@@ -273,7 +273,12 @@ fn esc_exit_unwinds_frames_running_defers_and_errdefers() {
         Some(call(g1id, vec![local(p, ptr_u32())], Ty::unit())),
         Ty::unit(),
     );
-    let w = with_(0, vec![HandlerValue::Literal(ex(Ty::unit(), ExprKind::HandlerRef(h)))], inner, Ty::i32());
+    let w = with_(
+        0,
+        vec![HandlerValue::Literal(ex(Ty::intern(TyKind::Handler(h.0)), ExprKind::HandlerRef(h)))],
+        inner,
+        Ty::i32(),
+    );
     let fid = tb.add(f.build(w));
     // The two inner frames run errdefer and defer; the block of `f` inside the `with` is left like
     // an ordinary break: defer only.
@@ -295,7 +300,7 @@ fn esc_exit_unwinds_frames_running_defers_and_errdefers() {
 // ---------------------------------------------------------------------------
 
 fn handler_ref(h: HandlerId) -> HandlerValue {
-    HandlerValue::Literal(ex(Ty::unit(), ExprKind::HandlerRef(h)))
+    HandlerValue::Literal(ex(Ty::intern(TyKind::Handler(h.0)), ExprKind::HandlerRef(h)))
 }
 
 #[test]

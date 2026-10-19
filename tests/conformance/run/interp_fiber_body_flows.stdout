@@ -1,0 +1,21 @@
+  emit 0
+  emit 1
+  body left
+from_body 1 done
+100
+  emit 0
+  emit 1
+  emit 3
+  body left
+from_body 10 failed
+from_body 10 done
+!.Bad(3)
+  round 0 body left
+round 0 completed, total 10
+  round 1 body left
+  round 2 body left
+round 2 completed, total 23
+  round 3 body left
+total 26
+nested 115
+9 -1 1 4

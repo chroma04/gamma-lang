@@ -1,10 +1,10 @@
-//! The bytecode engine: function bodies compiled to register code.
+//! The bytecode engine: function bodies compiled to register code, which is how the
+//! interpreter runs every function.
 //!
-//! The tree-walking evaluator dispatches on every node of the typed IR, turns every
-//! operand into a byte string and every local access into a lookup in its frame. For
-//! a function that runs more than a few nodes, compiling its body once into flat
-//! register code and running that is much cheaper. [`compile`] does the translation
-//! the first time a function is called, [`exec`] runs the code.
+//! [`compile`] translates a function the first time it is called, [`exec`] runs the
+//! code. Closed expressions (constants, globals, compile-time evaluation) and the
+//! bodies of `with … on` are compiled the same way, to code without parameters
+//! ([`compile_expr`], [`compile::compile_sub`]).
 //!
 //! # Registers
 //!
@@ -21,17 +21,24 @@
 //!
 //! # Locals
 //!
-//! A local stays in its frame's slots, as the tree-walker keeps it, when its address
-//! may be needed, a nested function captures it, it is a second-class value, or it is
-//! used by an expression the tree-walker evaluates (below). Closures therefore see
-//! the locals they capture wherever the function that owns them runs.
+//! A local stays in its frame's slots when its address may be needed, a nested
+//! function captures it, it is a second-class value, it is larger than 64 bytes, or
+//! the body of a `with … on` mentions it. Closures therefore see the locals they
+//! capture wherever the function that owns them runs.
 //!
-//! # What is not compiled
+//! # `with … on`
 //!
-//! A few rare expressions (`with … on`, `resume`, `cancel`, `@fiber` and the system
-//! services) are evaluated by the tree-walker from inside compiled code, in the same
-//! frame and handler context. A function the compiler cannot translate at all runs on
-//! the tree-walker entirely. `GAMMA_INTERP=tree` turns the bytecode engine off.
+//! The body of a `with … on` runs on a fiber, which has a thread of its own (see
+//! `fiber.rs`), so it is code of its own: it runs in the frame of the activation that
+//! contains it, which is where the locals it shares with the rest of the function
+//! live. A `return` in it, and a `break` or `continue` to a label outside it, are
+//! flows to that frame, which take the fiber down and land in the function's code.
+//!
+//! # What cannot be compiled
+//!
+//! A function the compiler cannot translate (a bug in the compiler, or a temporary
+//! larger than any frame) gets code that only traps, with an internal error naming
+//! the line of the compiler that gave up.
 //!
 //! # Control flow
 //!
@@ -55,7 +62,7 @@ use crate::types::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-pub use compile::compile;
+pub use compile::{compile, compile_expr};
 pub use exec::St;
 pub use heap::{HeapCx, HeapSlot};
 
@@ -84,7 +91,7 @@ impl IntK {
 
     #[inline(always)]
     pub fn si(self) -> SmallInt {
-        SmallInt { signed: self.signed, bits: self.bits as u32, size: self.size as usize, align: 1 }
+        SmallInt { signed: self.signed, bits: self.bits as u32, size: self.size as usize }
     }
 
     /// The unsigned 64-bit integer type, for indexes already converted to a word.
@@ -168,7 +175,7 @@ pub struct TagTest {
     pub off: u32,
     pub k: IntK,
     pub want: i128,
-    /// Every valid tag, sorted: a value matching none of them traps, as the tree-walker does.
+    /// Every valid tag, sorted: a value matching none of them traps.
     pub valid: Box<[i128]>,
 }
 
@@ -393,6 +400,15 @@ pub enum Op {
         ik: IntK,
         esz: u32,
         len: u32,
+    },
+    /// Like `IndexAddr` with a length of 2^32 or more, which is in register `len`.
+    IndexAddrW {
+        dst: Reg,
+        base: Reg,
+        idx: Reg,
+        ik: IntK,
+        esz: u32,
+        len: Reg,
     },
     /// The address of element `i` of the slice in `slice`, bounds checked.
     SliceIndexAddr {
@@ -755,12 +771,22 @@ pub enum Op {
         sink: Arg,
         args: u32,
     },
-    /// A statement run by the tree-walker.
-    TreeStmt {
-        stmt: u32,
+    /// `with … on` once its handlers are installed (`withs[info]`): runs the body on a
+    /// fiber and drives it.
+    WithOn {
+        info: u32,
     },
-    EvalTree {
-        expr: u32,
+    /// `resume k(v)`: the continuation and the value are `args[args]`.
+    Resume {
+        args: u32,
+    },
+    /// `cancel k`.
+    Cancel {
+        k: Arg,
+    },
+    /// `@fiber(f, arg, stack)`, with the operands `args[args]`.
+    Fiber {
+        args: u32,
         out: Arg,
     },
     Ret {
@@ -865,15 +891,19 @@ pub struct Code<'a> {
     /// For each of `effects`, whether the operation is a `ctl` one.
     pub effect_ctl: Vec<bool>,
     pub decls: Vec<Box<[HandlerDeclId]>>,
-    pub trees: Vec<&'a Expr>,
-    pub stmts: Vec<&'a Stmt>,
     pub writes: Vec<&'a Expr>,
+    pub withs: Vec<WithOn<'a>>,
+    /// The body of a `with … on` (see [`compile::compile_sub`]): it runs in its function's
+    /// frame, so a `return` to that frame is not this code's end.
+    pub sub: bool,
 }
 
-/// Whether compiled code is used, from `GAMMA_INTERP` (`tree` turns it off).
-pub fn enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("GAMMA_INTERP").map_or(true, |v| v != "tree"))
+/// A `with … on`: the code of its body, its label, and where its stack and its result are.
+pub struct WithOn<'a> {
+    pub code: Box<Code<'a>>,
+    pub label: LabelId,
+    pub stack: Arg,
+    pub out: Arg,
 }
 
 /// The compiled form of each function, filled in on first call.
@@ -882,17 +912,17 @@ pub enum CodeSlot<'a> {
     #[default]
     Unknown,
     Ready(Rc<Code<'a>>),
-    /// The function runs on the tree-walker.
-    Tree,
+    /// A foreign function: it has no body.
+    Foreign,
 }
 
 impl<'a> Machine<'a> {
-    /// The compiled code of `f`, compiling it on first use; `None` if it runs on the tree-walker.
+    /// The compiled code of `f`, compiling it on first use; `None` for a foreign function.
     #[inline]
     pub fn code_of(&mut self, f: FnId) -> Option<Rc<Code<'a>>> {
         match &self.vm_code[f.index()] {
             CodeSlot::Ready(c) => Some(c.clone()),
-            CodeSlot::Tree => None,
+            CodeSlot::Foreign => None,
             CodeSlot::Unknown => self.compile_now(f),
         }
     }
@@ -903,37 +933,31 @@ impl<'a> Machine<'a> {
     pub fn code_ptr(&mut self, f: FnId) -> Option<*const Code<'a>> {
         match &self.vm_code[f.index()] {
             CodeSlot::Ready(c) => Some(Rc::as_ptr(c)),
-            CodeSlot::Tree => None,
+            CodeSlot::Foreign => None,
             CodeSlot::Unknown => self.compile_now(f).map(|c| Rc::as_ptr(&c)),
         }
     }
 
     #[inline(never)]
     fn compile_now(&mut self, f: FnId) -> Option<Rc<Code<'a>>> {
-        let slot = if !enabled() {
-            CodeSlot::Tree
-        } else {
-            let c = compile(self, f);
-            let name = self.prog.fns[f.index()].name.as_str();
-            if let Ok(d) = std::env::var("GAMMA_VM_DUMP")
-                && (d == "*" || d == name)
-            {
-                match &c {
-                    Ok(c) => eprintln!("{}", c.dump(name)),
-                    Err(u) => eprintln!("== {} runs on the tree-walker ({}:{})", name, u.0, u.1),
-                }
+        let def = &self.prog.fns[f.index()];
+        if def.body.is_none() {
+            self.vm_code[f.index()] = CodeSlot::Foreign;
+            return None;
+        }
+        let c = compile(self, f);
+        let name = def.name.as_str();
+        if let Ok(d) = std::env::var("GAMMA_VM_DUMP")
+            && (d == "*" || d == name)
+        {
+            match &c {
+                Ok(c) => eprintln!("{}", c.dump(name)),
+                Err(u) => eprintln!("== {} cannot be compiled ({}:{})", name, u.0, u.1),
             }
-            match c {
-                Ok(c) => CodeSlot::Ready(Rc::new(c)),
-                Err(_) => CodeSlot::Tree,
-            }
-        };
-        let r = match &slot {
-            CodeSlot::Ready(c) => Some(c.clone()),
-            _ => None,
-        };
-        self.vm_code[f.index()] = slot;
-        r
+        }
+        let c = Rc::new(c.unwrap_or_else(|u| compile::trap_code(self, Some(def), &u)));
+        self.vm_code[f.index()] = CodeSlot::Ready(c.clone());
+        Some(c)
     }
 }
 

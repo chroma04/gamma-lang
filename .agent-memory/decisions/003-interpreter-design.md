@@ -8,5 +8,5 @@
 - Effects: handler stack passed explicitly; esc exits = Rust `Err(Unwind{target})` propagated
   through eval, running defers; returns/breaks similarly as control-flow enum.
 - Fibers: chosen OS thread per fiber with strict handoff (decisions/010).
-- Since s9 the default engine is a bytecode VM over the same memory; the tree-walker is the
-  fallback (decisions/020).
+- Since s9 the engine is a bytecode VM over the same memory; s29 removed the tree-walker
+  (decisions/020). Flows still propagate as Rust `Err(Box<Flow>)` across calls.

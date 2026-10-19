@@ -1,6 +1,7 @@
 //! Conversions, builtin methods and intrinsics (`tir::Builtin`).
 
 use super::bytes::Bytes;
+use super::coverage::cover_hit;
 use super::machine::*;
 use super::num::{self, Int};
 use super::ops::fmt_int;
@@ -510,5 +511,266 @@ impl<'a> Machine<'a> {
             n >>= 1;
         }
         num::wrap(&result, signed, bits)
+    }
+}
+
+impl<'a> Machine<'a> {
+    /// The `FnToPtr` coercion of `v` to type `to`: between second-class function values
+    /// and function pointers.
+    pub fn fn_to_ptr(&self, cx: &Ctx, span: Span, to: Ty, v: Value) -> R {
+        let to_second_class = matches!(to.kind(), TyKind::Fn(_));
+        match v {
+            Value::Closure(c) => {
+                if to_second_class {
+                    Ok(Value::Closure(c))
+                } else {
+                    Ok(Value::Bytes(self.ptr_bytes(self.fn_addr(c.func))))
+                }
+            }
+            Value::Bytes(b) => {
+                if to_second_class {
+                    match self.fn_from_addr(self.ptr_of(&b)) {
+                        Some(f) => Ok(Value::Closure(Closure { func: f, env: None, ctx: cx.clone() })),
+                        None => self.trap(span, "call through an invalid function pointer"),
+                    }
+                } else {
+                    Ok(Value::Bytes(b))
+                }
+            }
+            other => Ok(other),
+        }
+    }
+
+    /// Applies a coercion of plain data (not `FromNever` or `FnToPtr`) to the bytes `b` of a
+    /// value of type `from`, giving a value of type `to`.
+    pub fn coerce_bytes(&self, span: Span, kind: Coercion, from: Ty, to: Ty, b: Bytes) -> R<Bytes> {
+        Ok(match kind {
+            Coercion::IntWiden => {
+                if let (Some(isi), Some(osi)) = (self.small_of(from), self.small_of(to)) {
+                    let x = self.decode_small(isi, &b);
+                    self.encode_small(osi, x)
+                } else {
+                    let x = self.int_of(from, &b);
+                    self.int_bytes(to, &x)
+                }
+            }
+            Coercion::FloatWiden => {
+                let (TyKind::Float(sf), TyKind::Float(df)) = (from.kind(), to.kind()) else {
+                    return self.trap(span, "internal error: float widening of non-floats");
+                };
+                self.float_bytes(*df, self.float_of(*sf, &b))
+            }
+            Coercion::WrapOptional => self.make_some(to, &b),
+            Coercion::WrapOk => self.make_res(to, false, &b),
+            Coercion::LiftErr { variant } => {
+                if self.res_is_err(from, &b) {
+                    let ev = self.res_payload(from, &b);
+                    let (derr, _) = self.res_types(to);
+                    let lifted = self.make_variant(derr, variant as usize, &ev);
+                    self.make_res(to, true, &lifted)
+                } else {
+                    self.make_res(to, false, &self.res_payload(from, &b))
+                }
+            }
+            Coercion::ArrayPtrToSlice => self.array_ptr_to_slice(from, &b),
+            Coercion::InOptional => {
+                if !self.opt_present(from, &b) {
+                    self.make_none(to)
+                } else {
+                    let (src_in, dst_in) = (self.opt_inner(from), self.opt_inner(to));
+                    let payload = self.opt_payload(from, &b);
+                    let converted = match (src_in.kind(), dst_in.kind()) {
+                        (TyKind::Ptr { pointee, .. }, TyKind::Slice { .. })
+                            if matches!(pointee.kind(), TyKind::Array { .. }) =>
+                        {
+                            self.array_ptr_to_slice(src_in, &payload)
+                        }
+                        _ => payload,
+                    };
+                    self.make_some(to, &converted)
+                }
+            }
+            Coercion::PtrToPtr | Coercion::TupleRename | Coercion::FnPtrWiden => b,
+            Coercion::FromNever | Coercion::FnToPtr | Coercion::Unresolved => {
+                return self.trap(span, "internal error: unresolved coercion reached the interpreter");
+            }
+        })
+    }
+
+    fn array_ptr_to_slice(&self, ptr_ty: Ty, b: &[u8]) -> Bytes {
+        let len = match ptr_ty.kind() {
+            TyKind::Ptr { pointee, .. } => match pointee.kind() {
+                TyKind::Array { len, .. } => *len,
+                _ => 0,
+            },
+            _ => 0,
+        };
+        self.make_slice(self.ptr_of(b), len)
+    }
+
+    /// `file:line:column` of an allocation site.
+    fn site_text(&mut self, span: Span, site: &AllocSite) -> R<String> {
+        let file = String::from_utf8_lossy(&self.read_str(span, &site.0)?).into_owned();
+        Ok(format!("{}:{}:{}", file, site.1, site.2))
+    }
+
+    /// Applies a builtin whose arguments are all evaluated first (not `assert`, `expect`,
+    /// `@fiber`, the `Sys` operations or `get`/`get_ptr`/`first`/`last`) to the argument
+    /// values `v` of types `tys`.
+    pub fn builtin_vals(&mut self, span: Span, op: Builtin, res_ty: Ty, tys: &[Ty], v: &[Bytes]) -> R {
+        match op {
+            Builtin::HeapAlloc => {
+                let size = self.int_of(tys[0], &v[0]).to_u64_sat();
+                let align = self.int_of(tys[1], &v[1]).to_u64_sat().max(1);
+                if !align.is_power_of_two() {
+                    return self.trap(span, format!("allocation alignment {} is not a power of two", align));
+                }
+                // An allocation the host cannot provide is a null result, not a trap.
+                let Ok(addr) = self.mem.alloc(size, align, super::memory::AllocKind::Heap, true) else {
+                    return Ok(Value::Bytes(self.make_none(res_ty)));
+                };
+                // Fresh storage is unspecified; Debug builds fill it with a pattern (§18.3).
+                if self.mode == super::Mode::Debug && size > 0 {
+                    let fill = vec![0xAAu8; size as usize];
+                    self.mem.init(addr, &fill).map_err(|m| super::value::trap_flow(span, m.message()))?;
+                }
+                Ok(Value::Bytes(self.make_some(res_ty, &self.ptr_bytes(addr))))
+            }
+            Builtin::AllocTag | Builtin::AllocCheck => {
+                if self.mode != super::Mode::Debug {
+                    return Ok(Value::unit());
+                }
+                let (p, owner, vt) = (self.ptr_of(&v[0]), self.ptr_of(&v[1]), self.ptr_of(&v[2]));
+                let line = self.int_of(tys[4], &v[4]).to_u64_sat();
+                let col = self.int_of(tys[5], &v[5]).to_u64_sat();
+                let site = (v[3].clone(), line, col);
+                if op == Builtin::AllocTag {
+                    self.alloc_tags.insert(p, (owner, vt, site));
+                } else if let Some((o, t, from)) = self.alloc_tags.remove(&p)
+                    && (o, t) != (owner, vt)
+                {
+                    let (from, site) = (self.site_text(span, &from)?, self.site_text(span, &site)?);
+                    return self.trap(
+                        span,
+                        format!("memory allocated at {} is freed at {} through a different allocator", from, site),
+                    );
+                }
+                Ok(Value::unit())
+            }
+            Builtin::HeapFree => {
+                let p = self.ptr_of(&v[0]);
+                let size = self.int_of(tys[1], &v[1]).to_u64_sat();
+                match self.mem.describe(p) {
+                    Some((base, sz, super::memory::AllocKind::Heap, true)) if base == p && sz == size => {
+                        self.mem.kill(base);
+                        Ok(Value::unit())
+                    }
+                    Some((_, _, super::memory::AllocKind::Heap, false)) => {
+                        self.trap(span, format!("double free of heap block {:#x}", p))
+                    }
+                    // A whole block freed with the wrong size, such as a slice of it.
+                    Some((base, sz, super::memory::AllocKind::Heap, true)) if base == p => self.trap(
+                        span,
+                        format!("invalid free of {:#x}: the heap block there has {} bytes, not {}", p, sz, size),
+                    ),
+                    _ => self.trap(
+                        span,
+                        format!("invalid free of {:#x}: not the start of a live heap block of {} bytes", p, size),
+                    ),
+                }
+            }
+            // Threads take turns under a global lock (see threads.rs), so atomics are plain memory accesses (§19.6).
+            Builtin::AtomicLoad
+            | Builtin::AtomicStore
+            | Builtin::AtomicSwap
+            | Builtin::AtomicCas
+            | Builtin::AtomicRmw(_)
+            | Builtin::VolatileLoad
+            | Builtin::VolatileStore => {
+                let vals = v;
+                let addr = self.ptr_of(&vals[0]);
+                let ty = match tys[0].kind() {
+                    TyKind::Ptr { pointee, .. } => *pointee,
+                    _ => return self.trap(span, "internal error: atomic access through a non-pointer"),
+                };
+                let align = self.ti(ty).align;
+                let old = self.load_ty(span, addr, ty)?;
+                match op {
+                    Builtin::AtomicLoad | Builtin::VolatileLoad => Ok(Value::Bytes(old)),
+                    Builtin::AtomicStore | Builtin::VolatileStore => {
+                        self.store(span, addr, &vals[1], align)?;
+                        Ok(Value::unit())
+                    }
+                    Builtin::AtomicSwap => {
+                        self.store(span, addr, &vals[1], align)?;
+                        Ok(Value::Bytes(old))
+                    }
+                    Builtin::AtomicCas => {
+                        if self.tr(span, self.eq(ty, &old, &vals[1]))? {
+                            self.store(span, addr, &vals[2], align)?;
+                            Ok(Value::Bytes(self.make_none(res_ty)))
+                        } else {
+                            Ok(Value::Bytes(self.make_some(res_ty, &old)))
+                        }
+                    }
+                    Builtin::AtomicRmw(rmw) => {
+                        let (x, y) = (self.int_of(ty, &old), self.int_of(ty, &vals[1]));
+                        let (signed, bits) = self.ti(ty).int.unwrap_or((false, 8 * old.len() as u32));
+                        let r = match rmw {
+                            RmwOp::Add => x.add(&y),
+                            RmwOp::Sub => x.sub(&y),
+                            RmwOp::And => x.and(&y),
+                            RmwOp::Or => x.or(&y),
+                            RmwOp::Xor => x.xor(&y),
+                            RmwOp::Max => {
+                                if y.cmp(&x) == std::cmp::Ordering::Greater {
+                                    y
+                                } else {
+                                    x
+                                }
+                            }
+                            RmwOp::Min => {
+                                if y.cmp(&x) == std::cmp::Ordering::Less {
+                                    y
+                                } else {
+                                    x
+                                }
+                            }
+                        };
+                        let new = self.int_bytes(ty, &super::num::wrap(&r, signed, bits));
+                        self.store(span, addr, &new, align)?;
+                        Ok(Value::Bytes(old))
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Builtin::Fence => Ok(Value::unit()),
+            Builtin::Cover(id) => {
+                cover_hit(id);
+                Ok(Value::unit())
+            }
+            Builtin::Sys(op) => self.sys_op(span, op, res_ty, tys, v),
+            // Of an array value: the element is copied out of its bytes.
+            Builtin::Get | Builtin::First | Builtin::Last if matches!(tys[0].kind(), TyKind::Array { .. }) => {
+                let TyKind::Array { len, .. } = tys[0].kind() else { unreachable!() };
+                let esz = self.size_of(self.opt_inner(res_ty)) as u64;
+                let i = match op {
+                    Builtin::First => 0,
+                    Builtin::Last => len.wrapping_sub(1),
+                    _ => self.int_of(tys[1], &v[1]).to_u64_sat(),
+                };
+                if i >= *len {
+                    return Ok(Value::Bytes(self.make_none(res_ty)));
+                }
+                let elem = Bytes::from_slice(&v[0][(i * esz) as usize..((i + 1) * esz) as usize]);
+                Ok(Value::Bytes(self.make_some(res_ty, &elem)))
+            }
+            _ => {
+                if let Some(r) = self.vector_builtin(span, op, res_ty, tys, v) {
+                    return Ok(Value::Bytes(r?));
+                }
+                Ok(Value::Bytes(self.builtin(span, op, res_ty, tys, v)?))
+            }
+        }
     }
 }

@@ -38,9 +38,7 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
 ## Nice — after 0.1.0
 - Language: done/decided in s27 (decisions/029). Vector follow-ups if asked: lane `sqrt`,
   two-input shuffles, lane `trunc`/`round` to integers.
-- Compiler: retire the tree-walker (s24: no run test falls back for a whole function except
-  huge_local's 1e12-element array; left: statements with values > REG_VALUE_MAX run as
-  TreeStmt, coverage builtin, const eval), smaller Debug C (overflow-trap and
+- Compiler: smaller Debug C (overflow-trap and
   backtrace-site code ~8% each of gcc time; s25 split Debug C into parallel units, units.rs), a native
   back end (LLVM/Cranelift).
 - Platforms: wasm32-wasi (no fibers/threads), FreeBSD, freestanding/embedded profile.

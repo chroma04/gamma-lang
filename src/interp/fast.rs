@@ -1,16 +1,12 @@
-//! Fast paths for integers of at most 64 bits.
+//! Integers of at most 64 bits as exact `i128` values.
 //!
-//! The general evaluator turns every operand into [`Bytes`] and every integer
-//! into an arbitrary-precision [`super::num::Int`]. For the very common case of
-//! integer types that fit a machine word, the functions here evaluate
-//! expressions straight to an `i128` (the exact mathematical value, as in the
-//! general path) and read and write such values in memory without building
-//! intermediate byte strings. Every check, trap and message is the same as in
-//! the general path, and so is the order in which operands are evaluated and
-//! steps are counted.
+//! The general arithmetic works on byte strings and arbitrary-precision
+//! [`super::num::Int`]s. For integer types that fit a machine word, the functions here
+//! decode, encode and compute with the exact mathematical value in an `i128`, with the
+//! same checks, traps and messages: the bytecode VM's integer instructions use them for
+//! literals and when their 64-bit fast path overflows.
 
 use super::bytes::Bytes;
-use super::eval::is_place_expr;
 use super::machine::*;
 use super::value::*;
 use crate::source::Span;
@@ -105,28 +101,9 @@ impl<'a> Machine<'a> {
         super::num::wrap(&super::num::Int::from_big(v.clone()), si.signed, si.bits).to_i128().unwrap_or(0)
     }
 
-    /// Counts one evaluation step (`eval` does this on entry).
-    #[inline(always)]
-    pub fn step(&mut self, span: Span) -> R<()> {
-        self.steps += 1;
-        if let Some(b) = self.budget
-            && self.steps > b
-        {
-            return self.trap(span, "compile-time evaluation exceeded its step budget");
-        }
-        Ok(())
-    }
-
     #[inline(always)]
     pub fn small_of(&self, ty: Ty) -> Option<SmallInt> {
         self.ti(ty).small
-    }
-
-    /// Converts a word read from memory (first byte least significant) to the numeric value of
-    /// its low `size` bytes in the target's byte order.
-    #[inline(always)]
-    fn raw_to_word(&self, raw: u64, size: usize) -> u64 {
-        if self.little() { raw } else { raw.swap_bytes() >> (64 - 8 * size) }
     }
 
     /// The inverse of [`Machine::raw_to_word`].
@@ -143,76 +120,6 @@ impl<'a> Machine<'a> {
     #[inline(always)]
     pub fn encode_small(&self, si: SmallInt, v: i128) -> Bytes {
         Bytes::from_word(self.word_to_raw(v as u64, si.size), si.size)
-    }
-
-    #[inline(always)]
-    pub fn load_small(&self, span: Span, addr: u64, si: SmallInt, align: u64) -> R<i128> {
-        if let Some(raw) = self.mem.try_read_word(addr, si.size, align) {
-            return Ok(si.value(self.raw_to_word(raw, si.size)));
-        }
-        match self.mem.read_word(addr, si.size, align) {
-            Ok(raw) => Ok(si.value(self.raw_to_word(raw, si.size))),
-            Err(e) => Err(trap_flow(span, e.message())),
-        }
-    }
-
-    #[inline(always)]
-    pub fn store_small(&mut self, span: Span, addr: u64, v: i128, si: SmallInt, align: u64) -> R<()> {
-        let raw = self.word_to_raw(v as u64, si.size);
-        if self.mem.try_write_word(addr, raw, si.size, align) {
-            return Ok(());
-        }
-        match self.mem.write_word(addr, raw, si.size, align) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(trap_flow(span, e.message())),
-        }
-    }
-
-    pub fn read_place_small(&self, span: Span, p: Place, ty: Ty, si: SmallInt) -> R<i128> {
-        match p {
-            Place::Mem(addr) => self.load_small(span, addr, si, si.align),
-            Place::Packed(addr) => self.load_small(span, addr, si, 1),
-            Place::Bits { .. } => {
-                let b = self.read_place(span, p, ty)?;
-                Ok(self.decode_small(si, &b))
-            }
-        }
-    }
-
-    pub fn write_place_small(&mut self, span: Span, p: Place, ty: Ty, si: SmallInt, v: i128) -> R<()> {
-        match p {
-            Place::Mem(addr) => self.store_small(span, addr, v, si, si.align),
-            Place::Packed(addr) => self.store_small(span, addr, v, si, 1),
-            Place::Bits { .. } => {
-                let b = self.encode_small(si, v);
-                self.write_place(span, p, ty, &b)
-            }
-        }
-    }
-
-    /// Reads a first-class local of small integer type.
-    #[inline(always)]
-    pub fn read_local_small(&self, span: Span, fr: &Frame, id: LocalId, si: SmallInt) -> R<i128> {
-        let addr = {
-            let locals = fr.locals.borrow();
-            match locals.get(id.index()) {
-                Some(Slot::Mem(addr)) => *addr,
-                Some(Slot::Reg(r)) => {
-                    let raw = u64::from_le_bytes(r[..8].try_into().unwrap());
-                    return Ok(si.value(self.raw_to_word(raw, si.size)));
-                }
-                Some(Slot::Val(_)) => return self.local_not_data(span),
-                _ => return self.local_uninit(span),
-            }
-        };
-        self.load_small(span, addr, si, si.align)
-    }
-
-    /// Assigns the value `v` to a local of small integer type.
-    #[inline(always)]
-    pub fn set_local_small(&mut self, span: Span, fr: &Frame, id: LocalId, si: SmallInt, v: i128) -> R<()> {
-        let raw = self.word_to_raw(v as u64, si.size);
-        self.set_local(span, fr, id, &raw.to_le_bytes()[..si.size], si.align)
     }
 
     #[cold]
@@ -359,165 +266,5 @@ impl<'a> Machine<'a> {
             return None;
         }
         Some((si, ri))
-    }
-
-    /// Evaluates the operands of a `Binary` node that has already been counted and applies `op`.
-    #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn eval_binary_small(
-        &mut self,
-        a: Act,
-        e: &Expr,
-        op: BinOp,
-        lhs: &Expr,
-        rhs: &Expr,
-        si: SmallInt,
-        ri: SmallInt,
-    ) -> R<i128> {
-        let l = self.eval_small(a, lhs, si)?;
-        let r = self.eval_small(a, rhs, ri)?;
-        self.small_binop(e.span, op, si, lhs.ty, l, r)
-    }
-
-    /// Evaluates the operand of a counted `-x` or `~x` node of small integer type and applies the operator.
-    pub fn eval_unary_small(&mut self, a: Act, e: &Expr, op: UnOp, operand: &Expr, si: SmallInt) -> R<i128> {
-        let x = self.eval_small(a, operand, si)?;
-        if let UnOp::Neg = op {
-            let v = -x;
-            if !si.fits(v) {
-                if self.fast() {
-                    return Ok(si.value(v as u64));
-                }
-                return Err(self.overflow_trap(e.span, "-"));
-            }
-            Ok(v)
-        } else {
-            Ok(si.value(!x as u64))
-        }
-    }
-
-    /// Evaluates `e`, an expression whose type is the small integer type `si`, to its value.
-    ///
-    /// Only the most frequent kinds are handled here, the rest in [`Machine::eval_small_other`],
-    /// so that the frame of this recursive function stays small.
-    pub fn eval_small(&mut self, a: Act, e: &Expr, si: SmallInt) -> R<i128> {
-        match &e.kind {
-            ExprKind::Int(v) => {
-                self.step(e.span)?;
-                Ok(Self::int_literal(v, si))
-            }
-            ExprKind::Local(id) => {
-                self.step(e.span)?;
-                self.read_local_small(e.span, a.fr, *id, si)
-            }
-            ExprKind::Binary { op, lhs, rhs } => {
-                if let Some((si2, ri)) = self.small_binary_info(*op, lhs, rhs, e.ty)
-                    && !is_comparison(*op)
-                {
-                    self.step(e.span)?;
-                    return self.eval_binary_small(a, e, *op, lhs, rhs, si2, ri);
-                }
-                self.eval_small_generic(a, e, si)
-            }
-            _ => self.eval_small_other(a, e, si),
-        }
-    }
-
-    #[inline(never)]
-    fn eval_small_other(&mut self, a: Act, e: &Expr, si: SmallInt) -> R<i128> {
-        match &e.kind {
-            ExprKind::Upvar { levels, local } => {
-                self.step(e.span)?;
-                let mut fr: &Frame = a.fr;
-                for _ in 0..*levels {
-                    match fr.parent_env.as_deref() {
-                        Some(p) => fr = p,
-                        None => return self.trap(e.span, "internal error: upvar without an enclosing frame"),
-                    }
-                }
-                self.read_local_small(e.span, fr, *local, si)
-            }
-            ExprKind::Global(_) | ExprKind::Deref(_) => {
-                self.step(e.span)?;
-                let p = self.eval_place(a, e)?;
-                self.read_place_small(e.span, p, e.ty, si)
-            }
-            ExprKind::Field { base, .. } | ExprKind::VariantPayload { base, .. } if is_place_expr(base) => {
-                self.step(e.span)?;
-                let p = self.eval_place(a, e)?;
-                self.read_place_small(e.span, p, e.ty, si)
-            }
-            ExprKind::Index { base, .. }
-                if !(matches!(base.ty.kind(), TyKind::Array { .. }) && !is_place_expr(base)) =>
-            {
-                self.step(e.span)?;
-                let p = self.eval_place(a, e)?;
-                self.read_place_small(e.span, p, e.ty, si)
-            }
-            ExprKind::Unary { op: op @ (UnOp::Neg | UnOp::BitNot), operand } if operand.ty == e.ty => {
-                self.step(e.span)?;
-                self.eval_unary_small(a, e, *op, operand, si)
-            }
-            ExprKind::Coerce { kind: Coercion::IntWiden, expr } => {
-                if let Some(isi) = self.small_of(expr.ty) {
-                    self.step(e.span)?;
-                    return self.eval_small(a, expr, isi);
-                }
-                self.eval_small_generic(a, e, si)
-            }
-            ExprKind::SliceLen(s) => {
-                self.step(e.span)?;
-                let b = self.eval_bytes(a, s)?;
-                Ok(self.slice_parts(&b).1 as i128)
-            }
-            _ => self.eval_small_generic(a, e, si),
-        }
-    }
-
-    #[inline(never)]
-    fn eval_small_generic(&mut self, a: Act, e: &Expr, si: SmallInt) -> R<i128> {
-        let b = self.eval_bytes(a, e)?;
-        Ok(self.decode_small(si, &b))
-    }
-
-    /// Evaluates a condition of type `bool`.
-    pub fn eval_cond(&mut self, a: Act, e: &Expr) -> R<bool> {
-        if let ExprKind::Binary { op, lhs, rhs } = &e.kind
-            && is_comparison(*op)
-            && let Some((si, ri)) = self.small_binary_info(*op, lhs, rhs, e.ty)
-        {
-            self.step(e.span)?;
-            return Ok(self.eval_binary_small(a, e, *op, lhs, rhs, si, ri)? != 0);
-        }
-        self.eval_cond_other(a, e)
-    }
-
-    #[inline(never)]
-    fn eval_cond_other(&mut self, a: Act, e: &Expr) -> R<bool> {
-        match &e.kind {
-            ExprKind::Logic { is_and, lhs, rhs } => {
-                self.step(e.span)?;
-                let lv = self.eval_cond(a, lhs)?;
-                if lv != *is_and {
-                    return Ok(lv);
-                }
-                return self.eval_cond(a, rhs);
-            }
-            ExprKind::Eq { lhs, rhs, negated } if lhs.ty == rhs.ty => {
-                if let Some(si) = self.small_of(lhs.ty) {
-                    self.step(e.span)?;
-                    let l = self.eval_small(a, lhs, si)?;
-                    let r = self.eval_small(a, rhs, si)?;
-                    return Ok((l == r) != *negated);
-                }
-            }
-            ExprKind::Unary { op: UnOp::Not, operand } => {
-                self.step(e.span)?;
-                return Ok(!self.eval_cond(a, operand)?);
-            }
-            _ => {}
-        }
-        let b = self.eval_bytes(a, e)?;
-        Ok(self.truthy(&b))
     }
 }

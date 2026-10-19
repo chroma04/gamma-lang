@@ -2,9 +2,11 @@
 //! standard input, clocks, random bytes, files and directories, TCP networking,
 //! futexes and threads. Compiled programs get the same services from the C runtime.
 
+use super::bytes::Bytes;
 use super::machine::*;
 use super::value::*;
-use crate::tir::{self, Expr, IoErrorKind, SysOp, io_error_code};
+use crate::source::Span;
+use crate::tir::{self, IoErrorKind, SysOp, io_error_code};
 use crate::types::Ty;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -141,11 +143,8 @@ fn epoch() -> Instant {
 }
 
 impl<'a> Machine<'a> {
-    pub fn eval_sys(&mut self, a: Act, e: &Expr, op: SysOp, args: &[Expr]) -> R {
-        let mut vals = vec![];
-        for x in args {
-            vals.push(self.eval_bytes(a, x)?);
-        }
+    /// The system service `op` with the arguments `vals` of types `tys`; `res` is its result type.
+    pub fn sys_op(&mut self, span: Span, op: SysOp, res: Ty, tys: &[Ty], vals: &[Bytes]) -> R {
         let int = |m: &Self, t: Ty, n: i128| {
             Value::Bytes(m.int_bytes(t, &super::num::Int::from_big(num_bigint::BigInt::from(n))))
         };
@@ -164,21 +163,21 @@ impl<'a> Machine<'a> {
                 });
                 let n = match r {
                     Ok(n) => n,
-                    Err(err) => return Ok(int(self, e.ty, error_code(&err) as i128)),
+                    Err(err) => return Ok(int(self, res, error_code(&err) as i128)),
                 };
-                self.store(e.span, ptr, &buf[..n], 1)?;
-                Ok(int(self, e.ty, n as i128))
+                self.store(span, ptr, &buf[..n], 1)?;
+                Ok(int(self, res, n as i128))
             }
-            SysOp::ClockNow => Ok(int(self, e.ty, epoch().elapsed().as_nanos() as i128)),
+            SysOp::ClockNow => Ok(int(self, res, epoch().elapsed().as_nanos() as i128)),
             SysOp::ClockWall => {
                 let t = match SystemTime::now().duration_since(UNIX_EPOCH) {
                     Ok(d) => d.as_nanos() as i128,
                     Err(before) => -(before.duration().as_nanos() as i128),
                 };
-                Ok(int(self, e.ty, t))
+                Ok(int(self, res, t))
             }
             SysOp::Sleep => {
-                let ns = self.int_of(args[0].ty, &vals[0]).to_u64_sat();
+                let ns = self.int_of(tys[0], &vals[0]).to_u64_sat();
                 self.without_gil(|| std::thread::sleep(std::time::Duration::from_nanos(ns)));
                 Ok(Value::unit())
             }
@@ -199,8 +198,8 @@ impl<'a> Machine<'a> {
             | SysOp::FsTruncate
             | SysOp::FsSync
             | SysOp::FsCwd => {
-                let n = self.fs_op(e, op, args, &vals)?;
-                Ok(int(self, e.ty, n as i128))
+                let n = self.fs_op(span, op, tys, vals)?;
+                Ok(int(self, res, n as i128))
             }
             SysOp::NetConnect
             | SysOp::NetListen
@@ -212,8 +211,8 @@ impl<'a> Machine<'a> {
             | SysOp::NetShutdown
             | SysOp::NetSetTimeouts
             | SysOp::NetPeer => {
-                let n = self.net_op(e, op, args, &vals)?;
-                Ok(int(self, e.ty, n as i128))
+                let n = self.net_op(span, op, tys, vals)?;
+                Ok(int(self, res, n as i128))
             }
             SysOp::ProcSpawn
             | SysOp::ProcWriteIn
@@ -221,23 +220,23 @@ impl<'a> Machine<'a> {
             | SysOp::ProcReadOut
             | SysOp::ProcWait
             | SysOp::ProcKill => {
-                let n = self.proc_op(e, op, args, &vals)?;
-                Ok(int(self, e.ty, n as i128))
+                let n = self.proc_op(span, op, tys, vals)?;
+                Ok(int(self, res, n as i128))
             }
             SysOp::ThreadSpawn => {
                 let f = self.ptr_of(&vals[0]);
-                let h = self.spawn_thread(e.span, f, Value::Bytes(vals[1].clone()))?;
-                Ok(int(self, e.ty, h as i128))
+                let h = self.spawn_thread(span, f, Value::Bytes(vals[1].clone()))?;
+                Ok(int(self, res, h as i128))
             }
             SysOp::ThreadJoin => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let r = self.join_thread(h)?;
-                Ok(int(self, e.ty, r as i128))
+                Ok(int(self, res, r as i128))
             }
             SysOp::ThreadDetach => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let r = self.detach_thread(h);
-                Ok(int(self, e.ty, r as i128))
+                Ok(int(self, res, r as i128))
             }
             SysOp::ThreadYield => {
                 self.yield_thread()?;
@@ -245,25 +244,25 @@ impl<'a> Machine<'a> {
             }
             SysOp::FutexWait => {
                 let addr = self.ptr_of(&vals[0]);
-                let expected = self.int_arg(&args[1], &vals[1]) as u32;
-                let timeout = self.int_arg(&args[2], &vals[2]);
-                let n = self.futex_wait(e.span, addr, expected, timeout)?;
-                Ok(int(self, e.ty, n as i128))
+                let expected = self.int_arg(tys[1], &vals[1]) as u32;
+                let timeout = self.int_arg(tys[2], &vals[2]);
+                let n = self.futex_wait(span, addr, expected, timeout)?;
+                Ok(int(self, res, n as i128))
             }
             SysOp::FutexWake => {
                 // Every waiter wakes (a wake-up may be spurious) and re-checks its word.
                 let (lock, cv) = &*futex();
                 *lock.lock().unwrap_or_else(|e| e.into_inner()) += 1;
                 cv.notify_all();
-                Ok(int(self, e.ty, 0))
+                Ok(int(self, res, 0))
             }
             SysOp::CpuCount => {
                 let n = std::thread::available_parallelism().map_or(1, |n| n.get());
-                Ok(int(self, e.ty, n as i128))
+                Ok(int(self, res, n as i128))
             }
             SysOp::SysWrite => {
-                let fd = self.int_arg(&args[0], &vals[0]);
-                let data = self.read_str(e.span, &vals[1])?;
+                let fd = self.int_arg(tys[0], &vals[0]);
+                let data = self.read_str(span, &vals[1])?;
                 let w = if fd == 2 { self.errw.as_mut() } else { self.out.as_mut() };
                 if let Some(w) = w {
                     let _ = w.write_all(&data);
@@ -277,9 +276,9 @@ impl<'a> Machine<'a> {
                 let (ptr, len) = self.slice_parts(&vals[0]);
                 let mut buf = vec![0u8; len as usize];
                 if let Err(err) = random_bytes(&mut buf) {
-                    return self.trap(e.span, format!("cannot read random bytes: {}", err));
+                    return self.trap(span, format!("cannot read random bytes: {}", err));
                 }
-                self.store(e.span, ptr, &buf, 1)?;
+                self.store(span, ptr, &buf, 1)?;
                 Ok(Value::unit())
             }
         }
@@ -323,20 +322,20 @@ impl<'a> Machine<'a> {
         Ok(0)
     }
 
-    fn path_arg(&self, e: &Expr, v: &[u8]) -> R<PathBuf> {
-        Ok(path_of(self.read_str(e.span, v)?))
+    fn path_arg(&self, span: Span, v: &[u8]) -> R<PathBuf> {
+        Ok(path_of(self.read_str(span, v)?))
     }
 
-    pub(super) fn int_arg(&self, x: &Expr, v: &[u8]) -> i64 {
-        self.int_of(x.ty, v).to_big().try_into().unwrap_or(-1)
+    pub(super) fn int_arg(&self, ty: Ty, v: &[u8]) -> i64 {
+        self.int_of(ty, v).to_big().try_into().unwrap_or(-1)
     }
 
     /// A file-system service: its result, or an error code.
-    fn fs_op(&mut self, e: &Expr, op: SysOp, args: &[Expr], vals: &[super::bytes::Bytes]) -> R<i64> {
+    fn fs_op(&mut self, span: Span, op: SysOp, tys: &[Ty], vals: &[super::bytes::Bytes]) -> R<i64> {
         Ok(match op {
             SysOp::FsOpen => {
-                let path = self.path_arg(e, &vals[0])?;
-                let flags = self.int_arg(&args[1], &vals[1]) as u32;
+                let path = self.path_arg(span, &vals[0])?;
+                let flags = self.int_arg(tys[1], &vals[1]) as u32;
                 let has = |f: u32| flags & f != 0;
                 // Like POSIX, an access mode with neither write nor append is read-only; there
                 // `create`, `exclusive` and `truncate` are passed to open(2) as they are.
@@ -385,12 +384,12 @@ impl<'a> Machine<'a> {
                 }))
             }
             SysOp::FsClose => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let sys = &mut self.sys;
                 code(sys.files.remove(&h).map(|_| 0).ok_or_else(bad_handle))
             }
             SysOp::FsRead => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
                 let mut buf = vec![0u8; len as usize];
                 let r = match self.sys.files.get_mut(&h) {
@@ -399,24 +398,24 @@ impl<'a> Machine<'a> {
                 };
                 match r {
                     Ok(n) => {
-                        self.store(e.span, ptr, &buf[..n], 1)?;
+                        self.store(span, ptr, &buf[..n], 1)?;
                         n as i64
                     }
                     Err(err) => error_code(&err),
                 }
             }
             SysOp::FsWrite => {
-                let h = self.int_arg(&args[0], &vals[0]);
-                let data = self.read_str(e.span, &vals[1])?;
+                let h = self.int_arg(tys[0], &vals[0]);
+                let data = self.read_str(span, &vals[1])?;
                 code(match self.sys.files.get_mut(&h) {
                     Some(f) => f.write(&data).map(|n| n as i64),
                     None => Err(bad_handle()),
                 })
             }
             SysOp::FsSeek => {
-                let h = self.int_arg(&args[0], &vals[0]);
-                let off = self.int_arg(&args[1], &vals[1]);
-                let whence = self.int_arg(&args[2], &vals[2]);
+                let h = self.int_arg(tys[0], &vals[0]);
+                let off = self.int_arg(tys[1], &vals[1]);
+                let whence = self.int_arg(tys[2], &vals[2]);
                 let from = match whence {
                     0 if off >= 0 => Ok(SeekFrom::Start(off as u64)),
                     1 => Ok(SeekFrom::Current(off)),
@@ -430,7 +429,7 @@ impl<'a> Machine<'a> {
                 })
             }
             SysOp::FsStat | SysOp::FsLstat => {
-                let path = self.path_arg(e, &vals[0])?;
+                let path = self.path_arg(span, &vals[0])?;
                 let r = if op == SysOp::FsStat { std::fs::metadata(path) } else { std::fs::symlink_metadata(path) };
                 match r {
                     Ok(m) => {
@@ -446,21 +445,21 @@ impl<'a> Machine<'a> {
                                 &self.int_bytes(Ty::int(true, 64), &super::num::Int::from_big(v.into())),
                             );
                         }
-                        self.store(e.span, ptr, &out, 8)?;
+                        self.store(span, ptr, &out, 8)?;
                         0
                     }
                     Err(err) => error_code(&err),
                 }
             }
-            SysOp::FsRemove => code(std::fs::remove_file(self.path_arg(e, &vals[0])?).map(|_| 0)),
+            SysOp::FsRemove => code(std::fs::remove_file(self.path_arg(span, &vals[0])?).map(|_| 0)),
             SysOp::FsRename => {
-                let (a, b) = (self.path_arg(e, &vals[0])?, self.path_arg(e, &vals[1])?);
+                let (a, b) = (self.path_arg(span, &vals[0])?, self.path_arg(span, &vals[1])?);
                 code(std::fs::rename(a, b).map(|_| 0))
             }
-            SysOp::FsMakeDir => code(std::fs::create_dir(self.path_arg(e, &vals[0])?).map(|_| 0)),
-            SysOp::FsRemoveDir => code(std::fs::remove_dir(self.path_arg(e, &vals[0])?).map(|_| 0)),
+            SysOp::FsMakeDir => code(std::fs::create_dir(self.path_arg(span, &vals[0])?).map(|_| 0)),
+            SysOp::FsRemoveDir => code(std::fs::remove_dir(self.path_arg(span, &vals[0])?).map(|_| 0)),
             SysOp::FsOpenDir => {
-                let r = std::fs::read_dir(self.path_arg(e, &vals[0])?);
+                let r = std::fs::read_dir(self.path_arg(span, &vals[0])?);
                 let sys = &mut self.sys;
                 code(r.map(|d| {
                     let h = sys.handle();
@@ -469,7 +468,7 @@ impl<'a> Machine<'a> {
                 }))
             }
             SysOp::FsNextEntry => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let next = match self.sys.dirs.get_mut(&h) {
                     Some(d) => d.next().transpose(),
                     None => Err(bad_handle()),
@@ -484,7 +483,7 @@ impl<'a> Machine<'a> {
                         } else {
                             match entry.file_type() {
                                 Ok(t) => {
-                                    self.store(e.span, ptr, &name, 1)?;
+                                    self.store(span, ptr, &name, 1)?;
                                     name.len() as i64 + (kind_code(t) << 32)
                                 }
                                 Err(err) => error_code(&err),
@@ -495,19 +494,19 @@ impl<'a> Machine<'a> {
                 }
             }
             SysOp::FsCloseDir => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 code(self.sys.dirs.remove(&h).map(|_| 0).ok_or_else(bad_handle))
             }
             SysOp::FsTruncate => {
-                let h = self.int_arg(&args[0], &vals[0]);
-                let size = self.int_of(args[1].ty, &vals[1]).to_u64_sat();
+                let h = self.int_arg(tys[0], &vals[0]);
+                let size = self.int_of(tys[1], &vals[1]).to_u64_sat();
                 code(match self.sys.files.get(&h) {
                     Some(f) => f.set_len(size).map(|_| 0),
                     None => Err(bad_handle()),
                 })
             }
             SysOp::FsSync => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 code(match self.sys.files.get(&h) {
                     Some(f) => f.sync_all().map(|_| 0),
                     None => Err(bad_handle()),
@@ -520,7 +519,7 @@ impl<'a> Machine<'a> {
                     if name.len() as u64 > len {
                         io_error_code(IoErrorKind::InvalidInput)
                     } else {
-                        self.store(e.span, ptr, &name, 1)?;
+                        self.store(span, ptr, &name, 1)?;
                         name.len() as i64
                     }
                 }
@@ -533,11 +532,11 @@ impl<'a> Machine<'a> {
 
 impl<'a> Machine<'a> {
     /// A network service: its result, or an error code.
-    fn net_op(&mut self, e: &Expr, op: SysOp, args: &[Expr], vals: &[super::bytes::Bytes]) -> R<i64> {
+    fn net_op(&mut self, span: Span, op: SysOp, tys: &[Ty], vals: &[super::bytes::Bytes]) -> R<i64> {
         use std::net::{TcpListener, TcpStream, ToSocketAddrs};
         let addr = |m: &Self| -> R<std::io::Result<Vec<std::net::SocketAddr>>> {
-            let host = String::from_utf8_lossy(&m.read_str(e.span, &vals[0])?).into_owned();
-            let port = m.int_arg(&args[1], &vals[1]) as u16;
+            let host = String::from_utf8_lossy(&m.read_str(span, &vals[0])?).into_owned();
+            let port = m.int_arg(tys[1], &vals[1]) as u16;
             Ok((host.as_str(), port).to_socket_addrs().map(|a| a.collect()))
         };
         Ok(match op {
@@ -561,7 +560,7 @@ impl<'a> Machine<'a> {
                 }))
             }
             SysOp::NetLocalPort => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let sys = &self.sys;
                 let a = match (sys.listeners.get(&h), sys.streams.get(&h)) {
                     (Some(l), _) => l.local_addr(),
@@ -571,7 +570,7 @@ impl<'a> Machine<'a> {
                 code(a.map(|a| a.port() as i64))
             }
             SysOp::NetAccept => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let r = match self.sys.listeners.get(&h).cloned() {
                     Some(l) => self.without_gil(|| l.accept().map(|(s, _)| s)),
                     None => Err(bad_handle()),
@@ -584,15 +583,15 @@ impl<'a> Machine<'a> {
                 }))
             }
             SysOp::NetSend => {
-                let h = self.int_arg(&args[0], &vals[0]);
-                let data = self.read_str(e.span, &vals[1])?;
+                let h = self.int_arg(tys[0], &vals[0]);
+                let data = self.read_str(span, &vals[1])?;
                 match self.sys.streams.get(&h).cloned() {
                     Some(s) => self.without_gil(|| (&*s).write(&data)).map_or_else(|e| net_error(&e), |n| n as i64),
                     None => error_code(&bad_handle()),
                 }
             }
             SysOp::NetRecv => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
                 let mut buf = vec![0u8; len as usize];
                 let r = match self.sys.streams.get(&h).cloned() {
@@ -601,21 +600,21 @@ impl<'a> Machine<'a> {
                 };
                 match r {
                     Ok(n) => {
-                        self.store(e.span, ptr, &buf[..n], 1)?;
+                        self.store(span, ptr, &buf[..n], 1)?;
                         n as i64
                     }
                     Err(err) => net_error(&err),
                 }
             }
             SysOp::NetClose => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let sys = &mut self.sys;
                 let found = sys.streams.remove(&h).is_some() || sys.listeners.remove(&h).is_some();
                 code(if found { Ok(0) } else { Err(bad_handle()) })
             }
             SysOp::NetShutdown => {
-                let h = self.int_arg(&args[0], &vals[0]);
-                let how = match self.int_arg(&args[1], &vals[1]) {
+                let h = self.int_arg(tys[0], &vals[0]);
+                let how = match self.int_arg(tys[1], &vals[1]) {
                     0 => std::net::Shutdown::Read,
                     1 => std::net::Shutdown::Write,
                     _ => std::net::Shutdown::Both,
@@ -626,17 +625,17 @@ impl<'a> Machine<'a> {
                 })
             }
             SysOp::NetSetTimeouts => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 let timeout = |ns: u64| (ns > 0).then(|| std::time::Duration::from_nanos(ns));
-                let recv = timeout(self.int_of(args[1].ty, &vals[1]).to_u64_sat());
-                let send = timeout(self.int_of(args[2].ty, &vals[2]).to_u64_sat());
+                let recv = timeout(self.int_of(tys[1], &vals[1]).to_u64_sat());
+                let send = timeout(self.int_of(tys[2], &vals[2]).to_u64_sat());
                 code(match self.sys.streams.get(&h) {
                     Some(s) => s.set_read_timeout(recv).and_then(|_| s.set_write_timeout(send)).map(|_| 0),
                     None => Err(bad_handle()),
                 })
             }
             SysOp::NetPeer => {
-                let h = self.int_arg(&args[0], &vals[0]);
+                let h = self.int_arg(tys[0], &vals[0]);
                 match self.sys.streams.get(&h).map(|s| s.peer_addr()) {
                     Some(Ok(a)) => {
                         let name = a.to_string().into_bytes();
@@ -644,7 +643,7 @@ impl<'a> Machine<'a> {
                         if name.len() as u64 > len {
                             io_error_code(IoErrorKind::InvalidInput)
                         } else {
-                            self.store(e.span, ptr, &name, 1)?;
+                            self.store(span, ptr, &name, 1)?;
                             name.len() as i64
                         }
                     }

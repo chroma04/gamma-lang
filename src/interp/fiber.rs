@@ -1,7 +1,8 @@
 //! Fibers and continuations (§14).
 //!
-//! The evaluator is recursive, so a fiber suspended in the middle of an
-//! expression needs a Rust stack of its own: each fiber runs on an OS thread.
+//! The interpreter is recursive (a call from a builtin, a clause run by a driver), so a
+//! fiber suspended in the middle of its code needs a Rust stack of its own: each fiber
+//! runs on an OS thread.
 //! The threads share the one [`Machine`] through a raw pointer and hand control
 //! to each other over channels, so exactly one of them runs at any time while
 //! the others block in `recv`. What belongs to a thread rather than to the
@@ -90,8 +91,20 @@ struct WithRec {
 }
 
 enum Start {
-    Body { fr: *const Rc<Frame>, cx: *const Ctx, body: *const Expr },
-    Call { f: Value, fty: Ty, arg: Value, cx: Ctx, span: Span },
+    /// The body of a `with … on`: its compiled code (a `vm::Code` of the machine), run in
+    /// the frame of the function that contains it.
+    Body {
+        fr: *const Rc<Frame>,
+        cx: *const Ctx,
+        code: *const (),
+    },
+    Call {
+        f: Value,
+        fty: Ty,
+        arg: Value,
+        cx: Ctx,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -197,16 +210,25 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    /// `with h on stack { body }` (§14.1), after the handlers are installed in `cx`.
-    pub fn eval_with_on(&mut self, a: Act, span: Span, label: LabelId, cx: Ctx, stack: &[u8], body: &Expr) -> R {
+    /// `with h on stack { body }` (§14.1) in frame `fr`, after the handlers are installed in
+    /// `cx`; `code` is the body's.
+    pub fn with_on(
+        &mut self,
+        fr: &Rc<Frame>,
+        span: Span,
+        label: LabelId,
+        cx: Ctx,
+        stack: &[u8],
+        code: *const super::vm::Code<'a>,
+    ) -> R {
         self.check_stack(span, stack)?;
-        let key = (a.fr.id, label);
+        let key = (fr.id, label);
         let (tx, rx) = channel();
         let rec = WithRec { tx, rx: Rc::new(rx), suspended: vec![], body_cx: cx.clone(), owned: vec![], span };
         if self.fib.withs.insert(key, rec).is_some() {
             return self.trap(span, "internal error: a `with … on` is active twice");
         }
-        let start = Start::Body { fr: a.fr as *const Rc<Frame>, cx: &cx as *const Ctx, body: body as *const Expr };
+        let start = Start::Body { fr: fr as *const Rc<Frame>, cx: &cx as *const Ctx, code: code.cast() };
         let first = self.new_fiber(key, start, State::Running, stack);
         let r = self.drive(span, key, first);
         if let Some(w) = self.fib.withs.remove(&key) {
@@ -216,7 +238,7 @@ impl<'a> Machine<'a> {
         }
         match r {
             Err(f) => match *f {
-                Flow::Break { frame, label: l, value } if frame == a.fr.id && l == label => Ok(value),
+                Flow::Break { frame, label: l, value } if frame == fr.id && l == label => Ok(value),
                 other => Err(Box::new(other)),
             },
             ok => ok,
@@ -407,7 +429,7 @@ impl<'a> Machine<'a> {
     fn run_start(&mut self, start: Option<Start>) -> R {
         match start {
             // SAFETY: the pointers refer to the driver's frame, which outlives the fiber.
-            Some(Start::Body { fr, cx, body }) => unsafe { self.eval(Act { fr: &*fr, cx: &*cx }, &*body) },
+            Some(Start::Body { fr, cx, code }) => unsafe { self.vm_run_in(&*fr, (*cx).clone(), code.cast()) },
             Some(Start::Call { f, fty, arg, cx, span }) => self.call_value(&cx, span, f, fty, vec![arg]),
             None => Err(trap_flow(Span::DUMMY, "internal error: a fiber started twice")),
         }
@@ -467,36 +489,30 @@ impl<'a> Machine<'a> {
         Ok((id, w))
     }
 
-    /// `resume k(v)` (§14.3).
-    pub fn eval_resume(&mut self, a: Act, span: Span, cont: &Expr, value: &Expr) -> R {
-        let k = self.eval_bytes(a, cont)?;
-        let v = self.eval(a, value)?;
-        let (fiber, _) = self.consume(span, a.fr, &k)?;
+    /// `resume k(v)` (§14.3) in a clause running in frame `fr`.
+    pub fn resume(&mut self, span: Span, fr: &Frame, k: &[u8], v: Value) -> R {
+        let (fiber, _) = self.consume(span, fr, k)?;
         Err(Box::new(Flow::Resume { fiber, value: v }))
     }
 
-    /// `cancel k` (§14.5).
-    pub fn eval_cancel(&mut self, a: Act, span: Span, cont: &Expr) -> R {
-        let k = self.eval_bytes(a, cont)?;
-        let (fiber, w) = self.consume(span, a.fr, &k)?;
+    /// `cancel k` (§14.5) in a clause running in frame `fr`.
+    pub fn cancel_cont(&mut self, span: Span, fr: &Frame, k: &[u8]) -> R {
+        let (fiber, w) = self.consume(span, fr, k)?;
         self.cancel(span, w, fiber)?;
         Ok(Value::unit())
     }
 
-    /// `@fiber(f, arg, stack)` (§14.6).
-    pub fn eval_fiber(&mut self, a: Act, span: Span, args: &[Expr]) -> R {
-        let f = self.eval(a, &args[0])?;
-        let arg = self.eval(a, &args[1])?;
-        let stack = self.eval_bytes(a, &args[2])?;
-        self.check_stack(span, &stack)?;
-        let Some(key) = a.fr.installing else {
+    /// `@fiber(f, arg, stack)` (§14.6) in a clause running in frame `fr`; `fty` is the type of `f`.
+    pub fn new_fiber_op(&mut self, span: Span, fr: &Frame, f: Value, fty: Ty, arg: Value, stack: &[u8]) -> R {
+        self.check_stack(span, stack)?;
+        let Some(key) = fr.installing else {
             return self.trap(span, "internal error: `@fiber` outside a clause");
         };
         let Some(w) = self.fib.withs.get(&key) else {
             return self.trap(span, "internal error: `@fiber` in a clause of a `with` without `on`");
         };
-        let start = Start::Call { f, fty: args[0].ty, arg, cx: w.body_cx.clone(), span: w.span };
-        let id = self.new_fiber(key, start, State::Suspended(key), &stack);
+        let start = Start::Call { f, fty, arg, cx: w.body_cx.clone(), span: w.span };
+        let id = self.new_fiber(key, start, State::Suspended(key), stack);
         self.fib.withs.get_mut(&key).unwrap().suspended.push(id);
         Ok(self.cont_bytes(id, 1))
     }
