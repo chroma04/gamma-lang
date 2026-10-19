@@ -996,6 +996,27 @@ impl<'a, 's> FnCx<'a, 's> {
         ex
     }
 
+    /// Whether the signature of a function that `e` calls or names is not known yet (the
+    /// return type of a nested function inferred from an untyped literal): checking `e`
+    /// again outside this function could not see it.
+    fn unsettled(&mut self, e: &Expr) -> bool {
+        fn collect(e: &Expr, fns: &mut Vec<tir::FnId>) {
+            if let tir::ExprKind::Call { callee: tir::Callee::Fn(f), .. } | tir::ExprKind::FnRef(f) = &e.kind {
+                fns.push(*f);
+            }
+            e.for_each_child(&mut |c| collect(c, fns));
+        }
+        let (mut tys, mut fns) = (vec![], vec![]);
+        collect(e, &mut fns);
+        for f in fns {
+            if let Some(s) = self.sema.sigs.get(&f) {
+                tys.push(s.ret);
+                tys.extend(s.params.iter().map(|p| p.ty));
+            }
+        }
+        tys.into_iter().any(|t| self.infer.resolve(t).has_infer())
+    }
+
     /// Evaluates the initializer of immutable local `b` at compile time if it is a
     /// constant expression (§17.2) whose value may live in static memory (§17.4): it reads
     /// no locals and no compile-time parameters, and checks again as a constant. Returns
@@ -1006,6 +1027,7 @@ impl<'a, 's> FnCx<'a, 's> {
             || self.sema.type_params.iter().any(|&(_, t)| super::generics::has_param(t))
             || !self.sema.value_scope.is_empty()
             || !closed_const(init)
+            || self.unsettled(init)
         {
             return None;
         }

@@ -1,0 +1,12 @@
+// `--allow=all` silences every rule.
+//! stage: lint
+//! lint: --allow=all
+
+helper :: fn(a: u32) -> u32 => 1
+
+main :: fn() needs Out {
+    unused := 5
+    x := true
+    if x is true { print("hi\n") }
+    if (x) {}
+}

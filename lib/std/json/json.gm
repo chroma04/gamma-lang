@@ -314,13 +314,6 @@ skip_ws :: fn(p: ^Parser) {
     }
 }
 
-// The error for finding byte `pos`, or the end of the input, where something else was
-// expected.
-unexpected :: fn(p: ^Parser, pos: usize) -> ParseError {
-    if pos >= p.text.len { return .UnexpectedEnd(p.text.len) }
-    return .UnexpectedByte(pos)
-}
-
 is_digit :: fn(c: u8) -> bool => c >= '0' and c <= '9'
 
 /// Parses `text`, which must be one JSON value.

@@ -1,0 +1,21 @@
+// A variable that is never assigned could be a `::` binding. The rule is off by default.
+//! stage: lint
+//! lint: --warn=prefer-immutable
+
+Counter :: struct { n: u32 }
+
+bump :: fn(self: ^Counter) { self.n += 1 }
+
+set :: fn(p: ^u32) { p^ = 5 }
+
+main :: fn() needs Out {
+    a := 4 //~ WARNING [prefer-immutable]
+    b := 1
+    b = 2
+    c := 0
+    set(&c)
+    k := Counter(n: 0)
+    k.bump()
+    m := 3 //~ WARNING [prefer-immutable]
+    print("{} {} {} {} {}\n", a, b, c, k.n, m)
+}

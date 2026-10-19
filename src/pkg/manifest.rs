@@ -132,6 +132,9 @@ pub struct Manifest {
     /// The `[build]` table.
     pub build: BuildSettings,
     pub profiles: Vec<Profile>,
+    /// The `[lint]` table: the level (`allow`, `warn` or `deny`) of `gamma lint` rules, in
+    /// order; the rule `all` sets every rule.
+    pub lint: Vec<(String, crate::lint::Level)>,
 }
 
 /// Whether `s` can name a package: it is the first segment of an import path.
@@ -230,6 +233,24 @@ impl Manifest {
                 return Err(err(lines.of(b.span()), "`build` must be a table".into()));
             };
             m.build = parse_build(t, "[build]", &lines)?;
+        }
+        if let Some(l) = doc.get("lint") {
+            let Some(t) = l.as_table_like() else {
+                return Err(err(lines.of(l.span()), "`lint` must be a table of rule names and levels".into()));
+            };
+            for (name, item) in t.iter() {
+                let line = lines.of(t.get_key_value(name).and_then(|(k, _)| k.span()).or_else(|| item.span()));
+                if name != "all" && crate::lint::rule(name).is_none() {
+                    return Err(err(
+                        line,
+                        format!("unknown lint rule `{}` in [lint] (`gamma lint --rules` lists them)", name),
+                    ));
+                }
+                let level = item.as_str().and_then(crate::lint::Level::parse).ok_or_else(|| {
+                    err(line, format!("the level of `{}` in [lint] must be \"allow\", \"warn\" or \"deny\"", name))
+                })?;
+                m.lint.push((name.to_string(), level));
+            }
         }
         if let Some(ps) = doc.get("profile") {
             let Some(t) = ps.as_table_like() else {

@@ -1,0 +1,8 @@
+// `--deny` turns a rule's warnings into errors.
+//! stage: lint
+//! lint: --deny=unused-variable
+
+main :: fn() needs Out {
+    unused := 5 //~ ERROR [unused-variable]
+    print("hi\n")
+}

@@ -45,6 +45,18 @@ checks that formatting keeps the tokens and is idempotent for every `.gm` file i
 otherwise): run `gamma fmt lib` after editing it. Conformance tests are not
 reformatted, since some pin columns in their expected output.
 
+## Lint rules
+
+`gamma lint` ([`lint.md`](lint.md)) is kept clean on `lib/std` and `examples/`:
+`tests/lint.rs` fails if either has a warning. To add a rule, give it an entry in
+`RULES` (`src/lint/mod.rs`) with its default level and a one-line summary, then
+report it from the AST walk (`src/lint/syntax.rs`) if the syntax tree is enough, or
+as a `Finding` from `src/sema/lint.rs` if it needs types or name resolution. Attach a
+fix only when it cannot change what the program does; `gamma lint --fix` undoes a
+fix that stops the program compiling, but not one that changes its behavior. Add a
+conformance test for it under `tests/conformance/lint/`, with the cases it must not
+report, and a row to the tables of `docs/lint.md`.
+
 ## API documentation
 
 `gamma doc` (`src/doc/`) writes Markdown or HTML documentation for the `pub`

@@ -260,6 +260,8 @@ impl<'s> Sema<'s> {
                     }
                     hints.1 = Some((attr.span, attr.name.name));
                 }
+                // Read by `gamma lint`.
+                "allow" => self.check_allow_attr(attr),
                 // Uses of the declaration warn (`check_deprecated`).
                 "deprecated" => {
                     if !matches!(attr.args.as_deref(), None | Some([ast::Expr { kind: ExprKind::Str(_), .. }])) {

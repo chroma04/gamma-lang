@@ -1,0 +1,22 @@
+// Private top-level declarations nothing refers to are reported.
+//! stage: lint
+
+helper :: fn() -> u32 => 1 //~ WARNING [unused-declaration]
+LIMIT :: 10 //~ WARNING [unused-declaration]
+Thing :: struct { a: u32 } //~ WARNING [unused-declaration]
+
+pub exported :: fn() -> u32 => 2
+pub EXPORTED_LIMIT :: 10
+pub Exported :: struct { a: u32 }
+
+used_fn :: fn() -> u32 => 3
+USED :: 4
+UsedType :: struct { a: u32 }
+
+#allow("unused-declaration")
+allowed :: fn() -> u32 => 5
+
+main :: fn() needs Out {
+    u := UsedType(a: USED)
+    print("{}\n", used_fn() + u.a)
+}

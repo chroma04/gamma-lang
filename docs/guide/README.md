@@ -40,6 +40,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 - `...` inside a code block stands for elided code and is not Gamma syntax.
 - Section references such as "§10.6" refer to the [specification](../../gamma-spec.md). Appendix C of the specification explains the design reasoning in more depth.
 - [Editor support](../editors.md) describes syntax highlighting and the language server for common editors.
+- [`gamma lint`](../lint.md) lists the lint rules and how to configure them.
 - Boxes titled **Common mistake** describe C habits that Gamma turns into compile errors.
 - Where an example needs a helper that the language does not define (for instance a queue type for a scheduler), the text says so and calls it "a function you would write" or similar. The core library is exactly what [§21](../../gamma-spec.md#21-the-core-library) defines; the earlier chapters use nothing else from the library (except `std/c` in chapter 14), and [chapter 16](16-standard-library.md) tours the rest.
 

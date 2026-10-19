@@ -67,6 +67,9 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/source.rs` | source files, byte spans, line/column lookup |
 | `src/diag.rs` | diagnostics and their rendering |
 | `src/fix.rs` | `gamma fix`: choosing and applying the fixes diagnostics carry |
+| `src/lint/` | `gamma lint`: the rules, their levels and fixes; `syntax.rs` holds the rules that need only the syntax tree |
+| `src/sema/lint.rs` | the lint rules that need the checker: unused names and declarations, comparisons and assignments of a value with itself |
+| `src/linting.rs` | the `gamma lint` command line and its `--fix` loop (in the binary) |
 | `src/ice.rs` | the report printed for an internal compiler error |
 | `src/symbol.rs` | interned identifiers |
 | `src/syntax/token.rs` | token definitions |
@@ -198,6 +201,18 @@ comma after a match arm, `try x else d` with both readings) and semantic analysi
 `x := v` at top level). To tell a comma at the end of a line from one in the middle,
 the lexer records the line breaks it drops after a token that continues the line
 (`LexOutput::joined_lines`).
+
+`gamma lint` (`src/lint/`) checks the program like `gamma check` and then runs two
+kinds of rules over the files of the input's package. Rules about names and uses work
+from the checker's results (`src/sema/lint.rs`): name resolution records which
+declarations (`Sema::decl_uses`) and which local bindings (`Sema::local_uses`) each
+name refers to, so uses that leave no trace in TIR (`a.len` of an array, `@type_of(x)`)
+still count, and TIR says which locals are assigned or borrowed mutably. The other
+rules re-parse each file and walk its AST (`src/lint/syntax.rs`). Each finding is a
+warning whose `code` is the rule's name, with a fix where one is safe; levels come from
+the defaults, the manifest's `[lint]` table, the command line and `#allow` attributes.
+`gamma lint --fix` reuses `gamma fix`'s planning and, when a round of fixes breaks the
+program, undoes it and retries the fixes one at a time, leaving out the ones that break it.
 
 Cascades are kept down in three ways. `Diagnostics::push` drops a diagnostic that
 repeats an earlier one with the same severity, location and message, and an error

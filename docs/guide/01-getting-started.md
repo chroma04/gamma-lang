@@ -91,6 +91,7 @@ gamma run hello.gm         type-check the program and run it
 gamma build hello.gm       compile it to a native executable `hello` (-o picks the name)
 gamma check hello.gm       type-check without running
 gamma fix hello.gm         apply the fixes the compiler's errors suggest, where there is one
+gamma lint hello.gm        warn about code that is probably a mistake or has a simpler form
 gamma test hello.gm        run the `test` declarations (see Tests below)
 gamma bench hello.gm       run the `bench` declarations and report the time per run
 gamma fmt file.gm          format a source file in place (a directory: every .gm file in it)
@@ -106,7 +107,7 @@ gamma help                 print usage
 gamma version              print the compiler version
 ```
 
-A program is a single `.gm` file or a directory of `.gm` files (one module). Arguments after the file name of `gamma run` are passed to the program. `--diag-format=human|short|json` chooses how diagnostics are printed (`json` is one object per line, with locations and suggested fixes, for tools); they go to standard error, and the tool exits with status 1 if there were errors. `gamma fix` applies the suggested fixes that leave no choice, such as `&&` → `and` or adding an effect a function performs to its `needs` clause, and repeats until none are left; editors get the same fixes as quick fixes from `gamma lsp`. When a running program traps (for example on integer overflow), the tool prints the reason and the source location and exits with status 134.
+A program is a single `.gm` file or a directory of `.gm` files (one module). Arguments after the file name of `gamma run` are passed to the program. `--diag-format=human|short|json` chooses how diagnostics are printed (`json` is one object per line, with locations and suggested fixes, for tools); they go to standard error, and the tool exits with status 1 if there were errors. `gamma fix` applies the suggested fixes that leave no choice, such as `&&` → `and` or adding an effect a function performs to its `needs` clause, and repeats until none are left; editors get the same fixes as quick fixes from `gamma lsp`. `gamma lint` goes further than the compiler: it warns about variables, parameters, imports and functions that nothing uses, comparisons whose result is known and code with a simpler form, and `gamma lint --fix` applies the fixes it suggests ([`gamma lint`](../lint.md) lists the rules). When a running program traps (for example on integer overflow), the tool prints the reason and the source location and exits with status 134.
 
 `gamma run` interprets the program, which starts at once and gives the most precise diagnostics, but runs it roughly 10 to 100 times slower than compiled code. For programs that do real work (megabytes of input, long loops, benchmarks), use `gamma run --backend=c`: the first run pays for a C compilation (around a second), and later runs of the same program reuse the executable, which is kept in the cache directory described below. The two back ends give the same output.
 
