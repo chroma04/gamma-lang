@@ -1,0 +1,8 @@
+// The module under test.
+pub shared :: fn() -> u32 => helper() + 1
+
+helper :: fn() -> u32 => 2
+
+private_unused :: fn() -> u32 => 3 //~ WARNING [unused-declaration]
+
+pub exported_unused :: fn() -> u32 => 4

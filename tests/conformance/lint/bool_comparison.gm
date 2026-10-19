@@ -1,0 +1,15 @@
+// Comparing a bool with `true` or `false`.
+//! stage: lint
+
+check :: fn(x: bool, opt: ?bool) needs Out {
+    if x is true { print("a\n") } //~ WARNING [bool-comparison]
+    if x is false { print("b\n") } //~ WARNING [bool-comparison]
+    if x is not true { print("c\n") } //~ WARNING [bool-comparison]
+    if opt is true { print("d\n") }
+    if opt is null { print("e\n") }
+    if x { print("f\n") }
+}
+
+main :: fn() needs Out {
+    check(true, null)
+}

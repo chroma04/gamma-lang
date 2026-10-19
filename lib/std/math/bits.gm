@@ -17,9 +17,6 @@ from_words :: fn(hi: i32, lo: u32) -> f64 =>
 // `x` with its high word replaced.
 set_high :: fn(x: f64, hi: i32) -> f64 => from_words(hi, low_word(x))
 
-// `x` with its low word replaced.
-set_low :: fn(x: f64, lo: u32) -> f64 => from_words(high_word(x), lo)
-
 // `x` with the low 32 fraction bits cleared.
 clear_low :: fn(x: f64) -> f64 => (x.bits(u64) & 0xffff_ffff_0000_0000).bits(f64)
 

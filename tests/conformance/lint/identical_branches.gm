@@ -1,0 +1,24 @@
+// An `if` whose branches are all the same.
+//! stage: lint
+
+hello :: fn() needs Out { print("hello\n") }
+bye :: fn() needs Out { print("bye\n") }
+
+main :: fn() needs Out {
+    n := 3
+    if n > 2 { hello() } else { hello() } //~ WARNING [identical-branches]
+    if n > 2 {
+        hello()
+    } else if n > 1 {
+        hello()
+    } else {
+        bye()
+    }
+    if n > 2 {
+        hello()
+    } else {
+        bye()
+    }
+    v := if n > 1 { 5 } else { 5 } //~ WARNING [identical-branches]
+    print("{}\n", v)
+}

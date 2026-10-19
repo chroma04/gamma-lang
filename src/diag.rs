@@ -57,6 +57,9 @@ pub struct Diagnostic {
     /// Alternative ways to resolve the diagnostic mechanically. The message says what to
     /// write in words; human-oriented output does not show fixes.
     pub fixes: Vec<Fix>,
+    /// The `gamma lint` rule that reported the diagnostic, shown after its severity:
+    /// `warning[unused-variable]: …`.
+    pub code: Option<&'static str>,
 }
 
 impl Diagnostic {
@@ -69,7 +72,7 @@ impl Diagnostic {
     }
 
     fn new(severity: Severity, span: Span, message: String) -> Diagnostic {
-        Diagnostic { severity, message, span, labels: vec![], notes: vec![], fixes: vec![] }
+        Diagnostic { severity, message, span, labels: vec![], notes: vec![], fixes: vec![], code: None }
     }
 
     /// Adds a fix that replaces the text at `span` with `text`.
@@ -91,6 +94,19 @@ impl Diagnostic {
     pub fn with_note(mut self, note: impl Into<String>) -> Diagnostic {
         self.notes.push(note.into());
         self
+    }
+
+    pub fn with_code(mut self, code: &'static str) -> Diagnostic {
+        self.code = Some(code);
+        self
+    }
+
+    /// The severity as printed: `warning`, or `warning[code]` for a lint.
+    fn heading(&self) -> String {
+        match self.code {
+            Some(c) => format!("{}[{}]", self.severity.as_str(), c),
+            None => self.severity.as_str().to_string(),
+        }
     }
 }
 
@@ -232,15 +248,19 @@ fn json_location(sm: &SourceMap, span: Span, obj: &mut serde_json::Map<String, s
 }
 
 /// `d` as a JSON object:
-/// `{"severity", "message", <location>, "labels": [{"message", <location>}], "notes": [..],
+/// `{"severity", "message", "code"?, <location>, "labels": [{"message", <location>}], "notes": [..],
 /// "fixes": [{"message", "edits": [{<location>, "text"}]}]}`, where a location is the
 /// fields `file`, `offset`, `end_offset` (bytes), `line`, `column`, `end_line` and
 /// `end_column` (1-based; columns count characters), absent for a diagnostic without one.
+/// `code` is the lint rule of a `gamma lint` diagnostic, absent for others.
 pub fn to_json(sm: &SourceMap, d: &Diagnostic) -> serde_json::Value {
     use serde_json::{Map, Value};
     let mut obj = Map::new();
     obj.insert("severity".into(), d.severity.as_str().into());
     obj.insert("message".into(), d.message.clone().into());
+    if let Some(c) = d.code {
+        obj.insert("code".into(), c.into());
+    }
     json_location(sm, d.span, &mut obj);
     let labels = d
         .labels
@@ -301,7 +321,7 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
             if let Some((f, line, col)) = loc {
                 let _ = write!(out, "{}:{}:{}: ", f.path.display(), line, col);
             }
-            let _ = writeln!(out, "{}: {}", d.severity.as_str(), d.message);
+            let _ = writeln!(out, "{}: {}", d.heading(), d.message);
             // Secondary locations follow as notes, one per line.
             for l in d.labels.iter().filter(|l| l.span != Span::DUMMY) {
                 let f = sm.file(l.span.file);
@@ -317,7 +337,7 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
             }
         }
         DiagFormat::Human => {
-            let _ = writeln!(out, "{}: {}", d.severity.as_str(), d.message);
+            let _ = writeln!(out, "{}: {}", d.heading(), d.message);
             if let Some((f, line, col)) = loc {
                 let gutter = line.to_string().len().max(2);
                 let pad = " ".repeat(gutter);

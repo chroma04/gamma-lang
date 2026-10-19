@@ -45,12 +45,6 @@ binop_of :: fn(t: Token) -> ?BinOp => match t {
 
 peek :: fn(p: ^Parser) -> ?Spanned => p.toks.get(p.i)
 
-/// The position of the next token, or of the end of the line.
-here :: fn(p: ^Parser) -> usize {
-    t := p.peek() else return p.end_pos
-    return t.pos
-}
-
 node :: fn(e: Expr, pos: usize) -> CalcError!^Expr needs Alloc {
     return new(e) else err => !CalcError(kind: .Memory(err), pos: pos)
 }

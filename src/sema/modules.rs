@@ -287,6 +287,7 @@ impl<'s> Sema<'s> {
     /// prelude's public declarations (all of them, for the other core modules).
     pub fn lookup_module_name(&mut self, module: ModuleId, name: Symbol) -> Option<DeclId> {
         if let Some(&d) = self.modules[module.0 as usize].scope.get(&name) {
+            self.decl_uses.insert(d);
             return Some(d);
         }
         let prelude = self.prelude?;
@@ -466,6 +467,7 @@ impl<'s> Sema<'s> {
         let module_name = self.modules[m.0 as usize].name;
         match self.modules[m.0 as usize].scope.get(&name.name).copied() {
             Some(d) if self.decls[d.0 as usize].item.is_pub => {
+                self.decl_uses.insert(d);
                 self.check_deprecated(d, name.span);
                 Some(d)
             }

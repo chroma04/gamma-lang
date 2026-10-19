@@ -3,9 +3,10 @@
 //! Runs every `.gm` file under `tests/conformance/` through the `gamma` binary
 //! and checks the result against expectations written in the file itself:
 //!
-//! - `//! stage: lex|parse|check|run|test` (at the top of the file) selects
+//! - `//! stage: lex|parse|check|run|test|lint` (at the top of the file) selects
 //!   how far the compiler goes; `test` runs the file's `test` declarations with
-//!   `gamma test`. The default is `run`.
+//!   `gamma test`, and `lint` runs `gamma lint`. The default is `run`.
+//! - `//! lint: <options>` passes options to `gamma lint` (`--warn=prefer-immutable`).
 //! - `//! dump` compares the stage's dump output with a sibling golden file:
 //!   `<name>.tokens` for `lex`, `<name>.ast` for `parse`.
 //! - `//! stderr` also compares the standard error of a `run` or `test` test
@@ -46,7 +47,8 @@
 //!   diagnostic of that severity, reported on that line, whose message contains
 //!   `text`. `//~? ERROR text` (anywhere) expects one without a source location.
 //!   One line may carry several annotations (`//~ ERROR a //~ NOTE b`).
-//!   Every reported error or warning must be expected this way. `//~ NOTE text`
+//!   Every reported error or warning must be expected this way. The message of a lint
+//!   warning starts with its rule in brackets: `//~ WARNING [unused-variable] never used`. `//~ NOTE text`
 //!   expects a note of some diagnostic on that line: a secondary location (such as
 //!   a call in a compile-time call stack) or an explanation attached to a diagnostic
 //!   reported there; notes that no annotation names are allowed.
@@ -89,6 +91,7 @@ enum Stage {
     Check,
     Run,
     Test,
+    Lint,
 }
 
 struct Expectations {
@@ -118,6 +121,8 @@ struct Expectations {
     ptr_bits: Option<u32>,
     /// Run the test only through the C back end.
     native: bool,
+    /// The options of `gamma lint`.
+    lint_args: Vec<String>,
     /// (file, line, severity, message substring); line 0 means no location.
     diags: Vec<(PathBuf, u32, String, String)>,
 }
@@ -139,6 +144,7 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         needs_sockets: false,
         ptr_bits: None,
         native: false,
+        lint_args: vec![],
         diags: vec![],
     };
     for path in files {
@@ -160,8 +166,11 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                     "check" => Stage::Check,
                     "run" => Stage::Run,
                     "test" => Stage::Test,
+                    "lint" => Stage::Lint,
                     other => return Err(format!("{}: unknown stage `{}`", path.display(), other)),
                 };
+            } else if let Some(args) = directive.strip_prefix("lint:") {
+                e.lint_args.extend(args.split_whitespace().map(str::to_string));
             } else if directive == "dump" {
                 e.dump = true;
             } else if directive == "stderr" {
@@ -286,13 +295,13 @@ fn parse_reported(stderr: &str, files: &[PathBuf]) -> Vec<Reported> {
         let _col = parts.next();
         let tail = parts.next().unwrap_or("").trim_start();
         let (sev, msg) = tail.split_once(": ").unwrap_or((tail, ""));
+        // A lint's rule follows the severity: `warning[unused-variable]: …`.
+        let (sev, message) = match sev.split_once('[') {
+            Some((s, rule)) => (s, format!("[{}] {}", rule.trim_end_matches(']'), msg)),
+            None => (sev, msg.to_string()),
+        };
         if sev == "error" || sev == "warning" || sev == "note" {
-            out.push(Reported {
-                file: Some(file.clone()),
-                line: line_no,
-                severity: sev.to_string(),
-                message: msg.to_string(),
-            });
+            out.push(Reported { file: Some(file.clone()), line: line_no, severity: sev.to_string(), message });
         }
     }
     out
@@ -534,9 +543,13 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         Stage::Check => "check",
         Stage::Run => "run",
         Stage::Test => "test",
+        Stage::Lint => "lint",
     };
     let mut cmd = gamma();
     cmd.arg(command).arg("--diag-format=short");
+    if exp.stage == Stage::Lint {
+        cmd.args(&exp.lint_args);
+    }
     if exp.dump {
         cmd.arg("--dump");
     }

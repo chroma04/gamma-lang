@@ -1,4 +1,4 @@
-# 033 wasm32-wasi target (s30)
+# 034 wasm32-wasi target (s30)
 
 Route: the C back end with clang --target=wasm32-wasi + wasi-libc sysroot (wasi-sdk via
 WASI_SDK_PATH, or system clang). Runner Wasmtime (toolchain::WASI_RUNNER). target.os `.Wasi`

@@ -23,7 +23,7 @@ build_table :: fn() -> [256]u32 {
     t: [256]u32 = ---
     for n in 0..256 {
         c: u32 = n.trunc(u32)
-        for k in 0..8 {
+        for _ in 0..8 {
             c = if c & 1 is 1 { 0xEDB88320 ~ (c >> 1) } else { c >> 1 }
         }
         t[n] = c

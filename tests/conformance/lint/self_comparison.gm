@@ -1,0 +1,19 @@
+// A value compared with itself; floats are exempt because `f is f` is the NaN test.
+//! stage: lint
+
+P :: struct { x: u32, f: f64 }
+
+check :: fn(n: u32, p: P, f: f64) needs Out {
+    if n is n { print("a\n") } //~ WARNING [self-comparison]
+    if n < n { print("b\n") } //~ WARNING [self-comparison]
+    if p.x is p.x { print("c\n") } //~ WARNING [self-comparison]
+    if n is not n { print("d\n") } //~ WARNING [self-comparison]
+    if f is f { print("e\n") }
+    if f is not f { print("nan\n") }
+    if p.f is not p.f { print("nan\n") }
+    if n is p.x { print("g\n") }
+}
+
+main :: fn() needs Out {
+    check(1, P(x: 1, f: 1.0), 2.0)
+}

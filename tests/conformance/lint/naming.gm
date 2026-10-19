@@ -1,0 +1,36 @@
+// Types and variants are UpperCamelCase; everything else is snake_case.
+//! stage: lint
+
+my_type :: struct { //~ WARNING [naming]
+    myField: u32 //~ WARNING [naming]
+}
+
+Kind :: union {
+    lower, //~ WARNING [naming]
+    Upper
+}
+
+doThing :: fn() -> u32 => 1 //~ WARNING [naming]
+
+Good :: struct { good_field: u32 }
+
+CU :: #c_union union { Raw: u32, other: f32 }
+
+SCREAMING_LIMIT: u32 : 10
+
+generic :: fn(T: type, x: T) -> T => x
+
+main :: fn() needs Out {
+    myVar := 1 //~ WARNING [naming]
+    K :: 4
+    Row :: [3]u16
+    r: Row = [3]u16(fill: 0)
+    g := Good(good_field: 2)
+    print("{} {} {} {} {}\n", myVar, K, r[0], g.good_field, generic(SCREAMING_LIMIT) + doThing())
+    k: Kind = .lower
+    t := my_type(myField: 1)
+    print("{}\n", t.myField)
+    _ := k
+    cu := CU(Raw: 1)
+    _ := cu
+}

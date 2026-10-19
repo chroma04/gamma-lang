@@ -42,9 +42,10 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
 - Compiler: smaller Debug C (overflow-trap and
   backtrace-site code ~8% each of gcc time; s25 split Debug C into parallel units, units.rs), a native
   back end (LLVM/Cranelift).
-- Platforms: (wasm32-wasi done, decisions/033), FreeBSD, freestanding/embedded profile.
-- Tools: more fix-its (s24 machinery + 8, s25 +7, s26 needs; rejected list in decisions/028), `gamma lint`,
+- Platforms: (wasm32-wasi done, decisions/034), FreeBSD, freestanding/embedded profile.
+- Tools: more fix-its (s24 machinery + 8, s25 +7, s26 needs; rejected list in decisions/028), lint follow-ups (decisions/033),
   profiler docs (perf/Instruments on `-g` builds). LLDB formatters done (s26).
 - Packages: several versions of one repository in a dependency graph.
 - Library: time zones and std/process done (s27); TLS, compression rejected (§22.4).
-- Docs/project: Rosetta-style examples, "Gamma for C/Zig/Rust programmers", self-hosting.
+- Docs/project: Rosetta-style examples, "Gamma for Zig programmers" (C and Rust guides done
+  in s30, docs/guide/for-*-programmers.md), self-hosting.

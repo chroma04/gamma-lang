@@ -43,6 +43,8 @@ early exit, coroutines, testing.
 
 - [`gamma-spec.md`](gamma-spec.md) — the complete language specification.
 - [`docs/guide/`](docs/guide/README.md) — a tutorial introduction to the language.
+  Coming from another language? Read [Gamma for C programmers](docs/guide/for-c-programmers.md)
+  or [Gamma for Rust programmers](docs/guide/for-rust-programmers.md).
 - [`docs/std.md`](docs/std.md) — the standard library.
 - [`docs/architecture.md`](docs/architecture.md) — how the compiler is organized.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
@@ -118,6 +120,7 @@ gamma build file.gm -o prog  # compile to a native executable via the system C c
 gamma build -g file.gm       # the same, with debug information for gdb/lldb at .gm lines
 gamma check file.gm          # type-check only
 gamma fix file.gm            # apply the fixes the compiler suggests (`&&` → `and`, `_ = f()`, …)
+gamma lint hello             # warn about unused code, suspicious comparisons and simpler forms (--fix applies fixes)
 gamma test --filter=parse file.gm  # only the tests whose name contains `parse`
 gamma test --all --jobs=4 --coverage hello  # every module's tests, 4 at a time, with a line coverage table
 gamma bench hello            # run the `bench` declarations and report the time per run

@@ -265,6 +265,10 @@ impl<'a, 's> FnCx<'a, 's> {
     /// A name used as a value.
     fn name(&mut self, name: crate::symbol::Symbol, expect: Option<Ty>, span: Span) -> Expr {
         if let Some((b, depth)) = self.lookup_local_at(name) {
+            if let LocalBinding::Var(id) = b {
+                let decl = self.local_at(depth, id).span;
+                self.sema.local_uses.insert((decl, span));
+            }
             return match b {
                 LocalBinding::Var(id) if depth < self.depth() => {
                     // A local of an enclosing function, captured by reference (§11.6).

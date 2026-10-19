@@ -194,6 +194,16 @@ shim :: foreign "c" {
 - Compiled objects and the interpreter's shared libraries are cached (in `<cache>/native`). The name of an object is a hash of the *preprocessed* C file (so a changed header counts), the compiler and its version, and all flags; a C file is compiled once per change, not once per build. The cached executables of `run --backend=c` also depend on the objects and on the size and date of the library files found in `lib-dirs`.
 - Without a cache directory the objects are compiled into a temporary directory for each build.
 
+## Lint levels
+
+`[lint]` sets the level of `gamma lint`'s rules for the package: `"allow"` (not reported), `"warn"` or `"deny"` (an error, so `gamma lint` fails). `all` stands for every rule; later keys win, and the command line (`--allow=`, `--warn=`, `--deny=`, `-D`) wins over the table. An unknown rule or level is an error with its line. [`gamma lint`](../lint.md) lists the rules.
+
+```toml
+[lint]
+unused-parameter = "allow"
+naming = "deny"
+```
+
 ## The cache
 
 Fetched packages live in the same cache directory as compiled runtime objects: `$GAMMA_CACHE_DIR`, else `$XDG_CACHE_HOME/gamma`, else `~/Library/Caches/gamma` on macOS and `~/.cache/gamma` elsewhere (`gamma cache dir` prints it). Under it:
@@ -235,6 +245,7 @@ Gamma runs the `git` command-line tool for all of this, with prompts turned off,
 - A package is a directory tree with a `gamma.toml`; `gamma new` and `gamma init` create one.
 - A dependency is a `path`, a `git` repository with at most one of `version`, `tag`, `branch`, `rev`, or a `url` to a `.tar.gz` (optionally with its `sha256`).
 - `gamma.lock` records the commit (or archive hash) and checksum of every git and archive package; commit it.
+- `[lint]` sets the levels of `gamma lint`'s rules.
 - `[build]` and `[profile.<name>]` hold `mode`, `debug-info`, `cflags`, `ldflags`, `c-sources`, `include-dirs`, `libs` and `lib-dirs`; the command line beats the profile, which beats `[build]`. C sources of the root package and all dependencies are compiled once per change and used by `run`, `build` and `test`.
 - Checkouts in the cache are read-only; `gamma cache clean` frees the ones that are no longer used.
 - `fetch`, `update`, `add` and `remove` manage dependencies; `--locked` and `--offline` make builds strict.

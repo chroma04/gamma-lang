@@ -6,6 +6,7 @@ use gamma::toolchain::Toolchain;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod linting;
 mod testing;
 
 const USAGE: &str = "\
@@ -17,6 +18,9 @@ commands:
   check   type-check a program (a .gm file or a module directory)
   fix     check a program and apply the fixes its diagnostics suggest where there is only
           one, to the files of its package; prints the diagnostics left
+  lint    check a package (a .gm file or a directory, with all the modules of its package)
+          and warn about code that is probably a mistake or has a simpler form
+          (run `gamma help lint` for the options and `gamma lint --rules` for the rules)
   run     run a program; arguments after the file go to the program
   build   compile a program to a native executable (via the system C compiler); for a
           freestanding target (--target with a compiler that targets no operating system)
@@ -39,8 +43,9 @@ commands:
           (run `gamma help packages` for the options of the package commands)
   repl    interactive read-eval-print loop: gamma repl [--quiet] [file] (loads the file's declarations)
   lsp     run the language server on standard input and output
-  help    print this message; `gamma help packages` and `gamma help doc` add the options of
-          the package commands and of `doc` (as does `--help` after a command)
+  help    print this message; `gamma help packages`, `gamma help doc` and `gamma help lint`
+          add the options of the package commands, of `doc` and of `lint` (as does `--help`
+          after a command)
   version print the compiler version
 
 options:
@@ -153,6 +158,8 @@ struct Options {
     /// `cflags` / `ldflags` of gamma.toml, before those of the environment.
     manifest_cflags: Vec<String>,
     manifest_ldflags: Vec<String>,
+    /// `gamma lint`'s options.
+    lint: linting::LintOptions,
 }
 
 /// The number of tests to run at once: `--jobs=n`, where 0 means one per processor.
@@ -199,6 +206,7 @@ fn parse_args() -> Result<Options, String> {
         debug_info_given: false,
         manifest_cflags: vec![],
         manifest_ldflags: vec![],
+        lint: Default::default(),
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -265,6 +273,7 @@ fn parse_args() -> Result<Options, String> {
             }
             a if a.starts_with("--filter=") => opts.filter = Some(a["--filter=".len()..].to_string()),
             a if a.starts_with("--package=") => opts.package = Some(a["--package=".len()..].to_string()),
+            a if opts.command == "lint" && opts.lint.parse_arg(a)? => {}
             a if a.starts_with('-') => return Err(format!("unknown option `{}`", a)),
             a => {
                 if opts.file.is_some() {
@@ -333,6 +342,9 @@ fn print_help(topic: &str) {
     if topic == "doc" {
         print!("\n{}", gamma::doc::USAGE);
     }
+    if topic == "lint" {
+        print!("\n{}", linting::USAGE);
+    }
 }
 
 fn compiler_main() -> ExitCode {
@@ -394,6 +406,7 @@ fn compiler_main() -> ExitCode {
         "lex" | "parse" => run_front_end(&opts),
         "check" => check(&opts),
         "fix" => fix(&opts),
+        "lint" => linting::run(&opts),
         "run" => run(&opts),
         "test" => testing::run(&opts, testing::Kind::Test),
         "bench" => testing::run(&opts, testing::Kind::Bench),
@@ -414,7 +427,7 @@ fn compiler_main() -> ExitCode {
 /// Applies the build settings of the package that holds the input (gamma.toml's `[build]`
 /// and the selected profile) under the command line: an option given there wins.
 fn apply_build_settings(opts: &mut Options) -> Result<(), String> {
-    if !matches!(opts.command.as_str(), "check" | "fix" | "run" | "build" | "test" | "bench") {
+    if !matches!(opts.command.as_str(), "check" | "fix" | "lint" | "run" | "build" | "test" | "bench") {
         return Ok(());
     }
     let Some(path) = opts.file.clone() else { return Ok(()) };
@@ -567,6 +580,20 @@ fn check(opts: &Options) -> ExitCode {
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
+/// The directory of the files that `gamma fix` may change and `gamma lint` reports on:
+/// the input's package, or outside a package, the input's directory; never the standard
+/// library or other packages.
+fn own_files(path: &std::path::Path) -> Result<PathBuf, String> {
+    match gamma::pkg::find_root(path) {
+        Some(root) => Ok(root),
+        None => match gamma::source::canonicalize(path) {
+            Ok(p) if p.is_dir() => Ok(p),
+            Ok(p) => Ok(p.parent().map(|d| d.to_path_buf()).unwrap_or(p)),
+            Err(e) => Err(format!("cannot read `{}`: {}", path.display(), e)),
+        },
+    }
+}
+
 /// `gamma fix`: checks the program and applies the fixes of its diagnostics, again until
 /// none is left to apply (a fix can let checking go further), then reports what is left.
 fn fix(opts: &Options) -> ExitCode {
@@ -574,18 +601,12 @@ fn fix(opts: &Options) -> ExitCode {
         eprintln!("gamma: no input file\n\n{}", USAGE);
         return ExitCode::from(2);
     };
-    // Only the files of the input's package (or, outside a package, of the input's
-    // directory) are changed: never the standard library or other packages.
-    let scope = match gamma::pkg::find_root(path) {
-        Some(root) => root,
-        None => match gamma::source::canonicalize(path) {
-            Ok(p) if p.is_dir() => p,
-            Ok(p) => p.parent().map(|d| d.to_path_buf()).unwrap_or(p),
-            Err(e) => {
-                eprintln!("gamma: cannot read `{}`: {}", path.display(), e);
-                return ExitCode::FAILURE;
-            }
-        },
+    let scope = match own_files(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("gamma: {}", e);
+            return ExitCode::FAILURE;
+        }
     };
     let std_root = gamma::source::canonical(&gamma::sema::std_root());
     let (mut fixes, mut files) = (0, std::collections::BTreeSet::new());

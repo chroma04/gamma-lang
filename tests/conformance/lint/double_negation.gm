@@ -1,0 +1,9 @@
+// `not not x` is `x`.
+//! stage: lint
+
+main :: fn() needs Out {
+    x := true
+    y := not not x //~ WARNING [double-negation]
+    z := not x
+    print("{} {}\n", y, z)
+}

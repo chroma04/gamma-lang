@@ -1,0 +1,22 @@
+// Parentheses around a whole condition, initializer or returned value.
+//! stage: lint
+
+P :: struct { x: u32 }
+
+f :: fn(n: u32) -> u32 {
+    if (n > 3) { //~ WARNING [unnecessary-parens]
+        return (n) //~ WARNING [unnecessary-parens]
+    }
+    y := (n + 1) //~ WARNING [unnecessary-parens]
+    z := (n + 1) * 2
+    w := (
+        y +
+        z
+    )
+    if (P(x: n)).x > 2 { return 1 }
+    return y + z + w
+}
+
+main :: fn() needs Out {
+    print("{}\n", f(4))
+}
