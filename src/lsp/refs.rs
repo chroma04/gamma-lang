@@ -71,7 +71,7 @@ impl Request<'_> {
             let roots = package_roots(self.dir);
             if roots.iter().any(|r| t.loc.path.starts_with(r)) {
                 for cand in Workspace::module_dirs(&roots, self.overlays) {
-                    if cand != self.dir && Workspace::mentions(&cand, &t.name, self.overlays) {
+                    if cand != self.dir && self.ws.mentions(&cand, &t.name, self.overlays) {
                         modules.push(self.ws.facts(&cand, self.overlays, self.recycle));
                     }
                 }

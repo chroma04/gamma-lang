@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, SystemTime};
 
 /// A place in a file, by path and byte offsets.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -113,19 +114,86 @@ impl ModuleFacts {
     }
 }
 
+/// How long before it was read a file must have been last modified for its cached text
+/// to be trusted by (mtime, size) alone: a later write within the resolution of the
+/// file system's clock could leave both unchanged.
+const SETTLED: Duration = Duration::from_secs(3);
+
+/// What was read of one file on disk.
+struct Cached {
+    mtime: Option<SystemTime>,
+    size: u64,
+    /// Whether (mtime, size) are enough to tell that the file is unchanged.
+    settled: bool,
+    hash: u64,
+    /// The text, unless the file is not valid UTF-8.
+    text: Option<Rc<String>>,
+}
+
+/// The files read from disk, by path, read again only when they appear to have changed.
+#[derive(Default)]
+struct FileCache {
+    files: HashMap<PathBuf, Cached>,
+}
+
+/// The hash of a file that cannot be read.
+const UNREADABLE: u64 = 0;
+
+impl FileCache {
+    /// A hash of the file's contents and its text; the text is read only if the file's
+    /// modification time or size differ from when it was last read.
+    fn load(&mut self, path: &Path) -> (u64, Option<Rc<String>>) {
+        let Ok(meta) = std::fs::metadata(path) else {
+            self.files.remove(path);
+            return (UNREADABLE, None);
+        };
+        let (mtime, size) = (meta.modified().ok(), meta.len());
+        if let Some(c) = self.files.get(path)
+            && c.settled
+            && c.mtime == mtime
+            && c.size == size
+        {
+            return (c.hash, c.text.clone());
+        }
+        let now = SystemTime::now();
+        let Ok(bytes) = std::fs::read(path) else {
+            self.files.remove(path);
+            return (UNREADABLE, None);
+        };
+        let mut h = DefaultHasher::new();
+        bytes.hash(&mut h);
+        let hash = h.finish();
+        let text = String::from_utf8(bytes).ok().map(Rc::new);
+        let settled = mtime.is_some_and(|m| now.duration_since(m).is_ok_and(|age| age > SETTLED));
+        self.files.insert(path.to_path_buf(), Cached { mtime, size, settled, hash, text: text.clone() });
+        (hash, text)
+    }
+
+    fn forget(&mut self, path: &Path) {
+        self.files.remove(path);
+    }
+}
+
+/// The buffer standing in for the file at `path`, if there is one. Paths are made
+/// canonical only if a buffer has the file's name, which most files have not.
+fn buffer_for<'a>(path: &Path, overlays: &'a HashMap<PathBuf, String>) -> Option<&'a String> {
+    let name = path.file_name();
+    if overlays.keys().any(|k| k.file_name() == name) { overlays.get(&canon(path)) } else { None }
+}
+
 /// A hash of the files of the module directories `dirs` (their lists of files and
 /// contents, the buffers standing in for the files on disk).
-fn stamp(dirs: &[PathBuf], overlays: &HashMap<PathBuf, String>) -> u64 {
+fn stamp(files: &mut FileCache, dirs: &[PathBuf], overlays: &HashMap<PathBuf, String>) -> u64 {
     let mut h = DefaultHasher::new();
     for dir in dirs {
         dir.hash(&mut h);
-        let mut files = module_files(dir, overlays).unwrap_or_default();
-        files.sort();
-        for f in files {
+        let mut names = module_files(dir, overlays).unwrap_or_default();
+        names.sort();
+        for f in names {
             f.hash(&mut h);
-            match overlays.get(&canon(&f)) {
+            match buffer_for(&f, overlays) {
                 Some(text) => text.hash(&mut h),
-                None => std::fs::read(&f).ok().hash(&mut h),
+                None => files.load(&f).0.hash(&mut h),
             }
         }
     }
@@ -142,6 +210,7 @@ struct Entry {
 #[derive(Default)]
 pub struct Workspace {
     cache: HashMap<PathBuf, Entry>,
+    files: FileCache,
 }
 
 /// The directories to skip when looking for modules.
@@ -238,18 +307,23 @@ impl Workspace {
     }
 
     /// Whether some file of module directory `dir` mentions `name`.
-    pub fn mentions(dir: &Path, name: &str, overlays: &HashMap<PathBuf, String>) -> bool {
-        module_files(dir, overlays).unwrap_or_default().iter().any(|f| match overlays.get(&canon(f)) {
+    pub fn mentions(&mut self, dir: &Path, name: &str, overlays: &HashMap<PathBuf, String>) -> bool {
+        module_files(dir, overlays).unwrap_or_default().iter().any(|f| match buffer_for(f, overlays) {
             Some(t) => t.contains(name),
-            None => std::fs::read_to_string(f).is_ok_and(|t| t.contains(name)),
+            None => self.files.load(f).1.is_some_and(|t| t.contains(name)),
         })
+    }
+
+    /// Drops what was read of the file at `path`, which changed on disk.
+    pub fn file_changed(&mut self, path: &Path) {
+        self.files.forget(path);
     }
 
     /// The facts of the module in `dir`, analyzed now unless the cached ones are still
     /// valid.
     pub fn facts(&mut self, dir: &Path, overlays: &HashMap<PathBuf, String>, recycle: bool) -> Rc<ModuleFacts> {
         if let Some(e) = self.cache.get(dir)
-            && stamp(&e.dirs, overlays) == e.stamp
+            && stamp(&mut self.files, &e.dirs, overlays) == e.stamp
         {
             return e.facts.clone();
         }
@@ -269,7 +343,7 @@ impl Workspace {
         dirs.sort();
         dirs.dedup();
         dirs.retain(|d| !d.starts_with(&std));
-        let stamp = stamp(&dirs, overlays);
+        let stamp = stamp(&mut self.files, &dirs, overlays);
         self.cache.insert(dir.to_path_buf(), Entry { facts: facts.clone(), dirs, stamp });
         facts
     }
@@ -316,6 +390,31 @@ mod tests {
         let more = HashMap::from([(dir.join("b.gm"), "three :: fn() -> i32 => 3\n".to_string())]);
         let third = ws.facts(&dir, &more, false);
         assert!(third.top_level.contains("one") && third.top_level.contains("three"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_are_read_again_when_they_change() {
+        let dir = temp("filecache");
+        let file = dir.join("a.gm");
+        std::fs::write(&file, "one\n").unwrap();
+        let mut ws = Workspace::default();
+        let none = HashMap::new();
+        assert!(ws.mentions(&dir, "one", &none));
+        // Same size, written just now: the modification time cannot be trusted to differ.
+        std::fs::write(&file, "two\n").unwrap();
+        assert!(ws.mentions(&dir, "two", &none) && !ws.mentions(&dir, "one", &none));
+        // A file old enough to be trusted by (mtime, size) is not read again, until told.
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+        assert!(ws.mentions(&dir, "two", &none));
+        std::fs::write(&file, "six\n").unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+        assert!(ws.mentions(&dir, "two", &none));
+        ws.file_changed(&file);
+        assert!(ws.mentions(&dir, "six", &none) && !ws.mentions(&dir, "two", &none));
+        std::fs::remove_file(&file).unwrap();
+        assert!(!ws.mentions(&dir, "six", &none));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
