@@ -1072,6 +1072,29 @@ impl ConstKey {
         use num_traits::ToPrimitive;
         self.as_int().and_then(|i| i.to_u64())
     }
+
+    /// The value of a float key. The bytes of a float key are little-endian, whatever
+    /// the target's byte order, like those of an integer key.
+    pub fn as_float(&self) -> Option<f64> {
+        let ConstKey::Bytes(t, b) = self else { return None };
+        let TyKind::Float(ft) = t.kind() else { return None };
+        match (ft, b.len()) {
+            (FloatTy::F64, 8) => Some(f64::from_le_bytes(b[..].try_into().ok()?)),
+            (FloatTy::F32, 4) => Some(f32::from_le_bytes(b[..].try_into().ok()?) as f64),
+            (FloatTy::F16, 2) => {
+                let h = u16::from_le_bytes([b[0], b[1]]);
+                let (exp, man) = (((h >> 10) & 0x1f) as i32, (h & 0x3ff) as f64);
+                let mag = match exp {
+                    0 => man * 2f64.powi(-24),
+                    31 if man == 0.0 => f64::INFINITY,
+                    31 => f64::NAN,
+                    _ => (1.0 + man / 1024.0) * 2f64.powi(exp - 15),
+                };
+                Some(if h >> 15 == 1 { -mag } else { mag })
+            }
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for ConstKey {
@@ -1085,6 +1108,8 @@ impl fmt::Display for ConstKey {
                     write!(f, "{}", i)
                 } else if t.is_bool() {
                     write!(f, "{}", b.first() == Some(&1))
+                } else if let Some(x) = self.as_float() {
+                    write!(f, "{}", x)
                 } else {
                     write!(f, "{}(…)", t)
                 }

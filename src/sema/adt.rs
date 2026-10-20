@@ -198,10 +198,16 @@ impl<'s> Sema<'s> {
             }
             // A default that failed (and was reported) still counts as a default, so that
             // constructions do not report the field as missing as well.
-            let default = f
-                .default
-                .as_ref()
-                .map(|d| self.check_const_expr(module, d, Some(ty)).unwrap_or_else(|| super::func::error_expr(d.span)));
+            // A default is evaluated once (§17.2), unless its type mentions a type parameter
+            // of the struct: then each use checks it.
+            let default = f.default.as_ref().map(|d| {
+                let v = if super::generics::has_param(ty) {
+                    self.check_const_expr(module, d, Some(ty))
+                } else {
+                    self.default_value(module, d, ty)
+                };
+                v.unwrap_or_else(|| super::func::error_expr(d.span))
+            });
             for n in &f.names {
                 if n.name.as_str() != "_" && fields.iter().any(|x| x.name == n.name) {
                     self.error(n.span, format!("duplicate field `{}`", n.name));

@@ -434,10 +434,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     match &p.default {
                         Some(d) => {
                             let d = d.clone();
-                            let site = self.call_site(span);
-                            let saved = self.sema.caller_site.replace(site);
-                            let v = self.sema.check_const_expr(callee_module, &d, Some(p.ty));
-                            self.sema.caller_site = saved;
+                            let v = self.param_default(callee_module, &d, p.ty, p.is_site(), span);
                             match v {
                                 Some(v) => out.push(v),
                                 None => out.push(error_expr(span)),
@@ -458,6 +455,27 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         (out, stmts)
+    }
+
+    /// The value of the default `d` of a parameter of type `ty` declared in `module`,
+    /// for a call at `span` that omits the argument. A default is a compile-time value
+    /// (§17.2) computed once; `@caller_location()` is the call's location.
+    pub(super) fn param_default(
+        &mut self,
+        module: super::ModuleId,
+        d: &ast::Expr,
+        ty: Ty,
+        site: bool,
+        span: Span,
+    ) -> Option<Expr> {
+        if !site {
+            return self.sema.default_value(module, d, ty);
+        }
+        let location = self.call_site(span);
+        let saved = self.sema.caller_site.replace(location);
+        let v = self.sema.check_const_expr(module, d, Some(ty));
+        self.sema.caller_site = saved;
+        v
     }
 
     /// `call` preceded by the statements that evaluate its arguments (from

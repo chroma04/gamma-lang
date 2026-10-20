@@ -44,6 +44,59 @@ impl<'s> Sema<'s> {
         interp::eval_const(&self.prog, &cfg, e).map_err(Some)
     }
 
+    /// The default `d` of a field or parameter of type `ty`, declared in `module`, as a
+    /// reference to its compile-time value (§17.2). Each default is checked and evaluated
+    /// once per type it is used at; a failure is reported once, at the default, and
+    /// gives `None` here and at every later use.
+    pub fn default_value(&mut self, module: super::ModuleId, d: &crate::syntax::ast::Expr, ty: Ty) -> Option<Expr> {
+        let key = (d.span, ty);
+        if let Some(c) = self.default_consts.get(&key) {
+            return c.map(|id| Expr { ty, kind: ExprKind::Const(id), span: d.span });
+        }
+        if !self.default_active.insert(key) {
+            self.error(d.span, "this default depends on itself; the cycle cannot be evaluated (§3.4)");
+            return None;
+        }
+        let checked = self.check_const_expr(module, d, Some(ty));
+        let Some(ex) = checked.filter(|e| !e.ty.is_error()) else {
+            self.default_active.remove(&key);
+            self.default_consts.insert(key, None);
+            return None;
+        };
+        // A literal is its own value.
+        if matches!(ex.kind, ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Null) {
+            self.default_active.remove(&key);
+            return Some(ex);
+        }
+        let value = self.eval_tir_const(&ex);
+        self.default_active.remove(&key);
+        let Some(value) = value else {
+            self.default_consts.insert(key, None);
+            return None;
+        };
+        let id = tir::ConstId(self.prog.consts.len() as u32);
+        self.prog.consts.push(tir::ConstDef {
+            name: crate::symbol::Symbol::intern("<default>"),
+            ty,
+            span: d.span,
+            init: ex,
+            value: Some(value),
+        });
+        self.default_consts.insert(key, Some(id));
+        Some(Expr { ty, kind: ExprKind::Const(id), span: d.span })
+    }
+
+    /// Evaluates the defaults of declared parameters now, so that a default that fails is
+    /// an error even if no call omits its argument.
+    pub fn check_declared_defaults(&mut self) {
+        let mut done = 0;
+        while done < self.default_checks.len() {
+            let (module, d, ty) = self.default_checks[done].clone();
+            done += 1;
+            self.default_value(module, &d, ty);
+        }
+    }
+
     /// Reports the failed compile-time evaluation of `e` with its call stack (§17.1).
     pub fn report_eval_failure(&mut self, e: &Expr, t: &interp::Trap) {
         {
@@ -71,7 +124,7 @@ impl<'s> Sema<'s> {
     }
 
     /// The key of plain data of type `ty` stored in `bytes` in the target's layout. The
-    /// bytes of an integer are kept little-endian in the key, whatever the target. Values
+    /// bytes of an integer or a float are kept little-endian in the key, whatever the target. Values
     /// that compare equal with `is` (§5.18) have equal keys: `-0.0` is keyed as `0.0`, every
     /// NaN as one NaN, and padding bytes as zeros.
     pub fn const_key_of_bytes(&self, ty: Ty, bytes: &[u8]) -> ConstKey {
@@ -80,6 +133,9 @@ impl<'s> Sema<'s> {
         } else {
             let mut canon = vec![0u8; bytes.len()];
             self.with_layouts(|l| canonical_bytes(l, &self.prog.adts, ty, bytes, &mut canon));
+            if ty.is_float() {
+                canon = crate::layout::int_bytes_swap_order(&canon, self.target.little_endian);
+            }
             ConstKey::Bytes(ty, canon.into())
         }
     }

@@ -1,0 +1,6 @@
+//! stage: check
+// A default cannot perform effects: compile-time evaluation cannot (§17.1, §17.2).
+say :: fn() -> u8 needs Out { return 1 }
+S :: struct { a: u8 = say() } //~ ERROR may not perform effects //~ ERROR does not declare
+f :: fn(x: u8 = say()) {} //~ ERROR may not perform effects //~ ERROR does not declare
+main :: fn() {}

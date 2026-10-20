@@ -21,6 +21,20 @@ impl<'a, 's> FnCx<'a, 's> {
             );
             return error_expr(span);
         }
+        // The defaults of a struct's fields are evaluated while the struct is declared (§17.2),
+        // so a default that reaches a construction of the struct needs the struct to be complete.
+        if let TyKind::Adt(id, _) = ty.kind()
+            && self.sema.adts_in_progress.contains(id)
+        {
+            self.error(
+                span,
+                format!(
+                    "dependency cycle: `{}` is constructed while the default of one of its fields is evaluated (§3.4)",
+                    ty
+                ),
+            );
+            return error_expr(span);
+        }
         let fields: Vec<(Symbol, Ty)> =
             self.sema.struct_fields(ty).unwrap_or(&[]).iter().map(|f| (f.name, f.ty)).collect();
         let n = fields.len();
