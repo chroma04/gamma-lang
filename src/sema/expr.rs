@@ -1401,188 +1401,51 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
     }
 
+    /// The type argument at position `i` of `@name(..)`, or `None` after an error.
+    fn intrinsic_type_arg(&mut self, name: ast::Ident, args: &[ast::Arg], i: usize, span: Span) -> Option<Ty> {
+        match args.get(i).map(|a| &a.kind) {
+            Some(ast::ArgKind::Positional(e)) => {
+                let t = self.resolve_type(e);
+                (!t.is_error()).then_some(t)
+            }
+            _ => {
+                self.error(span, format!("`@{}` needs a type argument", name.name));
+                None
+            }
+        }
+    }
+
+    /// Whether the layout of `t` is still being resolved (and so not known); reports the cycle if so.
+    fn layout_pending(&mut self, name: ast::Ident, t: Ty, span: Span) -> bool {
+        let Some(id) = self.sema.pending_layout(t) else { return false };
+        self.error(
+            span,
+            format!(
+                "`@{}` needs the layout of `{}`, which depends on this value: the declarations form a cycle (§3.4)",
+                name.name,
+                id.name()
+            ),
+        );
+        true
+    }
+
     /// Intrinsics that are compile-time constants (§20.3).
     fn intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
-        let type_arg = |cx: &mut Self, i: usize| -> Option<Ty> {
-            match args.get(i).map(|a| &a.kind) {
-                Some(ast::ArgKind::Positional(e)) => {
-                    let t = cx.resolve_type(e);
-                    (!t.is_error()).then_some(t)
-                }
-                _ => {
-                    cx.error(span, format!("`@{}` needs a type argument", name.name));
-                    None
-                }
-            }
-        };
-        let usize_const = |v: u64| mk(Ty::usize(), tir::ExprKind::Int(v.into()), span);
-        // The layout of a type whose fields are still being resolved is not known.
-        let pending = |cx: &mut Self, t: Ty| -> bool {
-            let Some(id) = cx.sema.pending_layout(t) else { return false };
-            cx.error(
-                span,
-                format!(
-                    "`@{}` needs the layout of `{}`, which depends on this value: the declarations form a cycle (§3.4)",
-                    name.name,
-                    id.name()
-                ),
-            );
-            true
-        };
+        let in_prelude = self.sema.modules[self.module.0 as usize].is_prelude;
         match name.name.as_str() {
-            "size_of" | "align_of" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
-                if t.is_never() {
-                    self.error(span, format!("`never` has no values, so `@{}` does not apply to it", name.name));
-                    return error_expr(span);
-                }
-                if super::generics::has_param(t) {
-                    let align = name.name.as_str() == "align_of";
-                    return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
-                }
-                if pending(self, t) {
-                    return error_expr(span);
-                }
-                let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
-                usize_const(if name.name.as_str() == "size_of" { size } else { align })
-            }
-            "min_value" | "max_value" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
-                let max = name.name.as_str() == "max_value";
-                if let TyKind::Param(p) = t.kind() {
-                    if !self.sema.param_has(*p, super::generics::Constraint::Int) {
-                        self.error(span, format!("`@{}({})` needs `where Int({})`", name.name, t, t));
-                        return error_expr(span);
-                    }
-                    return mk(t, tir::ExprKind::IntLimit { of: t, max }, span);
-                }
-                match int_limit(t, max, &self.sema.target) {
-                    Some(v) => mk(t, tir::ExprKind::Int(v), span),
-                    None => {
-                        self.error(span, format!("`@{}` takes an integer type, not `{}`", name.name, t));
-                        error_expr(span)
-                    }
-                }
-            }
-            "offset_of" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
-                if pending(self, t) {
-                    return error_expr(span);
-                }
-                let field = match args.get(1).map(|a| &a.kind) {
-                    Some(ast::ArgKind::Positional(Expr0 { kind: ExprKind::Ident(f), .. })) => f.name,
-                    _ => {
-                        self.error(span, "`@offset_of(S, field)` needs a struct type and a field name");
-                        return error_expr(span);
-                    }
-                };
-                let Some(i) = self.sema.struct_fields(t).and_then(|fs| fs.iter().position(|f| f.name == field)) else {
-                    self.error(span, format!("`{}` has no field `{}`", t, field));
-                    return error_expr(span);
-                };
-                let off = self.sema.with_layouts(|l| l.layout(t).offsets.get(i).copied().unwrap_or(0));
-                usize_const(off)
-            }
+            "size_of" | "align_of" => self.layout_intrinsic(name, args, span),
+            "min_value" | "max_value" => self.limit_intrinsic(name, args, span),
+            "offset_of" => self.offset_of_intrinsic(name, args, span),
             // Compiler-internal heap primitives behind the core library's heap allocator.
-            "alloc_tag" | "alloc_check" if self.sema.modules[self.module.0 as usize].is_prelude => {
-                let raw = Ty::intern(TyKind::Rawptr);
-                let tys =
-                    [Ty::many_ptr(false, Ty::u8()), raw, raw, Ty::string(), Ty::int(false, 32), Ty::int(false, 32)];
-                let mut vals = vec![];
-                for (i, t) in tys.iter().enumerate() {
-                    match args.get(i).map(|a| &a.kind) {
-                        Some(ast::ArgKind::Positional(e)) => {
-                            let v = self.expr(e, Some(*t));
-                            vals.push(self.coerce(v, *t));
-                        }
-                        _ => return error_expr(span),
-                    }
-                }
-                let op =
-                    if name.name.as_str() == "alloc_tag" { tir::Builtin::AllocTag } else { tir::Builtin::AllocCheck };
-                mk(Ty::unit(), tir::ExprKind::Builtin { op, args: vals }, span)
+            "alloc_tag" | "alloc_check" | "heap_alloc" | "heap_free" if in_prelude => {
+                self.heap_intrinsic(name.name.as_str(), args, span)
             }
-            "heap_alloc" | "heap_free" if self.sema.modules[self.module.0 as usize].is_prelude => {
-                let mut vals = vec![];
-                let is_alloc = name.name.as_str() == "heap_alloc";
-                let tys: Vec<Ty> = if is_alloc {
-                    vec![Ty::usize(), Ty::usize()]
-                } else {
-                    vec![Ty::many_ptr(false, Ty::u8()), Ty::usize(), Ty::usize()]
-                };
-                for (i, t) in tys.iter().enumerate() {
-                    match args.get(i).map(|a| &a.kind) {
-                        Some(ast::ArgKind::Positional(e)) => {
-                            let v = self.expr(e, Some(*t));
-                            vals.push(self.coerce(v, *t));
-                        }
-                        _ => return error_expr(span),
-                    }
-                }
-                let (op, ty) = if is_alloc {
-                    (tir::Builtin::HeapAlloc, Ty::optional(Ty::many_ptr(false, Ty::u8())))
-                } else {
-                    (tir::Builtin::HeapFree, Ty::unit())
-                };
-                mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
-            }
-            n if (self.sema.modules[self.module.0 as usize].is_prelude
-                || self.sema.modules[self.module.0 as usize].is_std)
+            n if (in_prelude || self.sema.modules[self.module.0 as usize].is_std)
                 && let Some(&op) = tir::SysOp::ALL.iter().find(|op| op.signature().0 == n) =>
             {
-                let (_, params, ret) = op.signature();
-                if args.len() != params.len() {
-                    self.error(span, format!("`@{}` takes {} argument(s)", n, params.len()));
-                    return error_expr(span);
-                }
-                let mut vals = vec![];
-                for (i, (a, t)) in args.iter().zip(params).enumerate() {
-                    let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
-                    if op == tir::SysOp::ThreadSpawn && i == 0 {
-                        // A thread starts from a plain function: `^fn(arg: rawptr) needs Sys` (§19.6);
-                        // a typed `^T` argument has the same representation as `rawptr`.
-                        let v = self.expr(e, None);
-                        let vt = self.infer.resolve(v.ty);
-                        let ok = match vt.kind() {
-                            TyKind::FnPtr(sig) => {
-                                sig.params.len() == 1
-                                    && matches!(sig.params[0].kind(), TyKind::Rawptr | TyKind::Ptr { .. })
-                                    && sig.ret.is_unit()
-                                    && self.sema.within_sys(&sig.effects)
-                                    && sig.callconv == CallConv::C
-                            }
-                            _ => false,
-                        };
-                        if !ok && !vt.is_error() {
-                            self.error(e.span, format!("a thread runs a `^fn(arg: rawptr) needs Sys` with the C calling convention, not `{}`", vt));
-                        }
-                        vals.push(v);
-                        continue;
-                    }
-                    let v = self.expr(e, Some(t));
-                    vals.push(self.coerce(v, t));
-                }
-                mk(ret, tir::ExprKind::Builtin { op: tir::Builtin::Sys(op), args: vals }, span)
+                self.sys_intrinsic(op, args, span)
             }
-            "hash" => {
-                let (Some(ast::ArgKind::Positional(x)), Some(ast::ArgKind::Positional(seed)), None) =
-                    (args.first().map(|a| &a.kind), args.get(1).map(|a| &a.kind), args.get(2))
-                else {
-                    self.error(span, "`@hash(x, seed)` takes a value and a `u64` seed");
-                    return error_expr(span);
-                };
-                let x = self.expr(x, None);
-                let xt = self.infer.resolve(x.ty);
-                if !xt.has_infer() && !xt.is_error() && !self.eq_allowed(xt) {
-                    self.error(
-                        span,
-                        format!("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", xt),
-                    );
-                }
-                let seed = self.expr(seed, Some(Ty::u64()));
-                let seed = self.coerce(seed, Ty::u64());
-                mk(Ty::u64(), tir::ExprKind::Builtin { op: tir::Builtin::Hash, args: vec![x, seed] }, span)
-            }
+            "hash" => self.hash_intrinsic(args, span),
             "static_assert" => {
                 let module = self.module;
                 self.sema.static_assert(module, args, span).unwrap_or_else(|| unit(span))
@@ -1640,119 +1503,280 @@ impl<'a, 's> FnCx<'a, 's> {
             "fiber" => self.fiber_intrinsic(args, span),
             "asm" => self.asm(args, span),
             "write" => self.write_intrinsic(args, span),
-            // A hint that `p` will be read soon; it has no effect on the program.
-            "prefetch" => match args {
-                [ast::Arg { kind: ast::ArgKind::Positional(p), .. }] => {
-                    let v = self.expr(p, None);
-                    let t = self.infer.resolve(v.ty);
-                    if !t.is_error()
-                        && !matches!(t.kind(), TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr)
-                    {
-                        self.error(p.span, format!("`@prefetch` takes a pointer, not `{}`", t));
-                    }
-                    super::func::block_of(vec![tir::Stmt::Expr(v)], span)
-                }
-                _ => {
-                    self.error(span, "`@prefetch` takes one pointer: `@prefetch(p)`");
-                    error_expr(span)
-                }
-            },
+            "prefetch" => self.prefetch_intrinsic(args, span),
             "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" | "rotl" | "rotr" => {
                 self.numeric_intrinsic(name.name.as_str(), args, span)
             }
             // The smallest fiber stack (§14.1), in bytes.
-            "min_stack" => usize_const(tir::MIN_STACK),
-            "stack_size" => {
-                let f = match args {
-                    [ast::Arg { kind: ast::ArgKind::Positional(f), .. }] => self.expr(f, None),
-                    _ => {
-                        self.error(span, "`@stack_size` takes one function: `@stack_size(f)`");
-                        return error_expr(span);
-                    }
-                };
-                match f.kind {
-                    tir::ExprKind::FnRef(id) => match self.sema.stack_size(id, span) {
-                        Some(n) => usize_const(n),
-                        None => error_expr(span),
-                    },
-                    _ if f.ty.is_error() => error_expr(span),
-                    _ => {
-                        self.error(f.span, "`@stack_size` needs the name of a function (§14.8)");
-                        error_expr(span)
-                    }
-                }
-            }
+            "min_stack" => mk(Ty::usize(), tir::ExprKind::Int(tir::MIN_STACK.into()), span),
+            "stack_size" => self.stack_size_intrinsic(args, span),
             "type_name" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
                 if super::generics::has_param(t) {
                     // Named in each instance (§16.1).
                     return mk(Ty::string(), tir::ExprKind::TypeName { of: t }, span);
                 }
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
             }
-            "variants" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
-                if matches!(t.kind(), TyKind::Param(_)) {
-                    self.error(
-                        span,
-                        format!("`@variants` needs a concrete union type, not the type parameter `{}`", t),
-                    );
-                    return error_expr(span);
-                }
-                let Some((variants, _)) = self.sema.union_variants(t) else {
-                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
-                    self.error(span, format!("`@variants` takes a tagged union type, not `{}`{}", t, why));
-                    return error_expr(span);
-                };
-                if let Some(v) = variants.iter().find(|v| v.payload.is_some()) {
-                    self.error(
-                        span,
-                        format!("`@variants({})` needs a union without payloads, but variant `{}` has one", t, v.name),
-                    );
-                    return error_expr(span);
-                }
-                let elems = (0..variants.len() as u32)
-                    .map(|i| mk(t, tir::ExprKind::Variant { variant: i, payload: None }, span))
-                    .collect::<Vec<_>>();
-                mk(Ty::array(elems.len() as u64, t), tir::ExprKind::Array(elems), span)
-            }
-            "variant_name" => {
-                let x = match args {
-                    [ast::Arg { kind: ast::ArgKind::Positional(x), .. }] => self.expr(x, None),
-                    _ => {
-                        self.error(span, "`@variant_name` takes one union value: `@variant_name(x)`");
-                        return error_expr(span);
-                    }
-                };
-                let t = self.infer.resolve(x.ty);
-                if t.is_error() {
-                    return error_expr(span);
-                }
-                let Some((variants, _)) = self.sema.union_variants(t) else {
-                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
-                    self.error(
-                        span,
-                        format!("`@variant_name` takes a value of a tagged union type, not `{}`{}", t, why),
-                    );
-                    return error_expr(span);
-                };
-                let pat = |kind| tir::Pat { ty: t, kind, span };
-                let arms = variants
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| tir::Arm {
-                        pat: pat(tir::PatKind::Variant { variant: i as u32, payload: None }),
-                        guard: None,
-                        body: mk(Ty::string(), tir::ExprKind::Str(Rc::from(v.name.as_str().as_bytes())), span),
-                    })
-                    .collect();
-                mk(Ty::string(), tir::ExprKind::Match { scrutinee: Box::new(x), arms }, span)
-            }
+            "variants" => self.variants_intrinsic(name, args, span),
+            "variant_name" => self.variant_name_intrinsic(args, span),
             other => {
                 self.error(span, format!("intrinsic `@{}` is not supported yet", other));
                 error_expr(span)
             }
         }
+    }
+
+    /// `@size_of(T)` and `@align_of(T)`.
+    fn layout_intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
+        if t.is_never() {
+            self.error(span, format!("`never` has no values, so `@{}` does not apply to it", name.name));
+            return error_expr(span);
+        }
+        if super::generics::has_param(t) {
+            let align = name.name.as_str() == "align_of";
+            return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
+        }
+        if self.layout_pending(name, t, span) {
+            return error_expr(span);
+        }
+        let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
+        let v = if name.name.as_str() == "size_of" { size } else { align };
+        mk(Ty::usize(), tir::ExprKind::Int(v.into()), span)
+    }
+
+    /// `@min_value(T)` and `@max_value(T)`.
+    fn limit_intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
+        let max = name.name.as_str() == "max_value";
+        if let TyKind::Param(p) = t.kind() {
+            if !self.sema.param_has(*p, super::generics::Constraint::Int) {
+                self.error(span, format!("`@{}({})` needs `where Int({})`", name.name, t, t));
+                return error_expr(span);
+            }
+            return mk(t, tir::ExprKind::IntLimit { of: t, max }, span);
+        }
+        match int_limit(t, max, &self.sema.target) {
+            Some(v) => mk(t, tir::ExprKind::Int(v), span),
+            None => {
+                self.error(span, format!("`@{}` takes an integer type, not `{}`", name.name, t));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `@offset_of(S, field)`.
+    fn offset_of_intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
+        if self.layout_pending(name, t, span) {
+            return error_expr(span);
+        }
+        let field = match args.get(1).map(|a| &a.kind) {
+            Some(ast::ArgKind::Positional(Expr0 { kind: ExprKind::Ident(f), .. })) => f.name,
+            _ => {
+                self.error(span, "`@offset_of(S, field)` needs a struct type and a field name");
+                return error_expr(span);
+            }
+        };
+        let Some(i) = self.sema.struct_fields(t).and_then(|fs| fs.iter().position(|f| f.name == field)) else {
+            self.error(span, format!("`{}` has no field `{}`", t, field));
+            return error_expr(span);
+        };
+        let off = self.sema.with_layouts(|l| l.layout(t).offsets.get(i).copied().unwrap_or(0));
+        mk(Ty::usize(), tir::ExprKind::Int(off.into()), span)
+    }
+
+    /// The positional arguments, each checked against and coerced to the matching type of `tys`;
+    /// `None` when one is missing or not positional.
+    fn coerced_args(&mut self, tys: &[Ty], args: &[ast::Arg]) -> Option<Vec<Expr>> {
+        let mut vals = vec![];
+        for (i, t) in tys.iter().enumerate() {
+            match args.get(i).map(|a| &a.kind) {
+                Some(ast::ArgKind::Positional(e)) => {
+                    let v = self.expr(e, Some(*t));
+                    vals.push(self.coerce(v, *t));
+                }
+                _ => return None,
+            }
+        }
+        Some(vals)
+    }
+
+    /// The heap primitives behind the core library's allocator (`@alloc_tag`, `@alloc_check`,
+    /// `@heap_alloc`, `@heap_free`).
+    fn heap_intrinsic(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Expr {
+        let bytes = Ty::many_ptr(false, Ty::u8());
+        let (tys, op, ty) = match name {
+            "alloc_tag" | "alloc_check" => {
+                let raw = Ty::intern(TyKind::Rawptr);
+                let tys = vec![bytes, raw, raw, Ty::string(), Ty::int(false, 32), Ty::int(false, 32)];
+                let op = if name == "alloc_tag" { tir::Builtin::AllocTag } else { tir::Builtin::AllocCheck };
+                (tys, op, Ty::unit())
+            }
+            "heap_alloc" => (vec![Ty::usize(), Ty::usize()], tir::Builtin::HeapAlloc, Ty::optional(bytes)),
+            _ => (vec![bytes, Ty::usize(), Ty::usize()], tir::Builtin::HeapFree, Ty::unit()),
+        };
+        let Some(vals) = self.coerced_args(&tys, args) else { return error_expr(span) };
+        mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
+    }
+
+    /// A system operation of the core library (`SysOp`), called as `@name(..)`.
+    fn sys_intrinsic(&mut self, op: tir::SysOp, args: &[ast::Arg], span: Span) -> Expr {
+        let (n, params, ret) = op.signature();
+        if args.len() != params.len() {
+            self.error(span, format!("`@{}` takes {} argument(s)", n, params.len()));
+            return error_expr(span);
+        }
+        let mut vals = vec![];
+        for (i, (a, t)) in args.iter().zip(params).enumerate() {
+            let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
+            if op == tir::SysOp::ThreadSpawn && i == 0 {
+                vals.push(self.thread_entry_arg(e));
+                continue;
+            }
+            let v = self.expr(e, Some(t));
+            vals.push(self.coerce(v, t));
+        }
+        mk(ret, tir::ExprKind::Builtin { op: tir::Builtin::Sys(op), args: vals }, span)
+    }
+
+    /// The entry function of a spawned thread: a plain function `^fn(arg: rawptr) needs Sys`
+    /// (§19.6); a typed `^T` argument has the same representation as `rawptr`.
+    fn thread_entry_arg(&mut self, e: &ast::Expr) -> Expr {
+        let v = self.expr(e, None);
+        let vt = self.infer.resolve(v.ty);
+        let ok = match vt.kind() {
+            TyKind::FnPtr(sig) => {
+                sig.params.len() == 1
+                    && matches!(sig.params[0].kind(), TyKind::Rawptr | TyKind::Ptr { .. })
+                    && sig.ret.is_unit()
+                    && self.sema.within_sys(&sig.effects)
+                    && sig.callconv == CallConv::C
+            }
+            _ => false,
+        };
+        if !ok && !vt.is_error() {
+            self.error(
+                e.span,
+                format!("a thread runs a `^fn(arg: rawptr) needs Sys` with the C calling convention, not `{}`", vt),
+            );
+        }
+        v
+    }
+
+    /// `@hash(x, seed)`.
+    fn hash_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let (Some(ast::ArgKind::Positional(x)), Some(ast::ArgKind::Positional(seed)), None) =
+            (args.first().map(|a| &a.kind), args.get(1).map(|a| &a.kind), args.get(2))
+        else {
+            self.error(span, "`@hash(x, seed)` takes a value and a `u64` seed");
+            return error_expr(span);
+        };
+        let x = self.expr(x, None);
+        let xt = self.infer.resolve(x.ty);
+        if !xt.has_infer() && !xt.is_error() && !self.eq_allowed(xt) {
+            self.error(span, format!("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", xt));
+        }
+        let seed = self.expr(seed, Some(Ty::u64()));
+        let seed = self.coerce(seed, Ty::u64());
+        mk(Ty::u64(), tir::ExprKind::Builtin { op: tir::Builtin::Hash, args: vec![x, seed] }, span)
+    }
+
+    /// `@prefetch(p)`: a hint that `p` will be read soon; it has no effect on the program.
+    fn prefetch_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        match args {
+            [ast::Arg { kind: ast::ArgKind::Positional(p), .. }] => {
+                let v = self.expr(p, None);
+                let t = self.infer.resolve(v.ty);
+                if !t.is_error() && !matches!(t.kind(), TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr) {
+                    self.error(p.span, format!("`@prefetch` takes a pointer, not `{}`", t));
+                }
+                super::func::block_of(vec![tir::Stmt::Expr(v)], span)
+            }
+            _ => {
+                self.error(span, "`@prefetch` takes one pointer: `@prefetch(p)`");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `@stack_size(f)`.
+    fn stack_size_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let f = match args {
+            [ast::Arg { kind: ast::ArgKind::Positional(f), .. }] => self.expr(f, None),
+            _ => {
+                self.error(span, "`@stack_size` takes one function: `@stack_size(f)`");
+                return error_expr(span);
+            }
+        };
+        match f.kind {
+            tir::ExprKind::FnRef(id) => match self.sema.stack_size(id, span) {
+                Some(n) => mk(Ty::usize(), tir::ExprKind::Int(n.into()), span),
+                None => error_expr(span),
+            },
+            _ if f.ty.is_error() => error_expr(span),
+            _ => {
+                self.error(f.span, "`@stack_size` needs the name of a function (§14.8)");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `@variants(U)`: every variant of a union without payloads, as an array.
+    fn variants_intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
+        if matches!(t.kind(), TyKind::Param(_)) {
+            self.error(span, format!("`@variants` needs a concrete union type, not the type parameter `{}`", t));
+            return error_expr(span);
+        }
+        let Some((variants, _)) = self.sema.union_variants(t) else {
+            let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+            self.error(span, format!("`@variants` takes a tagged union type, not `{}`{}", t, why));
+            return error_expr(span);
+        };
+        if let Some(v) = variants.iter().find(|v| v.payload.is_some()) {
+            self.error(
+                span,
+                format!("`@variants({})` needs a union without payloads, but variant `{}` has one", t, v.name),
+            );
+            return error_expr(span);
+        }
+        let elems = (0..variants.len() as u32)
+            .map(|i| mk(t, tir::ExprKind::Variant { variant: i, payload: None }, span))
+            .collect::<Vec<_>>();
+        mk(Ty::array(elems.len() as u64, t), tir::ExprKind::Array(elems), span)
+    }
+
+    /// `@variant_name(x)`: the name of the variant `x` holds.
+    fn variant_name_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let x = match args {
+            [ast::Arg { kind: ast::ArgKind::Positional(x), .. }] => self.expr(x, None),
+            _ => {
+                self.error(span, "`@variant_name` takes one union value: `@variant_name(x)`");
+                return error_expr(span);
+            }
+        };
+        let t = self.infer.resolve(x.ty);
+        if t.is_error() {
+            return error_expr(span);
+        }
+        let Some((variants, _)) = self.sema.union_variants(t) else {
+            let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+            self.error(span, format!("`@variant_name` takes a value of a tagged union type, not `{}`{}", t, why));
+            return error_expr(span);
+        };
+        let pat = |kind| tir::Pat { ty: t, kind, span };
+        let arms = variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| tir::Arm {
+                pat: pat(tir::PatKind::Variant { variant: i as u32, payload: None }),
+                guard: None,
+                body: mk(Ty::string(), tir::ExprKind::Str(Rc::from(v.name.as_str().as_bytes())), span),
+            })
+            .collect();
+        mk(Ty::string(), tir::ExprKind::Match { scrutinee: Box::new(x), arms }, span)
     }
 
     // --- optionals and results (§10) ---
