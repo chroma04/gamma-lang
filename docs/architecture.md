@@ -411,7 +411,10 @@ it evaluates and hands it on every few thousand calls or loop iterations and aro
 calls that may block. A trap on any thread is recorded and stops every thread at its
 next turn (threads asleep in a futex are woken for it). File opens, reads and writes,
 name lookups and socket shutdowns run with the lock released, so a thread blocked on a
-pipe or a slow lookup does not stop the others; foreign calls keep it. A child process
+pipe or a slow lookup does not stop the others. So do calls of foreign functions with
+effects: a callback from C takes the lock back while it runs, and the thread's unfinished
+foreign calls are saved and restored with the rest of its state. Pure foreign functions
+(`needs not`) keep the lock. A child process
 records under its own mutex whether it was reaped: `Proc.wait` waits without reaping
 (`waitid` with `WNOWAIT`), then reaps and sets the flag under the mutex, and `Proc.kill`
 refuses once it is set, so it never signals a process id the system may have reused.
@@ -456,7 +459,10 @@ since every thread, and so every fiber, has its own). A mirror is a copy: C code
 keeps a pointer after the call and writes through it later changes the mirror, which
 the interpreter reads back only at the next call that passes that allocation. A pointer
 to freed memory, or a function whose type cannot become a C callback, is a trap rather
-than an address C would misuse.
+than an address C would misuse. A mirror handed to unfinished calls of several threads at once is
+shared: it counts its users and is not refreshed while it has any, and each call that
+finishes copies back what C changed since the last copy (the snapshot then becomes what
+was copied), so a write made by one thread's C is not copied twice over newer data.
 
 A function pointer passed to C becomes a libffi closure (cached per function) that
 calls `call_function`. Pointers it receives are host addresses, usable directly

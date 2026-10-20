@@ -311,8 +311,9 @@ Versions and what each kind of change means are described in
   declared (§17.2): a default that traps is a compile error at the default, and a default
   that constructs its own struct is a declaration cycle. Float value arguments of generic
   types are shown by value in messages (`Box(1.5)`).
-- Interpreter: file opens, reads and writes, name lookups and socket shutdowns no longer
-  stop the other threads; `Proc.kill` never signals a process id that may have been
+- Interpreter: file opens, reads and writes, name lookups, socket shutdowns and calls of
+  foreign functions with effects no longer stop the other threads (a C call waiting for
+  another Gamma thread deadlocked); `Proc.kill` never signals a process id that may have been
   reused; children a program never waited for are reaped when its run ends; foreign calls
   with large buffers copy less.
 - `gamma run` passes program arguments that are not UTF-8 to the program unchanged.

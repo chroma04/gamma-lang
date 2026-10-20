@@ -1,0 +1,62 @@
+//! os: unix
+//! needs: threads
+// A foreign call may block until another Gamma thread acts (§19.2, §19.6): here C reads a
+// pipe that a second thread writes to a little later. The reader must not stop the writer.
+// A callback from such a call runs Gamma code while the other thread runs too.
+c :: import "std/c"
+thread :: import "std/thread"
+
+libc :: foreign "c" {
+    pipe :: fn(fds: ^[2]c.c_int) -> c.c_int
+    read :: fn(fd: c.c_int, buf: [^]u8, n: usize) -> isize
+    write :: fn(fd: c.c_int, buf: [^]const u8, n: usize) -> isize
+    close :: fn(fd: c.c_int) -> c.c_int
+    usleep :: fn(us: c.c_uint) -> c.c_int
+    qsort :: fn(base: rawptr, n, size: usize, cmp: ^fn(a, b: rawptr) -> c.c_int)
+}
+
+cmp_i32 :: fn(a, b: rawptr) -> c.c_int {
+    x := a.cast(^const i32)^
+    y := b.cast(^const i32)^
+    if x < y { return -1 }
+    if x > y { return 1 }
+    return 0
+}
+
+Spin :: struct {
+    stop: bool
+    turns: u64
+}
+
+spin :: fn(s: ^Spin) needs Sys {
+    while not @atomic_load(&s.stop, .Acquire) {
+        s.turns += 1
+    }
+}
+
+writer :: fn(fds: ^[2]c.c_int) needs Sys {
+    _ = libc.usleep(200_000)
+    msg := "ping"
+    _ = libc.write(fds[1], msg.ptr, msg.len)
+}
+
+main :: fn() -> IoError!() needs Out + Sys {
+    fds: [2]c.c_int = ---
+    if libc.pipe(&fds) is not 0 { trap("pipe failed") }
+    t := try thread.spawn(writer, &fds)
+    buf: [16]u8 = ---
+    n := libc.read(fds[0], buf[..].ptr, buf.len)
+    t.join()
+    got := n.checked(usize) else trap("read failed")
+    print("read {} bytes: {}\n", got, buf[0..got])
+    _ = libc.close(fds[0])
+    _ = libc.close(fds[1])
+
+    sp := Spin(stop: false, turns: 0)
+    t2 := try thread.spawn(spin, &sp)
+    nums := [_]i32(5, 3, 8, 1, 9, 2, 7, 4)
+    libc.qsort(&nums, nums.len, @size_of(i32), cmp_i32)
+    @atomic_store(&sp.stop, true, .Release)
+    t2.join()
+    print("sorted {}\n", nums)
+}

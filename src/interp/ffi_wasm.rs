@@ -23,6 +23,17 @@ pub fn load_library(path: &std::path::Path) -> Result<(), String> {
 #[derive(Default)]
 pub struct Ffi {}
 
+/// The part of the state that belongs to one thread: there is none.
+pub(super) struct FfiThread;
+
+impl Ffi {
+    pub(super) fn take_thread(&mut self) -> FfiThread {
+        FfiThread
+    }
+
+    pub(super) fn put_thread(&mut self, _t: FfiThread) {}
+}
+
 /// Whether the interpreter can run `prog`'s foreign code: only if it has none.
 pub fn check_program(prog: &Program, _cfg: &RunConfig) -> Result<(), String> {
     if prog.fns.iter().any(|f| matches!(f.kind, FnKind::Foreign { .. }))

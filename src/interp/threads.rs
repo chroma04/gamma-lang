@@ -4,7 +4,7 @@
 //! one [`Machine`]. A global interpreter lock (the [`Gil`]) makes sure only one
 //! of them evaluates at a time: a thread holds it while it runs and lets the
 //! others in at regular points (calls and loop iterations) and around calls
-//! that may block (joining, sleeping, reading input, network operations). The
+//! that may block (joining, sleeping, reading input, network operations, calls into C). The
 //! lock is handed over in arrival order, so every thread makes progress. Data
 //! races therefore cannot corrupt the machine, and atomics are trivially atomic.
 //!
@@ -59,6 +59,12 @@ impl Gil {
     }
 }
 
+/// A thread's part of the machine while the thread runs without the lock.
+pub(super) struct Released<'a> {
+    gil: Arc<Gil>,
+    saved: Option<super::fiber::ThreadState<'a>>,
+}
+
 /// The threads of a program.
 #[derive(Default)]
 pub struct Threads {
@@ -111,15 +117,40 @@ impl<'a> Machine<'a> {
     /// Runs `f`, which must not touch the machine, with the lock released so that other
     /// threads can run meanwhile.
     pub fn without_gil<T>(&mut self, f: impl FnOnce() -> T) -> T {
-        let Some(gil) = self.threads.gil.clone() else { return f() };
+        let Some(mut held) = self.release_gil() else { return f() };
+        let r = f();
+        self.reacquire_gil(&mut held);
+        r
+    }
+
+    /// Gives the lock up, keeping this thread's part of the machine aside; `None` if there
+    /// is no lock (no thread was started). Until [`Machine::reacquire_gil`], the thread
+    /// must not touch the machine.
+    pub(super) fn release_gil(&mut self) -> Option<Released<'a>> {
+        let gil = self.threads.gil.clone()?;
         let saved = self.save_thread();
+        // The other threads reach the machine through this pointer: make sure nothing
+        // about it is assumed unchanged across the wait.
         std::hint::black_box(self as *mut Self);
         gil.release();
-        let r = f();
-        gil.acquire();
+        Some(Released { gil, saved: Some(saved) })
+    }
+
+    /// Gives the lock up again after [`Machine::reacquire_gil`] (a callback from C is over).
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) fn rerelease_gil(&mut self, held: &mut Released<'a>) {
+        held.saved = Some(self.save_thread());
         std::hint::black_box(self as *mut Self);
-        self.restore_thread(saved);
-        r
+        held.gil.release();
+    }
+
+    /// Takes the lock back and puts this thread's part of the machine back.
+    pub(super) fn reacquire_gil(&mut self, held: &mut Released<'a>) {
+        held.gil.acquire();
+        std::hint::black_box(self as *mut Self);
+        if let Some(saved) = held.saved.take() {
+            self.restore_thread(saved);
+        }
     }
 
     pub(super) fn check_fatal(&self) -> R<()> {

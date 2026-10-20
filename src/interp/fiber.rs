@@ -143,6 +143,7 @@ pub(super) struct ThreadState<'a> {
     depth: u32,
     stack_floor: usize,
     cur: u64,
+    ffi: super::ffi::FfiThread,
 }
 
 fn aborted() -> Box<Flow> {
@@ -159,6 +160,7 @@ impl<'a> Machine<'a> {
             depth: self.depth,
             stack_floor: self.stack_floor,
             cur: self.fib.cur,
+            ffi: self.ffi.take_thread(),
         }
     }
 
@@ -170,6 +172,7 @@ impl<'a> Machine<'a> {
         self.depth = s.depth;
         self.stack_floor = s.stack_floor;
         self.fib.cur = s.cur;
+        self.ffi.put_thread(s.ffi);
     }
 
     /// Sends `msg` (which lets another thread run) and blocks until a message arrives on `rx`.
