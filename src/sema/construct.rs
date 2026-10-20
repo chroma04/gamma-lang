@@ -74,24 +74,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 ArgKind::Spread(e) => {
                     let v = self.expr(e, None);
                     let vt = self.infer.resolve(v.ty);
-                    let src_fields: Vec<(Symbol, Ty)> = match vt.kind() {
-                        TyKind::Tuple { elems, names: Some(names) } => {
-                            names.iter().copied().zip(elems.iter().copied()).collect()
-                        }
-                        _ => match self.sema.struct_fields(vt) {
-                            Some(fs) => fs.iter().map(|f| (f.name, f.ty)).collect(),
-                            None => {
-                                if !vt.is_error() {
-                                    self.error(
-                                        e.span,
-                                        format!("cannot spread a value of type `{}` into named arguments", vt),
-                                    );
-                                }
-                                continue;
-                            }
-                        },
-                    };
-                    let tmp_ty = vt;
+                    let Some(src_fields) = self.spread_source_fields(vt, e) else { continue };
                     // Values written before the spread are evaluated before it.
                     self.spill_written(&mut slots, &written, &mut stmts);
                     written.clear();
@@ -111,7 +94,6 @@ impl<'a, 's> FnCx<'a, 's> {
                         }
                         let proj =
                             mk(*fty, tir::ExprKind::Field { base: Box::new(base.clone()), index: k as u32 }, e.span);
-                        let _ = tmp_ty;
                         slots[i] = Some(self.coerce(proj, fields[i].1));
                     }
                 }
@@ -122,6 +104,24 @@ impl<'a, 's> FnCx<'a, 's> {
         if written.windows(2).any(|w| w[0] > w[1]) {
             self.spill_written(&mut slots, &written, &mut stmts);
         }
+        let values = self.fill_fields(ty, &fields, slots, bad_args, span);
+        let agg = mk(ty, tir::ExprKind::Aggregate(values), span);
+        if stmts.is_empty() {
+            return agg;
+        }
+        mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(agg), span })), span)
+    }
+
+    /// The field values of a construction in field order; a field without an argument takes
+    /// its default or is reported missing.
+    fn fill_fields(
+        &mut self,
+        ty: Ty,
+        fields: &[(Symbol, Ty)],
+        slots: Vec<Option<Expr>>,
+        bad_args: bool,
+        span: Span,
+    ) -> Vec<Expr> {
         let mut values = vec![];
         for (i, slot) in slots.into_iter().enumerate() {
             match slot {
@@ -150,11 +150,26 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
-        let agg = mk(ty, tir::ExprKind::Aggregate(values), span);
-        if stmts.is_empty() {
-            return agg;
+        values
+    }
+
+    /// The named fields a spread argument of type `vt` supplies; `None` (after an error) when
+    /// it is neither a named tuple nor a struct.
+    fn spread_source_fields(&mut self, vt: Ty, e: &ast::Expr) -> Option<Vec<(Symbol, Ty)>> {
+        match vt.kind() {
+            TyKind::Tuple { elems, names: Some(names) } => {
+                Some(names.iter().copied().zip(elems.iter().copied()).collect())
+            }
+            _ => match self.sema.struct_fields(vt) {
+                Some(fs) => Some(fs.iter().map(|f| (f.name, f.ty)).collect()),
+                None => {
+                    if !vt.is_error() {
+                        self.error(e.span, format!("cannot spread a value of type `{}` into named arguments", vt));
+                    }
+                    None
+                }
+            },
         }
-        mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(agg), span })), span)
     }
 
     fn adt_default(&self, ty: Ty, i: usize) -> Option<Expr> {
