@@ -31,6 +31,11 @@ asset="gamma-$os-$arch.tar.gz"
 
 if [ -n "${GAMMA_DOWNLOAD:-}" ]; then
     base=$GAMMA_DOWNLOAD
+    # Over plain HTTP the archive and its checksum could both be replaced in transit.
+    case "$base" in
+        https://* | file://*) ;;
+        *) fail "GAMMA_DOWNLOAD must be an https:// or file:// URL" ;;
+    esac
 elif [ -n "${GAMMA_VERSION:-}" ]; then
     base="$repo/releases/download/$GAMMA_VERSION"
 else
@@ -38,9 +43,9 @@ else
 fi
 
 if command -v curl >/dev/null 2>&1; then
-    fetch() { curl -fsSL -o "$2" "$1"; }
+    fetch() { curl --proto '=https,file' --proto-redir '=https' -fsSL -o "$2" "$1"; }
 elif command -v wget >/dev/null 2>&1; then
-    fetch() { wget -q -O "$2" "$1"; }
+    fetch() { wget --https-only -q -O "$2" "$1"; }
 else
     fail "needs curl or wget"
 fi
@@ -59,6 +64,10 @@ say "Downloading $base/$asset"
 fetch "$base/$asset" "$work/$asset" || fail "cannot download $base/$asset"
 fetch "$base/$asset.sha256" "$work/$asset.sha256" || fail "cannot download $base/$asset.sha256"
 expected=$(cut -d ' ' -f 1 < "$work/$asset.sha256")
+case "$expected" in
+    *[!0-9a-f]* | "") fail "$asset.sha256 does not hold a SHA-256" ;;
+esac
+[ "${#expected}" -eq 64 ] || fail "$asset.sha256 does not hold a SHA-256"
 actual=$(sha256 "$work/$asset")
 [ "$expected" = "$actual" ] || fail "checksum mismatch for $asset (expected $expected, got $actual)"
 
@@ -67,9 +76,16 @@ src=$(echo "$work"/gamma-*-"$os-$arch")
 [ -x "$src/bin/gamma" ] || fail "the archive does not hold bin/gamma"
 
 # Replace the previous installation's files only, leaving anything else in the prefix.
+# The library is copied in full before the old one is swapped out, so a failed copy
+# leaves the previous installation working.
 mkdir -p "$prefix/bin" "$prefix/lib" "$prefix/share/doc/gamma"
-rm -rf "$prefix/lib/gamma"
-cp -R "$src/lib/gamma" "$prefix/lib/gamma"
+rm -rf "$prefix/lib/gamma.new" "$prefix/lib/gamma.old"
+cp -R "$src/lib/gamma" "$prefix/lib/gamma.new"
+if [ -d "$prefix/lib/gamma" ]; then
+    mv "$prefix/lib/gamma" "$prefix/lib/gamma.old"
+fi
+mv "$prefix/lib/gamma.new" "$prefix/lib/gamma"
+rm -rf "$prefix/lib/gamma.old"
 cp "$src/LICENSE" "$src/README.md" "$prefix/share/doc/gamma/"
 cp "$src/bin/gamma" "$prefix/bin/gamma.new"
 mv -f "$prefix/bin/gamma.new" "$prefix/bin/gamma"

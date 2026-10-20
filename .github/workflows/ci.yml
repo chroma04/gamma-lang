@@ -36,6 +36,19 @@ jobs:
         run: cargo clippy --all-targets
       - name: Test
         run: cargo test --all-targets
+      - name: Install script
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) asset=linux-x86_64 ;; Darwin-arm64) asset=macos-aarch64 ;;
+            Darwin-x86_64) asset=macos-x86_64 ;; *) asset=linux-aarch64 ;;
+          esac
+          tools/package-release.sh "$asset" target/debug/gamma "$RUNNER_TEMP/dist"
+          GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/prefix" sh tools/install.sh
+          printf 'm :: import "std/math"\nmain :: fn() needs Out { print("{}\\n", m.abs(-3)) }\n' > "$RUNNER_TEMP/hello.gm"
+          test "$("$RUNNER_TEMP/prefix/bin/gamma" run "$RUNNER_TEMP/hello.gm")" = 3
+          # A checksum that does not match stops the installation.
+          echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$RUNNER_TEMP/dist/gamma-$asset.tar.gz.sha256"
+          if GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/p2" sh tools/install.sh; then exit 1; fi
       - name: Conformance tests and examples with Debug builds split into C units
         if: matrix.os == 'ubuntu-latest'
         env:
@@ -96,6 +109,8 @@ jobs:
     timeout-minutes: 90
     env:
       FILC_VERSION: "0.686"
+      # The SHA-256 of the release archive, checked before it is installed as root.
+      FILC_SHA256: 3a0ba45283ff29668335d288530f35fe69c28ab8d663b4deb8801474825f117a
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -114,6 +129,7 @@ jobs:
             "https://github.com/pizlonator/fil-c/releases/download/v${FILC_VERSION}/optfil-${FILC_VERSION}-linux-x86_64.tar.xz"
       - name: Install Fil-C in /opt/fil
         run: |
+          echo "$FILC_SHA256  $HOME/filc/optfil.tar.xz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/filc"
           tar -C "$RUNNER_TEMP/filc" -xJf ~/filc/optfil.tar.xz
           cd "$RUNNER_TEMP/filc/optfil-${FILC_VERSION}-linux-x86_64"
@@ -182,7 +198,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 wasi-libc libclang-rt-18-dev-wasm32 binaryen
-          curl -sSfL https://github.com/bytecodealliance/wasmtime/releases/download/v25.0.1/wasmtime-v25.0.1-x86_64-linux.tar.xz | tar xJ
+          curl -sSfL -o wasmtime.tar.xz https://github.com/bytecodealliance/wasmtime/releases/download/v25.0.1/wasmtime-v25.0.1-x86_64-linux.tar.xz
+          echo "3785b32b79fd7af4f12bf42c4e46debf48ec853fbcc4a097a3bd9728237fb3ef  wasmtime.tar.xz" | sha256sum -c -
+          tar xJf wasmtime.tar.xz
           echo "$PWD/wasmtime-v25.0.1-x86_64-linux" >> "$GITHUB_PATH"
       - name: Tools
         run: |

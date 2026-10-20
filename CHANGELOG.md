@@ -257,6 +257,11 @@ Versions and what each kind of change means are described in
   release no longer resolves from the cache. Git commands ignore the caller's `GIT_DIR`
   and similar variables (as set inside a git hook).
 - Command-line arguments that are not valid UTF-8 are a usage error instead of a crash.
+- `gamma test --coverage=<file>` exits with status 1 when the tracefile cannot be
+  written.
+- `install.sh` accepts only `https://` and `file://` download locations, checks that the
+  `.sha256` file holds a hash, and replaces the standard library of an earlier
+  installation only once the new one is copied in full.
 - Types larger than `isize::MAX` bytes (arrays, structs, tuples, unions, optionals,
   results, generic instances) are a compile error instead of a compiler crash or silently
   wrong sizes; on 32-bit targets this catches arrays larger than the address space.

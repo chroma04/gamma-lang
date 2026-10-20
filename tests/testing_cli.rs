@@ -167,6 +167,15 @@ fn coverage_counts_the_lines_the_tests_run() {
 }
 
 #[test]
+fn a_tracefile_that_cannot_be_written_fails_the_run() {
+    let p = Package::new("coverage_unwritable", &package());
+    let flag = format!("--coverage={}", p.root.join("missing-dir").join("lcov.info").display());
+    let out = p.gamma(&["test", "--all", &flag]);
+    assert!(!out.ok, "{}", out.stdout);
+    assert!(out.stderr.contains("cannot write"), "{}", out.stderr);
+}
+
+#[test]
 fn coverage_needs_the_interpreter() {
     if !have_cc() {
         return;

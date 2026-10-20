@@ -431,8 +431,10 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
         );
         report.finish()
     };
-    if let Some((scope, map)) = &cover {
-        coverage_report(&me.sess, scope, map, opts.coverage.as_ref().and_then(|f| f.as_deref()));
+    if let Some((scope, map)) = &cover
+        && !coverage_report(&me.sess, scope, map, opts.coverage.as_ref().and_then(|f| f.as_deref()))
+    {
+        return ExitCode::FAILURE;
     }
     code
 }
@@ -507,8 +509,8 @@ fn run_exe(exe: &Path, j: usize) -> Finished {
 }
 
 /// Prints the lines of each file that the tests ran, and writes them as an LCOV tracefile
-/// to `lcov` if that is given.
-fn coverage_report(sess: &Session, scope: &Scope, map: &gamma::coverage::CoverMap, lcov: Option<&Path>) {
+/// to `lcov` if that is given; false if the tracefile cannot be written.
+fn coverage_report(sess: &Session, scope: &Scope, map: &gamma::coverage::CoverMap, lcov: Option<&Path>) -> bool {
     let counts = gamma::interp::coverage_counts();
     let mut files: BTreeMap<PathBuf, BTreeMap<u32, u32>> = BTreeMap::new();
     for (i, (file, line)) in map.points.iter().enumerate() {
@@ -551,6 +553,8 @@ fn coverage_report(sess: &Session, scope: &Scope, map: &gamma::coverage::CoverMa
         }
         if let Err(e) = std::fs::write(out, text) {
             eprintln!("gamma: cannot write {}: {}", out.display(), e);
+            return false;
         }
     }
+    true
 }
