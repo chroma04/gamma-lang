@@ -1013,6 +1013,7 @@ pub(crate) fn scratch_path(out: &Path, what: &str, ext: &str) -> PathBuf {
 }
 
 /// Removes its files when dropped, so no error path leaves intermediate files behind.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) struct Scratch(pub Vec<PathBuf>);
 
 impl Drop for Scratch {
@@ -1274,7 +1275,10 @@ pub fn is_runtime_symbol(sym: &str) -> bool {
     }
     NAMES
         .get_or_init(|| {
+            #[cfg(not(target_family = "wasm"))]
             let all = format!("{}\n{}\n{}", RT_H, RT_C, crate::clif::runtime_source());
+            #[cfg(target_family = "wasm")]
+            let all = format!("{}\n{}", RT_H, RT_C);
             c_identifiers(&all).into_iter().filter(|n| n.starts_with("gm_")).map(str::to_string).collect()
         })
         .contains(sym)
