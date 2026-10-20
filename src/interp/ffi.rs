@@ -257,6 +257,10 @@ impl Ffi {
 
     /// The address of `name` in `lib` or, failing that, anywhere in the process.
     pub fn symbol(&mut self, lib: &str, name: &str) -> Option<usize> {
+        // `errno` lives at a different address on each OS thread: ask every time.
+        if name == "errno" {
+            return self.lookup(lib, name);
+        }
         let key = (lib.to_string(), name.to_string());
         if let Some(r) = self.symbols.get(&key) {
             return *r;
@@ -267,8 +271,7 @@ impl Ffi {
     }
 
     /// The address of the function `getter` anywhere in the process.
-    fn symbol_of(&mut self, getter: &str, c: &CString) -> *mut c_void {
-        let _ = getter;
+    fn symbol_of(&mut self, c: &CString) -> *mut c_void {
         // SAFETY: `c` is a C string.
         let p = unsafe { dl::sym(dl::DEFAULT, c.as_ptr()) };
         if !p.is_null() {
@@ -336,7 +339,7 @@ impl Ffi {
             };
             let c = CString::new(getter).ok()?;
             // SAFETY: as above.
-            let g = self.symbol_of(getter, &c);
+            let g = self.symbol_of(&c);
             if g.is_null() {
                 return None;
             }
@@ -752,24 +755,26 @@ impl<'a> Machine<'a> {
 
     // --- mirrors -----------------------------------------------------------------------------------
 
-    /// The host address C sees for the interpreter pointer `v` of kind `kind`.
-    fn host_ptr(&mut self, v: u64, kind: SlotKind) -> u64 {
+    /// The host address C sees for the interpreter pointer `v` of kind `kind`, or why there
+    /// is none: the interpreter's addresses mean nothing to C.
+    fn host_ptr(&mut self, v: u64, kind: SlotKind) -> Result<u64, &'static str> {
         if v == 0 {
-            return 0;
+            return Ok(0);
         }
         match kind {
             SlotKind::Func => match self.fn_from_addr(v) {
-                Some(f) => self.callback_code(f).unwrap_or(v),
-                None => v,
+                Some(f) => self.callback_code(f).ok_or("this function type cannot be passed to C as a callback"),
+                None => Ok(v),
             },
             SlotKind::Data(pointee) => self.mirror_ptr(v, pointee),
         }
     }
 
-    fn mirror_ptr(&mut self, v: u64, pointee: Option<Ty>) -> u64 {
-        let Some((base, size, _, live)) = self.mem.describe(v) else { return v };
+    fn mirror_ptr(&mut self, v: u64, pointee: Option<Ty>) -> Result<u64, &'static str> {
+        // An address outside every allocation may be one C returned: it is passed on as it is.
+        let Some((base, size, _, live)) = self.mem.describe(v) else { return Ok(v) };
         if !live {
-            return v;
+            return Err("a pointer to freed memory was passed to C");
         }
         let size = size as usize;
         if !self.ffi.mirrors.contains_key(&base) {
@@ -800,7 +805,7 @@ impl<'a> Machine<'a> {
             m.scanned = true;
             self.scan_mirror(base);
         }
-        host as u64 + (v - base)
+        Ok(host as u64 + (v - base))
     }
 
     /// Translates the pointers held in the mirror of the allocation at `base`.
@@ -821,7 +826,8 @@ impl<'a> Machine<'a> {
                 }
                 // SAFETY: `off + 8 <= size`, inside the mirror's buffer; accessed unaligned.
                 let w = unsafe { (host.add(off) as *const u64).read_unaligned() };
-                let h = self.host_ptr(w, s.kind);
+                // A stale pointer inside a structure is C's to leave alone.
+                let h = self.host_ptr(w, s.kind).unwrap_or(w);
                 if h != w {
                     // SAFETY: as above.
                     unsafe { (host.add(off) as *mut u64).write_unaligned(h) };
@@ -854,14 +860,15 @@ impl<'a> Machine<'a> {
     }
 
     /// Translates the pointers inside a value of type `ty` for C.
-    fn export_value(&mut self, ty: Ty, b: &mut [u8]) {
+    fn export_value(&mut self, ty: Ty, b: &mut [u8]) -> Result<(), &'static str> {
         let slots = self.slots_cached(ty);
         for s in slots.iter() {
             if s.off + 8 <= b.len() {
-                let h = self.host_ptr(word(b, s.off), s.kind);
+                let h = self.host_ptr(word(b, s.off), s.kind)?;
                 set_word(b, s.off, h);
             }
         }
+        Ok(())
     }
 
     /// The reverse of [`Machine::export_value`], for a value C produced.
@@ -1062,7 +1069,11 @@ impl<'a> Machine<'a> {
             // SAFETY: the buffer is at least `b.len()` bytes.
             let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, b.len()) };
             bytes.copy_from_slice(b);
-            self.export_value(ty, bytes);
+            if let Err(why) = self.export_value(ty, bytes) {
+                let t = self.ffi.touched.pop().unwrap();
+                self.finish_mirrors(t);
+                return self.trap(span, why);
+            }
             bufs.push(buf);
         }
         self.snapshot_mirrors();
@@ -1191,7 +1202,8 @@ impl<'a> Machine<'a> {
         match r {
             Ok(Ok(Value::Bytes(b))) => {
                 let mut b = b.to_vec();
-                self.export_value(d.ret, &mut b);
+                // Whatever cannot be translated stays as it is; C may not use it.
+                let _ = self.export_value(d.ret, &mut b);
                 self.snapshot_mirrors();
                 // libffi expects integers narrower than a register widened to it.
                 let small = match (self.ti(d.ret).int, d.ret.kind()) {

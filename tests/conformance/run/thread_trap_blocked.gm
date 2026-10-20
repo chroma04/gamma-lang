@@ -1,0 +1,24 @@
+//! exit: 134
+//! needs: threads
+thread :: import "std/thread"
+
+Shared :: struct { m: thread.Mutex, cv: thread.Condvar, ready: bool }
+
+waiter :: fn(s: ^Shared) needs Sys {
+    s.m.lock()
+    while not s.ready { s.cv.wait(&s.m) }
+    s.m.unlock()
+}
+
+boom :: fn(n: ^u8) needs Sys {
+    n^ = n^ + 200
+}
+
+main :: fn() -> IoError!() needs Out + Sys {
+    s := Shared(m: thread.mutex(), cv: thread.condvar(), ready: false)
+    n: u8 = 100
+    a := try thread.spawn(waiter, &s)
+    b := try thread.spawn(boom, &n)
+    a.join()
+    print("unreachable\n")
+}

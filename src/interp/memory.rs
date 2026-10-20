@@ -171,12 +171,13 @@ impl Memory {
         self.host_access
             && matches!(err, MemError::Unmapped { .. })
             && addr >= self.next
+            && len <= isize::MAX as u64
             && addr.checked_add(len).is_some_and(|e| e <= usize::MAX as u64)
     }
 
     pub fn alloc(&mut self, size: u64, align: u64, kind: AllocKind, mutable: bool) -> Result<u64, MemError> {
         let a = align.max(MIN_ALIGN);
-        let base = self.next.div_ceil(a) * a;
+        let base = self.next.div_ceil(a).checked_mul(a).ok_or(MemError::Exhausted)?;
         let end = base.checked_add(size.max(1)).ok_or(MemError::Exhausted)?;
         let next = end.checked_add(GAP).ok_or(MemError::Exhausted)?;
         if next >= self.limit {
@@ -577,6 +578,17 @@ mod tests {
         m.init(a, &[1, 2, 3, 4]).unwrap();
         assert_eq!(m.read(a, 4, 1).unwrap(), &[1, 2, 3, 4]);
         assert!(matches!(m.write(a, &[0], 1), Err(MemError::ReadOnly { .. })));
+    }
+
+    #[test]
+    fn huge_alignment_is_exhaustion_not_overflow() {
+        let mut m = Memory::new(0x10000, 8);
+        let a = m.alloc(8, 1 << 63, AllocKind::Heap, true).unwrap();
+        assert_eq!(a, 1 << 63);
+        assert!(matches!(m.alloc(8, 1 << 63, AllocKind::Heap, true), Err(MemError::Exhausted)));
+        // The failed request left the allocator as it was.
+        let b = m.alloc(8, 8, AllocKind::Heap, true);
+        assert!(b.is_ok_and(|b| b > a));
     }
 
     #[test]

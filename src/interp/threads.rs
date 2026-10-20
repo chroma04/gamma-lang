@@ -10,7 +10,8 @@
 //!
 //! The lock exists only once a program starts a thread, so single-threaded
 //! programs pay nothing for it. When a thread traps, the trap is recorded, and
-//! every thread stops with it the next time it takes the lock, as the whole
+//! every thread stops with it the next time it takes the lock (sleepers in a futex are
+//! woken), as the whole
 //! process stops in compiled code.
 
 use super::fiber::Sendable;
@@ -107,7 +108,7 @@ impl<'a> Machine<'a> {
         r
     }
 
-    fn check_fatal(&self) -> R<()> {
+    pub(super) fn check_fatal(&self) -> R<()> {
         match &self.threads.fatal {
             Some(t) => Err(Box::new(Flow::Trap(t.clone()))),
             None => Ok(()),
@@ -151,6 +152,8 @@ impl<'a> Machine<'a> {
                 && m.threads.fatal.is_none()
             {
                 m.threads.fatal = Some(t);
+                // Threads asleep in a futex would never notice: wake them.
+                super::sys::wake_futex_waiters();
             }
             m.kill_temps(0);
             std::hint::black_box(m as *mut Machine);

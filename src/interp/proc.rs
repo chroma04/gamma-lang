@@ -423,7 +423,7 @@ impl<'a> Machine<'a> {
             SysOp::ProcReadOut => {
                 let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
-                let mut buf = vec![0u8; len as usize];
+                let mut buf = self.dest_buf(span, ptr, len)?;
                 let Some(p) = self.proc_entry(h) else { return Ok(bad()) };
                 let n = self.without_gil(|| p.read_out(&mut buf));
                 if n > 0 {
