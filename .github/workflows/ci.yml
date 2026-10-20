@@ -72,6 +72,21 @@ jobs:
           RUSTC_BOOTSTRAP: "1"
         run: cargo check --manifest-path fuzz/Cargo.toml
 
+  audit:
+    # The compiler unpacks archives and runs downloaded code (`gamma fetch`): a dependency
+    # with a published advisory fails the build.
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit
+        run: cargo audit
+
   msrv:
     # The oldest Rust that Cargo.toml's `rust-version` promises still builds the crate.
     name: Minimum Rust version

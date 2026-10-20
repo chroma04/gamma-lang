@@ -289,6 +289,20 @@ Versions and what each kind of change means are described in
 - Untyped constants are limited to 2^22 bits (§6.2), and very large numbers are shown by
   their size in messages.
 - Clearer messages for `fill:` given with other arguments of an array construction.
+- Directory, process and thread handles that were closed (or waited for) fail with an
+  error instead of acting on a newer object that took over their slot, and a concurrent
+  close or wait no longer frees an object another call is still using.
+- Windows: starting a process searches only `PATH` for a bare program name (never the
+  current directory), and refuses to pass arguments with characters `cmd.exe` interprets
+  to a `.bat` or `.cmd` program; `Fs.open_dir` rejects the empty path and wildcards.
+- `install.ps1`: https or file locations only, a validated `.sha256`, an atomic swap of the
+  standard library, LICENSE and README installed, and `%VAR%` entries of the user `PATH`
+  kept as they were.
+- Package commands accept `--` before arguments that start with `-`, say when a flag is
+  given a value, and `gamma new` creates no directory for a name it refuses; `gamma.toml`
+  and `gamma.lock` are replaced through a fresh temporary file flushed to disk.
+- Releases are published only when CI passed on the tagged commit, with a build provenance
+  attestation for each archive, and the archives are reproducible.
 - `gamma test --coverage=<file>` exits with status 1 when the tracefile cannot be
   written.
 - `install.sh` accepts only `https://` and `file://` download locations, checks that the
