@@ -1,0 +1,41 @@
+// Defaults of fields and parameters are compile-time values (§17.2): pure functions
+// compute them, and they are the same at every use.
+fib :: fn(n: u32) -> u32 {
+    a := u32(0)
+    b := u32(1)
+    i := u32(0)
+    while i < n {
+        t := a + b
+        a = b
+        b = t
+        i += 1
+    }
+    return a
+}
+
+table :: fn() -> [4]u16 { return [4]u16(1, 2, 3, 4) }
+
+S :: struct {
+    a: u32 = fib(20),
+    t: [4]u16 = table(),
+    name: string = "dflt",
+    p: ?^u8 = null,
+}
+
+f :: fn(x: u32 = fib(10), s: string = "hi", t: [4]u16 = table()) -> u32 {
+    return x + s.len.trunc(u32) + u32(t[3])
+}
+
+main :: fn() needs Out {
+    s := S()
+    print("{} {} {} {}\n", s.a, s.t[2], s.name, s.p is null)
+    t := S(a: 1)
+    print("{} {}\n", t.a, t.name)
+    print("{} {} {}\n", f(), f(1), f(s: "hello", x: 0))
+    total := u32(0)
+    for i in range(0, 1000) {
+        _ = i
+        total += S().a + f()
+    }
+    print("{}\n", total)
+}

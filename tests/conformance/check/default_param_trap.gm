@@ -1,0 +1,9 @@
+//! stage: check
+// A parameter default that traps at compile time is an error at the default, whether or
+// not a call omits the argument (§17.2).
+z :: fn(d: u8) -> u8 { return 1 / d }
+f :: fn(x: u8 = z(0)) {} //~ ERROR compile-time evaluation failed: division by zero
+g :: fn(x: u8 = z(0)) {} //~ ERROR compile-time evaluation failed: division by zero
+main :: fn() {
+    g()
+}

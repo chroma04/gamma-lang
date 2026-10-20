@@ -1,0 +1,12 @@
+//! stage: check
+// A float value argument is shown by its value in type names.
+Box :: struct(X: f64) { v: i32 }
+Half :: struct(X: f32) { v: i32 }
+main :: fn() {
+    a: Box(1.5) = Box(1.5)(v: 1)
+    b: Box(2.5) = a //~ ERROR expected `Box(2.5)`, found `Box(1.5)`
+    c: Half(-0.25) = Half(-0.25)(v: 1)
+    d: Half(0.5) = c //~ ERROR expected `Half(0.5)`, found `Half(-0.25)`
+    _ = b
+    _ = d
+}

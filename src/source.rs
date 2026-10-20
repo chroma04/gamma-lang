@@ -175,6 +175,15 @@ impl SourceMap {
         &self.file(span.file).src[span.lo as usize..span.hi as usize]
     }
 
+    /// The number of files.
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
     pub fn files(&self) -> impl Iterator<Item = (FileId, &SourceFile)> {
         self.files.iter().enumerate().map(|(i, f)| (FileId(i as u32), f))
     }

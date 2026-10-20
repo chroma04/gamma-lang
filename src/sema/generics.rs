@@ -333,6 +333,9 @@ impl<'s> Sema<'s> {
                 ConstKey::Bytes(t, b) => match k.as_int() {
                     Some(i) => tir::ExprKind::Int(i),
                     None if t.is_bool() => tir::ExprKind::Bool(b.first() == Some(&1)),
+                    None if t.is_float() => tir::ExprKind::ConstBytes(
+                        crate::layout::int_bytes_swap_order(b, self.target.little_endian).into(),
+                    ),
                     None => tir::ExprKind::ConstBytes(b.clone().into()),
                 },
                 ConstKey::Fn(f, _) => tir::ExprKind::FnRef(FnId(*f)),
@@ -1205,10 +1208,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 None => match &p.default {
                     Some(d) => {
                         let d = d.clone();
-                        let site = self.call_site(span);
-                        let saved = self.sema.caller_site.replace(site);
-                        let v = self.sema.check_const_expr(sig.module, &d, Some(pty));
-                        self.sema.caller_site = saved;
+                        let v = self.param_default(sig.module, &d, pty, p.is_site(), span);
                         match v {
                             Some(v) => out.push(v),
                             None => out.push(error_expr(span)),

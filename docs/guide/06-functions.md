@@ -60,7 +60,7 @@ reset :: fn(n: ^u32) { n^ = 0 }
 
 ### Defaults, named arguments and spread
 
-A parameter may have a default, which must be a constant expression. Parameters with defaults must come after those without:
+A parameter may have a default, which must be a constant expression; it is computed once at compile time, and a default that fails to evaluate is a compile error. Parameters with defaults must come after those without:
 
 ```gamma
 clamp_add :: fn(a, b: i32, lo: i32 = 0, hi: i32 = 100) -> i32 {

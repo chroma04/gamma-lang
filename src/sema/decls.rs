@@ -683,6 +683,12 @@ impl<'s> Sema<'s> {
             }
             for n in &p.names {
                 let default = p.default.clone().map(Rc::new);
+                if let Some(d) = &default
+                    && !super::generics::has_param(ty)
+                    && !matches!(&d.kind, ExprKind::Intrinsic { name, .. } if name.name.as_str() == "caller_location")
+                {
+                    self.default_checks.push((module, d.clone(), ty));
+                }
                 params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: None, rest });
             }
         }
