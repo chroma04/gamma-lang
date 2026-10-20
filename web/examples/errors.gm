@@ -1,0 +1,31 @@
+//! Failures are values: `?T` may be absent, `E!T` may be an error of type `E`. `try`
+//! passes an error up, widening it into the caller's error type; `else` supplies a default.
+
+ParseError :: union { Empty, BadDigit: usize, TooLarge }
+
+parse_port :: fn(s: string) -> ParseError!u16 {
+    if s.len is 0 { return !.Empty }
+    n: u32 = 0
+    for i, c in enumerate(s) {
+        if c not in '0'..='9' { return !.BadDigit(i) }
+        n = n * 10 + u32(c - '0')
+        if n > 65535 { return !.TooLarge }
+    }
+    return n.trunc(u16)
+}
+
+ConfigError :: union { Parse: ParseError, Missing }
+
+port_of :: fn(value: ?string) -> ConfigError!u16 {
+    s := value else return !.Missing
+    return try parse_port(s)              // a ParseError becomes ConfigError.Parse
+}
+
+main :: fn() needs Out {
+    for text in [4]string("8080", "80x", "", "99999") {
+        print("{:>7} -> {}\n", text, parse_port(text))
+    }
+    print("missing -> {}\n", port_of(null))
+    port := port_of("443") else 80
+    print("port {}\n", port)
+}

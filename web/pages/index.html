@@ -1,0 +1,115 @@
+<!-- title: Gamma; section: home; layout: page; description: Gamma is a systems programming language meant to replace C, in which everything a function depends on appears in its signature. -->
+<main class="home">
+
+<section class="hero">
+  <h1>Systems programming with everything in the <em>signature</em>.</h1>
+  <p class="lede">Gamma is a language meant to replace C. A function’s inputs are its parameters, its failures are in <code>E!T</code>, a missing result is <code>?T</code>, and its <strong>context</strong> — the allocator, input and output, the clock, the outside world — is its effect set, written after <code>needs</code>. Algebraic effects supply that context, so it is explicit without being passed around by hand, and tests can replace it.</p>
+  <div class="actions">
+    <a class="button" href="{{root}}guide/README.html">Read the guide</a>
+    <a href="{{root}}playground.html">Try it in your browser →</a>
+    <a href="#installing">Install</a>
+  </div>
+</section>
+
+<section class="showcase">
+  <pre class="code gamma"><code>fs    :: import "std/fs"
+arena :: import "std/arena"
+
+// Counts the lines of a file. The signature says everything it touches.
+count_lines :: fn(path: string) -&gt; fs.ReadError!usize needs Fs + Alloc {
+    text := try fs.read_all(path)          // from the current allocator
+    defer free(text)
+    n: usize = 0
+    for b in bytes(text) { if b is '\n' { n += 1 } }
+    return n
+}
+
+main :: fn() -&gt; fs.ReadError!() needs Fs + Alloc + Out {
+    scratch := arena.new()                 // you choose where memory comes from
+    defer scratch.deinit()
+    with scratch.allocator() {
+        print("{} lines\n", try count_lines("README.md"))
+    }
+}
+
+test "counts lines" {                      // tests get an in-memory file system
+    ok(fs.write_all("notes.txt", "one\ntwo\n"))
+    expect_eq(ok(count_lines("notes.txt")), 2)
+}</code></pre>
+  <ul class="notes">
+    <li><b>Inputs</b><span>are the parameters. Top-level bindings are constants; a mutable global is a <code>#global</code>, and touching one is the <code>Sys</code> effect, visible in the signature.</span></li>
+    <li><b>Failures</b><span><code>fs.ReadError!usize</code> is a count or an error, and <code>try</code> passes the error up. No <code>errno</code>, no exceptions.</span></li>
+    <li><b>Absence</b><span>is <code>?T</code>. Pointers are never null unless their type says so.</span></li>
+    <li><b>Context</b><span><code>needs Fs + Alloc</code> lists everything the function may touch. Calling <code>print</code> from it is a compile error, and the test swaps in an in-memory file system without changing a line.</span></li>
+  </ul>
+</section>
+
+<h2 class="section-title">What it keeps from C, and what it removes</h2>
+<p class="section-lede">Five principles, each of which the specification turns into concrete rules.</p>
+<div class="points">
+  <div><h3>Data is bytes you can lay out</h3><p>Structs are laid out as in C, values copy as bytes, and you choose every size and alignment. No hidden fields, no object headers, no garbage collector.</p></div>
+  <div><h3>Cost is visible where it is paid</h3><p>Allocation is an effect, so a function that allocates says so. Memory comes from whatever allocator the caller installed — the heap, an arena, a fixed buffer — and is freed with <code>defer</code>.</p></div>
+  <div><h3>Context is an effect</h3><p>What C does with globals, callbacks and <code>void*</code>, <code>setjmp</code> and hand-written state machines — logging, I/O, iteration, early exit, coroutines — is a handler installed with <code>with</code>.</p></div>
+  <div><h3>Mistakes are rejected</h3><p>No implicit numeric conversions, no fallthrough, no precedence traps such as <code>x &amp; 1 == 0</code>. Overflow traps unless you choose to wrap (<code>+%</code>), saturate (<code>+|</code>) or check (<code>+?</code>).</p></div>
+  <div><h3>Every rule is local</h3><p>Reading a declaration tells you the worst case. A function whose effects have no <code>esc</code> or <code>ctl</code> operation always returns to its caller.</p></div>
+  <div><h3>C is a neighbour</h3><p>Call C functions and use C types directly, export Gamma functions to C, and link with C sources and libraries from a package manifest.</p></div>
+</div>
+
+<h2 class="section-title">Effects in one screen</h2>
+<div class="pair">
+  <div>
+    <p>An effect declares operations. A function that performs one says so with <code>needs</code>; a <code>with</code> block above it decides what the operations do.</p>
+    <p><code>connect</code> below neither knows nor cares where its messages go. The same mechanism carries the allocator, standard output, the clock, randomness and the file system, which is how a test can run the same code against a fake clock and an in-memory disk.</p>
+    <p><a href="{{root}}guide/07-effects.html">The effects chapter</a> explains the three kinds of operations: <code>fn</code>, <code>esc</code> and <code>ctl</code>.</p>
+  </div>
+  <div class="runnable">
+    <pre class="code gamma"><code>Log :: effect {
+    log: fn(msg: string)
+}
+
+connect :: fn(host: string) -&gt; bool needs Log {
+    Log.log(host)
+    return host.len &gt; 0
+}
+
+main :: fn() needs Out {
+    // In production: print the messages.
+    printer :: handler Log { log(msg) =&gt; print("log: {}\n", msg) }
+    with printer { _ = connect("example.org") }
+
+    // In a test, or when it does not matter: drop them.
+    quiet :: handler Log { log(msg) =&gt; {} }
+    ok := with quiet { connect("") }
+    print("ok = {}\n", ok)
+}</code></pre>
+    <a class="try" href="{{root}}playground.html#code=TG9nIDo6IGVmZmVjdCB7CiAgICBsb2c6IGZuKG1zZzogc3RyaW5nKQp9Cgpjb25uZWN0IDo6IGZuKGhvc3Q6IHN0cmluZykgLT4gYm9vbCBuZWVkcyBMb2cgewogICAgTG9nLmxvZyhob3N0KQogICAgcmV0dXJuIGhvc3QubGVuID4gMAp9CgptYWluIDo6IGZuKCkgbmVlZHMgT3V0IHsKICAgIC8vIEluIHByb2R1Y3Rpb246IHByaW50IHRoZSBtZXNzYWdlcy4KICAgIHByaW50ZXIgOjogaGFuZGxlciBMb2cgeyBsb2cobXNnKSA9PiBwcmludCgibG9nOiB7fVxuIiwgbXNnKSB9CiAgICB3aXRoIHByaW50ZXIgeyBfID0gY29ubmVjdCgiZXhhbXBsZS5vcmciKSB9CgogICAgLy8gSW4gYSB0ZXN0LCBvciB3aGVuIGl0IGRvZXMgbm90IG1hdHRlcjogZHJvcCB0aGVtLgogICAgcXVpZXQgOjogaGFuZGxlciBMb2cgeyBsb2cobXNnKSA9PiB7fSB9CiAgICBvayA6PSB3aXRoIHF1aWV0IHsgY29ubmVjdCgiIikgfQogICAgcHJpbnQoIm9rID0ge31cbiIsIG9rKQp9Cg">Run in the playground</a>
+  </div>
+</div>
+
+<h2 class="section-title">One tool</h2>
+<p class="section-lede">The reference implementation is a single binary. The interpreter starts at once; the C and Cranelift back ends give the same results, faster.</p>
+<pre class="code lang-sh"><code>gamma run main.gm                         <span class="c"># check and interpret: no C compiler needed</span>
+gamma build main.gm -o main               <span class="c"># compile through C: Debug, Checked, Fast or Safe (Fil-C)</span>
+gamma run --backend=cranelift main.gm     <span class="c"># compile with Cranelift: builds several times faster</span>
+gamma build --target=wasm32-wasi main.gm  <span class="c"># cross-compile, WebAssembly included</span>
+gamma test --coverage                     <span class="c"># tests get a fake clock and an in-memory file system</span>
+gamma fmt · lint · fix                    <span class="c"># one style, warnings with fixes, compiler-suggested edits</span>
+gamma new · add · fetch · update          <span class="c"># packages: git, path and archive dependencies</span>
+gamma lsp · doc · repl                    <span class="c"># editor support, API documentation, a REPL</span></code></pre>
+
+<h2 class="section-title" id="installing">Install</h2>
+<p class="section-lede">Prebuilt binaries for Linux, macOS and Windows are attached to each <a href="https://github.com/chroma04/gamma-lang/releases">release</a>. The installer puts <code>gamma</code> and its standard library in <code>~/.gamma</code>:</p>
+<pre class="code lang-sh"><code>curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh</code></pre>
+<p class="section-lede">On Windows, in PowerShell: <code>irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex</code>. To build from source you need Rust 1.95 or newer: <code>cargo build --release</code>. Native builds need a C compiler; the interpreter does not.</p>
+
+<h2 class="section-title">Read on</h2>
+<div class="links">
+  <a href="{{root}}guide/README.html"><b>The guide</b><span>A tutorial in sixteen chapters, for experienced programmers.</span></a>
+  <a href="{{root}}guide/for-c-programmers.html"><b>For C programmers</b><span>What changes, what stays, and why.</span></a>
+  <a href="{{root}}guide/for-rust-programmers.html"><b>For Rust programmers</b><span>Explicit memory instead of ownership, effects instead of traits for context.</span></a>
+  <a href="{{root}}spec.html"><b>The specification</b><span>The normative definition of the language.</span></a>
+  <a href="{{root}}std/index.html"><b>The standard library</b><span>API documentation of every module.</span></a>
+  <a href="{{root}}playground.html"><b>The playground</b><span>Run programs without installing anything.</span></a>
+</div>
+
+</main>

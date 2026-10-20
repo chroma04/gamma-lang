@@ -1,0 +1,13 @@
+# The playground's examples menu, in order: path from the repository root | title.
+# Every program here is run by web/check.mjs.
+examples/hello.gm | Hello, world
+web/examples/effects.gm | Effects and handlers
+web/examples/errors.gm | Optionals and errors
+web/examples/iterators.gm | Iterators
+web/examples/generics.gm | Generics
+web/examples/comptime.gm | Compile-time evaluation
+web/examples/safety.gm | Overflow and traps | exit 134
+examples/allocators.gm | Allocators
+examples/logging.gm | Logging
+examples/life.gm | Game of Life
+examples/mandelbrot.gm | Mandelbrot

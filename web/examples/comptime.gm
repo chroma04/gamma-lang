@@ -1,0 +1,30 @@
+//! Compile-time evaluation runs ordinary functions: `CRC_TABLE` is computed by the
+//! compiler, and the program only reads it.
+
+crc_table :: fn(poly: u32) -> [256]u32 {
+    table: [256]u32 = ---
+    for n in 0..256 {
+        c: u32 = u32(n)
+        for _ in 0..8 {
+            c = if c & 1 is 1 { (c >> 1) ~ poly } else { c >> 1 }
+        }
+        table[n] = c
+    }
+    return table
+}
+
+CRC_TABLE :: crc_table(0xEDB88320)
+
+crc32 :: fn(data: []const u8) -> u32 {
+    crc: u32 = 0xFFFFFFFF
+    for b in data {
+        crc = (crc >> 8) ~ CRC_TABLE[(crc ~ u32(b)) & 0xFF]
+    }
+    return crc ~ 0xFFFFFFFF
+}
+
+@static_assert(crc32("123456789") is 0xCBF43926, "the standard check value")
+
+main :: fn() needs Out {
+    print("crc32(\"hello, world\") = {:08x}\n", crc32("hello, world"))
+}

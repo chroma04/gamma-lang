@@ -32,6 +32,10 @@ mod consts;
 mod coverage;
 pub mod display;
 mod fast;
+#[cfg(not(target_family = "wasm"))]
+mod ffi;
+#[cfg(target_family = "wasm")]
+#[path = "ffi_wasm.rs"]
 mod ffi;
 mod fiber;
 mod fxmap;
@@ -96,16 +100,27 @@ pub enum Outcome {
 }
 
 /// Stack size of the evaluation thread.
+#[cfg(not(target_family = "wasm"))]
 const STACK_SIZE: usize = 1 << 30;
 /// Stack kept in reserve when checking for overflow.
+#[cfg(not(target_family = "wasm"))]
 const STACK_MARGIN: usize = 16 << 20;
+/// WebAssembly hosts have no threads: evaluation runs on the caller's stack, which the
+/// embedder links with at least this much room (see `web/playground/`).
+#[cfg(target_family = "wasm")]
+const STACK_SIZE: usize = 24 << 20;
+#[cfg(target_family = "wasm")]
+const STACK_MARGIN: usize = 2 << 20;
 
+#[cfg(not(target_family = "wasm"))]
 struct AssertSend<T>(T);
 // SAFETY: the wrapped references are handed to the evaluation thread while the
 // spawning thread blocks in `thread::scope`; they are never used concurrently.
 // The interpreter thread is the only one touching the `Rc`s inside the program.
+#[cfg(not(target_family = "wasm"))]
 unsafe impl<T> Send for AssertSend<T> {}
 
+#[cfg(not(target_family = "wasm"))]
 impl<T> AssertSend<T> {
     fn into_inner(self) -> T {
         self.0
@@ -156,20 +171,25 @@ pub fn run_entry(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Outcome {
-    let payload = AssertSend((prog, cfg, entry, args, stdout, stderr));
-    std::thread::scope(|s| {
-        let h = std::thread::Builder::new()
-            .stack_size(STACK_SIZE)
-            .spawn_scoped(s, move || {
-                let (prog, cfg, entry, args, stdout, stderr) = payload.into_inner();
-                run_main_inner(prog, cfg, entry, args, stdout, stderr)
-            })
-            .expect("failed to spawn the evaluation thread");
-        match h.join() {
-            Ok(o) => o,
-            Err(p) => Outcome::Trap(panic_trap(p)),
-        }
-    })
+    #[cfg(target_family = "wasm")]
+    return run_main_inner(prog, cfg, entry, args, stdout, stderr);
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let payload = AssertSend((prog, cfg, entry, args, stdout, stderr));
+        std::thread::scope(|s| {
+            let h = std::thread::Builder::new()
+                .stack_size(STACK_SIZE)
+                .spawn_scoped(s, move || {
+                    let (prog, cfg, entry, args, stdout, stderr) = payload.into_inner();
+                    run_main_inner(prog, cfg, entry, args, stdout, stderr)
+                })
+                .expect("failed to spawn the evaluation thread");
+            match h.join() {
+                Ok(o) => o,
+                Err(p) => Outcome::Trap(panic_trap(p)),
+            }
+        })
+    }
 }
 
 fn run_main_inner(
@@ -259,20 +279,25 @@ impl Machine<'_> {
 /// relocations in the [`ConstValue`]. Calls to functions and uses of
 /// [`ExprKind::Const`] are supported; constants are evaluated once per call.
 pub fn eval_const(prog: &Program, cfg: &RunConfig, expr: &Expr) -> Result<ConstValue, Trap> {
-    let payload = AssertSend((prog, cfg, expr));
-    std::thread::scope(|s| {
-        let h = std::thread::Builder::new()
-            .stack_size(STACK_SIZE)
-            .spawn_scoped(s, move || {
-                let (prog, cfg, expr) = payload.into_inner();
-                AssertSend(eval_const_inner(prog, cfg, expr))
-            })
-            .expect("failed to spawn the evaluation thread");
-        match h.join() {
-            Ok(o) => o.into_inner(),
-            Err(p) => Err(panic_trap(p)),
-        }
-    })
+    #[cfg(target_family = "wasm")]
+    return eval_const_inner(prog, cfg, expr);
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let payload = AssertSend((prog, cfg, expr));
+        std::thread::scope(|s| {
+            let h = std::thread::Builder::new()
+                .stack_size(STACK_SIZE)
+                .spawn_scoped(s, move || {
+                    let (prog, cfg, expr) = payload.into_inner();
+                    AssertSend(eval_const_inner(prog, cfg, expr))
+                })
+                .expect("failed to spawn the evaluation thread");
+            match h.join() {
+                Ok(o) => o.into_inner(),
+                Err(p) => Err(panic_trap(p)),
+            }
+        })
+    }
 }
 
 fn eval_const_inner<'a>(prog: &'a Program, cfg: &RunConfig, expr: &'a Expr) -> Result<ConstValue, Trap> {

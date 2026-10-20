@@ -144,6 +144,7 @@ pub struct Machine<'a> {
     /// The program's threads (§19.6).
     pub threads: super::threads::Threads,
     /// Foreign function calls (§19.2).
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub ffi: super::ffi::Ffi,
     /// Compiled code by function, and buffers of finished activations to reuse.
     pub vm_code: Vec<super::vm::CodeSlot<'a>>,

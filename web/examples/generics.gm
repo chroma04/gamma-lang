@@ -1,0 +1,41 @@
+//! Generics are functions of types: type parameters come first, are usually inferred,
+//! and a `where` clause says what the body may do with them.
+
+largest :: fn(T: type, xs: []const T) -> ?T where Ord(T) {
+    best := xs.first() else return null
+    for x in xs {
+        if x > best { best = x }
+    }
+    return best
+}
+
+sum_all :: fn(T: type, xs: []const T) -> T where Num(T) {
+    total: T = 0
+    for x in xs { total += x }
+    return total
+}
+
+Stack :: struct(T: type, N: usize) {
+    items: [N]T
+    len: usize = 0
+}
+
+stack :: fn(T: type, N :: usize) -> Stack(T, N) where Plain(T) {
+    return Stack(T, N)(items: ---)
+}
+
+push :: fn(T: type, N :: usize, s: ^Stack(T, N), x: T) -> bool {
+    if s.len is N { return false }
+    s.items[s.len] = x
+    s.len += 1
+    return true
+}
+
+main :: fn() needs Out {
+    scores := [3]i32(12, 40, 7)
+    print("largest {}, sum {}\n", largest(scores[..]), sum_all(scores[..]))
+    print("largest of nothing: {}\n", largest(scores[0..0]))
+
+    s := stack(u8, 2)
+    print("{} {} {}\n", push(&s, 1), push(&s, 2), push(&s, 3))
+}

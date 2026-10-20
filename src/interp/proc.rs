@@ -282,6 +282,10 @@ impl ProcEntry {
             }
             0
         }
+        #[cfg(not(any(unix, windows)))]
+        {
+            invalid()
+        }
     }
 }
 
@@ -350,6 +354,12 @@ fn wait_readable(out: Option<&ChildStdout>, err: Option<&ChildStderr>) -> std::i
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+/// No child processes run on other hosts (spawning fails), so there is nothing to wait for.
+#[cfg(not(any(unix, windows)))]
+fn wait_readable(_out: Option<&ChildStdout>, _err: Option<&ChildStderr>) -> std::io::Result<(bool, bool)> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 impl<'a> Machine<'a> {

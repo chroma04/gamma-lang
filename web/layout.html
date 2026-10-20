@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<meta name="description" content="{{description}}">
+<link rel="icon" href="{{root}}assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{root}}assets/style.css">
+</head>
+<body class="page-{{layout}}" data-section="{{section}}">
+<header class="top">
+  <a class="mark" href="{{root}}index.html"><span class="gamma">γ</span> Gamma</a>
+  <nav>
+    <a href="{{root}}guide/README.html" data-s="guide">Guide</a>
+    <a href="{{root}}spec.html" data-s="spec">Spec</a>
+    <a href="{{root}}std/index.html" data-s="std">Library</a>
+    <a href="{{root}}playground.html" data-s="playground">Playground</a>
+    <a href="https://github.com/chroma04/gamma-lang">GitHub</a>
+  </nav>
+</header>
+{{body}}
+<footer class="bottom">
+  <p>Gamma is free software under the MIT license. <a href="https://github.com/chroma04/gamma-lang">Source</a> · <a href="{{root}}docs/contributing.html">Contributing</a> · <a href="{{root}}changelog.html">Changes</a></p>
+</footer>
+</body>
+</html>

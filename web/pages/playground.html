@@ -1,0 +1,23 @@
+<!-- title: Playground · Gamma; section: playground; layout: wide; description: Write and run Gamma programs in your browser. -->
+<main class="play">
+  <div class="bar">
+    <button id="run" class="primary" type="button" title="Run (Ctrl+Enter)">Run<kbd>⌃↵</kbd></button>
+    <button id="fmt" type="button" title="Format (Ctrl+Shift+F)">Format</button>
+    <button id="share" type="button">Share</button>
+    <select id="examples" aria-label="Examples"><option value="" selected disabled>Examples</option></select>
+    <span class="grow"></span>
+    <span id="status" class="status" role="status"></span>
+  </div>
+  <div class="editor">
+    <pre id="shadow" aria-hidden="true"><code></code></pre>
+    <textarea id="source" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" aria-label="Program"></textarea>
+  </div>
+  <div class="out" id="output" aria-live="polite">
+    <div class="hint">
+      <p>Programs run in your browser, in the same interpreter as <code>gamma run</code>, compiled to WebAssembly.</p>
+      <p>Everything works except what a browser tab cannot offer: files, processes, the network, threads, fibers (<code>with … on</code>) and C. Install <code>gamma</code> for those.</p>
+    </div>
+  </div>
+</main>
+<script src="{{root}}assets/examples.js"></script>
+<script src="{{root}}assets/play.js"></script>

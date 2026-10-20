@@ -1,0 +1,17 @@
+//! Mistakes are rejected, not interpreted. Arithmetic says what happens on overflow:
+//! `+` traps, `+%` wraps, `+|` saturates and `+?` gives an optional. Indexing is checked.
+//! Run this to see the trap at the end, with where it happened.
+
+main :: fn() needs Out {
+    x: u8 = 250
+    print("wrapping {}, saturating {}, checked {}\n", x +% 10, x +| 10, x +? 10)
+    print("checked with a default: {}\n", x +? 10 else 255)
+
+    data := [4]u32(1, 2, 3, 4)
+    i: usize = 2
+    print("data[{}] = {}\n", i, data[i])
+
+    total: u8 = 0
+    for d in data { total += d.trunc(u8) * 70 }    // 70, 210, then 420: not a u8
+    print("unreachable: {}\n", total)
+}

@@ -41,6 +41,9 @@ null, results instead of `errno`, generics, modules and a package manager. And e
 do the jobs C leaves to globals, callbacks and `setjmp`: allocation, I/O, iteration,
 early exit, coroutines, testing.
 
+- [The website](https://chroma04.github.io/gamma-lang/) — the guide, the specification and
+  the library reference as web pages, and a [playground](https://chroma04.github.io/gamma-lang/playground.html)
+  that runs programs in your browser.
 - [`gamma-spec.md`](gamma-spec.md) — the complete language specification.
 - [`docs/guide/`](docs/guide/README.md) — a tutorial introduction to the language.
   Coming from another language? Read [Gamma for C programmers](docs/guide/for-c-programmers.md)

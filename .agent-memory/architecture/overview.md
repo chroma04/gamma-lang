@@ -59,6 +59,8 @@ runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap
 lib/core/          prelude.gm, list.gm, map.gm, slice.gm (embedded via include_str!)
 lib/std/           std modules (GAMMA_STD, <prefix>/lib/gamma/std, or lib/std)
 editors/           vscode extension + TextMate grammar; tree-sitter-gamma (CI job "editors")
+web/               website (decisions/036): sitegen/ (Markdown → pages), playground/ (wasm32-wasip1
+                   interpreter), static/, pages/, examples/list.txt, check.mjs; .github/workflows/pages.yml
 tools/             package-release.sh, install.sh/.ps1, gen_float_table.py, gen_text_tables.py
 tests/             conformance.rs (format in its header) + conformance/{lex,parse,check,run,
                    test,safe}; per-tool suites (pkg, lsp, repl, doc, fmt, cross, native_build, …)

@@ -1,17 +1,14 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-19) — PRs #1–#58 merged (s29 PRs done)
-- s30 (branch claude/project-thread-34q66w, PR #60 open): wasm32-wasi target via C back end +
-  Asyncify fibers (decisions/034); CI job `wasi`.
-- s30 (branch claude/project-thread-3twojx, PR #59 open): `gamma lint`, 18 rules, levels,
-  --fix (decisions/033).
-- s30 (PR #58 merged): docs/guide/for-c-programmers.md and for-rust-programmers.md; their
-  code blocks are checked by tests/doc_examples.rs (info strings `gamma` run+fmt (+ `output`
-  block), `gamma test`, `gamma error` with `// error:` lines, `gamma fragment` unchecked; add a
-  doc to CHECKED_DOCS to opt it in). Mention wasm32-wasi, `gamma lint`, a native back end in
-  the guides once merged.
-- s30 (branch claude/project-thread-3wi9el, PR open): Cranelift back end `--backend=cranelift`
-  (src/clif/, runtime/gm_clif.c), all conformance passes in its lane (decisions/035).
+## State (2026-10-19) — PRs #1–#61 merged
+- s31 (branch claude/charming-hypatia-asv87o): website + browser playground in web/, GitHub
+  Pages workflow; compiler builds for wasm32-wasip1 (decisions/036). User must switch Pages
+  source to GitHub Actions. Keep web/ in step: new docs pages need no work (sitegen picks up
+  docs/*.md), but broken anchors fail the Website workflow.
+- s30 (PRs #59–#61 merged): `gamma lint` (decisions/033), wasm32-wasi target via C + Asyncify
+  (034), Cranelift back end `--backend=cranelift` (035); guides for C/Rust programmers, their
+  code blocks checked by tests/doc_examples.rs (info strings `gamma`, `gamma test`,
+  `gamma error`, `gamma fragment`; add a doc to CHECKED_DOCS to opt in).
 - s29: huge functions → helper C functions (decisions/031); Safe/VM perf (decisions/032).
 - s28: applied an outside design review (decisions/030): spec §1 rewrite, no array arithmetic,
   vector `is`→bool + lanes_* methods, ints ≤128, iterator args evaluated once. Open user calls
@@ -34,7 +31,7 @@
   parallel Debug C units; s24 `gamma fix`/json diags/LSP quick fixes (028); s19–s23 bugs/perf.
 
 ## Next steps
-1. Drive the s30 PRs to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
+1. Drive the s31 website PR to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
@@ -74,6 +71,7 @@
                   · 033 gamma lint (rule sources, levels, --fix careful mode, follow-ups)
                   · 034 wasm32-wasi target (runtime GM_WASI, Asyncify fibers, perf)
                   · 035 Cranelift back end (ABI, C ABI classes, trampolines, @asm, perf)
+                  · 036 website + playground (web/, wasm32-wasip1 interpreter, Pages)
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
                   · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md

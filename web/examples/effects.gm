@@ -1,0 +1,38 @@
+//! Effects: a function says what context it needs, and the caller decides what that means.
+//! `connect` logs, but does not know where the messages go. `main` handles `Log` twice:
+//! once by printing, once by counting.
+
+Level :: union { Debug, Info, Warn, Error }
+
+Log :: effect {
+    log: fn(level: Level, msg: string)
+}
+
+connect :: fn(host: string) -> bool needs Log {
+    Log.log(.Info, "connecting")
+    if host.len is 0 {
+        Log.log(.Error, "empty host name")
+        return false
+    }
+    Log.log(.Debug, "connected")
+    return true
+}
+
+main :: fn() needs Out {
+    printer :: handler Log {
+        log(level, msg) => print("[{}] {}\n", level, msg)
+    }
+    ok := with printer { connect("example.org") }
+    print("ok = {}\n\n", ok)
+
+    errors := 0
+    counter :: handler Log {
+        log(level, msg) => if level is .Error { errors += 1 }
+    }
+    with counter {
+        _ = connect("")
+        _ = connect("gamma-lang.org")
+        _ = connect("")
+    }
+    print("{} errors, and nothing printed while counting\n", errors)
+}
