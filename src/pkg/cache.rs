@@ -25,6 +25,8 @@ pub struct Report {
     pub mirrors: usize,
     pub builds: usize,
     pub bytes: u64,
+    /// What could not be removed, and why.
+    pub failures: Vec<String>,
 }
 
 impl Report {
@@ -119,17 +121,20 @@ impl Cleaner {
         self.policy.all || self.age(t) >= self.policy.older_than
     }
 
-    /// Deletes `path` (a tree or a file) and adds its size to the report.
-    fn delete(&mut self, path: &Path) {
-        self.report.bytes += size_of_tree(path);
-        if self.policy.dry_run {
-            return;
+    /// Deletes `path` (a tree or a file) and adds its size to the report; false (with
+    /// the failure recorded) if it could not be deleted.
+    fn delete(&mut self, path: &Path) -> bool {
+        let size = size_of_tree(path);
+        if !self.policy.dry_run {
+            let res = if path.is_dir() { git::remove_tree(path) } else { std::fs::remove_file(path) };
+            // Gone already (a stamp removed with its tree) is fine.
+            if let Err(e) = res.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }) {
+                self.report.failures.push(format!("cannot remove {}: {}", path.display(), e));
+                return false;
+            }
         }
-        if path.is_dir() {
-            let _ = git::remove_tree(path);
-        } else {
-            let _ = std::fs::remove_file(path);
-        }
+        self.report.bytes += size;
+        true
     }
 
     /// Removes a half-written temporary entry if it is old enough; true if it was one.
@@ -169,13 +174,17 @@ impl Cleaner {
                     continue;
                 }
                 if entry.is_dir() {
-                    self.report.checkouts += 1;
-                    self.delete(&entry);
-                    self.delete(&git::stamp_of(&entry));
+                    if self.delete(&entry) {
+                        self.report.checkouts += 1;
+                        self.delete(&git::stamp_of(&entry));
+                    } else {
+                        left += 1;
+                    }
                 }
             }
+            // Only an empty directory goes: a build may be writing a new tree into it.
             if left == 0 && !self.policy.dry_run {
-                let _ = std::fs::remove_dir_all(&repo);
+                let _ = std::fs::remove_dir(&repo);
             }
             if left > 0 {
                 kept.push(name_of(&repo));
@@ -189,9 +198,8 @@ impl Cleaner {
             if self.tmp(&mirror) || !mirror.is_dir() {
                 continue;
             }
-            if self.policy.all || !kept.contains(&name_of(&mirror)) {
+            if (self.policy.all || !kept.contains(&name_of(&mirror))) && self.delete(&mirror) {
                 self.report.mirrors += 1;
-                self.delete(&mirror);
             }
         }
     }
@@ -217,10 +225,12 @@ impl Cleaner {
             if !self.stale(modified(&f)) {
                 continue;
             }
+            if !self.delete(&f) {
+                continue;
+            }
             if !name.ends_with(".c") {
                 self.report.builds += 1;
             }
-            self.delete(&f);
             if name.ends_with(".o") && name.starts_with("gm_rt-") {
                 self.delete(&f.with_extension("c"));
             }
@@ -242,7 +252,12 @@ pub fn clean(dir: &Path, policy: &Policy) -> Result<Report, String> {
     c.builds(dir, &["gm_rt-"]);
     if policy.all && !policy.dry_run {
         for sub in ["git", "run", "native"] {
-            let _ = std::fs::remove_dir_all(dir.join(sub));
+            let d = dir.join(sub);
+            if d.exists()
+                && let Err(e) = git::remove_tree(&d)
+            {
+                c.report.failures.push(format!("cannot remove {}: {}", d.display(), e));
+            }
         }
     }
     Ok(c.report)

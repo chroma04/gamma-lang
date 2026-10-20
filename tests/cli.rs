@@ -13,7 +13,7 @@ fn gamma(args: &[&str]) -> (bool, String) {
 fn every_command_takes_help() {
     let commands = [
         "lex", "parse", "check", "fix", "run", "test", "bench", "build", "repl", "fmt", "doc", "lsp", "new", "init",
-        "add", "remove", "fetch", "update", "cache",
+        "add", "remove", "fetch", "update", "cache", "lint",
     ];
     for cmd in commands {
         for flag in ["--help", "-h"] {
@@ -39,4 +39,13 @@ fn help_after_the_program_belongs_to_the_program() {
     assert!(ok);
     assert!(out.ends_with("--help\n"), "{:?}", out);
     assert!(!out.contains("usage: gamma"));
+}
+
+#[cfg(unix)]
+#[test]
+fn arguments_that_are_not_utf8_are_usage_errors() {
+    use std::os::unix::ffi::OsStrExt;
+    let out = Command::new(GAMMA).arg("check").arg(std::ffi::OsStr::from_bytes(b"\xff.gm")).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not valid UTF-8"));
 }

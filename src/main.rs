@@ -358,6 +358,11 @@ fn print_help(topic: &str) {
 fn compiler_main() -> ExitCode {
     #[cfg(unix)]
     default_sigpipe();
+    // Every argument is read as text below (`std::env::args` panics on others).
+    if let Some(a) = std::env::args_os().find(|a| a.to_str().is_none()) {
+        eprintln!("gamma: the argument `{}` is not valid UTF-8", a.to_string_lossy());
+        return ExitCode::from(2);
+    }
     // The language server catches panics per request and keeps the default hook's log.
     if std::env::args().nth(1).as_deref() != Some("lsp") {
         gamma::ice::install();

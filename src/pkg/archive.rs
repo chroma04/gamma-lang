@@ -11,11 +11,19 @@ pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// A name no other process uses, for a temporary file or directory in `dir`.
-fn private_name(dir: &Path, what: &str) -> PathBuf {
+/// A name no other process or thread uses, for a temporary file or directory in `dir`.
+pub(super) fn private_name(dir: &Path, what: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    dir.join(format!(".tmp-{}-{}-{:x}", what, std::process::id(), nanos))
+    dir.join(format!(".tmp-{}-{}-{:x}-{}", what, std::process::id(), nanos, n))
 }
+
+/// The largest archive file downloaded, and the most bytes and entries one may unpack
+/// to: a package is source code, and a compressed archive must not fill the disk.
+const MAX_ARCHIVE_BYTES: u64 = 1 << 30;
+const MAX_UNPACKED_BYTES: u64 = 4 << 30;
+const MAX_ENTRIES: usize = 1 << 20;
 
 /// An archive downloaded to a temporary file.
 pub struct Download {
@@ -36,6 +44,9 @@ pub fn download(url: &str, dir: &Path) -> Result<Download, String> {
     let path = private_name(dir, "download");
     let out = Command::new("curl")
         .args(["--fail", "--silent", "--show-error", "--location", "--retry", "2"])
+        // A stalled server fails the download instead of hanging every build.
+        .args(["--connect-timeout", "30", "--speed-limit", "1", "--speed-time", "60"])
+        .args(["--max-filesize", &MAX_ARCHIVE_BYTES.to_string()])
         .args(["--proto", "=http,https,file", "--proto-redir", "=http,https"])
         .arg("--output")
         .arg(&path)
@@ -77,7 +88,7 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<(), String> {
     let parent = dest.parent().ok_or("bad archive path")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {}", parent.display(), e))?;
     let tmp = private_name(parent, "unpack");
-    std::fs::create_dir_all(&tmp).map_err(|e| format!("cannot create {}: {}", tmp.display(), e))?;
+    std::fs::create_dir(&tmp).map_err(|e| format!("cannot create {}: {}", tmp.display(), e))?;
     let res = unpack_into(archive, &tmp).and_then(|()| place(&tmp, dest));
     let _ = std::fs::remove_dir_all(&tmp);
     res
@@ -94,8 +105,18 @@ fn unpack_into(archive: &Path, dir: &Path) -> Result<(), String> {
     tar.set_preserve_mtime(false);
     tar.set_unpack_xattrs(false);
     let bad = |e: std::io::Error| format!("cannot read the archive: {}", e);
+    let (mut bytes, mut count) = (0u64, 0usize);
     for entry in tar.entries().map_err(bad)? {
         let mut entry = entry.map_err(bad)?;
+        bytes = bytes.saturating_add(entry.size());
+        count += 1;
+        if bytes > MAX_UNPACKED_BYTES || count > MAX_ENTRIES {
+            return Err(format!(
+                "the archive unpacks to more than {} GiB or {} entries, which is not allowed",
+                MAX_UNPACKED_BYTES >> 30,
+                MAX_ENTRIES
+            ));
+        }
         let kind = entry.header().entry_type();
         let name = entry.path().map_err(bad)?.display().to_string();
         if kind.is_pax_global_extensions() || kind.is_pax_local_extensions() {

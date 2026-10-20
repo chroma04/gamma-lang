@@ -166,6 +166,18 @@ pub fn name_problem(s: &str, what: &str) -> Option<String> {
     None
 }
 
+/// Why `url` cannot be the location of a dependency, if it cannot. A URL is handed to
+/// `git` or `curl` as an argument, so one that starts with `-` would be read as an option.
+pub fn url_problem(url: &str) -> Option<String> {
+    if url.starts_with('-') {
+        return Some(format!("the URL `{}` starts with `-`", url));
+    }
+    if let Some(c) = url.chars().find(|c| c.is_whitespace() || c.is_control()) {
+        return Some(format!("the URL `{}` contains the character {:?}", url.escape_debug(), c));
+    }
+    None
+}
+
 /// The identity of a git repository: its URL without a trailing `/` or `.git`.
 pub fn normalize_url(url: &str) -> String {
     let mut u = url.trim().trim_end_matches('/');
@@ -400,6 +412,9 @@ fn parse_dependency(name: &str, item: &Item, line: usize, lines: &Lines) -> Resu
         if url.trim().is_empty() {
             return Err(err(line, format!("the `url` of dependency `{}` is empty", name)));
         }
+        if let Some(p) = url_problem(url.trim()) {
+            return Err(err(line, format!("invalid `url` of dependency `{}`: {}", name, p)));
+        }
         let sha256 = match string("sha256")? {
             None => None,
             Some(h) => {
@@ -442,6 +457,9 @@ fn parse_dependency(name: &str, item: &Item, line: usize, lines: &Lines) -> Resu
             if normalize_url(&url).is_empty() {
                 return Err(err(line, format!("the `git` URL of dependency `{}` is empty", name)));
             }
+            if let Some(p) = url_problem(url.trim()) {
+                return Err(err(line, format!("invalid `git` URL of dependency `{}`: {}", name, p)));
+            }
             let present: Vec<&str> =
                 ["version", "tag", "branch", "rev"].into_iter().filter(|k| t.get(k).is_some()).collect();
             if present.len() > 1 {
@@ -480,17 +498,19 @@ fn parse_dependency(name: &str, item: &Item, line: usize, lines: &Lines) -> Resu
     }
 }
 
+/// Whether `s` is a relative path inside a repository, usable as a `subdir`.
+pub fn is_subdir(s: &str) -> bool {
+    !s.is_empty() && !s.starts_with('/') && s.split('/').all(|c| !c.is_empty() && c != ".." && c != "." && c != ".git")
+}
+
 fn check_subdir(name: &str, subdir: &Option<String>, line: usize) -> Result<(), ManifestError> {
-    if let Some(s) = subdir {
-        let ok = !s.is_empty()
-            && !s.starts_with('/')
-            && s.split('/').all(|c| !c.is_empty() && c != ".." && c != "." && c != ".git");
-        if !ok {
-            return Err(err(
-                line,
-                format!("`subdir` of dependency `{}` must be a relative path inside the repository", name),
-            ));
-        }
+    if let Some(s) = subdir
+        && !is_subdir(s)
+    {
+        return Err(err(
+            line,
+            format!("`subdir` of dependency `{}` must be a relative path inside the repository", name),
+        ));
     }
     Ok(())
 }
@@ -563,6 +583,10 @@ mod tests {
         assert!(fails("[dependencies]\nx = { git = \"b\", rev = \"zz\" }\n").msg.contains("hexadecimal"));
         assert!(fails("[dependencies]\nx = { git = \"b\", subdir = \"../a\" }\n").msg.contains("subdir"));
         assert!(fails("[dependencies]\nx = { path = \"b\", tag = \"v\" }\n").msg.contains("needs `git`"));
+        assert!(fails("[dependencies]\nx = { git = \"--upload-pack=touch x\" }\n").msg.contains("starts with `-`"));
+        assert!(fails("[dependencies]\nx = { git = \" -u\" }\n").msg.contains("starts with `-`"));
+        assert!(fails("[dependencies]\nx = { git = \"a b\" }\n").msg.contains("contains the character"));
+        assert!(fails("[dependencies]\nx = { url = \"-K/etc/x\" }\n").msg.contains("starts with `-`"));
         assert_eq!(fails("[dependencies]\n\"a-b\" = { path = \"b\" }\n").line, 2);
         assert!(fails("[package]\nname = \"1x\"\n").msg.contains("invalid package name"));
         assert!(fails("[package]\nname = \"a\"\nversion = \"x\"\n").msg.contains("invalid package version"));

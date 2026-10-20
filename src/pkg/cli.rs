@@ -4,7 +4,7 @@
 
 use super::cache;
 use super::edit::{self, NewDep};
-use super::manifest::{Manifest, name_problem};
+use super::manifest::{Manifest, name_problem, url_problem};
 use super::{Options, Refresh, find_root, resolve, scaffold, sync};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -199,6 +199,9 @@ fn add(args: &[String]) -> Result<(), Failure> {
             NewDep::Path(relative_path(&root, &abs))
         }
         (None, Some(url)) => {
+            if let Some(p) = url_problem(url) {
+                return Err(Failure::Usage(p));
+            }
             if refs.len() > 1 {
                 return Err(Failure::Usage("use only one of `--tag`, `--branch`, `--rev`, `--version`".into()));
             }
@@ -306,6 +309,9 @@ fn cache_command(args: &[String]) -> Result<(), Failure> {
             };
             let report = cache::clean(&dir, &policy)?;
             println!("{} in {}", report.summary(policy.dry_run), dir.display());
+            if !report.failures.is_empty() {
+                return Err(Failure::Error(report.failures.join("\n")));
+            }
             Ok(())
         }
         other => Err(Failure::Usage(format!("unknown `cache` subcommand `{}`: use `dir` or `clean`", other))),
