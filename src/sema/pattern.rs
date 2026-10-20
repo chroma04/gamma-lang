@@ -115,9 +115,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 let id = self.new_local(name.name, ty, false, name.span);
                 if binds.iter().any(|(n, _, _)| *n == name.name) {
+                    // The name is declared once, by its first binding.
                     self.error(name.span, format!("`{}` is bound twice in this pattern", name.name));
+                } else {
+                    binds.push((name.name, id, name.span));
                 }
-                binds.push((name.name, id, name.span));
                 pat(ty, PatKind::Bind(id), p.span)
             }
             PatternKind::Null => {

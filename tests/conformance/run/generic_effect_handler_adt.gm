@@ -1,0 +1,16 @@
+// A generic handler declaration for an effect instantiated with a generic type (§12.3, §16.6).
+E :: effect(T: type) { op: fn(x: T) }
+H :: struct(T: type) { n: T }
+handler(T: type) E(H(?T)) for ^H(T) needs Out {
+    op(self, x) => {
+        print("op {}\n", self.n)
+        if x.n is null { print("null\n") }
+    }
+}
+use_it :: fn(T: type) needs E(H(?T)) {
+    E(H(?T)).op(H(?T)(n: null))
+}
+main :: fn() needs Out {
+    h := H(i32)(n: 1)
+    with &h { use_it(i32) }
+}

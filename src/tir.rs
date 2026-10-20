@@ -379,9 +379,13 @@ pub const MAX_FRAME: u64 = 1 << 30;
 /// results, constructed values, and the copies made by reading a large value, but
 /// not by using it as a place); and the records of the handlers its `with`s install.
 pub fn frame_cost(def: &FnDef, size_of: &mut dyn FnMut(Ty) -> u64) -> u64 {
+    // Sums saturate: sizes of ill-formed programs may be huge.
+    fn round8(n: u64) -> u64 {
+        n.saturating_add(7) & !7
+    }
     let mut c = 256u64;
     for l in &def.locals {
-        c += size_of(l.ty).next_multiple_of(8);
+        c = c.saturating_add(round8(size_of(l.ty)));
     }
     if let Some(b) = &def.body {
         // `place` is set for an expression used as a place (the base of an index,
@@ -391,11 +395,11 @@ pub fn frame_cost(def: &FnDef, size_of: &mut dyn FnMut(Ty) -> u64) -> u64 {
             let mut add = |t: Ty, c: &mut u64| {
                 let n = size_of(t);
                 if n > 8 {
-                    *c += n.next_multiple_of(8);
+                    *c = c.saturating_add(round8(n));
                 }
             };
             match &e.kind {
-                ExprKind::With { handlers, .. } => *c += 128 * handlers.len() as u64,
+                ExprKind::With { handlers, .. } => *c = c.saturating_add(128 * handlers.len() as u64),
                 ExprKind::Call { .. }
                 | ExprKind::Aggregate(_)
                 | ExprKind::Array(_)

@@ -1284,6 +1284,10 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Field `name` of a struct value, looking through `using` fields (§5.10.3).
     fn struct_field(&mut self, b: Expr, name: crate::symbol::Symbol, span: Span) -> Option<Expr> {
+        self.struct_field_in(b, name, span, 0)
+    }
+
+    fn struct_field_in(&mut self, b: Expr, name: crate::symbol::Symbol, span: Span, depth: u32) -> Option<Expr> {
         let fields = self.sema.struct_fields(b.ty).or_else(|| self.sema.c_union_fields(b.ty))?;
         if let Some(i) = fields.iter().position(|f| f.name == name) {
             let ty = fields[i].ty;
@@ -1297,9 +1301,13 @@ impl<'a, 's> FnCx<'a, 's> {
         if !self.sema.adts.get(id).is_some_and(|a| a.has_using) {
             return None;
         }
-        let first = fields[0].ty;
+        // A `using` chain that contains itself is an error already; do not follow it forever.
+        if depth >= 64 {
+            return None;
+        }
+        let first = fields.first()?.ty;
         let inner = mk(first, tir::ExprKind::Field { base: Box::new(b), index: 0 }, span);
-        self.struct_field(inner, name, span)
+        self.struct_field_in(inner, name, span, depth + 1)
     }
 
     /// Whether pointer type `src` is `^Outer` (or `^const Outer`) and `target` is
@@ -1321,7 +1329,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 return false;
             }
             let Some(fields) = self.sema.struct_fields(cur) else { return false };
-            cur = fields[0].ty;
+            let Some(first) = fields.first() else { return false };
+            cur = first.ty;
             if cur == *inner {
                 return true;
             }
@@ -2028,15 +2037,13 @@ impl<'a, 's> FnCx<'a, 's> {
             else_ = Some(mk(ty, tir::ExprKind::Match { scrutinee: Box::new(v), arms }, span));
         }
         // Build the chain from the end.
-        let mut result = None;
         while let Some((cond, then)) = arms.pop() {
             let span = then.span;
             let e = mk(ty, tir::ExprKind::If { cond, then: Box::new(then), else_: else_.take().map(Box::new) }, span);
             else_ = Some(e);
-            result = else_.clone();
         }
         // With a capture and no earlier branch, the whole `if` is the `match`.
-        let mut r = result.or(else_).unwrap_or_else(|| unit(i.span));
+        let mut r = else_.unwrap_or_else(|| unit(i.span));
         r.span = i.span;
         r
     }

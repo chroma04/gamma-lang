@@ -98,8 +98,15 @@ impl<'s> Sema<'s> {
                     return None;
                 };
                 let len = self.const_key_of_bytes(Ty::usize(), &v.bytes[v.bytes.len() / 2..]).as_u64()?;
-                let start = r.addend as usize;
-                Some(ConstKey::Str(data[start..start + len as usize].into()))
+                let bytes = usize::try_from(r.addend)
+                    .ok()
+                    .zip(usize::try_from(len).ok())
+                    .and_then(|(start, len)| data.get(start..start.checked_add(len)?));
+                let Some(bytes) = bytes else {
+                    self.error(span, "this compile-time string points outside its data (§17.4)");
+                    return None;
+                };
+                Some(ConstKey::Str(bytes.into()))
             }
             ([r], TyKind::FnPtr(_)) | ([r], TyKind::Optional(_)) if r.offset == 0 && r.addend == 0 => match r.target {
                 StaticData::Fn(f) => Some(ConstKey::Fn(f.0, self.prog.fns[f.index()].name)),

@@ -1,0 +1,9 @@
+//! stage: check
+// A string computed at compile time must lie inside its data (§17.4).
+big :: fn() -> string { s := "abc"; p := s.ptr; return p[0..100] }
+ok :: fn() -> string { s := "abc"; p := s.ptr; return p[1..3] }
+show :: fn(S :: string) -> usize { return S.len }
+main :: fn() {
+    _ = show(ok())
+    _ = show(big()) //~ ERROR points outside its data
+}

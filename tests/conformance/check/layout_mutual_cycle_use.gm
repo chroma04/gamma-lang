@@ -1,0 +1,18 @@
+//! stage: check
+// Types that contain each other by value are an error, and using them afterwards
+// does not send the checker around the cycle (§3.4).
+S :: struct { a: S2 } //~ ERROR `S` contains itself by value
+S2 :: struct { b: S }
+T :: struct { using t: T } //~ ERROR `T` contains itself by value
+A :: struct { using b: B } //~ ERROR `A` contains itself by value
+B :: struct { using a: A }
+U :: struct { a: [0]U } //~ ERROR `U` contains itself by value
+main :: fn() {
+    x: S2 = ---
+    y: S = ---
+    u: U = ---
+    t: ?^T = null
+    z := t.foo //~ ERROR
+    a: ?^A = null
+    w := a.foo //~ ERROR
+}

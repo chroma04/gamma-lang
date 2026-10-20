@@ -415,6 +415,11 @@ impl<'a, 's> FnCx<'a, 's> {
                     return error_expr(span);
                 }
                 None => {
+                    if let tir::ExprKind::Int(i) = &v.kind {
+                        let msg = format!("lane {} does not exist: `{}` has lanes 0 to {}", i, vt, len - 1);
+                        self.error(v.span, msg);
+                        return error_expr(span);
+                    }
                     self.error(v.span, "a lane index of `.shuffle` must be a compile-time constant");
                     return error_expr(span);
                 }

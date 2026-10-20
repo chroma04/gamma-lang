@@ -64,7 +64,7 @@ impl<'s> Sema<'s> {
     pub fn stack_size(&mut self, f: FnId, span: Span) -> Option<u64> {
         let mut a = Analysis { sema: self, path: vec![], env: vec![], memo: HashMap::new(), costs: HashMap::new() };
         match a.call(f, &[], vec![], span) {
-            Ok(frames) => Some((tir::STACK_RESERVE + tir::STACK_BASE + frames).max(tir::MIN_STACK)),
+            Ok(frames) => Some((tir::STACK_RESERVE + tir::STACK_BASE).saturating_add(frames).max(tir::MIN_STACK)),
             Err(Fail::Quiet) => None,
             Err(Fail::At(at, why)) => {
                 let chain: Vec<String> =
@@ -124,7 +124,7 @@ impl Analysis<'_, '_> {
             self.path.pop();
         }
         self.env = saved;
-        let c = r? + self.frame(g);
+        let c = r?.saturating_add(self.frame(g));
         if let Some(k) = key {
             self.memo.insert(k, c);
         }
