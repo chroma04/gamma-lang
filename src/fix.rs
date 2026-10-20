@@ -7,7 +7,7 @@
 //! program again) can pick it up.
 
 use crate::diag::{Diagnostic, Edit, Fix};
-use crate::source::FileId;
+use crate::source::{FileId, Span};
 use std::collections::BTreeMap;
 
 /// The edits to make for `diags`, by file, sorted by position and not overlapping, and
@@ -20,7 +20,7 @@ pub fn plan<'d>(
     let mut count = 0;
     for d in diags {
         let [fix] = d.fixes.as_slice() else { continue };
-        if fix.edits.is_empty() || !fix.edits.iter().all(|e| editable(e.span.file)) {
+        if fix.edits.is_empty() || !fix.edits.iter().all(|e| e.span != Span::DUMMY && editable(e.span.file)) {
             continue;
         }
         // A fix planned already (by the same diagnostic of another instantiation of
@@ -76,7 +76,7 @@ pub fn apply(src: &str, edits: &[Edit]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{SourceMap, Span};
+    use crate::source::SourceMap;
 
     fn sp(file: FileId, lo: u32, hi: u32) -> Span {
         Span { file, lo, hi }
@@ -129,5 +129,28 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(apply("abcdef", &plan[&f]), "aBCd_ef");
         assert!(!plan.contains_key(&g));
+    }
+
+    #[test]
+    fn a_fix_without_a_location_is_skipped() {
+        let mut sm = SourceMap::new();
+        let f = sm.add("a.gm", "abc".to_string());
+        let diags = vec![
+            Diagnostic::error(Span::DUMMY, "e").with_fix("f", Span::DUMMY, "x"),
+            Diagnostic::error(sp(f, 0, 1), "e").with_fix("f", sp(f, 0, 1), "A"),
+        ];
+        let (plan, n) = plan(&diags, |file| sm.file(file).src.len() == 3);
+        assert_eq!(n, 1);
+        assert_eq!(apply("abc", &plan[&f]), "Abc");
+    }
+
+    #[test]
+    fn adjacent_edits_both_apply() {
+        let mut sm = SourceMap::new();
+        let f = sm.add("a.gm", "abcdef".to_string());
+        let e = |lo, hi, t: &str| Diagnostic::error(sp(f, lo, hi), "e").with_fix("f", sp(f, lo, hi), t);
+        let (plan, n) = plan(&[e(0, 2, "AB"), e(3, 5, "DE")], |_| true);
+        assert_eq!(n, 2);
+        assert_eq!(apply("abcdef", &plan[&f]), "ABcDEf");
     }
 }

@@ -83,6 +83,32 @@ fn fix_applies_every_fix_and_keeps_the_program_working() {
 }
 
 #[test]
+fn collapsible_else_if_fix_keeps_multi_line_raw_strings() {
+    let d = dir("raw_string_else");
+    let src = "\
+f :: fn(a: bool, c: bool) -> string {
+    if a {
+        return \"a\"
+    } else {
+        if c {
+            return `line1
+            line2`
+        }
+    }
+    return \"z\"
+}
+
+main :: fn() needs Out {
+    print(\"{}\\n\", f(false, true))
+}
+";
+    std::fs::write(d.join("main.gm"), src).unwrap();
+    let (_, _, err) = gamma(&["lint", "--fix", "main.gm"], &d);
+    assert!(err.contains("collapsible-else-if"), "{}", err);
+    assert_eq!(std::fs::read_to_string(d.join("main.gm")).unwrap(), src);
+}
+
+#[test]
 fn fix_leaves_out_fixes_that_break_the_program() {
     // `::` evaluates a call of a pure function with constant arguments at compile
     // time, which a foreign function cannot be, so the prefer-immutable fix of `r`

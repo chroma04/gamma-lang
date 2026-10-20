@@ -1,6 +1,8 @@
 //! Conversions between byte offsets and LSP positions (a line and a character, counted
 //! in UTF-16 code units by default, or in bytes when the client offers UTF-8).
 
+use std::rc::Rc;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
     Utf8,
@@ -25,14 +27,25 @@ impl Encoding {
 
 pub struct LineIndex<'a> {
     text: &'a str,
-    /// Byte offset of the start of each line.
-    starts: Vec<usize>,
+    /// Byte offset of the start of each line; shared, so that a text scanned once serves
+    /// every lookup of a request.
+    starts: Rc<Vec<usize>>,
 }
 
 impl<'a> LineIndex<'a> {
     pub fn new(text: &'a str) -> LineIndex<'a> {
         let mut starts = vec![0];
         starts.extend(text.bytes().enumerate().filter(|(_, b)| *b == b'\n').map(|(i, _)| i + 1));
+        LineIndex { text, starts: Rc::new(starts) }
+    }
+
+    /// The line starts, to build another index of the same text with [`LineIndex::from_starts`].
+    pub fn starts(&self) -> Rc<Vec<usize>> {
+        self.starts.clone()
+    }
+
+    /// An index of `text` from the `starts` of an index of that same text.
+    pub fn from_starts(text: &'a str, starts: Rc<Vec<usize>>) -> LineIndex<'a> {
         LineIndex { text, starts }
     }
 
@@ -50,6 +63,8 @@ impl<'a> LineIndex<'a> {
             offset -= 1;
         }
         let line = self.starts.partition_point(|&s| s <= offset) - 1;
+        // The `\r` of a `\r\n` is not a column.
+        let offset = offset.min(self.line_end(line));
         let col: usize = self.text[self.starts[line]..offset].chars().map(|c| enc.width(c)).sum();
         (line as u32, col as u32)
     }
@@ -146,6 +161,14 @@ mod tests {
         let ix = LineIndex::new(TEXT);
         let c = TEXT.find('ç').unwrap();
         assert_eq!(ix.position(c + 1, Encoding::Utf16), (1, 0));
+    }
+
+    #[test]
+    fn a_carriage_return_is_not_a_column() {
+        let ix = LineIndex::new("ab\r\ncd");
+        assert_eq!(ix.position(2, Encoding::Utf16), (0, 2));
+        assert_eq!(ix.position(3, Encoding::Utf16), (0, 2));
+        assert_eq!(ix.position(4, Encoding::Utf16), (1, 0));
     }
 
     #[test]

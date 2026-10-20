@@ -445,13 +445,24 @@ pub fn run(mut opts: Options) -> ExitCode {
         prompt(if pending.is_empty() { ">> " } else { ".. " });
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {
-            Ok(0) | Err(_) => {
+            Ok(0) => {
                 if !pending.is_empty() {
                     repl.submit(&pending);
                 }
                 break;
             }
             Ok(_) => {}
+            // The bytes of the bad line are consumed; go on with the next.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                eprintln!("error: input is not valid UTF-8; the line was ignored");
+                continue;
+            }
+            Err(_) => {
+                if !pending.is_empty() {
+                    repl.submit(&pending);
+                }
+                break;
+            }
         }
         let line = line.trim_end_matches(['\n', '\r']);
         if pending.is_empty() {

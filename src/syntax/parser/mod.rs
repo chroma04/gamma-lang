@@ -117,8 +117,6 @@ pub(super) struct Parser<'a> {
     /// pathological input from taking exponential time.
     spec_waste: usize,
     spec_limit: usize,
-    /// True if line terminators in the file are CR LF (for doc comment placement).
-    crlf: bool,
     /// Keywords already reported as misused names; later uses of the same word
     /// in an expression are read as that name, so one mistake gives one error.
     kw_names: Vec<Keyword>,
@@ -151,7 +149,6 @@ impl<'a> Parser<'a> {
         ids: &'a mut NodeIdGen,
         diags: &'a mut Diagnostics,
     ) -> Parser<'a> {
-        let crlf = toks.iter().any(|t| t.kind == TokenKind::Newline && t.span.len() == 2);
         Parser {
             file,
             toks,
@@ -177,7 +174,6 @@ impl<'a> Parser<'a> {
             },
             spec_waste: 0,
             spec_limit: toks.len() * 50 + 1000,
-            crlf,
             kw_names: Vec::new(),
         }
     }

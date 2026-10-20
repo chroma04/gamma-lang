@@ -1,7 +1,7 @@
 //! Markdown output.
 
 use super::collect::{Decl, Kind, Module};
-use super::md_html::demote_headings;
+use super::md_html::{DEMOTE, demote_headings, fence, url_path};
 
 /// The page of one module.
 pub fn module(m: &Module, index: Option<&str>) -> String {
@@ -10,7 +10,7 @@ pub fn module(m: &Module, index: Option<&str>) -> String {
         out.push_str(&format!("[All modules]({})\n\n", link));
     }
     if !m.doc.is_empty() {
-        out.push_str(&demote_headings(&m.doc, 3));
+        out.push_str(&demote_headings(&m.doc, DEMOTE));
         out.push_str("\n\n");
     }
     for kind in Kind::ALL {
@@ -28,9 +28,10 @@ pub fn module(m: &Module, index: Option<&str>) -> String {
 
 fn declaration(out: &mut String, d: &Decl) {
     out.push_str(&format!("### `{}`\n\n", d.name));
-    out.push_str(&format!("```gamma\n{}\n```\n\n", d.sig));
+    let fence = fence(&d.sig);
+    out.push_str(&format!("{fence}gamma\n{}\n{fence}\n\n", d.sig));
     if let Some(doc) = &d.doc {
-        out.push_str(&demote_headings(doc, 3));
+        out.push_str(&demote_headings(doc, DEMOTE));
         out.push_str("\n\n");
     }
     if !d.members.is_empty() {
@@ -50,7 +51,7 @@ fn declaration(out: &mut String, d: &Decl) {
 pub fn index(title: &str, modules: &[Module]) -> String {
     let mut out = format!("# {}\n\n| Module | Description |\n| --- | --- |\n", title);
     for m in modules {
-        out.push_str(&format!("| [`{}`]({}.md) | {} |\n", m.name, m.path, summary(m).replace('|', "\\|")));
+        out.push_str(&format!("| [`{}`]({}.md) | {} |\n", m.name, url_path(&m.path), summary(m).replace('|', "\\|")));
     }
     finish(out)
 }

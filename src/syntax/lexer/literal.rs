@@ -62,10 +62,19 @@ impl<'a> Lexer<'a> {
         // Fraction and exponent.
         let mut frac_part = None;
         let mut exp: Option<i64> = None;
-        let digit_follows = |lx: &Self, i: usize| {
-            lx.bytes.get(i).is_some_and(|&b| if radix == 16 { b.is_ascii_hexdigit() } else { b.is_ascii_digit() })
+        // In a hexadecimal literal, `.` starts a fraction only before a decimal digit or
+        // before hex digits and a `p` exponent; otherwise it is member access (`0xFF.abs()`).
+        let fraction_follows = |lx: &Self, i: usize| match radix {
+            10 => lx.bytes.get(i).is_some_and(|b| b.is_ascii_digit()),
+            _ => {
+                let mut j = i;
+                while lx.bytes.get(j).is_some_and(|&b| b.is_ascii_hexdigit() || b == b'_') {
+                    j += 1;
+                }
+                lx.bytes.get(i).is_some_and(|b| b.is_ascii_digit()) || lx.bytes.get(j) == Some(&b'p')
+            }
         };
-        if (radix == 10 || radix == 16) && self.peek() == Some(b'.') && digit_follows(self, self.pos + 1) {
+        if (radix == 10 || radix == 16) && self.peek() == Some(b'.') && fraction_follows(self, self.pos + 1) {
             self.pos += 1;
             frac_part = Some(self.scan_digits(radix, &mut err));
         }

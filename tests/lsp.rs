@@ -634,6 +634,23 @@ fn a_huge_content_length_does_not_crash_the_server() {
 }
 
 #[test]
+fn out_of_range_positions_clamp_instead_of_wrapping() {
+    let dir = TempDir::new();
+    let path = dir.write("main.gm", PROGRAM);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&path, PROGRAM);
+    // 2^32 would wrap to a position that has a hover; clamped, it is past the end.
+    assert!(!lsp.result("textDocument/hover", lsp.at(&path, 13, 20)).is_null());
+    let h = lsp.result(
+        "textDocument/hover",
+        json!({"textDocument": {"uri": uri(&path)}, "position": {"line": 4294967296u64 + 13, "character": 20}}),
+    );
+    assert!(h.is_null(), "{:?}", h);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
 fn closing_a_document_clears_its_diagnostics() {
     let dir = TempDir::new();
     let text = "main :: fn() {\n    nope\n}\n";
@@ -650,6 +667,34 @@ fn closing_a_document_clears_its_diagnostics() {
             && m["params"]["uri"] == uri(&path)
             && m["params"].get("version").is_none()
         {
+            assert_eq!(m["params"]["diagnostics"], json!([]));
+            break;
+        }
+    }
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn closing_the_last_document_clears_diagnostics_of_its_siblings() {
+    let dir = TempDir::new();
+    let text = "main :: fn() {\n    helper()\n}\n";
+    let main = dir.write("main.gm", text);
+    let util = dir.write("util.gm", "helper :: fn() {\n    x: i32 = \"s\"\n}\n");
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, text);
+    // The sibling is not open; its error is published all the same.
+    loop {
+        let m = lsp.next_message();
+        if m["method"] == "textDocument/publishDiagnostics" && uri_path(m["params"]["uri"].as_str().unwrap()) == util {
+            assert!(!m["params"]["diagnostics"].as_array().unwrap().is_empty());
+            break;
+        }
+    }
+    lsp.notify("textDocument/didClose", json!({"textDocument": {"uri": uri(&main)}}));
+    loop {
+        let m = lsp.next_message();
+        if m["method"] == "textDocument/publishDiagnostics" && uri_path(m["params"]["uri"].as_str().unwrap()) == util {
             assert_eq!(m["params"]["diagnostics"], json!([]));
             break;
         }

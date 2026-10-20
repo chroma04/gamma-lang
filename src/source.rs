@@ -25,6 +25,12 @@ impl Span {
 
     /// The smallest span covering both `self` and `other` (same file).
     pub fn to(self, other: Span) -> Span {
+        if self == Span::DUMMY {
+            return other;
+        }
+        if other == Span::DUMMY {
+            return self;
+        }
         debug_assert_eq!(self.file, other.file);
         Span { file: self.file, lo: self.lo.min(other.lo), hi: self.hi.max(other.hi) }
     }
@@ -54,6 +60,8 @@ pub struct SourceFile {
     pub src: String,
     /// Byte offset of the start of each line.
     line_starts: Vec<u32>,
+    /// True if `src` is ASCII, so that columns are byte distances.
+    ascii: bool,
 }
 
 impl SourceFile {
@@ -64,7 +72,8 @@ impl SourceFile {
                 line_starts.push(i as u32 + 1);
             }
         }
-        SourceFile { path, src, line_starts }
+        let ascii = src.is_ascii();
+        SourceFile { path, src, line_starts, ascii }
     }
 
     /// 1-based line and column (column counted in Unicode scalar values) of `offset`.
@@ -75,16 +84,22 @@ impl SourceFile {
         };
         let start = self.line_starts[line] as usize;
         let end = (offset as usize).min(self.src.len());
-        let col = self.src.get(start..end).map_or(end - start, |s| s.chars().count());
+        let col =
+            if self.ascii { end - start } else { self.src.get(start..end).map_or(end - start, |s| s.chars().count()) };
         (line as u32 + 1, col as u32 + 1)
     }
 
     /// The text of the 1-based line `line`, without its terminator.
     pub fn line_text(&self, line: u32) -> &str {
-        let i = (line - 1) as usize;
+        let i = (line.max(1) - 1) as usize;
         let start = self.line_starts[i] as usize;
         let end = self.line_starts.get(i + 1).map_or(self.src.len(), |&e| e as usize);
         self.src[start..end].trim_end_matches(['\n', '\r'])
+    }
+
+    /// True if the file is entirely ASCII.
+    pub fn is_ascii(&self) -> bool {
+        self.ascii
     }
 
     pub fn line_count(&self) -> u32 {
@@ -120,14 +135,27 @@ impl SourceMap {
     }
 
     /// Registers in-memory source text under `path` (which need not exist on disk).
+    /// Panics if the text is 4 GiB or longer, as byte offsets are 32 bits; use
+    /// [`SourceMap::try_add`] for text of unknown size.
     pub fn add(&mut self, path: impl Into<PathBuf>, src: String) -> FileId {
-        let id = FileId(self.files.len() as u32);
+        match self.try_add(path, src) {
+            Ok(id) => id,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// Like [`SourceMap::add`], but reports a source that is too long as an error.
+    pub fn try_add(&mut self, path: impl Into<PathBuf>, src: String) -> Result<FileId, String> {
         let path = path.into();
+        if u32::try_from(src.len()).is_err() {
+            return Err(format!("{}: source file is too large (the limit is 4 GiB)", path.display()));
+        }
+        let id = FileId(self.files.len() as u32);
         // File names show as they do everywhere else: with `/` (Windows accepts it too).
         #[cfg(windows)]
         let path = PathBuf::from(path.to_string_lossy().replace('\\', "/"));
         self.files.push(SourceFile::new(path, src));
-        id
+        Ok(id)
     }
 
     /// Reads a file from disk. Invalid UTF-8 is reported as an error message.
@@ -136,7 +164,7 @@ impl SourceMap {
         let src = String::from_utf8(bytes).map_err(|e| {
             format!("{}: source file is not valid UTF-8 (at byte {})", path.display(), e.utf8_error().valid_up_to())
         })?;
-        Ok(self.add(path, src))
+        self.try_add(path, src)
     }
 
     pub fn file(&self, id: FileId) -> &SourceFile {
@@ -149,5 +177,28 @@ impl SourceMap {
 
     pub fn files(&self) -> impl Iterator<Item = (FileId, &SourceFile)> {
         self.files.iter().enumerate().map(|(i, f)| (FileId(i as u32), f))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joining_with_a_dummy_span_keeps_the_real_one() {
+        let real = Span::new(FileId(0), 3, 7);
+        assert_eq!(Span::DUMMY.to(real), real);
+        assert_eq!(real.to(Span::DUMMY), real);
+    }
+
+    #[test]
+    fn columns_count_characters() {
+        let mut sm = SourceMap::new();
+        let a = sm.add("a.gm", "ab\ncd".to_string());
+        let u = sm.add("u.gm", "é1\n€x".to_string());
+        assert_eq!(sm.file(a).line_col(4), (2, 2));
+        assert_eq!(sm.file(u).line_col(2), (1, 2));
+        assert_eq!(sm.file(u).line_col(7), (2, 2));
+        assert_eq!(sm.file(a).line_text(0), "ab");
     }
 }

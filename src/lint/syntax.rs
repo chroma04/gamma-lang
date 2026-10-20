@@ -692,8 +692,10 @@ impl<'a> Walk<'a> {
         let before = self.text(Span::new(file, els.span.lo, inner.span.lo));
         let after = self.text(Span::new(file, inner.span.hi, els.span.hi));
         let blank = |t: &str| t.chars().all(|c| c.is_whitespace() || c == '{' || c == '}');
-        if blank(before) && blank(after) {
-            let text = dedent(self.text(inner.span), self.indent_of(inner.span), self.indent_of(els.span));
+        // Re-indenting must not touch the content of a multi-line raw string or block comment.
+        let inner_text = self.text(inner.span);
+        if blank(before) && blank(after) && !inner_text.contains('`') && !inner_text.contains("/*") {
+            let text = dedent(inner_text, self.indent_of(inner.span), self.indent_of(els.span));
             d = d.with_fix("merge the `else` and the `if`", els.span, text);
         }
         self.push(d);

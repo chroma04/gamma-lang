@@ -237,7 +237,15 @@ impl<W: Write> Server<W> {
                     if !self.docs.keys().any(|p| dir_of(p) == dir) {
                         self.analyses.remove(&dir);
                         self.stale.remove(&dir);
-                        self.published.remove(&dir);
+                        // Other files of the directory keep no diagnostics once nothing is open.
+                        for other in self.published.remove(&dir).unwrap_or_default() {
+                            if other != path {
+                                self.notify(
+                                    "textDocument/publishDiagnostics",
+                                    json!({"uri": path_to_uri(&other), "diagnostics": []}),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -406,7 +414,9 @@ impl<W: Write> Server<W> {
         let cx = Ctx { a, enc: self.enc, uri_of: &uri_of };
         let pos = &params["position"];
         let at = |cx: &Ctx| {
-            cx.offset(file, pos["line"].as_u64().unwrap_or(0) as u32, pos["character"].as_u64().unwrap_or(0) as u32)
+            // Out-of-range components clamp to the end, as `LineIndex::offset` does.
+            let component = |v: &Value| u32::try_from(v.as_u64().unwrap_or(0)).unwrap_or(u32::MAX);
+            cx.offset(file, component(&pos["line"]), component(&pos["character"]))
         };
         Ok(match method {
             "textDocument/hover" => features::hover(&cx, file, at(&cx)),

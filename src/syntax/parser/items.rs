@@ -146,24 +146,16 @@ impl Parser<'_> {
     /// The doc comments that directly precede the declaration starting at byte
     /// `item_lo`, joined by newlines.
     ///
-    /// The parser sees only token spans, not the source text, so "directly
-    /// precedes" is judged from byte distances: the gap between a comment and
-    /// what follows must be one line terminator plus indentation (a multiple of
-    /// four bytes), and the comment must start its own line.
+    /// A comment is adjacent to what follows when that begins on the next line,
+    /// after indentation only (the lexer records where, in `next_lo`), and the
+    /// comment starts its own line.
     fn doc_before(&self, item_lo: u32) -> Option<String> {
         let mut idx = self.docs.partition_point(|d| d.span.hi <= item_lo);
-        let terminator = if self.crlf { 2 } else { 1 };
         let mut next_lo = item_lo;
         let mut lines: Vec<&str> = Vec::new();
         while idx > 0 {
             let d: &DocComment = &self.docs[idx - 1];
-            let gap = next_lo - d.span.hi;
-            if gap < terminator
-                || !(gap - terminator).is_multiple_of(4)
-                || gap - terminator > 32
-                || !self.starts_line(d)
-                || self.token_between(d.span.hi, next_lo)
-            {
+            if d.next_lo != next_lo || !self.starts_line(d) {
                 break;
             }
             lines.push(&d.text);
@@ -175,12 +167,6 @@ impl Parser<'_> {
         }
         lines.reverse();
         Some(lines.join("\n"))
-    }
-
-    /// True if some token starts in `lo..hi`.
-    fn token_between(&self, lo: u32, hi: u32) -> bool {
-        let i = self.toks.partition_point(|t| t.span.lo < lo);
-        self.toks.get(i).is_some_and(|t| t.span.lo < hi)
     }
 
     /// True if no code precedes the comment on its line.

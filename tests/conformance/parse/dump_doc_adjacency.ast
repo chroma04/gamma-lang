@@ -1,0 +1,13 @@
+(file
+  (item
+    (binding const a (int 1)))
+  (item
+    (binding const b (int 2)))
+  (item
+    (doc "Directly above, tab indented.")
+    (when-items
+      (ident X)
+      (then
+        (item
+          (doc "Indented with a tab.")
+          (binding const c (int 3)))))))

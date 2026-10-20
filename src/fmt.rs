@@ -415,8 +415,13 @@ fn would_merge(a: &str, b: &str) -> bool {
     let joined = format!("{}{}", a, b);
     let mut diags = Diagnostics::new();
     let lexed = lex(FileId(0), &joined, &mut diags);
-    let n = lexed.tokens.iter().filter(|t| !matches!(t.kind, TokenKind::Newline | TokenKind::Eof)).count();
-    n != 2 || diags.has_errors()
+    let toks: Vec<&str> = lexed
+        .tokens
+        .iter()
+        .filter(|t| !matches!(t.kind, TokenKind::Newline | TokenKind::Eof))
+        .map(|t| &joined[t.span.lo as usize..t.span.hi as usize])
+        .collect();
+    toks != [a, b] || diags.has_errors()
 }
 
 /// True for a `.` directly followed by a name, which joins the line to the previous one,
@@ -615,7 +620,8 @@ fn layout(src: &str, toks: &[Token]) -> String {
                 if !first && !matches!(prev, Prev::Tok(p) if infos[p].ta) {
                     out.push(' ');
                 }
-                out.push_str(text);
+                // The output has LF line ends, also inside the comment.
+                out.push_str(&text.replace("\r\n", "\n"));
                 prev = Prev::Other;
             }
             Item::Tok(k) => {
