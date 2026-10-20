@@ -409,7 +409,13 @@ and a fiber given `@stack_size(f)` bytes never traps while running `f`.
 machine under a fair global lock (`src/interp/threads.rs`): a thread holds it while
 it evaluates and hands it on every few thousand calls or loop iterations and around
 calls that may block. A trap on any thread is recorded and stops every thread at its
-next turn. The lock is created by the first `@thread_spawn`, so single-threaded
+next turn (threads asleep in a futex are woken for it). File opens, reads and writes,
+name lookups and socket shutdowns run with the lock released, so a thread blocked on a
+pipe or a slow lookup does not stop the others; foreign calls keep it. A child process
+records under its own mutex whether it was reaped: `Proc.wait` waits without reaping
+(`waitid` with `WNOWAIT`), then reaps and sets the flag under the mutex, and `Proc.kill`
+refuses once it is set, so it never signals a process id the system may have reused.
+Children a program never waited for are reaped when its run ends. The lock is created by the first `@thread_spawn`, so single-threaded
 programs never take it. `@futex_wait` and `@futex_wake` are emulated with one global
 wake-up counter and condition variable: a wake-up wakes every waiter, which is allowed
 because a futex wait may return early, and the waiter reads the counter before it gives
@@ -445,7 +451,12 @@ it. Addresses that are in no interpreter allocation (`getenv`'s result, a
 `FILE *`, memory from `malloc`, a mirror seen from a callback) are host memory:
 once a foreign function has been called, `Memory` lets accesses to addresses above
 everything it handed out go to the host directly. Foreign `#global`s are such
-addresses (`dlsym`, and `__errno_location` for `errno`).
+addresses (`dlsym`, and `__errno_location` for `errno`, asked again at each access
+since every thread, and so every fiber, has its own). A mirror is a copy: C code that
+keeps a pointer after the call and writes through it later changes the mirror, which
+the interpreter reads back only at the next call that passes that allocation. A pointer
+to freed memory, or a function whose type cannot become a C callback, is a trap rather
+than an address C would misuse.
 
 A function pointer passed to C becomes a libffi closure (cached per function) that
 calls `call_function`. Pointers it receives are host addresses, usable directly
@@ -528,6 +539,8 @@ accounting, no threads, depth and Rust stack far from their limits, the block va
 unchanged. The tables the machine keeps by address or id use a plain multiplicative hash
 (`fxmap.rs`), and reads and writes of up to 64 bytes go from memory to registers directly.
 
+A run may also have a deadline (`gamma test --timeout`), checked with the step budget
+every 1024 calls or loop iterations; a run blocked in a system call does not reach it.
 The dispatch loop is instantiated per byte order and per whether a step budget
 (compile-time evaluation) is being counted, so the common case pays for neither.
 An `Op` is at most 24 bytes (checked at compile time): operands that do not fit

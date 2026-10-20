@@ -482,7 +482,16 @@ impl<'a> Machine<'a> {
             SysOp::FsMakeDir => code(std::fs::create_dir(self.path_arg(span, &vals[0])?).map(|_| 0)),
             SysOp::FsRemoveDir => code(std::fs::remove_dir(self.path_arg(span, &vals[0])?).map(|_| 0)),
             SysOp::FsOpenDir => {
-                let r = std::fs::read_dir(self.path_arg(span, &vals[0])?);
+                let path = self.path_arg(span, &vals[0])?;
+                // As the C runtime does: no directory has the empty name, and on Windows a
+                // name with pattern characters names none either.
+                let s = path.to_string_lossy();
+                let impossible = s.is_empty() || (cfg!(windows) && s.contains(['*', '?', '<', '>', '"', '|']));
+                let r = if impossible {
+                    Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+                } else {
+                    std::fs::read_dir(path)
+                };
                 let sys = &mut self.sys;
                 code(r.map(|d| {
                     let h = sys.handle();

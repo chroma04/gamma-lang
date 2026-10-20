@@ -8,6 +8,9 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `gamma test --timeout=<seconds>` (and `gamma bench`): a test that runs longer fails
+  with `timed out after N s`, on the interpreter and natively.
+
 - A website, published with GitHub Pages from `web/`: a landing page, the guide, the
   specification and the standard library reference as pages, and a playground that runs
   programs in the browser with the interpreter compiled to WebAssembly (everything except
@@ -303,6 +306,18 @@ Versions and what each kind of change means are described in
   and `gamma.lock` are replaced through a fresh temporary file flushed to disk.
 - Releases are published only when CI passed on the tagged commit, with a build provenance
   attestation for each archive, and the archives are reproducible.
+- Field and parameter defaults are evaluated once, at compile time, where they are
+  declared (§17.2): a default that traps is a compile error at the default, and a default
+  that constructs its own struct is a declaration cycle. Float value arguments of generic
+  types are shown by value in messages (`Box(1.5)`).
+- Interpreter: file opens, reads and writes, name lookups and socket shutdowns no longer
+  stop the other threads; `Proc.kill` never signals a process id that may have been
+  reused; children a program never waited for are reaped when its run ends; foreign calls
+  with large buffers copy less.
+- `gamma run` passes program arguments that are not UTF-8 to the program unchanged.
+- The language server registers file watchers when the client supports it, and refreshes
+  diagnostics when imported files change on disk; references and rename read unchanged
+  files from a cache.
 - `gamma test --coverage=<file>` exits with status 1 when the tracefile cannot be
   written.
 - `install.sh` accepts only `https://` and `file://` download locations, checks that the
