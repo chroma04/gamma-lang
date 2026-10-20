@@ -323,23 +323,7 @@ impl<'a> Lexer<'a> {
     /// The end of the block comment starting at `lo`, or `None` if it is
     /// unterminated or contains a line terminator.
     fn inline_block_comment_end(&self, lo: usize) -> Option<usize> {
-        let mut i = lo + 2;
-        let mut depth = 1;
-        while depth > 0 {
-            match (self.bytes.get(i)?, self.bytes.get(i + 1)) {
-                (b'/', Some(b'*')) => {
-                    depth += 1;
-                    i += 2;
-                }
-                (b'*', Some(b'/')) => {
-                    depth -= 1;
-                    i += 2;
-                }
-                (b'\n' | b'\r', _) => return None,
-                _ => i += 1,
-            }
-        }
-        Some(i)
+        inline_comment_end(self.bytes, lo)
     }
 
     // ----- tokens -----
@@ -730,8 +714,52 @@ fn suppresses_newline_after(kind: &TokenKind) -> bool {
     }
 }
 
+/// The end of the (possibly nested) block comment starting at `lo` in `bytes`, or `None`
+/// if it is unterminated or contains a line terminator.
+fn inline_comment_end(bytes: &[u8], lo: usize) -> Option<usize> {
+    let mut i = lo + 2;
+    let mut depth = 1;
+    while depth > 0 {
+        match (bytes.get(i)?, bytes.get(i + 1)) {
+            (b'/', Some(b'*')) => {
+                depth += 1;
+                i += 2;
+            }
+            (b'*', Some(b'/')) => {
+                depth -= 1;
+                i += 2;
+            }
+            (b'\n' | b'\r', _) => return None,
+            _ => i += 1,
+        }
+    }
+    Some(i)
+}
+
+/// The end of the raw string starting at `lo` in `bytes`, or `None` if it does not end on
+/// this line.
+fn inline_raw_string_end(bytes: &[u8], lo: usize) -> Option<usize> {
+    let run = |at: usize| bytes[at..].iter().take_while(|&&b| b == b'`').count();
+    let delim = run(lo);
+    let mut i = lo + delim;
+    loop {
+        match bytes.get(i)? {
+            b'`' => {
+                let n = run(i);
+                i += n;
+                if n == delim {
+                    return Some(i);
+                }
+            }
+            b'\n' | b'\r' => return None,
+            _ => i += 1,
+        }
+    }
+}
+
 /// True if the rest of a line, `rest`, has a `:=` outside brackets, which makes a line
-/// starting with `.name` a pattern binding (§2.8 rule 2).
+/// starting with `.name` a pattern binding (§2.8 rule 2). A literal or comment that goes
+/// on past the line ends the search: the line does not bind.
 pub(crate) fn line_binds(rest: &[u8]) -> bool {
     let mut depth = 0i32;
     let mut i = 0;
@@ -753,7 +781,20 @@ pub(crate) fn line_binds(rest: &[u8]) -> bool {
                 }
             }
             b'/' if rest.get(i + 1) == Some(&b'/') => return false,
-            b'`' => return false,
+            b'/' if rest.get(i + 1) == Some(&b'*') => match inline_comment_end(rest, i) {
+                Some(end) => {
+                    i = end;
+                    continue;
+                }
+                None => return false,
+            },
+            b'`' => match inline_raw_string_end(rest, i) {
+                Some(end) => {
+                    i = end;
+                    continue;
+                }
+                None => return false,
+            },
             b':' if depth == 0 && rest.get(i + 1) == Some(&b'=') => return true,
             _ => {}
         }

@@ -307,7 +307,7 @@ Newlines are significant inside braces `{ }` and at the top level, where they te
 A newline token is **suppressed** (treated as whitespace) when any of the following holds:
 
 1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `needs`, `.`, or an opening bracket of any kind.
-2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm, and except when that line contains `:=` outside brackets, which makes it a pattern binding (`.Num(n) := v else return`, §4.5).
+2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm, and except when that line contains a `:=` token outside brackets (strings and comments do not count, and the line is taken to end where a raw string or block comment carries on to the next one), which makes it a pattern binding (`.Num(n) := v else return`, §4.5).
 3. Its innermost enclosing bracket is `( )` or `[ ]`. Only the innermost bracket matters: newlines inside a `{ }` block are significant even when that block is itself inside parentheses (a function literal passed as an argument, for example).
 
 Rule 2's exception means a method chain cannot continue an arm's expression onto a new line in a `match` body; wrap the arm body in `{ }` or `( )` for that. Inside those, normal rules resume.

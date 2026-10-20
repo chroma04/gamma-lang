@@ -127,6 +127,8 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- `gamma fetch` takes its directory as `--dir <dir>`, like `update`, `add` and `remove`
+  (the positional form still works).
 - `Os` has a new case, `Wasi`, and `IoError` a new case, `Unsupported`: an exhaustive
   `match` over either needs an arm for it.
 - Faster Safe builds: values that hold no pointer, or hold their pointers at fixed
@@ -245,6 +247,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- A line starting with `.name` that holds a raw string or a block comment before its `:=`
+  (`` .Some(`x`) := v else … ``) is read as a pattern binding, instead of continuing the line
+  before it.
 - `gamma build x.gm` no longer overwrites a file `x.c` that it did not generate (it
   refuses, naming the file), and intermediate objects of the C and Cranelift back ends no
   longer take the name of a file next to the output (`-o app` deleted `app.o`).

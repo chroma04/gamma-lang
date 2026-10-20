@@ -15,7 +15,7 @@ package commands:
   new     create a package in a new directory: gamma new <dir> [--name=<name>] [--vcs=none]
   init    create a package in an existing directory: gamma init [dir] [--name=<name>] [--vcs=none]
   fetch   resolve and download the git and archive dependencies, and write gamma.lock:
-          gamma fetch [dir] [--offline] [--locked]
+          gamma fetch [--dir <dir>] [--offline] [--locked]
   update  move git dependencies to the newest revisions their requirements allow:
           gamma update [name...] [--dir <dir>]
   add     add a dependency to gamma.toml and fetch it:
@@ -133,11 +133,13 @@ fn usage<T>(parsed: Result<T, String>) -> Result<T, Failure> {
 }
 
 fn fetch(args: &[String]) -> Result<(), Failure> {
-    let p = usage(parse(args, &[], &["offline", "locked"]))?;
-    if p.pos.len() > 1 {
+    let p = usage(parse(args, &["dir"], &["offline", "locked"]))?;
+    // The directory may also be given as `--dir`, as for the other commands.
+    let given: Vec<&String> = p.pos.iter().chain(p.values.get("dir")).collect();
+    if given.len() > 1 {
         return Err(Failure::Usage("more than one directory given".into()));
     }
-    let dir = PathBuf::from(p.pos.first().map_or(".", |s| s.as_str()));
+    let dir = PathBuf::from(given.first().map_or(".", |s| s.as_str()));
     let root = root_of(&dir)?;
     let opts = Options { offline: p.flags.contains("offline"), locked: p.flags.contains("locked") };
     sync(&root, &opts, &Refresh::None, true)?;

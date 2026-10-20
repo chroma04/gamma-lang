@@ -262,6 +262,9 @@ fn packages_are_found_from_a_subdirectory_and_by_file() {
     sum_app(&w, &format!("http = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("http")), &["http"]);
     w.gamma("app", &["fetch"]).success();
     assert_eq!(w.gamma(".", &["fetch", "app"]).success().stderr, "");
+    assert_eq!(w.gamma(".", &["fetch", "--dir", "app"]).success().stderr, "");
+    let both = w.gamma(".", &["fetch", "app", "--dir", "app"]).failure();
+    assert!(both.stderr.contains("more than one directory given"), "{}", both.stderr);
     std::fs::create_dir_all(w.path("app/sub")).unwrap();
     assert!(w.gamma("app/sub", &["fetch"]).ok);
     assert!(!w.gamma("cache", &["fetch"]).ok, "no package here");

@@ -127,7 +127,7 @@ If a locked commit has disappeared from the repository (history was rewritten), 
 
 | Command | What it does |
 | --- | --- |
-| `gamma fetch [dir]` | Resolves what the lock does not cover, downloads everything, writes `gamma.lock` |
+| `gamma fetch [--dir <dir>]` | Resolves what the lock does not cover, downloads everything, writes `gamma.lock` |
 | `gamma update [name...] [--dir <dir>]` | Moves the named dependencies (default: all) to the newest revisions their requirements allow, and prints `Updating http v1.2.3 -> v1.3.0` |
 | `gamma add <name> --path <dir>` | Adds a path dependency to `gamma.toml` |
 | `gamma add <name> --git <url> [--tag T \| --branch B \| --rev R \| --version REQ] [--subdir P]` | Adds a git dependency, then locks and fetches it |
