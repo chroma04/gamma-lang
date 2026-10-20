@@ -8,11 +8,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Every job has a C compiler: its absence must fail the C lanes, not skip them.
+  GAMMA_TEST_C: "1"
+
+# The jobs only read the repository.
+permissions:
+  contents: read
 
 jobs:
   test:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +46,7 @@ jobs:
     # The oldest Rust that Cargo.toml's `rust-version` promises still builds the crate.
     name: Minimum Rust version
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95
@@ -85,6 +93,7 @@ jobs:
     # Safe builds compile the generated C with Fil-C, a memory-safe C implementation.
     name: Safe builds (Fil-C)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       FILC_VERSION: "0.686"
     steps:
@@ -117,6 +126,7 @@ jobs:
     # s390x is 64-bit big-endian: the suite runs cross-compiled under qemu-user.
     name: Big-endian cross build (s390x)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -140,6 +150,7 @@ jobs:
     # Apple's variant of the AArch64 calling convention; this job covers the standard one.
     name: AArch64 Linux, emulated (C and Cranelift back ends)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -162,6 +173,7 @@ jobs:
     # Binaryen where it switches fibers, under Wasmtime.
     name: WebAssembly (wasm32-wasi)
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -230,8 +242,10 @@ jobs:
         run: cargo build --release
       - name: Build the base branch
         continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git worktree add ../base "origin/${{ github.base_ref }}"
+          git worktree add ../base "origin/$BASE_REF"
           cd ../base && CARGO_TARGET_DIR="$PWD/../base-target" cargo build --release
       - name: Compare
         run: |

@@ -20,6 +20,8 @@
 //! `GAMMA_TEST_FILTER=substring` runs only the blocks whose name
 //! (`<document>:<line>`) contains it.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -106,14 +108,6 @@ fn blocks(doc: &str) -> Vec<Block> {
     out
 }
 
-fn c_backend_available() -> bool {
-    if std::env::var("GAMMA_TEST_C").is_ok_and(|v| v == "0") {
-        return false;
-    }
-    gamma::toolchain::Toolchain::from_env()
-        .is_ok_and(|t| t.base_command().arg("--version").output().is_ok_and(|o| o.status.success()))
-}
-
 /// Writes the block to its own directory and returns the path of the source file.
 fn write_block(block: &Block) -> PathBuf {
     let dir_name: String = block.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
@@ -125,14 +119,13 @@ fn write_block(block: &Block) -> PathBuf {
 }
 
 fn gamma(args: &[&str], file: &Path) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
-        .env("GAMMA_CACHE_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    cmd.env("GAMMA_CACHE_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"))
         .current_dir(file.parent().unwrap())
         .args(args)
         .arg(file.file_name().unwrap())
-        .stdin(Stdio::null())
-        .output()
-        .expect("cannot run gamma");
+        .stdin(Stdio::null());
+    let out = common::output(&mut cmd).expect("cannot run gamma");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -210,7 +203,7 @@ fn check(block: &Block, with_c: bool) -> Result<(), String> {
 #[test]
 fn doc_examples() {
     let filter = std::env::var("GAMMA_TEST_FILTER").ok();
-    let with_c = c_backend_available();
+    let with_c = common::c_backend_available();
     let blocks: Vec<Block> = CHECKED_DOCS
         .iter()
         .flat_map(|d| blocks(d))

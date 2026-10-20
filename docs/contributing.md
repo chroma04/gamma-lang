@@ -158,7 +158,8 @@ changed.
 
 Every `run` test that expects no errors also runs through the C back end and
 must produce the same output and exit status as with the interpreter. This
-needs a C compiler (`$CC` or `cc`); set `GAMMA_TEST_C=0` to skip it, and
+needs a C compiler (`$CC` or `cc`); without one the C lanes are skipped, unless
+`GAMMA_TEST_C=1` is set (as in CI), which makes that a failure. Set `GAMMA_TEST_C=0` to skip it, and
 `GAMMA_TEST_DEBUG_INFO=1` to build every such program with `-g` (worth doing after
 changing `src/cgen/debug.rs` or `src/cgen/views.rs`). The C
 runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
