@@ -265,6 +265,27 @@ Versions and what each kind of change means are described in
   directory must be private to the user (`docs/architecture.md`).
 - On Windows, a backslash in `CC`, `CFLAGS`, `LDFLAGS` and `GAMMA_RUNNER` is literal
   except before a double quote (as in Windows command lines), so `C:\msys64\…` paths work.
+- A failed write to the standard output (`> /dev/full`) ends the program with status 1 and
+  `gamma: cannot write the standard output: …` on every back end; a closed pipe still ends
+  it as before.
+- Integer `pow` takes time in proportion to the bit length of the exponent on the C and
+  Cranelift back ends (`x.pow(4000000000)` took seconds), and `clz`, `ctz`, `popcount`,
+  `bswap` and `bitreverse` use the compiler's builtins in the C back end.
+- C runtime: sockets are no longer inherited by started processes; each thread's
+  alternate signal stack is freed when the thread ends; joining or detaching an unknown
+  thread handle fails instead of crashing; a `connect` interrupted by a signal completes;
+  the working directory may be longer than 4096 bytes.
+- Cranelift back end: constants are placed in read-only data, and `@cpu_count` returns a
+  32-bit value as declared.
+- Non-relative imports (`std/../..`, `dep//abs`) can no longer leave the directory of
+  `std` or of the dependency.
+- A `pub` declaration's private types are also found in the operations of a `pub` effect,
+  in the effect arguments of `needs`, and in effect aliases (§3.3).
+- Value arguments of generic types compare with `is`: `Box(0.0)` and `Box(-0.0)` are one
+  type, NaNs are one value, and padding bytes do not count.
+- Untyped constants are limited to 2^22 bits (§6.2), and very large numbers are shown by
+  their size in messages.
+- Clearer messages for `fill:` given with other arguments of an array construction.
 - `gamma test --coverage=<file>` exits with status 1 when the tracefile cannot be
   written.
 - `install.sh` accepts only `https://` and `file://` download locations, checks that the
