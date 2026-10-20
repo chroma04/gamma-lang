@@ -1,20 +1,14 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-20) — PRs #1–#62 merged
-- s32 (branch claude/kind-allen-vuxksg): whole-codebase review, findings + status in
-  roadmap/review-2026-10-20.md (P0/P1 all fixed; P2/P3 list open there).
-- s31 (branch claude/charming-hypatia-asv87o): website + browser playground in web/, GitHub
-  Pages workflow; compiler builds for wasm32-wasip1 (decisions/036). User must switch Pages
-  source to GitHub Actions. Keep web/ in step: new docs pages need no work (sitegen picks up
-  docs/*.md), but broken anchors fail the Website workflow.
-- s30 (PRs #59–#61 merged): `gamma lint` (decisions/033), wasm32-wasi target via C + Asyncify
-  (034), Cranelift back end `--backend=cranelift` (035); guides for C/Rust programmers, their
-  code blocks checked by tests/doc_examples.rs (info strings `gamma`, `gamma test`,
-  `gamma error`, `gamma fragment`; add a doc to CHECKED_DOCS to opt in).
-- s29: huge functions → helper C functions (decisions/031); Safe/VM perf (decisions/032).
-- s28: applied an outside design review (decisions/030): spec §1 rewrite, no array arithmetic,
-  vector `is`→bool + lanes_* methods, ints ≤128, iterator args evaluated once. Open user calls
-  all done (decisions/030): effect ops PR #53, freestanding/Neg/time.ms/literal fallbacks in the third PR.
+- s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
+  in roadmap/review-2026-10-20.md (P0/P1 and most P2 fixed; rest listed there). New infra:
+  tests/common (GAMMA_TEST_C=1 required in CI, GAMMA_TEST_TIMEOUT), cgen::is_runtime_symbol,
+  cgen::write_generated_c/scratch_path, clif c_abi_ptr/c_thunk/c_shim.
+- s31: website + playground in web/ (decisions/036); broken doc anchors fail the Website job.
+- s30: `gamma lint` (033), wasm32-wasi (034), Cranelift (035), C/Rust guides checked by
+  tests/doc_examples.rs (add a doc to CHECKED_DOCS to opt in). s29: outlining (031), perf (032).
+  s28: outside design review applied (030).
 - The whole spec is implemented in all back ends (interpreter = bytecode VM only since s29,
   decisions/020; C back end, gcc and clang; Cranelift, 64-bit Linux/macOS only, no -g).
   Every run test runs on each and must match.
