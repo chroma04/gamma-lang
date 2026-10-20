@@ -1,0 +1,12 @@
+// `Fs.open_dir` opens the directory a path names: the empty path and a path with pattern
+// characters name nothing, so they fail like any path that does not exist.
+main :: fn() needs Out + Fs {
+    for path in [_]string("", "target/gamma-no-such-*", "target/gamma-no-such-?", "no-such-dir-for-gamma") {
+        d := Fs.open_dir(path) else e => {
+            print("{}: {}\n", path.len, e)
+            continue
+        }
+        Fs.close_dir(d)
+        print("{}: opened\n", path.len)
+    }
+}

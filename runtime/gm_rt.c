@@ -1867,6 +1867,61 @@ GM_API int64_t gm_io_error(int err) {
     }
 }
 
+/* Tables of the live objects that the system services hand out (directories, child
+ * processes, threads). A handle is the slot index plus one in the low 32 bits and the
+ * slot's generation in the next 31, so it is positive, and a handle that has been closed
+ * never names a newer object that took over its slot. The caller holds the runtime lock,
+ * except in gm_table_add. */
+typedef struct {
+    void **item;
+    uint32_t *gen;   /* per slot; advanced when the slot is vacated */
+    size_t n;
+} gm_table;
+
+/* Puts p in the lowest free slot and returns its handle; 0 if memory is exhausted. */
+static inline int64_t gm_table_add(gm_table *t, void *p) {
+    gm_rt_acquire();
+    size_t i = 0;
+    while (i < t->n && t->item[i] != NULL) i++;
+    if (i == t->n) {
+        size_t m = t->n * 2 + 4;
+        void **it = (void **)realloc(t->item, sizeof(void *) * m);
+        if (it != NULL) t->item = it;
+        uint32_t *g = (uint32_t *)realloc(t->gen, sizeof(uint32_t) * m);
+        if (g != NULL) t->gen = g;
+        if (it == NULL || g == NULL) {
+            gm_rt_release();
+            return 0;
+        }
+        memset(t->item + t->n, 0, sizeof(void *) * (m - t->n));
+        memset(t->gen + t->n, 0, sizeof(uint32_t) * (m - t->n));
+        t->n = m;
+    }
+    t->item[i] = p;
+    int64_t h = (int64_t)(i + 1) + ((int64_t)t->gen[i] << 32);
+    gm_rt_release();
+    return h;
+}
+
+/* The object that handle h names, or NULL if h is not the handle of a live object. */
+static inline void *gm_table_get(const gm_table *t, int64_t h) {
+    uint64_t i = (uint64_t)h & 0xffffffffu;
+    if (h < 1 || i < 1 || i > t->n || t->gen[i - 1] != (uint32_t)((uint64_t)h >> 32)) return NULL;
+    return t->item[i - 1];
+}
+
+/* Removes the object that handle h names and returns it (NULL if there is none); the
+ * handle is invalid from now on. */
+static inline void *gm_table_take(gm_table *t, int64_t h) {
+    void *p = gm_table_get(t, h);
+    if (p != NULL) {
+        size_t i = (size_t)((uint64_t)h & 0xffffffffu) - 1;
+        t->item[i] = NULL;
+        t->gen[i] = (t->gen[i] + 1) & 0x7fffffffu;
+    }
+    return p;
+}
+
 #ifndef _WIN32
 GM_API int64_t gm_sys_read(void *p, size_t n) {
     gm_flush();
@@ -2031,8 +2086,12 @@ GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, s
     return r != 0 ? gm_io_error(err) : 0;
 }
 
-static DIR **gm_dirs;
-static size_t gm_ndirs;
+/* An open directory; refs counts the table's reference and the calls in progress. */
+typedef struct {
+    DIR *d;
+    int refs;   /* guarded by gm_rt_lock */
+} gm_pdir;
+static gm_table gm_dirs;
 
 GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
     char *s = gm_path(path, len);
@@ -2041,31 +2100,47 @@ GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
     int err = errno;
     free(s);
     if (d == NULL) return gm_io_error(err);
-    gm_rt_acquire();
-    size_t i = 0;
-    while (i < gm_ndirs && gm_dirs[i] != NULL) i++;
-    if (i == gm_ndirs) {
-        DIR **t = (DIR **)realloc(gm_dirs, sizeof(DIR *) * (gm_ndirs * 2 + 4));
-        if (t == NULL) gm_trap("out of memory", NULL, 0, 0);
-        memset(t + gm_ndirs, 0, sizeof(DIR *) * (gm_ndirs + 4));
-        gm_dirs = t;
-        gm_ndirs = gm_ndirs * 2 + 4;
-    }
-    gm_dirs[i] = d;
-    gm_rt_release();
-    return (int64_t)i + 1;
+    gm_pdir *e = (gm_pdir *)malloc(sizeof *e);
+    if (e == NULL) gm_trap("out of memory", NULL, 0, 0);
+    e->d = d;
+    e->refs = 1;
+    int64_t h = gm_table_add(&gm_dirs, e);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
 }
 
-static DIR *gm_dir(int64_t d) {
+/* The directory of handle d, with a reference that gm_dir_put drops; NULL if d is not open. */
+static gm_pdir *gm_dir(int64_t d) {
     gm_rt_acquire();
-    DIR *dir = d >= 1 && (size_t)d <= gm_ndirs ? gm_dirs[d - 1] : NULL;
+    gm_pdir *e = (gm_pdir *)gm_table_get(&gm_dirs, d);
+    if (e != NULL) e->refs++;
     gm_rt_release();
-    return dir;
+    return e;
 }
+
+/* Drops a reference; the last one closes the directory (and returns closedir's result). */
+static int gm_dir_put(gm_pdir *e) {
+    gm_rt_acquire();
+    int last = --e->refs == 0;
+    gm_rt_release();
+    if (!last) return 0;
+    int r = closedir(e->d), en = errno;
+    free(e);
+    errno = en;
+    return r;
+}
+
+static int64_t gm_next_entry(DIR *dir, void *p, size_t n);
 
 GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
-    DIR *dir = gm_dir(d);
-    if (dir == NULL) return gm_io_error(EBADF);
+    gm_pdir *e = gm_dir(d);
+    if (e == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_next_entry(e->d, p, n);
+    gm_dir_put(e);
+    return r;
+}
+
+static int64_t gm_next_entry(DIR *dir, void *p, size_t n) {
     for (;;) {
         errno = 0;
         struct dirent *e = readdir(dir);
@@ -2092,12 +2167,11 @@ GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
 }
 
 GM_API int64_t gm_fs_close_dir(int64_t d) {
-    DIR *dir = gm_dir(d);
-    if (dir == NULL) return gm_io_error(EBADF);
     gm_rt_acquire();
-    gm_dirs[d - 1] = NULL;
+    gm_pdir *e = (gm_pdir *)gm_table_take(&gm_dirs, d);
     gm_rt_release();
-    return GM_RET_ERR(closedir(dir) != 0);
+    if (e == NULL) return gm_io_error(EBADF);
+    return GM_RET_ERR(gm_dir_put(e) != 0);
 }
 
 GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size) {
@@ -2359,17 +2433,18 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
 }
 /* ---- child processes (the Proc effect) -------------------------------------------------
  *
- * A handle is the index of the child in a table, plus one. Our ends of the pipes are
+ * A handle names the child in a table (see gm_table). Our ends of the pipes are
  * close-on-exec, so no child inherits another's. */
 
 typedef struct {
     pid_t pid;
     int in_fd, out_fd, err_fd;   /* our ends of the pipes; -1 when there is none or it is closed */
     int reaped;                  /* the process has been waited for (guarded by gm_rt_lock) */
+    int waiting;                 /* a wait is in progress (guarded by gm_rt_lock) */
+    int refs;                    /* the table's reference and the calls in progress (guarded by gm_rt_lock) */
 } gm_proc;
 
-static gm_proc **gm_procs;
-static size_t gm_nprocs;
+static gm_table gm_procs;
 
 /* A pipe whose both ends are close-on-exec. */
 static int gm_pipe_cloexec(int fds[2]) {
@@ -2581,31 +2656,40 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     p->in_fd = mine[0];
     p->out_fd = mine[1];
     p->err_fd = mine[2];
-    gm_rt_acquire();
-    size_t i = 0;
-    while (i < gm_nprocs && gm_procs[i] != NULL) i++;
-    if (i == gm_nprocs) {
-        gm_proc **t = (gm_proc **)realloc(gm_procs, sizeof(gm_proc *) * (gm_nprocs * 2 + 4));
-        if (t == NULL) gm_trap("out of memory", NULL, 0, 0);
-        memset(t + gm_nprocs, 0, sizeof(gm_proc *) * (gm_nprocs + 4));
-        gm_procs = t;
-        gm_nprocs = gm_nprocs * 2 + 4;
-    }
-    gm_procs[i] = p;
-    gm_rt_release();
-    return (int64_t)i + 1;
+    p->refs = 1;
+    int64_t h = gm_table_add(&gm_procs, p);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
 }
 
+/* The child of handle h, with a reference that gm_proc_put drops; NULL if h is not live. */
 static gm_proc *gm_proc_get(int64_t h) {
     gm_rt_acquire();
-    gm_proc *p = h >= 1 && (size_t)h <= gm_nprocs ? gm_procs[h - 1] : NULL;
+    gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
+    if (p != NULL) p->refs++;
     gm_rt_release();
     return p;
 }
 
+static void gm_proc_put(gm_proc *p) {
+    gm_rt_acquire();
+    int last = --p->refs == 0;
+    gm_rt_release();
+    if (last) free(p);
+}
+
+static int64_t gm_proc_write(gm_proc *p, const void *data, size_t n);
+static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n);
+
 GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_proc_write(p, data, n);
+    gm_proc_put(p);
+    return r;
+}
+
+static int64_t gm_proc_write(gm_proc *p, const void *data, size_t n) {
     if (p->in_fd < 0) return gm_io_error(EINVAL);
     if (n > ((size_t)1 << 30)) n = (size_t)1 << 30;
 #if defined(F_SETNOSIGPIPE)
@@ -2642,12 +2726,19 @@ GM_API int64_t gm_proc_close_in(int64_t h) {
         close(p->in_fd);
         p->in_fd = -1;
     }
+    gm_proc_put(p);
     return 0;
 }
 
 GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_proc_read(p, buf, n);
+    gm_proc_put(p);
+    return r;
+}
+
+static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
     if (n > 0xffffffffu) n = 0xffffffffu;
     if (n > ((size_t)1 << 30)) n = (size_t)1 << 30;
     for (;;) {
@@ -2686,28 +2777,45 @@ GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
 GM_API int64_t gm_proc_wait(int64_t h) {
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
+    gm_rt_acquire();
+    int busy = p->waiting;
+    p->waiting = 1;
+    gm_rt_release();
+    if (busy) {
+        gm_proc_put(p);
+        return gm_io_error(EBADF);
+    }
     if (p->in_fd >= 0) close(p->in_fd);
     if (p->out_fd >= 0) close(p->out_fd);
     if (p->err_fd >= 0) close(p->err_fd);
     p->in_fd = p->out_fd = p->err_fd = -1;
     /* Wait without reaping, so that no kill can reach a recycled process id. */
     siginfo_t si;
-    while (waitid(P_PID, (id_t)p->pid, &si, WEXITED | WNOWAIT) != 0)
-        if (errno != EINTR) return gm_io_error(errno);
+    while (waitid(P_PID, (id_t)p->pid, &si, WEXITED | WNOWAIT) != 0) {
+        if (errno != EINTR) {
+            int e = errno;
+            gm_rt_acquire();
+            p->waiting = 0;
+            gm_rt_release();
+            gm_proc_put(p);
+            return gm_io_error(e);
+        }
+    }
     int st = 0;
     gm_rt_acquire();
     while (waitpid(p->pid, &st, 0) < 0 && errno == EINTR) {}
     p->reaped = 1;
-    gm_procs[h - 1] = NULL;
+    gm_table_take(&gm_procs, h);
+    p->refs -= 1;   /* the table's reference; ours is dropped below */
     gm_rt_release();
-    free(p);
+    gm_proc_put(p);
     if (WIFSIGNALED(st)) return (int64_t)WTERMSIG(st) + ((int64_t)1 << 32);
     return (int64_t)WEXITSTATUS(st);
 }
 
 GM_API int64_t gm_proc_kill(int64_t h) {
     gm_rt_acquire();
-    gm_proc *p = h >= 1 && (size_t)h <= gm_nprocs ? gm_procs[h - 1] : NULL;
+    gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
     int64_t r = p == NULL || p->reaped ? gm_io_error(EBADF) : (kill(p->pid, SIGKILL) != 0 ? gm_io_error(errno) : 0);
     gm_rt_release();
     return r;
@@ -2998,14 +3106,20 @@ GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, s
     return ok ? 0 : gm_win_err(err);
 }
 
-typedef struct { HANDLE h; WIN32_FIND_DATAW fd; bool pending; } gm_wdir;
-static gm_wdir **gm_dirs;
-static size_t gm_ndirs;
+/* refs counts the table's reference and the calls in progress (guarded by gm_rt_lock). */
+typedef struct { HANDLE h; WIN32_FIND_DATAW fd; bool pending; int refs; } gm_wdir;
+static gm_table gm_dirs;
 
 GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
     wchar_t *w = gm_wide(path, len);
     if (w == NULL) return gm_io_error(EINVAL);
     size_t wl = wcslen(w);
+    /* The path is turned into a search pattern below, so one that is empty or holds pattern
+     * characters would list something other than the directory it names; none can exist. */
+    if (wl == 0 || wcspbrk(w, L"*?<>\"|") != NULL) {
+        free(w);
+        return gm_io_error(ENOENT);
+    }
     wchar_t *pat = (wchar_t *)malloc((wl + 3) * sizeof(wchar_t));
     if (pat == NULL) gm_trap("out of memory", NULL, 0, 0);
     memcpy(pat, w, wl * sizeof(wchar_t));
@@ -3023,31 +3137,42 @@ GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
         return gm_win_err(err);
     }
     d->pending = true;
-    gm_rt_acquire();
-    size_t i = 0;
-    while (i < gm_ndirs && gm_dirs[i] != NULL) i++;
-    if (i == gm_ndirs) {
-        gm_wdir **t = (gm_wdir **)realloc(gm_dirs, sizeof(gm_wdir *) * (gm_ndirs * 2 + 4));
-        if (t == NULL) gm_trap("out of memory", NULL, 0, 0);
-        memset(t + gm_ndirs, 0, sizeof(gm_wdir *) * (gm_ndirs + 4));
-        gm_dirs = t;
-        gm_ndirs = gm_ndirs * 2 + 4;
-    }
-    gm_dirs[i] = d;
-    gm_rt_release();
-    return (int64_t)i + 1;
+    d->refs = 1;
+    int64_t h = gm_table_add(&gm_dirs, d);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
 }
 
-static gm_wdir *gm_dir(int64_t d) {
+/* The directory of handle di, with a reference that gm_dir_put drops; NULL if di is not open. */
+static gm_wdir *gm_dir(int64_t di) {
     gm_rt_acquire();
-    gm_wdir *dir = d >= 1 && (size_t)d <= gm_ndirs ? gm_dirs[d - 1] : NULL;
+    gm_wdir *d = (gm_wdir *)gm_table_get(&gm_dirs, di);
+    if (d != NULL) d->refs++;
     gm_rt_release();
-    return dir;
+    return d;
 }
+
+/* Drops a reference; the last one closes the directory. */
+static void gm_dir_put(gm_wdir *d) {
+    gm_rt_acquire();
+    int last = --d->refs == 0;
+    gm_rt_release();
+    if (!last) return;
+    FindClose(d->h);
+    free(d);
+}
+
+static int64_t gm_next_entry(gm_wdir *d, void *p, size_t n);
 
 GM_API int64_t gm_fs_next_entry(int64_t di, void *p, size_t n) {
     gm_wdir *d = gm_dir(di);
     if (d == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_next_entry(d, p, n);
+    gm_dir_put(d);
+    return r;
+}
+
+static int64_t gm_next_entry(gm_wdir *d, void *p, size_t n) {
     for (;;) {
         if (!d->pending) {
             if (!FindNextFileW(d->h, &d->fd)) {
@@ -3071,13 +3196,11 @@ GM_API int64_t gm_fs_next_entry(int64_t di, void *p, size_t n) {
 }
 
 GM_API int64_t gm_fs_close_dir(int64_t di) {
-    gm_wdir *d = gm_dir(di);
-    if (d == NULL) return gm_io_error(EBADF);
     gm_rt_acquire();
-    gm_dirs[di - 1] = NULL;
+    gm_wdir *d = (gm_wdir *)gm_table_take(&gm_dirs, di);
     gm_rt_release();
-    FindClose(d->h);
-    free(d);
+    if (d == NULL) return gm_io_error(EBADF);
+    gm_dir_put(d);
     return 0;
 }
 
@@ -3278,7 +3401,7 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
 
 /* ---- child processes (the Proc effect) -------------------------------------------------
  *
- * A handle is the index of the child in a table, plus one. The pipes are anonymous pipes;
+ * A handle names the child in a table (see gm_table). The pipes are anonymous pipes;
  * only the child's ends are inheritable, and starting a child is serialized, so no child
  * gets another's. */
 
@@ -3286,13 +3409,100 @@ typedef struct {
     HANDLE process;
     HANDLE in_h, out_h, err_h;   /* our ends of the pipes; NULL when there is none or it is closed */
     int reaped;                  /* guarded by gm_rt_lock */
+    int waiting;                 /* a wait is in progress (guarded by gm_rt_lock) */
+    int refs;                    /* the table's reference and the calls in progress (guarded by gm_rt_lock) */
 } gm_proc;
 
-static gm_proc **gm_procs;
-static size_t gm_nprocs;
+static gm_table gm_procs;
 
 static int gm_env_cmp(const void *a, const void *b) {
     return _wcsicmp(*(const wchar_t *const *)a, *(const wchar_t *const *)b);
+}
+
+static int gm_file_exists(const wchar_t *path) {
+    DWORD a = GetFileAttributesW(path);
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* The file `base` + one of the executable extensions in PATHEXT (those CreateProcess can
+ * run), or `base` itself if it has an extension and exists. A new string, or NULL. */
+static wchar_t *gm_with_extension(const wchar_t *base) {
+    size_t bl = wcslen(base);
+    const wchar_t *dot = wcsrchr(base, L'.'), *sep = NULL;
+    for (const wchar_t *q = base; (q = wcspbrk(q, L"\\/")) != NULL; sep = q++) {}
+    if (dot != NULL && (sep == NULL || dot > sep) && gm_file_exists(base)) return _wcsdup(base);
+    wchar_t exts[1024];
+    DWORD n = GetEnvironmentVariableW(L"PATHEXT", exts, 1024);
+    if (n == 0 || n >= 1024) wcscpy(exts, L".COM;.EXE;.BAT;.CMD");
+    wchar_t *file = (wchar_t *)malloc((bl + 1024 + 1) * sizeof(wchar_t));
+    if (file == NULL) gm_trap("out of memory", NULL, 0, 0);
+    for (wchar_t *e = exts; *e != 0;) {
+        wchar_t *end = wcschr(e, L';');
+        size_t el = end ? (size_t)(end - e) : wcslen(e);
+        if ((el == 4 && (_wcsnicmp(e, L".com", 4) == 0 || _wcsnicmp(e, L".exe", 4) == 0 || _wcsnicmp(e, L".bat", 4) == 0 ||
+                         _wcsnicmp(e, L".cmd", 4) == 0))) {
+            memcpy(file, base, bl * sizeof(wchar_t));
+            memcpy(file + bl, e, el * sizeof(wchar_t));
+            file[bl + el] = 0;
+            if (gm_file_exists(file)) return file;
+        }
+        if (end == NULL) break;
+        e = end + 1;
+    }
+    free(file);
+    return NULL;
+}
+
+/* The file that the program named in `name` stands for, found the way gm_find_program does
+ * on other systems: a name with a directory part is used as it is; any other is searched for
+ * in the directories of PATH, and never in the current directory or the directory of this
+ * program (which CreateProcess would search first). Returns a new string, or NULL. */
+static wchar_t *gm_find_program(const wchar_t *name) {
+    if (name[0] == 0) return NULL;
+    if (wcspbrk(name, L":\\/") != NULL) return gm_with_extension(name);
+    DWORD pn = GetEnvironmentVariableW(L"PATH", NULL, 0);
+    if (pn == 0) return NULL;
+    wchar_t *path = (wchar_t *)malloc(((size_t)pn + 1) * sizeof(wchar_t));
+    if (path == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (GetEnvironmentVariableW(L"PATH", path, pn + 1) == 0) {
+        free(path);
+        return NULL;
+    }
+    size_t nl = wcslen(name);
+    wchar_t *found = NULL;
+    for (wchar_t *d = path; found == NULL && *d != 0;) {
+        wchar_t *end = wcschr(d, L';');
+        size_t dl = end ? (size_t)(end - d) : wcslen(d);
+        wchar_t *next = end ? end + 1 : d + dl;
+        if (dl >= 2 && d[0] == L'"' && d[dl - 1] == L'"') d++, dl -= 2;
+        if (dl > 0) {
+            wchar_t *base = (wchar_t *)malloc((dl + nl + 2) * sizeof(wchar_t));
+            if (base == NULL) gm_trap("out of memory", NULL, 0, 0);
+            memcpy(base, d, dl * sizeof(wchar_t));
+            size_t k = dl;
+            if (d[dl - 1] != L'\\' && d[dl - 1] != L'/') base[k++] = L'\\';
+            memcpy(base + k, name, (nl + 1) * sizeof(wchar_t));
+            found = gm_with_extension(base);
+            free(base);
+        }
+        d = next;
+    }
+    free(path);
+    return found;
+}
+
+/* True if `prog` is a batch file, which Windows runs through cmd.exe. */
+static int gm_is_batch(const wchar_t *prog) {
+    size_t n = wcslen(prog);
+    return n >= 4 && (_wcsicmp(prog + n - 4, L".bat") == 0 || _wcsicmp(prog + n - 4, L".cmd") == 0);
+}
+
+/* True if the argument holds a character that cmd.exe treats specially whatever the quoting
+ * of the command line, so that it cannot be passed to a batch file safely. */
+static int gm_cmd_unsafe(const gm_rt_str *a) {
+    for (size_t i = 0; i < a->len; i++)
+        if (strchr("\"%!^&|<>\r\n", a->ptr[i]) != NULL) return 1;
+    return 0;
 }
 
 /* A child's end of a pipe is inheritable; ours is not. */
@@ -3340,13 +3550,25 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
         }
     }
     int64_t result = 0;
+    wchar_t *prog = NULL;
+    if (!bad) {
+        wchar_t *name = gm_wide(av[0].ptr, av[0].len);
+        prog = name ? gm_find_program(name) : NULL;
+        free(name);
+        if (prog == NULL) {
+            result = gm_io_error(ENOENT);
+        } else if (gm_is_batch(prog)) {
+            for (size_t i = 0; i < argc && result == 0; i++)
+                if (gm_cmd_unsafe(&av[i])) result = gm_io_error(EINVAL);
+        }
+    }
     HANDLE child_h[3] = {NULL, NULL, NULL}, mine[3] = {NULL, NULL, NULL};
     HANDLE null_h = INVALID_HANDLE_VALUE;
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof pi);
     if (bad) {
         result = gm_io_error(EINVAL);
-    } else {
+    } else if (result == 0) {
         gm_flush();
         fflush(stderr);
         gm_rt_acquire();   /* only one child's pipes are inheritable at a time */
@@ -3376,7 +3598,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
             si.hStdInput = child_h[0];
             si.hStdOutput = child_h[1];
             si.hStdError = child_h[2];
-            if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, block, cwd, &si, &pi))
+            if (!CreateProcessW(prog, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, block, cwd, &si, &pi))
                 result = gm_win_err(GetLastError());
         }
         for (int i = 0; i < 3; i++)
@@ -3391,6 +3613,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     free(block);
     free(cmd);
     free(cwd);
+    free(prog);
     if (result != 0) {
         for (int i = 0; i < 3; i++)
             if (mine[i] != NULL) CloseHandle(mine[i]);
@@ -3403,26 +3626,28 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     p->in_h = mine[0];
     p->out_h = mine[1];
     p->err_h = mine[2];
-    gm_rt_acquire();
-    size_t i = 0;
-    while (i < gm_nprocs && gm_procs[i] != NULL) i++;
-    if (i == gm_nprocs) {
-        gm_proc **t = (gm_proc **)realloc(gm_procs, sizeof(gm_proc *) * (gm_nprocs * 2 + 4));
-        if (t == NULL) gm_trap("out of memory", NULL, 0, 0);
-        memset(t + gm_nprocs, 0, sizeof(gm_proc *) * (gm_nprocs + 4));
-        gm_procs = t;
-        gm_nprocs = gm_nprocs * 2 + 4;
-    }
-    gm_procs[i] = p;
-    gm_rt_release();
-    return (int64_t)i + 1;
+    p->refs = 1;
+    int64_t h = gm_table_add(&gm_procs, p);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
 }
 
+/* The child of handle h, with a reference that gm_proc_put drops; NULL if h is not live. */
 static gm_proc *gm_proc_get(int64_t h) {
     gm_rt_acquire();
-    gm_proc *p = h >= 1 && (size_t)h <= gm_nprocs ? gm_procs[h - 1] : NULL;
+    gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
+    if (p != NULL) p->refs++;
     gm_rt_release();
     return p;
+}
+
+static void gm_proc_put(gm_proc *p) {
+    gm_rt_acquire();
+    int last = --p->refs == 0;
+    gm_rt_release();
+    if (!last) return;
+    CloseHandle(p->process);
+    free(p);
 }
 
 /* The error code of a failed pipe operation: a pipe whose other end is closed. */
@@ -3434,10 +3659,13 @@ static int64_t gm_pipe_err(DWORD e) {
 GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
-    if (p->in_h == NULL) return gm_io_error(EINVAL);
+    int64_t r;
     DWORD wrote = 0;
-    if (!WriteFile(p->in_h, data, (DWORD)(n < GM_CHUNK ? n : GM_CHUNK), &wrote, NULL)) return gm_pipe_err(GetLastError());
-    return (int64_t)wrote;
+    if (p->in_h == NULL) r = gm_io_error(EINVAL);
+    else if (!WriteFile(p->in_h, data, (DWORD)(n < GM_CHUNK ? n : GM_CHUNK), &wrote, NULL)) r = gm_pipe_err(GetLastError());
+    else r = (int64_t)wrote;
+    gm_proc_put(p);
+    return r;
 }
 
 GM_API int64_t gm_proc_close_in(int64_t h) {
@@ -3447,6 +3675,7 @@ GM_API int64_t gm_proc_close_in(int64_t h) {
         CloseHandle(p->in_h);
         p->in_h = NULL;
     }
+    gm_proc_put(p);
     return 0;
 }
 
@@ -3456,9 +3685,17 @@ static int gm_pipe_ready(HANDLE h) {
     return !PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail > 0;
 }
 
+static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n);
+
 GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_proc_read(p, buf, n);
+    gm_proc_put(p);
+    return r;
+}
+
+static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
     if (n > 0xffffffffu) n = 0xffffffffu;
     if (n > GM_CHUNK) n = GM_CHUNK;
     for (;;) {
@@ -3489,25 +3726,40 @@ GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
 GM_API int64_t gm_proc_wait(int64_t h) {
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
+    gm_rt_acquire();
+    int busy = p->waiting;
+    p->waiting = 1;
+    gm_rt_release();
+    if (busy) {
+        gm_proc_put(p);
+        return gm_io_error(EBADF);
+    }
     if (p->in_h != NULL) CloseHandle(p->in_h);
     if (p->out_h != NULL) CloseHandle(p->out_h);
     if (p->err_h != NULL) CloseHandle(p->err_h);
     p->in_h = p->out_h = p->err_h = NULL;
-    if (WaitForSingleObject(p->process, INFINITE) != WAIT_OBJECT_0) return gm_win_err(GetLastError());
+    if (WaitForSingleObject(p->process, INFINITE) != WAIT_OBJECT_0) {
+        int64_t e = gm_win_err(GetLastError());
+        gm_rt_acquire();
+        p->waiting = 0;
+        gm_rt_release();
+        gm_proc_put(p);
+        return e;
+    }
     DWORD code = 0;
     GetExitCodeProcess(p->process, &code);
     gm_rt_acquire();
     p->reaped = 1;
-    gm_procs[h - 1] = NULL;
+    gm_table_take(&gm_procs, h);
+    p->refs -= 1;   /* the table's reference; ours is dropped below */
     gm_rt_release();
-    CloseHandle(p->process);
-    free(p);
+    gm_proc_put(p);
     return (int64_t)code;
 }
 
 GM_API int64_t gm_proc_kill(int64_t h) {
     gm_rt_acquire();
-    gm_proc *p = h >= 1 && (size_t)h <= gm_nprocs ? gm_procs[h - 1] : NULL;
+    gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
     int64_t r = 0;
     if (p == NULL || p->reaped) {
         r = gm_io_error(EBADF);
@@ -3832,11 +4084,9 @@ GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
     return gm_finish_main(c.status);
 }
 
-/* A thread's handle is 1 + its index in this table, rather than its address: a pointer
- * turned into an integer and back loses its capability under Fil-C. A joined thread's
- * slot is reused. */
-static gm_thread **gm_threads;
-static size_t gm_nthreads;
+/* A thread's handle names it in this table (see gm_table), rather than being its address: a
+ * pointer turned into an integer and back loses its capability under Fil-C. */
+static gm_table gm_threads;
 
 GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     gm_thread *t = (gm_thread *)malloc(sizeof *t);
@@ -3844,22 +4094,11 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     t->f = (void (*)(void *))f;
     t->arg = arg;
     t->detached = t->finished = 0;
-    gm_rt_acquire();
-    size_t slot = 0;
-    while (slot < gm_nthreads && gm_threads[slot] != NULL) slot++;
-    if (slot == gm_nthreads) {
-        gm_thread **tab = (gm_thread **)realloc(gm_threads, sizeof(gm_thread *) * (gm_nthreads * 2 + 4));
-        if (tab == NULL) {
-            gm_rt_release();
-            free(t);
-            return gm_io_error(ENOMEM);
-        }
-        for (size_t i = gm_nthreads; i < gm_nthreads * 2 + 4; i++) tab[i] = NULL;
-        gm_threads = tab;
-        gm_nthreads = gm_nthreads * 2 + 4;
+    int64_t h = gm_table_add(&gm_threads, t);
+    if (h == 0) {
+        free(t);
+        return gm_io_error(ENOMEM);
     }
-    gm_threads[slot] = t;
-    gm_rt_release();
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, GM_THREAD_STACK_SIZE);
@@ -3867,22 +4106,18 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     pthread_attr_destroy(&attr);
     if (r != 0) {
         gm_rt_acquire();
-        gm_threads[slot] = NULL;
+        gm_table_take(&gm_threads, h);
         gm_rt_release();
         free(t);
         return gm_io_error(r);
     }
-    return (int64_t)slot + 1;
+    return h;
 }
 
 /* Takes the thread of handle h out of the table; NULL if h is not the handle of a live thread. */
 static gm_thread *gm_thread_take(int64_t h) {
     gm_rt_acquire();
-    gm_thread *t = NULL;
-    if (h >= 1 && (uint64_t)h <= gm_nthreads) {
-        t = gm_threads[h - 1];
-        gm_threads[h - 1] = NULL;
-    }
+    gm_thread *t = (gm_thread *)gm_table_take(&gm_threads, h);
     gm_rt_release();
     return t;
 }
@@ -3897,11 +4132,7 @@ GM_API int64_t gm_thread_join(int64_t h) {
 
 GM_API int64_t gm_thread_detach(int64_t h) {
     pthread_mutex_lock(&gm_rt_lock);
-    gm_thread *t = NULL;
-    if (h >= 1 && (uint64_t)h <= gm_nthreads) {
-        t = gm_threads[h - 1];
-        gm_threads[h - 1] = NULL;
-    }
+    gm_thread *t = (gm_thread *)gm_table_take(&gm_threads, h);
     if (t == NULL) {
         pthread_mutex_unlock(&gm_rt_lock);
         return gm_io_error(EBADF);
@@ -4036,9 +4267,8 @@ GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
     return gm_finish_main(c.status);
 }
 
-/* A thread's handle is 1 + its index in this table. A joined thread's slot is reused. */
-static gm_thread **gm_threads;
-static size_t gm_nthreads;
+/* A thread's handle names it in this table (see gm_table). */
+static gm_table gm_threads;
 
 GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     gm_thread *t = (gm_thread *)malloc(sizeof *t);
@@ -4046,44 +4276,29 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     t->f = (void (*)(void *))f;
     t->arg = arg;
     t->detached = t->finished = 0;
-    gm_rt_acquire();
-    size_t slot = 0;
-    while (slot < gm_nthreads && gm_threads[slot] != NULL) slot++;
-    if (slot == gm_nthreads) {
-        gm_thread **tab = (gm_thread **)realloc(gm_threads, sizeof(gm_thread *) * (gm_nthreads * 2 + 4));
-        if (tab == NULL) {
-            gm_rt_release();
-            free(t);
-            return gm_io_error(ENOMEM);
-        }
-        for (size_t i = gm_nthreads; i < gm_nthreads * 2 + 4; i++) tab[i] = NULL;
-        gm_threads = tab;
-        gm_nthreads = gm_nthreads * 2 + 4;
-    }
-    gm_threads[slot] = t;
-    gm_rt_release();
-    uintptr_t h = _beginthreadex(NULL, (unsigned)GM_THREAD_STACK_SIZE, gm_thread_main, t,
-                                 STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    int64_t h = gm_table_add(&gm_threads, t);
     if (h == 0) {
+        free(t);
+        return gm_io_error(ENOMEM);
+    }
+    uintptr_t th = _beginthreadex(NULL, (unsigned)GM_THREAD_STACK_SIZE, gm_thread_main, t,
+                                  STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (th == 0) {
         int e = errno;
         gm_rt_acquire();
-        gm_threads[slot] = NULL;
+        gm_table_take(&gm_threads, h);
         gm_rt_release();
         free(t);
         return gm_io_error(e);
     }
-    t->t = (HANDLE)h;
-    return (int64_t)slot + 1;
+    t->t = (HANDLE)th;
+    return h;
 }
 
 /* Takes the thread of handle h out of the table; NULL if h is not the handle of a live thread. */
 static gm_thread *gm_thread_take(int64_t h) {
     gm_rt_acquire();
-    gm_thread *t = NULL;
-    if (h >= 1 && (uint64_t)h <= gm_nthreads) {
-        t = gm_threads[h - 1];
-        gm_threads[h - 1] = NULL;
-    }
+    gm_thread *t = (gm_thread *)gm_table_take(&gm_threads, h);
     gm_rt_release();
     return t;
 }
@@ -4099,11 +4314,7 @@ GM_API int64_t gm_thread_join(int64_t h) {
 
 GM_API int64_t gm_thread_detach(int64_t h) {
     gm_rt_acquire();
-    gm_thread *t = NULL;
-    if (h >= 1 && (uint64_t)h <= gm_nthreads) {
-        t = gm_threads[h - 1];
-        gm_threads[h - 1] = NULL;
-    }
+    gm_thread *t = (gm_thread *)gm_table_take(&gm_threads, h);
     if (t == NULL) {
         gm_rt_release();
         return gm_io_error(EBADF);
