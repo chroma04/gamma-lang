@@ -4,6 +4,7 @@
 //! See `docs/architecture.md` for an overview of the pipeline.
 
 pub mod cgen;
+#[cfg(not(target_family = "wasm"))]
 pub mod clif;
 pub mod coverage;
 pub mod diag;

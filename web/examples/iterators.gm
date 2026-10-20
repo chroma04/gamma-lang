@@ -1,0 +1,43 @@
+//! Iteration is an effect too: an iterator is a function that performs `yield`, and `for`
+//! handles it. Breaking out of the loop stops the iterator and runs its `defer`s.
+
+fibonacci :: fn() needs Yield(u64) {
+    a: u64 = 0
+    b: u64 = 1
+    while true {
+        yield(a)
+        next := a + b
+        a = b
+        b = next
+    }
+}
+
+words :: fn(s: string) needs Yield(string) {
+    start := 0
+    for i in 0..s.len {
+        if s[i] is ' ' {
+            if i > start { yield(s[start..i]) }
+            start = i + 1
+        }
+    }
+    if s.len > start { yield(s[start..]) }
+}
+
+numbered :: fn(n: u32) needs Yield(u32) + Out {
+    defer print("(iterator cleaned up)\n")
+    for i in 1..=n { yield(i) }
+}
+
+main :: fn() needs Out {
+    for f in fibonacci() {
+        if f > 1000 { break }
+        print("{} ", f)
+    }
+    print("\n")
+    for w in words("the quick  brown fox") { print("[{}]", w) }
+    print("\n")
+    for i in numbered(10) {
+        if i > 3 { break }
+        print("{}\n", i)
+    }
+}

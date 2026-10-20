@@ -849,7 +849,7 @@ main :: fn() -> json.WriteError!() needs Out + Alloc {
 }
 ```
 
-A float is written in the shortest form that reads back as the same value, NaN and infinities are an error, and a number parsed from text keeps its exact literal when written again. See the [reference](../std.md#stdjson) for how duplicate keys, lone surrogates and the nesting limit are treated.
+A float is written in the shortest form that reads back as the same value, NaN and infinities are an error, and a number parsed from text keeps its exact literal when written again. See the [reference](../std/json.md) for how duplicate keys, lone surrogates and the nesting limit are treated.
 
 ## The rest of the tour
 

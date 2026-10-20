@@ -428,6 +428,19 @@ at a point that moves with the run number, so successive runs cover new programs
 gcc and clang. A failure prints the seed and the three outputs; `difftest --print SEED`
 shows the program and `--reduce` shrinks it. The job takes a few minutes.
 
+## The website
+
+`web/` holds the website: a generator that renders the guide, the specification, the
+library reference and these documents into pages, and a playground that runs the
+interpreter, compiled to WebAssembly, in the browser. The *Website* workflow builds it on
+every pull request (failing on a broken internal link, or on a playground example that
+does not run) and publishes it from `main`. [`web/README.md`](../web/README.md) explains
+how to build and preview it locally.
+
+The compiler must keep building for `wasm32-wasip1`: code that needs threads, the C
+library or Cranelift goes behind `cfg(not(target_family = "wasm"))`, with a stand-in for
+WebAssembly hosts (see `src/interp/ffi_wasm.rs`).
+
 ## The specification
 
 `gamma-spec.md` is the definition of the language. If an implementation question

@@ -12,13 +12,8 @@ keywords = ["compiler", "interpreter", "programming-language", "gamma"]
 categories = ["compilers", "development-tools"]
 
 [dependencies]
-cranelift-codegen = { version = "0.135", default-features = false, features = ["std", "x86", "arm64"] }
-cranelift-frontend = "0.135"
-cranelift-module = "0.135"
-cranelift-object = "0.135"
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 libc = "0.2.190"
-libffi = "5.2.0"
 num-bigint = "0.4"
 num-integer = "0.1.47"
 num-rational = { version = "0.4.2", features = ["num-bigint"] }
@@ -28,6 +23,15 @@ serde_json = "1.0.154"
 sha2 = "0.11.1"
 tar = { version = "0.4.46", default-features = false }
 toml_edit = "0.25.17"
+
+# Native-only: the Cranelift back end and calls into C from the interpreter. A WebAssembly
+# build (the web playground, `web/playground/`) leaves them out.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+cranelift-codegen = { version = "0.135", default-features = false, features = ["std", "x86", "arm64"] }
+cranelift-frontend = "0.135"
+cranelift-module = "0.135"
+cranelift-object = "0.135"
+libffi = "5.2.0"
 
 [profile.dev]
 # The compile-time evaluator and the test suite run noticeably faster with

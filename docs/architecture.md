@@ -538,6 +538,13 @@ See `docs/contributing.md` for the debugging switches.
 any pointers into static data (string literals, other constants, functions), so
 the value can later be placed in a compiled program's read-only data.
 
+**On WebAssembly.** The crate also builds for `wasm32-wasip1`, for the web playground
+(`web/playground/`). There are no threads there, so evaluation (`run_entry`, `eval_const`)
+runs on the caller's stack instead of a thread of its own, with `STACK_SIZE` matching the
+stack the playground links with; fibers and `@thread_spawn` report that they cannot start.
+Calls into C are replaced by `ffi_wasm.rs`, which rejects programs with foreign
+declarations, and the Cranelift back end (`src/clif/`) is not compiled.
+
 ## The C back end
 
 `gamma build` and `gamma run --backend=c` translate the checked program to C

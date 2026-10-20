@@ -1,0 +1,77 @@
+name: Website
+
+# Builds the website (web/) with the playground's WebAssembly interpreter on every pull
+# request, and publishes it to GitHub Pages from main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: Build the website
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            web/playground
+            web/sitegen
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Format and lint the web crates
+        run: |
+          cargo fmt --manifest-path web/playground/Cargo.toml -- --check
+          cargo fmt --manifest-path web/sitegen/Cargo.toml -- --check
+          cargo clippy --manifest-path web/playground/Cargo.toml
+          cargo clippy --manifest-path web/sitegen/Cargo.toml --all-targets
+      - name: Build the playground interpreter (wasm32-wasip1)
+        # The playground crate's .cargo/config.toml selects the target and stack size.
+        working-directory: web/playground
+        run: cargo build --release
+      - name: Check the playground examples
+        run: node web/check.mjs web/playground/target/wasm32-wasip1/release/gamma-playground.wasm
+      - name: Test the site generator
+        run: cargo test --manifest-path web/sitegen/Cargo.toml
+      - name: Generate the site
+        run: |
+          cargo run --release --manifest-path web/sitegen/Cargo.toml -- --out _site
+          cp web/playground/target/wasm32-wasip1/release/gamma-playground.wasm _site/assets/gamma-play.wasm
+          touch _site/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Publish to GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

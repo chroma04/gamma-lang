@@ -1,0 +1,7 @@
+[build]
+target = "wasm32-wasip1"
+
+[target.wasm32-wasip1]
+# The interpreter runs on the main stack (there are no threads); see STACK_SIZE in
+# src/interp/mod.rs.
+rustflags = ["-C", "link-arg=-zstack-size=33554432"]
