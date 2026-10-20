@@ -1241,3 +1241,76 @@ fn rename_refuses_names_outside_the_package() {
     assert!(r["error"]["message"].as_str().unwrap().contains("dependency"), "{}", r);
     assert_eq!(lsp.shutdown(), 0);
 }
+
+// --- watched files ---
+
+impl Lsp {
+    /// Initializes a client that supports dynamic registration of file watchers.
+    fn initialize_watching(&mut self) {
+        let caps = json!({"workspace": {"didChangeWatchedFiles": {"dynamicRegistration": true}}});
+        self.result("initialize", json!({"processId": null, "rootUri": null, "capabilities": caps}));
+        self.notify("initialized", json!({}));
+    }
+
+    /// The next request of the server to the client.
+    fn server_request(&mut self) -> Value {
+        let is_request = |m: &Value| m.get("id").is_some() && m.get("method").is_some();
+        if let Some(i) = self.queued.iter().position(is_request) {
+            return self.queued.remove(i);
+        }
+        loop {
+            let m = self.next_message();
+            if is_request(&m) {
+                return m;
+            }
+            self.queued.push(m);
+        }
+    }
+}
+
+#[test]
+fn file_watchers_are_registered_and_changes_on_disk_refresh_importers() {
+    let dir = TempDir::new();
+    let util = dir.write("util/util.gm", "pub double :: fn(n: i32) -> i32 => n * 2\n");
+    let text = "util :: import \"./util\"\n\nmain :: fn() {\n    x := util.double(2)\n    _ = x\n}\n";
+    let main = dir.write("main.gm", text);
+    let mut lsp = Lsp::start();
+    lsp.initialize_watching();
+    let reg = lsp.server_request();
+    assert_eq!(reg["method"], "client/registerCapability");
+    let r = &reg["params"]["registrations"][0];
+    assert_eq!(r["method"], "workspace/didChangeWatchedFiles");
+    let watchers = r["registerOptions"]["watchers"].as_array().unwrap();
+    let globs: Vec<&str> = watchers.iter().map(|w| w["globPattern"].as_str().unwrap()).collect();
+    assert_eq!(globs, ["**/*.gm", "**/gamma.toml"]);
+    let reply = json!({"jsonrpc": "2.0", "id": reg["id"], "result": null});
+    lsp.send_raw(&reply.to_string());
+
+    lsp.open(&main, text);
+    assert_eq!(lsp.diagnostics(&main, 1), Vec::<Value>::new());
+    // Another program rewrites the imported file, which is not open.
+    std::fs::write(&util, "pub other :: fn() {}\n").unwrap();
+    lsp.notify("workspace/didChangeWatchedFiles", json!({"changes": [{"uri": uri(&util), "type": 2}]}));
+    let d = lsp.diagnostics(&main, 1);
+    assert!(d.iter().any(|d| d["message"].as_str().unwrap().contains("no declaration `double`")), "{:?}", d);
+    // A file restored (as a creation) is noticed too.
+    std::fs::write(&util, "pub double :: fn(n: i32) -> i32 => n * 2\n").unwrap();
+    lsp.notify("workspace/didChangeWatchedFiles", json!({"changes": [{"uri": uri(&util), "type": 1}]}));
+    assert_eq!(lsp.diagnostics(&main, 1), Vec::<Value>::new());
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn no_watchers_are_registered_without_client_support() {
+    let dir = TempDir::new();
+    let main = dir.write("main.gm", "main :: fn() {}\n");
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, "main :: fn() {}\n");
+    lsp.diagnostics(&main, 1);
+    assert!(lsp.queued.iter().all(|m| m["method"] != "client/registerCapability"), "{:?}", lsp.queued);
+    // The notification is accepted all the same.
+    lsp.notify("workspace/didChangeWatchedFiles", json!({"changes": [{"uri": uri(&main), "type": 2}]}));
+    assert_eq!(lsp.diagnostics(&main, 1), Vec::<Value>::new());
+    assert_eq!(lsp.shutdown(), 0);
+}

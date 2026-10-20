@@ -45,6 +45,10 @@ pub struct Server<W: Write> {
     shutdown: bool,
     /// Whether `initialize` has been received.
     initialized: bool,
+    /// Whether the client lets the server register for file-watching events.
+    can_watch: bool,
+    /// The number of requests sent to the client.
+    next_request: u64,
     /// Free the compiler's types after each analysis (see [`Analysis::run`]).
     pub recycle: bool,
 }
@@ -94,6 +98,8 @@ impl<W: Write> Server<W> {
             workspace: Workspace::default(),
             shutdown: false,
             initialized: false,
+            can_watch: false,
+            next_request: 0,
             recycle: false,
         }
     }
@@ -226,6 +232,26 @@ impl<W: Write> Server<W> {
                     self.invalidate(&canon(&path));
                 }
             }
+            "initialized" => {
+                if self.can_watch {
+                    self.next_request += 1;
+                    let id = format!("gamma-register-{}", self.next_request);
+                    self.send(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "client/registerCapability",
+                        "params": {"registrations": [{
+                            "id": "gamma-watched-files",
+                            "method": "workspace/didChangeWatchedFiles",
+                            "registerOptions": {"watchers": [
+                                {"globPattern": "**/*.gm"},
+                                {"globPattern": "**/gamma.toml"},
+                            ]},
+                        }]},
+                    }));
+                }
+            }
+            "workspace/didChangeWatchedFiles" => self.watched_files_changed(&params),
             "textDocument/didClose" => {
                 if let Some(uri) = params["textDocument"]["uri"].as_str()
                     && let Some(path) = uri_to_path(uri).map(|p| canon(&p))
@@ -262,6 +288,32 @@ impl<W: Write> Server<W> {
             if a.files.keys().any(|f| dir_of(f) == dir) {
                 self.stale.insert(d.clone());
             }
+        }
+    }
+
+    /// Files changed on disk, as reported by the client's watcher: everything that read
+    /// them is analyzed again. A file created or deleted, or a manifest changed, may
+    /// affect any module, so all analyses are redone.
+    fn watched_files_changed(&mut self, params: &Value) {
+        let mut everything = false;
+        for change in params["changes"].as_array().into_iter().flatten() {
+            let Some(path) = change["uri"].as_str().and_then(uri_to_path).map(|p| canon(&p)) else { continue };
+            let is_gm = path.extension().is_some_and(|e| e == "gm");
+            if is_gm {
+                self.workspace.file_changed(&path);
+                // 1 is created, 2 changed, 3 deleted.
+                if change["type"].as_i64() == Some(2) {
+                    self.invalidate(&path);
+                    continue;
+                }
+            } else if path.file_name().is_none_or(|n| n != "gamma.toml") {
+                continue;
+            }
+            everything = true;
+        }
+        if everything {
+            self.stale.extend(self.analyses.keys().cloned());
+            self.stale.extend(self.open_dirs());
         }
     }
 
@@ -370,6 +422,7 @@ impl<W: Write> Server<W> {
         if offered.is_some_and(|e| e.iter().any(|x| x == "utf-8")) {
             self.enc = Encoding::Utf8;
         }
+        self.can_watch = params["capabilities"]["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"] == true;
         json!({
             "capabilities": {
                 "positionEncoding": self.enc.name(),
