@@ -34,60 +34,10 @@ impl<'a, 's> FnCx<'a, 's> {
             _ => None,
         });
         let wants_pointer = target.is_some_and(|t| matches!(t.kind(), TyKind::FnPtr(_)));
-        // Parameter types come from annotations, or from the expected function type.
-        let mut params: Vec<ParamInfo> = vec![];
-        for p in &lit.sig.params {
-            if p.comptime {
-                self.error(p.span, "compile-time parameters are not supported in function literals");
-            }
-            let annotated = p.ty.as_ref().map(|t| self.resolve_type(t));
-            for n in &p.names {
-                let i = params.len();
-                let ty = match (annotated, &expected) {
-                    (Some(t), _) => t,
-                    // Parts of the expectation that mention type parameters still to be
-                    // inferred (a generic call's `K`) say nothing yet.
-                    (None, Some(sig)) if i < sig.params.len() && !has_param(sig.params[i]) => sig.params[i],
-                    _ => {
-                        self.error(
-                            n.span,
-                            format!("the type of parameter `{}` cannot be inferred here; annotate it", n.name),
-                        );
-                        Ty::error()
-                    }
-                };
-                params.push(ParamInfo { name: n.name, ty, span: n.span, default: None, generic: None, rest: false });
-            }
-        }
-        if let Some(sig) = &expected
-            && sig.params.len() != params.len()
-        {
-            self.error(
-                lit.sig.span,
-                format!("expected a function with {} parameters, but this one has {}", sig.params.len(), params.len()),
-            );
-        }
+        let params = self.literal_params(lit, expected.as_ref());
         let ret_annot = lit.sig.ret.as_ref().map(|r| self.resolve_type(r));
         let ret_known = ret_annot.or(expected.as_ref().map(|s| s.ret).filter(|r| !has_param(*r)));
-        let effects = match &lit.sig.effects {
-            Some(list) => {
-                let module = self.module;
-                self.sema.resolve_effect_set(module, list)
-            }
-            None => expected.as_ref().map(|s| s.effects.clone()).unwrap_or_default(),
-        };
-        // Expected effects that mention type parameters still to be inferred (a generic
-        // call's `Yield(T)`) are taken from what the body performs.
-        let open: Vec<crate::types::EffectId> = if lit.sig.effects.is_none() {
-            effects.effects.iter().filter(|e| has_param_args(e)).map(|e| e.effect).collect()
-        } else {
-            vec![]
-        };
-        let mut effects = if open.is_empty() {
-            effects
-        } else {
-            EffectSet::new(effects.effects.iter().filter(|e| !has_param_args(e)).cloned().collect())
-        };
+        let (mut effects, open) = self.literal_effects(lit, expected.as_ref());
         // The literal passed for an iterator argument (§13.5), checked for being one below.
         let iterator_arg = self.iterator_args.contains(&lit.span);
         // The return type of an `=>` literal without one comes from its body.
@@ -116,40 +66,12 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             param_ids.push(id);
         }
-        let body = match &lit.body {
-            ast::FnBody::Expr(e) if infer_ret => {
-                let b = self.expr(e, None);
-                self.ret = b.ty;
-                b
-            }
-            ast::FnBody::Expr(e) => {
-                let b = self.expr(e, Some(ret));
-                self.coerce(b, ret)
-            }
-            ast::FnBody::Block(b) => {
-                let block = self.block(b, false);
-                // The return type is that of the `return`s: `()` if none has a value.
-                if let Some(open) = self.open_ret.take() {
-                    self.ret = open.unwrap_or(Ty::unit());
-                }
-                self.finish_block_body(block, b)
-            }
-        };
+        let body = self.literal_body(&lit.body, ret, infer_ret);
         if open_fn.is_some() {
             self.open_fns.pop();
         }
         let final_ret = self.ret;
-        if matches!(self.infer.resolve(final_ret).kind(), TyKind::Fn(_)) {
-            let at = match (&lit.sig.ret, &lit.body) {
-                (Some(r), _) => r.span,
-                (None, ast::FnBody::Expr(e)) => e.span,
-                (None, _) => lit.sig.span,
-            };
-            self.error(
-                at,
-                "a second-class function cannot be returned; return a function pointer `^fn(…)` instead (§11.6)",
-            );
-        }
+        self.reject_returned_closure(lit, final_ret);
         let (locals, performed, captures) = self.exit_fn();
         if iterator_arg && !performed.iter().any(|(e, _)| Some(e.effect) == self.sema.yield_effect) {
             let ty = self.infer.resolve(final_ret);
@@ -162,31 +84,8 @@ impl<'a, 's> FnCx<'a, 's> {
             return error_expr(span);
         }
         for id in &open {
-            let mut found: Vec<EffectRef> = vec![];
-            for (e, _) in &performed {
-                if e.effect == *id && !found.contains(e) {
-                    found.push(e.clone());
-                }
-            }
-            if found.len() > 1 {
-                let list: Vec<String> = found.iter().map(|e| format!("`{}`", e)).collect();
-                self.error(
-                    span,
-                    format!(
-                        "this performs {}, so the type it is passed at cannot be inferred; write the type argument",
-                        list.join(" and ")
-                    ),
-                );
+            if !self.infer_open_effect(*id, &performed, &mut effects, fn_id, span) {
                 return error_expr(span);
-            }
-            if let Some(e) = found.pop() {
-                let mut all = effects.effects.to_vec();
-                all.push(e);
-                effects = EffectSet::new(all);
-                self.sema.prog.fns[fn_id.index()].effects = effects.clone();
-                if let Some(s) = self.sema.sigs.get_mut(&fn_id) {
-                    s.effects = effects.clone();
-                }
             }
         }
         if infer_ret || infer_block {
@@ -194,27 +93,8 @@ impl<'a, 's> FnCx<'a, 's> {
             s.ret = final_ret;
             self.sema.prog.fns[fn_id.index()].ret = final_ret;
         }
-        // Effects in the literal's own set are performed where it is called; the
-        // others are performed where it is written (§11.6, §12.3).
-        let mut own = vec![];
-        for (e, sp) in performed {
-            if !effects.contains(&e) {
-                if wants_pointer && name.is_none() {
-                    let n = e.to_string();
-                    self.error(
-                        sp,
-                        format!("a function pointer performs only the effects in its type, and `{}` is not among them (§11.7)", n),
-                    );
-                    continue;
-                }
-                own.push(e.clone());
-                if name.is_some() && !captures {
-                    self.undeclared_effect(&e, sp, &effects);
-                } else {
-                    self.performed.push((e, sp));
-                }
-            }
-        }
+        let own =
+            self.route_performed(performed, &effects, wants_pointer && name.is_none(), name.is_some() && !captures);
         let parent = if captures { self.fn_id } else { None };
         self.sema.prog.fns[fn_id.index()].parent = parent;
         // The value carries the handler context where it is written for its own effects,
@@ -232,14 +112,7 @@ impl<'a, 's> FnCx<'a, 's> {
             _ => CallConv::C,
         };
         if callconv != CallConv::C {
-            if self.sema.within_sys(&effects) {
-                self.sema.prog.fns[fn_id.index()].callconv = callconv;
-            } else {
-                self.error(
-                    span,
-                    "a function with a calling convention other than C must have effects at most `{Sys}` (§19.2)",
-                );
-            }
+            self.set_literal_callconv(fn_id, callconv, &effects, span);
         }
         let fty =
             FnTy { params: params.iter().map(|p| p.ty).collect(), ret: final_ret, effects, variadic: false, callconv };
@@ -262,6 +135,192 @@ impl<'a, 's> FnCx<'a, 's> {
             };
             mk(ty, tir::ExprKind::FnRef(fn_id), span)
         }
+    }
+
+    /// A literal cannot return a second-class function (§11.6).
+    fn reject_returned_closure(&mut self, lit: &ast::FnLit, final_ret: Ty) {
+        if matches!(self.infer.resolve(final_ret).kind(), TyKind::Fn(_)) {
+            let at = match (&lit.sig.ret, &lit.body) {
+                (Some(r), _) => r.span,
+                (None, ast::FnBody::Expr(e)) => e.span,
+                (None, _) => lit.sig.span,
+            };
+            self.error(
+                at,
+                "a second-class function cannot be returned; return a function pointer `^fn(…)` instead (§11.6)",
+            );
+        }
+    }
+
+    /// Gives the literal `fn_id` a calling convention other than C, which needs effects at most `{Sys}`.
+    fn set_literal_callconv(&mut self, fn_id: FnId, callconv: CallConv, effects: &EffectSet, span: Span) {
+        if self.sema.within_sys(effects) {
+            self.sema.prog.fns[fn_id.index()].callconv = callconv;
+        } else {
+            self.error(
+                span,
+                "a function with a calling convention other than C must have effects at most `{Sys}` (§19.2)",
+            );
+        }
+    }
+
+    /// The parameters of a literal. Types come from annotations, or from the expected function type.
+    fn literal_params(&mut self, lit: &ast::FnLit, expected: Option<&FnTy>) -> Vec<ParamInfo> {
+        let mut params: Vec<ParamInfo> = vec![];
+        for p in &lit.sig.params {
+            if p.comptime {
+                self.error(p.span, "compile-time parameters are not supported in function literals");
+            }
+            let annotated = p.ty.as_ref().map(|t| self.resolve_type(t));
+            for n in &p.names {
+                let i = params.len();
+                let ty = match (annotated, expected) {
+                    (Some(t), _) => t,
+                    // Parts of the expectation that mention type parameters still to be
+                    // inferred (a generic call's `K`) say nothing yet.
+                    (None, Some(sig)) if i < sig.params.len() && !has_param(sig.params[i]) => sig.params[i],
+                    _ => {
+                        self.error(
+                            n.span,
+                            format!("the type of parameter `{}` cannot be inferred here; annotate it", n.name),
+                        );
+                        Ty::error()
+                    }
+                };
+                params.push(ParamInfo { name: n.name, ty, span: n.span, default: None, generic: None, rest: false });
+            }
+        }
+        if let Some(sig) = expected
+            && sig.params.len() != params.len()
+        {
+            self.error(
+                lit.sig.span,
+                format!("expected a function with {} parameters, but this one has {}", sig.params.len(), params.len()),
+            );
+        }
+        params
+    }
+
+    /// The declared effects of a literal, or the expected ones, and the effects among the latter
+    /// that are still open (their arguments mention type parameters to be inferred).
+    fn literal_effects(
+        &mut self,
+        lit: &ast::FnLit,
+        expected: Option<&FnTy>,
+    ) -> (EffectSet, Vec<crate::types::EffectId>) {
+        let effects = match &lit.sig.effects {
+            Some(list) => {
+                let module = self.module;
+                self.sema.resolve_effect_set(module, list)
+            }
+            None => expected.map(|s| s.effects.clone()).unwrap_or_default(),
+        };
+        // Expected effects that mention type parameters still to be inferred (a generic
+        // call's `Yield(T)`) are taken from what the body performs.
+        let open: Vec<crate::types::EffectId> = if lit.sig.effects.is_none() {
+            effects.effects.iter().filter(|e| has_param_args(e)).map(|e| e.effect).collect()
+        } else {
+            vec![]
+        };
+        if open.is_empty() {
+            (effects, open)
+        } else {
+            (EffectSet::new(effects.effects.iter().filter(|e| !has_param_args(e)).cloned().collect()), open)
+        }
+    }
+
+    /// Checks the body of a literal whose function has been entered.
+    fn literal_body(&mut self, body: &ast::FnBody, ret: Ty, infer_ret: bool) -> Expr {
+        match body {
+            ast::FnBody::Expr(e) if infer_ret => {
+                let b = self.expr(e, None);
+                self.ret = b.ty;
+                b
+            }
+            ast::FnBody::Expr(e) => {
+                let b = self.expr(e, Some(ret));
+                self.coerce(b, ret)
+            }
+            ast::FnBody::Block(b) => {
+                let block = self.block(b, false);
+                // The return type is that of the `return`s: `()` if none has a value.
+                if let Some(open) = self.open_ret.take() {
+                    self.ret = open.unwrap_or(Ty::unit());
+                }
+                self.finish_block_body(block, b)
+            }
+        }
+    }
+
+    /// Adds to `effects` (and the function's signature) the instance of the open effect `id` that
+    /// the body performed. False after an error: the instance is ambiguous.
+    fn infer_open_effect(
+        &mut self,
+        id: crate::types::EffectId,
+        performed: &[(EffectRef, Span)],
+        effects: &mut EffectSet,
+        fn_id: FnId,
+        span: Span,
+    ) -> bool {
+        let mut found: Vec<EffectRef> = vec![];
+        for (e, _) in performed {
+            if e.effect == id && !found.contains(e) {
+                found.push(e.clone());
+            }
+        }
+        if found.len() > 1 {
+            let list: Vec<String> = found.iter().map(|e| format!("`{}`", e)).collect();
+            self.error(
+                span,
+                format!(
+                    "this performs {}, so the type it is passed at cannot be inferred; write the type argument",
+                    list.join(" and ")
+                ),
+            );
+            return false;
+        }
+        if let Some(e) = found.pop() {
+            let mut all = effects.effects.to_vec();
+            all.push(e);
+            *effects = EffectSet::new(all);
+            self.sema.prog.fns[fn_id.index()].effects = effects.clone();
+            if let Some(s) = self.sema.sigs.get_mut(&fn_id) {
+                s.effects = effects.clone();
+            }
+        }
+        true
+    }
+
+    /// Effects in the literal's own set are performed where it is called; the others are
+    /// performed where it is written (§11.6, §12.3). Returns those the literal performs outside
+    /// its set, which it carries the handlers for.
+    fn route_performed(
+        &mut self,
+        performed: Vec<(EffectRef, Span)>,
+        effects: &EffectSet,
+        pointer_literal: bool,
+        undeclared_is_error: bool,
+    ) -> Vec<EffectRef> {
+        let mut own = vec![];
+        for (e, sp) in performed {
+            if !effects.contains(&e) {
+                if pointer_literal {
+                    let n = e.to_string();
+                    self.error(
+                        sp,
+                        format!("a function pointer performs only the effects in its type, and `{}` is not among them (§11.7)", n),
+                    );
+                    continue;
+                }
+                own.push(e.clone());
+                if undeclared_is_error {
+                    self.undeclared_effect(&e, sp, effects);
+                } else {
+                    self.performed.push((e, sp));
+                }
+            }
+        }
+        own
     }
 
     pub fn recursive_without_ret(&mut self, name: Symbol, span: Span) {

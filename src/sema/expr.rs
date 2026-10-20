@@ -31,20 +31,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 mk(ty, tir::ExprKind::Int(BigInt::from(l.value.clone())), span)
             }
-            ExprKind::Float(l) => match l.suffix {
-                Some(s) => {
-                    let fty = match s {
-                        crate::syntax::token::FloatSuffix::F16 => crate::types::FloatTy::F16,
-                        crate::syntax::token::FloatSuffix::F32 => crate::types::FloatTy::F32,
-                        crate::syntax::token::FloatSuffix::F64 => crate::types::FloatTy::F64,
-                    };
-                    mk(Ty::intern(TyKind::Float(fty)), tir::ExprKind::UntypedFloat(Rc::new(l.value.clone())), span)
-                }
-                None => {
-                    let ty = self.literal_var(VarKind::Float);
-                    mk(ty, tir::ExprKind::UntypedFloat(Rc::new(l.value.clone())), span)
-                }
-            },
+            ExprKind::Float(l) => self.float_literal(l, span),
             ExprKind::Str(s) => match s.kind {
                 crate::syntax::token::StrKind::C => {
                     mk(Ty::many_ptr(true, Ty::u8()), tir::ExprKind::CStr(s.bytes.clone().into()), span)
@@ -52,18 +39,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => mk(Ty::string(), tir::ExprKind::Str(s.bytes.clone().into()), span),
             },
             ExprKind::Bool(b) => mk(Ty::bool(), tir::ExprKind::Bool(*b), span),
-            ExprKind::Null => match expect.map(|t| self.infer.shallow(t)) {
-                Some(t) if matches!(t.kind(), TyKind::Optional(_)) => mk(t, tir::ExprKind::Null, span),
-                // `null` where an `E!?T` is expected is the success value `null` (§10.3).
-                Some(t) if matches!(t.kind(), TyKind::Result { ok, .. } if matches!(ok.kind(), TyKind::Optional(_))) => {
-                    let TyKind::Result { ok, .. } = t.kind() else { unreachable!() };
-                    mk(*ok, tir::ExprKind::Null, span)
-                }
-                _ => {
-                    self.error(span, "cannot infer the type of `null` here; annotate the optional type");
-                    error_expr(span)
-                }
-            },
+            ExprKind::Null => self.null_value(expect, span),
             ExprKind::Uninit => {
                 self.error(span, "`---` may only initialize a variable, field or argument");
                 error_expr(span)
@@ -90,85 +66,22 @@ impl<'a, 's> FnCx<'a, 's> {
                 let l = self.expr(lhs, None);
                 self.binary_op(*op, l, rhs, span)
             }
-            ExprKind::Deref(p) => {
-                let p = self.expr(p, None);
-                match self.infer.shallow(p.ty).kind() {
-                    TyKind::Ptr { pointee, .. } => mk(*pointee, tir::ExprKind::Deref(Box::new(p)), span),
-                    TyKind::Error => error_expr(span),
-                    _ => {
-                        let t = self.infer.resolve(p.ty);
-                        self.error(span, format!("`^` dereferences a pointer `^T`, but this is `{}`", t));
-                        error_expr(span)
-                    }
-                }
-            }
+            ExprKind::Deref(p) => self.deref_expr(p, span),
             ExprKind::Index { base, index } => self.index(base, index, span),
             ExprKind::Slice { base, lo, hi, inclusive } => {
                 self.slice_expr(base, lo.as_deref(), hi.as_deref(), *inclusive, span)
             }
             ExprKind::Field { base, name } => self.field(base, *name, span),
-            ExprKind::TupleField { base, index, .. } => {
-                let b = self.expr(base, None);
-                let bt = self.infer.resolve(b.ty);
-                let b = self.auto_deref(b);
-                match self.infer.resolve(b.ty).kind() {
-                    TyKind::Tuple { elems, .. } if (*index as usize) < elems.len() => {
-                        mk(elems[*index as usize], tir::ExprKind::Field { base: Box::new(b), index: *index }, span)
-                    }
-                    TyKind::Error => error_expr(span),
-                    _ => {
-                        self.error(span, format!("type `{}` has no element {}", bt, index));
-                        error_expr(span)
-                    }
-                }
-            }
+            ExprKind::TupleField { base, index, .. } => self.tuple_field(base, *index, span),
             ExprKind::Call { callee, args, .. } => self.call(callee, args, expect, span),
             ExprKind::If(i) => self.if_expr(i, true, expect),
             ExprKind::Match(m) => self.match_expr(m, true, expect),
             ExprKind::Fn(lit) => self.fn_literal(lit, expect, None, span),
             ExprKind::Handler(lit) => self.handler_literal(lit, None, span),
             ExprKind::With(w) => self.with_expr(w, true, expect),
-            ExprKind::OptUnwrap(inner) => {
-                let v = self.expr(inner, None);
-                match self.infer.resolve(v.ty).kind() {
-                    TyKind::Optional(t) => mk(*t, tir::ExprKind::Unwrap { expr: Box::new(v), is_result: false }, span),
-                    TyKind::Error => error_expr(span),
-                    _ => {
-                        let t = self.infer.resolve(v.ty);
-                        self.error(span, format!("`?` unwraps an optional, but this is `{}`", t));
-                        error_expr(span)
-                    }
-                }
-            }
+            ExprKind::OptUnwrap(inner) => self.opt_unwrap(inner, span),
             ExprKind::ResUnwrap(inner) => self.res_unwrap(inner, span),
-            ExprKind::Bang { lhs, rhs } => {
-                if self.type_of_name(lhs).is_some() {
-                    self.error(span, "expected a value, found the error-union type `E!T`");
-                    return error_expr(span);
-                }
-                // `x!(args)`: unwrap, then call (§A.7 rule 3).
-                let callee = self.res_unwrap(lhs, lhs.span.to(span.shrink_to_lo()));
-                let args: Vec<ast::Arg> = match &rhs.kind {
-                    ExprKind::Paren(a) => {
-                        vec![ast::Arg { kind: ast::ArgKind::Positional((**a).clone()), span: a.span }]
-                    }
-                    ExprKind::Tuple(elems) => elems
-                        .iter()
-                        .map(|el| ast::Arg {
-                            kind: match el.name {
-                                Some(n) => ast::ArgKind::Named(n, el.value.clone()),
-                                None => ast::ArgKind::Positional(el.value.clone()),
-                            },
-                            span: el.value.span,
-                        })
-                        .collect(),
-                    _ => {
-                        self.error(rhs.span, "this is a type, but `!` follows a value; to unwrap twice write `(x!)?`");
-                        return error_expr(span);
-                    }
-                };
-                self.call_value(callee, &args, span)
-            }
+            ExprKind::Bang { lhs, rhs } => self.bang_call(lhs, rhs, span),
             ExprKind::Else { lhs, capture, rhs } => self.else_expr(lhs, *capture, rhs, expect, span),
             ExprKind::Block(b) => self.block_expected(b, true, expect),
             ExprKind::Return(v) => self.return_expr(v.as_deref(), span),
@@ -191,48 +104,13 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             // A type prefix before a construction applies to the whole type (§A.7 rule 12).
             ExprKind::ArrayType { len, elem } if construction_call(elem).is_some() => {
-                let Some(ExprKind::Call { args, .. }) = construction_call(elem).map(|c| &c.kind) else {
-                    unreachable!()
-                };
-                // `[2][3]i32(…)`: the element type is everything after the outer prefix.
-                if let Some(l) = len
-                    && self.sema.length_is_type(self.module, l)
-                {
-                    let t = self.resolve_type(&without_call(e));
-                    return match t.kind() {
-                        TyKind::Array { elem, kind: crate::types::ArrayKind::Enum(index), .. } => {
-                            self.construct_enum_array(t, *index, *elem, args, span)
-                        }
-                        _ => error_expr(span),
-                    };
-                }
-                let elem_ty = self.resolve_type(&without_call(elem));
-                let len = match len {
-                    Some(l) => match self.sema.array_len(self.module, l) {
-                        Some(ArrayLen::Known(n)) => Some(n),
-                        Some(ArrayLen::Param(len)) => {
-                            let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
-                            return self.construct_param_array(t, elem_ty, args, span);
-                        }
-                        None => return error_expr(span),
-                    },
-                    None => None,
-                };
-                self.construct_array(None, len, elem_ty, args, span)
+                self.array_type_construction(e, len.as_deref(), elem, span)
             }
             // `#simd [4]f32(…)`: constructing a vector (§5.6.2).
             ExprKind::Attributed { attrs, inner }
                 if matches!(inner.kind, ExprKind::ArrayType { .. }) && construction_call(inner).is_some() =>
             {
-                let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else {
-                    unreachable!()
-                };
-                let module = self.module;
-                let t = self.sema.vector_type(module, attrs, &without_call(inner), span);
-                match t.vector_parts() {
-                    Some((n, elem)) => self.construct_array(Some(t), Some(n), elem, args, span),
-                    None => error_expr(span),
-                }
+                self.vector_construction(attrs, inner, span)
             }
             ExprKind::OptionalType(inner) if construction_call(inner).is_some() => {
                 let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else {
@@ -260,6 +138,159 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
+    }
+
+    /// A float literal: of its suffix's type, or of a type still to be inferred.
+    fn float_literal(&mut self, l: &crate::syntax::token::FloatLit, span: Span) -> Expr {
+        let ty = match l.suffix {
+            Some(s) => {
+                let fty = match s {
+                    crate::syntax::token::FloatSuffix::F16 => crate::types::FloatTy::F16,
+                    crate::syntax::token::FloatSuffix::F32 => crate::types::FloatTy::F32,
+                    crate::syntax::token::FloatSuffix::F64 => crate::types::FloatTy::F64,
+                };
+                Ty::intern(TyKind::Float(fty))
+            }
+            None => self.literal_var(VarKind::Float),
+        };
+        mk(ty, tir::ExprKind::UntypedFloat(Rc::new(l.value.clone())), span)
+    }
+
+    /// `#simd [4]f32(…)`: constructing a vector (§5.6.2).
+    fn vector_construction(&mut self, attrs: &[ast::Attribute], inner: &ast::Expr, span: Span) -> Expr {
+        let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else { unreachable!() };
+        let module = self.module;
+        let t = self.sema.vector_type(module, attrs, &without_call(inner), span);
+        match t.vector_parts() {
+            Some((n, elem)) => self.construct_array(Some(t), Some(n), elem, args, span),
+            None => error_expr(span),
+        }
+    }
+
+    /// `null`, typed by the optional (or `E!?T`) it is expected to be.
+    fn null_value(&mut self, expect: Option<Ty>, span: Span) -> Expr {
+        match expect.map(|t| self.infer.shallow(t)) {
+            Some(t) if matches!(t.kind(), TyKind::Optional(_)) => mk(t, tir::ExprKind::Null, span),
+            // `null` where an `E!?T` is expected is the success value `null` (§10.3).
+            Some(t) if matches!(t.kind(), TyKind::Result { ok, .. } if matches!(ok.kind(), TyKind::Optional(_))) => {
+                let TyKind::Result { ok, .. } = t.kind() else { unreachable!() };
+                mk(*ok, tir::ExprKind::Null, span)
+            }
+            _ => {
+                self.error(span, "cannot infer the type of `null` here; annotate the optional type");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `p^`.
+    fn deref_expr(&mut self, p: &ast::Expr, span: Span) -> Expr {
+        let p = self.expr(p, None);
+        match self.infer.shallow(p.ty).kind() {
+            TyKind::Ptr { pointee, .. } => mk(*pointee, tir::ExprKind::Deref(Box::new(p)), span),
+            TyKind::Error => error_expr(span),
+            _ => {
+                let t = self.infer.resolve(p.ty);
+                self.error(span, format!("`^` dereferences a pointer `^T`, but this is `{}`", t));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `t.0`: an element of a tuple.
+    fn tuple_field(&mut self, base: &ast::Expr, index: u32, span: Span) -> Expr {
+        let b = self.expr(base, None);
+        let bt = self.infer.resolve(b.ty);
+        let b = self.auto_deref(b);
+        match self.infer.resolve(b.ty).kind() {
+            TyKind::Tuple { elems, .. } if (index as usize) < elems.len() => {
+                mk(elems[index as usize], tir::ExprKind::Field { base: Box::new(b), index }, span)
+            }
+            TyKind::Error => error_expr(span),
+            _ => {
+                self.error(span, format!("type `{}` has no element {}", bt, index));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `x?`: unwraps an optional.
+    fn opt_unwrap(&mut self, inner: &ast::Expr, span: Span) -> Expr {
+        let v = self.expr(inner, None);
+        match self.infer.resolve(v.ty).kind() {
+            TyKind::Optional(t) => mk(*t, tir::ExprKind::Unwrap { expr: Box::new(v), is_result: false }, span),
+            TyKind::Error => error_expr(span),
+            _ => {
+                let t = self.infer.resolve(v.ty);
+                self.error(span, format!("`?` unwraps an optional, but this is `{}`", t));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `x!(args)`: unwrap, then call (§A.7 rule 3).
+    fn bang_call(&mut self, lhs: &ast::Expr, rhs: &ast::Expr, span: Span) -> Expr {
+        if self.type_of_name(lhs).is_some() {
+            self.error(span, "expected a value, found the error-union type `E!T`");
+            return error_expr(span);
+        }
+        let callee = self.res_unwrap(lhs, lhs.span.to(span.shrink_to_lo()));
+        let args: Vec<ast::Arg> = match &rhs.kind {
+            ExprKind::Paren(a) => {
+                vec![ast::Arg { kind: ast::ArgKind::Positional((**a).clone()), span: a.span }]
+            }
+            ExprKind::Tuple(elems) => elems
+                .iter()
+                .map(|el| ast::Arg {
+                    kind: match el.name {
+                        Some(n) => ast::ArgKind::Named(n, el.value.clone()),
+                        None => ast::ArgKind::Positional(el.value.clone()),
+                    },
+                    span: el.value.span,
+                })
+                .collect(),
+            _ => {
+                self.error(rhs.span, "this is a type, but `!` follows a value; to unwrap twice write `(x!)?`");
+                return error_expr(span);
+            }
+        };
+        self.call_value(callee, &args, span)
+    }
+
+    /// `[N]T(…)` and `[N][M]T(…)`: an array type prefix applied to a construction `e` (§A.7 rule 12).
+    fn array_type_construction(
+        &mut self,
+        e: &ast::Expr,
+        len: Option<&ast::Expr>,
+        elem: &ast::Expr,
+        span: Span,
+    ) -> Expr {
+        let Some(ExprKind::Call { args, .. }) = construction_call(elem).map(|c| &c.kind) else { unreachable!() };
+        // `[2][3]i32(…)`: the element type is everything after the outer prefix.
+        if let Some(l) = len
+            && self.sema.length_is_type(self.module, l)
+        {
+            let t = self.resolve_type(&without_call(e));
+            return match t.kind() {
+                TyKind::Array { elem, kind: crate::types::ArrayKind::Enum(index), .. } => {
+                    self.construct_enum_array(t, *index, *elem, args, span)
+                }
+                _ => error_expr(span),
+            };
+        }
+        let elem_ty = self.resolve_type(&without_call(elem));
+        let len = match len {
+            Some(l) => match self.sema.array_len(self.module, l) {
+                Some(ArrayLen::Known(n)) => Some(n),
+                Some(ArrayLen::Param(len)) => {
+                    let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
+                    return self.construct_param_array(t, elem_ty, args, span);
+                }
+                None => return error_expr(span),
+            },
+            None => None,
+        };
+        self.construct_array(None, len, elem_ty, args, span)
     }
 
     /// A name used as a value.
@@ -538,66 +569,8 @@ impl<'a, 's> FnCx<'a, 's> {
 
     fn unary(&mut self, op: ast::UnOp, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
         match op {
-            ast::UnOp::Neg => {
-                // A minus applied directly to a literal is part of the literal (§7.4.1).
-                let mut v = self.expr(operand, expect);
-                match &mut v.kind {
-                    tir::ExprKind::Int(i) if is_literal(operand) || v.ty.is_infer() => {
-                        *i = -i.clone();
-                        v.span = span;
-                        return v;
-                    }
-                    // Not for zero: exact rationals have no negative zero, and `-0.0` must keep its sign.
-                    tir::ExprKind::UntypedFloat(r)
-                        if (is_literal(operand) || v.ty.is_infer()) && !num_traits::Zero::is_zero(&**r) =>
-                    {
-                        *r = Rc::new(-(**r).clone());
-                        v.span = span;
-                        return v;
-                    }
-                    _ => {}
-                }
-                if self.infer.resolve(v.ty).is_vector() {
-                    return self.vector_unary(op, v, span);
-                }
-                self.obligations.push(Obligation::Numeric {
-                    ty: v.ty,
-                    span,
-                    op: "-",
-                    int_only: false,
-                    signed_only: true,
-                });
-                mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(v) }, span)
-            }
-            ast::UnOp::BitNot => {
-                let v = self.expr(operand, expect);
-                let st = self.infer.resolve(v.ty);
-                if st.is_vector() {
-                    return self.vector_unary(op, v, span);
-                }
-                if let Some(u) = self.bits_operand(st, "~", span) {
-                    let x = self.bits_convert(v, u);
-                    let mut n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
-                    // Padding fields `_` stay zero (§5.10.5): only the named fields are complemented.
-                    if let Some(mask) = self.bits_padding_mask(st) {
-                        let m = mk(u, tir::ExprKind::Int(mask), span);
-                        n = mk(
-                            u,
-                            tir::ExprKind::Binary { op: tir::BinOp::BitAnd, lhs: Box::new(n), rhs: Box::new(m) },
-                            span,
-                        );
-                    }
-                    return self.bits_convert(n, st);
-                }
-                self.obligations.push(Obligation::Numeric {
-                    ty: v.ty,
-                    span,
-                    op: "~",
-                    int_only: true,
-                    signed_only: false,
-                });
-                mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(v) }, span)
-            }
+            ast::UnOp::Neg => self.neg_expr(operand, expect, span),
+            ast::UnOp::BitNot => self.bit_not_expr(operand, expect, span),
             ast::UnOp::Not => {
                 let v = self.expr(operand, Some(Ty::bool()));
                 if self.infer.resolve(v.ty).is_vector() {
@@ -606,39 +579,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 let v = self.expect_bool(v);
                 mk(Ty::bool(), tir::ExprKind::Unary { op: tir::UnOp::Not, operand: Box::new(v) }, span)
             }
-            ast::UnOp::AddrOf => {
-                let temp_ok = std::mem::take(&mut self.temp_ref_arg);
-                let v = self.expr(operand, None);
-                if self.reject_second_class(&v, "the target of `&`") {
-                    return error_expr(span);
-                }
-                if let tir::ExprKind::Field { base, .. } = &v.kind
-                    && let TyKind::Adt(id, _) = base.ty.kind()
-                    && matches!(
-                        self.sema.prog.adts.get(id).map(|d| &d.kind),
-                        Some(tir::AdtKind::Struct { bits: Some(_), .. })
-                    )
-                {
-                    self.error(span, "the fields of a `#bits` struct have no address (§5.10.5)");
-                    return error_expr(span);
-                }
-                match self.place_mutability(&v) {
-                    Some(m) => {
-                        let ty = Ty::ptr(!m, v.ty);
-                        mk(ty, tir::ExprKind::AddrOf(Box::new(v)), span)
-                    }
-                    // `f(&g(x))` for a `^const T` parameter: a temporary that lives until
-                    // the call returns, as for a method's receiver (§7.10).
-                    None if temp_ok => mk(Ty::ptr(true, v.ty), tir::ExprKind::AddrOfTemp(Box::new(v)), span),
-                    None => {
-                        self.error(
-                            span,
-                            "`&` needs a place (a variable, `p^`, field or element), not a temporary value",
-                        );
-                        error_expr(span)
-                    }
-                }
-            }
+            ast::UnOp::AddrOf => self.addr_of_expr(operand, span),
             // `!e` where `?(E!T)` is expected: the result, then wrapped (§6.4).
             ast::UnOp::MakeErr
                 if let Some(inner) = expect.map(|t| self.infer.shallow(t)).and_then(|t| t.optional_inner())
@@ -647,34 +588,116 @@ impl<'a, 's> FnCx<'a, 's> {
                 let r = self.unary(op, operand, Some(inner), span);
                 self.coerce(r, expect.unwrap())
             }
-            ast::UnOp::MakeErr => match expect.map(|t| self.infer.shallow(t)) {
-                Some(t) if matches!(t.kind(), TyKind::Result { .. }) => {
-                    let TyKind::Result { err, .. } = t.kind() else { unreachable!() };
-                    let err = *err;
-                    let v = self.expr(operand, Some(err));
-                    let vt = self.infer.resolve(v.ty);
-                    // `!e` with `e` of a type that lifts into the error union (§10.6).
-                    let v = if !vt.has_infer() && vt != err && self.coercion_steps(vt, err).is_none() {
-                        match self.lift_variant(vt, err) {
-                            Ok(i) => mk(err, tir::ExprKind::Variant { variant: i, payload: Some(Box::new(v)) }, span),
-                            Err(_) => self.coerce(v, err),
-                        }
-                    } else {
-                        self.coerce(v, err)
-                    };
-                    mk(t, tir::ExprKind::MakeErr(Box::new(v)), span)
-                }
-                _ => {
-                    let hint = if expect.is_none_or(|t| t.is_bool()) {
-                        " (`!e` makes an error; logical negation is `not e`)"
-                    } else {
-                        ""
-                    };
-                    self.error(span, format!("cannot infer the result type of `!e` here{}", hint));
-                    error_expr(span)
-                }
-            },
+            ast::UnOp::MakeErr => self.make_err_expr(operand, expect, span),
             ast::UnOp::Try => self.try_expr(operand, span),
+        }
+    }
+
+    /// `-x`.
+    fn neg_expr(&mut self, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
+        // A minus applied directly to a literal is part of the literal (§7.4.1).
+        let mut v = self.expr(operand, expect);
+        match &mut v.kind {
+            tir::ExprKind::Int(i) if is_literal(operand) || v.ty.is_infer() => {
+                *i = -i.clone();
+                v.span = span;
+                return v;
+            }
+            // Not for zero: exact rationals have no negative zero, and `-0.0` must keep its sign.
+            tir::ExprKind::UntypedFloat(r)
+                if (is_literal(operand) || v.ty.is_infer()) && !num_traits::Zero::is_zero(&**r) =>
+            {
+                *r = Rc::new(-(**r).clone());
+                v.span = span;
+                return v;
+            }
+            _ => {}
+        }
+        if self.infer.resolve(v.ty).is_vector() {
+            return self.vector_unary(ast::UnOp::Neg, v, span);
+        }
+        self.obligations.push(Obligation::Numeric { ty: v.ty, span, op: "-", int_only: false, signed_only: true });
+        mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(v) }, span)
+    }
+
+    /// `~x`.
+    fn bit_not_expr(&mut self, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
+        let v = self.expr(operand, expect);
+        let st = self.infer.resolve(v.ty);
+        if st.is_vector() {
+            return self.vector_unary(ast::UnOp::BitNot, v, span);
+        }
+        if let Some(u) = self.bits_operand(st, "~", span) {
+            let x = self.bits_convert(v, u);
+            let mut n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
+            // Padding fields `_` stay zero (§5.10.5): only the named fields are complemented.
+            if let Some(mask) = self.bits_padding_mask(st) {
+                let m = mk(u, tir::ExprKind::Int(mask), span);
+                n = mk(u, tir::ExprKind::Binary { op: tir::BinOp::BitAnd, lhs: Box::new(n), rhs: Box::new(m) }, span);
+            }
+            return self.bits_convert(n, st);
+        }
+        self.obligations.push(Obligation::Numeric { ty: v.ty, span, op: "~", int_only: true, signed_only: false });
+        mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(v) }, span)
+    }
+
+    /// `&place`.
+    fn addr_of_expr(&mut self, operand: &ast::Expr, span: Span) -> Expr {
+        let temp_ok = std::mem::take(&mut self.temp_ref_arg);
+        let v = self.expr(operand, None);
+        if self.reject_second_class(&v, "the target of `&`") {
+            return error_expr(span);
+        }
+        if let tir::ExprKind::Field { base, .. } = &v.kind
+            && let TyKind::Adt(id, _) = base.ty.kind()
+            && matches!(self.sema.prog.adts.get(id).map(|d| &d.kind), Some(tir::AdtKind::Struct { bits: Some(_), .. }))
+        {
+            self.error(span, "the fields of a `#bits` struct have no address (§5.10.5)");
+            return error_expr(span);
+        }
+        match self.place_mutability(&v) {
+            Some(m) => {
+                let ty = Ty::ptr(!m, v.ty);
+                mk(ty, tir::ExprKind::AddrOf(Box::new(v)), span)
+            }
+            // `f(&g(x))` for a `^const T` parameter: a temporary that lives until
+            // the call returns, as for a method's receiver (§7.10).
+            None if temp_ok => mk(Ty::ptr(true, v.ty), tir::ExprKind::AddrOfTemp(Box::new(v)), span),
+            None => {
+                self.error(span, "`&` needs a place (a variable, `p^`, field or element), not a temporary value");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `!e`: an error value of the expected result type.
+    fn make_err_expr(&mut self, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
+        match expect.map(|t| self.infer.shallow(t)) {
+            Some(t) if matches!(t.kind(), TyKind::Result { .. }) => {
+                let TyKind::Result { err, .. } = t.kind() else { unreachable!() };
+                let err = *err;
+                let v = self.expr(operand, Some(err));
+                let vt = self.infer.resolve(v.ty);
+                // `!e` with `e` of a type that lifts into the error union (§10.6).
+                let v = if !vt.has_infer() && vt != err && self.coercion_steps(vt, err).is_none() {
+                    match self.lift_variant(vt, err) {
+                        Ok(i) => mk(err, tir::ExprKind::Variant { variant: i, payload: Some(Box::new(v)) }, span),
+                        Err(_) => self.coerce(v, err),
+                    }
+                } else {
+                    self.coerce(v, err)
+                };
+                mk(t, tir::ExprKind::MakeErr(Box::new(v)), span)
+            }
+            _ => {
+                let hint = if expect.is_none_or(|t| t.is_bool()) {
+                    " (`!e` makes an error; logical negation is `not e`)"
+                } else {
+                    ""
+                };
+                self.error(span, format!("cannot infer the result type of `!e` here{}", hint));
+                error_expr(span)
+            }
         }
     }
 
@@ -1401,188 +1424,51 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
     }
 
+    /// The type argument at position `i` of `@name(..)`, or `None` after an error.
+    fn intrinsic_type_arg(&mut self, name: ast::Ident, args: &[ast::Arg], i: usize, span: Span) -> Option<Ty> {
+        match args.get(i).map(|a| &a.kind) {
+            Some(ast::ArgKind::Positional(e)) => {
+                let t = self.resolve_type(e);
+                (!t.is_error()).then_some(t)
+            }
+            _ => {
+                self.error(span, format!("`@{}` needs a type argument", name.name));
+                None
+            }
+        }
+    }
+
+    /// Whether the layout of `t` is still being resolved (and so not known); reports the cycle if so.
+    fn layout_pending(&mut self, name: ast::Ident, t: Ty, span: Span) -> bool {
+        let Some(id) = self.sema.pending_layout(t) else { return false };
+        self.error(
+            span,
+            format!(
+                "`@{}` needs the layout of `{}`, which depends on this value: the declarations form a cycle (§3.4)",
+                name.name,
+                id.name()
+            ),
+        );
+        true
+    }
+
     /// Intrinsics that are compile-time constants (§20.3).
     fn intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
-        let type_arg = |cx: &mut Self, i: usize| -> Option<Ty> {
-            match args.get(i).map(|a| &a.kind) {
-                Some(ast::ArgKind::Positional(e)) => {
-                    let t = cx.resolve_type(e);
-                    (!t.is_error()).then_some(t)
-                }
-                _ => {
-                    cx.error(span, format!("`@{}` needs a type argument", name.name));
-                    None
-                }
-            }
-        };
-        let usize_const = |v: u64| mk(Ty::usize(), tir::ExprKind::Int(v.into()), span);
-        // The layout of a type whose fields are still being resolved is not known.
-        let pending = |cx: &mut Self, t: Ty| -> bool {
-            let Some(id) = cx.sema.pending_layout(t) else { return false };
-            cx.error(
-                span,
-                format!(
-                    "`@{}` needs the layout of `{}`, which depends on this value: the declarations form a cycle (§3.4)",
-                    name.name,
-                    id.name()
-                ),
-            );
-            true
-        };
+        let in_prelude = self.sema.modules[self.module.0 as usize].is_prelude;
         match name.name.as_str() {
-            "size_of" | "align_of" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
-                if t.is_never() {
-                    self.error(span, format!("`never` has no values, so `@{}` does not apply to it", name.name));
-                    return error_expr(span);
-                }
-                if super::generics::has_param(t) {
-                    let align = name.name.as_str() == "align_of";
-                    return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
-                }
-                if pending(self, t) {
-                    return error_expr(span);
-                }
-                let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
-                usize_const(if name.name.as_str() == "size_of" { size } else { align })
-            }
-            "min_value" | "max_value" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
-                let max = name.name.as_str() == "max_value";
-                if let TyKind::Param(p) = t.kind() {
-                    if !self.sema.param_has(*p, super::generics::Constraint::Int) {
-                        self.error(span, format!("`@{}({})` needs `where Int({})`", name.name, t, t));
-                        return error_expr(span);
-                    }
-                    return mk(t, tir::ExprKind::IntLimit { of: t, max }, span);
-                }
-                match int_limit(t, max, &self.sema.target) {
-                    Some(v) => mk(t, tir::ExprKind::Int(v), span),
-                    None => {
-                        self.error(span, format!("`@{}` takes an integer type, not `{}`", name.name, t));
-                        error_expr(span)
-                    }
-                }
-            }
-            "offset_of" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
-                if pending(self, t) {
-                    return error_expr(span);
-                }
-                let field = match args.get(1).map(|a| &a.kind) {
-                    Some(ast::ArgKind::Positional(Expr0 { kind: ExprKind::Ident(f), .. })) => f.name,
-                    _ => {
-                        self.error(span, "`@offset_of(S, field)` needs a struct type and a field name");
-                        return error_expr(span);
-                    }
-                };
-                let Some(i) = self.sema.struct_fields(t).and_then(|fs| fs.iter().position(|f| f.name == field)) else {
-                    self.error(span, format!("`{}` has no field `{}`", t, field));
-                    return error_expr(span);
-                };
-                let off = self.sema.with_layouts(|l| l.layout(t).offsets.get(i).copied().unwrap_or(0));
-                usize_const(off)
-            }
+            "size_of" | "align_of" => self.layout_intrinsic(name, args, span),
+            "min_value" | "max_value" => self.limit_intrinsic(name, args, span),
+            "offset_of" => self.offset_of_intrinsic(name, args, span),
             // Compiler-internal heap primitives behind the core library's heap allocator.
-            "alloc_tag" | "alloc_check" if self.sema.modules[self.module.0 as usize].is_prelude => {
-                let raw = Ty::intern(TyKind::Rawptr);
-                let tys =
-                    [Ty::many_ptr(false, Ty::u8()), raw, raw, Ty::string(), Ty::int(false, 32), Ty::int(false, 32)];
-                let mut vals = vec![];
-                for (i, t) in tys.iter().enumerate() {
-                    match args.get(i).map(|a| &a.kind) {
-                        Some(ast::ArgKind::Positional(e)) => {
-                            let v = self.expr(e, Some(*t));
-                            vals.push(self.coerce(v, *t));
-                        }
-                        _ => return error_expr(span),
-                    }
-                }
-                let op =
-                    if name.name.as_str() == "alloc_tag" { tir::Builtin::AllocTag } else { tir::Builtin::AllocCheck };
-                mk(Ty::unit(), tir::ExprKind::Builtin { op, args: vals }, span)
+            "alloc_tag" | "alloc_check" | "heap_alloc" | "heap_free" if in_prelude => {
+                self.heap_intrinsic(name.name.as_str(), args, span)
             }
-            "heap_alloc" | "heap_free" if self.sema.modules[self.module.0 as usize].is_prelude => {
-                let mut vals = vec![];
-                let is_alloc = name.name.as_str() == "heap_alloc";
-                let tys: Vec<Ty> = if is_alloc {
-                    vec![Ty::usize(), Ty::usize()]
-                } else {
-                    vec![Ty::many_ptr(false, Ty::u8()), Ty::usize(), Ty::usize()]
-                };
-                for (i, t) in tys.iter().enumerate() {
-                    match args.get(i).map(|a| &a.kind) {
-                        Some(ast::ArgKind::Positional(e)) => {
-                            let v = self.expr(e, Some(*t));
-                            vals.push(self.coerce(v, *t));
-                        }
-                        _ => return error_expr(span),
-                    }
-                }
-                let (op, ty) = if is_alloc {
-                    (tir::Builtin::HeapAlloc, Ty::optional(Ty::many_ptr(false, Ty::u8())))
-                } else {
-                    (tir::Builtin::HeapFree, Ty::unit())
-                };
-                mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
-            }
-            n if (self.sema.modules[self.module.0 as usize].is_prelude
-                || self.sema.modules[self.module.0 as usize].is_std)
+            n if (in_prelude || self.sema.modules[self.module.0 as usize].is_std)
                 && let Some(&op) = tir::SysOp::ALL.iter().find(|op| op.signature().0 == n) =>
             {
-                let (_, params, ret) = op.signature();
-                if args.len() != params.len() {
-                    self.error(span, format!("`@{}` takes {} argument(s)", n, params.len()));
-                    return error_expr(span);
-                }
-                let mut vals = vec![];
-                for (i, (a, t)) in args.iter().zip(params).enumerate() {
-                    let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
-                    if op == tir::SysOp::ThreadSpawn && i == 0 {
-                        // A thread starts from a plain function: `^fn(arg: rawptr) needs Sys` (§19.6);
-                        // a typed `^T` argument has the same representation as `rawptr`.
-                        let v = self.expr(e, None);
-                        let vt = self.infer.resolve(v.ty);
-                        let ok = match vt.kind() {
-                            TyKind::FnPtr(sig) => {
-                                sig.params.len() == 1
-                                    && matches!(sig.params[0].kind(), TyKind::Rawptr | TyKind::Ptr { .. })
-                                    && sig.ret.is_unit()
-                                    && self.sema.within_sys(&sig.effects)
-                                    && sig.callconv == CallConv::C
-                            }
-                            _ => false,
-                        };
-                        if !ok && !vt.is_error() {
-                            self.error(e.span, format!("a thread runs a `^fn(arg: rawptr) needs Sys` with the C calling convention, not `{}`", vt));
-                        }
-                        vals.push(v);
-                        continue;
-                    }
-                    let v = self.expr(e, Some(t));
-                    vals.push(self.coerce(v, t));
-                }
-                mk(ret, tir::ExprKind::Builtin { op: tir::Builtin::Sys(op), args: vals }, span)
+                self.sys_intrinsic(op, args, span)
             }
-            "hash" => {
-                let (Some(ast::ArgKind::Positional(x)), Some(ast::ArgKind::Positional(seed)), None) =
-                    (args.first().map(|a| &a.kind), args.get(1).map(|a| &a.kind), args.get(2))
-                else {
-                    self.error(span, "`@hash(x, seed)` takes a value and a `u64` seed");
-                    return error_expr(span);
-                };
-                let x = self.expr(x, None);
-                let xt = self.infer.resolve(x.ty);
-                if !xt.has_infer() && !xt.is_error() && !self.eq_allowed(xt) {
-                    self.error(
-                        span,
-                        format!("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", xt),
-                    );
-                }
-                let seed = self.expr(seed, Some(Ty::u64()));
-                let seed = self.coerce(seed, Ty::u64());
-                mk(Ty::u64(), tir::ExprKind::Builtin { op: tir::Builtin::Hash, args: vec![x, seed] }, span)
-            }
+            "hash" => self.hash_intrinsic(args, span),
             "static_assert" => {
                 let module = self.module;
                 self.sema.static_assert(module, args, span).unwrap_or_else(|| unit(span))
@@ -1640,119 +1526,280 @@ impl<'a, 's> FnCx<'a, 's> {
             "fiber" => self.fiber_intrinsic(args, span),
             "asm" => self.asm(args, span),
             "write" => self.write_intrinsic(args, span),
-            // A hint that `p` will be read soon; it has no effect on the program.
-            "prefetch" => match args {
-                [ast::Arg { kind: ast::ArgKind::Positional(p), .. }] => {
-                    let v = self.expr(p, None);
-                    let t = self.infer.resolve(v.ty);
-                    if !t.is_error()
-                        && !matches!(t.kind(), TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr)
-                    {
-                        self.error(p.span, format!("`@prefetch` takes a pointer, not `{}`", t));
-                    }
-                    super::func::block_of(vec![tir::Stmt::Expr(v)], span)
-                }
-                _ => {
-                    self.error(span, "`@prefetch` takes one pointer: `@prefetch(p)`");
-                    error_expr(span)
-                }
-            },
+            "prefetch" => self.prefetch_intrinsic(args, span),
             "sqrt" | "fma" | "clz" | "ctz" | "popcount" | "bswap" | "bitreverse" | "rotl" | "rotr" => {
                 self.numeric_intrinsic(name.name.as_str(), args, span)
             }
             // The smallest fiber stack (§14.1), in bytes.
-            "min_stack" => usize_const(tir::MIN_STACK),
-            "stack_size" => {
-                let f = match args {
-                    [ast::Arg { kind: ast::ArgKind::Positional(f), .. }] => self.expr(f, None),
-                    _ => {
-                        self.error(span, "`@stack_size` takes one function: `@stack_size(f)`");
-                        return error_expr(span);
-                    }
-                };
-                match f.kind {
-                    tir::ExprKind::FnRef(id) => match self.sema.stack_size(id, span) {
-                        Some(n) => usize_const(n),
-                        None => error_expr(span),
-                    },
-                    _ if f.ty.is_error() => error_expr(span),
-                    _ => {
-                        self.error(f.span, "`@stack_size` needs the name of a function (§14.8)");
-                        error_expr(span)
-                    }
-                }
-            }
+            "min_stack" => mk(Ty::usize(), tir::ExprKind::Int(tir::MIN_STACK.into()), span),
+            "stack_size" => self.stack_size_intrinsic(args, span),
             "type_name" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
+                let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
                 if super::generics::has_param(t) {
                     // Named in each instance (§16.1).
                     return mk(Ty::string(), tir::ExprKind::TypeName { of: t }, span);
                 }
                 mk(Ty::string(), tir::ExprKind::Str(Rc::from(t.to_string().as_bytes())), span)
             }
-            "variants" => {
-                let Some(t) = type_arg(self, 0) else { return error_expr(span) };
-                if matches!(t.kind(), TyKind::Param(_)) {
-                    self.error(
-                        span,
-                        format!("`@variants` needs a concrete union type, not the type parameter `{}`", t),
-                    );
-                    return error_expr(span);
-                }
-                let Some((variants, _)) = self.sema.union_variants(t) else {
-                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
-                    self.error(span, format!("`@variants` takes a tagged union type, not `{}`{}", t, why));
-                    return error_expr(span);
-                };
-                if let Some(v) = variants.iter().find(|v| v.payload.is_some()) {
-                    self.error(
-                        span,
-                        format!("`@variants({})` needs a union without payloads, but variant `{}` has one", t, v.name),
-                    );
-                    return error_expr(span);
-                }
-                let elems = (0..variants.len() as u32)
-                    .map(|i| mk(t, tir::ExprKind::Variant { variant: i, payload: None }, span))
-                    .collect::<Vec<_>>();
-                mk(Ty::array(elems.len() as u64, t), tir::ExprKind::Array(elems), span)
-            }
-            "variant_name" => {
-                let x = match args {
-                    [ast::Arg { kind: ast::ArgKind::Positional(x), .. }] => self.expr(x, None),
-                    _ => {
-                        self.error(span, "`@variant_name` takes one union value: `@variant_name(x)`");
-                        return error_expr(span);
-                    }
-                };
-                let t = self.infer.resolve(x.ty);
-                if t.is_error() {
-                    return error_expr(span);
-                }
-                let Some((variants, _)) = self.sema.union_variants(t) else {
-                    let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
-                    self.error(
-                        span,
-                        format!("`@variant_name` takes a value of a tagged union type, not `{}`{}", t, why),
-                    );
-                    return error_expr(span);
-                };
-                let pat = |kind| tir::Pat { ty: t, kind, span };
-                let arms = variants
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| tir::Arm {
-                        pat: pat(tir::PatKind::Variant { variant: i as u32, payload: None }),
-                        guard: None,
-                        body: mk(Ty::string(), tir::ExprKind::Str(Rc::from(v.name.as_str().as_bytes())), span),
-                    })
-                    .collect();
-                mk(Ty::string(), tir::ExprKind::Match { scrutinee: Box::new(x), arms }, span)
-            }
+            "variants" => self.variants_intrinsic(name, args, span),
+            "variant_name" => self.variant_name_intrinsic(args, span),
             other => {
                 self.error(span, format!("intrinsic `@{}` is not supported yet", other));
                 error_expr(span)
             }
         }
+    }
+
+    /// `@size_of(T)` and `@align_of(T)`.
+    fn layout_intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
+        if t.is_never() {
+            self.error(span, format!("`never` has no values, so `@{}` does not apply to it", name.name));
+            return error_expr(span);
+        }
+        if super::generics::has_param(t) {
+            let align = name.name.as_str() == "align_of";
+            return mk(Ty::usize(), tir::ExprKind::SizeOf { of: t, align }, span);
+        }
+        if self.layout_pending(name, t, span) {
+            return error_expr(span);
+        }
+        let (size, align) = self.sema.with_layouts(|l| (l.size_of(t), l.align_of(t)));
+        let v = if name.name.as_str() == "size_of" { size } else { align };
+        mk(Ty::usize(), tir::ExprKind::Int(v.into()), span)
+    }
+
+    /// `@min_value(T)` and `@max_value(T)`.
+    fn limit_intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
+        let max = name.name.as_str() == "max_value";
+        if let TyKind::Param(p) = t.kind() {
+            if !self.sema.param_has(*p, super::generics::Constraint::Int) {
+                self.error(span, format!("`@{}({})` needs `where Int({})`", name.name, t, t));
+                return error_expr(span);
+            }
+            return mk(t, tir::ExprKind::IntLimit { of: t, max }, span);
+        }
+        match int_limit(t, max, &self.sema.target) {
+            Some(v) => mk(t, tir::ExprKind::Int(v), span),
+            None => {
+                self.error(span, format!("`@{}` takes an integer type, not `{}`", name.name, t));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `@offset_of(S, field)`.
+    fn offset_of_intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
+        if self.layout_pending(name, t, span) {
+            return error_expr(span);
+        }
+        let field = match args.get(1).map(|a| &a.kind) {
+            Some(ast::ArgKind::Positional(Expr0 { kind: ExprKind::Ident(f), .. })) => f.name,
+            _ => {
+                self.error(span, "`@offset_of(S, field)` needs a struct type and a field name");
+                return error_expr(span);
+            }
+        };
+        let Some(i) = self.sema.struct_fields(t).and_then(|fs| fs.iter().position(|f| f.name == field)) else {
+            self.error(span, format!("`{}` has no field `{}`", t, field));
+            return error_expr(span);
+        };
+        let off = self.sema.with_layouts(|l| l.layout(t).offsets.get(i).copied().unwrap_or(0));
+        mk(Ty::usize(), tir::ExprKind::Int(off.into()), span)
+    }
+
+    /// The positional arguments, each checked against and coerced to the matching type of `tys`;
+    /// `None` when one is missing or not positional.
+    fn coerced_args(&mut self, tys: &[Ty], args: &[ast::Arg]) -> Option<Vec<Expr>> {
+        let mut vals = vec![];
+        for (i, t) in tys.iter().enumerate() {
+            match args.get(i).map(|a| &a.kind) {
+                Some(ast::ArgKind::Positional(e)) => {
+                    let v = self.expr(e, Some(*t));
+                    vals.push(self.coerce(v, *t));
+                }
+                _ => return None,
+            }
+        }
+        Some(vals)
+    }
+
+    /// The heap primitives behind the core library's allocator (`@alloc_tag`, `@alloc_check`,
+    /// `@heap_alloc`, `@heap_free`).
+    fn heap_intrinsic(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Expr {
+        let bytes = Ty::many_ptr(false, Ty::u8());
+        let (tys, op, ty) = match name {
+            "alloc_tag" | "alloc_check" => {
+                let raw = Ty::intern(TyKind::Rawptr);
+                let tys = vec![bytes, raw, raw, Ty::string(), Ty::int(false, 32), Ty::int(false, 32)];
+                let op = if name == "alloc_tag" { tir::Builtin::AllocTag } else { tir::Builtin::AllocCheck };
+                (tys, op, Ty::unit())
+            }
+            "heap_alloc" => (vec![Ty::usize(), Ty::usize()], tir::Builtin::HeapAlloc, Ty::optional(bytes)),
+            _ => (vec![bytes, Ty::usize(), Ty::usize()], tir::Builtin::HeapFree, Ty::unit()),
+        };
+        let Some(vals) = self.coerced_args(&tys, args) else { return error_expr(span) };
+        mk(ty, tir::ExprKind::Builtin { op, args: vals }, span)
+    }
+
+    /// A system operation of the core library (`SysOp`), called as `@name(..)`.
+    fn sys_intrinsic(&mut self, op: tir::SysOp, args: &[ast::Arg], span: Span) -> Expr {
+        let (n, params, ret) = op.signature();
+        if args.len() != params.len() {
+            self.error(span, format!("`@{}` takes {} argument(s)", n, params.len()));
+            return error_expr(span);
+        }
+        let mut vals = vec![];
+        for (i, (a, t)) in args.iter().zip(params).enumerate() {
+            let ast::ArgKind::Positional(e) = &a.kind else { return error_expr(span) };
+            if op == tir::SysOp::ThreadSpawn && i == 0 {
+                vals.push(self.thread_entry_arg(e));
+                continue;
+            }
+            let v = self.expr(e, Some(t));
+            vals.push(self.coerce(v, t));
+        }
+        mk(ret, tir::ExprKind::Builtin { op: tir::Builtin::Sys(op), args: vals }, span)
+    }
+
+    /// The entry function of a spawned thread: a plain function `^fn(arg: rawptr) needs Sys`
+    /// (§19.6); a typed `^T` argument has the same representation as `rawptr`.
+    fn thread_entry_arg(&mut self, e: &ast::Expr) -> Expr {
+        let v = self.expr(e, None);
+        let vt = self.infer.resolve(v.ty);
+        let ok = match vt.kind() {
+            TyKind::FnPtr(sig) => {
+                sig.params.len() == 1
+                    && matches!(sig.params[0].kind(), TyKind::Rawptr | TyKind::Ptr { .. })
+                    && sig.ret.is_unit()
+                    && self.sema.within_sys(&sig.effects)
+                    && sig.callconv == CallConv::C
+            }
+            _ => false,
+        };
+        if !ok && !vt.is_error() {
+            self.error(
+                e.span,
+                format!("a thread runs a `^fn(arg: rawptr) needs Sys` with the C calling convention, not `{}`", vt),
+            );
+        }
+        v
+    }
+
+    /// `@hash(x, seed)`.
+    fn hash_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let (Some(ast::ArgKind::Positional(x)), Some(ast::ArgKind::Positional(seed)), None) =
+            (args.first().map(|a| &a.kind), args.get(1).map(|a| &a.kind), args.get(2))
+        else {
+            self.error(span, "`@hash(x, seed)` takes a value and a `u64` seed");
+            return error_expr(span);
+        };
+        let x = self.expr(x, None);
+        let xt = self.infer.resolve(x.ty);
+        if !xt.has_infer() && !xt.is_error() && !self.eq_allowed(xt) {
+            self.error(span, format!("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", xt));
+        }
+        let seed = self.expr(seed, Some(Ty::u64()));
+        let seed = self.coerce(seed, Ty::u64());
+        mk(Ty::u64(), tir::ExprKind::Builtin { op: tir::Builtin::Hash, args: vec![x, seed] }, span)
+    }
+
+    /// `@prefetch(p)`: a hint that `p` will be read soon; it has no effect on the program.
+    fn prefetch_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        match args {
+            [ast::Arg { kind: ast::ArgKind::Positional(p), .. }] => {
+                let v = self.expr(p, None);
+                let t = self.infer.resolve(v.ty);
+                if !t.is_error() && !matches!(t.kind(), TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr) {
+                    self.error(p.span, format!("`@prefetch` takes a pointer, not `{}`", t));
+                }
+                super::func::block_of(vec![tir::Stmt::Expr(v)], span)
+            }
+            _ => {
+                self.error(span, "`@prefetch` takes one pointer: `@prefetch(p)`");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `@stack_size(f)`.
+    fn stack_size_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let f = match args {
+            [ast::Arg { kind: ast::ArgKind::Positional(f), .. }] => self.expr(f, None),
+            _ => {
+                self.error(span, "`@stack_size` takes one function: `@stack_size(f)`");
+                return error_expr(span);
+            }
+        };
+        match f.kind {
+            tir::ExprKind::FnRef(id) => match self.sema.stack_size(id, span) {
+                Some(n) => mk(Ty::usize(), tir::ExprKind::Int(n.into()), span),
+                None => error_expr(span),
+            },
+            _ if f.ty.is_error() => error_expr(span),
+            _ => {
+                self.error(f.span, "`@stack_size` needs the name of a function (§14.8)");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `@variants(U)`: every variant of a union without payloads, as an array.
+    fn variants_intrinsic(&mut self, name: ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        let Some(t) = self.intrinsic_type_arg(name, args, 0, span) else { return error_expr(span) };
+        if matches!(t.kind(), TyKind::Param(_)) {
+            self.error(span, format!("`@variants` needs a concrete union type, not the type parameter `{}`", t));
+            return error_expr(span);
+        }
+        let Some((variants, _)) = self.sema.union_variants(t) else {
+            let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+            self.error(span, format!("`@variants` takes a tagged union type, not `{}`{}", t, why));
+            return error_expr(span);
+        };
+        if let Some(v) = variants.iter().find(|v| v.payload.is_some()) {
+            self.error(
+                span,
+                format!("`@variants({})` needs a union without payloads, but variant `{}` has one", t, v.name),
+            );
+            return error_expr(span);
+        }
+        let elems = (0..variants.len() as u32)
+            .map(|i| mk(t, tir::ExprKind::Variant { variant: i, payload: None }, span))
+            .collect::<Vec<_>>();
+        mk(Ty::array(elems.len() as u64, t), tir::ExprKind::Array(elems), span)
+    }
+
+    /// `@variant_name(x)`: the name of the variant `x` holds.
+    fn variant_name_intrinsic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let x = match args {
+            [ast::Arg { kind: ast::ArgKind::Positional(x), .. }] => self.expr(x, None),
+            _ => {
+                self.error(span, "`@variant_name` takes one union value: `@variant_name(x)`");
+                return error_expr(span);
+            }
+        };
+        let t = self.infer.resolve(x.ty);
+        if t.is_error() {
+            return error_expr(span);
+        }
+        let Some((variants, _)) = self.sema.union_variants(t) else {
+            let why = if self.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" };
+            self.error(span, format!("`@variant_name` takes a value of a tagged union type, not `{}`{}", t, why));
+            return error_expr(span);
+        };
+        let pat = |kind| tir::Pat { ty: t, kind, span };
+        let arms = variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| tir::Arm {
+                pat: pat(tir::PatKind::Variant { variant: i as u32, payload: None }),
+                guard: None,
+                body: mk(Ty::string(), tir::ExprKind::Str(Rc::from(v.name.as_str().as_bytes())), span),
+            })
+            .collect();
+        mk(Ty::string(), tir::ExprKind::Match { scrutinee: Box::new(x), arms }, span)
     }
 
     // --- optionals and results (§10) ---
