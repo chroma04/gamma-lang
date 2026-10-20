@@ -242,7 +242,11 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
                 let x = self.resize(raw, types::I128, ity, false);
                 self.adt_from_int(t, x)
             }
-            _ => self.undef(t),
+            // The checker allows no other field types in a `#bits` struct (§5.10.5).
+            _ => {
+                debug_assert!(false, "a #bits field of type {}", t);
+                self.undef(t)
+            }
         }
     }
 
@@ -260,7 +264,10 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
                 let x = self.load_s(it, a, off);
                 self.widen_i128(it, x, false)
             }
-            _ => self.iconst_bits(types::I128, 0),
+            _ => {
+                debug_assert!(false, "a #bits field of type {}", t);
+                self.iconst_bits(types::I128, 0)
+            }
         }
     }
 

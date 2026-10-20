@@ -55,6 +55,23 @@ jobs:
           GAMMA_C_UNITS: "3"
         run: cargo test --test conformance --test examples
 
+  fuzz:
+    # The fuzz targets live outside the workspace (they need nightly to run): make sure
+    # they still compile against the crate's API.
+    name: Fuzz targets compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Check
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: cargo check --manifest-path fuzz/Cargo.toml
+
   msrv:
     # The oldest Rust that Cargo.toml's `rust-version` promises still builds the crate.
     name: Minimum Rust version

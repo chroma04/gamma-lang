@@ -20,7 +20,9 @@ asset=$1
 binary=$2
 out=$3
 root=$(cd "$(dirname "$0")/.." && pwd)
-version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml" | head -n 1)
+# The `version` of the `[package]` table (not of another table that may come first).
+version=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version = / { gsub(/"/, "", $3); print $3; exit }' "$root/Cargo.toml")
+[ -n "$version" ] || { echo "$0: no [package] version in Cargo.toml" >&2; exit 1; }
 name="gamma-$version-$asset"
 
 work=$(mktemp -d)
@@ -51,7 +53,16 @@ case "$asset" in
         ;;
     *)
         archive="gamma-$asset.tar.gz"
-        tar -C "$work" -czf "$out/$archive" "$name"
+        # The same sources give the same bytes: sorted names, no owners, the time of the
+        # last commit (or SOURCE_DATE_EPOCH), and no time stamp in the gzip header.
+        epoch=${SOURCE_DATE_EPOCH:-$(git -C "$root" log -1 --format=%ct 2>/dev/null || echo 0)}
+        if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+            tar -C "$work" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" \
+                -cf - "$name" | gzip -n -9 > "$out/$archive"
+        else
+            # bsdtar (macOS): no AppleDouble files, owners zeroed.
+            COPYFILE_DISABLE=1 tar -C "$work" --uid 0 --gid 0 -cf - "$name" | gzip -n -9 > "$out/$archive"
+        fi
         ;;
 esac
 (

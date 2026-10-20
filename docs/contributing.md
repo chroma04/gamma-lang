@@ -310,7 +310,10 @@ Pushing the tag runs `.github/workflows/release.yml`, which:
    and `README.md`;
 3. unpacks each archive, hides the source tree's `lib/std`, and checks that the packaged
    compiler runs a program that imports `std/...`, on the interpreter and through C;
-4. creates the GitHub release with the archives, `SHA256SUMS`, `tools/install.sh` and
+4. checks that the CI workflow passed on the tagged commit (a tag on a commit whose CI
+   failed or never ran publishes nothing), records a build provenance attestation for each
+   archive (`gh attestation verify <archive> --repo chroma04/gamma-lang` checks one), and
+   creates the GitHub release with the archives, `SHA256SUMS`, `tools/install.sh` and
    `tools/install.ps1`.
 
 To cut a release, follow [`versioning.md`](versioning.md): in short, update
@@ -340,8 +343,14 @@ main workspace, so `cargo build` and `cargo test` never compile it). Its targets
 arbitrary text to the front end: `parse` lexes and parses it, `fmt` formats
 text the parser accepts and checks that the result formats to itself, and `check` runs
 the whole front end (name resolution, type checking, lowering) on it as a single-file
-program, with the real standard library from `lib/std` of the source tree. Diagnostics for
+program, with the real standard library from `lib/std` of the source tree. Two targets
+cover what comes from other people's repositories: `manifest` parses text as a
+`gamma.toml` and as a `gamma.lock` (and checks that an accepted lock names no path outside
+the package store), and `archive` unpacks bytes as a package archive into a scratch
+directory and checks that nothing is written outside it. Diagnostics for
 invalid input are expected; panics, stack overflows, hangs and quadratic blowups are bugs.
+CI checks that the targets compile (`RUSTC_BOOTSTRAP=1 cargo check --manifest-path
+fuzz/Cargo.toml`).
 
 ```sh
 rustup toolchain install nightly --profile minimal
@@ -349,6 +358,8 @@ cargo install cargo-fuzz
 fuzz/seed.sh                      # corpus from lib/, examples/ and tests/conformance/
 cargo +nightly fuzz run parse -- -max_total_time=600 -timeout=5 -rss_limit_mb=4096
 cargo +nightly fuzz run fmt -- -max_total_time=600 -timeout=5 -rss_limit_mb=4096
+cargo +nightly fuzz run manifest -- -max_total_time=600 -timeout=5
+cargo +nightly fuzz run archive -- -max_total_time=600 -timeout=5 -max_len=65536
 cargo +nightly fuzz run check -s none -- -max_total_time=600 -timeout=20 -rss_limit_mb=4096 \
     -max_len=8192 -jobs=4 -workers=4
 ```

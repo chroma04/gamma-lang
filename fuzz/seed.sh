@@ -14,3 +14,8 @@ for target in parse fmt check; do
         cp "$f" "fuzz/corpus/$target/$(echo "$f" | tr '/' '_')"
     done
 done
+# The manifest target gets every manifest and lockfile of the repository's tests and examples.
+mkdir -p fuzz/corpus/manifest
+find tests examples -name 'gamma.toml' -o -name 'gamma.lock' | while read -r f; do
+    cp "$f" "fuzz/corpus/manifest/$(echo "$f" | tr '/' '_')"
+done

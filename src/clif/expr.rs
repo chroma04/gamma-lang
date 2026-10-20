@@ -1206,12 +1206,8 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
         match self.g.rep(ret) {
             Rep::Zero => V::Z,
             Rep::Mem { .. } => V::M(dest.unwrap()),
-            r => V::S(self.normalize_ret(r, rs[0])),
+            _ => V::S(rs[0]),
         }
-    }
-
-    fn normalize_ret(&mut self, _r: Rep, v: Value) -> Value {
-        v
     }
 
     /// Where a call's large result goes: `dest`, or a new temporary.

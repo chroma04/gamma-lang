@@ -49,12 +49,19 @@ fn parse(args: &[String], value_opts: &[&str], flag_opts: &[&str]) -> Result<Par
     let mut p = Parsed { pos: vec![], values: HashMap::new(), flags: HashSet::new() };
     let mut it = args.iter();
     while let Some(a) = it.next() {
+        // After `--`, everything is positional (a directory named `-x`).
+        if a == "--" {
+            p.pos.extend(it.cloned());
+            break;
+        }
         if let Some(opt) = a.strip_prefix("--") {
             let (name, inline) = match opt.split_once('=') {
                 Some((n, v)) => (n, Some(v.to_string())),
                 None => (opt, None),
             };
-            if flag_opts.contains(&name) && inline.is_none() {
+            if flag_opts.contains(&name) && inline.is_some() {
+                return Err(format!("`--{}` takes no value", name));
+            } else if flag_opts.contains(&name) {
                 p.flags.insert(name.to_string());
             } else if value_opts.contains(&name) {
                 let v = match inline {
@@ -331,6 +338,11 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
         Some("none") => false,
         Some(other) => return Err(Failure::Usage(format!("unknown --vcs `{}`: use `git` or `none`", other))),
     };
+    // A bad name is reported before anything is created.
+    if let Some(problem) = p.values.get("name").and_then(|n| name_problem(n, "package")) {
+        return Err(Failure::Error(problem));
+    }
+    let mut created_here = false;
     if create {
         match std::fs::read_dir(&dir) {
             Ok(mut rd) => {
@@ -341,6 +353,7 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 std::fs::create_dir_all(&dir)
                     .map_err(|e| Failure::Error(format!("cannot create {}: {}", dir.display(), e)))?;
+                created_here = true;
             }
             Err(e) => return Err(Failure::Error(format!("cannot use {}: {}", dir.display(), e))),
         }
@@ -359,6 +372,9 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
             let dir_name = abs.file_name().map_or(String::new(), |s| s.to_string_lossy().into_owned());
             let name = scaffold::sanitize_name(&dir_name);
             if let Some(problem) = name_problem(&name, "package") {
+                if created_here {
+                    let _ = std::fs::remove_dir(&dir);
+                }
                 return Err(Failure::Error(format!(
                     "the directory name `{dir_name}` gives the package name `{name}`: {problem}; choose one with `--name`"
                 )));

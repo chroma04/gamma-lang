@@ -80,7 +80,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/symbol.rs` | interned identifiers |
 | `src/syntax/token.rs` | token definitions |
 | `src/syntax/lexer/` | the lexer (`mod.rs`), and the exact values of literals (`literal.rs`) |
-| `src/syntax/parser/` | the parser |
+| `src/syntax/parser/` | the parser: `mod.rs` (the parser state), `expr.rs`, `stmt.rs` (blocks, statements, control flow), `items.rs` (declarations), `types.rs`, `pattern.rs`, `lits.rs` (type, handler and foreign literals) |
 | `src/syntax/ast.rs` | the syntax tree |
 | `src/syntax/ast_dump.rs` | stable textual rendering of the syntax tree |
 | `src/types.rs` | semantic types (hash-consed `Ty`) |
@@ -348,6 +348,17 @@ would: target integer sizes, layouts and float semantics, with every checked
 operation checked. A machine (memory, frames, handler contexts) runs register
 bytecode compiled from TIR by the VM in `src/interp/vm/`, described below; every
 function, constant initializer and compile-time evaluation runs that way.
+
+Its files: `machine.rs` holds the interpreter state and the typed helpers all evaluation
+code shares; `memory.rs` the flat address space below; `bytes.rs` the small-buffer byte
+string values are made of, and `fast.rs` integers of at most 64 bits as exact `i128`
+values; `calls.rs` calls, handler contexts, `with`, `perform` and the native ambient
+handlers; `consts.rs` the memoized evaluation of constants and their place in static
+memory; `display.rs` the display rules of `@write` (§21.6.1); `sys.rs` and `proc.rs` the
+system services and child processes behind the default handlers (§12.9); `testkit.rs`
+helpers for building TIR by hand in the unit tests. In `vm/`, `compile.rs` translates a
+function body to bytecode (where locals live, expressions) and `compile_flow.rs` its
+statements, patterns and control flow.
 
 **Memory.** The interpreter models a flat address space. Every allocation (a
 local variable, a temporary whose address is taken, a string literal, a
@@ -1187,6 +1198,7 @@ reference in `docs/std/` is checked in and `tests/doc.rs` fails when it is stale
 | declarations | the source text of each earlier top-level item, and for a declaration input the new text |
 | `main` | the kept statements, the replay marker, then the new input |
 
+- `report.rs` turns the output into what the user typed: diagnostics relative to the input, trap reports, and the filter that hides the output of replayed statements.
 - `input.rs` classifies text by parsing it twice, as top-level items and as the body of a function. `x := e` parses as an item but is not a declaration, so it is read as a statement. Items that are plain `name :: value` bindings are tried as constants first and as local variables if that fails.
 - `main` returns `AllocError!()` so `try` works on allocation.
 - An expression statement is tried as written (it must have type `()`), then as `__repl_v := e` followed by `print("{}\n", __repl_v)`.

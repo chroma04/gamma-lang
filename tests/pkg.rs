@@ -863,12 +863,13 @@ fn names_that_cannot_be_imported_are_rejected() {
     for name in ["fn", "import", "true", "_", "i32", "u8", "bool", "string", "std", "core"] {
         let out = w.gamma(".", &["new", "--vcs=none", &format!("--name={name}"), "d"]).failure();
         assert!(out.stderr.contains("invalid package name"), "{name}: {}", out.stderr);
-        assert!(!w.path("d/gamma.toml").exists(), "{name}");
-        std::fs::remove_dir_all(w.path("d")).ok();
+        // Nothing is created for a name that is refused.
+        assert!(!w.path("d").exists(), "{name}");
     }
     // The directory name is used when it is one of them, unless `--name` says otherwise.
     let out = w.gamma(".", &["new", "--vcs=none", "fn"]).failure();
     assert!(out.stderr.contains("--name"), "{}", out.stderr);
+    assert!(!w.path("fn").exists());
     run_ok(&w, ".", &["new", "--vcs=none", "std", "--name=mystd"]);
     w.write("app/gamma.toml", "[package]\nname = \"app\"\n\n[dependencies]\n");
     for name in ["true", "i32", "std", "core", "_"] {
@@ -909,6 +910,8 @@ fn usage_of_the_package_commands() {
     assert!(out.stdout.contains("gamma add <name>") && out.stdout.contains("--offline"), "{}", out.stdout);
     let out = w.gamma(".", &["update", "--bogus"]).failure();
     assert!(out.stderr.contains("unknown option `--bogus`"), "{}", out.stderr);
+    let out = w.gamma(".", &["fetch", "--offline=true"]).failure();
+    assert!(out.stderr.contains("`--offline` takes no value"), "{}", out.stderr);
     assert!(Path::new(GAMMA).exists());
 }
 
