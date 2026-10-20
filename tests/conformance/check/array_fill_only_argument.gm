@@ -1,0 +1,10 @@
+//! stage: check
+// `fill:` must be the only argument of an array construction (§7.11).
+Color :: union { R, G }
+main :: fn() {
+    a := [3]i32(fill: 1, 2) //~ ERROR `fill:` must be the only argument
+    b := [3]i32(1, fill: 2) //~ ERROR `fill:` must be the only argument
+    c := [Color]i32(fill: 0, R: 1) //~ ERROR `fill:` must be the only argument
+    d := [3]i32(1) //~ ERROR needs exactly 3 elements, but 1 is given
+    e := [3]i32(1, 2) //~ ERROR needs exactly 3 elements, but 2 are given
+}

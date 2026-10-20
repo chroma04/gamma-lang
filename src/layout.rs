@@ -90,6 +90,12 @@ impl Target {
     pub fn ptr_bits(&self) -> u32 {
         (self.ptr_bytes * 8) as u32
     }
+
+    /// The largest size of an object, `isize::MAX` for the target: a larger type is an
+    /// error, since offsets and lengths of its values would not fit `isize`.
+    pub fn max_object_size(&self) -> u64 {
+        (1u64 << (self.ptr_bits() - 1)) - 1
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,8 +135,10 @@ pub fn int_bits(ty: Ty, target: &Target) -> Option<(bool, u32)> {
     }
 }
 
+/// Sizes saturate at `u64::MAX`, which is above [`Target::max_object_size`] on every target,
+/// so that the checker can report a type that is too large instead of overflowing.
 fn round_up(x: u64, align: u64) -> u64 {
-    x.div_ceil(align) * align
+    x.div_ceil(align).saturating_mul(align)
 }
 
 /// Lays out fields in order with C rules (§5.10.4).
@@ -142,7 +150,7 @@ fn struct_layout(fields: &[(Layout, Option<u64>)], packed: bool, min_align: Opti
         let a = if packed { 1 } else { field_align.map_or(l.align, |fa| fa.max(l.align)) };
         offset = round_up(offset, a);
         offsets.push(offset);
-        offset += l.size;
+        offset = offset.saturating_add(l.size);
         align = align.max(a);
     }
     if let Some(m) = min_align {
@@ -282,8 +290,8 @@ impl<'a> Layouts<'a> {
             TyKind::Array { len, elem, kind } => {
                 let e = self.layout(*elem);
                 // A vector is aligned to its size, a power of two (§5.6.2).
-                let align = if *kind == crate::types::ArrayKind::Simd { e.size * len } else { e.align };
-                Layout { size: e.size * len, align, offsets: vec![] }
+                let align = if *kind == crate::types::ArrayKind::Simd { e.size.saturating_mul(*len) } else { e.align };
+                Layout { size: e.size.saturating_mul(*len), align, offsets: vec![] }
             }
             TyKind::Tuple { elems, .. } => {
                 let fields: Vec<_> = elems.iter().map(|t| (self.layout(*t), None)).collect();

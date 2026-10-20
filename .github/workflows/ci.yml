@@ -8,11 +8,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Every job has a C compiler: its absence must fail the C lanes, not skip them.
+  GAMMA_TEST_C: "1"
+
+# The jobs only read the repository.
+permissions:
+  contents: read
 
 jobs:
   test:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -29,16 +36,62 @@ jobs:
         run: cargo clippy --all-targets
       - name: Test
         run: cargo test --all-targets
+      - name: Install script
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) asset=linux-x86_64 ;; Darwin-arm64) asset=macos-aarch64 ;;
+            Darwin-x86_64) asset=macos-x86_64 ;; *) asset=linux-aarch64 ;;
+          esac
+          tools/package-release.sh "$asset" target/debug/gamma "$RUNNER_TEMP/dist"
+          GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/prefix" sh tools/install.sh
+          printf 'm :: import "std/math"\nmain :: fn() needs Out { print("{}\\n", m.abs(-3)) }\n' > "$RUNNER_TEMP/hello.gm"
+          test "$("$RUNNER_TEMP/prefix/bin/gamma" run "$RUNNER_TEMP/hello.gm")" = 3
+          # A checksum that does not match stops the installation.
+          echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$RUNNER_TEMP/dist/gamma-$asset.tar.gz.sha256"
+          if GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/p2" sh tools/install.sh; then exit 1; fi
       - name: Conformance tests and examples with Debug builds split into C units
         if: matrix.os == 'ubuntu-latest'
         env:
           GAMMA_C_UNITS: "3"
         run: cargo test --test conformance --test examples
 
+  fuzz:
+    # The fuzz targets live outside the workspace (they need nightly to run): make sure
+    # they still compile against the crate's API.
+    name: Fuzz targets compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Check
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: cargo check --manifest-path fuzz/Cargo.toml
+
+  audit:
+    # The compiler unpacks archives and runs downloaded code (`gamma fetch`): a dependency
+    # with a published advisory fails the build.
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit
+        run: cargo audit
+
   msrv:
     # The oldest Rust that Cargo.toml's `rust-version` promises still builds the crate.
     name: Minimum Rust version
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95
@@ -85,8 +138,11 @@ jobs:
     # Safe builds compile the generated C with Fil-C, a memory-safe C implementation.
     name: Safe builds (Fil-C)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       FILC_VERSION: "0.686"
+      # The SHA-256 of the release archive, checked before it is installed as root.
+      FILC_SHA256: 3a0ba45283ff29668335d288530f35fe69c28ab8d663b4deb8801474825f117a
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -105,6 +161,7 @@ jobs:
             "https://github.com/pizlonator/fil-c/releases/download/v${FILC_VERSION}/optfil-${FILC_VERSION}-linux-x86_64.tar.xz"
       - name: Install Fil-C in /opt/fil
         run: |
+          echo "$FILC_SHA256  $HOME/filc/optfil.tar.xz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/filc"
           tar -C "$RUNNER_TEMP/filc" -xJf ~/filc/optfil.tar.xz
           cd "$RUNNER_TEMP/filc/optfil-${FILC_VERSION}-linux-x86_64"
@@ -117,6 +174,7 @@ jobs:
     # s390x is 64-bit big-endian: the suite runs cross-compiled under qemu-user.
     name: Big-endian cross build (s390x)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -140,6 +198,7 @@ jobs:
     # Apple's variant of the AArch64 calling convention; this job covers the standard one.
     name: AArch64 Linux, emulated (C and Cranelift back ends)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -162,6 +221,7 @@ jobs:
     # Binaryen where it switches fibers, under Wasmtime.
     name: WebAssembly (wasm32-wasi)
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -170,7 +230,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 wasi-libc libclang-rt-18-dev-wasm32 binaryen
-          curl -sSfL https://github.com/bytecodealliance/wasmtime/releases/download/v25.0.1/wasmtime-v25.0.1-x86_64-linux.tar.xz | tar xJ
+          curl -sSfL -o wasmtime.tar.xz https://github.com/bytecodealliance/wasmtime/releases/download/v25.0.1/wasmtime-v25.0.1-x86_64-linux.tar.xz
+          echo "3785b32b79fd7af4f12bf42c4e46debf48ec853fbcc4a097a3bd9728237fb3ef  wasmtime.tar.xz" | sha256sum -c -
+          tar xJf wasmtime.tar.xz
           echo "$PWD/wasmtime-v25.0.1-x86_64-linux" >> "$GITHUB_PATH"
       - name: Tools
         run: |
@@ -230,8 +292,10 @@ jobs:
         run: cargo build --release
       - name: Build the base branch
         continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git worktree add ../base "origin/${{ github.base_ref }}"
+          git worktree add ../base "origin/$BASE_REF"
           cd ../base && CARGO_TARGET_DIR="$PWD/../base-target" cargo build --release
       - name: Compare
         run: |

@@ -543,6 +543,12 @@ static void test_env_args(void) {
 
 /* ---- scenarios that end the process ------------------------------------------------ */
 
+static int write_entry(gm_node *cx) {
+    (void)cx;
+    gm_write_out((const uint8_t *)"hello\n", 6);
+    return 0;
+}
+
 static int scenario(const char *name) {
     if (strcmp(name, "trap") == 0) {
         gm_write_out((const uint8_t *)"before\n", 7);
@@ -560,6 +566,8 @@ static int scenario(const char *name) {
     } else if (strcmp(name, "wrong-size") == 0) {
         void *p = gm_heap_alloc(16, 8);
         gm_heap_free(p, 8, 8, "w.gm", 1, 2);
+    } else if (strcmp(name, "write-failure") == 0) {
+        return gm_run_main(write_entry, NULL);
     } else if (strcmp(name, "args") == 0) {
         return 0;
     } else {
@@ -620,6 +628,54 @@ static void test_cmdline(void) {
     check_cmdline(one, 1, "a");
 }
 
+/* Handles of directories, child processes and threads are not reused: a handle that has been
+ * closed fails, and does not reach a newer object that took over its table slot. */
+static void noop_thread(void *arg) { (void)arg; }
+
+static void test_stale_handles(void) {
+    int64_t ebadf = gm_io_error(EBADF);
+
+    int64_t d1 = gm_fs_open_dir(".", 1);
+    CHECK(d1 > 0);
+    CHECK(gm_fs_close_dir(d1) == 0);
+    CHECK(gm_fs_close_dir(d1) == ebadf);
+    char name[8];
+    CHECK(gm_fs_next_entry(d1, name, sizeof name) == ebadf);
+    int64_t d2 = gm_fs_open_dir(".", 1);
+    CHECK(d2 > 0 && d2 != d1);
+    CHECK(gm_fs_close_dir(d1) == ebadf);
+    CHECK(gm_fs_close_dir(d2) == 0);
+    CHECK(gm_fs_close_dir(0) == ebadf && gm_fs_close_dir(-1) == ebadf && gm_fs_close_dir((int64_t)1 << 40) == ebadf);
+    CHECK(gm_fs_open_dir("", 0) < 0);
+
+    int64_t t1 = gm_thread_spawn((void *)noop_thread, NULL);
+    CHECK(t1 > 0);
+    CHECK(gm_thread_join(t1) == 0);
+    CHECK(gm_thread_join(t1) == ebadf);
+    int64_t t2 = gm_thread_spawn((void *)noop_thread, NULL);
+    CHECK(t2 > 0 && t2 != t1);
+    CHECK(gm_thread_join(t1) == ebadf);
+    CHECK(gm_thread_detach(t1) == ebadf);
+    CHECK(gm_thread_join(t2) == 0);
+    CHECK(gm_thread_join(12345) == ebadf);
+
+#ifndef _WIN32
+    gm_rt_str argv[1] = {{(const uint8_t *)"true", 4}};
+    uint32_t null_streams = 1 | (1 << 2) | (1 << 4);
+    int64_t p1 = gm_proc_spawn(argv, 1, NULL, 0, "", 0, null_streams);
+    CHECK(p1 > 0);
+    CHECK(gm_proc_wait(p1) == 0);
+    CHECK(gm_proc_wait(p1) == ebadf);
+    int64_t p2 = gm_proc_spawn(argv, 1, NULL, 0, "", 0, null_streams);
+    CHECK(p2 > 0 && p2 != p1);
+    CHECK(gm_proc_wait(p1) == ebadf);
+    CHECK(gm_proc_kill(p1) == ebadf);
+    CHECK(gm_proc_close_in(p1) == ebadf);
+    CHECK(gm_proc_wait(p2) == 0);
+    CHECK(gm_proc_wait(p2) == ebadf);
+#endif
+}
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
     _setmode(1, _O_BINARY);   /* as gm_run_main does: no newline translation */
@@ -642,6 +698,7 @@ int main(int argc, char **argv) {
     test_heap();
     test_env_args();
     test_cmdline();
+    test_stale_handles();
     gm_flush();
     if (failures != 0) {
         fprintf(stderr, "%d runtime check(s) failed\n", failures);

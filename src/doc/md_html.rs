@@ -17,6 +17,33 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// How many levels the headings of a doc comment move down, in Markdown and HTML output,
+/// so that they sit below the heading of the item they document.
+pub const DEMOTE: usize = 3;
+
+/// A code fence for `content`: backticks, three or one more than the longest run in it,
+/// so that the content cannot close the fence.
+pub fn fence(content: &str) -> String {
+    let (mut longest, mut run) = (0, 0);
+    for c in content.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    "`".repeat((longest + 1).max(3))
+}
+
+/// `path` for use in a link: each segment percent-encoded, the `/` between them kept.
+pub fn url_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for &b in path.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 /// Moves the headings of Markdown `text` down by `by` levels (to at most 6), so that
 /// they sit below the heading of the item they document. Fenced code is left alone.
 pub fn demote_headings(text: &str, by: usize) -> String {
@@ -59,7 +86,7 @@ pub fn render(text: &str) -> String {
             i += 1;
             out.push_str(&format!("<pre><code>{}</code></pre>\n", escape(&code.join("\n"))));
         } else if let Some((level, title)) = heading(t) {
-            let level = (level + 3).min(6);
+            let level = (level + DEMOTE).min(6);
             out.push_str(&format!("<h{0}>{1}</h{0}>\n", level, inline(title)));
             i += 1;
         } else if is_indented(line) {

@@ -1,0 +1,8 @@
+//! stage: check
+//! ptr_bits: 32
+// On a 32-bit target an object is at most 2^31 - 1 bytes.
+Fits :: [2147483647]u8
+Big :: [2147483648]u8 //~ ERROR the type `[2147483648]u8` is too large: an object is at most 2147483647 bytes
+Trillion :: [1000000000000]u8 //~ ERROR is too large
+Two :: struct { a: [2147483647]u8, b: u8 } //~ ERROR `Two` is too large
+main :: fn() {}

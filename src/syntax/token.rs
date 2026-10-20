@@ -204,6 +204,11 @@ pub struct DocComment {
     pub span: Span,
     /// The comment text after `///`, with one leading space removed if present.
     pub text: String,
+    /// Where something directly after the comment begins: the first byte after the
+    /// indentation of the next line. A declaration or doc comment starting exactly
+    /// here is adjacent to this comment; a blank line or other comment in between
+    /// puts this offset elsewhere.
+    pub next_lo: u32,
 }
 
 /// The result of lexing one file.

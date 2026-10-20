@@ -201,6 +201,10 @@ static int64_t gm_clif_tag(const gm_type *t, const uint8_t *v) {
     return tag;
 }
 
+/* The address of the calling thread's `errno`, for a foreign `#global errno`: the C
+ * library makes it a thread-local variable or a function call, not a symbol to link with. */
+GM_API int *gm_clif_errno(void) { return &errno; }
+
 GM_API bool gm_clif_eq(const gm_type *t, const uint8_t *a, const uint8_t *b) {
     switch (t->kind) {
     case GM_K_INT: return gm_clif_int(t, a) == gm_clif_int(t, b);
@@ -509,8 +513,8 @@ GM_API void gm_clif_f64_to_int(double x, uint32_t sgn, gm_u128 *out) {
 }
 
 /* *r = base ^ n for an integer type of `bits` bits stored in `storage` bytes, as the C back end
- * computes it: repeated multiplication wrapping at the storage width. Returns whether a product
- * did not fit the storage or the result does not fit the type. */
+ * computes it: repeated squaring, wrapping at the storage width. Returns whether a product that
+ * contributes to the result did not fit the storage or the result does not fit the type. */
 GM_API bool gm_clif_pow(uint32_t sgn, uint32_t bits, uint32_t storage, const gm_u128 *pbase, uint64_t n,
                         gm_u128 *out) {
     gm_u128 base = *pbase;
@@ -518,10 +522,11 @@ GM_API bool gm_clif_pow(uint32_t sgn, uint32_t bits, uint32_t storage, const gm_
 #define GM_CLIF_POW(T)                                                                                                 \
     {                                                                                                                  \
         T r = 1, b = (T)base;                                                                                          \
-        for (uint64_t i = 0; i < n; i++) {                                                                             \
-            T x;                                                                                                       \
-            if (__builtin_mul_overflow(r, b, &x)) o = true;                                                            \
-            r = x;                                                                                                     \
+        for (;;) {                                                                                                     \
+            if ((n & 1) && __builtin_mul_overflow(r, b, &r)) o = true;                                                 \
+            n >>= 1;                                                                                                   \
+            if (!n) break;                                                                                             \
+            if (__builtin_mul_overflow(b, b, &b)) o = true;                                                            \
         }                                                                                                              \
         gm_u128 w = (gm_u128)r;                                                                                        \
         if (!gm_clif_fits(w, bits, sgn)) o = true;                                                                     \

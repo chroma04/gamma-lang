@@ -67,6 +67,16 @@ impl<'s> Sema<'s> {
         block: &ast::ForeignBlock,
     ) -> DeclValue {
         let lib = Symbol::intern(&String::from_utf8_lossy(&block.lib.bytes));
+        // The name becomes one `-l<name>` argument of the linker.
+        let lib_ok = !lib.as_str().starts_with('-')
+            && !lib.as_str().is_empty()
+            && lib.as_str().bytes().all(|b| b.is_ascii_alphanumeric() || b"_.+-".contains(&b));
+        if !lib_ok {
+            self.error(
+                name.span,
+                format!("`{}` is not a library name: use letters, digits and `_ . + -`", lib.as_str().escape_debug()),
+            );
+        }
         let m = self.add_module(name.name, vec![], false);
         self.modules[m.0 as usize].dir = self.modules[module.0 as usize].dir.clone();
         self.modules[m.0 as usize].package = self.modules[module.0 as usize].package;
@@ -76,8 +86,21 @@ impl<'s> Sema<'s> {
             let mut callconv = None;
             for a in &member.attrs {
                 match (a.name.name.as_str(), a.args.as_deref()) {
-                    ("link_name", Some([ast::Expr { kind: ExprKind::Str(s), .. }])) => {
-                        link_name = Some(Symbol::intern(&String::from_utf8_lossy(&s.bytes)));
+                    ("link_name", Some([ast::Expr { kind: ExprKind::Str(s), span, .. }])) => {
+                        let sym = String::from_utf8_lossy(&s.bytes);
+                        let ok =
+                            !sym.is_empty() && sym.bytes().all(|b| b.is_ascii_alphanumeric() || b"_$.@".contains(&b));
+                        if ok {
+                            link_name = Some(Symbol::intern(&sym));
+                        } else {
+                            self.error(
+                                *span,
+                                format!(
+                                    "`{}` is not a symbol name: use letters, digits and `_ $ . @`",
+                                    sym.escape_debug()
+                                ),
+                            );
+                        }
                     }
                     ("link_name", _) => self.error(a.span, "`#link_name` takes the symbol name: `#link_name(\"sym\")`"),
                     ("callconv", _) if matches!(member.kind, ast::ForeignMemberKind::Fn { .. }) => {
@@ -90,6 +113,13 @@ impl<'s> Sema<'s> {
                         self.error(a.span, format!("attribute `#{}` does not apply to a foreign member", other))
                     }
                 }
+            }
+            let own_name = match &member.kind {
+                ast::ForeignMemberKind::Fn { name: n, .. } | ast::ForeignMemberKind::Global { name: n, .. } => n,
+            };
+            let sym = link_name.unwrap_or(own_name.name);
+            if crate::cgen::is_runtime_symbol(sym.as_str()) {
+                self.error(own_name.span, format!("`{}` is a symbol of the runtime; choose another name", sym));
             }
             let (member_name, value) = match &member.kind {
                 ast::ForeignMemberKind::Fn { name: n, sig } => {
@@ -275,6 +305,10 @@ impl<'s> Sema<'s> {
         }
         if s == "main" {
             self.error(span, "`main` cannot be exported: it is the program's entry point");
+            return;
+        }
+        if crate::cgen::is_runtime_symbol(s) {
+            self.error(span, format!("`{}` is a symbol of the runtime; choose another name", s));
             return;
         }
         if self.prog.exports.iter().any(|(e, _)| *e == sym) {

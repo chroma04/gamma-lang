@@ -4,15 +4,59 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
-## Unreleased
+## 0.1.0 - 2026-10-20
+
+The first release: the complete language of `gamma-spec.md`, implemented on three
+back ends that give the same results.
+
+- **Language**: algebraic effects and handlers for allocation, I/O, processes, iteration,
+  early exit and fibers, with effect sets written `needs A + B` (named sets and
+  effect-set parameters included); generics with type, compile-time value and effect-set
+  parameters, inferred or named; rest parameters; compile-time evaluation, `when` and
+  local constants; optionals and error unions; SIMD vectors (`#simd [N]T`) and arrays
+  indexed by an enum (`[E]T`); modules and packages; `test` and `bench` declarations,
+  with failing a test as the `Test` effect; C interoperability (`foreign`, `#export`,
+  `#callconv`, inline assembly, atomics).
+- **Interpreter** (`gamma run`, `gamma test`): functions run as register bytecode, with
+  a tree-walking fallback; foreign C functions are called through libffi.
+- **C back end** (`gamma build`, `--backend=c`): build modes Debug, Checked, Fast and
+  Safe (memory-safe through Fil-C, Linux only); debug information with gdb and lldb views
+  and pretty printers (`-g`); cross-compiling with `--target=`, including WebAssembly
+  for WASI (`--target=wasm32-wasi`).
+- **Cranelift back end** (`--backend=cranelift`, 64-bit Linux and macOS): generates
+  machine code directly, several times faster to build than through C.
+- **Platforms**: Linux and macOS (x86_64 and arm64), x86_64 Windows with a MinGW-w64 C
+  compiler (gcc or clang), and WASI.
+- **Standard library**: the core library and the `std/` modules listed in
+  [`docs/std.md`](docs/std.md), including files, networking, processes, threads, fibers
+  (with sleeping and channels), text, time zones, JSON, hashes and collections.
+  Additions follow the admission policy of §22.
+- **Tooling**: `gamma fmt`, `gamma lint`, `gamma fix` (applies the compiler's suggested
+  fixes), `gamma doc` (API documentation in Markdown or HTML), `gamma repl`; `gamma test`
+  and `gamma bench` with filters, parallel jobs, timeouts, timing and line coverage;
+  packages with path, git and archive dependencies, version requirements, `gamma.lock`
+  and build profiles with C sources and libraries (`gamma new`, `init`, `add`, `remove`,
+  `fetch`, `update`, `cache`); the language server `gamma lsp`; VS Code and Zed
+  extensions and TextMate and tree-sitter grammars; prebuilt binaries with install
+  scripts for every platform above.
+- **Documentation**: the guide (with chapters for C and Rust programmers), runnable
+  examples, and a website with a playground that runs programs in the browser.
+
+The feature set above was first frozen on 2026-10-16. The lists below record what was
+added, changed and fixed between then and this release, for anyone who built Gamma from
+source in that time.
 
 ### Added
+
+- `gamma test --timeout=<seconds>` (and `gamma bench`): a test that runs longer fails
+  with `timed out after N s`, on the interpreter and natively. The interpreter also stops
+  a test that is sleeping when its time is up.
 
 - A website, published with GitHub Pages from `web/`: a landing page, the guide, the
   specification and the standard library reference as pages, and a playground that runs
   programs in the browser with the interpreter compiled to WebAssembly (everything except
-  files, processes, the network, threads, fibers and C). The compiler crate now also
-  builds for `wasm32-wasip1`.
+  files, processes, the network, threads, fibers and C). A sleep lasts as long as asked;
+  Stop ends the program. The compiler crate now also builds for `wasm32-wasip1`.
 - The Cranelift back end: `--backend=cranelift` on `gamma run`, `build`, `test` and
   `bench` generates machine code directly with Cranelift instead of going through C. It
   compiles the whole language, passes the whole conformance suite, and builds several
@@ -123,6 +167,8 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- `gamma fetch` takes its directory as `--dir <dir>`, like `update`, `add` and `remove`
+  (the positional form still works).
 - `Os` has a new case, `Wasi`, and `IoError` a new case, `Unsupported`: an exhaustive
   `match` over either needs an arm for it.
 - Faster Safe builds: values that hold no pointer, or hold their pointers at fixed
@@ -221,8 +267,139 @@ Versions and what each kind of change means are described in
 - The interpreter performs an operation with less work (about 6% fewer instructions in
   a loop of handled performs).
 
+### Security
+
+- Package manager: a git URL that starts with `-` (in `gamma.toml`, `gamma.lock` or
+  `gamma add`) is rejected, and URLs are passed to git after `--`; such a URL in any
+  dependency's manifest made git run a command (`--upload-pack=…`) on `gamma fetch`,
+  `check`, `build` or when the language server opened the project. URLs with spaces or
+  control characters are rejected too, and git's `ext::` transport is never allowed.
+- Package manager: the entries of `gamma.lock` are validated (full commit ids, `sha256:`
+  hashes, names, subdirectories); a damaged or hostile lock crashed `gamma fetch` or named
+  a directory outside the package store. A chain of symbolic links that climbs out of a
+  package (`d/up -> ..`, `esc -> d/up/..`) is rejected like a single such link. An
+  archive already unpacked in the cache is hashed again against the lock, as git
+  checkouts are. Downloads that stall time out, and archives over 1 GiB, or that unpack to
+  more than 4 GiB or a million entries, are refused.
+- `#link_name` takes only symbol characters (letters, digits, `_ $ . @`) and a foreign
+  library name only letters, digits and `_ . + -`: a crafted name was pasted into the
+  generated C. Foreign symbols and exports named like a symbol of the runtime are errors.
+
 ### Fixed
 
+- Cranelift back end on x86-64 Linux and macOS: a foreign call whose 128-bit integer
+  argument finds a single integer register left is refused with a message, instead of
+  passing the value differently from C (the C back end and the interpreter handle it).
+- A line starting with `.name` that holds a raw string or a block comment before its `:=`
+  (`` .Some(`x`) := v else … ``) is read as a pattern binding, instead of continuing the line
+  before it.
+- `gamma build x.gm` no longer overwrites a file `x.c` that it did not generate (it
+  refuses, naming the file), and intermediate objects of the C and Cranelift back ends no
+  longer take the name of a file next to the output (`-o app` deleted `app.o`).
+- C and Cranelift back ends: an index or slice bound of a 128-bit type (or of a type
+  wider than `usize`) is checked with its whole value instead of its low bits, and an
+  inclusive slice bound of `usize`'s largest value traps instead of wrapping to an empty
+  slice, as on the interpreter.
+- Cranelift back end: calls through a `^fn` whose signature passes a struct by value use
+  the C convention (§19.2), so pointers to C functions (and Gamma functions behind such
+  pointers called from C) receive the right arguments.
+- `gamma cache clean` reports what it could not remove and exits with status 1 instead of
+  claiming success, and no longer removes a repository directory a build is writing to.
+- Mirrors of git dependencies drop branches and tags deleted upstream, so a deleted
+  release no longer resolves from the cache. Git commands ignore the caller's `GIT_DIR`
+  and similar variables (as set inside a git hook).
+- Command-line arguments that are not valid UTF-8 are a usage error instead of a crash.
+- `gamma run --backend=c` rebuilds a cached executable when a library named by a
+  `foreign` block or by `-L`/`-l` in `LDFLAGS` changes, or when `wasm-opt` is upgraded.
+- The cache directory and temporary build directories are created accessible to the
+  user only, and temporary files never replace an existing file; failed builds no longer
+  leave temporary executables in the cache, and old leftovers are removed. The cache
+  directory must be private to the user (`docs/architecture.md`).
+- On Windows, a backslash in `CC`, `CFLAGS`, `LDFLAGS` and `GAMMA_RUNNER` is literal
+  except before a double quote (as in Windows command lines), so `C:\msys64\…` paths work.
+- A failed write to the standard output (`> /dev/full`) ends the program with status 1 and
+  `gamma: cannot write the standard output: …` on every back end; a closed pipe still ends
+  it as before.
+- Integer `pow` takes time in proportion to the bit length of the exponent on the C and
+  Cranelift back ends (`x.pow(4000000000)` took seconds), and `clz`, `ctz`, `popcount`,
+  `bswap` and `bitreverse` use the compiler's builtins in the C back end.
+- C runtime: sockets are no longer inherited by started processes; each thread's
+  alternate signal stack is freed when the thread ends; joining or detaching an unknown
+  thread handle fails instead of crashing; a `connect` interrupted by a signal completes;
+  the working directory may be longer than 4096 bytes.
+- `#global errno` in a `foreign` block (as in the specification's example) links and reads
+  the calling thread's `errno` on the C and Cranelift back ends; glibc's `errno` is not a
+  plain symbol, so linking failed.
+- Cranelift back end: constants are placed in read-only data, and `@cpu_count` returns a
+  32-bit value as declared.
+- Non-relative imports (`std/../..`, `dep//abs`) can no longer leave the directory of
+  `std` or of the dependency.
+- A `pub` declaration's private types are also found in the operations of a `pub` effect,
+  in the effect arguments of `needs`, and in effect aliases (§3.3).
+- Value arguments of generic types compare with `is`: `Box(0.0)` and `Box(-0.0)` are one
+  type, NaNs are one value, and padding bytes do not count.
+- Untyped constants are limited to 2^22 bits (§6.2), and very large numbers are shown by
+  their size in messages.
+- Clearer messages for `fill:` given with other arguments of an array construction.
+- Directory, process and thread handles that were closed (or waited for) fail with an
+  error instead of acting on a newer object that took over their slot, and a concurrent
+  close or wait no longer frees an object another call is still using.
+- Windows: starting a process searches only `PATH` for a bare program name (never the
+  current directory), and refuses to pass arguments with characters `cmd.exe` interprets
+  to a `.bat` or `.cmd` program; `Fs.open_dir` rejects the empty path and wildcards.
+- `install.ps1`: https or file locations only, a validated `.sha256`, an atomic swap of the
+  standard library, LICENSE and README installed, and `%VAR%` entries of the user `PATH`
+  kept as they were.
+- Package commands accept `--` before arguments that start with `-`, say when a flag is
+  given a value, and `gamma new` creates no directory for a name it refuses; `gamma.toml`
+  and `gamma.lock` are replaced through a fresh temporary file flushed to disk.
+- Releases are published only when CI passed on the tagged commit, with a build provenance
+  attestation for each archive, and the archives are reproducible.
+- Field and parameter defaults are evaluated once, at compile time, where they are
+  declared (§17.2): a default that traps is a compile error at the default, and a default
+  that constructs its own struct is a declaration cycle. Float value arguments of generic
+  types are shown by value in messages (`Box(1.5)`).
+- Interpreter: file opens, reads and writes, name lookups, socket shutdowns and calls of
+  foreign functions with effects no longer stop the other threads (a C call waiting for
+  another Gamma thread deadlocked); `Proc.kill` never signals a process id that may have been
+  reused; children a program never waited for are reaped when its run ends; foreign calls
+  with large buffers copy less.
+- `gamma run` passes program arguments that are not UTF-8 to the program unchanged.
+- The language server registers file watchers when the client supports it, and refreshes
+  diagnostics when imported files change on disk; references and rename read unchanged
+  files from a cache.
+- `gamma test --coverage=<file>` exits with status 1 when the tracefile cannot be
+  written.
+- `install.sh` accepts only `https://` and `file://` download locations, checks that the
+  `.sha256` file holds a hash, and replaces the standard library of an earlier
+  installation only once the new one is copied in full.
+- Types larger than `isize::MAX` bytes (arrays, structs, tuples, unions, optionals,
+  results, generic instances) are a compile error instead of a compiler crash or silently
+  wrong sizes; on 32-bit targets this catches arrays larger than the address space.
+- Types that contain each other by value (also through `using`) no longer crash the
+  compiler after the error is reported, and a compile-time string pointing outside its
+  data is an error instead of a crash.
+- Generic effects with a generic type argument (`needs E(Box(T))`) no longer reject valid
+  programs.
+- Checking stays fast for long `else if` chains, for types built by repeated doubling
+  (long type names in messages are abbreviated), for lines with many unmatched closing
+  brackets, and for many diagnostics on long lines.
+- Interpreter: a trap on one thread stops the program even when another thread is blocked
+  in a mutex, condition variable, channel or join; `errno` read from other threads and
+  fibers is their own; huge allocation alignments and forged slice lengths passed to
+  system operations no longer crash it; `Env.var` returns values that are not UTF-8, and
+  `Env.args` and `Env.var` no longer leak memory per call; passing freed memory or a
+  callback it cannot translate to C traps; more than 8192 suspended fibers is a clean trap
+  instead of an abort.
+- `gamma lint --fix` no longer changes multi-line raw strings inside an `else { if … }`
+  it collapses.
+- The language server clears the diagnostics of other files of a directory when its last
+  open document closes, clamps out-of-range positions, and limits header and message sizes.
+- `0xFF.abs()` lexes as an integer and a method call, and a doc comment separated from a
+  declaration by blank lines no longer attaches to it.
+- `gamma doc` lengthens code fences around signatures that contain backticks and
+  percent-encodes module links; `gamma repl` reports a line that is not UTF-8 and goes
+  on; `gamma fmt` writes LF line ends inside block comments of CRLF files.
 - A `::` binding whose initializer calls a nested function with an inferred return type
   (`zero :: fn() { return 0 }`, then `z :: zero()`) no longer crashes the compiler.
 - Listing a directory no longer traps on targets with a 32-bit `usize`.
@@ -279,33 +456,3 @@ Versions and what each kind of change means are described in
   variant, as `u is .V` does (§7.6).
 - The tree-sitter grammar treats a block comment that contains a line break as a line
   break (§2.2).
-
-## 0.1.0 - 2026-10-16
-
-The first release: the complete language of `gamma-spec.md`, implemented on two
-back ends that give the same results.
-
-- **Language**: algebraic effects and handlers for allocation, I/O, iteration, early
-  exit and fibers, with effect sets written `needs A + B` (named sets and effect-set
-  parameters included); generics with type, compile-time value and effect-set
-  parameters, inferred or named; rest parameters; compile-time evaluation, `when` and
-  local constants; optionals and error unions; modules and packages; `test` and `bench`
-  declarations, with failing a test as the `Test` effect; C interoperability (`foreign`,
-  `#export`, `#callconv`, inline assembly, atomics).
-- **Interpreter** (`gamma run`, `gamma test`): functions run as register bytecode, with
-  a tree-walking fallback; foreign C functions are called through libffi.
-- **C back end** (`gamma build`, `--backend=c`): build modes Debug, Checked, Fast and
-  Safe (memory-safe through Fil-C, Linux only); debug information with gdb views and
-  pretty printers (`-g`); cross-compiling with `--target=`.
-- **Platforms**: Linux and macOS (x86_64 and arm64), and x86_64 Windows with a
-  MinGW-w64 C compiler (gcc or clang).
-- **Standard library**: the core library and the `std/` modules listed in
-  [`docs/std.md`](docs/std.md), including files, networking, threads, fibers, text,
-  JSON, hashes and collections. Additions follow the admission policy of §22.
-- **Tooling**: `gamma fmt`, `gamma doc` (API documentation in Markdown or HTML),
-  `gamma repl`; `gamma test` and `gamma bench` with filters, parallel jobs, timing and
-  line coverage; packages with path, git and archive dependencies, version
-  requirements, `gamma.lock` and build profiles with C sources and libraries
-  (`gamma new`, `init`, `add`, `remove`, `fetch`, `update`, `cache`); the language
-  server `gamma lsp`; a VS Code extension and TextMate and tree-sitter grammars;
-  prebuilt binaries with install scripts for every platform above.

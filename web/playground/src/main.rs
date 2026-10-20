@@ -51,14 +51,14 @@ fn run(src: String) -> ExitCode {
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(gamma::diag::DiagFormat::Human));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    let cfg = RunConfig { target: prog.target.clone(), mode: sess.mode, step_budget: None };
+    let cfg = RunConfig { target: prog.target.clone(), mode: sess.mode, step_budget: None, deadline: None };
     if let Err(e) = gamma::interp::foreign_supported(&prog, &cfg) {
         eprintln!("gamma: cannot run this program here: {}", e);
         return ExitCode::FAILURE;
     }
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
-    let args = vec!["main.gm".to_string()];
+    let args = vec![b"main.gm".to_vec()];
     match gamma::interp::run_main(&prog, &cfg, &args, &mut stdout, &mut stderr) {
         Outcome::Exit(code) => ExitCode::from(code),
         Outcome::Trap(t) => {

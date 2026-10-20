@@ -148,7 +148,8 @@ function run(module, mode, source) {
     sched_yield: () => ESUCCESS,
 
     // Sleeping: only clock subscriptions, waited for by spinning (a worker has no
-    // blocking sleep without shared memory).
+    // blocking sleep without shared memory). The whole time is waited out, however
+    // long; the page's Stop button ends the worker.
     poll_oneoff(inPtr, outPtr, n, countPtr) {
       const v = view();
       let wait = 0n;
@@ -160,7 +161,7 @@ function run(module, mode, source) {
         if (v.getUint16(s + 40, true) & 1) t -= now(id); // absolute time
         if (t > wait) wait = t;
       }
-      const until = performance.now() + Math.min(Number(wait) / 1e6, 10000);
+      const until = performance.now() + Number(wait) / 1e6;
       while (performance.now() < until) { /* spin */ }
       for (let i = 0; i < n; i++) {
         const s = inPtr + i * 48, e = outPtr + i * 32;

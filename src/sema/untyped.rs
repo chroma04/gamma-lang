@@ -44,8 +44,31 @@ pub fn negate(v: &Untyped) -> Result<Untyped, String> {
     }
 }
 
+/// The largest size, in bits, of an integer (or of a rational's numerator or denominator)
+/// that untyped constant arithmetic produces (§6.2).
+pub const MAX_CONST_BITS: u64 = 1 << 22;
+
+/// An integer for a diagnostic: in full unless it is very large, then only its size.
+pub fn show_int(v: &BigInt) -> String {
+    const SHOWN_BITS: u64 = 512;
+    if v.bits() <= SHOWN_BITS { v.to_string() } else { format!("<{}-bit integer>", v.bits()) }
+}
+
 /// Applies a binary operator to two untyped constants.
 pub fn binary(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
+    let r = binary_exact(op, a, b)?;
+    let bits = match &r {
+        Untyped::Int(i) => i.bits(),
+        Untyped::Float(q) => q.numer().bits().max(q.denom().bits()),
+        _ => 0,
+    };
+    if bits > MAX_CONST_BITS {
+        return Err(format!("the result of this constant expression is too large (more than {} bits)", MAX_CONST_BITS));
+    }
+    Ok(r)
+}
+
+fn binary_exact(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
     use Untyped::*;
     match op {
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Is | BinOp::IsNot => {
@@ -173,6 +196,12 @@ mod tests {
             Ok(Untyped::Float(BigRational::new(BigInt::from(3), BigInt::from(2))))
         );
         assert!(binary(BinOp::Div, &int(1), &int(0)).is_err());
+        let big = binary(BinOp::Shl(Flavor::Checked), &int(1), &int(1 << 20)).unwrap();
+        let sq = binary(BinOp::Mul(Flavor::Checked), &big, &big).unwrap();
+        assert!(binary(BinOp::Mul(Flavor::Checked), &sq, &sq).is_err());
+        let Untyped::Int(i) = &sq else { panic!() };
+        assert_eq!(show_int(i), "<2097153-bit integer>");
+        assert_eq!(show_int(&BigInt::from(-12)), "-12");
         assert_eq!(binary(BinOp::Lt, &int(1), &half), Ok(Untyped::Bool(false)));
         assert_eq!(
             binary(BinOp::Shl(Flavor::Checked), &int(1), &int(100)).unwrap(),

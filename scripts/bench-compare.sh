@@ -44,9 +44,15 @@ fi
 to_ns <"$tmp/head.txt" >"$tmp/head.tsv"
 
 have_base=0
-if [ -n "$base_gamma" ] && "$base_gamma" bench "$dir" --backend=c >"$tmp/base.txt" 2>"$tmp/base.err"; then
+why_no_base="The base branch has no \`gamma bench\`, so there is nothing to compare with."
+if [ -z "$base_gamma" ]; then
+    why_no_base="The base branch could not be built, so there is nothing to compare with."
+elif "$base_gamma" bench "$dir" --backend=c >"$tmp/base.txt" 2>"$tmp/base.err"; then
     to_ns <"$tmp/base.txt" >"$tmp/base.tsv"
     [ -s "$tmp/base.tsv" ] && have_base=1
+elif ! grep -qi 'unknown command' "$tmp/base.err"; then
+    # The command exists there but failed: say so rather than claim it is missing.
+    why_no_base="\`gamma bench\` failed on the base branch: $(head -n 3 "$tmp/base.err" | tr '\n' ' ')"
 fi
 
 {
@@ -72,7 +78,7 @@ fi
         echo
         echo "A ratio above 1 means this branch is slower. Wall-clock times on a shared runner are noisy; this table is for information and never fails the build."
     else
-        echo "The base branch has no \`gamma bench\`, so there is nothing to compare with."
+        echo "$why_no_base"
         echo
         echo "| Benchmark | This branch |"
         echo "| --- | ---: |"

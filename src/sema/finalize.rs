@@ -165,7 +165,7 @@ impl<'a, 's> FnCx<'a, 's> {
             tir::PatKind::Range { lo, hi, .. } => {
                 for v in [&*lo, &*hi] {
                     if p.ty.is_integer() && !int_fits(v, p.ty, &self.sema.target) {
-                        self.error(p.span, format!("{} does not fit in `{}`", v, p.ty));
+                        self.error(p.span, format!("{} does not fit in `{}`", super::untyped::show_int(v), p.ty));
                     }
                 }
             }
@@ -207,7 +207,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     let r = BigRational::from_integer(v.clone());
                     self.fin_float(e, r, true);
                 } else if !e.ty.is_error() && !int_fits(v, e.ty, &self.sema.target) {
-                    let mut d = Diagnostic::error(e.span, format!("the literal {} does not fit in `{}`", v, e.ty));
+                    let mut d = Diagnostic::error(
+                        e.span,
+                        format!("the literal {} does not fit in `{}`", super::untyped::show_int(v), e.ty),
+                    );
                     // The type may come from a conversion of a variable the literal flows into.
                     if let Some(span) = fixed_by {
                         d = d.with_label(span, format!(

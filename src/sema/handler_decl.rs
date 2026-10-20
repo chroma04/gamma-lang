@@ -396,15 +396,12 @@ impl<'s> Sema<'s> {
                 out.push(d);
                 continue;
             }
-            let (eref, effects, clauses, span) = {
+            let (tpl_effect, tpl_effects, clauses, span) = {
                 let tpl = &self.handler_templates[k];
-                (
-                    super::generics::subst_eref(&tpl.effect, &map),
-                    super::generics::subst_effects(&tpl.effects, &map),
-                    tpl.clauses.clone(),
-                    tpl.span,
-                )
+                (tpl.effect.clone(), tpl.effects.clone(), tpl.clauses.clone(), tpl.span)
             };
+            let eref = self.subst_eref(&tpl_effect, &map);
+            let effects = self.subst_effects(&tpl_effects, &map);
             let clauses = clauses.into_iter().map(|c| self.instantiate(c, args.clone(), span)).collect();
             let id = HandlerDeclId(self.prog.handler_decls.len() as u32);
             self.prog.handler_decls.push(tir::HandlerDecl { effect: eref, for_ty: t, clauses });
@@ -446,7 +443,8 @@ impl Sema<'_> {
             return false;
         };
         let map: Vec<(ParamId, Ty)> = tpl.generics.iter().copied().zip(args).collect();
-        self.subst(tpl.for_ty, &map) == t && super::generics::subst_eref(&tpl.effect, &map) == *eref
+        let (for_ty, tpl_effect) = (tpl.for_ty, tpl.effect.clone());
+        self.subst(for_ty, &map) == t && self.subst_eref(&tpl_effect, &map) == *eref
     }
 }
 

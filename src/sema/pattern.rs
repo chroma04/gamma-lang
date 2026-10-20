@@ -115,9 +115,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 let id = self.new_local(name.name, ty, false, name.span);
                 if binds.iter().any(|(n, _, _)| *n == name.name) {
+                    // The name is declared once, by its first binding.
                     self.error(name.span, format!("`{}` is bound twice in this pattern", name.name));
+                } else {
+                    binds.push((name.name, id, name.span));
                 }
-                binds.push((name.name, id, name.span));
                 pat(ty, PatKind::Bind(id), p.span)
             }
             PatternKind::Null => {
@@ -466,7 +468,21 @@ impl<'a, 's> FnCx<'a, 's> {
                 return pat(ty, PatKind::Wild, span);
             }
         };
-        let u = union_ty.unwrap();
+        self.variant_pattern(union_ty.unwrap(), vname, args, ty, ctx, binds, span)
+    }
+
+    /// `.V` / `.V(…)` for the variant `vname` of the union type `u`.
+    #[allow(clippy::too_many_arguments)]
+    fn variant_pattern(
+        &mut self,
+        u: Ty,
+        vname: ast::Ident,
+        args: Option<&[ast::PatArg]>,
+        ty: Ty,
+        ctx: PatCtx,
+        binds: &mut Vec<(Symbol, tir::LocalId, Span)>,
+        span: Span,
+    ) -> Pat {
         let Some((variants, _)) = self.sema.union_variants(u) else {
             if self.is_c_union(u) {
                 self.error(span, super::matching::c_union_match(u));
@@ -500,7 +516,21 @@ impl<'a, 's> FnCx<'a, 's> {
             return pat(ty, PatKind::Wild, span);
         };
         let payload_ty = variants[idx].payload;
-        let payload = match (payload_ty, args) {
+        let payload = self.payload_pattern(payload_ty, vname, args, ctx, binds, span);
+        pat(ty, PatKind::Variant { variant: idx as u32, payload }, span)
+    }
+
+    /// The sub-pattern for the payload (of type `payload_ty`, if the variant has one) of `.V(…)`.
+    fn payload_pattern(
+        &mut self,
+        payload_ty: Option<Ty>,
+        vname: ast::Ident,
+        args: Option<&[ast::PatArg]>,
+        ctx: PatCtx,
+        binds: &mut Vec<(Symbol, tir::LocalId, Span)>,
+        span: Span,
+    ) -> Option<Box<Pat>> {
+        match (payload_ty, args) {
             (None, None) => None,
             (None, Some(_)) => {
                 self.error(span, format!("variant `{}` has no payload", vname.name));
@@ -545,8 +575,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 Some(Box::new(p))
             }
-        };
-        pat(ty, PatKind::Variant { variant: idx as u32, payload }, span)
+        }
     }
 
     /// Declares the names bound by a pattern in the current scope.

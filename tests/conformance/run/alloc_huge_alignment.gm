@@ -1,0 +1,13 @@
+//! ptr_bits: 64
+//! safe: skip Fil-C stops a program that asks for an alignment over 256 KiB
+// An allocation the host cannot provide is a null result, whatever makes it impossible:
+// here an alignment no address space can honour (§12.3).
+main :: fn() needs Out + Alloc {
+    h := heap_allocator()
+    for i in 0..3 {
+        a := h.vt.alloc(h.data, 8, 1 << 63)
+        print("{}\n", a is null)
+    }
+    p := h.vt.alloc(h.data, 8, 16) else trap("a small allocation fails")
+    h.vt.free(h.data, p, 8, 16)
+}

@@ -30,6 +30,10 @@ use std::thread::JoinHandle;
 /// Stack size of a fiber's thread, and the part kept in reserve for overflow checks.
 const FIBER_STACK: usize = 64 << 20;
 const FIBER_MARGIN: usize = 8 << 20;
+/// How many fiber threads may exist at once: every thread takes several memory mappings,
+/// and a process that runs out of them is killed by the C library, not given an error.
+const MAX_FIBER_THREADS: usize = 8192;
+
 /// Values crossing between fiber threads. Only one thread runs at a time and
 /// every handoff goes through a channel, so the `Rc`s inside are never used
 /// concurrently.
@@ -72,6 +76,8 @@ pub struct Fibers {
     pub cur: u64,
     last_id: u64,
     withs: HashMap<WithKey, WithRec>,
+    /// How many fiber threads exist now.
+    threads: usize,
     fibers: HashMap<u64, FiberRec>,
 }
 
@@ -137,6 +143,7 @@ pub(super) struct ThreadState<'a> {
     depth: u32,
     stack_floor: usize,
     cur: u64,
+    ffi: super::ffi::FfiThread,
 }
 
 fn aborted() -> Box<Flow> {
@@ -153,6 +160,7 @@ impl<'a> Machine<'a> {
             depth: self.depth,
             stack_floor: self.stack_floor,
             cur: self.fib.cur,
+            ffi: self.ffi.take_thread(),
         }
     }
 
@@ -164,6 +172,7 @@ impl<'a> Machine<'a> {
         self.depth = s.depth;
         self.stack_floor = s.stack_floor;
         self.fib.cur = s.cur;
+        self.ffi.put_thread(s.ffi);
     }
 
     /// Sends `msg` (which lets another thread run) and blocks until a message arrives on `rx`.
@@ -231,6 +240,8 @@ impl<'a> Machine<'a> {
         let start = Start::Body { fr: fr as *const Rc<Frame>, cx: &cx as *const Ctx, code: code.cast() };
         let first = self.new_fiber(key, start, State::Running, stack);
         let r = self.drive(span, key, first);
+        // Whatever way the driver ended, no fiber thread may outlive the records it uses.
+        self.abort_all(span, key);
         if let Some(w) = self.fib.withs.remove(&key) {
             for f in w.owned {
                 self.fib.fibers.remove(&f);
@@ -320,6 +331,18 @@ impl<'a> Machine<'a> {
                 self.join(fiber);
             }
         }
+        // A fiber off the list (its continuation was consumed, or it was running when the
+        // driver failed) may still be waiting for a message.
+        let rest: Vec<u64> = self.fib.withs.get(&key).map_or(vec![], |w| {
+            let alive =
+                |id: &&u64| self.fib.fibers.get(id).is_some_and(|r| r.thread.is_some() && r.state != State::Done);
+            w.owned.iter().filter(alive).copied().collect()
+        });
+        for id in rest {
+            if let Ok(Some(ToDriver::Done { fiber, .. })) = self.switch_to(span, key, id, ToFiber::Abort) {
+                self.join(fiber);
+            }
+        }
     }
 
     /// Cancels suspended fiber `id` (already taken off its `with`'s list) and waits until
@@ -368,12 +391,17 @@ impl<'a> Machine<'a> {
             rec.state = State::Done;
             if let Some(h) = rec.thread.take() {
                 let _ = h.join();
+                self.fib.threads -= 1;
             }
         }
     }
 
     /// Starts the thread of fiber `id`; it waits for its first message.
     fn spawn(&mut self, span: Span, id: u64) -> R<()> {
+        if self.fib.threads >= MAX_FIBER_THREADS {
+            return self
+                .trap(span, format!("cannot start a fiber: more than {} fibers are suspended", MAX_FIBER_THREADS));
+        }
         let rec = self.fib.fibers.get_mut(&id).unwrap();
         let start = rec.start.take();
         let owner = rec.owner;
@@ -420,6 +448,7 @@ impl<'a> Machine<'a> {
                 let rec = self.fib.fibers.get_mut(&id).unwrap();
                 rec.tx = Some(tx);
                 rec.thread = Some(h);
+                self.fib.threads += 1;
                 Ok(())
             }
             Err(e) => self.trap(span, format!("cannot start a fiber: {}", e)),

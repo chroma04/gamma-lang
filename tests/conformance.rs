@@ -62,7 +62,8 @@
 //! Every `run` test that expects no errors also runs through the C back end
 //! (`gamma run --backend=c`), and every such `test` test through
 //! `gamma test --backend=c`. Both must give the same output and exit status as
-//! the interpreter, unless the system has no C compiler or `GAMMA_TEST_C=0` is set.
+//! the interpreter, unless the system has no C compiler or `GAMMA_TEST_C=0` is set;
+//! with `GAMMA_TEST_C=1` a missing C compiler fails the tests (CI sets it).
 //!
 //! The Cranelift lane runs the same tests through `--backend=cranelift` on the hosts that
 //! back end supports (64-bit Linux and macOS on x86-64 and AArch64), unless
@@ -83,6 +84,8 @@
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, `GAMMA_TEST_FILTER=substring` to run only matching tests, and
 //! `GAMMA_TEST_DEBUG_INFO=1` to build the C back end's programs with `-g`.
+
+mod common;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -412,25 +415,13 @@ fn target_has_f16() -> bool {
     *F16.get_or_init(|| gamma::toolchain::Toolchain::from_env().and_then(|t| t.target()).is_ok_and(|t| t.f16))
 }
 
-/// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
-fn c_backend_available() -> bool {
-    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        if std::env::var("GAMMA_TEST_C").is_ok_and(|v| v == "0") {
-            return false;
-        }
-        gamma::toolchain::Toolchain::from_env()
-            .is_ok_and(|t| t.base_command().arg("--version").output().is_ok_and(|o| o.status.success()))
-    })
-}
-
 /// Whether Safe builds can be tested: Fil-C is found and `GAMMA_TEST_SAFE` is not 0.
 /// With `GAMMA_TEST_SAFE=1`, its absence fails the tests.
 fn safe_available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {
         let setting = std::env::var("GAMMA_TEST_SAFE").unwrap_or_default();
-        if setting == "0" || !c_backend_available() {
+        if setting == "0" || !common::c_backend_available() {
             return false;
         }
         let found = gamma::toolchain::Toolchain::for_safe_build().and_then(|t| t.target()).map(|t| t.filc);
@@ -460,6 +451,8 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
     if input.exists() {
         let f = fs::File::open(input).map_err(|e| format!("{}: {}", input.display(), e))?;
         cmd.stdin(f);
+    } else {
+        cmd.stdin(std::process::Stdio::null());
     }
     Ok(())
 }
@@ -470,7 +463,7 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
 fn cranelift_lane() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        if std::env::var("GAMMA_TEST_CRANELIFT").is_ok_and(|v| v == "0") || !c_backend_available() {
+        if std::env::var("GAMMA_TEST_CRANELIFT").is_ok_and(|v| v == "0") || !common::c_backend_available() {
             return false;
         }
         gamma::toolchain::Toolchain::from_env().and_then(|t| t.target()).is_ok_and(|t| {
@@ -535,7 +528,7 @@ fn run_native(
         cmd.env("TMPDIR", wasi_tmp_dir());
     }
     set_stdin(&mut cmd, &golden.with_extension("stdin"))?;
-    let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
+    let output = common::output(&mut cmd).map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let expected = fs::read_to_string(golden).unwrap_or_default();
     let mut problems = vec![];
@@ -614,14 +607,14 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         cmd.arg(format!("--filter={}", f));
     }
     if exp.native && matches!(exp.stage, Stage::Run | Stage::Test) {
-        if !c_backend_available() {
+        if !common::c_backend_available() {
             return Ok(());
         }
         cmd.arg("--backend=c");
     }
     cmd.arg(&target);
     set_stdin(&mut cmd, &path.with_extension("stdin"))?;
-    let output = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
+    let output = common::output(&mut cmd).map_err(|e| format!("cannot run gamma: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let golden_stderr = normalize_stderr(&stderr);
@@ -723,7 +716,7 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
     if compiled
         && problems.is_empty()
         && !exp.native
-        && c_backend_available()
+        && common::c_backend_available()
         && let Err(p) = run_c(command, &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
     {
         problems.push(p);
@@ -853,7 +846,14 @@ fn conformance() {
         }
     });
     times.extend(new_times.into_inner().unwrap());
-    let _ = fs::write(&times_file, times.iter().map(|(name, ms)| format!("{ms} {name}\n")).collect::<String>());
+    // Tests that no longer exist are forgotten. The file is replaced whole, so that runs
+    // sharing the target directory never read half of it.
+    times.retain(|name, _| base.join(name).exists());
+    let tmp = times_file.with_extension(format!("tmp{}", std::process::id()));
+    let text: String = times.iter().map(|(name, ms)| format!("{ms} {name}\n")).collect();
+    if fs::write(&tmp, text).is_ok() {
+        let _ = fs::rename(&tmp, &times_file);
+    }
     let failures = failures.into_inner().unwrap();
     for (name, msg) in &failures {
         eprintln!("FAIL {}\n{}\n", name, msg);

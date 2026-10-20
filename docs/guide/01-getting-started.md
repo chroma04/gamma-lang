@@ -191,7 +191,7 @@ Two differences are visible to programs. `target.os` is `.Windows` and `c_long` 
 
 ### The C compiler and cross-compiling
 
-Native builds use the C compiler named by the environment variable `CC` (default `cc`), which may include arguments. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted.
+Native builds use the C compiler named by the environment variable `CC` (default `cc`), which may include arguments. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted. On Windows a backslash is an ordinary character (so `C:\msys64\ucrt64\bin\gcc.exe` works as written) except before a double quote, as in the Windows command line.
 
 When `CC` or `CFLAGS` selects another target, the program is compiled for that target: the tool asks the compiler which machine it targets, and the `target` constants (`target.arch`, `target.os`, `target.endian`, `target.ptr_bits`) and the layouts of types follow it. Any C compiler that can cross-compile works:
 
@@ -353,6 +353,7 @@ Options of `gamma test`:
 - `--package=name` runs the tests of the dependency `name` instead, with the versions your package locks ([chapter 15](15-packages.md#commands)).
 - `--show-output` prints the output of passing tests too, and `--time` reports how long each test took.
 - `-j n` (or `--jobs=n`) runs `n` tests at a time, `0` meaning one per processor; the report stays in order.
+- `--timeout=seconds` fails a test (or benchmark) that runs longer than that, with `timed out after N s`; there is no limit unless you give one. Compiled tests are killed, along with the processes they started; the interpreter stops a test at its next call or loop iteration, or when its time is up during a sleep, so a test that is blocked in another system call (reading a pipe, say) is not interrupted.
 - `--coverage` counts the lines of the package that the tests run and prints a table; `--coverage=out.lcov` also writes an LCOV file.
 
 `gamma bench` takes the same file or directory and runs the top-level `bench` declarations the same way, reporting the time per run; it compiles through C in Fast mode unless you pass `--backend=interp` or `--mode`.

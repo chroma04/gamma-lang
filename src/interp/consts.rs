@@ -66,6 +66,11 @@ impl<'a> Machine<'a> {
         Ok(ConstValue { ty, bytes, relocs })
     }
 
+    /// Whether `addr` is in live static data or a constant, which a constant may refer to.
+    fn points_to_static(&self, addr: u64) -> bool {
+        matches!(self.mem.describe(addr), Some((_, _, AllocKind::Static(_) | AllocKind::Const(_), true)))
+    }
+
     fn reloc_ptr(&self, span: Span, off: usize, b: &[u8], bytes: &mut [u8], relocs: &mut Vec<Reloc>) -> R<()> {
         let psz = self.ptr_size();
         let addr = self.ptr_of(&b[off..off + psz]);
@@ -87,6 +92,14 @@ impl<'a> Machine<'a> {
 
     fn scan_ptrs(&self, span: Span, ty: Ty, b: &[u8], off: usize, bytes: &mut [u8], relocs: &mut Vec<Reloc>) -> R<()> {
         match ty.kind() {
+            // An empty slice's pointer is never dereferenced: one that points to no static
+            // data (`empty_slice` makes it from the element alignment) is kept as it is.
+            TyKind::Slice { .. }
+                if self.ptr_of(&b[off + self.ptr_size()..off + 2 * self.ptr_size()]) == 0
+                    && !self.points_to_static(self.ptr_of(&b[off..off + self.ptr_size()])) =>
+            {
+                Ok(())
+            }
             TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::Slice { .. } => {
                 self.reloc_ptr(span, off, b, bytes, relocs)
             }

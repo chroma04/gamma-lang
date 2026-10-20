@@ -1,0 +1,13 @@
+//! exit: 134
+//! stderr
+//! ptr_bits: 64
+// An inclusive upper bound of `usize`'s largest value is past the end of every slice, so
+// slicing with it traps (§7.6) rather than wrapping around to an empty slice.
+id :: fn(x: usize) -> usize { return x }
+
+main :: fn() needs Out {
+    a := [3]u8(1, 2, 3)
+    s := a[0..]
+    print("{}\n", s[0..=id(2)].len)
+    print("{}\n", s[1..=id(18446744073709551615)].len)
+}

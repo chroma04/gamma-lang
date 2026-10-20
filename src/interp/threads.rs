@@ -4,14 +4,14 @@
 //! one [`Machine`]. A global interpreter lock (the [`Gil`]) makes sure only one
 //! of them evaluates at a time: a thread holds it while it runs and lets the
 //! others in at regular points (calls and loop iterations) and around calls
-//! that may block (joining, sleeping, reading input, network operations). The
+//! that may block (joining, sleeping, reading input, network operations, calls into C). The
 //! lock is handed over in arrival order, so every thread makes progress. Data
 //! races therefore cannot corrupt the machine, and atomics are trivially atomic.
 //!
 //! The lock exists only once a program starts a thread, so single-threaded
 //! programs pay nothing for it. When a thread traps, the trap is recorded, and
-//! every thread stops with it the next time it takes the lock, as the whole
-//! process stops in compiled code.
+//! every thread stops with it the next time it takes the lock (sleepers in a futex are
+//! woken), as the whole process stops in compiled code.
 
 use super::fiber::Sendable;
 use super::machine::*;
@@ -27,6 +27,9 @@ const THREAD_MARGIN: usize = 16 << 20;
 
 /// How many calls or loop iterations a thread runs before letting others in.
 const SLICE: u32 = 2000;
+
+/// How many calls or loop iterations pass between two looks at the clock for a deadline.
+const CHECK_TIME: u32 = 1024;
 
 /// A fair lock: tickets are served in the order they were drawn.
 pub struct Gil {
@@ -56,6 +59,12 @@ impl Gil {
     }
 }
 
+/// A thread's part of the machine while the thread runs without the lock.
+pub(super) struct Released<'a> {
+    gil: Arc<Gil>,
+    saved: Option<super::fiber::ThreadState<'a>>,
+}
+
 /// The threads of a program.
 #[derive(Default)]
 pub struct Threads {
@@ -71,14 +80,26 @@ impl<'a> Machine<'a> {
     /// Called at each call and loop iteration: now and then, lets the other threads run.
     #[inline(always)]
     pub fn tick(&mut self) -> R<()> {
-        if self.threads.gil.is_none() {
+        if self.threads.gil.is_none() && self.deadline.is_none() {
             return Ok(());
         }
-        self.tick_threaded()
+        self.tick_slow()
     }
 
     #[inline(never)]
-    fn tick_threaded(&mut self) -> R<()> {
+    fn tick_slow(&mut self) -> R<()> {
+        if let Some(d) = self.deadline {
+            self.since_check += 1;
+            if self.since_check >= CHECK_TIME {
+                self.since_check = 0;
+                if std::time::Instant::now() >= d {
+                    return Err(Box::new(Flow::Trap(Trap::new(super::DEADLINE_TRAP, Span::DUMMY))));
+                }
+            }
+        }
+        if self.threads.gil.is_none() {
+            return Ok(());
+        }
         self.threads.since_yield += 1;
         if self.threads.since_yield < SLICE {
             return Ok(());
@@ -96,18 +117,43 @@ impl<'a> Machine<'a> {
     /// Runs `f`, which must not touch the machine, with the lock released so that other
     /// threads can run meanwhile.
     pub fn without_gil<T>(&mut self, f: impl FnOnce() -> T) -> T {
-        let Some(gil) = self.threads.gil.clone() else { return f() };
-        let saved = self.save_thread();
-        std::hint::black_box(self as *mut Self);
-        gil.release();
+        let Some(mut held) = self.release_gil() else { return f() };
         let r = f();
-        gil.acquire();
-        std::hint::black_box(self as *mut Self);
-        self.restore_thread(saved);
+        self.reacquire_gil(&mut held);
         r
     }
 
-    fn check_fatal(&self) -> R<()> {
+    /// Gives the lock up, keeping this thread's part of the machine aside; `None` if there
+    /// is no lock (no thread was started). Until [`Machine::reacquire_gil`], the thread
+    /// must not touch the machine.
+    pub(super) fn release_gil(&mut self) -> Option<Released<'a>> {
+        let gil = self.threads.gil.clone()?;
+        let saved = self.save_thread();
+        // The other threads reach the machine through this pointer: make sure nothing
+        // about it is assumed unchanged across the wait.
+        std::hint::black_box(self as *mut Self);
+        gil.release();
+        Some(Released { gil, saved: Some(saved) })
+    }
+
+    /// Gives the lock up again after [`Machine::reacquire_gil`] (a callback from C is over).
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) fn rerelease_gil(&mut self, held: &mut Released<'a>) {
+        held.saved = Some(self.save_thread());
+        std::hint::black_box(self as *mut Self);
+        held.gil.release();
+    }
+
+    /// Takes the lock back and puts this thread's part of the machine back.
+    pub(super) fn reacquire_gil(&mut self, held: &mut Released<'a>) {
+        held.gil.acquire();
+        std::hint::black_box(self as *mut Self);
+        if let Some(saved) = held.saved.take() {
+            self.restore_thread(saved);
+        }
+    }
+
+    pub(super) fn check_fatal(&self) -> R<()> {
         match &self.threads.fatal {
             Some(t) => Err(Box::new(Flow::Trap(t.clone()))),
             None => Ok(()),
@@ -151,6 +197,8 @@ impl<'a> Machine<'a> {
                 && m.threads.fatal.is_none()
             {
                 m.threads.fatal = Some(t);
+                // Threads asleep in a futex would never notice: wake them.
+                super::sys::wake_futex_waiters();
             }
             m.kill_temps(0);
             std::hint::black_box(m as *mut Machine);

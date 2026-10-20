@@ -67,3 +67,8 @@
   on an optimized wasm link: gamma links WASI unoptimized. wasmtime needs `--dir=.` and
   `-W max-wasm-stack=268435456`; multiple preopens incl. "/" misbehaved, so the harness uses a
   relative TMPDIR (target/tmp/wasi-tmp).
+- Sonnet subagents hit an account session limit after ~1–2 h of parallel work (s32, twice);
+  their worktree state survives: resume them with SendMessage after the reset time.
+- Windows cross-check: `apt-get update` first, else gcc-mingw-w64-x86-64 is "not found".
+  Unit tests that call cfg(windows)-dependent helpers must pin the variant they test.
+- CI job logs: mcp__github__get_job_logs with tail_lines; the download URL form is 403 here.

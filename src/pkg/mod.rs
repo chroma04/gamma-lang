@@ -183,9 +183,18 @@ fn report_changes(old: Option<&Lock>, new: &Lock, refresh: &Refresh) {
 
 /// Writes `text` to `path` through a temporary file, so a reader never sees half a file.
 pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    std::fs::write(&tmp, text).map_err(|e| format!("cannot write {}: {}", tmp.display(), e))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    use std::io::Write;
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let tmp = archive::private_name(dir, "write");
+    // Written in full and flushed to disk before it replaces the file, so a crash leaves
+    // the old file or the new one, never a partial one; the temporary file never stays.
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| f.sync_all()));
+    let res = written.and_then(|()| std::fs::rename(&tmp, path));
+    res.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("cannot write {}: {}", path.display(), e)
     })

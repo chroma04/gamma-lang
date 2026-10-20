@@ -633,6 +633,12 @@ fn rule_2_defers_newlines_before_continuations() {
     assert_eq!(toks("a\n.V(x) := v else c"), "a NL . V ( x ) := v else c EOF");
     assert_eq!(toks("a\n.f(g(x := 1))"), "a . f ( g ( x := 1 ) ) EOF");
     assert_eq!(toks("a\n.f(\":=\")"), "a . f ( Regular\":=\" ) EOF");
+    // Raw strings and block comments on the line are skipped, brackets and all.
+    assert_eq!(toks("a\n.V(`)`) := v"), "a NL . V ( Raw\")\" ) := v EOF");
+    assert_eq!(toks("a\n.V(``x`)``) := v"), "a NL . V ( Raw\"x`)\" ) := v EOF");
+    assert_eq!(toks("a\n.f(`:=`)"), "a . f ( Raw\":=\" ) EOF");
+    assert_eq!(toks("a\n.V(x) /* ( /* ] */ */ := v"), "a NL . V ( x ) := v EOF");
+    assert_eq!(toks("a\n.f(x) /* := */"), "a . f ( x ) EOF");
     // Other keywords and `not`/`is` do not continue.
     assert_eq!(toks("a\nnot b"), "a NL not b EOF");
     assert_eq!(toks("a\nis b"), "a NL is b EOF");

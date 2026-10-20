@@ -14,6 +14,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Only the job that publishes the release writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build (${{ matrix.asset }})
@@ -40,7 +44,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "the tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml" >&2
             exit 1
@@ -48,7 +52,7 @@ jobs:
       - name: Check that CHANGELOG.md has a section for the crate version
         shell: bash
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           if ! grep -q "^## $version\b" CHANGELOG.md; then
             echo "CHANGELOG.md has no section for $version" >&2
             exit 1
@@ -130,12 +134,31 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # To read the CI runs of the tagged commit, and to attest where the archives come from.
+      actions: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
+      - name: Check that CI passed on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq '.total_count')
+          if [ "${passed:-0}" -lt 1 ]; then
+            echo "CI has not passed on $GITHUB_SHA: tag a commit of main whose CI run succeeded" >&2
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Attest the provenance of the archives
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}

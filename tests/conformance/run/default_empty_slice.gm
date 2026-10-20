@@ -1,0 +1,13 @@
+// A default may be an empty slice made with `empty_slice`, whose pointer is never read.
+show :: fn(xs: []const i32 = empty_slice(i32)) -> usize {
+    return xs.len
+}
+
+Opts :: struct {
+    names: []const string = empty_slice(string)
+}
+
+main :: fn() needs Out {
+    a := [2]i32(1, 2)
+    print("{} {} {}\n", show(), show(a[..]), Opts().names.len)
+}

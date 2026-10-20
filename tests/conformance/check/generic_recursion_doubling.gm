@@ -1,0 +1,7 @@
+//! stage: check
+// A generic function that doubles its type argument at every call reaches the instantiation
+// limit at once, although the expanded types would be astronomically large (§16.7).
+f :: fn(T: type) -> usize {
+    return @size_of(T) + f((T, T))
+}
+main :: fn() { _ = f(i32) } //~ ERROR generic instantiations nest more than

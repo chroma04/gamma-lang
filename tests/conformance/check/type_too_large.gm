@@ -1,0 +1,25 @@
+//! stage: check
+//! ptr_bits: 64
+// No object is larger than `isize::MAX` bytes; a larger type is an error wherever it is
+// formed, instead of overflowing the size computations (§5.2).
+Fits :: [9223372036854775807]u8
+Arr :: [4611686018427387904]u64 //~ ERROR the type `[4611686018427387904]u64` is too large
+Nested :: [4294967296][4294967296]u32 //~ ERROR is too large
+Huge :: [18446744073709551615]u8 //~ ERROR is too large
+Tup :: ([2305843009213693951]u32, [2305843009213693951]u32) //~ ERROR is too large
+Opt :: ?[9223372036854775807]u8 //~ ERROR is too large
+Res :: u8![9223372036854775807]u8 //~ ERROR is too large
+S :: struct { a: [4611686018427387904]u32, b: [4611686018427387904]u32 } //~ ERROR `S` is too large
+Aligned :: #align(9223372036854775808) struct { a: u8 } //~ ERROR `Aligned` is too large
+U :: union { A: [9223372036854775807]u8, B: u8 } //~ ERROR `U` is too large
+G :: struct(T: type) { a: [4611686018427387904]T } //~ ERROR `G(u64)` is too large
+UseG :: G(u64)
+sized :: fn(N :: usize) -> usize {
+    x: [N]u8 = ---
+    return x.len
+}
+main :: fn() {
+    a: [1 << 63]u8 = --- //~ ERROR is too large
+    b: [1 << 63]u8 = --- //~ ERROR is too large
+    _ = sized(18446744073709551615) //~ ERROR is too large
+}

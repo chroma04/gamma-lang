@@ -1703,3 +1703,81 @@ pub fn gen_export_thunk(g: &mut Gen, func: FuncId, f: FnId, cs: &CSig) -> CResul
     }
     shell.finish(g, func, "export thunk")
 }
+
+/// Generates `func`, the code of a second-class value made from a C-convention function
+/// pointer (see `FnGen::c_abi_ptr`), which is the value's environment: it takes the
+/// arguments of a call in the hidden convention and calls the pointer as C does, with
+/// parameters `tys`, result `ret` and C signature `cs`.
+pub fn gen_c_shim(g: &mut Gen, func: FuncId, tys: &[Ty], ret: Ty, cs: &CSig) -> CResult<()> {
+    let sig = g.sig_of(tys, ret, true, g.cc);
+    let memmove = g.rt("gm_clif_memmove", "ppl>p");
+    let ret_mem = matches!(g.rep(ret), Rep::Mem { .. });
+    let reps: Vec<Rep> = tys.iter().map(|t| g.rep(*t)).collect();
+    let sizes: Vec<u64> = tys.iter().map(|t| g.size(*t)).collect();
+    let ret_size = g.size(ret);
+    let mut shell = Shell::new(g, func, sig);
+    {
+        let mut b = FunctionBuilder::new(&mut shell.func, &mut shell.fctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        let mm = g.module.declare_func_in_func(memmove, b.func);
+        // A copy the callee may change: C passes some aggregates by address.
+        let copy = |b: &mut FunctionBuilder, src: Value, size: u64, room: u64| {
+            let tmp = aligned_slot(b, room.max(size), 16);
+            let n = b.ins().iconst(types::I64, size as i64);
+            b.ins().call(mm, &[tmp, src, n]);
+            tmp
+        };
+        let mut it = b.block_params(entry).to_vec().into_iter();
+        let dest = if ret_mem { it.next() } else { None };
+        let code = it.next().unwrap();
+        it.next(); // the context
+        it.next(); // the unused third hidden parameter
+        let mut args = vec![];
+        if cs.ret == CRet::Sret {
+            args.push(dest.unwrap());
+        }
+        for ((a, rep), size) in cs.args.iter().zip(&reps).zip(&sizes) {
+            let v = if *rep == Rep::Zero { None } else { it.next() };
+            match a {
+                CArg::None => {}
+                CArg::Scalar => args.push(v.unwrap()),
+                CArg::Parts { pad, parts } => {
+                    for ty in pad {
+                        args.push(b.ins().iconst(*ty, 0));
+                    }
+                    let tmp = copy(&mut b, v.unwrap(), *size, parts_size(parts));
+                    for (ty, off) in parts {
+                        args.push(b.ins().load(*ty, mf(), tmp, *off as i32));
+                    }
+                }
+                CArg::Stack(n) => args.push(copy(&mut b, v.unwrap(), *size, *n as u64)),
+                CArg::Indirect => args.push(copy(&mut b, v.unwrap(), *size, *size)),
+            }
+        }
+        let sr = b.import_signature(cs.sig.clone());
+        let inst = b.ins().call_indirect(sr, code, &args);
+        let rs = b.inst_results(inst).to_vec();
+        match &cs.ret {
+            CRet::Scalar => {
+                b.ins().return_(&rs);
+            }
+            CRet::Parts(parts) => {
+                let tmp = aligned_slot(&mut b, parts_size(parts).max(ret_size), 16);
+                for ((_, off), v) in parts.iter().zip(&rs) {
+                    b.ins().store(mf(), *v, tmp, *off as i32);
+                }
+                let n = b.ins().iconst(types::I64, ret_size as i64);
+                b.ins().call(mm, &[dest.unwrap(), tmp, n]);
+                b.ins().return_(&[]);
+            }
+            CRet::None | CRet::Sret => {
+                b.ins().return_(&[]);
+            }
+        }
+        b.seal_all_blocks();
+        b.finalize(g.module.target_config());
+    }
+    shell.finish(g, func, "C shim")
+}

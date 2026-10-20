@@ -1,18 +1,15 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-19) — PRs #1–#61 merged
-- s31 (branch claude/charming-hypatia-asv87o): website + browser playground in web/, GitHub
-  Pages workflow; compiler builds for wasm32-wasip1 (decisions/036). User must switch Pages
-  source to GitHub Actions. Keep web/ in step: new docs pages need no work (sitegen picks up
-  docs/*.md), but broken anchors fail the Website workflow.
-- s30 (PRs #59–#61 merged): `gamma lint` (decisions/033), wasm32-wasi target via C + Asyncify
-  (034), Cranelift back end `--backend=cranelift` (035); guides for C/Rust programmers, their
-  code blocks checked by tests/doc_examples.rs (info strings `gamma`, `gamma test`,
-  `gamma error`, `gamma fragment`; add a doc to CHECKED_DOCS to opt in).
-- s29: huge functions → helper C functions (decisions/031); Safe/VM perf (decisions/032).
-- s28: applied an outside design review (decisions/030): spec §1 rewrite, no array arithmetic,
-  vector `is`→bool + lanes_* methods, ints ≤128, iterator args evaluated once. Open user calls
-  all done (decisions/030): effect ops PR #53, freestanding/Neg/time.ms/literal fallbacks in the third PR.
+## State (2026-10-20) — PRs #1–#62 merged
+- s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
+  in roadmap/review-2026-10-20.md (P0/P1, most P2/P3 fixed; rest listed there). Fuzz
+  targets in fuzz/ (manifest, archive; seeds via fuzz/seed.sh). New infra:
+  tests/common (GAMMA_TEST_C=1 required in CI, GAMMA_TEST_TIMEOUT), cgen::is_runtime_symbol,
+  cgen::write_generated_c/scratch_path, clif c_abi_ptr/c_thunk/c_shim.
+- s31: website + playground in web/ (decisions/036); broken doc anchors fail the Website job.
+- s30: `gamma lint` (033), wasm32-wasi (034), Cranelift (035), C/Rust guides checked by
+  tests/doc_examples.rs (add a doc to CHECKED_DOCS to opt in). s29: outlining (031), perf (032).
+  s28: outside design review applied (030).
 - The whole spec is implemented in all back ends (interpreter = bytecode VM only since s29,
   decisions/020; C back end, gcc and clang; Cranelift, 64-bit Linux/macOS only, no -g).
   Every run test runs on each and must match.
@@ -31,9 +28,11 @@
   parallel Debug C units; s24 `gamma fix`/json diags/LSP quick fixes (028); s19–s23 bugs/perf.
 
 ## Next steps
-1. Drive the s31 website PR to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
-   section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
-   reporting (SECURITY.md links it).
+0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
+1. CHANGELOG: Unreleased folded into `## 0.1.0 - 2026-10-20` (refreshed summary + the
+   detailed lists "since the feature set was frozen 2026-10-16"); no Unreleased section
+   now. User merges PR #63, then tags v0.1.0 (if tagged on another day, fix the date).
+   User: enable private vulnerability reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.
@@ -42,46 +41,13 @@
 
 ## Map
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
-                  c-backend-plan.md
+                  c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001 Rust · 002 pipeline · 003 interpreter · 004 test format · 005 parser ambiguity
-                  · 006 generics (monomorphization by TIR cloning)
-                  · 007 value params + sema-time const eval · 008 C back end · 009 interop
-                  · 010 fibers · 011 stack size · 012 handler specialization + local exits
-                  · 013 debug info (-g) · 014 native build speed (cached runtime obj)
-                  · 015 toolchain env (CC/CFLAGS/LDFLAGS) + target from the compiler
-                  · 016 C perf s6 (exit flag measured, nested spec, gm_out, borrow.rs)
-                  · 017 Safe mode via Fil-C (capability-clean C, ucontext fibers, Safe arena)
-                  · 018 stdlib policy §22 + s7 language changes (fmt specs, op=, .to)
-                  · 019 perf round s9 (where time goes, what was measured/kept/dropped)
-                  · 020 bytecode VM (shape, fallbacks, measurements, follow-ups)
-                  · 021 language papercuts (tuple payloads, ret inference, generic fn ptrs, cast)
-                  · 022 effect-set parameters (`E: effects`, `needs E`, Sched(E))
-                  · 023 tooling: packages, LSP, editor grammars, release
-                  · 024 locals not named like types (+ local consts at comptime, scope isolation)
-                  · 025 design review (thesis, principles; implemented: cancel, Test effect, rest
-                    params, named args/inferable params, universe w/o ops, named effect sets)
-                  · 026 effect syntax `needs A + B`, `needs not` (foreign only), no `..E`
-                  · 027 effect-set params inferred from the caller's Sched(E); fiber channel
-                  · 028 machine-applicable fixes (gamma fix, json diags, LSP quick fixes)
-                  · 029 s27 wishes: admitted ([E]T, SIMD, Proc, zones, fiber sleep/generators) / rejected
-                  · 030 s28 coherence review: applied + open questions for the user
-                  · 031 statement-run outlining (huge functions → helpers sharing F)
-                  · 032 s29 perf: Safe blob kinds, steady by-ref params, VM upvars/perform
-                  · 033 gamma lint (rule sources, levels, --fix careful mode, follow-ups)
-                  · 034 wasm32-wasi target (runtime GM_WASI, Asyncify fibers, perf)
-                  · 035 Cranelift back end (ABI, C ABI classes, trampolines, @asm, perf)
-                  · 036 website + playground (web/, wasm32-wasip1 interpreter, Pages)
+- decisions/      001–036, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+                  020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
+                  035 Cranelift, 036 website. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
-- sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
-                  · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
-                  · s14-2026-10-15-docsweep.md · s15-2026-10-15-vision.md · s16-2026-10-16-needs.md
-                  · s17-2026-10-16-release-prep.md · s18-2026-10-16-examples.md
-                  · s19-2026-10-16-papercuts-p2.md · s20-2026-10-16-bugs-p2.md
-                  · s21-2026-10-16-bugs-p2.md · s22-2026-10-16-bugs-p2.md
-                  · s23-2026-10-17-difftest-fix.md · s24-2026-10-17-fixits.md · s25-2026-10-17-units.md
-                  · s26-2026-10-17-bugs-lldb.md · s27-2026-10-17-wishes.md (s28: see decisions/030)
-                  · s30-2026-10-19-cranelift.md
+- sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
 - gotchas/        environment.md
 
 ## Conventions

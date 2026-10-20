@@ -14,7 +14,7 @@
 mod collect;
 mod html;
 mod markdown;
-mod md_html;
+pub(crate) mod md_html;
 
 pub use collect::{Decl, Kind, Module, load_module};
 

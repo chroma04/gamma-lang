@@ -129,7 +129,7 @@ Two tuple types are the same if they have the same element types in the same ord
 
 ## Structs
 
-A `struct` literal creates a new, nominal type. Fields are declared `name: Type`, optionally with a compile-time constant default, and `a, b: T` declares several at once. Fields are separated by newlines (or `;`).
+A `struct` literal creates a new, nominal type. Fields are declared `name: Type`, optionally with a default, a constant that is computed once at compile time (a default that fails to evaluate is a compile error), and `a, b: T` declares several at once. Fields are separated by newlines (or `;`).
 
 ```gamma
 Vec2 :: struct { x, y: f32 }

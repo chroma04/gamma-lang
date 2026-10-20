@@ -88,6 +88,20 @@ fn trap_flushes_stdout_and_reports_location() {
     assert_eq!(text(&out.stderr), "err\ntrap: boom\n  at f.gm:3:4\n");
 }
 
+/// A program whose standard output cannot be written ends with status 1 and says why.
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_stdout_write_fails_the_program() {
+    let Some(exe) = test_binary() else { return };
+    if !gamma::toolchain::runner_from_env().expect("GAMMA_RUNNER").is_empty() {
+        return;
+    }
+    let full = std::fs::OpenOptions::new().write(true).open("/dev/full").expect("open /dev/full");
+    let out = Command::new(exe).arg("write-failure").stdout(full).output().expect("run the compiled runtime test");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(text(&out.stderr), "gamma: cannot write the standard output: No space left on device\n");
+}
+
 #[test]
 fn trap_without_location_has_one_line() {
     let Some(out) = run(&["trap-nofile"]) else { return };

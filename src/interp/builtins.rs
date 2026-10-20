@@ -45,6 +45,9 @@ fn fmax(x: f64, y: f64) -> f64 {
     }
 }
 
+/// The largest alignment of a heap block the interpreter tries to provide.
+const MAX_HEAP_ALIGN: u64 = 1 << 32;
+
 impl<'a> Machine<'a> {
     fn decode_src(&self, ty: Ty, b: &[u8]) -> Result<Src, String> {
         match ty.kind() {
@@ -625,7 +628,11 @@ impl<'a> Machine<'a> {
                 if !align.is_power_of_two() {
                     return self.trap(span, format!("allocation alignment {} is not a power of two", align));
                 }
-                // An allocation the host cannot provide is a null result, not a trap.
+                // An allocation the host cannot provide is a null result, not a trap: no host
+                // aligns blocks beyond what an address space can hold.
+                if align > MAX_HEAP_ALIGN {
+                    return Ok(Value::Bytes(self.make_none(res_ty)));
+                }
                 let Ok(addr) = self.mem.alloc(size, align, super::memory::AllocKind::Heap, true) else {
                     return Ok(Value::Bytes(self.make_none(res_ty)));
                 };

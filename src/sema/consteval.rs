@@ -9,9 +9,10 @@
 use super::Sema;
 use crate::diag::Diagnostic;
 use crate::interp::{self, Mode, RunConfig};
+use crate::layout::Layouts;
 use crate::source::Span;
-use crate::tir::{self, ConstValue, Expr, ExprKind, FnId, StaticData};
-use crate::types::{ConstKey, Ty, TyKind};
+use crate::tir::{self, AdtDef, AdtKind, ConstValue, Expr, ExprKind, FnId, StaticData};
+use crate::types::{AdtId, ConstKey, FloatTy, Ty, TyKind};
 use std::collections::HashSet;
 
 /// The default number of interpreter steps one compile-time evaluation may
@@ -39,8 +40,62 @@ impl<'s> Sema<'s> {
         if e.ty.is_error() || !self.prepare_for_eval(e) {
             return Err(None);
         }
-        let cfg = RunConfig { target: self.target.clone(), mode: Mode::Debug, step_budget: Some(self.fuel) };
+        let cfg =
+            RunConfig { target: self.target.clone(), mode: Mode::Debug, step_budget: Some(self.fuel), deadline: None };
         interp::eval_const(&self.prog, &cfg, e).map_err(Some)
+    }
+
+    /// The default `d` of a field or parameter of type `ty`, declared in `module`, as a
+    /// reference to its compile-time value (§17.2). Each default is checked and evaluated
+    /// once per type it is used at; a failure is reported once, at the default, and
+    /// gives `None` here and at every later use.
+    pub fn default_value(&mut self, module: super::ModuleId, d: &crate::syntax::ast::Expr, ty: Ty) -> Option<Expr> {
+        let key = (d.span, ty);
+        if let Some(c) = self.default_consts.get(&key) {
+            return c.map(|id| Expr { ty, kind: ExprKind::Const(id), span: d.span });
+        }
+        if !self.default_active.insert(key) {
+            self.error(d.span, "this default depends on itself; the cycle cannot be evaluated (§3.4)");
+            return None;
+        }
+        let checked = self.check_const_expr(module, d, Some(ty));
+        let Some(ex) = checked.filter(|e| !e.ty.is_error()) else {
+            self.default_active.remove(&key);
+            self.default_consts.insert(key, None);
+            return None;
+        };
+        // A literal is its own value.
+        if matches!(ex.kind, ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Null) {
+            self.default_active.remove(&key);
+            return Some(ex);
+        }
+        let value = self.eval_tir_const(&ex);
+        self.default_active.remove(&key);
+        let Some(value) = value else {
+            self.default_consts.insert(key, None);
+            return None;
+        };
+        let id = tir::ConstId(self.prog.consts.len() as u32);
+        self.prog.consts.push(tir::ConstDef {
+            name: crate::symbol::Symbol::intern("<default>"),
+            ty,
+            span: d.span,
+            init: ex,
+            value: Some(value),
+        });
+        self.default_consts.insert(key, Some(id));
+        Some(Expr { ty, kind: ExprKind::Const(id), span: d.span })
+    }
+
+    /// Evaluates the defaults of declared parameters now, so that a default that fails is
+    /// an error even if no call omits its argument.
+    pub fn check_declared_defaults(&mut self) {
+        let mut done = 0;
+        while done < self.default_checks.len() {
+            let (module, d, ty) = self.default_checks[done].clone();
+            done += 1;
+            self.default_value(module, &d, ty);
+        }
     }
 
     /// Reports the failed compile-time evaluation of `e` with its call stack (§17.1).
@@ -70,12 +125,19 @@ impl<'s> Sema<'s> {
     }
 
     /// The key of plain data of type `ty` stored in `bytes` in the target's layout. The
-    /// bytes of an integer are kept little-endian in the key, whatever the target.
+    /// bytes of an integer or a float are kept little-endian in the key, whatever the target. Values
+    /// that compare equal with `is` (§5.18) have equal keys: `-0.0` is keyed as `0.0`, every
+    /// NaN as one NaN, and padding bytes as zeros.
     pub fn const_key_of_bytes(&self, ty: Ty, bytes: &[u8]) -> ConstKey {
         if ty.is_integer() {
             ConstKey::Bytes(ty, crate::layout::int_bytes_swap_order(bytes, self.target.little_endian).into())
         } else {
-            ConstKey::Bytes(ty, bytes.into())
+            let mut canon = vec![0u8; bytes.len()];
+            self.with_layouts(|l| canonical_bytes(l, &self.prog.adts, ty, bytes, &mut canon));
+            if ty.is_float() {
+                canon = crate::layout::int_bytes_swap_order(&canon, self.target.little_endian);
+            }
+            ConstKey::Bytes(ty, canon.into())
         }
     }
 
@@ -98,8 +160,15 @@ impl<'s> Sema<'s> {
                     return None;
                 };
                 let len = self.const_key_of_bytes(Ty::usize(), &v.bytes[v.bytes.len() / 2..]).as_u64()?;
-                let start = r.addend as usize;
-                Some(ConstKey::Str(data[start..start + len as usize].into()))
+                let bytes = usize::try_from(r.addend)
+                    .ok()
+                    .zip(usize::try_from(len).ok())
+                    .and_then(|(start, len)| data.get(start..start.checked_add(len)?));
+                let Some(bytes) = bytes else {
+                    self.error(span, "this compile-time string points outside its data (§17.4)");
+                    return None;
+                };
+                Some(ConstKey::Str(bytes.into()))
             }
             ([r], TyKind::FnPtr(_)) | ([r], TyKind::Optional(_)) if r.offset == 0 && r.addend == 0 => match r.target {
                 StaticData::Fn(f) => Some(ConstKey::Fn(f.0, self.prog.fns[f.index()].name)),
@@ -381,4 +450,76 @@ fn depends_on_params(e: &Expr) -> bool {
         || matches!(&e.kind, ExprKind::TypeIs { .. } | ExprKind::IntLimit { .. } | ExprKind::TypeName { .. });
     e.for_each_child(&mut |c| found |= depends_on_params(c));
     found
+}
+
+type AdtMap = std::collections::HashMap<AdtId, AdtDef>;
+
+/// Copies the bytes of a value of type `ty` from `src` to `dst` (zeroed, of the same
+/// length), leaving padding zero and giving equal floats equal bytes.
+fn canonical_bytes(l: &Layouts, adts: &AdtMap, ty: Ty, src: &[u8], dst: &mut [u8]) {
+    let n = src.len().min(dst.len());
+    match ty.kind() {
+        TyKind::Float(f) => {
+            let (bits, man) = match f {
+                FloatTy::F16 => (16, 10),
+                FloatTy::F32 => (32, 23),
+                FloatTy::F64 => (64, 52),
+            };
+            let size = bits / 8;
+            if n < size {
+                return;
+            }
+            let little = l.target.little_endian;
+            let mut raw = 0u64;
+            for i in 0..size {
+                let b = if little { src[size - 1 - i] } else { src[i] };
+                raw = raw << 8 | b as u64;
+            }
+            let mantissa = raw & ((1 << man) - 1);
+            let exp_ones = (raw >> man) & ((1 << (bits - 1 - man)) - 1) == (1 << (bits - 1 - man)) - 1;
+            let canon = if exp_ones && mantissa != 0 {
+                // The quiet NaN with no payload.
+                (((1u64 << (bits - 1 - man)) - 1) << man) | (1 << (man - 1))
+            } else if raw & !(1 << (bits - 1)) == 0 {
+                0
+            } else {
+                raw
+            };
+            for i in 0..size {
+                let b = (canon >> (8 * i)) as u8;
+                dst[if little { i } else { size - 1 - i }] = b;
+            }
+        }
+        TyKind::Array { elem, .. } => {
+            let size = l.size_of(*elem) as usize;
+            if size > 0 {
+                for (s, d) in src.chunks_exact(size).zip(dst.chunks_exact_mut(size)) {
+                    canonical_bytes(l, adts, *elem, s, d);
+                }
+            }
+        }
+        TyKind::Tuple { elems, .. } => {
+            let offsets = l.layout(ty).offsets;
+            for (e, off) in elems.iter().zip(offsets) {
+                canonical_field(l, adts, *e, off as usize, src, dst);
+            }
+        }
+        TyKind::Adt(id, _) => match adts.get(id).map(|d| &d.kind) {
+            Some(AdtKind::Struct { fields, bits: None, .. }) => {
+                let offsets = l.layout(ty).offsets;
+                for (f, off) in fields.iter().zip(offsets) {
+                    canonical_field(l, adts, f.ty, off as usize, src, dst);
+                }
+            }
+            _ => dst[..n].copy_from_slice(&src[..n]),
+        },
+        _ => dst[..n].copy_from_slice(&src[..n]),
+    }
+}
+
+fn canonical_field(l: &Layouts, adts: &AdtMap, ty: Ty, off: usize, src: &[u8], dst: &mut [u8]) {
+    let end = off.saturating_add(l.size_of(ty) as usize);
+    if end <= src.len() && end <= dst.len() {
+        canonical_bytes(l, adts, ty, &src[off..end], &mut dst[off..end]);
+    }
 }

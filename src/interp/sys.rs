@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Open files and directories, by handle.
 #[derive(Default)]
 pub struct SysState {
-    files: HashMap<i64, std::fs::File>,
+    files: HashMap<i64, std::sync::Arc<std::fs::File>>,
     dirs: HashMap<i64, std::fs::ReadDir>,
     // Shared, so a blocking call can use one while other threads run (§19.6).
     streams: HashMap<i64, std::sync::Arc<std::net::TcpStream>>,
@@ -106,7 +106,6 @@ fn net_error(e: &std::io::Error) -> i64 {
     if e.kind() == std::io::ErrorKind::WouldBlock { io_error_code(IoErrorKind::TimedOut) } else { error_code(e) }
 }
 
-/// The start of the monotonic clock: the first time it is read.
 /// Fills `buf` with random bytes from the system.
 #[cfg(not(windows))]
 fn random_bytes(buf: &mut [u8]) -> std::io::Result<()> {
@@ -138,6 +137,7 @@ fn random_bytes(buf: &mut [u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The start of the monotonic clock: the first time it is read.
 fn epoch() -> Instant {
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *START.get_or_init(Instant::now)
@@ -152,7 +152,7 @@ impl<'a> Machine<'a> {
         match op {
             SysOp::Read => {
                 let (ptr, len) = self.slice_parts(&vals[0]);
-                let mut buf = vec![0u8; len as usize];
+                let mut buf = self.dest_buf(span, ptr, len)?;
                 let _ = self.out.as_mut().map(|w| w.flush());
                 let r = self.without_gil(|| {
                     loop {
@@ -178,8 +178,17 @@ impl<'a> Machine<'a> {
                 Ok(int(self, res, t))
             }
             SysOp::Sleep => {
-                let ns = self.int_of(tys[0], &vals[0]).to_u64_sat();
-                self.without_gil(|| std::thread::sleep(std::time::Duration::from_nanos(ns)));
+                let mut nap = std::time::Duration::from_nanos(self.int_of(tys[0], &vals[0]).to_u64_sat());
+                // A sleep past the deadline ends the run when the deadline comes.
+                let late =
+                    self.deadline.map(|d| d.saturating_duration_since(Instant::now())).filter(|left| *left < nap);
+                if let Some(left) = late {
+                    nap = left;
+                }
+                self.without_gil(|| std::thread::sleep(nap));
+                if late.is_some() {
+                    return Err(Box::new(Flow::Trap(Trap::new(super::DEADLINE_TRAP, Span::DUMMY))));
+                }
                 Ok(Value::unit())
             }
             SysOp::FsOpen
@@ -252,9 +261,7 @@ impl<'a> Machine<'a> {
             }
             SysOp::FutexWake => {
                 // Every waiter wakes (a wake-up may be spurious) and re-checks its word.
-                let (lock, cv) = &*futex();
-                *lock.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-                cv.notify_all();
+                wake_futex_waiters();
                 Ok(int(self, res, 0))
             }
             SysOp::CpuCount => {
@@ -275,7 +282,7 @@ impl<'a> Machine<'a> {
             }
             SysOp::RandFill => {
                 let (ptr, len) = self.slice_parts(&vals[0]);
-                let mut buf = vec![0u8; len as usize];
+                let mut buf = self.dest_buf(span, ptr, len)?;
                 if let Err(err) = random_bytes(&mut buf) {
                     return self.trap(span, format!("cannot read random bytes: {}", err));
                 }
@@ -294,10 +301,18 @@ fn futex() -> std::sync::Arc<Futex> {
     F.get_or_init(Default::default).clone()
 }
 
+/// Wakes every thread sleeping in `@futex_wait`.
+pub(super) fn wake_futex_waiters() {
+    let (lock, cv) = &*futex();
+    *lock.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    cv.notify_all();
+}
+
 impl<'a> Machine<'a> {
     /// `@futex_wait`: sleeps while the word at `addr` is `expected`. The interpreter lock
     /// serializes the check with every wake-up, so none is missed.
     fn futex_wait(&mut self, span: crate::source::Span, addr: u64, expected: u32, timeout: i64) -> R<i64> {
+        self.check_fatal()?;
         let word = self.load(span, addr, 4, 4)?;
         if self.int_of(Ty::u32(), &word).to_big() != expected.into() {
             return Ok(0);
@@ -320,7 +335,22 @@ impl<'a> Machine<'a> {
                 }
             }
         });
+        // A trap on another thread wakes every sleeper so that it can stop too.
+        self.check_fatal()?;
         Ok(0)
+    }
+
+    /// A zeroed host buffer for an operation that fills the `len` bytes at `ptr`. The range is
+    /// checked first, since a slice made from an unchecked pointer can claim any length.
+    pub(super) fn dest_buf(&self, span: Span, ptr: u64, len: u64) -> R<Vec<u8>> {
+        let r = self.mem.read(ptr, len, 1).map(|_| ());
+        self.mem_err(span, r)?;
+        let mut buf = Vec::new();
+        if buf.try_reserve_exact(len as usize).is_err() {
+            return self.trap(span, format!("out of memory allocating {} bytes", len));
+        }
+        buf.resize(len as usize, 0);
+        Ok(buf)
     }
 
     fn path_arg(&self, span: Span, v: &[u8]) -> R<PathBuf> {
@@ -376,11 +406,12 @@ impl<'a> Machine<'a> {
                             .access_mode(GENERIC_READ);
                     }
                 }
-                let r = o.open(path);
+                // Opening a FIFO or a slow mount can block.
+                let r = self.without_gil(|| o.open(path));
                 let sys = &mut self.sys;
                 code(r.map(|f| {
                     let h = sys.handle();
-                    sys.files.insert(h, f);
+                    sys.files.insert(h, f.into());
                     h
                 }))
             }
@@ -392,9 +423,9 @@ impl<'a> Machine<'a> {
             SysOp::FsRead => {
                 let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
-                let mut buf = vec![0u8; len as usize];
-                let r = match self.sys.files.get_mut(&h) {
-                    Some(f) => f.read(&mut buf),
+                let mut buf = self.dest_buf(span, ptr, len)?;
+                let r = match self.sys.files.get(&h).cloned() {
+                    Some(f) => self.without_gil(|| (&*f).read(&mut buf)),
                     None => Err(bad_handle()),
                 };
                 match r {
@@ -408,8 +439,8 @@ impl<'a> Machine<'a> {
             SysOp::FsWrite => {
                 let h = self.int_arg(tys[0], &vals[0]);
                 let data = self.read_str(span, &vals[1])?;
-                code(match self.sys.files.get_mut(&h) {
-                    Some(f) => f.write(&data).map(|n| n as i64),
+                code(match self.sys.files.get(&h).cloned() {
+                    Some(f) => self.without_gil(|| (&*f).write(&data)).map(|n| n as i64),
                     None => Err(bad_handle()),
                 })
             }
@@ -423,8 +454,8 @@ impl<'a> Machine<'a> {
                     2 => Ok(SeekFrom::End(off)),
                     _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
                 };
-                code(match (self.sys.files.get_mut(&h), from) {
-                    (Some(f), Ok(from)) => f.seek(from).map(|p| p as i64),
+                code(match (self.sys.files.get(&h), from) {
+                    (Some(f), Ok(from)) => (&**f).seek(from).map(|p| p as i64),
                     (None, _) => Err(bad_handle()),
                     (_, Err(err)) => Err(err),
                 })
@@ -460,7 +491,16 @@ impl<'a> Machine<'a> {
             SysOp::FsMakeDir => code(std::fs::create_dir(self.path_arg(span, &vals[0])?).map(|_| 0)),
             SysOp::FsRemoveDir => code(std::fs::remove_dir(self.path_arg(span, &vals[0])?).map(|_| 0)),
             SysOp::FsOpenDir => {
-                let r = std::fs::read_dir(self.path_arg(span, &vals[0])?);
+                let path = self.path_arg(span, &vals[0])?;
+                // As the C runtime does: no directory has the empty name, and on Windows a
+                // name with pattern characters names none either.
+                let s = path.to_string_lossy();
+                let impossible = s.is_empty() || (cfg!(windows) && s.contains(['*', '?', '<', '>', '"', '|']));
+                let r = if impossible {
+                    Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+                } else {
+                    std::fs::read_dir(path)
+                };
                 let sys = &mut self.sys;
                 code(r.map(|d| {
                     let h = sys.handle();
@@ -535,15 +575,19 @@ impl<'a> Machine<'a> {
     /// A network service: its result, or an error code.
     fn net_op(&mut self, span: Span, op: SysOp, tys: &[Ty], vals: &[super::bytes::Bytes]) -> R<i64> {
         use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-        let addr = |m: &Self| -> R<std::io::Result<Vec<std::net::SocketAddr>>> {
+        // The host name and port; resolving the name can block, so it happens without the lock.
+        let addr = |m: &Self| -> R<(String, u16)> {
             let host = String::from_utf8_lossy(&m.read_str(span, &vals[0])?).into_owned();
             let port = m.int_arg(tys[1], &vals[1]) as u16;
-            Ok((host.as_str(), port).to_socket_addrs().map(|a| a.collect()))
+            Ok((host, port))
         };
         Ok(match op {
             SysOp::NetConnect => {
-                let a = addr(self)?;
-                let r = self.without_gil(|| a.and_then(|a| TcpStream::connect(&a[..])));
+                let (host, port) = addr(self)?;
+                let r = self.without_gil(|| {
+                    let a: Vec<_> = (host.as_str(), port).to_socket_addrs()?.collect();
+                    TcpStream::connect(&a[..])
+                });
                 let sys = &mut self.sys;
                 code(r.map(|s| {
                     let h = sys.handle();
@@ -552,7 +596,11 @@ impl<'a> Machine<'a> {
                 }))
             }
             SysOp::NetListen => {
-                let r = addr(self)?.and_then(|a| TcpListener::bind(&a[..]));
+                let (host, port) = addr(self)?;
+                let r = self.without_gil(|| {
+                    let a: Vec<_> = (host.as_str(), port).to_socket_addrs()?.collect();
+                    TcpListener::bind(&a[..])
+                });
                 let sys = &mut self.sys;
                 code(r.map(|l| {
                     let h = sys.handle();
@@ -594,7 +642,7 @@ impl<'a> Machine<'a> {
             SysOp::NetRecv => {
                 let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
-                let mut buf = vec![0u8; len as usize];
+                let mut buf = self.dest_buf(span, ptr, len)?;
                 let r = match self.sys.streams.get(&h).cloned() {
                     Some(s) => self.without_gil(|| (&*s).read(&mut buf)),
                     None => Err(bad_handle()),
@@ -620,8 +668,8 @@ impl<'a> Machine<'a> {
                     1 => std::net::Shutdown::Write,
                     _ => std::net::Shutdown::Both,
                 };
-                code(match self.sys.streams.get(&h) {
-                    Some(s) => s.shutdown(how).map(|_| 0),
+                code(match self.sys.streams.get(&h).cloned() {
+                    Some(s) => self.without_gil(|| s.shutdown(how)).map(|_| 0),
                     None => Err(bad_handle()),
                 })
             }

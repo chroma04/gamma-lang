@@ -12,7 +12,7 @@ pub fn target64() -> Target {
 }
 
 pub fn cfg() -> RunConfig {
-    RunConfig { target: target64(), mode: Mode::Checked, step_budget: None }
+    RunConfig { target: target64(), mode: Mode::Checked, step_budget: None, deadline: None }
 }
 
 pub fn ex(ty: Ty, kind: ExprKind) -> Expr {
@@ -430,7 +430,7 @@ impl Tb {
     /// Runs `main`, returning `(outcome, stdout, stderr)`.
     pub fn run(&mut self, main: FnId, args: &[&str]) -> (Outcome, String, String) {
         self.prog.main = Some(main);
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let args: Vec<Vec<u8>> = args.iter().map(|s| s.as_bytes().to_vec()).collect();
         let (mut out, mut errb) = (Vec::new(), Vec::new());
         let o = run_main(&self.prog, &cfg(), &args, &mut out, &mut errb);
         (o, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&errb).into_owned())

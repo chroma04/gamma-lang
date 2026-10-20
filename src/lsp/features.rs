@@ -16,7 +16,7 @@ pub struct Ctx<'a> {
 
 impl Ctx<'_> {
     pub fn offset(&self, file: FileId, line: u32, character: u32) -> u32 {
-        LineIndex::new(self.a.text(file)).offset(line, character, self.enc) as u32
+        self.a.line_index(file).offset(line, character, self.enc) as u32
     }
 
     fn location(&self, span: Span) -> Option<Value> {
@@ -26,7 +26,8 @@ impl Ctx<'_> {
 }
 
 fn markdown(code: &str, doc: Option<&str>) -> String {
-    let mut s = format!("```gamma\n{}\n```", code);
+    let fence = crate::doc::md_html::fence(code);
+    let mut s = format!("{fence}gamma\n{}\n{fence}", code);
     if let Some(d) = doc {
         s.push_str("\n\n");
         s.push_str(d);

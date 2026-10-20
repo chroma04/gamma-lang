@@ -1,0 +1,11 @@
+//! stage: check
+// Untyped integers are unbounded in principle, but a result of more than 2^22 bits is an
+// error, and huge values are abbreviated in diagnostics (§6.2).
+A :: 1 << 1000000
+B :: A * A
+C :: B * B
+D :: C * C //~ ERROR too large
+main :: fn() {
+    x: u8 = C //~ ERROR the literal <4000001-bit integer> does not fit in `u8`
+    _ = x
+}

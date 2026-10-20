@@ -4,7 +4,7 @@
 
 use super::cache;
 use super::edit::{self, NewDep};
-use super::manifest::{Manifest, name_problem};
+use super::manifest::{Manifest, name_problem, url_problem};
 use super::{Options, Refresh, find_root, resolve, scaffold, sync};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ package commands:
   new     create a package in a new directory: gamma new <dir> [--name=<name>] [--vcs=none]
   init    create a package in an existing directory: gamma init [dir] [--name=<name>] [--vcs=none]
   fetch   resolve and download the git and archive dependencies, and write gamma.lock:
-          gamma fetch [dir] [--offline] [--locked]
+          gamma fetch [--dir <dir>] [--offline] [--locked]
   update  move git dependencies to the newest revisions their requirements allow:
           gamma update [name...] [--dir <dir>]
   add     add a dependency to gamma.toml and fetch it:
@@ -49,12 +49,19 @@ fn parse(args: &[String], value_opts: &[&str], flag_opts: &[&str]) -> Result<Par
     let mut p = Parsed { pos: vec![], values: HashMap::new(), flags: HashSet::new() };
     let mut it = args.iter();
     while let Some(a) = it.next() {
+        // After `--`, everything is positional (a directory named `-x`).
+        if a == "--" {
+            p.pos.extend(it.cloned());
+            break;
+        }
         if let Some(opt) = a.strip_prefix("--") {
             let (name, inline) = match opt.split_once('=') {
                 Some((n, v)) => (n, Some(v.to_string())),
                 None => (opt, None),
             };
-            if flag_opts.contains(&name) && inline.is_none() {
+            if flag_opts.contains(&name) && inline.is_some() {
+                return Err(format!("`--{}` takes no value", name));
+            } else if flag_opts.contains(&name) {
                 p.flags.insert(name.to_string());
             } else if value_opts.contains(&name) {
                 let v = match inline {
@@ -126,11 +133,13 @@ fn usage<T>(parsed: Result<T, String>) -> Result<T, Failure> {
 }
 
 fn fetch(args: &[String]) -> Result<(), Failure> {
-    let p = usage(parse(args, &[], &["offline", "locked"]))?;
-    if p.pos.len() > 1 {
+    let p = usage(parse(args, &["dir"], &["offline", "locked"]))?;
+    // The directory may also be given as `--dir`, as for the other commands.
+    let given: Vec<&String> = p.pos.iter().chain(p.values.get("dir")).collect();
+    if given.len() > 1 {
         return Err(Failure::Usage("more than one directory given".into()));
     }
-    let dir = PathBuf::from(p.pos.first().map_or(".", |s| s.as_str()));
+    let dir = PathBuf::from(given.first().map_or(".", |s| s.as_str()));
     let root = root_of(&dir)?;
     let opts = Options { offline: p.flags.contains("offline"), locked: p.flags.contains("locked") };
     sync(&root, &opts, &Refresh::None, true)?;
@@ -199,6 +208,9 @@ fn add(args: &[String]) -> Result<(), Failure> {
             NewDep::Path(relative_path(&root, &abs))
         }
         (None, Some(url)) => {
+            if let Some(p) = url_problem(url) {
+                return Err(Failure::Usage(p));
+            }
             if refs.len() > 1 {
                 return Err(Failure::Usage("use only one of `--tag`, `--branch`, `--rev`, `--version`".into()));
             }
@@ -306,6 +318,9 @@ fn cache_command(args: &[String]) -> Result<(), Failure> {
             };
             let report = cache::clean(&dir, &policy)?;
             println!("{} in {}", report.summary(policy.dry_run), dir.display());
+            if !report.failures.is_empty() {
+                return Err(Failure::Error(report.failures.join("\n")));
+            }
             Ok(())
         }
         other => Err(Failure::Usage(format!("unknown `cache` subcommand `{}`: use `dir` or `clean`", other))),
@@ -325,6 +340,11 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
         Some("none") => false,
         Some(other) => return Err(Failure::Usage(format!("unknown --vcs `{}`: use `git` or `none`", other))),
     };
+    // A bad name is reported before anything is created.
+    if let Some(problem) = p.values.get("name").and_then(|n| name_problem(n, "package")) {
+        return Err(Failure::Error(problem));
+    }
+    let mut created_here = false;
     if create {
         match std::fs::read_dir(&dir) {
             Ok(mut rd) => {
@@ -335,6 +355,7 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 std::fs::create_dir_all(&dir)
                     .map_err(|e| Failure::Error(format!("cannot create {}: {}", dir.display(), e)))?;
+                created_here = true;
             }
             Err(e) => return Err(Failure::Error(format!("cannot use {}: {}", dir.display(), e))),
         }
@@ -353,6 +374,9 @@ fn new_package(args: &[String], create: bool) -> Result<(), Failure> {
             let dir_name = abs.file_name().map_or(String::new(), |s| s.to_string_lossy().into_owned());
             let name = scaffold::sanitize_name(&dir_name);
             if let Some(problem) = name_problem(&name, "package") {
+                if created_here {
+                    let _ = std::fs::remove_dir(&dir);
+                }
                 return Err(Failure::Error(format!(
                     "the directory name `{dir_name}` gives the package name `{name}`: {problem}; choose one with `--name`"
                 )));

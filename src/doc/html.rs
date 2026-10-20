@@ -3,7 +3,7 @@
 
 use super::collect::{Decl, Kind, Module};
 use super::markdown::summary;
-use super::md_html::{escape, inline, render};
+use super::md_html::{escape, inline, render, url_path};
 
 const STYLE: &str = "\
 :root { color-scheme: light dark; --fg: #1f2328; --bg: #ffffff; --muted: #59636e; --code-bg: #f3f4f6; --rule: #d1d9e0; --link: #0550ae; }
@@ -112,7 +112,7 @@ pub fn index(title: &str, modules: &[Module]) -> String {
     for m in modules {
         body.push_str(&format!(
             "<tr><td><a href=\"{}.html\"><code>{}</code></a></td><td>{}</td></tr>\n",
-            escape(&m.path),
+            escape(&url_path(&m.path)),
             escape(&m.name),
             inline(&summary(m))
         ));

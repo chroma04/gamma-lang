@@ -25,7 +25,7 @@ pub(super) const BUILTIN_FNS: &[&str] = &["assert", "eprint", "expect_eq", "prin
 
 impl<'s> Sema<'s> {
     pub(super) fn src(&self, span: Span) -> String {
-        if span == Span::DUMMY || span.file.0 as usize >= self.sess.sources.files().count() {
+        if span == Span::DUMMY || span.file.0 as usize >= self.sess.sources.len() {
             return String::new();
         }
         self.sess.sources.text(span).to_string()

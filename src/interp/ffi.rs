@@ -21,9 +21,18 @@
 //! interpreter. A trap (or `Env.exit`) in a callback cannot unwind through C: it is kept,
 //! further callbacks return at once with zero, and the foreign call reports it when C
 //! returns.
+//!
+//! Once a program has started threads, a call of a foreign function with effects runs
+//! with the interpreter lock released (pure ones keep it: they are not expected to block),
+//! so that C blocking on another Gamma thread (a mutex, a pipe, a queue) does not stop
+//! that thread. A callback takes the lock back while it runs. The unfinished calls of a
+//! thread are part of the thread's state, saved and restored with it. A mirror handed to
+//! several unfinished calls at once (of several threads) is shared by them: it counts its
+//! users, and each call that finishes copies back what C changed so far.
 
 use super::bytes::Bytes;
 use super::machine::Machine;
+use super::threads::Released;
 use super::value::*;
 use super::{Mode, RunConfig};
 use crate::layout::Target;
@@ -51,8 +60,15 @@ pub fn set_owns_process(on: bool) {
     OWNS_PROCESS.store(on, Ordering::Relaxed);
 }
 
+/// A foreign call running C on this thread.
+struct Running<'a> {
+    machine: *mut Machine<'a>,
+    /// While C runs without the interpreter lock: what a callback needs to take it back.
+    released: Option<Released<'a>>,
+}
+
 thread_local! {
-    /// The machine running foreign code on this thread, for callbacks.
+    /// The innermost [`Running`] call on this thread, for callbacks.
     static CURRENT: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
 }
 
@@ -109,14 +125,17 @@ struct Mirror {
     buf: HostBuf,
     /// The bytes as they were when C was handed the mirror, to find what C changed.
     snap: Vec<u8>,
-    /// Handed to an unfinished foreign call: not to be refreshed again.
-    active: bool,
+    /// How many unfinished foreign calls it was handed to: while any, it is not refreshed
+    /// from the interpreter's memory.
+    users: u32,
     /// Copied from the interpreter's memory since the last snapshot.
     fresh: bool,
     /// The type of the elements the allocation is taken to hold, and whether its pointers
     /// were translated since the last refresh.
     elem: Option<Ty>,
     scanned: bool,
+    /// The frame that last counted itself as a user.
+    frame: u64,
 }
 
 /// Libraries and directories that packages add (`c-sources`, `lib-dirs` in gamma.toml),
@@ -187,13 +206,46 @@ pub struct Ffi {
     /// Closure code addresses to the functions they call.
     code_to_fn: HashMap<usize, FnId>,
     slots: HashMap<Ty, Rc<Vec<Slot>>>,
-    /// The mirrors each unfinished foreign call (or callback) activated.
-    touched: Vec<Vec<u64>>,
+    /// This thread's unfinished foreign calls (and callbacks), innermost last.
+    touched: Vec<Frame>,
     /// A trap or exit raised in a callback, reported when C returns.
+    pending: Option<Box<Flow>>,
+    /// Numbers the frames.
+    frames: u64,
+    /// A buffer reused by [`Machine::finish_mirrors`].
+    scratch: Vec<u8>,
+}
+
+/// An unfinished foreign call (or callback) and the mirrors it was handed, each counted
+/// as one of its users. A mirror may be listed twice (it is then counted twice).
+struct Frame {
+    id: u64,
+    bases: Vec<u64>,
+}
+
+/// The part of [`Ffi`] that belongs to one thread, kept aside while another thread runs.
+#[derive(Default)]
+pub(super) struct FfiThread {
+    touched: Vec<Frame>,
     pending: Option<Box<Flow>>,
 }
 
 impl Ffi {
+    pub(super) fn take_thread(&mut self) -> FfiThread {
+        FfiThread { touched: std::mem::take(&mut self.touched), pending: self.pending.take() }
+    }
+
+    pub(super) fn put_thread(&mut self, t: FfiThread) {
+        self.touched = t.touched;
+        self.pending = t.pending;
+    }
+
+    /// Starts a frame for a foreign call or callback.
+    fn open_frame(&mut self) {
+        self.frames += 1;
+        self.touched.push(Frame { id: self.frames, bases: Vec::new() });
+    }
+
     /// Whether callbacks were handed to C.
     pub fn has_callbacks(&self) -> bool {
         !self.closures.is_empty()
@@ -257,6 +309,10 @@ impl Ffi {
 
     /// The address of `name` in `lib` or, failing that, anywhere in the process.
     pub fn symbol(&mut self, lib: &str, name: &str) -> Option<usize> {
+        // `errno` lives at a different address on each OS thread: ask every time.
+        if name == "errno" {
+            return self.lookup(lib, name);
+        }
         let key = (lib.to_string(), name.to_string());
         if let Some(r) = self.symbols.get(&key) {
             return *r;
@@ -267,8 +323,7 @@ impl Ffi {
     }
 
     /// The address of the function `getter` anywhere in the process.
-    fn symbol_of(&mut self, getter: &str, c: &CString) -> *mut c_void {
-        let _ = getter;
+    fn symbol_of(&mut self, c: &CString) -> *mut c_void {
         // SAFETY: `c` is a C string.
         let p = unsafe { dl::sym(dl::DEFAULT, c.as_ptr()) };
         if !p.is_null() {
@@ -336,7 +391,7 @@ impl Ffi {
             };
             let c = CString::new(getter).ok()?;
             // SAFETY: as above.
-            let g = self.symbol_of(getter, &c);
+            let g = self.symbol_of(&c);
             if g.is_null() {
                 return None;
             }
@@ -752,41 +807,50 @@ impl<'a> Machine<'a> {
 
     // --- mirrors -----------------------------------------------------------------------------------
 
-    /// The host address C sees for the interpreter pointer `v` of kind `kind`.
-    fn host_ptr(&mut self, v: u64, kind: SlotKind) -> u64 {
+    /// The host address C sees for the interpreter pointer `v` of kind `kind`, or why there
+    /// is none: the interpreter's addresses mean nothing to C.
+    fn host_ptr(&mut self, v: u64, kind: SlotKind) -> Result<u64, &'static str> {
         if v == 0 {
-            return 0;
+            return Ok(0);
         }
         match kind {
             SlotKind::Func => match self.fn_from_addr(v) {
-                Some(f) => self.callback_code(f).unwrap_or(v),
-                None => v,
+                Some(f) => self.callback_code(f).ok_or("this function type cannot be passed to C as a callback"),
+                None => Ok(v),
             },
             SlotKind::Data(pointee) => self.mirror_ptr(v, pointee),
         }
     }
 
-    fn mirror_ptr(&mut self, v: u64, pointee: Option<Ty>) -> u64 {
-        let Some((base, size, _, live)) = self.mem.describe(v) else { return v };
+    fn mirror_ptr(&mut self, v: u64, pointee: Option<Ty>) -> Result<u64, &'static str> {
+        // An address outside every allocation may be one C returned: it is passed on as it is.
+        let Some((base, size, _, live)) = self.mem.describe(v) else { return Ok(v) };
         if !live {
-            return v;
+            return Err("a pointer to freed memory was passed to C");
         }
         let size = size as usize;
         if !self.ffi.mirrors.contains_key(&base) {
             let buf = HostBuf::new(size);
             self.ffi.by_host.insert(buf.ptr as usize, (base, size));
-            let m = Mirror { size, buf, snap: Vec::new(), active: false, fresh: false, elem: None, scanned: false };
+            let m =
+                Mirror { size, buf, snap: Vec::new(), users: 0, fresh: false, elem: None, scanned: false, frame: 0 };
             self.ffi.mirrors.insert(base, m);
         }
         let m = self.ffi.mirrors.get_mut(&base).unwrap();
         let host = m.buf.ptr;
-        if !m.active {
-            m.active = true;
+        let refresh = match self.ffi.touched.last_mut() {
+            Some(t) if m.frame != t.id => {
+                m.frame = t.id;
+                t.bases.push(base);
+                m.users += 1;
+                m.users == 1
+            }
+            Some(_) => false,
+            None => m.users == 0,
+        };
+        if refresh {
             m.fresh = true;
             m.scanned = false;
-            if let Some(t) = self.ffi.touched.last_mut() {
-                t.push(base);
-            }
             if let Ok(data) = self.mem.read(base, size as u64, 1) {
                 // SAFETY: the buffer holds `size` bytes and does not overlap interpreter memory.
                 unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), host, size) };
@@ -800,7 +864,7 @@ impl<'a> Machine<'a> {
             m.scanned = true;
             self.scan_mirror(base);
         }
-        host as u64 + (v - base)
+        Ok(host as u64 + (v - base))
     }
 
     /// Translates the pointers held in the mirror of the allocation at `base`.
@@ -821,7 +885,8 @@ impl<'a> Machine<'a> {
                 }
                 // SAFETY: `off + 8 <= size`, inside the mirror's buffer; accessed unaligned.
                 let w = unsafe { (host.add(off) as *const u64).read_unaligned() };
-                let h = self.host_ptr(w, s.kind);
+                // A stale pointer inside a structure is C's to leave alone.
+                let h = self.host_ptr(w, s.kind).unwrap_or(w);
                 if h != w {
                     // SAFETY: as above.
                     unsafe { (host.add(off) as *mut u64).write_unaligned(h) };
@@ -854,14 +919,15 @@ impl<'a> Machine<'a> {
     }
 
     /// Translates the pointers inside a value of type `ty` for C.
-    fn export_value(&mut self, ty: Ty, b: &mut [u8]) {
+    fn export_value(&mut self, ty: Ty, b: &mut [u8]) -> Result<(), &'static str> {
         let slots = self.slots_cached(ty);
         for s in slots.iter() {
             if s.off + 8 <= b.len() {
-                let h = self.host_ptr(word(b, s.off), s.kind);
+                let h = self.host_ptr(word(b, s.off), s.kind)?;
                 set_word(b, s.off, h);
             }
         }
+        Ok(())
     }
 
     /// The reverse of [`Machine::export_value`], for a value C produced.
@@ -878,34 +944,55 @@ impl<'a> Machine<'a> {
     /// Takes the snapshots that tell later what C changed.
     fn snapshot_mirrors(&mut self) {
         let Some(t) = self.ffi.touched.last() else { return };
-        for base in t.clone() {
+        for base in t.bases.clone() {
             let m = self.ffi.mirrors.get_mut(&base).unwrap();
             if m.fresh {
                 m.fresh = false;
-                m.snap = m.buf.bytes().to_vec();
+                // The buffer of the previous snapshot is reused.
+                m.snap.clear();
+                m.snap.extend_from_slice(m.buf.bytes());
             }
         }
     }
 
-    /// Copies what C changed in the mirrors the finished call activated back to the
+    /// Copies what C changed in the mirrors handed to the finished call back to the
     /// interpreter's memory.
-    fn finish_mirrors(&mut self, bases: Vec<u64>) {
-        for base in bases {
-            let (host, snap, size, elem) = {
+    fn finish_mirrors(&mut self, frame: Frame) {
+        /// Compared and copied in pieces of this size, so that only what changed is touched.
+        const CHUNK: usize = 4096;
+        for base in frame.bases {
+            let mut host = std::mem::take(&mut self.ffi.scratch);
+            let (snap, size, elem) = {
                 let m = self.ffi.mirrors.get_mut(&base).unwrap();
-                m.active = false;
-                (m.buf.bytes().to_vec(), std::mem::take(&mut m.snap), m.size, m.elem)
+                m.users = m.users.saturating_sub(1);
+                if m.users == 0 {
+                    m.frame = 0;
+                }
+                // Copied first: C may still be writing to it (in another thread's call).
+                host.clear();
+                host.extend_from_slice(m.buf.bytes());
+                (std::mem::take(&mut m.snap), m.size, m.elem)
             };
             if snap.len() != size || host == snap || !self.mem.is_live(base) {
                 self.ffi.mirrors.get_mut(&base).unwrap().snap = snap;
+                self.ffi.scratch = host;
                 continue;
             }
-            let Ok(cur) = self.mem.read(base, size as u64, 1).map(|s| s.to_vec()) else { continue };
-            let mut cur = cur;
-            for i in 0..size {
-                if host[i] != snap[i] {
-                    cur[i] = host[i];
+            // Only the bytes C changed are written, so what the interpreter changed meanwhile
+            // (in a callback, or in another thread) in the rest survives.
+            for (i, (h, s)) in host.chunks(CHUNK).zip(snap.chunks(CHUNK)).enumerate() {
+                if h == s {
+                    continue;
                 }
+                let at = i * CHUNK;
+                let Ok(cur) = self.mem.read(base + at as u64, h.len() as u64, 1).map(|c| c.to_vec()) else { continue };
+                let mut cur = cur;
+                for j in 0..h.len() {
+                    if h[j] != s[j] {
+                        cur[j] = h[j];
+                    }
+                }
+                let _ = self.mem.write(base + at as u64, &cur, 1);
             }
             if let Some(t) = elem {
                 let es = self.size_of(t);
@@ -917,15 +1004,17 @@ impl<'a> Machine<'a> {
                             let off = at + s.off;
                             if off + 8 <= size && word(&host, off) != word(&snap, off) {
                                 let v = self.virt_ptr(word(&host, off), s.kind);
-                                set_word(&mut cur, off, v);
+                                let _ = self.mem.write(base + off as u64, &v.to_le_bytes(), 1);
                             }
                         }
                         at += es;
                     }
                 }
             }
-            let _ = self.mem.write(base, &cur, 1);
-            self.ffi.mirrors.get_mut(&base).unwrap().snap = snap;
+            // What was copied is the new reference: a call still using the mirror copies
+            // back only what C changes after this.
+            self.ffi.mirrors.get_mut(&base).unwrap().snap = host;
+            self.ffi.scratch = snap;
         }
     }
 
@@ -935,7 +1024,7 @@ impl<'a> Machine<'a> {
             return;
         }
         let dead: Vec<u64> =
-            self.ffi.mirrors.iter().filter(|(b, m)| !m.active && !self.mem.is_live(**b)).map(|(b, _)| *b).collect();
+            self.ffi.mirrors.iter().filter(|(b, m)| m.users == 0 && !self.mem.is_live(**b)).map(|(b, _)| *b).collect();
         for b in dead {
             if let Some(m) = self.ffi.mirrors.remove(&b) {
                 self.ffi.by_host.remove(&(m.buf.ptr as usize));
@@ -1048,7 +1137,7 @@ impl<'a> Machine<'a> {
         if outermost {
             self.purge_mirrors();
         }
-        self.ffi.touched.push(Vec::new());
+        self.ffi.open_frame();
 
         // Argument buffers, aligned for any type.
         let mut bufs: Vec<Vec<u128>> = Vec::with_capacity(args.len());
@@ -1062,7 +1151,11 @@ impl<'a> Machine<'a> {
             // SAFETY: the buffer is at least `b.len()` bytes.
             let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, b.len()) };
             bytes.copy_from_slice(b);
-            self.export_value(ty, bytes);
+            if let Err(why) = self.export_value(ty, bytes) {
+                let t = self.ffi.touched.pop().unwrap();
+                self.finish_mirrors(t);
+                return self.trap(span, why);
+            }
             bufs.push(buf);
         }
         self.snapshot_mirrors();
@@ -1075,7 +1168,9 @@ impl<'a> Machine<'a> {
         }
         {
             let cargs: Vec<Arg> = bufs.iter().map(|b| Arg::new(unsafe { &*(b.as_ptr() as *const u8) })).collect();
-            let prev = CURRENT.with(|c| c.replace(self as *mut Machine<'a> as *mut c_void));
+            let released = if pure { None } else { self.release_gil() };
+            let mut running = Running { machine: self as *mut Machine<'a>, released };
+            let prev = CURRENT.with(|c| c.replace(&mut running as *mut Running<'a> as *mut c_void));
             // SAFETY: the symbol, argument types and buffers match the cif built from the
             // declaration; pointer arguments are host addresses of live mirrors.
             unsafe {
@@ -1083,6 +1178,9 @@ impl<'a> Machine<'a> {
                 p.cif.call_return_into(CodePtr(p.sym as *mut c_void), &cargs, Ret::new(rbuf));
             }
             CURRENT.with(|c| c.set(prev));
+            if let Some(held) = running.released.as_mut() {
+                self.reacquire_gil(held);
+            }
         }
         if !pure {
             flush_c_streams();
@@ -1104,6 +1202,8 @@ impl<'a> Machine<'a> {
             }
             return Err(flow);
         }
+        // Another thread may have trapped while C ran.
+        self.check_fatal()?;
         if matches!(p.ret.kind(), TyKind::Never) {
             return self.trap(span, format!("the foreign function `{}` returned although it does not return", f.name));
         }
@@ -1165,7 +1265,7 @@ impl<'a> Machine<'a> {
         }
         let own_frame = self.ffi.touched.is_empty();
         if own_frame {
-            self.ffi.touched.push(Vec::new());
+            self.ffi.open_frame();
         }
         let mut vals = Vec::with_capacity(d.params.len());
         for (i, &ty) in d.params.iter().enumerate() {
@@ -1191,7 +1291,8 @@ impl<'a> Machine<'a> {
         match r {
             Ok(Ok(Value::Bytes(b))) => {
                 let mut b = b.to_vec();
-                self.export_value(d.ret, &mut b);
+                // Whatever cannot be translated stays as it is; C may not use it.
+                let _ = self.export_value(d.ret, &mut b);
                 self.snapshot_mirrors();
                 // libffi expects integers narrower than a register widened to it.
                 let small = match (self.ti(d.ret).int, d.ret.kind()) {
@@ -1230,7 +1331,9 @@ impl<'a> Machine<'a> {
             return;
         }
         self.flush_out();
-        CURRENT.with(|c| c.set(self as *mut Machine<'a> as *mut c_void));
+        // Lives until the process ends: `exit` does not return.
+        let mut running = Running { machine: self as *mut Machine<'a>, released: None };
+        CURRENT.with(|c| c.set(&mut running as *mut Running<'a> as *mut c_void));
         // SAFETY: `exit` runs the registered handlers and ends the process.
         unsafe { libc::exit(code as i32) }
     }
@@ -1240,12 +1343,26 @@ unsafe extern "C" fn trampoline(_cif: &ffi_cif, result: &mut u64, args: *const *
     let result = result as *mut u64 as *mut u8;
     // SAFETY: libffi gives a result buffer of at least a register.
     unsafe { std::ptr::write_bytes(result, 0, 8) };
-    let m = CURRENT.with(|c| c.get());
-    if m.is_null() {
+    let r = CURRENT.with(|c| c.get());
+    if r.is_null() {
         return;
     }
     // SAFETY: set by the foreign call (or process exit) that is running C on this thread, which
-    // does not touch the machine meanwhile.
-    let m = unsafe { &mut *(m as *mut Machine<'static>) };
-    m.run_callback(data, args, result);
+    // does not touch the machine (or the record) meanwhile.
+    let r = unsafe { &mut *(r as *mut Running<'static>) };
+    let m = unsafe { &mut *r.machine };
+    match r.released.as_mut() {
+        Some(held) => {
+            m.reacquire_gil(held);
+            // Another thread may have trapped while C ran: the callback does not start.
+            if let Err(flow) = m.check_fatal()
+                && m.ffi.pending.is_none()
+            {
+                m.ffi.pending = Some(flow);
+            }
+            m.run_callback(data, args, result);
+            m.rerelease_gil(held);
+        }
+        None => m.run_callback(data, args, result),
+    }
 }

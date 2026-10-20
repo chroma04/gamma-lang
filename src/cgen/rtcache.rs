@@ -20,6 +20,7 @@
 use crate::toolchain::Toolchain;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The cache directory, or `None` if there is none.
 pub fn cache_dir() -> Option<PathBuf> {
@@ -59,13 +60,13 @@ pub fn runtime_object_from(toolchain: &Toolchain, flags: &[String], source: &str
         touch(&obj);
         return Some(obj);
     }
-    std::fs::create_dir_all(&dir).ok()?;
+    create_private_dirs(&dir).ok()?;
     // The source stays next to the object (a debugger reads it); writing it is idempotent
     // but goes through a private file too, so a concurrent build never compiles a partial one.
     let c_file = dir.join(format!("{stem}.c"));
     if !c_file.is_file() {
         let tmp = private_name(&dir, &stem, "c");
-        std::fs::write(&tmp, source).ok()?;
+        write_new(&tmp, source.as_bytes()).ok()?;
         rename_or_remove(&tmp, &c_file)?;
     }
     let tmp = private_name(&dir, &stem, "o");
@@ -79,10 +80,39 @@ pub fn runtime_object_from(toolchain: &Toolchain, flags: &[String], source: &str
     Some(obj)
 }
 
-/// A file name in `dir` no other process uses.
+/// A file name in `dir` no other process or thread uses.
 pub(super) fn private_name(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    dir.join(format!("{stem}.tmp-{}-{nanos:x}.{ext}", std::process::id()))
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!("{stem}.tmp-{}-{nanos:x}-{n}.{ext}", std::process::id()))
+}
+
+/// Creates the new directory `dir` (failing if it exists), accessible to this user only
+/// where the system has such modes.
+pub(super) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    private_dir_builder().create(dir)
+}
+
+/// Creates `dir` and its missing parents like [`create_private_dir`]; fine if it exists.
+pub(super) fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
+    private_dir_builder().recursive(true).create(dir)
+}
+
+/// A builder of directories accessible to this user only (mode 0700 on Unix).
+pub fn private_dir_builder() -> std::fs::DirBuilder {
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b
+}
+
+/// Writes `data` to the file `path`, which must not exist (a symbolic link in its place is
+/// not followed).
+pub(super) fn write_new(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)?.write_all(data)
 }
 
 /// Renames `from` to `to` (replacing it), removing `from` if that fails.
@@ -115,7 +145,11 @@ pub fn cached_program(
     (env!("CARGO_PKG_VERSION"), super::RT_H, super::RT_C, &generated.code, &generated.libs).hash(&mut h);
     (format!("{:?}", generated.opts), format!("{:?}", generated.target)).hash(&mut h);
     (&toolchain.cc, &toolchain.cflags, &toolchain.ldflags, &version.stdout).hash(&mut h);
-    (link.fingerprint(), &link.libs, &link.lib_dirs).hash(&mut h);
+    (link.fingerprint(&generated.libs, &toolchain.ldflags), &link.libs, &link.lib_dirs).hash(&mut h);
+    if generated.target.os == "Wasi" {
+        // `wasm-opt` rewrites the linked module.
+        super::wasi::wasm_opt_version().hash(&mut h);
+    }
     let stem = format!("prog-{:016x}", h.finish());
     let exe = dir.join(match generated.target.os {
         "Windows" => format!("{stem}.exe"),
@@ -127,7 +161,7 @@ pub fn cached_program(
         touch(&exe);
         return Ok(Some(exe));
     }
-    if std::fs::create_dir_all(&dir).is_err() {
+    if create_private_dirs(&dir).is_err() {
         return Ok(None);
     }
     let tmp = private_name(&dir, &stem, "exe");
@@ -135,7 +169,11 @@ pub fn cached_program(
     for i in 0..super::units::MAX_UNITS {
         let _ = std::fs::remove_file(super::units::unit_path(&tmp, i));
     }
-    built?;
+    if let Err(e) = built {
+        // A failure after linking (a later step on the executable) leaves it behind.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     if rename_or_remove(&tmp, &exe).is_none() {
         return Ok(None);
     }
@@ -159,13 +197,22 @@ pub(crate) fn touch(p: &Path) {
 }
 
 /// Removes all but the most recently used `KEPT_PROGRAMS` executables in `dir`, sparing
-/// any used in the last ten minutes (another process may be about to run it).
+/// any used in the last ten minutes (another process may be about to run it), and the
+/// leftovers of builds that died, which are over an hour old.
 fn prune(dir: &Path) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
     let mut progs: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("prog-"))
         .filter(|e| {
-            e.file_name().to_string_lossy().starts_with("prog-") && !e.file_name().to_string_lossy().contains(".tmp-")
+            if !e.file_name().to_string_lossy().contains(".tmp-") {
+                return true;
+            }
+            if e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < stale) {
+                let _ = std::fs::remove_file(e.path());
+            }
+            false
         })
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
@@ -200,5 +247,44 @@ mod tests {
         let t = std::fs::metadata(&p).unwrap().modified().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(t > old + std::time::Duration::from_secs(86400), "{t:?}");
+    }
+
+    #[test]
+    fn private_names_are_unique() {
+        let dir = Path::new("/x");
+        assert_ne!(private_name(dir, "s", "o"), private_name(dir, "s", "o"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_directories_are_new_and_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gamma-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        create_private_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert!(create_private_dir(&dir).is_err());
+        let file = dir.join("f");
+        write_new(&file, b"x").unwrap();
+        assert!(write_new(&file, b"y").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn prune_removes_old_temporary_files_only() {
+        let dir = std::env::temp_dir().join(format!("gamma-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("prog-1.tmp-1-2-3.exe");
+        let new = dir.join("prog-2.tmp-1-2-3.exe");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&new, b"x").unwrap();
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        // Windows sets times only through a handle opened for writing.
+        std::fs::OpenOptions::new().write(true).open(&old).unwrap().set_modified(t).unwrap();
+        prune(&dir);
+        let (old_left, new_left) = (old.exists(), new.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!old_left && new_left);
     }
 }

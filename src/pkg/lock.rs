@@ -29,7 +29,45 @@ pub struct LockedPackage {
     pub dependencies: Vec<String>,
 }
 
+/// Whether `s` is `sha256:` and 64 lowercase hexadecimal digits.
+fn is_sha256(s: &str) -> bool {
+    s.strip_prefix("sha256:")
+        .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
 impl LockedPackage {
+    /// Checks the fields that name files in the package store or are passed to `git`:
+    /// a damaged or hostile lockfile must not reach outside the store.
+    fn check(&self) -> Result<(), String> {
+        let name = &self.name;
+        if let Some(p) = super::manifest::name_problem(name, "package") {
+            return Err(p);
+        }
+        let url = self.url.strip_prefix("url+").unwrap_or(&self.url);
+        if let Some(p) = super::manifest::url_problem(url) {
+            return Err(format!("package `{}`: {}", name, p));
+        }
+        if self.subdir.as_deref().is_some_and(|s| !super::manifest::is_subdir(s)) {
+            return Err(format!("package `{}`: `subdir` must be a relative path inside the repository", name));
+        }
+        match &self.archive {
+            Some(a) if !is_sha256(a) => {
+                return Err(format!("package `{}`: `archive` must be `sha256:` and 64 hexadecimal digits", name));
+            }
+            Some(_) => {}
+            None => {
+                let hex = self.rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+                if !(hex && (self.rev.len() == 40 || self.rev.len() == 64)) {
+                    return Err(format!("package `{}`: `rev` must be a full commit id", name));
+                }
+            }
+        }
+        if !is_sha256(&self.checksum) {
+            return Err(format!("package `{}`: `checksum` must be `sha256:` and 64 hexadecimal digits", name));
+        }
+        Ok(())
+    }
+
     /// Whether this is an archive (`url = …`) rather than a git package.
     pub fn is_archive(&self) -> bool {
         self.archive.is_some()
@@ -134,7 +172,7 @@ impl Lock {
                     .map(|v| v.as_str().map(str::to_string).ok_or("`dependencies` holds strings"))
                     .collect::<Result<_, _>>()?,
             };
-            lock.packages.push(LockedPackage {
+            let package = LockedPackage {
                 name: get("name")?,
                 url,
                 subdir: t.get("subdir").and_then(Item::as_str).map(str::to_string),
@@ -144,7 +182,9 @@ impl Lock {
                 archive,
                 checksum: get("checksum")?,
                 dependencies,
-            });
+            };
+            package.check()?;
+            lock.packages.push(package);
         }
         Ok(lock)
     }
@@ -225,5 +265,30 @@ mod tests {
         assert!(Lock::parse("[[package]]\nname = \"a\"\n").is_err());
         assert!(Lock::parse("version = 1\n[[package]]\nname = \"a\"\n").is_err());
         assert_eq!(Lock::parse(&Lock::default().render()).unwrap(), Lock::default());
+    }
+
+    #[test]
+    fn rejects_damaged_entries() {
+        let parse = |p: LockedPackage| Lock::parse(&Lock { packages: vec![p] }.render());
+        let mut p = pkg("util", "https://h/u");
+        p.rev = "aéééééééééééééééééé".into();
+        assert!(parse(p).unwrap_err().contains("full commit id"));
+        let mut p = pkg("util", "https://h/u");
+        p.rev = "../../../../../../../..".into();
+        assert!(parse(p).unwrap_err().contains("full commit id"));
+        let mut p = pkg("blob", "url+https://h/b.tgz");
+        p.rev = String::new();
+        p.archive = Some("sha256:../../../../../..".into());
+        assert!(parse(p).unwrap_err().contains("`archive`"));
+        let mut p = pkg("util", "https://h/u");
+        p.checksum = "sha256:x".into();
+        assert!(parse(p).unwrap_err().contains("`checksum`"));
+        let mut p = pkg("util", "--upload-pack=x");
+        p.url = "--upload-pack=x".into();
+        assert!(parse(p).unwrap_err().contains("starts with `-`"));
+        let mut p = pkg("util", "https://h/u");
+        p.subdir = Some("../x".into());
+        assert!(parse(p).unwrap_err().contains("subdir"));
+        assert!(parse(pkg("../x", "https://h/u")).unwrap_err().contains("invalid package name"));
     }
 }

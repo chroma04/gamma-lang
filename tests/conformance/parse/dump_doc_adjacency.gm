@@ -1,0 +1,20 @@
+//! stage: parse
+//! dump
+// A doc comment attaches only to a declaration on the very next line.
+
+/// Four blank lines apart.
+
+
+
+
+a :: 1
+
+/// A plain comment between.
+// note
+b :: 2
+
+/// Directly above, tab indented.
+when X {
+	/// Indented with a tab.
+	c :: 3
+}

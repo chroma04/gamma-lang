@@ -247,15 +247,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
             TyKind::Ptr { pointee, is_const } if pointee.is_array() => {
-                let (TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. }) = pointee.kind() else {
-                    unreachable!()
-                };
-                let arr = mk(*pointee, tir::ExprKind::Deref(Box::new(src)), span);
-                let ty = Ty::slice(*is_const, *elem);
-                (
-                    mk(ty, tir::ExprKind::Slice { base: Box::new(arr), lo: None, hi: None, inclusive: false }, span),
-                    *elem,
-                )
+                let (arr, elem) = deref_array_ptr(src, *pointee, span);
+                let ty = Ty::slice(*is_const, elem);
+                (mk(ty, tir::ExprKind::Slice { base: Box::new(arr), lo: None, hi: None, inclusive: false }, span), elem)
             }
             TyKind::Error => return Some(error_expr(span)),
             // A tuple whose elements have one type iterates like the array of them:
@@ -388,4 +382,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let body = tir::Block { stmts: vec![Stmt::Expr(m)], tail: None, span };
         mk(Ty::unit(), tir::ExprKind::Loop { label: id, cond, body: Box::new(body), step: Some(Box::new(step)) }, span)
     }
+}
+
+/// `*p` for a pointer `p` to the array type `pointee`, with the array's element type.
+pub(super) fn deref_array_ptr(p: Expr, pointee: Ty, span: Span) -> (Expr, Ty) {
+    let (TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. }) = pointee.kind() else {
+        unreachable!("a pointer to an array")
+    };
+    (mk(pointee, tir::ExprKind::Deref(Box::new(p)), span), *elem)
 }

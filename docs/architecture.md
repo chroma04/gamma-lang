@@ -80,7 +80,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/symbol.rs` | interned identifiers |
 | `src/syntax/token.rs` | token definitions |
 | `src/syntax/lexer/` | the lexer (`mod.rs`), and the exact values of literals (`literal.rs`) |
-| `src/syntax/parser/` | the parser |
+| `src/syntax/parser/` | the parser: `mod.rs` (the parser state), `expr.rs`, `stmt.rs` (blocks, statements, control flow), `items.rs` (declarations), `types.rs`, `pattern.rs`, `lits.rs` (type, handler and foreign literals) |
 | `src/syntax/ast.rs` | the syntax tree |
 | `src/syntax/ast_dump.rs` | stable textual rendering of the syntax tree |
 | `src/types.rs` | semantic types (hash-consed `Ty`) |
@@ -349,6 +349,17 @@ operation checked. A machine (memory, frames, handler contexts) runs register
 bytecode compiled from TIR by the VM in `src/interp/vm/`, described below; every
 function, constant initializer and compile-time evaluation runs that way.
 
+Its files: `machine.rs` holds the interpreter state and the typed helpers all evaluation
+code shares; `memory.rs` the flat address space below; `bytes.rs` the small-buffer byte
+string values are made of, and `fast.rs` integers of at most 64 bits as exact `i128`
+values; `calls.rs` calls, handler contexts, `with`, `perform` and the native ambient
+handlers; `consts.rs` the memoized evaluation of constants and their place in static
+memory; `display.rs` the display rules of `@write` (§21.6.1); `sys.rs` and `proc.rs` the
+system services and child processes behind the default handlers (§12.9); `testkit.rs`
+helpers for building TIR by hand in the unit tests. In `vm/`, `compile.rs` translates a
+function body to bytecode (where locals live, expressions) and `compile_flow.rs` its
+statements, patterns and control flow.
+
 **Memory.** The interpreter models a flat address space. Every allocation (a
 local variable, a temporary whose address is taken, a string literal, a
 constant, a heap block) gets a fresh, never-reused range of addresses, aligned
@@ -398,7 +409,16 @@ and a fiber given `@stack_size(f)` bytes never traps while running `f`.
 machine under a fair global lock (`src/interp/threads.rs`): a thread holds it while
 it evaluates and hands it on every few thousand calls or loop iterations and around
 calls that may block. A trap on any thread is recorded and stops every thread at its
-next turn. The lock is created by the first `@thread_spawn`, so single-threaded
+next turn (threads asleep in a futex are woken for it). File opens, reads and writes,
+name lookups and socket shutdowns run with the lock released, so a thread blocked on a
+pipe or a slow lookup does not stop the others. So do calls of foreign functions with
+effects: a callback from C takes the lock back while it runs, and the thread's unfinished
+foreign calls are saved and restored with the rest of its state. Pure foreign functions
+(`needs not`) keep the lock. A child process
+records under its own mutex whether it was reaped: `Proc.wait` waits without reaping
+(`waitid` with `WNOWAIT`), then reaps and sets the flag under the mutex, and `Proc.kill`
+refuses once it is set, so it never signals a process id the system may have reused.
+Children a program never waited for are reaped when its run ends. The lock is created by the first `@thread_spawn`, so single-threaded
 programs never take it. `@futex_wait` and `@futex_wake` are emulated with one global
 wake-up counter and condition variable: a wake-up wakes every waiter, which is allowed
 because a futex wait may return early, and the waiter reads the counter before it gives
@@ -434,7 +454,15 @@ it. Addresses that are in no interpreter allocation (`getenv`'s result, a
 `FILE *`, memory from `malloc`, a mirror seen from a callback) are host memory:
 once a foreign function has been called, `Memory` lets accesses to addresses above
 everything it handed out go to the host directly. Foreign `#global`s are such
-addresses (`dlsym`, and `__errno_location` for `errno`).
+addresses (`dlsym`, and `__errno_location` for `errno`, asked again at each access
+since every thread, and so every fiber, has its own). A mirror is a copy: C code that
+keeps a pointer after the call and writes through it later changes the mirror, which
+the interpreter reads back only at the next call that passes that allocation. A pointer
+to freed memory, or a function whose type cannot become a C callback, is a trap rather
+than an address C would misuse. A mirror handed to unfinished calls of several threads at once is
+shared: it counts its users and is not refreshed while it has any, and each call that
+finishes copies back what C changed since the last copy (the snapshot then becomes what
+was copied), so a write made by one thread's C is not copied twice over newer data.
 
 A function pointer passed to C becomes a libffi closure (cached per function) that
 calls `call_function`. Pointers it receives are host addresses, usable directly
@@ -517,6 +545,8 @@ accounting, no threads, depth and Rust stack far from their limits, the block va
 unchanged. The tables the machine keeps by address or id use a plain multiplicative hash
 (`fxmap.rs`), and reads and writes of up to 64 bytes go from memory to registers directly.
 
+A run may also have a deadline (`gamma test --timeout`), checked with the step budget
+every 1024 calls or loop iterations; a run blocked in a system call does not reach it.
 The dispatch loop is instantiated per byte order and per whether a step budget
 (compile-time evaluation) is being counted, so the common case pays for neither.
 An `Op` is at most 24 bytes (checked at compile time): operands that do not fit
@@ -682,7 +712,15 @@ How the runtime is linked depends on the build mode:
   output, and the flags, so a
   changed runtime or compiler gets a new object. Without a usable cache, a Debug
   build is one translation unit too. The test runners point `GAMMA_CACHE_DIR`
-  into Cargo's target directory.
+  into Cargo's target directory. Cached objects and executables are found by a
+  hash and used without any check, so the cache directory must be private to the
+  user: gamma creates it with mode 0700 (and temporary directories and files
+  exclusively, never reusing an existing name), but a cache that other users can
+  write to lets them plant programs that `gamma run` then executes. The key of a
+  cached executable also covers the size and modification time of the library
+  files it links (the package's, those of `foreign` blocks, and those named by
+  `-L` / `-l` in `$LDFLAGS`) and, for WASI, the version of `wasm-opt`. Leftover
+  temporary files of builds that died are removed after an hour.
 - A large Debug build is split into several translation units, compiled in
   parallel and then linked (`src/cgen/units.rs`): one per 96 KiB of function
   text, at most one per processor and 8. The generator writes everything with
@@ -1115,7 +1153,11 @@ and `#export` use the platform's C convention (`clif/cabi.rs`): aggregates are c
 by the System V x86-64 rules (eightbytes of class INTEGER or SSE, larger ones in memory),
 by AAPCS64 (homogeneous floating-point aggregates, one or two integer registers, larger
 ones by reference) or as Windows x64 passes them, and an export whose C signature differs
-from its plain one gets a thunk that converts. Two details Cranelift leaves to the
+from its plain one gets a thunk that converts. Calls through a plain `^fn` whose C signature
+differs from the plain one (it passes an aggregate by value) use the C convention too, since
+the pointer may come from C (§19.2): a Gamma function stored in one is the address of such a
+thunk, and a second-class value made from one at run time calls it through a shim that takes
+the hidden convention and calls the pointer, its environment, as C does. Two details Cranelift leaves to the
 front end: a variadic call with floats on x86-64 goes through a ten-byte trampoline that
 sets `al` (System V's count of vector registers) before jumping to the callee, and on
 Apple's AArch64 the unused argument registers are filled so that the variadic arguments
@@ -1140,7 +1182,8 @@ of addresses), compiled with the C compiler and linked with the program.
 | `func.rs` | frames, locals, the ladder, statements, and the generated functions (`with … on` bodies, clause thunks, fiber starts, entry wrappers, export thunks) |
 | `expr.rs` | expressions, places, coercions, calls (including foreign calls), effects, fibers, patterns |
 | `ops.rs` | operators, conversions, checks, builtins, vectors, `@asm` |
-| `cabi.rs` | the C calling conventions for aggregates |
+| `cabi.rs` | the C calling conventions for aggregates (`CAbi` classifies from layouts alone) |
+| `cabi_tests.rs` | unit tests of the classification for every target, checked against the ABI documents rather than the host |
 | `data.rs` | constants, statics, strings and type descriptors |
 
 `GAMMA_DUMP_CLIF=1` prints the Cranelift IR of each function as it is defined; in
@@ -1175,6 +1218,7 @@ reference in `docs/std/` is checked in and `tests/doc.rs` fails when it is stale
 | declarations | the source text of each earlier top-level item, and for a declaration input the new text |
 | `main` | the kept statements, the replay marker, then the new input |
 
+- `report.rs` turns the output into what the user typed: diagnostics relative to the input, trap reports, and the filter that hides the output of replayed statements.
 - `input.rs` classifies text by parsing it twice, as top-level items and as the body of a function. `x := e` parses as an item but is not a declaration, so it is read as a statement. Items that are plain `name :: value` bindings are tried as constants first and as local variables if that fails.
 - `main` returns `AllocError!()` so `try` works on allocation.
 - An expression statement is tried as written (it must have type `()`), then as `__repl_v := e` followed by `print("{}\n", __repl_v)`.

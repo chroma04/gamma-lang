@@ -54,7 +54,7 @@ impl World {
 
     /// A world outside any git work tree (the target directory may be inside one).
     fn outside(name: &str) -> World {
-        World::in_dir(std::env::temp_dir().join("gamma-pkg-tests"), name)
+        World::in_dir(std::env::temp_dir().join(format!("gamma-pkg-tests-{}", std::process::id())), name)
     }
 
     fn in_dir(base: PathBuf, name: &str) -> World {
@@ -262,6 +262,9 @@ fn packages_are_found_from_a_subdirectory_and_by_file() {
     sum_app(&w, &format!("http = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("http")), &["http"]);
     w.gamma("app", &["fetch"]).success();
     assert_eq!(w.gamma(".", &["fetch", "app"]).success().stderr, "");
+    assert_eq!(w.gamma(".", &["fetch", "--dir", "app"]).success().stderr, "");
+    let both = w.gamma(".", &["fetch", "app", "--dir", "app"]).failure();
+    assert!(both.stderr.contains("more than one directory given"), "{}", both.stderr);
     std::fs::create_dir_all(w.path("app/sub")).unwrap();
     assert!(w.gamma("app/sub", &["fetch"]).ok);
     assert!(!w.gamma("cache", &["fetch"]).ok, "no package here");
@@ -863,12 +866,13 @@ fn names_that_cannot_be_imported_are_rejected() {
     for name in ["fn", "import", "true", "_", "i32", "u8", "bool", "string", "std", "core"] {
         let out = w.gamma(".", &["new", "--vcs=none", &format!("--name={name}"), "d"]).failure();
         assert!(out.stderr.contains("invalid package name"), "{name}: {}", out.stderr);
-        assert!(!w.path("d/gamma.toml").exists(), "{name}");
-        std::fs::remove_dir_all(w.path("d")).ok();
+        // Nothing is created for a name that is refused.
+        assert!(!w.path("d").exists(), "{name}");
     }
     // The directory name is used when it is one of them, unless `--name` says otherwise.
     let out = w.gamma(".", &["new", "--vcs=none", "fn"]).failure();
     assert!(out.stderr.contains("--name"), "{}", out.stderr);
+    assert!(!w.path("fn").exists());
     run_ok(&w, ".", &["new", "--vcs=none", "std", "--name=mystd"]);
     w.write("app/gamma.toml", "[package]\nname = \"app\"\n\n[dependencies]\n");
     for name in ["true", "i32", "std", "core", "_"] {
@@ -909,6 +913,8 @@ fn usage_of_the_package_commands() {
     assert!(out.stdout.contains("gamma add <name>") && out.stdout.contains("--offline"), "{}", out.stdout);
     let out = w.gamma(".", &["update", "--bogus"]).failure();
     assert!(out.stderr.contains("unknown option `--bogus`"), "{}", out.stderr);
+    let out = w.gamma(".", &["fetch", "--offline=true"]).failure();
+    assert!(out.stderr.contains("`--offline` takes no value"), "{}", out.stderr);
     assert!(Path::new(GAMMA).exists());
 }
 
@@ -1270,6 +1276,18 @@ fn archive_dependencies_are_downloaded_locked_and_verified() {
     assert!(dirs[0].join("lib.gm").is_file() && dirs[0].join("gamma.toml").is_file());
     #[cfg(unix)]
     assert_eq!(mode(&dirs[0]) & 0o222, 0);
+    // A modified unpacked archive is noticed against the lock.
+    let lib = dirs[0].join("lib.gm");
+    let original = std::fs::read_to_string(&lib).unwrap();
+    let mut perm = std::fs::metadata(&lib).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perm.set_readonly(false);
+    std::fs::set_permissions(&lib, perm).unwrap();
+    std::fs::write(&lib, lib_source(7)).unwrap();
+    let out = w.gamma("app", &["run", "."]).failure();
+    assert!(out.stderr.contains("checksum mismatch") && out.stderr.contains("was modified"), "{}", out.stderr);
+    std::fs::write(&lib, original).unwrap();
+    assert_eq!(w.gamma("app", &["run", "."]).success().stdout, "5\n");
 
     // `update` downloads again only if the URL changed: a different file at the same URL is ignored.
     util_archive(&w, "dist/util-1.0.0.tar.gz", 6);
@@ -1428,6 +1446,26 @@ fn a_hand_edited_lock_is_noticed() {
     }
     w.write("app/gamma.lock", &lock);
     w.gamma("app", &["run", "--locked", "."]).success();
+
+    // A damaged revision is an error, not a crash or a path outside the store.
+    let rev = lock_field(&lock, "a", "rev").unwrap();
+    for bad_rev in ["aéééééééééééé", "../../../../../../.."] {
+        w.write("app/gamma.lock", &lock.replace(&rev, bad_rev));
+        let out = w.gamma("app", &["run", "."]).failure();
+        assert!(out.stderr.contains("`rev` must be a full commit id"), "{}", out.stderr);
+    }
+    w.write("app/gamma.lock", &lock);
+}
+
+#[test]
+fn a_git_url_cannot_be_an_option() {
+    let w = World::new("dash_url");
+    sum_app(&w, "evil = { git = \"--upload-pack=touch PWNED\" }\n", &[]);
+    let out = w.gamma("app", &["fetch"]).failure();
+    assert!(out.stderr.contains("starts with `-`"), "{}", out.stderr);
+    let out = w.gamma("app", &["add", "evil", "--git=--upload-pack=x"]).failure();
+    assert!(out.stderr.contains("starts with `-`"), "{}", out.stderr);
+    assert!(!w.path("app/PWNED").exists() && !w.path("PWNED").exists());
 }
 
 #[test]

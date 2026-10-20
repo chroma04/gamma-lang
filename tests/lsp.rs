@@ -634,6 +634,23 @@ fn a_huge_content_length_does_not_crash_the_server() {
 }
 
 #[test]
+fn out_of_range_positions_clamp_instead_of_wrapping() {
+    let dir = TempDir::new();
+    let path = dir.write("main.gm", PROGRAM);
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&path, PROGRAM);
+    // 2^32 would wrap to a position that has a hover; clamped, it is past the end.
+    assert!(!lsp.result("textDocument/hover", lsp.at(&path, 13, 20)).is_null());
+    let h = lsp.result(
+        "textDocument/hover",
+        json!({"textDocument": {"uri": uri(&path)}, "position": {"line": 4294967296u64 + 13, "character": 20}}),
+    );
+    assert!(h.is_null(), "{:?}", h);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
 fn closing_a_document_clears_its_diagnostics() {
     let dir = TempDir::new();
     let text = "main :: fn() {\n    nope\n}\n";
@@ -650,6 +667,34 @@ fn closing_a_document_clears_its_diagnostics() {
             && m["params"]["uri"] == uri(&path)
             && m["params"].get("version").is_none()
         {
+            assert_eq!(m["params"]["diagnostics"], json!([]));
+            break;
+        }
+    }
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn closing_the_last_document_clears_diagnostics_of_its_siblings() {
+    let dir = TempDir::new();
+    let text = "main :: fn() {\n    helper()\n}\n";
+    let main = dir.write("main.gm", text);
+    let util = dir.write("util.gm", "helper :: fn() {\n    x: i32 = \"s\"\n}\n");
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, text);
+    // The sibling is not open; its error is published all the same.
+    loop {
+        let m = lsp.next_message();
+        if m["method"] == "textDocument/publishDiagnostics" && uri_path(m["params"]["uri"].as_str().unwrap()) == util {
+            assert!(!m["params"]["diagnostics"].as_array().unwrap().is_empty());
+            break;
+        }
+    }
+    lsp.notify("textDocument/didClose", json!({"textDocument": {"uri": uri(&main)}}));
+    loop {
+        let m = lsp.next_message();
+        if m["method"] == "textDocument/publishDiagnostics" && uri_path(m["params"]["uri"].as_str().unwrap()) == util {
             assert_eq!(m["params"]["diagnostics"], json!([]));
             break;
         }
@@ -1194,5 +1239,78 @@ fn rename_refuses_names_outside_the_package() {
     assert!(rename_error(&mut lsp, &main, 3, 14, "thrice").contains("dependency"));
     let r = lsp.request("textDocument/prepareRename", lsp.at(&main, 3, 14));
     assert!(r["error"]["message"].as_str().unwrap().contains("dependency"), "{}", r);
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+// --- watched files ---
+
+impl Lsp {
+    /// Initializes a client that supports dynamic registration of file watchers.
+    fn initialize_watching(&mut self) {
+        let caps = json!({"workspace": {"didChangeWatchedFiles": {"dynamicRegistration": true}}});
+        self.result("initialize", json!({"processId": null, "rootUri": null, "capabilities": caps}));
+        self.notify("initialized", json!({}));
+    }
+
+    /// The next request of the server to the client.
+    fn server_request(&mut self) -> Value {
+        let is_request = |m: &Value| m.get("id").is_some() && m.get("method").is_some();
+        if let Some(i) = self.queued.iter().position(is_request) {
+            return self.queued.remove(i);
+        }
+        loop {
+            let m = self.next_message();
+            if is_request(&m) {
+                return m;
+            }
+            self.queued.push(m);
+        }
+    }
+}
+
+#[test]
+fn file_watchers_are_registered_and_changes_on_disk_refresh_importers() {
+    let dir = TempDir::new();
+    let util = dir.write("util/util.gm", "pub double :: fn(n: i32) -> i32 => n * 2\n");
+    let text = "util :: import \"./util\"\n\nmain :: fn() {\n    x := util.double(2)\n    _ = x\n}\n";
+    let main = dir.write("main.gm", text);
+    let mut lsp = Lsp::start();
+    lsp.initialize_watching();
+    let reg = lsp.server_request();
+    assert_eq!(reg["method"], "client/registerCapability");
+    let r = &reg["params"]["registrations"][0];
+    assert_eq!(r["method"], "workspace/didChangeWatchedFiles");
+    let watchers = r["registerOptions"]["watchers"].as_array().unwrap();
+    let globs: Vec<&str> = watchers.iter().map(|w| w["globPattern"].as_str().unwrap()).collect();
+    assert_eq!(globs, ["**/*.gm", "**/gamma.toml"]);
+    let reply = json!({"jsonrpc": "2.0", "id": reg["id"], "result": null});
+    lsp.send_raw(&reply.to_string());
+
+    lsp.open(&main, text);
+    assert_eq!(lsp.diagnostics(&main, 1), Vec::<Value>::new());
+    // Another program rewrites the imported file, which is not open.
+    std::fs::write(&util, "pub other :: fn() {}\n").unwrap();
+    lsp.notify("workspace/didChangeWatchedFiles", json!({"changes": [{"uri": uri(&util), "type": 2}]}));
+    let d = lsp.diagnostics(&main, 1);
+    assert!(d.iter().any(|d| d["message"].as_str().unwrap().contains("no declaration `double`")), "{:?}", d);
+    // A file restored (as a creation) is noticed too.
+    std::fs::write(&util, "pub double :: fn(n: i32) -> i32 => n * 2\n").unwrap();
+    lsp.notify("workspace/didChangeWatchedFiles", json!({"changes": [{"uri": uri(&util), "type": 1}]}));
+    assert_eq!(lsp.diagnostics(&main, 1), Vec::<Value>::new());
+    assert_eq!(lsp.shutdown(), 0);
+}
+
+#[test]
+fn no_watchers_are_registered_without_client_support() {
+    let dir = TempDir::new();
+    let main = dir.write("main.gm", "main :: fn() {}\n");
+    let mut lsp = Lsp::start();
+    lsp.initialize();
+    lsp.open(&main, "main :: fn() {}\n");
+    lsp.diagnostics(&main, 1);
+    assert!(lsp.queued.iter().all(|m| m["method"] != "client/registerCapability"), "{:?}", lsp.queued);
+    // The notification is accepted all the same.
+    lsp.notify("workspace/didChangeWatchedFiles", json!({"changes": [{"uri": uri(&main), "type": 2}]}));
+    assert_eq!(lsp.diagnostics(&main, 1), Vec::<Value>::new());
     assert_eq!(lsp.shutdown(), 0);
 }

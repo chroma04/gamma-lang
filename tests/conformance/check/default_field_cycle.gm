@@ -1,0 +1,9 @@
+//! stage: check
+// A field default that calls a function constructing the same struct is a declaration
+// cycle (§3.4).
+S :: struct { a: u8 = f() }
+f :: fn() -> u8 {
+    s := S() //~ ERROR dependency cycle: `S` is constructed while the default
+    return s.a
+}
+main :: fn() { _ = f() }

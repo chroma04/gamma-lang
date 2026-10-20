@@ -349,30 +349,57 @@ static double gm_fmax(double x, double y) {
     if (x == 0 && y == 0) return __builtin_signbit(x) ? y : x;
     return x > y ? x : y;
 }
+/* base ^ e by repeated squaring, wrapping at the width of T; *o is set when a product that
+ * contributes to the result overflowed T (so the true result does not fit T). */
+#define GM_POW_FN(name, T)                                                      \
+    static T name(T b, uint64_t e, bool *o) {                                   \
+        T r = 1;                                                                \
+        for (;;) {                                                              \
+            if ((e & 1) && __builtin_mul_overflow(r, b, &r)) *o = true;        \
+            e >>= 1;                                                            \
+            if (!e) return r;                                                   \
+            if (__builtin_mul_overflow(b, b, &b)) *o = true;                    \
+        }                                                                       \
+    }
+GM_POW_FN(gm_pow_u8, uint8_t)
+GM_POW_FN(gm_pow_i8, int8_t)
+GM_POW_FN(gm_pow_u16, uint16_t)
+GM_POW_FN(gm_pow_i16, int16_t)
+GM_POW_FN(gm_pow_u32, uint32_t)
+GM_POW_FN(gm_pow_i32, int32_t)
+GM_POW_FN(gm_pow_u64, uint64_t)
+GM_POW_FN(gm_pow_i64, int64_t)
+GM_POW_FN(gm_pow_u128, unsigned __int128)
+GM_POW_FN(gm_pow_i128, __int128)
+/* Bit counts of the low `bits` bits of x (the caller masks the rest). */
 static unsigned __int128 gm_clz(unsigned __int128 x, int bits) {
-    int n = 0;
-    for (int i = bits - 1; i >= 0 && !((x >> i) & 1); i--) n++;
-    return n;
+    uint64_t hi = (uint64_t)(x >> 64), lo = (uint64_t)x;
+    int n = hi ? __builtin_clzll(hi) : lo ? 64 + __builtin_clzll(lo) : 128;
+    return n - (128 - bits);
 }
 static unsigned __int128 gm_ctz(unsigned __int128 x, int bits) {
-    int n = 0;
-    while (n < bits && !((x >> n) & 1)) n++;
-    return n;
+    uint64_t hi = (uint64_t)(x >> 64), lo = (uint64_t)x;
+    int n = lo ? __builtin_ctzll(lo) : hi ? 64 + __builtin_ctzll(hi) : 128;
+    return n < bits ? n : bits;
 }
 static unsigned __int128 gm_popcount(unsigned __int128 x) {
-    int n = 0;
-    while (x) { n += (int)(x & 1); x >>= 1; }
-    return n;
+    return __builtin_popcountll((uint64_t)x) + __builtin_popcountll((uint64_t)(x >> 64));
 }
 static unsigned __int128 gm_bswap(unsigned __int128 x, int bits) {
-    unsigned __int128 r = 0;
-    for (int i = 0; i < bits / 8; i++) { r = (r << 8) | (x & 0xff); x >>= 8; }
-    return r;
+    unsigned __int128 r = ((unsigned __int128)__builtin_bswap64((uint64_t)x) << 64) | __builtin_bswap64((uint64_t)(x >> 64));
+    return r >> (128 - bits);
 }
 static unsigned __int128 gm_bitreverse(unsigned __int128 x, int bits) {
     unsigned __int128 r = 0;
-    for (int i = 0; i < bits; i++) { r = (r << 1) | (x & 1); x >>= 1; }
-    return r;
+    for (int i = 0; i < 4; i++) {
+        uint32_t w = (uint32_t)(x >> (32 * i));
+        w = ((w >> 1) & 0x55555555u) | ((w & 0x55555555u) << 1);
+        w = ((w >> 2) & 0x33333333u) | ((w & 0x33333333u) << 2);
+        w = ((w >> 4) & 0x0f0f0f0fu) | ((w & 0x0f0f0f0fu) << 4);
+        w = __builtin_bswap32(w);
+        r |= (unsigned __int128)w << (32 * (3 - i));
+    }
+    return r >> (128 - bits);
 }
 /* Rotates the low `bits` bits of x left by k (taken modulo bits). */
 static unsigned __int128 gm_rotl(unsigned __int128 x, uint64_t k, int bits) {

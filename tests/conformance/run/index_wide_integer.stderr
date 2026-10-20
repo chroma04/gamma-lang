@@ -1,0 +1,2 @@
+trap: slice bounds 2..18446744073709551615 invalid for length 3
+  at tests/conformance/run/index_wide_integer.gm:12:19 in main

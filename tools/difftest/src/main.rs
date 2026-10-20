@@ -56,6 +56,9 @@ pub struct Config {
 
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> (String, String, i32) {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // A group of its own, so that a timeout also kills the program `gamma run` started,
+    // which would otherwise keep the pipes open.
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let Ok(mut child) = cmd.spawn() else { return (String::new(), "cannot run the process".into(), -2) };
     let mut out = child.stdout.take().unwrap();
     let mut err = child.stderr.take().unwrap();
@@ -77,6 +80,9 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> (String, String,
                 break status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
             }
             Ok(None) if start.elapsed() > timeout => {
+                // A negative pid names the process group (a plain `kill` command needs no
+                // unsafe code here).
+                let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).status();
                 let _ = child.kill();
                 let _ = child.wait();
                 break -1;

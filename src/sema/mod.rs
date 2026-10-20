@@ -291,6 +291,14 @@ pub struct Sema<'s> {
     pub nested_owner: HashMap<FnId, FnId>,
     /// Functions whose bodies are being checked (for compile-time evaluation cycles).
     pub checking: Vec<FnId>,
+    /// The compile-time value of each default (§17.2), by the default's location and
+    /// the type it is checked against; `None` for one that failed (and was reported).
+    pub default_consts: HashMap<(Span, Ty), Option<tir::ConstId>>,
+    /// The defaults being evaluated.
+    default_active: std::collections::HashSet<(Span, Ty)>,
+    /// Parameter defaults whose type is known at the declaration, to be evaluated even
+    /// if no call omits the argument.
+    pub default_checks: Vec<(ModuleId, Rc<ast::Expr>, Ty)>,
     /// Type parameters of generic structs and unions.
     pub adt_params: HashMap<AdtId, Vec<crate::types::ParamId>>,
     /// Unions declared with an explicit tag type (`union(u8) { … }`).
@@ -314,6 +322,8 @@ pub struct Sema<'s> {
     pub adt_inst_depth: u32,
     /// Instances created during the outermost instantiation in progress, with their templates.
     pub adt_new_instances: Vec<(AdtId, Ty)>,
+    /// Which concrete types are plain data (§4.4), once known.
+    pub plain_cache: std::cell::RefCell<HashMap<Ty, bool>>,
     /// Every array length computed from compile-time value parameters, with its
     /// span: checked for overflow at each instantiation (§16.5).
     pub len_exprs: Vec<(Ty, Span)>,
@@ -424,6 +434,9 @@ impl<'s> Sema<'s> {
             mono_queue: vec![],
             mono_depth: 0,
             nested_owner: HashMap::new(),
+            default_consts: HashMap::new(),
+            default_active: Default::default(),
+            default_checks: vec![],
             adt_params: HashMap::new(),
             adt_param_defaults: HashMap::new(),
             explicit_tags: std::collections::HashSet::new(),
@@ -435,6 +448,7 @@ impl<'s> Sema<'s> {
             deferred_constraints: vec![],
             adt_inst_depth: 0,
             adt_new_instances: vec![],
+            plain_cache: Default::default(),
             len_exprs: vec![],
             adt_inst_overflowed: false,
         }
@@ -587,6 +601,8 @@ impl<'s> Sema<'s> {
         self.drain_bodies();
         let clauses = std::mem::take(&mut self.pending_clauses);
         self.check_handler_clauses(clauses);
+        self.drain_bodies();
+        self.check_declared_defaults();
         self.drain_bodies();
         self.check_decl_breaks();
         self.monomorphize();

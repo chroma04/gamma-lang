@@ -41,9 +41,7 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
  pieces, spec says pieces are non-empty; C emits a trap-only body when tir::frame_cost > MAX_FRAME.)
 
 ## Correctness gaps
-54. 32-bit targets (wasm32): sema accepts types/arrays larger than the address space
-    (e.g. [10^12]u8); the C compiler rejects them instead of a Gamma diagnostic. Tests with
-    such sizes are marked `//! ptr_bits: 64`. Fix: check sizes against target.ptr_bits in sema.
+(#54 fixed in s32: types over isize::MAX of the target are a sema error.)
 
 ## Dogfood papercuts (s18 examples; unscheduled)
 - Struct-typed errors get no `!.Variant` shorthand / lifting (by design; friction).

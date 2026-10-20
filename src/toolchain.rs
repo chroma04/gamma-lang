@@ -412,12 +412,116 @@ pub fn target_from_macros(macros: &str) -> Result<Target, String> {
 
 /// `w` quoted so that [`split_words`] gives it back as one word.
 fn quote_word(w: &str) -> String {
-    format!("\"{}\"", w.replace('\\', "\\\\").replace('"', "\\\""))
+    quote_word_for(w, cfg!(windows))
+}
+
+fn quote_word_for(w: &str, windows: bool) -> String {
+    if !windows {
+        return format!("\"{}\"", w.replace('\\', "\\\\").replace('"', "\\\""));
+    }
+    // Backslashes only need doubling before a quote (and before the closing one).
+    let mut out = String::from("\"");
+    let mut slashes = 0;
+    for c in w.chars() {
+        match c {
+            '\\' => slashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(slashes * 2 + 1));
+                out.push('"');
+                slashes = 0;
+            }
+            c => {
+                out.push_str(&"\\".repeat(slashes));
+                out.push(c);
+                slashes = 0;
+            }
+        }
+    }
+    out.push_str(&"\\".repeat(slashes * 2));
+    out.push('"');
+    out
 }
 
 /// Splits `s` into words as a shell would, without expansions: at unquoted
-/// whitespace, with `'…'` and `"…"` quoting and `\` escaping one character.
+/// whitespace, with `'…'` and `"…"` quoting and `\` escaping one character. On Windows,
+/// where paths contain backslashes, a backslash is literal unless it comes before a
+/// double quote (the rules of `CommandLineToArgvW`).
 pub fn split_words(s: &str) -> Result<Vec<String>, String> {
+    split_words_for(s, cfg!(windows))
+}
+
+fn split_words_for(s: &str, windows: bool) -> Result<Vec<String>, String> {
+    if windows { split_windows(s) } else { split_posix(s) }
+}
+
+fn split_windows(s: &str) -> Result<Vec<String>, String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut words = vec![];
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut in_quote = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        i += 1;
+        match c {
+            c if c.is_whitespace() && !in_quote => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\\' => {
+                in_word = true;
+                let mut n = 1;
+                while chars.get(i) == Some(&'\\') {
+                    n += 1;
+                    i += 1;
+                }
+                if chars.get(i) == Some(&'"') {
+                    // Pairs of backslashes before a quote are one backslash; an odd one
+                    // out makes the quote literal.
+                    word.push_str(&"\\".repeat(n / 2));
+                    if n % 2 == 1 {
+                        word.push('"');
+                        i += 1;
+                    }
+                } else {
+                    word.push_str(&"\\".repeat(n));
+                }
+            }
+            '"' => {
+                in_word = true;
+                in_quote = !in_quote;
+            }
+            '\'' if !in_quote => {
+                in_word = true;
+                loop {
+                    match chars.get(i) {
+                        None => return Err("unterminated ' quote".into()),
+                        Some('\'') => break,
+                        Some(&x) => word.push(x),
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_quote {
+        return Err("unterminated \" quote".into());
+    }
+    if in_word {
+        words.push(word);
+    }
+    Ok(words)
+}
+
+fn split_posix(s: &str) -> Result<Vec<String>, String> {
     let mut words = vec![];
     let mut word = String::new();
     let mut in_word = false;
@@ -469,17 +573,35 @@ mod tests {
 
     #[test]
     fn splits_words() {
-        let w = |s: &str| split_words(s).unwrap();
+        let w = |s: &str| split_words_for(s, false).unwrap();
         assert_eq!(w("zig cc -target aarch64-linux-gnu"), ["zig", "cc", "-target", "aarch64-linux-gnu"]);
         assert_eq!(w("  cc  "), ["cc"]);
         assert_eq!(w(""), Vec::<String>::new());
         assert_eq!(w("'/opt/my tools/cc' -DX=\"a b\""), ["/opt/my tools/cc", "-DX=a b"]);
         assert_eq!(w(r"a\ b ''"), ["a b", ""]);
         assert_eq!(w(r#""say \"hi\"""#), [r#"say "hi""#]);
-        assert!(split_words("'open").is_err());
-        assert!(split_words("x\\").is_err());
+        assert!(split_words_for("'open", false).is_err());
+        assert!(split_words_for("x\\", false).is_err());
         for raw in [r"C:\wasi sdk\bin\clang", r#"/opt/"odd"/clang"#, "plain"] {
-            assert_eq!(w(&format!("{} -v", quote_word(raw))), [raw, "-v"]);
+            assert_eq!(w(&format!("{} -v", quote_word_for(raw, false))), [raw, "-v"]);
+        }
+    }
+
+    #[test]
+    fn splits_words_with_windows_paths() {
+        let w = |s: &str| split_words_for(s, true).unwrap();
+        assert_eq!(w(r"C:\msys64\ucrt64\bin\gcc.exe -O2"), [r"C:\msys64\ucrt64\bin\gcc.exe", "-O2"]);
+        assert_eq!(w(r"-IC:\inc -IC:\other\"), [r"-IC:\inc", r"-IC:\other\"]);
+        assert_eq!(w(r#""C:\Program Files\LLVM\bin\clang.exe" -v"#), [r"C:\Program Files\LLVM\bin\clang.exe", "-v"]);
+        assert_eq!(w(r"\\server\share\cc"), [r"\\server\share\cc"]);
+        // Backslashes before a quote follow the Windows command-line rules.
+        assert_eq!(w(r#"a\"b c\"d"#), [r#"a"b"#, r#"c"d"#]);
+        assert_eq!(w(r#""C:\dir with space\\" next"#), [r"C:\dir with space\", "next"]);
+        assert_eq!(w(r#"say\"hi"#), [r#"say"hi"#]);
+        assert_eq!(w("'/opt/my tools/cc' -DX=\"a b\""), ["/opt/my tools/cc", "-DX=a b"]);
+        assert!(split_words_for("\"open", true).is_err());
+        for raw in [r"C:\wasi sdk\bin\clang", r"C:\dir\", r#"a\"b\\"c"#, "plain"] {
+            assert_eq!(w(&format!("{} -v", quote_word_for(raw, true))), [raw, "-v"]);
         }
     }
 

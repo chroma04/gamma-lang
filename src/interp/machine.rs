@@ -103,6 +103,8 @@ pub struct Machine<'a> {
     pub target: Target,
     pub mode: Mode,
     pub budget: Option<u64>,
+    pub deadline: Option<std::time::Instant>,
+    pub(super) since_check: u32,
     layouts: Layouts<'a>,
     tyinfo: TyTable<'a>,
     pub mem: Memory,
@@ -114,6 +116,10 @@ pub struct Machine<'a> {
     pub str_cache: FxMap<(usize, usize), u64>,
     pub str_keep: Vec<Rc<[u8]>>,
     pub cstr_cache: FxMap<(usize, usize), u64>,
+    /// The slice `Env.args` returns, made on the first call.
+    pub env_args: Option<Bytes>,
+    /// The slices `Env.var` returned, by value.
+    pub env_vals: std::collections::HashMap<Vec<u8>, Bytes>,
     pub consts: FxMap<ConstId, ConstEntry>,
     pub consts_busy: HashSet<ConstId>,
     /// Storage of `#global`s, by global and thread (0 except for `#thread_local` ones).
@@ -122,7 +128,7 @@ pub struct Machine<'a> {
     pub thread_id: u64,
     pub out: Option<&'a mut dyn Write>,
     pub errw: Option<&'a mut dyn Write>,
-    pub args: Vec<String>,
+    pub args: Vec<Vec<u8>>,
     /// True during compile-time evaluation (no `#global` access).
     pub const_mode: bool,
     pub code_end: u64,
@@ -180,6 +186,8 @@ impl<'a> Machine<'a> {
             target: cfg.target.clone(),
             mode: cfg.mode,
             budget: cfg.step_budget,
+            deadline: cfg.deadline,
+            since_check: 0,
             layouts: Layouts::new(cfg.target.clone(), adts),
             tyinfo: TyTable::default(),
             mem: Memory::new(data_base, cfg.target.ptr_bytes),
@@ -191,6 +199,8 @@ impl<'a> Machine<'a> {
             str_cache: FxMap::default(),
             str_keep: Vec::new(),
             cstr_cache: FxMap::default(),
+            env_args: None,
+            env_vals: Default::default(),
             consts: FxMap::default(),
             consts_busy: HashSet::new(),
             globals: FxMap::default(),
@@ -975,7 +985,10 @@ impl<'a> Machine<'a> {
         let Some(init) = &def.init else {
             let name = def.link_name.map_or_else(|| def.name.as_str().to_string(), |n| n.as_str().to_string());
             let addr = self.foreign_global_addr(span, &name)?;
-            self.globals.insert(key, addr);
+            // Fibers move between OS threads and `errno` is per thread: resolve it on each access.
+            if name != "errno" {
+                self.globals.insert(key, addr);
+            }
             return Ok(addr);
         };
         let bytes = self.eval_closed(init)?;

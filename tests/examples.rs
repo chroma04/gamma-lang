@@ -25,6 +25,8 @@
 //! Set `BLESS=1` to rewrite the `.stdout` files from the interpreter's output, and
 //! `GAMMA_TEST_FILTER=substring` to run only the cases whose name contains it.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -101,15 +103,6 @@ fn cases() -> Vec<Case> {
     paths.iter().map(|p| parse_case(p).unwrap_or_else(|e| panic!("{}", e))).collect()
 }
 
-/// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
-fn c_backend_available() -> bool {
-    if std::env::var("GAMMA_TEST_C").is_ok_and(|v| v == "0") {
-        return false;
-    }
-    gamma::toolchain::Toolchain::from_env()
-        .is_ok_and(|t| t.base_command().arg("--version").output().is_ok_and(|o| o.status.success()))
-}
-
 /// Runs `case`, through the C back end if `c` is set; returns (exit status, stdout, stderr).
 fn run(case: &Case, c: bool) -> Result<(i32, String, String), String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
@@ -130,7 +123,7 @@ fn run(case: &Case, c: bool) -> Result<(i32, String, String), String> {
             cmd.stdin(Stdio::null());
         }
     }
-    let out = cmd.output().map_err(|e| format!("cannot run gamma: {}", e))?;
+    let out = common::output(&mut cmd).map_err(|e| format!("cannot run gamma: {}", e))?;
     Ok((
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -183,7 +176,7 @@ fn diff(expected: &str, actual: &str) -> String {
 fn examples_run() {
     let filter = std::env::var("GAMMA_TEST_FILTER").ok();
     let bless = std::env::var("BLESS").is_ok_and(|v| v == "1");
-    let with_c = c_backend_available();
+    let with_c = common::c_backend_available();
     let cases: Vec<Case> =
         cases().into_iter().filter(|c| filter.as_ref().is_none_or(|f| c.name.contains(f.as_str()))).collect();
     let interp: Vec<(&Case, bool)> = cases.iter().map(|c| (c, false)).collect();

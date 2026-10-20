@@ -120,6 +120,8 @@ pub fn generate(
         queue: VecDeque::new(),
         rt: HashMap::new(),
         va_tramps: HashMap::new(),
+        c_thunks: HashMap::new(),
+        c_shims: HashMap::new(),
         asm: vec![],
         bytes: HashMap::new(),
         descs: HashMap::new(),
@@ -158,19 +160,48 @@ enum Work<'a> {
     Fn(FnId),
     /// The body of a `with … on` of function `fid`, which runs on a fiber (§14): a
     /// `void (gm_fiber *)` that reaches the frame of `fid` through the fiber.
-    WithBody { func: FuncId, fid: FnId, label: LabelId, ty: Ty, body: &'a Expr },
+    WithBody {
+        func: FuncId,
+        fid: FnId,
+        label: LabelId,
+        ty: Ty,
+        body: &'a Expr,
+    },
     /// The thunk that calls the clause of a `ctl` operation for a pending perform (§14.2):
     /// `void (void *req, gm_cont k)`; the request holds the node and the arguments at
     /// `offsets`.
-    CtlThunk { func: FuncId, op: u32, tys: Vec<Ty>, offsets: Vec<u64>, ret: Ty },
+    CtlThunk {
+        func: FuncId,
+        op: u32,
+        tys: Vec<Ty>,
+        offsets: Vec<u64>,
+        ret: Ty,
+    },
     /// The start function of a fiber made by `@fiber` (§14.6): calls the function pointer
     /// `fb->fn` with the argument at `fb->arg`.
-    FiberStart { func: FuncId, aty: Ty, hidden: bool },
+    FiberStart {
+        func: FuncId,
+        aty: Ty,
+        hidden: bool,
+    },
     /// The clause thunk of a handler declaration: loads `self` from the node's `env`.
-    DeclThunk { func: FuncId, clause: FnId },
+    DeclThunk {
+        func: FuncId,
+        clause: FnId,
+    },
     /// The exported symbol of function `f` when the C ABI passes some of its values
     /// differently from the plain convention: converts and calls `f`.
-    ExportThunk { func: FuncId, f: FnId, cs: Rc<cabi::CSig> },
+    ExportThunk {
+        func: FuncId,
+        f: FnId,
+        cs: Rc<cabi::CSig>,
+    },
+    CShim {
+        func: FuncId,
+        tys: Vec<Ty>,
+        ret: Ty,
+        cs: Rc<cabi::CSig>,
+    },
 }
 
 /// How a value of a type is held in generated code.
@@ -261,6 +292,11 @@ pub struct Gen<'a> {
     rt: HashMap<&'static str, FuncId>,
     /// The trampolines that call variadic C functions with floats on x86-64, by callee.
     va_tramps: HashMap<FuncId, FuncId>,
+    /// The C-convention wrappers of functions used as values of C-convention pointer types
+    /// (see `FnGen::c_abi_ptr`), by function.
+    c_thunks: HashMap<FnId, FuncId>,
+    /// The code of second-class values made from such pointers, by pointer type.
+    c_shims: HashMap<Ty, FuncId>,
     /// The C function of each `@asm` (see `FnGen::asm`).
     pub asm: Vec<String>,
     /// Static byte strings (each followed by a NUL byte), by content.
@@ -281,6 +317,25 @@ pub struct Gen<'a> {
     anon: u32,
 }
 
+/// How a value of type `t` is held in generated code.
+pub fn rep_of(lay: &Layouts, t: Ty) -> Rep {
+    let size = lay.size_of(t);
+    match t.kind() {
+        TyKind::Int(i) => Rep::Int { ty: int_type(size), bits: i.bits as u32, signed: i.signed },
+        TyKind::Usize | TyKind::Isize => {
+            Rep::Int { ty: types::I64, bits: 64, signed: matches!(t.kind(), TyKind::Isize) }
+        }
+        TyKind::Float(FloatTy::F16) => Rep::F16,
+        TyKind::Float(FloatTy::F32) => Rep::F32,
+        TyKind::Float(FloatTy::F64) => Rep::F64,
+        TyKind::Bool => Rep::Bool,
+        TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_) => Rep::Ptr,
+        TyKind::Optional(inner) if crate::layout::is_nullable_pointer(*inner) => Rep::Ptr,
+        _ if size == 0 => Rep::Zero,
+        _ => Rep::Mem { size, align: lay.align_of(t).max(1) },
+    }
+}
+
 fn module_err(e: cranelift_module::ModuleError) -> Unsupported {
     Unsupported { message: format!("Cranelift: {e:?}"), span: Span::DUMMY }
 }
@@ -299,21 +354,7 @@ impl<'a> Gen<'a> {
     }
 
     pub fn rep(&self, t: Ty) -> Rep {
-        let size = self.size(t);
-        match t.kind() {
-            TyKind::Int(i) => Rep::Int { ty: int_type(size), bits: i.bits as u32, signed: i.signed },
-            TyKind::Usize | TyKind::Isize => {
-                Rep::Int { ty: types::I64, bits: 64, signed: matches!(t.kind(), TyKind::Isize) }
-            }
-            TyKind::Float(FloatTy::F16) => Rep::F16,
-            TyKind::Float(FloatTy::F32) => Rep::F32,
-            TyKind::Float(FloatTy::F64) => Rep::F64,
-            TyKind::Bool => Rep::Bool,
-            TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_) => Rep::Ptr,
-            TyKind::Optional(inner) if crate::layout::is_nullable_pointer(*inner) => Rep::Ptr,
-            _ if size == 0 => Rep::Zero,
-            _ => Rep::Mem { size, align: self.align(t) },
-        }
+        rep_of(self.lay, t)
     }
 
     /// A fresh name for a local symbol.
@@ -438,6 +479,7 @@ impl<'a> Gen<'a> {
                 Work::FiberStart { func, aty, hidden } => func::gen_fiber_start(self, func, aty, hidden)?,
                 Work::DeclThunk { func, clause } => func::gen_decl_thunk(self, func, clause)?,
                 Work::ExportThunk { func, f, cs } => func::gen_export_thunk(self, func, f, &cs)?,
+                Work::CShim { func, tys, ret, cs } => func::gen_c_shim(self, func, &tys, ret, &cs)?,
             }
         }
         Ok(())
@@ -447,6 +489,33 @@ impl<'a> Gen<'a> {
     fn local_fn(&mut self, prefix: &str, sig: &Signature) -> CResult<FuncId> {
         let name = self.anon_name(prefix);
         self.module.declare_function(&name, Linkage::Local, sig).map_err(module_err)
+    }
+
+    /// A function with the C ABI that calls plain function `f`: what a function pointer
+    /// of a type that passes aggregates (see `FnGen::c_abi_ptr`) holds for `f`.
+    pub fn c_thunk(&mut self, f: FnId) -> CResult<FuncId> {
+        if let Some(&t) = self.c_thunks.get(&f) {
+            return Ok(t);
+        }
+        let cs = self.c_sig_of(f)?;
+        let id = self.local_fn("gm_cthunk", &cs.sig)?;
+        self.c_thunks.insert(f, id);
+        self.queue.push_back(Work::ExportThunk { func: id, f, cs: Rc::new(cs) });
+        Ok(id)
+    }
+
+    /// The code of a second-class value whose environment is a pointer of C-convention
+    /// function pointer type `t` (see `FnGen::c_abi_ptr`): it calls the pointer as C does.
+    pub fn c_shim(&mut self, t: Ty, span: Span) -> CResult<FuncId> {
+        if let Some(&id) = self.c_shims.get(&t) {
+            return Ok(id);
+        }
+        let TyKind::FnPtr(sig) = t.kind() else { return unsupported(span, format!("calling `{}` as C does", t)) };
+        let cs = self.c_sig(&sig.params, sig.ret, sig.callconv, span)?;
+        let id = self.local_fn("gm_cshim", &self.sig_of(&sig.params, sig.ret, true, self.cc))?;
+        self.c_shims.insert(t, id);
+        self.queue.push_back(Work::CShim { func: id, tys: sig.params.to_vec(), ret: sig.ret, cs: Rc::new(cs) });
+        Ok(id)
     }
 
     /// A trampoline for calls of variadic C function `callee` on x86-64: the System V ABI
@@ -821,15 +890,20 @@ pub fn compile(
     link: &crate::cgen::Link,
     exe: &Path,
 ) -> Result<(), String> {
-    let obj = exe.with_extension("o");
+    use crate::cgen::{Scratch, scratch_path};
+    let obj = scratch_path(exe, "gamma", "o");
+    let asm_obj = scratch_path(exe, "asm", "o");
+    let rt_obj = scratch_path(exe, "rt", "o");
+    let _scratch = Scratch(vec![obj.clone(), asm_obj.clone(), rt_obj.clone()]);
     std::fs::write(&obj, &generated.object).map_err(|e| format!("cannot write {}: {}", obj.display(), e))?;
     let rt_flags = crate::cgen::rt_flags(&generated.opts, &generated.target);
     let runtime = match crate::cgen::runtime_object_from(toolchain, &rt_flags, &runtime_source(), "gm_clif_rt") {
         Some(o) => o,
         None => {
             // No cache: the runtime is compiled next to the executable.
-            let c = exe.with_extension("rt.c");
-            let o = exe.with_extension("rt.o");
+            let c = scratch_path(exe, "rt", "c");
+            let o = rt_obj.clone();
+            let _c = Scratch(vec![c.clone()]);
             std::fs::write(&c, runtime_source()).map_err(|e| format!("cannot write {}: {}", c.display(), e))?;
             let out = toolchain
                 .command(&rt_flags)
@@ -839,7 +913,6 @@ pub fn compile(
                 .arg(&c)
                 .output()
                 .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;
-            let _ = std::fs::remove_file(&c);
             if !out.status.success() {
                 return Err(format!("the C compiler failed:\n{}", String::from_utf8_lossy(&out.stderr)));
             }
@@ -847,9 +920,9 @@ pub fn compile(
         }
     };
     // The functions holding inline assembly.
-    let asm_obj = exe.with_extension("asm.o");
     if !generated.asm.is_empty() {
-        let c = exe.with_extension("asm.c");
+        let c = scratch_path(exe, "asm", "c");
+        let _c = Scratch(vec![c.clone()]);
         let src = format!("#include <stdint.h>\n\n{}", generated.asm.join("\n"));
         std::fs::write(&c, src).map_err(|e| format!("cannot write {}: {}", c.display(), e))?;
         let mut flags: Vec<String> =
@@ -863,7 +936,6 @@ pub fn compile(
             .arg(&c)
             .output()
             .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;
-        let _ = std::fs::remove_file(&c);
         if !out.status.success() {
             return Err(format!(
                 "the C compiler failed on the program's `@asm`:\n{}",
@@ -889,11 +961,6 @@ pub fn compile(
         .arg("-lm")
         .output()
         .map_err(|e| format!("cannot run the C compiler `{}`: {}", toolchain.display(), e))?;
-    let _ = std::fs::remove_file(&obj);
-    let _ = std::fs::remove_file(&asm_obj);
-    if runtime == exe.with_extension("rt.o") {
-        let _ = std::fs::remove_file(&runtime);
-    }
     if !out.status.success() {
         return Err(format!("linking failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }

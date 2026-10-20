@@ -96,6 +96,21 @@ fn check(input: &str, expected: &str) {
 }
 
 #[test]
+fn crlf_input_gives_lf_output_inside_block_comments_too() {
+    let out = format_source("x := 1 /* a\r\n b */\r\ny := 2\r\n").unwrap();
+    assert_eq!(out, "x := 1 /* a\n b */\ny := 2\n");
+}
+
+#[test]
+fn tokens_that_lex_differently_when_joined_stay_apart() {
+    // `..` next to `..` would join into `...` and `.`.
+    let src = "x := a .. ..b\n";
+    if let Ok(out) = format_source(src) {
+        assert_eq!(tokens(src), tokens(&out));
+    }
+}
+
+#[test]
 fn dot_after_a_space_at_line_start_stays_apart() {
     // `. p` is not a continuation line; gluing it to `p` would turn it into one (§2.8) and
     // change the indentation the second time around.

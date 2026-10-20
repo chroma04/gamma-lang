@@ -606,11 +606,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 })?;
                 let c = ii.cty();
                 let (r, o) = (format!("r{}", self.fresh()), format!("o{}", self.fresh()));
-                self.line(&format!("{c} {r} = 1; bool {o} = false;"));
-                self.line(&format!(
-                    "for (unsigned __int128 i = 0; i < (unsigned __int128){}; i++) {{ {c} x; if (__builtin_mul_overflow({r}, {}, &x)) {o} = true; {r} = x; }}",
-                    vals[1], vals[0]
-                ));
+                let f = format!("gm_pow_{}{}", if ii.signed { 'i' } else { 'u' }, ii.storage * 8);
+                self.line(&format!("bool {o} = false; {c} {r} = {f}({}, (uint64_t){}, &{o});", vals[0], vals[1]));
                 if !ii.exact() {
                     let (min, max) = (self.int_lit(at, &ii.min()), self.int_lit(at, &ii.max()));
                     self.line(&format!("{o} = {o} || {r} < {min} || {r} > {max};"));
@@ -774,7 +771,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Builtin::Last => format!("({} - 1)", len),
             _ => {
                 let v = self.expr(&args[1])?;
-                format!("(uintptr_t){v}")
+                self.bound(args[1].ty, &v)
             }
         };
         let i = self.tmp(Ty::usize(), &i);

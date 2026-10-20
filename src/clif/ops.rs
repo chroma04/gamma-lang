@@ -160,7 +160,7 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
 
     /// The shift or exponent amount `v` of integer type `t` as a `u64`; a negative amount
     /// is huge, and one beyond 64 bits is `u64::MAX`.
-    fn amount64(&mut self, t: Ty, v: Value) -> Value {
+    pub(super) fn amount64(&mut self, t: Ty, v: Value) -> Value {
         let (ty, _, signed) = self.int_info(t).unwrap_or((types::I64, 64, false));
         if ty == types::I128 {
             let (lo, hi) = self.b.ins().isplit(v);
@@ -242,7 +242,11 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
                 let x = self.resize(raw, types::I128, ity, false);
                 self.adt_from_int(t, x)
             }
-            _ => self.undef(t),
+            // The checker allows no other field types in a `#bits` struct (§5.10.5).
+            _ => {
+                debug_assert!(false, "a #bits field of type {}", t);
+                self.undef(t)
+            }
         }
     }
 
@@ -260,7 +264,10 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
                 let x = self.load_s(it, a, off);
                 self.widen_i128(it, x, false)
             }
-            _ => self.iconst_bits(types::I128, 0),
+            _ => {
+                debug_assert!(false, "a #bits field of type {}", t);
+                self.iconst_bits(types::I128, 0)
+            }
         }
     }
 
@@ -1358,7 +1365,7 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
 
     /// `c ? a : b` of integers. A 128-bit choice is a branch: Cranelift turns a `select`
     /// of a comparison into a minimum or maximum, which it cannot emit for 128 bits.
-    fn pick(&mut self, c: Value, a: Value, b: Value) -> Value {
+    pub(super) fn pick(&mut self, c: Value, a: Value, b: Value) -> Value {
         let ty = self.b.func.dfg.value_type(a);
         if ty != types::I128 {
             return self.b.ins().select(c, a, b);
@@ -1453,11 +1460,16 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
         }
         let unit = matches!(self.g.rep(e.ty), Rep::Zero);
         if !unit {
-            sig.push_str(">l");
+            // The result is as wide as its type: `@cpu_count` returns 32 bits.
+            sig.push('>');
+            sig.push(match self.g.rep(e.ty).ty().map_or(64, |t| t.bits()) {
+                8 => 'b',
+                16 => 'h',
+                32 => 'i',
+                _ => 'l',
+            });
         }
-        let name: &'static str = Box::leak(format!("gm_{}", op.signature().0).into_boxed_str());
-        let sig: &'static str = Box::leak(sig.into_boxed_str());
-        let r = self.rt_call(name, sig, &cargs);
+        let r = self.rt_call(sys_symbol(op), &sig, &cargs);
         Ok(if unit { V::Z } else { V::S(r[0]) })
     }
 
@@ -1490,7 +1502,7 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             Builtin::Last => self.b.ins().iadd_imm_s(len, -1),
             _ => {
                 let v = self.expr_s(&args[1])?;
-                self.as_index(args[1].ty, v)
+                self.as_bound(args[1].ty, v)
             }
         };
         let Some(inner) = t.optional_inner() else { return unsupported(e.span, "get") };
@@ -1922,4 +1934,17 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             }
         }
     }
+}
+
+/// The runtime function that implements system service `op`, `gm_<name>`, interned so that
+/// each name is allocated once however often the service is used.
+fn sys_symbol(op: crate::tir::SysOp) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<(crate::tir::SysOp, &'static str)>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, n)) = names.iter().find(|(o, _)| *o == op) {
+        return n;
+    }
+    let name: &'static str = Box::leak(format!("gm_{}", op.signature().0).into_boxed_str());
+    names.push((op, name));
+    name
 }

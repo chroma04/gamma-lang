@@ -74,6 +74,15 @@ Details are in the "Language server" section of `docs/architecture.md`.
 - Rename and references in another module are computed from the files of the
   package as they are on disk and in open buffers; modules in a dependency that
   is not a path dependency are not searched.
+- Changes made outside the editor to files that are not open (a `git checkout`, a
+  formatter, a new or deleted file) are seen through the client's file watching: if
+  the client supports dynamic registration of `workspace/didChangeWatchedFiles`, the
+  server registers watchers for `**/*.gm` and `**/gamma.toml` after `initialized`, and
+  on a change it checks the affected modules again and republishes the diagnostics
+  of the open documents. A client without that support is not told to watch: such a
+  change is seen when a document of a module that reads it is next opened, edited
+  or saved. References and rename read a file again only when its modification
+  time or size changed.
 - Completion after a `.` checks the module again when the text so far has no
   receiver for it. That takes as long as a normal check.
 

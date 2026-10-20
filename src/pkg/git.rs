@@ -13,6 +13,7 @@
 //! Checkouts are read-only once verified. A directory and its `.used` stamp are the
 //! unit the cache cleaner (`pkg::cache`) deletes.
 
+use super::archive::hex;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,10 +22,6 @@ use std::process::Command;
 #[derive(Debug, Clone)]
 pub struct Store {
     base: PathBuf,
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// A directory name for a repository: the last segment of its URL and a hash of the URL.
@@ -74,8 +71,25 @@ impl Store {
     }
 }
 
+/// Variables of the caller's environment that would point git at another repository,
+/// index or object store than the one given (set, for example, inside a git hook).
+const GIT_LOCATION_VARS: [&str; 6] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+];
+
 fn git(git_dir: Option<&Path>, args: &[&str], env: &[(&str, &Path)]) -> Result<String, String> {
     let mut cmd = Command::new("git");
+    for var in GIT_LOCATION_VARS {
+        cmd.env_remove(var);
+    }
+    // The `ext::` transport runs a command named in the URL: never allow it, whatever
+    // the user's git configuration says.
+    cmd.args(["-c", "protocol.ext.allow=never"]);
     if let Some(d) = git_dir {
         cmd.arg("--git-dir").arg(d);
     }
@@ -111,7 +125,17 @@ pub fn fetch_mirror(db: &Path, url: &str) -> Result<(), String> {
     }
     git(
         Some(db),
-        &["fetch", "-q", "--tags", "--force", url, "+refs/heads/*:refs/heads/*", "+HEAD:refs/gamma/head"],
+        &[
+            "fetch",
+            "-q",
+            "--force",
+            "--prune",
+            "--",
+            url,
+            "+refs/heads/*:refs/heads/*",
+            "+refs/tags/*:refs/tags/*",
+            "+HEAD:refs/gamma/head",
+        ],
         &[],
     )
     .map_err(|e| format!("cannot fetch {}: {}", url, e))?;
@@ -162,8 +186,8 @@ pub fn show_file(db: &Path, rev: &str, path: &str) -> Option<String> {
 
 /// The names of the tags of the repository at `url`, without cloning it.
 pub fn remote_tags(url: &str) -> Result<Vec<String>, String> {
-    let out =
-        git(None, &["ls-remote", "--tags", "--refs", url], &[]).map_err(|e| format!("cannot list {}: {}", url, e))?;
+    let out = git(None, &["ls-remote", "--tags", "--refs", "--", url], &[])
+        .map_err(|e| format!("cannot list {}: {}", url, e))?;
     Ok(out.lines().filter_map(|l| l.split('\t').nth(1)?.strip_prefix("refs/tags/").map(str::to_string)).collect())
 }
 
@@ -175,11 +199,11 @@ pub fn checkout(db: &Path, rev: &str, dest: &Path) -> Result<(), String> {
     }
     let parent = dest.parent().ok_or("bad checkout path")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {}", parent.display(), e))?;
-    let tag = format!(".tmp-{}-{}", std::process::id(), &rev[..12.min(rev.len())]);
-    let tmp = parent.join(&tag);
-    let index = parent.join(format!("{}.index", tag));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).map_err(|e| format!("cannot create {}: {}", tmp.display(), e))?;
+    let tmp = super::archive::private_name(parent, "checkout");
+    let mut index = tmp.clone().into_os_string();
+    index.push(".index");
+    let index = PathBuf::from(index);
+    std::fs::create_dir(&tmp).map_err(|e| format!("cannot create {}: {}", tmp.display(), e))?;
     let res = git(
         Some(db),
         &["-c", "core.bare=false", "--work-tree", &tmp.to_string_lossy(), "checkout", "-q", "-f", rev, "--", "."],
@@ -257,6 +281,72 @@ fn check_link(rel: &str, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks that every symbolic link stays inside the tree when it is resolved the way
+/// the system resolves it: a link whose target goes through another link (`d/up -> ..`,
+/// `esc -> d/up/..`) is followed, so a chain of links that each look harmless cannot
+/// climb out of the tree.
+fn check_link_chains(entries: &[(String, Entry)]) -> Result<(), String> {
+    use std::collections::HashMap;
+    let links: HashMap<&str, &Path> = entries
+        .iter()
+        .filter_map(|(rel, e)| match e {
+            Entry::Link(t) => Some((rel.as_str(), t.as_path())),
+            Entry::File(_) => None,
+        })
+        .collect();
+    for (&rel, &target) in &links {
+        let mut dir: Vec<String> = rel.split('/').map(str::to_string).collect();
+        dir.pop();
+        let mut hops = 0;
+        if !resolve_within(&mut dir, target, &links, &mut hops) {
+            return Err(format!(
+                "the package contains the symbolic link `{}` -> `{}`, which points outside the package \
+                 through other links; links must stay inside the package directory",
+                rel,
+                target.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Resolves `target` relative to the directory `at` (path components inside the tree),
+/// following the links in `links`, and leaves the result in `at`. False if the path
+/// leaves the tree, is absolute, or takes more than 40 link hops.
+fn resolve_within(
+    at: &mut Vec<String>,
+    target: &Path,
+    links: &std::collections::HashMap<&str, &Path>,
+    hops: &mut usize,
+) -> bool {
+    use std::path::Component;
+    for c in target.components() {
+        match c {
+            Component::Normal(name) => {
+                at.push(name.to_string_lossy().into_owned());
+                if let Some(&next) = links.get(at.join("/").as_str()) {
+                    *hops += 1;
+                    if *hops > 40 {
+                        return false;
+                    }
+                    at.pop();
+                    if !resolve_within(at, next, links, hops) {
+                        return false;
+                    }
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if at.pop().is_none() {
+                    return false;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
+}
+
 /// The content hash of the tree at `root`: SHA-256 over its entries in sorted path
 /// order (`/` separators, `.git` excluded). A regular file is the path, a NUL byte, the
 /// length as 8 little-endian bytes, and the contents. A symbolic link is the path, a NUL
@@ -266,6 +356,7 @@ fn check_link(rel: &str, target: &Path) -> Result<(), String> {
 pub fn tree_checksum(root: &Path) -> Result<String, String> {
     let mut entries = vec![];
     collect_entries(root, "", &mut entries)?;
+    check_link_chains(&entries)?;
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut h = Sha256::new();
     for (rel, entry) in entries {
@@ -452,6 +543,18 @@ mod tests {
         std::fs::remove_file(d.join("s/t/out")).unwrap();
         std::os::unix::fs::symlink("/etc/passwd", d.join("abs")).unwrap();
         assert!(tree_checksum(&d).unwrap_err().contains("outside"));
+        std::fs::remove_file(d.join("abs")).unwrap();
+        // A chain of links that each stay inside, but together climb out.
+        std::os::unix::fs::symlink("..", d.join("s/up")).unwrap();
+        tree_checksum(&d).unwrap();
+        std::os::unix::fs::symlink("s/up/..", d.join("esc")).unwrap();
+        let e = tree_checksum(&d).unwrap_err();
+        assert!(e.contains("esc") && e.contains("through other links"), "{}", e);
+        std::fs::remove_file(d.join("esc")).unwrap();
+        // A loop of links is an error, not a hang.
+        std::os::unix::fs::symlink("loop2", d.join("loop1")).unwrap();
+        std::os::unix::fs::symlink("loop1", d.join("loop2")).unwrap();
+        assert!(tree_checksum(&d).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 

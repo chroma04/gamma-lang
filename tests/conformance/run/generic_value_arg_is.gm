@@ -1,0 +1,26 @@
+// Value arguments of generic types compare with `is` (§5.18, §16.4): `0.0` and `-0.0`
+// are one value, every NaN is one value, and padding does not matter.
+Box :: struct(X: f64) { v: i32 }
+Pair :: struct { a: u8, b: u32 }
+Holder :: struct(P: Pair) { v: i32 }
+Arr :: struct(A: [2]f32) { v: i32 }
+
+nan :: fn() -> f64 {
+    z: f64 = 0.0
+    return z / z
+}
+neg_nan :: fn() -> f64 => -nan()
+
+main :: fn() needs Out {
+    a: Box(0.0) = Box(0.0)(v: 1)
+    b: Box(-0.0) = a
+    print("{}\n", b.v)
+    c: Box(nan()) = Box(nan())(v: 2)
+    d: Box(neg_nan()) = c
+    print("{}\n", d.v)
+    h: Holder(Pair(a: 1, b: 2)) = Holder(Pair(a: 1, b: 2))(v: 3)
+    print("{}\n", h.v)
+    x: Arr([2]f32(0.0, 1.0)) = Arr([2]f32(0.0, 1.0))(v: 4)
+    y: Arr([2]f32(-0.0, 1.0)) = x
+    print("{}\n", y.v)
+}

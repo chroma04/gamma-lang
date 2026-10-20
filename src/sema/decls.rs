@@ -68,8 +68,9 @@ impl<'s> Sema<'s> {
     }
 
     /// A `pub` declaration's signature must not mention a private type (§3.3): the
-    /// types of a function's parameters and result, of a constant or global, an alias's
-    /// type, a struct's `pub` fields and a union's payloads.
+    /// types of a function's parameters and result and its `needs` effect arguments, the
+    /// operations of an effect, the type of a constant or global, an alias's type, a
+    /// struct's `pub` fields and a union's payloads.
     pub(super) fn check_pub_signatures(&mut self) {
         let private = |s: &Self, t: Ty| -> Option<Ty> {
             let mut found = None;
@@ -100,12 +101,29 @@ impl<'s> Sema<'s> {
                     Some(AdtKind::Union { variants, .. }) => tys.extend(variants.iter().filter_map(|v| v.payload)),
                     None => {}
                 };
+            let effect_arg_tys = |refs: &[crate::types::EffectRef], tys: &mut Vec<Ty>| {
+                for r in refs {
+                    tys.extend(r.args.iter().filter_map(|a| match a {
+                        crate::types::GenericArg::Type(t) => Some(*t),
+                        crate::types::GenericArg::Value(_) => None,
+                    }));
+                }
+            };
             match v {
                 DeclValue::Fn(f) => {
                     let sig = &self.sigs[f];
                     tys.extend(sig.params.iter().filter(|p| p.generic.is_none()).map(|p| p.ty));
                     tys.push(sig.ret);
+                    effect_arg_tys(&sig.effects.effects, &mut tys);
                 }
+                DeclValue::Effect(e) => {
+                    for op in &self.effects[e].ops {
+                        tys.extend(op.params.iter().filter(|p| p.generic.is_none()).map(|p| p.ty));
+                        tys.push(op.ret);
+                    }
+                }
+                DeclValue::EffectInst(r) => effect_arg_tys(std::slice::from_ref(r), &mut tys),
+                DeclValue::EffectSet(set) => effect_arg_tys(&set.effects, &mut tys),
                 DeclValue::Type(t) => match t.kind() {
                     TyKind::Adt(id, _) if self.adt_decls.get(id) == Some(&DeclId(i as u32)) => {
                         adt_fields(self, *id, &mut tys)
@@ -665,6 +683,12 @@ impl<'s> Sema<'s> {
             }
             for n in &p.names {
                 let default = p.default.clone().map(Rc::new);
+                if let Some(d) = &default
+                    && !super::generics::has_param(ty)
+                    && !matches!(&d.kind, ExprKind::Intrinsic { name, .. } if name.name.as_str() == "caller_location")
+                {
+                    self.default_checks.push((module, d.clone(), ty));
+                }
                 params.push(ParamInfo { name: n.name, ty, span: n.span, default, generic: None, rest });
             }
         }

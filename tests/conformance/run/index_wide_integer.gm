@@ -1,0 +1,13 @@
+//! exit: 134
+//! stderr
+//! ptr_bits: 64
+// An index of a 128-bit type is checked with its whole value: one past the range of
+// `usize` is out of bounds, not its low 64 bits.
+main :: fn() needs Out {
+    a := [3]u8(1, 2, 3)
+    s := a[0..]
+    i: u128 = 2
+    print("{} {}\n", a[i], s[i])
+    big: u128 = 18446744073709551617
+    print("{}\n", s[i..big].len)
+}

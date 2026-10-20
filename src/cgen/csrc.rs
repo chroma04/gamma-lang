@@ -11,7 +11,7 @@
 //! lives as long as the [`Link`].
 
 use super::Options;
-use super::rtcache::{cache_dir, private_name, rename_or_remove};
+use super::rtcache::{cache_dir, create_private_dir, create_private_dirs, private_name, rename_or_remove};
 use crate::toolchain::Toolchain;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -64,13 +64,33 @@ fn hex(bytes: &[u8]) -> String {
 impl Link {
     /// Describes everything in the link that can change the executable, for the key of
     /// the executable cache: the objects (named by their content hash), the libraries
-    /// and the size and modification time of the library files found in `lib_dirs`.
-    pub fn fingerprint(&self) -> String {
+    /// and the size and modification time of the library files found in the search
+    /// directories. `more` are the libraries of `foreign` blocks and `ldflags` the linker
+    /// options, whose `-L` and `-l` count like the package's own.
+    pub fn fingerprint(&self, more: &[String], ldflags: &[String]) -> String {
         let mut s = String::new();
         for o in &self.objects {
             s.push_str(&format!("obj {}\n", o.display()));
         }
-        s.push_str(&library_stamps(&self.libs, &self.lib_dirs));
+        let mut libs: Vec<String> = more.iter().chain(&self.libs).cloned().collect();
+        let mut dirs = self.lib_dirs.clone();
+        let mut it = ldflags.iter();
+        while let Some(w) = it.next() {
+            for (prefix, is_dir) in [("-L", true), ("-l", false)] {
+                if let Some(v) = w.strip_prefix(prefix) {
+                    let v = if v.is_empty() { it.next().map(String::as_str).unwrap_or("") } else { v };
+                    if is_dir {
+                        dirs.push(PathBuf::from(v));
+                    } else {
+                        libs.push(v.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(p) = std::env::var_os("LIBRARY_PATH") {
+            dirs.extend(std::env::split_paths(&p));
+        }
+        s.push_str(&library_stamps(&libs, &dirs));
         s
     }
 
@@ -134,17 +154,25 @@ fn compiler_version(toolchain: &Toolchain) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
+/// A new private directory in the system's temporary directory: created here (never one
+/// that exists, which another user could have prepared) and accessible to this user only.
 fn temp_dir() -> Result<PathBuf, String> {
     let base = std::env::temp_dir();
-    let dir = private_name(&base, "gamma-native", "d");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {}", dir.display(), e))?;
-    Ok(dir)
+    for _ in 0..100 {
+        let dir = private_name(&base, "gamma-native", "d");
+        match create_private_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot create {}: {}", dir.display(), e)),
+        }
+    }
+    Err(format!("cannot create a temporary directory in {}", base.display()))
 }
 
 /// The directory for compiled C sources, if there is a cache.
 fn native_cache() -> Option<PathBuf> {
     let d = cache_dir()?.join("native");
-    std::fs::create_dir_all(&d).ok().map(|_| d)
+    create_private_dirs(&d).ok().map(|_| d)
 }
 
 /// Compiles the C sources of `extras` (or finds them in the cache) and returns what a
@@ -249,7 +277,7 @@ pub fn load_for_interpreter(extras: &Extras, opts: &Options, toolchain: &Toolcha
         toolchain.cflags.join("\0"),
         toolchain.ldflags.join("\0"),
         String::from_utf8_lossy(&compiler_version(toolchain)?).into_owned(),
-        link.fingerprint(),
+        link.fingerprint(&[], &toolchain.ldflags),
     ] {
         h.update((part.len() as u64).to_le_bytes());
         h.update(part.as_bytes());

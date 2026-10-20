@@ -21,6 +21,20 @@ impl<'a, 's> FnCx<'a, 's> {
             );
             return error_expr(span);
         }
+        // The defaults of a struct's fields are evaluated while the struct is declared (§17.2),
+        // so a default that reaches a construction of the struct needs the struct to be complete.
+        if let TyKind::Adt(id, _) = ty.kind()
+            && self.sema.adts_in_progress.contains(id)
+        {
+            self.error(
+                span,
+                format!(
+                    "dependency cycle: `{}` is constructed while the default of one of its fields is evaluated (§3.4)",
+                    ty
+                ),
+            );
+            return error_expr(span);
+        }
         let fields: Vec<(Symbol, Ty)> =
             self.sema.struct_fields(ty).unwrap_or(&[]).iter().map(|f| (f.name, f.ty)).collect();
         let n = fields.len();
@@ -60,29 +74,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 ArgKind::Spread(e) => {
                     let v = self.expr(e, None);
                     let vt = self.infer.resolve(v.ty);
-                    let src_fields: Vec<(Symbol, Ty)> = match vt.kind() {
-                        TyKind::Tuple { elems, names: Some(names) } => {
-                            names.iter().copied().zip(elems.iter().copied()).collect()
-                        }
-                        _ => match self.sema.struct_fields(vt) {
-                            Some(fs) => fs.iter().map(|f| (f.name, f.ty)).collect(),
-                            None => {
-                                if !vt.is_error() {
-                                    self.error(
-                                        e.span,
-                                        format!("cannot spread a value of type `{}` into named arguments", vt),
-                                    );
-                                }
-                                continue;
-                            }
-                        },
-                    };
-                    let tmp_ty = vt;
+                    let Some(src_fields) = self.spread_source_fields(vt, e) else { continue };
                     // Values written before the spread are evaluated before it.
-                    for &w in &written {
-                        let v = slots[w].take().unwrap();
-                        slots[w] = Some(self.bind_temp(v, &mut stmts));
-                    }
+                    self.spill_written(&mut slots, &written, &mut stmts);
                     written.clear();
                     let base = self.bind_temp(v, &mut stmts);
                     for (k, (fname, fty)) in src_fields.iter().enumerate() {
@@ -100,7 +94,6 @@ impl<'a, 's> FnCx<'a, 's> {
                         }
                         let proj =
                             mk(*fty, tir::ExprKind::Field { base: Box::new(base.clone()), index: k as u32 }, e.span);
-                        let _ = tmp_ty;
                         slots[i] = Some(self.coerce(proj, fields[i].1));
                     }
                 }
@@ -109,11 +102,26 @@ impl<'a, 's> FnCx<'a, 's> {
         // Arguments written out of field order are evaluated into temporaries first,
         // so evaluation follows the written order (§7.1).
         if written.windows(2).any(|w| w[0] > w[1]) {
-            for &w in &written {
-                let v = slots[w].take().unwrap();
-                slots[w] = Some(self.bind_temp(v, &mut stmts));
-            }
+            self.spill_written(&mut slots, &written, &mut stmts);
         }
+        let values = self.fill_fields(ty, &fields, slots, bad_args, span);
+        let agg = mk(ty, tir::ExprKind::Aggregate(values), span);
+        if stmts.is_empty() {
+            return agg;
+        }
+        mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(agg), span })), span)
+    }
+
+    /// The field values of a construction in field order; a field without an argument takes
+    /// its default or is reported missing.
+    fn fill_fields(
+        &mut self,
+        ty: Ty,
+        fields: &[(Symbol, Ty)],
+        slots: Vec<Option<Expr>>,
+        bad_args: bool,
+        span: Span,
+    ) -> Vec<Expr> {
         let mut values = vec![];
         for (i, slot) in slots.into_iter().enumerate() {
             match slot {
@@ -142,11 +150,26 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
-        let agg = mk(ty, tir::ExprKind::Aggregate(values), span);
-        if stmts.is_empty() {
-            return agg;
+        values
+    }
+
+    /// The named fields a spread argument of type `vt` supplies; `None` (after an error) when
+    /// it is neither a named tuple nor a struct.
+    fn spread_source_fields(&mut self, vt: Ty, e: &ast::Expr) -> Option<Vec<(Symbol, Ty)>> {
+        match vt.kind() {
+            TyKind::Tuple { elems, names: Some(names) } => {
+                Some(names.iter().copied().zip(elems.iter().copied()).collect())
+            }
+            _ => match self.sema.struct_fields(vt) {
+                Some(fs) => Some(fs.iter().map(|f| (f.name, f.ty)).collect()),
+                None => {
+                    if !vt.is_error() {
+                        self.error(e.span, format!("cannot spread a value of type `{}` into named arguments", vt));
+                    }
+                    None
+                }
+            },
         }
-        mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(agg), span })), span)
     }
 
     fn adt_default(&self, ty: Ty, i: usize) -> Option<Expr> {
@@ -197,6 +220,16 @@ impl<'a, 's> FnCx<'a, 's> {
             })
             .collect();
         Some(parts)
+    }
+
+    /// Evaluates the values written so far (the `written` slots) into temporaries, in the
+    /// order they were written.
+    fn spill_written(&mut self, slots: &mut [Option<Expr>], written: &[usize], stmts: &mut Vec<Stmt>) {
+        for &w in written {
+            if let Some(v) = slots[w].take() {
+                slots[w] = Some(self.bind_temp(v, stmts));
+            }
+        }
     }
 
     pub(super) fn bind_temp(&mut self, v: Expr, stmts: &mut Vec<Stmt>) -> Expr {
@@ -378,6 +411,10 @@ impl<'a, 's> FnCx<'a, 's> {
             let v = self.field_value(e, elem);
             return mk(ty.unwrap_or(Ty::array(len, elem)), tir::ExprKind::ArrayFill(Box::new(v)), span);
         }
+        if let Some(a) = args.iter().find(|a| matches!(&a.kind, ArgKind::Named(n, _) if n.name.as_str() == "fill")) {
+            self.error(a.span, "`fill:` must be the only argument");
+            return error_expr(span);
+        }
         // `[N]T(v)` and `V(a)` with one argument that is itself an array or a vector:
         // a conversion between a vector and an array or another vector (§6.5, §5.6.2).
         if let [ast::Arg { kind: ArgKind::Positional(e), .. }] = args
@@ -425,7 +462,7 @@ impl<'a, 's> FnCx<'a, 's> {
             && n != values.len() as u64
         {
             let t = ty.unwrap_or(Ty::array(n, elem));
-            self.error(span, format!("`{}` needs exactly {} elements, but {} are given", t, n, values.len()));
+            self.error(span, format!("`{}` needs exactly {} elements, but {} given", t, n, given(values.len())));
             return error_expr(span);
         }
         let t = ty.unwrap_or(Ty::array(values.len() as u64, elem));
@@ -490,10 +527,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         if written.windows(2).any(|w| w[0] > w[1]) {
-            for &w in &written {
-                let v = slots[w].take().unwrap();
-                slots[w] = Some(self.bind_temp(v, &mut stmts));
-            }
+            self.spill_written(&mut slots, &written, &mut stmts);
         }
         let missing: Vec<String> =
             names.iter().zip(&slots).filter(|(_, s)| s.is_none()).map(|(n, _)| format!("`{}`", n)).collect();
@@ -534,4 +568,9 @@ fn is_constant(e: &Expr) -> bool {
             | tir::ExprKind::Uninit
             | tir::ExprKind::Const(_)
     )
+}
+
+/// "1 is" or "3 are", for a count of given values.
+fn given(n: usize) -> String {
+    if n == 1 { "1 is".to_string() } else { format!("{} are", n) }
 }

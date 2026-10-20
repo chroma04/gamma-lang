@@ -108,11 +108,14 @@ impl<'a> Machine<'a> {
                 Ok(Value::unit())
             }
             (NativeKind::Env, 0) => {
-                let strs: Vec<String> = self.args.clone();
+                if let Some(t) = &self.env_args {
+                    return Ok(Value::Bytes(t.clone()));
+                }
+                let strs: Vec<Vec<u8>> = self.args.clone();
                 let ps = self.ptr_size();
                 let mut table = Bytes::zeroed(strs.len() * 2 * ps);
                 for (i, s) in strs.iter().enumerate() {
-                    let rc: Rc<[u8]> = s.as_bytes().to_vec().into();
+                    let rc: Rc<[u8]> = s.clone().into();
                     let addr = self.static_bytes(span, &rc)?;
                     let slice = self.make_slice(addr, rc.len() as u64);
                     table[i * 2 * ps..(i + 1) * 2 * ps].copy_from_slice(&slice);
@@ -120,23 +123,31 @@ impl<'a> Machine<'a> {
                 let taddr = self.alloc_mem(span, table.len(), 16, AllocKind::Heap, false)?;
                 let r = self.mem.init(taddr, &table);
                 self.mem_err(span, r)?;
-                Ok(Value::Bytes(self.make_slice(taddr, strs.len() as u64)))
+                let slice = self.make_slice(taddr, strs.len() as u64);
+                self.env_args = Some(slice.clone());
+                Ok(Value::Bytes(slice))
             }
             (NativeKind::Env, 1) => {
                 let Some(Value::Bytes(s)) = args.first() else {
                     return self.trap(span, "internal error: bad argument to Env.var");
                 };
                 let name = self.read_str(span, s)?;
-                let name = String::from_utf8_lossy(&name).into_owned();
                 let opt_ty = Ty::optional(Ty::string());
-                match std::env::var(&name) {
-                    Ok(v) => {
-                        let rc: Rc<[u8]> = v.into_bytes().into();
-                        let addr = self.static_bytes(span, &rc)?;
-                        let slice = self.make_slice(addr, rc.len() as u64);
+                match env_var(&name) {
+                    Some(v) => {
+                        let slice = match self.env_vals.get(&v) {
+                            Some(s) => s.clone(),
+                            None => {
+                                let rc: Rc<[u8]> = v.clone().into();
+                                let addr = self.static_bytes(span, &rc)?;
+                                let slice = self.make_slice(addr, rc.len() as u64);
+                                self.env_vals.insert(v, slice.clone());
+                                slice
+                            }
+                        };
                         Ok(Value::Bytes(self.make_some(opt_ty, &slice)))
                     }
-                    Err(_) => Ok(Value::Bytes(self.make_none(opt_ty))),
+                    None => Ok(Value::Bytes(self.make_none(opt_ty))),
                 }
             }
             (NativeKind::Env, 2) => {
@@ -199,5 +210,18 @@ impl<'a> Machine<'a> {
         };
         self.mem.kill(addr);
         r.map(|_| ())
+    }
+}
+
+/// The value of environment variable `name` as bytes (names and values are not always UTF-8).
+fn env_var(name: &[u8]) -> Option<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        std::env::var_os(std::ffi::OsStr::from_bytes(name)).map(|v| v.into_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::var_os(String::from_utf8_lossy(name).as_ref()).map(|v| v.to_string_lossy().into_owned().into_bytes())
     }
 }

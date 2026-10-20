@@ -3,13 +3,20 @@
 use serde_json::Value;
 use std::io::{self, BufRead, Read, Write};
 
+/// The longest header line and the largest body that are accepted.
+const MAX_HEADER_LINE: u64 = 8 * 1024;
+const MAX_BODY: u64 = 256 * 1024 * 1024;
+
 /// Reads one message. Returns `None` at the end of the input.
 pub fn read_message(input: &mut impl BufRead) -> io::Result<Option<Value>> {
     let mut length: Option<usize> = None;
     loop {
         let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
+        if input.by_ref().take(MAX_HEADER_LINE + 1).read_line(&mut line)? == 0 {
             return Ok(None);
+        }
+        if line.len() as u64 > MAX_HEADER_LINE {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "header line is too long"));
         }
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
@@ -32,6 +39,9 @@ pub fn read_message(input: &mut impl BufRead) -> io::Result<Option<Value>> {
         // Other headers (`Content-Type`) are ignored.
     }
     let length = length.unwrap_or(0) as u64;
+    if length > MAX_BODY {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "message body is too large"));
+    }
     // Read at most `length` bytes without trusting it for an allocation.
     let mut body = Vec::new();
     input.take(length).read_to_end(&mut body)?;
@@ -98,6 +108,27 @@ mod tests {
     fn huge_length_is_an_error_not_an_allocation() {
         let mut input = io::Cursor::new(b"Content-Length: 99999999999999\r\n\r\n{}".to_vec());
         assert!(read_message(&mut input).is_err());
+    }
+
+    #[test]
+    fn an_endless_header_line_is_an_error() {
+        let mut input = io::Cursor::new(vec![b'x'; 100_000]);
+        assert!(read_message(&mut input).is_err());
+    }
+
+    #[test]
+    fn a_body_over_the_cap_is_refused_before_reading() {
+        let mut input = io::Cursor::new(b"Content-Length: 300000000\r\n\r\n{}".to_vec());
+        assert!(read_message(&mut input).is_err());
+    }
+
+    #[test]
+    fn a_bad_length_does_not_swallow_the_next_message() {
+        let mut data = b"Content-Length: nope\r\n\r\n".to_vec();
+        data.extend(frame(r#"{"a":1}"#));
+        let mut input = io::Cursor::new(data);
+        assert!(read_message(&mut input).is_err());
+        assert_eq!(read_message(&mut input).unwrap().unwrap()["a"], 1);
     }
 
     #[test]

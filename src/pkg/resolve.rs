@@ -479,11 +479,19 @@ impl<'a> Resolver<'a> {
                 )
             });
         }
-        let summarize = |hash: &str, dir: &Path, sum: Option<String>| -> Result<ArchiveInfo, String> {
-            let checksum = match sum {
-                Some(s) => s,
-                None => git::tree_checksum(dir)?,
-            };
+        // An archive unpacked by an earlier run is hashed again: it must still be what the
+        // lock vouches for.
+        let summarize = |hash: &str, dir: &Path, locked: Option<String>| -> Result<ArchiveInfo, String> {
+            let checksum = git::tree_checksum(dir)?;
+            if let Some(l) = locked.filter(|l| *l != checksum) {
+                return Err(format!(
+                    "checksum mismatch for package {} (expected {}, found {}); gamma.lock was edited or the cached archive {} was modified (`gamma cache clean --all` removes it)",
+                    dep,
+                    l,
+                    checksum,
+                    dir.display()
+                ));
+            }
             let dir = crate::source::canonicalize(dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
             Ok(ArchiveInfo { sha256: hash.to_string(), dir, checksum })
         };
@@ -522,7 +530,9 @@ impl<'a> Resolver<'a> {
             }
             git::make_read_only(&dest);
             git::mark_used(&dest);
-            let info = summarize(&dl.sha256, &dest, Some(sum))?;
+            let dir =
+                crate::source::canonicalize(&dest).map_err(|e| format!("cannot read {}: {}", dest.display(), e))?;
+            let info = ArchiveInfo { sha256: dl.sha256.clone(), dir, checksum: sum };
             self.archives.insert(u.url.clone(), info.clone());
             return Ok(info);
         }

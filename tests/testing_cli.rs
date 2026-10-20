@@ -1,5 +1,5 @@
 //! Tests of `gamma test` and `gamma bench`: which tests run (`--all`, `--filter`), what is
-//! printed (`--show-output`, `--time`), `--jobs`, `--coverage`, and benchmarks.
+//! printed (`--show-output`, `--time`), `--jobs`, `--timeout`, `--coverage`, and benchmarks.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -167,6 +167,15 @@ fn coverage_counts_the_lines_the_tests_run() {
 }
 
 #[test]
+fn a_tracefile_that_cannot_be_written_fails_the_run() {
+    let p = Package::new("coverage_unwritable", &package());
+    let flag = format!("--coverage={}", p.root.join("missing-dir").join("lcov.info").display());
+    let out = p.gamma(&["test", "--all", &flag]);
+    assert!(!out.ok, "{}", out.stdout);
+    assert!(out.stderr.contains("cannot write"), "{}", out.stderr);
+}
+
+#[test]
 fn coverage_needs_the_interpreter() {
     if !have_cc() {
         return;
@@ -253,4 +262,58 @@ fn invalid_option_values_are_named() {
 fn lsp_rejects_unknown_options() {
     let err = usage_error(&["lsp", "--bogus"]);
     assert!(err.contains("unknown option `--bogus`"), "{}", err);
+}
+
+const HANGS: &str = r#"
+main :: fn() {}
+
+test "quick" {
+    expect_eq(1 + 1, 2)
+}
+
+test "never ends" {
+    n: u64 = 0
+    while @black_box(true) {
+        n += 1
+    }
+}
+"#;
+
+fn check_timeout(out: &Out, elapsed: std::time::Duration) {
+    assert!(!out.ok, "{}", out.stdout);
+    assert!(out.stdout.contains("test \"quick\" ... ok"), "{}", out.stdout);
+    assert!(out.stdout.contains("test \"never ends\" ... FAILED"), "{}", out.stdout);
+    assert!(out.stdout.contains("timed out after 1 s"), "{}", out.stdout);
+    assert!(out.stdout.ends_with("1 passed, 1 failed\n"), "{}", out.stdout);
+    assert!(elapsed < std::time::Duration::from_secs(60), "{:?}", elapsed);
+}
+
+#[test]
+fn a_test_that_runs_too_long_fails_in_the_interpreter() {
+    let p = Package::new("timeout_interp", &[("main.gm", HANGS)]);
+    let started = std::time::Instant::now();
+    let out = p.gamma(&["test", "--backend=interp", "--timeout=1"]);
+    check_timeout(&out, started.elapsed());
+    // Parallel workers have a limit each.
+    let out = p.gamma(&["test", "--backend=interp", "--timeout=1", "--jobs=2"]);
+    check_timeout(&out, started.elapsed());
+}
+
+#[test]
+fn a_test_that_runs_too_long_fails_natively() {
+    if !have_cc() {
+        return;
+    }
+    let p = Package::new("timeout_native", &[("main.gm", HANGS)]);
+    let started = std::time::Instant::now();
+    let out = p.gamma(&["test", "--backend=c", "--timeout=1"]);
+    check_timeout(&out, started.elapsed());
+}
+
+#[test]
+fn the_timeout_must_be_a_positive_number() {
+    for bad in ["--timeout=0", "--timeout=soon", "--timeout=-1"] {
+        let err = usage_error(&["test", bad, "x.gm"]);
+        assert!(err.contains("`--timeout` needs a positive number of seconds"), "{}", err);
+    }
 }

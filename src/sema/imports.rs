@@ -130,6 +130,16 @@ impl<'s> Sema<'s> {
             dir
         } else {
             let (first, rest) = path.split_once('/').unwrap_or((path, ""));
+            if !rest.is_empty() && rest.split('/').any(|c| c.is_empty() || c == ".." || c.contains('\\')) {
+                self.error(
+                    span,
+                    format!(
+                        "the import path `{}` leaves the directory of `{}`: after the first segment it may not contain empty, `..` or absolute components (§3.2)",
+                        path, first
+                    ),
+                );
+                return None;
+            }
             let base = if first == "std" {
                 std_root()
             } else {

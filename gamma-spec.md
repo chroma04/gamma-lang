@@ -231,7 +231,7 @@ exponent   = ( 'e' | 'E' ) [ '+' | '-' ] dec_lit
 float_suffix = 'f16' | 'f32' | 'f64'
 ```
 
-Both sides of the `.` are required (`1.` and `.5` are not float literals). This keeps `1..10` a range and `x.0` a field access. A decimal integer with a float suffix is a float literal (`1f32` is `1.0f32`); in a hexadecimal literal `f` is a digit, so `0x1f32` is the integer `0x1f32`. A hexadecimal float needs the `p` exponent but not a fraction (`0x1p4` is 16.0). The value of a float literal is an exact rational number; it is rounded only when it receives a type (§6.1).
+Both sides of the `.` are required (`1.` and `.5` are not float literals). This keeps `1..10` a range and `x.0` a field access. A decimal integer with a float suffix is a float literal (`1f32` is `1.0f32`); in a hexadecimal literal `f` is a digit, so `0x1f32` is the integer `0x1f32`. A hexadecimal float needs the `p` exponent but not a fraction (`0x1p4` is 16.0); in a hexadecimal literal a `.` begins a fraction only when hex digits and a `p` exponent follow, so `0xFF.abs()` is a member access on an integer. The value of a float literal is an exact rational number; it is rounded only when it receives a type (§6.1).
 
 #### 2.5.3 Character literals
 
@@ -307,7 +307,7 @@ Newlines are significant inside braces `{ }` and at the top level, where they te
 A newline token is **suppressed** (treated as whitespace) when any of the following holds:
 
 1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `needs`, `.`, or an opening bracket of any kind.
-2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm, and except when that line contains `:=` outside brackets, which makes it a pattern binding (`.Num(n) := v else return`, §4.5).
+2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm, and except when that line contains a `:=` token outside brackets (strings and comments do not count, and the line is taken to end where a raw string or block comment carries on to the next one), which makes it a pattern binding (`.Num(n) := v else return`, §4.5).
 3. Its innermost enclosing bracket is `( )` or `[ ]`. Only the innermost bracket matters: newlines inside a `{ }` block are significant even when that block is itself inside parentheses (a function literal passed as an argument, for example).
 
 Rule 2's exception means a method chain cannot continue an arm's expression onto a new line in a `match` body; wrap the arm body in `{ }` or `( )` for that. Inside those, normal rules resume.
@@ -712,7 +712,7 @@ Window :: struct {
 }
 ```
 
-A `struct` literal creates a new nominal type. Fields are declared `name: Type`, optionally with `= default` where `default` is a compile-time constant expression of the field's type. `a, b: T` declares several fields of one type. Fields may be `pub` (§3.3). Field names must be distinct.
+A `struct` literal creates a new nominal type. Fields are declared `name: Type`, optionally with `= default` where `default` is a constant expression (§7.15) of the field's type, evaluated once, at compile time, when the struct is declared (§17.2): a default that traps or cannot be evaluated is a compile error at the default, whether or not any construction uses it, and each construction takes the resulting value. A default that constructs the struct itself, directly or through the functions it calls, is a declaration cycle (§3.4). A default cannot name the type parameters of a generic struct; when the field's type mentions one (`next: ?T = null`), the default is checked in the declaration and its value is taken at each construction. `a, b: T` declares several fields of one type. Fields may be `pub` (§3.3). Field names must be distinct.
 
 #### 5.10.1 Construction
 
@@ -876,7 +876,7 @@ PI   :: 3.14159265358979323846
 TAU  :: 2 * PI
 ```
 
-Its value is computed exactly (integers are unbounded; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). A float value also has a sign when it is zero, as in IEEE arithmetic: unary `-` flips it, so `-0.0` is negative zero; a product or quotient whose exact value is zero is negative when exactly one operand is negative (counting negative zero); a sum or difference whose exact value is zero is negative zero only when it is `-0.0 + -0.0` or `-0.0 - 0.0`. Comparisons treat both zeros as equal. Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
+Its value is computed exactly (integers are unbounded in principle, but an integer, or the numerator or denominator of a rational, of more than 2^22 bits is a compile error; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). A float value also has a sign when it is zero, as in IEEE arithmetic: unary `-` flips it, so `-0.0` is negative zero; a product or quotient whose exact value is zero is negative when exactly one operand is negative (counting negative zero); a sum or difference whose exact value is zero is negative zero only when it is `-0.0 + -0.0` or `-0.0 - 0.0`. Comparisons treat both zeros as equal. Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
 
 Untyped constants are permitted at top level and as locals. A typed constant is written `MAX: usize : 4096`.
 
@@ -1471,7 +1471,7 @@ Parameters are immutable bindings. Each parameter is a **distinct object** initi
 
 *Implementation note:* an implementation may pass a large argument by reference instead of copying when this is unobservable. See Appendix D.
 
-A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type (if that type mentions a type parameter, the default is used only when that type parameter is inferred from it, §16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), or the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults. A parameter whose default is `@caller_location()` is bound only by name: positional arguments (and unnamed tuple spreads) never bind to it.
+A parameter may have a default `= e`, where `e` is a constant expression (§7.15) of the parameter's type, evaluated once at compile time (§17.2): a default that traps or cannot be evaluated is a compile error at the default, whether or not any call omits the argument, and every call that omits the argument receives the same value. A default cannot refer to other parameters, which are run-time values. If the parameter's type mentions a type parameter, the default is used only when that type parameter is inferred from it (§16.5; supplying the type parameter and omitting the argument is a compile error unless the default has the supplied type), and it is checked and evaluated for each distinct type it is used at, by the first call that omits the argument. A default may also be the intrinsic `@caller_location()`, which is evaluated at each call site and gives that call's location. Parameters with defaults may be followed only by parameters with defaults. A parameter whose default is `@caller_location()` is bound only by name: positional arguments (and unnamed tuple spreads) never bind to it.
 
 A parameter of type `type` is a **type parameter**, and a parameter declared `name :: T` is a **compile-time value parameter**; either makes the function generic (§16.1, §16.5).
 
@@ -2316,7 +2316,7 @@ CRC32 :: crc_table(0xEDB88320)        // crc_table :: fn(poly: u32) -> [256]u32
 
 ### 17.2 Where compile-time evaluation happens
 
-**Required.** Compile-time evaluation is required — and failure to evaluate is a compile error — for: top-level `::` initializers; typed constants `x: T : e`; array lengths; `when` conditions; arguments for compile-time parameters (type parameters and compile-time value parameters of functions, all parameters of generic types); default values of parameters and fields; `@static_assert`; and `#global` initializers.
+**Required.** Compile-time evaluation is required — and failure to evaluate is a compile error — for: top-level `::` initializers; typed constants `x: T : e`; array lengths; `when` conditions; arguments for compile-time parameters (type parameters and compile-time value parameters of functions, all parameters of generic types); default values of parameters and fields (each evaluated once, where it is declared, except that a default of a parameter whose type mentions a type parameter is evaluated for each type it is used at, and `@caller_location()` is evaluated at each call); `@static_assert`; and `#global` initializers.
 
 **Opportunistic.** An immutable local `x :: e` whose initializer is a constant expression is evaluated at compile time if evaluation succeeds within the step budget; if it runs out of steps, it is evaluated at run time instead (no error). Any other failure (a failing check, UB, `trap`) is still a compile error, since the same call would fail at run time.
 

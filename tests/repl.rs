@@ -8,6 +8,11 @@ const GAMMA: &str = env!("CARGO_BIN_EXE_gamma");
 
 /// Feeds `input` to a REPL and returns its standard output and error.
 fn repl(input: &str) -> (String, String) {
+    repl_bytes(input.as_bytes())
+}
+
+/// Like [`repl`], for input that need not be UTF-8.
+fn repl_bytes(input: &[u8]) -> (String, String) {
     let mut child = Command::new(GAMMA)
         .arg("repl")
         .stdin(Stdio::piped())
@@ -15,7 +20,7 @@ fn repl(input: &str) -> (String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("cannot start gamma");
-    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success(), "the REPL failed: {:?}", out.status);
     (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
@@ -177,6 +182,13 @@ fn unfinished_input_at_end_of_input_is_reported() {
     let (out, err) = repl("1 + 1\nf :: fn() {\n");
     assert_eq!(out, "2\n");
     assert!(err.contains("error"), "{}", err);
+}
+
+#[test]
+fn input_that_is_not_utf8_is_reported_and_the_session_continues() {
+    let (out, err) = repl_bytes(b"1 + 1\n\"\xff\xfe\"\n2 + 2\n");
+    assert_eq!(out, "2\n4\n");
+    assert!(err.contains("not valid UTF-8"), "{}", err);
 }
 
 #[test]

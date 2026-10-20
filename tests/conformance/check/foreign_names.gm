@@ -1,0 +1,28 @@
+//! stage: check
+// Library and symbol names of foreign blocks end up in the linker's arguments and the
+// generated C, so they are restricted to the characters symbols and libraries use.
+c :: import "std/c"
+
+bad_lib :: foreign "m -o x" { //~ ERROR is not a library name
+    cos :: fn(x: f64) -> f64 needs not
+}
+
+dash_lib :: foreign "-lfoo" { //~ ERROR is not a library name
+    sin :: fn(x: f64) -> f64 needs not
+}
+
+libc :: foreign "c" {
+    #link_name("abs\")); int injected(void) { return 1; } //") absolute :: fn(x: c.c_int) -> c.c_int needs not //~ ERROR is not a symbol name
+    #link_name("") empty :: fn(x: c.c_int) -> c.c_int needs not //~ ERROR is not a symbol name
+    #link_name("abs\n#error x") newline :: fn(x: c.c_int) -> c.c_int needs not //~ ERROR is not a symbol name
+    #link_name("fopen$UNIX2003") dollar :: fn() needs not
+    #link_name("stat@GLIBC_2.2.5") versioned :: fn() needs not
+    #link_name("gm_heap_alloc") runtime :: fn(x: i32) -> i32 needs not //~ ERROR is a symbol of the runtime
+    gm_trap :: fn() needs not //~ ERROR is a symbol of the runtime
+    gm_f12 :: fn() needs not //~ ERROR is a symbol of the runtime
+    gm_my_helper :: fn() needs not
+}
+
+#export("gm_trap") exported :: fn() {} //~ ERROR is a symbol of the runtime
+
+main :: fn() {}

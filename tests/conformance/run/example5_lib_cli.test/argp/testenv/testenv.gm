@@ -1,8 +1,11 @@
 // A scripted process environment for exercising command-line programs without a real process.
 
+// A constant empty list: a default must point into static data, which `empty_slice` does not.
+NO_VARS :: [0](string, string)()
+
 pub FakeEnv :: struct {
     pub argv: []const string
-    pub vars: []const (string, string) = empty_slice((string, string))
+    pub vars: []const (string, string) = NO_VARS[..]
     pub exit_code: ?u8 = null
 }
 
