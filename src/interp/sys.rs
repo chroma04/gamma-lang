@@ -106,7 +106,6 @@ fn net_error(e: &std::io::Error) -> i64 {
     if e.kind() == std::io::ErrorKind::WouldBlock { io_error_code(IoErrorKind::TimedOut) } else { error_code(e) }
 }
 
-/// The start of the monotonic clock: the first time it is read.
 /// Fills `buf` with random bytes from the system.
 #[cfg(not(windows))]
 fn random_bytes(buf: &mut [u8]) -> std::io::Result<()> {
@@ -138,6 +137,7 @@ fn random_bytes(buf: &mut [u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The start of the monotonic clock: the first time it is read.
 fn epoch() -> Instant {
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *START.get_or_init(Instant::now)
@@ -152,7 +152,7 @@ impl<'a> Machine<'a> {
         match op {
             SysOp::Read => {
                 let (ptr, len) = self.slice_parts(&vals[0]);
-                let mut buf = vec![0u8; len as usize];
+                let mut buf = self.dest_buf(span, ptr, len)?;
                 let _ = self.out.as_mut().map(|w| w.flush());
                 let r = self.without_gil(|| {
                     loop {
@@ -252,9 +252,7 @@ impl<'a> Machine<'a> {
             }
             SysOp::FutexWake => {
                 // Every waiter wakes (a wake-up may be spurious) and re-checks its word.
-                let (lock, cv) = &*futex();
-                *lock.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-                cv.notify_all();
+                wake_futex_waiters();
                 Ok(int(self, res, 0))
             }
             SysOp::CpuCount => {
@@ -275,7 +273,7 @@ impl<'a> Machine<'a> {
             }
             SysOp::RandFill => {
                 let (ptr, len) = self.slice_parts(&vals[0]);
-                let mut buf = vec![0u8; len as usize];
+                let mut buf = self.dest_buf(span, ptr, len)?;
                 if let Err(err) = random_bytes(&mut buf) {
                     return self.trap(span, format!("cannot read random bytes: {}", err));
                 }
@@ -294,10 +292,18 @@ fn futex() -> std::sync::Arc<Futex> {
     F.get_or_init(Default::default).clone()
 }
 
+/// Wakes every thread sleeping in `@futex_wait`.
+pub(super) fn wake_futex_waiters() {
+    let (lock, cv) = &*futex();
+    *lock.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    cv.notify_all();
+}
+
 impl<'a> Machine<'a> {
     /// `@futex_wait`: sleeps while the word at `addr` is `expected`. The interpreter lock
     /// serializes the check with every wake-up, so none is missed.
     fn futex_wait(&mut self, span: crate::source::Span, addr: u64, expected: u32, timeout: i64) -> R<i64> {
+        self.check_fatal()?;
         let word = self.load(span, addr, 4, 4)?;
         if self.int_of(Ty::u32(), &word).to_big() != expected.into() {
             return Ok(0);
@@ -320,7 +326,22 @@ impl<'a> Machine<'a> {
                 }
             }
         });
+        // A trap on another thread wakes every sleeper so that it can stop too.
+        self.check_fatal()?;
         Ok(0)
+    }
+
+    /// A zeroed host buffer for an operation that fills the `len` bytes at `ptr`. The range is
+    /// checked first, since a slice made from an unchecked pointer can claim any length.
+    pub(super) fn dest_buf(&self, span: Span, ptr: u64, len: u64) -> R<Vec<u8>> {
+        let r = self.mem.read(ptr, len, 1).map(|_| ());
+        self.mem_err(span, r)?;
+        let mut buf = Vec::new();
+        if buf.try_reserve_exact(len as usize).is_err() {
+            return self.trap(span, format!("out of memory allocating {} bytes", len));
+        }
+        buf.resize(len as usize, 0);
+        Ok(buf)
     }
 
     fn path_arg(&self, span: Span, v: &[u8]) -> R<PathBuf> {
@@ -392,7 +413,7 @@ impl<'a> Machine<'a> {
             SysOp::FsRead => {
                 let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
-                let mut buf = vec![0u8; len as usize];
+                let mut buf = self.dest_buf(span, ptr, len)?;
                 let r = match self.sys.files.get_mut(&h) {
                     Some(f) => f.read(&mut buf),
                     None => Err(bad_handle()),
@@ -594,7 +615,7 @@ impl<'a> Machine<'a> {
             SysOp::NetRecv => {
                 let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
-                let mut buf = vec![0u8; len as usize];
+                let mut buf = self.dest_buf(span, ptr, len)?;
                 let r = match self.sys.streams.get(&h).cloned() {
                     Some(s) => self.without_gil(|| (&*s).read(&mut buf)),
                     None => Err(bad_handle()),

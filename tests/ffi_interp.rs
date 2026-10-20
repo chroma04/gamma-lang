@@ -190,3 +190,105 @@ main :: fn() needs Out + Sys {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "tokens 3\n2 hi\nerrno 2\n");
 }
+
+// A slice cut from an unchecked pointer can claim any length; a system call that fills it
+// traps (the interpreter checks what compiled code would overrun) and does not run out of memory.
+#[test]
+fn a_forged_slice_length_traps_in_system_calls() {
+    let src = r#"
+main :: fn() needs Out + Rand {
+    buf: [8]u8 = ---
+    q: [^]u8 = &buf[0]
+    big: usize = 1 << 45
+    Rand.fill(q[0..big])
+    print("unreachable\n")
+}
+"#;
+    let file = program("forged_slice", src);
+    let out = gamma("/bin/false", &["run"], &file);
+    assert_eq!(out.status.code(), Some(134), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid memory access"));
+}
+
+// The interpreter's addresses mean nothing to C: a pointer to freed memory is not passed on.
+#[test]
+fn a_freed_pointer_is_not_passed_to_c() {
+    let src = r#"
+libc :: foreign "c" {
+    strlen :: fn(s: cstring) -> usize needs not
+}
+main :: fn() needs Out + Alloc {
+    buf := make(u8, 8) else return
+    buf[0] = 'a'
+    buf[1] = 0
+    p := buf.ptr
+    free(buf)
+    print("{}\n", libc.strlen(p.cast(cstring)))
+}
+"#;
+    let file = program("freed_pointer", src);
+    let out = gamma("/bin/false", &["run"], &file);
+    assert_eq!(out.status.code(), Some(134), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("freed memory"));
+}
+
+// Strings are bytes: an environment variable that is not UTF-8 is set, not "unset".
+#[cfg(unix)]
+#[test]
+fn env_var_with_non_utf8_value() {
+    use std::os::unix::ffi::OsStrExt;
+    let src = r#"
+main :: fn() needs Out + Env {
+    for i in 0..3 {
+        v := Env.var("GAMMA_TEST_BIN") else trap("unset")
+        print("{} {}\n", v.len, v[0])
+    }
+    print("{}\n", Env.var("GAMMA_TEST_UNSET_VAR") is null)
+    print("{}\n", Env.var("") is null)
+}
+"#;
+    let file = program("env_non_utf8", src);
+    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        .env("CC", "/bin/false")
+        .env("GAMMA_TEST_BIN", std::ffi::OsStr::from_bytes(b"\xff\xfe"))
+        .env_remove("GAMMA_TEST_UNSET_VAR")
+        .arg("run")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "2 255\n2 255\n2 255\ntrue\ntrue\n");
+}
+
+// `errno` has an address per OS thread, so a spawned thread reads its own errors.
+#[cfg(unix)]
+#[test]
+fn errno_is_per_thread() {
+    let src = r#"
+thread :: import "std/thread"
+c :: import "std/c"
+libc :: foreign "c" {
+    open :: fn(path: cstring, flags: c.c_int) -> c.c_int needs Sys
+    #global errno: c.c_int
+}
+work :: fn(x: ^i32) needs Sys {
+    libc.errno = 0
+    _ = libc.open(c"/nonexistent/zzz", 0)
+    x^ = libc.errno
+}
+main :: fn() needs Out + Sys + Alloc {
+    libc.errno = 0
+    _ = libc.open(c"/nonexistent/aaa", 0)
+    print("main {}\n", libc.errno)
+    n: i32 = 0
+    h := thread.spawn(work, &n) else e => return
+    h.join()
+    print("thread {}\n", n)
+    print("main again {}\n", libc.errno)
+}
+"#;
+    let file = program("errno_threads", src);
+    let out = gamma("/bin/false", &["run"], &file);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "main 2\nthread 2\nmain again 2\n");
+}
