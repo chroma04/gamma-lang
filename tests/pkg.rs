@@ -1454,13 +1454,12 @@ fn a_hand_edited_lock_is_noticed() {
 #[test]
 fn a_git_url_cannot_be_an_option() {
     let w = World::new("dash_url");
-    let marker = w.path("PWNED");
-    sum_app(&w, &format!("evil = {{ git = \"--upload-pack=touch {}\" }}\n", marker.display()), &[]);
+    sum_app(&w, "evil = { git = \"--upload-pack=touch PWNED\" }\n", &[]);
     let out = w.gamma("app", &["fetch"]).failure();
     assert!(out.stderr.contains("starts with `-`"), "{}", out.stderr);
     let out = w.gamma("app", &["add", "evil", "--git=--upload-pack=x"]).failure();
     assert!(out.stderr.contains("starts with `-`"), "{}", out.stderr);
-    assert!(!marker.exists());
+    assert!(!w.path("app/PWNED").exists() && !w.path("PWNED").exists());
 }
 
 #[test]
