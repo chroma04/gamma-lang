@@ -110,7 +110,10 @@ fn blocks(doc: &str) -> Vec<Block> {
 
 /// Writes the block to its own directory and returns the path of the source file.
 fn write_block(block: &Block) -> PathBuf {
-    let dir_name: String = block.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    // `a-b.md:3` and `a_b.md:3` must not share a directory: the name's hash keeps them apart.
+    let mut dir_name: String = block.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let hash = block.name.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    dir_name.push_str(&format!("_{:08x}", hash as u32));
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("doc-examples").join(dir_name);
     fs::create_dir_all(&dir).unwrap();
     let file = dir.join("example.gm");

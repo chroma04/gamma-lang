@@ -74,6 +74,9 @@ Details are in the "Language server" section of `docs/architecture.md`.
 - Rename and references in another module are computed from the files of the
   package as they are on disk and in open buffers; modules in a dependency that
   is not a path dependency are not searched.
+- The server does not watch files: a change made outside the editor to a file that is
+  not open (a `git checkout`, a formatter, a new or deleted file) is seen when a
+  document of a module that reads it is next opened, edited or saved.
 - Completion after a `.` checks the module again when the text so far has no
   receiver for it. That takes as long as a normal check.
 

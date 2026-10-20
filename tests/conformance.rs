@@ -846,7 +846,14 @@ fn conformance() {
         }
     });
     times.extend(new_times.into_inner().unwrap());
-    let _ = fs::write(&times_file, times.iter().map(|(name, ms)| format!("{ms} {name}\n")).collect::<String>());
+    // Tests that no longer exist are forgotten. The file is replaced whole, so that runs
+    // sharing the target directory never read half of it.
+    times.retain(|name, _| base.join(name).exists());
+    let tmp = times_file.with_extension(format!("tmp{}", std::process::id()));
+    let text: String = times.iter().map(|(name, ms)| format!("{ms} {name}\n")).collect();
+    if fs::write(&tmp, text).is_ok() {
+        let _ = fs::rename(&tmp, &times_file);
+    }
     let failures = failures.into_inner().unwrap();
     for (name, msg) in &failures {
         eprintln!("FAIL {}\n{}\n", name, msg);
