@@ -27,6 +27,77 @@ enum CalleeKind {
     Value(Expr),
 }
 
+/// The progress of binding the arguments of one call to its parameters.
+struct ArgBinding<'p> {
+    params: &'p [ParamInfo],
+    /// What is called, for messages ("function", "method", …).
+    what: &'p str,
+    bound: Vec<Option<Expr>>,
+    /// The parameters given an argument so far, in the order written.
+    written: Vec<usize>,
+    /// Named arguments given explicitly (a spread supplying one later is an error).
+    explicit: Vec<bool>,
+    /// Statements evaluating the arguments in the order written, when that is needed.
+    stmts: Vec<Stmt>,
+    /// Whether positional arguments may bind each parameter: not one that a named
+    /// argument names (§11.3), and never a `@caller_location()` parameter.
+    positional: Vec<bool>,
+    positional_max: usize,
+    next_positional: usize,
+    seen_named: bool,
+    /// After a spread fails, missing arguments are not reported again.
+    spread_failed: bool,
+    has_spread: bool,
+    /// Whether each argument goes into a temporary first: with spreads, or named arguments
+    /// out of parameter order, arguments are still evaluated in the order written (§11.3).
+    spreading: bool,
+}
+
+impl<'p> ArgBinding<'p> {
+    fn new(params: &'p [ParamInfo], args: &[ast::Arg], what: &'p str) -> Self {
+        let named_here: Vec<crate::symbol::Symbol> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::Named(n, _) => Some(n.name),
+                _ => None,
+            })
+            .collect();
+        let positional: Vec<bool> = params.iter().map(|p| !p.is_site() && !named_here.contains(&p.name)).collect();
+        let mut order = vec![];
+        for a in args {
+            match &a.kind {
+                ArgKind::Positional(_) => order.push(order.len()),
+                ArgKind::Named(n, _) => order.extend(params.iter().position(|p| p.name == n.name)),
+                ArgKind::Spread(_) => {}
+            }
+        }
+        let reordered = order.windows(2).any(|w| w[0] > w[1]);
+        let has_spread = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
+        ArgBinding {
+            params,
+            what,
+            bound: vec![None; params.len()],
+            written: vec![],
+            explicit: vec![false; params.len()],
+            stmts: vec![],
+            positional_max: positional.iter().filter(|&&p| p).count(),
+            positional,
+            next_positional: 0,
+            seen_named: false,
+            spread_failed: false,
+            has_spread,
+            spreading: reordered || has_spread,
+        }
+    }
+
+    /// The first parameter at or after `i` that positional arguments may bind.
+    fn skip_named(&self, mut i: usize) -> usize {
+        while i < self.params.len() && !self.positional[i] {
+            i += 1;
+        }
+        i
+    }
+}
 impl<'a, 's> FnCx<'a, 's> {
     pub fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], expect: Option<Ty>, span: Span) -> Expr {
         // `T(5)` with a type parameter `T`: the untyped constant is typed at `T`, as
@@ -291,140 +362,117 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             None => args,
         };
-        let mut bound: Vec<Option<Expr>> = vec![None; params.len()];
-        let mut next_positional = 0;
-        let mut seen_named = false;
-        // Arguments are evaluated in the order written (§11.3): with spreads, or named
-        // arguments out of parameter order, each goes into a temporary first.
-        let mut order = vec![];
-        for a in args {
-            match &a.kind {
-                ArgKind::Positional(_) => order.push(order.len()),
-                ArgKind::Named(n, _) => order.extend(params.iter().position(|p| p.name == n.name)),
-                ArgKind::Spread(_) => {}
-            }
-        }
-        let reordered = order.windows(2).any(|w| w[0] > w[1]);
-        let has_spread = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
-        let spreading = reordered || has_spread;
-        let mut stmts = vec![];
-        // The parameters given an argument so far, in the order written.
-        let mut written: Vec<usize> = vec![];
-        // Named arguments given explicitly (a spread supplying one later is an error).
-        let mut explicit = vec![false; params.len()];
-        // Positional arguments bind, in order, the parameters that no named argument names
-        // (§11.3); never a `@caller_location()` parameter.
-        let named_here: Vec<crate::symbol::Symbol> = args
-            .iter()
-            .filter_map(|a| match &a.kind {
-                ArgKind::Named(n, _) => Some(n.name),
-                _ => None,
-            })
-            .collect();
-        let positional_slot = |p: &ParamInfo| !p.is_site() && !named_here.contains(&p.name);
-        let positional_max = params.iter().filter(|p| positional_slot(p)).count();
-        let skip_named = |mut i: usize| {
-            while i < params.len() && !positional_slot(&params[i]) {
-                i += 1;
-            }
-            i
-        };
-        // After a spread fails, missing arguments are not reported again.
-        let mut spread_failed = false;
+        let mut st = ArgBinding::new(params, args, what);
         for arg in args {
             match &arg.kind {
-                ArgKind::Positional(e) => {
-                    if seen_named {
-                        self.error(arg.span, "positional arguments must come before a spread that supplies names");
-                    }
-                    next_positional = skip_named(next_positional);
-                    if next_positional >= params.len() {
-                        self.error(arg.span, format!("too many arguments: the {} takes {}", what, positional_max));
-                        let _ = self.expr(e, None);
-                        continue;
-                    }
-                    let p = &params[next_positional];
-                    let mut v = self.arg_value(e, p.ty);
-                    if spreading {
-                        v = self.bind_temp(v, &mut stmts);
-                    }
-                    self.place_iter_pre(&mut bound, &mut written, next_positional, &mut stmts);
-                    bound[next_positional] = Some(v);
-                    next_positional += 1;
-                }
-                ArgKind::Named(name, e) => {
-                    let Some(i) = params.iter().position(|p| p.name == name.name) else {
-                        self.error(name.span, format!("the {} has no parameter named `{}`", what, name.name));
-                        let _ = self.expr(e, None);
-                        continue;
-                    };
-                    if explicit[i] || (bound[i].is_some() && !has_spread) {
-                        self.error(name.span, format!("parameter `{}` is given more than once", name.name));
-                    }
-                    explicit[i] = true;
-                    // A later explicit named argument overrides one supplied by a spread.
-                    let mut v = self.arg_value(e, params[i].ty);
-                    if spreading {
-                        v = self.bind_temp(v, &mut stmts);
-                    }
-                    self.place_iter_pre(&mut bound, &mut written, i, &mut stmts);
-                    bound[i] = Some(v);
-                }
-                ArgKind::Spread(e) => {
-                    let Some(parts) = self.spread_parts(e, &mut stmts) else {
-                        spread_failed = true;
-                        continue;
-                    };
-                    for (name, proj) in parts {
-                        let i = match name {
-                            // An unnamed tuple's elements are positional arguments.
-                            None => {
-                                if seen_named {
-                                    self.error(
-                                        e.span,
-                                        "positional arguments must come before a spread that supplies names",
-                                    );
-                                    spread_failed = true;
-                                    break;
-                                }
-                                next_positional = skip_named(next_positional);
-                                if next_positional >= params.len() {
-                                    self.error(
-                                        e.span,
-                                        format!("too many arguments: the {} takes {}", what, positional_max),
-                                    );
-                                    spread_failed = true;
-                                    break;
-                                }
-                                next_positional += 1;
-                                next_positional - 1
-                            }
-                            Some(n) => {
-                                seen_named = true;
-                                let Some(i) = params.iter().position(|p| p.name == n) else {
-                                    self.error(
-                                        e.span,
-                                        format!(
-                                            "the {} has no parameter named `{}` (supplied by this spread)",
-                                            what, n
-                                        ),
-                                    );
-                                    spread_failed = true;
-                                    break;
-                                };
-                                if explicit[i] || bound[i].is_some() {
-                                    self.error(e.span, format!("parameter `{}` is given more than once", n));
-                                    spread_failed = true;
-                                    break;
-                                }
-                                i
-                            }
-                        };
-                        bound[i] = Some(self.coerce(proj, params[i].ty));
-                    }
-                }
+                ArgKind::Positional(e) => self.bind_positional(&mut st, e, arg.span),
+                ArgKind::Named(name, e) => self.bind_named(&mut st, *name, e),
+                ArgKind::Spread(e) => self.bind_spread(&mut st, e),
             }
         }
+        let out = self.fill_unbound(st.bound, params, callee_module, st.spread_failed, what, span);
+        (out, st.stmts)
+    }
+
+    /// Binds the next positional argument `e`.
+    fn bind_positional(&mut self, st: &mut ArgBinding, e: &ast::Expr, arg_span: Span) {
+        if st.seen_named {
+            self.error(arg_span, "positional arguments must come before a spread that supplies names");
+        }
+        st.next_positional = st.skip_named(st.next_positional);
+        let i = st.next_positional;
+        if i >= st.params.len() {
+            self.error(arg_span, format!("too many arguments: the {} takes {}", st.what, st.positional_max));
+            let _ = self.expr(e, None);
+            return;
+        }
+        let mut v = self.arg_value(e, st.params[i].ty);
+        if st.spreading {
+            v = self.bind_temp(v, &mut st.stmts);
+        }
+        self.place_iter_pre(&mut st.bound, &mut st.written, i, &mut st.stmts);
+        st.bound[i] = Some(v);
+        st.next_positional += 1;
+    }
+
+    /// Binds the named argument `name: e`.
+    fn bind_named(&mut self, st: &mut ArgBinding, name: ast::Ident, e: &ast::Expr) {
+        let Some(i) = st.params.iter().position(|p| p.name == name.name) else {
+            self.error(name.span, format!("the {} has no parameter named `{}`", st.what, name.name));
+            let _ = self.expr(e, None);
+            return;
+        };
+        if st.explicit[i] || (st.bound[i].is_some() && !st.has_spread) {
+            self.error(name.span, format!("parameter `{}` is given more than once", name.name));
+        }
+        st.explicit[i] = true;
+        // A later explicit named argument overrides one supplied by a spread.
+        let mut v = self.arg_value(e, st.params[i].ty);
+        if st.spreading {
+            v = self.bind_temp(v, &mut st.stmts);
+        }
+        self.place_iter_pre(&mut st.bound, &mut st.written, i, &mut st.stmts);
+        st.bound[i] = Some(v);
+    }
+
+    /// Binds the parts of the spread argument `..e`; the first part that fits no parameter ends it.
+    fn bind_spread(&mut self, st: &mut ArgBinding, e: &ast::Expr) {
+        let Some(parts) = self.spread_parts(e, &mut st.stmts) else {
+            st.spread_failed = true;
+            return;
+        };
+        let params = st.params;
+        for (name, proj) in parts {
+            let i = match name {
+                // An unnamed tuple's elements are positional arguments.
+                None => {
+                    if st.seen_named {
+                        self.error(e.span, "positional arguments must come before a spread that supplies names");
+                        st.spread_failed = true;
+                        break;
+                    }
+                    st.next_positional = st.skip_named(st.next_positional);
+                    if st.next_positional >= params.len() {
+                        self.error(e.span, format!("too many arguments: the {} takes {}", st.what, st.positional_max));
+                        st.spread_failed = true;
+                        break;
+                    }
+                    st.next_positional += 1;
+                    st.next_positional - 1
+                }
+                Some(n) => {
+                    st.seen_named = true;
+                    let Some(i) = params.iter().position(|p| p.name == n) else {
+                        self.error(
+                            e.span,
+                            format!("the {} has no parameter named `{}` (supplied by this spread)", st.what, n),
+                        );
+                        st.spread_failed = true;
+                        break;
+                    };
+                    if st.explicit[i] || st.bound[i].is_some() {
+                        self.error(e.span, format!("parameter `{}` is given more than once", n));
+                        st.spread_failed = true;
+                        break;
+                    }
+                    i
+                }
+            };
+            st.bound[i] = Some(self.coerce(proj, params[i].ty));
+        }
+    }
+
+    /// The bound arguments in parameter order; a parameter left without one takes its default, or
+    /// is reported missing (unless a failed spread already explains it).
+    fn fill_unbound(
+        &mut self,
+        bound: Vec<Option<Expr>>,
+        params: &[ParamInfo],
+        callee_module: ModuleId,
+        spread_failed: bool,
+        what: &str,
+        span: Span,
+    ) -> Vec<Expr> {
         let mut out = vec![];
         for (i, b) in bound.into_iter().enumerate() {
             match b {
@@ -454,7 +502,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
             }
         }
-        (out, stmts)
+        out
     }
 
     /// The value of the default `d` of a parameter of type `ty` declared in `module`,
