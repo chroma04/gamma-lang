@@ -653,7 +653,7 @@ fn big_endian_32_bit_target() {
         filc: false,
         f16: true,
     };
-    let c = RunConfig { target, mode: Mode::Checked, step_budget: None };
+    let c = RunConfig { target, mode: Mode::Checked, step_budget: None, deadline: None };
     let prog = Program::default();
     let v = eval_const(&prog, &c, &add(int(0x0102, Ty::int(false, 16)), int(1, Ty::int(false, 16)))).unwrap();
     assert_eq!(v.bytes, vec![0x01, 0x03]);

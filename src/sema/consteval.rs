@@ -40,7 +40,8 @@ impl<'s> Sema<'s> {
         if e.ty.is_error() || !self.prepare_for_eval(e) {
             return Err(None);
         }
-        let cfg = RunConfig { target: self.target.clone(), mode: Mode::Debug, step_budget: Some(self.fuel) };
+        let cfg =
+            RunConfig { target: self.target.clone(), mode: Mode::Debug, step_budget: Some(self.fuel), deadline: None };
         interp::eval_const(&self.prog, &cfg, e).map_err(Some)
     }
 

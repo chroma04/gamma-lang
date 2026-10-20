@@ -1,0 +1,51 @@
+//! os: unix
+//! needs: threads
+// A thread blocked in a file-system call does not stop the others: one thread waits in a
+// read of a FIFO until another thread, which runs meanwhile, writes to it.
+thread :: import "std/thread"
+process :: import "std/process"
+fs :: import "std/fs"
+time :: import "std/time"
+
+hex :: fn(b: u8) -> u8 => if b < 10 { '0' + b } else { 'a' + b - 10 }
+
+Job :: struct {
+    file: fs.File
+    got: [16]u8
+    n: usize
+}
+
+reader :: fn(j: ^Job) needs Sys {
+    thread.defaults(fn() {
+        j.n = j.file.read(j.got[..]) else 0
+    })
+}
+
+main :: fn() -> IoError!() needs Out + Fs + Rand + Alloc + Env + Proc + Clock + Sys {
+    tmp := Env.var("TMPDIR") else "/tmp"
+    r: [6]u8 = ---
+    Rand.fill(r[..])
+    path: [256]u8 = ---
+    prefix := "/gamma-fifo-"
+    path[0..tmp.len].copy_from(tmp)
+    path[tmp.len..tmp.len + prefix.len].copy_from(prefix)
+    at := tmp.len + prefix.len
+    for i in 0..6 {
+        path[at + 2 * i] = hex(r[i] >> 4)
+        path[at + 2 * i + 1] = hex(r[i] & 15)
+    }
+    fifo := string(path[0..at + 12])
+    st := try process.status([_]string("mkfifo", fifo))
+    print("mkfifo: {}\n", process.success(st))
+
+    // Opened for reading and writing, a FIFO opens at once; the read waits for data.
+    f := try Fs.open(fifo, fs.OpenOptions(read: true, write: true))
+    j := Job(file: f, got: ---, n: 0)
+    t := try thread.spawn(reader, &j)
+    Clock.sleep(time.ms(100))
+    _ = try f.write("ping")
+    t.join()
+    print("read {} bytes: {}\n", j.n, string(j.got[0..j.n]))
+    Fs.close(f)
+    try Fs.remove(fifo)
+}

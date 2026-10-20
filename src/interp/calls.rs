@@ -111,11 +111,11 @@ impl<'a> Machine<'a> {
                 if let Some(t) = &self.env_args {
                     return Ok(Value::Bytes(t.clone()));
                 }
-                let strs: Vec<String> = self.args.clone();
+                let strs: Vec<Vec<u8>> = self.args.clone();
                 let ps = self.ptr_size();
                 let mut table = Bytes::zeroed(strs.len() * 2 * ps);
                 for (i, s) in strs.iter().enumerate() {
-                    let rc: Rc<[u8]> = s.as_bytes().to_vec().into();
+                    let rc: Rc<[u8]> = s.clone().into();
                     let addr = self.static_bytes(span, &rc)?;
                     let slice = self.make_slice(addr, rc.len() as u64);
                     table[i * 2 * ps..(i + 1) * 2 * ps].copy_from_slice(&slice);

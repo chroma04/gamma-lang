@@ -250,6 +250,8 @@ struct Interp {
     sess: Session,
     prog: Program,
     cfg: gamma::interp::RunConfig,
+    /// `--timeout`: how long one test may run.
+    timeout: Option<Duration>,
 }
 
 impl Interp {
@@ -266,8 +268,13 @@ impl Interp {
             let map = gamma::coverage::instrument(&mut prog, &sess.sources, &|p| scope.contains(p));
             gamma::interp::coverage_init(map.points.len());
         }
-        let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
-        Some(Interp { sess, prog, cfg })
+        let cfg = gamma::interp::RunConfig {
+            target: prog.target.clone(),
+            mode: opts.mode,
+            step_budget: None,
+            deadline: None,
+        };
+        Some(Interp { sess, prog, cfg, timeout: opts.timeout })
     }
 
     fn cases(&self, kind: Kind) -> &[TestCase] {
@@ -277,11 +284,15 @@ impl Interp {
     fn run(&self, t: &TestCase) -> Finished {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let started = Instant::now();
-        let outcome = gamma::interp::run_entry(&self.prog, &self.cfg, t.entry, &[], &mut out, &mut err);
+        let cfg = gamma::interp::RunConfig { deadline: self.timeout.map(|t| started + t), ..self.cfg.clone() };
+        let outcome = gamma::interp::run_entry(&self.prog, &cfg, t.entry, &[], &mut out, &mut err);
         let elapsed = started.elapsed();
         let reason = match outcome {
             gamma::interp::Outcome::Exit(0) => None,
             gamma::interp::Outcome::Exit(_) => Some(String::new()),
+            gamma::interp::Outcome::Trap(trap) if trap.message == gamma::interp::DEADLINE_TRAP => {
+                Some(timed_out(self.timeout))
+            }
             gamma::interp::Outcome::Trap(trap) => Some(trap_report(&self.sess, &self.prog, &trap)),
         };
         let mut output = String::from_utf8_lossy(&out).into_owned();
@@ -289,6 +300,11 @@ impl Interp {
         let failure = reason.map(|reason| format!("{}{}", output, reason));
         Finished { failure, output, elapsed }
     }
+}
+
+/// The failure detail of a test that ran out of time.
+fn timed_out(limit: Option<Duration>) -> String {
+    format!("timed out after {} s\n", limit.map_or(0.0, |d| d.as_secs_f64()))
 }
 
 /// The files that coverage counts: those under the package root, but not the standard library.
@@ -380,7 +396,8 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
     let prog = gamma::sema::analyze_package_tests(&mut sess, path, opts.all);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(mut prog) = prog else { return ExitCode::FAILURE };
-    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
+    let cfg =
+        gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None, deadline: None };
     // Tests of modules that call C or run assembly are compiled natively, so that C's output
     // is captured with the test's.
     let native = opts.c_backend || prog.has_foreign() || gamma::interp::foreign_supported(&prog, &cfg).is_err();
@@ -402,7 +419,7 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
         gamma::interp::coverage_init(map.points.len());
         cover = Some((scope, map));
     }
-    let me = Interp { sess, prog, cfg };
+    let me = Interp { sess, prog, cfg, timeout: opts.timeout };
     let cases = me.cases(kind);
     let chosen: Vec<usize> = (0..cases.len()).filter(|&i| selected(&cases[i], opts.filter.as_deref())).collect();
     let mut report = Report {
@@ -417,7 +434,7 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
     // Benchmarks time themselves, so they take turns.
     let jobs = if kind == Kind::Bench { 1 } else { opts.jobs.max(1) };
     let code = if native {
-        run_native(&me, kind, &chosen, &toolchain, &extras, jobs, opts.cranelift, &mut report)
+        run_native(&me, kind, &chosen, &toolchain, &extras, jobs, opts.cranelift, opts.timeout, &mut report)
     } else {
         let scope = cover.as_ref().map(|(s, _)| s);
         pool(
@@ -450,6 +467,7 @@ fn run_native(
     extras: &gamma::cgen::Extras,
     jobs: usize,
     cranelift: bool,
+    timeout: Option<Duration>,
     report: &mut Report,
 ) -> ExitCode {
     let cases = me.cases(kind);
@@ -477,7 +495,7 @@ fn run_native(
                 jobs,
                 Some(&()),
                 &|| Some(()),
-                &|_, j| run_exe(&exe, j),
+                &|_, j| run_exe(&exe, j, timeout),
                 &|_| Finished::failed("internal error: the test was not run\n".to_string()),
                 |j, f| report.record(&cases[chosen[j]], f),
             );
@@ -492,20 +510,66 @@ fn run_native(
     code
 }
 
-/// Runs the native test executable `exe` on its `j`th test.
-fn run_exe(exe: &Path, j: usize) -> Finished {
+/// Runs the native test executable `exe` on its `j`th test. A test that is still running
+/// after `timeout` is killed, with everything it started, and fails.
+fn run_exe(exe: &Path, j: usize, timeout: Option<Duration>) -> Finished {
+    use std::io::Read;
+    use std::process::Stdio;
     let mut cmd = runner_command(exe, None);
-    cmd.arg(j.to_string()).stdin(std::process::Stdio::null());
+    cmd.arg(j.to_string()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let started = Instant::now();
-    match cmd.output() {
-        Ok(o) => {
-            let mut output = String::from_utf8_lossy(&o.stdout).into_owned();
-            output.push_str(&native_stderr(&String::from_utf8_lossy(&o.stderr)));
-            let failure = (o.status.code() != Some(0)).then(|| output.clone());
-            Finished { failure, output, elapsed: started.elapsed() }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Finished::failed(format!("cannot run {}: {}\n", exe.display(), e)),
+    };
+    let drain = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut v = vec![];
+            let _ = r.read_to_end(&mut v);
+            v
+        })
+    };
+    let out = drain(Box::new(child.stdout.take().expect("piped")));
+    let err = drain(Box::new(child.stderr.take().expect("piped")));
+    let mut expired = false;
+    let status = loop {
+        let status = match timeout {
+            None => child.wait().map(Some),
+            Some(_) => child.try_wait(),
+        };
+        match status {
+            Ok(Some(s)) => break Ok(s),
+            Ok(None) => {}
+            Err(e) => break Err(e),
         }
-        Err(e) => Finished::failed(format!("cannot run {}: {}\n", exe.display(), e)),
-    }
+        if timeout.is_some_and(|t| started.elapsed() >= t) {
+            // The whole process group: the test may have started processes that keep the pipes open.
+            // SAFETY: `kill` takes no pointers.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            expired = true;
+            break child.wait();
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let elapsed = started.elapsed();
+    let status = match status {
+        Ok(s) => s,
+        Err(e) => return Finished::failed(format!("cannot run {}: {}\n", exe.display(), e)),
+    };
+    let mut output = String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned();
+    output.push_str(&native_stderr(&String::from_utf8_lossy(&err.join().unwrap_or_default())));
+    let failure = if expired {
+        Some(format!("{}{}", output, timed_out(timeout)))
+    } else {
+        (status.code() != Some(0)).then(|| output.clone())
+    };
+    Finished { failure, output, elapsed }
 }
 
 /// Prints the lines of each file that the tests ran, and writes them as an LCOV tracefile

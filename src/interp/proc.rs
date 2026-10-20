@@ -20,6 +20,9 @@ pub struct ProcEntry {
     #[cfg(windows)]
     handle: usize,
     child: Mutex<Option<Child>>,
+    /// Whether the child has been reaped. It is set under the same lock that `kill` holds while
+    /// signalling, so a signal never goes to a process id that may already belong to another process.
+    reaped: Mutex<bool>,
     stdin: Mutex<Option<Arc<ChildStdin>>>,
     outs: Mutex<Outs>,
 }
@@ -144,6 +147,7 @@ fn spawn(argv: &[Vec<u8>], env: &[Vec<u8>], dir: &[u8], flags: u32) -> Result<Pr
         #[cfg(windows)]
         handle,
         child: Mutex::new(Some(child)),
+        reaped: Mutex::new(false),
         stdin: Mutex::new(stdin),
         outs: Mutex::new(outs),
     })
@@ -255,13 +259,43 @@ impl ProcEntry {
         self.close_in();
         *lock(&self.outs) = Outs::default();
         let Some(mut child) = lock(&self.child).take() else { return invalid() };
-        match child.wait() {
+        // The exit is awaited without reaping, so that the process id stays reserved until the
+        // flag is set; on Windows the handle stays open for the same purpose.
+        #[cfg(unix)]
+        wait_exit(child.id());
+        #[cfg(windows)]
+        let status = child.wait();
+        let mut reaped = lock(&self.reaped);
+        #[cfg(unix)]
+        let status = child.wait();
+        *reaped = true;
+        drop(child);
+        match status {
             Ok(status) => status_code(&status),
             Err(e) => error_code(&e),
         }
     }
 
+    /// Lets go of a child whose program is over without having waited for it: the pipes
+    /// are closed, and the child is reaped now if it has exited and by a helper thread when
+    /// it does, so that it does not stay a zombie in a host that outlives the run. It is not killed.
+    fn abandon(&self) {
+        self.close_in();
+        *lock(&self.outs) = Outs::default();
+        let Some(mut child) = lock(&self.child).take() else { return };
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        let _ = std::thread::Builder::new().name("reaper".into()).spawn(move || {
+            let _ = child.wait();
+        });
+    }
+
     fn kill(&self) -> i64 {
+        let reaped = lock(&self.reaped);
+        if *reaped {
+            return errno_code(9); // EBADF: the handle is gone once waited for
+        }
         #[cfg(unix)]
         {
             // SAFETY: plain system call; the process has not been waited for.
@@ -285,6 +319,21 @@ impl ProcEntry {
         #[cfg(not(any(unix, windows)))]
         {
             invalid()
+        }
+    }
+}
+
+/// Blocks until the child `pid` has exited, leaving it unreaped.
+#[cfg(unix)]
+fn wait_exit(pid: u32) {
+    loop {
+        // SAFETY: `info` is a local buffer; the child is ours, so the call only observes it.
+        let r = unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT)
+        };
+        if r == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return;
         }
     }
 }
@@ -363,6 +412,13 @@ fn wait_readable(_out: Option<&ChildStdout>, _err: Option<&ChildStderr>) -> std:
 }
 
 impl<'a> Machine<'a> {
+    /// Reaps the children that the program started and never waited for.
+    pub(super) fn abandon_children(&mut self) {
+        for (_, p) in self.sys.procs.drain() {
+            p.abandon();
+        }
+    }
+
     /// The strings of a `[]const string` value.
     fn string_list(&self, span: Span, v: &[u8]) -> R<Vec<Vec<u8>>> {
         let p = self.ptr_size();
@@ -448,5 +504,26 @@ impl<'a> Machine<'a> {
             }
             _ => unreachable!(),
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kill_ends_a_child_being_waited_for_and_is_refused_afterwards() {
+        let argv = vec![b"sleep".to_vec(), b"30".to_vec()];
+        let entry = Arc::new(spawn(&argv, &[], b"", 0).unwrap_or_else(|c| panic!("cannot spawn: {c}")));
+        let waiter = {
+            let entry = entry.clone();
+            std::thread::spawn(move || entry.wait())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(entry.kill(), 0);
+        // The signal number plus 2^32 (SIGKILL).
+        assert_eq!(waiter.join().unwrap(), 9 + (1 << 32));
+        // The process is gone and its id may belong to another process: nothing is signalled.
+        assert_eq!(entry.kill(), errno_code(9));
     }
 }

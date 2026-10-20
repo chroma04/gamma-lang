@@ -1,0 +1,2 @@
+mkfifo: true
+read 4 bytes: ping
