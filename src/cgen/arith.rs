@@ -774,7 +774,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Builtin::Last => format!("({} - 1)", len),
             _ => {
                 let v = self.expr(&args[1])?;
-                format!("(uintptr_t){v}")
+                self.bound(args[1].ty, &v)
             }
         };
         let i = self.tmp(Ty::usize(), &i);

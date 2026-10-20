@@ -782,7 +782,7 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             })
         };
         let i = self.expr_s(index)?;
-        let i = self.as_index(index.ty, i);
+        let i = if checked { self.as_bound(index.ty, i) } else { self.as_index(index.ty, i) };
         let span = e.span;
         let check = |fg: &mut Self, len: Value| -> CResult<()> {
             if checked {
@@ -846,6 +846,16 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
         }
     }
 
+    /// An index or bound that is checked against a length, as a 64-bit value: like
+    /// [`FnGen::as_index`], but a 128-bit value that does not fit becomes `u64::MAX`, so
+    /// the check fails instead of seeing its low half.
+    pub fn as_bound(&mut self, t: Ty, v: Value) -> Value {
+        match self.g.rep(t) {
+            Rep::Int { ty, .. } if ty == types::I128 => self.amount64(t, v),
+            _ => self.as_index(t, v),
+        }
+    }
+
     fn slice_expr(
         &mut self,
         e: &'a Expr,
@@ -877,18 +887,29 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             }
             _ => return unsupported(e.span, format!("slicing `{}`", base.ty)),
         };
+        let bound = |fg: &mut Self, t: Ty, v: Value| if len.is_some() { fg.as_bound(t, v) } else { fg.as_index(t, v) };
         let lo_v = match lo {
             Some(x) => {
                 let v = self.expr_s(x)?;
-                self.as_index(x.ty, v)
+                bound(self, x.ty, v)
             }
             None => self.b.ins().iconst(types::I64, 0),
         };
         let hi_v = match hi {
             Some(x) => {
                 let v = self.expr_s(x)?;
-                let h = self.as_index(x.ty, v);
-                if inclusive { self.b.ins().iadd_imm_s(h, 1) } else { h }
+                let h = bound(self, x.ty, v);
+                if inclusive && len.is_some() {
+                    // An inclusive bound of `u64::MAX` stays past every length rather
+                    // than wrapping to 0.
+                    let max = self.b.ins().icmp_imm_s(IntCC::Equal, h, -1);
+                    let next = self.b.ins().iadd_imm_s(h, 1);
+                    self.pick(max, h, next)
+                } else if inclusive {
+                    self.b.ins().iadd_imm_s(h, 1)
+                } else {
+                    h
+                }
             }
             None => match len {
                 Some(l) => l,
@@ -915,8 +936,22 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
     // --- coercions ------------------------------------------------------------------------------
 
     fn coerce(&mut self, e: &'a Expr, kind: Coercion, x: &'a Expr) -> CResult<V> {
-        let v = self.expr(x)?;
         let t = e.ty;
+        // A second-class value made from a C-convention pointer: of a named function, it
+        // calls the function itself; a pointer only known at run time (it could come from
+        // C) becomes the environment of a shim that calls it as C does.
+        if kind == Coercion::FnToPtr && matches!(t.kind(), TyKind::Fn(_)) && self.c_abi_ptr(x.ty) {
+            if let ExprKind::FnRef(f) = x.kind {
+                return self.fn_ref(f, t);
+            }
+            let v = self.expr(x)?;
+            let p = self.as_scalar(x.ty, v);
+            let shim = self.g.c_shim(x.ty, e.span)?;
+            let fr = self.fref(shim);
+            let code = self.b.ins().func_addr(types::I64, fr);
+            return Ok(self.closure_value(t, code, Some(p)));
+        }
+        let v = self.expr(x)?;
         if x.ty.is_never() && kind != Coercion::FromNever {
             return Ok(self.undef(t));
         }
@@ -964,6 +999,12 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             // Widening a plain function pointer to an effectful type marks it (see
             // `call_indirect`).
             Coercion::FnPtrWiden if self.ptr_type_plain(x.ty) && !self.ptr_type_plain(t) => {
+                if self.c_abi_ptr(x.ty) {
+                    return unsupported(
+                        e.span,
+                        "widening a function pointer that takes or returns a value by value to an effectful type",
+                    );
+                }
                 let s = self.as_scalar(x.ty, v);
                 V::S(self.b.ins().bor_imm_s(s, 1))
             }
@@ -1014,13 +1055,34 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
 
     /// A named function or non-capturing literal as a value of type `t`.
     fn fn_ref(&mut self, f: FnId, t: Ty) -> CResult<V> {
-        let id = self.g.func(f)?;
+        let foreign = matches!(self.g.prog.fns[f.index()].kind, FnKind::Foreign { .. });
+        let id = if self.c_abi_ptr(t) && !foreign { self.g.c_thunk(f)? } else { self.g.func(f)? };
         let fr = self.fref(id);
         let addr = self.b.ins().func_addr(types::I64, fr);
         // A plain function where hidden-convention code is expected is marked by setting
         // the low bit of its address (see `call_indirect`).
         let code = if self.g.is_plain(f) && !self.ptr_type_plain(t) { self.b.ins().bor_imm_s(addr, 1) } else { addr };
         if matches!(t.kind(), TyKind::Fn(_)) { Ok(self.closure_value(t, code, None)) } else { Ok(V::S(code)) }
+    }
+
+    /// True if values of function pointer type `t` are called with the C ABI rather than
+    /// the plain convention: their effects are at most `{Sys}` and they take or return an
+    /// aggregate by value, which the two pass differently (for scalars they agree), and C
+    /// can pass every one of its types. Such a pointer may come from C, so a Gamma function
+    /// stored in one is wrapped ([`Gen::c_thunk`]).
+    pub fn c_abi_ptr(&self, t: Ty) -> bool {
+        let t = match t.kind() {
+            TyKind::Optional(inner) => *inner,
+            _ => t,
+        };
+        match t.kind() {
+            TyKind::FnPtr(sig) => {
+                self.g.within_sys(&sig.effects)
+                    && sig.params.iter().chain([&sig.ret]).any(|t| matches!(self.g.rep(*t), Rep::Mem { .. }))
+                    && self.g.c_sig(&sig.params, sig.ret, sig.callconv, Span::DUMMY).is_ok()
+            }
+            _ => false,
+        }
     }
 
     /// True if values of function pointer type `t` use the plain convention: their effects
@@ -1064,6 +1126,20 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
                     TyKind::Fn(_) => {
                         let ca = self.spill(c.ty, cv);
                         self.call_closure(ca, c.ty, &vals, &tys, e.ty, dest)
+                    }
+                    TyKind::FnPtr(sig) if self.c_abi_ptr(c.ty) => {
+                        let code = self.as_scalar(c.ty, cv);
+                        let cs = self.g.c_sig(&tys, e.ty, sig.callconv, e.span)?;
+                        let dest = self.result_dest(e.ty, dest);
+                        let cargs = self.c_args(&cs, &vals, &tys, dest);
+                        let sr = self.sigref(cs.sig.clone());
+                        let inst = self.b.ins().call_indirect(sr, code, &cargs);
+                        let rs = self.b.inst_results(inst).to_vec();
+                        let r = self.c_result(&cs, e.ty, &rs, dest);
+                        if super::takes_fn(tys.iter().copied()) {
+                            self.check_unwind();
+                        }
+                        Ok(r)
                     }
                     TyKind::FnPtr(sig) => {
                         let effectful = !self.g.within_sys(&sig.effects);
@@ -1152,7 +1228,6 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
         if let FnKind::Foreign { variadic, .. } = def.kind {
             let n = def.params.len();
             let cs = self.g.c_sig_of(f)?;
-            self.check_c_args(e, &tys[..n])?;
             let args = self.c_args(&cs, &vals[..n], &tys[..n], dest);
             if variadic && vals.len() > n {
                 let rs = self.variadic_call(e, cs.sig.clone(), id, args, &vals[n..], &tys[n..])?;
@@ -1336,31 +1411,6 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             }
             CRet::Sret => V::M(dest.unwrap()),
         }
-    }
-
-    /// Rejects a function pointer passed to C whose parameters or result the plain
-    /// convention passes differently from C (structs by value).
-    fn check_c_args(&mut self, e: &Expr, tys: &[Ty]) -> CResult<()> {
-        for t in tys {
-            let t = match t.kind() {
-                TyKind::Optional(inner) => *inner,
-                _ => *t,
-            };
-            if let TyKind::FnPtr(sig) = t.kind() {
-                let mut tys: Vec<Ty> = sig.params.to_vec();
-                tys.push(sig.ret);
-                if tys.iter().any(|t| matches!(self.g.rep(*t), Rep::Mem { .. })) {
-                    return unsupported(
-                        e.span,
-                        format!(
-                            "passing a function pointer of type `{}` to C (it takes or returns a value by value that C passes differently)",
-                            t
-                        ),
-                    );
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Calls a second-class function value (at `ca`): its context plus the caller's handlers
@@ -1965,6 +2015,9 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             return unsupported(e.span, "`@fiber` with this function");
         };
         let hidden = !self.g.within_sys(&sig.effects);
+        if self.c_abi_ptr(args[0].ty) {
+            return unsupported(e.span, "`@fiber` with a function that takes its argument by value as C does");
+        }
         let f = self.expr_s(&args[0])?;
         let a = self.expr(&args[1])?;
         let sa = self.expr_m(&args[2])?;

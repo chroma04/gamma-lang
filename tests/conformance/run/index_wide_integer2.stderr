@@ -1,0 +1,2 @@
+trap: index 18446744073709551615 out of bounds for length 3
+  at tests/conformance/run/index_wide_integer2.gm:8:19 in main

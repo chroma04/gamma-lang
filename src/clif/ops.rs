@@ -160,7 +160,7 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
 
     /// The shift or exponent amount `v` of integer type `t` as a `u64`; a negative amount
     /// is huge, and one beyond 64 bits is `u64::MAX`.
-    fn amount64(&mut self, t: Ty, v: Value) -> Value {
+    pub(super) fn amount64(&mut self, t: Ty, v: Value) -> Value {
         let (ty, _, signed) = self.int_info(t).unwrap_or((types::I64, 64, false));
         if ty == types::I128 {
             let (lo, hi) = self.b.ins().isplit(v);
@@ -1358,7 +1358,7 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
 
     /// `c ? a : b` of integers. A 128-bit choice is a branch: Cranelift turns a `select`
     /// of a comparison into a minimum or maximum, which it cannot emit for 128 bits.
-    fn pick(&mut self, c: Value, a: Value, b: Value) -> Value {
+    pub(super) fn pick(&mut self, c: Value, a: Value, b: Value) -> Value {
         let ty = self.b.func.dfg.value_type(a);
         if ty != types::I128 {
             return self.b.ins().select(c, a, b);
@@ -1490,7 +1490,7 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             Builtin::Last => self.b.ins().iadd_imm_s(len, -1),
             _ => {
                 let v = self.expr_s(&args[1])?;
-                self.as_index(args[1].ty, v)
+                self.as_bound(args[1].ty, v)
             }
         };
         let Some(inner) = t.optional_inner() else { return unsupported(e.span, "get") };

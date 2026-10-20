@@ -1,0 +1,66 @@
+// Calls through `^fn` use the C convention (§19.2), also when the function takes or
+// returns a struct by value: a pointer to a C function and a pointer to a Gamma function
+// are called alike, and a Gamma function behind such a pointer can be called from C.
+c :: import "std/c"
+
+DivT :: struct {
+    quot: c.c_int
+    rem: c.c_int
+}
+
+LDivT :: struct {
+    quot: c.c_long
+    rem: c.c_long
+}
+
+Big :: struct {
+    a: i64
+    b: i64
+    c: i64
+}
+
+libc :: foreign "c" {
+    div :: fn(n, d: c.c_int) -> DivT needs not
+    ldiv :: fn(n, d: c.c_long) -> LDivT needs not
+}
+
+my_div :: fn(n, d: c.c_int) -> DivT {
+    return DivT(quot: n / d, rem: n % d)
+}
+
+sum :: fn(x: Big, y: DivT) -> Big {
+    return Big(a: x.a + i64(y.quot), b: x.b + i64(y.rem), c: x.c)
+}
+
+apply :: fn(f: ^fn(n, d: c.c_int) -> DivT, n, d: c.c_int) -> DivT {
+    return f(n, d)
+}
+
+// A second-class function made from a pointer known only at run time.
+apply2 :: fn(f: fn(n, d: c.c_int) -> DivT, n, d: c.c_int) -> DivT {
+    return f(n, d)
+}
+
+Ops :: struct {
+    op: ^fn(n, d: c.c_int) -> DivT
+}
+
+main :: fn() needs Out {
+    p: ^fn(n, d: c.c_int) -> DivT = libc.div
+    q := p(17, 5)
+    print("{} {}\n", q.quot, q.rem)
+    pl: ^fn(n, d: c.c_long) -> LDivT = libc.ldiv
+    ql := pl(17, 5)
+    print("{} {}\n", ql.quot, ql.rem)
+    r := apply(libc.div, 23, 4)
+    print("{} {}\n", r.quot, r.rem)
+    r = apply(my_div, 23, 4)
+    print("{} {}\n", r.quot, r.rem)
+    for o in [2]Ops(Ops(op: libc.div), Ops(op: my_div)) {
+        r = apply2(o.op, 9, 2)
+        print("{} {}\n", r.quot, r.rem)
+    }
+    s: ^fn(x: Big, y: DivT) -> Big = sum
+    b := s(Big(a: 1, b: 2, c: 3), DivT(quot: 10, rem: 20))
+    print("{} {} {}\n", b.a, b.b, b.c)
+}

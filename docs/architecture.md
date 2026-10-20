@@ -1115,7 +1115,11 @@ and `#export` use the platform's C convention (`clif/cabi.rs`): aggregates are c
 by the System V x86-64 rules (eightbytes of class INTEGER or SSE, larger ones in memory),
 by AAPCS64 (homogeneous floating-point aggregates, one or two integer registers, larger
 ones by reference) or as Windows x64 passes them, and an export whose C signature differs
-from its plain one gets a thunk that converts. Two details Cranelift leaves to the
+from its plain one gets a thunk that converts. Calls through a plain `^fn` whose C signature
+differs from the plain one (it passes an aggregate by value) use the C convention too, since
+the pointer may come from C (§19.2): a Gamma function stored in one is the address of such a
+thunk, and a second-class value made from one at run time calls it through a shim that takes
+the hidden convention and calls the pointer, its environment, as C does. Two details Cranelift leaves to the
 front end: a variadic call with floats on x86-64 goes through a ten-byte trampoline that
 sets `al` (System V's count of vector registers) before jumping to the callee, and on
 Apple's AArch64 the unused argument registers are filled so that the variadic arguments

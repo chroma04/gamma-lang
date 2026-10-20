@@ -866,7 +866,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     n
                 });
                 let i = self.expr(index)?;
-                let i = format!("(uintptr_t){i}");
+                let i = if *checked { self.bound(index.ty, &i) } else { format!("(uintptr_t){i}") };
                 let i = self.tmp(Ty::usize(), &i);
                 let loc = self.loc(e);
                 let check = |fg: &mut Self, len: &str| {
@@ -924,6 +924,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.place_addr(base)
     }
 
+    /// An index or bound `v` of type `t` that is checked against a length, as a
+    /// `uintptr_t`: a value too large for one becomes `UINTPTR_MAX`, so the check fails
+    /// instead of seeing its low bits.
+    pub(super) fn bound(&self, t: Ty, v: &str) -> String {
+        if self.g.ty.size(t) > self.g.ty.lay.target.ptr_bytes {
+            format!("(((unsigned __int128)({v}) > (unsigned __int128)UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)({v}))")
+        } else {
+            format!("(uintptr_t){v}")
+        }
+    }
+
     fn slice_expr(
         &mut self,
         e: &'a Expr,
@@ -958,10 +969,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
             _ => return unsupported(e.span, format!("slicing `{}`", base.ty)),
         };
         let ptr = self.tmp(Ty::ptr(false, Ty::u8()), &ptr);
+        let bound = |fg: &Self, t: Ty, v: &str| if len.is_some() { fg.bound(t, v) } else { format!("(uintptr_t){v}") };
         let lo_v = match lo {
             Some(x) => {
                 let v = self.expr(x)?;
-                let v = format!("(uintptr_t){v}");
+                let v = bound(self, x.ty, &v);
                 self.tmp(Ty::usize(), &v)
             }
             None => "(uintptr_t)0".into(),
@@ -969,9 +981,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let hi_v = match hi {
             Some(x) => {
                 let v = self.expr(x)?;
-                let v = format!("(uintptr_t){v}");
+                let v = bound(self, x.ty, &v);
                 let h = self.tmp(Ty::usize(), &v);
-                if inclusive {
+                if inclusive && len.is_some() {
+                    // An inclusive bound of `UINTPTR_MAX` stays past every length rather
+                    // than wrapping to 0.
+                    self.line(&format!("{h} += {h} != UINTPTR_MAX;"));
+                } else if inclusive {
                     self.line(&format!("{} += 1;", h));
                 }
                 h

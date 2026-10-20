@@ -1,0 +1,9 @@
+//! exit: 134
+//! stderr
+//! ptr_bits: 64
+// See index_wide_integer.gm: the same for an index.
+main :: fn() needs Out {
+    a := [3]u8(1, 2, 3)
+    big: u128 = 18446744073709551617
+    print("{}\n", a[big])
+}

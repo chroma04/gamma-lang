@@ -221,8 +221,42 @@ Versions and what each kind of change means are described in
 - The interpreter performs an operation with less work (about 6% fewer instructions in
   a loop of handled performs).
 
+### Security
+
+- Package manager: a git URL that starts with `-` (in `gamma.toml`, `gamma.lock` or
+  `gamma add`) is rejected, and URLs are passed to git after `--`; such a URL in any
+  dependency's manifest made git run a command (`--upload-pack=…`) on `gamma fetch`,
+  `check`, `build` or when the language server opened the project. URLs with spaces or
+  control characters are rejected too, and git's `ext::` transport is never allowed.
+- Package manager: the entries of `gamma.lock` are validated (full commit ids, `sha256:`
+  hashes, names, subdirectories); a damaged or hostile lock crashed `gamma fetch` or named
+  a directory outside the package store. A chain of symbolic links that climbs out of a
+  package (`d/up -> ..`, `esc -> d/up/..`) is rejected like a single such link. An
+  archive already unpacked in the cache is hashed again against the lock, as git
+  checkouts are. Downloads that stall time out, and archives over 1 GiB, or that unpack to
+  more than 4 GiB or a million entries, are refused.
+- `#link_name` takes only symbol characters (letters, digits, `_ $ . @`) and a foreign
+  library name only letters, digits and `_ . + -`: a crafted name was pasted into the
+  generated C. Foreign symbols and exports named like a symbol of the runtime are errors.
+
 ### Fixed
 
+- `gamma build x.gm` no longer overwrites a file `x.c` that it did not generate (it
+  refuses, naming the file), and intermediate objects of the C and Cranelift back ends no
+  longer take the name of a file next to the output (`-o app` deleted `app.o`).
+- C and Cranelift back ends: an index or slice bound of a 128-bit type (or of a type
+  wider than `usize`) is checked with its whole value instead of its low bits, and an
+  inclusive slice bound of `usize`'s largest value traps instead of wrapping to an empty
+  slice, as on the interpreter.
+- Cranelift back end: calls through a `^fn` whose signature passes a struct by value use
+  the C convention (§19.2), so pointers to C functions (and Gamma functions behind such
+  pointers called from C) receive the right arguments.
+- `gamma cache clean` reports what it could not remove and exits with status 1 instead of
+  claiming success, and no longer removes a repository directory a build is writing to.
+- Mirrors of git dependencies drop branches and tags deleted upstream, so a deleted
+  release no longer resolves from the cache. Git commands ignore the caller's `GIT_DIR`
+  and similar variables (as set inside a git hook).
+- Command-line arguments that are not valid UTF-8 are a usage error instead of a crash.
 - A `::` binding whose initializer calls a nested function with an inferred return type
   (`zero :: fn() { return 0 }`, then `z :: zero()`) no longer crashes the compiler.
 - Listing a directory no longer traps on targets with a 32-bit `usize`.

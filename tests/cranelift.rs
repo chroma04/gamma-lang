@@ -347,3 +347,25 @@ main :: fn() needs Out + Sys {
     assert!(out.ok, "{}", out.stderr);
     assert_eq!(out.stdout, "42\n");
 }
+
+#[test]
+fn builds_leave_files_next_to_the_output_alone() {
+    if !supported() {
+        return;
+    }
+    let d = dir("own-files");
+    std::fs::write(d.join("h.gm"), "main :: fn() needs Out { print(\"hi\\n\") }\n").unwrap();
+    for f in ["app.o", "app.rt.c", "app.asm.o"] {
+        std::fs::write(d.join(f), "mine").unwrap();
+    }
+    let out = gamma(&d, &["build", "--backend=cranelift", "-o", "app", "h.gm"]);
+    assert!(out.ok, "{}", out.stderr);
+    for f in ["app.o", "app.rt.c", "app.asm.o"] {
+        assert_eq!(std::fs::read_to_string(d.join(f)).unwrap(), "mine", "{f}");
+    }
+    // Nothing else is left behind.
+    let mut names: Vec<String> =
+        std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, ["app", "app.asm.o", "app.o", "app.rt.c", "cache", "h.gm"]);
+}
