@@ -573,15 +573,15 @@ mod tests {
 
     #[test]
     fn splits_words() {
-        let w = |s: &str| split_words(s).unwrap();
+        let w = |s: &str| split_words_for(s, false).unwrap();
         assert_eq!(w("zig cc -target aarch64-linux-gnu"), ["zig", "cc", "-target", "aarch64-linux-gnu"]);
         assert_eq!(w("  cc  "), ["cc"]);
         assert_eq!(w(""), Vec::<String>::new());
         assert_eq!(w("'/opt/my tools/cc' -DX=\"a b\""), ["/opt/my tools/cc", "-DX=a b"]);
         assert_eq!(w(r"a\ b ''"), ["a b", ""]);
         assert_eq!(w(r#""say \"hi\"""#), [r#"say "hi""#]);
-        assert!(split_words("'open").is_err());
-        assert!(split_words("x\\").is_err());
+        assert!(split_words_for("'open", false).is_err());
+        assert!(split_words_for("x\\", false).is_err());
         for raw in [r"C:\wasi sdk\bin\clang", r#"/opt/"odd"/clang"#, "plain"] {
             assert_eq!(w(&format!("{} -v", quote_word_for(raw, false))), [raw, "-v"]);
         }
