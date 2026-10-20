@@ -29,9 +29,10 @@
 
 ## Next steps
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
-1. The user tags v0.1.0 (CHANGELOG has an Unreleased
-   section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
-   reporting (SECURITY.md links it).
+1. CHANGELOG: Unreleased folded into `## 0.1.0 - 2026-10-20` (refreshed summary + the
+   detailed lists "since the feature set was frozen 2026-10-16"); no Unreleased section
+   now. User merges PR #63, then tags v0.1.0 (if tagged on another day, fix the date).
+   User: enable private vulnerability reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.

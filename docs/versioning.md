@@ -47,8 +47,8 @@ in any release. A new warning never stops a build.
 
 ## Recording changes
 
-Each pull request that changes behavior adds a line to the `Unreleased` section of
-`CHANGELOG.md`, under one of **Breaking**, **Added**, **Changed** or **Fixed**. A
+Each pull request that changes behavior adds a line to the `Unreleased` section at the
+top of `CHANGELOG.md` (starting one if the last release left none), under one of **Breaking**, **Added**, **Changed** or **Fixed**. A
 change to the specification names the section it touches. When a release is cut, the
 `Unreleased` section becomes the section of that release.
 
