@@ -1182,7 +1182,8 @@ of addresses), compiled with the C compiler and linked with the program.
 | `func.rs` | frames, locals, the ladder, statements, and the generated functions (`with … on` bodies, clause thunks, fiber starts, entry wrappers, export thunks) |
 | `expr.rs` | expressions, places, coercions, calls (including foreign calls), effects, fibers, patterns |
 | `ops.rs` | operators, conversions, checks, builtins, vectors, `@asm` |
-| `cabi.rs` | the C calling conventions for aggregates |
+| `cabi.rs` | the C calling conventions for aggregates (`CAbi` classifies from layouts alone) |
+| `cabi_tests.rs` | unit tests of the classification for every target, checked against the ABI documents rather than the host |
 | `data.rs` | constants, statics, strings and type descriptors |
 
 `GAMMA_DUMP_CLIF=1` prints the Cranelift IR of each function as it is defined; in
