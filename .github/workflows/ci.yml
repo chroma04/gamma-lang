@@ -149,7 +149,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Cache the Fil-C download
         id: filc-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/filc
           key: optfil-${{ env.FILC_VERSION }}-linux-x86_64
