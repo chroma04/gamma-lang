@@ -260,15 +260,16 @@ impl ProcEntry {
         *lock(&self.outs) = Outs::default();
         let Some(mut child) = lock(&self.child).take() else { return invalid() };
         // The exit is awaited without reaping, so that the process id stays reserved until the
-        // flag is set; on Windows the handle stays open for the same purpose.
+        // flag is set; elsewhere the handle stays open for the same purpose.
         #[cfg(unix)]
         wait_exit(child.id());
-        #[cfg(windows)]
+        #[cfg(not(unix))]
         let status = child.wait();
         let mut reaped = lock(&self.reaped);
         #[cfg(unix)]
         let status = child.wait();
         *reaped = true;
+        #[cfg_attr(not(any(unix, windows)), allow(clippy::drop_non_drop))]
         drop(child);
         match status {
             Ok(status) => status_code(&status),
