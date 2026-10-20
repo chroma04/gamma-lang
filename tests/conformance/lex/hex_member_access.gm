@@ -1,0 +1,8 @@
+//! stage: lex
+//! dump
+// A `.` after a hexadecimal integer is member access unless a `p` exponent follows.
+0xFF.abs()
+0xA.b
+0x10.div(2)
+0x1.8p1
+0xA.Fp-2

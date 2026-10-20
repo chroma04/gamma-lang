@@ -128,6 +128,99 @@ pub f :: fn() {}
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn a_signature_with_backticks_cannot_close_its_fence() {
+    let dir = temp_dir("fence");
+    std::fs::write(dir.join("m.gm"), "/// After the fence.\npub X :: \"```\"\n").unwrap();
+    let m = &doc::load_modules(&dir, false).unwrap()[0];
+    let md = doc::render_module(m, Format::Markdown, None);
+    assert!(md.contains("````gamma\nX :: \"```\"\n````\n"), "{md}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn index_links_are_percent_encoded() {
+    let dir = temp_dir("links");
+    let file = dir.join("m.gm");
+    std::fs::write(&file, "//! Text.\npub f :: fn() {}\n").unwrap();
+    let m = doc::load_module(&[file], "m", "my dir/a#b)").unwrap();
+    let md = doc::render_index("T", std::slice::from_ref(&m), Format::Markdown);
+    assert!(md.contains("(my%20dir/a%23b%29.md)"), "{md}");
+    let html = doc::render_index("T", std::slice::from_ref(&m), Format::Html);
+    assert!(html.contains("href=\"my%20dir/a%23b%29.html\""), "{html}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The values of the `href` and `src` attributes in `html`.
+fn urls(html: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for attr in ["href=\"", "src=\""] {
+        let mut rest = html;
+        while let Some(i) = rest.find(attr) {
+            rest = &rest[i + attr.len()..];
+            out.push(rest[..rest.find('"').unwrap()].to_string());
+        }
+    }
+    out
+}
+
+#[test]
+fn html_output_never_contains_active_content() {
+    let hostile = [
+        "<script>alert(1)</script>",
+        "<img src=x onerror=alert(1)>",
+        "<iframe src=\"javascript:alert(1)\"></iframe>",
+        "[x](javascript:alert(1))",
+        "[x](JaVaScRiPt:alert(1))",
+        "[x]( javascript:alert(1))",
+        "[x](&#106;avascript:alert(1))",
+        "[x](jav&#x09;ascript:alert(1))",
+        "[x](vbscript:msgbox(1))",
+        "[x](data:text/html;base64,PHNjcmlwdD4=)",
+        "[x](file:///etc/passwd)",
+        "[<b>x</b>](http://a.test/\" onmouseover=\"alert(1))",
+        "[x](http://a.test/<script>)",
+        "**<u>bold</u>** `<script>` *<svg onload=alert(1)>*",
+        "> <script>alert(1)</script>",
+        "- <img src=x onerror=alert(1)>",
+        "| <script> | b |\n| --- | --- |\n| <img onerror=x> | [x](javascript:1) |",
+        "# <script>alert(1)</script>",
+        "    <script>alert(1)</script>",
+        "```\n</code></pre><script>alert(1)</script>\n```",
+    ];
+    let dir = temp_dir("inject");
+    for (n, text) in hostile.iter().enumerate() {
+        let module_doc: String = text.lines().map(|l| format!("//! {l}\n")).collect();
+        let item_doc: String = text.lines().map(|l| format!("/// {l}\n")).collect();
+        let member_doc: String = text.lines().map(|l| format!("    /// {l}\n")).collect();
+        let src = format!(
+            "{module_doc}\n{item_doc}pub f :: fn() {{}}\n\n/// Variants.\npub E :: union {{\n{member_doc}    A: i64\n}}\n"
+        );
+        std::fs::write(dir.join("m.gm"), src).unwrap();
+        let m = &doc::load_modules(&dir, false).unwrap()[0];
+        let html = doc::render_module(m, Format::Html, Some("index.html"));
+        let lower = html.to_ascii_lowercase();
+        for tag in ["<script", "<img", "<iframe", "<svg", "<u>", "<b>"] {
+            assert!(!lower.contains(tag), "case {n}: {tag} in {html}");
+        }
+        // Attribute-like text may appear as escaped text, but never inside a tag.
+        for tag in lower.split('<').skip(1) {
+            let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+            assert!(!tag.contains(" on"), "case {n}: event handler in <{tag}> in {html}");
+        }
+        for url in urls(&html) {
+            let ok = match url.find([':', '/', '#', '?']) {
+                Some(i) if url.as_bytes()[i] == b':' => {
+                    matches!(url[..i].to_ascii_lowercase().as_str(), "http" | "https" | "mailto")
+                }
+                _ => true,
+            };
+            assert!(ok && !url.contains(['<', '>', ' ']), "case {n}: unsafe URL {url:?} in {html}");
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("gamma-doc-test-{}-{}", std::process::id(), name));
     let _ = std::fs::remove_dir_all(&dir);

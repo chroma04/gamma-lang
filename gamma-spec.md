@@ -231,7 +231,7 @@ exponent   = ( 'e' | 'E' ) [ '+' | '-' ] dec_lit
 float_suffix = 'f16' | 'f32' | 'f64'
 ```
 
-Both sides of the `.` are required (`1.` and `.5` are not float literals). This keeps `1..10` a range and `x.0` a field access. A decimal integer with a float suffix is a float literal (`1f32` is `1.0f32`); in a hexadecimal literal `f` is a digit, so `0x1f32` is the integer `0x1f32`. A hexadecimal float needs the `p` exponent but not a fraction (`0x1p4` is 16.0). The value of a float literal is an exact rational number; it is rounded only when it receives a type (§6.1).
+Both sides of the `.` are required (`1.` and `.5` are not float literals). This keeps `1..10` a range and `x.0` a field access. A decimal integer with a float suffix is a float literal (`1f32` is `1.0f32`); in a hexadecimal literal `f` is a digit, so `0x1f32` is the integer `0x1f32`. A hexadecimal float needs the `p` exponent but not a fraction (`0x1p4` is 16.0); in a hexadecimal literal a `.` begins a fraction only when hex digits and a `p` exponent follow, so `0xFF.abs()` is a member access on an integer. The value of a float literal is an exact rational number; it is rounded only when it receives a type (§6.1).
 
 #### 2.5.3 Character literals
 

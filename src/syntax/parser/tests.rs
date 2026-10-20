@@ -210,3 +210,15 @@ fn statements_and_disambiguation() {
     check_stmts("defer x += 1", "(defer (assign += (places (ident x)) (int 1)))");
     check_stmt_err("x := 1 +", "expected");
 }
+
+#[test]
+fn a_doc_comment_attaches_only_to_the_next_line_in_crlf_files() {
+    let docs = |src: &str| -> Vec<Option<String>> {
+        let (file, errors) = parse(src);
+        assert!(errors.is_empty(), "{errors:?}");
+        file.items.iter().map(|i| i.doc.clone()).collect()
+    };
+    assert_eq!(docs("/// far\r\n\r\n\r\n\r\n\r\na :: 1\r\n"), vec![None]);
+    assert_eq!(docs("/// near\r\na :: 1\r\n"), vec![Some("near".to_string())]);
+    assert_eq!(docs("/// far\n\n\n\n\na :: 1\n"), vec![None]);
+}

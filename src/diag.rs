@@ -201,7 +201,7 @@ impl Diagnostics {
     }
 
     pub fn unsuppress(&mut self) {
-        self.suppressed -= 1;
+        self.suppressed = self.suppressed.saturating_sub(1);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Diagnostic> {
@@ -342,8 +342,8 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
                 let gutter = line.to_string().len().max(2);
                 let pad = " ".repeat(gutter);
                 let _ = writeln!(out, "{}--> {}:{}:{}", pad, f.path.display(), line, col);
-                let text = f.line_text(line).replace('\t', " ");
-                let len = text.chars().count() as u32;
+                let text = f.line_text(line);
+                let len = if f.is_ascii() { text.len() } else { text.chars().count() } as u32;
                 let (end_line, end_col) = f.line_col(d.span.hi);
                 let mut width = if end_line == line { (end_col - col).max(1) } else { (len + 1 - col).max(1) };
                 // A very long line is shown as a window around the location, so that many
@@ -351,13 +351,21 @@ pub fn render(sm: &SourceMap, d: &Diagnostic, format: DiagFormat) -> String {
                 let (shown, caret) = if len > LONG_LINE {
                     let start = (col - 1).saturating_sub(WINDOW / 3);
                     let end = (start + WINDOW).min(len);
-                    let body: String = text.chars().skip(start as usize).take((end - start) as usize).collect();
+                    let body: String = if f.is_ascii() {
+                        text[start as usize..end as usize].replace('\t', " ")
+                    } else {
+                        text.chars()
+                            .skip(start as usize)
+                            .take((end - start) as usize)
+                            .collect::<String>()
+                            .replace('\t', " ")
+                    };
                     let pre = if start > 0 { "…" } else { "" };
                     let post = if end < len { "…" } else { "" };
                     width = width.min(end + 1 - col);
                     (format!("{pre}{body}{post}"), col - 1 - start + pre.chars().count() as u32)
                 } else {
-                    (text, col - 1)
+                    (text.replace('\t', " "), col - 1)
                 };
                 let _ = writeln!(out, "{} |", pad);
                 let _ = writeln!(out, "{:>w$} | {}", line, shown, w = gutter);

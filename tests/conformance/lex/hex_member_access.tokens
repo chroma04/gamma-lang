@@ -1,0 +1,22 @@
+4:1 int 255
+4:5 punct .
+4:6 ident abs
+4:9 punct (
+4:10 punct )
+4:11 newline
+5:1 int 10
+5:4 punct .
+5:5 ident b
+5:6 newline
+6:1 int 16
+6:5 punct .
+6:6 ident div
+6:9 punct (
+6:10 int 2
+6:11 punct )
+6:12 newline
+7:1 float 3
+7:8 newline
+8:1 float 175/64
+8:9 newline
+9:1 eof

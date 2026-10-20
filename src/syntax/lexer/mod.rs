@@ -57,12 +57,30 @@ enum BracketKind {
     MatchBrace,
 }
 
+/// The `BracketKind::slot` of the bracket that a closing `p` closes.
+fn closer_slot(p: Punct) -> usize {
+    match p {
+        Punct::RParen => 0,
+        Punct::RBracket => 1,
+        _ => 2,
+    }
+}
+
 impl BracketKind {
     fn opener(self) -> Punct {
         match self {
             BracketKind::Paren => Punct::LParen,
             BracketKind::Bracket => Punct::LBracket,
             BracketKind::Brace | BracketKind::MatchBrace => Punct::LBrace,
+        }
+    }
+
+    /// Index into the open-bracket counts: parentheses, square brackets, braces.
+    fn slot(self) -> usize {
+        match self {
+            BracketKind::Paren => 0,
+            BracketKind::Bracket => 1,
+            BracketKind::Brace | BracketKind::MatchBrace => 2,
         }
     }
 
@@ -91,6 +109,8 @@ struct Lexer<'a> {
     docs: Vec<DocComment>,
     /// Currently open brackets, innermost last.
     brackets: Vec<Bracket>,
+    /// How many brackets of each kind (`BracketKind::slot`) are open.
+    open_counts: [usize; 3],
     /// Bracket depths at which a `match` keyword was seen and whose body `{` has
     /// not been opened yet; the innermost is last.
     pending_matches: Vec<usize>,
@@ -114,6 +134,7 @@ impl<'a> Lexer<'a> {
             tokens: Vec::new(),
             docs: Vec::new(),
             brackets: Vec::new(),
+            open_counts: [0; 3],
             pending_matches: Vec::new(),
             pending_newline: None,
             joined_lines: Vec::new(),
@@ -226,7 +247,18 @@ impl<'a> Lexer<'a> {
             let text = &self.src[lo + 3..i];
             let text = text.strip_prefix(' ').unwrap_or(text).to_string();
             let span = self.span(lo, i);
-            self.docs.push(DocComment { span, text });
+            let mut next = i;
+            if self.bytes.get(next) == Some(&b'\r') {
+                next += 1;
+            }
+            if self.bytes.get(next) == Some(&b'\n') {
+                next += 1;
+                while matches!(self.bytes.get(next), Some(b' ' | b'\t')) {
+                    next += 1;
+                }
+            }
+            let next_lo = next as u32;
+            self.docs.push(DocComment { span, text, next_lo });
         }
         self.pos = i;
     }
@@ -550,7 +582,7 @@ impl<'a> Lexer<'a> {
     fn emit(&mut self, kind: TokenKind, lo: usize, hi: usize) {
         let span = self.span(lo, hi);
         if let TokenKind::Punct(p @ (Punct::RParen | Punct::RBracket | Punct::RBrace)) = kind
-            && !self.brackets.iter().any(|b| b.kind.closer() == p)
+            && self.open_counts[closer_slot(p)] == 0
         {
             self.error(lo, hi, format!("unmatched closing `{}`", p.as_str()));
             return;
@@ -601,6 +633,7 @@ impl<'a> Lexer<'a> {
         self.pending_newline = None;
         let here = self.span(lo, lo);
         while let Some(b) = self.brackets.pop() {
+            self.open_counts[b.kind.slot()] -= 1;
             let msg = format!("unclosed `{}`", b.kind.opener().as_str());
             let note = format!("a declaration starts here, so this `{}` was not closed", b.kind.opener().as_str());
             self.diags.push(Diagnostic::error(b.span, msg).with_label(here, note));
@@ -611,6 +644,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn open_bracket(&mut self, kind: BracketKind, span: Span) {
+        self.open_counts[kind.slot()] += 1;
         self.brackets.push(Bracket { kind, span });
     }
 
@@ -619,11 +653,13 @@ impl<'a> Lexer<'a> {
     fn close_bracket(&mut self, closer: Punct, span: Span) {
         let i = self.brackets.iter().rposition(|b| b.kind.closer() == closer).unwrap_or(0);
         for skipped in self.brackets.split_off(i + 1) {
+            self.open_counts[skipped.kind.slot()] -= 1;
             let msg = format!("unclosed `{}`", skipped.kind.opener().as_str());
             let note =
                 format!("this `{}` does not match the open `{}`", closer.as_str(), skipped.kind.opener().as_str());
             self.diags.push(Diagnostic::error(skipped.span, msg).with_label(span, note));
         }
+        self.open_counts[closer_slot(closer)] -= 1;
         self.brackets.truncate(i);
         let depth = self.brackets.len();
         while self.pending_matches.last().is_some_and(|&d| d > depth) {

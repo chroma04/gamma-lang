@@ -74,6 +74,8 @@ pub struct Analysis {
     pub primary: PathBuf,
     /// Files made for the embedded core library, by source file.
     core_files: std::cell::RefCell<HashMap<FileId, Option<PathBuf>>>,
+    /// The line index of each file already looked up, so that a request scans a file once.
+    line_starts: std::cell::RefCell<HashMap<FileId, std::rc::Rc<Vec<usize>>>>,
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -150,7 +152,14 @@ impl Analysis {
             }
         };
         let files = sess.sources.files().map(|(id, f)| (canon(&f.path), id)).collect();
-        Analysis { sess, index, files, primary: primary.to_path_buf(), core_files: Default::default() }
+        Analysis {
+            sess,
+            index,
+            files,
+            primary: primary.to_path_buf(),
+            core_files: Default::default(),
+            line_starts: Default::default(),
+        }
     }
 
     pub fn file_id(&self, path: &Path) -> Option<FileId> {
@@ -182,11 +191,19 @@ impl Analysis {
         self.core_files.borrow_mut().entry(file).or_insert_with(|| super::corelib::path_for(&name, &f.src)).clone()
     }
 
+    /// The line index of a file, scanning the file the first time only.
+    pub fn line_index(&self, file: FileId) -> LineIndex<'_> {
+        let text = self.text(file);
+        let mut cache = self.line_starts.borrow_mut();
+        let starts = cache.entry(file).or_insert_with(|| LineIndex::new(text).starts()).clone();
+        LineIndex::from_starts(text, starts)
+    }
+
     /// The LSP range of `span`; an empty span is widened to one character so that
     /// editors can underline it.
     pub fn range(&self, span: Span, enc: Encoding) -> Value {
         let text = self.text(span.file);
-        let ix = LineIndex::new(text);
+        let ix = self.line_index(span.file);
         let (mut lo, mut hi) = (span.lo as usize, span.hi as usize);
         if lo == hi {
             if let Some(c) = text.get(hi..).and_then(|t| t.chars().next()).filter(|c| *c != '\n' && *c != '\r') {
@@ -263,8 +280,7 @@ impl Analysis {
         for e in &fx.edits {
             let path = self.real_path(e.span.file)?;
             // The exact range, not widened as for showing a diagnostic.
-            let range =
-                range_json(&LineIndex::new(self.text(e.span.file)), e.span.lo as usize, e.span.hi as usize, enc);
+            let range = range_json(&self.line_index(e.span.file), e.span.lo as usize, e.span.hi as usize, enc);
             let edit = json!({"range": range, "newText": e.text});
             match changes.entry(uri_of(&path)).or_insert_with(|| Value::Array(vec![])) {
                 Value::Array(a) => a.push(edit),
