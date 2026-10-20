@@ -31,20 +31,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 mk(ty, tir::ExprKind::Int(BigInt::from(l.value.clone())), span)
             }
-            ExprKind::Float(l) => match l.suffix {
-                Some(s) => {
-                    let fty = match s {
-                        crate::syntax::token::FloatSuffix::F16 => crate::types::FloatTy::F16,
-                        crate::syntax::token::FloatSuffix::F32 => crate::types::FloatTy::F32,
-                        crate::syntax::token::FloatSuffix::F64 => crate::types::FloatTy::F64,
-                    };
-                    mk(Ty::intern(TyKind::Float(fty)), tir::ExprKind::UntypedFloat(Rc::new(l.value.clone())), span)
-                }
-                None => {
-                    let ty = self.literal_var(VarKind::Float);
-                    mk(ty, tir::ExprKind::UntypedFloat(Rc::new(l.value.clone())), span)
-                }
-            },
+            ExprKind::Float(l) => self.float_literal(l, span),
             ExprKind::Str(s) => match s.kind {
                 crate::syntax::token::StrKind::C => {
                     mk(Ty::many_ptr(true, Ty::u8()), tir::ExprKind::CStr(s.bytes.clone().into()), span)
@@ -52,18 +39,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 _ => mk(Ty::string(), tir::ExprKind::Str(s.bytes.clone().into()), span),
             },
             ExprKind::Bool(b) => mk(Ty::bool(), tir::ExprKind::Bool(*b), span),
-            ExprKind::Null => match expect.map(|t| self.infer.shallow(t)) {
-                Some(t) if matches!(t.kind(), TyKind::Optional(_)) => mk(t, tir::ExprKind::Null, span),
-                // `null` where an `E!?T` is expected is the success value `null` (§10.3).
-                Some(t) if matches!(t.kind(), TyKind::Result { ok, .. } if matches!(ok.kind(), TyKind::Optional(_))) => {
-                    let TyKind::Result { ok, .. } = t.kind() else { unreachable!() };
-                    mk(*ok, tir::ExprKind::Null, span)
-                }
-                _ => {
-                    self.error(span, "cannot infer the type of `null` here; annotate the optional type");
-                    error_expr(span)
-                }
-            },
+            ExprKind::Null => self.null_value(expect, span),
             ExprKind::Uninit => {
                 self.error(span, "`---` may only initialize a variable, field or argument");
                 error_expr(span)
@@ -90,85 +66,22 @@ impl<'a, 's> FnCx<'a, 's> {
                 let l = self.expr(lhs, None);
                 self.binary_op(*op, l, rhs, span)
             }
-            ExprKind::Deref(p) => {
-                let p = self.expr(p, None);
-                match self.infer.shallow(p.ty).kind() {
-                    TyKind::Ptr { pointee, .. } => mk(*pointee, tir::ExprKind::Deref(Box::new(p)), span),
-                    TyKind::Error => error_expr(span),
-                    _ => {
-                        let t = self.infer.resolve(p.ty);
-                        self.error(span, format!("`^` dereferences a pointer `^T`, but this is `{}`", t));
-                        error_expr(span)
-                    }
-                }
-            }
+            ExprKind::Deref(p) => self.deref_expr(p, span),
             ExprKind::Index { base, index } => self.index(base, index, span),
             ExprKind::Slice { base, lo, hi, inclusive } => {
                 self.slice_expr(base, lo.as_deref(), hi.as_deref(), *inclusive, span)
             }
             ExprKind::Field { base, name } => self.field(base, *name, span),
-            ExprKind::TupleField { base, index, .. } => {
-                let b = self.expr(base, None);
-                let bt = self.infer.resolve(b.ty);
-                let b = self.auto_deref(b);
-                match self.infer.resolve(b.ty).kind() {
-                    TyKind::Tuple { elems, .. } if (*index as usize) < elems.len() => {
-                        mk(elems[*index as usize], tir::ExprKind::Field { base: Box::new(b), index: *index }, span)
-                    }
-                    TyKind::Error => error_expr(span),
-                    _ => {
-                        self.error(span, format!("type `{}` has no element {}", bt, index));
-                        error_expr(span)
-                    }
-                }
-            }
+            ExprKind::TupleField { base, index, .. } => self.tuple_field(base, *index, span),
             ExprKind::Call { callee, args, .. } => self.call(callee, args, expect, span),
             ExprKind::If(i) => self.if_expr(i, true, expect),
             ExprKind::Match(m) => self.match_expr(m, true, expect),
             ExprKind::Fn(lit) => self.fn_literal(lit, expect, None, span),
             ExprKind::Handler(lit) => self.handler_literal(lit, None, span),
             ExprKind::With(w) => self.with_expr(w, true, expect),
-            ExprKind::OptUnwrap(inner) => {
-                let v = self.expr(inner, None);
-                match self.infer.resolve(v.ty).kind() {
-                    TyKind::Optional(t) => mk(*t, tir::ExprKind::Unwrap { expr: Box::new(v), is_result: false }, span),
-                    TyKind::Error => error_expr(span),
-                    _ => {
-                        let t = self.infer.resolve(v.ty);
-                        self.error(span, format!("`?` unwraps an optional, but this is `{}`", t));
-                        error_expr(span)
-                    }
-                }
-            }
+            ExprKind::OptUnwrap(inner) => self.opt_unwrap(inner, span),
             ExprKind::ResUnwrap(inner) => self.res_unwrap(inner, span),
-            ExprKind::Bang { lhs, rhs } => {
-                if self.type_of_name(lhs).is_some() {
-                    self.error(span, "expected a value, found the error-union type `E!T`");
-                    return error_expr(span);
-                }
-                // `x!(args)`: unwrap, then call (§A.7 rule 3).
-                let callee = self.res_unwrap(lhs, lhs.span.to(span.shrink_to_lo()));
-                let args: Vec<ast::Arg> = match &rhs.kind {
-                    ExprKind::Paren(a) => {
-                        vec![ast::Arg { kind: ast::ArgKind::Positional((**a).clone()), span: a.span }]
-                    }
-                    ExprKind::Tuple(elems) => elems
-                        .iter()
-                        .map(|el| ast::Arg {
-                            kind: match el.name {
-                                Some(n) => ast::ArgKind::Named(n, el.value.clone()),
-                                None => ast::ArgKind::Positional(el.value.clone()),
-                            },
-                            span: el.value.span,
-                        })
-                        .collect(),
-                    _ => {
-                        self.error(rhs.span, "this is a type, but `!` follows a value; to unwrap twice write `(x!)?`");
-                        return error_expr(span);
-                    }
-                };
-                self.call_value(callee, &args, span)
-            }
+            ExprKind::Bang { lhs, rhs } => self.bang_call(lhs, rhs, span),
             ExprKind::Else { lhs, capture, rhs } => self.else_expr(lhs, *capture, rhs, expect, span),
             ExprKind::Block(b) => self.block_expected(b, true, expect),
             ExprKind::Return(v) => self.return_expr(v.as_deref(), span),
@@ -191,48 +104,13 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             // A type prefix before a construction applies to the whole type (§A.7 rule 12).
             ExprKind::ArrayType { len, elem } if construction_call(elem).is_some() => {
-                let Some(ExprKind::Call { args, .. }) = construction_call(elem).map(|c| &c.kind) else {
-                    unreachable!()
-                };
-                // `[2][3]i32(…)`: the element type is everything after the outer prefix.
-                if let Some(l) = len
-                    && self.sema.length_is_type(self.module, l)
-                {
-                    let t = self.resolve_type(&without_call(e));
-                    return match t.kind() {
-                        TyKind::Array { elem, kind: crate::types::ArrayKind::Enum(index), .. } => {
-                            self.construct_enum_array(t, *index, *elem, args, span)
-                        }
-                        _ => error_expr(span),
-                    };
-                }
-                let elem_ty = self.resolve_type(&without_call(elem));
-                let len = match len {
-                    Some(l) => match self.sema.array_len(self.module, l) {
-                        Some(ArrayLen::Known(n)) => Some(n),
-                        Some(ArrayLen::Param(len)) => {
-                            let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
-                            return self.construct_param_array(t, elem_ty, args, span);
-                        }
-                        None => return error_expr(span),
-                    },
-                    None => None,
-                };
-                self.construct_array(None, len, elem_ty, args, span)
+                self.array_type_construction(e, len.as_deref(), elem, span)
             }
             // `#simd [4]f32(…)`: constructing a vector (§5.6.2).
             ExprKind::Attributed { attrs, inner }
                 if matches!(inner.kind, ExprKind::ArrayType { .. }) && construction_call(inner).is_some() =>
             {
-                let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else {
-                    unreachable!()
-                };
-                let module = self.module;
-                let t = self.sema.vector_type(module, attrs, &without_call(inner), span);
-                match t.vector_parts() {
-                    Some((n, elem)) => self.construct_array(Some(t), Some(n), elem, args, span),
-                    None => error_expr(span),
-                }
+                self.vector_construction(attrs, inner, span)
             }
             ExprKind::OptionalType(inner) if construction_call(inner).is_some() => {
                 let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else {
@@ -260,6 +138,159 @@ impl<'a, 's> FnCx<'a, 's> {
                 error_expr(span)
             }
         }
+    }
+
+    /// A float literal: of its suffix's type, or of a type still to be inferred.
+    fn float_literal(&mut self, l: &crate::syntax::token::FloatLit, span: Span) -> Expr {
+        let ty = match l.suffix {
+            Some(s) => {
+                let fty = match s {
+                    crate::syntax::token::FloatSuffix::F16 => crate::types::FloatTy::F16,
+                    crate::syntax::token::FloatSuffix::F32 => crate::types::FloatTy::F32,
+                    crate::syntax::token::FloatSuffix::F64 => crate::types::FloatTy::F64,
+                };
+                Ty::intern(TyKind::Float(fty))
+            }
+            None => self.literal_var(VarKind::Float),
+        };
+        mk(ty, tir::ExprKind::UntypedFloat(Rc::new(l.value.clone())), span)
+    }
+
+    /// `#simd [4]f32(…)`: constructing a vector (§5.6.2).
+    fn vector_construction(&mut self, attrs: &[ast::Attribute], inner: &ast::Expr, span: Span) -> Expr {
+        let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else { unreachable!() };
+        let module = self.module;
+        let t = self.sema.vector_type(module, attrs, &without_call(inner), span);
+        match t.vector_parts() {
+            Some((n, elem)) => self.construct_array(Some(t), Some(n), elem, args, span),
+            None => error_expr(span),
+        }
+    }
+
+    /// `null`, typed by the optional (or `E!?T`) it is expected to be.
+    fn null_value(&mut self, expect: Option<Ty>, span: Span) -> Expr {
+        match expect.map(|t| self.infer.shallow(t)) {
+            Some(t) if matches!(t.kind(), TyKind::Optional(_)) => mk(t, tir::ExprKind::Null, span),
+            // `null` where an `E!?T` is expected is the success value `null` (§10.3).
+            Some(t) if matches!(t.kind(), TyKind::Result { ok, .. } if matches!(ok.kind(), TyKind::Optional(_))) => {
+                let TyKind::Result { ok, .. } = t.kind() else { unreachable!() };
+                mk(*ok, tir::ExprKind::Null, span)
+            }
+            _ => {
+                self.error(span, "cannot infer the type of `null` here; annotate the optional type");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `p^`.
+    fn deref_expr(&mut self, p: &ast::Expr, span: Span) -> Expr {
+        let p = self.expr(p, None);
+        match self.infer.shallow(p.ty).kind() {
+            TyKind::Ptr { pointee, .. } => mk(*pointee, tir::ExprKind::Deref(Box::new(p)), span),
+            TyKind::Error => error_expr(span),
+            _ => {
+                let t = self.infer.resolve(p.ty);
+                self.error(span, format!("`^` dereferences a pointer `^T`, but this is `{}`", t));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `t.0`: an element of a tuple.
+    fn tuple_field(&mut self, base: &ast::Expr, index: u32, span: Span) -> Expr {
+        let b = self.expr(base, None);
+        let bt = self.infer.resolve(b.ty);
+        let b = self.auto_deref(b);
+        match self.infer.resolve(b.ty).kind() {
+            TyKind::Tuple { elems, .. } if (index as usize) < elems.len() => {
+                mk(elems[index as usize], tir::ExprKind::Field { base: Box::new(b), index }, span)
+            }
+            TyKind::Error => error_expr(span),
+            _ => {
+                self.error(span, format!("type `{}` has no element {}", bt, index));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `x?`: unwraps an optional.
+    fn opt_unwrap(&mut self, inner: &ast::Expr, span: Span) -> Expr {
+        let v = self.expr(inner, None);
+        match self.infer.resolve(v.ty).kind() {
+            TyKind::Optional(t) => mk(*t, tir::ExprKind::Unwrap { expr: Box::new(v), is_result: false }, span),
+            TyKind::Error => error_expr(span),
+            _ => {
+                let t = self.infer.resolve(v.ty);
+                self.error(span, format!("`?` unwraps an optional, but this is `{}`", t));
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `x!(args)`: unwrap, then call (§A.7 rule 3).
+    fn bang_call(&mut self, lhs: &ast::Expr, rhs: &ast::Expr, span: Span) -> Expr {
+        if self.type_of_name(lhs).is_some() {
+            self.error(span, "expected a value, found the error-union type `E!T`");
+            return error_expr(span);
+        }
+        let callee = self.res_unwrap(lhs, lhs.span.to(span.shrink_to_lo()));
+        let args: Vec<ast::Arg> = match &rhs.kind {
+            ExprKind::Paren(a) => {
+                vec![ast::Arg { kind: ast::ArgKind::Positional((**a).clone()), span: a.span }]
+            }
+            ExprKind::Tuple(elems) => elems
+                .iter()
+                .map(|el| ast::Arg {
+                    kind: match el.name {
+                        Some(n) => ast::ArgKind::Named(n, el.value.clone()),
+                        None => ast::ArgKind::Positional(el.value.clone()),
+                    },
+                    span: el.value.span,
+                })
+                .collect(),
+            _ => {
+                self.error(rhs.span, "this is a type, but `!` follows a value; to unwrap twice write `(x!)?`");
+                return error_expr(span);
+            }
+        };
+        self.call_value(callee, &args, span)
+    }
+
+    /// `[N]T(…)` and `[N][M]T(…)`: an array type prefix applied to a construction `e` (§A.7 rule 12).
+    fn array_type_construction(
+        &mut self,
+        e: &ast::Expr,
+        len: Option<&ast::Expr>,
+        elem: &ast::Expr,
+        span: Span,
+    ) -> Expr {
+        let Some(ExprKind::Call { args, .. }) = construction_call(elem).map(|c| &c.kind) else { unreachable!() };
+        // `[2][3]i32(…)`: the element type is everything after the outer prefix.
+        if let Some(l) = len
+            && self.sema.length_is_type(self.module, l)
+        {
+            let t = self.resolve_type(&without_call(e));
+            return match t.kind() {
+                TyKind::Array { elem, kind: crate::types::ArrayKind::Enum(index), .. } => {
+                    self.construct_enum_array(t, *index, *elem, args, span)
+                }
+                _ => error_expr(span),
+            };
+        }
+        let elem_ty = self.resolve_type(&without_call(elem));
+        let len = match len {
+            Some(l) => match self.sema.array_len(self.module, l) {
+                Some(ArrayLen::Known(n)) => Some(n),
+                Some(ArrayLen::Param(len)) => {
+                    let t = Ty::intern(TyKind::ParamArray { len, elem: elem_ty });
+                    return self.construct_param_array(t, elem_ty, args, span);
+                }
+                None => return error_expr(span),
+            },
+            None => None,
+        };
+        self.construct_array(None, len, elem_ty, args, span)
     }
 
     /// A name used as a value.
@@ -538,66 +569,8 @@ impl<'a, 's> FnCx<'a, 's> {
 
     fn unary(&mut self, op: ast::UnOp, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
         match op {
-            ast::UnOp::Neg => {
-                // A minus applied directly to a literal is part of the literal (§7.4.1).
-                let mut v = self.expr(operand, expect);
-                match &mut v.kind {
-                    tir::ExprKind::Int(i) if is_literal(operand) || v.ty.is_infer() => {
-                        *i = -i.clone();
-                        v.span = span;
-                        return v;
-                    }
-                    // Not for zero: exact rationals have no negative zero, and `-0.0` must keep its sign.
-                    tir::ExprKind::UntypedFloat(r)
-                        if (is_literal(operand) || v.ty.is_infer()) && !num_traits::Zero::is_zero(&**r) =>
-                    {
-                        *r = Rc::new(-(**r).clone());
-                        v.span = span;
-                        return v;
-                    }
-                    _ => {}
-                }
-                if self.infer.resolve(v.ty).is_vector() {
-                    return self.vector_unary(op, v, span);
-                }
-                self.obligations.push(Obligation::Numeric {
-                    ty: v.ty,
-                    span,
-                    op: "-",
-                    int_only: false,
-                    signed_only: true,
-                });
-                mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(v) }, span)
-            }
-            ast::UnOp::BitNot => {
-                let v = self.expr(operand, expect);
-                let st = self.infer.resolve(v.ty);
-                if st.is_vector() {
-                    return self.vector_unary(op, v, span);
-                }
-                if let Some(u) = self.bits_operand(st, "~", span) {
-                    let x = self.bits_convert(v, u);
-                    let mut n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
-                    // Padding fields `_` stay zero (§5.10.5): only the named fields are complemented.
-                    if let Some(mask) = self.bits_padding_mask(st) {
-                        let m = mk(u, tir::ExprKind::Int(mask), span);
-                        n = mk(
-                            u,
-                            tir::ExprKind::Binary { op: tir::BinOp::BitAnd, lhs: Box::new(n), rhs: Box::new(m) },
-                            span,
-                        );
-                    }
-                    return self.bits_convert(n, st);
-                }
-                self.obligations.push(Obligation::Numeric {
-                    ty: v.ty,
-                    span,
-                    op: "~",
-                    int_only: true,
-                    signed_only: false,
-                });
-                mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(v) }, span)
-            }
+            ast::UnOp::Neg => self.neg_expr(operand, expect, span),
+            ast::UnOp::BitNot => self.bit_not_expr(operand, expect, span),
             ast::UnOp::Not => {
                 let v = self.expr(operand, Some(Ty::bool()));
                 if self.infer.resolve(v.ty).is_vector() {
@@ -606,39 +579,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 let v = self.expect_bool(v);
                 mk(Ty::bool(), tir::ExprKind::Unary { op: tir::UnOp::Not, operand: Box::new(v) }, span)
             }
-            ast::UnOp::AddrOf => {
-                let temp_ok = std::mem::take(&mut self.temp_ref_arg);
-                let v = self.expr(operand, None);
-                if self.reject_second_class(&v, "the target of `&`") {
-                    return error_expr(span);
-                }
-                if let tir::ExprKind::Field { base, .. } = &v.kind
-                    && let TyKind::Adt(id, _) = base.ty.kind()
-                    && matches!(
-                        self.sema.prog.adts.get(id).map(|d| &d.kind),
-                        Some(tir::AdtKind::Struct { bits: Some(_), .. })
-                    )
-                {
-                    self.error(span, "the fields of a `#bits` struct have no address (§5.10.5)");
-                    return error_expr(span);
-                }
-                match self.place_mutability(&v) {
-                    Some(m) => {
-                        let ty = Ty::ptr(!m, v.ty);
-                        mk(ty, tir::ExprKind::AddrOf(Box::new(v)), span)
-                    }
-                    // `f(&g(x))` for a `^const T` parameter: a temporary that lives until
-                    // the call returns, as for a method's receiver (§7.10).
-                    None if temp_ok => mk(Ty::ptr(true, v.ty), tir::ExprKind::AddrOfTemp(Box::new(v)), span),
-                    None => {
-                        self.error(
-                            span,
-                            "`&` needs a place (a variable, `p^`, field or element), not a temporary value",
-                        );
-                        error_expr(span)
-                    }
-                }
-            }
+            ast::UnOp::AddrOf => self.addr_of_expr(operand, span),
             // `!e` where `?(E!T)` is expected: the result, then wrapped (§6.4).
             ast::UnOp::MakeErr
                 if let Some(inner) = expect.map(|t| self.infer.shallow(t)).and_then(|t| t.optional_inner())
@@ -647,34 +588,116 @@ impl<'a, 's> FnCx<'a, 's> {
                 let r = self.unary(op, operand, Some(inner), span);
                 self.coerce(r, expect.unwrap())
             }
-            ast::UnOp::MakeErr => match expect.map(|t| self.infer.shallow(t)) {
-                Some(t) if matches!(t.kind(), TyKind::Result { .. }) => {
-                    let TyKind::Result { err, .. } = t.kind() else { unreachable!() };
-                    let err = *err;
-                    let v = self.expr(operand, Some(err));
-                    let vt = self.infer.resolve(v.ty);
-                    // `!e` with `e` of a type that lifts into the error union (§10.6).
-                    let v = if !vt.has_infer() && vt != err && self.coercion_steps(vt, err).is_none() {
-                        match self.lift_variant(vt, err) {
-                            Ok(i) => mk(err, tir::ExprKind::Variant { variant: i, payload: Some(Box::new(v)) }, span),
-                            Err(_) => self.coerce(v, err),
-                        }
-                    } else {
-                        self.coerce(v, err)
-                    };
-                    mk(t, tir::ExprKind::MakeErr(Box::new(v)), span)
-                }
-                _ => {
-                    let hint = if expect.is_none_or(|t| t.is_bool()) {
-                        " (`!e` makes an error; logical negation is `not e`)"
-                    } else {
-                        ""
-                    };
-                    self.error(span, format!("cannot infer the result type of `!e` here{}", hint));
-                    error_expr(span)
-                }
-            },
+            ast::UnOp::MakeErr => self.make_err_expr(operand, expect, span),
             ast::UnOp::Try => self.try_expr(operand, span),
+        }
+    }
+
+    /// `-x`.
+    fn neg_expr(&mut self, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
+        // A minus applied directly to a literal is part of the literal (§7.4.1).
+        let mut v = self.expr(operand, expect);
+        match &mut v.kind {
+            tir::ExprKind::Int(i) if is_literal(operand) || v.ty.is_infer() => {
+                *i = -i.clone();
+                v.span = span;
+                return v;
+            }
+            // Not for zero: exact rationals have no negative zero, and `-0.0` must keep its sign.
+            tir::ExprKind::UntypedFloat(r)
+                if (is_literal(operand) || v.ty.is_infer()) && !num_traits::Zero::is_zero(&**r) =>
+            {
+                *r = Rc::new(-(**r).clone());
+                v.span = span;
+                return v;
+            }
+            _ => {}
+        }
+        if self.infer.resolve(v.ty).is_vector() {
+            return self.vector_unary(ast::UnOp::Neg, v, span);
+        }
+        self.obligations.push(Obligation::Numeric { ty: v.ty, span, op: "-", int_only: false, signed_only: true });
+        mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(v) }, span)
+    }
+
+    /// `~x`.
+    fn bit_not_expr(&mut self, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
+        let v = self.expr(operand, expect);
+        let st = self.infer.resolve(v.ty);
+        if st.is_vector() {
+            return self.vector_unary(ast::UnOp::BitNot, v, span);
+        }
+        if let Some(u) = self.bits_operand(st, "~", span) {
+            let x = self.bits_convert(v, u);
+            let mut n = mk(u, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(x) }, span);
+            // Padding fields `_` stay zero (§5.10.5): only the named fields are complemented.
+            if let Some(mask) = self.bits_padding_mask(st) {
+                let m = mk(u, tir::ExprKind::Int(mask), span);
+                n = mk(u, tir::ExprKind::Binary { op: tir::BinOp::BitAnd, lhs: Box::new(n), rhs: Box::new(m) }, span);
+            }
+            return self.bits_convert(n, st);
+        }
+        self.obligations.push(Obligation::Numeric { ty: v.ty, span, op: "~", int_only: true, signed_only: false });
+        mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::BitNot, operand: Box::new(v) }, span)
+    }
+
+    /// `&place`.
+    fn addr_of_expr(&mut self, operand: &ast::Expr, span: Span) -> Expr {
+        let temp_ok = std::mem::take(&mut self.temp_ref_arg);
+        let v = self.expr(operand, None);
+        if self.reject_second_class(&v, "the target of `&`") {
+            return error_expr(span);
+        }
+        if let tir::ExprKind::Field { base, .. } = &v.kind
+            && let TyKind::Adt(id, _) = base.ty.kind()
+            && matches!(self.sema.prog.adts.get(id).map(|d| &d.kind), Some(tir::AdtKind::Struct { bits: Some(_), .. }))
+        {
+            self.error(span, "the fields of a `#bits` struct have no address (§5.10.5)");
+            return error_expr(span);
+        }
+        match self.place_mutability(&v) {
+            Some(m) => {
+                let ty = Ty::ptr(!m, v.ty);
+                mk(ty, tir::ExprKind::AddrOf(Box::new(v)), span)
+            }
+            // `f(&g(x))` for a `^const T` parameter: a temporary that lives until
+            // the call returns, as for a method's receiver (§7.10).
+            None if temp_ok => mk(Ty::ptr(true, v.ty), tir::ExprKind::AddrOfTemp(Box::new(v)), span),
+            None => {
+                self.error(span, "`&` needs a place (a variable, `p^`, field or element), not a temporary value");
+                error_expr(span)
+            }
+        }
+    }
+
+    /// `!e`: an error value of the expected result type.
+    fn make_err_expr(&mut self, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
+        match expect.map(|t| self.infer.shallow(t)) {
+            Some(t) if matches!(t.kind(), TyKind::Result { .. }) => {
+                let TyKind::Result { err, .. } = t.kind() else { unreachable!() };
+                let err = *err;
+                let v = self.expr(operand, Some(err));
+                let vt = self.infer.resolve(v.ty);
+                // `!e` with `e` of a type that lifts into the error union (§10.6).
+                let v = if !vt.has_infer() && vt != err && self.coercion_steps(vt, err).is_none() {
+                    match self.lift_variant(vt, err) {
+                        Ok(i) => mk(err, tir::ExprKind::Variant { variant: i, payload: Some(Box::new(v)) }, span),
+                        Err(_) => self.coerce(v, err),
+                    }
+                } else {
+                    self.coerce(v, err)
+                };
+                mk(t, tir::ExprKind::MakeErr(Box::new(v)), span)
+            }
+            _ => {
+                let hint = if expect.is_none_or(|t| t.is_bool()) {
+                    " (`!e` makes an error; logical negation is `not e`)"
+                } else {
+                    ""
+                };
+                self.error(span, format!("cannot infer the result type of `!e` here{}", hint));
+                error_expr(span)
+            }
         }
     }
 

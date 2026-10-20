@@ -71,17 +71,7 @@ impl<'a, 's> FnCx<'a, 's> {
             self.open_fns.pop();
         }
         let final_ret = self.ret;
-        if matches!(self.infer.resolve(final_ret).kind(), TyKind::Fn(_)) {
-            let at = match (&lit.sig.ret, &lit.body) {
-                (Some(r), _) => r.span,
-                (None, ast::FnBody::Expr(e)) => e.span,
-                (None, _) => lit.sig.span,
-            };
-            self.error(
-                at,
-                "a second-class function cannot be returned; return a function pointer `^fn(…)` instead (§11.6)",
-            );
-        }
+        self.reject_returned_closure(lit, final_ret);
         let (locals, performed, captures) = self.exit_fn();
         if iterator_arg && !performed.iter().any(|(e, _)| Some(e.effect) == self.sema.yield_effect) {
             let ty = self.infer.resolve(final_ret);
@@ -122,14 +112,7 @@ impl<'a, 's> FnCx<'a, 's> {
             _ => CallConv::C,
         };
         if callconv != CallConv::C {
-            if self.sema.within_sys(&effects) {
-                self.sema.prog.fns[fn_id.index()].callconv = callconv;
-            } else {
-                self.error(
-                    span,
-                    "a function with a calling convention other than C must have effects at most `{Sys}` (§19.2)",
-                );
-            }
+            self.set_literal_callconv(fn_id, callconv, &effects, span);
         }
         let fty =
             FnTy { params: params.iter().map(|p| p.ty).collect(), ret: final_ret, effects, variadic: false, callconv };
@@ -151,6 +134,33 @@ impl<'a, 's> FnCx<'a, 's> {
                 Ty::intern(TyKind::FnPtr(Box::new(fty)))
             };
             mk(ty, tir::ExprKind::FnRef(fn_id), span)
+        }
+    }
+
+    /// A literal cannot return a second-class function (§11.6).
+    fn reject_returned_closure(&mut self, lit: &ast::FnLit, final_ret: Ty) {
+        if matches!(self.infer.resolve(final_ret).kind(), TyKind::Fn(_)) {
+            let at = match (&lit.sig.ret, &lit.body) {
+                (Some(r), _) => r.span,
+                (None, ast::FnBody::Expr(e)) => e.span,
+                (None, _) => lit.sig.span,
+            };
+            self.error(
+                at,
+                "a second-class function cannot be returned; return a function pointer `^fn(…)` instead (§11.6)",
+            );
+        }
+    }
+
+    /// Gives the literal `fn_id` a calling convention other than C, which needs effects at most `{Sys}`.
+    fn set_literal_callconv(&mut self, fn_id: FnId, callconv: CallConv, effects: &EffectSet, span: Span) {
+        if self.sema.within_sys(effects) {
+            self.sema.prog.fns[fn_id.index()].callconv = callconv;
+        } else {
+            self.error(
+                span,
+                "a function with a calling convention other than C must have effects at most `{Sys}` (§19.2)",
+            );
         }
     }
 
