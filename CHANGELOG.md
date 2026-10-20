@@ -247,6 +247,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- Cranelift back end on x86-64 Linux and macOS: a foreign call whose 128-bit integer
+  argument finds a single integer register left is refused with a message, instead of
+  passing the value differently from C (the C back end and the interpreter handle it).
 - A line starting with `.name` that holds a raw string or a block comment before its `:=`
   (`` .Some(`x`) := v else … ``) is read as a pattern binding, instead of continuing the line
   before it.

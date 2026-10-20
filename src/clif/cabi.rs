@@ -184,6 +184,11 @@ impl<'a> CAbi<'a> {
                     match p.value_type {
                         t if t.is_float() => regs.float = regs.float.saturating_sub(1),
                         types::I128 => {
+                            // The C ABI then passes it whole on the stack and keeps the last
+                            // register for later arguments; Cranelift would split it.
+                            if x64 && !win64 && regs.int == 1 {
+                                return unsupported(span, format!("passing `{}` to C in the last integer register", t));
+                            }
                             if !x64 && regs.int % 2 == 1 {
                                 regs.int -= 1;
                             }

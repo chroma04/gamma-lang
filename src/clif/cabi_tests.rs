@@ -257,15 +257,16 @@ fn sysv_int128() {
 }
 
 /// An `__int128` that finds one register left goes to the stack whole and leaves that
-/// register to the next argument (psABI 3.2.3). The classification counts it as used, and
-/// Cranelift itself splits such a value between the register and the stack, so a call
-/// disagrees with C there.
+/// register to the next argument (psABI 3.2.3). Cranelift would split it between the
+/// register and the stack, so such a signature is refused rather than miscompiled.
 #[test]
-#[ignore = "an __int128 with one register left is split by Cranelift"]
 fn sysv_int128_with_one_register_left() {
-    let mut ty = Types::default();
-    let one_int = ty.strukt(&[i64t()]);
-    assert_eq!(ty.after(SYSV, &[ints(5), vec![i128t()]].concat(), one_int), parts(&[(I64, 0)]));
+    let ty = Types::default();
+    let err = ty.sig(SYSV, &[ints(5), vec![i128t()]].concat(), Ty::unit()).err().unwrap();
+    assert!(err.message.contains("in the last integer register"), "{}", err.message);
+    // With two registers left, or none, it is passed as C does.
+    assert!(ty.sig(SYSV, &[ints(4), vec![i128t()]].concat(), Ty::unit()).is_ok());
+    assert!(ty.sig(SYSV, &[ints(6), vec![i128t()]].concat(), Ty::unit()).is_ok());
 }
 
 // --- AArch64 ---------------------------------------------------------------------------
