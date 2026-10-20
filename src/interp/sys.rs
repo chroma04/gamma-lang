@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Open files and directories, by handle.
 #[derive(Default)]
 pub struct SysState {
-    files: HashMap<i64, std::fs::File>,
+    files: HashMap<i64, std::sync::Arc<std::fs::File>>,
     dirs: HashMap<i64, std::fs::ReadDir>,
     // Shared, so a blocking call can use one while other threads run (§19.6).
     streams: HashMap<i64, std::sync::Arc<std::net::TcpStream>>,
@@ -397,11 +397,12 @@ impl<'a> Machine<'a> {
                             .access_mode(GENERIC_READ);
                     }
                 }
-                let r = o.open(path);
+                // Opening a FIFO or a slow mount can block.
+                let r = self.without_gil(|| o.open(path));
                 let sys = &mut self.sys;
                 code(r.map(|f| {
                     let h = sys.handle();
-                    sys.files.insert(h, f);
+                    sys.files.insert(h, f.into());
                     h
                 }))
             }
@@ -414,8 +415,8 @@ impl<'a> Machine<'a> {
                 let h = self.int_arg(tys[0], &vals[0]);
                 let (ptr, len) = self.slice_parts(&vals[1]);
                 let mut buf = self.dest_buf(span, ptr, len)?;
-                let r = match self.sys.files.get_mut(&h) {
-                    Some(f) => f.read(&mut buf),
+                let r = match self.sys.files.get(&h).cloned() {
+                    Some(f) => self.without_gil(|| (&*f).read(&mut buf)),
                     None => Err(bad_handle()),
                 };
                 match r {
@@ -429,8 +430,8 @@ impl<'a> Machine<'a> {
             SysOp::FsWrite => {
                 let h = self.int_arg(tys[0], &vals[0]);
                 let data = self.read_str(span, &vals[1])?;
-                code(match self.sys.files.get_mut(&h) {
-                    Some(f) => f.write(&data).map(|n| n as i64),
+                code(match self.sys.files.get(&h).cloned() {
+                    Some(f) => self.without_gil(|| (&*f).write(&data)).map(|n| n as i64),
                     None => Err(bad_handle()),
                 })
             }
@@ -444,8 +445,8 @@ impl<'a> Machine<'a> {
                     2 => Ok(SeekFrom::End(off)),
                     _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
                 };
-                code(match (self.sys.files.get_mut(&h), from) {
-                    (Some(f), Ok(from)) => f.seek(from).map(|p| p as i64),
+                code(match (self.sys.files.get(&h), from) {
+                    (Some(f), Ok(from)) => (&**f).seek(from).map(|p| p as i64),
                     (None, _) => Err(bad_handle()),
                     (_, Err(err)) => Err(err),
                 })
@@ -556,15 +557,19 @@ impl<'a> Machine<'a> {
     /// A network service: its result, or an error code.
     fn net_op(&mut self, span: Span, op: SysOp, tys: &[Ty], vals: &[super::bytes::Bytes]) -> R<i64> {
         use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-        let addr = |m: &Self| -> R<std::io::Result<Vec<std::net::SocketAddr>>> {
+        // The host name and port; resolving the name can block, so it happens without the lock.
+        let addr = |m: &Self| -> R<(String, u16)> {
             let host = String::from_utf8_lossy(&m.read_str(span, &vals[0])?).into_owned();
             let port = m.int_arg(tys[1], &vals[1]) as u16;
-            Ok((host.as_str(), port).to_socket_addrs().map(|a| a.collect()))
+            Ok((host, port))
         };
         Ok(match op {
             SysOp::NetConnect => {
-                let a = addr(self)?;
-                let r = self.without_gil(|| a.and_then(|a| TcpStream::connect(&a[..])));
+                let (host, port) = addr(self)?;
+                let r = self.without_gil(|| {
+                    let a: Vec<_> = (host.as_str(), port).to_socket_addrs()?.collect();
+                    TcpStream::connect(&a[..])
+                });
                 let sys = &mut self.sys;
                 code(r.map(|s| {
                     let h = sys.handle();
@@ -573,7 +578,11 @@ impl<'a> Machine<'a> {
                 }))
             }
             SysOp::NetListen => {
-                let r = addr(self)?.and_then(|a| TcpListener::bind(&a[..]));
+                let (host, port) = addr(self)?;
+                let r = self.without_gil(|| {
+                    let a: Vec<_> = (host.as_str(), port).to_socket_addrs()?.collect();
+                    TcpListener::bind(&a[..])
+                });
                 let sys = &mut self.sys;
                 code(r.map(|l| {
                     let h = sys.handle();
@@ -641,8 +650,8 @@ impl<'a> Machine<'a> {
                     1 => std::net::Shutdown::Write,
                     _ => std::net::Shutdown::Both,
                 };
-                code(match self.sys.streams.get(&h) {
-                    Some(s) => s.shutdown(how).map(|_| 0),
+                code(match self.sys.streams.get(&h).cloned() {
+                    Some(s) => self.without_gil(|| s.shutdown(how)).map(|_| 0),
                     None => Err(bad_handle()),
                 })
             }

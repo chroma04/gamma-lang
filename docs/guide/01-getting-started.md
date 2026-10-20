@@ -353,6 +353,7 @@ Options of `gamma test`:
 - `--package=name` runs the tests of the dependency `name` instead, with the versions your package locks ([chapter 15](15-packages.md#commands)).
 - `--show-output` prints the output of passing tests too, and `--time` reports how long each test took.
 - `-j n` (or `--jobs=n`) runs `n` tests at a time, `0` meaning one per processor; the report stays in order.
+- `--timeout=seconds` fails a test (or benchmark) that runs longer than that, with `timed out after N s`; there is no limit unless you give one. Compiled tests are killed, along with the processes they started; the interpreter stops a test at its next call or loop iteration, so a test that is blocked in a system call (reading a pipe, say) is not interrupted.
 - `--coverage` counts the lines of the package that the tests run and prints a table; `--coverage=out.lcov` also writes an LCOV file.
 
 `gamma bench` takes the same file or directory and runs the top-level `bench` declarations the same way, reporting the time per run; it compiles through C in Fast mode unless you pass `--backend=interp` or `--mode`.

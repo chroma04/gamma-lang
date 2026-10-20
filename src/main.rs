@@ -68,6 +68,9 @@ options:
   --show-output               (test, bench) also print the output of the tests that pass
   --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; 0: one per processor;
                               the output is still in order)
+  --timeout=<seconds>         (test, bench) fail a test that runs longer than <seconds> (no
+                              limit by default; the interpreter cannot stop a test that is
+                              blocked in a system call, but native tests are always killed)
   --time                      (test, bench) print how long each test took and the total
   --coverage[=<file>]         (test) count the lines of the package that the tests run, with
                               the interpreter; print a table, and with <file> write LCOV
@@ -121,7 +124,7 @@ struct Options {
     command: String,
     file: Option<PathBuf>,
     /// Arguments for the program (`gamma run file.gm args…`).
-    program_args: Vec<String>,
+    program_args: Vec<std::ffi::OsString>,
     format: DiagFormat,
     dump: bool,
     /// `--backend=c` or `--backend=cranelift`: run natively.
@@ -144,6 +147,8 @@ struct Options {
     show_output: bool,
     /// `--jobs=n`: how many tests run at once.
     jobs: usize,
+    /// `--timeout=seconds`: the longest a test or benchmark may run.
+    timeout: Option<std::time::Duration>,
     /// `--time`: report how long tests take.
     time: bool,
     /// `--coverage[=file]`: count the lines the tests run; the LCOV file to write, if any.
@@ -177,13 +182,37 @@ fn parse_jobs(text: &str) -> Result<usize, String> {
     }
 }
 
+/// The time limit of a test: `--timeout=seconds`, a positive number.
+fn parse_timeout(text: &str) -> Result<std::time::Duration, String> {
+    match text.parse::<f64>() {
+        Ok(s) if s > 0.0 && s < 1e9 => Ok(std::time::Duration::from_secs_f64(s)),
+        _ => Err(format!("`--timeout` needs a positive number of seconds, not `{}`", text)),
+    }
+}
+
 fn invalid_value(option: &str, value: &str, expected: &str) -> String {
     format!("invalid value `{}` for {} (expected {})", value, option, expected)
 }
 
+/// An argument of gamma itself, which must be text.
+fn text_arg(arg: std::ffi::OsString) -> Result<String, String> {
+    arg.into_string().map_err(|a| format!("the argument `{}` is not valid UTF-8", a.to_string_lossy()))
+}
+
+/// The bytes of an argument for the program: exact on Unix, where arguments are bytes.
+fn arg_bytes(arg: &std::ffi::OsStr) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        arg.as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    arg.to_string_lossy().into_owned().into_bytes()
+}
+
 fn parse_args() -> Result<Options, String> {
-    let mut args = std::env::args().skip(1);
-    let command = args.next().ok_or_else(|| "missing command".to_string())?;
+    let mut args = std::env::args_os().skip(1);
+    let command = text_arg(args.next().ok_or_else(|| "missing command".to_string())?)?;
     let bench = command == "bench";
     let mut opts = Options {
         command,
@@ -202,6 +231,7 @@ fn parse_args() -> Result<Options, String> {
         package: None,
         show_output: false,
         jobs: 1,
+        timeout: None,
         time: false,
         coverage: None,
         target: None,
@@ -217,10 +247,12 @@ fn parse_args() -> Result<Options, String> {
     };
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
+        // What follows the file of `gamma run` is the program's, whatever its bytes are.
         if opts.file.is_some() && opts.command == "run" {
             opts.program_args.push(arg);
             continue;
         }
+        let arg = text_arg(arg)?;
         match arg.as_str() {
             "--dump" => opts.dump = true,
             "--offline" => opts.offline = true,
@@ -234,9 +266,10 @@ fn parse_args() -> Result<Options, String> {
                 opts.coverage = Some(Some(PathBuf::from(&a["--coverage=".len()..])));
             }
             "-j" | "--jobs" => {
-                let n = args.next().ok_or_else(|| format!("`{}` needs a number", arg))?;
+                let n = text_arg(args.next().ok_or_else(|| format!("`{}` needs a number", arg))?)?;
                 opts.jobs = parse_jobs(&n)?;
             }
+            a if a.starts_with("--timeout=") => opts.timeout = Some(parse_timeout(&a["--timeout=".len()..])?),
             a if a.starts_with("--jobs=") => opts.jobs = parse_jobs(&a["--jobs=".len()..])?,
             "--backend=c" => (opts.c_backend, opts.cranelift) = (true, false),
             "--backend=cranelift" => (opts.c_backend, opts.cranelift) = (true, true),
@@ -358,33 +391,37 @@ fn print_help(topic: &str) {
 fn compiler_main() -> ExitCode {
     #[cfg(unix)]
     default_sigpipe();
-    // Every argument is read as text below (`std::env::args` panics on others).
-    if let Some(a) = std::env::args_os().find(|a| a.to_str().is_none()) {
+    // Arguments are read as text (lossily here), except those that `gamma run` passes on to
+    // the program; `parse_args` rejects any other that is not valid UTF-8.
+    let argv: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
+    if argv.get(1).map(String::as_str) != Some("run")
+        && let Some(a) = std::env::args_os().find(|a| a.to_str().is_none())
+    {
         eprintln!("gamma: the argument `{}` is not valid UTF-8", a.to_string_lossy());
         return ExitCode::from(2);
     }
     // The language server catches panics per request and keeps the default hook's log.
-    if std::env::args().nth(1).as_deref() != Some("lsp") {
+    if argv.get(1).map(String::as_str) != Some("lsp") {
         gamma::ice::install();
         if std::env::var_os("GAMMA_DEBUG_PANIC").is_some() {
             panic!("requested by GAMMA_DEBUG_PANIC");
         }
     }
-    if let Some(cmd) = help_requested(&std::env::args().collect::<Vec<_>>()) {
+    if let Some(cmd) = help_requested(&argv) {
         print_help(&cmd);
         return ExitCode::SUCCESS;
     }
-    if std::env::args().nth(1).as_deref() == Some("fmt") {
-        return fmt_command(std::env::args().skip(2).collect());
+    if argv.get(1).map(String::as_str) == Some("fmt") {
+        return fmt_command(argv[2..].to_vec());
     }
-    if std::env::args().nth(1).as_deref() == Some("doc") {
-        return gamma::doc::run(&std::env::args().skip(2).collect::<Vec<_>>());
+    if argv.get(1).map(String::as_str) == Some("doc") {
+        return gamma::doc::run(&argv[2..]);
     }
-    if let Some(cmd) = std::env::args().nth(1).filter(|c| gamma::pkg::cli::is_package_command(c)) {
-        return gamma::pkg::cli::run(&cmd, &std::env::args().skip(2).collect::<Vec<_>>());
+    if let Some(cmd) = argv.get(1).filter(|c| gamma::pkg::cli::is_package_command(c)) {
+        return gamma::pkg::cli::run(cmd, &argv[2..]);
     }
-    if std::env::args().nth(1).as_deref() == Some("lsp") {
-        if let Some(a) = std::env::args().nth(2) {
+    if argv.get(1).map(String::as_str) == Some("lsp") {
+        if let Some(a) = argv.get(2) {
             eprintln!("gamma: unknown option `{}`\n\n{}", a, USAGE);
             return ExitCode::from(2);
         }
@@ -676,7 +713,8 @@ fn run(opts: &Options) -> ExitCode {
     let prog = gamma::sema::analyze(&mut sess, path);
     eprint!("{}", sess.render_diagnostics(opts.format));
     let Some(prog) = prog else { return ExitCode::FAILURE };
-    let cfg = gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None };
+    let cfg =
+        gamma::interp::RunConfig { target: prog.target.clone(), mode: opts.mode, step_budget: None, deadline: None };
     // The interpreter calls C itself where it can (§19.2); it cannot run assembly, or foreign
     // code it cannot find or describe to libffi, so such programs run natively. The C sources
     // of the packages are loaded as a shared library, unless the program is not for the host
@@ -695,8 +733,8 @@ fn run(opts: &Options) -> ExitCode {
         return run_native(&sess, &prog, &toolchain, &extras, path, opts);
     }
     gamma::interp::set_owns_process(true);
-    let mut args = vec![path.display().to_string()];
-    args.extend(opts.program_args.iter().cloned());
+    let mut args = vec![path.display().to_string().into_bytes()];
+    args.extend(opts.program_args.iter().map(|a| arg_bytes(a)));
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     match gamma::interp::run_main(&prog, &cfg, &args, &mut stdout, &mut stderr) {

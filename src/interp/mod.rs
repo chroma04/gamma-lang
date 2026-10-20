@@ -79,7 +79,13 @@ pub struct RunConfig {
     pub target: Target,
     pub mode: Mode,
     pub step_budget: Option<u64>,
+    /// When the run must end: it traps with [`DEADLINE_TRAP`] at the first call or loop
+    /// iteration after that time. A program blocked in a system call is not interrupted.
+    pub deadline: Option<std::time::Instant>,
 }
+
+/// The message of the trap that ends a run at its deadline.
+pub const DEADLINE_TRAP: &str = "the time limit was exceeded";
 
 /// Build mode (spec §1.4): checked operations trap in `Debug`, `Checked` and
 /// `Safe` and are skipped (giving unspecified values) in `Fast`. Integer division
@@ -152,7 +158,7 @@ pub(super) fn stack_floor(size: usize, margin: usize) -> usize {
 pub fn run_main(
     prog: &Program,
     cfg: &RunConfig,
-    args: &[String],
+    args: &[Vec<u8>],
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Outcome {
@@ -168,7 +174,7 @@ pub fn run_entry(
     prog: &Program,
     cfg: &RunConfig,
     entry: FnId,
-    args: &[String],
+    args: &[Vec<u8>],
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Outcome {
@@ -197,7 +203,7 @@ fn run_main_inner(
     prog: &Program,
     cfg: &RunConfig,
     main: FnId,
-    args: &[String],
+    args: &[Vec<u8>],
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Outcome {
@@ -233,6 +239,7 @@ fn run_main_inner(
     if let Some(w) = m.out.as_mut() {
         let _ = w.flush();
     }
+    m.abandon_children();
     // A program whose output was lost does not end successfully.
     let Outcome::Exit(mut code) = outcome else { return outcome };
     if let Some(e) = out_failure.borrow().as_ref() {

@@ -173,7 +173,7 @@ impl Repl {
     /// part is hidden when `replayed`.
     fn run(&self, c: &Compiled, replayed: bool) -> bool {
         let prog = c.prog.as_ref().expect("a checked program");
-        let cfg = RunConfig { target: prog.target.clone(), mode: self.opts.mode, step_budget: None };
+        let cfg = RunConfig { target: prog.target.clone(), mode: self.opts.mode, step_budget: None, deadline: None };
         if let Err(why) = interp::foreign_supported(prog, &cfg) {
             eprintln!("error: cannot run this in the REPL: {}", why);
             return false;
@@ -182,7 +182,7 @@ impl Repl {
         let outcome = {
             let mut fo = report::Filter::new(&mut out, replayed);
             let mut fe = report::Filter::new(&mut err, replayed);
-            let o = interp::run_main(prog, &cfg, &["repl".to_string()], &mut fo, &mut fe);
+            let o = interp::run_main(prog, &cfg, &[b"repl".to_vec()], &mut fo, &mut fe);
             let _ = fo.flush();
             let _ = fe.flush();
             o

@@ -28,6 +28,9 @@ const THREAD_MARGIN: usize = 16 << 20;
 /// How many calls or loop iterations a thread runs before letting others in.
 const SLICE: u32 = 2000;
 
+/// How many calls or loop iterations pass between two looks at the clock for a deadline.
+const CHECK_TIME: u32 = 1024;
+
 /// A fair lock: tickets are served in the order they were drawn.
 pub struct Gil {
     state: Mutex<(u64, u64)>, // (ticket being served, next ticket)
@@ -71,14 +74,26 @@ impl<'a> Machine<'a> {
     /// Called at each call and loop iteration: now and then, lets the other threads run.
     #[inline(always)]
     pub fn tick(&mut self) -> R<()> {
-        if self.threads.gil.is_none() {
+        if self.threads.gil.is_none() && self.deadline.is_none() {
             return Ok(());
         }
-        self.tick_threaded()
+        self.tick_slow()
     }
 
     #[inline(never)]
-    fn tick_threaded(&mut self) -> R<()> {
+    fn tick_slow(&mut self) -> R<()> {
+        if let Some(d) = self.deadline {
+            self.since_check += 1;
+            if self.since_check >= CHECK_TIME {
+                self.since_check = 0;
+                if std::time::Instant::now() >= d {
+                    return Err(Box::new(Flow::Trap(Trap::new(super::DEADLINE_TRAP, Span::DUMMY))));
+                }
+            }
+        }
+        if self.threads.gil.is_none() {
+            return Ok(());
+        }
         self.threads.since_yield += 1;
         if self.threads.since_yield < SLICE {
             return Ok(());

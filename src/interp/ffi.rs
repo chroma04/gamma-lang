@@ -889,7 +889,9 @@ impl<'a> Machine<'a> {
             let m = self.ffi.mirrors.get_mut(&base).unwrap();
             if m.fresh {
                 m.fresh = false;
-                m.snap = m.buf.bytes().to_vec();
+                // The buffer of the previous snapshot is reused.
+                m.snap.clear();
+                m.snap.extend_from_slice(m.buf.bytes());
             }
         }
     }
@@ -897,22 +899,36 @@ impl<'a> Machine<'a> {
     /// Copies what C changed in the mirrors the finished call activated back to the
     /// interpreter's memory.
     fn finish_mirrors(&mut self, bases: Vec<u64>) {
+        /// Compared and copied in pieces of this size, so that only what changed is touched.
+        const CHUNK: usize = 4096;
         for base in bases {
-            let (host, snap, size, elem) = {
+            let (hostp, snap, size, elem) = {
                 let m = self.ffi.mirrors.get_mut(&base).unwrap();
                 m.active = false;
-                (m.buf.bytes().to_vec(), std::mem::take(&mut m.snap), m.size, m.elem)
+                (m.buf.ptr, std::mem::take(&mut m.snap), m.size, m.elem)
             };
-            if snap.len() != size || host == snap || !self.mem.is_live(base) {
+            // SAFETY: the mirror's buffer holds `size` bytes and lives as long as the mirror,
+            // which nothing below removes; no code below writes to it.
+            let host = unsafe { std::slice::from_raw_parts(hostp, size) };
+            if snap.len() != size || host == &snap[..] || !self.mem.is_live(base) {
                 self.ffi.mirrors.get_mut(&base).unwrap().snap = snap;
                 continue;
             }
-            let Ok(cur) = self.mem.read(base, size as u64, 1).map(|s| s.to_vec()) else { continue };
-            let mut cur = cur;
-            for i in 0..size {
-                if host[i] != snap[i] {
-                    cur[i] = host[i];
+            // Only the bytes C changed are written, so what the interpreter changed meanwhile
+            // (in a callback, or in another thread) in the rest survives.
+            for (i, (h, s)) in host.chunks(CHUNK).zip(snap.chunks(CHUNK)).enumerate() {
+                if h == s {
+                    continue;
                 }
+                let at = i * CHUNK;
+                let Ok(cur) = self.mem.read(base + at as u64, h.len() as u64, 1).map(|c| c.to_vec()) else { continue };
+                let mut cur = cur;
+                for j in 0..h.len() {
+                    if h[j] != s[j] {
+                        cur[j] = h[j];
+                    }
+                }
+                let _ = self.mem.write(base + at as u64, &cur, 1);
             }
             if let Some(t) = elem {
                 let es = self.size_of(t);
@@ -922,16 +938,15 @@ impl<'a> Machine<'a> {
                     while at + es <= size {
                         for s in slots.iter() {
                             let off = at + s.off;
-                            if off + 8 <= size && word(&host, off) != word(&snap, off) {
-                                let v = self.virt_ptr(word(&host, off), s.kind);
-                                set_word(&mut cur, off, v);
+                            if off + 8 <= size && word(host, off) != word(&snap, off) {
+                                let v = self.virt_ptr(word(host, off), s.kind);
+                                let _ = self.mem.write(base + off as u64, &v.to_le_bytes(), 1);
                             }
                         }
                         at += es;
                     }
                 }
             }
-            let _ = self.mem.write(base, &cur, 1);
             self.ffi.mirrors.get_mut(&base).unwrap().snap = snap;
         }
     }
