@@ -1,0 +1,35 @@
+// Integer `pow` takes time proportional to the bit length of the exponent, and every flavour
+// agrees on the result at the largest exponents.
+main :: fn() needs Out {
+    n: u32 = @black_box(4294967295)
+    even: u32 = @black_box(4294967294)
+    one: u64 = @black_box(1)
+    zero: i32 = @black_box(0)
+    minus: i32 = @black_box(-1)
+    print("{} {} {}\n", one.pow(n), zero.pow(n), zero.pow(0))
+    print("{} {}\n", minus.pow(n), minus.pow(even))
+    print("{} {}\n", minus.pow_wrap(n), minus.pow_sat(even))
+
+    two: u64 = @black_box(2)
+    print("{} {} {}\n", two.pow(63), two.pow_wrap(64), two.pow_wrap(65))
+    print("{} {}\n", two.pow_checked(63), two.pow_checked(64))
+    print("{} {}\n", two.pow_sat(n), two.pow_wrap(n))
+
+    three: i32 = @black_box(3)
+    neg: i32 = @black_box(-3)
+    print("{} {}\n", three.pow_wrap(n), neg.pow_wrap(n))
+    print("{} {} {}\n", three.pow_sat(n), neg.pow_sat(n), neg.pow_sat(even))
+    print("{} {}\n", three.pow_checked(n), neg.pow_checked(19))
+    print("{} {}\n", neg.pow_checked(20), neg.pow_checked(21))
+
+    m: i8 = @black_box(-2)
+    print("{} {} {}\n", m.pow(7), m.pow_checked(7), m.pow_checked(8))
+    print("{} {}\n", m.pow_sat(8), m.pow_sat(9))
+    wide: u128 = @black_box(2)
+    print("{} {}\n", wide.pow(127), wide.pow_checked(128))
+    sw: i128 = @black_box(-2)
+    print("{} {}\n", sw.pow(127), sw.pow_checked(127))
+
+    seven: u8 = @black_box(7)
+    print("{} {}\n", seven.pow_wrap(n), seven.pow_checked(3))
+}

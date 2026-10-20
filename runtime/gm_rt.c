@@ -1672,8 +1672,16 @@ GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, s
 }
 #else
 
+/* The first failure to write the standard output or error (an errno value; a closed pipe is
+ * not one: its reader has gone away), which makes the process end with status 1. */
+static int gm_out_errno, gm_err_errno;
+
+static void gm_note_failure(int *slot, int e) {
+    if (e != EPIPE && *slot == 0) *slot = e != 0 ? e : EIO;
+}
+
 GM_API void gm_write_out(const uint8_t *p, size_t len) {
-    if (len > 0) fwrite(p, 1, len, stdout);
+    if (len > 0 && fwrite(p, 1, len, stdout) != len) gm_note_failure(&gm_out_errno, errno);
 #if defined(__FILC__)
     /* Fil-C ends the process on a memory error without running any code of ours, so
      * output must not wait in the buffer for a trap or exit to flush it. */
@@ -1682,11 +1690,26 @@ GM_API void gm_write_out(const uint8_t *p, size_t len) {
 }
 
 GM_API void gm_write_err(const uint8_t *p, size_t len) {
-    if (len > 0) fwrite(p, 1, len, stderr);
-    fflush(stderr);
+    if (len > 0 && fwrite(p, 1, len, stderr) != len) gm_note_failure(&gm_err_errno, errno);
+    if (fflush(stderr) != 0) gm_note_failure(&gm_err_errno, errno);
 }
 
-GM_API void gm_flush(void) { fflush(stdout); }
+GM_API void gm_flush(void) {
+    if (fflush(stdout) != 0) gm_note_failure(&gm_out_errno, errno);
+}
+
+/* The exit status of a program whose entry returned `status`: 1 if writing the standard output
+ * or error failed, after flushing what is buffered, and saying so. */
+static int gm_finish_main(int status) {
+    gm_flush();
+    if (gm_out_errno != 0) {
+        fprintf(stderr, "gamma: cannot write the standard output: %s\n", strerror(gm_out_errno));
+        if (status == 0) status = 1;
+    }
+    if (gm_err_errno != 0 && status == 0) status = 1;
+    fflush(stderr);
+    return status;
+}
 
 typedef struct { const uint8_t *ptr; uintptr_t len; } gm_rt_str;
 
@@ -3676,8 +3699,8 @@ GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
  * (gm_wasi_drive), which the context switch needs at the bottom of the stack. */
 static int gm_wasi_drive(int (*f)(gm_node *), gm_node *cx);
 
-GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) { return f(cx); }
-GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx) { return gm_wasi_drive(f, cx); }
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) { return gm_finish_main(f(cx)); }
+GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx) { return gm_finish_main(gm_wasi_drive(f, cx)); }
 
 GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     (void)f; (void)arg;
@@ -3747,9 +3770,9 @@ GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
     pthread_t t;
     int r = pthread_create(&t, &attr, gm_main_thread, &c);
     pthread_attr_destroy(&attr);
-    if (r != 0) return f(cx);
+    if (r != 0) return gm_finish_main(f(cx));
     pthread_join(t, NULL);
-    return c.status;
+    return gm_finish_main(c.status);
 }
 
 /* A thread's handle is 1 + its index in this table, rather than its address: a pointer
@@ -3935,10 +3958,10 @@ GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
     gm_main_call c = {f, cx, 0};
     uintptr_t h = _beginthreadex(NULL, (unsigned)GM_MAIN_STACK_SIZE, gm_main_thread, &c,
                                  STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
-    if (h == 0) return f(cx);
+    if (h == 0) return gm_finish_main(f(cx));
     WaitForSingleObject((HANDLE)h, INFINITE);
     CloseHandle((HANDLE)h);
-    return c.status;
+    return gm_finish_main(c.status);
 }
 
 /* A thread's handle is 1 + its index in this table. A joined thread's slot is reused. */
