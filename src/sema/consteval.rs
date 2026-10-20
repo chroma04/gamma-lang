@@ -9,9 +9,10 @@
 use super::Sema;
 use crate::diag::Diagnostic;
 use crate::interp::{self, Mode, RunConfig};
+use crate::layout::Layouts;
 use crate::source::Span;
-use crate::tir::{self, ConstValue, Expr, ExprKind, FnId, StaticData};
-use crate::types::{ConstKey, Ty, TyKind};
+use crate::tir::{self, AdtDef, AdtKind, ConstValue, Expr, ExprKind, FnId, StaticData};
+use crate::types::{AdtId, ConstKey, FloatTy, Ty, TyKind};
 use std::collections::HashSet;
 
 /// The default number of interpreter steps one compile-time evaluation may
@@ -70,12 +71,16 @@ impl<'s> Sema<'s> {
     }
 
     /// The key of plain data of type `ty` stored in `bytes` in the target's layout. The
-    /// bytes of an integer are kept little-endian in the key, whatever the target.
+    /// bytes of an integer are kept little-endian in the key, whatever the target. Values
+    /// that compare equal with `is` (§5.18) have equal keys: `-0.0` is keyed as `0.0`, every
+    /// NaN as one NaN, and padding bytes as zeros.
     pub fn const_key_of_bytes(&self, ty: Ty, bytes: &[u8]) -> ConstKey {
         if ty.is_integer() {
             ConstKey::Bytes(ty, crate::layout::int_bytes_swap_order(bytes, self.target.little_endian).into())
         } else {
-            ConstKey::Bytes(ty, bytes.into())
+            let mut canon = vec![0u8; bytes.len()];
+            self.with_layouts(|l| canonical_bytes(l, &self.prog.adts, ty, bytes, &mut canon));
+            ConstKey::Bytes(ty, canon.into())
         }
     }
 
@@ -388,4 +393,76 @@ fn depends_on_params(e: &Expr) -> bool {
         || matches!(&e.kind, ExprKind::TypeIs { .. } | ExprKind::IntLimit { .. } | ExprKind::TypeName { .. });
     e.for_each_child(&mut |c| found |= depends_on_params(c));
     found
+}
+
+type AdtMap = std::collections::HashMap<AdtId, AdtDef>;
+
+/// Copies the bytes of a value of type `ty` from `src` to `dst` (zeroed, of the same
+/// length), leaving padding zero and giving equal floats equal bytes.
+fn canonical_bytes(l: &Layouts, adts: &AdtMap, ty: Ty, src: &[u8], dst: &mut [u8]) {
+    let n = src.len().min(dst.len());
+    match ty.kind() {
+        TyKind::Float(f) => {
+            let (bits, man) = match f {
+                FloatTy::F16 => (16, 10),
+                FloatTy::F32 => (32, 23),
+                FloatTy::F64 => (64, 52),
+            };
+            let size = bits / 8;
+            if n < size {
+                return;
+            }
+            let little = l.target.little_endian;
+            let mut raw = 0u64;
+            for i in 0..size {
+                let b = if little { src[size - 1 - i] } else { src[i] };
+                raw = raw << 8 | b as u64;
+            }
+            let mantissa = raw & ((1 << man) - 1);
+            let exp_ones = (raw >> man) & ((1 << (bits - 1 - man)) - 1) == (1 << (bits - 1 - man)) - 1;
+            let canon = if exp_ones && mantissa != 0 {
+                // The quiet NaN with no payload.
+                (((1u64 << (bits - 1 - man)) - 1) << man) | (1 << (man - 1))
+            } else if raw & !(1 << (bits - 1)) == 0 {
+                0
+            } else {
+                raw
+            };
+            for i in 0..size {
+                let b = (canon >> (8 * i)) as u8;
+                dst[if little { i } else { size - 1 - i }] = b;
+            }
+        }
+        TyKind::Array { elem, .. } => {
+            let size = l.size_of(*elem) as usize;
+            if size > 0 {
+                for (s, d) in src.chunks_exact(size).zip(dst.chunks_exact_mut(size)) {
+                    canonical_bytes(l, adts, *elem, s, d);
+                }
+            }
+        }
+        TyKind::Tuple { elems, .. } => {
+            let offsets = l.layout(ty).offsets;
+            for (e, off) in elems.iter().zip(offsets) {
+                canonical_field(l, adts, *e, off as usize, src, dst);
+            }
+        }
+        TyKind::Adt(id, _) => match adts.get(id).map(|d| &d.kind) {
+            Some(AdtKind::Struct { fields, bits: None, .. }) => {
+                let offsets = l.layout(ty).offsets;
+                for (f, off) in fields.iter().zip(offsets) {
+                    canonical_field(l, adts, f.ty, off as usize, src, dst);
+                }
+            }
+            _ => dst[..n].copy_from_slice(&src[..n]),
+        },
+        _ => dst[..n].copy_from_slice(&src[..n]),
+    }
+}
+
+fn canonical_field(l: &Layouts, adts: &AdtMap, ty: Ty, off: usize, src: &[u8], dst: &mut [u8]) {
+    let end = off.saturating_add(l.size_of(ty) as usize);
+    if end <= src.len() && end <= dst.len() {
+        canonical_bytes(l, adts, ty, &src[off..end], &mut dst[off..end]);
+    }
 }

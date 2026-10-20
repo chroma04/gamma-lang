@@ -348,7 +348,11 @@ impl<'s> Sema<'s> {
                     let r = num_rational::BigRational::from_integer(v.clone());
                     e.kind = tir::ExprKind::UntypedFloat(std::rc::Rc::new(r));
                 } else if !super::finalize::int_fits(v, e.ty, &self.target) {
-                    let msg = format!("the literal {} does not fit in `{}` (in an instantiation used here)", v, e.ty);
+                    let msg = format!(
+                        "the literal {} does not fit in `{}` (in an instantiation used here)",
+                        super::untyped::show_int(v),
+                        e.ty
+                    );
                     self.error(cx.span, msg);
                 }
             }
@@ -1385,7 +1389,7 @@ impl<'a, 's> FnCx<'a, 's> {
             crate::types::ConstKey::Bytes(t, _) if t.is_integer() && ty.is_integer() => {
                 let i = k.as_int()?;
                 if !super::finalize::int_fits(&i, ty, &self.sema.target) {
-                    self.error(span, format!("`{}` = {} does not fit in `{}`", name, i, ty));
+                    self.error(span, format!("`{}` = {} does not fit in `{}`", name, super::untyped::show_int(&i), ty));
                     return None;
                 }
                 let size = self.sema.with_layouts(|l| l.size_of(ty));

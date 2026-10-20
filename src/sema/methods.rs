@@ -390,11 +390,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 (take_expr(recv), *elem, c)
             }
             TyKind::Ptr { pointee, is_const } if pointee.is_array() => {
-                let (TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. }) = pointee.kind() else {
-                    unreachable!()
-                };
-                let d = mk(*pointee, tir::ExprKind::Deref(Box::new(take_expr(recv))), span);
-                (d, *elem, *is_const)
+                let (d, elem) = super::seq::deref_array_ptr(take_expr(recv), *pointee, span);
+                (d, elem, *is_const)
             }
             _ => return None,
         };

@@ -1528,9 +1528,8 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             n if (self.sema.modules[self.module.0 as usize].is_prelude
                 || self.sema.modules[self.module.0 as usize].is_std)
-                && tir::SysOp::ALL.iter().any(|op| op.signature().0 == n) =>
+                && let Some(&op) = tir::SysOp::ALL.iter().find(|op| op.signature().0 == n) =>
             {
-                let op = *tir::SysOp::ALL.iter().find(|op| op.signature().0 == n).unwrap();
                 let (_, params, ret) = op.signature();
                 if args.len() != params.len() {
                     self.error(span, format!("`@{}` takes {} argument(s)", n, params.len()));
