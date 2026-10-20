@@ -38,7 +38,7 @@ jobs:
           - os: windows-latest
             asset: windows-x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Check that the tag matches the crate version
         if: startsWith(github.ref, 'refs/tags/')
@@ -139,7 +139,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check that CI passed on the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
