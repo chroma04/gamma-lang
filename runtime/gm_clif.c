@@ -201,6 +201,10 @@ static int64_t gm_clif_tag(const gm_type *t, const uint8_t *v) {
     return tag;
 }
 
+/* The address of the calling thread's `errno`, for a foreign `#global errno`: the C
+ * library makes it a thread-local variable or a function call, not a symbol to link with. */
+GM_API int *gm_clif_errno(void) { return &errno; }
+
 GM_API bool gm_clif_eq(const gm_type *t, const uint8_t *a, const uint8_t *b) {
     switch (t->kind) {
     case GM_K_INT: return gm_clif_int(t, a) == gm_clif_int(t, b);

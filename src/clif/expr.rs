@@ -733,6 +733,12 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
                 }
                 _ => self.local_addr(*l),
             },
+            // The calling thread's `errno`, through the C library (see `gm_clif_errno`).
+            ExprKind::Global(id)
+                if self.g.prog.globals[id.index()].link_name.is_some_and(|l| l.as_str() == "errno") =>
+            {
+                Ok(self.rt_call("gm_clif_errno", ">p", &[])[0])
+            }
             ExprKind::Global(id) => {
                 let (d, tls) = self.g.global_data(id.0)?;
                 Ok(if tls { self.tls_addr(d) } else { self.data_addr(d) })

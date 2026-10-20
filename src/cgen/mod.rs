@@ -550,6 +550,12 @@ impl<'a> Gen<'a> {
         }
         for (i, gl) in self.prog.globals.iter().enumerate() {
             let (size, align) = (self.ty.size(gl.ty), self.ty.align(gl.ty).max(gl.align.unwrap_or(1)).max(1));
+            // `errno` is the C library's macro for the calling thread's variable, not a
+            // symbol to link with (it is thread-local or a function call).
+            if gl.link_name.is_some_and(|l| l.as_str() == "errno") {
+                let _ = writeln!(decls, "#define gm_g{} ((uint8_t *)&errno)", i);
+                continue;
+            }
             if let Some(link) = gl.link_name {
                 let _ = writeln!(
                     decls,

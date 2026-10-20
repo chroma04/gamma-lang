@@ -275,6 +275,9 @@ Versions and what each kind of change means are described in
   alternate signal stack is freed when the thread ends; joining or detaching an unknown
   thread handle fails instead of crashing; a `connect` interrupted by a signal completes;
   the working directory may be longer than 4096 bytes.
+- `#global errno` in a `foreign` block (as in the specification's example) links and reads
+  the calling thread's `errno` on the C and Cranelift back ends; glibc's `errno` is not a
+  plain symbol, so linking failed.
 - Cranelift back end: constants are placed in read-only data, and `@cpu_count` returns a
   32-bit value as declared.
 - Non-relative imports (`std/../..`, `dep//abs`) can no longer leave the directory of

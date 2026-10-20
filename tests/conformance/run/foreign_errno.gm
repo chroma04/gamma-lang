@@ -1,0 +1,16 @@
+//! os: unix
+// `#global errno` (§19.3) reads the calling thread's `errno`, which C libraries make a
+// thread-local variable or a function call rather than a symbol to link with.
+c :: import "std/c"
+
+libc :: foreign "c" {
+    #global errno: c.c_int
+    open :: fn(path: cstring, flags: c.c_int) -> c.c_int needs not
+}
+
+main :: fn() needs Out + Sys {
+    libc.errno = 0
+    r := libc.open(c"/nonexistent/gamma-errno-test", 0)
+    // ENOENT is 2 on every Unix the tests run on.
+    print("{} {}\n", r, libc.errno)
+}
