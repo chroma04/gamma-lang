@@ -1,4 +1,5 @@
 //! ptr_bits: 64
+//! safe: skip Fil-C stops a program that asks for an alignment over 256 KiB
 // An allocation the host cannot provide is a null result, whatever makes it impossible:
 // here an alignment no address space can honour (§12.3).
 main :: fn() needs Out + Alloc {
