@@ -2094,6 +2094,8 @@ typedef struct {
 static gm_table gm_dirs;
 
 GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
+    /* No directory has the empty name (WASI's opendir would open the current one). */
+    if (len == 0) return gm_io_error(ENOENT);
     char *s = gm_path(path, len);
     if (s == NULL) return gm_io_error(EINVAL);
     DIR *d = opendir(s);

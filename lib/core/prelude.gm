@@ -205,7 +205,19 @@ SystemIo :: struct {}
 /// The result of a system read or write: a count, or an error code.
 io_result :: fn(n: i64) -> IoError!usize {
     if n >= 0 { return n.trunc(usize) }
-    if n <= -1000 { return !.Other((-1000 - n).trunc(i32)) }
+    return !io_error(n)
+}
+
+/// The result of a system call that opens something: a handle, which uses all 63 bits
+/// (it is never truncated to `usize`), or an error code.
+io_handle :: fn(n: i64) -> IoError!i64 {
+    if n >= 0 { return n }
+    return !io_error(n)
+}
+
+/// The error of the negative result `n` of a system call.
+io_error :: fn(n: i64) -> IoError {
+    if n <= -1000 { return .Other((-1000 - n).trunc(i32)) }
     e: IoError = match -1 - n {
         0 => .NotFound
         1 => .PermissionDenied
@@ -221,7 +233,7 @@ io_result :: fn(n: i64) -> IoError!usize {
         11 => .TimedOut
         _ => .Unsupported
     }
-    return !e
+    return e
 }
 
 handler In for SystemIo {
@@ -269,8 +281,8 @@ handler Fs for SystemIo {
         if o.create { flags |= 8 }
         if o.truncate { flags |= 16 }
         if o.exclusive { flags |= 32 }
-        h := try io_result(@fs_open(path, flags))
-        return File(handle: h.trunc(i64))
+        h := try io_handle(@fs_open(path, flags))
+        return File(handle: h)
     }
     close(self, f) => { _ = @fs_close(f.handle) }
     read(self, f, buf) => io_result(@fs_read(f.handle, buf))
@@ -294,8 +306,8 @@ handler Fs for SystemIo {
     make_dir(self, path) => io_unit(@fs_make_dir(path))
     remove_dir(self, path) => io_unit(@fs_remove_dir(path))
     open_dir(self, path) => {
-        h := try io_result(@fs_open_dir(path))
-        return Dir(handle: h.trunc(i64))
+        h := try io_handle(@fs_open_dir(path))
+        return Dir(handle: h)
     }
     next_entry(self, d, buf) => {
         // The length in the low 32 bits, the kind above them.
@@ -312,20 +324,20 @@ handler Fs for SystemIo {
 
 handler Net for SystemIo {
     connect(self, host, port) => {
-        h := try io_result(@net_connect(host, port))
-        return Socket(handle: h.trunc(i64))
+        h := try io_handle(@net_connect(host, port))
+        return Socket(handle: h)
     }
     listen(self, host, port) => {
-        h := try io_result(@net_listen(host, port))
-        return Listener(handle: h.trunc(i64))
+        h := try io_handle(@net_listen(host, port))
+        return Listener(handle: h)
     }
     local_port(self, l) => {
         p := try io_result(@net_local_port(l.handle))
         return p.trunc(u16)
     }
     accept(self, l) => {
-        h := try io_result(@net_accept(l.handle))
-        return Socket(handle: h.trunc(i64))
+        h := try io_handle(@net_accept(l.handle))
+        return Socket(handle: h)
     }
     send(self, s, bytes) => io_result(@net_send(s.handle, bytes))
     recv(self, s, buf) => io_result(@net_recv(s.handle, buf))
@@ -350,8 +362,8 @@ handler Proc for SystemIo {
         if argv.len is 0 { return !.InvalidInput }
         env := o.env else empty_slice(string)
         dir := o.dir else ""
-        h := try io_result(@proc_spawn(argv, env, dir, stdio_flags(o)))
-        return Child(handle: h.trunc(i64))
+        h := try io_handle(@proc_spawn(argv, env, dir, stdio_flags(o)))
+        return Child(handle: h)
     }
     write(self, c, bytes) => io_result(@proc_write_in(c.handle, bytes))
     close_in(self, c) => { _ = @proc_close_in(c.handle) }
