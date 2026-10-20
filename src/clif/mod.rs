@@ -317,6 +317,25 @@ pub struct Gen<'a> {
     anon: u32,
 }
 
+/// How a value of type `t` is held in generated code.
+pub fn rep_of(lay: &Layouts, t: Ty) -> Rep {
+    let size = lay.size_of(t);
+    match t.kind() {
+        TyKind::Int(i) => Rep::Int { ty: int_type(size), bits: i.bits as u32, signed: i.signed },
+        TyKind::Usize | TyKind::Isize => {
+            Rep::Int { ty: types::I64, bits: 64, signed: matches!(t.kind(), TyKind::Isize) }
+        }
+        TyKind::Float(FloatTy::F16) => Rep::F16,
+        TyKind::Float(FloatTy::F32) => Rep::F32,
+        TyKind::Float(FloatTy::F64) => Rep::F64,
+        TyKind::Bool => Rep::Bool,
+        TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_) => Rep::Ptr,
+        TyKind::Optional(inner) if crate::layout::is_nullable_pointer(*inner) => Rep::Ptr,
+        _ if size == 0 => Rep::Zero,
+        _ => Rep::Mem { size, align: lay.align_of(t).max(1) },
+    }
+}
+
 fn module_err(e: cranelift_module::ModuleError) -> Unsupported {
     Unsupported { message: format!("Cranelift: {e:?}"), span: Span::DUMMY }
 }
@@ -335,21 +354,7 @@ impl<'a> Gen<'a> {
     }
 
     pub fn rep(&self, t: Ty) -> Rep {
-        let size = self.size(t);
-        match t.kind() {
-            TyKind::Int(i) => Rep::Int { ty: int_type(size), bits: i.bits as u32, signed: i.signed },
-            TyKind::Usize | TyKind::Isize => {
-                Rep::Int { ty: types::I64, bits: 64, signed: matches!(t.kind(), TyKind::Isize) }
-            }
-            TyKind::Float(FloatTy::F16) => Rep::F16,
-            TyKind::Float(FloatTy::F32) => Rep::F32,
-            TyKind::Float(FloatTy::F64) => Rep::F64,
-            TyKind::Bool => Rep::Bool,
-            TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_) => Rep::Ptr,
-            TyKind::Optional(inner) if crate::layout::is_nullable_pointer(*inner) => Rep::Ptr,
-            _ if size == 0 => Rep::Zero,
-            _ => Rep::Mem { size, align: self.align(t) },
-        }
+        rep_of(self.lay, t)
     }
 
     /// A fresh name for a local symbol.
