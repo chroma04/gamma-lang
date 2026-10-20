@@ -1,6 +1,8 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-19) — PRs #1–#61 merged
+## State (2026-10-20) — PRs #1–#62 merged
+- s32 (branch claude/kind-allen-vuxksg): whole-codebase review, findings + status in
+  roadmap/review-2026-10-20.md (P0/P1 all fixed; P2/P3 list open there).
 - s31 (branch claude/charming-hypatia-asv87o): website + browser playground in web/, GitHub
   Pages workflow; compiler builds for wasm32-wasip1 (decisions/036). User must switch Pages
   source to GitHub Actions. Keep web/ in step: new docs pages need no work (sitegen picks up
@@ -31,7 +33,8 @@
   parallel Debug C units; s24 `gamma fix`/json diags/LSP quick fixes (028); s19–s23 bugs/perf.
 
 ## Next steps
-1. Drive the s31 website PR to merge. Then the user tags v0.1.0 (CHANGELOG has an Unreleased
+0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
+1. The user tags v0.1.0 (CHANGELOG has an Unreleased
    section: fold it into 0.1.0 if tagged after it). User: enable private vulnerability
    reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
@@ -42,7 +45,7 @@
 
 ## Map
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
-                  c-backend-plan.md
+                  c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001 Rust · 002 pipeline · 003 interpreter · 004 test format · 005 parser ambiguity
                   · 006 generics (monomorphization by TIR cloning)

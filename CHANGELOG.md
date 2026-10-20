@@ -257,6 +257,33 @@ Versions and what each kind of change means are described in
   release no longer resolves from the cache. Git commands ignore the caller's `GIT_DIR`
   and similar variables (as set inside a git hook).
 - Command-line arguments that are not valid UTF-8 are a usage error instead of a crash.
+- Types larger than `isize::MAX` bytes (arrays, structs, tuples, unions, optionals,
+  results, generic instances) are a compile error instead of a compiler crash or silently
+  wrong sizes; on 32-bit targets this catches arrays larger than the address space.
+- Types that contain each other by value (also through `using`) no longer crash the
+  compiler after the error is reported, and a compile-time string pointing outside its
+  data is an error instead of a crash.
+- Generic effects with a generic type argument (`needs E(Box(T))`) no longer reject valid
+  programs.
+- Checking stays fast for long `else if` chains, for types built by repeated doubling
+  (long type names in messages are abbreviated), for lines with many unmatched closing
+  brackets, and for many diagnostics on long lines.
+- Interpreter: a trap on one thread stops the program even when another thread is blocked
+  in a mutex, condition variable, channel or join; `errno` read from other threads and
+  fibers is their own; huge allocation alignments and forged slice lengths passed to
+  system operations no longer crash it; `Env.var` returns values that are not UTF-8, and
+  `Env.args` and `Env.var` no longer leak memory per call; passing freed memory or a
+  callback it cannot translate to C traps; more than 8192 suspended fibers is a clean trap
+  instead of an abort.
+- `gamma lint --fix` no longer changes multi-line raw strings inside an `else { if … }`
+  it collapses.
+- The language server clears the diagnostics of other files of a directory when its last
+  open document closes, clamps out-of-range positions, and limits header and message sizes.
+- `0xFF.abs()` lexes as an integer and a method call, and a doc comment separated from a
+  declaration by blank lines no longer attaches to it.
+- `gamma doc` lengthens code fences around signatures that contain backticks and
+  percent-encodes module links; `gamma repl` reports a line that is not UTF-8 and goes
+  on; `gamma fmt` writes LF line ends inside block comments of CRLF files.
 - A `::` binding whose initializer calls a nested function with an inferred return type
   (`zero :: fn() { return 0 }`, then `z :: zero()`) no longer crashes the compiler.
 - Listing a directory no longer traps on targets with a 32-bit `usize`.

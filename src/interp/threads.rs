@@ -11,8 +11,7 @@
 //! The lock exists only once a program starts a thread, so single-threaded
 //! programs pay nothing for it. When a thread traps, the trap is recorded, and
 //! every thread stops with it the next time it takes the lock (sleepers in a futex are
-//! woken), as the whole
-//! process stops in compiled code.
+//! woken), as the whole process stops in compiled code.
 
 use super::fiber::Sendable;
 use super::machine::*;
