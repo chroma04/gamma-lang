@@ -66,6 +66,7 @@ use crate::source::Span;
 use crate::tir::*;
 use crate::types::*;
 use machine::Machine;
+use std::cell::RefCell;
 use std::io::Write;
 use value::*;
 
@@ -201,9 +202,13 @@ fn run_main_inner(
     stderr: &mut dyn Write,
 ) -> Outcome {
     let lookup = |id: AdtId| prog.adts.get(&id);
+    let out_failure = RefCell::new(None);
+    let err_failure = RefCell::new(None);
+    let mut tracked_out = Tracked { inner: stdout, failure: &out_failure };
+    let mut tracked_err = Tracked { inner: stderr, failure: &err_failure };
     let mut m = Machine::new(prog, cfg, &lookup, stack_floor(STACK_SIZE, STACK_MARGIN));
-    m.out = Some(stdout);
-    m.errw = Some(stderr);
+    m.out = Some(&mut tracked_out);
+    m.errw = Some(&mut tracked_err);
     m.args = args.to_vec();
     let mut cx = Ctx::empty();
     let mut install = |e: Option<EffectId>, k: NativeKind| {
@@ -228,10 +233,55 @@ fn run_main_inner(
     if let Some(w) = m.out.as_mut() {
         let _ = w.flush();
     }
-    if let Outcome::Exit(code) = outcome {
-        m.exit_process(code);
+    // A program whose output was lost does not end successfully.
+    let Outcome::Exit(mut code) = outcome else { return outcome };
+    if let Some(e) = out_failure.borrow().as_ref() {
+        if let Some(w) = m.errw.as_mut() {
+            let _ = writeln!(w, "gamma: cannot write the standard output: {e}");
+            let _ = w.flush();
+        }
+        code = code.max(1);
     }
-    outcome
+    if err_failure.borrow().is_some() {
+        code = code.max(1);
+    }
+    m.exit_process(code);
+    Outcome::Exit(code)
+}
+
+/// A writer that remembers its first failure other than a closed pipe (whose reader has
+/// gone away), so that a program that lost output can end with an error status.
+struct Tracked<'w> {
+    inner: &'w mut dyn Write,
+    failure: &'w RefCell<Option<String>>,
+}
+
+impl Tracked<'_> {
+    fn note<T>(&self, r: std::io::Result<T>) -> std::io::Result<T> {
+        if let Err(e) = &r
+            && e.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            let mut slot = self.failure.borrow_mut();
+            if slot.is_none() {
+                // The system's message, without Rust's "(os error N)" suffix.
+                let text = e.to_string();
+                *slot = Some(text.split(" (os error ").next().unwrap_or_default().to_string());
+            }
+        }
+        r
+    }
+}
+
+impl Write for Tracked<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let r = self.inner.write(buf);
+        self.note(r)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let r = self.inner.flush();
+        self.note(r)
+    }
 }
 
 impl Machine<'_> {

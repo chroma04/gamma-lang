@@ -543,6 +543,12 @@ static void test_env_args(void) {
 
 /* ---- scenarios that end the process ------------------------------------------------ */
 
+static int write_entry(gm_node *cx) {
+    (void)cx;
+    gm_write_out((const uint8_t *)"hello\n", 6);
+    return 0;
+}
+
 static int scenario(const char *name) {
     if (strcmp(name, "trap") == 0) {
         gm_write_out((const uint8_t *)"before\n", 7);
@@ -560,6 +566,8 @@ static int scenario(const char *name) {
     } else if (strcmp(name, "wrong-size") == 0) {
         void *p = gm_heap_alloc(16, 8);
         gm_heap_free(p, 8, 8, "w.gm", 1, 2);
+    } else if (strcmp(name, "write-failure") == 0) {
+        return gm_run_main(write_entry, NULL);
     } else if (strcmp(name, "args") == 0) {
         return 0;
     } else {

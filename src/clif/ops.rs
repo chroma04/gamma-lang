@@ -1453,11 +1453,16 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
         }
         let unit = matches!(self.g.rep(e.ty), Rep::Zero);
         if !unit {
-            sig.push_str(">l");
+            // The result is as wide as its type: `@cpu_count` returns 32 bits.
+            sig.push('>');
+            sig.push(match self.g.rep(e.ty).ty().map_or(64, |t| t.bits()) {
+                8 => 'b',
+                16 => 'h',
+                32 => 'i',
+                _ => 'l',
+            });
         }
-        let name: &'static str = Box::leak(format!("gm_{}", op.signature().0).into_boxed_str());
-        let sig: &'static str = Box::leak(sig.into_boxed_str());
-        let r = self.rt_call(name, sig, &cargs);
+        let r = self.rt_call(sys_symbol(op), &sig, &cargs);
         Ok(if unit { V::Z } else { V::S(r[0]) })
     }
 
@@ -1922,4 +1927,17 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             }
         }
     }
+}
+
+/// The runtime function that implements system service `op`, `gm_<name>`, interned so that
+/// each name is allocated once however often the service is used.
+fn sys_symbol(op: crate::tir::SysOp) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<(crate::tir::SysOp, &'static str)>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, n)) = names.iter().find(|(o, _)| *o == op) {
+        return n;
+    }
+    let name: &'static str = Box::leak(format!("gm_{}", op.signature().0).into_boxed_str());
+    names.push((op, name));
+    name
 }
