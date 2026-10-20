@@ -31,6 +31,12 @@ fn wasm_opt() -> String {
     std::env::var("WASM_OPT").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "wasm-opt".into())
 }
 
+/// The output of `wasm-opt --version` (empty if it cannot be run), which belongs in the
+/// cache key of a module that goes through it.
+pub fn wasm_opt_version() -> Vec<u8> {
+    std::process::Command::new(wasm_opt()).arg("--version").output().map(|o| o.stdout).unwrap_or_default()
+}
+
 /// Applies the Asyncify transformation to the module at `path` in place when it needs it
 /// (it imports from `asyncify`), then optimizes it at the build's level `opt` (`-O1`, ...).
 /// `debug_info` keeps the debugging information.
