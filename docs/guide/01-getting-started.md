@@ -191,7 +191,7 @@ Two differences are visible to programs. `target.os` is `.Windows` and `c_long` 
 
 ### The C compiler and cross-compiling
 
-Native builds use the C compiler named by the environment variable `CC` (default `cc`), which may include arguments. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted.
+Native builds use the C compiler named by the environment variable `CC` (default `cc`), which may include arguments. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted. On Windows a backslash is an ordinary character (so `C:\msys64\ucrt64\bin\gcc.exe` works as written) except before a double quote, as in the Windows command line.
 
 When `CC` or `CFLAGS` selects another target, the program is compiled for that target: the tool asks the compiler which machine it targets, and the `target` constants (`target.arch`, `target.os`, `target.endian`, `target.ptr_bits`) and the layouts of types follow it. Any C compiler that can cross-compile works:
 

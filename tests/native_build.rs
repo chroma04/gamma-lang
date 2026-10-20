@@ -295,3 +295,56 @@ fn builds_never_overwrite_files_they_did_not_generate() {
     build_and_run(&src, &exe, &cache, &[]);
     assert_eq!(std::fs::read_to_string(&obj).unwrap(), "mine");
 }
+
+/// The cached executable of `gamma run --backend=c` is rebuilt when a library that a
+/// `foreign` block names (found through `LDFLAGS`) is replaced.
+#[cfg(unix)]
+#[test]
+fn run_relinks_when_a_foreign_library_changes() {
+    if !c_compiler_available() || Command::new("ar").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-build").join("foreign_lib");
+    let _ = std::fs::remove_dir_all(&dir);
+    let libs = dir.join("libs");
+    std::fs::create_dir_all(&libs).unwrap();
+    let cc = gamma::toolchain::Toolchain::from_env().unwrap();
+    let make_lib = |value: i32| {
+        let c = dir.join("gmfoo.c");
+        std::fs::write(
+            &c,
+            format!("const char gm_pad[{}] = {{1}};\nint gm_foo_value(void) {{ return {value}; }}\n", value * 100),
+        )
+        .unwrap();
+        let o = dir.join("gmfoo.o");
+        let out = cc.command::<&str>(&[]).arg("-c").arg("-o").arg(&o).arg(&c).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let a = libs.join("libgmfoo.a");
+        let _ = std::fs::remove_file(&a);
+        let out = Command::new("ar").arg("rcs").arg(&a).arg(&o).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    let src = dir.join("main.gm");
+    std::fs::write(
+        &src,
+        "c :: import \"std/c\"\nfoo :: foreign \"gmfoo\" {\n    gm_foo_value :: fn() -> c.c_int needs not\n}\n\
+         main :: fn() needs Out {\n    print(\"{}\\n\", foo.gm_foo_value())\n}\n",
+    )
+    .unwrap();
+    let run = || {
+        let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+            .env("GAMMA_CACHE_DIR", dir.join("cache"))
+            .env("LDFLAGS", format!("-L{}", libs.display()))
+            .args(["run", "--backend=c"])
+            .arg(&src)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    make_lib(1);
+    assert_eq!(run(), "1\n");
+    // A different size, so the stamp changes whatever the file system's time resolution.
+    make_lib(7);
+    assert_eq!(run(), "7\n");
+}

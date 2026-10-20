@@ -682,7 +682,15 @@ How the runtime is linked depends on the build mode:
   output, and the flags, so a
   changed runtime or compiler gets a new object. Without a usable cache, a Debug
   build is one translation unit too. The test runners point `GAMMA_CACHE_DIR`
-  into Cargo's target directory.
+  into Cargo's target directory. Cached objects and executables are found by a
+  hash and used without any check, so the cache directory must be private to the
+  user: gamma creates it with mode 0700 (and temporary directories and files
+  exclusively, never reusing an existing name), but a cache that other users can
+  write to lets them plant programs that `gamma run` then executes. The key of a
+  cached executable also covers the size and modification time of the library
+  files it links (the package's, those of `foreign` blocks, and those named by
+  `-L` / `-l` in `$LDFLAGS`) and, for WASI, the version of `wasm-opt`. Leftover
+  temporary files of builds that died are removed after an hour.
 - A large Debug build is split into several translation units, compiled in
   parallel and then linked (`src/cgen/units.rs`): one per 96 KiB of function
   text, at most one per processor and 8. The generator writes everything with
