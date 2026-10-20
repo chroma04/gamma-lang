@@ -135,153 +135,7 @@ impl<'a, 's> FnCx<'a, 's> {
             || self.param_with(rty, Constraint::Float);
         let b = |op, ty, args: Vec<Expr>| mk(ty, tir::ExprKind::Builtin { op, args }, span);
         if is_int || is_float {
-            match n {
-                "trunc" | "round" | "floor" | "ceil" | "checked" | "sat" => {
-                    if !self.arity(args, 1, n, span) {
-                        return Some(error_expr(span));
-                    }
-                    let t = self.type_arg(args, 0, span)?;
-                    let op = match n {
-                        "trunc" => Builtin::Trunc,
-                        "round" => Builtin::Round,
-                        "floor" => Builtin::Floor,
-                        "ceil" => Builtin::Ceil,
-                        "checked" => Builtin::Checked,
-                        _ => Builtin::Sat,
-                    };
-                    let t_int = t.is_integer() || self.param_with(t, Constraint::Int);
-                    let t_float = t.is_float() || self.param_with(t, Constraint::Float);
-                    let ok = match op {
-                        Builtin::Trunc | Builtin::Checked | Builtin::Sat => t_int,
-                        Builtin::Round => t_int,
-                        _ => t_int && is_float,
-                    };
-                    if op == Builtin::Round && t_float && !t_int {
-                        self.error(
-                            span,
-                            format!("`.round` converts to an integer; for the nearest `{}` use `.to({})`", t, t),
-                        );
-                    } else if !ok {
-                        self.error(span, format!("`.{}` cannot convert to `{}`", n, t));
-                    }
-                    let ty = if op == Builtin::Checked { Ty::optional(t) } else { t };
-                    return Some(b(op, ty, vec![take_expr(recv)]));
-                }
-                // `x.to(F)`: the nearest value of float type `F` (§6.6).
-                "to" => {
-                    if !self.arity(args, 1, n, span) {
-                        return Some(error_expr(span));
-                    }
-                    let t = self.type_arg(args, 0, span)?;
-                    if !(t.is_float() || self.param_with(t, Constraint::Float)) {
-                        self.error(
-                            span,
-                            format!("`.to` converts to a float type, not `{}`; use `.trunc`, `.round`, `.checked` or `.sat` for integers", t),
-                        );
-                    }
-                    return Some(b(Builtin::Round, t, vec![take_expr(recv)]));
-                }
-                "unsigned_abs" if is_int => {
-                    self.arity(args, 0, n, span);
-                    self.obligations.push(Obligation::Numeric {
-                        ty: recv.ty,
-                        span,
-                        op: "unsigned_abs",
-                        int_only: true,
-                        signed_only: false,
-                    });
-                    let ty = recv.ty;
-                    let zero = mk(ty, tir::ExprKind::Int(num_bigint::BigInt::from(0)), span);
-                    let rty = unsigned_of(self.infer.resolve(ty));
-                    return Some(b(Builtin::AbsDiff, rty, vec![take_expr(recv), zero]));
-                }
-                "bits" => {
-                    if !self.arity(args, 1, n, span) {
-                        return Some(error_expr(span));
-                    }
-                    let t = self.type_arg(args, 0, span)?;
-                    return Some(self.bits_cast(take_expr(recv), t, span));
-                }
-                "min" | "max" | "abs_diff" => {
-                    if !self.arity(args, 1, n, span) {
-                        return Some(error_expr(span));
-                    }
-                    let y = self.value_arg(args, 0, recv.ty, span);
-                    let ty =
-                        self.unify_operands(recv.ty, y.ty, span, &format!("the receiver and argument of `.{}`", n));
-                    let (op, rty) = match n {
-                        "min" => (Builtin::Min, ty),
-                        "max" => (Builtin::Max, ty),
-                        _ => {
-                            self.obligations.push(Obligation::Numeric {
-                                ty,
-                                span,
-                                op: "abs_diff",
-                                int_only: true,
-                                signed_only: false,
-                            });
-                            (Builtin::AbsDiff, unsigned_of(self.infer.resolve(ty)))
-                        }
-                    };
-                    return Some(b(op, rty, vec![take_expr(recv), y]));
-                }
-                "clamp" => {
-                    if !self.arity(args, 2, n, span) {
-                        return Some(error_expr(span));
-                    }
-                    let lo = self.value_arg(args, 0, recv.ty, span);
-                    let hi = self.value_arg(args, 1, recv.ty, span);
-                    let ty = self.unify_operands(recv.ty, lo.ty, span, "the arguments of `.clamp`");
-                    self.unify_operands(ty, hi.ty, span, "the arguments of `.clamp`");
-                    return Some(b(Builtin::Clamp, ty, vec![take_expr(recv), lo, hi]));
-                }
-                "abs" => {
-                    self.arity(args, 0, n, span);
-                    self.obligations.push(Obligation::Numeric {
-                        ty: recv.ty,
-                        span,
-                        op: "abs",
-                        int_only: false,
-                        signed_only: true,
-                    });
-                    let ty = recv.ty;
-                    return Some(b(Builtin::Abs, ty, vec![take_expr(recv)]));
-                }
-                "pow" | "pow_wrap" | "pow_sat" | "pow_checked" if is_int => {
-                    if !self.arity(args, 1, n, span) {
-                        return Some(error_expr(span));
-                    }
-                    let e = self.value_arg(args, 0, Ty::u32(), span);
-                    let flavor = match n {
-                        "pow" => ast::Flavor::Checked,
-                        "pow_wrap" => ast::Flavor::Wrap,
-                        "pow_sat" => ast::Flavor::Sat,
-                        _ => ast::Flavor::Opt,
-                    };
-                    let ty = if flavor == ast::Flavor::Opt { Ty::optional(recv.ty) } else { recv.ty };
-                    return Some(b(Builtin::Pow(flavor), ty, vec![take_expr(recv), e]));
-                }
-                "is_nan" | "is_inf" | "is_finite" | "sign_bit" if is_float => {
-                    self.arity(args, 0, n, span);
-                    let op = match n {
-                        "is_nan" => Builtin::IsNan,
-                        "is_inf" => Builtin::IsInf,
-                        "is_finite" => Builtin::IsFinite,
-                        _ => Builtin::SignBit,
-                    };
-                    return Some(b(op, Ty::bool(), vec![take_expr(recv)]));
-                }
-                "sqrt" if is_float => {
-                    self.arity(args, 0, n, span);
-                    let ty = recv.ty;
-                    return Some(b(Builtin::Sqrt, ty, vec![take_expr(recv)]));
-                }
-                "to_ptr" if rty == Ty::usize() => {
-                    let t = self.type_arg(args, 0, span)?;
-                    return Some(b(Builtin::ToPtr, Ty::optional(t), vec![take_expr(recv)]));
-                }
-                _ => return None,
-            }
+            return self.numeric_method(recv, rty, n, (is_int, is_float), args, span);
         }
         match (rty.kind(), n) {
             (TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_), "addr") => {
@@ -291,37 +145,7 @@ impl<'a, 's> FnCx<'a, 's> {
             (
                 TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr | TyKind::FnPtr(_) | TyKind::Optional(_),
                 "cast",
-            ) => {
-                let t = self.type_arg(args, 0, span)?;
-                // Data pointers convert to data pointers, function pointers to function pointers.
-                let kind = |t: Ty| match t.kind() {
-                    TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr => Some(false),
-                    TyKind::FnPtr(_) => Some(true),
-                    _ => None,
-                };
-                let same = |a: Ty, b: Ty| kind(a).is_some() && kind(a) == kind(b);
-                let ok = match (rty.kind(), t.kind()) {
-                    (TyKind::Optional(a), TyKind::Optional(b)) => same(*a, *b),
-                    (TyKind::Optional(_), _) | (_, TyKind::Optional(_)) => false,
-                    _ => same(rty, t),
-                };
-                if !ok {
-                    self.error(span, format!("`cast` converts between pointer types, not from `{}` to `{}`; use `.addr()` for an address", rty, t));
-                    return Some(error_expr(span));
-                }
-                // A function pointer converts to one with the same shape (§6.6).
-                let fn_of = |t: Ty| match t.kind() {
-                    TyKind::Optional(i) => i.kind().clone(),
-                    k => k.clone(),
-                };
-                if let (TyKind::FnPtr(a), TyKind::FnPtr(b)) = (fn_of(rty), fn_of(t))
-                    && let Some(why) = fn_cast_mismatch(&a, &b)
-                {
-                    self.error(span, format!("cannot cast `{}` to `{}`: {}", rty, t, why));
-                    return Some(error_expr(span));
-                }
-                Some(b(Builtin::Cast, t, vec![take_expr(recv)]))
-            }
+            ) => self.pointer_cast(recv, rty, args, span),
             // From an embedded struct back to the struct embedding it (§5.10.3); unchecked.
             (TyKind::Ptr { is_const, pointee }, "downcast_unchecked") => {
                 let (is_const, pointee) = (*is_const, *pointee);
@@ -357,6 +181,217 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             _ => self.collection_method(recv, rty, n, args, span),
         }
+    }
+
+    /// The builtin methods of integers and floats; the flags say which the receiver is.
+    fn numeric_method(
+        &mut self,
+        recv: &mut Expr,
+        rty: Ty,
+        n: &str,
+        (is_int, is_float): (bool, bool),
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Option<Expr> {
+        let b = |op, ty, args: Vec<Expr>| mk(ty, tir::ExprKind::Builtin { op, args }, span);
+        match n {
+            "trunc" | "round" | "floor" | "ceil" | "checked" | "sat" => {
+                self.numeric_conversion(recv, n, is_float, args, span)
+            }
+            // `x.to(F)`: the nearest value of float type `F` (§6.6).
+            "to" => {
+                if !self.arity(args, 1, n, span) {
+                    return Some(error_expr(span));
+                }
+                let t = self.type_arg(args, 0, span)?;
+                if !(t.is_float() || self.param_with(t, Constraint::Float)) {
+                    self.error(
+                        span,
+                        format!("`.to` converts to a float type, not `{}`; use `.trunc`, `.round`, `.checked` or `.sat` for integers", t),
+                    );
+                }
+                Some(b(Builtin::Round, t, vec![take_expr(recv)]))
+            }
+            "unsigned_abs" if is_int => {
+                self.arity(args, 0, n, span);
+                self.obligations.push(Obligation::Numeric {
+                    ty: recv.ty,
+                    span,
+                    op: "unsigned_abs",
+                    int_only: true,
+                    signed_only: false,
+                });
+                let ty = recv.ty;
+                let zero = mk(ty, tir::ExprKind::Int(num_bigint::BigInt::from(0)), span);
+                let rty = unsigned_of(self.infer.resolve(ty));
+                Some(b(Builtin::AbsDiff, rty, vec![take_expr(recv), zero]))
+            }
+            "bits" => {
+                if !self.arity(args, 1, n, span) {
+                    return Some(error_expr(span));
+                }
+                let t = self.type_arg(args, 0, span)?;
+                Some(self.bits_cast(take_expr(recv), t, span))
+            }
+            "min" | "max" | "abs_diff" => self.numeric_pair(recv, n, args, span),
+            "clamp" => {
+                if !self.arity(args, 2, n, span) {
+                    return Some(error_expr(span));
+                }
+                let lo = self.value_arg(args, 0, recv.ty, span);
+                let hi = self.value_arg(args, 1, recv.ty, span);
+                let ty = self.unify_operands(recv.ty, lo.ty, span, "the arguments of `.clamp`");
+                self.unify_operands(ty, hi.ty, span, "the arguments of `.clamp`");
+                Some(b(Builtin::Clamp, ty, vec![take_expr(recv), lo, hi]))
+            }
+            "abs" => {
+                self.arity(args, 0, n, span);
+                self.obligations.push(Obligation::Numeric {
+                    ty: recv.ty,
+                    span,
+                    op: "abs",
+                    int_only: false,
+                    signed_only: true,
+                });
+                let ty = recv.ty;
+                Some(b(Builtin::Abs, ty, vec![take_expr(recv)]))
+            }
+            "pow" | "pow_wrap" | "pow_sat" | "pow_checked" if is_int => {
+                if !self.arity(args, 1, n, span) {
+                    return Some(error_expr(span));
+                }
+                let e = self.value_arg(args, 0, Ty::u32(), span);
+                let flavor = match n {
+                    "pow" => ast::Flavor::Checked,
+                    "pow_wrap" => ast::Flavor::Wrap,
+                    "pow_sat" => ast::Flavor::Sat,
+                    _ => ast::Flavor::Opt,
+                };
+                let ty = if flavor == ast::Flavor::Opt { Ty::optional(recv.ty) } else { recv.ty };
+                Some(b(Builtin::Pow(flavor), ty, vec![take_expr(recv), e]))
+            }
+            "is_nan" | "is_inf" | "is_finite" | "sign_bit" if is_float => {
+                self.arity(args, 0, n, span);
+                let op = match n {
+                    "is_nan" => Builtin::IsNan,
+                    "is_inf" => Builtin::IsInf,
+                    "is_finite" => Builtin::IsFinite,
+                    _ => Builtin::SignBit,
+                };
+                Some(b(op, Ty::bool(), vec![take_expr(recv)]))
+            }
+            "sqrt" if is_float => {
+                self.arity(args, 0, n, span);
+                let ty = recv.ty;
+                Some(b(Builtin::Sqrt, ty, vec![take_expr(recv)]))
+            }
+            "to_ptr" if rty == Ty::usize() => {
+                let t = self.type_arg(args, 0, span)?;
+                Some(b(Builtin::ToPtr, Ty::optional(t), vec![take_expr(recv)]))
+            }
+            _ => None,
+        }
+    }
+
+    /// `x.trunc(T)`, `.round`, `.floor`, `.ceil`, `.checked` and `.sat`: conversions to an integer
+    /// type (§6.6).
+    fn numeric_conversion(
+        &mut self,
+        recv: &mut Expr,
+        n: &str,
+        is_float: bool,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Option<Expr> {
+        if !self.arity(args, 1, n, span) {
+            return Some(error_expr(span));
+        }
+        let t = self.type_arg(args, 0, span)?;
+        let op = match n {
+            "trunc" => Builtin::Trunc,
+            "round" => Builtin::Round,
+            "floor" => Builtin::Floor,
+            "ceil" => Builtin::Ceil,
+            "checked" => Builtin::Checked,
+            _ => Builtin::Sat,
+        };
+        let t_int = t.is_integer() || self.param_with(t, Constraint::Int);
+        let t_float = t.is_float() || self.param_with(t, Constraint::Float);
+        let ok = match op {
+            Builtin::Trunc | Builtin::Checked | Builtin::Sat => t_int,
+            Builtin::Round => t_int,
+            _ => t_int && is_float,
+        };
+        if op == Builtin::Round && t_float && !t_int {
+            self.error(span, format!("`.round` converts to an integer; for the nearest `{}` use `.to({})`", t, t));
+        } else if !ok {
+            self.error(span, format!("`.{}` cannot convert to `{}`", n, t));
+        }
+        let ty = if op == Builtin::Checked { Ty::optional(t) } else { t };
+        Some(mk(ty, tir::ExprKind::Builtin { op, args: vec![take_expr(recv)] }, span))
+    }
+
+    /// `x.min(y)`, `x.max(y)` and `x.abs_diff(y)`.
+    fn numeric_pair(&mut self, recv: &mut Expr, n: &str, args: &[ast::Arg], span: Span) -> Option<Expr> {
+        if !self.arity(args, 1, n, span) {
+            return Some(error_expr(span));
+        }
+        let y = self.value_arg(args, 0, recv.ty, span);
+        let ty = self.unify_operands(recv.ty, y.ty, span, &format!("the receiver and argument of `.{}`", n));
+        let (op, rty) = match n {
+            "min" => (Builtin::Min, ty),
+            "max" => (Builtin::Max, ty),
+            _ => {
+                self.obligations.push(Obligation::Numeric {
+                    ty,
+                    span,
+                    op: "abs_diff",
+                    int_only: true,
+                    signed_only: false,
+                });
+                (Builtin::AbsDiff, unsigned_of(self.infer.resolve(ty)))
+            }
+        };
+        Some(mk(rty, tir::ExprKind::Builtin { op, args: vec![take_expr(recv), y] }, span))
+    }
+
+    /// `p.cast(T)`: a conversion between pointer types.
+    fn pointer_cast(&mut self, recv: &mut Expr, rty: Ty, args: &[ast::Arg], span: Span) -> Option<Expr> {
+        let t = self.type_arg(args, 0, span)?;
+        // Data pointers convert to data pointers, function pointers to function pointers.
+        let kind = |t: Ty| match t.kind() {
+            TyKind::Ptr { .. } | TyKind::ManyPtr { .. } | TyKind::Rawptr => Some(false),
+            TyKind::FnPtr(_) => Some(true),
+            _ => None,
+        };
+        let same = |a: Ty, b: Ty| kind(a).is_some() && kind(a) == kind(b);
+        let ok = match (rty.kind(), t.kind()) {
+            (TyKind::Optional(a), TyKind::Optional(b)) => same(*a, *b),
+            (TyKind::Optional(_), _) | (_, TyKind::Optional(_)) => false,
+            _ => same(rty, t),
+        };
+        if !ok {
+            self.error(
+                span,
+                format!(
+                    "`cast` converts between pointer types, not from `{}` to `{}`; use `.addr()` for an address",
+                    rty, t
+                ),
+            );
+            return Some(error_expr(span));
+        }
+        // A function pointer converts to one with the same shape (§6.6).
+        let fn_of = |t: Ty| match t.kind() {
+            TyKind::Optional(i) => i.kind().clone(),
+            k => k.clone(),
+        };
+        if let (TyKind::FnPtr(a), TyKind::FnPtr(b)) = (fn_of(rty), fn_of(t))
+            && let Some(why) = fn_cast_mismatch(&a, &b)
+        {
+            self.error(span, format!("cannot cast `{}` to `{}`: {}", rty, t, why));
+            return Some(error_expr(span));
+        }
+        Some(mk(t, tir::ExprKind::Builtin { op: Builtin::Cast, args: vec![take_expr(recv)] }, span))
     }
 
     fn collection_method(&mut self, recv: &mut Expr, rty: Ty, n: &str, args: &[ast::Arg], span: Span) -> Option<Expr> {
