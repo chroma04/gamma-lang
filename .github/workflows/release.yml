@@ -122,7 +122,7 @@ jobs:
           test "$("$gamma" run hello.gm)" = true
           test "$("$gamma" run --backend=c hello.gm)" = true
           "$gamma" version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gamma-${{ matrix.asset }}
           path: dist/*
