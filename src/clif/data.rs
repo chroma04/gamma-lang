@@ -345,7 +345,7 @@ impl Gen<'_> {
         };
         let (span, ty) = (c.span, c.ty);
         let v = v.clone();
-        let id = self.module.declare_anonymous_data(true, false).map_err(module_err)?;
+        let id = self.module.declare_anonymous_data(false, false).map_err(module_err)?;
         self.consts.insert(k, id);
         let relocs = self.value_relocs(&v, span)?;
         let mut bytes = v.bytes.clone();

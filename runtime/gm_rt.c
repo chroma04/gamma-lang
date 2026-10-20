@@ -1809,7 +1809,7 @@ GM_API const void *gm_args(size_t *count) {
 
 GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len) {
 #ifdef _WIN32
-    if (len > 0x7fffffff || memchr(name, 0, len) != NULL) return false;
+    if (len > 0x7fffffff || (len > 0 && memchr(name, 0, len) != NULL)) return false;
     int wn = len ? MultiByteToWideChar(CP_UTF8, 0, (const char *)name, (int)len, NULL, 0) : 0;
     wchar_t *wk = (wchar_t *)malloc(((size_t)wn + 1) * sizeof(wchar_t));
     if (wk == NULL) gm_trap("out of memory", NULL, 0, 0);
@@ -1926,7 +1926,7 @@ GM_API void gm_rand_fill(void *vp, size_t n) {
 
 /* A NUL-terminated copy of a path (freed by the caller), or NULL if it contains a NUL. */
 static char *gm_path(const void *p, size_t n) {
-    if (memchr(p, 0, n) != NULL) return NULL;
+    if (n > 0 && memchr(p, 0, n) != NULL) return NULL;
     char *s = (char *)malloc(n + 1);
     if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
     memcpy(s, p, n);
@@ -2108,12 +2108,23 @@ GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size) {
 GM_API int64_t gm_fs_sync(int64_t f) { return GM_RET_ERR(fsync((int)f) != 0); }
 
 GM_API int64_t gm_fs_cwd(void *p, size_t n) {
-    char tmp[4096];
-    if (getcwd(tmp, sizeof tmp) == NULL) return gm_io_error(errno);
-    size_t len = strlen(tmp);
-    if (len > n) return gm_io_error(EINVAL);
-    memcpy(p, tmp, len);
-    return (int64_t)len;
+    size_t cap = 4096;
+    for (;;) {
+        char *tmp = (char *)malloc(cap);
+        if (tmp == NULL) return gm_io_error(ENOMEM);
+        if (getcwd(tmp, cap) != NULL) {
+            size_t len = strlen(tmp);
+            int64_t r = (int64_t)len;
+            if (len > n) r = gm_io_error(EINVAL);
+            else if (len > 0) memcpy(p, tmp, len);
+            free(tmp);
+            return r;
+        }
+        int e = errno;
+        free(tmp);
+        if (e != ERANGE) return gm_io_error(e);
+        cap *= 2;
+    }
 }
 
 #ifdef GM_WASI
@@ -2176,9 +2187,19 @@ static struct addrinfo *gm_resolve(const void *host, size_t len, uint16_t port, 
     return res;
 }
 
+/* Sockets are close-on-exec, like files and pipes: a started process inherits none. */
+#if defined(__linux__) && !defined(__FILC__)
+#define GM_SOCK_CLOEXEC SOCK_CLOEXEC
+#else
+#define GM_SOCK_CLOEXEC 0
+#endif
+
 static int gm_socket(const struct addrinfo *a) {
-    int fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+    int fd = socket(a->ai_family, a->ai_socktype | GM_SOCK_CLOEXEC, a->ai_protocol);
     if (fd < 0) return fd;
+#if !defined(__linux__) || defined(__FILC__)
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
 #if defined(SO_NOSIGPIPE)
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
@@ -2194,8 +2215,22 @@ GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
     for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
         fd = gm_socket(a);
         if (fd < 0) { e = errno; continue; }
-        int r;
-        do r = connect(fd, a->ai_addr, a->ai_addrlen); while (r != 0 && errno == EINTR);
+        int r = connect(fd, a->ai_addr, a->ai_addrlen);
+        if (r != 0 && errno == EINTR) {
+            /* The connection goes on in the background: wait for it to finish, and ask how. */
+            struct pollfd pf = {.fd = fd, .events = POLLOUT};
+            int w;
+            do w = poll(&pf, 1, -1); while (w < 0 && errno == EINTR);
+            int soerr = 0;
+            socklen_t sl = sizeof soerr;
+            if (w < 0) {
+                soerr = errno;
+            } else if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) != 0) {
+                soerr = errno;
+            }
+            errno = soerr;
+            r = soerr == 0 ? 0 : -1;
+        }
         if (r == 0) break;
         e = errno;
         close(fd);
@@ -2235,8 +2270,15 @@ GM_API int64_t gm_net_local_port(int64_t h) {
 
 GM_API int64_t gm_net_accept(int64_t h) {
     for (;;) {
+#if defined(__linux__) && !defined(__FILC__)
+        int fd = accept4((int)h, NULL, NULL, SOCK_CLOEXEC);
+#else
         int fd = accept((int)h, NULL, NULL);
+#endif
         if (fd >= 0) {
+#if !defined(__linux__) || defined(__FILC__)
+            fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
 #if defined(SO_NOSIGPIPE)
             int one = 1;
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
@@ -2712,7 +2754,7 @@ static int64_t gm_wsa_err(int e) {
 /* A NUL-terminated UTF-16 copy of the UTF-8 text at p (freed by the caller), or NULL if it
  * contains a NUL or is not valid UTF-8. */
 static wchar_t *gm_wide(const void *p, size_t n) {
-    if (memchr(p, 0, n) != NULL || n > 0x7fffffff) return NULL;
+    if ((n > 0 && memchr(p, 0, n) != NULL) || n > 0x7fffffff) return NULL;
     int wn = n ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)p, (int)n, NULL, 0) : 0;
     if (n && wn == 0) return NULL;
     wchar_t *w = (wchar_t *)malloc(((size_t)wn + 1) * sizeof(wchar_t));
@@ -2734,7 +2776,7 @@ static char *gm_utf8(const wchar_t *w, int wn, size_t *len) {
 }
 
 static char *gm_path(const void *p, size_t n) {
-    if (memchr(p, 0, n) != NULL) return NULL;
+    if (n > 0 && memchr(p, 0, n) != NULL) return NULL;
     char *s = (char *)malloc(n + 1);
     if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
     memcpy(s, p, n);
@@ -3100,6 +3142,15 @@ static struct addrinfo *gm_resolve(const void *host, size_t len, uint16_t port, 
     return res;
 }
 
+/* A socket that a started process does not inherit. */
+#ifndef WSA_FLAG_NO_HANDLE_INHERIT
+#define WSA_FLAG_NO_HANDLE_INHERIT 0x80
+#endif
+static SOCKET gm_wsocket(const struct addrinfo *a) {
+    return WSASocketW(a->ai_family, a->ai_socktype, a->ai_protocol, NULL, 0,
+                      WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+}
+
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
     int64_t err = 0;
     struct addrinfo *res = gm_resolve(host, len, port, false, &err);
@@ -3107,7 +3158,7 @@ GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
     SOCKET fd = INVALID_SOCKET;
     int e = 0;
     for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
-        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        fd = gm_wsocket(a);
         if (fd == INVALID_SOCKET) { e = WSAGetLastError(); continue; }
         if (connect(fd, a->ai_addr, (int)a->ai_addrlen) == 0) break;
         e = WSAGetLastError();
@@ -3125,7 +3176,7 @@ GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
     SOCKET fd = INVALID_SOCKET;
     int e = 0;
     for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
-        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        fd = gm_wsocket(a);
         if (fd == INVALID_SOCKET) { e = WSAGetLastError(); continue; }
         /* No SO_REUSEADDR: on Windows it would let another socket take over a used port. */
         if (bind(fd, a->ai_addr, (int)a->ai_addrlen) == 0 && listen(fd, 128) == 0) break;
@@ -3149,7 +3200,10 @@ GM_API int64_t gm_net_local_port(int64_t h) {
 GM_API int64_t gm_net_accept(int64_t h) {
     for (;;) {
         SOCKET fd = accept((SOCKET)h, NULL, NULL);
-        if (fd != INVALID_SOCKET) return (int64_t)fd;
+        if (fd != INVALID_SOCKET) {
+            SetHandleInformation((HANDLE)fd, HANDLE_FLAG_INHERIT, 0);
+            return (int64_t)fd;
+        }
         int e = WSAGetLastError();
         if (e != WSAEINTR) return gm_wsa_err(e);
     }
@@ -3670,16 +3724,19 @@ GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, u
     gm_hblock *b = gm_hb_find((uintptr_t)p);
     if (b != NULL && b->state == GM_HB_FREED) {
         snprintf(msg, sizeof msg, "double free of heap block 0x%llx", (unsigned long long)(uintptr_t)p);
+        gm_rt_release();
         gm_trap(msg, file, line, col);
     }
     if (b != NULL && b->size != size) {
         snprintf(msg, sizeof msg, "invalid free of 0x%llx: the heap block there has %llu bytes, not %llu",
                  (unsigned long long)(uintptr_t)p, (unsigned long long)b->size, (unsigned long long)size);
+        gm_rt_release();
         gm_trap(msg, file, line, col);
     }
     if (b == NULL) {
         snprintf(msg, sizeof msg, "invalid free of 0x%llx: not the start of a live heap block of %llu bytes",
                  (unsigned long long)(uintptr_t)p, (unsigned long long)size);
+        gm_rt_release();
         gm_trap(msg, file, line, col);
     }
     b->state = GM_HB_FREED;
@@ -3818,22 +3875,37 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     return (int64_t)slot + 1;
 }
 
+/* Takes the thread of handle h out of the table; NULL if h is not the handle of a live thread. */
+static gm_thread *gm_thread_take(int64_t h) {
+    gm_rt_acquire();
+    gm_thread *t = NULL;
+    if (h >= 1 && (uint64_t)h <= gm_nthreads) {
+        t = gm_threads[h - 1];
+        gm_threads[h - 1] = NULL;
+    }
+    gm_rt_release();
+    return t;
+}
+
 GM_API int64_t gm_thread_join(int64_t h) {
-    gm_rt_acquire();
-    gm_thread *t = gm_threads[h - 1];
-    gm_rt_release();
+    gm_thread *t = gm_thread_take(h);
+    if (t == NULL) return gm_io_error(EBADF);
     int r = pthread_join(t->t, NULL);
-    gm_rt_acquire();
-    gm_threads[h - 1] = NULL;
-    gm_rt_release();
     free(t);
     return r == 0 ? 0 : gm_io_error(r);
 }
 
 GM_API int64_t gm_thread_detach(int64_t h) {
     pthread_mutex_lock(&gm_rt_lock);
-    gm_thread *t = gm_threads[h - 1];
-    gm_threads[h - 1] = NULL;
+    gm_thread *t = NULL;
+    if (h >= 1 && (uint64_t)h <= gm_nthreads) {
+        t = gm_threads[h - 1];
+        gm_threads[h - 1] = NULL;
+    }
+    if (t == NULL) {
+        pthread_mutex_unlock(&gm_rt_lock);
+        return gm_io_error(EBADF);
+    }
     int done = t->finished;
     pthread_t tid = t->t;
     t->detached = 1;
@@ -4004,23 +4076,38 @@ GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     return (int64_t)slot + 1;
 }
 
-GM_API int64_t gm_thread_join(int64_t h) {
+/* Takes the thread of handle h out of the table; NULL if h is not the handle of a live thread. */
+static gm_thread *gm_thread_take(int64_t h) {
     gm_rt_acquire();
-    gm_thread *t = gm_threads[h - 1];
+    gm_thread *t = NULL;
+    if (h >= 1 && (uint64_t)h <= gm_nthreads) {
+        t = gm_threads[h - 1];
+        gm_threads[h - 1] = NULL;
+    }
     gm_rt_release();
+    return t;
+}
+
+GM_API int64_t gm_thread_join(int64_t h) {
+    gm_thread *t = gm_thread_take(h);
+    if (t == NULL) return gm_io_error(EBADF);
     WaitForSingleObject(t->t, INFINITE);
     CloseHandle(t->t);
-    gm_rt_acquire();
-    gm_threads[h - 1] = NULL;
-    gm_rt_release();
     free(t);
     return 0;
 }
 
 GM_API int64_t gm_thread_detach(int64_t h) {
     gm_rt_acquire();
-    gm_thread *t = gm_threads[h - 1];
-    gm_threads[h - 1] = NULL;
+    gm_thread *t = NULL;
+    if (h >= 1 && (uint64_t)h <= gm_nthreads) {
+        t = gm_threads[h - 1];
+        gm_threads[h - 1] = NULL;
+    }
+    if (t == NULL) {
+        gm_rt_release();
+        return gm_io_error(EBADF);
+    }
     int done = t->finished;
     t->detached = 1;
     HANDLE th = t->t;
@@ -4619,16 +4706,39 @@ static void gm_overflow_install(void) {
     sigaction(SIGBUS, &sa, NULL);
 }
 
+/* The calling thread's alternate stack, released when the thread ends. */
+static pthread_key_t gm_altstack_key;
+static bool gm_altstack_keyed;
+
+static void gm_altstack_free(void *sp) {
+    stack_t ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_flags = SS_DISABLE;
+    sigaltstack(&ss, NULL);
+    free(sp);
+}
+
+static void gm_altstack_init(void) {
+    gm_overflow_install();
+    gm_altstack_keyed = pthread_key_create(&gm_altstack_key, gm_altstack_free) == 0;
+}
+
 /* Gives the calling thread a stack for gm_segv, and installs it once per process. */
 static void gm_overflow_handler(void) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, gm_altstack_init);
+    if (!gm_altstack_keyed || pthread_getspecific(gm_altstack_key) != NULL) return;
     size_t size = (size_t)64 << 10;
     stack_t ss;
     ss.ss_sp = malloc(size);
     ss.ss_size = size;
     ss.ss_flags = 0;
-    if (ss.ss_sp == NULL || sigaltstack(&ss, NULL) != 0) return;
-    pthread_once(&once, gm_overflow_install);
+    if (ss.ss_sp == NULL) return;
+    if (sigaltstack(&ss, NULL) != 0) {
+        free(ss.ss_sp);
+    } else if (pthread_setspecific(gm_altstack_key, ss.ss_sp) != 0) {
+        gm_altstack_free(ss.ss_sp);
+    }
 }
 #endif
 
