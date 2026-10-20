@@ -9,13 +9,14 @@ Versions and what each kind of change means are described in
 ### Added
 
 - `gamma test --timeout=<seconds>` (and `gamma bench`): a test that runs longer fails
-  with `timed out after N s`, on the interpreter and natively.
+  with `timed out after N s`, on the interpreter and natively. The interpreter also stops
+  a test that is sleeping when its time is up.
 
 - A website, published with GitHub Pages from `web/`: a landing page, the guide, the
   specification and the standard library reference as pages, and a playground that runs
   programs in the browser with the interpreter compiled to WebAssembly (everything except
-  files, processes, the network, threads, fibers and C). The compiler crate now also
-  builds for `wasm32-wasip1`.
+  files, processes, the network, threads, fibers and C). A sleep lasts as long as asked;
+  Stop ends the program. The compiler crate now also builds for `wasm32-wasip1`.
 - The Cranelift back end: `--backend=cranelift` on `gamma run`, `build`, `test` and
   `bench` generates machine code directly with Cranelift instead of going through C. It
   compiles the whole language, passes the whole conformance suite, and builds several

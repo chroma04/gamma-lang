@@ -178,8 +178,17 @@ impl<'a> Machine<'a> {
                 Ok(int(self, res, t))
             }
             SysOp::Sleep => {
-                let ns = self.int_of(tys[0], &vals[0]).to_u64_sat();
-                self.without_gil(|| std::thread::sleep(std::time::Duration::from_nanos(ns)));
+                let mut nap = std::time::Duration::from_nanos(self.int_of(tys[0], &vals[0]).to_u64_sat());
+                // A sleep past the deadline ends the run when the deadline comes.
+                let late =
+                    self.deadline.map(|d| d.saturating_duration_since(Instant::now())).filter(|left| *left < nap);
+                if let Some(left) = late {
+                    nap = left;
+                }
+                self.without_gil(|| std::thread::sleep(nap));
+                if late.is_some() {
+                    return Err(Box::new(Flow::Trap(Trap::new(super::DEADLINE_TRAP, Span::DUMMY))));
+                }
                 Ok(Value::unit())
             }
             SysOp::FsOpen

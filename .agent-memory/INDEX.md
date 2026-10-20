@@ -2,7 +2,8 @@
 
 ## State (2026-10-20) — PRs #1–#62 merged
 - s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
-  in roadmap/review-2026-10-20.md (P0/P1 and most P2 fixed; rest listed there). New infra:
+  in roadmap/review-2026-10-20.md (P0/P1, most P2/P3 fixed; rest listed there). Fuzz
+  targets in fuzz/ (manifest, archive; seeds via fuzz/seed.sh). New infra:
   tests/common (GAMMA_TEST_C=1 required in CI, GAMMA_TEST_TIMEOUT), cgen::is_runtime_symbol,
   cgen::write_generated_c/scratch_path, clif c_abi_ptr/c_thunk/c_shim.
 - s31: website + playground in web/ (decisions/036); broken doc anchors fail the Website job.
@@ -41,44 +42,11 @@
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001 Rust · 002 pipeline · 003 interpreter · 004 test format · 005 parser ambiguity
-                  · 006 generics (monomorphization by TIR cloning)
-                  · 007 value params + sema-time const eval · 008 C back end · 009 interop
-                  · 010 fibers · 011 stack size · 012 handler specialization + local exits
-                  · 013 debug info (-g) · 014 native build speed (cached runtime obj)
-                  · 015 toolchain env (CC/CFLAGS/LDFLAGS) + target from the compiler
-                  · 016 C perf s6 (exit flag measured, nested spec, gm_out, borrow.rs)
-                  · 017 Safe mode via Fil-C (capability-clean C, ucontext fibers, Safe arena)
-                  · 018 stdlib policy §22 + s7 language changes (fmt specs, op=, .to)
-                  · 019 perf round s9 (where time goes, what was measured/kept/dropped)
-                  · 020 bytecode VM (shape, fallbacks, measurements, follow-ups)
-                  · 021 language papercuts (tuple payloads, ret inference, generic fn ptrs, cast)
-                  · 022 effect-set parameters (`E: effects`, `needs E`, Sched(E))
-                  · 023 tooling: packages, LSP, editor grammars, release
-                  · 024 locals not named like types (+ local consts at comptime, scope isolation)
-                  · 025 design review (thesis, principles; implemented: cancel, Test effect, rest
-                    params, named args/inferable params, universe w/o ops, named effect sets)
-                  · 026 effect syntax `needs A + B`, `needs not` (foreign only), no `..E`
-                  · 027 effect-set params inferred from the caller's Sched(E); fiber channel
-                  · 028 machine-applicable fixes (gamma fix, json diags, LSP quick fixes)
-                  · 029 s27 wishes: admitted ([E]T, SIMD, Proc, zones, fiber sleep/generators) / rejected
-                  · 030 s28 coherence review: applied + open questions for the user
-                  · 031 statement-run outlining (huge functions → helpers sharing F)
-                  · 032 s29 perf: Safe blob kinds, steady by-ref params, VM upvars/perform
-                  · 033 gamma lint (rule sources, levels, --fix careful mode, follow-ups)
-                  · 034 wasm32-wasi target (runtime GM_WASI, Asyncify fibers, perf)
-                  · 035 Cranelift back end (ABI, C ABI classes, trampolines, @asm, perf)
-                  · 036 website + playground (web/, wasm32-wasip1 interpreter, Pages)
+- decisions/      001–036, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+                  020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
+                  035 Cranelift, 036 website. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
-- sessions/       s01-s08-2026-10-08..12.md (compacted + lessons) · s11-2026-10-14-p1-tooling.md
-                  · s12-2026-10-14-todo-p2.md · s13-2026-10-15-bughunt.md
-                  · s14-2026-10-15-docsweep.md · s15-2026-10-15-vision.md · s16-2026-10-16-needs.md
-                  · s17-2026-10-16-release-prep.md · s18-2026-10-16-examples.md
-                  · s19-2026-10-16-papercuts-p2.md · s20-2026-10-16-bugs-p2.md
-                  · s21-2026-10-16-bugs-p2.md · s22-2026-10-16-bugs-p2.md
-                  · s23-2026-10-17-difftest-fix.md · s24-2026-10-17-fixits.md · s25-2026-10-17-units.md
-                  · s26-2026-10-17-bugs-lldb.md · s27-2026-10-17-wishes.md (s28: see decisions/030)
-                  · s30-2026-10-19-cranelift.md
+- sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
 - gotchas/        environment.md
 
 ## Conventions
