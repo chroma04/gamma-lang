@@ -98,6 +98,7 @@ impl<'p> ArgBinding<'p> {
         i
     }
 }
+
 impl<'a, 's> FnCx<'a, 's> {
     pub fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], expect: Option<Ty>, span: Span) -> Expr {
         // `T(5)` with a type parameter `T`: the untyped constant is typed at `T`, as
