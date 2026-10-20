@@ -346,7 +346,53 @@ pub enum TyKind {
     Error,
 }
 
+impl TyKind {
+    /// Calls `f` on each type this one is directly built from (not through ADT definitions).
+    pub fn for_each_component(&self, f: &mut impl FnMut(Ty)) {
+        fn args(args: &[GenericArg], f: &mut impl FnMut(Ty)) {
+            for a in args {
+                if let GenericArg::Type(t) = a {
+                    f(*t);
+                }
+            }
+        }
+        match self {
+            TyKind::Ptr { pointee: t, .. }
+            | TyKind::ManyPtr { elem: t, .. }
+            | TyKind::Slice { elem: t, .. }
+            | TyKind::Array { elem: t, .. }
+            | TyKind::Optional(t)
+            | TyKind::Cont(t) => f(*t),
+            TyKind::ParamArray { len: a, elem: b } | TyKind::LenExpr { lhs: a, rhs: b, .. } => {
+                f(*a);
+                f(*b);
+            }
+            TyKind::Result { err, ok } => {
+                f(*err);
+                f(*ok);
+            }
+            TyKind::Tuple { elems, .. } => elems.iter().for_each(|t| f(*t)),
+            TyKind::Fn(sig) | TyKind::FnPtr(sig) => {
+                sig.params.iter().for_each(|t| f(*t));
+                f(sig.ret);
+                sig.effects.effects.iter().for_each(|e| args(&e.args, f));
+            }
+            TyKind::Adt(_, a) => args(a, f),
+            TyKind::Effects(set) => set.effects.iter().for_each(|e| args(&e.args, f)),
+            _ => {}
+        }
+    }
+}
+
+/// Facts about a type and the types it is built from, computed once when it is interned,
+/// since types are shared DAGs whose expanded trees can be exponentially large.
+const HAS_PARAM: u8 = 1;
+const HAS_INFER: u8 = 2;
+const HAS_ERROR: u8 = 4;
+
 struct Interner {
+    /// The flags (`HAS_*`) of each type.
+    flags: Vec<u8>,
     /// The number of kinds interned; the kinds themselves are in [`KINDS`].
     len: usize,
     map: HashMap<&'static TyKind, Ty>,
@@ -389,6 +435,7 @@ fn interner() -> &'static RwLock<Interner> {
     static I: OnceLock<RwLock<Interner>> = OnceLock::new();
     I.get_or_init(|| {
         RwLock::new(Interner {
+            flags: vec![],
             len: 0,
             map: HashMap::new(),
             adt_names: vec![],
@@ -408,12 +455,29 @@ impl Ty {
         if let Some(&t) = i.map.get(&kind) {
             return t;
         }
+        let mut flags = match &kind {
+            TyKind::Param(_) => HAS_PARAM,
+            TyKind::Infer(_) => HAS_INFER,
+            TyKind::Error => HAS_ERROR,
+            _ => 0,
+        };
+        kind.for_each_component(&mut |c| flags |= i.flags[c.0 as usize]);
+        i.flags.push(flags);
         let leaked: &'static TyKind = Box::leak(Box::new(kind));
         let t = Ty(i.len as u32);
         kinds_publish(i.len, leaked);
         i.len += 1;
         i.map.insert(leaked, t);
         t
+    }
+
+    fn flags(self) -> u8 {
+        interner().read().unwrap().flags[self.0 as usize]
+    }
+
+    /// Whether a type parameter occurs anywhere in this type.
+    pub fn has_param(self) -> bool {
+        self.flags() & HAS_PARAM != 0
     }
 
     /// A dense index, unique per distinct type, usable to key side tables.
@@ -534,9 +598,7 @@ impl Ty {
     }
     /// Whether the error type occurs anywhere in this type (`[3]<error>`, say).
     pub fn mentions_error(self) -> bool {
-        let mut found = false;
-        self.walk(&mut |t| found |= t.is_error());
-        found
+        self.flags() & HAS_ERROR != 0
     }
     pub fn is_never(self) -> bool {
         matches!(self.kind(), TyKind::Never)
@@ -608,59 +670,13 @@ impl Ty {
 
     /// True if any part of the type is an inference variable.
     pub fn has_infer(self) -> bool {
-        let mut found = false;
-        self.walk(&mut |t| found |= t.is_infer());
-        found
+        self.flags() & HAS_INFER != 0
     }
 
     /// Calls `f` on this type and every type it is built from (not through ADT definitions).
     pub fn walk(self, f: &mut impl FnMut(Ty)) {
         f(self);
-        match self.kind() {
-            TyKind::Ptr { pointee: t, .. }
-            | TyKind::ManyPtr { elem: t, .. }
-            | TyKind::Slice { elem: t, .. }
-            | TyKind::Array { elem: t, .. }
-            | TyKind::Optional(t)
-            | TyKind::Cont(t) => t.walk(f),
-            TyKind::ParamArray { len: a, elem: b } | TyKind::LenExpr { lhs: a, rhs: b, .. } => {
-                a.walk(f);
-                b.walk(f);
-            }
-            TyKind::Result { err, ok } => {
-                err.walk(f);
-                ok.walk(f);
-            }
-            TyKind::Tuple { elems, .. } => elems.iter().for_each(|t| t.walk(f)),
-            TyKind::Fn(sig) | TyKind::FnPtr(sig) => {
-                sig.params.iter().for_each(|t| t.walk(f));
-                sig.ret.walk(f);
-                for e in sig.effects.effects.iter() {
-                    for a in e.args.iter() {
-                        if let GenericArg::Type(t) = a {
-                            t.walk(f);
-                        }
-                    }
-                }
-            }
-            TyKind::Adt(_, args) => {
-                for a in args.iter() {
-                    if let GenericArg::Type(t) = a {
-                        t.walk(f);
-                    }
-                }
-            }
-            TyKind::Effects(set) => {
-                for e in set.effects.iter() {
-                    for a in e.args.iter() {
-                        if let GenericArg::Type(t) = a {
-                            t.walk(f);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+        self.kind().for_each_component(&mut |t| t.walk(f));
     }
 
     /// Rebuilds the type, replacing each component type `t` for which `f(t)` is `Some`.
@@ -786,6 +802,7 @@ pub unsafe fn release_since(mark: Mark) {
         drop(unsafe { Box::from_raw(kind) });
     }
     i.len = mark.kinds;
+    i.flags.truncate(mark.kinds);
     i.adt_names.truncate(mark.adts);
     i.effect_names.truncate(mark.effects);
     i.param_names.truncate(mark.params);
@@ -846,8 +863,31 @@ impl ParamId {
     }
 }
 
+/// How many component types a type's text may show; the rest is elided, since a shared
+/// type can be exponentially large when written out.
+const DISPLAY_BUDGET: u32 = 300;
+
+thread_local! {
+    /// The nesting depth of the type being displayed, and how many more components may be.
+    static DISPLAY: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (depth, left) = DISPLAY.get();
+        let left = if depth == 0 { DISPLAY_BUDGET } else { left };
+        if left == 0 {
+            return f.write_str("...");
+        }
+        DISPLAY.set((depth + 1, left - 1));
+        let r = self.fmt_components(f);
+        DISPLAY.set((depth, DISPLAY.get().1));
+        r
+    }
+}
+
+impl Ty {
+    fn fmt_components(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
             TyKind::Int(i) => write!(f, "{}{}", if i.signed { 'i' } else { 'u' }, i.bits),
             TyKind::Usize => f.write_str("usize"),

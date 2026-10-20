@@ -8,7 +8,7 @@ use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ArgKind};
 use crate::tir::{self, Expr, FnId, HandlerId};
-use crate::types::{ConstKey, EffectRef, EffectSet, GenericArg, ParamId, Ty, TyKind};
+use crate::types::{ConstKey, GenericArg, ParamId, Ty, TyKind};
 use std::collections::{HashMap, HashSet};
 
 /// The closed set of constraints (§16.3).
@@ -182,6 +182,20 @@ impl<'s> Sema<'s> {
     }
 
     pub fn is_plain(&self, t: Ty) -> bool {
+        // Types are shared DAGs, so the answer for a type with no definition under
+        // construction is remembered.
+        let stable = !has_param(t) && self.adts_in_progress.is_empty() && self.adt_inst_depth == 0;
+        if stable && let Some(&r) = self.plain_cache.borrow().get(&t) {
+            return r;
+        }
+        let r = self.is_plain_uncached(t);
+        if stable {
+            self.plain_cache.borrow_mut().insert(t, r);
+        }
+        r
+    }
+
+    fn is_plain_uncached(&self, t: Ty) -> bool {
         match t.kind() {
             TyKind::Int(_) | TyKind::Usize | TyKind::Isize | TyKind::Float(_) => true,
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } => self.is_plain(*elem),
@@ -216,7 +230,7 @@ impl<'s> Sema<'s> {
             module: sig.module,
             params,
             ret: self.subst(sig.ret, &map),
-            effects: subst_effects(&sig.effects, &map),
+            effects: self.subst_effects(&sig.effects, &map),
             generics: vec![],
         };
         let name = self.prog.fns[f.index()].name;
@@ -294,6 +308,12 @@ impl<'s> Sema<'s> {
             locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(&mut cx, l.ty), ..l }).collect();
         let body = self.mono_expr(&mut cx, body);
         self.mono_depth = outer_depth;
+        // An instance may need a type larger than any object (a computed array length).
+        for l in &locals {
+            if !self.type_size_ok(l.ty, req.span) {
+                break;
+            }
+        }
         let def = &mut self.prog.fns[req.instance.index()];
         def.params = params;
         def.locals = locals;
@@ -389,13 +409,13 @@ impl<'s> Sema<'s> {
                 *id = self.mono_fn(cx, *id);
             }
             tir::ExprKind::Call { callee: tir::Callee::Perform { effect, .. }, .. } => {
-                *effect = subst_eref(effect, cx.map);
+                *effect = self.subst_eref(effect, cx.map);
             }
             tir::ExprKind::HandlerRef(h) => {
                 *h = self.mono_handler(cx, *h);
             }
             tir::ExprKind::Write { sink: tir::WriteSink::Perform { effect, .. }, .. } => {
-                *effect = subst_eref(effect, cx.map);
+                *effect = self.subst_eref(effect, cx.map);
             }
             tir::ExprKind::With { handlers, .. } => {
                 for h in handlers.iter_mut() {
@@ -576,7 +596,7 @@ impl<'s> Sema<'s> {
         let new_sig = super::FnSig {
             params: sig.params.iter().map(|p| ParamInfo { ty: self.subst(p.ty, cx.map), ..p.clone() }).collect(),
             ret: self.subst(sig.ret, cx.map),
-            effects: subst_effects(&sig.effects, cx.map),
+            effects: self.subst_effects(&sig.effects, cx.map),
             ..sig
         };
         let new_id = self.new_fn(name, span, new_sig, kind);
@@ -585,7 +605,8 @@ impl<'s> Sema<'s> {
         let def = &self.prog.fns[id.index()];
         let (params, locals, body) = (def.params.clone(), def.locals.clone(), def.body.clone());
         // Including the effects a literal performs where it is written (§11.6).
-        let effects = subst_effects(&def.effects, cx.map);
+        let def_effects = def.effects.clone();
+        let effects = self.subst_effects(&def_effects, cx.map);
         let locals: Vec<tir::LocalDecl> =
             locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(cx, l.ty), ..l }).collect();
         let parent = parent.map(|p| self.mono_fn(cx, p));
@@ -613,8 +634,8 @@ impl<'s> Sema<'s> {
             return n;
         }
         let lit = &self.prog.handlers[h.index()];
-        let effect = subst_eref(&lit.effect, cx.map);
-        let clauses = lit.clauses.clone();
+        let (lit_effect, clauses) = (lit.effect.clone(), lit.clauses.clone());
+        let effect = self.subst_eref(&lit_effect, cx.map);
         let new_h = HandlerId(self.prog.handlers.len() as u32);
         self.prog.handlers.push(tir::HandlerLit { effect, clauses: vec![] });
         cx.handler_map.insert(h, new_h);
@@ -674,52 +695,19 @@ fn inner_second_class_part(t: Ty) -> Option<Ty> {
 }
 
 pub fn has_param(t: Ty) -> bool {
-    let mut found = false;
-    t.walk(&mut |x| found |= matches!(x.kind(), TyKind::Param(_)));
-    found
+    t.has_param()
 }
 
-/// Replaces type parameters in `t`.
+/// Replaces type parameters in `t`, without re-instantiating the generic types it contains
+/// (see [`Sema::subst`] for that).
 pub fn subst_ty(t: Ty, map: &[(ParamId, Ty)]) -> Ty {
     if map.is_empty() || !has_param(t) {
         return t;
     }
     t.map(&mut |x| match x.kind() {
         TyKind::Param(p) => map.iter().find(|(q, _)| q == p).map(|(_, a)| *a),
-        TyKind::Fn(sig) | TyKind::FnPtr(sig) if !sig.effects.is_empty() => {
-            let s = crate::types::FnTy {
-                params: sig.params.iter().map(|t| subst_ty(*t, map)).collect(),
-                ret: subst_ty(sig.ret, map),
-                effects: subst_effects(&sig.effects, map),
-                variadic: sig.variadic,
-                callconv: sig.callconv,
-            };
-            Some(Ty::intern(if matches!(x.kind(), TyKind::Fn(_)) {
-                TyKind::Fn(Box::new(s))
-            } else {
-                TyKind::FnPtr(Box::new(s))
-            }))
-        }
         _ => None,
     })
-}
-
-pub fn subst_eref(e: &EffectRef, map: &[(ParamId, Ty)]) -> EffectRef {
-    EffectRef {
-        effect: e.effect,
-        args: e
-            .args
-            .iter()
-            .map(|a| match a {
-                GenericArg::Type(t) => GenericArg::Type(subst_ty(*t, map)),
-                v => v.clone(),
-            })
-            .collect(),
-    }
-}
-
-pub fn subst_effects(s: &EffectSet, map: &[(ParamId, Ty)]) -> EffectSet {
-    EffectSet::new(s.effects.iter().map(|e| subst_eref(e, map)).collect()).flatten()
 }
 
 impl<'a, 's> FnCx<'a, 's> {
@@ -1229,7 +1217,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 },
             }
         }
-        let effects = subst_effects(&sig.effects, &map);
+        let effects = self.sema.subst_effects(&sig.effects, &map);
         self.record_effects(&effects, span);
         // Named arguments out of parameter order are evaluated in the order written
         // (§11.3), into temporaries.

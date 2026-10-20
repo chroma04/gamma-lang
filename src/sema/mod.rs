@@ -314,6 +314,8 @@ pub struct Sema<'s> {
     pub adt_inst_depth: u32,
     /// Instances created during the outermost instantiation in progress, with their templates.
     pub adt_new_instances: Vec<(AdtId, Ty)>,
+    /// Which concrete types are plain data (§4.4), once known.
+    pub plain_cache: std::cell::RefCell<HashMap<Ty, bool>>,
     /// Every array length computed from compile-time value parameters, with its
     /// span: checked for overflow at each instantiation (§16.5).
     pub len_exprs: Vec<(Ty, Span)>,
@@ -435,6 +437,7 @@ impl<'s> Sema<'s> {
             deferred_constraints: vec![],
             adt_inst_depth: 0,
             adt_new_instances: vec![],
+            plain_cache: Default::default(),
             len_exprs: vec![],
             adt_inst_overflowed: false,
         }

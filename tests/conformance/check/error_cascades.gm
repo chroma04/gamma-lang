@@ -1,0 +1,16 @@
+//! stage: check
+// One mistake is reported once: later uses of a declaration with an error do not add errors.
+U :: union(bool) { A, B } //~ ERROR a union's tag type must be an integer type
+g :: fn() -> i32 needs Out { print("hi\n"); return 1 }
+S :: struct { x: i32 = g() } //~ ERROR may not perform effects //~ ERROR this performs the effect `Out`
+F4 :: #simd [4]f32
+main :: fn() {
+    _ = S()
+    v := F4(fill: 1.0)
+    w := v.shuffle(-1, 1, 2, 3) //~ ERROR lane -1 does not exist
+    _ = w
+    r := match (1, 2) {
+        (a, a) => 1 //~ ERROR `a` is bound twice in this pattern
+    }
+    _ = r
+}

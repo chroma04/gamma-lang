@@ -1,0 +1,51 @@
+//! stage: check
+// Types built by repeated doubling are shared, and are checked without walking their expansion.
+T0 :: (u8, u8)
+T1 :: (T0, T0)
+T2 :: (T1, T1)
+T3 :: (T2, T2)
+T4 :: (T3, T3)
+T5 :: (T4, T4)
+T6 :: (T5, T5)
+T7 :: (T6, T6)
+T8 :: (T7, T7)
+T9 :: (T8, T8)
+T10 :: (T9, T9)
+T11 :: (T10, T10)
+T12 :: (T11, T11)
+T13 :: (T12, T12)
+T14 :: (T13, T13)
+T15 :: (T14, T14)
+T16 :: (T15, T15)
+T17 :: (T16, T16)
+T18 :: (T17, T17)
+T19 :: (T18, T18)
+T20 :: (T19, T19)
+T21 :: (T20, T20)
+T22 :: (T21, T21)
+T23 :: (T22, T22)
+T24 :: (T23, T23)
+T25 :: (T24, T24)
+T26 :: (T25, T25)
+T27 :: (T26, T26)
+T28 :: (T27, T27)
+T29 :: (T28, T28)
+T30 :: (T29, T29)
+T31 :: (T30, T30)
+T32 :: (T31, T31)
+T33 :: (T32, T32)
+T34 :: (T33, T33)
+T35 :: (T34, T34)
+T36 :: (T35, T35)
+T37 :: (T36, T36)
+T38 :: (T37, T37)
+T39 :: (T38, T38)
+main :: fn() {
+    x: T39 = ---
+    y: ?T39 = null
+    z: [2]T39 = ---
+    _ = x
+    _ = y
+    _ = z
+    w: T39 = 5 //~ ERROR expected
+}

@@ -1,0 +1,9 @@
+//! stage: check
+// Effect arguments that are generic types are the same type after substitution (§12.3, §16.6).
+E :: effect(T: type) { op: fn(x: T) }
+Box :: struct(T: type) { v: T }
+f :: fn(T: type) needs E(Box(T)) { }
+g :: fn() needs E(Box(i32)) { f(i32) }
+handler E(Box(i32)) for ^i32 { op(self, x) => {} }
+h :: fn() { n: i32 = 0; with &n { f(i32) } }
+main :: fn() { h() }

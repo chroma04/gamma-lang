@@ -157,6 +157,21 @@ impl<'s> Sema<'s> {
     /// Resolves a type expression, reporting an error (and returning the error
     /// type) if it does not denote a type.
     pub fn resolve_type(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
+        let ty = self.resolve_type_unchecked(module, e);
+        // The size of a type being defined is checked when its definition is complete.
+        if matches!(
+            ty.kind(),
+            TyKind::Array { .. } | TyKind::Tuple { .. } | TyKind::Optional(_) | TyKind::Result { .. }
+        ) && self.adts_in_progress.is_empty()
+            && self.adt_inst_depth == 0
+            && !self.type_size_ok(ty, e.span)
+        {
+            return Ty::error();
+        }
+        ty
+    }
+
+    fn resolve_type_unchecked(&mut self, module: ModuleId, e: &ast::Expr) -> Ty {
         match &e.kind {
             ExprKind::Ident(id) => {
                 if let Some(&(_, t)) = self.type_params.iter().rev().find(|(n, _)| *n == id.name) {
@@ -526,7 +541,7 @@ impl<'s> Sema<'s> {
                                 e.span,
                                 "this array length is not supported in a type: a length computed from \
                                  compile-time parameters may use only `usize` parameters, integer constants \
-                                 and the plain operators `+ - * / % << >> & | ^` (§16.5)",
+                                 and the plain operators `+ - * / % << >> & | ~` (§16.5)",
                             );
                             None
                         }

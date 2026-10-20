@@ -116,9 +116,40 @@ impl<'s> Sema<'s> {
                 lit.span,
                 format!("`{}` contains itself by value and would be infinitely large; use a pointer", name),
             );
+            self.empty_adt(id, name);
+            return Ty::error();
+        }
+        if !self.type_size_ok(ty, lit.span) {
+            self.empty_adt(id, name);
             return Ty::error();
         }
         ty
+    }
+
+    /// Leaves a type that was reported as ill-formed without fields or variants, so that
+    /// nothing walks it later.
+    fn empty_adt(&mut self, id: AdtId, name: Symbol) {
+        let empty = AdtKind::Struct { fields: vec![], packed: false, align: None, bits: None };
+        self.prog.adts.insert(id, AdtDef { name, kind: empty });
+        if let Some(info) = self.adts.get_mut(&id) {
+            info.has_using = false;
+            info.defaults.clear();
+        }
+    }
+
+    /// Reports `ty` if it is larger than any object can be (`isize::MAX` bytes on the
+    /// target), and returns whether it is fine.
+    pub fn type_size_ok(&mut self, ty: Ty, span: Span) -> bool {
+        let max = self.target.max_object_size();
+        let aggregate = matches!(
+            ty.kind(),
+            TyKind::Array { .. } | TyKind::Tuple { .. } | TyKind::Optional(_) | TyKind::Result { .. } | TyKind::Adt(..)
+        );
+        if !aggregate || super::generics::has_param(ty) || self.with_layouts(|l| l.size_of(ty)) <= max {
+            return true;
+        }
+        self.error(span, format!("the type `{}` is too large: an object is at most {} bytes", ty, max));
+        false
     }
 
     fn struct_kind(&mut self, module: ModuleId, id: AdtId, s: &ast::StructLit, attrs: &[ast::Attribute]) -> AdtKind {
@@ -165,7 +196,12 @@ impl<'s> Sema<'s> {
                     has_using = true;
                 }
             }
-            let default = f.default.as_ref().and_then(|d| self.check_const_expr(module, d, Some(ty)));
+            // A default that failed (and was reported) still counts as a default, so that
+            // constructions do not report the field as missing as well.
+            let default = f
+                .default
+                .as_ref()
+                .map(|d| self.check_const_expr(module, d, Some(ty)).unwrap_or_else(|| super::func::error_expr(d.span)));
             for n in &f.names {
                 if n.name.as_str() != "_" && fields.iter().any(|x| x.name == n.name) {
                     self.error(n.span, format!("duplicate field `{}`", n.name));
@@ -245,6 +281,8 @@ impl<'s> Sema<'s> {
         {
             self.error(u.span, format!("a union's tag type must be an integer type, not `{}`", t));
         }
+        // Without a usable tag type, the tag values are not checked against it.
+        let explicit_tag = explicit_tag.map(|t| if t.is_integer() { t } else { Ty::error() });
         let mut variants: Vec<VariantDef> = vec![];
         let mut next = BigInt::from(0);
         let mut spans = vec![];
@@ -521,21 +559,25 @@ impl<'s> Sema<'s> {
         // value (as for non-generic types). Such an instance is left without fields, so
         // that computing its layout ends.
         if self.adt_inst_depth == 0 {
-            let new = std::mem::take(&mut self.adt_new_instances);
-            let infinite: Vec<(AdtId, Ty)> = new
-                .into_iter()
+            let new_all = std::mem::take(&mut self.adt_new_instances);
+            let infinite: Vec<(AdtId, Ty)> = new_all
+                .iter()
+                .copied()
                 .filter(|&(_, t)| matches!(t.kind(), TyKind::Adt(id, _) if self.contains_by_value(t, *id, &mut vec![])))
                 .collect();
-            for (template, t) in infinite {
+            for &(template, t) in &infinite {
                 let TyKind::Adt(id, _) = t.kind() else { continue };
-                {
-                    let span = self.adt_spans[&template];
-                    self.error(
-                        span,
-                        format!("`{}` contains itself by value and would be infinitely large; use a pointer", t),
-                    );
-                    let empty = AdtKind::Struct { fields: vec![], packed: false, align: None, bits: None };
-                    self.prog.adts.insert(*id, AdtDef { name: template.name(), kind: empty });
+                let span = self.adt_spans[&template];
+                self.error(
+                    span,
+                    format!("`{}` contains itself by value and would be infinitely large; use a pointer", t),
+                );
+                self.empty_adt(*id, template.name());
+            }
+            for (template, t) in new_all {
+                let TyKind::Adt(id, _) = t.kind() else { continue };
+                if !infinite.iter().any(|&(_, i)| i == t) && !self.type_size_ok(t, self.adt_spans[&template]) {
+                    self.empty_adt(*id, template.name());
                 }
             }
         }
@@ -602,6 +644,33 @@ impl<'s> Sema<'s> {
         }
     }
 
+    /// [`Sema::subst`] on the type arguments of an effect.
+    pub fn subst_eref(
+        &mut self,
+        e: &crate::types::EffectRef,
+        map: &[(crate::types::ParamId, Ty)],
+    ) -> crate::types::EffectRef {
+        let args = e
+            .args
+            .iter()
+            .map(|a| match a {
+                crate::types::GenericArg::Type(t) => crate::types::GenericArg::Type(self.subst(*t, map)),
+                v => v.clone(),
+            })
+            .collect();
+        crate::types::EffectRef { effect: e.effect, args }
+    }
+
+    /// [`Sema::subst`] on the arguments of each effect in `s`.
+    pub fn subst_effects(
+        &mut self,
+        s: &crate::types::EffectSet,
+        map: &[(crate::types::ParamId, Ty)],
+    ) -> crate::types::EffectSet {
+        let effects = s.effects.iter().map(|e| self.subst_eref(e, map)).collect();
+        crate::types::EffectSet::new(effects).flatten()
+    }
+
     /// Replaces type parameters in `t`, re-instantiating generic types (§16.4).
     pub fn subst(&mut self, t: Ty, map: &[(crate::types::ParamId, Ty)]) -> Ty {
         if map.is_empty() || !super::generics::has_param(t) {
@@ -623,7 +692,7 @@ impl<'s> Sema<'s> {
                 let s = crate::types::FnTy {
                     params: sig.params.iter().map(|t| self.subst(*t, map)).collect(),
                     ret: self.subst(sig.ret, map),
-                    effects: super::generics::subst_effects(&sig.effects, map),
+                    effects: self.subst_effects(&sig.effects, map),
                     variadic: sig.variadic,
                     callconv: sig.callconv,
                 };

@@ -79,10 +79,7 @@ impl<'a, 's> FnCx<'a, 's> {
                     };
                     let tmp_ty = vt;
                     // Values written before the spread are evaluated before it.
-                    for &w in &written {
-                        let v = slots[w].take().unwrap();
-                        slots[w] = Some(self.bind_temp(v, &mut stmts));
-                    }
+                    self.spill_written(&mut slots, &written, &mut stmts);
                     written.clear();
                     let base = self.bind_temp(v, &mut stmts);
                     for (k, (fname, fty)) in src_fields.iter().enumerate() {
@@ -109,10 +106,7 @@ impl<'a, 's> FnCx<'a, 's> {
         // Arguments written out of field order are evaluated into temporaries first,
         // so evaluation follows the written order (§7.1).
         if written.windows(2).any(|w| w[0] > w[1]) {
-            for &w in &written {
-                let v = slots[w].take().unwrap();
-                slots[w] = Some(self.bind_temp(v, &mut stmts));
-            }
+            self.spill_written(&mut slots, &written, &mut stmts);
         }
         let mut values = vec![];
         for (i, slot) in slots.into_iter().enumerate() {
@@ -197,6 +191,16 @@ impl<'a, 's> FnCx<'a, 's> {
             })
             .collect();
         Some(parts)
+    }
+
+    /// Evaluates the values written so far (the `written` slots) into temporaries, in the
+    /// order they were written.
+    fn spill_written(&mut self, slots: &mut [Option<Expr>], written: &[usize], stmts: &mut Vec<Stmt>) {
+        for &w in written {
+            if let Some(v) = slots[w].take() {
+                slots[w] = Some(self.bind_temp(v, stmts));
+            }
+        }
     }
 
     pub(super) fn bind_temp(&mut self, v: Expr, stmts: &mut Vec<Stmt>) -> Expr {
@@ -490,10 +494,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
         }
         if written.windows(2).any(|w| w[0] > w[1]) {
-            for &w in &written {
-                let v = slots[w].take().unwrap();
-                slots[w] = Some(self.bind_temp(v, &mut stmts));
-            }
+            self.spill_written(&mut slots, &written, &mut stmts);
         }
         let missing: Vec<String> =
             names.iter().zip(&slots).filter(|(_, s)| s.is_none()).map(|(n, _)| format!("`{}`", n)).collect();
