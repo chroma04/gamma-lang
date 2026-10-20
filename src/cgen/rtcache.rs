@@ -91,19 +91,21 @@ pub(super) fn private_name(dir: &Path, stem: &str, ext: &str) -> PathBuf {
 /// Creates the new directory `dir` (failing if it exists), accessible to this user only
 /// where the system has such modes.
 pub(super) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    let mut b = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(dir)
+    private_dir_builder().create(dir)
 }
 
 /// Creates `dir` and its missing parents like [`create_private_dir`]; fine if it exists.
 pub(super) fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
+    private_dir_builder().recursive(true).create(dir)
+}
+
+/// A builder of directories accessible to this user only (mode 0700 on Unix).
+pub fn private_dir_builder() -> std::fs::DirBuilder {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut b = std::fs::DirBuilder::new();
-    b.recursive(true);
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(dir)
+    b
 }
 
 /// Writes `data` to the file `path`, which must not exist (a symbolic link in its place is
@@ -253,6 +255,7 @@ mod tests {
         assert_ne!(private_name(dir, "s", "o"), private_name(dir, "s", "o"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn private_directories_are_new_and_owner_only() {
         use std::os::unix::fs::PermissionsExt;
@@ -277,7 +280,8 @@ mod tests {
         std::fs::write(&old, b"x").unwrap();
         std::fs::write(&new, b"x").unwrap();
         let t = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
-        std::fs::File::open(&old).unwrap().set_modified(t).unwrap();
+        // Windows sets times only through a handle opened for writing.
+        std::fs::OpenOptions::new().write(true).open(&old).unwrap().set_modified(t).unwrap();
         prune(&dir);
         let (old_left, new_left) = (old.exists(), new.exists());
         std::fs::remove_dir_all(&dir).unwrap();

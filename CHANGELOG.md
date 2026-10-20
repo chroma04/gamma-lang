@@ -257,6 +257,14 @@ Versions and what each kind of change means are described in
   release no longer resolves from the cache. Git commands ignore the caller's `GIT_DIR`
   and similar variables (as set inside a git hook).
 - Command-line arguments that are not valid UTF-8 are a usage error instead of a crash.
+- `gamma run --backend=c` rebuilds a cached executable when a library named by a
+  `foreign` block or by `-L`/`-l` in `LDFLAGS` changes, or when `wasm-opt` is upgraded.
+- The cache directory and temporary build directories are created accessible to the
+  user only, and temporary files never replace an existing file; failed builds no longer
+  leave temporary executables in the cache, and old leftovers are removed. The cache
+  directory must be private to the user (`docs/architecture.md`).
+- On Windows, a backslash in `CC`, `CFLAGS`, `LDFLAGS` and `GAMMA_RUNNER` is literal
+  except before a double quote (as in Windows command lines), so `C:\msys64\…` paths work.
 - `gamma test --coverage=<file>` exits with status 1 when the tracefile cannot be
   written.
 - `install.sh` accepts only `https://` and `file://` download locations, checks that the

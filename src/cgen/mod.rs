@@ -19,7 +19,7 @@ mod func;
 mod helpers;
 mod outline;
 mod rtcache;
-pub use rtcache::{cache_dir, cached_program, runtime_object_from};
+pub use rtcache::{cache_dir, cached_program, private_dir_builder, runtime_object_from};
 mod types;
 mod units;
 mod vector;
