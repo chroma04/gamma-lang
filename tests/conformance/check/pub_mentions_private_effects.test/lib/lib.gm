@@ -1,0 +1,11 @@
+//! stage: check
+// A `pub` effect's operations and a `pub` function's `needs` arguments must not mention private types (§3.3).
+Hidden :: struct { q: i32 }
+pub Shown :: struct { q: i32 }
+pub E :: effect { op: fn(h: Hidden) } //~ ERROR `E` mentions the private type `Hidden`
+pub E2 :: effect(T: type) { op: fn() -> T }
+pub F :: effect { op: fn() -> Hidden } //~ ERROR `F` mentions the private type `Hidden`
+pub f :: fn() needs E2(Hidden) {} //~ ERROR `f` mentions the private type `Hidden`
+pub Ev :: E2(Hidden) //~ ERROR `Ev` mentions the private type `Hidden`
+pub ok :: fn() needs E2(Shown) {}
+pub G :: effect { op: fn(s: Shown) -> Shown }

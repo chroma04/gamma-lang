@@ -382,6 +382,10 @@ impl<'a, 's> FnCx<'a, 's> {
             let v = self.field_value(e, elem);
             return mk(ty.unwrap_or(Ty::array(len, elem)), tir::ExprKind::ArrayFill(Box::new(v)), span);
         }
+        if let Some(a) = args.iter().find(|a| matches!(&a.kind, ArgKind::Named(n, _) if n.name.as_str() == "fill")) {
+            self.error(a.span, "`fill:` must be the only argument");
+            return error_expr(span);
+        }
         // `[N]T(v)` and `V(a)` with one argument that is itself an array or a vector:
         // a conversion between a vector and an array or another vector (§6.5, §5.6.2).
         if let [ast::Arg { kind: ArgKind::Positional(e), .. }] = args
@@ -429,7 +433,7 @@ impl<'a, 's> FnCx<'a, 's> {
             && n != values.len() as u64
         {
             let t = ty.unwrap_or(Ty::array(n, elem));
-            self.error(span, format!("`{}` needs exactly {} elements, but {} are given", t, n, values.len()));
+            self.error(span, format!("`{}` needs exactly {} elements, but {} given", t, n, given(values.len())));
             return error_expr(span);
         }
         let t = ty.unwrap_or(Ty::array(values.len() as u64, elem));
@@ -535,4 +539,9 @@ fn is_constant(e: &Expr) -> bool {
             | tir::ExprKind::Uninit
             | tir::ExprKind::Const(_)
     )
+}
+
+/// "1 is" or "3 are", for a count of given values.
+fn given(n: usize) -> String {
+    if n == 1 { "1 is".to_string() } else { format!("{} are", n) }
 }
