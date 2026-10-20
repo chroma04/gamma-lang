@@ -9,10 +9,13 @@
 //! (AArch64), and a larger result is written through a hidden pointer.
 
 use super::{CResult, Gen, Rep, unsupported};
+use crate::layout::Layouts;
 use crate::source::Span;
-use crate::tir::{AdtKind, FnId};
-use crate::types::{ArrayKind, Ty, TyKind};
+use crate::tir::{AdtDef, AdtKind, FnId};
+use crate::types::{AdtId, ArrayKind, Ty, TyKind};
 use cranelift_codegen::ir::{AbiParam, ArgumentPurpose, Signature, Type, types};
+use cranelift_codegen::isa::CallConv;
+use std::collections::HashMap;
 
 /// How one argument crosses the C ABI.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +77,14 @@ struct Regs {
     float: u32,
 }
 
+/// What classifying values needs: the layouts of types (and so the target) and the
+/// definitions of the nominal types.
+#[derive(Clone, Copy)]
+pub struct CAbi<'a> {
+    pub lay: &'a Layouts<'a>,
+    pub adts: &'a HashMap<AdtId, AdtDef>,
+}
+
 impl<'a> Gen<'a> {
     /// The C signature of foreign or exported function `f`.
     pub fn c_sig_of(&self, f: FnId) -> CResult<CSig> {
@@ -84,9 +95,33 @@ impl<'a> Gen<'a> {
 
     /// The C signature of a function with parameters `tys` and result `ret`.
     pub fn c_sig(&self, tys: &[Ty], ret: Ty, cc: crate::types::CallConv, span: Span) -> CResult<CSig> {
-        let mut sig = Signature::new(self.callconv(cc));
+        CAbi { lay: self.lay, adts: &self.prog.adts }.c_sig(tys, ret, cc, self.callconv(cc), span)
+    }
+}
+
+impl<'a> CAbi<'a> {
+    fn size(&self, t: Ty) -> u64 {
+        self.lay.size_of(t)
+    }
+
+    fn align(&self, t: Ty) -> u64 {
+        self.lay.align_of(t).max(1)
+    }
+
+    fn offsets(&self, t: Ty) -> Vec<u64> {
+        self.lay.layout(t).offsets
+    }
+
+    fn rep(&self, t: Ty) -> Rep {
+        super::rep_of(self.lay, t)
+    }
+
+    /// The C signature of a function with parameters `tys` and result `ret`, in calling
+    /// convention `cc` (`conv` in Cranelift's terms).
+    pub fn c_sig(&self, tys: &[Ty], ret: Ty, cc: crate::types::CallConv, conv: CallConv, span: Span) -> CResult<CSig> {
+        let mut sig = Signature::new(conv);
         let win64 = cc == crate::types::CallConv::Win64;
-        let x64 = self.prog.target.arch == "X86_64";
+        let x64 = self.lay.target.arch == "X86_64";
         let mut regs = if x64 { Regs { int: 6, float: 8 } } else { Regs { int: 8, float: 8 } };
         let cret = match self.rep(ret) {
             Rep::Zero => CRet::None,
@@ -223,7 +258,7 @@ impl<'a> Gen<'a> {
     /// (none if larger than 16 bytes).
     fn classify(&self, t: Ty, span: Span) -> CResult<Option<Vec<(Type, u32)>>> {
         let size = self.size(t);
-        let x64 = self.prog.target.arch == "X86_64";
+        let x64 = self.lay.target.arch == "X86_64";
         if size > 32 || (x64 && size > 16) {
             return Ok(None);
         }
@@ -282,7 +317,7 @@ impl<'a> Gen<'a> {
                         self.pieces(*elem, base + i * step, out)?;
                     }
                 }
-                TyKind::Adt(id, _) => match &self.prog.adts[id].kind {
+                TyKind::Adt(id, _) => match &self.adts[id].kind {
                     AdtKind::Struct { bits: Some(_), .. } => out.push((base, size, Class::Int)),
                     AdtKind::Struct { fields, .. } => {
                         for (f, off) in fields.iter().zip(self.offsets(t)) {
@@ -319,3 +354,7 @@ fn win64_parts(size: u64) -> Option<Vec<(Type, u32)>> {
 pub fn parts_size(parts: &[(Type, u32)]) -> u64 {
     parts.iter().map(|(t, off)| *off as u64 + t.bytes() as u64).max().unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "cabi_tests.rs"]
+mod tests;
