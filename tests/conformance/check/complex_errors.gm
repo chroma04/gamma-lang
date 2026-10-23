@@ -9,12 +9,12 @@ main :: fn() {
     a := C64(re: 1, im: 2)
     b := C64(re: 3, im: 4)
     c := C32(re: 1, im: 1)
-    _ = a + 1.0 //~ ERROR `+` takes two `Complex(f64)`, not `Complex(f64)` and `{integer}`
-    _ = 1.0 - a //~ ERROR `-` takes two `Complex(f64)`, not `{integer}` and `Complex(f64)`
-    _ = 2 / a //~ ERROR `/` takes two `Complex(f64)`, not `{integer}` and `Complex(f64)`
+    _ = a + 1.0 //~ ERROR `+` takes two `Complex(f64)`, not `Complex(f64)` and a literal
+    _ = 1.0 - a //~ ERROR `-` takes two `Complex(f64)`, not a literal and `Complex(f64)`
+    _ = 2 / a //~ ERROR `/` takes two `Complex(f64)`, not a literal and `Complex(f64)`
     _ = a + c //~ ERROR the operands of `+` have different types: `Complex(f64)` and `Complex(f32)`
     _ = a * c //~ ERROR the operands of `*` have different types: `Complex(f64)` and `Complex(f32)`
-    _ = a * f32(2) //~ ERROR `*` scales `Complex(f64)` by a `f64`, not by a `f32`
+    _ = a * f32(2) //~ ERROR `*` scales `Complex(f64)` by its element type `f64`, not by `f32`
     _ = a % b //~ ERROR `%` does not apply to complex numbers
     _ = a << 1 //~ ERROR `<<` does not apply to complex numbers
     _ = a & b //~ ERROR `&` does not apply to complex numbers

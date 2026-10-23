@@ -31,6 +31,11 @@ Rejections recorded in spec C.8. User: "work on complex numbers and vectors firs
   rhs compound → scalar-left), neg_expr/bit_not_expr, methods.rs collection_method,
   construct.rs conversions, vector.rs vector_type accepts `#vec`.
 
+## Delivered
+std/complex (lib/std/complex: arg, from_polar, exp, log, sqrt, pow, sin, cos; Annex G
+deviations in its //! doc), conformance tests, guide 04-types, examples nbody/julia.
+
 ## Follow-ups (not done)
+- tree-sitter corpus case for `#vec` (CLI not installed in s35).
 - SOA (`#soa`), lane names `.x .y .z .w` / swizzles (rejected for now: two ways to index).
 - Inline complex ops in Cranelift (perf), formatting `Complex` as `1+2i` (no: structural).

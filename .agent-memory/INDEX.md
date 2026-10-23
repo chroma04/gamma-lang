@@ -2,8 +2,10 @@
 
 ## State (2026-10-23) — PRs #1–#68 merged, v0.1.0 tagged; work branch `dev`
 - s35 (branch dev): complex numbers `Complex(T)` + math vectors `#vec [N]T` (decisions/039;
-  Odin-feature verdicts there too). Float(T) implies Neg. std/complex, conformance tests,
-  docs/example delegated (merge status: see decisions/039 follow-ups).
+  Odin-feature verdicts there too). Float(T) implies Neg. Done + merged: std/complex,
+  conformance tests (run/math_vector*, run/complex, run/std_complex, check/*_errors),
+  guide sections in 04-types.md, examples nbody.gm + julia.gm, CHANGELOG Unreleased.
+  Next on this thread: SOA (`#soa`) if the user wants it; tree-sitter corpus `#vec` case.
 - s34 (branch dev): HashMap moved to std/collections/hash_map; deprecated universe aliases
   for one release (decisions/038 — remove after the next release). Constraints stay
   one-type; `in` stays built-in only.
