@@ -1,0 +1,132 @@
+// std/math: frexp, ldexp and nextafter, including zeros, subnormal numbers, infinities, NaN and the
+// extremes of the exponent range.
+math :: import "std/math"
+
+NZ: f64 : (0x8000_0000_0000_0000u64).bits(f64)
+
+p1 :: fn(name: string, x: f64, r: f64) needs Out {
+    print("{}({}) = {}\n", name, x, r)
+}
+
+p2 :: fn(name: string, x: f64, y: f64, r: f64) needs Out {
+    print("{}({}, {}) = {}\n", name, x, y, r)
+}
+
+pfr :: fn(x: f64) needs Out {
+    f := math.frexp(x)
+    print("frexp({}) = {} {}\n", x, f.frac, f.exp)
+}
+
+test_frexp :: fn() needs Out {
+    pfr(0.0)
+    pfr(NZ)
+    pfr(1.0)
+    pfr(-1.0)
+    pfr(0.5)
+    pfr(0.75)
+    pfr(-0.75)
+    pfr(2.0)
+    pfr(3.0)
+    pfr(8.0)
+    pfr(10.0)
+    pfr(0.1)
+    pfr(1e+300)
+    pfr(-1e+300)
+    pfr(1.7976931348623157e+308)
+    pfr(2.2250738585072014e-308)
+    pfr(2.225073858507201e-308)
+    pfr(1e-310)
+    pfr(5e-324)
+    pfr(-5e-324)
+    pfr(1.5e-323)
+    pfr(1.5e-320)
+    pfr(math.inf)
+    pfr(-math.inf)
+    pfr(math.nan)
+}
+
+test_ldexp :: fn() needs Out {
+    p2("ldexp", 1.0, f64(0), math.ldexp(1.0, 0))
+    p2("ldexp", 1.0, f64(1), math.ldexp(1.0, 1))
+    p2("ldexp", 1.0, f64(-1), math.ldexp(1.0, -1))
+    p2("ldexp", 0.75, f64(10), math.ldexp(0.75, 10))
+    p2("ldexp", -3.0, f64(4), math.ldexp(-3.0, 4))
+    p2("ldexp", 1.0, f64(1023), math.ldexp(1.0, 1023))
+    p2("ldexp", 1.0, f64(1024), math.ldexp(1.0, 1024))
+    p2("ldexp", 1.0, f64(-1022), math.ldexp(1.0, -1022))
+    p2("ldexp", 1.0, f64(-1023), math.ldexp(1.0, -1023))
+    p2("ldexp", 1.0, f64(-1074), math.ldexp(1.0, -1074))
+    p2("ldexp", 1.0, f64(-1075), math.ldexp(1.0, -1075))
+    p2("ldexp", 1.5, f64(-1075), math.ldexp(1.5, -1075))
+    p2("ldexp", 1.0, f64(-1076), math.ldexp(1.0, -1076))
+    p2("ldexp", 3.0, f64(-1075), math.ldexp(3.0, -1075))
+    p2("ldexp", 1.9999999999999998, f64(-1075), math.ldexp(1.9999999999999998, -1075))
+    p2("ldexp", 5e-324, f64(1), math.ldexp(5e-324, 1))
+    p2("ldexp", 5e-324, f64(1074), math.ldexp(5e-324, 1074))
+    p2("ldexp", 1e-310, f64(20), math.ldexp(1e-310, 20))
+    p2("ldexp", 1e+300, f64(100), math.ldexp(1e+300, 100))
+    p2("ldexp", 1e+300, f64(-2000), math.ldexp(1e+300, -2000))
+    p2("ldexp", 1e-300, f64(2000), math.ldexp(1e-300, 2000))
+    p2("ldexp", 1.7976931348623157e+308, f64(-1), math.ldexp(1.7976931348623157e+308, -1))
+    p2("ldexp", 1.7976931348623157e+308, f64(1), math.ldexp(1.7976931348623157e+308, 1))
+    p2("ldexp", 1.0, f64(100000), math.ldexp(1.0, 100000))
+    p2("ldexp", 1.0, f64(-100000), math.ldexp(1.0, -100000))
+    p2("ldexp", 1.0, f64(2147483647), math.ldexp(1.0, 2147483647))
+    p2("ldexp", 1.0, f64(-2147483648), math.ldexp(1.0, -2147483648))
+    p2("ldexp", 0.0, f64(5), math.ldexp(0.0, 5))
+    p2("ldexp", NZ, f64(5), math.ldexp(NZ, 5))
+    p2("ldexp", NZ, f64(-5000), math.ldexp(NZ, -5000))
+    p2("ldexp", math.inf, f64(-5), math.ldexp(math.inf, -5))
+    p2("ldexp", -math.inf, f64(7), math.ldexp(-math.inf, 7))
+    p2("ldexp", math.nan, f64(3), math.ldexp(math.nan, 3))
+    p2("ldexp", -2.5, f64(1023), math.ldexp(-2.5, 1023))
+    p2("ldexp", -2.5, f64(-1074), math.ldexp(-2.5, -1074))
+    p2("ldexp", 0.5, f64(-1073), math.ldexp(0.5, -1073))
+    p2("ldexp", 0.5000000000000001, f64(-1073), math.ldexp(0.5000000000000001, -1073))
+    p2("ldexp", 1.0000000000000002, f64(-1074), math.ldexp(1.0000000000000002, -1074))
+}
+
+test_nextafter :: fn() needs Out {
+    p2("nextafter", 1.0, 2.0, math.nextafter(1.0, 2.0))
+    p2("nextafter", 1.0, 0.0, math.nextafter(1.0, 0.0))
+    p2("nextafter", 1.0, 1.0, math.nextafter(1.0, 1.0))
+    p2("nextafter", -1.0, 0.0, math.nextafter(-1.0, 0.0))
+    p2("nextafter", -1.0, -2.0, math.nextafter(-1.0, -2.0))
+    p2("nextafter", 0.0, 1.0, math.nextafter(0.0, 1.0))
+    p2("nextafter", 0.0, -1.0, math.nextafter(0.0, -1.0))
+    p2("nextafter", NZ, 1.0, math.nextafter(NZ, 1.0))
+    p2("nextafter", NZ, -1.0, math.nextafter(NZ, -1.0))
+    p2("nextafter", 0.0, 0.0, math.nextafter(0.0, 0.0))
+    p2("nextafter", NZ, 0.0, math.nextafter(NZ, 0.0))
+    p2("nextafter", 0.0, NZ, math.nextafter(0.0, NZ))
+    p2("nextafter", NZ, NZ, math.nextafter(NZ, NZ))
+    p2("nextafter", 5e-324, 0.0, math.nextafter(5e-324, 0.0))
+    p2("nextafter", -5e-324, 0.0, math.nextafter(-5e-324, 0.0))
+    p2("nextafter", 5e-324, 1.0, math.nextafter(5e-324, 1.0))
+    p2("nextafter", -5e-324, -1.0, math.nextafter(-5e-324, -1.0))
+    p2("nextafter", 2.225073858507201e-308, 1.0, math.nextafter(2.225073858507201e-308, 1.0))
+    p2("nextafter", 2.2250738585072014e-308, 0.0, math.nextafter(2.2250738585072014e-308, 0.0))
+    p2("nextafter", 2.2250738585072014e-308, 1.0, math.nextafter(2.2250738585072014e-308, 1.0))
+    p2("nextafter", 1.7976931348623157e+308, math.inf, math.nextafter(1.7976931348623157e+308, math.inf))
+    p2("nextafter", 1.7976931348623157e+308, 0.0, math.nextafter(1.7976931348623157e+308, 0.0))
+    p2("nextafter", -1.7976931348623157e+308, -math.inf, math.nextafter(-1.7976931348623157e+308, -math.inf))
+    p2("nextafter", math.inf, 0.0, math.nextafter(math.inf, 0.0))
+    p2("nextafter", -math.inf, 0.0, math.nextafter(-math.inf, 0.0))
+    p2("nextafter", math.inf, math.inf, math.nextafter(math.inf, math.inf))
+    p2("nextafter", -math.inf, 0.0, math.nextafter(-math.inf, 0.0))
+    p2("nextafter", math.inf, math.nan, math.nextafter(math.inf, math.nan))
+    p2("nextafter", math.nan, 1.0, math.nextafter(math.nan, 1.0))
+    p2("nextafter", 1.0, math.nan, math.nextafter(1.0, math.nan))
+    p2("nextafter", math.nan, math.nan, math.nextafter(math.nan, math.nan))
+    p2("nextafter", 0.5, 0.25, math.nextafter(0.5, 0.25))
+    p2("nextafter", 1e+300, 1e+301, math.nextafter(1e+300, 1e+301))
+    p2("nextafter", -1e+300, 1e+301, math.nextafter(-1e+300, 1e+301))
+    p2("nextafter", 1.9999999999999998, 2.0, math.nextafter(1.9999999999999998, 2.0))
+    p2("nextafter", 2.0, 1.9999999999999998, math.nextafter(2.0, 1.9999999999999998))
+}
+
+main :: fn() needs Out {
+    test_frexp()
+    test_ldexp()
+    test_nextafter()
+}

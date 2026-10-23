@@ -1,0 +1,113 @@
+// std/math: asinh, acosh and atanh on ordinary arguments, at the points where the algorithm changes
+// its formula, and on special values (signed zeros, domain errors, infinities, NaN). The results are printed
+// with the shortest round-trip representation, so the expected output pins the exact bits.
+math :: import "std/math"
+
+NZ: f64 : (0x8000_0000_0000_0000u64).bits(f64)
+
+p1 :: fn(name: string, x: f64, r: f64) needs Out {
+    print("{}({}) = {}\n", name, x, r)
+}
+
+p2 :: fn(name: string, x: f64, y: f64, r: f64) needs Out {
+    print("{}({}, {}) = {}\n", name, x, y, r)
+}
+
+test_asinh :: fn() needs Out {
+    p1("asinh", 0.0, math.asinh(0.0))
+    p1("asinh", NZ, math.asinh(NZ))
+    p1("asinh", 5e-324, math.asinh(5e-324))
+    p1("asinh", 1e-300, math.asinh(1e-300))
+    p1("asinh", 1e-10, math.asinh(1e-10))
+    p1("asinh", 3.725290298461914e-09, math.asinh(3.725290298461914e-09))
+    p1("asinh", 3.7252902984619136e-09, math.asinh(3.7252902984619136e-09))
+    p1("asinh", 1e-05, math.asinh(1e-05))
+    p1("asinh", 0.1, math.asinh(0.1))
+    p1("asinh", 0.5, math.asinh(0.5))
+    p1("asinh", 1.0, math.asinh(1.0))
+    p1("asinh", -1.0, math.asinh(-1.0))
+    p1("asinh", 2.0, math.asinh(2.0))
+    p1("asinh", 2.0000000000000004, math.asinh(2.0000000000000004))
+    p1("asinh", 3.5, math.asinh(3.5))
+    p1("asinh", -3.5, math.asinh(-3.5))
+    p1("asinh", 10.0, math.asinh(10.0))
+    p1("asinh", 100.0, math.asinh(100.0))
+    p1("asinh", 100000000.0, math.asinh(100000000.0))
+    p1("asinh", 268435456.0, math.asinh(268435456.0))
+    p1("asinh", 268435455.99999997, math.asinh(268435455.99999997))
+    p1("asinh", 10000000000.0, math.asinh(10000000000.0))
+    p1("asinh", 1e+100, math.asinh(1e+100))
+    p1("asinh", 1e+300, math.asinh(1e+300))
+    p1("asinh", 1.7976931348623157e+308, math.asinh(1.7976931348623157e+308))
+    p1("asinh", -1.7976931348623157e+308, math.asinh(-1.7976931348623157e+308))
+    p1("asinh", math.inf, math.asinh(math.inf))
+    p1("asinh", -math.inf, math.asinh(-math.inf))
+    p1("asinh", math.nan, math.asinh(math.nan))
+}
+
+test_acosh :: fn() needs Out {
+    p1("acosh", 1.0, math.acosh(1.0))
+    p1("acosh", 1.0000000000000002, math.acosh(1.0000000000000002))
+    p1("acosh", 1.0000000000001, math.acosh(1.0000000000001))
+    p1("acosh", 1.0000001, math.acosh(1.0000001))
+    p1("acosh", 1.001, math.acosh(1.001))
+    p1("acosh", 1.5, math.acosh(1.5))
+    p1("acosh", 1.9999999999999998, math.acosh(1.9999999999999998))
+    p1("acosh", 2.0, math.acosh(2.0))
+    p1("acosh", 2.0000000000000004, math.acosh(2.0000000000000004))
+    p1("acosh", 2.5, math.acosh(2.5))
+    p1("acosh", 10.0, math.acosh(10.0))
+    p1("acosh", 1000.0, math.acosh(1000.0))
+    p1("acosh", 268435455.99999997, math.acosh(268435455.99999997))
+    p1("acosh", 268435456.0, math.acosh(268435456.0))
+    p1("acosh", 10000000000.0, math.acosh(10000000000.0))
+    p1("acosh", 1e+100, math.acosh(1e+100))
+    p1("acosh", 1e+300, math.acosh(1e+300))
+    p1("acosh", 1.7976931348623157e+308, math.acosh(1.7976931348623157e+308))
+    p1("acosh", math.inf, math.acosh(math.inf))
+    p1("acosh", 0.9999999999999999, math.acosh(0.9999999999999999))
+    p1("acosh", 0.5, math.acosh(0.5))
+    p1("acosh", 0.0, math.acosh(0.0))
+    p1("acosh", NZ, math.acosh(NZ))
+    p1("acosh", -1.0, math.acosh(-1.0))
+    p1("acosh", -5e-324, math.acosh(-5e-324))
+    p1("acosh", -math.inf, math.acosh(-math.inf))
+    p1("acosh", math.nan, math.acosh(math.nan))
+}
+
+test_atanh :: fn() needs Out {
+    p1("atanh", 0.0, math.atanh(0.0))
+    p1("atanh", NZ, math.atanh(NZ))
+    p1("atanh", 5e-324, math.atanh(5e-324))
+    p1("atanh", 1e-300, math.atanh(1e-300))
+    p1("atanh", 1e-10, math.atanh(1e-10))
+    p1("atanh", 3.7252902984619136e-09, math.atanh(3.7252902984619136e-09))
+    p1("atanh", 1e-05, math.atanh(1e-05))
+    p1("atanh", 0.1, math.atanh(0.1))
+    p1("atanh", 0.25, math.atanh(0.25))
+    p1("atanh", 0.4999999999999999, math.atanh(0.4999999999999999))
+    p1("atanh", 0.5, math.atanh(0.5))
+    p1("atanh", 0.75, math.atanh(0.75))
+    p1("atanh", 0.9, math.atanh(0.9))
+    p1("atanh", 0.99, math.atanh(0.99))
+    p1("atanh", 0.9999999999999999, math.atanh(0.9999999999999999))
+    p1("atanh", -0.9999999999999999, math.atanh(-0.9999999999999999))
+    p1("atanh", -0.5, math.atanh(-0.5))
+    p1("atanh", -1e-05, math.atanh(-1e-05))
+    p1("atanh", 1.0, math.atanh(1.0))
+    p1("atanh", -1.0, math.atanh(-1.0))
+    p1("atanh", 1.0000000000000002, math.atanh(1.0000000000000002))
+    p1("atanh", -1.0000000000000002, math.atanh(-1.0000000000000002))
+    p1("atanh", 2.0, math.atanh(2.0))
+    p1("atanh", -3.0, math.atanh(-3.0))
+    p1("atanh", 1e+300, math.atanh(1e+300))
+    p1("atanh", math.inf, math.atanh(math.inf))
+    p1("atanh", -math.inf, math.atanh(-math.inf))
+    p1("atanh", math.nan, math.atanh(math.nan))
+}
+
+main :: fn() needs Out {
+    test_asinh()
+    test_acosh()
+    test_atanh()
+}
