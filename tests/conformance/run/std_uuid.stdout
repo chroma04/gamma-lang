@@ -1,0 +1,37 @@
+00000000-0000-0000-0000-000000000000
+ffffffff-ffff-ffff-ffff-ffffffffffff
+version 0 15, rfc variant false false
+919108f7-52d1-4320-9bac-f847db4148a8
+uppercase equal true
+bytes 145 32 155 168
+version 4 rfc true
+nil parsed true
+max parsed true
+not equal true
+919108f7-52d1-4320-9bac-f847db4148a8
+syntax error at 0
+syntax error at 8
+syntax error at 35
+ok 919108f7-52d1-4320-9bac-f847db4148a8
+syntax error at 36
+syntax error at 36
+syntax error at 0
+syntax error at 8
+syntax error at 8
+syntax error at 7
+syntax error at 35
+syntax error at 34
+syntax error at 8
+syntax error at 0
+syntax error at 0
+919108f7-52d1-4320-9bac-f847db4148a8
+v4 is example true version 4 rfc true
+ffffffff-ffff-4fff-bfff-ffffffffffff
+00000000-0000-4000-8000-000000000000
+017f22e2-79b0-7cc3-98c4-dc0c0c07398f
+v7 is example true version 7 rfc true
+017f22e2-79b0-7000-8000-000000000000
+00000000-0000-7000-8000-000000000000
+00000000-0000-7000-8000-000000000000
+00000000-0001-7000-8000-000000000000
+08637bd0-5af6-7fff-bfff-ffffffffffff
