@@ -427,6 +427,9 @@ impl<'a, 's> FnCx<'a, 's> {
             if vt.is_array() && vt != elem && (vt.is_vector() || target.is_vector()) {
                 return self.vector_conversion(target, v, span).expect("a vector conversion");
             }
+            if vt.is_array() && vt != elem && (vt.is_math_vector() || target.is_math_vector()) {
+                return self.math_vector_conversion(target, v, span).expect("a math vector conversion");
+            }
             let v = self.coerce(v, elem);
             if n != 1 {
                 self.error(span, format!("`{}` needs exactly {} elements, but 1 is given", target, n));

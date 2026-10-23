@@ -48,6 +48,7 @@ const CORE_MODULES: &[(&str, &str, &[&str])] = &[
     ("list", include_str!("../../lib/core/list.gm"), &["List", "list"]),
     ("map", include_str!("../../lib/core/map.gm"), &["HashMap", "hash_map", "hash_map_with"]),
     ("slice", include_str!("../../lib/core/slice.gm"), &[]),
+    ("complex", include_str!("../../lib/core/complex.gm"), &["Complex"]),
 ];
 
 impl<'s> Sema<'s> {

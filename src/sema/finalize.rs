@@ -126,7 +126,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 if matches!(t.kind(), TyKind::Array { .. } | TyKind::ParamArray { .. }) {
                     self.error(
                         span,
-                        "arithmetic does not apply to arrays; use a `#simd [N]T` vector (§5.6.2) or a loop",
+                        "arithmetic does not apply to arrays; use a `#vec [N]T` math vector (§5.6.3), a `#simd [N]T` vector (§5.6.2) or a loop",
                     );
                     return;
                 }

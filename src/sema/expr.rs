@@ -106,7 +106,8 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::ArrayType { len, elem } if construction_call(elem).is_some() => {
                 self.array_type_construction(e, len.as_deref(), elem, span)
             }
-            // `#simd [4]f32(…)`: constructing a vector (§5.6.2).
+            // `#simd [4]f32(…)` or `#vec [3]f32(…)`: constructing a vector (§5.6.2) or a
+            // math vector (§5.6.3).
             ExprKind::Attributed { attrs, inner }
                 if matches!(inner.kind, ExprKind::ArrayType { .. }) && construction_call(inner).is_some() =>
             {
@@ -156,12 +157,13 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::UntypedFloat(Rc::new(l.value.clone())), span)
     }
 
-    /// `#simd [4]f32(…)`: constructing a vector (§5.6.2).
+    /// `#simd [4]f32(…)` or `#vec [3]f32(…)`: constructing a vector (§5.6.2) or a math
+    /// vector (§5.6.3).
     fn vector_construction(&mut self, attrs: &[ast::Attribute], inner: &ast::Expr, span: Span) -> Expr {
         let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else { unreachable!() };
         let module = self.module;
         let t = self.sema.vector_type(module, attrs, &without_call(inner), span);
-        match t.vector_parts() {
+        match t.vector_parts().or(t.math_vector_parts()) {
             Some((n, elem)) => self.construct_array(Some(t), Some(n), elem, args, span),
             None => error_expr(span),
         }
@@ -616,6 +618,9 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.infer.resolve(v.ty).is_vector() {
             return self.vector_unary(ast::UnOp::Neg, v, span);
         }
+        if self.is_compound_number(v.ty) {
+            return self.compound_number_unary(ast::UnOp::Neg, v, span);
+        }
         self.obligations.push(Obligation::Numeric { ty: v.ty, span, op: "-", int_only: false, signed_only: true });
         mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(v) }, span)
     }
@@ -626,6 +631,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let st = self.infer.resolve(v.ty);
         if st.is_vector() {
             return self.vector_unary(ast::UnOp::BitNot, v, span);
+        }
+        if self.is_compound_number(st) {
+            return self.compound_number_unary(ast::UnOp::BitNot, v, span);
         }
         if let Some(u) = self.bits_operand(st, "~", span) {
             let x = self.bits_convert(v, u);
@@ -760,6 +768,13 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.infer.resolve(lhs.ty).is_vector() && !matches!(op, B::Is | B::IsNot) {
             return self.vector_binary(op, lhs, rhs, span);
         }
+        // Math vectors and complex numbers (§7.4.7): the right operand may be a scalar.
+        if !matches!(op, B::Is | B::IsNot | B::In | B::NotIn | B::And | B::Or | B::Range | B::RangeIncl)
+            && self.is_compound_number(lhs.ty)
+        {
+            let r = self.expr(rhs, None);
+            return self.compound_number_binary(op, lhs, r, span);
+        }
         match op {
             B::And | B::Or => {
                 let l = self.expect_bool(lhs);
@@ -831,6 +846,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     _ => lhs.ty,
                 };
                 let r = self.expr(rhs, Some(expect));
+                // `2 * v`: a scalar times a math vector or a complex number (§7.4.7).
+                if self.is_compound_number(r.ty) {
+                    return self.compound_number_binary(op, lhs, r, span);
+                }
                 self.arith_op(op, lhs, r, span)
             }
             B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),

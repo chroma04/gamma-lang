@@ -61,17 +61,25 @@ pub fn mask_ty(len: u64) -> Ty {
 
 impl<'s> Sema<'s> {
     /// `#simd [N]T` (§5.6.2): `attrs` are the attributes before the array type `inner`.
+    /// `#simd [N]T` (§5.6.2) or `#vec [N]T` (§5.6.3): `attrs` are the attributes before
+    /// the array type `inner`.
     pub fn vector_type(&mut self, module: ModuleId, attrs: &[ast::Attribute], inner: &ast::Expr, span: Span) -> Ty {
-        if let Some(a) = attrs.iter().find(|a| a.name.name.as_str() != "simd") {
-            self.error(a.span, format!("`#{}` cannot precede an array type; only `#simd` can", a.name.name));
+        if let Some(a) = attrs.iter().find(|a| !matches!(a.name.name.as_str(), "simd" | "vec")) {
+            self.error(a.span, format!("`#{}` cannot precede an array type; only `#simd` and `#vec` can", a.name.name));
             return Ty::error();
         }
+        let math = attrs[0].name.name.as_str() == "vec";
+        let (attr, what, example) =
+            if math { ("vec", "a math vector", "#vec [3]f32") } else { ("simd", "a vector", "#simd [4]f32") };
         if attrs.len() > 1 || attrs[0].args.is_some() {
-            self.error(span, "`#simd` takes no arguments and is written once: `#simd [N]T`");
+            self.error(span, format!("`#{}` takes no arguments and is written once: `#{} [N]T`", attr, attr));
             return Ty::error();
         }
         let ast::ExprKind::ArrayType { len: Some(len), elem } = &inner.kind else {
-            self.error(span, "`#simd` makes a vector of an array type with a constant length: `#simd [4]f32`");
+            self.error(
+                span,
+                format!("`#{}` makes {} of an array type with a constant length: `{}`", attr, what, example),
+            );
             return Ty::error();
         };
         let elem = self.resolve_type(module, elem);
@@ -79,17 +87,22 @@ impl<'s> Sema<'s> {
             return Ty::error();
         }
         if super::generics::has_param(elem) {
-            self.error(span, format!("a vector needs a concrete lane type, not `{}`", elem));
+            let part = if math { "element" } else { "lane" };
+            self.error(span, format!("{} needs a concrete {} type, not `{}`", what, part, elem));
             return Ty::error();
         }
         let n = match self.array_len(module, len) {
             Some(super::ty_expr::ArrayLen::Known(n)) => n,
             Some(super::ty_expr::ArrayLen::Param(_)) => {
-                self.error(len.span, "a vector's lane count is a constant, not a compile-time parameter");
+                let part = if math { "length" } else { "lane count" };
+                self.error(len.span, format!("{}'s {} is a constant, not a compile-time parameter", what, part));
                 return Ty::error();
             }
             None => return Ty::error(),
         };
+        if math {
+            return self.math_vector_type(module, n, elem, span);
+        }
         if let Some(msg) = vector_shape_error(n, elem) {
             self.error(span, msg);
             return Ty::error();

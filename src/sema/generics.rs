@@ -46,7 +46,7 @@ impl Constraint {
             Num => &[Num, Ord, Eq],
             Int => &[Int, Num, Ord, Eq, Plain],
             Neg => &[Neg, Num, Ord, Eq, Plain],
-            Float => &[Float, Num, Ord, Eq, Plain],
+            Float => &[Float, Neg, Num, Ord, Eq, Plain],
             Plain => &[Plain],
         }
     }
@@ -134,7 +134,8 @@ impl<'s> Sema<'s> {
             | TyKind::ManyPtr { .. } => true,
             TyKind::Tuple { elems, .. } => elems.iter().all(|e| self.has_ord(*e)),
             // Vectors are not ordered: `.lanes_lt(w)` and its kin compare lanes (§5.6.2).
-            TyKind::Array { kind: crate::types::ArrayKind::Simd, .. } => false,
+            // Nor are math vectors: no order of points is the natural one (§5.6.3).
+            TyKind::Array { kind: crate::types::ArrayKind::Simd | crate::types::ArrayKind::Math, .. } => false,
             TyKind::Array { elem, .. } | TyKind::ParamArray { elem, .. } | TyKind::Slice { elem, .. } => {
                 self.has_ord(*elem)
             }

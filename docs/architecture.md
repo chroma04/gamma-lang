@@ -257,6 +257,7 @@ lowers each function body to TIR.
 | `pattern.rs`, `matching.rs`, `exhaust.rs` | patterns, `match`, binding conditions, exhaustiveness |
 | `seq.rs` | slicing, `in`, and `for` over arrays and slices |
 | `vector.rs` | vector types `#simd [N]T`: their lane-wise operators, conversions and methods (§5.6.2) |
+| `mathvec.rs` | math vectors `#vec [N]T` and complex numbers `Complex(T)`: their operators (expanded element by element, or calls of `core/complex`), methods and conversions (§5.3.1, §5.6.3, §7.4.7) |
 | `infer.rs`, `finalize.rs` | literal inference and the final pass over each body |
 | `fnlit.rs` | function literals, captures and second-class rules |
 | `effects.rs`, `handler_decl.rs` | performing operations, handler literals and declarations (generic ones are templates instantiated by `handlers_for`), `with`, `for` over iterators |
@@ -274,8 +275,9 @@ tool. The prelude (`prelude.gm`) is visible in every module: it declares the
 ambient effects (`Out`, `Err`, `Env`, `Alloc`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, and
 `Sys`), the standard iterators and allocation (`Allocator`, `new`, `make`, `free`, …). The
 containers live in their own core modules, `list.gm` and `map.gm`, and the builtin methods
-of arrays and slices that are written in Gamma (the sorts, …) in `slice.gm`; only their types and
-constructors (`List`, `list`, `HashMap`, `map`, `map_with`) are re-exported to
+of arrays and slices that are written in Gamma (the sorts, …) in `slice.gm`. `complex.gm`
+declares `Complex` with its methods and the private functions that its operators call; only the types and
+constructors (`List`, `list`, `HashMap`, `map`, `map_with`, `Complex`) are re-exported to
 the universe scope, and their other functions are reached as methods, which
 resolve in the receiver type's module (§21.5).
 

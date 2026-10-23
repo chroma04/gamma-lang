@@ -586,6 +586,34 @@ Types are compile-time values of type `type`. A type expression may appear where
 
 `f16`, `f32` and `f64` are IEEE 754 binary16, binary32 and binary64. Arithmetic is correctly rounded with round-to-nearest-even; no contraction (fused multiply-add), reassociation or flush-to-zero is performed unless the program opts in per function with `#fast_math` (§20.2). NaN payloads are unspecified except as preserved by `bits` (§6.6).
 
+#### 5.3.1 Complex numbers
+
+`Complex(T)`, for a float type `T`, is a complex number with real part `re` and imaginary part `im`. It is a struct of the core library (§21.1) on which the language defines arithmetic operators (§7.4.7):
+
+```
+Complex :: struct(T: type) where Float(T) { pub re, im: T }
+```
+
+```
+C64 :: Complex(f64)
+
+mandelbrot_steps :: fn(c: C64, limit: u32) -> u32 {
+    z := C64(re: 0, im: 0)
+    for n in 0..limit {
+        if z.abs() > 2 { return n }
+        z = z * z + c
+    }
+    return limit
+}
+```
+
+- **A struct in every other respect.** It is constructed by name (`C64(re: 1, im: -2)`), its parts are fields (`z.im = 0`), and `is`, `@hash` and formatting are those of a struct (§7.6, §16.8, §21.6.1): `is` compares the parts as floats. It is not ordered. There is no imaginary literal: `2i` would read too much like `2i8`.
+- **Layout.** That of the struct: `re`, then `im`, aligned as `T`. This is the layout of C's `float _Complex` and `double _Complex`, and since a struct of two floats is classified like them on the x86-64 System V and AArch64 ABIs, `Complex(f32)` and `Complex(f64)` may stand for them in foreign signatures there (§19.1).
+- **Methods** (functions of its core module, §7.10): `z.conj()` is `re - im·i`; `z.abs()` is \|z\| = √(re² + im²), computed as C's `hypot` is, without overflow or underflow in intermediate steps (not necessarily correctly rounded). The functions of complex analysis (`exp`, `log`, `sqrt`, `pow`, polar form) are in `std/complex`.
+- **In generic code** `Complex(T)` needs `Float(T)` (§16.4), and its operators are available wherever the type is.
+
+*Rationale:* complex arithmetic is written as formulas, and a library type could only offer `a.mul(b).add(c)`, since operators never call library code (C.3). Its operators are a fixed handful of float operations with no loop and no call to user code, so they keep P2. It is a struct, not a new kind of type, so everything except the operators is the struct's ordinary behavior.
+
 ### 5.4 `bool`
 
 `bool` occupies one byte holding 0 (`false`) or 1 (`true`). Any other byte value in a `bool` object is undefined behavior to read (it can arise only through `bits`-style reinterpretation, `#c_union`, or foreign code).
@@ -675,6 +703,26 @@ count_byte :: fn(s: []const u8, c: u8) -> usize {
 - **Operators** (§7.4.6) apply to each pair of lanes and give a vector. `is` and `is not` compare whole vectors and give `bool`, as for arrays, so vectors are `Eq` (§16.3); they are not ordered, so `< <= > >=` do not apply to them. Lanes are compared by methods that give a **mask** `#simd [N]bool`: `v.lanes_eq(w)` and `v.lanes_ne(w)`, and for numeric lanes `lanes_lt`, `lanes_le`, `lanes_gt` and `lanes_ge`. A mask is tested with `.all()`, `.any()` or `.count()`, not as a condition.
 - **Conversions.** `V(a)` and `[N]T(v)` convert between a vector and the array of its lanes, `W(v)` between vectors of the same lane count where each lane converts losslessly (§6.5), and `v.to(F)` gives the nearest `f32` or `f64` lanes. `.bits(U)` reinterprets as for any plain data (§6.6).
 - **Methods** (§21.3): the lane comparisons above, `reduce_sum()`, `reduce_min()`, `reduce_max()`, `min(w)`, `max(w)`, `abs()`, `shuffle(i0, i1, …)` (the lanes at the constant indices, as a vector of as many lanes), `store(dst)`; on masks `all()`, `any()`, `count()` and `select(a, b)` (each lane from `a` where the mask is set, else from `b`).
+
+#### 5.6.3 Math vectors
+
+`#vec [N]T` is a **math vector**: an array of `N` numbers whose operators work element by element, for coordinates, colors and the like. Unlike a vector (§5.6.2, in this specification *vector* alone always means `#simd`), it promises no instructions and has exactly the layout of `[N]T`, so it fits in C structs, vertex buffers and file formats.
+
+```
+Vec3 :: #vec [3]f32
+
+reflect :: fn(d, n: Vec3) -> Vec3 => d - 2 * d.dot(n) * n
+
+lerp :: fn(a, b: Vec3, t: f32) -> Vec3 => a + (b - a) * t
+```
+
+- **Shape.** `T` is a concrete integer or float type, and `N` is a constant 2, 3 or 4.
+- **Layout.** That of `[N]T`. A math vector is C-compatible where an array is: as a struct field (§19.1).
+- **Values.** As for an array: constructed with exactly `N` elements, `fill:` or `---` (`Vec3(1, 0, 0)`, `Vec3(fill: 0)`); indexed and assigned (`v[i]`, checked), iterated and sliced; `v.len` is `N`. `V(a)` and `[N]T(v)` convert between a math vector and the array of its elements, and `W(v)` between math vectors of the same length whose elements convert losslessly (§6.5).
+- **Operators** (§7.4.7) apply element by element, and `*` and `/` also scale by a scalar. `is` and `is not` compare whole math vectors, as for arrays (§7.6); unlike arrays, math vectors are not ordered, since no order of points is the natural one.
+- **Methods** (§21.3): `v.dot(w)` (`v[0]·w[0] + …`, added in element order with the rules of `+` and `*`), `v.cross(w)` (`N` = 3), `v.norm()` (`√(v.dot(v))`, float elements), and element by element `min(w)`, `max(w)` and `abs()`. A math vector has none of the array methods (§21.3).
+
+*Rationale:* the operators cost `N` scalar operations, at most four, with the checks of the scalar operator for each element (§18.2), so they hide no loop (C.3); this is why the length is bounded, and why ordinary arrays have no arithmetic. Matrices and quaternions are left to libraries (C.8).
 
 ### 5.7 Slices
 
@@ -1041,7 +1089,7 @@ Float division follows IEEE 754 (division by zero gives ±∞ or NaN; it does no
 
 #### 7.4.6 Vector operators
 
-Arithmetic and bitwise operators do not apply to arrays: on an array of any length they would be a hidden loop (P2). They apply to vectors, whose operations are single instructions.
+Arithmetic and bitwise operators do not apply to arrays: on an array of any length they would be a hidden loop (P2). They apply to vectors, whose operations are single instructions, and to math vectors, whose operations are at most four scalar operations (§7.4.7).
 
 On vectors (§5.6.2) every operator applies lane by lane, with the rules and checks of the scalar operator for each lane; the two operands have the same vector type (a scalar is never spread over the lanes: use `V(fill: x)`), except that a shift takes one scalar amount for every lane.
 
@@ -1052,9 +1100,30 @@ On vectors (§5.6.2) every operator applies lane by lane, with the rules and che
 | `& \| ~`, unary `~`; `<< >>` (and `<<%`) by a scalar amount | integer; `& \| ~` also `bool` | the vector type |
 
 `/` and `%` on integer lanes do not exist: no target divides integer lanes in one instruction, so the cost would be hidden (P2); divide lanes one by one. The `?` flavors do not exist, since a lane cannot be absent, and `and`, `or`, `not` and `in` take `bool` values, not masks: combine masks with `&`, `|` and `~`. `is` and `is not` compare whole vectors (§7.6); lanes are compared by the `lanes_*` methods (§5.6.2), so that a word always gives `bool` (§1).
+#### 7.4.7 Complex and math-vector operators
+
+On complex numbers (§5.3.1) and math vectors (§5.6.3), the operands of `+`, `-`, `*` and `/` have the same type, except that `*` also takes a scalar of the element type on either side and `/` one on the right (an untyped literal takes the element type: `2 * v`, `z / 2`).
+
+**Math vectors** apply each operator element by element, with the rules and checks of the scalar operator for each element (§7.4.1–§7.4.5), and give the math vector type: `+ - *` and their `%` and `|` flavors, unary `-`, `/` and `%`, and for integer elements the bitwise operators and shifts by one scalar amount. A scalar operand of `*` or `/` takes part in every element's operation. The `?` flavors do not exist, since an element cannot be absent.
+
+**Complex numbers** have `+`, `-`, `*`, `/` and unary `-`, each a fixed sequence of float operations of `T` (no contraction, §5.3). For `a = p + q·i` and `b = r + s·i`:
+
+| Operation | Real part | Imaginary part |
+| --- | --- | --- |
+| `a + b`, `a - b` | `p ± r` | `q ± s` |
+| `-a` | `-p` | `-q` |
+| `a * b` | `p·r - q·s` | `p·s + q·r` |
+| `a * x`, `x * a`, `a / x` (scalar `x`) | `p·x`, `p/x` | `q·x`, `q/x` |
+| `a / b`, when \|r\| ≥ \|s\| | with `t = s/r`, `d = r + s·t`: `(p + q·t)/d` | `(q - p·t)/d` |
+| `a / b`, otherwise | with `t = r/s`, `d = r·t + s`: `(p·t + q)/d` | `(q·t - p)/d` |
+
+Division is Smith's algorithm, which avoids the overflow of the textbook formula for large divisors. A NaN or infinity in an operand propagates through these formulas as IEEE arithmetic does; unlike C's Annex G, nothing tries to recover an infinite result from a NaN one.
+
+Compound assignment works as for scalars (§4.7): `v *= 2`, `z /= w`.
+
 ### 7.5 Comparison
 
-`< <= > >=` apply to two operands of type `bool` (`false < true`), the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all `bool`s, integers, floats, enums, or (recursively) such tuples, arrays and slices.
+`< <= > >=` apply to two operands of type `bool` (`false < true`), the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all `bool`s, integers, floats, enums, or (recursively) such tuples, arrays and slices. Vectors and math vectors are not ordered (§5.6.2, §5.6.3).
 
 Tuples, arrays and slices (including `string`) compare **lexicographically**: find the first index `i` at which element `i` of `a` is not `is`-equal to element `i` of `b`; then `a < b` is element `i` of `a` `<` element `i` of `b`. If there is no such position, the shorter is less (tuples and arrays of one type have equal length, so they are equal). `a <= b` is `a < b or a is b`; `>` and `>=` are the mirror images. Strings therefore compare bytewise. Structs are deliberately **not** ordered: their field order records layout, not priority. To order structs, order a tuple of keys (`sort_by_key`, §21.3).
 
@@ -2176,11 +2245,11 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | Constraint | Satisfied by | Grants |
 | --- | --- | --- |
 | `Eq(T)` | every type for which `is` is defined (§7.6) | `is`, `is not`, `in` over `T`, literal patterns of `T`, `@hash` (§16.8) |
-| `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
+| `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays (other than math vectors) and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, and the integer methods of §21.3 (`.trunc`, `.checked`, `.sat`, `.to`, `min`, `abs_diff`, …) |
 | `Neg(T)` | signed integer and float types | `Num`, plus unary `-` |
-| `Float(T)` | float types | `Num`, plus float methods (§21.3) |
+| `Float(T)` | float types | `Neg`, plus float methods (§21.3) |
 | `Plain(T)` | plain-data types (§5.19) | `---` at `T`, `.bits` to and from `T` |
 
 Without any constraint, a type parameter `T` still supports: declaring variables and parameters of type `T`, copying, taking addresses, forming `^T`, `[]T`, `?T`, `E!T`, `[N]T`, passing `T` to other generics whose constraints it satisfies, `@size_of(T)` and `@align_of(T)`.
@@ -2454,7 +2523,8 @@ A type is **C-compatible** if it is one of:
 | `bool` | `_Bool` |
 | `^T`, `^const T`, `[^]T`, `[^]const T`, `rawptr`, `cstring`, and `?` of each | `T *`, `const T *`, `void *`, `const char *` (nullable only when `?`) |
 | `^fn(…) -> R` with C-compatible parameters and result, empty effect set or `Sys` | function pointer |
-| `[N]T` of a C-compatible `T` (as a struct field) | `T[N]` |
+| `[N]T` and `#vec [N]T` of a C-compatible `T` (as a struct field) | `T[N]` |
+| `Complex(f32)`, `Complex(f64)` (on x86-64 System V and AArch64, also as parameters and results) | `float _Complex`, `double _Complex` (§5.3.1) |
 | `struct` whose fields are all C-compatible (including `#packed`, `#align`) | `struct` with the same layout |
 | `#c_union` whose fields are all C-compatible | `union` |
 | `#bits(U)` struct | `U` (C bitfields have implementation-defined layout, so Gamma exposes the underlying integer instead) |
@@ -2598,6 +2668,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#bits(U)` | struct literal | bit-packed into `U` | 5.10.5 |
 | `#c_union` | union literal | untagged C union | 5.11.1 |
 | `#simd` | array type `[N]T` | a vector of `N` lanes | 5.6.2 |
+| `#vec` | array type `[N]T` | a math vector of `N` elements | 5.6.3 |
 | `#export("sym")` | top-level function | external C-ABI symbol | 19.4 |
 | `#trap_hook` | top-level function | called by every trap on a freestanding target | 3.7.1 |
 | `#link_name("sym")` | foreign member | symbol name | 19.2 |
@@ -2656,7 +2727,7 @@ The universe holds the **effects** but not their **operations**, with one except
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u128`, `i1`…`i128`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
-| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
+| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Complex`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`, `Test` |
 | operations | `yield` only; the others are reached through their effects |
 | functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
@@ -2696,6 +2767,10 @@ Builtin methods are resolved by §7.10 rule 2. `T` is a type argument.
 **Arrays and slices** (`a` of element type `T`): `len` (field-like, no parentheses), `ptr` (slices), `get(i) -> ?T`, `get_ptr(i) -> ?^T`, `first() -> ?T`, `last() -> ?T`, `cursor()`, `copy_from(src: []const T)` (lengths must be equal: checked; overlap allowed), `fill(x: T)`, `starts_with(p)`, `ends_with(p)`, `index_of(x) -> ?usize` (`Eq`), `swap(i, j)`, `sort()` (`Ord` elements), `sort_by(less: fn(a, b: ^const T) -> bool)`, `sort_by_key(key: fn(x: ^const T) -> K)` (`Ord(K)`), `min()`, `max()` (`Ord`; `?T`), `binary_search(x) -> (found: bool, at: usize)` (`Ord`). `stable_sort()`, `stable_sort_by(less)` and `stable_sort_by_key(key)` are the stable variants. All sorts are in place and allocate nothing. If `<` (or `less`) is not a strict weak ordering on the elements — for example, floats including NaN — the result is an unspecified permutation of the input: never a trap or undefined behavior. `min`, `max` and `binary_search` likewise give an unspecified element or index in that case.
 
 **Vectors** (§5.6.2) have none of the array methods; they have `reduce_sum()`, `reduce_min()`, `reduce_max()` (in lane order, with the scalar `+`, `min` and `max`), `min(w)`, `max(w)`, `abs()` (lane by lane, as the scalar methods), `to(F)`, `shuffle(i0, …)`, `store(dst: []T)` (checked: long enough), and on the type `load(xs: []const T)` (checked). Masks have `all()`, `any()`, `count() -> usize` and `select(a, b)`.
+
+**Math vectors** (§5.6.3) have none of the array methods; they have `dot(w)`, `cross(w)` (three elements), `norm()` (float elements), and element by element `min(w)`, `max(w)` and `abs()` (as the scalar methods).
+
+**Complex numbers** (§5.3.1) are a struct of the core library, whose module gives them `conj()` and `abs()`.
 
 **Strings** additionally: `cstr_len()` on `cstring`, `utf8_valid()`.
 
@@ -3054,6 +3129,7 @@ prefix_type   = '?' prefix_type
               | '[' '^' ']' [ 'const' ] prefix_type
               | '[' expr ']' prefix_type                        // [N]T; [E]T when expr names an enum type (§5.6.1)
               | '#simd' '[' expr ']' prefix_type                // a vector (§5.6.2)
+              | '#vec' '[' expr ']' prefix_type                 // a math vector (§5.6.3)
               | '[' '_' ']' prefix_type                         // only in array constructors
               | { attribute } '^' fn_type                       // #callconv (§19.2)
               | fn_type
@@ -3291,6 +3367,8 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 - **C layout by default** for structs, unions and pointers; `?^T` is a nullable C pointer (§5.10.4, §5.12). Tagged unions, optionals of non-pointers, slices and tuples stay out of foreign signatures, where their layouts would be a promise to C (§19.1).
 - **Values copy bitwise and own nothing.** There are no destructors, move semantics or copy constructors (§15.4); cleanup is explicit, structured by `defer` and `errdefer` (§8.8). Ownership tracking would make Gamma a different language; Debug builds tag allocations, poison freed memory and detect leaks instead (§18.3).
 - **Vectors are arrays with lane-wise operators** (§5.6.2). Their layout is fixed (the array of the lanes, aligned to its size), so they are plain data like any array. They are the one way to apply an operator to many values at once, and it costs one instruction; ordinary arrays have no arithmetic, since `+` on an array of any length would be a loop (P2). Lane comparisons are methods that give masks, so `is` keeps its one meaning (C.5).
+- **Complex numbers are a struct with operators** (§5.3.1): the layout of C's `_Complex`, the behavior of a struct, and operators that are fixed float formulas. Division is Smith's algorithm rather than C's Annex G, whose recovery of infinities makes a multiplication a library call.
+- **Math vectors are arrays with element-wise operators** (§5.6.3): the layout of `[N]T`, so they belong in C structs and buffers, and at most four elements, so an operator is at most four scalar operations. They differ from vectors in what they promise: a vector promises one instruction and an alignment, a math vector a C layout. Both follow the same operator rules.
 - **Arbitrary-width integers** (`u1` … `u128`, as C23's `_BitInt` up to the widths machines compute with) make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified, unlike C bitfields (§5.2, §5.10.5).
 - **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so forgetting to cannot create an invalid value (§4.4, §5.19).
 - **One-shot continuations on caller-provided stacks.** Multi-shot continuations would copy stacks and break pointers into them. One-shot ones allocate nothing and keep every pointer valid (§14). This is also where the effects of Gamma stop: it covers exactly the one-shot uses of algebraic effects — generators, async I/O and schedulers, early exit, dependency injection — and leaves out the multi-shot ones, such as backtracking by re-running a continuation.
@@ -3299,7 +3377,7 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 ### C.3 P2 — Cost is visible where it is paid
 
 - **No hidden allocation.** No construct allocates (§15.3). The current allocator comes from the `Alloc` effect; long-lived structures capture their allocator when constructed, so memory is freed through the allocator that produced it (§15.2).
-- **No hidden calls.** An operator never calls user code, so `a + b` costs what it looks like it costs; there is no operator overloading. `is` and `in` are the operators whose cost grows with the data: `is` compares slices by content, so that `name is "admin"` means what it says (§7.6), and `x in xs` scans an array or slice (§7.7). Both are loops over values, never user code, and both are words, which mark logic rather than a machine operation (C.5). No sigil operator hides a loop: arithmetic applies to scalars and to vectors, never to arrays (§7.4.6).
+- **No hidden calls.** An operator never calls user code, so `a + b` costs what it looks like it costs; there is no operator overloading. `is` and `in` are the operators whose cost grows with the data: `is` compares slices by content, so that `name is "admin"` means what it says (§7.6), and `x in xs` scans an array or slice (§7.7). Both are loops over values, never user code, and both are words, which mark logic rather than a machine operation (C.5). No sigil operator hides a loop: arithmetic applies to scalars, vectors, math vectors and complex numbers, each a fixed number of operations, never to arrays (§7.4.6, §7.4.7).
 - **The kind of an effect operation is its cost** (§12.2): `fn` operations always return (a call), `esc` operations may exit (a return-flag check), `ctl` operations may suspend (a stack switch). Programs pay only for the kind they use, and `with … on stack` makes the program provide the stack a suspension needs (§14.1).
 - **No hidden conversions.** Lossless widening happens only at coercion sites and on the right of a compound assignment; `T(x)` converts only when lossless for every value of the source *type*; lossy conversions are named methods (`trunc`, `round`, `checked`, `sat`, `bits`, §6). The one implicit conversion between two distinct nominal types is error lifting (§10.6): a `try` or `return` wraps an error in the one variant of the function's error union that carries it. It is allowed because it is decided at the site, by one unambiguous variant, and is a compile error when ambiguous.
 - **Second-class closures.** `fn(…)` values capture by reference, cost no allocation, and can be passed down but never stored or returned; `^fn(…)` is a plain code pointer, first-class and C-compatible (§11.6, §11.7). Between them they cover callbacks and stored function pointers without closures that allocate or dangle.
@@ -3393,6 +3471,10 @@ The first four already exist, each with its cost and its code visible where it i
 | Integers wider than 128 bits | P2 | arithmetic on them is a loop over words behind an operator; a library type makes those calls visible |
 | Re-evaluating an iterator argument's arguments on each run | P2 | they would run an unknown number of times with nothing at the call to say so; they are evaluated once, as for `for` (§13.5) |
 | Fibers that migrate between threads (a `Send`-like rule) | P1, P5 | values own nothing, so no rule on types can tell whether the memory a fiber reaches is shared with its old thread; and its handlers live on that thread (§14.9). Threads exchange data explicitly (§19.6) |
+| Matrix types with a `*` that multiplies them | P2, P4 | `*` would be a matrix product on matrices and an element-wise product on math vectors; an `M×N` product costs `M·N·K` multiplications behind one sigil; storage order and the algorithms of inversion are policies. A library type built on math vectors (§5.6.3) states them |
+| Quaternion types | admission (§1) | no word asks for them, and nothing they would replace is broken; `p / q` would have to choose between `p·q⁻¹` and `q⁻¹·p`. A library type over `#vec [4]T` serves them |
+| A scalar added to a complex number or math vector (`z + 1`, `v + 1`) | P4 | adding a number to every element is not an operation of the vector space; `*` and `/` by a scalar are |
+| Arithmetic on arrays of any length up to some bound | P4 | an arbitrary cliff (`[4]f32` adds, `[5]f32` does not); math vectors are marked, so a reader sees which arrays have arithmetic |
 | A packed set type over an enum | one feature per job | `[E]bool` is a set indexed by the enum (§5.6.1), a `#bits` struct packs named flags (§5.10.5), and the library has integer bit sets |
 
 ### C.9 Future directions

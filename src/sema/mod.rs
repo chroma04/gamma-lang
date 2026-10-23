@@ -29,6 +29,7 @@ mod imports;
 mod infer;
 mod lint;
 mod matching;
+mod mathvec;
 mod methods;
 mod modules;
 mod pattern;

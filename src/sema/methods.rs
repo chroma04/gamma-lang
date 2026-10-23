@@ -407,6 +407,13 @@ impl<'a, 's> FnCx<'a, 's> {
             };
             return Some(self.vector_method(recv, arr, n, args, span));
         }
+        if arr.is_math_vector() {
+            let recv = match rty.kind() {
+                TyKind::Ptr { .. } => mk(arr, tir::ExprKind::Deref(Box::new(take_expr(recv))), span),
+                _ => take_expr(recv),
+            };
+            return Some(self.math_vector_method(recv, arr, n, args, span));
+        }
         if arr.enum_index().is_some() {
             self.error(
                 span,
