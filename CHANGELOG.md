@@ -44,6 +44,32 @@ Versions and what each kind of change means are described in
   one type and why `in` covers only built-in sequences: library containers answer
   membership with `contains`.
 
+### Standard library
+
+- Slices and arrays have new builtin methods (§21.3): `reverse()`, `rotate_left(k)`,
+  `rotate_right(k)`, `dedup()`, `partition(pred)`, `select_nth(n)` and `select_nth_by(n,
+  less)`, `is_sorted()` and `is_sorted_by(less)`, and `upper_bound(x)`, the counterpart of
+  `binary_search`'s lower bound. Like the sorts, they work in place and allocate nothing.
+- `std/uuid`: RFC 9562 identifiers, with `v4()` (needs `Rand`), `v7()` (needs `Clock +
+  Rand`), and `parse` and `format` of the canonical text.
+- `std/net`: IP address values `Ipv4`, `Ipv6` and `IpAddr`, parsed from the text forms of
+  RFC 4291 (`parse_ipv4`, `parse_ipv6`, `parse_ip`) and written in the canonical form of
+  RFC 5952 (`format_ipv4`, `format_ipv6`, `format_ip`), plus `is_loopback` and
+  `is_unspecified`.
+- `std/fs`: `remove_all(path)` removes a directory tree without following symbolic links;
+  `temp_dir()`, `create_temp(dir, prefix, buf)` and `make_temp_dir(dir, prefix, buf)`
+  create temporary files and directories under fresh random names.
+- `std/math`: `asinh`, `acosh`, `atanh`, `erf`, `erfc`, `lgamma`, `lgamma_sign`, `tgamma`,
+  `frexp`, `ldexp` and `nextafter`; and, for every integer type, `gcd`, `lcm`, `isqrt`,
+  `ilog2`, `ilog10`, `div_floor` and `mod_floor`.
+- `std/complex`: `tan`, `sinh`, `cosh`, `tanh`, `asin`, `acos`, `atan`, `asinh`, `acosh` and
+  `atanh`, with the branch cuts and special values of C99 Annex G.
+- `std/time`: `parse_duration`, the inverse of `format_duration`; ISO 8601 week dates and
+  ordinal dates (`iso_week`, `from_iso_week`, `day_of_year`, `from_ordinal`, and
+  `format_`/`parse_iso_week` and `format_`/`parse_ordinal` for their text).
+- `std/text`: UTF-16 with `utf16_len`, `encode_utf16`, `append_utf16` and the iterator
+  `decode_utf16`.
+
 ### Diagnostics
 
 - An `else` arm of a `match` gets the plain "expected a pattern" error, without a fix.

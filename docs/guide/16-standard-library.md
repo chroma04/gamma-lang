@@ -356,6 +356,8 @@ main :: fn() needs Out {
 
 `graphemes` implements Unicode's extended grapheme clusters (UAX #29): a letter with its accents, a flag, an emoji family are each one cluster. Use it for anything the user counts or cuts as "characters". `runes(s)` and `s.utf8_valid()` are core.
 
+For Windows APIs, JavaScript and JSON `\u` escapes, `std/text` also speaks UTF-16: `text.encode_utf16(s, buf)` and `text.append_utf16(&units, s)` encode (size the buffer with `text.utf16_len(s)`), and `for r in text.decode_utf16(units)` yields the scalar values back, an unpaired surrogate as U+FFFD; `text.append_rune` turns them into UTF-8.
+
 ## Files, paths and standard input
 
 File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations are the operations of the `Fs` effect itself, reached through it (`Fs.open(path, opts)`, `Fs.stat(path)`, `Fs.lstat(path)`, ...), and the files they return are `fs.File` values with the methods `f.read(buf)`, `f.write(bytes)` and `f.seek(offset, from)`. The file types (`File`, `Dir`, `OpenOptions`, `FileInfo`, ...) come from `std/fs`:
@@ -442,6 +444,8 @@ main :: fn() needs Out {
 
 `io.describe(e)` turns an `IoError` into a short message for `error: ...` lines.
 
+`fs.make_dir_all(path)` creates a directory and its parents, and `fs.remove_all(path)` removes a tree, never following a symbolic link out of it. For scratch space, `fs.temp_dir()` is the system's directory for temporary files, and `fs.create_temp(dir, prefix, buf)` and `fs.make_temp_dir(dir, prefix, buf)` create a file or directory under a fresh random name, never one that already exists, writing its path into `buf` (`dir.len + prefix.len + fs.TEMP_EXTRA` bytes are enough).
+
 ### Running programs: `std/process`
 
 Child processes are the `Proc` effect, like files are `Fs`. `process.output` runs a command to completion (no shell: the first element is the program, found in `PATH` unless it has a path separator) and collects what it writes; `process.status` only waits for it. Options choose what the child's standard streams are connected to (`Inherit`, `Null` or `Pipe`), its working directory and its environment:
@@ -515,6 +519,8 @@ main :: fn() -> zone.ZoneError!() needs Out + Alloc + Fs + Env {
 ```
 
 `zone.local()` follows `$TZ` and `/etc/localtime`, and `zone.utc()`, `zone.fixed(seconds)` and `zone.from_tz_string("CET-1CEST,M3.5.0,M10.5.0/3")` need no file. Instants are Unix seconds, so the whole range of dates works.
+
+`time.parse_duration("1h30m")` reads back what `time.format_duration` writes, exactly, for command-line options and configuration. The ISO 8601 week calendar is there too: `time.iso_week(d)` gives the week-numbering year and week, `time.from_iso_week(2004, 53, .Friday)` goes back, `time.day_of_year(d)` and `time.from_ordinal(year, day)` convert ordinal dates, and `format_iso_week`/`parse_iso_week` and `format_ordinal`/`parse_ordinal` handle the text forms `2004-W53-5` and `2004-366`.
 
 Randomness is the `Rand` effect, filled from the operating system by default and from a fixed seed in tests. `std/random` builds the usual draws on it without modulo bias, and has a seedable generator that is itself a `Rand` handler, for reproducible runs:
 
@@ -858,9 +864,10 @@ A float is written in the shortest form that reads back as the same value, NaN a
 | Module | For |
 | --- | --- |
 | `std/cli` | command-line options as an iterator: short and long flags, values, positional arguments, generated help |
-| `std/math` | `sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, ... on `f64`, written in Gamma so every back end gives identical results |
-| `std/complex` | `exp`, `log`, `sqrt`, `pow`, `sin`, `cos`, `arg` and `from_polar` on `Complex(f64)`, also in pure Gamma |
-| `std/net` | the types `Socket`, `Listener` and `Shutdown` (`net.Socket`), and `send_all` and `recv_exact` over the `Net` effect, whose operations are reached through it (`Net.connect(host, port)`); tests get an in-memory network |
+| `std/math` | `sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, ... on `f64`, written in Gamma so every back end gives identical results; also `asinh`/`acosh`/`atanh`, `erf`/`erfc`, `lgamma`/`tgamma`, `frexp`/`ldexp`/`nextafter`, and integer `gcd`, `lcm`, `isqrt`, `ilog2`, `ilog10`, `div_floor` and `mod_floor` for every integer type |
+| `std/complex` | `exp`, `log`, `sqrt`, `pow`, the trigonometric and hyperbolic functions and their inverses, `arg` and `from_polar` on `Complex(f64)`, with the branch cuts of C99, also in pure Gamma |
+| `std/net` | the types `Socket`, `Listener` and `Shutdown` (`net.Socket`), and `send_all` and `recv_exact` over the `Net` effect, whose operations are reached through it (`Net.connect(host, port)`); tests get an in-memory network. IP addresses are values too: `net.parse_ip("2001:db8::1")` gives an `IpAddr`, and `format_ip` writes the canonical text of RFC 5952 |
+| `std/uuid` | RFC 9562 identifiers: `uuid.v4()` (random), `uuid.v7()` (time-ordered), `parse` and `format` of the canonical text |
 | `std/process` | running other programs: `output`, `status` and `success` over the `Proc` effect (above); tests cannot start processes |
 | `std/bytes`, `std/encoding/*`, `std/hash`, `std/json` | binary data and formats (above) |
 | `std/c` | C's platform-dependent types (`c_int`, `c_long`, ...) for [foreign declarations](14-interop.md) |

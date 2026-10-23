@@ -34,8 +34,9 @@
 | [`std/process`](process.md) | Running other programs over the `Proc` effect (§21.7). |
 | [`std/random`](random.md) | A fast seedable generator, and helpers that draw from `Rand`. |
 | [`std/str`](str.md) | Byte-oriented string utilities. |
-| [`std/text`](text.md) | Unicode text segmentation and UTF-8 encoding of scalar values. |
+| [`std/text`](text.md) | Unicode text segmentation, and UTF-8 and UTF-16 encoding of scalar values. |
 | [`std/thread`](thread.md) | Threads and the synchronization built on futexes (§19.6). |
 | [`std/thread/wait_group`](thread/wait_group.md) | The wait group of std/thread, which re-exports it. |
 | [`std/time`](time.md) | Calendar dates and times, RFC 3339 text, and durations as text. |
 | [`std/time/zone`](time/zone.md) | Time zones: converting between UTC and local civil time with TZif data. |
+| [`std/uuid`](uuid.md) | Universally unique identifiers as in RFC 9562: the 128-bit value, its canonical text form, and generators for versions 4 (random) and 7 (time-ordered). |
