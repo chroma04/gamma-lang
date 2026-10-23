@@ -206,9 +206,11 @@ describe :: fn(e: Either(i32, string)) -> string => match e {
 }
 ```
 
-`List(T)` and `HashMap(K, V, ...)` are generic types of exactly this kind. A `HashMap` also takes the hash and equality functions as compile-time parameters, which is how you customize behavior for a data structure without any trait mechanism:
+`List(T)` and the standard library's `HashMap(K, V, ...)` are generic types of exactly this kind. A `HashMap` also takes the hash and equality functions as compile-time parameters, which is how you customize behavior for a data structure without any trait mechanism:
 
 ```gamma
+hm :: import "std/collections/hash_map"
+
 lower :: fn(c: u8) -> u8 => if c in 'A'..='Z' { c + 32 } else { c }
 
 fold_hash :: fn(key: ^const string, seed: u64) -> u64 {
@@ -226,7 +228,7 @@ fold_eq :: fn(a, b: ^const string) -> bool {
 }
 
 case_insensitive_demo :: fn() -> AllocError!() needs Alloc {
-    names := hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
+    names := hm.hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
     defer names.deinit()
     try names.put("Ada", 1)
     return ()
@@ -331,7 +333,7 @@ If you are coming from Rust, C++ or Go, you probably expect user-defined traits,
 | Bound a generic body to operations on `T` | a closed constraint (`where Ord(T)`) or a function parameter |
 | An algorithm that needs per-call behavior | a second-class function parameter: `xs.sort_by(fn(a, b) => a.score > b.score)` |
 | Order structs | order a tuple of keys: `people.sort_by_key(fn(p) => (p.last, p.first))` |
-| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are `HashMap` parameters |
+| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are parameters of the hash map type |
 | A data structure with fixed, consistent behavior | a compile-time parameter of the type |
 | Print or log any value | `print("{}", x)` formats every type structurally; custom display is a function returning a string |
 | Dispatch over a closed set of cases at run time | a tagged union and `match` |

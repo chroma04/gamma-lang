@@ -1,4 +1,6 @@
 // A bare binding unwraps one level of an optional or result (§9.3, §10.1).
+hm :: import "std/collections/hash_map"
+
 E :: union { Bad }
 res :: fn(k: i32) -> E!?u16 {
     if k is 0 { return !.Bad }
@@ -15,7 +17,7 @@ show :: fn(v: ??u8) needs Out {
     }
 }
 main :: fn() -> AllocError!() needs Out + Alloc {
-    m := hash_map(string, ?u32)
+    m := hm.hash_map(string, ?u32)
     defer m.deinit()
     try m.put("none", null)
     try m.put("five", 5)

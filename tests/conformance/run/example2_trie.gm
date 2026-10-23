@@ -1,12 +1,14 @@
 // Trie with recursive Yield iterators, nested for loops over map entries, defer in recursion.
+hm :: import "std/collections/hash_map"
+
 Node :: struct {
-    kids: HashMap(u8, ^Node)
+    kids: hm.HashMap(u8, ^Node)
     end: bool = false
     hits: u32 = 0
 }
 
 new_node :: fn() -> AllocError!^Node needs Alloc {
-    return try new(Node(kids: hash_map(u8, ^Node)))
+    return try new(Node(kids: hm.hash_map(u8, ^Node)))
 }
 
 insert :: fn(root: ^Node, word: string) -> AllocError!() needs Alloc {

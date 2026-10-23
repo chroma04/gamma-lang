@@ -135,7 +135,7 @@ The table lists the Rust construct you would reach for and what Gamma uses. The 
 | `dyn Trait`, `Box<dyn Trait>` | a struct holding a data pointer and `^fn` pointers | as `Allocator` does |
 | `Box<T>` | `^T` from `new`, released with `destroy` | no ownership |
 | `Vec<T>` | `List(T)` | takes an allocator at construction |
-| `HashMap<K, V>` | `HashMap(K, V)` | hash and equality are structural |
+| `HashMap<K, V>` | `HashMap(K, V)` from `std/collections/hash_map` | hash and equality are structural |
 | `String` | a `List(u8)` or a slice from `dupe` | no builder type in the core library |
 | `&str`, `&[T]` | `string`, `[]const T` | a pointer and a length |
 | `&mut [T]` | `[]T` | |
@@ -543,6 +543,8 @@ In Rust, `let b = a;` moves `a` unless `Point` is `Copy`, and a type that holds 
 There is no global allocator. Functions that allocate perform the `Alloc` effect, listed in their signature, and the **caller** decides where memory comes from by installing a handler. `new`, `make` and friends use whatever allocator is current, and they return a result, because allocation can fail:
 
 ```gamma
+hm :: import "std/collections/hash_map"
+
 Point :: struct { x, y: i32 }
 
 main :: fn() -> AllocError!() needs Alloc + Out {
@@ -555,7 +557,7 @@ main :: fn() -> AllocError!() needs Alloc + Out {
     try names.push("ada")
     try names.push("grace")
 
-    ages := hash_map(string, u32)         // HashMap::new
+    ages := hm.hash_map(string, u32)      // HashMap::new
     defer ages.deinit()
     try ages.put("ada", 36)
 
@@ -607,7 +609,7 @@ main :: fn() -> AllocError!() needs Alloc + Out {
 640
 ```
 
-Two details keep this safe enough in practice. A container (`List`, `HashMap`) captures the allocator that was current when it was created and uses that same handle for every later operation, so you cannot free memory through a different allocator than the one that produced it (Debug builds also tag every allocation with its allocator and trap on a mismatch). And a function without `Alloc` in its effect set does not allocate through the current allocator, so `needs Alloc` is a reliable "this function may allocate" marker. No language construct allocates: closures, `for` loops and string literals never do.
+Two details keep this safe enough in practice. A container (`List`, a hash map) captures the allocator that was current when it was created and uses that same handle for every later operation, so you cannot free memory through a different allocator than the one that produced it (Debug builds also tag every allocation with its allocator and trap on a mismatch). And a function without `Alloc` in its effect set does not allocate through the current allocator, so `needs Alloc` is a reliable "this function may allocate" marker. No language construct allocates: closures, `for` loops and string literals never do.
 
 ### `defer` replaces `Drop`
 
@@ -708,6 +710,8 @@ Gamma's design argument is that a trait bundles five jobs, and four of them have
 Passing behavior is first-class. The standard `sort_by` takes a comparison, and a `HashMap` takes its hash and equality as compile-time parameters:
 
 ```gamma
+hm :: import "std/collections/hash_map"
+
 lower :: fn(c: u8) -> u8 => if c in 'A'..='Z' { c + 32 } else { c }
 
 fold_hash :: fn(key: ^const string, seed: u64) -> u64 {
@@ -725,7 +729,7 @@ fold_eq :: fn(a, b: ^const string) -> bool {
 }
 
 main :: fn() -> AllocError!() needs Alloc + Out {
-    names := hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
+    names := hm.hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
     defer names.deinit()
     try names.put("Ada", 1)
     print("{} {}\n", names.get("ADA"), names.get("grace"))
@@ -1287,7 +1291,7 @@ Differences you will notice:
 - **One revision per repository.** Gamma does not link two versions of one package side by side, so two packages that need incompatible versions of a third cannot be used together until one is updated. There is no `semver`-compatible duplicate in the dependency graph.
 - **A module is a directory**, and all `.gm` files in it share one namespace; subdirectories are separate modules. Files and declarations are unordered, and `import` is an expression bound with `::`: `geom :: import "./geom"`. The standard library is `import "std/..."`. There is no `use`.
 - **Profiles** hold `mode`, `debug-info`, `cflags`, `ldflags`, `c-sources` and the like. C sources in a package are compiled and linked automatically, which is the role of `build.rs` plus `cc` for most crates.
-- **Layering.** The language defines the core library (`string`, `List`, `HashMap`, `print`, ...); the rest of `std/` (collections, files, JSON, hashes, time, fibers, threads) is ordinary library code outside the specification.
+- **Layering.** The language defines the core library (`string`, `List`, `print`, ...); the rest of `std/` (hash maps and other collections, files, JSON, hashes, time, fibers, threads) is ordinary library code outside the specification.
 
 See [chapter 1](01-getting-started.md) and [chapter 15](15-packages.md).
 

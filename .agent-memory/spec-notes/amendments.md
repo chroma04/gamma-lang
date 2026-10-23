@@ -95,3 +95,6 @@
   bullet removed; §10.2 `!` not negation; §3.1 empty dir not a module; §5.10 no self by value;
   §19.2 name charsets; §19.4 runtime names = limitation; §20.2 `#allow` names checked by lint
   only; B.2 `needs` row removed; B.3 35 keywords; C.8 row `+` vs `,`.
+- s34 (decisions/038): §21.5 now "Lists" (List only, real rationale); HashMap → std
+  (§16.4 example `hm.`; §16.9/C.6 tables; §3.5 alias example `Seq :: List`; §21.1 tables +
+  Transition note on deprecated names); §7.7 `in` built-in only; C.8 three rows.

@@ -1,7 +1,7 @@
 # The standard library
 
 The **core library** (spec §21) is visible in every module without an import: the
-ambient effects, allocation, iterators, `List`, `HashMap`, formatting with `print`,
+ambient effects, allocation, iterators, `List`, formatting with `print`,
 and the builtin methods of slices, numbers and pointers. The rest of the standard
 library is a set of modules under `std/`, imported by path:
 

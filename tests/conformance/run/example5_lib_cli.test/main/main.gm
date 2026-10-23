@@ -1,6 +1,7 @@
 // A word-tally tool on a command-line parsing library: typed options through generics, a scripted Env handler.
 argp :: import "../argp"
 str :: import "std/str"
+hm :: import "std/collections/hash_map"
 
 Format :: union { Text, Csv, Json }
 
@@ -66,7 +67,7 @@ tally :: fn(m: ^const argp.Matches) -> AllocError!() needs Alloc + Out {
         for b in owned.items { free(b) }
         owned.deinit()
     }
-    counts := hash_map(string, u32)
+    counts := hm.hash_map(string, u32)
     defer counts.deinit()
     dropped: u32 = 0
     for arg in m.positionals() {

@@ -1,5 +1,6 @@
-// core/map: the hash map (§21.5). `HashMap`, `hash_map` and `hash_map_with` are
-// re-exported to the universe scope; the other functions are reached as methods.
+// core/map: the hash map. `std/collections/hash_map` re-exports `HashMap`, `hash_map`,
+// `hash_map_with` and `Entry`; the other functions are reached as methods. It is a core
+// module because the test runner's allocation tracker uses it.
 //
 // The table uses open addressing with linear probing over a power-of-two
 // number of slots. Removed entries leave a tombstone until the next growth.

@@ -17,6 +17,15 @@ Versions and what each kind of change means are described in
 - The specification states rules the compiler already enforced: a struct may not contain
   itself by value, a directory without `.gm` files is not a module, and the characters of
   foreign library and symbol names.
+- The hash map moved from the core library to the standard module
+  `std/collections/hash_map`: write `hm :: import "std/collections/hash_map"`, then
+  `hm.hash_map(K, V)` and `hm.HashMap(K, V)`. `List` is now the only container in the
+  core library, the one the language definition refers to (§21.5). The universe names
+  `HashMap`, `hash_map` and `hash_map_with` stay for one release as `#deprecated` names of
+  the same declarations, so existing code compiles with a warning.
+- The specification's rationale (Appendix C.8) records why constraints stay predicates on
+  one type and why `in` covers only built-in sequences: library containers answer
+  membership with `contains`.
 
 ### Diagnostics
 

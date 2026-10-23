@@ -380,7 +380,7 @@ Top-level declarations are mutually visible regardless of order. Their dependenc
 
 ### 3.5 Type aliases
 
-A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Map :: HashMap`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Map(K, V)` then instantiates `HashMap`, and a `pub` alias re-exports the declaration. An instantiation of a generic effect may be named the same way: `Bytes :: Yield(u8)` makes `Bytes` stand for `Yield(u8)` in effect sets, handler literals and `Bytes.yield(b)`. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
+A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Seq :: List`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Seq(T)` then instantiates `List`, and a `pub` alias re-exports the declaration. An instantiation of a generic effect may be named the same way: `Bytes :: Yield(u8)` makes `Bytes` stand for `Yield(u8)` in effect sets, handler literals and `Bytes.yield(b)`. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
 
 ### 3.6 Conditional compilation: `when`
 
@@ -1097,6 +1097,8 @@ Comparing slices by content is the one place where `is` looks through a value to
 | tuple whose elements all have `x`'s type | some element `e` has `e is x` |
 
 The tuple form is written inline: `c in ('\n', '\r')`, `d in (.N, .S)`.
+
+`in` is defined only for these built-in forms, whose test is a comparison or a scan the reader can see. A library container answers membership with a method (`m.contains(k)`), and a generic function that needs a membership test takes it as a function parameter (`has: fn(x: T) -> bool`) or the elements as an iterator (§13.5); see C.8.
 
 ### 7.8 Logical operators
 
@@ -2193,7 +2195,7 @@ Operations beyond these come in as function parameters (`less: fn(a, b: ^const T
 
 ### 16.4 Generic types
 
-The parameters of a `struct`, `union` or `effect` are always compile-time, because they are part of the type. They may be types or values of the types allowed for compile-time value parameters (§16.5), including function values:
+The parameters of a `struct`, `union` or `effect` are always compile-time, because they are part of the type. They may be types or values of the types allowed for compile-time value parameters (§16.5), including function values. The standard library's hash map (`std/collections/hash_map`) is declared:
 
 ```
 HashMap :: struct(K, V: type,
@@ -2202,10 +2204,10 @@ HashMap :: struct(K, V: type,
     …
 }
 
-ids := hash_map(string, u32)                                // @hash and `is`
+ids := hm.hash_map(string, u32)                             // @hash and `is`
 try ids.put("ada", 1)
 
-names := hash_map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
+names := hm.hash_map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
 ```
 
 - Parameters may have defaults, which must be constant expressions; arguments may be named.
@@ -2289,7 +2291,7 @@ The idiomatic replacements:
 | Bound a generic body to operations on `T` | a closed constraint (`where Ord(T)`), or a function parameter |
 | An algorithm that needs per-call behavior | a second-class function parameter: `xs.sort_by(fn(a, b) => a.score > b.score)` |
 | Order structs | order a tuple of keys: `people.sort_by_key(fn(p) => (p.last, p.first))` |
-| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are `HashMap` parameters |
+| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are parameters of the hash map type (§16.4) |
 | A data structure with fixed, consistent behavior | a compile-time parameter of the type: `BTree(K, V, less: by_name)` |
 | Print or log any value | `print("{} at {}", name, pos)`, which formats every type structurally (§21.6); custom display is an ordinary function returning a string |
 | Run-time dispatch over a closed set of cases | a tagged union and `match` |
@@ -2660,11 +2662,13 @@ The universe holds the **effects** but not their **operations**, with one except
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u128`, `i1`…`i128`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
-| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
+| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`, `Test` |
 | operations | `yield` only; the others are reached through their effects |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
+
+*Transition.* Until the release after 0.1.0, the universe scope also holds `HashMap`, `hash_map` and `hash_map_with`, `#deprecated` names for the declarations of `std/collections/hash_map` (§21.5); a program may hide them like any other name.
 
 ### 21.2 Allocation
 
@@ -2729,9 +2733,11 @@ nth        :: fn(T: type, it: fn() needs Yield(T), n: usize) -> ?T
 
 `range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. `zip` yields pairs up to the shorter length. The iterators are `#inline`. `collect`, `count` and `nth` run the iterator they are given (§13.5): `collect` gathers its values in a new list, `count` counts them, and `nth` returns the value at index `n` (from 0) and stops the iterator there, or `null`.
 
-### 21.5 Containers (summary)
+### 21.5 Lists
 
-`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`). Only `List`, `list`, `HashMap`, `hash_map` and `hash_map_with` are re-exported to the universe scope; the other functions and types of those modules are reached as methods, and method calls on them resolve in those modules (§7.10). Their required interface:
+`List(T)`, the growable array, is the one container in the core library, because the language definition and the core library's conventions refer to it: `collect` returns a `List(T)` (§21.4), and every library operation that produces text or bytes of unknown length appends them to a `List(u8)` (`l.write(template, args)` formats into one, §21.6.1; §22.3). It is the type through which independent code hands over a growing sequence. Every other container — hash maps, ordered maps, queues, heaps, bit sets — is a module of the standard library (`std/collections/…`), which needs nothing from the language that a program does not have.
+
+`List` is declared, with its functions, in the core module `core/list`. Only `List` and `list` are re-exported to the universe scope; the other functions are reached as methods, and method calls on a list resolve in that module (§7.10). Its required interface:
 
 ```
 // core/list
@@ -2750,31 +2756,9 @@ deinit :: fn(T: type, l: ^List(T))                                 // frees thro
 into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T          // hands over the storage, sized exactly
 collect :: fn(T: type, l: ^List(T), it: fn() needs Yield(T)) -> AllocError!()   // appends what `it` yields
 write  :: fn(A: type, l: ^List(u8), template :: string, args: ..A) -> AllocError!()  // @write into the list
-
-// core/map
-HashMap  :: struct(K, V: type,
-                   hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,   // null: @hash
-                   eq:   ?^fn(a, b: ^const K) -> bool = null)            // null: `is`
-hash_map :: fn(K, V: type) -> HashMap(K, V) needs Alloc where Eq(K)
-hash_map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
-               eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) needs Alloc
-put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
-get      :: fn(m: ^const HashMap(…), k: K) -> ?V
-get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
-Entry    :: struct(K, V: type) { pub key: ^K; pub value: ^V; pub found: bool }
-entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // stores `default` if absent; pointers to the stored key and value
-contains :: fn(m: ^const HashMap(…), k: K) -> bool
-remove   :: fn(m: ^HashMap(…), k: K) -> ?V
-remove_entry :: fn(m: ^HashMap(…), k: K) -> ?(key: K, value: V)   // with the stored key
-len      :: fn(m: ^const HashMap(…)) -> usize
-entries  :: fn(m: ^const HashMap(…)) needs Yield((key: K, value: V))   // unspecified order
-keys     :: fn(m: ^const HashMap(…)) needs Yield(K)                   // in the order of `entries`
-values   :: fn(m: ^const HashMap(…)) needs Yield(V)
-clear    :: fn(m: ^HashMap(…))                                      // keeps the storage
-deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `Alloc.current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
+The list captures `Alloc.current()` at construction and never performs `Alloc` afterwards (§15.2). `for x in l.items` iterates it. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 
@@ -3414,7 +3398,7 @@ Generic code is ordinary code with compile-time parameters, **checked once** whe
 | Job | In Gamma |
 | --- | --- |
 | Bounding a generic body | closed constraints, plus function parameters |
-| Implementation fixed per type, called directly | compile-time parameters of functions and types (`HashMap(K, V, hash: f)`) |
+| Implementation fixed per type, called directly | compile-time parameters of functions and types (a hash map's `hash` and `eq`, §16.4) |
 | Implementation chosen at run time | a struct with a vtable of `^fn` (as `Allocator`), or a tagged union |
 | Implementation supplied by context | effects and handlers |
 | Implementation found **implicitly** and **composed** (`Hash` for `(A, B)` from `Hash` for `A` and `B`) | deliberately absent |
@@ -3461,6 +3445,9 @@ The first four already exist, each with its cost and its code visible where it i
 | Integers wider than 128 bits | P2 | arithmetic on them is a loop over words behind an operator; a library type makes those calls visible |
 | Re-evaluating an iterator argument's arguments on each run | P2 | they would run an unknown number of times with nothing at the call to say so; they are evaluated once, as for `for` (§13.5) |
 | Fibers that migrate between threads (a `Send`-like rule) | P1, P5 | values own nothing, so no rule on types can tell whether the memory a fiber reaches is shared with its old thread; and its handlers live on that thread (§14.9). Threads exchange data explicitly (§19.6) |
+| Relational constraints over several types (`Contains(C, T)`, `Iterable(C, T)`), to make `in` or `for` generic over containers | P5, one feature per job | with no traits (C.6) a relation can only cover built-in types, where it buys little: a generic body that scans takes the elements as a slice or an iterator, and one that tests membership takes a predicate. Opening it to library containers needs associated types and implementations found by type — the trait machinery C.6 omits |
+| `in` on library containers (`k in m`) | P5, one feature per job | a privilege the core's containers would have and no library container could; `m.contains(k)` reads as well and works the same way for every container |
+| More containers in the core library | §22.1 | the core holds what the language definition refers to; `List` is the one container it refers to (§21.5), and the others are library code that needs nothing a program lacks |
 | A packed set type over an enum | one feature per job | `[E]bool` is a set indexed by the enum (§5.6.1), a `#bits` struct packs named flags (§5.10.5), and the library has integer bit sets |
 
 ### C.9 Future directions

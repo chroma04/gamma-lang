@@ -1,5 +1,7 @@
 // A queue-like workload (insert a fresh key, remove the old one) keeps the table at a size
 // that follows the live entries instead of doubling it for ever.
+hm :: import "std/collections/hash_map"
+
 Counter :: struct { inner: Allocator, cur: usize, peak: usize }
 
 c_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
@@ -20,7 +22,7 @@ CV :: AllocVtable(alloc: c_alloc, resize: c_resize, free: c_free)
 main :: fn() -> AllocError!() needs Out + Alloc {
     c := Counter(inner: Alloc.current(), cur: 0, peak: 0)
     with Allocator(data: (&c).cast(rawptr), vt: &CV) {
-        m := hash_map(u32, u32)
+        m := hm.hash_map(u32, u32)
         defer m.deinit()
         for i in 0..200000 {
             try m.put(i, i)

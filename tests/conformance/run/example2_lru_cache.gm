@@ -1,4 +1,6 @@
 // LRU cache built from a HashMap plus an intrusive doubly linked list of heap nodes, with iterators and errdefer cleanup.
+hm :: import "std/collections/hash_map"
+
 Node :: struct(K, V: type) {
     key: K
     val: V
@@ -7,7 +9,7 @@ Node :: struct(K, V: type) {
 }
 
 Lru :: struct(K, V: type) {
-    index: HashMap(K, ^Node(K, V))
+    index: hm.HashMap(K, ^Node(K, V))
     head: ?^Node(K, V) = null     // most recently used
     tail: ?^Node(K, V) = null     // least recently used
     cap: usize
@@ -16,7 +18,7 @@ Lru :: struct(K, V: type) {
 }
 
 lru :: fn(K, V: type, cap: usize) -> Lru(K, V) needs Alloc where Eq(K) {
-    return Lru(K, V)(index: hash_map(K, ^Node(K, V)), cap: cap)
+    return Lru(K, V)(index: hm.hash_map(K, ^Node(K, V)), cap: cap)
 }
 
 unlink :: fn(K, V: type, c: ^Lru(K, V), n: ^Node(K, V)) {

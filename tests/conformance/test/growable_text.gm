@@ -2,6 +2,7 @@
 // Growable text: `List(u8).write`, `into_slice`, `collect`, `dupe` and `str.format`
 // (§21.2, §21.5), with the test allocator checking that nothing leaks.
 str :: import "std/str"
+hm :: import "std/collections/hash_map"
 
 test "write appends formatted text" {
     l := list(u8)
@@ -25,7 +26,7 @@ test "into_slice hands over the storage" {
 }
 
 test "collect gathers an iterator" {
-    m := hash_map(u32, u32)
+    m := hm.hash_map(u32, u32)
     defer m.deinit()
     for i in 0u32..5 { ok(m.put(i, i * i)) }
     vs := list(u32)

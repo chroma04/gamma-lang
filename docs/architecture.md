@@ -273,11 +273,13 @@ The core library is ordinary Gamma source in `lib/core/`, compiled into the
 tool. The prelude (`prelude.gm`) is visible in every module: it declares the
 ambient effects (`Out`, `Err`, `Env`, `Alloc`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, and
 `Sys`), the standard iterators and allocation (`Allocator`, `new`, `make`, `free`, …). The
-containers live in their own core modules, `list.gm` and `map.gm`, and the builtin methods
-of arrays and slices that are written in Gamma (the sorts, …) in `slice.gm`; only their types and
-constructors (`List`, `list`, `HashMap`, `map`, `map_with`) are re-exported to
-the universe scope, and their other functions are reached as methods, which
-resolve in the receiver type's module (§21.5).
+list lives in its own core module, `list.gm`, and the builtin methods of arrays and slices
+that are written in Gamma (the sorts, …) in `slice.gm`; only `List` and `list` are
+re-exported to the universe scope, and the other functions are reached as methods, which
+resolve in the receiver type's module (§21.5). `map.gm` is the hash map: the prelude binds
+it as the hidden module name `map` (the test runner's allocation tracker uses it), and
+`std/collections/hash_map` re-exports its declarations as `core.map.HashMap` and so on,
+the way `std/fs` re-exports `core.File`.
 
 Core modules see the prelude's private declarations and may use a few
 host-facing intrinsics: `@heap_alloc` and `@heap_free`, and the system

@@ -2,6 +2,7 @@
 // HashMap, and prints the most frequent ones. Keys are copied into heap memory because
 // the reader reuses its line buffer.
 io :: import "std/io"
+hm :: import "std/collections/hash_map"
 
 Entry :: struct {
     word: string
@@ -43,13 +44,13 @@ more_frequent :: fn(a, b: ^const Entry) -> bool {
     return a.word < b.word
 }
 
-free_keys :: fn(m: ^HashMap(string, u32)) needs Alloc {
+free_keys :: fn(m: ^hm.HashMap(string, u32)) needs Alloc {
     for e in m.entries() { release(e.key) }
     m.deinit()
 }
 
 main :: fn() -> Failure!() needs Out + In + Alloc {
-    counts := hash_map(string, u32)
+    counts := hm.hash_map(string, u32)
     defer free_keys(&counts)
     lines: u32 = 0
     total: u32 = 0
