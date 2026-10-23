@@ -76,3 +76,6 @@
   them to `git merge --ff-only <session branch>` first. `gamma lint lib/std` errors ("no .gm
   files"); lint per module dir (`gamma lint lib/std/math`); tests/lint.rs walks modules itself.
   Agents can verify with `GAMMA_STD=$PWD/lib/std target/debug/gamma run [--backend=c|cranelift]`.
+- Windows-only code (`when target.os is .Windows`) is not type-checked on Linux. Check it with
+  `CC=clang gamma check --target=x86_64-w64-mingw32 f.gm` (works without a mingw toolchain).
+  s36: `when … { return a }` then `return b` = "unreachable code" on Windows only → use `else`.
