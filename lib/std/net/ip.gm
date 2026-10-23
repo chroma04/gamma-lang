@@ -1,0 +1,337 @@
+// IP addresses: values, text parsing and formatting. Part of the `std/net` module; the
+// module documentation is in `net.gm`.
+
+/// Maximum length of an IPv4 address in text: `255.255.255.255`.
+pub IPV4_LEN :: 15
+
+/// A length that always suffices for an IPv6 address in text. The longest form
+/// `format_ipv6` writes is 39 bytes (`ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff`); 45 is the
+/// longest form with a dotted IPv4 tail, which `parse_ipv6` accepts.
+pub IPV6_LEN :: 45
+
+/// An IPv4 address.
+pub Ipv4 :: struct {
+    /// The four bytes in network order: `192.0.2.1` is `192, 0, 2, 1`.
+    pub octets: [4]u8
+}
+
+/// An IPv6 address.
+pub Ipv6 :: struct {
+    /// The sixteen bytes in network order.
+    pub octets: [16]u8
+}
+
+/// An address of either family.
+pub IpAddr :: union {
+    V4: Ipv4
+    V6: Ipv6
+}
+
+/// Why parsing an address failed. Each variant carries a byte index into the text. The
+/// problem nearest the start is reported, except that a field out of range is reported
+/// as soon as its digits have been read.
+pub ParseError :: union {
+    /// The text does not have the expected shape: the index of the first byte that does
+    /// not fit, or the length of the text if it ended too early. Also used for an octet
+    /// with a leading zero (the index of the digit after the zero), for a second `::`
+    /// (the index of its second colon), and for too many groups or a `::` that stands for
+    /// no group (the index of the group that does not fit, or of the `::`).
+    Syntax: usize
+    /// The shape is right but a number is too big: an IPv4 octet above 255 (including one
+    /// with more than three digits), or an IPv6 group with more than four hex digits. The
+    /// index is where that field starts.
+    Range: usize
+}
+
+// ---------------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------------
+
+is_digit :: fn(c: u8) -> bool => c >= '0' and c <= '9'
+
+// The value of the hexadecimal digit `c` (either case), or 255.
+hex_value :: fn(c: u8) -> u8 {
+    if c >= '0' and c <= '9' { return c - '0' }
+    if c >= 'a' and c <= 'f' { return c - 'a' + 10 }
+    if c >= 'A' and c <= 'F' { return c - 'A' + 10 }
+    return 255
+}
+
+// Parses the dotted decimal address that occupies `s[at..]` to the end of `s`.
+v4_at :: fn(s: string, at: usize) -> ParseError!Ipv4 {
+    out: [4]u8 = ---
+    pos := at
+    for i in 0..4 {
+        if i > 0 {
+            if pos >= s.len { return !.Syntax(s.len) }
+            if s[pos] is not '.' { return !.Syntax(pos) }
+            pos += 1
+        }
+        start := pos
+        if pos >= s.len { return !.Syntax(s.len) }
+        if not is_digit(s[pos]) { return !.Syntax(pos) }
+        v: u32 = 0
+        while pos < s.len and is_digit(s[pos]) {
+            if pos > start and v is 0 { return !.Syntax(pos) }
+            v = v * 10 + u32(s[pos] - '0')
+            if v > 255 { v = 256 }
+            pos += 1
+        }
+        if v > 255 { return !.Range(start) }
+        out[i] = v.trunc(u8)
+    }
+    if pos < s.len { return !.Syntax(pos) }
+    return Ipv4(octets: out)
+}
+
+/// Parses an IPv4 address in dotted decimal: exactly four decimal fields of 0 to 255
+/// separated by `.`, with nothing else around them.
+///
+/// The form is strict: a field with a leading zero (`01`, which some systems read as
+/// octal) is `Syntax`, as are whitespace, a missing or extra field and the shorthand forms
+/// (`127.1`, `0x7f.0.0.1`). A field above 255 is `Range` at the start of that field.
+pub parse_ipv4 :: fn(s: string) -> ParseError!Ipv4 => v4_at(s, 0)
+
+/// Parses an IPv6 address in the text forms of RFC 4291 section 2.2.
+///
+/// That is eight groups of 1 to 4 hexadecimal digits (either case) separated by `:`;
+/// `::`, at most once, standing for one or more groups of zeros; and, as the last field, an
+/// embedded dotted IPv4 address in place of the last two groups (`::ffff:1.2.3.4`,
+/// `64:ff9b::192.0.2.33`), which follows the rules of `parse_ipv4`. Brackets (`[::1]`) and
+/// zone identifiers (`fe80::1%eth0`) are not part of an address and are `Syntax` errors.
+/// A group with more than four digits is `Range` at its start.
+pub parse_ipv6 :: fn(s: string) -> ParseError!Ipv6 {
+    g: [8]u16 = ---
+    n: usize = 0
+    have_gap := false
+    gap_at: usize = 0          // the number of groups before the `::`
+    gap_pos: usize = 0         // the index of the `::`
+    pos: usize = 0
+    if s.len > 0 and s[0] is ':' {
+        if s.len < 2 or s[1] is not ':' { return !.Syntax(1) }
+        have_gap = true
+        pos = 2
+    }
+    while pos < s.len or (n is 0 and not have_gap) {
+        start := pos
+        v: u32 = 0
+        while pos < s.len and hex_value(s[pos]) is not 255 {
+            v = v * 16 + u32(hex_value(s[pos]))
+            if v > 0xfffff { v = 0xfffff }
+            pos += 1
+        }
+        if pos is start { return !.Syntax(pos) }
+        if pos < s.len and s[pos] is '.' {
+            v4 := try v4_at(s, start)
+            if n + 2 > 8 { return !.Syntax(start) }
+            g[n] = (u16(v4.octets[0]) << 8) | u16(v4.octets[1])
+            g[n + 1] = (u16(v4.octets[2]) << 8) | u16(v4.octets[3])
+            n += 2
+            pos = s.len
+            break
+        }
+        if pos - start > 4 { return !.Range(start) }
+        if n >= 8 { return !.Syntax(start) }
+        g[n] = v.trunc(u16)
+        n += 1
+        if pos >= s.len { break }
+        if s[pos] is not ':' { return !.Syntax(pos) }
+        pos += 1
+        if pos < s.len and s[pos] is ':' {
+            if have_gap { return !.Syntax(pos) }
+            have_gap = true
+            gap_at = n
+            gap_pos = pos - 1
+            pos += 1
+            if pos >= s.len { break }
+        } else if pos >= s.len {
+            return !.Syntax(s.len)
+        }
+    }
+    tail: usize = 0
+    if have_gap {
+        if n > 7 { return !.Syntax(gap_pos) }
+        tail = n - gap_at
+    } else {
+        if n < 8 { return !.Syntax(s.len) }
+        gap_at = 8
+    }
+    out: [16]u8 = ---
+    for i in 0..16 { out[i] = 0 }
+    for i in 0..gap_at {
+        out[2 * i] = (g[i] >> 8).trunc(u8)
+        out[2 * i + 1] = (g[i] & 0xff).trunc(u8)
+    }
+    for j in 0..tail {
+        k := 8 - tail + j
+        out[2 * k] = (g[gap_at + j] >> 8).trunc(u8)
+        out[2 * k + 1] = (g[gap_at + j] & 0xff).trunc(u8)
+    }
+    return Ipv6(octets: out)
+}
+
+/// Parses an address of either family: `parse_ipv6` if `s` contains a `:`, `parse_ipv4`
+/// otherwise.
+pub parse_ip :: fn(s: string) -> ParseError!IpAddr {
+    for c in s {
+        if c is ':' {
+            a := try parse_ipv6(s)
+            return IpAddr.V6(a)
+        }
+    }
+    a := try parse_ipv4(s)
+    return IpAddr.V4(a)
+}
+
+// ---------------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------------
+
+put :: fn(buf: []u8, pos: usize, c: u8) -> usize {
+    assert(pos < buf.len, "net: buffer too small")
+    buf[pos] = c
+    return pos + 1
+}
+
+// Writes `v` in decimal at `buf[pos..]`; returns the new position.
+put_dec :: fn(buf: []u8, pos: usize, v: u8) -> usize {
+    p := pos
+    if v >= 100 { p = put(buf, p, '0' + v / 100) }
+    if v >= 10 { p = put(buf, p, '0' + v / 10 % 10) }
+    return put(buf, p, '0' + v % 10)
+}
+
+// Writes the four bytes at `o[at..]` in dotted decimal.
+put_v4 :: fn(buf: []u8, pos: usize, o: []const u8, at: usize) -> usize {
+    p := pos
+    for i in 0..4 {
+        if i > 0 { p = put(buf, p, '.') }
+        p = put_dec(buf, p, o[at + i])
+    }
+    return p
+}
+
+// Writes `v` in lowercase hex without leading zeros.
+put_hex :: fn(buf: []u8, pos: usize, v: u16) -> usize {
+    digits := "0123456789abcdef"
+    p := pos
+    started := false
+    shift: u16 = 12
+    while true {
+        d := (v >> shift) & 15
+        if d is not 0 or started or shift is 0 {
+            p = put(buf, p, digits[usize(d)])
+            started = true
+        }
+        if shift is 0 { break }
+        shift -= 4
+    }
+    return p
+}
+
+/// Formats `a` as dotted decimal (`192.0.2.1`) into `buf` and returns the part written.
+/// `buf` must hold the text, at most `IPV4_LEN` bytes (a trap otherwise).
+pub format_ipv4 :: fn(a: Ipv4, buf: []u8) -> string {
+    end := put_v4(buf, 0, a.octets[..], 0)
+    return buf[0..end]
+}
+
+/// Formats `a` in the canonical form of RFC 5952 into `buf` and returns the part written.
+///
+/// Digits are lowercase without leading zeros. The longest run of two or more zero groups
+/// is written `::` (the first one when runs are equally long); a single zero group is
+/// written `0`. An IPv4-mapped address (`::ffff:0:0/96`) is written with a dotted IPv4
+/// tail, `::ffff:192.0.2.1`, as section 5 of the RFC recommends; every other address is
+/// all hex. `buf` must hold the text, at most `IPV6_LEN` bytes (a trap otherwise).
+pub format_ipv6 :: fn(a: Ipv6, buf: []u8) -> string {
+    o := a.octets[..]
+    mapped := o[10] is 0xff and o[11] is 0xff
+    for i in 0..10 {
+        if o[i] is not 0 { mapped = false }
+    }
+    if mapped {
+        p := put(buf, 0, ':')
+        p = put(buf, p, ':')
+        for c in "ffff:" { p = put(buf, p, c) }
+        p = put_v4(buf, p, o, 12)
+        return buf[0..p]
+    }
+    g: [8]u16 = ---
+    for i in 0..8 { g[i] = (u16(o[2 * i]) << 8) | u16(o[2 * i + 1]) }
+    // The first longest run of zero groups.
+    best_start: usize = 0
+    best_len: usize = 0
+    i: usize = 0
+    while i < 8 {
+        if g[i] is not 0 {
+            i += 1
+            continue
+        }
+        j := i
+        while j < 8 and g[j] is 0 { j += 1 }
+        if j - i > best_len {
+            best_start = i
+            best_len = j - i
+        }
+        i = j
+    }
+    p: usize = 0
+    sep := false
+    k: usize = 0
+    while k < 8 {
+        if best_len >= 2 and k is best_start {
+            p = put(buf, p, ':')
+            p = put(buf, p, ':')
+            k += best_len
+            sep = false
+            continue
+        }
+        if sep { p = put(buf, p, ':') }
+        p = put_hex(buf, p, g[k])
+        sep = true
+        k += 1
+    }
+    return buf[0..p]
+}
+
+/// Formats `a` with `format_ipv4` or `format_ipv6`. A buffer of `IPV6_LEN` bytes always
+/// suffices.
+pub format_ip :: fn(a: IpAddr, buf: []u8) -> string {
+    return match a {
+        .V4(v) => format_ipv4(v, buf)
+        .V6(v) => format_ipv6(v, buf)
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Classes
+// ---------------------------------------------------------------------------------
+
+/// Whether `a` is a loopback address: `127.0.0.0/8` or `::1`. An IPv4-mapped IPv6 address
+/// is judged as the IPv6 address it is, so `::ffff:127.0.0.1` is not loopback here.
+pub is_loopback :: fn(a: IpAddr) -> bool {
+    return match a {
+        .V4(v) => v.octets[0] is 127
+        .V6(v) => {
+            r := v.octets[15] is 1
+            for i in 0..15 {
+                if v.octets[i] is not 0 { r = false }
+            }
+            r
+        }
+    }
+}
+
+/// Whether `a` is the unspecified address: `0.0.0.0` or `::`.
+pub is_unspecified :: fn(a: IpAddr) -> bool {
+    r := true
+    match a {
+        .V4(v) => {
+            for b in v.octets { if b is not 0 { r = false } }
+        }
+        .V6(v) => {
+            for b in v.octets { if b is not 0 { r = false } }
+        }
+    }
+    return r
+}
