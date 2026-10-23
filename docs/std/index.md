@@ -11,6 +11,7 @@
 | [`std/collections/deque`](collections/deque.md) | A double-ended queue in a growable ring buffer. |
 | [`std/collections/heap`](collections/heap.md) | A binary heap, used as a priority queue. |
 | [`std/collections/ordered_map`](collections/ordered_map.md) | A map that keeps its keys in order, as a B-tree. |
+| [`std/complex`](complex.md) | Functions of a complex variable on `Complex(f64)`, written entirely in Gamma. |
 | [`std/encoding/base64`](encoding/base64.md) | Base64 as in RFC 4648, with the standard alphabet (section 4) or the URL and filename safe one (section 5), with or without `=` padding. |
 | [`std/encoding/hex`](encoding/hex.md) | Base16 as in RFC 4648 section 8, two hexadecimal digits per byte. |
 | [`std/fiber`](fiber.md) | A cooperative round-robin scheduler for fibers (§14). |

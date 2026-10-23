@@ -1,0 +1,145 @@
+//! Functions of a complex variable on `Complex(f64)`, written entirely in Gamma.
+//!
+//! The type, its operators, `conj` and `abs` are in the core library; this
+//! module adds the polar form and the transcendental functions. Everything is
+//! built on `std/math`, so results are bit-identical on every back end and
+//! during compile-time evaluation.
+//!
+//! All functions return the principal value. `log` and `sqrt` have their branch
+//! cut along the negative real axis, and the sign of a zero imaginary part
+//! chooses the side, as in C99: `sqrt(-4 + 0i)` is `2i` and `sqrt(-4 - 0i)`
+//! is `-2i`.
+//!
+//! Special values follow C99 Annex G for `exp`, `log`, `sqrt` and `arg`, which
+//! are the cases with a well-defined limit. `sin` and `cos` handle zero parts,
+//! an infinite imaginary part and a NaN with a zero imaginary part; for other
+//! infinite or NaN arguments they return NaN parts where Annex G prescribes
+//! more specific values, and the sign of a NaN or of a returned zero that
+//! Annex G leaves unspecified is not defined. `from_polar` and `pow` apply
+//! the arithmetic of their definitions and do not special-case infinities.
+
+math :: import "std/math"
+
+mk :: fn(re, im: f64) -> Complex(f64) => Complex(f64)(re: re, im: im)
+
+/// The argument (phase angle) of `z` in radians, in `[-pi, pi]`. It is `pi` or
+/// `-pi` on the negative real axis, according to the sign of the zero imaginary
+/// part.
+pub arg :: fn(z: Complex(f64)) -> f64 => math.atan2(z.im, z.re)
+
+/// The number with magnitude `r` and argument `theta`: `r*cos(theta) +
+/// r*sin(theta)*i`.
+pub from_polar :: fn(r, theta: f64) -> Complex(f64) =>
+    mk(r * math.cos(theta), r * math.sin(theta))
+
+/// The exponential `e^z`. On the real axis it is exact (`exp(x + 0i)` has the
+/// imaginary part of `z`), and a part whose true value is finite is not lost to
+/// an intermediate overflow of `e^x`.
+pub exp :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if y is 0.0 { return mk(math.exp(x), y) }
+    if x.is_nan() { return mk(x, math.nan) }
+    if x.is_inf() {
+        if x > 0.0 {
+            if y.is_inf() or y.is_nan() { return mk(x, math.nan) }
+            return mk(x * math.cos(y), x * math.sin(y))
+        }
+        if y.is_inf() or y.is_nan() { return mk(0.0, 0.0) }
+        return mk(math.copysign(0.0, math.cos(y)), math.copysign(0.0, math.sin(y)))
+    }
+    if y.is_inf() or y.is_nan() { return mk(math.nan, math.nan) }
+    c := math.cos(y)
+    s := math.sin(y)
+    if x > 709.0 {
+        // e^x alone would overflow: apply it in two halves.
+        t := math.exp(x * 0.5)
+        return mk((t * c) * t, (t * s) * t)
+    }
+    e := math.exp(x)
+    return mk(e * c, e * s)
+}
+
+/// The natural logarithm: `log|z| + arg(z)*i`. The logarithm of zero has the
+/// real part `-inf`. Near `|z| = 1` the real part is computed with `log1p`,
+/// so it keeps its relative accuracy there.
+pub log :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    m := math.hypot(x, y)
+    if m > 0.5 and m < 2.0 {
+        return mk(0.5 * math.log1p((x - 1.0) * (x + 1.0) + y * y), arg(z))
+    }
+    return mk(math.log(m), arg(z))
+}
+
+/// The principal square root, with `re >= 0`. It uses the stable formulas that
+/// avoid cancellation, and it does not overflow for large parts.
+pub sqrt :: fn(z: Complex(f64)) -> Complex(f64) {
+    a := z.re
+    b := z.im
+    if a is 0.0 and b is 0.0 { return mk(0.0, b) }
+    if b.is_inf() { return mk(math.inf, b) }
+    if a.is_nan() { return mk(a, math.nan) }
+    if a.is_inf() {
+        if a < 0.0 { return mk(0.0, math.copysign(a, b)) }
+        return mk(a, math.copysign(0.0, b))
+    }
+    scaled := false
+    if math.abs(a) >= 7.4e307 or math.abs(b) >= 7.4e307 {
+        a = a * 0.25
+        b = b * 0.25
+        scaled = true
+    }
+    re := 0.0
+    im := 0.0
+    if a >= 0.0 {
+        t := math.sqrt((a + math.hypot(a, b)) * 0.5)
+        re = t
+        im = b / (2.0 * t)
+    } else {
+        t := math.sqrt((-a + math.hypot(a, b)) * 0.5)
+        re = math.abs(b) / (2.0 * t)
+        im = math.copysign(t, b)
+    }
+    if scaled { return mk(re * 2.0, im * 2.0) }
+    return mk(re, im)
+}
+
+/// `z` raised to the power `w`, as `exp(w * log(z))`. `pow(z, 0)` is 1 for
+/// every `z`. For `z = 0` the result is 0 when `re(w) > 0`, infinite on the
+/// real axis when `w` is a negative real and NaN otherwise. Integer powers are
+/// not exact; multiply for small integral exponents.
+pub pow :: fn(z, w: Complex(f64)) -> Complex(f64) {
+    if w.re is 0.0 and w.im is 0.0 { return mk(1.0, 0.0) }
+    if z.re is 0.0 and z.im is 0.0 {
+        if w.re > 0.0 { return mk(0.0, 0.0) }
+        if w.re < 0.0 and w.im is 0.0 { return mk(math.inf, 0.0) }
+        return mk(math.nan, math.nan)
+    }
+    return exp(w * log(z))
+}
+
+/// The sine: `sin(x)cosh(y) + cos(x)sinh(y)*i` for `z = x + yi`.
+pub sin :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if x is 0.0 { return mk(x, math.sinh(y)) }
+    if y is 0.0 {
+        if x.is_inf() or x.is_nan() { return mk(math.nan, y) }
+        return mk(math.sin(x), math.cos(x) * y)
+    }
+    return mk(math.sin(x) * math.cosh(y), math.cos(x) * math.sinh(y))
+}
+
+/// The cosine: `cos(x)cosh(y) - sin(x)sinh(y)*i` for `z = x + yi`.
+pub cos :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if x is 0.0 { return mk(math.cosh(y), -(x * math.copysign(1.0, math.sinh(y)))) }
+    if y is 0.0 {
+        if x.is_inf() or x.is_nan() { return mk(math.nan, 0.0) }
+        return mk(math.cos(x), -(math.sin(x) * y))
+    }
+    return mk(math.cos(x) * math.cosh(y), -(math.sin(x) * math.sinh(y)))
+}
