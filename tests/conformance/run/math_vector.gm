@@ -1,0 +1,144 @@
+// Math vectors `#vec [N]T` (§5.6.3, §7.4.7, §21.3): construction, element-wise operators on
+// float and integer elements, scaling, compound assignment, methods, conversions, iteration,
+// indexing, comparison, hashing, formatting and constants.
+Vec2 :: #vec [2]f32
+Vec3 :: #vec [3]f32
+Vec4 :: #vec [4]f64
+IV3 :: #vec [3]i32
+UV4 :: #vec [4]u8
+LV3 :: #vec [3]i64
+
+Particle :: struct {
+    pos: Vec3
+    vel: Vec3
+    id: u32
+}
+
+K :: Vec3(1, 2, 3) * 2
+KN :: -Vec3(1, -2, 3)
+KD :: Vec3(1, 2, 3).dot(Vec3(4, 5, 6))
+
+reflect :: fn(d, n: Vec3) -> Vec3 => d - 2 * d.dot(n) * n
+
+lerp :: fn(a, b: Vec3, t: f32) -> Vec3 => a + (b - a) * t
+
+bump :: fn(p: ^Vec3) {
+    p^ += Vec3(fill: 1)
+}
+
+main :: fn() needs Out {
+    // Construction.
+    a := Vec3(1, 2, 3)
+    b := Vec3(fill: 0.5)
+    z := Vec3(fill: 0)
+    u: Vec3 = ---
+    u = Vec3(7, 8, 9)
+    print("{} {} {} {}\n", a, b, z, u)
+    print("{} {}\n", a.len, @size_of(Vec3))
+
+    // Float operators.
+    print("{} {} {}\n", a + b, a - b, a * b)
+    print("{} {}\n", a / Vec3(2, 4, 8), -a)
+    print("{} {} {}\n", a * 2, 2 * a, a / 2)
+    print("{} {}\n", a * 0.5, 1.5 * a)
+    print("{} {}\n", a * f32(3), f32(3) * a)
+
+    // Integer operators.
+    i := IV3(7, -7, 9)
+    j := IV3(2, 2, -4)
+    print("{} {} {}\n", i + j, i - j, i * j)
+    print("{} {} {}\n", i / j, i % j, -i)
+    print("{} {} {}\n", i & j, i | j, i ~ j)
+    print("{} {}\n", i << 2, i >> 1)
+    print("{} {} {}\n", ~i, i * 3, 3 * i)
+    print("{} {}\n", i / 2, i % IV3(4, 4, 4))
+    print("{} {}\n", i & IV3(fill: 6), i | IV3(fill: 8))
+
+    // Wrapping and saturating flavors.
+    w := UV4(250, 5, 255, 0)
+    print("{} {}\n", w +% UV4(fill: 10), w -% UV4(fill: 10))
+    print("{} {}\n", w *% UV4(fill: 2), w +| UV4(fill: 10))
+    print("{} {}\n", w -| UV4(fill: 10), w *| UV4(fill: 2))
+    print("{}\n", IV3(fill: 0) -% IV3(-2147483648, 5, 0))
+    print("{} {}\n", IV3(2147483647, 1, -1) +% IV3(fill: 1), IV3(-2147483648, 1, 0) -| IV3(fill: 1))
+
+    // Compound assignment: locals, array elements, struct fields and pointers.
+    c := Vec3(1, 2, 3)
+    c += Vec3(fill: 1)
+    c *= 3
+    c -= b
+    c /= 2
+    print("{}\n", c)
+    n := IV3(10, 20, 30)
+    n %= IV3(3, 7, 8)
+    n <<= 2
+    n |= IV3(1, 1, 1)
+    n ~= IV3(fill: 3)
+    n &= IV3(fill: 14)
+    n >>= 1
+    n +%= IV3(fill: 100)
+    n *= 2
+    print("{}\n", n)
+    arr := [2]Vec3(Vec3(1, 1, 1), Vec3(2, 2, 2))
+    arr[1] += arr[0]
+    arr[0] *= 4
+    print("{} {}\n", arr[0], arr[1])
+    p := Particle(pos: Vec3(0, 0, 0), vel: Vec3(1, 2, 3), id: 9)
+    p.pos += p.vel * 2
+    p.vel /= 2
+    print("{} {} {}\n", p.pos, p.vel, p.id)
+    pp := &p
+    pp.pos -= Vec3(fill: 1)
+    bump(&p.vel)
+    print("{} {}\n", p.pos, p.vel)
+
+    // Methods.
+    print("{} {}\n", a.dot(Vec3(4, 5, 6)), KD)
+    print("{} {}\n", Vec3(1, 0, 0).cross(Vec3(0, 1, 0)), Vec3(0, 1, 0).cross(Vec3(1, 0, 0)))
+    print("{} {}\n", IV3(1, 2, 3).cross(IV3(4, 5, 6)), IV3(1, 2, 3).dot(IV3(4, -5, 6)))
+    print("{} {}\n", Vec2(3, 4).norm(), Vec3(2, 3, 6).norm())
+    print("{}\n", Vec4(1, 1, 1, 1).norm())
+    print("{} {}\n", a.min(Vec3(2, 1, 5)), a.max(Vec3(2, 1, 5)))
+    print("{} {}\n", Vec3(-1, 2, -3).abs(), IV3(-5, 5, 0).abs())
+    print("{} {}\n", IV3(1, 9, 3).min(IV3(4, 4, 4)), IV3(1, 9, 3).max(IV3(4, 4, 4)))
+    print("{}\n", reflect(Vec3(1, -1, 0), Vec3(0, 1, 0)))
+    print("{}\n", lerp(Vec3(0, 0, 0), Vec3(10, 20, 30), 0.25))
+    print("{} {} {}\n", K, KN, K.dot(K))
+
+    // Conversions.
+    arr3 := [3]f32(1, 2, 3)
+    va := Vec3(arr3)
+    back := [3]f32(va * 2)
+    print("{} {}\n", va, back)
+    iv := IV3(1, -2, 3)
+    print("{} {}\n", LV3(iv), #vec [3]f64(iv))
+    print("{}\n", #vec [3]f64(Vec3(0.5, 1, 2)))
+    print("{}\n", Vec4(Vec4(1, 2, 3, 4)))
+
+    // Iteration and indexing.
+    sum: f32 = 0
+    for x in a {
+        sum += x
+    }
+    print("{}\n", sum)
+    for k, x in enumerate(iv) {
+        print("{}:{} ", k, x)
+    }
+    print("\n")
+    idx: usize = 2
+    a[idx] = 30
+    a[0] = a[1] * 5
+    print("{} {} {}\n", a, a[idx], a[1])
+
+    // Comparison, `is`, hashing.
+    print("{} {} {}\n", Vec3(1, 2, 3) is Vec3(1, 2, 3), Vec3(1, 2, 3) is Vec3(1, 2, 4), Vec3(1, 2, 3) is not Vec3(1, 2, 4))
+    nan := Vec2(0.0 / 0.0, 1)
+    print("{} {}\n", nan is nan, nan is not nan)
+    print("{} {}\n", @hash(IV3(1, 2, 3), 0) is @hash(IV3(1, 2, 3), 0), @hash(IV3(1, 2, 3), 0) is @hash(IV3(3, 2, 1), 0))
+    if iv is IV3(1, -2, 3) {
+        print("equal\n")
+    }
+
+    // Formatting.
+    print("{}\n", Vec2(1.5, -2.25))
+}

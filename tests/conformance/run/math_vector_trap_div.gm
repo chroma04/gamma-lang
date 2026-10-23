@@ -1,0 +1,10 @@
+//! exit: 134
+//! stderr
+// An integer division by zero in one element of a math vector traps (§7.4.7, §7.4.1).
+IV3 :: #vec [3]i32
+
+main :: fn() needs Out {
+    v := IV3(10, 20, 30)
+    d := IV3(5, 0, 5)
+    print("{}\n", v / d)
+}
