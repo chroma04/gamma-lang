@@ -354,14 +354,20 @@ pub temp_dir :: fn() -> string needs Env {
     }
 }
 
+// Whether `c` separates the parts of a path: `/`, and on Windows also `\`.
+is_sep :: fn(c: u8) -> bool {
+    when target.os is .Windows { return c is '/' or c is '\\' }
+    return c is '/'
+}
+
 // Writes `dir`, a separator (unless `dir` is empty or ends with one) and `prefix` to the
 // start of `buf`, and returns the length used; null if that and 16 more bytes do not fit,
 // or if `prefix` has a separator in it.
 temp_stem :: fn(dir, prefix: string, buf: []u8) -> ?usize {
     for c in prefix {
-        if c is '/' { return null }
+        if is_sep(c) { return null }
     }
-    sep: usize = if dir.len > 0 and dir[dir.len - 1] is not '/' { 1 } else { 0 }
+    sep: usize = if dir.len > 0 and not is_sep(dir[dir.len - 1]) { 1 } else { 0 }
     n := dir.len + sep + prefix.len
     if n + 16 > buf.len { return null }
     buf[0..dir.len].copy_from(dir)
@@ -386,7 +392,8 @@ temp_random :: fn(buf: []u8, at: usize) needs Rand {
 /// to the start of `buf` and returned as the used part. The file is created exclusively, so
 /// an existing file is never opened; a name that is taken is replaced by a new random one,
 /// up to 16 times, and then the result is `.AlreadyExists`. A `buf` shorter than
-/// `dir.len + prefix.len + TEMP_EXTRA` bytes, or a `prefix` with a `/` in it, gives
+/// `dir.len + prefix.len + TEMP_EXTRA` bytes, or a `prefix` with a separator in it (`/`, and
+/// on Windows also `\`), gives
 /// `.InvalidInput` and creates nothing. The caller closes the file and removes it.
 pub create_temp :: fn(dir, prefix: string, buf: []u8) -> IoError!(file: File, path: string) needs Fs + Rand {
     n := temp_stem(dir, prefix, buf) else return !.InvalidInput
