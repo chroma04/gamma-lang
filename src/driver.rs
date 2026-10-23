@@ -151,10 +151,13 @@ pub fn dump_tokens(sources: &SourceMap, tokens: &[Token]) -> String {
                     None => writeln!(out, "{} {}", kind, l.value),
                 }
             }
-            TokenKind::Float(l) => match l.suffix {
-                Some(s) => writeln!(out, "float {} {:?}", l.value, s),
-                None => writeln!(out, "float {}", l.value),
-            },
+            TokenKind::Float(l) => {
+                let kind = if l.imag { "imag" } else { "float" };
+                match l.suffix {
+                    Some(s) => writeln!(out, "{} {} {:?}", kind, l.value, s),
+                    None => writeln!(out, "{} {}", kind, l.value),
+                }
+            }
             TokenKind::Str(s) => writeln!(out, "str {:?} {}", s.kind, escape_bytes(&s.bytes)),
             TokenKind::Intrinsic(s) => writeln!(out, "intrinsic @{}", s),
             TokenKind::Attribute(s) => writeln!(out, "attribute #{}", s),

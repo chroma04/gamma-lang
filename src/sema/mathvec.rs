@@ -7,7 +7,7 @@
 //! operator's span. A complex operator becomes a call of a function of `core/complex`.
 
 use super::func::{FnCx, LocalBinding, error_expr};
-use super::infer::Fallback;
+use super::infer::{Fallback, VarKind};
 use super::{ModuleId, Sema};
 use crate::source::Span;
 use crate::syntax::ast::{self, ArgKind};
@@ -30,14 +30,21 @@ pub fn math_vector_shape_error(len: u64, elem: Ty) -> Option<String> {
 }
 
 impl<'s> Sema<'s> {
-    /// `T` if `t` is `Complex(T)` (§5.3.1).
-    pub fn complex_of(&mut self, t: Ty) -> Option<Ty> {
-        let TyKind::Adt(id, args) = t.kind() else { return None };
+    /// The generic struct `Complex` of the core library (§5.3.1).
+    pub fn complex_template(&mut self) -> Option<crate::types::AdtId> {
         let name = crate::symbol::Symbol::intern("Complex");
         let d = self.prelude.and_then(|p| self.modules[p.0 as usize].scope.get(&name).copied())?;
         match self.resolve_decl(d) {
-            super::DeclValue::GenericType(template) if template == id.template() => {}
-            _ => return None,
+            super::DeclValue::GenericType(template) => Some(template),
+            _ => None,
+        }
+    }
+
+    /// `T` if `t` is `Complex(T)` (§5.3.1).
+    pub fn complex_of(&mut self, t: Ty) -> Option<Ty> {
+        let TyKind::Adt(id, args) = t.kind() else { return None };
+        if self.complex_template() != Some(id.template()) {
+            return None;
         }
         match args.first() {
             Some(crate::types::GenericArg::Type(e)) => Some(*e),
@@ -72,16 +79,136 @@ impl<'a, 's> FnCx<'a, 's> {
     /// True if `t` (resolved) is a math vector or a complex number.
     pub fn is_compound_number(&mut self, t: Ty) -> bool {
         let t = self.infer.resolve(t);
-        t.is_math_vector() || self.sema.complex_of(t).is_some()
+        t.is_math_vector() || self.sema.complex_of(t).is_some() || self.is_complex_var(t)
+    }
+
+    /// True if `t` is the still unresolved type of an imaginary literal (§6.1).
+    pub fn is_complex_var(&mut self, t: Ty) -> bool {
+        self.infer.var_kind(t) == Some(VarKind::Complex)
+    }
+
+    /// An operand's type for a diagnostic: `T`, or what kind of untyped number it is.
+    fn describe_operand(&mut self, t: Ty) -> String {
+        match self.infer.var_kind(t) {
+            Some(VarKind::Int) => "an untyped integer".into(),
+            Some(VarKind::Float) => "an untyped float".into(),
+            Some(VarKind::Complex) => "an untyped complex number".into(),
+            None => format!("`{}`", self.infer.resolve(t)),
+        }
+    }
+
+    /// `4j`, `2.5j32`: an untyped complex constant whose real part is zero (§2.5.2).
+    pub fn imaginary_literal(&mut self, l: &crate::syntax::token::FloatLit, span: Span) -> Expr {
+        use crate::syntax::token::FloatSuffix;
+        let ty = match l.suffix {
+            Some(s) => {
+                let part = match s {
+                    FloatSuffix::F16 => Ty::intern(TyKind::Float(crate::types::FloatTy::F16)),
+                    FloatSuffix::F32 => Ty::intern(TyKind::Float(crate::types::FloatTy::F32)),
+                    FloatSuffix::F64 => Ty::f64(),
+                };
+                match self.sema.complex_template() {
+                    Some(c) => self.sema.instantiate_adt(c, vec![part]),
+                    None => Ty::error(),
+                }
+            }
+            None => self.literal_var(VarKind::Complex),
+        };
+        if self.infer.complex.is_none() && !ty.is_error() {
+            self.literal_var(VarKind::Complex);
+        }
+        let parts = (num_traits::Zero::zero(), l.value.clone());
+        mk(ty, tir::ExprKind::UntypedComplex(std::rc::Rc::new(parts)), span)
+    }
+
+    /// True if `e` is made of constants with operators and mentions a complex constant, so
+    /// that it is an untyped complex constant expression to evaluate exactly (§6.2).
+    pub fn mentions_complex_constant(&mut self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::Float(l) => l.imag,
+            ast::ExprKind::Paren(inner) | ast::ExprKind::Unary { operand: inner, .. } => {
+                self.mentions_complex_constant(inner)
+            }
+            ast::ExprKind::Binary { lhs, rhs, .. } => {
+                self.mentions_complex_constant(lhs) || self.mentions_complex_constant(rhs)
+            }
+            ast::ExprKind::Ident(_) | ast::ExprKind::Field { .. } => {
+                matches!(self.try_untyped(e), Some(Ok(super::untyped::Untyped::Complex(..))))
+            }
+            _ => false,
+        }
+    }
+
+    /// Gives the types of imaginary literals among the operands of `op` (§6.1): from a
+    /// complex operand, from a float scalar that scales them, else their fallback.
+    fn settle_complex_operands(&mut self, op: ast::BinOp, lhs: &Expr, r: &Expr, span: Span) {
+        let (lc, rc) = (self.is_complex_var(lhs.ty), self.is_complex_var(r.ty));
+        if !lc && !rc {
+            return;
+        }
+        if lc && rc {
+            let _ = self.infer.unify(lhs.ty, r.ty);
+        }
+        for (var, other, var_left) in [(lhs.ty, r.ty, true), (r.ty, lhs.ty, false)] {
+            if !self.is_complex_var(var) {
+                continue;
+            }
+            let other = self.infer.resolve(other);
+            if self.sema.complex_of(other).is_some() {
+                let _ = self.infer.unify(var, other);
+            } else if (other.is_float() || matches!(other.kind(), TyKind::Param(_)))
+                && (matches!(op, ast::BinOp::Mul(_)) || (op == ast::BinOp::Div && var_left))
+                && let Some(c) = self.sema.complex_template()
+            {
+                // `x * 2j` with `x: f32` is a `Complex(f32)`.
+                let t = self.sema.instantiate_adt(c, vec![other]);
+                let _ = self.infer.unify(var, t);
+            }
+        }
+        for t in [lhs.ty, r.ty] {
+            if self.is_complex_var(t) {
+                self.settle(t, span);
+            }
+        }
+    }
+
+    /// A real untyped constant beside a complex number of type `agg`, as that complex
+    /// number with a zero imaginary part (§7.4.7), or `None` if `v` is not one.
+    pub fn promote_real_constant(&mut self, v: &Expr, agg: Ty, elem: Ty) -> Option<Expr> {
+        if !matches!(v.kind, tir::ExprKind::Int(_) | tir::ExprKind::UntypedFloat(_))
+            || !matches!(self.infer.var_kind(v.ty), Some(VarKind::Int | VarKind::Float))
+        {
+            return None;
+        }
+        self.infer.unify(v.ty, elem).ok()?;
+        let zero = mk(elem, tir::ExprKind::UntypedFloat(std::rc::Rc::new(num_traits::Zero::zero())), v.span);
+        Some(mk(agg, tir::ExprKind::Aggregate(vec![v.clone(), zero]), v.span))
     }
 
     /// `lhs op rhs` where an operand is a math vector or a complex number (§7.4.7). Both
     /// operands are checked; `lhs` is evaluated first.
     pub fn compound_number_binary(&mut self, op: ast::BinOp, lhs: Expr, r: Expr, span: Span) -> Expr {
         use ast::BinOp as B;
-        let (lt, rt) = (self.infer.resolve(lhs.ty), self.infer.resolve(r.ty));
+        let (mut lhs, mut r) = (lhs, r);
+        self.settle_complex_operands(op, &lhs, &r, span);
+        let (mut lt, mut rt) = (self.infer.resolve(lhs.ty), self.infer.resolve(r.ty));
         if lt.is_error() || rt.is_error() {
             return error_expr(span);
+        }
+        // `z + 1`, `1 - z`, `1 / z`: a real constant is a complex number (§7.4.7).
+        if matches!(op, B::Add(ast::Flavor::Checked) | B::Sub(ast::Flavor::Checked) | B::Div) {
+            if let Some(elem) = self.sema.complex_of(lt)
+                && op != B::Div
+                && let Some(p) = self.promote_real_constant(&r, lt, elem)
+            {
+                r = p;
+                rt = lt;
+            } else if let Some(elem) = self.sema.complex_of(rt)
+                && let Some(p) = self.promote_real_constant(&lhs, rt, elem)
+            {
+                lhs = p;
+                lt = rt;
+            }
         }
         let (agg, left_is_agg) = if self.is_compound_number(lt) { (lt, true) } else { (rt, false) };
         let elem = self.sema.compound_number_elem(agg).expect("a compound number operand");
@@ -143,19 +270,21 @@ impl<'a, 's> FnCx<'a, 's> {
             if !scales {
                 let hint = match op {
                     B::Div => "; divide by a scalar on the right".to_string(),
+                    B::Add(_) | B::Sub(_) if complex => "; only a real constant is added to a complex number \
+                         (§7.4.7): write a variable `x` as `Complex(T)(re: x, im: 0)`"
+                        .to_string(),
                     B::Add(_) | B::Sub(_) => {
                         format!("; a scalar is not added to {} (§7.4.7): write the other operand as one", what)
                     }
                     _ => String::new(),
                 };
-                let shown = |t: Ty| if t.has_infer() { "a literal".to_string() } else { format!("`{}`", t) };
-                let (l, r) = (shown(lt), shown(rt));
+                let (l, r) = (self.describe_operand(lt), self.describe_operand(rt));
                 self.error(span, format!("`{}` takes two `{}`, not {} and {}{}", op.as_str(), agg, l, r, hint));
                 return error_expr(span);
             }
             if self.infer.unify(other, elem).is_err() {
                 let other = self.infer.resolve(other);
-                let shown = if other.has_infer() { "this literal".to_string() } else { format!("`{}`", other) };
+                let shown = self.describe_operand(other);
                 let msg =
                     format!("`{}` scales `{}` by its element type `{}`, not by {}", op.as_str(), agg, elem, shown);
                 self.error(span, msg);
@@ -216,6 +345,9 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// A unary operator on a math vector or complex number `v` (§7.4.7).
     pub fn compound_number_unary(&mut self, op: ast::UnOp, v: Expr, span: Span) -> Expr {
+        if self.is_complex_var(v.ty) {
+            self.settle(v.ty, span);
+        }
         let vt = self.infer.resolve(v.ty);
         if vt.is_error() {
             return error_expr(span);

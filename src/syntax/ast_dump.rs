@@ -384,7 +384,7 @@ impl Dumper {
                 if let Some(s) = l.suffix {
                     v.push(atom(float_suffix(s)));
                 }
-                node("float", v)
+                node(if l.imag { "imag" } else { "float" }, v)
             }
             ExprKind::Str(s) => str_lit(s),
             ExprKind::Bool(b) => node("bool", vec![atom(b.to_string())]),

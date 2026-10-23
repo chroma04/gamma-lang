@@ -1,0 +1,8 @@
+4:1 imag 4
+4:4 imag 5/2 F32
+4:11 imag 1/1000 F64
+4:19 imag 7 F16
+4:24 imag 0
+4:27 imag 1000
+4:33 newline
+5:1 eof

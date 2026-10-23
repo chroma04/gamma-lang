@@ -40,6 +40,7 @@ const ASSIGN_OPS = [
 
 const INT_SUFFIX = /(u|i)[1-9][0-9]*|usize|isize/;
 const FLOAT_SUFFIX = /f16|f32|f64/;
+const IMAG_SUFFIX = /j(16|32|64)?/;
 
 /** @param {RuleOrLiteral} rule */
 function commaSep1(rule) {
@@ -299,6 +300,7 @@ module.exports = grammar({
       $.discard,
       $.integer_literal,
       $.float_literal,
+      $.imaginary_literal,
       $._string,
       $.character_literal,
       $.boolean_literal,
@@ -793,6 +795,14 @@ module.exports = grammar({
       seq(/[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*/, optional(FLOAT_SUFFIX)),
       seq(/[0-9][0-9_]*/, FLOAT_SUFFIX),
       seq(/0x[0-9a-fA-F][0-9a-fA-F_]*/, optional(seq('.', /[0-9a-fA-F][0-9a-fA-F_]*/)), 'p', optional(/[+-]/), /[0-9][0-9_]*/, optional(FLOAT_SUFFIX)),
+    )),
+
+    // `4j`, `2.5j32`: a complex number whose real part is zero.
+    imaginary_literal: _ => token(seq(
+      /[0-9][0-9_]*/,
+      optional(/\.[0-9][0-9_]*/),
+      optional(/[eE][+-]?[0-9][0-9_]*/),
+      IMAG_SUFFIX,
     )),
   },
 });

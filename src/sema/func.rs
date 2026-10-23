@@ -1729,6 +1729,10 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// The type of a fresh variable for an untyped literal.
     pub fn literal_var(&mut self, kind: VarKind) -> Ty {
+        if kind == VarKind::Complex && self.infer.complex.is_none() {
+            self.infer.complex =
+                self.sema.complex_template().map(|c| (c, self.sema.instantiate_adt(c, vec![Ty::f64()])));
+        }
         self.infer.new_var(kind)
     }
 }

@@ -757,6 +757,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             | ExprKind::IntLimit { .. }
             | ExprKind::TypeName { .. }
             | ExprKind::UntypedFloat(_)
+            | ExprKind::UntypedComplex(_)
             | ExprKind::ValueParam(_) => unsupported(e.span, "an expression left over from generic checking"),
         }
     }
@@ -2146,6 +2147,7 @@ fn no_writes(e: &Expr) -> bool {
             | ExprKind::IntLimit { .. }
             | ExprKind::TypeName { .. }
             | ExprKind::UntypedFloat(_)
+            | ExprKind::UntypedComplex(_)
             | ExprKind::Bool(_)
             | ExprKind::Str(_)
             | ExprKind::CStr(_)

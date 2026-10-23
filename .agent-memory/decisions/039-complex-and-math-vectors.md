@@ -31,6 +31,22 @@ Rejections recorded in spec C.8. User: "work on complex numbers and vectors firs
   rhs compound → scalar-left), neg_expr/bit_not_expr, methods.rs collection_method,
   construct.rs conversions, vector.rs vector_type accepts `#vec`.
 
+## Imaginary literals (s35, user chose `j` + `jN`)
+- `4j`, `2.5j`, `1e-3j`; `j16/j32/j64` fix the part type (N = part width, like fN).
+  Decimal only. Lexer: FloatLit.imag flag (no new token/AST kind); dump says `imag`.
+- Inference: VarKind::Complex (InferTable.complex = (template, Complex(f64)) set lazily
+  in literal_var); fallback Complex(f64). settle_complex_operands: unify with a complex
+  operand, `x * 2j` with float x → Complex(T), else settle at the operator.
+- Untyped::Complex(re, im) exact (zero parts unsigned); FnCx::expr folds any Binary/Neg
+  that mentions_complex_constant via try_untyped → TIR UntypedComplex → finalize makes
+  Aggregate of rounded parts (UntypedFloat kept at a Param T).
+- Real constant promotion (promote_real_constant: Int/UntypedFloat TIR with Int/Float var):
+  coerce sites, `+ -`, left of `/`, `is`. Real variables never convert. C.8 row rewritten
+  (scalar add rejected for #vec only) + row rejecting suffix `i`.
+- Spec: §2.5.2 paragraph (not a new §2.5.3, to avoid renumbering), §6.1, §6.2, §6.4 row,
+  §5.3.1 Values bullet, §7.4.7. Grammars: TextMate constant.numeric.imaginary, tree-sitter
+  imaginary_literal node. Tests: lex/imaginary(+errors), run/imaginary, check/complex_errors.
+
 ## Delivered
 std/complex (lib/std/complex: arg, from_polar, exp, log, sqrt, pow, sin, cos; Annex G
 deviations in its //! doc), conformance tests, guide 04-types, examples nbody/julia.

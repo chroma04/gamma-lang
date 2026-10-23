@@ -234,6 +234,15 @@ float_suffix = 'f16' | 'f32' | 'f64'
 
 Both sides of the `.` are required (`1.` and `.5` are not float literals). This keeps `1..10` a range and `x.0` a field access. A decimal integer with a float suffix is a float literal (`1f32` is `1.0f32`); in a hexadecimal literal `f` is a digit, so `0x1f32` is the integer `0x1f32`. A hexadecimal float needs the `p` exponent but not a fraction (`0x1p4` is 16.0); in a hexadecimal literal a `.` begins a fraction only when hex digits and a `p` exponent follow, so `0xFF.abs()` is a member access on an integer. The value of a float literal is an exact rational number; it is rounded only when it receives a type (§6.1).
 
+**Imaginary literals.** A decimal integer or float literal followed by `j`, `j16`, `j32` or `j64` is an **imaginary literal**: a complex number (§5.3.1) whose real part is zero and whose imaginary part is the literal's value.
+
+```
+imag_lit    = ( dec_lit | dec_lit '.' dec_lit [ exponent ] | dec_lit exponent ) imag_suffix
+imag_suffix = 'j' | 'j16' | 'j32' | 'j64'
+```
+
+`jN` fixes the type to `Complex(fN)`: `2j32` is a `Complex(f32)`. Without a width the literal is untyped and takes its type by literal inference (§6.1). `j` follows a decimal literal only (`0x1j` is ill-formed) and replaces a float suffix (`1.5f32j` is ill-formed). There is no implicit multiplication, so `2j` is never `2 * j`.
+
 #### 2.5.3 Character literals
 
 `'c'` is an **integer literal** whose value is the Unicode code point of `c`. `c` is a single Unicode scalar value or one escape sequence (§2.5.5). `''` is ill-formed. A character literal is untyped and receives its type like any integer literal; `'€'` (U+20AC) does not fit `u8` and is a compile error at type `u8`, while `'é'` (U+00E9) fits.
@@ -599,16 +608,20 @@ Complex :: struct(T: type) where Float(T) { pub re, im: T }
 C64 :: Complex(f64)
 
 mandelbrot_steps :: fn(c: C64, limit: u32) -> u32 {
-    z := C64(re: 0, im: 0)
+    z: C64 = 0
     for n in 0..limit {
         if z.abs() > 2 { return n }
         z = z * z + c
     }
     return limit
 }
+
+ROOT :: -0.5 + 0.5j                    // an untyped complex constant (§6.2)
+steps := mandelbrot_steps(ROOT, 100)
 ```
 
-- **A struct in every other respect.** It is constructed by name (`C64(re: 1, im: -2)`), its parts are fields (`z.im = 0`), and `is`, `@hash` and formatting are those of a struct (§7.6, §16.8, §21.6.1): `is` compares the parts as floats. It is not ordered. There is no imaginary literal: `2i` would read too much like `2i8`.
+- **Values.** Constants are written with imaginary literals (§2.5.2): `3 + 4j` is one untyped complex constant, `1.5j32` a `Complex(f32)`. A value made of run-time parts is constructed by name: `C64(re: x, im: y)`. A real constant is a complex number where one is expected (§6.4) and beside one in `+`, `-`, `/` and `is` (§7.4.7): `z: C64 = 1`, `z + 1`, `1 / z`, `z is 0`. A real *variable* does not convert implicitly.
+- **A struct in every other respect.** Its parts are fields (`z.im = 0`), and `is`, `@hash` and formatting are those of a struct (§7.6, §16.8, §21.6.1): `is` compares the parts as floats. It is not ordered.
 - **Layout.** That of the struct: `re`, then `im`, aligned as `T`. This is the layout of C's `float _Complex` and `double _Complex`, and since a struct of two floats is classified like them on the x86-64 System V and AArch64 ABIs, `Complex(f32)` and `Complex(f64)` may stand for them in foreign signatures there (§19.1).
 - **Methods** (functions of its core module, §7.10): `z.conj()` is `re - im·i`; `z.abs()` is \|z\| = √(re² + im²), computed as C's `hypot` is, without overflow or underflow in intermediate steps (not necessarily correctly rounded). The functions of complex analysis (`exp`, `log`, `sqrt`, `pow`, polar form) are in `std/complex`.
 - **In generic code** `Complex(T)` needs `Float(T)` (§16.4), and its operators are available wherever the type is.
@@ -886,9 +899,9 @@ A type is **plain-data** if every bit pattern of its size is a valid value: inte
 
 ### 6.1 Typing literals
 
-An integer, float or character literal without a suffix is **untyped**: it denotes an exact number, and its type is determined by **literal inference** within the enclosing function body (or the enclosing top-level declaration).
+An integer, float, imaginary or character literal without a suffix is **untyped**: it denotes an exact number, and its type is determined by **literal inference** within the enclosing function body (or the enclosing top-level declaration).
 
-**Literal inference.** Each untyped literal *L* is given a fresh type variable α\_L, restricted to integer types (for integer and character literals) or to numeric types (for float literals: float types only). Type variables are unified with each other and with concrete types by the ordinary typing rules, wherever a type equality is required:
+**Literal inference.** Each untyped literal *L* is given a fresh type variable α\_L, restricted to integer types (for integer and character literals), to numeric types (for float literals: float types only), or to complex types `Complex(T)` (for imaginary literals and the untyped complex constants of §6.2). Type variables are unified with each other and with concrete types by the ordinary typing rules, wherever a type equality is required:
 
 - a variable binding `x := L` gives `x` the type α\_L, so later uses of `x` constrain it (an immutable `x :: L` is an untyped constant instead, §6.2);
 - the two operands of a binary operator (other than a shift), the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
@@ -896,12 +909,14 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
 - a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
-Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable and `f64` for a float variable. A few constructs need a variable's type while the body is still being checked, and there the variable takes its fallback early, from the constraints met so far: `@type_of` (§20.3), an intrinsic whose operation depends on the type a pointer points to (`@atomic_add(&x, …)`, `@volatile_load`), a format argument whose placeholder has a spec (`{:x}`, §21.6.1; `{}` formats by the final type), the handler value of `with` (§12.7), `expect_eq` (§21.6) and a type parameter that only literals determine (§16.2). Later uses must then agree with that type, and the program is rejected, not reinterpreted, wherever the whole-body rule would have chosen differently: `x := 0; T :: @type_of(x); y: u8 = x` is an error because `x` is already `i32`, and so is `n := 0; print("{:x}", n); for i in 0..n { … }`, where the range bound would have made `n` a `usize`. The error names the place that fixed the type; annotating the variable (`n: usize = 0`) resolves it. Then each literal is checked against its final type:
+Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable, `f64` for a float variable and `Complex(f64)` for a complex variable. A few constructs need a variable's type while the body is still being checked, and there the variable takes its fallback early, from the constraints met so far: `@type_of` (§20.3), an intrinsic whose operation depends on the type a pointer points to (`@atomic_add(&x, …)`, `@volatile_load`), a format argument whose placeholder has a spec (`{:x}`, §21.6.1; `{}` formats by the final type), the handler value of `with` (§12.7), `expect_eq` (§21.6) and a type parameter that only literals determine (§16.2). Later uses must then agree with that type, and the program is rejected, not reinterpreted, wherever the whole-body rule would have chosen differently: `x := 0; T :: @type_of(x); y: u8 = x` is an error because `x` is already `i32`, and so is `n := 0; print("{:x}", n); for i in 0..n { … }`, where the range bound would have made `n` a `usize`. The error names the place that fixed the type; annotating the variable (`n: usize = 0`) resolves it. Then each literal is checked against its final type:
 
 - An integer literal must be exactly representable in its type. If the type is a float type, the integer must convert exactly.
 - A float literal at a float type is rounded to nearest-even; it is a compile error if the result is infinite. A float literal can never have an integer type (`3.0` cannot be an `i32`).
 
-A suffix (`200u8`, `1.5f32`) fixes the type directly.
+A complex variable that meets a `Complex(T)` takes that type, and one that a float `x: T` scales (`x * 2j`) becomes `Complex(T)`; where an operator needs the type of a complex variable that nothing else fixes (`z := 2j; w := z * z`), it takes its fallback there. An untyped complex constant at `Complex(T)` has each part rounded to `T` as a float literal is.
+
+A suffix (`200u8`, `1.5f32`, `2j32`) fixes the type directly.
 
 ```
 count := 0                     // usize: fixed by the comparison below
@@ -925,7 +940,7 @@ PI   :: 3.14159265358979323846
 TAU  :: 2 * PI
 ```
 
-Its value is computed exactly (integers are unbounded in principle, but an integer, or the numerator or denominator of a rational, of more than 2^22 bits is a compile error; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). A float value also has a sign when it is zero, as in IEEE arithmetic: unary `-` flips it, so `-0.0` is negative zero; a product or quotient whose exact value is zero is negative when exactly one operand is negative (counting negative zero); a sum or difference whose exact value is zero is negative zero only when it is `-0.0 + -0.0` or `-0.0 - 0.0`. Comparisons treat both zeros as equal. Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
+Its value is computed exactly (integers are unbounded in principle, but an integer, or the numerator or denominator of a rational, of more than 2^22 bits is a compile error; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). A float value also has a sign when it is zero, as in IEEE arithmetic: unary `-` flips it, so `-0.0` is negative zero; a product or quotient whose exact value is zero is negative when exactly one operand is negative (counting negative zero); a sum or difference whose exact value is zero is negative zero only when it is `-0.0 + -0.0` or `-0.0 - 0.0`. Comparisons treat both zeros as equal. An imaginary literal makes a **complex value**, an exact pair of rationals; mixing it with an integer or float value takes that value as its real part, and `+ - * /`, unary `-`, `is` and `is not` apply to complex values with the formulas of exact complex arithmetic (division by zero is an error, as is any other operator). The zero parts of a complex value have no sign. The same rules evaluate a constant expression that mentions an imaginary literal wherever it appears, so `3 + 4j` is one untyped complex constant even inside an expression. Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
 
 Untyped constants are permitted at top level and as locals. A typed constant is written `MAX: usize : 4096`.
 
@@ -945,6 +960,7 @@ Gamma has no implicit conversions between different numeric types in expressions
 | `uN`, N ≤ 32 | `usize` | see note |
 | `uN`, N ≤ 31; `iN`, N ≤ 32 | `isize` | see note |
 | `fN` | `fM`, M > N | exact |
+| a real untyped constant | `Complex(T)` | the constant as the real part, the imaginary part zero (§5.3.1) |
 | `T` | `?T` | wrap present |
 | `T` | `E!T` | wrap success |
 | `never` | any | |
@@ -1103,7 +1119,7 @@ On vectors (§5.6.2) every operator applies lane by lane, with the rules and che
 `/` and `%` on integer lanes do not exist: no target divides integer lanes in one instruction, so the cost would be hidden (P2); divide lanes one by one. The `?` flavors do not exist, since a lane cannot be absent, and `and`, `or`, `not` and `in` take `bool` values, not masks: combine masks with `&`, `|` and `~`. `is` and `is not` compare whole vectors (§7.6); lanes are compared by the `lanes_*` methods (§5.6.2), so that a word always gives `bool` (§1).
 #### 7.4.7 Complex and math-vector operators
 
-On complex numbers (§5.3.1) and math vectors (§5.6.3), the operands of `+`, `-`, `*` and `/` have the same type, except that `*` also takes a scalar of the element type on either side and `/` one on the right (an untyped literal takes the element type: `2 * v`, `z / 2`).
+On complex numbers (§5.3.1) and math vectors (§5.6.3), the operands of `+`, `-`, `*` and `/` have the same type, except that `*` also takes a scalar of the element type on either side and `/` one on the right (an untyped literal takes the element type: `2 * v`, `z / 2`). Beside a complex number, a real untyped constant in `+`, `-`, on the left of `/`, or in `is` and `is not`, is a complex number with a zero imaginary part (`z + 1`, `1 / z`, `z is 0`); a real constant on the right of `/` or either side of `*` is the scalar (`z / 2`).
 
 **Math vectors** apply each operator element by element, with the rules and checks of the scalar operator for each element (§7.4.1–§7.4.5), and give the math vector type: `+ - *` and their `%` and `|` flavors, unary `-`, `/` and `%`, and for integer elements the bitwise operators and shifts by one scalar amount. A scalar operand of `*` or `/` takes part in every element's operation. The `?` flavors do not exist, since an element cannot be absent.
 
@@ -3525,7 +3541,8 @@ The first four already exist, each with its cost and its code visible where it i
 | Fibers that migrate between threads (a `Send`-like rule) | P1, P5 | values own nothing, so no rule on types can tell whether the memory a fiber reaches is shared with its old thread; and its handlers live on that thread (§14.9). Threads exchange data explicitly (§19.6) |
 | Matrix types with a `*` that multiplies them | P2, P4 | `*` would be a matrix product on matrices and an element-wise product on math vectors; an `M×N` product costs `M·N·K` multiplications behind one sigil; storage order and the algorithms of inversion are policies. A library type built on math vectors (§5.6.3) states them |
 | Quaternion types | admission (§1) | no word asks for them, and nothing they would replace is broken; `p / q` would have to choose between `p·q⁻¹` and `q⁻¹·p`. A library type over `#vec [4]T` serves them |
-| A scalar added to a complex number or math vector (`z + 1`, `v + 1`) | P4 | adding a number to every element is not an operation of the vector space; `*` and `/` by a scalar are |
+| A scalar added to a math vector (`v + 1`) | P4 | adding a number to every element is not an operation of the vector space; `*` and `/` by a scalar are. (Complex numbers differ: the real numbers are among them, so a real constant is a complex number, §7.4.7; a real *variable* still converts only explicitly) |
+| An imaginary suffix `i` (`2i`) | P4 | `2i` is one character from the integer `2i8`; `j` is free, and `jN` fixes the part type as `fN` does for floats |
 | Arithmetic on arrays of any length up to some bound | P4 | an arbitrary cliff (`[4]f32` adds, `[5]f32` does not); math vectors are marked, so a reader sees which arrays have arithmetic |
 | Relational constraints over several types (`Contains(C, T)`, `Iterable(C, T)`), to make `in` or `for` generic over containers | P5, one feature per job | with no traits (C.6) a relation can only cover built-in types, where it buys little: a generic body that scans takes the elements as a slice or an iterator, and one that tests membership takes a predicate. Opening it to library containers needs associated types and implementations found by type — the trait machinery C.6 omits |
 | `in` on library containers (`k in m`) | P5, one feature per job | a privilege the core's containers would have and no library container could; `m.contains(k)` reads as well and works the same way for every container |

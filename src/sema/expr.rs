@@ -23,6 +23,16 @@ impl<'a, 's> FnCx<'a, 's> {
     /// (the caller still coerces to it where the context is a coercion site).
     pub fn expr(&mut self, e: &ast::Expr, expect: Option<Ty>) -> Expr {
         let span = e.span;
+        // `3 + 4j`: an untyped complex constant expression is evaluated exactly (§6.2).
+        if matches!(e.kind, ExprKind::Binary { .. } | ExprKind::Unary { op: ast::UnOp::Neg, .. })
+            && self.mentions_complex_constant(e)
+            && let Some(v) = self.try_untyped(e)
+        {
+            return match v {
+                Ok(v) => self.untyped_literal(&v, span),
+                Err(()) => error_expr(span),
+            };
+        }
         match &e.kind {
             ExprKind::Int(l) => {
                 let ty = match l.suffix {
@@ -147,6 +157,9 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// A float literal: of its suffix's type, or of a type still to be inferred.
     fn float_literal(&mut self, l: &crate::syntax::token::FloatLit, span: Span) -> Expr {
+        if l.imag {
+            return self.imaginary_literal(l, span);
+        }
         let ty = match l.suffix {
             Some(s) => {
                 let fty = match s {
@@ -509,6 +522,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 mk(zero.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(zero) }, span)
             }
             Untyped::Bool(b) => mk(Ty::bool(), tir::ExprKind::Bool(*b), span),
+            Untyped::Complex(re, im) => {
+                let ty = self.literal_var(VarKind::Complex);
+                mk(ty, tir::ExprKind::UntypedComplex(Rc::new((re.clone(), im.clone()))), span)
+            }
         }
     }
 
@@ -1083,6 +1100,17 @@ impl<'a, 's> FnCx<'a, 's> {
         if lt.is_infer() && wraps(rt) {
             let l = self.coerce(l, rt);
             return (l, r);
+        }
+        // `z is 0`: a real constant compared with a complex number (§7.4.7).
+        if let Some(elem) = self.sema.complex_of(lt)
+            && let Some(p) = self.promote_real_constant(&r, lt, elem)
+        {
+            return (l, p);
+        }
+        if let Some(elem) = self.sema.complex_of(rt)
+            && let Some(p) = self.promote_real_constant(&l, rt, elem)
+        {
+            return (p, r);
         }
         if lt.has_infer() || rt.has_infer() || lt == rt {
             self.unify_operands(l.ty, r.ty, span, "the operands of `is`");
@@ -2404,6 +2432,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let target = self.infer.resolve(target);
         if src == target || src.is_error() || target.is_error() {
             return e;
+        }
+        // `z: Complex(f64) = 1`: a real constant where a complex number is expected (§6.4).
+        if let Some(elem) = self.sema.complex_of(target)
+            && let Some(p) = self.promote_real_constant(&e, target, elem)
+        {
+            return p;
         }
         if src.is_never() {
             let span = e.span;

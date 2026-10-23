@@ -23,7 +23,7 @@ escape_time :: fn(z0, c: C64) -> u32 {
 }
 
 main :: fn() needs Out + Alloc {
-    c := C64(re: -0.8, im: 0.156)
+    c: C64 = -0.8 + 0.156j
     row_buf := make_fill(T: u8, 64, ' ') else {
         print("out of memory\n")
         return
@@ -41,8 +41,8 @@ main :: fn() needs Out + Alloc {
 }
 
 test "escape times" {
-    c := C64(re: 0, im: 0)
-    expect_eq(escape_time(C64(re: 0.5, im: 0.5), c), MAX_ITER)
-    expect_eq(escape_time(C64(re: 3, im: 0), c), 0)
-    expect(escape_time(C64(re: 1.5, im: 0), c) < MAX_ITER)
+    c: C64 = 0
+    expect_eq(escape_time(0.5 + 0.5j, c), MAX_ITER)
+    expect_eq(escape_time(3, c), 0)
+    expect(escape_time(1.5, c) < MAX_ITER)
 }

@@ -637,6 +637,7 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             | ExprKind::IntLimit { .. }
             | ExprKind::TypeName { .. }
             | ExprKind::UntypedFloat(_)
+            | ExprKind::UntypedComplex(_)
             | ExprKind::ValueParam(_) => unsupported(e.span, "an expression left over from generic checking"),
         }
     }

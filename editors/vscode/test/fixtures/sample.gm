@@ -25,6 +25,8 @@ main :: fn() -> IoError!() needs Out + Err(IoError) {
     f := 1f32
     big := 0xFF_u8
     t := 3.5e-2f64
+    z := 3 + 4j
+    w := 2.5j32
     c := 'a'
     nl := '\n'
     s := "tab\t{} and {:>8.2} {{lit}}"

@@ -74,14 +74,14 @@ Matrices and quaternions are not built in. They are library types, ordinary stru
 
 ### Complex numbers
 
-`Complex(T)`, for a float type `T`, is a struct `{ re, im }` of the core library on which the language defines `+`, `-`, `*`, `/` and unary `-`. Its layout is that of C's `float _Complex` and `double _Complex`. Like a math vector, `*` takes a scalar on either side and `/` on the right (`2 * z`, `z / 2`); `z + 1` is an error, for the same reason as `v + 1`. Division is Smith's algorithm, which does not overflow for large divisors. The methods are `conj()` and `abs()` (the magnitude, computed like C's `hypot`); `exp`, `log`, `sqrt` and the rest of complex analysis are in `std/complex`.
+`Complex(T)`, for a float type `T`, is a struct `{ re, im }` of the core library on which the language defines `+`, `-`, `*`, `/` and unary `-`. Its layout is that of C's `float _Complex` and `double _Complex`. Constants are written with imaginary literals: `3 + 4j` is one complex constant, computed exactly, whose type comes from where it is used (`Complex(f64)` if nothing decides). `j32` and the other widths fix the type of the parts, as `f32` does for a float: `2.5j32` is a `Complex(f32)`. Values made of run-time parts are constructed by name: `C64(re: x, im: y)`. Like a math vector, `*` takes a scalar on either side and `/` on the right (`2 * z`, `z / 2`). Unlike a math vector, a real *constant* is also a complex number, so `z + 1`, `1 / z` and `z is 0` work; a real variable `x` is not converted for you (write `C64(re: x, im: 0)`). Division is Smith's algorithm, which does not overflow for large divisors. The methods are `conj()` and `abs()` (the magnitude, computed like C's `hypot`); `exp`, `log`, `sqrt` and the rest of complex analysis are in `std/complex`.
 
 ```gamma
 C64 :: Complex(f64)
 
 /// Iterations of z = z*z + c until z leaves the circle of radius 2, at most `limit`.
 mandelbrot_steps :: fn(c: C64, limit: u32) -> u32 {
-    z := C64(re: 0, im: 0)
+    z: C64 = 0
     for n in 0..limit {
         if z.abs() > 2 { return n }
         z = z * z + c
@@ -90,16 +90,17 @@ mandelbrot_steps :: fn(c: C64, limit: u32) -> u32 {
 }
 
 complex_demo :: fn() needs Out {
-    a := C64(re: 1, im: 2)
-    b := C64(re: 3, im: -1)
+    a: C64 = 1 + 2j
+    b: C64 = 3 - 1j
     print("{}\n", a * b)                    // Complex(re: 5, im: 5)
     print("{}\n", a / b)                    // Complex(re: 0.1, im: 0.7000000000000001)
     print("{} {}\n", a.conj().im, b.abs())  // -2 3.1622776601683795
-    print("{}\n", mandelbrot_steps(C64(re: -1, im: 0), 100))   // 100
+    print("{}\n", 1 / a + 1)                // Complex(re: 1.2, im: -0.4)
+    print("{}\n", mandelbrot_steps(-1, 100))   // 100
 }
 ```
 
-A complex number is a struct in every other respect: it is constructed by name, its parts are fields (`z.im = 0`), and `is` compares the parts as floats. It is not ordered, and there is no imaginary literal.
+A complex number is a struct in every other respect: its parts are fields (`z.im = 0`), and `is` compares the parts as floats. It is not ordered.
 
 ## Slices
 

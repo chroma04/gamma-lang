@@ -96,12 +96,26 @@ impl<'a> Lexer<'a> {
             self.pos = at;
             is_float_suffix
         };
-        let is_float = frac_part.is_some() || exp.is_some() || float_by_suffix;
+        let mut is_float = frac_part.is_some() || exp.is_some() || float_by_suffix;
 
         // Suffix: any identifier characters directly after the literal.
         let suffix = self.scan_ident();
+        // `j`, `j16`, `j32` or `j64` makes an imaginary literal (§2.5.2).
+        let imag = imag_suffix(suffix);
+        if imag.is_some() {
+            if radix != 10 {
+                err.get_or_insert_with(|| "imaginary literals are decimal".to_string());
+            }
+            is_float = true;
+        } else if suffix.starts_with('j') && suffix[1..].bytes().all(|b| b.is_ascii_digit()) && radix == 10 {
+            err.get_or_insert_with(|| {
+                format!("invalid suffix `{}` for an imaginary literal; expected j, j16, j32 or j64", suffix)
+            });
+        }
         let (int_suffix, float_suffix) = if suffix.is_empty() {
             (None, None)
+        } else if let Some(width) = imag {
+            (None, width)
         } else if is_float {
             match float_suffix(suffix) {
                 Some(s) => (None, Some(s)),
@@ -131,7 +145,7 @@ impl<'a> Lexer<'a> {
         }
         let kind = if is_float {
             let value = self.float_value(radix, &int_part, frac_part.as_ref(), exp.unwrap_or(0));
-            TokenKind::Float(Box::new(FloatLit { value, suffix: float_suffix }))
+            TokenKind::Float(Box::new(FloatLit { value, suffix: float_suffix, imag: imag.is_some() }))
         } else {
             let value = self.int_value(&int_part, radix);
             TokenKind::Int(Box::new(IntLit { value, suffix: int_suffix, is_char: false }))
@@ -252,7 +266,7 @@ impl<'a> Lexer<'a> {
 
     // ----- characters -----
 
-    /// Lexes a character literal starting at the `'` at `self.pos` (§2.5.3).
+    /// Lexes a character literal starting at the `'` at `self.pos` (§2.5.2).
     pub(super) fn lex_char(&mut self) {
         let lo = self.pos;
         self.pos += 1;
@@ -544,6 +558,18 @@ fn int_suffix(s: &str) -> Result<IntSuffix, String> {
         ));
     }
     Err(format!("invalid suffix `{}` for integer literal", s))
+}
+
+/// The part type of an imaginary literal's suffix (`j` leaves it to inference), or
+/// `None` if `s` is not one (§2.5.2).
+fn imag_suffix(s: &str) -> Option<Option<FloatSuffix>> {
+    match s {
+        "j" => Some(None),
+        "j16" => Some(Some(FloatSuffix::F16)),
+        "j32" => Some(Some(FloatSuffix::F32)),
+        "j64" => Some(Some(FloatSuffix::F64)),
+        _ => None,
+    }
 }
 
 fn float_suffix(s: &str) -> Option<FloatSuffix> {

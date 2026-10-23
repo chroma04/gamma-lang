@@ -11,6 +11,10 @@ Versions and what each kind of change means are described in
 - **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the
   layout of C's `_Complex`, and the operators `+ - * /`, unary `-`, and scaling by a scalar;
   methods `conj()` and `abs()`. Division is Smith's algorithm (§5.3.1, §7.4.7).
+  Imaginary literals write complex constants: `3 + 4j` is one untyped complex constant,
+  computed exactly and typed by inference (falling back to `Complex(f64)`); `2.5j32` fixes
+  the part type. A real constant is a complex number where one is expected and beside one
+  (`z: C64 = 1`, `z + 1`, `1 / z`, `z is 0`) (§2.5.2, §6.1, §6.2).
 - **Math vectors**: `#vec [N]T`, with `N` from 2 to 4 and an integer or float `T`, an array
   layout that is C-compatible, element-wise operators, scalar `*` and `/`, and the methods
   `dot`, `cross`, `norm`, `min`, `max` and `abs` (§5.6.3, §7.4.7).

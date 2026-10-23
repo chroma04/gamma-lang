@@ -23,6 +23,7 @@
 (character_literal) @character
 (integer_literal) @number
 (float_literal) @number.float
+(imaginary_literal) @number.float
 (boolean_literal) @boolean
 (null) @constant.builtin
 (uninitialized) @constant.builtin

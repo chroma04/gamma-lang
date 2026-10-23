@@ -436,6 +436,9 @@ impl<'s> Sema<'s> {
     pub fn try_untyped(&mut self, module: ModuleId, e: &ast::Expr) -> Option<Result<Untyped, ()>> {
         match &e.kind {
             ExprKind::Int(l) if l.suffix.is_none() => Some(Ok(Untyped::Int(l.value.clone().into()))),
+            ExprKind::Float(l) if l.suffix.is_none() && l.imag => {
+                Some(Ok(Untyped::Complex(num_traits::Zero::zero(), l.value.clone())))
+            }
             ExprKind::Float(l) if l.suffix.is_none() => Some(Ok(Untyped::Float(l.value.clone()))),
             ExprKind::Paren(inner) => self.try_untyped(module, inner),
             ExprKind::Ident(id) => {

@@ -12,6 +12,8 @@ pub enum Untyped {
     /// The float constant negative zero, which a rational cannot represent.
     NegZero,
     Bool(bool),
+    /// A complex constant: its real and imaginary parts (§2.5.2). Zero parts are `+0`.
+    Complex(BigRational, BigRational),
 }
 
 impl Untyped {
@@ -20,6 +22,7 @@ impl Untyped {
             Untyped::Int(_) => "integer constant",
             Untyped::Float(_) | Untyped::NegZero => "float constant",
             Untyped::Bool(_) => "boolean constant",
+            Untyped::Complex(..) => "complex constant",
         }
     }
 
@@ -28,7 +31,15 @@ impl Untyped {
             Untyped::Int(i) => Some(BigRational::from_integer(i.clone())),
             Untyped::Float(r) => Some(r.clone()),
             Untyped::NegZero => Some(BigRational::zero()),
-            Untyped::Bool(_) => None,
+            Untyped::Bool(_) | Untyped::Complex(..) => None,
+        }
+    }
+
+    /// The constant as the parts of a complex number, if it is numeric.
+    fn as_complex(&self) -> Option<(BigRational, BigRational)> {
+        match self {
+            Untyped::Complex(re, im) => Some((re.clone(), im.clone())),
+            _ => self.as_rational().map(|r| (r, BigRational::zero())),
         }
     }
 }
@@ -41,6 +52,7 @@ pub fn negate(v: &Untyped) -> Result<Untyped, String> {
         Untyped::Float(r) => Ok(Untyped::Float(-r)),
         Untyped::NegZero => Ok(Untyped::Float(BigRational::zero())),
         Untyped::Bool(_) => Err("cannot negate a boolean constant".into()),
+        Untyped::Complex(re, im) => Ok(Untyped::Complex(-re, -im)),
     }
 }
 
@@ -57,9 +69,11 @@ pub fn show_int(v: &BigInt) -> String {
 /// Applies a binary operator to two untyped constants.
 pub fn binary(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
     let r = binary_exact(op, a, b)?;
+    let rational_bits = |q: &BigRational| q.numer().bits().max(q.denom().bits());
     let bits = match &r {
         Untyped::Int(i) => i.bits(),
-        Untyped::Float(q) => q.numer().bits().max(q.denom().bits()),
+        Untyped::Float(q) => rational_bits(q),
+        Untyped::Complex(re, im) => rational_bits(re).max(rational_bits(im)),
         _ => 0,
     };
     if bits > MAX_CONST_BITS {
@@ -70,6 +84,9 @@ pub fn binary(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
 
 fn binary_exact(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
     use Untyped::*;
+    if matches!(a, Complex(..)) || matches!(b, Complex(..)) {
+        return complex_binary(op, a, b);
+    }
     match op {
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Is | BinOp::IsNot => {
             if let (Bool(x), Bool(y)) = (a, b) {
@@ -142,6 +159,31 @@ fn binary_exact(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> 
         }
         _ => Err(format!("`{}` is not allowed in an untyped constant expression", op.as_str())),
     }
+}
+
+/// `a op b` where one operand is a complex constant: exact arithmetic on the parts, with a
+/// real operand taken as a complex number whose imaginary part is zero (§7.4.7).
+fn complex_binary(op: BinOp, a: &Untyped, b: &Untyped) -> Result<Untyped, String> {
+    let ((p, q), (r, s)) = match (a.as_complex(), b.as_complex()) {
+        (Some(x), Some(y)) => (x, y),
+        _ => return Err("expected a numeric constant".into()),
+    };
+    Ok(match op {
+        BinOp::Add(_) => Untyped::Complex(p + r, q + s),
+        BinOp::Sub(_) => Untyped::Complex(p - r, q - s),
+        BinOp::Mul(_) => Untyped::Complex(&p * &r - &q * &s, &p * &s + &q * &r),
+        BinOp::Div => {
+            let d = &r * &r + &s * &s;
+            if d.is_zero() {
+                return Err("division by zero in constant expression".into());
+            }
+            Untyped::Complex((&p * &r + &q * &s) / &d, (&q * &r - &p * &s) / &d)
+        }
+        BinOp::Is => Untyped::Bool(p == r && q == s),
+        BinOp::IsNot => Untyped::Bool(p != r || q != s),
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => return Err("complex constants are not ordered".into()),
+        _ => return Err(format!("`{}` does not apply to complex constants", op.as_str())),
+    })
 }
 
 /// A float-valued arithmetic result, with the sign IEEE arithmetic gives a zero result.

@@ -9,6 +9,8 @@ pub enum VarKind {
     Int,
     /// Created for a float literal: float types only.
     Float,
+    /// Created for an imaginary literal (§2.5.2): `Complex(T)` types only.
+    Complex,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,6 +42,9 @@ pub struct InferTable {
     vars: Vec<Var>,
     /// Type parameters with a `Num` constraint, at which untyped literals are allowed (§16.3).
     pub numeric_params: Vec<crate::types::ParamId>,
+    /// The generic struct `Complex` and its instance `Complex(f64)`, the fallback of
+    /// imaginary literals (§6.1), when the core library provides them.
+    pub complex: Option<(crate::types::AdtId, Ty)>,
 }
 
 /// Why two types could not be unified.
@@ -106,7 +111,7 @@ impl InferTable {
         match self.shallow(ty).kind() {
             TyKind::Infer(v) => {
                 let r = self.root(v.0) as usize;
-                if self.vars[r].kind == VarKind::Float {
+                if self.vars[r].kind != VarKind::Int {
                     return false;
                 }
                 self.vars[r].unsigned = true;
@@ -123,7 +128,7 @@ impl InferTable {
         match self.shallow(ty).kind() {
             TyKind::Infer(v) => {
                 let r = self.root(v.0) as usize;
-                if self.vars[r].kind == VarKind::Float {
+                if self.vars[r].kind != VarKind::Int {
                     return false;
                 }
                 self.vars[r].integer = true;
@@ -158,11 +163,20 @@ impl InferTable {
         None
     }
 
+    /// True if `ty` is `Complex(T)` for some `T`.
+    pub fn is_complex(&self, ty: Ty) -> bool {
+        matches!((ty.kind(), self.complex), (TyKind::Adt(id, _), Some((c, _))) if id.template() == c)
+    }
+
     fn compatible(&self, var: &Var, ty: Ty) -> bool {
+        if var.kind == VarKind::Complex {
+            return self.is_complex(ty);
+        }
         if let TyKind::Param(p) = ty.kind() {
             return !var.unsigned && self.numeric_params.contains(p);
         }
         match var.kind {
+            VarKind::Complex => unreachable!(),
             VarKind::Float => ty.is_float(),
             VarKind::Int if var.unsigned => ty.is_unsigned_integer(),
             VarKind::Int if var.integer => ty.is_integer(),
@@ -195,8 +209,16 @@ impl InferTable {
             (TyKind::Infer(x), TyKind::Infer(y)) => {
                 let (rx, ry) = (self.root(x.0), self.root(y.0));
                 let (vx, vy) = (self.vars[rx as usize].clone(), self.vars[ry as usize].clone());
-                let kind =
-                    if vx.kind == VarKind::Float || vy.kind == VarKind::Float { VarKind::Float } else { VarKind::Int };
+                if (vx.kind == VarKind::Complex) != (vy.kind == VarKind::Complex) {
+                    return Err(Mismatch);
+                }
+                let kind = if vx.kind == VarKind::Complex {
+                    VarKind::Complex
+                } else if vx.kind == VarKind::Float || vy.kind == VarKind::Float {
+                    VarKind::Float
+                } else {
+                    VarKind::Int
+                };
                 let unsigned = vx.unsigned || vy.unsigned;
                 let integer = vx.integer || vy.integer;
                 if kind == VarKind::Float && (unsigned || integer) {
@@ -270,6 +292,7 @@ impl InferTable {
                 let var = &self.vars[r];
                 let fixed = match (var.kind, var.fallback) {
                     (VarKind::Float, _) => Ty::f64(),
+                    (VarKind::Complex, _) => self.complex.map_or(Ty::error(), |(_, t)| t),
                     (VarKind::Int, Fallback::Usize) => Ty::usize(),
                     (VarKind::Int, Fallback::I32) if var.unsigned => Ty::u32(),
                     (VarKind::Int, Fallback::I32) => Ty::i32(),
@@ -289,6 +312,7 @@ impl InferTable {
                 let v = &self.vars[r];
                 let ty = match (v.kind, v.fallback) {
                     (VarKind::Float, _) => Ty::f64(),
+                    (VarKind::Complex, _) => self.complex.map_or(Ty::error(), |(_, t)| t),
                     (VarKind::Int, Fallback::Usize) => Ty::usize(),
                     (VarKind::Int, Fallback::I32) => {
                         if v.unsigned {
