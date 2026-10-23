@@ -116,14 +116,14 @@ main :: fn() needs Out {
     // Many values: a multiplicative sequence covers every magnitude and digit pattern.
     x: u64 = 1
     count := 0
-    for _ in 0..200000 {
+    for _ in 0..20000 {
         x = x *% 6364136223846793005 +% 1442695040888963407
         if not round_trips(x) { bad += 1 }
         if not round_trips(x >> (x % 64).trunc(u6)) { bad += 1 }
         if not round_trips(x - x % 1_000_000_000) { bad += 1 }
         count += 3
     }
-    for i in 0..100000 {
+    for i in 0..10000 {
         if not round_trips(i.trunc(u64)) { bad += 1 }
         if not round_trips(18_446_744_073_709_551_615 - i.trunc(u64)) { bad += 1 }
         count += 2

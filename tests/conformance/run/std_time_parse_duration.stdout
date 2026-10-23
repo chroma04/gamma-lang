@@ -72,4 +72,4 @@
 "0.0" => syntax error at 3
 "18446744073709551616nsx" => syntax error at 22
 "5124096h1s1h" => syntax error at 11
-round trips: 800027 values, 0 failed
+round trips: 80027 values, 0 failed

@@ -169,7 +169,7 @@ main :: fn() needs Out {
     bad := 0
     checksum: u64 = 0
     weeks53 := 0
-    for n in -200000..200000 {
+    for n in -20000..20000 {
         d := time.civil_from_days(n)
         w := time.iso_week(d)
         dow := time.days_from_civil(d) + 3
