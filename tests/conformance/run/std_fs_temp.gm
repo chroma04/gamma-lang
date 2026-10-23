@@ -1,0 +1,133 @@
+//! os: unix
+// `remove_all`, `create_temp`, `make_temp_dir` and `temp_dir` on the real file system. The
+// symbolic link is made with the C library's `symlink`, which Windows does not have.
+c :: import "std/c"
+fs :: import "std/fs"
+path :: import "std/path"
+
+libc :: foreign "c" {
+    symlink :: fn(target: cstring, link: cstring) -> c.c_int
+}
+
+// `path` followed by a NUL, in `buf`, as a C string.
+cpath :: fn(buf: []u8, path: string) -> cstring {
+    buf[0..path.len].copy_from(path)
+    buf[path.len] = 0
+    return buf.ptr.cast(cstring)
+}
+
+// `root/rel` in `buf`.
+at :: fn(buf: []u8, root, rel: string) -> string {
+    buf[0..root.len].copy_from(root)
+    buf[root.len] = '/'
+    buf[root.len + 1..root.len + 1 + rel.len].copy_from(rel)
+    return buf[0..root.len + 1 + rel.len]
+}
+
+// Whether `name` is `prefix` and 16 lowercase hex digits.
+well_formed :: fn(name, prefix: string) -> bool {
+    if name.len is not prefix.len + 16 { return false }
+    for i in 0..prefix.len {
+        if name[i] is not prefix[i] { return false }
+    }
+    for i in prefix.len..name.len {
+        ch := name[i]
+        if not ((ch >= '0' and ch <= '9') or (ch >= 'a' and ch <= 'f')) { return false }
+    }
+    return true
+}
+
+touch :: fn(path: string) -> IoError!() needs Fs {
+    f := try Fs.open(path, fs.OpenOptions(read: false, write: true, create: true))
+    Fs.close(f)
+    return ()
+}
+
+count :: fn(dir: string) -> IoError!u32 needs Fs {
+    n: u32 = 0
+    for r in fs.entries(dir) {
+        _ = try r
+        n += 1
+    }
+    return n
+}
+
+main :: fn() -> IoError!() needs Out + Fs + Rand + Alloc + Env + Sys {
+    tmp := fs.temp_dir()
+    print("temp_dir is set: {}\n", tmp.len > 0)
+
+    // A directory that stays outside the tree that is removed.
+    ob: [600]u8 = ---
+    outside := try fs.make_temp_dir(tmp, "gamma-outside-", ob[..])
+    print("outside name: {}\n", well_formed(path.base_name(outside), "gamma-outside-"))
+    p: [700]u8 = ---
+    kb: [700]u8 = ---
+    keep := at(kb[..], outside, "keep.txt")
+    try fs.write_all(keep, "keep")
+
+    rb: [600]u8 = ---
+    root := try fs.make_temp_dir(tmp, "gamma-tree-", rb[..])
+    print("root name: {} in temp_dir: {}\n", well_formed(path.base_name(root), "gamma-tree-"), root[0..tmp.len] is tmp)
+
+    // Too small a buffer creates nothing.
+    small: [27]u8 = ---
+    print("small make_temp_dir: {}\n", fs.make_temp_dir(root, "ab", small[..]) is !.InvalidInput)
+    print("small create_temp: {}\n", fs.create_temp(root, "ab", small[..]) is !.InvalidInput)
+    print("slash in prefix: {}\n", fs.create_temp(root, "a/b", rb[..]) is !.InvalidInput)
+    print("entries after failures: {}\n", try count(root))
+    // The documented size is enough.
+    exact: [600]u8 = ---
+    n := root.len + 2 + fs.TEMP_EXTRA
+    made := try fs.make_temp_dir(root, "ab", exact[0..n])
+    print("exact buffer: {} {}\n", made.len is n, well_formed(path.base_name(made), "ab"))
+    try Fs.remove_dir(made)
+
+    // A file with contents, found again under its name.
+    tb: [600]u8 = ---
+    t := try fs.create_temp(root, "f-", tb[..])
+    print("temp file name: {}\n", well_formed(path.base_name(t.path), "f-"))
+    try fs.write_all_to(t.file, "hello")
+    _ = try t.file.seek(0, .Start)
+    rd: [8]u8 = ---
+    got := try t.file.read(rd[..])
+    print("read back: {}\n", got is 5 and rd[0] is 'h')
+    Fs.close(t.file)
+    two := try fs.create_temp(root, "f-", p[..])
+    Fs.close(two.file)
+    print("distinct names: {}\n", t.path is not two.path)
+
+    // A tree: nested directories, files, an empty directory, and links out of the tree.
+    q: [700]u8 = ---
+    try fs.make_dir_all(at(q[..], root, "a/b/c"))
+    try fs.make_dir_all(at(q[..], root, "empty"))
+    try touch(at(q[..], root, "a/x.txt"))
+    try touch(at(q[..], root, "a/b/c/deep.txt"))
+    cb: [700]u8 = ---
+    lb: [700]u8 = ---
+    l1 := libc.symlink(cpath(cb[..], outside), cpath(lb[..], at(q[..], root, "dirlink")))
+    l2 := libc.symlink(cpath(cb[..], keep), cpath(lb[..], at(q[..], root, "a/b/filelink")))
+    l3 := libc.symlink(cpath(cb[..], "no/such"), cpath(lb[..], at(q[..], root, "a/dangling")))
+    print("links made: {}\n", l1 is 0 and l2 is 0 and l3 is 0)
+    print("entries in the root: {}\n", try count(root))
+
+    try fs.remove_all(root)
+    print("tree gone: {}\n", Fs.lstat(root) is !.NotFound)
+    print("outside survived: {} {}\n", fs.exists(keep), try count(outside))
+    print("remove_all again: {}\n", fs.remove_all(root) is !.NotFound)
+
+    // A file, a link to a directory, and an empty directory.
+    try touch(at(q[..], outside, "plain"))
+    try fs.remove_all(at(q[..], outside, "plain"))
+    d := at(q[..], outside, "dir")
+    try Fs.make_dir(d)
+    l4 := libc.symlink(cpath(cb[..], outside), cpath(lb[..], at(p[..], d, "up")))
+    print("link up made: {}\n", l4 is 0)
+    try fs.remove_all(at(q[..], outside, "dir/up"))
+    print("link removed, target kept: {} {}\n", Fs.lstat(at(q[..], outside, "dir/up")) is !.NotFound, fs.exists(keep))
+    try fs.remove_all(d)
+    print("empty dir gone: {}\n", Fs.lstat(d) is !.NotFound)
+
+    try fs.remove_all(outside)
+    print("outside gone: {}\n", Fs.lstat(outside) is !.NotFound)
+    return ()
+}

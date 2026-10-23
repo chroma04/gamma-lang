@@ -265,6 +265,167 @@ pub make_dir_all :: fn(path: string) -> IoError!() needs Fs {
     return ()
 }
 
+/// Removes `path` and everything in it: a file or a symbolic link is removed, a directory
+/// is emptied and then removed, like `rm -rf`. Symbolic links are never followed (a link to
+/// a directory is removed as a link and its target is left alone). An entry that vanishes
+/// while the removal runs is not an error. If `path` itself does not exist the result is
+/// `.NotFound`, which a caller that does not mind can ignore. Any other failure ends the
+/// removal at once, leaving the rest in place. The directories being emptied are tracked in
+/// memory from the current allocator (`.NoSpace` if it runs out), not on the call stack,
+/// and all of them are closed again on every exit.
+pub remove_all :: fn(path: string) -> IoError!() needs Fs + Alloc {
+    info := try Fs.lstat(path)
+    if info.kind is not .Dir {
+        return Fs.remove(path)
+    }
+    cur := list(u8)
+    defer cur.deinit()
+    frames := list(Frame)
+    defer close_frames(&frames)
+    cur.extend(path) else return !.NoSpace
+    first := try Fs.open_dir(path)
+    frames.push(Frame(dir: first, path_len: path.len)) else {
+        Fs.close_dir(first)
+        return !.NoSpace
+    }
+    buf: [256]u8 = ---
+    while frames.items.len > 0 {
+        top := frames.items[frames.items.len - 1]
+        next := try top.dir.next_entry(buf[..])
+        ent := next else {
+            // The directory is empty now.
+            Fs.close_dir(top.dir)
+            _ = frames.pop()
+            cur.truncate(top.path_len)
+            Fs.remove_dir(cur.items) else e => {
+                if e is not .NotFound { return !e }
+            }
+            continue
+        }
+        cur.truncate(top.path_len)
+        if cur.items.len > 0 and cur.items[cur.items.len - 1] is not '/' {
+            cur.push('/') else return !.NoSpace
+        }
+        cur.extend(buf[0..ent.len]) else return !.NoSpace
+        if ent.kind is .Dir {
+            sub := Fs.open_dir(cur.items) else e => {
+                // Gone already: nothing to empty.
+                if e is .NotFound { continue }
+                return !e
+            }
+            frames.push(Frame(dir: sub, path_len: cur.items.len)) else {
+                Fs.close_dir(sub)
+                return !.NoSpace
+            }
+        } else {
+            Fs.remove(cur.items) else e => {
+                if e is not .NotFound { return !e }
+            }
+        }
+    }
+    return ()
+}
+
+// ---------------------------------------------------------------------------------
+// Temporary files
+// ---------------------------------------------------------------------------------
+
+/// The bytes `create_temp` and `make_temp_dir` need in their buffer beyond the length of
+/// `prefix`: a buffer of `dir.len + prefix.len + TEMP_EXTRA` bytes always suffices (a
+/// separator and 16 hex digits).
+pub TEMP_EXTRA :: 17
+
+// How often a name that is taken is replaced by a new one before giving up.
+TEMP_TRIES :: 16
+
+/// The directory for temporary files. On Windows it is the value of `TEMP`, else `TMP`,
+/// else `C:\Windows\Temp`; elsewhere it is `TMPDIR`, else `/tmp`. A variable that is empty
+/// counts as unset. The result is not checked to exist.
+pub temp_dir :: fn() -> string needs Env {
+    when target.os is .Windows {
+        for name in [_]string("TEMP", "TMP") {
+            v := Env.var(name) else continue
+            if v.len > 0 { return v }
+        }
+        return "C:\\Windows\\Temp"
+    } else {
+        v := Env.var("TMPDIR") else return "/tmp"
+        return if v.len > 0 { v } else { "/tmp" }
+    }
+}
+
+// Writes `dir`, a separator (unless `dir` is empty or ends with one) and `prefix` to the
+// start of `buf`, and returns the length used; null if that and 16 more bytes do not fit,
+// or if `prefix` has a separator in it.
+temp_stem :: fn(dir, prefix: string, buf: []u8) -> ?usize {
+    for c in prefix {
+        if c is '/' { return null }
+    }
+    sep: usize = if dir.len > 0 and dir[dir.len - 1] is not '/' { 1 } else { 0 }
+    n := dir.len + sep + prefix.len
+    if n + 16 > buf.len { return null }
+    buf[0..dir.len].copy_from(dir)
+    if sep is 1 { buf[dir.len] = '/' }
+    buf[dir.len + sep..n].copy_from(prefix)
+    return n
+}
+
+// Fills the 16 bytes of `buf` from `at` with random lowercase hex digits.
+temp_random :: fn(buf: []u8, at: usize) needs Rand {
+    r: [8]u8 = ---
+    Rand.fill(r[..])
+    for i in 0..8 {
+        buf[at + 2 * i] = hex_digit(r[i] >> 4)
+        buf[at + 2 * i + 1] = hex_digit(r[i] & 15)
+    }
+}
+
+/// Creates a new file in `dir`, opened for reading and writing, and returns it with its
+/// path. The name is `prefix` followed by 16 random lowercase hex digits (from `Rand`);
+/// the path is `dir`, a `/` (unless `dir` is empty or ends with one) and the name, written
+/// to the start of `buf` and returned as the used part. The file is created exclusively, so
+/// an existing file is never opened; a name that is taken is replaced by a new random one,
+/// up to 16 times, and then the result is `.AlreadyExists`. A `buf` shorter than
+/// `dir.len + prefix.len + TEMP_EXTRA` bytes, or a `prefix` with a `/` in it, gives
+/// `.InvalidInput` and creates nothing. The caller closes the file and removes it.
+pub create_temp :: fn(dir, prefix: string, buf: []u8) -> IoError!(file: File, path: string) needs Fs + Rand {
+    n := temp_stem(dir, prefix, buf) else return !.InvalidInput
+    opts := OpenOptions(read: true, write: true, create: true, exclusive: true)
+    tries: u32 = 0
+    while true {
+        temp_random(buf, n)
+        path := buf[0..n + 16]
+        f := Fs.open(path, opts) else e => {
+            if e is .AlreadyExists and tries + 1 < TEMP_TRIES {
+                tries += 1
+                continue
+            }
+            return !e
+        }
+        return (file: f, path: path)
+    }
+}
+
+/// Creates a new directory in `dir` and returns its path, named as for `create_temp`
+/// (`prefix` and 16 random hex digits) and written to `buf` in the same way, with the same
+/// retries and errors. The caller removes it, for instance with `remove_all`.
+pub make_temp_dir :: fn(dir, prefix: string, buf: []u8) -> IoError!string needs Fs + Rand {
+    n := temp_stem(dir, prefix, buf) else return !.InvalidInput
+    tries: u32 = 0
+    while true {
+        temp_random(buf, n)
+        path := buf[0..n + 16]
+        Fs.make_dir(path) else e => {
+            if e is .AlreadyExists and tries + 1 < TEMP_TRIES {
+                tries += 1
+                continue
+            }
+            return !e
+        }
+        return path
+    }
+}
+
 /// Replaces the contents of the file at `path` with `bytes` so that no reader ever sees a
 /// partial file: the bytes go to a new file next to `path` (named after it with a random
 /// suffix), which is synced and then renamed over `path`. The new file is removed again
