@@ -31,7 +31,7 @@ K :: #soa [2]Pair(fill: Pair(a: 7, b: 70))
 main :: fn() needs Out {
     // Layout: one array per field, in declaration order.
     print("{} {}\n", @size_of(#soa [3]Pair), @align_of(#soa [3]Pair))
-    print("{} {}\n", @size_of(#soa [4]Particle), @size_of(Ps))
+    print("{} {}\n", @size_of(#soa [4]Particle), @size_of(Ps) is 3 * @size_of(rawptr) + @size_of(usize))
 
     // Construction, elements and fields of elements.
     a := #soa [3]Particle(fill: Particle(pos: V2(1, 2), vel: V2(0, 0), alive: true))

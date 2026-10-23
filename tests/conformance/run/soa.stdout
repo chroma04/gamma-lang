@@ -1,5 +1,5 @@
 32 8
-68 32
+68 true
 3 Particle(pos: [9, 2], vel: [0, 0], alive: true)
 Particle(pos: [5, 5], vel: [1, 1], alive: false)
 [2, 1]
