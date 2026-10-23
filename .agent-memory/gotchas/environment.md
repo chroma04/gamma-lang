@@ -72,3 +72,7 @@
 - Windows cross-check: `apt-get update` first, else gcc-mingw-w64-x86-64 is "not found".
   Unit tests that call cfg(windows)-dependent helpers must pin the variant they test.
 - CI job logs: mcp__github__get_job_logs with tail_lines; the download URL form is 403 here.
+- s36: worktree agents again started from `main` (one noticed and fast-forwarded to dev). Brief
+  them to `git merge --ff-only <session branch>` first. `gamma lint lib/std` errors ("no .gm
+  files"); lint per module dir (`gamma lint lib/std/math`); tests/lint.rs walks modules itself.
+  Agents can verify with `GAMMA_STD=$PWD/lib/std target/debug/gamma run [--backend=c|cranelift]`.
