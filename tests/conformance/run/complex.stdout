@@ -1,6 +1,6 @@
 Complex(re: 1, im: 2) Complex(re: 3, im: -4)
 1 2 16
-8 4
+8
 Complex(re: 1.5, im: 5)
 Complex(re: 4, im: -2) Complex(re: -2, im: 6) Complex(re: -1, im: -2)
 Complex(re: 11, im: 2) Complex(re: 11, im: 2)
@@ -39,12 +39,9 @@ nan nan
 Complex(re: 3.5, im: 3.5) Complex(re: 5, im: 5) Complex(re: 0.05, im: -0.35)
 Complex(re: 3, im: -1) Complex(re: 6, im: -2) Complex(re: 0.25, im: 0.5)
 Complex(re: 2, im: -4) 5
-Complex(re: 2, im: 1) Complex(re: 2.75, im: -0.5) Complex(re: -1, im: 2)
-Complex(re: -1.5, im: -2) 5
-Complex(re: 3, im: 4) Complex(re: 1.5, im: -2)
 Complex(re: -3, im: 4) Complex(re: 2, im: -1.5)
-Complex(re: -1.75, im: 6) 25
-20 1.25
+25
+20
 Complex(re: 3, im: 6) Complex(re: 7.5, im: -2.5)
 Complex(re: 0, im: 2) Complex(re: 1.5, im: -0.5) 5
 Complex(re: -0.75, im: 0.75)

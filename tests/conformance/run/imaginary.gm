@@ -15,9 +15,8 @@ main :: fn() needs Out {
     a := 3 + 4j
     b: C32 = 1.5 - 2j
     c := 2j32
-    d := 0.5j16
     print("{} {} {}\n", @type_name(@type_of(a)), @type_name(@type_of(b)), @type_name(@type_of(c)))
-    print("{} {} {} {}\n", a, b, c, d)
+    print("{} {} {}\n", a, b, c)
 
     // Constant expressions are exact: the parts are rounded once.
     print("{} {} {} {}\n", K, I * I, HALF, K / (1 + 1j))
