@@ -1,0 +1,10 @@
+//! exit: 134
+//! stderr
+// gcd(MIN, 0) is 2^(N-1), which does not fit a signed type.
+math :: import "std/math"
+
+main :: fn() needs Out {
+    print("{}\n", math.gcd(i8(-128), 96))
+    a: i8 = @black_box(-128)
+    print("{}\n", math.gcd(a, 0))
+}
