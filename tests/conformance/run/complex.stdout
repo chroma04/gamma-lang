@@ -1,0 +1,63 @@
+Complex(re: 1, im: 2) Complex(re: 3, im: -4)
+1 2 16
+8 4
+Complex(re: 1.5, im: 5)
+Complex(re: 4, im: -2) Complex(re: -2, im: 6) Complex(re: -1, im: -2)
+Complex(re: 11, im: 2) Complex(re: 11, im: 2)
+Complex(re: -3, im: 4) Complex(re: -1, im: 0)
+Complex(re: 2.5, im: 0)
+Complex(re: 0.5, im: 0.5)
+Complex(re: 0.4, im: 2.2)
+Complex(re: 0.125, im: -0.125)
+Complex(re: 1, im: 0)
+Complex(re: 0.5, im: 0)
+Complex(re: -1.2, im: 1.6)
+Complex(re: 0, im: -1)
+Complex(re: 1.4705882352941178, im: -0.8823529411764706)
+Complex(re: 1, im: 0)
+Complex(re: 1, im: 0)
+Complex(re: 1, im: -1)
+Complex(re: 2, im: 4) Complex(re: 2, im: 4) Complex(re: 0.5, im: 1)
+Complex(re: 0.5, im: 1) Complex(re: 0.5, im: 1)
+Complex(re: 3, im: 6) Complex(re: 3, im: 6)
+Complex(re: 0.25, im: 0.5) Complex(re: inf, im: inf)
+Complex(re: nan, im: nan)
+Complex(re: 1, im: -2) Complex(re: 1, im: 2)
+5 13 17
+0 3 7
+true
+5
+5
+true
+inf inf
+inf inf
+nan nan
+nan
+nan inf
+nan 2
+nan nan
+Complex(re: 3.5, im: 3.5) Complex(re: 5, im: 5) Complex(re: 0.05, im: -0.35)
+Complex(re: 3, im: -1) Complex(re: 6, im: -2) Complex(re: 0.25, im: 0.5)
+Complex(re: 2, im: -4) 5
+Complex(re: 2, im: 1) Complex(re: 2.75, im: -0.5) Complex(re: -1, im: 2)
+Complex(re: -1.5, im: -2) 5
+Complex(re: 3, im: 4) Complex(re: 1.5, im: -2)
+Complex(re: -3, im: 4) Complex(re: 2, im: -1.5)
+Complex(re: -1.75, im: 6) 25
+20 1.25
+Complex(re: 3, im: 6) Complex(re: 7.5, im: -2.5)
+Complex(re: 0, im: 2) Complex(re: 1.5, im: -0.5) 5
+Complex(re: -0.75, im: 0.75)
+Complex(re: -0.375, im: 0.375)
+Complex(re: -2, im: 5) 3
+Complex(re: 1, im: 1) Complex(re: -1, im: 1)
+Complex(re: 1, im: 1)
+true false
+true false
+false true
+true
+equal
+Complex(re: -1.25, im: 10000000000)
+50
+2
+33

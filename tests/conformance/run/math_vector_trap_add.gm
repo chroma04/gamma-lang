@@ -1,0 +1,10 @@
+//! exit: 134
+//! stderr
+// An element of a math vector `+` that overflows traps with the message of the scalar check,
+// at the operator (§5.6.3, §7.4.7).
+IV3 :: #vec [3]i32
+
+main :: fn() needs Out {
+    v := IV3(1, 2, 2147483647)
+    print("{}\n", v + IV3(fill: 1))
+}

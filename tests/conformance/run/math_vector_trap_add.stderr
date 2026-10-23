@@ -1,0 +1,2 @@
+trap: integer overflow in `+`
+  at tests/conformance/run/math_vector_trap_add.gm:9:19 in main

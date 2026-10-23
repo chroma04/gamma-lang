@@ -4,7 +4,7 @@
 Color :: union { Red, Green }
 
 f :: fn(a: [3]i32, b: [3]bool, c: [2]i32, d: [Color]f64) {
-    _ = a + a           //~ ERROR arithmetic does not apply to arrays; use a `#simd [N]T` vector
+    _ = a + a           //~ ERROR arithmetic does not apply to arrays; use a `#vec [N]T` math vector
     _ = a +% a          //~ ERROR arithmetic does not apply to arrays
     _ = a * a           //~ ERROR arithmetic does not apply to arrays
     _ = -a              //~ ERROR arithmetic does not apply to arrays
