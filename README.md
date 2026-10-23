@@ -50,6 +50,8 @@ early exit, coroutines, testing.
   or [Gamma for Rust programmers](docs/guide/for-rust-programmers.md).
 - [`docs/std.md`](docs/std.md) — the standard library.
 - [`docs/architecture.md`](docs/architecture.md) — how the compiler is organized.
+- [`docs/llvm-experiment.md`](docs/llvm-experiment.md) — an experimental LLVM back end for a
+  subset of the language, and what it shows about the optimizers of the other back ends.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
 - [`CHANGELOG.md`](CHANGELOG.md) and [`docs/versioning.md`](docs/versioning.md) — what
   changed in each release, and what stays stable between releases.

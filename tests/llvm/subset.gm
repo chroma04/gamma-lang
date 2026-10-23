@@ -1,0 +1,94 @@
+// Every construct the LLVM back end supports.
+LIMIT :: 10
+SCALE: f64 : 2.5
+small: u8 : 200
+
+side :: fn(tag: i32, v: bool) -> bool needs Out {
+    print("side {}\n", tag)
+    return v
+}
+
+classify :: fn(x: i32) -> i32 => match x {
+    0 => 100
+    1, 2 => 200
+    3..=9 => 300
+    n if n < 0 => -1
+    _ => 400
+}
+
+sum_to :: fn(n: u32) -> u64 {
+    s: u64 = 0
+    for i in 1..=n {
+        s += u64(i)
+    }
+    return s
+}
+
+fill_squares :: fn(a: ^[LIMIT]i64) {
+    for i in 0..LIMIT {
+        a[i] = i.trunc(i64) * i.trunc(i64)
+    }
+}
+
+never_returns :: fn() -> never {
+    trap("unreachable here")
+}
+
+main :: fn() needs Out {
+    // Integers of every width and the overflow flavors.
+    a: u8 = small
+    print("{} {} {}\n", a +% 100, a +| 100, a -| 250)
+    b: i16 = -300
+    print("{} {} {}\n", b / 7, b % 7, -b)
+    c: u32 = 0xF000_0001
+    print("{} {} {}\n", c >> 4, c <<% 4, c ~ 0xFF)
+    d: i64 = -9
+    print("{} {} {} {}\n", d >> 1, d.abs(), d.min(3), d.max(3))
+    print("{} {}\n", u16(a) * 300, i32(b).trunc(i8))
+    // Floats and conversions.
+    x := 1.0 / 3.0
+    y: f32 = 0.1
+    print("{} {} {} {}\n", x, y, f64(y), (2.0).sqrt())
+    print("{} {}\n", d.to(f64) * SCALE, x is x)
+    print("{}\n", (1.5).bits(u64))
+    // Control flow.
+    print("{} {} {} {} {}\n", classify(0), classify(2), classify(7), classify(-5), classify(50))
+    print("{}\n", sum_to(100))
+    if side(1, false) and side(2, true) {
+        print("no\n")
+    }
+    if side(3, true) or side(4, true) {
+        print("yes\n")
+    }
+    n := 0
+    total := 0
+    while true {
+        n += 1
+        if n % 2 is 0 {
+            continue
+        }
+        if n > 15 {
+            break
+        }
+        total += n
+    }
+    print("{} {}\n", n, total)
+    k := if total > 50 { 1 } else { 2 }
+    print("{}\n", k)
+    // Arrays: fill, literals, nesting, pointers.
+    sq := [LIMIT]i64(fill: 7)
+    fill_squares(&sq)
+    lit := [3]f64(0.5, 1.5, 2.5)
+    grid := [4][4]u8(fill: [4]u8(fill: 0))
+    grid[2][3] = 9
+    p := &grid[2]
+    p[1] = 4
+    print("{} {} {} {} {}\n", sq[9], sq.len, lit[2], grid[2][3], grid[2][1])
+    flags := [5]bool(fill: true)
+    flags[3] = false
+    print("{} {}\n", flags[2], flags[3])
+    print("{} {}\n", @black_box(41) + 1, LIMIT)
+    if total < 0 {
+        never_returns()
+    }
+}

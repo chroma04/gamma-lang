@@ -1,0 +1,25 @@
+// Mandelbrot set membership on a 2400x2400 grid: float arithmetic in a tight loop.
+SIZE :: 2400
+
+main :: fn() needs Out {
+    inside: i64 = 0
+    for py in 0..SIZE {
+        ci := py.to(f64) * 2.0 / SIZE.to(f64) - 1.0
+        for px in 0..SIZE {
+            cr := px.to(f64) * 3.0 / SIZE.to(f64) - 2.0
+            zr := 0.0
+            zi := 0.0
+            k := 0
+            while k < 100 and zr * zr + zi * zi <= 4.0 {
+                t := zr * zr - zi * zi + cr
+                zi = 2.0 * zr * zi + ci
+                zr = t
+                k += 1
+            }
+            if k is 100 {
+                inside += 1
+            }
+        }
+    }
+    print("{}\n", inside)
+}

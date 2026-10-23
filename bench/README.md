@@ -75,3 +75,17 @@ for the default (Debug), which also records the allocator and call site of each 
 `GAMMA_VM_DUMP=name` prints the bytecode of the functions called `name`, and a build with
 `--features vm-profile` counts the instructions run when `GAMMA_VM_PROFILE=1` (see
 `docs/contributing.md`).
+
+## Comparing the native back ends: `bench/backends/`
+
+`bench/backends/` holds six programs that stay within the subset of the language the
+experimental LLVM back end supports, so the C back end (with gcc and with clang), Cranelift and
+LLVM at each optimization level compile the same source. `scripts/bench-backends.py` builds
+and times them all and checks that they print the same checksum:
+
+```sh
+cargo build --release
+python3 scripts/bench-backends.py --runs=5 --all-levels
+```
+
+The results and what they mean are in [`docs/llvm-experiment.md`](../docs/llvm-experiment.md).

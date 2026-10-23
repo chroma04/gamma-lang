@@ -4,6 +4,14 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
+## Unreleased
+
+- **Experimental LLVM back end** (`--backend=llvm` for `run` and `build`): writes LLVM IR
+  for a subset of the language (scalars, arrays, functions, structured control flow,
+  `print`) and compiles it with `clang` at `GAMMA_LLVM_OPT` (default 2). It exists to
+  compare optimizers: `docs/llvm-experiment.md` has the results, and
+  `scripts/bench-backends.py` times `bench/backends/` on every native back end.
+
 ## 0.1.0 - 2026-10-20
 
 The first release: the complete language of `gamma-spec.md`, implemented on three

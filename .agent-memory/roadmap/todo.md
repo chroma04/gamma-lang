@@ -26,6 +26,10 @@ s20: fiber channel, trap-path dedup, check fuzz target + differential tester.)
   s24: 1500 debug seeds (300000..301500) + checked-mode batch (400000..), 0 disagreements.
   Left: tree-sitter as a second parser.
 - bugs-open #48 done (s29: statement-run outlining, decisions/031). Left: by-ref chains.
+- Perf (s33, decisions/037): Cranelift is 1.4–4.6× behind LLVM/C-clang on loops over arrays
+  and small calls. Do in TIR (helps Cranelift + VM): drop bounds/overflow checks a `for`
+  range proves; inline small plain fns. Measure with scripts/bench-backends.py
+  (GAMMA_LLVM_OPT=1 = target).
 - Perf (s29, decisions/032): Safe new/destroy 1731 → ~1000 instr/iter (Checked ~400; rest
   is Fil-C malloc/free + indirect clause calls). VM iterator −27%; decl `perform` only −2.5%
   (cost spread thin over vm_enter/vm_state; next: transitive handler specialization in C,
