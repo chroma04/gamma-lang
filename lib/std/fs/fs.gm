@@ -356,8 +356,11 @@ pub temp_dir :: fn() -> string needs Env {
 
 // Whether `c` separates the parts of a path: `/`, and on Windows also `\`.
 is_sep :: fn(c: u8) -> bool {
-    when target.os is .Windows { return c is '/' or c is '\\' }
-    return c is '/'
+    when target.os is .Windows {
+        return c is '/' or c is '\\'
+    } else {
+        return c is '/'
+    }
 }
 
 // Writes `dir`, a separator (unless `dir` is empty or ends with one) and `prefix` to the
