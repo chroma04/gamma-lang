@@ -6,6 +6,16 @@
 //!     try net.send_all(s, "ping\n")
 //!     reply: [5]u8 = ---
 //!     try net.recv_exact(s, reply[..])
+//!
+//! The module also has IP address values (`Ipv4`, `Ipv6`, `IpAddr`) with strict text
+//! parsing and RFC 5952 formatting into a caller-supplied buffer. They are plain values
+//! and need no effect. The text `format_ip` writes is a valid host for `Net.connect` and
+//! `Net.listen` (numeric hosts are passed to the system resolver as they are, without
+//! brackets):
+//!
+//!     addr := try net.parse_ip("2001:db8::1")
+//!     buf: [net.IPV6_LEN]u8 = ---
+//!     s := try Net.connect(net.format_ip(addr, buf[..]), 8080)
 
 /// A TCP connection (§21.7).
 pub Socket :: core.Socket

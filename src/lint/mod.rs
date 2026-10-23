@@ -162,6 +162,7 @@ pub fn run(sess: &mut Session, root: &Path, in_scope: &dyn Fn(&Path) -> bool, co
     let mut diags = vec![];
     let mut sites = HashMap::new();
     let mut allows = vec![];
+    let mut input_errors = vec![];
     let mut when_names: HashSet<Symbol> = HashSet::new();
     let files: Vec<_> = sess
         .sources
@@ -182,6 +183,7 @@ pub fn run(sess: &mut Session, root: &Path, in_scope: &dyn Fn(&Path) -> bool, co
         let facts = walk.facts;
         syntax::names_in(&lexed.tokens, &facts.whens, &mut when_names);
         diags.extend(facts.diags);
+        input_errors.extend(facts.errors);
         sites.extend(facts.sites);
         allows.extend(facts.allows);
     }
@@ -190,7 +192,10 @@ pub fn run(sess: &mut Session, root: &Path, in_scope: &dyn Fn(&Path) -> bool, co
             diags.push(d);
         }
     }
-    let mut out = Outcome { warnings: 0, errors: 0 };
+    let mut out = Outcome { warnings: 0, errors: input_errors.len() };
+    for d in input_errors {
+        sess.diags.push(d);
+    }
     for mut d in diags {
         let code = d.code.unwrap_or_default();
         let allowed = allows.iter().any(|(item, rules): &(Span, Vec<String>)| {

@@ -40,14 +40,18 @@ const UNIVERSE_HIDDEN: &[&str] = &[
     "us",
     "ms",
     "secs",
+    "map",
 ];
 
-/// The other core modules (§21.5): name, source, and the names re-exported to
-/// the universe scope. Their remaining functions are reached as methods.
-const CORE_MODULES: &[(&str, &str, &[&str])] = &[
-    ("list", include_str!("../../lib/core/list.gm"), &["List", "list"]),
-    ("map", include_str!("../../lib/core/map.gm"), &["HashMap", "hash_map", "hash_map_with"]),
-    ("slice", include_str!("../../lib/core/slice.gm"), &[]),
+/// The other core modules (§21.5): name, source, the names re-exported to the universe
+/// scope, and whether the prelude binds the module itself under its name. Their remaining
+/// functions are reached as methods. `core/map` is the hash map that `std/collections/hash_map`
+/// re-exports as `core.map` (the prelude's test tracker uses it too).
+const CORE_MODULES: &[(&str, &str, &[&str], bool)] = &[
+    ("list", include_str!("../../lib/core/list.gm"), &["List", "list"], false),
+    ("map", include_str!("../../lib/core/map.gm"), &[], true),
+    ("slice", include_str!("../../lib/core/slice.gm"), &[], false),
+    ("complex", include_str!("../../lib/core/complex.gm"), &["Complex"], false),
 ];
 
 impl<'s> Sema<'s> {
@@ -58,12 +62,15 @@ impl<'s> Sema<'s> {
         self.collect_whens(id);
         self.prelude = Some(id);
         self.load_target_module(id);
-        self.bind_core_module(id);
-        for (name, src, exports) in CORE_MODULES {
+        self.bind_module(id, "core", id);
+        for (name, src, exports, bind) in CORE_MODULES {
             let file = self.sess.sources.add(format!("<core>/{}.gm", name), src.to_string());
             let ast = self.sess.parse(file);
             let m = self.add_module(Symbol::intern(&format!("core/{}", name)), vec![ast], true);
             self.core_modules.push(m);
+            if *bind {
+                self.bind_module(id, name, m);
+            }
             for e in exports.iter() {
                 let e = Symbol::intern(e);
                 let d = self.modules[m.0 as usize].scope.get(&e).copied();
@@ -323,7 +330,9 @@ impl<'s> Sema<'s> {
     pub fn universe_hint(&mut self, name: Symbol) -> Option<String> {
         let prelude = self.prelude?;
         let &d = self.modules[prelude.0 as usize].scope.get(&name)?;
-        if !self.universe_hidden(d) {
+        if !self.universe_hidden(d)
+            || matches!(self.decls[d.0 as usize].state, DeclState::Done(super::DeclValue::Module(_)))
+        {
             return None;
         }
         Some(match std_home(name) {
@@ -508,8 +517,10 @@ impl<'s> Sema<'s> {
     /// the compilation target, generated from the session's target.
     /// Binds `core` to the core prelude itself, for the standard library, which exports
     /// some of its declarations under other modules (`std/fs`'s `File`).
-    fn bind_core_module(&mut self, prelude: ModuleId) {
-        let name = ast::Ident { name: Symbol::intern("core"), span: Span::DUMMY };
+    /// Declares the public module binding `name` for module `m` in the prelude: `core` for the
+    /// core library itself, and the core modules that standard modules re-export.
+    fn bind_module(&mut self, prelude: ModuleId, name: &str, m: ModuleId) {
+        let name = ast::Ident { name: Symbol::intern(name), span: Span::DUMMY };
         let item = Rc::new(ast::Item {
             id: ast::NodeId(u32::MAX),
             span: Span::DUMMY,
@@ -527,7 +538,7 @@ impl<'s> Sema<'s> {
             name,
             module: prelude,
             item,
-            state: DeclState::Done(super::DeclValue::Module(prelude)),
+            state: DeclState::Done(super::DeclValue::Module(m)),
             op_of: None,
         });
         self.modules[prelude.0 as usize].scope.insert(name.name, id);

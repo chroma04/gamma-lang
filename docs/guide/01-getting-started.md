@@ -304,7 +304,7 @@ Points worth knowing:
 - A path starting with `./` or `../` is relative to the importing module. Any other path starts with a package name: `std` is the standard library, and every other name must be a dependency listed in `gamma.toml`.
 - Everything is **private to its module unless marked `pub`**. A private name is visible from every file of the same module, and from nowhere else. Struct fields have the same rule (§3.3).
 - A module binding is not a value: you cannot store it, pass it or compare it. The import graph must be acyclic.
-- A binding that just names another declaration is an alias for it: `Shape :: geom.Shape`, `area :: geom.area`, `Map :: HashMap`. Generic types and functions work through aliases and qualified names alike (`geom.Pair(i32)`). A `pub` alias re-exports the declaration, and a `pub` import is itself a member, so a module can gather others: with `pub geom :: import "./geom"` in module `lib`, `lib.geom.area(s)` works.
+- A binding that just names another declaration is an alias for it: `Shape :: geom.Shape`, `area :: geom.area`, `Seq :: List`. Generic types and functions work through aliases and qualified names alike (`geom.Pair(i32)`). A `pub` alias re-exports the declaration, and a `pub` import is itself a member, so a module can gather others: with `pub geom :: import "./geom"` in module `lib`, `lib.geom.area(s)` works.
 - The manifest is a small TOML file with a `[package]` section and a `[dependencies]` section. A dependency is a directory given relative to the manifest, or a git repository with a version requirement ([chapter 15](15-packages.md) covers git dependencies, the lockfile and `gamma new`):
 
   ```toml
@@ -316,7 +316,7 @@ Points worth knowing:
   ```
 
   A directory tree without a manifest is a package of its own, rooted at the root module's directory.
-- Beyond the names that are always available (the *universe scope*: `string`, `print`, `List`, `HashMap`, `range`, and the rest listed in §21.1), the chapters before the last rely only on the module `std/c` (in the interop chapter, which also mentions `std/thread`). Other `std/...` modules are outside what the specification defines; [chapter 16](16-standard-library.md) tours them and the [standard library reference](../std.md) lists them.
+- Beyond the names that are always available (the *universe scope*: `string`, `print`, `List`, `range`, and the rest listed in §21.1), the chapters before the last rely only on the hash map of `std/collections/hash_map` (from the memory chapter on) and the module `std/c` (in the interop chapter, which also mentions `std/thread`). Other `std/...` modules are outside what the specification defines; [chapter 16](16-standard-library.md) tours them and the [standard library reference](../std.md) lists them.
 
 ## Tests
 

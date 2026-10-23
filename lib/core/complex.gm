@@ -1,0 +1,58 @@
+// core/complex: complex numbers (§5.3.1). `Complex` is re-exported to the universe
+// scope; `conj` and `abs` are reached as methods. The operators of §7.4.7 call the
+// private functions below.
+
+/// A complex number `re + im·i` with parts of the float type `T`.
+pub Complex :: struct(T: type) where Float(T) {
+    pub re: T
+    pub im: T
+}
+
+/// The complex conjugate `re - im·i`.
+pub conj :: fn(T: type, z: Complex(T)) -> Complex(T) where Float(T) => Complex(T)(re: z.re, im: -z.im)
+
+/// The magnitude √(re² + im²), without overflow or underflow in intermediate steps:
+/// infinite if either part is, else NaN if either part is.
+pub abs :: fn(T: type, z: Complex(T)) -> T where Float(T) {
+    a := z.re.abs()
+    b := z.im.abs()
+    if a.is_inf() { return a }
+    if b.is_inf() { return b }
+    if a.is_nan() or b.is_nan() { return a + b }
+    big := a.max(b)
+    small := a.min(b)
+    if big is 0 { return big }
+    r := small / big
+    return big * (1 + r * r).sqrt()
+}
+
+// The operators (§7.4.7).
+
+op_add :: fn(T: type, a, b: Complex(T)) -> Complex(T) where Float(T) =>
+    Complex(T)(re: a.re + b.re, im: a.im + b.im)
+
+op_sub :: fn(T: type, a, b: Complex(T)) -> Complex(T) where Float(T) =>
+    Complex(T)(re: a.re - b.re, im: a.im - b.im)
+
+op_neg :: fn(T: type, a: Complex(T)) -> Complex(T) where Float(T) => Complex(T)(re: -a.re, im: -a.im)
+
+op_mul :: fn(T: type, a, b: Complex(T)) -> Complex(T) where Float(T) =>
+    Complex(T)(re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re)
+
+op_scale :: fn(T: type, a: Complex(T), x: T) -> Complex(T) where Float(T) =>
+    Complex(T)(re: a.re * x, im: a.im * x)
+
+op_div_scalar :: fn(T: type, a: Complex(T), x: T) -> Complex(T) where Float(T) =>
+    Complex(T)(re: a.re / x, im: a.im / x)
+
+// Smith's algorithm.
+op_div :: fn(T: type, a, b: Complex(T)) -> Complex(T) where Float(T) {
+    if b.re.abs() >= b.im.abs() {
+        t := b.im / b.re
+        d := b.re + b.im * t
+        return Complex(T)(re: (a.re + a.im * t) / d, im: (a.im - a.re * t) / d)
+    }
+    t := b.re / b.im
+    d := b.re * t + b.im
+    return Complex(T)(re: (a.re * t + a.im) / d, im: (a.im * t - a.re) / d)
+}

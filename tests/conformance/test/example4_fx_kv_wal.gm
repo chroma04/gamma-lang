@@ -2,6 +2,7 @@
 // A key-value store behind a Kv effect with an in-memory and a file-backed handler: write-ahead log, crash recovery, torn and corrupt records, snapshot compaction on the in-memory file system.
 fs :: import "std/fs"
 str :: import "std/str"
+hm :: import "std/collections/hash_map"
 
 KEY_MAX :: 16
 WAL :: "kv.wal"
@@ -37,10 +38,10 @@ Kv :: effect {
 // ---- The in-memory handler ------------------------------------------------------
 
 MemKv :: struct {
-    m: HashMap(Key, i64)
+    m: hm.HashMap(Key, i64)
 }
 
-mem_new :: fn() -> MemKv needs Alloc => MemKv(m: hash_map(Key, i64))
+mem_new :: fn() -> MemKv needs Alloc => MemKv(m: hm.hash_map(Key, i64))
 
 mem_put :: fn(s: ^MemKv, key: string, val: i64) -> KvError!() {
     k := try key_of(key)

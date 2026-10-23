@@ -1,4 +1,4 @@
-//! Unicode text segmentation and UTF-8 encoding of scalar values.
+//! Unicode text segmentation, and UTF-8 and UTF-16 encoding of scalar values.
 //!
 //! A `string` carries no encoding guarantee; these functions read it as UTF-8 and treat
 //! each maximal ill-formed subsequence as one U+FFFD, exactly like `runes`. They never
@@ -233,4 +233,81 @@ pub append_rune :: fn(out: ^List(u8), cp: u32) -> AllocError!() {
     tmp: [4]u8 = ---
     enc := encode_rune(cp, tmp[..]) else trap("text: append_rune of a value that is not a scalar value")
     try out.extend(enc)
+}
+
+// ---------------------------------------------------------------------------------
+// UTF-16
+// ---------------------------------------------------------------------------------
+//
+// UTF-16 is the string encoding of Windows APIs, JavaScript and JSON `\u` escapes.
+// Units are `u16` values in the machine's order; reading or writing them as bytes in
+// a particular byte order is `std/bytes`'s job, not this module's.
+
+/// The number of UTF-16 code units that `s` encodes to: 1 for each scalar value below
+/// U+10000 and 2 for each above. `s` is read like `runes` reads it, so each ill-formed
+/// subsequence counts as U+FFFD, one unit.
+pub utf16_len :: fn(s: string) -> usize {
+    n: usize = 0
+    for r in runes(s) {
+        n += if r >= 0x10000 { 2 } else { 1 }
+    }
+    return n
+}
+
+/// Writes the UTF-16 encoding of `s` (read like `runes` reads it, so ill-formed bytes
+/// become U+FFFD) at the start of `buf` and returns the code units written, a slice of
+/// `buf`. Traps if `buf.len` is less than `utf16_len(s)`.
+pub encode_utf16 :: fn(s: string, buf: []u16) -> []u16 {
+    assert(buf.len >= utf16_len(s), "text: encode_utf16 needs a buffer of at least utf16_len(s) units")
+    n: usize = 0
+    for r in runes(s) {
+        if r >= 0x10000 {
+            v := r - 0x10000
+            buf[n] = (0xd800 | (v >> 10)).trunc(u16)
+            buf[n + 1] = (0xdc00 | (v & 0x3ff)).trunc(u16)
+            n += 2
+        } else {
+            buf[n] = r.trunc(u16)
+            n += 1
+        }
+    }
+    return buf[0..n]
+}
+
+/// Appends the UTF-16 encoding of `s` (read like `runes` reads it) to `out`.
+pub append_utf16 :: fn(out: ^List(u16), s: string) -> AllocError!() {
+    for r in runes(s) {
+        if r >= 0x10000 {
+            v := r - 0x10000
+            try out.push((0xd800 | (v >> 10)).trunc(u16))
+            try out.push((0xdc00 | (v & 0x3ff)).trunc(u16))
+        } else {
+            try out.push(r.trunc(u16))
+        }
+    }
+}
+
+/// The Unicode scalar values of the UTF-16 text `units`, in order. A high surrogate
+/// followed by a low one is one value above U+FFFF; every unpaired surrogate (a lone
+/// one, or a pair in the wrong order) yields U+FFFD, so the values are always scalar
+/// values and `append_rune` accepts them. Building UTF-8 from UTF-16 is that call:
+///
+///     out := list(u8)
+///     defer out.deinit()
+///     for r in text.decode_utf16(units) { try text.append_rune(&out, r) }
+pub decode_utf16 :: fn(units: []const u16) needs Yield(rune) {
+    i: usize = 0
+    while i < units.len {
+        u := u32(units[i])
+        i += 1
+        if u < 0xd800 or u > 0xdfff {
+            yield(rune(u))
+        } else if u < 0xdc00 and i < units.len and units[i] >= 0xdc00 and units[i] <= 0xdfff {
+            lo := u32(units[i])
+            i += 1
+            yield(rune(0x10000 + ((u - 0xd800) << 10) + (lo - 0xdc00)))
+        } else {
+            yield(0xfffd)
+        }
+    }
 }

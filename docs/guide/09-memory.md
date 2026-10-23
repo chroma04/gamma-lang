@@ -125,11 +125,13 @@ scratch_demo :: fn(arena: Allocator) -> AllocError!() needs Alloc {
 
 A function without `Alloc` in its effect set does not allocate through the current allocator, though it may allocate through an `Allocator` value it was handed. So `needs Alloc` in a signature is a reliable "this function may allocate" marker.
 
-## `List` and `HashMap`
+## `List` and hash maps
 
-The core library provides two containers, both capturing the current allocator at construction and never performing `Alloc` afterwards. Neither is magical: they are structs with ordinary functions, called with method syntax.
+The core library provides one container, `List(T)`, the growable array; the standard library adds a hash map (`std/collections/hash_map`) and the other collections of [chapter 16](16-standard-library.md#collections). All of them capture the current allocator at construction and never perform `Alloc` afterwards. None is magical: they are structs with ordinary functions, called with method syntax.
 
 ```gamma
+hm :: import "std/collections/hash_map"
+
 list_demo :: fn() -> AllocError!() needs Alloc + Out {
     names := list(string)               // constructed with the current allocator
     defer names.deinit()
@@ -145,7 +147,7 @@ list_demo :: fn() -> AllocError!() needs Alloc + Out {
 }
 
 map_demo :: fn() -> AllocError!() needs Alloc + Out {
-    ages := hash_map(string, u32)
+    ages := hm.hash_map(string, u32)
     defer ages.deinit()
     try ages.put("ada", 36)
     try ages.put("grace", 45)
@@ -157,14 +159,14 @@ map_demo :: fn() -> AllocError!() needs Alloc + Out {
 }
 ```
 
-The element and key types are written explicitly where the compiler cannot infer them (`list(string)`, `hash_map(string, u32)`). `List(T)` has a public `items` slice (so `items.len` is the length) and private bookkeeping fields. A map hashes keys with the language's structural `@hash` and compares them with `is`; the key type must support `is`. A custom hash and equality can be supplied as parameters of the type with `hash_map_with`; see [chapter 10](10-generics.md).
+The element and key types are written explicitly where the compiler cannot infer them (`list(string)`, `hm.hash_map(string, u32)`). `List(T)` has a public `items` slice (so `items.len` is the length) and private bookkeeping fields. A map hashes keys with the language's structural `@hash` and compares them with `is`; the key type must support `is`. A custom hash and equality can be supplied as parameters of the type with `hm.hash_map_with`; see [chapter 10](10-generics.md).
 
 Besides `put`, `get` and `remove`, a map has `contains(k)`, `len()`, `clear()` (which keeps the storage) and `entries()`, an iterator over `(key, value)` pairs in an unspecified order: `for e in ages.entries() { print("{} {}\n", e.key, e.value) }`.
 
 `get` returns a copy of the value. To update a value in place, `get_ptr(k)` returns a `?^V` pointing into the map, and `entry(k, default)` stores `default` if `k` was absent and returns an `AllocError!Entry`, whose `value` field points at the stored value, which makes counting a one-liner. A pointer is valid until the next insertion or removal:
 
 ```gamma
-counts := hash_map(string, u32)
+counts := hm.hash_map(string, u32)
 defer counts.deinit()
 for w in words {
     c := (try counts.entry(w, 0)).value

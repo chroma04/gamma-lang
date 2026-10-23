@@ -23,6 +23,16 @@ impl<'a, 's> FnCx<'a, 's> {
     /// (the caller still coerces to it where the context is a coercion site).
     pub fn expr(&mut self, e: &ast::Expr, expect: Option<Ty>) -> Expr {
         let span = e.span;
+        // `3 + 4j`: an untyped complex constant expression is evaluated exactly (§6.2).
+        if matches!(e.kind, ExprKind::Binary { .. } | ExprKind::Unary { op: ast::UnOp::Neg, .. })
+            && self.mentions_complex_constant(e)
+            && let Some(v) = self.try_untyped(e)
+        {
+            return match v {
+                Ok(v) => self.untyped_literal(&v, span),
+                Err(()) => error_expr(span),
+            };
+        }
         match &e.kind {
             ExprKind::Int(l) => {
                 let ty = match l.suffix {
@@ -50,6 +60,10 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ExprKind::Ident(id) => self.name(id.name, expect, span),
             ExprKind::Paren(inner) => self.expr(inner, expect),
+            ExprKind::Elements(inner) => {
+                let v = self.expr(inner, None);
+                self.elements_tuple(v, inner.span).unwrap_or_else(|| error_expr(span))
+            }
             ExprKind::Tuple(elems) => self.tuple(elems, expect, span),
             ExprKind::Unary { op, operand } => self.unary(*op, operand, expect, span),
             ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } => {
@@ -106,7 +120,8 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::ArrayType { len, elem } if construction_call(elem).is_some() => {
                 self.array_type_construction(e, len.as_deref(), elem, span)
             }
-            // `#simd [4]f32(…)`: constructing a vector (§5.6.2).
+            // `#simd [4]f32(…)` or `#vec [3]f32(…)`: constructing a vector (§5.6.2) or a
+            // math vector (§5.6.3).
             ExprKind::Attributed { attrs, inner }
                 if matches!(inner.kind, ExprKind::ArrayType { .. }) && construction_call(inner).is_some() =>
             {
@@ -142,6 +157,9 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// A float literal: of its suffix's type, or of a type still to be inferred.
     fn float_literal(&mut self, l: &crate::syntax::token::FloatLit, span: Span) -> Expr {
+        if l.imag {
+            return self.imaginary_literal(l, span);
+        }
         let ty = match l.suffix {
             Some(s) => {
                 let fty = match s {
@@ -156,12 +174,20 @@ impl<'a, 's> FnCx<'a, 's> {
         mk(ty, tir::ExprKind::UntypedFloat(Rc::new(l.value.clone())), span)
     }
 
-    /// `#simd [4]f32(…)`: constructing a vector (§5.6.2).
+    /// `#simd [4]f32(…)` or `#vec [3]f32(…)`: constructing a vector (§5.6.2) or a math
+    /// vector (§5.6.3).
     fn vector_construction(&mut self, attrs: &[ast::Attribute], inner: &ast::Expr, span: Span) -> Expr {
         let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else { unreachable!() };
         let module = self.module;
+        if attrs.iter().any(|a| a.name.name.as_str() == "soa") {
+            let t = self.sema.soa_type_expr(module, &without_call(inner), span);
+            return match self.sema.soa_info(t) {
+                Some(info) => self.soa_construct(t, info, args, span),
+                None => error_expr(span),
+            };
+        }
         let t = self.sema.vector_type(module, attrs, &without_call(inner), span);
-        match t.vector_parts() {
+        match t.vector_parts().or(t.math_vector_parts()) {
             Some((n, elem)) => self.construct_array(Some(t), Some(n), elem, args, span),
             None => error_expr(span),
         }
@@ -503,6 +529,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 mk(zero.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(zero) }, span)
             }
             Untyped::Bool(b) => mk(Ty::bool(), tir::ExprKind::Bool(*b), span),
+            Untyped::Complex(re, im) => {
+                let ty = self.literal_var(VarKind::Complex);
+                mk(ty, tir::ExprKind::UntypedComplex(Rc::new((re.clone(), im.clone()))), span)
+            }
         }
     }
 
@@ -616,6 +646,9 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.infer.resolve(v.ty).is_vector() {
             return self.vector_unary(ast::UnOp::Neg, v, span);
         }
+        if self.is_compound_number(v.ty) {
+            return self.compound_number_unary(ast::UnOp::Neg, v, span);
+        }
         self.obligations.push(Obligation::Numeric { ty: v.ty, span, op: "-", int_only: false, signed_only: true });
         mk(v.ty, tir::ExprKind::Unary { op: tir::UnOp::Neg, operand: Box::new(v) }, span)
     }
@@ -626,6 +659,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let st = self.infer.resolve(v.ty);
         if st.is_vector() {
             return self.vector_unary(ast::UnOp::BitNot, v, span);
+        }
+        if self.is_compound_number(st) {
+            return self.compound_number_unary(ast::UnOp::BitNot, v, span);
         }
         if let Some(u) = self.bits_operand(st, "~", span) {
             let x = self.bits_convert(v, u);
@@ -646,6 +682,13 @@ impl<'a, 's> FnCx<'a, 's> {
         let temp_ok = std::mem::take(&mut self.temp_ref_arg);
         let v = self.expr(operand, None);
         if self.reject_second_class(&v, "the target of `&`") {
+            return error_expr(span);
+        }
+        if self.sema.soa_gathers.contains(&v.span) {
+            self.error(
+                span,
+                "an element of a `#soa` has no address, since its fields are stored apart (§5.6.4); take the address of a field: `&a[i].f`",
+            );
             return error_expr(span);
         }
         if let tir::ExprKind::Field { base, .. } = &v.kind
@@ -760,6 +803,13 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.infer.resolve(lhs.ty).is_vector() && !matches!(op, B::Is | B::IsNot) {
             return self.vector_binary(op, lhs, rhs, span);
         }
+        // Math vectors and complex numbers (§7.4.7): the right operand may be a scalar.
+        if !matches!(op, B::Is | B::IsNot | B::In | B::NotIn | B::And | B::Or | B::Range | B::RangeIncl)
+            && self.is_compound_number(lhs.ty)
+        {
+            let r = self.expr(rhs, None);
+            return self.compound_number_binary(op, lhs, r, span);
+        }
         match op {
             B::And | B::Or => {
                 let l = self.expect_bool(lhs);
@@ -772,6 +822,13 @@ impl<'a, 's> FnCx<'a, 's> {
                     return self.is_pattern_test(lhs, &p, op == B::IsNot, span);
                 }
                 let r = self.expr(rhs, Some(lhs.ty));
+                // `#soa` slices compare by content, column by column (§5.6.4).
+                if let Some(info) = self.soa_of(&lhs).filter(|i| i.len.is_none())
+                    && let Some(ri) = self.soa_of(&r).filter(|i| i.len.is_none() && i.elem == info.elem)
+                {
+                    let info = if info.is_const { info } else { ri };
+                    return self.soa_eq(lhs, r, info, op == B::IsNot, span);
+                }
                 let (l, r) = self.equalize(lhs, r, span);
                 mk(Ty::bool(), tir::ExprKind::Eq { lhs: Box::new(l), rhs: Box::new(r), negated: op == B::IsNot }, span)
             }
@@ -831,6 +888,10 @@ impl<'a, 's> FnCx<'a, 's> {
                     _ => lhs.ty,
                 };
                 let r = self.expr(rhs, Some(expect));
+                // `2 * v`: a scalar times a math vector or a complex number (§7.4.7).
+                if self.is_compound_number(r.ty) {
+                    return self.compound_number_binary(op, lhs, r, span);
+                }
                 self.arith_op(op, lhs, r, span)
             }
             B::In | B::NotIn => self.in_expr(lhs, rhs, op == B::NotIn, span),
@@ -1061,6 +1122,17 @@ impl<'a, 's> FnCx<'a, 's> {
             let l = self.coerce(l, rt);
             return (l, r);
         }
+        // `z is 0`: a real constant compared with a complex number (§7.4.7).
+        if let Some(elem) = self.sema.complex_of(lt)
+            && let Some(p) = self.promote_real_constant(&r, lt, elem)
+        {
+            return (l, p);
+        }
+        if let Some(elem) = self.sema.complex_of(rt)
+            && let Some(p) = self.promote_real_constant(&l, rt, elem)
+        {
+            return (p, r);
+        }
         if lt.has_infer() || rt.has_infer() || lt == rt {
             self.unify_operands(l.ty, r.ty, span, "the operands of `is`");
             return (l, r);
@@ -1079,6 +1151,15 @@ impl<'a, 's> FnCx<'a, 's> {
 
     fn index(&mut self, base: &ast::Expr, index: &ast::Expr, span: Span) -> Expr {
         let b = self.expr(base, None);
+        self.index_value(b, index, span)
+    }
+
+    /// `b[index]` with the base already checked.
+    pub fn index_value(&mut self, b: Expr, index: &ast::Expr, span: Span) -> Expr {
+        let b = self.soa_deref(b);
+        if let Some(info) = self.soa_of(&b) {
+            return self.soa_element(b, info, index, span);
+        }
         let b = self.auto_deref_array(b);
         if let Some(e) = self.infer.resolve(b.ty).enum_index() {
             return self.enum_array_index(b, e, index, span);
@@ -1092,7 +1173,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 let base = Box::new(mk(it, tir::ExprKind::Local(r), span));
                 mk(elem, tir::ExprKind::Field { base, index: n }, span)
             };
-            let s = self.slice_of(b, base.span, Some(field(0)), Some(field(1)), inclusive, span);
+            let s = self.slice_of(b, span, Some(field(0)), Some(field(1)), inclusive, span);
             let ty = s.ty;
             let block = tir::Block { stmts: vec![tir::Stmt::Let { local: r, init: Some(i) }], tail: Some(s), span };
             return mk(ty, tir::ExprKind::Block(Box::new(block)), span);
@@ -1242,7 +1323,21 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(t) = self.type_of_name(base) {
             return self.construct_variant(t, name, None, span);
         }
-        let b = self.expr(base, None);
+        // `a[i].f` on a `#soa`: element `i` of column `f`, without gathering the element.
+        let b = if let ExprKind::Index { base: inner, index } = &base.kind {
+            let ib = self.expr(inner, None);
+            let ib = self.soa_deref(ib);
+            if let Some(info) = self.soa_of(&ib) {
+                return self.soa_element_field(ib, info, index, name, span);
+            }
+            self.index_value(ib, index, base.span)
+        } else {
+            self.expr(base, None)
+        };
+        let b = self.soa_deref(b);
+        if let Some(info) = self.soa_of(&b) {
+            return self.soa_member(b, info, name, span);
+        }
         let b = self.auto_deref(b);
         let bt = self.infer.resolve(b.ty);
         match (bt.kind(), name.name.as_str()) {
@@ -1697,6 +1792,8 @@ impl<'a, 's> FnCx<'a, 's> {
             return error_expr(span);
         };
         let x = self.expr(x, None);
+        // A `#soa` slice hashes by its contents, as `is` compares it (§5.6.4).
+        let x = self.soa_columns_tuple(x);
         let xt = self.infer.resolve(x.ty);
         if !xt.has_infer() && !xt.is_error() && !self.eq_allowed(xt) {
             self.error(span, format!("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", xt));
@@ -2381,6 +2478,15 @@ impl<'a, 's> FnCx<'a, 's> {
         let target = self.infer.resolve(target);
         if src == target || src.is_error() || target.is_error() {
             return e;
+        }
+        if let Some(c) = self.soa_coerce(&e, src, target) {
+            return c;
+        }
+        // `z: Complex(f64) = 1`: a real constant where a complex number is expected (§6.4).
+        if let Some(elem) = self.sema.complex_of(target)
+            && let Some(p) = self.promote_real_constant(&e, target, elem)
+        {
+            return p;
         }
         if src.is_never() {
             let span = e.span;

@@ -1,0 +1,102 @@
+// The reordering and order-checking methods of arrays and slices (§21.3): reverse,
+// rotations, dedup, partition, select_nth with many input shapes, is_sorted and
+// upper_bound against binary_search.
+
+// A linear congruential generator over 31 bits.
+Lcg :: struct { state: u64 }
+
+next :: fn(g: ^Lcg) -> u32 {
+    g.state = (g.state * 1103515245 + 12345) % 2147483648
+    return (g.state / 256).sat(u32)
+}
+
+Item :: struct { key: u32, seq: u32 }
+
+check_select :: fn(n: usize, modulus: u32, seed: u64) -> bool needs Alloc {
+    g := Lcg(state: seed)
+    xs := make(u32, n) else return false
+    defer free(xs)
+    sorted := make(u32, n) else return false
+    defer free(sorted)
+    for k in 0..n {
+        for i in 0..n { xs[i] = next(&g) % modulus }
+        sorted.copy_from(xs)
+        sorted.sort()
+        xs.select_nth(k)
+        if xs[k] is not sorted[k] { return false }
+        for i in 0..k {
+            if xs[i] > xs[k] { return false }
+        }
+        for i in k + 1..n {
+            if xs[i] < xs[k] { return false }
+        }
+    }
+    return true
+}
+
+main :: fn() needs Out + Alloc {
+    a := [_]i32(1, 2, 3, 4, 5, 6, 7)
+    a.reverse()
+    print("reverse: {}\n", a)
+    a.reverse()
+    a.rotate_left(2)
+    print("rotate_left(2): {}\n", a)
+    a.rotate_right(2)
+    print("rotate_right(2): {}\n", a)
+    a.rotate_left(0)
+    a.rotate_left(7)
+    a.rotate_right(7)
+    print("rotate by 0 and len: {}\n", a)
+    a[2..5].reverse()
+    print("reverse a part: {}\n", a)
+    e := empty_slice(i32)
+    e.reverse()
+    e.rotate_left(0)
+    print("empty: {} {} {}\n", e.dedup(), e.is_sorted(), e.upper_bound(3))
+
+    d := [_]i32(1, 1, 2, 3, 3, 3, 1, 4, 4)
+    n := d.dedup()
+    print("dedup: {} {}\n", n, d[0..n])
+    d[n..].sort()
+    print("removed: {}\n", d[n..])
+    one := [_]u8(9)
+    print("dedup one: {}\n", one.dedup())
+
+    p := [_]i32(5, -1, 8, -3, 0, 7, -2)
+    k := p.partition(fn(x: ^const i32) => x^ < 0)
+    print("partition: {}", k)
+    ok_parts := true
+    for x in p[0..k] { ok_parts = ok_parts and x < 0 }
+    for x in p[k..] { ok_parts = ok_parts and x >= 0 }
+    print(" {}\n", ok_parts)
+    print("partition none/all: {} {}\n", p.partition(fn(x: ^const i32) => x^ > 100), p.partition(fn(x: ^const i32) => true))
+
+    up := [_]u8(1, 2, 2, 3)
+    down := [_]u8(2, 1)
+    print("is_sorted: {} {} {}\n", up.is_sorted(), down.is_sorted(), one.is_sorted())
+    items := [_]Item(Item(key: 3, seq: 0), Item(key: 1, seq: 1), Item(key: 1, seq: 2))
+    by_key := fn(x, y: ^const Item) => x.key < y.key
+    print("is_sorted_by: {}", items.is_sorted_by(by_key))
+    items.stable_sort_by(by_key)
+    print(" {}\n", items.is_sorted_by(by_key))
+
+    s := [_]u32(1, 3, 3, 3, 5, 8)
+    for x in [_]u32(0, 1, 3, 4, 8, 9) {
+        r := s.binary_search(x)
+        print("bounds of {}: {}..{}\n", x, r.at, s.upper_bound(x))
+    }
+
+    words := [_]string("pear", "apple", "fig", "kiwi", "banana")
+    words.select_nth_by(0, fn(x, y: ^const string) => x.len < y.len)
+    print("shortest: {}\n", words[0])
+    words.select_nth(4)
+    print("last: {}\n", words[4])
+
+    all_ok := true
+    for len in [_]usize(1, 2, 3, 16, 17, 40, 100) {
+        for modulus in [_]u32(1, 3, 1000000) {
+            all_ok = all_ok and check_select(len, modulus, u64(len) * 31 + u64(modulus))
+        }
+    }
+    print("select_nth: {}\n", all_ok)
+}

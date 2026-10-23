@@ -89,3 +89,17 @@
   syntactic, `~`; A.3/A.5 `needs` grammar; §21.5 hash_map; §13.4, §15.2, §7.6 explanations; C.8 rows.
 - s30 WASI (decisions/034): `Os` gains `.Wasi`; new §3.7.2 "Hosts without some services"
   (no processes/sockets/threads → `IoError.Unsupported`; fibers work); `IoError.Unsupported`.
+- s33 (decisions/037): §11.4 array/vector spread (not `[E]T`, not ParamArray); §7.11, §11.2,
+  §21.6.1 follow. New ch. 23 errors policy (23.1 kinds, 23.2 what is an error, 23.3 report,
+  23.4 no foreign/look-alike guesses except listed, 23.5 limits table). §2.6 `&&`/`||`, `\`
+  bullet removed; §10.2 `!` not negation; §3.1 empty dir not a module; §5.10 no self by value;
+  §19.2 name charsets; §19.4 runtime names = limitation; §20.2 `#allow` names checked by lint
+  only; B.2 `needs` row removed; B.3 35 keywords; C.8 row `+` vs `,`.
+- s34 (decisions/038): §21.5 now "Lists" (List only, real rationale); HashMap → std
+  (§16.4 example `hm.`; §16.9/C.6 tables; §3.5 alias example `Seq :: List`; §21.1 tables +
+  Transition note on deprecated names); §7.7 `in` built-in only; C.8 three rows.
+- s35: §5.3.1 Complex(T), §5.6.3 `#vec [N]T` math vectors, §7.4.7 their operators; §16.3
+  Float implies Neg; §7.5/§16.3 math vectors not ordered; §19.1 table rows; §20.2 `#vec`;
+  A grammar `#vec`; C.2 bullets; C.8 matrices/quaternions/scalar-add/bounded-array rows
+  (decisions/039). "vector" alone in the spec still means `#simd`.
+- s35: §5.6.4 `#soa` (decisions/040); §20.2 `#soa` row; A grammar; C.2 bullet; C.8 rows (field reflection note, SoA containers/AoSoA, addressable elements).

@@ -1,0 +1,163 @@
+// std/complex: sin, cos, tan, sinh, cosh, tanh and the inverse functions asin, acos, atan,
+// asinh, acosh and atanh. Ordinary arguments in every quadrant, both sides of every branch cut
+// (signed zero parts), the special values of C99 Annex G.6 and huge or tiny parts. Results are
+// printed with the shortest round-trip representation, so the expected output pins the exact bits.
+math :: import "std/math"
+cx :: import "std/complex"
+
+NZ: f64 : (0x8000_0000_0000_0000u64).bits(f64)
+inf: f64 : math.inf
+nan: f64 : math.nan
+huge: f64 : 1.7976931348623157e308
+
+c :: fn(re, im: f64) -> Complex(f64) => Complex(f64)(re: re, im: im)
+
+show :: fn(name: string, z: Complex(f64), r: Complex(f64)) needs Out {
+    print("{}({} {}i) = {} {}i\n", name, z.re, z.im, r.re, r.im)
+}
+
+// Ordinary points: all four quadrants, small and moderate magnitudes.
+ordinary :: fn() -> [12]Complex(f64) =>
+    [_]Complex(f64)(
+    c(0.5, 0.25), c(-0.5, 0.25), c(-0.5, -0.25), c(0.5, -0.25), c(1.0, 1.0), c(-2.0, 3.0),
+    c(-3.0, -4.0), c(2.5, -0.75), c(0.1, 7.0), c(-9.0, 0.5), c(1e-5, -2e-5), c(30.0, -25.0),
+)
+
+// Points on the real axis, on and next to the cuts of the inverse functions.
+axis :: fn() -> [16]Complex(f64) =>
+    [_]Complex(f64)(
+    c(0.5, 0.0), c(0.5, NZ), c(-0.5, 0.0), c(-0.5, NZ), c(1.0, 0.0), c(1.0, NZ), c(-1.0, 0.0),
+    c(-1.0, NZ), c(2.0, 0.0), c(2.0, NZ), c(-2.0, 0.0), c(-2.0, NZ), c(1e10, 0.0), c(1e10, NZ),
+    c(-1e10, 0.0), c(-1e10, NZ),
+)
+
+// Points on the imaginary axis, on and next to the cuts of asin/atan... (via the identities).
+imag_axis :: fn() -> [16]Complex(f64) =>
+    [_]Complex(f64)(
+    c(0.0, 0.5), c(NZ, 0.5), c(0.0, -0.5), c(NZ, -0.5), c(0.0, 1.0), c(NZ, 1.0), c(0.0, -1.0),
+    c(NZ, -1.0), c(0.0, 2.0), c(NZ, 2.0), c(0.0, -2.0), c(NZ, -2.0), c(0.0, 1e10), c(NZ, 1e10),
+    c(0.0, -1e10), c(NZ, -1e10),
+)
+
+// Close to the cuts, to +-1 and to +-i, where naive formulas lose all their digits.
+near :: fn() -> [20]Complex(f64) =>
+    [_]Complex(f64)(
+    c(2.0, 1e-20), c(2.0, -1e-20), c(-2.0, 1e-20), c(-2.0, -1e-20), c(1.0, 1e-20), c(1.0, -1e-9),
+    c(-1.0, 1e-9), c(1.0 + 1e-8, 1e-8), c(1.0 - 1e-8, -1e-8), c(0.5, 1e-300), c(1e-20, 1.0),
+    c(-1e-20, 1.0), c(1e-9, 1.0 + 1e-9), c(1e-9, -1.0 - 1e-9), c(1e-9, 1.0 - 1e-9),
+    c(1e-300, 1.0), c(1e-8, 1e-8), c(1e-170, -1e-170), c(5e-324, 5e-324), c(0.0, 5e-324),
+)
+
+// Huge parts: the inverse functions must not overflow, the others overflow exactly where the
+// true value does.
+big :: fn() -> [20]Complex(f64) =>
+    [_]Complex(f64)(
+    c(1e10, 1e10), c(-1e10, 1e10), c(1e20, -3.0), c(3.0, 1e20), c(1e100, 1e100), c(-1e100, 2.0),
+    c(1e200, -1e150), c(1e300, 1e300), c(huge, huge), c(-huge, huge), c(huge, 1.0), c(1.0, huge),
+    c(-huge, -1.0), c(1.0, -huge), c(huge, 1e-300), c(1e-300, huge), c(1e154, 1e154),
+    c(4.5e307, 4.5e307), c(0.0, huge), c(huge, 0.0),
+)
+
+// The special values of Annex G: zeros, infinities and NaN in every combination.
+specials :: fn() -> [49]Complex(f64) =>
+    [_]Complex(f64)(
+    c(0.0, 0.0), c(NZ, 0.0), c(0.0, NZ), c(NZ, NZ), c(0.0, inf), c(NZ, -inf), c(0.0, nan),
+    c(NZ, nan), c(1.0, inf), c(-1.0, -inf), c(1.0, nan), c(-1.0, nan), c(inf, 0.0),
+    c(-inf, 0.0), c(inf, NZ), c(-inf, NZ), c(inf, 1.0), c(-inf, 1.0), c(inf, -1.0), c(-inf, -1.0),
+    c(inf, 3.0), c(-inf, -3.0), c(inf, inf), c(inf, -inf), c(-inf, inf), c(-inf, -inf),
+    c(inf, nan), c(-inf, nan), c(nan, 0.0), c(nan, NZ), c(nan, 1.0), c(nan, -1.0),
+    c(nan, inf), c(nan, -inf), c(nan, nan), c(2.0, 0.0), c(2.0, NZ), c(0.5, 0.0), c(0.5, NZ),
+    c(1.0, 0.0), c(1.0, NZ), c(-1.0, 0.0), c(-1.0, NZ), c(0.0, 1.0), c(NZ, 1.0), c(0.0, -1.0),
+    c(NZ, -1.0), c(0.0, 2.0), c(NZ, -2.0),
+)
+
+all_funcs :: fn(z: Complex(f64)) needs Out {
+    show("sin", z, cx.sin(z))
+    show("cos", z, cx.cos(z))
+    show("tan", z, cx.tan(z))
+    show("sinh", z, cx.sinh(z))
+    show("cosh", z, cx.cosh(z))
+    show("tanh", z, cx.tanh(z))
+    show("asin", z, cx.asin(z))
+    show("acos", z, cx.acos(z))
+    show("atan", z, cx.atan(z))
+    show("asinh", z, cx.asinh(z))
+    show("acosh", z, cx.acosh(z))
+    show("atanh", z, cx.atanh(z))
+}
+
+test_ordinary :: fn() needs Out {
+    for z in ordinary() { all_funcs(z) }
+}
+
+test_axes :: fn() needs Out {
+    for z in axis() { all_funcs(z) }
+    for z in imag_axis() { all_funcs(z) }
+}
+
+test_near :: fn() needs Out {
+    for z in near() { all_funcs(z) }
+}
+
+test_big :: fn() needs Out {
+    for z in big() { all_funcs(z) }
+}
+
+test_specials :: fn() needs Out {
+    for z in specials() { all_funcs(z) }
+}
+
+// Large real or imaginary parts: the hyperbolic functions overflow only where they must, even
+// when e^x alone would overflow.
+test_overflow_edge :: fn() needs Out {
+    zs := [_]Complex(f64)(
+        c(709.0, 1.0), c(710.0, 1.0), c(711.0, 0.5), c(720.0, 1.5707963267948966), c(750.0, 1.5707963267948966),
+        c(760.0, 1.5707963267948966), c(-760.0, 1.5707963267948966), c(1000.0, 1e-300), c(1400.0, 1e-300),
+        c(1450.0, 5e-324), c(1500.0, 5e-324), c(1500.0, 1.0), c(-1500.0, -1.0), c(1e300, 1.0),
+        c(30.0, 1.0), c(-30.0, 2.0), c(21.0, 1.0), c(23.0, -1.0), c(1.0, 710.0), c(1.0, 1e5),
+    )
+    for z in zs {
+        show("sinh", z, cx.sinh(z))
+        show("cosh", z, cx.cosh(z))
+        show("tanh", z, cx.tanh(z))
+        show("tan", z, cx.tan(z))
+        rot := c(-z.im, z.re)
+        show("sin", rot, cx.sin(rot))
+        show("cos", rot, cx.cos(rot))
+    }
+}
+
+// The identities that define the functions through each other, up to rounding.
+test_identities :: fn() needs Out {
+    for z in [_]Complex(f64)(c(0.3, 0.7), c(-1.2, 2.0), c(2.5, -0.4), c(-0.1, -3.0)) {
+        // sin(asin z) = z, cos(acos z) = z, tan(atan z) = z
+        a := cx.sin(cx.asin(z))
+        b := cx.cos(cx.acos(z))
+        d := cx.tan(cx.atan(z))
+        print("sin(asin({} {}i)) = {} {}i\n", z.re, z.im, a.re, a.im)
+        print("cos(acos({} {}i)) = {} {}i\n", z.re, z.im, b.re, b.im)
+        print("tan(atan({} {}i)) = {} {}i\n", z.re, z.im, d.re, d.im)
+        // sinh(asinh z) = z, cosh(acosh z) = z, tanh(atanh z) = z
+        e := cx.sinh(cx.asinh(z))
+        f := cx.cosh(cx.acosh(z))
+        g := cx.tanh(cx.atanh(z))
+        print("sinh(asinh({} {}i)) = {} {}i\n", z.re, z.im, e.re, e.im)
+        print("cosh(acosh({} {}i)) = {} {}i\n", z.re, z.im, f.re, f.im)
+        print("tanh(atanh({} {}i)) = {} {}i\n", z.re, z.im, g.re, g.im)
+        // cosh^2 - sinh^2 = 1
+        s := cx.sinh(z)
+        k := cx.cosh(z)
+        t := k * k - s * s
+        print("cosh^2-sinh^2({} {}i) = {} {}i\n", z.re, z.im, t.re, t.im)
+    }
+}
+
+main :: fn() needs Out {
+    test_ordinary()
+    test_axes()
+    test_near()
+    test_big()
+    test_specials()
+    test_overflow_edge()
+    test_identities()
+}

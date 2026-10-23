@@ -390,10 +390,6 @@ impl Parser<'_> {
     /// An optional effect clause `needs E1 + E2 + …` (§11.1); `needs not`, the empty
     /// set, only where `foreign` allows it. `Some(vec![])` is `needs not`.
     pub(super) fn parse_needs_opt(&mut self, foreign: bool) -> PResult<Option<Vec<Expr>>> {
-        if self.at(Punct::Backslash) {
-            let span = self.span();
-            return self.fail(span, "effects are written after `needs`: `fn() needs Alloc + Out` (§11.1)");
-        }
         if !self.at_kw(Keyword::Needs) {
             return Ok(None);
         }

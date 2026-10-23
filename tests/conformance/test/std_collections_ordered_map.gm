@@ -4,6 +4,7 @@
 // node back.
 om :: import "std/collections/ordered_map"
 fixed_buffer :: import "std/fixed_buffer"
+hm :: import "std/collections/hash_map"
 
 test "an empty map" {
     m := om.ordered_map(u32, string)
@@ -210,7 +211,7 @@ test "random operations agree with a hash map and a sort" {
     for domain in [_]u32(8, 40, 400, 5000) {
         m := om.ordered_map(u32, u32)
         defer m.deinit()
-        model := hash_map(u32, u32)
+        model := hm.hash_map(u32, u32)
         defer model.deinit()
         for step in 0..6000 {
             k := next(&rng) % domain

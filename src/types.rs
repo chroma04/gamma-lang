@@ -256,6 +256,9 @@ pub enum ArrayKind {
     Enum(Ty),
     /// `#simd [N]T`: a vector, whose operators act lane by lane (§5.6.2).
     Simd,
+    /// `#vec [N]T`: a math vector, laid out as `[N]T`, whose operators act element by
+    /// element (§5.6.3).
+    Math,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -286,7 +289,7 @@ pub enum TyKind {
         is_const: bool,
         elem: Ty,
     },
-    /// `[N]T`, `[E]T` or `#simd [N]T`, as `kind` says (§5.6).
+    /// `[N]T`, `[E]T`, `#simd [N]T` or `#vec [N]T`, as `kind` says (§5.6).
     Array {
         len: u64,
         elem: Ty,
@@ -578,6 +581,10 @@ impl Ty {
     pub fn vector(len: u64, elem: Ty) -> Ty {
         Ty::intern(TyKind::Array { len, elem, kind: ArrayKind::Simd })
     }
+    /// `#vec [N]T`: a math vector of `len` elements (§5.6.3).
+    pub fn math_vector(len: u64, elem: Ty) -> Ty {
+        Ty::intern(TyKind::Array { len, elem, kind: ArrayKind::Math })
+    }
     pub fn optional(inner: Ty) -> Ty {
         Ty::intern(TyKind::Optional(inner))
     }
@@ -655,12 +662,26 @@ impl Ty {
         }
     }
 
-    /// True for an array whose elements are reached by position: `[N]T` or a vector, not
-    /// `[E]T`.
+    /// True for a math vector type `#vec [N]T` (§5.6.3).
+    pub fn is_math_vector(self) -> bool {
+        matches!(self.kind(), TyKind::Array { kind: ArrayKind::Math, .. })
+    }
+
+    /// The length and element type of a math vector type.
+    pub fn math_vector_parts(self) -> Option<(u64, Ty)> {
+        match self.kind() {
+            TyKind::Array { len, elem, kind: ArrayKind::Math } => Some((*len, *elem)),
+            _ => None,
+        }
+    }
+
+    /// True for an array whose elements are reached by position: `[N]T`, a vector or a
+    /// math vector, not `[E]T`.
     pub fn is_positional_array(self) -> bool {
         matches!(
             self.kind(),
-            TyKind::Array { kind: ArrayKind::Plain | ArrayKind::Simd, .. } | TyKind::ParamArray { .. }
+            TyKind::Array { kind: ArrayKind::Plain | ArrayKind::Simd | ArrayKind::Math, .. }
+                | TyKind::ParamArray { .. }
         )
     }
 
@@ -908,6 +929,7 @@ impl Ty {
             }
             TyKind::Array { kind: ArrayKind::Enum(e), elem, .. } => write!(f, "[{}]{}", e, elem),
             TyKind::Array { len, elem, kind: ArrayKind::Simd } => write!(f, "#simd [{}]{}", len, elem),
+            TyKind::Array { len, elem, kind: ArrayKind::Math } => write!(f, "#vec [{}]{}", len, elem),
             TyKind::Array { len, elem, kind: ArrayKind::Plain } => write!(f, "[{}]{}", len, elem),
             TyKind::Tuple { elems, names } => {
                 f.write_str("(")?;

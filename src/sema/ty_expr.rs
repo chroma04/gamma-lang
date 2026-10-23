@@ -347,6 +347,16 @@ impl<'s> Sema<'s> {
             ExprKind::Attributed { attrs, inner } if matches!(&inner.kind, ExprKind::PtrType { inner: f, .. } if matches!(f.kind, ExprKind::FnType(_))) => {
                 self.callconv_fn_ptr(module, attrs, inner, e.span)
             }
+            ExprKind::Attributed { attrs, inner }
+                if attrs.iter().any(|a| a.name.name.as_str() == "soa")
+                    && matches!(inner.kind, ExprKind::ArrayType { .. } | ExprKind::SliceType { .. }) =>
+            {
+                if attrs.len() > 1 || attrs[0].args.is_some() {
+                    self.error(e.span, "`#soa` takes no arguments and is written once: `#soa [N]S` or `#soa []S`");
+                    return Ty::error();
+                }
+                self.soa_type_expr(module, inner, e.span)
+            }
             ExprKind::Attributed { attrs, inner } if matches!(inner.kind, ExprKind::ArrayType { .. }) => {
                 self.vector_type(module, attrs, inner, e.span)
             }

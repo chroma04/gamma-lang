@@ -1,0 +1,26 @@
+//! stage: check
+// Spreading arrays (§11.4): an array or vector of known length gives its elements, an
+// enum-indexed array or an array whose length is a compile-time parameter does not.
+
+Dir :: union { N, E, S, W }
+
+f :: fn(a, b, c: i32) -> i32 => a + b + c
+
+sum :: fn(N :: usize, xs: [N]i32) -> i32 {
+    return f(..xs)                 //~ ERROR cannot be spread: its length depends on a compile-time parameter
+}
+
+g :: fn(xs: [3]i32, ys: [2]i32, d: [Dir]i32) {
+    _ = f(..xs)
+    _ = f(..ys)                    //~ ERROR
+    _ = f(..d)                     //~ ERROR cannot be spread: its elements are named by its variants
+    _ = (i32, i32)(..xs)           //~ ERROR
+    _ = (a: i32, b: i32, c: i32)(..xs)
+    _ = (i32, i32, i32)(xs)        //~ ERROR so an array is not converted to it; spread it
+    _ = (i32, i32, i32, i32)(..d)  //~ ERROR cannot be spread
+}
+
+main :: fn() needs Out {
+    xs := [_]i32(1, 2)
+    print("{} {} {}\n", ..xs)      //~ ERROR the template has 3 placeholders, so this spread must have 3 values
+}

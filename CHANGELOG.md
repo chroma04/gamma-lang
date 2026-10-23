@@ -4,6 +4,85 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
+## Unreleased
+
+### Language
+
+- **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the
+  layout of C's `_Complex`, and the operators `+ - * /`, unary `-`, and scaling by a scalar;
+  methods `conj()` and `abs()`. Division is Smith's algorithm (§5.3.1, §7.4.7).
+  Imaginary literals write complex constants: `3 + 4j` is one untyped complex constant,
+  computed exactly and typed by inference (falling back to `Complex(f64)`); `2.5j32` fixes
+  the part type. A real constant is a complex number where one is expected and beside one
+  (`z: C64 = 1`, `z + 1`, `1 / z`, `z is 0`) (§2.5.2, §6.1, §6.2).
+- **Math vectors**: `#vec [N]T`, with `N` from 2 to 4 and an integer or float `T`, an array
+  layout that is C-compatible, element-wise operators, scalar `*` and `/`, and the methods
+  `dot`, `cross`, `norm`, `min`, `max` and `abs` (§5.6.3, §7.4.7).
+- **Structure-of-arrays**: `#soa [N]S` and `#soa []S` store a struct type `S` by field, one
+  array per field. `a[i]` gathers or stores a whole element, `a[i].f` is a field of one
+  element (a place), `a.f` a whole column; slicing, `&a` to a slice, `for`, `is` and `@hash`
+  work as for arrays and slices; `T.make(n)` and `s.free()` allocate and release a `#soa`
+  slice in one block (§5.6.4).
+- `Float(T)` now implies `Neg(T)`, so unary minus works in generic code over floats.
+- Examples `nbody.gm` (math vectors) and `julia.gm` (complex numbers).
+- An array `[N]T` or a vector spreads into its `N` elements like an unnamed tuple:
+  `f(..xs)`, `(u8, u8, u8)(..xs)`, `print("{} {}", ..pair)` (§11.4). An enum-indexed array,
+  or one whose length is a compile-time parameter, cannot be spread.
+- New chapter 23 of the specification: what is a compile error, a trap or an error value,
+  what a diagnostic reports and what it does not, and the limits every implementation
+  supports (64 levels of nesting, …).
+- The specification states rules the compiler already enforced: a struct may not contain
+  itself by value, a directory without `.gm` files is not a module, and the characters of
+  foreign library and symbol names.
+- The hash map moved from the core library to the standard module
+  `std/collections/hash_map`: write `hm :: import "std/collections/hash_map"`, then
+  `hm.hash_map(K, V)` and `hm.HashMap(K, V)`. `List` is now the only container in the
+  core library, the one the language definition refers to (§21.5). The universe names
+  `HashMap`, `hash_map` and `hash_map_with` stay for one release as `#deprecated` names of
+  the same declarations, so existing code compiles with a warning.
+- The specification's rationale (Appendix C.8) records why constraints stay predicates on
+  one type and why `in` covers only built-in sequences: library containers answer
+  membership with `contains`.
+
+### Standard library
+
+- Slices and arrays have new builtin methods (§21.3): `reverse()`, `rotate_left(k)`,
+  `rotate_right(k)`, `dedup()`, `partition(pred)`, `select_nth(n)` and `select_nth_by(n,
+  less)`, `is_sorted()` and `is_sorted_by(less)`, and `upper_bound(x)`, the counterpart of
+  `binary_search`'s lower bound. Like the sorts, they work in place and allocate nothing.
+- `std/uuid`: RFC 9562 identifiers, with `v4()` (needs `Rand`), `v7()` (needs `Clock +
+  Rand`), and `parse` and `format` of the canonical text.
+- `std/net`: IP address values `Ipv4`, `Ipv6` and `IpAddr`, parsed from the text forms of
+  RFC 4291 (`parse_ipv4`, `parse_ipv6`, `parse_ip`) and written in the canonical form of
+  RFC 5952 (`format_ipv4`, `format_ipv6`, `format_ip`), plus `is_loopback` and
+  `is_unspecified`.
+- `std/fs`: `remove_all(path)` removes a directory tree without following symbolic links;
+  `temp_dir()`, `create_temp(dir, prefix, buf)` and `make_temp_dir(dir, prefix, buf)`
+  create temporary files and directories under fresh random names.
+- `std/math`: `asinh`, `acosh`, `atanh`, `erf`, `erfc`, `lgamma`, `lgamma_sign`, `tgamma`,
+  `frexp`, `ldexp` and `nextafter`; and, for every integer type, `gcd`, `lcm`, `isqrt`,
+  `ilog2`, `ilog10`, `div_floor` and `mod_floor`.
+- `std/complex`: `tan`, `sinh`, `cosh`, `tanh`, `asin`, `acos`, `atan`, `asinh`, `acosh` and
+  `atanh`, with the branch cuts and special values of C99 Annex G. `sin` and `cos` are now
+  computed through `sinh` and `cosh`, so they also follow Annex G for infinite and NaN parts,
+  and a finite part is no longer lost to an overflow (`sin(-0.5 + 711i)` was `-inf + inf*i`).
+- `std/time`: `parse_duration`, the inverse of `format_duration`; ISO 8601 week dates and
+  ordinal dates (`iso_week`, `from_iso_week`, `day_of_year`, `from_ordinal`, and
+  `format_`/`parse_iso_week` and `format_`/`parse_ordinal` for their text).
+- `std/text`: UTF-16 with `utf16_len`, `encode_utf16`, `append_utf16` and the iterator
+  `decode_utf16`.
+
+### Diagnostics
+
+- An `else` arm of a `match` gets the plain "expected a pattern" error, without a fix.
+- The hint to write `is` for `=` is given only after an `if` or `while` condition.
+- `#allow` with a name that is not a lint rule no longer stops compilation; `gamma lint`
+  reports it.
+- Nesting deeper than the parser's limit (now 256) and other implementation limits say
+  which limit was reached.
+- A spread that fails no longer also reports every element it did not supply.
+- The old effect syntax `\` is no longer recognized: `\` is an unexpected character.
+
 ## 0.1.0 - 2026-10-20
 
 The first release: the complete language of `gamma-spec.md`, implemented on three

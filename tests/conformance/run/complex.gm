@@ -1,0 +1,153 @@
+// Complex numbers `Complex(T)` (§5.3.1, §7.4.7, §21.3): construction, operators with Smith's
+// division, scalar operations, `conj` and `abs` (also for huge, infinite and NaN parts), the
+// float types, generic code, constants, compound assignment, `is` and formatting.
+C64 :: Complex(f64)
+C32 :: Complex(f32)
+
+Wave :: struct {
+    z: C64
+    n: u32
+}
+
+TWO :: C64(re: 1, im: 1) * C64(re: 1, im: 1)
+HALF :: C64(re: 3, im: -1) / 2
+MAG :: C64(re: 3, im: 4).abs()
+
+mandelbrot_steps :: fn(c: C64, limit: u32) -> u32 {
+    z := C64(re: 0, im: 0)
+    for n in 0..limit {
+        if z.abs() > 2 {
+            return n
+        }
+        z = z * z + c
+    }
+    return limit
+}
+
+square :: fn(T: type, z: Complex(T)) -> Complex(T) where Float(T) => z * z
+
+norm_sq :: fn(T: type, z: Complex(T)) -> T where Float(T) {
+    w := z * z.conj()
+    return w.re
+}
+
+scaled :: fn(T: type, z: Complex(T), k: T) -> Complex(T) where Float(T) => k * z / k + z * k
+
+main :: fn() needs Out {
+    // Construction and fields.
+    a := C64(re: 1, im: 2)
+    b := C64(re: 3, im: -4)
+    print("{} {}\n", a, b)
+    print("{} {} {}\n", a.re, a.im, @size_of(C64))
+    print("{}\n", @size_of(C32))
+    z := C64(re: 0, im: 0)
+    z.im = 5
+    z.re += 1.5
+    print("{}\n", z)
+
+    // Addition, subtraction, negation, multiplication.
+    print("{} {} {}\n", a + b, a - b, -a)
+    print("{} {}\n", a * b, b * a)
+    print("{} {}\n", a * a, C64(re: 0, im: 1) * C64(re: 0, im: 1))
+
+    // Division: Smith's algorithm, branch |re| >= |im| of the divisor.
+    print("{}\n", C64(re: 10, im: 5) / C64(re: 4, im: 2))
+    print("{}\n", C64(re: 1, im: 1) / C64(re: 2, im: 0))
+    print("{}\n", C64(re: 3, im: 4) / C64(re: 2, im: -1))
+    print("{}\n", C64(re: 1, im: 0) / C64(re: 4, im: 4))
+    // Division: the other branch, |re| < |im|.
+    print("{}\n", C64(re: 1, im: 2) / C64(re: 1, im: 2))
+    print("{}\n", C64(re: 0, im: 1) / C64(re: 0, im: 2))
+    print("{}\n", C64(re: 2, im: 4) / C64(re: 1, im: -2))
+    print("{}\n", C64(re: 1, im: 0) / C64(re: 0, im: 1))
+    print("{}\n", C64(re: 5, im: 5) / C64(re: 1, im: 4))
+
+    // Division by a large divisor does not overflow.
+    big := C64(re: 1e200, im: 2e200)
+    print("{}\n", big / big)
+    print("{}\n", C64(re: 1e300, im: 1e300) / C64(re: 1e300, im: 1e300))
+    print("{}\n", C64(re: 1e300, im: 1e300) / C64(re: 0, im: 1e300))
+
+    // Scalars on either side.
+    print("{} {} {}\n", a * 2, 2 * a, a / 2)
+    print("{} {}\n", a * 0.5, 0.5 * a)
+    print("{} {}\n", a * f64(3), f64(3) * a)
+    print("{} {}\n", a / 4, C64(re: 1, im: 1) / 0)
+    print("{}\n", C64(re: 0, im: 0) / 0)
+
+    // Conjugate and magnitude.
+    print("{} {}\n", a.conj(), a.conj().conj())
+    print("{} {} {}\n", MAG, C64(re: 5, im: 12).abs(), C64(re: -8, im: 15).abs())
+    print("{} {} {}\n", C64(re: 0, im: 0).abs(), C64(re: -3, im: 0).abs(), C64(re: 0, im: -7).abs())
+    print("{}\n", C64(re: 1e300, im: 1e300).abs() > 1e300)
+    print("{}\n", C64(re: 3e300, im: 4e300).abs() / 1e300)
+    print("{}\n", C64(re: 3e-300, im: 4e-300).abs() / 1e-300)
+    print("{}\n", C64(re: 1e308, im: 1e308).abs() > 1e308)
+    inf := 1.0 / 0.0
+    nan := 0.0 / 0.0
+    print("{} {}\n", C64(re: inf, im: 1).abs(), C64(re: 1, im: -inf).abs())
+    print("{} {}\n", C64(re: inf, im: nan).abs(), C64(re: nan, im: -inf).abs())
+    print("{} {}\n", C64(re: nan, im: 1).abs(), C64(re: 1, im: nan).abs())
+    print("{}\n", C64(re: nan, im: nan).abs())
+
+    // Infinity and NaN propagate through the formulas.
+    p := C64(re: inf, im: 0) * C64(re: 0, im: 1)
+    print("{} {}\n", p.re, p.im)
+    q := C64(re: nan, im: 1) + C64(re: 1, im: 1)
+    print("{} {}\n", q.re, q.im)
+    r := C64(re: 1, im: 1) / C64(re: 0, im: 0)
+    print("{} {}\n", r.re, r.im)
+
+    // The float types.
+    x32 := C32(re: 1.5, im: -0.5)
+    y32 := C32(re: 2, im: 4)
+    print("{} {} {}\n", x32 + y32, x32 * y32, x32 / y32)
+    print("{} {} {}\n", x32 * 2, 4 * x32, y32 / 8)
+    print("{} {}\n", y32.conj(), C32(re: 3, im: 4).abs())
+
+    // Generic code.
+    print("{} {}\n", square(a), square(x32))
+    print("{}\n", norm_sq(b))
+    print("{}\n", norm_sq(y32))
+    print("{} {}\n", scaled(a, 2), scaled(x32, 4))
+
+    // Constants.
+    print("{} {} {}\n", TWO, HALF, MAG)
+
+    // Compound assignment: locals, struct fields, array elements and pointers.
+    c := C64(re: 1, im: 1)
+    c += C64(re: 1, im: 0)
+    c *= C64(re: 0, im: 1)
+    c -= C64(re: 0.5, im: 0.5)
+    c /= C64(re: 2, im: 0)
+    print("{}\n", c)
+    c *= 4
+    c /= 8
+    print("{}\n", c)
+    w := Wave(z: C64(re: 1, im: 2), n: 3)
+    w.z *= w.z
+    w.z += C64(re: 1, im: 1)
+    print("{} {}\n", w.z, w.n)
+    cs := [2]C64(C64(re: 1, im: 0), C64(re: 0, im: 1))
+    cs[0] += cs[1]
+    cs[1] *= cs[0]
+    print("{} {}\n", cs[0], cs[1])
+    pc := &cs[0]
+    pc^ *= 2
+    pc^ -= C64(re: 1, im: 1)
+    print("{}\n", cs[0])
+
+    // Comparison, formatting.
+    print("{} {}\n", a is C64(re: 1, im: 2), a is C64(re: 1, im: 3))
+    print("{} {}\n", a is not b, a is not a)
+    nz := C64(re: nan, im: 0)
+    print("{} {}\n", nz is nz, nz is not nz)
+    print("{}\n", C64(re: 0.0, im: 0) is C64(re: -0.0, im: 0))
+    if a is C64(re: 1, im: 2) {
+        print("equal\n")
+    }
+    print("{}\n", C64(re: -1.25, im: 1e10))
+    print("{}\n", mandelbrot_steps(C64(re: 0, im: 0), 50))
+    print("{}\n", mandelbrot_steps(C64(re: 1, im: 1), 50))
+    print("{}\n", mandelbrot_steps(C64(re: -0.75, im: 0.1), 50))
+}

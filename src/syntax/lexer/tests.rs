@@ -347,8 +347,8 @@ fn float_errors() {
     one_err("0x1.8", "require a `p` exponent");
     one_err("1.5f33", "invalid suffix `f33` for float literal");
     one_err("1.5_", "separators");
-    one_err("1e99999999", "exponent is too large");
-    one_err("0x1.0p99999999", "exponent is too large");
+    one_err("1e99999999", "the exponent is larger than 100000");
+    one_err("0x1.0p99999999", "the exponent is larger than 100000");
 }
 
 // ----- numeric field names -----
@@ -568,7 +568,7 @@ fn rule_1_suppresses_newlines_after_operators() {
     let binary = [
         "*", "/", "%", "*%", "*|", "*?", "+", "-", "+%", "+|", "+?", "-%", "-|", "-?", "<<", ">>", "<<%", "<<|", "<<?",
         "&", "|", "~", "..", "..=", "<", "<=", ">", ">=", "=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "|=",
-        "~=", "+%=", "-%=", "*%=", "<<%=", "+|=", "-|=", "*|=", "<<|=", ",", "::", ":=", ":", "=>", "->", "\\", ".",
+        "~=", "+%=", "-%=", "*%=", "<<%=", "+|=", "-|=", "*|=", "<<|=", ",", "::", ":=", ":", "=>", "->", ".",
         "is not", "not in", "is", "in", "and", "or", "else",
     ];
     for op in binary {
@@ -836,7 +836,10 @@ fn full_statements() {
         "x : u8 = 255 NL for i in 0 .. n { s += i NL } EOF"
     );
     assert_eq!(toks("p := a.b.0.1(c)?.d!"), "p := a . b . 0 . 1 ( c ) ? . d ! EOF");
-    assert_eq!(toks("fn(x: ^const T) -> E!?T \\ {A, B} => x"), "fn ( x : ^ const T ) -> E ! ? T \\ { A , B } => x EOF");
+    assert_eq!(
+        toks("fn(x: ^const T) -> E!?T needs A + B => x"),
+        "fn ( x : ^ const T ) -> E ! ? T needs A + B => x EOF"
+    );
 }
 
 #[test]

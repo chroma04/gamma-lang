@@ -48,7 +48,7 @@
 12:5 punct ^
 12:7 punct @
 12:9 punct #
-12:11 punct \
+12:10 newline
 13:1 punct ..
 13:4 punct ..=
 13:8 punct ...

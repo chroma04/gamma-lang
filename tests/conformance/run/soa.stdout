@@ -1,0 +1,20 @@
+32 8
+68 true
+3 Particle(pos: [9, 2], vel: [0, 0], alive: true)
+Particle(pos: [5, 5], vel: [1, 1], alive: false)
+[2, 1]
+[[1, 2], [9, 2], [5, 5]] [true, true, false]
+[[1.5, 2], [9.5, 2], [5.5, 5]]
+2 [9.5, 2] [[9.5, 2], [5.5, 5]]
+1 true
+16.5
+15
+true true true 
+[9.5, 2]
+#soa [2]Pair(a: [1, 2], b: [10, 20]) 20
+#soa [2]Pair(a: [7, 7], b: [70, 70]) Pair(a: 7, b: 70)
+true false
+true true
+false false
+false true
+(pos: [[9.5, 2], [5.5, 5]], vel: [[1, 0], [1, 0]], alive: [true, true])

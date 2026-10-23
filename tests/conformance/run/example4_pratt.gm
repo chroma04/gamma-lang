@@ -1,5 +1,6 @@
 // Tokenizer (a failing Yield iterator), Pratt parser and tree-walking evaluator with variables, functions and line/column diagnostics.
 arena :: import "std/arena"
+hm :: import "std/collections/hash_map"
 
 Kind :: union {
     Num, Ident, Let, Def, If, Then, Else
@@ -293,8 +294,8 @@ Scope :: struct {
 }
 
 Interp :: struct {
-    globals: HashMap(string, i64)
-    funcs: HashMap(string, Def)
+    globals: hm.HashMap(string, i64)
+    funcs: hm.HashMap(string, Def)
     depth: u32 = 0
     calls: u64 = 0
 }
@@ -489,7 +490,7 @@ main :: fn() needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {
-        it := Interp(globals: hash_map(string, i64), funcs: hash_map(string, Def))
+        it := Interp(globals: hm.hash_map(string, i64), funcs: hm.hash_map(string, Def))
         run_source(&it, PROGRAM_OK)
         print("({} calls)\n", it.calls)
 

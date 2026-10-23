@@ -1,0 +1,12 @@
+//! mode: fast
+//! exit: 134
+//! stderr
+// Integer division by zero in an element of a math vector traps in every build mode,
+// Fast included (§7.4.5).
+IV3 :: #vec [3]i32
+
+main :: fn() needs Out {
+    v := IV3(10, 20, 30)
+    d := IV3(5, 5, 0)
+    print("{}\n", v % d)
+}

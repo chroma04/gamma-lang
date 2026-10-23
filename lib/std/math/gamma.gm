@@ -1,0 +1,142 @@
+// The gamma function: tgamma, and the double-double gamma that lgamma builds on.
+//
+// gamma(x) is reduced to u = x + m in [1, 2) for an integer m, by the
+// recurrence gamma(x) = gamma(u) / (x (x+1) ... (x+m-1)) for x < 1 and
+// gamma(x) = gamma(u) * u (u+1) ... (x-1) for x >= 2; this covers negative x
+// too, so no reflection formula (and no sine) is needed, and it is exact for
+// the integers (factorials). Everything is carried in double-double
+// arithmetic: the products, and gamma(u) itself, a polynomial of degree 40 in
+// t = u - 3/2 (a Chebyshev fit of gamma on [1, 2] with relative error 8e-32,
+// converted to powers of t). The only rounding that remains is the final one,
+// so the result is correctly rounded except in rare near-halfway cases (the
+// worst error measured is 0.4999 ulp); for results in the subnormal range the
+// double rounding costs at most one more half ulp of that range.
+
+GAMMA_HI: [41]f64 : [41]f64(
+    0x1.c5bf891b4ef6bp-1, 0x1.08ea88ee561b1p-5,
+    0x1.a8c4dba620d57p-2, -0x1.b77ac1ca2eba5p-4,
+    0x1.283bd374eb2a9p-3, -0x1.3d88cfe50606ep-4,
+    0x1.e022b7434f056p-5, -0x1.374fd5cc92307p-5,
+    0x1.a752c6af0044ap-6, -0x1.1a2c297b7dc36p-6,
+    0x1.7991dd6395dfcp-7, -0x1.f7fc564f09ebcp-8,
+    0x1.504eb103f42dcp-8, -0x1.c0a23192daf74p-9,
+    0x1.2b2f00c575ac8p-9, -0x1.8efc5deb2e4fdp-10,
+    0x1.0a0540a8e292fp-10, -0x1.62b7cd15c7e12p-11,
+    0x1.d8f9fae096550p-12, -0x1.3b53490c33012p-12,
+    0x1.a4709eb3c4f28p-13, -0x1.184bb49753bb1p-13,
+    0x1.75bac70485920p-14, -0x1.f24eebc9496d1p-15,
+    0x1.4c34c67244b5ap-15, -0x1.baeee26fbee02p-16,
+    0x1.2749f97e83ffcp-16, -0x1.89d36bceb4618p-17,
+    0x1.068cf6c378196p-17, -0x1.5d102d289c765p-18,
+    0x1.d16ae995194acp-19, -0x1.3d893175c40a6p-19,
+    0x1.a76198253c765p-20, -0x1.e555f9b8e1545p-21,
+    0x1.438ea6c212218p-21, -0x1.75405b1e55096p-21,
+    0x1.f1ab243f6aea4p-22, 0x1.8eccab3c0b5f2p-24,
+    -0x1.09ddc7705fc29p-24, -0x1.3f0a226c2aa60p-22,
+    0x1.a962d891fbbbdp-23,
+)
+
+GAMMA_LO: [41]f64 : [41]f64(
+    -0x1.618f13eb7ca89p-55, 0x1.fbccaad53b656p-59,
+    -0x1.bf1c49e14f74ap-56, -0x1.b413ab6bda8dfp-59,
+    0x1.e7a7ab89b0943p-57, 0x1.76730e1e45cdap-59,
+    0x1.2e5ca36339ffep-59, 0x1.eb5b74318fe26p-59,
+    0x1.6539b48afbedbp-60, -0x1.ad4a3207b185ap-60,
+    0x1.e592dd0e86509p-64, 0x1.9bdd87b367259p-63,
+    0x1.00d3aeaa0a9b4p-63, -0x1.4711a05f7e02ep-64,
+    0x1.c851f8e1196e2p-64, -0x1.ae3274fa6acb3p-66,
+    -0x1.0571be31f06cdp-68, 0x1.27af336e21719p-65,
+    -0x1.aff0a0ba9aba3p-66, 0x1.2b74b81e07875p-66,
+    -0x1.711c7513e4039p-67, -0x1.325409f08539fp-68,
+    -0x1.001923360d583p-70, 0x1.abc52fc373455p-70,
+    0x1.e4e70d91ae124p-69, -0x1.da559f1d12c1cp-70,
+    0x1.1561a9114e0a2p-71, 0x1.9baa96a036152p-72,
+    -0x1.4ca22c35bde42p-71, 0x1.b66c2867d8db9p-77,
+    -0x1.55d7a30ca907fp-73, 0x1.6453788449d1bp-75,
+    -0x1.499bb17d33728p-75, 0x1.de0c0f109b1c2p-76,
+    0x1.331baa356acf1p-75, -0x1.ce94e3ae80fa2p-76,
+    -0x1.3ee585c397ca3p-76, -0x1.e669fa3c35939p-80,
+    -0x1.e8f80d9b815adp-78, 0x1.2f5ca2edecdc8p-80,
+    -0x1.6015bda1d5194p-77,
+)
+
+// gamma(u) for u in [1, 2], given as t = u - 3/2 (a double-double).
+gamma_poly :: fn(t: (f64, f64)) -> (f64, f64) {
+    n: usize = 40
+    acc := (GAMMA_HI[n], GAMMA_LO[n])
+    while n > 0 {
+        n -= 1
+        acc = dd_add(dd_mul(acc, t), (GAMMA_HI[n], GAMMA_LO[n]))
+    }
+    return acc
+}
+
+// Multiplies the double-double `p` by `f`, keeping |p| below 2**200 by
+// moving powers of 2**200 into the count `sc`.
+gamma_step :: fn(p: (f64, f64), f: (f64, f64), sc: i32) -> ((f64, f64), i32) {
+    q := dd_mul(p, f)
+    if abs(q.0) > 0x1.0p200 { return ((q.0 * 0x1.0p-200, q.1 * 0x1.0p-200), sc + 200) }
+    return (q, sc)
+}
+
+// gamma(x) as `(g, e)`: the double-double g times 2**e. It needs x finite, not
+// a non-positive integer, with 2**-60 <= |x| and -184 < x < 172, so that the
+// exponent e is at most a few thousand in magnitude.
+gamma_dd :: fn(x: f64) -> ((f64, f64), i32) {
+    // u = x + m exactly, as a double-double, with u in [1, 2).
+    mf := 1.0 - floor(x)
+    m := mf.trunc(i32)
+    u := two_sum(x, mf)
+    p := (1.0, 0.0)
+    sc: i32 = 0
+    if m > 0 {
+        k: i32 = 0
+        while k < m {
+            r := gamma_step(p, two_sum(x, f64(k)), sc)
+            p = r.0
+            sc = r.1
+            k += 1
+        }
+    } else {
+        // x >= 2, so u is a double
+        j: i32 = 0
+        while j < -m {
+            r := gamma_step(p, two_sum(u.0, f64(j)), sc)
+            p = r.0
+            sc = r.1
+            j += 1
+        }
+    }
+    g := (1.0, 0.0)
+    if not (u.0 is 1.0 and u.1 is 0.0) {
+        g = gamma_poly(fast_two_sum(u.0 - 1.5, u.1))
+    }
+    if m > 0 { return (dd_div(g, p), -sc) }
+    return (dd_mul(g, p), sc)
+}
+
+/// The gamma function of `x`. It is `+-inf` for `+-0` (with the sign of the
+/// zero), NaN for the negative integers and for `-inf`, and +inf for `+inf`
+/// and for `x` above about 171.62, where the result exceeds the largest finite
+/// number. For negative `x` the sign alternates between the poles, and the
+/// result underflows to a signed zero below about -184. The result is within
+/// 1 ulp of the exact value, and exact where that is a double (the factorials
+/// up to 22!).
+pub tgamma :: fn(x: f64) -> f64 {
+    if x.is_nan() { return x }
+    if x is inf { return inf }
+    if x is -inf { return nan }
+    if (high_word(x) & 0x7fffffff) < 0x3c300000 {
+        // |x| < 2**-60: gamma(x) = 1/x - 0.5772..., which rounds to 1/x
+        return 1.0 / x
+    }
+    fl := floor(x)
+    if x < 0.0 and fl is x { return nan }
+    if x >= 172.0 { return inf }
+    if x <= -184.0 {
+        if 2.0 * floor(0.5 * fl) is fl { return 0.0 }
+        return NEG_ZERO
+    }
+    r := gamma_dd(x)
+    return scalbn(r.0.0, r.1)
+}

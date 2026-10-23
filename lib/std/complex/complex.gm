@@ -1,0 +1,567 @@
+//! Functions of a complex variable on `Complex(f64)`, written entirely in Gamma.
+//!
+//! The type, its operators, `conj` and `abs` are in the core library; this
+//! module adds the polar form and the transcendental functions. Everything is
+//! built on `std/math`, so results are bit-identical on every back end and
+//! during compile-time evaluation.
+//!
+//! All functions return the principal value. `log` and `sqrt` have their branch
+//! cut along the negative real axis, and the sign of a zero imaginary part
+//! chooses the side, as in C99: `sqrt(-4 + 0i)` is `2i` and `sqrt(-4 - 0i)`
+//! is `-2i`.
+//!
+//! Special values follow C99 Annex G for `exp`, `log`, `sqrt` and `arg`, which
+//! are the cases with a well-defined limit. `from_polar` and `pow` apply the
+//! arithmetic of their definitions and do not special-case infinities.
+//!
+//! The trigonometric functions `sin`, `cos` and `tan`, the hyperbolic `sinh`,
+//! `cosh` and `tanh`, and the inverse functions `asin`, `acos`, `atan`,
+//! `asinh`, `acosh` and `atanh` follow C99 Annex G (G.6) completely: branch
+//! cuts, the signs of zero parts, infinities and NaN. The branch cuts are
+//! listed in each function's documentation. A NaN result has no defined sign
+//! or payload, and where Annex G leaves the sign of an infinity or a zero
+//! optional the choice made here is documented by the tests.
+//!
+//! The inverse functions are the algorithms of Hull, Fairgrieve and Tang,
+//! "Implementing the complex arcsine and arccosine functions using exception
+//! handling" (ACM TOMS 23, 1997), in the form of FreeBSD's msun `catrig.c`
+//! (Bruce D. Evans, BSD licence): they neither overflow for huge arguments
+//! nor lose accuracy close to the branch cuts or the points +-1 and +-i.
+//! `tanh` is Kahan's formula as in FreeBSD's `s_ctanh.c`, `sinh` and `cosh`
+//! follow `s_csinh.c` and `s_ccosh.c`.
+
+math :: import "std/math"
+
+mk :: fn(re, im: f64) -> Complex(f64) => Complex(f64)(re: re, im: im)
+
+/// The argument (phase angle) of `z` in radians, in `[-pi, pi]`. It is `pi` or
+/// `-pi` on the negative real axis, according to the sign of the zero imaginary
+/// part.
+pub arg :: fn(z: Complex(f64)) -> f64 => math.atan2(z.im, z.re)
+
+/// The number with magnitude `r` and argument `theta`: `r*cos(theta) +
+/// r*sin(theta)*i`.
+pub from_polar :: fn(r, theta: f64) -> Complex(f64) =>
+    mk(r * math.cos(theta), r * math.sin(theta))
+
+/// The exponential `e^z`. On the real axis it is exact (`exp(x + 0i)` has the
+/// imaginary part of `z`), and a part whose true value is finite is not lost to
+/// an intermediate overflow of `e^x`.
+pub exp :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if y is 0.0 { return mk(math.exp(x), y) }
+    if x.is_nan() { return mk(x, math.nan) }
+    if x.is_inf() {
+        if x > 0.0 {
+            if y.is_inf() or y.is_nan() { return mk(x, math.nan) }
+            return mk(x * math.cos(y), x * math.sin(y))
+        }
+        if y.is_inf() or y.is_nan() { return mk(0.0, 0.0) }
+        return mk(math.copysign(0.0, math.cos(y)), math.copysign(0.0, math.sin(y)))
+    }
+    if y.is_inf() or y.is_nan() { return mk(math.nan, math.nan) }
+    c := math.cos(y)
+    s := math.sin(y)
+    if x > 709.0 {
+        // e^x alone would overflow: apply it in two halves.
+        t := math.exp(x * 0.5)
+        return mk((t * c) * t, (t * s) * t)
+    }
+    e := math.exp(x)
+    return mk(e * c, e * s)
+}
+
+/// The natural logarithm: `log|z| + arg(z)*i`. The logarithm of zero has the
+/// real part `-inf`. Near `|z| = 1` the real part is computed with `log1p`,
+/// so it keeps its relative accuracy there.
+pub log :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    m := math.hypot(x, y)
+    if m > 0.5 and m < 2.0 {
+        return mk(0.5 * math.log1p((x - 1.0) * (x + 1.0) + y * y), arg(z))
+    }
+    return mk(math.log(m), arg(z))
+}
+
+/// The principal square root, with `re >= 0`. It uses the stable formulas that
+/// avoid cancellation, and it does not overflow for large parts.
+pub sqrt :: fn(z: Complex(f64)) -> Complex(f64) {
+    a := z.re
+    b := z.im
+    if a is 0.0 and b is 0.0 { return mk(0.0, b) }
+    if b.is_inf() { return mk(math.inf, b) }
+    if a.is_nan() { return mk(a, math.nan) }
+    if a.is_inf() {
+        if a < 0.0 { return mk(0.0, math.copysign(a, b)) }
+        return mk(a, math.copysign(0.0, b))
+    }
+    scaled := false
+    if math.abs(a) >= 7.4e307 or math.abs(b) >= 7.4e307 {
+        a = a * 0.25
+        b = b * 0.25
+        scaled = true
+    }
+    re := 0.0
+    im := 0.0
+    if a >= 0.0 {
+        t := math.sqrt((a + math.hypot(a, b)) * 0.5)
+        re = t
+        im = b / (2.0 * t)
+    } else {
+        t := math.sqrt((-a + math.hypot(a, b)) * 0.5)
+        re = math.abs(b) / (2.0 * t)
+        im = math.copysign(t, b)
+    }
+    if scaled { return mk(re * 2.0, im * 2.0) }
+    return mk(re, im)
+}
+
+/// `z` raised to the power `w`, as `exp(w * log(z))`. `pow(z, 0)` is 1 for
+/// every `z`. For `z = 0` the result is 0 when `re(w) > 0`, infinite on the
+/// real axis when `w` is a negative real and NaN otherwise. Integer powers are
+/// not exact; multiply for small integral exponents.
+pub pow :: fn(z, w: Complex(f64)) -> Complex(f64) {
+    if w.re is 0.0 and w.im is 0.0 { return mk(1.0, 0.0) }
+    if z.re is 0.0 and z.im is 0.0 {
+        if w.re > 0.0 { return mk(0.0, 0.0) }
+        if w.re < 0.0 and w.im is 0.0 { return mk(math.inf, 0.0) }
+        return mk(math.nan, math.nan)
+    }
+    return exp(w * log(z))
+}
+
+/// The sine, `-i*sinh(i*z)`: `sin(x)cosh(y) + cos(x)sinh(y)*i` for `z = x + yi`. It
+/// is entire, so it has no branch cut, and its special values follow from `sinh`
+/// (C99 Annex G): `sin(+-0 + yi)` is `+-0 + sinh(y)*i`; `sin(x +- 0i)` is
+/// `sin(x) +- 0i` for a finite `x` and `NaN +- 0i` for an infinite or NaN `x`;
+/// `sin(x + yi)` for an infinite `y` is `inf*sin(x) + y*cos(x)*i` for a finite
+/// non-zero `x` and `NaN + y*i` for an infinite or NaN `x`.
+pub sin :: fn(z: Complex(f64)) -> Complex(f64) {
+    w := sinh(mk(-z.im, z.re))
+    return mk(w.im, -w.re)
+}
+
+/// The cosine, `cosh(i*z)`: `cos(x)cosh(y) - sin(x)sinh(y)*i` for `z = x + yi`. It is
+/// entire, so it has no branch cut, and its special values follow from `cosh` (C99
+/// Annex G): `cos(+-0 + yi)` is `cosh(y)` with a zero imaginary part signed like
+/// `-y*x`; `cos(x +- 0i)` for an infinite or NaN `x` is `NaN -+ 0i`; `cos(x + yi)`
+/// for an infinite `y` is `inf*cos(x) - y*sin(x)*i` for a finite non-zero `x` and
+/// `inf + NaN*i` for an infinite or NaN `x`.
+pub cos :: fn(z: Complex(f64)) -> Complex(f64) => cosh(mk(-z.im, z.re))
+
+// ---------------------------------------------------------------------------
+// Constants and helpers
+
+EPS: f64 : 0x1p-52
+RECIP_EPS: f64 : 0x1p52
+SQRT_3_EPS: f64 : 2.5809568279517849e-8
+SQRT_6_EPS_4: f64 : 9.1250603749721418e-9
+FOUR_SQRT_MIN: f64 : 0x1p-509
+SQRT_MIN: f64 : 0x1p-511
+QUARTER_SQRT_MAX: f64 : 0x1p509
+HALF_MAX: f64 : 0x1.fffffffffffffp1022
+A_CROSSOVER: f64 : 10.0
+B_CROSSOVER: f64 : 0.6417
+LN2: f64 : 6.9314718055994531e-1
+PIO2: f64 : 1.5707963267948966
+PIO2_LO: f64 : 6.1232339957367659e-17
+LN2_HI: f64 : 6.93147180369123816490e-01
+LN2_LO: f64 : 1.90821492927058770002e-10
+INV_LN2: f64 : 1.44269504088896338700e+00
+
+// 2**n for 0 <= n <= 1023.
+pow2 :: fn(n: u64) -> f64 => ((1023 + n) << 52).bits(f64)
+
+// `v * 2**n` for a non-negative `n`, with every power of two representable.
+scale_up :: fn(v: f64, n: u64) -> f64 {
+    r := v
+    k := n
+    while k > 1000 {
+        r = r * 0x1p1000
+        k = k - 1000
+    }
+    return r * pow2(k)
+}
+
+// `exp(x)/2 * (c + s*i)` for `x >= 22` and finite `c` and `s`, computed so that
+// an intermediate `exp(x)` which overflows does not spoil a finite result: the
+// exponential is `exp(r) * 2**k`, and `c`, `s` are applied before the last
+// scaling. Results which overflow are infinite.
+half_exp_scaled :: fn(x, c, s: f64) -> Complex(f64) {
+    if x < 709.0 {
+        h := math.exp(x) * 0.5
+        return mk(h * c, h * s)
+    }
+    xc := if x > 1600.0 { 1600.0 } else { x }
+    k := math.floor(xc * INV_LN2 + 0.5)
+    r := (xc - k * LN2_HI) - k * LN2_LO
+    m := math.exp(r)
+    n := k.trunc(u64) - 1
+    a := if n > 1000 { 1000 } else { n }
+    big := m * pow2(a)
+    return mk(scale_up(c * big, n - a), scale_up(s * big, n - a))
+}
+
+// `x*x + y*y` for a non-negative `y`, not underflowing for a tiny `y`.
+sum_squares :: fn(x, y: f64) -> f64 {
+    if y < SQRT_MIN { return x * x }
+    return x * x + y * y
+}
+
+// The real part of `1/(x + y*i)`, `x/(x*x + y*y)`, without overflow or
+// underflow of the intermediate sum.
+real_part_reciprocal :: fn(x, y: f64) -> f64 {
+    ex := (x.bits(u64) >> 52) & 0x7ff
+    ey := (y.bits(u64) >> 52) & 0x7ff
+    if ex >= ey + 27 or x.is_inf() { return 1.0 / x }
+    if ey >= ex + 27 { return x / y / y }
+    if ex <= 1508 { return x / (x * x + y * y) }
+    // ex > 1508: scale down by 2**-600 so that the squares cannot overflow.
+    scale := 0x1p-600
+    xs := x * scale
+    ys := y * scale
+    return xs / (xs * xs + ys * ys) * scale
+}
+
+// `log(z)` for a `z` with a part above `2**52`, avoiding overflow in the
+// magnitude.
+log_large :: fn(x, y: f64) -> Complex(f64) {
+    ax := math.abs(x)
+    ay := math.abs(y)
+    if ax < ay {
+        t := ax
+        ax = ay
+        ay = t
+    }
+    theta := math.atan2(y, x)
+    // Divide by e (> sqrt 2) so that hypot cannot overflow, and add 1 back.
+    if ax > HALF_MAX { return mk(math.log(math.hypot(x / math.e, y / math.e)) + 1.0, theta) }
+    if ax > QUARTER_SQRT_MAX or ay < SQRT_MIN { return mk(math.log(math.hypot(x, y)), theta) }
+    t := ay / ax
+    return mk(math.log(ax) + math.log1p(t * t) / 2.0, theta)
+}
+
+// The terms of A - 1 and A - y of Hull et al.: with the distances `h` of the
+// point from +-i, `f_term(a, b, h)` is the part of `A - 1` (or `A - y`) due to
+// one of them.
+f_term :: fn(a, b, h: f64) -> f64 {
+    if b < 0.0 { return (h - b) / 2.0 }
+    if b is 0.0 { return a / 2.0 }
+    return a * a / (h + b) / 2.0
+}
+
+// The common core of `asinh` and `acos` for `x, y >= 0` below `2**52`. With
+// R = |z + i|, S = |z - i|, A = (R + S)/2 and B = (R - S)/2 = y/A:
+// `rx` is Re(asinh(x + yi)) = -Im(acos(y + xi)); if `usable`, `b` is B
+// and Im(asinh) = asin(B); otherwise Im(asinh) = atan2(ny, sq) where
+// sq = sqrt(A*A - y*y) (rescaled together with `ny` if it could underflow).
+Hard :: struct {
+    rx: f64
+    usable: bool
+    b: f64
+    sq: f64
+    ny: f64
+}
+
+hard_work :: fn(x, y: f64) -> Hard {
+    r := math.hypot(x, y + 1.0)
+    s := math.hypot(x, y - 1.0)
+    a := (r + s) / 2.0
+    if a < 1.0 { a = 1.0 }
+    rx := 0.0
+    if y < A_CROSSOVER {
+        if y is 1.0 and x < EPS * EPS / 128.0 {
+            rx = math.sqrt(x)
+        } else if x >= EPS * math.abs(y - 1.0) {
+            am1 := f_term(x, 1.0 + y, r) + f_term(x, 1.0 - y, s)
+            rx = math.log1p(am1 + math.sqrt(am1 * (a + 1.0)))
+        } else if y < 1.0 {
+            rx = x / math.sqrt((1.0 - y) * (1.0 + y))
+        } else {
+            rx = math.log1p((y - 1.0) + math.sqrt((y - 1.0) * (y + 1.0)))
+        }
+    } else {
+        rx = math.log(a + math.sqrt(a * a - 1.0))
+    }
+    if y < FOUR_SQRT_MIN {
+        // y/A could underflow (legitimate for asinh, not for acos): use atan2.
+        return Hard(rx: rx, usable: false, b: 0.0, sq: a * (2.0 / EPS), ny: y * (2.0 / EPS))
+    }
+    b := y / a
+    if b <= B_CROSSOVER { return Hard(rx: rx, usable: true, b: b, sq: 0.0, ny: y) }
+    // B is too close to 1 for asin: use atan2(y, sqrt(A*A - y*y)) with
+    // A*A - y*y = (A - y)(A + y) and A - y = f(x, y+1) + f(x, y-1).
+    sq := 0.0
+    ny := y
+    if y is 1.0 and x < EPS / 128.0 {
+        sq = math.sqrt(x) * math.sqrt((a + y) / 2.0)
+    } else if x >= EPS * math.abs(y - 1.0) {
+        amy := f_term(x, y + 1.0, r) + f_term(x, y - 1.0, s)
+        sq = math.sqrt(amy * (a + y))
+    } else if y > 1.0 {
+        sq = x * (4.0 / EPS / EPS) * y / math.sqrt((y + 1.0) * (y - 1.0))
+        ny = y * (4.0 / EPS / EPS)
+    } else {
+        sq = math.sqrt((1.0 - y) * (1.0 + y))
+    }
+    return Hard(rx: rx, usable: false, b: b, sq: sq, ny: ny)
+}
+
+// ---------------------------------------------------------------------------
+// Hyperbolic and trigonometric functions
+
+/// The hyperbolic sine: `sinh(x)cos(y) + cosh(x)sin(y)*i` for `z = x + yi`. It
+/// is entire, so it has no branch cut. A part whose true value is finite is
+/// not lost to an intermediate overflow of `e^x`. `sinh(x + 0i)` has the
+/// imaginary part of `z`; `sinh(+-0 + yi)` is `+-0 + sin(y)*i`, and for an
+/// infinite or NaN `y` it is `+-0 + NaN*i`; `sinh(+-inf + yi)` is
+/// `+-inf*cos(y) + inf*sin(y)*i` for a finite `y` and `+-inf + NaN*i` for an
+/// infinite or NaN `y`; `sinh(NaN + 0i)` is `NaN + 0i`.
+pub sinh :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if x.is_finite() and y.is_finite() {
+        if y is 0.0 { return mk(math.sinh(x), y) }
+        if math.abs(x) < 22.0 { return mk(math.sinh(x) * math.cos(y), math.cosh(x) * math.sin(y)) }
+        w := half_exp_scaled(math.abs(x), math.cos(y), math.sin(y))
+        return mk(math.copysign(1.0, x) * w.re, w.im)
+    }
+    if x is 0.0 { return mk(x, math.nan) }
+    if y is 0.0 { return mk(x, y) }
+    if x.is_inf() {
+        if y.is_inf() or y.is_nan() { return mk(x, math.nan) }
+        return mk(x * math.cos(y), math.inf * math.sin(y))
+    }
+    return mk(math.nan, math.nan)
+}
+
+/// The hyperbolic cosine: `cosh(x)cos(y) + sinh(x)sin(y)*i` for `z = x + yi`.
+/// It is entire, so it has no branch cut; overflow is handled as in `sinh`.
+/// `cosh(x + 0i)` is `cosh(x) + (x*0)i` (the imaginary part has the sign of
+/// `x` times the sign of the zero); `cosh(+-0 + yi)` for an infinite or NaN
+/// `y` is `NaN +- 0i`; `cosh(+-inf + yi)` is `inf*cos(y) +- inf*sin(y)*i` for a
+/// finite `y` and `inf + NaN*i` for an infinite or NaN `y`; `cosh(NaN + 0i)` is
+/// `NaN + 0i`.
+pub cosh :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if x.is_finite() and y.is_finite() {
+        if y is 0.0 { return mk(math.cosh(x), x * y) }
+        if math.abs(x) < 22.0 { return mk(math.cosh(x) * math.cos(y), math.sinh(x) * math.sin(y)) }
+        w := half_exp_scaled(math.abs(x), math.cos(y), math.sin(y))
+        return mk(w.re, math.copysign(1.0, x) * w.im)
+    }
+    if x is 0.0 { return mk(math.nan, x) }
+    if y is 0.0 {
+        if x.is_nan() { return mk(x, y) }
+        return mk(math.inf, math.copysign(0.0, x) * y)
+    }
+    if x.is_inf() {
+        if y.is_inf() or y.is_nan() { return mk(math.inf, math.nan) }
+        return mk(math.inf * math.cos(y), x * math.sin(y))
+    }
+    return mk(math.nan, math.nan)
+}
+
+/// The hyperbolic tangent, by Kahan's formula, which stays accurate when
+/// `cosh(x)` or `tan(y)` is huge. It is entire except for poles at
+/// `(k + 1/2)*pi*i`; it has no branch cut, and at the (inexact) double nearest
+/// to a pole the result is large but finite. `tanh(+-inf + yi)` is
+/// `+-1 + 0i` with the zero signed like `sin(2y)` (positive for an infinite or
+/// NaN `y`); `tanh(+-0 + yi)` for an infinite or NaN `y` is `+-0 + NaN*i`;
+/// `tanh(x + yi)` for finite nonzero `x` and infinite or NaN `y` is
+/// `NaN + NaN*i`; `tanh(NaN + 0i)` is `NaN + 0i` and `tanh(NaN + yi)` for
+/// other `y` is `NaN + NaN*i`.
+pub tanh :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if x.is_nan() { return mk(x, if y is 0.0 { y } else { math.nan }) }
+    if x.is_inf() {
+        if y.is_inf() or y.is_nan() { return mk(math.copysign(1.0, x), 0.0) }
+        return mk(math.copysign(1.0, x), math.copysign(0.0, math.sin(y) * math.cos(y)))
+    }
+    if y.is_inf() or y.is_nan() {
+        if x is 0.0 { return mk(x, math.nan) }
+        return mk(math.nan, math.nan)
+    }
+    if math.abs(x) >= 22.0 {
+        // sinh^2(x) ~ exp(2|x|)/4 for large x: tanh = +-1 + 4 sin(y)cos(y) exp(-2|x|) i.
+        e := math.exp(-math.abs(x))
+        return mk(math.copysign(1.0, x), 4.0 * math.sin(y) * math.cos(y) * e * e)
+    }
+    t := math.tan(y)
+    beta := 1.0 + t * t
+    s := math.sinh(x)
+    rho := math.sqrt(1.0 + s * s)
+    denom := 1.0 + beta * s * s
+    return mk((beta * rho * s) / denom, t / denom)
+}
+
+/// The tangent, `-i*tanh(i*z)`. It is entire except for poles at
+/// `pi/2 + k*pi` on the real axis; it has no branch cut. `tan(x + 0i)` has the
+/// imaginary part of `z` and `tan(+-0 + yi)` has the real part `+-0`. For a
+/// large `|y|` the value tends to `+-i`: `tan(x +- inf*i)` is `0 +- 1i` for a
+/// finite or NaN `x`, the zero being signed like `sin(2x)` (positive for a
+/// NaN `x`). `tan(+-0 + NaN*i)` is `+-0 + NaN*i` and `tan(NaN + 0i)` is
+/// `NaN + 0i`.
+pub tan :: fn(z: Complex(f64)) -> Complex(f64) {
+    w := tanh(mk(-z.im, z.re))
+    return mk(w.im, -w.re)
+}
+
+// ---------------------------------------------------------------------------
+// Inverse hyperbolic and trigonometric functions
+
+/// The inverse hyperbolic sine, with real part in `(-inf, inf)` and imaginary
+/// part in `[-pi/2, pi/2]`. The branch cuts are the parts of the imaginary axis
+/// outside the open segment from `-i` to `i`; the sign of a zero real part
+/// chooses the side: `asinh(+0 + 2i)` is `1.3169... + pi/2*i` and
+/// `asinh(-0 + 2i)` is `-1.3169... + pi/2*i`. `asinh(-z) = -asinh(z)` and
+/// `asinh(conj(z)) = conj(asinh(z))` hold, also for signed zeros. Special
+/// values: `asinh(+-0 + 0i)` is the argument, `asinh(x + inf*i)` is
+/// `+inf + pi/2*i` for positive finite `x`, `asinh(+inf + inf*i)` is
+/// `+inf + pi/4*i`, `asinh(+inf + NaN*i)` is `+inf + NaN*i`,
+/// `asinh(NaN + 0i)` is `NaN + 0i` and `asinh(NaN + inf*i)` is `inf + NaN*i`.
+/// Huge arguments do not overflow.
+pub asinh :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if x.is_nan() or y.is_nan() {
+        if x.is_inf() { return mk(x, y + y) }
+        if y.is_inf() { return mk(y, x + x) }
+        if y is 0.0 { return mk(x + x, y) }
+        return mk(math.nan, math.nan)
+    }
+    ax := math.abs(x)
+    ay := math.abs(y)
+    if ax > RECIP_EPS or ay > RECIP_EPS {
+        w := if x.sign_bit() { log_large(-x, -y) } else { log_large(x, y) }
+        return mk(math.copysign(w.re + LN2, x), math.copysign(w.im, y))
+    }
+    if x is 0.0 and y is 0.0 { return z }
+    if ax < SQRT_6_EPS_4 and ay < SQRT_6_EPS_4 { return z }
+    h := hard_work(ax, ay)
+    ry := if h.usable { math.asin(h.b) } else { math.atan2(h.ny, h.sq) }
+    return mk(math.copysign(h.rx, x), math.copysign(ry, y))
+}
+
+/// The inverse sine, `-i*asinh(i*z)`, with real part in `[-pi/2, pi/2]`. The
+/// branch cuts are the parts of the real axis outside `[-1, 1]`; the sign of a
+/// zero imaginary part chooses the side: `asin(2 + 0i)` is
+/// `pi/2 + 1.3169...i` and `asin(2 - 0i)` is `pi/2 - 1.3169...i`. For real
+/// `x` with `|x| <= 1`, `asin(x + 0i)` is real (with the sign of the zero kept).
+/// It is accurate close to the cuts, and huge arguments do not overflow.
+pub asin :: fn(z: Complex(f64)) -> Complex(f64) {
+    w := asinh(mk(-z.im, z.re))
+    return mk(w.im, -w.re)
+}
+
+/// The inverse cosine, with real part in `[0, pi]`. The branch cuts are the
+/// parts of the real axis outside `[-1, 1]`, with the side chosen by the sign
+/// of a zero imaginary part: `acos(2 + 0i)` is `0 - 1.3169...i` and
+/// `acos(2 - 0i)` is `0 + 1.3169...i`. It is `pi/2 - asin(z)` but accurate also
+/// near `z = 1`, where that subtraction would cancel. `acos(1 + 0i)` is
+/// `0 - 0i`, `acos(0 + NaN*i)` is `pi/2 + NaN*i`, `acos(x + inf*i)` is
+/// `pi/2 - inf*i`, `acos(+-inf + NaN*i)` is `NaN +- inf*i` and
+/// `acos(NaN + inf*i)` is `NaN - inf*i`.
+pub acos :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    if x.is_nan() or y.is_nan() {
+        if x.is_inf() { return mk(y + y, -math.inf) }
+        if y.is_inf() { return mk(x + x, -y) }
+        if x is 0.0 { return mk(PIO2 + PIO2_LO, y + y) }
+        return mk(math.nan, math.nan)
+    }
+    sx := x.sign_bit()
+    sy := y.sign_bit()
+    ax := math.abs(x)
+    ay := math.abs(y)
+    if ax > RECIP_EPS or ay > RECIP_EPS {
+        w := log_large(x, y)
+        ry := w.re + LN2
+        return mk(math.abs(w.im), if sy { ry } else { -ry })
+    }
+    if x is 1.0 and y is 0.0 { return mk(0.0, -y) }
+    if ax < SQRT_6_EPS_4 and ay < SQRT_6_EPS_4 { return mk(PIO2 - (x - PIO2_LO), -y) }
+    h := hard_work(ay, ax)
+    rx := 0.0
+    if h.usable {
+        rx = if sx { math.acos(-h.b) } else { math.acos(h.b) }
+    } else {
+        rx = if sx { math.atan2(h.sq, -h.ny) } else { math.atan2(h.sq, h.ny) }
+    }
+    return mk(rx, if sy { h.rx } else { -h.rx })
+}
+
+/// The inverse hyperbolic cosine, with real part in `[0, inf)` and imaginary
+/// part in `[-pi, pi]`. The branch cut is the part of the real axis left of
+/// `1`: `acosh(x + 0i)` for `x < -1` is `acosh(|x|) + pi*i`, with `-0i` it is
+/// `acosh(|x|) - pi*i`, and for `-1 < x < 1` it is `0 +- acos(x)*i`. In
+/// general it is `+-i*acos(z)` with the sign of `im(z)`. `acosh(+-0 + 0i)` is
+/// `0 + pi/2*i`, `acosh(x + inf*i)` is `inf + pi/2*i`, `acosh(-inf + yi)` is
+/// `inf + pi*i` for finite positive `y`, and `acosh(+-inf + NaN*i)` and
+/// `acosh(NaN +- inf*i)` are `inf + NaN*i`.
+pub acosh :: fn(z: Complex(f64)) -> Complex(f64) {
+    w := acos(z)
+    rx := w.re
+    ry := w.im
+    if rx.is_nan() and ry.is_nan() { return mk(math.nan, math.nan) }
+    if rx.is_nan() { return mk(math.abs(ry), math.nan) }
+    if ry.is_nan() { return mk(math.nan, math.nan) }
+    return mk(math.abs(ry), math.copysign(rx, z.im))
+}
+
+/// The inverse hyperbolic tangent, with imaginary part in `[-pi/2, pi/2]`. The
+/// branch cuts are the parts of the real axis outside `[-1, 1]`, with the side
+/// chosen by the sign of a zero imaginary part: `atanh(2 + 0i)` has imaginary
+/// part `+pi/2` and `atanh(2 - 0i)` has `-pi/2`. The points `+-1` are poles:
+/// `atanh(+-1 + 0i)` is `+-inf + 0i`. It is accurate close to `+-1` and `+-i`,
+/// and for huge arguments, where the result tends to `0 +- pi/2*i`.
+/// `atanh(+-inf + NaN*i)` is `+-0 + NaN*i`, `atanh(NaN + inf*i)` is
+/// `0 +- pi/2*i` and `atanh(+-0 + NaN*i)` is `+-0 + NaN*i`.
+pub atanh :: fn(z: Complex(f64)) -> Complex(f64) {
+    x := z.re
+    y := z.im
+    ax := math.abs(x)
+    ay := math.abs(y)
+    if y is 0.0 and ax <= 1.0 { return mk(math.atanh(x), y) }
+    if x is 0.0 { return mk(x, math.atan(y)) }
+    if x.is_nan() or y.is_nan() {
+        if x.is_inf() { return mk(math.copysign(0.0, x), y + y) }
+        if y.is_inf() { return mk(0.0, math.copysign(PIO2, y)) }
+        return mk(math.nan, math.nan)
+    }
+    if ax > RECIP_EPS or ay > RECIP_EPS {
+        return mk(real_part_reciprocal(x, y), math.copysign(PIO2, y))
+    }
+    if ax < SQRT_3_EPS / 2.0 and ay < SQRT_3_EPS / 2.0 { return z }
+    rx := 0.0
+    if ax is 1.0 and ay < EPS {
+        rx = (LN2 - math.log(ay)) / 2.0
+    } else {
+        rx = math.log1p(4.0 * ax / sum_squares(ax - 1.0, ay)) / 4.0
+    }
+    ry := 0.0
+    if ax is 1.0 {
+        ry = math.atan2(2.0, -ay) / 2.0
+    } else if ay < EPS {
+        ry = math.atan2(2.0 * ay, (1.0 - ax) * (1.0 + ax)) / 2.0
+    } else {
+        ry = math.atan2(2.0 * ay, (1.0 - ax) * (1.0 + ax) - ay * ay) / 2.0
+    }
+    return mk(math.copysign(rx, x), math.copysign(ry, y))
+}
+
+/// The inverse tangent, `-i*atanh(i*z)`, with real part in `[-pi/2, pi/2]`.
+/// The branch cuts are the parts of the imaginary axis outside the open
+/// segment from `-i` to `i`, with the side chosen by the sign of a zero real
+/// part: `atan(0 + 2i)` has real part `+pi/2` and `atan(-0 + 2i)` has `-pi/2`.
+/// The points `+-i` are poles. It is accurate close to them and for huge
+/// arguments.
+pub atan :: fn(z: Complex(f64)) -> Complex(f64) {
+    w := atanh(mk(-z.im, z.re))
+    return mk(w.im, -w.re)
+}

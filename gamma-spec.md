@@ -2,7 +2,7 @@
 
 Version 1.0. Gamma is a systems programming language intended to replace C: C in which everything a function depends on appears in its signature, with algebraic effects carrying the context that C leaves implicit — allocation, I/O, iteration, early exit and coroutines.
 
-This specification is self-contained. Chapters 1–22 and Appendices A–B are normative; [Appendix C](#appendix-c-design-rationale) explains the reasoning behind the design, and [Appendix D](#appendix-d-implementation-notes) sketches the intended implementation.
+This specification is self-contained. Chapters 1–23 and Appendices A–B are normative; [Appendix C](#appendix-c-design-rationale) explains the reasoning behind the design, and [Appendix D](#appendix-d-implementation-notes) sketches the intended implementation.
 
 | § | Chapter |
 | --- | --- |
@@ -28,6 +28,7 @@ This specification is self-contained. Chapters 1–22 and Appendices A–B are n
 | 20 | [Attributes and intrinsics](#20-attributes-and-intrinsics) |
 | 21 | [The core library](#21-the-core-library) |
 | 22 | [The standard library: scope and admission](#22-the-standard-library-scope-and-admission) |
+| 23 | [Errors and diagnostics](#23-errors-and-diagnostics) |
 | A | [Grammar](#appendix-a-grammar) |
 | B | [Reference tables](#appendix-b-reference-tables) |
 | C | [Design rationale](#appendix-c-design-rationale) |
@@ -233,6 +234,15 @@ float_suffix = 'f16' | 'f32' | 'f64'
 
 Both sides of the `.` are required (`1.` and `.5` are not float literals). This keeps `1..10` a range and `x.0` a field access. A decimal integer with a float suffix is a float literal (`1f32` is `1.0f32`); in a hexadecimal literal `f` is a digit, so `0x1f32` is the integer `0x1f32`. A hexadecimal float needs the `p` exponent but not a fraction (`0x1p4` is 16.0); in a hexadecimal literal a `.` begins a fraction only when hex digits and a `p` exponent follow, so `0xFF.abs()` is a member access on an integer. The value of a float literal is an exact rational number; it is rounded only when it receives a type (§6.1).
 
+**Imaginary literals.** A decimal integer or float literal followed by `j`, `j16`, `j32` or `j64` is an **imaginary literal**: a complex number (§5.3.1) whose real part is zero and whose imaginary part is the literal's value.
+
+```
+imag_lit    = ( dec_lit | dec_lit '.' dec_lit [ exponent ] | dec_lit exponent ) imag_suffix
+imag_suffix = 'j' | 'j16' | 'j32' | 'j64'
+```
+
+`jN` fixes the type to `Complex(fN)`: `2j32` is a `Complex(f32)`. Without a width the literal is untyped and takes its type by literal inference (§6.1). `j` follows a decimal literal only (`0x1j` is ill-formed) and replaces a float suffix (`1.5f32j` is ill-formed). There is no implicit multiplication, so `2j` is never `2 * j`.
+
 #### 2.5.3 Character literals
 
 `'c'` is an **integer literal** whose value is the Unicode code point of `c`. `c` is a single Unicode scalar value or one escape sequence (§2.5.5). `''` is ill-formed. A character literal is untyped and receives its type like any integer literal; `'€'` (U+20AC) does not fit `u8` and is a compile error at type `u8`, while `'é'` (U+00E9) fits.
@@ -287,7 +297,7 @@ Exceptions to maximal munch:
 - A numeric field name is lexed as a plain decimal integer: after a `.` token, digits form an integer token and never a float literal, so `t.0.1` is `t` `.` `0` `.` `1` (the field `1` of the field `0` of `t`).
 - The words `is not` and `not in`, when they appear together on one line (separated only by whitespace or comments), form the single operator tokens `is not` and `not in` (§7.3).
 - `==` and `!=` are not tokens; the character pairs are ill-formed (equality is written `is` and `is not`, §7.6). Implementations should say so and may read them as `is` and `is not` to continue.
-- `\` outside a literal or comment is ill-formed. (Effect sets are written after `needs`, §11.1.)
+- `&&` and `||` are not tokens either: logic is written `and` and `or` (§7.8). `a || b` does not parse, and `a && b` is `a & (&b)`, which is never well-typed; implementations should name the word to write instead.
 
 `;` may separate statements on one line (§2.8). It is never required.
 
@@ -322,7 +332,7 @@ Multiple consecutive newlines are one newline. `;` is equivalent to a newline.
 
 ### 3.1 Packages and modules
 
-- A **module** is a directory. Every `.gm` file directly inside the directory belongs to the module; subdirectories are separate modules. All files of a module share one top-level namespace, and the order of files and of declarations within them has no meaning.
+- A **module** is a directory. Every `.gm` file directly inside the directory belongs to the module; subdirectories are separate modules, and a directory without `.gm` files is not a module. All files of a module share one top-level namespace, and the order of files and of declarations within them has no meaning.
 - A **package** is a directory tree containing a `gamma.toml` manifest at its root. The manifest names the package and lists its dependencies, each as a name mapped to a source location and version. The manifest format is implementation-defined, except as stated here; the reference implementation's is described in chapter 15 of the guide (`docs/guide/15-packages.md`).
 - The **root module** of a program is the module named on the compiler's command line. (The reference implementation also accepts a single `.gm` file there, which then forms a module by itself.) It must declare `main` (§3.7). A library has no `main`.
 
@@ -379,7 +389,7 @@ Top-level declarations are mutually visible regardless of order. Their dependenc
 
 ### 3.5 Type aliases
 
-A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Map :: HashMap`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Map(K, V)` then instantiates `HashMap`, and a `pub` alias re-exports the declaration. An instantiation of a generic effect may be named the same way: `Bytes :: Yield(u8)` makes `Bytes` stand for `Yield(u8)` in effect sets, handler literals and `Bytes.yield(b)`. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
+A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Seq :: List`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Seq(T)` then instantiates `List`, and a `pub` alias re-exports the declaration. An instantiation of a generic effect may be named the same way: `Bytes :: Yield(u8)` makes `Bytes` stand for `Yield(u8)` in effect sets, handler literals and `Bytes.yield(b)`. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
 
 ### 3.6 Conditional compilation: `when`
 
@@ -586,6 +596,38 @@ Types are compile-time values of type `type`. A type expression may appear where
 
 `f16`, `f32` and `f64` are IEEE 754 binary16, binary32 and binary64. Arithmetic is correctly rounded with round-to-nearest-even; no contraction (fused multiply-add), reassociation or flush-to-zero is performed unless the program opts in per function with `#fast_math` (§20.2). NaN payloads are unspecified except as preserved by `bits` (§6.6).
 
+#### 5.3.1 Complex numbers
+
+`Complex(T)`, for a float type `T`, is a complex number with real part `re` and imaginary part `im`. It is a struct of the core library (§21.1) on which the language defines arithmetic operators (§7.4.7):
+
+```
+Complex :: struct(T: type) where Float(T) { pub re, im: T }
+```
+
+```
+C64 :: Complex(f64)
+
+mandelbrot_steps :: fn(c: C64, limit: u32) -> u32 {
+    z: C64 = 0
+    for n in 0..limit {
+        if z.abs() > 2 { return n }
+        z = z * z + c
+    }
+    return limit
+}
+
+ROOT :: -0.5 + 0.5j                    // an untyped complex constant (§6.2)
+steps := mandelbrot_steps(ROOT, 100)
+```
+
+- **Values.** Constants are written with imaginary literals (§2.5.2): `3 + 4j` is one untyped complex constant, `1.5j32` a `Complex(f32)`. A value made of run-time parts is constructed by name: `C64(re: x, im: y)`. A real constant is a complex number where one is expected (§6.4) and beside one in `+`, `-`, `/` and `is` (§7.4.7): `z: C64 = 1`, `z + 1`, `1 / z`, `z is 0`. A real *variable* does not convert implicitly.
+- **A struct in every other respect.** Its parts are fields (`z.im = 0`), and `is`, `@hash` and formatting are those of a struct (§7.6, §16.8, §21.6.1): `is` compares the parts as floats. It is not ordered.
+- **Layout.** That of the struct: `re`, then `im`, aligned as `T`. This is the layout of C's `float _Complex` and `double _Complex`, and since a struct of two floats is classified like them on the x86-64 System V and AArch64 ABIs, `Complex(f32)` and `Complex(f64)` may stand for them in foreign signatures there (§19.1).
+- **Methods** (functions of its core module, §7.10): `z.conj()` is `re - im·i`; `z.abs()` is \|z\| = √(re² + im²), computed as C's `hypot` is, without overflow or underflow in intermediate steps (not necessarily correctly rounded). The functions of complex analysis (`exp`, `log`, `sqrt`, `pow`, polar form) are in `std/complex`.
+- **In generic code** `Complex(T)` needs `Float(T)` (§16.4), and its operators are available wherever the type is.
+
+*Rationale:* complex arithmetic is written as formulas, and a library type could only offer `a.mul(b).add(c)`, since operators never call library code (C.3). Its operators are a fixed handful of float operations with no loop and no call to user code, so they keep P2. It is a struct, not a new kind of type, so everything except the operators is the struct's ordinary behavior.
+
 ### 5.4 `bool`
 
 `bool` occupies one byte holding 0 (`false`) or 1 (`true`). Any other byte value in a `bool` object is undefined behavior to read (it can arise only through `bits`-style reinterpretation, `#c_union`, or foreign code).
@@ -676,6 +718,61 @@ count_byte :: fn(s: []const u8, c: u8) -> usize {
 - **Conversions.** `V(a)` and `[N]T(v)` convert between a vector and the array of its lanes, `W(v)` between vectors of the same lane count where each lane converts losslessly (§6.5), and `v.to(F)` gives the nearest `f32` or `f64` lanes. `.bits(U)` reinterprets as for any plain data (§6.6).
 - **Methods** (§21.3): the lane comparisons above, `reduce_sum()`, `reduce_min()`, `reduce_max()`, `min(w)`, `max(w)`, `abs()`, `shuffle(i0, i1, …)` (the lanes at the constant indices, as a vector of as many lanes), `store(dst)`; on masks `all()`, `any()`, `count()` and `select(a, b)` (each lane from `a` where the mask is set, else from `b`).
 
+#### 5.6.3 Math vectors
+
+`#vec [N]T` is a **math vector**: an array of `N` numbers whose operators work element by element, for coordinates, colors and the like. Unlike a vector (§5.6.2, in this specification *vector* alone always means `#simd`), it promises no instructions and has exactly the layout of `[N]T`, so it fits in C structs, vertex buffers and file formats.
+
+```
+Vec3 :: #vec [3]f32
+
+reflect :: fn(d, n: Vec3) -> Vec3 => d - 2 * d.dot(n) * n
+
+lerp :: fn(a, b: Vec3, t: f32) -> Vec3 => a + (b - a) * t
+```
+
+- **Shape.** `T` is a concrete integer or float type, and `N` is a constant 2, 3 or 4.
+- **Layout.** That of `[N]T`. A math vector is C-compatible where an array is: as a struct field (§19.1).
+- **Values.** As for an array: constructed with exactly `N` elements, `fill:` or `---` (`Vec3(1, 0, 0)`, `Vec3(fill: 0)`); indexed and assigned (`v[i]`, checked), iterated and sliced; `v.len` is `N`. `V(a)` and `[N]T(v)` convert between a math vector and the array of its elements, and `W(v)` between math vectors of the same length whose elements convert losslessly (§6.5).
+- **Operators** (§7.4.7) apply element by element, and `*` and `/` also scale by a scalar. `is` and `is not` compare whole math vectors, as for arrays (§7.6); unlike arrays, math vectors are not ordered, since no order of points is the natural one.
+- **Methods** (§21.3): `v.dot(w)` (`v[0]·w[0] + …`, added in element order with the rules of `+` and `*`), `v.cross(w)` (`N` = 3), `v.norm()` (`√(v.dot(v))`, float elements), and element by element `min(w)`, `max(w)` and `abs()`. A math vector has none of the array methods (§21.3).
+
+*Rationale:* the operators cost `N` scalar operations, at most four, with the checks of the scalar operator for each element (§18.2), so they hide no loop (C.3); this is why the length is bounded, and why ordinary arrays have no arithmetic. Matrices and quaternions are left to libraries (C.8).
+
+#### 5.6.4 Structure-of-arrays
+
+`#soa [N]S`, for a struct type `S`, is an array of `N` values of `S` stored **by field**: one array `[N]F` for each field `f: F` of `S`. `#soa []S` and `#soa []const S` are the slices of such arrays. They replace the parallel arrays a C program keeps in step by hand, which a library cannot generate from a struct, since Gamma has no field reflection (C.8).
+
+```
+Particle :: struct { pos, vel: #vec [2]f32; alive: bool }
+Particles :: #soa []Particle
+
+step :: fn(ps: Particles, dt: f32) {
+    for i in 0..ps.len {
+        if ps[i].alive { ps[i].pos += ps[i].vel * dt }    // touches three columns
+    }
+}
+
+simulate :: fn(n: usize) -> AllocError!() needs Alloc + Out {
+    ps := try Particles.make(n)
+    defer ps.free()
+    for i in 0..n { ps[i] = Particle(pos: #vec [2]f32(fill: 0), vel: #vec [2]f32(1, 0), alive: true) }
+    step(ps, 0.5)
+    print("{}\n", ps[0].pos)                             // [0.5, 0]
+    xs: []#vec [2]f32 = ps.pos                           // a whole column, contiguous
+}
+```
+
+- **Element type.** `S` is a concrete struct type that is not a `#bits` struct, has at least one field and has no field named `len`.
+- **Layout.** `#soa [N]S` has the layout of a struct with one field `f: [N]F` for each field of `S`, in declaration order (§5.10.4), and is plain data when `S` is. `#soa []S` is a many-pointer `[^]F` (or `[^]const F`) for each field, in the same order, followed by `len: usize`; like a slice it is not C-compatible (§19.1).
+- **Elements.** `a[i]` is element `i`, with the bounds check of indexing (§18.2). Read, it gathers the fields into an `S`; assigned (`a[i] = s`), it stores each field. It has no address: `&a[i]`, and a method call on it whose receiver must be a `^S`, are compile errors. `a[i].f` is element `i` of column `f`, an ordinary place (§7.2) of type `F`: it is read, assigned, extended by fields and indexing (`a[i].pos[0]`) and has an address.
+- **Columns.** `a.f` is the column of field `f`: for an array the array `[N]F` itself (a place when `a` is one), for a slice the slice `[]F` (`[]const F` for `#soa []const S`). `a.len` is the number of elements.
+- **Slicing and coercion.** `a[lo..hi]` and `a[..]` of an array place or a slice give a `#soa []S`, checked as slicing is (§7.9). `^#soa [N]S` coerces to `#soa []S`, `^const #soa [N]S` and `#soa []S` to `#soa []const S`, as for arrays (§5.5).
+- **Construction.** `#soa [N]S(e1, …, eN)`, `#soa [N]S(fill: s)`, and `---` when `S` is plain data.
+- **Iteration and comparison.** `for s in a` gathers each element in order. `is` compares the elements (for slices also the lengths), so it compares the columns; `@hash` agrees with it (§16.8). They are not ordered, and have none of the array methods. Formatting writes the columns: an array as `#soa [2]P(x: [1, 2], y: [3, 4])`, a slice as `(x: [1, 2], y: [3, 4])` (§21.6.1).
+- **Allocation.** For a slice type `T :: #soa []S`, `T.make(n) -> AllocError!T needs Alloc` allocates `n` elements, uninitialized as by `make` (§21.2), in one block that holds every column, each aligned for its type; `s.free() needs Alloc` releases it, and must be given exactly what `make` returned.
+
+*Rationale:* the layout is one a C programmer would write (P1), and the costs are those of the C: `a[i].f` is one access, `a[i]` as a whole one per field (P2). Elements are not addressable because no `S` exists in memory; that rule is local to the expression (P5).
+
 ### 5.7 Slices
 
 `[]T` and `[]const T` are a pair `(ptr: [^]T, len: usize)` (`[^]const T` for the `const` form), laid out as a struct with those two fields in that order. The fields can be read but not assigned; build a slice by slicing (§7.9).
@@ -712,7 +809,7 @@ Window :: struct {
 }
 ```
 
-A `struct` literal creates a new nominal type. Fields are declared `name: Type`, optionally with `= default` where `default` is a constant expression (§7.15) of the field's type, evaluated once, at compile time, when the struct is declared (§17.2): a default that traps or cannot be evaluated is a compile error at the default, whether or not any construction uses it, and each construction takes the resulting value. A default that constructs the struct itself, directly or through the functions it calls, is a declaration cycle (§3.4). A default cannot name the type parameters of a generic struct; when the field's type mentions one (`next: ?T = null`), the default is checked in the declaration and its value is taken at each construction. `a, b: T` declares several fields of one type. Fields may be `pub` (§3.3). Field names must be distinct.
+A `struct` literal creates a new nominal type. Fields are declared `name: Type`, optionally with `= default` where `default` is a constant expression (§7.15) of the field's type, evaluated once, at compile time, when the struct is declared (§17.2): a default that traps or cannot be evaluated is a compile error at the default, whether or not any construction uses it, and each construction takes the resulting value. A default that constructs the struct itself, directly or through the functions it calls, is a declaration cycle (§3.4). A default cannot name the type parameters of a generic struct; when the field's type mentions one (`next: ?T = null`), the default is checked in the declaration and its value is taken at each construction. `a, b: T` declares several fields of one type. Fields may be `pub` (§3.3). Field names must be distinct. A struct or union may not contain itself by value, directly or through the fields, elements and payloads of other types, since it would be infinitely large; it may hold a pointer to itself.
 
 #### 5.10.1 Construction
 
@@ -837,9 +934,9 @@ A type is **plain-data** if every bit pattern of its size is a valid value: inte
 
 ### 6.1 Typing literals
 
-An integer, float or character literal without a suffix is **untyped**: it denotes an exact number, and its type is determined by **literal inference** within the enclosing function body (or the enclosing top-level declaration).
+An integer, float, imaginary or character literal without a suffix is **untyped**: it denotes an exact number, and its type is determined by **literal inference** within the enclosing function body (or the enclosing top-level declaration).
 
-**Literal inference.** Each untyped literal *L* is given a fresh type variable α\_L, restricted to integer types (for integer and character literals) or to numeric types (for float literals: float types only). Type variables are unified with each other and with concrete types by the ordinary typing rules, wherever a type equality is required:
+**Literal inference.** Each untyped literal *L* is given a fresh type variable α\_L, restricted to integer types (for integer and character literals), to numeric types (for float literals: float types only), or to complex types `Complex(T)` (for imaginary literals and the untyped complex constants of §6.2). Type variables are unified with each other and with concrete types by the ordinary typing rules, wherever a type equality is required:
 
 - a variable binding `x := L` gives `x` the type α\_L, so later uses of `x` constrain it (an immutable `x :: L` is an untyped constant instead, §6.2);
 - the two operands of a binary operator (other than a shift), the two bounds of a range, both sides of an assignment and of a comparison, the arms of an `if`/`match` expression, and the operand of `in` and its element type must have equal types;
@@ -847,12 +944,14 @@ An integer, float or character literal without a suffix is **untyped**: it denot
 - the amount operand of a shift (§7.4.3), an index (§7.9) and a slicing bound need not equal any other type; a variable used there is restricted to unsigned integer types.
 - a `match` scrutinee (or part of one) that integer literal or range patterns test is restricted to integer types; the patterns' values and the `match`'s exhaustiveness are checked against the final type, so a later statement may still fix it (`a := 1; match a { … }; n: u8 = a` makes `a` a `u8`).
 
-Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable and `f64` for a float variable. A few constructs need a variable's type while the body is still being checked, and there the variable takes its fallback early, from the constraints met so far: `@type_of` (§20.3), an intrinsic whose operation depends on the type a pointer points to (`@atomic_add(&x, …)`, `@volatile_load`), a format argument whose placeholder has a spec (`{:x}`, §21.6.1; `{}` formats by the final type), the handler value of `with` (§12.7), `expect_eq` (§21.6) and a type parameter that only literals determine (§16.2). Later uses must then agree with that type, and the program is rejected, not reinterpreted, wherever the whole-body rule would have chosen differently: `x := 0; T :: @type_of(x); y: u8 = x` is an error because `x` is already `i32`, and so is `n := 0; print("{:x}", n); for i in 0..n { … }`, where the range bound would have made `n` a `usize`. The error names the place that fixed the type; annotating the variable (`n: usize = 0`) resolves it. Then each literal is checked against its final type:
+Inference considers the whole function body at once; the order of statements does not matter. After unification, every variable that is still unresolved takes its **fallback**: `usize` if it was created for, or unified with, a range bound, an array length, an index, a slicing bound or a shift amount (anything that counts or positions); otherwise `i32` for an integer variable, `f64` for a float variable and `Complex(f64)` for a complex variable. A few constructs need a variable's type while the body is still being checked, and there the variable takes its fallback early, from the constraints met so far: `@type_of` (§20.3), an intrinsic whose operation depends on the type a pointer points to (`@atomic_add(&x, …)`, `@volatile_load`), a format argument whose placeholder has a spec (`{:x}`, §21.6.1; `{}` formats by the final type), the handler value of `with` (§12.7), `expect_eq` (§21.6) and a type parameter that only literals determine (§16.2). Later uses must then agree with that type, and the program is rejected, not reinterpreted, wherever the whole-body rule would have chosen differently: `x := 0; T :: @type_of(x); y: u8 = x` is an error because `x` is already `i32`, and so is `n := 0; print("{:x}", n); for i in 0..n { … }`, where the range bound would have made `n` a `usize`. The error names the place that fixed the type; annotating the variable (`n: usize = 0`) resolves it. Then each literal is checked against its final type:
 
 - An integer literal must be exactly representable in its type. If the type is a float type, the integer must convert exactly.
 - A float literal at a float type is rounded to nearest-even; it is a compile error if the result is infinite. A float literal can never have an integer type (`3.0` cannot be an `i32`).
 
-A suffix (`200u8`, `1.5f32`) fixes the type directly.
+A complex variable that meets a `Complex(T)` takes that type, and one that a float `x: T` scales (`x * 2j`) becomes `Complex(T)`; where an operator needs the type of a complex variable that nothing else fixes (`z := 2j; w := z * z`), it takes its fallback there. An untyped complex constant at `Complex(T)` has each part rounded to `T` as a float literal is.
+
+A suffix (`200u8`, `1.5f32`, `2j32`) fixes the type directly.
 
 ```
 count := 0                     // usize: fixed by the comparison below
@@ -876,7 +975,7 @@ PI   :: 3.14159265358979323846
 TAU  :: 2 * PI
 ```
 
-Its value is computed exactly (integers are unbounded in principle, but an integer, or the numerator or denominator of a rational, of more than 2^22 bits is a compile error; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). A float value also has a sign when it is zero, as in IEEE arithmetic: unary `-` flips it, so `-0.0` is negative zero; a product or quotient whose exact value is zero is negative when exactly one operand is negative (counting negative zero); a sum or difference whose exact value is zero is negative zero only when it is `-0.0 + -0.0` or `-0.0 - 0.0`. Comparisons treat both zeros as equal. Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
+Its value is computed exactly (integers are unbounded in principle, but an integer, or the numerator or denominator of a rational, of more than 2^22 bits is a compile error; float-valued expressions are exact rationals; `/` on two integer values is truncating integer division; mixing an integer and a float value makes a float value). A float value also has a sign when it is zero, as in IEEE arithmetic: unary `-` flips it, so `-0.0` is negative zero; a product or quotient whose exact value is zero is negative when exactly one operand is negative (counting negative zero); a sum or difference whose exact value is zero is negative zero only when it is `-0.0 + -0.0` or `-0.0 - 0.0`. Comparisons treat both zeros as equal. An imaginary literal makes a **complex value**, an exact pair of rationals; mixing it with an integer or float value takes that value as its real part, and `+ - * /`, unary `-`, `is` and `is not` apply to complex values with the formulas of exact complex arithmetic (division by zero is an error, as is any other operator). The zero parts of a complex value have no sign. The same rules evaluate a constant expression that mentions an imaginary literal wherever it appears, so `3 + 4j` is one untyped complex constant even inside an expression. Each *use* of the constant is treated as if its exact value were written there as a literal, typed by literal inference (§6.1). `x: u8 = PAGE` is a compile error (4096 doesn't fit).
 
 Untyped constants are permitted at top level and as locals. A typed constant is written `MAX: usize : 4096`.
 
@@ -896,6 +995,7 @@ Gamma has no implicit conversions between different numeric types in expressions
 | `uN`, N ≤ 32 | `usize` | see note |
 | `uN`, N ≤ 31; `iN`, N ≤ 32 | `isize` | see note |
 | `fN` | `fM`, M > N | exact |
+| a real untyped constant | `Complex(T)` | the constant as the real part, the imaginary part zero (§5.3.1) |
 | `T` | `?T` | wrap present |
 | `T` | `E!T` | wrap success |
 | `never` | any | |
@@ -1041,7 +1141,7 @@ Float division follows IEEE 754 (division by zero gives ±∞ or NaN; it does no
 
 #### 7.4.6 Vector operators
 
-Arithmetic and bitwise operators do not apply to arrays: on an array of any length they would be a hidden loop (P2). They apply to vectors, whose operations are single instructions.
+Arithmetic and bitwise operators do not apply to arrays: on an array of any length they would be a hidden loop (P2). They apply to vectors, whose operations are single instructions, and to math vectors, whose operations are at most four scalar operations (§7.4.7).
 
 On vectors (§5.6.2) every operator applies lane by lane, with the rules and checks of the scalar operator for each lane; the two operands have the same vector type (a scalar is never spread over the lanes: use `V(fill: x)`), except that a shift takes one scalar amount for every lane.
 
@@ -1052,9 +1152,30 @@ On vectors (§5.6.2) every operator applies lane by lane, with the rules and che
 | `& \| ~`, unary `~`; `<< >>` (and `<<%`) by a scalar amount | integer; `& \| ~` also `bool` | the vector type |
 
 `/` and `%` on integer lanes do not exist: no target divides integer lanes in one instruction, so the cost would be hidden (P2); divide lanes one by one. The `?` flavors do not exist, since a lane cannot be absent, and `and`, `or`, `not` and `in` take `bool` values, not masks: combine masks with `&`, `|` and `~`. `is` and `is not` compare whole vectors (§7.6); lanes are compared by the `lanes_*` methods (§5.6.2), so that a word always gives `bool` (§1).
+#### 7.4.7 Complex and math-vector operators
+
+On complex numbers (§5.3.1) and math vectors (§5.6.3), the operands of `+`, `-`, `*` and `/` have the same type, except that `*` also takes a scalar of the element type on either side and `/` one on the right (an untyped literal takes the element type: `2 * v`, `z / 2`). Beside a complex number, a real untyped constant in `+`, `-`, on the left of `/`, or in `is` and `is not`, is a complex number with a zero imaginary part (`z + 1`, `1 / z`, `z is 0`); a real constant on the right of `/` or either side of `*` is the scalar (`z / 2`).
+
+**Math vectors** apply each operator element by element, with the rules and checks of the scalar operator for each element (§7.4.1–§7.4.5), and give the math vector type: `+ - *` and their `%` and `|` flavors, unary `-`, `/` and `%`, and for integer elements the bitwise operators and shifts by one scalar amount. A scalar operand of `*` or `/` takes part in every element's operation. The `?` flavors do not exist, since an element cannot be absent.
+
+**Complex numbers** have `+`, `-`, `*`, `/` and unary `-`, each a fixed sequence of float operations of `T` (no contraction, §5.3). For `a = p + q·i` and `b = r + s·i`:
+
+| Operation | Real part | Imaginary part |
+| --- | --- | --- |
+| `a + b`, `a - b` | `p ± r` | `q ± s` |
+| `-a` | `-p` | `-q` |
+| `a * b` | `p·r - q·s` | `p·s + q·r` |
+| `a * x`, `x * a`, `a / x` (scalar `x`) | `p·x`, `p/x` | `q·x`, `q/x` |
+| `a / b`, when \|r\| ≥ \|s\| | with `t = s/r`, `d = r + s·t`: `(p + q·t)/d` | `(q - p·t)/d` |
+| `a / b`, otherwise | with `t = r/s`, `d = r·t + s`: `(p·t + q)/d` | `(q·t - p)/d` |
+
+Division is Smith's algorithm, which avoids the overflow of the textbook formula for large divisors. A NaN or infinity in an operand propagates through these formulas as IEEE arithmetic does; unlike C's Annex G, nothing tries to recover an infinite result from a NaN one.
+
+Compound assignment works as for scalars (§4.7): `v *= 2`, `z /= w`.
+
 ### 7.5 Comparison
 
-`< <= > >=` apply to two operands of type `bool` (`false < true`), the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all `bool`s, integers, floats, enums, or (recursively) such tuples, arrays and slices.
+`< <= > >=` apply to two operands of type `bool` (`false < true`), the same integer type, the same float type (IEEE ordered comparison: false if either is NaN), the same enum type (payload-less union; compared by tag value), the same many-pointer type (which must point into the same allocation, §18.4), or the same tuple, array or slice type whose element types are all `bool`s, integers, floats, enums, or (recursively) such tuples, arrays and slices. Vectors and math vectors are not ordered (§5.6.2, §5.6.3).
 
 Tuples, arrays and slices (including `string`) compare **lexicographically**: find the first index `i` at which element `i` of `a` is not `is`-equal to element `i` of `b`; then `a < b` is element `i` of `a` `<` element `i` of `b`. If there is no such position, the shorter is less (tuples and arrays of one type have equal length, so they are equal). `a <= b` is `a < b or a is b`; `>` and `>=` are the mirror images. Strings therefore compare bytewise. Structs are deliberately **not** ordered: their field order records layout, not priority. To order structs, order a tuple of keys (`sort_by_key`, §21.3).
 
@@ -1097,6 +1218,8 @@ Comparing slices by content is the one place where `is` looks through a value to
 
 The tuple form is written inline: `c in ('\n', '\r')`, `d in (.N, .S)`.
 
+`in` is defined only for these built-in forms, whose test is a comparison or a scan the reader can see. A library container answers membership with a method (`m.contains(k)`), and a generic function that needs a membership test takes it as a function parameter (`has: fn(x: T) -> bool`) or the elements as an iterator (§13.5); see C.8.
+
 ### 7.8 Logical operators
 
 `and`, `or` and `not` take and give `bool`. `and` and `or` short-circuit. Mixing `and` and `or` in one expression requires parentheses. There are no truthy values: conditions must be `bool` (or binding conditions, §8.2).
@@ -1131,7 +1254,7 @@ Methods cannot be added to types declared in other modules; write a free functio
 
 - A struct type: construction (§5.10.1). Struct construction takes **named** arguments and spreads only; positional arguments are not allowed, so reordering fields can never silently change meaning, and `S(x)` with one positional argument is always a conversion.
 - A union variant `.V(args)` / `U.V(args)`: construction with the payload.
-- An array type `[N]T(e1, …, eN)`: exactly `N` elements; `[_]T(…)` infers `N`; `[N]T(fill: x)` repeats `x`; `[N]T(..t)` spreads a tuple of `N` elements. An enum-indexed array `[E]T(V: x, …)` names every variant of `E`, or is `[E]T(fill: x)` (§5.6.1).
+- An array type `[N]T(e1, …, eN)`: exactly `N` elements; `[_]T(…)` infers `N`; `[N]T(fill: x)` repeats `x`; `[N]T(..t)` spreads a tuple of `N` elements, and a tuple type spreads an array the other way: `(T, T)(..a)` for `a: [2]T`. An enum-indexed array `[E]T(V: x, …)` names every variant of `E`, or is `[E]T(fill: x)` (§5.6.1).
 - A tuple type: construction from positional/named arguments and spreads, one value per element; each value coerces to its element's type (§6.4). It is never a conversion, even with one argument (§6.5).
 - An optional type `?T(x)`: an optional holding `x` (coerced to `T`), or with `null`, the absent value of `?T`. This is how inner levels of nested optionals are written: `??i32` holds `?i32(null)`.
 - Any other type with exactly one argument: conversion (§6.5).
@@ -1380,6 +1503,8 @@ Wrapping is one level. For `x: ??i32`, `null` is the outer absent value, and the
 
 `!e` is a prefix expression that makes a result in the error state from `e`. Its type is `E!T` where `E` is `e`'s type and `T` comes from context. With a union error type known from context, variant shorthand works: `return !.TooBig`.
 
+`!` is never logical negation, which is the word `not` (§7.8, §C.5); where `!e` is used as a `bool`, implementations should say so.
+
 ### 10.3 Unwrap: `x?` and `x!`
 
 `x?` on `?T` gives the `T`. `x!` on `E!T` gives the `T`. Both are **checked operations**: if `x` is `null` (or an error), the program traps in Debug and Checked builds, reporting the source location (and, for `!`, the error value's type and variant). In Fast builds the result is an unspecified value of type `T` (§18).
@@ -1486,7 +1611,7 @@ show("none")                // args is ()
 show("two", 5, "x")         // args is (5, "x"): A is (i32, string)
 ```
 
-Inside the function the parameter is an ordinary tuple, and a spread passes it on whole: `print(template, ..args)`. In a call of a function with a rest parameter, a spread may appear only as the whole of the rest arguments, where it passes a tuple as them. Rest parameters replace C's variadic functions: the arguments are typed and counted at compile time, and nothing is allocated. `print`, `eprint`, `@write` and the formatting functions of the library take their values this way (§21.6).
+Inside the function the parameter is an ordinary tuple, and a spread passes it on whole: `print(template, ..args)`. In a call of a function with a rest parameter, a spread may appear only as the whole of the rest arguments, where it passes a tuple, or an array's elements as one (§11.4), as them. Rest parameters replace C's variadic functions: the arguments are typed and counted at compile time, and nothing is allocated. `print`, `eprint`, `@write` and the formatting functions of the library take their values this way (§21.6).
 
 ### 11.3 Calls
 
@@ -1507,6 +1632,7 @@ The argument list is a tuple: `f(..t)` where `t: (i32, i32)` passes `t`'s elemen
 `..e` in an argument list or constructor:
 
 - If `e` is an unnamed tuple, its elements become positional arguments.
+- If `e` is an array `[N]T` or a vector `#simd [N]T` (§5.6.2), it spreads as the unnamed tuple `(T, …, T)` of its `N` elements, in index order: `(u8, u8, u8)(..[_]u8(10, 20, 30))` is `(10, 20, 30)`. `N` must be known where the spread is written, so an array whose length depends on a compile-time parameter (§16.5) cannot be spread, and neither can an enum-indexed array, whose elements have no positions (§5.6.1).
 - If `e` is a named tuple or a struct (whose fields are all visible), its elements/fields become named arguments.
 - Several spreads may appear. A later explicit **named** argument overrides a name supplied by a spread: `Window(..w, title: "new")` is `w` with a different title. A name supplied twice by spreads, or twice explicitly, is a compile error.
 
@@ -2176,11 +2302,11 @@ The constraints are a closed set of predicates on types. A generic body may use 
 | Constraint | Satisfied by | Grants |
 | --- | --- | --- |
 | `Eq(T)` | every type for which `is` is defined (§7.6) | `is`, `is not`, `in` over `T`, literal patterns of `T`, `@hash` (§16.8) |
-| `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
+| `Ord(T)` | `bool`, integer, float and enum types; tuples, arrays (other than math vectors) and slices of `Ord` types (§7.5) | `Eq`, plus `< <= > >=` |
 | `Num(T)` | integer and float types | `Ord`, plus `+ - * /`, untyped literals at `T` |
 | `Int(T)` | integer types | `Num`, plus `%`, the overflow flavors, shifts, bitwise ops, and the integer methods of §21.3 (`.trunc`, `.checked`, `.sat`, `.to`, `min`, `abs_diff`, …) |
 | `Neg(T)` | signed integer and float types | `Num`, plus unary `-` |
-| `Float(T)` | float types | `Num`, plus float methods (§21.3) |
+| `Float(T)` | float types | `Neg`, plus float methods (§21.3) |
 | `Plain(T)` | plain-data types (§5.19) | `---` at `T`, `.bits` to and from `T` |
 
 Without any constraint, a type parameter `T` still supports: declaring variables and parameters of type `T`, copying, taking addresses, forming `^T`, `[]T`, `?T`, `E!T`, `[N]T`, passing `T` to other generics whose constraints it satisfies, `@size_of(T)` and `@align_of(T)`.
@@ -2189,7 +2315,7 @@ Operations beyond these come in as function parameters (`less: fn(a, b: ^const T
 
 ### 16.4 Generic types
 
-The parameters of a `struct`, `union` or `effect` are always compile-time, because they are part of the type. They may be types or values of the types allowed for compile-time value parameters (§16.5), including function values:
+The parameters of a `struct`, `union` or `effect` are always compile-time, because they are part of the type. They may be types or values of the types allowed for compile-time value parameters (§16.5), including function values. The standard library's hash map (`std/collections/hash_map`) is declared:
 
 ```
 HashMap :: struct(K, V: type,
@@ -2198,10 +2324,10 @@ HashMap :: struct(K, V: type,
     …
 }
 
-ids := hash_map(string, u32)                                // @hash and `is`
+ids := hm.hash_map(string, u32)                             // @hash and `is`
 try ids.put("ada", 1)
 
-names := hash_map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
+names := hm.hash_map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
 ```
 
 - Parameters may have defaults, which must be constant expressions; arguments may be named.
@@ -2285,7 +2411,7 @@ The idiomatic replacements:
 | Bound a generic body to operations on `T` | a closed constraint (`where Ord(T)`), or a function parameter |
 | An algorithm that needs per-call behavior | a second-class function parameter: `xs.sort_by(fn(a, b) => a.score > b.score)` |
 | Order structs | order a tuple of keys: `people.sort_by_key(fn(p) => (p.last, p.first))` |
-| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are `HashMap` parameters |
+| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are parameters of the hash map type (§16.4) |
 | A data structure with fixed, consistent behavior | a compile-time parameter of the type: `BTree(K, V, less: by_name)` |
 | Print or log any value | `print("{} at {}", name, pos)`, which formats every type structurally (§21.6); custom display is an ordinary function returning a string |
 | Run-time dispatch over a closed set of cases | a tagged union and `match` |
@@ -2454,7 +2580,8 @@ A type is **C-compatible** if it is one of:
 | `bool` | `_Bool` |
 | `^T`, `^const T`, `[^]T`, `[^]const T`, `rawptr`, `cstring`, and `?` of each | `T *`, `const T *`, `void *`, `const char *` (nullable only when `?`) |
 | `^fn(…) -> R` with C-compatible parameters and result, empty effect set or `Sys` | function pointer |
-| `[N]T` of a C-compatible `T` (as a struct field) | `T[N]` |
+| `[N]T` and `#vec [N]T` of a C-compatible `T` (as a struct field) | `T[N]` |
+| `Complex(f32)`, `Complex(f64)` (on x86-64 System V and AArch64, also as parameters and results) | `float _Complex`, `double _Complex` (§5.3.1) |
 | `struct` whose fields are all C-compatible (including `#packed`, `#align`) | `struct` with the same layout |
 | `#c_union` whose fields are all C-compatible | `union` |
 | `#bits(U)` struct | `U` (C bitfields have implementation-defined layout, so Gamma exposes the underlying integer instead) |
@@ -2477,7 +2604,7 @@ libc :: foreign "c" {
 }
 ```
 
-- `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name. In a Safe build (§18.7) every foreign library, the C library included, must be built for Safe builds as well.
+- `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name. Since both reach the linker, a library name consists of letters, digits and `_ . + -` and does not begin with `-`, and a symbol name of letters, digits and `_ $ . @`. In a Safe build (§18.7) every foreign library, the C library included, must be built for Safe builds as well.
 - Parameter and result types must be C-compatible.
 - A foreign function needs `Sys` unless annotated. An annotation with a smaller set — usually `needs not`, the empty set, which ends the signature and is allowed only here — is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. (`needs not Alloc` is a syntax error: Gamma has no way to exclude an effect, and `not` never means "everything but".) Foreign functions are never evaluated at compile time regardless (§17.6).
 - **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions use rest parameters (§11.2) instead.
@@ -2516,7 +2643,7 @@ load :: fn(path: cstring) -> c.c_int needs Sys {
 }
 ```
 
-`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). `sym` must be a C identifier other than `main`, and no two functions may be exported under one name; an implementation may also reject names its own runtime uses. Its signature must be C-compatible and its effect set must be empty or `Sys`, because C callers cannot supply handlers; it installs whatever handlers it needs, using the default handlers of the core library (`heap_allocator()`, `system_io()`, `system_output()`, §21.1). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
+`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). `sym` must be a C identifier other than `main`, and no two functions may be exported under one name. An implementation's runtime may use some symbol names itself; it documents them, and they are unavailable to `#export` and foreign members, a limitation of the implementation (§23.5). Its signature must be C-compatible and its effect set must be empty or `Sys`, because C callers cannot supply handlers; it installs whatever handlers it needs, using the default handlers of the core library (`heap_allocator()`, `system_io()`, `system_output()`, §21.1). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
 
 A trap inside an exported function terminates the process; it does not return to C.
 
@@ -2598,6 +2725,8 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#bits(U)` | struct literal | bit-packed into `U` | 5.10.5 |
 | `#c_union` | union literal | untagged C union | 5.11.1 |
 | `#simd` | array type `[N]T` | a vector of `N` lanes | 5.6.2 |
+| `#vec` | array type `[N]T` | a math vector of `N` elements | 5.6.3 |
+| `#soa` | array type `[N]S`, slice type `[]S` | stored by field: one array per field of the struct `S` | 5.6.4 |
 | `#export("sym")` | top-level function | external C-ABI symbol | 19.4 |
 | `#trap_hook` | top-level function | called by every trap on a freestanding target | 3.7.1 |
 | `#link_name("sym")` | foreign member | symbol name | 19.2 |
@@ -2608,7 +2737,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#fast_math` | function | relaxed float semantics | 5.3 |
 | `#fuel(n)` | top-level declaration | compile-time step budget | 17.3 |
 | `#deprecated`, `#deprecated("msg")` | declaration | a warning at each use, quoting the message | — |
-| `#allow("rule", …)` | top-level declaration | no meaning for the program; tools that report on code (the `gamma` tool's `lint` command) report none of the named rules inside the declaration. The arguments are string literals naming rules the tool knows | — |
+| `#allow("rule", …)` | top-level declaration | no meaning for the program; tools that report on code (the `gamma` tool's `lint` command) report none of the named rules inside the declaration. The arguments are string literals; whether they name rules is for those tools to check, not for compiling (§23.2) | — |
 
 ### 20.3 Intrinsics
 
@@ -2656,11 +2785,13 @@ The universe holds the **effects** but not their **operations**, with one except
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u128`, `i1`…`i128`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
-| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
+| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Complex`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`, `Test` |
 | operations | `yield` only; the others are reached through their effects |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
+
+*Transition.* Until the release after 0.1.0, the universe scope also holds `HashMap`, `hash_map` and `hash_map_with`, `#deprecated` names for the declarations of `std/collections/hash_map` (§21.5); a program may hide them like any other name.
 
 ### 21.2 Allocation
 
@@ -2693,9 +2824,13 @@ Builtin methods are resolved by §7.10 rule 2. `T` is a type argument.
 
 **`usize`:** `to_ptr(P)`.
 
-**Arrays and slices** (`a` of element type `T`): `len` (field-like, no parentheses), `ptr` (slices), `get(i) -> ?T`, `get_ptr(i) -> ?^T`, `first() -> ?T`, `last() -> ?T`, `cursor()`, `copy_from(src: []const T)` (lengths must be equal: checked; overlap allowed), `fill(x: T)`, `starts_with(p)`, `ends_with(p)`, `index_of(x) -> ?usize` (`Eq`), `swap(i, j)`, `sort()` (`Ord` elements), `sort_by(less: fn(a, b: ^const T) -> bool)`, `sort_by_key(key: fn(x: ^const T) -> K)` (`Ord(K)`), `min()`, `max()` (`Ord`; `?T`), `binary_search(x) -> (found: bool, at: usize)` (`Ord`). `stable_sort()`, `stable_sort_by(less)` and `stable_sort_by_key(key)` are the stable variants. All sorts are in place and allocate nothing. If `<` (or `less`) is not a strict weak ordering on the elements — for example, floats including NaN — the result is an unspecified permutation of the input: never a trap or undefined behavior. `min`, `max` and `binary_search` likewise give an unspecified element or index in that case.
+**Arrays and slices** (`a` of element type `T`): `len` (field-like, no parentheses), `ptr` (slices), `get(i) -> ?T`, `get_ptr(i) -> ?^T`, `first() -> ?T`, `last() -> ?T`, `cursor()`, `copy_from(src: []const T)` (lengths must be equal: checked; overlap allowed), `fill(x: T)`, `starts_with(p)`, `ends_with(p)`, `index_of(x) -> ?usize` (`Eq`), `swap(i, j)`, `sort()` (`Ord` elements), `sort_by(less: fn(a, b: ^const T) -> bool)`, `sort_by_key(key: fn(x: ^const T) -> K)` (`Ord(K)`), `min()`, `max()` (`Ord`; `?T`), `binary_search(x) -> (found: bool, at: usize)` (`Ord`; `at` is the first index whose element is not less than `x`), `upper_bound(x) -> usize` (`Ord`; the first index whose element is greater than `x`), `is_sorted()` (`Ord`), `is_sorted_by(less)`, `reverse()`, `rotate_left(k)` and `rotate_right(k)` (`k` at most `len`: checked), `dedup() -> usize` (`Eq`; moves the first element of each run of equal adjacent elements to the front and returns how many there are; the other elements follow, in an unspecified order), `partition(pred: fn(x: ^const T) -> bool) -> usize` (moves the elements satisfying `pred` to the front, not stably, and returns how many there are), `select_nth(n)` (`Ord`) and `select_nth_by(n, less)` (put at index `n` the element a sort would put there, no greater element before it and no smaller one after it; `n` less than `len`: checked). `stable_sort()`, `stable_sort_by(less)` and `stable_sort_by_key(key)` are the stable variants. All sorts and reorderings are in place and allocate nothing; each one leaves a permutation of the elements. If `<` (or `less`) is not a strict weak ordering on the elements — for example, floats including NaN — the result is an unspecified permutation of the input: never a trap or undefined behavior. `min`, `max`, `binary_search`, `upper_bound` and `is_sorted` likewise give an unspecified element, index or answer in that case.
 
 **Vectors** (§5.6.2) have none of the array methods; they have `reduce_sum()`, `reduce_min()`, `reduce_max()` (in lane order, with the scalar `+`, `min` and `max`), `min(w)`, `max(w)`, `abs()` (lane by lane, as the scalar methods), `to(F)`, `shuffle(i0, …)`, `store(dst: []T)` (checked: long enough), and on the type `load(xs: []const T)` (checked). Masks have `all()`, `any()`, `count() -> usize` and `select(a, b)`.
+
+**Math vectors** (§5.6.3) have none of the array methods; they have `dot(w)`, `cross(w)` (three elements), `norm()` (float elements), and element by element `min(w)`, `max(w)` and `abs()` (as the scalar methods).
+
+**Complex numbers** (§5.3.1) are a struct of the core library, whose module gives them `conj()` and `abs()`.
 
 **Strings** additionally: `cstr_len()` on `cstring`, `utf8_valid()`.
 
@@ -2725,9 +2860,11 @@ nth        :: fn(T: type, it: fn() needs Yield(T), n: usize) -> ?T
 
 `range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. `zip` yields pairs up to the shorter length. The iterators are `#inline`. `collect`, `count` and `nth` run the iterator they are given (§13.5): `collect` gathers its values in a new list, `count` counts them, and `nth` returns the value at index `n` (from 0) and stops the iterator there, or `null`.
 
-### 21.5 Containers (summary)
+### 21.5 Lists
 
-`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`). Only `List`, `list`, `HashMap`, `hash_map` and `hash_map_with` are re-exported to the universe scope; the other functions and types of those modules are reached as methods, and method calls on them resolve in those modules (§7.10). Their required interface:
+`List(T)`, the growable array, is the one container in the core library, because the language definition and the core library's conventions refer to it: `collect` returns a `List(T)` (§21.4), and every library operation that produces text or bytes of unknown length appends them to a `List(u8)` (`l.write(template, args)` formats into one, §21.6.1; §22.3). It is the type through which independent code hands over a growing sequence. Every other container — hash maps, ordered maps, queues, heaps, bit sets — is a module of the standard library (`std/collections/…`), which needs nothing from the language that a program does not have.
+
+`List` is declared, with its functions, in the core module `core/list`. Only `List` and `list` are re-exported to the universe scope; the other functions are reached as methods, and method calls on a list resolve in that module (§7.10). Its required interface:
 
 ```
 // core/list
@@ -2746,31 +2883,9 @@ deinit :: fn(T: type, l: ^List(T))                                 // frees thro
 into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T          // hands over the storage, sized exactly
 collect :: fn(T: type, l: ^List(T), it: fn() needs Yield(T)) -> AllocError!()   // appends what `it` yields
 write  :: fn(A: type, l: ^List(u8), template :: string, args: ..A) -> AllocError!()  // @write into the list
-
-// core/map
-HashMap  :: struct(K, V: type,
-                   hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,   // null: @hash
-                   eq:   ?^fn(a, b: ^const K) -> bool = null)            // null: `is`
-hash_map :: fn(K, V: type) -> HashMap(K, V) needs Alloc where Eq(K)
-hash_map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
-               eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) needs Alloc
-put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
-get      :: fn(m: ^const HashMap(…), k: K) -> ?V
-get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
-Entry    :: struct(K, V: type) { pub key: ^K; pub value: ^V; pub found: bool }
-entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // stores `default` if absent; pointers to the stored key and value
-contains :: fn(m: ^const HashMap(…), k: K) -> bool
-remove   :: fn(m: ^HashMap(…), k: K) -> ?V
-remove_entry :: fn(m: ^HashMap(…), k: K) -> ?(key: K, value: V)   // with the stored key
-len      :: fn(m: ^const HashMap(…)) -> usize
-entries  :: fn(m: ^const HashMap(…)) needs Yield((key: K, value: V))   // unspecified order
-keys     :: fn(m: ^const HashMap(…)) needs Yield(K)                   // in the order of `entries`
-values   :: fn(m: ^const HashMap(…)) needs Yield(V)
-clear    :: fn(m: ^HashMap(…))                                      // keeps the storage
-deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `Alloc.current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
+The list captures `Alloc.current()` at construction and never performs `Alloc` afterwards (§15.2). `for x in l.items` iterates it. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 
@@ -2797,7 +2912,7 @@ eprint :: fn(A: type, template :: string, args: ..A) needs Err
 @write(sink, template, values…)
 ```
 
-`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: ..A)` can forward to `print` or `@write`. After the template come the **values**, one for each placeholder, as the rest arguments of a rest parameter do (§11.2): written out, or as a single spread of a tuple holding them (`@write(sink, template, ..args)`). `@write` calls `sink` zero or more times with consecutive, non-empty pieces of output, allocating nothing; how the output is divided into pieces is unspecified. Effects performed by `sink` are the effects of the `@write` expression.
+`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: ..A)` can forward to `print` or `@write`. After the template come the **values**, one for each placeholder, as the rest arguments of a rest parameter do (§11.2): written out, or as a single spread of a tuple or array holding them (`@write(sink, template, ..args)`). `@write` calls `sink` zero or more times with consecutive, non-empty pieces of output, allocating nothing; how the output is divided into pieces is unspecified. Effects performed by `sink` are the effects of the `@write` expression.
 
 **Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. There must be exactly as many values as placeholders: `print("{} and {}", a, b)`. A tuple given as one value is written as one tuple: `print("{}", (a, b))` writes `(a, b)`. Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
 
@@ -3014,6 +3129,70 @@ These belong in packages, whatever their popularity: application protocols above
 
 ---
 
+## 23. Errors and diagnostics
+
+§22 says what earns a place in the standard library; this chapter says what earns being an error, and what the report of one must do. It is normative for rules added to this specification and for the diagnostics of every implementation.
+
+### 23.1 Three kinds of error
+
+| Kind | Used when | Who must act |
+| --- | --- | --- |
+| **Compile error** (§1.3) | the program text breaks a rule of this specification | the programmer, before the program runs |
+| **Trap** (§18.5) | the program breaks a precondition it was responsible for: a checked operation fails (§18.2), or `trap` is called | the programmer: a trap is a bug, and is not handled |
+| **Error value** (§10) | an operation fails for a reason the program cannot rule out beforehand: input, the environment, resources | the caller, through the result's type |
+
+A mistake is classified by the earliest point at which it can be known. If the text alone shows it, it is a compile error; if it depends on values the program controls, it is a precondition, checked at run time and trapping; if it depends on the world outside the program, it is an error value. So a library function returns an error value for bad input, and traps only when a caller broke a documented precondition (§22.2).
+
+### 23.2 What is a compile error
+
+Every compile error is stated by a rule of this specification. A rule makes text a compile error only when all of these hold:
+
+1. **The text has no meaning, or more than one.** It breaks the grammar, a typing, effect or scoping rule, or it could be read two ways that readers confuse (mixing `and` with `or`, chained comparisons, §7.3). Gamma rejects what it would otherwise have to guess at (§C.5).
+2. **It is decided locally.** The rule is checked from the declaration and the signatures it uses (§C.6), without whole-program analysis, heuristics or a limit an implementation picks, so every implementation rejects the same programs. Where a bound is unavoidable, this specification states it (§23.5).
+3. **It rejects only what it is meant to.** No correct program falls under the rule by accident, and every program it rejects has a form the rules accept that says what was meant.
+
+Code that is well-formed but suspicious — a variable that is never read, a comparison whose result is always the same, an unneeded import, a construct that has a simpler form — is not an error. Rejecting it would reject correct programs (code being written, generated code, a deliberate choice), and where suspicious ends depends on taste. Such findings are warnings of tools that report on code on request (`#allow`, §20.2), which a project may enforce or not.
+
+An implementation adds no compile errors of its own and makes none optional: a program this specification accepts compiles in every conforming implementation, on every target that supports the facilities it uses and within the limits of §23.5, and a program it rejects compiles in none. Compiling a program reports errors, and warnings only for uses of `#deprecated` declarations (§20.2). A limitation of the implementation or the host (a facility the target lacks, a resource exhausted) is reported as such, not as a mistake in the program.
+
+### 23.3 What a diagnostic reports
+
+A compile error is reported by a diagnostic, written for the programmer in the terms of the program:
+
+1. **Where.** Its location is the smallest piece of text that breaks the rule: the operator, the argument, the name, not the whole statement. Further locations the explanation needs (the parameter an argument does not fit, the earlier declaration of a name) are attached to it.
+2. **What.** One sentence naming the rule broken, in terms of the program: the names, types and effects involved, and what was expected where it differs from what was found. A rule that a reader may not know is cited by its section.
+3. **How to fix it, when the rule decides.** When the rule leaves one way to write what was meant (`is` for `==`, `Fs.open` for a bare `open`, `_ = f()` for an ignored result), the diagnostic says it, and tools may apply it. When there are several, it may name each. When the intent cannot be known, it says nothing rather than guess.
+4. **Each mistake once.** An implementation continues after an error so that independent errors are reported together, but does not report what follows only from an earlier error (uses of a declaration that failed, a type unknown because of an error), and reports a mistake in a generic body once, not per instantiation.
+5. **The same every time.** The same program gives the same diagnostics, in the same order, on every run and host.
+
+### 23.4 What a diagnostic does not do
+
+A diagnostic explains the program in terms of Gamma. Its suggestions come from the program (its declarations, the names in scope, the expected type, the import that would make a name resolve) and from this specification (the rule broken and the alternative it states). Nothing else is consulted:
+
+- **Other languages.** Their notation is recognized only where this specification replaced a widespread notation and names the replacement: `==`, `!=`, `&&` and `||` (§2.6), `!` as negation (§10.2), `=` as a comparison (§C.5) and octal by leading zero (§2.5.1). Any other foreign syntax gets the diagnostic the text earns as Gamma.
+- **Characters.** A character that is not part of the language is reported by its code point (§2.1). A diagnostic does not say what it looks like (a Greek question mark for `;`, a typographic quote, a non-breaking space): the code point identifies it, and what it resembles depends on the font.
+
+*Rationale.* Guesses from outside the language need tables that are never complete (every look-alike character, every other language's syntax), must be maintained forever, and mislead when they guess wrong. The rules of this specification are finite, and a diagnostic that rests on one can be checked against it.
+
+### 23.5 Limits
+
+Compiling needs memory and time, so some sizes have bounds. Each is a minimum that every implementation supports; a program beyond one may be rejected, and the diagnostic then says which limit it exceeds, not that the program is wrong.
+
+| Quantity | At least |
+| --- | --- |
+| Nesting of brackets, blocks, statements and other syntax | 64 levels |
+| Postfix operations applied in a row to one operand (`a.b.c(…)[i]?…`) | 100 000 |
+| Magnitude of the exponent of a float literal (§2.5.2) | 100 000 |
+| Steps of one compile-time evaluation (§17.3) | 10⁷, or `#fuel(n)` |
+| Depth of generic instantiations requesting each other (§16.7) | 64 |
+| Generic instantiations in one program | 100 000 |
+
+Symbol names that an implementation's runtime uses are also a limit of the implementation (§19.4); the reference implementation's all begin with `gm_` followed by a lowercase letter.
+
+One bound is a rule rather than a limit, since the target's address space decides it: the size of a type is at most the largest value of `isize` (§5.1), and a type larger than that is a compile error.
+
+---
+
 ## Appendix A. Grammar
 
 This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. `ATTR` is an attribute name and `INTRINSIC` an intrinsic name (§2.7); each is one token, `#` or `@` and the identifier together, so `'#global'` is the attribute name `global`. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
@@ -3054,6 +3233,8 @@ prefix_type   = '?' prefix_type
               | '[' '^' ']' [ 'const' ] prefix_type
               | '[' expr ']' prefix_type                        // [N]T; [E]T when expr names an enum type (§5.6.1)
               | '#simd' '[' expr ']' prefix_type                // a vector (§5.6.2)
+              | '#vec' '[' expr ']' prefix_type                 // a math vector (§5.6.3)
+              | '#soa' '[' [ expr ] ']' [ 'const' ] prefix_type   // stored by field (§5.6.4)
               | '[' '_' ']' prefix_type                         // only in array constructors
               | { attribute } '^' fn_type                       // #callconv (§19.2)
               | fn_type
@@ -3247,14 +3428,13 @@ Assignment (`=` and compound forms) is a statement.
 | `^` | pointer | `^T`, `^const T`, `[^]T`, `^fn`, `x^` |
 | `:` | naming | `x: T`, `x := e`, `x :: e`, `x: T : e`, `label:` |
 | `=>` | maps to | expression bodies, match arms, handler clauses, `else e =>` |
-| `needs` | effects | `-> T needs E1 + E2`, `needs not` (foreign) |
 | `..` | span, splice | ranges `a..b`, slicing `a[i..]`, spread `f(..t)`, rest parameters `args: ..A` |
 | `@` / `#` | intrinsic / attribute | `@size_of(T)`, `#packed` |
 | `---` | don't care | uninitialized plain data |
 
 ### B.3 Keywords
 
-**Reserved (34):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
+**Reserved (35):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `needs` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
 
 **Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
 
@@ -3290,7 +3470,10 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 
 - **C layout by default** for structs, unions and pointers; `?^T` is a nullable C pointer (§5.10.4, §5.12). Tagged unions, optionals of non-pointers, slices and tuples stay out of foreign signatures, where their layouts would be a promise to C (§19.1).
 - **Values copy bitwise and own nothing.** There are no destructors, move semantics or copy constructors (§15.4); cleanup is explicit, structured by `defer` and `errdefer` (§8.8). Ownership tracking would make Gamma a different language; Debug builds tag allocations, poison freed memory and detect leaks instead (§18.3).
-- **Vectors are arrays with lane-wise operators** (§5.6.2). Their layout is fixed (the array of the lanes, aligned to its size), so they are plain data like any array. They are the one way to apply an operator to many values at once, and it costs one instruction; ordinary arrays have no arithmetic, since `+` on an array of any length would be a loop (P2). Lane comparisons are methods that give masks, so `is` keeps its one meaning (C.5).
+- **Vectors are arrays with lane-wise operators** (§5.6.2). Their layout is fixed (the array of the lanes, aligned to its size), so they are plain data like any array. They are the way to apply an operator to many values in one instruction; ordinary arrays have no arithmetic, since `+` on an array of any length would be a loop (P2). Lane comparisons are methods that give masks, so `is` keeps its one meaning (C.5).
+- **Complex numbers are a struct with operators** (§5.3.1): the layout of C's `_Complex`, the behavior of a struct, and operators that are fixed float formulas. Division is Smith's algorithm rather than C's Annex G, whose recovery of infinities makes a multiplication a library call.
+- **Math vectors are arrays with element-wise operators** (§5.6.3): the layout of `[N]T`, so they belong in C structs and buffers, and at most four elements, so an operator is at most four scalar operations. They differ from vectors in what they promise: a vector promises one instruction and an alignment, a math vector a C layout. Both follow the same operator rules.
+- **Structure-of-arrays is a layout of arrays and slices** (§5.6.4): one array per field, the layout of the parallel arrays a C program would declare. Indexing gives the element by value and fields of elements as places, so no element needs an address it does not have.
 - **Arbitrary-width integers** (`u1` … `u128`, as C23's `_BitInt` up to the widths machines compute with) make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified, unlike C bitfields (§5.2, §5.10.5).
 - **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so forgetting to cannot create an invalid value (§4.4, §5.19).
 - **One-shot continuations on caller-provided stacks.** Multi-shot continuations would copy stacks and break pointers into them. One-shot ones allocate nothing and keep every pointer valid (§14). This is also where the effects of Gamma stop: it covers exactly the one-shot uses of algebraic effects — generators, async I/O and schedulers, early exit, dependency injection — and leaves out the multi-shot ones, such as backtracking by re-running a continuation.
@@ -3299,7 +3482,7 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 ### C.3 P2 — Cost is visible where it is paid
 
 - **No hidden allocation.** No construct allocates (§15.3). The current allocator comes from the `Alloc` effect; long-lived structures capture their allocator when constructed, so memory is freed through the allocator that produced it (§15.2).
-- **No hidden calls.** An operator never calls user code, so `a + b` costs what it looks like it costs; there is no operator overloading. `is` and `in` are the operators whose cost grows with the data: `is` compares slices by content, so that `name is "admin"` means what it says (§7.6), and `x in xs` scans an array or slice (§7.7). Both are loops over values, never user code, and both are words, which mark logic rather than a machine operation (C.5). No sigil operator hides a loop: arithmetic applies to scalars and to vectors, never to arrays (§7.4.6).
+- **No hidden calls.** An operator never calls user code, so `a + b` costs what it looks like it costs; there is no operator overloading. `is` and `in` are the operators whose cost grows with the data: `is` compares slices by content, so that `name is "admin"` means what it says (§7.6), and `x in xs` scans an array or slice (§7.7). Both are loops over values, never user code, and both are words, which mark logic rather than a machine operation (C.5). No sigil operator hides a loop: arithmetic applies to scalars, vectors, math vectors and complex numbers, each a fixed number of operations, never to arrays (§7.4.6, §7.4.7).
 - **The kind of an effect operation is its cost** (§12.2): `fn` operations always return (a call), `esc` operations may exit (a return-flag check), `ctl` operations may suspend (a stack switch). Programs pay only for the kind they use, and `with … on stack` makes the program provide the stack a suspension needs (§14.1).
 - **No hidden conversions.** Lossless widening happens only at coercion sites and on the right of a compound assignment; `T(x)` converts only when lossless for every value of the source *type*; lossy conversions are named methods (`trunc`, `round`, `checked`, `sat`, `bits`, §6). The one implicit conversion between two distinct nominal types is error lifting (§10.6): a `try` or `return` wraps an error in the one variant of the function's error union that carries it. It is allowed because it is decided at the site, by one unambiguous variant, and is a compile error when ambiguous.
 - **Second-class closures.** `fn(…)` values capture by reference, cost no allocation, and can be passed down but never stored or returned; `^fn(…)` is a plain code pointer, first-class and C-compatible (§11.6, §11.7). Between them they cover callbacks and stored function pointers without closures that allocate or dangle.
@@ -3347,7 +3530,7 @@ Generic code is ordinary code with compile-time parameters, **checked once** whe
 | Job | In Gamma |
 | --- | --- |
 | Bounding a generic body | closed constraints, plus function parameters |
-| Implementation fixed per type, called directly | compile-time parameters of functions and types (`HashMap(K, V, hash: f)`) |
+| Implementation fixed per type, called directly | compile-time parameters of functions and types (a hash map's `hash` and `eq`, §16.4) |
 | Implementation chosen at run time | a struct with a vtable of `^fn` (as `Allocator`), or a tagged union |
 | Implementation supplied by context | effects and handlers |
 | Implementation found **implicitly** and **composed** (`Hash` for `(A, B)` from `Hash` for `A` and `B`) | deliberately absent |
@@ -3378,6 +3561,7 @@ The first four already exist, each with its cost and its code visible where it i
 | `T(x)` succeeding when the *value* is provably in range | P5 | legality would depend on the compiler's analysis |
 | Binding inferred type arguments by position | P5 | which argument binds which parameter would depend on counting them |
 | Case-sensitive line continuation (`.lower` continues, `.Upper` does not) | P4 | would make naming conventions part of the grammar |
+| Separating effects with `,` like constraints, or constraints with `+` like effects | one feature per job | they are different things. An effect set is one value, a union that can be named (`Io :: Fs + Alloc`) and passed as one argument (`Sched(Out + Clock)`), where a comma would start the next argument. A `where` clause is a list of separate predicates on different types, like a parameter list, and there is nothing to name or pass (§12.3, §16.3) |
 | Effect variables in the types of run-time values | P2 | needs a run-time representation of effect rows; second-class callbacks and effect-set parameters cover the uses (C.4) |
 | Multi-shot continuations | P1 | require copying stacks; break pointers into them |
 | Exceptions | P3, P2 | `esc` exits and results cover early exit and failure, visibly (C.1) |
@@ -3385,14 +3569,24 @@ The first four already exist, each with its cost and its code visible where it i
 | Implicit allocation for closures | P2 | second-class closures need none |
 | Macros | one feature per job | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
 | Effect operations as bare names (in the universe scope, or as top-level names of their module) | P3 | a bare `now()` or `log(msg)` hides that it reaches into the context, and operations of different effects could not share a name |
-| Field reflection (`@fields(T)`) | one feature per job, P5 | a field list without the fields' types drives no code, and with them it needs loops whose variable is a type: a compile-time sublanguage (§17). Equality, hashing and printing are derived from structure already (C.6); serialization is code a program writes for its types |
+| Field reflection (`@fields(T)`) | one feature per job, P5 | a field list without the fields' types drives no code, and with them it needs loops whose variable is a type: a compile-time sublanguage (§17). Equality, hashing and printing are derived from structure already (C.6); serialization is code a program writes for its types. The one job reflection would do that ordinary code cannot, storing a struct by field, is `#soa` (§5.6.4) |
+| Growable structure-of-arrays containers, or `#soa` of chunks (AoSoA) in the language | one feature per job | a container is library code over `#soa []S` slices (`make` and `free` are the only allocation the layout needs); a chunked layout is `[K]#soa [N]S` |
+| Addressable elements of a `#soa` | P1 | no `S` exists in memory: `&a[i]` would need a gather into a temporary that writes back, a hidden copy |
 | Target-specific SIMD types and intrinsics | P1, P5 | their layouts and meanings differ by target; `#simd [N]T` has one layout and one meaning everywhere (§5.6.2), and anything beyond it is reached through foreign C or `@asm` (§19) |
 | Integer division of vector lanes | P2 | no target has the instruction, so `/` would hide a loop |
-| Elementwise arithmetic on arrays | P2, one feature per job | `+` would hide a loop of any length; vectors do the job in one instruction (§5.6.2), loops do the rest |
+| Elementwise arithmetic on arrays | P2, one feature per job | `+` would hide a loop of any length; vectors do the job in one instruction (§5.6.2), math vectors for two to four numbers (§5.6.3), loops do the rest |
 | `is` on vectors giving a mask | P4 | a word would mean two things depending on the type; lane comparisons are named methods |
 | Integers wider than 128 bits | P2 | arithmetic on them is a loop over words behind an operator; a library type makes those calls visible |
 | Re-evaluating an iterator argument's arguments on each run | P2 | they would run an unknown number of times with nothing at the call to say so; they are evaluated once, as for `for` (§13.5) |
 | Fibers that migrate between threads (a `Send`-like rule) | P1, P5 | values own nothing, so no rule on types can tell whether the memory a fiber reaches is shared with its old thread; and its handlers live on that thread (§14.9). Threads exchange data explicitly (§19.6) |
+| Matrix types with a `*` that multiplies them | P2, P4 | `*` would be a matrix product on matrices and an element-wise product on math vectors; an `M×N` product costs `M·N·K` multiplications behind one sigil; storage order and the algorithms of inversion are policies. A library type built on math vectors (§5.6.3) states them |
+| Quaternion types | admission (§1) | no word asks for them, and nothing they would replace is broken; `p / q` would have to choose between `p·q⁻¹` and `q⁻¹·p`. A library type over `#vec [4]T` serves them |
+| A scalar added to a math vector (`v + 1`) | P4 | adding a number to every element is not an operation of the vector space; `*` and `/` by a scalar are. (Complex numbers differ: the real numbers are among them, so a real constant is a complex number, §7.4.7; a real *variable* still converts only explicitly) |
+| An imaginary suffix `i` (`2i`) | P4 | `2i` is one character from the integer `2i8`; `j` is free, and `jN` fixes the part type as `fN` does for floats |
+| Arithmetic on arrays of any length up to some bound | P4 | an arbitrary cliff (`[4]f32` adds, `[5]f32` does not); math vectors are marked, so a reader sees which arrays have arithmetic |
+| Relational constraints over several types (`Contains(C, T)`, `Iterable(C, T)`), to make `in` or `for` generic over containers | P5, one feature per job | with no traits (C.6) a relation can only cover built-in types, where it buys little: a generic body that scans takes the elements as a slice or an iterator, and one that tests membership takes a predicate. Opening it to library containers needs associated types and implementations found by type — the trait machinery C.6 omits |
+| `in` on library containers (`k in m`) | P5, one feature per job | a privilege the core's containers would have and no library container could; `m.contains(k)` reads as well and works the same way for every container |
+| More containers in the core library | §22.1 | the core holds what the language definition refers to; `List` is the one container it refers to (§21.5), and the others are library code that needs nothing a program lacks |
 | A packed set type over an enum | one feature per job | `[E]bool` is a set indexed by the enum (§5.6.1), a `#bits` struct packs named flags (§5.10.5), and the library has integer bit sets |
 
 ### C.9 Future directions

@@ -1,0 +1,12 @@
+//! exit: 134
+//! stderr
+// An element index of a `#soa` is checked like an array index (§5.6.4, §18.2).
+P :: struct { x: i32, y: f32 }
+
+main :: fn() needs Out {
+    a := #soa [2]P(fill: P(x: 0, y: 0))
+    s: #soa []P = &a
+    i: usize = 2
+    print("{}\n", s[0].y)
+    s[i].x = 1
+}

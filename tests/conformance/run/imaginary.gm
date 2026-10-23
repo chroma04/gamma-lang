@@ -1,0 +1,48 @@
+// Imaginary literals and untyped complex constants (§2.5.2, §6.1, §6.2), and real
+// constants beside complex numbers (§6.4, §7.4.7).
+C64 :: Complex(f64)
+C32 :: Complex(f32)
+
+K :: 3 + 4j                     // an untyped complex constant
+I :: 1j
+HALF :: K / 2
+
+// In generic code an imaginary literal takes the type `Complex(T)`.
+shift :: fn(T: type, z: Complex(T)) -> Complex(T) where Float(T) => z * z + 1 - 2j
+
+main :: fn() needs Out {
+    // Types: inferred, fixed by a suffix, or the fallback `Complex(f64)`.
+    a := 3 + 4j
+    b: C32 = 1.5 - 2j
+    c := 2j32
+    print("{} {} {}\n", @type_name(@type_of(a)), @type_name(@type_of(b)), @type_name(@type_of(c)))
+    print("{} {} {}\n", a, b, c)
+
+    // Constant expressions are exact: the parts are rounded once.
+    print("{} {} {} {}\n", K, I * I, HALF, K / (1 + 1j))
+    e: C32 = (1 + 2j) / 3
+    print("{} {}\n", e, (1 + 2j) / 3)
+    print("{} {}\n", -(2 - 3j), 1e-3j + 2)
+
+    // A real constant beside a complex number is one with a zero imaginary part.
+    z := C64(re: 1, im: 1)
+    print("{} {} {} {}\n", z + 1, 1 - z, 1 / z, z - 0.5)
+    print("{} {} {}\n", z is 1 + 1j, z is not 1, C64(re: 0, im: 0) is 0)
+    w: C64 = 2
+    print("{}\n", w)
+
+    // An imaginary literal takes the type of the complex number or float it meets.
+    x: f32 = 2
+    print("{} {} {} {}\n", b * 2j, x * 1j, 1j * x, @type_name(@type_of(x * 1j)))
+    print("{} {}\n", shift(C32(re: 1, im: 0)), shift(T: f64, 2j))
+
+    // A variable of an imaginary literal's type takes the fallback where it is used.
+    v := 2j
+    print("{} {}\n", v * v, @type_name(@type_of(v)))
+
+    // Compound assignment.
+    z += 1
+    z *= 1j
+    z -= 1 - 1j
+    print("{}\n", z)
+}

@@ -1,0 +1,47 @@
+//! stage: check
+// Misuse of complex numbers `Complex(T)` (§5.3.1, §7.4.7).
+C64 :: Complex(f64)
+C32 :: Complex(f32)
+Bad :: Complex(i32) //~ ERROR `i32` does not satisfy `Float(T)` required by `Complex`
+Worse :: Complex(bool) //~ ERROR `bool` does not satisfy `Float(T)` required by `Complex`
+
+main :: fn() {
+    a := C64(re: 1, im: 2)
+    b := C64(re: 3, im: 4)
+    c := C32(re: 1, im: 1)
+    r: f64 = 1
+    n := 2
+    _ = a + r //~ ERROR `+` takes two `Complex(f64)`, not `Complex(f64)` and `f64`; only a real constant is added to a complex number
+    _ = n - a //~ ERROR `-` takes two `Complex(f64)`, not an untyped integer and `Complex(f64)`
+    _ = r / a //~ ERROR `/` takes two `Complex(f64)`, not `f64` and `Complex(f64)`
+    _ = a + c //~ ERROR the operands of `+` have different types: `Complex(f64)` and `Complex(f32)`
+    _ = a * c //~ ERROR the operands of `*` have different types: `Complex(f64)` and `Complex(f32)`
+    _ = a * f32(2) //~ ERROR `*` scales `Complex(f64)` by its element type `f64`, not by `f32`
+    _ = a % b //~ ERROR `%` does not apply to complex numbers
+    _ = a << 1 //~ ERROR `<<` does not apply to complex numbers
+    _ = a & b //~ ERROR `&` does not apply to complex numbers
+    _ = a | b //~ ERROR `|` does not apply to complex numbers
+    _ = a < b //~ ERROR complex numbers are not ordered (§7.5)
+    _ = a >= b //~ ERROR complex numbers are not ordered (§7.5)
+    _ = a +? b //~ ERROR `+?` is not available on complex numbers: an element cannot be `null`
+    _ = a *? b //~ ERROR `*?` is not available on complex numbers: an element cannot be `null`
+    _ = a +% b //~ ERROR `+%` does not apply to complex numbers
+    _ = a *| b //~ ERROR `*|` does not apply to complex numbers
+    _ = ~a //~ ERROR `~` does not apply to complex numbers
+    _ = a.sqrt() //~ ERROR type `Complex(f64)` has no method `sqrt`
+    _ = a.norm() //~ ERROR type `Complex(f64)` has no method `norm`
+    _ = a.sort() //~ ERROR type `Complex(f64)` has no method `sort`
+    _ = C64(re: 1) //~ ERROR missing field `im` (it has no default)
+    _ = C64(1, 2, 3) //~ ERROR `Complex(f64)` is constructed with named arguments only: `Complex(f64)(field: value)`
+    _ = C64(re: 1, im: 2, extra: 3) //~ ERROR `Complex(f64)` has no field `extra`
+    _ = C32(a) //~ ERROR `Complex(f32)` is constructed with named arguments only: `Complex(f32)(field: value)`
+    _ = C64(c) //~ ERROR `Complex(f64)` is constructed with named arguments only: `Complex(f64)(field: value)`
+    _ = f64(a) //~ ERROR `f64(Complex(f64))` is not a lossless conversion (§6.5)
+    x: f64 = a //~ ERROR expected `f64`, found `Complex(f64)`
+    y: f64 = 1.0 + 2j //~ ERROR expected `f64`, found a complex constant
+    _ = 1j < 2j //~ ERROR complex constants are not ordered
+    _ = 1j % 2 //~ ERROR `%` does not apply to complex constants
+    _ = 3 / 0j //~ ERROR division by zero in constant expression
+    _ = a + 2j32 //~ ERROR the operands of `+` have different types: `Complex(f64)` and `Complex(f32)`
+    _ = 2.5j * c + a //~ ERROR the operands of `+` have different types: `Complex(f32)` and `Complex(f64)`
+}

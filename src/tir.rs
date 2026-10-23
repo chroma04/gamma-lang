@@ -820,6 +820,10 @@ pub enum ExprKind {
     /// An untyped float literal's exact value. Exists only while semantic analysis
     /// is inferring literal types; never present in a finished [`Program`].
     UntypedFloat(Rc<num_rational::BigRational>),
+    /// An untyped complex constant's exact real and imaginary parts (§2.5.2, §6.2), of a
+    /// `Complex(T)` type or a variable for one. Exists only while semantic analysis is
+    /// inferring literal types: finalizing makes it the struct of its two parts.
+    UntypedComplex(Rc<(num_rational::BigRational, num_rational::BigRational)>),
     Bool(bool),
     /// A string literal: a `string` (slice) pointing at static bytes.
     Str(Rc<[u8]>),

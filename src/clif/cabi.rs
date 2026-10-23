@@ -316,7 +316,7 @@ impl<'a> CAbi<'a> {
                         self.pieces(*e, base + off, out)?;
                     }
                 }
-                TyKind::Array { len, elem, kind: ArrayKind::Plain } => {
+                TyKind::Array { len, elem, kind: ArrayKind::Plain | ArrayKind::Math } => {
                     let step = self.size(*elem);
                     for i in 0..*len {
                         self.pieces(*elem, base + i * step, out)?;

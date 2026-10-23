@@ -298,6 +298,7 @@ impl<'a, 's> Walker<'a, 's> {
                 self.variant_at(e.span, *id);
             }
             ExprKind::Paren(i)
+            | ExprKind::Elements(i)
             | ExprKind::OptUnwrap(i)
             | ExprKind::ResUnwrap(i)
             | ExprKind::Deref(i)

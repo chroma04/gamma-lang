@@ -3,6 +3,7 @@ arena :: import "std/arena"
 fixed_buffer :: import "std/fixed_buffer"
 dq :: import "std/collections/deque"
 hp :: import "std/collections/heap"
+hm :: import "std/collections/hash_map"
 
 Rec :: struct {
     id: u32
@@ -108,7 +109,7 @@ main :: fn() -> AllocError!() needs Out + Alloc {
     with Allocator(data: &cnt, vt: &COUNTING_VT) {
         l := list(Rec)
         for i in 0..N { try l.push(make_rec(i.trunc(u32))) }
-        m := hash_map(u32, Rec)
+        m := hm.hash_map(u32, Rec)
         for i in 0..500 { try m.put(i.trunc(u32) * 3, make_rec(i.trunc(u32))) }
         h := hp.heap_by(T: Rec, fn(a, b: ^const Rec) -> bool => a.prio < b.prio or (a.prio is b.prio and a.id < b.id))
         for r in l.items { try h.push(r) }

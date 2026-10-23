@@ -1,0 +1,82 @@
+// Structure-of-arrays (§5.6.4): layout, elements gathered and stored, fields of elements
+// as places, columns, slicing, coercions, construction, iteration, `is`, `@hash` and
+// formatting.
+V2 :: #vec [2]f32
+
+Particle :: struct {
+    pos, vel: V2
+    alive: bool
+}
+
+Pair :: struct { a: u8, b: u64 }
+
+Ps :: #soa []Particle
+
+step :: fn(ps: Ps, dt: f32) {
+    for i in 0..ps.len {
+        if ps[i].alive { ps[i].pos += ps[i].vel * dt }
+    }
+}
+
+total_x :: fn(ps: #soa []const Particle) -> f32 {
+    t: f32 = 0
+    for p in ps { t += p.pos[0] }
+    return t
+}
+
+make_pairs :: fn() -> #soa [2]Pair => #soa [2]Pair(Pair(a: 1, b: 10), Pair(a: 2, b: 20))
+
+K :: #soa [2]Pair(fill: Pair(a: 7, b: 70))
+
+main :: fn() needs Out {
+    // Layout: one array per field, in declaration order.
+    print("{} {}\n", @size_of(#soa [3]Pair), @align_of(#soa [3]Pair))
+    print("{} {}\n", @size_of(#soa [4]Particle), @size_of(Ps) is 3 * @size_of(rawptr) + @size_of(usize))
+
+    // Construction, elements and fields of elements.
+    a := #soa [3]Particle(fill: Particle(pos: V2(1, 2), vel: V2(0, 0), alive: true))
+    a[1].pos[0] = 9
+    a[2] = Particle(pos: V2(5, 5), vel: V2(1, 1), alive: false)
+    a[0].vel = V2(2, 0)
+    print("{} {}\n", a.len, a[1])
+    print("{}\n", a[2])
+    p := &a[0].vel
+    p^ += V2(0, 1)
+    print("{}\n", a[0].vel)
+
+    // Columns: the arrays themselves.
+    print("{} {}\n", a.pos, a.alive)
+    a.alive[2] = true
+    a.vel = [3]V2(fill: V2(1, 0))
+
+    // Slices: by coercion and by slicing; a function changes the array through one.
+    s: Ps = &a
+    step(s, 0.5)
+    print("{}\n", a.pos)
+    tail := a[1..]
+    print("{} {} {}\n", tail.len, tail[0].pos, tail.pos)
+    mid := s[1..2]
+    print("{} {}\n", mid.len, mid[0].alive)
+    print("{}\n", total_x(&a))
+    print("{}\n", total_x(tail))
+
+    // Iteration.
+    for q in a { print("{} ", q.alive) }
+    print("\n")
+    for q in tail[..1] { print("{}\n", q.pos) }
+
+    // Construction from elements, a temporary, and a constant.
+    ps := make_pairs()
+    print("{} {}\n", ps, make_pairs()[1].b)
+    print("{} {}\n", K, K[0])
+
+    // `is` and `@hash`: arrays by elements, slices by length and contents.
+    b := a
+    print("{} {}\n", a is b, a is not b)
+    t: Ps = &b
+    print("{} {}\n", s is t, @hash(s, 1) is @hash(t, 1))
+    b[0].alive = false
+    print("{} {}\n", a is b, s is t)
+    print("{} {}\n", s[0..1] is t[0..1], s[1..] is t[1..])
+    print("{}\n", s[1..])
+}

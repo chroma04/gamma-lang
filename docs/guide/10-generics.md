@@ -83,7 +83,7 @@ Without any constraint, a type parameter supports copying, declaring variables a
 | `Num(T)` | integers and floats | `Ord`, plus `+ - * /` and untyped literals at `T` |
 | `Int(T)` | integers | `Num`, plus `%`, overflow flavors, shifts, bitwise operators, `.trunc` / `.checked` / `.sat` |
 | `Neg(T)` | signed integers and floats | `Num`, plus unary `-` |
-| `Float(T)` | floats | `Num`, plus the float methods |
+| `Float(T)` | floats | `Neg`, plus the float methods |
 | `Plain(T)` | plain-data types | `---` at `T`, and `.bits` to and from `T` |
 
 Several constraints are separated by commas: `where Num(T), Plain(T)`.
@@ -206,9 +206,11 @@ describe :: fn(e: Either(i32, string)) -> string => match e {
 }
 ```
 
-`List(T)` and `HashMap(K, V, ...)` are generic types of exactly this kind. A `HashMap` also takes the hash and equality functions as compile-time parameters, which is how you customize behavior for a data structure without any trait mechanism:
+`List(T)` and the standard library's `HashMap(K, V, ...)` are generic types of exactly this kind. A `HashMap` also takes the hash and equality functions as compile-time parameters, which is how you customize behavior for a data structure without any trait mechanism:
 
 ```gamma
+hm :: import "std/collections/hash_map"
+
 lower :: fn(c: u8) -> u8 => if c in 'A'..='Z' { c + 32 } else { c }
 
 fold_hash :: fn(key: ^const string, seed: u64) -> u64 {
@@ -226,7 +228,7 @@ fold_eq :: fn(a, b: ^const string) -> bool {
 }
 
 case_insensitive_demo :: fn() -> AllocError!() needs Alloc {
-    names := hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
+    names := hm.hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)
     defer names.deinit()
     try names.put("Ada", 1)
     return ()
@@ -331,7 +333,7 @@ If you are coming from Rust, C++ or Go, you probably expect user-defined traits,
 | Bound a generic body to operations on `T` | a closed constraint (`where Ord(T)`) or a function parameter |
 | An algorithm that needs per-call behavior | a second-class function parameter: `xs.sort_by(fn(a, b) => a.score > b.score)` |
 | Order structs | order a tuple of keys: `people.sort_by_key(fn(p) => (p.last, p.first))` |
-| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are `HashMap` parameters |
+| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are parameters of the hash map type |
 | A data structure with fixed, consistent behavior | a compile-time parameter of the type |
 | Print or log any value | `print("{}", x)` formats every type structurally; custom display is a function returning a string |
 | Dispatch over a closed set of cases at run time | a tagged union and `match` |
@@ -365,7 +367,7 @@ dot :: fn(T: type, ring: Ring(T), xs, ys: []const T) -> T {
 use_dot :: fn(xs, ys: []const i32) -> i32 => dot(SAT_RING, xs, ys)
 ```
 
-The cost is one explicit argument. In exchange, every call tells you exactly which `add` runs. By the same reasoning, Gamma has no operator overloading: an operator never calls user code, so `a + b` always costs what it looks like it costs. Vectors (`#simd [N]T`) are the one place where an operator works on many values, and the language, not user code, defines how.
+The cost is one explicit argument. In exchange, every call tells you exactly which `add` runs. By the same reasoning, Gamma has no operator overloading: an operator never calls user code, so `a + b` always costs what it looks like it costs. The exceptions are the types whose operators the language itself defines: vectors (`#simd [N]T`), math vectors (`#vec [N]T`) and complex numbers (`Complex(T)`) have operators that work on several values, and the language, not user code, defines how.
 
 ## Summary
 

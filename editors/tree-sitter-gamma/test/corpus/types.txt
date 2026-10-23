@@ -699,11 +699,20 @@ Vector types and enum-indexed arrays
 ================================================================================
 
 F4 :: #simd [4]f32
+V3 :: #vec [3]f32
 NAMES :: [Dir]string(N: "n")
 
 --------------------------------------------------------------------------------
 
 (source_file
+  (const_declaration
+    (identifier)
+    (attributed_type
+      (attribute
+        (attribute_name))
+      (array_type
+        (integer_literal)
+        (identifier))))
   (const_declaration
     (identifier)
     (attributed_type

@@ -1,0 +1,6 @@
+//! stage: lex
+// Imaginary literals are decimal and take `j`, `j16`, `j32` or `j64` (§2.5.2).
+a 0x1j //~ ERROR imaginary literals are decimal
+b 0b1j //~ ERROR imaginary literals are decimal
+c 2j8 //~ ERROR invalid suffix `j8` for an imaginary literal; expected j, j16, j32 or j64
+d 1.5j128 //~ ERROR invalid suffix `j128` for an imaginary literal

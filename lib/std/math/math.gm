@@ -7,12 +7,17 @@
 //! a minimax polynomial, and a careful reconstruction. All functions follow
 //! C99 Annex F for special values: a domain error gives NaN, an overflow gives
 //! an infinity, and the sign of zero is preserved where the result is a zero.
-//! Except for `pow`, results are within 1 ulp of the exact value; `pow` is
-//! within 2 ulp (in practice below 0.85 ulp).
+//! Except for `pow` and `lgamma`, results are within 1 ulp of the exact value;
+//! `pow` is within 2 ulp (in practice below 0.85 ulp), and `lgamma` loses relative
+//! accuracy within about 1e-14 of its zeros on the negative axis, where only its
+//! absolute error (about 1e-31) is bounded.
 //!
 //! `sin`, `cos` and `tan` reduce their argument modulo pi/2 exactly (with
 //! Payne-Hanek style multi-precision arithmetic for large arguments), so they
 //! are accurate for every finite argument.
+//!
+//! The module also has integer functions, generic over every integer type: `gcd`,
+//! `lcm`, `isqrt`, `ilog2`, `ilog10`, `div_floor` and `mod_floor`.
 
 SIGN_MASK: u64 : 0x8000_0000_0000_0000
 ABS_MASK: u64 : 0x7fff_ffff_ffff_ffff

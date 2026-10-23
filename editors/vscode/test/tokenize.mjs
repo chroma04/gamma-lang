@@ -109,6 +109,8 @@ const expectations = [
   ["at:1f32", "constant.numeric.float.gamma"],
   ["at:0xFF_u8", "constant.numeric.integer.hex.gamma"],
   ["at:3.5e-2f64", "constant.numeric.float.gamma"],
+  ["at:4j", "constant.numeric.imaginary.gamma"],
+  ["at:2.5j32", "constant.numeric.imaginary.gamma"],
   ["'a'", "string.quoted.single.char.gamma"],
   ["'\\n'", "string.quoted.single.char.gamma"],
   ["\\t", "constant.character.escape.gamma"],

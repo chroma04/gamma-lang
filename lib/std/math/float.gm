@@ -1,0 +1,43 @@
+// Decomposing and stepping floating-point numbers: frexp, ldexp, nextafter.
+// All three work on the bit pattern, so they are exact.
+
+/// Splits `x` into a fraction and a power of two: `x = frac * 2**exp` with
+/// `|frac|` in [0.5, 1) and the sign of `x`. Zeros, infinities and NaNs are
+/// returned unchanged as `frac`, with `exp` 0. Subnormal numbers are
+/// normalized, so `exp` reaches -1073.
+pub frexp :: fn(x: f64) -> (frac: f64, exp: i32) {
+    bits := x.bits(u64)
+    if (bits <<% 1) is 0 { return (x, 0) }
+    e := ((bits >> 52) & 0x7ff).trunc(i32)
+    if e is 0x7ff { return (x, 0) }
+    adjust: i32 = 0
+    if e is 0 {
+        // Subnormal: scale into the normal range (exactly) and correct the exponent.
+        bits = (x * 0x1.0p64).bits(u64)
+        e = ((bits >> 52) & 0x7ff).trunc(i32)
+        adjust = -64
+    }
+    frac := ((bits & 0x800f_ffff_ffff_ffff) | 0x3fe0_0000_0000_0000).bits(f64)
+    return (frac, e - 1022 + adjust)
+}
+
+/// `x * 2**n`, correctly rounded, also when the result is subnormal (the
+/// same as C's `scalbn`). The result overflows to an infinity or underflows to
+/// a zero of the sign of `x`, and zeros, infinities and NaNs are returned
+/// unchanged.
+pub ldexp :: fn(x: f64, n: i32) -> f64 => scalbn(x, n)
+
+/// The next representable number after `x` in the direction of `y`. It is `y`
+/// if the two are equal (so `nextafter(-0.0, 0.0)` is +0), NaN if either is
+/// NaN, and from a zero it is the smallest subnormal number with the sign of
+/// `y`. It goes from the largest finite number to an infinity and from an
+/// infinity back to the largest finite number.
+pub nextafter :: fn(x: f64, y: f64) -> f64 {
+    if x.is_nan() or y.is_nan() { return x + y }
+    if x is y { return y }
+    if x is 0.0 { return copysign((1u64).bits(f64), y) }
+    bits := x.bits(u64)
+    // The magnitude grows when moving away from zero.
+    if (y > x) is (x > 0.0) { return (bits + 1).bits(f64) }
+    return (bits - 1).bits(f64)
+}

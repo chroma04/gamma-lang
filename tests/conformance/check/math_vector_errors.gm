@@ -1,0 +1,52 @@
+//! stage: check
+// Misuse of math vectors `#vec [N]T` (§5.6.3, §7.4.7, §21.3).
+Vec3 :: #vec [3]f32
+Vec2 :: #vec [2]f32
+IV3 :: #vec [3]i32
+IV2 :: #vec [2]i32
+I16V :: #vec [3]i16
+Five :: #vec [5]f32 //~ ERROR a math vector has 2, 3 or 4 elements, not 5
+One :: #vec [1]f32 //~ ERROR a math vector has 2, 3 or 4 elements, not 1
+Flags :: #vec [3]bool //~ ERROR a math vector's elements are integers or floats, not `bool`
+Gen :: struct(T: type) { v: #vec [3]T } //~ ERROR a math vector needs a concrete element type, not `T`
+
+main :: fn() {
+    a := Vec3(1, 2, 3)
+    b := Vec2(1, 2)
+    i := IV3(1, 2, 3)
+    f := Vec3(fill: 1)
+    _ = a + 1.0 //~ ERROR `+` takes two `#vec [3]f32`, not `#vec [3]f32` and an untyped float
+    _ = 1.0 + a //~ ERROR `+` takes two `#vec [3]f32`, not an untyped float and `#vec [3]f32`
+    _ = a - 1 //~ ERROR `-` takes two `#vec [3]f32`, not `#vec [3]f32` and an untyped integer
+    _ = 2 / a //~ ERROR `/` takes two `#vec [3]f32`, not an untyped integer and `#vec [3]f32`
+    _ = 2.0 % i //~ ERROR `%` takes two `#vec [3]i32`, not an untyped float and `#vec [3]i32`
+    _ = a < f //~ ERROR math vectors are not ordered (§7.5)
+    _ = a >= f //~ ERROR math vectors are not ordered (§7.5)
+    _ = a +? f //~ ERROR `+?` is not available on math vectors: an element cannot be `null`
+    _ = a *? f //~ ERROR `*?` is not available on math vectors: an element cannot be `null`
+    _ = a * i //~ ERROR the operands of `*` have different types: `#vec [3]f32` and `#vec [3]i32`
+    _ = a + b //~ ERROR the operands of `+` have different types: `#vec [3]f32` and `#vec [2]f32`
+    _ = a * f64(2) //~ ERROR `*` scales `#vec [3]f32` by its element type `f32`, not by `f64`
+    _ = i * 1.5 //~ ERROR `*` scales `#vec [3]i32` by its element type `i32`, not by an untyped float
+    _ = i / a //~ ERROR the operands of `/` have different types: `#vec [3]i32` and `#vec [3]f32`
+    _ = a % f //~ ERROR `%` requires integer operands, not `f32`
+    _ = a & f //~ ERROR `&` requires integer operands, not `f32`
+    _ = a << 1 //~ ERROR `<<` requires integer operands, not `f32`
+    _ = i << f //~ ERROR a shift takes a math vector on the left and one scalar amount on the right
+    _ = i & 1 //~ ERROR `&` takes two `#vec [3]i32`, not `#vec [3]i32` and an untyped integer
+    _ = Vec2(1, 2).cross(Vec2(3, 4)) //~ ERROR `.cross` needs three elements, and `#vec [2]f32` has 2
+    _ = i.norm() //~ ERROR `.norm` needs float elements, not `i32`
+    _ = a.dot(b) //~ ERROR expected `#vec [3]f32`, found `#vec [2]f32`
+    _ = a.sort() //~ ERROR math vectors have no method `.sort`
+    _ = a.first() //~ ERROR math vectors have no method `.first`
+    _ = a.fill(0) //~ ERROR math vectors have no method `.fill`
+    _ = a.index_of(1) //~ ERROR math vectors have no method `.index_of`
+    _ = a.min() //~ ERROR `min` takes 1 argument
+    _ = a.reduce_sum() //~ ERROR math vectors have no method `.reduce_sum`
+    _ = Vec3(1, 2) //~ ERROR `#vec [3]f32` needs exactly 3 elements, but 2 are given
+    _ = Vec3(1, 2, 3, 4) //~ ERROR `#vec [3]f32` needs exactly 3 elements, but 4 are given
+    _ = IV2(a) //~ ERROR cannot convert `#vec [3]f32` to `#vec [2]i32`
+    _ = I16V(a) //~ ERROR cannot convert `#vec [3]f32` to `#vec [3]i16`
+    _ = IV3(Vec3(1, 2, 3)) //~ ERROR cannot convert `#vec [3]f32` to `#vec [3]i32`
+    _ = [2]f32(a) //~ ERROR cannot convert `#vec [3]f32` to `[2]f32`
+}

@@ -2,6 +2,7 @@
 str :: import "std/str"
 fmt :: import "std/fmt"
 arena :: import "std/arena"
+hm :: import "std/collections/hash_map"
 
 TEXT :: `
 The quick brown fox jumps over the lazy dog. The dog, being lazy,
@@ -60,7 +61,7 @@ bar :: fn(n: u32, out: []u8) -> string {
 main :: fn() -> AllocError!() needs Out + Alloc {
     a := arena.new()
     defer a.deinit()
-    counts := hash_map(string, u32)
+    counts := hm.hash_map(string, u32)
     defer counts.deinit()
     total: u32 = 0
     nlines: u32 = 0

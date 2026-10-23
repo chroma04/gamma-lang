@@ -29,10 +29,12 @@ mod imports;
 mod infer;
 mod lint;
 mod matching;
+mod mathvec;
 mod methods;
 mod modules;
 mod pattern;
 mod seq;
+mod soa;
 mod stack_size;
 mod tests_decl;
 mod ty_expr;
@@ -307,6 +309,12 @@ pub struct Sema<'s> {
     pub adt_param_defaults: HashMap<AdtId, Vec<Option<Rc<ast::Expr>>>>,
     /// Instantiations of generic structs and unions.
     pub adt_instances: HashMap<(AdtId, Vec<Ty>), AdtId>,
+    /// The structs that stand for `#soa` arrays and slices (§5.6.4), and what they store.
+    pub soa: HashMap<AdtId, soa::SoaInfo>,
+    /// The struct for each `#soa` type made so far, by element, length and constness.
+    pub soa_types: HashMap<(Ty, Option<u64>, bool), Ty>,
+    /// The spans of `a[i]` expressions that gather an element of a `#soa` (for errors).
+    pub soa_gathers: std::collections::HashSet<Span>,
     /// The literal of each generic struct or union, for errors found when instantiating it.
     pub adt_spans: HashMap<AdtId, Span>,
     /// Structs and unions whose fields are being resolved (their layout is not known).
@@ -441,6 +449,9 @@ impl<'s> Sema<'s> {
             adt_param_defaults: HashMap::new(),
             explicit_tags: std::collections::HashSet::new(),
             adt_instances: HashMap::new(),
+            soa: HashMap::new(),
+            soa_types: HashMap::new(),
+            soa_gathers: Default::default(),
             adt_spans: HashMap::new(),
             adts_in_progress: vec![],
             adt_decls: HashMap::new(),

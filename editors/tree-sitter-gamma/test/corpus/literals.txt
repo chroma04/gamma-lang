@@ -244,3 +244,30 @@ e :: fn() { _ = 1 }
         (assignment_statement
           (discard)
           (integer_literal))))))
+
+================================================================================
+Imaginary literals
+================================================================================
+
+a :: 4j
+b :: 2.5j32
+c :: 1e-3j64
+d :: 3 + 4j
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (imaginary_literal))
+  (const_declaration
+    (identifier)
+    (imaginary_literal))
+  (const_declaration
+    (identifier)
+    (imaginary_literal))
+  (const_declaration
+    (identifier)
+    (binary_expression
+      (integer_literal)
+      (imaginary_literal))))

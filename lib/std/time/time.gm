@@ -131,6 +131,66 @@ pub add_months :: fn(d: Date, n: i32) -> Date {
     return Date(year: y, month: m, day: d.day.min(days_in_month(y, m)))
 }
 
+// The position of a weekday counting from Monday = 0.
+weekday_index :: fn(w: Weekday) -> i64 {
+    return match w {
+        .Monday => 0
+        .Tuesday => 1
+        .Wednesday => 2
+        .Thursday => 3
+        .Friday => 4
+        .Saturday => 5
+        .Sunday => 6
+    }
+}
+
+// The day number of the Monday that starts ISO week 1 of `year`: the week with the
+// year's first Thursday, which is also the week of January 4.
+iso_year_start :: fn(year: i32) -> i64 {
+    jan4 := days_from_civil(Date(year: year, month: 1, day: 4))
+    return jan4 - floor_mod(jan4 + 3, 7)
+}
+
+// The number of ISO weeks in `year`: 52 or 53.
+iso_weeks_in_year :: fn(year: i32) -> u8 {
+    return ((iso_year_start(year + 1) - iso_year_start(year)) / 7).trunc(u8)
+}
+
+/// The day of the year of `d`: 1 for January 1, 365 or 366 for December 31.
+pub day_of_year :: fn(d: Date) -> u16 {
+    jan1 := days_from_civil(Date(year: d.year, month: 1, day: 1))
+    return (days_from_civil(d) - jan1 + 1).trunc(u16)
+}
+
+/// The date that is day `day` (1 to 365, or 366 in a leap year) of `year`, or `null` if
+/// the year has no such day.
+pub from_ordinal :: fn(year: i32, day: u16) -> ?Date {
+    len: u16 = if is_leap_year(year) { 366 } else { 365 }
+    if day < 1 or day > len { return null }
+    return add_days(Date(year: year, month: 1, day: 1), i64(day) - 1)
+}
+
+/// The ISO 8601 week-numbering year and week of `d`. Weeks start on Monday and week 1
+/// is the one with the year's first Thursday (the one with January 4), so the first days
+/// of January can belong to week 52 or 53 of the previous year, and the last days of
+/// December to week 1 of the next: 2005-01-01 is in week 53 of 2004. `week` is 1 to 53.
+pub iso_week :: fn(d: Date) -> (year: i32, week: u8) {
+    days := days_from_civil(d)
+    // The Thursday of d's week names the year.
+    thursday := days - floor_mod(days + 3, 7) + 3
+    year := civil_from_days(thursday).year
+    jan1 := days_from_civil(Date(year: year, month: 1, day: 1))
+    return (year: year, week: ((thursday - jan1) / 7 + 1).trunc(u8))
+}
+
+/// The date on weekday `day` of ISO week `week` of the week-numbering year `year`, or
+/// `null` if the year has no such week (`week` is 0, or 53 in a year with only 52).
+/// The inverse of `iso_week` with `weekday`.
+pub from_iso_week :: fn(year: i32, week: u8, day: Weekday) -> ?Date {
+    if week < 1 or week > iso_weeks_in_year(year) { return null }
+    return civil_from_days(iso_year_start(year) + i64(week - 1) * 7 + weekday_index(day))
+}
+
 // ---------------------------------------------------------------------------------
 // Unix time
 // ---------------------------------------------------------------------------------
@@ -256,6 +316,43 @@ pub format_rfc3339 :: fn(t: DateTime, buf: []u8) -> string {
 /// written. The year must be in 0 to 9999.
 pub format_date :: fn(d: Date, buf: []u8) -> string => buf[0..put_date(buf, 0, d)]
 
+// Writes `YYYY-Www-D` for the ISO week date of `d` and returns the position after it.
+put_iso_week :: fn(buf: []u8, pos: usize, d: Date) -> usize {
+    assert(is_valid(d), "time: invalid date")
+    w := iso_week(d)
+    assert(w.year >= 0 and w.year <= 9999, "time: week-numbering year outside 0..=9999")
+    p := put_uint(buf, pos, w.year.trunc(u64), 4)
+    p = put_byte(buf, p, '-')
+    p = put_byte(buf, p, 'W')
+    p = put_uint(buf, p, u64(w.week), 2)
+    p = put_byte(buf, p, '-')
+    return put_uint(buf, p, floor_mod(days_from_civil(d) + 3, 7).trunc(u64) + 1, 1)
+}
+
+/// The size of a buffer that always holds the output of `format_iso_week`: `YYYY-Www-D`.
+pub ISO_WEEK_LEN :: 10
+
+/// Formats the ISO 8601 week date of `d`, `2004-W53-6` (week-numbering year, week 01 to
+/// 53, and day 1 for Monday to 7 for Sunday), into `buf` and returns the bytes written.
+/// The week-numbering year (see `iso_week`) must be in 0 to 9999. Traps if `buf` is too
+/// small (`ISO_WEEK_LEN` bytes always suffice).
+pub format_iso_week :: fn(d: Date, buf: []u8) -> string => buf[0..put_iso_week(buf, 0, d)]
+
+/// The size of a buffer that always holds the output of `format_ordinal`: `YYYY-DDD`.
+pub ORDINAL_LEN :: 8
+
+/// Formats the ordinal date of `d`, `2024-060` (year and day of the year, 001 to 366),
+/// into `buf` and returns the bytes written. The year must be in 0 to 9999. Traps if
+/// `buf` is too small (`ORDINAL_LEN` bytes always suffice).
+pub format_ordinal :: fn(d: Date, buf: []u8) -> string {
+    assert(d.year >= 0 and d.year <= 9999, "time: year outside 0..=9999")
+    assert(is_valid(d), "time: invalid date")
+    p := put_uint(buf, 0, d.year.trunc(u64), 4)
+    p = put_byte(buf, p, '-')
+    p = put_uint(buf, p, u64(day_of_year(d)), 3)
+    return buf[0..p]
+}
+
 // ---------------------------------------------------------------------------------
 // Parsing text
 // ---------------------------------------------------------------------------------
@@ -320,6 +417,40 @@ pub parse_date :: fn(s: string) -> ParseError!Date {
     f := try date_fields(s, 0)
     if s.len > 10 { return !.Syntax(10) }
     return try checked_date(f, 0)
+}
+
+/// Parses an ISO 8601 week date in the extended form `YYYY-Www-D`: a four-digit
+/// week-numbering year, `W` and a two-digit week, and a day 1 (Monday) to 7 (Sunday).
+///
+/// A text that is not of that shape is `Syntax` with the position of the first wrong
+/// byte; a week the year does not have (00, or 53 in a year with 52) is `Range(6)` and a
+/// day of 0, 8 or 9 is `Range(9)`. The date of `9999-W52-6` and `9999-W52-7` is in the
+/// year 10000, which `format_date` cannot write.
+pub parse_iso_week :: fn(s: string) -> ParseError!Date {
+    year := try read_digits(s, 0, 4)
+    try want(s, 4, '-')
+    try want(s, 5, 'W')
+    week := try read_digits(s, 6, 2)
+    try want(s, 8, '-')
+    day := try read_digits(s, 9, 1)
+    if s.len > 10 { return !.Syntax(10) }
+    y := year.trunc(i32)
+    if week < 1 or week > u32(iso_weeks_in_year(y)) { return !.Range(6) }
+    if day < 1 or day > 7 { return !.Range(9) }
+    return civil_from_days(iso_year_start(y) + i64(week - 1) * 7 + i64(day - 1))
+}
+
+/// Parses an ordinal date in the form `YYYY-DDD`: a four-digit year and the day of the
+/// year, 001 to 365 (366 in a leap year).
+///
+/// A text that is not of that shape is `Syntax` with the position of the first wrong
+/// byte; a day the year does not have is `Range(5)`.
+pub parse_ordinal :: fn(s: string) -> ParseError!Date {
+    year := try read_digits(s, 0, 4)
+    try want(s, 4, '-')
+    day := try read_digits(s, 5, 3)
+    if s.len > 8 { return !.Syntax(8) }
+    return from_ordinal(year.trunc(i32), day.trunc(u16)) else !.Range(5)
 }
 
 /// Parses an RFC 3339 timestamp and gives it in UTC.
@@ -450,6 +581,95 @@ pub format_duration :: fn(d: Duration, buf: []u8) -> string {
     p = put_fraction(buf, p, ns % 1_000_000_000, 9, true)
     p = put_byte(buf, p, 's')
     return buf[0..p]
+}
+
+// A duration unit in text: its rank (0 for `h` down to 5 for `ns`), its length in bytes
+// and its size in nanoseconds.
+Unit :: struct { rank: usize, len: usize, ns: u64 }
+
+// The unit that starts at `s[at..]`, or `null`.
+read_unit :: fn(s: string, at: usize) -> ?Unit {
+    if at >= s.len { return null }
+    c := s[at]
+    next: u8 = if at + 1 < s.len { s[at + 1] } else { 0 }
+    if c is 'h' { return Unit(rank: 0, len: 1, ns: 3_600_000_000_000) }
+    if c is 'm' {
+        if next is 's' { return Unit(rank: 3, len: 2, ns: 1_000_000) }
+        return Unit(rank: 1, len: 1, ns: 60_000_000_000)
+    }
+    if c is 's' { return Unit(rank: 2, len: 1, ns: 1_000_000_000) }
+    if c is 'u' and next is 's' { return Unit(rank: 4, len: 2, ns: 1_000) }
+    if c is 'n' and next is 's' { return Unit(rank: 5, len: 2, ns: 1) }
+    // U+00B5 MICRO SIGN in UTF-8, then `s`.
+    if c is 0xC2 and next is 0xB5 and at + 2 < s.len and s[at + 2] is 's' { return Unit(rank: 4, len: 3, ns: 1_000) }
+    return null
+}
+
+/// Parses a duration in the form `format_duration` writes, and accepts everything it
+/// writes (`parse_duration(format_duration(d))` is `d` for every `d`).
+///
+/// The text is one or more terms, each a decimal number and a unit, written together
+/// without spaces or a sign: `1h30m`, `2.5s`, `150ms`, `1h0.25s`. The units are `h`,
+/// `m`, `s`, `ms`, `us` (also `µs`, U+00B5), and `ns`; each may appear at most once and
+/// they must be in that order, largest first. A number is digits with an optional `.` and
+/// at least one digit after it (`1.5s`; not `.5s` or `5.s`). `0` alone, with no unit, is
+/// also accepted and is the zero duration.
+///
+/// The value is computed with integers, so it is exact whenever it is a whole number of
+/// nanoseconds; digits finer than a nanosecond are dropped (`1.9999ns` is 1ns, and
+/// `0.0000000019s` is 1ns), and only the first 24 fraction digits of a number count.
+///
+/// Errors: `Syntax(i)` for the first byte that does not fit (the length of the text if it
+/// ended too early, which includes the empty text and a number without a unit), including
+/// a unit that is unknown, repeated or out of order, which is reported at the unit;
+/// `Range(i)` if the total does not fit a `Duration` (about 584 years), `i` being the
+/// start of the term whose addition overflowed. A syntax error anywhere is reported before
+/// a range error.
+pub parse_duration :: fn(s: string) -> ParseError!Duration {
+    if s.len is 0 { return !.Syntax(0) }
+    if s.len is 1 and s[0] is '0' { return Duration(ns: 0) }
+    max: u128 = 0xFFFF_FFFF_FFFF_FFFF
+    total: u128 = 0
+    overflow := false
+    overflow_at: usize = 0
+    // The lowest rank the next unit may have.
+    next_rank: usize = 0
+    pos: usize = 0
+    while pos < s.len {
+        start := pos
+        whole: u128 = 0
+        while pos < s.len and s[pos] >= '0' and s[pos] <= '9' {
+            // Beyond the largest u64 the exact value no longer matters: it overflows.
+            if whole <= max { whole = whole * 10 + u128(s[pos] - '0') }
+            pos += 1
+        }
+        if pos is start { return !.Syntax(pos) }
+        frac: u128 = 0
+        if pos < s.len and s[pos] is '.' {
+            pos += 1
+            fstart := pos
+            while pos < s.len and s[pos] >= '0' and s[pos] <= '9' {
+                if pos - fstart < 24 { frac = frac * 10 + u128(s[pos] - '0') }
+                pos += 1
+            }
+            if pos is fstart { return !.Syntax(pos) }
+            for _ in (pos - fstart).min(24)..24 { frac *= 10 }
+        }
+        unit := read_unit(s, pos) else return !.Syntax(pos)
+        if unit.rank < next_rank { return !.Syntax(pos) }
+        next_rank = unit.rank + 1
+        pos += unit.len
+        if not overflow {
+            // `frac` is a value below 10^24, so the product is below 4 * 10^36.
+            total += whole * u128(unit.ns) + frac * u128(unit.ns) / 1_000_000_000_000_000_000_000_000
+            if total > max {
+                overflow = true
+                overflow_at = start
+            }
+        }
+    }
+    if overflow { return !.Range(overflow_at) }
+    return Duration(ns: total.trunc(u64))
 }
 
 put_text :: fn(buf: []u8, pos: usize, text: string) -> usize {

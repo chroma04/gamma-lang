@@ -1,0 +1,49 @@
+// Double-double square root and logarithm, used by the inverse hyperbolic
+// functions and by lgamma. Everything here is private. The results carry a
+// relative error of about 2**-90.
+
+// The square root of a positive double-double.
+dd_sqrt :: fn(a: (f64, f64)) -> (f64, f64) {
+    q := sqrt(a.0)
+    p := two_prod(q, q)
+    r := dd_sub(a, p)
+    return fast_two_sum(q, r.0 / (2.0 * q))
+}
+
+// log(1 + w) for a double-double w > -1 with log(1 + w) below 46 in magnitude.
+// Newton's step from the double y0 = log1p(w): 1 + w = exp(y0) * (1 + d) with
+// d = (w - expm1(y0)) / (1 + expm1(y0)) tiny, and log(1 + d) = d - d*d/2.
+log1p_dd :: fn(w: (f64, f64)) -> (f64, f64) {
+    if w.0 is 0.0 { return w }
+    y0 := log1p(w.0)
+    e := expm1_dd(y0)
+    d := dd_div(dd_sub(w, e), dd_add((1.0, 0.0), e))
+    return dd_add((y0, 0.0), dd_add(d, (-0.5 * d.0 * d.0, 0.0)))
+}
+
+// k * log(2) for an integer-valued double k of moderate size.
+ln2_mul :: fn(k: f64) -> (f64, f64) =>
+    dd_add(dd_mul_d((DD_LN2_1, DD_LN2_2), k), (k * DD_LN2_3, 0.0))
+
+// The natural logarithm of a positive finite double-double.
+log_dd :: fn(v0: (f64, f64)) -> (f64, f64) {
+    v := v0
+    shift: i32 = 0
+    if v.0 < 0x1.0p-1000 {
+        // Subnormal or nearly so: scale up (exactly).
+        v = (v.0 * 0x1.0p100, v.1 * 0x1.0p100)
+        shift = -100
+    }
+    // v = m * 2**e with m in [sqrt(1/2), sqrt(2)); k = e + shift.
+    e := ((v.0.bits(u64) >> 52) & 0x7ff).trunc(i32) - 1023
+    mh := scalbn(v.0, -e)
+    ml := scalbn(v.1, -e)
+    if mh > sqrt2 {
+        mh *= 0.5
+        ml *= 0.5
+        e += 1
+    }
+    k := e + shift
+    l := log1p_dd(dd_sub((mh, ml), (1.0, 0.0)))
+    return dd_add(l, ln2_mul(f64(k)))
+}

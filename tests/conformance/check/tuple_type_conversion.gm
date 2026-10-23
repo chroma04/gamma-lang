@@ -5,6 +5,6 @@ P :: (i32, i32)
 main :: fn() {
     p := (1i32, 2i32)
     a := (i64, i64)(p)  //~ ERROR `(i64, i64)` takes one value per element, so a tuple is not converted to it; spread it
-    b := P(p)           //~ ERROR spread it: `(i32, i32)(..t)`
+    b := P(p)           //~ ERROR spread it: `(i32, i32)(..x)`
     c := P(5)           //~ ERROR missing element 1 of `(i32, i32)`
 }

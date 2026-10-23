@@ -1,0 +1,4 @@
+//! stage: lex
+//! dump
+// Imaginary literals: a decimal literal and `j`, `j16`, `j32` or `j64` (§2.5.2).
+4j 2.5j32 1e-3j64 7j16 0j 1_000j

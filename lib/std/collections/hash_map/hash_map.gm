@@ -1,0 +1,59 @@
+//! A hash map, with keys hashed by the structural `@hash` and compared with `is`.
+//!
+//!     hm :: import "std/collections/hash_map"
+//!
+//!     ages := hm.hash_map(string, u32)            // captures the current allocator
+//!     defer ages.deinit()
+//!     try ages.put("ada", 36)
+//!     print("{}\n", ages.get("ada"))              // 36
+//!     e := try ages.entry("bob", 0)               // stores 0 if "bob" is absent
+//!     e.value^ += 1
+//!     for kv in ages.entries() { print("{} {}\n", kv.key, kv.value) }
+//!
+//! A key type needs no code of its own: `hash_map(K, V)` requires `Eq(K)` and uses
+//! `@hash` and `is`, which the language derives from the type's structure. A different
+//! notion of equality is given as compile-time parameters of the type, with
+//! `hash_map_with(K: string, u32, hash: fold_hash, eq: fold_eq)`; a custom `hash` must
+//! agree with `eq` (keys equal under `eq` hash equally).
+//!
+//! The methods (abbreviated: each takes the map type's parameters as leading compile-time
+//! parameters, inferred from the receiver):
+//!
+//!     put          :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
+//!     get          :: fn(m: ^const HashMap(…), k: K) -> ?V
+//!     get_ptr      :: fn(m: ^HashMap(…), k: K) -> ?^V
+//!     entry        :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)
+//!     contains     :: fn(m: ^const HashMap(…), k: K) -> bool
+//!     remove       :: fn(m: ^HashMap(…), k: K) -> ?V
+//!     remove_entry :: fn(m: ^HashMap(…), k: K) -> ?(key: K, value: V)
+//!     len          :: fn(m: ^const HashMap(…)) -> usize
+//!     entries      :: fn(m: ^const HashMap(…)) needs Yield((key: K, value: V))
+//!     keys         :: fn(m: ^const HashMap(…)) needs Yield(K)
+//!     values       :: fn(m: ^const HashMap(…)) needs Yield(V)
+//!     clear        :: fn(m: ^HashMap(…))                  // keeps the storage
+//!     deinit       :: fn(m: ^HashMap(…))
+//!
+//! A map keeps the allocator it was created with, performs no `Alloc` afterwards, and
+//! reports a failed allocation as `AllocError`, leaving the map as it was. `entries`,
+//! `keys` and `values` visit the entries in an unspecified order, the same for all three.
+//! A map must not change during an iteration. The pointers from `get_ptr` and `entry` are
+//! valid until the next insertion or removal. When `entry` stores a new key (`found` is
+//! false), the caller may replace the stored key through `key` with one equal to it, such
+//! as a copy the map owns; `remove_entry` returns that key so it can be released.
+//!
+//! Each map stores a seed chosen at construction without performing effects; copies of the
+//! map keep it. The table uses open addressing with linear probing; lookups, insertions
+//! and removals take expected constant time.
+
+/// A map from `K` to `V`. `hash` and `eq` default to `@hash` and `is` (`null`).
+pub HashMap :: core.map.HashMap
+
+/// An empty map using `@hash` and `is`, and the current allocator.
+pub hash_map :: core.map.hash_map
+
+/// An empty map using the given hash and equality functions, and the current allocator.
+pub hash_map_with :: core.map.hash_map_with
+
+/// What `entry` returns: pointers to the stored key and value, and whether the key was
+/// already present.
+pub Entry :: core.map.Entry

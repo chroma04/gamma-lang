@@ -102,6 +102,18 @@ SeekFrom :: core.SeekFrom
 
 Where `Fs.seek` counts from.
 
+## Constants
+
+### `TEMP_EXTRA`
+
+```gamma
+TEMP_EXTRA :: 17
+```
+
+The bytes `create_temp` and `make_temp_dir` need in their buffer beyond the length of
+`prefix`: a buffer of `dir.len + prefix.len + TEMP_EXTRA` bytes always suffices (a
+separator and 16 hex digits).
+
 ## Functions
 
 ### `read_all`
@@ -200,6 +212,57 @@ make_dir_all :: fn(path: string) -> IoError!() needs Fs
 Creates the directory `path` and any missing parents, like `mkdir -p`. Directories that
 exist already are fine; something else at `path`, or at one of its parents, is an
 error.
+
+### `remove_all`
+
+```gamma
+remove_all :: fn(path: string) -> IoError!() needs Fs + Alloc
+```
+
+Removes `path` and everything in it: a file or a symbolic link is removed, a directory
+is emptied and then removed, like `rm -rf`. Symbolic links are never followed (a link to
+a directory is removed as a link and its target is left alone). An entry that vanishes
+while the removal runs is not an error. If `path` itself does not exist the result is
+`.NotFound`, which a caller that does not mind can ignore. Any other failure ends the
+removal at once, leaving the rest in place. The directories being emptied are tracked in
+memory from the current allocator (`.NoSpace` if it runs out), not on the call stack,
+and all of them are closed again on every exit.
+
+### `temp_dir`
+
+```gamma
+temp_dir :: fn() -> string needs Env
+```
+
+The directory for temporary files. On Windows it is the value of `TEMP`, else `TMP`,
+else `C:\Windows\Temp`; elsewhere it is `TMPDIR`, else `/tmp`. A variable that is empty
+counts as unset. The result is not checked to exist.
+
+### `create_temp`
+
+```gamma
+create_temp :: fn(dir, prefix: string, buf: []u8) -> IoError!(file: File, path: string) needs Fs + Rand
+```
+
+Creates a new file in `dir`, opened for reading and writing, and returns it with its
+path. The name is `prefix` followed by 16 random lowercase hex digits (from `Rand`);
+the path is `dir`, a `/` (unless `dir` is empty or ends with one) and the name, written
+to the start of `buf` and returned as the used part. The file is created exclusively, so
+an existing file is never opened; a name that is taken is replaced by a new random one,
+up to 16 times, and then the result is `.AlreadyExists`. A `buf` shorter than
+`dir.len + prefix.len + TEMP_EXTRA` bytes, or a `prefix` with a separator in it (`/`, and
+on Windows also `\`), gives
+`.InvalidInput` and creates nothing. The caller closes the file and removes it.
+
+### `make_temp_dir`
+
+```gamma
+make_temp_dir :: fn(dir, prefix: string, buf: []u8) -> IoError!string needs Fs + Rand
+```
+
+Creates a new directory in `dir` and returns its path, named as for `create_temp`
+(`prefix` and 16 random hex digits) and written to `buf` in the same way, with the same
+retries and errors. The caller removes it, for instance with `remove_all`.
 
 ### `write_atomic`
 

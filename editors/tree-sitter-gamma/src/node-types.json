@@ -100,6 +100,10 @@
         "named": true
       },
       {
+        "type": "imaginary_literal",
+        "named": true
+      },
+      {
         "type": "import_expression",
         "named": true
       },
@@ -3663,6 +3667,10 @@
   {
     "type": "if",
     "named": false
+  },
+  {
+    "type": "imaginary_literal",
+    "named": true
   },
   {
     "type": "import",

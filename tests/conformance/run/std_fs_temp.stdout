@@ -1,0 +1,20 @@
+temp_dir is set: true
+outside name: true
+root name: true in temp_dir: true
+small make_temp_dir: true
+small create_temp: true
+slash in prefix: true
+entries after failures: 0
+exact buffer: true true
+temp file name: true
+read back: true
+distinct names: true
+links made: true
+entries in the root: 5
+tree gone: true
+outside survived: true 1
+remove_all again: true
+link up made: true
+link removed, target kept: true true
+empty dir gone: true
+outside gone: true

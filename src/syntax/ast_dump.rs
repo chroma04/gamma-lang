@@ -384,7 +384,7 @@ impl Dumper {
                 if let Some(s) = l.suffix {
                     v.push(atom(float_suffix(s)));
                 }
-                node("float", v)
+                node(if l.imag { "imag" } else { "float" }, v)
             }
             ExprKind::Str(s) => str_lit(s),
             ExprKind::Bool(b) => node("bool", vec![atom(b.to_string())]),
@@ -394,6 +394,7 @@ impl Dumper {
             ExprKind::Underscore => atom("underscore"),
             ExprKind::DotIdent(id) => node("dot", vec![name(id)]),
             ExprKind::Paren(x) => node("paren", vec![self.expr(x)]),
+            ExprKind::Elements(x) => node("elements", vec![self.expr(x)]),
             ExprKind::Tuple(elems) => node("tuple", elems.iter().map(|t| self.tuple_elem(t)).collect()),
             ExprKind::Unary { op, operand } => node("unary", vec![atom(unop_name(*op)), self.expr(operand)]),
             ExprKind::Binary { op, lhs, rhs } => {

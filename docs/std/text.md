@@ -2,7 +2,7 @@
 
 [All modules](index.md)
 
-Unicode text segmentation and UTF-8 encoding of scalar values.
+Unicode text segmentation, and UTF-8 and UTF-16 encoding of scalar values.
 
 A `string` carries no encoding guarantee; these functions read it as UTF-8 and treat
 each maximal ill-formed subsequence as one U+FFFD, exactly like `runes`. They never
@@ -75,3 +75,46 @@ append_rune :: fn(out: ^List(u8), cp: u32) -> AllocError!()
 
 Appends the UTF-8 encoding of `cp` to `out`. Traps if `cp` is a surrogate or above
 U+10FFFF.
+
+### `utf16_len`
+
+```gamma
+utf16_len :: fn(s: string) -> usize
+```
+
+The number of UTF-16 code units that `s` encodes to: 1 for each scalar value below
+U+10000 and 2 for each above. `s` is read like `runes` reads it, so each ill-formed
+subsequence counts as U+FFFD, one unit.
+
+### `encode_utf16`
+
+```gamma
+encode_utf16 :: fn(s: string, buf: []u16) -> []u16
+```
+
+Writes the UTF-16 encoding of `s` (read like `runes` reads it, so ill-formed bytes
+become U+FFFD) at the start of `buf` and returns the code units written, a slice of
+`buf`. Traps if `buf.len` is less than `utf16_len(s)`.
+
+### `append_utf16`
+
+```gamma
+append_utf16 :: fn(out: ^List(u16), s: string) -> AllocError!()
+```
+
+Appends the UTF-16 encoding of `s` (read like `runes` reads it) to `out`.
+
+### `decode_utf16`
+
+```gamma
+decode_utf16 :: fn(units: []const u16) needs Yield(rune)
+```
+
+The Unicode scalar values of the UTF-16 text `units`, in order. A high surrogate
+followed by a low one is one value above U+FFFF; every unpaired surrogate (a lone
+one, or a pair in the wrong order) yields U+FFFD, so the values are always scalar
+values and `append_rune` accepts them. Building UTF-8 from UTF-16 is that call:
+
+    out := list(u8)
+    defer out.deinit()
+    for r in text.decode_utf16(units) { try text.append_rune(&out, r) }

@@ -1,0 +1,121 @@
+// ---------------------------------------------------------------------------
+// Integer helpers
+//
+// These are generic over every integer type `T` (signed or unsigned, of any width up to
+// 128 bits, including `usize` and `isize`). The type is inferred from the arguments:
+// `math.gcd(a, b)`. Where a result does not fit `T`, the function overflows like the
+// plain arithmetic operators: it traps in Debug and Checked builds, and the result is
+// unspecified in Fast builds.
+
+// Whether `T` is a signed integer type.
+is_signed :: fn(T: type) -> bool where Int(T) => (T(0) -% 1) < 0
+
+// The magnitude of `x` as a `u128`; never overflows.
+magnitude :: fn(T: type, x: T) -> u128 where Int(T) => x.unsigned_abs().trunc(u128)
+
+// A `u128` magnitude `m` as a non-negative `T`, overflowing (checked) when it does not
+// fit. `who` is the trap message.
+from_magnitude :: fn(T: type, m: u128, who: string) -> T where Int(T) {
+    r := m.checked(T) else {
+        assert(false, who)
+        return m.trunc(T)
+    }
+    return r
+}
+
+// The gcd of two `u128` values (binary, Stein's algorithm).
+gcd_wide :: fn(a, b: u128) -> u128 {
+    if a is 0 { return b }
+    if b is 0 { return a }
+    shift := @ctz(a | b)
+    x := a >> @ctz(a)
+    y := b
+    while y is not 0 {
+        y >>= @ctz(y)
+        if x > y {
+            t := x
+            x = y
+            y = t
+        }
+        y -= x
+    }
+    return x << shift
+}
+
+/// The greatest common divisor of `a` and `b`, never negative; `gcd(0, 0)` is 0 and
+/// `gcd(x, 0)` is `|x|`. For a signed `T`, the result `2^(N-1)` of `gcd(MIN, 0)`,
+/// `gcd(0, MIN)` and `gcd(MIN, MIN)` does not fit `T`: it overflows, checked like `*`.
+pub gcd :: fn(T: type, a, b: T) -> T where Int(T) =>
+    from_magnitude(T: T, gcd_wide(magnitude(a), magnitude(b)), "integer overflow in `gcd`")
+
+/// The least common multiple of `a` and `b`, never negative; `lcm(x, 0)` and
+/// `lcm(0, x)` are 0. It is `|a| / gcd(a, b) * |b|`, so it overflows (checked like `*`)
+/// when that does not fit `T`, which includes the case that `|a|` or `|b|` is `MIN` of a
+/// signed type and neither operand is 0.
+pub lcm :: fn(T: type, a, b: T) -> T where Int(T) {
+    if a is 0 or b is 0 { return 0 }
+    x := magnitude(a)
+    y := magnitude(b)
+    q := from_magnitude(T: T, x / gcd_wide(x, y), "integer overflow in `lcm`")
+    return q * from_magnitude(T: T, y, "integer overflow in `lcm`")
+}
+
+/// The integer square root of `n`: the largest `r` with `r * r <= n`, exact for every
+/// value of every width. `n` must not be negative; otherwise it traps (Debug and
+/// Checked builds).
+pub isqrt :: fn(T: type, n: T) -> T where Int(T) {
+    assert(n >= 0, "math.isqrt: n must not be negative")
+    v := n.trunc(u128)
+    if v < 2 { return n }
+    // Newton's iteration from a starting point that is at least the root; it decreases
+    // strictly until it reaches the floor of the root.
+    x: u128 = 1 << ((127 - @clz(v)) / 2 + 1)
+    while true {
+        y := (x + v / x) >> 1
+        if y >= x { break }
+        x = y
+    }
+    return x.trunc(T)
+}
+
+/// The floor of the base-2 logarithm of `n`, that is the index of its highest set bit.
+/// `n` must be greater than 0; otherwise it traps (Debug and Checked builds).
+pub ilog2 :: fn(T: type, n: T) -> u32 where Int(T) {
+    assert(n > 0, "math.ilog2: n must be greater than 0")
+    return 127 - @clz(n.trunc(u128))
+}
+
+/// The floor of the base-10 logarithm of `n`: the number of decimal digits of `n` minus
+/// one. `n` must be greater than 0; otherwise it traps (Debug and Checked builds).
+pub ilog10 :: fn(T: type, n: T) -> u32 where Int(T) {
+    assert(n > 0, "math.ilog10: n must be greater than 0")
+    v := n.trunc(u128)
+    bits := 127 - @clz(v)
+    // 1233 / 4096 approximates log10(2) from below, so `t` is the answer or one less.
+    t := (bits * 1233) >> 12
+    if t < 38 and v >= (10).pow(t + 1) { return t + 1 }
+    return t
+}
+
+/// `a / b` rounded toward negative infinity. Division by zero traps like `/`, and so
+/// does `div_floor(MIN, -1)` of a signed type. For unsigned types it is `a / b`.
+pub div_floor :: fn(T: type, a, b: T) -> T where Int(T) {
+    q := a / b
+    if is_signed(T: T) {
+        r := a % b
+        if r is not 0 and ((r < 0) is not (b < 0)) { return q - 1 }
+    }
+    return q
+}
+
+/// The modulus matching `div_floor`: `div_floor(a, b) * b + mod_floor(a, b) == a`, and
+/// the result is 0 or has the sign of `b` (as `%` in Python). Division by zero traps like
+/// `%`, and so does `mod_floor(MIN, -1)` of a signed type. For unsigned types it is
+/// `a % b`.
+pub mod_floor :: fn(T: type, a, b: T) -> T where Int(T) {
+    r := a % b
+    if is_signed(T: T) {
+        if r is not 0 and ((r < 0) is not (b < 0)) { return r + b }
+    }
+    return r
+}

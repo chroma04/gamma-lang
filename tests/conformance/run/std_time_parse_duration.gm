@@ -1,0 +1,132 @@
+// std/time: parse_duration, the inverse of format_duration.
+time :: import "std/time"
+
+try_parse :: fn(s: string) needs Out {
+    print("\"{}\" => ", s)
+    d := time.parse_duration(s) else e => {
+        match e {
+            .Syntax(p) => print("syntax error at {}\n", p)
+            .Range(p) => print("range error at {}\n", p)
+        }
+        return
+    }
+    print("{}\n", d.ns)
+}
+
+// Whether formatting `ns` and parsing it back gives `ns`.
+round_trips :: fn(ns: u64) -> bool {
+    buf: [time.DURATION_LEN]u8 = ---
+    text := time.format_duration(Duration(ns: ns), buf[..])
+    d := time.parse_duration(text) else return false
+    return d.ns is ns
+}
+
+main :: fn() needs Out {
+    // Single units.
+    try_parse("0")
+    try_parse("0s")
+    try_parse("1ns")
+    try_parse("250ns")
+    try_parse("1us")
+    try_parse("1µs")
+    try_parse("1.5us")
+    try_parse("1ms")
+    try_parse("1.5ms")
+    try_parse("1s")
+    try_parse("3.25s")
+    try_parse("1m")
+    try_parse("1h")
+    try_parse("0.25h")
+    try_parse("1.5m")
+    try_parse("00012s")
+    try_parse("007.500s")
+
+    // Several terms.
+    try_parse("1m0s")
+    try_parse("1h2m3.5s")
+    try_parse("1h30m")
+    try_parse("2h45s500ms")
+    try_parse("1h1m1s1ms1us1ns")
+    try_parse("1h0.25s")
+    try_parse("0h0m0s0ms0us0ns")
+
+    // Digits finer than a nanosecond are dropped.
+    try_parse("1.9999ns")
+    try_parse("0.0000000019s")
+    try_parse("0.9ns")
+    try_parse("1.000000001s")
+    try_parse("1.0000000019s")
+    try_parse("0.0000000000001h")
+    try_parse("0.00000000000027777777777777777777h")
+
+    // Largest values.
+    try_parse("18446744073709551615ns")
+    try_parse("18446744073.709551615s")
+    try_parse("18446744073.709551616s")
+    try_parse("5124095h34m33.709551615s")
+    try_parse("5124095h34m33.709551616s")
+    try_parse("18446744073709551616ns")
+    try_parse("99999999999999999999999999999999999999999999999ns")
+    try_parse("5124096h")
+    try_parse("1h5124095h")
+    try_parse("1000000h0.5s")
+    try_parse("18446744073709551615ns1")
+
+    // Syntax errors, with positions.
+    try_parse("")
+    try_parse("1")
+    try_parse("12")
+    try_parse("s")
+    try_parse("1x")
+    try_parse("1h2")
+    try_parse("1h2x")
+    try_parse(".5s")
+    try_parse("5.s")
+    try_parse("1.5")
+    try_parse("1..5s")
+    try_parse("-1s")
+    try_parse("+1s")
+    try_parse("1 s")
+    try_parse(" 1s")
+    try_parse("1s ")
+    try_parse("1H")
+    try_parse("1S")
+    try_parse("1d")
+    try_parse("1µ")
+    try_parse("1µm")
+    try_parse("1m1h")
+    try_parse("1s1s")
+    try_parse("1ms1s")
+    try_parse("1us1ms")
+    try_parse("1h1h")
+    try_parse("1ns1ns")
+    try_parse("1s1m")
+    try_parse("00")
+    try_parse("0.0")
+    // A syntax error is reported before a range error.
+    try_parse("18446744073709551616nsx")
+    try_parse("5124096h1s1h")
+
+    // Round trips.
+    cases := [_]u64(0, 1, 9, 10, 999, 1_000, 1_001, 1_500, 999_999, 1_000_000, 1_000_001, 1_500_000, 999_999_999, 1_000_000_000, 1_000_000_001, 1_500_000_000, 59_999_999_999, 60_000_000_000, 60_000_000_001, 3_599_999_999_999, 3_600_000_000_000, 3_600_000_000_001, 3_661_500_000_000, 86_400_000_000_000, 1_000_000_000_000_000_000, 18_446_744_073_709_551_614, 18_446_744_073_709_551_615)
+    bad := 0
+    for c in cases {
+        if not round_trips(c) { bad += 1 }
+    }
+    // Many values: a multiplicative sequence covers every magnitude and digit pattern.
+    x: u64 = 1
+    count := 0
+    for _ in 0..20000 {
+        x = x *% 6364136223846793005 +% 1442695040888963407
+        if not round_trips(x) { bad += 1 }
+        if not round_trips(x >> (x % 64).trunc(u6)) { bad += 1 }
+        if not round_trips(x - x % 1_000_000_000) { bad += 1 }
+        count += 3
+    }
+    for i in 0..10000 {
+        if not round_trips(i.trunc(u64)) { bad += 1 }
+        if not round_trips(18_446_744_073_709_551_615 - i.trunc(u64)) { bad += 1 }
+        count += 2
+    }
+    print("round trips: {} values, {} failed\n", count + cases.len, bad)
+}

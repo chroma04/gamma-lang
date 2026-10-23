@@ -96,6 +96,8 @@ spread_demo :: fn() -> i32 {
 
 Spread works in struct construction too, which is how you write "this value, but with one field changed": `Window(..w, title: "new")`.
 
+An array spreads like an unnamed tuple of its elements, so `..rgb` with `rgb: [3]u8` passes three positional arguments, and `(u8, u8, u8)(..rgb)` turns the array into a tuple, as `[3]u8(..t)` turns a tuple into an array. The length must be known where the spread is written: an array whose length is a compile-time parameter cannot be spread, and neither can an enum-indexed array, whose elements are named by its variants rather than numbered.
+
 A parameter's default may also be `@caller_location()`, which is evaluated at each *call site*. This is how `assert` and `trap` know where they were called from, and you can use it the same way. Such a parameter is bound only by name, so positional arguments skip it:
 
 ```gamma
@@ -271,7 +273,7 @@ mix :: fn(a, b, t: f32) -> f32 => lerp(a, b, t)
 ## Summary
 
 - Functions are values bound with `::`. `-> R` is required unless the function returns `()`, and `needs …` lists its effects.
-- Calls mix positional and named arguments (named ones may appear anywhere); defaults must be constants; `..e` spreads tuples and structs; a last parameter `name: ..A` collects the remaining arguments as a tuple.
+- Calls mix positional and named arguments (named ones may appear anywhere); defaults must be constants; `..e` spreads tuples, arrays and structs; a last parameter `name: ..A` collects the remaining arguments as a tuple.
 - Methods are module functions called with dot syntax; receiver adjustments are limited to taking or dereferencing one address.
 - `fn(...)` values capture by reference but only flow downward; `^fn(...)` values capture nothing and can go anywhere.
 

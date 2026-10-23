@@ -231,6 +231,9 @@ pub enum ExprKind {
     Paren(Box<Expr>),
     /// `()`, `(a,)`, `(a, b)`, `(x: a, y: b)`. Also tuple *types* such as `(i32, u8)`.
     Tuple(Vec<TupleElem>),
+    /// The elements of a tuple or array as an unnamed tuple. Never parsed: a spread `..e`
+    /// passed as the whole of a call's rest arguments (§11.2) becomes this.
+    Elements(Box<Expr>),
 
     // --- operators ---
     Unary {

@@ -1,7 +1,7 @@
 # The standard library
 
 The **core library** (spec §21) is visible in every module without an import: the
-ambient effects, allocation, iterators, `List`, `HashMap`, formatting with `print`,
+ambient effects, allocation, iterators, `List`, formatting with `print`,
 and the builtin methods of slices, numbers and pointers. The rest of the standard
 library is a set of modules under `std/`, imported by path:
 
@@ -97,7 +97,9 @@ so no module repeats them. The ones people look for most:
   `min`, `max`, `abs`, `sqrt`. (`std/math` has the `f64` functions that are not built in.)
 - Slices and strings: `len`, `get(i)`, `first`, `last`, `starts_with`, `ends_with`,
   `index_of`, `copy_from`, `fill`, `swap`, `sort`, `sort_by`, `sort_by_key`, the stable
-  sorts, `min`, `max`, `binary_search`, `utf8_valid`. `is` compares strings and slices
+  sorts, `min`, `max`, `binary_search`, `upper_bound`, `is_sorted`, `reverse`,
+  `rotate_left`, `rotate_right`, `dedup`, `partition`, `select_nth`, `utf8_valid`. `is`
+  compares strings and slices
   by value and `<` orders them.
 
 ## Formatting into your own sink: `@write`

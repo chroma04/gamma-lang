@@ -1,0 +1,23 @@
+//! needs: f16
+// Complex numbers with `f16` parts (§5.3.1, §7.4.7) and the imaginary literal suffix `j16`
+// (§2.5.2).
+C16 :: Complex(f16)
+
+square :: fn(T: type, z: Complex(T)) -> Complex(T) where Float(T) => z * z
+
+norm_sq :: fn(T: type, z: Complex(T)) -> T where Float(T) {
+    w := z * z.conj()
+    return w.re
+}
+
+main :: fn() needs Out {
+    print("{}\n", @size_of(C16))
+    x16 := C16(re: 1.5, im: 2)
+    y16 := C16(re: 0.5, im: -1)
+    print("{} {} {}\n", x16 + y16, x16 * y16, x16 / y16)
+    print("{} {}\n", -x16, C16(re: 3, im: 4).abs())
+    print("{} {}\n", x16 * 2, x16.conj())
+    print("{} {}\n", square(x16), norm_sq(y16))
+    d := 0.5j16
+    print("{} {} {}\n", d, @type_name(@type_of(d)), x16 + 1 - 2j)
+}

@@ -1,6 +1,8 @@
 // Vector comparison (§5.6.2): `is` and `is not` compare whole vectors and give a `bool`
 // (a NaN lane makes `is` false); `.lanes_eq(w)` and its kin compare lane by lane and give a
 // mask. Vectors are `Eq`, hash like the array of their lanes, and work as map keys.
+hm :: import "std/collections/hash_map"
+
 F4 :: #simd [4]f32
 I4 :: #simd [4]i32
 B4 :: #simd [4]bool
@@ -39,7 +41,7 @@ main :: fn() -> AllocError!() needs Out + Alloc {
     print("{}\n", @hash(a, 0) is @hash([4]i32(a), 0))
 
     // A vector is a map key.
-    names := hash_map(I4, string)
+    names := hm.hash_map(I4, string)
     defer names.deinit()
     try names.put(a, "a")
     try names.put(b, "b")

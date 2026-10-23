@@ -1,0 +1,10 @@
+//! exit: 134
+//! stderr
+// isqrt of a negative number violates its precondition.
+math :: import "std/math"
+
+main :: fn() needs Out {
+    print("{}\n", math.isqrt(i32(49)))
+    n: i64 = @black_box(-4)
+    print("{}\n", math.isqrt(n))
+}

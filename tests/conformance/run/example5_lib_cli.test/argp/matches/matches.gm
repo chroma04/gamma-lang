@@ -1,5 +1,6 @@
 // The result of a successful parse: option values by name, positional arguments in order,
 // and typed accessors (generic over the integer type the caller wants).
+hm :: import "std/collections/hash_map"
 
 pub Value :: union {
     Flag: bool
@@ -9,12 +10,12 @@ pub Value :: union {
 }
 
 pub Matches :: struct {
-    vals: HashMap(string, Value)
+    vals: hm.HashMap(string, Value)
     rest: List(string)
 }
 
 pub matches :: fn() -> Matches needs Alloc {
-    return Matches(vals: hash_map(string, Value), rest: list(string))
+    return Matches(vals: hm.hash_map(string, Value), rest: list(string))
 }
 
 pub deinit :: fn(m: ^Matches) {

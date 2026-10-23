@@ -21,7 +21,7 @@ arrays_demo :: fn() needs Out {
 }
 ```
 
-Array constructors are calls on the array type: `[N]T(e1, ..., eN)` with exactly `N` elements, `[_]T(...)` to infer `N`, `[N]T(fill: x)` to repeat one value, and `[N]T(..t)` to spread a tuple. The length is `a.len`, a constant. `a[i]` is bounds-checked (`i` must be an unsigned integer), and `a.get(i)` gives an optional instead of trapping:
+Array constructors are calls on the array type: `[N]T(e1, ..., eN)` with exactly `N` elements, `[_]T(...)` to infer `N`, `[N]T(fill: x)` to repeat one value, and `[N]T(..t)` to spread a tuple. An array spreads too: `(T, T, T)(..a)` is the tuple of its three elements. The length is `a.len`, a constant. `a[i]` is bounds-checked (`i` must be an unsigned integer), and `a.get(i)` gives an optional instead of trapping:
 
 ```gamma
 third :: fn(a: [4]i32) -> i32 => a.get(2) else 0
@@ -46,7 +46,96 @@ vectors_demo :: fn() needs Out {
 }
 ```
 
-Arrays have no arithmetic (`a + b` on arrays is an error): use a vector, or a loop. Comparing vectors works as for arrays: `a is b` is one `bool`, true when every pair of lanes is equal (so a `NaN` lane makes it false), and vectors can be hash map keys. Vectors are not ordered, so `<` is an error; the methods `.lanes_eq(w)`, `.lanes_ne(w)`, `.lanes_lt(w)`, `.lanes_le(w)`, `.lanes_gt(w)` and `.lanes_ge(w)` compare lane by lane and give a mask `#simd [N]bool`. A mask is not a condition: write `m.all()` or `m.any()`. A scalar is never spread over the lanes (`a * 2` is an error; write `a * F4(fill: 2)`), and integer lanes have no `/` or `%`, since no processor divides integer lanes in one instruction. `F4.load(xs[i..])` reads four floats from a slice and `v.store(out[i..])` writes them back; both check the slice is long enough. Integer lanes keep the checks of their scalar operators, so `+` traps on overflow in Debug and Checked builds; `+%` wraps and `+|` saturates.
+Arrays have no arithmetic (`a + b` on arrays is an error): use a vector, a math vector (below), or a loop. Comparing vectors works as for arrays: `a is b` is one `bool`, true when every pair of lanes is equal (so a `NaN` lane makes it false), and vectors can be hash map keys. Vectors are not ordered, so `<` is an error; the methods `.lanes_eq(w)`, `.lanes_ne(w)`, `.lanes_lt(w)`, `.lanes_le(w)`, `.lanes_gt(w)` and `.lanes_ge(w)` compare lane by lane and give a mask `#simd [N]bool`. A mask is not a condition: write `m.all()` or `m.any()`. A scalar is never spread over the lanes (`a * 2` is an error; write `a * F4(fill: 2)`), and integer lanes have no `/` or `%`, since no processor divides integer lanes in one instruction. `F4.load(xs[i..])` reads four floats from a slice and `v.store(out[i..])` writes them back; both check the slice is long enough. Integer lanes keep the checks of their scalar operators, so `+` traps on overflow in Debug and Checked builds; `+%` wraps and `+|` saturates.
+
+### Math vectors
+
+`#vec [N]T` is a math vector: an array of 2, 3 or 4 integers or floats whose operators work element by element. It is meant for coordinates, colors and the like. Where a `#simd` vector promises instructions and so restricts its shape (power-of-two length, aligned to the whole vector), a math vector promises a layout: it is exactly `[N]T`, so it can be a field of a C struct, a vertex in a buffer or a record in a file. Use `#simd` when you are tuning a loop and `#vec` when you are writing geometry.
+
+```gamma
+Vec3 :: #vec [3]f32
+
+reflect :: fn(d, n: Vec3) -> Vec3 => d - 2 * d.dot(n) * n
+
+lerp :: fn(a, b: Vec3, t: f32) -> Vec3 => a + (b - a) * t
+
+math_vec_demo :: fn() needs Out {
+    ray := Vec3(1, -1, 0)
+    up := Vec3(0, 1, 0)
+    print("{}\n", reflect(ray, up))                // [1, 1, 0]
+    print("{}\n", lerp(Vec3(fill: 0), ray, 0.5))   // [0.5, -0.5, 0]
+    print("{} {}\n", ray.norm(), ray.cross(up))     // 1.4142135 [-0, 0, 1]
+}
+```
+
+Construct and index it like an array; `is` compares whole vectors, and `Vec3(xs)` and `[3]f32(v)` convert to and from an array. The operators `+ - *` and `/` (and the others the element type has, with the same overflow checks per element) take two vectors of one type; `*` and `/` also take a scalar, so `2 * d` scales every element. There is no `v + 1`: adding a scalar to every element is rarely what a formula means, and writing `v + Vec3(fill: 1)` says so. The methods are `dot`, `cross` (three elements), `norm` (float elements), and `min`, `max` and `abs` element by element. A math vector is not ordered (`<` is an error) and has none of the array methods.
+
+Matrices and quaternions are not built in. They are library types, ordinary structs of math vectors with functions, since the language only defines the operators that cost a handful of scalar operations.
+
+### Complex numbers
+
+`Complex(T)`, for a float type `T`, is a struct `{ re, im }` of the core library on which the language defines `+`, `-`, `*`, `/` and unary `-`. Its layout is that of C's `float _Complex` and `double _Complex`. Constants are written with imaginary literals: `3 + 4j` is one complex constant, computed exactly, whose type comes from where it is used (`Complex(f64)` if nothing decides). `j32` and the other widths fix the type of the parts, as `f32` does for a float: `2.5j32` is a `Complex(f32)`. Values made of run-time parts are constructed by name: `C64(re: x, im: y)`. Like a math vector, `*` takes a scalar on either side and `/` on the right (`2 * z`, `z / 2`). Unlike a math vector, a real *constant* is also a complex number, so `z + 1`, `1 / z` and `z is 0` work; a real variable `x` is not converted for you (write `C64(re: x, im: 0)`). Division is Smith's algorithm, which does not overflow for large divisors. The methods are `conj()` and `abs()` (the magnitude, computed like C's `hypot`); `exp`, `log`, `sqrt` and the rest of complex analysis are in `std/complex`.
+
+```gamma
+C64 :: Complex(f64)
+
+/// Iterations of z = z*z + c until z leaves the circle of radius 2, at most `limit`.
+mandelbrot_steps :: fn(c: C64, limit: u32) -> u32 {
+    z: C64 = 0
+    for n in 0..limit {
+        if z.abs() > 2 { return n }
+        z = z * z + c
+    }
+    return limit
+}
+
+complex_demo :: fn() needs Out {
+    a: C64 = 1 + 2j
+    b: C64 = 3 - 1j
+    print("{}\n", a * b)                    // Complex(re: 5, im: 5)
+    print("{}\n", a / b)                    // Complex(re: 0.1, im: 0.7000000000000001)
+    print("{} {}\n", a.conj().im, b.abs())  // -2 3.1622776601683795
+    print("{}\n", 1 / a + 1)                // Complex(re: 1.2, im: -0.4)
+    print("{}\n", mandelbrot_steps(-1, 100))   // 100
+}
+```
+
+A complex number is a struct in every other respect: its parts are fields (`z.im = 0`), and `is` compares the parts as floats. It is not ordered.
+
+### Structure-of-arrays
+
+An array of structs keeps each element's fields together. When a loop reads one or two fields of many elements, a layout that keeps each *field* together is faster: the loop then reads contiguous memory, and a column can be handed to vector code. In C you would declare parallel arrays and keep them in step by hand. In Gamma you write `#soa` before an array or slice type of a struct, and the compiler stores it by field:
+
+```gamma
+V2 :: #vec [2]f32
+
+Particle :: struct {
+    pos, vel: V2
+    alive: bool
+}
+
+Particles :: #soa []Particle
+
+step :: fn(ps: Particles, dt: f32) {
+    for i in 0..ps.len {
+        if ps[i].alive { ps[i].pos += ps[i].vel * dt }
+    }
+}
+
+soa_demo :: fn() -> AllocError!() needs Alloc + Out {
+    ps := try Particles.make(3)           // one block, one column per field
+    defer ps.free()
+    for i in 0..ps.len { ps[i] = Particle(pos: V2(fill: 0), vel: V2(1, 2), alive: i is not 1) }
+    step(ps, 0.5)
+    print("{}\n", ps.pos)                  // [[0.5, 1], [0, 0], [0.5, 1]]
+    print("{}\n", ps[2])                   // Particle(pos: [0.5, 1], vel: [1, 2], alive: true)
+    return ()
+}
+```
+
+`ps[i]` is the whole element: reading it gathers the fields into a `Particle`, and assigning to it stores each field in its column. `ps[i].pos` is one field of one element, an ordinary place you can read, assign and take the address of. The element as a whole has no address, since it is not stored anywhere in one piece, so `&ps[i]` is an error. `ps.pos` is the whole column: a `[]V2` for a slice, or the array `[N]V2` itself for `#soa [N]Particle`.
+
+A `#soa [N]S` array works like an array (`#soa [4]Particle(fill: p)`, `a[1..3]`, `&a` passes it as a `#soa []S`), and a `#soa []S` like a slice; `T.make(n)` allocates one and `s.free()` releases it. `for p in ps` gathers each element in turn. `is` compares elements, and a `#soa` is not ordered.
 
 ## Slices
 
@@ -66,7 +155,7 @@ slices_demo :: fn() needs Out {
 
 Slicing checks `lo <= hi <= len`. Slicing a mutable place gives `[]T`; slicing an immutable binding or a `const` view gives `[]const T`, and `[]T` converts to `[]const T` implicitly. Slicing an array requires a *place* (a named variable, a field, `p^`, and so on); there are no hidden temporaries.
 
-Useful methods on arrays and slices (full list in §21.3 of the [specification][s21]): `get(i)`, `first()`, `last()` (all give optionals), `fill(x)`, `copy_from(src)`, `swap(i, j)`, `index_of(x)`, `sort()`, `sort_by(less)`, `sort_by_key(key)`, `min()`, `max()`, `binary_search(x)`, and `cursor()` ([chapter 8](08-iteration.md)). Sorting is in place and allocates nothing.
+Useful methods on arrays and slices (full list in §21.3 of the [specification][s21]): `get(i)`, `first()`, `last()` (all give optionals), `fill(x)`, `copy_from(src)`, `swap(i, j)`, `index_of(x)`, `sort()`, `sort_by(less)`, `sort_by_key(key)`, `min()`, `max()`, `binary_search(x)`, `upper_bound(x)`, `is_sorted()`, `reverse()`, `rotate_left(k)`, `rotate_right(k)`, `dedup()`, `partition(pred)`, `select_nth(n)`, and `cursor()` ([chapter 8](08-iteration.md)). Sorting and the other reorderings are in place and allocate nothing.
 
 ```gamma
 largest_two :: fn(scores: []i32) -> (i32, i32) {

@@ -1,4 +1,6 @@
 // Command table with function pointers, case-insensitive map, generic helpers.
+hm :: import "std/collections/hash_map"
+
 Line :: []const string
 
 lower :: fn(c: u8) -> u8 => if c in 'A'..='Z' { c + 32 } else { c }
@@ -66,7 +68,7 @@ largest_by :: fn(T: type, xs: []const T, better: fn(a, b: T) -> bool) -> ?T {
 }
 
 main :: fn() -> AllocError!() needs Out + Alloc {
-    table := hash_map_with(K: string, Cmd, fold_hash, fold_eq)
+    table := hm.hash_map_with(K: string, Cmd, fold_hash, fold_eq)
     defer table.deinit()
     try table.put("ADD", Cmd(name: "add", arity: 1, run: cmd_add))
     try table.put("reset", Cmd(name: "reset", arity: 0, run: cmd_reset))

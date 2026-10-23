@@ -23,10 +23,10 @@ impl<'a, 's> FnCx<'a, 's> {
             if src.is_infer() {
                 let core = literal_core(p.target);
                 if self.infer.unify(src, core).is_err() && self.infer.unify(src, p.target).is_err() {
-                    let kind = if self.infer.var_kind(src) == Some(super::infer::VarKind::Float) {
-                        "a float"
-                    } else {
-                        "an integer"
+                    let kind = match self.infer.var_kind(src) {
+                        Some(super::infer::VarKind::Float) => "a float",
+                        Some(super::infer::VarKind::Complex) => "a complex",
+                        _ => "an integer",
                     };
                     let hint = match core.kind() {
                         TyKind::Param(_) => {
@@ -35,7 +35,8 @@ impl<'a, 's> FnCx<'a, 's> {
                         }
                         _ => String::new(),
                     };
-                    self.error(p.span, format!("expected `{}`, found {} literal{}", p.target, kind, hint));
+                    let what = if kind == "a complex" { "constant" } else { "literal" };
+                    self.error(p.span, format!("expected `{}`, found {} {}{}", p.target, kind, what, hint));
                     self.failed_coercions.push(p.span);
                 }
             }
@@ -126,7 +127,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 if matches!(t.kind(), TyKind::Array { .. } | TyKind::ParamArray { .. }) {
                     self.error(
                         span,
-                        "arithmetic does not apply to arrays; use a `#simd [N]T` vector (§5.6.2) or a loop",
+                        "arithmetic does not apply to arrays; use a `#vec [N]T` math vector (§5.6.3), a `#simd [N]T` vector (§5.6.2) or a loop",
                     );
                     return;
                 }
@@ -220,6 +221,25 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                     self.sema.emit(d);
                 }
+            }
+            // An untyped complex constant: the struct of its parts (§5.3.1).
+            ExprKind::UntypedComplex(parts) => {
+                let (re, im) = (**parts).clone();
+                let Some(elem) = self.sema.complex_of(e.ty) else {
+                    self.error(e.span, format!("expected `{}`, found a complex constant", e.ty));
+                    *e = super::func::error_expr(e.span);
+                    return;
+                };
+                let span = e.span;
+                let mut fields = vec![];
+                for r in [re, im] {
+                    let mut x = Expr { ty: elem, kind: ExprKind::UntypedFloat(std::rc::Rc::new(r.clone())), span };
+                    if !matches!(elem.kind(), TyKind::Param(_)) {
+                        self.fin_float(&mut x, r, false);
+                    }
+                    fields.push(x);
+                }
+                e.kind = ExprKind::Aggregate(fields);
             }
             ExprKind::UntypedFloat(r) => {
                 let r = (**r).clone();

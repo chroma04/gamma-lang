@@ -8,7 +8,7 @@ Huge :: #simd [32]f32 //~ ERROR at most 64 bytes
 Sizes :: #simd [4]usize //~ ERROR not `usize`
 Halves :: #simd [4]f16 //~ ERROR not `f16`
 Gen :: struct(T: type) { v: #simd [4]T } //~ ERROR a concrete lane type
-Bad :: #packed [4]u8 //~ ERROR only `#simd` can
+Bad :: #packed [4]u8 //~ ERROR only `#simd` and `#vec` can
 same :: fn(T: type, a, b: T) -> bool where Eq(T) => a is b
 before :: fn(T: type, a, b: T) -> bool where Ord(T) => a < b
 lib :: foreign "c" { f :: fn(v: F4) } //~ ERROR not a C-compatible parameter type

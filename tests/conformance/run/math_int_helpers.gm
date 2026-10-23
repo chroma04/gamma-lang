@@ -1,0 +1,60 @@
+// gcd, lcm, isqrt, ilog2, ilog10, div_floor and mod_floor of std/math, over many widths.
+math :: import "std/math"
+
+main :: fn() needs Out {
+    // gcd and lcm; the type is inferred from the arguments.
+    print("{} {} {} {}\n", math.gcd(12, 18), math.gcd(0, 0), math.gcd(0, 7), math.gcd(-12, 18))
+    print("{} {} {}\n", math.gcd(u8(255), 85), math.gcd(i8(-128), 96), math.gcd(i8(-128), -127))
+    print("{} {}\n", math.gcd(i32(-2147483648), 6), math.gcd(u64(0xffff_ffff_ffff_ffff), 0x1_0000_0000))
+    print("{}\n", math.gcd(u128(1) << 127, (u128(1) << 100) * 3))
+    print("{} {}\n", math.gcd(i128(-170141183460469231731687303715884105727) - 1, 1024), math.gcd(usize(48), 180))
+    print("{} {} {}\n", math.lcm(4, 6), math.lcm(0, 5), math.lcm(-4, 6))
+    print("{} {}\n", math.lcm(u8(15), 17), math.lcm(i8(-127), 1))
+    print("{} {}\n", math.lcm(u64(4294967295), 4294967296), math.lcm(u128(1) << 100, 3))
+
+    // isqrt
+    print("{} {} {} {}\n", math.isqrt(u8(0)), math.isqrt(u8(1)), math.isqrt(u8(255)), math.isqrt(i8(127)))
+    print("{} {} {}\n", math.isqrt(i32(2147483647)), math.isqrt(u64(0)), math.isqrt(usize(99)))
+    s64: u64 = 4294967295
+    print("{} {} {}\n", math.isqrt(s64 * s64 - 1), math.isqrt(s64 * s64), math.isqrt(s64 * s64 + 1))
+    print("{} {}\n", math.isqrt(u64(0xffff_ffff_ffff_ffff)), math.isqrt(u64(1) << 63))
+    big: u64 = 94906267 // above 2^53 when squared, so a float root is inexact
+    print("{} {}\n", math.isqrt(big * big - 1), math.isqrt(big * big))
+    s128: u128 = 18446744073709551615
+    print("{} {} {}\n", math.isqrt(s128 * s128 - 1), math.isqrt(s128 * s128), math.isqrt(s128 * s128 + 1))
+    print("{}\n", math.isqrt(u128(0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff)))
+    print("{}\n", math.isqrt(i128(170141183460469231731687303715884105727)))
+    p: u128 = 18446744073709551616
+    print("{} {} {}\n", math.isqrt(p / 2 * (p / 2) - 1), math.isqrt(p / 2 * (p / 2)), math.isqrt(p * (p - 1)))
+
+    // ilog2
+    print("{} {} {} {}\n", math.ilog2(u8(1)), math.ilog2(u8(255)), math.ilog2(i8(127)), math.ilog2(i32(1024)))
+    print("{} {} {}\n", math.ilog2(u64(0xffff_ffff_ffff_ffff)), math.ilog2(u128(1) << 127), math.ilog2(usize(4096)))
+    print("{} {}\n", math.ilog2(i128(1)), math.ilog2(u128(0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff)))
+
+    // ilog10
+    print("{} {} {} {}\n", math.ilog10(u8(1)), math.ilog10(u8(9)), math.ilog10(u8(10)), math.ilog10(u8(255)))
+    print("{} {} {}\n", math.ilog10(i8(99)), math.ilog10(i8(100)), math.ilog10(i8(127)))
+    print("{} {}\n", math.ilog10(i32(999999999)), math.ilog10(i32(1000000000)))
+    print("{} {} {}\n", math.ilog10(u64(9999999999999999999)), math.ilog10(u64(10000000000000000000)), math.ilog10(u64(0xffff_ffff_ffff_ffff)))
+    t: u128 = 1
+    for k in 0..39 {
+        lo: u32 = 0
+        if t > 1 { lo = math.ilog10(t - 1) }
+        print("{}:{}{}{} ", k, math.ilog10(t), math.ilog10(t +| 1), lo)
+        if k < 38 { t *= 10 }
+    }
+    print("\n{}\n", math.ilog10(u128(0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff)))
+    print("{}\n", math.ilog10(usize(1000000)))
+
+    // div_floor and mod_floor
+    print("{} {} {} {}\n", math.div_floor(7, 2), math.div_floor(-7, 2), math.div_floor(7, -2), math.div_floor(-7, -2))
+    print("{} {} {} {}\n", math.mod_floor(7, 2), math.mod_floor(-7, 2), math.mod_floor(7, -2), math.mod_floor(-7, -2))
+    print("{} {} {} {}\n", math.div_floor(-6, 3), math.mod_floor(-6, 3), math.div_floor(0, -5), math.mod_floor(0, -5))
+    print("{} {} {} {}\n", math.div_floor(u8(255), 4), math.mod_floor(u8(255), 4), math.div_floor(i8(-128), 3), math.mod_floor(i8(-128), 3))
+    print("{} {}\n", math.div_floor(i8(-128), 127), math.mod_floor(i8(127), -128))
+    print("{} {}\n", math.div_floor(i64(-9223372036854775807) - 1, 7), math.mod_floor(i64(-9223372036854775807) - 1, 7))
+    print("{} {}\n", math.div_floor(i128(-170141183460469231731687303715884105727) - 1, 10), math.mod_floor(i128(-170141183460469231731687303715884105727) - 1, -10))
+    print("{} {}\n", math.div_floor(u128(0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff), 1000), math.mod_floor(usize(17), 5))
+    print("{} {}\n", math.div_floor(i32(-2147483647) - 1, 1), math.mod_floor(i32(-2147483647) - 1, 2147483647))
+}

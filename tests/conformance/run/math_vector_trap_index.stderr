@@ -1,0 +1,2 @@
+trap: index 3 out of bounds for length 3
+  at tests/conformance/run/math_vector_trap_index.gm:9:19 in main

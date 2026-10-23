@@ -119,7 +119,13 @@ impl<'s> Sema<'s> {
             };
             let sym = link_name.unwrap_or(own_name.name);
             if crate::cgen::is_runtime_symbol(sym.as_str()) {
-                self.error(own_name.span, format!("`{}` is a symbol of the runtime; choose another name", sym));
+                self.error(
+                    own_name.span,
+                    format!(
+                        "`{}` is a symbol of this implementation's runtime, so it cannot name a foreign member (§23.5)",
+                        sym
+                    ),
+                );
             }
             let (member_name, value) = match &member.kind {
                 ast::ForeignMemberKind::Fn { name: n, sig } => {
@@ -308,7 +314,10 @@ impl<'s> Sema<'s> {
             return;
         }
         if crate::cgen::is_runtime_symbol(s) {
-            self.error(span, format!("`{}` is a symbol of the runtime; choose another name", s));
+            self.error(
+                span,
+                format!("`{}` is a symbol of this implementation's runtime, so it cannot be exported (§23.5)", s),
+            );
             return;
         }
         if self.prog.exports.iter().any(|(e, _)| *e == sym) {
@@ -380,6 +389,8 @@ impl<'s> Sema<'s> {
             TyKind::Array { elem, kind, .. } => {
                 in_struct && *kind != crate::types::ArrayKind::Simd && self.is_c_compatible(*elem, true)
             }
+            // A `#soa` slice, like a slice, is not (§5.6.4).
+            TyKind::Adt(id, _) if self.soa.get(id).is_some_and(|s| s.len.is_none()) => false,
             TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
                 Some(AdtKind::Struct { bits: Some(_), .. }) => true,
                 Some(AdtKind::Struct { fields, .. }) | Some(AdtKind::CUnion { fields }) => {

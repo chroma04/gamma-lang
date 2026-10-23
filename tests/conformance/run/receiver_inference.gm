@@ -1,12 +1,14 @@
 // A method's receiver fixes its type parameters, and the other arguments coerce to
 // them (§16.2); `T(x)` is a coercion when `x` coerces to `T` (§6.5).
+hm :: import "std/collections/hash_map"
+
 main :: fn() -> AllocError!() needs Out + Alloc {
     buf := [5]u8('h', 'e', 'l', 'l', 'o')
     words := list(string)
     defer words.deinit()
     try words.push(buf[..])
     try words.push(buf[1..3])
-    counts := hash_map(string, u32)
+    counts := hm.hash_map(string, u32)
     defer counts.deinit()
     try counts.put(buf[..2], 7)
     s := string(buf[2..])

@@ -1,0 +1,3 @@
+trap: integer overflow in `*`
+  at <std>/math/int.gm:60:12 in lcm
+  called from tests/conformance/run/math_lcm_overflow_trap.gm:9:19 in main

@@ -464,8 +464,11 @@ examples), rather than letting the implementation silently diverge.
 
 - Follow the existing structure described in [`architecture.md`](architecture.md).
 - Public items get doc comments; other comments explain *why*, not *what*.
-- Diagnostics are lowercase, name the construct involved, and suggest a fix when
-  there is an obvious one. When the fix is a mechanical edit that is right whenever
+- Diagnostics follow chapter 23 of the specification: every compile error is a rule
+  of the specification (an implementation limit says so), and hints come from the
+  program and the specification only, never from guesses about other languages or
+  look-alike characters beyond those §23.4 lists. They are lowercase, name the
+  construct involved, and suggest a fix when the rule leaves one. When the fix is a mechanical edit that is right whenever
   the diagnostic is, attach it too (`Diagnostic::with_fix`), so that `gamma fix` and
   the language server can apply it; when there are several reasonable edits, attach
   each (`gamma fix` then leaves the choice to the programmer). Test it in

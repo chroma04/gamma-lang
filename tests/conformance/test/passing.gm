@@ -1,5 +1,7 @@
 //! stage: test
 // A module without `main` can be tested; tests that pass print `ok`.
+hm :: import "std/collections/hash_map"
+
 double :: fn(x: i32) -> i32 => x * 2
 
 test "doubles" {
@@ -7,7 +9,7 @@ test "doubles" {
 }
 
 test "maps free their storage" {
-    m := hash_map(string, i32)
+    m := hm.hash_map(string, i32)
     defer m.deinit()
     m.put("a", 1) else return
     expect(m.get("a") is 1)

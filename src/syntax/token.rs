@@ -20,7 +20,7 @@ pub enum TokenKind {
     /// The discard identifier `_`.
     Underscore,
     Keyword(Keyword),
-    /// Integer literal, including character literals (`'a'`), which are integers (§2.5.3).
+    /// Integer literal, including character literals (`'a'`), which are integers (§2.5.2).
     Int(Box<IntLit>),
     Float(Box<FloatLit>),
     Str(Box<StrLit>),
@@ -76,7 +76,10 @@ pub struct IntLit {
 pub struct FloatLit {
     /// The exact value as a rational number (§2.5.2).
     pub value: BigRational,
+    /// For an imaginary literal (`4j`, `2.5j32`, §2.5.2), the type of its parts.
     pub suffix: Option<FloatSuffix>,
+    /// True for an imaginary literal: the value is the imaginary part (§2.5.2).
+    pub imag: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,7 +159,7 @@ puncts! {
     PlusWrapAssign = "+%=", MinusWrapAssign = "-%=", StarWrapAssign = "*%=", ShlWrapAssign = "<<%=",
     PlusSatAssign = "+|=", MinusSatAssign = "-|=", StarSatAssign = "*|=", ShlSatAssign = "<<|=",
     Lt = "<", Le = "<=", Gt = ">", Ge = ">=",
-    Question = "?", Bang = "!", Caret = "^", At = "@", Hash = "#", Backslash = "\\",
+    Question = "?", Bang = "!", Caret = "^", At = "@", Hash = "#",
     DotDot = "..", DotDotEq = "..=", Ellipsis = "...", Uninit = "---",
     ColonColon = "::", ColonEq = ":=", Colon = ":", Comma = ",", Dot = ".",
     FatArrow = "=>", Arrow = "->",

@@ -1,0 +1,10 @@
+//! exit: 134
+//! stderr
+// Indexing a math vector is checked (§5.6.3).
+Vec3 :: #vec [3]f32
+
+main :: fn() needs Out {
+    v := Vec3(1, 2, 3)
+    i: usize = 3
+    print("{}\n", v[i])
+}

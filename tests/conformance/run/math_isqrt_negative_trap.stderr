@@ -1,0 +1,3 @@
+trap: assertion failed: math.isqrt: n must not be negative
+  at <std>/math/int.gm:67:5 in isqrt
+  called from tests/conformance/run/math_isqrt_negative_trap.gm:9:19 in main

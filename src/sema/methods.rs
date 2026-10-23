@@ -25,11 +25,35 @@ impl<'a, 's> FnCx<'a, 's> {
             if t.is_vector() && name.name.as_str() == "load" {
                 return self.vector_load(t, args, span);
             }
+            if let Some(info) = self.sema.soa_info(t)
+                && name.name.as_str() == "make"
+            {
+                return self.soa_make(t, info, args, span);
+            }
             return self.construct_variant(t, name, Some(args), span);
         }
         let recv = self.expr(base, None);
         let rty = self.infer.resolve(recv.ty);
         if rty.is_error() {
+            return error_expr(span);
+        }
+        // `s.free()` on a `#soa` slice; a `#soa` has no other methods (§5.6.4).
+        if self.sema.soa_info(rty).is_some()
+            || matches!(rty.kind(), TyKind::Ptr { pointee, .. } if self.sema.soa_info(*pointee).is_some())
+        {
+            let recv = self.soa_deref(recv);
+            let info = self.soa_of(&recv).expect("a `#soa` receiver");
+            if name.name.as_str() == "free" {
+                return self.soa_free(recv, info, args, span);
+            }
+            let t = self.infer.resolve(recv.ty);
+            self.error(
+                span,
+                format!(
+                    "`{}` has no method `.{}`; its columns, `a.f`, are arrays and slices with methods",
+                    t, name.name
+                ),
+            );
             return error_expr(span);
         }
         // 1. A field (holding a function pointer).
@@ -407,6 +431,13 @@ impl<'a, 's> FnCx<'a, 's> {
             };
             return Some(self.vector_method(recv, arr, n, args, span));
         }
+        if arr.is_math_vector() {
+            let recv = match rty.kind() {
+                TyKind::Ptr { .. } => mk(arr, tir::ExprKind::Deref(Box::new(take_expr(recv))), span),
+                _ => take_expr(recv),
+            };
+            return Some(self.math_vector_method(recv, arr, n, args, span));
+        }
         if arr.enum_index().is_some() {
             self.error(
                 span,
@@ -697,6 +728,16 @@ pub(super) const SLICE_FNS: &[&str] = &[
     "min",
     "max",
     "binary_search",
+    "upper_bound",
+    "select_nth",
+    "select_nth_by",
+    "reverse",
+    "rotate_left",
+    "rotate_right",
+    "dedup",
+    "partition",
+    "is_sorted",
+    "is_sorted_by",
     "utf8_valid",
     "cursor",
 ];

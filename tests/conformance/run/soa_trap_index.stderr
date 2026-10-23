@@ -1,0 +1,2 @@
+trap: index 2 out of bounds for length 2
+  at tests/conformance/run/soa_trap_index.gm:11:5 in main
