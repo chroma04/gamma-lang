@@ -30,6 +30,29 @@ pub fn define(g: &mut Gen, id: FnId) -> LResult<()> {
         return unsupported(def.span, "a calling convention other than C's");
     }
     let Some(body) = &def.body else { return unsupported(def.span, "a function without a body") };
+    let lookup = |id| prog.adts.get(&id);
+    let layouts = crate::layout::Layouts::new(prog.target.clone(), &lookup);
+    let cost = crate::tir::frame_cost(def, &mut |t| layouts.size_of(t));
+    if cost > crate::tir::MAX_FRAME {
+        // No stack can hold the frame: every call is a stack overflow, reported as the
+        // interpreter reports it (an LLVM `alloca` that size would be optimized away).
+        let ret = g.llty(def.ret, def.span)?;
+        let n = g.bytes(def.name.as_str().as_bytes());
+        let name = super::fn_name(id);
+        let params: Vec<String> = def
+            .params
+            .iter()
+            .filter_map(|p| g.llty(def.locals[p.index()].ty, def.span).ok().filter(|t| t != "void"))
+            .enumerate()
+            .map(|(i, t)| format!("{t} %p{i}"))
+            .collect();
+        let _ = writeln!(
+            g.fns,
+            "define internal {ret} @{name}({}) {{\n  call void @gm_frame_overflow(ptr {n}, i64 {cost})\n  unreachable\n}}\n",
+            params.join(", ")
+        );
+        return Ok(());
+    }
     let mut f = FnGen {
         g,
         def,
@@ -397,10 +420,7 @@ impl FnGen<'_, '_> {
                 }
                 return Ok(None);
             }
-            ExprKind::Write { sink, pieces, specs, args } => {
-                self.write(sink, pieces, specs, args, e)?;
-                String::new()
-            }
+            ExprKind::Write { sink, pieces, specs, args } => return self.write(sink, pieces, specs, args, e),
             ExprKind::Trap { message } => {
                 let ExprKind::Str(msg) = &message.kind else {
                     return unsupported(message.span, "a trap message that is not a string literal");
@@ -925,7 +945,7 @@ impl FnGen<'_, '_> {
         specs: &[crate::tir::FmtSpec],
         args: &[Expr],
         e: &Expr,
-    ) -> LResult<()> {
+    ) -> LResult<Val> {
         let out = self.g.prog.ambient.out;
         if !matches!(sink, WriteSink::Perform { effect, op: 0 } if Some(effect.effect) == out) {
             return unsupported(e.span, "writing elsewhere than to the ambient `Out`");
@@ -933,34 +953,41 @@ impl FnGen<'_, '_> {
         if specs.iter().any(|s| !s.is_default()) {
             return unsupported(e.span, "format specs other than `{}`");
         }
+        // The arguments are evaluated before anything is written.
+        let mut vals = vec![];
+        for a in args {
+            if matches!(a.kind, ExprKind::Str(_)) {
+                vals.push(String::new());
+                continue;
+            }
+            if self.g.int(a.ty).is_none() && !matches!(a.ty.kind(), TyKind::Bool | TyKind::Float(_)) {
+                return unsupported(a.span, format!("printing a `{}`", a.ty));
+            }
+            let Some(v) = self.expr(a)? else { return Ok(None) };
+            vals.push(v);
+        }
         for (i, piece) in pieces.iter().enumerate() {
             if !piece.is_empty() {
                 self.write_bytes(piece);
             }
             let Some(a) = args.get(i) else { break };
-            if let ExprKind::Str(s) = &a.kind {
-                self.write_bytes(s);
-                continue;
-            }
-            let at = self.llty(a.ty, a)?;
-            let Some(v) = self.expr(a)? else { return unsupported(a.span, "an argument that does not complete") };
-            match a.ty.kind() {
-                TyKind::Bool => {
+            let v = &vals[i];
+            match (&a.kind, a.ty.kind()) {
+                (ExprKind::Str(s), _) => self.write_bytes(s),
+                (_, TyKind::Bool) => {
                     let b = self.value(format!("zext i1 {v} to i8"));
                     self.emit(format!("call void @gm_ll_write_bool(i8 {b})"));
                 }
-                TyKind::Float(FloatTy::F64) => self.emit(format!("call void @gm_ll_write_f64(double {v})")),
-                TyKind::Float(FloatTy::F32) => self.emit(format!("call void @gm_ll_write_f32(float {v})")),
-                _ => match self.g.int(a.ty) {
-                    Some((signed, bits)) => {
-                        let w = self.int_cast(&v, a.ty, if signed { Ty::int(true, 64) } else { Ty::u64() })?;
-                        self.emit(format!("call void @gm_ll_write_int(i64 {w}, i32 {bits}, i32 {})", signed as u8));
-                    }
-                    None => return unsupported(a.span, format!("printing a `{}` ({at})", a.ty)),
-                },
+                (_, TyKind::Float(FloatTy::F64)) => self.emit(format!("call void @gm_ll_write_f64(double {v})")),
+                (_, TyKind::Float(FloatTy::F32)) => self.emit(format!("call void @gm_ll_write_f32(float {v})")),
+                _ => {
+                    let (signed, bits) = self.g.int(a.ty).expect("checked above");
+                    let w = self.int_cast(v, a.ty, if signed { Ty::int(true, 64) } else { Ty::u64() })?;
+                    self.emit(format!("call void @gm_ll_write_int(i64 {w}, i32 {bits}, i32 {})", signed as u8));
+                }
             }
         }
-        Ok(())
+        Ok(Some(String::new()))
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) {

@@ -94,6 +94,7 @@ declare void @gm_trap(ptr, ptr, i32, i32) #1
 declare void @gm_ll_trap_index(i64, i64, ptr, i32, i32) #1
 declare void @gm_ll_trap_shift(i64, ptr, ptr, i32, i32) #1
 declare void @gm_stack_overflow() #1
+declare void @gm_frame_overflow(ptr, i64) #1
 @gm_stack_limit = external thread_local global i64
 declare void @gm_write_out(ptr, i64)
 declare void @gm_ll_write_int(i64, i32, i32)

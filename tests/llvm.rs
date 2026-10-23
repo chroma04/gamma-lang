@@ -144,6 +144,21 @@ fn stack_overflow_traps() {
     std::fs::write(d.join("deep.gm"), src).unwrap();
     let out = gamma(&d, &["run", "--mode=checked", "--backend=llvm", "deep.gm"], &[("GAMMA_LLVM_OPT", "0")]);
     assert!(out.stderr.starts_with("trap: stack overflow\n"), "{}", out.stderr);
+    // A frame no stack can hold traps at the call, even though LLVM would drop the unused
+    // storage; `print` evaluates its arguments before writing anything.
+    let src = "big :: fn(n: i32) -> u8 needs Out {\n    print(\"not reached\\n\")\n    \
+               x: [1000000000000]u8 = ---\n    x[5] = 1\n    return x[5] + n.trunc(u8)\n}\n\n\
+               main :: fn() needs Out {\n    print(\"start\\n\")\n    print(\"hi {}\\n\", big(3))\n}\n";
+    std::fs::write(d.join("frame.gm"), src).unwrap();
+    for level in ["0", "2"] {
+        let out = gamma(&d, &["run", "--mode=checked", "--backend=llvm", "frame.gm"], &[("GAMMA_LLVM_OPT", level)]);
+        assert_eq!(out.stdout, "start\n", "-O{level}");
+        assert!(
+            out.stderr.starts_with("trap: stack overflow: `big` needs a frame of 1000000000264 bytes\n"),
+            "-O{level}: {}",
+            out.stderr
+        );
+    }
 }
 
 #[test]

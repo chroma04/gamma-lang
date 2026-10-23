@@ -40,7 +40,9 @@ GAMMA_LLVM_CLANG=clang-18 gamma run --backend=llvm prog.gm
 
 `tests/llvm.rs` checks that a program using every supported construct prints what the
 interpreter prints in every build mode at `-O0` and `-O2`, and that failed checks report
-exactly what the interpreter reports.
+exactly what the interpreter reports. Of the 405 programs of `tests/conformance/run/` that read
+no input, 15 fall within the subset and give their expected output and exit status in Checked
+builds; the other 390 are reported as unsupported.
 
 ## Method
 
