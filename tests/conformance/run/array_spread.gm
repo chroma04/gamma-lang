@@ -1,0 +1,33 @@
+// An array `[N]T` or a vector spreads into its `N` elements, as an unnamed tuple of
+// `N` elements does (§11.4): into calls, rest arguments, templates and constructors.
+V4 :: #simd [4]i32
+
+add3 :: fn(a, b, c: i32) -> i32 => a + b + c
+
+first :: fn(T: type, a, b: T) -> T => a
+
+count :: fn(A: type, args: ..A) -> usize => @size_of(A)
+
+next :: fn(n: ^i32) -> [3]i32 needs Out {
+    print("evaluated once\n")
+    n^ += 1
+    return [_]i32(n^, n^ * 10, n^ * 100)
+}
+
+main :: fn() needs Out {
+    xs := [_]u8(10, 20, 30)
+    t := (u8, u8, u8)(..xs)
+    w := (u16, u16, u16)(..xs)               // each element coerces
+    print("{} {}\n", t, w)
+    print("{} {} {}\n", ..xs)                // a template's values
+    print("{}\n", add3(..[_]i32(1, 2, 3)))
+    print("{}\n", first(..[_]string("a", "b")))
+    print("{}\n", count(..xs))               // rest arguments: A is (u8, u8, u8)
+    n: i32 = 0
+    print("{}\n", add3(..next(&n)))
+    back := [3]u8(..t)                       // and back: a tuple spreads into an array
+    print("{}\n", back is xs)
+    v := V4(1, 2, 3, 4)
+    print("{}\n", (i32, i32, i32, i32)(..v))
+    print("{}\n", V4(..[_]i32(5, 6, 7, 8)))
+}

@@ -1,4 +1,6 @@
 // Tiny expression language (let bindings, + - * / % ^ and parentheses) with variable lookup and error reporting as effects.
+hm :: import "std/collections/hash_map"
+
 Kind :: union { Num, Ident, Let, Eq, Plus, Minus, Star, Slash, Percent, Caret, LParen, RParen, End }
 
 Token :: struct {
@@ -163,7 +165,7 @@ statement :: fn(p: ^Parser) -> i64 needs Vars + Report {
 
 // Variables live in a map owned by the caller.
 Store :: struct {
-    vars: HashMap(string, i64)
+    vars: hm.HashMap(string, i64)
     defs: u32 = 0
 }
 
@@ -200,7 +202,7 @@ run_line :: fn(store: ^Store, src: string) -> ?i64 needs Alloc + Out {
 }
 
 main :: fn() needs Out + Alloc {
-    store := Store(vars: hash_map(string, i64))
+    store := Store(vars: hm.hash_map(string, i64))
     defer store.vars.deinit()
     lines := [_]string(
         "let y = 4",

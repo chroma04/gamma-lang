@@ -21,7 +21,7 @@ arrays_demo :: fn() needs Out {
 }
 ```
 
-Array constructors are calls on the array type: `[N]T(e1, ..., eN)` with exactly `N` elements, `[_]T(...)` to infer `N`, `[N]T(fill: x)` to repeat one value, and `[N]T(..t)` to spread a tuple. The length is `a.len`, a constant. `a[i]` is bounds-checked (`i` must be an unsigned integer), and `a.get(i)` gives an optional instead of trapping:
+Array constructors are calls on the array type: `[N]T(e1, ..., eN)` with exactly `N` elements, `[_]T(...)` to infer `N`, `[N]T(fill: x)` to repeat one value, and `[N]T(..t)` to spread a tuple. An array spreads too: `(T, T, T)(..a)` is the tuple of its three elements. The length is `a.len`, a constant. `a[i]` is bounds-checked (`i` must be an unsigned integer), and `a.get(i)` gives an optional instead of trapping:
 
 ```gamma
 third :: fn(a: [4]i32) -> i32 => a.get(2) else 0

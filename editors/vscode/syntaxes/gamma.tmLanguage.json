@@ -323,7 +323,7 @@
         },
         {
           "name": "support.type.builtin.gamma",
-          "match": "\\b(?:Range|RangeIncl|Allocator|AllocVtable|AllocError|IoError|Instant|Duration|SourceLocation|MemoryOrder|List|HashMap)\\b"
+          "match": "\\b(?:Range|RangeIncl|Allocator|AllocVtable|AllocError|IoError|Instant|Duration|SourceLocation|MemoryOrder|List)\\b"
         },
         {
           "name": "support.type.effect.gamma",

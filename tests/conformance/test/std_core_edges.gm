@@ -4,6 +4,7 @@
 // removals, and the length of a range.
 deque :: import "std/collections/deque"
 arena :: import "std/arena"
+hm :: import "std/collections/hash_map"
 
 test "extend with the list's own items after growth" {
     l := list(u32)
@@ -73,7 +74,7 @@ test "a range has a length" {
 }
 
 test "a map full of tombstones is rehashed without growing" {
-    m := hash_map(u32, u32)
+    m := hm.hash_map(u32, u32)
     defer m.deinit()
     for i in 0..1000 {
         ok(m.put(i, i))

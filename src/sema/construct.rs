@@ -5,7 +5,7 @@ use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ArgKind};
 use crate::tir::{self, Expr, Stmt};
-use crate::types::{Ty, TyKind};
+use crate::types::{ArrayKind, Ty, TyKind};
 
 fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
     Expr { ty, kind, span }
@@ -200,12 +200,20 @@ impl<'a, 's> FnCx<'a, 's> {
         let (elems, names): (Vec<Ty>, Option<Vec<Symbol>>) = match vt.kind() {
             TyKind::Tuple { elems, names } => (elems.to_vec(), names.as_ref().map(|n| n.to_vec())),
             TyKind::Error => return None,
+            TyKind::Array { .. } | TyKind::ParamArray { .. } => {
+                let (len, elem) = self.spread_array(vt, e.span)?;
+                let base = self.bind_temp(v, stmts);
+                return Some((0..len).map(|i| (None, self.array_element(&base, elem, i, e.span))).collect());
+            }
             _ => match self.sema.struct_fields(vt) {
                 Some(fs) if self.hidden_field(vt).is_none() => {
                     (fs.iter().map(|f| f.ty).collect(), Some(fs.iter().map(|f| f.name).collect()))
                 }
                 _ => {
-                    self.error(e.span, format!("a spread needs a tuple or a struct with visible fields, not `{}`", vt));
+                    self.error(
+                        e.span,
+                        format!("a spread needs a tuple, an array or a struct with visible fields, not `{}`", vt),
+                    );
                     return None;
                 }
             },
@@ -220,6 +228,63 @@ impl<'a, 's> FnCx<'a, 's> {
             })
             .collect();
         Some(parts)
+    }
+
+    /// The length and element type of an array that a spread may expand (§11.4): `[N]T` or
+    /// a vector, whose length is known where it is written. `None` (after reporting) for
+    /// an enum-indexed array or an array whose length depends on a compile-time parameter.
+    pub(super) fn spread_array(&mut self, vt: Ty, span: Span) -> Option<(u64, Ty)> {
+        match vt.kind() {
+            TyKind::Array { kind: ArrayKind::Enum(_), .. } => {
+                self.error(
+                    span,
+                    format!(
+                        "`{}` cannot be spread: its elements are named by its variants, not positions (§5.6.1)",
+                        vt
+                    ),
+                );
+                None
+            }
+            TyKind::Array { len, elem, .. } => Some((*len, *elem)),
+            _ => {
+                self.error(
+                    span,
+                    format!("`{}` cannot be spread: its length depends on a compile-time parameter (§11.4)", vt),
+                );
+                None
+            }
+        }
+    }
+
+    /// Element `i` of the array `base` (a constant index, so never checked).
+    pub(super) fn array_element(&mut self, base: &Expr, elem: Ty, i: u64, span: Span) -> Expr {
+        let index = mk(Ty::usize(), tir::ExprKind::Int(i.into()), span);
+        mk(elem, tir::ExprKind::Index { base: Box::new(base.clone()), index: Box::new(index), checked: false }, span)
+    }
+
+    /// For a spread that passes a tuple whole (as rest arguments or a template's values):
+    /// an array's elements as an unnamed tuple, and any other `v` unchanged. `None` (after
+    /// reporting) for an array that cannot be spread.
+    pub(super) fn elements_tuple(&mut self, v: Expr, span: Span) -> Option<Expr> {
+        let vt = self.infer.resolve(v.ty);
+        match vt.kind() {
+            TyKind::Error => None,
+            TyKind::Array { .. } | TyKind::ParamArray { .. } => {
+                let (len, elem) = self.spread_array(vt, span)?;
+                let mut stmts = vec![];
+                let base = self.bind_temp(v, &mut stmts);
+                let elems: Vec<Expr> = (0..len).map(|i| self.array_element(&base, elem, i, span)).collect();
+                let ty = Ty::intern(TyKind::Tuple { elems: vec![elem; len as usize].into_boxed_slice(), names: None });
+                let agg = mk(ty, tir::ExprKind::Aggregate(elems), span);
+                Some(if stmts.is_empty() {
+                    agg
+                } else {
+                    mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(agg), span })), span)
+                })
+            }
+            // Anything else is passed on as it is, for the caller to check.
+            _ => Some(v),
+        }
     }
 
     /// Evaluates the values written so far (the `written` slots) into temporaries, in the
@@ -303,6 +368,8 @@ impl<'a, 's> FnCx<'a, 's> {
         // With spreads, every value goes through a temporary, in the order written.
         let spreading = args.iter().any(|a| matches!(a.kind, ArgKind::Spread(_)));
         let mut stmts = vec![];
+        // A spread that could not be expanded already explains the missing elements.
+        let mut spread_failed = false;
         // `T(t)` with a tuple `t` is not a conversion: a tuple type takes one value per
         // element (§6.5), and `T(..t)` builds it from another tuple.
         if let [ast::Arg { kind: ArgKind::Positional(e), .. }] = args
@@ -310,12 +377,17 @@ impl<'a, 's> FnCx<'a, 's> {
         {
             let v = self.expr(e, None);
             let vt = self.infer.resolve(v.ty);
-            if let TyKind::Tuple { .. } = vt.kind() {
+            let what = match vt.kind() {
+                TyKind::Tuple { .. } => Some("a tuple"),
+                TyKind::Array { kind: ArrayKind::Plain | ArrayKind::Simd, .. } => Some("an array"),
+                _ => None,
+            };
+            if let Some(what) = what {
                 self.error(
                     span,
                     format!(
-                        "`{}` takes one value per element, so a tuple is not converted to it; spread it: `{}(..t)` (§6.5)",
-                        ty, ty
+                        "`{}` takes one value per element, so {} is not converted to it; spread it: `{}(..x)` (§6.5)",
+                        ty, what, ty
                     ),
                 );
                 return error_expr(span);
@@ -346,7 +418,10 @@ impl<'a, 's> FnCx<'a, 's> {
                 }
                 ArgKind::Spread(e) => match self.spread_parts(e, &mut stmts) {
                     Some(ps) => ps.into_iter().map(|(n, v)| (n, v, e.span)).collect(),
-                    None => continue,
+                    None => {
+                        spread_failed = true;
+                        continue;
+                    }
                 },
             };
             for (name, v, at) in parts {
@@ -379,7 +454,9 @@ impl<'a, 's> FnCx<'a, 's> {
             match s {
                 Some(v) => values.push(v),
                 None => {
-                    self.error(span, format!("missing element {} of `{}`", i, ty));
+                    if !spread_failed {
+                        self.error(span, format!("missing element {} of `{}`", i, ty));
+                    }
                     values.push(error_expr(span));
                 }
             }

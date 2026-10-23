@@ -545,7 +545,6 @@ impl<'a> Lexer<'a> {
             b'?' => (Question, 1),
             b'!' => (Bang, 1),
             b'^' => (Caret, 1),
-            b'\\' => (Backslash, 1),
             b',' => (Comma, 1),
             b'(' => (LParen, 1),
             b')' => (RParen, 1),

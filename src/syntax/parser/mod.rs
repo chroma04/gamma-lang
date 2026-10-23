@@ -51,7 +51,7 @@ pub(super) type PResult<T> = Result<T, Abort>;
 
 /// Maximum nesting of expressions, types and patterns before the parser gives up
 /// (protects the native stack).
-const MAX_DEPTH: u32 = 64;
+const MAX_DEPTH: u32 = 256;
 
 /// Maximum number of postfix operations (calls, subscripts, field accesses, `?`, `^`, `!`)
 /// applied one after another to one operand. The parser reads them in a loop, but every
@@ -513,7 +513,10 @@ impl<'a> Parser<'a> {
     pub(super) fn nest<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
         if self.depth >= MAX_DEPTH {
             let span = self.span();
-            return self.fail(span, "this is nested too deeply");
+            return self.fail(
+                span,
+                format!("this is nested more than {MAX_DEPTH} levels deep, the limit of this implementation (§23.5)"),
+            );
         }
         self.depth += 1;
         let r = f(self);

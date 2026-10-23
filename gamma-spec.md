@@ -2,7 +2,7 @@
 
 Version 1.0. Gamma is a systems programming language intended to replace C: C in which everything a function depends on appears in its signature, with algebraic effects carrying the context that C leaves implicit — allocation, I/O, iteration, early exit and coroutines.
 
-This specification is self-contained. Chapters 1–22 and Appendices A–B are normative; [Appendix C](#appendix-c-design-rationale) explains the reasoning behind the design, and [Appendix D](#appendix-d-implementation-notes) sketches the intended implementation.
+This specification is self-contained. Chapters 1–23 and Appendices A–B are normative; [Appendix C](#appendix-c-design-rationale) explains the reasoning behind the design, and [Appendix D](#appendix-d-implementation-notes) sketches the intended implementation.
 
 | § | Chapter |
 | --- | --- |
@@ -28,6 +28,7 @@ This specification is self-contained. Chapters 1–22 and Appendices A–B are n
 | 20 | [Attributes and intrinsics](#20-attributes-and-intrinsics) |
 | 21 | [The core library](#21-the-core-library) |
 | 22 | [The standard library: scope and admission](#22-the-standard-library-scope-and-admission) |
+| 23 | [Errors and diagnostics](#23-errors-and-diagnostics) |
 | A | [Grammar](#appendix-a-grammar) |
 | B | [Reference tables](#appendix-b-reference-tables) |
 | C | [Design rationale](#appendix-c-design-rationale) |
@@ -287,7 +288,7 @@ Exceptions to maximal munch:
 - A numeric field name is lexed as a plain decimal integer: after a `.` token, digits form an integer token and never a float literal, so `t.0.1` is `t` `.` `0` `.` `1` (the field `1` of the field `0` of `t`).
 - The words `is not` and `not in`, when they appear together on one line (separated only by whitespace or comments), form the single operator tokens `is not` and `not in` (§7.3).
 - `==` and `!=` are not tokens; the character pairs are ill-formed (equality is written `is` and `is not`, §7.6). Implementations should say so and may read them as `is` and `is not` to continue.
-- `\` outside a literal or comment is ill-formed. (Effect sets are written after `needs`, §11.1.)
+- `&&` and `||` are not tokens either: logic is written `and` and `or` (§7.8). `a || b` does not parse, and `a && b` is `a & (&b)`, which is never well-typed; implementations should name the word to write instead.
 
 `;` may separate statements on one line (§2.8). It is never required.
 
@@ -322,7 +323,7 @@ Multiple consecutive newlines are one newline. `;` is equivalent to a newline.
 
 ### 3.1 Packages and modules
 
-- A **module** is a directory. Every `.gm` file directly inside the directory belongs to the module; subdirectories are separate modules. All files of a module share one top-level namespace, and the order of files and of declarations within them has no meaning.
+- A **module** is a directory. Every `.gm` file directly inside the directory belongs to the module; subdirectories are separate modules, and a directory without `.gm` files is not a module. All files of a module share one top-level namespace, and the order of files and of declarations within them has no meaning.
 - A **package** is a directory tree containing a `gamma.toml` manifest at its root. The manifest names the package and lists its dependencies, each as a name mapped to a source location and version. The manifest format is implementation-defined, except as stated here; the reference implementation's is described in chapter 15 of the guide (`docs/guide/15-packages.md`).
 - The **root module** of a program is the module named on the compiler's command line. (The reference implementation also accepts a single `.gm` file there, which then forms a module by itself.) It must declare `main` (§3.7). A library has no `main`.
 
@@ -379,7 +380,7 @@ Top-level declarations are mutually visible regardless of order. Their dependenc
 
 ### 3.5 Type aliases
 
-A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Map :: HashMap`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Map(K, V)` then instantiates `HashMap`, and a `pub` alias re-exports the declaration. An instantiation of a generic effect may be named the same way: `Bytes :: Yield(u8)` makes `Bytes` stand for `Yield(u8)` in effect sets, handler literals and `Bytes.yield(b)`. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
+A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Seq :: List`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Seq(T)` then instantiates `List`, and a `pub` alias re-exports the declaration. An instantiation of a generic effect may be named the same way: `Bytes :: Yield(u8)` makes `Bytes` stand for `Yield(u8)` in effect sets, handler literals and `Bytes.yield(b)`. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
 
 ### 3.6 Conditional compilation: `when`
 
@@ -760,7 +761,7 @@ Window :: struct {
 }
 ```
 
-A `struct` literal creates a new nominal type. Fields are declared `name: Type`, optionally with `= default` where `default` is a constant expression (§7.15) of the field's type, evaluated once, at compile time, when the struct is declared (§17.2): a default that traps or cannot be evaluated is a compile error at the default, whether or not any construction uses it, and each construction takes the resulting value. A default that constructs the struct itself, directly or through the functions it calls, is a declaration cycle (§3.4). A default cannot name the type parameters of a generic struct; when the field's type mentions one (`next: ?T = null`), the default is checked in the declaration and its value is taken at each construction. `a, b: T` declares several fields of one type. Fields may be `pub` (§3.3). Field names must be distinct.
+A `struct` literal creates a new nominal type. Fields are declared `name: Type`, optionally with `= default` where `default` is a constant expression (§7.15) of the field's type, evaluated once, at compile time, when the struct is declared (§17.2): a default that traps or cannot be evaluated is a compile error at the default, whether or not any construction uses it, and each construction takes the resulting value. A default that constructs the struct itself, directly or through the functions it calls, is a declaration cycle (§3.4). A default cannot name the type parameters of a generic struct; when the field's type mentions one (`next: ?T = null`), the default is checked in the declaration and its value is taken at each construction. `a, b: T` declares several fields of one type. Fields may be `pub` (§3.3). Field names must be distinct. A struct or union may not contain itself by value, directly or through the fields, elements and payloads of other types, since it would be infinitely large; it may hold a pointer to itself.
 
 #### 5.10.1 Construction
 
@@ -1166,6 +1167,8 @@ Comparing slices by content is the one place where `is` looks through a value to
 
 The tuple form is written inline: `c in ('\n', '\r')`, `d in (.N, .S)`.
 
+`in` is defined only for these built-in forms, whose test is a comparison or a scan the reader can see. A library container answers membership with a method (`m.contains(k)`), and a generic function that needs a membership test takes it as a function parameter (`has: fn(x: T) -> bool`) or the elements as an iterator (§13.5); see C.8.
+
 ### 7.8 Logical operators
 
 `and`, `or` and `not` take and give `bool`. `and` and `or` short-circuit. Mixing `and` and `or` in one expression requires parentheses. There are no truthy values: conditions must be `bool` (or binding conditions, §8.2).
@@ -1200,7 +1203,7 @@ Methods cannot be added to types declared in other modules; write a free functio
 
 - A struct type: construction (§5.10.1). Struct construction takes **named** arguments and spreads only; positional arguments are not allowed, so reordering fields can never silently change meaning, and `S(x)` with one positional argument is always a conversion.
 - A union variant `.V(args)` / `U.V(args)`: construction with the payload.
-- An array type `[N]T(e1, …, eN)`: exactly `N` elements; `[_]T(…)` infers `N`; `[N]T(fill: x)` repeats `x`; `[N]T(..t)` spreads a tuple of `N` elements. An enum-indexed array `[E]T(V: x, …)` names every variant of `E`, or is `[E]T(fill: x)` (§5.6.1).
+- An array type `[N]T(e1, …, eN)`: exactly `N` elements; `[_]T(…)` infers `N`; `[N]T(fill: x)` repeats `x`; `[N]T(..t)` spreads a tuple of `N` elements, and a tuple type spreads an array the other way: `(T, T)(..a)` for `a: [2]T`. An enum-indexed array `[E]T(V: x, …)` names every variant of `E`, or is `[E]T(fill: x)` (§5.6.1).
 - A tuple type: construction from positional/named arguments and spreads, one value per element; each value coerces to its element's type (§6.4). It is never a conversion, even with one argument (§6.5).
 - An optional type `?T(x)`: an optional holding `x` (coerced to `T`), or with `null`, the absent value of `?T`. This is how inner levels of nested optionals are written: `??i32` holds `?i32(null)`.
 - Any other type with exactly one argument: conversion (§6.5).
@@ -1449,6 +1452,8 @@ Wrapping is one level. For `x: ??i32`, `null` is the outer absent value, and the
 
 `!e` is a prefix expression that makes a result in the error state from `e`. Its type is `E!T` where `E` is `e`'s type and `T` comes from context. With a union error type known from context, variant shorthand works: `return !.TooBig`.
 
+`!` is never logical negation, which is the word `not` (§7.8, §C.5); where `!e` is used as a `bool`, implementations should say so.
+
 ### 10.3 Unwrap: `x?` and `x!`
 
 `x?` on `?T` gives the `T`. `x!` on `E!T` gives the `T`. Both are **checked operations**: if `x` is `null` (or an error), the program traps in Debug and Checked builds, reporting the source location (and, for `!`, the error value's type and variant). In Fast builds the result is an unspecified value of type `T` (§18).
@@ -1555,7 +1560,7 @@ show("none")                // args is ()
 show("two", 5, "x")         // args is (5, "x"): A is (i32, string)
 ```
 
-Inside the function the parameter is an ordinary tuple, and a spread passes it on whole: `print(template, ..args)`. In a call of a function with a rest parameter, a spread may appear only as the whole of the rest arguments, where it passes a tuple as them. Rest parameters replace C's variadic functions: the arguments are typed and counted at compile time, and nothing is allocated. `print`, `eprint`, `@write` and the formatting functions of the library take their values this way (§21.6).
+Inside the function the parameter is an ordinary tuple, and a spread passes it on whole: `print(template, ..args)`. In a call of a function with a rest parameter, a spread may appear only as the whole of the rest arguments, where it passes a tuple, or an array's elements as one (§11.4), as them. Rest parameters replace C's variadic functions: the arguments are typed and counted at compile time, and nothing is allocated. `print`, `eprint`, `@write` and the formatting functions of the library take their values this way (§21.6).
 
 ### 11.3 Calls
 
@@ -1576,6 +1581,7 @@ The argument list is a tuple: `f(..t)` where `t: (i32, i32)` passes `t`'s elemen
 `..e` in an argument list or constructor:
 
 - If `e` is an unnamed tuple, its elements become positional arguments.
+- If `e` is an array `[N]T` or a vector `#simd [N]T` (§5.6.2), it spreads as the unnamed tuple `(T, …, T)` of its `N` elements, in index order: `(u8, u8, u8)(..[_]u8(10, 20, 30))` is `(10, 20, 30)`. `N` must be known where the spread is written, so an array whose length depends on a compile-time parameter (§16.5) cannot be spread, and neither can an enum-indexed array, whose elements have no positions (§5.6.1).
 - If `e` is a named tuple or a struct (whose fields are all visible), its elements/fields become named arguments.
 - Several spreads may appear. A later explicit **named** argument overrides a name supplied by a spread: `Window(..w, title: "new")` is `w` with a different title. A name supplied twice by spreads, or twice explicitly, is a compile error.
 
@@ -2258,7 +2264,7 @@ Operations beyond these come in as function parameters (`less: fn(a, b: ^const T
 
 ### 16.4 Generic types
 
-The parameters of a `struct`, `union` or `effect` are always compile-time, because they are part of the type. They may be types or values of the types allowed for compile-time value parameters (§16.5), including function values:
+The parameters of a `struct`, `union` or `effect` are always compile-time, because they are part of the type. They may be types or values of the types allowed for compile-time value parameters (§16.5), including function values. The standard library's hash map (`std/collections/hash_map`) is declared:
 
 ```
 HashMap :: struct(K, V: type,
@@ -2267,10 +2273,10 @@ HashMap :: struct(K, V: type,
     …
 }
 
-ids := hash_map(string, u32)                                // @hash and `is`
+ids := hm.hash_map(string, u32)                             // @hash and `is`
 try ids.put("ada", 1)
 
-names := hash_map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
+names := hm.hash_map_with(K: string, u32, hash: ascii_fold_hash, eq: ascii_fold_eq)   // case-insensitive keys
 ```
 
 - Parameters may have defaults, which must be constant expressions; arguments may be named.
@@ -2354,7 +2360,7 @@ The idiomatic replacements:
 | Bound a generic body to operations on `T` | a closed constraint (`where Ord(T)`), or a function parameter |
 | An algorithm that needs per-call behavior | a second-class function parameter: `xs.sort_by(fn(a, b) => a.score > b.score)` |
 | Order structs | order a tuple of keys: `people.sort_by_key(fn(p) => (p.last, p.first))` |
-| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are `HashMap` parameters |
+| Hash or compare keys | nothing to write: `@hash` and `is` are structural; custom ones are parameters of the hash map type (§16.4) |
 | A data structure with fixed, consistent behavior | a compile-time parameter of the type: `BTree(K, V, less: by_name)` |
 | Print or log any value | `print("{} at {}", name, pos)`, which formats every type structurally (§21.6); custom display is an ordinary function returning a string |
 | Run-time dispatch over a closed set of cases | a tagged union and `match` |
@@ -2547,7 +2553,7 @@ libc :: foreign "c" {
 }
 ```
 
-- `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name. In a Safe build (§18.7) every foreign library, the C library included, must be built for Safe builds as well.
+- `foreign "lib" { … }` declares functions (and `#global` variables) provided by the named library ("c" is the C standard library; other names are passed to the linker). The block is bound to a name like a module. `#link_name("sym")` on a member overrides the symbol name. Since both reach the linker, a library name consists of letters, digits and `_ . + -` and does not begin with `-`, and a symbol name of letters, digits and `_ $ . @`. In a Safe build (§18.7) every foreign library, the C library included, must be built for Safe builds as well.
 - Parameter and result types must be C-compatible.
 - A foreign function needs `Sys` unless annotated. An annotation with a smaller set — usually `needs not`, the empty set, which ends the signature and is allowed only here — is a **trusted assertion** by the programmer that the C function touches nothing but its arguments; it is not verified. (`needs not Alloc` is a syntax error: Gamma has no way to exclude an effect, and `not` never means "everything but".) Foreign functions are never evaluated at compile time regardless (§17.6).
 - **Variadic** functions are declared with a final `...`. Arguments passed in the variadic position must have C-compatible scalar types of at least C `int` width for integers and `f64` for floats (C's default argument promotions are not applied implicitly; convert explicitly, e.g. `c.c_int(x)`, `f64(y)`). Gamma functions use rest parameters (§11.2) instead.
@@ -2586,7 +2592,7 @@ load :: fn(path: cstring) -> c.c_int needs Sys {
 }
 ```
 
-`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). `sym` must be a C identifier other than `main`, and no two functions may be exported under one name; an implementation may also reject names its own runtime uses. Its signature must be C-compatible and its effect set must be empty or `Sys`, because C callers cannot supply handlers; it installs whatever handlers it needs, using the default handlers of the core library (`heap_allocator()`, `system_io()`, `system_output()`, §21.1). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
+`#export("sym")` gives a top-level function external linkage under `sym` with the C ABI, or with the function's `#callconv` (§19.2). `sym` must be a C identifier other than `main`, and no two functions may be exported under one name. An implementation's runtime may use some symbol names itself; it documents them, and they are unavailable to `#export` and foreign members, a limitation of the implementation (§23.5). Its signature must be C-compatible and its effect set must be empty or `Sys`, because C callers cannot supply handlers; it installs whatever handlers it needs, using the default handlers of the core library (`heap_allocator()`, `system_io()`, `system_output()`, §21.1). The same restriction applies to any function pointer passed to C, which is enforced by the C-compatibility of `^fn` types (§19.1).
 
 A trap inside an exported function terminates the process; it does not return to C.
 
@@ -2679,7 +2685,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#fast_math` | function | relaxed float semantics | 5.3 |
 | `#fuel(n)` | top-level declaration | compile-time step budget | 17.3 |
 | `#deprecated`, `#deprecated("msg")` | declaration | a warning at each use, quoting the message | — |
-| `#allow("rule", …)` | top-level declaration | no meaning for the program; tools that report on code (the `gamma` tool's `lint` command) report none of the named rules inside the declaration. The arguments are string literals naming rules the tool knows | — |
+| `#allow("rule", …)` | top-level declaration | no meaning for the program; tools that report on code (the `gamma` tool's `lint` command) report none of the named rules inside the declaration. The arguments are string literals; whether they name rules is for those tools to check, not for compiling (§23.2) | — |
 
 ### 20.3 Intrinsics
 
@@ -2727,11 +2733,13 @@ The universe holds the **effects** but not their **operations**, with one except
 | Category | Names |
 | --- | --- |
 | reserved type names | `u1`…`u128`, `i1`…`i128`, `usize`, `isize`, `f16`, `f32`, `f64`, `bool`, `never`, `type`, `rawptr`, `cont` |
-| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Complex`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List`, `HashMap` |
+| types | `string`, `cstring`, `rune`, `Range`, `RangeIncl`, `Complex`, `Allocator`, `AllocVtable`, `AllocError`, `IoError`, `Instant`, `Duration`, `SourceLocation`, `MemoryOrder`, `List` |
 | effects | `Yield`, `Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`, `Test` |
 | operations | `yield` only; the others are reached through their effects |
-| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `hash_map`, `hash_map_with`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
+| functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
+
+*Transition.* Until the release after 0.1.0, the universe scope also holds `HashMap`, `hash_map` and `hash_map_with`, `#deprecated` names for the declarations of `std/collections/hash_map` (§21.5); a program may hide them like any other name.
 
 ### 21.2 Allocation
 
@@ -2800,9 +2808,11 @@ nth        :: fn(T: type, it: fn() needs Yield(T), n: usize) -> ?T
 
 `range_incl(lo, hi)` yields `hi` without overflowing, and yields nothing if `lo > hi`. `zip` yields pairs up to the shorter length. The iterators are `#inline`. `collect`, `count` and `nth` run the iterator they are given (§13.5): `collect` gathers its values in a new list, `count` counts them, and `nth` returns the value at index `n` (from 0) and stops the iterator there, or `null`.
 
-### 21.5 Containers (summary)
+### 21.5 Lists
 
-`List(T)` and `HashMap(K, V, …)` are in the universe scope because they are used throughout the language's examples and by the test runner. Each is declared, with its functions, in its own core module (`core/list`, `core/map`). Only `List`, `list`, `HashMap`, `hash_map` and `hash_map_with` are re-exported to the universe scope; the other functions and types of those modules are reached as methods, and method calls on them resolve in those modules (§7.10). Their required interface:
+`List(T)`, the growable array, is the one container in the core library, because the language definition and the core library's conventions refer to it: `collect` returns a `List(T)` (§21.4), and every library operation that produces text or bytes of unknown length appends them to a `List(u8)` (`l.write(template, args)` formats into one, §21.6.1; §22.3). It is the type through which independent code hands over a growing sequence. Every other container — hash maps, ordered maps, queues, heaps, bit sets — is a module of the standard library (`std/collections/…`), which needs nothing from the language that a program does not have.
+
+`List` is declared, with its functions, in the core module `core/list`. Only `List` and `list` are re-exported to the universe scope; the other functions are reached as methods, and method calls on a list resolve in that module (§7.10). Its required interface:
 
 ```
 // core/list
@@ -2821,31 +2831,9 @@ deinit :: fn(T: type, l: ^List(T))                                 // frees thro
 into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T          // hands over the storage, sized exactly
 collect :: fn(T: type, l: ^List(T), it: fn() needs Yield(T)) -> AllocError!()   // appends what `it` yields
 write  :: fn(A: type, l: ^List(u8), template :: string, args: ..A) -> AllocError!()  // @write into the list
-
-// core/map
-HashMap  :: struct(K, V: type,
-                   hash: ?^fn(key: ^const K, seed: u64) -> u64 = null,   // null: @hash
-                   eq:   ?^fn(a, b: ^const K) -> bool = null)            // null: `is`
-hash_map :: fn(K, V: type) -> HashMap(K, V) needs Alloc where Eq(K)
-hash_map_with :: fn(K, V: type, hash :: ^fn(key: ^const K, seed: u64) -> u64,
-               eq :: ^fn(a, b: ^const K) -> bool) -> HashMap(K, V, hash, eq) needs Alloc
-put      :: fn(m: ^HashMap(…), k: K, v: V) -> AllocError!()
-get      :: fn(m: ^const HashMap(…), k: K) -> ?V
-get_ptr  :: fn(m: ^HashMap(…), k: K) -> ?^V                         // valid until the next put/remove
-Entry    :: struct(K, V: type) { pub key: ^K; pub value: ^V; pub found: bool }
-entry    :: fn(m: ^HashMap(…), k: K, default: V) -> AllocError!Entry(K, V)  // stores `default` if absent; pointers to the stored key and value
-contains :: fn(m: ^const HashMap(…), k: K) -> bool
-remove   :: fn(m: ^HashMap(…), k: K) -> ?V
-remove_entry :: fn(m: ^HashMap(…), k: K) -> ?(key: K, value: V)   // with the stored key
-len      :: fn(m: ^const HashMap(…)) -> usize
-entries  :: fn(m: ^const HashMap(…)) needs Yield((key: K, value: V))   // unspecified order
-keys     :: fn(m: ^const HashMap(…)) needs Yield(K)                   // in the order of `entries`
-values   :: fn(m: ^const HashMap(…)) needs Yield(V)
-clear    :: fn(m: ^HashMap(…))                                      // keeps the storage
-deinit   :: fn(m: ^HashMap(…))
 ```
 
-Signatures are abbreviated: the `HashMap` functions take the map type's parameters as leading compile-time parameters, inferred from the receiver. `Eq(K)` is required when `hash` or `eq` is `null`. A custom `hash` must agree with the map's equality: keys equal under `eq` (or `is`) must hash equally. Each map stores an implementation-defined seed chosen at construction without performing effects; copies of the map keep it. Both containers capture `Alloc.current()` at construction and never perform `Alloc` afterwards (§15.2). `for x in l.items` iterates a list. The pointers from `get_ptr` and `entry` are invalidated by the next insertion or removal. When `entry` stores a new key (`found` is false), the caller may replace the stored key through `key` with one that is equal to it, such as a copy the map owns; `remove_entry` returns that key so it can be released. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
+The list captures `Alloc.current()` at construction and never performs `Alloc` afterwards (§15.2). `for x in l.items` iterates it. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 
@@ -2872,7 +2860,7 @@ eprint :: fn(A: type, template :: string, args: ..A) needs Err
 @write(sink, template, values…)
 ```
 
-`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: ..A)` can forward to `print` or `@write`. After the template come the **values**, one for each placeholder, as the rest arguments of a rest parameter do (§11.2): written out, or as a single spread of a tuple holding them (`@write(sink, template, ..args)`). `@write` calls `sink` zero or more times with consecutive, non-empty pieces of output, allocating nothing; how the output is divided into pieces is unspecified. Effects performed by `sink` are the effects of the `@write` expression.
+`sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: ..A)` can forward to `print` or `@write`. After the template come the **values**, one for each placeholder, as the rest arguments of a rest parameter do (§11.2): written out, or as a single spread of a tuple or array holding them (`@write(sink, template, ..args)`). `@write` calls `sink` zero or more times with consecutive, non-empty pieces of output, allocating nothing; how the output is divided into pieces is unspecified. Effects performed by `sink` are the effects of the `@write` expression.
 
 **Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. There must be exactly as many values as placeholders: `print("{} and {}", a, b)`. A tuple given as one value is written as one tuple: `print("{}", (a, b))` writes `(a, b)`. Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
 
@@ -3086,6 +3074,70 @@ These belong in packages, whatever their popularity: application protocols above
 *Cryptography* here means whatever needs dedicated security maintenance: ciphers, message authentication codes and other keyed constructions, signatures, key exchange, key derivation and password hashing. Fixed, unkeyed digests and checksums of published standards, used to detect corruption and to identify content (CRC-32, SHA-256), are not excluded: they have one settled definition, no parameters to choose wrongly, and a test-vector suite that leaves nothing to interpretation, so they are admitted on reason 2 (§22.2). A digest in the library carries no promise beyond its standard; whether it suits a security purpose is the caller's decision.
 
 *Rationale.* A standard library that grows by request becomes a second language to learn and a maintenance burden that slows the first. The reasons above admit exactly the code that every program would otherwise duplicate or get wrong; the requirements keep that code consistent with the language; the exclusions name the areas that grow without bound.
+
+---
+
+## 23. Errors and diagnostics
+
+§22 says what earns a place in the standard library; this chapter says what earns being an error, and what the report of one must do. It is normative for rules added to this specification and for the diagnostics of every implementation.
+
+### 23.1 Three kinds of error
+
+| Kind | Used when | Who must act |
+| --- | --- | --- |
+| **Compile error** (§1.3) | the program text breaks a rule of this specification | the programmer, before the program runs |
+| **Trap** (§18.5) | the program breaks a precondition it was responsible for: a checked operation fails (§18.2), or `trap` is called | the programmer: a trap is a bug, and is not handled |
+| **Error value** (§10) | an operation fails for a reason the program cannot rule out beforehand: input, the environment, resources | the caller, through the result's type |
+
+A mistake is classified by the earliest point at which it can be known. If the text alone shows it, it is a compile error; if it depends on values the program controls, it is a precondition, checked at run time and trapping; if it depends on the world outside the program, it is an error value. So a library function returns an error value for bad input, and traps only when a caller broke a documented precondition (§22.2).
+
+### 23.2 What is a compile error
+
+Every compile error is stated by a rule of this specification. A rule makes text a compile error only when all of these hold:
+
+1. **The text has no meaning, or more than one.** It breaks the grammar, a typing, effect or scoping rule, or it could be read two ways that readers confuse (mixing `and` with `or`, chained comparisons, §7.3). Gamma rejects what it would otherwise have to guess at (§C.5).
+2. **It is decided locally.** The rule is checked from the declaration and the signatures it uses (§C.6), without whole-program analysis, heuristics or a limit an implementation picks, so every implementation rejects the same programs. Where a bound is unavoidable, this specification states it (§23.5).
+3. **It rejects only what it is meant to.** No correct program falls under the rule by accident, and every program it rejects has a form the rules accept that says what was meant.
+
+Code that is well-formed but suspicious — a variable that is never read, a comparison whose result is always the same, an unneeded import, a construct that has a simpler form — is not an error. Rejecting it would reject correct programs (code being written, generated code, a deliberate choice), and where suspicious ends depends on taste. Such findings are warnings of tools that report on code on request (`#allow`, §20.2), which a project may enforce or not.
+
+An implementation adds no compile errors of its own and makes none optional: a program this specification accepts compiles in every conforming implementation, on every target that supports the facilities it uses and within the limits of §23.5, and a program it rejects compiles in none. Compiling a program reports errors, and warnings only for uses of `#deprecated` declarations (§20.2). A limitation of the implementation or the host (a facility the target lacks, a resource exhausted) is reported as such, not as a mistake in the program.
+
+### 23.3 What a diagnostic reports
+
+A compile error is reported by a diagnostic, written for the programmer in the terms of the program:
+
+1. **Where.** Its location is the smallest piece of text that breaks the rule: the operator, the argument, the name, not the whole statement. Further locations the explanation needs (the parameter an argument does not fit, the earlier declaration of a name) are attached to it.
+2. **What.** One sentence naming the rule broken, in terms of the program: the names, types and effects involved, and what was expected where it differs from what was found. A rule that a reader may not know is cited by its section.
+3. **How to fix it, when the rule decides.** When the rule leaves one way to write what was meant (`is` for `==`, `Fs.open` for a bare `open`, `_ = f()` for an ignored result), the diagnostic says it, and tools may apply it. When there are several, it may name each. When the intent cannot be known, it says nothing rather than guess.
+4. **Each mistake once.** An implementation continues after an error so that independent errors are reported together, but does not report what follows only from an earlier error (uses of a declaration that failed, a type unknown because of an error), and reports a mistake in a generic body once, not per instantiation.
+5. **The same every time.** The same program gives the same diagnostics, in the same order, on every run and host.
+
+### 23.4 What a diagnostic does not do
+
+A diagnostic explains the program in terms of Gamma. Its suggestions come from the program (its declarations, the names in scope, the expected type, the import that would make a name resolve) and from this specification (the rule broken and the alternative it states). Nothing else is consulted:
+
+- **Other languages.** Their notation is recognized only where this specification replaced a widespread notation and names the replacement: `==`, `!=`, `&&` and `||` (§2.6), `!` as negation (§10.2), `=` as a comparison (§C.5) and octal by leading zero (§2.5.1). Any other foreign syntax gets the diagnostic the text earns as Gamma.
+- **Characters.** A character that is not part of the language is reported by its code point (§2.1). A diagnostic does not say what it looks like (a Greek question mark for `;`, a typographic quote, a non-breaking space): the code point identifies it, and what it resembles depends on the font.
+
+*Rationale.* Guesses from outside the language need tables that are never complete (every look-alike character, every other language's syntax), must be maintained forever, and mislead when they guess wrong. The rules of this specification are finite, and a diagnostic that rests on one can be checked against it.
+
+### 23.5 Limits
+
+Compiling needs memory and time, so some sizes have bounds. Each is a minimum that every implementation supports; a program beyond one may be rejected, and the diagnostic then says which limit it exceeds, not that the program is wrong.
+
+| Quantity | At least |
+| --- | --- |
+| Nesting of brackets, blocks, statements and other syntax | 64 levels |
+| Postfix operations applied in a row to one operand (`a.b.c(…)[i]?…`) | 100 000 |
+| Magnitude of the exponent of a float literal (§2.5.2) | 100 000 |
+| Steps of one compile-time evaluation (§17.3) | 10⁷, or `#fuel(n)` |
+| Depth of generic instantiations requesting each other (§16.7) | 64 |
+| Generic instantiations in one program | 100 000 |
+
+Symbol names that an implementation's runtime uses are also a limit of the implementation (§19.4); the reference implementation's all begin with `gm_` followed by a lowercase letter.
+
+One bound is a rule rather than a limit, since the target's address space decides it: the size of a type is at most the largest value of `isize` (§5.1), and a type larger than that is a compile error.
 
 ---
 
@@ -3323,14 +3375,13 @@ Assignment (`=` and compound forms) is a statement.
 | `^` | pointer | `^T`, `^const T`, `[^]T`, `^fn`, `x^` |
 | `:` | naming | `x: T`, `x := e`, `x :: e`, `x: T : e`, `label:` |
 | `=>` | maps to | expression bodies, match arms, handler clauses, `else e =>` |
-| `needs` | effects | `-> T needs E1 + E2`, `needs not` (foreign) |
 | `..` | span, splice | ranges `a..b`, slicing `a[i..]`, spread `f(..t)`, rest parameters `args: ..A` |
 | `@` / `#` | intrinsic / attribute | `@size_of(T)`, `#packed` |
 | `---` | don't care | uninitialized plain data |
 
 ### B.3 Keywords
 
-**Reserved (34):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
+**Reserved (35):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `needs` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
 
 **Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
 
@@ -3425,7 +3476,7 @@ Generic code is ordinary code with compile-time parameters, **checked once** whe
 | Job | In Gamma |
 | --- | --- |
 | Bounding a generic body | closed constraints, plus function parameters |
-| Implementation fixed per type, called directly | compile-time parameters of functions and types (`HashMap(K, V, hash: f)`) |
+| Implementation fixed per type, called directly | compile-time parameters of functions and types (a hash map's `hash` and `eq`, §16.4) |
 | Implementation chosen at run time | a struct with a vtable of `^fn` (as `Allocator`), or a tagged union |
 | Implementation supplied by context | effects and handlers |
 | Implementation found **implicitly** and **composed** (`Hash` for `(A, B)` from `Hash` for `A` and `B`) | deliberately absent |
@@ -3456,6 +3507,7 @@ The first four already exist, each with its cost and its code visible where it i
 | `T(x)` succeeding when the *value* is provably in range | P5 | legality would depend on the compiler's analysis |
 | Binding inferred type arguments by position | P5 | which argument binds which parameter would depend on counting them |
 | Case-sensitive line continuation (`.lower` continues, `.Upper` does not) | P4 | would make naming conventions part of the grammar |
+| Separating effects with `,` like constraints, or constraints with `+` like effects | one feature per job | they are different things. An effect set is one value, a union that can be named (`Io :: Fs + Alloc`) and passed as one argument (`Sched(Out + Clock)`), where a comma would start the next argument. A `where` clause is a list of separate predicates on different types, like a parameter list, and there is nothing to name or pass (§12.3, §16.3) |
 | Effect variables in the types of run-time values | P2 | needs a run-time representation of effect rows; second-class callbacks and effect-set parameters cover the uses (C.4) |
 | Multi-shot continuations | P1 | require copying stacks; break pointers into them |
 | Exceptions | P3, P2 | `esc` exits and results cover early exit and failure, visibly (C.1) |
@@ -3475,6 +3527,9 @@ The first four already exist, each with its cost and its code visible where it i
 | Quaternion types | admission (§1) | no word asks for them, and nothing they would replace is broken; `p / q` would have to choose between `p·q⁻¹` and `q⁻¹·p`. A library type over `#vec [4]T` serves them |
 | A scalar added to a complex number or math vector (`z + 1`, `v + 1`) | P4 | adding a number to every element is not an operation of the vector space; `*` and `/` by a scalar are |
 | Arithmetic on arrays of any length up to some bound | P4 | an arbitrary cliff (`[4]f32` adds, `[5]f32` does not); math vectors are marked, so a reader sees which arrays have arithmetic |
+| Relational constraints over several types (`Contains(C, T)`, `Iterable(C, T)`), to make `in` or `for` generic over containers | P5, one feature per job | with no traits (C.6) a relation can only cover built-in types, where it buys little: a generic body that scans takes the elements as a slice or an iterator, and one that tests membership takes a predicate. Opening it to library containers needs associated types and implementations found by type — the trait machinery C.6 omits |
+| `in` on library containers (`k in m`) | P5, one feature per job | a privilege the core's containers would have and no library container could; `m.contains(k)` reads as well and works the same way for every container |
+| More containers in the core library | §22.1 | the core holds what the language definition refers to; `List` is the one container it refers to (§21.5), and the others are library code that needs nothing a program lacks |
 | A packed set type over an enum | one feature per job | `[E]bool` is a set indexed by the enum (§5.6.1), a `#bits` struct packs named flags (§5.10.5), and the library has integer bit sets |
 
 ### C.9 Future directions

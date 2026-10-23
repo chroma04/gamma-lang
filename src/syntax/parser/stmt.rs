@@ -42,14 +42,6 @@ impl Parser<'_> {
     /// this fails only if the `{` is missing.
     pub(super) fn parse_block(&mut self) -> PResult<Block> {
         let start = self.lo();
-        if self.at(Punct::Assign) {
-            // Most likely `if x = 1 {`.
-            let span = self.span();
-            let d =
-                Diagnostic::error(span, "expected `{` to begin a block, found `=`; to compare values, use `is` (§7.6)")
-                    .with_fix("write `is`", span, "is");
-            return self.fail_diag(d);
-        }
         self.expect(Punct::LBrace, "to begin a block")?;
         let stmts = self.unrestricted(|p| p.nest(|p| Ok(p.parse_block_body())))?;
         let id = self.ids.next();
@@ -369,12 +361,26 @@ impl Parser<'_> {
         }
     }
 
+    /// After the condition of an `if` or `while`, a `=` is `=` written for a comparison
+    /// (§C.5): `if x = 1 {`.
+    fn reject_assign_after_cond(&mut self) -> PResult<()> {
+        if !self.at(Punct::Assign) {
+            return Ok(());
+        }
+        let span = self.span();
+        let d =
+            Diagnostic::error(span, "expected `{` after the condition, found `=`; to compare values, use `is` (§7.6)")
+                .with_fix("write `is`", span, "is");
+        self.fail_diag(d)
+    }
+
     /// `if cond { … } { else if cond { … } } [else { … } | else e => …]`.
     pub(super) fn parse_if(&mut self) -> PResult<Expr> {
         let start = self.lo();
         self.bump();
         let mut branches = Vec::new();
         let cond = self.parse_cond()?;
+        self.reject_assign_after_cond()?;
         let block = self.parse_block()?;
         branches.push((cond, block));
         let mut else_ = None;
@@ -383,6 +389,7 @@ impl Parser<'_> {
                 self.bump();
                 self.bump();
                 let cond = self.parse_cond()?;
+                self.reject_assign_after_cond()?;
                 let block = self.parse_block()?;
                 branches.push((cond, block));
             } else if self.nth_is(1, Punct::LBrace) {
@@ -421,6 +428,7 @@ impl Parser<'_> {
     fn parse_while(&mut self, label: Option<Ident>) -> PResult<StmtKind> {
         self.bump();
         let cond = self.parse_cond()?;
+        self.reject_assign_after_cond()?;
         let body = self.parse_labeled_block(label)?;
         Ok(StmtKind::While { label, cond, body })
     }

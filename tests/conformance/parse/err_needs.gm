@@ -1,5 +1,0 @@
-//! stage: parse
-// The effect clause is `needs E1 + E2` (§11.1); `needs not` only ends the signature of a
-// foreign function (§19.2).
-
-old :: fn() \ {Out} { }   //~ ERROR effects are written after `needs`

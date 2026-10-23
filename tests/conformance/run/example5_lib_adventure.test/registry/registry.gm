@@ -1,11 +1,13 @@
 // A named collection: values get small integer ids and can be found by name.
+hm :: import "std/collections/hash_map"
+
 pub Registry :: struct(T: type) {
     items: List(T)
-    names: HashMap(string, u16)
+    names: hm.HashMap(string, u16)
 }
 
 pub registry :: fn(T: type) -> Registry(T) needs Alloc {
-    return Registry(T)(items: list(T), names: hash_map(string, u16))
+    return Registry(T)(items: list(T), names: hm.hash_map(string, u16))
 }
 
 pub deinit :: fn(T: type, r: ^Registry(T)) {

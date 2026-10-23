@@ -3,13 +3,14 @@
 
 math :: import "std/math"
 arena :: import "std/arena"
+hm :: import "std/collections/hash_map"
 
 /// Variables by name. The map owns copies of its keys (see `store`).
-Vars :: HashMap(string, f64)
+Vars :: hm.HashMap(string, f64)
 
 /// A map preloaded with `pi`.
 new_vars :: fn() -> AllocError!Vars needs Alloc {
-    vars := hash_map(string, f64)
+    vars := hm.hash_map(string, f64)
     errdefer free_vars(&vars)
     try store(&vars, "pi", math.pi)
     return vars

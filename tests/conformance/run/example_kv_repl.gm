@@ -4,6 +4,7 @@
 // failed, running the deferred cleanup on the way out.
 io :: import "std/io"
 arena :: import "std/arena"
+hm :: import "std/collections/hash_map"
 
 CmdError :: union {
     Unknown: string
@@ -55,7 +56,7 @@ parse_i64 :: fn(s: string) -> CmdError!i64 {
 
 Db :: struct {
     arena: arena.Arena
-    data: HashMap(string, i64)
+    data: hm.HashMap(string, i64)
     ops: u32 = 0
 }
 
@@ -116,7 +117,7 @@ execute :: fn(db: ^Db, w: Words) -> CmdError!() needs Out {
 }
 
 main :: fn() -> IoError!() needs Out + In + Alloc + Env {
-    db := Db(arena: arena.new(), data: hash_map(string, i64))
+    db := Db(arena: arena.new(), data: hm.hash_map(string, i64))
     defer print("cleanup done\n")
     defer db.arena.deinit()
     defer db.data.deinit()

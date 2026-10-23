@@ -1,4 +1,6 @@
 // Generic row storage and unique hash indexes over a key extracted from each row.
+hm :: import "std/collections/hash_map"
+
 pub Table :: struct(T: type) {
     pub name: string
     rows: List(T)
@@ -27,11 +29,11 @@ pub all :: fn(T: type, t: ^const Table(T)) -> []const T => t.rows.items
 
 /// Maps a key to the row number of the first row with that key.
 pub Index :: struct(T: type, K: type) {
-    map: HashMap(K, usize)
+    map: hm.HashMap(K, usize)
 }
 
 pub index :: fn(T: type, K: type, t: ^const Table(T), key: ^fn(row: ^const T) -> K) -> AllocError!Index(T, K) needs Alloc where Eq(K) {
-    m := hash_map(K, usize)
+    m := hm.hash_map(K, usize)
     errdefer m.deinit()
     for i in 0..t.rows.items.len {
         k := key(&t.rows.items[i])

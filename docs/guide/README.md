@@ -18,7 +18,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [6. Functions](06-functions.md) | Parameters, defaults, named arguments, spread, rest parameters, methods, second-class functions and function pointers |
 | [7. Effects](07-effects.md) | Effects, handlers, the three operation kinds, `with`, ambient effects, named effect sets, `Sys`, effect polymorphism |
 | [8. Iteration](08-iteration.md) | `Yield`, `for` as a handler, writing iterators, standard iterators, early exit, cursors |
-| [9. Memory](09-memory.md) | Allocators and the `Alloc` effect, `new`/`make`/`free`, `List` and `HashMap`, cleanup with `defer` |
+| [9. Memory](09-memory.md) | Allocators and the `Alloc` effect, `new`/`make`/`free`, `List` and hash maps, cleanup with `defer` |
 | [10. Generics](10-generics.md) | Type parameters, inference, constraints, generic types, compile-time value parameters, life without traits |
 | [11. Compile time](11-compile-time.md) | Compile-time evaluation, constants, `when`, `target`, `@static_assert` |
 | [12. Fibers](12-fibers.md) | `with ... on`, `ctl` operations, continuations, `resume` and `cancel`, a scheduler sketch |

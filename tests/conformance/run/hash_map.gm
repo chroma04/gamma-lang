@@ -1,4 +1,6 @@
-// HashMap (§21.5): default and custom hashing, growth, removal, iteration.
+// The hash map of std/collections/hash_map: default and custom hashing, growth, removal, iteration.
+hm :: import "std/collections/hash_map"
+
 lower :: fn(c: u8) -> u8 => if c in 'A'..='Z' { c + 32 } else { c }
 
 fold_hash :: fn(key: ^const string, seed: u64) -> u64 {
@@ -16,14 +18,14 @@ fold_eq :: fn(a, b: ^const string) -> bool {
 }
 
 main :: fn() -> AllocError!() needs Out + Alloc {
-    ids := hash_map(string, u32)
+    ids := hm.hash_map(string, u32)
     defer ids.deinit()
     try ids.put("ada", 1)
     try ids.put("grace", 2)
     try ids.put("ada", 3)
     print("{} {} {} {}\n", ids.get("ada"), ids.get("grace"), ids.get("alan"), ids.len())
 
-    squares := hash_map(i32, i64)
+    squares := hm.hash_map(i32, i64)
     defer squares.deinit()
     for i in range(T: i32, 0, 1000) { try squares.put(i, i64(i) * i64(i)) }
     removed := 0
@@ -38,12 +40,12 @@ main :: fn() -> AllocError!() needs Out + Alloc {
     print("{} {} {} {}\n", squares.len(), removed, squares.get(999), total)
     print("{} {}\n", squares.contains(998), squares.contains(999))
 
-    names := hash_map_with(hash: fold_hash, eq: fold_eq, K: string, u32)
+    names := hm.hash_map_with(hash: fold_hash, eq: fold_eq, K: string, u32)
     defer names.deinit()
     try names.put("Ada", 1)
     print("{} {}\n", names.get("ADA"), names.get("ada lovelace"))
 
-    pairs := hash_map((i32, bool), string)
+    pairs := hm.hash_map((i32, bool), string)
     defer pairs.deinit()
     try pairs.put((1, true), "one-true")
     print("{} {}\n", pairs.get((1, true)), pairs.get((1, false)))

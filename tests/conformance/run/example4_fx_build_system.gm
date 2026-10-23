@@ -1,4 +1,6 @@
 // A build system: tasks with dependencies, topological order as a Yield iterator, cycle detection through an esc operation, a result cache in a HashMap, and a fake command runner and file fingerprints supplied as effect handlers.
+hm :: import "std/collections/hash_map"
+
 Task :: struct {
     name: string
     cmd: string                 // empty for source files
@@ -145,8 +147,8 @@ Stats :: struct {
 }
 
 Build :: struct {
-    cache: HashMap(string, CacheEntry)
-    outputs: HashMap(string, u64)
+    cache: hm.HashMap(string, CacheEntry)
+    outputs: hm.HashMap(string, u64)
     stats: Stats = Stats()
 }
 
@@ -219,7 +221,7 @@ build :: fn(b: ^Build, graph: []const Task, root: string) -> BuildError!() needs
 }
 
 new_build :: fn() -> Build needs Alloc {
-    return Build(cache: hash_map(string, CacheEntry), outputs: hash_map(string, u64))
+    return Build(cache: hm.hash_map(string, CacheEntry), outputs: hm.hash_map(string, u64))
 }
 
 drop :: fn(b: ^Build) {

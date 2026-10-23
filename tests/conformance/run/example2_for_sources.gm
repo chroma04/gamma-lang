@@ -1,4 +1,6 @@
 // Every way of driving a for loop: method-call iterators, array calls, pointers to arrays, stored ranges, runes/bytes, cursors, map entries, inclusive ranges.
+hm :: import "std/collections/hash_map"
+
 Bag :: struct { vals: [5]u32, n: usize }
 
 items :: fn(b: ^const Bag) needs Yield(u32) {
@@ -30,7 +32,7 @@ main :: fn() needs Out + Alloc {
     cur := l.items.cursor()
     while x := cur.next() { print("{} ", x) }
     print("\n")
-    m := hash_map(u32, string)
+    m := hm.hash_map(u32, string)
     defer m.deinit()
     m.put(1, "one") else trap("oom")
     for e in m.entries() { print("{}={}\n", e.key, e.value) }

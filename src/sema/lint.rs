@@ -3,7 +3,6 @@
 //! comparisons whose result is known). `crate::lint` turns them into diagnostics.
 
 use super::{DeclId, DeclState, DeclValue, Sema};
-use crate::diag::Diagnostic;
 use crate::driver::Session;
 use crate::source::Span;
 use crate::symbol::Symbol;
@@ -399,14 +398,9 @@ impl<'s> Sema<'s> {
         }
         for a in args {
             match &a.kind {
-                ast::ExprKind::Str(s) => {
-                    let name = String::from_utf8_lossy(&s.bytes);
-                    if name != "all" && crate::lint::rule(&name).is_none() {
-                        let d = Diagnostic::error(a.span, format!("unknown lint rule `{}`", name))
-                            .with_note("`gamma lint --rules` lists the rules");
-                        self.emit(d);
-                    }
-                }
+                // Which names are rules is the lint tool's business, not the program's
+                // (§20.2): the tool reports unknown ones.
+                ast::ExprKind::Str(_) => {}
                 _ => self.error(a.span, "`#allow` takes the names of lint rules as string literals"),
             }
         }

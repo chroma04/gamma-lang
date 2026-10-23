@@ -54,39 +54,37 @@
 30:3 punct =>
 31:1 ident b
 31:3 punct ->
-32:1 ident c
-32:3 punct \
-33:1 ident d
-33:3 punct .
-34:1 ident e
-34:3 keyword is
-35:1 ident f
-35:3 keyword in
-36:1 ident g
-36:3 keyword and
-37:1 ident h
-37:3 keyword or
-38:1 ident i
-38:3 keyword else
-39:1 ident j
-39:3 punct is not
-40:1 ident k
-40:3 punct not in
-41:1 ident l
-41:3 punct (
-42:1 ident m
-42:3 punct )
-42:4 newline
-43:1 ident n
-43:3 punct [
-44:1 ident o
-44:3 punct ]
-44:4 newline
-45:1 ident p
-45:3 punct {
-46:1 ident q
-46:3 punct }
-46:4 newline
-47:1 ident r
-47:2 newline
-48:1 eof
+32:1 ident d
+32:3 punct .
+33:1 ident e
+33:3 keyword is
+34:1 ident f
+34:3 keyword in
+35:1 ident g
+35:3 keyword and
+36:1 ident h
+36:3 keyword or
+37:1 ident i
+37:3 keyword else
+38:1 ident j
+38:3 punct is not
+39:1 ident k
+39:3 punct not in
+40:1 ident l
+40:3 punct (
+41:1 ident m
+41:3 punct )
+41:4 newline
+42:1 ident n
+42:3 punct [
+43:1 ident o
+43:3 punct ]
+43:4 newline
+44:1 ident p
+44:3 punct {
+45:1 ident q
+45:3 punct }
+45:4 newline
+46:1 ident r
+46:2 newline
+47:1 eof

@@ -156,7 +156,7 @@ puncts! {
     PlusWrapAssign = "+%=", MinusWrapAssign = "-%=", StarWrapAssign = "*%=", ShlWrapAssign = "<<%=",
     PlusSatAssign = "+|=", MinusSatAssign = "-|=", StarSatAssign = "*|=", ShlSatAssign = "<<|=",
     Lt = "<", Le = "<=", Gt = ">", Ge = ">=",
-    Question = "?", Bang = "!", Caret = "^", At = "@", Hash = "#", Backslash = "\\",
+    Question = "?", Bang = "!", Caret = "^", At = "@", Hash = "#",
     DotDot = "..", DotDotEq = "..=", Ellipsis = "...", Uninit = "---",
     ColonColon = "::", ColonEq = ":=", Colon = ":", Comma = ",", Dot = ".",
     FatArrow = "=>", Arrow = "->",

@@ -74,7 +74,8 @@ The levels come from, in increasing order of precedence:
    CLASS_OTHER :: 0
    ```
 
-   The compiler checks the rule names of `#allow` and otherwise ignores it.
+   The compiler ignores `#allow`; `gamma lint` reports a name that is not one of its rules
+   as an error.
 
 A name that starts with `_` is never reported as unused: `_unused := f()` and
 `fn(_event: Event)` say that the value is ignored on purpose.

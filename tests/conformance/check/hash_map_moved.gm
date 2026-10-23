@@ -1,0 +1,22 @@
+//! stage: check
+// The hash map is `std/collections/hash_map` (§21.5). The universe names it had are
+// `#deprecated` names of the same declarations (§21.1), so old and new spellings mix;
+// the module binding `map` that the core library uses for it is not a universe name.
+hm :: import "std/collections/hash_map"
+
+old :: fn() -> HashMap(string, u32) needs Alloc {    //~ WARNING `HashMap` is deprecated: import "std/collections/hash_map"
+    return hash_map(string, u32)                      //~ WARNING `hash_map` is deprecated
+}
+
+new_style :: fn() -> hm.HashMap(string, u32) needs Alloc => old()
+
+hidden :: fn() needs Alloc {
+    m := map.hash_map(u32, u32)                       //~ ERROR unknown name `map`
+}
+
+own :: fn() -> u32 {
+    map := 3                                          // `map` is free for programs
+    return map
+}
+
+main :: fn() {}

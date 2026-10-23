@@ -1,4 +1,4 @@
-# 037 Complex numbers and math vectors (s33, 2026-10-23)
+# 039 Complex numbers and math vectors (s35, 2026-10-23)
 
 User asked which Odin features fit Gamma; verdicts agreed with the user:
 complex YES, small math vectors YES (narrow), SOA maybe later (fixed arrays/slices only,

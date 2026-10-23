@@ -17,12 +17,12 @@ libc :: foreign "c" {
     #link_name("abs\n#error x") newline :: fn(x: c.c_int) -> c.c_int needs not //~ ERROR is not a symbol name
     #link_name("fopen$UNIX2003") dollar :: fn() needs not
     #link_name("stat@GLIBC_2.2.5") versioned :: fn() needs not
-    #link_name("gm_heap_alloc") runtime :: fn(x: i32) -> i32 needs not //~ ERROR is a symbol of the runtime
-    gm_trap :: fn() needs not //~ ERROR is a symbol of the runtime
-    gm_f12 :: fn() needs not //~ ERROR is a symbol of the runtime
+    #link_name("gm_heap_alloc") runtime :: fn(x: i32) -> i32 needs not //~ ERROR is a symbol of this implementation's runtime
+    gm_trap :: fn() needs not //~ ERROR is a symbol of this implementation's runtime
+    gm_f12 :: fn() needs not //~ ERROR is a symbol of this implementation's runtime
     gm_my_helper :: fn() needs not
 }
 
-#export("gm_trap") exported :: fn() {} //~ ERROR is a symbol of the runtime
+#export("gm_trap") exported :: fn() {} //~ ERROR is a symbol of this implementation's runtime
 
 main :: fn() {}

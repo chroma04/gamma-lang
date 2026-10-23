@@ -1,10 +1,11 @@
 // A query engine over generic tables: qualified generic types, aliases, iterators with failure, handler types.
 db :: import "../db"
 fixed_buffer :: import "std/fixed_buffer"
+hm :: import "std/collections/hash_map"
 
 Table :: db.Table
 Query :: db.Query
-Map :: HashMap
+Map :: hm.HashMap
 
 Employee :: struct {
     id: u32

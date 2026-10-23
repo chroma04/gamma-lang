@@ -95,8 +95,8 @@ fn long_ill_typed_chains_are_errors() {
 fn postfix_chain_limit_is_an_error() {
     for (name, link) in [("limit_call", "(1)"), ("limit_index", "[0]"), ("limit_field", ".c"), ("limit_deref", "^")] {
         let src = chain_program(NODE, "a: N", "a", link, 150_000);
-        check_error("check", name, &src, "nested too deeply");
-        check_error("run", name, &src, "nested too deeply");
+        check_error("check", name, &src, "more than 100000 postfix operations in a row");
+        check_error("run", name, &src, "more than 100000 postfix operations in a row");
     }
 }
 

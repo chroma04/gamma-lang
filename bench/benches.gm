@@ -2,6 +2,7 @@
 // Fast mode by default). The same operations as the programs in programs/, which count
 // instructions instead; the numbers here are the time of one pass of the body, so
 // each body does 1,000 of the operation it is about.
+hm :: import "std/collections/hash_map"
 
 plain_bump :: fn(n: i64) -> i64 {
     return n + 1
@@ -78,8 +79,8 @@ bench "1000 List pushes and a sum" {
     _ = @black_box(total)
 }
 
-bench "1000 HashMap inserts and lookups" {
-    m := hash_map(u32, u32)
+bench "1000 hm.HashMap inserts and lookups" {
+    m := hm.hash_map(u32, u32)
     defer m.deinit()
     for i in 0..1000 {
         ok(m.put(i, i * 2))

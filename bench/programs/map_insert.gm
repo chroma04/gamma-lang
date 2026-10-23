@@ -1,6 +1,8 @@
 // 20000 inserts into a HashMap, then lookups.
+hm :: import "std/collections/hash_map"
+
 main :: fn() -> AllocError!() needs Out + Alloc {
-    m := hash_map(u32, u32)
+    m := hm.hash_map(u32, u32)
     defer m.deinit()
     for i in 0..20000 {
         try m.put(i, i * 2)

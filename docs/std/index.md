@@ -9,6 +9,7 @@
 | [`std/cli`](cli.md) | Command-line parsing as an iterator, getopt style. |
 | [`std/collections/bitset`](collections/bitset.md) | A set of small unsigned integers, one bit each. |
 | [`std/collections/deque`](collections/deque.md) | A double-ended queue in a growable ring buffer. |
+| [`std/collections/hash_map`](collections/hash_map.md) | A hash map, with keys hashed by the structural `@hash` and compared with `is`. |
 | [`std/collections/heap`](collections/heap.md) | A binary heap, used as a priority queue. |
 | [`std/collections/ordered_map`](collections/ordered_map.md) | A map that keeps its keys in order, as a B-tree. |
 | [`std/encoding/base64`](encoding/base64.md) | Base64 as in RFC 4648, with the standard alphabet (section 4) or the URL and filename safe one (section 5), with or without `=` padding. |

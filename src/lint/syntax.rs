@@ -20,6 +20,8 @@ pub struct FileFacts {
     pub whens: Vec<Span>,
     /// Top-level declarations with `#allow`: the declaration and the rules it allows.
     pub allows: Vec<(Span, Vec<String>)>,
+    /// Errors in the tool's own input: `#allow` arguments that name no rule.
+    pub errors: Vec<Diagnostic>,
 }
 
 pub struct Walk<'a> {
@@ -59,6 +61,16 @@ impl<'a> Walk<'a> {
                 _ => None,
             })
             .collect();
+        for e in item.attrs.iter().filter(|a| a.name.name.as_str() == "allow").flat_map(|a| a.args.iter().flatten()) {
+            if let ExprKind::Str(s) = &e.kind {
+                let name = String::from_utf8_lossy(&s.bytes);
+                if name != "all" && super::rule(&name).is_none() {
+                    let d = Diagnostic::error(e.span, format!("unknown lint rule `{}`", name))
+                        .with_note("`gamma lint --rules` lists the rules");
+                    self.facts.errors.push(d);
+                }
+            }
+        }
         if !allowed.is_empty() {
             self.facts.allows.push((item.span, allowed));
         }
@@ -393,6 +405,7 @@ impl<'a> Walk<'a> {
             | ExprKind::Import(_)
             | ExprKind::Error => {}
             ExprKind::Paren(x)
+            | ExprKind::Elements(x)
             | ExprKind::OptUnwrap(x)
             | ExprKind::ResUnwrap(x)
             | ExprKind::Deref(x)

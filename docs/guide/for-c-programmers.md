@@ -799,7 +799,7 @@ C's `malloc` is available to any function without saying so. In Gamma, allocatio
 | `free(p)` | `destroy(p)` for `new`, `free(s)` for slices |
 | `strdup`, `memdup` | `dupe(s)` |
 | `realloc` growth in a loop | `list(T)`, then `push` |
-| a hash table you wrote | `hash_map(K, V)` |
+| a hash table you wrote | `hm.hash_map(K, V)` from `std/collections/hash_map` |
 
 ```gamma
 Point :: struct { x, y: i32 }
@@ -865,7 +865,7 @@ main :: fn() -> AllocError!() needs Alloc + Out {
 100 !.OutOfMemory
 ```
 
-Long-lived structures (`list`, `hash_map`) *capture* the allocator they were created with and use that same handle for every later operation, so the C bug of freeing through a different allocator than the one that produced the memory cannot arise from ordinary use (Debug builds additionally tag every allocation with its allocator and trap on a mismatch). An `Allocator` is a data pointer plus a table of three functions (allocate, resize, free), so writing your own is a few lines; see `examples/allocators.gm` for a tracking allocator.
+Long-lived structures (`list`, `hm.hash_map`) *capture* the allocator they were created with and use that same handle for every later operation, so the C bug of freeing through a different allocator than the one that produced the memory cannot arise from ordinary use (Debug builds additionally tag every allocation with its allocator and trap on a mismatch). An `Allocator` is a data pointer plus a table of three functions (allocate, resize, free), so writing your own is a few lines; see `examples/allocators.gm` for a tracking allocator.
 
 ### Leaks are test failures
 
@@ -1257,7 +1257,7 @@ total :: fn(s: []const geom.Shape) -> f32 {
 
 An `import` is only legal as the initializer of a top-level `::`, the name is chosen by the importer, the import graph must be acyclic, and private names (including struct fields not marked `pub`) are invisible outside their module. There are no include guards, no declaration/definition split, no link-order bugs, and no ODR violations. A package is a directory tree with a `gamma.toml`; `gamma new`, `add`, `fetch`, `update` and a lockfile replace the hand-written Makefile and the vendored copies of libraries. The standard library is imported as `std/...` (`std/arena`, `std/str`, `std/fs`, `std/json`, ...). See [chapter 15](15-packages.md).
 
-The standard library is split in two tiers: the core (everything predeclared: `print`, `list`, `hash_map`, `new`, `make`, slices' methods) and the `std/` modules. Nothing in it is a language feature: a `List` is a struct and some functions. [Chapter 16](16-standard-library.md) tours it.
+The standard library is split in two tiers: the core (everything predeclared: `print`, `list`, `new`, `make`, slices' methods) and the `std/` modules. Nothing in it is a language feature: a `List` is a struct and some functions. [Chapter 16](16-standard-library.md) tours it.
 
 ## Testing
 

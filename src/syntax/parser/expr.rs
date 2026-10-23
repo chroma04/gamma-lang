@@ -474,7 +474,10 @@ impl Parser<'_> {
                 links += 1;
                 if links > super::MAX_POSTFIX_CHAIN {
                     let span = self.span();
-                    return self.fail(span, "this is nested too deeply");
+                    return self.fail(
+                        span,
+                        "more than 100000 postfix operations in a row, the limit of this implementation (§23.5)",
+                    );
                 }
             }
             match self.kind() {
