@@ -63,7 +63,9 @@ Versions and what each kind of change means are described in
   `frexp`, `ldexp` and `nextafter`; and, for every integer type, `gcd`, `lcm`, `isqrt`,
   `ilog2`, `ilog10`, `div_floor` and `mod_floor`.
 - `std/complex`: `tan`, `sinh`, `cosh`, `tanh`, `asin`, `acos`, `atan`, `asinh`, `acosh` and
-  `atanh`, with the branch cuts and special values of C99 Annex G.
+  `atanh`, with the branch cuts and special values of C99 Annex G. `sin` and `cos` are now
+  computed through `sinh` and `cosh`, so they also follow Annex G for infinite and NaN parts,
+  and a finite part is no longer lost to an overflow (`sin(-0.5 + 711i)` was `-inf + inf*i`).
 - `std/time`: `parse_duration`, the inverse of `format_duration`; ISO 8601 week dates and
   ordinal dates (`iso_week`, `from_iso_week`, `day_of_year`, `from_ordinal`, and
   `format_`/`parse_iso_week` and `format_`/`parse_ordinal` for their text).

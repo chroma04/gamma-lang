@@ -15,20 +15,16 @@ chooses the side, as in C99: `sqrt(-4 + 0i)` is `2i` and `sqrt(-4 - 0i)`
 is `-2i`.
 
 Special values follow C99 Annex G for `exp`, `log`, `sqrt` and `arg`, which
-are the cases with a well-defined limit. `sin` and `cos` handle zero parts,
-an infinite imaginary part and a NaN with a zero imaginary part; for other
-infinite or NaN arguments they return NaN parts where Annex G prescribes
-more specific values, and the sign of a NaN or of a returned zero that
-Annex G leaves unspecified is not defined. `from_polar` and `pow` apply
-the arithmetic of their definitions and do not special-case infinities.
+are the cases with a well-defined limit. `from_polar` and `pow` apply the
+arithmetic of their definitions and do not special-case infinities.
 
-The hyperbolic functions `sinh`, `cosh` and `tanh`, the trigonometric
-`tan`, and the inverse functions `asin`, `acos`, `atan`, `asinh`, `acosh`
-and `atanh` follow C99 Annex G (G.6) completely: branch cuts, the signs of
-zero parts, infinities and NaN. The branch cuts are listed in each
-function's documentation. A NaN result has no defined sign or payload, and
-where Annex G leaves the sign of an infinity or a zero optional the choice
-made here is documented by the tests.
+The trigonometric functions `sin`, `cos` and `tan`, the hyperbolic `sinh`,
+`cosh` and `tanh`, and the inverse functions `asin`, `acos`, `atan`,
+`asinh`, `acosh` and `atanh` follow C99 Annex G (G.6) completely: branch
+cuts, the signs of zero parts, infinities and NaN. The branch cuts are
+listed in each function's documentation. A NaN result has no defined sign
+or payload, and where Annex G leaves the sign of an infinity or a zero
+optional the choice made here is documented by the tests.
 
 The inverse functions are the algorithms of Hull, Fairgrieve and Tang,
 "Implementing the complex arcsine and arccosine functions using exception
@@ -105,7 +101,12 @@ not exact; multiply for small integral exponents.
 sin :: fn(z: Complex(f64)) -> Complex(f64)
 ```
 
-The sine: `sin(x)cosh(y) + cos(x)sinh(y)*i` for `z = x + yi`.
+The sine, `-i*sinh(i*z)`: `sin(x)cosh(y) + cos(x)sinh(y)*i` for `z = x + yi`. It
+is entire, so it has no branch cut, and its special values follow from `sinh`
+(C99 Annex G): `sin(+-0 + yi)` is `+-0 + sinh(y)*i`; `sin(x +- 0i)` is
+`sin(x) +- 0i` for a finite `x` and `NaN +- 0i` for an infinite or NaN `x`;
+`sin(x + yi)` for an infinite `y` is `inf*sin(x) + y*cos(x)*i` for a finite
+non-zero `x` and `NaN + y*i` for an infinite or NaN `x`.
 
 ### `cos`
 
@@ -113,7 +114,12 @@ The sine: `sin(x)cosh(y) + cos(x)sinh(y)*i` for `z = x + yi`.
 cos :: fn(z: Complex(f64)) -> Complex(f64)
 ```
 
-The cosine: `cos(x)cosh(y) - sin(x)sinh(y)*i` for `z = x + yi`.
+The cosine, `cosh(i*z)`: `cos(x)cosh(y) - sin(x)sinh(y)*i` for `z = x + yi`. It is
+entire, so it has no branch cut, and its special values follow from `cosh` (C99
+Annex G): `cos(+-0 + yi)` is `cosh(y)` with a zero imaginary part signed like
+`-y*x`; `cos(x +- 0i)` for an infinite or NaN `x` is `NaN -+ 0i`; `cos(x + yi)`
+for an infinite `y` is `inf*cos(x) - y*sin(x)*i` for a finite non-zero `x` and
+`inf + NaN*i` for an infinite or NaN `x`.
 
 ### `sinh`
 

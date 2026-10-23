@@ -1,7 +1,7 @@
-// std/complex: tan, sinh, cosh, tanh and the inverse functions asin, acos, atan, asinh, acosh and
-// atanh. Ordinary arguments in every quadrant, both sides of every branch cut (signed zero parts),
-// the special values of C99 Annex G.6 and huge or tiny parts. Results are printed with the
-// shortest round-trip representation, so the expected output pins the exact bits.
+// std/complex: sin, cos, tan, sinh, cosh, tanh and the inverse functions asin, acos, atan,
+// asinh, acosh and atanh. Ordinary arguments in every quadrant, both sides of every branch cut
+// (signed zero parts), the special values of C99 Annex G.6 and huge or tiny parts. Results are
+// printed with the shortest round-trip representation, so the expected output pins the exact bits.
 math :: import "std/math"
 cx :: import "std/complex"
 
@@ -72,6 +72,8 @@ specials :: fn() -> [49]Complex(f64) =>
 )
 
 all_funcs :: fn(z: Complex(f64)) needs Out {
+    show("sin", z, cx.sin(z))
+    show("cos", z, cx.cos(z))
     show("tan", z, cx.tan(z))
     show("sinh", z, cx.sinh(z))
     show("cosh", z, cx.cosh(z))
@@ -119,6 +121,9 @@ test_overflow_edge :: fn() needs Out {
         show("cosh", z, cx.cosh(z))
         show("tanh", z, cx.tanh(z))
         show("tan", z, cx.tan(z))
+        rot := c(-z.im, z.re)
+        show("sin", rot, cx.sin(rot))
+        show("cos", rot, cx.cos(rot))
     }
 }
 
