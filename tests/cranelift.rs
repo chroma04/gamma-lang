@@ -50,9 +50,9 @@ fn gamma(cwd: &PathBuf, args: &[&str]) -> Out {
 fn backend_option() {
     let d = dir("option");
     std::fs::write(d.join("hi.gm"), "main :: fn() needs Out { print(\"hi\\n\") }\n").unwrap();
-    let out = gamma(&d, &["run", "--backend=gcc", "hi.gm"]);
+    let out = gamma(&d, &["run", "--backend=llvm", "hi.gm"]);
     assert!(!out.ok);
-    assert!(out.stderr.contains("c, cranelift, llvm or interp"), "{}", out.stderr);
+    assert!(out.stderr.contains("c, cranelift or interp"), "{}", out.stderr);
     if !supported() {
         return;
     }

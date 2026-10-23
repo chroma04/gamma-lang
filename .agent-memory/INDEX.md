@@ -1,10 +1,6 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-23) — PRs #1–#68 merged
-- s33 (branch dev): toy LLVM back end `--backend=llvm` (subset; textual IR + clang) and
-  bench/backends/ + scripts/bench-backends.py; verdict in docs/llvm-experiment.md and
-  decisions/037: LLVM -O2 ≈ C-via-clang, 1.1–4.6× over Cranelift; not worth a full back end.
-  Natural follow-up: TIR range-check elision + small-fn inlining for Cranelift/VM.
+## State (2026-10-20) — PRs #1–#62 merged
 - s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
   in roadmap/review-2026-10-20.md (P0/P1, most P2/P3 fixed; rest listed there). Fuzz
   targets in fuzz/ (manifest, archive; seeds via fuzz/seed.sh). New infra:
@@ -33,8 +29,9 @@
 
 ## Next steps
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
-1. CHANGELOG has `## 0.1.0 - 2026-10-20` (PR #63 merged) and an Unreleased section (s33).
-   User tags v0.1.0 (if tagged on another day, fix the date).
+1. CHANGELOG: Unreleased folded into `## 0.1.0 - 2026-10-20` (refreshed summary + the
+   detailed lists "since the feature set was frozen 2026-10-16"); no Unreleased section
+   now. User merges PR #63, then tags v0.1.0 (if tagged on another day, fix the date).
    User: enable private vulnerability reporting (SECURITY.md links it).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
@@ -46,9 +43,9 @@
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–037, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–036, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 LLVM experiment. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
 - gotchas/        environment.md

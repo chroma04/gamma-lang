@@ -364,10 +364,6 @@ impl Proto {
 /// the modules of its package that it imports (all of them with `--all`), with captured
 /// output (§3.8). A failing test's output and failure reason are printed below its line.
 pub fn run(opts: &Options, kind: Kind) -> ExitCode {
-    if opts.llvm {
-        eprintln!("gamma: the experimental LLVM back end builds and runs programs only; use another `--backend`");
-        return ExitCode::from(2);
-    }
     let Some(path) = &opts.file else {
         eprintln!("gamma: no input file\n\n{}", USAGE);
         return ExitCode::from(2);
