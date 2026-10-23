@@ -155,7 +155,7 @@ slices_demo :: fn() needs Out {
 
 Slicing checks `lo <= hi <= len`. Slicing a mutable place gives `[]T`; slicing an immutable binding or a `const` view gives `[]const T`, and `[]T` converts to `[]const T` implicitly. Slicing an array requires a *place* (a named variable, a field, `p^`, and so on); there are no hidden temporaries.
 
-Useful methods on arrays and slices (full list in §21.3 of the [specification][s21]): `get(i)`, `first()`, `last()` (all give optionals), `fill(x)`, `copy_from(src)`, `swap(i, j)`, `index_of(x)`, `sort()`, `sort_by(less)`, `sort_by_key(key)`, `min()`, `max()`, `binary_search(x)`, and `cursor()` ([chapter 8](08-iteration.md)). Sorting is in place and allocates nothing.
+Useful methods on arrays and slices (full list in §21.3 of the [specification][s21]): `get(i)`, `first()`, `last()` (all give optionals), `fill(x)`, `copy_from(src)`, `swap(i, j)`, `index_of(x)`, `sort()`, `sort_by(less)`, `sort_by_key(key)`, `min()`, `max()`, `binary_search(x)`, `upper_bound(x)`, `is_sorted()`, `reverse()`, `rotate_left(k)`, `rotate_right(k)`, `dedup()`, `partition(pred)`, `select_nth(n)`, and `cursor()` ([chapter 8](08-iteration.md)). Sorting and the other reorderings are in place and allocate nothing.
 
 ```gamma
 largest_two :: fn(scores: []i32) -> (i32, i32) {

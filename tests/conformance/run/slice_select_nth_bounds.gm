@@ -1,0 +1,9 @@
+//! exit: 134
+// `select_nth` needs an index less than the length (§21.3): a checked precondition.
+main :: fn() needs Out {
+    xs := [_]i32(3, 1, 2)
+    xs.select_nth(1)
+    print("{}\n", xs[1])
+    xs.select_nth(3)
+    print("not reached\n")
+}

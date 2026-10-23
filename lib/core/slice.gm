@@ -111,7 +111,7 @@ heap_sort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
 
 // Moves a median-of-three pivot of `s` (at least 3 elements) to `s[0]`, partitions the
 // rest around it and puts it between the two parts. Returns the pivot's final index.
-partition :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) -> usize {
+pivot_partition :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) -> usize {
     n := s.len
     a: usize = 0
     b := n / 2
@@ -160,7 +160,7 @@ introsort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
         } else if depth is 0 {
             heap_sort(s[lo..hi], less)
         } else {
-            p := lo + partition(s[lo..hi], less)
+            p := lo + pivot_partition(s[lo..hi], less)
             depth -= 1
             if p - lo < hi - (p + 1) {
                 los[n] = p + 1
@@ -302,6 +302,109 @@ merge_sort :: fn(T: type, s: []T, less: fn(a, b: ^const T) -> bool) {
     }
 }
 
+/// Selects the element that would be at index `n` if `s` were sorted, and puts it there,
+/// with no greater element before it and no smaller one after it (not stable). `n` must
+/// be less than `s.len` (checked).
+pub select_nth :: fn(T: type, s: []T, n: usize) where Ord(T) {
+    introselect(s, n, fn(a, b: ^const T) => a^ < b^)
+}
+
+/// Like `select_nth`, with the order given by `less`.
+pub select_nth_by :: fn(T: type, s: []T, n: usize, less: fn(a, b: ^const T) -> bool) {
+    introselect(s, n, less)
+}
+
+// Quickselect that falls back to heapsort when a range has been partitioned too often,
+// so its time is O(n) on average and O(n log n) at worst.
+introselect :: fn(T: type, s: []T, n: usize, less: fn(a, b: ^const T) -> bool) {
+    assert(n < s.len, "select_nth needs an index less than the length")
+    depth: usize = 0
+    m := s.len
+    while m > 1 {
+        m /= 2
+        depth += 2
+    }
+    lo: usize = 0
+    hi := s.len
+    while hi - lo > SMALL {
+        if depth is 0 {
+            heap_sort(s[lo..hi], less)
+            return
+        }
+        p := lo + pivot_partition(s[lo..hi], less)
+        depth -= 1
+        if p is n { return }
+        if n < p { hi = p } else { lo = p + 1 }
+    }
+    insertion_sort(s[lo..hi], less)
+}
+
+/// Reverses the order of the elements.
+pub reverse :: fn(T: type, s: []T) {
+    reverse_range(s, 0, s.len)
+}
+
+/// Moves every element `k` places towards the front, the first `k` going to the end.
+/// `k` must not exceed `s.len` (checked).
+pub rotate_left :: fn(T: type, s: []T, k: usize) {
+    assert(k <= s.len, "rotate_left needs a count not greater than the length")
+    rotate(s, 0, k, s.len)
+}
+
+/// Moves every element `k` places towards the end, the last `k` going to the front.
+/// `k` must not exceed `s.len` (checked).
+pub rotate_right :: fn(T: type, s: []T, k: usize) {
+    assert(k <= s.len, "rotate_right needs a count not greater than the length")
+    rotate(s, 0, s.len - k, s.len)
+}
+
+/// Moves the first element of each run of equal adjacent elements to the front, in
+/// order, and returns how many there are: `s[0..n]` is `s` without repeats, if `s` was
+/// sorted. The rest of `s` holds the other elements, in an unspecified order.
+pub dedup :: fn(T: type, s: []T) -> usize where Eq(T) {
+    if s.len is 0 { return 0 }
+    n: usize = 1
+    for i in 1..s.len {
+        if s[i] is not s[n - 1] {
+            s.swap(n, i)
+            n += 1
+        }
+    }
+    return n
+}
+
+/// Moves the elements for which `pred` holds before the others and returns how many
+/// there are (not stable).
+pub partition :: fn(T: type, s: []T, pred: fn(x: ^const T) -> bool) -> usize {
+    i: usize = 0
+    j := s.len
+    while true {
+        while i < j and pred(&s[i]) { i += 1 }
+        while i < j and not pred(&s[j - 1]) { j -= 1 }
+        if i >= j { break }
+        s.swap(i, j - 1)
+        i += 1
+        j -= 1
+    }
+    return i
+}
+
+/// Whether no element is less than the one before it.
+pub is_sorted :: fn(T: type, s: []const T) -> bool where Ord(T) {
+    for i in 1..s.len {
+        if s[i] < s[i - 1] { return false }
+    }
+    return true
+}
+
+/// Whether `less` holds between no element and the one before it.
+pub is_sorted_by :: fn(T: type, s: []const T, less: fn(a, b: ^const T) -> bool) -> bool {
+    for i in 1..s.len {
+        if less(&s[i], &s[i - 1]) { return false }
+    }
+    return true
+}
+
 /// The index of the first element equal to `x`.
 pub index_of :: fn(T: type, s: []const T, x: T) -> ?usize where Eq(T) {
     for i in 0..s.len {
@@ -352,6 +455,19 @@ pub binary_search :: fn(T: type, s: []const T, x: T) -> (found: bool, at: usize)
         if s[mid] < x { lo = mid + 1 } else { hi = mid }
     }
     return (found: lo < s.len and s[lo] is x, at: lo)
+}
+
+/// The index of the first element of the sorted `s` that is greater than `x` (`s.len` if
+/// there is none). With `binary_search`, which gives the first one not less than `x`, it
+/// bounds the elements equal to `x`.
+pub upper_bound :: fn(T: type, s: []const T, x: T) -> usize where Ord(T) {
+    lo: usize = 0
+    hi := s.len
+    while lo < hi {
+        mid := lo + (hi - lo) / 2
+        if x < s[mid] { hi = mid } else { lo = mid + 1 }
+    }
+    return lo
 }
 
 /// Whether `s` is well-formed UTF-8.
