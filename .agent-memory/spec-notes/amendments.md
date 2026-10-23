@@ -89,3 +89,7 @@
   syntactic, `~`; A.3/A.5 `needs` grammar; §21.5 hash_map; §13.4, §15.2, §7.6 explanations; C.8 rows.
 - s30 WASI (decisions/034): `Os` gains `.Wasi`; new §3.7.2 "Hosts without some services"
   (no processes/sockets/threads → `IoError.Unsupported`; fibers work); `IoError.Unsupported`.
+- s33: §5.3.1 Complex(T), §5.6.3 `#vec [N]T` math vectors, §7.4.7 their operators; §16.3
+  Float implies Neg; §7.5/§16.3 math vectors not ordered; §19.1 table rows; §20.2 `#vec`;
+  A grammar `#vec`; C.2 bullets; C.8 matrices/quaternions/scalar-add/bounded-array rows
+  (decisions/037). "vector" alone in the spec still means `#simd`.

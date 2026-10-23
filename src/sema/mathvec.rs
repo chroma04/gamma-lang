@@ -148,12 +148,17 @@ impl<'a, 's> FnCx<'a, 's> {
                     }
                     _ => String::new(),
                 };
-                self.error(span, format!("`{}` takes two `{}`, not `{}` and `{}`{}", op.as_str(), agg, lt, rt, hint));
+                let shown = |t: Ty| if t.has_infer() { "a literal".to_string() } else { format!("`{}`", t) };
+                let (l, r) = (shown(lt), shown(rt));
+                self.error(span, format!("`{}` takes two `{}`, not {} and {}{}", op.as_str(), agg, l, r, hint));
                 return error_expr(span);
             }
             if self.infer.unify(other, elem).is_err() {
                 let other = self.infer.resolve(other);
-                self.error(span, format!("`{}` scales `{}` by a `{}`, not by a `{}`", op.as_str(), agg, elem, other));
+                let shown = if other.has_infer() { "this literal".to_string() } else { format!("`{}`", other) };
+                let msg =
+                    format!("`{}` scales `{}` by its element type `{}`, not by {}", op.as_str(), agg, elem, shown);
+                self.error(span, msg);
                 return error_expr(span);
             }
         }
