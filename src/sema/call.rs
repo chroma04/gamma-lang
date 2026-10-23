@@ -1030,6 +1030,8 @@ impl<'a, 's> FnCx<'a, 's> {
         let Some((pieces, specs, values, mut stmts)) = self.template_args(&bytes, template.span, rest, span) else {
             return error_expr(span);
         };
+        // A `#soa` slice is written as its columns, not its pointers (§5.6.4).
+        let values = values.into_iter().map(|v| self.soa_columns_tuple(v)).collect();
         let write = mk(Ty::unit(), tir::ExprKind::Write { sink, pieces, specs, args: values }, span);
         if stmts.is_empty() {
             return write;

@@ -14,6 +14,9 @@ fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
 impl<'a, 's> FnCx<'a, 's> {
     /// `S(f: v, …, ..spread)` for a struct type `S`.
     pub fn construct_struct(&mut self, ty: Ty, args: &[ast::Arg], span: Span) -> Expr {
+        if let Some(info) = self.sema.soa_info(ty) {
+            return self.soa_construct(ty, info, args, span);
+        }
         if let Some(f) = self.hidden_field(ty) {
             self.error(
                 span,
@@ -178,7 +181,7 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// A constructor field or argument value: `---` for plain data, else coerced.
-    fn field_value(&mut self, e: &ast::Expr, ty: Ty) -> Expr {
+    pub(super) fn field_value(&mut self, e: &ast::Expr, ty: Ty) -> Expr {
         if let ast::ExprKind::Uninit = e.kind {
             if !self.is_plain_data(ty) {
                 self.error(e.span, super::func::uninit_message(ty));
@@ -651,6 +654,6 @@ fn is_constant(e: &Expr) -> bool {
 }
 
 /// "1 is" or "3 are", for a count of given values.
-fn given(n: usize) -> String {
+pub(super) fn given(n: usize) -> String {
     if n == 1 { "1 is".to_string() } else { format!("{} are", n) }
 }

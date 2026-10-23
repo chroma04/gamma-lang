@@ -179,6 +179,13 @@ impl<'a, 's> FnCx<'a, 's> {
     fn vector_construction(&mut self, attrs: &[ast::Attribute], inner: &ast::Expr, span: Span) -> Expr {
         let Some(ExprKind::Call { args, .. }) = construction_call(inner).map(|c| &c.kind) else { unreachable!() };
         let module = self.module;
+        if attrs.iter().any(|a| a.name.name.as_str() == "soa") {
+            let t = self.sema.soa_type_expr(module, &without_call(inner), span);
+            return match self.sema.soa_info(t) {
+                Some(info) => self.soa_construct(t, info, args, span),
+                None => error_expr(span),
+            };
+        }
         let t = self.sema.vector_type(module, attrs, &without_call(inner), span);
         match t.vector_parts().or(t.math_vector_parts()) {
             Some((n, elem)) => self.construct_array(Some(t), Some(n), elem, args, span),
@@ -677,6 +684,13 @@ impl<'a, 's> FnCx<'a, 's> {
         if self.reject_second_class(&v, "the target of `&`") {
             return error_expr(span);
         }
+        if self.sema.soa_gathers.contains(&v.span) {
+            self.error(
+                span,
+                "an element of a `#soa` has no address, since its fields are stored apart (§5.6.4); take the address of a field: `&a[i].f`",
+            );
+            return error_expr(span);
+        }
         if let tir::ExprKind::Field { base, .. } = &v.kind
             && let TyKind::Adt(id, _) = base.ty.kind()
             && matches!(self.sema.prog.adts.get(id).map(|d| &d.kind), Some(tir::AdtKind::Struct { bits: Some(_), .. }))
@@ -808,6 +822,13 @@ impl<'a, 's> FnCx<'a, 's> {
                     return self.is_pattern_test(lhs, &p, op == B::IsNot, span);
                 }
                 let r = self.expr(rhs, Some(lhs.ty));
+                // `#soa` slices compare by content, column by column (§5.6.4).
+                if let Some(info) = self.soa_of(&lhs).filter(|i| i.len.is_none())
+                    && let Some(ri) = self.soa_of(&r).filter(|i| i.len.is_none() && i.elem == info.elem)
+                {
+                    let info = if info.is_const { info } else { ri };
+                    return self.soa_eq(lhs, r, info, op == B::IsNot, span);
+                }
                 let (l, r) = self.equalize(lhs, r, span);
                 mk(Ty::bool(), tir::ExprKind::Eq { lhs: Box::new(l), rhs: Box::new(r), negated: op == B::IsNot }, span)
             }
@@ -1130,6 +1151,15 @@ impl<'a, 's> FnCx<'a, 's> {
 
     fn index(&mut self, base: &ast::Expr, index: &ast::Expr, span: Span) -> Expr {
         let b = self.expr(base, None);
+        self.index_value(b, index, span)
+    }
+
+    /// `b[index]` with the base already checked.
+    pub fn index_value(&mut self, b: Expr, index: &ast::Expr, span: Span) -> Expr {
+        let b = self.soa_deref(b);
+        if let Some(info) = self.soa_of(&b) {
+            return self.soa_element(b, info, index, span);
+        }
         let b = self.auto_deref_array(b);
         if let Some(e) = self.infer.resolve(b.ty).enum_index() {
             return self.enum_array_index(b, e, index, span);
@@ -1143,7 +1173,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 let base = Box::new(mk(it, tir::ExprKind::Local(r), span));
                 mk(elem, tir::ExprKind::Field { base, index: n }, span)
             };
-            let s = self.slice_of(b, base.span, Some(field(0)), Some(field(1)), inclusive, span);
+            let s = self.slice_of(b, span, Some(field(0)), Some(field(1)), inclusive, span);
             let ty = s.ty;
             let block = tir::Block { stmts: vec![tir::Stmt::Let { local: r, init: Some(i) }], tail: Some(s), span };
             return mk(ty, tir::ExprKind::Block(Box::new(block)), span);
@@ -1293,7 +1323,21 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(t) = self.type_of_name(base) {
             return self.construct_variant(t, name, None, span);
         }
-        let b = self.expr(base, None);
+        // `a[i].f` on a `#soa`: element `i` of column `f`, without gathering the element.
+        let b = if let ExprKind::Index { base: inner, index } = &base.kind {
+            let ib = self.expr(inner, None);
+            let ib = self.soa_deref(ib);
+            if let Some(info) = self.soa_of(&ib) {
+                return self.soa_element_field(ib, info, index, name, span);
+            }
+            self.index_value(ib, index, base.span)
+        } else {
+            self.expr(base, None)
+        };
+        let b = self.soa_deref(b);
+        if let Some(info) = self.soa_of(&b) {
+            return self.soa_member(b, info, name, span);
+        }
         let b = self.auto_deref(b);
         let bt = self.infer.resolve(b.ty);
         match (bt.kind(), name.name.as_str()) {
@@ -1748,6 +1792,8 @@ impl<'a, 's> FnCx<'a, 's> {
             return error_expr(span);
         };
         let x = self.expr(x, None);
+        // A `#soa` slice hashes by its contents, as `is` compares it (§5.6.4).
+        let x = self.soa_columns_tuple(x);
         let xt = self.infer.resolve(x.ty);
         if !xt.has_infer() && !xt.is_error() && !self.eq_allowed(xt) {
             self.error(span, format!("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", xt));
@@ -2432,6 +2478,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let target = self.infer.resolve(target);
         if src == target || src.is_error() || target.is_error() {
             return e;
+        }
+        if let Some(c) = self.soa_coerce(&e, src, target) {
+            return c;
         }
         // `z: Complex(f64) = 1`: a real constant where a complex number is expected (§6.4).
         if let Some(elem) = self.sema.complex_of(target)

@@ -395,6 +395,21 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(span, format!("the complex operation `{}` is missing from the core library", name));
             return error_expr(span);
         };
+        let mut args = args;
+        if swap {
+            args.swap(0, 1);
+            // The arguments are evaluated in the order written: bind the first one first.
+            let mut stmts = vec![];
+            let first = self.bind_temp(args.remove(1), &mut stmts);
+            args.insert(1, first);
+            let call = self.core_call_values(f, args, span);
+            return mk(call.ty, tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(call), span })), span);
+        }
+        self.core_call_values(f, args, span)
+    }
+
+    /// A call of the core function `f` on checked arguments, evaluated in order.
+    pub fn core_call_values(&mut self, f: crate::tir::FnId, args: Vec<Expr>, span: Span) -> Expr {
         let mut stmts = vec![];
         let mut written = vec![];
         for v in args {
@@ -407,9 +422,6 @@ impl<'a, 's> FnCx<'a, 's> {
             let id = ast::Ident { name: local_name, span: vsp };
             let e = ast::Expr { id: ast::NodeId(u32::MAX), kind: ast::ExprKind::Ident(id), span: vsp };
             written.push(ast::Arg { kind: ArgKind::Positional(e), span: vsp });
-        }
-        if swap {
-            written.swap(0, 1);
         }
         let call = self.generic_call(f, &written, span);
         let ty = call.ty;

@@ -18,6 +18,11 @@ Versions and what each kind of change means are described in
 - **Math vectors**: `#vec [N]T`, with `N` from 2 to 4 and an integer or float `T`, an array
   layout that is C-compatible, element-wise operators, scalar `*` and `/`, and the methods
   `dot`, `cross`, `norm`, `min`, `max` and `abs` (§5.6.3, §7.4.7).
+- **Structure-of-arrays**: `#soa [N]S` and `#soa []S` store a struct type `S` by field, one
+  array per field. `a[i]` gathers or stores a whole element, `a[i].f` is a field of one
+  element (a place), `a.f` a whole column; slicing, `&a` to a slice, `for`, `is` and `@hash`
+  work as for arrays and slices; `T.make(n)` and `s.free()` allocate and release a `#soa`
+  slice in one block (§5.6.4).
 - `Float(T)` now implies `Neg(T)`, so unary minus works in generic code over floats.
 - Examples `nbody.gm` (math vectors) and `julia.gm` (complex numbers).
 - An array `[N]T` or a vector spreads into its `N` elements like an unnamed tuple:

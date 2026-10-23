@@ -1,0 +1,39 @@
+//! stage: check
+// Misuse of `#soa` arrays and slices (§5.6.4).
+P :: struct { x: i32, y: f32 }
+Q :: struct { len: usize }
+E :: struct {}
+B :: #bits(u8) struct { a: u4, b: u4 }
+
+Ints :: #soa [4]i32 //~ ERROR `#soa` stores the fields of a struct, and `i32` is not a struct
+HasLen :: #soa []Q //~ ERROR its field `len` would hide the length
+Empty :: #soa []E //~ ERROR `#soa` needs a struct with fields
+Bits :: #soa []B //~ ERROR the fields of a `#bits` struct have no address
+Arrays :: #soa [2]P
+Ps :: #soa []P
+
+by_ref :: fn(p: ^P) {}
+
+generic :: fn(T: type, xs: #soa []T) {} //~ ERROR `#soa` needs a concrete struct type, not `T`
+
+main :: fn() needs Alloc {
+    a := Arrays(fill: P(x: 0, y: 0))
+    c: #soa []const P = &a
+    k :: Arrays(fill: P(x: 1, y: 1))
+    _ = &a[0] //~ ERROR an element of a `#soa` has no address
+    _ = a[0].z //~ ERROR type `P` has no field `z`
+    _ = a.z //~ ERROR type `#soa [2]P` has no column `z`
+    c[0] = P(x: 1, y: 2) //~ ERROR cannot assign to an element of a `#soa []const` slice
+    c[0].x = 1 //~ ERROR cannot assign to an immutable place
+    k[0] = P(x: 1, y: 2) //~ ERROR cannot assign to an element of an immutable `#soa` array
+    a[0] += a[0] //~ ERROR an element of a `#soa` is assigned whole with `=`
+    a.sort() //~ ERROR `#soa [2]P` has no method `.sort`
+    _ = a < a //~ ERROR values of type `#soa [2]P` are not ordered
+    a.free() //~ ERROR only a `#soa` slice from `.make(n)` is freed, not an array
+    _ = Ps(x: 1) //~ ERROR `#soa []P` is made by slicing an array or by `.make(n)`, not constructed
+    _ = Arrays(P(x: 1, y: 1)) //~ ERROR `#soa [2]P` needs exactly 2 elements, but 1 is given
+    _ = Arrays.make(1) //~ ERROR `.make(n)` makes a `#soa` slice; `#soa [2]P` is an array
+    a[0].by_ref() //~ ERROR must be a variable, not a temporary
+    m: Ps = &c //~ ERROR expected `#soa []P`, found `^#soa []const P`
+    _ = m
+}

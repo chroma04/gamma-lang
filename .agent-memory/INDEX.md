@@ -5,7 +5,7 @@
   Odin-feature verdicts there too). Float(T) implies Neg. Done + merged: std/complex,
   conformance tests (run/math_vector*, run/complex, run/std_complex, check/*_errors),
   guide sections in 04-types.md, examples nbody.gm + julia.gm, CHANGELOG Unreleased.
-  Imaginary literals `4j`/`2j32` done (decisions/039). Next on this thread: SOA if wanted.
+  Imaginary literals `4j`/`2j32` done (decisions/039). `#soa` arrays/slices done (040).
   tree-sitter CLI: `npm ci` in editors/tree-sitter-gamma works (node 22 in /opt/node22).
 - s34 (branch dev): HashMap moved to std/collections/hash_map; deprecated universe aliases
   for one release (decisions/038 — remove after the next release). Constraints stay

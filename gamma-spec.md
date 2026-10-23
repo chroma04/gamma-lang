@@ -738,6 +738,41 @@ lerp :: fn(a, b: Vec3, t: f32) -> Vec3 => a + (b - a) * t
 
 *Rationale:* the operators cost `N` scalar operations, at most four, with the checks of the scalar operator for each element (§18.2), so they hide no loop (C.3); this is why the length is bounded, and why ordinary arrays have no arithmetic. Matrices and quaternions are left to libraries (C.8).
 
+#### 5.6.4 Structure-of-arrays
+
+`#soa [N]S`, for a struct type `S`, is an array of `N` values of `S` stored **by field**: one array `[N]F` for each field `f: F` of `S`. `#soa []S` and `#soa []const S` are the slices of such arrays. They replace the parallel arrays a C program keeps in step by hand, which a library cannot generate from a struct, since Gamma has no field reflection (C.8).
+
+```
+Particle :: struct { pos, vel: #vec [2]f32; alive: bool }
+Particles :: #soa []Particle
+
+step :: fn(ps: Particles, dt: f32) {
+    for i in 0..ps.len {
+        if ps[i].alive { ps[i].pos += ps[i].vel * dt }    // touches three columns
+    }
+}
+
+simulate :: fn(n: usize) -> AllocError!() needs Alloc + Out {
+    ps := try Particles.make(n)
+    defer ps.free()
+    for i in 0..n { ps[i] = Particle(pos: #vec [2]f32(fill: 0), vel: #vec [2]f32(1, 0), alive: true) }
+    step(ps, 0.5)
+    print("{}\n", ps[0].pos)                             // [0.5, 0]
+    xs: []#vec [2]f32 = ps.pos                           // a whole column, contiguous
+}
+```
+
+- **Element type.** `S` is a concrete struct type that is not a `#bits` struct, has at least one field and has no field named `len`.
+- **Layout.** `#soa [N]S` has the layout of a struct with one field `f: [N]F` for each field of `S`, in declaration order (§5.10.4), and is plain data when `S` is. `#soa []S` is a many-pointer `[^]F` (or `[^]const F`) for each field, in the same order, followed by `len: usize`; like a slice it is not C-compatible (§19.1).
+- **Elements.** `a[i]` is element `i`, with the bounds check of indexing (§18.2). Read, it gathers the fields into an `S`; assigned (`a[i] = s`), it stores each field. It has no address: `&a[i]`, and a method call on it whose receiver must be a `^S`, are compile errors. `a[i].f` is element `i` of column `f`, an ordinary place (§7.2) of type `F`: it is read, assigned, extended by fields and indexing (`a[i].pos[0]`) and has an address.
+- **Columns.** `a.f` is the column of field `f`: for an array the array `[N]F` itself (a place when `a` is one), for a slice the slice `[]F` (`[]const F` for `#soa []const S`). `a.len` is the number of elements.
+- **Slicing and coercion.** `a[lo..hi]` and `a[..]` of an array place or a slice give a `#soa []S`, checked as slicing is (§7.9). `^#soa [N]S` coerces to `#soa []S`, `^const #soa [N]S` and `#soa []S` to `#soa []const S`, as for arrays (§5.5).
+- **Construction.** `#soa [N]S(e1, …, eN)`, `#soa [N]S(fill: s)`, and `---` when `S` is plain data.
+- **Iteration and comparison.** `for s in a` gathers each element in order. `is` compares the elements (for slices also the lengths), so it compares the columns; `@hash` agrees with it (§16.8). They are not ordered, and have none of the array methods. Formatting writes the columns: an array as `#soa [2]P(x: [1, 2], y: [3, 4])`, a slice as `(x: [1, 2], y: [3, 4])` (§21.6.1).
+- **Allocation.** For a slice type `T :: #soa []S`, `T.make(n) -> AllocError!T needs Alloc` allocates `n` elements, uninitialized as by `make` (§21.2), in one block that holds every column, each aligned for its type; `s.free() needs Alloc` releases it, and must be given exactly what `make` returned.
+
+*Rationale:* the layout is one a C programmer would write (P1), and the costs are those of the C: `a[i].f` is one access, `a[i]` as a whole one per field (P2). Elements are not addressable because no `S` exists in memory; that rule is local to the expression (P5).
+
 ### 5.7 Slices
 
 `[]T` and `[]const T` are a pair `(ptr: [^]T, len: usize)` (`[^]const T` for the `const` form), laid out as a struct with those two fields in that order. The fields can be read but not assigned; build a slice by slicing (§7.9).
@@ -2691,6 +2726,7 @@ Attributes precede the declaration, field, or type literal they modify. Intrinsi
 | `#c_union` | union literal | untagged C union | 5.11.1 |
 | `#simd` | array type `[N]T` | a vector of `N` lanes | 5.6.2 |
 | `#vec` | array type `[N]T` | a math vector of `N` elements | 5.6.3 |
+| `#soa` | array type `[N]S`, slice type `[]S` | stored by field: one array per field of the struct `S` | 5.6.4 |
 | `#export("sym")` | top-level function | external C-ABI symbol | 19.4 |
 | `#trap_hook` | top-level function | called by every trap on a freestanding target | 3.7.1 |
 | `#link_name("sym")` | foreign member | symbol name | 19.2 |
@@ -3198,6 +3234,7 @@ prefix_type   = '?' prefix_type
               | '[' expr ']' prefix_type                        // [N]T; [E]T when expr names an enum type (§5.6.1)
               | '#simd' '[' expr ']' prefix_type                // a vector (§5.6.2)
               | '#vec' '[' expr ']' prefix_type                 // a math vector (§5.6.3)
+              | '#soa' '[' [ expr ] ']' [ 'const' ] prefix_type   // stored by field (§5.6.4)
               | '[' '_' ']' prefix_type                         // only in array constructors
               | { attribute } '^' fn_type                       // #callconv (§19.2)
               | fn_type
@@ -3436,6 +3473,7 @@ A Gamma signature `fn(path: string) -> LoadError!Config needs Alloc + Fs` says w
 - **Vectors are arrays with lane-wise operators** (§5.6.2). Their layout is fixed (the array of the lanes, aligned to its size), so they are plain data like any array. They are the way to apply an operator to many values in one instruction; ordinary arrays have no arithmetic, since `+` on an array of any length would be a loop (P2). Lane comparisons are methods that give masks, so `is` keeps its one meaning (C.5).
 - **Complex numbers are a struct with operators** (§5.3.1): the layout of C's `_Complex`, the behavior of a struct, and operators that are fixed float formulas. Division is Smith's algorithm rather than C's Annex G, whose recovery of infinities makes a multiplication a library call.
 - **Math vectors are arrays with element-wise operators** (§5.6.3): the layout of `[N]T`, so they belong in C structs and buffers, and at most four elements, so an operator is at most four scalar operations. They differ from vectors in what they promise: a vector promises one instruction and an alignment, a math vector a C layout. Both follow the same operator rules.
+- **Structure-of-arrays is a layout of arrays and slices** (§5.6.4): one array per field, the layout of the parallel arrays a C program would declare. Indexing gives the element by value and fields of elements as places, so no element needs an address it does not have.
 - **Arbitrary-width integers** (`u1` … `u128`, as C23's `_BitInt` up to the widths machines compute with) make protocol fields and bit manipulation exact, with storage rules that keep them addressable; packing is opt-in through `#bits` structs, whose layout is fully specified, unlike C bitfields (§5.2, §5.10.5).
 - **`---` only for plain data.** Reading uninitialized integers gives an unspecified value, never UB; types with invariants (`bool`, unions, pointers) must be initialized, so forgetting to cannot create an invalid value (§4.4, §5.19).
 - **One-shot continuations on caller-provided stacks.** Multi-shot continuations would copy stacks and break pointers into them. One-shot ones allocate nothing and keep every pointer valid (§14). This is also where the effects of Gamma stop: it covers exactly the one-shot uses of algebraic effects — generators, async I/O and schedulers, early exit, dependency injection — and leaves out the multi-shot ones, such as backtracking by re-running a continuation.
@@ -3531,7 +3569,9 @@ The first four already exist, each with its cost and its code visible where it i
 | Implicit allocation for closures | P2 | second-class closures need none |
 | Macros | one feature per job | compile-time evaluation of ordinary functions covers tables and constants; `when` covers configuration |
 | Effect operations as bare names (in the universe scope, or as top-level names of their module) | P3 | a bare `now()` or `log(msg)` hides that it reaches into the context, and operations of different effects could not share a name |
-| Field reflection (`@fields(T)`) | one feature per job, P5 | a field list without the fields' types drives no code, and with them it needs loops whose variable is a type: a compile-time sublanguage (§17). Equality, hashing and printing are derived from structure already (C.6); serialization is code a program writes for its types |
+| Field reflection (`@fields(T)`) | one feature per job, P5 | a field list without the fields' types drives no code, and with them it needs loops whose variable is a type: a compile-time sublanguage (§17). Equality, hashing and printing are derived from structure already (C.6); serialization is code a program writes for its types. The one job reflection would do that ordinary code cannot, storing a struct by field, is `#soa` (§5.6.4) |
+| Growable structure-of-arrays containers, or `#soa` of chunks (AoSoA) in the language | one feature per job | a container is library code over `#soa []S` slices (`make` and `free` are the only allocation the layout needs); a chunked layout is `[K]#soa [N]S` |
+| Addressable elements of a `#soa` | P1 | no `S` exists in memory: `&a[i]` would need a gather into a temporary that writes back, a hidden copy |
 | Target-specific SIMD types and intrinsics | P1, P5 | their layouts and meanings differ by target; `#simd [N]T` has one layout and one meaning everywhere (§5.6.2), and anything beyond it is reached through foreign C or `@asm` (§19) |
 | Integer division of vector lanes | P2 | no target has the instruction, so `/` would hide a loop |
 | Elementwise arithmetic on arrays | P2, one feature per job | `+` would hide a loop of any length; vectors do the job in one instruction (§5.6.2), math vectors for two to four numbers (§5.6.3), loops do the rest |

@@ -1,0 +1,35 @@
+// Allocating `#soa` slices with `T.make(n)` and releasing them with `s.free()` (§5.6.4).
+Body :: struct {
+    mass: f64
+    id: u16
+    tag: u8
+}
+
+Bodies :: #soa []Body
+
+fill :: fn(bs: Bodies) {
+    for i in 0..bs.len { bs[i] = Body(mass: i.to(f64) * 1.5, id: i.trunc(u16), tag: 'a' + i.trunc(u8)) }
+}
+
+main :: fn() -> AllocError!() needs Alloc + Out {
+    bs := try Bodies.make(5)
+    defer bs.free()
+    fill(bs)
+    print("{} {} {}\n", bs.len, bs[4], bs.id)
+    // Each column is aligned for its type, in one block.
+    print("{} {}\n", bs.mass.ptr.addr() % 8, bs.id.ptr.addr() % 2)
+    heavy: f64 = 0
+    for b in bs { if b.mass > 2 { heavy += b.mass } }
+    print("{}\n", heavy)
+    // No elements: nothing is allocated.
+    none := try Bodies.make(0)
+    print("{} {}\n", none.len, none)
+    none.free()
+    // A size that overflows is an allocation failure.
+    big := Bodies.make(@max_value(usize) / 4) else e => {
+        print("{}\n", e)
+        return ()
+    }
+    big.free()
+    return ()
+}

@@ -412,3 +412,51 @@ pub next :: fn(T: type, c: ^Cursor(T)) -> ?T {
     c.pos += 1
     return x
 }
+
+// Structure-of-arrays storage (§5.6.4): the columns of `n` elements whose fields have
+// the sizes and alignments given, in one block, each column aligned for its type.
+
+// Writes each column's offset into `offsets`; the block's size and alignment, or `null`
+// if the size overflows.
+soa_extent :: fn(K :: usize, sizes, aligns: [K]usize, n: usize, offsets: ^[K]usize) -> ?(size: usize, align: usize) {
+    off: usize = 0
+    align: usize = 1
+    for k in 0..K {
+        a := aligns[k]
+        if a > align { align = a }
+        start := off +? (a - 1) else return null
+        off = start / a * a
+        offsets[k] = off
+        bytes := sizes[k] *? n else return null
+        off = off +? bytes else return null
+    }
+    return (size: off, align: align)
+}
+
+/// The column pointers of `n` new elements (`T.make(n)` of a `#soa []S`).
+pub soa_alloc :: fn(K :: usize, sizes, aligns: [K]usize, n: usize, site: SourceLocation = @caller_location()) -> AllocError![K] rawptr needs Alloc {
+    offsets := [K]usize(fill: 0)
+    ext := soa_extent(sizes, aligns, n, &offsets) else return !.OutOfMemory
+    ptrs := [K]rawptr(fill: aligns[0].to_ptr(rawptr)?)
+    if ext.size is 0 {
+        for k in 0..K { ptrs[k] = aligns[k].to_ptr(rawptr)? }
+        return ptrs
+    }
+    a := Alloc.current()
+    raw := a.vt.alloc(a.data, ext.size, ext.align) else return !.OutOfMemory
+    tag(raw, a, site)
+    for k in 0..K { ptrs[k] = raw + offsets[k] }
+    return ptrs
+}
+
+/// Releases the block of a `#soa` slice of `n` elements whose first column is at `base`
+/// (`s.free()`).
+pub soa_free :: fn(K :: usize, sizes, aligns: [K]usize, n: usize, base: rawptr, site: SourceLocation = @caller_location()) needs Alloc {
+    offsets := [K]usize(fill: 0)
+    ext := soa_extent(sizes, aligns, n, &offsets) else return
+    if ext.size is 0 { return }
+    a := Alloc.current()
+    p := base.cast([^]u8)
+    @alloc_check(p, a.data, a.vt.cast(rawptr), site.file, site.line, site.column)
+    a.vt.free(a.data, p, ext.size, ext.align)
+}

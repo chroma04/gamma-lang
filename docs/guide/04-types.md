@@ -102,6 +102,41 @@ complex_demo :: fn() needs Out {
 
 A complex number is a struct in every other respect: its parts are fields (`z.im = 0`), and `is` compares the parts as floats. It is not ordered.
 
+### Structure-of-arrays
+
+An array of structs keeps each element's fields together. When a loop reads one or two fields of many elements, a layout that keeps each *field* together is faster: the loop then reads contiguous memory, and a column can be handed to vector code. In C you would declare parallel arrays and keep them in step by hand. In Gamma you write `#soa` before an array or slice type of a struct, and the compiler stores it by field:
+
+```gamma
+V2 :: #vec [2]f32
+
+Particle :: struct {
+    pos, vel: V2
+    alive: bool
+}
+
+Particles :: #soa []Particle
+
+step :: fn(ps: Particles, dt: f32) {
+    for i in 0..ps.len {
+        if ps[i].alive { ps[i].pos += ps[i].vel * dt }
+    }
+}
+
+soa_demo :: fn() -> AllocError!() needs Alloc + Out {
+    ps := try Particles.make(3)           // one block, one column per field
+    defer ps.free()
+    for i in 0..ps.len { ps[i] = Particle(pos: V2(fill: 0), vel: V2(1, 2), alive: i is not 1) }
+    step(ps, 0.5)
+    print("{}\n", ps.pos)                  // [[0.5, 1], [0, 0], [0.5, 1]]
+    print("{}\n", ps[2])                   // Particle(pos: [0.5, 1], vel: [1, 2], alive: true)
+    return ()
+}
+```
+
+`ps[i]` is the whole element: reading it gathers the fields into a `Particle`, and assigning to it stores each field in its column. `ps[i].pos` is one field of one element, an ordinary place you can read, assign and take the address of. The element as a whole has no address, since it is not stored anywhere in one piece, so `&ps[i]` is an error. `ps.pos` is the whole column: a `[]V2` for a slice, or the array `[N]V2` itself for `#soa [N]Particle`.
+
+A `#soa [N]S` array works like an array (`#soa [4]Particle(fill: p)`, `a[1..3]`, `&a` passes it as a `#soa []S`), and a `#soa []S` like a slice; `T.make(n)` allocates one and `s.free()` releases it. `for p in ps` gathers each element in turn. `is` compares elements, and a `#soa` is not ordered.
+
 ## Slices
 
 `[]T` is a pointer and a length. It is what you use in C when you pass `(T *p, size_t n)`, packaged so the two cannot get separated. The fields `.ptr` and `.len` can be read but not assigned. `[]const T` is a read-only view.

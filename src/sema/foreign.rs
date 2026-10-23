@@ -389,6 +389,8 @@ impl<'s> Sema<'s> {
             TyKind::Array { elem, kind, .. } => {
                 in_struct && *kind != crate::types::ArrayKind::Simd && self.is_c_compatible(*elem, true)
             }
+            // A `#soa` slice, like a slice, is not (§5.6.4).
+            TyKind::Adt(id, _) if self.soa.get(id).is_some_and(|s| s.len.is_none()) => false,
             TyKind::Adt(id, _) => match self.prog.adts.get(id).map(|d| &d.kind) {
                 Some(AdtKind::Struct { bits: Some(_), .. }) => true,
                 Some(AdtKind::Struct { fields, .. }) | Some(AdtKind::CUnion { fields }) => {

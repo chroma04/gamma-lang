@@ -102,3 +102,4 @@
   Float implies Neg; §7.5/§16.3 math vectors not ordered; §19.1 table rows; §20.2 `#vec`;
   A grammar `#vec`; C.2 bullets; C.8 matrices/quaternions/scalar-add/bounded-array rows
   (decisions/039). "vector" alone in the spec still means `#simd`.
+- s35: §5.6.4 `#soa` (decisions/040); §20.2 `#soa` row; A grammar; C.2 bullet; C.8 rows (field reflection note, SoA containers/AoSoA, addressable elements).

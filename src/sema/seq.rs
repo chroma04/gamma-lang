@@ -74,6 +74,10 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             _ => b,
         };
+        let b = self.soa_deref(b);
+        if let Some(info) = self.soa_of(&b) {
+            return self.soa_slice(b, info, lo, hi, inclusive, span);
+        }
         let bt = self.infer.resolve(b.ty);
         if bt.enum_index().is_some() && (lo.is_some() || hi.is_some()) {
             self.error(span, format!("`{}` is indexed by its enum, so it is sliced only whole: `a[..]`", bt));
@@ -221,6 +225,10 @@ impl<'a, 's> FnCx<'a, 's> {
     /// slice or a range; `None` if it is none of these.
     pub fn for_each_value(&mut self, f: &ast::ForExpr, src: Expr) -> Option<Expr> {
         let span = f.span;
+        let src = self.soa_deref(src);
+        if let Some(info) = self.soa_of(&src) {
+            return Some(self.soa_for(f, src, info));
+        }
         let st = self.infer.resolve(src.ty);
         let (slice, elem) = match st.kind() {
             TyKind::Slice { elem, .. } => (src, *elem),

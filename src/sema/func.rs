@@ -1311,7 +1311,23 @@ impl<'a, 's> FnCx<'a, 's> {
             let _ = self.expr(value, None);
             return Stmt::Expr(unit(span));
         }
-        let place = self.expr(place_ast, None);
+        // `a[i] = s` on a `#soa`: each field of `s` goes to its column (§5.6.4).
+        let place = if let ExprKind::Index { base, index } = &place_ast.kind {
+            let b = self.expr(base, None);
+            let b = self.soa_deref(b);
+            if let Some(info) = self.soa_of(&b) {
+                if op != ast::AssignOp::Assign {
+                    self.error(
+                        span,
+                        "an element of a `#soa` is assigned whole with `=`; assign to its fields with `a[i].f`",
+                    );
+                }
+                return self.soa_store(b, info, index, value, span);
+            }
+            self.index_value(b, index, place_ast.span)
+        } else {
+            self.expr(place_ast, None)
+        };
         self.require_mutable_place(&place, place_ast.span);
         match op {
             ast::AssignOp::Assign => {
