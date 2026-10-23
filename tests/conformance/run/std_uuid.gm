@@ -1,0 +1,118 @@
+// std/uuid: text form, parsing errors, NIL/MAX, and the v4 and v7 generators with RFC 9562 vectors.
+uuid :: import "std/uuid"
+
+// A `Rand` that supplies fixed bytes, repeating from the start for longer requests.
+Fixed :: struct {
+    bytes: [16]u8
+}
+
+handler Rand for ^Fixed {
+    fill(self, buf) => {
+        for i in 0..buf.len { buf[i] = self.bytes[i % 16] }
+    }
+}
+
+// A `Clock` whose wall time is `ns` nanoseconds since the epoch.
+Wall :: struct {
+    ns: i64
+}
+
+handler Clock for ^Wall {
+    now(self) => Instant(ns: 0)
+    wall(self) => self.ns
+    sleep(self, d) => {}
+}
+
+show :: fn(u: uuid.Uuid) needs Out {
+    buf: [uuid.LEN]u8 = ---
+    print("{}\n", uuid.format(u, buf[..]))
+}
+
+try_parse :: fn(s: string) needs Out {
+    u := uuid.parse(s) else e => {
+        match e {
+            .Syntax(i) => print("syntax error at {}\n", i)
+        }
+        return
+    }
+    buf: [uuid.LEN]u8 = ---
+    print("ok {}\n", uuid.format(u, buf[..]))
+}
+
+main :: fn() needs Out {
+    // Constants.
+    show(uuid.NIL)
+    show(uuid.MAX)
+    print("version {} {}, rfc variant {} {}\n", uuid.version(uuid.NIL), uuid.version(uuid.MAX),
+        uuid.is_rfc_variant(uuid.NIL), uuid.is_rfc_variant(uuid.MAX))
+
+    // Round trips, case, equality.
+    a := uuid.parse("919108f7-52d1-4320-9bac-f847db4148a8") else _ => uuid.NIL
+    show(a)
+    b := uuid.parse("919108F7-52D1-4320-9BAC-F847DB4148A8") else _ => uuid.NIL
+    print("uppercase equal {}\n", a is b)
+    print("bytes {} {} {} {}\n", a.bytes[0], a.bytes[7], a.bytes[8], a.bytes[15])
+    print("version {} rfc {}\n", uuid.version(a), uuid.is_rfc_variant(a))
+    c := uuid.parse("00000000-0000-0000-0000-000000000000") else _ => uuid.MAX
+    print("nil parsed {}\n", c is uuid.NIL)
+    d := uuid.parse("ffffffff-FFFF-ffff-FFFF-ffffffffffff") else _ => uuid.NIL
+    print("max parsed {}\n", d is uuid.MAX)
+    print("not equal {}\n", a is not uuid.NIL)
+    big: [64]u8 = ---
+    print("{}\n", uuid.format(a, big[..]))
+
+    // Parse errors and their positions.
+    try_parse("")
+    try_parse("919108f7")
+    try_parse("919108f7-52d1-4320-9bac-f847db4148a")
+    try_parse("919108f7-52d1-4320-9bac-f847db4148a8")
+    try_parse("919108f7-52d1-4320-9bac-f847db4148a8x")
+    try_parse("919108f7-52d1-4320-9bac-f847db4148a8-")
+    try_parse("g19108f7-52d1-4320-9bac-f847db4148a8")
+    try_parse("919108f7_52d1-4320-9bac-f847db4148a8")
+    try_parse("919108f752d1-4320-9bac-f847db4148a8")
+    try_parse("919108f-752d1-4320-9bac-f847db4148a8")
+    try_parse("919108f7-52d1-4320-9bac-f847db4148ag")
+    try_parse("919108f7-52d1-4320-9bac-f847db4148 8")
+    try_parse("919108f752d143209bacf847db4148a8")
+    try_parse("{919108f7-52d1-4320-9bac-f847db4148a8}")
+    try_parse("urn:uuid:919108f7-52d1-4320-9bac-f847db4148a8")
+
+    // v4: RFC 9562 A.3, from the random bits of the example (version and variant bits
+    // deliberately wrong in the input).
+    r4 := Fixed(bytes: [_]u8(0x91, 0x91, 0x08, 0xf7, 0x52, 0xd1, 0xf3, 0x20, 0xdb, 0xac, 0xf8, 0x47, 0xdb, 0x41, 0x48, 0xa8))
+    with &r4 {
+        u := uuid.v4()
+        show(u)
+        print("v4 is example {} version {} rfc {}\n", u is a, uuid.version(u), uuid.is_rfc_variant(u))
+    }
+    ones := Fixed(bytes: [_]u8(255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255))
+    with &ones { show(uuid.v4()) }
+    zeros := Fixed(bytes: [_]u8(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    with &zeros { show(uuid.v4()) }
+
+    // v7: RFC 9562 A.6. Unix time 0x017F22E279B0 ms = 1645557742000 ms.
+    r7 := Fixed(bytes: [_]u8(0, 0, 0, 0, 0, 0, 0xfc, 0xc3, 0xd8, 0xc4, 0xdc, 0x0c, 0x0c, 0x07, 0x39, 0x8f))
+    w := Wall(ns: 1_645_557_742_000_000_000)
+    with &r7, &w {
+        u := uuid.v7()
+        show(u)
+        ex := uuid.parse("017f22e2-79b0-7cc3-98c4-dc0c0c07398f") else _ => uuid.NIL
+        print("v7 is example {} version {} rfc {}\n", u is ex, uuid.version(u), uuid.is_rfc_variant(u))
+    }
+    // Sub-millisecond parts are dropped; the epoch and a time before it give zero.
+    with &zeros {
+        w2 := Wall(ns: 1_645_557_742_000_999_999)
+        with &w2 { show(uuid.v7()) }
+        w3 := Wall(ns: 999_999)
+        with &w3 { show(uuid.v7()) }
+        w4 := Wall(ns: -5_000_000_000)
+        with &w4 { show(uuid.v7()) }
+        w5 := Wall(ns: 1_000_000)
+        with &w5 { show(uuid.v7()) }
+    }
+    with &ones {
+        w6 := Wall(ns: 9_223_372_036_854_775_807)
+        with &w6 { show(uuid.v7()) }
+    }
+}
