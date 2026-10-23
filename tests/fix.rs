@@ -32,7 +32,7 @@ Sh :: union {
 area :: fn(s: Sh) -> i32 {
     return match s {
         .Circle => 1,
-        else => 0,
+        _ => 0,
     }
 }
 
@@ -81,7 +81,7 @@ fn fix_applies_every_single_fix_until_the_program_checks() {
     std::fs::write(d.join("main.gm"), BROKEN).unwrap();
     let (ok, err) = gamma(&["fix", "main.gm"], &d);
     assert!(ok, "{err}");
-    assert_eq!(err, "gamma: applied 9 fixes in 1 file\n");
+    assert_eq!(err, "gamma: applied 8 fixes in 1 file\n");
     assert_eq!(std::fs::read_to_string(d.join("main.gm")).unwrap(), FIXED);
     // Nothing is left to do.
     let (ok, err) = gamma(&["fix", "main.gm"], &d);

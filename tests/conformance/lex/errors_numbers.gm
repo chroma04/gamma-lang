@@ -29,5 +29,5 @@
 1e //~ ERROR invalid suffix `e`
 1e+ //~ ERROR invalid suffix `e`
 0x1.8 //~ ERROR require a `p` exponent
-1e99999999 //~ ERROR exponent is too large
+1e99999999 //~ ERROR the exponent is larger than 100000
 t.01 //~ ERROR leading zero

@@ -205,8 +205,12 @@ main :: fn() needs Out {
     let (ok, _, err) = gamma(&["lint", "main.gm"], &d);
     assert!(ok && err.is_empty(), "{}", err);
     std::fs::write(d.join("main.gm"), src.replace("unused-declaration", "unused-decl")).unwrap();
+    // Which names are rules is the tool's concern: the program compiles, and the tool
+    // reports the name it does not know.
     let (ok, _, err) = gamma(&["check", "main.gm"], &d);
-    assert!(!ok && err.contains("unused-decl"), "{}", err);
+    assert!(ok && err.is_empty(), "{}", err);
+    let (ok, _, err) = gamma(&["lint", "main.gm"], &d);
+    assert!(!ok && err.contains("unknown lint rule `unused-decl`"), "{}", err);
 }
 
 #[test]

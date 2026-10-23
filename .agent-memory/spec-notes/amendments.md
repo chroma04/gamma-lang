@@ -89,3 +89,9 @@
   syntactic, `~`; A.3/A.5 `needs` grammar; §21.5 hash_map; §13.4, §15.2, §7.6 explanations; C.8 rows.
 - s30 WASI (decisions/034): `Os` gains `.Wasi`; new §3.7.2 "Hosts without some services"
   (no processes/sockets/threads → `IoError.Unsupported`; fibers work); `IoError.Unsupported`.
+- s33 (decisions/037): §11.4 array/vector spread (not `[E]T`, not ParamArray); §7.11, §11.2,
+  §21.6.1 follow. New ch. 23 errors policy (23.1 kinds, 23.2 what is an error, 23.3 report,
+  23.4 no foreign/look-alike guesses except listed, 23.5 limits table). §2.6 `&&`/`||`, `\`
+  bullet removed; §10.2 `!` not negation; §3.1 empty dir not a module; §5.10 no self by value;
+  §19.2 name charsets; §19.4 runtime names = limitation; §20.2 `#allow` names checked by lint
+  only; B.2 `needs` row removed; B.3 35 keywords; C.8 row `+` vs `,`.

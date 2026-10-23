@@ -284,7 +284,7 @@ impl<'s> Sema<'s> {
             if depth_guard > 100_000 {
                 self.error(
                     req.span,
-                    "too many generic instantiations (is a generic function recursing on ever-larger types?)",
+                    "more than 100000 generic instantiations, the limit of this implementation (§23.5)",
                 );
                 return;
             }
@@ -767,12 +767,29 @@ impl<'a, 's> FnCx<'a, 's> {
                         TyKind::Tuple { elems, names: None } => vec![None; elems.len()],
                         TyKind::Tuple { names: Some(ns), .. } => ns.iter().map(|n| Some(*n)).collect(),
                         TyKind::Error => return error_expr(span),
+                        TyKind::Array { .. } | TyKind::ParamArray { .. } => {
+                            let Some((len, _)) = self.spread_array(vt, e.span) else { return error_expr(span) };
+                            for i in 0..len {
+                                let lit = Box::new(crate::syntax::token::IntLit {
+                                    value: i.into(),
+                                    suffix: None,
+                                    is_char: false,
+                                });
+                                let index = Box::new(synthetic(ast::ExprKind::Int(lit), e.span));
+                                let elem = synthetic(ast::ExprKind::Index { base: Box::new(base()), index }, e.span);
+                                written.push(ast::Arg { kind: ArgKind::Positional(elem), span: e.span });
+                            }
+                            continue;
+                        }
                         _ => match self.sema.struct_fields(vt) {
                             Some(fs) if self.hidden_field(vt).is_none() => fs.iter().map(|f| Some(f.name)).collect(),
                             _ => {
                                 self.error(
                                     e.span,
-                                    format!("a spread needs a tuple or a struct with visible fields, not `{}`", vt),
+                                    format!(
+                                        "a spread needs a tuple, an array or a struct with visible fields, not `{}`",
+                                        vt
+                                    ),
                                 );
                                 return error_expr(span);
                             }

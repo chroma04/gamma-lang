@@ -4,6 +4,31 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
+## Unreleased
+
+### Language
+
+- An array `[N]T` or a vector spreads into its `N` elements like an unnamed tuple:
+  `f(..xs)`, `(u8, u8, u8)(..xs)`, `print("{} {}", ..pair)` (§11.4). An enum-indexed array,
+  or one whose length is a compile-time parameter, cannot be spread.
+- New chapter 23 of the specification: what is a compile error, a trap or an error value,
+  what a diagnostic reports and what it does not, and the limits every implementation
+  supports (64 levels of nesting, …).
+- The specification states rules the compiler already enforced: a struct may not contain
+  itself by value, a directory without `.gm` files is not a module, and the characters of
+  foreign library and symbol names.
+
+### Diagnostics
+
+- An `else` arm of a `match` gets the plain "expected a pattern" error, without a fix.
+- The hint to write `is` for `=` is given only after an `if` or `while` condition.
+- `#allow` with a name that is not a lint rule no longer stops compilation; `gamma lint`
+  reports it.
+- Nesting deeper than the parser's limit (now 256) and other implementation limits say
+  which limit was reached.
+- A spread that fails no longer also reports every element it did not supply.
+- The old effect syntax `\` is no longer recognized: `\` is an unexpected character.
+
 ## 0.1.0 - 2026-10-20
 
 The first release: the complete language of `gamma-spec.md`, implemented on three

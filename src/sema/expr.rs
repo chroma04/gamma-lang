@@ -50,6 +50,10 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             ExprKind::Ident(id) => self.name(id.name, expect, span),
             ExprKind::Paren(inner) => self.expr(inner, expect),
+            ExprKind::Elements(inner) => {
+                let v = self.expr(inner, None);
+                self.elements_tuple(v, inner.span).unwrap_or_else(|| error_expr(span))
+            }
             ExprKind::Tuple(elems) => self.tuple(elems, expect, span),
             ExprKind::Unary { op, operand } => self.unary(*op, operand, expect, span),
             ExprKind::Binary { op: op @ (ast::BinOp::Range | ast::BinOp::RangeIncl), lhs, rhs } => {

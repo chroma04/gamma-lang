@@ -212,7 +212,9 @@ impl<'a> Lexer<'a> {
             }
         }
         if value > MAX_EXPONENT {
-            err.get_or_insert_with(|| format!("exponent is too large (at most {} is supported)", MAX_EXPONENT));
+            err.get_or_insert_with(|| {
+                format!("the exponent is larger than {}, the limit of this implementation (§23.5)", MAX_EXPONENT)
+            });
             value = 0;
         }
         if negative { -value } else { value }

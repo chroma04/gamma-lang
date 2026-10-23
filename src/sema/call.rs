@@ -982,7 +982,13 @@ impl<'a, 's> FnCx<'a, 's> {
             if let tir::ExprKind::ValueParam(_) = t.kind {
                 let args = match rest {
                     [] => None,
-                    [ast::Arg { kind: ArgKind::Spread(e), .. }] => Some(Box::new(self.expr(e, None))),
+                    [ast::Arg { kind: ArgKind::Spread(e), .. }] => {
+                        let v = self.expr(e, None);
+                        match self.elements_tuple(v, e.span) {
+                            Some(v) => Some(Box::new(v)),
+                            None => return error_expr(span),
+                        }
+                    }
                     _ => {
                         let mut elems = vec![];
                         for a in rest {
@@ -1065,6 +1071,8 @@ impl<'a, 's> FnCx<'a, 's> {
             // `..t`: a tuple holding one value per placeholder.
             [ast::Arg { kind: ArgKind::Spread(a), .. }] => {
                 let v = self.expr(a, None);
+                let written = self.infer.resolve(v.ty);
+                let v = self.elements_tuple(v, a.span)?;
                 let t = self.infer.resolve(v.ty);
                 match t.kind() {
                     TyKind::Tuple { elems, .. } if elems.len() == n => {
@@ -1083,10 +1091,10 @@ impl<'a, 's> FnCx<'a, 's> {
                         self.error(
                             a.span,
                             format!(
-                                "the template has {}, so this spread must be a tuple of {} values, not `{}`",
+                                "the template has {}, so this spread must have {} values, not `{}`",
                                 placeholders(n),
                                 n,
-                                t
+                                written
                             ),
                         );
                         return None;
@@ -1510,7 +1518,10 @@ pub fn pack_rest_args(
     }
     let synthetic = |kind: ast::ExprKind, span: Span| ast::Expr { id: ast::NodeId(u32::MAX), kind, span };
     let packed = match rest[..] {
-        [ast::Arg { kind: ArgKind::Spread(e), span }] => ast::Arg { kind: ArgKind::Positional(e.clone()), span: *span },
+        [ast::Arg { kind: ArgKind::Spread(e), span }] => ast::Arg {
+            kind: ArgKind::Positional(synthetic(ast::ExprKind::Elements(Box::new(e.clone())), e.span)),
+            span: *span,
+        },
         _ => {
             if let Some(a) = rest.iter().find(|a| matches!(a.kind, ArgKind::Spread(_))) {
                 return Some(Err((
