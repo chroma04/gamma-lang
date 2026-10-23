@@ -953,6 +953,13 @@ impl Ty {
             TyKind::FnPtr(sig) => fmt_sig(f, "^fn", sig),
             TyKind::Adt(id, args) => {
                 write!(f, "{}", id.name())?;
+                // The stand-in `#soa []T` of a generic body (§5.6.4).
+                // (A real `#soa` struct has its element in its name.)
+                if let [GenericArg::Type(t)] = &args[..]
+                    && id.name().as_str().starts_with("#soa ")
+                {
+                    return if id.template() == *id { write!(f, "{}", t) } else { Ok(()) };
+                }
                 let args = shown_args(args);
                 if !args.is_empty() {
                     f.write_str("(")?;

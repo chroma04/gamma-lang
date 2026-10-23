@@ -29,6 +29,8 @@ src/sema/          checking (architecture/sema-notes.md). One file per area, eac
                    handler_decl, fnlit, generics, infer/finalize/untyped, consteval,
                    stack_size, cont_check (§14.2), escape, foreign, tests_decl, adt, builtins;
                    ide/ builds the editor index after checking (decisions/023)
+                   soa.rs: #soa structs; generic `#soa []T` stand-ins + SoaDeferred expanded
+                   by generics.rs mono_expr via Sema::soa_expand (decisions/042)
 src/interp/        interpreter: vm/ (bytecode: mod, compile, compile_flow, exec, heap) is the
                    only engine (tree-walker removed s29, decisions/020); calls/ops/builtins/
                    fast(small ints)/sys/proc hold the value-level helpers; memory.rs byte memory +

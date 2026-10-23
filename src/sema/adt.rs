@@ -684,6 +684,15 @@ impl<'s> Sema<'s> {
         }
         t.map(&mut |x| match x.kind() {
             TyKind::Param(p) => map.iter().find(|(q, _)| q == p).map(|(_, a)| *a),
+            // `#soa []T` becomes the struct of the argument's fields (§5.6.4).
+            TyKind::Adt(id, args) if self.soa_templates.contains_key(&id.template()) => {
+                let shape = self.soa_templates[&id.template()];
+                let elem = match args.first() {
+                    Some(crate::types::GenericArg::Type(t)) => self.subst(*t, map),
+                    _ => Ty::error(),
+                };
+                Some(self.subst_soa(elem, shape))
+            }
             TyKind::Adt(id, args) if !args.is_empty() => {
                 let new_args: Vec<Ty> = args
                     .iter()

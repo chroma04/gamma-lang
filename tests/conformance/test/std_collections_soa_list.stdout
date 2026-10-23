@@ -1,0 +1,7 @@
+test "an unused list takes nothing" ... ok
+test "growth frees each old block and keeps the columns aligned" ... ok
+test "extend copies the list's own elements before growing" ... ok
+test "insert, remove and swap_remove keep the other elements in order" ... ok
+test "a list can be reused after deinit" ... ok
+test "a list frees through the allocator it was created with" ... ok
+6 passed, 0 failed

@@ -1,0 +1,28 @@
+// `std/collections/soa_list`: a growable list stored by field (§5.6.4).
+sl :: import "std/collections/soa_list"
+
+P :: struct { x: i32; y: f64; tag: u8 }
+
+main :: fn() -> AllocError!() needs Alloc + Out {
+    ps := sl.soa_list(P)
+    defer ps.deinit()
+    for i in 0..10 { try ps.push(P(x: i, y: i.to(f64) / 2, tag: 'a' + i.trunc(u8))) }
+    print("{} {} {}\n", ps.len(), ps.capacity(), ps.items.x)
+    try ps.insert(0, P(x: -1, y: 0, tag: 'z'))
+    print("{}\n", ps.remove(3))
+    print("{}\n", ps.swap_remove(0))
+    print("{}\n", ps.pop())
+    try ps.extend(ps.items[0..3])
+    print("{}\n", ps.items.x)
+    for p in ps.items { if p.x > 7 { print("{} ", p.tag) } }
+    print("\n")
+    ps.items[0].y = 100
+    sum: f64 = 0
+    for y in ps.items.y { sum += y }
+    print("{}\n", sum)
+    ps.truncate(2)
+    print("{} {}\n", ps.len(), ps.items)
+    ps.clear()
+    print("{} {}\n", ps.is_empty(), ps.pop())
+    return ()
+}

@@ -1043,6 +1043,32 @@ pub enum ExprKind {
         args: Option<Box<Expr>>,
         tmp: LocalId,
     },
+    /// An operation on a `#soa` value whose element type is a type parameter (§5.6.4),
+    /// expanded in each instance, where the element's fields are known. The operands are
+    /// variables, places through a variable, or constants, so they may be used repeatedly.
+    SoaDeferred {
+        op: SoaOp,
+        args: Vec<Expr>,
+    },
+}
+
+/// The operations of [`ExprKind::SoaDeferred`], with their operands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoaOp {
+    /// `a[i]` read: `[a, i]`.
+    Get,
+    /// `a[i] = x`: `[a, i, x]`.
+    Set,
+    /// `a.len` of a slice: `[a]`.
+    Len,
+    /// `a[lo..hi]`: `[a]`, then `lo` and `hi` if written.
+    Slice { lo: bool, hi: bool, inclusive: bool },
+    /// `#soa []S` to `#soa []const S`: `[a]`.
+    ToConst,
+    /// `T.make(n)`: `[n, site]`; the expression's type is `AllocError!T`.
+    Make,
+    /// `s.free()`: `[s, site]`.
+    Free,
 }
 
 /// Where `@write` sends its output.
@@ -1555,6 +1581,7 @@ impl Expr {
                     f(a);
                 }
             }
+            ExprKind::SoaDeferred { args, .. } => args.iter().for_each(f),
             _ => {}
         }
     }
@@ -1733,6 +1760,7 @@ impl Expr {
                     f(a);
                 }
             }
+            ExprKind::SoaDeferred { args, .. } => args.iter_mut().for_each(f),
             _ => {}
         }
     }

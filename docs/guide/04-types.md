@@ -137,6 +137,25 @@ soa_demo :: fn() -> AllocError!() needs Alloc + Out {
 
 A `#soa [N]S` array works like an array (`#soa [4]Particle(fill: p)`, `a[1..3]`, `&a` passes it as a `#soa []S`), and a `#soa []S` like a slice; `T.make(n)` allocates one and `s.free()` releases it. `for p in ps` gathers each element in turn. `is` compares elements, and a `#soa` is not ordered.
 
+Generic code can take a `#soa []T` of a type parameter. It does not know `T`'s fields, so it works with whole elements and with the shape: `a[i]`, `a[i] = x`, `a.len`, slicing, `for`, `make` and `free`. Each instantiation checks that its `T` is a struct `#soa` can store:
+
+```gamma
+reverse :: fn(T: type, xs: #soa []T) {
+    if xs.len < 2 { return }
+    i: usize = 0
+    j := xs.len - 1
+    while i < j {
+        t := xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+        i += 1
+        j -= 1
+    }
+}
+```
+
+That is how `std/collections/soa_list` is written: `SoaList(S)` is a growable list like `List(S)`, with its elements in a `#soa []S` named `items`, so `l.items.pos` is a column and `l.items[i].pos` one field ([chapter 16](16-standard-library.md#collections)).
+
 ## Slices
 
 `[]T` is a pointer and a length. It is what you use in C when you pass `(T *p, size_t n)`, packaged so the two cannot get separated. The fields `.ptr` and `.len` can be read but not assigned. `[]const T` is a read-only view.

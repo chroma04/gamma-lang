@@ -1031,7 +1031,7 @@ impl<'a, 's> FnCx<'a, 's> {
             return error_expr(span);
         };
         // A `#soa` slice is written as its columns, not its pointers (§5.6.4).
-        let values = values.into_iter().map(|v| self.soa_columns_tuple(v)).collect();
+        let values = values.into_iter().map(|v| self.soa_columns_tuple(v, "formatting")).collect();
         let write = mk(Ty::unit(), tir::ExprKind::Write { sink, pieces, specs, args: values }, span);
         if stmts.is_empty() {
             return write;

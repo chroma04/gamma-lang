@@ -714,6 +714,27 @@ main :: fn() -> AllocError!() needs Out + Alloc {
 
 `ordered_map` orders by `<`, or by a function you give it (`om.ordered_map_by(K, V, less)`, as `heap_by` does). Lookups, insertions and removals take O(log n) comparisons.
 
+`std/collections/soa_list` is a `List` stored by field ([chapter 4](04-types.md#structure-of-arrays)): `push`, `pop`, `insert`, `remove`, `extend` and the rest work on whole elements, and `items` is a `#soa []S`, so a loop that reads one field reads one contiguous column:
+
+```gamma
+sl :: import "std/collections/soa_list"
+
+Body :: struct {
+    mass: f64
+    x, v: f64
+}
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    bodies := sl.soa_list(Body)
+    defer bodies.deinit()
+    for i in 0..4 { try bodies.push(Body(mass: i.to(f64) + 1, x: 0, v: i.to(f64))) }
+    for i in 0..bodies.len() { bodies.items[i].x += bodies.items[i].v * 0.5 }
+    total: f64 = 0
+    for m in bodies.items.mass { total += m }      // one column: []f64
+    print("{} {} {}\n", total, bodies.items.x, bodies.pop())
+}
+```
+
 ## Bytes and encodings
 
 `std/bytes` reads and writes integers in a chosen byte order and takes a record apart with a cursor. `std/encoding/hex` and `std/encoding/base64` are RFC 4648. All of them write into a buffer you supply or append to a list:

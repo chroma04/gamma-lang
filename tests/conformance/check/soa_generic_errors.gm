@@ -1,0 +1,32 @@
+//! stage: check
+// A `#soa` of a type parameter has whole elements only; its element type is checked at
+// each instantiation (§5.6.4).
+P :: struct { x: i32, y: f32 }
+Q :: struct { len: usize }
+
+Wrap :: struct(T: type) { items: #soa []T }
+
+columns :: fn(T: type, xs: #soa []T) {
+    _ = xs.x //~ ERROR the column `a.x` needs the fields of `T`
+    _ = xs[0].x //~ ERROR `a[i].x` needs the fields of `T`
+}
+
+compare :: fn(T: type, xs: #soa []T) -> bool => xs is xs //~ ERROR `is` on `#soa` slices needs the fields of `T`
+
+show :: fn(T: type, xs: #soa []T) needs Out {
+    print("{}\n", xs) //~ ERROR formatting needs the fields of `T`
+}
+
+hash :: fn(T: type, xs: #soa []T) -> u64 => @hash(xs, 0) //~ ERROR `@hash` needs the fields of `T`
+
+build :: fn(T: type, x: T) {
+    _ = #soa [2]T(fill: x) //~ ERROR constructing `#soa [2]T` needs the fields of `T`
+}
+
+first :: fn(T: type, xs: #soa []T) -> T => xs[0]
+
+main :: fn() {
+    _ = Wrap(i32)(items: ---) //~ ERROR `#soa` stores the fields of a struct, and `i32` is not a struct (in an instantiation used here)
+    _ = first(T: Q, ---) //~ ERROR its field `len` would hide the length, `a.len` (in an instantiation used here)
+    _ = P(x: 1, y: 2)
+}

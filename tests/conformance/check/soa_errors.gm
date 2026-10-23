@@ -14,8 +14,6 @@ Ps :: #soa []P
 
 by_ref :: fn(p: ^P) {}
 
-generic :: fn(T: type, xs: #soa []T) {} //~ ERROR `#soa` needs a concrete struct type, not `T`
-
 main :: fn() needs Alloc {
     a := Arrays(fill: P(x: 0, y: 0))
     c: #soa []const P = &a

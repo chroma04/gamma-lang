@@ -632,6 +632,9 @@ impl<'f, 'g, 'a> FnGen<'f, 'g, 'a> {
             ExprKind::WriteDeferred { .. } => {
                 unsupported(e.span, "a template in a generic function that was not instantiated")
             }
+            ExprKind::SoaDeferred { .. } => {
+                unsupported(e.span, "a `#soa` operation in a generic function that was not instantiated")
+            }
             ExprKind::SizeOf { .. }
             | ExprKind::TypeIs { .. }
             | ExprKind::IntLimit { .. }

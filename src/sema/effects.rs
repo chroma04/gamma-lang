@@ -34,6 +34,12 @@ impl<'s> super::Sema<'s> {
     }
 }
 
+/// Whether `pat` is a `#soa []const` type and `actual` a `#soa []` one: like `[]const T`
+/// against `[]S`, it binds the element (§5.6.4).
+fn soa_const_view(pat: crate::types::AdtId, actual: crate::types::AdtId) -> bool {
+    pat.template().name().as_str() == "#soa []const " && actual.template().name().as_str() == "#soa []"
+}
+
 /// Binds type parameters by matching a parameter type against an argument type.
 pub fn match_params_pub(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
     match_params(pat, actual, binds)
@@ -71,7 +77,9 @@ fn match_params(pat: Ty, actual: Ty, binds: &mut HashMap<ParamId, Ty>) {
             match_params(*e1, *e2, binds);
             match_params(*o1, *o2, binds);
         }
-        (TyKind::Adt(a, x), TyKind::Adt(b, y)) if a.template() == b.template() && x.len() == y.len() => {
+        (TyKind::Adt(a, x), TyKind::Adt(b, y))
+            if (a.template() == b.template() || soa_const_view(*a, *b)) && x.len() == y.len() =>
+        {
             for (p, q) in x.iter().zip(y.iter()) {
                 if let (GenericArg::Type(p), GenericArg::Type(q)) = (p, q) {
                     match_params(*p, *q, binds);

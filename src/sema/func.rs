@@ -1621,6 +1621,13 @@ impl<'a, 's> FnCx<'a, 's> {
             | ExprKind::FnType(_)
             | ExprKind::ContType(_) => Some(self.resolve_type(e)),
             ExprKind::Intrinsic { name, .. } if name.name.as_str() == "type_of" => Some(self.resolve_type(e)),
+            // `Cols :: #soa []T`, `V :: #vec [2]f32`; `#soa [2]P(…)` constructs a value.
+            ExprKind::Attributed { inner, .. }
+                if matches!(inner.kind, ExprKind::SliceType { .. })
+                    || matches!(inner.kind, ExprKind::ArrayType { .. }) && !self.is_construction(inner) =>
+            {
+                Some(self.resolve_type(e))
+            }
             ExprKind::Struct(_) | ExprKind::Union(_) | ExprKind::Effect(_) => {
                 self.error(
                     e.span,
