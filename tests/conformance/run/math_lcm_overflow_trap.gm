@@ -1,0 +1,10 @@
+//! exit: 134
+//! stderr
+// lcm overflows like `*` when the result does not fit.
+math :: import "std/math"
+
+main :: fn() needs Out {
+    print("{}\n", math.lcm(u8(15), 17))
+    a: u8 = @black_box(16)
+    print("{}\n", math.lcm(a, 255))
+}

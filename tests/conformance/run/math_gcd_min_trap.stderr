@@ -1,0 +1,4 @@
+trap: assertion failed: integer overflow in `gcd`
+  at <std>/math/int.gm:20:9 in from_magnitude
+  called from <std>/math/int.gm:49:5 in gcd
+  called from tests/conformance/run/math_gcd_min_trap.gm:9:19 in main
