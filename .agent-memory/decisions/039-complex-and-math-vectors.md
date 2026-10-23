@@ -36,6 +36,5 @@ std/complex (lib/std/complex: arg, from_polar, exp, log, sqrt, pow, sin, cos; An
 deviations in its //! doc), conformance tests, guide 04-types, examples nbody/julia.
 
 ## Follow-ups (not done)
-- tree-sitter corpus case for `#vec` (CLI not installed in s35).
 - SOA (`#soa`), lane names `.x .y .z .w` / swizzles (rejected for now: two ways to index).
 - Inline complex ops in Cranelift (perf), formatting `Complex` as `1+2i` (no: structural).
