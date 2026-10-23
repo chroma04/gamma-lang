@@ -1,0 +1,72 @@
+// Inverse hyperbolic functions: asinh, acosh, atanh.
+//
+// The fdlibm / FreeBSD msun formulas avoid the naive formulas' cancellation
+// near 0 (asinh, atanh) and near 1 (acosh) and their overflow for large
+// arguments by writing each result as log1p(w) for a suitable w, or as
+// log(2x) for large x. Evaluated in double precision, they are up to 1.4 ulp
+// off. Here w is evaluated in double-double precision (`log1p_dd`, see
+// ddlog.gm) so that a single rounding remains and the result is within a
+// fraction of an ulp of the exact value:
+//
+//   asinh(x) = log1p(|x| + x*x / (1 + sqrt(1 + x*x)))   for 2**-28 <= |x| < 2**28
+//   acosh(x) = log1p(t + sqrt(t * (t + 2)))             with t = x - 1, x < 2**28
+//   atanh(x) = log1p(2|x| / (1 - |x|)) / 2
+//
+// and log(x) + log(2) (double-double again) for asinh and acosh above 2**28.
+
+LN2_DD: (f64, f64) : (DD_LN2_1, DD_LN2_2)
+
+/// The inverse hyperbolic sine of `x`, an odd function. For `|x|` below 2**-28
+/// the result is `x` (so the sign of zero is preserved); infinities and NaNs
+/// are returned as they are. It never overflows.
+pub asinh :: fn(x: f64) -> f64 {
+    ix := high_word(x) & 0x7fffffff
+    if ix >= 0x7ff00000 { return x + x }
+    if ix < 0x3e300000 { return x }
+    ax := abs(x)
+    if ix >= 0x41b00000 {
+        // |x| >= 2**28: log(2|x|)
+        return copysign(dd_add(log_dd((ax, 0.0)), LN2_DD).0, x)
+    }
+    t := two_prod(ax, ax)
+    s := dd_sqrt(dd_add(t, (1.0, 0.0)))
+    q := dd_div(t, dd_add((1.0, 0.0), s))
+    return copysign(log1p_dd(dd_add((ax, 0.0), q)).0, x)
+}
+
+/// The inverse hyperbolic cosine of `x`. It is NaN for `x` below 1 (including
+/// -inf), `acosh(1)` is +0 and `acosh(+inf)` is +inf. It never overflows.
+pub acosh :: fn(x: f64) -> f64 {
+    hx := high_word(x)
+    if hx < 0x3ff00000 { return nan }
+    if hx >= 0x7ff00000 { return x + x }
+    if x is 1.0 { return 0.0 }
+    if hx >= 0x41b00000 {
+        // x >= 2**28: log(2x)
+        return dd_add(log_dd((x, 0.0)), LN2_DD).0
+    }
+    // t = x - 1 is exact.
+    t := x - 1.0
+    p := dd_mul_d(two_sum(t, 2.0), t)
+    return log1p_dd(dd_add((t, 0.0), dd_sqrt(p))).0
+}
+
+/// The inverse hyperbolic tangent of `x`, an odd function. It is NaN for
+/// `|x| > 1`, an infinity of the sign of `x` for `x = +-1`, and `x` itself for
+/// `|x|` below 2**-28, so the sign of zero is preserved.
+pub atanh :: fn(x: f64) -> f64 {
+    ix := high_word(x) & 0x7fffffff
+    if ix >= 0x7ff00000 {
+        // NaN, or an infinity (outside the domain)
+        return if x.is_nan() { x + x } else { nan }
+    }
+    if ix > 0x3ff00000 { return nan }
+    if ix is 0x3ff00000 {
+        if low_word(x) is 0 { return copysign(inf, x) }
+        return nan
+    }
+    if ix < 0x3e300000 { return x }
+    ax := abs(x)
+    w := dd_div((2.0 * ax, 0.0), two_sum(1.0, -ax))
+    return copysign(0.5 * log1p_dd(w).0, x)
+}

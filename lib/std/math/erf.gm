@@ -1,0 +1,202 @@
+// Error function and complementary error function (fdlibm / FreeBSD msun s_erf.c).
+//
+// erf(x) = 2/sqrt(pi) * integral of exp(-t*t) from 0 to x, erfc(x) = 1 - erf(x).
+// The range is split by |x|, as in fdlibm:
+//   [0, 0.84375]       erf(x) = x + x*P(x*x)/Q(x*x)
+//   [0.84375, 1.25]    erf(x) = erx + P(s)/Q(s) with s = |x| - 1
+//   [1.25, 28]         erfc(x) = exp(-x*x - 0.5625 + R(z)/S(z)) / x, z = 1/(x*x)
+// with fdlibm's minimax coefficients for the rational functions P/Q and R/S.
+// Their evaluation, and that of the exponential, is carried out in
+// double-double precision here (the double evaluation costs up to 2 ulp in
+// erfc, which loses the digits of 1 - erf(x) where that is small), so the
+// results are within a fraction of an ulp of the exact value, up to the
+// 2**-58 accuracy of the approximations. erfc keeps full relative accuracy for
+// large x, where erf is 1 to working precision.
+//
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved. Developed
+// at SunPro, a Sun Microsystems, Inc. business. Permission to use, copy,
+// modify, and distribute this software is freely granted, provided that this
+// notice is preserved.
+
+ERF_ERX :: 8.45062911510467529297e-01
+ERF_EFX8 :: 1.02703333676410069053e+00
+ERF_PP: [5]f64 : [5]f64(
+    1.28379167095512558561e-01,
+    -3.25042107247001499370e-01,
+    -2.84817495755985104766e-02,
+    -5.77027029648944159157e-03,
+    -2.37630166566501626084e-05
+)
+ERF_QQ: [6]f64 : [6]f64(
+    1.0,
+    3.97917223959155352819e-01,
+    6.50222499887672944485e-02,
+    5.08130628187576562776e-03,
+    1.32494738004321644526e-04,
+    -3.96022827877536812320e-06
+)
+ERF_PA: [7]f64 : [7]f64(
+    -2.36211856075265944077e-03,
+    4.14856118683748331666e-01,
+    -3.72207876035701323847e-01,
+    3.18346619901161753674e-01,
+    -1.10894694282396677476e-01,
+    3.54783043256182359371e-02,
+    -2.16637559486879084300e-03
+)
+ERF_QA: [7]f64 : [7]f64(
+    1.0,
+    1.06420880400844228286e-01,
+    5.40397917702171048937e-01,
+    7.18286544141962662868e-02,
+    1.26171219808761642112e-01,
+    1.36370839120290507362e-02,
+    1.19844998467991074170e-02
+)
+ERF_RA: [8]f64 : [8]f64(
+    -9.86494403484714822705e-03,
+    -6.93858572707181764372e-01,
+    -1.05586262253232909814e+01,
+    -6.23753324503260060396e+01,
+    -1.62396669462573470355e+02,
+    -1.84605092906711035994e+02,
+    -8.12874355063065934246e+01,
+    -9.81432934416914548592e+00
+)
+ERF_SA: [9]f64 : [9]f64(
+    1.0,
+    1.96512716674392571292e+01,
+    1.37657754143519042600e+02,
+    4.34565877475229228821e+02,
+    6.45387271733267880336e+02,
+    4.29008140027567833386e+02,
+    1.08635005541779435134e+02,
+    6.57024977031928170135e+00,
+    -6.04244152148580987438e-02
+)
+ERF_RB: [7]f64 : [7]f64(
+    -9.86494292470009928597e-03,
+    -7.99283237680523006574e-01,
+    -1.77579549177547519889e+01,
+    -1.60636384855821916062e+02,
+    -6.37566443368389627722e+02,
+    -1.02509513161107724954e+03,
+    -4.83519191608651397019e+02
+)
+ERF_SB: [8]f64 : [8]f64(
+    1.0,
+    3.03380607434824582924e+01,
+    3.25792512996573918826e+02,
+    1.53672958608443695994e+03,
+    3.19985821950859553908e+03,
+    2.55305040643316442583e+03,
+    4.74528541206955367215e+02,
+    -2.24409524465858183362e+01
+)
+
+// The polynomial with coefficients `c` (c[0] first) at the double-double `x`.
+poly_dd :: fn(c: []const f64, x: (f64, f64)) -> (f64, f64) {
+    i := c.len - 1
+    acc := (c[i], 0.0)
+    while i > 0 {
+        i -= 1
+        acc = dd_add(dd_mul(acc, x), (c[i], 0.0))
+    }
+    return acc
+}
+
+// erf(x) for |x| < 0.84375: x + x*P(z)/Q(z) with z = x*x.
+erf_small :: fn(x: f64) -> (f64, f64) {
+    z := two_prod(x, x)
+    y := dd_div(poly_dd(ERF_PP[..], z), poly_dd(ERF_QQ[..], z))
+    return dd_add((x, 0.0), dd_mul_d(y, x))
+}
+
+// erfc(|x|) for 0.84375 <= |x| < 28 as a double-double, given the high word
+// `ix` of |x|.
+erfc_tail :: fn(ix: i32, x0: f64) -> (f64, f64) {
+    ax := abs(x0)
+    if ix < 0x3ff40000 {
+        // |x| < 1.25: 1 - erx - P(s)/Q(s) with s = |x| - 1 (exact)
+        s := (ax - 1.0, 0.0)
+        return dd_sub((1.0 - ERF_ERX, 0.0), dd_div(poly_dd(ERF_PA[..], s), poly_dd(ERF_QA[..], s)))
+    }
+    z := (1.0 / (ax * ax), 0.0)
+    rs := (0.0, 0.0)
+    if ix < 0x4006db6d {
+        // |x| < 1/0.35
+        rs = dd_div(poly_dd(ERF_RA[..], z), poly_dd(ERF_SA[..], z))
+    } else {
+        rs = dd_div(poly_dd(ERF_RB[..], z), poly_dd(ERF_SB[..], z))
+    }
+    // exp(-x*x - 0.5625 + R/S) / x, with the argument of the exponential in
+    // double-double precision (x*x is exact there): the argument is as large as
+    // 745, so a rounding error of its own would spoil the result.
+    arg := dd_sub(rs, dd_add(two_prod(ax, ax), (0.5625, 0.0)))
+    if arg.0 < -746.0 { return (0.0, 0.0) }
+    parts := exp_parts_dd(arg.0)
+    f := dd_mul(dd_add((1.0, 0.0), parts.0), dd_add((1.0, 0.0), (arg.1 + 0.5 * arg.1 * arg.1, 0.0)))
+    r := dd_div(f, (ax, 0.0))
+    return (scalbn(r.0, parts.1), scalbn(r.1, parts.1))
+}
+
+/// The error function of `x`, an odd function: `erf(+-inf)` is +-1 and the
+/// sign of zero is preserved. The result is +-1 exactly for `|x|` of 6 and
+/// more (the difference is below half an ulp).
+pub erf :: fn(x: f64) -> f64 {
+    hx := high_word(x)
+    sign := (hx >> 31) & 1
+    ix := hx & 0x7fffffff
+    if ix >= 0x7ff00000 {
+        // erf(NaN) is NaN
+        return 1.0 - 2.0 * f64(sign) + 1.0 / x
+    }
+    if ix < 0x3feb0000 {
+        // |x| < 0.84375
+        if ix < 0x3e300000 {
+            // |x| < 2**-28: avoid underflow
+            return 0.125 * (8.0 * x + ERF_EFX8 * x)
+        }
+        return erf_small(x).0
+    }
+    y := 1.0
+    if ix < 0x40180000 {
+        // 0.84375 <= |x| < 6
+        y = dd_sub((1.0, 0.0), erfc_tail(ix, x)).0
+    } else {
+        tiny := 0x1.0p-1022
+        y = 1.0 - tiny
+    }
+    return if sign is 0 { y } else { -y }
+}
+
+/// The complementary error function `1 - erf(x)`, computed without the
+/// cancellation of that formula: it is accurate (in relative terms) for large
+/// `x`. The result is subnormal from `x` of about 26.55 and underflows to +0
+/// above about 27.22; it is 2 for `x` below about -6, `erfc(+inf)` is 0 and
+/// `erfc(-inf)` is 2.
+pub erfc :: fn(x: f64) -> f64 {
+    hx := high_word(x)
+    sign := (hx >> 31) & 1
+    ix := hx & 0x7fffffff
+    if ix >= 0x7ff00000 {
+        // erfc(NaN) is NaN
+        return 2.0 * f64(sign) + 1.0 / x
+    }
+    if ix < 0x3feb0000 {
+        // |x| < 0.84375
+        if ix < 0x3c700000 {
+            // |x| < 2**-56
+            return 1.0 - x
+        }
+        return dd_sub((1.0, 0.0), erf_small(x)).0
+    }
+    if ix < 0x403c0000 {
+        // 0.84375 <= |x| < 28
+        if sign is not 0 { return dd_sub((2.0, 0.0), erfc_tail(ix, x)).0 }
+        return erfc_tail(ix, x).0
+    }
+    tiny := 0x1.0p-1022
+    if sign is not 0 { return 2.0 - tiny }
+    return tiny * tiny
+}

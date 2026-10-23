@@ -1,0 +1,190 @@
+// Logarithm of the gamma function: lgamma, lgamma_sign.
+//
+// For 2**-60 <= x < 8 (away from the zeros at 1 and 2) and for negative x
+// above -184, the double-double gamma(x) of gamma.gm is computed and its
+// logarithm taken in double-double precision. For x >= 8, Stirling's series
+//   lgamma(x) = (x - 1/2) (log x - 1) + w(1/x)
+// is used with fdlibm's polynomial w and the logarithm and product in
+// double-double. Close to 1 and 2 the relative accuracy needs the rational
+// approximations of fdlibm (the double-double gamma has an absolute error of
+// 1e-31), and for x <= -184 the reflection formula of fdlibm is used, with an
+// exact reduction of the argument of the sine. The result is within 1 ulp (the
+// worst error measured is 0.69 ulp and most results are correctly rounded),
+// except within about 1e-14 of a zero on the negative axis, where the absolute
+// error of 1e-31 is what is guaranteed.
+//
+// The approximations near 1 and 2 and the polynomial w are those of fdlibm:
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved. Developed
+// at SunSoft, a Sun Microsystems, Inc. business. Permission to use, copy,
+// modify, and distribute this software is freely granted, provided that this
+// notice is preserved.
+
+LGM_A0 :: 7.72156649015328655494e-02
+LGM_A1 :: 3.22467033424113591611e-01
+LGM_A2 :: 6.73523010531292681824e-02
+LGM_A3 :: 2.05808084325167332806e-02
+LGM_A4 :: 7.38555086081402883957e-03
+LGM_A5 :: 2.89051383673415629091e-03
+LGM_A6 :: 1.19270763183362067845e-03
+LGM_A7 :: 5.10069792153511336608e-04
+LGM_A8 :: 2.20862790713908385557e-04
+LGM_A9 :: 1.08011567247583939954e-04
+LGM_A10 :: 2.52144565451257326939e-05
+LGM_A11 :: 4.48640949618915160150e-05
+LGM_U0 :: -7.72156649015328655494e-02
+LGM_U1 :: 6.32827064025093366517e-01
+LGM_U2 :: 1.45492250137234768737e+00
+LGM_U3 :: 9.77717527963372745603e-01
+LGM_U4 :: 2.28963728064692451092e-01
+LGM_U5 :: 1.33810918536787660377e-02
+LGM_V1 :: 2.45597793713041134822e+00
+LGM_V2 :: 2.12848976379893395361e+00
+LGM_V3 :: 7.69285150456672783825e-01
+LGM_V4 :: 1.04222645593369134254e-01
+LGM_V5 :: 3.21709242282423911810e-03
+LGM_S0 :: -7.72156649015328655494e-02
+LGM_S1 :: 2.14982415960608852501e-01
+LGM_S2 :: 3.25778796408930981787e-01
+LGM_S3 :: 1.46350472652464452805e-01
+LGM_S4 :: 2.66422703033638609560e-02
+LGM_S5 :: 1.84028451407337715652e-03
+LGM_S6 :: 3.19475326584100867617e-05
+LGM_R1 :: 1.39200533467621045958e+00
+LGM_R2 :: 7.21935547567138069525e-01
+LGM_R3 :: 1.71933865632803078993e-01
+LGM_R4 :: 1.86459191715652901344e-02
+LGM_R5 :: 7.77942496381893596434e-04
+LGM_R6 :: 7.32668430744625636189e-06
+LGM_W0 :: 4.18938533204672725052e-01
+LGM_W1 :: 8.33333333333329678849e-02
+LGM_W2 :: -2.77777777728775536470e-03
+LGM_W3 :: 7.93650558643019558500e-04
+LGM_W4 :: -5.95187557450339963135e-04
+LGM_W5 :: 8.36339918996282139126e-04
+LGM_W6 :: -1.63092934096575273989e-03
+
+// sin(pi*x) for x > 2**-100; when the sine is zero its sign is arbitrary.
+sin_pi :: fn(x0: f64) -> f64 {
+    // x mod 2
+    x := 2.0 * (x0 * 0.5 - floor(x0 * 0.5))
+    // Reduce into [-1/4, 1/4] around a multiple of 1/2.
+    n := (x * 4.0).trunc(i32)
+    n = (n + 1) >> 1
+    x -= f64(n) * 0.5
+    x *= pi
+    return match n {
+        1 => k_cos(x, 0.0)
+        2 => k_sin(-x, 0.0, 0)
+        3 => -k_cos(x, 0.0)
+        _ => k_sin(x, 0.0, 0)
+    }
+}
+
+// lgamma(x) for 2**-60 <= x < 8 and x not close to 1 or 2: the logarithm of
+// the double-double gamma(x).
+lgamma_mid :: fn(x: f64) -> f64 {
+    g := gamma_dd(x)
+    return dd_add(log_dd(g.0), ln2_mul(f64(g.1))).0
+}
+
+// lgamma(x) for x >= 8 as a double-double. Stirling:
+// lgamma(x) = (x - 1/2) (log x - 1) + w(1/x) with fdlibm's polynomial w, the
+// logarithm and the product in double-double.
+lgamma_big :: fn(x: f64) -> (f64, f64) {
+    l1 := dd_sub(log_dd((x, 0.0)), (1.0, 0.0))
+    if x >= 0x1.0p58 {
+        // w is negligible; scale x so that the product cannot overflow early.
+        return (scalbn(dd_mul_d(l1, x * 0x1.0p-100).0, 100), 0.0)
+    }
+    z := 1.0 / x
+    y := z * z
+    w := LGM_W0 + z * (LGM_W1 + y * (LGM_W2 + y * (LGM_W3 + y * (LGM_W4 + y * (LGM_W5 + y * LGM_W6)))))
+    r := dd_sub(dd_mul_d(l1, x), dd_mul_d(l1, 0.5))
+    return dd_add(r, (w, 0.0))
+}
+
+// lgamma(x) for x >= 2**-60.
+lgamma_pos :: fn(x: f64) -> f64 {
+    if x is 1.0 or x is 2.0 { return 0.0 }
+    if x < 8.0 {
+        if abs(x - 1.0) < 0.01 {
+            // fdlibm's rational approximation in y = x - 1, accurate relative
+            // to the zero at 1
+            y := x - 1.0
+            p1 := y * (LGM_U0 + y * (LGM_U1 + y * (LGM_U2 + y * (LGM_U3 + y * (LGM_U4 + y * LGM_U5)))))
+            p2 := 1.0 + y * (LGM_V1 + y * (LGM_V2 + y * (LGM_V3 + y * (LGM_V4 + y * LGM_V5))))
+            return -0.5 * y + p1 / p2
+        }
+        if x > 1.99 and x < 2.0 {
+            y := 2.0 - x
+            z := y * y
+            p1 := LGM_A0 + z * (LGM_A2 + z * (LGM_A4 + z * (LGM_A6 + z * (LGM_A8 + z * LGM_A10))))
+            p2 := z * (LGM_A1 + z * (LGM_A3 + z * (LGM_A5 + z * (LGM_A7 + z * (LGM_A9 + z * LGM_A11)))))
+            return (y * p1 + p2) - 0.5 * y
+        }
+        if x > 2.0 and x < 2.01 {
+            y := x - 2.0
+            p := y * (LGM_S0 + y * (LGM_S1 + y * (LGM_S2 + y * (LGM_S3 + y * (LGM_S4 + y * (LGM_S5 + y * LGM_S6))))))
+            q := 1.0 + y * (LGM_R1 + y * (LGM_R2 + y * (LGM_R3 + y * (LGM_R4 + y * (LGM_R5 + y * LGM_R6)))))
+            return 0.5 * y + p / q
+        }
+        return lgamma_mid(x)
+    }
+    return lgamma_big(x).0
+}
+
+// lgamma(x) and the sign of gamma(x).
+lgamma_r :: fn(x: f64) -> (f64, i8) {
+    hx := high_word(x)
+    ix := hx & 0x7fffffff
+    sg: i8 = 1
+    if ix >= 0x7ff00000 { return (x * x, sg) }
+    if hx < 0 { sg = -1 }
+    if ix < 0x3c300000 {
+        // |x| < 2**-60: lgamma(x) = -log(|x|) + O(x)
+        if x is 0.0 { return (inf, sg) }
+        return (-log_dd((abs(x), 0.0)).0, sg)
+    }
+    if hx >= 0 { return (lgamma_pos(x), 1) }
+    // Negative argument.
+    sg = 1
+    ax := -x
+    if floor(ax) is ax { return (inf, sg) }
+    if x > -184.0 {
+        // |gamma(x)| from the double-double gamma, whose sign is that of gamma(x).
+        g := gamma_dd(x)
+        v := g.0
+        if v.0 < 0.0 {
+            sg = -1
+            v = dd_neg(v)
+        }
+        return (dd_add(log_dd(v), ln2_mul(f64(g.1))).0, sg)
+    }
+    // x <= -184, where lgamma is large: the reflection formula
+    // gamma(x) * gamma(1-x) = pi / sin(pi*x) with fdlibm's reduction.
+    t := sin_pi(ax)
+    if t > 0.0 {
+        sg = -1
+    } else {
+        t = -t
+    }
+    return (dd_sub((log(pi / (t * ax)), 0.0), lgamma_big(ax)).0, sg)
+}
+
+/// The natural logarithm of the absolute value of the gamma function at `x`.
+/// It is +inf at zero and at the negative integers, and also at `+-inf` (as
+/// C99 specifies); `lgamma(1)` and `lgamma(2)` are +0. It overflows to +inf for
+/// `x` above about 2.5e305. The result is within 1 ulp of the exact value, even
+/// close to the zeros at 1 and 2; close to its other zeros (the first ones are
+/// near -2.457 and -2.748) the absolute error is at most about 1e-31, so the
+/// relative error is small unless `x` is within about 1e-14 of a zero.
+pub lgamma :: fn(x: f64) -> f64 => lgamma_r(x).0
+
+/// `lgamma(x)` together with the sign of the gamma function at `x`: `sign` is
+/// 1 where gamma is positive (and for NaN and the poles at the negative
+/// integers), and -1 where it is negative: for `x` in (-1, 0), (-3, -2), and
+/// so on. The sign at the pole `-0` is -1, that at `+0` is 1.
+pub lgamma_sign :: fn(x: f64) -> (value: f64, sign: i8) {
+    r := lgamma_r(x)
+    return (value: r.0, sign: r.1)
+}
