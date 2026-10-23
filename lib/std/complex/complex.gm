@@ -213,23 +213,6 @@ half_exp_scaled :: fn(x, c, s: f64) -> Complex(f64) {
     return mk(scale_up(c * big, n - a), scale_up(s * big, n - a))
 }
 
-// `atanh` of a real `x`, from fdlibm. It is +-inf for `x = +-1` and NaN
-// outside [-1, 1].
-atanh_real :: fn(x: f64) -> f64 {
-    a := math.abs(x)
-    if a > 1.0 { return math.nan }
-    if a is 1.0 { return math.copysign(math.inf, x) }
-    if a < 0x1p-28 { return x }
-    t := 0.0
-    if a < 0.5 {
-        t = a + a
-        t = 0.5 * math.log1p(t + t * a / (1.0 - a))
-    } else {
-        t = 0.5 * math.log1p((a + a) / (1.0 - a))
-    }
-    return math.copysign(t, x)
-}
-
 // `x*x + y*y` for a non-negative `y`, not underflowing for a tiny `y`.
 sum_squares :: fn(x, y: f64) -> f64 {
     if y < SQRT_MIN { return x * x }
@@ -553,7 +536,7 @@ pub atanh :: fn(z: Complex(f64)) -> Complex(f64) {
     y := z.im
     ax := math.abs(x)
     ay := math.abs(y)
-    if y is 0.0 and ax <= 1.0 { return mk(atanh_real(x), y) }
+    if y is 0.0 and ax <= 1.0 { return mk(math.atanh(x), y) }
     if x is 0.0 { return mk(x, math.atan(y)) }
     if x.is_nan() or y.is_nan() {
         if x.is_inf() { return mk(math.copysign(0.0, x), y + y) }
