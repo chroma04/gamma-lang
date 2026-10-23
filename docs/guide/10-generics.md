@@ -83,7 +83,7 @@ Without any constraint, a type parameter supports copying, declaring variables a
 | `Num(T)` | integers and floats | `Ord`, plus `+ - * /` and untyped literals at `T` |
 | `Int(T)` | integers | `Num`, plus `%`, overflow flavors, shifts, bitwise operators, `.trunc` / `.checked` / `.sat` |
 | `Neg(T)` | signed integers and floats | `Num`, plus unary `-` |
-| `Float(T)` | floats | `Num`, plus the float methods |
+| `Float(T)` | floats | `Neg`, plus the float methods |
 | `Plain(T)` | plain-data types | `---` at `T`, and `.bits` to and from `T` |
 
 Several constraints are separated by commas: `where Num(T), Plain(T)`.
@@ -365,7 +365,7 @@ dot :: fn(T: type, ring: Ring(T), xs, ys: []const T) -> T {
 use_dot :: fn(xs, ys: []const i32) -> i32 => dot(SAT_RING, xs, ys)
 ```
 
-The cost is one explicit argument. In exchange, every call tells you exactly which `add` runs. By the same reasoning, Gamma has no operator overloading: an operator never calls user code, so `a + b` always costs what it looks like it costs. Vectors (`#simd [N]T`) are the one place where an operator works on many values, and the language, not user code, defines how.
+The cost is one explicit argument. In exchange, every call tells you exactly which `add` runs. By the same reasoning, Gamma has no operator overloading: an operator never calls user code, so `a + b` always costs what it looks like it costs. The exceptions are the types whose operators the language itself defines: vectors (`#simd [N]T`), math vectors (`#vec [N]T`) and complex numbers (`Complex(T)`) have operators that work on several values, and the language, not user code, defines how.
 
 ## Summary
 

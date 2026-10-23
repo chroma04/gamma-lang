@@ -51,6 +51,8 @@ which also show what each example prints.
 | [`bank/`](bank/) | applies deposits, withdrawals and transfers and prints balances | a package (`gamma.toml`) with a submodule, `pub`, error unions with payloads, a type that keeps its allocator |
 | [`life.gm`](life.gm) | Conway's Game of Life on a torus | fixed-size arrays, tables computed at compile time, `@static_assert`, methods |
 | [`mandelbrot.gm`](mandelbrot.gm) | the Mandelbrot set in ASCII | floating point, loops, `--backend=c` for speed |
+| [`julia.gm`](julia.gm) | a Julia set in ASCII | `Complex(f64)`: operators, `abs()` |
+| [`nbody.gm`](nbody.gm) | a leapfrog simulation of a sun and three planets | math vectors (`#vec [3]f64`): operators, `dot`, `norm` |
 
 Run a module directory or a package by naming the directory: `gamma run calc <
 data/calc-input.txt`, `gamma test bank`.

@@ -46,7 +46,60 @@ vectors_demo :: fn() needs Out {
 }
 ```
 
-Arrays have no arithmetic (`a + b` on arrays is an error): use a vector, or a loop. Comparing vectors works as for arrays: `a is b` is one `bool`, true when every pair of lanes is equal (so a `NaN` lane makes it false), and vectors can be hash map keys. Vectors are not ordered, so `<` is an error; the methods `.lanes_eq(w)`, `.lanes_ne(w)`, `.lanes_lt(w)`, `.lanes_le(w)`, `.lanes_gt(w)` and `.lanes_ge(w)` compare lane by lane and give a mask `#simd [N]bool`. A mask is not a condition: write `m.all()` or `m.any()`. A scalar is never spread over the lanes (`a * 2` is an error; write `a * F4(fill: 2)`), and integer lanes have no `/` or `%`, since no processor divides integer lanes in one instruction. `F4.load(xs[i..])` reads four floats from a slice and `v.store(out[i..])` writes them back; both check the slice is long enough. Integer lanes keep the checks of their scalar operators, so `+` traps on overflow in Debug and Checked builds; `+%` wraps and `+|` saturates.
+Arrays have no arithmetic (`a + b` on arrays is an error): use a vector, a math vector (below), or a loop. Comparing vectors works as for arrays: `a is b` is one `bool`, true when every pair of lanes is equal (so a `NaN` lane makes it false), and vectors can be hash map keys. Vectors are not ordered, so `<` is an error; the methods `.lanes_eq(w)`, `.lanes_ne(w)`, `.lanes_lt(w)`, `.lanes_le(w)`, `.lanes_gt(w)` and `.lanes_ge(w)` compare lane by lane and give a mask `#simd [N]bool`. A mask is not a condition: write `m.all()` or `m.any()`. A scalar is never spread over the lanes (`a * 2` is an error; write `a * F4(fill: 2)`), and integer lanes have no `/` or `%`, since no processor divides integer lanes in one instruction. `F4.load(xs[i..])` reads four floats from a slice and `v.store(out[i..])` writes them back; both check the slice is long enough. Integer lanes keep the checks of their scalar operators, so `+` traps on overflow in Debug and Checked builds; `+%` wraps and `+|` saturates.
+
+### Math vectors
+
+`#vec [N]T` is a math vector: an array of 2, 3 or 4 integers or floats whose operators work element by element. It is meant for coordinates, colors and the like. Where a `#simd` vector promises instructions and so restricts its shape (power-of-two length, aligned to the whole vector), a math vector promises a layout: it is exactly `[N]T`, so it can be a field of a C struct, a vertex in a buffer or a record in a file. Use `#simd` when you are tuning a loop and `#vec` when you are writing geometry.
+
+```gamma
+Vec3 :: #vec [3]f32
+
+reflect :: fn(d, n: Vec3) -> Vec3 => d - 2 * d.dot(n) * n
+
+lerp :: fn(a, b: Vec3, t: f32) -> Vec3 => a + (b - a) * t
+
+math_vec_demo :: fn() needs Out {
+    ray := Vec3(1, -1, 0)
+    up := Vec3(0, 1, 0)
+    print("{}\n", reflect(ray, up))                // [1, 1, 0]
+    print("{}\n", lerp(Vec3(fill: 0), ray, 0.5))   // [0.5, -0.5, 0]
+    print("{} {}\n", ray.norm(), ray.cross(up))     // 1.4142135 [-0, 0, 1]
+}
+```
+
+Construct and index it like an array; `is` compares whole vectors, and `Vec3(xs)` and `[3]f32(v)` convert to and from an array. The operators `+ - *` and `/` (and the others the element type has, with the same overflow checks per element) take two vectors of one type; `*` and `/` also take a scalar, so `2 * d` scales every element. There is no `v + 1`: adding a scalar to every element is rarely what a formula means, and writing `v + Vec3(fill: 1)` says so. The methods are `dot`, `cross` (three elements), `norm` (float elements), and `min`, `max` and `abs` element by element. A math vector is not ordered (`<` is an error) and has none of the array methods.
+
+Matrices and quaternions are not built in. They are library types, ordinary structs of math vectors with functions, since the language only defines the operators that cost a handful of scalar operations.
+
+### Complex numbers
+
+`Complex(T)`, for a float type `T`, is a struct `{ re, im }` of the core library on which the language defines `+`, `-`, `*`, `/` and unary `-`. Its layout is that of C's `float _Complex` and `double _Complex`. Like a math vector, `*` takes a scalar on either side and `/` on the right (`2 * z`, `z / 2`); `z + 1` is an error, for the same reason as `v + 1`. Division is Smith's algorithm, which does not overflow for large divisors. The methods are `conj()` and `abs()` (the magnitude, computed like C's `hypot`); `exp`, `log`, `sqrt` and the rest of complex analysis are in `std/complex`.
+
+```gamma
+C64 :: Complex(f64)
+
+/// Iterations of z = z*z + c until z leaves the circle of radius 2, at most `limit`.
+mandelbrot_steps :: fn(c: C64, limit: u32) -> u32 {
+    z := C64(re: 0, im: 0)
+    for n in 0..limit {
+        if z.abs() > 2 { return n }
+        z = z * z + c
+    }
+    return limit
+}
+
+complex_demo :: fn() needs Out {
+    a := C64(re: 1, im: 2)
+    b := C64(re: 3, im: -1)
+    print("{}\n", a * b)                    // Complex(re: 5, im: 5)
+    print("{}\n", a / b)                    // Complex(re: 0.1, im: 0.7000000000000001)
+    print("{} {}\n", a.conj().im, b.abs())  // -2 3.1622776601683795
+    print("{}\n", mandelbrot_steps(C64(re: -1, im: 0), 100))   // 100
+}
+```
+
+A complex number is a struct in every other respect: it is constructed by name, its parts are fields (`z.im = 0`), and `is` compares the parts as floats. It is not ordered, and there is no imaginary literal.
 
 ## Slices
 

@@ -1,0 +1,97 @@
+//! A small gravitational n-body simulation with math vectors.
+//!
+//! Positions, velocities and forces are `Vec3 :: #vec [3]f64`, so the physics is written as
+//! the formulas are: `d * (m / (r * r * r))`. A sun and three planets start on circular
+//! orbits; the program steps them with leapfrog integration and prints the total energy,
+//! which stays nearly constant, every 1000 steps. The number of steps is an optional
+//! argument (default 5000).
+//!
+//!     gamma run nbody.gm
+//!     gamma run --backend=c nbody.gm 100000
+
+str :: import "std/str"
+math :: import "std/math"
+
+Vec3 :: #vec [3]f64
+
+G :: 1.0
+
+Body :: struct {
+    pos: Vec3
+    vel: Vec3
+    mass: f64
+}
+
+/// A body on a circular orbit of radius `r` around a unit mass at the origin, `phase`
+/// radians along it.
+planet :: fn(r, mass, phase: f64) -> Body {
+    speed := math.sqrt(G / r)
+    c := math.cos(phase)
+    s := math.sin(phase)
+    return Body(pos: Vec3(r * c, r * s, 0), vel: Vec3(-speed * s, speed * c, 0), mass: mass)
+}
+
+/// The acceleration of body `i` from all the others.
+accel :: fn(bodies: []const Body, i: usize) -> Vec3 {
+    a := Vec3(fill: 0)
+    for j in 0..bodies.len {
+        if j is i { continue }
+        d := bodies[j].pos - bodies[i].pos
+        r := d.norm()
+        a += d * (G * bodies[j].mass / (r * r * r))
+    }
+    return a
+}
+
+/// One kick-drift-kick leapfrog step of length `dt`.
+step :: fn(bodies: []Body, dt: f64) {
+    for i in 0..bodies.len { bodies[i].vel += accel(bodies, i) * (dt / 2) }
+    for i in 0..bodies.len { bodies[i].pos += bodies[i].vel * dt }
+    for i in 0..bodies.len { bodies[i].vel += accel(bodies, i) * (dt / 2) }
+}
+
+energy :: fn(bodies: []const Body) -> f64 {
+    e := 0.0
+    for i in 0..bodies.len {
+        e += 0.5 * bodies[i].mass * bodies[i].vel.dot(bodies[i].vel)
+        for j in i + 1..bodies.len {
+            e -= G * bodies[i].mass * bodies[j].mass / (bodies[i].pos - bodies[j].pos).norm()
+        }
+    }
+    return e
+}
+
+main :: fn() -> u8 needs Out + Err + Env {
+    args := Env.args()[1..]
+    steps: u32 = 5000
+    if args.len is 1 {
+        steps = str.parse_int(u32, args[0]) else 0
+    } else if args.len is not 0 {
+        eprint("usage: nbody [steps]\n")
+        return 1
+    }
+    if steps is 0 {
+        eprint("error: steps must be a positive number\n")
+        return 1
+    }
+    bodies := [4]Body(
+        Body(pos: Vec3(fill: 0), vel: Vec3(fill: 0), mass: 1),
+        planet(1.0, 0.001, 0.0),
+        planet(2.0, 0.0005, 2.0),
+        planet(3.5, 0.002, 4.0),
+    )
+    print("start  energy {:.6}\n", energy(&bodies))
+    for n in 1..=steps {
+        step(&bodies, 0.001)
+        if n % 1000 is 0 { print("{:>6} energy {:.6}\n", n, energy(&bodies)) }
+    }
+    p := bodies[1].pos
+    print("planet 1 at ({:.3}, {:.3}, {:.3}), distance {:.3}\n", p[0], p[1], p[2], p.norm())
+    return 0
+}
+
+test "a circular orbit keeps its radius" {
+    bodies := [2]Body(Body(pos: Vec3(fill: 0), vel: Vec3(fill: 0), mass: 1), planet(1.0, 0.0, 0.0))
+    for _ in 0..2000 { step(&bodies, 0.001) }
+    expect(math.abs(bodies[1].pos.norm() - 1.0) < 0.001)
+}

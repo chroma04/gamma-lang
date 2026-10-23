@@ -1,0 +1,48 @@
+//! A Julia set in ASCII, with complex numbers.
+//!
+//! `C64 :: Complex(f64)` has the operators of the language, so the iteration `z = z*z + c`
+//! is written as it is on paper, and `z.abs()` is the magnitude. Each character cell is a
+//! starting point `z`; the brightness is the number of iterations before it leaves the circle
+//! of radius 2.
+//!
+//!     gamma run julia.gm
+
+C64 :: Complex(f64)
+
+MAX_ITER :: 60
+PALETTE :: " .:-=+*#%@"
+
+/// The number of iterations of `z = z*z + c` before |z| exceeds 2, at most `MAX_ITER`.
+escape_time :: fn(z0, c: C64) -> u32 {
+    z := z0
+    for n in 0..MAX_ITER {
+        if z.abs() > 2 { return n }
+        z = z * z + c
+    }
+    return MAX_ITER
+}
+
+main :: fn() needs Out + Alloc {
+    c := C64(re: -0.8, im: 0.156)
+    row_buf := make_fill(T: u8, 64, ' ') else {
+        print("out of memory\n")
+        return
+    }
+    defer free(row_buf)
+    for row in 0..24 {
+        for col in 0..64 {
+            z := C64(re: -1.6 + 3.2 * col.to(f64) / 63, im: 1.2 - 2.4 * row.to(f64) / 23)
+            n := escape_time(z, c)
+            row_buf[col] = PALETTE[usize(n) * (PALETTE.len - 1) / MAX_ITER]
+        }
+        line: string = row_buf
+        print("{}\n", line)
+    }
+}
+
+test "escape times" {
+    c := C64(re: 0, im: 0)
+    expect_eq(escape_time(C64(re: 0.5, im: 0.5), c), MAX_ITER)
+    expect_eq(escape_time(C64(re: 3, im: 0), c), 0)
+    expect(escape_time(C64(re: 1.5, im: 0), c) < MAX_ITER)
+}

@@ -4,6 +4,22 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
+## Unreleased
+
+### Added
+
+- **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the
+  layout of C's `_Complex`, and the operators `+ - * /`, unary `-`, and scaling by a scalar;
+  methods `conj()` and `abs()`. Division is Smith's algorithm.
+- **Math vectors**: `#vec [N]T`, with `N` from 2 to 4 and an integer or float `T`, an array
+  layout that is C-compatible, element-wise operators, scalar `*` and `/`, and the methods
+  `dot`, `cross`, `norm`, `min`, `max` and `abs`.
+- Examples `nbody.gm` (math vectors) and `julia.gm` (complex numbers).
+
+### Changed
+
+- `Float(T)` now implies `Neg(T)`, so unary minus works in generic code over floats.
+
 ## 0.1.0 - 2026-10-20
 
 The first release: the complete language of `gamma-spec.md`, implemented on three
