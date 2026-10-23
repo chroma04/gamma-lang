@@ -1,0 +1,143 @@
+// std/complex: every function on ordinary arguments, on both sides of the branch cuts and
+// on special values (signed zeros, infinities, NaN, huge parts). Results are printed with the
+// shortest round-trip representation, so the expected output pins the exact bits.
+math :: import "std/math"
+cx :: import "std/complex"
+
+NZ: f64 : (0x8000_0000_0000_0000u64).bits(f64)
+inf: f64 : math.inf
+nan: f64 : math.nan
+
+c :: fn(re, im: f64) -> Complex(f64) => Complex(f64)(re: re, im: im)
+
+show :: fn(name: string, z: Complex(f64), r: Complex(f64)) needs Out {
+    print("{}({} {}i) = {} {}i\n", name, z.re, z.im, r.re, r.im)
+}
+
+show2 :: fn(name: string, z, w: Complex(f64), r: Complex(f64)) needs Out {
+    print("{}({} {}i, {} {}i) = {} {}i\n", name, z.re, z.im, w.re, w.im, r.re, r.im)
+}
+
+test_arg :: fn() needs Out {
+    zs := [_]Complex(f64)(
+        c(1.0, 0.0), c(1.0, 1.0), c(0.0, 1.0), c(-1.0, 1.0), c(-1.0, 0.0), c(-1.0, NZ),
+        c(0.0, -1.0), c(NZ, 0.0), c(0.0, 0.0), c(NZ, NZ), c(inf, 1.0), c(-inf, 1.0),
+        c(1.0, inf), c(inf, -inf), c(nan, 1.0),
+    )
+    for z in zs {
+        print("arg({} {}i) = {}\n", z.re, z.im, cx.arg(z))
+    }
+}
+
+test_from_polar :: fn() needs Out {
+    rs := [_]f64(1.0, 2.0, 0.0, 3.5)
+    ts := [_]f64(0.0, 1.0, math.pi / 2.0, math.pi, -2.0, 100.0)
+    for r in rs {
+        for t in ts {
+            z := cx.from_polar(r, t)
+            print("from_polar({}, {}) = {} {}i\n", r, t, z.re, z.im)
+        }
+    }
+}
+
+test_exp :: fn() needs Out {
+    zs := [_]Complex(f64)(
+        c(0.0, 0.0), c(1.0, 0.0), c(1.0, NZ), c(-2.0, 0.5), c(0.0, math.pi), c(0.5, 1.0),
+        c(0.0, 1.0), c(10.0, -3.0), c(709.5, 1.0), c(710.0, math.pi / 2.0), c(1000.0, 1.0), c(1000.0, 0.5),
+        c(1500.0, 1.0), c(-1000.0, 1.0), c(-1000.0, 0.0), c(inf, 0.0), c(inf, 1.0),
+        c(inf, inf), c(inf, nan), c(-inf, 1.0), c(-inf, -1.0), c(-inf, inf), c(-inf, nan),
+        c(nan, 0.0), c(nan, 1.0), c(1.0, inf), c(1.0, nan), c(nan, nan),
+    )
+    for z in zs { show("exp", z, cx.exp(z)) }
+}
+
+test_log :: fn() needs Out {
+    zs := [_]Complex(f64)(
+        c(1.0, 0.0), c(math.e, 0.0), c(-1.0, 0.0), c(-1.0, NZ), c(0.0, 1.0), c(0.0, -1.0),
+        c(1.0, 1.0), c(3.0, 4.0), c(0.0, 0.0), c(NZ, 0.0), c(NZ, NZ), c(1.0, 1e-8),
+        c(1.0 + 1e-9, 1e-9), c(0.6, 0.8), c(1e300, 1e300), c(1e-300, 1e-300), c(5e-324, 0.0),
+        c(inf, 0.0), c(-inf, 0.0), c(-inf, NZ), c(inf, inf), c(1.0, inf), c(nan, inf),
+        c(nan, 1.0), c(1.0, nan), c(inf, nan),
+    )
+    for z in zs { show("log", z, cx.log(z)) }
+}
+
+test_sqrt :: fn() needs Out {
+    zs := [_]Complex(f64)(
+        c(0.0, 0.0), c(NZ, 0.0), c(0.0, NZ), c(4.0, 0.0), c(-4.0, 0.0), c(-4.0, NZ),
+        c(0.0, 2.0), c(0.0, -2.0), c(3.0, 4.0), c(3.0, -4.0), c(-3.0, 4.0), c(-3.0, -4.0),
+        c(-1.0, 1e-300), c(-1.0, -1e-300), c(1e-300, 1e-300), c(5e-324, 5e-324),
+        c(1e308, 1e308), c(-1e308, 1e308), c(1.7e308, 0.0), c(-1.7e308, -1.7e308),
+        c(1.0, 1e300), c(inf, 1.0), c(inf, -1.0), c(inf, nan), c(-inf, 1.0), c(-inf, -1.0),
+        c(-inf, nan), c(nan, 1.0), c(1.0, inf), c(nan, inf), c(-inf, inf), c(nan, nan),
+        c(1.0, nan),
+    )
+    for z in zs { show("sqrt", z, cx.sqrt(z)) }
+    // sqrt squares back to its argument.
+    for z in [_]Complex(f64)(c(3.0, 4.0), c(-7.0, 0.25), c(0.1, -9.0)) {
+        r := cx.sqrt(z)
+        q := r * r
+        print("sqrt({} {}i)^2 = {} {}i\n", z.re, z.im, q.re, q.im)
+    }
+}
+
+test_pow :: fn() needs Out {
+    zs := [_]Complex(f64)(c(2.0, 0.0), c(0.0, 1.0), c(-1.0, 0.0), c(1.0, 1.0), c(-8.0, NZ), c(0.5, -2.0))
+    ws := [_]Complex(f64)(c(2.0, 0.0), c(0.5, 0.0), c(-1.0, 0.0), c(0.0, 1.0), c(1.0, 1.0), c(0.0, 0.0))
+    for z in zs {
+        for w in ws { show2("pow", z, w, cx.pow(z, w)) }
+    }
+    zero := c(0.0, 0.0)
+    for w in [_]Complex(f64)(c(2.0, 0.0), c(0.5, 3.0), c(0.0, 0.0), c(-1.0, 0.0), c(-1.0, 1.0), c(0.0, 1.0)) {
+        show2("pow", zero, w, cx.pow(zero, w))
+        show2("pow", c(NZ, 0.0), w, cx.pow(c(NZ, 0.0), w))
+    }
+    // The cube roots of 8 and a unit root.
+    third := c(1.0 / 3.0, 0.0)
+    show2("pow", c(8.0, 0.0), third, cx.pow(c(8.0, 0.0), third))
+    show2("pow", c(-8.0, 0.0), third, cx.pow(c(-8.0, 0.0), third))
+}
+
+test_trig :: fn() needs Out {
+    zs := [_]Complex(f64)(
+        c(0.0, 0.0), c(NZ, 0.0), c(0.0, NZ), c(1.0, 0.0), c(1.0, NZ), c(0.0, 1.0), c(0.0, -2.0),
+        c(1.0, 1.0), c(-2.0, 0.5), c(math.pi, 0.0), c(math.pi / 2.0, 0.0), c(math.pi / 2.0, 1.0),
+        c(3.0, -4.0), c(0.5, 20.0), c(0.5, 800.0), c(1.0, -800.0), c(1e6, 1.0), c(1.0, inf),
+        c(1.0, -inf), c(0.0, inf), c(inf, 0.0), c(-inf, 0.0), c(nan, 0.0), c(inf, 1.0),
+        c(nan, 1.0), c(1.0, nan),
+    )
+    for z in zs {
+        show("sin", z, cx.sin(z))
+        show("cos", z, cx.cos(z))
+    }
+    // sin^2 + cos^2 = 1 up to rounding.
+    for z in [_]Complex(f64)(c(0.3, 0.7), c(-1.2, 2.0)) {
+        s := cx.sin(z)
+        k := cx.cos(z)
+        t := s * s + k * k
+        print("sin^2+cos^2({} {}i) = {} {}i\n", z.re, z.im, t.re, t.im)
+    }
+}
+
+test_roundtrip :: fn() needs Out {
+    // exp and log invert each other (up to rounding) away from the branch cut.
+    for z in [_]Complex(f64)(c(1.0, 2.0), c(-3.0, 0.5), c(0.25, -1.5)) {
+        r := cx.exp(cx.log(z))
+        print("exp(log({} {}i)) = {} {}i\n", z.re, z.im, r.re, r.im)
+    }
+    // polar form agrees with abs and arg.
+    z := c(-2.0, 3.0)
+    p := cx.from_polar(z.abs(), cx.arg(z))
+    print("polar({} {}i) = {} {}i\n", z.re, z.im, p.re, p.im)
+}
+
+main :: fn() needs Out {
+    test_arg()
+    test_from_polar()
+    test_exp()
+    test_log()
+    test_sqrt()
+    test_pow()
+    test_trig()
+    test_roundtrip()
+}

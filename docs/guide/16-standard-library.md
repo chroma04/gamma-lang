@@ -859,6 +859,7 @@ A float is written in the shortest form that reads back as the same value, NaN a
 | --- | --- |
 | `std/cli` | command-line options as an iterator: short and long flags, values, positional arguments, generated help |
 | `std/math` | `sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, ... on `f64`, written in Gamma so every back end gives identical results |
+| `std/complex` | `exp`, `log`, `sqrt`, `pow`, `sin`, `cos`, `arg` and `from_polar` on `Complex(f64)`, also in pure Gamma |
 | `std/net` | the types `Socket`, `Listener` and `Shutdown` (`net.Socket`), and `send_all` and `recv_exact` over the `Net` effect, whose operations are reached through it (`Net.connect(host, port)`); tests get an in-memory network |
 | `std/process` | running other programs: `output`, `status` and `success` over the `Proc` effect (above); tests cannot start processes |
 | `std/bytes`, `std/encoding/*`, `std/hash`, `std/json` | binary data and formats (above) |
