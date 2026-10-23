@@ -8,6 +8,14 @@ Versions and what each kind of change means are described in
 
 ### Language
 
+- **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the
+  layout of C's `_Complex`, and the operators `+ - * /`, unary `-`, and scaling by a scalar;
+  methods `conj()` and `abs()`. Division is Smith's algorithm (§5.3.1, §7.4.7).
+- **Math vectors**: `#vec [N]T`, with `N` from 2 to 4 and an integer or float `T`, an array
+  layout that is C-compatible, element-wise operators, scalar `*` and `/`, and the methods
+  `dot`, `cross`, `norm`, `min`, `max` and `abs` (§5.6.3, §7.4.7).
+- `Float(T)` now implies `Neg(T)`, so unary minus works in generic code over floats.
+- Examples `nbody.gm` (math vectors) and `julia.gm` (complex numbers).
 - An array `[N]T` or a vector spreads into its `N` elements like an unnamed tuple:
   `f(..xs)`, `(u8, u8, u8)(..xs)`, `print("{} {}", ..pair)` (§11.4). An enum-indexed array,
   or one whose length is a compile-time parameter, cannot be spread.

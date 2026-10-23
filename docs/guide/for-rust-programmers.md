@@ -685,7 +685,7 @@ Like Rust, a generic body is checked once where it is written, treating `T` as o
 | `Num(T)` | `Ord`, plus `+ - * /` and literals at type `T` |
 | `Int(T)` | `Num`, plus `%`, overflow flavors, shifts, bitwise operators |
 | `Neg(T)` | `Num`, plus unary `-` |
-| `Float(T)` | `Num`, plus the float methods |
+| `Float(T)` | `Neg`, plus the float methods |
 | `Plain(T)` | `---` and `.bits` for plain-data types |
 
 A few notes on inference. A type parameter that another parameter's type mentions (`T` in `xs: []const T`) is *inferable*, and is never bound positionally: either the arguments determine it, or you write it by name (`largest(T: f64, ...)`). A parameter that nothing mentions, like the element type of `list(string)`, is an ordinary positional parameter. All the arguments that determine a type parameter must agree exactly, with no widening, and an untyped literal never decides on its own. That is stricter than Rust's inference, and the reason is local reasoning: which argument binds which parameter never depends on counting.
