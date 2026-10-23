@@ -37,14 +37,16 @@ impl<'a, 's> FnCx<'a, 's> {
         if rty.is_error() {
             return error_expr(span);
         }
-        // `s.free()` on a `#soa` slice; a `#soa` has no other methods (§5.6.4).
+        // `s.free()` and `a.copy_from(src)` on a `#soa`; it has no other methods (§5.6.4).
         if self.sema.soa_info(rty).is_some()
             || matches!(rty.kind(), TyKind::Ptr { pointee, .. } if self.sema.soa_info(*pointee).is_some())
         {
             let recv = self.soa_deref(recv);
             let info = self.soa_of(&recv).expect("a `#soa` receiver");
-            if name.name.as_str() == "free" {
-                return self.soa_free(recv, info, args, span);
+            match name.name.as_str() {
+                "free" => return self.soa_free(recv, info, args, span),
+                "copy_from" => return self.soa_copy_from(recv, info, args, span),
+                _ => {}
             }
             let t = self.infer.resolve(recv.ty);
             self.error(

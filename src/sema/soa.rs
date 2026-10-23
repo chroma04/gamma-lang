@@ -432,6 +432,33 @@ impl<'s> Sema<'s> {
         mk(self.sigs[&f].ret, tir::ExprKind::Call { callee: tir::Callee::Fn(f), args }, span)
     }
 
+    /// `dst.copy_from(src)`, `src` a `#soa []const` slice: each column copied with the
+    /// slice method `copy_from`, which checks the lengths and allows overlap (§5.6.4).
+    fn soa_copy_columns(&mut self, dst: &Expr, info: SoaInfo, src: &Expr, span: Span) -> Expr {
+        let Some(f) = self.core_fn("slice", "copy_from") else {
+            self.error(span, "`copy_from` is missing from the core library");
+            return error_expr(span);
+        };
+        let Some(from) = self.soa_info(src.ty) else { return error_expr(span) };
+        let fields = self.soa_fields(info);
+        let mut stmts = vec![];
+        for (k, field) in fields.iter().enumerate() {
+            let mut d = self.soa_column(dst, info, k, span);
+            if info.len.is_some() {
+                // The array column of an array place, sliced whole.
+                let kind = tir::ExprKind::Slice { base: Box::new(d), lo: None, hi: None, inclusive: false };
+                d = mk(Ty::slice(false, field.ty), kind, span);
+            }
+            let s = self.soa_column(src, from, k, span);
+            let pending = std::mem::take(&mut self.soa_errors);
+            let inst = self.instantiate(f, vec![field.ty], span);
+            self.soa_errors = pending;
+            let call = tir::ExprKind::Call { callee: tir::Callee::Fn(inst), args: vec![d, s] };
+            stmts.push(Stmt::Expr(mk(self.sigs[&inst].ret, call, span)));
+        }
+        super::func::block_of(stmts, span)
+    }
+
     /// The sizes and alignments of the element's fields, as `[K]usize` arrays.
     fn soa_layout(&mut self, info: SoaInfo, span: Span) -> (Expr, Expr) {
         let fields = self.soa_fields(info);
@@ -480,6 +507,7 @@ impl<'s> Sema<'s> {
                 self.soa_make_columns(locals, operand, info, n, site, span)
             }
             SoaOp::Free => self.soa_free_columns(&args[0], info, args[1].clone(), span),
+            SoaOp::CopyFrom => self.soa_copy_columns(&args[0], info, &args[1], span),
         }
     }
 }
@@ -538,7 +566,7 @@ impl<'a, 's> FnCx<'a, 's> {
             span,
             format!(
                 "{} needs the fields of `{}`, which a generic function does not know; a `#soa` of a type parameter has \
-                 whole elements (`a[i]`), `len`, slicing, `make` and `free` (§5.6.4)",
+                 whole elements (`a[i]`), `len`, slicing, `copy_from`, `make` and `free` (§5.6.4)",
                 what, info.elem
             ),
         );
@@ -945,5 +973,39 @@ impl<'a, 's> FnCx<'a, 's> {
             self.sema.soa_free_columns(&v, info, site, span)
         };
         block(stmts, call, span)
+    }
+
+    /// `a.copy_from(src)` on a `#soa` array place or slice: `src` is coerced to a
+    /// `#soa []const S` of the same length, and may overlap `a` (§5.6.4).
+    pub fn soa_copy_from(&mut self, recv: Expr, info: SoaInfo, args: &[ast::Arg], span: Span) -> Expr {
+        let writable = match info.len {
+            Some(_) => self.place_mutability(&recv) == Some(true),
+            None => !info.is_const,
+        };
+        if !writable {
+            let what = match info.len {
+                Some(_) if self.place_mutability(&recv).is_none() => "a temporary `#soa` array",
+                Some(_) => "an immutable `#soa` array",
+                None => "a `#soa []const` slice",
+            };
+            self.error(span, format!("cannot copy into {}", what));
+        }
+        if !self.arity(args, 1, "copy_from", span) {
+            return error_expr(span);
+        }
+        let mut stmts = vec![];
+        let dst = self.soa_operand(recv, info, &mut stmts);
+        let src_ty = self.sema.soa_type(info.elem, None, true, span);
+        let src = self.value_arg(args, 0, src_ty, span);
+        if src.ty.is_error() {
+            return error_expr(span);
+        }
+        let src = self.bind_temp(src, &mut stmts);
+        let copy = if info.generic() {
+            mk(Ty::unit(), tir::ExprKind::SoaDeferred { op: SoaOp::CopyFrom, args: vec![dst, src] }, span)
+        } else {
+            self.sema.soa_copy_columns(&dst, info, &src, span)
+        };
+        block(stmts, copy, span)
     }
 }

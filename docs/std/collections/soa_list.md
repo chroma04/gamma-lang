@@ -18,7 +18,8 @@ A growable structure-of-arrays list: a `List` whose elements are stored by field
 `items[i].f` its field `f` in place, and `items.f` the column of `f`. The list grows
 like `List`: it keeps the allocator it was created with, performs no `Alloc`
 afterwards, reports a failed growth as `AllocError`, and at least doubles its
-capacity when it grows, so that pushing takes amortized constant time. All the
+capacity when it grows, so that pushing takes amortized constant time; moving
+elements (growing, `insert`, `remove`) copies whole columns. All the
 columns live in one block of `capacity()` elements, which growing replaces, so a
 slice of `items` or of one of its columns is valid only until the list next grows.
 

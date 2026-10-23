@@ -1069,6 +1069,8 @@ pub enum SoaOp {
     Make,
     /// `s.free()`: `[s, site]`.
     Free,
+    /// `a.copy_from(src)`: `[a, src]`, `src` a `#soa []const` slice.
+    CopyFrom,
 }
 
 /// Where `@write` sends its output.

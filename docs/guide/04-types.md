@@ -135,9 +135,9 @@ soa_demo :: fn() -> AllocError!() needs Alloc + Out {
 
 `ps[i]` is the whole element: reading it gathers the fields into a `Particle`, and assigning to it stores each field in its column. `ps[i].pos` is one field of one element, an ordinary place you can read, assign and take the address of. The element as a whole has no address, since it is not stored anywhere in one piece, so `&ps[i]` is an error. `ps.pos` is the whole column: a `[]V2` for a slice, or the array `[N]V2` itself for `#soa [N]Particle`.
 
-A `#soa [N]S` array works like an array (`#soa [4]Particle(fill: p)`, `a[1..3]`, `&a` passes it as a `#soa []S`), and a `#soa []S` like a slice; `T.make(n)` allocates one and `s.free()` releases it. `for p in ps` gathers each element in turn. `is` compares elements, and a `#soa` is not ordered.
+A `#soa [N]S` array works like an array (`#soa [4]Particle(fill: p)`, `a[1..3]`, `&a` passes it as a `#soa []S`), and a `#soa []S` like a slice; `T.make(n)` allocates one and `s.free()` releases it. `for p in ps` gathers each element in turn. `dst.copy_from(src)` copies one `#soa` into another of the same length, a column at a time, and the two may overlap. `is` compares elements, and a `#soa` is not ordered.
 
-Generic code can take a `#soa []T` of a type parameter. It does not know `T`'s fields, so it works with whole elements and with the shape: `a[i]`, `a[i] = x`, `a.len`, slicing, `for`, `make` and `free`. Each instantiation checks that its `T` is a struct `#soa` can store:
+Generic code can take a `#soa []T` of a type parameter. It does not know `T`'s fields, so it works with whole elements and with the shape: `a[i]`, `a[i] = x`, `a.len`, slicing, `for`, `copy_from`, `make` and `free`. Each instantiation checks that its `T` is a struct `#soa` can store:
 
 ```gamma
 reverse :: fn(T: type, xs: #soa []T) {

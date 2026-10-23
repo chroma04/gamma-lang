@@ -1,0 +1,30 @@
+//! exit: 134
+//! stderr
+// `copy_from` on `#soa` arrays and slices copies each column; the source may overlap the
+// destination, and the lengths must be equal (checked) (§5.6.4).
+P :: struct { a: u8; b: u64 }
+Ps :: #soa []P
+
+shift :: fn(T: type, xs: #soa []T) { xs[1..].copy_from(xs[..xs.len - 1]) }
+
+main :: fn() -> AllocError!() needs Alloc + Out {
+    s := try Ps.make(5)
+    defer s.free()
+    for i in 0..5 { s[i] = P(a: i.trunc(u8), b: i.trunc(u64) * 10) }
+    s[0..3].copy_from(s[2..5])        // overlap, forwards
+    print("{}\n", s)
+    s[2..5].copy_from(s[0..3])        // overlap, backwards
+    print("{}\n", s)
+    shift(s)
+    print("{}\n", s)
+    arr := #soa [3]P(fill: P(a: 9, b: 9))
+    arr.copy_from(s[0..3])
+    print("{}\n", arr)
+    t := try Ps.make(2)
+    defer t.free()
+    ones := #soa [2]P(fill: P(a: 1, b: 1))
+    t.copy_from(&ones)
+    print("{}\n", t)
+    s.copy_from(t)
+    return ()
+}

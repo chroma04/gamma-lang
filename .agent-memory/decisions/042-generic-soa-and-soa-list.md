@@ -9,7 +9,10 @@ agreed plan: lift the concrete-only restriction, then a std SoaList.
   Concrete soa structs now also carry `[elem]` as args and `set_template(shape template)`,
   so match_params binds T for free (plus `soa_const_view` in effects.rs: `#soa []const T`
   pattern vs `#soa []S` actual, keyed on template names).
-- Allowed in generic bodies: a[i], a[i]=x, len, slicing, coercions, for, make, free.
+- Allowed in generic bodies: a[i], a[i]=x, len, slicing, coercions, for, copy_from, make, free.
+- `a.copy_from(src)` (user asked, after the per-element-copy limitation): only array method
+  on #soa; src coerced to `#soa []const S`; per column calls core/slice copy_from instance
+  (length assert + overlap direction for free). SoaOp::CopyFrom. Receiver evaluated first.
   Errors: columns, a[i].f, construction, `is` on slices, @hash, formatting
   (`soa_needs_fields`). `is` on generic #soa *arrays* falls through to struct Eq (fine).
 - Ops → `tir::ExprKind::SoaDeferred { op: SoaOp, args }`; operands pre-bound to temps at
@@ -27,12 +30,10 @@ agreed plan: lift the concrete-only restriction, then a std SoaList.
 ## Library: std/collections/soa_list
 - `SoaList(S) { pub items: #soa []S; block: #soa []S; alloc }`; block = whole make()
   block (cap = block.len), items = block[0..n]. Growth `with l.alloc { Cols.make(..) }`,
-  doubling, min 4; copies element-wise (gather/scatter; no per-column memcpy possible
-  generically). API mirrors List: push pop insert remove swap_remove extend(#soa []const S)
+  doubling, min 4; growth/insert/remove/extend move elements with `copy_from` (per column). API mirrors List: push pop insert remove swap_remove extend(#soa []const S)
   reserve truncate clear deinit len is_empty capacity. extend from self handled (regrow
   copies tail before free). deinit twice / reuse after deinit fine (free of len 0 = no-op).
 
 ## Left out / follow-ups
-- Per-column bulk copy on growth (needs field knowledge; could be a compiler-provided op).
 - Array-pointer `^#soa [N]S` arg does not infer `#soa []T` (same as plain slices).
 - Deep formatting/hashing of nested #soa slices (from 040).

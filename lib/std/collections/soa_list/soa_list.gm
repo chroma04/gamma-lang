@@ -14,7 +14,8 @@
 //! `items[i].f` its field `f` in place, and `items.f` the column of `f`. The list grows
 //! like `List`: it keeps the allocator it was created with, performs no `Alloc`
 //! afterwards, reports a failed growth as `AllocError`, and at least doubles its
-//! capacity when it grows, so that pushing takes amortized constant time. All the
+//! capacity when it grows, so that pushing takes amortized constant time; moving
+//! elements (growing, `insert`, `remove`) copies whole columns. All the
 //! columns live in one block of `capacity()` elements, which growing replaces, so a
 //! slice of `items` or of one of its columns is valid only until the list next grows.
 
@@ -62,8 +63,8 @@ regrow :: fn(S: type, l: ^SoaList(S), extra: usize, tail: #soa []const S) -> All
     if cap <= @max_value(usize) / 2 and cap * 2 > new_cap { new_cap = cap * 2 }
     if cap is 0 and new_cap < 4 { new_cap = 4 }
     fresh := try with l.alloc { Cols.make(new_cap) }
-    for i in 0..n { fresh[i] = l.items[i] }
-    for i in 0..tail.len { fresh[n + i] = tail[i] }
+    fresh[0..n].copy_from(l.items)
+    fresh[n..n + tail.len].copy_from(tail)
     with l.alloc { l.block.free() }
     l.block = fresh
     l.items = fresh[0..n + tail.len]
@@ -87,7 +88,7 @@ pub extend :: fn(S: type, l: ^SoaList(S), xs: #soa []const S) -> AllocError!() {
         return regrow(l, xs.len, xs)
     }
     l.items = l.block[0..n + xs.len]
-    for i in 0..xs.len { l.items[n + i] = xs[i] }
+    l.items[n..].copy_from(xs)
     return ()
 }
 
@@ -98,11 +99,7 @@ pub insert :: fn(S: type, l: ^SoaList(S), i: usize, x: S) -> AllocError!() {
     if i > n { trap("soa_list.insert: index out of bounds") }
     try reserve(l, 1)
     l.items = l.block[0..n + 1]
-    k := n
-    while k > i {
-        l.items[k] = l.items[k - 1]
-        k -= 1
-    }
+    l.items[i + 1..].copy_from(l.items[i..n])
     l.items[i] = x
     return ()
 }
@@ -112,7 +109,7 @@ pub insert :: fn(S: type, l: ^SoaList(S), i: usize, x: S) -> AllocError!() {
 pub remove :: fn(S: type, l: ^SoaList(S), i: usize) -> S {
     x := l.items[i]
     n := l.items.len
-    for k in i + 1..n { l.items[k - 1] = l.items[k] }
+    l.items[i..n - 1].copy_from(l.items[i + 1..])
     l.items = l.items[0..n - 1]
     return x
 }

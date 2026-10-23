@@ -22,9 +22,10 @@ Versions and what each kind of change means are described in
   array per field. `a[i]` gathers or stores a whole element, `a[i].f` is a field of one
   element (a place), `a.f` a whole column; slicing, `&a` to a slice, `for`, `is` and `@hash`
   work as for arrays and slices; `T.make(n)` and `s.free()` allocate and release a `#soa`
-  slice in one block (§5.6.4).
+  slice in one block (§5.6.4). `a.copy_from(src)` copies a `#soa` column by column (the
+  lengths must be equal; the two may overlap).
 - `#soa []T` and `#soa [N]T` of a type parameter in generic code: whole elements (`a[i]`,
-  `a[i] = x`), `len`, slicing, `for`, `make` and `free` work there, and each instantiation
+  `a[i] = x`), `len`, slicing, `for`, `copy_from`, `make` and `free` work there, and each instantiation
   checks that its argument is a struct `#soa` can store (§5.6.4). A local alias may name an
   attributed type: `Cols :: #soa []T`, then `Cols.make(n)`.
 - `Float(T)` now implies `Neg(T)`, so unary minus works in generic code over floats.
