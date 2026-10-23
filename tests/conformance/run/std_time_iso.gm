@@ -1,0 +1,192 @@
+// std/time: day of the year, ISO week dates and ordinal dates.
+time :: import "std/time"
+
+date :: fn(y: i32, m, d: u8) -> time.Date => time.Date(year: y, month: m, day: d)
+
+show :: fn(d: time.Date) needs Out {
+    buf: [16]u8 = ---
+    print("{}", time.format_date(d, buf[..]))
+}
+
+weekday_of :: fn(n: i64) -> time.Weekday {
+    names := [_]time.Weekday(.Monday, .Tuesday, .Wednesday, .Thursday, .Friday, .Saturday, .Sunday)
+    return names[(n - 1).trunc(usize)]
+}
+
+// The ISO week date of a calendar date, with the day as 1 to 7.
+iso :: fn(d: time.Date) needs Out {
+    show(d)
+    w := time.iso_week(d)
+    buf: [time.ISO_WEEK_LEN]u8 = ---
+    text := time.format_iso_week(d, buf[..])
+    print(" -> {} (week {} of {}, day {})\n", text, w.week, w.year, time.day_of_year(d))
+}
+
+parse_week :: fn(s: string) needs Out {
+    print("\"{}\" => ", s)
+    d := time.parse_iso_week(s) else e => {
+        match e {
+            .Syntax(p) => print("syntax error at {}\n", p)
+            .Range(p) => print("range error at {}\n", p)
+        }
+        return
+    }
+    show(d)
+    print("\n")
+}
+
+parse_ord :: fn(s: string) needs Out {
+    print("\"{}\" => ", s)
+    d := time.parse_ordinal(s) else e => {
+        match e {
+            .Syntax(p) => print("syntax error at {}\n", p)
+            .Range(p) => print("range error at {}\n", p)
+        }
+        return
+    }
+    show(d)
+    print("\n")
+}
+
+from_week :: fn(y: i32, w: u8, day: i64) needs Out {
+    print("{}-W{}-{}: ", y, w, day)
+    if d := time.from_iso_week(y, w, weekday_of(day)) {
+        show(d)
+        print("\n")
+    } else {
+        print("none\n")
+    }
+}
+
+from_ord :: fn(y: i32, n: u16) needs Out {
+    print("{}/{}: ", y, n)
+    if d := time.from_ordinal(y, n) {
+        show(d)
+        print("\n")
+    } else {
+        print("none\n")
+    }
+}
+
+main :: fn() needs Out {
+    // Year boundaries.
+    iso(date(2004, 12, 31))
+    iso(date(2005, 1, 1))
+    iso(date(2005, 1, 2))
+    iso(date(2005, 1, 3))
+    iso(date(2005, 12, 31))
+    iso(date(2006, 1, 1))
+    iso(date(2006, 1, 2))
+    iso(date(2008, 12, 28))
+    iso(date(2008, 12, 29))
+    iso(date(2008, 12, 31))
+    iso(date(2009, 1, 1))
+    iso(date(2009, 12, 31))
+    iso(date(2010, 1, 1))
+    iso(date(2010, 1, 3))
+    iso(date(2010, 1, 4))
+    iso(date(2012, 1, 1))
+    iso(date(2016, 1, 1))
+    iso(date(2020, 12, 31))
+    iso(date(2021, 1, 3))
+    iso(date(2024, 12, 30))
+    iso(date(0, 1, 3))
+    iso(date(9999, 12, 31))
+
+    // Day of the year, leap years.
+    for d in [_]time.Date(date(2023, 1, 1), date(2023, 12, 31), date(2024, 12, 31), date(2024, 2, 29), date(2024, 3, 1), date(2023, 3, 1), date(1900, 12, 31), date(2000, 12, 31)) {
+        show(d)
+        print(" doy {}\n", time.day_of_year(d))
+    }
+
+    // From week dates.
+    from_week(2004, 53, 5)
+    from_week(2004, 53, 6)
+    from_week(2009, 1, 1)
+    from_week(2009, 53, 7)
+    from_week(2010, 1, 1)
+    from_week(2010, 53, 1)
+    from_week(2010, 52, 7)
+    from_week(2020, 53, 4)
+    from_week(2021, 53, 1)
+    from_week(2026, 53, 1)
+    from_week(2015, 53, 1)
+    from_week(2024, 0, 1)
+    from_week(2024, 54, 1)
+    from_week(2024, 1, 1)
+    from_week(2024, 52, 7)
+
+    // From ordinals.
+    from_ord(2024, 1)
+    from_ord(2024, 60)
+    from_ord(2024, 366)
+    from_ord(2024, 367)
+    from_ord(2023, 365)
+    from_ord(2023, 366)
+    from_ord(2023, 0)
+    from_ord(1900, 366)
+    from_ord(2000, 366)
+
+    // Parsing.
+    parse_week("2004-W53-6")
+    parse_week("2009-W01-1")
+    parse_week("0000-W01-1")
+    parse_week("2024-W01-1")
+    parse_week("2024-W52-7")
+    parse_week("2020-W53-7")
+    parse_week("2021-W53-1")
+    parse_week("2024-W00-1")
+    parse_week("2024-W01-0")
+    parse_week("2024-W01-8")
+    parse_week("2024-w01-1")
+    parse_week("2024W011")
+    parse_week("2024-W01-")
+    parse_week("2024-W1-1")
+    parse_week("2024-W01-11")
+    parse_week("20x4-W01-1")
+    parse_week("")
+    parse_week("2024-W5")
+    parse_week("2024-W99-9")
+    parse_ord("2024-001")
+    parse_ord("2024-366")
+    parse_ord("2023-365")
+    parse_ord("2023-366")
+    parse_ord("2024-000")
+    parse_ord("2024-367")
+    parse_ord("2024-61")
+    parse_ord("2024-0061")
+    parse_ord("2024/061")
+    parse_ord("2024-06a")
+    parse_ord("")
+    parse_ord("2024-")
+
+    // Formatting an ordinal date, and round trips through both text forms.
+    buf: [time.ORDINAL_LEN]u8 = ---
+    print("{}\n", time.format_ordinal(date(2024, 2, 29), buf[..]))
+    print("{}\n", time.format_ordinal(date(0, 1, 1), buf[..]))
+    print("{}\n", time.format_ordinal(date(9999, 12, 31), buf[..]))
+    wbuf: [time.ISO_WEEK_LEN]u8 = ---
+    bad := 0
+    checksum: u64 = 0
+    weeks53 := 0
+    for n in -200000..200000 {
+        d := time.civil_from_days(n)
+        w := time.iso_week(d)
+        dow := time.days_from_civil(d) + 3
+        dow = dow - (dow / 7) * 7
+        if dow < 0 { dow += 7 }
+        wd := time.weekday(d)
+        back := time.from_iso_week(w.year, w.week, wd) else date(0, 0, 0)
+        if back is not d { bad += 1 }
+        doy := time.day_of_year(d)
+        o := time.from_ordinal(d.year, doy) else date(0, 0, 0)
+        if o is not d { bad += 1 }
+        if d.year >= 0 and d.year <= 9999 and w.year >= 0 and w.year <= 9999 {
+            if time.parse_iso_week(time.format_iso_week(d, wbuf[..])) is not d { bad += 1 }
+            if time.parse_ordinal(time.format_ordinal(d, buf[..])) is not d { bad += 1 }
+        }
+        if w.week is 53 and d.month is 12 and d.day is 28 { weeks53 += 1 }
+        checksum = (checksum * 31 + (w.year + 100000).trunc(u64) * 1000 + u64(w.week) * 10 + (dow + 1).trunc(u64)) % 1000000007
+    }
+    print("round trips: {} bad, {} 53-week years with Dec 28 in week 53, checksum {}\n", bad, weeks53, checksum)
+}
