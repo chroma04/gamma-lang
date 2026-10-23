@@ -1,0 +1,35 @@
+len 0 ->
+len 5 -> 68 65 6c 6c 6f
+len 5 -> e9 20ac ffff e000 d7ff
+len 2 -> d83d de00
+len 2 -> d800 dc00
+len 2 -> dbff dfff
+len 7 -> 61 d83d de00 62 d800 dc00 63
+len 3 -> 61 fffd 62
+len 2 -> fffd fffd
+len 1 -> fffd
+len 3 -> fffd fffd fffd
+len 1 -> fffd
+len 5 -> 78 fffd fffd fffd fffd
+decode | utf8
+decode 68 69 | utf8 68 69
+decode 20ac e9 | utf8 e2 82 ac c3 a9
+decode 1f600 | utf8 f0 9f 98 80
+decode 10000 | utf8 f0 90 80 80
+decode 10ffff | utf8 f4 8f bf bf
+decode 61 1f600 62 | utf8 61 f0 9f 98 80 62
+decode fffd | utf8 ef bf bd
+decode fffd | utf8 ef bf bd
+decode fffd 61 | utf8 ef bf bd 61
+decode fffd 61 | utf8 ef bf bd 61
+decode 61 fffd 62 | utf8 61 ef bf bd 62
+decode 61 fffd | utf8 61 ef bf bd
+decode 61 fffd | utf8 61 ef bf bd
+decode fffd fffd | utf8 ef bf bd ef bf bd
+decode fffd 1f600 | utf8 ef bf bd f0 9f 98 80
+decode 1f600 fffd | utf8 f0 9f 98 80 ef bf bd
+decode fffd fffd | utf8 ef bf bd ef bf bd
+round trip true
+round trip true
+round trip true
+round trip true

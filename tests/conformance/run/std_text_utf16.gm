@@ -1,0 +1,102 @@
+// std/text: utf16_len, encode_utf16, append_utf16 and decode_utf16.
+text :: import "std/text"
+
+show_units :: fn(units: []const u16) needs Out {
+    for u in units { print(" {:x}", u) }
+    print("\n")
+}
+
+// Encodes `s` three ways (counted, into a buffer, appended) and checks they agree.
+show_encode :: fn(s: string) -> AllocError!() needs Out + Alloc {
+    n := text.utf16_len(s)
+    print("len {} ->", n)
+    buf := try make(u16, n + 2)
+    defer free(buf)
+    got := text.encode_utf16(s, buf)
+    assert(got.len is n, "encode_utf16 length")
+    show_units(got)
+    out := list(u16)
+    defer out.deinit()
+    try text.append_utf16(&out, s)
+    assert(out.items.len is n, "append_utf16 length")
+    for i in 0..n { assert(out.items[i] is got[i], "append_utf16 content") }
+}
+
+show_decode :: fn(units: []const u16) -> AllocError!() needs Out + Alloc {
+    print("decode")
+    out := list(u8)
+    defer out.deinit()
+    for r in text.decode_utf16(units) {
+        print(" {:x}", r)
+        try text.append_rune(&out, r)
+    }
+    print(" | utf8")
+    for b in out.items { print(" {:x}", b) }
+    print("\n")
+}
+
+// UTF-8 -> UTF-16 -> UTF-8 gives the string `runes` sees.
+round_trip :: fn(s: string) -> AllocError!() needs Out + Alloc {
+    buf := try make(u16, text.utf16_len(s))
+    defer free(buf)
+    units := text.encode_utf16(s, buf)
+    out := list(u8)
+    defer out.deinit()
+    for r in text.decode_utf16(units) { try text.append_rune(&out, r) }
+    want := list(u8)
+    defer want.deinit()
+    for r in runes(s) { try text.append_rune(&want, r) }
+    same := out.items.len is want.items.len
+    if same {
+        for i in 0..out.items.len {
+            if out.items[i] is not want.items[i] { same = false }
+        }
+    }
+    print("round trip {}\n", same)
+}
+
+main :: fn() -> AllocError!() needs Out + Alloc {
+    // Encoding: ASCII, BMP, astral, empty.
+    try show_encode("")
+    try show_encode("hello")
+    try show_encode("é€\u{ffff}\u{e000}\u{d7ff}")
+    try show_encode("😀")
+    try show_encode("\u{10000}")
+    try show_encode("\u{10ffff}")
+    try show_encode("a😀b\u{10000}c")
+
+    // Ill-formed UTF-8 becomes one U+FFFD per maximal subsequence, like `runes`.
+    try show_encode("a\x80b")
+    try show_encode("\xff\xfe")
+    try show_encode("\xe2\x82")
+    try show_encode("\xed\xa0\x80")
+    try show_encode("\xf0\x9f\x98")
+    try show_encode("x\xf4\x90\x80\x80")
+
+    // Decoding well-formed input.
+    try show_decode(empty_slice(u16))
+    try show_decode(([_]u16(0x68, 0x69))[..])
+    try show_decode(([_]u16(0x20ac, 0xe9))[..])
+    try show_decode(([_]u16(0xd83d, 0xde00))[..])
+    try show_decode(([_]u16(0xd800, 0xdc00))[..])
+    try show_decode(([_]u16(0xdbff, 0xdfff))[..])
+    try show_decode(([_]u16(0x61, 0xd83d, 0xde00, 0x62))[..])
+
+    // Unpaired surrogates: alone, at the start, middle and end, and reversed pairs.
+    try show_decode(([_]u16(0xd800))[..])
+    try show_decode(([_]u16(0xdc00))[..])
+    try show_decode(([_]u16(0xdfff, 0x61))[..])
+    try show_decode(([_]u16(0xd83d, 0x61))[..])
+    try show_decode(([_]u16(0x61, 0xdc00, 0x62))[..])
+    try show_decode(([_]u16(0x61, 0xd800))[..])
+    try show_decode(([_]u16(0x61, 0xdc00))[..])
+    try show_decode(([_]u16(0xde00, 0xd83d))[..])
+    try show_decode(([_]u16(0xd83d, 0xd83d, 0xde00))[..])
+    try show_decode(([_]u16(0xd83d, 0xde00, 0xde00))[..])
+    try show_decode(([_]u16(0xd800, 0xd800))[..])
+
+    try round_trip("")
+    try round_trip("plain")
+    try round_trip("é€😀\u{10ffff}\u{10000}z")
+    try round_trip("bad\xffbytes\xe2\x82")
+}
