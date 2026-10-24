@@ -181,6 +181,8 @@ labeled break
 return
 ```
 
+When a `match` has a catch-all arm, it is complete, so the compiler has nothing to point at: `.Return(v) => …` followed by `_ => …` sends `.Return(null)` to the catch-all. `gamma lint` reports that (rule `present-only-binding`) unless an arm names the absent case or the catch-all is an empty `_ => {}`.
+
 A payload with several optional parts that many functions take apart is often clearer as a struct of its own, which can also carry documentation per field.
 
 A line that *starts* with `.Name` continues the previous line (§2.8), so a variant that begins a line, such as the value at the end of a block arm, is written with its type: `ast.ItemKind.When(…)`.

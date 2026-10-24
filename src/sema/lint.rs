@@ -38,6 +38,10 @@ pub enum Finding {
     /// The address of local `name` (declared at `local`), taken at `span`, kept where it
     /// outlives the local: `why` is "stored", "passed to be stored" or "returned".
     DanglingAddress { span: Span, name: Symbol, local: Span, why: &'static str },
+    /// A bare name below the top of a `match` arm's pattern, in the position of an
+    /// optional (or of a result, if `is_result`), whose absent value (or error) no arm
+    /// names, so that it goes to the catch-all arm at `catch_all`.
+    PresentOnlyBinding { span: Span, name: Symbol, catch_all: Span, is_result: bool },
 }
 
 /// Checks the program rooted at `root` with its tests, and with the other modules of its
@@ -309,6 +313,9 @@ impl Lint<'_, '_> {
             ExprKind::Match { arms, .. } => {
                 for a in arms {
                     self.binds(f, &a.pat);
+                }
+                if let Some(def) = self.sema.prog.fns.get(f.index()) {
+                    super::lint_present::present_only_bindings(def, arms, &mut self.out);
                 }
             }
             ExprKind::If { cond, .. } | ExprKind::Loop { cond, .. } => {

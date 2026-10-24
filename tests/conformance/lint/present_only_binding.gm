@@ -1,0 +1,39 @@
+// A bare name in the position of an optional below the top of a pattern matches only a
+// present value (§9.3): without an arm for `null` there, the absent case goes to the
+// catch-all arm.
+//! stage: lint
+
+Failure :: union { Bad }
+Step :: union { Jump: ?u32, Stop, Pair: (a: ?u32, b: u32), Run: Failure!u32 }
+
+target :: fn(s: Step) -> u32 {
+    match s {
+        .Jump(t) => return t //~ WARNING [present-only-binding] `t` matches only a present value, so `null` here goes to the catch-all arm
+        .Run(r) => return r //~ WARNING [present-only-binding] `r` matches only a success value, so an error here goes to the catch-all arm
+        _ => return 0
+    }
+}
+
+// An arm for the absent case, or a catch-all that ignores the rest, is not reported.
+handled :: fn(s: Step) -> u32 {
+    match s {
+        .Jump(t) => return t
+        .Jump(null) => return 1
+        .Pair(a, _) => return a
+        .Pair(_) => return 2
+        _ => return 0
+    }
+}
+
+count :: fn(s: Step, n: ^u32) {
+    match s {
+        .Jump(t) => { n^ += t }
+        _ => {}
+    }
+}
+
+main :: fn() {
+    n: u32 = 0
+    count(.Stop, &n)
+    _ = target(.Stop) + handled(.Jump(null)) + n
+}

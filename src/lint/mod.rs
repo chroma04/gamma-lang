@@ -76,6 +76,10 @@ pub const RULES: &[Rule] = &[
         "dangling-address",
         "the address of a local, such as a loop variable or a pattern binding, kept where it outlives the local",
     ),
+    rule_def(
+        "present-only-binding",
+        "a name in a `match` pattern that matches only a present optional, leaving `null` to a catch-all arm",
+    ),
     rule_def("constant-condition", "an `if` or `while` whose condition is the literal `true` or `false`"),
     rule_def("useless-defer", "a `defer` or `errdefer` that is the last statement of its block"),
     rule_def("needless-bool", "`if c { true } else { false }` and the like, which are `c` or `not c`"),
@@ -330,6 +334,21 @@ fn finding_diag(
                     "a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope \
                      (§15.1); point into the original (`&items[i]`), or keep the value instead",
                 )
+        }
+        Finding::PresentOnlyBinding { span, name, catch_all, is_result } => {
+            let (value, absent) =
+                if is_result { ("a success value", "an error") } else { ("a present value", "`null`") };
+            lint(
+                span,
+                "present-only-binding",
+                format!("`{}` matches only {}, so {} here goes to the catch-all arm", name, value, absent),
+            )
+            .with_label(catch_all, format!("{} is matched here", absent))
+            .with_note(
+                "a name in the position of an optional or a result below the top of a pattern matches only a \
+                     present or success value (§9.3); add an arm for the other case (such as `.V(null)`), or bind \
+                     the value that holds it",
+            )
         }
         Finding::BoolComparison { span, operand, same } => {
             let whole = text(span);

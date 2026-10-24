@@ -30,6 +30,7 @@ mod imports;
 mod infer;
 mod lint;
 mod lint_escape;
+mod lint_present;
 mod matching;
 mod mathvec;
 mod methods;
