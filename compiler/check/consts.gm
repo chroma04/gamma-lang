@@ -8,7 +8,7 @@
 // any other as unsupported.
 
 /// Checks the initializers queued while resolving declarations.
-check_consts :: fn(s: ^Sema) needs Load {
+pub check_consts :: fn(s: ^Sema) needs Load {
     for i in 0..s.pending_consts.items.len {
         c := s.pending_consts.items[i]
         if s.l.modules.items[c.module].is_prelude { continue }
@@ -20,10 +20,7 @@ check_const :: fn(s: ^Sema, c: sema.PendingConst) needs Load {
     errors := s.l.diags.error_count()
     cx := fn_cx(s, c.module, s.tys.unit(), types.empty_effects())
     e := cx.coerce(cx.expr(c.init, c.ty), c.ty)
-    if cx.performed.items.len > 0 {
-        s.unsupported(c.init.span, "constant initializers that perform effects")
-        return
-    }
+    if cx.performed.items.len > 0 { cx.error(cx.performed.items[0].span, "a constant's initializer may not perform effects") }
     cx.finish(e)
     if s.l.diags.error_count() is not errors { return }
     if cx.locals.items.len > 0 {

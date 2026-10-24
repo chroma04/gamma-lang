@@ -161,10 +161,54 @@ pub intern :: fn(t: ^Types, k: TyKind) -> Ty needs Alloc {
     }
     for_each_component(&k, fn(c: Ty) { flags |= t.flags.items[usize(c.id)] })
     id := t.kinds.items.len.trunc(u32)
-    t.kinds.push(k)!
+    // The table keeps the kind: its slices may be the caller's temporaries.
+    owned := owned_kind(k)
+    t.kinds.push(owned)!
     t.flags.push(flags)!
-    t.by_kind.put(k, id)!
+    t.by_kind.put(owned, id)!
     return Ty(id: id)
+}
+
+/// `k` with copies of the slices it holds.
+owned_kind :: fn(k: TyKind) -> TyKind needs Alloc => match k {
+    .Tuple(elems, names) => .Tuple(copied(elems), copied(names))
+    .Fn(f) => .Fn(owned_fn(f))
+    .FnPtr(f) => .FnPtr(owned_fn(f))
+    .Adt(id, args) => .Adt(id, owned_args(args))
+    .Value(v) => .Value(owned_key(v))
+    .Effects(e) => .Effects(owned_effects(e))
+    _ => k
+}
+
+owned_fn :: fn(f: FnTy) -> FnTy needs Alloc => FnTy(params: copied(f.params), ret: f.ret, effects: owned_effects(f.effects), variadic: f.variadic, win64: f.win64)
+
+owned_effects :: fn(e: EffectSet) -> EffectSet needs Alloc {
+    refs := list(EffectRef)
+    for r in e.effects { refs.push(EffectRef(eff: r.eff, args: owned_args(r.args)))! }
+    return EffectSet(effects: refs.items)
+}
+
+owned_args :: fn(args: []const GenericArg) -> []const GenericArg needs Alloc {
+    out := list(GenericArg)
+    for a in args {
+        out.push(match a {
+            .Type(_) => a
+            .Value(v) => GenericArg.Value(owned_key(v))
+        })!
+    }
+    return out.items
+}
+
+owned_key :: fn(v: ConstKey) -> ConstKey needs Alloc => match v {
+    .Bytes(ty, bytes) => .Bytes(ty, copied(bytes))
+    .Str(bytes) => .Str(copied(bytes))
+    _ => v
+}
+
+copied :: fn(T: type, xs: []const T) -> []const T needs Alloc {
+    out := list(T)
+    out.extend(xs)!
+    return out.items
 }
 
 /// Calls `f` on each type `k` is directly built from (not through definitions).
