@@ -1,0 +1,139 @@
+// The declarations of a program as `gamma decls` prints them.
+
+/// The modules loaded, other than the core library's, in load order, each with its
+/// declarations in declaration order and what each denotes:
+///
+/// ```text
+/// module main
+///   Point :: struct Point
+///     x: i32
+///   main :: fn() needs Out
+/// ```
+///
+/// A struct or union is followed by its fields or variants, an effect by its operations,
+/// each on an indented line.
+pub decl_dump :: fn(s: ^Sema) -> string needs Alloc {
+    out := list(u8)
+    for m in s.l.modules.items {
+        if m.is_prelude { continue }
+        out.write("module {}\n", m.name)!
+        for n in m.scope.items {
+            d := &s.l.decls.items[n.decl]
+            out.write("  {} :: ", d.name.name)!
+            match s.state(n.decl) {
+                .Done(v) => s.dump_value(n.decl, v, &out)
+                _ => out.extend("unresolved\n")!
+            }
+        }
+    }
+    return out.items
+}
+
+dump_value :: fn(s: ^Sema, id: usize, v: DeclValue, out: ^List(u8)) needs Alloc {
+    match v {
+        .Type(t) => {
+            if .Adt(a, args) := s.tys.kind(t) and args.len is 0 and s.adts.items[usize(a)].decl is id {
+                s.dump_adt(a, out)
+            } else {
+                out.write("type {}\n", s.show(t))!
+            }
+        }
+        .GenericType(a) => {
+            out.extend("generic ")!
+            s.dump_adt(a, out)
+        }
+        .Effect(e) => {
+            info := &s.effects.items[usize(e)]
+            out.write("effect {}", info.name)!
+            s.dump_params(info.params, out)
+            out.push('\n')!
+            for op in info.ops {
+                kind := match op.kind {
+                    .Fn => "fn"
+                    .Esc => "esc"
+                    .Ctl => "ctl"
+                }
+                out.write("    {}: {}{}\n", op.name, kind, s.sig_text(op.params, op.ret, types.empty_effects()))!
+            }
+        }
+        .EffectInst(r) => out.write("effect {}\n", s.tys.show_ref(&r))!
+        .EffectSet(set) => out.write("effects {}\n", s.tys.show_effects(&set))!
+        .Fn(f) => {
+            sig := &s.fns.items[usize(f)]
+            out.write("fn{}\n", s.sig_text(sig.params, sig.ret, sig.effects))!
+        }
+        .Op(e, i) => out.write("op {}.{}\n", s.tys.effect_name(e), s.effects.items[usize(e)].ops[usize(i)].name)!
+        .Const(t) => out.write("const {}\n", s.show(t))!
+        .Untyped(u) => out.write("untyped {}\n", dump_untyped(&u))!
+        .Module(m) => out.write("module {}\n", s.l.modules.items[m].name)!
+        .Global(t) => out.write("global {}\n", s.show(t))!
+        .Error => out.extend("error\n")!
+    }
+}
+
+/// `struct S` or `union(u8) U(T: type)` with its attributes, then its fields or variants.
+dump_adt :: fn(s: ^Sema, a: u32, out: ^List(u8)) needs Alloc {
+    info := &s.adts.items[usize(a)]
+    match info.kind {
+        .Struct(def) => {
+            out.extend("struct")!
+            if def.packed { out.extend(" #packed")! }
+            if n := def.align { out.write(" #align({})", n)! }
+            if t := def.bits { out.write(" #bits({})", s.show(t))! }
+        }
+        .Union(tag, _) => out.write("union({})", s.show(tag))!
+        .CUnion(_) => out.extend("union #c_union")!
+    }
+    out.write(" {}", info.name)!
+    s.dump_params(info.params, out)
+    out.push('\n')!
+    match info.kind {
+        .Struct(def) => s.dump_fields(def.fields, info.defaults, out)
+        .CUnion(fields) => s.dump_fields(fields, info.defaults, out)
+        .Union(_, variants) => for v in variants {
+            out.write("    {}", v.name)!
+            if p := v.payload { out.write(": {}", s.show(p))! }
+            out.write(" = {}\n", v.tag.to_decimal())!
+        }
+    }
+}
+
+dump_fields :: fn(s: ^Sema, fields: []const FieldDef, defaults: []const bool, out: ^List(u8)) needs Alloc {
+    for i, f in enumerate(fields) {
+        out.write("    {}{}: {}", if f.is_pub { "pub " } else { "" }, f.name, s.show(f.ty))!
+        if n := f.align { out.write(" #align({})", n)! }
+        if i < defaults.len and defaults[i] { out.extend(" = …")! }
+        out.push('\n')!
+    }
+}
+
+/// The parameters of a generic type or effect: `(T: type, N: usize)`.
+dump_params :: fn(s: ^Sema, params: []const u32, out: ^List(u8)) needs Alloc {
+    if params.len is 0 { return }
+    out.push('(')!
+    for i, p in enumerate(params) {
+        if i > 0 { out.extend(", ")! }
+        kind := match s.params.items[usize(p)].kind {
+            .Effects => "effects"
+            .Type => "type"
+            .Value(t) => s.show(t)
+        }
+        out.write("{}: {}", s.tys.param_name(p), kind)!
+    }
+    out.push(')')!
+}
+
+/// `(a: i32, ..rest: T, b: u8 = …) -> R needs E`, as after `fn`.
+sig_text :: fn(s: ^Sema, params: []const ParamInfo, ret: Ty, effects: EffectSet) -> string needs Alloc {
+    out := list(u8)
+    out.push('(')!
+    for i, p in enumerate(params) {
+        if i > 0 { out.extend(", ")! }
+        out.write("{}: {}{}", p.name, if p.rest { ".." } else { "" }, s.show(p.ty))!
+        if p.default is not null { out.extend(" = …")! }
+    }
+    out.push(')')!
+    if not s.tys.is_unit(ret) { out.write(" -> {}", s.show(ret))! }
+    if effects.effects.len > 0 { out.write(" needs {}", s.tys.show_effects(&effects))! }
+    return out.items
+}

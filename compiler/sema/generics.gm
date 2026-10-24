@@ -1,0 +1,224 @@
+// Constraints on type parameters (§16.3) and what may be a type argument (§16.1).
+
+parse_constraint :: fn(name: string) -> ?Constraint => match name {
+    "Eq" => Constraint.Eq
+    "Ord" => Constraint.Ord
+    "Num" => Constraint.Num
+    "Int" => Constraint.Int
+    "Neg" => Constraint.Neg
+    "Float" => Constraint.Float
+    "Plain" => Constraint.Plain
+    _ => null
+}
+
+constraint_name :: fn(c: Constraint) -> string => @variant_name(c)
+
+/// Whether constraint `a` implies `b`.
+implies :: fn(a, b: Constraint) -> bool => match a {
+    .Eq => b is .Eq
+    .Ord => b in (Constraint.Ord, Constraint.Eq)
+    .Num => b in (Constraint.Num, Constraint.Ord, Constraint.Eq)
+    .Int => b in (Constraint.Int, Constraint.Num, Constraint.Ord, Constraint.Eq, Constraint.Plain)
+    .Neg => b in (Constraint.Neg, Constraint.Num, Constraint.Ord, Constraint.Eq, Constraint.Plain)
+    .Float => b in (Constraint.Float, Constraint.Neg, Constraint.Num, Constraint.Ord, Constraint.Eq, Constraint.Plain)
+    .Plain => b is .Plain
+}
+
+declare_constraint :: fn(s: ^Sema, module: usize, c: ^const ast.Constraint) needs Load {
+    k := parse_constraint(c.name.name) else {
+        msg := str.format("unknown constraint `{}`; the constraints are Eq, Ord, Num, Int, Neg, Float and Plain", c.name.name)!
+        if c.name.name is "Signed" { msg = str.format("{}; `Signed` is now `Neg`", msg)! }
+        s.error(c.name.span, msg)
+        return
+    }
+    t := s.resolve_type(module, c.ty)
+    match s.tys.kind(t) {
+        .Param(p) => s.params.items[usize(p)].constraints.push(k)!
+        .Error => {}
+        _ => s.error(c.ty.span, "a constraint applies to a type parameter of this declaration")
+    }
+}
+
+/// True if type parameter `p` is granted constraint `c`.
+param_has :: fn(s: ^const Sema, p: u32, c: Constraint) -> bool {
+    for k in s.params.items[usize(p)].constraints.items {
+        if implies(k, c) { return true }
+    }
+    return false
+}
+
+/// Ends a signature or generic type declaration: once the outermost one has declared its
+/// `where` clause, checks the constraints that waited for it.
+end_constraint_defer :: fn(s: ^Sema) needs Alloc {
+    s.constraint_defer -= 1
+    if s.constraint_defer > 0 { return }
+    deferred := s.deferred
+    s.deferred = list(Deferred)
+    for d in deferred.items {
+        if not s.satisfies(d.ty, d.c) { s.error(d.span, s.unsatisfied(d.ty, d.c, d.param, d.template)) }
+    }
+}
+
+unsatisfied :: fn(s: ^const Sema, t: Ty, c: Constraint, p: u32, template: u32) -> string needs Alloc {
+    return str.format("`{}` does not satisfy `{}({})` required by `{}`", s.show(t), constraint_name(c), s.tys.param_name(p), s.adts.items[usize(template)].name)!
+}
+
+/// True if the (concrete or parameter) type `t` satisfies `c` (§16.3).
+satisfies :: fn(s: ^const Sema, t: Ty, c: Constraint) -> bool needs Alloc {
+    if .Param(p) := s.tys.kind(t) { return s.param_has(p, c) }
+    is_float := s.tys.kind(t) is .Float(_)
+    return match c {
+        .Eq => s.has_eq(t)
+        .Ord => s.has_ord(t)
+        .Num => s.tys.is_integer(t) or is_float
+        .Int => s.tys.is_integer(t)
+        .Neg => s.tys.is_signed_integer(t) or is_float
+        .Float => is_float
+        .Plain => s.is_plain(t)
+    }
+}
+
+has_ord :: fn(s: ^const Sema, t: Ty) -> bool => match s.tys.kind(t) {
+    .Bool, .Int(_), .Usize, .Isize, .Float(_), .ManyPtr(_) => true
+    .Tuple(elems, _) => all_ord(s, elems)
+    // Vectors and math vectors are not ordered (§5.6.2, §5.6.3).
+    .Array(_, elem, kind) => kind not in (types.ArrayKind.Simd, types.ArrayKind.Math) and s.has_ord(elem)
+    .ParamArray(_, elem), .Slice(_, elem) => s.has_ord(elem)
+    .Param(p) => s.param_has(p, .Ord)
+    .Adt(_) => {
+        u := s.union_variants(t) else return false
+        for v in u.variants {
+            if v.payload is not null { return false }
+        }
+        true
+    }
+    _ => false
+}
+
+all_ord :: fn(s: ^const Sema, elems: []const Ty) -> bool {
+    for e in elems {
+        if not s.has_ord(e) { return false }
+    }
+    return true
+}
+
+/// The types `is` is defined for (§7.6).
+has_eq :: fn(s: ^const Sema, t: Ty) -> bool needs Alloc {
+    seen := list(Ty)
+    return s.has_eq_in(t, &seen)
+}
+
+/// `has_eq` with the types being examined: a type that reaches itself again is assumed to
+/// have equality (the other parts decide), so self-recursive types terminate.
+has_eq_in :: fn(s: ^const Sema, t: Ty, seen: ^List(Ty)) -> bool needs Alloc {
+    match s.tys.kind(t) {
+        .Fn(_), .Handler(_), .Cont(_), .Type => return false
+        .Param(p) => return s.param_has(p, .Eq)
+        .Tuple(elems, _) => {
+            for e in elems {
+                if not s.has_eq_in(e, seen) { return false }
+            }
+            return true
+        }
+        .Array(_, elem, _), .ParamArray(_, elem), .Slice(_, elem), .Optional(elem) => return s.has_eq_in(elem, seen)
+        .Result(err, ok) => return s.has_eq_in(err, seen) and s.has_eq_in(ok, seen)
+        .Adt(id, _) => {
+            if t in seen.items { return true }
+            seen.push(t)!
+            r := true
+            match s.adts.items[usize(id)].kind {
+                .Struct(def) => for f in def.fields {
+                    if not s.has_eq_in(f.ty, seen) {
+                        r = false
+                        break
+                    }
+                }
+                .Union(_, variants) => for v in variants {
+                    if p := v.payload and not s.has_eq_in(p, seen) {
+                        r = false
+                        break
+                    }
+                }
+                .CUnion(_) => { r = false }
+            }
+            _ = seen.pop()
+            return r
+        }
+        _ => return true
+    }
+}
+
+is_plain :: fn(s: ^const Sema, t: Ty) -> bool => match s.tys.kind(t) {
+    .Int(_), .Usize, .Isize, .Float(_) => true
+    .Array(_, elem, _), .ParamArray(_, elem) => s.is_plain(elem)
+    .Tuple(elems, _) => all_plain(s, elems)
+    .Param(p) => s.param_has(p, .Plain)
+    .Adt(id, _) => match s.adts.items[usize(id)].kind {
+        .Struct(def) => plain_fields(s, def)
+        _ => false
+    }
+    _ => false
+}
+
+all_plain :: fn(s: ^const Sema, elems: []const Ty) -> bool {
+    for e in elems {
+        if not s.is_plain(e) { return false }
+    }
+    return true
+}
+
+plain_fields :: fn(s: ^const Sema, def: StructDef) -> bool {
+    for f in def.fields {
+        if def.bits is null {
+            if not s.is_plain(f.ty) { return false }
+        } else {
+            // A `#bits` struct whose fields are `bool`, integers or such structs (§5.19).
+            ok := s.tys.is_integer(f.ty) or s.tys.kind(f.ty) is .Bool or (s.bits_struct_ty(f.ty) is not null and s.is_plain(f.ty))
+            if not ok { return false }
+        }
+    }
+    return true
+}
+
+/// The underlying integer type of a `#bits` struct, if `ty` is one.
+bits_struct_ty :: fn(s: ^const Sema, ty: Ty) -> ?Ty {
+    .Adt(id, _) := s.tys.kind(ty) else return null
+    .Struct(def) := s.adts.items[usize(id)].kind else return null
+    return def.bits
+}
+
+not_first_class :: fn(s: ^const Sema, t: Ty, part: Ty) -> string needs Alloc {
+    if t is part { return str.format("`{}` is not a first-class type, so it cannot be a type argument (§16.1)", s.show(t))! }
+    return str.format("`{}` contains the second-class type `{}`, so it cannot be a type argument (§16.1)", s.show(t), s.show(part))!
+}
+
+/// The second-class part of `t` (a `fn(…)` type, a handler, `type`), if it has one: such
+/// a type is not a valid type argument (§16.1).
+second_class_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
+    if s.tys.kind(t) is .Fn(_) { return t }
+    return s.inner_second_class_part(t)
+}
+
+inner_second_class_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
+    match s.tys.kind(t) {
+        .Handler(_), .Type => return t
+        .Ptr(_, x), .ManyPtr(_, x), .Slice(_, x), .Optional(x), .Cont(x) => return s.inner_second_class_part(x)
+        .Array(_, x, _), .ParamArray(_, x) => return s.inner_second_class_part(x)
+        .Result(err, ok) => return s.inner_second_class_part(err) else s.inner_second_class_part(ok)
+        .Tuple(elems, _) => {
+            for x in elems {
+                if p := s.inner_second_class_part(x) { return p }
+            }
+            return null
+        }
+        .Adt(_, args) => {
+            for a in args {
+                if .Type(x) := a {
+                    if p := s.inner_second_class_part(x) { return p }
+                }
+            }
+            return null
+        }
+        _ => return null
+    }
+}

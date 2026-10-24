@@ -104,6 +104,7 @@ gamma lex file.gm          print the tokens of a source file
 gamma parse file.gm        check the syntax of a source file
 gamma parse --dump file.gm check the syntax and print the syntax tree
 gamma modules file.gm      list the modules a program loads and what each imports
+gamma decls file.gm        print what each top-level declaration of a program denotes
 gamma help                 print usage
 gamma version              print the compiler version
 ```

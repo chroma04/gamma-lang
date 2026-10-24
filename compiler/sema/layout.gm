@@ -1,0 +1,141 @@
+// The sizes and alignments of types on the target (§5.10.4), as far as checking needs
+// them. Sizes saturate at the largest `u64`, which is above any object size, so that a
+// type that is too large can be reported.
+
+/// A size and an alignment, in bytes.
+pub Layout :: struct {
+    pub size: u64
+    pub align: u64
+}
+
+scalar :: fn(size: u64) -> Layout => Layout(size: size, align: size.max(1))
+
+/// The size in bytes of the storage of an integer of `bits` bits (§5.2).
+int_storage_bytes :: fn(bits: u16) -> u64 => if bits <= 8 { 1 } else if bits <= 16 { 2 } else if bits <= 32 { 4 } else if bits <= 64 { 8 } else { 16 }
+
+round_up :: fn(x, align: u64) -> u64 {
+    q := x / align + (if x % align is 0 { 0 } else { 1 })
+    return q *| align
+}
+
+/// Lays out fields in order with C rules.
+struct_layout :: fn(fields: []const (layout: Layout, align: ?u64), packed: bool, min_align: ?u64) -> Layout {
+    offset: u64 = 0
+    align: u64 = 1
+    for f in fields {
+        a := if packed { u64(1) } else if fa := f.align { fa.max(f.layout.align) } else { f.layout.align }
+        offset = round_up(offset, a) +| f.layout.size
+        align = align.max(a)
+    }
+    if m := min_align { align = align.max(m) }
+    return Layout(size: round_up(offset, align), align: align)
+}
+
+pair :: fn(a, b: Layout) -> Layout {
+    fields := [2](layout: Layout, align: ?u64)((layout: a, align: null), (layout: b, align: null))
+    return struct_layout(fields[..], false, null)
+}
+
+/// True for the pointer kinds whose optional uses address 0 as null (§5.12).
+is_nullable_pointer :: fn(s: ^Sema, t: Ty) -> bool => s.tys.kind(t) in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_))
+
+/// The layout of `t`, computed once per query: types are shared DAGs whose expanded
+/// trees can be exponentially large.
+pub layout :: fn(s: ^Sema, t: Ty) -> Layout needs Alloc {
+    i := usize(t.id)
+    while s.layout_cache.items.len <= i { s.layout_cache.push(null)! }
+    if l := s.layout_cache.items[i] { return l }
+    l := s.compute_layout(t)
+    while s.layout_cache.items.len <= i { s.layout_cache.push(null)! }
+    s.layout_cache.items[i] = l
+    return l
+}
+
+compute_layout :: fn(s: ^Sema, t: Ty) -> Layout needs Alloc {
+    p := u64(target.ptr_bits / 8)
+    match s.tys.kind(t) {
+        .Int(_, bits) => {
+            size := int_storage_bytes(bits)
+            return Layout(size: size, align: if size is 16 { u64(@align_of(i128)) } else { size })
+        }
+        .Usize, .Isize => return scalar(p)
+        .Float(bits) => return scalar(u64(bits / 8))
+        .Bool => return scalar(1)
+        .Rawptr, .Ptr(_), .ManyPtr(_), .FnPtr(_) => return scalar(p)
+        .Slice(_) => return Layout(size: 2 * p, align: p)
+        .Array(len, elem, kind) => {
+            e := s.layout(elem)
+            // A vector is aligned to its size, a power of two (§5.6.2).
+            return Layout(size: e.size *| len, align: if kind is .Simd { e.size *| len } else { e.align })
+        }
+        .Tuple(elems, _) => {
+            fields := list((layout: Layout, align: ?u64))
+            for e in elems { fields.push((layout: s.layout(e), align: null))! }
+            return struct_layout(fields.items, false, null)
+        }
+        .Optional(inner) => {
+            if s.is_nullable_pointer(inner) { return s.layout(inner) }
+            return pair(s.layout(inner), scalar(1))
+        }
+        .Result(err, ok) => {
+            e := s.layout(err)
+            o := s.layout(ok)
+            return pair(scalar(1), Layout(size: e.size.max(o.size), align: e.align.max(o.align)))
+        }
+        .Fn(_) => return Layout(size: 3 * p, align: p)
+        .Handler(_), .Cont(_) => return Layout(size: 2 * p, align: p)
+        .Adt(id, _) => return s.adt_layout(id)
+        _ => return Layout(size: 0, align: 1)
+    }
+}
+
+adt_layout :: fn(s: ^Sema, id: u32) -> Layout needs Alloc {
+    match s.adts.items[usize(id)].kind {
+        .Struct(def) => {
+            if u := def.bits { return s.layout(u) }
+            fields := list((layout: Layout, align: ?u64))
+            for f in def.fields { fields.push((layout: s.layout(f.ty), align: f.align))! }
+            return struct_layout(fields.items, def.packed, def.align)
+        }
+        .Union(tag, variants) => {
+            tag_l := s.layout(tag)
+            size: u64 = 0
+            align: u64 = 1
+            any := false
+            for v in variants {
+                if p := v.payload {
+                    l := s.layout(p)
+                    size = size.max(l.size)
+                    align = align.max(l.align)
+                    any = true
+                }
+            }
+            if not any { return tag_l }
+            return pair(tag_l, Layout(size: size, align: align))
+        }
+        .CUnion(fields) => {
+            size: u64 = 0
+            align: u64 = 1
+            for f in fields {
+                l := s.layout(f.ty)
+                size = size.max(l.size)
+                align = align.max(l.align)
+            }
+            return Layout(size: round_up(size, align), align: align)
+        }
+    }
+}
+
+/// The largest size of an object, `isize::MAX` for the target.
+max_object_size :: fn() -> u64 => (u64(1) << u64(target.ptr_bits - 1)) - 1
+
+/// Reports `ty` if it is larger than any object can be, and returns whether it is fine.
+type_size_ok :: fn(s: ^Sema, ty: Ty, span: source.Span) -> bool needs Alloc {
+    aggregate := s.tys.kind(ty) in (.Array(_), .Tuple(_), .Optional(_), .Result(_), .Adt(_))
+    max := max_object_size()
+    // Definitions change while types are declared: layouts are remembered for one query.
+    s.layout_cache.clear()
+    if not aggregate or s.tys.has_param(ty) or s.layout(ty).size <= max { return true }
+    s.error(span, str.format("the type `{}` is too large: an object is at most {} bytes", s.show(ty), max)!)
+    return false
+}

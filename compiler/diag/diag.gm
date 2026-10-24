@@ -62,6 +62,13 @@ pub error :: fn(span: source.Span, message: string) -> Diagnostic needs Alloc {
     )
 }
 
+/// A new warning at `span`.
+pub warning :: fn(span: source.Span, message: string) -> Diagnostic needs Alloc {
+    d := error(span, message)
+    d.severity = .Warning
+    return d
+}
+
 pub add_label :: fn(d: ^Diagnostic, span: source.Span, message: string) {
     d.labels.push(Label(span: span, message: message))!
 }

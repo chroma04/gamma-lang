@@ -1,0 +1,97 @@
+// The core library (§21): the prelude, whose public names are in every module's scope,
+// the `target` module, and the other core modules, loaded before the program in the order
+// the reference implementation loads them, so that the files are numbered alike.
+
+/// A core module other than the prelude: its name, the names it adds to the prelude's
+/// scope, and whether the prelude binds the module itself under its name.
+CoreModule :: struct {
+    name: string
+    exports: []const string
+    bind: bool
+}
+
+/// The source files of the core library are named `<core>/NAME.gm` in messages.
+CORE_PREFIX :: "<core>/"
+
+/// Loads the core library from `dir`, the directory of its sources, with the `target`
+/// module for the target gammac compiles for in build mode `mode` (a variant of
+/// `target.Mode`). Returns whether it could be read.
+pub load_core :: fn(l: ^Loader, dir: string, mode: string) -> bool needs Alloc + Fs {
+    prelude := l.load_core_module(dir, "prelude", "core") else return false
+    l.collect_whens(prelude)
+    l.prelude = prelude
+    l.load_target_module(prelude, mode)
+    l.bind_module(prelude, "core", prelude)
+    list_exports := [2]string("List", "list")
+    complex_exports := [1]string("Complex")
+    modules := [4]CoreModule(
+        CoreModule(name: "list", exports: list_exports[..], bind: false),
+        CoreModule(name: "map", exports: empty_slice(string), bind: true),
+        CoreModule(name: "slice", exports: empty_slice(string), bind: false),
+        CoreModule(name: "complex", exports: complex_exports[..], bind: false),
+    )
+    for c in modules {
+        m := l.load_core_module(dir, c.name, str.format("core/{}", c.name)!) else return false
+        l.core_modules.push(m)!
+        if c.bind { l.bind_module(prelude, c.name, m) }
+        for e in c.exports {
+            d := l.lookup(m, e) else {
+                l.diags.report(source.DUMMY, str.format("core module `{}` does not declare `{}`", c.name, e)!)
+                continue
+            }
+            l.modules.items[prelude].scope.push(Named(name: e, decl: d))!
+        }
+    }
+    return true
+}
+
+load_core_module :: fn(l: ^Loader, dir: string, file: string, name: string) -> ?usize needs Alloc + Fs {
+    path := join(dir, str.format("{}.gm", file)!)
+    text := fs.read_all(path) else e => {
+        l.diags.report(source.DUMMY, str.format("cannot read {}: {}", path, describe_read_error(e))!)
+        return null
+    }
+    parsed := l.parse_text(str.format("{}{}.gm", CORE_PREFIX, file)!, text)
+    m := l.add_core_module(name, parsed)
+    return m
+}
+
+add_core_module :: fn(l: ^Loader, name: string, file: ast.File) -> usize needs Alloc {
+    files := list(ast.File)
+    files.push(file)!
+    m := l.add_module(name, files.items)
+    l.modules.items[m].is_prelude = true
+    return m
+}
+
+/// The predeclared module `target` (§3.7): the target's operating system, architecture,
+/// byte order and pointer width, and the build mode.
+load_target_module :: fn(l: ^Loader, prelude: usize, mode: string) needs Alloc {
+    text := str.format(
+        "pub Os :: union {{ Linux, MacOS, Windows, FreeBSD, Wasi, Freestanding }}\npub Arch :: union {{ X86_64, Aarch64, Riscv64, S390x, Wasm32, Other }}\npub Endian :: union {{ Little, Big }}\npub Mode :: union {{ Debug, Checked, Safe, Fast }}\npub os :: Os.{}\npub arch :: Arch.{}\npub endian :: Endian.{}\npub ptr_bits :: {}\npub mode :: Mode.{}\n",
+        @variant_name(target.os),
+        @variant_name(target.arch),
+        @variant_name(target.endian),
+        target.ptr_bits,
+        mode,
+    )!
+    m := l.add_core_module("target", l.parse_text("<core>/target.gm", text))
+    l.core_modules.push(m)!
+    l.bind_module(prelude, "target", m)
+}
+
+/// Declares `name` in the prelude's scope as a binding of module `m`.
+bind_module :: fn(l: ^Loader, prelude: usize, name: string, m: usize) needs Alloc {
+    underscore := new(ast.Expr(id: 0xFFFF_FFFF, kind: .Underscore, span: source.DUMMY))!
+    item := ast.Item(
+        id: 0xFFFF_FFFF,
+        span: source.DUMMY,
+        doc: null,
+        attrs: empty_slice(ast.Attribute),
+        is_pub: true,
+        kind: .Intrinsic(underscore),
+    )
+    ident := ast.Ident(name: name, span: source.DUMMY)
+    l.decls.push(Decl(name: ident, module: prelude, item: item, state: .Module(m)))!
+    l.modules.items[prelude].scope.push(Named(name: name, decl: l.decls.items.len - 1))!
+}

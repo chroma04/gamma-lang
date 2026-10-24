@@ -247,6 +247,36 @@ impl<'a, 's> FnCx<'a, 's> {
         }
     }
 
+    /// Checks `lhs in (p1, p2, …)` where a member is a pattern form (§7.7): `lhs` matches
+    /// one of the members, each written as on the right of `is`.
+    pub fn in_patterns(&mut self, lhs: Expr, members: &[ast::TupleElem], negated: bool, span: Span) -> Expr {
+        let mut ty = self.infer.resolve(lhs.ty);
+        if self.is_c_union(ty) {
+            self.error(lhs.span, c_union_match(ty));
+            ty = Ty::error();
+        }
+        let mut arms = vec![];
+        for m in members {
+            let Some(p) = expr_to_pattern(&m.value).filter(|_| m.name.is_none()) else {
+                self.error(
+                    m.value.span,
+                    "when a member of an inline tuple of `in` is a pattern, every member must be a pattern or a literal (§7.7)",
+                );
+                return super::func::error_expr(span);
+            };
+            let mut binds = vec![];
+            let pat = self.pattern(&p, ty, PatCtx::IsTest, &mut binds);
+            arms.push(tir::Arm {
+                pat,
+                guard: None,
+                body: Expr { ty: Ty::bool(), kind: tir::ExprKind::Bool(!negated), span },
+            });
+        }
+        let otherwise = Expr { ty: Ty::bool(), kind: tir::ExprKind::Bool(negated), span };
+        arms.push(tir::Arm { pat: Pat { ty, kind: PatKind::Wild, span }, guard: None, body: otherwise });
+        Expr { ty: Ty::bool(), kind: tir::ExprKind::Match { scrutinee: Box::new(lhs), arms }, span }
+    }
+
     /// Checks `lhs is <pattern>`.
     pub fn is_pattern_test(&mut self, lhs: Expr, p: &ast::Pattern, negated: bool, span: Span) -> Expr {
         let mut ty = self.infer.resolve(lhs.ty);
@@ -282,7 +312,7 @@ fn remap_binds(p: &mut Pat, map: &[(LocalId, LocalId)]) {
 
 /// Converts an expression written on the right of `is` into a pattern, if it has
 /// the shape of one (§A.7 rule 9).
-fn expr_to_pattern(e: &ast::Expr) -> Option<ast::Pattern> {
+pub(super) fn expr_to_pattern(e: &ast::Expr) -> Option<ast::Pattern> {
     let kind = match &e.kind {
         ExprKind::Underscore => PatternKind::Wildcard,
         ExprKind::Null => PatternKind::Null,

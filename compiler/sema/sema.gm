@@ -1,0 +1,764 @@
+//! Semantic analysis: name resolution and the checking of declarations.
+//!
+//! Analysis is demand-driven, as in the reference implementation. Each top-level
+//! declaration is resolved the first time something needs it (`resolve_decl`); a
+//! declaration requested while it is being resolved is a dependency cycle (§3.4).
+//!
+//! gammac checks declarations so far: what each top-level binding denotes (a type, an
+//! effect, a function signature, a constant, …), as `gamma decls` shows it. Where it meets
+//! a construct it cannot check yet it reports so (`unsupported`), and the result is not
+//! to be compared with the reference implementation's.
+
+ast :: import "../ast"
+bigint :: import "../bigint"
+diag :: import "../diag"
+load :: import "../load"
+source :: import "../source"
+str :: import "std/str"
+types :: import "../types"
+
+Ty :: types.Ty
+TyKind :: types.TyKind
+EffectRef :: types.EffectRef
+EffectSet :: types.EffectSet
+GenericArg :: types.GenericArg
+
+/// What resolving can do: allocate, and load the modules that imports name.
+pub Load :: Alloc + Fs
+
+/// What a top-level binding denotes.
+pub DeclValue :: union {
+    /// A type (an alias, or a nominal `struct`/`union` literal).
+    Type: Ty
+    /// A generic struct or union, by its id, applied to arguments to give a type (§16.4).
+    GenericType: u32
+    /// An effect, by its id.
+    Effect: u32
+    /// A generic effect with its arguments: `Ev :: Events(Msg)` (§3.5).
+    EffectInst: EffectRef
+    /// A named effect set: `Io :: Fs + Alloc` (§12.3).
+    EffectSet: EffectSet
+    /// A function, by its index in `Sema.fns`.
+    Fn: u32
+    /// An effect operation: the effect and the operation's index (§12.1).
+    Op: (effect_: u32, index: u32)
+    /// A typed constant, of this type.
+    Const: Ty
+    /// An untyped constant (§6.2).
+    Untyped: Untyped
+    /// A module binding (§3.2), by the module's index.
+    Module: usize
+    /// A `#global` variable (§19.3), of this type.
+    Global: Ty
+    /// The declaration has errors (already reported).
+    Error
+}
+
+DeclState :: union {
+    Unresolved
+    InProgress
+    Done: DeclValue
+}
+
+/// A parameter of a function signature or of an effect operation.
+pub ParamInfo :: struct {
+    pub name: string
+    pub ty: Ty
+    pub span: source.Span
+    /// A default argument, evaluated at each call.
+    pub default: ?^ast.Expr
+    /// For a type parameter (`T: type`) or a compile-time value parameter (`N :: usize`):
+    /// its identity in the signature's types.
+    pub generic: ?u32
+    /// A rest parameter `name: ..T` (§11.3).
+    pub rest: bool
+}
+
+/// The signature of a function.
+pub FnSig :: struct {
+    pub name: string
+    pub span: source.Span
+    /// The module the function is declared in.
+    pub module: usize
+    pub params: []ParamInfo
+    pub ret: Ty
+    pub effects: EffectSet
+    /// The type parameters, in order (empty unless the function is generic, §16.1).
+    pub generics: []u32
+}
+
+pub OpInfo :: struct {
+    pub name: string
+    pub kind: ast.OpKind
+    pub params: []ParamInfo
+    pub ret: Ty
+}
+
+/// An effect declaration (§12.1).
+pub EffectInfo :: struct {
+    pub name: string
+    pub module: usize
+    /// The parameters of a generic effect (`Yield(T)`).
+    pub params: []u32
+    pub ops: []OpInfo
+}
+
+pub FieldDef :: struct {
+    pub name: string
+    pub ty: Ty
+    pub is_pub: bool
+    /// `#align(n)` on the field.
+    pub align: ?u64
+}
+
+pub VariantDef :: struct {
+    pub name: string
+    pub payload: ?Ty
+    /// The tag value (fits the union's tag type).
+    pub tag: bigint.Int
+}
+
+pub StructDef :: struct {
+    pub fields: []FieldDef
+    pub packed: bool
+    pub align: ?u64
+    /// `#bits(U)`: the underlying integer type.
+    pub bits: ?Ty
+}
+
+pub AdtKind :: union {
+    Struct: StructDef
+    Union: (tag: Ty, variants: []VariantDef)
+    /// `#c_union`: every field at offset 0, no tag.
+    CUnion: []FieldDef
+}
+
+/// A struct or union type, by its id (the index in `Sema.adts`).
+pub AdtInfo :: struct {
+    pub name: string
+    pub module: usize
+    pub kind: AdtKind
+    /// For a struct: whether each field has a default value.
+    pub defaults: []bool
+    /// The first field of a struct is declared `using` (§5.10.3).
+    pub has_using: bool
+    /// The type parameters of a generic struct or union, and their default arguments.
+    pub params: []u32
+    pub param_defaults: []?^ast.Expr
+    /// Declared with an explicit tag type (`union(u8) { … }`).
+    pub explicit_tag: bool
+    /// The literal, for errors found when instantiating a generic type.
+    pub span: source.Span
+    /// The top-level declaration that names it.
+    pub decl: ?usize
+}
+
+/// The constraints of §16.3.
+pub Constraint :: union { Eq, Ord, Num, Int, Neg, Float, Plain }
+
+/// What a generic parameter stands for.
+pub ParamKind :: union {
+    Type
+    /// An effect-set parameter (`E: effects`, §16.6).
+    Effects
+    /// A compile-time value parameter, of this type (§16.5).
+    Value: Ty
+}
+
+ParamData :: struct {
+    kind: ParamKind
+    constraints: List(Constraint)
+}
+
+/// A generic struct or union instantiated for some arguments.
+Instance :: struct {
+    template: u32
+    args: []Ty
+    inst: u32
+}
+
+/// A name in scope for type expressions: a type parameter or a value parameter.
+Scoped :: struct {
+    name: string
+    ty: Ty
+}
+
+ValueScoped :: struct {
+    name: string
+    param: u32
+}
+
+/// A constraint on a type argument to check when the `where` clause of the signature or
+/// type being declared is known.
+Deferred :: struct {
+    ty: Ty
+    c: Constraint
+    param: u32
+    template: u32
+    span: source.Span
+}
+
+/// A function or operation that is a method candidate of a struct or union (§7.10).
+MethodCandidate :: struct {
+    adt: u32
+    name: string
+    span: source.Span
+    is_op: bool
+}
+
+pub Sema :: struct {
+    pub l: ^load.Loader
+    pub tys: types.Types
+    /// The state of each declaration of the loader, by index.
+    states: List(DeclState)
+    pub fns: List(FnSig)
+    /// By effect id; the first is the pseudo-effect of `..E` terms.
+    pub effects: List(EffectInfo)
+    pub adts: List(AdtInfo)
+    /// By parameter id.
+    params: List(ParamData)
+    instances: List(Instance)
+    type_params: List(Scoped)
+    value_scope: List(ValueScoped)
+    /// The declarations being resolved, for cycle reports.
+    resolving: List(usize)
+    /// Structural type aliases being resolved a second time (see `resolve_decl`).
+    alias_reentry: List(usize)
+    /// Structs and unions whose fields are being resolved.
+    adts_in_progress: List(u32)
+    constraint_defer: u32
+    deferred: List(Deferred)
+    adt_inst_depth: u32
+    adt_new_instances: List(Instance)
+    adt_inst_overflowed: bool
+    method_candidates: List(MethodCandidate)
+    layout_cache: List(?Layout)
+    /// The ambient effects (§12.9), once resolved.
+    pub yield_effect: ?u32
+}
+
+pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
+    s := Sema(
+        l: l,
+        tys: types.types(),
+        states: list(DeclState),
+        fns: list(FnSig),
+        effects: list(EffectInfo),
+        adts: list(AdtInfo),
+        params: list(ParamData),
+        instances: list(Instance),
+        type_params: list(Scoped),
+        value_scope: list(ValueScoped),
+        resolving: list(usize),
+        alias_reentry: list(usize),
+        adts_in_progress: list(u32),
+        constraint_defer: 0,
+        deferred: list(Deferred),
+        adt_inst_depth: 0,
+        adt_new_instances: list(Instance),
+        adt_inst_overflowed: false,
+        method_candidates: list(MethodCandidate),
+        layout_cache: list(?Layout),
+        yield_effect: null,
+    )
+    s.effects.push(EffectInfo(name: "..", module: 0, params: empty_slice(u32), ops: empty_slice(OpInfo)))!
+    return s
+}
+
+/// The prefix of the message of every construct gammac cannot check yet.
+pub UNSUPPORTED :: "gammac cannot check"
+
+/// Reports that gammac cannot check `what` yet.
+pub unsupported :: fn(s: ^Sema, span: source.Span, what: string) needs Alloc {
+    s.error(span, str.format("{} {} yet", UNSUPPORTED, what)!)
+}
+
+pub error :: fn(s: ^Sema, span: source.Span, message: string) needs Alloc {
+    s.l.diags.report(span, message)
+}
+
+pub emit :: fn(s: ^Sema, d: diag.Diagnostic) needs Alloc {
+    s.l.diags.push(d)
+}
+
+/// The text of `t`.
+pub show :: fn(s: ^const Sema, t: Ty) -> string needs Alloc => s.tys.show(t)
+
+// ---------------------------------------------------------------------------------
+// The declarations of a program
+// ---------------------------------------------------------------------------------
+
+/// Resolves the core library's ambient effects, as loading the prelude does, so that
+/// their ids come first.
+pub resolve_ambient :: fn(s: ^Sema) needs Load {
+    prelude := s.l.prelude else return
+    if d := s.l.lookup(prelude, "Yield") {
+        if .Effect(e) := s.resolve_decl(d) { s.yield_effect = e }
+    }
+    names := [12]string("Out", "Err", "Env", "Alloc", "Sys", "In", "Clock", "Rand", "Fs", "Net", "Test", "Proc")
+    for name in names {
+        if d := s.l.lookup(prelude, name) { _ = s.resolve_decl(d) }
+    }
+}
+
+/// Resolves the declarations of every loaded module, as checking does before it checks
+/// the function bodies: module by module in load order, each module's declarations in
+/// declaration order, then the checks that span declarations.
+pub resolve_declarations :: fn(s: ^Sema) needs Load {
+    done: usize = 0
+    while done < s.l.modules.items.len {
+        m := done
+        done += 1
+        if s.l.modules.items[m].is_prelude { continue }
+        // Resolving may load modules and add declarations, but not to this module.
+        n := s.l.modules.items[m].scope.items.len
+        for i in 0..n {
+            _ = s.resolve_decl(s.l.modules.items[m].scope.items[i].decl)
+        }
+    }
+    s.check_method_candidates()
+    s.l.check_import_cycles()
+    s.check_pub_signatures()
+}
+
+state :: fn(s: ^Sema, id: usize) -> DeclState needs Alloc {
+    while s.states.items.len <= id { s.states.push(.Unresolved)! }
+    // A module binding of the core library is resolved when it is declared.
+    if s.states.items[id] is .Unresolved and s.l.decls.items[id].item.kind is .Intrinsic(_) {
+        if .Module(m) := s.l.decls.items[id].state { s.states.items[id] = .Done(.Module(m)) }
+    }
+    return s.states.items[id]
+}
+
+set_state :: fn(s: ^Sema, id: usize, v: DeclState) needs Alloc {
+    _ = s.state(id)
+    s.states.items[id] = v
+}
+
+/// The value of declaration `id`, resolving it the first time.
+pub resolve_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
+    match s.state(id) {
+        .Done(v) => return v
+        .InProgress => {
+            // `Link :: ?^Node` used by a field of `Node` while `Link` is being resolved:
+            // `Node` is usable by now, so resolving the alias again succeeds. A real cycle
+            // is found again on the second pass.
+            if s.is_structural_alias(id) and id not in s.alias_reentry.items {
+                s.alias_reentry.push(id)!
+                v := s.compute_decl(id)
+                if i := s.alias_reentry.items.index_of(id) { _ = s.alias_reentry.remove(i) }
+                return v
+            }
+            s.report_cycle(id)
+            return .Error
+        }
+        .Unresolved => {}
+    }
+    s.set_state(id, .InProgress)
+    s.resolving.push(id)!
+    // A declaration is resolved in its module's scope: the names of whatever needed it
+    // first are not visible.
+    type_params := s.type_params
+    value_scope := s.value_scope
+    s.type_params = list(Scoped)
+    s.value_scope = list(ValueScoped)
+    v := s.compute_decl(id)
+    s.type_params = type_params
+    s.value_scope = value_scope
+    _ = s.resolving.pop()
+    // A cycle report may already have marked this declaration as failed.
+    if s.states.items[id] is .InProgress { s.states.items[id] = .Done(v) }
+    if .Done(r) := s.states.items[id] { return r }
+    return .Error
+}
+
+/// Whether declaration `id` is an alias for a structural type built with pointer, slice,
+/// optional, array or function type syntax; resolving one has no side effects, so it may
+/// be done twice.
+is_structural_alias :: fn(s: ^const Sema, id: usize) -> bool {
+    d := &s.l.decls.items[id]
+    if d.item.attrs.len > 0 { return false }
+    .Binding(b) := d.item.kind else return false
+    if b.ty is not null { return false }
+    return match b.init.kind {
+        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_) => true
+        _ => false
+    }
+}
+
+report_cycle :: fn(s: ^Sema, id: usize) needs Alloc {
+    start := s.resolving.items.index_of(id) else 0
+    cycle := s.resolving.items[start..]
+    names := list(string)
+    for d in cycle { names.push(str.format("`{}`", s.l.decls.items[d].name.name)!)! }
+    span := s.l.decls.items[id].name.span
+    d := diag.error(span, str.format("dependency cycle between declarations: {}", str.join(names.items, " -> ")!)!)
+    for c in cycle[1..] { d.add_label(s.l.decls.items[c].name.span, "part of the cycle") }
+    s.emit(d)
+    for c in cycle { s.set_state(c, .Done(.Error)) }
+}
+
+compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
+    decl := s.l.decls.items[id]
+    item := decl.item
+    module := decl.module
+    name := decl.name
+    .Binding(b) := item.kind else return .Error
+    global := false
+    thread_local := false
+    hints: ?ast.Attribute = null
+    align_attr: ?ast.Attribute = null
+    for attr in item.attrs {
+        match attr.name.name {
+            "global" => { global = true }
+            // `#global #align(n)` (§20.2); on anything else, an error below.
+            "align" => {
+                if align_attr is null {
+                    align_attr = attr
+                } else {
+                    s.error(attr.span, "`#align` goes directly before a `struct` or `union` literal (§20.2)")
+                }
+            }
+            "thread_local" => { thread_local = true }
+            "export", "trap_hook", "callconv", "fuel" => s.unsupported(attr.span, str.format("the attribute `#{}`", attr.name.name)!)
+            // Inlining hints (§11.10) do not change the meaning of a program.
+            "inline", "noinline", "cold", "fast_math" => { hints = attr }
+            // Read by `gamma lint`.
+            "allow" => s.check_allow_attr(&attr)
+            // Uses of the declaration warn.
+            "deprecated" => {
+                ok := true
+                if args := attr.args {
+                    ok = args.len is 1 and args[0].kind is .Str(_)
+                }
+                if not ok { s.error(attr.span, "`#deprecated` takes an optional message: `#deprecated(\"use g\")`") }
+            }
+            "packed", "bits", "c_union" => s.error(attr.span, str.format("`#{}` goes directly before a `struct` or `union` literal (§20.2)", attr.name.name)!)
+            "link_name" => s.error(attr.span, "`#link_name` applies to a member of a `foreign` block (§19.2)")
+            other => s.error(attr.span, str.format("unknown attribute `#{}` (§20.2)", other)!)
+        }
+    }
+    if thread_local and not global { s.error(name.span, "`#thread_local` applies only to a `#global`") }
+    if a := align_attr {
+        if global {
+            s.unsupported(a.span, "`#global #align`")
+        } else {
+            s.error(a.span, "`#align` goes directly before a `struct` or `union` literal, or on a `#global` (§20.2)")
+        }
+    }
+    v: DeclValue = .Error
+    if global {
+        s.unsupported(name.span, "`#global` declarations")
+    } else {
+        v = s.compute_binding(id, module, name, &item, &b)
+    }
+    if h := hints {
+        if v is not .Fn(_) and v is not .Error {
+            s.error(h.span, str.format("`#{}` applies only to a function (§20.2)", h.name.name)!)
+        }
+    }
+    return v
+}
+
+check_allow_attr :: fn(s: ^Sema, attr: ^const ast.Attribute) needs Alloc {
+    args := attr.args else empty_slice(ast.Expr)
+    if args.len is 0 { s.error(attr.span, "`#allow` takes the names of lint rules: `#allow(\"unused-parameter\")`") }
+    for a in args {
+        if a.kind is not .Str(_) { s.error(a.span, "`#allow` takes the names of lint rules as string literals") }
+    }
+}
+
+compute_binding :: fn(s: ^Sema, id: usize, module: usize, name: ast.Ident, item: ^const ast.Item, b: ^const ast.Binding) -> DeclValue needs Load {
+    if b.kind is .Var {
+        if b.init.kind is .Import(_) {
+            // The loader reports it.
+            s.l.resolve_import(id)
+            return .Error
+        }
+        e := diag.error(b.span, "top-level bindings are immutable; use `::` (mutable storage needs `#global`)")
+        // `x := v` becomes `x :: v`.
+        between := source.Span(file: b.span.file, lo: name.span.hi, hi: b.init.span.lo)
+        text := s.l.sm.file(between.file).text[usize(between.lo)..usize(between.hi)]
+        if b.ty is null and str.trim(text) is ":=" { e.add_fix("write `::`", between, " :: ") }
+        s.emit(e)
+        return .Error
+    }
+    init := b.init
+    match init.kind {
+        .Import(_) => {
+            s.l.resolve_import(id)
+            return match s.l.decls.items[id].state {
+                .Module(m) => DeclValue.Module(m)
+                _ => DeclValue.Error
+            }
+        }
+        .Foreign(_) => {
+            if b.ty is null {
+                s.unsupported(init.span, "foreign blocks")
+                return .Error
+            }
+        }
+        .Fn(lit) => if b.ty is null { return s.declare_fn(module, name, lit) }
+        .Effect(lit) => if b.ty is null { return s.declare_effect(module, id, name, lit) }
+        // `Io :: Fs + Alloc`: a named effect set (§12.3).
+        .Binary(.Add(.Checked), _, _) => {
+            if b.ty is null and s.is_effect_sum(module, init) {
+                set := s.resolve_effect_set(module, effect_terms(init))
+                if has_splice(set) {
+                    s.error(init.span, "a named effect set cannot contain an effect-set parameter")
+                    return .Error
+                }
+                return .EffectSet(set)
+            }
+        }
+        .Handler(_) => {
+            s.error(init.span, "a handler literal cannot be a top-level declaration; bind it inside a function, or declare a handler for a type with `handler E for T { … }` (§12.6)")
+            return .Error
+        }
+        .Struct(_), .Union(_) => {
+            if b.ty is null {
+                ty := s.declare_adt(module, id, name.name, init)
+                return if s.tys.is_error(ty) { DeclValue.Error } else { DeclValue.Type(ty) }
+            }
+        }
+        .Attributed(_, inner) => {
+            if b.ty is null and inner.kind in (.Struct(_), .Union(_)) {
+                ty := s.declare_adt(module, id, name.name, init)
+                return if s.tys.is_error(ty) { DeclValue.Error } else { DeclValue.Type(ty) }
+            }
+        }
+        _ => {}
+    }
+    // An untyped constant expression?
+    if b.ty is null {
+        if r := s.try_untyped(module, init) {
+            return match r {
+                .Ok(v) => DeclValue.Untyped(v)
+                .Failed => DeclValue.Error
+            }
+        }
+    }
+    return s.declare_const_or_type(module, name, b.ty, init)
+}
+
+/// A binding whose initializer is a type expression (an alias) or a typed constant.
+declare_const_or_type :: fn(s: ^Sema, module: usize, name: ast.Ident, annot: ?^ast.Expr, init: ^const ast.Expr) -> DeclValue needs Load {
+    if annot is null {
+        // A name for another declaration (§3.5): `mk :: shapes.make`, `Map :: HashMap`.
+        if found := s.aliased_decl(module, init) {
+            d := found.decl else return .Error
+            v := s.resolve_decl(d)
+            match v {
+                .Const(_), .Global(_) => {}
+                _ => return v
+            }
+        }
+        // `Ev :: Events(Msg)`: an instantiation of a generic effect.
+        if .Call(callee, _, _) := init.kind {
+            if found := s.aliased_decl(module, callee) {
+                if d := found.decl {
+                    if s.resolve_decl(d) is .Effect(_) {
+                        r := s.resolve_effect_ref(module, init) else return .Error
+                        return .EffectInst(r)
+                    }
+                }
+            }
+        }
+        if s.looks_like_type(module, init) {
+            ty := s.resolve_type(module, init)
+            return if s.tys.is_error(ty) { DeclValue.Error } else { DeclValue.Type(ty) }
+        }
+    }
+    expected: ?Ty = null
+    if a := annot { expected = s.resolve_type(module, a) }
+    ty := s.const_type(module, init, expected) else return .Error
+    if s.tys.is_error(ty) { return .Error }
+    if bad := s.non_constant_part(ty) {
+        s.error(init.span, str.format("a constant cannot hold `{}`, which contains `{}` (§17.4)", s.show(ty), s.show(bad))!)
+        return .Error
+    }
+    return .Const(ty)
+}
+
+/// A declaration that `e` names, if it is a plain name or `m.name`: a candidate for an
+/// alias declaration. `decl` is `null` if `name` is missing from or private to module `m`
+/// (reported).
+AliasTarget :: struct {
+    decl: ?usize
+}
+
+aliased_decl :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?AliasTarget needs Load {
+    match e.kind {
+        .Ident(id) => {
+            d := s.lookup_module_name(module, id.name) else return null
+            return AliasTarget(decl: d)
+        }
+        .Paren(inner) => return s.aliased_decl(module, inner)
+        .Field(base, name) => {
+            m := s.module_named(module, base) else return null
+            return AliasTarget(decl: s.module_member(m, name))
+        }
+        _ => return null
+    }
+}
+
+/// The part of a type that a constant may not contain (§17.4): mutable pointers,
+/// `rawptr`, continuations, and allocator handles.
+non_constant_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
+    bad: ?Ty = null
+    s.walk(t, fn(x: Ty) {
+        is_bad := match s.tys.kind(x) {
+            .Ptr(c, _), .ManyPtr(c, _), .Slice(c, _) => not c
+            .Rawptr, .Cont(_) => true
+            .Adt(id, _) => s.tys.adt_name(id) is "Allocator"
+            _ => false
+        }
+        if is_bad and bad is null { bad = x }
+    })
+    return bad
+}
+
+/// Calls `f` on `t` and every type it is built from (not through definitions).
+pub walk :: fn(s: ^const Sema, t: Ty, f: fn(t: Ty)) {
+    f(t)
+    k := s.tys.kind(t)
+    types.for_each_component(&k, fn(c: Ty) { s.walk(c, f) })
+}
+
+// ---------------------------------------------------------------------------------
+// Checks across declarations
+// ---------------------------------------------------------------------------------
+
+/// Records the function or operation `name` of `module`, whose first run-time parameter
+/// has type `first`, as a method candidate of that type if the type is declared in
+/// `module`. A struct may not have both a field and a method candidate named alike (§7.10).
+declare_method_candidate :: fn(s: ^Sema, module: usize, name: ast.Ident, first: Ty, is_op: bool) needs Alloc {
+    t := first
+    if .Ptr(_, p) := s.tys.kind(first) { t = p }
+    .Adt(adt, _) := s.tys.kind(t) else return
+    if s.adts.items[usize(adt)].module is not module { return }
+    if .Struct(def) := s.adts.items[usize(adt)].kind {
+        for f in def.fields {
+            if f.name is name.name {
+                s.error(name.span, str.format("`{}` has a field `{}`, so a method of that name could never be called (§7.10)", s.show(t), name.name)!)
+                break
+            }
+        }
+    }
+    s.method_candidates.push(MethodCandidate(adt: s.tys.template(adt), name: name.name, span: name.span, is_op: is_op))!
+}
+
+/// Reports a type with two method candidates of one name (§7.10).
+check_method_candidates :: fn(s: ^Sema) needs Alloc {
+    seen := list(MethodCandidate)
+    for c in s.method_candidates.items {
+        first: ?source.Span = null
+        for x in seen.items {
+            if x.adt is c.adt and x.name is c.name {
+                first = x.span
+                break
+            }
+        }
+        f := first else {
+            seen.push(c)!
+            continue
+        }
+        // Report at the later declaration.
+        at := c.span
+        other := f
+        if c.span.file < f.file or (c.span.file is f.file and c.span.lo < f.lo) {
+            at = f
+            other = c.span
+        }
+        d := diag.error(at, str.format("`{}` would have two methods named `{}`: a method call must find exactly one (§7.10)", s.adts.items[usize(c.adt)].name, c.name)!)
+        d.add_label(other, "the other candidate")
+        s.emit(d)
+    }
+    s.method_candidates.clear()
+}
+
+/// A `pub` declaration's signature must not mention a private type (§3.3).
+check_pub_signatures :: fn(s: ^Sema) needs Alloc {
+    for i in 0..s.l.decls.items.len {
+        d := &s.l.decls.items[i]
+        if not d.item.is_pub or d.item.kind is not .Binding(_) { continue }
+        if i >= s.states.items.len { continue }
+        .Done(v) := s.states.items[i] else continue
+        tys := list(Ty)
+        match v {
+            .Fn(f) => {
+                sig := &s.fns.items[usize(f)]
+                for p in sig.params {
+                    if p.generic is null { tys.push(p.ty)! }
+                }
+                tys.push(sig.ret)!
+                effect_arg_tys(sig.effects.effects, &tys)
+            }
+            .Effect(e) => {
+                for op in s.effects.items[usize(e)].ops {
+                    for p in op.params {
+                        if p.generic is null { tys.push(p.ty)! }
+                    }
+                    tys.push(op.ret)!
+                }
+            }
+            .EffectInst(r) => effect_arg_tys([1]EffectRef(r)[..], &tys)
+            .EffectSet(set) => effect_arg_tys(set.effects, &tys)
+            .Type(t) => {
+                if .Adt(id, _) := s.tys.kind(t) and s.adts.items[usize(id)].decl is i {
+                    s.adt_field_tys(id, &tys)
+                } else {
+                    tys.push(t)!
+                }
+            }
+            .GenericType(id) => {
+                if s.adts.items[usize(id)].decl is i { s.adt_field_tys(id, &tys) }
+            }
+            .Const(t), .Global(t) => tys.push(t)!
+            _ => {}
+        }
+        for t in tys.items {
+            if p := s.private_part(t) {
+                s.error(d.name.span, str.format("the `pub` declaration `{}` mentions the private type `{}` (§3.3)", d.name.name, s.show(p))!)
+                break
+            }
+        }
+    }
+}
+
+effect_arg_tys :: fn(refs: []const EffectRef, tys: ^List(Ty)) needs Alloc {
+    for r in refs {
+        for a in r.args {
+            if .Type(t) := a { tys.push(t)! }
+        }
+    }
+}
+
+adt_field_tys :: fn(s: ^const Sema, id: u32, tys: ^List(Ty)) needs Alloc {
+    match s.adts.items[usize(id)].kind {
+        .Struct(def) => for f in def.fields {
+            if f.is_pub { tys.push(f.ty)! }
+        }
+        .CUnion(fields) => for f in fields {
+            if f.is_pub { tys.push(f.ty)! }
+        }
+        .Union(_, variants) => for v in variants {
+            if p := v.payload { tys.push(p)! }
+        }
+    }
+}
+
+/// The first type in `t` that a private declaration names.
+private_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
+    found: ?Ty = null
+    s.walk(t, fn(x: Ty) {
+        if found is null {
+            if .Adt(id, _) := s.tys.kind(x) {
+                if d := s.adts.items[usize(s.tys.template(id))].decl {
+                    if not s.l.decls.items[d].item.is_pub { found = x }
+                }
+            }
+        }
+    })
+    return found
+}

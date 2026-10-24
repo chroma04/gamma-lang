@@ -1,0 +1,191 @@
+// Names at module level: a module's own declarations, the universe scope (the core
+// prelude's public declarations), and the members of other modules (§3.2, §3.3, §21.1).
+
+/// Public declarations of the core prelude that the universe scope leaves out, besides the
+/// effect operations (§21.1): the types of `Fs`, `Net` and `Proc`, which `std/fs`,
+/// `std/net` and `std/process` export, the duration constructors, which `std/time`
+/// exports, and the methods of `Instant` and `Duration`.
+UNIVERSE_HIDDEN :: [26]string(
+    "File", "Dir", "OpenOptions", "FileKind", "FileInfo", "DirEntry", "SeekFrom", "Socket", "Listener",
+    "Shutdown", "Child", "Stdio", "Stream", "SpawnOptions", "Chunk", "ExitStatus", "since", "after", "plus",
+    "minus", "to_ms", "ns", "us", "ms", "secs", "map",
+)
+
+/// The built-in methods of slices that are functions of the core library (§21.3).
+SLICE_FNS :: [28]string(
+    "swap", "fill", "copy_from", "sort", "sort_by", "sort_by_key", "stable_sort", "stable_sort_by",
+    "stable_sort_by_key", "index_of", "starts_with", "ends_with", "min", "max", "binary_search",
+    "upper_bound", "select_nth", "select_nth_by", "reverse", "rotate_left", "rotate_right", "dedup",
+    "partition", "is_sorted", "is_sorted_by", "utf8_valid", "cursor", "get",
+)
+
+/// Looks up a name at module level: the module's own declarations, then the prelude's
+/// public declarations (all of them, for the other core modules).
+pub lookup_module_name :: fn(s: ^Sema, module: usize, name: string) -> ?usize {
+    if d := s.l.lookup(module, name) { return d }
+    prelude := s.l.prelude else return null
+    d := s.l.lookup(prelude, name) else return null
+    m := &s.l.modules.items[module]
+    if m.is_prelude { return d }
+    if not s.l.decls.items[d].item.is_pub { return null }
+    // The name `core` for the core library itself is the standard library's (§22).
+    if name is "core" { return if m.is_std { d } else { null } }
+    return if s.universe_hidden(d) { null } else { d }
+}
+
+/// Whether the core library's public declaration `d` is left out of the universe scope.
+universe_hidden :: fn(s: ^const Sema, d: usize) -> bool => s.l.decls.items[d].name.name in UNIVERSE_HIDDEN[..]
+
+/// For an unknown name that the core library declares but leaves out of the universe
+/// scope, how to reach it.
+pub universe_hint :: fn(s: ^Sema, name: string) -> ?string needs Alloc {
+    prelude := s.l.prelude else return null
+    d := s.l.lookup(prelude, name) else return null
+    if not s.universe_hidden(d) or s.l.decls.items[d].state is .Module(_) { return null }
+    if m := std_home(name) {
+        return str.format("`{}` is declared by `{}`: import it and write `{}.{}`", name, m, m[4..], name)!
+    }
+    return str.format("`{}` is a method of `Instant` or `Duration`: write `x.{}(…)`", name, name)!
+}
+
+std_home :: fn(name: string) -> ?string {
+    if name in ("Socket", "Listener", "Shutdown") { return "std/net" }
+    if name in ("File", "Dir", "OpenOptions", "FileKind", "FileInfo", "DirEntry", "SeekFrom") { return "std/fs" }
+    if name in ("Child", "Stdio", "Stream", "SpawnOptions", "Chunk", "ExitStatus") { return "std/process" }
+    if name in ("ns", "us", "ms", "secs") { return "std/time" }
+    return null
+}
+
+/// The hint for a bare or module-qualified use of the operation `name` of `effect_`.
+op_hint :: fn(effect_: string, name: string, qualifier: ?string) -> string needs Alloc {
+    q: string = if m := qualifier { str.format("{}.", m)! } else { "" }
+    return str.format("`{}` is an operation of `{}`; call it as `{}{}.{}(…)` (§12.1)", name, effect_, q, effect_, name)!
+}
+
+/// A fix for an unknown name that `universe_hint` attributes to a standard module: write
+/// `m.Name`, after adding `m :: import "std/m"` unless the module has it already. `span`
+/// is the name at its use in the file of `module`.
+pub import_fix :: fn(s: ^Sema, module: usize, name: string, span: source.Span) -> ?List(diag.Edit) needs Alloc {
+    path := std_home(name) else return null
+    m := &s.l.modules.items[module]
+    if m.is_prelude or m.is_std { return null }
+    alias := path[4..]
+    edits := list(diag.Edit)
+    existing: ?string = null
+    last_import_end: ?u32 = null
+    for n in m.scope.items {
+        decl := &s.l.decls.items[n.decl]
+        if decl.item.span.file is not span.file { continue }
+        .Binding(b) := decl.item.kind else continue
+        if b.ty is not null or b.names.len is not 1 { continue }
+        .Import(p) := b.init.kind else continue
+        if p.bytes is path { existing = decl.name.name }
+        hi := b.init.span.hi
+        if e := last_import_end {
+            if hi > e { last_import_end = hi }
+        } else {
+            last_import_end = hi
+        }
+    }
+    text := s.l.sm.file(span.file).text
+    name_text := ""
+    if a := existing {
+        name_text = a
+    } else {
+        if s.l.lookup(module, alias) is not null { return null }
+        line := str.format("{} :: import \"{}\"\n", alias, path)!
+        at: usize = 0
+        if hi := last_import_end {
+            // The start of the line after the last import.
+            nl := text[usize(hi)..].index_of('\n') else return null
+            at = usize(hi) + nl + 1
+        } else {
+            // After the comments that open the file (its documentation).
+            while text[at..].starts_with("//") {
+                if nl := text[at..].index_of('\n') { at += nl + 1 } else { at = text.len }
+            }
+            line = if at is 0 { str.format("{}\n", line)! } else { str.format("\n{}", line)! }
+        }
+        edits.push(diag.Edit(span: source.span(span.file, at, at), text: line))!
+        name_text = alias
+    }
+    edits.push(diag.Edit(span: span, text: str.format("{}.{}", name_text, name)!))!
+    return edits
+}
+
+/// The module that `e` names (`m` or `m.sub`) in `module`.
+pub module_named :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?usize needs Load {
+    if .Field(base, name) := e.kind {
+        m := s.module_named(module, base) else return null
+        return s.public_module_member(m, name.name)
+    }
+    .Ident(id) := e.kind else return null
+    d := s.lookup_module_name(module, id.name) else return null
+    .Module(m) := s.resolve_decl(d) else return null
+    return m
+}
+
+/// The module that the public declaration `name` of module `m` binds, if it is a module
+/// binding (reports nothing otherwise).
+public_module_member :: fn(s: ^Sema, m: usize, name: string) -> ?usize needs Load {
+    d := s.l.lookup(m, name) else return null
+    if not s.l.decls.items[d].item.is_pub { return null }
+    .Module(r) := s.resolve_decl(d) else return null
+    return r
+}
+
+/// The public declaration `name` of module `m`; reports a missing or private one.
+pub module_member :: fn(s: ^Sema, m: usize, name: ast.Ident) -> ?usize needs Alloc {
+    module_name := s.l.modules.items[m].name
+    if d := s.l.lookup(m, name.name) {
+        if s.l.decls.items[d].item.is_pub {
+            s.check_deprecated(d, name.span)
+            return d
+        }
+        s.error(name.span, str.format("`{}` is private to the module `{}` (§3.3)", name.name, module_name)!)
+        return null
+    }
+    if effect_ := s.public_op_effect(m, name.name) {
+        s.error(name.span, op_hint(effect_, name.name, module_name))
+        return null
+    }
+    d := diag.error(name.span, str.format("the module `{}` has no declaration `{}`", module_name, name.name)!)
+    // `str.starts_with(s, p)` for the built-in method `s.starts_with(p)` (§21.3).
+    if name.name in SLICE_FNS[..] or name.name in ("first", "last") {
+        d.add_note(str.format("`{}` is a built-in method of slices and strings: write `s.{}(…)`", name.name, name.name)!)
+    }
+    s.emit(d)
+    return null
+}
+
+/// The name of a public effect of module `m` that has an operation `name`.
+public_op_effect :: fn(s: ^const Sema, m: usize, name: string) -> ?string {
+    for n in s.l.modules.items[m].scope.items {
+        d := &s.l.decls.items[n.decl]
+        if not d.item.is_pub { continue }
+        .Binding(b) := d.item.kind else continue
+        .Effect(lit) := b.init.kind else continue
+        for op in lit.ops {
+            if op.name.name is name { return d.name.name }
+        }
+    }
+    return null
+}
+
+/// Warns about a use at `span` of declaration `d` if it is `#deprecated("msg")` (§20.2).
+pub check_deprecated :: fn(s: ^Sema, d: usize, span: source.Span) needs Alloc {
+    decl := &s.l.decls.items[d]
+    for attr in decl.item.attrs {
+        if attr.name.name is not "deprecated" { continue }
+        msg := ""
+        if args := attr.args {
+            if args.len is 1 {
+                if .Str(lit) := args[0].kind { msg = str.format(": {}", lit.bytes)! }
+            }
+        }
+        w := diag.warning(span, str.format("`{}` is deprecated{}", decl.name.name, msg)!)
+        w.add_label(decl.name.span, "declared here")
+        s.emit(w)
+        return
+    }
+}

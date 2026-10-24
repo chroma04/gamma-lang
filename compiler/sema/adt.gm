@@ -1,0 +1,705 @@
+// Struct and union declarations (§5.10, §5.11) and the instances of generic ones (§16.4).
+
+/// How deeply instantiating a generic type may instantiate others (§16.7).
+MAX_ADT_INST_DEPTH :: 64
+
+empty_struct :: fn() -> AdtKind => .Struct(StructDef(fields: empty_slice(FieldDef), packed: false, align: null, bits: null))
+
+/// A type parameter of a generic declaration: whether it is an effect set, a type, or a
+/// value of the given type (`N :: usize`).
+param_kind_of :: fn(s: ^Sema, module: usize, p: ^const ast.Param) -> ParamKind needs Load {
+    t := p.ty else {
+        s.error(p.span, "a type parameter needs a type: `T: type` or `N :: usize`")
+        return .Value(s.tys.error())
+    }
+    if is_effects_kind(t) { return .Effects }
+    if .Ident(i) := t.kind and i.name is "type" { return .Type }
+    return .Value(s.resolve_type(module, t))
+}
+
+new_param :: fn(s: ^Sema, name: string, kind: ParamKind) -> u32 needs Alloc {
+    id := s.tys.fresh_param(name)
+    s.params.push(ParamData(kind: kind, constraints: list(Constraint)))!
+    return id
+}
+
+/// Declares the nominal type written by a `struct` or `union` literal (possibly preceded
+/// by attributes). `decl` is the binding that names it, if any.
+declare_adt :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^const ast.Expr) -> Ty needs Load {
+    attrs := empty_slice(ast.Attribute)
+    inner := lit
+    if .Attributed(a, i) := lit.kind {
+        attrs = a
+        inner = i
+    }
+    id := s.tys.fresh_adt(name)
+    s.adts.push(AdtInfo(
+        name: name,
+        module: module,
+        kind: empty_struct(),
+        defaults: empty_slice(bool),
+        has_using: false,
+        params: empty_slice(u32),
+        param_defaults: empty_slice(?^ast.Expr),
+        explicit_tag: false,
+        span: lit.span,
+        decl: decl,
+    ))!
+    ty := s.tys.adt(id, empty_slice(GenericArg))
+    // Type parameters of a generic struct or union (§16.4).
+    params: ?[]ast.Param = match inner.kind {
+        .Struct(st) => st.params
+        .Union(u) => u.params
+        _ => null
+    }
+    scope_len := s.type_params.items.len
+    value_scope_len := s.value_scope.items.len
+    generics := list(u32)
+    defaults := list(?^ast.Expr)
+    for p in params else empty_slice(ast.Param) {
+        kind := s.param_kind_of(module, &p)
+        for n in p.names {
+            pid := s.new_param(n.name, kind)
+            generics.push(pid)!
+            defaults.push(p.default)!
+            match kind {
+                .Value(_) => s.value_scope.push(ValueScoped(name: n.name, param: pid))!
+                _ => s.type_params.push(Scoped(name: n.name, ty: s.tys.param(pid)))!
+            }
+        }
+    }
+    s.adts.items[usize(id)].params = generics.items
+    s.adts.items[usize(id)].param_defaults = defaults.items
+    // The type is usable (through pointers) by its own fields.
+    if d := decl {
+        v: DeclValue = if generics.items.len is 0 { .Type(ty) } else { .GenericType(id) }
+        s.set_state(d, .Done(v))
+    }
+    s.adts_in_progress.push(id)!
+    s.constraint_defer += 1
+    kind: AdtKind = empty_struct()
+    wheres := empty_slice(ast.Constraint)
+    match inner.kind {
+        .Struct(st) => {
+            kind = s.struct_kind(module, id, st, attrs)
+            wheres = st.where_
+        }
+        .Union(u) => {
+            if u.tag_type is not null { s.adts.items[usize(id)].explicit_tag = true }
+            kind = s.union_kind(module, u, attrs)
+            wheres = u.where_
+        }
+        _ => {
+            s.error(lit.span, "expected a struct or union literal after the attributes")
+            s.remove_in_progress(id)
+            s.end_constraint_defer()
+            return s.tys.error()
+        }
+    }
+    s.remove_in_progress(id)
+    s.adts.items[usize(id)].kind = kind
+    for c in wheres { s.declare_constraint(module, &c) }
+    s.end_constraint_defer()
+    s.type_params.truncate(scope_len)
+    s.value_scope.truncate(value_scope_len)
+    if generics.items.len > 0 { return ty }
+    stack := list(u32)
+    if s.is_infinitely_sized(ty, &stack) {
+        s.error(lit.span, str.format("`{}` contains itself by value and would be infinitely large; use a pointer", name)!)
+        s.empty_adt(id)
+        return s.tys.error()
+    }
+    if not s.type_size_ok(ty, lit.span) {
+        s.empty_adt(id)
+        return s.tys.error()
+    }
+    return ty
+}
+
+remove_in_progress :: fn(s: ^Sema, id: u32) {
+    if i := s.adts_in_progress.items.index_of(id) { _ = s.adts_in_progress.remove(i) }
+}
+
+/// Leaves a type that was reported as ill-formed without fields or variants, so that
+/// nothing walks it later.
+empty_adt :: fn(s: ^Sema, id: u32) {
+    s.adts.items[usize(id)].kind = empty_struct()
+    s.adts.items[usize(id)].has_using = false
+    s.adts.items[usize(id)].defaults = empty_slice(bool)
+}
+
+struct_kind :: fn(s: ^Sema, module: usize, id: u32, st: ^const ast.StructLit, attrs: []const ast.Attribute) -> AdtKind needs Load {
+    packed := false
+    align: ?u64 = null
+    bits: ?Ty = null
+    for a in attrs {
+        match a.name.name {
+            "packed" => { packed = true }
+            "align" => { align = s.attr_power_of_two(module, &a) }
+            "bits" => {
+                args := a.args else empty_slice(ast.Expr)
+                if args.len is 1 {
+                    bits = s.resolve_type(module, &args[0])
+                } else {
+                    s.error(a.span, "`#bits` takes the underlying unsigned integer type: `#bits(u16)`")
+                }
+            }
+            other => s.error(a.span, str.format("attribute `#{}` does not apply to a struct", other)!)
+        }
+    }
+    fields := list(FieldDef)
+    defaults := list(bool)
+    has_using := false
+    members := list(ast.FieldDecl)
+    s.taken_struct_members(module, st.members, &members)
+    for i, f in enumerate(members.items) {
+        ty := s.resolve_type(module, f.ty)
+        if s.tys.kind(ty) is .Fn(_) {
+            s.error(f.ty.span, "a field cannot hold a second-class function; use a function pointer `^fn(…)` (§11.6)")
+        }
+        field_align: ?u64 = null
+        for a in f.attrs {
+            match a.name.name {
+                "align" => { field_align = s.attr_power_of_two(module, &a) }
+                other => s.error(a.span, str.format("attribute `#{}` does not apply to a field", other)!)
+            }
+        }
+        if f.is_using {
+            if i is not 0 or f.names.len is not 1 {
+                s.error(f.span, "only the first field of a struct may be `using`, and it must be a single field")
+            } else if s.tys.kind(ty) is not .Adt(_) and not s.tys.is_error(ty) {
+                s.error(f.span, str.format("a `using` field must have a struct type, not `{}`", s.show(ty))!)
+            } else {
+                has_using = true
+            }
+        }
+        // A default is evaluated once (§17.2), unless its type mentions a type parameter of
+        // the struct: then each use checks it.
+        if d := f.default { s.check_default(module, d, ty) }
+        for n in f.names {
+            if n.name is not "_" {
+                for x in fields.items {
+                    if x.name is n.name {
+                        s.error(n.span, str.format("duplicate field `{}`", n.name)!)
+                        break
+                    }
+                }
+            }
+            fields.push(FieldDef(name: n.name, ty: ty, is_pub: f.is_pub, align: field_align))!
+            defaults.push(f.default is not null)!
+        }
+    }
+    if b := bits { s.check_bits_struct(st.span, b, fields.items) }
+    s.adts.items[usize(id)].defaults = defaults.items
+    s.adts.items[usize(id)].has_using = has_using
+    return .Struct(StructDef(fields: fields.items, packed: packed, align: align, bits: bits))
+}
+
+check_bits_struct :: fn(s: ^Sema, span: source.Span, underlying: Ty, fields: []const FieldDef) needs Alloc {
+    msg := str.format("`#bits` needs an unsigned integer type, not `{}`", s.show(underlying))!
+    .Int(signed, width) := s.tys.kind(underlying) else {
+        s.error(span, msg)
+        return
+    }
+    if signed { s.error(span, msg) }
+    total: u64 = 0
+    for f in fields {
+        if w := s.bit_width(f.ty) {
+            total += w
+        } else {
+            s.error(span, str.format("field `{}` of a `#bits` struct must be `bool`, an integer, an enum with an explicit tag type or another `#bits` struct", f.name)!)
+        }
+    }
+    if total is not u64(width) {
+        s.error(span, str.format("the fields of this `#bits` struct use {} bits, but `{}` has {}", total, s.show(underlying), width)!)
+    }
+}
+
+bit_width :: fn(s: ^const Sema, t: Ty) -> ?u64 {
+    match s.tys.kind(t) {
+        .Bool => return 1
+        .Int(_, bits) => return u64(bits)
+        .Adt(id, _) => {
+            info := &s.adts.items[usize(id)]
+            match info.kind {
+                .Struct(def) => {
+                    u := def.bits else return null
+                    return s.bit_width(u)
+                }
+                // An enum with an explicit tag type occupies its tag's bits.
+                .Union(tag, variants) => {
+                    if not info.explicit_tag { return null }
+                    for v in variants {
+                        if v.payload is not null { return null }
+                    }
+                    return s.bit_width(tag)
+                }
+                _ => return null
+            }
+        }
+        _ => return null
+    }
+}
+
+union_kind :: fn(s: ^Sema, module: usize, u: ^const ast.UnionLit, attrs: []const ast.Attribute) -> AdtKind needs Load {
+    c_union := false
+    for a in attrs {
+        match a.name.name {
+            "c_union" => { c_union = true }
+            other => s.error(a.span, str.format("attribute `#{}` does not apply to a union", other)!)
+        }
+    }
+    explicit_tag: ?Ty = null
+    if t := u.tag_type {
+        tag := s.resolve_type(module, t)
+        if not s.tys.is_integer(tag) and not s.tys.is_error(tag) {
+            s.error(u.span, str.format("a union's tag type must be an integer type, not `{}`", s.show(tag))!)
+        }
+        // Without a usable tag type, the tag values are not checked against it.
+        explicit_tag = if s.tys.is_integer(tag) { tag } else { s.tys.error() }
+    }
+    variants := list(VariantDef)
+    spans := list(source.Span)
+    next := bigint.zero()
+    members := list(ast.Variant)
+    s.taken_union_members(module, u.members, &members)
+    for v in members.items {
+        for x in variants.items {
+            if x.name is v.name.name {
+                s.error(v.name.span, str.format("duplicate variant `{}`", v.name.name)!)
+                break
+            }
+        }
+        payload: ?Ty = null
+        if p := v.payload { payload = s.resolve_type(module, p) }
+        tag := next
+        if val := v.value {
+            if explicit_tag is null { s.error(val.span, "explicit tag values need an explicit tag type: `union(u8) { … }`") }
+            match s.try_untyped(module, val) {
+                .Ok(c) => {
+                    if .Int(i) := c {
+                        tag = i
+                    } else {
+                        s.error(val.span, "a tag value must be an integer constant")
+                    }
+                }
+                .Failed => {}
+                null => s.error(val.span, "a tag value must be an integer constant")
+            }
+        }
+        next = tag.add(bigint.one())
+        variants.push(VariantDef(name: v.name.name, payload: payload, tag: tag))!
+        spans.push(v.span)!
+    }
+    if c_union {
+        fields := list(FieldDef)
+        for i, v in enumerate(variants.items) {
+            if p := v.payload {
+                fields.push(FieldDef(name: v.name, ty: p, is_pub: true, align: null))!
+            } else {
+                s.error(spans.items[i], "every field of a `#c_union` needs a type")
+            }
+        }
+        return .CUnion(fields.items)
+    }
+    n := variants.items.len
+    tag := explicit_tag else (if n <= 256 { s.tys.u8_ty() } else if n <= 65536 { s.tys.int(false, 16) } else { s.tys.int(false, 32) })
+    for i, v in enumerate(variants.items) {
+        if not s.tys.is_error(tag) and not s.int_fits(v.tag, tag) {
+            s.error(spans.items[i], str.format("tag value {} of `{}` does not fit the tag type `{}`", v.tag.to_decimal(), v.name, s.show(tag))!)
+        }
+        for j, w in enumerate(variants.items[0..i]) {
+            if w.tag.eq(v.tag) {
+                d := diag.error(spans.items[i], str.format("variants `{}` and `{}` have the same tag value {}", w.name, v.name, v.tag.to_decimal())!)
+                d.add_label(spans.items[j], "first used here")
+                s.emit(d)
+                break
+            }
+        }
+    }
+    return .Union(tag, variants.items)
+}
+
+/// Whether the integer `v` is a value of the integer type `t`.
+int_fits :: fn(s: ^const Sema, v: bigint.Int, t: Ty) -> bool needs Alloc {
+    signed := false
+    bits: u64 = 0
+    match s.tys.kind(t) {
+        .Int(sg, b) => {
+            signed = sg
+            bits = u64(b)
+        }
+        .Usize => { bits = u64(target.ptr_bits) }
+        .Isize => {
+            signed = true
+            bits = u64(target.ptr_bits)
+        }
+        _ => return false
+    }
+    if v.is_negative() {
+        if not signed { return false }
+        // -2^(bits-1) <= v
+        return v.add(bigint.one()).neg().bits() <= bits - 1
+    }
+    return v.bits() <= (if signed { bits - 1 } else { bits })
+}
+
+attr_power_of_two :: fn(s: ^Sema, module: usize, a: ^const ast.Attribute) -> ?u64 needs Load {
+    args := a.args else empty_slice(ast.Expr)
+    if args.len is not 1 {
+        s.error(a.span, "`#align` takes one argument: `#align(16)`")
+        return null
+    }
+    arg := &args[0]
+    if r := s.try_untyped(module, arg) {
+        if .Ok(v) := r and .Int(i) := v {
+            if n := i.to_u64() {
+                if n > 0 and n & (n - 1) is 0 { return n }
+            }
+            s.error(arg.span, "an alignment must be a power of two")
+            return null
+        }
+    }
+    s.error(arg.span, "an alignment must be an integer constant")
+    return null
+}
+
+/// True if `ty` contains a nominal type in `stack` by value.
+is_infinitely_sized :: fn(s: ^const Sema, ty: Ty, stack: ^List(u32)) -> bool needs Alloc {
+    match s.tys.kind(ty) {
+        .Adt(id, _) => {
+            if id in stack.items { return true }
+            stack.push(id)!
+            r := false
+            match s.adts.items[usize(id)].kind {
+                .Struct(def) => for f in def.fields {
+                    if s.is_infinitely_sized(f.ty, stack) {
+                        r = true
+                        break
+                    }
+                }
+                .CUnion(fields) => for f in fields {
+                    if s.is_infinitely_sized(f.ty, stack) {
+                        r = true
+                        break
+                    }
+                }
+                .Union(_, variants) => for v in variants {
+                    if p := v.payload and s.is_infinitely_sized(p, stack) {
+                        r = true
+                        break
+                    }
+                }
+            }
+            _ = stack.pop()
+            return r
+        }
+        .Array(_, elem, _), .ParamArray(_, elem), .Optional(elem) => return s.is_infinitely_sized(elem, stack)
+        .Tuple(elems, _) => {
+            for e in elems {
+                if s.is_infinitely_sized(e, stack) { return true }
+            }
+            return false
+        }
+        .Result(err, ok) => return s.is_infinitely_sized(err, stack) or s.is_infinitely_sized(ok, stack)
+        _ => return false
+    }
+}
+
+/// The fields of a struct type, if `ty` is one.
+pub struct_fields :: fn(s: ^const Sema, ty: Ty) -> ?[]FieldDef {
+    .Adt(id, _) := s.tys.kind(ty) else return null
+    .Struct(def) := s.adts.items[usize(id)].kind else return null
+    return def.fields
+}
+
+/// The variants and tag type of a tagged union type, if `ty` is one.
+pub union_variants :: fn(s: ^const Sema, ty: Ty) -> ?(variants: []VariantDef, tag: Ty) {
+    .Adt(id, _) := s.tys.kind(ty) else return null
+    .Union(tag, variants) := s.adts.items[usize(id)].kind else return null
+    return (variants: variants, tag: tag)
+}
+
+/// The fields of a struct body, with each `when` replaced by its taken branch (§3.6).
+taken_struct_members :: fn(s: ^Sema, module: usize, members: []const ast.StructMember, out: ^List(ast.FieldDecl)) needs Load {
+    for m in members {
+        match m {
+            .Field(f) => out.push(f)!
+            .When(w) => match s.l.when_cond(module, w.cond) {
+                true => s.taken_struct_members(module, w.then, out)
+                false => s.taken_struct_members(module, w.else_ else empty_slice(ast.StructMember), out)
+                null => {}
+            }
+        }
+    }
+}
+
+/// The variants of a union body, with each `when` replaced by its taken branch.
+taken_union_members :: fn(s: ^Sema, module: usize, members: []const ast.UnionMember, out: ^List(ast.Variant)) needs Load {
+    for m in members {
+        match m {
+            .Variant(v) => out.push(v)!
+            .When(w) => match s.l.when_cond(module, w.cond) {
+                true => s.taken_union_members(module, w.then, out)
+                false => s.taken_union_members(module, w.else_ else empty_slice(ast.UnionMember), out)
+                null => {}
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Instances of generic types
+// ---------------------------------------------------------------------------------
+
+/// The instance of generic struct or union `template` for `args` (§16.4).
+instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Load {
+    gargs := list(GenericArg)
+    for a in args { gargs.push(.Type(a))! }
+    for i in s.instances.items {
+        if i.template is template and i.args is args { return s.tys.adt(i.inst, gargs.items) }
+    }
+    // Instantiating a type's fields instantiates the types they mention, which must end:
+    // `Bad :: struct(T: type) { next: ?^Bad(?T) }` would go on forever (§16.7).
+    if s.adt_inst_depth >= MAX_ADT_INST_DEPTH {
+        if not s.adt_inst_overflowed {
+            s.adt_inst_overflowed = true
+            s.error(s.adts.items[usize(template)].span, str.format("`{}` instantiates itself with ever-larger type arguments (more than {} deep) (§16.7)", s.adts.items[usize(template)].name, MAX_ADT_INST_DEPTH)!)
+        }
+        return s.tys.error()
+    }
+    info := s.adts.items[usize(template)]
+    inst := s.tys.fresh_adt(info.name)
+    s.tys.set_template(inst, template)
+    copy := list(Ty)
+    copy.extend(args)!
+    s.instances.push(Instance(template: template, args: copy.items, inst: inst))!
+    ty := s.tys.adt(inst, gargs.items)
+    s.adts.push(AdtInfo(
+        name: info.name,
+        module: info.module,
+        kind: empty_struct(),
+        defaults: info.defaults,
+        has_using: info.has_using,
+        params: empty_slice(u32),
+        param_defaults: empty_slice(?^ast.Expr),
+        explicit_tag: info.explicit_tag,
+        span: info.span,
+        decl: null,
+    ))!
+    map := list(Subst)
+    for i, p in enumerate(info.params) {
+        if i < args.len { map.push(Subst(param: p, ty: args[i]))! }
+    }
+    s.adt_inst_depth += 1
+    kind: AdtKind = match info.kind {
+        .Struct(def) => AdtKind.Struct(StructDef(fields: s.subst_fields(def.fields, map.items), packed: def.packed, align: def.align, bits: def.bits))
+        .Union(tag, variants) => {
+            vs := list(VariantDef)
+            for v in variants {
+                payload: ?Ty = null
+                if p := v.payload { payload = s.subst(p, map.items) }
+                vs.push(VariantDef(name: v.name, payload: payload, tag: v.tag))!
+            }
+            AdtKind.Union(tag, vs.items)
+        }
+        .CUnion(fields) => AdtKind.CUnion(s.subst_fields(fields, map.items))
+    }
+    s.adts.items[usize(inst)].kind = kind
+    s.adt_inst_depth -= 1
+    concrete := true
+    for a in args {
+        if s.tys.has_param(a) { concrete = false }
+    }
+    if concrete { s.adt_new_instances.push(Instance(template: template, args: empty_slice(Ty), inst: inst))! }
+    // Once the outermost instantiation is complete, no instance may contain itself by
+    // value. Such an instance is left without fields, so that computing its layout ends.
+    if s.adt_inst_depth is 0 {
+        all := s.adt_new_instances
+        s.adt_new_instances = list(Instance)
+        infinite := list(u32)
+        for i in all.items {
+            seen := list(u32)
+            t := s.tys.adt(i.inst, s.instance_args(i.inst))
+            if s.contains_by_value(t, i.inst, &seen) { infinite.push(i.inst)! }
+        }
+        for i in all.items {
+            if i.inst not in infinite.items { continue }
+            t := s.tys.adt(i.inst, s.instance_args(i.inst))
+            s.error(s.adts.items[usize(i.template)].span, str.format("`{}` contains itself by value and would be infinitely large; use a pointer", s.show(t))!)
+            s.empty_adt(i.inst)
+        }
+        for i in all.items {
+            if i.inst in infinite.items { continue }
+            t := s.tys.adt(i.inst, s.instance_args(i.inst))
+            if not s.type_size_ok(t, s.adts.items[usize(i.template)].span) { s.empty_adt(i.inst) }
+        }
+    }
+    return ty
+}
+
+/// The type arguments of the instance `inst`, as generic arguments.
+instance_args :: fn(s: ^const Sema, inst: u32) -> []GenericArg needs Alloc {
+    out := list(GenericArg)
+    for i in s.instances.items {
+        if i.inst is inst {
+            for a in i.args { out.push(.Type(a))! }
+            break
+        }
+    }
+    return out.items
+}
+
+subst_fields :: fn(s: ^Sema, fields: []const FieldDef, map: []const Subst) -> []FieldDef needs Load {
+    out := list(FieldDef)
+    for f in fields { out.push(FieldDef(name: f.name, ty: s.subst(f.ty, map), is_pub: f.is_pub, align: f.align))! }
+    return out.items
+}
+
+/// Whether a value of type `ty` contains a value of the struct or union `target_`.
+contains_by_value :: fn(s: ^const Sema, ty: Ty, target_: u32, seen: ^List(u32)) -> bool needs Alloc {
+    match s.tys.kind(ty) {
+        .Adt(id, _) => {
+            if id is target_ and seen.items.len > 0 { return true }
+            if id in seen.items { return false }
+            seen.push(id)!
+            match s.adts.items[usize(id)].kind {
+                .Struct(def) => for f in def.fields {
+                    if s.contains_by_value(f.ty, target_, seen) { return true }
+                }
+                .CUnion(fields) => for f in fields {
+                    if s.contains_by_value(f.ty, target_, seen) { return true }
+                }
+                .Union(_, variants) => for v in variants {
+                    if p := v.payload and s.contains_by_value(p, target_, seen) { return true }
+                }
+            }
+            return false
+        }
+        .Array(_, elem, _), .ParamArray(_, elem), .Optional(elem) => return s.contains_by_value(elem, target_, seen)
+        .Tuple(elems, _) => {
+            for e in elems {
+                if s.contains_by_value(e, target_, seen) { return true }
+            }
+            return false
+        }
+        .Result(err, ok) => return s.contains_by_value(err, target_, seen) or s.contains_by_value(ok, target_, seen)
+        _ => return false
+    }
+}
+
+/// A type parameter and the type that replaces it.
+pub Subst :: struct {
+    pub param: u32
+    pub ty: Ty
+}
+
+/// Replaces type parameters in `t`, re-instantiating generic types (§16.4).
+pub subst :: fn(s: ^Sema, t: Ty, map: []const Subst) -> Ty needs Load {
+    if map.len is 0 or not s.tys.has_param(t) { return t }
+    tys := &s.tys
+    k := tys.kind(t)
+    match k {
+        .Param(p) => {
+            for m in map {
+                if m.param is p { return m.ty }
+            }
+            return t
+        }
+        .Adt(id, args) => {
+            if args.len is 0 { return t }
+            new_args := list(Ty)
+            for a in args {
+                new_args.push(match a {
+                    .Type(x) => s.subst(x, map)
+                    .Value(_) => s.tys.error()
+                })!
+            }
+            return s.instantiate_adt(s.tys.template(id), new_args.items)
+        }
+        .Fn(sig) => return s.tys.intern(.Fn(s.subst_sig(&sig, map)))
+        .FnPtr(sig) => return s.tys.intern(.FnPtr(s.subst_sig(&sig, map)))
+        .Ptr(c, x) => return s.tys.ptr(c, s.subst(x, map))
+        .ManyPtr(c, x) => return s.tys.many_ptr(c, s.subst(x, map))
+        .Slice(c, x) => return s.tys.slice(c, s.subst(x, map))
+        .Array(len, elem, kind) => {
+            ak: types.ArrayKind = kind
+            if .Enum(e) := kind { ak = .Enum(s.subst(e, map)) }
+            return s.tys.intern(.Array(len, s.subst(elem, map), ak))
+        }
+        .ParamArray(len, elem) => {
+            l := s.subst(len, map)
+            el := s.subst(elem, map)
+            match s.tys.kind(l) {
+                .Value(key) => {
+                    n := types.key_u64(key) else return s.tys.error()
+                    return s.tys.array(n, el)
+                }
+                .Error => return s.tys.error()
+                _ => return s.tys.intern(.ParamArray(l, el))
+            }
+        }
+        .LenExpr(op, lhs, rhs) => {
+            a := s.subst(lhs, map)
+            b := s.subst(rhs, map)
+            return s.tys.len_expr(op, a, b)
+        }
+        .Optional(x) => return s.tys.optional(s.subst(x, map))
+        .Cont(x) => return s.tys.intern(.Cont(s.subst(x, map)))
+        .Result(err, ok) => {
+            e := s.subst(err, map)
+            o := s.subst(ok, map)
+            return s.tys.result(e, o)
+        }
+        .Tuple(elems, names) => {
+            out := list(Ty)
+            for e in elems { out.push(s.subst(e, map))! }
+            return s.tys.intern(.Tuple(out.items, names))
+        }
+        .Effects(set) => return s.tys.intern(.Effects(s.subst_effects(&set, map)))
+        _ => return t
+    }
+}
+
+subst_sig :: fn(s: ^Sema, sig: ^const types.FnTy, map: []const Subst) -> types.FnTy needs Load {
+    params := list(Ty)
+    for p in sig.params { params.push(s.subst(p, map))! }
+    ret := s.subst(sig.ret, map)
+    effects := s.subst_effects(&sig.effects, map)
+    return types.FnTy(params: params.items, ret: ret, effects: effects, variadic: sig.variadic, win64: sig.win64)
+}
+
+/// `subst` on the arguments of each effect in `set`, splicing in the effect sets that
+/// `E` terms become.
+subst_effects :: fn(s: ^Sema, set: ^const EffectSet, map: []const Subst) -> EffectSet needs Load {
+    refs := list(EffectRef)
+    for e in set.effects {
+        args := list(GenericArg)
+        for a in e.args {
+            args.push(match a {
+                .Type(t) => GenericArg.Type(s.subst(t, map))
+                v => v
+            })!
+        }
+        refs.push(EffectRef(eff: e.eff, args: args.items))!
+    }
+    return s.flatten(types.effect_set(refs.items))
+}
+
+/// Replaces each term `E` whose argument has become an effect set with that set's effects.
+flatten :: fn(s: ^const Sema, set: EffectSet) -> EffectSet needs Alloc {
+    spliced := false
+    out := list(EffectRef)
+    for e in set.effects {
+        if e.eff is types.SPLICE and e.args.len > 0 {
+            if .Type(t) := e.args[0] and .Effects(inner) := s.tys.kind(t) {
+                out.extend(inner.effects)!
+                spliced = true
+                continue
+            }
+        }
+        out.push(e)!
+    }
+    if not spliced { return set }
+    return types.effect_set(out.items)
+}

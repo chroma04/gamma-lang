@@ -1,0 +1,586 @@
+//! Semantic types (§5).
+//!
+//! Types are hash-consed: a `Ty` is a small handle into a `Types` table, and two
+//! structurally identical types (§5.18) have the same handle, so type identity is `is`.
+//! Nominal types (`struct`, `union` and `effect` literals) are identified by an id
+//! allocated when the literal is evaluated, so two identically written literals are still
+//! distinct types.
+
+hash_map :: import "std/collections/hash_map"
+
+/// A type, by its index in the `Types` table.
+pub Ty :: struct {
+    pub id: u32
+}
+
+/// What kind of array an `Array` type is (§5.6).
+pub ArrayKind :: union {
+    /// `[N]T`, indexed by position.
+    Plain
+    /// `[E]T`, indexed by the enum `E`, one element per variant in declaration order.
+    Enum: Ty
+    /// `#simd [N]T` (§5.6.2).
+    Simd
+    /// `#vec [N]T` (§5.6.3).
+    Math
+}
+
+/// An operator of a computed array length (§16.5).
+pub LenOp :: union { Add, Sub, Mul, Div, Rem, Shl, Shr, And, Or, Xor }
+
+/// A canonical encoding of a compile-time value used as a generic argument.
+pub ConstKey :: union {
+    /// The value's type and its bytes, little-endian for an integer or a float.
+    Bytes: (ty: Ty, bytes: []const u8)
+    /// A named function, by its id, with its name for display.
+    Fn: (id: u32, name: string)
+    /// The null value of an optional function pointer.
+    Null
+    /// A string, by its contents.
+    Str: []const u8
+}
+
+/// A compile-time argument of a generic type or effect instantiation.
+pub GenericArg :: union {
+    Type: Ty
+    Value: ConstKey
+}
+
+/// An instantiated effect, such as `Yield(i32)`.
+pub EffectRef :: struct {
+    pub eff: u32
+    pub args: []const GenericArg
+}
+
+/// A set of effects, sorted and without duplicates, so that equal sets are equal.
+pub EffectSet :: struct {
+    pub effects: []const EffectRef
+}
+
+/// The signature part of a function or function pointer type (§5.14).
+pub FnTy :: struct {
+    pub params: []const Ty
+    pub ret: Ty
+    pub effects: EffectSet
+    /// Only foreign function types may be variadic.
+    pub variadic: bool
+    /// The Microsoft x64 calling convention (`#callconv(.Win64)`, §19.2).
+    pub win64: bool
+}
+
+pub TyKind :: union {
+    /// `uN` / `iN`.
+    Int: (signed: bool, bits: u16)
+    Usize
+    Isize
+    /// `f16`, `f32` or `f64`, by its width.
+    Float: u16
+    Bool
+    Never
+    /// The type of types.
+    Type
+    Rawptr
+    Ptr: (is_const: bool, pointee: Ty)
+    ManyPtr: (is_const: bool, elem: Ty)
+    Slice: (is_const: bool, elem: Ty)
+    Array: (len: u64, elem: Ty, kind: ArrayKind)
+    /// `(T1, T2)` or `(a: T1, b: T2)`; `()` is the unit type. `names` is empty for an
+    /// unnamed tuple.
+    Tuple: (elems: []const Ty, names: []const string)
+    Optional: Ty
+    Result: (err: Ty, ok: Ty)
+    /// `fn(…) -> R needs E`, a second-class function value (§11.6).
+    Fn: FnTy
+    /// `^fn(…) -> R needs E`.
+    FnPtr: FnTy
+    /// A struct or union, with its generic arguments.
+    Adt: (id: u32, args: []const GenericArg)
+    Cont: Ty
+    /// A generic parameter, opaque inside the generic body.
+    Param: u32
+    /// `[N]T` where `N` is a compile-time value parameter.
+    ParamArray: (len: Ty, elem: Ty)
+    /// A compile-time value used as a generic argument.
+    Value: ConstKey
+    /// An array length computed from compile-time value parameters (§16.5).
+    LenExpr: (op: LenOp, lhs: Ty, rhs: Ty)
+    /// An unresolved literal type variable.
+    Infer: u32
+    /// A compile-time effect set used as a generic argument (§16.6).
+    Effects: EffectSet
+    /// The anonymous type of a handler literal (§5.15).
+    Handler: u32
+    /// The type of an erroneous expression.
+    Error
+}
+
+HAS_PARAM :: 1
+HAS_INFER :: 2
+HAS_ERROR :: 4
+
+/// The table of types and of the names of nominal types, effects and parameters.
+pub Types :: struct {
+    kinds: List(TyKind)
+    /// The `HAS_*` flags of each type.
+    flags: List(u8)
+    /// Each type by the encoding of its kind.
+    by_key: hash_map.HashMap(string, u32)
+    adt_names: List(string)
+    /// For each nominal type: the generic type it instantiates, or itself.
+    adt_templates: List(u32)
+    effect_names: List(string)
+    param_names: List(string)
+    key: List(u8)
+}
+
+/// The pseudo-effect of the `..E` terms of an effect set (§16.6), the first effect.
+pub SPLICE :: 0
+
+pub types :: fn() -> Types needs Alloc {
+    t := Types(
+        kinds: list(TyKind),
+        flags: list(u8),
+        by_key: hash_map.hash_map(string, u32),
+        adt_names: list(string),
+        adt_templates: list(u32),
+        effect_names: list(string),
+        param_names: list(string),
+        key: list(u8),
+    )
+    _ = t.fresh_effect("..")
+    return t
+}
+
+pub kind :: fn(t: ^const Types, ty: Ty) -> TyKind => t.kinds.items[usize(ty.id)]
+
+pub intern :: fn(t: ^Types, k: TyKind) -> Ty needs Alloc {
+    t.key.clear()
+    encode(&k, &t.key)
+    if id := t.by_key.get(t.key.items) { return Ty(id: id) }
+    flags: u8 = match k {
+        .Param(_) => HAS_PARAM
+        .Infer(_) => HAS_INFER
+        .Error => HAS_ERROR
+        _ => 0
+    }
+    for_each_component(&k, fn(c: Ty) { flags |= t.flags.items[usize(c.id)] })
+    id := t.kinds.items.len.trunc(u32)
+    t.kinds.push(k)!
+    t.flags.push(flags)!
+    key := list(u8)
+    key.extend(t.key.items)!
+    t.by_key.put(key.items, id)!
+    return Ty(id: id)
+}
+
+/// Calls `f` on each type `k` is directly built from (not through definitions).
+pub for_each_component :: fn(k: ^const TyKind, f: fn(t: Ty)) {
+    match k^ {
+        .Ptr(_, t), .ManyPtr(_, t), .Slice(_, t), .Optional(t), .Cont(t) => f(t)
+        .Array(_, t, _) => f(t)
+        .ParamArray(a, b) => {
+            f(a)
+            f(b)
+        }
+        .LenExpr(_, a, b) => {
+            f(a)
+            f(b)
+        }
+        .Result(a, b) => {
+            f(a)
+            f(b)
+        }
+        .Tuple(elems, _) => for e in elems { f(e) }
+        .Fn(sig), .FnPtr(sig) => {
+            for p in sig.params { f(p) }
+            f(sig.ret)
+            for e in sig.effects.effects { arg_types(e.args, f) }
+        }
+        .Adt(_, args) => arg_types(args, f)
+        .Effects(set) => for e in set.effects { arg_types(e.args, f) }
+        _ => {}
+    }
+}
+
+arg_types :: fn(args: []const GenericArg, f: fn(t: Ty)) {
+    for a in args {
+        if .Type(t) := a { f(t) }
+    }
+}
+
+/// Whether a type parameter occurs anywhere in `ty`.
+pub has_param :: fn(t: ^const Types, ty: Ty) -> bool => t.flags.items[usize(ty.id)] & HAS_PARAM is not 0
+
+/// Whether an inference variable occurs anywhere in `ty`.
+pub has_infer :: fn(t: ^const Types, ty: Ty) -> bool => t.flags.items[usize(ty.id)] & HAS_INFER is not 0
+
+/// Whether the error type occurs anywhere in `ty`.
+pub mentions_error :: fn(t: ^const Types, ty: Ty) -> bool => t.flags.items[usize(ty.id)] & HAS_ERROR is not 0
+
+// ---------------------------------------------------------------------------------
+// Nominal types, effects and parameters
+// ---------------------------------------------------------------------------------
+
+pub fresh_adt :: fn(t: ^Types, name: string) -> u32 needs Alloc {
+    id := t.adt_names.items.len.trunc(u32)
+    t.adt_names.push(name)!
+    t.adt_templates.push(id)!
+    return id
+}
+
+pub adt_name :: fn(t: ^const Types, id: u32) -> string => t.adt_names.items[usize(id)]
+
+/// Records that `id` is an instantiation of the generic type `template`.
+pub set_template :: fn(t: ^Types, id, template: u32) {
+    t.adt_templates.items[usize(id)] = template
+}
+
+/// The generic type `id` instantiates, or `id`.
+pub template :: fn(t: ^const Types, id: u32) -> u32 => t.adt_templates.items[usize(id)]
+
+pub fresh_effect :: fn(t: ^Types, name: string) -> u32 needs Alloc {
+    t.effect_names.push(name)!
+    return (t.effect_names.items.len - 1).trunc(u32)
+}
+
+pub effect_name :: fn(t: ^const Types, id: u32) -> string => t.effect_names.items[usize(id)]
+
+pub fresh_param :: fn(t: ^Types, name: string) -> u32 needs Alloc {
+    t.param_names.push(name)!
+    return (t.param_names.items.len - 1).trunc(u32)
+}
+
+pub param_name :: fn(t: ^const Types, id: u32) -> string => t.param_names.items[usize(id)]
+
+// ---------------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------------
+
+pub int :: fn(t: ^Types, signed: bool, bits: u16) -> Ty needs Alloc => t.intern(.Int(signed, bits))
+pub u8_ty :: fn(t: ^Types) -> Ty needs Alloc => t.int(false, 8)
+pub usize_ty :: fn(t: ^Types) -> Ty needs Alloc => t.intern(.Usize)
+pub bool_ty :: fn(t: ^Types) -> Ty needs Alloc => t.intern(.Bool)
+pub never_ty :: fn(t: ^Types) -> Ty needs Alloc => t.intern(.Never)
+pub type_ty :: fn(t: ^Types) -> Ty needs Alloc => t.intern(.Type)
+pub error :: fn(t: ^Types) -> Ty needs Alloc => t.intern(.Error)
+pub unit :: fn(t: ^Types) -> Ty needs Alloc => t.intern(.Tuple(empty_slice(Ty), empty_slice(string)))
+pub tuple :: fn(t: ^Types, elems: []const Ty) -> Ty needs Alloc => t.intern(.Tuple(elems, empty_slice(string)))
+pub ptr :: fn(t: ^Types, is_const: bool, pointee: Ty) -> Ty needs Alloc => t.intern(.Ptr(is_const, pointee))
+pub many_ptr :: fn(t: ^Types, is_const: bool, elem: Ty) -> Ty needs Alloc => t.intern(.ManyPtr(is_const, elem))
+pub slice :: fn(t: ^Types, is_const: bool, elem: Ty) -> Ty needs Alloc => t.intern(.Slice(is_const, elem))
+/// `string`, that is `[]const u8`.
+pub string_ty :: fn(t: ^Types) -> Ty needs Alloc => t.slice(true, t.u8_ty())
+pub array :: fn(t: ^Types, len: u64, elem: Ty) -> Ty needs Alloc => t.intern(.Array(len, elem, .Plain))
+pub optional :: fn(t: ^Types, inner: Ty) -> Ty needs Alloc => t.intern(.Optional(inner))
+pub result :: fn(t: ^Types, err, ok: Ty) -> Ty needs Alloc => t.intern(.Result(err, ok))
+pub adt :: fn(t: ^Types, id: u32, args: []const GenericArg) -> Ty needs Alloc => t.intern(.Adt(id, args))
+pub param :: fn(t: ^Types, id: u32) -> Ty needs Alloc => t.intern(.Param(id))
+
+/// The array length `lhs op rhs` (§16.5): a `usize` value when both operands are values
+/// (the error type where the operation traps), else a `LenExpr`.
+pub len_expr :: fn(t: ^Types, op: LenOp, lhs, rhs: Ty) -> Ty needs Alloc {
+    if t.kind(lhs) is .Error or t.kind(rhs) is .Error { return t.error() }
+    if .Value(a) := t.kind(lhs) and .Value(b) := t.kind(rhs) {
+        x := key_u64(a) else return t.error()
+        y := key_u64(b) else return t.error()
+        n := apply(op, x, y) else return t.error()
+        return t.intern(.Value(t.usize_key(n)))
+    }
+    return t.intern(.LenExpr(op, lhs, rhs))
+}
+
+/// The key of the `usize` value `n`.
+pub usize_key :: fn(t: ^Types, n: u64) -> ConstKey needs Alloc {
+    bytes := list(u8)
+    for i in 0..8 { bytes.push((n >> u64(i * 8)).trunc(u8))! }
+    return .Bytes(t.usize_ty(), bytes.items)
+}
+
+/// The result of `op` on `usize` operands, or `null` where the operation traps.
+pub apply :: fn(op: LenOp, a, b: u64) -> ?u64 {
+    match op {
+        .Add => return a +? b
+        .Sub => return a -? b
+        .Mul => return a *? b
+        .Div => return if b is 0 { null } else { a / b }
+        .Rem => return if b is 0 { null } else { a % b }
+        .Shl => {
+            if b >= 64 { return null }
+            r := a << b
+            return if r >> b is a { r } else { null }
+        }
+        .Shr => return if b >= 64 { 0 } else { a >> b }
+        .And => return a & b
+        .Or => return a | b
+        .Xor => return a ~ b
+    }
+}
+
+pub len_op_symbol :: fn(op: LenOp) -> string => match op {
+    .Add => "+"
+    .Sub => "-"
+    .Mul => "*"
+    .Div => "/"
+    .Rem => "%"
+    .Shl => "<<"
+    .Shr => ">>"
+    .And => "&"
+    .Or => "|"
+    .Xor => "~"
+}
+
+// ---------------------------------------------------------------------------------
+// Predicates
+// ---------------------------------------------------------------------------------
+
+pub is_error :: fn(t: ^const Types, ty: Ty) -> bool => t.kind(ty) is .Error
+pub is_unit :: fn(t: ^const Types, ty: Ty) -> bool {
+    .Tuple(elems, _) := t.kind(ty) else return false
+    return elems.len is 0
+}
+pub is_integer :: fn(t: ^const Types, ty: Ty) -> bool => match t.kind(ty) {
+    .Int(_), .Usize, .Isize => true
+    _ => false
+}
+pub is_signed_integer :: fn(t: ^const Types, ty: Ty) -> bool => match t.kind(ty) {
+    .Int(s, _) => s
+    .Isize => true
+    _ => false
+}
+
+// ---------------------------------------------------------------------------------
+// Effect sets
+// ---------------------------------------------------------------------------------
+
+/// The set of `effects`, sorted and without duplicates.
+pub effect_set :: fn(effects: []const EffectRef) -> EffectSet needs Alloc {
+    out := list(EffectRef)
+    for e in effects {
+        // Insertion sort: sets are small.
+        i := out.items.len
+        while i > 0 and cmp_ref(&out.items[i - 1], &e) > 0 { i -= 1 }
+        if i > 0 and cmp_ref(&out.items[i - 1], &e) is 0 { continue }
+        out.insert(i, e)!
+    }
+    return EffectSet(effects: out.items)
+}
+
+pub empty_effects :: fn() -> EffectSet => EffectSet(effects: empty_slice(EffectRef))
+
+/// The order of effect references: by effect, then by arguments.
+pub cmp_ref :: fn(a, b: ^const EffectRef) -> i32 {
+    if a.eff is not b.eff { return if a.eff < b.eff { -1 } else { 1 } }
+    n := a.args.len.min(b.args.len)
+    for i in 0..n {
+        c := cmp_arg(&a.args[i], &b.args[i])
+        if c is not 0 { return c }
+    }
+    return cmp_usize(a.args.len, b.args.len)
+}
+
+cmp_arg :: fn(a, b: ^const GenericArg) -> i32 {
+    match a^ {
+        .Type(x) => {
+            .Type(y) := b^ else return -1
+            return cmp_u32(x.id, y.id)
+        }
+        .Value(x) => {
+            .Value(y) := b^ else return 1
+            return cmp_key(&x, &y)
+        }
+    }
+}
+
+cmp_key :: fn(a, b: ^const ConstKey) -> i32 {
+    ia := key_rank(a)
+    ib := key_rank(b)
+    if ia is not ib { return cmp_u32(ia, ib) }
+    match a^ {
+        .Bytes(t, x) => {
+            .Bytes(u, y) := b^ else return 0
+            if t.id is not u.id { return cmp_u32(t.id, u.id) }
+            return cmp_bytes(x, y)
+        }
+        .Fn(i, _) => {
+            .Fn(j, _) := b^ else return 0
+            return cmp_u32(i, j)
+        }
+        .Null => return 0
+        .Str(x) => {
+            .Str(y) := b^ else return 0
+            return cmp_bytes(x, y)
+        }
+    }
+}
+
+key_rank :: fn(k: ^const ConstKey) -> u32 => match k^ {
+    .Bytes(_) => 0
+    .Fn(_) => 1
+    .Null => 2
+    .Str(_) => 3
+}
+
+cmp_bytes :: fn(x, y: []const u8) -> i32 {
+    for i in 0..x.len.min(y.len) {
+        if x[i] is not y[i] { return if x[i] < y[i] { -1 } else { 1 } }
+    }
+    return cmp_usize(x.len, y.len)
+}
+
+cmp_u32 :: fn(a, b: u32) -> i32 => if a < b { -1 } else if a > b { 1 } else { 0 }
+cmp_usize :: fn(a, b: usize) -> i32 => if a < b { -1 } else if a > b { 1 } else { 0 }
+
+/// `..p`: the effects of the effect-set parameter type `p`, as a term of a set (§16.6).
+pub splice :: fn(p: Ty) -> EffectRef needs Alloc {
+    args := list(GenericArg)
+    args.push(.Type(p))!
+    return EffectRef(eff: SPLICE, args: args.items)
+}
+
+// ---------------------------------------------------------------------------------
+// Constant keys
+// ---------------------------------------------------------------------------------
+
+/// The value of an integer key, if it fits in `u64` (and is not negative).
+pub key_u64 :: fn(k: ConstKey) -> ?u64 {
+    .Bytes(_, b) := k else return null
+    // The type is an integer type; its bytes are little-endian.
+    v: u64 = 0
+    for i, c in enumerate(b) {
+        if i >= 8 {
+            if c is not 0 { return null }
+        } else {
+            v |= u64(c) << u64(i * 8)
+        }
+    }
+    return v
+}
+
+// ---------------------------------------------------------------------------------
+// Encoding kinds, for hash-consing
+// ---------------------------------------------------------------------------------
+
+encode :: fn(k: ^const TyKind, out: ^List(u8)) needs Alloc {
+    out.push(u8(k^.tag()))!
+    match k^ {
+        .Int(s, bits) => {
+            out.push(if s { 1 } else { 0 })!
+            put_u32(out, u32(bits))
+        }
+        .Float(bits) => put_u32(out, u32(bits))
+        .Ptr(c, t), .ManyPtr(c, t), .Slice(c, t) => {
+            out.push(if c { 1 } else { 0 })!
+            put_u32(out, t.id)
+        }
+        .Array(len, elem, kind) => {
+            put_u64(out, len)
+            put_u32(out, elem.id)
+            out.push(u8(kind.tag()))!
+            if .Enum(e) := kind { put_u32(out, e.id) }
+        }
+        .Tuple(elems, names) => {
+            put_tys(out, elems)
+            put_u32(out, names.len.trunc(u32))
+            for n in names { put_str(out, n) }
+        }
+        .Optional(t), .Cont(t) => put_u32(out, t.id)
+        .Result(a, b), .ParamArray(a, b) => {
+            put_u32(out, a.id)
+            put_u32(out, b.id)
+        }
+        .Fn(sig), .FnPtr(sig) => {
+            put_tys(out, sig.params)
+            put_u32(out, sig.ret.id)
+            put_set(out, &sig.effects)
+            out.push(if sig.variadic { 1 } else { 0 })!
+            out.push(if sig.win64 { 1 } else { 0 })!
+        }
+        .Adt(id, args) => {
+            put_u32(out, id)
+            put_args(out, args)
+        }
+        .Param(id), .Infer(id), .Handler(id) => put_u32(out, id)
+        .Value(key) => put_key(out, &key)
+        .LenExpr(op, a, b) => {
+            out.push(u8(op.tag()))!
+            put_u32(out, a.id)
+            put_u32(out, b.id)
+        }
+        .Effects(set) => put_set(out, &set)
+        _ => {}
+    }
+}
+
+put_u32 :: fn(out: ^List(u8), v: u32) needs Alloc {
+    for i in 0..4 { out.push((v >> u32(i * 8)).trunc(u8))! }
+}
+
+put_u64 :: fn(out: ^List(u8), v: u64) needs Alloc {
+    for i in 0..8 { out.push((v >> u64(i * 8)).trunc(u8))! }
+}
+
+put_str :: fn(out: ^List(u8), s: []const u8) needs Alloc {
+    put_u32(out, s.len.trunc(u32))
+    out.extend(s)!
+}
+
+put_tys :: fn(out: ^List(u8), tys: []const Ty) needs Alloc {
+    put_u32(out, tys.len.trunc(u32))
+    for t in tys { put_u32(out, t.id) }
+}
+
+put_set :: fn(out: ^List(u8), set: ^const EffectSet) needs Alloc {
+    put_u32(out, set.effects.len.trunc(u32))
+    for e in set.effects {
+        put_u32(out, e.eff)
+        put_args(out, e.args)
+    }
+}
+
+put_args :: fn(out: ^List(u8), args: []const GenericArg) needs Alloc {
+    put_u32(out, args.len.trunc(u32))
+    for a in args {
+        match a {
+            .Type(t) => {
+                out.push(0)!
+                put_u32(out, t.id)
+            }
+            .Value(k) => {
+                out.push(1)!
+                put_key(out, &k)
+            }
+        }
+    }
+}
+
+put_key :: fn(out: ^List(u8), k: ^const ConstKey) needs Alloc {
+    out.push(key_rank(k).trunc(u8))!
+    match k^ {
+        .Bytes(t, b) => {
+            put_u32(out, t.id)
+            put_str(out, b)
+        }
+        .Fn(id, _) => put_u32(out, id)
+        .Null => {}
+        .Str(s) => put_str(out, s)
+    }
+}
+
+test "hash-consing" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        t := types()
+        expect_eq(t.string_ty(), t.slice(true, t.u8_ty()))
+        expect(t.string_ty() is not t.slice(false, t.u8_ty()))
+        expect_eq(t.optional(t.ptr(false, t.int(true, 32))), t.optional(t.ptr(false, t.int(true, 32))))
+        expect(t.usize_ty() is not t.int(false, 64))
+        x := t.fresh_adt("S")
+        y := t.fresh_adt("S")
+        expect(t.adt(x, empty_slice(GenericArg)) is not t.adt(y, empty_slice(GenericArg)))
+        expect(t.has_param(t.slice(false, t.param(t.fresh_param("T")))))
+        expect(not t.has_param(t.string_ty()))
+    }
+}
+
+arena :: import "std/arena"

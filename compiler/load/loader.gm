@@ -20,7 +20,9 @@ syntax :: import "../syntax"
 pub Module :: struct {
     pub name: string
     /// The top-level declarations by name, in the order they were declared.
-    scope: List(Named)
+    pub scope: List(Named)
+    /// True for the core library's modules, whose public names are in the universe scope.
+    pub is_prelude: bool
     /// True for the standard library's modules (under the std root).
     pub is_std: bool
     /// The module's directory as written, for relative imports and messages.
@@ -32,13 +34,13 @@ pub Module :: struct {
 }
 
 /// A name of a module's scope and its declaration.
-Named :: struct {
-    name: string
-    decl: usize
+pub Named :: struct {
+    pub name: string
+    pub decl: usize
 }
 
 /// How far an import declaration has been resolved.
-DeclState :: union {
+pub DeclState :: union {
     Unresolved
     /// It names the module with this index.
     Module: usize
@@ -46,11 +48,12 @@ DeclState :: union {
 }
 
 /// A top-level binding of some module.
-Decl :: struct {
-    name: ast.Ident
-    module: usize
-    item: ast.Item
-    state: DeclState
+pub Decl :: struct {
+    pub name: ast.Ident
+    pub module: usize
+    pub item: ast.Item
+    /// For an import: how far it has been resolved.
+    pub state: DeclState
 }
 
 /// A package: its root directory and its dependencies by name.
@@ -78,8 +81,8 @@ DirModule :: struct {
 }
 
 pub Loader :: struct {
-    sm: ^source.SourceMap
-    diags: ^diag.Diagnostics
+    pub sm: ^source.SourceMap
+    pub diags: ^diag.Diagnostics
     ids: ^ast.NodeId
     /// Lex with the layout recovery that tools use after errors.
     recover: bool
@@ -88,8 +91,11 @@ pub Loader :: struct {
     std_canon: string
     /// The working directory, for canonical paths.
     cwd: string
-    modules: List(Module)
-    decls: List(Decl)
+    pub modules: List(Module)
+    pub decls: List(Decl)
+    /// The core prelude and the other core modules, once loaded.
+    pub prelude: ?usize
+    pub core_modules: List(usize)
     packages: List(Package)
     by_dir: List(DirModule)
     edges: List(Edge)
@@ -106,6 +112,8 @@ pub loader :: fn(sm: ^source.SourceMap, diags: ^diag.Diagnostics, ids: ^ast.Node
         cwd: working_dir(),
         modules: list(Module),
         decls: list(Decl),
+        prelude: null,
+        core_modules: list(usize),
         packages: list(Package),
         by_dir: list(DirModule),
         edges: list(Edge),
@@ -122,6 +130,7 @@ pub load_modules :: fn(l: ^Loader, root: string) -> ?string needs Alloc + Fs {
     while done < l.modules.items.len {
         m := done
         done += 1
+        if l.modules.items[m].is_prelude { continue }
         for d in l.imports_of(m) { l.resolve_import(d) }
     }
     l.check_import_cycles()
@@ -139,7 +148,7 @@ imports_of :: fn(l: ^const Loader, m: usize) -> []usize needs Alloc {
 }
 
 /// Whether `item` is a binding initialized by `import`.
-is_import :: fn(item: ^const ast.Item) -> bool {
+pub is_import :: fn(item: ^const ast.Item) -> bool {
     .Binding(b) := item.kind else return false
     return b.init.kind is .Import(_)
 }
@@ -192,7 +201,12 @@ load_file :: fn(l: ^Loader, path: string) -> ?ast.File needs Alloc + Fs {
         l.diags.report(source.DUMMY, str.format("cannot read {}: {}", path, describe_read_error(e))!)
         return null
     }
-    id := l.sm.add(path, text)
+    return l.parse_text(path, text)
+}
+
+/// Adds a source file named `name` to the source map and parses it.
+parse_text :: fn(l: ^Loader, name, text: string) -> ast.File needs Alloc {
+    id := l.sm.add(name, text)
     lexed := if l.recover { syntax.lex_recovering(id, text, l.diags) } else { syntax.lex(id, text, l.diags) }
     return parse.parse_file(id, &lexed, l.ids, l.diags)
 }
@@ -212,7 +226,7 @@ describe_read_error :: fn(e: fs.ReadError) -> string => match e {
 
 /// Loads the root module: a single `.gm` file, or every `.gm` file directly inside a
 /// directory (§3.1).
-load_root :: fn(l: ^Loader, root: string) -> ?usize needs Alloc + Fs {
+pub load_root :: fn(l: ^Loader, root: string) -> ?usize needs Alloc + Fs {
     if is_dir(root) or (not is_file(root) and module_files(root) is not null) {
         m := l.load_dir_module(root, source.DUMMY, null, null) else return null
         if l.diags.has_errors() { return null }
@@ -270,7 +284,15 @@ load_dir_module :: fn(l: ^Loader, dir: string, at: source.Span, parent_package: 
 /// `when`s wait for `collect_whens`.
 add_module :: fn(l: ^Loader, name: string, files: []const ast.File) -> usize needs Alloc {
     id := l.modules.items.len
-    l.modules.push(Module(name: name, scope: list(Named), is_std: false, dir: "", package: 0, pending_whens: list(ast.Item)))!
+    l.modules.push(Module(
+        name: name,
+        scope: list(Named),
+        is_prelude: false,
+        is_std: false,
+        dir: "",
+        package: 0,
+        pending_whens: list(ast.Item),
+    ))!
     for file in files {
         for item in file.items {
             if item.kind is .When(_) {
@@ -338,7 +360,7 @@ collect_item :: fn(l: ^Loader, module: usize, item: ast.Item) needs Alloc {
 }
 
 /// The declaration of `name` in module `module`'s scope.
-lookup :: fn(l: ^const Loader, module: usize, name: string) -> ?usize {
+pub lookup :: fn(l: ^const Loader, module: usize, name: string) -> ?usize {
     for n in l.modules.items[module].scope.items {
         if n.name is name { return n.decl }
     }
@@ -381,7 +403,7 @@ is_reserved_type_name :: fn(name: string) -> bool {
 // ---------------------------------------------------------------------------------
 
 /// Resolves the import declaration `id`, loading the module it names.
-resolve_import :: fn(l: ^Loader, id: usize) needs Alloc + Fs {
+pub resolve_import :: fn(l: ^Loader, id: usize) needs Alloc + Fs {
     if l.decls.items[id].state is not .Unresolved { return }
     d := l.decls.items[id]
     .Binding(b) := d.item.kind else return
@@ -536,7 +558,7 @@ read_manifest :: fn(l: ^Loader, root: string) -> List(Dep) needs Alloc + Fs {
 }
 
 /// Reports each cycle in the import graph (§3.2).
-check_import_cycles :: fn(l: ^Loader) needs Alloc {
+pub check_import_cycles :: fn(l: ^Loader) needs Alloc {
     n := l.modules.items.len
     // 0 new, 1 on the stack, 2 done
     state := make(u8, n)!
@@ -578,6 +600,7 @@ visit :: fn(l: ^Loader, m: usize, state: []u8, stack: ^List(usize)) needs Alloc 
 dump :: fn(l: ^const Loader) -> string needs Alloc {
     out := list(u8)
     for mi, m in enumerate(l.modules.items) {
+        if m.is_prelude { continue }
         out.write("module {}\n  dir {}\n  package {}\n", m.name, l.show(m.dir), l.show(l.packages.items[m.package].root))!
         if m.is_std { out.extend("  std\n")! }
         for i in l.imports_of(mi) {

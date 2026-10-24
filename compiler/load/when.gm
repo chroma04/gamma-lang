@@ -14,7 +14,7 @@ Const :: union {
 
 /// The value of the condition of a top-level `when` of module `module`, or `null` (after
 /// reporting it) if it cannot be evaluated.
-when_cond :: fn(l: ^Loader, module: usize, cond: ^const ast.Expr) -> ?bool needs Alloc {
+pub when_cond :: fn(l: ^Loader, module: usize, cond: ^const ast.Expr) -> ?bool needs Alloc {
     v := l.eval(module, cond, 0) else {
         l.diags.report(cond.span, "gammac cannot evaluate this `when` condition yet: it handles `target`, `@size_of`, literals and constants")
         return null

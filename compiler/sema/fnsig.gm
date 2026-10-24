@@ -1,0 +1,449 @@
+// Function signatures (§11.1), effect declarations (§12.1) and effect sets (§12.3, §16.6).
+
+/// Resolves the signature of a top-level function.
+declare_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, lit: ^const ast.FnLit) -> DeclValue needs Load {
+    sig := s.resolve_fn_sig(module, &lit.sig, true, lit.where_) else return .Error
+    for p in sig.params {
+        if p.generic is null {
+            s.declare_method_candidate(module, name, p.ty, false)
+            break
+        }
+    }
+    s.fns.push(FnSig(name: name.name, span: name.span, module: module, params: sig.params, ret: sig.ret, effects: sig.effects, generics: sig.generics))!
+    return .Fn((s.fns.items.len - 1).trunc(u32))
+}
+
+/// Whether a parameter defaults to `@caller_location()`: it is bound only by name (§11.3).
+is_site :: fn(p: ^const ParamInfo) -> bool {
+    d := p.default else return false
+    .Intrinsic(i) := d.kind else return false
+    return i.name.name is "caller_location"
+}
+
+/// Resolves parameter types, return type and effect set. `literal` is true for function
+/// literals (parameter names required), false for function types.
+resolve_fn_sig :: fn(s: ^Sema, module: usize, sig: ^const ast.FnSig, literal: bool, where_: []const ast.Constraint) -> ?FnSig needs Load {
+    ok := true
+    params := list(ParamInfo)
+    generics := list(u32)
+    seen_default := false
+    s.constraint_defer += 1
+    scope_len := s.type_params.items.len
+    value_scope_len := s.value_scope.items.len
+    for p in sig.params {
+        if p.comptime {
+            // `N :: usize`: a compile-time value parameter (§16.5).
+            if not literal {
+                s.error(p.span, "a function type cannot have compile-time parameters")
+                ok = false
+                continue
+            }
+            ty_expr := p.ty else {
+                s.error(p.span, "a compile-time parameter needs a type: `N :: usize`")
+                ok = false
+                continue
+            }
+            ty := s.resolve_type(module, ty_expr)
+            if s.tys.kind(ty) in (.Fn(_), .Handler(_), .Type) {
+                s.error(ty_expr.span, str.format("a compile-time parameter cannot have the type `{}`", s.show(ty))!)
+                ok = false
+                continue
+            }
+            for n in p.names {
+                pid := s.new_param(n.name, .Value(ty))
+                generics.push(pid)!
+                s.value_scope.push(ValueScoped(name: n.name, param: pid))!
+                params.push(ParamInfo(name: n.name, ty: ty, span: n.span, default: p.default, generic: pid, rest: false))!
+            }
+            continue
+        }
+        ty_expr := p.ty else {
+            s.error(p.span, "parameter types are required here")
+            ok = false
+            continue
+        }
+        // `T: type` declares a type parameter, visible in the rest of the signature
+        // (§16.1); `E: effects` an effect-set parameter (§16.6).
+        is_effects := is_effects_kind(ty_expr)
+        is_type := false
+        if .Ident(i) := ty_expr.kind { is_type = i.name is "type" }
+        if is_effects or is_type {
+            if not literal {
+                s.error(ty_expr.span, "a function type cannot have type parameters")
+                ok = false
+                continue
+            }
+            for n in p.names {
+                pid := s.new_param(n.name, if is_effects { ParamKind.Effects } else { ParamKind.Type })
+                generics.push(pid)!
+                s.type_params.push(Scoped(name: n.name, ty: s.tys.param(pid)))!
+                params.push(ParamInfo(name: n.name, ty: s.tys.type_ty(), span: n.span, default: null, generic: pid, rest: false))!
+            }
+            continue
+        }
+        ty := s.resolve_type(module, ty_expr)
+        if p.default is not null {
+            seen_default = true
+        } else if seen_default and literal {
+            s.error(p.span, "parameters with defaults may be followed only by parameters with defaults")
+        }
+        if p.names.len is 0 {
+            params.push(ParamInfo(name: "_", ty: ty, span: p.span, default: null, generic: null, rest: false))!
+        }
+        rest := false
+        if p.rest {
+            // `args: ..A` (§11.3): one name, a tuple type or a type parameter, no default.
+            ok_ty := match s.tys.kind(ty) {
+                .Tuple(_, names) => names.len is 0
+                .Param(_), .Error => true
+                _ => false
+            }
+            if not literal {
+                s.error(p.span, "a function type cannot have a rest parameter")
+                ok = false
+            } else if p.names.len is not 1 or p.default is not null or not ok_ty {
+                s.error(p.span, "a rest parameter is one name with an unnamed tuple type or a type parameter, and no default: `args: ..A`")
+                ok = false
+            } else {
+                rest = true
+            }
+        }
+        for n in p.names {
+            params.push(ParamInfo(name: n.name, ty: ty, span: n.span, default: p.default, generic: null, rest: rest))!
+        }
+    }
+    // A rest parameter is the last one, but for those bound only by name (§11.3).
+    for r, p in enumerate(params.items) {
+        if not p.rest { continue }
+        for q in params.items[r + 1..] {
+            if q.rest or not is_site(&q) {
+                s.error(p.span, "a rest parameter must be the last parameter (other than `@caller_location()` ones)")
+                ok = false
+                break
+            }
+        }
+        break
+    }
+    if sig.variadic {
+        s.error(sig.span, "variadic parameters are allowed only in foreign functions")
+        ok = false
+    }
+    ret := s.tys.unit()
+    if r := sig.ret {
+        ret = s.resolve_type(module, r)
+        if s.tys.kind(ret) is .Fn(_) {
+            s.error(r.span, "a second-class function cannot be returned; return a function pointer `^fn(…)` instead (§11.6)")
+        }
+    }
+    effects := types.empty_effects()
+    if list_ := sig.effects { effects = s.resolve_effect_list(module, list_) }
+    for c in where_ { s.declare_constraint(module, &c) }
+    s.end_constraint_defer()
+    // Instantiations of one generic effect in the declared set must be told apart without
+    // knowing the type arguments (§16.6).
+    if generics.items.len > 0 { s.check_distinct(sig.span, effects.effects) }
+    s.type_params.truncate(scope_len)
+    s.value_scope.truncate(value_scope_len)
+    if not ok { return null }
+    return FnSig(name: "", span: sig.span, module: module, params: params.items, ret: ret, effects: effects, generics: generics.items)
+}
+
+/// Reports two instantiations of the same generic effect in `refs` that are neither
+/// identical nor provably distinct (§16.6).
+check_distinct :: fn(s: ^Sema, span: source.Span, refs: []const EffectRef) needs Alloc {
+    for i, a in enumerate(refs) {
+        for b in refs[i + 1..] {
+            if s.may_coincide(&a, &b) {
+                s.error(span, str.format("`{}` and `{}` might be the same effect for some type arguments, so performing either would be ambiguous (§16.6)", s.tys.show_ref(&a), s.tys.show_ref(&b))!)
+            }
+        }
+    }
+}
+
+may_coincide :: fn(s: ^const Sema, a, b: ^const EffectRef) -> bool {
+    if a.eff is not b.eff or types.cmp_ref(a, b) is 0 { return false }
+    for i in 0..a.args.len.min(b.args.len) {
+        if .Type(x) := a.args[i] and .Type(y) := b.args[i] {
+            if s.provably_distinct(x, y) { return false }
+        }
+    }
+    return true
+}
+
+provably_distinct :: fn(s: ^const Sema, a, b: Ty) -> bool {
+    if not s.tys.has_param(a) and not s.tys.has_param(b) { return a is not b }
+    ka := s.tys.kind(a)
+    kb := s.tys.kind(b)
+    if ka is .Param(_) or kb is .Param(_) { return false }
+    match ka {
+        .Ptr(_, x) => if .Ptr(_, y) := kb { return s.provably_distinct(x, y) }
+        .Slice(_, x) => if .Slice(_, y) := kb { return s.provably_distinct(x, y) }
+        .ManyPtr(_, x) => if .ManyPtr(_, y) := kb { return s.provably_distinct(x, y) }
+        .Optional(x) => if .Optional(y) := kb { return s.provably_distinct(x, y) }
+        .Adt(x, xs) => if .Adt(y, ys) := kb {
+            if s.tys.template(x) is not s.tys.template(y) { return true }
+            for i in 0..xs.len.min(ys.len) {
+                if .Type(p) := xs[i] and .Type(q) := ys[i] {
+                    if s.provably_distinct(p, q) { return true }
+                }
+            }
+            return false
+        }
+        .Tuple(x, _) => if .Tuple(y, _) := kb {
+            if x.len is not y.len { return true }
+            for i in 0..x.len {
+                if s.provably_distinct(x[i], y[i]) { return true }
+            }
+            return false
+        }
+        _ => {}
+    }
+    return ka.tag() is not kb.tag()
+}
+
+/// Whether a parameter's annotation is `effects`: an effect-set parameter (§16.6).
+is_effects_kind :: fn(t: ^const ast.Expr) -> bool {
+    .Ident(i) := t.kind else return false
+    return i.name is "effects"
+}
+
+/// The terms of a sum `A + B + …`, left to right; `[e]` if `e` is not a sum.
+effect_terms :: fn(e: ^const ast.Expr) -> []^const ast.Expr needs Alloc {
+    out := list(^const ast.Expr)
+    collect_terms(e, &out)
+    return out.items
+}
+
+collect_terms :: fn(e: ^const ast.Expr, out: ^List(^const ast.Expr)) needs Alloc {
+    if .Binary(.Add(.Checked), lhs, rhs) := e.kind {
+        collect_terms(lhs, out)
+        collect_terms(rhs, out)
+    } else {
+        out.push(e)!
+    }
+}
+
+/// Whether the set mentions an effect-set parameter, as a term `E` (§16.6).
+has_splice :: fn(set: EffectSet) -> bool {
+    for e in set.effects {
+        if e.eff is types.SPLICE { return true }
+    }
+    return false
+}
+
+/// The effects of the terms of `needs A + B` or of a set expression `A + B`: each an
+/// effect, a named effect set (§12.3), or an effect-set parameter (§16.6).
+resolve_effect_set :: fn(s: ^Sema, module: usize, terms: []const ^const ast.Expr) -> EffectSet needs Load {
+    v := list(EffectRef)
+    for e in terms {
+        if p := s.effect_param_named(e) {
+            v.push(types.splice(p))!
+            continue
+        }
+        if set := s.named_effect_set(module, e) {
+            v.extend(set.effects)!
+            continue
+        }
+        if r := s.resolve_effect_ref(module, e) { v.push(r)! }
+    }
+    return types.effect_set(v.items)
+}
+
+/// `needs` lists hold expressions, not pointers to them.
+resolve_effect_list :: fn(s: ^Sema, module: usize, list_: []const ast.Expr) -> EffectSet needs Load {
+    terms := list(^const ast.Expr)
+    for i in 0..list_.len { terms.push(&list_[i])! }
+    return s.resolve_effect_set(module, terms.items)
+}
+
+/// True if `e`, a sum `A + B + …`, adds effects rather than numbers: its first term names
+/// an effect, an instantiation of one, or an effect set.
+is_effect_sum :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs Load {
+    first := effect_terms(e)[0]
+    head := first
+    if .Call(callee, _, _) := first.kind { head = callee }
+    d: ?usize = null
+    match head.kind {
+        .Ident(id) => { d = s.lookup_module_name(module, id.name) }
+        .Field(base, name) => {
+            if m := s.module_named(module, base) { d = s.module_member(m, name) }
+        }
+        _ => {}
+    }
+    decl := d else return false
+    return s.resolve_decl(decl) in (.Effect(_), .EffectInst(_), .EffectSet(_))
+}
+
+/// The effects of the named effect set that `e` names (`Io`, `m.Io`), if it names one.
+named_effect_set :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?EffectSet needs Load {
+    d: usize = 0
+    match e.kind {
+        .Ident(id) => { d = s.lookup_module_name(module, id.name) else return null }
+        .Field(base, name) => {
+            m := s.module_named(module, base) else return null
+            d = s.module_member(m, name) else return null
+        }
+        _ => return null
+    }
+    .EffectSet(set) := s.resolve_decl(d) else return null
+    return set
+}
+
+resolve_effect_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?EffectRef needs Load {
+    if p := s.effect_param_named(e) {
+        s.error(e.span, str.format("`{}` is an effect set, not a single effect (§16.6)", s.show(p))!)
+        return null
+    }
+    // `E(T1, …)`: an instantiation of a generic effect.
+    if .Call(callee, args, _) := e.kind {
+        base := s.resolve_effect_ref(module, callee) else return null
+        params := s.effects.items[usize(base.eff)].params
+        // Effect-set parameters may be left out at the end; they are then empty.
+        required: usize = 0
+        for i, p in enumerate(params) {
+            if s.params.items[usize(p)].kind is not .Effects { required = i + 1 }
+        }
+        if args.len > params.len or args.len < required {
+            s.error(e.span, str.format("`{}` takes {} argument(s)", s.tys.effect_name(base.eff), params.len)!)
+            return null
+        }
+        targs := list(GenericArg)
+        for i, p in enumerate(params) {
+            if i >= args.len {
+                targs.push(.Type(s.tys.intern(.Effects(types.empty_effects()))))!
+                continue
+            }
+            a := &args[i]
+            .Positional(t) := a.kind else {
+                s.error(a.span, "expected a type argument")
+                return null
+            }
+            if s.params.items[usize(p)].kind is .Effects {
+                targs.push(.Type(s.resolve_effect_arg(module, &t)))!
+            } else {
+                targs.push(.Type(s.resolve_type(module, &t)))!
+            }
+        }
+        return EffectRef(eff: base.eff, args: targs.items)
+    }
+    if .Ident(id) := e.kind {
+        d := s.lookup_module_name(module, id.name) else {
+            s.error(e.span, str.format("unknown effect `{}`", id.name)!)
+            return null
+        }
+        match s.resolve_decl(d) {
+            .Effect(eff) => return s.bare_effect_ref(eff)
+            .EffectInst(r) => return r
+            .Error => return null
+            .EffectSet(_) => {
+                s.error(e.span, str.format("`{}` is an effect set, not a single effect (§12.3)", id.name)!)
+                return null
+            }
+            _ => {
+                s.error(e.span, str.format("`{}` is not an effect", id.name)!)
+                return null
+            }
+        }
+    }
+    // `m.E`: an effect declared in another module.
+    if .Field(base, name) := e.kind {
+        if m := s.module_named(module, base) {
+            d := s.module_member(m, name) else return null
+            match s.resolve_decl(d) {
+                .Effect(eff) => return s.bare_effect_ref(eff)
+                .EffectInst(r) => return r
+                .Error => return null
+                _ => {
+                    s.error(e.span, str.format("`{}` is not an effect", name.name)!)
+                    return null
+                }
+            }
+        }
+        if s.names_error(module, base) { return null }
+    }
+    s.error(e.span, "expected an effect name")
+    return null
+}
+
+/// An effect named without arguments. An effect whose parameters are all effect sets
+/// gets empty ones; otherwise the arguments stay empty.
+bare_effect_ref :: fn(s: ^Sema, eff: u32) -> EffectRef needs Alloc {
+    params := s.effects.items[usize(eff)].params
+    all_sets := params.len > 0
+    for p in params {
+        if s.params.items[usize(p)].kind is not .Effects { all_sets = false }
+    }
+    if not all_sets { return EffectRef(eff: eff, args: empty_slice(GenericArg)) }
+    args := list(GenericArg)
+    for _ in params { args.push(.Type(s.tys.intern(.Effects(types.empty_effects()))))! }
+    return EffectRef(eff: eff, args: args.items)
+}
+
+/// The effect-set parameter that `e` names, as a `Param` type.
+effect_param_named :: fn(s: ^const Sema, e: ^const ast.Expr) -> ?Ty {
+    .Ident(id) := e.kind else return null
+    t := s.type_param(id.name) else return null
+    .Param(p) := s.tys.kind(t) else return null
+    if s.params.items[usize(p)].kind is not .Effects { return null }
+    return t
+}
+
+/// The argument of an effect-set parameter (§16.6): a set expression `E1 + E2`, a single
+/// effect, a named effect set, or another effect-set parameter.
+resolve_effect_arg :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Load {
+    if p := s.effect_param_named(e) { return p }
+    if set := s.named_effect_set(module, e) { return s.tys.intern(.Effects(set)) }
+    if e.kind is .Binary(.Add(.Checked), _, _) {
+        set := s.resolve_effect_set(module, effect_terms(e))
+        return s.tys.intern(.Effects(set))
+    }
+    r := s.resolve_effect_ref(module, e) else return s.tys.error()
+    return s.tys.intern(.Effects(types.effect_set([1]EffectRef(r)[..])))
+}
+
+declare_effect :: fn(s: ^Sema, module: usize, decl: usize, name: ast.Ident, lit: ^const ast.EffectLit) -> DeclValue needs Load {
+    eff := s.tys.fresh_effect(name.name)
+    // Type parameters (`effect(T: type)`), visible in the operation signatures.
+    params := list(u32)
+    for p in lit.params else empty_slice(ast.Param) {
+        is_type := false
+        is_effects := false
+        if t := p.ty {
+            if .Ident(i) := t.kind { is_type = i.name is "type" }
+            is_effects = is_effects_kind(t)
+        }
+        if not is_type and not is_effects {
+            s.error(p.span, "effect parameters are types or effect sets: `effect(T: type)`, `effect(E: effects)` (§12.1)")
+        }
+        for n in p.names {
+            pid := s.new_param(n.name, if is_effects { ParamKind.Effects } else { ParamKind.Type })
+            params.push(pid)!
+            s.type_params.push(Scoped(name: n.name, ty: s.tys.param(pid)))!
+        }
+    }
+    // Register the effect before resolving operation types, which may mention it.
+    s.effects.push(EffectInfo(name: name.name, module: module, params: params.items, ops: empty_slice(OpInfo)))!
+    s.set_state(decl, .Done(.Effect(eff)))
+    ops := list(OpInfo)
+    for op in lit.ops {
+        op_params := list(ParamInfo)
+        for p in op.params {
+            ty := s.tys.error()
+            if t := p.ty {
+                ty = s.resolve_type(module, t)
+            } else {
+                s.error(p.span, "operation parameters need types")
+            }
+            for n in p.names {
+                op_params.push(ParamInfo(name: n.name, ty: ty, span: n.span, default: null, generic: null, rest: false))!
+            }
+        }
+        ret := s.tys.unit()
+        if r := op.ret { ret = s.resolve_type(module, r) }
+        if op_params.items.len > 0 { s.declare_method_candidate(module, op.name, op_params.items[0].ty, true) }
+        ops.push(OpInfo(name: op.name.name, kind: op.kind, params: op_params.items, ret: ret))!
+    }
+    s.type_params.truncate(s.type_params.items.len - params.items.len)
+    s.effects.items[usize(eff)].ops = ops.items
+    return .Effect(eff)
+}

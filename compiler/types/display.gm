@@ -1,0 +1,320 @@
+// Types as messages show them: `?^const u8`, `fn(i32) -> bool needs Out`, `List(T)`.
+
+/// How many component types a type's text may show; the rest is elided as `...`, since a
+/// shared type can be exponentially large when written out.
+DISPLAY_BUDGET :: 300
+
+/// Writes types to `out`. The budget is shared by the components of one type.
+pub Printer :: struct {
+    t: ^const Types
+    out: ^List(u8)
+    depth: u32
+    left: u32
+}
+
+pub printer :: fn(t: ^const Types, out: ^List(u8)) -> Printer => Printer(t: t, out: out, depth: 0, left: 0)
+
+/// The text of `ty`.
+pub show :: fn(t: ^const Types, ty: Ty) -> string needs Alloc {
+    out := list(u8)
+    p := printer(t, &out)
+    p.ty(ty)
+    return out.items
+}
+
+/// The text of the effect set `set`, as after `needs`: `A + B`, or `()` if it is empty.
+pub show_effects :: fn(t: ^const Types, set: ^const EffectSet) -> string needs Alloc {
+    out := list(u8)
+    p := printer(t, &out)
+    p.effects(set)
+    return out.items
+}
+
+/// The text of one effect: `Yield(i32)`.
+pub show_ref :: fn(t: ^const Types, e: ^const EffectRef) -> string needs Alloc {
+    out := list(u8)
+    p := printer(t, &out)
+    p.effect_ref(e)
+    return out.items
+}
+
+pub ty :: fn(p: ^Printer, ty: Ty) needs Alloc {
+    left: u32 = if p.depth is 0 { DISPLAY_BUDGET } else { p.left }
+    if left is 0 {
+        p.out.extend("...")!
+        return
+    }
+    p.depth += 1
+    p.left = left - 1
+    p.components(ty)
+    p.depth -= 1
+}
+
+components :: fn(p: ^Printer, ty: Ty) needs Alloc {
+    out := p.out
+    match p.t.kind(ty) {
+        .Int(signed, bits) => out.write("{}{}", if signed { "i" } else { "u" }, bits)!
+        .Usize => out.extend("usize")!
+        .Isize => out.extend("isize")!
+        .Float(bits) => out.write("f{}", bits)!
+        .Bool => out.extend("bool")!
+        .Never => out.extend("never")!
+        .Type => out.extend("type")!
+        .Rawptr => out.extend("rawptr")!
+        .Ptr(c, t) => {
+            out.extend(if c { "^const " } else { "^" })!
+            p.ty(t)
+        }
+        .ManyPtr(c, t) => {
+            out.extend(if c { "[^]const " } else { "[^]" })!
+            p.ty(t)
+        }
+        .Slice(c, t) => {
+            if c and p.t.kind(t) is .Int(false, 8) {
+                out.extend("string")!
+            } else {
+                out.extend(if c { "[]const " } else { "[]" })!
+                p.ty(t)
+            }
+        }
+        .Array(len, elem, kind) => {
+            match kind {
+                .Enum(e) => {
+                    out.push('[')!
+                    p.ty(e)
+                    out.push(']')!
+                }
+                .Simd => out.write("#simd [{}]", len)!
+                .Math => out.write("#vec [{}]", len)!
+                .Plain => out.write("[{}]", len)!
+            }
+            p.ty(elem)
+        }
+        .Tuple(elems, names) => {
+            out.push('(')!
+            for i, t in enumerate(elems) {
+                if i > 0 { out.extend(", ")! }
+                if names.len > 0 { out.write("{}: ", names[i])! }
+                p.ty(t)
+            }
+            if elems.len is 1 and names.len is 0 { out.push(',')! }
+            out.push(')')!
+        }
+        .Optional(t) => {
+            out.push('?')!
+            p.ty(t)
+        }
+        .Result(err, ok) => {
+            p.ty(err)
+            out.push('!')!
+            p.ty(ok)
+        }
+        .Fn(sig) => p.sig("fn", &sig)
+        .FnPtr(sig) => p.sig("^fn", &sig)
+        .Adt(id, args) => {
+            name := p.t.adt_name(id)
+            out.extend(name)!
+            // The stand-in `#soa []T` of a generic body (§5.6.4); a real `#soa` struct has
+            // its element in its name.
+            if args.len is 1 and name.starts_with("#soa ") {
+                if .Type(t) := args[0] and p.t.template(id) is id { p.ty(t) }
+                return
+            }
+            p.args(args)
+        }
+        .Cont(t) => {
+            out.extend("cont(")!
+            p.ty(t)
+            out.push(')')!
+        }
+        .Param(id) => out.extend(p.t.param_name(id))!
+        .ParamArray(len, elem) => {
+            out.push('[')!
+            p.ty(len)
+            out.push(']')!
+            p.ty(elem)
+        }
+        .LenExpr(op, lhs, rhs) => {
+            for i, t in enumerate([2]Ty(lhs, rhs)) {
+                if i is 1 { out.write(" {} ", len_op_symbol(op))! }
+                if p.t.kind(t) is .LenExpr(_) {
+                    out.push('(')!
+                    p.ty(t)
+                    out.push(')')!
+                } else {
+                    p.ty(t)
+                }
+            }
+        }
+        .Value(k) => p.key(&k)
+        .Effects(set) => p.effects(&set)
+        .Handler(_) => out.extend("handler")!
+        .Infer(_) => out.extend("{integer}")!
+        .Error => out.extend("{error}")!
+    }
+}
+
+sig :: fn(p: ^Printer, head: string, sig: ^const FnTy) needs Alloc {
+    out := p.out
+    if sig.win64 { out.extend("#callconv(.Win64) ")! }
+    out.write("{}(", head)!
+    for i, t in enumerate(sig.params) {
+        if i > 0 { out.extend(", ")! }
+        p.ty(t)
+    }
+    if sig.variadic { out.extend(if sig.params.len is 0 { "..." } else { ", ..." })! }
+    out.push(')')!
+    if not p.t.is_unit(sig.ret) {
+        out.extend(" -> ")!
+        p.ty(sig.ret)
+    }
+    if sig.effects.effects.len > 0 {
+        out.extend(" needs ")!
+        p.effects(&sig.effects)
+    }
+}
+
+/// `A + B + …`; the empty set has no written form and shows as `()`.
+pub effects :: fn(p: ^Printer, set: ^const EffectSet) needs Alloc {
+    if set.effects.len is 0 {
+        p.out.extend("()")!
+        return
+    }
+    for i, e in enumerate(set.effects) {
+        if i > 0 { p.out.extend(" + ")! }
+        p.effect_ref(&e)
+    }
+}
+
+pub effect_ref :: fn(p: ^Printer, e: ^const EffectRef) needs Alloc {
+    if e.eff is SPLICE and e.args.len > 0 {
+        if .Type(t) := e.args[0] {
+            p.ty(t)
+            return
+        }
+    }
+    p.out.extend(p.t.effect_name(e.eff))!
+    p.args(e.args)
+}
+
+/// Generic arguments as written: the trailing empty effect sets, which may be left out
+/// (§16.6), are.
+args :: fn(p: ^Printer, args: []const GenericArg) needs Alloc {
+    n := args.len
+    while n > 0 and p.is_empty_set(args[n - 1]) { n -= 1 }
+    if n is 0 { return }
+    p.out.push('(')!
+    for i, a in enumerate(args[0..n]) {
+        if i > 0 { p.out.extend(", ")! }
+        match a {
+            .Type(t) => p.ty(t)
+            .Value(k) => p.key(&k)
+        }
+    }
+    p.out.push(')')!
+}
+
+is_empty_set :: fn(p: ^const Printer, a: GenericArg) -> bool {
+    .Type(t) := a else return false
+    .Effects(set) := p.t.kind(t) else return false
+    return set.effects.len is 0
+}
+
+pub key :: fn(p: ^Printer, k: ^const ConstKey) needs Alloc {
+    out := p.out
+    match k^ {
+        .Fn(_, name) => out.extend(name)!
+        .Null => out.extend("null")!
+        .Str(s) => write_debug_string(s, out)
+        .Bytes(t, b) => {
+            match p.t.kind(t) {
+                .Int(signed, _) => write_int(b, signed, out)
+                .Usize => write_int(b, false, out)
+                .Isize => write_int(b, true, out)
+                .Bool => out.extend(if b.len > 0 and b[0] is 1 { "true" } else { "false" })!
+                _ => {
+                    p.ty(t)
+                    out.extend("(…)")!
+                }
+            }
+        }
+    }
+}
+
+/// The little-endian integer `b` (at most 16 bytes) in decimal.
+write_int :: fn(b: []const u8, signed: bool, out: ^List(u8)) needs Alloc {
+    v: u128 = 0
+    for i, c in enumerate(b) { v |= u128(c) << u128(i * 8) }
+    if signed and b.len > 0 and b.len < 16 and b[b.len - 1] >= 0x80 {
+        // Sign-extend to 128 bits.
+        v |= ~u128(0) << u128(b.len * 8)
+    }
+    if signed and v >> 127 is 1 {
+        out.push('-')!
+        v = ~v +% 1
+    }
+    digits: [40]u8 = ---
+    n: usize = 0
+    while true {
+        digits[n] = '0' + (v % 10).trunc(u8)
+        n += 1
+        v /= 10
+        if v is 0 { break }
+    }
+    while n > 0 {
+        n -= 1
+        out.push(digits[n])!
+    }
+}
+
+/// `s` as Rust's `{:?}` writes a string: in quotes, with `"` and `\` escaped and the
+/// control characters written as escapes.
+pub write_debug_string :: fn(s: []const u8, out: ^List(u8)) needs Alloc {
+    out.push('"')!
+    for c in s {
+        match c {
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            '\n' => out.extend("\\n")!
+            '\r' => out.extend("\\r")!
+            '\t' => out.extend("\\t")!
+            0 => out.extend("\\0")!
+            _ => {
+                if c < 0x20 or c is 0x7f {
+                    out.write("\\u{{{}}}", hex(c))!
+                } else {
+                    out.push(c)!
+                }
+            }
+        }
+    }
+    out.push('"')!
+}
+
+hex :: fn(c: u8) -> string needs Alloc {
+    digits := "0123456789abcdef"
+    out := list(u8)
+    if c >= 16 { out.push(digits[usize(c >> 4)])! }
+    out.push(digits[usize(c & 15)])!
+    return out.items
+}
+
+test "display" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        t := types()
+        expect_eq(t.show(t.string_ty()), "string")
+        expect_eq(t.show(t.optional(t.ptr(true, t.u8_ty()))), "?^const u8")
+        expect_eq(t.show(t.result(t.int(true, 32), t.unit())), "i32!()")
+        expect_eq(t.show(t.tuple([1]Ty(t.u8_ty())[..])), "(u8,)")
+        expect_eq(t.show(t.array(4, t.intern(.Float(64)))), "[4]f64")
+        n := t.intern(.Value(t.usize_key(16)))
+        list_id := t.fresh_adt("Ring")
+        args := [2]GenericArg(.Type(t.u8_ty()), .Type(n))
+        expect_eq(t.show(t.adt(list_id, args[..])), "Ring(u8, 16)")
+        out := list(u8)
+        write_debug_string("a\"b\n\x01", &out)
+        expect_eq(out.items, "\"a\\\"b\\n\\u{1}\"")
+    }
+}
