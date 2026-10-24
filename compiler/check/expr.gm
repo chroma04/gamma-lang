@@ -77,12 +77,20 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
             }
             return cx.construct_variant(cx.strip_wrappers(cx.infer.resolve(cx.s, t)), name, null, span)
         }
+        .OptionalType(inner) if prefix_on_call(inner) => return cx.unsupported(span, "constructions of optional types")
         .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ErrorUnionType(_), .FnType(_), .ContType(_), .Struct(_), .Union(_), .Effect(_) => {
             cx.error(span, "expected a value, found a type")
             return error_expr(cx.s, span)
         }
         _ => return cx.unsupported(span, expr_kind_text(&e.kind))
     }
+}
+
+/// Whether `e`, under any type prefixes, is a call: `?u8(null)` constructs a `?u8`.
+prefix_on_call :: fn(e: ^const ast.Expr) -> bool => match e.kind {
+    .Call(_) => true
+    .OptionalType(inner), .PtrType(_, inner), .SliceType(_, inner), .ManyPtrType(_, inner) => prefix_on_call(inner)
+    _ => false
 }
 
 /// What a construct gammac cannot check yet is called in its message.
@@ -755,6 +763,7 @@ join_branch :: fn(cx: ^FnCx, b: ^Expr, ty: Ty) -> ^Expr needs Load {
 }
 
 return_expr :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
+    if cx.in_defer { cx.error(span, "`return` is not allowed in a deferred statement") }
     ret := cx.ret
     value := if x := v {
         cx.coerce(cx.expr(x, ret), ret)
@@ -773,11 +782,15 @@ find_loop :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span, is_continue: bo
     while i > 0 {
         i -= 1
         x := cx.labels.items[i]
-        if l := label {
-            if x.name is l.name { return x }
-        } else if x.is_loop {
+        found := if l := label { x.name is l.name } else { x.is_loop }
+        if found {
+            if cx.in_defer and i < cx.defer_label_base { cx.error(span, "a deferred statement may not `break` or `continue` out of itself") }
             return x
         }
+    }
+    if cx.in_defer {
+        cx.error(span, "a deferred statement may not `break` or `continue` out of itself")
+        return null
     }
     if l := label {
         _ = cx.unsupported(span, "labels of enclosing functions")

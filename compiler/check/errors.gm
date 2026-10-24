@@ -95,6 +95,7 @@ else_expr :: fn(cx: ^FnCx, lhs: ^const ast.Expr, capture: ?ast.Ident, rhs: ^cons
 
 /// `try x` (§10.5).
 try_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    if cx.in_defer { cx.error(span, "`try` is not allowed in a deferred statement") }
     tys := &cx.s.tys
     v := cx.expr(operand, null)
     vt := cx.infer.resolve(cx.s, v.ty)

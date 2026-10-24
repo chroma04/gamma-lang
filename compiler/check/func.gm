@@ -123,6 +123,11 @@ pub FnCx :: struct {
     temp_ref_arg: bool
     /// The `match`es whose exhaustiveness waits for the final types of literals.
     deferred_matches: List(DeferredMatch)
+    /// Inside a deferred statement (§8.8), whose labels start at `defer_label_base`.
+    in_defer: bool
+    defer_label_base: usize
+    /// Where operations of kind `fn` are performed, which a deferred statement may do.
+    fn_performs: List(source.Span)
 }
 
 fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs Alloc {
@@ -147,6 +152,9 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         label_breaks: list(LabelBreak),
         temp_ref_arg: false,
         deferred_matches: list(DeferredMatch),
+        in_defer: false,
+        defer_label_base: 0,
+        fn_performs: list(source.Span),
     )
 }
 
@@ -476,11 +484,46 @@ stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
         .Expr(e) => return .Expr(cx.stmt_expr(e))
         .While(w) => return .Expr(cx.while_loop(w.label, &w.cond, &w.body, s.span))
         .Block(b) => return .Expr(cx.block(&b, false))
-        .Defer(_) => return .Expr(cx.unsupported(s.span, "`defer` and `errdefer`"))
+        .Defer(is_err, body) => return cx.defer_stmt(is_err, body)
         .When(_) => return .Expr(cx.unsupported(s.span, "local `when`"))
         .Cancel(_) => return .Expr(cx.unsupported(s.span, "`cancel`"))
         .LetElse(_) => return .Expr(cx.unsupported(s.span, "pattern bindings with `else`"))
     }
+}
+
+/// `defer body` or `errdefer body` (§8.8): `body` may not leave itself, and may perform
+/// only operations of kind `fn`, unless it handles the others itself.
+defer_stmt :: fn(cx: ^FnCx, is_err: bool, body: ^const ast.Stmt) -> tir.Stmt needs Load {
+    was := cx.in_defer
+    base := cx.defer_label_base
+    cx.in_defer = true
+    cx.defer_label_base = cx.labels.items.len
+    performed_base := cx.performed.items.len
+    cx.push_scope()
+    inner := cx.stmt(body)
+    cx.pop_scope()
+    for i in performed_base..cx.performed.items.len {
+        p := cx.performed.items[i]
+        if p.span in cx.fn_performs.items { continue }
+        exits := false
+        for o in cx.s.effects.items[usize(p.effect_.eff)].ops {
+            if o.kind is not .Fn { exits = true }
+        }
+        if exits {
+            cx.error(p.span, str.format("a deferred statement may not perform `{}`, whose operations can exit or suspend, unless it handles it (§8.8)", cx.s.tys.show_ref(&p.effect_))!)
+        }
+    }
+    cx.in_defer = was
+    cx.defer_label_base = base
+    x := match inner {
+        .Expr(e) => e
+        _ => {
+            stmts := list(tir.Stmt)
+            stmts.push(inner)!
+            tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: body.span))!), body.span)
+        }
+    }
+    return .Defer(is_err, x)
 }
 
 /// An expression in statement position: its value must be `()` or `never` (§7.14).
@@ -857,6 +900,7 @@ stmt_diverges :: fn(s: ^Sema, st: tir.Stmt) -> bool => match st {
     .Let(_, null) => false
     .Let(_, x) => s.tys.kind(x.ty) is .Never
     .Assign(_, v) => s.tys.kind(v.ty) is .Never
+    .Defer(_, _) => false
 }
 
 /// The expression that makes statement `st` diverge, with the reason it never completes.
@@ -866,6 +910,7 @@ stmt_never_cause :: fn(s: ^Sema, st: tir.Stmt) -> ?(span: source.Span, why: stri
         .Let(_, null) => return null
         .Let(_, x) => return never_cause(s, x)
         .Assign(_, v) => return never_cause(s, v)
+        .Defer(_, _) => return null
     }
 }
 

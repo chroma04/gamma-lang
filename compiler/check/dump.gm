@@ -401,6 +401,10 @@ write_block :: fn(d: ^Dump, depth: usize, b: ^tir.Block) needs Alloc {
                 d.write_line(depth, "expr")
                 d.write_expr(depth + 1, x)
             }
+            .Defer(is_err, x) => {
+                d.write_line(depth, if is_err { "errdefer" } else { "defer" })
+                d.write_expr(depth + 1, x)
+            }
         }
     }
     if t := b.tail {

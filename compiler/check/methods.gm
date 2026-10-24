@@ -513,6 +513,7 @@ op_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, s: Ty, module: usize, name: ast
             vals.extend(bound.args)!
             eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
             cx.performed.push(Performed(effect_: eref, span: span))!
+            if o.kind is .Fn { cx.fn_performs.push(span)! }
             call := tir.mk(o.ret, .Call(.Perform(eref, op_i.trunc(u32)), vals.items), span)
             return cx.finish_call(bound.pre, call, true)
         }
@@ -573,6 +574,7 @@ perform_named :: fn(cx: ^FnCx, named: EffectNamed, name: ast.Ident, args: []cons
         bound := cx.bind_args(o.params, info.module, args, span, "operation") else return error_expr(cx.s, span)
         eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
         cx.performed.push(Performed(effect_: eref, span: span))!
+        if o.kind is .Fn { cx.fn_performs.push(span)! }
         call := tir.mk(o.ret, .Call(.Perform(eref, i.trunc(u32)), bound.args), span)
         return cx.finish_call(bound.pre, call, false)
     }

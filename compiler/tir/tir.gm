@@ -167,6 +167,8 @@ pub Stmt :: union {
     Let: (local: u32, init: ?^Expr)
     Assign: (place: ^Expr, value: ^Expr)
     Expr: ^Expr
+    /// `defer` or (`is_err`) `errdefer` (§8.8).
+    Defer: (is_err: bool, body: ^Expr)
 }
 
 pub CondPart :: union {
@@ -423,7 +425,7 @@ block_children :: fn(b: ^Block, f: fn(c: ^Expr)) {
                 f(p)
                 f(v)
             }
-            .Expr(x) => f(x)
+            .Expr(x), .Defer(_, x) => f(x)
         }
     }
     if t := b.tail { f(t) }
