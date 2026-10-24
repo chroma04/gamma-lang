@@ -10,7 +10,9 @@
   compiler/types+sema+bigint+ratio, "gammac cannot" skip protocol + DECLS_FLOOR ratchet);
   `in` takes patterns (§7.7). s38e: stage 4b bodies started (`gamma tir`, compiler/tir +
   compiler/check, PR #76); s38f: patterns/for/methods/errors/sequences, TIR_FLOOR 100,
-  `&e` expected-pointee hint. Next: generics in gammac (roadmap/self-hosting.md).
+  `&e` expected-pointee hint. s38g (branch claude/project-thread-735qf0): generics in
+  gammac (check/generic.gm, sema instantiate + mono walk), TIR_FLOOR 137. Next: defer,
+  with/handlers, intrinsics, fn literals/pointers (roadmap/self-hosting.md).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
   in editors/tree-sitter-gamma (node 22 in /opt/node22).

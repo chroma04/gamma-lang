@@ -353,6 +353,13 @@ main :: fn() needs Alloc + Out {
 
 When the data has no stable place (a payload bound by a pattern), keep a copy of the value rather than a pointer to the binding.
 
+The same goes for a slot that is about to be overwritten. A function that keeps the pointer it is given, such as one that wraps an expression node in a new node, must not be handed the address of the slot that receives its result:
+
+```gamma fragment
+args[0] = cx.bind_temp(&args[0], &stmts)^           // wrong: the kept pointer now sees the new value
+args[0] = cx.bind_temp(new(args[0])!, &stmts)^      // the old value gets a place of its own
+```
+
 ## Building text
 
 Append to a `List(u8)` with `write`, which takes a `print` template, and write the result out once. Many small `print` calls are much slower than one large write:

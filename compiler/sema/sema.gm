@@ -12,6 +12,7 @@
 ast :: import "../ast"
 bigint :: import "../bigint"
 diag :: import "../diag"
+hash_map :: import "std/collections/hash_map"
 load :: import "../load"
 source :: import "../source"
 str :: import "std/str"
@@ -86,6 +87,8 @@ pub FnSig :: struct {
     pub effects: EffectSet
     /// The type parameters, in order (empty unless the function is generic, §16.1).
     pub generics: []u32
+    /// For an instance of a generic function: the generic function and the arguments.
+    pub instance: ?FnInstance = null
 }
 
 /// A top-level function whose body is still to be checked.
@@ -240,6 +243,12 @@ pub Sema :: struct {
     /// By parameter id.
     params: List(ParamData)
     instances: List(Instance)
+    /// The instances of generic functions, by the key of the function and its arguments.
+    fn_instances: hash_map.HashMap(string, u32)
+    /// The instances of generic functions whose calls are still to be followed, and how
+    /// deeply instantiations nest at the one being followed (§16.7).
+    pub mono_queue: List(MonoRequest)
+    pub mono_depth: u32
     type_params: List(Scoped)
     value_scope: List(ValueScoped)
     /// The declarations being resolved, for cycle reports.
@@ -272,6 +281,9 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         adts: list(AdtInfo),
         params: list(ParamData),
         instances: list(Instance),
+        fn_instances: hash_map.hash_map(string, u32),
+        mono_queue: list(MonoRequest),
+        mono_depth: 0,
         type_params: list(Scoped),
         value_scope: list(ValueScoped),
         resolving: list(usize),

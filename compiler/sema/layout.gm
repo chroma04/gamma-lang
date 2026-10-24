@@ -130,7 +130,7 @@ adt_layout :: fn(s: ^Sema, id: u32) -> Layout needs Alloc {
 max_object_size :: fn() -> u64 => (u64(1) << u64(target.ptr_bits - 1)) - 1
 
 /// Reports `ty` if it is larger than any object can be, and returns whether it is fine.
-type_size_ok :: fn(s: ^Sema, ty: Ty, span: source.Span) -> bool needs Alloc {
+pub type_size_ok :: fn(s: ^Sema, ty: Ty, span: source.Span) -> bool needs Alloc {
     aggregate := s.tys.kind(ty) in (.Array(_), .Tuple(_), .Optional(_), .Result(_), .Adt(_))
     max := max_object_size()
     // Definitions change while types are declared: layouts are remembered for one query.

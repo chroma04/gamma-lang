@@ -33,6 +33,8 @@ pub ExprKind :: union {
     CStr: []const u8
     Null
     Uninit
+    /// A compile-time value parameter of a generic function, by its id (§16.5).
+    ValueParam: u32
     /// A constant in static memory: a typed top-level constant, or a default value
     /// (`<default>`), by its name and place.
     Const: (name: string, span: source.Span)

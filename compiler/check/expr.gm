@@ -181,6 +181,7 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
             }
         }
     }
+    if pid := cx.s.value_param(name) { return tir.mk(cx.value_param_ty(pid), .ValueParam(pid), span) }
     if d := cx.s.lookup_module_name(cx.module, name) { return cx.decl_expr(d, name, expect, span) }
     if sema.is_builtin_type_name(name) {
         cx.error(span, str.format("expected a value, found the type `{}`", name)!)
@@ -192,12 +193,57 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
     return error_expr(cx.s, span)
 }
 
+/// The type of compile-time value parameter `pid`.
+value_param_ty :: fn(cx: ^FnCx, pid: u32) -> Ty needs Alloc {
+    .Value(t) := cx.s.param_kind(pid) else return cx.s.tys.error()
+    return t
+}
+
+/// The length `len` of an array type `[len]T`, as a `usize` value: a compile-time value
+/// parameter, a constant, or an expression computing it from those (§16.5).
+len_value :: fn(cx: ^FnCx, len: Ty, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    match tys.kind(len) {
+        .Param(p) => {
+            v := tir.mk(cx.value_param_ty(p), .ValueParam(p), span)
+            if v.ty is tys.usize_ty() { return v }
+            return tir.mk(tys.usize_ty(), .Coerce(.IntWiden, v), span)
+        }
+        .Value(k) => {
+            n := cx.s.key_int(k) else return error_expr(cx.s, span)
+            return tir.mk(tys.usize_ty(), .Int(n), span)
+        }
+        .LenExpr(op, lhs, rhs) => {
+            bop: tir.BinOp = match op {
+                .Add => .Add(.Checked)
+                .Sub => .Sub(.Checked)
+                .Mul => .Mul(.Checked)
+                .Shl => .Shl(.Checked)
+                .Div => .Div
+                .Rem => .Rem
+                .Shr => .Shr
+                .And => .BitAnd
+                .Or => .BitOr
+                .Xor => .BitXor
+            }
+            l := cx.len_value(lhs, span)
+            r := cx.len_value(rhs, span)
+            return tir.mk(tys.usize_ty(), .Binary(bop, l, r), span)
+        }
+        _ => return error_expr(cx.s, span)
+    }
+}
+
 /// The value of a top-level declaration named `name`.
 decl_expr :: fn(cx: ^FnCx, d: usize, name: string, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
     cx.s.check_deprecated(d, span)
     match cx.s.resolve_decl(d) {
         .Fn(f) => {
-            if cx.s.fns.items[usize(f)].generics.len > 0 { return cx.unsupported(span, "generic functions as values") }
+            if cx.s.fns.items[usize(f)].generics.len > 0 {
+                if e := cx.generic_fn_from_expected(f, expect, span) { return e }
+                cx.error(span, str.format("`{}` is generic, so it needs its compile-time arguments to be a function value: write `{}(…)` with only the types and `::` values, or give a function pointer type that determines them (§16.7)", name, name)!)
+                return error_expr(cx.s, span)
+            }
             return cx.fn_ref(f, span)
         }
         .Const(ty) => return tir.mk(ty, .Const(name, cx.s.l.decls.items[d].name.span), span)
@@ -545,9 +591,25 @@ type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
             return t
         }
     }
-    if e.kind is .Call(_) {
-        if cx.maybe_generic_type(e) { _ = cx.unsupported(e.span, "generic types in bodies") }
-        return null
+    // `G(args)` or `m.G(args)` where `G` is a generic type.
+    if .Call(callee, _, _) := e.kind {
+        d: usize = 0
+        match callee.kind {
+            .Ident(id) => {
+                if cx.lookup_local(id.name) is not null { return null }
+                d = cx.s.lookup_module_name(cx.module, id.name) else return null
+            }
+            .Field(base, name) => {
+                m := cx.module_of(base) else return null
+                d = cx.s.l.lookup(m, name.name) else return null
+                if not cx.s.l.decls.items[d].item.is_pub { return null }
+            }
+            _ => return null
+        }
+        if cx.s.resolve_decl(d) is not .GenericType(_) { return null }
+        t := cx.s.resolve_type(cx.module, e)
+        if cx.s.tys.is_error(t) { return null }
+        return t
     }
     .Ident(id) := e.kind else return null
     if cx.lookup_local(id.name) is not null { return null }
@@ -556,12 +618,6 @@ type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
         return t
     }
     return cx.s.builtin_type(id.name)
-}
-
-maybe_generic_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
-    .Call(callee, _, _) := e.kind else return false
-    g := cx.s.generic_decl(cx.module, callee, false) else return false
-    return cx.s.resolve_decl(g.decl) is .GenericType(_)
 }
 
 field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span) -> ^Expr needs Load {
@@ -587,7 +643,7 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
             if name.name is "ptr" { return tir.mk(tys.many_ptr(c, e), .SlicePtr(b), span) }
         }
         .Array(len, _, _) => if name.name is "len" { return tir.mk(tys.usize_ty(), .Int(bigint.from_u64(len)), span) }
-        .ParamArray(_) => if name.name is "len" { return cx.unsupported(span, "lengths of compile-time parameters") }
+        .ParamArray(len, _) => if name.name is "len" { return cx.len_value(len, span) }
         .Error => return error_expr(cx.s, span)
         _ => {}
     }

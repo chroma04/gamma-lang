@@ -25,8 +25,79 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
         }
     }
     check_bodies(s)
+    monomorphize(s)
     check_inline(s)
     check_escapes(s)
+}
+
+/// Follows the bodies of the instances of generic functions requested so far, as
+/// producing them would (§16.7): what they call is instantiated for the instance's type
+/// arguments, which may request more, and what depends on the type arguments is checked
+/// for them. Generic functions of the core library, whose bodies gammac does not check,
+/// are not followed.
+monomorphize :: fn(s: ^Sema) needs Load {
+    while req := s.mono_queue.pop() {
+        def := s.defs.items[usize(req.generic)]
+        body := def.body else continue
+        map := list(sema.Subst)
+        for i, g in enumerate(s.fns.items[usize(req.generic)].generics) { map.push(sema.Subst(param: g, ty: req.args[i]))! }
+        outer := s.mono_depth
+        s.mono_depth = req.depth
+        mono_check(s, body, map.items, req.span)
+        s.mono_depth = outer
+        // An instance may need a type larger than any object (a computed array length).
+        for l in def.locals {
+            if not s.type_size_ok(s.subst(l.ty, map.items), req.span) { break }
+        }
+    }
+}
+
+/// Checks expression `e` of a generic body for the instance with type arguments `map`,
+/// reporting at `span`, where the instance is used.
+mono_check :: fn(s: ^Sema, e: ^Expr, map: []const sema.Subst, span: source.Span) needs Load {
+    had_param := s.tys.has_param(e.ty)
+    t := s.subst(e.ty, map)
+    // Literals typed by a parameter are checked against each instantiation (§16.1).
+    match e.kind {
+        .Int(v) => if had_param and s.tys.kind(t) is not .Float(_) and not s.int_fits(v, t) {
+            s.error(span, str.format("the literal {} does not fit in `{}` (in an instantiation used here)", sema.show_int(v), s.show(t))!)
+        }
+        .UntypedFloat(_) => if s.tys.kind(t) is not .Float(_) {
+            s.error(span, str.format("a float literal cannot have the type `{}` (in an instantiation used here)", s.show(t))!)
+        }
+        _ => {}
+    }
+    callee: ?u32 = null
+    match e.kind {
+        .Call(.Fn(c), _) => { callee = c }
+        .FnRef(c) => { callee = c }
+        _ => {}
+    }
+    if c := callee {
+        if inst := s.fns.items[usize(c)].instance {
+            has_param := false
+            for a in inst.args {
+                if s.tys.has_param(a) { has_param = true }
+            }
+            if has_param {
+                args := list(Ty)
+                for a in inst.args { args.push(s.subst(a, map))! }
+                _ = s.instantiate(inst.template, args.items, span)
+            }
+        }
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { mono_check(s, x, map, span) })
+    // `.bits` between types that mention parameters is size-checked per instance (§6.6).
+    if .Builtin(.Bits, args) := e.kind and map.len > 0 and not s.tys.has_param(t) {
+        src := s.subst(args[0].ty, map)
+        if not s.tys.has_param(src) {
+            a := s.layout(src).size
+            b := s.layout(t).size
+            if a is not b {
+                s.error(span, str.format("`.bits` needs equal sizes, but `{}` has {} bytes and `{}` has {} (in an instantiation used here)", s.show(src), a, s.show(t), b)!)
+            }
+        }
+    }
 }
 
 /// Whether a parameter default is a literal, which needs no compile-time evaluation.

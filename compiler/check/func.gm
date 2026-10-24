@@ -178,12 +178,15 @@ pub check_bodies :: fn(s: ^Sema) needs Load {
 /// Checks the body of a top-level function and stores it.
 check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) needs Load {
     sig := s.fns.items[usize(fn_id)]
-    if sig.generics.len > 0 {
-        s.unsupported(sig.span, "generic function bodies")
-        return
+    // A generic body is checked once, with its type parameters opaque (§16.1).
+    scope_len := s.scope_type_params(sig.params)
+    numeric := list(u32)
+    for g in sig.generics {
+        if s.param_has(g, .Num) { numeric.push(g)! }
     }
     cx := fn_cx(s, module, sig.ret, sig.effects)
     cx.fn_id = fn_id
+    cx.infer.numeric_params = numeric.items
     // `needs not` (foreign functions only) takes no fix.
     no_needs := false
     if e := lit.sig.effects { no_needs = e.len is 0 }
@@ -200,6 +203,7 @@ check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) 
     }
     body := cx.fn_body(&lit.body)
     cx.finish(body)
+    s.unscope_type_params(scope_len)
     s.defs.items[usize(fn_id)] = tir.FnDef(kind: .Named, params: params.items, locals: cx.locals.items, body: body)
 }
 
