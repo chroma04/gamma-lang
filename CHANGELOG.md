@@ -102,13 +102,20 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `gamma modules`: loads a program the way `gamma check` does, without checking its
+  declarations, and prints its modules in load order with their directories, packages
+  and imports (see chapter 15 of the guide).
 - `compiler/`: `gammac`, a Gamma compiler written in Gamma, the start of a self-hosted
   toolchain. Its lexer and parser produce the same tokens, syntax trees and diagnostics as
-  `gamma lex` and `gamma parse --dump` on every `.gm` file of the repository, which
-  `tests/selfhost.rs` checks (see `docs/self-hosting.md`).
+  `gamma lex` and `gamma parse --dump` on every `.gm` file of the repository, and loads
+  every program's modules as `gamma modules` does, which `tests/selfhost.rs` checks (see
+  `docs/self-hosting.md`).
 
 ### Fixed
 
+- C back end: an assignment through a slice, a pointer or an index stores to the place as
+  it was before the right side ran, as §4.7 says and the interpreter and the Cranelift
+  back end did: `s.xs[0] = f(&s)` no longer stores into the slice that `f` put in `s.xs`.
 - Interpreter: `x!` on a result whose success type is empty (`E!()`) no longer crashes
   the interpreter.
 

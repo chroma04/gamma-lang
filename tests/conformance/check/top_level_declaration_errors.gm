@@ -1,0 +1,12 @@
+//! stage: check
+// What a top-level declaration may not be (§3.4, §4.1).
+a, b :: (1, 2) //~ ERROR destructuring is not allowed at top level
+_ :: 3 //~ ERROR `_` cannot be declared at top level
+u8 :: 4 //~ ERROR `u8` is a reserved type name and cannot be redeclared
+i128 :: 5 //~ ERROR `i128` is a reserved type name
+str: type : import "std/str" //~ ERROR an import binding cannot have a type
+fs := import "std/fs" //~ ERROR top-level bindings are immutable
+u129 :: 6
+u0 :: 7
+
+main :: fn() {}

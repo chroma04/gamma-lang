@@ -1,0 +1,30 @@
+// An assignment evaluates its place before its right side (§4.7): a store through a
+// slice or pointer goes to the slice or pointer read before the right side ran, even if
+// the right side changes it.
+Holder :: struct {
+    xs: []u32
+    p: ^u32
+}
+
+swap_slice :: fn(h: ^Holder, to: []u32) -> u32 {
+    h.xs = to
+    return 9
+}
+
+swap_ptr :: fn(h: ^Holder, to: ^u32) -> u32 {
+    h.p = to
+    return 7
+}
+
+main :: fn() needs Out {
+    first := [3]u32(fill: 0)
+    second := [3]u32(fill: 0)
+    a: u32 = 0
+    b: u32 = 0
+    h := Holder(xs: first[..], p: &a)
+    h.xs[1] = swap_slice(&h, second[..])
+    h.p^ = swap_ptr(&h, &b)
+    print("{} {} {} {}\n", first, second, a, b)
+    h.xs[0], h.p^ = swap_slice(&h, first[..]), swap_ptr(&h, &a)
+    print("{} {} {} {}\n", first, second, a, b)
+}

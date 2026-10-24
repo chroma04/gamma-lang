@@ -233,6 +233,27 @@ If the cache is turned off (`GAMMA_CACHE_DIR` set to an empty string), packages 
 
 Gamma runs the `git` command-line tool for all of this, with prompts turned off, so private repositories work with whatever credentials `git` already has (an SSH agent, a credential helper). If `git` fails, its message is part of the error.
 
+## Seeing what a program loads
+
+`gamma modules` loads a program (a file or a module directory) the way `gamma check` does, without checking its declarations, and lists its modules in the order they are loaded. For each it shows the directory, the package and what each of its imports names:
+
+```text
+$ gamma modules app
+module app
+  dir app
+  package app
+  import json "json" deps/json
+  import util "./util" app/util
+module json
+  dir deps/json
+  package deps/json
+module util
+  dir app/util
+  package app
+```
+
+Modules of the standard library are marked `std` and their directories start with `<std>`; an import that fails to load shows `error`, next to the diagnostic that says why.
+
 ## Common mistakes
 
 > - **Forgetting to commit `gamma.lock`.** Without it, a fresh checkout resolves again and can pick newer revisions.

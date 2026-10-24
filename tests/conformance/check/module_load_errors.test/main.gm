@@ -1,0 +1,5 @@
+//! stage: check
+// A module directory that holds no `.gm` files is not a module (§3.1).
+empty :: import "./empty" //~ ERROR has no `.gm` files
+
+main :: fn() {}

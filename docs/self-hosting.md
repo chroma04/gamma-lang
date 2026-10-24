@@ -22,6 +22,7 @@ this checkable:
 | --- | --- |
 | lexer | the token dump of `gamma lex`, and its diagnostics |
 | parser | the syntax tree dump of `gamma parse --dump`, and its diagnostics |
+| modules and packages | the module graph of `gamma modules`, and its diagnostics |
 | checker | the diagnostics of `gamma check` |
 | back end | the output and exit status of the compiled programs |
 
@@ -47,8 +48,13 @@ leaves to implementations: message texts, spans and recovery after errors.
 2. **Parser** — done. The syntax tree, the parser with its error recovery, and the dump
    format: `gammac parse --dump` matches `gamma parse --dump` on the whole repository,
    syntax errors included.
-3. **Modules and packages** — loading a module directory, imports, `gamma.toml` and the
-   lock file, as `src/driver.rs` and `src/pkg/` do.
+3. **Modules and packages** — done. Loading the root module and every module its imports
+   name, packages and their path dependencies from `gamma.toml`, collecting each
+   module's top-level names (including the taken branches of top-level `when`s), and
+   import cycles: `gammac modules` matches `gamma modules` on the root of every program in
+   the repository. Not yet: git and archive dependencies (which need the lock file and the
+   package manager), the exact messages for a malformed `gamma.toml`, and `when`
+   conditions beyond `target`, `@size_of`, literals and constants.
 4. **Checker** — name resolution, types, inference, effects, generics, compile-time
    evaluation, producing a typed representation like `src/tir.rs`. Checked against the
    diagnostics of `gamma check` on the conformance tests of `check/`.
@@ -71,6 +77,7 @@ read the two side by side.
 | `compiler/bignum/` | natural numbers and rationals of any size, for the exact values of literals |
 | `compiler/syntax/` | tokens (`token.gm`), the lexer (`lexer.gm`, `literal.gm`) and the token dump (`dump.gm`) (`src/syntax/`) |
 | `compiler/ast/` | the syntax tree (`ast.gm`) and its dump (`dump.gm`) (`src/syntax/ast.rs`, `ast_dump.rs`) |
+| `compiler/load/` | loading modules and packages (`loader.gm`), file paths (`paths.gm`), the `gamma.toml` reader (`toml.gm`) and the conditions of top-level `when`s (`when.gm`) (`src/sema/modules.rs`, `imports.rs`) |
 | `compiler/parse/` | the parser: its state, errors and recovery (`parser.gm`), expressions, statements, declarations, types, patterns and the brace-delimited literals (`src/syntax/parser/`) |
 
 ## Building and running
@@ -80,6 +87,7 @@ gamma build compiler -o gammac          # or: gamma run compiler lex FILE
 ./gammac lex examples/hello.gm
 ./gammac lex --diag-format=json tests/conformance/lex/errors_numbers.gm
 ./gammac parse --dump examples/hello.gm
+GAMMA_STD=lib/std ./gammac modules examples/grep.gm
 gamma test compiler                     # gammac's own unit tests
 cargo test --test selfhost              # the parity tests
 ```

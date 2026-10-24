@@ -1,0 +1,123 @@
+// The conditions of top-level `when`s (§3.6), which decide what a module declares and
+// therefore what it imports. A condition is a compile-time expression; until gammac has a
+// checker, it evaluates the conditions programs use for this: the fields of `target`,
+// `@size_of` of an integer type, `bool` and integer literals, constants of the module
+// bound to such an expression, and `is`, `is not`, the orderings, `and`, `or` and `not`.
+
+/// A compile-time value of a condition.
+Const :: union {
+    Bool: bool
+    Int: i64
+    /// A variant of one of `target`'s enums, by name.
+    Variant: string
+}
+
+/// The value of the condition of a top-level `when` of module `module`, or `null` (after
+/// reporting it) if it cannot be evaluated.
+when_cond :: fn(l: ^Loader, module: usize, cond: ^const ast.Expr) -> ?bool needs Alloc {
+    v := l.eval(module, cond, 0) else {
+        l.diags.report(cond.span, "gammac cannot evaluate this `when` condition yet: it handles `target`, `@size_of`, literals and constants")
+        return null
+    }
+    .Bool(b) := v else {
+        l.diags.report(cond.span, "gammac cannot evaluate this `when` condition yet: it is not a `bool`")
+        return null
+    }
+    return b
+}
+
+/// The value of `e`, or `null` if it is not a condition gammac can evaluate. `depth`
+/// counts the constants followed, which stops a cycle.
+eval :: fn(l: ^Loader, module: usize, e: ^const ast.Expr, depth: u32) -> ?Const needs Alloc {
+    if depth > 64 { return null }
+    match e.kind {
+        .Bool(b) => return Const.Bool(b)
+        .Int(lit) => {
+            limbs := lit.value.limbs.items
+            if limbs.len > 1 { return null }
+            return Const.Int(i64(limbs.first() else 0))
+        }
+        .Paren(x) => return l.eval(module, x, depth)
+        .Unary(.Not, x) => {
+            .Bool(b) := l.eval(module, x, depth) else return null
+            return Const.Bool(not b)
+        }
+        .DotIdent(id) => return Const.Variant(id.name)
+        .Field(base, name) => {
+            .Ident(m) := base.kind else return null
+            if m.name is not "target" or l.lookup(module, "target") is not null { return null }
+            return target_field(name.name)
+        }
+        .Ident(id) => {
+            // A constant of the module: `DEBUG :: true`.
+            d := l.lookup(module, id.name) else return null
+            .Binding(b) := l.decls.items[d].item.kind else return null
+            if b.kind is .Var or b.ty is not null { return null }
+            return l.eval(module, b.init, depth + 1)
+        }
+        .Intrinsic(i) => {
+            if i.name.name is not "size_of" { return null }
+            args := i.args else return null
+            if args.len is not 1 { return null }
+            .Positional(arg) := args[0].kind else return null
+            .Ident(t) := arg.kind else return null
+            bytes := type_size(t.name) else return null
+            return Const.Int(bytes)
+        }
+        .Binary(op, lhs, rhs) => {
+            a := l.eval(module, lhs, depth) else return null
+            if op in (ast.BinOp.And, ast.BinOp.Or) {
+                // Both operands are evaluated, as the checker checks both.
+                .Bool(x) := a else return null
+                .Bool(y) := l.eval(module, rhs, depth) else return null
+                return Const.Bool(if op is .And { x and y } else { x or y })
+            }
+            b := l.eval(module, rhs, depth) else return null
+            return compare(op, a, b)
+        }
+        _ => return null
+    }
+}
+
+/// `a op b` for a comparison operator.
+compare :: fn(op: ast.BinOp, a, b: Const) -> ?Const {
+    match op {
+        .Is => return Const.Bool(a is b)
+        .IsNot => return Const.Bool(a is not b)
+        _ => {}
+    }
+    .Int(x) := a else return null
+    .Int(y) := b else return null
+    return match op {
+        .Lt => Const.Bool(x < y)
+        .Le => Const.Bool(x <= y)
+        .Gt => Const.Bool(x > y)
+        .Ge => Const.Bool(x >= y)
+        _ => null
+    }
+}
+
+/// The value of `target.<name>` for the target gammac was built for, which is the target
+/// it compiles for, in the default build mode.
+target_field :: fn(name: string) -> ?Const => match name {
+    "os" => Const.Variant(@variant_name(target.os))
+    "arch" => Const.Variant(@variant_name(target.arch))
+    "endian" => Const.Variant(@variant_name(target.endian))
+    "ptr_bits" => Const.Int(i64(target.ptr_bits))
+    "mode" => Const.Variant("Debug")
+    _ => null
+}
+
+/// The size in bytes of an integer or float type named `name`.
+type_size :: fn(name: string) -> ?i64 {
+    if name in ("usize", "isize") { return i64(target.ptr_bits / 8) }
+    if name in ("f16", "f32", "f64") { return if name is "f16" { 2 } else if name is "f32" { 4 } else { 8 } }
+    if name is "bool" { return 1 }
+    if not is_reserved_type_name(name) or name.len < 2 or name[0] not in ('u', 'i') { return null }
+    bits: i64 = 0
+    for c in name[1..] { bits = bits * 10 + i64(c - '0') }
+    // Integers are stored in 1, 2, 4, 8 or 16 bytes.
+    size: i64 = 1
+    while size * 8 < bits { size *= 2 }
+    return size
+}

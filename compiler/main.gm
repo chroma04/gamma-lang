@@ -2,10 +2,15 @@
 //!
 //!     gammac lex [--diag-format=short|json] [--recover] FILE...
 //!     gammac parse [--diag-format=short|json] [--recover] [--dump] FILE...
+//!     gammac modules [--diag-format=short|json] ROOT...
 //!
 //! `lex` prints the tokens of each file in the format of `gamma lex`. `parse` parses each
 //! file and, with `--dump`, prints its syntax tree in the format of `gamma parse --dump`.
-//! Both print the diagnostics to standard error in the chosen format (default `short`).
+//! `modules` loads the program whose root module is ROOT (a `.gm` file or a module
+//! directory) and prints its module graph in the format of `gamma modules`; the standard
+//! library is the directory `$GAMMA_STD`, or else `lib/gamma/std` next to the directory of
+//! the executable. Each prints the diagnostics to standard error in the chosen format
+//! (default `short`).
 //! With several files, the output of each is preceded by a line `==> FILE <==` on both
 //! streams. `--recover` lexes with the layout heuristic that tools use after errors.
 //! The exit status is 1 if a file has errors, 2 for a usage error or a file that cannot
@@ -15,14 +20,15 @@ arena :: import "std/arena"
 ast :: import "./ast"
 diag :: import "./diag"
 fs :: import "std/fs"
+load :: import "./load"
 parse :: import "./parse"
 source :: import "./source"
 syntax :: import "./syntax"
 
-USAGE :: "usage: gammac lex|parse [--diag-format=short|json] [--recover] [--dump] FILE...\n"
+USAGE :: "usage: gammac lex|parse|modules [--diag-format=short|json] [--recover] [--dump] FILE...\n"
 
 /// What to do with each file.
-Command :: union { Lex, Parse }
+Command :: union { Lex, Parse, Modules }
 
 Options :: struct {
     command: Command
@@ -33,8 +39,12 @@ Options :: struct {
 
 main :: fn() needs Alloc + Env + Err + Fs + Out {
     args := Env.args()
-    if args.len < 2 or args[1] not in ("lex", "parse") { usage() }
-    opts := Options(command: if args[1] is "lex" { .Lex } else { .Parse })
+    opts := Options(command: match args.get(1) else "" {
+        "lex" => .Lex
+        "parse" => .Parse
+        "modules" => .Modules
+        _ => usage()
+    })
     files := list(string)
     defer files.deinit()
     for a in args[2..] {
@@ -77,7 +87,8 @@ usage :: fn() -> never needs Env + Err {
 
 /// Runs the command on one file and prints its output and diagnostics. Returns whether
 /// the file had no errors.
-process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Err + Fs + Out {
+process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Env + Err + Fs + Out {
+    if opts.command is .Modules { return load_program(path, opts) }
     text := try fs.read_all(path)
     defer free(text)
     a := arena.new()
@@ -90,6 +101,7 @@ process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Er
         out := list(u8)
         match opts.command {
             .Lex => syntax.dump_tokens(sm.file(id), lexed.tokens.items, &out)
+            .Modules => {}
             .Parse => {
                 next_id: ast.NodeId = 0
                 tree := parse.parse_file(id, &lexed, &next_id, &diags)
@@ -103,4 +115,31 @@ process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Er
         Err.write(out.items)
         return not diags.has_errors()
     }
+}
+
+/// `modules`: loads the program rooted at `root` and prints its module graph.
+load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Out {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        sm := source.source_map()
+        diags := diag.diagnostics()
+        next_id: ast.NodeId = 0
+        l := load.loader(&sm, &diags, &next_id, std_root(), opts.recover)
+        if graph := l.load_modules(root) { Out.write(graph) }
+        out := list(u8)
+        diags.sort()
+        for d in diags.list.items { diag.render(&sm, &d, opts.format, &out) }
+        Err.write(out.items)
+        return not diags.has_errors()
+    }
+}
+
+/// The directory of the standard library: `$GAMMA_STD`, or else `lib/gamma/std` next to
+/// the directory of the executable, as in an installed release.
+std_root :: fn() -> string needs Alloc + Env {
+    if dir := Env.var("GAMMA_STD") { return dir }
+    exe := Env.args()[0]
+    bin := load.parent(exe) else "."
+    return load.join(load.join(if bin.len is 0 { "." } else { bin }, ".."), "lib/gamma/std")
 }

@@ -1,0 +1,369 @@
+// A reader for the part of TOML (https://toml.io) that `gamma.toml` uses: tables and
+// arrays of tables, dotted table names, bare and quoted keys, and values that are
+// strings (basic and literal), integers, booleans, arrays and inline tables. Every entry
+// remembers its line, for messages.
+
+/// A TOML value.
+Value :: union {
+    Str: string
+    Int: i64
+    Bool: bool
+    Array: List(Value)
+    Table: ^Table
+}
+
+/// The entries of a table, in the order they were written.
+Table :: struct {
+    entries: List(Entry)
+}
+
+Entry :: struct {
+    key: string
+    value: Value
+    /// The line of the key, from 1.
+    line: usize
+}
+
+/// What went wrong, and on which line.
+TomlError :: struct {
+    line: usize
+    message: string
+}
+
+new_table :: fn() -> ^Table needs Alloc => new(Table(entries: list(Entry)))!
+
+/// The entry `key` of `t`, if it has one.
+get :: fn(t: ^const Table, key: string) -> ?^Entry {
+    for i in 0..t.entries.items.len {
+        if t.entries.items[i].key is key { return &t.entries.items[i] }
+    }
+    return null
+}
+
+/// `v` as a string, if it is one.
+as_str :: fn(v: Value) -> ?string => match v {
+    .Str(s) => s
+    _ => null
+}
+
+/// `v` as a table, if it is one.
+as_table :: fn(v: Value) -> ?^Table => match v {
+    .Table(t) => t
+    _ => null
+}
+
+Reader :: struct {
+    text: string
+    pos: usize = 0
+    line: usize = 1
+}
+
+/// Parses a whole document into its root table.
+parse_toml :: fn(text: string) -> TomlError!^Table needs Alloc {
+    r := Reader(text: text)
+    root := new_table()
+    current := root
+    while true {
+        r.skip_space_and_newlines()
+        c := r.peek() else break
+        if c is '[' {
+            current = try r.table_header(root)
+        } else {
+            line := r.line
+            path := try r.key_path()
+            r.skip_space()
+            if r.peek() is not '=' { return !r.error("expected `=` after a key") }
+            r.pos += 1
+            r.skip_space()
+            v := try r.value()
+            try insert_path(current, path.items, v, line)
+        }
+        try r.end_of_line()
+    }
+    return root
+}
+
+error :: fn(r: ^const Reader, message: string) -> TomlError => TomlError(line: r.line, message: message)
+
+peek :: fn(r: ^const Reader) -> ?u8 => r.text.get(r.pos)
+
+skip_space :: fn(r: ^Reader) {
+    while r.peek() in (' ', '\t') { r.pos += 1 }
+}
+
+/// Skips blanks, comments and line ends.
+skip_space_and_newlines :: fn(r: ^Reader) {
+    while c := r.peek() {
+        if c in (' ', '\t', '\r') {
+            r.pos += 1
+        } else if c is '\n' {
+            r.pos += 1
+            r.line += 1
+        } else if c is '#' {
+            while r.peek() is not null and r.peek() is not '\n' { r.pos += 1 }
+        } else {
+            return
+        }
+    }
+}
+
+/// After an entry or a header: blanks, an optional comment, and the end of the line.
+end_of_line :: fn(r: ^Reader) -> TomlError!() {
+    r.skip_space()
+    if r.peek() is '#' {
+        while r.peek() is not null and r.peek() is not '\n' { r.pos += 1 }
+    }
+    if r.peek() is '\r' { r.pos += 1 }
+    if r.peek() is null { return () }
+    if r.peek() is not '\n' { return !r.error("expected the end of the line") }
+    return ()
+}
+
+/// `[a.b]` or `[[a.b]]`: the table that the following entries belong to.
+table_header :: fn(r: ^Reader, root: ^Table) -> TomlError!^Table needs Alloc {
+    r.pos += 1
+    array := r.peek() is '['
+    if array { r.pos += 1 }
+    r.skip_space()
+    line := r.line
+    path := try r.key_path()
+    r.skip_space()
+    if r.peek() is not ']' { return !r.error("expected `]` after the table name") }
+    r.pos += 1
+    if array {
+        if r.peek() is not ']' { return !r.error("expected `]]` after the table name") }
+        r.pos += 1
+    }
+    names := path.items
+    t := root
+    for i, name in enumerate(names) {
+        last := i is names.len - 1
+        if e := t.get(name) {
+            if last and array {
+                .Array(items) := e.value else return !r.error("this key is not an array of tables")
+                fresh := new_table()
+                grown := items
+                grown.push(.Table(fresh))!
+                e.value = .Array(grown)
+                return fresh
+            }
+            match e.value {
+                .Table(sub) => { t = sub }
+                .Array(items) if items.items.len > 0 => {
+                    .Table(sub) := items.items[items.items.len - 1] else return !r.error("this key is not a table")
+                    t = sub
+                }
+                _ => return !r.error("this key is not a table")
+            }
+        } else {
+            fresh := new_table()
+            if last and array {
+                items := list(Value)
+                items.push(.Table(fresh))!
+                t.entries.push(Entry(key: name, value: .Array(items), line: line))!
+            } else {
+                t.entries.push(Entry(key: name, value: .Table(fresh), line: line))!
+            }
+            t = fresh
+        }
+    }
+    return t
+}
+
+/// A key or dotted key: `name`, `"quoted"`, `a.b.c`.
+key_path :: fn(r: ^Reader) -> TomlError!List(string) needs Alloc {
+    path := list(string)
+    while true {
+        r.skip_space()
+        path.push(try r.key())!
+        r.skip_space()
+        if r.peek() is not '.' { break }
+        r.pos += 1
+    }
+    return path
+}
+
+key :: fn(r: ^Reader) -> TomlError!string needs Alloc {
+    c := r.peek() else return !r.error("expected a key")
+    if c in ('"', '\'') { return r.parse_string() }
+    start := r.pos
+    while k := r.peek() {
+        if not (k in 'a'..='z' or k in 'A'..='Z' or k in '0'..='9' or k in ('_', '-')) { break }
+        r.pos += 1
+    }
+    if r.pos is start { return !r.error("expected a key") }
+    return r.text[start..r.pos]
+}
+
+/// Adds `v` under the dotted key `path` of `t`.
+insert_path :: fn(t: ^Table, path: []const string, v: Value, line: usize) -> TomlError!() needs Alloc {
+    target := t
+    for name in path[0..path.len - 1] {
+        if e := target.get(name) {
+            sub := as_table(e.value) else return !TomlError(line: line, message: "this key is not a table")
+            target = sub
+        } else {
+            fresh := new_table()
+            target.entries.push(Entry(key: name, value: .Table(fresh), line: line))!
+            target = fresh
+        }
+    }
+    name := path[path.len - 1]
+    if target.get(name) is not null { return !TomlError(line: line, message: "this key is defined twice") }
+    target.entries.push(Entry(key: name, value: v, line: line))!
+    return ()
+}
+
+value :: fn(r: ^Reader) -> TomlError!Value needs Alloc {
+    c := r.peek() else return !r.error("expected a value")
+    match c {
+        '"', '\'' => return Value.Str(try r.parse_string())
+        '[' => return r.array()
+        '{' => return r.inline_table()
+        't' if r.text[r.pos..].starts_with("true") => {
+            r.pos += 4
+            return Value.Bool(true)
+        }
+        'f' if r.text[r.pos..].starts_with("false") => {
+            r.pos += 5
+            return Value.Bool(false)
+        }
+        '+', '-', '0'..='9' => return r.integer()
+        _ => return !r.error("expected a value")
+    }
+}
+
+integer :: fn(r: ^Reader) -> TomlError!Value {
+    negative := r.peek() is '-'
+    if r.peek() in ('+', '-') { r.pos += 1 }
+    n: i64 = 0
+    digits := 0
+    while d := r.peek() {
+        if d is '_' {
+            r.pos += 1
+            continue
+        }
+        if d not in '0'..='9' { break }
+        n = n *? 10 +? i64(d - '0') else return !r.error("the integer is too large")
+        digits += 1
+        r.pos += 1
+    }
+    if digits is 0 { return !r.error("expected a value") }
+    return Value.Int(if negative { -n } else { n })
+}
+
+/// `"basic"` with escapes, or `'literal'`.
+parse_string :: fn(r: ^Reader) -> TomlError!string needs Alloc {
+    quote := r.text[r.pos]
+    r.pos += 1
+    out := list(u8)
+    while true {
+        c := r.peek() else return !r.error("unterminated string")
+        r.pos += 1
+        if c is quote { break }
+        if c is '\n' { return !r.error("unterminated string") }
+        if c is '\\' and quote is '"' {
+            e := r.peek() else return !r.error("unterminated string")
+            r.pos += 1
+            match e {
+                'n' => out.push('\n')!
+                't' => out.push('\t')!
+                'r' => out.push('\r')!
+                '"', '\\' => out.push(e)!
+                _ => return !r.error("unknown escape in a string")
+            }
+        } else {
+            out.push(c)!
+        }
+    }
+    return out.items
+}
+
+/// `[a, b, …]`, which may span lines and end with a comma.
+array :: fn(r: ^Reader) -> TomlError!Value needs Alloc {
+    r.pos += 1
+    items := list(Value)
+    while true {
+        r.skip_space_and_newlines()
+        if r.peek() is ']' { break }
+        items.push(try r.value())!
+        r.skip_space_and_newlines()
+        if r.peek() is ',' {
+            r.pos += 1
+        } else if r.peek() is not ']' {
+            return !r.error("expected `,` or `]` in an array")
+        }
+    }
+    r.pos += 1
+    return Value.Array(items)
+}
+
+/// `{ key = value, … }` on one line.
+inline_table :: fn(r: ^Reader) -> TomlError!Value needs Alloc {
+    r.pos += 1
+    t := new_table()
+    r.skip_space()
+    if r.peek() is '}' {
+        r.pos += 1
+        return Value.Table(t)
+    }
+    while true {
+        line := r.line
+        path := try r.key_path()
+        r.skip_space()
+        if r.peek() is not '=' { return !r.error("expected `=` after a key") }
+        r.pos += 1
+        r.skip_space()
+        v := try r.value()
+        try insert_path(t, path.items, v, line)
+        r.skip_space()
+        if r.peek() is '}' { break }
+        if r.peek() is not ',' { return !r.error("expected `,` or `}` in an inline table") }
+        r.pos += 1
+    }
+    r.pos += 1
+    return Value.Table(t)
+}
+
+test "toml documents" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        doc := ok(parse_toml(``[package]
+name = "app"   # the name
+version = "0.1.0"
+
+[dependencies]
+json = { path = "../json" }
+"util" = { git = "https://example.com/u.git", tag = "v1" }
+
+[build]
+cflags = [
+    "-O2",
+    "-DX=1",
+]
+
+[[package.authors]]
+name = 'a'
+[[package.authors]]
+name = 'b'
+``))
+        pkg := as_table(doc.get("package")?.value)?
+        expect_eq(as_str(pkg.get("name")?.value), "app")
+        deps := as_table(doc.get("dependencies")?.value)?
+        expect_eq(deps.entries.items.len, 2)
+        expect_eq(deps.entries.items[1].key, "util")
+        expect_eq(deps.entries.items[1].line, 7)
+        json := as_table(deps.get("json")?.value)?
+        expect_eq(as_str(json.get("path")?.value), "../json")
+        build := as_table(doc.get("build")?.value)?
+        .Array(flags) := build.get("cflags")?.value else return
+        expect_eq(flags.items.len, 2)
+        .Array(authors) := pkg.get("authors")?.value else return
+        expect_eq(authors.items.len, 2)
+        bad := parse_toml("x = \n")
+        expect(bad is !_)
+    }
+}
+
+arena :: import "std/arena"
