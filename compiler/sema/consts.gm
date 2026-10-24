@@ -1,11 +1,12 @@
 // Typed constants (§17.2): the initializers of typed top-level constants and the default
 // values of struct fields.
 //
-// gammac does not check expressions in general yet. It knows the type of the constant
-// expressions made of literals, `null`, enum variants, untyped constant arithmetic and
-// array and struct constructors of these, and reports the rest as unsupported. It never
-// reports an error in such an expression itself: whatever it cannot show to be valid is
-// unsupported.
+// Resolving a declaration needs the type of a constant at once. This file knows the type
+// of the constant expressions made of literals, `null`, enum variants, untyped constant
+// arithmetic and array and struct constructors of these, without reporting anything. Any
+// other initializer of a declared type takes that type, and is checked as an expression
+// with the function bodies (`check/consts.gm`); one without a declared type is reported
+// as unsupported.
 
 /// The type of the constant expression `e`, checked against `expected` if given, or
 /// `null` after reporting an error.
@@ -14,6 +15,12 @@ const_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> 
         if s.tys.is_error(t) { return null }
     }
     if t := s.const_check(module, e, expected) { return t }
+    // Any other initializer of a declared type is checked as an expression, with the
+    // function bodies.
+    if t := expected {
+        s.pending_consts.push(PendingConst(module: module, init: e, ty: t))!
+        return t
+    }
     s.unsupported(e.span, "this constant expression")
     return null
 }
@@ -21,7 +28,7 @@ const_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> 
 /// Checks the default value `d` of a field of type `ty`.
 check_default :: fn(s: ^Sema, module: usize, d: ^const ast.Expr, ty: Ty) needs Load {
     if s.tys.is_error(ty) { return }
-    if s.const_check(module, d, ty) is null { s.unsupported(d.span, "this default value") }
+    if s.const_check(module, d, ty) is null { s.pending_consts.push(PendingConst(module: module, init: d, ty: ty))! }
 }
 
 /// The type of `e` if gammac can tell that it is a valid constant expression (of type
@@ -65,6 +72,23 @@ const_check :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) ->
                 }))
                 if not s.float_finite(literal_rational(&lit.value), t) { return null }
                 return s.expect_type(t, expected)
+            }
+        }
+        .Field(base, name) => {
+            // `E.V`: a variant without a payload, named through its type.
+            if s.module_named(module, base) is null and s.syntax_is_type(module, base, 0) {
+                errors := s.l.diags.list.items.len
+                t := s.resolve_type(module, base)
+                if s.l.diags.list.items.len is not errors or s.tys.is_error(t) { return null }
+                u := s.union_variants(t) else return null
+                for v in u.variants {
+                    if v.name is name.name {
+                        if v.payload is not null { return null }
+                        x := expected else return t
+                        return if x is t or s.tys.kind(x) is .Optional(t) { x } else { null }
+                    }
+                }
+                return null
             }
         }
         .Call(callee, args, _) => return s.const_construction(module, callee, args, expected)

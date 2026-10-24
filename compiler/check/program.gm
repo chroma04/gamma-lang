@@ -24,6 +24,7 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
             }
         }
     }
+    check_consts(s)
     check_bodies(s)
     monomorphize(s)
     check_inline(s)

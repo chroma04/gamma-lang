@@ -98,6 +98,14 @@ pub PendingBody :: struct {
     pub lit: ^const ast.FnLit
 }
 
+/// A typed constant's initializer or a field's default value, checked with the function
+/// bodies against its declared type.
+pub PendingConst :: struct {
+    pub module: usize
+    pub init: ^const ast.Expr
+    pub ty: Ty
+}
+
 pub InlineFn :: struct {
     pub fn_id: u32
     pub span: source.Span
@@ -235,6 +243,7 @@ pub Sema :: struct {
     pub defs: List(tir.FnDef)
     /// The top-level functions whose bodies are still to be checked, in declaration order.
     pub pending_bodies: List(PendingBody)
+    pub pending_consts: List(PendingConst)
     /// The functions marked `#inline` (§11.10), and where.
     pub inline_fns: List(InlineFn)
     /// By effect id; the first is the pseudo-effect of `..E` terms.
@@ -276,6 +285,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         fns: list(FnSig),
         defs: list(tir.FnDef),
         pending_bodies: list(PendingBody),
+        pending_consts: list(PendingConst),
         inline_fns: list(InlineFn),
         effects: list(EffectInfo),
         adts: list(AdtInfo),

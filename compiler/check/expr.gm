@@ -68,8 +68,10 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         .For(f) => return cx.for_loop(f)
         .Block(b) => return cx.block_expected(&b, true, expect)
         .Return(v) => return cx.return_expr(v, span)
+        .Return(null) => return cx.return_expr(null, span)
         .Break(b) => return cx.break_expr(b.label, b.value, span)
         .Continue(label) => return cx.continue_expr(label, span)
+        .Continue(null) => return cx.continue_expr(null, span)
         .DotIdent(name) => {
             t := expect else {
                 cx.error(span, str.format("cannot infer the union type of `.{}` here", name.name)!)
