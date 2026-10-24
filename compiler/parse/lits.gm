@@ -1,0 +1,319 @@
+// Type literals (`struct`, `union`, `effect`), handler literals and foreign blocks: the
+// constructs whose bodies are written between braces.
+
+/// `(` params `)` after `struct`, `union` or `effect`: every parameter is compile-time and
+/// written with `:`.
+parse_decl_params :: fn(p: ^Parser) -> Abort![]ast.Param needs Alloc {
+    _ = try p.expect(.LParen, "")
+    params := (try p.parse_params()).params
+    for param in params {
+        if param.comptime {
+            p.report(param.span, "parameters of a type are always compile-time; declare them with `:`, not `::`")
+        } else if param.names.len is 0 or param.ty is null {
+            p.report(param.span, "type parameters must be named and typed, like `T: type`")
+        }
+    }
+    return params
+}
+
+/// Runs `body` until the `}` that closes a braced list of members, recovering from
+/// errors member by member. `body` parses one member and the separator after it.
+members :: fn(p: ^Parser, what: string, body: fn() -> Abort!() needs Alloc) needs Alloc {
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    while true {
+        p.skip_newlines()
+        if p.eat(.RBrace) { break }
+        if p.at_eof() {
+            _ = p.expected(str.format("`}}` to close the {}", what)!)
+            break
+        }
+        before := p.pos
+        if body() is !_ { p.recover_to_stmt_end() }
+        if p.pos is before { _ = p.bump() }
+    }
+}
+
+// ----- struct -----
+
+parse_struct_lit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    try p.deny_in_head("a struct literal")
+    start := p.lo()
+    _ = p.bump()
+    params: ?[]ast.Param = null
+    if p.at(.LParen) { params = try p.parse_decl_params() }
+    where_ := try p.parse_where_opt()
+    _ = try p.expect(.LBrace, "to begin the struct body")
+    ms := p.parse_struct_members()
+    whole := p.span_from(start)
+    return p.mk_expr(.Struct(new(ast.StructLit(params: params, where_: where_, members: ms, span: whole))!), whole)
+}
+
+/// The fields after `{`, through the closing `}`. Fields are separated by newlines or
+/// commas (§A.2).
+parse_struct_members :: fn(p: ^Parser) -> []ast.StructMember needs Alloc {
+    out := list(ast.StructMember)
+    p.members("struct body", fn() -> Abort!() needs Alloc {
+        out.push(try p.parse_struct_member())!
+        if not p.eat(.Comma) { p.expect_terminator("the field") }
+        return ()
+    })
+    return out.items
+}
+
+parse_struct_member :: fn(p: ^Parser) -> Abort!ast.StructMember needs Alloc {
+    start := p.lo()
+    attrs := try p.parse_attrs()
+    if p.at_kw(.When) {
+        if a := attrs.first() { p.report(a.span, "attributes cannot be applied to a `when` block") }
+        return p.parse_struct_when()
+    }
+    is_pub := p.eat_kw(.Pub)
+    is_using := p.eat_kw(.Using)
+    names := list(ast.Ident)
+    names.push(try p.parse_name("a field name"))!
+    while p.eat(.Comma) { names.push(try p.parse_name("a field name"))! }
+    _ = try p.expect(.Colon, "and a type after the field name")
+    ty := box(try p.parse_type())
+    default: ?^ast.Expr = null
+    if p.eat(.Assign) { default = box(try p.parse_expr()) }
+    return ast.StructMember.Field(ast.FieldDecl(
+        attrs: attrs,
+        is_pub: is_pub,
+        is_using: is_using,
+        names: names.items,
+        ty: ty,
+        default: default,
+        span: p.span_from(start),
+    ))
+}
+
+parse_struct_when :: fn(p: ^Parser) -> Abort!ast.StructMember needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    cond := box(try p.parse_head_expr())
+    _ = try p.expect(.LBrace, "to begin the `when` block")
+    then := p.parse_struct_members()
+    else_: ?[]ast.StructMember = null
+    if p.eat_kw(.Else) {
+        _ = try p.expect(.LBrace, "after `else`")
+        else_ = p.parse_struct_members()
+    }
+    return ast.StructMember.When(ast.StructWhen(cond: cond, then: then, else_: else_, span: p.span_from(start)))
+}
+
+// ----- union -----
+
+/// After `union`, at `(`: whether this is a parameter list (`union(T: type)`) rather than
+/// a tag type (`union(u8)`).
+paren_is_param_list :: fn(p: ^const Parser) -> bool {
+    if p.nth_is(1, .RParen) { return true }
+    k: usize = 1
+    while p.nth_is_name(k) {
+        k += 1
+        if not (p.nth_is(k, .Comma) and p.nth_is_name(k + 1)) { break }
+        k += 1
+    }
+    return k > 1 and p.nth(k) in (.Punct(.Colon), .Punct(.ColonColon))
+}
+
+parse_union_lit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    try p.deny_in_head("a union literal")
+    start := p.lo()
+    _ = p.bump()
+    tag_type: ?^ast.Expr = null
+    params: ?[]ast.Param = null
+    if p.at(.LParen) {
+        if p.paren_is_param_list() {
+            params = try p.parse_decl_params()
+        } else {
+            _ = p.bump()
+            old := p.restr
+            p.restr = Restr()
+            t := p.parse_type()
+            p.restr = old
+            tag_type = box(try t)
+            _ = try p.expect(.RParen, "to close the tag type")
+        }
+    }
+    where_ := try p.parse_where_opt()
+    _ = try p.expect(.LBrace, "to begin the union body")
+    ms := p.parse_union_members()
+    whole := p.span_from(start)
+    return p.mk_expr(.Union(new(ast.UnionLit(tag_type: tag_type, params: params, where_: where_, members: ms, span: whole))!), whole)
+}
+
+/// The variants after `{`, through the closing `}`, separated by commas or newlines.
+parse_union_members :: fn(p: ^Parser) -> []ast.UnionMember needs Alloc {
+    out := list(ast.UnionMember)
+    p.members("union body", fn() -> Abort!() needs Alloc {
+        out.push(try p.parse_union_member())!
+        sep := p.eat(.Comma)
+        while p.at_newline() {
+            _ = p.bump()
+            sep = true
+        }
+        if not sep and not p.at(.RBrace) and not p.at_eof() {
+            _ = p.expected("`,` or a newline after the variant")
+            p.recover_to_stmt_end()
+        }
+        return ()
+    })
+    return out.items
+}
+
+parse_union_member :: fn(p: ^Parser) -> Abort!ast.UnionMember needs Alloc {
+    start := p.lo()
+    if p.eat_kw(.When) {
+        cond := box(try p.parse_head_expr())
+        _ = try p.expect(.LBrace, "to begin the `when` block")
+        then := p.parse_union_members()
+        else_: ?[]ast.UnionMember = null
+        if p.eat_kw(.Else) {
+            _ = try p.expect(.LBrace, "after `else`")
+            else_ = p.parse_union_members()
+        }
+        return ast.UnionMember.When(ast.UnionWhen(cond: cond, then: then, else_: else_, span: p.span_from(start)))
+    }
+    name := try p.parse_decl_ident("a variant name")
+    payload: ?^ast.Expr = null
+    if p.eat(.Colon) { payload = box(try p.parse_type()) }
+    value: ?^ast.Expr = null
+    if p.eat(.Assign) { value = box(try p.parse_expr()) }
+    return ast.UnionMember.Variant(ast.Variant(name: name, payload: payload, value: value, span: p.span_from(start)))
+}
+
+// ----- effect -----
+
+parse_effect_lit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    try p.deny_in_head("an effect literal")
+    start := p.lo()
+    _ = p.bump()
+    params: ?[]ast.Param = null
+    if p.at(.LParen) { params = try p.parse_decl_params() }
+    _ = try p.expect(.LBrace, "to begin the effect body")
+    ops := list(ast.OpDecl)
+    p.members("effect body", fn() -> Abort!() needs Alloc {
+        ops.push(try p.parse_op_decl())!
+        p.expect_terminator("the operation")
+        return ()
+    })
+    whole := p.span_from(start)
+    return p.mk_expr(.Effect(new(ast.EffectLit(params: params, ops: ops.items, span: whole))!), whole)
+}
+
+/// `name: fn(params) -> T`, with `esc` or `ctl` in place of `fn`.
+parse_op_decl :: fn(p: ^Parser) -> Abort!ast.OpDecl needs Alloc {
+    start := p.lo()
+    name := try p.parse_decl_ident("an operation name")
+    _ = try p.expect(.Colon, "and an operation kind after the name")
+    k := match p.kind() {
+        .Keyword(.Fn) => ast.OpKind.Fn
+        .Keyword(.Esc) => ast.OpKind.Esc
+        .Keyword(.Ctl) => ast.OpKind.Ctl
+        _ => return !p.expected("`fn`, `esc` or `ctl`")
+    }
+    _ = p.bump()
+    _ = try p.expect(.LParen, "to begin the parameter list")
+    params := (try p.parse_params()).params
+    ret: ?^ast.Expr = null
+    if p.eat(.Arrow) { ret = box(try p.parse_type()) }
+    return ast.OpDecl(name: name, kind: k, params: params, ret: ret, span: p.span_from(start))
+}
+
+// ----- handler -----
+
+/// `handler Effect { clauses }` as an expression.
+parse_handler_lit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    try p.deny_in_head("a handler literal")
+    start := p.lo()
+    _ = p.bump()
+    effect_ := box(try p.parse_effect_ref())
+    _ = try p.expect(.LBrace, "to begin the handler body")
+    clauses := p.parse_clauses()
+    whole := p.span_from(start)
+    return p.mk_expr(.Handler(new(ast.HandlerLit(effect_: effect_, clauses: clauses, span: whole))!), whole)
+}
+
+/// The effect named by a handler: a postfix expression such as `Log`, `Yield(T)` or
+/// `m.Net`, parsed so that a following `{` is not taken.
+parse_effect_ref :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    old := p.restr
+    p.restr = Restr(no_brace: true)
+    defer p.restr = old
+    return p.parse_postfix(false)
+}
+
+/// Handler clauses after `{`, through the closing `}`.
+parse_clauses :: fn(p: ^Parser) -> []ast.Clause needs Alloc {
+    out := list(ast.Clause)
+    p.members("handler body", fn() -> Abort!() needs Alloc {
+        out.push(try p.parse_clause())!
+        p.expect_terminator("the clause")
+        return ()
+    })
+    return out.items
+}
+
+/// `name(a, b, k) => expr | block`.
+parse_clause :: fn(p: ^Parser) -> Abort!ast.Clause needs Alloc {
+    start := p.lo()
+    name := try p.parse_decl_ident("an operation name")
+    _ = try p.expect(.LParen, "after the operation name")
+    params := list(ast.Ident)
+    while not p.at(.RParen) {
+        params.push(try p.parse_name("a parameter name"))!
+        if not p.eat(.Comma) { break }
+    }
+    _ = try p.expect(.RParen, "to close the clause parameters")
+    _ = try p.expect(.FatArrow, "after the clause parameters")
+    body := try (if p.at(.LBrace) { p.parse_block_expr() } else { p.parse_expr() })
+    return ast.Clause(name: name, params: params.items, body: box(body), span: p.span_from(start))
+}
+
+// ----- foreign -----
+
+/// `foreign "lib" { members }`.
+parse_foreign :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    try p.deny_in_head("a foreign block")
+    start := p.lo()
+    _ = p.bump()
+    .Str(lib) := p.kind() else return !p.expected("the library name as a string literal after `foreign`")
+    _ = p.bump()
+    _ = try p.expect(.LBrace, "to begin the foreign block")
+    ms := list(ast.ForeignMember)
+    p.members("foreign block", fn() -> Abort!() needs Alloc {
+        ms.push(try p.parse_foreign_member())!
+        p.expect_terminator("the foreign declaration")
+        return ()
+    })
+    whole := p.span_from(start)
+    return p.mk_expr(.Foreign(new(ast.ForeignBlock(lib: lib, members: ms.items, span: whole))!), whole)
+}
+
+parse_foreign_member :: fn(p: ^Parser) -> Abort!ast.ForeignMember needs Alloc {
+    start := p.lo()
+    all := try p.parse_attrs()
+    // `#global` makes the member a variable; the attribute itself is not kept.
+    attrs := list(ast.Attribute)
+    global := false
+    for a in all {
+        if a.name.name is "global" and not global {
+            global = true
+        } else {
+            attrs.push(a)!
+        }
+    }
+    if global {
+        name := try p.parse_decl_ident("the name of the foreign variable")
+        _ = try p.expect(.Colon, "and a type after the variable name")
+        ty := box(try p.parse_type())
+        return ast.ForeignMember(attrs: attrs.items, kind: .Global(name: name, ty: ty), span: p.span_from(start))
+    }
+    name := try p.parse_decl_ident("the name of a foreign function")
+    _ = try p.expect(.ColonColon, "and a function type after the name")
+    if not p.at_kw(.Fn) { return !p.expected("a function type like `fn(args) -> T`") }
+    sig := try p.parse_foreign_fn_sig()
+    return ast.ForeignMember(attrs: all, kind: .Fn(name: name, sig: sig), span: p.span_from(start))
+}

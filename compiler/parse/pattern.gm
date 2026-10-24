@@ -1,0 +1,161 @@
+// Patterns (Appendix A.6, spec §9.1).
+
+mk_pat :: fn(p: ^Parser, k: ast.PatternKind, at: source.Span) -> ast.Pattern => ast.Pattern(id: p.next_id(), kind: k, span: at)
+
+parse_pattern :: fn(p: ^Parser) -> Abort!ast.Pattern needs Alloc {
+    try p.enter()
+    defer p.leave()
+    start := p.lo()
+    match p.kind() {
+        .Underscore => {
+            _ = p.bump()
+            return p.mk_pat(.Wildcard, p.span_from(start))
+        }
+        .Keyword(.Null) => {
+            _ = p.bump()
+            return p.mk_pat(.Null, p.span_from(start))
+        }
+        .Punct(.Bang) => {
+            _ = p.bump()
+            inner := try p.parse_pattern()
+            return p.mk_pat(.Err(new(inner)!), p.span_from(start))
+        }
+        .Punct(.Dot) => {
+            _ = p.bump()
+            name := try p.parse_ident("a variant name after `.`")
+            path := box(p.mk_expr(.DotIdent(name), p.span_from(start)))
+            args: ?[]ast.PatArg = null
+            if p.at(.LParen) { args = try p.parse_pat_args() }
+            return p.mk_pat(.Path(ast.PathPattern(path: path, args: args)), p.span_from(start))
+        }
+        .Punct(.LParen) => return p.parse_tuple_pattern()
+        .Punct(.Minus), .Int(_), .Float(_), .Str(_), .Keyword(.True), .Keyword(.False) => return p.parse_literal_pattern()
+        .Ident(_) => return p.parse_path_pattern()
+        _ => return !p.expected("a pattern")
+    }
+}
+
+/// A literal (optionally negated), possibly the lower bound of a range.
+parse_literal_pattern :: fn(p: ^Parser) -> Abort!ast.Pattern needs Alloc {
+    start := p.lo()
+    lo := try p.parse_literal_bound()
+    if p.at(.DotDot) or p.at(.DotDotEq) { return p.finish_range_pattern(start, lo) }
+    return p.mk_pat(.Lit(box(lo)), p.span_from(start))
+}
+
+/// `[-] literal`, as the expression the pattern holds.
+parse_literal_bound :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    negated := p.eat(.Minus)
+    at := p.span()
+    k: ast.ExprKind = match p.kind() {
+        .Int(l) => .Int(l)
+        .Float(l) => .Float(l)
+        .Str(l) if not negated => .Str(l)
+        .Keyword(.True) if not negated => .Bool(true)
+        .Keyword(.False) if not negated => .Bool(false)
+        _ => return !p.expected(if negated { "a numeric literal after `-`" } else { "a literal" })
+    }
+    _ = p.bump()
+    lit := p.mk_expr(k, at)
+    if not negated { return lit }
+    return p.mk_expr(.Unary(op: .Neg, operand: box(lit)), p.span_from(start))
+}
+
+/// The upper bound after `..` or `..=`: a literal or a qualified constant.
+finish_range_pattern :: fn(p: ^Parser, start: u32, lo: ast.Expr) -> Abort!ast.Pattern needs Alloc {
+    inclusive := p.at(.DotDotEq)
+    _ = p.bump()
+    qualified := p.kind() is .Ident(_)
+    hi := try (if qualified { p.parse_qualified_path() } else { p.parse_literal_bound() })
+    if qualified and not (hi.kind is .Field(_, _)) {
+        return !p.fail(hi.span, "a range bound must be a literal or a qualified constant such as `m.MAX`")
+    }
+    return p.mk_pat(.Range(lo: box(lo), hi: box(hi), inclusive: inclusive), p.span_from(start))
+}
+
+/// `name` or `a.b.c` as an expression.
+parse_qualified_path :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    id := try p.parse_ident("a name")
+    path := p.mk_expr(.Ident(id), id.span)
+    while p.at(.Dot) and p.nth(1) is .Ident(_) {
+        _ = p.bump()
+        name := try p.parse_ident("a name")
+        path = p.mk_expr(.Field(base: box(path), name: name), p.span_from(id.span.lo))
+    }
+    return path
+}
+
+/// `x`, `m.CONST`, `T.V`, `T.V(p…)`, `S(f: p, …)`, or a range with a qualified lower
+/// bound.
+parse_path_pattern :: fn(p: ^Parser) -> Abort!ast.Pattern needs Alloc {
+    start := p.lo()
+    path := try p.parse_qualified_path()
+    // `G(args)(f: p, …)`: the first parentheses instantiate a generic struct type.
+    if p.at(.LParen) and p.after_parens_is(.LParen) {
+        args := try p.parse_call_args()
+        path = p.mk_expr(.Call(callee: box(path), args: args.args, trailing_comma: args.trailing_comma), p.span_from(start))
+    }
+    if p.at(.LParen) {
+        args := try p.parse_pat_args()
+        return p.mk_pat(.Path(ast.PathPattern(path: box(path), args: args)), p.span_from(start))
+    }
+    if .Ident(id) := path.kind { return p.mk_pat(.Bind(id), p.span_from(start)) }
+    if p.at(.DotDot) or p.at(.DotDotEq) { return p.finish_range_pattern(start, path) }
+    return p.mk_pat(.Path(ast.PathPattern(path: box(path), args: null)), p.span_from(start))
+}
+
+/// Whether the token after the parenthesized group starting here is `x`.
+after_parens_is :: fn(p: ^const Parser, x: syntax.Punct) -> bool {
+    depth: usize = 0
+    i: usize = 0
+    while true {
+        match p.nth(i) {
+            .Punct(.LParen), .Punct(.LBracket), .Punct(.LBrace) => { depth += 1 }
+            .Punct(.RParen), .Punct(.RBracket), .Punct(.RBrace) => {
+                depth = depth -| 1
+                if depth is 0 { return p.nth_is(i + 1, x) }
+            }
+            .Eof => return false
+            _ => {}
+        }
+        i += 1
+    }
+}
+
+/// `( p, name: p, … )`
+parse_pat_args :: fn(p: ^Parser) -> Abort![]ast.PatArg needs Alloc {
+    _ = try p.expect(.LParen, "")
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    args := list(ast.PatArg)
+    while not p.at(.RParen) {
+        args.push(try p.parse_pat_arg())!
+        if not p.eat(.Comma) { break }
+    }
+    _ = try p.expect(.RParen, "to close the pattern arguments")
+    return args.items
+}
+
+parse_pat_arg :: fn(p: ^Parser) -> Abort!ast.PatArg needs Alloc {
+    start := p.lo()
+    name: ?ast.Ident = null
+    if p.nth_is_name(0) and p.nth_is(1, .Colon) {
+        name = try p.parse_name("a field name")
+        _ = p.bump()
+    }
+    pat := try p.parse_pattern()
+    return ast.PatArg(name: name, pat: pat, span: p.span_from(start))
+}
+
+/// `()`, `(p)`, `(p,)`, `(p, q)`, `(a: p, b: q)`.
+parse_tuple_pattern :: fn(p: ^Parser) -> Abort!ast.Pattern needs Alloc {
+    start := p.lo()
+    args := try p.parse_pat_args()
+    // The token before the closing `)`.
+    had_comma := p.pos >= 2 and p.toks[p.pos - 2].kind is .Punct(.Comma)
+    whole := p.span_from(start)
+    if args.len is 1 and args[0].name is null and not had_comma { return args[0].pat }
+    return p.mk_pat(.Tuple(args), whole)
+}

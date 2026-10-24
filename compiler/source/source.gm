@@ -14,6 +14,14 @@ pub Span :: struct {
 /// The span `lo..hi` of `file`.
 pub span :: fn(file: FileId, lo, hi: usize) -> Span => Span(file: file, lo: lo.trunc(u32), hi: hi.trunc(u32))
 
+/// The span from the start of `a` to the end of `b`.
+pub to :: fn(a: Span, b: Span) -> Span => Span(file: a.file, lo: a.lo, hi: b.hi)
+
+/// The empty span at the start of `a`.
+pub shrink_to_lo :: fn(a: Span) -> Span => Span(file: a.file, lo: a.lo, hi: a.lo)
+
+pub is_empty :: fn(a: Span) -> bool => a.lo is a.hi
+
 /// A loaded source file.
 pub SourceFile :: struct {
     /// The path as given, used in messages.

@@ -1,56 +1,62 @@
 //! gammac: the Gamma compiler written in Gamma.
 //!
 //!     gammac lex [--diag-format=short|json] [--recover] FILE...
+//!     gammac parse [--diag-format=short|json] [--recover] [--dump] FILE...
 //!
-//! `lex` prints the tokens of each file in the format of `gamma lex`, and its diagnostics
-//! to standard error in the chosen format (default `short`). With several files, the
-//! output of each is preceded by a line `==> FILE <==` on both streams. `--recover`
-//! lexes with the layout heuristic that tools use after errors. The exit status is 1
-//! if a file has errors, 2 for a usage error or a file that cannot be read.
+//! `lex` prints the tokens of each file in the format of `gamma lex`. `parse` parses each
+//! file and, with `--dump`, prints its syntax tree in the format of `gamma parse --dump`.
+//! Both print the diagnostics to standard error in the chosen format (default `short`).
+//! With several files, the output of each is preceded by a line `==> FILE <==` on both
+//! streams. `--recover` lexes with the layout heuristic that tools use after errors.
+//! The exit status is 1 if a file has errors, 2 for a usage error or a file that cannot
+//! be read.
 
+arena :: import "std/arena"
+ast :: import "./ast"
 diag :: import "./diag"
 fs :: import "std/fs"
+parse :: import "./parse"
 source :: import "./source"
 syntax :: import "./syntax"
-arena :: import "std/arena"
 
-USAGE :: "usage: gammac lex [--diag-format=short|json] [--recover] FILE...\n"
+USAGE :: "usage: gammac lex|parse [--diag-format=short|json] [--recover] [--dump] FILE...\n"
+
+/// What to do with each file.
+Command :: union { Lex, Parse }
+
+Options :: struct {
+    command: Command
+    format: diag.Format = .Short
+    recover: bool = false
+    dump: bool = false
+}
 
 main :: fn() needs Alloc + Env + Err + Fs + Out {
     args := Env.args()
-    if args.len < 2 or args[1] is not "lex" {
-        Err.write(USAGE)
-        Env.exit(2)
-    }
-    format := diag.Format.Short
-    recover := false
+    if args.len < 2 or args[1] not in ("lex", "parse") { usage() }
+    opts := Options(command: if args[1] is "lex" { .Lex } else { .Parse })
     files := list(string)
     defer files.deinit()
     for a in args[2..] {
-        if a is "--diag-format=short" {
-            format = .Short
-        } else if a is "--diag-format=json" {
-            format = .Json
-        } else if a is "--recover" {
-            recover = true
-        } else if a.starts_with("-") {
-            Err.write(USAGE)
-            Env.exit(2)
-        } else {
-            files.push(a)!
+        match a {
+            "--diag-format=short" => { opts.format = .Short }
+            "--diag-format=json" => { opts.format = .Json }
+            "--recover" => { opts.recover = true }
+            "--dump" => { opts.dump = true }
+            _ => {
+                if a.starts_with("-") { usage() }
+                files.push(a)!
+            }
         }
     }
-    if files.items.len is 0 {
-        Err.write(USAGE)
-        Env.exit(2)
-    }
+    if files.items.len is 0 { usage() }
     status: u8 = 0
     for path in files.items {
         if files.items.len > 1 {
             print("==> {} <==\n", path)
             eprint("==> {} <==\n", path)
         }
-        match lex_file(path, format, recover) {
+        match process(path, opts) {
             !_ => {
                 eprint("gammac: cannot read `{}`\n", path)
                 status = 2
@@ -64,9 +70,14 @@ main :: fn() needs Alloc + Env + Err + Fs + Out {
     if status is not 0 { Env.exit(status) }
 }
 
-/// Lexes one file and prints its tokens and diagnostics. Returns whether it had no
-/// errors.
-lex_file :: fn(path: string, format: diag.Format, recover: bool) -> fs.ReadError!bool needs Alloc + Err + Fs + Out {
+usage :: fn() -> never needs Env + Err {
+    Err.write(USAGE)
+    Env.exit(2)
+}
+
+/// Runs the command on one file and prints its output and diagnostics. Returns whether
+/// the file had no errors.
+process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Err + Fs + Out {
     text := try fs.read_all(path)
     defer free(text)
     a := arena.new()
@@ -75,13 +86,20 @@ lex_file :: fn(path: string, format: diag.Format, recover: bool) -> fs.ReadError
         sm := source.source_map()
         id := sm.add(path, text)
         diags := diag.diagnostics()
-        lexed := if recover { syntax.lex_recovering(id, text, &diags) } else { syntax.lex(id, text, &diags) }
+        lexed := if opts.recover { syntax.lex_recovering(id, text, &diags) } else { syntax.lex(id, text, &diags) }
         out := list(u8)
-        syntax.dump_tokens(sm.file(id), lexed.tokens.items, &out)
+        match opts.command {
+            .Lex => syntax.dump_tokens(sm.file(id), lexed.tokens.items, &out)
+            .Parse => {
+                next_id: ast.NodeId = 0
+                tree := parse.parse_file(id, &lexed, &next_id, &diags)
+                if opts.dump { ast.dump_file(&tree, &out) }
+            }
+        }
         Out.write(out.items)
         out.clear()
         diags.sort()
-        for d in diags.list.items { diag.render(&sm, &d, format, &out) }
+        for d in diags.list.items { diag.render(&sm, &d, opts.format, &out) }
         Err.write(out.items)
         return not diags.has_errors()
     }

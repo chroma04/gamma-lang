@@ -2,6 +2,7 @@
 
 bignum :: import "../bignum"
 source :: import "../source"
+str :: import "std/str"
 
 /// Reserved keywords (§2.4).
 pub Keyword :: union {
@@ -272,5 +273,25 @@ pub LexOutput :: struct {
 
 pub is_punct :: fn(k: TokenKind, p: Punct) -> bool => match k {
     .Punct(q) => q is p
+    _ => false
+}
+
+/// A short description of a token for diagnostics: "identifier `x`", "`+`".
+pub describe :: fn(k: TokenKind) -> string needs Alloc => match k {
+    .Ident(s) => str.format("identifier `{}`", s)!
+    .Underscore => "`_`"
+    .Keyword(kw) => str.format("keyword `{}`", keyword_text(kw))!
+    .Int(l) => if l.is_char { "character literal" } else { "integer literal" }
+    .Float(_) => "float literal"
+    .Str(_) => "string literal"
+    .Intrinsic(s) => str.format("intrinsic `@{}`", s)!
+    .Attribute(s) => str.format("attribute `#{}`", s)!
+    .Punct(p) => str.format("`{}`", punct_text(p))!
+    .Newline => "newline"
+    .Eof => "end of file"
+}
+
+pub is_keyword :: fn(k: TokenKind, kw: Keyword) -> bool => match k {
+    .Keyword(x) => x is kw
     _ => false
 }

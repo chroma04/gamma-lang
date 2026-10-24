@@ -44,9 +44,11 @@ pub Diagnostic :: struct {
 pub Diagnostics :: struct {
     pub list: List(Diagnostic)
     errors: usize
+    /// While above zero, diagnostics are dropped (a parser trying an alternative).
+    suppressed: u32
 }
 
-pub diagnostics :: fn() -> Diagnostics needs Alloc => Diagnostics(list: list(Diagnostic), errors: 0)
+pub diagnostics :: fn() -> Diagnostics needs Alloc => Diagnostics(list: list(Diagnostic), errors: 0, suppressed: 0)
 
 /// A new error at `span`.
 pub error :: fn(span: source.Span, message: string) -> Diagnostic needs Alloc {
@@ -75,9 +77,31 @@ pub add_fix :: fn(d: ^Diagnostic, message: string, span: source.Span, text: stri
     d.fixes.push(Fix(message: message, edits: edits))!
 }
 
+/// Adds a fix made of several edits of non-overlapping spans.
+pub add_fix_edits :: fn(d: ^Diagnostic, message: string, edits: []const Edit) needs Alloc {
+    l := list(Edit)
+    l.extend(edits)!
+    d.fixes.push(Fix(message: message, edits: l))!
+}
+
+/// Records `d`, unless diagnostics are suppressed, or it repeats one with the same
+/// severity, location and message.
 pub push :: fn(ds: ^Diagnostics, d: Diagnostic) {
+    if ds.suppressed > 0 { return }
+    for old in ds.list.items {
+        if old.span is d.span and old.severity is d.severity and old.message is d.message { return }
+    }
     if d.severity is .Error { ds.errors += 1 }
     ds.list.push(d)!
+}
+
+/// Drops the diagnostics reported until the matching `unsuppress`.
+pub suppress :: fn(ds: ^Diagnostics) {
+    ds.suppressed += 1
+}
+
+pub unsuppress :: fn(ds: ^Diagnostics) {
+    if ds.suppressed > 0 { ds.suppressed -= 1 }
 }
 
 /// Reports an error at `span` with nothing attached.

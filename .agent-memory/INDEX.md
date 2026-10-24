@@ -1,10 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-24) — PRs #1–#71 merged, v0.1.0 tagged
-- s38 (branch claude/lucid-clarke-qkl7ak): self-hosted compiler groundwork (decisions/043,
-  roadmap/self-hosting.md): compiler/ = gammac in Gamma; stage 1 lexer byte-identical to
-  `gamma lex` (tokens + JSON diags) on all ~980 .gm files, tests/selfhost.rs. Fixed VM crash
-  on `x!` of `E!()`. Next stage: parser.
+- s38 (PR #72 merged; then s38b on the same branch): self-hosted compiler (decisions/043,
+  roadmap/self-hosting.md): compiler/ = gammac; lexer + parser byte-identical to
+  `gamma lex`/`parse --dump` (+ JSON diags) on all ~980 .gm files, tests/selfhost.rs.
+  docs/guide/idioms.md = growing idioms handbook (doc_examples-checked; ADD to it whenever
+  a pattern is learned). `?T in (..)` fix (§7.7). Next: stage 3 modules/packages.
 - s37 (branch claude/sharp-turing-sfr2js): generic `#soa []T` (stand-in type + SoaDeferred
   expanded per instance) and std/collections/soa_list `SoaList(S)` (decisions/042).
 - s36 (branch dev): stdlib batch 1 (decisions/041): slice methods (core/slice + SLICE_FNS),

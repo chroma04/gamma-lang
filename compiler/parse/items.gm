@@ -1,0 +1,181 @@
+// Top-level declarations (Appendix A.1, spec §3.4).
+
+/// One top-level declaration: `[attrs] [pub] binding`, `when`, `handler … for …`,
+/// `test "name" { … }`, `bench "name" { … }` or `@static_assert(…)`.
+parse_item :: fn(p: ^Parser) -> Abort!ast.Item needs Alloc {
+    start := p.lo()
+    doc := p.doc_before(start)
+    attrs := try p.parse_attrs()
+    pub_span := p.span()
+    is_pub := p.eat_kw(.Pub)
+    k: ast.ItemKind = match p.kind() {
+        .Keyword(.When) => {
+            p.deny_pub(is_pub, pub_span, "a `when` block")
+            ast.ItemKind.When(try p.parse_when_items())
+        }
+        .Keyword(.Handler) => .Handler(new(try p.parse_handler_decl())!)
+        .Ident(name) if name in ("test", "bench") and p.nth(1) is .Str(_) => {
+            bench := name is "bench"
+            p.deny_pub(is_pub, pub_span, if bench { "a benchmark" } else { "a test" })
+            try p.parse_test(bench)
+        }
+        .Intrinsic(_) => {
+            p.deny_pub(is_pub, pub_span, "an intrinsic call")
+            ast.ItemKind.Intrinsic(box(try p.parse_expr()))
+        }
+        .Ident(_), .Underscore, .Keyword(_) if p.binding_ahead() => .Binding(try p.parse_binding())
+        _ => return !p.expected("a declaration")
+    }
+    return ast.Item(id: p.next_id(), span: p.span_from(start), doc: doc, attrs: attrs, is_pub: is_pub, kind: k)
+}
+
+deny_pub :: fn(p: ^Parser, is_pub: bool, at: source.Span, what: string) needs Alloc {
+    if is_pub { p.report(at, str.format("`pub` cannot be applied to {}", what)!) }
+}
+
+/// `test "name" { … }` or `bench "name" { … }`.
+parse_test :: fn(p: ^Parser, bench: bool) -> Abort!ast.ItemKind needs Alloc {
+    _ = p.bump()
+    name_span := p.span()
+    .Str(name) := p.kind() else return !p.expected("the name of the test as a string literal")
+    _ = p.bump()
+    // A test body is a function body: no label outside it is in scope.
+    saved := p.labels
+    p.labels = list(string)
+    body := p.parse_block()
+    p.labels = saved
+    return ast.ItemKind.Test(ast.TestDecl(name: name, name_span: name_span, body: try body, bench: bench))
+}
+
+/// `handler E for T [needs effects] { clauses }`.
+parse_handler_decl :: fn(p: ^Parser) -> Abort!ast.HandlerDecl needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    params: ?[]ast.Param = null
+    if p.at(.LParen) { params = try p.parse_decl_params() }
+    effect_ := box(try p.parse_effect_ref())
+    _ = try p.expect_kw(.For, "after the effect of a handler declaration")
+    old := p.restr
+    p.restr = Restr(no_brace: true)
+    for_ty := p.parse_type()
+    p.restr = old
+    for_type := box(try for_ty)
+    effects := try p.parse_needs_opt(false)
+    _ = try p.expect(.LBrace, "to begin the handler body")
+    saved := p.labels
+    p.labels = list(string)
+    p.restr = Restr()
+    clauses := p.parse_clauses()
+    p.restr = old
+    p.labels = saved
+    return ast.HandlerDecl(
+        params: params,
+        effect_: effect_,
+        for_ty: for_type,
+        effects: effects,
+        clauses: clauses,
+        span: p.span_from(start),
+    )
+}
+
+/// `when cond { items } [else when … | else { items }]`.
+parse_when_items :: fn(p: ^Parser) -> Abort!ast.WhenItems needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    cond := box(try p.parse_head_expr())
+    then := try p.parse_top_block()
+    else_: ?[]ast.Item = null
+    if p.eat_kw(.Else) {
+        if p.at_kw(.When) {
+            nested_start := p.lo()
+            nested := try p.parse_when_items()
+            items := list(ast.Item)
+            items.push(ast.Item(
+                id: p.next_id(),
+                span: p.span_from(nested_start),
+                doc: null,
+                attrs: empty_slice(ast.Attribute),
+                is_pub: false,
+                kind: .When(nested),
+            ))!
+            else_ = items.items
+        } else {
+            else_ = try p.parse_top_block()
+        }
+    }
+    return ast.WhenItems(cond: cond, then: then, else_: else_, span: p.span_from(start))
+}
+
+/// `{ items }` of a top-level `when`. Errors are recovered item by item.
+parse_top_block :: fn(p: ^Parser) -> Abort![]ast.Item needs Alloc {
+    _ = try p.expect(.LBrace, "to begin the block")
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    try p.enter()
+    defer p.leave()
+    items := list(ast.Item)
+    while true {
+        p.skip_newlines()
+        if p.eat(.RBrace) { break }
+        if p.at_eof() {
+            _ = p.expected("`}` to close the block")
+            break
+        }
+        before := p.pos
+        if item := p.parse_item() {
+            items.push(item)!
+            p.expect_terminator("the declaration")
+        } else {
+            p.recover_to_stmt_end()
+        }
+        if p.pos is before { _ = p.bump() }
+    }
+    return items.items
+}
+
+// ----- doc comments -----
+
+/// The doc comments that directly precede the declaration starting at byte `item_lo`,
+/// joined by newlines.
+///
+/// A comment is adjacent to what follows when that begins on the next line, after
+/// indentation only (the lexer records where, in `next_lo`), and the comment starts its
+/// own line.
+doc_before :: fn(p: ^const Parser, item_lo: u32) -> ?string needs Alloc {
+    // The comments that end at or before `item_lo`.
+    idx: usize = 0
+    while idx < p.docs.len and p.docs[idx].span.hi <= item_lo { idx += 1 }
+    next_lo := item_lo
+    first := idx
+    while first > 0 {
+        d := p.docs[first - 1]
+        if d.next_lo is not next_lo or not p.starts_line(&d) { break }
+        next_lo = d.span.lo
+        first -= 1
+    }
+    if first is idx { return null }
+    out := list(u8)
+    for i in first..idx {
+        if i > first { out.push('\n')! }
+        out.extend(p.docs[i].text)!
+    }
+    return out.items
+}
+
+/// True if no code precedes the comment on its line.
+starts_line :: fn(p: ^const Parser, d: ^const syntax.DocComment) -> bool {
+    // The last token that starts before the comment.
+    lo: usize = 0
+    hi := p.toks.len
+    while lo < hi {
+        mid := lo + (hi - lo) / 2
+        if p.toks[mid].span.lo < d.span.lo {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    if lo is 0 { return true }
+    return p.toks[lo - 1].kind in (.Newline, .Punct(.LBrace))
+}

@@ -103,9 +103,9 @@ Versions and what each kind of change means are described in
 ### Added
 
 - `compiler/`: `gammac`, a Gamma compiler written in Gamma, the start of a self-hosted
-  toolchain. Its first stage, the lexer, produces the same tokens and diagnostics as
-  `gamma lex` on every `.gm` file of the repository, which `tests/selfhost.rs` checks
-  (see `docs/self-hosting.md`).
+  toolchain. Its lexer and parser produce the same tokens, syntax trees and diagnostics as
+  `gamma lex` and `gamma parse --dump` on every `.gm` file of the repository, which
+  `tests/selfhost.rs` checks (see `docs/self-hosting.md`).
 
 ### Fixed
 

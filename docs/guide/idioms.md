@@ -149,6 +149,108 @@ main :: fn() needs Out {
 - **Test a variant with `is`**, including nested payloads: `kind is .Punct(.Dot)`. Bind with `if .Punct(p) := kind { … }` or a `match` arm.
 - **Guards** go after the pattern: `.Punct(p) if p in (Punct.RParen, Punct.RBracket) => …`. A guarded arm does not count toward exhaustiveness.
 
+## Optional parts of variants
+
+In a pattern, a name in the position of an optional matches only a *present* value (§9.3). That is what makes `if x := opt` work, but it also means that `.Break(label, value)`, for a payload `(label: ?Ident, value: ?^Expr)`, does not match a `break` without a label. When a payload has optional parts, give the variant a struct payload and look at the fields:
+
+```gamma
+BreakExpr :: struct {
+    label: ?string
+    value: ?i32
+}
+
+Expr :: union {
+    Break: BreakExpr
+    Return: ?i32
+    Int: i32
+}
+
+describe :: fn(e: Expr) -> string => match e {
+    .Break(b) => if b.label is null { "break" } else { "labeled break" }
+    .Return(null) => "return"
+    .Return(_) => "return a value"
+    .Int(_) => "integer"
+}
+
+main :: fn() needs Out {
+    print("{}\n", describe(.Break(BreakExpr(label: null, value: null))))
+    print("{}\n", describe(.Break(BreakExpr(label: "outer", value: 1))))
+    print("{}\n", describe(.Return(null)))
+}
+```
+
+```output
+break
+labeled break
+return
+```
+
+With a single optional payload, two arms (`.Return(null)` and `.Return(x)`) read well too.
+
+A line that *starts* with `.Name` continues the previous line (§2.8), so a variant that begins a line, such as the value at the end of a block arm, is written with its type: `ast.ItemKind.When(…)`.
+
+## Errors that unwind a recursive descent
+
+A parser reports a syntax error once and then unwinds to a point where it can recover. Give the error a type of its own (an empty struct is enough), return `Abort!T` from every parsing function, propagate with `try`, and write the report as a function that *returns* the error value, so that failing reads `return !p.fail(…)`:
+
+```gamma
+Abort :: struct {}
+
+Parser :: struct {
+    text: string
+    pos: usize = 0
+    errors: u32 = 0
+}
+
+fail :: fn(p: ^Parser, message: string) -> Abort needs Out {
+    print("error at {}: {}\n", p.pos, message)
+    p.errors += 1
+    return Abort()
+}
+
+digit :: fn(p: ^Parser) -> Abort!u32 needs Out {
+    c := p.text.get(p.pos) else return !p.fail("expected a digit, found the end")
+    if c not in '0'..='9' { return !p.fail("expected a digit") }
+    p.pos += 1
+    return u32(c - '0')
+}
+
+sum :: fn(p: ^Parser) -> Abort!u32 needs Out {
+    total := try p.digit()
+    while p.text.get(p.pos) is '+' {
+        p.pos += 1
+        total += try p.digit()
+    }
+    return total
+}
+
+main :: fn() needs Out {
+    for text in ("1+2+3", "1+x", "4+") {
+        parser := Parser(text: text)
+        if n := parser.sum() { print("{}\n", n) }
+    }
+}
+```
+
+```output
+6
+error at 2: expected a digit
+error at 2: expected a digit, found the end
+```
+
+State that must be restored on every way out, such as a nesting depth or a mode flag, is saved and restored with `defer`, which runs on a `try` that propagates as well:
+
+```gamma fragment
+parse_head_expr :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    old := p.restr
+    p.restr = Restr(no_brace: true)
+    defer p.restr = old
+    return p.parse_expr()
+}
+```
+
+Behavior that varies inside a fixed frame, such as "parse one member" inside "loop to the closing brace and recover from errors", is a second-class function parameter: `p.members("union body", fn() -> Abort!() needs Alloc { … })`. The literal can use and change the caller's locals, and it costs no allocation.
+
 ## Memory: one arena per phase
 
 Most programs allocate in phases: read a file, build a structure, print a result, forget all of it. Give each phase an arena and let the arena free everything at once. Code inside the phase allocates through the `Alloc` effect without caring where the memory comes from, and nothing needs its own `deinit`:
@@ -214,5 +316,6 @@ main :: fn() needs Alloc + Out {
 - **`x in s`** asks whether a slice contains `x`; there is no `.contains` method for slices.
 - **`for i, c in enumerate(s)`** gives indexes and elements; `for c in s` iterates the bytes of a string.
 - **`while true` with an exit inside** (`b := next() else break`) needs no `return` after the loop: the compiler knows the loop only ends where it says.
+- **A keyword cannot be a name**, not even a field name: write `effect_` or `is_foreign`.
 - **Conversions say what they do**: `u64(x)` only when lossless, `x.trunc(u32)` to keep the low bits, `x.checked(u8)` for an optional.
 - **Tests live next to the code** in `test "…" { }` blocks; a test that allocates runs its body in an arena, or releases what it allocates.

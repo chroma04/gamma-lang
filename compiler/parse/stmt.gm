@@ -1,0 +1,424 @@
+// Blocks, statements, bindings and control flow (Appendix A.4, spec §4 and §8).
+
+/// The assignment operator of a token.
+assign_op :: fn(k: syntax.TokenKind) -> ?ast.AssignOp => match k {
+    .Punct(.Assign) => .Assign
+    .Punct(.PlusAssign) => .Compound(.Add(.Checked))
+    .Punct(.MinusAssign) => .Compound(.Sub(.Checked))
+    .Punct(.StarAssign) => .Compound(.Mul(.Checked))
+    .Punct(.SlashAssign) => .Compound(.Div)
+    .Punct(.PercentAssign) => .Compound(.Rem)
+    .Punct(.ShlAssign) => .Compound(.Shl(.Checked))
+    .Punct(.ShrAssign) => .Compound(.Shr)
+    .Punct(.AmpAssign) => .Compound(.BitAnd)
+    .Punct(.PipeAssign) => .Compound(.BitOr)
+    .Punct(.TildeAssign) => .Compound(.BitXor)
+    .Punct(.PlusWrapAssign) => .Compound(.Add(.Wrap))
+    .Punct(.MinusWrapAssign) => .Compound(.Sub(.Wrap))
+    .Punct(.StarWrapAssign) => .Compound(.Mul(.Wrap))
+    .Punct(.ShlWrapAssign) => .Compound(.Shl(.Wrap))
+    .Punct(.PlusSatAssign) => .Compound(.Add(.Sat))
+    .Punct(.MinusSatAssign) => .Compound(.Sub(.Sat))
+    .Punct(.StarSatAssign) => .Compound(.Mul(.Sat))
+    .Punct(.ShlSatAssign) => .Compound(.Shl(.Sat))
+    _ => null
+}
+
+// ----- blocks -----
+
+/// `{ stmt … }`. Errors in statements are recovered inside the block, so this fails
+/// only if the `{` is missing.
+parse_block :: fn(p: ^Parser) -> Abort!ast.Block needs Alloc {
+    start := p.lo()
+    _ = try p.expect(.LBrace, "to begin a block")
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    try p.enter()
+    stmts := p.parse_block_body()
+    p.leave()
+    return ast.Block(id: p.next_id(), stmts: stmts, span: p.span_from(start))
+}
+
+/// The statements after `{`, through the closing `}`.
+parse_block_body :: fn(p: ^Parser) -> []ast.Stmt needs Alloc {
+    stmts := list(ast.Stmt)
+    while true {
+        p.skip_newlines()
+        if p.eat(.RBrace) { break }
+        if p.at_eof() {
+            _ = p.expected("`}` to close the block")
+            break
+        }
+        before := p.pos
+        start := p.lo()
+        if s := p.parse_stmt() {
+            stmts.push(s)!
+            p.expect_terminator("the statement")
+        } else {
+            p.recover_to_stmt_end()
+            at := p.span_from(start)
+            stmts.push(ast.Stmt(id: p.next_id(), kind: .Expr(box(p.error_expr(at))), span: at))!
+        }
+        if p.pos is before { _ = p.bump() }
+    }
+    return stmts.items
+}
+
+// ----- statements -----
+
+parse_stmt :: fn(p: ^Parser) -> Abort!ast.Stmt needs Alloc {
+    start := p.lo()
+    k := try p.parse_stmt_kind()
+    return ast.Stmt(id: p.next_id(), kind: k, span: p.span_from(start))
+}
+
+parse_stmt_kind :: fn(p: ^Parser) -> Abort!ast.StmtKind needs Alloc {
+    match p.kind() {
+        .Attribute(_) => {
+            attrs := try p.parse_attrs()
+            if not p.binding_ahead() { return !p.expected("a declaration after the attribute") }
+            return .Binding(attrs: attrs, binding: try p.parse_binding())
+        }
+        .Keyword(.Defer), .Keyword(.Errdefer) => {
+            is_err := p.at_kw(.Errdefer)
+            _ = p.bump()
+            body := try p.parse_defer_body()
+            return .Defer(is_err: is_err, body: new(body)!)
+        }
+        .Keyword(.When) => return .When(new(try p.parse_when_stmt())!)
+        .Keyword(.While) => return p.parse_while(null)
+        .Keyword(.Cancel) => {
+            _ = p.bump()
+            return .Cancel(box(try p.parse_expr()))
+        }
+        .Punct(.LBrace) => return .Block(try p.parse_block())
+        .Ident(_), .Underscore => return p.parse_name_stmt()
+        .Keyword(_) if p.binding_ahead() => return .Binding(attrs: empty_slice(ast.Attribute), binding: try p.parse_binding())
+        .Punct(.Dot), .Punct(.Bang), .Punct(.LParen), .Punct(.Minus), .Int(_), .Str(_) => {
+            if k := try p.parse_let_else() { return k }
+            return p.parse_expr_or_assign()
+        }
+        _ => return p.parse_expr_or_assign()
+    }
+}
+
+/// A statement starting with an identifier or `_` (A.7 rule 1).
+parse_name_stmt :: fn(p: ^Parser) -> Abort!ast.StmtKind needs Alloc {
+    if p.kind() is .Ident(_) and p.nth_is(1, .Colon) and p.nth(2) in (.Keyword(.For), .Keyword(.While), .Keyword(.With)) {
+        label := try p.parse_ident("a label")
+        _ = p.bump()
+        if p.at_kw(.While) { return p.parse_while(label) }
+        if p.at_kw(.For) { return .Expr(box(try p.parse_for(label))) }
+        return .Expr(box(try p.parse_with(label)))
+    }
+    if p.binding_ahead() { return .Binding(attrs: empty_slice(ast.Attribute), binding: try p.parse_binding()) }
+    if k := try p.parse_let_else() { return k }
+    return p.parse_expr_or_assign()
+}
+
+/// `pattern := value else fallback` with a pattern that is not a plain name (§4.5), or
+/// `null` (consuming nothing) if no such binding starts here.
+parse_let_else :: fn(p: ^Parser) -> Abort!?ast.StmtKind needs Alloc {
+    pat := p.speculate(fn() -> Abort!ast.Pattern needs Alloc {
+        pat := try p.parse_pattern()
+        if p.at(.ColonEq) and not (pat.kind is .Bind(_) or pat.kind is .Wildcard) { return pat }
+        return !Abort()
+    }) else return null
+    _ = p.bump()
+    value := try p.parse_expr()
+    if .Else(e) := value.kind {
+        if c := e.capture {
+            p.report(c.span, "the `else` of a pattern binding cannot capture an error; match the error with `!e` in a `match`")
+            return ast.StmtKind.Expr(box(value))
+        }
+        return ast.StmtKind.LetElse(pat: pat, value: e.lhs, fallback: e.rhs)
+    }
+    p.report(pat.span, "a binding with a pattern that can fail needs `else` to leave the block: `.V(x) := e else return …` (§4.5)")
+    return ast.StmtKind.Expr(box(value))
+}
+
+/// True if a binding (`x :: e`, `x := e`, `x: T …`, `a, b := e`) starts here.
+binding_ahead :: fn(p: ^const Parser) -> bool {
+    if not p.nth_is_name(0) { return false }
+    if p.nth(1) in (.Punct(.ColonColon), .Punct(.ColonEq), .Punct(.Colon)) { return true }
+    if not p.nth_is(1, .Comma) { return false }
+    k: usize = 0
+    while p.nth_is_name(k) and p.nth_is(k + 1, .Comma) { k += 2 }
+    return p.nth_is_name(k) and p.nth(k + 1) in (.Punct(.ColonColon), .Punct(.ColonEq), .Punct(.Colon))
+}
+
+/// `names (:: | :=) e`, `names : T (: | =) e`.
+parse_binding :: fn(p: ^Parser) -> Abort!ast.Binding needs Alloc {
+    start := p.lo()
+    names := list(ast.Ident)
+    names.push(try p.parse_name("a name"))!
+    while p.eat(.Comma) { names.push(try p.parse_name("a name"))! }
+    ty: ?^ast.Expr = null
+    kind := ast.BindingKind.Const
+    if p.eat(.ColonColon) {
+        kind = .Const
+    } else if p.eat(.ColonEq) {
+        kind = .Var
+    } else if p.eat(.Colon) {
+        ty = box(try p.parse_type())
+        if p.eat(.Colon) {
+            kind = .Const
+        } else if p.eat(.Assign) {
+            kind = .Var
+        } else {
+            return !p.expected("`=` or `:` and an initializer after the type")
+        }
+    } else {
+        return !p.expected("`::`, `:=` or `:` in a binding")
+    }
+    init := box(try p.parse_rhs(names.items.len))
+    return ast.Binding(id: p.next_id(), names: names.items, ty: ty, kind: kind, init: init, span: p.span_from(start))
+}
+
+/// The right side of a binding or assignment with `targets` names or places. With
+/// several, `a, b = b, a` means `a, b = (b, a)` (§4.7).
+parse_rhs :: fn(p: ^Parser, targets: usize) -> Abort!ast.Expr needs Alloc {
+    first := try p.parse_expr()
+    if targets < 2 or not p.at(.Comma) { return first }
+    elems := list(ast.TupleElem)
+    elems.push(ast.TupleElem(name: null, value: first))!
+    while p.eat(.Comma) { elems.push(ast.TupleElem(name: null, value: try p.parse_expr()))! }
+    last := elems.items[elems.items.len - 1].value.span
+    return p.mk_expr(.Tuple(elems.items), first.span.to(last))
+}
+
+/// An expression statement, or an assignment `place[, place…] op= e`.
+parse_expr_or_assign :: fn(p: ^Parser) -> Abort!ast.StmtKind needs Alloc {
+    places := list(ast.Expr)
+    places.push(try p.parse_expr())!
+    while p.eat(.Comma) { places.push(try p.parse_expr())! }
+    if op := assign_op(p.kind()) {
+        _ = p.bump()
+        value := box(try p.parse_rhs(places.items.len))
+        return .Assign(places: places.items, op: op, value: value)
+    }
+    if places.items.len > 1 { return !p.expected("an assignment operator after the list of places") }
+    return .Expr(box(places.items[0]))
+}
+
+/// The statement after `defer` or `errdefer`: a block, an expression or an assignment.
+parse_defer_body :: fn(p: ^Parser) -> Abort!ast.Stmt needs Alloc {
+    start := p.lo()
+    k := if p.at(.LBrace) { ast.StmtKind.Block(try p.parse_block()) } else { try p.parse_expr_or_assign() }
+    return ast.Stmt(id: p.next_id(), kind: k, span: p.span_from(start))
+}
+
+// ----- when -----
+
+parse_when_stmt :: fn(p: ^Parser) -> Abort!ast.WhenStmt needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    cond := box(try p.parse_head_expr())
+    then := try p.parse_block()
+    else_: ?ast.WhenElse = null
+    if p.eat_kw(.Else) {
+        if p.at_kw(.When) {
+            else_ = ast.WhenElse.When(new(try p.parse_when_stmt())!)
+        } else {
+            else_ = ast.WhenElse.Block(try p.parse_block())
+        }
+    }
+    return ast.WhenStmt(cond: cond, then: then, else_: else_, span: p.span_from(start))
+}
+
+// ----- conditions, if, while -----
+
+/// `cond = cond_part { 'and' cond_part }` (A.7 rule 2).
+parse_cond :: fn(p: ^Parser) -> Abort!ast.Cond needs Alloc {
+    start := p.lo()
+    old := p.restr
+    p.restr = Restr(no_brace: true, no_and: true)
+    parts := list(ast.CondPart)
+    r := p.parse_cond_parts(&parts)
+    p.restr = old
+    try r
+    // The parts are joined by `and`, so an `or` directly inside one of them mixes the
+    // two operators (§7.8).
+    if parts.items.len > 1 {
+        for part in parts.items {
+            e := match part {
+                .Expr(x) => x
+                .Bind(_, value) => value
+            }
+            if e.kind is .Binary(.Or, _, _) { p.report(e.span, "cannot mix `and` and `or` without parentheses") }
+        }
+    }
+    return ast.Cond(parts: parts.items, span: p.span_from(start))
+}
+
+parse_cond_parts :: fn(p: ^Parser, parts: ^List(ast.CondPart)) -> Abort!() needs Alloc {
+    while true {
+        parts.push(try p.parse_cond_part())!
+        if not p.eat_kw(.And) { break }
+    }
+    return ()
+}
+
+parse_cond_part :: fn(p: ^Parser) -> Abort!ast.CondPart needs Alloc {
+    bind := p.speculate(fn() -> Abort!ast.Pattern needs Alloc {
+        pat := try p.parse_pattern()
+        if p.at(.ColonEq) { return pat }
+        return !Abort()
+    })
+    if pat := bind {
+        _ = p.bump()
+        return ast.CondPart.Bind(pat: pat, value: box(try p.parse_expr()))
+    }
+    return ast.CondPart.Expr(box(try p.parse_expr()))
+}
+
+/// After the condition of an `if` or `while`, `=` is written for a comparison (§C.5):
+/// `if x = 1 {`.
+reject_assign_after_cond :: fn(p: ^Parser) -> Abort!() needs Alloc {
+    if not p.at(.Assign) { return () }
+    at := p.span()
+    d := diag.error(at, "expected `{` after the condition, found `=`; to compare values, use `is` (§7.6)")
+    d.add_fix("write `is`", at, "is")
+    return !p.fail_diag(d)
+}
+
+/// `if cond { … } { else if cond { … } } [else { … } | else e => …]`.
+parse_if :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    branches := list(ast.IfBranch)
+    cond := try p.parse_cond()
+    try p.reject_assign_after_cond()
+    branches.push(ast.IfBranch(cond: cond, block: try p.parse_block()))!
+    else_: ?ast.IfElse = null
+    while p.at_kw(.Else) {
+        if p.nth_is_kw(1, .If) {
+            _ = p.bump()
+            _ = p.bump()
+            c := try p.parse_cond()
+            try p.reject_assign_after_cond()
+            branches.push(ast.IfBranch(cond: c, block: try p.parse_block()))!
+        } else if p.nth_is(1, .LBrace) {
+            _ = p.bump()
+            else_ = ast.IfElse.Block(try p.parse_block())
+            break
+        } else if p.nth_is_name(1) and p.nth_is(2, .FatArrow) {
+            _ = p.bump()
+            name := try p.parse_name("a name")
+            _ = p.bump()
+            else_ = ast.IfElse.Capture(name: name, body: box(try p.parse_capture_body()))
+            break
+        } else {
+            // `if c { … } else d` is the fallback form `e else d`, which the caller parses.
+            break
+        }
+    }
+    whole := p.span_from(start)
+    return p.mk_expr(.If(new(ast.IfExpr(branches: branches.items, else_: else_, span: whole))!), whole)
+}
+
+/// A loop or `with` body with `label` in scope.
+parse_labeled_block :: fn(p: ^Parser, label: ?ast.Ident) -> Abort!ast.Block needs Alloc {
+    l := label else return p.parse_block()
+    p.labels.push(l.name)!
+    defer _ = p.labels.pop()
+    return p.parse_block()
+}
+
+/// `while cond { … }`, after an optional label.
+parse_while :: fn(p: ^Parser, label: ?ast.Ident) -> Abort!ast.StmtKind needs Alloc {
+    _ = p.bump()
+    cond := try p.parse_cond()
+    try p.reject_assign_after_cond()
+    body := try p.parse_labeled_block(label)
+    return .While(ast.WhileStmt(label: label, cond: cond, body: body))
+}
+
+// ----- for, with, match -----
+
+/// `[label:] for p, q in e { … }`; the label has been consumed.
+parse_for :: fn(p: ^Parser, label: ?ast.Ident) -> Abort!ast.Expr needs Alloc {
+    start := if l := label { l.span.lo } else { p.lo() }
+    _ = p.bump()
+    pats := list(ast.Pattern)
+    pats.push(try p.parse_pattern())!
+    while p.eat(.Comma) { pats.push(try p.parse_pattern())! }
+    _ = try p.expect_kw(.In, "after the patterns of the `for`")
+    iter := box(try p.parse_head_expr())
+    body := try p.parse_labeled_block(label)
+    whole := p.span_from(start)
+    return p.mk_expr(.For(new(ast.ForExpr(label: label, pats: pats.items, iter: iter, body: body, span: whole))!), whole)
+}
+
+/// `[label:] with e, f [on s] { … }`; the label has been consumed.
+parse_with :: fn(p: ^Parser, label: ?ast.Ident) -> Abort!ast.Expr needs Alloc {
+    start := if l := label { l.span.lo } else { p.lo() }
+    _ = p.bump()
+    handlers := list(ast.Expr)
+    handlers.push(try p.parse_head_expr())!
+    while p.eat(.Comma) { handlers.push(try p.parse_head_expr())! }
+    on: ?^ast.Expr = null
+    if p.at_word("on") {
+        _ = p.bump()
+        on = box(try p.parse_head_expr())
+    }
+    body := try p.parse_labeled_block(label)
+    whole := p.span_from(start)
+    return p.mk_expr(.With(new(ast.WithExpr(label: label, handlers: handlers.items, on: on, body: body, span: whole))!), whole)
+}
+
+/// `match e { arm … }`.
+parse_match :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    scrutinee := box(try p.parse_head_expr())
+    _ = try p.expect(.LBrace, "to begin the match arms")
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    try p.enter()
+    arms := p.parse_arms()
+    p.leave()
+    whole := p.span_from(start)
+    return p.mk_expr(.Match(new(ast.MatchExpr(scrutinee: scrutinee, arms: arms, span: whole))!), whole)
+}
+
+/// The arms after `{`, through the closing `}`.
+parse_arms :: fn(p: ^Parser) -> []ast.Arm needs Alloc {
+    arms := list(ast.Arm)
+    while true {
+        p.skip_newlines()
+        if p.eat(.RBrace) { break }
+        if p.at_eof() {
+            _ = p.expected("`}` to close the match")
+            break
+        }
+        before := p.pos
+        if arm := p.parse_arm() {
+            arms.push(arm)!
+            p.expect_terminator("the match arm")
+        } else {
+            p.recover_to_stmt_end()
+        }
+        if p.pos is before { _ = p.bump() }
+    }
+    return arms.items
+}
+
+/// `p1, p2 [if guard] => body`.
+parse_arm :: fn(p: ^Parser) -> Abort!ast.Arm needs Alloc {
+    start := p.lo()
+    pats := list(ast.Pattern)
+    pats.push(try p.parse_pattern())!
+    while p.eat(.Comma) { pats.push(try p.parse_pattern())! }
+    guard: ?^ast.Expr = null
+    if p.eat_kw(.If) { guard = box(try p.parse_expr()) }
+    _ = try p.expect(.FatArrow, "after the pattern of the match arm")
+    body := try (if p.at(.LBrace) { p.parse_block_expr() } else { p.parse_expr() })
+    // An assignment is a statement, so it needs a block: `p => { x = 1 }`.
+    if assign_op(p.kind()) is not null {
+        return !p.fail(p.span(), "an arm's body is an expression; put an assignment in a block: `=> { x = v }`")
+    }
+    return ast.Arm(pats: pats.items, guard: guard, body: box(body), span: p.span_from(start))
+}

@@ -1,0 +1,731 @@
+// A stable, span-free textual rendering of the syntax tree, the format of
+// `gamma parse --dump` and of the parser's golden tests.
+//
+// The output is an S-expression tree. Every part of the tree that carries meaning is
+// shown; spans and node ids are not. Optional parts that are absent are left out, and
+// each optional part has a label such as `(ty …)` or `(ret …)`, so the form is
+// unambiguous. A node is printed on one line when it is short and has no block-like
+// children; otherwise its children go on their own lines, indented by two spaces.
+
+bignum :: import "../bignum"
+source :: import "../source"
+str :: import "std/str"
+
+/// The widest a node printed on one line may be, counting its indentation.
+WIDTH: isize : 92
+
+/// Appends the dump of `f` to `out`.
+pub dump_file :: fn(f: ^const File, out: ^List(u8)) needs Alloc {
+    items := list(Sx)
+    for item in f.items { items.push(dump_item(&item))! }
+    render(&bnode("file", items), 0, out)
+    out.push('\n')!
+}
+
+// ---------------------------------------------------------------------------------
+// The S-expression tree and its layout
+// ---------------------------------------------------------------------------------
+
+Sx :: union {
+    Atom: string
+    /// A list. `brk` forces the children onto separate lines.
+    List: (items: []Sx, brk: bool)
+}
+
+/// `(head rest…)`, on one line when short enough.
+node :: fn(head: string, rest: List(Sx)) -> Sx needs Alloc => make_list(head, rest, false)
+
+/// `(head rest…)`, with the children always on separate lines (unless there are none).
+bnode :: fn(head: string, rest: List(Sx)) -> Sx needs Alloc => make_list(head, rest, true)
+
+make_list :: fn(head: string, rest: List(Sx), brk: bool) -> Sx needs Alloc {
+    items := list(Sx)
+    items.push(.Atom(head))!
+    items.extend(rest.items)!
+    return .List(items: items.items, brk: brk)
+}
+
+/// `(head x)`.
+node1 :: fn(head: string, x: Sx) -> Sx needs Alloc {
+    rest := list(Sx)
+    rest.push(x)!
+    return node(head, rest)
+}
+
+/// `(head x y)`.
+node2 :: fn(head: string, x, y: Sx) -> Sx needs Alloc {
+    rest := list(Sx)
+    rest.push(x)!
+    rest.push(y)!
+    return node(head, rest)
+}
+
+/// Appends `(label x)` for a present optional part.
+push_labeled :: fn(v: ^List(Sx), label: string, x: ?Sx) needs Alloc {
+    if s := x { v.push(node1(label, s))! }
+}
+
+/// Whether `sx` fits on one line in `budget` characters; subtracts its width.
+fits :: fn(sx: ^const Sx, budget: ^isize) -> bool {
+    match sx^ {
+        .Atom(s) => {
+            budget^ -= source.char_count(s).trunc(isize)
+            return budget^ >= 0
+        }
+        .List(items, brk) => {
+            if brk and items.len > 1 { return false }
+            budget^ -= 2 + items.len.max(1).trunc(isize) - 1
+            if budget^ < 0 { return false }
+            for item in items {
+                if not fits(&item, budget) { return false }
+            }
+            return true
+        }
+    }
+}
+
+flat :: fn(sx: ^const Sx, out: ^List(u8)) needs Alloc {
+    match sx^ {
+        .Atom(s) => out.extend(s)!
+        .List(items, _) => {
+            out.push('(')!
+            for i, item in enumerate(items) {
+                if i > 0 { out.push(' ')! }
+                flat(&item, out)
+            }
+            out.push(')')!
+        }
+    }
+}
+
+render :: fn(sx: ^const Sx, indent: isize, out: ^List(u8)) needs Alloc {
+    budget := WIDTH - indent
+    if fits(sx, &budget) {
+        flat(sx, out)
+        return
+    }
+    .List(items, brk) := sx^ else return
+    // The head and the children after it that fit stay on the first line; once a child
+    // does not fit, the rest go on their own lines.
+    out.push('(')!
+    col := indent + 1
+    inline := true
+    for i, item in enumerate(items) {
+        if inline {
+            room := WIDTH - col - 1
+            if item is .Atom(_) or (not brk and i > 0 and fits(&item, &room)) {
+                text := list(u8)
+                flat(&item, &text)
+                if i > 0 {
+                    out.push(' ')!
+                    col += 1
+                }
+                col += source.char_count(text.items).trunc(isize)
+                out.extend(text.items)!
+                continue
+            }
+            inline = false
+        }
+        out.push('\n')!
+        for _ in 0..indent + 2 { out.push(' ')! }
+        render(&item, indent + 2, out)
+    }
+    out.push(')')!
+}
+
+// ---------------------------------------------------------------------------------
+// The tree to S-expressions
+// ---------------------------------------------------------------------------------
+
+ident_sx :: fn(id: Ident) -> Sx => .Atom(id.name)
+
+atom_of_bytes :: fn(bytes: []const u8) -> Sx needs Alloc {
+    out := list(u8)
+    syntax.escape_bytes(bytes, &out)
+    return .Atom(out.items)
+}
+
+str_lit :: fn(s: syntax.StrLit) -> Sx needs Alloc {
+    head := match s.kind {
+        .Regular => "str"
+        .Raw => "raw-str"
+        .C => "c-str"
+    }
+    return node1(head, atom_of_bytes(s.bytes))
+}
+
+float_suffix :: fn(s: syntax.FloatSuffix) -> string => match s {
+    .F16 => "f16"
+    .F32 => "f32"
+    .F64 => "f64"
+}
+
+/// The operator with its space replaced: `is-not`.
+binop_name :: fn(op: BinOp) -> string => match op {
+    .IsNot => "is-not"
+    .NotIn => "not-in"
+    _ => binop_text(op)
+}
+
+unop_name :: fn(op: UnOp) -> string => match op {
+    .Neg => "neg"
+    .BitNot => "bit-not"
+    .AddrOf => "addr-of"
+    .MakeErr => "make-err"
+    .Try => "try"
+    .Not => "not"
+}
+
+assign_op_name :: fn(op: AssignOp) -> string needs Alloc => match op {
+    .Assign => "="
+    .Compound(b) => str.format("{}=", binop_text(b))!
+}
+
+dump_attr :: fn(a: ^const Attribute) -> Sx needs Alloc {
+    v := list(Sx)
+    v.push(ident_sx(a.name))!
+    if args := a.args {
+        xs := list(Sx)
+        for e in args { xs.push(dump_expr(&e))! }
+        v.push(node("args", xs))!
+    }
+    return node("attr", v)
+}
+
+push_attrs :: fn(v: ^List(Sx), attrs: []const Attribute) needs Alloc {
+    for a in attrs { v.push(dump_attr(&a))! }
+}
+
+// ----- items -----
+
+dump_item :: fn(item: ^const Item) -> Sx needs Alloc {
+    v := list(Sx)
+    if item.is_pub { v.push(.Atom("pub"))! }
+    if doc := item.doc { v.push(node1("doc", atom_of_bytes(doc)))! }
+    push_attrs(&v, item.attrs)
+    v.push(match item.kind {
+        .Binding(b) => dump_binding(&b)
+        .When(w) => dump_when_items(&w)
+        .Handler(h) => dump_handler_decl(h)
+        .Test(t) => node2(if t.bench { "bench" } else { "test" }, str_lit(t.name), dump_block(&t.body))
+        .Intrinsic(e) => node1("intrinsic-decl", dump_expr(e))
+    })!
+    return bnode("item", v)
+}
+
+dump_items :: fn(label: string, items: []const Item) -> Sx needs Alloc {
+    v := list(Sx)
+    for item in items { v.push(dump_item(&item))! }
+    return bnode(label, v)
+}
+
+dump_when_items :: fn(w: ^const WhenItems) -> Sx needs Alloc {
+    v := list(Sx)
+    v.push(dump_expr(w.cond))!
+    v.push(dump_items("then", w.then))!
+    if e := w.else_ { v.push(dump_items("else", e))! }
+    return bnode("when-items", v)
+}
+
+dump_handler_decl :: fn(h: ^const HandlerDecl) -> Sx needs Alloc {
+    v := list(Sx)
+    if p := h.params { v.push(dump_params(p))! }
+    v.push(dump_expr(h.effect_))!
+    v.push(node1("for", dump_expr(h.for_ty)))!
+    if e := h.effects { v.push(dump_effects(e))! }
+    for c in h.clauses { v.push(dump_clause(&c))! }
+    return bnode("handler-decl", v)
+}
+
+dump_clause :: fn(c: ^const Clause) -> Sx needs Alloc {
+    params := list(Sx)
+    for p in c.params { params.push(ident_sx(p))! }
+    v := list(Sx)
+    v.push(ident_sx(c.name))!
+    v.push(node("params", params))!
+    v.push(dump_expr(c.body))!
+    return bnode("clause", v)
+}
+
+dump_effects :: fn(effects: []const Expr) -> Sx needs Alloc {
+    v := list(Sx)
+    for e in effects { v.push(dump_expr(&e))! }
+    return node("effects", v)
+}
+
+// ----- bindings and statements -----
+
+dump_binding :: fn(b: ^const Binding) -> Sx needs Alloc {
+    v := list(Sx)
+    v.push(.Atom(if b.kind is .Const { "const" } else { "var" }))!
+    if b.names.len is 1 {
+        v.push(ident_sx(b.names[0]))!
+    } else {
+        ns := list(Sx)
+        for n in b.names { ns.push(ident_sx(n))! }
+        v.push(node("names", ns))!
+    }
+    if t := b.ty { v.push(node1("ty", dump_expr(t)))! }
+    v.push(dump_expr(b.init))!
+    return node("binding", v)
+}
+
+dump_block :: fn(b: ^const Block) -> Sx needs Alloc {
+    v := list(Sx)
+    for s in b.stmts { v.push(dump_stmt(&s))! }
+    return bnode("block", v)
+}
+
+dump_stmt :: fn(s: ^const Stmt) -> Sx needs Alloc {
+    match s.kind {
+        .Binding(attrs, binding) => {
+            if attrs.len is 0 { return dump_binding(&binding) }
+            v := list(Sx)
+            push_attrs(&v, attrs)
+            v.push(dump_binding(&binding))!
+            return node("binding-stmt", v)
+        }
+        .Assign(places, op, value) => {
+            ps := list(Sx)
+            for p in places { ps.push(dump_expr(&p))! }
+            v := list(Sx)
+            v.push(.Atom(assign_op_name(op)))!
+            v.push(node("places", ps))!
+            v.push(dump_expr(value))!
+            return node("assign", v)
+        }
+        .Expr(e) => return node1("expr", dump_expr(e))
+        .Defer(is_err, body) => return node1(if is_err { "errdefer" } else { "defer" }, dump_stmt(body))
+        .When(w) => return dump_when_stmt(w)
+        .While(w) => {
+            v := list(Sx)
+            if l := w.label { v.push(node1("label", ident_sx(l)))! }
+            v.push(dump_cond(&w.cond))!
+            v.push(dump_block(&w.body))!
+            return node("while", v)
+        }
+        .Cancel(e) => return node1("cancel", dump_expr(e))
+        .LetElse(pat, value, fallback) => {
+            v := list(Sx)
+            v.push(dump_pattern(&pat))!
+            v.push(dump_expr(value))!
+            v.push(dump_expr(fallback))!
+            return node("let-else", v)
+        }
+        .Block(b) => return dump_block(&b)
+    }
+}
+
+dump_when_stmt :: fn(w: ^const WhenStmt) -> Sx needs Alloc {
+    v := list(Sx)
+    v.push(dump_expr(w.cond))!
+    v.push(dump_block(&w.then))!
+    match w.else_ {
+        null => {}
+        .Block(b) => v.push(node1("else", dump_block(&b)))!
+        .When(inner) => v.push(node1("else", dump_when_stmt(inner)))!
+    }
+    return node("when-stmt", v)
+}
+
+dump_cond :: fn(c: ^const Cond) -> Sx needs Alloc {
+    v := list(Sx)
+    for part in c.parts {
+        v.push(match part {
+            .Bind(pat, value) => node2("bind", dump_pattern(&pat), dump_expr(value))
+            .Expr(e) => dump_expr(e)
+        })!
+    }
+    return node("cond", v)
+}
+
+// ----- expressions -----
+
+/// The decimal text of a natural number.
+decimal :: fn(n: ^const bignum.Nat) -> Sx needs Alloc => .Atom(n.to_decimal())
+
+dump_expr :: fn(e: ^const Expr) -> Sx needs Alloc {
+    v := list(Sx)
+    match e.kind {
+        .Int(l) => {
+            v.push(decimal(&l.value))!
+            if s := l.suffix {
+                v.push(.Atom(match s {
+                    .U(n) => str.format("u{}", n)!
+                    .I(n) => str.format("i{}", n)!
+                    .Usize => "usize"
+                    .Isize => "isize"
+                }))!
+            }
+            return node(if l.is_char { "char" } else { "int" }, v)
+        }
+        .Float(l) => {
+            text := list(u8)
+            l.value.write_rational(&text)
+            v.push(.Atom(text.items))!
+            if s := l.suffix { v.push(.Atom(float_suffix(s)))! }
+            return node(if l.imag { "imag" } else { "float" }, v)
+        }
+        .Str(s) => return str_lit(s)
+        .Bool(b) => return node1("bool", .Atom(if b { "true" } else { "false" }))
+        .Null => return .Atom("null")
+        .Uninit => return .Atom("uninit")
+        .Ident(id) => return node1("ident", ident_sx(id))
+        .Underscore => return .Atom("underscore")
+        .DotIdent(id) => return node1("dot", ident_sx(id))
+        .Paren(x) => return node1("paren", dump_expr(x))
+        .Elements(x) => return node1("elements", dump_expr(x))
+        .Tuple(elems) => {
+            for t in elems { v.push(dump_tuple_elem(&t))! }
+            return node("tuple", v)
+        }
+        .Unary(op, operand) => return node2("unary", .Atom(unop_name(op)), dump_expr(operand))
+        .Binary(op, lhs, rhs) => {
+            v.push(.Atom(binop_name(op)))!
+            v.push(dump_expr(lhs))!
+            v.push(dump_expr(rhs))!
+            return node("binary", v)
+        }
+        .Else(x) => {
+            v.push(dump_expr(x.lhs))!
+            if c := x.capture { v.push(node1("capture", ident_sx(c)))! }
+            v.push(dump_expr(x.rhs))!
+            return node("else", v)
+        }
+        .OptUnwrap(x) => return node1("opt-unwrap", dump_expr(x))
+        .ResUnwrap(x) => return node1("res-unwrap", dump_expr(x))
+        .Bang(lhs, rhs) => return node2("bang", dump_expr(lhs), dump_expr(rhs))
+        .Deref(x) => return node1("deref", dump_expr(x))
+        .Call(callee, args, trailing_comma) => {
+            v.push(dump_expr(callee))!
+            for a in args { v.push(dump_arg(&a))! }
+            if trailing_comma { v.push(.Atom("trailing-comma"))! }
+            return node("call", v)
+        }
+        .Index(base, index) => return node2("index", dump_expr(base), dump_expr(index))
+        .Slice(x) => {
+            v.push(dump_expr(x.base))!
+            if lo := x.lo { v.push(node1("lo", dump_expr(lo)))! }
+            if hi := x.hi { v.push(node1("hi", dump_expr(hi)))! }
+            if x.inclusive { v.push(.Atom("inclusive"))! }
+            return node("slice", v)
+        }
+        .Field(base, n) => return node2("field", dump_expr(base), ident_sx(n))
+        .TupleField(base, index, _) => return node2("tuple-field", dump_expr(base), .Atom(str.format("{}", index)!))
+        .OptionalType(x) => return node1("optional-type", dump_expr(x))
+        .PtrType(is_const, inner) => return const_type("ptr-type", is_const, inner)
+        .SliceType(is_const, inner) => return const_type("slice-type", is_const, inner)
+        .ManyPtrType(is_const, inner) => return const_type("many-ptr-type", is_const, inner)
+        .ArrayType(a) => {
+            length: Sx = .Atom("_")
+            if l := a.len { length = dump_expr(l) }
+            return node2("array-type", length, dump_expr(a.elem))
+        }
+        .ErrorUnionType(err, ok) => return node2("error-union-type", dump_expr(err), dump_expr(ok))
+        .FnType(sig) => return dump_fn_sig("fn-type", sig, list(Sx))
+        .ContType(x) => return node1("cont-type", dump_expr(x))
+        .Struct(s) => return dump_struct_lit(s)
+        .Union(u) => return dump_union_lit(u)
+        .Effect(eff) => return dump_effect_lit(eff)
+        .Attributed(attrs, inner) => {
+            push_attrs(&v, attrs)
+            v.push(dump_expr(inner))!
+            return node("attributed", v)
+        }
+        .Fn(f) => return dump_fn_lit(f)
+        .Handler(h) => {
+            v.push(dump_expr(h.effect_))!
+            for c in h.clauses { v.push(dump_clause(&c))! }
+            return bnode("handler", v)
+        }
+        .Import(s) => return node1("import", str_lit(s))
+        .Foreign(f) => {
+            v.push(str_lit(f.lib))!
+            for m in f.members { v.push(dump_foreign_member(&m))! }
+            return bnode("foreign", v)
+        }
+        .If(i) => return dump_if(i)
+        .Match(m) => {
+            v.push(dump_expr(m.scrutinee))!
+            for a in m.arms { v.push(dump_arm(&a))! }
+            return bnode("match", v)
+        }
+        .With(w) => {
+            if l := w.label { v.push(node1("label", ident_sx(l)))! }
+            hs := list(Sx)
+            for h in w.handlers { hs.push(dump_expr(&h))! }
+            v.push(node("handlers", hs))!
+            if x := w.on { v.push(node1("on", dump_expr(x)))! }
+            v.push(dump_block(&w.body))!
+            return node("with", v)
+        }
+        .For(f) => {
+            if l := f.label { v.push(node1("label", ident_sx(l)))! }
+            ps := list(Sx)
+            for p in f.pats { ps.push(dump_pattern(&p))! }
+            v.push(node("pats", ps))!
+            v.push(dump_expr(f.iter))!
+            v.push(dump_block(&f.body))!
+            return node("for", v)
+        }
+        .Block(b) => return dump_block(&b)
+        .Return(null) => return node("return", v)
+        .Return(x) => return node1("return", dump_expr(x))
+        .Break(b) => {
+            if l := b.label { v.push(node1("label", ident_sx(l)))! }
+            if x := b.value { v.push(dump_expr(x))! }
+            return node("break", v)
+        }
+        .Continue(null) => return node("continue", v)
+        .Continue(l) => return node1("continue", node1("label", ident_sx(l)))
+        .Resume(r) => {
+            v.push(dump_expr(r.cont))!
+            if x := r.value { v.push(dump_expr(x))! }
+            return node("resume", v)
+        }
+        .Intrinsic(i) => {
+            v.push(ident_sx(i.name))!
+            if xs := i.args {
+                items := list(Sx)
+                for a in xs { items.push(dump_arg(&a))! }
+                v.push(node("args", items))!
+            }
+            return node("intrinsic", v)
+        }
+        .Error => return .Atom("error")
+    }
+}
+
+const_type :: fn(head: string, is_const: bool, inner: ^const Expr) -> Sx needs Alloc {
+    v := list(Sx)
+    if is_const { v.push(.Atom("const"))! }
+    v.push(dump_expr(inner))!
+    return node(head, v)
+}
+
+dump_tuple_elem :: fn(t: ^const TupleElem) -> Sx needs Alloc {
+    if n := t.name { return node2("named", ident_sx(n), dump_expr(&t.value)) }
+    return dump_expr(&t.value)
+}
+
+dump_arg :: fn(a: ^const Arg) -> Sx needs Alloc => match a.kind {
+    .Positional(e) => dump_expr(&e)
+    .Named(n, e) => node2("named", ident_sx(n), dump_expr(&e))
+    .Spread(e) => node1("spread", dump_expr(&e))
+}
+
+dump_if :: fn(i: ^const IfExpr) -> Sx needs Alloc {
+    v := list(Sx)
+    for b in i.branches {
+        bv := list(Sx)
+        bv.push(dump_cond(&b.cond))!
+        bv.push(dump_block(&b.block))!
+        v.push(bnode("branch", bv))!
+    }
+    match i.else_ {
+        null => {}
+        .Block(b) => v.push(node1("else", dump_block(&b)))!
+        .Capture(n, body) => v.push(node2("else-capture", ident_sx(n), dump_expr(body)))!
+    }
+    return bnode("if", v)
+}
+
+dump_arm :: fn(a: ^const Arm) -> Sx needs Alloc {
+    pats := list(Sx)
+    for p in a.pats { pats.push(dump_pattern(&p))! }
+    v := list(Sx)
+    v.push(node("pats", pats))!
+    if g := a.guard { v.push(node1("guard", dump_expr(g)))! }
+    v.push(dump_expr(a.body))!
+    return node("arm", v)
+}
+
+// ----- functions and type literals -----
+
+dump_param :: fn(p: ^const Param) -> Sx needs Alloc {
+    ns := list(Sx)
+    for n in p.names { ns.push(ident_sx(n))! }
+    v := list(Sx)
+    v.push(node("names", ns))!
+    if p.comptime { v.push(.Atom("comptime"))! }
+    if p.rest { v.push(.Atom("rest"))! }
+    if t := p.ty { v.push(node1("ty", dump_expr(t)))! }
+    if d := p.default { v.push(node1("default", dump_expr(d)))! }
+    return node("param", v)
+}
+
+dump_params :: fn(params: []const Param) -> Sx needs Alloc {
+    v := list(Sx)
+    for p in params { v.push(dump_param(&p))! }
+    return node("params", v)
+}
+
+dump_fn_sig :: fn(head: string, sig: ^const FnSig, tail: List(Sx)) -> Sx needs Alloc {
+    v := list(Sx)
+    v.push(dump_params(sig.params))!
+    if sig.variadic { v.push(.Atom("variadic"))! }
+    if r := sig.ret { v.push(node1("ret", dump_expr(r)))! }
+    if e := sig.effects { v.push(dump_effects(e))! }
+    v.extend(tail.items)!
+    return node(head, v)
+}
+
+dump_constraints :: fn(cs: []const Constraint) -> ?Sx needs Alloc {
+    if cs.len is 0 { return null }
+    v := list(Sx)
+    for c in cs { v.push(node2("constraint", ident_sx(c.name), dump_expr(c.ty)))! }
+    return node("where", v)
+}
+
+dump_fn_lit :: fn(f: ^const FnLit) -> Sx needs Alloc {
+    tail := list(Sx)
+    if w := dump_constraints(f.where_) { tail.push(w)! }
+    tail.push(match f.body {
+        .Block(b) => dump_block(&b)
+        .Expr(e) => node1("=>", dump_expr(e))
+    })!
+    return dump_fn_sig("fn", &f.sig, tail)
+}
+
+dump_struct_lit :: fn(s: ^const StructLit) -> Sx needs Alloc {
+    v := list(Sx)
+    if p := s.params { v.push(dump_params(p))! }
+    if w := dump_constraints(s.where_) { v.push(w)! }
+    for m in s.members { v.push(dump_struct_member(&m))! }
+    return bnode("struct", v)
+}
+
+dump_struct_member :: fn(m: ^const StructMember) -> Sx needs Alloc {
+    v := list(Sx)
+    match m^ {
+        .Field(f) => {
+            push_attrs(&v, f.attrs)
+            if f.is_pub { v.push(.Atom("pub"))! }
+            if f.is_using { v.push(.Atom("using"))! }
+            ns := list(Sx)
+            for n in f.names { ns.push(ident_sx(n))! }
+            v.push(node("names", ns))!
+            v.push(dump_expr(f.ty))!
+            if d := f.default { v.push(node1("default", dump_expr(d)))! }
+            return node("field", v)
+        }
+        .When(w) => {
+            v.push(dump_expr(w.cond))!
+            th := list(Sx)
+            for x in w.then { th.push(dump_struct_member(&x))! }
+            v.push(bnode("then", th))!
+            if members := w.else_ {
+                el := list(Sx)
+                for x in members { el.push(dump_struct_member(&x))! }
+                v.push(bnode("else", el))!
+            }
+            return bnode("when-members", v)
+        }
+    }
+}
+
+dump_union_lit :: fn(u: ^const UnionLit) -> Sx needs Alloc {
+    v := list(Sx)
+    if t := u.tag_type { v.push(node1("tag", dump_expr(t)))! }
+    if p := u.params { v.push(dump_params(p))! }
+    if w := dump_constraints(u.where_) { v.push(w)! }
+    for m in u.members { v.push(dump_union_member(&m))! }
+    return bnode("union", v)
+}
+
+dump_union_member :: fn(m: ^const UnionMember) -> Sx needs Alloc {
+    v := list(Sx)
+    match m^ {
+        .Variant(var) => {
+            v.push(ident_sx(var.name))!
+            if p := var.payload { v.push(node1("payload", dump_expr(p)))! }
+            if x := var.value { v.push(node1("value", dump_expr(x)))! }
+            return node("variant", v)
+        }
+        .When(w) => {
+            v.push(dump_expr(w.cond))!
+            th := list(Sx)
+            for x in w.then { th.push(dump_union_member(&x))! }
+            v.push(bnode("then", th))!
+            if members := w.else_ {
+                el := list(Sx)
+                for x in members { el.push(dump_union_member(&x))! }
+                v.push(bnode("else", el))!
+            }
+            return bnode("when-members", v)
+        }
+    }
+}
+
+dump_effect_lit :: fn(e: ^const EffectLit) -> Sx needs Alloc {
+    v := list(Sx)
+    if p := e.params { v.push(dump_params(p))! }
+    for op in e.ops {
+        kind := match op.kind {
+            .Fn => "fn"
+            .Esc => "esc"
+            .Ctl => "ctl"
+        }
+        ov := list(Sx)
+        ov.push(ident_sx(op.name))!
+        ov.push(.Atom(kind))!
+        ov.push(dump_params(op.params))!
+        if r := op.ret { ov.push(node1("ret", dump_expr(r)))! }
+        v.push(node("op", ov))!
+    }
+    return bnode("effect", v)
+}
+
+dump_foreign_member :: fn(m: ^const ForeignMember) -> Sx needs Alloc {
+    v := list(Sx)
+    push_attrs(&v, m.attrs)
+    match m.kind {
+        .Fn(n, sig) => {
+            v.push(ident_sx(n))!
+            v.push(dump_fn_sig("fn-type", &sig, list(Sx)))!
+            return node("foreign-fn", v)
+        }
+        .Global(n, ty) => {
+            v.push(ident_sx(n))!
+            v.push(dump_expr(ty))!
+            return node("foreign-global", v)
+        }
+    }
+}
+
+// ----- patterns -----
+
+dump_pattern :: fn(p: ^const Pattern) -> Sx needs Alloc {
+    v := list(Sx)
+    match p.kind {
+        .Wildcard => return .Atom("wildcard")
+        .Bind(id) => return node1("bind", ident_sx(id))
+        .Lit(e) => return node1("lit", dump_expr(e))
+        .Null => return .Atom("null-pat")
+        .Range(lo, hi, inclusive) => {
+            v.push(dump_expr(lo))!
+            v.push(dump_expr(hi))!
+            if inclusive { v.push(.Atom("inclusive"))! }
+            return node("range", v)
+        }
+        .Err(inner) => return node1("err", dump_pattern(inner))
+        .Path(pp) => {
+            v.push(dump_expr(pp.path))!
+            if xs := pp.args {
+                items := list(Sx)
+                for a in xs { items.push(dump_pat_arg(&a))! }
+                v.push(node("args", items))!
+            }
+            return node("path", v)
+        }
+        .Tuple(args) => {
+            for a in args { v.push(dump_pat_arg(&a))! }
+            return node("tuple", v)
+        }
+    }
+}
+
+dump_pat_arg :: fn(a: ^const PatArg) -> Sx needs Alloc {
+    if n := a.name { return node2("named", ident_sx(n), dump_pattern(&a.pat)) }
+    return dump_pattern(&a.pat)
+}
