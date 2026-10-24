@@ -103,7 +103,7 @@ all_ord :: fn(s: ^const Sema, elems: []const Ty) -> bool {
 }
 
 /// The types `is` is defined for (§7.6).
-has_eq :: fn(s: ^const Sema, t: Ty) -> bool needs Alloc {
+pub has_eq :: fn(s: ^const Sema, t: Ty) -> bool needs Alloc {
     seen := list(Ty)
     return s.has_eq_in(t, &seen)
 }

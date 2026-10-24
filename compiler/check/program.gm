@@ -26,6 +26,7 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
     }
     check_bodies(s)
     check_inline(s)
+    check_escapes(s)
 }
 
 /// Whether a parameter default is a literal, which needs no compile-time evaluation.

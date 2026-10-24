@@ -326,15 +326,31 @@ pub resolve_ambient :: fn(s: ^Sema) needs Load {
     }
 }
 
-/// `T` if `t` is `Complex(T)` (§5.3.1).
-pub complex_of :: fn(s: ^Sema, t: Ty) -> ?Ty needs Load {
-    .Adt(id, args) := s.tys.kind(t) else return null
+/// The generic type `name` of the core prelude, if it declares one.
+prelude_template :: fn(s: ^Sema, name: string) -> ?u32 needs Load {
     prelude := s.l.prelude else return null
-    d := s.l.lookup(prelude, "Complex") else return null
+    d := s.l.lookup(prelude, name) else return null
     .GenericType(template) := s.resolve_decl(d) else return null
+    return template
+}
+
+/// The type argument of `t` if `t` is an instance of the prelude's generic type `name`.
+prelude_instance_arg :: fn(s: ^Sema, t: Ty, name: string) -> ?Ty needs Load {
+    .Adt(id, args) := s.tys.kind(t) else return null
+    template := s.prelude_template(name) else return null
     if s.tys.template(id) is not template or args.len is 0 { return null }
     .Type(e) := args[0] else return null
     return e
+}
+
+/// `T` if `t` is `Complex(T)` (§5.3.1).
+pub complex_of :: fn(s: ^Sema, t: Ty) -> ?Ty needs Load => s.prelude_instance_arg(t, "Complex")
+
+/// If `t` is `Range(T)` or `RangeIncl(T)`: whether it is inclusive, and `T`.
+pub range_of :: fn(s: ^Sema, t: Ty) -> ?(inclusive: bool, elem: Ty) needs Load {
+    if e := s.prelude_instance_arg(t, "Range") { return (inclusive: false, elem: e) }
+    if e := s.prelude_instance_arg(t, "RangeIncl") { return (inclusive: true, elem: e) }
+    return null
 }
 
 /// The default value of field `i` of struct `id`, if it has one.

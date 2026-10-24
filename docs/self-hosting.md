@@ -71,11 +71,16 @@ leaves to implementations: message texts, spans and recovery after errors.
      representation in a stable text form: every function written outside the core
      library, in source order, one line per expression with its type. `gammac tir` matches
      it on the programs it supports, which so far are those made of non-generic functions
-     with locals, assignments, arithmetic and comparisons, `if` and `while`, `return`,
-     `break` and `continue`, calls, struct and variant construction with field defaults,
-     field access, `print` with plain `{}` placeholders, `assert` and `trap`, literal
-     inference with its fallbacks, and the checks of effects and of `main`. Next:
-     `match` and patterns, method calls, `for` loops, error values, generic functions.
+     with locals, assignments, arithmetic and comparisons, `if` and `while` with binding
+     conditions, `match` and patterns with exhaustiveness, `is` and `in` with patterns,
+     `for` over ranges, arrays, slices and tuples, `return`, `break` and `continue`, calls,
+     method calls (builtin methods, functions of the receiver's module and effect
+     operations), `E.op(…)`, struct, variant and array construction, indexing, slicing,
+     `.len` and `.ptr`, optionals and results (`else`, `try`, `!e`, `x?`, `x!`, error
+     lifting), `print` with plain `{}` placeholders, `assert` and `trap`, literal inference
+     with its fallbacks, and the checks of effects, of `main`, of `#inline` and of
+     escaping pointers. Next: generic functions and types, `defer`, `with` and handlers,
+     intrinsics, function literals.
 5. **Back end** — C generation, linking the existing C runtime (`runtime/`). Checked by
    running the `run` conformance tests through `gammac` and comparing with the reference.
 6. **Bootstrap** — `gammac` built by `gamma` (stage 1) compiles `gammac` (stage 2), which
@@ -99,7 +104,7 @@ read the two side by side.
 | `compiler/types/` | types, hash-consed (`types.gm`), and their text in messages (`display.gm`) (`src/types.rs`) |
 | `compiler/bigint/`, `compiler/ratio/` | integers and rationals of any size, for the exact arithmetic of untyped constants |
 | `compiler/tir/` | the typed intermediate representation that checking produces (`src/tir.rs`) |
-| `compiler/check/` | checking function bodies (`src/sema/func.rs`, `expr.rs`, `finalize.rs`): the per-function context, statements and control flow (`func.gm`), expressions (`expr.gm`), calls and builtins (`call.gm`), implicit coercions (`coerce.gm`), literal inference (`infer.gm`), the final pass over a body (`finalize.gm`), the checks of a whole program (`program.gm`) and the `tir` dump (`dump.gm`) |
+| `compiler/check/` | checking function bodies (`src/sema/func.rs`, `expr.rs`, `finalize.rs` and the files named alike): the per-function context, statements and control flow (`func.gm`), expressions (`expr.gm`), calls and builtins (`call.gm`), method calls (`methods.gm`), implicit coercions (`coerce.gm`), optionals and results (`errors.gm`), patterns (`pattern.gm`), `match` and pattern tests (`matching.gm`), exhaustiveness (`exhaust.gm`), sequences, `in` and `for` (`seq.gm`), literal inference (`infer.gm`), the final pass over a body (`finalize.gm`), the checks of a whole program (`program.gm`, `escape.gm`) and the `tir` dump (`dump.gm`) |
 | `compiler/sema/` | checking: the state and the resolution of declarations (`sema.gm`), names (`names.gm`), type expressions (`ty_expr.gm`), structs and unions (`adt.gm`), signatures and effects (`fnsig.gm`), constraints (`generics.gm`), untyped constants (`untyped.gm`), typed constants (`consts.gm`), layouts (`layout.gm`) and the `decls` dump (`dump.gm`) (`src/sema/`) |
 | `compiler/parse/` | the parser: its state, errors and recovery (`parser.gm`), expressions, statements, declarations, types, patterns and the brace-delimited literals (`src/syntax/parser/`) |
 

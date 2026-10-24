@@ -2,10 +2,10 @@
 // `src/sema/call.rs`).
 
 call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
-    if .Field(base, _) := callee.kind {
-        if cx.module_of(base) is null {
-            if cx.type_of_name(base) is null { return cx.unsupported(span, "method calls and operations") }
-        }
+    if .Field(base, name) := callee.kind {
+        // `E.op(args)`: an operation named through its effect (§12.1).
+        if named := cx.effect_named(base) { return cx.perform_named(named, name, args, span) }
+        if cx.module_of(base) is null { return cx.method_call(base, name, args, span) }
     }
     match callee.kind {
         .DotIdent(name) => {
@@ -203,10 +203,7 @@ arg_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
     cx.temp_ref_arg = is_const_ref_arg(cx.s, e, ty)
     v := cx.expr(e, ty)
     cx.temp_ref_arg = false
-    vt := cx.infer.resolve(cx.s, v.ty)
-    if .Slice(c, _) := cx.s.tys.kind(cx.infer.resolve(cx.s, ty)) and c and cx.s.tys.kind(vt) is .Array(_) {
-        return cx.unsupported(e.span, "arrays passed as slices")
-    }
+    v = cx.array_arg_as_slice(v, ty)
     return cx.coerce(v, ty)
 }
 

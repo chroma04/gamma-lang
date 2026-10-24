@@ -1,0 +1,535 @@
+// Sequences: membership `in` (§7.7) and `for` loops over ranges (§13.2) (mirrors
+// `src/sema/seq.rs` and `for_loop` in `src/sema/func.rs`).
+
+/// `elem in container`, with `elem` already checked.
+in_expr :: fn(cx: ^FnCx, elem: ^Expr, container: ^const ast.Expr, negated: bool, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    // Ranges: `lo <= x and x < hi` with `x` evaluated once.
+    if .Binary(op, lhs, rhs) := container.kind and op in (ast.BinOp.Range, ast.BinOp.RangeIncl) {
+        lo := cx.expr(lhs, elem.ty)
+        hi := cx.expr(rhs, elem.ty)
+        ty := cx.unify_operands(elem.ty, lo.ty, span, "the operands of `in`")
+        _ = cx.unify_operands(ty, hi.ty, span, "the operands of `in`")
+        cx.obligations.push(.Ord(ty, span))!
+        return cx.range_test(elem, empty_slice(tir.Stmt), lo, hi, ty, op is .RangeIncl, negated, span)
+    }
+    // An inline tuple with a pattern member: `k in (.Fn(_), .Type)` (§7.7).
+    if .Tuple(elems) := container.kind {
+        for i in 0..elems.len {
+            if cx.is_pattern_operand(&elems[i].value, elem.ty) is not null { return cx.in_patterns(elem, elems, negated, span) }
+        }
+    }
+    c := if .Tuple(elems) := container.kind {
+        // An inline tuple: every element has the element's type. As with `is`, a member
+        // converts to an optional or result element: `c in ('a', 'b')` with `c: ?u8`.
+        vals := list(Expr)
+        etys := list(Ty)
+        et := cx.infer.resolve(cx.s, elem.ty)
+        wraps := tys.kind(et) in (.Optional(_), .Result(_)) and not tys.has_infer(et)
+        for i in 0..elems.len {
+            v := cx.expr(&elems[i].value, elem.ty)
+            vt := cx.infer.resolve(cx.s, v.ty)
+            if wraps and vt is not et and (tys.kind(vt) is .Infer(_) or cx.coercion_steps(vt, et) is not null) {
+                v = cx.coerce(v, et)
+            } else {
+                _ = cx.unify_operands(elem.ty, v.ty, v.span, "the element and the tuple members of `in`")
+            }
+            vals.push(v^)!
+            etys.push(v.ty)!
+        }
+        tir.mk(tys.tuple(etys.items), .Aggregate(vals.items), container.span)
+    } else {
+        cx.expr(container, null)
+    }
+    ct := cx.infer.resolve(cx.s, c.ty)
+    // A range value: `r.lo <= x and x < r.hi`.
+    if r := cx.s.range_of(ct) {
+        _ = cx.unify_operands(elem.ty, r.elem, span, "the element and the range of `in`")
+        t := cx.temp(ct, span)
+        lets := list(tir.Stmt)
+        lets.push(.Let(t, c))!
+        lo := tir.mk(r.elem, .Field(tir.mk(ct, .Local(t), span), 0), span)
+        hi := tir.mk(r.elem, .Field(tir.mk(ct, .Local(t), span), 1), span)
+        return cx.range_test(elem, lets.items, lo, hi, r.elem, r.inclusive, negated, span)
+    }
+    item: Ty = elem.ty
+    match tys.kind(ct) {
+        .Array(_, e, _) => { item = e }
+        .ParamArray(_, e) => { item = e }
+        .Slice(_, e) => { item = e }
+        .Tuple(es, _) => if es.len > 0 { item = es[0] }
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            cx.error(container.span, str.format("`in` needs a range, array, slice or tuple, not `{}`", cx.show(ct))!)
+            return error_expr(cx.s, span)
+        }
+    }
+    _ = cx.unify_operands(elem.ty, item, span, "the element and the members of `in`")
+    // The members are compared with `is` (§7.7).
+    et := cx.infer.resolve(cx.s, item)
+    if not tys.has_infer(et) and not tys.is_error(et) and not cx.s.has_eq(et) {
+        cx.error(span, str.format("`in` compares with `is`, which is not defined for `{}` (§7.6)", cx.show(et))!)
+    }
+    return tir.mk(tys.bool_ty(), .In(elem, c, negated), span)
+}
+
+/// `{ x := elem; lets…; lo <= x and x <(=) hi }`, negated if `negated`.
+range_test :: fn(cx: ^FnCx, elem: ^Expr, lets: []const tir.Stmt, lo, hi: ^Expr, ty: Ty, inclusive: bool, negated: bool, span: source.Span) -> ^Expr needs Load {
+    b := cx.s.tys.bool_ty()
+    tmp := cx.temp(ty, span)
+    x :: fn() -> ^Expr needs Alloc => tir.mk(ty, .Local(tmp), span)
+    upper: tir.BinOp = if inclusive { .Le } else { .Lt }
+    test := tir.mk(b, .Logic(true, tir.mk(b, .Binary(.Le, lo, x()), span), tir.mk(b, .Binary(upper, x(), hi), span)), span)
+    if negated { test = tir.mk(b, .Unary(.Not, test), span) }
+    stmts := list(tir.Stmt)
+    stmts.push(.Let(tmp, elem))!
+    stmts.extend(lets)!
+    return tir.mk(b, .Block(new(tir.Block(stmts: stmts.items, tail: test, span: span))!), span)
+}
+
+/// A `for` loop (§13.2).
+for_loop :: fn(cx: ^FnCx, f: ^const ast.ForExpr) -> ^Expr needs Load {
+    span := f.span
+    is_range := false
+    if .Binary(op, _, _) := f.iter.kind { is_range = op in (ast.BinOp.Range, ast.BinOp.RangeIncl) }
+    if not is_range {
+        if f.iter.kind is .Call(_) { return cx.unsupported(f.iter.span, "calls of iterators") }
+        src := cx.expr(f.iter, null)
+        if e := cx.for_each_value(f, src) { return e }
+        cx.error(f.iter.span, "`for` iterates over a range, an array, slice or tuple, or a call to an iterator")
+        return error_expr(cx.s, span)
+    }
+    .Binary(op, lhs, rhs) := f.iter.kind else return error_expr(cx.s, span)
+    lo := cx.expr(lhs, null)
+    hi := cx.expr(rhs, null)
+    elem := cx.unify_operands(lo.ty, hi.ty, f.iter.span, "range bounds")
+    for t in [3]Ty(elem, lo.ty, hi.ty) {
+        if c := cx.infer.set_fallback(&cx.s.tys, t, .Usize) {
+            cx.s.emit(early_fallback_error(cx.s, f.iter.span, c.ty, c.at))
+            break
+        }
+    }
+    cx.obligations.push(.Numeric(NumericObligation(ty: elem, span: f.iter.span, op: "range", int_only: true, signed_only: false)))!
+    return cx.range_loop(f, lo, hi, elem, op is .RangeIncl)
+}
+
+/// A `for` loop over the integers from `lo` to `hi` (of type `elem`), excluding `hi`
+/// unless `inclusive`:
+///
+/// ```text
+/// { i := lo; hi_t := hi; going := i <= hi_t;
+///   loop going { p :: i; body } step { if i is hi_t { going = false } else { i += 1 } } }
+/// ```
+///
+/// The half-open form uses `i < hi_t` as the condition and `i += 1` as the step.
+range_loop :: fn(cx: ^FnCx, f: ^const ast.ForExpr, lo, hi: ^Expr, elem: Ty, inclusive: bool) -> ^Expr needs Load {
+    span := f.span
+    b := cx.s.tys.bool_ty()
+    hi_t := cx.temp(elem, span)
+    i := cx.temp(elem, span)
+    local :: fn(id: u32, ty: Ty) -> ^Expr needs Alloc => tir.mk(ty, .Local(id), span)
+    incr :: fn() -> tir.Stmt needs Alloc => .Assign(local(i, elem), tir.mk(elem, .Binary(.Add(.Wrap), local(i, elem), tir.mk(elem, .Int(bigint.one()), span)), span))
+    stmts := list(tir.Stmt)
+    stmts.push(.Let(i, lo))!
+    stmts.push(.Let(hi_t, hi))!
+    cond := list(tir.CondPart)
+    step: ^Expr = local(i, elem)
+    if inclusive {
+        going := cx.temp(b, span)
+        stmts.push(.Let(going, tir.mk(b, .Binary(.Le, local(i, elem), local(hi_t, elem)), span)))!
+        at_end := tir.mk(b, .Eq(local(i, elem), local(hi_t, elem), false), span)
+        stop := list(tir.Stmt)
+        stop.push(.Assign(local(going, b), tir.mk(b, .Bool(false), span)))!
+        more := list(tir.Stmt)
+        more.push(incr())!
+        parts := list(tir.CondPart)
+        parts.push(.Bool(at_end))!
+        step = tir.mk(cx.s.tys.unit(), .If(tir.IfExpr(cond: parts.items, then: block_of(cx.s, stop.items, span), else_: block_of(cx.s, more.items, span))), span)
+        cond.push(.Bool(local(going, b)))!
+    } else {
+        cond.push(.Bool(tir.mk(b, .Binary(.Lt, local(i, elem), local(hi_t, elem)), span)))!
+        more := list(tir.Stmt)
+        more.push(incr())!
+        step = block_of(cx.s, more.items, span)
+    }
+    lp := cx.loop_with_pattern(f, elem, local(i, elem), cond.items, step)
+    stmts.push(.Expr(lp))!
+    return block_of(cx.s, stmts.items, span)
+}
+
+/// The loop of a lowered `for`: binds the head patterns to `item` for each iteration.
+loop_with_pattern :: fn(cx: ^FnCx, f: ^const ast.ForExpr, elem: Ty, item: ^Expr, cond: []tir.CondPart, step: ^Expr) -> ^Expr needs Load {
+    span := f.span
+    cx.push_scope()
+    if l := f.label { cx.declare(l.name, .Label, l.span) }
+    // `for a, b in …` is the tuple pattern `(a, b)` (§8.4).
+    pat_ast := f.pats[0]
+    if f.pats.len is not 1 {
+        args := list(ast.PatArg)
+        for p in f.pats { args.push(ast.PatArg(name: null, pat: p, span: p.span))! }
+        sp := source.to(f.pats[0].span, f.pats[f.pats.len - 1].span)
+        pat_ast = ast.Pattern(id: f.pats[0].id, kind: .Tuple(args.items), span: sp)
+    }
+    binds := list(PatBind)
+    pat := cx.pattern(&pat_ast, elem, .Irrefutable, &binds)
+    if not cx.s.tys.is_error(elem) and not irrefutable(cx.s, pat) {
+        cx.error(pat_ast.span, "a `for` pattern must match every value (it must be irrefutable)")
+    }
+    cx.declare_binds(&binds)
+    label_name: ?string = null
+    if l := f.label { label_name = l.name }
+    id := cx.new_label(label_name, true, .Loop(cx.s.tys.unit()))
+    body := cx.block(&f.body, false)
+    _ = cx.labels.pop()
+    _ = cx.forget_label_breaks(id)
+    cx.pop_scope()
+    arms := list(tir.Arm)
+    arms.push(tir.Arm(pat: pat, guard: null, body: body))!
+    m := tir.mk(cx.s.tys.unit(), .Match(item, arms.items), span)
+    stmts := list(tir.Stmt)
+    stmts.push(.Expr(m))!
+    lb := new(tir.Block(stmts: stmts.items, tail: null, span: span))!
+    return tir.mk(cx.s.tys.unit(), .Loop(tir.LoopExpr(label: id, cond: cond, body: lb, step: step)), span)
+}
+
+// ---------------------------------------------------------------------------------
+// Indexing and slicing (§7.9)
+// ---------------------------------------------------------------------------------
+
+/// `base[index]`.
+index :: fn(cx: ^FnCx, base: ^const ast.Expr, i: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    b := cx.expr(base, null)
+    return cx.index_value(b, i, span)
+}
+
+/// `b[index]` with the base already checked.
+index_value :: fn(cx: ^FnCx, b0: ^Expr, index_ast: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    b := cx.auto_deref_array(b0)
+    if .Array(_, _, kind) := tys.kind(cx.infer.resolve(cx.s, b.ty)) and kind is .Enum(_) { return cx.unsupported(span, "enum-indexed arrays") }
+    i := cx.expr(index_ast, null)
+    // `a[r]` with a range value `r` is the slice `a[r.lo..r.hi]` (§5.16).
+    it := cx.infer.resolve(cx.s, i.ty)
+    if r := cx.s.range_of(it) {
+        t := cx.temp(it, span)
+        lo := tir.mk(r.elem, .Field(tir.mk(it, .Local(t), span), 0), span)
+        hi := tir.mk(r.elem, .Field(tir.mk(it, .Local(t), span), 1), span)
+        s := cx.slice_of(b, span, lo, hi, r.inclusive, span)
+        stmts := list(tir.Stmt)
+        stmts.push(.Let(t, i))!
+        return tir.mk(s.ty, .Block(new(tir.Block(stmts: stmts.items, tail: s, span: span))!), span)
+    }
+    if not cx.infer.require_unsigned(tys, i.ty, .Usize) and not tys.is_error(i.ty) {
+        cx.error(i.span, str.format("an index must have an unsigned integer type, not `{}`", cx.show(it))!)
+    }
+    bt := cx.infer.resolve(cx.s, b.ty)
+    elem: Ty = bt
+    checked := true
+    match tys.kind(bt) {
+        .Array(_, e, _), .ParamArray(_, e), .Slice(_, e) => { elem = e }
+        .ManyPtr(_, e) => {
+            elem = e
+            checked = false
+        }
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            cx.error(span, str.format("cannot index a value of type `{}`", cx.show(bt))!)
+            return error_expr(cx.s, span)
+        }
+    }
+    return tir.mk(elem, .Index(b, i, checked), span)
+}
+
+/// Indexing and slicing see through one pointer to an array.
+auto_deref_array :: fn(cx: ^FnCx, b: ^Expr) -> ^Expr needs Alloc {
+    if .Ptr(_, pointee) := cx.s.tys.kind(cx.infer.shallow(&cx.s.tys, b.ty)) and cx.s.tys.kind(pointee) in (.Array(_), .ParamArray(_)) {
+        return tir.mk(pointee, .Deref(b), b.span)
+    }
+    return b
+}
+
+/// `a[lo..hi]` and its open-ended forms.
+slice_expr :: fn(cx: ^FnCx, base: ^const ast.Expr, lo_ast: ?^ast.Expr, hi_ast: ?^ast.Expr, inclusive: bool, span: source.Span) -> ^Expr needs Load {
+    temp_ok := cx.temp_ref_arg
+    cx.temp_ref_arg = false
+    b := cx.expr(base, null)
+    // A temporary array sliced as an argument for a `[]const T` parameter lives for the
+    // call, like `&e` for a `^const T` one (§7.2).
+    if temp_ok and cx.s.tys.kind(cx.infer.resolve(cx.s, b.ty)) is .Array(_) and cx.place_mutability(b) is null {
+        t := b.ty
+        p := tir.mk(cx.s.tys.ptr(true, t), .AddrOfTemp(b), base.span)
+        b = tir.mk(t, .Deref(p), base.span)
+    }
+    lo: ?^Expr = null
+    if x := lo_ast { lo = cx.expr(x, null) }
+    hi: ?^Expr = null
+    if x := hi_ast { hi = cx.expr(x, null) }
+    return cx.slice_of(b, base.span, lo, hi, inclusive, span)
+}
+
+/// An array argument `v` for a `[]const T` parameter is passed as a slice of the whole
+/// array; a temporary array lives for the call, like `&e` for a `^const T` one (§7.2).
+array_arg_as_slice :: fn(cx: ^FnCx, v: ^Expr, param0: Ty) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    param := cx.infer.resolve(cx.s, param0)
+    vt := cx.infer.resolve(cx.s, v.ty)
+    .Slice(c, _) := tys.kind(param) else return v
+    if not c or not is_positional_array(tys, vt) { return v }
+    span := v.span
+    b := v
+    if cx.place_mutability(v) is null {
+        p := tir.mk(tys.ptr(true, v.ty), .AddrOfTemp(v), span)
+        b = tir.mk(v.ty, .Deref(p), span)
+    }
+    return cx.slice_of(b, span, null, null, false, span)
+}
+
+/// An array indexed by position (not by an enum).
+is_positional_array :: fn(tys: ^types.Types, t: Ty) -> bool => match tys.kind(t) {
+    .Array(_, _, kind) => kind is .Plain
+    .ParamArray(_) => true
+    _ => false
+}
+
+/// Slices the checked `b` (written at `base_span`) with the checked bounds.
+slice_of :: fn(cx: ^FnCx, b0: ^Expr, base_span: source.Span, lo: ?^Expr, hi: ?^Expr, inclusive: bool, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    b := b0
+    if .Ptr(_, pointee) := tys.kind(cx.infer.resolve(cx.s, b.ty)) and tys.kind(pointee) in (.Array(_), .ParamArray(_)) {
+        b = tir.mk(pointee, .Deref(b), span)
+    }
+    bt := cx.infer.resolve(cx.s, b.ty)
+    if .Array(_, _, kind) := tys.kind(bt) and kind is .Enum(_) and (lo is not null or hi is not null) {
+        cx.error(span, str.format("`{}` is indexed by its enum, so it is sliced only whole: `a[..]`", cx.show(bt))!)
+        return error_expr(cx.s, span)
+    }
+    elem: Ty = bt
+    is_const := false
+    match tys.kind(bt) {
+        .Array(_, e, _), .ParamArray(_, e) => {
+            m := cx.place_mutability(b) else {
+                cx.error(base_span, "only an array variable (a place) can be sliced, not a temporary array")
+                return error_expr(cx.s, span)
+            }
+            elem = e
+            is_const = not m
+        }
+        .Slice(c, e) => {
+            elem = e
+            is_const = c
+        }
+        .ManyPtr(c, e) => {
+            if lo is null or hi is null { cx.error(span, "slicing a many-pointer needs both bounds") }
+            elem = e
+            is_const = c
+        }
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            cx.error(span, str.format("cannot slice a value of type `{}`", cx.show(bt))!)
+            return error_expr(cx.s, span)
+        }
+    }
+    for x in [2]?^Expr(lo, hi) {
+        v := x else continue
+        if not cx.infer.require_unsigned(tys, v.ty, .Usize) and not tys.is_error(v.ty) {
+            cx.error(v.span, str.format("a slice bound must have an unsigned integer type, not `{}`", cx.show(cx.infer.resolve(cx.s, v.ty)))!)
+        }
+    }
+    return tir.mk(tys.slice(is_const, elem), .Slice(tir.SliceExpr(base: b, lo: lo, hi: hi, inclusive: inclusive)), span)
+}
+
+// ---------------------------------------------------------------------------------
+// Array construction (§7.11)
+// ---------------------------------------------------------------------------------
+
+/// `[N]T(…)`: an array type prefix applied to a construction `e` (§A.7 rule 12).
+array_type_construction :: fn(cx: ^FnCx, e: ^const ast.Expr, len_ast: ?^ast.Expr, elem: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    call := sema.construction_call(elem) else return cx.unsupported(span, "array construction")
+    .Call(_, args, _) := call.kind else return cx.unsupported(span, "array construction")
+    if l := len_ast and cx.s.length_is_type(cx.module, l) { return cx.unsupported(span, "enum-indexed arrays") }
+    elem_ty := cx.construction_elem_type(elem) else return error_expr(cx.s, span)
+    len: ?u64 = null
+    if l := len_ast {
+        match cx.s.array_len(cx.module, l) {
+            .Known(n) => { len = n }
+            .Param(_) => return cx.unsupported(span, "arrays with compile-time parameter lengths")
+            .Failed => return error_expr(cx.s, span)
+        }
+    }
+    return cx.construct_array(null, len, elem_ty, args, span)
+}
+
+/// The type that a construction (with its prefixes) spells, without the call.
+construction_elem_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
+    tys := &cx.s.tys
+    match e.kind {
+        .Call(callee, _, _) => return cx.s.resolve_type(cx.module, callee)
+        .OptionalType(inner) => {
+            t := cx.construction_elem_type(inner) else return null
+            return tys.optional(t)
+        }
+        _ => {
+            _ = cx.unsupported(e.span, "array construction")
+            return null
+        }
+    }
+}
+
+/// The elements of an array of `len` elements (or as many as given) of type `elem`.
+construct_array :: fn(cx: ^FnCx, ty: ?Ty, len: ?u64, elem: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if args.len is 1 and .Named(n, e) := args[0].kind and n.name is "fill" {
+        l := len else {
+            cx.error(span, "`[_]T(fill: x)` cannot infer the length; write it")
+            return error_expr(cx.s, span)
+        }
+        v := cx.field_value(&e, elem)
+        return tir.mk(ty else tys.array(l, elem), .ArrayFill(v), span)
+    }
+    for a in args {
+        if .Named(n, _) := a.kind and n.name is "fill" {
+            cx.error(a.span, "`fill:` must be the only argument")
+            return error_expr(cx.s, span)
+        }
+    }
+    // `[N]T(v)`: one element, unless `v` is a vector conversion.
+    if args.len is 1 and .Positional(e) := args[0].kind and e.kind is not .Uninit {
+        if n := len {
+            v := cx.expr(&e, elem)
+            vt := cx.infer.resolve(cx.s, v.ty)
+            target := ty else tys.array(n, elem)
+            if tys.kind(vt) is .Array(_) and vt is not elem { return cx.unsupported(span, "vector conversions") }
+            v = cx.coerce(v, elem)
+            if n is not 1 {
+                cx.error(span, str.format("`{}` needs exactly {} elements, but 1 is given", cx.show(target), n)!)
+                return error_expr(cx.s, span)
+            }
+            values := list(Expr)
+            values.push(v^)!
+            return tir.mk(target, .Array(values.items), span)
+        }
+    }
+    values := list(Expr)
+    for a in args {
+        match a.kind {
+            .Positional(e) => values.push(cx.field_value(&e, elem)^)!
+            .Spread(_) => return cx.unsupported(a.span, "spreads")
+            _ => cx.error(a.span, "array elements are written positionally")
+        }
+    }
+    if n := len and n is not u64(values.items.len) {
+        t := ty else tys.array(n, elem)
+        cx.error(span, str.format("`{}` needs exactly {} elements, but {} given", cx.show(t), n, given(values.items.len))!)
+        return error_expr(cx.s, span)
+    }
+    t := ty else tys.array(u64(values.items.len), elem)
+    return tir.mk(t, .Array(values.items), span)
+}
+
+/// "1 is" or "3 are", for a count of given values.
+given :: fn(n: usize) -> string needs Alloc => if n is 1 { "1 is" } else { str.format("{} are", n)! }
+
+// ---------------------------------------------------------------------------------
+// `for` over arrays, slices and tuples (§13.2)
+// ---------------------------------------------------------------------------------
+
+/// `for p in src` where `src` (already checked) is an array, a pointer to one, a slice, a
+/// tuple or a range value; `null` if it is none of these.
+for_each_value :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src: ^Expr) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    span := f.span
+    st := cx.infer.resolve(cx.s, src.ty)
+    slice: ^Expr = src
+    elem: Ty = st
+    match tys.kind(st) {
+        .Slice(_, e) => { elem = e }
+        .Array(_, e, _), .ParamArray(_, e) => {
+            elem = e
+            // A temporary array is iterated from a hidden local that lives as long as the
+            // loop, and so is an array in a `#packed` struct, whose elements may be
+            // misaligned.
+            m := cx.place_mutability(src)
+            if packed_place(cx.s, src) { m = null }
+            if x := m {
+                slice = tir.mk(tys.slice(not x, e), .Slice(tir.SliceExpr(base: src, lo: null, hi: null, inclusive: false)), span)
+            } else {
+                t := cx.temp(st, span)
+                sty := tys.slice(true, e)
+                s := tir.mk(sty, .Slice(tir.SliceExpr(base: tir.mk(st, .Local(t), span), lo: null, hi: null, inclusive: false)), span)
+                stmts := list(tir.Stmt)
+                stmts.push(.Let(t, src))!
+                slice = tir.mk(sty, .Block(new(tir.Block(stmts: stmts.items, tail: s, span: span))!), span)
+            }
+        }
+        .Ptr(c, pointee) => {
+            match tys.kind(pointee) {
+                .Array(_, e, _), .ParamArray(_, e) => {
+                    elem = e
+                    arr := tir.mk(pointee, .Deref(src), span)
+                    slice = tir.mk(tys.slice(c, e), .Slice(tir.SliceExpr(base: arr, lo: null, hi: null, inclusive: false)), span)
+                }
+                _ => return null
+            }
+        }
+        .Error => return error_expr(cx.s, span)
+        // A tuple whose elements have one type iterates like the array of them:
+        // `{ t := src; for x in [t.0, t.1, …] { body } }`.
+        .Tuple(elems, _) => {
+            if elems.len is 0 { return null }
+            e0 := elems[0]
+            for k in 1..elems.len {
+                if cx.infer.unify(tys, e0, elems[k]) is !_ {
+                    a := cx.infer.resolve(cx.s, e0)
+                    b := cx.infer.resolve(cx.s, elems[k])
+                    cx.error(f.iter.span, str.format("the elements of a tuple iterated by `for` must have one type, but found `{}` and `{}`", cx.show(a), cx.show(b))!)
+                    return error_expr(cx.s, span)
+                }
+            }
+            t := cx.temp(st, span)
+            items := list(Expr)
+            for k in 0..elems.len { items.push(tir.mk(e0, .Field(tir.mk(st, .Local(t), span), k.trunc(u32)), span)^)! }
+            arr := tir.mk(tys.array(u64(elems.len), e0), .Array(items.items), span)
+            lp := cx.for_each_value(f, arr) else return null
+            stmts := list(tir.Stmt)
+            stmts.push(.Let(t, src))!
+            stmts.push(.Expr(lp))!
+            return block_of(cx.s, stmts.items, span)
+        }
+        .Adt(_) => {
+            // A range value: `{ r := src; for i in r.lo..r.hi { body } }`.
+            r := cx.s.range_of(st) else return null
+            if not tys.is_integer(r.elem) {
+                cx.error(f.iter.span, str.format("`for` iterates over ranges of integers, not of `{}`", cx.show(r.elem))!)
+                return error_expr(cx.s, span)
+            }
+            t := cx.temp(st, span)
+            lo := tir.mk(r.elem, .Field(tir.mk(st, .Local(t), span), 0), span)
+            hi := tir.mk(r.elem, .Field(tir.mk(st, .Local(t), span), 1), span)
+            lp := cx.range_loop(f, lo, hi, r.elem, r.inclusive)
+            stmts := list(tir.Stmt)
+            stmts.push(.Let(t, src))!
+            stmts.push(.Expr(lp))!
+            return block_of(cx.s, stmts.items, span)
+        }
+        _ => return null
+    }
+    // { s := xs[..]; i := 0; loop i < s.len { p :: s[i]; body } step i += 1 }
+    sty := slice.ty
+    usize_t := tys.usize_ty()
+    s := cx.temp(sty, span)
+    i := cx.temp(usize_t, span)
+    local :: fn(id: u32, ty: Ty) -> ^Expr needs Alloc => tir.mk(ty, .Local(id), span)
+    len := tir.mk(usize_t, .SliceLen(local(s, sty)), span)
+    cond := list(tir.CondPart)
+    cond.push(.Bool(tir.mk(tys.bool_ty(), .Binary(.Lt, local(i, usize_t), len), span)))!
+    item := tir.mk(elem, .Index(local(s, sty), local(i, usize_t), false), span)
+    more := list(tir.Stmt)
+    more.push(.Assign(local(i, usize_t), tir.mk(usize_t, .Binary(.Add(.Wrap), local(i, usize_t), tir.mk(usize_t, .Int(bigint.one()), span)), span)))!
+    step := block_of(cx.s, more.items, span)
+    lp := cx.loop_with_pattern(f, elem, item, cond.items, step)
+    stmts := list(tir.Stmt)
+    stmts.push(.Let(s, slice))!
+    stmts.push(.Let(i, tir.mk(usize_t, .Int(bigint.zero()), span)))!
+    stmts.push(.Expr(lp))!
+    return block_of(cx.s, stmts.items, span)
+}

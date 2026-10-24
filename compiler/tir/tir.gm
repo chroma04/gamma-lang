@@ -44,6 +44,10 @@ pub ExprKind :: union {
     /// A struct field or tuple element, by index.
     Field: (base: ^Expr, index: u32)
     Index: (base: ^Expr, index: ^Expr, checked: bool)
+    /// `base[lo..hi]`, `base[lo..=hi]` and the open-ended forms.
+    Slice: SliceExpr
+    SliceLen: ^Expr
+    SlicePtr: ^Expr
 
     // Values.
     AddrOf: ^Expr
@@ -63,7 +67,14 @@ pub ExprKind :: union {
     Variant: VariantExpr
     MakeErr: ^Expr
     Unwrap: (expr: ^Expr, is_result: bool)
+    /// `x else d` and `x else e => d` (§10.4).
+    Else: ElseExpr
+    /// `try x` (§10.5).
+    Try: TryExpr
     Eq: (lhs: ^Expr, rhs: ^Expr, negated: bool)
+    Match: (scrutinee: ^Expr, arms: []Arm)
+    /// `elem in container` over an array, slice or tuple, compared with `is` (§7.7).
+    In: (elem: ^Expr, container: ^Expr, negated: bool)
 
     // Control flow.
     Block: ^Block
@@ -81,6 +92,28 @@ pub ExprKind :: union {
 pub VariantExpr :: struct {
     pub variant: u32
     pub payload: ?^Expr
+}
+
+pub ElseExpr :: struct {
+    pub lhs: ^Expr
+    /// The local that `else e =>` binds the error to.
+    pub capture: ?u32
+    pub rhs: ^Expr
+}
+
+pub TryExpr :: struct {
+    pub expr: ^Expr
+    /// The variant of the function's error union that carries the error, if it is lifted
+    /// (§10.6).
+    pub lift: ?u32
+    pub levels: u32
+}
+
+pub SliceExpr :: struct {
+    pub base: ^Expr
+    pub lo: ?^Expr
+    pub hi: ?^Expr
+    pub inclusive: bool
 }
 
 pub IfExpr :: struct {
@@ -136,7 +169,54 @@ pub Stmt :: union {
 
 pub CondPart :: union {
     Bool: ^Expr
+    /// `pattern := value` (§8.2).
+    Match: (pat: ^Pat, value: ^Expr)
 }
+
+/// An arm of a `match`: its pattern, its guard and its body.
+pub Arm :: struct {
+    pub pat: ^Pat
+    pub guard: ?^Expr
+    pub body: ^Expr
+}
+
+/// A checked pattern (§9) and the type of the value it matches.
+pub Pat :: struct {
+    pub ty: Ty
+    pub kind: PatKind
+    pub span: source.Span
+}
+
+pub PatKind :: union {
+    Wild
+    /// Binds the matched value to a local (a copy).
+    Bind: u32
+    /// Matches a value `is`-equal to the constant (integers, bools, strings).
+    Const: ^Expr
+    Range: (lo: bigint.Int, hi: bigint.Int, inclusive: bool)
+    /// The absent optional.
+    Null
+    /// A present optional whose value matches.
+    Some: ^Pat
+    /// A successful result whose value matches.
+    Ok: ^Pat
+    /// A failed result whose error matches.
+    Err: ^Pat
+    /// A union value of the given variant, and the pattern of its payload if any.
+    Variant: (variant: u32, payload: ?^Pat)
+    /// Struct fields or tuple elements by index; unlisted ones are ignored.
+    Fields: []FieldPat
+    /// Alternatives `p1, p2` of a match arm, tried in order; all bind the same locals.
+    Or: []^Pat
+}
+
+pub FieldPat :: struct {
+    pub index: u32
+    pub pat: ^Pat
+}
+
+/// A new pattern in the arena.
+pub mk_pat :: fn(ty: Ty, kind: PatKind, span: source.Span) -> ^Pat needs Alloc => new(Pat(ty: ty, kind: kind, span: span))!
 
 pub Callee :: union {
     /// A direct call to a known function, by its index.
@@ -183,7 +263,47 @@ pub Coercion :: union {
 }
 
 /// Explicit conversions and builtin operations.
-pub Builtin :: union { Convert, Assert }
+pub Builtin :: union {
+    /// `T(x)`: a lossless conversion (§6.5).
+    Convert
+    /// `x.trunc(T)`, `.round`, `.floor`, `.ceil`, `.checked` and `.sat` (§6.6).
+    Trunc
+    Round
+    Floor
+    Ceil
+    Checked
+    Sat
+    /// `x.bits(T)`: reinterpret bytes.
+    Bits
+    /// `p.cast(P)`.
+    Cast
+    /// `p.addr()`.
+    Addr
+    /// `n.to_ptr(P)`.
+    ToPtr
+    /// `u.tag()` and `U.from_tag(x)`.
+    Tag
+    FromTag
+    Min
+    Max
+    Clamp
+    Abs
+    AbsDiff
+    Pow: ast.Flavor
+    IsNan
+    IsInf
+    IsFinite
+    SignBit
+    Sqrt
+    /// The methods of arrays and slices that return an element or a pointer to one.
+    Get
+    GetPtr
+    First
+    Last
+    /// `p.cstr_len()`.
+    CstrLen
+    Assert
+}
 
 /// A placeholder of a format template (§21.6.1).
 pub FmtSpec :: struct {
@@ -236,10 +356,20 @@ pub mk :: fn(ty: Ty, kind: ExprKind, span: source.Span) -> ^Expr needs Alloc => 
 /// conditions.
 pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
     match e.kind {
-        .Deref(a), .AddrOf(a), .AddrOfTemp(a), .MakeErr(a), .ArrayFill(a), .Trap(a) => f(a)
+        .Deref(a), .AddrOf(a), .AddrOfTemp(a), .MakeErr(a), .ArrayFill(a), .Trap(a), .SliceLen(a), .SlicePtr(a) => f(a)
+        .Slice(sl) => {
+            f(sl.base)
+            if x := sl.lo { f(x) }
+            if x := sl.hi { f(x) }
+        }
         .Unary(_, a) => f(a)
         .Coerce(_, a) => f(a)
         .Unwrap(a, _) => f(a)
+        .Else(x) => {
+            f(x.lhs)
+            f(x.rhs)
+        }
+        .Try(x) => f(x.expr)
         .Field(a, _) => f(a)
         .Return(_, a) => f(a)
         .Index(a, b, _) => {
@@ -250,9 +380,17 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
             f(a)
             f(b)
         }
-        .Eq(a, b, _) => {
+        .Eq(a, b, _), .In(a, b, _) => {
             f(a)
             f(b)
+        }
+        .Match(s, arms) => {
+            f(s)
+            for a in arms {
+                pat_children(a.pat, f)
+                if g := a.guard { f(g) }
+                f(a.body)
+            }
         }
         .Builtin(_, args), .Call(_, args) => for i in 0..args.len { f(&args[i]) }
         .Aggregate(xs), .Array(xs) => for i in 0..xs.len { f(&xs[i]) }
@@ -293,6 +431,22 @@ conds_children :: fn(cond: []CondPart, f: fn(c: ^Expr)) {
     for c in cond {
         match c {
             .Bool(x) => f(x)
+            .Match(p, v) => {
+                pat_children(p, f)
+                f(v)
+            }
         }
+    }
+}
+
+/// Calls `f` on the constant expressions inside pattern `p`.
+pub pat_children :: fn(p: ^Pat, f: fn(c: ^Expr)) {
+    match p.kind {
+        .Const(e) => f(e)
+        .Some(q), .Ok(q), .Err(q) => pat_children(q, f)
+        .Variant(_, q) => pat_children(q, f)
+        .Fields(fs) => for x in fs { pat_children(x.pat, f) }
+        .Or(ps) => for q in ps { pat_children(q, f) }
+        _ => {}
     }
 }

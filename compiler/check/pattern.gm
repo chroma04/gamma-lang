@@ -1,0 +1,456 @@
+// Checking patterns (§9) and lowering them to `tir.Pat` (mirrors `src/sema/pattern.rs`).
+
+/// Where a pattern appears, which decides how bare bindings treat optionals and results
+/// (§9.3).
+PatCtx :: union {
+    /// `match` arms and binding conditions: patterns implicitly unwrap.
+    Refutable
+    /// `for` patterns and destructuring: a bare binding binds the whole value.
+    Irrefutable
+    /// The right operand of `is`: no bindings allowed.
+    IsTest
+}
+
+/// A name a pattern binds, declared by the caller once the whole pattern is checked.
+PatBind :: struct {
+    name: string
+    local: u32
+    span: source.Span
+}
+
+Pat :: tir.Pat
+
+/// Binds the names of pattern `p` at the error type, for a pattern that could not be
+/// checked.
+bind_unchecked :: fn(cx: ^FnCx, p: ^const ast.Pattern, ctx: PatCtx, binds: ^List(PatBind)) needs Load {
+    match p.kind {
+        .Bind(name) => if ctx is not .IsTest and not bound(binds, name.name) {
+            id := cx.new_local(name.name, cx.s.tys.error(), false, name.span)
+            binds.push(PatBind(name: name.name, local: id, span: name.span))!
+        }
+        .Err(inner) => cx.bind_unchecked(inner, ctx, binds)
+        .Path(pp) => if args := pp.args {
+            for i in 0..args.len { cx.bind_unchecked(&args[i].pat, ctx, binds) }
+        }
+        .Tuple(args) => for i in 0..args.len { cx.bind_unchecked(&args[i].pat, ctx, binds) }
+        _ => {}
+    }
+}
+
+bound :: fn(binds: ^const List(PatBind), name: string) -> bool {
+    for b in binds.items {
+        if b.name is name { return true }
+    }
+    return false
+}
+
+/// Checks `p` against a scrutinee of type `ty`. The names it binds are collected into
+/// `binds`; the caller declares them afterwards.
+pattern :: fn(cx: ^FnCx, p: ^const ast.Pattern, ty0: Ty, ctx: PatCtx, binds: ^List(PatBind)) -> ^Pat needs Load {
+    tys := &cx.s.tys
+    ty := cx.infer.resolve(cx.s, ty0)
+    if tys.is_error(ty) {
+        cx.bind_unchecked(p, ctx, binds)
+        return tir.mk_pat(ty, .Wild, p.span)
+    }
+    // Implicit unwrapping of optionals and results in refutable contexts (§9.3). A bare
+    // binding unwraps one level: against `??T` it binds the present `?T`.
+    if ctx is not .Irrefutable {
+        bare := p.kind is .Bind(_)
+        match tys.kind(ty) {
+            .Optional(inner) => if p.kind is not .Null and p.kind is not .Wildcard {
+                ip := if bare { cx.pattern_here(p, inner, ctx, binds) } else { cx.pattern(p, inner, ctx, binds) }
+                return tir.mk_pat(ty, .Some(ip), p.span)
+            }
+            .Result(_, ok) => if p.kind is not .Err(_) and p.kind is not .Wildcard {
+                ip := if bare { cx.pattern_here(p, ok, ctx, binds) } else { cx.pattern(p, ok, ctx, binds) }
+                return tir.mk_pat(ty, .Ok(ip), p.span)
+            }
+            _ => {}
+        }
+    }
+    return cx.pattern_here(p, ty, ctx, binds)
+}
+
+/// Pattern `p` against a value of type `ty`, without unwrapping `ty`.
+pattern_here :: fn(cx: ^FnCx, p: ^const ast.Pattern, ty0: Ty, ctx: PatCtx, binds: ^List(PatBind)) -> ^Pat needs Load {
+    tys := &cx.s.tys
+    ty := cx.infer.resolve(cx.s, ty0)
+    span := p.span
+    wild := tir.mk_pat(ty, .Wild, span)
+    match p.kind {
+        .Wildcard => return wild
+        .Bind(name) => {
+            if ctx is .IsTest {
+                cx.error(span, "a pattern on the right of `is` cannot bind names; use `if pattern := value`")
+                return wild
+            }
+            if cx.names_constant(name.name) {
+                cx.error(span, str.format("`{}` is a constant, but a bare name in a pattern always binds a new name; compare with a guard instead (`x if x is {}`)", name.name, name.name)!)
+            }
+            id := cx.new_local(name.name, ty, false, name.span)
+            if bound(binds, name.name) {
+                // The name is declared once, by its first binding.
+                cx.error(name.span, str.format("`{}` is bound twice in this pattern", name.name)!)
+            } else {
+                binds.push(PatBind(name: name.name, local: id, span: name.span))!
+            }
+            return tir.mk_pat(ty, .Bind(id), span)
+        }
+        .Null => {
+            if tys.kind(ty) is not .Optional(_) {
+                cx.error(span, str.format("`null` matches only optionals, but this is `{}`", cx.show(ty))!)
+            }
+            return tir.mk_pat(ty, .Null, span)
+        }
+        .Lit(e) => return cx.literal_pattern(e, ty, span)
+        .Range(lo, hi, inclusive) => {
+            if not cx.integer_pattern_ty(ty) {
+                cx.error(span, str.format("range patterns match integers, but this is `{}`", cx.show(ty))!)
+                return wild
+            }
+            l := cx.pattern_int(lo, ty) else return wild
+            h := cx.pattern_int(hi, ty) else return wild
+            if (inclusive and l.cmp(h) > 0) or (not inclusive and l.cmp(h) >= 0) {
+                cx.error(span, "this range pattern matches nothing")
+            }
+            return tir.mk_pat(ty, .Range(l, h, inclusive), span)
+        }
+        .Err(inner) => {
+            .Result(err, _) := tys.kind(ty) else {
+                cx.error(span, str.format("`!p` matches the error of a result, but this is `{}`", cx.show(ty))!)
+                return wild
+            }
+            ip := cx.pattern(inner, err, ctx, binds)
+            return tir.mk_pat(ty, .Err(ip), span)
+        }
+        .Tuple(args) => {
+            .Tuple(elems, names) := tys.kind(ty) else {
+                cx.error(span, str.format("a tuple pattern needs a tuple, but this is `{}`", cx.show(ty))!)
+                return wild
+            }
+            fields := cx.sub_patterns(args, elems, names, ctx, binds, span, false)
+            return tir.mk_pat(ty, .Fields(fields), span)
+        }
+        .Path(pp) => {
+            errors := cx.s.l.diags.error_count()
+            nbinds := binds.items.len
+            r := cx.path_pattern(pp.path, pp.args, ty, ctx, binds, span)
+            // After an error, still bind the names so that uses of them don't cascade.
+            if r.kind is .Wild and cx.s.l.diags.error_count() > errors and binds.items.len is nbinds {
+                if args := pp.args {
+                    for i in 0..args.len { cx.bind_unchecked(&args[i].pat, ctx, binds) }
+                }
+            }
+            return r
+        }
+    }
+}
+
+/// Whether `name` refers to a visible constant value (§9.2 "bare names always bind").
+names_constant :: fn(cx: ^FnCx, name: string) -> bool needs Load {
+    if b := cx.lookup_local(name) { return b is .Untyped(_) }
+    d := cx.s.lookup_module_name(cx.module, name) else return false
+    match cx.s.resolve_decl(d) {
+        .Untyped(_) => return true
+        .Const(t) => {
+            tys := &cx.s.tys
+            return tys.is_integer(t) or tys.kind(t) is .Bool or t is tys.string_ty() or cx.s.union_variants(t) is not null
+        }
+        _ => return false
+    }
+}
+
+literal_pattern :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty, span: source.Span) -> ^Pat needs Load {
+    tys := &cx.s.tys
+    match e.kind {
+        .Str(s) => {
+            if ty is not tys.string_ty() {
+                cx.error(span, str.format("a string pattern needs a `string`, but this is `{}`", cx.show(ty))!)
+            }
+            return tir.mk_pat(ty, .Const(tir.mk(ty, .Str(s.bytes), span)), span)
+        }
+        .Bool(b) => {
+            if tys.kind(ty) is not .Bool {
+                cx.error(span, str.format("a boolean pattern needs a `bool`, but this is `{}`", cx.show(ty))!)
+            }
+            return tir.mk_pat(ty, .Const(tir.mk(ty, .Bool(b), span)), span)
+        }
+        .Float(_) => {
+            cx.error(span, "float literal patterns are not allowed; compare with a guard")
+            return tir.mk_pat(ty, .Wild, span)
+        }
+        .Unary(_, operand) => if operand.kind is .Float(_) {
+            cx.error(span, "float literal patterns are not allowed; compare with a guard")
+            return tir.mk_pat(ty, .Wild, span)
+        }
+        _ => {}
+    }
+    if not cx.integer_pattern_ty(ty) {
+        cx.error(span, str.format("an integer pattern needs an integer, but this is `{}`", cx.show(ty))!)
+        return tir.mk_pat(ty, .Wild, span)
+    }
+    v := cx.pattern_int(e, ty) else return tir.mk_pat(ty, .Wild, span)
+    return tir.mk_pat(ty, .Const(tir.mk(ty, .Int(v), span)), span)
+}
+
+/// The value of an integer pattern bound: a literal, a negated literal or a constant; it
+/// must fit `ty`.
+pattern_int :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ?bigint.Int needs Load {
+    v := bigint.zero()
+    match e.kind {
+        .Int(l) => { v = bigint.from_nat(&l.value) }
+        .Unary(.Neg, operand) => {
+            .Int(l) := operand.kind else {
+                cx.error(operand.span, "expected an integer literal")
+                return null
+            }
+            v = bigint.from_nat(&l.value).neg()
+        }
+        _ => {
+            r := cx.try_untyped(e)
+            if x := r and .Ok(u) := x and .Int(i) := u {
+                v = i
+            } else if .Field(base, _) := e.kind and cx.module_of(base) is not null {
+                // A typed constant of another module, as a range bound.
+                c := cx.const_pattern_value(e, ty) else return null
+                .Int(i) := c.kind else return null
+                v = i
+            } else {
+                cx.error(e.span, "expected an integer literal or constant here")
+                return null
+            }
+        }
+    }
+    // A literal's type is checked once it is known (when patterns are finalized).
+    if cx.s.tys.kind(ty) is not .Infer(_) and not cx.s.int_fits(v, ty) {
+        cx.error(e.span, str.format("{} does not fit in `{}`", sema.show_int(v), cx.show(ty))!)
+        return null
+    }
+    return v
+}
+
+/// Whether integer patterns can match values of type `ty`: an integer type, or the type
+/// of an integer literal not known yet, which is then restricted to integers.
+integer_pattern_ty :: fn(cx: ^FnCx, ty: Ty) -> bool needs Alloc {
+    if cx.s.tys.is_integer(ty) { return true }
+    return cx.infer.var_kind(&cx.s.tys, ty) is .Int and cx.infer.require_integer(&cx.s.tys, ty)
+}
+
+/// The value of the constant `e` (such as `m.MAX`) as a literal of type `ty`, for a
+/// pattern: an integer, `bool` or string.
+const_pattern_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    v := cx.expr(e, ty)
+    if tys.is_error(v.ty) { return null }
+    // An untyped constant is already a literal.
+    if .Int(i) := v.kind and tys.is_integer(ty) {
+        if not cx.s.int_fits(i, ty) {
+            cx.error(e.span, str.format("{} does not fit in `{}`", sema.show_int(i), cx.show(ty))!)
+            return null
+        }
+        return tir.mk(ty, .Int(i), e.span)
+    }
+    _ = cx.unsupported(e.span, "typed constants in patterns")
+    return null
+}
+
+/// The sub-patterns of a tuple or struct pattern, by element index.
+sub_patterns :: fn(cx: ^FnCx, args: []const ast.PatArg, elems: []const Ty, names: []const string, ctx: PatCtx, binds: ^List(PatBind), span: source.Span, partial: bool) -> []tir.FieldPat needs Load {
+    out := list(tir.FieldPat)
+    next: usize = 0
+    all_positional := true
+    for i in 0..args.len {
+        a := &args[i]
+        idx: usize = 0
+        if n := a.name {
+            all_positional = false
+            found := names.index_of(n.name) else {
+                cx.error(n.span, str.format("no element named `{}`", n.name)!)
+                continue
+            }
+            idx = found
+        } else {
+            idx = next
+            next += 1
+            if idx >= elems.len {
+                cx.error(a.span, "too many sub-patterns")
+                continue
+            }
+        }
+        p := cx.pattern(&a.pat, elems[idx], ctx, binds)
+        out.push(tir.FieldPat(index: idx.trunc(u32), pat: p))!
+    }
+    if not partial and out.items.len < elems.len and all_positional {
+        cx.error(span, str.format("this pattern has {} elements, but the value has {}", out.items.len, elems.len)!)
+    }
+    return out.items
+}
+
+/// `S(f: p, …)` against a value of type `ty`, where `t` is the struct type named by
+/// `path` (if it names one).
+struct_pattern :: fn(cx: ^FnCx, path: ^const ast.Expr, t0: ?Ty, args0: ?[]ast.PatArg, ty: Ty, ctx: PatCtx, binds: ^List(PatBind), span: source.Span) -> ^Pat needs Load {
+    wild := tir.mk_pat(ty, .Wild, span)
+    t := t0 else {
+        cx.error(path.span, "expected a struct type")
+        return wild
+    }
+    if t is not ty {
+        cx.error(span, str.format("this pattern is for `{}`, but the value is `{}`", cx.show(t), cx.show(ty))!)
+        return wild
+    }
+    fields := cx.s.struct_fields(t) else {
+        cx.error(path.span, str.format("`{}` is not a struct type", cx.show(t))!)
+        return wild
+    }
+    if not cx.sees_private(t) {
+        for f in fields {
+            if not f.is_pub {
+                cx.error(span, str.format("`{}` cannot be matched with a struct pattern outside its module: its field `{}` is private (§3.3)", cx.show(t), f.name)!)
+                return wild
+            }
+        }
+    }
+    names := list(string)
+    ftys := list(Ty)
+    for f in fields {
+        names.push(f.name)!
+        ftys.push(f.ty)!
+    }
+    // A bare name `x` in a struct pattern is shorthand for `x: x`.
+    args := list(ast.PatArg)
+    for a in args0 else empty_slice(ast.PatArg) {
+        if a.name is null and .Bind(n) := a.pat.kind {
+            args.push(ast.PatArg(name: n, pat: a.pat, span: a.span))!
+        } else {
+            args.push(a)!
+        }
+    }
+    for a in args.items {
+        if a.name is null {
+            cx.error(a.span, "struct patterns name their fields: `S(field: pattern)`")
+            break
+        }
+    }
+    fs := cx.sub_patterns(args.items, ftys.items, names.items, ctx, binds, span, true)
+    return tir.mk_pat(ty, .Fields(fs), span)
+}
+
+path_pattern :: fn(cx: ^FnCx, path: ^const ast.Expr, args: ?[]ast.PatArg, ty: Ty, ctx: PatCtx, binds: ^List(PatBind), span: source.Span) -> ^Pat needs Load {
+    wild := tir.mk_pat(ty, .Wild, span)
+    // `.V` / `.V(…)`: a variant of the scrutinee's union type.
+    match path.kind {
+        .DotIdent(n) => return cx.variant_pattern(ty, n, args, ty, ctx, binds, span)
+        .Field(base, name) => {
+            if t := cx.type_of_name(base) {
+                if t is not ty {
+                    cx.error(span, str.format("this pattern is for `{}`, but the value is `{}`", cx.show(t), cx.show(ty))!)
+                    return wild
+                }
+                return cx.variant_pattern(t, name, args, ty, ctx, binds, span)
+            }
+            // `m.CONST`: a constant of another module (§9.2).
+            if args is null and cx.module_of(base) is not null {
+                v := cx.const_pattern_value(path, ty) else return wild
+                return tir.mk_pat(ty, .Const(v), span)
+            }
+            // `m.S(f: p, …)`: a struct type of another module.
+            if args is not null {
+                if t := cx.type_of_name(path) and cx.s.struct_fields(t) is not null {
+                    return cx.struct_pattern(path, t, args, ty, ctx, binds, span)
+                }
+            }
+            cx.error(path.span, "expected a union type or a module before `.` in a pattern")
+            return wild
+        }
+        .Ident(_) => return cx.struct_pattern(path, cx.type_of_name(path), args, ty, ctx, binds, span)
+        .Call(_) => return cx.unsupported_pat(span, ty, "patterns of generic struct types")
+        _ => {
+            cx.error(path.span, "expected a variant, constant or struct pattern")
+            return wild
+        }
+    }
+}
+
+unsupported_pat :: fn(cx: ^FnCx, span: source.Span, ty: Ty, what: string) -> ^Pat needs Alloc {
+    cx.s.unsupported(span, what)
+    return tir.mk_pat(ty, .Wild, span)
+}
+
+/// `.V` / `.V(…)` for the variant `vname` of the union type `u`.
+variant_pattern :: fn(cx: ^FnCx, u: Ty, vname: ast.Ident, args: ?[]ast.PatArg, ty: Ty, ctx: PatCtx, binds: ^List(PatBind), span: source.Span) -> ^Pat needs Load {
+    wild := tir.mk_pat(ty, .Wild, span)
+    uv := cx.s.union_variants(u) else {
+        if cx.is_c_union(u) {
+            cx.error(span, c_union_match(cx.s, u))
+            return wild
+        }
+        d := diag.error(span, str.format("`.{}` matches a union variant, but this is `{}`", vname.name, cx.show(u))!)
+        // Results and optionals have no variants; their patterns unwrap (§9.3).
+        if vname.name in ("Ok", "Err") {
+            d.add_note("a result is not a union: match its error with `!e` (or `!.Variant`) and its success value with a plain pattern, as in `!e => …` and `v => …` (§9.3)")
+        } else if vname.name in ("Some", "None") {
+            d.add_note("an optional is not a union: match absence with `null` and the present value with a plain pattern, as in `null => …` and `v => …` (§9.3)")
+        }
+        cx.s.emit(d)
+        return wild
+    }
+    idx: ?usize = null
+    for i, v in enumerate(uv.variants) {
+        if v.name is vname.name {
+            idx = i
+            break
+        }
+    }
+    i := idx else {
+        cx.error(vname.span, str.format("`{}` has no variant `{}`", cx.show(u), vname.name)!)
+        return wild
+    }
+    payload := cx.payload_pattern(uv.variants[i].payload, vname, args, ctx, binds, span)
+    return tir.mk_pat(ty, .Variant(i.trunc(u32), payload), span)
+}
+
+/// The sub-pattern for the payload (of type `payload_ty`, if the variant has one) of
+/// `.V(…)`.
+payload_pattern :: fn(cx: ^FnCx, payload_ty: ?Ty, vname: ast.Ident, args0: ?[]ast.PatArg, ctx: PatCtx, binds: ^List(PatBind), span: source.Span) -> ?^Pat needs Load {
+    pt := payload_ty else {
+        if args0 is not null { cx.error(span, str.format("variant `{}` has no payload", vname.name)!) }
+        return null
+    }
+    args := args0 else {
+        if ctx is not .IsTest {
+            d := diag.error(span, str.format("variant `{}` has a payload; write `.{}(_)` to ignore it", vname.name, vname.name)!)
+            d.add_fix("match any payload with `(_)`", source.Span(file: span.file, lo: span.hi, hi: span.hi), "(_)")
+            cx.s.emit(d)
+        }
+        return null
+    }
+    one := args.len is 1 and args[0].name is null
+    // `.Rect(_)` ignores the whole payload.
+    if one and args[0].pat.kind is .Wildcard { return tir.mk_pat(pt, .Wild, span) }
+    if .Tuple(elems, names) := cx.s.tys.kind(pt) {
+        // One sub-pattern for a payload that is not a 1-tuple matches the whole tuple:
+        // `.Rect(r)` gives `r.w` and `r.h` (§9.2).
+        if one and elems.len is not 1 { return cx.pattern(&args[0].pat, pt, ctx, binds) }
+        // A tuple payload's elements are written directly: `.Rect(w, h)` (§9.2).
+        fs := cx.sub_patterns(args, elems, names, ctx, binds, span, false)
+        return tir.mk_pat(pt, .Fields(fs), span)
+    }
+    if not one { cx.error(span, str.format("variant `{}` has a single payload; use one sub-pattern", vname.name)!) }
+    if args.len is 0 { return tir.mk_pat(pt, .Wild, span) }
+    return cx.pattern(&args[0].pat, pt, ctx, binds)
+}
+
+/// Declares the names bound by a pattern in the current scope.
+declare_binds :: fn(cx: ^FnCx, binds: ^const List(PatBind)) needs Load {
+    for b in binds.items { cx.declare(b.name, .Var(b.local), b.span) }
+}
+
+/// Whether `t` is a `#c_union` type.
+is_c_union :: fn(cx: ^const FnCx, t: Ty) -> bool {
+    .Adt(id, _) := cx.s.tys.kind(t) else return false
+    return cx.s.adts.items[usize(id)].kind is .CUnion(_)
+}
+
+/// The error for matching a value of `#c_union` type `t` (§5.11.1).
+c_union_match :: fn(s: ^Sema, t: Ty) -> string needs Alloc => str.format("`{}` is a `#c_union`: it has no tag, so it cannot be matched; read one of its fields instead (§5.11.1)", s.show(t))!

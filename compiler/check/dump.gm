@@ -135,6 +135,20 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             kids.push(index)!
             if checked { "index" } else { "index unchecked" }
         }
+        .Slice(sl) => {
+            kids.push(sl.base)!
+            if x := sl.lo { kids.push(x)! }
+            if x := sl.hi { kids.push(x)! }
+            str.format("slice{}{}{}", if sl.lo is not null { " lo" } else { "" }, if sl.hi is not null { " hi" } else { "" }, if sl.inclusive { " inclusive" } else { "" })!
+        }
+        .SliceLen(x) => {
+            kids.push(x)!
+            "slice-len"
+        }
+        .SlicePtr(x) => {
+            kids.push(x)!
+            "slice-ptr"
+        }
         .AddrOf(x) => {
             kids.push(x)!
             "addr-of"
@@ -168,10 +182,7 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
         }
         .Builtin(op, args) => {
             for i in 0..args.len { kids.push(&args[i])! }
-            str.format("builtin {}", match op {
-                .Convert => "Convert"
-                .Assert => "Assert"
-            })!
+            str.format("builtin {}", builtin_text(op))!
         }
         .Call(callee, args) => {
             h := match callee {
@@ -201,6 +212,15 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             kids.push(x)!
             "make-err"
         }
+        .Else(x) => {
+            kids.push(x.lhs)!
+            kids.push(x.rhs)!
+            if c := x.capture { str.format("else capture {}", d.local_text(c))! } else { "else" }
+        }
+        .Try(x) => {
+            kids.push(x.expr)!
+            if v := x.lift { str.format("try {} lift {}", x.levels, v)! } else { str.format("try {}", x.levels)! }
+        }
         .Unwrap(x, is_result) => {
             kids.push(x)!
             if is_result { "unwrap-result" } else { "unwrap-optional" }
@@ -209,6 +229,17 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             kids.push(a)!
             kids.push(b)!
             if negated { "is-not" } else { "is" }
+        }
+        .In(a, b, negated) => {
+            kids.push(a)!
+            kids.push(b)!
+            if negated { "not-in" } else { "in" }
+        }
+        .Match(scrutinee, arms) => {
+            d.write_line(depth, str.format("match : {}", ty)!)
+            d.write_expr(depth + 1, scrutinee)
+            for a in arms { d.write_arm(depth + 1, &a) }
+            return
         }
         .Block(b) => {
             d.write_line(depth, str.format("block : {}", ty)!)
@@ -378,6 +409,99 @@ write_conds :: fn(d: ^Dump, depth: usize, cond: []const tir.CondPart) needs Allo
                 d.write_line(depth, "cond")
                 d.write_expr(depth + 1, x)
             }
+            .Match(p, v) => {
+                d.write_line(depth, "cond-match")
+                d.write_pat(depth + 1, p)
+                d.write_expr(depth + 1, v)
+            }
         }
     }
+}
+
+write_arm :: fn(d: ^Dump, depth: usize, a: ^const tir.Arm) needs Alloc {
+    d.write_line(depth, "arm")
+    d.write_pat(depth + 1, a.pat)
+    if g := a.guard {
+        d.write_line(depth + 1, "guard")
+        d.write_expr(depth + 2, g)
+    }
+    d.write_expr(depth + 1, a.body)
+}
+
+write_pat :: fn(d: ^Dump, depth: usize, p: ^const tir.Pat) needs Alloc {
+    ty := d.s.show(p.ty)
+    head: string = match p.kind {
+        .Wild => "pat-wild"
+        .Bind(l) => str.format("pat-bind {}", d.local_text(l))!
+        .Const(x) => {
+            d.write_line(depth, str.format("pat-const : {}", ty)!)
+            d.write_expr(depth + 1, x)
+            return
+        }
+        .Range(lo, hi, inclusive) => str.format("pat-range {} {}{}", sema.show_int(lo), sema.show_int(hi), if inclusive { " inclusive" } else { "" })!
+        .Null => "pat-null"
+        .Some(q), .Ok(q), .Err(q) => {
+            name := match p.kind {
+                .Some(_) => "pat-some"
+                .Ok(_) => "pat-ok"
+                _ => "pat-err"
+            }
+            d.write_line(depth, str.format("{} : {}", name, ty)!)
+            d.write_pat(depth + 1, q)
+            return
+        }
+        .Variant(v, null) => str.format("pat-variant {}", v)!
+        .Variant(v, q) => {
+            d.write_line(depth, str.format("pat-variant {} : {}", v, ty)!)
+            d.write_pat(depth + 1, q)
+            return
+        }
+        .Fields(fs) => {
+            d.write_line(depth, str.format("pat-fields : {}", ty)!)
+            for f in fs {
+                d.write_line(depth + 1, str.format("field {}", f.index)!)
+                d.write_pat(depth + 2, f.pat)
+            }
+            return
+        }
+        .Or(ps) => {
+            d.write_line(depth, str.format("pat-or : {}", ty)!)
+            for q in ps { d.write_pat(depth + 1, q) }
+            return
+        }
+    }
+    d.write_line(depth, str.format("{} : {}", head, ty)!)
+}
+
+builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
+    .Convert => "Convert"
+    .Trunc => "Trunc"
+    .Round => "Round"
+    .Floor => "Floor"
+    .Ceil => "Ceil"
+    .Checked => "Checked"
+    .Sat => "Sat"
+    .Bits => "Bits"
+    .Cast => "Cast"
+    .Addr => "Addr"
+    .ToPtr => "ToPtr"
+    .Tag => "Tag"
+    .FromTag => "FromTag"
+    .Min => "Min"
+    .Max => "Max"
+    .Clamp => "Clamp"
+    .Abs => "Abs"
+    .AbsDiff => "AbsDiff"
+    .Pow(f) => str.format("Pow({})", flavor_text(f))!
+    .IsNan => "IsNan"
+    .IsInf => "IsInf"
+    .IsFinite => "IsFinite"
+    .SignBit => "SignBit"
+    .Sqrt => "Sqrt"
+    .Get => "Get"
+    .GetPtr => "GetPtr"
+    .First => "First"
+    .Last => "Last"
+    .CstrLen => "CstrLen"
+    .Assert => "Assert"
 }

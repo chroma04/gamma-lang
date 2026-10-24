@@ -9,8 +9,8 @@
   C-backend assignment-order bug fixed. s38d: stage 4a declarations (`gamma decls`,
   compiler/types+sema+bigint+ratio, "gammac cannot" skip protocol + DECLS_FLOOR ratchet);
   `in` takes patterns (§7.7). s38e: stage 4b bodies started (`gamma tir`, compiler/tir +
-  compiler/check, TIR_FLOOR 55); fixed let-else-in-value-block (ref) + fmt `.A` first
-  line of block. Next: roadmap/self-hosting.md.
+  compiler/check, PR #76); s38f: patterns/for/methods/errors/sequences, TIR_FLOOR 100,
+  `&e` expected-pointee hint. Next: generics in gammac (roadmap/self-hosting.md).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
   in editors/tree-sitter-gamma (node 22 in /opt/node22).

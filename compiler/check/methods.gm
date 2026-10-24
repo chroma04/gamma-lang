@@ -1,0 +1,528 @@
+// Method calls (§7.10): struct fields holding function pointers, builtin methods (§6.6,
+// §21.3), functions of the receiver type's module and the operations of its effects
+// (mirrors `src/sema/methods.rs`).
+
+/// `base.name(args)`.
+method_call :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    // `U.from_tag(x)` on an enum type, or a variant `T.V(…)`.
+    if t := cx.type_of_name(base) {
+        if name.name is "from_tag" { return cx.check_from_tag(t, args, span) }
+        return cx.construct_variant(t, name, args, span)
+    }
+    recv := cx.expr(base, null)
+    rty := cx.infer.resolve(cx.s, recv.ty)
+    if tys.is_error(rty) { return error_expr(cx.s, span) }
+    // 1. A field (holding a function pointer).
+    derefed_ty := rty
+    if .Ptr(_, p) := tys.kind(cx.infer.shallow(tys, recv.ty)) { derefed_ty = p }
+    if fields := cx.s.struct_fields(derefed_ty) {
+        for f in fields {
+            if f.name is name.name { return cx.unsupported(span, "calls of function pointers") }
+        }
+    }
+    // 2. A builtin method.
+    if e := cx.builtin_method(recv, rty, name, args, span) { return e }
+    // `r.len()` of a range is a function of the core library (§21.3).
+    if cx.s.range_of(rty) is not null and name.name is "len" { return cx.unsupported(span, "lengths of ranges") }
+    // 3. A function of the module that declares the receiver's type.
+    if e := cx.module_method(recv, name, args, span) { return e }
+    d := diag.error(name.span, str.format("type `{}` has no method `{}`", cx.show(cx.infer.resolve(cx.s, rty)), name.name)!)
+    cx.emit_with_continuation_note(d, base.span, name.span)
+    return error_expr(cx.s, span)
+}
+
+/// Emits `d`, a missing field or method `.name` of `base`, adding a note when `.name`
+/// starts a line: such a line continues the previous one (§2.8), which surprises code
+/// that meant `.Variant` as a value of its own.
+emit_with_continuation_note :: fn(cx: ^FnCx, d0: diag.Diagnostic, base: source.Span, name: source.Span) needs Alloc {
+    d := d0
+    file := cx.s.l.sm.file(base.file)
+    if base.file is name.file and file.line_col(base.hi).line < file.line_col(name.lo).line {
+        d.add_note("a line that starts with `.name` continues the previous line (§2.8); to begin a new expression with a variant, name its type: `T.Variant`")
+    }
+    cx.s.emit(d)
+}
+
+/// The type written as argument `i`.
+type_arg :: fn(cx: ^FnCx, args: []const ast.Arg, i: usize, span: source.Span) -> ?Ty needs Load {
+    if i < args.len and .Positional(e) := args[i].kind {
+        t := cx.s.resolve_type(cx.module, &e)
+        if cx.s.tys.is_error(t) { return null }
+        return t
+    }
+    cx.error(span, "expected a type argument")
+    return null
+}
+
+/// The value written as argument `i`, of type `ty`.
+value_arg :: fn(cx: ^FnCx, args: []const ast.Arg, i: usize, ty: Ty, span: source.Span) -> ^Expr needs Load {
+    if i < args.len and .Positional(e) := args[i].kind { return cx.coerce(cx.expr(&e, ty), ty) }
+    cx.error(span, "missing argument")
+    return error_expr(cx.s, span)
+}
+
+arity :: fn(cx: ^FnCx, args: []const ast.Arg, n: usize, name: string, span: source.Span) -> bool needs Alloc {
+    if args.len is not n {
+        cx.error(span, str.format("`{}` takes {} argument{}", name, n, if n is 1 { "" } else { "s" })!)
+        return false
+    }
+    return true
+}
+
+builtin :: fn(op: tir.Builtin, ty: Ty, args: []const ^Expr, span: source.Span) -> ^Expr needs Alloc {
+    vals := list(Expr)
+    for a in args { vals.push(a^)! }
+    return tir.mk(ty, .Builtin(op, vals.items), span)
+}
+
+/// The builtin methods of §21.3 and the conversions of §6.6.
+builtin_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    n := name.name
+    is_int := tys.is_integer(rty) or cx.infer.var_kind(tys, rty) is .Int
+    is_float := tys.kind(rty) is .Float(_) or cx.infer.var_kind(tys, rty) is .Float
+    if .Param(_) := tys.kind(rty) { return cx.unsupported(span, "methods of type parameters") }
+    if is_int or is_float { return cx.numeric_method(recv, rty, n, is_int, is_float, args, span) }
+    k := tys.kind(rty)
+    if n is "addr" and k in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_)) {
+        _ = cx.arity(args, 0, n, span)
+        return builtin(.Addr, tys.usize_ty(), [1]^Expr(recv)[..], span)
+    }
+    if n is "cast" and k in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_), .Optional(_)) { return cx.pointer_cast(recv, rty, args, span) }
+    if n is "downcast_unchecked" and k is .Ptr(_) { return cx.unsupported(span, "`downcast_unchecked`") }
+    if n is "cstr_len" and .ManyPtr(_, e) := k and e is tys.u8_ty() {
+        _ = cx.arity(args, 0, n, span)
+        return builtin(.CstrLen, tys.usize_ty(), [1]^Expr(recv)[..], span)
+    }
+    if n is "bits" and (cx.is_plain_data(rty) or k is .Bool or cx.s.bits_struct_ty(rty) is not null) {
+        if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+        t := cx.type_arg(args, 0, span) else return null
+        return cx.bits_cast(recv, t, span)
+    }
+    if n is "tag" and k is .Adt(_) {
+        if uv := cx.s.union_variants(rty) {
+            _ = cx.arity(args, 0, n, span)
+            return builtin(.Tag, uv.tag, [1]^Expr(recv)[..], span)
+        }
+    }
+    return cx.collection_method(recv, rty, n, args, span)
+}
+
+/// The builtin methods of integers and floats.
+numeric_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, n: string, is_int, is_float: bool, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    one := [1]^Expr(recv)
+    match n {
+        "trunc", "round", "floor", "ceil", "checked", "sat" => return cx.numeric_conversion(recv, n, is_float, args, span)
+        // `x.to(F)`: the nearest value of float type `F` (§6.6).
+        "to" => {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            t := cx.type_arg(args, 0, span) else return null
+            if tys.kind(t) is not .Float(_) {
+                cx.error(span, str.format("`.to` converts to a float type, not `{}`; use `.trunc`, `.round`, `.checked` or `.sat` for integers", cx.show(t))!)
+            }
+            return builtin(.Round, t, one[..], span)
+        }
+        "unsigned_abs" => if is_int {
+            _ = cx.arity(args, 0, n, span)
+            cx.obligations.push(.Numeric(NumericObligation(ty: recv.ty, span: span, op: "unsigned_abs", int_only: true, signed_only: false)))!
+            zero := tir.mk(recv.ty, .Int(bigint.zero()), span)
+            return builtin(.AbsDiff, unsigned_of(tys, cx.infer.resolve(cx.s, recv.ty)), [2]^Expr(recv, zero)[..], span)
+        }
+        "bits" => {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            t := cx.type_arg(args, 0, span) else return null
+            return cx.bits_cast(recv, t, span)
+        }
+        "min", "max", "abs_diff" => return cx.numeric_pair(recv, n, args, span)
+        "clamp" => {
+            if not cx.arity(args, 2, n, span) { return error_expr(cx.s, span) }
+            lo := cx.value_arg(args, 0, recv.ty, span)
+            hi := cx.value_arg(args, 1, recv.ty, span)
+            ty := cx.unify_operands(recv.ty, lo.ty, span, "the arguments of `.clamp`")
+            _ = cx.unify_operands(ty, hi.ty, span, "the arguments of `.clamp`")
+            return builtin(.Clamp, ty, [3]^Expr(recv, lo, hi)[..], span)
+        }
+        "abs" => {
+            _ = cx.arity(args, 0, n, span)
+            cx.obligations.push(.Numeric(NumericObligation(ty: recv.ty, span: span, op: "abs", int_only: false, signed_only: true)))!
+            return builtin(.Abs, recv.ty, one[..], span)
+        }
+        "pow", "pow_wrap", "pow_sat", "pow_checked" => if is_int {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            e := cx.value_arg(args, 0, tys.int(false, 32), span)
+            flavor: ast.Flavor = match n {
+                "pow" => .Checked
+                "pow_wrap" => .Wrap
+                "pow_sat" => .Sat
+                _ => .Opt
+            }
+            ty := if flavor is .Opt { tys.optional(recv.ty) } else { recv.ty }
+            return builtin(.Pow(flavor), ty, [2]^Expr(recv, e)[..], span)
+        }
+        "is_nan", "is_inf", "is_finite", "sign_bit" => if is_float {
+            _ = cx.arity(args, 0, n, span)
+            op: tir.Builtin = match n {
+                "is_nan" => .IsNan
+                "is_inf" => .IsInf
+                "is_finite" => .IsFinite
+                _ => .SignBit
+            }
+            return builtin(op, tys.bool_ty(), one[..], span)
+        }
+        "sqrt" => if is_float {
+            _ = cx.arity(args, 0, n, span)
+            return builtin(.Sqrt, recv.ty, one[..], span)
+        }
+        "to_ptr" => if rty is tys.usize_ty() {
+            t := cx.type_arg(args, 0, span) else return null
+            return builtin(.ToPtr, tys.optional(t), one[..], span)
+        }
+        "fma", "clz", "ctz", "popcount", "bswap", "bitreverse", "rotl", "rotr" => return cx.unsupported(span, str.format("`.{}`", n)!)
+        _ => {}
+    }
+    return null
+}
+
+/// `x.trunc(T)`, `.round`, `.floor`, `.ceil`, `.checked` and `.sat`: conversions to an
+/// integer type (§6.6).
+numeric_conversion :: fn(cx: ^FnCx, recv: ^Expr, n: string, is_float: bool, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+    t := cx.type_arg(args, 0, span) else return null
+    op: tir.Builtin = match n {
+        "trunc" => .Trunc
+        "round" => .Round
+        "floor" => .Floor
+        "ceil" => .Ceil
+        "checked" => .Checked
+        _ => .Sat
+    }
+    t_int := tys.is_integer(t)
+    t_float := tys.kind(t) is .Float(_)
+    ok := if op in (tir.Builtin.Trunc, tir.Builtin.Checked, tir.Builtin.Sat, tir.Builtin.Round) { t_int } else { t_int and is_float }
+    if op is .Round and t_float and not t_int {
+        cx.error(span, str.format("`.round` converts to an integer; for the nearest `{}` use `.to({})`", cx.show(t), cx.show(t))!)
+    } else if not ok {
+        cx.error(span, str.format("`.{}` cannot convert to `{}`", n, cx.show(t))!)
+    }
+    ty := if op is .Checked { tys.optional(t) } else { t }
+    return builtin(op, ty, [1]^Expr(recv)[..], span)
+}
+
+/// `x.min(y)`, `x.max(y)` and `x.abs_diff(y)`.
+numeric_pair :: fn(cx: ^FnCx, recv: ^Expr, n: string, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+    if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+    y := cx.value_arg(args, 0, recv.ty, span)
+    ty := cx.unify_operands(recv.ty, y.ty, span, str.format("the receiver and argument of `.{}`", n)!)
+    op: tir.Builtin = .Min
+    rty := ty
+    match n {
+        "min" => {}
+        "max" => { op = .Max }
+        _ => {
+            cx.obligations.push(.Numeric(NumericObligation(ty: ty, span: span, op: "abs_diff", int_only: true, signed_only: false)))!
+            op = .AbsDiff
+            rty = unsigned_of(&cx.s.tys, cx.infer.resolve(cx.s, ty))
+        }
+    }
+    return builtin(op, rty, [2]^Expr(recv, y)[..], span)
+}
+
+/// The unsigned integer type of the same width (`abs_diff`).
+unsigned_of :: fn(tys: ^types.Types, t: Ty) -> Ty needs Alloc => match tys.kind(t) {
+    .Int(_, bits) => tys.int(false, bits)
+    .Isize => tys.usize_ty()
+    _ => t
+}
+
+/// `p.cast(T)`: a conversion between pointer types.
+pointer_cast :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    t := cx.type_arg(args, 0, span) else return null
+    // Data pointers convert to data pointers, function pointers to function pointers.
+    kind :: fn(x: Ty) -> u8 => match tys.kind(x) {
+        .Ptr(_), .ManyPtr(_), .Rawptr => 1
+        .FnPtr(_) => 2
+        _ => 0
+    }
+    same :: fn(a, b: Ty) -> bool => kind(a) is not 0 and kind(a) is kind(b)
+    ok := false
+    if .Optional(a) := tys.kind(rty) {
+        if .Optional(b) := tys.kind(t) { ok = same(a, b) }
+    } else if tys.kind(t) is not .Optional(_) {
+        ok = same(rty, t)
+    }
+    if not ok {
+        cx.error(span, str.format("`cast` converts between pointer types, not from `{}` to `{}`; use `.addr()` for an address", cx.show(rty), cx.show(t))!)
+        return error_expr(cx.s, span)
+    }
+    if kind(t) is 2 or kind(rty) is 2 { return cx.unsupported(span, "casts of function pointers") }
+    return builtin(.Cast, t, [1]^Expr(recv)[..], span)
+}
+
+/// The methods of arrays and slices; a pointer to an array also works.
+collection_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, n: string, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    arr := rty
+    if .Ptr(_, p) := tys.kind(rty) { arr = p }
+    if cx.is_vector(arr) { return cx.unsupported(span, "vector methods") }
+    if .Array(_, _, kind) := tys.kind(arr) and kind is .Enum(_) {
+        cx.error(span, str.format("`{}` has no methods; `a[..]` is a slice of its elements, which has `.{}`", cx.show(arr), n)!)
+        return error_expr(cx.s, span)
+    }
+    base := recv
+    elem := rty
+    is_const := false
+    match tys.kind(rty) {
+        .Slice(c, e) => {
+            elem = e
+            is_const = c
+        }
+        .Array(_, e, _), .ParamArray(_, e) => {
+            m := cx.place_mutability(recv)
+            if m is null and n in ("get_ptr", "fill", "swap", "copy_from") {
+                cx.error(span, str.format("`.{}` needs an array variable, not a temporary", n)!)
+            }
+            elem = e
+            is_const = m is not true
+        }
+        .Ptr(c, pointee) => match tys.kind(pointee) {
+            .Array(_, e, _), .ParamArray(_, e) => {
+                base = tir.mk(pointee, .Deref(recv), span)
+                elem = e
+                is_const = c
+            }
+            _ => return null
+        }
+        _ => return null
+    }
+    match n {
+        "get", "get_ptr" => {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            i := cx.value_arg(args, 0, tys.usize_ty(), span)
+            if n is "get" { return builtin(.Get, tys.optional(elem), [2]^Expr(base, i)[..], span) }
+            return builtin(.GetPtr, tys.optional(tys.ptr(is_const, elem)), [2]^Expr(base, i)[..], span)
+        }
+        "first", "last" => {
+            _ = cx.arity(args, 0, n, span)
+            op: tir.Builtin = if n is "first" { .First } else { .Last }
+            return builtin(op, tys.optional(elem), [1]^Expr(base)[..], span)
+        }
+        _ => {}
+    }
+    if n in SLICE_FNS { return cx.unsupported(span, "the slice methods of the core library") }
+    if n is "len" or n is "ptr" {
+        d := diag.error(span, str.format("`.{}` of a slice is a field, not a method: write `s.{}` without `()`", n, n)!)
+        text := cx.s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
+        if args.len is 0 and text.ends_with("()") {
+            d.add_fix("remove `()`", source.Span(file: span.file, lo: span.hi - 2, hi: span.hi), "")
+        }
+        cx.s.emit(d)
+    } else {
+        cx.error(span, str.format("slices have no method `.{}` (§21.3)", n)!)
+    }
+    return error_expr(cx.s, span)
+}
+
+/// The methods of arrays and slices implemented by `core/slice`.
+SLICE_FNS :: [27]string(
+    "swap", "fill", "copy_from", "sort", "sort_by", "sort_by_key", "stable_sort", "stable_sort_by",
+    "stable_sort_by_key", "index_of", "starts_with", "ends_with", "min", "max", "binary_search",
+    "upper_bound", "select_nth", "select_nth_by", "reverse", "rotate_left", "rotate_right", "dedup",
+    "partition", "is_sorted", "is_sorted_by", "utf8_valid", "cursor",
+)
+
+/// `x.bits(T)`: reinterpret plain data of the same size (§6.6).
+bits_cast :: fn(cx: ^FnCx, v: ^Expr, t: Ty, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    src := cx.infer.resolve(cx.s, v.ty)
+    if not cx.is_plain_data(t) {
+        cx.error(span, str.format("`.bits` can only produce plain-data types, not `{}`", cx.show(t))!)
+    } else if not tys.has_infer(src) and not tys.has_param(src) and not tys.has_param(t) {
+        a := cx.s.layout(src).size
+        b := cx.s.layout(t).size
+        if a is not b {
+            cx.error(span, str.format("`.bits` needs equal sizes, but `{}` has {} bytes and `{}` has {}", cx.show(src), a, cx.show(t), b)!)
+        }
+    }
+    return builtin(.Bits, t, [1]^Expr(v)[..], span)
+}
+
+/// `U.from_tag(x)` (§5.11).
+check_from_tag :: fn(cx: ^FnCx, u: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    uv := cx.s.union_variants(u) else {
+        cx.error(span, str.format("`from_tag` is defined only for enums, not `{}`", cx.show(u))!)
+        return error_expr(cx.s, span)
+    }
+    for v in uv.variants {
+        if v.payload is not null {
+            cx.error(span, str.format("`{}.from_tag` needs an enum (a union without payloads)", cx.show(u))!)
+            break
+        }
+    }
+    if not cx.arity(args, 1, "from_tag", span) { return error_expr(cx.s, span) }
+    x := cx.value_arg(args, 0, uv.tag, span)
+    return builtin(.FromTag, cx.s.tys.optional(u), [1]^Expr(x)[..], span)
+}
+
+/// The receiver `recv` (of type `rty`) adjusted to fill a first parameter of type
+/// `param`: `&e` for `^T`, `e^` for `T` given a pointer (§7.10). Reports and gives `null`
+/// if it does not fit.
+adjust_receiver :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, param: Ty, name: ast.Ident, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    if param is rty { return recv }
+    if .Ptr(c, pointee) := tys.kind(param) and pointee is rty {
+        if m := cx.place_mutability(recv) {
+            if not m and not c { cx.error(recv.span, str.format("`{}` needs a mutable receiver", name.name)!) }
+            return tir.mk(tys.ptr(c, rty), .AddrOf(recv), span)
+        }
+        if c { return tir.mk(tys.ptr(true, rty), .AddrOfTemp(recv), span) }
+        cx.error(recv.span, str.format("`{}` modifies its receiver, which must be a variable, not a temporary", name.name)!)
+        return null
+    }
+    if .Ptr(c1, pointee) := tys.kind(param) and .Ptr(c2, p2) := tys.kind(rty) and pointee is p2 {
+        if c1 { return cx.coerce(recv, tys.ptr(true, p2)) }
+        if not c2 { return recv }
+    }
+    if .Ptr(_, pointee) := tys.kind(rty) and param is pointee { return tir.mk(pointee, .Deref(recv), span) }
+    cx.error(span, str.format("`{}` cannot take a receiver of type `{}`", name.name, cx.show(rty))!)
+    return null
+}
+
+/// A function `name` of the module that declares the receiver's type, whose first
+/// run-time parameter takes the receiver (§7.10 rule 3).
+module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    rty := cx.infer.resolve(cx.s, recv.ty)
+    s := rty
+    if .Ptr(_, p) := tys.kind(rty) { s = p }
+    .Adt(id, gargs) := tys.kind(s) else return null
+    if gargs.len > 0 { return cx.unsupported(span, "methods of generic types") }
+    module := cx.s.adts.items[usize(id)].module
+    d := cx.s.l.lookup(module, name.name) else return cx.op_method(recv, rty, s, module, name, args, span)
+    .Fn(f) := cx.s.resolve_decl(d) else return cx.op_method(recv, rty, s, module, name, args, span)
+    sig := cx.s.fns.items[usize(f)]
+    // A function whose first parameter is not the receiver's type leaves the name to an
+    // operation that takes it (§7.10).
+    first: ?sema.ParamInfo = null
+    for p in sig.params {
+        if p.generic is null {
+            first = p
+            break
+        }
+    }
+    if p := first {
+        t := p.ty
+        if .Ptr(_, x) := tys.kind(t) { t = x }
+        if t is not s {
+            if e := cx.op_method(recv, rty, s, module, name, args, span) { return e }
+        }
+    }
+    fp := first else {
+        cx.error(span, str.format("`{}` takes no receiver", name.name)!)
+        return error_expr(cx.s, span)
+    }
+    if sig.generics.len > 0 { return cx.unsupported(span, "calls of generic functions") }
+    for p in sig.params {
+        if p.rest { return cx.unsupported(span, "rest parameters") }
+        if sema.is_site(&p) { return cx.unsupported(span, "`@caller_location()` parameters") }
+    }
+    r := cx.adjust_receiver(recv, rty, fp.ty, name, span) else return error_expr(cx.s, span)
+    bound := cx.bind_args(sig.params[1..], sig.module, args, span, "method") else return error_expr(cx.s, span)
+    vals := list(Expr)
+    vals.push(r^)!
+    vals.extend(bound.args)!
+    cx.record_effects(&sig.effects, span)
+    call := tir.mk(sig.ret, .Call(.Fn(f), vals.items), span)
+    return cx.finish_call(bound.pre, call, true)
+}
+
+/// `e.op(args)` where `op` is an operation of a non-generic effect declared in `module`
+/// whose first parameter takes `e` (by value or as a pointer to it): a perform.
+op_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, s: Ty, module: usize, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    for n in cx.s.l.modules.items[module].scope.items {
+        .Effect(eff) := cx.s.resolve_decl(n.decl) else continue
+        info := cx.s.effects.items[usize(eff)]
+        if info.module is not module or info.params.len > 0 { continue }
+        if cx.module is not module and not cx.s.l.decls.items[n.decl].item.is_pub { continue }
+        for op_i, o in enumerate(info.ops) {
+            if o.name is not name.name or o.params.len is 0 { continue }
+            t := o.params[0].ty
+            if .Ptr(_, x) := tys.kind(t) { t = x }
+            if t is not s { continue }
+            r := cx.adjust_receiver(recv, rty, o.params[0].ty, name, span) else return error_expr(cx.s, span)
+            bound := cx.bind_args(o.params[1..], module, args, span, "operation") else return error_expr(cx.s, span)
+            vals := list(Expr)
+            vals.push(r^)!
+            vals.extend(bound.args)!
+            eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
+            cx.performed.push(Performed(effect_: eref, span: span))!
+            call := tir.mk(o.ret, .Call(.Perform(eref, op_i.trunc(u32)), vals.items), span)
+            return cx.finish_call(bound.pre, call, true)
+        }
+    }
+    return null
+}
+
+/// A call whose arguments needed statements evaluated first. With `receiver`, the first
+/// argument goes through a temporary too, so that it is evaluated before them.
+finish_call :: fn(cx: ^FnCx, pre: []tir.Stmt, call: ^Expr, receiver: bool) -> ^Expr needs Load {
+    if pre.len is 0 { return call }
+    stmts := list(tir.Stmt)
+    if .Call(_, args) := call.kind and receiver and args.len > 0 {
+        args[0] = cx.bind_temp(&args[0], &stmts)^
+    }
+    stmts.extend(pre)!
+    return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: call.span))!), call.span)
+}
+
+/// The effect that `e` names, if it names one: `E`, `m.E`, or an instantiation `E(T)`.
+EffectNamed :: union {
+    Plain: u32
+    /// An instantiated or generic effect, which gammac does not check yet.
+    Other
+}
+
+effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
+    d: usize = 0
+    match e.kind {
+        .Call(callee, _, _) => {
+            _ = cx.effect_named(callee) else return null
+            return .Other
+        }
+        .Ident(id) => {
+            if cx.lookup_local(id.name) is not null { return null }
+            d = cx.s.lookup_module_name(cx.module, id.name) else return null
+        }
+        .Field(base, name) => {
+            m := cx.module_of(base) else return null
+            d = cx.s.module_member(m, name) else return null
+        }
+        _ => return null
+    }
+    match cx.s.resolve_decl(d) {
+        .Effect(eff) => return .Plain(eff)
+        .EffectInst(_) => return .Other
+        _ => return null
+    }
+}
+
+/// `E.op(args)`: an operation named through its effect (§12.1).
+perform_named :: fn(cx: ^FnCx, named: EffectNamed, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    .Plain(eff) := named else return cx.unsupported(span, "operations of generic effects")
+    info := cx.s.effects.items[usize(eff)]
+    for i, o in enumerate(info.ops) {
+        if o.name is not name.name { continue }
+        if info.params.len > 0 { return cx.unsupported(span, "operations of generic effects") }
+        bound := cx.bind_args(o.params, info.module, args, span, "operation") else return error_expr(cx.s, span)
+        eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
+        cx.performed.push(Performed(effect_: eref, span: span))!
+        call := tir.mk(o.ret, .Call(.Perform(eref, i.trunc(u32)), bound.args), span)
+        return cx.finish_call(bound.pre, call, false)
+    }
+    cx.error(name.span, str.format("the effect `{}` has no operation `{}`", info.name, name.name)!)
+    return error_expr(cx.s, span)
+}

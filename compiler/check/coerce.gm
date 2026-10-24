@@ -69,9 +69,11 @@ steps_into :: fn(cx: ^FnCx, src, target: Ty, out: ^List(Step)) -> bool needs Loa
     }
     tys := &cx.s.tys
     // Error lifting `E!T` → `F!T` (§10.6).
-    if .Result(_, o1) := tys.kind(src) and .Result(_, o2) := tys.kind(target) and o1 is o2 {
-        _ = cx.unsupported(source.DUMMY, "error lifting")
-        return false
+    if .Result(e, o1) := tys.kind(src) and .Result(f, o2) := tys.kind(target) and o1 is o2 {
+        if .Ok(i) := cx.lift_variant(e, f) {
+            out.push(Step(kind: .LiftErr(i), ty: target))!
+            return true
+        }
     }
     match tys.kind(target) {
         .Optional(inner) => {

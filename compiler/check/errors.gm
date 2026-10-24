@@ -1,0 +1,175 @@
+// Optionals and results as values (§10): `x else d`, `try x`, `!e`, `x?` and `x!`
+// (mirrors the corresponding functions of `src/sema/expr.rs`).
+
+/// `x?`: the value of a present optional.
+opt_unwrap :: fn(cx: ^FnCx, inner: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    v := cx.expr(inner, null)
+    t := cx.infer.resolve(cx.s, v.ty)
+    match cx.s.tys.kind(t) {
+        .Optional(x) => return tir.mk(x, .Unwrap(v, false), span)
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            cx.error(span, str.format("`?` unwraps an optional, but this is `{}`", cx.show(t))!)
+            return error_expr(cx.s, span)
+        }
+    }
+}
+
+/// `x!`: the value of a successful result.
+res_unwrap :: fn(cx: ^FnCx, inner: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    v := cx.expr(inner, null)
+    t := cx.infer.resolve(cx.s, v.ty)
+    match cx.s.tys.kind(t) {
+        .Result(_, ok) => return tir.mk(ok, .Unwrap(v, true), span)
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            cx.error(span, str.format("`!` unwraps a result, but this is `{}`", cx.show(t))!)
+            return error_expr(cx.s, span)
+        }
+    }
+}
+
+/// `x else d` and `x else e => d` (§10.4).
+else_expr :: fn(cx: ^FnCx, lhs: ^const ast.Expr, capture: ?ast.Ident, rhs: ^const ast.Expr, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    l := cx.expr(lhs, null)
+    lt := cx.infer.resolve(cx.s, l.ty)
+    present: Ty = lt
+    err: ?Ty = null
+    match tys.kind(lt) {
+        .Optional(t) => { present = t }
+        .Result(e, ok) => {
+            present = ok
+            err = e
+        }
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            if not tys.mentions_error(lt) {
+                cx.error(lhs.span, str.format("`else` needs an optional or a result on its left, but this is `{}`", cx.show(lt))!)
+            }
+            return error_expr(cx.s, span)
+        }
+    }
+    cx.push_scope()
+    cap: ?u32 = null
+    if c := capture {
+        if e := err {
+            id := cx.new_local(c.name, e, false, c.span)
+            cx.declare(c.name, .Var(id), c.span)
+            cap = id
+        } else {
+            cx.error(c.span, "an optional has no error value to capture; use `x else d`")
+        }
+    }
+    // An error value on the right gets its error type from the context (§10.4).
+    rhs_expect: ?Ty = present
+    if .Unary(op, _) := rhs.kind and op is .MakeErr {
+        rhs_expect = null
+        if t := expect and tys.kind(t) is .Result(_) {
+            rhs_expect = t
+        } else if .Result(e, _) := tys.kind(cx.ret) {
+            rhs_expect = tys.result(e, present)
+        }
+    } else if rhs.kind is .Null and err is not null {
+        // A result with an optional fallback drops the error: `parse(s) else null`.
+        rhs_expect = tys.optional(present)
+    }
+    r := cx.expr(rhs, rhs_expect)
+    cx.pop_scope()
+    rt := cx.infer.resolve(cx.s, r.ty)
+    // A fallback that is itself a result or optional of the present type keeps it so.
+    rewraps := err is not null and rt is tys.optional(present)
+    if .Result(_, ok) := tys.kind(rt) and ok is present { rewraps = true }
+    ty := present
+    if tys.kind(rt) is .Never {
+        ty = present
+    } else if rt is lt and err is null {
+        ty = lt
+    } else if rewraps {
+        ty = rt
+    } else {
+        r = cx.coerce(r, present)
+    }
+    return tir.mk(ty, .Else(tir.ElseExpr(lhs: l, capture: cap, rhs: r)), span)
+}
+
+/// `try x` (§10.5).
+try_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    v := cx.expr(operand, null)
+    vt := cx.infer.resolve(cx.s, v.ty)
+    ret := cx.ret
+    match tys.kind(vt) {
+        .Error => return error_expr(cx.s, span)
+        .Optional(t) => if tys.kind(ret) is .Optional(_) {
+            return tir.mk(t, .Try(tir.TryExpr(expr: v, lift: null, levels: 0)), span)
+        }
+        .Result(err, ok) => if .Result(f, _) := tys.kind(ret) {
+            lift: ?u32 = null
+            if err is not f {
+                match cx.lift_variant(err, f) {
+                    .Ok(i) => { lift = i }
+                    .Err(msg) => cx.error(span, msg)
+                }
+            }
+            return tir.mk(ok, .Try(tir.TryExpr(expr: v, lift: lift, levels: 0)), span)
+        }
+        _ => {
+            cx.error(span, str.format("`try` needs an optional or a result, but this is `{}`", cx.show(vt))!)
+            return error_expr(cx.s, span)
+        }
+    }
+    if tys.kind(ret) in (.Optional(_), .Result(_)) {
+        cx.error(span, "`try` does not convert between optionals and results; give the absent value an error: `try (x else !.Missing)`")
+    } else {
+        cx.error(span, str.format("`try` needs the function to return an optional or a result, not `{}`", cx.show(ret))!)
+    }
+    return error_expr(cx.s, span)
+}
+
+/// The variant of union `f` whose payload is `e`, for error lifting (§10.6).
+LiftResult :: union {
+    Ok: u32
+    Err: string
+}
+
+lift_variant :: fn(cx: ^FnCx, e: Ty, f: Ty) -> LiftResult needs Alloc {
+    uv := cx.s.union_variants(f) else return .Err(str.format("cannot propagate an error of type `{}` from a function whose error type is `{}`", cx.show(e), cx.show(f))!)
+    found: ?u32 = null
+    count := 0
+    for i, v in enumerate(uv.variants) {
+        if p := v.payload and p is e {
+            if count is 0 { found = i.trunc(u32) }
+            count += 1
+        }
+    }
+    if count is 1 { return .Ok(found else 0) }
+    if count is 0 { return .Err(str.format("`{}` has no variant carrying `{}`, so the error cannot be lifted (§10.6)", cx.show(f), cx.show(e))!) }
+    return .Err(str.format("`{}` has several variants carrying `{}`; handle the error explicitly", cx.show(f), cx.show(e))!)
+}
+
+/// `!e`: an error value of the expected result type.
+make_err_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if x := expect {
+        t := cx.infer.shallow(tys, x)
+        if .Result(err, _) := tys.kind(t) {
+            v := cx.expr(operand, err)
+            vt := cx.infer.resolve(cx.s, v.ty)
+            // `!e` with `e` of a type that lifts into the error union (§10.6).
+            if not tys.has_infer(vt) and vt is not err and cx.coercion_steps(vt, err) is null {
+                match cx.lift_variant(vt, err) {
+                    .Ok(i) => { v = tir.mk(err, .Variant(tir.VariantExpr(variant: i, payload: v)), span) }
+                    .Err(_) => { v = cx.coerce(v, err) }
+                }
+            } else {
+                v = cx.coerce(v, err)
+            }
+            return tir.mk(t, .MakeErr(v), span)
+        }
+    }
+    hint := ""
+    if expect is null or expect is tys.bool_ty() { hint = " (`!e` makes an error; logical negation is `not e`)" }
+    cx.error(span, str.format("cannot infer the result type of `!e` here{}", hint)!)
+    return error_expr(cx.s, span)
+}

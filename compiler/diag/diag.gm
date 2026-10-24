@@ -120,6 +120,9 @@ pub report :: fn(ds: ^Diagnostics, span: source.Span, message: string) needs All
 
 pub has_errors :: fn(ds: ^const Diagnostics) -> bool => ds.errors > 0
 
+/// The number of errors reported so far.
+pub error_count :: fn(ds: ^const Diagnostics) -> usize => ds.errors
+
 /// Sorts the diagnostics by file and position, keeping the order of those at one place.
 pub sort :: fn(ds: ^Diagnostics) {
     xs := ds.list.items

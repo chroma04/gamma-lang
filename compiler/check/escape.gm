@@ -1,0 +1,112 @@
+// Pointer checks over the whole program (mirrors `src/sema/escape.rs`): the dangling
+// pointers rejected at compile time (§15.1), returning the address of, or a slice of, a
+// local or parameter of the returning function; and pointers into `#packed` fields that
+// would be misaligned (§5.10.4).
+
+/// An error found by the checks, reported once per place.
+Escape :: struct {
+    span: source.Span
+    message: string
+}
+
+check_escapes :: fn(s: ^Sema) needs Alloc {
+    found := list(Escape)
+    for def in s.defs.items {
+        body := def.body else continue
+        returned(body, fn(e: ^Expr) { escaping(s, &def, e, &found) })
+        returns(body, fn(v: ^Expr) {
+            returned(v, fn(e: ^Expr) { escaping(s, &def, e, &found) })
+        })
+    }
+    for def in s.defs.items {
+        body := def.body else continue
+        unaligned(s, body, fn(e: ^Expr, t: Ty) {
+            if s.layout(t).align > 1 {
+                found.push(Escape(span: e.span, message: str.format("this points into a field of a `#packed` struct, where a `{}` may be misaligned; copy the field to a local first (§5.10.4)", s.show(t))!))!
+            }
+        })
+    }
+    seen := list(source.Span)
+    for x in found.items {
+        if seen.items.index_of(x.span) is not null { continue }
+        seen.push(x.span)!
+        s.error(x.span, x.message)
+    }
+}
+
+/// Calls `f` on the value of each `return` of the function itself in `e`.
+returns :: fn(e: ^Expr, f: fn(v: ^Expr)) {
+    if .Return(levels, value) := e.kind and levels is 0 { f(value) }
+    tir.for_each_child(e, fn(c: ^Expr) { returns(c, f) })
+}
+
+/// Calls `f` on each expression whose value is directly the value of `e`.
+returned :: fn(e: ^Expr, f: fn(x: ^Expr)) {
+    match e.kind {
+        .Coerce(_, x) => returned(x, f)
+        .Block(b) => if t := b.tail { returned(t, f) }
+        .If(x) => {
+            returned(x.then, f)
+            if el := x.else_ { returned(el, f) }
+        }
+        .Match(_, arms) => for a in arms { returned(a.body, f) }
+        _ => f(e)
+    }
+}
+
+/// Records the error for returning `e` from `def`, if it points into one of `def`'s
+/// locals.
+escaping :: fn(s: ^Sema, def: ^const tir.FnDef, e: ^Expr, found: ^List(Escape)) needs Alloc {
+    what := ""
+    place: ^Expr = e
+    match e.kind {
+        .AddrOf(p) => {
+            what = "the address of"
+            place = p
+        }
+        .Slice(sl) => {
+            if s.tys.kind(sl.base.ty) is not .Array(_) { return }
+            what = "a slice of"
+            place = sl.base
+        }
+        _ => return
+    }
+    local := root_local(s, place) else return
+    name := def.locals[usize(local)].name
+    kind := if def.params.index_of(local) is not null { "parameter" } else { "local" }
+    found.push(Escape(span: e.span, message: str.format("this returns {} the {} `{}`, which dies when the function returns (§15.1)", what, kind, name)!))!
+}
+
+/// The local whose storage the place `e` is part of, if it is one of the function's own.
+root_local :: fn(s: ^Sema, e: ^Expr) -> ?u32 {
+    match e.kind {
+        .Local(l) => return l
+        .Field(base, _) => return root_local(s, base)
+        .Index(base, _, _) => if s.tys.kind(base.ty) is .Array(_) { return root_local(s, base) }
+        _ => {}
+    }
+    return null
+}
+
+/// Calls `f` with each expression in `e` that takes an address inside a field of a
+/// `#packed` struct, and the type of what that address points to.
+unaligned :: fn(s: ^Sema, e: ^Expr, f: fn(x: ^Expr, t: Ty)) {
+    match e.kind {
+        .AddrOf(p) => if packed_place(s, p) { f(e, p.ty) }
+        .Slice(sl) => if packed_place(s, sl.base) and .Array(_, elem, _) := s.tys.kind(sl.base.ty) { f(e, elem) }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(c: ^Expr) { unaligned(s, c, f) })
+}
+
+/// Whether the place `e` lies inside a field of a `#packed` struct value.
+packed_place :: fn(s: ^Sema, e: ^Expr) -> bool {
+    match e.kind {
+        .Field(base, _) => {
+            if .Adt(id, _) := s.tys.kind(base.ty) and .Struct(def) := s.adts.items[usize(id)].kind and def.packed { return true }
+            return packed_place(s, base)
+        }
+        .Index(base, _, _) => return s.tys.kind(base.ty) is .Array(_) and packed_place(s, base)
+        _ => return false
+    }
+}

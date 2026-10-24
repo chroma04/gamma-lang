@@ -121,6 +121,8 @@ pub FnCx :: struct {
     /// Set just before checking an argument `&e` for a `^const T` parameter: `e` may be a
     /// temporary, which lives until the call returns (§7.10).
     temp_ref_arg: bool
+    /// The `match`es whose exhaustiveness waits for the final types of literals.
+    deferred_matches: List(DeferredMatch)
 }
 
 fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs Alloc {
@@ -144,6 +146,7 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         needs_at: null,
         label_breaks: list(LabelBreak),
         temp_ref_arg: false,
+        deferred_matches: list(DeferredMatch),
     )
 }
 
@@ -481,8 +484,17 @@ stmt_expr :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ^Expr needs Load {
     ex := match e.kind {
         .If(i) => cx.if_expr(i, false, null)
         .Block(b) => cx.block(&b, false)
-        .For(_), .Match(_), .With(_) => cx.unsupported(e.span, expr_kind_text(&e.kind))
-        _ => cx.expr(e, null)
+        .For(f) => cx.for_loop(f)
+        .Match(m) => cx.match_expr(m, false, null)
+        .With(_) => cx.unsupported(e.span, expr_kind_text(&e.kind))
+        _ => {
+            errors := cx.s.l.diags.error_count()
+            x := cx.expr(e, null)
+            // A call that was already reported (wrong arguments, say) has a value of
+            // doubtful type: no second error about it being unused.
+            if cx.s.l.diags.error_count() is not errors { return x }
+            x
+        }
     }
     cx.obligations.push(.UnitStatement(ex.ty, e.span))!
     return ex
@@ -761,18 +773,10 @@ while_loop :: fn(cx: ^FnCx, label: ?ast.Ident, cond: ^const ast.Cond, body: ^con
     for part in c {
         match part {
             .Bool(x) => if x.kind is not .Bool(true) { infinite = false }
+            .Match(_) => { infinite = false }
         }
     }
-    breaks := false
-    i := 0
-    while i < cx.label_breaks.items.len {
-        if cx.label_breaks.items[i].label is id {
-            breaks = true
-            _ = cx.label_breaks.remove(i)
-        } else {
-            i += 1
-        }
-    }
+    breaks := cx.forget_label_breaks(id)
     ty := if infinite and not breaks { cx.s.tys.never_ty() } else { cx.s.tys.unit() }
     .Block(blk) := b.kind else return b
     return tir.mk(ty, .Loop(tir.LoopExpr(label: id, cond: c, body: blk, step: null)), span)
@@ -787,7 +791,7 @@ cond :: fn(cx: ^FnCx, c: ^const ast.Cond) -> []tir.CondPart needs Load {
                 ex := cx.expr(e, cx.s.tys.bool_ty())
                 parts.push(.Bool(cx.expect_bool(ex)))!
             }
-            .Bind(_) => parts.push(.Bool(cx.unsupported(c.span, "binding conditions")))!
+            .Bind(pat, value) => parts.push(cx.binding_cond(&pat, value))!
         }
     }
     return parts.items
@@ -814,6 +818,34 @@ pub error_expr :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk
 uninit_message :: fn(s: ^Sema, ty: Ty) -> string needs Alloc {
     hint := if s.tys.kind(ty) is .Array(_) { "; an array can start filled: `[N]T(fill: v)`" } else { "" }
     return str.format("`---` requires a plain-data type, but `{}` is not (§4.4){}", s.show(ty), hint)!
+}
+
+/// Forgets the `break`s to the loop with label `id`; returns whether there were any.
+forget_label_breaks :: fn(cx: ^FnCx, id: u32) -> bool {
+    found := false
+    i: usize = 0
+    while i < cx.label_breaks.items.len {
+        if cx.label_breaks.items[i].label is id {
+            found = true
+            _ = cx.label_breaks.remove(i)
+        } else {
+            i += 1
+        }
+    }
+    return found
+}
+
+/// A block of statements as a `()` expression.
+block_of :: fn(s: ^Sema, stmts: []tir.Stmt, span: source.Span) -> ^Expr needs Alloc {
+    return tir.mk(s.tys.unit(), .Block(new(tir.Block(stmts: stmts, tail: null, span: span))!), span)
+}
+
+/// The error for a literal whose type an earlier use already fixed (§6.1).
+early_fallback_error :: fn(s: ^Sema, span: source.Span, ty: Ty, settled_at: source.Span) -> diag.Diagnostic needs Alloc {
+    t := s.show(ty)
+    d := diag.error(span, str.format("the type of this value was already fixed as `{}` at an earlier use (§6.1); annotate it, e.g. `n: usize = 0`", t)!)
+    d.add_label(settled_at, str.format("this use fixed the type as `{}`", t)!)
+    return d
 }
 
 stmt_diverges :: fn(s: ^Sema, st: tir.Stmt) -> bool => match st {

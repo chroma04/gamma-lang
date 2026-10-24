@@ -50,10 +50,22 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
             return cx.binary_op(op, l, rhs, span)
         }
         .Deref(p) => return cx.deref_expr(p, span)
+        .OptUnwrap(inner) => return cx.opt_unwrap(inner, span)
+        .ResUnwrap(inner) => return cx.res_unwrap(inner, span)
+        .Else(x) => return cx.else_expr(x.lhs, x.capture, x.rhs, expect, span)
+        .Index(base, i) => return cx.index(base, i, span)
+        .Slice(sl) => return cx.slice_expr(sl.base, sl.lo, sl.hi, sl.inclusive, span)
+        .ArrayType(a) => {
+            // A type prefix before a construction applies to the whole type (§A.7 rule 12).
+            if sema.construction_call(a.elem) is null { return cx.unsupported(span, "postfix operators after a construction") }
+            return cx.array_type_construction(e, a.len, a.elem, span)
+        }
         .Field(base, name) => return cx.field(base, name, span)
         .TupleField(base, index, _) => return cx.tuple_field(base, index, span)
         .Call(callee, args, _) => return cx.call(callee, args, expect, span)
         .If(i) => return cx.if_expr(i, true, expect)
+        .Match(m) => return cx.match_expr(m, true, expect)
+        .For(f) => return cx.for_loop(f)
         .Block(b) => return cx.block_expected(&b, true, expect)
         .Return(v) => return cx.return_expr(v, span)
         .Break(b) => return cx.break_expr(b.label, b.value, span)
@@ -308,8 +320,16 @@ unary :: fn(cx: ^FnCx, op: ast.UnOp, operand: ^const ast.Expr, expect: ?Ty, span
             v = cx.expect_bool(v)
             return tir.mk(cx.s.tys.bool_ty(), .Unary(.Not, v), span)
         }
-        .AddrOf => return cx.addr_of_expr(operand, span)
-        .MakeErr, .Try => return cx.unsupported(span, "error values")
+        .AddrOf => return cx.addr_of_expr(operand, expect, span)
+        .MakeErr => {
+            // `!e` where `?(E!T)` is expected: the result, then wrapped (§6.4).
+            if t := expect and .Optional(inner) := cx.s.tys.kind(cx.infer.shallow(&cx.s.tys, t)) and cx.s.tys.kind(cx.infer.shallow(&cx.s.tys, inner)) is .Result(_) {
+                r := cx.make_err_expr(operand, inner, span)
+                return cx.coerce(r, t)
+            }
+            return cx.make_err_expr(operand, expect, span)
+        }
+        .Try => return cx.try_expr(operand, span)
     }
 }
 
@@ -349,10 +369,13 @@ is_literal :: fn(e: ^const ast.Expr) -> bool => match e.kind {
 }
 
 /// `&place`.
-addr_of_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+addr_of_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
     temp_ok := cx.temp_ref_arg
     cx.temp_ref_arg = false
-    v := cx.expr(operand, null)
+    // The expected pointee is a hint for the operand: `f(&.Circle(r))` (§7.2).
+    hint: ?Ty = null
+    if t := expect and .Ptr(_, pointee) := cx.s.tys.kind(cx.infer.shallow(&cx.s.tys, t)) { hint = pointee }
+    v := cx.expr(operand, hint)
     if cx.reject_second_class(v, "the target of `&`") { return error_expr(cx.s, span) }
     if .Field(base, _) := v.kind and cx.s.bits_struct_ty(base.ty) is not null {
         cx.error(span, "the fields of a `#bits` struct have no address (§5.10.5)")
@@ -393,7 +416,7 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
             return tir.mk(tys.bool_ty(), .Logic(op is .And, l, r), span)
         }
         .Is, .IsNot => {
-            if cx.pattern_operand(rhs) { return cx.unsupported(span, "pattern tests") }
+            if p := cx.is_pattern_operand(rhs, lhs.ty) { return cx.is_pattern_test(lhs, &p, op is .IsNot, span) }
             r := cx.expr(rhs, lhs.ty)
             eq := cx.equalize(lhs, r, span)
             return tir.mk(tys.bool_ty(), .Eq(eq.l, eq.r, op is .IsNot), span)
@@ -429,23 +452,12 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
             if cx.is_vector(rt) or cx.s.complex_of(rt) is not null { return cx.unsupported(span, "operators on vectors and complex numbers") }
             return cx.arith_op(op, lhs, r, span)
         }
-        .In, .NotIn => return cx.unsupported(span, "`in`")
+        .In, .NotIn => return cx.in_expr(lhs, rhs, op is .NotIn, span)
         .Range, .RangeIncl => {
             cx.error(span, "a range cannot be an operand here; put it in parentheses")
             return error_expr(cx.s, span)
         }
     }
-}
-
-/// Whether the right operand of `is` may be a pattern form (§7.6), which gammac does not
-/// check yet.
-pattern_operand :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool => match e.kind {
-    .Underscore, .Null, .DotIdent(_) => true
-    .Field(_), .Call(_) => true
-    .Unary(.MakeErr, _) => true
-    .Paren(inner) => cx.pattern_operand(inner)
-    .Tuple(_) => true
-    _ => false
 }
 
 /// An arithmetic or bitwise operator applied to checked operands.
@@ -561,7 +573,6 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
     }
     // `U.V`: a payload-less variant of a union type.
     if t := cx.type_of_name(base) { return cx.construct_variant(t, name, null, span) }
-    if base.kind is .Index(_) { return cx.unsupported(span, "indexing") }
     b := cx.expr(base, null)
     b = cx.auto_deref(b)
     bt := cx.infer.resolve(cx.s, b.ty)
@@ -571,7 +582,12 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
                 if n is name.name { return tir.mk(elems[i], .Field(b, i.trunc(u32)), span) }
             }
         }
-        .Slice(_), .Array(_), .ParamArray(_) => if name.name in ("len", "ptr") { return cx.unsupported(span, "`.len` and `.ptr`") }
+        .Slice(c, e) => {
+            if name.name is "len" { return tir.mk(tys.usize_ty(), .SliceLen(b), span) }
+            if name.name is "ptr" { return tir.mk(tys.many_ptr(c, e), .SlicePtr(b), span) }
+        }
+        .Array(len, _, _) => if name.name is "len" { return tir.mk(tys.usize_ty(), .Int(bigint.from_u64(len)), span) }
+        .ParamArray(_) => if name.name is "len" { return cx.unsupported(span, "lengths of compile-time parameters") }
         .Error => return error_expr(cx.s, span)
         _ => {}
     }

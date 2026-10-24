@@ -108,6 +108,8 @@ Versions and what each kind of change means are described in
   of its functions (resolved names, typed operators, explicit conversions), see chapter
   15 of the guide. `gammac tir` checks the function bodies of a first subset of programs
   the same way.
+- `&e` where a pointer `^T` is expected checks `e` with `T` expected, so a variant or tuple
+  takes its type from it: `area(&.Circle(2.0))` (§7.2).
 - `gamma decls`: resolves the top-level declarations of a program without checking
   function bodies, and prints what each denotes (types with their fields or variants,
   effects, signatures, constants), with the diagnostics of declarations.
