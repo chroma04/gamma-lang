@@ -17,8 +17,11 @@ method_call :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, args: []con
     derefed_ty := rty
     if .Ptr(_, p) := tys.kind(cx.infer.shallow(tys, recv.ty)) { derefed_ty = p }
     if fields := cx.s.struct_fields(derefed_ty) {
-        for f in fields {
-            if f.name is name.name { return cx.unsupported(span, "calls of function pointers") }
+        for i, f in enumerate(fields) {
+            if f.name is name.name {
+                field := tir.mk(f.ty, .Field(cx.auto_deref(recv), i.trunc(u32)), span)
+                return cx.call_value(field, args, span)
+            }
         }
     }
     // 2. A builtin method.

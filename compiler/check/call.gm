@@ -40,10 +40,7 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             return cx.unsupported(span, "calls of fields")
         }
         .Ident(id) => {
-            if b := cx.lookup_local(id.name) {
-                _ = b
-                return cx.unsupported(span, "calls of local values")
-            }
+            if cx.lookup_local(id.name) is not null { return cx.call_value(cx.expr(callee, null), args, span) }
             if cx.s.type_param(id.name) is not null {
                 n := id.name
                 cx.error(callee.span, str.format("`{}(x)` would be a conversion to a type parameter, which is not lossless for every type; use `x.trunc({})`, `x.sat({})` or `x.checked({})`", n, n, n, n)!)
@@ -68,10 +65,33 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             // `Heap(T, N)(…)` with a wrong type application: the application's error is
             // the only one.
             if cx.s.looks_like_type(cx.module, callee) and cx.s.tys.is_error(cx.s.resolve_type(cx.module, callee)) { return error_expr(cx.s, span) }
-            return cx.unsupported(span, "calls of computed functions")
+            return cx.call_value(cx.expr(callee, null), args, span)
         }
-        _ => return cx.unsupported(span, "calls of computed functions")
+        _ => return cx.call_value(cx.expr(callee, null), args, span)
     }
+}
+
+/// A call of the function value `v`: a function pointer or a second-class function.
+call_value :: fn(cx: ^FnCx, v: ^Expr, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    t := cx.infer.resolve(cx.s, v.ty)
+    sig := match cx.s.tys.kind(t) {
+        .FnPtr(f), .Fn(f) => f
+        _ => {
+            if not cx.s.tys.is_error(t) { cx.error(v.span, str.format("cannot call a value of type `{}`", cx.show(t))!) }
+            return error_expr(cx.s, span)
+        }
+    }
+    params := list(sema.ParamInfo)
+    for p in sig.params { params.push(sema.ParamInfo(name: "_", ty: p, span: span, default: null, generic: null, rest: false))! }
+    bound := cx.bind_args(params.items, cx.module, args, span, "function") else return error_expr(cx.s, span)
+    cx.record_effects(&sig.effects, span)
+    callee := v
+    stmts := list(tir.Stmt)
+    if bound.pre.len > 0 { callee = cx.bind_temp(v, &stmts) }
+    call := tir.mk(sig.ret, .Call(.Indirect(callee), bound.args), span)
+    if bound.pre.len is 0 { return call }
+    for st in bound.pre { stmts.push(st)! }
+    return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
 }
 
 /// A call of the declaration `d`, written as `callee`.

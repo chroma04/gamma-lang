@@ -192,9 +192,13 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             str.format("builtin {}", builtin_text(op))!
         }
         .Call(callee, args) => {
-            h := match callee {
+            h: string = match callee {
                 .Fn(f) => str.format("call fn {}", fn_label(s, f))!
                 .Perform(eff, op) => str.format("call perform {} {}", s.tys.show_ref(&eff), op)!
+                .Indirect(c) => {
+                    kids.push(c)!
+                    "call indirect"
+                }
             }
             for i in 0..args.len { kids.push(&args[i])! }
             h

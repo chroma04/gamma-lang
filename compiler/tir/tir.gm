@@ -227,6 +227,8 @@ pub Callee :: union {
     Fn: u32
     /// Performing operation `op` of an effect.
     Perform: (effect_: types.EffectRef, op: u32)
+    /// A call of a function value: a function pointer or a second-class function.
+    Indirect: ^Expr
 }
 
 pub UnOp :: union { Neg, BitNot, Not }
@@ -407,7 +409,11 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
                 f(a.body)
             }
         }
-        .Builtin(_, args), .Call(_, args) => for i in 0..args.len { f(&args[i]) }
+        .Builtin(_, args) => for i in 0..args.len { f(&args[i]) }
+        .Call(callee, args) => {
+            if .Indirect(c) := callee { f(c) }
+            for i in 0..args.len { f(&args[i]) }
+        }
         .Aggregate(xs), .Array(xs) => for i in 0..xs.len { f(&xs[i]) }
         .Variant(v) => if p := v.payload { f(p) }
         .Block(b) => block_children(b, f)
