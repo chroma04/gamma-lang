@@ -49,7 +49,7 @@ pub is_builtin_type_name :: fn(name: string) -> bool {
     return int_type_name(name) is not null or name in ("usize", "isize", "f16", "f32", "f64", "bool", "never", "type", "rawptr", "string", "cstring", "rune")
 }
 
-type_param :: fn(s: ^const Sema, name: string) -> ?Ty {
+pub type_param :: fn(s: ^const Sema, name: string) -> ?Ty {
     i := s.type_params.items.len
     while i > 0 {
         i -= 1
@@ -58,7 +58,7 @@ type_param :: fn(s: ^const Sema, name: string) -> ?Ty {
     return null
 }
 
-value_param :: fn(s: ^const Sema, name: string) -> ?u32 {
+pub value_param :: fn(s: ^const Sema, name: string) -> ?u32 {
     i := s.value_scope.items.len
     while i > 0 {
         i -= 1
@@ -151,7 +151,7 @@ syntax_module :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, depth: u32) -> 
 }
 
 /// True if `e` syntactically denotes a type (used to tell aliases from constants).
-looks_like_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs Load {
+pub looks_like_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs Load {
     match e.kind {
         .Ident(id) => {
             if d := s.lookup_module_name(module, id.name) { return s.resolve_decl(d) is .Type(_) }
@@ -665,7 +665,7 @@ generic_type_args :: fn(s: ^Sema, module: usize, template: u32, args: []const as
 
 /// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5) to a
 /// type-level value. A compile-time parameter in scope is passed on as it is.
-comptime_value :: fn(s: ^Sema, module: usize, ty: Ty, e: ^const ast.Expr) -> ?Ty needs Load {
+pub comptime_value :: fn(s: ^Sema, module: usize, ty: Ty, e: ^const ast.Expr) -> ?Ty needs Load {
     if .Ident(id) := e.kind {
         if pid := s.value_param(id.name) {
             .Value(have) := s.params.items[usize(pid)].kind else return null
@@ -695,16 +695,7 @@ const_key_of :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?type
     match v {
         .Int(i) => {
             if not s.tys.is_integer(ty) or not s.int_fits(i, ty) { return null }
-            size := s.layout(ty).size
-            bytes := list(u8)
-            // Little-endian two's complement, whatever the target.
-            x := i
-            for _ in 0..size {
-                low := x.bit_and(bigint.from_u64(255)).to_u64() else 0
-                bytes.push(low.trunc(u8))!
-                x = x.shr(8)
-            }
-            return .Bytes(ty, bytes.items)
+            return s.int_key(ty, i)
         }
         .Bool(b) => {
             if s.tys.kind(ty) is not .Bool { return null }

@@ -80,9 +80,9 @@ builtin :: fn(op: tir.Builtin, ty: Ty, args: []const ^Expr, span: source.Span) -
 builtin_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
     tys := &cx.s.tys
     n := name.name
-    is_int := tys.is_integer(rty) or cx.infer.var_kind(tys, rty) is .Int
-    is_float := tys.kind(rty) is .Float(_) or cx.infer.var_kind(tys, rty) is .Float
-    if .Param(_) := tys.kind(rty) { return cx.unsupported(span, "methods of type parameters") }
+    // A type parameter constrained `Int` or `Float` has the methods of its types (§16.3).
+    is_int := tys.is_integer(rty) or cx.infer.var_kind(tys, rty) is .Int or cx.param_with(rty, .Int)
+    is_float := tys.kind(rty) is .Float(_) or cx.infer.var_kind(tys, rty) is .Float or cx.param_with(rty, .Float)
     if is_int or is_float { return cx.numeric_method(recv, rty, n, is_int, is_float, args, span) }
     k := tys.kind(rty)
     if n is "addr" and k in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_)) {
@@ -119,7 +119,7 @@ numeric_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, n: string, is_int, is_floa
         "to" => {
             if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
             t := cx.type_arg(args, 0, span) else return null
-            if tys.kind(t) is not .Float(_) {
+            if tys.kind(t) is not .Float(_) and not cx.param_with(t, .Float) {
                 cx.error(span, str.format("`.to` converts to a float type, not `{}`; use `.trunc`, `.round`, `.checked` or `.sat` for integers", cx.show(t))!)
             }
             return builtin(.Round, t, one[..], span)
@@ -199,8 +199,8 @@ numeric_conversion :: fn(cx: ^FnCx, recv: ^Expr, n: string, is_float: bool, args
         "checked" => .Checked
         _ => .Sat
     }
-    t_int := tys.is_integer(t)
-    t_float := tys.kind(t) is .Float(_)
+    t_int := tys.is_integer(t) or cx.param_with(t, .Int)
+    t_float := tys.kind(t) is .Float(_) or cx.param_with(t, .Float)
     ok := if op in (tir.Builtin.Trunc, tir.Builtin.Checked, tir.Builtin.Sat, tir.Builtin.Round) { t_int } else { t_int and is_float }
     if op is .Round and t_float and not t_int {
         cx.error(span, str.format("`.round` converts to an integer; for the nearest `{}` use `.to({})`", cx.show(t), cx.show(t))!)
@@ -312,7 +312,7 @@ collection_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, n: string, args: []cons
         }
         _ => {}
     }
-    if n in SLICE_FNS { return cx.unsupported(span, "the slice methods of the core library") }
+    if n in SLICE_FNS { return cx.slice_fn(base, n, args, span) }
     if n is "len" or n is "ptr" {
         d := diag.error(span, str.format("`.{}` of a slice is a field, not a method: write `s.{}` without `()`", n, n)!)
         text := cx.s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
@@ -333,6 +333,42 @@ SLICE_FNS :: [27]string(
     "upper_bound", "select_nth", "select_nth_by", "reverse", "rotate_left", "rotate_right", "dedup",
     "partition", "is_sorted", "is_sorted_by", "utf8_valid", "cursor",
 )
+
+/// A method of arrays and slices written in Gamma, in the core module `core/slice`:
+/// `a.sort()` calls `sort(a[..])` (§21.3).
+slice_fn :: fn(cx: ^FnCx, base: ^Expr, n: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    f := cx.core_fn("slice", n) else {
+        cx.error(span, str.format("the slice method `.{}` is missing from the core library", n)!)
+        return error_expr(cx.s, span)
+    }
+    tys := &cx.s.tys
+    bt := cx.infer.resolve(cx.s, base.ty)
+    recv := base
+    match tys.kind(bt) {
+        .Array(_, elem, _), .ParamArray(_, elem) => {
+            m := cx.place_mutability(base) else {
+                cx.error(span, str.format("`.{}` needs an array variable, not a temporary", n)!)
+                return error_expr(cx.s, span)
+            }
+            p := tir.mk(tys.ptr(not m, bt), .AddrOf(base), span)
+            recv = cx.coerce(p, tys.slice(not m, elem))
+        }
+        _ => {}
+    }
+    return cx.generic_call(f, recv, args, span)
+}
+
+/// Function `name` of the core module `core/<module>`.
+core_fn :: fn(cx: ^FnCx, module: string, name: string) -> ?u32 needs Load {
+    mname := str.format("core/{}", module)!
+    for m in cx.s.l.core_modules.items {
+        if cx.s.l.modules.items[m].name is not mname { continue }
+        d := cx.s.l.lookup(m, name) else return null
+        .Fn(f) := cx.s.resolve_decl(d) else return null
+        return f
+    }
+    return null
+}
 
 /// `x.bits(T)`: reinterpret plain data of the same size (§6.6).
 bits_cast :: fn(cx: ^FnCx, v: ^Expr, t: Ty, span: source.Span) -> ^Expr needs Load {
@@ -372,8 +408,8 @@ check_from_tag :: fn(cx: ^FnCx, u: Ty, args: []const ast.Arg, span: source.Span)
 /// if it does not fit.
 adjust_receiver :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, param: Ty, name: ast.Ident, span: source.Span) -> ?^Expr needs Load {
     tys := &cx.s.tys
-    if param is rty { return recv }
-    if .Ptr(c, pointee) := tys.kind(param) and pointee is rty {
+    if fits_receiver(tys, param, rty) { return recv }
+    if .Ptr(c, pointee) := tys.kind(param) and fits_receiver(tys, pointee, rty) {
         if m := cx.place_mutability(recv) {
             if not m and not c { cx.error(recv.span, str.format("`{}` needs a mutable receiver", name.name)!) }
             return tir.mk(tys.ptr(c, rty), .AddrOf(recv), span)
@@ -382,11 +418,11 @@ adjust_receiver :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, param: Ty, name: ast.Iden
         cx.error(recv.span, str.format("`{}` modifies its receiver, which must be a variable, not a temporary", name.name)!)
         return null
     }
-    if .Ptr(c1, pointee) := tys.kind(param) and .Ptr(c2, p2) := tys.kind(rty) and pointee is p2 {
+    if .Ptr(c1, pointee) := tys.kind(param) and .Ptr(c2, p2) := tys.kind(rty) and fits_receiver(tys, pointee, p2) {
         if c1 { return cx.coerce(recv, tys.ptr(true, p2)) }
         if not c2 { return recv }
     }
-    if .Ptr(_, pointee) := tys.kind(rty) and param is pointee { return tir.mk(pointee, .Deref(recv), span) }
+    if .Ptr(_, pointee) := tys.kind(rty) and fits_receiver(tys, param, pointee) { return tir.mk(pointee, .Deref(recv), span) }
     cx.error(span, str.format("`{}` cannot take a receiver of type `{}`", name.name, cx.show(rty))!)
     return null
 }
@@ -398,8 +434,7 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.A
     rty := cx.infer.resolve(cx.s, recv.ty)
     s := rty
     if .Ptr(_, p) := tys.kind(rty) { s = p }
-    .Adt(id, gargs) := tys.kind(s) else return null
-    if gargs.len > 0 { return cx.unsupported(span, "methods of generic types") }
+    .Adt(id, _) := tys.kind(s) else return null
     module := cx.s.adts.items[usize(id)].module
     d := cx.s.l.lookup(module, name.name) else return cx.op_method(recv, rty, s, module, name, args, span)
     .Fn(f) := cx.s.resolve_decl(d) else return cx.op_method(recv, rty, s, module, name, args, span)
@@ -414,9 +449,7 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.A
         }
     }
     if p := first {
-        t := p.ty
-        if .Ptr(_, x) := tys.kind(t) { t = x }
-        if t is not s {
+        if not takes_receiver(tys, p.ty, s) {
             if e := cx.op_method(recv, rty, s, module, name, args, span) { return e }
         }
     }
@@ -424,12 +457,11 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.A
         cx.error(span, str.format("`{}` takes no receiver", name.name)!)
         return error_expr(cx.s, span)
     }
-    if sig.generics.len > 0 { return cx.unsupported(span, "calls of generic functions") }
+    r := cx.adjust_receiver(recv, rty, fp.ty, name, span) else return error_expr(cx.s, span)
+    if sig.generics.len > 0 { return cx.generic_call(f, r, args, span) }
     for p in sig.params {
         if p.rest { return cx.unsupported(span, "rest parameters") }
-        if sema.is_site(&p) { return cx.unsupported(span, "`@caller_location()` parameters") }
     }
-    r := cx.adjust_receiver(recv, rty, fp.ty, name, span) else return error_expr(cx.s, span)
     bound := cx.bind_args(sig.params[1..], sig.module, args, span, "method") else return error_expr(cx.s, span)
     vals := list(Expr)
     vals.push(r^)!
@@ -437,6 +469,23 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.A
     cx.record_effects(&sig.effects, span)
     call := tir.mk(sig.ret, .Call(.Fn(f), vals.items), span)
     return cx.finish_call(bound.pre, call, true)
+}
+
+/// Whether a first parameter of type `param` takes a receiver of type `s` (or a pointer
+/// to one): the types are equal, or instances of one generic type.
+takes_receiver :: fn(tys: ^const types.Types, param: Ty, s: Ty) -> bool {
+    t := param
+    if .Ptr(_, x) := tys.kind(t) { t = x }
+    return fits_receiver(tys, t, s)
+}
+
+/// Whether parameter type `p` and argument type `a` match exactly, or (for generic
+/// methods) as instances of one generic type.
+fits_receiver :: fn(tys: ^const types.Types, p: Ty, a: Ty) -> bool {
+    if p is a { return true }
+    .Adt(x, _) := tys.kind(p) else return false
+    .Adt(y, _) := tys.kind(a) else return false
+    return tys.template(x) is tys.template(y)
 }
 
 /// `e.op(args)` where `op` is an operation of a non-generic effect declared in `module`
@@ -473,7 +522,7 @@ finish_call :: fn(cx: ^FnCx, pre: []tir.Stmt, call: ^Expr, receiver: bool) -> ^E
     if pre.len is 0 { return call }
     stmts := list(tir.Stmt)
     if .Call(_, args) := call.kind and receiver and args.len > 0 {
-        args[0] = cx.bind_temp(&args[0], &stmts)^
+        args[0] = cx.bind_temp(new(args[0])!, &stmts)^
     }
     stmts.extend(pre)!
     return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: call.span))!), call.span)
@@ -525,4 +574,10 @@ perform_named :: fn(cx: ^FnCx, named: EffectNamed, name: ast.Ident, args: []cons
     }
     cx.error(name.span, str.format("the effect `{}` has no operation `{}`", info.name, name.name)!)
     return error_expr(cx.s, span)
+}
+
+/// Whether `t` is a type parameter granted constraint `c`.
+param_with :: fn(cx: ^FnCx, t: Ty, c: sema.Constraint) -> bool {
+    .Param(p) := cx.s.tys.kind(t) else return false
+    return cx.s.param_has(p, c)
 }

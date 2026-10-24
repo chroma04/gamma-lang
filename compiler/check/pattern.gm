@@ -364,7 +364,11 @@ path_pattern :: fn(cx: ^FnCx, path: ^const ast.Expr, args: ?[]ast.PatArg, ty: Ty
             return wild
         }
         .Ident(_) => return cx.struct_pattern(path, cx.type_of_name(path), args, ty, ctx, binds, span)
-        .Call(_) => return cx.unsupported_pat(span, ty, "patterns of generic struct types")
+        // `G(T)(f: p, …)`: a struct pattern of an instance of a generic struct.
+        .Call(_) => {
+            t := cx.s.resolve_type(cx.module, path)
+            return cx.struct_pattern(path, if cx.s.tys.is_error(t) { null } else { t }, args, ty, ctx, binds, span)
+        }
         _ => {
             cx.error(path.span, "expected a variant, constant or struct pattern")
             return wild

@@ -11,7 +11,7 @@ parse_constraint :: fn(name: string) -> ?Constraint => match name {
     _ => null
 }
 
-constraint_name :: fn(c: Constraint) -> string => @variant_name(c)
+pub constraint_name :: fn(c: Constraint) -> string => @variant_name(c)
 
 /// Whether constraint `a` implies `b`.
 implies :: fn(a, b: Constraint) -> bool => match a {
@@ -40,7 +40,7 @@ declare_constraint :: fn(s: ^Sema, module: usize, c: ^const ast.Constraint) need
 }
 
 /// True if type parameter `p` is granted constraint `c`.
-param_has :: fn(s: ^const Sema, p: u32, c: Constraint) -> bool {
+pub param_has :: fn(s: ^const Sema, p: u32, c: Constraint) -> bool {
     for k in s.params.items[usize(p)].constraints.items {
         if implies(k, c) { return true }
     }
@@ -64,7 +64,7 @@ unsatisfied :: fn(s: ^const Sema, t: Ty, c: Constraint, p: u32, template: u32) -
 }
 
 /// True if the (concrete or parameter) type `t` satisfies `c` (§16.3).
-satisfies :: fn(s: ^const Sema, t: Ty, c: Constraint) -> bool needs Alloc {
+pub satisfies :: fn(s: ^const Sema, t: Ty, c: Constraint) -> bool needs Alloc {
     if .Param(p) := s.tys.kind(t) { return s.param_has(p, c) }
     is_float := s.tys.kind(t) is .Float(_)
     return match c {
@@ -190,14 +190,14 @@ bits_struct_ty :: fn(s: ^const Sema, ty: Ty) -> ?Ty {
     return def.bits
 }
 
-not_first_class :: fn(s: ^const Sema, t: Ty, part: Ty) -> string needs Alloc {
+pub not_first_class :: fn(s: ^const Sema, t: Ty, part: Ty) -> string needs Alloc {
     if t is part { return str.format("`{}` is not a first-class type, so it cannot be a type argument (§16.1)", s.show(t))! }
     return str.format("`{}` contains the second-class type `{}`, so it cannot be a type argument (§16.1)", s.show(t), s.show(part))!
 }
 
 /// The second-class part of `t` (a `fn(…)` type, a handler, `type`), if it has one: such
 /// a type is not a valid type argument (§16.1).
-second_class_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
+pub second_class_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
     if s.tys.kind(t) is .Fn(_) { return t }
     return s.inner_second_class_part(t)
 }
@@ -224,4 +224,248 @@ inner_second_class_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
         }
         _ => return null
     }
+}
+
+/// Brings the compile-time parameters among `params` into scope for a generic body, and
+/// returns what `unscope_type_params` needs to take them out again.
+pub scope_type_params :: fn(s: ^Sema, params: []const ParamInfo) -> (types: usize, values: usize) needs Alloc {
+    before := (types: s.type_params.items.len, values: s.value_scope.items.len)
+    for p in params {
+        pid := p.generic else continue
+        if s.params.items[usize(pid)].kind is .Value(_) {
+            s.value_scope.push(ValueScoped(name: p.name, param: pid))!
+        } else {
+            s.type_params.push(Scoped(name: p.name, ty: s.tys.param(pid)))!
+        }
+    }
+    return before
+}
+
+pub unscope_type_params :: fn(s: ^Sema, before: (types: usize, values: usize)) {
+    s.type_params.truncate(before.types)
+    s.value_scope.truncate(before.values)
+}
+
+/// What generic parameter `p` stands for.
+pub param_kind :: fn(s: ^const Sema, p: u32) -> ParamKind => s.params.items[usize(p)].kind
+
+/// The constraints declared for type parameter `p`.
+pub param_constraints :: fn(s: ^const Sema, p: u32) -> []const Constraint => s.params.items[usize(p)].constraints.items
+
+// ---------------------------------------------------------------------------------
+// Instances of generic functions
+// ---------------------------------------------------------------------------------
+
+/// A generic function and the arguments of one of its instances.
+pub FnInstance :: struct {
+    pub template: u32
+    pub args: []const Ty
+}
+
+/// How deeply generic instantiations may nest (§16.7).
+MAX_MONO_DEPTH: u32 : 256
+
+/// An instance whose generic body's calls are still to be followed: the instances they
+/// call are instantiated in turn.
+pub MonoRequest :: struct {
+    pub generic: u32
+    pub instance: u32
+    pub args: []const Ty
+    pub span: source.Span
+    pub depth: u32
+}
+
+/// The instance of generic function `f` for `args`, allocated on the first request (at
+/// `span`). Its body is not produced: the `tir` dump shows generic functions by their
+/// templates, and only the calls in it are followed (see `MonoRequest`).
+pub instantiate :: fn(s: ^Sema, f: u32, args: []const Ty, span: source.Span) -> u32 needs Load {
+    key := list(u8)
+    key.write("{}", f)!
+    for a in args { key.write(":{}", a.id)! }
+    if id := s.fn_instances.get(key.items) { return id }
+    sig := s.fns.items[usize(f)]
+    map := list(Subst)
+    for i, g in enumerate(sig.generics) { map.push(Subst(param: g, ty: args[i]))! }
+    params := list(ParamInfo)
+    for p in sig.params {
+        if p.generic is not null { continue }
+        q := p
+        q.ty = s.subst(p.ty, map.items)
+        params.push(q)!
+    }
+    kept := list(Ty)
+    kept.extend(args)!
+    inst := FnSig(
+        name: sig.name,
+        span: sig.span,
+        module: sig.module,
+        params: params.items,
+        ret: s.subst(sig.ret, map.items),
+        effects: s.subst_effects(&sig.effects, map.items),
+        generics: empty_slice(u32),
+        instance: FnInstance(template: f, args: kept.items),
+    )
+    id := s.fns.items.len.trunc(u32)
+    s.fns.push(inst)!
+    kind: tir.FnKind = if s.defs.items[usize(f)].kind is .Clause { .Clause } else { .Named }
+    s.defs.push(tir.FnDef(kind: kind, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null))!
+    s.fn_instances.put(key.items, id)!
+    for a in args {
+        if s.tys.has_param(a) { return id }
+    }
+    depth := s.mono_depth + 1
+    if depth > MAX_MONO_DEPTH {
+        s.error(span, str.format("generic instantiations nest more than {} deep; does a generic function call itself with ever-larger type arguments? (§16.7)", MAX_MONO_DEPTH)!)
+        return id
+    }
+    s.mono_queue.push(MonoRequest(generic: f, instance: id, args: kept.items, span: span, depth: depth))!
+    return id
+}
+
+/// The type bound to parameter `p` in `binds`, if any.
+pub bound_to :: fn(binds: []const Subst, p: u32) -> ?Ty {
+    for b in binds {
+        if b.param is p { return b.ty }
+    }
+    return null
+}
+
+/// Binds type parameters by matching a parameter type `pat` against an argument type
+/// `actual`; a parameter bound already keeps its type.
+pub match_params :: fn(s: ^Sema, pat: Ty, actual: Ty, binds: ^List(Subst)) needs Alloc {
+    tys := &s.tys
+    if tys.has_infer(actual) or tys.is_error(actual) { return }
+    a := tys.kind(actual)
+    match tys.kind(pat) {
+        .Param(p) => if bound_to(binds.items, p) is null { binds.push(Subst(param: p, ty: actual))! }
+        .ParamArray(len, x) => match a {
+            .ParamArray(len2, y) => {
+                s.match_params(len, len2, binds)
+                s.match_params(x, y, binds)
+            }
+            // `[N]T` against `[4]u8` gives `N = 4` (as a `u64`, converted by the caller).
+            .Array(n, y, .Plain) => {
+                if .Param(p) := tys.kind(len) and bound_to(binds.items, p) is null {
+                    bytes := list(u8)
+                    for i in 0..8 { bytes.push((n >> u64(i * 8)).trunc(u8))! }
+                    v := tys.intern(.Value(.Bytes(tys.int(false, 64), bytes.items)))
+                    binds.push(Subst(param: p, ty: v))!
+                }
+                s.match_params(x, y, binds)
+            }
+            _ => {}
+        }
+        .Ptr(_, x) => if .Ptr(_, y) := a { s.match_params(x, y, binds) }
+        .Slice(_, x) => if .Slice(_, y) := a { s.match_params(x, y, binds) }
+        .ManyPtr(_, x) => if .ManyPtr(_, y) := a { s.match_params(x, y, binds) }
+        .Array(_, x, _) => if .Array(_, y, _) := a { s.match_params(x, y, binds) }
+        .Optional(x) => if .Optional(y) := a { s.match_params(x, y, binds) }
+        .Result(e1, o1) => if .Result(e2, o2) := a {
+            s.match_params(e1, e2, binds)
+            s.match_params(o1, o2, binds)
+        }
+        .Adt(x, xs) => if .Adt(y, ys) := a {
+            same := tys.template(x) is tys.template(y) or soa_const_view(tys, x, y)
+            if same and xs.len is ys.len {
+                for i, p in enumerate(xs) {
+                    if .Type(pt) := p and .Type(qt) := ys[i] { s.match_params(pt, qt, binds) }
+                }
+            }
+        }
+        .Tuple(xs, _) => if .Tuple(ys, _) := a and xs.len is ys.len {
+            for i, x in enumerate(xs) { s.match_params(x, ys[i], binds) }
+        }
+        .Fn(f) => match a {
+            .Fn(g), .FnPtr(g) => s.match_fn_params(&f, &g, binds)
+            _ => {}
+        }
+        .FnPtr(f) => if .FnPtr(g) := a { s.match_fn_params(&f, &g, binds) }
+        .Effects(x) => if .Effects(y) := a { s.match_effects(&x, &y, binds) }
+        _ => {}
+    }
+}
+
+match_fn_params :: fn(s: ^Sema, f: ^const types.FnTy, g: ^const types.FnTy, binds: ^List(Subst)) needs Alloc {
+    if f.params.len is not g.params.len { return }
+    for i, p in enumerate(f.params) { s.match_params(p, g.params[i], binds) }
+    s.match_params(f.ret, g.ret, binds)
+    s.match_effects(&f.effects, &g.effects, binds)
+}
+
+/// A `#soa []const T` view matches a `#soa []T` argument.
+soa_const_view :: fn(tys: ^const types.Types, pat: u32, actual: u32) -> bool {
+    return tys.adt_name(tys.template(pat)) is "#soa []const " and tys.adt_name(tys.template(actual)) is "#soa []"
+}
+
+/// Binds the parameters of effect set `pat` from `actual` (§16.6): the arguments of an
+/// effect that occurs once in each, then a single term `..E` from the effects of
+/// `actual` that `pat` does not name.
+match_effects :: fn(s: ^Sema, pat: ^const EffectSet, actual: ^const EffectSet, binds: ^List(Subst)) needs Alloc {
+    for p in pat.effects {
+        if p.eff is types.SPLICE or p.args.len is 0 { continue }
+        found: ?EffectRef = null
+        count := 0
+        for a in actual.effects {
+            if a.eff is p.eff {
+                found = a
+                count += 1
+            }
+        }
+        if count is not 1 { continue }
+        a := found else continue
+        for i, x in enumerate(p.args) {
+            if i < a.args.len and .Type(xt) := x and .Type(yt) := a.args[i] { s.match_params(xt, yt, binds) }
+        }
+    }
+    splice: ?EffectRef = null
+    splices := 0
+    for p in pat.effects {
+        if p.eff is types.SPLICE {
+            splice = p
+            splices += 1
+        }
+    }
+    if splices is not 1 { return }
+    sp := splice else return
+    if sp.args.len is 0 { return }
+    .Type(t) := sp.args[0] else return
+    .Param(e) := s.tys.kind(t) else return
+    if bound_to(binds.items, e) is not null { return }
+    rest := list(EffectRef)
+    for a in actual.effects {
+        named := false
+        for p in pat.effects {
+            if p.eff is not types.SPLICE and p.eff is a.eff { named = true }
+        }
+        if not named { rest.push(a)! }
+    }
+    binds.push(Subst(param: e, ty: s.tys.intern(.Effects(types.effect_set(rest.items)))))!
+}
+
+/// The value of an integer key, as its type gives it (two's complement for a signed one).
+pub key_int :: fn(s: ^const Sema, k: types.ConstKey) -> ?bigint.Int needs Alloc {
+    .Bytes(t, b) := k else return null
+    if not s.tys.is_integer(t) { return null }
+    v := bigint.zero()
+    i := b.len
+    while i > 0 {
+        i -= 1
+        v = v.shl(8).add(bigint.from_u64(u64(b[i])))
+    }
+    if s.tys.is_signed_integer(t) and b.len > 0 and b[b.len - 1] >= 128 { v = v.sub(bigint.one().shl(u64(b.len * 8))) }
+    return v
+}
+
+/// The key of integer `i` of integer type `ty`: its bytes, little-endian two's
+/// complement whatever the target.
+pub int_key :: fn(s: ^Sema, ty: Ty, i: bigint.Int) -> types.ConstKey needs Load {
+    size := s.layout(ty).size
+    bytes := list(u8)
+    x := i
+    for _ in 0..size {
+        low := x.bit_and(bigint.from_u64(255)).to_u64() else 0
+        bytes.push(low.trunc(u8))!
+        x = x.shr(8)
+    }
+    return .Bytes(ty, bytes.items)
 }

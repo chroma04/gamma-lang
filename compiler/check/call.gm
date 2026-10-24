@@ -2,6 +2,22 @@
 // `src/sema/call.rs`).
 
 call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    // `T(5)` with a type parameter `T`: the untyped constant is typed at `T`, as `x: T =
+    // 5` would, and checked against each instantiation (§16.1).
+    if .Ident(id) := callee.kind and cx.lookup_local(id.name) is null and args.len is 1 and .Positional(a) := args[0].kind {
+        if t := cx.s.type_param(id.name) {
+            if r := cx.try_untyped(&a) {
+                .Ok(v) := r else return error_expr(cx.s, span)
+                if v is .Bool(_) {
+                    cx.error(a.span, str.format("a boolean constant cannot be converted to `{}`", id.name)!)
+                    return error_expr(cx.s, span)
+                }
+                c := cx.coerce(cx.untyped_literal(&v, a.span), t)
+                c.span = span
+                return c
+            }
+        }
+    }
     if .Field(base, name) := callee.kind {
         // `E.op(args)`: an operation named through its effect (§12.1).
         if named := cx.effect_named(base) { return cx.perform_named(named, name, args, span) }
@@ -28,6 +44,11 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
                 _ = b
                 return cx.unsupported(span, "calls of local values")
             }
+            if cx.s.type_param(id.name) is not null {
+                n := id.name
+                cx.error(callee.span, str.format("`{}(x)` would be a conversion to a type parameter, which is not lossless for every type; use `x.trunc({})`, `x.sat({})` or `x.checked({})`", n, n, n, n)!)
+                return error_expr(cx.s, span)
+            }
             if d := cx.s.lookup_module_name(cx.module, id.name) {
                 cx.s.check_deprecated(d, id.span)
                 return cx.call_decl(d, id.name, callee, args, span)
@@ -41,6 +62,13 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             }
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
             return cx.unsupported(span, str.format("calls of `{}`", id.name)!)
+        }
+        .Call(_) => {
+            if t := cx.type_of_name(callee) { return cx.conversion(t, args, span) }
+            // `Heap(T, N)(…)` with a wrong type application: the application's error is
+            // the only one.
+            if cx.s.looks_like_type(cx.module, callee) and cx.s.tys.is_error(cx.s.resolve_type(cx.module, callee)) { return error_expr(cx.s, span) }
+            return cx.unsupported(span, "calls of computed functions")
         }
         _ => return cx.unsupported(span, "calls of computed functions")
     }
@@ -64,10 +92,9 @@ call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args
 /// A direct call of function `f`.
 call_fn :: fn(cx: ^FnCx, f: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     sig := cx.s.fns.items[usize(f)]
-    if sig.generics.len > 0 { return cx.unsupported(span, "calls of generic functions") }
+    if sig.generics.len > 0 { return cx.generic_call(f, null, args, span) }
     for p in sig.params {
         if p.rest { return cx.unsupported(span, "rest parameters") }
-        if sema.is_site(&p) { return cx.unsupported(span, "`@caller_location()` parameters") }
     }
     bound := cx.bind_args(sig.params, sig.module, args, span, "function") else return error_expr(cx.s, span)
     cx.record_effects(&sig.effects, span)
@@ -98,7 +125,7 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
     positional := list(bool)
     max: usize = 0
     for p in params {
-        ok := p.name not in named_here.items
+        ok := not sema.is_site(&p) and p.name not in named_here.items
         positional.push(ok)!
         if ok { max += 1 }
     }
@@ -174,7 +201,7 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
         }
         p := &params[i]
         if d := p.default {
-            out.push(cx.default_value(d, p.ty)^)!
+            out.push(cx.param_default(p, d, p.ty, span)^)!
             continue
         }
         if p.name is "_" {

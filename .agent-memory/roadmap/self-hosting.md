@@ -38,13 +38,25 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   index/slice/.len/.ptr, array construction, methods (methods.gm: builtins, module fns,
   effect ops, E.op), errors.gm (else/try/!e/?/!/lift), escape.gm. `&e` passes expected
   pointee as hint (ref + gammac + spec §7.2). TIR_FLOOR = 100 (0 DIFF of 784).
+- s38g generics DONE: generic bodies (type params scoped, numeric_params), generic_call
+  (port of generic_call_packed: receiver binds, ranks, literal fallbacks, `()` defaults,
+  value params via comptime_value + normalize_value, constraints, inst_only), instances
+  = FnSig with `instance` set + empty def (dump skips, label `f@..[args]`), mono walk in
+  program.gm (instantiates nested calls, depth 256, per-instance literal/.bits/type-size
+  checks; core templates have no bodies → not followed), site defaults (SourceLocation
+  aggregate), methods of generic types (fits_receiver by template), core slice methods
+  (slice_fn), `G(T)` in bodies (type_of_name, constructions, struct patterns),
+  ValueParam TIR + len_value, `T(lit)`, generic fns as values. 137 SAME / 0 DIFF of 794.
+  Still unsupported: effect-set params (18), rest params (25), spread (55), generic
+  effect ops (28 roots), iterator args.
 - Survey script: $SP/one.sh per root (gammac tir vs gamma tir --diag-format=json), xargs
   -P6 over roots.txt (= program_roots); rewrite if scratch is gone (~60 s).
-- Biggest remaining buckets (roots mentioning): generic calls 301 + generic bodies 261 +
-  methods of generic types 127 + core slice methods 134 (all = generics: instantiation,
-  labels `f@..[args]`, instance dumps excluded); catch-all exprs 194 (break down:
-  intrinsics, fn literals...), intrinsics 179, defer 178, with 172, `calls of X` 156
-  (builtins like list/new/free/enumerate), iterators 136, handler decls 102, consts 88.
+- Biggest remaining buckets after s38g (roots mentioning): intrinsics 225 (+@size_of
+  137), catch-all exprs 222, defer 196, with 182, `yield` 157, iterators 145, typed
+  consts 115, computed callees 115 + fn pointers 95 + local values 51 (= call_value with
+  Callee.Indirect, dump "call indirect"), handler decls 103, local when 76, tuple
+  payloads 70. Single-blocker roots are a long tail (intrinsics 19, with 13, tests 10,
+  defer 10): unlocking needs several features.
 - Gotcha hit 6x: tuple payload with ?T element + bare binding in match unwraps; use struct
   payloads for variants with optional parts (handbook rule).
 - Perf: gammac re-parses core per root (~100 KB); could cache parsed core per process

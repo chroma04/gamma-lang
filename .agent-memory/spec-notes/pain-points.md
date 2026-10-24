@@ -1,0 +1,20 @@
+# Repeated usability pain points (candidates for language/library improvements)
+Standing user rule: Gamma is evidence-driven; a pain point hit more than once while writing
+Gamma gets flagged here (and to the user) as a possible improvement. Note how often and where.
+
+- **Pointers to copies / to slots** (≥8x across s38–s38g): `&loop_var`, `&pattern_binding`,
+  `&list.items[i]` across a push, and `x[i] = f(&x[i])^` where f keeps the pointer (s38g
+  finish_call). Escape analysis catches none. Idea: a lint/escape rule for storing the
+  address of a loop variable or binding; warn on `p = f(&p)` shapes. Handbook covers it.
+- **Optional parts in tuple payloads** (6x, s38b–s38e): bare name at a `?T` position matches
+  only present values (§9.3) → struct payloads everywhere. Idea: a lint, or `_?`/`?x` pattern
+  that binds the optional as is.
+- **Cross-module helpers must be `pub`** (s38e, s38g: ~15 sema fns made pub just so
+  check/ can call `cx.s.f()`): no package-private visibility. Idea: package-level
+  visibility (`pub(package)`), since a package's modules are one unit.
+- **Small maps / composite keys** (s38d types interner, s38g fn instances, binds): HashMap
+  needs a hand-built byte-string key for struct/tuple keys, and tiny maps become List +
+  linear lookup helpers. Idea: hashing derived for plain structs/tuples (`@hash` exists
+  for core) so HashMap((u32, []Ty), u32) works; or a small assoc-list type in std.
+- **Function literals must be bound with `::`** (2x): `f := fn(..)` is an error; the
+  message is clear, so low priority.

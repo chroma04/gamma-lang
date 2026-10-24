@@ -21,7 +21,7 @@ pub tir_dump :: fn(s: ^Sema) -> string needs Alloc {
     order := list(u32)
     for i in 0..s.fns.items.len {
         sig := &s.fns.items[i]
-        if sig.span is source.DUMMY or sig.name is "<entry>" { continue }
+        if sig.span is source.DUMMY or sig.name is "<entry>" or sig.instance is not null { continue }
         if s.l.sm.file(sig.span.file).path.starts_with("<core>") { continue }
         order.push(i.trunc(u32))!
     }
@@ -38,9 +38,15 @@ pub tir_dump :: fn(s: ^Sema) -> string needs Alloc {
     return d.out.items
 }
 
-/// How the dump names function `f`: `name@path:line:col`.
+/// How the dump names function `f`: `name@path:line:col`, and an instance of a generic
+/// function by the generic one and its type arguments: `max@main.gm:1:1[i32]`.
 fn_label :: fn(s: ^Sema, f: u32) -> string needs Alloc {
     sig := &s.fns.items[usize(f)]
+    if inst := sig.instance {
+        args := list(string)
+        for a in inst.args { args.push(s.show(a))! }
+        return str.format("{}[{}]", fn_label(s, inst.template), str.join(args.items, ", ")!)!
+    }
     if sig.span is source.DUMMY { return sig.name }
     return str.format("{}@{}", sig.name, place(s, sig.span))!
 }
@@ -119,6 +125,7 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
         .CStr(b) => escaped("cstr ", b)
         .Null => "null"
         .Uninit => "uninit"
+        .ValueParam(p) => str.format("value-param {}", d.s.tys.param_name(p))!
         .Const(name, span) => str.format("const {}@{}", name, place(s, span))!
         .Local(l) => str.format("local {}", d.local_text(l))!
         .Upvar(levels, l) => str.format("upvar {} {}", levels, l)!

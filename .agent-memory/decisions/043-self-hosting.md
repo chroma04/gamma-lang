@@ -102,3 +102,19 @@ User asked: "lay the groundwork for a self-hosted compiler; doubly the ultimate 
   rejected; fmt indented a block's first line `.A` as continuation; in-process test runs
   need a 1 GiB stack thread (selfhost.rs on_big_stack). gammac sema.is_plain was
   exponential on DAG tuples (dedupe elements).
+
+## Stage 4b generics (s38g)
+- Instances of generic functions are FnSig entries with `instance: ?FnInstance` (template +
+  args) and an empty FnDef; keyed in Sema.fn_instances (HashMap by "f:argids"). Bodies are
+  NOT monomorphized (dump shows templates only); instead program.gm `monomorphize` walks
+  each concrete instance's template TIR: re-instantiates calls/FnRefs whose instance args
+  mention params (substituted), with mono_depth/MAX 256 (error at the outermost call span,
+  as ref's MonoCx.span), and ports mono_expr's per-instance checks (Int literal fits,
+  untyped float type, `.bits` sizes) + type_size_ok of substituted locals. Core generic
+  templates have no checked bodies in gammac → not followed (fine so far).
+- Ref HashMap binds → List(Subst) + bound_to/set_bind (insert overrides for explicit
+  type args, or_insert for inference). Ref sort_by_key is stable → stable_sort_by.
+- Bug found: finish_call did `args[0] = bind_temp(&args[0], ..)^` — Let kept a pointer to
+  the overwritten slot (Let(t, Local(t))). Fixed with `new(args[0])!`; handbook note.
+- type_of_name/denotes_type: ref type_of_name does NOT consult type params; denotes_type
+  does. `T(x)` with type param: untyped arg → coerce, else the "not lossless" error.

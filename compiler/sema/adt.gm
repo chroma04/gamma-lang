@@ -326,7 +326,7 @@ union_kind :: fn(s: ^Sema, module: usize, u: ^const ast.UnionLit, attrs: []const
 }
 
 /// Whether the integer `v` is a value of the integer type `t`.
-int_fits :: fn(s: ^const Sema, v: bigint.Int, t: Ty) -> bool needs Alloc {
+pub int_fits :: fn(s: ^const Sema, v: bigint.Int, t: Ty) -> bool needs Alloc {
     signed := false
     bits: u64 = 0
     match s.tys.kind(t) {
