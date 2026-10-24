@@ -11,8 +11,11 @@
   `in` takes patterns (§7.7). s38e: stage 4b bodies started (`gamma tir`, compiler/tir +
   compiler/check, PR #76); s38f: patterns/for/methods/errors/sequences, TIR_FLOOR 100,
   `&e` expected-pointee hint. s38g (branch claude/project-thread-735qf0): generics in
-  gammac (check/generic.gm, sema instantiate + mono walk), TIR_FLOOR 137. Next: defer,
-  with/handlers, intrinsics, fn literals/pointers (roadmap/self-hosting.md).
+  gammac (check/generic.gm, sema instantiate + mono walk), TIR_FLOOR 137 (PR #78 merged).
+  s39 (branch claude/project-thread-nhzd4o): pain-point language changes (decisions/044:
+  pub(package), needless-pub/dangling-address/present-only-binding lints, payload-binding
+  note) + gammac defer, typed consts, intrinsics: TIR_FLOOR 190. Next: with/handlers,
+  iterators+yield, fn literals/pointers (roadmap/self-hosting.md).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
   in editors/tree-sitter-gamma (node 22 in /opt/node22).
@@ -58,9 +61,9 @@
                   self-hosting.md (gammac stages),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–043, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–044, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

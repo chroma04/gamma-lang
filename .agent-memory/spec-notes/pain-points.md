@@ -2,6 +2,10 @@
 Standing user rule: Gamma is evidence-driven; a pain point hit more than once while writing
 Gamma gets flagged here (and to the user) as a possible improvement. Note how often and where.
 
+STATUS s39 (decisions/044): the four below were addressed — dangling-address lint, §9.3
+note + diagnostic, pub(package) + needless-pub lint, and composite keys already worked.
+Still open: pointers into a growing List across push (lint can't see it).
+
 - **Pointers to copies / to slots** (≥8x across s38–s38g): `&loop_var`, `&pattern_binding`,
   `&list.items[i]` across a push, and `x[i] = f(&x[i])^` where f keeps the pointer (s38g
   finish_call). Escape analysis catches none. Idea: a lint/escape rule for storing the
