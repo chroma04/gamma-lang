@@ -63,12 +63,13 @@ split_root_len :: fn(p: string) -> usize {
     }
 }
 
-/// `b` appended to `a`; `b` itself if it is absolute.
+/// `b` appended to `a`; `b` itself if it is absolute. On Windows the separator added is
+/// `/` when `a` already uses `/`, as Rust's `Path::join` does there.
 pub join :: fn(a, b: string) -> string needs Alloc {
     if a.len is 0 or is_absolute(b) { return b }
     out := list(u8)
     out.extend(a)!
-    if not is_sep(a[a.len - 1]) { out.push(SEP)! }
+    if not is_sep(a[a.len - 1]) { out.push(if '/' in a { '/' } else { SEP })! }
     out.extend(b)!
     return out.items
 }
