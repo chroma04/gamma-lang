@@ -14,8 +14,6 @@ Ps :: #soa []P
 
 by_ref :: fn(p: ^P) {}
 
-generic :: fn(T: type, xs: #soa []T) {} //~ ERROR `#soa` needs a concrete struct type, not `T`
-
 main :: fn() needs Alloc {
     a := Arrays(fill: P(x: 0, y: 0))
     c: #soa []const P = &a
@@ -30,6 +28,9 @@ main :: fn() needs Alloc {
     a.sort() //~ ERROR `#soa [2]P` has no method `.sort`
     _ = a < a //~ ERROR values of type `#soa [2]P` are not ordered
     a.free() //~ ERROR only a `#soa` slice from `.make(n)` is freed, not an array
+    c.copy_from(c) //~ ERROR cannot copy into a `#soa []const` slice
+    k.copy_from(c) //~ ERROR cannot copy into an immutable `#soa` array
+    a.copy_from(a[0]) //~ ERROR expected `#soa []const P`
     _ = Ps(x: 1) //~ ERROR `#soa []P` is made by slicing an array or by `.make(n)`, not constructed
     _ = Arrays(P(x: 1, y: 1)) //~ ERROR `#soa [2]P` needs exactly 2 elements, but 1 is given
     _ = Arrays.make(1) //~ ERROR `.make(n)` makes a `#soa` slice; `#soa [2]P` is an array

@@ -1262,6 +1262,12 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// If `e` is a name denoting a type, that type.
     pub fn type_of_name(&mut self, e: &ast::Expr) -> Option<Ty> {
+        // A local alias: `Cols :: #soa []T` then `Cols.make(n)`.
+        if let ExprKind::Ident(id) = &e.kind
+            && let Some(super::func::LocalBinding::Type(t)) = self.lookup_local(id.name)
+        {
+            return Some(*t);
+        }
         if let Some(d) = self.qualified_decl(e) {
             return match self.sema.resolve_decl(d?) {
                 DeclValue::Type(t) => Some(t),
@@ -1793,7 +1799,7 @@ impl<'a, 's> FnCx<'a, 's> {
         };
         let x = self.expr(x, None);
         // A `#soa` slice hashes by its contents, as `is` compares it (§5.6.4).
-        let x = self.soa_columns_tuple(x);
+        let x = self.soa_columns_tuple(x, "`@hash`");
         let xt = self.infer.resolve(x.ty);
         if !xt.has_infer() && !xt.is_error() && !self.eq_allowed(xt) {
             self.error(span, format!("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", xt));

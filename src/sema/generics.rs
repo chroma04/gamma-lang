@@ -239,6 +239,7 @@ impl<'s> Sema<'s> {
             tir::FnKind::Clause => tir::FnKind::Clause,
             _ => tir::FnKind::Named,
         };
+        self.report_soa_errors(span);
         let id = self.new_fn(name, self.prog.fns[f.index()].span, inst_sig, kind);
         self.instances.insert((f, args.clone()), id);
         self.instance_of.insert(id, (f, args.clone()));
@@ -303,11 +304,13 @@ impl<'s> Sema<'s> {
         let hints = g.hints;
         let outer_depth = std::mem::replace(&mut self.mono_depth, req.depth);
         self.check_len_exprs(&map, Some(req.span));
-        let mut cx = MonoCx { map: &map, fn_map: HashMap::new(), handler_map: HashMap::new(), span: req.span };
+        let mut cx =
+            MonoCx { map: &map, locals: vec![], fn_map: HashMap::new(), handler_map: HashMap::new(), span: req.span };
         cx.fn_map.insert(req.generic, req.instance);
-        let locals: Vec<tir::LocalDecl> =
-            locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(&mut cx, l.ty), ..l }).collect();
+        cx.locals = locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(&mut cx, l.ty), ..l }).collect();
         let body = self.mono_expr(&mut cx, body);
+        let locals = std::mem::take(&mut cx.locals);
+        self.report_soa_errors(req.span);
         self.mono_depth = outer_depth;
         // An instance may need a type larger than any object (a computed array length).
         for l in &locals {
@@ -449,6 +452,9 @@ impl<'s> Sema<'s> {
         }
         if let tir::ExprKind::WriteDeferred { .. } = e.kind {
             return self.resolve_write(cx, e);
+        }
+        if let tir::ExprKind::SoaDeferred { .. } = e.kind {
+            return self.soa_expand(&mut cx.locals, e);
         }
         // `.bits` between types that mention parameters is size-checked per instance (§6.6).
         if let tir::ExprKind::Builtin { op: tir::Builtin::Bits, args } = &e.kind
@@ -618,7 +624,9 @@ impl<'s> Sema<'s> {
         let locals: Vec<tir::LocalDecl> =
             locals.into_iter().map(|l| tir::LocalDecl { ty: self.mono_ty(cx, l.ty), ..l }).collect();
         let parent = parent.map(|p| self.mono_fn(cx, p));
+        let outer_locals = std::mem::replace(&mut cx.locals, locals);
         let body = body.map(|b| self.mono_expr(cx, b));
+        let locals = std::mem::replace(&mut cx.locals, outer_locals);
         let nd = &mut self.prog.fns[new_id.index()];
         nd.params = params;
         nd.locals = locals;
@@ -655,6 +663,9 @@ impl<'s> Sema<'s> {
 
 pub struct MonoCx<'m> {
     map: &'m [(ParamId, Ty)],
+    /// The locals of the function whose body is being produced, which lowering a
+    /// `#soa` operation may add to.
+    locals: Vec<tir::LocalDecl>,
     fn_map: HashMap<FnId, FnId>,
     handler_map: HashMap<HandlerId, HandlerId>,
     span: Span,

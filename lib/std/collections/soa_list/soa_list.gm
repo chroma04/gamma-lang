@@ -1,0 +1,151 @@
+//! A growable structure-of-arrays list: a `List` whose elements are stored by field.
+//!
+//!     sl :: import "std/collections/soa_list"
+//!
+//!     Particle :: struct { pos, vel: #vec [2]f32; alive: bool }
+//!
+//!     ps := sl.soa_list(Particle)          // captures the current allocator
+//!     defer ps.deinit()
+//!     try ps.push(Particle(pos: #vec [2]f32(fill: 0), vel: #vec [2]f32(1, 0), alive: true))
+//!     for i in 0..ps.len() { ps.items[i].pos += ps.items[i].vel }
+//!     xs: []#vec [2]f32 = ps.items.pos     // a whole column, contiguous
+//!
+//! `items` is a `#soa []S` slice of the elements (§5.6.4): `items[i]` is element `i`,
+//! `items[i].f` its field `f` in place, and `items.f` the column of `f`. The list grows
+//! like `List`: it keeps the allocator it was created with, performs no `Alloc`
+//! afterwards, reports a failed growth as `AllocError`, and at least doubles its
+//! capacity when it grows, so that pushing takes amortized constant time; moving
+//! elements (growing, `insert`, `remove`) copies whole columns. All the
+//! columns live in one block of `capacity()` elements, which growing replaces, so a
+//! slice of `items` or of one of its columns is valid only until the list next grows.
+
+/// A growable list of `S` values stored by field, which keeps the allocator it was
+/// created with. `S` is a struct that `#soa` can store (§5.6.4).
+pub SoaList :: struct(S: type) {
+    /// The elements: `items.len` is the length and `for x in l.items` iterates.
+    pub items: #soa []S
+    // The whole block from `make`; `items` is its first `items.len` elements.
+    block: #soa []S
+    alloc: Allocator
+}
+
+/// An empty list using the current allocator. It allocates on the first push.
+pub soa_list :: fn(S: type) -> SoaList(S) needs Alloc {
+    Cols :: #soa []S
+    // No elements allocate nothing, so this cannot fail.
+    none := Cols.make(0) else @unreachable()
+    return SoaList(S)(items: none, block: none, alloc: Alloc.current())
+}
+
+/// The number of elements.
+pub len :: fn(S: type, l: ^const SoaList(S)) -> usize => l.items.len
+
+/// Whether the list has no elements.
+pub is_empty :: fn(S: type, l: ^const SoaList(S)) -> bool => l.items.len is 0
+
+/// The number of elements the list can hold before it must grow.
+pub capacity :: fn(S: type, l: ^const SoaList(S)) -> usize => l.block.len
+
+/// Makes room for at least `extra` more elements without further allocation.
+pub reserve :: fn(S: type, l: ^SoaList(S), extra: usize) -> AllocError!() {
+    if l.block.len - l.items.len >= extra { return () }
+    return regrow(l, extra, l.items[0..0])
+}
+
+// Moves the list into a larger block with room for `extra` more elements and appends `tail`
+// (which may be part of the old block) after the existing ones.
+regrow :: fn(S: type, l: ^SoaList(S), extra: usize, tail: #soa []const S) -> AllocError!() {
+    Cols :: #soa []S
+    n := l.items.len
+    if extra > @max_value(usize) - n { return !.OutOfMemory }
+    cap := l.block.len
+    new_cap := n + extra
+    if cap <= @max_value(usize) / 2 and cap * 2 > new_cap { new_cap = cap * 2 }
+    if cap is 0 and new_cap < 4 { new_cap = 4 }
+    fresh := try with l.alloc { Cols.make(new_cap) }
+    fresh[0..n].copy_from(l.items)
+    fresh[n..n + tail.len].copy_from(tail)
+    with l.alloc { l.block.free() }
+    l.block = fresh
+    l.items = fresh[0..n + tail.len]
+    return ()
+}
+
+/// Appends `x`.
+pub push :: fn(S: type, l: ^SoaList(S), x: S) -> AllocError!() {
+    try reserve(l, 1)
+    n := l.items.len
+    l.items = l.block[0..n + 1]
+    l.items[n] = x
+    return ()
+}
+
+/// Appends the elements of `xs`, which may be part of the list itself.
+pub extend :: fn(S: type, l: ^SoaList(S), xs: #soa []const S) -> AllocError!() {
+    n := l.items.len
+    if l.block.len - n < xs.len {
+        // `xs` may be part of the list's own block: it is copied before that is released.
+        return regrow(l, xs.len, xs)
+    }
+    l.items = l.block[0..n + xs.len]
+    l.items[n..].copy_from(xs)
+    return ()
+}
+
+/// Inserts `x` at index `i`, moving the later elements up; traps if `i` is more than the
+/// length (`i` equal to the length appends).
+pub insert :: fn(S: type, l: ^SoaList(S), i: usize, x: S) -> AllocError!() {
+    n := l.items.len
+    if i > n { trap("soa_list.insert: index out of bounds") }
+    try reserve(l, 1)
+    l.items = l.block[0..n + 1]
+    l.items[i + 1..].copy_from(l.items[i..n])
+    l.items[i] = x
+    return ()
+}
+
+/// Removes and returns the element at index `i`, moving the later elements down. `i` must
+/// be less than the length.
+pub remove :: fn(S: type, l: ^SoaList(S), i: usize) -> S {
+    x := l.items[i]
+    n := l.items.len
+    l.items[i..n - 1].copy_from(l.items[i + 1..])
+    l.items = l.items[0..n - 1]
+    return x
+}
+
+/// Removes and returns the element at index `i`, moving the last element into its place
+/// (constant time, but the order changes). `i` must be less than the length.
+pub swap_remove :: fn(S: type, l: ^SoaList(S), i: usize) -> S {
+    x := l.items[i]
+    n := l.items.len
+    l.items[i] = l.items[n - 1]
+    l.items = l.items[0..n - 1]
+    return x
+}
+
+/// Keeps the first `n` elements (all of them if there are fewer).
+pub truncate :: fn(S: type, l: ^SoaList(S), n: usize) {
+    if n < l.items.len { l.items = l.items[0..n] }
+}
+
+/// Removes and returns the last element.
+pub pop :: fn(S: type, l: ^SoaList(S)) -> ?S {
+    n := l.items.len
+    if n is 0 { return null }
+    x := l.items[n - 1]
+    l.items = l.items[0..n - 1]
+    return x
+}
+
+/// Removes every element, keeping the storage.
+pub clear :: fn(S: type, l: ^SoaList(S)) {
+    l.items = l.block[0..0]
+}
+
+/// Frees the list's storage through its own allocator and leaves it empty.
+pub deinit :: fn(S: type, l: ^SoaList(S)) {
+    with l.alloc { l.block.free() }
+    l.items = l.block[0..0]
+    l.block = l.items
+}

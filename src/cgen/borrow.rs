@@ -216,6 +216,7 @@ impl<'a> Gen<'a> {
             | ExprKind::Cancel(_)
             | ExprKind::Write { .. }
             | ExprKind::WriteDeferred { .. }
+            | ExprKind::SoaDeferred { .. }
             | ExprKind::Global(_)
             | ExprKind::Upvar { .. } => false,
             ExprKind::Builtin { op, .. } => !matches!(

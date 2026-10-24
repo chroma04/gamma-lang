@@ -1,0 +1,79 @@
+//! stage: test
+// `std/collections/soa_list`: the list grows by field, frees every block it took through
+// its own allocator, and copies from itself safely (§5.6.4, §21.5).
+sl :: import "std/collections/soa_list"
+fixed_buffer :: import "std/fixed_buffer"
+
+P :: struct { a: u8; b: u64; c: u16 }
+
+p :: fn(i: usize) -> P => P(a: i.trunc(u8), b: i.trunc(u64) * 10, c: i.trunc(u16) + 1)
+
+test "an unused list takes nothing" {
+    l := sl.soa_list(P)
+    expect(l.is_empty() and l.capacity() is 0)
+    l.deinit()
+}
+
+test "growth frees each old block and keeps the columns aligned" {
+    l := sl.soa_list(P)
+    defer l.deinit()
+    for i in 0..100 { ok(l.push(p(i))) }
+    expect(l.len() is 100 and l.capacity() is 128)
+    expect(l.items.b.ptr.addr() % 8 is 0 and l.items.c.ptr.addr() % 2 is 0)
+    expect(l.items[57] is p(57))
+    expect(l.items.b[99] is 990)
+}
+
+test "extend copies the list's own elements before growing" {
+    l := sl.soa_list(P)
+    defer l.deinit()
+    for i in 0..4 { ok(l.push(p(i))) }
+    expect(l.capacity() is 4)
+    ok(l.extend(l.items))
+    ok(l.extend(l.items[1..3]))
+    expect(l.len() is 10)
+    for i in 0..8 { expect(l.items[i] is p(i % 4)) }
+    expect(l.items[8] is p(1) and l.items[9] is p(2))
+}
+
+test "insert, remove and swap_remove keep the other elements in order" {
+    l := sl.soa_list(P)
+    defer l.deinit()
+    for i in 0..5 { ok(l.push(p(i))) }
+    ok(l.insert(2, p(9)))
+    ok(l.insert(6, p(8)))
+    want := [7]u8(0, 1, 9, 2, 3, 4, 8)
+    expect(l.items.a is want[..])
+    expect(l.remove(0) is p(0))
+    expect(l.swap_remove(1) is p(9))
+    left := [5]u8(1, 8, 2, 3, 4)
+    expect(l.items.a is left[..])
+    expect(l.pop() is p(4))
+    l.truncate(1)
+    expect(l.len() is 1 and l.items[0] is p(1))
+    l.clear()
+    expect(l.pop() is null and l.capacity() is 8)
+}
+
+test "a list can be reused after deinit" {
+    l := sl.soa_list(P)
+    for i in 0..10 { ok(l.push(p(i))) }
+    l.deinit()
+    expect(l.len() is 0 and l.capacity() is 0)
+    l.deinit()
+    ok(l.push(p(3)))
+    expect(l.items[0] is p(3))
+    l.deinit()
+}
+
+test "a list frees through the allocator it was created with" {
+    l := sl.soa_list(P)
+    defer l.deinit()
+    // A fixed buffer installed afterwards is never touched by the list.
+    store: [16]u8 = ---
+    fb := fixed_buffer.over(store[..])
+    with fb.allocator() {
+        for i in 0..20 { ok(l.push(p(i))) }
+    }
+    expect(l.len() is 20)
+}

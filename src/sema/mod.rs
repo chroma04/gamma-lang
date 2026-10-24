@@ -315,6 +315,12 @@ pub struct Sema<'s> {
     pub soa_types: HashMap<(Ty, Option<u64>, bool), Ty>,
     /// The spans of `a[i]` expressions that gather an element of a `#soa` (for errors).
     pub soa_gathers: std::collections::HashSet<Span>,
+    /// The generic stand-ins for `#soa` types of a type parameter, `#soa []T` in a generic
+    /// body, by shape (length, constness); each instance replaces them with the real struct.
+    pub soa_templates: HashMap<AdtId, (Option<u64>, bool)>,
+    /// Why a `#soa` type of an instantiation's type argument cannot exist, until reported at
+    /// the instantiation.
+    pub soa_errors: Vec<String>,
     /// The literal of each generic struct or union, for errors found when instantiating it.
     pub adt_spans: HashMap<AdtId, Span>,
     /// Structs and unions whose fields are being resolved (their layout is not known).
@@ -452,6 +458,8 @@ impl<'s> Sema<'s> {
             soa: HashMap::new(),
             soa_types: HashMap::new(),
             soa_gathers: Default::default(),
+            soa_templates: HashMap::new(),
+            soa_errors: vec![],
             adt_spans: HashMap::new(),
             adts_in_progress: vec![],
             adt_decls: HashMap::new(),

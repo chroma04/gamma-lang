@@ -1,0 +1,3 @@
+trap: assertion failed: copy_from needs slices of equal length
+  at <core>/slice.gm:19:5
+  called from tests/conformance/run/soa_copy_from.gm:28:5 in main

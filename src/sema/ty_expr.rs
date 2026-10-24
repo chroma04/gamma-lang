@@ -342,7 +342,9 @@ impl<'s> Sema<'s> {
                         self.error(e.span, super::generics::not_first_class(*t, part));
                     }
                 }
-                self.instantiate_adt(template, targs)
+                let t = self.instantiate_adt(template, targs);
+                self.report_soa_errors(e.span);
+                t
             }
             ExprKind::Attributed { attrs, inner } if matches!(&inner.kind, ExprKind::PtrType { inner: f, .. } if matches!(f.kind, ExprKind::FnType(_))) => {
                 self.callconv_fn_ptr(module, attrs, inner, e.span)

@@ -683,6 +683,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             ExprKind::WriteDeferred { .. } => {
                 unsupported(e.span, "a template in a generic function that was not instantiated")
             }
+            ExprKind::SoaDeferred { .. } => {
+                unsupported(e.span, "a `#soa` operation in a generic function that was not instantiated")
+            }
             ExprKind::Write { sink, pieces, specs, args } => {
                 let sink_v = match sink {
                     WriteSink::Fn(x) => Some((self.expr(x)?, x.ty)),

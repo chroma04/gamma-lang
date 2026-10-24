@@ -22,7 +22,12 @@ Versions and what each kind of change means are described in
   array per field. `a[i]` gathers or stores a whole element, `a[i].f` is a field of one
   element (a place), `a.f` a whole column; slicing, `&a` to a slice, `for`, `is` and `@hash`
   work as for arrays and slices; `T.make(n)` and `s.free()` allocate and release a `#soa`
-  slice in one block (§5.6.4).
+  slice in one block (§5.6.4). `a.copy_from(src)` copies a `#soa` column by column (the
+  lengths must be equal; the two may overlap).
+- `#soa []T` and `#soa [N]T` of a type parameter in generic code: whole elements (`a[i]`,
+  `a[i] = x`), `len`, slicing, `for`, `copy_from`, `make` and `free` work there, and each instantiation
+  checks that its argument is a struct `#soa` can store (§5.6.4). A local alias may name an
+  attributed type: `Cols :: #soa []T`, then `Cols.make(n)`.
 - `Float(T)` now implies `Neg(T)`, so unary minus works in generic code over floats.
 - Examples `nbody.gm` (math vectors) and `julia.gm` (complex numbers).
 - An array `[N]T` or a vector spreads into its `N` elements like an unnamed tuple:
@@ -46,6 +51,9 @@ Versions and what each kind of change means are described in
 
 ### Standard library
 
+- `std/collections/soa_list`: `SoaList(S)`, a growable list stored by field, with `items` a
+  `#soa []S` (`push`, `pop`, `insert`, `remove`, `swap_remove`, `extend`, `reserve`,
+  `truncate`, `clear`, `deinit`). Like `List`, it keeps the allocator it was created with.
 - Slices and arrays have new builtin methods (§21.3): `reverse()`, `rotate_left(k)`,
   `rotate_right(k)`, `dedup()`, `partition(pred)`, `select_nth(n)` and `select_nth_by(n,
   less)`, `is_sorted()` and `is_sorted_by(less)`, and `upper_bound(x)`, the counterpart of

@@ -1,0 +1,90 @@
+// `#soa` of a type parameter: generic code moves whole elements, and each instance
+// stores the fields of its own struct (§5.6.4, §16.1).
+P :: struct { x: i32; y: f64 }
+Q :: struct { tag: u8; big: u64; small: u16 }
+
+// Copies `src` into `dst` element by element, through a read-only view.
+copy_into :: fn(T: type, dst: #soa []T, src: #soa []const T) {
+    for i in 0..src.len { dst[i] = src[i] }
+}
+
+count :: fn(T: type, xs: #soa []const T) -> usize {
+    n: usize = 0
+    for _ in xs { n += 1 }
+    return n
+}
+
+reverse :: fn(T: type, xs: #soa []T) {
+    if xs.len < 2 { return }
+    i: usize = 0
+    j := xs.len - 1
+    while i < j {
+        t := xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+        i += 1
+        j -= 1
+    }
+}
+
+// Allocates a copy with room for `extra` more elements, from inside the generic body.
+grown :: fn(T: type, xs: #soa []const T, extra: usize) -> AllocError! #soa []T needs Alloc {
+    Cols :: #soa []T
+    out := try Cols.make(xs.len + extra)
+    copy_into(out[0..xs.len], xs)
+    return out
+}
+
+// Generic over generic: `grown` is instantiated with this function's `T`.
+doubled :: fn(T: type, xs: #soa []const T) -> AllocError! #soa []T needs Alloc {
+    out := try grown(xs, xs.len)
+    copy_into(out[xs.len..], xs)
+    return out
+}
+
+// A `#soa` field of a generic struct.
+Pair :: struct(T: type) { left, right: #soa [2]T }
+
+swap_sides :: fn(T: type, p: ^Pair(T)) {
+    for i in 0..2 {
+        t := p.left[i]
+        p.left[i] = p.right[i]
+        p.right[i] = t
+    }
+}
+
+// A function literal in a generic body that allocates (its temporaries are its own).
+each_copy :: fn(T: type, xs: #soa []const T, f: fn(ys: #soa []T)) -> AllocError!() needs Alloc {
+    run :: fn(n: usize) -> AllocError!() needs Alloc {
+        Cols :: #soa []T
+        ys := try Cols.make(n)
+        defer ys.free()
+        copy_into(ys, xs[0..n])
+        f(ys)
+        return ()
+    }
+    try run(xs.len)
+    return ()
+}
+
+main :: fn() -> AllocError!() needs Alloc + Out {
+    Ps :: #soa []P
+    ps := try Ps.make(4)
+    defer ps.free()
+    for i in 0..ps.len { ps[i] = P(x: i.trunc(i32), y: i.to(f64) / 4) }
+    reverse(ps)
+    print("{}\n", ps)
+    print("{} {}\n", count(ps), count(ps[1..]))
+    qs := #soa [3]Q(Q(tag: 'a', big: 1, small: 2), Q(tag: 'b', big: 3, small: 4), Q(tag: 'c', big: 5, small: 6))
+    reverse(qs[..])
+    print("{}\n", qs)
+    two := try doubled(qs[..])
+    defer two.free()
+    print("{} {} {}\n", two.len, two[4], two.big)
+    print("{}\n", two.big.ptr.addr() % 8)
+    pair := Pair(P)(left: #soa [2]P(fill: P(x: 1, y: 1)), right: #soa [2]P(fill: P(x: 2, y: 2)))
+    swap_sides(&pair)
+    print("{} {}\n", pair.left.x, pair.right.y)
+    try each_copy(ps[..2], fn(ys: #soa []P) { print("{}\n", ys.x) })
+    return ()
+}

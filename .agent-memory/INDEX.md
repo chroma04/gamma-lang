@@ -1,6 +1,8 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-23) — PRs #1–#68 merged, v0.1.0 tagged; work branch `dev`
+## State (2026-10-23) — PRs #1–#70 merged, v0.1.0 tagged
+- s37 (branch claude/sharp-turing-sfr2js): generic `#soa []T` (stand-in type + SoaDeferred
+  expanded per instance) and std/collections/soa_list `SoaList(S)` (decisions/042).
 - s36 (branch dev): stdlib batch 1 (decisions/041): slice methods (core/slice + SLICE_FNS),
   std/uuid, net IP types (net/ip.gm), fs remove_all/temp, math special + int helpers,
   complex inverse/hyperbolic, time parse_duration/ISO weeks, text UTF-16. Tier B list
@@ -57,7 +59,7 @@
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–041, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–042, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
                   035 Cranelift, 036 website, 037 errors policy + array spread. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
