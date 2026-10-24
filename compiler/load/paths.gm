@@ -1,0 +1,167 @@
+// File paths, with the semantics of the reference implementation's (Rust's `Path`): a
+// path is an optional root followed by names; `.` and empty names do not count, and
+// both `/` and, on Windows, `\` separate names. Paths are built with the platform's
+// separator.
+
+when target.os is .Windows {
+    SEP :: '\\'
+} else {
+    SEP :: '/'
+}
+
+is_sep :: fn(c: u8) -> bool {
+    when target.os is .Windows {
+        return c in ('/', '\\')
+    } else {
+        return c is '/'
+    }
+}
+
+/// A path taken apart: its root (`/`, or a drive and separator on Windows; empty for a
+/// relative path) and its names, without `.` and empty ones.
+Parts :: struct {
+    root: string
+    names: List(string)
+}
+
+split :: fn(p: string) -> Parts needs Alloc {
+    root_len: usize = 0
+    when target.os is .Windows {
+        if p.len >= 2 and p[1] is ':' { root_len = 2 }
+    }
+    if root_len < p.len and is_sep(p[root_len]) { root_len += 1 }
+    names := list(string)
+    start := root_len
+    for i in root_len..p.len + 1 {
+        if i is p.len or is_sep(p[i]) {
+            name := p[start..i]
+            if name.len > 0 and name is not "." { names.push(name)! }
+            start = i + 1
+        }
+    }
+    return Parts(root: p[0..root_len], names: names)
+}
+
+/// The path of `parts`, with the platform's separator.
+build :: fn(root: string, names: []const string) -> string needs Alloc {
+    out := list(u8)
+    out.extend(root)!
+    for i, n in enumerate(names) {
+        if i > 0 { out.push(SEP)! }
+        out.extend(n)!
+    }
+    return out.items
+}
+
+pub is_absolute :: fn(p: string) -> bool => split_root_len(p) > 0
+
+split_root_len :: fn(p: string) -> usize {
+    when target.os is .Windows {
+        return if p.len >= 3 and p[1] is ':' and is_sep(p[2]) { 3 } else { 0 }
+    } else {
+        return if p.len > 0 and p[0] is '/' { 1 } else { 0 }
+    }
+}
+
+/// `b` appended to `a`; `b` itself if it is absolute.
+pub join :: fn(a, b: string) -> string needs Alloc {
+    if a.len is 0 or is_absolute(b) { return b }
+    out := list(u8)
+    out.extend(a)!
+    if not is_sep(a[a.len - 1]) { out.push(SEP)! }
+    out.extend(b)!
+    return out.items
+}
+
+/// `p` without `.` and `..` names, without looking at the file system. A `..` at the start
+/// of a relative path stays: `../lib` is not `lib`.
+pub normalize :: fn(p: string) -> string needs Alloc {
+    parts := split(p)
+    out := list(string)
+    for n in parts.names.items {
+        if n is ".." {
+            last := out.items.last()
+            if last is not null and last is not ".." {
+                _ = out.pop()
+            } else if parts.root.len is 0 {
+                out.push("..")!
+            }
+        } else {
+            out.push(n)!
+        }
+    }
+    return build(parts.root, out.items)
+}
+
+/// The directory of `p`: `p` without its last name, or `null` if `p` has no names.
+pub parent :: fn(p: string) -> ?string needs Alloc {
+    parts := split(p)
+    n := parts.names.items.len
+    if n is 0 { return null }
+    return build(parts.root, parts.names.items[0..n - 1])
+}
+
+/// The last name of `p`, if it has one.
+pub file_name :: fn(p: string) -> ?string needs Alloc => split(p).names.items.last()
+
+/// The last name of `p` without its extension: `main` for `src/main.gm`.
+pub file_stem :: fn(p: string) -> ?string needs Alloc {
+    name := file_name(p) else return null
+    i := name.len
+    while i > 1 {
+        i -= 1
+        if name[i] is '.' { return name[0..i] }
+    }
+    return name
+}
+
+/// Whether `p` begins with the names of `base` (comparing whole names, so `/a/bc` does not
+/// begin with `/a/b`).
+pub starts_with :: fn(p, base: string) -> bool needs Alloc => strip_prefix(p, base) is not null
+
+/// `p` without the leading names of `base` (empty if they are equal), or `null` if `p`
+/// does not begin with `base`.
+pub strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
+    a := split(p)
+    b := split(base)
+    if a.root is not b.root or a.names.items.len < b.names.items.len { return null }
+    for i, n in enumerate(b.names.items) {
+        if a.names.items[i] is not n { return null }
+    }
+    return build("", a.names.items[b.names.items.len..])
+}
+
+/// `p` with `/` for every separator, for output that is the same on every platform.
+pub slashes :: fn(p: string) -> string needs Alloc {
+    out := list(u8)
+    for c in p { out.push(if is_sep(c) { '/' } else { c })! }
+    return out.items
+}
+
+// The tests write paths with `/`, and compare with `/` on every platform.
+n :: fn(p: string) -> string needs Alloc => slashes(normalize(p))
+
+test "paths" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(n("a/./b/../c"), "a/c")
+        expect_eq(n("/a/b/./../c"), "/a/c")
+        expect_eq(n("../lib"), "../lib")
+        expect_eq(n("a/../../b"), "../b")
+        expect_eq(n("/../a"), "/a")
+        expect_eq(n("compiler/./ast"), "compiler/ast")
+        expect_eq(slashes(join("compiler", "./ast")), "compiler/./ast")
+        expect_eq(join("", "x"), "x")
+        expect_eq(parent("x.gm"), "")
+        expect_eq(slashes(parent("a/b/x.gm") else ""), "a/b")
+        expect_eq(file_stem("a/main.gm"), "main")
+        expect_eq(file_stem(".hidden"), ".hidden")
+        expect(starts_with("a/b/c", "a/b"))
+        expect(not starts_with("a/bc", "a/b"))
+        expect_eq(slashes(strip_prefix("a/b/c", "a") else ""), "b/c")
+        expect_eq(strip_prefix("a", "a"), "")
+    }
+}
+
+arena :: import "std/arena"

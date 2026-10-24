@@ -88,8 +88,10 @@ pub add_fix_edits :: fn(d: ^Diagnostic, message: string, edits: []const Edit) ne
 /// severity, location and message.
 pub push :: fn(ds: ^Diagnostics, d: Diagnostic) {
     if ds.suppressed > 0 { return }
-    for old in ds.list.items {
-        if old.span is d.span and old.severity is d.severity and old.message is d.message { return }
+    if d.span is not source.DUMMY {
+        for old in ds.list.items {
+            if old.span is d.span and old.severity is d.severity and old.message is d.message { return }
+        }
     }
     if d.severity is .Error { ds.errors += 1 }
     ds.list.push(d)!
@@ -149,6 +151,7 @@ render_short :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List
     location(sm, d.span, out)
     out.write("{}: {}\n", severity_name(d.severity), d.message)!
     for l in d.labels.items {
+        if l.span is source.DUMMY { continue }
         location(sm, l.span, out)
         out.write("note: {}\n", l.message)!
     }
@@ -158,8 +161,9 @@ render_short :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List
     }
 }
 
-// `path:line:col: `
+// `path:line:col: `, or nothing for a diagnostic without a location.
 location :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8)) needs Alloc {
+    if span is source.DUMMY { return }
     f := sm.file(span.file)
     lc := f.line_col(span.lo)
     out.write("{}:{}:{}: ", f.path, lc.line, lc.col)!
@@ -168,9 +172,13 @@ location :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8)) n
 // The fields of an object are in the order of their names, as the reference
 // implementation writes them.
 render_json :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
+    located := d.span is not source.DUMMY
     out.push('{')!
-    json_before_line(sm, d.span, out)
-    out.extend(",\"fixes\":[")!
+    if located {
+        json_before_line(sm, d.span, out)
+        out.push(',')!
+    }
+    out.extend("\"fixes\":[")!
     for i, fx in enumerate(d.fixes.items) {
         if i > 0 { out.push(',')! }
         out.extend("{\"edits\":[")!
@@ -194,13 +202,20 @@ render_json :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(
         out.push('}')!
     }
     out.extend("]")!
-    json_after_line(sm, d.span, out, d.message)
+    if located {
+        json_after_line(sm, d.span, out, d.message)
+    } else {
+        out.extend(",\"message\":")!
+        json_string(d.message, out)
+    }
     out.extend(",\"notes\":[")!
     for i, n in enumerate(d.notes.items) {
         if i > 0 { out.push(',')! }
         json_string(n, out)
     }
-    out.write("],\"offset\":{},\"severity\":", d.span.lo)!
+    out.extend("]")!
+    if located { out.write(",\"offset\":{}", d.span.lo)! }
+    out.extend(",\"severity\":")!
     json_string(severity_name(d.severity), out)
     out.extend("}\n")!
 }

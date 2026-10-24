@@ -249,6 +249,72 @@ impl<'s> Sema<'s> {
         }
     }
 
+    /// Whether declaration `id` is a binding initialized by `import`.
+    pub(super) fn is_import(&self, id: super::DeclId) -> bool {
+        let d = &self.decls[id.0 as usize];
+        d.op_of.is_none()
+            && matches!(&d.item.kind, crate::syntax::ast::ItemKind::Binding(b)
+                if matches!(b.init.kind, crate::syntax::ast::ExprKind::Import(_)))
+    }
+
+    /// The modules loaded so far, other than the core library's, in load order: for each,
+    /// its name, directory, package root, whether it belongs to the standard library, and
+    /// its imports in declaration order with the directory of the module each names (or
+    /// `error`). Paths use `/`; those in the standard library start with `<std>`, and
+    /// package roots are relative to the working directory when they are inside it.
+    ///
+    /// ```text
+    /// module main
+    ///   dir tests/conformance/run
+    ///   package tests/conformance/run
+    ///   import str "std/str" <std>/str
+    /// ```
+    pub(super) fn module_dump(&self) -> String {
+        use std::fmt::Write as _;
+        let std = std_root();
+        let std_canon = crate::source::canonicalize(&std).unwrap_or_else(|_| std.clone());
+        let cwd = std::env::current_dir().ok().map(|d| crate::source::canonical(&d));
+        let show = |p: &Path| -> String {
+            let s = if let Ok(rest) = p.strip_prefix(&std).or_else(|_| p.strip_prefix(&std_canon)) {
+                Path::new("<std>").join(rest)
+            } else if let Some(rest) = cwd.as_ref().and_then(|c| p.strip_prefix(c).ok()) {
+                if rest.as_os_str().is_empty() { PathBuf::from(".") } else { rest.to_path_buf() }
+            } else {
+                p.to_path_buf()
+            };
+            s.to_string_lossy().replace('\\', "/")
+        };
+        let mut out = String::new();
+        for m in self.modules.iter().filter(|m| !m.is_prelude) {
+            let _ = writeln!(out, "module {}", m.name);
+            if let Some(dir) = &m.dir {
+                let _ = writeln!(out, "  dir {}", show(dir));
+            }
+            if let Some(p) = m.package {
+                let _ = writeln!(out, "  package {}", show(&self.packages[p].root));
+            }
+            if m.is_std {
+                let _ = writeln!(out, "  std");
+            }
+            let mut ids: Vec<super::DeclId> = m.scope.values().copied().filter(|&d| self.is_import(d)).collect();
+            ids.sort();
+            for id in ids {
+                let d = &self.decls[id.0 as usize];
+                let crate::syntax::ast::ItemKind::Binding(b) = &d.item.kind else { continue };
+                let crate::syntax::ast::ExprKind::Import(path) = &b.init.kind else { continue };
+                let target = match &d.state {
+                    super::DeclState::Done(super::DeclValue::Module(t)) => {
+                        self.modules[t.0 as usize].dir.as_deref().map_or_else(|| "error".to_string(), show)
+                    }
+                    _ => "error".to_string(),
+                };
+                let _ =
+                    writeln!(out, "  import {} {} {}", d.name.name, crate::driver::escape_bytes(&path.bytes), target);
+            }
+        }
+        out
+    }
+
     /// Reports each cycle in the import graph (§3.2).
     pub(super) fn check_import_cycles(&mut self) {
         let n = self.modules.len();

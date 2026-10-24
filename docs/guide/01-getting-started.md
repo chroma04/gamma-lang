@@ -103,6 +103,7 @@ gamma lsp                  run the language server for editors (docs/editors.md)
 gamma lex file.gm          print the tokens of a source file
 gamma parse file.gm        check the syntax of a source file
 gamma parse --dump file.gm check the syntax and print the syntax tree
+gamma modules file.gm      list the modules a program loads and what each imports
 gamma help                 print usage
 gamma version              print the compiler version
 ```

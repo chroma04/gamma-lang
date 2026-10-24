@@ -45,3 +45,32 @@ User asked: "lay the groundwork for a self-hosted compiler; doubly the ultimate 
 - diag: push() now dedupes (severity, span, message) and honors suppress/unsuppress, as
   src/diag.rs; NodeIds kept (not dumped) for later side tables.
 - Language fix found by dogfooding: `?T in (a, b)` converts members like `is` (§7.7).
+
+## Stage 3 decisions (s38c): modules and packages
+- Parity target = new `gamma modules ROOT` (user approved "the dump"): sema::load_modules =
+  load_prelude + load_root + BFS over modules resolving ONLY import decls (sorted DeclId) +
+  check_import_cycles; dump in load order (module/dir/package/std/import alias "path" dir).
+  Load order matters: diagnostics sort by FileId = load order. Paths: `<std>` prefix,
+  package roots relative to cwd, `/` separators.
+- gammac compiler/load/: loader.gm (mirrors sema/modules.rs + imports.rs), paths.gm (Rust Path
+  semantics; SEP '\\' on Windows via top-level `when`), toml.gm (TOML subset; valid docs
+  only), when.gm (target fields, @size_of, literals, module constants; else an explicit
+  "gammac cannot evaluate" error). canonicalize = normalize(cwd/p) if it exists (no
+  symlink resolution; std/fs has no realpath). GAMMA_STD passed by the test.
+- Known gaps (in docs/self-hosting.md): git/url deps (need lock + pkg manager), malformed
+  manifest messages (reference uses toml_edit + semver), general when conditions.
+- Corpus = program_roots() in tests/selfhost.rs (~785 roots: conformance non-lex/parse files,
+  .test dirs via main/, examples, bench, every lib/std module dir, compiler).
+- New conformance tests: check/top_level_declaration_errors.gm, check/module_load_errors.test
+  (git-dep error can't be a conformance test: `gamma check` auto-fetches).
+
+## Dogfooding findings (s38c)
+- C BACKEND BUG fixed: assignment evaluated the place AFTER the RHS (place_addr is a lazy C
+  expression string) — violates §4.7; interp + Cranelift were right. Fix: cgen func.rs
+  assign_addr() spills the address to `uint8_t *tN` when !fixed_address(place) &&
+  may_write(value). Test run/assign_place_before_value.gm. Found because interpreted gammac
+  differed from native gammac (the interpreted lane is worth keeping!).
+- gammac had the matching use-after-move bug (`l.decls.items[id].state = l.import_decl(..)`
+  while import_decl grows decls) → handbook "Lists that grow under you".
+- Naming a function `string` hides the type module-wide → confusing cascade (cycle error,
+  "cannot infer null"). Not fixed (no obvious fix); handbook note.

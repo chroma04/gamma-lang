@@ -287,6 +287,44 @@ main :: fn() needs Alloc + Out {
 
 Outside an arena, pair each acquisition with its release on the next line: `l := list(u8)` then `defer l.deinit()`. Tests run on a heap that reports leaks, so a missing `defer` is found by `gamma test`.
 
+## Lists that grow under you
+
+A `List` keeps its elements in one block and moves them to a larger block when it grows, so a slice or a pointer into `l.items` is valid only until the next `push`. That includes the place of an assignment: the place is evaluated *before* the right side (§4.7), so in
+
+```gamma fragment
+l.decls.items[id].state = l.import_decl(…)    // wrong if import_decl pushes to l.decls
+```
+
+the store goes to the block that `items` named before the call, which the push may have left. Compute the value first, then store it:
+
+```gamma
+Decl :: struct {
+    name: string
+    done: bool = false
+}
+
+// Adds a declaration, which may move the list's elements.
+declare :: fn(decls: ^List(Decl), name: string) -> bool needs Alloc {
+    decls.push(Decl(name: name))!
+    return true
+}
+
+main :: fn() needs Alloc + Out {
+    decls := list(Decl)
+    defer decls.deinit()
+    decls.push(Decl(name: "a"))!
+    done := declare(&decls, "b")
+    decls.items[0].done = done
+    print("{} {}\n", decls.items[0].done, decls.items.len)
+}
+```
+
+```output
+true 2
+```
+
+The same goes for keeping `p := &l.items[i]` across a call that may add to `l`: keep the index instead.
+
 ## Building text
 
 Append to a `List(u8)` with `write`, which takes a `print` template, and write the result out once. Many small `print` calls are much slower than one large write:
@@ -317,5 +355,6 @@ main :: fn() needs Alloc + Out {
 - **`for i, c in enumerate(s)`** gives indexes and elements; `for c in s` iterates the bytes of a string.
 - **`while true` with an exit inside** (`b := next() else break`) needs no `return` after the loop: the compiler knows the loop only ends where it says.
 - **A keyword cannot be a name**, not even a field name: write `effect_` or `is_foreign`.
+- **Do not reuse the names of predeclared types** (`string`, `rune`, `cstring`) for your own declarations: a function called `string` hides the type in its whole module.
 - **Conversions say what they do**: `u64(x)` only when lossless, `x.trunc(u32)` to keep the low bits, `x.checked(u8)` for an optional.
 - **Tests live next to the code** in `test "…" { }` blocks; a test that allocates runs its body in an arena, or releases what it allocates.

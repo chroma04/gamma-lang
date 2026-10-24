@@ -364,6 +364,35 @@ pub fn analyze_package_tests(sess: &mut Session, root: &Path, all: bool) -> Opti
     analyze_with(sess, root, Some(all))
 }
 
+/// Loads the program rooted at `root` as checking it would, without checking its
+/// declarations: the core library, the root module, and every module that an import of a
+/// loaded module names, in the order `gamma check` resolves them (module by module, each
+/// module's imports in declaration order); then reports import cycles. Returns the module
+/// graph in the format of `gamma modules` (see [`imports::module_dump`]), or `None` if the
+/// root module could not be loaded.
+pub fn load_modules(sess: &mut Session, root: &Path) -> Option<String> {
+    let mut sema = Sema::new(sess);
+    sema.load_prelude();
+    sema.load_root(root)?;
+    let mut done = 0;
+    while done < sema.modules.len() {
+        let m = done;
+        done += 1;
+        if sema.modules[m].is_prelude {
+            continue;
+        }
+        let mut ids: Vec<DeclId> = sema.modules[m].scope.values().copied().collect();
+        ids.sort();
+        for id in ids {
+            if sema.is_import(id) {
+                sema.resolve_decl(id);
+            }
+        }
+    }
+    sema.check_import_cycles();
+    Some(sema.module_dump())
+}
+
 fn analyze_with(sess: &mut Session, root: &Path, tests: Option<bool>) -> Option<Program> {
     let mut sema = Sema::new(sess);
     sema.tests_enabled = tests.is_some();

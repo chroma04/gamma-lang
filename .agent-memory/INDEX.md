@@ -5,7 +5,8 @@
   roadmap/self-hosting.md): compiler/ = gammac; lexer + parser byte-identical to
   `gamma lex`/`parse --dump` (+ JSON diags) on all ~980 .gm files, tests/selfhost.rs.
   docs/guide/idioms.md = growing idioms handbook (doc_examples-checked; ADD to it whenever
-  a pattern is learned). `?T in (..)` fix (§7.7). Next: stage 3 modules/packages.
+  a pattern is learned). `?T in (..)` fix (§7.7). s38c: stage 3 modules (`gamma modules`),
+  C-backend assignment-order bug fixed. Next: stage 4 checker (roadmap/self-hosting.md).
 - s37 (branch claude/sharp-turing-sfr2js): generic `#soa []T` (stand-in type + SoaDeferred
   expanded per instance) and std/collections/soa_list `SoaList(S)` (decisions/042).
 - s36 (branch dev): stdlib batch 1 (decisions/041): slice methods (core/slice + SLICE_FNS),

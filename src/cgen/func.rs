@@ -519,6 +519,21 @@ impl<'g, 'a> FnGen<'g, 'a> {
         n
     }
 
+    /// The address of `place` for an assignment of `value`. The place is evaluated before
+    /// the value (§4.7), so where its address is read from memory (through a pointer, a
+    /// slice, an index) and `value` may change memory, the address is computed into a
+    /// temporary first: `s.xs[0] = f(&s)` stores into the slice `s.xs` held before the call.
+    fn assign_addr(&mut self, place: &'a Expr, value: &Expr) -> CResult<String> {
+        let p = self.place_addr(place)?;
+        if fixed_address(place) || !may_write(value) {
+            return Ok(p);
+        }
+        self.temp_bytes += 8;
+        let n = format!("t{}", self.fresh());
+        self.line(&format!("uint8_t *{} = {};", n, p));
+        Ok(n)
+    }
+
     pub fn zero(&mut self, t: Ty) -> String {
         format!("GM_ZERO({})", self.g.ty.cty(t))
     }
@@ -1082,7 +1097,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     outer = b;
                 }
                 let (u, _) = self.g.ty.bits_layout(outer.ty).unwrap();
-                let a = self.place_addr(outer)?;
+                let a = self.assign_addr(outer, value)?;
                 let v = self.expr(value)?;
                 let raw = self.bits_raw(value.ty, &v);
                 let uc = self.g.ty.cty(u);
@@ -1092,12 +1107,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 ));
             }
             Stmt::Assign { place, value } if self.big_place(value) => {
-                let p = self.place_addr(place)?;
+                let p = self.assign_addr(place, value)?;
                 let a = self.place_addr(value)?;
                 self.line(&format!("memmove({}, {}, {});", p, a, self.g.ty.size(value.ty)));
             }
             Stmt::Assign { place, value } if self.builds_in_place(value) => {
-                let p = self.place_addr(place)?;
+                let p = self.assign_addr(place, value)?;
                 let c = self.g.ty.cty(place.ty);
                 let root = super::borrow::root_local(place);
                 self.expr_into(value, &format!("(*({} *){})", c, p), Observed::Any(root))?;
@@ -1111,7 +1126,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.line(&format!("{lv} = {v};"));
             }
             Stmt::Assign { place, value } => {
-                let p = self.place_addr(place)?;
+                let p = self.assign_addr(place, value)?;
                 let v = self.expr(value)?;
                 let c = self.g.ty.cty(place.ty);
                 self.line(&format!("GM_ST({}, {}, {});", c, p, v));
@@ -1120,7 +1135,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let mut addrs = vec![];
                 for p in places {
                     addrs.push(match p {
-                        Some(p) => Some(self.place_addr(p)?),
+                        Some(p) => Some(self.assign_addr(p, value)?),
                         None => None,
                     });
                 }
@@ -1242,4 +1257,53 @@ fn collect_upvars(
         out.insert((owner, *local));
     }
     e.for_each_child(&mut |c| collect_upvars(prog, f, c, out));
+}
+
+/// Whether the address of `place` is fixed: a local, global, constant or captured
+/// variable, or a field of one, whose address no store can change.
+fn fixed_address(place: &Expr) -> bool {
+    match &place.kind {
+        ExprKind::Local(_) | ExprKind::Global(_) | ExprKind::Const(_) | ExprKind::Upvar { .. } => true,
+        ExprKind::Field { base, .. } => fixed_address(base),
+        _ => false,
+    }
+}
+
+/// Whether evaluating `e` may store to memory: it calls a function, runs statements or
+/// performs an operation with side effects.
+fn may_write(e: &Expr) -> bool {
+    use crate::tir::Builtin;
+    let writes = match &e.kind {
+        ExprKind::Call { .. }
+        | ExprKind::Block(_)
+        | ExprKind::Loop { .. }
+        | ExprKind::With { .. }
+        | ExprKind::Closure(_)
+        | ExprKind::Resume { .. }
+        | ExprKind::Cancel(_)
+        | ExprKind::Write { .. }
+        | ExprKind::WriteDeferred { .. }
+        | ExprKind::SoaDeferred { .. } => true,
+        ExprKind::Builtin { op, .. } => matches!(
+            op,
+            Builtin::AtomicStore
+                | Builtin::AtomicSwap
+                | Builtin::AtomicCas
+                | Builtin::AtomicRmw(_)
+                | Builtin::VolatileStore
+                | Builtin::Sys(_)
+                | Builtin::Fiber
+                | Builtin::HeapAlloc
+                | Builtin::HeapFree
+                | Builtin::AllocTag
+                | Builtin::AllocCheck
+                | Builtin::Asm { .. }
+        ),
+        _ => false,
+    };
+    let mut r = writes;
+    if !r {
+        e.for_each_child(&mut |c| r = r || may_write(c));
+    }
+    r
 }

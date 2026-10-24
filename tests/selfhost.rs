@@ -4,9 +4,11 @@
 //! C compiler is available, else they run it with `gamma run`), run it over every `.gm`
 //! file in the repository, and require output identical to the reference implementation's,
 //! byte for byte: for `gammac lex`, the token dump of `gamma lex`, and for `gammac parse
-//! --dump`, the syntax tree dump of `gamma parse --dump`; for both, the diagnostics in the
-//! JSON format (which carries every field of a diagnostic: spans, labels, notes and
-//! fixes), with and without the layout recovery that tools use after errors.
+//! --dump`, the syntax tree dump of `gamma parse --dump` (with and without the layout
+//! recovery that tools use after errors); for `gammac modules`, run on the root of every
+//! program in the repository, the module graph of `gamma modules`. The diagnostics are
+//! compared too, in the JSON format, which carries every field of a diagnostic: spans,
+//! labels, notes and fixes.
 //!
 //! `gammac`'s own unit tests run with `gamma test compiler`, and its sources must be
 //! formatted as `gamma fmt` formats them.
@@ -57,6 +59,53 @@ fn corpus() -> Vec<String> {
     files
 }
 
+/// The roots of every program in the repository, as `gamma check` and the test runners
+/// load them: the conformance tests past the parse stage (a `.test` directory by its
+/// `main/` module when it has one), the examples, the benchmarks, every module of the
+/// standard library, and the self-hosted compiler.
+fn program_roots() -> Vec<String> {
+    let mut roots = Vec::new();
+    let mut files = Vec::new();
+    gm_files(Path::new("tests/conformance"), &mut files);
+    for f in files {
+        if let Some(i) = f.find(".test/") {
+            let dir = &f[..i + 5];
+            let main = format!("{}/main", dir);
+            let module = if root().join(&main).is_dir() { main } else { dir.to_string() };
+            if !roots.contains(&module) {
+                roots.push(module);
+            }
+            continue;
+        }
+        let text = std::fs::read_to_string(root().join(&f)).unwrap();
+        let header: Vec<&str> = text.lines().take_while(|l| l.starts_with("//!")).collect();
+        if !header.iter().any(|l| matches!(l.trim(), "//! stage: lex" | "//! stage: parse")) {
+            roots.push(f);
+        }
+    }
+    let mut dirs = Vec::new();
+    for top in ["examples", "bench", "lib/std"] {
+        let mut gm = Vec::new();
+        gm_files(Path::new(top), &mut gm);
+        for f in gm {
+            let dir = f.rsplit_once('/').map_or(".", |(d, _)| d).to_string();
+            if top == "lib/std" {
+                if !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
+            } else if dir == top || dir == "bench/programs" {
+                roots.push(f);
+            } else if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    roots.extend(dirs);
+    roots.push("compiler".to_string());
+    assert!(roots.len() > 500, "only {} program roots found", roots.len());
+    roots
+}
+
 /// How `gammac` is run: a native executable, or the interpreter.
 enum Gammac {
     Native(PathBuf),
@@ -99,6 +148,8 @@ fn run_gammac(args: &[String]) -> std::process::Output {
         }
     };
     cmd.args(args);
+    // The standard library the reference implementation uses.
+    cmd.env("GAMMA_STD", gamma::sema::std_root());
     common::output(&mut cmd).unwrap()
 }
 
@@ -109,6 +160,8 @@ enum Stage {
     Lex,
     /// `parse --dump`: the syntax tree dump.
     Parse,
+    /// `modules`: the module graph of a program, from its root module.
+    Modules,
 }
 
 impl Stage {
@@ -116,6 +169,7 @@ impl Stage {
         match self {
             Stage::Lex => &["lex"],
             Stage::Parse => &["parse", "--dump"],
+            Stage::Modules => &["modules"],
         }
     }
 
@@ -124,6 +178,7 @@ impl Stage {
         match self {
             Stage::Lex => "tokens",
             Stage::Parse => "syntax tree",
+            Stage::Modules => "module graph",
         }
     }
 }
@@ -136,9 +191,17 @@ fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, 
     for path in files {
         out.push_str(&format!("==> {} <==\n", path));
         err.push_str(&format!("==> {} <==\n", path));
-        let text = std::fs::read_to_string(root().join(path)).unwrap();
         let mut sess = Session::new();
         sess.recover_layout = recover;
+        if let Stage::Modules = stage {
+            out.push_str(&gamma::sema::load_modules(&mut sess, Path::new(path)).unwrap_or_default());
+            err.push_str(&sess.render_diagnostics(DiagFormat::Json));
+            if sess.diags.has_errors() {
+                status = 1;
+            }
+            continue;
+        }
+        let text = std::fs::read_to_string(root().join(path)).unwrap();
         // Diagnostics name the file as it is given on the command line.
         let file = sess.sources.add(Path::new(path), text);
         match stage {
@@ -150,6 +213,7 @@ fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, 
                 let tree = sess.parse(file);
                 out.push_str(&driver::dump_ast(&tree));
             }
+            Stage::Modules => unreachable!(),
         }
         err.push_str(&sess.render_diagnostics(DiagFormat::Json));
         if sess.diags.has_errors() {
@@ -183,7 +247,8 @@ fn first_difference(expected: &str, actual: &str) -> Option<(String, usize, Stri
 
 fn check(stage: Stage, recover: bool) {
     // In batches, since a command line is limited in length (to 32 KiB on Windows).
-    for files in corpus().chunks(100) {
+    let inputs = if let Stage::Modules = stage { program_roots() } else { corpus() };
+    for files in inputs.chunks(100) {
         let (out, err, status) = reference(stage, files, recover);
         let mut args: Vec<String> = stage.args().iter().map(|a| a.to_string()).collect();
         args.push("--diag-format=json".to_string());
@@ -229,6 +294,11 @@ fn parser_matches_the_reference_on_the_whole_repository() {
 #[test]
 fn parser_after_layout_recovery_matches_the_reference_on_the_whole_repository() {
     check(Stage::Parse, true);
+}
+
+#[test]
+fn module_loading_matches_the_reference_on_every_program() {
+    check(Stage::Modules, false);
 }
 
 #[test]

@@ -5,15 +5,12 @@ lexer, token dump), ast (tree + dump), parse (parser), main.gm (lex|parse CLI).
 Port took ~1 session by hand (no subagents): 1:1 file mapping to src/syntax/parser/*.rs
 made it mechanical; matched on first full-corpus run.
 
-## Next: stage 3 modules and packages
-- What `gamma check` does before sema: driver module loading (module_files: every .gm in a
-  dir; overlays), import resolution (§3.2: ./ ../ relative, std, deps from gamma.toml),
-  pkg manifest (TOML subset!) + lock, cycle detection. Needs a TOML reader in Gamma
-  (check std for one first; none as of s38 → write compiler/toml or std/toml?).
-- Parity target: there is no dump for module graphs. Options: add `gamma check
-  --dump-modules` (hidden/debug flag) to the reference, or compare only diagnostics of
-  `gamma check` restricted to load/import errors. Decide at start (record in decisions/043).
-## Later
-- stage 4 checker (biggest; TIR), stage 5 C gen (reuse runtime/gm_rt.c), stage 6 bootstrap.
-- Perf: gammac lex ~3 MB/s, parse whole repo 2.1 s native (reference 4 s incl. process
-  spawns); profile later.
+## Stage 3 done (s38c): `gammac modules` == `gamma modules` on ~785 program roots.
+Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions/043).
+
+## Next: stage 4 checker (biggest)
+- Split into sub-stages with their own parity dumps; candidates: (a) name resolution of
+  top-level decls + type expressions (dump resolved decl kinds/types?), (b) const eval,
+  (c) function bodies → TIR. Needs a reference dump for each (like `gamma modules`):
+  design a `gamma check --dump-decls` (types of every top-level decl) first.
+- Keep: interpreted lane (found a C backend bug in s38c).
