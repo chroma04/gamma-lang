@@ -27,7 +27,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// The documents whose examples are checked, relative to the repository root.
-const CHECKED_DOCS: &[&str] = &["docs/guide/for-c-programmers.md", "docs/guide/for-rust-programmers.md"];
+const CHECKED_DOCS: &[&str] =
+    &["docs/guide/for-c-programmers.md", "docs/guide/for-rust-programmers.md", "docs/guide/idioms.md"];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Kind {

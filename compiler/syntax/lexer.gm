@@ -255,7 +255,7 @@ line_comment :: fn(lx: ^Lexer) needs Alloc {
         if lx.byte(next) is '\r' { next += 1 }
         if lx.byte(next) is '\n' {
             next += 1
-            while (lx.byte(next) else 0) in (' ', '\t') { next += 1 }
+            while lx.byte(next) in (' ', '\t') { next += 1 }
         }
         lx.docs.push(DocComment(span: lx.span(lo, i), text: text, next_lo: next.trunc(u32)))!
     }
