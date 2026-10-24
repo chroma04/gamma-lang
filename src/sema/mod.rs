@@ -29,6 +29,7 @@ mod ide;
 mod imports;
 mod infer;
 mod lint;
+mod lint_escape;
 mod matching;
 mod mathvec;
 mod methods;

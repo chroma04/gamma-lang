@@ -50,7 +50,12 @@ impl Types {
         fields
             .iter()
             .enumerate()
-            .map(|(i, &ty)| FieldDef { name: Symbol::intern(&format!("f{i}")), ty, is_pub: true, align: None })
+            .map(|(i, &ty)| FieldDef {
+                name: Symbol::intern(&format!("f{i}")),
+                ty,
+                vis: crate::syntax::ast::Visibility::Public,
+                align: None,
+            })
             .collect()
     }
 

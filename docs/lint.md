@@ -101,6 +101,7 @@ are not checked, a name written anywhere in a `when` is never reported as unused
 
 | Rule | Reports | Fix |
 | --- | --- | --- |
+| `dangling-address` | the address of a local, or a slice of a local array, kept where it outlives the local: assigned to a place of an enclosing scope, through a pointer or to a global; passed for a parameter whose type is a type parameter (`list.push(&x)`, `map.put(k, &x)`) to a call that also gets a mutable pointer to longer-lived storage; or returned inside a value. A loop variable or a pattern binding is a copy, whose storage is reused by the next iteration or gone after its scope (§15.1). Pointers into a growing list that a later `push` moves are not detected | — (point into the original, `&items[i]`, or keep the value) |
 | `self-comparison` | a value compared with itself (`n is n`, `p.x < p.x`), whose result is known; floats are left alone, since `x is x` is false for NaN | — |
 | `self-assignment` | a place assigned to itself (`x = x`) | — |
 | `constant-condition` | an `if` or `while` whose condition is the literal `true` or `false` (other than the loop `while true`); a condition known at compile time is written with `when` | — |

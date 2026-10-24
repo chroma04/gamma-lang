@@ -72,6 +72,10 @@ pub const RULES: &[Rule] = &[
     rule_def("bool-comparison", "a `bool` compared with `true` or `false`"),
     rule_def("self-comparison", "a value compared with itself"),
     rule_def("self-assignment", "a place assigned to itself"),
+    rule_def(
+        "dangling-address",
+        "the address of a local, such as a loop variable or a pattern binding, kept where it outlives the local",
+    ),
     rule_def("constant-condition", "an `if` or `while` whose condition is the literal `true` or `false`"),
     rule_def("useless-defer", "a `defer` or `errdefer` that is the last statement of its block"),
     rule_def("needless-bool", "`if c { true } else { false }` and the like, which are `c` or `not c`"),
@@ -313,6 +317,19 @@ fn finding_diag(
             };
             lint(span, "needless-pub", format!("the {} `{}` is `{}`, but {}", what, name, marker, why))
                 .with_note("without the marker it is private to its module (§3.3)")
+        }
+        Finding::DanglingAddress { span, name, local, why } => {
+            let msg = match why {
+                "stored" => format!("this address of `{}` is stored where it outlives `{}`", name, name),
+                "returned" => format!("this address of `{}` is returned, but `{}` ends with the call", name, name),
+                _ => format!("this address of `{}` is passed to a call that may keep it after `{}` ends", name, name),
+            };
+            lint(span, "dangling-address", msg)
+                .with_label(local, format!("`{}` lives until the end of its scope", name))
+                .with_note(
+                    "a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope \
+                     (§15.1); point into the original (`&items[i]`), or keep the value instead",
+                )
         }
         Finding::BoolComparison { span, operand, same } => {
             let whole = text(span);

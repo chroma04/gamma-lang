@@ -35,6 +35,9 @@ pub enum Finding {
     /// program package (whose root module declares `main`, so other packages do not import
     /// it).
     NeedlessPub { name: Symbol, span: Span, vis: ast::Visibility, what: &'static str },
+    /// The address of local `name` (declared at `local`), taken at `span`, kept where it
+    /// outlives the local: `why` is "stored", "passed to be stored" or "returned".
+    DanglingAddress { span: Span, name: Symbol, local: Span, why: &'static str },
 }
 
 /// Checks the program rooted at `root` with its tests, and with the other modules of its
@@ -154,6 +157,7 @@ impl Lint<'_, '_> {
             if sema.instance_of.contains_key(&f) || def.body.is_none() || !file_ok(def.span) {
                 continue;
             }
+            super::lint_escape::dangling_addresses(sema, def, &mut self.out);
             let own_params = def.kind == FnKind::Named && !self.as_value.contains(&f) && def.name.as_str() != "main";
             for (j, l) in def.locals.iter().enumerate() {
                 let name = l.name.as_str();

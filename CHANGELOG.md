@@ -94,6 +94,11 @@ Versions and what each kind of change means are described in
 
 ### Diagnostics
 
+- `gamma lint` has two new rules: `dangling-address`, for the address of a local (a loop
+  variable, a pattern binding) stored, passed to be stored or returned where it outlives the
+  local, and `needless-pub`, for `pub(package)` names no other module uses and `pub` ones of
+  a program package. Lint now names the files of a package's other modules relative to the
+  working directory, as `gamma check` does.
 - A `match` left incomplete by a bare name in the position of an optional inside a
   pattern (which matches only a present value, §9.3) now points at that name and says how
   to bind the optional as it is: bind the value that holds it, such as `.Break(b)` for the
