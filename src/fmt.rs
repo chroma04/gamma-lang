@@ -565,8 +565,11 @@ fn layout(src: &str, toks: &[Token]) -> String {
                 };
                 let next_tok = items[idx..].iter().find_map(|it| if let Item::Tok(j) = it { Some(*j) } else { None });
                 let chain_else = after_chain && matches!(item, Item::Tok(k) if infos[*k].text == "else");
+                // The first line of a block continues nothing, even when it starts with
+                // `.Name` (a variant).
                 let cont = plain_ctx
                     && !chain_else
+                    && !after_lbrace
                     && (cont_next
                         || match item {
                             Item::Tok(k) => starts_cont(*k),

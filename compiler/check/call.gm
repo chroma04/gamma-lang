@@ -1,0 +1,390 @@
+// Calls (§11.3), conversions `T(x)` (§6.5) and the builtin functions (mirrors
+// `src/sema/call.rs`).
+
+call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    if .Field(base, _) := callee.kind {
+        if cx.module_of(base) is null {
+            if cx.type_of_name(base) is null { return cx.unsupported(span, "method calls and operations") }
+        }
+    }
+    match callee.kind {
+        .DotIdent(name) => {
+            t := expect else {
+                cx.error(callee.span, str.format("cannot infer the union type of `.{}` here", name.name)!)
+                return error_expr(cx.s, span)
+            }
+            return cx.construct_variant(cx.strip_wrappers(cx.infer.resolve(cx.s, t)), name, args, span)
+        }
+        .Field(base, name) => {
+            if m := cx.module_of(base) {
+                d := cx.s.module_member(m, name) else return error_expr(cx.s, span)
+                return cx.call_decl(d, name.name, callee, args, span)
+            }
+            if t := cx.type_of_name(base) { return cx.construct_variant(t, name, args, span) }
+            return cx.unsupported(span, "calls of fields")
+        }
+        .Ident(id) => {
+            if b := cx.lookup_local(id.name) {
+                _ = b
+                return cx.unsupported(span, "calls of local values")
+            }
+            if d := cx.s.lookup_module_name(cx.module, id.name) {
+                cx.s.check_deprecated(d, id.span)
+                return cx.call_decl(d, id.name, callee, args, span)
+            }
+            match id.name {
+                "print" => return cx.print(true, args, span)
+                "eprint" => return cx.print(false, args, span)
+                "trap" => return cx.trap(args, span)
+                "assert" => return cx.assert_(args, span)
+                _ => {}
+            }
+            if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
+            return cx.unsupported(span, str.format("calls of `{}`", id.name)!)
+        }
+        _ => return cx.unsupported(span, "calls of computed functions")
+    }
+}
+
+/// A call of the declaration `d`, written as `callee`.
+call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    match cx.s.resolve_decl(d) {
+        .Fn(f) => return cx.call_fn(f, args, span)
+        .Type(t) => return cx.conversion(t, args, span)
+        .Error => return error_expr(cx.s, span)
+        .Op(_) => return cx.unsupported(span, "effect operations")
+        .Const(_) => return cx.unsupported(span, "calls of constants")
+        _ => {
+            cx.error(callee.span, str.format("`{}` cannot be called", name)!)
+            return error_expr(cx.s, span)
+        }
+    }
+}
+
+/// A direct call of function `f`.
+call_fn :: fn(cx: ^FnCx, f: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    sig := cx.s.fns.items[usize(f)]
+    if sig.generics.len > 0 { return cx.unsupported(span, "calls of generic functions") }
+    for p in sig.params {
+        if p.rest { return cx.unsupported(span, "rest parameters") }
+        if sema.is_site(&p) { return cx.unsupported(span, "`@caller_location()` parameters") }
+    }
+    bound := cx.bind_args(sig.params, sig.module, args, span, "function") else return error_expr(cx.s, span)
+    cx.record_effects(&sig.effects, span)
+    call := tir.mk(sig.ret, .Call(.Fn(f), bound.args), span)
+    if bound.pre.len is 0 { return call }
+    return tir.mk(call.ty, .Block(new(tir.Block(stmts: bound.pre, tail: call, span: span))!), span)
+}
+
+/// Bound arguments in parameter order, and the statements that evaluate them first.
+Bound :: struct {
+    args: []Expr
+    pre: []tir.Stmt
+}
+
+/// Binds call arguments to parameters (§11.3) and coerces each to its type.
+bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize, args: []const ast.Arg, span: source.Span, what: string) -> ?Bound needs Load {
+    named_here := list(string)
+    for a in args {
+        match a.kind {
+            .Named(n, _) => named_here.push(n.name)!
+            .Spread(_) => {
+                _ = cx.unsupported(a.span, "spread arguments")
+                return null
+            }
+            _ => {}
+        }
+    }
+    positional := list(bool)
+    max: usize = 0
+    for p in params {
+        ok := p.name not in named_here.items
+        positional.push(ok)!
+        if ok { max += 1 }
+    }
+    // Arguments out of parameter order go through temporaries, in the order written.
+    order := list(usize)
+    for a in args {
+        match a.kind {
+            .Positional(_) => order.push(order.items.len)!
+            .Named(n, _) => for i, p in enumerate(params) {
+                if p.name is n.name {
+                    order.push(i)!
+                    break
+                }
+            }
+            _ => {}
+        }
+    }
+    spreading := false
+    for k in 1..order.items.len.max(1) {
+        if order.items[k - 1] > order.items[k] { spreading = true }
+    }
+    bound := list(?^Expr)
+    explicit := list(bool)
+    for _ in params {
+        bound.push(null)!
+        explicit.push(false)!
+    }
+    stmts := list(tir.Stmt)
+    next: usize = 0
+    for a in args {
+        match a.kind {
+            .Positional(e) => {
+                while next < params.len and not positional.items[next] { next += 1 }
+                if next >= params.len {
+                    cx.error(a.span, str.format("too many arguments: the {} takes {}", what, max)!)
+                    _ = cx.expr(&e, null)
+                    continue
+                }
+                v := cx.arg_value(&e, params[next].ty)
+                if spreading { v = cx.bind_temp(v, &stmts) }
+                bound.items[next] = v
+                next += 1
+            }
+            .Named(n, e) => {
+                found: ?usize = null
+                for i, p in enumerate(params) {
+                    if p.name is n.name {
+                        found = i
+                        break
+                    }
+                }
+                i := found else {
+                    cx.error(n.span, str.format("the {} has no parameter named `{}`", what, n.name)!)
+                    _ = cx.expr(&e, null)
+                    continue
+                }
+                if explicit.items[i] or bound.items[i] is not null {
+                    cx.error(n.span, str.format("parameter `{}` is given more than once", n.name)!)
+                }
+                explicit.items[i] = true
+                v := cx.arg_value(&e, params[i].ty)
+                if spreading { v = cx.bind_temp(v, &stmts) }
+                bound.items[i] = v
+            }
+            .Spread(_) => {}
+        }
+    }
+    out := list(Expr)
+    for i, b in enumerate(bound.items) {
+        if v := b {
+            out.push(v^)!
+            continue
+        }
+        p := &params[i]
+        if d := p.default {
+            out.push(cx.default_value(d, p.ty)^)!
+            continue
+        }
+        if p.name is "_" {
+            cx.error(span, str.format("missing argument: the {} takes {}", what, params.len)!)
+        } else {
+            cx.error(span, str.format("missing argument for parameter `{}`", p.name)!)
+        }
+        out.push(error_expr(cx.s, span)^)!
+    }
+    return Bound(args: out.items, pre: stmts.items)
+}
+
+/// An argument for a parameter of type `ty`.
+arg_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
+    if .Fn(sig) := cx.s.tys.kind(ty) {
+        if y := cx.s.yield_effect {
+            for x in sig.effects.effects {
+                if x.eff is y { return cx.unsupported(e.span, "iterator arguments") }
+            }
+        }
+    }
+    if e.kind is .Uninit {
+        if not cx.is_plain_data(ty) { cx.error(e.span, uninit_message(cx.s, ty)) }
+        return tir.mk(ty, .Uninit, e.span)
+    }
+    cx.temp_ref_arg = is_const_ref_arg(cx.s, e, ty)
+    v := cx.expr(e, ty)
+    cx.temp_ref_arg = false
+    vt := cx.infer.resolve(cx.s, v.ty)
+    if .Slice(c, _) := cx.s.tys.kind(cx.infer.resolve(cx.s, ty)) and c and cx.s.tys.kind(vt) is .Array(_) {
+        return cx.unsupported(e.span, "arrays passed as slices")
+    }
+    return cx.coerce(v, ty)
+}
+
+/// True if argument `e` is `&x` for a parameter of type `^const T`: `x` may be a
+/// temporary (§7.2).
+is_const_ref_arg :: fn(s: ^Sema, e: ^const ast.Expr, ty: Ty) -> bool {
+    x := e
+    while .Paren(inner) := x.kind { x = inner }
+    if .Unary(.AddrOf, _) := x.kind {
+        if .Ptr(c, _) := s.tys.kind(ty) { return c }
+    }
+    return false
+}
+
+/// `T(x)`: a lossless conversion (§6.5), or the construction of a struct.
+conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if .Adt(id, _) := tys.kind(t) {
+        match cx.s.adts.items[usize(id)].kind {
+            .Struct(def) => {
+                if def.bits is not null { return cx.unsupported(span, "`#bits` structs") }
+                return cx.construct_struct(t, args, span)
+            }
+            .CUnion(_) => return cx.unsupported(span, "`#c_union`s")
+            _ => {}
+        }
+    }
+    match tys.kind(t) {
+        .Tuple(_), .Array(_), .ParamArray(_), .Optional(_) => return cx.unsupported(span, "this construction")
+        _ => {}
+    }
+    if args.len is not 1 or args[0].kind is not .Positional(_) {
+        cx.error(span, str.format("construction of `{}` is not supported yet; a conversion takes one argument", cx.show(t))!)
+        return error_expr(cx.s, span)
+    }
+    .Positional(x) := args[0].kind else return error_expr(cx.s, span)
+    // Only an untyped literal (or arithmetic on literals) takes its type from the target.
+    v := cx.expr(&x, if is_literal_tree(&x) { t } else { null })
+    if cx.infer.var_kind(tys, v.ty) is not null and (tys.is_integer(t) or (tys.kind(t) is .Float(_) and tir_literal(v))) {
+        if cx.infer.unify(tys, v.ty, t) is not !_ {
+            if not tir_literal(v) { return cx.unsupported(span, "conversions of literal variables") }
+            return v
+        }
+        if not tir_literal(v) or cx.infer.var_kind(tys, v.ty) is not .Float {
+            cx.obligations.push(.Conversion(v.ty, t, span))!
+            return tir.mk(t, .Builtin(.Convert, one_expr(v)), span)
+        }
+        cx.error(x.span, str.format("a float literal cannot have the integer type `{}`", cx.show(t))!)
+        return v
+    }
+    // A value that coerces to `T` implicitly converts by that coercion.
+    vt := cx.infer.resolve(cx.s, v.ty)
+    if not tys.has_infer(vt) and vt is not t and cx.coercion_steps(vt, t) is not null { return cx.coerce(v, t) }
+    // `T(x)` of a `T` is a copy of the value (not a place).
+    if not tys.has_infer(vt) and vt is t and not tys.is_error(vt) { return tir.mk(t, .Coerce(.TupleRename, v), span) }
+    cx.obligations.push(.Conversion(v.ty, t, span))!
+    return tir.mk(t, .Builtin(.Convert, one_expr(v)), span)
+}
+
+/// True if the syntax tree `e` is built from literals, parentheses and operators only.
+is_literal_tree :: fn(e: ^const ast.Expr) -> bool => match e.kind {
+    .Int(_), .Float(_) => true
+    .Paren(inner) => is_literal_tree(inner)
+    .Unary(_, operand) => is_literal_tree(operand)
+    .Binary(_, lhs, rhs) => is_literal_tree(lhs) and is_literal_tree(rhs)
+    _ => false
+}
+
+/// True if `e` is built from literals only.
+tir_literal :: fn(e: ^Expr) -> bool => match e.kind {
+    .Int(_), .Float(_), .UntypedFloat(_) => true
+    .Unary(_, operand) => tir_literal(operand)
+    .Binary(_, lhs, rhs) => tir_literal(lhs) and tir_literal(rhs)
+    _ => false
+}
+
+/// `trap(msg)`.
+trap :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    msg := if args.len is 0 {
+        tir.mk(cx.s.tys.string_ty(), .Str("trap"), span)
+    } else if args.len is 1 and args[0].kind is .Positional(_) {
+        .Positional(m) := args[0].kind else return error_expr(cx.s, span)
+        cx.coerce(cx.expr(&m, cx.s.tys.string_ty()), cx.s.tys.string_ty())
+    } else {
+        cx.error(span, "`trap` takes one optional message argument")
+        return error_expr(cx.s, span)
+    }
+    return tir.mk(cx.s.tys.never_ty(), .Trap(msg), span)
+}
+
+/// `assert(cond, msg)`.
+assert_ :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    for a in args {
+        if a.kind is not .Positional(_) or args.len > 2 or args.len is 0 {
+            cx.error(span, "`assert` takes a condition and an optional message")
+            return error_expr(cx.s, span)
+        }
+    }
+    if args.len is 0 {
+        cx.error(span, "`assert` takes a condition and an optional message")
+        return error_expr(cx.s, span)
+    }
+    .Positional(c) := args[0].kind else return error_expr(cx.s, span)
+    cond := cx.expr(&c, cx.s.tys.bool_ty())
+    cond = cx.expect_bool(cond)
+    m := if args.len is 2 {
+        .Positional(x) := args[1].kind else return error_expr(cx.s, span)
+        cx.coerce(cx.expr(&x, cx.s.tys.string_ty()), cx.s.tys.string_ty())
+    } else {
+        tir.mk(cx.s.tys.string_ty(), .Str("assertion failed"), span)
+    }
+    both := list(Expr)
+    both.push(cond^)!
+    both.push(m^)!
+    return tir.mk(cx.s.tys.unit(), .Builtin(.Assert, both.items), span)
+}
+
+/// `print(template, args…)` (§21.6, §21.6.1).
+print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if args.len is 0 or args[0].kind is not .Positional(_) {
+        cx.error(span, "`print` takes a template string and the values for its placeholders")
+        return error_expr(cx.s, span)
+    }
+    for a in args {
+        if a.kind is .Named(_) {
+            cx.error(span, "`print` takes a template string and the values for its placeholders")
+            return error_expr(cx.s, span)
+        }
+        if a.kind is .Spread(_) { return cx.unsupported(a.span, "spread arguments") }
+    }
+    .Positional(template) := args[0].kind else return error_expr(cx.s, span)
+    .Str(lit) := template.kind else return cx.unsupported(template.span, "templates that are not literals")
+    effect_name := if to_out { "Out" } else { "Err" }
+    prelude := cx.s.l.prelude else return error_expr(cx.s, span)
+    d := cx.s.l.lookup(prelude, effect_name) else return error_expr(cx.s, span)
+    .Effect(eff) := cx.s.resolve_decl(d) else return error_expr(cx.s, span)
+    eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
+    one := list(EffectRef)
+    one.push(eref)!
+    set := types.effect_set(one.items)
+    cx.record_effects(&set, span)
+    // The template's pieces around its placeholders, each `{}`.
+    pieces := list([]const u8)
+    specs := list(tir.FmtSpec)
+    cur := list(u8)
+    t := lit.bytes
+    i: usize = 0
+    while i < t.len {
+        c := t[i]
+        next: ?u8 = if i + 1 < t.len { t[i + 1] } else { null }
+        if (c is '{' and next is '{') or (c is '}' and next is '}') {
+            cur.push(c)!
+            i += 2
+        } else if c is '{' and next is '}' {
+            pieces.push(cur.items)!
+            cur = list(u8)
+            specs.push(tir.default_spec())!
+            i += 2
+        } else if c is '{' or c is '}' {
+            return cx.unsupported(template.span, "format specs and invalid templates")
+        } else {
+            cur.push(c)!
+            i += 1
+        }
+    }
+    pieces.push(cur.items)!
+    n := specs.items.len
+    if args.len - 1 is not n {
+        placeholders := if n is 1 { "1 placeholder" } else { str.format("{} placeholders", n)! }
+        given := if args.len - 1 is 1 { "1 value is" } else { str.format("{} values are", args.len - 1)! }
+        cx.error(span, str.format("the template has {}, but {} given", placeholders, given)!)
+        return error_expr(cx.s, span)
+    }
+    values := list(Expr)
+    for a in args[1..] {
+        .Positional(x) := a.kind else continue
+        values.push(cx.expr(&x, null)^)!
+    }
+    sink: tir.WriteSink = .Perform(eref, 0)
+    return tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: pieces.items, specs: specs.items, args: values.items)), span)
+}

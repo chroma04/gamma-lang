@@ -17,6 +17,7 @@ commands:
   parse   check the syntax of a source file (--dump prints the syntax tree)
   modules load a program's modules without checking them and print the module graph
   decls   resolve a program's declarations without checking bodies and print them
+  tir     check a program and print the typed program the checker produces
   check   type-check a program (a .gm file or a module directory)
   fix     check a program and apply the fixes its diagnostics suggest where there is only
           one, to the files of its package; prints the diagnostics left
@@ -458,6 +459,7 @@ fn compiler_main() -> ExitCode {
         "lex" | "parse" => run_front_end(&opts),
         "modules" => modules(&opts),
         "decls" => decls(&opts),
+        "tir" => tir(&opts),
         "check" => check(&opts),
         "fix" => fix(&opts),
         "lint" => linting::run(&opts),
@@ -553,6 +555,20 @@ fn decls(opts: &Options) -> ExitCode {
     let mut sess = Session::new();
     sess.mode = opts.mode;
     let out = gamma::sema::declarations(&mut sess, path).unwrap_or_default();
+    print!("{}", out);
+    eprint!("{}", sess.render_diagnostics(opts.format));
+    if sess.diags.has_errors() { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+/// `gamma tir`: the typed program that checking produces, as text.
+fn tir(opts: &Options) -> ExitCode {
+    let Some(path) = &opts.file else {
+        eprintln!("gamma: no input file\n\n{}", USAGE);
+        return ExitCode::from(2);
+    };
+    let mut sess = Session::new();
+    sess.mode = opts.mode;
+    let out = gamma::sema::typed_program(&mut sess, path).unwrap_or_default();
     print!("{}", out);
     eprint!("{}", sess.render_diagnostics(opts.format));
     if sess.diags.has_errors() { ExitCode::FAILURE } else { ExitCode::SUCCESS }

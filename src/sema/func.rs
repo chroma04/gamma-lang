@@ -866,8 +866,13 @@ impl<'a, 's> FnCx<'a, 's> {
                     ast::IfExpr { branches: vec![(cond, rest)], else_: Some(ast::IfElse::Block(fb)), span: s.span };
                 let ex = self.if_expr(&lowered, value, expected);
                 diverges = ex.ty.is_never();
+                // In value position the fallback may be coerced to the expected type.
+                let fallback_ty = |e: &Expr| match &e.kind {
+                    tir::ExprKind::Coerce { kind: tir::Coercion::FromNever, expr } => expr.ty,
+                    _ => e.ty,
+                };
                 if let tir::ExprKind::If { else_: Some(e), .. } = &ex.kind
-                    && !e.ty.is_never()
+                    && !fallback_ty(e).is_never()
                     && !e.ty.is_error()
                 {
                     // One error, not also an unused value or a missing return after it.

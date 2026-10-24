@@ -1,0 +1,17 @@
+// The `else` of a pattern binding in a block used as a value leaves the block, even
+// where the block's value is coerced to an expected type (§4.5).
+Shape :: union { Circle: i32, Square: i32, Empty }
+
+area :: fn(s: Shape, wanted: bool) -> i32 {
+    x: i64 = if wanted {
+        .Circle(r) := s else return -1
+        r * 3
+    } else {
+        0
+    }
+    return x.trunc(i32)
+}
+
+main :: fn() needs Out {
+    print("{} {} {}\n", area(.Circle(2), true), area(.Square(2), true), area(.Empty, false))
+}

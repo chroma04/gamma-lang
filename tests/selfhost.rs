@@ -9,7 +9,8 @@
 //! program in the repository, the module graph of `gamma modules`; for `gammac decls`, on
 //! the same roots, what `gamma decls` prints for every declaration, on each program that
 //! gammac does not report as using something it cannot check yet (their number may only
-//! grow: see `DECLS_FLOOR`). The diagnostics are
+//! grow: see `DECLS_FLOOR`); and for `gammac tir`, likewise, the typed program of `gamma
+//! tir` (see `TIR_FLOOR`). The diagnostics are
 //! compared too, in the JSON format, which carries every field of a diagnostic: spans,
 //! labels, notes and fixes.
 //!
@@ -167,6 +168,8 @@ enum Stage {
     Modules,
     /// `decls`: the declarations of a program, from its root module.
     Decls,
+    /// `tir`: the checked function bodies of a program, from its root module.
+    Tir,
 }
 
 impl Stage {
@@ -176,6 +179,7 @@ impl Stage {
             Stage::Parse => &["parse", "--dump"],
             Stage::Modules => &["modules"],
             Stage::Decls => &["decls"],
+            Stage::Tir => &["tir"],
         }
     }
 
@@ -186,8 +190,15 @@ impl Stage {
             Stage::Parse => "syntax tree",
             Stage::Modules => "module graph",
             Stage::Decls => "declarations",
+            Stage::Tir => "typed program",
         }
     }
+}
+
+/// Runs `f` on a thread with the large stack the `gamma` command gives the compiler,
+/// which checking deeply nested programs needs.
+fn on_big_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    std::thread::scope(|s| std::thread::Builder::new().stack_size(1 << 30).spawn_scoped(s, f).unwrap().join().unwrap())
 }
 
 /// What `gamma lex` or `gamma parse --dump` prints for each file with
@@ -200,10 +211,11 @@ fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, 
         err.push_str(&format!("==> {} <==\n", path));
         let mut sess = Session::new();
         sess.recover_layout = recover;
-        if let Stage::Modules | Stage::Decls = stage {
+        if let Stage::Modules | Stage::Decls | Stage::Tir = stage {
             let dump = match stage {
                 Stage::Modules => gamma::sema::load_modules(&mut sess, Path::new(path)),
-                _ => gamma::sema::declarations(&mut sess, Path::new(path)),
+                Stage::Decls => gamma::sema::declarations(&mut sess, Path::new(path)),
+                _ => gamma::sema::typed_program(&mut sess, Path::new(path)),
             };
             out.push_str(&dump.unwrap_or_default());
             err.push_str(&sess.render_diagnostics(DiagFormat::Json));
@@ -224,7 +236,7 @@ fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, 
                 let tree = sess.parse(file);
                 out.push_str(&driver::dump_ast(&tree));
             }
-            Stage::Modules | Stage::Decls => unreachable!(),
+            Stage::Modules | Stage::Decls | Stage::Tir => unreachable!(),
         }
         err.push_str(&sess.render_diagnostics(DiagFormat::Json));
         if sess.diags.has_errors() {
@@ -258,7 +270,7 @@ fn first_difference(expected: &str, actual: &str) -> Option<(String, usize, Stri
 
 fn check(stage: Stage, recover: bool) {
     // In batches, since a command line is limited in length (to 32 KiB on Windows).
-    let inputs = if let Stage::Modules | Stage::Decls = stage { program_roots() } else { corpus() };
+    let inputs = if let Stage::Lex | Stage::Parse = stage { corpus() } else { program_roots() };
     for files in inputs.chunks(100) {
         let (out, err, status) = reference(stage, files, recover);
         let mut args: Vec<String> = stage.args().iter().map(|a| a.to_string()).collect();
@@ -291,6 +303,11 @@ fn check(stage: Stage, recover: bool) {
 /// a construct it cannot check yet. Raise it as gammac learns more; it may not drop.
 const DECLS_FLOOR: usize = 630;
 
+/// The number of programs whose function bodies `gammac tir` must check without
+/// reporting a construct it cannot check yet. Raise it as gammac learns more; it may not
+/// drop.
+const TIR_FLOOR: usize = 55;
+
 /// The output for each file of a run over several, by the `==> FILE <==` lines.
 fn sections(text: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = vec![];
@@ -304,13 +321,15 @@ fn sections(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// `gammac decls` against the reference, on the programs it can check.
-fn check_decls() {
+/// `gammac decls` or `gammac tir` against the reference, on the programs it can check;
+/// there must be at least `floor` of them.
+fn check_supported(stage: Stage, floor: usize) {
+    let name = stage.args()[0];
     let mut checked = 0;
     let mut skipped = vec![];
     for files in program_roots().chunks(100) {
-        let (out, err, _) = reference(Stage::Decls, files, false);
-        let mut args = vec!["decls".to_string(), "--diag-format=json".to_string()];
+        let (out, err, _) = on_big_stack(|| reference(stage, files, false));
+        let mut args = vec![name.to_string(), "--diag-format=json".to_string()];
         args.extend(files.iter().cloned());
         let got = run_gammac(&args);
         let (got_out, got_err) = (String::from_utf8_lossy(&got.stdout), String::from_utf8_lossy(&got.stderr));
@@ -318,7 +337,8 @@ fn check_decls() {
         assert_eq!(
             got_err.len(),
             files.len(),
-            "gammac decls did not report on every program of the batch of {}",
+            "gammac {} did not report on every program of the batch of {}",
+            name,
             files[0]
         );
         for i in 0..files.len() {
@@ -328,30 +348,36 @@ fn check_decls() {
             }
             checked += 1;
             for (what, expected, actual) in
-                [("declarations", &out[i].1, &got_out[i].1), ("diagnostics", &err[i].1, &got_err[i].1)]
+                [(stage.output(), &out[i].1, &got_out[i].1), ("diagnostics", &err[i].1, &got_err[i].1)]
             {
                 if let Some((_, line, e, a)) = first_difference(expected, actual) {
                     panic!(
-                        "gammac decls: the {} of {} differ (line {}):\nexpected: {}\n  gammac: {}",
-                        what, files[i], line, e, a
+                        "gammac {}: the {} of {} differ (line {}):\nexpected: {}\n  gammac: {}",
+                        name, what, files[i], line, e, a
                     );
                 }
             }
         }
     }
     assert!(
-        checked >= DECLS_FLOOR,
-        "gammac decls checked {} programs, fewer than the {} it checked before; it now skips {:?}",
+        checked >= floor,
+        "gammac {} checked {} programs, fewer than the {} it checked before; it now skips {:?}",
+        name,
         checked,
-        DECLS_FLOOR,
+        floor,
         skipped
     );
-    eprintln!("gammac decls: {} programs checked, {} skipped", checked, skipped.len());
+    eprintln!("gammac {}: {} programs checked, {} skipped", name, checked, skipped.len());
 }
 
 #[test]
 fn declaration_checking_matches_the_reference_on_the_programs_gammac_supports() {
-    check_decls();
+    check_supported(Stage::Decls, DECLS_FLOOR);
+}
+
+#[test]
+fn body_checking_matches_the_reference_on_the_programs_gammac_supports() {
+    check_supported(Stage::Tir, TIR_FLOOR);
 }
 
 #[test]

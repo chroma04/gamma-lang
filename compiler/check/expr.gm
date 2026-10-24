@@ -1,0 +1,930 @@
+// Checking expressions (§7): literals, names, operators, calls, construction and
+// control-flow expressions (mirrors `src/sema/expr.rs`, `call.rs` and `construct.rs`).
+
+/// Checks an expression whose value is used. `expect` is a hint from the context (the
+/// caller still coerces to it where the context is a coercion site).
+expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
+    span := e.span
+    tys := &cx.s.tys
+    match e.kind {
+        .Int(lit) => {
+            ty := if suffix := lit.suffix { cx.s.suffix_type(suffix) } else { cx.infer.new_var(tys, .Int) }
+            return tir.mk(ty, .Int(bigint.from_nat(&lit.value)), span)
+        }
+        .Float(lit) => {
+            if lit.imag { return cx.unsupported(span, "imaginary literals") }
+            ty: Ty = cx.infer.new_var(tys, .Float)
+            if suffix := lit.suffix {
+                ty = tys.intern(.Float(match suffix {
+                    .F16 => 16
+                    .F32 => 32
+                    .F64 => 64
+                }))
+            }
+            return tir.mk(ty, .UntypedFloat(sema.literal_rational(&lit.value)), span)
+        }
+        .Str(lit) => {
+            if lit.kind is .C { return tir.mk(tys.many_ptr(true, tys.u8_ty()), .CStr(lit.bytes), span) }
+            return tir.mk(tys.string_ty(), .Str(lit.bytes), span)
+        }
+        .Bool(b) => return tir.mk(tys.bool_ty(), .Bool(b), span)
+        .Null => return cx.null_value(expect, span)
+        .Uninit => {
+            cx.error(span, "`---` may only initialize a variable, field or argument")
+            return error_expr(cx.s, span)
+        }
+        .Underscore => {
+            cx.error(span, "`_` cannot be used as a value")
+            return error_expr(cx.s, span)
+        }
+        .Ident(id) => return cx.name(id.name, expect, span)
+        .Paren(inner) => return cx.expr(inner, expect)
+        .Tuple(elems) => return cx.tuple(elems, expect, span)
+        .Unary(op, operand) => return cx.unary(op, operand, expect, span)
+        .Binary(op, lhs, rhs) => {
+            if op in (ast.BinOp.Range, ast.BinOp.RangeIncl) { return cx.unsupported(span, "range values") }
+            if op in (ast.BinOp.Is, ast.BinOp.IsNot) and (cx.maybe_type(lhs) or cx.maybe_type(rhs)) {
+                return cx.unsupported(span, "`is` on types")
+            }
+            l := cx.expr(lhs, null)
+            return cx.binary_op(op, l, rhs, span)
+        }
+        .Deref(p) => return cx.deref_expr(p, span)
+        .Field(base, name) => return cx.field(base, name, span)
+        .TupleField(base, index, _) => return cx.tuple_field(base, index, span)
+        .Call(callee, args, _) => return cx.call(callee, args, expect, span)
+        .If(i) => return cx.if_expr(i, true, expect)
+        .Block(b) => return cx.block_expected(&b, true, expect)
+        .Return(v) => return cx.return_expr(v, span)
+        .Break(b) => return cx.break_expr(b.label, b.value, span)
+        .Continue(label) => return cx.continue_expr(label, span)
+        .DotIdent(name) => {
+            t := expect else {
+                cx.error(span, str.format("cannot infer the union type of `.{}` here", name.name)!)
+                return error_expr(cx.s, span)
+            }
+            return cx.construct_variant(cx.strip_wrappers(cx.infer.resolve(cx.s, t)), name, null, span)
+        }
+        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ErrorUnionType(_), .FnType(_), .ContType(_), .Struct(_), .Union(_), .Effect(_) => {
+            cx.error(span, "expected a value, found a type")
+            return error_expr(cx.s, span)
+        }
+        _ => return cx.unsupported(span, expr_kind_text(&e.kind))
+    }
+}
+
+/// What a construct gammac cannot check yet is called in its message.
+expr_kind_text :: fn(k: ^const ast.ExprKind) -> string => match k^ {
+    .Elements(_) => "element lists"
+    .Else(_) => "`else` on optionals and results"
+    .OptUnwrap(_) => "`.?`"
+    .ResUnwrap(_) => "`.!`"
+    .Bang(_) => "`!` on values"
+    .Index(_) => "indexing"
+    .Slice(_) => "slicing"
+    .ArrayType(_) => "array construction"
+    .Attributed(_) => "attributes on expressions"
+    .Fn(_) => "function literals"
+    .Handler(_) => "handler literals"
+    .Import(_) => "local imports"
+    .Foreign(_) => "local foreign blocks"
+    .Match(_) => "`match`"
+    .With(_) => "`with`"
+    .For(_) => "`for` loops"
+    .Resume(_) => "`resume`"
+    .Intrinsic(i) => if i.name.name is "size_of" { "`@size_of`" } else { "intrinsic calls" }
+    _ => "this kind of expression"
+}
+
+/// Whether `e` may denote a type rather than a value (`T is U`), which gammac does not
+/// check yet.
+maybe_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+    match e.kind {
+        .Paren(inner) => return cx.maybe_type(inner)
+        .Ident(id) => {
+            if cx.lookup_local(id.name) is not null { return false }
+            if d := cx.s.lookup_module_name(cx.module, id.name) { return cx.s.resolve_decl(d) in (.Type(_), .GenericType(_)) }
+            return sema.is_builtin_type_name(id.name)
+        }
+        .Call(_), .Field(_), .Intrinsic(_) => return false
+        .Tuple(elems) => return elems.len > 0 and cx.s.looks_like_type(cx.module, e)
+        _ => return cx.s.looks_like_type(cx.module, e)
+    }
+}
+
+/// `null`, typed by the optional it is expected to be.
+null_value :: fn(cx: ^FnCx, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    if x := expect {
+        t := cx.infer.shallow(&cx.s.tys, x)
+        if cx.s.tys.kind(t) is .Optional(_) { return tir.mk(t, .Null, span) }
+        if .Result(_, ok) := cx.s.tys.kind(t) and cx.s.tys.kind(ok) is .Optional(_) { return tir.mk(ok, .Null, span) }
+    }
+    cx.error(span, "cannot infer the type of `null` here; annotate the optional type")
+    return error_expr(cx.s, span)
+}
+
+/// `p^`.
+deref_expr :: fn(cx: ^FnCx, p: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    v := cx.expr(p, null)
+    match cx.s.tys.kind(cx.infer.shallow(&cx.s.tys, v.ty)) {
+        .Ptr(_, pointee) => return tir.mk(pointee, .Deref(v), span)
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            t := cx.infer.resolve(cx.s, v.ty)
+            cx.error(span, str.format("`^` dereferences a pointer `^T`, but this is `{}`", cx.show(t))!)
+            return error_expr(cx.s, span)
+        }
+    }
+}
+
+/// `t.0`: an element of a tuple.
+tuple_field :: fn(cx: ^FnCx, base: ^const ast.Expr, index: u32, span: source.Span) -> ^Expr needs Load {
+    b := cx.expr(base, null)
+    bt := cx.infer.resolve(cx.s, b.ty)
+    b = cx.auto_deref(b)
+    match cx.s.tys.kind(cx.infer.resolve(cx.s, b.ty)) {
+        .Tuple(elems, _) => if usize(index) < elems.len { return tir.mk(elems[usize(index)], .Field(b, index), span) }
+        .Error => return error_expr(cx.s, span)
+        _ => {}
+    }
+    cx.error(span, str.format("type `{}` has no element {}", cx.show(bt), index)!)
+    return error_expr(cx.s, span)
+}
+
+/// Field access dereferences one pointer level (§5.5).
+auto_deref :: fn(cx: ^FnCx, b: ^Expr) -> ^Expr needs Alloc {
+    if .Ptr(_, pointee) := cx.s.tys.kind(cx.infer.shallow(&cx.s.tys, b.ty)) { return tir.mk(pointee, .Deref(b), b.span) }
+    return b
+}
+
+/// A name used as a value.
+name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    if b := cx.lookup_local(name) {
+        match b {
+            .Var(id) => return tir.mk(cx.locals.items[usize(id)].ty, .Local(id), span)
+            .Untyped(v) => return cx.untyped_literal(&v, span)
+            .Label => {
+                cx.error(span, str.format("`{}` is a label, not a value", name)!)
+                return error_expr(cx.s, span)
+            }
+        }
+    }
+    if d := cx.s.lookup_module_name(cx.module, name) { return cx.decl_expr(d, name, expect, span) }
+    if sema.is_builtin_type_name(name) {
+        cx.error(span, str.format("expected a value, found the type `{}`", name)!)
+    } else if name in ("print", "eprint", "trap", "assert", "expect_eq") {
+        cx.error(span, str.format("the builtin function `{}` can only be called", name)!)
+    } else {
+        return cx.unsupported(span, str.format("the name `{}`", name)!)
+    }
+    return error_expr(cx.s, span)
+}
+
+/// The value of a top-level declaration named `name`.
+decl_expr :: fn(cx: ^FnCx, d: usize, name: string, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    cx.s.check_deprecated(d, span)
+    match cx.s.resolve_decl(d) {
+        .Fn(f) => {
+            if cx.s.fns.items[usize(f)].generics.len > 0 { return cx.unsupported(span, "generic functions as values") }
+            return cx.fn_ref(f, span)
+        }
+        .Const(ty) => return tir.mk(ty, .Const(name, cx.s.l.decls.items[d].name.span), span)
+        .Untyped(v) => return cx.untyped_literal(&v, span)
+        .Type(_), .GenericType(_) => cx.error(span, str.format("expected a value, found the type `{}`", name)!)
+        .Effect(_), .EffectInst(_) => cx.error(span, str.format("expected a value, found the effect `{}`", name)!)
+        .EffectSet(_) => cx.error(span, str.format("expected a value, found the effect set `{}`", name)!)
+        .Op(_) => cx.error(span, str.format("the operation `{}` can only be called", name)!)
+        .Module(_) => cx.error(span, str.format("`{}` is a module, which is not a value (§3.2)", name)!)
+        .Global(_) => return cx.unsupported(span, "`#global`s")
+        .Error => {}
+    }
+    return error_expr(cx.s, span)
+}
+
+/// A named function used as a value: a function pointer (§5.14).
+fn_ref :: fn(cx: ^FnCx, f: u32, span: source.Span) -> ^Expr needs Alloc {
+    ty := cx.s.tys.intern(.FnPtr(cx.s.fn_ty(&cx.s.fns.items[usize(f)])))
+    return tir.mk(ty, .FnRef(f), span)
+}
+
+/// An untyped constant used as a value becomes a literal (§6.2).
+untyped_literal :: fn(cx: ^FnCx, v: ^const sema.Untyped, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    match v^ {
+        .Int(i) => return tir.mk(cx.infer.new_var(tys, .Int), .Int(i), span)
+        .Float(r) => return tir.mk(cx.infer.new_var(tys, .Float), .UntypedFloat(r), span)
+        .NegZero => {
+            zero := tir.mk(cx.infer.new_var(tys, .Float), .UntypedFloat(ratio.from_int(bigint.zero())), span)
+            return tir.mk(zero.ty, .Unary(.Neg, zero), span)
+        }
+        .Bool(b) => return tir.mk(tys.bool_ty(), .Bool(b), span)
+        .Complex(_) => return cx.unsupported(span, "complex constants")
+    }
+}
+
+tuple :: fn(cx: ^FnCx, elems: []const ast.TupleElem, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    // The expected tuple type, also through optionals and results that would wrap it.
+    want: ?Ty = null
+    if x := expect { want = cx.infer.shallow(tys, x) }
+    while w := want {
+        match tys.kind(w) {
+            .Optional(inner), .Result(_, inner) => { want = cx.infer.shallow(tys, inner) }
+            _ => break
+        }
+    }
+    expected_elems: ?[]const Ty = null
+    if w := want {
+        if .Tuple(es, _) := tys.kind(w) and es.len is elems.len { expected_elems = es }
+    }
+    named := elems.len > 0 and elems[0].name is not null
+    for el in elems {
+        if (el.name is not null) is not named {
+            cx.error(span, "a tuple must be either fully named or fully unnamed")
+            break
+        }
+    }
+    vals := list(Expr)
+    for i, el in enumerate(elems) {
+        exp: ?Ty = null
+        if es := expected_elems { exp = es[i] }
+        v := cx.expr(&el.value, exp)
+        // Each element converts to the expected element type where it can (§6.4).
+        if x := exp {
+            et := cx.infer.resolve(cx.s, x)
+            if not tys.has_infer(et) {
+                vt := cx.infer.resolve(cx.s, v.ty)
+                if vt is not et and (tys.kind(vt) is .Infer(_) or (not tys.has_infer(vt) and cx.coercion_steps(vt, et) is not null)) {
+                    v = cx.coerce(v, et)
+                }
+            }
+        }
+        _ = cx.reject_second_class(v, "a tuple element")
+        vals.push(v^)!
+    }
+    names := list(string)
+    if named {
+        for i, el in enumerate(elems) {
+            if n := el.name {
+                if n.name in names.items {
+                    cx.error(span, str.format("duplicate tuple element name `{}`", n.name)!)
+                }
+                names.push(n.name)!
+            }
+        }
+    }
+    ts := list(Ty)
+    for v in vals.items { ts.push(v.ty)! }
+    return tir.mk(tys.intern(.Tuple(ts.items, names.items)), .Aggregate(vals.items), span)
+}
+
+/// Reports a second-class value used as `what`. True if it was reported.
+reject_second_class :: fn(cx: ^FnCx, v: ^Expr, what: string) -> bool needs Load {
+    match cx.s.tys.kind(cx.infer.resolve(cx.s, v.ty)) {
+        .Fn(_) => cx.error(v.span, str.format("a second-class function cannot be {}; use a function pointer `^fn(…)` (§11.6)", what)!)
+        .Handler(_) => cx.error(v.span, str.format("a handler literal is second-class and cannot be {} (§11.6)", what)!)
+        _ => return false
+    }
+    return true
+}
+
+// ---------------------------------------------------------------------------------
+// Operators
+// ---------------------------------------------------------------------------------
+
+unary :: fn(cx: ^FnCx, op: ast.UnOp, operand: ^const ast.Expr, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    match op {
+        .Neg => return cx.neg_expr(operand, expect, span)
+        .BitNot => {
+            v := cx.expr(operand, expect)
+            st := cx.infer.resolve(cx.s, v.ty)
+            if cx.s.tys.kind(st) is .Adt(_) or cx.is_vector(st) { return cx.unsupported(span, "`~` on this type") }
+            cx.obligations.push(.Numeric(NumericObligation(ty: v.ty, span: span, op: "~", int_only: true, signed_only: false)))!
+            return tir.mk(v.ty, .Unary(.BitNot, v), span)
+        }
+        .Not => {
+            v := cx.expr(operand, cx.s.tys.bool_ty())
+            if cx.is_vector(cx.infer.resolve(cx.s, v.ty)) { return cx.unsupported(span, "`not` on vectors") }
+            v = cx.expect_bool(v)
+            return tir.mk(cx.s.tys.bool_ty(), .Unary(.Not, v), span)
+        }
+        .AddrOf => return cx.addr_of_expr(operand, span)
+        .MakeErr, .Try => return cx.unsupported(span, "error values")
+    }
+}
+
+is_vector :: fn(cx: ^FnCx, t: Ty) -> bool {
+    .Array(_, _, kind) := cx.s.tys.kind(t) else return false
+    return kind in (types.ArrayKind.Simd, types.ArrayKind.Math)
+}
+
+/// `-x`. A minus applied directly to a literal is part of the literal (§7.4.1).
+neg_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    v := cx.expr(operand, expect)
+    literal := is_literal(operand) or cx.s.tys.kind(v.ty) is .Infer(_)
+    match v.kind {
+        .Int(i) => if literal {
+            v.kind = .Int(i.neg())
+            v.span = span
+            return v
+        }
+        // Not for zero: exact rationals have no negative zero, and `-0.0` keeps its sign.
+        .UntypedFloat(r) => if literal and not r.is_zero() {
+            v.kind = .UntypedFloat(r.neg())
+            v.span = span
+            return v
+        }
+        _ => {}
+    }
+    t := cx.infer.resolve(cx.s, v.ty)
+    if cx.is_vector(t) or cx.s.tys.kind(t) is .Adt(_) { return cx.unsupported(span, "`-` on this type") }
+    cx.obligations.push(.Numeric(NumericObligation(ty: v.ty, span: span, op: "-", int_only: false, signed_only: true)))!
+    return tir.mk(v.ty, .Unary(.Neg, v), span)
+}
+
+is_literal :: fn(e: ^const ast.Expr) -> bool => match e.kind {
+    .Int(_), .Float(_) => true
+    .Paren(inner) => is_literal(inner)
+    _ => false
+}
+
+/// `&place`.
+addr_of_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    temp_ok := cx.temp_ref_arg
+    cx.temp_ref_arg = false
+    v := cx.expr(operand, null)
+    if cx.reject_second_class(v, "the target of `&`") { return error_expr(cx.s, span) }
+    if .Field(base, _) := v.kind and cx.s.bits_struct_ty(base.ty) is not null {
+        cx.error(span, "the fields of a `#bits` struct have no address (§5.10.5)")
+        return error_expr(cx.s, span)
+    }
+    match cx.place_mutability(v) {
+        true => return tir.mk(cx.s.tys.ptr(false, v.ty), .AddrOf(v), span)
+        false => return tir.mk(cx.s.tys.ptr(true, v.ty), .AddrOf(v), span)
+        null => {
+            if temp_ok { return tir.mk(cx.s.tys.ptr(true, v.ty), .AddrOfTemp(v), span) }
+            cx.error(span, "`&` needs a place (a variable, `p^`, field or element), not a temporary value")
+            return error_expr(cx.s, span)
+        }
+    }
+}
+
+/// Unifies the types of two operands that must be equal (§6.1, §7.4.1).
+unify_operands :: fn(cx: ^FnCx, a, b: Ty, span: source.Span, what: string) -> Ty needs Load {
+    if cx.infer.unify(&cx.s.tys, a, b) is !_ {
+        ra := cx.infer.resolve(cx.s, a)
+        rb := cx.infer.resolve(cx.s, b)
+        cx.error(span, str.format("{} have different types: `{}` and `{}`", what, cx.show(ra), cx.show(rb))!)
+        return cx.s.tys.error()
+    }
+    return cx.infer.shallow(&cx.s.tys, a)
+}
+
+/// Checks `lhs op rhs` given the already-checked left operand.
+binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    lt := cx.infer.resolve(cx.s, lhs.ty)
+    if cx.is_vector(lt) or cx.s.complex_of(lt) is not null { return cx.unsupported(span, "operators on vectors and complex numbers") }
+    match op {
+        .And, .Or => {
+            l := cx.expect_bool(lhs)
+            r := cx.expr(rhs, tys.bool_ty())
+            r = cx.expect_bool(r)
+            return tir.mk(tys.bool_ty(), .Logic(op is .And, l, r), span)
+        }
+        .Is, .IsNot => {
+            if cx.pattern_operand(rhs) { return cx.unsupported(span, "pattern tests") }
+            r := cx.expr(rhs, lhs.ty)
+            eq := cx.equalize(lhs, r, span)
+            return tir.mk(tys.bool_ty(), .Eq(eq.l, eq.r, op is .IsNot), span)
+        }
+        .Lt, .Le, .Gt, .Ge => {
+            r := cx.expr(rhs, lhs.ty)
+            ty := cx.unify_operands(lhs.ty, r.ty, span, "the operands of a comparison")
+            cx.obligations.push(.Ord(ty, span))!
+            top: tir.BinOp = match op {
+                .Lt => .Lt
+                .Le => .Le
+                .Gt => .Gt
+                _ => .Ge
+            }
+            return tir.mk(tys.bool_ty(), .Binary(top, lhs, r), span)
+        }
+        .Shl(_), .Shr => {
+            r := cx.expr(rhs, null)
+            if not cx.infer.require_unsigned(tys, r.ty, .Usize) and not tys.is_error(r.ty) {
+                t := cx.infer.resolve(cx.s, r.ty)
+                cx.error(r.span, str.format("a shift amount must have an unsigned integer type, not `{}`", cx.show(t))!)
+            }
+            if op is .Shl(.Opt) { return cx.unsupported(span, "`<<?`") }
+            cx.obligations.push(.Numeric(NumericObligation(ty: lhs.ty, span: span, op: ast.binop_text(op), int_only: true, signed_only: false)))!
+            top: tir.BinOp = if .Shl(f) := op { .Shl(f) } else { .Shr }
+            return tir.mk(lhs.ty, .Binary(top, lhs, r), span)
+        }
+        .Add(_), .Sub(_), .Mul(_), .Div, .Rem, .BitAnd, .BitOr, .BitXor => {
+            if tys.kind(lt) in (.ManyPtr(_), .Ptr(_), .Rawptr) { return cx.unsupported(span, "pointer arithmetic") }
+            if op in (ast.BinOp.Add(.Opt), ast.BinOp.Sub(.Opt), ast.BinOp.Mul(.Opt)) { return cx.unsupported(span, "optional arithmetic") }
+            r := cx.expr(rhs, lhs.ty)
+            rt := cx.infer.resolve(cx.s, r.ty)
+            if cx.is_vector(rt) or cx.s.complex_of(rt) is not null { return cx.unsupported(span, "operators on vectors and complex numbers") }
+            return cx.arith_op(op, lhs, r, span)
+        }
+        .In, .NotIn => return cx.unsupported(span, "`in`")
+        .Range, .RangeIncl => {
+            cx.error(span, "a range cannot be an operand here; put it in parentheses")
+            return error_expr(cx.s, span)
+        }
+    }
+}
+
+/// Whether the right operand of `is` may be a pattern form (§7.6), which gammac does not
+/// check yet.
+pattern_operand :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool => match e.kind {
+    .Underscore, .Null, .DotIdent(_) => true
+    .Field(_), .Call(_) => true
+    .Unary(.MakeErr, _) => true
+    .Paren(inner) => cx.pattern_operand(inner)
+    .Tuple(_) => true
+    _ => false
+}
+
+/// An arithmetic or bitwise operator applied to checked operands.
+arith_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs, r: ^Expr, span: source.Span) -> ^Expr needs Load {
+    what := str.format("the operands of `{}`", ast.binop_text(op))!
+    match op {
+        .Add(f), .Sub(f), .Mul(f) => {
+            ty := cx.unify_operands(lhs.ty, r.ty, span, what)
+            cx.obligations.push(.Numeric(NumericObligation(ty: ty, span: span, op: ast.binop_text(op), int_only: f is not .Checked, signed_only: false)))!
+            top: tir.BinOp = match op {
+                .Add(_) => .Add(f)
+                .Sub(_) => .Sub(f)
+                _ => .Mul(f)
+            }
+            rty := if f is .Opt { cx.s.tys.optional(ty) } else { ty }
+            return tir.mk(rty, .Binary(top, lhs, r), span)
+        }
+        _ => {
+            ty := cx.unify_operands(lhs.ty, r.ty, span, what)
+            st := cx.infer.resolve(cx.s, ty)
+            if op is not .Div and op is not .Rem and cx.s.bits_struct_ty(st) is not null {
+                return cx.unsupported(span, "bitwise operators on `#bits` structs")
+            }
+            cx.obligations.push(.Numeric(NumericObligation(ty: ty, span: span, op: ast.binop_text(op), int_only: op is not .Div, signed_only: false)))!
+            top: tir.BinOp = match op {
+                .Div => .Div
+                .Rem => .Rem
+                .BitAnd => .BitAnd
+                .BitOr => .BitOr
+                _ => .BitXor
+            }
+            return tir.mk(ty, .Binary(top, lhs, r), span)
+        }
+    }
+}
+
+/// The operands of `is`, converted to one type.
+equalize :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, span: source.Span) -> (l: ^Expr, r: ^Expr) needs Load {
+    tys := &cx.s.tys
+    lt := cx.infer.resolve(cx.s, l.ty)
+    rt := cx.infer.resolve(cx.s, r.ty)
+    if not tys.has_infer(lt) and not tys.is_error(lt) and not cx.s.has_eq(lt) {
+        cx.error(span, str.format("`is` is not defined for `{}` (§7.6)", cx.show(lt))!)
+    }
+    // A literal compared with an optional or result is wrapped: `x is 1`.
+    wraps :: fn(t: Ty) -> bool => tys.kind(t) in (.Optional(_), .Result(_)) and not tys.has_infer(t)
+    if tys.kind(rt) is .Infer(_) and wraps(lt) { return (l: l, r: cx.coerce(r, lt)) }
+    if tys.kind(lt) is .Infer(_) and wraps(rt) { return (l: cx.coerce(l, rt), r: r) }
+    if cx.s.complex_of(lt) is not null or cx.s.complex_of(rt) is not null {
+        return (l: l, r: cx.unsupported(span, "complex numbers"))
+    }
+    if tys.has_infer(lt) or tys.has_infer(rt) or lt is rt {
+        _ = cx.unify_operands(l.ty, r.ty, span, "the operands of `is`")
+        return (l: l, r: r)
+    }
+    if cx.coercion_steps(rt, lt) is not null { return (l: l, r: cx.coerce(r, lt)) }
+    if cx.coercion_steps(lt, rt) is not null { return (l: cx.coerce(l, rt), r: r) }
+    cx.error(span, str.format("cannot compare `{}` with `{}`", cx.show(lt), cx.show(rt))!)
+    return (l: l, r: r)
+}
+
+// ---------------------------------------------------------------------------------
+// Fields
+// ---------------------------------------------------------------------------------
+
+/// The module a module-binding expression (`m` in `m.x`) names, unless a local shadows it.
+module_of :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?usize needs Load {
+    if .Field(base, name) := e.kind {
+        m := cx.module_of(base) else return null
+        return cx.s.public_module_member(m, name.name)
+    }
+    .Ident(id) := e.kind else return null
+    if cx.lookup_local(id.name) is not null { return null }
+    d := cx.s.lookup_module_name(cx.module, id.name) else return null
+    .Module(m) := cx.s.resolve_decl(d) else return null
+    return m
+}
+
+/// If `e` is a name denoting a type, that type.
+type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
+    if .Field(base, name) := e.kind {
+        if m := cx.module_of(base) {
+            d := cx.s.module_member(m, name) else return null
+            .Type(t) := cx.s.resolve_decl(d) else return null
+            return t
+        }
+    }
+    if e.kind is .Call(_) {
+        if cx.maybe_generic_type(e) { _ = cx.unsupported(e.span, "generic types in bodies") }
+        return null
+    }
+    .Ident(id) := e.kind else return null
+    if cx.lookup_local(id.name) is not null { return null }
+    if d := cx.s.lookup_module_name(cx.module, id.name) {
+        .Type(t) := cx.s.resolve_decl(d) else return null
+        return t
+    }
+    return cx.s.builtin_type(id.name)
+}
+
+maybe_generic_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+    .Call(callee, _, _) := e.kind else return false
+    g := cx.s.generic_decl(cx.module, callee, false) else return false
+    return cx.s.resolve_decl(g.decl) is .GenericType(_)
+}
+
+field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    // `m.x`: a declaration of another module (§3.2).
+    if m := cx.module_of(base) {
+        d := cx.s.module_member(m, name) else return error_expr(cx.s, span)
+        return cx.decl_expr(d, name.name, null, span)
+    }
+    // `U.V`: a payload-less variant of a union type.
+    if t := cx.type_of_name(base) { return cx.construct_variant(t, name, null, span) }
+    if base.kind is .Index(_) { return cx.unsupported(span, "indexing") }
+    b := cx.expr(base, null)
+    b = cx.auto_deref(b)
+    bt := cx.infer.resolve(cx.s, b.ty)
+    match tys.kind(bt) {
+        .Tuple(elems, names) => {
+            for i, n in enumerate(names) {
+                if n is name.name { return tir.mk(elems[i], .Field(b, i.trunc(u32)), span) }
+            }
+        }
+        .Slice(_), .Array(_), .ParamArray(_) => if name.name in ("len", "ptr") { return cx.unsupported(span, "`.len` and `.ptr`") }
+        .Error => return error_expr(cx.s, span)
+        _ => {}
+    }
+    if .Adt(id, _) := tys.kind(bt) {
+        if cx.s.adts.items[usize(id)].has_using { return cx.unsupported(span, "`using` fields") }
+        if fields := cx.s.struct_fields(bt) {
+            for i, f in enumerate(fields) {
+                if f.name is not name.name { continue }
+                if not f.is_pub and not cx.sees_private(bt) {
+                    cx.error(span, str.format("the field `{}` of `{}` is private to its module (§3.3)", name.name, cx.show(bt))!)
+                }
+                return tir.mk(f.ty, .Field(b, i.trunc(u32)), span)
+            }
+        }
+        if .CUnion(_) := cx.s.adts.items[usize(id)].kind { return cx.unsupported(span, "`#c_union` fields") }
+    }
+    return cx.unsupported(span, "this field")
+}
+
+/// Whether the private fields of `t` are visible here.
+sees_private :: fn(cx: ^const FnCx, t: Ty) -> bool {
+    .Adt(id, _) := cx.s.tys.kind(t) else return true
+    return cx.s.adts.items[usize(id)].module is cx.module
+}
+
+// ---------------------------------------------------------------------------------
+// Control flow
+// ---------------------------------------------------------------------------------
+
+if_expr :: fn(cx: ^FnCx, i: ^const ast.IfExpr, value_: bool, expect: ?Ty) -> ^Expr needs Load {
+    if e := i.else_ {
+        if e is .Capture(_) { return cx.unsupported(i.span, "`else e =>`") }
+    }
+    value := value_ and i.else_ is not null
+    conds := list([]tir.CondPart)
+    thens := list(^Expr)
+    for br in i.branches {
+        cx.push_scope()
+        c := cx.cond(&br.cond)
+        b := cx.block_expected(&br.block, value, expect)
+        cx.pop_scope()
+        conds.push(c)!
+        thens.push(b)!
+    }
+    else_: ?^Expr = null
+    if e := i.else_ {
+        if .Block(b) := e { else_ = cx.block_expected(&b, value, expect) }
+    }
+    tys := &cx.s.tys
+    ty: Ty = tys.unit()
+    if value {
+        if x := expect {
+            ty = x
+        } else {
+            ty = tys.never_ty()
+            found := false
+            for t in thens.items {
+                if not found and tys.kind(t.ty) is not .Never {
+                    ty = t.ty
+                    found = true
+                }
+            }
+            if not found {
+                if e := else_ and tys.kind(e.ty) is not .Never { ty = e.ty }
+            }
+        }
+        for k in 0..thens.items.len { thens.items[k] = cx.join_branch(thens.items[k], ty) }
+        if e := else_ { else_ = cx.join_branch(e, ty) }
+    } else {
+        all_never := false
+        if e := else_ { all_never = tys.kind(e.ty) is .Never }
+        for t in thens.items {
+            if tys.kind(t.ty) is not .Never { all_never = false }
+        }
+        if all_never { ty = tys.never_ty() }
+    }
+    // Build the chain from the end.
+    k := thens.items.len
+    while k > 0 {
+        k -= 1
+        then := thens.items[k]
+        else_ = tir.mk(ty, .If(tir.IfExpr(cond: conds.items[k], then: then, else_: else_)), then.span)
+    }
+    r := else_ else unit(cx.s, i.span)
+    r.span = i.span
+    return r
+}
+
+join_branch :: fn(cx: ^FnCx, b: ^Expr, ty: Ty) -> ^Expr needs Load {
+    if cx.s.tys.kind(ty) is .Never { return b }
+    return cx.coerce(b, ty)
+}
+
+return_expr :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
+    ret := cx.ret
+    value := if x := v {
+        cx.coerce(cx.expr(x, ret), ret)
+    } else {
+        if not cx.s.tys.is_unit(ret) and not cx.s.tys.is_error(ret) {
+            cx.error(span, str.format("`return` needs a value of type `{}`", cx.show(ret))!)
+        }
+        unit(cx.s, span)
+    }
+    return tir.mk(cx.s.tys.never_ty(), .Return(0, value), span)
+}
+
+/// The loop that `break` or `continue` with `label` targets, if any.
+find_loop :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span, is_continue: bool) -> ?LabelInfo needs Alloc {
+    i := cx.labels.items.len
+    while i > 0 {
+        i -= 1
+        x := cx.labels.items[i]
+        if l := label {
+            if x.name is l.name { return x }
+        } else if x.is_loop {
+            return x
+        }
+    }
+    if l := label {
+        _ = cx.unsupported(span, "labels of enclosing functions")
+        return null
+    }
+    what := if is_continue { "continue" } else { "break" }
+    _ = cx.unsupported(span, str.format("`{}` outside a loop", what)!)
+    return null
+}
+
+break_expr :: fn(cx: ^FnCx, label: ?ast.Ident, value: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
+    l := cx.find_loop(label, span, false) else return error_expr(cx.s, span)
+    if value is not null or l.value is not .Nothing { return cx.unsupported(span, "`break` with a value") }
+    cx.label_breaks.push(LabelBreak(label: l.id, ty: cx.s.tys.unit(), span: span))!
+    return tir.mk(cx.s.tys.never_ty(), .Break(tir.BreakExpr(target: tir.Target(levels: 0, label: l.id), value: null)), span)
+}
+
+continue_expr :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span) -> ^Expr needs Load {
+    l := cx.find_loop(label, span, true) else return error_expr(cx.s, span)
+    if not l.is_loop { return cx.unsupported(span, "`continue` to a `with`") }
+    return tir.mk(cx.s.tys.never_ty(), .Continue(tir.Target(levels: 0, label: l.id)), span)
+}
+
+// ---------------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------------
+
+/// The type inside optional and result wrappers, where a variant shorthand's union type
+/// is found (`x: ?Shape = .Empty`).
+strip_wrappers :: fn(cx: ^FnCx, t0: Ty) -> Ty {
+    t := t0
+    while true {
+        match cx.s.tys.kind(t) {
+            .Optional(i) => { t = i }
+            .Result(_, ok) => { t = ok }
+            _ => return t
+        }
+    }
+}
+
+/// `.V`, `.V(args)`, `U.V`, `U.V(args)` for a union type `u`.
+construct_variant :: fn(cx: ^FnCx, u: Ty, name: ast.Ident, args: ?[]const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    vs := cx.s.union_variants(u) else {
+        cx.error(span, str.format("`.{}` needs a union type, but the expected type is `{}`", name.name, cx.show(u))!)
+        return error_expr(cx.s, span)
+    }
+    idx: ?usize = null
+    for i, v in enumerate(vs.variants) {
+        if v.name is name.name {
+            idx = i
+            break
+        }
+    }
+    i := idx else {
+        cx.error(name.span, str.format("`{}` has no variant `{}`", cx.show(u), name.name)!)
+        return error_expr(cx.s, span)
+    }
+    payload_ty := vs.variants[i].payload
+    payload: ?^Expr = null
+    if pt := payload_ty {
+        a := args else {
+            cx.error(span, str.format("variant `{}` needs a payload: `.{}(…)`", name.name, name.name)!)
+            return error_expr(cx.s, span)
+        }
+        if .Tuple(_) := cx.s.tys.kind(pt) { return cx.unsupported(span, "tuple payloads") }
+        if a.len is not 1 or a[0].kind is not .Positional(_) {
+            cx.error(span, str.format("expected one payload value of type `{}`", cx.show(pt))!)
+            return error_expr(cx.s, span)
+        }
+        .Positional(x) := a[0].kind else return error_expr(cx.s, span)
+        payload = cx.field_value(&x, pt)
+    } else if args is not null {
+        cx.error(span, str.format("variant `{}` has no payload", name.name)!)
+        return error_expr(cx.s, span)
+    }
+    return tir.mk(u, .Variant(tir.VariantExpr(variant: i.trunc(u32), payload: payload)), span)
+}
+
+/// A constructor field or argument value: `---` for plain data, else coerced.
+field_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
+    if e.kind is .Uninit {
+        if not cx.is_plain_data(ty) { cx.error(e.span, uninit_message(cx.s, ty)) }
+        return tir.mk(ty, .Uninit, e.span)
+    }
+    v := cx.expr(e, ty)
+    return cx.coerce(v, ty)
+}
+
+/// `S(field: value, …)`.
+construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    .Adt(id, _) := cx.s.tys.kind(ty) else return error_expr(cx.s, span)
+    if not cx.sees_private(ty) {
+        fields := cx.s.struct_fields(ty) else empty_slice(sema.FieldDef)
+        for f in fields {
+            if not f.is_pub {
+                cx.error(span, str.format("`{}` cannot be constructed outside its module: its field `{}` is private (§3.3)", cx.show(ty), f.name)!)
+                return error_expr(cx.s, span)
+            }
+        }
+    }
+    if id in cx.s.adts_in_progress.items { return cx.unsupported(span, "constructions in defaults") }
+    fields := cx.s.struct_fields(ty) else empty_slice(sema.FieldDef)
+    n := fields.len
+    stmts := list(tir.Stmt)
+    slots := list(?^Expr)
+    explicit := list(bool)
+    for _ in 0..n {
+        slots.push(null)!
+        explicit.push(false)!
+    }
+    written := list(usize)
+    bad_args := false
+    for arg in args {
+        match arg.kind {
+            .Positional(e) => {
+                if not bad_args {
+                    cx.error(e.span, str.format("`{}` is constructed with named arguments only: `{}(field: value)`", cx.show(ty), cx.show(ty))!)
+                }
+                bad_args = true
+            }
+            .Named(fname, e) => {
+                found: ?usize = null
+                for i, f in enumerate(fields) {
+                    if f.name is fname.name {
+                        found = i
+                        break
+                    }
+                }
+                i := found else {
+                    cx.error(fname.span, str.format("`{}` has no field `{}`", cx.show(ty), fname.name)!)
+                    _ = cx.expr(&e, null)
+                    continue
+                }
+                if explicit.items[i] { cx.error(fname.span, str.format("field `{}` is given twice", fname.name)!) }
+                explicit.items[i] = true
+                v := cx.field_value(&e, fields[i].ty)
+                written.push(i)!
+                slots.items[i] = v
+            }
+            .Spread(_) => return cx.unsupported(arg.span, "spreads")
+        }
+    }
+    // Arguments written out of field order are evaluated into temporaries first, so
+    // evaluation follows the written order (§7.1).
+    out_of_order := false
+    for k in 1..written.items.len.max(1) {
+        if written.items[k - 1] > written.items[k] { out_of_order = true }
+    }
+    if out_of_order {
+        for w in written.items {
+            if v := slots.items[w] { slots.items[w] = cx.bind_temp(v, &stmts) }
+        }
+    }
+    values := list(Expr)
+    for i in 0..n {
+        if v := slots.items[i] {
+            values.push(v^)!
+            continue
+        }
+        if fields[i].name is "_" and cx.s.bits_struct_ty(ty) is not null { return cx.unsupported(span, "`#bits` structs") }
+        if d := cx.field_default(id, i, fields[i].ty, span) {
+            values.push(d^)!
+        } else {
+            if not bad_args { cx.error(span, str.format("missing field `{}` (it has no default)", fields[i].name)!) }
+            values.push(error_expr(cx.s, span)^)!
+        }
+    }
+    agg := tir.mk(ty, .Aggregate(values.items), span)
+    if stmts.items.len is 0 { return agg }
+    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+}
+
+/// The default of field `i` of struct `id` of type `ty`, as the reference implementation
+/// gives it: the literal itself for a numeric, `bool` or `null` literal of the field's
+/// type, else the default's value in static memory.
+field_default :: fn(cx: ^FnCx, id: u32, i: usize, ty: Ty, span: source.Span) -> ?^Expr needs Load {
+    defaults := cx.s.adts.items[usize(id)].defaults
+    if i >= defaults.len or not defaults[i] { return null }
+    d := cx.s.field_default_expr(id, i) else return null
+    return cx.default_value(d, ty)
+}
+
+/// The value of the default `d` (written in the declaring module) of type `ty`.
+default_value :: fn(cx: ^FnCx, d: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    e := d
+    while .Paren(inner) := e.kind { e = inner }
+    negative := false
+    if .Unary(.Neg, x) := e.kind and x.kind in (.Int(_), .Float(_)) {
+        negative = true
+        e = x
+    }
+    numeric := tys.is_integer(ty) or tys.kind(ty) is .Float(_)
+    match e.kind {
+        .Int(lit) => if numeric and lit.suffix is null {
+            v := bigint.from_nat(&lit.value)
+            if negative { v = v.neg() }
+            if tys.is_integer(ty) { return tir.mk(ty, .Int(v), d.span) }
+            return cx.float_value(ratio.from_int(v), ty, d.span)
+        }
+        .Float(lit) => if tys.kind(ty) is .Float(_) and lit.suffix is null and not lit.imag {
+            r := sema.literal_rational(&lit.value)
+            if negative {
+                if r.is_zero() { return tir.mk(ty, .Const("<default>", d.span), d.span) }
+                r = r.neg()
+            }
+            return cx.float_value(r, ty, d.span)
+        }
+        .Bool(b) => if tys.kind(ty) is .Bool { return tir.mk(ty, .Bool(b), d.span) }
+        .Null => if tys.kind(ty) is .Optional(_) { return tir.mk(ty, .Null, d.span) }
+        _ => {}
+    }
+    return tir.mk(ty, .Const("<default>", d.span), d.span)
+}
+
+/// The float `r` rounded to float type `ty`.
+float_value :: fn(cx: ^FnCx, r: ratio.Rat, ty: Ty, span: source.Span) -> ^Expr needs Alloc {
+    .Float(bits) := cx.s.tys.kind(ty) else return error_expr(cx.s, span)
+    x: f64 = if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
+    return tir.mk(ty, .Float(x), span)
+}
+
+/// Binds `v` to a temporary (appending the `let` to `stmts`) unless it is a constant, and
+/// returns an expression reading it.
+bind_temp :: fn(cx: ^FnCx, v: ^Expr, stmts: ^List(tir.Stmt)) -> ^Expr needs Alloc {
+    if v.kind in (.Int(_), .Float(_), .UntypedFloat(_), .Bool(_), .Str(_), .Null, .Uninit, .Const(_)) { return v }
+    if contains_temp_ref(v) { return cx.unsupported(v.span, "temporaries in arguments") }
+    t := cx.temp(v.ty, v.span)
+    stmts.push(.Let(t, v))!
+    return tir.mk(v.ty, .Local(t), v.span)
+}
+
+contains_temp_ref :: fn(e: ^Expr) -> bool {
+    found := false
+    visit(e, fn(x: ^Expr) {
+        if x.kind is .AddrOfTemp(_) { found = true }
+    })
+    return found
+}

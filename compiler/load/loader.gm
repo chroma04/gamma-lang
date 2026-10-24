@@ -47,6 +47,12 @@ pub DeclState :: union {
     Error
 }
 
+/// A top-level item that declares no name.
+pub OtherItem :: struct {
+    pub module: usize
+    pub item: ast.Item
+}
+
 /// A top-level binding of some module.
 pub Decl :: struct {
     pub name: ast.Ident
@@ -93,6 +99,9 @@ pub Loader :: struct {
     cwd: string
     pub modules: List(Module)
     pub decls: List(Decl)
+    /// The top-level items other than bindings (tests, handler declarations and
+    /// intrinsic calls), with their modules.
+    pub other_items: List(OtherItem)
     /// The core prelude and the other core modules, once loaded.
     pub prelude: ?usize
     pub core_modules: List(usize)
@@ -112,6 +121,7 @@ pub loader :: fn(sm: ^source.SourceMap, diags: ^diag.Diagnostics, ids: ^ast.Node
         cwd: working_dir(),
         modules: list(Module),
         decls: list(Decl),
+        other_items: list(OtherItem),
         prelude: null,
         core_modules: list(usize),
         packages: list(Package),
@@ -332,7 +342,10 @@ collect_whens :: fn(l: ^Loader, id: usize) needs Alloc {
 }
 
 collect_item :: fn(l: ^Loader, module: usize, item: ast.Item) needs Alloc {
-    .Binding(b) := item.kind else return
+    .Binding(b) := item.kind else {
+        l.other_items.push(OtherItem(module: module, item: item))!
+        return
+    }
     if b.names.len is not 1 {
         l.diags.report(b.span, "destructuring is not allowed at top level; bind each name separately")
         return
@@ -387,7 +400,7 @@ import_path :: fn(item: ^const ast.Item) -> ?string {
 
 /// Integer type names (`u1` to `u128`, `i1` to `i128`) and the other builtin type names
 /// that cannot be declared (§B.3).
-is_reserved_type_name :: fn(name: string) -> bool {
+pub is_reserved_type_name :: fn(name: string) -> bool {
     if name in ("usize", "isize", "f16", "f32", "f64", "bool", "never", "type", "rawptr", "cont") { return true }
     if name.len < 2 or name[0] not in ('u', 'i') or name[1] is '0' or name.len > 4 { return false }
     bits: u32 = 0

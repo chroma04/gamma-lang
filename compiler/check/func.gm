@@ -1,0 +1,862 @@
+//! Checking function bodies: the per-function context, local scopes, statements, blocks
+//! and control flow (§4, §8), producing the typed representation (`tir`). Mirrors
+//! `src/sema/func.rs`; expressions are in `expr.gm`, coercions in `coerce.gm` and the
+//! final pass over a body in `finalize.gm`.
+//!
+//! gammac checks a growing subset of the language: a construct it cannot check yet is
+//! reported with `Sema.unsupported`, and the result is not compared with the reference
+//! implementation's.
+
+ast :: import "../ast"
+load :: import "../load"
+bigint :: import "../bigint"
+diag :: import "../diag"
+ratio :: import "../ratio"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+tir :: import "../tir"
+types :: import "../types"
+
+Sema :: sema.Sema
+Load :: sema.Load
+Ty :: types.Ty
+Expr :: tir.Expr
+EffectRef :: types.EffectRef
+EffectSet :: types.EffectSet
+
+/// What a name in a local scope denotes.
+LocalBinding :: union {
+    Var: u32
+    /// An untyped constant local (`x :: 5`), inlined at each use.
+    Untyped: sema.Untyped
+    /// A label of an enclosing loop.
+    Label
+}
+
+Binding :: struct {
+    name: string
+    value: LocalBinding
+}
+
+/// What a `break` to a label supplies (§8.5).
+LabelValue :: union {
+    /// A `while` loop: nothing.
+    Nothing
+    /// A `for` loop: the type of its value.
+    Loop: Ty
+}
+
+LabelInfo :: struct {
+    name: ?string
+    id: u32
+    is_loop: bool
+    value: LabelValue
+}
+
+/// A coercion whose source was an unresolved literal type when it was checked; decided
+/// after inference (§6.1).
+PendingCoercion :: struct {
+    source: Ty
+    target: Ty
+    span: source.Span
+}
+
+/// A check that needs the final types of literals.
+Obligation :: union {
+    /// An expression statement must have type `()` or `never`.
+    UnitStatement: (ty: Ty, span: source.Span)
+    /// A lossless conversion `T(x)` (§6.5).
+    Conversion: (from: Ty, to: Ty, span: source.Span)
+    /// Comparison operands must be ordered (§7.5).
+    Ord: (ty: Ty, span: source.Span)
+    /// An operator operand must be numeric.
+    Numeric: NumericObligation
+}
+
+NumericObligation :: struct {
+    ty: Ty
+    span: source.Span
+    op: string
+    int_only: bool
+    signed_only: bool
+}
+
+Performed :: struct {
+    effect_: EffectRef
+    span: source.Span
+}
+
+/// A `break` to a loop of this function: the label and the value's type and place.
+LabelBreak :: struct {
+    label: u32
+    ty: Ty
+    span: source.Span
+}
+
+/// Where a fix adds an effect to a function's signature.
+NeedsAt :: struct {
+    span: source.Span
+    has_needs: bool
+}
+
+pub FnCx :: struct {
+    s: ^Sema
+    module: usize
+    locals: List(tir.LocalDecl)
+    /// Block scopes, innermost last.
+    scopes: List(List(Binding))
+    infer: InferTable
+    ret: Ty
+    declared: EffectSet
+    performed: List(Performed)
+    labels: List(LabelInfo)
+    next_label: u32
+    pending: List(PendingCoercion)
+    obligations: List(Obligation)
+    failed_coercions: List(source.Span)
+    fn_id: ?u32
+    needs_at: ?NeedsAt
+    label_breaks: List(LabelBreak)
+    /// Set just before checking an argument `&e` for a `^const T` parameter: `e` may be a
+    /// temporary, which lives until the call returns (§7.10).
+    temp_ref_arg: bool
+}
+
+fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs Alloc {
+    scopes := list(List(Binding))
+    scopes.push(list(Binding))!
+    return FnCx(
+        s: s,
+        module: module,
+        locals: list(tir.LocalDecl),
+        scopes: scopes,
+        infer: infer_table(),
+        ret: ret,
+        declared: declared,
+        performed: list(Performed),
+        labels: list(LabelInfo),
+        next_label: 0,
+        pending: list(PendingCoercion),
+        obligations: list(Obligation),
+        failed_coercions: list(source.Span),
+        fn_id: null,
+        needs_at: null,
+        label_breaks: list(LabelBreak),
+        temp_ref_arg: false,
+    )
+}
+
+error :: fn(cx: ^FnCx, span: source.Span, msg: string) needs Alloc {
+    cx.s.error(span, msg)
+}
+
+/// Reports that gammac cannot check `what` yet, and returns an error expression.
+unsupported :: fn(cx: ^FnCx, span: source.Span, what: string) -> ^Expr needs Alloc {
+    cx.s.unsupported(span, what)
+    return error_expr(cx.s, span)
+}
+
+show :: fn(cx: ^FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
+
+// ---------------------------------------------------------------------------------
+// Function bodies
+// ---------------------------------------------------------------------------------
+
+/// Checks the bodies of the functions declared so far, newest first, as the reference
+/// implementation does, except those of the core library.
+pub check_bodies :: fn(s: ^Sema) needs Load {
+    while body := s.pending_bodies.pop() {
+        if s.l.modules.items[body.module].is_prelude { continue }
+        check_fn_body(s, body.fn_id, body.module, body.lit)
+    }
+}
+
+/// Checks the body of a top-level function and stores it.
+check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) needs Load {
+    sig := s.fns.items[usize(fn_id)]
+    if sig.generics.len > 0 {
+        s.unsupported(sig.span, "generic function bodies")
+        return
+    }
+    cx := fn_cx(s, module, sig.ret, sig.effects)
+    cx.fn_id = fn_id
+    // `needs not` (foreign functions only) takes no fix.
+    no_needs := false
+    if e := lit.sig.effects { no_needs = e.len is 0 }
+    if not no_needs {
+        hi := lit.sig.span.hi
+        cx.needs_at = NeedsAt(span: source.Span(file: lit.sig.span.file, lo: hi, hi: hi), has_needs: lit.sig.effects is not null)
+    }
+    params := list(u32)
+    for p in sig.params {
+        if p.generic is not null { continue }
+        id := cx.new_local(p.name, p.ty, false, p.span)
+        if p.name is not "_" { cx.declare(p.name, .Var(id), p.span) }
+        params.push(id)!
+    }
+    body := cx.fn_body(&lit.body)
+    cx.finish(body)
+    s.defs.items[usize(fn_id)] = tir.FnDef(kind: .Named, params: params.items, locals: cx.locals.items, body: body)
+}
+
+/// Runs the final inference pass and the effect check.
+finish :: fn(cx: ^FnCx, body: ^Expr) needs Load {
+    cx.finalize(body)
+    cx.check_effects()
+    for i in 0..cx.locals.items.len {
+        cx.locals.items[i].ty = cx.infer.resolve(cx.s, cx.locals.items[i].ty)
+    }
+}
+
+check_effects :: fn(cx: ^FnCx) needs Load {
+    reported := list(EffectRef)
+    for p in cx.performed.items {
+        if set_contains(&cx.declared, &p.effect_) { continue }
+        seen := false
+        for r in reported.items {
+            if types.cmp_ref(&r, &p.effect_) is 0 { seen = true }
+        }
+        if seen { continue }
+        name := cx.s.tys.show_ref(&p.effect_)
+        // Another instantiation of the same effect declared: a different message.
+        for d in cx.declared.effects {
+            if d.eff is p.effect_.eff {
+                _ = cx.unsupported(p.span, "effects declared with other arguments")
+            }
+        }
+        d := diag.error(p.span, str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!)
+        if fix := cx.needs_fix(&p.effect_) { d.add_fix(str.format("add `{}` to the function's effects", name)!, fix.span, fix.text) }
+        cx.s.emit(d)
+        reported.push(p.effect_)!
+    }
+    cx.performed.clear()
+}
+
+/// The edit that adds effect `e` to the signature of the function being checked, if it
+/// is a top-level function and `e` is written as its bare name there.
+needs_fix :: fn(cx: ^FnCx, e: ^const EffectRef) -> ?(span: source.Span, text: string) needs Load {
+    at := cx.needs_at else return null
+    name := cx.s.tys.effect_name(e.eff)
+    d := cx.s.lookup_module_name(cx.module, name) else return null
+    .Effect(eff) := cx.s.resolve_decl(d) else return null
+    bare := cx.s.bare_effect_ref(eff)
+    if types.cmp_ref(&bare, e) is not 0 { return null }
+    // `main` performs only ambient effects; the others must be handled inside it.
+    if f := cx.fn_id {
+        if cx.s.fns.items[usize(f)].name is "main" and not cx.s.is_ambient(e.eff) { return null }
+    }
+    text := if at.has_needs { str.format(" + {}", name)! } else { str.format(" needs {}", name)! }
+    return (span: at.span, text: text)
+}
+
+record_effects :: fn(cx: ^FnCx, set: ^const EffectSet, span: source.Span) needs Alloc {
+    for e in set.effects {
+        if y := cx.s.yield_effect and e.eff is y {
+            _ = cx.unsupported(span, "calls of iterators")
+        }
+        cx.performed.push(Performed(effect_: e, span: span))!
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Locals and scopes
+// ---------------------------------------------------------------------------------
+
+new_local :: fn(cx: ^FnCx, name: string, ty: Ty, mutable: bool, span: source.Span) -> u32 needs Alloc {
+    cx.locals.push(tir.LocalDecl(name: name, ty: ty, mutable: mutable, span: span))!
+    return (cx.locals.items.len - 1).trunc(u32)
+}
+
+/// A compiler-generated local that is never named by the program.
+temp :: fn(cx: ^FnCx, ty: Ty, span: source.Span) -> u32 needs Alloc => cx.new_local("<tmp>", ty, true, span)
+
+/// The value of `e` if it is an untyped constant expression (§6.2), which may name
+/// untyped constant locals.
+try_untyped :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?sema.UntypedResult needs Load {
+    match e.kind {
+        .Ident(id) => {
+            b := cx.lookup_local(id.name) else return cx.s.try_untyped(cx.module, e)
+            .Untyped(v) := b else return null
+            return .Ok(v)
+        }
+        .Paren(inner) => return cx.try_untyped(inner)
+        .Unary(.Neg, operand) => {
+            r := cx.try_untyped(operand) else return null
+            .Ok(v) := r else return .Failed
+            match sema.negate(&v) {
+                .Ok(x) => return .Ok(x)
+                .Err(m) => {
+                    cx.error(e.span, m)
+                    return .Failed
+                }
+            }
+        }
+        .Binary(op, lhs, rhs) => {
+            if not untyped_op(op) { return null }
+            a := cx.try_untyped(lhs) else return null
+            b := cx.try_untyped(rhs) else return null
+            .Ok(x) := a else return .Failed
+            .Ok(y) := b else return .Failed
+            match sema.binary(op, &x, &y) {
+                .Ok(v) => return .Ok(v)
+                .Err(m) => {
+                    cx.error(e.span, m)
+                    return .Failed
+                }
+            }
+        }
+        _ => return cx.s.try_untyped(cx.module, e)
+    }
+}
+
+/// The operators of untyped constant expressions (§6.2).
+untyped_op :: fn(op: ast.BinOp) -> bool => match op {
+    .Add(f), .Sub(f), .Mul(f), .Shl(f) => f is .Checked
+    .Div, .Rem, .Shr, .BitAnd, .BitOr, .BitXor, .Lt, .Le, .Gt, .Ge, .Is, .IsNot => true
+    _ => false
+}
+
+lookup_local :: fn(cx: ^const FnCx, name: string) -> ?LocalBinding {
+    i := cx.scopes.items.len
+    while i > 0 {
+        i -= 1
+        scope := cx.scopes.items[i].items
+        j := scope.len
+        while j > 0 {
+            j -= 1
+            if scope[j].name is name { return scope[j].value }
+        }
+    }
+    return null
+}
+
+/// Declares a local name, enforcing the no-shadowing rule and the rule that a local may
+/// not be named like a type visible here (§4.6).
+declare :: fn(cx: ^FnCx, name: string, b: LocalBinding, span: source.Span) needs Load {
+    if name is "_" { return }
+    if cx.lookup_local(name) is not null {
+        cx.error(span, str.format("`{}` is already declared in this function; locals may not be shadowed", name)!)
+    } else if b is not .Label and cx.s.names_type(cx.module, name) {
+        cx.error(span, str.format("`{}` names a type; a local may not have the name of a type (§4.6)", name)!)
+    } else if load.is_reserved_type_name(name) {
+        cx.error(span, str.format("`{}` is a reserved type name and cannot be redeclared", name)!)
+    }
+    cx.scopes.items[cx.scopes.items.len - 1].push(Binding(name: name, value: b))!
+}
+
+push_scope :: fn(cx: ^FnCx) needs Alloc {
+    cx.scopes.push(list(Binding))!
+}
+
+pop_scope :: fn(cx: ^FnCx) {
+    _ = cx.scopes.pop()
+}
+
+new_label :: fn(cx: ^FnCx, name: ?string, is_loop: bool, value: LabelValue) -> u32 needs Alloc {
+    id := cx.next_label
+    cx.next_label += 1
+    cx.labels.push(LabelInfo(name: name, id: id, is_loop: is_loop, value: value))!
+    return id
+}
+
+// ---------------------------------------------------------------------------------
+// Bodies, blocks and statements
+// ---------------------------------------------------------------------------------
+
+fn_body :: fn(cx: ^FnCx, body: ^const ast.FnBody) -> ^Expr needs Load {
+    ret := cx.ret
+    match body^ {
+        .Expr(e) => {
+            ex := cx.expr(e, ret)
+            return cx.coerce(ex, ret)
+        }
+        .Block(b) => {
+            block := cx.block(&b, false)
+            return cx.finish_block_body(block, &b)
+        }
+    }
+}
+
+/// A block body that has been checked: falling off the end of an `E!()` function returns
+/// success (§11.1); other non-unit functions must return a value.
+finish_block_body :: fn(cx: ^FnCx, block: ^Expr, b: ^const ast.Block) -> ^Expr needs Load {
+    ret := cx.ret
+    tys := &cx.s.tys
+    if .Result(_, ok) := tys.kind(ret) and tys.is_unit(ok) and tys.kind(block.ty) is not .Never {
+        span := source.Span(file: b.span.file, lo: b.span.hi, hi: b.span.hi)
+        success := cx.coerce(unit(cx.s, span), ret)
+        stmts := list(tir.Stmt)
+        stmts.push(.Expr(block))!
+        blk := new(tir.Block(stmts: stmts.items, tail: success, span: b.span))!
+        return tir.mk(ret, .Block(blk), b.span)
+    }
+    if not tys.is_unit(ret) and tys.kind(block.ty) is not .Never { cx.missing_return(b, ret) }
+    return block
+}
+
+/// Reports that a block body returning `ret` can end without a value.
+missing_return :: fn(cx: ^FnCx, b: ^const ast.Block, ret: Ty) needs Load {
+    if b.stmts.len > 0 {
+        if .Expr(e) := b.stmts[b.stmts.len - 1].kind and e.kind not in (.If(_), .Match(_), .For(_), .With(_), .Block(_)) {
+            k := cx.obligations.items.len
+            while k > 0 {
+                k -= 1
+                .UnitStatement(ty, span) := cx.obligations.items[k] else continue
+                if span is not e.span { continue }
+                t := cx.infer.resolve(cx.s, ty)
+                if cx.s.tys.is_unit(t) or cx.s.tys.kind(t) is .Never { continue }
+                _ = cx.obligations.remove(k)
+                cx.error(e.span, str.format("a block body's last expression is not its value: write `return …`, or `=> …` for a body that is one expression (this function returns `{}`)", cx.show(ret))!)
+                return
+            }
+        }
+    }
+    cx.error(source.Span(file: b.span.file, lo: b.span.hi, hi: b.span.hi), str.format("function returning `{}` can reach the end of its body without returning a value", cx.show(ret))!)
+}
+
+/// Checks a block. If `value` is true, the block's value is used: its final statement,
+/// if an expression, supplies the value (§7.12).
+block :: fn(cx: ^FnCx, b: ^const ast.Block, value: bool) -> ^Expr needs Load => cx.block_expected(b, value, null)
+
+block_expected :: fn(cx: ^FnCx, b: ^const ast.Block, value: bool, expected: ?Ty) -> ^Expr needs Load {
+    cx.push_scope()
+    stmts := list(tir.Stmt)
+    tail: ?^Expr = null
+    diverges := false
+    cause: ?(span: source.Span, why: string) = null
+    n := b.stmts.len
+    for i in 0..n {
+        s := &b.stmts[i]
+        if diverges {
+            d := diag.error(s.span, "unreachable code")
+            if c := cause { d.add_label(c.span, c.why) }
+            cx.s.emit(d)
+            break
+        }
+        if s.kind is .LetElse(_) {
+            _ = cx.unsupported(s.span, "bindings with an `else`")
+            break
+        }
+        if i + 1 is n and value {
+            if .Expr(e) := s.kind {
+                ex := cx.expr(e, expected)
+                diverges = cx.s.tys.kind(ex.ty) is .Never
+                tail = ex
+                break
+            }
+        }
+        st := cx.stmt(s)
+        diverges = stmt_diverges(cx.s, st)
+        if diverges { cause = stmt_never_cause(cx.s, st) }
+        stmts.push(st)!
+    }
+    cx.pop_scope()
+    ty := if t := tail { t.ty } else if diverges { cx.s.tys.never_ty() } else { cx.s.tys.unit() }
+    blk := new(tir.Block(stmts: stmts.items, tail: tail, span: b.span))!
+    return tir.mk(ty, .Block(blk), b.span)
+}
+
+stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
+    match s.kind {
+        .Binding(attrs, binding) => {
+            for a in attrs {
+                cx.error(a.span, str.format("attribute `#{}` does not apply to a local binding (§20.2)", a.name.name)!)
+            }
+            return cx.binding(&binding)
+        }
+        .Assign(places, op, value) => return cx.assign(places, op, value, s.span)
+        .Expr(e) => return .Expr(cx.stmt_expr(e))
+        .While(w) => return .Expr(cx.while_loop(w.label, &w.cond, &w.body, s.span))
+        .Block(b) => return .Expr(cx.block(&b, false))
+        .Defer(_) => return .Expr(cx.unsupported(s.span, "`defer` and `errdefer`"))
+        .When(_) => return .Expr(cx.unsupported(s.span, "local `when`"))
+        .Cancel(_) => return .Expr(cx.unsupported(s.span, "`cancel`"))
+        .LetElse(_) => return .Expr(cx.unsupported(s.span, "pattern bindings with `else`"))
+    }
+}
+
+/// An expression in statement position: its value must be `()` or `never` (§7.14).
+stmt_expr :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ^Expr needs Load {
+    ex := match e.kind {
+        .If(i) => cx.if_expr(i, false, null)
+        .Block(b) => cx.block(&b, false)
+        .For(_), .Match(_), .With(_) => cx.unsupported(e.span, expr_kind_text(&e.kind))
+        _ => cx.expr(e, null)
+    }
+    cx.obligations.push(.UnitStatement(ex.ty, e.span))!
+    return ex
+}
+
+binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
+    if b.names.len is not 1 { return .Expr(cx.unsupported(b.span, "destructuring")) }
+    name := b.names[0]
+    if b.kind is .Const and b.ty is null {
+        if b.init.kind is .Fn(_) { return .Expr(cx.unsupported(b.span, "nested functions")) }
+        if cx.local_type_init(b.init) { return .Expr(cx.unsupported(b.span, "local type aliases")) }
+    }
+    annot: ?Ty = null
+    if t := b.ty { annot = cx.s.resolve_type(cx.module, t) }
+    // An immutable binding of an untyped constant expression is an untyped constant (§6.2).
+    if b.kind is .Const and annot is null {
+        if r := cx.try_untyped(b.init) {
+            if .Ok(v) := r { cx.declare(name.name, .Untyped(v), name.span) }
+            return .Expr(unit(cx.s, b.span))
+        }
+    }
+    mutable := b.kind is .Var
+    errors_before := cx.s.l.diags.list.items.len
+    init := if b.init.kind is .Uninit {
+        if not mutable { cx.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)") }
+        if t := annot {
+            if not cx.is_plain_data(t) { cx.error(b.init.span, uninit_message(cx.s, t)) }
+            tir.mk(t, .Uninit, b.init.span)
+        } else {
+            cx.error(b.init.span, "`---` needs a type annotation")
+            error_expr(cx.s, b.init.span)
+        }
+    } else if b.init.kind is .Handler(_) {
+        cx.unsupported(b.init.span, "handler literals")
+    } else {
+        ex := cx.expr(b.init, annot)
+        if t := annot { cx.coerce(ex, t) } else { ex }
+    }
+    // An immutable local whose initializer is a constant expression is evaluated at
+    // compile time (§17.2): gammac cannot evaluate yet.
+    if b.kind is .Const and errors_before is cx.s.l.diags.list.items.len and b.init.kind is not .Uninit and closed_const(cx.s, init) and not cx.unsettled(init) {
+        return .Expr(cx.unsupported(b.span, "immutable locals with constant initializers"))
+    }
+    ty := annot else init.ty
+    if cx.s.tys.kind(ty) is .Type {
+        cx.error(b.init.span, "types cannot be stored in variables; use `::` at top level for a type alias")
+    }
+    if mutable and cx.s.tys.kind(cx.infer.resolve(cx.s, ty)) in (.Fn(_), .Handler(_)) {
+        cx.error(b.span, "a second-class value (a function literal or handler) may only be bound with `::`, not stored in a variable (§11.6)")
+    }
+    id := cx.new_local(name.name, ty, mutable, name.span)
+    // The name is in scope only after its initializer (§4.6).
+    cx.declare(name.name, .Var(id), name.span)
+    return .Let(id, init)
+}
+
+/// Plain data (§5.19).
+is_plain_data :: fn(cx: ^FnCx, t: Ty) -> bool needs Alloc => cx.s.tys.is_error(t) or cx.s.is_plain(t)
+
+/// Whether the initializer of a local `::` binding is a type expression, making the
+/// binding a local alias (§3.5).
+local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+    match e.kind {
+        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return true
+        .Struct(_), .Union(_), .Effect(_), .Attributed(_) => return true
+        .Paren(inner) => return cx.local_type_init(inner)
+        .Tuple(_) => return cx.s.looks_like_type(cx.module, e)
+        .Ident(id) => {
+            if cx.lookup_local(id.name) is not null { return false }
+            if d := cx.s.lookup_module_name(cx.module, id.name) { return cx.s.resolve_decl(d) is .Type(_) }
+            return sema.is_builtin_type_name(id.name)
+        }
+        .Field(base, name) => {
+            m := cx.s.module_named(cx.module, base) else return false
+            d := cx.s.l.lookup(m, name.name) else return false
+            return cx.s.l.decls.items[d].item.is_pub and cx.s.resolve_decl(d) is .Type(_)
+        }
+        .Intrinsic(i) => return i.name.name is "type_of"
+        _ => return false
+    }
+}
+
+/// Whether the signature of a function that `e` calls is not known yet.
+unsettled :: fn(cx: ^FnCx, e: ^Expr) -> bool needs Load {
+    found := false
+    visit(e, fn(x: ^Expr) {
+        f: ?u32 = null
+        match x.kind {
+            .Call(callee, _) => if .Fn(g) := callee { f = g }
+            .FnRef(g) => { f = g }
+            _ => {}
+        }
+        if g := f {
+            sig := &cx.s.fns.items[usize(g)]
+            if cx.s.tys.has_infer(sig.ret) { found = true }
+        }
+    })
+    return found
+}
+
+/// Calls `f` on every expression in `e` (pre-order).
+visit :: fn(e: ^Expr, f: fn(x: ^Expr)) {
+    f(e)
+    tir.for_each_child(e, fn(c: ^Expr) { visit(c, f) })
+}
+
+/// True if `e` mentions no locals: a candidate for evaluation at compile time.
+closed_const :: fn(s: ^Sema, e: ^Expr) -> bool {
+    ok := true
+    visit(e, fn(x: ^Expr) {
+        if s.tys.has_param(x.ty) or x.kind in (.Local(_), .Upvar(_)) { ok = false }
+    })
+    return ok
+}
+
+// ---------------------------------------------------------------------------------
+// Assignments
+// ---------------------------------------------------------------------------------
+
+assign :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
+    if places.len is not 1 { return .Expr(cx.unsupported(span, "assignments to several places")) }
+    place_ast := &places[0]
+    if place_ast.kind is .Underscore {
+        if op is not .Assign { cx.error(span, "`_` can only be assigned with `=`") }
+        v := cx.expr(value, null)
+        stmts := list(tir.Stmt)
+        stmts.push(.Expr(v))!
+        return .Expr(tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span))
+    }
+    if not cx.assignable_name(place_ast) {
+        _ = cx.expr(value, null)
+        return .Expr(unit(cx.s, span))
+    }
+    place := cx.expr(place_ast, null)
+    cx.require_mutable_place(place, place_ast.span)
+    match op {
+        .Assign => {
+            v := cx.expr(value, place.ty)
+            return .Assign(place, cx.coerce(v, place.ty))
+        }
+        .Compound(bop) => {
+            // `p op= e` is `p = p op e` with `p` evaluated once (§4.7).
+            if is_simple_place(place) {
+                rhs := cx.compound_op(bop, copy_expr(place), value, span)
+                return .Assign(place, cx.coerce(rhs, place.ty))
+            }
+            pty := cx.s.tys.ptr(false, place.ty)
+            tmp := cx.temp(pty, span)
+            addr := tir.mk(pty, .AddrOf(place), span)
+            deref :: fn() -> ^Expr needs Alloc => tir.mk(place.ty, .Deref(tir.mk(pty, .Local(tmp), span)), span)
+            rhs := cx.compound_op(bop, deref(), value, span)
+            rhs = cx.coerce(rhs, place.ty)
+            stmts := list(tir.Stmt)
+            stmts.push(.Let(tmp, addr))!
+            stmts.push(.Assign(deref(), rhs))!
+            return .Expr(tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span))
+        }
+    }
+}
+
+/// A copy of an expression tree, for a place used twice.
+copy_expr :: fn(e: ^Expr) -> ^Expr needs Alloc {
+    c := new(e^)!
+    match c.kind {
+        .Field(base, index) => { c.kind = .Field(copy_expr(base), index) }
+        .Deref(p) => { c.kind = .Deref(copy_expr(p)) }
+        _ => {}
+    }
+    return c
+}
+
+/// `place op value` for `place op= value`: the right operand of an arithmetic or bitwise
+/// operator may have a narrower numeric type that converts losslessly (§4.7, §6.5).
+compound_op :: fn(cx: ^FnCx, op: ast.BinOp, place: ^Expr, value: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    arith := match op {
+        .Add(_), .Sub(_), .Mul(_), .Div, .Rem, .BitAnd, .BitOr, .BitXor => true
+        _ => false
+    }
+    pt := cx.infer.resolve(cx.s, place.ty)
+    if not arith or not cx.numeric(pt) { return cx.binary_op(op, place, value, span) }
+    r := cx.expr(value, place.ty)
+    rt := cx.infer.resolve(cx.s, r.ty)
+    if pt is not rt and cx.numeric(rt) and lossless(cx.s, rt, pt) {
+        r = tir.mk(pt, .Builtin(.Convert, one_expr(r)), r.span)
+    }
+    return cx.arith_op(op, place, r, span)
+}
+
+numeric :: fn(cx: ^FnCx, t: Ty) -> bool => cx.s.tys.is_integer(t) or cx.s.tys.kind(t) is .Float(_)
+
+/// A slice holding one expression.
+one_expr :: fn(e: ^Expr) -> []Expr needs Alloc {
+    l := list(Expr)
+    l.push(e^)!
+    return l.items
+}
+
+/// For an assignment to a plain name: whether it names mutable storage (reports it if not).
+assignable_name :: fn(cx: ^FnCx, place: ^const ast.Expr) -> bool needs Load {
+    .Ident(id) := place.kind else return true
+    immutable := match cx.lookup_local(id.name) {
+        .Var(l) => not cx.locals.items[usize(l)].mutable
+        null => {
+            d := cx.s.lookup_module_name(cx.module, id.name)
+            if x := d { cx.s.resolve_decl(x) is not .Error } else { true }
+        }
+        _ => true
+    }
+    if immutable {
+        cx.error(place.span, str.format("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name)!)
+    }
+    return not immutable
+}
+
+/// Reports an error unless `place` is a mutable place (§7.2).
+require_mutable_place :: fn(cx: ^FnCx, place: ^Expr, span: source.Span) needs Alloc {
+    match cx.place_mutability(place) {
+        true => {}
+        false => cx.error(span, "cannot assign to an immutable place")
+        null => {
+            if not cx.s.tys.is_error(place.ty) {
+                cx.error(span, "the left side of an assignment must be a place (a variable, `p^`, field or element)")
+            }
+        }
+    }
+}
+
+/// Whether `e` is a mutable place, or `null` if it is not a place.
+place_mutability :: fn(cx: ^FnCx, e: ^Expr) -> ?bool {
+    tys := &cx.s.tys
+    if tys.is_error(e.ty) { return true }
+    match e.kind {
+        .Local(l) => return cx.locals.items[usize(l)].mutable
+        .Const(_) => return false
+        .Deref(p) => {
+            if .Ptr(c, _) := tys.kind(p.ty) { return not c }
+            return false
+        }
+        .Field(base, _) => return cx.place_mutability(base)
+        .Index(base, _, _) => match tys.kind(base.ty) {
+            .Slice(c, _), .ManyPtr(c, _) => return not c
+            .Array(_), .ParamArray(_) => return cx.place_mutability(base)
+            _ => return null
+        }
+        _ => return null
+    }
+}
+
+/// A place whose re-evaluation has no side effects and is cheap.
+is_simple_place :: fn(e: ^Expr) -> bool {
+    match e.kind {
+        .Local(_), .Upvar(_) => return true
+        .Field(base, _) => return is_simple_place(base)
+        .Deref(p) => return p.kind is .Local(_)
+        _ => return false
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Loops and conditions
+// ---------------------------------------------------------------------------------
+
+while_loop :: fn(cx: ^FnCx, label: ?ast.Ident, cond: ^const ast.Cond, body: ^const ast.Block, span: source.Span) -> ^Expr needs Load {
+    cx.push_scope()
+    name: ?string = null
+    if l := label {
+        cx.declare(l.name, .Label, l.span)
+        name = l.name
+    }
+    c := cx.cond(cond)
+    id := cx.new_label(name, true, .Nothing)
+    b := cx.block(body, false)
+    _ = cx.labels.pop()
+    cx.pop_scope()
+    infinite := true
+    for part in c {
+        match part {
+            .Bool(x) => if x.kind is not .Bool(true) { infinite = false }
+        }
+    }
+    breaks := false
+    i := 0
+    while i < cx.label_breaks.items.len {
+        if cx.label_breaks.items[i].label is id {
+            breaks = true
+            _ = cx.label_breaks.remove(i)
+        } else {
+            i += 1
+        }
+    }
+    ty := if infinite and not breaks { cx.s.tys.never_ty() } else { cx.s.tys.unit() }
+    .Block(blk) := b.kind else return b
+    return tir.mk(ty, .Loop(tir.LoopExpr(label: id, cond: c, body: blk, step: null)), span)
+}
+
+/// Checks an `if`/`while` condition (§8.2).
+cond :: fn(cx: ^FnCx, c: ^const ast.Cond) -> []tir.CondPart needs Load {
+    parts := list(tir.CondPart)
+    for p in c.parts {
+        match p {
+            .Expr(e) => {
+                ex := cx.expr(e, cx.s.tys.bool_ty())
+                parts.push(.Bool(cx.expect_bool(ex)))!
+            }
+            .Bind(_) => parts.push(.Bool(cx.unsupported(c.span, "binding conditions")))!
+        }
+    }
+    return parts.items
+}
+
+expect_bool :: fn(cx: ^FnCx, e: ^Expr) -> ^Expr needs Load {
+    k := cx.s.tys.kind(e.ty)
+    if k is not .Bool and k is not .Never and k is not .Error {
+        t := cx.infer.resolve(cx.s, e.ty)
+        cx.error(e.span, str.format("expected `bool`, found `{}` (there are no truthy values)", cx.show(t))!)
+    }
+    return e
+}
+
+// ---------------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------------
+
+pub unit :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.unit(), .Aggregate(empty_slice(Expr)), span)
+
+pub error_expr :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.error(), .Aggregate(empty_slice(Expr)), span)
+
+/// The error for `---` at a type that is not plain data (§4.4).
+uninit_message :: fn(s: ^Sema, ty: Ty) -> string needs Alloc {
+    hint := if s.tys.kind(ty) is .Array(_) { "; an array can start filled: `[N]T(fill: v)`" } else { "" }
+    return str.format("`---` requires a plain-data type, but `{}` is not (§4.4){}", s.show(ty), hint)!
+}
+
+stmt_diverges :: fn(s: ^Sema, st: tir.Stmt) -> bool => match st {
+    .Expr(e) => s.tys.kind(e.ty) is .Never
+    .Let(_, null) => false
+    .Let(_, x) => s.tys.kind(x.ty) is .Never
+    .Assign(_, v) => s.tys.kind(v.ty) is .Never
+}
+
+/// The expression that makes statement `st` diverge, with the reason it never completes.
+stmt_never_cause :: fn(s: ^Sema, st: tir.Stmt) -> ?(span: source.Span, why: string) {
+    match st {
+        .Expr(e) => return never_cause(s, e)
+        .Let(_, null) => return null
+        .Let(_, x) => return never_cause(s, x)
+        .Assign(_, v) => return never_cause(s, v)
+    }
+}
+
+/// Why `e`, an expression of type `never`, never completes.
+never_cause :: fn(s: ^Sema, e: ^Expr) -> ?(span: source.Span, why: string) {
+    why: string = match e.kind {
+        .Loop(_) => "this loop never ends: it has no `break`"
+        .Return(_) => "this `return` leaves the function"
+        .Break(_) => "this `break` leaves the loop"
+        .Continue(_) => "this `continue` starts the next iteration of the loop"
+        .Trap(_) => "this stops the program"
+        .Call(callee, _) => if callee is .Perform(_) { "this operation never returns to its caller: its result type is `never`" } else { "this call never returns: its result type is `never`" }
+        .If(_) => "this `if` never completes: each of its branches leaves"
+        .Block(b) => {
+            if t := b.tail and s.tys.kind(t.ty) is .Never { return never_cause(s, t) }
+            if b.stmts.len > 0 { return stmt_never_cause(s, b.stmts[b.stmts.len - 1]) }
+            return null
+        }
+        _ => return null
+    }
+    return (span: e.span, why: why)
+}
+
+/// Whether `set` contains the effect `e`.
+set_contains :: fn(set: ^const EffectSet, e: ^const EffectRef) -> bool {
+    for x in set.effects {
+        if types.cmp_ref(&x, e) is 0 { return true }
+    }
+    return false
+}

@@ -4,6 +4,7 @@
 //!     gammac parse [--diag-format=short|json] [--recover] [--dump] FILE...
 //!     gammac modules [--diag-format=short|json] ROOT...
 //!     gammac decls [--diag-format=short|json] ROOT...
+//!     gammac tir [--diag-format=short|json] ROOT...
 //!
 //! `lex` prints the tokens of each file in the format of `gamma lex`. `parse` parses each
 //! file and, with `--dump`, prints its syntax tree in the format of `gamma parse --dump`.
@@ -13,7 +14,8 @@
 //! the executable. Each prints the diagnostics to standard error in the chosen format
 //! (default `short`). `decls` loads the program likewise, with the core library from
 //! `$GAMMA_CORE` or else the `core` directory next to the standard library's, resolves its
-//! declarations and prints them in the format of `gamma decls`.
+//! declarations and prints them in the format of `gamma decls`. `tir` also checks the
+//! function bodies and, if there are no errors, prints them in the format of `gamma tir`.
 //! With several files, the output of each is preceded by a line `==> FILE <==` on both
 //! streams. `--recover` lexes with the layout heuristic that tools use after errors.
 //! The exit status is 1 if a file has errors, 2 for a usage error or a file that cannot
@@ -21,6 +23,7 @@
 
 arena :: import "std/arena"
 ast :: import "./ast"
+check :: import "./check"
 diag :: import "./diag"
 fs :: import "std/fs"
 load :: import "./load"
@@ -30,10 +33,10 @@ source :: import "./source"
 syntax :: import "./syntax"
 types :: import "./types"
 
-USAGE :: "usage: gammac lex|parse|modules|decls [--diag-format=short|json] [--recover] [--dump] FILE...\n"
+USAGE :: "usage: gammac lex|parse|modules|decls|tir [--diag-format=short|json] [--recover] [--dump] FILE...\n"
 
 /// What to do with each file.
-Command :: union { Lex, Parse, Modules, Decls }
+Command :: union { Lex, Parse, Modules, Decls, Tir }
 
 Options :: struct {
     command: Command
@@ -49,6 +52,7 @@ main :: fn() needs Alloc + Env + Err + Fs + Out {
         "parse" => .Parse
         "modules" => .Modules
         "decls" => .Decls
+        "tir" => .Tir
         _ => usage()
     })
     files := list(string)
@@ -94,7 +98,7 @@ usage :: fn() -> never needs Env + Err {
 /// Runs the command on one file and prints its output and diagnostics. Returns whether
 /// the file had no errors.
 process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Env + Err + Fs + Out {
-    if opts.command in (Command.Modules, Command.Decls) { return load_program(path, opts) }
+    if opts.command in (Command.Modules, Command.Decls, Command.Tir) { return load_program(path, opts) }
     text := try fs.read_all(path)
     defer free(text)
     a := arena.new()
@@ -107,7 +111,7 @@ process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + En
         out := list(u8)
         match opts.command {
             .Lex => syntax.dump_tokens(sm.file(id), lexed.tokens.items, &out)
-            .Modules, .Decls => {}
+            .Modules, .Decls, .Tir => {}
             .Parse => {
                 next_id: ast.NodeId = 0
                 tree := parse.parse_file(id, &lexed, &next_id, &diags)
@@ -133,13 +137,18 @@ load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err 
         next_id: ast.NodeId = 0
         std := std_root()
         l := load.loader(&sm, &diags, &next_id, std, opts.recover)
-        if opts.command is .Decls {
+        if opts.command in (Command.Decls, Command.Tir) {
             if l.load_core(core_root(std), "Debug") {
                 s := sema.sema(&l)
                 s.resolve_ambient()
-                if l.load_root(root) is not null {
+                if m := l.load_root(root) {
                     s.resolve_declarations()
-                    Out.write(s.decl_dump())
+                    if opts.command is .Decls {
+                        Out.write(s.decl_dump())
+                    } else {
+                        check.check_program(&s, m)
+                        if not diags.has_errors() { Out.write(check.tir_dump(&s)) }
+                    }
                 }
             }
         } else if graph := l.load_modules(root) {

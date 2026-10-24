@@ -1,0 +1,88 @@
+// Checking a whole program: its entry point and every function body (mirrors the end
+// of `check_all` in `src/sema/mod.rs`).
+
+/// Checks the bodies of the functions of the program whose root module is `root`, after
+/// its declarations are resolved. A root without `main` is a library, checked as for
+/// running its tests.
+pub check_program :: fn(s: ^Sema, root: usize) needs Load {
+    for o in s.l.other_items.items {
+        if s.l.modules.items[o.module].is_prelude { continue }
+        what := match o.item.kind {
+            .Test(_) => "tests and benchmarks"
+            .Handler(_) => "handler declarations"
+            _ => "top-level intrinsic calls"
+        }
+        s.unsupported(o.item.span, what)
+    }
+    if d := s.l.lookup(root, "main") { find_main(s, d) }
+    for f in s.fns.items {
+        if s.l.modules.items[f.module].is_prelude { continue }
+        for p in f.params {
+            d := p.default else continue
+            if not sema.is_site(&p) and not is_literal_default(d) {
+                s.unsupported(d.span, "parameter defaults evaluated at compile time")
+            }
+        }
+    }
+    check_bodies(s)
+    check_inline(s)
+}
+
+/// Whether a parameter default is a literal, which needs no compile-time evaluation.
+is_literal_default :: fn(d: ^const ast.Expr) -> bool => match d.kind {
+    .Int(_), .Float(_), .Bool(_), .Null, .Str(_) => true
+    .Unary(.Neg, x) => x.kind in (.Int(_), .Float(_))
+    _ => false
+}
+
+/// Reports the `#inline` functions that can call themselves (§11.10).
+check_inline :: fn(s: ^Sema) needs Alloc {
+    for inl in s.inline_fns.items {
+        seen := list(u32)
+        work := list(u32)
+        work.push(inl.fn_id)!
+        recursive := false
+        while g := work.pop() {
+            body := s.defs.items[usize(g)].body else continue
+            calls := list(u32)
+            collect_calls(body, &calls)
+            for c in calls.items {
+                if c is inl.fn_id {
+                    recursive = true
+                } else if seen.items.index_of(c) is null {
+                    seen.push(c)!
+                    work.push(c)!
+                }
+            }
+        }
+        if recursive {
+            s.error(inl.span, str.format("`{}` cannot be inlined at every call site: it can call itself (§11.10)", s.fns.items[usize(inl.fn_id)].name)!)
+        }
+    }
+}
+
+collect_calls :: fn(e: ^Expr, out: ^List(u32)) needs Alloc {
+    if .Call(.Fn(c), _) := e.kind { out.push(c)! }
+    tir.for_each_child(e, fn(x: ^Expr) { collect_calls(x, out) })
+}
+
+/// Checks that `main` is a function that can be a program's entry point (§3.7).
+find_main :: fn(s: ^Sema, id: usize) needs Load {
+    span := s.l.decls.items[id].name.span
+    match s.resolve_decl(id) {
+        .Fn(f) => {
+            sig := s.fns.items[usize(f)]
+            if sig.params.len > 0 { s.error(span, "`main` must take no parameters") }
+            ret_ok := s.tys.is_unit(sig.ret) or sig.ret is s.tys.u8_ty()
+            if .Result(_, ok) := s.tys.kind(sig.ret) and s.tys.is_unit(ok) { ret_ok = true }
+            if not ret_ok { s.error(span, str.format("`main` must return `()`, `u8` or `E!()`, not `{}`", s.show(sig.ret))!) }
+            for e in sig.effects.effects {
+                if not s.is_ambient(e.eff) {
+                    s.error(span, str.format("`main` may only perform ambient effects, but performs `{}`", s.tys.effect_name(e.eff))!)
+                }
+            }
+        }
+        .Error => {}
+        _ => s.error(span, "`main` must be a function")
+    }
+}

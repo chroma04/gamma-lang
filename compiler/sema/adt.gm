@@ -38,6 +38,7 @@ declare_adt :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^con
         module: module,
         kind: empty_struct(),
         defaults: empty_slice(bool),
+        default_exprs: empty_slice(?^ast.Expr),
         has_using: false,
         params: empty_slice(u32),
         param_defaults: empty_slice(?^ast.Expr),
@@ -126,6 +127,7 @@ empty_adt :: fn(s: ^Sema, id: u32) {
     s.adts.items[usize(id)].kind = empty_struct()
     s.adts.items[usize(id)].has_using = false
     s.adts.items[usize(id)].defaults = empty_slice(bool)
+    s.adts.items[usize(id)].default_exprs = empty_slice(?^ast.Expr)
 }
 
 struct_kind :: fn(s: ^Sema, module: usize, id: u32, st: ^const ast.StructLit, attrs: []const ast.Attribute) -> AdtKind needs Load {
@@ -149,6 +151,7 @@ struct_kind :: fn(s: ^Sema, module: usize, id: u32, st: ^const ast.StructLit, at
     }
     fields := list(FieldDef)
     defaults := list(bool)
+    default_exprs := list(?^ast.Expr)
     has_using := false
     members := list(ast.FieldDecl)
     s.taken_struct_members(module, st.members, &members)
@@ -187,10 +190,12 @@ struct_kind :: fn(s: ^Sema, module: usize, id: u32, st: ^const ast.StructLit, at
             }
             fields.push(FieldDef(name: n.name, ty: ty, is_pub: f.is_pub, align: field_align))!
             defaults.push(f.default is not null)!
+            default_exprs.push(f.default)!
         }
     }
     if b := bits { s.check_bits_struct(st.span, b, fields.items) }
     s.adts.items[usize(id)].defaults = defaults.items
+    s.adts.items[usize(id)].default_exprs = default_exprs.items
     s.adts.items[usize(id)].has_using = has_using
     return .Struct(StructDef(fields: fields.items, packed: packed, align: align, bits: bits))
 }
@@ -480,6 +485,7 @@ instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Loa
         module: info.module,
         kind: empty_struct(),
         defaults: info.defaults,
+        default_exprs: info.default_exprs,
         has_using: info.has_using,
         params: empty_slice(u32),
         param_defaults: empty_slice(?^ast.Expr),

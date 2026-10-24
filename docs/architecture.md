@@ -270,6 +270,7 @@ lowers each function body to TIR.
 | `stack_size.rs` | `@stack_size`: the deepest chain of frames below a function, following statically known handlers and function arguments |
 | `builtins.rs` | predeclared names built into the compiler (primitive type names) |
 | `decl_dump.rs` | `gamma decls`: resolving the declarations of every loaded module without checking bodies, and printing what each denotes (the dump the self-hosted compiler is compared against) |
+| `tir_dump.rs` | `gamma tir`: the checked program's functions as text, one expression per line with its type (the dump the self-hosted compiler's body checker is compared against) |
 
 ### The core prelude and the entry point
 
