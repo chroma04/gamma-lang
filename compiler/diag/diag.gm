@@ -1,0 +1,261 @@
+//! Diagnostics: errors and warnings with their locations, secondary labels, notes and
+//! machine-applicable fixes, and their rendering in the `short` and `json` formats of
+//! `gamma --diag-format` (the same text, byte for byte).
+
+source :: import "../source"
+
+pub Severity :: union { Note, Warning, Error }
+
+pub severity_name :: fn(s: Severity) -> string => match s {
+    .Note => "note"
+    .Warning => "warning"
+    .Error => "error"
+}
+
+/// A secondary location attached to a diagnostic.
+pub Label :: struct {
+    pub span: source.Span
+    pub message: string
+}
+
+/// A replacement of the text at `span` (empty for an insertion) by `text`.
+pub Edit :: struct {
+    pub span: source.Span
+    pub text: string
+}
+
+/// A change to the source that resolves a diagnostic, for tools to apply.
+pub Fix :: struct {
+    pub message: string
+    pub edits: List(Edit)
+}
+
+pub Diagnostic :: struct {
+    pub severity: Severity
+    pub message: string
+    /// The primary location.
+    pub span: source.Span
+    pub labels: List(Label)
+    pub notes: List(string)
+    pub fixes: List(Fix)
+}
+
+/// The diagnostics of a compilation, in the order they were reported.
+pub Diagnostics :: struct {
+    pub list: List(Diagnostic)
+    errors: usize
+}
+
+pub diagnostics :: fn() -> Diagnostics needs Alloc => Diagnostics(list: list(Diagnostic), errors: 0)
+
+/// A new error at `span`.
+pub error :: fn(span: source.Span, message: string) -> Diagnostic needs Alloc {
+    return Diagnostic(
+        severity: .Error,
+        message: message,
+        span: span,
+        labels: list(Label),
+        notes: list(string),
+        fixes: list(Fix),
+    )
+}
+
+pub add_label :: fn(d: ^Diagnostic, span: source.Span, message: string) {
+    d.labels.push(Label(span: span, message: message))!
+}
+
+pub add_note :: fn(d: ^Diagnostic, note: string) {
+    d.notes.push(note)!
+}
+
+/// Adds a fix that replaces the text at `span` with `text`.
+pub add_fix :: fn(d: ^Diagnostic, message: string, span: source.Span, text: string) needs Alloc {
+    edits := list(Edit)
+    edits.push(Edit(span: span, text: text))!
+    d.fixes.push(Fix(message: message, edits: edits))!
+}
+
+pub push :: fn(ds: ^Diagnostics, d: Diagnostic) {
+    if d.severity is .Error { ds.errors += 1 }
+    ds.list.push(d)!
+}
+
+/// Reports an error at `span` with nothing attached.
+pub report :: fn(ds: ^Diagnostics, span: source.Span, message: string) needs Alloc {
+    ds.push(error(span, message))
+}
+
+pub has_errors :: fn(ds: ^const Diagnostics) -> bool => ds.errors > 0
+
+/// Sorts the diagnostics by file and position, keeping the order of those at one place.
+pub sort :: fn(ds: ^Diagnostics) {
+    xs := ds.list.items
+    // Insertion sort: stable, and the list is nearly sorted already.
+    for i in 1..xs.len {
+        d := xs[i]
+        j := i
+        while j > 0 and before(d.span, xs[j - 1].span) {
+            xs[j] = xs[j - 1]
+            j -= 1
+        }
+        xs[j] = d
+    }
+}
+
+before :: fn(a, b: source.Span) -> bool => (a.file, a.lo) < (b.file, b.lo)
+
+/// How diagnostics are printed.
+pub Format :: union {
+    /// One line per diagnostic, `path:line:col: severity: message`, then one line per
+    /// label and note.
+    Short
+    /// One JSON object per line, with locations, notes and fixes.
+    Json
+}
+
+/// Appends `d` to `out` in `format`.
+pub render :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, format: Format, out: ^List(u8)) needs Alloc {
+    match format {
+        .Short => render_short(sm, d, out)
+        .Json => render_json(sm, d, out)
+    }
+}
+
+render_short :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
+    location(sm, d.span, out)
+    out.write("{}: {}\n", severity_name(d.severity), d.message)!
+    for l in d.labels.items {
+        location(sm, l.span, out)
+        out.write("note: {}\n", l.message)!
+    }
+    for n in d.notes.items {
+        location(sm, d.span, out)
+        out.write("note: {}\n", n)!
+    }
+}
+
+// `path:line:col: `
+location :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8)) needs Alloc {
+    f := sm.file(span.file)
+    lc := f.line_col(span.lo)
+    out.write("{}:{}:{}: ", f.path, lc.line, lc.col)!
+}
+
+// The fields of an object are in the order of their names, as the reference
+// implementation writes them.
+render_json :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
+    out.push('{')!
+    json_before_line(sm, d.span, out)
+    out.extend(",\"fixes\":[")!
+    for i, fx in enumerate(d.fixes.items) {
+        if i > 0 { out.push(',')! }
+        out.extend("{\"edits\":[")!
+        for j, e in enumerate(fx.edits.items) {
+            if j > 0 { out.push(',')! }
+            out.push('{')!
+            json_location(sm, e.span, out)
+            out.extend(",\"text\":")!
+            json_string(e.text, out)
+            out.push('}')!
+        }
+        out.extend("],\"message\":")!
+        json_string(fx.message, out)
+        out.push('}')!
+    }
+    out.extend("],\"labels\":[")!
+    for i, l in enumerate(d.labels.items) {
+        if i > 0 { out.push(',')! }
+        out.push('{')!
+        json_location_split(sm, l.span, out, l.message)
+        out.push('}')!
+    }
+    out.extend("]")!
+    json_after_line(sm, d.span, out, d.message)
+    out.extend(",\"notes\":[")!
+    for i, n in enumerate(d.notes.items) {
+        if i > 0 { out.push(',')! }
+        json_string(n, out)
+    }
+    out.write("],\"offset\":{},\"severity\":", d.span.lo)!
+    json_string(severity_name(d.severity), out)
+    out.extend("}\n")!
+}
+
+// The location fields of `span`, `column` to `file` and then `line` and `offset`.
+json_location :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8)) needs Alloc {
+    json_before_line(sm, span, out)
+    lc := sm.file(span.file).line_col(span.lo)
+    out.write(",\"line\":{},\"offset\":{}", lc.line, span.lo)!
+}
+
+// A location with a `message` field, which sorts between `line` and `offset`.
+json_location_split :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8), message: string) needs Alloc {
+    json_before_line(sm, span, out)
+    json_after_line(sm, span, out, message)
+    out.write(",\"offset\":{}", span.lo)!
+}
+
+// `"column"` to `"file"`: the fields that sort before `"fixes"`.
+json_before_line :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8)) needs Alloc {
+    f := sm.file(span.file)
+    lc := f.line_col(span.lo)
+    end := f.line_col(span.hi)
+    out.write("\"column\":{},\"end_column\":{},\"end_line\":{},\"end_offset\":{},\"file\":", lc.col, end.col, end.line, span.hi)!
+    json_string(f.path, out)
+}
+
+// `"line"` and `"message"`.
+json_after_line :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8), message: string) needs Alloc {
+    lc := sm.file(span.file).line_col(span.lo)
+    out.write(",\"line\":{},\"message\":", lc.line)!
+    json_string(message, out)
+}
+
+HEX :: "0123456789abcdef"
+
+/// Appends `s` as a JSON string. Control characters are escaped; everything else,
+/// including non-ASCII text, is copied.
+pub json_string :: fn(s: string, out: ^List(u8)) needs Alloc {
+    out.push('"')!
+    for c in s {
+        match c {
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            '\n' => out.extend("\\n")!
+            '\r' => out.extend("\\r")!
+            '\t' => out.extend("\\t")!
+            0x08 => out.extend("\\b")!
+            0x0C => out.extend("\\f")!
+            0..=0x1F => {
+                out.extend("\\u00")!
+                out.push(HEX[usize(c >> 4)])!
+                out.push(HEX[usize(c & 0xF)])!
+            }
+            _ => out.push(c)!
+        }
+    }
+    out.push('"')!
+}
+
+test "short and json rendering" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        sm := source.source_map()
+        id := sm.add("t.gm", "a ( b\n  ]\n")
+        d := error(source.span(id, 2, 3), "unclosed `(`")
+        d.add_label(source.span(id, 8, 9), "this `]` does not match")
+        d.add_note("a \"note\"\tthere")
+        d.add_fix("write `)`", source.span(id, 8, 9), ")")
+        out := list(u8)
+        render(&sm, &d, .Short, &out)
+        expect_eq(string(out.items), "t.gm:1:3: error: unclosed `(`\nt.gm:2:3: note: this `]` does not match\nt.gm:1:3: note: a \"note\"\tthere\n")
+        out.clear()
+        render(&sm, &d, .Json, &out)
+        expected :: ``{"column":3,"end_column":4,"end_line":1,"end_offset":3,"file":"t.gm","fixes":[{"edits":[{"column":3,"end_column":4,"end_line":2,"end_offset":9,"file":"t.gm","line":2,"offset":8,"text":")"}],"message":"write `)`"}],"labels":[{"column":3,"end_column":4,"end_line":2,"end_offset":9,"file":"t.gm","line":2,"message":"this `]` does not match","offset":8}],"line":1,"message":"unclosed `(`","notes":["a \"note\"\tthere"],"offset":2,"severity":"error"}
+``
+        expect_eq(string(out.items), expected)
+    }
+}
+
+arena :: import "std/arena"

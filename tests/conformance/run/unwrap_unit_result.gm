@@ -1,0 +1,32 @@
+// `x!` on a result whose success type is `()` (or another empty type) checks the error
+// flag and gives back the empty value.
+Empty :: struct {}
+
+check :: fn(n: usize) -> AllocError!() {
+    if n > 5 { return !.OutOfMemory }
+    return ()
+}
+
+empty :: fn(n: usize) -> AllocError!Empty {
+    if n > 5 { return !.OutOfMemory }
+    return Empty()
+}
+
+main :: fn() needs Out {
+    check(3)!
+    r := check(4)
+    r!
+    e := empty(1)!
+    print("{} {}\n", e, check(9))
+    l := list_of_unit()
+    print("{}\n", l)
+}
+
+list_of_unit :: fn() -> usize {
+    total: usize = 0
+    for i in 0..3 {
+        check(i)!
+        total += i
+    }
+    return total
+}

@@ -150,6 +150,10 @@ fn set_byte(regs: &mut [u64], r: Reg, i: u32, b: u8) {
 /// Copies `size` bytes at byte `off` of the value at `src` to the value at `dst` (whole).
 #[inline]
 fn extract(regs: &mut [u64], dst: Reg, src: Reg, off: u32, size: u32) {
+    // A value of size 0 (such as the `()` of an `E!()`) has no registers to write.
+    if size == 0 {
+        return;
+    }
     if off.is_multiple_of(8) {
         let s = (src + off / 8) as usize;
         let w = words(size) as usize;

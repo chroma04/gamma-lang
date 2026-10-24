@@ -1,0 +1,104 @@
+//! Source files and locations: the text of each file, byte spans into it, and the
+//! translation of a byte offset into a line and column for messages.
+
+/// A file in a `SourceMap`, by its index.
+pub FileId :: u32
+
+/// A range of bytes `lo..hi` in one file.
+pub Span :: struct {
+    pub file: FileId
+    pub lo: u32
+    pub hi: u32
+}
+
+/// The span `lo..hi` of `file`.
+pub span :: fn(file: FileId, lo, hi: usize) -> Span => Span(file: file, lo: lo.trunc(u32), hi: hi.trunc(u32))
+
+/// A loaded source file.
+pub SourceFile :: struct {
+    /// The path as given, used in messages.
+    pub path: string
+    pub text: string
+    /// The offset of the first byte of each line; the first is 0.
+    line_starts: List(u32)
+    /// True if every byte is ASCII, so that columns count bytes.
+    ascii: bool
+}
+
+/// A line and a column, both counting from 1. The column counts characters (Unicode
+/// scalar values), not bytes.
+pub LineCol :: struct {
+    pub line: u32
+    pub col: u32
+}
+
+/// The source files of a compilation.
+pub SourceMap :: struct {
+    files: List(SourceFile)
+}
+
+pub source_map :: fn() -> SourceMap needs Alloc => SourceMap(files: list(SourceFile))
+
+/// Adds a file with the given path and text and returns its id.
+pub add :: fn(sm: ^SourceMap, path, text: string) -> FileId needs Alloc {
+    starts := list(u32)
+    starts.push(0)!
+    ascii := true
+    for i, c in enumerate(text) {
+        if c is '\n' { starts.push((i + 1).trunc(u32))! }
+        if c >= 0x80 { ascii = false }
+    }
+    sm.files.push(SourceFile(path: path, text: text, line_starts: starts, ascii: ascii))!
+    return (sm.files.items.len - 1).trunc(u32)
+}
+
+/// The file with id `id`.
+pub file :: fn(sm: ^const SourceMap, id: FileId) -> ^const SourceFile => &sm.files.items[usize(id)]
+
+/// The line and column of byte `offset` (an offset past the end is the end).
+pub line_col :: fn(f: ^const SourceFile, offset: u32) -> LineCol {
+    starts := f.line_starts.items
+    // The last line that starts at or before `offset`.
+    lo: usize = 0
+    hi := starts.len
+    while hi - lo > 1 {
+        mid := lo + (hi - lo) / 2
+        if starts[mid] <= offset {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    start := usize(starts[lo])
+    end := usize(offset).min(f.text.len)
+    col := end - start
+    if not f.ascii { col = char_count(f.text[start..end]) }
+    return LineCol(line: (lo + 1).trunc(u32), col: (col + 1).trunc(u32))
+}
+
+/// The number of characters in UTF-8 text: the bytes that do not continue a character.
+pub char_count :: fn(s: string) -> usize {
+    n: usize = 0
+    for c in s {
+        if c & 0xC0 is not 0x80 { n += 1 }
+    }
+    return n
+}
+
+test "lines and columns" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        sm := source_map()
+        id := sm.add("x.gm", "ab\ncd\n\né x")
+        f := sm.file(id)
+        expect_eq(f.line_col(0), LineCol(line: 1, col: 1))
+        expect_eq(f.line_col(2), LineCol(line: 1, col: 3))
+        expect_eq(f.line_col(3), LineCol(line: 2, col: 1))
+        expect_eq(f.line_col(7), LineCol(line: 4, col: 1))
+        expect_eq(f.line_col(10), LineCol(line: 4, col: 3))
+        expect_eq(f.line_col(99), LineCol(line: 4, col: 4))
+    }
+}
+
+arena :: import "std/arena"

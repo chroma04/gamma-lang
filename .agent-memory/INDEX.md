@@ -1,6 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-23) — PRs #1–#70 merged, v0.1.0 tagged
+## State (2026-10-24) — PRs #1–#71 merged, v0.1.0 tagged
+- s38 (branch claude/lucid-clarke-qkl7ak): self-hosted compiler groundwork (decisions/043,
+  roadmap/self-hosting.md): compiler/ = gammac in Gamma; stage 1 lexer byte-identical to
+  `gamma lex` (tokens + JSON diags) on all ~980 .gm files, tests/selfhost.rs. Fixed VM crash
+  on `x!` of `E!()`. Next stage: parser.
 - s37 (branch claude/sharp-turing-sfr2js): generic `#soa []T` (stand-in type + SoaDeferred
   expanded per instance) and std/collections/soa_list `SoaList(S)` (decisions/042).
 - s36 (branch dev): stdlib batch 1 (decisions/041): slice methods (core/slice + SLICE_FNS),
@@ -13,12 +17,8 @@
   guide sections in 04-types.md, examples nbody.gm + julia.gm, CHANGELOG Unreleased.
   Imaginary literals `4j`/`2j32` done (decisions/039). `#soa` arrays/slices done (040).
   tree-sitter CLI: `npm ci` in editors/tree-sitter-gamma works (node 22 in /opt/node22).
-- s34 (branch dev): HashMap moved to std/collections/hash_map; deprecated universe aliases
-  for one release (decisions/038 — remove after the next release). Constraints stay
-  one-type; `in` stays built-in only.
-- s33 (branch dev): spec ch. 23 errors/diagnostics policy + diagnostics audit applied, array
-  spread, `+`/`,` kept (decisions/037). dev also carries an LLVM back-end experiment that was
-  added and removed again (net no change). CHANGELOG has an Unreleased section again.
+- s34: HashMap moved to std/collections/hash_map (decisions/038); s33: spec ch. 23 errors
+  policy + diagnostics audit, array spread (037); CHANGELOG has an Unreleased section.
 - s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
   in roadmap/review-2026-10-20.md (P0/P1, most P2/P3 fixed; rest listed there). Fuzz
   targets in fuzz/ (manifest, archive; seeds via fuzz/seed.sh). New infra:
@@ -49,6 +49,7 @@
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
 1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
+1b. Self-hosting: roadmap/self-hosting.md (next: stage 2 parser).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.
@@ -57,11 +58,12 @@
 
 ## Map
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
+                  self-hosting.md (gammac stages),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–042, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–043, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
 - gotchas/        environment.md

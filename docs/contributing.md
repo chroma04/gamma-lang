@@ -93,7 +93,7 @@ There are two kinds of tests.
 information (`debug_info.rs`), the Cranelift back end (`cranelift.rs`), the C toolchain variables and cross compilation
 (`cross.rs`), foreign calls from the interpreter (`ffi_interp.rs`), the layout of an
 installed release (`install_layout.rs`), very long expressions
-(`long_expressions.rs`), functions with thousands of statements (`long_functions.rs`) and the programs in `examples/` (`examples.rs`, below). The
+(`long_expressions.rs`), functions with thousands of statements (`long_functions.rs`), the self-hosted compiler in `compiler/`, whose output must match the reference implementation's on every `.gm` file of the repository (`selfhost.rs`, see [`self-hosting.md`](self-hosting.md)), and the programs in `examples/` (`examples.rs`, below). The
 header comment of each file says what it needs and when it skips itself.
 
 **Conformance tests** are Gamma source files under `tests/conformance/`,
