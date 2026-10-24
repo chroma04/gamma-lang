@@ -279,10 +279,7 @@ pub MonoRequest :: struct {
 /// `span`). Its body is not produced: the `tir` dump shows generic functions by their
 /// templates, and only the calls in it are followed (see `MonoRequest`).
 pub instantiate :: fn(s: ^Sema, f: u32, args: []const Ty, span: source.Span) -> u32 needs Load {
-    key := list(u8)
-    key.write("{}", f)!
-    for a in args { key.write(":{}", a.id)! }
-    if id := s.fn_instances.get(key.items) { return id }
+    if id := s.fn_instances.get((f, args)) { return id }
     sig := s.fns.items[usize(f)]
     map := list(Subst)
     for i, g in enumerate(sig.generics) { map.push(Subst(param: g, ty: args[i]))! }
@@ -309,7 +306,7 @@ pub instantiate :: fn(s: ^Sema, f: u32, args: []const Ty, span: source.Span) -> 
     s.fns.push(inst)!
     kind: tir.FnKind = if s.defs.items[usize(f)].kind is .Clause { .Clause } else { .Named }
     s.defs.push(tir.FnDef(kind: kind, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null))!
-    s.fn_instances.put(key.items, id)!
+    s.fn_instances.put((f, kept.items), id)!
     for a in args {
         if s.tys.has_param(a) { return id }
     }

@@ -123,14 +123,13 @@ pub Types :: struct {
     kinds: List(TyKind)
     /// The `HAS_*` flags of each type.
     flags: List(u8)
-    /// Each type by the encoding of its kind.
-    by_key: hash_map.HashMap(string, u32)
+    /// Each type by its kind.
+    by_kind: hash_map.HashMap(TyKind, u32)
     adt_names: List(string)
     /// For each nominal type: the generic type it instantiates, or itself.
     adt_templates: List(u32)
     effect_names: List(string)
     param_names: List(string)
-    key: List(u8)
 }
 
 /// The pseudo-effect of the `..E` terms of an effect set (§16.6), the first effect.
@@ -140,12 +139,11 @@ pub types :: fn() -> Types needs Alloc {
     t := Types(
         kinds: list(TyKind),
         flags: list(u8),
-        by_key: hash_map.hash_map(string, u32),
+        by_kind: hash_map.hash_map(TyKind, u32),
         adt_names: list(string),
         adt_templates: list(u32),
         effect_names: list(string),
         param_names: list(string),
-        key: list(u8),
     )
     _ = t.fresh_effect("..")
     return t
@@ -154,9 +152,7 @@ pub types :: fn() -> Types needs Alloc {
 pub kind :: fn(t: ^const Types, ty: Ty) -> TyKind => t.kinds.items[usize(ty.id)]
 
 pub intern :: fn(t: ^Types, k: TyKind) -> Ty needs Alloc {
-    t.key.clear()
-    encode(&k, &t.key)
-    if id := t.by_key.get(t.key.items) { return Ty(id: id) }
+    if id := t.by_kind.get(k) { return Ty(id: id) }
     flags: u8 = match k {
         .Param(_) => HAS_PARAM
         .Infer(_) => HAS_INFER
@@ -167,9 +163,7 @@ pub intern :: fn(t: ^Types, k: TyKind) -> Ty needs Alloc {
     id := t.kinds.items.len.trunc(u32)
     t.kinds.push(k)!
     t.flags.push(flags)!
-    key := list(u8)
-    key.extend(t.key.items)!
-    t.by_key.put(key.items, id)!
+    t.by_kind.put(k, id)!
     return Ty(id: id)
 }
 
@@ -459,112 +453,6 @@ pub key_u64 :: fn(k: ConstKey) -> ?u64 {
 // ---------------------------------------------------------------------------------
 // Encoding kinds, for hash-consing
 // ---------------------------------------------------------------------------------
-
-encode :: fn(k: ^const TyKind, out: ^List(u8)) needs Alloc {
-    out.push(u8(k^.tag()))!
-    match k^ {
-        .Int(s, bits) => {
-            out.push(if s { 1 } else { 0 })!
-            put_u32(out, u32(bits))
-        }
-        .Float(bits) => put_u32(out, u32(bits))
-        .Ptr(c, t), .ManyPtr(c, t), .Slice(c, t) => {
-            out.push(if c { 1 } else { 0 })!
-            put_u32(out, t.id)
-        }
-        .Array(len, elem, kind) => {
-            put_u64(out, len)
-            put_u32(out, elem.id)
-            out.push(u8(kind.tag()))!
-            if .Enum(e) := kind { put_u32(out, e.id) }
-        }
-        .Tuple(elems, names) => {
-            put_tys(out, elems)
-            put_u32(out, names.len.trunc(u32))
-            for n in names { put_str(out, n) }
-        }
-        .Optional(t), .Cont(t) => put_u32(out, t.id)
-        .Result(a, b), .ParamArray(a, b) => {
-            put_u32(out, a.id)
-            put_u32(out, b.id)
-        }
-        .Fn(sig), .FnPtr(sig) => {
-            put_tys(out, sig.params)
-            put_u32(out, sig.ret.id)
-            put_set(out, &sig.effects)
-            out.push(if sig.variadic { 1 } else { 0 })!
-            out.push(if sig.win64 { 1 } else { 0 })!
-        }
-        .Adt(id, args) => {
-            put_u32(out, id)
-            put_args(out, args)
-        }
-        .Param(id), .Infer(id), .Handler(id) => put_u32(out, id)
-        .Value(key) => put_key(out, &key)
-        .LenExpr(op, a, b) => {
-            out.push(u8(op.tag()))!
-            put_u32(out, a.id)
-            put_u32(out, b.id)
-        }
-        .Effects(set) => put_set(out, &set)
-        _ => {}
-    }
-}
-
-put_u32 :: fn(out: ^List(u8), v: u32) needs Alloc {
-    for i in 0..4 { out.push((v >> u32(i * 8)).trunc(u8))! }
-}
-
-put_u64 :: fn(out: ^List(u8), v: u64) needs Alloc {
-    for i in 0..8 { out.push((v >> u64(i * 8)).trunc(u8))! }
-}
-
-put_str :: fn(out: ^List(u8), s: []const u8) needs Alloc {
-    put_u32(out, s.len.trunc(u32))
-    out.extend(s)!
-}
-
-put_tys :: fn(out: ^List(u8), tys: []const Ty) needs Alloc {
-    put_u32(out, tys.len.trunc(u32))
-    for t in tys { put_u32(out, t.id) }
-}
-
-put_set :: fn(out: ^List(u8), set: ^const EffectSet) needs Alloc {
-    put_u32(out, set.effects.len.trunc(u32))
-    for e in set.effects {
-        put_u32(out, e.eff)
-        put_args(out, e.args)
-    }
-}
-
-put_args :: fn(out: ^List(u8), args: []const GenericArg) needs Alloc {
-    put_u32(out, args.len.trunc(u32))
-    for a in args {
-        match a {
-            .Type(t) => {
-                out.push(0)!
-                put_u32(out, t.id)
-            }
-            .Value(k) => {
-                out.push(1)!
-                put_key(out, &k)
-            }
-        }
-    }
-}
-
-put_key :: fn(out: ^List(u8), k: ^const ConstKey) needs Alloc {
-    out.push(key_rank(k).trunc(u8))!
-    match k^ {
-        .Bytes(t, b) => {
-            put_u32(out, t.id)
-            put_str(out, b)
-        }
-        .Fn(id, _) => put_u32(out, id)
-        .Null => {}
-        .Str(s) => put_str(out, s)
-    }
-}
 
 test "hash-consing" {
     a := arena.new()

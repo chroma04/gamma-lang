@@ -3,6 +3,7 @@
 use super::exhaust::Checker;
 use super::func::{FnCx, error_expr};
 use super::pattern::PatCtx;
+use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ExprKind, PatternKind};
@@ -90,7 +91,15 @@ impl<'a, 's> FnCx<'a, 's> {
 
     pub fn report_match(&mut self, report: super::exhaust::MatchReport, span: Span, arms: &[Span]) {
         if let Some(missing) = report.missing {
-            self.error(span, format!("this `match` is not exhaustive: `{}` is not covered", missing));
+            let mut d = Diagnostic::error(span, format!("this `match` is not exhaustive: `{}` is not covered", missing));
+            if let Some(at) = report.present_only {
+                d = d.with_label(at, "this name matches only a present value").with_note(
+                    "a name in the position of an optional matches only a present value (§9.3); to get the \
+                     optional as it is, bind the value that holds it, such as a whole payload with `.V(p)`, \
+                     and read the part from it (`p.field`)",
+                );
+            }
+            self.sema.emit(d);
         }
         for i in report.unreachable {
             self.error(arms[i], "this arm can never be chosen: earlier arms cover it");

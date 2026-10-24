@@ -8,6 +8,10 @@ Versions and what each kind of change means are described in
 
 ### Language
 
+- A `match` left incomplete by a bare name in the position of an optional inside a
+  pattern (which matches only a present value, §9.3) now points at that name and says how
+  to bind the optional as it is: bind the value that holds it, such as `.Break(b)` for the
+  whole payload.
 - A member of an inline tuple of `in` may be a pattern form, as on the right of `is`:
   `k in (.Fn(_), .Handler(_), .Type)` tests whether `k` matches any of them (§7.7).
 - **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the

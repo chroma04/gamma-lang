@@ -35,6 +35,10 @@ MatchReport :: struct {
     missing: ?string
     /// The indices of the arms that can never be chosen.
     unreachable: []usize
+    /// When `missing` has a `null` and an arm binds a name in the position of an optional
+    /// inside the pattern, that name's span: it matches only present values (§9.3), which
+    /// is the likely reason for the gap.
+    present_only: ?source.Span
 }
 
 /// A row of the pattern matrix.
@@ -65,8 +69,59 @@ check_match :: fn(s: ^Sema, ty: Ty, pats: []const ^Pat, guarded: []const bool) -
     q := list(DPat)
     q.push(.Wild(ty))!
     missing: ?string = null
-    if w := useful(s, rows.items, q.items) { missing = show_witness(s, &w[0]) }
-    return MatchReport(missing: missing, unreachable: unreachable.items)
+    present_only: ?source.Span = null
+    if w := useful(s, rows.items, q.items) {
+        m := show_witness(s, &w[0])
+        missing = m
+        if has_word(m, "null") {
+            for p in pats {
+                if at := nested_present_binding(p, true) {
+                    present_only = at
+                    break
+                }
+            }
+        }
+    }
+    return MatchReport(missing: missing, unreachable: unreachable.items, present_only: present_only)
+}
+
+/// Whether `word` occurs in `text` delimited by characters that cannot be part of a name.
+has_word :: fn(text: string, word: string) -> bool {
+    start: usize = 0
+    for i in 0..=text.len {
+        if i < text.len and is_name_char(text[i]) { continue }
+        if text[start..i] is word { return true }
+        start = i + 1
+    }
+    return false
+}
+
+is_name_char :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c is '_' or c >= 0x80
+
+/// The span of the first bare binding in `p` that is matched against the present value of
+/// an optional or the success value of a result below the top of the pattern (`top`).
+nested_present_binding :: fn(p: ^const Pat, top: bool) -> ?source.Span {
+    match p.kind {
+        .Some(q), .Ok(q) => {
+            if not top and q.kind is .Bind(_) { return q.span }
+            return nested_present_binding(q, top)
+        }
+        .Err(q) => return nested_present_binding(q, top)
+        .Or(alts) => {
+            for q in alts {
+                if at := nested_present_binding(q, top) { return at }
+            }
+        }
+        .Variant(_, null) => {}
+        .Variant(_, q) => return nested_present_binding(q, false)
+        .Fields(fs) => {
+            for f in fs {
+                if at := nested_present_binding(f.pat, false) { return at }
+            }
+        }
+        _ => {}
+    }
+    return null
 }
 
 /// Whether the pattern matches every value of its type (§9.4).

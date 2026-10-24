@@ -152,16 +152,11 @@ main :: fn() needs Out {
 
 ## Optional parts of variants
 
-In a pattern, a name in the position of an optional matches only a *present* value (§9.3). That is what makes `if x := opt` work, but it also means that `.Break(label, value)`, for a payload `(label: ?Ident, value: ?^Expr)`, does not match a `break` without a label. When a payload has optional parts, give the variant a struct payload and look at the fields:
+In a pattern, a name in the position of an optional matches only a *present* value (§9.3). That is what makes `if x := opt` work, and it makes `.Return(null)` and `.Return(x)` a natural pair of arms. But it also means that `.Break(label, value)`, for a payload `(label: ?string, value: ?i32)`, does not match a `break` without a label (the compiler points at `label` when the `match` is left incomplete). To look at optional parts as they are, bind the whole payload with one name and read its fields:
 
 ```gamma
-BreakExpr :: struct {
-    label: ?string
-    value: ?i32
-}
-
 Expr :: union {
-    Break: BreakExpr
+    Break: (label: ?string, value: ?i32)
     Return: ?i32
     Int: i32
 }
@@ -174,8 +169,8 @@ describe :: fn(e: Expr) -> string => match e {
 }
 
 main :: fn() needs Out {
-    print("{}\n", describe(.Break(BreakExpr(label: null, value: null))))
-    print("{}\n", describe(.Break(BreakExpr(label: "outer", value: 1))))
+    print("{}\n", describe(.Break(label: null, value: null)))
+    print("{}\n", describe(.Break(label: "outer", value: 1)))
     print("{}\n", describe(.Return(null)))
 }
 ```
@@ -186,7 +181,7 @@ labeled break
 return
 ```
 
-With a single optional payload, two arms (`.Return(null)` and `.Return(x)`) read well too.
+A payload with several optional parts that many functions take apart is often clearer as a struct of its own, which can also carry documentation per field.
 
 A line that *starts* with `.Name` continues the previous line (§2.8), so a variant that begins a line, such as the value at the end of a block arm, is written with its type: `ast.ItemKind.When(…)`.
 

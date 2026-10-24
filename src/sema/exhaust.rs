@@ -3,6 +3,7 @@
 //! splitting the type's range at the boundaries of the ranges in a column.
 
 use crate::layout::{Target, int_bits};
+use crate::source::Span;
 use crate::tir::{AdtDef, AdtKind, ExprKind, Pat, PatKind};
 use crate::types::{AdtId, Ty, TyKind};
 use num_bigint::BigInt;
@@ -49,6 +50,10 @@ pub struct MatchReport {
     pub missing: Option<String>,
     /// Indices of arms that can never be chosen.
     pub unreachable: Vec<usize>,
+    /// When `missing` has a `null` and an arm binds a name in the position of an
+    /// optional inside the pattern, that name's span: it matches only present values
+    /// (§9.3), which is the likely reason for the gap.
+    pub present_only: Option<Span>,
 }
 
 impl<'a> Checker<'a> {
@@ -74,7 +79,12 @@ impl<'a> Checker<'a> {
             }
         }
         let missing = self.useful(&rows, &[DPat::Wild(ty)]).map(|w| self.show(&w[0]));
-        MatchReport { missing, unreachable }
+        let has_null = |m: &String| m.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == "null");
+        let present_only = missing
+            .as_ref()
+            .filter(|m| has_null(m))
+            .and_then(|_| arms.iter().find_map(|(p, _)| nested_present_binding(p, true)));
+        MatchReport { missing, unreachable, present_only }
     }
 
     /// True if the pattern matches every value of its type (§9.4).
@@ -353,6 +363,19 @@ impl<'a> Checker<'a> {
 }
 
 /// Puts the first `arity` patterns of a witness back under constructor `c`.
+/// The span of the first bare binding in `p` that is matched against the present value
+/// of an optional or the success value of a result below the top of the pattern (`top`).
+fn nested_present_binding(p: &Pat, top: bool) -> Option<Span> {
+    match &p.kind {
+        PatKind::Some(q) | PatKind::Ok(q) if !top && matches!(q.kind, PatKind::Bind(_)) => Some(q.span),
+        PatKind::Some(q) | PatKind::Ok(q) | PatKind::Err(q) => nested_present_binding(q, top),
+        PatKind::Or(alts) => alts.iter().find_map(|q| nested_present_binding(q, top)),
+        PatKind::Variant { payload: Some(q), .. } => nested_present_binding(q, false),
+        PatKind::Fields(fs) => fs.iter().find_map(|(_, q)| nested_present_binding(q, false)),
+        _ => None,
+    }
+}
+
 fn rebuild(ty: Ty, c: Ctor, arity: usize, mut w: Vec<DPat>) -> Vec<DPat> {
     let rest = w.split_off(arity.min(w.len()));
     let mut out = vec![DPat::Ctor(ty, c, w)];
