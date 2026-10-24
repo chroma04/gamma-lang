@@ -100,6 +100,19 @@ pub var_kind :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> ?VarKind needs 
     return t.vars.items[usize(t.root(v))].kind
 }
 
+/// Restricts the variable `ty` (if unresolved, from an integer literal) to integer
+/// types. Returns false if it cannot be an integer.
+pub require_integer :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> bool needs Alloc {
+    st := t.shallow(tys, ty)
+    if .Infer(v) := tys.kind(st) {
+        r := usize(t.root(v))
+        if t.vars.items[r].kind is not .Int { return false }
+        t.vars.items[r].integer = true
+        return true
+    }
+    return tys.is_integer(st)
+}
+
 /// Restricts the variable `ty` (if unresolved) to unsigned types and raises its fallback.
 /// Returns false if `ty` is a concrete type that is not an unsigned integer.
 pub require_unsigned :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: Fallback) -> bool needs Alloc {

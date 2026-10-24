@@ -117,7 +117,18 @@ check_obligation :: fn(cx: ^FnCx, o: Obligation) needs Load {
 
 /// The final types and literal values of `e` and everything in it.
 fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
+    errors := cx.s.l.diags.error_count()
     tir.for_each_child(e, fn(c: ^Expr) { cx.fin_expr(c) })
+    match e.kind {
+        .Match(_, arms) => {
+            for a in arms { cx.fin_pat(a.pat) }
+            // A pattern that does not fit the final type was reported already.
+            if cx.deferred_matches.items.len > 0 and cx.s.l.diags.error_count() is errors { cx.check_deferred_match(e) }
+        }
+        .If(x) => cx.fin_cond(x.cond)
+        .Loop(x) => cx.fin_cond(x.cond)
+        _ => {}
+    }
     e.ty = cx.infer.resolve(cx.s, e.ty)
     tys := &cx.s.tys
     match e.kind {
@@ -154,6 +165,30 @@ fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
             // Nothing may evaluate a value of the wrong type.
             e^ = error_expr(cx.s, inner.span)^
         }
+        _ => {}
+    }
+}
+
+fin_cond :: fn(cx: ^FnCx, cond: []const tir.CondPart) needs Load {
+    for c in cond {
+        if .Match(p, _) := c { cx.fin_pat(p) }
+    }
+}
+
+/// Patterns carry types (and literal constants) that need final types too.
+fin_pat :: fn(cx: ^FnCx, p: ^Pat) needs Load {
+    p.ty = cx.infer.resolve(cx.s, p.ty)
+    match p.kind {
+        // Constants are expressions, finalized with the other children of the `match`.
+        .Range(lo, hi, _) => for v in [2]bigint.Int(lo, hi) {
+            if cx.s.tys.is_integer(p.ty) and not cx.s.int_fits(v, p.ty) {
+                cx.error(p.span, str.format("{} does not fit in `{}`", sema.show_int(v), cx.show(p.ty))!)
+            }
+        }
+        .Some(q), .Ok(q), .Err(q) => cx.fin_pat(q)
+        .Variant(_, q) => cx.fin_pat(q)
+        .Fields(fs) => for f in fs { cx.fin_pat(f.pat) }
+        .Or(ps) => for q in ps { cx.fin_pat(q) }
         _ => {}
     }
 }

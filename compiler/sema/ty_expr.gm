@@ -190,7 +190,7 @@ looks_like_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs
 
 /// The call `T(args)` that `e` is, or ends in after prefix type operators: the callee is
 /// constructed (§A.7 rule 12).
-construction_call :: fn(e: ^const ast.Expr) -> ?^const ast.Expr {
+pub construction_call :: fn(e: ^const ast.Expr) -> ?^const ast.Expr {
     match e.kind {
         // `xs.first()` and `xs[0](…)` call something on a value: not a construction.
         .Call(callee, _, _) => return if calls_on_value(callee) { null } else { e }
@@ -511,7 +511,7 @@ names_error :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs Loa
 
 /// True if the length of an array type `[len]T` names a type, making it an enum-indexed
 /// array `[E]T` (§5.6). A compile-time value parameter is a length.
-length_is_type :: fn(s: ^Sema, module: usize, len: ^const ast.Expr) -> bool needs Load {
+pub length_is_type :: fn(s: ^Sema, module: usize, len: ^const ast.Expr) -> bool needs Load {
     match len.kind {
         .Ident(id) => return s.value_param(id.name) is null and s.names_type(module, id.name)
         .Field(_) => return s.syntax_is_type(module, len, 0)
@@ -541,7 +541,7 @@ enum_array_type :: fn(s: ^Sema, index, elem: Ty, span: source.Span) -> Ty needs 
 }
 
 /// The length of an array type.
-ArrayLen :: union {
+pub ArrayLen :: union {
     Known: u64
     /// Depends on compile-time value parameters: a `Param` or a `LenExpr` (§16.5).
     Param: Ty
@@ -550,7 +550,7 @@ ArrayLen :: union {
 }
 
 /// Evaluates the length of an array type `[len]T`.
-array_len :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ArrayLen needs Load {
+pub array_len :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ArrayLen needs Load {
     // `[N]T` with `N` a compile-time value parameter (§16.5).
     if .Ident(id) := e.kind {
         if pid := s.value_param(id.name) {

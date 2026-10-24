@@ -1,0 +1,385 @@
+// `match` (§8.6), binding conditions (§8.2) and pattern tests in `is` (§7.6) and `in`
+// (§7.7) (mirrors `src/sema/matching.rs`).
+
+/// A `match` whose exhaustiveness waits for the final types of its scrutinee's literals.
+DeferredMatch :: struct {
+    span: source.Span
+    arm_spans: []source.Span
+}
+
+/// Checks a `match`. With `value` false, arms are statements (§7.12).
+match_expr :: fn(cx: ^FnCx, m: ^const ast.MatchExpr, value: bool, expect: ?Ty) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    scrutinee := cx.expr(m.scrutinee, null)
+    // A scrutinee whose type still contains literal types (`a := 1; match a …`) keeps them
+    // open: a later statement may still fix them (§6.1). Integer patterns restrict them
+    // to integers, and exhaustiveness is checked once they are final.
+    sty := cx.infer.resolve(cx.s, scrutinee.ty)
+    deferred := tys.has_infer(sty)
+    if cx.is_c_union(sty) {
+        cx.error(m.scrutinee.span, c_union_match(cx.s, sty))
+        sty = tys.error()
+    }
+    arms := list(tir.Arm)
+    // A pattern that was reported stands for nothing; checking coverage with it would only
+    // add follow-on errors.
+    bad_pattern := false
+    for i in 0..m.arms.len {
+        arm := &m.arms[i]
+        cx.push_scope()
+        before := cx.s.l.diags.error_count()
+        pat := cx.arm_pattern(arm.pats, sty)
+        if cx.s.l.diags.error_count() > before { bad_pattern = true }
+        guard: ?^Expr = null
+        if g := arm.guard { guard = cx.expect_bool(cx.expr(g, tys.bool_ty())) }
+        body := if .Block(b) := arm.body.kind {
+            cx.block_expected(&b, value, expect)
+        } else if value {
+            cx.expr(arm.body, expect)
+        } else {
+            cx.stmt_expr(arm.body)
+        }
+        cx.pop_scope()
+        arms.push(tir.Arm(pat: pat, guard: guard, body: body))!
+    }
+    // Exhaustiveness and reachability.
+    arm_spans := list(source.Span)
+    for i in 0..m.arms.len { arm_spans.push(m.arms[i].span)! }
+    if deferred {
+        cx.deferred_matches.push(DeferredMatch(span: m.span, arm_spans: arm_spans.items))!
+    } else if not tys.is_error(sty) and not bad_pattern {
+        cx.report_match(cx.check_arms(sty, arms.items), m.span, arm_spans.items)
+    }
+    ty: Ty = tys.unit()
+    if value {
+        if t := expect {
+            ty = t
+        } else {
+            ty = tys.never_ty()
+            for a in arms.items {
+                if tys.kind(a.body.ty) is not .Never {
+                    ty = a.body.ty
+                    break
+                }
+            }
+        }
+    } else {
+        all_never := true
+        for a in arms.items {
+            if tys.kind(a.body.ty) is not .Never { all_never = false }
+        }
+        if all_never { ty = tys.never_ty() }
+    }
+    if value and tys.kind(ty) is not .Never {
+        for i in 0..arms.items.len {
+            b := arms.items[i].body
+            if tys.kind(b.ty) is not .Never { arms.items[i].body = cx.coerce(b, ty) }
+        }
+    }
+    return tir.mk(ty, .Match(scrutinee, arms.items), m.span)
+}
+
+check_arms :: fn(cx: ^FnCx, ty: Ty, arms: []const tir.Arm) -> MatchReport needs Alloc {
+    pats := list(^Pat)
+    guarded := list(bool)
+    for a in arms {
+        pats.push(a.pat)!
+        guarded.push(a.guard is not null)!
+    }
+    return check_match(cx.s, ty, pats.items, guarded.items)
+}
+
+report_match :: fn(cx: ^FnCx, report: MatchReport, span: source.Span, arms: []const source.Span) needs Alloc {
+    if missing := report.missing {
+        cx.error(span, str.format("this `match` is not exhaustive: `{}` is not covered", missing)!)
+    }
+    for i in report.unreachable { cx.error(arms[i], "this arm can never be chosen: earlier arms cover it") }
+}
+
+/// Checks a `match` whose exhaustiveness was deferred until its scrutinee's literal types
+/// were final.
+check_deferred_match :: fn(cx: ^FnCx, e: ^Expr) needs Alloc {
+    .Match(scrutinee, arms) := e.kind else return
+    found: ?usize = null
+    for i, d in enumerate(cx.deferred_matches.items) {
+        if d.span is e.span {
+            found = i
+            break
+        }
+    }
+    i := found else return
+    d := cx.deferred_matches.items[i]
+    // `swap_remove`, as the reference implementation does.
+    last := cx.deferred_matches.items.len - 1
+    cx.deferred_matches.items[i] = cx.deferred_matches.items[last]
+    _ = cx.deferred_matches.pop()
+    if cx.s.tys.is_error(scrutinee.ty) { return }
+    cx.report_match(cx.check_arms(scrutinee.ty, arms), d.span, d.arm_spans)
+}
+
+/// The pattern of an arm: alternatives must bind the same names with the same types.
+arm_pattern :: fn(cx: ^FnCx, pats: []const ast.Pattern, ty: Ty) -> ^Pat needs Load {
+    first_binds := list(PatBind)
+    alts := list(^Pat)
+    for i in 0..pats.len {
+        p := &pats[i]
+        binds := list(PatBind)
+        pt := cx.pattern(p, ty, .Refutable, &binds)
+        if i is 0 {
+            first_binds = binds
+        } else {
+            // A name is bound once per alternative, so equal counts and inclusion mean
+            // the same names.
+            same := binds.items.len is first_binds.items.len
+            for b in binds.items {
+                if not bound(&first_binds, b.name) { same = false }
+            }
+            if not same { cx.error(p.span, "every alternative of an arm must bind the same names") }
+            // Make the alternative bind the first alternative's locals.
+            map := list(LocalMap)
+            for b in binds.items {
+                for f in first_binds.items {
+                    if f.name is b.name {
+                        t1 := cx.locals.items[usize(f.local)].ty
+                        t2 := cx.locals.items[usize(b.local)].ty
+                        if t1 is not t2 {
+                            cx.error(b.span, str.format("`{}` has type `{}` here but `{}` in the first alternative", b.name, cx.show(t2), cx.show(t1))!)
+                        }
+                        map.push(LocalMap(from: b.local, to: f.local))!
+                        break
+                    }
+                }
+            }
+            remap_binds(pt, map.items)
+        }
+        alts.push(pt)!
+    }
+    cx.declare_binds(&first_binds)
+    if alts.items.len is 1 { return alts.items[0] }
+    span := source.to(alts.items[0].span, alts.items[alts.items.len - 1].span)
+    return tir.mk_pat(ty, .Or(alts.items), span)
+}
+
+LocalMap :: struct {
+    from: u32
+    to: u32
+}
+
+remap_binds :: fn(p: ^Pat, map: []const LocalMap) {
+    match p.kind {
+        .Bind(id) => for m in map {
+            if m.from is id {
+                p.kind = .Bind(m.to)
+                break
+            }
+        }
+        .Some(q), .Ok(q), .Err(q) => remap_binds(q, map)
+        .Variant(_, q) => remap_binds(q, map)
+        .Fields(fs) => for f in fs { remap_binds(f.pat, map) }
+        .Or(ps) => for q in ps { remap_binds(q, map) }
+        _ => {}
+    }
+}
+
+/// `pattern := value` in a condition (§8.2): refutable; binds names for the rest.
+binding_cond :: fn(cx: ^FnCx, pat: ^const ast.Pattern, value: ^const ast.Expr) -> tir.CondPart needs Load {
+    v := cx.expr(value, null)
+    vty := cx.infer.resolve(cx.s, v.ty)
+    binds := list(PatBind)
+    p := cx.pattern(pat, vty, .Refutable, &binds)
+    if not cx.s.tys.is_error(vty) and irrefutable(cx.s, p) {
+        optional := cx.s.tys.kind(vty) in (.Optional(_), .Result(_))
+        if optional and pat.kind is .Wildcard {
+            // `_` matches the whole optional or result, absent or not (§9.3).
+            cx.error(pat.span, "this condition always succeeds: `_` matches a missing value too; bind a name (`v := …`) or test `… is not null`")
+        } else {
+            cx.error(pat.span, "this condition always succeeds; use a plain binding instead")
+        }
+    }
+    cx.declare_binds(&binds)
+    return .Match(p, v)
+}
+
+/// If the right operand of `is` is a pattern form that is not a value (§7.6), returns it
+/// as a pattern.
+is_pattern_operand :: fn(cx: ^FnCx, rhs: ^const ast.Expr, lhs_ty: Ty) -> ?ast.Pattern needs Load {
+    pat := expr_to_pattern(rhs) else return null
+    // `T.V(…)` is a variant pattern only if `T` names a type; `x.method(…)` is a value.
+    if .Path(pp) := pat.kind and .Field(base, _) := pp.path.kind and cx.type_of_name(base) is null { return null }
+    // `x is null` tests for absence, which needs no equality on the payload (§7.6).
+    if cx.s.tys.kind(cx.infer.resolve(cx.s, lhs_ty)) is .Optional(_) and pat.kind is .Null { return pat }
+    if contains_wildcard(&pat) or cx.omits_payload(&pat, lhs_ty) or cx.binds_unknown_name(&pat) { return pat }
+    return null
+}
+
+/// Whether a nested name in `p` is not a known value: an attempt to bind, which `is` does
+/// not allow (§7.6).
+binds_unknown_name :: fn(cx: ^FnCx, p: ^const ast.Pattern) -> bool needs Load {
+    match p.kind {
+        .Bind(n) => return cx.lookup_local(n.name) is null and cx.s.lookup_module_name(cx.module, n.name) is null
+        .Err(q) => return cx.binds_unknown_name(q)
+        .Path(pp) => {
+            args := pp.args else return false
+            for i in 0..args.len {
+                if cx.binds_unknown_name(&args[i].pat) { return true }
+            }
+            return false
+        }
+        .Tuple(args) => {
+            for i in 0..args.len {
+                if cx.binds_unknown_name(&args[i].pat) { return true }
+            }
+            return false
+        }
+        _ => return false
+    }
+}
+
+/// Whether `p` names a variant with a payload without giving one (`.Circle`).
+omits_payload :: fn(cx: ^FnCx, p: ^const ast.Pattern, ty0: Ty) -> bool needs Load {
+    tys := &cx.s.tys
+    ty := cx.infer.resolve(cx.s, ty0)
+    if .Err(inner) := p.kind {
+        t := ty
+        while .Optional(i) := tys.kind(t) { t = i }
+        .Result(err, _) := tys.kind(t) else return false
+        return cx.omits_payload(inner, err)
+    }
+    t := cx.strip_wrappers(ty)
+    .Path(pp) := p.kind else return false
+    if pp.args is not null { return false }
+    name := match pp.path.kind {
+        .DotIdent(n) => n.name
+        .Field(_, n) => n.name
+        _ => return false
+    }
+    uv := cx.s.union_variants(t) else return false
+    for v in uv.variants {
+        if v.name is name and v.payload is not null { return true }
+    }
+    return false
+}
+
+/// Checks `lhs in (p1, p2, …)` where a member is a pattern form (§7.7): `lhs` matches one
+/// of the members, each written as on the right of `is`.
+in_patterns :: fn(cx: ^FnCx, lhs: ^Expr, members: []const ast.TupleElem, negated: bool, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    ty := cx.infer.resolve(cx.s, lhs.ty)
+    if cx.is_c_union(ty) {
+        cx.error(lhs.span, c_union_match(cx.s, ty))
+        ty = tys.error()
+    }
+    arms := list(tir.Arm)
+    for i in 0..members.len {
+        m := &members[i]
+        p: ?ast.Pattern = if m.name is null { expr_to_pattern(&m.value) } else { null }
+        pp := p else {
+            cx.error(m.value.span, "when a member of an inline tuple of `in` is a pattern, every member must be a pattern or a literal (§7.7)")
+            return error_expr(cx.s, span)
+        }
+        binds := list(PatBind)
+        pat := cx.pattern(&pp, ty, .IsTest, &binds)
+        arms.push(tir.Arm(pat: pat, guard: null, body: tir.mk(tys.bool_ty(), .Bool(not negated), span)))!
+    }
+    otherwise := tir.mk(tys.bool_ty(), .Bool(negated), span)
+    arms.push(tir.Arm(pat: tir.mk_pat(ty, .Wild, span), guard: null, body: otherwise))!
+    return tir.mk(tys.bool_ty(), .Match(lhs, arms.items), span)
+}
+
+/// Checks `lhs is <pattern>`.
+is_pattern_test :: fn(cx: ^FnCx, lhs: ^Expr, p: ^const ast.Pattern, negated: bool, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    ty := cx.infer.resolve(cx.s, lhs.ty)
+    if cx.is_c_union(ty) {
+        cx.error(lhs.span, c_union_match(cx.s, ty))
+        ty = tys.error()
+    }
+    binds := list(PatBind)
+    pat := cx.pattern(p, ty, .IsTest, &binds)
+    then := tir.mk(tys.bool_ty(), .Bool(not negated), span)
+    otherwise := tir.mk(tys.bool_ty(), .Bool(negated), span)
+    arms := list(tir.Arm)
+    arms.push(tir.Arm(pat: pat, guard: null, body: then))!
+    arms.push(tir.Arm(pat: tir.mk_pat(ty, .Wild, span), guard: null, body: otherwise))!
+    return tir.mk(tys.bool_ty(), .Match(lhs, arms.items), span)
+}
+
+/// Converts an expression written on the right of `is` into a pattern, if it has the
+/// shape of one (§A.7 rule 9).
+expr_to_pattern :: fn(e: ^const ast.Expr) -> ?ast.Pattern needs Alloc {
+    kind: ast.PatternKind = .Wildcard
+    match e.kind {
+        .Underscore => {}
+        .Null => { kind = .Null }
+        .DotIdent(_), .Field(_) => { kind = .Path(ast.PathPattern(path: new(e^)!, args: null)) }
+        .Call(callee, args, _) => {
+            if callee.kind is not .DotIdent(_) and callee.kind is not .Field(_) { return null }
+            pargs := list(ast.PatArg)
+            for i in 0..args.len {
+                a := &args[i]
+                match a.kind {
+                    .Positional(v) => {
+                        np := nested_pattern(&v) else return null
+                        pargs.push(ast.PatArg(name: null, pat: np, span: a.span))!
+                    }
+                    .Named(n, v) => {
+                        np := nested_pattern(&v) else return null
+                        pargs.push(ast.PatArg(name: n, pat: np, span: a.span))!
+                    }
+                    .Spread(_) => return null
+                }
+            }
+            kind = .Path(ast.PathPattern(path: callee, args: pargs.items))
+        }
+        .Unary(op, operand) => {
+            if op is .MakeErr {
+                inner := expr_to_pattern(operand) else return null
+                kind = .Err(new(inner)!)
+            } else if op is .Neg and operand.kind is .Int(_) {
+                kind = .Lit(new(e^)!)
+            } else {
+                return null
+            }
+        }
+        .Int(_), .Str(_), .Bool(_) => { kind = .Lit(new(e^)!) }
+        .Tuple(elems) => {
+            pargs := list(ast.PatArg)
+            for i in 0..elems.len {
+                el := &elems[i]
+                np := nested_pattern(&el.value) else return null
+                pargs.push(ast.PatArg(name: el.name, pat: np, span: el.value.span))!
+            }
+            kind = .Tuple(pargs.items)
+        }
+        .Paren(inner) => return expr_to_pattern(inner)
+        _ => return null
+    }
+    return ast.Pattern(id: e.id, kind: kind, span: e.span)
+}
+
+/// Like `expr_to_pattern`, but a bare name inside a pattern is a binding.
+nested_pattern :: fn(e: ^const ast.Expr) -> ?ast.Pattern needs Alloc {
+    if .Ident(n) := e.kind { return ast.Pattern(id: e.id, kind: .Bind(n), span: e.span) }
+    return expr_to_pattern(e)
+}
+
+contains_wildcard :: fn(p: ^const ast.Pattern) -> bool {
+    match p.kind {
+        .Wildcard => return true
+        .Err(q) => return contains_wildcard(q)
+        .Path(pp) => {
+            args := pp.args else return false
+            for i in 0..args.len {
+                if contains_wildcard(&args[i].pat) { return true }
+            }
+            return false
+        }
+        .Tuple(args) => {
+            for i in 0..args.len {
+                if contains_wildcard(&args[i].pat) { return true }
+            }
+            return false
+        }
+        _ => return false
+    }
+}

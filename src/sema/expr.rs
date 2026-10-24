@@ -609,7 +609,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 let v = self.expect_bool(v);
                 mk(Ty::bool(), tir::ExprKind::Unary { op: tir::UnOp::Not, operand: Box::new(v) }, span)
             }
-            ast::UnOp::AddrOf => self.addr_of_expr(operand, span),
+            ast::UnOp::AddrOf => self.addr_of_expr(operand, expect, span),
             // `!e` where `?(E!T)` is expected: the result, then wrapped (§6.4).
             ast::UnOp::MakeErr
                 if let Some(inner) = expect.map(|t| self.infer.shallow(t)).and_then(|t| t.optional_inner())
@@ -678,9 +678,14 @@ impl<'a, 's> FnCx<'a, 's> {
     }
 
     /// `&place`.
-    fn addr_of_expr(&mut self, operand: &ast::Expr, span: Span) -> Expr {
+    fn addr_of_expr(&mut self, operand: &ast::Expr, expect: Option<Ty>, span: Span) -> Expr {
         let temp_ok = std::mem::take(&mut self.temp_ref_arg);
-        let v = self.expr(operand, None);
+        // The expected pointee is a hint for the operand: `f(&.Circle(r))` (§7.2).
+        let hint = expect.map(|t| self.infer.shallow(t)).and_then(|t| match t.kind() {
+            TyKind::Ptr { pointee, .. } => Some(*pointee),
+            _ => None,
+        });
+        let v = self.expr(operand, hint);
         if self.reject_second_class(&v, "the target of `&`") {
             return error_expr(span);
         }

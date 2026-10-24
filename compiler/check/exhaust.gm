@@ -1,0 +1,449 @@
+// Exhaustiveness and reachability of `match` arms (§8.6), by the usefulness algorithm
+// over deconstructed patterns (mirrors `src/sema/exhaust.rs`). Integer patterns are
+// handled by splitting the type's range at the boundaries of the ranges in a column.
+
+Int :: bigint.Int
+
+Ctor :: union {
+    Bool: bool
+    Null
+    Some
+    Ok
+    Err
+    Variant: u32
+    /// The single constructor of a tuple or struct.
+    Single
+    /// An inclusive range of integers.
+    Range: (lo: Int, hi: Int)
+    Str: []const u8
+}
+
+/// A deconstructed pattern: anything, or a constructor applied to sub-patterns.
+DPat :: union {
+    Wild: Ty
+    Ctor: (ty: Ty, ctor: Ctor, subs: []DPat)
+}
+
+dpat_ty :: fn(d: ^const DPat) -> Ty => match d^ {
+    .Wild(t) => t
+    .Ctor(t, _, _) => t
+}
+
+/// The outcome of checking one `match`.
+MatchReport :: struct {
+    /// A pattern (as source text) that no arm matches, if the match is not exhaustive.
+    missing: ?string
+    /// The indices of the arms that can never be chosen.
+    unreachable: []usize
+}
+
+/// A row of the pattern matrix.
+Row :: []DPat
+
+/// Checks the arms of a `match` on a value of type `ty`: each arm's pattern and whether
+/// it has a guard, in order.
+check_match :: fn(s: ^Sema, ty: Ty, pats: []const ^Pat, guarded: []const bool) -> MatchReport needs Alloc {
+    rows := list(Row)
+    unreachable := list(usize)
+    for i, p in enumerate(pats) {
+        alts := alternatives(s, p)
+        any_useful := false
+        for alt in alts {
+            one := list(DPat)
+            one.push(alt)!
+            if useful(s, rows.items, one.items) is not null { any_useful = true }
+        }
+        if not any_useful { unreachable.push(i)! }
+        if not guarded[i] {
+            for alt in alts {
+                row := list(DPat)
+                row.push(alt)!
+                rows.push(row.items)!
+            }
+        }
+    }
+    q := list(DPat)
+    q.push(.Wild(ty))!
+    missing: ?string = null
+    if w := useful(s, rows.items, q.items) { missing = show_witness(s, &w[0]) }
+    return MatchReport(missing: missing, unreachable: unreachable.items)
+}
+
+/// Whether the pattern matches every value of its type (§9.4).
+irrefutable :: fn(s: ^Sema, p: ^const Pat) -> bool needs Alloc {
+    rows := list(Row)
+    for d in alternatives(s, p) {
+        row := list(DPat)
+        row.push(d)!
+        rows.push(row.items)!
+    }
+    q := list(DPat)
+    q.push(.Wild(p.ty))!
+    return useful(s, rows.items, q.items) is null
+}
+
+alternatives :: fn(s: ^Sema, p: ^const Pat) -> []DPat needs Alloc {
+    if .Or(ps) := p.kind {
+        out := list(DPat)
+        for q in ps { out.extend(alternatives(s, q))! }
+        return out.items
+    }
+    return lower_product(s, p)
+}
+
+/// Lowers a pattern; nested or-patterns expand into several patterns.
+lower_product :: fn(s: ^Sema, p: ^const Pat) -> []DPat needs Alloc {
+    ty := p.ty
+    out := list(DPat)
+    no_subs := empty_slice(DPat)
+    match p.kind {
+        .Wild, .Bind(_) => out.push(.Wild(ty))!
+        .Or(ps) => for q in ps { out.extend(lower_product(s, q))! }
+        .Const(e) => match e.kind {
+            .Bool(b) => out.push(.Ctor(ty, .Bool(b), no_subs))!
+            .Int(v) => out.push(.Ctor(ty, .Range(v, v), no_subs))!
+            .Str(b) => out.push(.Ctor(ty, .Str(b), no_subs))!
+            _ => out.push(.Wild(ty))!
+        }
+        .Range(lo, hi, inclusive) => {
+            h := if inclusive { hi } else { hi.sub(bigint.one()) }
+            out.push(.Ctor(ty, .Range(lo, h), no_subs))!
+        }
+        .Null => out.push(.Ctor(ty, .Null, no_subs))!
+        .Some(q) => wrap_each(ty, .Some, lower_product(s, q), &out)
+        .Ok(q) => wrap_each(ty, .Ok, lower_product(s, q), &out)
+        .Err(q) => wrap_each(ty, .Err, lower_product(s, q), &out)
+        .Variant(v, null) => {
+            subs_tys := sub_types(s, ty, &.Variant(v))
+            subs := list(DPat)
+            if subs_tys.len > 0 { subs.push(.Wild(subs_tys[0]))! }
+            out.push(.Ctor(ty, .Variant(v), subs.items))!
+        }
+        .Variant(v, q) => wrap_each(ty, .Variant(v), lower_product(s, q), &out)
+        .Fields(fs) => {
+            tys := sub_types(s, ty, &.Single)
+            first := list(DPat)
+            for t in tys { first.push(.Wild(t))! }
+            combos := list(Row)
+            combos.push(first.items)!
+            for f in fs {
+                options := lower_product(s, f.pat)
+                next := list(Row)
+                for c in combos.items {
+                    for o in options {
+                        c2 := list(DPat)
+                        c2.extend(c)!
+                        if usize(f.index) < c2.items.len { c2.items[usize(f.index)] = o }
+                        next.push(c2.items)!
+                    }
+                }
+                combos = next
+            }
+            for subs in combos.items { out.push(.Ctor(ty, .Single, subs))! }
+        }
+    }
+    return out.items
+}
+
+wrap_each :: fn(ty: Ty, c: Ctor, ds: []DPat, out: ^List(DPat)) needs Alloc {
+    for d in ds {
+        subs := list(DPat)
+        subs.push(d)!
+        out.push(.Ctor(ty, c, subs.items))!
+    }
+}
+
+/// The types of the sub-patterns of constructor `c` of type `ty`.
+sub_types :: fn(s: ^Sema, ty: Ty, c: ^const Ctor) -> []Ty needs Alloc {
+    out := list(Ty)
+    match s.tys.kind(ty) {
+        .Optional(t) => if c^ is .Some { out.push(t)! }
+        .Result(err, ok) => {
+            if c^ is .Ok { out.push(ok)! }
+            if c^ is .Err { out.push(err)! }
+        }
+        .Tuple(elems, _) => if c^ is .Single { out.extend(elems)! }
+        .Adt(_) => {
+            if c^ is .Single {
+                if fields := s.struct_fields(ty) {
+                    for f in fields { out.push(f.ty)! }
+                }
+            } else if .Variant(v) := c^ {
+                if uv := s.union_variants(ty) {
+                    if p := uv.variants[usize(v)].payload { out.push(p)! }
+                }
+            }
+        }
+        _ => {}
+    }
+    return out.items
+}
+
+/// Every constructor of `ty`, split to agree with the ranges in `column`; `null` if the
+/// type has too many values to enumerate.
+all_ctors :: fn(s: ^Sema, ty: Ty, column: []const DPat) -> ?[]Ctor needs Alloc {
+    out := list(Ctor)
+    tys := &s.tys
+    match tys.kind(ty) {
+        .Bool => {
+            out.push(.Bool(false))!
+            out.push(.Bool(true))!
+        }
+        .Optional(_) => {
+            out.push(.Null)!
+            out.push(.Some)!
+        }
+        .Result(_) => {
+            out.push(.Ok)!
+            out.push(.Err)!
+        }
+        .Tuple(_) => out.push(.Single)!
+        .Never => {}
+        .Adt(_) => {
+            if s.struct_fields(ty) is not null {
+                out.push(.Single)!
+            } else if uv := s.union_variants(ty) {
+                for i in 0..uv.variants.len { out.push(.Variant(i.trunc(u32)))! }
+            } else {
+                return null
+            }
+        }
+        _ => {
+            r := int_bounds(tys, ty) else return null
+            min := r.min
+            end := r.max.add(bigint.one())
+            cuts := list(Int)
+            cuts.push(min)!
+            cuts.push(end)!
+            for d in column {
+                if .Ctor(_, c, _) := d and .Range(lo, hi) := c {
+                    cuts.push(lo)!
+                    cuts.push(hi.add(bigint.one()))!
+                }
+            }
+            cuts.items.sort_by(fn(a, b: ^const Int) -> bool => a.cmp(b^) < 0)
+            uniq := list(Int)
+            for c in cuts.items {
+                if uniq.items.len is 0 or uniq.items[uniq.items.len - 1].cmp(c) is not 0 { uniq.push(c)! }
+            }
+            for k in 1..uniq.items.len {
+                a := uniq.items[k - 1]
+                b := uniq.items[k]
+                if a.cmp(min) >= 0 and b.cmp(end) <= 0 and a.cmp(b) < 0 { out.push(.Range(a, b.sub(bigint.one())))! }
+            }
+        }
+    }
+    return out.items
+}
+
+/// The least and greatest values of an integer type, on the target.
+int_bounds :: fn(tys: ^types.Types, ty: Ty) -> ?(min: Int, max: Int) needs Alloc {
+    signed := false
+    bits: u64 = 0
+    match tys.kind(ty) {
+        .Int(sg, b) => {
+            signed = sg
+            bits = u64(b)
+        }
+        .Usize => { bits = u64(target.ptr_bits) }
+        .Isize => {
+            signed = true
+            bits = u64(target.ptr_bits)
+        }
+        _ => return null
+    }
+    if signed {
+        half := bigint.one().shl(bits - 1)
+        return (min: half.neg(), max: half.sub(bigint.one()))
+    }
+    return (min: bigint.zero(), max: bigint.one().shl(bits).sub(bigint.one()))
+}
+
+covers :: fn(head: ^const Ctor, c: ^const Ctor) -> bool {
+    if .Range(a, b) := head^ and .Range(x, y) := c^ { return a.cmp(x) <= 0 and y.cmp(b) <= 0 }
+    return ctor_eq(head, c)
+}
+
+ctor_eq :: fn(a: ^const Ctor, b: ^const Ctor) -> bool => match a^ {
+    .Bool(x) => b^ is .Bool(x)
+    .Null => b^ is .Null
+    .Some => b^ is .Some
+    .Ok => b^ is .Ok
+    .Err => b^ is .Err
+    .Variant(x) => b^ is .Variant(x)
+    .Single => b^ is .Single
+    .Range(lo, hi) => if .Range(l2, h2) := b^ { lo.eq(l2) and hi.eq(h2) } else { false }
+    .Str(x) => if .Str(y) := b^ { x is y } else { false }
+}
+
+/// The row `row` specialized to constructor `c` (whose sub-patterns have the types
+/// `arity_tys`), if its head can match `c`.
+specialize :: fn(row: []const DPat, c: ^const Ctor, arity_tys: []const Ty) -> ?Row needs Alloc {
+    if row.len is 0 { return null }
+    out := list(DPat)
+    match row[0] {
+        .Wild(_) => for t in arity_tys { out.push(.Wild(t))! }
+        .Ctor(_, hc, subs) => {
+            if not covers(&hc, c) { return null }
+            out.extend(subs)!
+        }
+    }
+    out.extend(row[1..])!
+    return out.items
+}
+
+/// If `q` matches some value no row matches, returns such a value (one pattern per
+/// column).
+useful :: fn(s: ^Sema, rows: []const Row, q: []const DPat) -> ?[]DPat needs Alloc {
+    if q.len is 0 {
+        if rows.len is 0 { return empty_slice(DPat) }
+        return null
+    }
+    head := &q[0]
+    ty := dpat_ty(head)
+    column := list(DPat)
+    for r in rows {
+        if r.len > 0 { column.push(r[0])! }
+    }
+    match head^ {
+        .Ctor(_, c, _) => {
+            // A range in `q` is useful if any piece of it is.
+            pieces := list(Ctor)
+            if .Range(lo, hi) := c {
+                with_head := list(DPat)
+                with_head.extend(column.items)!
+                with_head.push(head^)!
+                all := all_ctors(s, ty, with_head.items) else empty_slice(Ctor)
+                for p in all {
+                    if .Range(x, y) := p and x.cmp(lo) >= 0 and y.cmp(hi) <= 0 { pieces.push(p)! }
+                }
+            } else {
+                pieces.push(c)!
+            }
+            for piece in pieces.items {
+                tys := sub_types(s, ty, &piece)
+                spec_rows := list(Row)
+                for r in rows {
+                    if x := specialize(r, &piece, tys) { spec_rows.push(x)! }
+                }
+                spec_q := specialize(q, &piece, tys) else return null
+                if w := useful(s, spec_rows.items, spec_q) { return rebuild(ty, piece, tys.len, w) }
+            }
+            return null
+        }
+        .Wild(_) => {
+            ctors := all_ctors(s, ty, column.items)
+            complete := false
+            if cs := ctors {
+                complete = true
+                for c in cs {
+                    if not column_covers(column.items, &c) { complete = false }
+                }
+            }
+            if complete {
+                for c in ctors else empty_slice(Ctor) {
+                    tys := sub_types(s, ty, &c)
+                    spec_rows := list(Row)
+                    for r in rows {
+                        if x := specialize(r, &c, tys) { spec_rows.push(x)! }
+                    }
+                    spec_q := specialize(q, &c, tys) else return null
+                    if w := useful(s, spec_rows.items, spec_q) { return rebuild(ty, c, tys.len, w) }
+                }
+                return null
+            }
+            default := list(Row)
+            for r in rows {
+                if r.len > 0 and r[0] is .Wild(_) { default.push(r[1..])! }
+            }
+            w := useful(s, default.items, q[1..]) else return null
+            // Name a constructor that no row covers, if there is one to name.
+            first: DPat = .Wild(ty)
+            for c in ctors else empty_slice(Ctor) {
+                if not column_covers(column.items, &c) {
+                    subs := list(DPat)
+                    for t in sub_types(s, ty, &c) { subs.push(.Wild(t))! }
+                    first = .Ctor(ty, c, subs.items)
+                    break
+                }
+            }
+            out := list(DPat)
+            out.push(first)!
+            out.extend(w)!
+            return out.items
+        }
+    }
+}
+
+column_covers :: fn(column: []const DPat, c: ^const Ctor) -> bool {
+    for d in column {
+        if .Ctor(_, hc, _) := d and covers(&hc, c) { return true }
+    }
+    return false
+}
+
+/// Puts the first `arity` patterns of a witness back under constructor `c`.
+rebuild :: fn(ty: Ty, c: Ctor, arity: usize, w: []DPat) -> []DPat needs Alloc {
+    n := arity.min(w.len)
+    out := list(DPat)
+    out.push(.Ctor(ty, c, w[..n]))!
+    out.extend(w[n..])!
+    return out.items
+}
+
+/// A witness as Gamma pattern syntax.
+show_witness :: fn(s: ^Sema, d: ^const DPat) -> string needs Alloc {
+    .Ctor(ty, c, subs) := d^ else return "_"
+    match c {
+        .Bool(b) => return if b { "true" } else { "false" }
+        .Null => return "null"
+        .Some, .Ok => return show_witness(s, &subs[0])
+        .Err => return str.format("!{}", show_witness(s, &subs[0]))!
+        .Range(lo, hi) => {
+            if lo.eq(hi) { return sema.show_int(lo) }
+            return str.format("{}..={}", sema.show_int(lo), sema.show_int(hi))!
+        }
+        .Str(b) => return debug_string(b)
+        .Variant(v) => {
+            name := "?"
+            if uv := s.union_variants(ty) { name = uv.variants[usize(v)].name }
+            if subs.len is 0 { return str.format(".{}", name)! }
+            return str.format(".{}({})", name, show_witness(s, &subs[0]))!
+        }
+        .Single => {
+            inner := list(string)
+            for i in 0..subs.len { inner.push(show_witness(s, &subs[i]))! }
+            if .Adt(id, _) := s.tys.kind(ty) {
+                parts := list(string)
+                if fields := s.struct_fields(ty) {
+                    for i, f in enumerate(fields) {
+                        if i < inner.items.len and inner.items[i] is not "_" { parts.push(str.format("{}: {}", f.name, inner.items[i])!)! }
+                    }
+                }
+                return str.format("{}({})", s.adts.items[usize(id)].name, str.join(parts.items, ", ")!)!
+            }
+            return str.format("({})", str.join(inner.items, ", ")!)!
+        }
+    }
+}
+
+/// A string literal as the reference implementation shows it in messages (Rust's
+/// `Debug` for strings).
+debug_string :: fn(b: []const u8) -> string needs Alloc {
+    out := list(u8)
+    out.push('"')!
+    for c in b {
+        match c {
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            '\n' => out.extend("\\n")!
+            '\r' => out.extend("\\r")!
+            '\t' => out.extend("\\t")!
+            0 => out.extend("\\0")!
+            0x01..=0x1F, 0x7F => out.write("\\u{{{:x}}}", c)!
+            _ => out.push(c)!
+        }
+    }
+    out.push('"')!
+    return out.items
+}

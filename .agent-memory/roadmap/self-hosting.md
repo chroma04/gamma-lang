@@ -33,19 +33,20 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   infer/finalize/program/dump). Sema gained defs (List(tir.FnDef) parallel to fns),
   pending_bodies (popped LIFO like ref), inline_fns, default_exprs, complex_of,
   is_ambient; loader keeps other_items (tests/handlers/intrinsics → unsupported).
-- Supported subset: non-generic fns; let/assign/compound; arith/cmp/logic; if/while/
-  return/break/continue; direct calls (no rest/site params); struct + variant construction
-  w/ defaults (literal → inline, else Const("<default>")); fields; print `{}` only;
-  assert/trap; literal inference + fallbacks; effects + needs fix; main checks; #inline.
-- TIR_FLOOR = 55 (survey s38e: 55 SAME / 729 UNSUP / 0 DIFF of 784).
-- Top UNSUP buckets: "this kind of expression" 496 (catch-all, break down by ast kind),
-  statements 462 (for/match/defer...), method calls 405, generic fn bodies 261 + calls
-  259, error values 210, .len/.ptr 208, pattern tests 201, calls 177, binding conds 159,
-  unknown names 123 (check: prelude fns?), handler decls 102, const exprs 88, tests 58.
-- Next: break down catch-all; then match/patterns + binding conds, method calls, for
-  loops, .len/.ptr/indexing/slices, error values/try, generics (instantiation + labels).
-  Delegate well-specified buckets to subagents (file ownership: expr.gm is shared — split
-  new kinds into new files, e.g. check/pattern.gm, check/method.gm).
+- PR #76 merged (infra, 55). s38f added: patterns (pattern/exhaust/matching.gm), match,
+  binding conds, `is`/`in` patterns, for over ranges/arrays/slices/tuples/range values,
+  index/slice/.len/.ptr, array construction, methods (methods.gm: builtins, module fns,
+  effect ops, E.op), errors.gm (else/try/!e/?/!/lift), escape.gm. `&e` passes expected
+  pointee as hint (ref + gammac + spec §7.2). TIR_FLOOR = 100 (0 DIFF of 784).
+- Survey script: $SP/one.sh per root (gammac tir vs gamma tir --diag-format=json), xargs
+  -P6 over roots.txt (= program_roots); rewrite if scratch is gone (~60 s).
+- Biggest remaining buckets (roots mentioning): generic calls 301 + generic bodies 261 +
+  methods of generic types 127 + core slice methods 134 (all = generics: instantiation,
+  labels `f@..[args]`, instance dumps excluded); catch-all exprs 194 (break down:
+  intrinsics, fn literals...), intrinsics 179, defer 178, with 172, `calls of X` 156
+  (builtins like list/new/free/enumerate), iterators 136, handler decls 102, consts 88.
+- Gotcha hit 6x: tuple payload with ?T element + bare binding in match unwraps; use struct
+  payloads for variants with optional parts (handbook rule).
 - Perf: gammac re-parses core per root (~100 KB); could cache parsed core per process
   (FileIds/NodeIds identical since core is loaded first).
 - Keep: interpreted lane (found a C backend bug in s38c).

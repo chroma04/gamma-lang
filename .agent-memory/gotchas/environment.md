@@ -79,3 +79,6 @@
 - Windows-only code (`when target.os is .Windows`) is not type-checked on Linux. Check it with
   `CC=clang gamma check --target=x86_64-w64-mingw32 f.gm` (works without a mingw toolchain).
   s36: `when … { return a }` then `return b` = "unreachable code" on Windows only → use `else`.
+- s38f: a full `cargo test` once died in tests/selfhost.rs with exit 101 and no panic
+  message (killed; likely memory with the in-process reference on 1 GiB-stack threads plus
+  gammac processes); the rerun passed. If it recurs, run `--test selfhost` alone to check.
