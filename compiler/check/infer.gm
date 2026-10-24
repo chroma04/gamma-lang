@@ -1,0 +1,253 @@
+// Literal inference (§6.1): type variables for untyped literals, unified with each other
+// and with concrete types, with fallbacks for the unconstrained (mirrors
+// `src/sema/infer.rs`).
+
+pub VarKind :: union {
+    /// Created for an integer or character literal: any integer or float type.
+    Int
+    /// Created for a float literal: float types only.
+    Float
+    /// Created for an imaginary literal: `Complex(T)` types only.
+    Complex
+}
+
+/// The fallback of a variable nothing constrains: `i32`, or `usize` for one used as a
+/// range bound, array length, index, slicing bound or shift amount.
+pub Fallback :: union { I32, Usize }
+
+fallback_max :: fn(a, b: Fallback) -> Fallback => if a is .Usize or b is .Usize { Fallback.Usize } else { Fallback.I32 }
+
+Var :: struct {
+    parent: u32
+    kind: VarKind
+    /// Restricted to unsigned integer types.
+    unsigned: bool
+    /// Restricted to integer types.
+    integer: bool
+    fallback: Fallback
+    resolved: ?Ty
+    settled_at: ?source.Span
+}
+
+pub InferTable :: struct {
+    vars: List(Var)
+    /// Type parameters with a `Num` constraint, at which untyped literals are allowed.
+    pub numeric_params: []u32
+}
+
+pub infer_table :: fn() -> InferTable needs Alloc => InferTable(vars: list(Var), numeric_params: empty_slice(u32))
+
+/// Unification failed.
+pub Mismatch :: struct {}
+
+new_var :: fn(t: ^InferTable, tys: ^types.Types, kind: VarKind) -> Ty needs Alloc {
+    v := t.vars.items.len.trunc(u32)
+    t.vars.push(Var(parent: v, kind: kind, unsigned: false, integer: false, fallback: .I32, resolved: null, settled_at: null))!
+    return tys.intern(.Infer(v))
+}
+
+root :: fn(t: ^InferTable, v: u32) -> u32 {
+    p := t.vars.items[usize(v)].parent
+    if p is v { return v }
+    r := t.root(p)
+    t.vars.items[usize(v)].parent = r
+    return r
+}
+
+/// Replaces resolved variables at the top level of `ty` (not inside it).
+pub shallow :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> Ty needs Alloc {
+    .Infer(v) := tys.kind(ty) else return ty
+    r := t.root(v)
+    return t.vars.items[usize(r)].resolved else tys.intern(.Infer(r))
+}
+
+/// Replaces every resolved variable in `ty`.
+pub resolve :: fn(t: ^InferTable, s: ^Sema, ty: Ty) -> Ty needs Load {
+    if not s.tys.has_infer(ty) { return ty }
+    match s.tys.kind(ty) {
+        .Infer(_) => {
+            r := t.shallow(&s.tys, ty)
+            if r is ty or not s.tys.has_infer(r) { return r }
+            return t.resolve(s, r)
+        }
+        .Ptr(c, x) => return s.tys.ptr(c, t.resolve(s, x))
+        .ManyPtr(c, x) => return s.tys.many_ptr(c, t.resolve(s, x))
+        .Slice(c, x) => return s.tys.slice(c, t.resolve(s, x))
+        .Array(len, elem, kind) => return s.tys.intern(.Array(len, t.resolve(s, elem), kind))
+        .ParamArray(len, elem) => return s.tys.intern(.ParamArray(len, t.resolve(s, elem)))
+        .Optional(x) => return s.tys.optional(t.resolve(s, x))
+        .Cont(x) => return s.tys.intern(.Cont(t.resolve(s, x)))
+        .Result(e, o) => {
+            re := t.resolve(s, e)
+            ro := t.resolve(s, o)
+            return s.tys.result(re, ro)
+        }
+        .Tuple(elems, names) => {
+            out := list(Ty)
+            for x in elems { out.push(t.resolve(s, x))! }
+            return s.tys.intern(.Tuple(out.items, names))
+        }
+        _ => {
+            s.unsupported(source.DUMMY, "inference inside this type")
+            return ty
+        }
+    }
+}
+
+/// The kind of an unresolved variable type, if `ty` is one.
+pub var_kind :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> ?VarKind needs Alloc {
+    .Infer(v) := tys.kind(t.shallow(tys, ty)) else return null
+    return t.vars.items[usize(t.root(v))].kind
+}
+
+/// Restricts the variable `ty` (if unresolved) to unsigned types and raises its fallback.
+/// Returns false if `ty` is a concrete type that is not an unsigned integer.
+pub require_unsigned :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: Fallback) -> bool needs Alloc {
+    st := t.shallow(tys, ty)
+    if .Infer(v) := tys.kind(st) {
+        r := usize(t.root(v))
+        if t.vars.items[r].kind is not .Int { return false }
+        t.vars.items[r].unsigned = true
+        t.vars.items[r].fallback = fallback_max(t.vars.items[r].fallback, fallback)
+        return true
+    }
+    return tys.is_integer(st) and not tys.is_signed_integer(st)
+}
+
+/// Raises the fallback of an unresolved variable. If the variable was already given a
+/// different type early, returns that type and where it was settled.
+pub set_fallback :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: Fallback) -> ?(ty: Ty, at: source.Span) needs Alloc {
+    .Infer(v) := tys.kind(ty) else {
+        if .Infer(w) := tys.kind(t.shallow(tys, ty)) {
+            r := usize(t.root(w))
+            t.vars.items[r].fallback = fallback_max(t.vars.items[r].fallback, fallback)
+        }
+        return null
+    }
+    r := usize(t.root(v))
+    if x := t.vars.items[r].resolved and at := t.vars.items[r].settled_at {
+        if fallback is .Usize and x is not tys.usize_ty() and tys.is_integer(x) { return (ty: x, at: at) }
+        return null
+    }
+    if t.vars.items[r].resolved is null {
+        t.vars.items[r].fallback = fallback_max(t.vars.items[r].fallback, fallback)
+    }
+    return null
+}
+
+compatible :: fn(t: ^const InferTable, tys: ^types.Types, v: ^const Var, ty: Ty) -> bool {
+    if v.kind is .Complex { return false }
+    if .Param(p) := tys.kind(ty) { return not v.unsigned and p in t.numeric_params }
+    is_float := tys.kind(ty) is .Float(_)
+    if v.kind is .Float { return is_float }
+    if v.unsigned { return tys.is_integer(ty) and not tys.is_signed_integer(ty) }
+    if v.integer { return tys.is_integer(ty) }
+    return tys.is_integer(ty) or is_float
+}
+
+/// Makes `a` and `b` the same type.
+pub unify :: fn(t: ^InferTable, tys: ^types.Types, a0, b0: Ty) -> Mismatch!() needs Alloc {
+    a := t.shallow(tys, a0)
+    b := t.shallow(tys, b0)
+    if a is b or tys.is_error(a) or tys.is_error(b) { return () }
+    ka := tys.kind(a)
+    kb := tys.kind(b)
+    if .Infer(x) := ka {
+        if .Infer(y) := kb {
+            rx := t.root(x)
+            ry := t.root(y)
+            vx := t.vars.items[usize(rx)]
+            vy := t.vars.items[usize(ry)]
+            if (vx.kind is .Complex) is not (vy.kind is .Complex) { return !Mismatch() }
+            kind: VarKind = if vx.kind is .Complex {
+                .Complex
+            } else if vx.kind is .Float or vy.kind is .Float {
+                .Float
+            } else {
+                .Int
+            }
+            unsigned := vx.unsigned or vy.unsigned
+            integer := vx.integer or vy.integer
+            if kind is .Float and (unsigned or integer) { return !Mismatch() }
+            t.vars.items[usize(rx)].parent = ry
+            v := &t.vars.items[usize(ry)]
+            v.kind = kind
+            v.unsigned = unsigned
+            v.integer = integer
+            v.fallback = fallback_max(vx.fallback, vy.fallback)
+            return ()
+        }
+        return t.bind(tys, x, b)
+    }
+    if .Infer(y) := kb { return t.bind(tys, y, a) }
+    if tys.has_infer(a) or tys.has_infer(b) { return t.unify_structural(tys, a, b) }
+    return !Mismatch()
+}
+
+bind :: fn(t: ^InferTable, tys: ^types.Types, v: u32, ty: Ty) -> Mismatch!() needs Alloc {
+    r := usize(t.root(v))
+    if not t.compatible(tys, &t.vars.items[r], ty) { return !Mismatch() }
+    t.vars.items[r].resolved = ty
+    return ()
+}
+
+unify_structural :: fn(t: ^InferTable, tys: ^types.Types, a, b: Ty) -> Mismatch!() needs Alloc {
+    match tys.kind(a) {
+        .Ptr(c1, p1) => if .Ptr(c2, p2) := tys.kind(b) and c1 is c2 { return t.unify(tys, p1, p2) }
+        .ManyPtr(c1, e1) => if .ManyPtr(c2, e2) := tys.kind(b) and c1 is c2 { return t.unify(tys, e1, e2) }
+        .Slice(c1, e1) => if .Slice(c2, e2) := tys.kind(b) and c1 is c2 { return t.unify(tys, e1, e2) }
+        .Array(l1, e1, k1) => if .Array(l2, e2, k2) := tys.kind(b) and l1 is l2 and k1 is k2 { return t.unify(tys, e1, e2) }
+        .ParamArray(l1, e1) => if .ParamArray(l2, e2) := tys.kind(b) and l1 is l2 { return t.unify(tys, e1, e2) }
+        .Optional(x) => if .Optional(y) := tys.kind(b) { return t.unify(tys, x, y) }
+        .Cont(x) => if .Cont(y) := tys.kind(b) { return t.unify(tys, x, y) }
+        .Result(e1, o1) => if .Result(e2, o2) := tys.kind(b) {
+            try t.unify(tys, e1, e2)
+            return t.unify(tys, o1, o2)
+        }
+        .Tuple(x, n1) => if .Tuple(y, n2) := tys.kind(b) and x.len is y.len and n1 is n2 {
+            for i in 0..x.len { try t.unify(tys, x[i], y[i]) }
+            return ()
+        }
+        _ => {}
+    }
+    return !Mismatch()
+}
+
+/// The type a variable without a resolution takes.
+fallback_type :: fn(tys: ^types.Types, v: ^const Var) -> Ty needs Alloc {
+    match v.kind {
+        .Float => return tys.intern(.Float(64))
+        .Complex => return tys.error()
+        .Int => {
+            if v.fallback is .Usize { return tys.usize_ty() }
+            return if v.unsigned { tys.int(false, 32) } else { tys.int(true, 32) }
+        }
+    }
+}
+
+/// Gives the unresolved variables in `ty` their fallback types now (§6.1).
+pub settle_vars :: fn(t: ^InferTable, s: ^Sema, ty: Ty, at: source.Span) -> Ty needs Load {
+    r := t.resolve(s, ty)
+    vars := list(u32)
+    s.walk(r, fn(x: Ty) {
+        if .Infer(v) := s.tys.kind(x) { vars.push(v)! }
+    })
+    for v in vars.items {
+        root_ := usize(t.root(v))
+        if t.vars.items[root_].resolved is null {
+            t.vars.items[root_].resolved = fallback_type(&s.tys, &t.vars.items[root_])
+            t.vars.items[root_].settled_at = at
+        }
+    }
+    return t.resolve(s, ty)
+}
+
+/// Gives every unresolved variable its fallback type (§6.1).
+pub apply_fallbacks :: fn(t: ^InferTable, tys: ^types.Types) needs Alloc {
+    for i in 0..t.vars.items.len {
+        r := usize(t.root(i.trunc(u32)))
+        if t.vars.items[r].resolved is null {
+            t.vars.items[r].resolved = fallback_type(tys, &t.vars.items[r])
+        }
+    }
+}

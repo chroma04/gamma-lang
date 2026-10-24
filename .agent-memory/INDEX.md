@@ -8,19 +8,12 @@
   a pattern is learned). `?T in (..)` fix (§7.7). s38c: stage 3 modules (`gamma modules`),
   C-backend assignment-order bug fixed. s38d: stage 4a declarations (`gamma decls`,
   compiler/types+sema+bigint+ratio, "gammac cannot" skip protocol + DECLS_FLOOR ratchet);
-  `in` takes patterns (§7.7). Next: roadmap/self-hosting.md.
-- s37 (branch claude/sharp-turing-sfr2js): generic `#soa []T` (stand-in type + SoaDeferred
-  expanded per instance) and std/collections/soa_list `SoaList(S)` (decisions/042).
-- s36 (branch dev): stdlib batch 1 (decisions/041): slice methods (core/slice + SLICE_FNS),
-  std/uuid, net IP types (net/ip.gm), fs remove_all/temp, math special + int helpers,
-  complex inverse/hyperbolic, time parse_duration/ISO weeks, text UTF-16. Tier B list
-  and rejections in 041. Built by parallel sonnet subagents in worktrees; all reviewed.
-- s35 (branch dev): complex numbers `Complex(T)` + math vectors `#vec [N]T` (decisions/039;
-  Odin-feature verdicts there too). Float(T) implies Neg. Done + merged: std/complex,
-  conformance tests (run/math_vector*, run/complex, run/std_complex, check/*_errors),
-  guide sections in 04-types.md, examples nbody.gm + julia.gm, CHANGELOG Unreleased.
-  Imaginary literals `4j`/`2j32` done (decisions/039). `#soa` arrays/slices done (040).
-  tree-sitter CLI: `npm ci` in editors/tree-sitter-gamma works (node 22 in /opt/node22).
+  `in` takes patterns (§7.7). s38e: stage 4b bodies started (`gamma tir`, compiler/tir +
+  compiler/check, TIR_FLOOR 55); fixed let-else-in-value-block (ref) + fmt `.A` first
+  line of block. Next: roadmap/self-hosting.md.
+- s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
+  stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
+  in editors/tree-sitter-gamma (node 22 in /opt/node22).
 - s34: HashMap → std/collections/hash_map (038); s33: spec ch. 23 errors policy, spread (037).
 - s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
   in roadmap/review-2026-10-20.md (P0/P1, most P2/P3 fixed; rest listed there). Fuzz
@@ -51,7 +44,7 @@
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
 1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
-1b. Self-hosting: roadmap/self-hosting.md (stage 4a declarations in progress; then 4b bodies).
+1b. Self-hosting: roadmap/self-hosting.md (stage 4b bodies in progress: widen coverage).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.

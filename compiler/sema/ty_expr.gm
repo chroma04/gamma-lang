@@ -45,7 +45,7 @@ builtin_type :: fn(s: ^Sema, name: string) -> ?Ty needs Alloc {
     }
 }
 
-is_builtin_type_name :: fn(name: string) -> bool {
+pub is_builtin_type_name :: fn(name: string) -> bool {
     return int_type_name(name) is not null or name in ("usize", "isize", "f16", "f32", "f64", "bool", "never", "type", "rawptr", "string", "cstring", "rune")
 }
 
@@ -475,9 +475,9 @@ component_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Lo
 }
 
 /// A declaration and the span of the name that names it.
-NamedDecl :: struct {
-    decl: usize
-    span: source.Span
+pub NamedDecl :: struct {
+    pub decl: usize
+    pub span: source.Span
 }
 
 /// The declaration that `callee` of a type instantiation `G(args)` names: `G` or `m.G`.

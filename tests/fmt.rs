@@ -291,6 +291,14 @@ fn pattern_bindings_starting_with_a_dot_are_statements() {
 }
 
 #[test]
+fn a_variant_starting_a_block_is_not_a_continuation() {
+    check(
+        "f :: fn(a: bool) -> V {\n    k: V = if a {\n            .A\n    } else {\n    .B\n    }\n    return k\n}\n",
+        "f :: fn(a: bool) -> V {\n    k: V = if a {\n        .A\n    } else {\n        .B\n    }\n    return k\n}\n",
+    );
+}
+
+#[test]
 fn missing_final_newline_is_added() {
     assert_eq!(format_source("a :: 1").unwrap(), "a :: 1\n");
     assert_eq!(format_source("f :: fn() {\n    g()\n}").unwrap(), "f :: fn() {\n    g()\n}\n");

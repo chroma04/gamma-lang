@@ -10,11 +10,14 @@ declare_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, lit: ^const ast.FnLit
         }
     }
     s.fns.push(FnSig(name: name.name, span: name.span, module: module, params: sig.params, ret: sig.ret, effects: sig.effects, generics: sig.generics))!
-    return .Fn((s.fns.items.len - 1).trunc(u32))
+    s.defs.push(tir.FnDef(kind: .Named, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null))!
+    id := (s.fns.items.len - 1).trunc(u32)
+    s.pending_bodies.push(PendingBody(fn_id: id, module: module, lit: lit))!
+    return .Fn(id)
 }
 
 /// Whether a parameter defaults to `@caller_location()`: it is bound only by name (§11.3).
-is_site :: fn(p: ^const ParamInfo) -> bool {
+pub is_site :: fn(p: ^const ParamInfo) -> bool {
     d := p.default else return false
     .Intrinsic(i) := d.kind else return false
     return i.name.name is "caller_location"

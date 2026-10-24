@@ -1,0 +1,213 @@
+// Implicit coercions (§6.4), made explicit as `Coerce` nodes (mirrors `coerce` and
+// `coercion_steps` in `src/sema/expr.rs`).
+
+/// `e` converted to `target`, or `e` after reporting a mismatch.
+coerce :: fn(cx: ^FnCx, e: ^Expr, target0: Ty) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    src := cx.infer.resolve(cx.s, e.ty)
+    target := cx.infer.resolve(cx.s, target0)
+    if src is target or tys.is_error(src) or tys.is_error(target) { return e }
+    if cx.s.complex_of(target) is not null { return cx.unsupported(e.span, "complex numbers") }
+    if tys.kind(src) is .Never { return tir.mk(target, .Coerce(.FromNever, e), e.span) }
+    if tys.kind(src) is .Infer(_) {
+        // Decided after inference: the literal's type becomes the target, or the target's
+        // innermost wrapped type (§6.1).
+        cx.pending.push(PendingCoercion(source: src, target: target, span: e.span))!
+        return tir.mk(target, .Coerce(.Unresolved, e), e.span)
+    }
+    // A tuple with unresolved elements, to the same tuple with or without names (§5.9).
+    if .Tuple(a, na) := tys.kind(src) and .Tuple(b, nb) := tys.kind(target) {
+        if (tys.has_infer(src) or tys.has_infer(target)) and a.len is b.len and na is not nb and (na.len is 0 or nb.len is 0) {
+            for i in 0..a.len {
+                if cx.infer.unify(tys, a[i], b[i]) is !_ {
+                    found := cx.infer.resolve(cx.s, src)
+                    cx.error(e.span, str.format("expected `{}`, found `{}`", cx.show(target), cx.show(found))!)
+                    return e
+                }
+            }
+            return tir.mk(target, .Coerce(.TupleRename, e), e.span)
+        }
+    }
+    if tys.has_infer(src) or tys.has_infer(target) {
+        if cx.infer.unify(tys, src, target) is !_ {
+            s := cx.infer.resolve(cx.s, src)
+            t := cx.infer.resolve(cx.s, target)
+            cx.error(e.span, str.format("expected `{}`, found `{}`", cx.show(t), cx.show(s))!)
+        }
+        return e
+    }
+    if tys.kind(src) in (.FnPtr(_), .Fn(_)) and tys.kind(target) is .Fn(_) { return cx.unsupported(e.span, "second-class function values") }
+    if .Ptr(_, outer) := tys.kind(src) and .Adt(id, _) := tys.kind(outer) and cx.s.adts.items[usize(id)].has_using {
+        return cx.unsupported(e.span, "`using` fields")
+    }
+    steps := cx.coercion_steps(src, target) else {
+        cx.error(e.span, str.format("expected `{}`, found `{}`", cx.show(target), cx.show(src))!)
+        return e
+    }
+    return apply_steps(e, steps)
+}
+
+/// A coercion and the type it gives.
+Step :: struct {
+    kind: tir.Coercion
+    ty: Ty
+}
+
+/// The coercions converting `src` to `target`, if any: at most one base coercion followed
+/// by any number of wrapping steps (§6.4).
+coercion_steps :: fn(cx: ^FnCx, src, target: Ty) -> ?[]Step needs Load {
+    out := list(Step)
+    if cx.steps_into(src, target, &out) { return out.items }
+    return null
+}
+
+steps_into :: fn(cx: ^FnCx, src, target: Ty, out: ^List(Step)) -> bool needs Load {
+    if src is target { return true }
+    if k := base_coercion(cx.s, src, target) {
+        out.push(Step(kind: k, ty: target))!
+        return true
+    }
+    tys := &cx.s.tys
+    // Error lifting `E!T` → `F!T` (§10.6).
+    if .Result(_, o1) := tys.kind(src) and .Result(_, o2) := tys.kind(target) and o1 is o2 {
+        _ = cx.unsupported(source.DUMMY, "error lifting")
+        return false
+    }
+    match tys.kind(target) {
+        .Optional(inner) => {
+            if not cx.steps_into(src, inner, out) { return false }
+            out.push(Step(kind: .WrapOptional, ty: target))!
+            return true
+        }
+        .Result(_, ok) => {
+            if not cx.steps_into(src, ok, out) { return false }
+            out.push(Step(kind: .WrapOk, ty: target))!
+            return true
+        }
+        _ => return false
+    }
+}
+
+apply_steps :: fn(e0: ^Expr, steps: []const Step) -> ^Expr needs Alloc {
+    e := e0
+    for s in steps { e = tir.mk(s.ty, .Coerce(s.kind, e), e.span) }
+    return e
+}
+
+/// A single non-wrapping coercion from `src` to `target` (§6.4), if one applies.
+base_coercion :: fn(s: ^Sema, src, target: Ty) -> ?tir.Coercion needs Alloc {
+    tys := &s.tys
+    match tys.kind(src) {
+        .Never => return .FromNever
+        .Int(sa, ba) => match tys.kind(target) {
+            .Int(sb, bb) => {
+                ok := if sa is sb { bb >= ba } else if not sa { bb > ba } else { false }
+                return if ok { tir.Coercion.IntWiden } else { null }
+            }
+            .Usize => return if not sa and ba <= 32 { tir.Coercion.IntWiden } else { null }
+            .Isize => return if (not sa and ba <= 31) or (sa and ba <= 32) { tir.Coercion.IntWiden } else { null }
+            _ => {}
+        }
+        .Float(a) => if .Float(b) := tys.kind(target) { return if b > a { tir.Coercion.FloatWiden } else { null } }
+        .Tuple(a, na) => if .Tuple(b, nb) := tys.kind(target) {
+            same := a.len is b.len
+            if same {
+                for i in 0..a.len {
+                    if a[i] is not b[i] { same = false }
+                }
+            }
+            return if same and na is not nb and (na.len is 0 or nb.len is 0) { tir.Coercion.TupleRename } else { null }
+        }
+        .Optional(a) => if .Optional(b) := tys.kind(target) and s.is_nullable_pointer(a) {
+            return if pointer_coercion(s, a, b) { tir.Coercion.InOptional } else { null }
+        }
+        .FnPtr(a) => if .FnPtr(b) := tys.kind(target) {
+            same := a.params.len is b.params.len and a.ret is b.ret and a.variadic is b.variadic and a.win64 is b.win64
+            if same {
+                for i in 0..a.params.len {
+                    if a.params[i] is not b.params[i] { same = false }
+                }
+            }
+            if not same or a.effects.effects.len >= b.effects.effects.len { return null }
+            for x in a.effects.effects {
+                if not set_contains(&b.effects, &x) { return null }
+            }
+            return .FnPtrWiden
+        }
+        _ => {}
+    }
+    if pointer_coercion(s, src, target) {
+        if .Ptr(_, pointee) := tys.kind(src) and tys.kind(target) is .Slice(_) and tys.kind(pointee) in (.Array(_), .ParamArray(_)) {
+            return .ArrayPtrToSlice
+        }
+        return .PtrToPtr
+    }
+    return null
+}
+
+/// The pointer coercions of §5.5 (a sequence of them counts as one).
+pointer_coercion :: fn(s: ^Sema, src, target: Ty) -> bool {
+    tys := &s.tys
+    sc := false
+    se: Ty = src
+    sk: u8 = 0
+    match tys.kind(src) {
+        .Ptr(c, p) => {
+            sc = c
+            se = p
+            sk = 0
+        }
+        .ManyPtr(c, p) => {
+            sc = c
+            se = p
+            sk = 1
+        }
+        .Slice(c, p) => {
+            sc = c
+            se = p
+            sk = 2
+        }
+        _ => return false
+    }
+    if tys.kind(target) is .Rawptr { return sk is not 2 }
+    tc := false
+    te: Ty = target
+    tk: u8 = 0
+    match tys.kind(target) {
+        .Ptr(c, p) => {
+            tc = c
+            te = p
+            tk = 0
+        }
+        .ManyPtr(c, p) => {
+            tc = c
+            te = p
+            tk = 1
+        }
+        .Slice(c, p) => {
+            tc = c
+            te = p
+            tk = 2
+        }
+        _ => return false
+    }
+    if sc and not tc { return false }
+    if sk is tk { return se is te }
+    // ^T → [^]T, and ^[N]T → [^]T or []T.
+    array_elem: ?Ty = null
+    match tys.kind(se) {
+        .Array(_, elem, _) => if src_array_ok(tys, se) { array_elem = elem }
+        .ParamArray(_, elem) => { array_elem = elem }
+        _ => {}
+    }
+    if sk is 0 and tk is 1 { return se is te or array_elem is te }
+    if sk is 0 and tk is 2 { return array_elem is te }
+    return false
+}
+
+/// Whether a pointer to `t` may become a pointer to its first element: `t` is not an
+/// array indexed by an enum (§5.6.1).
+src_array_ok :: fn(tys: ^types.Types, t: Ty) -> bool {
+    .Array(_, _, kind) := tys.kind(t) else return true
+    return kind is not .Enum(_)
+}

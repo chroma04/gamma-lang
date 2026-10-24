@@ -269,6 +269,39 @@ module shapes
 
 The diagnostics are those of declarations: an unknown type in a signature, a cycle between declarations, a duplicate field. Errors in function bodies are left to `gamma check`.
 
+`gamma tir` checks the whole program, as `gamma check` does, and, if there are no errors, prints the typed form the checker produces for every function outside the core library, in source order. Each function shows its parameters and locals, its return type and effects, then its body, one expression per line with its type; names are resolved, operators are typed, implicit conversions and literal types are explicit. A root module without `main` is checked as a library, the way `gamma test` checks it:
+
+```text
+$ cat square.gm
+square :: fn(x: i32) -> i32 {
+    return x * x
+}
+
+main :: fn() needs Out {
+    print("{}\n", square(7))
+}
+$ gamma tir square.gm
+fn square@square.gm:1:1 named
+  param 0 x: i32
+  ret i32
+  block : never
+    expr
+      return 0 : never
+        binary Mul(Checked) : i32
+          local 0 x : i32
+          local 0 x : i32
+fn main@square.gm:5:1 named
+  ret ()
+  needs Out
+  block : ()
+    expr
+      write perform Out 0 "" "\n" {} : ()
+        call fn square@square.gm:1:1 : i32
+          int 7 : i32
+```
+
+The format is meant for comparing compilers (the self-hosted compiler is tested against it) and for looking at what the checker made of a program; it is not stable across versions.
+
 ## Common mistakes
 
 > - **Forgetting to commit `gamma.lock`.** Without it, a fresh checkout resolves again and can pick newer revisions.

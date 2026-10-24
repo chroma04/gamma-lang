@@ -161,7 +161,10 @@ is_plain :: fn(s: ^const Sema, t: Ty) -> bool => match s.tys.kind(t) {
 }
 
 all_plain :: fn(s: ^const Sema, elems: []const Ty) -> bool {
-    for e in elems {
+    for i, e in enumerate(elems) {
+        // An element equal to an earlier one is not checked again, so that types shaped
+        // like a DAG (`T2 :: (T1, T1)`) take linear time.
+        if elems[..i].index_of(e) is not null { continue }
         if not s.is_plain(e) { return false }
     }
     return true

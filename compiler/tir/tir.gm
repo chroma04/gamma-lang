@@ -1,0 +1,298 @@
+//! The typed intermediate representation (TIR) that checking produces from function
+//! bodies (mirrors `src/tir.rs`).
+//!
+//! Every expression has its final type once a body is checked; names are resolved to
+//! locals, functions and constants; implicit coercions (§6.4) are explicit `Coerce`
+//! nodes; operators are resolved to typed operations. Children are pointers into the
+//! compilation's arena, and the checker rewrites them in place when it finishes a body.
+
+ast :: import "../ast"
+bigint :: import "../bigint"
+ratio :: import "../ratio"
+source :: import "../source"
+types :: import "../types"
+
+Ty :: types.Ty
+
+pub Expr :: struct {
+    pub ty: Ty
+    pub kind: ExprKind
+    pub span: source.Span
+}
+
+pub ExprKind :: union {
+    // Constants.
+    /// An integer constant of integer type `ty`.
+    Int: bigint.Int
+    /// A float constant of float type `ty`, already rounded to that type.
+    Float: f64
+    /// A float literal whose type is still being inferred (or a type parameter).
+    UntypedFloat: ratio.Rat
+    Bool: bool
+    Str: []const u8
+    CStr: []const u8
+    Null
+    Uninit
+    /// A constant in static memory: a typed top-level constant, or a default value
+    /// (`<default>`), by its name and place.
+    Const: (name: string, span: source.Span)
+
+    // Places.
+    Local: u32
+    Upvar: (levels: u32, local: u32)
+    Deref: ^Expr
+    /// A struct field or tuple element, by index.
+    Field: (base: ^Expr, index: u32)
+    Index: (base: ^Expr, index: ^Expr, checked: bool)
+
+    // Values.
+    AddrOf: ^Expr
+    AddrOfTemp: ^Expr
+    /// A named function as a value, by its index.
+    FnRef: u32
+    Unary: (op: UnOp, operand: ^Expr)
+    Binary: (op: BinOp, lhs: ^Expr, rhs: ^Expr)
+    Logic: (is_and: bool, lhs: ^Expr, rhs: ^Expr)
+    Coerce: (kind: Coercion, expr: ^Expr)
+    Builtin: (op: Builtin, args: []Expr)
+    Call: (callee: Callee, args: []Expr)
+    /// A tuple or struct value: its fields in order.
+    Aggregate: []Expr
+    Array: []Expr
+    ArrayFill: ^Expr
+    Variant: VariantExpr
+    MakeErr: ^Expr
+    Unwrap: (expr: ^Expr, is_result: bool)
+    Eq: (lhs: ^Expr, rhs: ^Expr, negated: bool)
+
+    // Control flow.
+    Block: ^Block
+    If: IfExpr
+    Loop: LoopExpr
+    Break: BreakExpr
+    Continue: Target
+    Return: (levels: u32, value: ^Expr)
+    Trap: ^Expr
+    /// Formatted output (`print`): the template's literal pieces, a spec per placeholder
+    /// and the values.
+    Write: WriteExpr
+}
+
+pub VariantExpr :: struct {
+    pub variant: u32
+    pub payload: ?^Expr
+}
+
+pub IfExpr :: struct {
+    pub cond: []CondPart
+    pub then: ^Expr
+    pub else_: ?^Expr
+}
+
+pub LoopExpr :: struct {
+    pub label: u32
+    pub cond: []CondPart
+    pub body: ^Block
+    pub step: ?^Expr
+}
+
+pub BreakExpr :: struct {
+    pub target: Target
+    pub value: ?^Expr
+}
+
+pub WriteExpr :: struct {
+    pub sink: WriteSink
+    pub pieces: []const []const u8
+    pub specs: []const FmtSpec
+    pub args: []Expr
+}
+
+/// Where a write goes: an operation taking `[]const u8` (`Out.write` for `print`).
+pub WriteSink :: union {
+    Perform: (effect_: types.EffectRef, op: u32)
+}
+
+/// The target of a `break` or `continue`: a loop or `with` of the function `levels`
+/// frames up.
+pub Target :: struct {
+    pub levels: u32
+    pub label: u32
+}
+
+pub Block :: struct {
+    pub stmts: []Stmt
+    /// The value of the block; `null` means `()` (or `never` if the last statement
+    /// diverges).
+    pub tail: ?^Expr
+    pub span: source.Span
+}
+
+pub Stmt :: union {
+    Let: (local: u32, init: ?^Expr)
+    Assign: (place: ^Expr, value: ^Expr)
+    Expr: ^Expr
+}
+
+pub CondPart :: union {
+    Bool: ^Expr
+}
+
+pub Callee :: union {
+    /// A direct call to a known function, by its index.
+    Fn: u32
+    /// Performing operation `op` of an effect.
+    Perform: (effect_: types.EffectRef, op: u32)
+}
+
+pub UnOp :: union { Neg, BitNot, Not }
+
+pub BinOp :: union {
+    Add: ast.Flavor
+    Sub: ast.Flavor
+    Mul: ast.Flavor
+    Shl: ast.Flavor
+    Div
+    Rem
+    Shr
+    BitAnd
+    BitOr
+    BitXor
+    Lt
+    Le
+    Gt
+    Ge
+}
+
+/// Implicit coercions (§6.4), made explicit.
+pub Coercion :: union {
+    IntWiden
+    FloatWiden
+    WrapOptional
+    WrapOk
+    LiftErr: u32
+    FromNever
+    PtrToPtr
+    ArrayPtrToSlice
+    TupleRename
+    FnToPtr
+    FnPtrWiden
+    InOptional
+    /// From an unresolved literal type, decided once inference is done.
+    Unresolved
+}
+
+/// Explicit conversions and builtin operations.
+pub Builtin :: union { Convert, Assert }
+
+/// A placeholder of a format template (§21.6.1).
+pub FmtSpec :: struct {
+    pub fill: u8
+    pub align: FmtAlign
+    pub plus: bool
+    pub alt: bool
+    pub zero: bool
+    pub width: u32
+    pub precision: ?u32
+    pub kind: FmtKind
+}
+
+pub FmtAlign :: union { Auto, Left, Right, Center }
+
+pub FmtKind :: union { Display, Hex, HexUpper, Oct, Bin, Exp }
+
+pub default_spec :: fn() -> FmtSpec => FmtSpec(fill: ' ', align: .Auto, plus: false, alt: false, zero: false, width: 0, precision: null, kind: .Display)
+
+pub is_default_spec :: fn(s: ^const FmtSpec) -> bool {
+    return s.fill is ' ' and s.align is .Auto and not s.plus and not s.alt and not s.zero and s.width is 0 and s.precision is null and s.kind is .Display
+}
+
+/// A local variable or parameter of a function.
+pub LocalDecl :: struct {
+    pub name: string
+    pub ty: Ty
+    pub mutable: bool
+    pub span: source.Span
+}
+
+pub FnKind :: union { Named, Literal, Clause, Foreign }
+
+/// The checked form of a function: its parameters (also locals), locals and body.
+pub FnDef :: struct {
+    pub kind: FnKind
+    pub params: []u32
+    pub locals: []LocalDecl
+    pub body: ?^Expr
+}
+
+// ---------------------------------------------------------------------------------
+// Construction and traversal
+// ---------------------------------------------------------------------------------
+
+/// A new expression in the arena.
+pub mk :: fn(ty: Ty, kind: ExprKind, span: source.Span) -> ^Expr needs Alloc => new(Expr(ty: ty, kind: kind, span: span))!
+
+/// Calls `f` on each direct sub-expression, including those inside statements and
+/// conditions.
+pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
+    match e.kind {
+        .Deref(a), .AddrOf(a), .AddrOfTemp(a), .MakeErr(a), .ArrayFill(a), .Trap(a) => f(a)
+        .Unary(_, a) => f(a)
+        .Coerce(_, a) => f(a)
+        .Unwrap(a, _) => f(a)
+        .Field(a, _) => f(a)
+        .Return(_, a) => f(a)
+        .Index(a, b, _) => {
+            f(a)
+            f(b)
+        }
+        .Binary(_, a, b), .Logic(_, a, b) => {
+            f(a)
+            f(b)
+        }
+        .Eq(a, b, _) => {
+            f(a)
+            f(b)
+        }
+        .Builtin(_, args), .Call(_, args) => for i in 0..args.len { f(&args[i]) }
+        .Aggregate(xs), .Array(xs) => for i in 0..xs.len { f(&xs[i]) }
+        .Variant(v) => if p := v.payload { f(p) }
+        .Block(b) => block_children(b, f)
+        .If(x) => {
+            conds_children(x.cond, f)
+            f(x.then)
+            if e2 := x.else_ { f(e2) }
+        }
+        .Loop(x) => {
+            conds_children(x.cond, f)
+            block_children(x.body, f)
+            if st := x.step { f(st) }
+        }
+        .Break(x) => if v := x.value { f(v) }
+        .Write(w) => for i in 0..w.args.len { f(&w.args[i]) }
+        _ => {}
+    }
+}
+
+pub block_children :: fn(b: ^Block, f: fn(c: ^Expr)) {
+    for s in b.stmts {
+        match s {
+            .Let(_, null) => {}
+            .Let(_, x) => f(x)
+            .Assign(p, v) => {
+                f(p)
+                f(v)
+            }
+            .Expr(x) => f(x)
+        }
+    }
+    if t := b.tail { f(t) }
+}
+
+conds_children :: fn(cond: []CondPart, f: fn(c: ^Expr)) {
+    for c in cond {
+        match c {
+            .Bool(x) => f(x)
+        }
+    }
+}

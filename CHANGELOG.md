@@ -104,6 +104,10 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `gamma tir`: checks a program and prints the typed form the checker produces for each
+  of its functions (resolved names, typed operators, explicit conversions), see chapter
+  15 of the guide. `gammac tir` checks the function bodies of a first subset of programs
+  the same way.
 - `gamma decls`: resolves the top-level declarations of a program without checking
   function bodies, and prints what each denotes (types with their fields or variants,
   effects, signatures, constants), with the diagnostics of declarations.
@@ -118,6 +122,12 @@ Versions and what each kind of change means are described in
   `docs/self-hosting.md`).
 
 ### Fixed
+
+- A pattern binding with `else` in a block whose value is coerced to an expected type
+  (`x: i64 = if c { .A(v) := u else return 0; v } else { 0 }`) was rejected as not
+  leaving the block.
+- `gamma fmt` indented a line starting with a variant (`.A`) as a continuation when it
+  was the first line of a block.
 
 - Messages that show an effect set with an effect-set parameter (`needs E + Out`) list its
   terms in the same order in every run; the order used to depend on what the same process

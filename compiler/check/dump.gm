@@ -1,0 +1,383 @@
+// The checked program as `gamma tir` prints it (mirrors `src/sema/tir_dump.rs`).
+
+syntax :: import "../syntax"
+
+/// Every function whose body is written outside the core library, in source order, each
+/// as a header and its body:
+///
+/// ```text
+/// fn add@main.gm:1:1 named
+///   param 0 a: i32
+///   ret i32
+///   block : never
+///     expr
+///       return 0 : never
+///         local 0 a : i32
+/// ```
+///
+/// Each expression is one line, `kind operands : type`, followed by its sub-expressions
+/// indented by two spaces.
+pub tir_dump :: fn(s: ^Sema) -> string needs Alloc {
+    order := list(u32)
+    for i in 0..s.fns.items.len {
+        sig := &s.fns.items[i]
+        if sig.span is source.DUMMY or sig.name is "<entry>" { continue }
+        if s.l.sm.file(sig.span.file).path.starts_with("<core>") { continue }
+        order.push(i.trunc(u32))!
+    }
+    order.items.sort_by(fn(a, b: ^const u32) -> bool {
+        x := s.fns.items[usize(a^)].span
+        y := s.fns.items[usize(b^)].span
+        if x.file is not y.file { return x.file < y.file }
+        if x.lo is not y.lo { return x.lo < y.lo }
+        if x.hi is not y.hi { return x.hi < y.hi }
+        return a^ < b^
+    })
+    d := Dump(s: s, out: list(u8), fn_id: 0)
+    for f in order.items { d.write_fn(f) }
+    return d.out.items
+}
+
+/// How the dump names function `f`: `name@path:line:col`.
+fn_label :: fn(s: ^Sema, f: u32) -> string needs Alloc {
+    sig := &s.fns.items[usize(f)]
+    if sig.span is source.DUMMY { return sig.name }
+    return str.format("{}@{}", sig.name, place(s, sig.span))!
+}
+
+/// `path:line:col` of the start of `span`.
+place :: fn(s: ^Sema, span: source.Span) -> string needs Alloc {
+    file := s.l.sm.file(span.file)
+    lc := file.line_col(span.lo)
+    return str.format("{}:{}:{}", file.path, lc.line, lc.col)!
+}
+
+Dump :: struct {
+    s: ^Sema
+    out: List(u8)
+    /// The function being printed, whose locals the expressions name.
+    fn_id: u32
+}
+
+write_line :: fn(d: ^Dump, depth: usize, text: string) needs Alloc {
+    for _ in 0..depth { d.out.extend("  ")! }
+    d.out.extend(text)!
+    d.out.push('\n')!
+}
+
+write_fn :: fn(d: ^Dump, f: u32) needs Alloc {
+    d.fn_id = f
+    s := d.s
+    sig := &s.fns.items[usize(f)]
+    def := &s.defs.items[usize(f)]
+    kind := match def.kind {
+        .Named => "named"
+        .Literal => "literal"
+        .Clause => "clause"
+        .Foreign => "foreign"
+    }
+    d.write_line(0, str.format("fn {} {}", fn_label(s, f), kind)!)
+    for i, l in enumerate(def.locals) {
+        param := def.params.index_of(i.trunc(u32)) is not null
+        d.write_line(1, str.format("{} {} {}: {}{}", if param { "param" } else { "local" }, i, l.name, s.show(l.ty), if l.mutable { " mut" } else { "" })!)
+    }
+    d.write_line(1, str.format("ret {}", s.show(sig.ret))!)
+    if sig.effects.effects.len > 0 {
+        names := list(string)
+        for i in 0..sig.effects.effects.len { names.push(s.tys.show_ref(&sig.effects.effects[i]))! }
+        d.write_line(1, str.format("needs {}", str.join(names.items, " + ")!)!)
+    }
+    if b := def.body {
+        d.write_expr(1, b)
+    } else {
+        d.write_line(1, "no body")
+    }
+}
+
+local_text :: fn(d: ^Dump, l: u32) -> string needs Alloc {
+    locals := d.s.defs.items[usize(d.fn_id)].locals
+    if usize(l) < locals.len { return str.format("{} {}", l, locals[usize(l)].name)! }
+    return str.format("{} ?", l)!
+}
+
+target_text :: fn(t: tir.Target) -> string needs Alloc => str.format("{} {}", t.levels, t.label)!
+
+sink_text :: fn(d: ^Dump, sink: tir.WriteSink) -> string needs Alloc => match sink {
+    .Perform(e, op) => str.format("perform {} {}", d.s.tys.show_ref(&e), op)!
+}
+
+write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
+    s := d.s
+    ty := s.show(e.ty)
+    kids := list(^Expr)
+    head: string = match e.kind {
+        .Int(v) => str.format("int {}", sema.show_int(v))!
+        .Float(x) => str.format("float 0x{:016x}", x.bits(u64))!
+        .UntypedFloat(r) => str.format("untyped-float {}", show_rat(r))!
+        .Bool(b) => str.format("bool {}", b)!
+        .Str(b) => escaped("str ", b)
+        .CStr(b) => escaped("cstr ", b)
+        .Null => "null"
+        .Uninit => "uninit"
+        .Const(name, span) => str.format("const {}@{}", name, place(s, span))!
+        .Local(l) => str.format("local {}", d.local_text(l))!
+        .Upvar(levels, l) => str.format("upvar {} {}", levels, l)!
+        .Deref(x) => {
+            kids.push(x)!
+            "deref"
+        }
+        .Field(base, index) => {
+            kids.push(base)!
+            str.format("field {}", index)!
+        }
+        .Index(base, index, checked) => {
+            kids.push(base)!
+            kids.push(index)!
+            if checked { "index" } else { "index unchecked" }
+        }
+        .AddrOf(x) => {
+            kids.push(x)!
+            "addr-of"
+        }
+        .AddrOfTemp(x) => {
+            kids.push(x)!
+            "addr-of-temp"
+        }
+        .FnRef(f) => str.format("fn-ref {}", fn_label(s, f))!
+        .Unary(op, x) => {
+            kids.push(x)!
+            str.format("unary {}", match op {
+                .Neg => "Neg"
+                .BitNot => "BitNot"
+                .Not => "Not"
+            })!
+        }
+        .Binary(op, a, b) => {
+            kids.push(a)!
+            kids.push(b)!
+            str.format("binary {}", binop_text(op))!
+        }
+        .Logic(is_and, a, b) => {
+            kids.push(a)!
+            kids.push(b)!
+            if is_and { "and" } else { "or" }
+        }
+        .Coerce(kind, x) => {
+            kids.push(x)!
+            str.format("coerce {}", coercion_text(kind))!
+        }
+        .Builtin(op, args) => {
+            for i in 0..args.len { kids.push(&args[i])! }
+            str.format("builtin {}", match op {
+                .Convert => "Convert"
+                .Assert => "Assert"
+            })!
+        }
+        .Call(callee, args) => {
+            h := match callee {
+                .Fn(f) => str.format("call fn {}", fn_label(s, f))!
+                .Perform(eff, op) => str.format("call perform {} {}", s.tys.show_ref(&eff), op)!
+            }
+            for i in 0..args.len { kids.push(&args[i])! }
+            h
+        }
+        .Aggregate(xs) => {
+            for i in 0..xs.len { kids.push(&xs[i])! }
+            "aggregate"
+        }
+        .Array(xs) => {
+            for i in 0..xs.len { kids.push(&xs[i])! }
+            "array"
+        }
+        .ArrayFill(x) => {
+            kids.push(x)!
+            "array-fill"
+        }
+        .Variant(v) => {
+            if p := v.payload { kids.push(p)! }
+            str.format("variant {}", v.variant)!
+        }
+        .MakeErr(x) => {
+            kids.push(x)!
+            "make-err"
+        }
+        .Unwrap(x, is_result) => {
+            kids.push(x)!
+            if is_result { "unwrap-result" } else { "unwrap-optional" }
+        }
+        .Eq(a, b, negated) => {
+            kids.push(a)!
+            kids.push(b)!
+            if negated { "is-not" } else { "is" }
+        }
+        .Block(b) => {
+            d.write_line(depth, str.format("block : {}", ty)!)
+            d.write_block(depth + 1, b)
+            return
+        }
+        .If(x) => {
+            d.write_line(depth, str.format("if : {}", ty)!)
+            d.write_conds(depth + 1, x.cond)
+            d.write_line(depth + 1, "then")
+            d.write_expr(depth + 2, x.then)
+            if el := x.else_ {
+                d.write_line(depth + 1, "else")
+                d.write_expr(depth + 2, el)
+            }
+            return
+        }
+        .Loop(x) => {
+            d.write_line(depth, str.format("loop {} : {}", x.label, ty)!)
+            d.write_conds(depth + 1, x.cond)
+            d.write_line(depth + 1, "body")
+            d.write_block(depth + 2, x.body)
+            if st := x.step {
+                d.write_line(depth + 1, "step")
+                d.write_expr(depth + 2, st)
+            }
+            return
+        }
+        .Break(x) => {
+            if v := x.value { kids.push(v)! }
+            str.format("break {}", target_text(x.target))!
+        }
+        .Continue(t) => str.format("continue {}", target_text(t))!
+        .Return(levels, v) => {
+            kids.push(v)!
+            str.format("return {}", levels)!
+        }
+        .Trap(x) => {
+            kids.push(x)!
+            "trap"
+        }
+        .Write(w) => {
+            h := list(u8)
+            h.write("write {}", d.sink_text(w.sink))!
+            for p in w.pieces {
+                h.push(' ')!
+                syntax.escape_bytes(p, &h)
+            }
+            for i in 0..w.specs.len {
+                spec := &w.specs[i]
+                if tir.is_default_spec(spec) {
+                    h.extend(" {}")!
+                } else {
+                    h.push(' ')!
+                    spec_text(spec, &h)
+                }
+            }
+            for i in 0..w.args.len { kids.push(&w.args[i])! }
+            h.items
+        }
+    }
+    d.write_line(depth, str.format("{} : {}", head, ty)!)
+    for k in kids.items { d.write_expr(depth + 1, k) }
+}
+
+escaped :: fn(prefix: string, bytes: []const u8) -> string needs Alloc {
+    out := list(u8)
+    out.extend(prefix)!
+    syntax.escape_bytes(bytes, &out)
+    return out.items
+}
+
+binop_text :: fn(op: tir.BinOp) -> string needs Alloc => match op {
+    .Add(f) => str.format("Add({})", flavor_text(f))!
+    .Sub(f) => str.format("Sub({})", flavor_text(f))!
+    .Mul(f) => str.format("Mul({})", flavor_text(f))!
+    .Shl(f) => str.format("Shl({})", flavor_text(f))!
+    .Div => "Div"
+    .Rem => "Rem"
+    .Shr => "Shr"
+    .BitAnd => "BitAnd"
+    .BitOr => "BitOr"
+    .BitXor => "BitXor"
+    .Lt => "Lt"
+    .Le => "Le"
+    .Gt => "Gt"
+    .Ge => "Ge"
+}
+
+flavor_text :: fn(f: ast.Flavor) -> string => match f {
+    .Checked => "Checked"
+    .Opt => "Opt"
+    .Wrap => "Wrap"
+    .Sat => "Sat"
+}
+
+coercion_text :: fn(c: tir.Coercion) -> string needs Alloc => match c {
+    .IntWiden => "IntWiden"
+    .FloatWiden => "FloatWiden"
+    .WrapOptional => "WrapOptional"
+    .WrapOk => "WrapOk"
+    .LiftErr(v) => str.format("LiftErr {{ variant: {} }}", v)!
+    .FromNever => "FromNever"
+    .PtrToPtr => "PtrToPtr"
+    .ArrayPtrToSlice => "ArrayPtrToSlice"
+    .TupleRename => "TupleRename"
+    .FnToPtr => "FnToPtr"
+    .FnPtrWiden => "FnPtrWiden"
+    .InOptional => "InOptional"
+    .Unresolved => "Unresolved"
+}
+
+/// A placeholder's spec as the reference implementation's `Debug` writes it.
+spec_text :: fn(spec: ^const tir.FmtSpec, out: ^List(u8)) needs Alloc {
+    align := match spec.align {
+        .Auto => "Auto"
+        .Left => "Left"
+        .Right => "Right"
+        .Center => "Center"
+    }
+    kind := match spec.kind {
+        .Display => "Display"
+        .Hex => "Hex"
+        .HexUpper => "HexUpper"
+        .Oct => "Oct"
+        .Bin => "Bin"
+        .Exp => "Exp"
+    }
+    out.write("FmtSpec {{ fill: {}, align: {}, plus: {}, alt: {}, zero: {}, width: {}, precision: ", spec.fill, align, spec.plus, spec.alt, spec.zero, spec.width)!
+    if p := spec.precision {
+        out.write("Some({})", p)!
+    } else {
+        out.extend("None")!
+    }
+    out.write(", kind: {} }}", kind)!
+}
+
+write_block :: fn(d: ^Dump, depth: usize, b: ^tir.Block) needs Alloc {
+    for st in b.stmts {
+        match st {
+            .Let(l, null) => d.write_line(depth, str.format("let {}", d.local_text(l))!)
+            .Let(l, x) => {
+                d.write_line(depth, str.format("let {}", d.local_text(l))!)
+                d.write_expr(depth + 1, x)
+            }
+            .Assign(p, v) => {
+                d.write_line(depth, "assign")
+                d.write_expr(depth + 1, p)
+                d.write_expr(depth + 1, v)
+            }
+            .Expr(x) => {
+                d.write_line(depth, "expr")
+                d.write_expr(depth + 1, x)
+            }
+        }
+    }
+    if t := b.tail {
+        d.write_line(depth, "tail")
+        d.write_expr(depth + 1, t)
+    }
+}
+
+write_conds :: fn(d: ^Dump, depth: usize, cond: []const tir.CondPart) needs Alloc {
+    for c in cond {
+        match c {
+            .Bool(x) => {
+                d.write_line(depth, "cond")
+                d.write_expr(depth + 1, x)
+            }
+        }
+    }
+}

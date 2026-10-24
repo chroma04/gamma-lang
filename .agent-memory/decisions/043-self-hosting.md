@@ -90,3 +90,15 @@ User asked: "lay the groundwork for a self-hosted compiler; doubly the ultimate 
   reused slot (bit gammac twice) → handbook "Pointers to copies"; escape analysis does not
   catch it (candidate for a lint/escape rule later). Temp array slices only as call args.
   `if c { str.format(..)! } else { "" }` fails ([]u8 vs string branches) — annotate.
+
+## Stage 4b decisions (s38e): bodies
+- Target = new reference dump `gamma tir` (sema::typed_program, tir_dump.rs), not just
+  `gamma check` diags: compares the whole typed IR, so lowering details must match exactly
+  (temps, Coerce nodes, default handling, loop shapes). Root without main → tests mode.
+- gammac check lives in module `compiler/check` (FnCx methods can't live in sema: method
+  candidates come from the receiver type's module; sema helpers called as `cx.s.f()` must
+  be pub in sema). TIR in `compiler/tir`.
+- Ref fixes found: let-else inside a value block whose else is coerced (FromNever) was
+  rejected; fmt indented a block's first line `.A` as continuation; in-process test runs
+  need a 1 GiB stack thread (selfhost.rs on_big_stack). gammac sema.is_plain was
+  exponential on DAG tuples (dedupe elements).

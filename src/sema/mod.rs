@@ -38,6 +38,7 @@ mod seq;
 mod soa;
 mod stack_size;
 mod tests_decl;
+mod tir_dump;
 mod ty_expr;
 mod untyped;
 mod vector;
@@ -404,6 +405,25 @@ pub fn declarations(sess: &mut Session, root: &Path) -> Option<String> {
     sema.load_root(root)?;
     sema.resolve_declarations();
     Some(sema.decl_dump())
+}
+
+/// Checks the program rooted at `root` as [`analyze`] does, or, if its root module does
+/// not declare `main`, as a library with its tests, as [`analyze_tests`] does. Returns the
+/// typed program in the format of `gamma tir` (see `Sema::tir_dump`) if there were no
+/// errors.
+pub fn typed_program(sess: &mut Session, root: &Path) -> Option<String> {
+    let mut sema = Sema::new(sess);
+    sema.load_prelude();
+    let root_mod = sema.load_root(root)?;
+    sema.tests_enabled = !sema.modules[root_mod.0 as usize].scope.contains_key(&Symbol::intern("main"));
+    sema.check_all(root_mod);
+    sema.check_inline();
+    sema.check_escapes();
+    sema.check_continuations();
+    if sema.sess.diags.has_errors() {
+        return None;
+    }
+    Some(sema.tir_dump())
 }
 
 fn analyze_with(sess: &mut Session, root: &Path, tests: Option<bool>) -> Option<Program> {

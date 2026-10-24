@@ -1,0 +1,284 @@
+// The end of literal inference (§6.1): decide pending coercions, apply fallbacks, check
+// obligations, then rewrite the body with final types and literal values checked against
+// them (mirrors `src/sema/finalize.rs`).
+
+finalize :: fn(cx: ^FnCx, body: ^Expr) needs Load {
+    tys := &cx.s.tys
+    // Coercions from literal types: the literal takes the target type, or the type the
+    // target wraps (`T` for `?T` and `E!T`).
+    for p in cx.pending.items {
+        src := cx.infer.resolve(cx.s, p.source)
+        if tys.kind(src) is not .Infer(_) { continue }
+        core := literal_core(tys, p.target)
+        if cx.infer.unify(tys, src, core) is !_ and cx.infer.unify(tys, src, p.target) is !_ {
+            kind := match cx.infer.var_kind(tys, src) {
+                .Float => "a float"
+                .Complex => "a complex"
+                _ => "an integer"
+            }
+            if tys.kind(core) is .Param(_) {
+                _ = cx.unsupported(p.span, "literals at type parameters")
+                continue
+            }
+            what := if kind is "a complex" { "constant" } else { "literal" }
+            cx.error(p.span, str.format("expected `{}`, found {} {}", cx.show(p.target), kind, what)!)
+            cx.failed_coercions.push(p.span)!
+        }
+    }
+    cx.pending.clear()
+    cx.infer.apply_fallbacks(tys)
+    for o in cx.obligations.items { cx.check_obligation(o) }
+    cx.obligations.clear()
+    cx.fin_expr(body)
+}
+
+/// Gives the unresolved literal variables in `ty` their types now (§6.1).
+settle :: fn(cx: ^FnCx, ty: Ty, at: source.Span) -> Ty needs Load {
+    for p in cx.pending.items {
+        src := cx.infer.resolve(cx.s, p.source)
+        if cx.s.tys.kind(src) is not .Infer(_) { continue }
+        mentioned := false
+        cx.s.walk(cx.infer.resolve(cx.s, ty), fn(x: Ty) {
+            if x is src { mentioned = true }
+        })
+        if mentioned {
+            core := literal_core(&cx.s.tys, p.target)
+            if cx.infer.unify(&cx.s.tys, src, core) is !_ { _ = cx.infer.unify(&cx.s.tys, src, p.target) }
+        }
+    }
+    return cx.infer.settle_vars(cx.s, ty, at)
+}
+
+check_obligation :: fn(cx: ^FnCx, o: Obligation) needs Load {
+    tys := &cx.s.tys
+    match o {
+        .UnitStatement(ty, span) => {
+            t := cx.infer.resolve(cx.s, ty)
+            if not tys.is_unit(t) and tys.kind(t) is not .Never and not tys.is_error(t) {
+                d := diag.error(span, str.format("the value of this expression (of type `{}`) is unused; write `_ = …` to discard it", cx.show(t))!)
+                d.add_fix("discard the value with `_ = …`", source.Span(file: span.file, lo: span.lo, hi: span.lo), "_ = ")
+                cx.s.emit(d)
+            }
+        }
+        .Conversion(from0, to, span) => {
+            from := cx.infer.resolve(cx.s, from0)
+            if tys.is_error(from) or conversion_ok(cx.s, from, to) { return }
+            numeric :: fn(t: Ty) -> bool => tys.is_integer(t) or tys.kind(t) is .Float(_)
+            ff := tys.kind(from) is .Float(_)
+            tf := tys.kind(to) is .Float(_)
+            methods: []const string = empty_slice(string)
+            m1 := [3]string("trunc", "checked", "sat")
+            m2 := [4]string("trunc", "round", "checked", "sat")
+            m3 := [1]string("to")
+            if numeric(from) and numeric(to) {
+                methods = if not ff and not tf { m1[..] } else if ff and not tf { m2[..] } else { m3[..] }
+            }
+            hint := " (§6.5)"
+            if cx.s.bits_struct_ty(to) is from {
+                hint = str.format(": not every `{}` is a valid `{}`, since a field has a type with invalid bit patterns; build it with `{}(field: …)` (§5.10.5)", cx.show(from), cx.show(to), cx.show(to))!
+            } else if methods.len > 0 {
+                parts := list(string)
+                for m in methods { parts.push(str.format("`x.{}({})`", m, cx.show(to))!)! }
+                hint = str.format("; use {} (§6.6)", str.join(parts.items, ", ")!)!
+            }
+            cx.error(span, str.format("`{}({})` is not a lossless conversion{}", cx.show(to), cx.show(from), hint)!)
+        }
+        .Ord(ty, span) => {
+            t := cx.infer.resolve(cx.s, ty)
+            if not tys.is_error(t) and not cx.s.has_ord(t) {
+                cx.error(span, str.format("values of type `{}` are not ordered (§7.5)", cx.show(t))!)
+            }
+        }
+        .Numeric(n) => {
+            t := cx.infer.resolve(cx.s, n.ty)
+            if tys.kind(t) in (.Array(_), .ParamArray(_)) {
+                cx.error(n.span, "arithmetic does not apply to arrays; use a `#vec [N]T` math vector (§5.6.3), a `#simd [N]T` vector (§5.6.2) or a loop")
+                return
+            }
+            if tys.is_error(t) { return }
+            is_float := tys.kind(t) is .Float(_)
+            ok := false
+            if .Param(p) := tys.kind(t) {
+                ok = (if n.int_only { cx.s.param_has(p, .Int) } else { cx.s.param_has(p, .Num) }) and (not n.signed_only or cx.s.param_has(p, .Neg))
+            } else if n.int_only {
+                ok = tys.is_integer(t) and (not n.signed_only or tys.is_signed_integer(t))
+            } else if n.signed_only {
+                ok = tys.is_signed_integer(t) or is_float
+            } else {
+                ok = tys.is_integer(t) or is_float
+            }
+            if not ok {
+                what := if n.int_only { "integer" } else if n.signed_only { "signed integer or float" } else { "numeric" }
+                cx.error(n.span, str.format("`{}` requires {} operands, not `{}`", n.op, what, cx.show(t))!)
+            }
+        }
+    }
+}
+
+/// The final types and literal values of `e` and everything in it.
+fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
+    tir.for_each_child(e, fn(c: ^Expr) { cx.fin_expr(c) })
+    e.ty = cx.infer.resolve(cx.s, e.ty)
+    tys := &cx.s.tys
+    match e.kind {
+        .Int(v) => {
+            if tys.kind(e.ty) is .Param(_) { return }
+            if tys.kind(e.ty) is .Float(_) {
+                cx.fin_float(e, ratio.from_int(v), true)
+            } else if not tys.is_error(e.ty) and not cx.s.int_fits(v, e.ty) {
+                cx.error(e.span, str.format("the literal {} does not fit in `{}`", sema.show_int(v), cx.show(e.ty))!)
+            }
+        }
+        .UntypedFloat(r) => {
+            if tys.kind(e.ty) is .Param(_) { return }
+            if tys.is_integer(e.ty) {
+                cx.error(e.span, str.format("a float literal cannot have the integer type `{}`", cx.show(e.ty))!)
+                e.kind = .Int(bigint.zero())
+            } else {
+                cx.fin_float(e, r, false)
+            }
+        }
+        .Coerce(kind, inner) => if kind is .Unresolved {
+            target := e.ty
+            if inner.ty is target {
+                e^ = inner^
+                return
+            }
+            if steps := cx.final_steps(inner.ty, target) {
+                e^ = apply_steps(inner, steps)^
+                return
+            }
+            if inner.span not in cx.failed_coercions.items {
+                cx.error(inner.span, str.format("expected `{}`, found `{}`", cx.show(target), cx.show(inner.ty))!)
+            }
+            // Nothing may evaluate a value of the wrong type.
+            e^ = error_expr(cx.s, inner.span)^
+        }
+        _ => {}
+    }
+}
+
+final_steps :: fn(cx: ^FnCx, src, target: Ty) -> ?[]Step needs Alloc {
+    out := list(Step)
+    if cx.final_steps_into(src, target, &out) { return out.items }
+    return null
+}
+
+final_steps_into :: fn(cx: ^FnCx, src, target: Ty, out: ^List(Step)) -> bool needs Alloc {
+    if src is target { return true }
+    if k := base_coercion(cx.s, src, target) {
+        out.push(Step(kind: k, ty: target))!
+        return true
+    }
+    match cx.s.tys.kind(target) {
+        .Optional(inner) => {
+            if not cx.final_steps_into(src, inner, out) { return false }
+            out.push(Step(kind: .WrapOptional, ty: target))!
+            return true
+        }
+        .Result(_, ok) => {
+            if not cx.final_steps_into(src, ok, out) { return false }
+            out.push(Step(kind: .WrapOk, ty: target))!
+            return true
+        }
+        _ => return false
+    }
+}
+
+/// Rounds a literal value to its float type.
+fin_float :: fn(cx: ^FnCx, e: ^Expr, r: ratio.Rat, from_int: bool) needs Alloc {
+    .Float(bits) := cx.s.tys.kind(e.ty) else {
+        e.kind = .Float(0.0)
+        return
+    }
+    if bits is 16 {
+        _ = cx.unsupported(e.span, "`f16` literals")
+        return
+    }
+    x: f64 = if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
+    if x - x is not 0.0 {
+        cx.error(e.span, str.format("the literal is too large for `{}` (it would round to infinity)", cx.show(e.ty))!)
+        e.kind = .Float(0.0)
+        return
+    }
+    if from_int and not exact_float(x, r) {
+        cx.error(e.span, str.format("the integer {} is not exactly representable as `{}`", show_rat(r), cx.show(e.ty))!)
+    }
+    e.kind = .Float(x)
+}
+
+/// Whether the float `x` is exactly the rational `r`.
+exact_float :: fn(x: f64, r: ratio.Rat) -> bool needs Alloc {
+    // Integers within 2^53 are exact; larger ones are checked by converting back.
+    if r.is_integer() {
+        if i := r.num.to_i64() {
+            if i >= -(1 << 53) and i <= (1 << 53) { return true }
+        }
+    }
+    return false
+}
+
+show_rat :: fn(r: ratio.Rat) -> string needs Alloc {
+    out := list(u8)
+    r.write(&out)
+    return out.items
+}
+
+/// The type a literal coerced to `target` takes: `T` for `?T` and `E!T` (§6.1).
+literal_core :: fn(tys: ^types.Types, target: Ty) -> Ty {
+    core := target
+    while true {
+        match tys.kind(core) {
+            .Optional(t) => { core = t }
+            .Result(_, ok) => { core = ok }
+            _ => return core
+        }
+    }
+}
+
+/// The lossless conversions of §6.5. `usize`/`isize` are checked against every supported
+/// target (pointer width 32 or 64).
+lossless :: fn(s: ^Sema, from, to: Ty) -> bool {
+    tys := &s.tys
+    if from is to { return true }
+    if tys.kind(from) is .Bool { return tys.is_integer(to) }
+    if .Float(b) := tys.kind(to) and tys.is_integer(from) {
+        r := int_range(tys, from) else return false
+        needed := if r.signed { r.max - 1 } else { r.max }
+        return needed <= (if b is 16 { 11 } else if b is 32 { 24 } else { 53 })
+    }
+    if .Float(a) := tys.kind(from) and .Float(b) := tys.kind(to) { return b > a }
+    if tys.is_integer(from) and tys.is_integer(to) {
+        f := int_range(tys, from) else return false
+        t := int_range(tys, to) else return false
+        if f.signed is t.signed { return t.min >= f.max }
+        if not f.signed and t.signed { return t.min > f.max }
+        return false
+    }
+    return false
+}
+
+/// The signedness and the least and greatest width of an integer type over all targets.
+int_range :: fn(tys: ^types.Types, t: Ty) -> ?(signed: bool, min: u32, max: u32) {
+    match tys.kind(t) {
+        .Int(s, bits) => return (signed: s, min: u32(bits), max: u32(bits))
+        .Usize => return (signed: false, min: 32, max: 64)
+        .Isize => return (signed: true, min: 32, max: 64)
+        _ => return null
+    }
+}
+
+/// Whether `T(x)` with `x: from` converts losslessly to `to` (§6.5).
+conversion_ok :: fn(s: ^Sema, from, to: Ty) -> bool {
+    if lossless(s, from, to) { return true }
+    if b := s.bits_struct_ty(from) and b is to and s.is_plain(from) { return true }
+    if b := s.bits_struct_ty(to) and b is from and s.is_plain(to) { return true }
+    // An enum converts by its tag.
+    if u := s.union_variants(from) and s.tys.is_integer(to) {
+        for v in u.variants {
+            if v.payload is not null { return false }
+        }
+        return lossless(s, u.tag, to)
+    }
+    return false
+}
