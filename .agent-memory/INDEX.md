@@ -61,7 +61,8 @@
 - decisions/      001–043, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
                   035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting. `ls decisions/` for the rest.
-- spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved)
+- spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
+                  pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
 - gotchas/        environment.md
 
