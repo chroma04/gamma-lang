@@ -91,6 +91,18 @@ Versions and what each kind of change means are described in
 - A spread that fails no longer also reports every element it did not supply.
 - The old effect syntax `\` is no longer recognized: `\` is an unexpected character.
 
+### Added
+
+- `compiler/`: `gammac`, a Gamma compiler written in Gamma, the start of a self-hosted
+  toolchain. Its first stage, the lexer, produces the same tokens and diagnostics as
+  `gamma lex` on every `.gm` file of the repository, which `tests/selfhost.rs` checks
+  (see `docs/self-hosting.md`).
+
+### Fixed
+
+- Interpreter: `x!` on a result whose success type is empty (`E!()`) no longer crashes
+  the interpreter.
+
 ## 0.1.0 - 2026-10-20
 
 The first release: the complete language of `gamma-spec.md`, implemented on three

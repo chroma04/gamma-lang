@@ -1,0 +1,560 @@
+// Lexing of numeric, character and string literals (spec §2.5).
+
+bignum :: import "../bignum"
+diag :: import "../diag"
+str :: import "std/str"
+
+/// Decimal and binary exponents beyond this magnitude are rejected so that a literal
+/// such as `1e999999999999` cannot exhaust memory (§23.5).
+MAX_EXPONENT: i64 : 100_000
+
+/// A processed escape sequence.
+Escape :: union {
+    /// A Unicode scalar value.
+    Char: u32
+    /// A raw byte written as `\xHH`.
+    Byte: u8
+}
+
+/// A range of bytes of the source.
+Digits :: struct {
+    lo: usize
+    hi: usize
+}
+
+// ----- numbers -----
+
+/// Lexes an integer or float literal starting at the digit at the lexer's position.
+lex_number :: fn(lx: ^Lexer) needs Alloc {
+    lo := lx.pos
+    n := lx.tokens.items.len
+    if n > 0 and lx.tokens.items[n - 1].kind is .Punct(.Dot) {
+        lx.lex_field_index(lo)
+        return
+    }
+    // The first problem found is reported at the end, against the whole literal.
+    err: ?string = null
+    // The lowercase prefix, when an uppercase one is the problem reported.
+    prefix_fix: ?string = null
+    radix: u32 = 10
+    if lx.src[lo] is '0' {
+        if c := lx.peek_at(1) {
+            if c in ('x', 'o', 'b', 'X', 'O', 'B') {
+                lower := c | 0x20
+                if c < 'a' {
+                    letter := match lower {
+                        'x' => "x"
+                        'o' => "o"
+                        _ => "b"
+                    }
+                    err = str.format("radix prefixes must be lowercase; write `0{}`", letter)!
+                    prefix_fix = str.format("0{}", letter)!
+                }
+                lx.pos += 2
+                radix = match lower {
+                    'x' => 16
+                    'o' => 8
+                    _ => 2
+                }
+            }
+        }
+    }
+
+    int_part := lx.scan_digits(radix, &err)
+    if int_part.hi is int_part.lo and err is null {
+        err = str.format("expected {} digits after `{}`", radix_name(radix), lx.src[lo..lx.pos])!
+    }
+    if radix is 10 and int_part.hi - int_part.lo > 1 and lx.src[int_part.lo] is '0' and err is null {
+        err = "decimal literals may not have a leading zero; use 0o for octal"
+    }
+
+    // Fraction and exponent.
+    frac_part: ?Digits = null
+    exp: ?i64 = null
+    if radix in (10, 16) and lx.peek() is '.' and lx.fraction_follows(radix, lx.pos + 1) {
+        lx.pos += 1
+        frac_part = lx.scan_digits(radix, &err)
+    }
+    if radix is 10 {
+        if lx.at_exponent("eE") { exp = lx.scan_exponent(&err) }
+    } else if radix is 16 {
+        if lx.at_exponent("p") {
+            exp = lx.scan_exponent(&err)
+        } else if frac_part is not null and err is null {
+            err = "hexadecimal float literals require a `p` exponent"
+        }
+    }
+    // A decimal integer with a float suffix (`1f32`) is a float literal.
+    float_by_suffix := false
+    if radix is 10 and frac_part is null and exp is null {
+        at := lx.pos
+        float_by_suffix = float_suffix(lx.scan_ident()) is not null
+        lx.pos = at
+    }
+    is_float := frac_part is not null or exp is not null or float_by_suffix
+
+    // Suffix: any identifier characters directly after the literal.
+    suffix := lx.scan_ident()
+    // `j`, `j16`, `j32` or `j64` makes an imaginary literal (§2.5.2).
+    imag := is_imag_suffix(suffix)
+    if imag {
+        if radix is not 10 and err is null { err = "imaginary literals are decimal" }
+        is_float = true
+    } else if suffix.starts_with("j") and all_digits(suffix[1..]) and radix is 10 and err is null {
+        err = str.format("invalid suffix `{}` for an imaginary literal; expected j, j16, j32 or j64", suffix)!
+    }
+    int_sfx: ?IntSuffix = null
+    float_sfx: ?FloatSuffix = null
+    if suffix.len is 0 {
+        // No suffix.
+    } else if imag {
+        float_sfx = imag_width(suffix)
+    } else if is_float {
+        float_sfx = float_suffix(suffix)
+        if float_sfx is null and err is null {
+            err = str.format("invalid suffix `{}` for float literal; expected f16, f32 or f64", suffix)!
+        }
+    } else {
+        match int_suffix(suffix) {
+            !message => {
+                if err is null { err = message }
+            }
+            s => { int_sfx = s }
+        }
+    }
+
+    if message := err {
+        d := diag.error(lx.span(lo, lx.pos), message)
+        if p := prefix_fix { d.add_fix(str.format("write `{}`", p)!, lx.span(lo, lo + 2), p) }
+        lx.diags.push(d)
+    }
+    if is_float {
+        value := lx.float_value(radix, int_part, frac_part, exp else 0)
+        lx.emit(.Float(FloatLit(value: value, suffix: float_sfx, imag: imag)), lo, lx.pos)
+    } else {
+        value := lx.int_value(int_part, radix)
+        lx.emit(.Int(IntLit(value: value, suffix: int_sfx, is_char: false)), lo, lx.pos)
+    }
+}
+
+/// In a hexadecimal literal, `.` starts a fraction only before a decimal digit or before
+/// hex digits and a `p` exponent; otherwise it is member access (`0xFF.abs()`).
+fraction_follows :: fn(lx: ^const Lexer, radix: u32, i: usize) -> bool {
+    first_is_digit := if c := lx.byte(i) { is_digit(c) } else { false }
+    if radix is 10 { return first_is_digit }
+    j := i
+    while j < lx.src.len and (is_hex_digit(lx.src[j]) or lx.src[j] is '_') { j += 1 }
+    return first_is_digit or lx.byte(j) is 'p'
+}
+
+/// Lexes the digits of a numeric field name such as the `0` in `t.0` (§2.6).
+lex_field_index :: fn(lx: ^Lexer, lo: usize) needs Alloc {
+    while lx.pos < lx.src.len and is_digit(lx.src[lx.pos]) { lx.pos += 1 }
+    if lx.pos - lo > 1 and lx.src[lo] is '0' {
+        lx.error(lo, lx.pos, "numeric field names may not have a leading zero")
+    }
+    value := lx.int_value(Digits(lo: lo, hi: lx.pos), 10)
+    lx.emit(.Int(IntLit(value: value, suffix: null, is_char: false)), lo, lx.pos)
+}
+
+/// Consumes digits of `radix` and `_` separators and returns their range. Binary and
+/// octal literals accept all decimal digits here so that an invalid digit is reported as
+/// such rather than as a bad suffix.
+scan_digits :: fn(lx: ^Lexer, radix: u32, err: ^?string) -> Digits needs Alloc {
+    start := lx.pos
+    while c := lx.peek() {
+        ok := if radix is 16 { is_hex_digit(c) } else { is_digit(c) }
+        if not (ok or c is '_') { break }
+        lx.pos += 1
+    }
+    text := lx.src[start..lx.pos]
+    if err^ is null and (text.starts_with("_") or text.ends_with("_") or str.contains(text, "__")) {
+        err^ = "digit separators `_` must be single and between digits"
+    }
+    if err^ is null {
+        for i, c in enumerate(text) {
+            if c is not '_' and bignum.digit_value(c) >= radix {
+                err^ = str.format("invalid digit `{}` in {} literal", text[i..i + 1], radix_name(radix))!
+                break
+            }
+        }
+    }
+    return Digits(lo: start, hi: lx.pos)
+}
+
+/// True if an exponent marker from `markers`, an optional sign and a digit follow.
+at_exponent :: fn(lx: ^const Lexer, markers: string) -> bool {
+    m := lx.peek() else return false
+    if m not in markers { return false }
+    i: usize = 1
+    if (lx.peek_at(i) else 0) in ('+', '-') { i += 1 }
+    c := lx.peek_at(i) else return false
+    return is_digit(c)
+}
+
+/// Consumes an exponent (the marker is known to be present) and returns its value.
+scan_exponent :: fn(lx: ^Lexer, err: ^?string) -> i64 needs Alloc {
+    lx.pos += 1
+    negative := false
+    if lx.peek() is '-' {
+        lx.pos += 1
+        negative = true
+    } else if lx.peek() is '+' {
+        lx.pos += 1
+    }
+    digits := lx.scan_digits(10, err)
+    value: i64 = 0
+    for c in lx.src[digits.lo..digits.hi] {
+        if c is not '_' {
+            value = (value *| 10 +| i64(c - '0')).min(MAX_EXPONENT + 1)
+        }
+    }
+    if value > MAX_EXPONENT {
+        if err^ is null {
+            err^ = str.format("the exponent is larger than {}, the limit of this implementation (§23.5)", MAX_EXPONENT)!
+        }
+        value = 0
+    }
+    return if negative { -value } else { value }
+}
+
+/// The value of the digits, or zero if one of them is not a digit of `radix` (the
+/// literal has been reported then).
+int_value :: fn(lx: ^const Lexer, digits: Digits, radix: u32) -> bignum.Nat needs Alloc {
+    return parse_valid(lx.src[digits.lo..digits.hi], radix)
+}
+
+parse_valid :: fn(text: string, radix: u32) -> bignum.Nat needs Alloc {
+    for c in text {
+        if c is not '_' and bignum.digit_value(c) >= radix { return bignum.zero() }
+        if c is not '_' and not is_hex_digit(c) { return bignum.zero() }
+    }
+    return bignum.parse(text, radix)
+}
+
+float_value :: fn(lx: ^const Lexer, radix: u32, int_part: Digits, frac_part: ?Digits, exp: i64) -> bignum.Rational needs Alloc {
+    frac := frac_part else Digits(lo: 0, hi: 0)
+    frac_text := lx.src[frac.lo..frac.hi]
+    frac_digits: i64 = 0
+    for c in frac_text {
+        if c is not '_' { frac_digits += 1 }
+    }
+    digits := list(u8)
+    for c in lx.src[int_part.lo..int_part.hi] {
+        if c is not '_' { digits.push(c)! }
+    }
+    for c in frac_text {
+        if c is not '_' { digits.push(c)! }
+    }
+    mantissa := parse_valid(digits.items, radix)
+    // value = mantissa * base^scale where base is 10 (decimal) or 2 (hex float).
+    if radix is 16 { return bignum.scaled(mantissa, 2, exp - 4 * frac_digits) }
+    return bignum.scaled(mantissa, 10, exp - frac_digits)
+}
+
+// ----- characters -----
+
+/// Lexes a character literal starting at the `'` at the lexer's position (§2.5.2).
+lex_char :: fn(lx: ^Lexer) needs Alloc {
+    lo := lx.pos
+    lx.pos += 1
+    value: u32 = 0
+    b := lx.peek() else {
+        lx.error(lo, lx.pos, "unterminated character literal")
+        lx.emit_char(0, lo)
+        return
+    }
+    if b in ('\n', '\r') {
+        lx.error(lo, lx.pos, "unterminated character literal")
+        lx.emit_char(0, lo)
+        return
+    }
+    if b is '\'' {
+        lx.pos += 1
+        lx.error(lo, lx.pos, "empty character literal")
+        lx.emit_char(0, lo)
+        return
+    }
+    if b is '\\' {
+        match lx.lex_escape() {
+            .Char(c) => { value = c }
+            .Byte(x) => { value = u32(x) }
+            null => {
+                _ = lx.skip_to_closing_quote()
+                lx.emit_char(0, lo)
+                return
+            }
+        }
+    } else {
+        c := lx.current_char()
+        lx.pos += c.len
+        value = c.value
+    }
+    if lx.peek() is '\'' {
+        lx.pos += 1
+    } else if lx.skip_to_closing_quote() {
+        lx.error(lo, lx.pos, "a character literal must contain exactly one character")
+    } else {
+        lx.error(lo, lx.pos, "unterminated character literal")
+    }
+    lx.emit_char(value, lo)
+}
+
+/// Advances past the next `'` on the current line, if there is one. Returns whether it
+/// found one.
+skip_to_closing_quote :: fn(lx: ^Lexer) -> bool {
+    i := lx.pos
+    while b := lx.byte(i) {
+        if b is '\'' {
+            lx.pos = i + 1
+            return true
+        }
+        if b in ('\n', '\r') { break }
+        i += 1
+    }
+    return false
+}
+
+emit_char :: fn(lx: ^Lexer, value: u32, lo: usize) needs Alloc {
+    lit := IntLit(value: bignum.from_u64(u64(value)), suffix: null, is_char: true)
+    lx.emit(.Int(lit), lo, lx.pos)
+}
+
+// ----- escapes -----
+
+/// Processes the escape sequence starting at the backslash at the lexer's position.
+/// Errors are reported here; `null` means the escape was invalid or cut off by the end
+/// of the line or file (which the caller reports).
+lex_escape :: fn(lx: ^Lexer) -> ?Escape needs Alloc {
+    lo := lx.pos
+    lx.pos += 1
+    b := lx.peek() else return null
+    simple: ?u8 = match b {
+        'n' => '\n'
+        'r' => '\r'
+        't' => '\t'
+        '0' => 0
+        '\\', '"', '\'' => b
+        _ => null
+    }
+    if c := simple {
+        lx.pos += 1
+        return .Char(u32(c))
+    }
+    match b {
+        'x' => {
+            lx.pos += 1
+            hi := lx.peek() else 0
+            low := lx.peek_at(1) else 0
+            if is_hex_digit(hi) and is_hex_digit(low) {
+                lx.pos += 2
+                return .Byte((bignum.digit_value(hi) * 16 + bignum.digit_value(low)).trunc(u8))
+            }
+            while lx.pos < lo + 4 and lx.pos < lx.src.len and is_hex_digit(lx.src[lx.pos]) { lx.pos += 1 }
+            lx.error(lo, lx.pos, "invalid `\\x` escape: expected exactly two hexadecimal digits")
+            return null
+        }
+        'u' => {
+            lx.pos += 1
+            return lx.lex_unicode_escape(lo)
+        }
+        '\n', '\r' => return null
+        _ => {
+            c := lx.current_char()
+            lx.pos += c.len
+            lx.error(lo, lx.pos, str.format("unknown escape sequence `\\{}`", lx.src[lo + 1..lx.pos])!)
+            return null
+        }
+    }
+}
+
+/// Processes the `{H…}` of a `\u{H…}` escape; `lo` is the backslash.
+lex_unicode_escape :: fn(lx: ^Lexer, lo: usize) -> ?Escape needs Alloc {
+    if lx.peek() is not '{' {
+        lx.error(lo, lx.pos, "invalid unicode escape: expected `{` after `\\u`")
+        return null
+    }
+    lx.pos += 1
+    start := lx.pos
+    while lx.pos < lx.src.len and is_hex_digit(lx.src[lx.pos]) { lx.pos += 1 }
+    digits := lx.src[start..lx.pos]
+    if lx.peek() is not '}' {
+        lx.error(lo, lx.pos, "invalid unicode escape: expected `}` after the hexadecimal digits")
+        return null
+    }
+    lx.pos += 1
+    if digits.len is 0 or digits.len > 6 {
+        lx.error(lo, lx.pos, "invalid unicode escape: expected 1 to 6 hexadecimal digits")
+        return null
+    }
+    value: u32 = 0
+    for c in digits { value = value * 16 + bignum.digit_value(c) }
+    if value > 0x10FFFF or value in 0xD800..=0xDFFF {
+        why := if value > 0x10FFFF { "it is above U+10FFFF" } else { "it is a surrogate" }
+        lx.error(lo, lx.pos, str.format("invalid unicode escape `\\u{{{}}}`: {}", digits, why)!)
+        return null
+    }
+    return .Char(value)
+}
+
+/// Appends the UTF-8 encoding of the scalar value `c`.
+push_utf8 :: fn(out: ^List(u8), c: u32) {
+    if c < 0x80 {
+        out.push(c.trunc(u8))!
+    } else if c < 0x800 {
+        out.push((0xC0 | (c >> 6)).trunc(u8))!
+        out.push((0x80 | (c & 0x3F)).trunc(u8))!
+    } else if c < 0x10000 {
+        out.push((0xE0 | (c >> 12)).trunc(u8))!
+        out.push((0x80 | ((c >> 6) & 0x3F)).trunc(u8))!
+        out.push((0x80 | (c & 0x3F)).trunc(u8))!
+    } else {
+        out.push((0xF0 | (c >> 18)).trunc(u8))!
+        out.push((0x80 | ((c >> 12) & 0x3F)).trunc(u8))!
+        out.push((0x80 | ((c >> 6) & 0x3F)).trunc(u8))!
+        out.push((0x80 | (c & 0x3F)).trunc(u8))!
+    }
+}
+
+// ----- strings -----
+
+/// Lexes a regular or C string. `lo` is the start of the token (the `c` of a C string)
+/// and the lexer's position is at the opening quote.
+lex_string :: fn(lx: ^Lexer, lo: usize, kind: StrKind) needs Alloc {
+    lx.pos += 1
+    bytes := list(u8)
+    while true {
+        b := lx.peek() else {
+            lx.error(lo, lx.pos, "unterminated string literal")
+            break
+        }
+        if b is '"' {
+            lx.pos += 1
+            break
+        }
+        if b is '\n' {
+            lx.unterminated_at_line_end(lo)
+            break
+        }
+        if b is '\r' {
+            if lx.peek_at(1) is '\n' {
+                lx.unterminated_at_line_end(lo)
+                break
+            }
+            lx.lone_cr()
+        } else if b is '\\' {
+            match lx.lex_escape() {
+                .Char(c) => push_utf8(&bytes, c)
+                .Byte(x) => bytes.push(x)!
+                null => {}
+            }
+        } else {
+            bytes.push(b)!
+            lx.pos += 1
+        }
+    }
+    if kind is .C and 0 in bytes.items {
+        lx.error(lo, lx.pos, "C string literals may not contain NUL bytes")
+    }
+    lx.emit(.Str(StrLit(bytes: bytes.items, kind: kind)), lo, lx.pos)
+}
+
+unterminated_at_line_end :: fn(lx: ^Lexer, lo: usize) needs Alloc {
+    d := diag.error(lx.span(lo, lx.pos), "unterminated string literal")
+    d.add_note("regular string literals may not contain line terminators; use a raw string (backticks) for multi-line text")
+    lx.diags.push(d)
+}
+
+/// Lexes a raw string literal opened by the backticks at the lexer's position.
+lex_raw_string :: fn(lx: ^Lexer) needs Alloc {
+    lo := lx.pos
+    delim := backtick_run(lx.src, lx.pos)
+    lx.pos += delim
+    if lx.peek() is '\n' {
+        lx.pos += 1
+    } else if lx.peek() is '\r' and lx.peek_at(1) is '\n' {
+        lx.pos += 2
+    }
+    bytes := list(u8)
+    while true {
+        b := lx.peek() else {
+            d := diag.error(lx.span(lo, lo + delim), "unterminated raw string literal")
+            d.add_note(str.format("expected a closing run of exactly {} backtick(s)", delim)!)
+            lx.diags.push(d)
+            break
+        }
+        if b is '`' {
+            run := backtick_run(lx.src, lx.pos)
+            lx.pos += run
+            if run is delim { break }
+            for _ in 0..run { bytes.push('`')! }
+        } else if b is '\r' {
+            if lx.peek_at(1) is '\n' {
+                bytes.push('\n')!
+                lx.pos += 2
+            } else {
+                lx.lone_cr()
+            }
+        } else {
+            bytes.push(b)!
+            lx.pos += 1
+        }
+    }
+    lx.emit(.Str(StrLit(bytes: bytes.items, kind: .Raw)), lo, lx.pos)
+}
+
+radix_name :: fn(radix: u32) -> string => match radix {
+    2 => "binary"
+    8 => "octal"
+    10 => "decimal"
+    _ => "hexadecimal"
+}
+
+all_digits :: fn(s: string) -> bool {
+    for c in s {
+        if not is_digit(c) { return false }
+    }
+    return true
+}
+
+/// Parses an integer literal suffix (`u8`, `i64`, `usize`, …).
+int_suffix :: fn(s: string) -> string!IntSuffix needs Alloc {
+    if s is "usize" { return .Usize }
+    if s is "isize" { return .Isize }
+    digits := s[1..]
+    if s[0] in ('u', 'i') and digits.len > 0 and all_digits(digits) {
+        width: u32 = 0
+        valid := digits.len <= 3 and digits[0] is not '0'
+        if valid {
+            for c in digits { width = width * 10 + u32(c - '0') }
+            valid = width in 1..=128
+        }
+        if not valid {
+            return !str.format("invalid integer width in suffix `{}`: widths are 1 to 128 with no leading zero", s)!
+        }
+        if s[0] is 'u' { return IntSuffix.U(width) }
+        return IntSuffix.I(width)
+    }
+    if float_suffix(s) is not null {
+        return !str.format("invalid suffix `{}` for a binary or octal literal; only decimal and hexadecimal floats exist", s)!
+    }
+    return !str.format("invalid suffix `{}` for integer literal", s)!
+}
+
+/// True if `s` is the suffix of an imaginary literal (§2.5.2).
+is_imag_suffix :: fn(s: string) -> bool => s in ("j", "j16", "j32", "j64")
+
+/// The part type of an imaginary literal's suffix (`j` leaves it to inference).
+imag_width :: fn(s: string) -> ?FloatSuffix => match s {
+    "j16" => .F16
+    "j32" => .F32
+    "j64" => .F64
+    _ => null
+}
+
+float_suffix :: fn(s: string) -> ?FloatSuffix => match s {
+    "f16" => .F16
+    "f32" => .F32
+    "f64" => .F64
+    _ => null
+}

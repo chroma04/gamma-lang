@@ -56,6 +56,8 @@ src/doc/           `gamma doc`: collect, markdown, html, md_html
 src/repl/          `gamma repl`: mod, input (classify), report
 src/fmt.rs         `gamma fmt`;  src/testing.rs `gamma test`/`bench`;  src/coverage.rs
                    `--coverage`;  src/ice.rs internal-compiler-error reports
+compiler/          gammac, the self-hosted compiler in Gamma (decisions/043): source/, diag/,
+                   bignum/, syntax/ (token, lexer, literal, dump), main.gm; tests/selfhost.rs
 runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handlers
                    gm_node/gm_unw, fibers asm/ucontext, threads, Win32 + POSIX sys); rt_test.c
 lib/core/          prelude.gm, list.gm, map.gm, slice.gm (embedded via include_str!)

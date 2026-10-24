@@ -1,0 +1,80 @@
+// The token dump of `gamma lex`: one line per token, `line:col kind [payload]`.
+
+/// Appends the dump of `tokens`, which belong to file `f`, to `out`.
+pub dump_tokens :: fn(f: ^const source.SourceFile, tokens: []const Token, out: ^List(u8)) needs Alloc {
+    for t in tokens {
+        lc := f.line_col(t.span.lo)
+        out.write("{}:{} ", lc.line, lc.col)!
+        match t.kind {
+            .Ident(s) => out.write("ident {}\n", s)!
+            .Underscore => out.extend("underscore\n")!
+            .Keyword(k) => out.write("keyword {}\n", keyword_text(k))!
+            .Int(l) => {
+                out.extend(if l.is_char { "char " } else { "int " })!
+                l.value.write_decimal(out)
+                if s := l.suffix {
+                    out.push(' ')!
+                    write_int_suffix(s, out)
+                }
+                out.push('\n')!
+            }
+            .Float(l) => {
+                out.extend(if l.imag { "imag " } else { "float " })!
+                l.value.write_rational(out)
+                if s := l.suffix { out.write(" {}", float_suffix_name(s))! }
+                out.push('\n')!
+            }
+            .Str(s) => {
+                out.write("str {} ", str_kind_name(s.kind))!
+                escape_bytes(s.bytes, out)
+                out.push('\n')!
+            }
+            .Intrinsic(s) => out.write("intrinsic @{}\n", s)!
+            .Attribute(s) => out.write("attribute #{}\n", s)!
+            .Punct(p) => out.write("punct {}\n", punct_text(p))!
+            .Newline => out.extend("newline\n")!
+            .Eof => out.extend("eof\n")!
+        }
+    }
+}
+
+write_int_suffix :: fn(s: IntSuffix, out: ^List(u8)) needs Alloc {
+    match s {
+        .U(n) => out.write("u{}", n)!
+        .I(n) => out.write("i{}", n)!
+        .Usize => out.extend("usize")!
+        .Isize => out.extend("isize")!
+    }
+}
+
+float_suffix_name :: fn(s: FloatSuffix) -> string => match s {
+    .F16 => "F16"
+    .F32 => "F32"
+    .F64 => "F64"
+}
+
+str_kind_name :: fn(k: StrKind) -> string => match k {
+    .Regular => "Regular"
+    .Raw => "Raw"
+    .C => "C"
+}
+
+/// Appends `bytes` as a double-quoted string with escapes for bytes that are not
+/// printable ASCII.
+pub escape_bytes :: fn(bytes: []const u8, out: ^List(u8)) needs Alloc {
+    out.push('"')!
+    for b in bytes {
+        match b {
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            '\n' => out.extend("\\n")!
+            '\r' => out.extend("\\r")!
+            '\t' => out.extend("\\t")!
+            0x20..=0x7E => out.push(b)!
+            _ => out.write("\\x{:02x}", b)!
+        }
+    }
+    out.push('"')!
+}
+
+source :: import "../source"

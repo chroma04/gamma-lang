@@ -1,0 +1,276 @@
+// Tokens produced by the lexer (spec §2).
+
+bignum :: import "../bignum"
+source :: import "../source"
+
+/// Reserved keywords (§2.4).
+pub Keyword :: union {
+    And, Break, Cancel, Continue, Ctl, Defer, Effect, Else, Errdefer, Esc, False, Fn, For,
+    Foreign, Handler, If, Import, In, Is, Match, Needs, Not, Null, Or, Pub, Resume, Return,
+    Struct, True, Try, Union, Using, When, While, With
+}
+
+/// The keyword spelled `s`, if it is one.
+pub keyword_from :: fn(s: string) -> ?Keyword => match s {
+    "and" => .And
+    "break" => .Break
+    "cancel" => .Cancel
+    "continue" => .Continue
+    "ctl" => .Ctl
+    "defer" => .Defer
+    "effect" => .Effect
+    "else" => .Else
+    "errdefer" => .Errdefer
+    "esc" => .Esc
+    "false" => .False
+    "fn" => .Fn
+    "for" => .For
+    "foreign" => .Foreign
+    "handler" => .Handler
+    "if" => .If
+    "import" => .Import
+    "in" => .In
+    "is" => .Is
+    "match" => .Match
+    "needs" => .Needs
+    "not" => .Not
+    "null" => .Null
+    "or" => .Or
+    "pub" => .Pub
+    "resume" => .Resume
+    "return" => .Return
+    "struct" => .Struct
+    "true" => .True
+    "try" => .Try
+    "union" => .Union
+    "using" => .Using
+    "when" => .When
+    "while" => .While
+    "with" => .With
+    _ => null
+}
+
+pub keyword_text :: fn(k: Keyword) -> string => match k {
+    .And => "and"
+    .Break => "break"
+    .Cancel => "cancel"
+    .Continue => "continue"
+    .Ctl => "ctl"
+    .Defer => "defer"
+    .Effect => "effect"
+    .Else => "else"
+    .Errdefer => "errdefer"
+    .Esc => "esc"
+    .False => "false"
+    .Fn => "fn"
+    .For => "for"
+    .Foreign => "foreign"
+    .Handler => "handler"
+    .If => "if"
+    .Import => "import"
+    .In => "in"
+    .Is => "is"
+    .Match => "match"
+    .Needs => "needs"
+    .Not => "not"
+    .Null => "null"
+    .Or => "or"
+    .Pub => "pub"
+    .Resume => "resume"
+    .Return => "return"
+    .Struct => "struct"
+    .True => "true"
+    .Try => "try"
+    .Union => "union"
+    .Using => "using"
+    .When => "when"
+    .While => "while"
+    .With => "with"
+}
+
+/// Operators and punctuation (§2.6), plus the two-word operators `is not` and `not in`,
+/// which the lexer forms when both words are on one line.
+pub Punct :: union {
+    Plus, Minus, Star, Slash, Percent, Shl, Shr, Amp, Pipe, Tilde,
+    PlusWrap, MinusWrap, StarWrap, ShlWrap,
+    PlusSat, MinusSat, StarSat, ShlSat,
+    PlusOpt, MinusOpt, StarOpt, ShlOpt,
+    Assign, PlusAssign, MinusAssign, StarAssign, SlashAssign, PercentAssign, ShlAssign,
+    ShrAssign, AmpAssign, PipeAssign, TildeAssign,
+    PlusWrapAssign, MinusWrapAssign, StarWrapAssign, ShlWrapAssign,
+    PlusSatAssign, MinusSatAssign, StarSatAssign, ShlSatAssign,
+    Lt, Le, Gt, Ge,
+    Question, Bang, Caret, At, Hash,
+    DotDot, DotDotEq, Ellipsis, Uninit,
+    ColonColon, ColonEq, Colon, Comma, Dot,
+    FatArrow, Arrow,
+    LParen, RParen, LBracket, RBracket, LBrace, RBrace,
+    IsNot, NotIn
+}
+
+pub punct_text :: fn(p: Punct) -> string => match p {
+    .Plus => "+"
+    .Minus => "-"
+    .Star => "*"
+    .Slash => "/"
+    .Percent => "%"
+    .Shl => "<<"
+    .Shr => ">>"
+    .Amp => "&"
+    .Pipe => "|"
+    .Tilde => "~"
+    .PlusWrap => "+%"
+    .MinusWrap => "-%"
+    .StarWrap => "*%"
+    .ShlWrap => "<<%"
+    .PlusSat => "+|"
+    .MinusSat => "-|"
+    .StarSat => "*|"
+    .ShlSat => "<<|"
+    .PlusOpt => "+?"
+    .MinusOpt => "-?"
+    .StarOpt => "*?"
+    .ShlOpt => "<<?"
+    .Assign => "="
+    .PlusAssign => "+="
+    .MinusAssign => "-="
+    .StarAssign => "*="
+    .SlashAssign => "/="
+    .PercentAssign => "%="
+    .ShlAssign => "<<="
+    .ShrAssign => ">>="
+    .AmpAssign => "&="
+    .PipeAssign => "|="
+    .TildeAssign => "~="
+    .PlusWrapAssign => "+%="
+    .MinusWrapAssign => "-%="
+    .StarWrapAssign => "*%="
+    .ShlWrapAssign => "<<%="
+    .PlusSatAssign => "+|="
+    .MinusSatAssign => "-|="
+    .StarSatAssign => "*|="
+    .ShlSatAssign => "<<|="
+    .Lt => "<"
+    .Le => "<="
+    .Gt => ">"
+    .Ge => ">="
+    .Question => "?"
+    .Bang => "!"
+    .Caret => "^"
+    .At => "@"
+    .Hash => "#"
+    .DotDot => ".."
+    .DotDotEq => "..="
+    .Ellipsis => "..."
+    .Uninit => "---"
+    .ColonColon => "::"
+    .ColonEq => ":="
+    .Colon => ":"
+    .Comma => ","
+    .Dot => "."
+    .FatArrow => "=>"
+    .Arrow => "->"
+    .LParen => "("
+    .RParen => ")"
+    .LBracket => "["
+    .RBracket => "]"
+    .LBrace => "{"
+    .RBrace => "}"
+    .IsNot => "is not"
+    .NotIn => "not in"
+}
+
+/// The width suffix of an integer literal (§2.5.1): `uN`, `iN`, `usize` or `isize`.
+pub IntSuffix :: union {
+    U: u32
+    I: u32
+    Usize
+    Isize
+}
+
+pub FloatSuffix :: union { F16, F32, F64 }
+
+pub IntLit :: struct {
+    /// The exact value (literals are never negative; `-` is an operator).
+    pub value: bignum.Nat
+    pub suffix: ?IntSuffix
+    /// True for character literals such as `'a'`, which are integers (§2.5.2).
+    pub is_char: bool
+}
+
+pub FloatLit :: struct {
+    /// The exact value (§2.5.2).
+    pub value: bignum.Rational
+    /// For an imaginary literal (`4j`, `2.5j32`), the type of its parts.
+    pub suffix: ?FloatSuffix
+    /// True for an imaginary literal: the value is the imaginary part.
+    pub imag: bool
+}
+
+pub StrKind :: union {
+    /// `"..."`
+    Regular
+    /// `` `...` ``
+    Raw
+    /// `c"..."`
+    C
+}
+
+pub StrLit :: struct {
+    /// The bytes after escape processing (no NUL terminator for C strings).
+    pub bytes: []u8
+    pub kind: StrKind
+}
+
+pub TokenKind :: union {
+    /// An identifier (never a reserved keyword). Contextual keywords (`const`, `on`,
+    /// `where`, `test`) are identifiers; `_` is `Underscore`. The text is a slice of the
+    /// source.
+    Ident: string
+    /// The discard identifier `_`.
+    Underscore
+    Keyword: Keyword
+    /// An integer literal, including character literals.
+    Int: IntLit
+    Float: FloatLit
+    Str: StrLit
+    /// `@name`; the payload is `name`.
+    Intrinsic: string
+    /// `#name`; the payload is `name`.
+    Attribute: string
+    Punct: Punct
+    /// A significant newline or `;` (§2.8). Consecutive ones are merged.
+    Newline
+    Eof
+}
+
+pub Token :: struct {
+    pub kind: TokenKind
+    pub span: source.Span
+}
+
+/// A doc comment (`/// text`). The parser attaches it to the declaration that begins on
+/// the line after the comment block.
+pub DocComment :: struct {
+    pub span: source.Span
+    /// The text after `///`, with one leading space removed if present.
+    pub text: string
+    /// Where something directly after the comment begins: the first byte after the
+    /// indentation of the next line.
+    pub next_lo: u32
+}
+
+/// The result of lexing one file.
+pub LexOutput :: struct {
+    /// The tokens, ending with exactly one `Eof`.
+    pub tokens: List(Token)
+    pub docs: List(DocComment)
+    /// Offsets of the line terminators that are not `Newline` tokens because the token
+    /// before them continues the line (§2.8 rule 1), in order.
+    pub joined_lines: List(u32)
+}
+
+pub is_punct :: fn(k: TokenKind, p: Punct) -> bool => match k {
+    .Punct(q) => q is p
+    _ => false
+}

@@ -1,0 +1,239 @@
+//! Arbitrary-precision natural numbers and exact rationals, for the values of numeric
+//! literals: an integer literal is a natural number of any size, and a float literal is
+//! an exact rational (spec §2.5). Only what the front end needs is here: building a
+//! number from digits, multiplying by and dividing by small factors, and writing it in
+//! decimal.
+
+/// A natural number as base-2^32 limbs, least significant first. The top limb is
+/// never zero, so zero has no limbs.
+pub Nat :: struct {
+    pub limbs: List(u32)
+}
+
+/// Zero.
+pub zero :: fn() -> Nat needs Alloc => Nat(limbs: list(u32))
+
+/// `n` as a natural number.
+pub from_u64 :: fn(n: u64) -> Nat needs Alloc {
+    r := zero()
+    m := n
+    while m > 0 {
+        r.limbs.push(m.trunc(u32))!
+        m >>= 32
+    }
+    return r
+}
+
+/// A copy of `n` that shares no memory with it.
+pub copy :: fn(n: ^const Nat) -> Nat needs Alloc {
+    r := zero()
+    r.limbs.extend(n.limbs.items)!
+    return r
+}
+
+pub is_zero :: fn(n: ^const Nat) -> bool => n.limbs.items.len is 0
+
+/// Replaces `n` with `n * m + a`.
+pub mul_add :: fn(n: ^Nat, m: u32, a: u32) {
+    carry := u64(a)
+    for i in 0..n.limbs.items.len {
+        t := u64(n.limbs.items[i]) * u64(m) + carry
+        n.limbs.items[i] = t.trunc(u32)
+        carry = t >> 32
+    }
+    if carry > 0 { n.limbs.push(carry.trunc(u32))! }
+    normalize(n)
+}
+
+/// Replaces `n` with `n / d` and returns the remainder. `d` must not be zero.
+pub div_rem :: fn(n: ^Nat, d: u32) -> u32 {
+    rem: u64 = 0
+    i := n.limbs.items.len
+    while i > 0 {
+        i -= 1
+        cur := (rem << 32) | u64(n.limbs.items[i])
+        n.limbs.items[i] = (cur / u64(d)).trunc(u32)
+        rem = cur % u64(d)
+    }
+    normalize(n)
+    return rem.trunc(u32)
+}
+
+/// The remainder of `n / d`, leaving `n` as it is. `d` must not be zero.
+pub rem :: fn(n: ^const Nat, d: u32) -> u32 {
+    r: u64 = 0
+    i := n.limbs.items.len
+    while i > 0 {
+        i -= 1
+        r = ((r << 32) | u64(n.limbs.items[i])) % u64(d)
+    }
+    return r.trunc(u32)
+}
+
+/// Replaces `n` with `n * base^exp`. `base` is at most 16.
+pub mul_pow :: fn(n: ^Nat, base: u32, exp: u64) {
+    // Multiply by the largest power of `base` that fits in a limb at a time.
+    chunk: u32 = 1
+    per: u64 = 0
+    while u64(chunk) * u64(base) <= 0xFFFF_FFFF {
+        chunk *= base
+        per += 1
+    }
+    left := exp
+    while left >= per {
+        mul_add(n, chunk, 0)
+        left -= per
+    }
+    while left > 0 {
+        mul_add(n, base, 0)
+        left -= 1
+    }
+}
+
+/// The number written by `digits` in `radix` (2 to 16). `_` separators are skipped;
+/// other bytes must be digits of the radix.
+pub parse :: fn(digits: string, radix: u32) -> Nat needs Alloc {
+    r := zero()
+    for c in digits {
+        if c is '_' { continue }
+        mul_add(&r, radix, digit_value(c))
+    }
+    return r
+}
+
+/// The value of a hexadecimal digit (either case).
+pub digit_value :: fn(c: u8) -> u32 => match c {
+    '0'..='9' => u32(c - '0')
+    'a'..='f' => u32(c - 'a') + 10
+    'A'..='F' => u32(c - 'A') + 10
+    _ => 0
+}
+
+/// Drops zero limbs from the top.
+normalize :: fn(n: ^Nat) {
+    k := n.limbs.items.len
+    while k > 0 and n.limbs.items[k - 1] is 0 { k -= 1 }
+    n.limbs.truncate(k)
+}
+
+/// Appends `n` in decimal to `out`.
+pub write_decimal :: fn(n: ^const Nat, out: ^List(u8)) needs Alloc {
+    if n.is_zero() {
+        out.push('0')!
+        return
+    }
+    // Base-10^9 chunks, least significant first.
+    m := copy(n)
+    chunks := list(u32)
+    while not m.is_zero() { chunks.push(m.div_rem(1_000_000_000))! }
+    i := chunks.items.len - 1
+    out.write("{}", chunks.items[i])!
+    while i > 0 {
+        i -= 1
+        c := chunks.items[i]
+        width: u32 = 100_000_000
+        while width > 1 and c < width {
+            out.push('0')!
+            width /= 10
+        }
+        out.write("{}", c)!
+    }
+    m.limbs.deinit()
+    chunks.deinit()
+}
+
+/// `n` in decimal, from the current allocator.
+pub to_decimal :: fn(n: ^const Nat) -> []u8 needs Alloc {
+    out := list(u8)
+    write_decimal(n, &out)
+    return out.into_slice()!
+}
+
+/// An exact non-negative rational number `num / den` in lowest terms, with `den`
+/// positive.
+pub Rational :: struct {
+    pub num: Nat
+    pub den: Nat
+}
+
+/// The rational `mantissa * base^scale`, where `base` is 2 or 10, in lowest terms. Takes
+/// `mantissa` over.
+pub scaled :: fn(mantissa: Nat, base: u32, scale: i64) -> Rational needs Alloc {
+    num := mantissa
+    den := from_u64(1)
+    if scale >= 0 {
+        num.mul_pow(base, scale.trunc(u64))
+        return Rational(num: num, den: den)
+    }
+    if num.is_zero() { return Rational(num: num, den: den) }
+    // The denominator is base^k. Cancel the factors 2 (and 5) that the numerator shares
+    // with it; they are the only primes in it.
+    k := (-scale).trunc(u64)
+    twos := k
+    while twos > 0 and num.rem(2) is 0 {
+        _ = num.div_rem(2)
+        twos -= 1
+    }
+    den.mul_pow(2, twos)
+    if base is 10 {
+        fives := k
+        while fives > 0 and num.rem(5) is 0 {
+            _ = num.div_rem(5)
+            fives -= 1
+        }
+        den.mul_pow(5, fives)
+    }
+    return Rational(num: num, den: den)
+}
+
+/// Appends `r` to `out` as `num/den`, or as `num` alone when the denominator is 1.
+pub write_rational :: fn(r: ^const Rational, out: ^List(u8)) needs Alloc {
+    r.num.write_decimal(out)
+    if r.den.limbs.items.len is 1 and r.den.limbs.items[0] is 1 { return }
+    out.push('/')!
+    r.den.write_decimal(out)
+}
+
+test "decimal round trip" {
+    with_arena(fn() {
+        n := parse("123_456_789_012_345_678_901_234_567_890", 10)
+        expect_eq(string(to_decimal(&n)), "123456789012345678901234567890")
+        z := zero()
+        expect_eq(string(to_decimal(&z)), "0")
+        h := parse("ffff_ffff_ffff_ffff_f", 16)
+        expect_eq(string(to_decimal(&h)), "295147905179352825855")
+        p := parse("1", 10)
+        p.mul_pow(10, 30)
+        expect_eq(string(to_decimal(&p)), "1000000000000000000000000000000")
+        q := parse("1000000000000000000000000000000", 10)
+        expect_eq(q.div_rem(7), 1)
+        expect_eq(string(to_decimal(&q)), "142857142857142857142857142857")
+    })
+}
+
+test "rationals are in lowest terms" {
+    with_arena(fn() {
+        expect_eq(rational_text(parse("15", 10), 10, -1), "3/2")
+        expect_eq(rational_text(parse("314159", 10), 10, -5), "314159/100000")
+        expect_eq(rational_text(parse("25", 10), 10, 9), "25000000000")
+        expect_eq(rational_text(parse("0", 10), 10, -3), "0")
+        expect_eq(rational_text(parse("18", 16), 2, -4), "3/2")
+        expect_eq(rational_text(parse("1", 10), 10, -3), "1/1000")
+    })
+}
+
+rational_text :: fn(m: Nat, base: u32, scale: i64) -> string needs Alloc {
+    r := scaled(m, base, scale)
+    out := list(u8)
+    r.write_rational(&out)
+    return out.items
+}
+
+// Runs `body` with an arena as the current allocator, and releases the arena after.
+with_arena :: fn(body: fn() needs Alloc) needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+arena :: import "std/arena"

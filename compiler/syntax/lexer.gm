@@ -1,0 +1,821 @@
+// The lexer (spec §2).
+//
+// `lex` turns source text into tokens. Besides splitting the text it applies the newline
+// rules of §2.8 (deciding which line terminators become `Newline` tokens) and forms the
+// two-word operators `is not` and `not in`. Lexical errors are reported to the
+// diagnostics and lexing continues, so the result is always a complete token stream
+// ending in `Eof`.
+
+diag :: import "../diag"
+source :: import "../source"
+str :: import "std/str"
+
+/// Converts source text into tokens, applying the newline rules of §2.8.
+pub lex :: fn(file: source.FileId, src: string, diags: ^diag.Diagnostics) -> LexOutput needs Alloc {
+    lx := new_lexer(file, src, diags)
+    return lx.run()
+}
+
+/// `lex` for tools that keep going after errors. If the text has errors, it is lexed
+/// again with a layout heuristic: an open bracket is taken to be unclosed (and closed for
+/// the parser) where a line begins in the first column with a top-level declaration
+/// (`name ::`, `pub`, `handler`, `test "…"` or an attribute). Without it, one missing `}`
+/// or `)` makes the rest of the file part of one declaration.
+pub lex_recovering :: fn(file: source.FileId, src: string, diags: ^diag.Diagnostics) -> LexOutput needs Alloc {
+    first := diag.diagnostics()
+    lx := new_lexer(file, src, &first)
+    out := lx.run()
+    if not first.has_errors() {
+        for d in first.list.items { diags.push(d) }
+        return out
+    }
+    again := new_lexer(file, src, diags)
+    again.recover = true
+    return again.run()
+}
+
+is_ident_start :: fn(b: u8) -> bool => b in 'a'..='z' or b in 'A'..='Z' or b is '_'
+
+is_ident_cont :: fn(b: u8) -> bool => is_ident_start(b) or b in '0'..='9'
+
+is_digit :: fn(b: u8) -> bool => b in '0'..='9'
+
+is_hex_digit :: fn(b: u8) -> bool => b in '0'..='9' or b in 'a'..='f' or b in 'A'..='F'
+
+/// The kind of an open bracket on the lexer's bracket stack.
+BracketKind :: union {
+    Paren
+    Bracket
+    Brace
+    /// The `{` that opens a `match` body (§2.8).
+    MatchBrace
+}
+
+opener :: fn(k: BracketKind) -> Punct => match k {
+    .Paren => .LParen
+    .Bracket => .LBracket
+    .Brace, .MatchBrace => .LBrace
+}
+
+closer :: fn(k: BracketKind) -> Punct => match k {
+    .Paren => .RParen
+    .Bracket => .RBracket
+    .Brace, .MatchBrace => .RBrace
+}
+
+/// The index into the open-bracket counts: parentheses, square brackets, braces.
+slot :: fn(k: BracketKind) -> usize => match k {
+    .Paren => 0
+    .Bracket => 1
+    .Brace, .MatchBrace => 2
+}
+
+/// The slot of the bracket that the closing `p` closes.
+closer_slot :: fn(p: Punct) -> usize => match p {
+    .RParen => 0
+    .RBracket => 1
+    _ => 2
+}
+
+/// `p` if the token is a closing bracket.
+closing :: fn(k: TokenKind) -> ?Punct => match k {
+    .Punct(p) if p in (Punct.RParen, Punct.RBracket, Punct.RBrace) => p
+    _ => null
+}
+
+Bracket :: struct {
+    kind: BracketKind
+    /// Where the opening bracket is, for "unclosed" diagnostics.
+    span: source.Span
+}
+
+Lexer :: struct {
+    file: source.FileId
+    src: string
+    pos: usize
+    diags: ^diag.Diagnostics
+    tokens: List(Token)
+    docs: List(DocComment)
+    /// Currently open brackets, innermost last.
+    brackets: List(Bracket)
+    /// How many brackets of each kind (`slot`) are open.
+    open_counts: [3]usize
+    /// Bracket depths at which a `match` keyword was seen and whose body `{` has not been
+    /// opened yet; the innermost is last.
+    pending_matches: List(usize)
+    /// The span of the first line terminator seen since the last token. Whether it
+    /// becomes a `Newline` token is decided when the next token is known.
+    pending_newline: ?source.Span
+    joined_lines: List(u32)
+    /// Close open brackets where a declaration starts in the first column.
+    recover: bool
+}
+
+new_lexer :: fn(file: source.FileId, src: string, diags: ^diag.Diagnostics) -> Lexer needs Alloc {
+    return Lexer(
+        file: file,
+        src: src,
+        pos: 0,
+        diags: diags,
+        tokens: list(Token),
+        docs: list(DocComment),
+        brackets: list(Bracket),
+        open_counts: [3]usize(fill: 0),
+        pending_matches: list(usize),
+        pending_newline: null,
+        joined_lines: list(u32),
+        recover: false,
+    )
+}
+
+run :: fn(lx: ^Lexer) -> LexOutput needs Alloc {
+    if lx.src.starts_with("\u{feff}") { lx.pos = 3 }
+    while true {
+        lx.skip_trivia()
+        b := lx.peek() else break
+        lx.lex_token(b)
+    }
+    end := lx.src.len
+    lx.flush_newline(.Eof, end)
+    for b in lx.brackets.items {
+        lx.diags.report(b.span, str.format("unclosed `{}`", punct_text(opener(b.kind)))!)
+    }
+    lx.tokens.push(Token(kind: .Eof, span: lx.span(end, end)))!
+    return LexOutput(tokens: lx.tokens, docs: lx.docs, joined_lines: lx.joined_lines)
+}
+
+// ----- helpers -----
+
+span :: fn(lx: ^const Lexer, lo, hi: usize) -> source.Span => source.span(lx.file, lo, hi)
+
+error :: fn(lx: ^Lexer, lo, hi: usize, message: string) needs Alloc {
+    lx.diags.report(lx.span(lo, hi), message)
+}
+
+peek :: fn(lx: ^const Lexer) -> ?u8 => lx.src.get(lx.pos)
+
+peek_at :: fn(lx: ^const Lexer, n: usize) -> ?u8 => lx.src.get(lx.pos + n)
+
+/// The byte at `i`, if there is one.
+byte :: fn(lx: ^const Lexer, i: usize) -> ?u8 => lx.src.get(i)
+
+/// A character decoded from UTF-8: its code point and its length in bytes.
+Char :: struct {
+    value: u32
+    len: usize
+}
+
+/// The character starting at byte `i` of `s` (a malformed sequence is one byte long).
+decode :: fn(s: string, i: usize) -> Char {
+    b := s[i]
+    if b < 0x80 { return Char(value: u32(b), len: 1) }
+    len: usize = 1
+    value: u32 = 0
+    if b >= 0xF0 {
+        len = 4
+        value = u32(b & 0x07)
+    } else if b >= 0xE0 {
+        len = 3
+        value = u32(b & 0x0F)
+    } else if b >= 0xC0 {
+        len = 2
+        value = u32(b & 0x1F)
+    } else {
+        return Char(value: u32(b), len: 1)
+    }
+    if i + len > s.len { return Char(value: u32(b), len: 1) }
+    for k in 1..len { value = (value << 6) | u32(s[i + k] & 0x3F) }
+    return Char(value: value, len: len)
+}
+
+/// The character at the lexer's position, which must not be at the end.
+current_char :: fn(lx: ^const Lexer) -> Char => decode(lx.src, lx.pos)
+
+// ----- whitespace and comments -----
+
+skip_trivia :: fn(lx: ^Lexer) needs Alloc {
+    while b := lx.peek() {
+        match b {
+            ' ', '\t' => { lx.pos += 1 }
+            '\n' => {
+                lx.note_newline(lx.pos, lx.pos + 1)
+                lx.pos += 1
+            }
+            '\r' => {
+                if lx.peek_at(1) is '\n' {
+                    lx.note_newline(lx.pos, lx.pos + 2)
+                    lx.pos += 2
+                } else {
+                    lx.lone_cr()
+                }
+            }
+            '/' => {
+                next := lx.peek_at(1)
+                if next is '/' {
+                    lx.line_comment()
+                } else if next is '*' {
+                    lx.block_comment()
+                } else {
+                    return
+                }
+            }
+            _ => return
+        }
+    }
+}
+
+CR_MESSAGE :: "a carriage return must be followed by a line feed"
+
+/// Reports a CR that is not part of a CR LF pair and skips it.
+lone_cr :: fn(lx: ^Lexer) needs Alloc {
+    lx.error(lx.pos, lx.pos + 1, CR_MESSAGE)
+    lx.pos += 1
+}
+
+note_newline :: fn(lx: ^Lexer, lo, hi: usize) {
+    if lx.pending_newline is null { lx.pending_newline = lx.span(lo, hi) }
+}
+
+line_comment :: fn(lx: ^Lexer) needs Alloc {
+    lo := lx.pos
+    is_doc := lx.peek_at(2) is '/' and lx.peek_at(3) is not '/'
+    i := lo + 2
+    while b := lx.byte(i) {
+        if b is '\n' { break }
+        if b is '\r' {
+            if lx.byte(i + 1) is '\n' { break }
+            lx.error(i, i + 1, CR_MESSAGE)
+        }
+        i += 1
+    }
+    if is_doc {
+        text := lx.src[lo + 3..i]
+        if text.starts_with(" ") { text = text[1..] }
+        next := i
+        if lx.byte(next) is '\r' { next += 1 }
+        if lx.byte(next) is '\n' {
+            next += 1
+            while (lx.byte(next) else 0) in (' ', '\t') { next += 1 }
+        }
+        lx.docs.push(DocComment(span: lx.span(lo, i), text: text, next_lo: next.trunc(u32)))!
+    }
+    lx.pos = i
+}
+
+/// Skips a (possibly nested) block comment starting at the lexer's position.
+block_comment :: fn(lx: ^Lexer) needs Alloc {
+    lo := lx.pos
+    i := lo + 2
+    depth := 1
+    while depth > 0 {
+        b := lx.byte(i) else {
+            lx.error(lo, lo + 2, "unterminated block comment")
+            break
+        }
+        next := lx.byte(i + 1)
+        if b is '/' and next is '*' {
+            depth += 1
+            i += 2
+        } else if b is '*' and next is '/' {
+            depth -= 1
+            i += 2
+        } else if b is '\n' {
+            lx.note_newline(i, i + 1)
+            i += 1
+        } else if b is '\r' and next is '\n' {
+            lx.note_newline(i, i + 2)
+            i += 2
+        } else if b is '\r' {
+            lx.error(i, i + 1, CR_MESSAGE)
+            i += 1
+        } else {
+            i += 1
+        }
+    }
+    lx.pos = i
+}
+
+/// Looks past spaces, tabs and block comments that contain no line terminator for the
+/// word `word` (not followed by an identifier character). Returns the position just
+/// after it. Used to form `is not` and `not in`.
+second_word_end :: fn(lx: ^const Lexer, from: usize, word: string) -> ?usize {
+    i := from
+    while true {
+        b := lx.byte(i) else break
+        if b in (' ', '\t') {
+            i += 1
+        } else if b is '/' and lx.byte(i + 1) is '*' {
+            i = inline_comment_end(lx.src, i) else return null
+        } else {
+            break
+        }
+    }
+    end := i + word.len
+    if not lx.src[i..].starts_with(word) { return null }
+    if c := lx.byte(end) {
+        if is_ident_cont(c) { return null }
+    }
+    return end
+}
+
+// ----- tokens -----
+
+lex_token :: fn(lx: ^Lexer, b: u8) needs Alloc {
+    lo := lx.pos
+    match b {
+        'a'..='z', 'A'..='Z', '_' => lx.lex_word()
+        '0'..='9' => lx.lex_number()
+        '"' => lx.lex_string(lo, .Regular)
+        '`' => lx.lex_raw_string()
+        '\'' => lx.lex_char()
+        ';' => {
+            lx.pos += 1
+            lx.emit_semicolon(lo)
+        }
+        '@', '#' => {
+            lx.pos += 1
+            next := lx.peek() else 0
+            if is_ident_start(next) {
+                name := lx.scan_ident()
+                kind: TokenKind = if b is '@' { .Intrinsic(name) } else { .Attribute(name) }
+                lx.emit(kind, lo, lx.pos)
+            } else {
+                lx.emit(.Punct(if b is '@' { .At } else { .Hash }), lo, lx.pos)
+            }
+        }
+        // C's `==` and `!=`: report them, and read them as `is` and `is not`.
+        '=', '!' if lx.peek_at(1) is '=' => lx.c_equality(b)
+        _ => {
+            if p := lx.scan_punct() {
+                lx.emit(.Punct(p), lo, lx.pos)
+            } else {
+                lx.unexpected_char()
+            }
+        }
+    }
+}
+
+/// Lexes `==` or `!=` (the first byte is `b`) as `is` or `is not`, reporting it with a
+/// fix that writes the word.
+c_equality :: fn(lx: ^Lexer, b: u8) needs Alloc {
+    lo := lx.pos
+    lx.pos += 2
+    eq := b is '='
+    op := if eq { "is" } else { "is not" }
+    written := if eq { "==" } else { "!=" }
+    kind: TokenKind = if eq { .Keyword(.Is) } else { .Punct(.IsNot) }
+    // The word needs a space on each side (`a==b` becomes `a is b`).
+    before := if lo > 0 and not is_ascii_space(lx.src[lo - 1]) { " " } else { "" }
+    after := ""
+    if c := lx.peek() {
+        if not is_ascii_space(c) { after = " " }
+    }
+    d := diag.error(lx.span(lo, lx.pos), str.format("`{}` is not an operator; compare with `{}` (§7.6)", written, op)!)
+    d.add_fix(str.format("write `{}`", op)!, lx.span(lo, lx.pos), str.format("{}{}{}", before, op, after)!)
+    lx.diags.push(d)
+    lx.emit(kind, lo, lx.pos)
+}
+
+/// The ASCII whitespace of Rust's `u8::is_ascii_whitespace`: space, tab, line feed,
+/// form feed and carriage return.
+is_ascii_space :: fn(c: u8) -> bool => c in (' ', '\t', '\n', 0x0C, '\r')
+
+/// Consumes an identifier at the lexer's position and returns its text.
+scan_ident :: fn(lx: ^Lexer) -> string {
+    start := lx.pos
+    while c := lx.peek() {
+        if not is_ident_cont(c) { break }
+        lx.pos += 1
+    }
+    return lx.src[start..lx.pos]
+}
+
+/// Lexes an identifier, keyword, `_`, or the start of a C string.
+lex_word :: fn(lx: ^Lexer) needs Alloc {
+    lo := lx.pos
+    text := lx.scan_ident()
+    if text is "c" and lx.peek() is '"' {
+        lx.lex_string(lo, .C)
+        return
+    }
+    if text is "_" {
+        lx.emit(.Underscore, lo, lx.pos)
+        return
+    }
+    kw := keyword_from(text) else {
+        lx.emit(.Ident(text), lo, lx.pos)
+        return
+    }
+    two_word: ?Punct = null
+    end: usize = 0
+    if kw is .Is {
+        if e := lx.second_word_end(lx.pos, "not") {
+            two_word = .IsNot
+            end = e
+        }
+    } else if kw is .Not {
+        if e := lx.second_word_end(lx.pos, "in") {
+            two_word = .NotIn
+            end = e
+        }
+    }
+    if p := two_word {
+        lx.pos = end
+        lx.emit(.Punct(p), lo, end)
+    } else {
+        lx.emit(.Keyword(kw), lo, lx.pos)
+    }
+}
+
+/// Reports a character that cannot start any token and skips it.
+unexpected_char :: fn(lx: ^Lexer) needs Alloc {
+    lo := lx.pos
+    c := lx.current_char()
+    lx.pos += c.len
+    message: string = ""
+    if c.value >= 0x80 and is_unicode_space(c.value) {
+        message = str.format("unexpected whitespace character U+{:04X}; only space and tab are whitespace", c.value)!
+    } else if c.value >= 0x80 {
+        message = str.format(
+            "unexpected character `{}` (U+{:04X}); non-ASCII characters are only allowed in comments, strings and character literals",
+            lx.src[lo..lx.pos],
+            c.value,
+        )!
+    } else if c.value in 0x21..=0x7E {
+        message = str.format("unexpected character `{}`", lx.src[lo..lx.pos])!
+    } else {
+        message = str.format("unexpected character U+{:04X}", c.value)!
+    }
+    lx.error(lo, lx.pos, message)
+}
+
+/// The non-ASCII characters with the Unicode property White_Space.
+is_unicode_space :: fn(c: u32) -> bool {
+    return c in (0x85, 0xA0, 0x1680, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000) or c in 0x2000..=0x200A
+}
+
+/// Scans an operator or punctuation token by maximal munch (§2.6) and advances past it.
+/// Returns `null` (consuming nothing) if there is none.
+scan_punct :: fn(lx: ^Lexer) -> ?Punct {
+    first := lx.src[lx.pos]
+    a1 := lx.peek_at(1) else 0
+    a2 := lx.peek_at(2) else 0
+    a3 := lx.peek_at(3) else 0
+    p := Punct.Plus
+    len: usize = 1
+    match first {
+        '+', '-', '*' => {
+            fl := flavors(first)
+            if first is '-' and a1 is '-' and a2 is '-' {
+                p, len = .Uninit, 3
+            } else if first is '-' and a1 is '>' {
+                p, len = .Arrow, 2
+            } else if a1 is '=' {
+                p, len = fl.assign, 2
+            } else if a1 is '%' and a2 is '=' {
+                p, len = fl.wrap_assign, 3
+            } else if a1 is '%' {
+                p, len = fl.wrap, 2
+            } else if a1 is '|' and a2 is '=' {
+                p, len = fl.sat_assign, 3
+            } else if a1 is '|' {
+                p, len = fl.sat, 2
+            } else if a1 is '?' {
+                p, len = fl.opt, 2
+            } else {
+                p = fl.plain
+            }
+        }
+        '/' => { p, len = one_or_two(a1 is '=', .SlashAssign, .Slash) }
+        '%' => { p, len = one_or_two(a1 is '=', .PercentAssign, .Percent) }
+        '<' => {
+            if a1 is '<' {
+                if a2 is '%' and a3 is '=' {
+                    p, len = .ShlWrapAssign, 4
+                } else if a2 is '|' and a3 is '=' {
+                    p, len = .ShlSatAssign, 4
+                } else if a2 is '%' {
+                    p, len = .ShlWrap, 3
+                } else if a2 is '|' {
+                    p, len = .ShlSat, 3
+                } else if a2 is '?' {
+                    p, len = .ShlOpt, 3
+                } else if a2 is '=' {
+                    p, len = .ShlAssign, 3
+                } else {
+                    p, len = .Shl, 2
+                }
+            } else if a1 is '=' {
+                p, len = .Le, 2
+            } else {
+                p = .Lt
+            }
+        }
+        '>' => {
+            if a1 is '>' and a2 is '=' {
+                p, len = .ShrAssign, 3
+            } else if a1 is '>' {
+                p, len = .Shr, 2
+            } else if a1 is '=' {
+                p, len = .Ge, 2
+            } else {
+                p = .Gt
+            }
+        }
+        '&' => { p, len = one_or_two(a1 is '=', .AmpAssign, .Amp) }
+        '|' => { p, len = one_or_two(a1 is '=', .PipeAssign, .Pipe) }
+        '~' => { p, len = one_or_two(a1 is '=', .TildeAssign, .Tilde) }
+        '=' => { p, len = one_or_two(a1 is '>', .FatArrow, .Assign) }
+        '.' => {
+            if a1 is '.' and a2 is '.' {
+                p, len = .Ellipsis, 3
+            } else if a1 is '.' and a2 is '=' {
+                p, len = .DotDotEq, 3
+            } else if a1 is '.' {
+                p, len = .DotDot, 2
+            } else {
+                p = .Dot
+            }
+        }
+        ':' => {
+            if a1 is ':' {
+                p, len = .ColonColon, 2
+            } else if a1 is '=' {
+                p, len = .ColonEq, 2
+            } else {
+                p = .Colon
+            }
+        }
+        '?' => { p = .Question }
+        '!' => { p = .Bang }
+        '^' => { p = .Caret }
+        ',' => { p = .Comma }
+        '(' => { p = .LParen }
+        ')' => { p = .RParen }
+        '[' => { p = .LBracket }
+        ']' => { p = .RBracket }
+        '{' => { p = .LBrace }
+        '}' => { p = .RBrace }
+        _ => return null
+    }
+    lx.pos += len
+    return p
+}
+
+/// `long` (two bytes) if `two`, else `short` (one byte).
+one_or_two :: fn(two: bool, long, short: Punct) -> (Punct, usize) => if two { (long, 2) } else { (short, 1) }
+
+/// The flavors of one arithmetic operator.
+Flavors :: struct {
+    plain, assign, wrap, sat, opt, wrap_assign, sat_assign: Punct
+}
+
+flavors :: fn(c: u8) -> Flavors => match c {
+    '+' => Flavors(
+        plain: .Plus, assign: .PlusAssign, wrap: .PlusWrap, sat: .PlusSat, opt: .PlusOpt,
+        wrap_assign: .PlusWrapAssign, sat_assign: .PlusSatAssign,
+    )
+    '-' => Flavors(
+        plain: .Minus, assign: .MinusAssign, wrap: .MinusWrap, sat: .MinusSat, opt: .MinusOpt,
+        wrap_assign: .MinusWrapAssign, sat_assign: .MinusSatAssign,
+    )
+    _ => Flavors(
+        plain: .Star, assign: .StarAssign, wrap: .StarWrap, sat: .StarSat, opt: .StarOpt,
+        wrap_assign: .StarWrapAssign, sat_assign: .StarSatAssign,
+    )
+}
+
+// ----- emitting tokens and newlines -----
+
+/// Appends a token, first resolving any pending newline and updating the bracket stack.
+emit :: fn(lx: ^Lexer, kind: TokenKind, lo, hi: usize) needs Alloc {
+    here := lx.span(lo, hi)
+    if c := closing(kind) {
+        if lx.open_counts[closer_slot(c)] is 0 {
+            lx.error(lo, hi, str.format("unmatched closing `{}`", punct_text(c))!)
+            return
+        }
+    }
+    if lx.recover and lx.brackets.items.len > 0 and lx.declaration_starts_at(lo, kind) {
+        lx.close_all_brackets(lo)
+    }
+    lx.flush_newline(kind, hi)
+    match kind {
+        .Punct(.LParen) => lx.open_bracket(.Paren, here)
+        .Punct(.LBracket) => lx.open_bracket(.Bracket, here)
+        .Punct(.LBrace) => {
+            depth := lx.brackets.items.len
+            n := lx.pending_matches.items.len
+            is_match_body := n > 0 and lx.pending_matches.items[n - 1] is depth
+            if is_match_body { _ = lx.pending_matches.pop() }
+            lx.open_bracket(if is_match_body { .MatchBrace } else { .Brace }, here)
+        }
+        .Punct(p) if p in (Punct.RParen, Punct.RBracket, Punct.RBrace) => lx.close_bracket(p, here)
+        .Keyword(.Match) => lx.pending_matches.push(lx.brackets.items.len)!
+        _ => {}
+    }
+    lx.tokens.push(Token(kind: kind, span: here))!
+}
+
+/// Whether the token of `kind` at `lo` begins a line in the first column and looks like
+/// the start of a top-level declaration.
+declaration_starts_at :: fn(lx: ^const Lexer, lo: usize, kind: TokenKind) -> bool {
+    if lo is not 0 and lx.src[lo - 1] is not '\n' { return false }
+    i := lo
+    while i < lx.src.len and is_ident_cont(lx.src[i]) { i += 1 }
+    word := lx.src[lo..i]
+    while i < lx.src.len and lx.src[i] in (' ', '\t') { i += 1 }
+    after := lx.src[i..]
+    return match kind {
+        .Attribute(_) => true
+        .Keyword(k) => k in (Keyword.Pub, Keyword.Handler)
+        .Ident(_) => after.starts_with("::") or (word in ("test", "bench") and after.starts_with("\""))
+        _ => false
+    }
+}
+
+/// Closes every open bracket before the declaration at `lo`, reporting each as unclosed.
+close_all_brackets :: fn(lx: ^Lexer, lo: usize) needs Alloc {
+    lx.pending_newline = null
+    here := lx.span(lo, lo)
+    while b := lx.brackets.pop() {
+        lx.open_counts[slot(b.kind)] -= 1
+        open := punct_text(opener(b.kind))
+        d := diag.error(b.span, str.format("unclosed `{}`", open)!)
+        d.add_label(here, str.format("a declaration starts here, so this `{}` was not closed", open)!)
+        lx.diags.push(d)
+        lx.tokens.push(Token(kind: .Punct(closer(b.kind)), span: here))!
+    }
+    lx.pending_matches.clear()
+    lx.push_newline(here)
+}
+
+open_bracket :: fn(lx: ^Lexer, kind: BracketKind, at: source.Span) {
+    lx.open_counts[slot(kind)] += 1
+    lx.brackets.push(Bracket(kind: kind, span: at))!
+}
+
+/// Pops the bracket closed by `c`, which is known to be open. Brackets opened after it
+/// were never closed and are reported.
+close_bracket :: fn(lx: ^Lexer, c: Punct, at: source.Span) needs Alloc {
+    items := lx.brackets.items
+    i := items.len - 1
+    while i > 0 and closer(items[i].kind) is not c { i -= 1 }
+    for k in i + 1..items.len {
+        skipped := items[k]
+        lx.open_counts[slot(skipped.kind)] -= 1
+        open := punct_text(opener(skipped.kind))
+        d := diag.error(skipped.span, str.format("unclosed `{}`", open)!)
+        d.add_label(at, str.format("this `{}` does not match the open `{}`", punct_text(c), open)!)
+        lx.diags.push(d)
+    }
+    lx.open_counts[closer_slot(c)] -= 1
+    lx.brackets.truncate(i)
+    depth := i
+    while true {
+        n := lx.pending_matches.items.len
+        if n is 0 or lx.pending_matches.items[n - 1] <= depth { break }
+        _ = lx.pending_matches.pop()
+    }
+}
+
+emit_semicolon :: fn(lx: ^Lexer, lo: usize) needs Alloc {
+    lx.flush_newline(.Newline, lo)
+    lx.push_newline(lx.span(lo, lo + 1))
+}
+
+/// Appends a `Newline` unless it would be first or repeat the previous token.
+push_newline :: fn(lx: ^Lexer, at: source.Span) {
+    n := lx.tokens.items.len
+    if n > 0 and lx.tokens.items[n - 1].kind is not .Newline {
+        lx.tokens.push(Token(kind: .Newline, span: at))!
+    }
+}
+
+/// Decides whether the pending line terminator (if any) is significant given the token
+/// about to be emitted, which ends at byte `next_hi` (§2.8).
+flush_newline :: fn(lx: ^Lexer, next: TokenKind, next_hi: usize) {
+    at := lx.pending_newline else return
+    lx.pending_newline = null
+    depth := lx.brackets.items.len
+    innermost: ?BracketKind = if depth > 0 { lx.brackets.items[depth - 1].kind } else { null }
+    if innermost is .Paren or innermost is .Bracket { return }
+    n := lx.tokens.items.len
+    if n is 0 { return }
+    if suppresses_newline_after(lx.tokens.items[n - 1].kind) {
+        lx.joined_lines.push(at.lo)!
+        return
+    }
+    if innermost is not .MatchBrace {
+        // A line `.V(x) := v else …` is a pattern binding, not a continuation.
+        dot_name := next.is_punct(.Dot) and next_hi < lx.src.len and is_ident_start(lx.src[next_hi])
+            and not line_binds(lx.src[next_hi..])
+        if dot_name or starts_continuation(next) { return }
+    }
+    lx.push_newline(at)
+}
+
+/// Rule 1 of §2.8: a newline after this token is not significant.
+suppresses_newline_after :: fn(kind: TokenKind) -> bool => match kind {
+    .Keyword(k) => k in (Keyword.Is, Keyword.In, Keyword.And, Keyword.Or, Keyword.Else, Keyword.Needs)
+    // Every operator except the postfix and sigil ones, `...`, `---` and closing brackets.
+    .Punct(p) => p not in (
+        Punct.Question, Punct.Bang, Punct.Caret, Punct.At, Punct.Hash, Punct.Ellipsis,
+        Punct.Uninit, Punct.RParen, Punct.RBracket, Punct.RBrace,
+    )
+    _ => false
+}
+
+/// Rule 2 of §2.8 (except for `.name`, which needs the following byte): a newline before
+/// this token is not significant.
+starts_continuation :: fn(kind: TokenKind) -> bool => match kind {
+    .Keyword(k) => k in (Keyword.Else, Keyword.And, Keyword.Or)
+    _ => false
+}
+
+/// The end of the (possibly nested) block comment starting at `lo` in `s`, or `null` if
+/// it is unterminated or contains a line terminator.
+inline_comment_end :: fn(s: string, lo: usize) -> ?usize {
+    i := lo + 2
+    depth := 1
+    while depth > 0 {
+        b := s.get(i) else return null
+        next := s.get(i + 1)
+        if b is '/' and next is '*' {
+            depth += 1
+            i += 2
+        } else if b is '*' and next is '/' {
+            depth -= 1
+            i += 2
+        } else if b in ('\n', '\r') {
+            return null
+        } else {
+            i += 1
+        }
+    }
+    return i
+}
+
+/// The number of backticks at `i` in `s`.
+backtick_run :: fn(s: string, i: usize) -> usize {
+    j := i
+    while j < s.len and s[j] is '`' { j += 1 }
+    return j - i
+}
+
+/// The end of the raw string starting at `lo` in `s`, or `null` if it does not end on
+/// this line.
+inline_raw_string_end :: fn(s: string, lo: usize) -> ?usize {
+    delim := backtick_run(s, lo)
+    i := lo + delim
+    while true {
+        b := s.get(i) else return null
+        if b is '`' {
+            n := backtick_run(s, i)
+            i += n
+            if n is delim { return i }
+        } else if b in ('\n', '\r') {
+            return null
+        } else {
+            i += 1
+        }
+    }
+}
+
+/// True if the rest of a line, `rest`, has a `:=` outside brackets, which makes a line
+/// starting with `.name` a pattern binding (§2.8 rule 2). A literal or comment that goes
+/// on past the line ends the search: the line does not bind.
+pub line_binds :: fn(rest: string) -> bool {
+    depth := 0
+    i: usize = 0
+    while i < rest.len {
+        c := rest[i]
+        match c {
+            '\n' => return false
+            '(', '[', '{' => { depth += 1 }
+            ')', ']', '}' => {
+                depth -= 1
+                if depth < 0 { return false }
+            }
+            '"', '\'' => {
+                i += 1
+                while i < rest.len and rest[i] is not c and rest[i] is not '\n' {
+                    i += if rest[i] is '\\' { 2 } else { 1 }
+                }
+            }
+            '/' if rest.get(i + 1) is '/' => return false
+            '/' if rest.get(i + 1) is '*' => {
+                i = inline_comment_end(rest, i) else return false
+                continue
+            }
+            '`' => {
+                i = inline_raw_string_end(rest, i) else return false
+                continue
+            }
+            ':' if depth is 0 and rest.get(i + 1) is '=' => return true
+            _ => {}
+        }
+        i += 1
+    }
+    return false
+}
