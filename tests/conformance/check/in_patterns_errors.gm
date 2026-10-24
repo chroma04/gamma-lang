@@ -1,0 +1,10 @@
+//! stage: check
+Shape :: union { Circle: f64, Dot }
+
+main :: fn() {
+    s := Shape.Dot
+    x := 2
+    _ = s in (.Circle(_), 1) //~ ERROR an integer pattern needs an integer
+    _ = s in (.Circle(r), .Dot) //~ ERROR cannot bind names
+    _ = s in (.Circle(_), x) //~ ERROR every member must be a pattern or a literal
+}

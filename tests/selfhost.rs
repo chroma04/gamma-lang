@@ -6,7 +6,10 @@
 //! byte for byte: for `gammac lex`, the token dump of `gamma lex`, and for `gammac parse
 //! --dump`, the syntax tree dump of `gamma parse --dump` (with and without the layout
 //! recovery that tools use after errors); for `gammac modules`, run on the root of every
-//! program in the repository, the module graph of `gamma modules`. The diagnostics are
+//! program in the repository, the module graph of `gamma modules`; for `gammac decls`, on
+//! the same roots, what `gamma decls` prints for every declaration, on each program that
+//! gammac does not report as using something it cannot check yet (their number may only
+//! grow: see `DECLS_FLOOR`). The diagnostics are
 //! compared too, in the JSON format, which carries every field of a diagnostic: spans,
 //! labels, notes and fixes.
 //!
@@ -162,6 +165,8 @@ enum Stage {
     Parse,
     /// `modules`: the module graph of a program, from its root module.
     Modules,
+    /// `decls`: the declarations of a program, from its root module.
+    Decls,
 }
 
 impl Stage {
@@ -170,6 +175,7 @@ impl Stage {
             Stage::Lex => &["lex"],
             Stage::Parse => &["parse", "--dump"],
             Stage::Modules => &["modules"],
+            Stage::Decls => &["decls"],
         }
     }
 
@@ -179,6 +185,7 @@ impl Stage {
             Stage::Lex => "tokens",
             Stage::Parse => "syntax tree",
             Stage::Modules => "module graph",
+            Stage::Decls => "declarations",
         }
     }
 }
@@ -193,8 +200,12 @@ fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, 
         err.push_str(&format!("==> {} <==\n", path));
         let mut sess = Session::new();
         sess.recover_layout = recover;
-        if let Stage::Modules = stage {
-            out.push_str(&gamma::sema::load_modules(&mut sess, Path::new(path)).unwrap_or_default());
+        if let Stage::Modules | Stage::Decls = stage {
+            let dump = match stage {
+                Stage::Modules => gamma::sema::load_modules(&mut sess, Path::new(path)),
+                _ => gamma::sema::declarations(&mut sess, Path::new(path)),
+            };
+            out.push_str(&dump.unwrap_or_default());
             err.push_str(&sess.render_diagnostics(DiagFormat::Json));
             if sess.diags.has_errors() {
                 status = 1;
@@ -213,7 +224,7 @@ fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, 
                 let tree = sess.parse(file);
                 out.push_str(&driver::dump_ast(&tree));
             }
-            Stage::Modules => unreachable!(),
+            Stage::Modules | Stage::Decls => unreachable!(),
         }
         err.push_str(&sess.render_diagnostics(DiagFormat::Json));
         if sess.diags.has_errors() {
@@ -247,7 +258,7 @@ fn first_difference(expected: &str, actual: &str) -> Option<(String, usize, Stri
 
 fn check(stage: Stage, recover: bool) {
     // In batches, since a command line is limited in length (to 32 KiB on Windows).
-    let inputs = if let Stage::Modules = stage { program_roots() } else { corpus() };
+    let inputs = if let Stage::Modules | Stage::Decls = stage { program_roots() } else { corpus() };
     for files in inputs.chunks(100) {
         let (out, err, status) = reference(stage, files, recover);
         let mut args: Vec<String> = stage.args().iter().map(|a| a.to_string()).collect();
@@ -274,6 +285,73 @@ fn check(stage: Stage, recover: bool) {
         }
         assert_eq!(got.status.code(), Some(status), "exit status of gammac {} on {} …", stage.args()[0], files[0]);
     }
+}
+
+/// The number of programs whose declarations `gammac decls` must check without reporting
+/// a construct it cannot check yet. Raise it as gammac learns more; it may not drop.
+const DECLS_FLOOR: usize = 630;
+
+/// The output for each file of a run over several, by the `==> FILE <==` lines.
+fn sections(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vec![];
+    for line in text.split_inclusive('\n') {
+        if let Some(name) = line.strip_prefix("==> ").and_then(|l| l.trim_end().strip_suffix(" <==")) {
+            out.push((name.to_string(), String::new()));
+        } else if let Some(last) = out.last_mut() {
+            last.1.push_str(line);
+        }
+    }
+    out
+}
+
+/// `gammac decls` against the reference, on the programs it can check.
+fn check_decls() {
+    let mut checked = 0;
+    let mut skipped = vec![];
+    for files in program_roots().chunks(100) {
+        let (out, err, _) = reference(Stage::Decls, files, false);
+        let mut args = vec!["decls".to_string(), "--diag-format=json".to_string()];
+        args.extend(files.iter().cloned());
+        let got = run_gammac(&args);
+        let (got_out, got_err) = (String::from_utf8_lossy(&got.stdout), String::from_utf8_lossy(&got.stderr));
+        let (out, err, got_out, got_err) = (sections(&out), sections(&err), sections(&got_out), sections(&got_err));
+        assert_eq!(
+            got_err.len(),
+            files.len(),
+            "gammac decls did not report on every program of the batch of {}",
+            files[0]
+        );
+        for i in 0..files.len() {
+            if got_err[i].1.contains("gammac cannot") {
+                skipped.push(files[i].clone());
+                continue;
+            }
+            checked += 1;
+            for (what, expected, actual) in
+                [("declarations", &out[i].1, &got_out[i].1), ("diagnostics", &err[i].1, &got_err[i].1)]
+            {
+                if let Some((_, line, e, a)) = first_difference(expected, actual) {
+                    panic!(
+                        "gammac decls: the {} of {} differ (line {}):\nexpected: {}\n  gammac: {}",
+                        what, files[i], line, e, a
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= DECLS_FLOOR,
+        "gammac decls checked {} programs, fewer than the {} it checked before; it now skips {:?}",
+        checked,
+        DECLS_FLOOR,
+        skipped
+    );
+    eprintln!("gammac decls: {} programs checked, {} skipped", checked, skipped.len());
+}
+
+#[test]
+fn declaration_checking_matches_the_reference_on_the_programs_gammac_supports() {
+    check_decls();
 }
 
 #[test]

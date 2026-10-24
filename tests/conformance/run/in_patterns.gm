@@ -1,0 +1,22 @@
+// A member of an inline tuple of `in` may be a pattern form, as on the right of `is`
+// (§7.7): `s in (.Circle(_), .Dot)` is `s is .Circle(_) or s is .Dot`.
+Shape :: union { Circle: f64, Square: f64, Dot }
+
+next :: fn(shapes: []const Shape, i: ^usize) -> Shape {
+    i^ += 1
+    return shapes[i^ - 1]
+}
+
+main :: fn() needs Out {
+    shapes := [3]Shape(.Circle(1.0), .Dot, .Square(2.0))
+    for s in shapes {
+        print("{} {} {}\n", s in (.Circle(_), .Dot), s not in (.Circle, .Dot), s in (.Square(_), .Dot))
+    }
+    // The element is evaluated once.
+    i: usize = 0
+    print("{} {}\n", next(shapes[..], &i) in (.Square(_), .Circle(_)), i)
+    r: u8!u32 = !3
+    print("{} {}\n", r in (!_, 7), r in (!4, 7))
+    o: ?Shape = null
+    print("{}\n", o in (null, .Dot))
+}

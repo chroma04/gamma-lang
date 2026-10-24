@@ -3,7 +3,7 @@
 use crate::syntax::ast::BinOp;
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Untyped {
@@ -217,11 +217,30 @@ fn num(v: &Untyped) -> Result<BigRational, String> {
     v.as_rational().ok_or_else(|| "expected a numeric constant".to_string())
 }
 
+/// An untyped constant as `gamma decls` shows it: `int 5`, `float 1/3`, `float -0`,
+/// `bool true` or `complex 0 1/2` (the real and imaginary parts), with rationals in
+/// lowest terms.
+pub fn dump(v: &Untyped) -> String {
+    let rational = |q: &BigRational| {
+        if q.denom().is_one() {
+            show_int(q.numer())
+        } else {
+            format!("{}/{}", show_int(q.numer()), show_int(q.denom()))
+        }
+    };
+    match v {
+        Untyped::Int(i) => format!("int {}", show_int(i)),
+        Untyped::Float(q) => format!("float {}", rational(q)),
+        Untyped::NegZero => "float -0".to_string(),
+        Untyped::Bool(b) => format!("bool {}", b),
+        Untyped::Complex(re, im) => format!("complex {} {}", rational(re), rational(im)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::syntax::ast::Flavor;
-    use num_traits::One;
 
     fn int(i: i64) -> Untyped {
         Untyped::Int(BigInt::from(i))

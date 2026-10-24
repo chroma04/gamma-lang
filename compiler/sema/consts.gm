@@ -1,0 +1,231 @@
+// Typed constants (§17.2): the initializers of typed top-level constants and the default
+// values of struct fields.
+//
+// gammac does not check expressions in general yet. It knows the type of the constant
+// expressions made of literals, `null`, enum variants, untyped constant arithmetic and
+// array and struct constructors of these, and reports the rest as unsupported. It never
+// reports an error in such an expression itself: whatever it cannot show to be valid is
+// unsupported.
+
+/// The type of the constant expression `e`, checked against `expected` if given, or
+/// `null` after reporting an error.
+const_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?Ty needs Load {
+    if t := expected {
+        if s.tys.is_error(t) { return null }
+    }
+    if t := s.const_check(module, e, expected) { return t }
+    s.unsupported(e.span, "this constant expression")
+    return null
+}
+
+/// Checks the default value `d` of a field of type `ty`.
+check_default :: fn(s: ^Sema, module: usize, d: ^const ast.Expr, ty: Ty) needs Load {
+    if s.tys.is_error(ty) { return }
+    if s.const_check(module, d, ty) is null { s.unsupported(d.span, "this default value") }
+}
+
+/// The type of `e` if gammac can tell that it is a valid constant expression (of type
+/// `expected`, if given), else `null`. Reports nothing.
+const_check :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?Ty needs Load {
+    match e.kind {
+        .Paren(inner) => return s.const_check(module, inner, expected)
+        .Null => {
+            t := expected else return null
+            return if s.tys.kind(t) is .Optional(_) { t } else { null }
+        }
+        .Bool(_) => return s.expect_bool(expected)
+        .Str(lit) => {
+            if lit.kind is not .Regular { return null }
+            return s.expect_type(s.tys.string_ty(), expected)
+        }
+        .DotIdent(id) => {
+            t := expected else return null
+            target_ := t
+            if .Optional(inner) := s.tys.kind(t) { target_ = inner }
+            u := s.union_variants(target_) else return null
+            for v in u.variants {
+                if v.name is id.name { return if v.payload is null { t } else { null } }
+            }
+            return null
+        }
+        .Int(lit) => {
+            if suffix := lit.suffix {
+                t := s.suffix_type(suffix)
+                if not s.int_fits(nat_int(&lit.value), t) { return null }
+                return s.expect_type(t, expected)
+            }
+        }
+        .Float(lit) => {
+            if suffix := lit.suffix {
+                if lit.imag { return null }
+                t := s.tys.intern(.Float(match suffix {
+                    .F16 => 16
+                    .F32 => 32
+                    .F64 => 64
+                }))
+                if not s.float_finite(literal_rational(&lit.value), t) { return null }
+                return s.expect_type(t, expected)
+            }
+        }
+        .Call(callee, args, _) => return s.const_construction(module, callee, args, expected)
+        .ArrayType(_) => return s.const_array(module, e, expected)
+        _ => {}
+    }
+    t := expected else return null
+    if e.kind in (.Ident(_), .Field(_)) and s.fn_ref(module, e, t) is not null { return t }
+    return if s.untyped_fits(module, e, t) { t } else { null }
+}
+
+/// `bool`, or an optional `bool` if that is expected.
+expect_bool :: fn(s: ^Sema, expected: ?Ty) -> ?Ty needs Alloc {
+    b := s.tys.bool_ty()
+    x := expected else return b
+    if x is b or s.tys.kind(x) is .Optional(b) { return x }
+    return null
+}
+
+/// `t` if it is the expected type (or nothing is expected), else `null`.
+expect_type :: fn(s: ^const Sema, t: Ty, expected: ?Ty) -> ?Ty {
+    x := expected else return t
+    return if x is t { t } else { null }
+}
+
+suffix_type :: fn(s: ^Sema, suffix: syntax.IntSuffix) -> Ty needs Alloc => match suffix {
+    .U(bits) => s.tys.int(false, bits.trunc(u16))
+    .I(bits) => s.tys.int(true, bits.trunc(u16))
+    .Usize => s.tys.usize_ty()
+    .Isize => s.tys.intern(.Isize)
+}
+
+/// An array construction `[N]T(args)` (with `[_]` for as many elements as given): the
+/// prefix applies to the construction `T(args)` (§A.7 rule 12).
+const_array :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?Ty needs Load {
+    call := construction_call(e) else return null
+    .Call(callee, args, _) := call.kind else return null
+    t := s.construction_type(module, e, args.len) else return null
+    .Array(len, elem, kind) := s.tys.kind(t) else return null
+    if kind is not .Plain { return null }
+    if args.len is 1 {
+        if .Named(n, x) := args[0].kind {
+            if n.name is not "fill" or s.const_check(module, &x, elem) is null { return null }
+            return s.expect_type(t, expected)
+        }
+    }
+    if u64(args.len) is not len { return null }
+    for arg in args {
+        .Positional(x) := arg.kind else return null
+        if s.const_check(module, &x, elem) is null { return null }
+    }
+    return s.expect_type(t, expected)
+}
+
+/// The type a construction's prefixes and callee spell, with `[_]` standing for `n`
+/// elements; `null` if gammac cannot tell it without reporting anything.
+construction_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, n: usize) -> ?Ty needs Load {
+    match e.kind {
+        .Call(callee, _, _) => {
+            if not s.syntax_is_type(module, callee, 0) { return null }
+            errors := s.l.diags.list.items.len
+            t := s.resolve_type(module, callee)
+            if s.l.diags.list.items.len is not errors or s.tys.is_error(t) { return null }
+            return t
+        }
+        .ArrayType(a) => {
+            elem := s.construction_type(module, a.elem, n) else return null
+            len := u64(n)
+            if l := a.len {
+                if .Ident(id) := l.kind and s.length_is_type(module, l) { return null }
+                errors := s.l.diags.list.items.len
+                match s.array_len(module, l) {
+                    .Known(k) => { len = k }
+                    _ => return null
+                }
+                if s.l.diags.list.items.len is not errors { return null }
+            }
+            return s.tys.array(len, elem)
+        }
+        _ => return null
+    }
+}
+
+/// A construction `S(args)` of a struct.
+const_construction :: fn(s: ^Sema, module: usize, callee: ^const ast.Expr, args: []const ast.Arg, expected: ?Ty) -> ?Ty needs Load {
+    if calls_on_value(callee) or not s.syntax_is_type(module, callee, 0) { return null }
+    errors := s.l.diags.list.items.len
+    t := s.resolve_type(module, callee)
+    if s.l.diags.list.items.len is not errors or s.tys.is_error(t) { return null }
+    .Adt(id, gargs) := s.tys.kind(t) else return null
+    if gargs.len > 0 { return null }
+    .Struct(def) := s.adts.items[usize(id)].kind else return null
+    if s.adts.items[usize(id)].has_using { return null }
+    // Every field by name, once; the others have defaults.
+    given := list(bool)
+    for _ in def.fields { given.push(false)! }
+    for arg in args {
+        .Named(n, x) := arg.kind else return null
+        found: ?usize = null
+        for i, f in enumerate(def.fields) {
+            if f.name is n.name {
+                found = i
+                break
+            }
+        }
+        i := found else return null
+        if given.items[i] or not s.field_visible(module, id, &def.fields[i]) { return null }
+        given.items[i] = true
+        if s.const_check(module, &x, def.fields[i].ty) is null { return null }
+    }
+    defaults := s.adts.items[usize(id)].defaults
+    for i, g in enumerate(given.items) {
+        if not g and not (i < defaults.len and defaults[i]) { return null }
+    }
+    return s.expect_type(t, expected)
+}
+
+/// Whether field `f` of struct `id` may be named in `module`: it is `pub`, or the struct
+/// is declared there.
+field_visible :: fn(s: ^const Sema, module: usize, id: u32, f: ^const FieldDef) -> bool => f.is_pub or s.adts.items[usize(id)].module is module
+
+/// Whether `e` is an untyped constant expression whose value is a valid value of type
+/// `t` (or of the type an optional `t` holds).
+untyped_fits :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, t: Ty) -> bool needs Load {
+    inner := t
+    if .Optional(x) := s.tys.kind(t) { inner = x }
+    r := s.untyped_if_plain(module, e) else return false
+    .Ok(v) := r else return false
+    match v {
+        .Int(i) => {
+            if s.tys.is_integer(inner) { return s.int_fits(i, inner) }
+            return s.tys.kind(inner) is .Float(_) and s.float_finite(ratio.from_int(i), inner)
+        }
+        .Float(q) => return s.tys.kind(inner) is .Float(_) and s.float_finite(q, inner)
+        .NegZero => return s.tys.kind(inner) is .Float(_)
+        .Bool(_) => return s.tys.kind(inner) is .Bool
+        .Complex(_) => return false
+    }
+}
+
+/// The untyped value of `e`, if it is an untyped constant expression whose evaluation
+/// reports nothing.
+untyped_if_plain :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedResult needs Load {
+    errors := s.l.diags.list.items.len
+    r := s.try_untyped(module, e) else return null
+    if s.l.diags.list.items.len is not errors { return null }
+    return r
+}
+
+/// Whether the exact value `q` converts to a finite value of float type `t`.
+float_finite :: fn(s: ^const Sema, q: Rat, t: Ty) -> bool needs Alloc {
+    .Float(bits) := s.tys.kind(t) else return false
+    if bits is 64 {
+        x := q.to_f64()
+        return x - x is 0.0
+    }
+    if bits is 32 {
+        x := q.to_f32()
+        return x - x is 0.0
+    }
+    return false
+}
+
+syntax :: import "../syntax"

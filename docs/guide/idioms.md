@@ -148,6 +148,7 @@ main :: fn() needs Out {
 - **Tables over strings.** To map an enum to text and back, write two `match` functions (`keyword_text(k)` and `keyword_from(s) -> ?Keyword`, which matches string literals). They are exhaustive, so a new variant cannot be forgotten.
 - **Test a variant with `is`**, including nested payloads: `kind is .Punct(.Dot)`. Bind with `if .Punct(p) := kind { … }` or a `match` arm.
 - **Guards** go after the pattern: `.Punct(p) if p in (Punct.RParen, Punct.RBracket) => …`. A guarded arm does not count toward exhaustiveness.
+- **Several variants at once**: `k in (.Fn(_), .Handler(_), .Type)` tests whether `k` matches any of the patterns, as a chain of `is` tests would, and evaluates `k` once.
 
 ## Optional parts of variants
 
@@ -325,6 +326,33 @@ true 2
 
 The same goes for keeping `p := &l.items[i]` across a call that may add to `l`: keep the index instead.
 
+## Pointers to copies
+
+A loop variable and a name a pattern binds hold a *copy* of the element or the payload, in a slot that is reused. A pointer to one is fine for a call, but storing it keeps a pointer that the next iteration overwrites:
+
+```gamma fragment
+for e in exprs { terms.push(&e)! }          // wrong: every pointer is to `e`
+```
+
+Point into the data itself, by index:
+
+```gamma
+main :: fn() needs Alloc + Out {
+    words := [3]string("one", "two", "three")
+    longest := list(^const string)
+    for i in 0..words.len {
+        if words[i].len > 3 { longest.push(&words[i])! }
+    }
+    print("{} {}\n", longest.items.len, longest.items[0]^)
+}
+```
+
+```output
+1 three
+```
+
+When the data has no stable place (a payload bound by a pattern), keep a copy of the value rather than a pointer to the binding.
+
 ## Building text
 
 Append to a `List(u8)` with `write`, which takes a `print` template, and write the result out once. Many small `print` calls are much slower than one large write:
@@ -357,4 +385,6 @@ main :: fn() needs Alloc + Out {
 - **A keyword cannot be a name**, not even a field name: write `effect_` or `is_foreign`.
 - **Do not reuse the names of predeclared types** (`string`, `rune`, `cstring`) for your own declarations: a function called `string` hides the type in its whole module.
 - **Conversions say what they do**: `u64(x)` only when lossless, `x.trunc(u32)` to keep the low bits, `x.checked(u8)` for an optional.
+- **Name the effects a module keeps needing**: `Load :: Alloc + Fs` is a named effect set (§12.3), and `needs Load` reads better than the sum repeated on every function.
+- **A temporary array can be sliced only as an argument**: `f([2]string("a", "b")[..])` passes it for the call, but a struct field or a variable needs the array in a variable first (`names := [2]string(…)`, then `names[..]`).
 - **Tests live next to the code** in `test "…" { }` blocks; a test that allocates runs its body in an arena, or releases what it allocates.

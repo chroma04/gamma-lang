@@ -1,0 +1,741 @@
+// Evaluating type expressions to types (§5, §A.2).
+
+/// Integer type names `u1` to `u128` and `i1` to `i128`: the signedness and the width.
+int_type_name :: fn(name: string) -> ?(signed: bool, bits: u16) {
+    if name.len < 2 or name[0] not in ('u', 'i') or name[1] is '0' or name.len > 4 { return null }
+    bits: u32 = 0
+    for c in name[1..] {
+        if c not in '0'..='9' { return null }
+        bits = bits * 10 + u32(c - '0')
+    }
+    if bits not in 1..=128 { return null }
+    return (signed: name[0] is 'i', bits: bits.trunc(u16))
+}
+
+/// Whether `name` looks like an integer type but is wider than 128 bits (`u256`).
+is_oversized_int_name :: fn(name: string) -> bool {
+    if name.len < 2 or name[0] not in ('u', 'i') or name[1] is '0' { return false }
+    for c in name[1..] {
+        if c not in '0'..='9' { return false }
+    }
+    if name.len > 4 { return true }
+    bits: u32 = 0
+    for c in name[1..] { bits = bits * 10 + u32(c - '0') }
+    return bits > 128
+}
+
+/// A predeclared type name: the reserved names and the aliases `string`, `cstring` and
+/// `rune`.
+builtin_type :: fn(s: ^Sema, name: string) -> ?Ty needs Alloc {
+    if i := int_type_name(name) { return s.tys.int(i.signed, i.bits) }
+    return match name {
+        "usize" => s.tys.usize_ty()
+        "isize" => s.tys.intern(.Isize)
+        "f16" => s.tys.intern(.Float(16))
+        "f32" => s.tys.intern(.Float(32))
+        "f64" => s.tys.intern(.Float(64))
+        "bool" => s.tys.bool_ty()
+        "never" => s.tys.never_ty()
+        "type" => s.tys.type_ty()
+        "rawptr" => s.tys.intern(.Rawptr)
+        "string" => s.tys.string_ty()
+        "cstring" => s.tys.many_ptr(true, s.tys.u8_ty())
+        "rune" => s.tys.int(false, 32)
+        _ => null
+    }
+}
+
+is_builtin_type_name :: fn(name: string) -> bool {
+    return int_type_name(name) is not null or name in ("usize", "isize", "f16", "f32", "f64", "bool", "never", "type", "rawptr", "string", "cstring", "rune")
+}
+
+type_param :: fn(s: ^const Sema, name: string) -> ?Ty {
+    i := s.type_params.items.len
+    while i > 0 {
+        i -= 1
+        if s.type_params.items[i].name is name { return s.type_params.items[i].ty }
+    }
+    return null
+}
+
+value_param :: fn(s: ^const Sema, name: string) -> ?u32 {
+    i := s.value_scope.items.len
+    while i > 0 {
+        i -= 1
+        if s.value_scope.items[i].name is name { return s.value_scope.items[i].param }
+    }
+    return null
+}
+
+/// True if `name` denotes a type in `module`: a predeclared type, a type parameter in
+/// scope, or a type declared at top level (§4.6). Decided from the syntax of declarations
+/// not resolved yet, so that it never starts an evaluation.
+names_type :: fn(s: ^Sema, module: usize, name: string) -> bool needs Load {
+    if s.type_param(name) is not null { return true }
+    if d := s.lookup_module_name(module, name) { return s.decl_is_type(d, 0) }
+    return is_builtin_type_name(name)
+}
+
+decl_is_type :: fn(s: ^Sema, d: usize, depth: u32) -> bool needs Load {
+    if .Done(v) := s.state(d) { return v in (.Type(_), .GenericType(_)) }
+    if depth > 16 { return false }
+    decl := &s.l.decls.items[d]
+    .Binding(b) := decl.item.kind else return false
+    if b.ty is not null or b.names.len is not 1 { return false }
+    return s.syntax_is_type(decl.module, b.init, depth)
+}
+
+syntax_is_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, depth: u32) -> bool needs Load {
+    match e.kind {
+        .Ident(id) => {
+            if d := s.lookup_module_name(module, id.name) { return s.decl_is_type(d, depth + 1) }
+            return is_builtin_type_name(id.name)
+        }
+        .Paren(inner) => return s.syntax_is_type(module, inner, depth)
+        .Attributed(_, inner) => return s.syntax_is_type(module, inner, depth)
+        .Struct(_), .Union(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return true
+        .OptionalType(_), .ArrayType(_) => return not hoists(e)
+        .Call(callee, _, _) => match callee.kind {
+            .Ident(id) => {
+                d := s.lookup_module_name(module, id.name) else return false
+                return s.decl_is_type(d, depth + 1)
+            }
+            .Field(_) => return s.syntax_is_type(module, callee, depth)
+            _ => return false
+        }
+        // `T :: m.U`: a public declaration of another module.
+        .Field(base, name) => {
+            m := s.syntax_module(module, base, depth) else return false
+            d := s.l.lookup(m, name.name) else return false
+            if not s.l.decls.items[d].item.is_pub { return false }
+            return s.decl_is_type(d, depth + 1)
+        }
+        _ => return false
+    }
+}
+
+/// The module that `e` names (`m` or `m.sub`), judged without resolving anything but
+/// imports, which evaluate nothing.
+syntax_module :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, depth: u32) -> ?usize needs Load {
+    if depth > 16 { return null }
+    d: usize = 0
+    match e.kind {
+        .Ident(id) => { d = s.lookup_module_name(module, id.name) else return null }
+        .Field(base, name) => {
+            m := s.syntax_module(module, base, depth + 1) else return null
+            d = s.l.lookup(m, name.name) else return null
+            if not s.l.decls.items[d].item.is_pub { return null }
+        }
+        _ => return null
+    }
+    match s.state(d) {
+        .Done(v) => {
+            .Module(m) := v else return null
+            return m
+        }
+        _ => {}
+    }
+    decl := &s.l.decls.items[d]
+    dm := decl.module
+    .Binding(b) := decl.item.kind else return null
+    if b.ty is not null or b.names.len is not 1 { return null }
+    match b.init.kind {
+        .Import(_) => {
+            .Module(m) := s.resolve_decl(d) else return null
+            return m
+        }
+        // `sub :: m.sub`: a module re-exported by name.
+        .Ident(_), .Field(_) => return s.syntax_module(dm, b.init, depth + 1)
+        _ => return null
+    }
+}
+
+/// True if `e` syntactically denotes a type (used to tell aliases from constants).
+looks_like_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs Load {
+    match e.kind {
+        .Ident(id) => {
+            if d := s.lookup_module_name(module, id.name) { return s.resolve_decl(d) is .Type(_) }
+            return is_builtin_type_name(id.name)
+        }
+        .Paren(inner) => return s.looks_like_type(module, inner)
+        .ArrayType(a) => {
+            // `[2]P(…)[1]` indexes a constructed value (§A.7 rule 12).
+            if hoists(e) { return false }
+            // `[3]i32(1, 2, 3)` constructs a value, unless the call instantiates a generic
+            // type: `[4]List(i32)`.
+            if construction_call(a.elem) is not null { return s.looks_like_type(module, a.elem) }
+            return true
+        }
+        .OptionalType(inner) => {
+            if hoists(e) { return false }
+            if construction_call(inner) is not null { return s.looks_like_type(module, inner) }
+            return true
+        }
+        .Tuple(elems) => {
+            for el in elems {
+                if not s.looks_like_type(module, &el.value) { return false }
+            }
+            return true
+        }
+        .PtrType(_), .SliceType(_), .ManyPtrType(_), .ErrorUnionType(_), .FnType(_), .ContType(_), .Struct(_), .Union(_) => return true
+        .Bang(lhs, _) => return s.looks_like_type(module, lhs)
+        .Call(callee, _, _) => {
+            g := s.generic_decl(module, callee, false) else return false
+            return s.resolve_decl(g.decl) is .GenericType(_)
+        }
+        .Attributed(_, inner) => return s.looks_like_type(module, inner)
+        _ => return false
+    }
+}
+
+/// The call `T(args)` that `e` is, or ends in after prefix type operators: the callee is
+/// constructed (§A.7 rule 12).
+construction_call :: fn(e: ^const ast.Expr) -> ?^const ast.Expr {
+    match e.kind {
+        // `xs.first()` and `xs[0](…)` call something on a value: not a construction.
+        .Call(callee, _, _) => return if calls_on_value(callee) { null } else { e }
+        .ArrayType(a) => return construction_call(a.elem)
+        .OptionalType(inner) => return construction_call(inner)
+        .PtrType(_, inner), .SliceType(_, inner), .ManyPtrType(_, inner) => return construction_call(inner)
+        _ => return null
+    }
+}
+
+/// True if `callee` is a method or a function pointer reached from a value (`v.f`, `v[i]`
+/// where `v` is more than a name path such as `m.T`), so calling it constructs nothing.
+calls_on_value :: fn(callee: ^const ast.Expr) -> bool => match callee.kind {
+    .Field(base, _) => not is_path(base)
+    .Index(_) => true
+    _ => false
+}
+
+is_path :: fn(e: ^const ast.Expr) -> bool => match e.kind {
+    .Ident(_) => true
+    .Field(base, _) => is_path(base)
+    _ => false
+}
+
+/// Whether a prefix type operator `e` applies to a postfix expression that is not a type
+/// (`?x.f`, `[2]P(…)[1]`), which the operator really applies to (§A.7 rule 12).
+hoists :: fn(e: ^const ast.Expr) -> bool {
+    inner := match e.kind {
+        .ArrayType(a) => a.elem
+        .OptionalType(x) => x
+        _ => return false
+    }
+    if construction_call(inner) is not null { return false }
+    return pushes_down(prefix_operand(e))
+}
+
+/// The operand of the innermost prefix: `[2]?u8(1, null)[0]` stacks two of them.
+prefix_operand :: fn(e: ^const ast.Expr) -> ^const ast.Expr => match e.kind {
+    .ArrayType(a) => prefix_operand(a.elem)
+    .OptionalType(inner) => prefix_operand(inner)
+    .PtrType(_, inner), .SliceType(_, inner), .ManyPtrType(_, inner) => prefix_operand(inner)
+    _ => e
+}
+
+pushes_down :: fn(e: ^const ast.Expr) -> bool {
+    next := match e.kind {
+        .Index(base, _), .Field(base, _), .OptUnwrap(base), .ResUnwrap(base), .Deref(base) => base
+        .TupleField(base, _, _) => base
+        .Slice(x) => x.base
+        // A method call on the constructed value.
+        .Call(callee, _, _) => if calls_on_value(callee) { callee } else { return false }
+        _ => return false
+    }
+    if .Call(callee, _, _) := next.kind and not calls_on_value(callee) { return true }
+    return pushes_down(next)
+}
+
+/// Resolves a type expression, reporting an error (and returning the error type) if it
+/// does not denote a type.
+pub resolve_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Load {
+    ty := s.resolve_type_unchecked(module, e)
+    // The size of a type being defined is checked when its definition is complete.
+    sized := match s.tys.kind(ty) {
+        .Array(_), .Tuple(_), .Optional(_), .Result(_) => true
+        _ => false
+    }
+    if sized and s.adts_in_progress.items.len is 0 and s.adt_inst_depth is 0 and not s.type_size_ok(ty, e.span) {
+        return s.tys.error()
+    }
+    return ty
+}
+
+resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Load {
+    tys := &s.tys
+    match e.kind {
+        .Ident(id) => {
+            if t := s.type_param(id.name) {
+                if .Param(p) := tys.kind(t) and s.params.items[usize(p)].kind is .Effects {
+                    s.error(e.span, str.format("`{}` is an effect set, not a type; use it after `needs` (§16.6)", id.name)!)
+                    return tys.error()
+                }
+                return t
+            }
+            if d := s.lookup_module_name(module, id.name) {
+                s.check_deprecated(d, id.span)
+                match s.resolve_decl(d) {
+                    .Type(t) => return t
+                    .Error => return tys.error()
+                    _ => {
+                        s.error(e.span, str.format("`{}` is not a type", id.name)!)
+                        return tys.error()
+                    }
+                }
+            }
+            if t := s.builtin_type(id.name) { return t }
+            msg := if is_oversized_int_name(id.name) {
+                str.format("unknown type `{}`: integer types are at most 128 bits wide (§5.2)", id.name)!
+            } else {
+                str.format("unknown type `{}`", id.name)!
+            }
+            d := diag.error(e.span, msg)
+            if hint := s.universe_hint(id.name) {
+                d.add_note(hint)
+                if edits := s.import_fix(module, id.name, e.span) {
+                    last := edits.items[edits.items.len - 1].text
+                    d.add_fix_edits(str.format("write `{}`", last)!, edits.items)
+                }
+            }
+            s.emit(d)
+            return tys.error()
+        }
+        .Paren(inner) => return s.resolve_type(module, inner)
+        .Tuple(elems) => {
+            named := elems.len > 0 and elems[0].name is not null
+            ts := list(Ty)
+            for el in elems { ts.push(s.component_type(module, &el.value))! }
+            names := list(string)
+            if named {
+                for el in elems {
+                    n := el.name else {
+                        s.error(e.span, "a tuple type must be either fully named or fully unnamed")
+                        return tys.error()
+                    }
+                    names.push(n.name)!
+                }
+                for i, n in enumerate(names.items) {
+                    if n in names.items[0..i] {
+                        s.error(e.span, str.format("duplicate tuple element name `{}`", n)!)
+                        return tys.error()
+                    }
+                }
+            }
+            return tys.intern(.Tuple(ts.items, names.items))
+        }
+        .OptionalType(inner) => return tys.optional(s.component_type(module, inner))
+        .PtrType(is_const, inner) => {
+            if .FnType(sig) := inner.kind {
+                if is_const { s.error(e.span, "`^const fn` is not a type; function pointers are written `^fn(…)`") }
+                f := s.resolve_fn_sig(module, sig, false, empty_slice(ast.Constraint)) else return tys.error()
+                return tys.intern(.FnPtr(s.fn_ty(&f)))
+            }
+            return tys.ptr(is_const, s.component_type(module, inner))
+        }
+        .SliceType(is_const, inner) => return tys.slice(is_const, s.component_type(module, inner))
+        .ManyPtrType(is_const, inner) => return tys.many_ptr(is_const, s.component_type(module, inner))
+        .ArrayType(a) => {
+            elem := s.component_type(module, a.elem)
+            len := a.len else {
+                s.error(e.span, "`[_]` is allowed only in array constructors")
+                return tys.error()
+            }
+            if s.length_is_type(module, len) {
+                index := s.component_type(module, len)
+                return s.enum_array_type(index, elem, len.span)
+            }
+            match s.array_len(module, len) {
+                .Known(n) => return tys.array(n, elem)
+                .Param(l) => return tys.intern(.ParamArray(l, elem))
+                .Failed => return tys.error()
+            }
+        }
+        .ErrorUnionType(err, ok), .Bang(err, ok) => {
+            et := s.component_type(module, err)
+            ot := s.component_type(module, ok)
+            return tys.result(et, ot)
+        }
+        .FnType(sig) => {
+            f := s.resolve_fn_sig(module, sig, false, empty_slice(ast.Constraint)) else return tys.error()
+            return tys.intern(.Fn(s.fn_ty(&f)))
+        }
+        .ContType(inner) => return tys.intern(.Cont(s.resolve_type(module, inner)))
+        // `G(args)`: an instantiation of a generic type (§16.4).
+        .Call(callee, args, _) => {
+            if .Field(base, _) := callee.kind and s.names_error(module, base) { return tys.error() }
+            template: ?u32 = null
+            if g := s.generic_decl(module, callee, true) {
+                match s.resolve_decl(g.decl) {
+                    .GenericType(t) => {
+                        s.check_deprecated(g.decl, g.span)
+                        template = t
+                    }
+                    .Error => return tys.error()
+                    _ => {}
+                }
+            } else if callee.kind is .Field(_) {
+                return tys.error()
+            }
+            t := template else {
+                s.error(e.span, "expected a type")
+                return tys.error()
+            }
+            targs := s.generic_type_args(module, t, args, e.span) else return tys.error()
+            params := s.adts.items[usize(t)].params
+            for i, pid in enumerate(params) {
+                if i >= targs.len { break }
+                a := targs[i]
+                for c in s.params.items[usize(pid)].constraints.items {
+                    if not s.satisfies(a, c) {
+                        // In a signature or a generic type, the `where` clause that follows
+                        // may still constrain the parameters mentioned here.
+                        if s.constraint_defer > 0 and tys.has_param(a) {
+                            s.deferred.push(Deferred(ty: a, c: c, param: pid, template: t, span: e.span))!
+                        } else {
+                            s.error(e.span, s.unsatisfied(a, c, pid, t))
+                        }
+                    }
+                }
+            }
+            for a in targs {
+                if part := s.second_class_part(a) { s.error(e.span, s.not_first_class(a, part)) }
+            }
+            return s.instantiate_adt(t, targs)
+        }
+        .Attributed(attrs, inner) => {
+            if .PtrType(_, f) := inner.kind and f.kind is .FnType(_) {
+                s.unsupported(e.span, "`#callconv` on function pointer types")
+                return tys.error()
+            }
+            for a in attrs {
+                if a.name.name is "soa" and inner.kind in (.ArrayType(_), .SliceType(_)) {
+                    s.unsupported(e.span, "`#soa` types")
+                    return tys.error()
+                }
+            }
+            if inner.kind is .ArrayType(_) {
+                s.unsupported(e.span, "vector types")
+                return tys.error()
+            }
+            if inner.kind not in (.Struct(_), .Union(_)) {
+                s.error(e.span, "attributes here must precede a `struct`, a `union`, an array type or a `^fn` type")
+                return tys.error()
+            }
+            name := if inner.kind is .Union(_) { "union" } else { "struct" }
+            return s.declare_adt(module, null, name, e)
+        }
+        .Struct(_) => return s.declare_adt(module, null, "struct", e)
+        .Union(_) => return s.declare_adt(module, null, "union", e)
+        .Intrinsic(i) => {
+            if i.name.name is "type_of" {
+                s.unsupported(e.span, "`@type_of`")
+                return tys.error()
+            }
+        }
+        // `m.T`: a type declared in another module.
+        .Field(base, name) => {
+            if m := s.module_named(module, base) {
+                d := s.module_member(m, name) else return tys.error()
+                match s.resolve_decl(d) {
+                    .Type(t) => return t
+                    .Error => return tys.error()
+                    _ => {
+                        s.error(e.span, str.format("`{}` is not a type", name.name)!)
+                        return tys.error()
+                    }
+                }
+            }
+            // `m.T` where `m` failed to resolve (a bad import, already reported).
+            if s.names_error(module, base) { return tys.error() }
+        }
+        _ => {}
+    }
+    s.error(e.span, "expected a type")
+    return tys.error()
+}
+
+/// The function type of a signature.
+pub fn_ty :: fn(s: ^const Sema, f: ^const FnSig) -> types.FnTy needs Alloc {
+    params := list(Ty)
+    for p in f.params { params.push(p.ty)! }
+    return types.FnTy(params: params.items, ret: f.ret, effects: f.effects, variadic: false, win64: false)
+}
+
+/// Resolves a type that is part of a larger type (an element, a pointee, a payload): a
+/// second-class `fn(…)` type cannot be one (§11.6).
+component_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Load {
+    t := s.resolve_type(module, e)
+    if s.tys.kind(t) is .Fn(_) {
+        text := s.show(t)
+        s.error(e.span, str.format("the second-class type `{}` cannot be part of another type; use a function pointer `^{}` (§11.6)", text, text)!)
+    }
+    return t
+}
+
+/// A declaration and the span of the name that names it.
+NamedDecl :: struct {
+    decl: usize
+    span: source.Span
+}
+
+/// The declaration that `callee` of a type instantiation `G(args)` names: `G` or `m.G`.
+/// With `report`, a missing or private member of a module is reported.
+generic_decl :: fn(s: ^Sema, module: usize, callee: ^const ast.Expr, report: bool) -> ?NamedDecl needs Load {
+    match callee.kind {
+        .Ident(id) => {
+            d := s.lookup_module_name(module, id.name) else return null
+            return NamedDecl(decl: d, span: id.span)
+        }
+        .Field(base, name) => {
+            m := s.module_named(module, base) else return null
+            if report {
+                d := s.module_member(m, name) else return null
+                return NamedDecl(decl: d, span: name.span)
+            }
+            d := s.l.lookup(m, name.name) else return null
+            if not s.l.decls.items[d].item.is_pub { return null }
+            return NamedDecl(decl: d, span: name.span)
+        }
+        _ => return null
+    }
+}
+
+/// True if `e` is a name whose declaration has errors (already reported).
+names_error :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs Load {
+    .Ident(id) := e.kind else return false
+    d := s.lookup_module_name(module, id.name) else return false
+    return s.resolve_decl(d) is .Error
+}
+
+/// True if the length of an array type `[len]T` names a type, making it an enum-indexed
+/// array `[E]T` (§5.6). A compile-time value parameter is a length.
+length_is_type :: fn(s: ^Sema, module: usize, len: ^const ast.Expr) -> bool needs Load {
+    match len.kind {
+        .Ident(id) => return s.value_param(id.name) is null and s.names_type(module, id.name)
+        .Field(_) => return s.syntax_is_type(module, len, 0)
+        _ => return false
+    }
+}
+
+/// `[E]T` for the type `index` written as the length (§5.6): `E` must be an enum.
+enum_array_type :: fn(s: ^Sema, index, elem: Ty, span: source.Span) -> Ty needs Alloc {
+    tys := &s.tys
+    if tys.is_error(index) or tys.is_error(elem) { return tys.error() }
+    if tys.kind(index) is .Param(_) {
+        s.error(span, str.format("an array indexed by a type needs a concrete enum type, not the type parameter `{}`", s.show(index))!)
+        return tys.error()
+    }
+    u := s.union_variants(index) else {
+        s.error(span, str.format("an array length is a constant `usize` or an enum type (`[E]T`), and `{}` is not an enum", s.show(index))!)
+        return tys.error()
+    }
+    for v in u.variants {
+        if v.payload is not null {
+            s.error(span, str.format("an array can be indexed only by an enum, and `{}` has a variant with a payload (`{}`)", s.show(index), v.name)!)
+            return tys.error()
+        }
+    }
+    return tys.intern(.Array(u.variants.len.trunc(u64), elem, .Enum(index)))
+}
+
+/// The length of an array type.
+ArrayLen :: union {
+    Known: u64
+    /// Depends on compile-time value parameters: a `Param` or a `LenExpr` (§16.5).
+    Param: Ty
+    /// An error was reported.
+    Failed
+}
+
+/// Evaluates the length of an array type `[len]T`.
+array_len :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ArrayLen needs Load {
+    // `[N]T` with `N` a compile-time value parameter (§16.5).
+    if .Ident(id) := e.kind {
+        if pid := s.value_param(id.name) {
+            .Value(t) := s.params.items[usize(pid)].kind else return .Failed
+            if not s.tys.is_integer(t) {
+                s.error(e.span, str.format("`{}` is not an integer, so it cannot be an array length", id.name)!)
+                return .Failed
+            }
+            return .Param(s.tys.param(pid))
+        }
+    }
+    match s.try_untyped(module, e) {
+        .Ok(v) => {
+            if .Int(i) := v {
+                if n := i.to_u64() { return .Known(n) }
+                s.error(e.span, str.format("array length {} is out of range", i.to_decimal())!)
+                return .Failed
+            }
+            s.error(e.span, str.format("expected an integer array length, found a {}", describe(&v))!)
+            return .Failed
+        }
+        .Failed => return .Failed
+        null => {
+            s.unsupported(e.span, "array lengths that are typed constant expressions")
+            return .Failed
+        }
+    }
+}
+
+/// The arguments of `G(args)`, in parameter order: positional, then named, then defaults
+/// (§16.4).
+generic_type_args :: fn(s: ^Sema, module: usize, template: u32, args: []const ast.Arg, span: source.Span) -> ?[]Ty needs Load {
+    info := s.adts.items[usize(template)]
+    params := info.params
+    name := info.name
+    // The argument expressions, copied: a pattern binds a copy of a payload.
+    given := list(?ast.Expr)
+    for _ in params { given.push(null)! }
+    next: usize = 0
+    for a in args {
+        i: usize = 0
+        ep: ?ast.Expr = null
+        match a.kind {
+            .Positional(x) => {
+                i = next
+                next += 1
+                ep = x
+            }
+            .Named(n, x) => {
+                found: ?usize = null
+                for j, p in enumerate(params) {
+                    if s.tys.param_name(p) is n.name {
+                        found = j
+                        break
+                    }
+                }
+                i = found else {
+                    s.error(n.span, str.format("`{}` has no parameter named `{}`", name, n.name)!)
+                    return null
+                }
+                ep = x
+            }
+            .Spread(_) => {
+                s.error(a.span, "a spread argument cannot instantiate a generic type")
+                return null
+            }
+        }
+        if i >= params.len {
+            s.error(span, str.format("`{}` takes {} argument(s)", name, params.len)!)
+            return null
+        }
+        if given.items[i] is not null {
+            s.error(a.span, str.format("the parameter `{}` is given twice", s.tys.param_name(params[i]))!)
+            return null
+        }
+        given.items[i] = ep
+    }
+    out := list(Ty)
+    for i, pid in enumerate(params) {
+        ep: ?ast.Expr = null
+        m := module
+        if g := given.items[i] {
+            ep = g
+        } else if d := info.param_defaults[i] {
+            // A default is written in the module that declares the type.
+            ep = d^
+            m = info.module
+        } else if s.params.items[usize(pid)].kind is .Effects {
+            // An effect-set parameter left out is empty (§16.6).
+            out.push(s.tys.intern(.Effects(types.empty_effects())))!
+            continue
+        } else {
+            s.error(span, str.format("missing argument for the parameter `{}` of `{}`", s.tys.param_name(pid), name)!)
+            return null
+        }
+        ex := ep else return null
+        e := &ex
+        t := match s.params.items[usize(pid)].kind {
+            .Value(vt) => {
+                map := list(Subst)
+                for j, q in enumerate(params[0..out.items.len]) { map.push(Subst(param: q, ty: out.items[j]))! }
+                s.comptime_value(m, s.subst(vt, map.items), e) else return null
+            }
+            .Effects => s.resolve_effect_arg(m, e)
+            .Type => s.resolve_type(m, e)
+        }
+        if s.tys.is_error(t) { return null }
+        out.push(t)!
+    }
+    return out.items
+}
+
+/// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5) to a
+/// type-level value. A compile-time parameter in scope is passed on as it is.
+comptime_value :: fn(s: ^Sema, module: usize, ty: Ty, e: ^const ast.Expr) -> ?Ty needs Load {
+    if .Ident(id) := e.kind {
+        if pid := s.value_param(id.name) {
+            .Value(have) := s.params.items[usize(pid)].kind else return null
+            if have is not ty and ty is not s.tys.optional(have) {
+                s.error(e.span, str.format("expected a compile-time `{}`, found `{}` of type `{}`", s.show(ty), id.name, s.show(have))!)
+                return null
+            }
+            return s.tys.param(pid)
+        }
+    }
+    if key := s.const_key_of(module, e, ty) { return s.tys.intern(.Value(key)) }
+    s.unsupported(e.span, "this compile-time argument")
+    return null
+}
+
+/// The key of the constant expression `e` of type `ty`, if gammac can tell it without
+/// reporting anything: `null`, a function, or an integer or `bool` constant.
+const_key_of :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?types.ConstKey needs Load {
+    if e.kind is .Null {
+        if .Optional(inner) := s.tys.kind(ty) and s.is_nullable_pointer(inner) { return .Null }
+        return null
+    }
+    if f := s.fn_ref(module, e, ty) { return .Fn(f, s.fns.items[usize(f)].name) }
+    if s.tys.has_param(ty) { return null }
+    r := s.untyped_if_plain(module, e) else return null
+    .Ok(v) := r else return null
+    match v {
+        .Int(i) => {
+            if not s.tys.is_integer(ty) or not s.int_fits(i, ty) { return null }
+            size := s.layout(ty).size
+            bytes := list(u8)
+            // Little-endian two's complement, whatever the target.
+            x := i
+            for _ in 0..size {
+                low := x.bit_and(bigint.from_u64(255)).to_u64() else 0
+                bytes.push(low.trunc(u8))!
+                x = x.shr(8)
+            }
+            return .Bytes(ty, bytes.items)
+        }
+        .Bool(b) => {
+            if s.tys.kind(ty) is not .Bool { return null }
+            bytes := list(u8)
+            bytes.push(if b { 1 } else { 0 })!
+            return .Bytes(ty, bytes.items)
+        }
+        _ => return null
+    }
+}
+
+/// The function that `e` names, if it is one whose function pointer type is `ty` (or the
+/// pointer type an optional `ty` holds).
+fn_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?u32 needs Load {
+    want := ty
+    if .Optional(inner) := s.tys.kind(ty) { want = inner }
+    .FnPtr(sig) := s.tys.kind(want) else return null
+    d: usize = 0
+    match e.kind {
+        .Ident(id) => { d = s.lookup_module_name(module, id.name) else return null }
+        .Field(base, name) => {
+            m := s.module_named(module, base) else return null
+            d = s.l.lookup(m, name.name) else return null
+            if not s.l.decls.items[d].item.is_pub { return null }
+        }
+        _ => return null
+    }
+    .Fn(f) := s.resolve_decl(d) else return null
+    info := &s.fns.items[usize(f)]
+    if info.generics.len > 0 { return null }
+    have := s.fn_ty(info)
+    if s.tys.intern(.FnPtr(have)) is not s.tys.intern(.FnPtr(sig)) { return null }
+    return f
+}

@@ -8,6 +8,8 @@ Versions and what each kind of change means are described in
 
 ### Language
 
+- A member of an inline tuple of `in` may be a pattern form, as on the right of `is`:
+  `k in (.Fn(_), .Handler(_), .Type)` tests whether `k` matches any of them (§7.7).
 - **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the
   layout of C's `_Complex`, and the operators `+ - * /`, unary `-`, and scaling by a scalar;
   methods `conj()` and `abs()`. Division is Smith's algorithm (§5.3.1, §7.4.7).
@@ -102,17 +104,24 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `gamma decls`: resolves the top-level declarations of a program without checking
+  function bodies, and prints what each denotes (types with their fields or variants,
+  effects, signatures, constants), with the diagnostics of declarations.
 - `gamma modules`: loads a program the way `gamma check` does, without checking its
   declarations, and prints its modules in load order with their directories, packages
   and imports (see chapter 15 of the guide).
 - `compiler/`: `gammac`, a Gamma compiler written in Gamma, the start of a self-hosted
   toolchain. Its lexer and parser produce the same tokens, syntax trees and diagnostics as
   `gamma lex` and `gamma parse --dump` on every `.gm` file of the repository, and loads
-  every program's modules as `gamma modules` does, which `tests/selfhost.rs` checks (see
+  every program's modules as `gamma modules` does; it resolves the declarations of most
+  programs as `gamma decls` does. `tests/selfhost.rs` checks all of it (see
   `docs/self-hosting.md`).
 
 ### Fixed
 
+- Messages that show an effect set with an effect-set parameter (`needs E + Out`) list its
+  terms in the same order in every run; the order used to depend on what the same process
+  had compiled before (the language server, the test runner).
 - C back end: an assignment through a slice, a pointer or an index stores to the place as
   it was before the right side ran, as §4.7 says and the interpreter and the Cranelift
   back end did: `s.xs[0] = f(&s)` no longer stores into the slice that `f` put in `s.xs`.

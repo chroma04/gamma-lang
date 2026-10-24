@@ -130,6 +130,12 @@ impl<'a, 's> FnCx<'a, 's> {
             let inclusive = *op == ast::BinOp::RangeIncl;
             return self.range_test(elem, vec![], lo, hi, ty, inclusive, negated, span);
         }
+        // An inline tuple with a pattern member: `k in (.Fn(_), .Type)` (§7.7).
+        if let ExprKind::Tuple(elems) = &container.kind
+            && elems.iter().any(|el| self.is_pattern_operand(&el.value, elem.ty).is_some())
+        {
+            return self.in_patterns(elem, elems, negated, span);
+        }
         // An inline tuple: every element has the element's type.
         let c = if let ExprKind::Tuple(elems) = &container.kind {
             let mut vals = vec![];

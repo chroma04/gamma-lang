@@ -13,6 +13,7 @@ mod call;
 mod consteval;
 mod construct;
 mod cont_check;
+mod decl_dump;
 mod decls;
 mod effects;
 mod escape;
@@ -393,6 +394,18 @@ pub fn load_modules(sess: &mut Session, root: &Path) -> Option<String> {
     Some(sema.module_dump())
 }
 
+/// Loads the program rooted at `root` as [`load_modules`] does and resolves the
+/// declarations of every loaded module, as checking does before it checks the function
+/// bodies. Returns what each declaration denotes, in the format of `gamma decls` (see
+/// `Sema::decl_dump`), or `None` if the root module could not be loaded.
+pub fn declarations(sess: &mut Session, root: &Path) -> Option<String> {
+    let mut sema = Sema::new(sess);
+    sema.load_prelude();
+    sema.load_root(root)?;
+    sema.resolve_declarations();
+    Some(sema.decl_dump())
+}
+
 fn analyze_with(sess: &mut Session, root: &Path, tests: Option<bool>) -> Option<Program> {
     let mut sema = Sema::new(sess);
     sema.tests_enabled = tests.is_some();
@@ -414,6 +427,9 @@ fn analyze_with(sess: &mut Session, root: &Path, tests: Option<bool>) -> Option<
 
 impl<'s> Sema<'s> {
     fn new(sess: &'s mut Session) -> Sema<'s> {
+        // Effect sets are ordered by effect id: the pseudo-effect of `..E` terms exists
+        // before any effect of the program, so it comes first in every run.
+        crate::types::EffectId::splice();
         let build_mode = match sess.mode {
             crate::interp::Mode::Debug => "Debug",
             crate::interp::Mode::Checked => "Checked",

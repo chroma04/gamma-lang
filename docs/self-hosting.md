@@ -23,6 +23,7 @@ this checkable:
 | lexer | the token dump of `gamma lex`, and its diagnostics |
 | parser | the syntax tree dump of `gamma parse --dump`, and its diagnostics |
 | modules and packages | the module graph of `gamma modules`, and its diagnostics |
+| declarations | what `gamma decls` prints for every top-level declaration, and its diagnostics |
 | checker | the diagnostics of `gamma check` |
 | back end | the output and exit status of the compiled programs |
 
@@ -55,9 +56,18 @@ leaves to implementations: message texts, spans and recovery after errors.
    the repository. Not yet: git and archive dependencies (which need the lock file and the
    package manager), the exact messages for a malformed `gamma.toml`, and `when`
    conditions beyond `target`, `@size_of`, literals and constants.
-4. **Checker** — name resolution, types, inference, effects, generics, compile-time
-   evaluation, producing a typed representation like `src/tir.rs`. Checked against the
-   diagnostics of `gamma check` on the conformance tests of `check/`.
+4. **Checker** — in progress, in two parts:
+   - **Declarations.** Resolving every top-level declaration without checking function
+     bodies: types and type expressions, structs and unions (generic ones and their
+     instances), effects, function signatures, constraints, untyped constants with exact
+     arithmetic, and the typed constants made of literals and constructors. `gammac decls`
+     matches `gamma decls` on every program it does not report as using something it
+     cannot check yet (see below); that is most of the repository. Not yet: foreign blocks,
+     `#global`s, `#soa` and vector types, and constants that call functions, which need
+     the second part.
+   - **Bodies.** Expressions, statements, patterns, inference, effects, the instantiation
+     of generic functions and compile-time evaluation, producing a typed representation
+     like `src/tir.rs`. Checked against the diagnostics of `gamma check`.
 5. **Back end** — C generation, linking the existing C runtime (`runtime/`). Checked by
    running the `run` conformance tests through `gammac` and comparing with the reference.
 6. **Bootstrap** — `gammac` built by `gamma` (stage 1) compiles `gammac` (stage 2), which
@@ -77,7 +87,10 @@ read the two side by side.
 | `compiler/bignum/` | natural numbers and rationals of any size, for the exact values of literals |
 | `compiler/syntax/` | tokens (`token.gm`), the lexer (`lexer.gm`, `literal.gm`) and the token dump (`dump.gm`) (`src/syntax/`) |
 | `compiler/ast/` | the syntax tree (`ast.gm`) and its dump (`dump.gm`) (`src/syntax/ast.rs`, `ast_dump.rs`) |
-| `compiler/load/` | loading modules and packages (`loader.gm`), file paths (`paths.gm`), the `gamma.toml` reader (`toml.gm`) and the conditions of top-level `when`s (`when.gm`) (`src/sema/modules.rs`, `imports.rs`) |
+| `compiler/load/` | loading modules and packages (`loader.gm`), the core library (`core.gm`), file paths (`paths.gm`), the `gamma.toml` reader (`toml.gm`) and the conditions of top-level `when`s (`when.gm`) (`src/sema/modules.rs`, `imports.rs`) |
+| `compiler/types/` | types, hash-consed (`types.gm`), and their text in messages (`display.gm`) (`src/types.rs`) |
+| `compiler/bigint/`, `compiler/ratio/` | integers and rationals of any size, for the exact arithmetic of untyped constants |
+| `compiler/sema/` | checking: the state and the resolution of declarations (`sema.gm`), names (`names.gm`), type expressions (`ty_expr.gm`), structs and unions (`adt.gm`), signatures and effects (`fnsig.gm`), constraints (`generics.gm`), untyped constants (`untyped.gm`), typed constants (`consts.gm`), layouts (`layout.gm`) and the `decls` dump (`dump.gm`) (`src/sema/`) |
 | `compiler/parse/` | the parser: its state, errors and recovery (`parser.gm`), expressions, statements, declarations, types, patterns and the brace-delimited literals (`src/syntax/parser/`) |
 
 ## Building and running
@@ -88,6 +101,7 @@ gamma build compiler -o gammac          # or: gamma run compiler lex FILE
 ./gammac lex --diag-format=json tests/conformance/lex/errors_numbers.gm
 ./gammac parse --dump examples/hello.gm
 GAMMA_STD=lib/std ./gammac modules examples/grep.gm
+GAMMA_STD=lib/std ./gammac decls examples/grep.gm
 gamma test compiler                     # gammac's own unit tests
 cargo test --test selfhost              # the parity tests
 ```
@@ -98,6 +112,18 @@ position, in the `short` format by default. With several files,
 each file's output on both streams is preceded by a line `==> FILE <==`, so that one run
 can cover the whole repository. The exit status is 1 if a file has errors and 2 for a
 usage error or a file that cannot be read.
+
+`gammac decls` reads the core library from `$GAMMA_CORE`, or else from the `core`
+directory next to the standard library's.
+
+### Growing a stage
+
+A stage that covers a large part of the language grows over several steps. Until it is
+complete, `gammac` reports each construct it cannot handle yet with an error that starts
+`gammac cannot`, and `tests/selfhost.rs` compares only the programs without such an
+error. Everything else must match exactly. The number of programs compared may only
+grow: the test fails if it drops below `DECLS_FLOOR`, which is raised as `gammac` learns
+more.
 
 `tests/selfhost.rs` builds `gammac` through the C back end in the Debug mode, so that its
 overflow and bounds checks are on, when a C compiler is available, and otherwise runs it

@@ -1,0 +1,293 @@
+// Untyped constants (§6.2): exact arithmetic on integers and rationals.
+
+ratio :: import "../ratio"
+
+Int :: bigint.Int
+Rat :: ratio.Rat
+
+pub Untyped :: union {
+    Int: bigint.Int
+    Float: ratio.Rat
+    /// The float constant negative zero, which a rational cannot represent.
+    NegZero
+    Bool: bool
+    /// A complex constant: its real and imaginary parts (§2.5.2).
+    Complex: (re: ratio.Rat, im: ratio.Rat)
+}
+
+/// The outcome of evaluating an untyped constant expression: its value, or an error that
+/// was reported.
+pub UntypedResult :: union {
+    Ok: Untyped
+    Failed
+}
+
+/// The largest size, in bits, of an integer (or of a rational's numerator or denominator)
+/// that untyped constant arithmetic produces (§6.2).
+MAX_CONST_BITS :: 1 << 22
+
+pub describe :: fn(v: ^const Untyped) -> string => match v^ {
+    .Int(_) => "integer constant"
+    .Float(_), .NegZero => "float constant"
+    .Bool(_) => "boolean constant"
+    .Complex(_) => "complex constant"
+}
+
+/// The value as a rational, if it is a number other than a complex one.
+as_rational :: fn(v: ^const Untyped) -> ?Rat needs Alloc => match v^ {
+    .Int(i) => ratio.from_int(i)
+    .Float(r) => r
+    .NegZero => ratio.from_int(bigint.zero())
+    _ => null
+}
+
+as_complex :: fn(v: ^const Untyped) -> ?(re: Rat, im: Rat) needs Alloc {
+    if .Complex(re, im) := v^ { return (re: re, im: im) }
+    r := as_rational(v) else return null
+    return (re: r, im: ratio.from_int(bigint.zero()))
+}
+
+/// Applies unary minus.
+pub negate :: fn(v: ^const Untyped) -> UntypedOr needs Alloc => match v^ {
+    .Int(i) => UntypedOr.Ok(.Int(i.neg()))
+    .Float(r) => UntypedOr.Ok(if r.is_zero() { Untyped.NegZero } else { Untyped.Float(r.neg()) })
+    .NegZero => UntypedOr.Ok(.Float(ratio.from_int(bigint.zero())))
+    .Bool(_) => UntypedOr.Err("cannot negate a boolean constant")
+    .Complex(re, im) => UntypedOr.Ok(.Complex(re.neg(), im.neg()))
+}
+
+/// A value or an error message.
+pub UntypedOr :: union {
+    Ok: Untyped
+    Err: string
+}
+
+/// An integer for a diagnostic: in full unless it is very large, then only its size.
+pub show_int :: fn(v: Int) -> string needs Alloc {
+    if v.bits() <= 512 { return v.to_decimal() }
+    return str.format("<{}-bit integer>", v.bits())!
+}
+
+/// Applies a binary operator to two untyped constants.
+pub binary :: fn(op: ast.BinOp, a, b: ^const Untyped) -> UntypedOr needs Alloc {
+    r := binary_exact(op, a, b)
+    .Ok(v) := r else return r
+    bits: u64 = match v {
+        .Int(i) => i.bits()
+        .Float(q) => rational_bits(q)
+        .Complex(re, im) => rational_bits(re).max(rational_bits(im))
+        _ => 0
+    }
+    if bits > MAX_CONST_BITS {
+        return .Err(str.format("the result of this constant expression is too large (more than {} bits)", MAX_CONST_BITS)!)
+    }
+    return r
+}
+
+rational_bits :: fn(q: Rat) -> u64 => q.num.bits().max(q.den.bits())
+
+DIV_ZERO :: "division by zero in constant expression"
+
+binary_exact :: fn(op: ast.BinOp, a, b: ^const Untyped) -> UntypedOr needs Alloc {
+    if a^ is .Complex(_) or b^ is .Complex(_) { return complex_binary(op, a, b) }
+    match op {
+        .Lt, .Le, .Gt, .Ge, .Is, .IsNot => {
+            if .Bool(x) := a^ and .Bool(y) := b^ {
+                return match op {
+                    .Is => UntypedOr.Ok(.Bool(x is y))
+                    .IsNot => UntypedOr.Ok(.Bool(x is not y))
+                    _ => UntypedOr.Err("booleans are not ordered")
+                }
+            }
+            x := as_rational(a) else return .Err("expected a numeric constant")
+            y := as_rational(b) else return .Err("expected a numeric constant")
+            c := x.cmp(y)
+            return .Ok(.Bool(match op {
+                .Lt => c < 0
+                .Le => c <= 0
+                .Gt => c > 0
+                .Ge => c >= 0
+                .Is => c is 0
+                _ => c is not 0
+            }))
+        }
+        .Add(_), .Sub(_), .Mul(_), .Div => {
+            if .Int(x) := a^ and .Int(y) := b^ {
+                return .Ok(.Int(match op {
+                    .Add(_) => x.add(y)
+                    .Sub(_) => x.sub(y)
+                    .Mul(_) => x.mul(y)
+                    _ => {
+                        if y.is_zero() { return .Err(DIV_ZERO) }
+                        x.div(y)
+                    }
+                }))
+            }
+            x := as_rational(a) else return .Err("expected a numeric constant")
+            y := as_rational(b) else return .Err("expected a numeric constant")
+            r := match op {
+                .Add(_) => x.add(y)
+                .Sub(_) => x.sub(y)
+                .Mul(_) => x.mul(y)
+                _ => {
+                    if y.is_zero() { return .Err(DIV_ZERO) }
+                    x.div(y)
+                }
+            }
+            return .Ok(float_result(op, a, b, r))
+        }
+        .Rem, .BitAnd, .BitOr, .BitXor, .Shl(_), .Shr => {
+            .Int(x) := a^ else return .Err(str.format("`{}` requires integer constants", ast.binop_text(op))!)
+            .Int(y) := b^ else return .Err(str.format("`{}` requires integer constants", ast.binop_text(op))!)
+            return .Ok(.Int(match op {
+                .Rem => {
+                    if y.is_zero() { return .Err(DIV_ZERO) }
+                    x.rem(y)
+                }
+                .BitAnd => x.bit_and(y)
+                .BitOr => x.bit_or(y)
+                .BitXor => x.bit_xor(y)
+                _ => {
+                    if y.is_negative() { return .Err("negative shift amount in constant expression") }
+                    n := y.to_u64() else return .Err("shift amount too large")
+                    if n > 1 << 20 { return .Err("shift amount too large") }
+                    if op is .Shr { x.shr(n) } else { x.shl(n) }
+                }
+            }))
+        }
+        _ => return .Err(str.format("`{}` is not allowed in an untyped constant expression", ast.binop_text(op))!)
+    }
+}
+
+/// `a op b` where one operand is a complex constant: exact arithmetic on the parts, with a
+/// real operand taken as a complex number whose imaginary part is zero (§7.4.7).
+complex_binary :: fn(op: ast.BinOp, a, b: ^const Untyped) -> UntypedOr needs Alloc {
+    x := as_complex(a) else return .Err("expected a numeric constant")
+    y := as_complex(b) else return .Err("expected a numeric constant")
+    p := x.re
+    q := x.im
+    r := y.re
+    t := y.im
+    match op {
+        .Add(_) => return .Ok(.Complex(p.add(r), q.add(t)))
+        .Sub(_) => return .Ok(.Complex(p.sub(r), q.sub(t)))
+        .Mul(_) => return .Ok(.Complex(p.mul(r).sub(q.mul(t)), p.mul(t).add(q.mul(r))))
+        .Div => {
+            d := r.mul(r).add(t.mul(t))
+            if d.is_zero() { return .Err(DIV_ZERO) }
+            return .Ok(.Complex(p.mul(r).add(q.mul(t)).div(d), q.mul(r).sub(p.mul(t)).div(d)))
+        }
+        .Is => return .Ok(.Bool(p.eq(r) and q.eq(t)))
+        .IsNot => return .Ok(.Bool(not p.eq(r) or not q.eq(t)))
+        .Lt, .Le, .Gt, .Ge => return .Err("complex constants are not ordered")
+        _ => return .Err(str.format("`{}` does not apply to complex constants", ast.binop_text(op))!)
+    }
+}
+
+/// A float-valued arithmetic result, with the sign IEEE arithmetic gives a zero result.
+float_result :: fn(op: ast.BinOp, a, b: ^const Untyped, r: Rat) -> Untyped needs Alloc {
+    if not r.is_zero() { return .Float(r) }
+    negative := match op {
+        // An exact zero sum is negative only when both addends are negative zeros.
+        .Add(_) => a^ is .NegZero and b^ is .NegZero
+        .Sub(_) => a^ is .NegZero and b^ is not .NegZero and is_zero(b)
+        _ => is_neg(a) is not is_neg(b)
+    }
+    return if negative { Untyped.NegZero } else { Untyped.Float(r) }
+}
+
+is_neg :: fn(v: ^const Untyped) -> bool => match v^ {
+    .NegZero => true
+    .Int(i) => i.is_negative()
+    .Float(r) => r.is_negative()
+    _ => false
+}
+
+is_zero :: fn(v: ^const Untyped) -> bool needs Alloc {
+    r := as_rational(v) else return false
+    return r.is_zero()
+}
+
+/// An untyped constant as `gamma decls` shows it: `int 5`, `float 1/3`, `float -0`,
+/// `bool true` or `complex 0 1/2`.
+pub dump_untyped :: fn(v: ^const Untyped) -> string needs Alloc => match v^ {
+    .Int(i) => str.format("int {}", show_int(i))!
+    .Float(q) => str.format("float {}", show_rational(q))!
+    .NegZero => "float -0"
+    .Bool(b) => str.format("bool {}", b)!
+    .Complex(re, im) => str.format("complex {} {}", show_rational(re), show_rational(im))!
+}
+
+show_rational :: fn(q: Rat) -> string needs Alloc {
+    if q.is_integer() { return show_int(q.num) }
+    return str.format("{}/{}", show_int(q.num), show_int(q.den))!
+}
+
+/// The exact value of a literal's natural number.
+pub nat_int :: fn(n: ^const bignum.Nat) -> Int needs Alloc => bigint.from_nat(n)
+
+pub literal_rational :: fn(r: ^const bignum.Rational) -> Rat needs Alloc => ratio.new(bigint.from_nat(&r.num), bigint.from_nat(&r.den))
+
+/// Evaluates `e` as an untyped constant expression (§6.2) if it has that shape. Returns
+/// `null` if it is not an untyped constant expression, `.Failed` after reporting an error.
+pub try_untyped :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedResult needs Load {
+    match e.kind {
+        .Int(lit) => {
+            if lit.suffix is not null { return null }
+            return .Ok(.Int(nat_int(&lit.value)))
+        }
+        .Float(lit) => {
+            if lit.suffix is not null { return null }
+            v := literal_rational(&lit.value)
+            if lit.imag { return .Ok(.Complex(ratio.from_int(bigint.zero()), v)) }
+            return .Ok(.Float(v))
+        }
+        .Paren(inner) => return s.try_untyped(module, inner)
+        .Ident(id) => {
+            d := s.lookup_module_name(module, id.name) else return null
+            .Untyped(v) := s.resolve_decl(d) else return null
+            return .Ok(v)
+        }
+        // `m.X`, an untyped constant of another module.
+        .Field(base, name) => {
+            m := s.module_named(module, base) else return null
+            d := s.l.lookup(m, name.name) else return null
+            if not s.l.decls.items[d].item.is_pub { return null }
+            .Untyped(v) := s.resolve_decl(d) else return null
+            return .Ok(v)
+        }
+        .Unary(.Neg, operand) => {
+            r := s.try_untyped(module, operand) else return null
+            .Ok(v) := r else return .Failed
+            match negate(&v) {
+                .Ok(x) => return .Ok(x)
+                .Err(m) => {
+                    s.error(e.span, m)
+                    return .Failed
+                }
+            }
+        }
+        .Binary(op, lhs, rhs) => {
+            if op in (ast.BinOp.And, ast.BinOp.Or, ast.BinOp.In, ast.BinOp.NotIn, ast.BinOp.Range, ast.BinOp.RangeIncl) { return null }
+            // Flavored operators are not part of untyped constant expressions.
+            match op {
+                .Add(f), .Sub(f), .Mul(f), .Shl(f) => if f is not .Checked { return null }
+                _ => {}
+            }
+            a := s.try_untyped(module, lhs) else return null
+            b := s.try_untyped(module, rhs) else return null
+            .Ok(x) := a else return .Failed
+            .Ok(y) := b else return .Failed
+            match binary(op, &x, &y) {
+                .Ok(v) => return .Ok(v)
+                .Err(m) => {
+                    s.error(e.span, m)
+                    return .Failed
+                }
+            }
+        }
+        _ => return null
+    }
+}
+
+bignum :: import "../bignum"

@@ -6,7 +6,9 @@
   `gamma lex`/`parse --dump` (+ JSON diags) on all ~980 .gm files, tests/selfhost.rs.
   docs/guide/idioms.md = growing idioms handbook (doc_examples-checked; ADD to it whenever
   a pattern is learned). `?T in (..)` fix (§7.7). s38c: stage 3 modules (`gamma modules`),
-  C-backend assignment-order bug fixed. Next: stage 4 checker (roadmap/self-hosting.md).
+  C-backend assignment-order bug fixed. s38d: stage 4a declarations (`gamma decls`,
+  compiler/types+sema+bigint+ratio, "gammac cannot" skip protocol + DECLS_FLOOR ratchet);
+  `in` takes patterns (§7.7). Next: roadmap/self-hosting.md.
 - s37 (branch claude/sharp-turing-sfr2js): generic `#soa []T` (stand-in type + SoaDeferred
   expanded per instance) and std/collections/soa_list `SoaList(S)` (decisions/042).
 - s36 (branch dev): stdlib batch 1 (decisions/041): slice methods (core/slice + SLICE_FNS),
@@ -19,8 +21,7 @@
   guide sections in 04-types.md, examples nbody.gm + julia.gm, CHANGELOG Unreleased.
   Imaginary literals `4j`/`2j32` done (decisions/039). `#soa` arrays/slices done (040).
   tree-sitter CLI: `npm ci` in editors/tree-sitter-gamma works (node 22 in /opt/node22).
-- s34: HashMap moved to std/collections/hash_map (decisions/038); s33: spec ch. 23 errors
-  policy + diagnostics audit, array spread (037); CHANGELOG has an Unreleased section.
+- s34: HashMap → std/collections/hash_map (038); s33: spec ch. 23 errors policy, spread (037).
 - s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
   in roadmap/review-2026-10-20.md (P0/P1, most P2/P3 fixed; rest listed there). Fuzz
   targets in fuzz/ (manifest, archive; seeds via fuzz/seed.sh). New infra:
@@ -44,14 +45,13 @@
   conformance for cgen changes) before pushing.
 - examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
   header); new examples need a case and `gamma fmt`.
-- Recent history (details in sessions/, decisions/): s27 wishes (029); s26 bugs + LLDB; s25
-  parallel Debug C units; s24 `gamma fix`/json diags/LSP quick fixes (028); s19–s23 bugs/perf.
+- Older history: sessions/ and decisions/ (s24 `gamma fix`/json diags 028, s27 wishes 029).
 
 ## Next steps
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
 1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
-1b. Self-hosting: roadmap/self-hosting.md (next: stage 2 parser).
+1b. Self-hosting: roadmap/self-hosting.md (stage 4a declarations in progress; then 4b bodies).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.

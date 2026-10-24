@@ -74,3 +74,19 @@ User asked: "lay the groundwork for a self-hosted compiler; doubly the ultimate 
   while import_decl grows decls) → handbook "Lists that grow under you".
 - Naming a function `string` hides the type module-wide → confusing cascade (cycle error,
   "cannot infer null"). Not fixed (no obvious fix); handbook note.
+
+## Stage 4a decisions (s38d): declarations
+- New reference dump `gamma decls` (sema::declarations, decl_dump.rs); user said "move onto
+  the next stage" — dump designed like `gamma modules`. Values shown: types with fields/
+  variants/tags, generic params, effects with ops, fn sigs with param names/defaults
+  (`= …`), `const T`, `untyped int|float n/d|bool|complex`, `module m`, `error`.
+- Reference fix: Sema::new creates EffectId::splice first (effect sets sort by id; splice
+  id used to depend on process history → in-process test vs CLI differ).
+- Skip protocol ("gammac cannot") + floor ratchet instead of all-or-nothing parity: lets
+  stage 4 grow across sessions. Rule: gammac never emits a guessed real error.
+- Language: `x in (.A(_), .B)` — inline-tuple members may be pattern forms (§7.7), lowered
+  to a match (matching.rs in_patterns). Found writing gammac (`kind in (.Fn(_), ...)`).
+- Dogfooding: storing `&loop_var` / `&pattern_binding` gives dangling-ish pointers to a
+  reused slot (bit gammac twice) → handbook "Pointers to copies"; escape analysis does not
+  catch it (candidate for a lint/escape rule later). Temp array slices only as call args.
+  `if c { str.format(..)! } else { "" }` fails ([]u8 vs string branches) — annotate.

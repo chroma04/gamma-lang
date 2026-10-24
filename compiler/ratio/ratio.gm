@@ -1,0 +1,485 @@
+//! Exact rational numbers, for the values of float constants (spec §6.2). The operations
+//! follow the conventions of Rust's `num-rational` `BigRational`: a value is always in
+//! lowest terms with a positive denominator, so equal numbers have equal parts.
+//!
+//! Every function returns a new value and leaves its arguments alone. Memory comes from
+//! the current allocator and is never released one value at a time, so run a compilation
+//! inside an arena. Division by zero traps.
+
+bigint :: import "../bigint"
+
+/// A rational number `num / den` in lowest terms, with `den` positive. Zero is `0/1`.
+/// Build values with the functions of this module, which keep these rules.
+pub Rat :: struct {
+    pub num: bigint.Int
+    pub den: bigint.Int
+}
+
+/// `num / den`, reduced. Traps if `den` is zero.
+pub new :: fn(num, den: bigint.Int) -> Rat needs Alloc {
+    if den.is_zero() { trap("ratio: zero denominator") }
+    g := num.gcd(den)
+    n := num
+    d := den
+    if not g.is_zero() and g.cmp(bigint.one()) > 0 {
+        n = n.div(g)
+        d = d.div(g)
+    }
+    if d.is_negative() {
+        n = n.neg()
+        d = d.neg()
+    }
+    return Rat(num: n, den: d)
+}
+
+/// The integer `i`.
+pub from_int :: fn(i: bigint.Int) -> Rat needs Alloc => Rat(num: i, den: bigint.one())
+
+/// The integer `v`.
+pub from_i64 :: fn(v: i64) -> Rat needs Alloc => from_int(bigint.from_i64(v))
+
+/// 0.
+pub zero_rat :: fn() -> Rat needs Alloc => from_int(bigint.zero())
+
+/// 1.
+pub one_rat :: fn() -> Rat needs Alloc => from_int(bigint.one())
+
+pub is_zero :: fn(r: Rat) -> bool => r.num.is_zero()
+
+pub is_negative :: fn(r: Rat) -> bool => r.num.is_negative()
+
+/// Whether `r` has no fractional part.
+pub is_integer :: fn(r: Rat) -> bool => r.den.bits() is 1
+
+/// `-1`, `0` or `1` as `a` is less than, equal to or greater than `b`.
+pub cmp :: fn(a, b: Rat) -> i32 needs Alloc => a.num.mul(b.den).cmp(b.num.mul(a.den))
+
+pub eq :: fn(a, b: Rat) -> bool => a.num.eq(b.num) and a.den.eq(b.den)
+
+/// `-r`.
+pub neg :: fn(r: Rat) -> Rat needs Alloc => Rat(num: r.num.neg(), den: r.den)
+
+/// `|r|`.
+pub abs :: fn(r: Rat) -> Rat needs Alloc => Rat(num: r.num.abs(), den: r.den)
+
+pub add :: fn(a, b: Rat) -> Rat needs Alloc => new(a.num.mul(b.den).add(b.num.mul(a.den)), a.den.mul(b.den))
+
+pub sub :: fn(a, b: Rat) -> Rat needs Alloc => new(a.num.mul(b.den).sub(b.num.mul(a.den)), a.den.mul(b.den))
+
+pub mul :: fn(a, b: Rat) -> Rat needs Alloc => new(a.num.mul(b.num), a.den.mul(b.den))
+
+/// `a / b`. Traps if `b` is zero.
+pub div :: fn(a, b: Rat) -> Rat needs Alloc {
+    if b.is_zero() { trap("ratio: division by zero") }
+    return new(a.num.mul(b.den), a.den.mul(b.num))
+}
+
+/// `1 / r`. Traps if `r` is zero.
+pub recip :: fn(r: Rat) -> Rat needs Alloc {
+    if r.is_zero() { trap("ratio: division by zero") }
+    return new(r.den, r.num)
+}
+
+/// `r` rounded toward zero.
+pub trunc :: fn(r: Rat) -> bigint.Int needs Alloc => r.num.div(r.den)
+
+/// `r` rounded toward negative infinity.
+pub floor :: fn(r: Rat) -> bigint.Int needs Alloc => r.num.div_floor(r.den)
+
+/// `r` to the power `exp`, which may be negative (then `r` must not be zero).
+pub pow :: fn(r: Rat, exp: i32) -> Rat needs Alloc {
+    e := exp.unsigned_abs()
+    p := Rat(num: r.num.pow(e), den: r.den.pow(e))
+    if exp < 0 { return p.recip() }
+    return p
+}
+
+/// Appends `r` to `out` as `num`, or as `num/den` when `r` is not an integer.
+pub write :: fn(r: Rat, out: ^List(u8)) needs Alloc {
+    r.num.write_decimal(out)
+    if r.is_integer() { return }
+    out.push('/')!
+    r.den.write_decimal(out)
+}
+
+// ---------------------------------------------------------------------------
+// Conversion to binary floating point
+// ---------------------------------------------------------------------------
+
+/// A positive number `m * 2^ue` with `m` of at most `p + 1` bits, or zero when `m` is zero.
+Scaled :: struct {
+    m: u64
+    ue: i64
+    overflow: bool = false
+}
+
+/// The nearest number to the absolute value of `r` (ties to even) with a significand of
+/// `p` bits and a binary exponent of at least `emin` for the leading bit, as `m * 2^ue`.
+/// The result may be `2^p` exactly (a carry) and is flagged `overflow` when it is too big
+/// for a leading-bit exponent of `emax`. A subnormal number has `ue` equal to
+/// `emin - p + 1` and fewer than `p` bits.
+round_scaled :: fn(r: Rat, p: u32, emin: i64, emax: i64) -> Scaled needs Alloc {
+    n := r.num.abs()
+    d := r.den
+    if n.is_zero() { return Scaled(m: 0, ue: 0) }
+    // The value is in (2^(a-b-1), 2^(a-b+1)) where a and b are the bit lengths.
+    e0 := n.bits().trunc(i64) - d.bits().trunc(i64)
+    if e0 > emax + 3 { return Scaled(m: 0, ue: 0, overflow: true) }
+    if e0 < emin - i64(p) - 3 { return Scaled(m: 0, ue: 0) }
+    // Scale by 2^k so that the quotient q has p + 2 or p + 3 bits.
+    k := i64(p) + 2 - e0
+    num := n
+    den := d
+    if k > 0 { num = n.shl(k.trunc(u64)) } else if k < 0 { den = d.shl((-k).trunc(u64)) }
+    qi, ri := num.div_rem(den)
+    q := qi.to_u64()?
+    sticky := not ri.is_zero()
+    len := qi.bits().trunc(i64)
+    // The leading bit of the value has exponent e; below emin the significand shrinks.
+    e := len - 1 - k
+    drop := len - i64(p)
+    if e < emin { drop += emin - e }
+    ue := drop - k
+    if drop >= 64 { return Scaled(m: 0, ue: ue) }
+    m := q >> drop.trunc(u64)
+    rest := q - (m << drop.trunc(u64))
+    half: u64 = u64(1) << (drop - 1).trunc(u64)
+    up := rest > half or (rest is half and (sticky or (m & 1) is 1))
+    if up { m += 1 }
+    if m is 0 { return Scaled(m: 0, ue: ue) }
+    // A carry out of the significand gives 2^p; the value is then still exact as m = 2^p.
+    lead := i64(64) - i64(clz64(m)) - 1
+    if lead + ue > emax { return Scaled(m: 0, ue: ue, overflow: true) }
+    return Scaled(m: m, ue: ue)
+}
+
+/// The number of leading zero bits of `x`, which must not be zero.
+clz64 :: fn(x: u64) -> u32 {
+    s: u32 = 0
+    m := x
+    while (m & 0x8000_0000_0000_0000) is 0 {
+        m <<%= 1
+        s += 1
+    }
+    return s
+}
+
+/// The `f64` nearest to `r`, ties to even: exactly the correctly rounded value, which is
+/// infinite when `r` is too large and zero (with the sign of `r`) when it is too small.
+pub to_f64 :: fn(r: Rat) -> f64 needs Alloc {
+    sign: u64 = 0
+    if r.is_negative() { sign = 0x8000_0000_0000_0000 }
+    s := round_scaled(r, 53, -1022, 1023)
+    if s.overflow { return (sign | 0x7FF0_0000_0000_0000).bits(f64) }
+    if s.m is 0 { return sign.bits(f64) }
+    m := s.m
+    ue := s.ue
+    if m >= (u64(1) << 53) {
+        // Only 2^53 itself, from a carry.
+        m >>= 1
+        ue += 1
+    }
+    if m < (u64(1) << 52) {
+        // Subnormal: the exponent field is 0.
+        return (sign | m).bits(f64)
+    }
+    field := (ue + 52 + 1023).trunc(u64)
+    return (sign | (field << 52) | (m - (u64(1) << 52))).bits(f64)
+}
+
+/// The `f32` nearest to `r`, ties to even, rounded directly from the exact value.
+pub to_f32 :: fn(r: Rat) -> f32 needs Alloc {
+    sign: u32 = 0
+    if r.is_negative() { sign = 0x8000_0000 }
+    s := round_scaled(r, 24, -126, 127)
+    if s.overflow { return (sign | 0x7F80_0000).bits(f32) }
+    if s.m is 0 { return sign.bits(f32) }
+    m := s.m
+    ue := s.ue
+    if m >= (u64(1) << 24) {
+        m >>= 1
+        ue += 1
+    }
+    if m < (u64(1) << 23) { return (sign | m.trunc(u32)).bits(f32) }
+    field := (ue + 23 + 127).trunc(u32)
+    return (sign | (field <<% 23) | (m.trunc(u32) - (u32(1) <<% 23))).bits(f32)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+arena :: import "std/arena"
+
+// Runs `body` with an arena as the current allocator, and releases the arena after.
+with_arena :: fn(body: fn() needs Alloc) needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+// The rational `n / d` of two machine integers.
+q :: fn(n, d: i64) -> Rat needs Alloc => new(bigint.from_i64(n), bigint.from_i64(d))
+
+// `r` as text.
+txt :: fn(r: Rat) -> string needs Alloc {
+    out := list(u8)
+    r.write(&out)
+    return string(out.items)
+}
+
+// The rational `2^e` for an exponent of either sign.
+two_to :: fn(e: i32) -> Rat needs Alloc => from_i64(2).pow(e)
+
+test "normalization" {
+    with_arena(fn() {
+        expect_eq(txt(q(6, -4)), "-3/2")
+        expect_eq(txt(q(-6, -4)), "3/2")
+        expect_eq(txt(q(-6, 4)), "-3/2")
+        expect_eq(txt(q(6, 3)), "2")
+        expect_eq(txt(q(0, -7)), "0")
+        expect(not q(0, -7).is_negative())
+        expect_eq(string(bigint.to_decimal(q(0, -7).den)), "1")
+        expect_eq(txt(q(7, 1)), "7")
+        expect_eq(txt(q(-1, 3)), "-1/3")
+        expect(q(1, 3).den.is_positive())
+        expect(q(1, -3).den.is_positive())
+        expect(q(2, 4).eq(q(1, 2)))
+        expect(q(2, 4).eq(q(-3, -6)))
+        expect(not q(2, 4).eq(q(-1, 2)))
+        big := new(bigint.shl(bigint.one(), 200), bigint.shl(bigint.one(), 198))
+        expect_eq(txt(big), "4")
+        expect(zero_rat().is_zero())
+        expect(not one_rat().is_zero())
+        expect(one_rat().is_integer())
+        expect(not q(1, 2).is_integer())
+        expect(q(-8, 2).is_integer())
+        expect(q(-1, 2).is_negative())
+    })
+}
+
+test "comparison" {
+    with_arena(fn() {
+        expect_eq(q(1, 3).cmp(q(1, 2)), -1)
+        expect_eq(q(1, 2).cmp(q(1, 3)), 1)
+        expect_eq(q(2, 6).cmp(q(1, 3)), 0)
+        expect_eq(q(-1, 2).cmp(q(-1, 3)), -1)
+        expect_eq(q(-1, 2).cmp(q(1, 3)), -1)
+        expect_eq(q(1, 2).cmp(q(-1, 3)), 1)
+        expect_eq(zero_rat().cmp(q(-1, 1000)), 1)
+        expect_eq(q(1, 1000).cmp(zero_rat()), 1)
+    })
+}
+
+test "arithmetic" {
+    with_arena(fn() {
+        expect_eq(txt(q(1, 2).add(q(1, 3))), "5/6")
+        expect_eq(txt(q(1, 2).add(q(1, 2))), "1")
+        expect_eq(txt(q(1, 2).sub(q(1, 3))), "1/6")
+        expect_eq(txt(q(1, 3).sub(q(1, 2))), "-1/6")
+        expect_eq(txt(q(1, 2).sub(q(1, 2))), "0")
+        expect(not q(1, 2).sub(q(1, 2)).is_negative())
+        expect_eq(txt(q(2, 3).mul(q(3, 4))), "1/2")
+        expect_eq(txt(q(-2, 3).mul(q(3, 4))), "-1/2")
+        expect_eq(txt(q(-2, 3).mul(q(-3, 4))), "1/2")
+        expect_eq(txt(q(2, 3).mul(zero_rat())), "0")
+        expect_eq(txt(q(2, 3).div(q(4, 9))), "3/2")
+        expect_eq(txt(q(2, 3).div(q(-4, 9))), "-3/2")
+        expect_eq(txt(q(-2, 3).recip()), "-3/2")
+        expect_eq(txt(q(5, 1).recip()), "1/5")
+        expect_eq(txt(q(1, 3).neg()), "-1/3")
+        expect_eq(txt(q(-1, 3).neg()), "1/3")
+        expect_eq(txt(q(-1, 3).abs()), "1/3")
+        expect_eq(txt(zero_rat().neg()), "0")
+        expect_eq(txt(q(1, 10).add(q(2, 10))), "3/10")
+        // 1/1 + 1/2 + ... + 1/10 = 7381/2520
+        h := zero_rat()
+        for i in 1..11 { h = h.add(q(1, i)) }
+        expect_eq(txt(h), "7381/2520")
+    })
+}
+
+test "truncation and floor" {
+    with_arena(fn() {
+        expect_eq(string(bigint.to_decimal(q(7, 2).trunc())), "3")
+        expect_eq(string(bigint.to_decimal(q(-7, 2).trunc())), "-3")
+        expect_eq(string(bigint.to_decimal(q(7, 2).floor())), "3")
+        expect_eq(string(bigint.to_decimal(q(-7, 2).floor())), "-4")
+        expect_eq(string(bigint.to_decimal(q(-6, 2).floor())), "-3")
+        expect_eq(string(bigint.to_decimal(q(-1, 3).trunc())), "0")
+        expect_eq(string(bigint.to_decimal(q(-1, 3).floor())), "-1")
+        expect_eq(string(bigint.to_decimal(q(1, 3).floor())), "0")
+        expect_eq(string(bigint.to_decimal(zero_rat().floor())), "0")
+    })
+}
+
+test "powers" {
+    with_arena(fn() {
+        expect_eq(txt(q(2, 3).pow(0)), "1")
+        expect_eq(txt(q(2, 3).pow(3)), "8/27")
+        expect_eq(txt(q(-2, 3).pow(3)), "-8/27")
+        expect_eq(txt(q(-2, 3).pow(2)), "4/9")
+        expect_eq(txt(q(2, 3).pow(-2)), "9/4")
+        expect_eq(txt(q(-2, 3).pow(-3)), "-27/8")
+        expect_eq(txt(q(0, 1).pow(5)), "0")
+        expect_eq(txt(q(10, 1).pow(-3)), "1/1000")
+        expect_eq(txt(two_to(100)), "1267650600228229401496703205376")
+        expect_eq(txt(two_to(-10)), "1/1024")
+    })
+}
+
+// The bits of `r` as an f64.
+f64_bits :: fn(r: Rat) -> u64 needs Alloc => r.to_f64().bits(u64)
+
+f32_bits :: fn(r: Rat) -> u32 needs Alloc => r.to_f32().bits(u32)
+
+test "to_f64 of simple values" {
+    with_arena(fn() {
+        expect_eq(q(0, 1).to_f64(), 0.0)
+        expect_eq(f64_bits(q(0, 1)), 0)
+        expect_eq(q(1, 1).to_f64(), 1.0)
+        expect_eq(q(-1, 1).to_f64(), -1.0)
+        expect_eq(q(1, 2).to_f64(), 0.5)
+        expect_eq(q(3, 2).to_f64(), 1.5)
+        expect_eq(q(1, 3).to_f64(), 1.0 / 3.0)
+        expect_eq(f64_bits(q(1, 3)), 0x3FD5_5555_5555_5555)
+        expect_eq(q(2, 3).to_f64(), 2.0 / 3.0)
+        expect_eq(f64_bits(q(2, 3)), 0x3FE5_5555_5555_5555)
+        expect_eq(q(1, 10).to_f64(), 0.1)
+        expect_eq(f64_bits(q(1, 10)), 0x3FB9_9999_9999_999A)
+        expect_eq(f64_bits(q(-1, 10)), 0xBFB9_9999_9999_999A)
+        expect_eq(q(3, 10).to_f64(), 0.3)
+        expect_eq(q(314159, 100000).to_f64(), 3.14159)
+        expect_eq(q(123456789, 1).to_f64(), 123456789.0)
+        expect_eq(f64_bits(q(100, 1)), 0x4059_0000_0000_0000)
+        expect_eq(f64_bits(q(1, 7)), 0x3FC2_4924_9249_2492)
+        expect_eq(f64_bits(q(22, 7)), 0x4009_2492_4924_9249)
+        // The largest and smallest normal numbers.
+        expect_eq(f64_bits(q(1, 1).mul(two_to(-1022))), 0x0010_0000_0000_0000)
+        expect_eq(f64_bits(two_to(1023)), 0x7FE0_0000_0000_0000)
+        expect_eq(f64_bits(two_to(-1)), 0x3FE0_0000_0000_0000)
+    })
+}
+
+test "to_f64 rounds ties to even" {
+    with_arena(fn() {
+        one_ := bigint.one()
+        p53 := bigint.shl(one_, 53)
+        // 2^53 + 1 lies between 2^53 and 2^53 + 2 and rounds to the even 2^53.
+        expect_eq(f64_bits(from_int(p53.add(one_))), f64_bits(from_int(p53)))
+        // 2^53 + 3 lies between 2^53 + 2 and 2^53 + 4 and rounds to the even 2^53 + 4.
+        expect_eq(f64_bits(from_int(p53.add(bigint.from_i64(3)))), f64_bits(from_int(p53.add(bigint.from_i64(4)))))
+        // Exactly representable.
+        expect_eq(f64_bits(from_int(p53.add(bigint.from_i64(2)))), 0x4340_0000_0000_0001)
+        expect_eq(f64_bits(from_int(p53)), 0x4340_0000_0000_0000)
+        // Just above the tie rounds up, just below rounds down.
+        above := new(p53.mul(bigint.from_i64(1000)).add(bigint.from_i64(1001)), bigint.from_i64(1000))
+        expect_eq(f64_bits(above), f64_bits(from_int(p53.add(bigint.from_i64(2)))))
+        below := new(p53.mul(bigint.from_i64(1000)).add(bigint.from_i64(999)), bigint.from_i64(1000))
+        expect_eq(f64_bits(below), f64_bits(from_int(p53)))
+        // A tie in the other direction: 2^53 + 2 + 1 is not a tie but 2^54 + 2 is: ties to 2^54.
+        p54 := bigint.shl(one_, 54)
+        expect_eq(f64_bits(from_int(p54.add(bigint.from_i64(2)))), f64_bits(from_int(p54)))
+        expect_eq(f64_bits(from_int(p54.add(bigint.from_i64(6)))), f64_bits(from_int(p54.add(bigint.from_i64(8)))))
+        // A negative tie.
+        expect_eq(f64_bits(from_int(p53.add(one_).neg())), f64_bits(from_int(p53.neg())))
+        // The significand rounds up into the next binade.
+        all_ones := bigint.shl(one_, 53).sub(one_)
+        expect_eq(f64_bits(new(all_ones.mul(bigint.from_i64(2)).add(one_), bigint.from_i64(2))), f64_bits(from_int(p53)))
+    })
+}
+
+test "to_f64 overflow and underflow" {
+    with_arena(fn() {
+        inf: u64 = 0x7FF0_0000_0000_0000
+        expect_eq(f64_bits(two_to(1024)), inf)
+        expect_eq(f64_bits(two_to(1024).neg()), inf | 0x8000_0000_0000_0000)
+        expect_eq(f64_bits(two_to(2000)), inf)
+        expect_eq(f64_bits(two_to(1_000_000)), inf)
+        // The largest finite number is (2^53 - 1) * 2^971; half an ulp more rounds to infinity.
+        maxf := from_int(bigint.shl(bigint.one(), 53).sub(bigint.one())).mul(two_to(971))
+        expect_eq(f64_bits(maxf), 0x7FEF_FFFF_FFFF_FFFF)
+        halfway := maxf.add(two_to(970))
+        expect_eq(f64_bits(halfway), inf)
+        expect_eq(f64_bits(halfway.sub(two_to(900))), 0x7FEF_FFFF_FFFF_FFFF)
+        // Subnormals: the smallest is 2^-1074, and half of it ties to zero.
+        expect_eq(f64_bits(two_to(-1074)), 1)
+        expect_eq(f64_bits(two_to(-1075)), 0)
+        expect_eq(f64_bits(two_to(-1075).neg()), 0x8000_0000_0000_0000)
+        expect_eq(f64_bits(two_to(-1075).add(two_to(-2000))), 1)
+        expect_eq(f64_bits(two_to(-1075).mul(q(3, 1))), 2)
+        expect_eq(f64_bits(two_to(-1074).mul(q(3, 2))), 2)
+        expect_eq(f64_bits(two_to(-1074).mul(q(5, 2))), 2)
+        expect_eq(f64_bits(two_to(-1074).mul(q(7, 2))), 4)
+        expect_eq(f64_bits(two_to(-1074).mul(q(1, 3))), 0)
+        expect_eq(f64_bits(two_to(-1074).mul(q(2, 3))), 1)
+        expect_eq(f64_bits(two_to(-1060)), 1 << 14)
+        expect_eq(f64_bits(two_to(-1023)), 1 << 51)
+        expect_eq(f64_bits(two_to(-1022)), 1 << 52)
+        expect_eq(f64_bits(two_to(-1022).sub(two_to(-1074))), (1 << 52) - 1)
+        // Just below the smallest normal number rounds up to it.
+        expect_eq(f64_bits(two_to(-1022).sub(two_to(-1076))), 1 << 52)
+        expect_eq(f64_bits(two_to(-1_000_000)), 0)
+        expect_eq(f64_bits(one_rat().div(from_int(bigint.shl(bigint.one(), 5000)))), 0)
+        expect_eq(f64_bits(q(-1, 1).div(from_int(bigint.shl(bigint.one(), 5000)))), 0x8000_0000_0000_0000)
+    })
+}
+
+test "to_f64 of huge and tiny ratios" {
+    with_arena(fn() {
+        // (3 * 10^400) / (10^399) = 30.
+        t := from_i64(10).pow(400).mul(q(3, 1)).div(from_i64(10).pow(399))
+        expect_eq(t.to_f64(), 30.0)
+        // 10^400 / 10^399 * 1/3 is 10/3.
+        u := from_i64(10).pow(400).div(from_i64(10).pow(399)).div(q(3, 1))
+        expect_eq(u.to_f64(), 10.0 / 3.0)
+        // 1e300 and 1e-300 from their exact values.
+        expect_eq(from_i64(10).pow(300).to_f64(), 1e300)
+        expect_eq(from_i64(10).pow(-300).to_f64(), 1e-300)
+        expect_eq(from_i64(10).pow(308).to_f64(), 1e308)
+        expect_eq(from_i64(10).pow(-323).to_f64(), 1e-323)
+        expect_eq(f64_bits(from_i64(10).pow(309)), 0x7FF0_0000_0000_0000)
+        expect_eq(from_i64(10).pow(-5).to_f64(), 0.00001)
+        expect_eq(q(17976931348623157, 1).mul(from_i64(10).pow(292)).to_f64(), 1.7976931348623157e308)
+        expect_eq(q(5, 1).mul(from_i64(10).pow(-324)).to_f64(), 5e-324)
+        expect_eq(q(2, 1).mul(from_i64(10).pow(-324)).to_f64(), 0.0)
+    })
+}
+
+test "to_f32" {
+    with_arena(fn() {
+        expect_eq(f32_bits(q(0, 1)), 0)
+        expect_eq(f32_bits(q(1, 1)), 0x3F80_0000)
+        expect_eq(f32_bits(q(-2, 1)), 0xC000_0000)
+        expect_eq(f32_bits(q(1, 3)), 0x3EAA_AAAB)
+        expect_eq(f32_bits(q(1, 10)), 0x3DCC_CCCD)
+        expect_eq(q(3, 2).to_f32(), 1.5)
+        expect_eq(f32_bits(q(314159, 100000)), 0x4049_0FD0)
+        expect_eq(f32_bits(two_to(127)), 0x7F00_0000)
+        expect_eq(f32_bits(two_to(128)), 0x7F80_0000)
+        expect_eq(f32_bits(two_to(128).neg()), 0xFF80_0000)
+        // Ties to even at 24 bits.
+        p24 := bigint.shl(bigint.one(), 24)
+        expect_eq(f32_bits(from_int(p24.add(bigint.one()))), f32_bits(from_int(p24)))
+        expect_eq(f32_bits(from_int(p24.add(bigint.from_i64(3)))), f32_bits(from_int(p24.add(bigint.from_i64(4)))))
+        // Subnormals: smallest is 2^-149.
+        expect_eq(f32_bits(two_to(-149)), 1)
+        expect_eq(f32_bits(two_to(-150)), 0)
+        expect_eq(f32_bits(two_to(-150).add(two_to(-400))), 1)
+        expect_eq(f32_bits(two_to(-126)), 0x0080_0000)
+        expect_eq(f32_bits(two_to(-127)), 0x0040_0000)
+        expect_eq(f32_bits(two_to(-126).sub(two_to(-150))), 0x0080_0000)
+        // The largest finite f32 and the rounding to infinity.
+        maxf := from_int(bigint.shl(bigint.one(), 24).sub(bigint.one())).mul(two_to(104))
+        expect_eq(f32_bits(maxf), 0x7F7F_FFFF)
+        expect_eq(f32_bits(maxf.add(two_to(103))), 0x7F80_0000)
+        // No double rounding: 2^25 + 2 is a tie between f32 numbers, and a hair more rounds
+        // up, though the f64 nearest to the value is the tie itself.
+        tie := from_int(bigint.shl(bigint.one(), 25).add(bigint.from_i64(2)))
+        expect_eq(f32_bits(tie), 0x4C00_0000)
+        expect_eq(f32_bits(tie.add(two_to(-60))), 0x4C00_0001)
+        expect_eq(f32_bits(tie.sub(two_to(-60))), 0x4C00_0000)
+        expect_eq(f32_bits(two_to(-100000)), 0)
+        expect_eq(f32_bits(two_to(100000)), 0x7F80_0000)
+    })
+}

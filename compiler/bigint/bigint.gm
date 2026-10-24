@@ -1,0 +1,1136 @@
+//! Arbitrary-precision signed integers, for the values of integer constants (spec §6.2).
+//! The operations follow the conventions of Rust's `num-bigint`: `/` truncates toward
+//! zero, `%` takes the sign of the dividend, `>>` rounds toward negative infinity, and the
+//! bitwise operations act as on two's complement numbers of unbounded width.
+//!
+//! Every function returns a new value and leaves its arguments alone. Memory comes from
+//! the current allocator and is never released one value at a time, so run a compilation
+//! inside an arena. Division by zero traps.
+
+bignum :: import "../bignum"
+
+/// An integer as a sign and a magnitude. The magnitude is in base-2^32 limbs, least
+/// significant first, with no zero limb at the top, so zero has no limbs. Zero is never
+/// negative. Build values with the functions of this module, which keep these rules.
+pub Int :: struct {
+    pub negative: bool
+    pub mag: List(u32)
+}
+
+// ---------------------------------------------------------------------------
+// Magnitudes: slices of limbs, least significant first. A result list has no zero limb at
+// the top unless the function says otherwise.
+// ---------------------------------------------------------------------------
+
+/// Drops zero limbs from the top of `l`.
+trim :: fn(l: ^List(u32)) {
+    k := l.items.len
+    while k > 0 and l.items[k - 1] is 0 { k -= 1 }
+    l.truncate(k)
+}
+
+/// An `Int` of the given sign over the magnitude `m`, normalized.
+make :: fn(negative: bool, m: List(u32)) -> Int {
+    l := m
+    trim(&l)
+    return Int(negative: negative and l.items.len > 0, mag: l)
+}
+
+/// A list of `n` zero limbs.
+zeros :: fn(n: usize) -> List(u32) needs Alloc {
+    l := list(u32)
+    l.reserve(n)!
+    for _ in 0..n { l.push(0)! }
+    return l
+}
+
+/// `-1`, `0` or `1` as `a` is less than, equal to or greater than `b`.
+mag_cmp :: fn(a, b: []const u32) -> i32 {
+    if a.len < b.len { return -1 }
+    if a.len > b.len { return 1 }
+    i := a.len
+    while i > 0 {
+        i -= 1
+        if a[i] < b[i] { return -1 }
+        if a[i] > b[i] { return 1 }
+    }
+    return 0
+}
+
+mag_add :: fn(a, b: []const u32) -> List(u32) needs Alloc {
+    x := a
+    y := b
+    if x.len < y.len { x, y = y, x }
+    r := list(u32)
+    r.reserve(x.len + 1)!
+    carry: u64 = 0
+    for i in 0..x.len {
+        s := u64(x[i]) + carry
+        if i < y.len { s += u64(y[i]) }
+        r.push(s.trunc(u32))!
+        carry = s >> 32
+    }
+    if carry > 0 { r.push(carry.trunc(u32))! }
+    return r
+}
+
+/// `a - b`, where `a` is at least `b`.
+mag_sub :: fn(a, b: []const u32) -> List(u32) needs Alloc {
+    r := list(u32)
+    r.reserve(a.len)!
+    borrow: u64 = 0
+    for i in 0..a.len {
+        s: u64 = 0
+        if i < b.len { s = u64(b[i]) }
+        t := u64(a[i]) + 0x1_0000_0000 - s - borrow
+        r.push(t.trunc(u32))!
+        borrow = 1 - (t >> 32)
+    }
+    trim(&r)
+    return r
+}
+
+mag_mul :: fn(a, b: []const u32) -> List(u32) needs Alloc {
+    if a.len is 0 or b.len is 0 { return list(u32) }
+    r := zeros(a.len + b.len)
+    for i in 0..a.len {
+        ai := u64(a[i])
+        if ai is 0 { continue }
+        carry: u64 = 0
+        for j in 0..b.len {
+            t := ai * u64(b[j]) + u64(r.items[i + j]) + carry
+            r.items[i + j] = t.trunc(u32)
+            carry = t >> 32
+        }
+        r.items[i + b.len] = carry.trunc(u32)
+    }
+    trim(&r)
+    return r
+}
+
+/// The number of leading zero bits of the limb `x`, which must not be zero.
+clz :: fn(x: u32) -> u32 {
+    s: u32 = 0
+    m := x
+    while (m & 0x8000_0000) is 0 {
+        m <<%= 1
+        s += 1
+    }
+    return s
+}
+
+/// The quotient of `a` and the single limb `d`, and the remainder.
+mag_divrem_small :: fn(a: []const u32, d: u32) -> (q: List(u32), r: u32) needs Alloc {
+    q := zeros(a.len)
+    rem: u64 = 0
+    i := a.len
+    while i > 0 {
+        i -= 1
+        cur := (rem <<% 32) | u64(a[i])
+        q.items[i] = (cur / u64(d)).trunc(u32)
+        rem = cur % u64(d)
+    }
+    trim(&q)
+    return (q, rem.trunc(u32))
+}
+
+/// The limbs of `a <<% s` for `s` below 32, with one limb more than `a` when `extra`.
+shl_small :: fn(a: []const u32, s: u32, extra: bool) -> List(u32) needs Alloc {
+    r := list(u32)
+    r.reserve(a.len + 1)!
+    if s is 0 {
+        r.extend(a)!
+        if extra { r.push(0)! }
+        return r
+    }
+    carry: u32 = 0
+    for x in a {
+        r.push((x <<% s) | carry)!
+        carry = x >> (32 - s)
+    }
+    if extra { r.push(carry)! } else if carry > 0 { r.push(carry)! }
+    return r
+}
+
+/// The quotient and remainder of `a` by `b` (Knuth, algorithm D). `b` must not be empty.
+mag_divrem :: fn(a, b: []const u32) -> (q: List(u32), r: List(u32)) needs Alloc {
+    if mag_cmp(a, b) < 0 {
+        r := list(u32)
+        r.extend(a)!
+        return (list(u32), r)
+    }
+    if b.len is 1 {
+        q, r := mag_divrem_small(a, b[0])
+        rl := list(u32)
+        if r > 0 { rl.push(r)! }
+        return (q, rl)
+    }
+    n := b.len
+    m := a.len - n
+    s := clz(b[n - 1])
+    v := shl_small(b, s, false)
+    u := shl_small(a, s, true)
+    q := zeros(m + 1)
+    base: u64 = 0x1_0000_0000
+    vtop := u64(v.items[n - 1])
+    vnext := u64(v.items[n - 2])
+    j := m + 1
+    while j > 0 {
+        j -= 1
+        num := (u64(u.items[j + n]) <<% 32) | u64(u.items[j + n - 1])
+        qhat := num / vtop
+        rhat := num % vtop
+        while qhat >= base or qhat * vnext > ((rhat <<% 32) | u64(u.items[j + n - 2])) {
+            qhat -= 1
+            rhat += vtop
+            if rhat >= base { break }
+        }
+        // Multiply and subtract: u[j..j+n] -= qhat * v.
+        carry: u64 = 0
+        borrow: u64 = 0
+        for i in 0..n {
+            p := qhat * u64(v.items[i]) + carry
+            carry = p >> 32
+            t := u64(u.items[i + j]) + base - (p & 0xFFFF_FFFF) - borrow
+            u.items[i + j] = t.trunc(u32)
+            borrow = 1 - (t >> 32)
+        }
+        t := u64(u.items[j + n]) + base - carry - borrow
+        u.items[j + n] = t.trunc(u32)
+        borrow = 1 - (t >> 32)
+        if borrow > 0 {
+            // qhat was one too large: add the divisor back.
+            qhat -= 1
+            c: u64 = 0
+            for i in 0..n {
+                sum := u64(u.items[i + j]) + u64(v.items[i]) + c
+                u.items[i + j] = sum.trunc(u32)
+                c = sum >> 32
+            }
+            u.items[j + n] = u.items[j + n] +% c.trunc(u32)
+        }
+        q.items[j] = qhat.trunc(u32)
+    }
+    trim(&q)
+    // The remainder is u[0..n] >> s.
+    r := list(u32)
+    r.reserve(n)!
+    for i in 0..n {
+        x := u.items[i]
+        if s > 0 {
+            hi := u.items[i + 1]
+            if i + 1 is n { hi = 0 }
+            x = (x >> s) | (hi <<% (32 - s))
+        }
+        r.push(x)!
+    }
+    trim(&r)
+    return (q, r)
+}
+
+/// `a <<% n`.
+mag_shl :: fn(a: []const u32, n: u64) -> List(u32) needs Alloc {
+    if a.len is 0 { return list(u32) }
+    limbs := (n >> 5).trunc(usize)
+    bits := (n & 31).trunc(u32)
+    r := zeros(limbs)
+    r.reserve(a.len + 1)!
+    if bits is 0 {
+        r.extend(a)!
+        return r
+    }
+    carry: u32 = 0
+    for x in a {
+        r.push((x <<% bits) | carry)!
+        carry = x >> (32 - bits)
+    }
+    if carry > 0 { r.push(carry)! }
+    return r
+}
+
+/// `a >> n`, rounding down.
+mag_shr :: fn(a: []const u32, n: u64) -> List(u32) needs Alloc {
+    r := list(u32)
+    skip := n >> 5
+    if skip >= u64(a.len) { return r }
+    limbs := skip.trunc(usize)
+    bits := (n & 31).trunc(u32)
+    r.reserve(a.len - limbs)!
+    for i in limbs..a.len {
+        x := a[i]
+        if bits > 0 {
+            hi: u32 = 0
+            if i + 1 < a.len { hi = a[i + 1] }
+            x = (x >> bits) | (hi <<% (32 - bits))
+        }
+        r.push(x)!
+    }
+    trim(&r)
+    return r
+}
+
+/// Whether any of the low `n` bits of `a` is set.
+mag_low_bits_set :: fn(a: []const u32, n: u64) -> bool {
+    whole := n >> 5
+    for i in 0..a.len {
+        if u64(i) >= whole { break }
+        if a[i] is not 0 { return true }
+    }
+    bits := (n & 31).trunc(u32)
+    if bits > 0 and whole < u64(a.len) {
+        mask := (u32(1) <<% bits) - 1
+        if (a[whole.trunc(usize)] & mask) is not 0 { return true }
+    }
+    return false
+}
+
+/// `a + 1`.
+mag_inc :: fn(a: []const u32) -> List(u32) needs Alloc {
+    one: [1]u32 = [_]u32(1)
+    return mag_add(a, one[..])
+}
+
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
+
+/// Zero.
+pub zero :: fn() -> Int needs Alloc => Int(negative: false, mag: list(u32))
+
+/// One.
+pub one :: fn() -> Int needs Alloc => from_u64(1)
+
+/// `v`.
+pub from_u64 :: fn(v: u64) -> Int needs Alloc {
+    l := list(u32)
+    m := v
+    while m > 0 {
+        l.push(m.trunc(u32))!
+        m >>= 32
+    }
+    return Int(negative: false, mag: l)
+}
+
+/// `v`.
+pub from_i64 :: fn(v: i64) -> Int needs Alloc {
+    r := from_u64(v.unsigned_abs())
+    r.negative = v < 0
+    return r
+}
+
+/// `v`.
+pub from_u128 :: fn(v: u128) -> Int needs Alloc {
+    l := list(u32)
+    m := v
+    while m > 0 {
+        l.push(m.trunc(u32))!
+        m >>= 32
+    }
+    return Int(negative: false, mag: l)
+}
+
+/// `v`.
+pub from_i128 :: fn(v: i128) -> Int needs Alloc {
+    r := from_u128(v.unsigned_abs())
+    r.negative = v < 0
+    return r
+}
+
+/// The natural number `n`.
+pub from_nat :: fn(n: ^const bignum.Nat) -> Int needs Alloc {
+    l := list(u32)
+    l.extend(n.limbs.items)!
+    return make(false, l)
+}
+
+/// A copy of `a` that shares no memory with it.
+pub copy :: fn(a: Int) -> Int needs Alloc {
+    l := list(u32)
+    l.extend(a.mag.items)!
+    return Int(negative: a.negative, mag: l)
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+pub is_zero :: fn(a: Int) -> bool => a.mag.items.len is 0
+
+pub is_negative :: fn(a: Int) -> bool => a.negative
+
+pub is_positive :: fn(a: Int) -> bool => not a.negative and a.mag.items.len > 0
+
+pub is_even :: fn(a: Int) -> bool => a.mag.items.len is 0 or (a.mag.items[0] & 1) is 0
+
+/// `-1`, `0` or `1` as `a` is negative, zero or positive.
+pub signum :: fn(a: Int) -> i32 {
+    if a.mag.items.len is 0 { return 0 }
+    if a.negative { return -1 }
+    return 1
+}
+
+/// `-1`, `0` or `1` as `a` is less than, equal to or greater than `b`.
+pub cmp :: fn(a, b: Int) -> i32 {
+    if a.negative is not b.negative {
+        if a.negative { return -1 }
+        return 1
+    }
+    c := mag_cmp(a.mag.items, b.mag.items)
+    if a.negative { return -c }
+    return c
+}
+
+pub eq :: fn(a, b: Int) -> bool => a.negative is b.negative and mag_cmp(a.mag.items, b.mag.items) is 0
+
+/// The number of bits of the magnitude: 0 for zero, 1 for one, 8 for 255 and -255.
+pub bits :: fn(a: Int) -> u64 {
+    k := a.mag.items.len
+    if k is 0 { return 0 }
+    return u64(k - 1) * 32 + u64(32 - clz(a.mag.items[k - 1]))
+}
+
+/// The magnitude as a `u128`, if it fits.
+mag_to_u128 :: fn(a: Int) -> ?u128 {
+    if a.mag.items.len > 4 { return null }
+    r: u128 = 0
+    i := a.mag.items.len
+    while i > 0 {
+        i -= 1
+        r = (r <<% 32) | u128(a.mag.items[i])
+    }
+    return r
+}
+
+pub to_u128 :: fn(a: Int) -> ?u128 {
+    if a.negative { return null }
+    return mag_to_u128(a)
+}
+
+pub to_u64 :: fn(a: Int) -> ?u64 {
+    v := to_u128(a) else return null
+    return v.checked(u64)
+}
+
+pub to_i128 :: fn(a: Int) -> ?i128 {
+    m := mag_to_u128(a) else return null
+    if a.negative {
+        if m > 0x8000_0000_0000_0000_0000_0000_0000_0000 { return null }
+        return (0 -% m).bits(i128)
+    }
+    return m.checked(i128)
+}
+
+pub to_i64 :: fn(a: Int) -> ?i64 {
+    v := to_i128(a) else return null
+    return v.checked(i64)
+}
+
+// ---------------------------------------------------------------------------
+// Arithmetic
+// ---------------------------------------------------------------------------
+
+/// `-a`.
+pub neg :: fn(a: Int) -> Int needs Alloc {
+    r := copy(a)
+    r.negative = not a.negative and a.mag.items.len > 0
+    return r
+}
+
+/// `|a|`.
+pub abs :: fn(a: Int) -> Int needs Alloc {
+    r := copy(a)
+    r.negative = false
+    return r
+}
+
+/// The sum of the signed magnitudes `(an, a)` and `(bn, b)`.
+signed_add :: fn(an: bool, a: []const u32, bn: bool, b: []const u32) -> Int needs Alloc {
+    if an is bn { return make(an, mag_add(a, b)) }
+    c := mag_cmp(a, b)
+    if c is 0 { return zero() }
+    if c > 0 { return make(an, mag_sub(a, b)) }
+    return make(bn, mag_sub(b, a))
+}
+
+pub add :: fn(a, b: Int) -> Int needs Alloc => signed_add(a.negative, a.mag.items, b.negative, b.mag.items)
+
+pub sub :: fn(a, b: Int) -> Int needs Alloc => signed_add(a.negative, a.mag.items, not b.negative, b.mag.items)
+
+pub mul :: fn(a, b: Int) -> Int needs Alloc => make(a.negative is not b.negative, mag_mul(a.mag.items, b.mag.items))
+
+/// The quotient (rounded toward zero) and the remainder (with the sign of `a`) of `a` and
+/// `b`, so that `q * b + r` is `a`. Traps if `b` is zero.
+pub div_rem :: fn(a, b: Int) -> (q: Int, r: Int) needs Alloc {
+    if b.is_zero() { trap("bigint: division by zero") }
+    q, r := mag_divrem(a.mag.items, b.mag.items)
+    return (make(a.negative is not b.negative, q), make(a.negative, r))
+}
+
+/// `a / b`, rounded toward zero.
+pub div :: fn(a, b: Int) -> Int needs Alloc {
+    q, _ := div_rem(a, b)
+    return q
+}
+
+/// `a % b`, with the sign of `a`.
+pub rem :: fn(a, b: Int) -> Int needs Alloc {
+    _, r := div_rem(a, b)
+    return r
+}
+
+/// The quotient of `a` and `b` rounded toward negative infinity, and the remainder, which
+/// has the sign of `b`.
+pub div_mod_floor :: fn(a, b: Int) -> (q: Int, r: Int) needs Alloc {
+    q, r := div_rem(a, b)
+    if not r.is_zero() and r.negative is not b.negative {
+        return (q.sub(one()), r.add(b))
+    }
+    return (q, r)
+}
+
+/// `a / b`, rounded toward negative infinity.
+pub div_floor :: fn(a, b: Int) -> Int needs Alloc {
+    q, _ := div_mod_floor(a, b)
+    return q
+}
+
+/// `a` modulo `b`, with the sign of `b`.
+pub mod_floor :: fn(a, b: Int) -> Int needs Alloc {
+    _, r := div_mod_floor(a, b)
+    return r
+}
+
+/// `base` to the power `exp`.
+pub pow :: fn(base: Int, exp: u32) -> Int needs Alloc {
+    result := one()
+    sq := base
+    e := exp
+    while e > 0 {
+        if (e & 1) is 1 { result = result.mul(sq) }
+        e >>= 1
+        if e > 0 { sq = sq.mul(sq) }
+    }
+    return result
+}
+
+/// The greatest common divisor of `a` and `b`, never negative; `gcd(0, 0)` is 0.
+pub gcd :: fn(a, b: Int) -> Int needs Alloc {
+    x := abs(a).mag
+    y := abs(b).mag
+    while y.items.len > 0 {
+        _, r := mag_divrem(x.items, y.items)
+        x = y
+        y = r
+    }
+    return make(false, x)
+}
+
+/// `a <<% n`.
+pub shl :: fn(a: Int, n: u64) -> Int needs Alloc => make(a.negative, mag_shl(a.mag.items, n))
+
+/// `a >> n`, rounded toward negative infinity.
+pub shr :: fn(a: Int, n: u64) -> Int needs Alloc {
+    m := mag_shr(a.mag.items, n)
+    if a.negative and mag_low_bits_set(a.mag.items, n) { m = mag_inc(m.items) }
+    return make(a.negative, m)
+}
+
+// ---------------------------------------------------------------------------
+// Bitwise operations, as on two's complement numbers of unbounded width
+// ---------------------------------------------------------------------------
+
+/// The `len` low limbs of the two's complement form of `a`.
+to_twos :: fn(a: Int, len: usize) -> List(u32) needs Alloc {
+    r := zeros(len)
+    for i in 0..a.mag.items.len { r.items[i] = a.mag.items[i] }
+    if a.negative {
+        carry: u64 = 1
+        for i in 0..len {
+            t := u64(~r.items[i]) + carry
+            r.items[i] = t.trunc(u32)
+            carry = t >> 32
+        }
+    }
+    return r
+}
+
+/// The integer whose two's complement form is `t` (its top bit is the sign).
+from_twos :: fn(t: List(u32)) -> Int needs Alloc {
+    l := t
+    n := l.items.len
+    negative := n > 0 and (l.items[n - 1] >> 31) is 1
+    if negative {
+        carry: u64 = 1
+        for i in 0..n {
+            x := u64(~l.items[i]) + carry
+            l.items[i] = x.trunc(u32)
+            carry = x >> 32
+        }
+    }
+    return make(negative, l)
+}
+
+Op :: union { And, Or, Xor }
+
+bitwise :: fn(op: Op, a, b: Int) -> Int needs Alloc {
+    len := a.mag.items.len
+    if b.mag.items.len > len { len = b.mag.items.len }
+    len += 1
+    x := to_twos(a, len)
+    y := to_twos(b, len)
+    for i in 0..len {
+        x.items[i] = match op {
+            .And => x.items[i] & y.items[i]
+            .Or => x.items[i] | y.items[i]
+            .Xor => x.items[i] ~ y.items[i]
+        }
+    }
+    return from_twos(x)
+}
+
+pub bit_and :: fn(a, b: Int) -> Int needs Alloc => bitwise(.And, a, b)
+
+pub bit_or :: fn(a, b: Int) -> Int needs Alloc => bitwise(.Or, a, b)
+
+pub bit_xor :: fn(a, b: Int) -> Int needs Alloc => bitwise(.Xor, a, b)
+
+/// `!a`, which is `-a - 1`.
+pub bit_not :: fn(a: Int) -> Int needs Alloc => neg(a).sub(one())
+
+// ---------------------------------------------------------------------------
+// Text
+// ---------------------------------------------------------------------------
+
+/// Appends `a` in decimal to `out`, with a `-` for a negative number.
+pub write_decimal :: fn(a: Int, out: ^List(u8)) needs Alloc {
+    if a.negative { out.push('-')! }
+    if a.is_zero() {
+        out.push('0')!
+        return
+    }
+    // Base-10^9 chunks, least significant first.
+    m := list(u32)
+    m.extend(a.mag.items)!
+    chunks := list(u32)
+    while m.items.len > 0 {
+        k := m.items.len
+        rem: u64 = 0
+        i := k
+        while i > 0 {
+            i -= 1
+            cur := (rem <<% 32) | u64(m.items[i])
+            m.items[i] = (cur / 1_000_000_000).trunc(u32)
+            rem = cur % 1_000_000_000
+        }
+        trim(&m)
+        chunks.push(rem.trunc(u32))!
+    }
+    i := chunks.items.len - 1
+    out.write("{}", chunks.items[i])!
+    while i > 0 {
+        i -= 1
+        c := chunks.items[i]
+        width: u32 = 100_000_000
+        while width > 1 and c < width {
+            out.push('0')!
+            width /= 10
+        }
+        out.write("{}", c)!
+    }
+}
+
+/// `a` in decimal.
+pub to_decimal :: fn(a: Int) -> []u8 needs Alloc {
+    out := list(u8)
+    write_decimal(a, &out)
+    return out.into_slice()!
+}
+
+/// The non-negative number written by `digits` in `radix` (2, 8, 10 or 16), without sign
+/// or separators. Other bytes count as the digit 0.
+pub parse :: fn(digits: string, radix: u32) -> Int needs Alloc {
+    // Digits are taken in groups whose weight `radix^k` still fits in a limb.
+    group: u32 = 1
+    per: usize = 0
+    while u64(group) * u64(radix) <= 0xFFFF_FFFF {
+        group *= radix
+        per += 1
+    }
+    l := list(u32)
+    start: usize = 0
+    while start < digits.len {
+        end := start + per
+        if end > digits.len { end = digits.len }
+        chunk: u32 = 0
+        weight: u32 = 1
+        for i in start..end {
+            chunk = chunk * radix + bignum.digit_value(digits[i])
+            weight *= radix
+        }
+        // l = l * weight + chunk
+        carry := u64(chunk)
+        for i in 0..l.items.len {
+            t := u64(l.items[i]) * u64(weight) + carry
+            l.items[i] = t.trunc(u32)
+            carry = t >> 32
+        }
+        if carry > 0 { l.push(carry.trunc(u32))! }
+        start = end
+    }
+    return make(false, l)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+arena :: import "std/arena"
+
+// Runs `body` with an arena as the current allocator, and releases the arena after.
+with_arena :: fn(body: fn() needs Alloc) needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+// The integer written in decimal, with an optional leading `-`.
+dec :: fn(s: string) -> Int needs Alloc {
+    if s.len > 0 and s[0] is '-' { return parse(s[1..], 10).neg() }
+    return parse(s, 10)
+}
+
+// `a` in decimal, as a string.
+txt :: fn(a: Int) -> string needs Alloc => string(to_decimal(a))
+
+test "constructors and conversions" {
+    with_arena(fn() {
+        expect_eq(txt(zero()), "0")
+        expect_eq(txt(one()), "1")
+        expect_eq(txt(from_i64(-5)), "-5")
+        expect_eq(txt(from_i64(-9223372036854775807 - 1)), "-9223372036854775808")
+        expect_eq(txt(from_u64(18446744073709551615)), "18446744073709551615")
+        expect_eq(txt(from_i128(-170141183460469231731687303715884105727 - 1)), "-170141183460469231731687303715884105728")
+        expect_eq(txt(from_u128(340282366920938463463374607431768211455)), "340282366920938463463374607431768211455")
+        expect(from_i64(0).neg().is_zero())
+        expect(not from_i64(0).neg().is_negative())
+        expect_eq(from_i64(-77).to_i64(), -77)
+        expect_eq(from_i64(77).to_u64(), 77)
+        expect_eq(from_i64(-77).to_u64(), null)
+        min64 := from_i64(-9223372036854775807 - 1)
+        expect_eq(min64.to_i64(), -9223372036854775807 - 1)
+        expect_eq(min64.sub(one()).to_i64(), null)
+        max64 := from_i64(9223372036854775807)
+        expect_eq(max64.to_i64(), 9223372036854775807)
+        expect_eq(max64.add(one()).to_i64(), null)
+        expect_eq(max64.add(one()).to_u64(), 9223372036854775808)
+        expect_eq(from_u64(18446744073709551615).add(one()).to_u64(), null)
+        expect_eq(from_u64(18446744073709551615).add(one()).to_u128(), 18446744073709551616)
+        expect_eq(from_i128(-5).to_i128(), -5)
+        big := shl(one(), 127)
+        expect_eq(big.to_i128(), null)
+        expect_eq(big.neg().to_i128(), -170141183460469231731687303715884105727 - 1)
+        expect_eq(big.to_u128(), 170141183460469231731687303715884105728)
+        expect_eq(shl(one(), 128).to_u128(), null)
+        expect_eq(shl(one(), 128).to_i128(), null)
+        n := bignum.from_u64(0x1_0000_0001)
+        expect_eq(txt(from_nat(&n)), "4294967297")
+        z := bignum.zero()
+        expect(from_nat(&z).is_zero())
+    })
+}
+
+test "predicates" {
+    with_arena(fn() {
+        expect(zero().is_zero())
+        expect(not from_i64(3).is_zero())
+        expect(from_i64(-3).is_negative())
+        expect(not zero().is_negative())
+        expect(from_i64(3).is_positive())
+        expect(not zero().is_positive())
+        expect(not from_i64(-3).is_positive())
+        expect_eq(from_i64(-3).signum(), -1)
+        expect_eq(zero().signum(), 0)
+        expect_eq(from_i64(9).signum(), 1)
+        expect(from_i64(0).is_even())
+        expect(from_i64(-4).is_even())
+        expect(not from_i64(-3).is_even())
+        expect(shl(one(), 100).is_even())
+        expect_eq(zero().bits(), 0)
+        expect_eq(one().bits(), 1)
+        expect_eq(from_i64(255).bits(), 8)
+        expect_eq(from_i64(-255).bits(), 8)
+        expect_eq(from_i64(256).bits(), 9)
+        expect_eq(shl(one(), 200).bits(), 201)
+        expect_eq(shl(one(), 200).sub(one()).bits(), 200)
+        expect_eq(from_u64(0xFFFF_FFFF).bits(), 32)
+        expect_eq(from_u64(0x1_0000_0000).bits(), 33)
+    })
+}
+
+test "comparison" {
+    with_arena(fn() {
+        a := dec("-100000000000000000000")
+        b := dec("-99999999999999999999")
+        c := dec("99999999999999999999")
+        expect_eq(a.cmp(b), -1)
+        expect_eq(b.cmp(a), 1)
+        expect_eq(a.cmp(a), 0)
+        expect_eq(a.cmp(c), -1)
+        expect_eq(c.cmp(a), 1)
+        expect_eq(zero().cmp(a), 1)
+        expect_eq(zero().cmp(c), -1)
+        expect(a.eq(dec("-100000000000000000000")))
+        expect(not a.eq(c))
+        expect(not a.eq(a.neg()))
+        expect(zero().eq(zero().neg()))
+        expect_eq(from_i64(5).cmp(from_i64(7)), -1)
+        expect_eq(from_i64(-5).cmp(from_i64(-7)), 1)
+    })
+}
+
+test "add and sub" {
+    with_arena(fn() {
+        expect_eq(txt(from_i64(5).add(from_i64(7))), "12")
+        expect_eq(txt(from_i64(5).add(from_i64(-7))), "-2")
+        expect_eq(txt(from_i64(-5).add(from_i64(7))), "2")
+        expect_eq(txt(from_i64(-5).add(from_i64(-7))), "-12")
+        expect_eq(txt(from_i64(5).sub(from_i64(7))), "-2")
+        expect_eq(txt(from_i64(5).sub(from_i64(5))), "0")
+        expect(not from_i64(5).sub(from_i64(5)).is_negative())
+        expect_eq(txt(from_i64(-5).sub(from_i64(-7))), "2")
+        m := from_u64(0xFFFF_FFFF)
+        expect_eq(txt(m.add(one())), "4294967296")
+        expect_eq(txt(m.add(one()).sub(one())), "4294967295")
+        p := shl(one(), 200)
+        expect_eq(txt(p), "1606938044258990275541962092341162602522202993782792835301376")
+        expect_eq(txt(p.sub(one())), "1606938044258990275541962092341162602522202993782792835301375")
+        expect_eq(txt(p.sub(one()).add(one())), "1606938044258990275541962092341162602522202993782792835301376")
+        expect_eq(txt(one().sub(p)), "-1606938044258990275541962092341162602522202993782792835301375")
+        expect_eq(txt(p.neg().add(p)), "0")
+        expect_eq(txt(p.add(p)), txt(shl(one(), 201)))
+        expect_eq(txt(zero().add(zero())), "0")
+        expect_eq(txt(zero().sub(p)), txt(p.neg()))
+        expect_eq(txt(p.neg().neg()), txt(p))
+        expect_eq(txt(p.neg().abs()), txt(p))
+        expect_eq(txt(zero().neg()), "0")
+    })
+}
+
+test "mul" {
+    with_arena(fn() {
+        expect_eq(txt(from_i64(6).mul(from_i64(7))), "42")
+        expect_eq(txt(from_i64(-6).mul(from_i64(7))), "-42")
+        expect_eq(txt(from_i64(-6).mul(from_i64(-7))), "42")
+        expect_eq(txt(from_i64(-6).mul(zero())), "0")
+        expect(not from_i64(-6).mul(zero()).is_negative())
+        a := dec("123456789012345678901234567890")
+        b := dec("987654321098765432109876543210")
+        expect_eq(txt(a.mul(b)), "121932631137021795226185032733622923332237463801111263526900")
+        expect_eq(txt(a.mul(b)), txt(b.mul(a)))
+        expect_eq(txt(a.mul(a).sub(a.mul(a))), "0")
+        // (x + 1)(x - 1) = x^2 - 1
+        x := shl(one(), 130)
+        expect_eq(txt(x.add(one()).mul(x.sub(one()))), txt(x.mul(x).sub(one())))
+        f := from_u64(0xFFFF_FFFF)
+        expect_eq(txt(f.mul(f)), "18446744065119617025")
+        expect_eq(txt(f.mul(f).mul(f)), "79228162458924105385300197375")
+    })
+}
+
+test "pow" {
+    with_arena(fn() {
+        expect_eq(txt(from_i64(2).pow(0)), "1")
+        expect_eq(txt(from_i64(0).pow(0)), "1")
+        expect_eq(txt(from_i64(0).pow(5)), "0")
+        expect_eq(txt(from_i64(2).pow(10)), "1024")
+        expect_eq(txt(from_i64(-3).pow(3)), "-27")
+        expect_eq(txt(from_i64(-3).pow(4)), "81")
+        expect_eq(txt(from_i64(2).pow(200)), "1606938044258990275541962092341162602522202993782792835301376")
+        expect_eq(txt(from_i64(10).pow(30)), "1000000000000000000000000000000")
+        expect_eq(txt(from_i64(7).pow(50)), "1798465042647412146620280340569649349251249")
+        expect(from_i64(2).pow(100).eq(shl(one(), 100)))
+    })
+}
+
+test "division of small and negative numbers" {
+    with_arena(fn() {
+        a := from_i64(-7)
+        b := from_i64(2)
+        expect_eq(txt(a.div(b)), "-3")
+        expect_eq(txt(a.rem(b)), "-1")
+        expect_eq(txt(b.neg().div(a.neg())), "0")
+        expect_eq(txt(from_i64(7).div(from_i64(-2))), "-3")
+        expect_eq(txt(from_i64(7).rem(from_i64(-2))), "1")
+        expect_eq(txt(from_i64(-7).div(from_i64(-2))), "3")
+        expect_eq(txt(from_i64(-7).rem(from_i64(-2))), "-1")
+        expect_eq(txt(from_i64(6).div(from_i64(-3))), "-2")
+        expect_eq(txt(from_i64(6).rem(from_i64(-3))), "0")
+        expect(not from_i64(-6).rem(from_i64(3)).is_negative())
+        expect_eq(txt(from_i64(0).div(from_i64(5))), "0")
+        expect_eq(txt(from_i64(-7).div_floor(from_i64(2))), "-4")
+        expect_eq(txt(from_i64(-7).mod_floor(from_i64(2))), "1")
+        expect_eq(txt(from_i64(7).div_floor(from_i64(-2))), "-4")
+        expect_eq(txt(from_i64(7).mod_floor(from_i64(-2))), "-1")
+        expect_eq(txt(from_i64(-7).div_floor(from_i64(-2))), "3")
+        expect_eq(txt(from_i64(-7).mod_floor(from_i64(-2))), "-1")
+        expect_eq(txt(from_i64(7).div_floor(from_i64(2))), "3")
+        expect_eq(txt(from_i64(7).mod_floor(from_i64(2))), "1")
+        expect_eq(txt(from_i64(-6).div_floor(from_i64(2))), "-3")
+        expect_eq(txt(from_i64(-6).mod_floor(from_i64(2))), "0")
+        q, r := from_i64(-17).div_rem(from_i64(5))
+        expect_eq(txt(q), "-3")
+        expect_eq(txt(r), "-2")
+        fq, fr := from_i64(-17).div_mod_floor(from_i64(5))
+        expect_eq(txt(fq), "-4")
+        expect_eq(txt(fr), "3")
+    })
+}
+
+// Checks `q * d + r == n`, `|r| < |d|` and the sign rule of the remainder.
+check_division :: fn(n, d: Int) needs Alloc + Test {
+    q, r := n.div_rem(d)
+    expect(q.mul(d).add(r).eq(n))
+    expect(r.abs().cmp(d.abs()) < 0)
+    expect(r.is_zero() or r.is_negative() is n.is_negative())
+    expect(q.eq(n.div(d)))
+    expect(r.eq(n.rem(d)))
+}
+
+test "multi-limb division" {
+    with_arena(fn() {
+        n := dec("121932631137021795226185032733622923332237463801111263526900")
+        d := dec("987654321098765432109876543210")
+        q, r := n.div_rem(d)
+        expect_eq(txt(q), "123456789012345678901234567890")
+        expect_eq(txt(r), "0")
+        expect_eq(txt(n.add(one()).rem(d)), "1")
+        expect_eq(txt(n.sub(one()).div(d)), "123456789012345678901234567889")
+        check_division(n, d)
+        check_division(n.neg(), d)
+        check_division(n, d.neg())
+        check_division(n.neg(), d.neg())
+        // Divisors with a top limb of all ones and of a single bit, and quotients
+        // that need the "add back" correction of Knuth's algorithm.
+        pows := [_]u64(1, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128, 129, 200, 255, 256)
+        for pa in pows {
+            for pb in pows {
+                x := shl(one(), pa)
+                y := shl(one(), pb)
+                check_division(x, y)
+                check_division(x.sub(one()), y)
+                check_division(x.sub(one()), y.sub(one()))
+                check_division(x.add(one()), y.sub(one()))
+                check_division(x.mul(x).sub(one()), y.add(one()))
+                check_division(x.mul(y).add(y).sub(one()), y.sub(one()))
+            }
+        }
+        // 0x7FFFFFFF_FFFFFFFF_00000000 / 0x80000000_00000001 needs the add-back step.
+        u := from_u128(0x7FFF_FFFF_FFFF_FFFF_0000_0000)
+        v := from_u128(0x8000_0000_0000_0001)
+        check_division(u, v)
+        w := dec("340282366920938463463374607431768211455")
+        check_division(w.mul(w).mul(w), w.sub(one()))
+        check_division(w.mul(w).mul(w).sub(one()), w)
+        check_division(w.mul(w).mul(w).sub(one()), w.mul(w))
+        // The quotient limbs of an exact multi-limb division.
+        k := dec("18446744073709551617")
+        expect_eq(txt(k.mul(k).div(k)), "18446744073709551617")
+        expect_eq(txt(k.mul(k).rem(k)), "0")
+        expect_eq(txt(zero().div(k)), "0")
+        expect_eq(txt(k.rem(w)), "18446744073709551617")
+    })
+}
+
+test "division by a single limb and by a larger divisor" {
+    with_arena(fn() {
+        n := dec("123456789012345678901234567890")
+        expect_eq(txt(n.div(from_i64(10))), "12345678901234567890123456789")
+        expect_eq(txt(n.rem(from_i64(7))), "0")
+        expect_eq(txt(from_i64(5).div(n)), "0")
+        expect_eq(txt(from_i64(5).rem(n)), "5")
+        expect_eq(txt(from_i64(-5).rem(n)), "-5")
+        expect_eq(txt(from_i64(-5).div_floor(n)), "-1")
+        expect_eq(txt(from_i64(-5).mod_floor(n)), "123456789012345678901234567885")
+    })
+}
+
+test "gcd" {
+    with_arena(fn() {
+        expect_eq(txt(from_i64(12).gcd(from_i64(18))), "6")
+        expect_eq(txt(from_i64(-12).gcd(from_i64(18))), "6")
+        expect_eq(txt(from_i64(-12).gcd(from_i64(-18))), "6")
+        expect_eq(txt(from_i64(0).gcd(from_i64(-18))), "18")
+        expect_eq(txt(from_i64(12).gcd(from_i64(0))), "12")
+        expect_eq(txt(from_i64(0).gcd(from_i64(0))), "0")
+        expect_eq(txt(from_i64(17).gcd(from_i64(31))), "1")
+        f := dec("1000000007")
+        a := f.pow(5).mul(from_i64(6))
+        b := f.pow(3).mul(from_i64(35))
+        expect_eq(txt(a.gcd(b)), txt(f.pow(3)))
+        expect_eq(txt(shl(one(), 300).gcd(shl(one(), 200).mul(from_i64(3)))), txt(shl(one(), 200)))
+    })
+}
+
+test "shifts" {
+    with_arena(fn() {
+        expect_eq(txt(from_i64(1).shl(0)), "1")
+        expect_eq(txt(from_i64(1).shl(10)), "1024")
+        expect_eq(txt(from_i64(-3).shl(33)), "-25769803776")
+        expect_eq(txt(zero().shl(500)), "0")
+        expect_eq(txt(from_i64(1).shl(200)), "1606938044258990275541962092341162602522202993782792835301376")
+        expect_eq(txt(from_i64(-7).shr(1)), "-4")
+        expect_eq(txt(from_i64(7).shr(1)), "3")
+        expect_eq(txt(from_i64(-8).shr(1)), "-4")
+        expect_eq(txt(from_i64(-1).shr(1)), "-1")
+        expect_eq(txt(from_i64(-1).shr(1000)), "-1")
+        expect_eq(txt(from_i64(1).shr(1000)), "0")
+        expect_eq(txt(from_i64(0).shr(1)), "0")
+        expect_eq(txt(from_i64(-4294967296).shr(32)), "-1")
+        expect_eq(txt(from_i64(-4294967297).shr(32)), "-2")
+        expect_eq(txt(from_i64(-4294967295).shr(32)), "-1")
+        expect_eq(txt(from_i64(-5).shr(0)), "-5")
+        expect_eq(txt(from_i64(-5).shr(64)), "-1")
+        p := dec("-1606938044258990275541962092341162602522202993782792835301376")
+        expect_eq(txt(p.shr(200)), "-1")
+        expect_eq(txt(p.sub(one()).shr(200)), "-2")
+        expect_eq(txt(p.add(one()).shr(200)), "-1")
+        expect_eq(txt(p.shr(199)), "-2")
+        expect_eq(txt(p.shr(201)), "-1")
+        x := dec("123456789012345678901234567890")
+        expect(x.shl(77).shr(77).eq(x))
+        expect(x.neg().shl(77).shr(77).eq(x.neg()))
+        expect(x.shl(64).eq(x.mul(shl(one(), 64))))
+        expect(x.shr(33).eq(x.div(shl(one(), 33))))
+        expect(x.neg().shr(33).eq(x.neg().div_floor(shl(one(), 33))))
+        // A shift by a very large count.
+        big := one().shl(1_000_000)
+        expect_eq(big.bits(), 1_000_001)
+        expect(big.shr(1_000_000).eq(one()))
+    })
+}
+
+test "bitwise operations" {
+    with_arena(fn() {
+        expect_eq(txt(from_i64(-1).bit_and(from_i64(255))), "255")
+        expect_eq(txt(from_i64(5).bit_not()), "-6")
+        expect_eq(txt(from_i64(-6).bit_not()), "5")
+        expect_eq(txt(zero().bit_not()), "-1")
+        expect_eq(txt(from_i64(-1).bit_not()), "0")
+        expect_eq(txt(from_i64(-6).bit_xor(from_i64(3))), "-7")
+        expect_eq(txt(from_i64(12).bit_and(from_i64(10))), "8")
+        expect_eq(txt(from_i64(12).bit_or(from_i64(10))), "14")
+        expect_eq(txt(from_i64(12).bit_xor(from_i64(10))), "6")
+        expect_eq(txt(from_i64(-12).bit_and(from_i64(10))), "0")
+        expect_eq(txt(from_i64(-12).bit_or(from_i64(10))), "-2")
+        expect_eq(txt(from_i64(-12).bit_xor(from_i64(10))), "-2")
+        expect_eq(txt(from_i64(-12).bit_and(from_i64(-10))), "-12")
+        expect_eq(txt(from_i64(-12).bit_or(from_i64(-10))), "-10")
+        expect_eq(txt(from_i64(-12).bit_xor(from_i64(-10))), "2")
+        expect_eq(txt(from_i64(-1).bit_and(from_i64(-1))), "-1")
+        expect_eq(txt(from_i64(-1).bit_xor(from_i64(-1))), "0")
+        expect_eq(txt(zero().bit_or(zero())), "0")
+        // Across limbs.
+        p := shl(one(), 100)
+        expect_eq(txt(p.neg().bit_and(shl(one(), 150).sub(one()))), txt(shl(one(), 150).sub(p)))
+        expect_eq(txt(p.neg().bit_or(from_i64(5))), txt(p.neg().add(from_i64(5))))
+        expect_eq(txt(p.bit_xor(p)), "0")
+        expect_eq(txt(p.neg().bit_xor(p.neg())), "0")
+        expect_eq(txt(p.neg().bit_and(p.neg())), txt(p.neg()))
+        expect_eq(txt(p.neg().bit_xor(from_i64(-1))), txt(p.sub(one())))
+        expect_eq(txt(p.sub(one()).bit_not()), txt(p.neg()))
+        expect_eq(txt(from_i64(-1).bit_and(p.sub(one()))), txt(p.sub(one())))
+        expect_eq(txt(from_i64(-1).bit_or(p)), "-1")
+        // 2^32 - 1 with its sign bit set in the two's complement form of 5 limbs.
+        m := from_u64(0xFFFF_FFFF)
+        expect_eq(txt(m.bit_not().bit_and(m)), "0")
+        expect_eq(txt(m.neg().bit_and(from_u64(0xFFFF_FFFF_FFFF))), "281470681743361")
+    })
+}
+
+test "decimal text" {
+    with_arena(fn() {
+        expect_eq(txt(zero()), "0")
+        expect_eq(txt(from_i64(-1)), "-1")
+        expect_eq(txt(from_i64(1_000_000_000)), "1000000000")
+        expect_eq(txt(from_i64(1_000_000_001)), "1000000001")
+        expect_eq(txt(from_i64(999_999_999)), "999999999")
+        expect_eq(txt(from_i64(10_000_000_000_000)), "10000000000000")
+        expect_eq(txt(from_i64(100_000_000_000_000_001)), "100000000000000001")
+        for s in ("0", "7", "1000000000000000000", "123456789012345678901234567890123456789012345678901234567890", "-98765432109876543210987654321098765432109876543210", "-4294967296", "4294967295", "100000000000000000000000000000000000000000000000000000000000000000000001") {
+            expect_eq(txt(dec(s)), s)
+        }
+        out := list(u8)
+        write_decimal(from_i64(-12), &out)
+        out.push(' ')!
+        write_decimal(from_i64(0), &out)
+        expect_eq(string(out.items), "-12 0")
+    })
+}
+
+test "parse" {
+    with_arena(fn() {
+        expect_eq(txt(parse("ff", 16)), "255")
+        expect_eq(txt(parse("FF", 16)), "255")
+        expect_eq(txt(parse("DeadBeef", 16)), "3735928559")
+        expect_eq(txt(parse("ffffffffffffffffffffffffffffffff", 16)), "340282366920938463463374607431768211455")
+        expect_eq(txt(parse("10000000000000000000000000000000000000000", 16)), txt(shl(one(), 160)))
+        expect_eq(txt(parse("101", 2)), "5")
+        expect_eq(txt(parse("1000000000000000000000000000000000000", 2)), "68719476736")
+        expect_eq(txt(parse("777", 8)), "511")
+        expect_eq(txt(parse("0", 10)), "0")
+        expect_eq(txt(parse("", 10)), "0")
+        expect_eq(txt(parse("000000000000000000000000000012", 10)), "12")
+        expect_eq(txt(parse("4294967296", 10)), "4294967296")
+        expect_eq(txt(parse("340282366920938463463374607431768211456", 10)), txt(shl(one(), 128)))
+        expect_eq(txt(parse("1606938044258990275541962092341162602522202993782792835301376", 10)), txt(shl(one(), 200)))
+        expect(parse("0000", 16).is_zero())
+    })
+}
+
+test "large values" {
+    with_arena(fn() {
+        // 2^200 and its relatives.
+        t := from_i64(2).pow(200)
+        expect(t.eq(shl(one(), 200)))
+        expect_eq(t.bits(), 201)
+        expect(t.shr(100).eq(shl(one(), 100)))
+        expect(t.div(shl(one(), 100)).eq(shl(one(), 100)))
+        expect(t.rem(shl(one(), 100)).is_zero())
+        expect(t.sub(one()).rem(shl(one(), 100)).eq(shl(one(), 100).sub(one())))
+        // 100! has 158 digits and ends with 24 zeros.
+        f := one()
+        for i in 1..101 { f = f.mul(from_i64(i)) }
+        s := txt(f)
+        expect_eq(s.len, 158)
+        expect_eq(s[0..10], "9332621544")
+        expect_eq(s[134..], "000000000000000000000000")
+        expect(f.rem(from_i64(1_000_000_007)).is_positive())
+        // Dividing 100! back down by 1..100 gives 1.
+        g := f
+        for i in 1..101 { g = g.div(from_i64(i)) }
+        expect(g.eq(one()))
+        // A large power and its decimal round trip.
+        p := from_i64(3).pow(2000)
+        back := parse(txt(p), 10)
+        expect(back.eq(p))
+        expect(p.div(from_i64(3).pow(1999)).eq(from_i64(3)))
+        expect(p.mul(p).div(p).eq(p))
+    })
+}
+
+test "operations on a million-bit number" {
+    with_arena(fn() {
+        a := shl(one(), 1_000_000).sub(one())
+        expect_eq(a.bits(), 1_000_000)
+        b := a.add(one())
+        expect(b.shr(999_999).eq(from_i64(2)))
+        expect(b.sub(a).eq(one()))
+        c := b.div(shl(one(), 64))
+        expect(c.eq(shl(one(), 999_936)))
+        d := a.neg().shr(1)
+        expect_eq(d.bits(), 1_000_000)
+        expect(d.is_negative())
+        e := from_i64(7).pow(10_000)
+        expect_eq(e.bits(), 28_074)
+    })
+}

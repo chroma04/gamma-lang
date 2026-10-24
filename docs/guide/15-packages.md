@@ -254,6 +254,21 @@ module util
 
 Modules of the standard library are marked `std` and their directories start with `<std>`; an import that fails to load shows `error`, next to the diagnostic that says why.
 
+`gamma decls` goes one step further: it resolves the top-level declarations of every module the program loads, without checking the bodies of its functions, and prints what each one denotes: a type with its fields or variants, an effect with its operations, a function's signature, a constant's type, or the value of an untyped constant:
+
+```text
+$ gamma decls shapes.gm
+module shapes
+  Shape :: union(u8) Shape
+    Circle: f64 = 0
+    Rect: (w: f64, h: f64) = 1
+  SIDES :: untyped int 4
+  area :: fn(s: Shape) -> f64
+  main :: fn() needs Out
+```
+
+The diagnostics are those of declarations: an unknown type in a signature, a cycle between declarations, a duplicate field. Errors in function bodies are left to `gamma check`.
+
 ## Common mistakes
 
 > - **Forgetting to commit `gamma.lock`.** Without it, a fresh checkout resolves again and can pick newer revisions.

@@ -269,6 +269,7 @@ lowers each function body to TIR.
 | `consteval.rs` | compile-time evaluation (checking the bodies it reaches first), `@static_assert` |
 | `stack_size.rs` | `@stack_size`: the deepest chain of frames below a function, following statically known handlers and function arguments |
 | `builtins.rs` | predeclared names built into the compiler (primitive type names) |
+| `decl_dump.rs` | `gamma decls`: resolving the declarations of every loaded module without checking bodies, and printing what each denotes (the dump the self-hosted compiler is compared against) |
 
 ### The core prelude and the entry point
 

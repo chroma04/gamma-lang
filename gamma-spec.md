@@ -1217,7 +1217,7 @@ Comparing slices by content is the one place where `is` looks through a value to
 | array, slice | some element `e` has `e is x` |
 | tuple whose elements all have `x`'s type | some element `e` has `e is x` |
 
-The tuple form is written inline: `c in ('\n', '\r')`, `d in (.N, .S)`. When `x` is an optional or a result, the members of an inline tuple convert to its type as the right operand of `is` does (§7.6): with `c: ?u8`, `c in (' ', '\t')` is true only for a present space or tab, and `null` may be a member.
+The tuple form is written inline: `c in ('\n', '\r')`, `d in (.N, .S)`. When `x` is an optional or a result, the members of an inline tuple convert to its type as the right operand of `is` does (§7.6): with `c: ?u8`, `c in (' ', '\t')` is true only for a present space or tab, and `null` may be a member. A member may also be a pattern form as on the right of `is` (§7.6): `k in (.Fn(_), .Handler(_), .Type)` is `k is .Fn(_) or k is .Handler(_) or k is .Type`, with `k` evaluated once. When one member is such a pattern, every member must have the shape of a pattern (a variant, a literal, `null`, `_`, an error pattern or a tuple of these), and none may bind a name.
 
 `in` is defined only for these built-in forms, whose test is a comparison or a scan the reader can see. A library container answers membership with a method (`m.contains(k)`), and a generic function that needs a membership test takes it as a function parameter (`has: fn(x: T) -> bool`) or the elements as an iterator (§13.5); see C.8.
 
