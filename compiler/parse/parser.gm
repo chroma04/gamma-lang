@@ -1,0 +1,432 @@
+//! The parser (spec Appendix A).
+//!
+//! A hand-written recursive-descent parser with precedence climbing for expressions.
+//! Types are expressions (spec §5), so there is no separate type tree; type positions use
+//! their own entry point (`parse_type`), in which `!` is the infix error-union operator.
+//!
+//! Errors. Most parse functions return `Abort!T`. An error `Abort` means that a syntax
+//! error has already been reported; it propagates with `try` to the nearest recovery
+//! point (a statement, a declaration, a match arm, a field, …), which skips to the end of
+//! the construct and carries on. Precedence errors such as mixing `and` with `or` are
+//! reported without aborting, since the tree is still well formed.
+//!
+//! Speculation. A few rules of Appendix A.7 need unbounded lookahead (a pattern before
+//! `:=`, a type after `!`). `speculate` runs a parse with diagnostics suppressed and
+//! rolls the position back if it fails.
+//!
+//! Restrictions. `Restr` carries the context-dependent switches: `no_brace` in the head
+//! of `if`, `while`, `for`, `match`, `with` and `when` (A.7 rule 4), `no_and` in one part
+//! of a condition, and `in_index` inside `[ ]`, so that `a[lo..]` may leave out its
+//! upper bound. Parentheses, brackets and blocks clear them.
+
+ast :: import "../ast"
+diag :: import "../diag"
+source :: import "../source"
+str :: import "std/str"
+syntax :: import "../syntax"
+
+/// A syntax error that has been reported.
+pub Abort :: struct {}
+
+/// The deepest nesting of expressions, types and patterns before the parser gives up,
+/// which protects the native stack.
+MAX_DEPTH: u32 : 256
+
+/// The most postfix operations (calls, subscripts, field accesses, `?`, `^`, `!`) applied
+/// one after another to one operand. The parser reads them in a loop, but every later
+/// pass recurses over the chain.
+MAX_POSTFIX_CHAIN: u32 : 100_000
+
+/// Context-dependent restrictions on what the expression parser accepts.
+Restr :: struct {
+    /// A `{` at this level begins a body, so no construct containing a `{` may be parsed
+    /// (A.7 rule 4).
+    no_brace: bool = false
+    /// A top-level `and` ends the expression (conditions, A.7 rule 2).
+    no_and: bool = false
+    /// Directly inside `[ ]` after an operand: `a..` may leave out its upper bound.
+    in_index: bool = false
+}
+
+/// A saved parser state for `speculate`.
+Snapshot :: struct {
+    pos: usize
+    last_hi: u32
+    last_err_pos: ?usize
+    err_count: usize
+    depth: u32
+    labels: usize
+    restr: Restr
+}
+
+Parser :: struct {
+    file: source.FileId
+    toks: []const syntax.Token
+    docs: []const syntax.DocComment
+    /// See `syntax.LexOutput.joined_lines`.
+    joined_lines: []const u32
+    /// The next node id; shared by all files of a compilation.
+    ids: ^ast.NodeId
+    diags: ^diag.Diagnostics
+    pos: usize
+    /// The end of the last consumed token that is not a newline.
+    last_hi: u32
+    /// The labels of the enclosing `while`, `for` and `with`, innermost last (A.7 rule 11).
+    labels: List(string)
+    restr: Restr
+    depth: u32
+    /// The number of errors raised, including suppressed ones (speculation checks it).
+    err_count: usize
+    /// The token index of the last reported error, to avoid cascades.
+    last_err_pos: ?usize
+    /// Tokens consumed by failed speculation so far. Speculation is refused once this
+    /// exceeds `spec_limit`, which keeps pathological input from taking exponential time.
+    spec_waste: usize
+    spec_limit: usize
+    /// Keywords already reported as misused names; later uses of the same word in an
+    /// expression are read as that name, so one mistake gives one error.
+    kw_names: List(syntax.Keyword)
+}
+
+/// Parses one lexed file into a syntax tree, reporting syntax errors to `diags`. `ids`
+/// is the next free node id.
+pub parse_file :: fn(file: source.FileId, lexed: ^const syntax.LexOutput, ids: ^ast.NodeId, diags: ^diag.Diagnostics) -> ast.File needs Alloc {
+    toks := lexed.tokens.items
+    p := Parser(
+        file: file,
+        toks: toks,
+        docs: lexed.docs.items,
+        joined_lines: lexed.joined_lines.items,
+        ids: ids,
+        diags: diags,
+        pos: 0,
+        last_hi: 0,
+        labels: list(string),
+        restr: Restr(),
+        depth: 0,
+        err_count: 0,
+        last_err_pos: null,
+        spec_waste: 0,
+        spec_limit: toks.len * 50 + 1000,
+        kw_names: list(syntax.Keyword),
+    )
+    items := p.parse_file_items()
+    end := if t := toks.last() { t.span.hi } else { 0 }
+    return ast.File(items: items, span: source.Span(file: file, lo: 0, hi: end))
+}
+
+// ---------------------------------------------------------------------------------
+// Token access
+// ---------------------------------------------------------------------------------
+
+tok :: fn(p: ^const Parser) -> ^const syntax.Token => &p.toks[p.pos.min(p.toks.len - 1)]
+
+kind :: fn(p: ^const Parser) -> syntax.TokenKind => p.tok().kind
+
+nth :: fn(p: ^const Parser, n: usize) -> syntax.TokenKind => p.toks[(p.pos + n).min(p.toks.len - 1)].kind
+
+span :: fn(p: ^const Parser) -> source.Span => p.tok().span
+
+lo :: fn(p: ^const Parser) -> u32 => p.span().lo
+
+/// Consumes the current token (never moves past `Eof`) and returns it.
+bump :: fn(p: ^Parser) -> syntax.Token {
+    t := p.tok()^
+    if t.kind is not .Eof {
+        p.pos += 1
+        if t.kind is not .Newline { p.last_hi = t.span.hi }
+    }
+    return t
+}
+
+/// The span from `start` to the end of the last consumed token.
+span_from :: fn(p: ^const Parser, start: u32) -> source.Span => source.Span(file: p.file, lo: start, hi: p.last_hi.max(start))
+
+at :: fn(p: ^const Parser, x: syntax.Punct) -> bool => p.kind() is .Punct(x)
+
+nth_is :: fn(p: ^const Parser, n: usize, x: syntax.Punct) -> bool => p.nth(n) is .Punct(x)
+
+eat :: fn(p: ^Parser, x: syntax.Punct) -> bool {
+    if not p.at(x) { return false }
+    _ = p.bump()
+    return true
+}
+
+at_kw :: fn(p: ^const Parser, k: syntax.Keyword) -> bool => p.kind() is .Keyword(k)
+
+nth_is_kw :: fn(p: ^const Parser, n: usize, k: syntax.Keyword) -> bool => p.nth(n) is .Keyword(k)
+
+eat_kw :: fn(p: ^Parser, k: syntax.Keyword) -> bool {
+    if not p.at_kw(k) { return false }
+    _ = p.bump()
+    return true
+}
+
+at_eof :: fn(p: ^const Parser) -> bool => p.kind() is .Eof
+
+at_newline :: fn(p: ^const Parser) -> bool => p.kind() is .Newline
+
+/// True if the current token is the contextual keyword `word`.
+at_word :: fn(p: ^const Parser, word: string) -> bool => p.nth_is_word(0, word)
+
+nth_is_word :: fn(p: ^const Parser, n: usize, word: string) -> bool => match p.nth(n) {
+    .Ident(s) => s is word
+    _ => false
+}
+
+/// An identifier or `_` at offset `n`.
+nth_is_name :: fn(p: ^const Parser, n: usize) -> bool => match p.nth(n) {
+    .Ident(_), .Underscore => true
+    // A keyword where a binding or parameter name belongs (`esc := 1`,
+    // `fn(match: i32)`) is read as a name, and reported when consumed.
+    .Keyword(_) => p.nth(n + 1) in (.Punct(.Colon), .Punct(.ColonEq), .Punct(.ColonColon))
+    _ => false
+}
+
+/// Consumes the keyword at the current token where a name was expected, reports it once,
+/// and returns it as the name so that parsing goes on.
+keyword_as_name :: fn(p: ^Parser, k: syntax.Keyword) -> ast.Ident needs Alloc {
+    at := p.span()
+    _ = p.bump()
+    p.err_count += 1
+    if k not in p.kw_names.items { p.kw_names.push(k)! }
+    text := syntax.keyword_text(k)
+    d := diag.error(at, str.format("`{}` is a keyword and cannot be used as a name", text)!)
+    d.add_note(str.format("rename it, for example to `{}_`", text)!)
+    p.diags.push(d)
+    return ast.Ident(name: text, span: at)
+}
+
+/// True if the current token is a keyword already reported as a misused name.
+at_reported_kw_name :: fn(p: ^const Parser) -> bool => match p.kind() {
+    .Keyword(k) => k in p.kw_names.items
+    _ => false
+}
+
+/// Consumes the current token, a keyword already reported by `keyword_as_name`, as a name.
+bump_reported_kw_name :: fn(p: ^Parser) -> ast.Ident {
+    t := p.bump()
+    .Keyword(k) := t.kind else return ast.Ident(name: "", span: t.span)
+    return ast.Ident(name: syntax.keyword_text(k), span: t.span)
+}
+
+skip_newlines :: fn(p: ^Parser) {
+    while p.at_newline() { _ = p.bump() }
+}
+
+/// Consumes an identifier or `_`.
+parse_name :: fn(p: ^Parser, what: string) -> Abort!ast.Ident needs Alloc {
+    at := p.span()
+    match p.kind() {
+        .Ident(s) => {
+            _ = p.bump()
+            return ast.Ident(name: s, span: at)
+        }
+        .Underscore => {
+            _ = p.bump()
+            return ast.Ident(name: "_", span: at)
+        }
+        .Keyword(k) => return p.keyword_as_name(k)
+        _ => return !p.expected(what)
+    }
+}
+
+/// Consumes an identifier (not `_`) in a position that declares a name: a keyword there
+/// is reported and taken as the name.
+parse_decl_ident :: fn(p: ^Parser, what: string) -> Abort!ast.Ident needs Alloc {
+    if .Keyword(k) := p.kind() { return p.keyword_as_name(k) }
+    return p.parse_ident(what)
+}
+
+/// Consumes an identifier (not `_`).
+parse_ident :: fn(p: ^Parser, what: string) -> Abort!ast.Ident needs Alloc {
+    at := p.span()
+    .Ident(s) := p.kind() else return !p.expected(what)
+    _ = p.bump()
+    return ast.Ident(name: s, span: at)
+}
+
+// ---------------------------------------------------------------------------------
+// Errors and recovery
+// ---------------------------------------------------------------------------------
+
+/// Reports an error without aborting.
+report :: fn(p: ^Parser, at: source.Span, message: string) needs Alloc {
+    p.err_count += 1
+    p.diags.report(at, message)
+}
+
+/// Reports the error `d` without aborting.
+report_diag :: fn(p: ^Parser, d: diag.Diagnostic) {
+    p.err_count += 1
+    p.diags.push(d)
+}
+
+/// Reports an error and returns the `Abort` for the caller to return. A second error at
+/// the token of the previous one is dropped: it is almost always a cascade.
+fail :: fn(p: ^Parser, at: source.Span, message: string) -> Abort needs Alloc => p.fail_diag(diag.error(at, message))
+
+/// `fail` with the error `d`.
+fail_diag :: fn(p: ^Parser, d: diag.Diagnostic) -> Abort {
+    if p.last_err_pos is not p.pos {
+        p.last_err_pos = p.pos
+        p.report_diag(d)
+    } else {
+        p.err_count += 1
+    }
+    return Abort()
+}
+
+/// "expected `what`, found `token`" at the current token.
+expected :: fn(p: ^Parser, what: string) -> Abort needs Alloc {
+    return p.fail(p.span(), str.format("expected {}, found {}", what, syntax.describe(p.kind()))!)
+}
+
+/// Consumes the punctuation `x`, or fails with "expected `x` {ctx}".
+expect :: fn(p: ^Parser, x: syntax.Punct, ctx: string) -> Abort!source.Span needs Alloc {
+    if p.at(x) { return p.bump().span }
+    if ctx.len is 0 { return !p.expected(str.format("`{}`", syntax.punct_text(x))!) }
+    return !p.expected(str.format("`{}` {}", syntax.punct_text(x), ctx)!)
+}
+
+expect_kw :: fn(p: ^Parser, k: syntax.Keyword, ctx: string) -> Abort!source.Span needs Alloc {
+    if p.at_kw(k) { return p.bump().span }
+    if ctx.len is 0 { return !p.expected(str.format("`{}`", syntax.keyword_text(k))!) }
+    return !p.expected(str.format("`{}` {}", syntax.keyword_text(k), ctx)!)
+}
+
+/// Skips to the end of the current statement or declaration: stops before a newline or
+/// an unmatched `}` (neither is consumed), or at the end of the file.
+recover_to_stmt_end :: fn(p: ^Parser) {
+    depth: usize = 0
+    while true {
+        match p.kind() {
+            .Eof => return
+            .Newline if depth is 0 => return
+            .Punct(.LBrace) => { depth += 1 }
+            .Punct(.RBrace) => {
+                if depth is 0 { return }
+                depth -= 1
+            }
+            _ => {}
+        }
+        _ = p.bump()
+    }
+}
+
+/// Checks that a statement-like construct ends at a newline, `}` or the end of the
+/// file; otherwise reports an error and skips the rest of the line.
+expect_terminator :: fn(p: ^Parser, what: string) needs Alloc {
+    if p.kind() in (.Newline, .Eof, .Punct(.RBrace)) { return }
+    at := p.span()
+    d := diag.error(at, str.format("expected a newline or `;` after {}, found {}", what, syntax.describe(p.kind()))!)
+    // A comma at the end of a line, as other languages put after match arms.
+    if p.at(.Comma) {
+        next := p.toks[(p.pos + 1).min(p.toks.len - 1)].span.lo
+        i := p.joined_lines.binary_search(at.hi).at
+        at_line_end := if o := p.joined_lines.get(i) { o < next } else { false }
+        if at_line_end or p.nth(1) in (.Eof, .Punct(.RBrace)) { d.add_fix("remove the `,`", at, "") }
+    }
+    _ = p.fail_diag(d)
+    p.recover_to_stmt_end()
+}
+
+// ---------------------------------------------------------------------------------
+// Speculation, nesting, restrictions
+// ---------------------------------------------------------------------------------
+
+snapshot :: fn(p: ^const Parser) -> Snapshot {
+    return Snapshot(
+        pos: p.pos,
+        last_hi: p.last_hi,
+        last_err_pos: p.last_err_pos,
+        err_count: p.err_count,
+        depth: p.depth,
+        labels: p.labels.items.len,
+        restr: p.restr,
+    )
+}
+
+restore :: fn(p: ^Parser, s: Snapshot) {
+    p.pos = s.pos
+    p.last_hi = s.last_hi
+    p.last_err_pos = s.last_err_pos
+    p.err_count = s.err_count
+    p.depth = s.depth
+    p.labels.truncate(s.labels)
+    p.restr = s.restr
+}
+
+/// Runs `f` with diagnostics suppressed. If it succeeds without raising any error,
+/// returns its value; otherwise rolls back and returns `null`.
+speculate :: fn(T: type, p: ^Parser, f: fn() -> Abort!T needs Alloc) -> ?T needs Alloc {
+    if p.spec_waste > p.spec_limit { return null }
+    snap := p.snapshot()
+    p.diags.suppress()
+    before := p.err_count
+    r := f()
+    p.diags.unsuppress()
+    if v := r {
+        if p.err_count is before { return v }
+    }
+    p.spec_waste += (p.pos -| snap.pos) + 1
+    p.restore(snap)
+    return null
+}
+
+/// Goes one nesting level deeper, failing if the input nests too deeply. The caller
+/// leaves the level with `defer p.leave()`.
+enter :: fn(p: ^Parser) -> Abort!() needs Alloc {
+    if p.depth >= MAX_DEPTH {
+        return !p.fail(p.span(), str.format("this is nested more than {} levels deep, the limit of this implementation (§23.5)", MAX_DEPTH)!)
+    }
+    p.depth += 1
+    return ()
+}
+
+leave :: fn(p: ^Parser) {
+    p.depth -= 1
+}
+
+// ---------------------------------------------------------------------------------
+// Nodes
+// ---------------------------------------------------------------------------------
+
+next_id :: fn(p: ^Parser) -> ast.NodeId {
+    id := p.ids^
+    p.ids^ += 1
+    return id
+}
+
+mk_expr :: fn(p: ^Parser, k: ast.ExprKind, at: source.Span) -> ast.Expr => ast.Expr(id: p.next_id(), kind: k, span: at)
+
+error_expr :: fn(p: ^Parser, at: source.Span) -> ast.Expr => p.mk_expr(.Error, at)
+
+/// `e` on the heap (the compilation's arena).
+box :: fn(e: ast.Expr) -> ^ast.Expr needs Alloc => new(e)!
+
+// ---------------------------------------------------------------------------------
+// The file
+// ---------------------------------------------------------------------------------
+
+parse_file_items :: fn(p: ^Parser) -> []ast.Item needs Alloc {
+    items := list(ast.Item)
+    while true {
+        p.skip_newlines()
+        if p.at_eof() { break }
+        before := p.pos
+        if p.at(.RBrace) {
+            p.report(p.span(), "unmatched `}`")
+            _ = p.bump()
+            continue
+        }
+        if item := p.parse_item() {
+            items.push(item)!
+            p.expect_terminator("the declaration")
+        } else {
+            p.recover_to_stmt_end()
+        }
+        if p.pos is before { _ = p.bump() }
+    }
+    return items.items
+}

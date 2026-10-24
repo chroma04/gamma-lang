@@ -1,15 +1,19 @@
 # Self-hosting roadmap (decisions/043; public doc docs/self-hosting.md)
-State: stage 1 (lexer) done in s38, parity on whole repo incl. --recover.
+State (s38b): stage 1 lexer + stage 2 parser done; parity (dump + JSON diags) on all ~980
+.gm files, plain and --recover. gammac modules: source, diag, bignum, syntax (tokens,
+lexer, token dump), ast (tree + dump), parse (parser), main.gm (lex|parse CLI).
+Port took ~1 session by hand (no subagents): 1:1 file mapping to src/syntax/parser/*.rs
+made it mechanical; matched on first full-corpus run.
 
-## Next: stage 2 parser
-- Port src/syntax/ast.rs (821 lines) → compiler/syntax/ast.gm; parser/{mod,expr,stmt,items,
-  types,pattern,lits}.rs (~3.3k lines) → parser*.gm; ast_dump.rs (750) → ast_dump.gm.
-- CLI `gammac parse [--dump]`; selfhost.rs lane comparing `gamma parse --dump` output
-  (driver::dump_ast) + JSON diags over the corpus. Parser needs NodeIds like Rust (dump
-  shows them? check ast_dump format first).
-- Good delegation target (well specified by the Rust code + goldens): split AST+dump / expr
-  / stmt+items / types+patterns across agents only after AST types are fixed by me.
+## Next: stage 3 modules and packages
+- What `gamma check` does before sema: driver module loading (module_files: every .gm in a
+  dir; overlays), import resolution (§3.2: ./ ../ relative, std, deps from gamma.toml),
+  pkg manifest (TOML subset!) + lock, cycle detection. Needs a TOML reader in Gamma
+  (check std for one first; none as of s38 → write compiler/toml or std/toml?).
+- Parity target: there is no dump for module graphs. Options: add `gamma check
+  --dump-modules` (hidden/debug flag) to the reference, or compare only diagnostics of
+  `gamma check` restricted to load/import errors. Decide at start (record in decisions/043).
 ## Later
-- stage 3 modules/packages (needs gamma.toml parser: TOML subset), stage 4 checker (biggest;
-  TIR), stage 5 C gen (reuse runtime/gm_rt.c), stage 6 bootstrap fixed point.
-- Fix papercuts listed in decisions/043 when they bite again; profile gammac lexer.
+- stage 4 checker (biggest; TIR), stage 5 C gen (reuse runtime/gm_rt.c), stage 6 bootstrap.
+- Perf: gammac lex ~3 MB/s, parse whole repo 2.1 s native (reference 4 s incl. process
+  spawns); profile later.

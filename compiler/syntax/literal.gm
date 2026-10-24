@@ -187,7 +187,7 @@ at_exponent :: fn(lx: ^const Lexer, markers: string) -> bool {
     m := lx.peek() else return false
     if m not in markers { return false }
     i: usize = 1
-    if (lx.peek_at(i) else 0) in ('+', '-') { i += 1 }
+    if lx.peek_at(i) in ('+', '-') { i += 1 }
     c := lx.peek_at(i) else return false
     return is_digit(c)
 }

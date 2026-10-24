@@ -133,9 +133,19 @@ impl<'a, 's> FnCx<'a, 's> {
         // An inline tuple: every element has the element's type.
         let c = if let ExprKind::Tuple(elems) = &container.kind {
             let mut vals = vec![];
+            // As with `is`, a member converts to an optional or result element: `c in ('a', 'b')`
+            // with `c: ?u8` (§7.7).
+            let et = self.infer.resolve(elem.ty);
+            let wraps = matches!(et.kind(), TyKind::Optional(_) | TyKind::Result { .. }) && !et.has_infer();
             for el in elems {
                 let v = self.expr(&el.value, Some(elem.ty));
-                self.unify_operands(elem.ty, v.ty, v.span, "the element and the tuple members of `in`");
+                let vt = self.infer.resolve(v.ty);
+                let v = if wraps && vt != et && (vt.is_infer() || self.coercion_steps(vt, et).is_some()) {
+                    self.coerce(v, et)
+                } else {
+                    self.unify_operands(elem.ty, v.ty, v.span, "the element and the tuple members of `in`");
+                    v
+                };
                 vals.push(v);
             }
             let ty = Ty::tuple(vals.iter().map(|v| v.ty).collect());

@@ -1,0 +1,777 @@
+// Expressions (Appendix A.5): precedence climbing, postfix operators, primaries.
+
+/// True if a token can begin an expression (for the optional operand of `return` and
+/// `break`, A.7 rule 11).
+can_begin_expr :: fn(k: syntax.TokenKind) -> bool => match k {
+    .Ident(_), .Underscore, .Int(_), .Float(_), .Str(_), .Intrinsic(_), .Attribute(_) => true
+    .Keyword(kw) => kw in (
+        syntax.Keyword.True, syntax.Keyword.False, syntax.Keyword.Null, syntax.Keyword.Fn,
+        syntax.Keyword.Struct, syntax.Keyword.Union, syntax.Keyword.Effect, syntax.Keyword.Handler,
+        syntax.Keyword.Import, syntax.Keyword.Foreign, syntax.Keyword.If, syntax.Keyword.Match,
+        syntax.Keyword.With, syntax.Keyword.For, syntax.Keyword.Return, syntax.Keyword.Break,
+        syntax.Keyword.Continue, syntax.Keyword.Resume, syntax.Keyword.Try, syntax.Keyword.Not,
+    )
+    .Punct(x) => x in (
+        syntax.Punct.LParen, syntax.Punct.LBracket, syntax.Punct.Dot, syntax.Punct.Minus,
+        syntax.Punct.Tilde, syntax.Punct.Amp, syntax.Punct.Bang, syntax.Punct.Question,
+        syntax.Punct.Caret, syntax.Punct.Uninit,
+    )
+    .Newline, .Eof => false
+}
+
+/// True if a token can begin a type (for the `!` rule, A.7 rule 3).
+can_begin_type :: fn(k: syntax.TokenKind) -> bool => match k {
+    .Ident(_), .Attribute(_) => true
+    .Keyword(kw) => kw in (syntax.Keyword.Fn, syntax.Keyword.Struct, syntax.Keyword.Union, syntax.Keyword.Effect)
+    .Punct(x) => x in (syntax.Punct.Question, syntax.Punct.Caret, syntax.Punct.LBracket, syntax.Punct.LParen)
+    _ => false
+}
+
+/// True for an ordering operator (`<`, `<=`, `>`, `>=`).
+is_relational :: fn(k: syntax.TokenKind) -> bool => k in (.Punct(.Lt), .Punct(.Le), .Punct(.Gt), .Punct(.Ge))
+
+cmp_op :: fn(k: syntax.TokenKind) -> ?ast.BinOp => match k {
+    .Keyword(.Is) => .Is
+    .Keyword(.In) => .In
+    .Punct(.IsNot) => .IsNot
+    .Punct(.NotIn) => .NotIn
+    .Punct(.Lt) => .Lt
+    .Punct(.Le) => .Le
+    .Punct(.Gt) => .Gt
+    .Punct(.Ge) => .Ge
+    _ => null
+}
+
+bit_op :: fn(k: syntax.TokenKind) -> ?ast.BinOp => match k {
+    .Punct(.Amp) => .BitAnd
+    .Punct(.Pipe) => .BitOr
+    .Punct(.Tilde) => .BitXor
+    _ => null
+}
+
+shift_op :: fn(k: syntax.TokenKind) -> ?ast.BinOp => match k {
+    .Punct(.Shl) => .Shl(.Checked)
+    .Punct(.ShlWrap) => .Shl(.Wrap)
+    .Punct(.ShlSat) => .Shl(.Sat)
+    .Punct(.ShlOpt) => .Shl(.Opt)
+    .Punct(.Shr) => .Shr
+    _ => null
+}
+
+add_op :: fn(k: syntax.TokenKind) -> ?ast.BinOp => match k {
+    .Punct(.Plus) => .Add(.Checked)
+    .Punct(.PlusWrap) => .Add(.Wrap)
+    .Punct(.PlusSat) => .Add(.Sat)
+    .Punct(.PlusOpt) => .Add(.Opt)
+    .Punct(.Minus) => .Sub(.Checked)
+    .Punct(.MinusWrap) => .Sub(.Wrap)
+    .Punct(.MinusSat) => .Sub(.Sat)
+    .Punct(.MinusOpt) => .Sub(.Opt)
+    _ => null
+}
+
+mul_op :: fn(k: syntax.TokenKind) -> ?ast.BinOp => match k {
+    .Punct(.Star) => .Mul(.Checked)
+    .Punct(.StarWrap) => .Mul(.Wrap)
+    .Punct(.StarSat) => .Mul(.Sat)
+    .Punct(.StarOpt) => .Mul(.Opt)
+    .Punct(.Slash) => .Div
+    .Punct(.Percent) => .Rem
+    _ => null
+}
+
+/// True for an unparenthesized arithmetic expression (levels 3 and 4).
+is_arith :: fn(e: ^const ast.Expr) -> bool => match e.kind {
+    .Binary(op, _, _) => op is .Add(_) or op is .Sub(_) or op is .Mul(_) or op in (ast.BinOp.Div, ast.BinOp.Rem)
+    _ => false
+}
+
+/// Parses an expression.
+parse_expr :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    try p.enter()
+    defer p.leave()
+    return p.parse_else()
+}
+
+/// Parses an expression with `{` reserved for the body of the construct whose head this
+/// is (A.7 rule 4).
+parse_head_expr :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    old := p.restr
+    p.restr = Restr(no_brace: true)
+    defer p.restr = old
+    return p.parse_expr()
+}
+
+binary :: fn(p: ^Parser, op: ast.BinOp, lhs, rhs: ast.Expr) -> ast.Expr needs Alloc {
+    return p.mk_expr(.Binary(op: op, lhs: box(lhs), rhs: box(rhs)), lhs.span.to(rhs.span))
+}
+
+// ----- level 11: else -----
+
+parse_else :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.parse_logic()
+    if not p.at_kw(.Else) { return lhs }
+    _ = p.bump()
+    // `else x => d`: error capture.
+    capture: ?ast.Ident = null
+    if p.nth_is_name(0) and p.nth_is(1, .FatArrow) {
+        capture = try p.parse_name("a name")
+        _ = p.bump()
+    }
+    rhs := try p.parse_fallback(capture is not null)
+    p.ambiguous_try_else(&lhs, &rhs)
+    return p.mk_expr(.Else(ast.ElseExpr(lhs: box(lhs), capture: capture, rhs: box(rhs))), lhs.span.to(rhs.span))
+}
+
+/// The right side of `else`: the body after `else x =>`, a block, or an expression.
+parse_fallback :: fn(p: ^Parser, captured: bool) -> Abort!ast.Expr needs Alloc {
+    if captured { return p.parse_capture_body() }
+    // `e else { … }`: a block fallback (not in a condition, where `{` begins the body).
+    if p.at(.LBrace) and not p.restr.no_brace { return p.parse_block_expr() }
+    try p.enter()
+    defer p.leave()
+    return p.parse_else()
+}
+
+/// Reports `try x else d`, whose `try` could apply to either side of the `else`.
+ambiguous_try_else :: fn(p: ^Parser, lhs, rhs: ^const ast.Expr) needs Alloc {
+    .Unary(.Try, operand) := lhs.kind else return
+    d := diag.error(lhs.span, "`try x else d` is ambiguous: write `try (x else d)` or `(try x) else d`")
+    d.add_fix_edits("write `try (x else d)`", parens(p.file, operand.span.lo, rhs.span.hi)[..])
+    d.add_fix_edits("write `(try x) else d`", parens(p.file, lhs.span.lo, lhs.span.hi)[..])
+    p.report_diag(d)
+}
+
+/// The edits that put `lo..hi` in parentheses.
+parens :: fn(file: source.FileId, lo, hi: u32) -> [2]diag.Edit {
+    return [2]diag.Edit(
+        diag.Edit(span: source.Span(file: file, lo: lo, hi: lo), text: "("),
+        diag.Edit(span: source.Span(file: file, lo: hi, hi: hi), text: ")"),
+    )
+}
+
+/// The body after `else x =>`: a block or an expression.
+parse_capture_body :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    if p.at(.LBrace) { return p.parse_block_expr() }
+    return p.parse_expr()
+}
+
+// ----- level 10: and, or -----
+
+parse_logic :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.parse_not()
+    chain: ?ast.BinOp = null
+    while true {
+        op: ast.BinOp = .And
+        if p.at_kw(.And) and not p.restr.no_and {
+            op = .And
+        } else if p.at_kw(.Or) {
+            op = .Or
+        } else {
+            break
+        }
+        if chain is null {
+            chain = op
+        } else if chain is not op {
+            p.report(p.span(), "cannot mix `and` and `or` without parentheses")
+        }
+        _ = p.bump()
+        rhs := try p.parse_not()
+        lhs = p.binary(op, lhs, rhs)
+    }
+    return lhs
+}
+
+// ----- level 9: not -----
+
+parse_not :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    if not p.at_kw(.Not) { return p.parse_cmp() }
+    start := p.lo()
+    _ = p.bump()
+    try p.enter()
+    defer p.leave()
+    operand := try p.parse_not()
+    return p.mk_expr(.Unary(op: .Not, operand: box(operand)), p.span_from(start))
+}
+
+// ----- level 8: comparison -----
+
+parse_cmp :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start_pos := p.pos
+    lhs := try p.parse_range()
+    op := cmp_op(p.kind()) else return lhs
+    first_rel := is_relational(p.kind())
+    _ = p.bump()
+    rhs := try p.parse_range()
+    e := p.binary(op, lhs, rhs)
+    if cmp_op(p.kind()) is null { return e }
+    at := p.span()
+    d := diag.error(at, "comparison operators cannot be chained; use `and`")
+    // `a < b < c` is `a < b and b < c` when `b` is a name (so evaluating it twice is
+    // harmless), both operators are orderings, and the chain is not the operand of a
+    // `not` (which would then apply to the first comparison only).
+    negated := start_pos > 0 and p.toks[start_pos - 1].kind is .Keyword(.Not)
+    fix: ?string = null
+    if .Ident(mid) := rhs.kind {
+        if first_rel and is_relational(p.kind()) and not negated {
+            fix = str.format("and {} {}", mid.name, op_text(p.kind()))!
+        }
+    }
+    count := 0
+    while cmp_op(p.kind()) is not null {
+        _ = p.bump()
+        _ = try p.parse_range()
+        count += 1
+    }
+    if text := fix {
+        if count is 1 { d.add_fix("write `a < b and b < c`", at, text) }
+    }
+    p.report_diag(d)
+    return e
+}
+
+/// The text of an operator token.
+op_text :: fn(k: syntax.TokenKind) -> string => match k {
+    .Punct(x) => syntax.punct_text(x)
+    .Keyword(kw) => syntax.keyword_text(kw)
+    _ => ""
+}
+
+// ----- level 7: ranges -----
+
+parse_range :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.parse_bit()
+    op: ast.BinOp = .Range
+    if p.at(.DotDot) {
+        op = .Range
+    } else if p.at(.DotDotEq) {
+        op = .RangeIncl
+    } else {
+        return lhs
+    }
+    _ = p.bump()
+    // In `a[lo..]` the missing upper bound is an empty error node, which the subscript
+    // parser recognizes.
+    open := p.restr.in_index and p.at(.RBracket)
+    rhs := if open { p.error_expr(p.span().shrink_to_lo()) } else { try p.parse_bit() }
+    e := p.binary(op, lhs, rhs)
+    if p.at(.DotDot) or p.at(.DotDotEq) {
+        p.report(p.span(), "range operators cannot be chained")
+        while p.at(.DotDot) or p.at(.DotDotEq) {
+            _ = p.bump()
+            _ = try p.parse_bit()
+        }
+    }
+    return e
+}
+
+// ----- level 6: bitwise -----
+
+parse_bit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.parse_shift()
+    chain: ?ast.BinOp = null
+    while op := bit_op(p.kind()) {
+        if chain is null {
+            chain = op
+        } else if chain is not op {
+            p.report(p.span(), "cannot mix `&`, `|` and `~` in one expression without parentheses")
+        }
+        t := p.bump()
+        // C's `&&` and `||`: two adjacent tokens here.
+        if op in (ast.BinOp.BitAnd, ast.BinOp.BitOr) and p.at(if op is .BitAnd { .Amp } else { .Pipe }) and p.lo() is t.span.hi {
+            at := t.span.to(p.span())
+            c := if op is .BitAnd { "&&" } else { "||" }
+            word := if op is .BitAnd { "and" } else { "or" }
+            // `a&&b` needs spaces around the word.
+            before := if lhs.span.hi is at.lo { " " } else { "" }
+            _ = p.bump()
+            after := if p.lo() is at.hi { " " } else { "" }
+            d := diag.error(at, str.format("`{}` is not an operator; use `{}`", c, word)!)
+            d.add_fix(str.format("replace `{}` with `{}`", c, word)!, at, str.format("{}{}{}", before, word, after)!)
+            return !p.fail_diag(d)
+        }
+        rhs := try p.parse_shift()
+        lhs = p.binary(op, lhs, rhs)
+    }
+    return lhs
+}
+
+// ----- level 5: shifts -----
+
+parse_shift :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.parse_add()
+    op := shift_op(p.kind()) else return lhs
+    _ = p.bump()
+    rhs := try p.parse_add()
+    if is_arith(&lhs) {
+        p.report(lhs.span, "an arithmetic operand of a shift must be parenthesized")
+    } else if is_arith(&rhs) {
+        p.report(rhs.span, "an arithmetic operand of a shift must be parenthesized")
+    }
+    e := p.binary(op, lhs, rhs)
+    if shift_op(p.kind()) is not null {
+        p.report(p.span(), "shifts cannot be chained without parentheses")
+        while shift_op(p.kind()) is not null {
+            _ = p.bump()
+            _ = try p.parse_add()
+        }
+    }
+    return e
+}
+
+// ----- levels 4 and 3: additive and multiplicative -----
+
+parse_add :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.parse_mul()
+    while op := add_op(p.kind()) {
+        _ = p.bump()
+        rhs := try p.parse_mul()
+        lhs = p.binary(op, lhs, rhs)
+    }
+    return lhs
+}
+
+parse_mul :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.parse_prefix()
+    while op := mul_op(p.kind()) {
+        _ = p.bump()
+        rhs := try p.parse_prefix()
+        lhs = p.binary(op, lhs, rhs)
+    }
+    return lhs
+}
+
+// ----- level 2: prefix operators -----
+
+prefix_op :: fn(k: syntax.TokenKind) -> ?ast.UnOp => match k {
+    .Punct(.Minus) => .Neg
+    .Punct(.Tilde) => .BitNot
+    .Punct(.Amp) => .AddrOf
+    .Punct(.Bang) => .MakeErr
+    .Keyword(.Try) => .Try
+    _ => null
+}
+
+parse_prefix :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    op := prefix_op(p.kind()) else return p.parse_postfix(true)
+    start := p.lo()
+    _ = p.bump()
+    try p.enter()
+    defer p.leave()
+    operand := try p.parse_prefix()
+    return p.mk_expr(.Unary(op: op, operand: box(operand)), p.span_from(start))
+}
+
+// ----- level 1: postfix operators -----
+
+/// A primary followed by postfix operators. With `allow_bang` false a `!` is left alone
+/// (it belongs to an enclosing error-union type).
+parse_postfix :: fn(p: ^Parser, allow_bang: bool) -> Abort!ast.Expr needs Alloc {
+    base := try p.parse_primary()
+    return p.parse_postfix_ops(base, allow_bang)
+}
+
+parse_postfix_ops :: fn(p: ^Parser, base: ast.Expr, allow_bang: bool) -> Abort!ast.Expr needs Alloc {
+    e := base
+    links: u32 = 0
+    while true {
+        start := e.span.lo
+        k := p.kind()
+        if k in (.Punct(.Question), .Punct(.Caret), .Punct(.LParen), .Punct(.LBracket), .Punct(.Dot)) or (allow_bang and k is .Punct(.Bang)) {
+            links += 1
+            if links > MAX_POSTFIX_CHAIN {
+                return !p.fail(p.span(), "more than 100000 postfix operations in a row, the limit of this implementation (§23.5)")
+            }
+        }
+        match k {
+            .Punct(.Question) => {
+                _ = p.bump()
+                e = p.mk_expr(.OptUnwrap(box(e)), p.span_from(start))
+            }
+            .Punct(.Bang) if allow_bang => { e = try p.parse_bang(e) }
+            .Punct(.Caret) => {
+                _ = p.bump()
+                e = p.mk_expr(.Deref(box(e)), p.span_from(start))
+            }
+            .Punct(.LParen) => {
+                args := try p.parse_call_args()
+                e = p.mk_expr(.Call(callee: box(e), args: args.args, trailing_comma: args.trailing_comma), p.span_from(start))
+            }
+            .Punct(.LBracket) => { e = try p.parse_subscript(e) }
+            .Punct(.Dot) => { e = try p.parse_dot_suffix(e) }
+            _ => break
+        }
+    }
+    return e
+}
+
+/// `e.name` or `e.0`.
+parse_dot_suffix :: fn(p: ^Parser, base: ast.Expr) -> Abort!ast.Expr needs Alloc {
+    start := base.span.lo
+    _ = p.bump()
+    at := p.span()
+    match p.kind() {
+        .Ident(n) => {
+            _ = p.bump()
+            return p.mk_expr(.Field(base: box(base), name: ast.Ident(name: n, span: at)), p.span_from(start))
+        }
+        .Keyword(k) => {
+            name := p.keyword_as_name(k)
+            return p.mk_expr(.Field(base: box(base), name: name), p.span_from(start))
+        }
+        .Int(l) => {
+            _ = p.bump()
+            index: u32 = 0
+            limbs := l.value.limbs.items
+            if limbs.len <= 1 and l.suffix is null {
+                index = limbs.first() else 0
+            } else {
+                p.report(at, "invalid tuple index")
+            }
+            return p.mk_expr(.TupleField(base: box(base), index: index, index_span: at), p.span_from(start))
+        }
+        _ => return !p.expected("a field name or tuple index after `.`")
+    }
+}
+
+/// `e!` followed by a type is an error-union `Bang`; otherwise an unwrap (A.7 rule 3).
+parse_bang :: fn(p: ^Parser, lhs: ast.Expr) -> Abort!ast.Expr needs Alloc {
+    start := lhs.span.lo
+    if can_begin_type(p.nth(1)) {
+        rhs := p.speculate(fn() -> Abort!ast.Expr needs Alloc {
+            _ = p.bump()
+            return p.parse_type()
+        })
+        if r := rhs { return p.mk_expr(.Bang(lhs: box(lhs), rhs: box(r)), p.span_from(start)) }
+    }
+    _ = p.bump()
+    return p.mk_expr(.ResUnwrap(box(lhs)), p.span_from(start))
+}
+
+/// `a[i]`, `a[lo..hi]`, `a[lo..=hi]`, `a[lo..]`, `a[..hi]`, `a[..]`.
+parse_subscript :: fn(p: ^Parser, base: ast.Expr) -> Abort!ast.Expr needs Alloc {
+    start := base.span.lo
+    _ = p.bump()
+    old := p.restr
+    p.restr = Restr(in_index: true)
+    sub := p.parse_subscript_inner()
+    p.restr = old
+    s := try sub
+    _ = try p.expect(.RBracket, "to close the subscript")
+    whole := p.span_from(start)
+    match s {
+        .Index(index) => return p.mk_expr(.Index(base: box(base), index: box(index)), whole)
+        .Slice(x) => {
+            sl := x
+            sl.base = box(base)
+            return p.mk_expr(.Slice(sl), whole)
+        }
+    }
+}
+
+/// What is inside `[ ]` after an operand. A slice's base is filled in by the caller.
+Subscript :: union {
+    Index: ast.Expr
+    Slice: ast.SliceExpr
+}
+
+parse_subscript_inner :: fn(p: ^Parser) -> Abort!Subscript needs Alloc {
+    placeholder := box(p.error_expr(p.span()))
+    if p.at(.DotDot) or p.at(.DotDotEq) {
+        inclusive := p.at(.DotDotEq)
+        op_span := p.bump().span
+        hi: ?^ast.Expr = null
+        if not p.at(.RBracket) { hi = box(try p.parse_expr()) }
+        if inclusive and hi is null { p.report(op_span, "an inclusive range needs an upper bound") }
+        return Subscript.Slice(ast.SliceExpr(base: placeholder, lo: null, hi: hi, inclusive: inclusive))
+    }
+    first := try p.parse_expr()
+    if .Binary(op, lhs, rhs) := first.kind {
+        if op in (ast.BinOp.Range, ast.BinOp.RangeIncl) {
+            inclusive := op is .RangeIncl
+            open := rhs.kind is .Error and rhs.span.is_empty()
+            if open and inclusive { p.report(first.span, "an inclusive range needs an upper bound") }
+            hi: ?^ast.Expr = if open { null } else { rhs }
+            return Subscript.Slice(ast.SliceExpr(base: placeholder, lo: lhs, hi: hi, inclusive: inclusive))
+        }
+    }
+    return Subscript.Index(first)
+}
+
+// ----- calls -----
+
+CallArgs :: struct {
+    args: []ast.Arg
+    trailing_comma: bool
+}
+
+/// `( args )`, and whether a trailing comma was written.
+parse_call_args :: fn(p: ^Parser) -> Abort!CallArgs needs Alloc {
+    _ = try p.expect(.LParen, "")
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    args := list(ast.Arg)
+    trailing := false
+    while not p.at(.RParen) {
+        args.push(try p.parse_arg())!
+        trailing = false
+        if not p.eat(.Comma) { break }
+        trailing = true
+    }
+    _ = try p.expect(.RParen, "to close the argument list")
+    return CallArgs(args: args.items, trailing_comma: trailing)
+}
+
+parse_arg :: fn(p: ^Parser) -> Abort!ast.Arg needs Alloc {
+    start := p.lo()
+    if p.at(.DotDot) {
+        _ = p.bump()
+        e := try p.parse_expr()
+        return ast.Arg(kind: .Spread(e), span: p.span_from(start))
+    }
+    if p.nth_is_name(0) and p.nth_is(1, .Colon) {
+        if p.kind() is .Underscore { p.diags.push(diag.error(p.span(), "`_` cannot name an argument (§11.3)")) }
+        name := try p.parse_name("an argument name")
+        _ = p.bump()
+        e := try p.parse_expr()
+        return ast.Arg(kind: .Named(name: name, value: e), span: p.span_from(start))
+    }
+    e := try p.parse_expr()
+    return ast.Arg(kind: .Positional(e), span: p.span_from(start))
+}
+
+// ----- primaries -----
+
+/// Fails if a construct that contains a `{` appears in a head (A.7 rule 4).
+deny_in_head :: fn(p: ^Parser, what: string) -> Abort!() needs Alloc {
+    if p.restr.no_brace { return !p.fail(p.span(), str.format("{} must be parenthesized in this position", what)!) }
+    return ()
+}
+
+parse_primary :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    at := p.span()
+    k := p.kind()
+    // A labeled `with` or `for` used as a value (A.5).
+    if k is .Ident(_) and p.nth_is(1, .Colon) and p.nth(2) in (.Keyword(.With), .Keyword(.For)) {
+        label := try p.parse_ident("a label")
+        _ = p.bump()
+        if p.at_kw(.With) {
+            try p.deny_in_head("a `with` expression")
+            return p.parse_with(label)
+        }
+        try p.deny_in_head("a `for` expression")
+        return p.parse_for(label)
+    }
+    if k is .Keyword(_) and k not in (.Keyword(.True), .Keyword(.False), .Keyword(.Null)) and p.at_reported_kw_name() {
+        id := p.bump_reported_kw_name()
+        return p.mk_expr(.Ident(id), at)
+    }
+    match k {
+        .Int(l) => {
+            _ = p.bump()
+            return p.mk_expr(.Int(l), at)
+        }
+        .Float(l) => {
+            _ = p.bump()
+            return p.mk_expr(.Float(l), at)
+        }
+        .Str(l) => {
+            _ = p.bump()
+            return p.mk_expr(.Str(l), at)
+        }
+        .Keyword(.True), .Keyword(.False) => {
+            _ = p.bump()
+            return p.mk_expr(.Bool(k is .Keyword(.True)), at)
+        }
+        .Keyword(.Null) => {
+            _ = p.bump()
+            return p.mk_expr(.Null, at)
+        }
+        .Underscore => {
+            _ = p.bump()
+            return p.mk_expr(.Underscore, at)
+        }
+        .Punct(.Uninit) => {
+            _ = p.bump()
+            return p.mk_expr(.Uninit, at)
+        }
+        .Ident(name) => {
+            if name is "cont" and p.nth_is(1, .LParen) { return p.parse_cont_type() }
+            _ = p.bump()
+            return p.mk_expr(.Ident(ast.Ident(name: name, span: at)), at)
+        }
+        .Punct(.LParen) => return p.parse_paren(.Expr)
+        .Punct(.Dot) => {
+            _ = p.bump()
+            name := try p.parse_ident("a variant name after `.`")
+            return p.mk_expr(.DotIdent(name), p.span_from(at.lo))
+        }
+        .Punct(.Question), .Punct(.Caret), .Punct(.LBracket) => return p.parse_type_prefix(.Expr)
+        .Keyword(.Fn) => return p.parse_fn_expr()
+        .Keyword(.Struct) => return p.parse_struct_lit()
+        .Keyword(.Union) => return p.parse_union_lit()
+        .Keyword(.Effect) => return p.parse_effect_lit()
+        .Keyword(.Handler) => return p.parse_handler_lit()
+        .Keyword(.Import) => return p.parse_import()
+        .Keyword(.Foreign) => return p.parse_foreign()
+        .Keyword(.If) => {
+            try p.deny_in_head("an `if` expression")
+            return p.parse_if()
+        }
+        .Keyword(.Match) => {
+            try p.deny_in_head("a `match` expression")
+            return p.parse_match()
+        }
+        .Keyword(.With) => {
+            try p.deny_in_head("a `with` expression")
+            return p.parse_with(null)
+        }
+        .Keyword(.For) => {
+            try p.deny_in_head("a `for` expression")
+            return p.parse_for(null)
+        }
+        .Keyword(.Return) => return p.parse_return()
+        .Keyword(.Break) => return p.parse_break()
+        .Keyword(.Continue) => return p.parse_continue()
+        .Keyword(.Resume) => return p.parse_resume()
+        .Intrinsic(_) => return p.parse_intrinsic()
+        .Attribute(_) => return p.parse_attributed(.Expr)
+        .Keyword(.Not) => return !p.fail(at, "`not` cannot be an operand here; parenthesize it: `(not x)`")
+        .Keyword(.Try) => return !p.fail(at, "`try` cannot be an operand here; parenthesize it")
+        _ => return !p.expected("an expression")
+    }
+}
+
+/// `(` … `)` as an expression or a type: parenthesized, or a tuple.
+parse_paren :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = try p.expect(.LParen, "")
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    elems := list(ast.TupleElem)
+    comma := false
+    named: ?bool = null
+    while not p.at(.RParen) {
+        elem_start := p.lo()
+        name: ?ast.Ident = null
+        if p.nth_is_name(0) and p.nth_is(1, .Colon) {
+            name = try p.parse_name("a name")
+            _ = p.bump()
+        }
+        if named is null {
+            named = name is not null
+        } else if named is not (name is not null) {
+            p.report(source.Span(file: p.file, lo: elem_start, hi: p.span().hi), "tuple elements must be either all named or all unnamed")
+        }
+        value := try (if mode is .Expr { p.parse_expr() } else { p.parse_type() })
+        elems.push(ast.TupleElem(name: name, value: value))!
+        comma = p.eat(.Comma)
+        if not comma { break }
+    }
+    _ = try p.expect(.RParen, "to close the parenthesis")
+    whole := p.span_from(start)
+    if elems.items.len is 1 and not comma and elems.items[0].name is null {
+        return p.mk_expr(.Paren(box(elems.items[0].value)), whole)
+    }
+    return p.mk_expr(.Tuple(elems.items), whole)
+}
+
+parse_import :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    .Str(l) := p.kind() else return !p.expected("a string literal naming the module after `import`")
+    _ = p.bump()
+    return p.mk_expr(.Import(l), p.span_from(start))
+}
+
+/// `@name` or `@name(args)`.
+parse_intrinsic :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    t := p.bump()
+    .Intrinsic(sym) := t.kind else return !p.expected("an intrinsic")
+    name := ast.Ident(name: sym, span: t.span)
+    args: ?[]ast.Arg = null
+    if p.at(.LParen) { args = (try p.parse_call_args()).args }
+    return p.mk_expr(.Intrinsic(ast.IntrinsicExpr(name: name, args: args)), p.span_from(t.span.lo))
+}
+
+// ----- jumps -----
+
+parse_return :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    value: ?^ast.Expr = null
+    if can_begin_expr(p.kind()) { value = box(try p.parse_expr()) }
+    return p.mk_expr(.Return(value), p.span_from(start))
+}
+
+/// Consumes an identifier naming an enclosing label, if the current token is one.
+eat_label :: fn(p: ^Parser) -> ?ast.Ident {
+    .Ident(sym) := p.kind() else return null
+    if sym not in p.labels.items { return null }
+    return ast.Ident(name: sym, span: p.bump().span)
+}
+
+parse_break :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    label := p.eat_label()
+    // `break L v` with `L` not in scope: an identifier followed by something that cannot
+    // continue an expression.
+    if label is null {
+        if .Ident(sym) := p.kind() {
+            if ends_expr_after_name(p.nth(1)) {
+                return !p.fail(p.span(), str.format("`{}` is not a label of an enclosing `while`, `for` or `with`", sym)!)
+            }
+        }
+    }
+    value: ?^ast.Expr = null
+    if can_begin_expr(p.kind()) { value = box(try p.parse_expr()) }
+    return p.mk_expr(.Break(ast.BreakExpr(label: label, value: value)), p.span_from(start))
+}
+
+/// True for a token that cannot continue an expression that is a name: `break L v` names
+/// a label `L`.
+ends_expr_after_name :: fn(k: syntax.TokenKind) -> bool => match k {
+    .Ident(_), .Int(_), .Float(_), .Str(_), .Keyword(.Null), .Keyword(.True), .Keyword(.False) => true
+    _ => false
+}
+
+parse_continue :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    label := p.eat_label()
+    if label is null {
+        if .Ident(sym) := p.kind() {
+            return !p.fail(p.span(), str.format("`{}` is not a label of an enclosing `while`, `for` or `with`", sym)!)
+        }
+    }
+    return p.mk_expr(.Continue(label), p.span_from(start))
+}
+
+/// `resume k(v)` / `resume k()` (A.7 rule 10).
+parse_resume :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    operand := try p.parse_postfix(true)
+    whole := p.span_from(start)
+    if .Call(callee, args, _) := operand.kind {
+        if args.len <= 1 and (args.len is 0 or args[0].kind is .Positional(_)) {
+            value: ?^ast.Expr = null
+            if args.len is 1 {
+                if .Positional(e) := args[0].kind { value = box(e) }
+            }
+            return p.mk_expr(.Resume(ast.ResumeExpr(cont: callee, value: value)), whole)
+        }
+    }
+    return !p.fail(operand.span, "`resume` expects a continuation call with at most one value: `resume k(value)`")
+}
+
+/// A block used as an expression (match arm bodies, handler clause bodies,
+/// `else e => { … }`).
+parse_block_expr :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    try p.deny_in_head("a block")
+    block := try p.parse_block()
+    return p.mk_expr(.Block(block), block.span)
+}

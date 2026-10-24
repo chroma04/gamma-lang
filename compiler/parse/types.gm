@@ -1,0 +1,375 @@
+// Type syntax (Appendix A.2), function signatures and literals (A.3), parameters,
+// effect sets, `where` clauses and attributes.
+//
+// Types are expressions. In type positions (after `:` in a binding, parameter or field,
+// after `->`, in effect sets, …) `parse_type` is used, and `!` is the infix error-union
+// operator there. In expression positions the same syntax is reached through
+// `parse_primary` in the `Expr` mode.
+
+/// Whether the operand of a type prefix is parsed as a type or as an expression.
+Mode :: union {
+    /// An expression position: the operand is a postfix expression (A.7 rule 12).
+    Expr
+    /// A type position.
+    Type
+}
+
+/// A type (A.2 `type`): a prefix type, optionally followed by `!` and the success type.
+parse_type :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    try p.enter()
+    defer p.leave()
+    lhs := try p.parse_prefix_type()
+    if not p.eat(.Bang) { return lhs }
+    ok := try p.parse_type()
+    return p.mk_expr(.ErrorUnionType(err: box(lhs), ok: box(ok)), lhs.span.to(ok.span))
+}
+
+/// A.2 `prefix_type`.
+parse_prefix_type :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    match p.kind() {
+        .Punct(.Question), .Punct(.Caret), .Punct(.LBracket) => return p.parse_type_prefix(.Type)
+        .Keyword(.Fn) => return p.parse_fn_type_only()
+        .Punct(.LParen) => return p.parse_paren(.Type)
+        .Keyword(.Struct) => return p.parse_struct_lit()
+        .Keyword(.Union) => return p.parse_union_lit()
+        .Keyword(.Effect) => return p.parse_effect_lit()
+        .Attribute(_) => return p.parse_attributed(.Type)
+        .Intrinsic(_) => return p.parse_intrinsic()
+        .Ident(name) => {
+            if name is "cont" and p.nth_is(1, .LParen) { return p.parse_cont_type() }
+            return p.parse_type_name()
+        }
+        _ => return !p.expected("a type")
+    }
+}
+
+/// `name`, `m.T`, `G(args)` and combinations.
+parse_type_name :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    id := try p.parse_ident("a type")
+    e := p.mk_expr(.Ident(id), id.span)
+    while true {
+        start := e.span.lo
+        if p.at(.Dot) and p.nth(1) is .Ident(_) {
+            _ = p.bump()
+            name := try p.parse_ident("a name")
+            e = p.mk_expr(.Field(base: box(e), name: name), p.span_from(start))
+        } else if p.at(.LParen) {
+            args := try p.parse_call_args()
+            e = p.mk_expr(.Call(callee: box(e), args: args.args, trailing_comma: args.trailing_comma), p.span_from(start))
+        } else {
+            break
+        }
+    }
+    return e
+}
+
+/// Consumes the contextual keyword `const` after `^`, `[]` or `[^]`.
+eat_const :: fn(p: ^Parser) -> bool {
+    if not p.at_word("const") { return false }
+    _ = p.bump()
+    return true
+}
+
+/// The operand of a type prefix operator.
+parse_type_operand :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
+    try p.enter()
+    defer p.leave()
+    if mode is .Type { return p.parse_prefix_type() }
+    return p.parse_postfix(false)
+}
+
+/// `?T`, `^T`, `^const T`, `[]T`, `[^]T`, `[N]T`, `[_]T`.
+parse_type_prefix :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    if p.eat(.Question) {
+        inner := try p.parse_type_operand(mode)
+        return p.mk_expr(.OptionalType(box(inner)), p.span_from(start))
+    }
+    if p.eat(.Caret) {
+        is_const := p.eat_const()
+        inner := try p.parse_type_operand(mode)
+        return p.mk_expr(.PtrType(is_const: is_const, inner: box(inner)), p.span_from(start))
+    }
+    if not p.eat(.LBracket) { return !p.expected("a type") }
+    if p.eat(.RBracket) {
+        is_const := p.eat_const()
+        inner := try p.parse_type_operand(mode)
+        return p.mk_expr(.SliceType(is_const: is_const, inner: box(inner)), p.span_from(start))
+    }
+    if p.at(.Caret) and p.nth_is(1, .RBracket) {
+        _ = p.bump()
+        _ = p.bump()
+        is_const := p.eat_const()
+        inner := try p.parse_type_operand(mode)
+        return p.mk_expr(.ManyPtrType(is_const: is_const, inner: box(inner)), p.span_from(start))
+    }
+    if p.kind() is .Underscore and p.nth_is(1, .RBracket) {
+        _ = p.bump()
+        _ = p.bump()
+        elem := try p.parse_type_operand(mode)
+        return p.mk_expr(.ArrayType(ast.ArrayTypeExpr(len: null, elem: box(elem))), p.span_from(start))
+    }
+    old := p.restr
+    p.restr = Restr()
+    len := p.parse_expr()
+    p.restr = old
+    length := box(try len)
+    _ = try p.expect(.RBracket, "to close the array length")
+    elem := try p.parse_type_operand(mode)
+    return p.mk_expr(.ArrayType(ast.ArrayTypeExpr(len: length, elem: box(elem))), p.span_from(start))
+}
+
+/// `cont(T)`.
+parse_cont_type :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    _ = p.bump()
+    _ = p.bump()
+    old := p.restr
+    p.restr = Restr()
+    inner := p.parse_type()
+    p.restr = old
+    t := try inner
+    _ = try p.expect(.RParen, "to close `cont(`")
+    return p.mk_expr(.ContType(box(t)), p.span_from(start))
+}
+
+/// Attributes followed by a type or a literal.
+parse_attributed :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    attrs := try p.parse_attrs()
+    inner := try p.parse_type_operand(mode)
+    return p.mk_expr(.Attributed(attrs: attrs, inner: box(inner)), p.span_from(start))
+}
+
+// ----- attributes -----
+
+/// `{ '#' name [ '(' args ')' ] }`; newlines after an attribute are skipped (A.7
+/// rule 13).
+parse_attrs :: fn(p: ^Parser) -> Abort![]ast.Attribute needs Alloc {
+    attrs := list(ast.Attribute)
+    while .Attribute(sym) := p.kind() {
+        t := p.bump()
+        args: ?[]ast.Expr = null
+        if p.at(.LParen) { args = try p.parse_attr_args() }
+        attrs.push(ast.Attribute(name: ast.Ident(name: sym, span: t.span), args: args, span: p.span_from(t.span.lo)))!
+        p.skip_newlines()
+    }
+    return attrs.items
+}
+
+parse_attr_args :: fn(p: ^Parser) -> Abort![]ast.Expr needs Alloc {
+    _ = try p.expect(.LParen, "")
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    args := list(ast.Expr)
+    while not p.at(.RParen) {
+        args.push(try p.parse_expr())!
+        if not p.eat(.Comma) { break }
+    }
+    _ = try p.expect(.RParen, "to close the attribute arguments")
+    return args.items
+}
+
+// ----- functions -----
+
+/// `fn(params) [-> T] [needs E1 + E2]`. `is_foreign` is true for the signature of a
+/// foreign function, the one place `needs not` is allowed (§19.2).
+parse_fn_sig :: fn(p: ^Parser, is_foreign: bool) -> Abort!ast.FnSig needs Alloc {
+    start := p.lo()
+    _ = try p.expect_kw(.Fn, "")
+    _ = try p.expect(.LParen, "to begin the parameter list")
+    params := try p.parse_params()
+    ret: ?^ast.Expr = null
+    if p.eat(.Arrow) { ret = box(try p.parse_type()) }
+    effects := try p.parse_needs_opt(is_foreign)
+    return ast.FnSig(params: params.params, variadic: params.variadic, ret: ret, effects: effects, span: p.span_from(start))
+}
+
+/// A function signature that is a type: `fn(A, B) -> R needs E`.
+parse_fn_type_sig :: fn(p: ^Parser) -> Abort!ast.FnSig needs Alloc {
+    sig := try p.parse_fn_sig(false)
+    p.fn_sig_to_type(&sig)
+    return sig
+}
+
+/// The signature of a foreign function, which may end in `needs not` (§19.2).
+parse_foreign_fn_sig :: fn(p: ^Parser) -> Abort!ast.FnSig needs Alloc {
+    sig := try p.parse_fn_sig(true)
+    p.fn_sig_to_type(&sig)
+    return sig
+}
+
+/// A function type in a type position (never a literal).
+parse_fn_type_only :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    sig := try p.parse_fn_type_sig()
+    return p.mk_expr(.FnType(new(sig)!), p.span_from(start))
+}
+
+/// A function type or literal in an expression position (A.7 rule 5).
+parse_fn_expr :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
+    start := p.lo()
+    sig := try p.parse_fn_sig(false)
+    where_ := try p.parse_where_opt()
+    is_lit := p.at(.FatArrow) or (p.at(.LBrace) and not p.restr.no_brace)
+    if not is_lit {
+        if where_.len > 0 { return !p.expected("a function body after the `where` clause") }
+        p.fn_sig_to_type(&sig)
+        return p.mk_expr(.FnType(new(sig)!), p.span_from(start))
+    }
+    for param in sig.params {
+        if param.names.len is 0 { p.report(param.span, "function literal parameters must be named") }
+    }
+    // A function body is a function of its own: no label outside it is in scope.
+    saved := p.labels
+    p.labels = list(string)
+    body := p.parse_fn_body()
+    p.labels = saved
+    whole := p.span_from(start)
+    return p.mk_expr(.Fn(new(ast.FnLit(sig: sig, where_: where_, body: try body, span: whole))!), whole)
+}
+
+parse_fn_body :: fn(p: ^Parser) -> Abort!ast.FnBody needs Alloc {
+    if not p.eat(.FatArrow) { return ast.FnBody.Block(try p.parse_block()) }
+    if p.at(.LBrace) {
+        p.report(p.span(), "`=>` takes an expression; a block body is written without it: `fn(…) -> R { … }`")
+        return ast.FnBody.Block(try p.parse_block())
+    }
+    return ast.FnBody.Expr(box(try p.parse_expr()))
+}
+
+/// In a function type, a parameter group that is only names (`fn(i32, u8)`) is a list
+/// of unnamed parameter types.
+fn_sig_to_type :: fn(p: ^Parser, sig: ^ast.FnSig) needs Alloc {
+    params := list(ast.Param)
+    for param in sig.params {
+        if param.ty is null and param.default is null and param.names.len > 0 {
+            for n in param.names {
+                params.push(ast.Param(
+                    names: empty_slice(ast.Ident),
+                    comptime: false,
+                    rest: false,
+                    ty: box(p.mk_expr(.Ident(n), n.span)),
+                    default: null,
+                    span: n.span,
+                ))!
+            }
+        } else {
+            params.push(param)!
+        }
+    }
+    sig.params = params.items
+}
+
+Params :: struct {
+    params: []ast.Param
+    /// The list ended with `...`.
+    variadic: bool
+}
+
+/// The parameters after `(`, through the closing `)`.
+parse_params :: fn(p: ^Parser) -> Abort!Params needs Alloc {
+    old := p.restr
+    p.restr = Restr()
+    defer p.restr = old
+    params := list(ast.Param)
+    variadic := false
+    while not p.at(.RParen) {
+        if p.eat(.Ellipsis) {
+            variadic = true
+            _ = p.eat(.Comma)
+            break
+        }
+        params.push(try p.parse_param_group())!
+        if not p.eat(.Comma) { break }
+    }
+    _ = try p.expect(.RParen, "to close the parameter list")
+    return Params(params: params.items, variadic: variadic)
+}
+
+/// `a, b: T = d`, `N :: usize`, a bare `x`, or (in function types) a bare type.
+parse_param_group :: fn(p: ^Parser) -> Abort!ast.Param needs Alloc {
+    start := p.lo()
+    // Count the leading `name {, name}` run.
+    k: usize = 0
+    names_found: usize = 0
+    while p.nth_is_name(k) {
+        names_found += 1
+        k += 1
+        if not (p.nth_is(k, .Comma) and p.nth_is_name(k + 1)) { break }
+        k += 1
+    }
+    named := names_found > 0 and p.nth(k) in (.Punct(.Colon), .Punct(.ColonColon), .Punct(.Comma), .Punct(.RParen), .Punct(.Assign))
+    if not named {
+        ty := box(try p.parse_type())
+        return ast.Param(names: empty_slice(ast.Ident), comptime: false, rest: false, ty: ty, default: null, span: p.span_from(start))
+    }
+    names := list(ast.Ident)
+    for i in 0..names_found {
+        if i > 0 { _ = p.bump() }
+        names.push(try p.parse_name("a parameter name"))!
+    }
+    comptime := false
+    rest := false
+    ty: ?^ast.Expr = null
+    if p.at(.Colon) or p.at(.ColonColon) {
+        comptime = p.at(.ColonColon)
+        _ = p.bump()
+        // `args: ..A`: a rest parameter (§11.3).
+        if not comptime and p.eat(.DotDot) { rest = true }
+        ty = box(try p.parse_type())
+    }
+    default: ?^ast.Expr = null
+    if p.eat(.Assign) { default = box(try p.parse_expr()) }
+    return ast.Param(names: names.items, comptime: comptime, rest: rest, ty: ty, default: default, span: p.span_from(start))
+}
+
+/// An optional effect clause `needs E1 + E2 + …` (§11.1); `needs not`, the empty set,
+/// only where `is_foreign` allows it, as an empty list.
+parse_needs_opt :: fn(p: ^Parser, is_foreign: bool) -> Abort!?[]ast.Expr needs Alloc {
+    if not p.eat_kw(.Needs) { return null }
+    if p.at_kw(.Not) {
+        at := p.span()
+        _ = p.bump()
+        if not is_foreign {
+            return !p.fail(at, "`needs not` is only for foreign functions (§19.2); a Gamma function without `needs` already needs nothing")
+        }
+        if p.kind() is .Ident(_) {
+            return !p.fail(p.span(), "`needs not` ends the signature: it means the empty effect set, not \"everything but\" (§19.2)")
+        }
+        return empty_slice(ast.Expr)
+    }
+    effects := list(ast.Expr)
+    old := p.restr
+    defer p.restr = old
+    while true {
+        p.restr = Restr(no_brace: true)
+        effects.push(try p.parse_type())!
+        p.restr = old
+        if not p.eat(.Plus) { break }
+        p.skip_newlines()
+    }
+    return effects.items
+}
+
+/// An optional `where Ord(T), Eq(K)` clause.
+parse_where_opt :: fn(p: ^Parser) -> Abort![]ast.Constraint needs Alloc {
+    out := list(ast.Constraint)
+    if not p.at_word("where") { return out.items }
+    _ = p.bump()
+    while true {
+        start := p.lo()
+        name := try p.parse_ident("a constraint such as `Ord(T)`")
+        _ = try p.expect(.LParen, "after the constraint name")
+        old := p.restr
+        p.restr = Restr()
+        ty := p.parse_type()
+        p.restr = old
+        t := box(try ty)
+        _ = try p.expect(.RParen, "to close the constraint")
+        out.push(ast.Constraint(name: name, ty: t, span: p.span_from(start)))!
+        if not (p.eat(.Comma) and p.kind() is .Ident(_) and p.nth_is(1, .LParen)) { break }
+    }
+    return out.items
+}

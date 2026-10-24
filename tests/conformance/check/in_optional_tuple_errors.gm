@@ -1,0 +1,6 @@
+//! stage: check
+main :: fn() {
+    c: ?u8 = null
+    _ = c in (1.5, 2) //~ ERROR expected `?u8`, found a float literal
+    _ = c in ("a", 'b') //~ ERROR the element and the members //~ ERROR the element and the tuple members
+}

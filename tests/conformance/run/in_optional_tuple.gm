@@ -1,0 +1,11 @@
+// The members of an inline tuple convert to an optional or result element, as the right
+// operand of `is` does (§7.7): `c in ('a', 'b')` with `c: ?u8`.
+peek :: fn(s: string, i: usize) -> ?u8 => s.get(i)
+
+main :: fn() needs Out {
+    s :: "a b"
+    print("{} {}\n", peek(s, 1) in (' ', '\t'), peek(s, 9) in (' ', '\t'))
+    print("{} {}\n", peek(s, 9) in ('x', null), peek(s, 0) not in ('a', 'b'))
+    r: u8!u32 = 7
+    print("{}\n", r in (1, 7))
+}

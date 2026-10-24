@@ -44,9 +44,9 @@ leaves to implementations: message texts, spans and recovery after errors.
 
 1. **Lexer** — done. `gammac lex` matches `gamma lex` on the whole repository, with and
    without the layout recovery that tools use after errors.
-2. **Parser** — the syntax tree (the counterpart of `src/syntax/ast.rs`), the parser, and
-   the dump format of `src/syntax/ast_dump.rs`. Checked against the `.ast` goldens of
-   `tests/conformance/parse/` and against `gamma parse --dump` on the whole repository.
+2. **Parser** — done. The syntax tree, the parser with its error recovery, and the dump
+   format: `gammac parse --dump` matches `gamma parse --dump` on the whole repository,
+   syntax errors included.
 3. **Modules and packages** — loading a module directory, imports, `gamma.toml` and the
    lock file, as `src/driver.rs` and `src/pkg/` do.
 4. **Checker** — name resolution, types, inference, effects, generics, compile-time
@@ -70,6 +70,8 @@ read the two side by side.
 | `compiler/diag/` | diagnostics and their `short` and `json` rendering (`src/diag.rs`) |
 | `compiler/bignum/` | natural numbers and rationals of any size, for the exact values of literals |
 | `compiler/syntax/` | tokens (`token.gm`), the lexer (`lexer.gm`, `literal.gm`) and the token dump (`dump.gm`) (`src/syntax/`) |
+| `compiler/ast/` | the syntax tree (`ast.gm`) and its dump (`dump.gm`) (`src/syntax/ast.rs`, `ast_dump.rs`) |
+| `compiler/parse/` | the parser: its state, errors and recovery (`parser.gm`), expressions, statements, declarations, types, patterns and the brace-delimited literals (`src/syntax/parser/`) |
 
 ## Building and running
 
@@ -77,12 +79,14 @@ read the two side by side.
 gamma build compiler -o gammac          # or: gamma run compiler lex FILE
 ./gammac lex examples/hello.gm
 ./gammac lex --diag-format=json tests/conformance/lex/errors_numbers.gm
+./gammac parse --dump examples/hello.gm
 gamma test compiler                     # gammac's own unit tests
 cargo test --test selfhost              # the parity tests
 ```
 
-`gammac lex FILE...` prints each file's tokens to standard output and its diagnostics to
-standard error, sorted by position, in the `short` format by default. With several files,
+`gammac lex FILE...` prints each file's tokens to standard output, and `gammac parse --dump
+FILE...` its syntax tree; both print the diagnostics to standard error, sorted by
+position, in the `short` format by default. With several files,
 each file's output on both streams is preceded by a line `==> FILE <==`, so that one run
 can cover the whole repository. The exit status is 1 if a file has errors and 2 for a
 usage error or a file that cannot be read.
@@ -101,4 +105,8 @@ in the interpreter (slower, but the same results).
   and the stage goes on, as the reference implementation does; only a failure of the
   environment (an unreadable file) is an error value.
 - **No dependencies** beyond the standard library.
+- **Mirror the reference.** Each Gamma module corresponds to a part of `src/` and keeps its
+  structure and comments, so that a change to one is easy to carry to the other. Where
+  Gamma has a better way to say the same thing (`try` for `?`, `defer` to restore parser
+  state), the Gamma code uses it; [Idiomatic Gamma](guide/idioms.md) collects these.
 - Sources are formatted with `gamma fmt compiler`; a test checks it.

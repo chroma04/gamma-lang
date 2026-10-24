@@ -49,6 +49,10 @@ Versions and what each kind of change means are described in
   one type and why `in` covers only built-in sequences: library containers answer
   membership with `contains`.
 
+- An optional or result on the left of `in` with an inline tuple compares as `is` does: the
+  members convert to its type, so `s.get(i) in (' ', '\t')` works for `s.get(i): ?u8`
+  (§7.7).
+
 ### Standard library
 
 - `std/collections/soa_list`: `SoaList(S)`, a growable list stored by field, with `items` a
@@ -91,12 +95,17 @@ Versions and what each kind of change means are described in
 - A spread that fails no longer also reports every element it did not supply.
 - The old effect syntax `\` is no longer recognized: `\` is an unexpected character.
 
+### Documentation
+
+- [Idiomatic Gamma](docs/guide/idioms.md), a growing handbook of the patterns Gamma code uses,
+  checked by the test suite.
+
 ### Added
 
 - `compiler/`: `gammac`, a Gamma compiler written in Gamma, the start of a self-hosted
-  toolchain. Its first stage, the lexer, produces the same tokens and diagnostics as
-  `gamma lex` on every `.gm` file of the repository, which `tests/selfhost.rs` checks
-  (see `docs/self-hosting.md`).
+  toolchain. Its lexer and parser produce the same tokens, syntax trees and diagnostics as
+  `gamma lex` and `gamma parse --dump` on every `.gm` file of the repository, which
+  `tests/selfhost.rs` checks (see `docs/self-hosting.md`).
 
 ### Fixed
 

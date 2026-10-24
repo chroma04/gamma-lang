@@ -1,0 +1,708 @@
+//! The abstract syntax tree produced by the parser.
+//!
+//! The tree is a faithful, unresolved representation of the source. Types are
+//! expressions (spec §5), so type syntax appears as `ExprKind` variants; where the grammar
+//! is ambiguous between a type and a value, the parser produces one node and name
+//! resolution decides (spec §A.7).
+//!
+//! Every expression, pattern, statement and item carries a `NodeId` that is unique within
+//! one compilation, so that later passes can attach information in side tables keyed by
+//! id. Children are pointers (`^Expr`) or slices; all of it lives in the compilation's
+//! arena.
+
+source :: import "../source"
+syntax :: import "../syntax"
+
+pub NodeId :: u32
+
+pub Ident :: struct {
+    pub name: string
+    pub span: source.Span
+}
+
+/// One parsed source file.
+pub File :: struct {
+    pub items: []Item
+    pub span: source.Span
+}
+
+// ---------------------------------------------------------------------------------
+// Top-level declarations (§3.4, §A.1)
+// ---------------------------------------------------------------------------------
+
+pub Item :: struct {
+    pub id: NodeId
+    pub span: source.Span
+    /// The text of the doc comments (`///`) directly before the item, joined by newlines.
+    pub doc: ?string
+    pub attrs: []Attribute
+    pub is_pub: bool
+    pub kind: ItemKind
+}
+
+pub ItemKind :: union {
+    /// `name :: e`, `name: T : e`, and `#global name: T = e`.
+    Binding: Binding
+    /// Top-level `when` (§3.6). Each branch holds items declared as if at top level.
+    When: WhenItems
+    /// `handler E for T needs A { … }` (§12.6).
+    Handler: ^HandlerDecl
+    /// `test "name" { … }` (§3.8), or `bench "name" { … }` (§3.9).
+    Test: TestDecl
+    /// A top-level intrinsic call, that is `@static_assert(…)` (§17.7).
+    Intrinsic: ^Expr
+}
+
+pub TestDecl :: struct {
+    pub name: syntax.StrLit
+    pub name_span: source.Span
+    pub body: Block
+    pub bench: bool
+}
+
+pub WhenItems :: struct {
+    pub cond: ^Expr
+    pub then: []Item
+    /// `else when …` is an `else` holding a single `When` item.
+    pub else_: ?[]Item
+    pub span: source.Span
+}
+
+/// `#name` or `#name(args)` (§20.1).
+pub Attribute :: struct {
+    pub name: Ident
+    /// `null` when written without parentheses.
+    pub args: ?[]Expr
+    pub span: source.Span
+}
+
+// ---------------------------------------------------------------------------------
+// Bindings (§4.1)
+// ---------------------------------------------------------------------------------
+
+pub BindingKind :: union {
+    /// `x :: e` or `x: T : e`: immutable.
+    Const
+    /// `x := e` or `x: T = e`: mutable.
+    Var
+}
+
+pub Binding :: struct {
+    pub id: NodeId
+    /// One name, or several for destructuring (`a, b := e`); `_` is an `Ident` named `_`.
+    pub names: []Ident
+    /// The annotated type, if any.
+    pub ty: ?^Expr
+    pub kind: BindingKind
+    /// The initializer; `---` is `ExprKind.Uninit`.
+    pub init: ^Expr
+    pub span: source.Span
+}
+
+// ---------------------------------------------------------------------------------
+// Statements (§8, §A.4)
+// ---------------------------------------------------------------------------------
+
+pub Block :: struct {
+    pub id: NodeId
+    pub stmts: []Stmt
+    pub span: source.Span
+}
+
+pub Stmt :: struct {
+    pub id: NodeId
+    pub kind: StmtKind
+    pub span: source.Span
+}
+
+pub StmtKind :: union {
+    /// A local binding, including nested named functions. Attributes (`#inline` on a
+    /// nested function) are kept on the statement.
+    Binding: (attrs: []Attribute, binding: Binding)
+    /// `p = e`, `p op= e`, `a, b = e`, `_ = e`.
+    Assign: (places: []Expr, op: AssignOp, value: ^Expr)
+    /// An expression statement (including `return`, `break`, `for`, `if`, `with`, …).
+    Expr: ^Expr
+    /// `defer S` / `errdefer S`; the body is a block, expression or assignment statement.
+    Defer: (is_err: bool, body: ^Stmt)
+    When: ^WhenStmt
+    While: WhileStmt
+    /// `cancel k` (§14.5).
+    Cancel: ^Expr
+    /// `pattern := value else fallback` with a refutable pattern (§4.5).
+    LetElse: (pat: Pattern, value: ^Expr, fallback: ^Expr)
+    /// A nested block used as a statement.
+    Block: Block
+}
+
+pub WhileStmt :: struct {
+    pub label: ?Ident
+    pub cond: Cond
+    pub body: Block
+}
+
+pub WhenStmt :: struct {
+    pub cond: ^Expr
+    pub then: Block
+    pub else_: ?WhenElse
+    pub span: source.Span
+}
+
+pub WhenElse :: union {
+    Block: Block
+    When: ^WhenStmt
+}
+
+pub AssignOp :: union {
+    /// `=`
+    Assign
+    /// `op=` for the given binary operator (arithmetic, bitwise and shift operators only).
+    Compound: BinOp
+}
+
+/// A condition of `if` or `while` (§8.2): parts joined by `and`.
+pub Cond :: struct {
+    pub parts: []CondPart
+    pub span: source.Span
+}
+
+pub CondPart :: union {
+    /// `pattern := e`
+    Bind: (pat: Pattern, value: ^Expr)
+    Expr: ^Expr
+}
+
+// ---------------------------------------------------------------------------------
+// Expressions (§7, §A.5), including type syntax (§A.2)
+// ---------------------------------------------------------------------------------
+
+pub Expr :: struct {
+    pub id: NodeId
+    pub kind: ExprKind
+    pub span: source.Span
+}
+
+pub ExprKind :: union {
+    // Literals and names.
+    Int: syntax.IntLit
+    Float: syntax.FloatLit
+    Str: syntax.StrLit
+    Bool: bool
+    Null
+    /// `---`, valid as an initializer, constructor field or argument (§4.4).
+    Uninit
+    Ident: Ident
+    /// `_`: meaningful in assignment targets, `[_]T` and patterns on the right of `is`.
+    Underscore
+    /// `.Name`: a union variant whose type comes from context (§5.11).
+    DotIdent: Ident
+
+    /// `(e)`.
+    Paren: ^Expr
+    /// `()`, `(a,)`, `(a, b)`, `(x: a, y: b)`; also tuple types such as `(i32, u8)`.
+    Tuple: []TupleElem
+    /// The elements of a tuple or array as an unnamed tuple. Never parsed: the checker
+    /// makes it from a spread passed as all of a call's rest arguments (§11.2).
+    Elements: ^Expr
+
+    // Operators.
+    Unary: (op: UnOp, operand: ^Expr)
+    Binary: (op: BinOp, lhs: ^Expr, rhs: ^Expr)
+    /// `e else d` or `e else x => d` (§10.4).
+    Else: ElseExpr
+
+    // Postfix operators.
+    /// `e?` (§10.3).
+    OptUnwrap: ^Expr
+    /// `e!` with nothing type-like after it (§10.3).
+    ResUnwrap: ^Expr
+    /// `lhs!rhs` where `rhs` parsed as a type: the error-union type `E!T`, or an unwrap
+    /// followed by postfix operators (§A.7 rule 3).
+    Bang: (lhs: ^Expr, rhs: ^Expr)
+    /// `e^` (§5.5).
+    Deref: ^Expr
+    /// `f(args)`: call, construction, conversion or generic type application (§7.11).
+    Call: (callee: ^Expr, args: []Arg, trailing_comma: bool)
+    /// `a[i]`.
+    Index: (base: ^Expr, index: ^Expr)
+    /// `a[lo..hi]`, `a[lo..=hi]`, `a[lo..]`, `a[..hi]`, `a[..]`.
+    Slice: SliceExpr
+    /// `e.name`: field, builtin method, method call callee or module member.
+    Field: (base: ^Expr, name: Ident)
+    /// `e.0`: tuple element by position.
+    TupleField: (base: ^Expr, index: u32, index_span: source.Span)
+
+    // Type syntax (§A.2).
+    /// `?T`
+    OptionalType: ^Expr
+    /// `^T` / `^const T`. `^fn(…)` is a `PtrType` over an `FnType`.
+    PtrType: (is_const: bool, inner: ^Expr)
+    /// `[]T` / `[]const T`
+    SliceType: (is_const: bool, inner: ^Expr)
+    /// `[^]T` / `[^]const T`
+    ManyPtrType: (is_const: bool, inner: ^Expr)
+    /// `[N]T`, or `[_]T` when `len` is `null` (array constructors only).
+    ArrayType: ArrayTypeExpr
+    /// `E!T` in a type position (§5.13).
+    ErrorUnionType: (err: ^Expr, ok: ^Expr)
+    /// `fn(params) -> R needs E` as a type.
+    FnType: ^FnSig
+    /// `cont(T)` (§14.2).
+    ContType: ^Expr
+    Struct: ^StructLit
+    Union: ^UnionLit
+    Effect: ^EffectLit
+    /// Attributes before a literal or type: `#packed struct {…}`, `#callconv(.C) ^fn(…)`.
+    Attributed: (attrs: []Attribute, inner: ^Expr)
+
+    // Functions, handlers, modules.
+    Fn: ^FnLit
+    Handler: ^HandlerLit
+    /// `import "path"` (§3.2).
+    Import: syntax.StrLit
+    /// `foreign "lib" { … }` (§19.2).
+    Foreign: ^ForeignBlock
+
+    // Control flow (all are expressions).
+    If: ^IfExpr
+    Match: ^MatchExpr
+    With: ^WithExpr
+    For: ^ForExpr
+    /// A block used as an expression: match arm bodies, clause bodies, `else e => {…}`.
+    Block: Block
+    Return: ?^Expr
+    Break: BreakExpr
+    Continue: ?Ident
+    /// `resume k(v)` / `resume k()` (§14.3).
+    Resume: ResumeExpr
+
+    /// `@name` or `@name(args)` (§20.3).
+    Intrinsic: IntrinsicExpr
+
+    /// A placeholder after a syntax error, so that parsing can continue.
+    Error
+}
+
+// The payloads with optional parts are structs: in a pattern, a name in the position of
+// an optional matches only a present value (§9.3), so `.Break(b)` and then `b.label` is
+// the way to look at one that may be absent.
+
+pub ElseExpr :: struct {
+    pub lhs: ^Expr
+    pub capture: ?Ident
+    pub rhs: ^Expr
+}
+
+pub SliceExpr :: struct {
+    pub base: ^Expr
+    pub lo: ?^Expr
+    pub hi: ?^Expr
+    pub inclusive: bool
+}
+
+pub ArrayTypeExpr :: struct {
+    pub len: ?^Expr
+    pub elem: ^Expr
+}
+
+pub BreakExpr :: struct {
+    pub label: ?Ident
+    pub value: ?^Expr
+}
+
+pub ResumeExpr :: struct {
+    pub cont: ^Expr
+    pub value: ?^Expr
+}
+
+pub IntrinsicExpr :: struct {
+    pub name: Ident
+    pub args: ?[]Arg
+}
+
+pub TupleElem :: struct {
+    pub name: ?Ident
+    pub value: Expr
+}
+
+pub Arg :: struct {
+    pub kind: ArgKind
+    pub span: source.Span
+}
+
+pub ArgKind :: union {
+    /// `e` (including `---`).
+    Positional: Expr
+    /// `name: e`.
+    Named: (name: Ident, value: Expr)
+    /// `..e` (§11.4).
+    Spread: Expr
+}
+
+pub UnOp :: union {
+    /// `-e`
+    Neg
+    /// `~e`
+    BitNot
+    /// `&e`
+    AddrOf
+    /// `!e`: make an error value (§10.2).
+    MakeErr
+    /// `try e`
+    Try
+    /// `not e`
+    Not
+}
+
+/// The overflow behavior of `+ - * <<` (§7.4.2).
+pub Flavor :: union {
+    /// Plain: checked.
+    Checked
+    /// `%`: wrapping.
+    Wrap
+    /// `|`: saturating.
+    Sat
+    /// `?`: optional result.
+    Opt
+}
+
+pub BinOp :: union {
+    Add: Flavor
+    Sub: Flavor
+    Mul: Flavor
+    Shl: Flavor
+    Div
+    Rem
+    Shr
+    BitAnd
+    BitOr
+    BitXor
+    /// `..`
+    Range
+    /// `..=`
+    RangeIncl
+    Is
+    IsNot
+    In
+    NotIn
+    Lt
+    Le
+    Gt
+    Ge
+    And
+    Or
+}
+
+/// The operator as written.
+pub binop_text :: fn(op: BinOp) -> string => match op {
+    .Add(f) => flavored(f, "+", "+%", "+|", "+?")
+    .Sub(f) => flavored(f, "-", "-%", "-|", "-?")
+    .Mul(f) => flavored(f, "*", "*%", "*|", "*?")
+    .Shl(f) => flavored(f, "<<", "<<%", "<<|", "<<?")
+    .Div => "/"
+    .Rem => "%"
+    .Shr => ">>"
+    .BitAnd => "&"
+    .BitOr => "|"
+    .BitXor => "~"
+    .Range => ".."
+    .RangeIncl => "..="
+    .Is => "is"
+    .IsNot => "is not"
+    .In => "in"
+    .NotIn => "not in"
+    .Lt => "<"
+    .Le => "<="
+    .Gt => ">"
+    .Ge => ">="
+    .And => "and"
+    .Or => "or"
+}
+
+flavored :: fn(f: Flavor, checked, wrap, sat, opt: string) -> string => match f {
+    .Checked => checked
+    .Wrap => wrap
+    .Sat => sat
+    .Opt => opt
+}
+
+// ---------------------------------------------------------------------------------
+// Control-flow expressions
+// ---------------------------------------------------------------------------------
+
+pub IfExpr :: struct {
+    /// `if c1 {…} else if c2 {…} …`: at least one branch.
+    pub branches: []IfBranch
+    pub else_: ?IfElse
+    pub span: source.Span
+}
+
+pub IfBranch :: struct {
+    pub cond: Cond
+    pub block: Block
+}
+
+pub IfElse :: union {
+    Block: Block
+    /// `else e => body`: error capture (§8.2); `body` is a block or an expression.
+    Capture: (name: Ident, body: ^Expr)
+}
+
+pub MatchExpr :: struct {
+    pub scrutinee: ^Expr
+    pub arms: []Arm
+    pub span: source.Span
+}
+
+pub Arm :: struct {
+    /// Alternatives `p1, p2, …` (at least one).
+    pub pats: []Pattern
+    pub guard: ?^Expr
+    /// An expression or an `ExprKind.Block`.
+    pub body: ^Expr
+    pub span: source.Span
+}
+
+pub WithExpr :: struct {
+    pub label: ?Ident
+    pub handlers: []Expr
+    /// `on stack` (§14.1).
+    pub on: ?^Expr
+    pub body: Block
+    pub span: source.Span
+}
+
+pub ForExpr :: struct {
+    pub label: ?Ident
+    /// The comma-separated patterns of the head; more than one is a tuple pattern (§8.4).
+    pub pats: []Pattern
+    pub iter: ^Expr
+    pub body: Block
+    pub span: source.Span
+}
+
+// ---------------------------------------------------------------------------------
+// Functions (§11, §A.3)
+// ---------------------------------------------------------------------------------
+
+/// A function signature, shared by function literals and function types.
+pub FnSig :: struct {
+    pub params: []Param
+    /// True if the parameter list ends with `...` (foreign functions only, §19.2).
+    pub variadic: bool
+    pub ret: ?^Expr
+    /// `needs E1 + E2`; `null` when omitted, empty for `needs not` (§19.2).
+    pub effects: ?[]Expr
+    pub span: source.Span
+}
+
+/// One parameter group as written: `a, b: i32`, `T: type`, `N :: usize`, `x: u8 = 0`, or
+/// a bare `x`. In function types the names are optional: `fn(i32, u8)`.
+pub Param :: struct {
+    pub names: []Ident
+    /// Declared with `::`: a compile-time value parameter (§16.5).
+    pub comptime: bool
+    /// Declared `name: ..T`: a rest parameter (§11.3).
+    pub rest: bool
+    pub ty: ?^Expr
+    pub default: ?^Expr
+    pub span: source.Span
+}
+
+pub Constraint :: struct {
+    /// `Eq`, `Ord`, `Num`, `Int`, `Neg`, `Float` or `Plain` (checked later).
+    pub name: Ident
+    pub ty: ^Expr
+    pub span: source.Span
+}
+
+pub FnLit :: struct {
+    pub sig: FnSig
+    pub where_: []Constraint
+    pub body: FnBody
+    pub span: source.Span
+}
+
+pub FnBody :: union {
+    Block: Block
+    /// `=> expr`
+    Expr: ^Expr
+}
+
+// ---------------------------------------------------------------------------------
+// Type literals (§5.10, §5.11, §12.1)
+// ---------------------------------------------------------------------------------
+
+pub StructLit :: struct {
+    /// `struct(P: T, …)`: generic parameters (§16.4).
+    pub params: ?[]Param
+    pub where_: []Constraint
+    pub members: []StructMember
+    pub span: source.Span
+}
+
+pub StructMember :: union {
+    Field: FieldDecl
+    When: StructWhen
+}
+
+pub StructWhen :: struct {
+    pub cond: ^Expr
+    pub then: []StructMember
+    pub else_: ?[]StructMember
+    pub span: source.Span
+}
+
+pub FieldDecl :: struct {
+    pub attrs: []Attribute
+    pub is_pub: bool
+    pub is_using: bool
+    /// `a, b: T` declares several fields; `_` (padding in `#bits` structs) is named `_`.
+    pub names: []Ident
+    pub ty: ^Expr
+    pub default: ?^Expr
+    pub span: source.Span
+}
+
+pub UnionLit :: struct {
+    /// `union(T)`: an explicit tag type.
+    pub tag_type: ?^Expr
+    /// `union(P: type, …)`: generic parameters.
+    pub params: ?[]Param
+    pub where_: []Constraint
+    pub members: []UnionMember
+    pub span: source.Span
+}
+
+pub UnionMember :: union {
+    Variant: Variant
+    When: UnionWhen
+}
+
+pub UnionWhen :: struct {
+    pub cond: ^Expr
+    pub then: []UnionMember
+    pub else_: ?[]UnionMember
+    pub span: source.Span
+}
+
+pub Variant :: struct {
+    pub name: Ident
+    pub payload: ?^Expr
+    /// `Name = c`: an explicit tag value.
+    pub value: ?^Expr
+    pub span: source.Span
+}
+
+pub EffectLit :: struct {
+    pub params: ?[]Param
+    pub ops: []OpDecl
+    pub span: source.Span
+}
+
+pub OpKind :: union { Fn, Esc, Ctl }
+
+pub OpDecl :: struct {
+    pub name: Ident
+    pub kind: OpKind
+    pub params: []Param
+    pub ret: ?^Expr
+    pub span: source.Span
+}
+
+// ---------------------------------------------------------------------------------
+// Handlers (§12.5, §12.6)
+// ---------------------------------------------------------------------------------
+
+pub HandlerLit :: struct {
+    pub effect_: ^Expr
+    pub clauses: []Clause
+    pub span: source.Span
+}
+
+pub HandlerDecl :: struct {
+    /// `handler(T: type, …)`: parameters of a handler for a generic type (§12.6).
+    pub params: ?[]Param
+    pub effect_: ^Expr
+    pub for_ty: ^Expr
+    pub effects: ?[]Expr
+    pub clauses: []Clause
+    pub span: source.Span
+}
+
+pub Clause :: struct {
+    pub name: Ident
+    pub params: []Ident
+    /// An expression or an `ExprKind.Block`.
+    pub body: ^Expr
+    pub span: source.Span
+}
+
+// ---------------------------------------------------------------------------------
+// Foreign blocks (§19.2)
+// ---------------------------------------------------------------------------------
+
+pub ForeignBlock :: struct {
+    pub lib: syntax.StrLit
+    pub members: []ForeignMember
+    pub span: source.Span
+}
+
+pub ForeignMember :: struct {
+    pub attrs: []Attribute
+    pub kind: ForeignMemberKind
+    pub span: source.Span
+}
+
+pub ForeignMemberKind :: union {
+    /// `name :: fn(…) -> R needs E`
+    Fn: (name: Ident, sig: FnSig)
+    /// `#global name: T` (the `#global` attribute is consumed, not kept in `attrs`).
+    Global: (name: Ident, ty: ^Expr)
+}
+
+// ---------------------------------------------------------------------------------
+// Patterns (§9, §A.6)
+// ---------------------------------------------------------------------------------
+
+pub Pattern :: struct {
+    pub id: NodeId
+    pub kind: PatternKind
+    pub span: source.Span
+}
+
+pub PatternKind :: union {
+    /// `_`
+    Wildcard
+    /// A bare identifier: always a binding (§9.2).
+    Bind: Ident
+    /// An integer, character, string or bool literal, optionally negated: `Int`, `Str`,
+    /// `Bool`, or a `Unary` `Neg` of an `Int` or `Float`.
+    Lit: ^Expr
+    /// `null`
+    Null
+    /// `lo..hi` / `lo..=hi`. Each bound is a literal (possibly negated) or a qualified
+    /// constant.
+    Range: (lo: ^Expr, hi: ^Expr, inclusive: bool)
+    /// `!p`: the error of a result.
+    Err: ^Pattern
+    /// A path with optional arguments: `.V(p…)` (a `DotIdent` path), `T.V(p…)`, `m.CONST`,
+    /// or the struct pattern `S(f: p, …)`. Resolution decides which it is. A bare
+    /// identifier without arguments is never a `Path` (it is `Bind`).
+    Path: PathPattern
+    /// `(p1, p2, …)` or `(a: p, b: q)`. `(p)` without a comma is just `p`.
+    Tuple: []PatArg
+}
+
+pub PathPattern :: struct {
+    pub path: ^Expr
+    pub args: ?[]PatArg
+}
+
+/// A sub-pattern of a variant, struct or tuple pattern: positional `p` or named
+/// `name: p`.
+pub PatArg :: struct {
+    pub name: ?Ident
+    pub pat: Pattern
+    pub span: source.Span
+}

@@ -3,8 +3,9 @@
 //! The differential tests build `gammac` with `gamma build` (through the C back end when a
 //! C compiler is available, else they run it with `gamma run`), run it over every `.gm`
 //! file in the repository, and require output identical to the reference implementation's,
-//! byte for byte: for `gammac lex`, the token dump of `gamma lex` and its diagnostics in
-//! the JSON format (which carries every field of a diagnostic: spans, labels, notes and
+//! byte for byte: for `gammac lex`, the token dump of `gamma lex`, and for `gammac parse
+//! --dump`, the syntax tree dump of `gamma parse --dump`; for both, the diagnostics in the
+//! JSON format (which carries every field of a diagnostic: spans, labels, notes and
 //! fixes), with and without the layout recovery that tools use after errors.
 //!
 //! `gammac`'s own unit tests run with `gamma test compiler`, and its sources must be
@@ -101,9 +102,36 @@ fn run_gammac(args: &[String]) -> std::process::Output {
     common::output(&mut cmd).unwrap()
 }
 
-/// What `gamma lex --diag-format=json` prints for each file, in the layout of
-/// `gammac lex` with several files: standard output, standard error and the exit status.
-fn reference_lex(files: &[String], recover: bool) -> (String, String, i32) {
+/// A stage of the front end that `gammac` implements, with the output it is compared on.
+#[derive(Clone, Copy)]
+enum Stage {
+    /// `lex`: the token dump.
+    Lex,
+    /// `parse --dump`: the syntax tree dump.
+    Parse,
+}
+
+impl Stage {
+    fn args(self) -> &'static [&'static str] {
+        match self {
+            Stage::Lex => &["lex"],
+            Stage::Parse => &["parse", "--dump"],
+        }
+    }
+
+    /// What the dump is called in messages.
+    fn output(self) -> &'static str {
+        match self {
+            Stage::Lex => "tokens",
+            Stage::Parse => "syntax tree",
+        }
+    }
+}
+
+/// What `gamma lex` or `gamma parse --dump` prints for each file with
+/// `--diag-format=json`, in the layout of `gammac` with several files: standard output,
+/// standard error and the exit status.
+fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, i32) {
     let (mut out, mut err, mut status) = (String::new(), String::new(), 0);
     for path in files {
         out.push_str(&format!("==> {} <==\n", path));
@@ -113,8 +141,16 @@ fn reference_lex(files: &[String], recover: bool) -> (String, String, i32) {
         sess.recover_layout = recover;
         // Diagnostics name the file as it is given on the command line.
         let file = sess.sources.add(Path::new(path), text);
-        let lexed = sess.lex(file);
-        out.push_str(&driver::dump_tokens(&sess.sources, &lexed.tokens));
+        match stage {
+            Stage::Lex => {
+                let lexed = sess.lex(file);
+                out.push_str(&driver::dump_tokens(&sess.sources, &lexed.tokens));
+            }
+            Stage::Parse => {
+                let tree = sess.parse(file);
+                out.push_str(&driver::dump_ast(&tree));
+            }
+        }
         err.push_str(&sess.render_diagnostics(DiagFormat::Json));
         if sess.diags.has_errors() {
             status = 1;
@@ -145,11 +181,12 @@ fn first_difference(expected: &str, actual: &str) -> Option<(String, usize, Stri
     None
 }
 
-fn check_lex(recover: bool) {
+fn check(stage: Stage, recover: bool) {
     // In batches, since a command line is limited in length (to 32 KiB on Windows).
     for files in corpus().chunks(100) {
-        let (out, err, status) = reference_lex(files, recover);
-        let mut args = vec!["lex".to_string(), "--diag-format=json".to_string()];
+        let (out, err, status) = reference(stage, files, recover);
+        let mut args: Vec<String> = stage.args().iter().map(|a| a.to_string()).collect();
+        args.push("--diag-format=json".to_string());
         if recover {
             args.push("--recover".to_string());
         }
@@ -157,31 +194,46 @@ fn check_lex(recover: bool) {
         let got = run_gammac(&args);
         let got_out = String::from_utf8_lossy(&got.stdout);
         let got_err = String::from_utf8_lossy(&got.stderr);
-        for (what, expected, actual) in [("tokens", &out, &got_out), ("diagnostics", &err, &got_err)] {
+        for (what, expected, actual) in [(stage.output(), &out, &got_out), ("diagnostics", &err, &got_err)] {
             if let Some((file, line, e, a)) = first_difference(expected, actual) {
                 panic!(
-                    "gammac lex: the {} of {} differ (output line {}):\nexpected: {}\n  gammac: {}",
-                    what, file, line, e, a
+                    "gammac {}: the {} of {} differ (output line {}):\nexpected: {}\n  gammac: {}",
+                    stage.args()[0],
+                    what,
+                    file,
+                    line,
+                    e,
+                    a
                 );
             }
         }
-        assert_eq!(got.status.code(), Some(status), "exit status of gammac lex on {} …", files[0]);
+        assert_eq!(got.status.code(), Some(status), "exit status of gammac {} on {} …", stage.args()[0], files[0]);
     }
 }
 
 #[test]
 fn lexer_matches_the_reference_on_the_whole_repository() {
-    check_lex(false);
+    check(Stage::Lex, false);
 }
 
 #[test]
 fn recovering_lexer_matches_the_reference_on_the_whole_repository() {
-    check_lex(true);
+    check(Stage::Lex, true);
+}
+
+#[test]
+fn parser_matches_the_reference_on_the_whole_repository() {
+    check(Stage::Parse, false);
+}
+
+#[test]
+fn parser_after_layout_recovery_matches_the_reference_on_the_whole_repository() {
+    check(Stage::Parse, true);
 }
 
 #[test]
 fn usage_errors() {
-    let got = run_gammac(&["parse".to_string()]);
+    let got = run_gammac(&["check".to_string()]);
     assert_eq!(got.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&got.stderr).starts_with("usage: gammac"));
     let got = run_gammac(&["lex".to_string(), "no/such/file.gm".to_string()]);
