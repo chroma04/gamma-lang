@@ -50,8 +50,15 @@ pub SourceMap :: struct {
 
 pub source_map :: fn() -> SourceMap needs Alloc => SourceMap(files: list(SourceFile))
 
-/// Adds a file with the given path and text and returns its id.
-pub add :: fn(sm: ^SourceMap, path, text: string) -> FileId needs Alloc {
+/// Adds a file with the given path and text and returns its id. On Windows the path is
+/// kept with `/` for `\`, so that file names show as they do everywhere else.
+pub add :: fn(sm: ^SourceMap, path_as_given, text: string) -> FileId needs Alloc {
+    path := path_as_given
+    when target.os is .Windows {
+        name := list(u8)
+        for c in path_as_given { name.push(if c is '\\' { '/' } else { c })! }
+        path = name.items
+    }
     starts := list(u32)
     starts.push(0)!
     ascii := true
