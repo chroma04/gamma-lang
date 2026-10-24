@@ -299,6 +299,17 @@ pub Builtin :: union {
     IsFinite
     SignBit
     Sqrt
+    /// The intrinsics `@fma`, `@clz`, `@ctz`, `@popcount`, `@bswap`, `@rotl`, `@rotr`,
+    /// `@bitreverse` and `@black_box` (§20.3).
+    Fma
+    Clz
+    Ctz
+    Popcount
+    Bswap
+    Rotl
+    Rotr
+    Bitreverse
+    BlackBox
     /// The methods of arrays and slices that return an element or a pointer to one.
     Get
     GetPtr

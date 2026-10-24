@@ -84,6 +84,7 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
             cx.error(span, "expected a value, found a type")
             return error_expr(cx.s, span)
         }
+        .Intrinsic(i) => return cx.intrinsic(i, span)
         _ => return cx.unsupported(span, expr_kind_text(&e.kind))
     }
 }
@@ -114,7 +115,6 @@ expr_kind_text :: fn(k: ^const ast.ExprKind) -> string => match k^ {
     .With(_) => "`with`"
     .For(_) => "`for` loops"
     .Resume(_) => "`resume`"
-    .Intrinsic(i) => if i.name.name is "size_of" { "`@size_of`" } else { "intrinsic calls" }
     _ => "this kind of expression"
 }
 
