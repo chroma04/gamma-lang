@@ -36,13 +36,13 @@ pub new :: fn(num, den: bigint.Int) -> Rat needs Alloc {
 pub from_int :: fn(i: bigint.Int) -> Rat needs Alloc => Rat(num: i, den: bigint.one())
 
 /// The integer `v`.
-pub from_i64 :: fn(v: i64) -> Rat needs Alloc => from_int(bigint.from_i64(v))
+from_i64 :: fn(v: i64) -> Rat needs Alloc => from_int(bigint.from_i64(v))
 
 /// 0.
-pub zero_rat :: fn() -> Rat needs Alloc => from_int(bigint.zero())
+zero_rat :: fn() -> Rat needs Alloc => from_int(bigint.zero())
 
 /// 1.
-pub one_rat :: fn() -> Rat needs Alloc => from_int(bigint.one())
+one_rat :: fn() -> Rat needs Alloc => from_int(bigint.one())
 
 pub is_zero :: fn(r: Rat) -> bool => r.num.is_zero()
 
@@ -60,7 +60,7 @@ pub eq :: fn(a, b: Rat) -> bool => a.num.eq(b.num) and a.den.eq(b.den)
 pub neg :: fn(r: Rat) -> Rat needs Alloc => Rat(num: r.num.neg(), den: r.den)
 
 /// `|r|`.
-pub abs :: fn(r: Rat) -> Rat needs Alloc => Rat(num: r.num.abs(), den: r.den)
+abs :: fn(r: Rat) -> Rat needs Alloc => Rat(num: r.num.abs(), den: r.den)
 
 pub add :: fn(a, b: Rat) -> Rat needs Alloc => new(a.num.mul(b.den).add(b.num.mul(a.den)), a.den.mul(b.den))
 
@@ -75,19 +75,19 @@ pub div :: fn(a, b: Rat) -> Rat needs Alloc {
 }
 
 /// `1 / r`. Traps if `r` is zero.
-pub recip :: fn(r: Rat) -> Rat needs Alloc {
+recip :: fn(r: Rat) -> Rat needs Alloc {
     if r.is_zero() { trap("ratio: division by zero") }
     return new(r.den, r.num)
 }
 
 /// `r` rounded toward zero.
-pub trunc :: fn(r: Rat) -> bigint.Int needs Alloc => r.num.div(r.den)
+trunc :: fn(r: Rat) -> bigint.Int needs Alloc => r.num.div(r.den)
 
 /// `r` rounded toward negative infinity.
-pub floor :: fn(r: Rat) -> bigint.Int needs Alloc => r.num.div_floor(r.den)
+floor :: fn(r: Rat) -> bigint.Int needs Alloc => r.num.div_floor(r.den)
 
 /// `r` to the power `exp`, which may be negative (then `r` must not be zero).
-pub pow :: fn(r: Rat, exp: i32) -> Rat needs Alloc {
+pow :: fn(r: Rat, exp: i32) -> Rat needs Alloc {
     e := exp.unsigned_abs()
     p := Rat(num: r.num.pow(e), den: r.den.pow(e))
     if exp < 0 { return p.recip() }

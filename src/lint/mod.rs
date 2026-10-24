@@ -59,6 +59,10 @@ pub const RULES: &[Rule] = &[
     rule_def("unused-parameter", "a parameter of a function that its body never uses"),
     rule_def("unused-import", "an import that nothing in its module refers to"),
     rule_def("unused-declaration", "a private top-level function, type, constant or global that nothing refers to"),
+    rule_def(
+        "needless-pub",
+        "a `pub(package)` function or constant, or a `pub` one of a program package, that no other module uses",
+    ),
     rule_def("unused-label", "a loop or `with` label that no `break` or `continue` names"),
     Rule {
         name: "prefer-immutable",
@@ -297,6 +301,18 @@ fn finding_diag(
                 lint(span, "unused-declaration", format!("the {} `{}` is never used", what, name))
                     .with_note("it is private to its module: mark it `pub` if other modules are to use it")
             }
+        }
+        Finding::NeedlessPub { name, span, vis, what } => {
+            if when_names.contains(&name) {
+                return None;
+            }
+            let (marker, why) = if vis == crate::syntax::ast::Visibility::Package {
+                ("pub(package)", "no other module of its package uses it")
+            } else {
+                ("pub", "no other module uses it, and other packages do not import a program")
+            };
+            lint(span, "needless-pub", format!("the {} `{}` is `{}`, but {}", what, name, marker, why))
+                .with_note("without the marker it is private to its module (§3.3)")
         }
         Finding::BoolComparison { span, operand, same } => {
             let whole = text(span);

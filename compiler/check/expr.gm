@@ -573,7 +573,7 @@ equalize :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, span: source.Span) -> (l: ^Expr, r
 module_of :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?usize needs Load {
     if .Field(base, name) := e.kind {
         m := cx.module_of(base) else return null
-        return cx.s.public_module_member(m, name.name)
+        return cx.s.public_module_member(m, name.name, cx.module)
     }
     .Ident(id) := e.kind else return null
     if cx.lookup_local(id.name) is not null { return null }
@@ -586,7 +586,7 @@ module_of :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?usize needs Load {
 type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
     if .Field(base, name) := e.kind {
         if m := cx.module_of(base) {
-            d := cx.s.module_member(m, name) else return null
+            d := cx.s.module_member(m, name, cx.module) else return null
             .Type(t) := cx.s.resolve_decl(d) else return null
             return t
         }
@@ -602,7 +602,7 @@ type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
             .Field(base, name) => {
                 m := cx.module_of(base) else return null
                 d = cx.s.l.lookup(m, name.name) else return null
-                if not cx.s.l.decls.items[d].item.is_pub { return null }
+                if not cx.s.decl_visible(d, cx.module) { return null }
             }
             _ => return null
         }
@@ -624,7 +624,7 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
     tys := &cx.s.tys
     // `m.x`: a declaration of another module (§3.2).
     if m := cx.module_of(base) {
-        d := cx.s.module_member(m, name) else return error_expr(cx.s, span)
+        d := cx.s.module_member(m, name, cx.module) else return error_expr(cx.s, span)
         return cx.decl_expr(d, name.name, null, span)
     }
     // `U.V`: a payload-less variant of a union type.
@@ -652,9 +652,7 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
         if fields := cx.s.struct_fields(bt) {
             for i, f in enumerate(fields) {
                 if f.name is not name.name { continue }
-                if not f.is_pub and not cx.sees_private(bt) {
-                    cx.error(span, str.format("the field `{}` of `{}` is private to its module (§3.3)", name.name, cx.show(bt))!)
-                }
+                if not cx.field_visible_here(f.vis, bt) { cx.error(span, hidden_field_message(cx, name.name, bt, f.vis)) }
                 return tir.mk(f.ty, .Field(b, i.trunc(u32)), span)
             }
         }
@@ -664,9 +662,28 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
 }
 
 /// Whether the private fields of `t` are visible here.
-sees_private :: fn(cx: ^const FnCx, t: Ty) -> bool {
+/// Whether a field of visibility `vis` of type `t` can be named here (§3.3).
+field_visible_here :: fn(cx: ^const FnCx, vis: ast.Visibility, t: Ty) -> bool {
+    if vis is .Public { return true }
     .Adt(id, _) := cx.s.tys.kind(t) else return true
-    return cx.s.adts.items[usize(id)].module is cx.module
+    return cx.s.visible(vis, cx.s.adts.items[usize(id)].module, cx.module)
+}
+
+/// The first field of struct type `t` that is not visible here, if any, with what the
+/// field is visible to: "module" or "package".
+hidden_field :: fn(cx: ^const FnCx, t: Ty) -> ?(name: string, owner: string) {
+    fields := cx.s.struct_fields(t) else return null
+    for f in fields {
+        if not cx.field_visible_here(f.vis, t) { return (name: f.name, owner: if f.vis is .Package { "package" } else { "module" }) }
+    }
+    return null
+}
+
+/// The error for naming field `name` of type `t`, of visibility `vis`, where it is not
+/// visible (§3.3).
+hidden_field_message :: fn(cx: ^const FnCx, name: string, t: Ty, vis: ast.Visibility) -> string needs Alloc {
+    if vis is .Package { return str.format("the field `{}` of `{}` is visible only in the package of its module (§3.3)", name, cx.show(t))! }
+    return str.format("the field `{}` of `{}` is private to its module (§3.3)", name, cx.show(t))!
 }
 
 // ---------------------------------------------------------------------------------
@@ -852,14 +869,9 @@ field_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
 /// `S(field: value, …)`.
 construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     .Adt(id, _) := cx.s.tys.kind(ty) else return error_expr(cx.s, span)
-    if not cx.sees_private(ty) {
-        fields := cx.s.struct_fields(ty) else empty_slice(sema.FieldDef)
-        for f in fields {
-            if not f.is_pub {
-                cx.error(span, str.format("`{}` cannot be constructed outside its module: its field `{}` is private (§3.3)", cx.show(ty), f.name)!)
-                return error_expr(cx.s, span)
-            }
-        }
+    if h := cx.hidden_field(ty) {
+        cx.error(span, str.format("`{}` cannot be constructed outside its {}: its field `{}` is private (§3.3)", cx.show(ty), h.owner, h.name)!)
+        return error_expr(cx.s, span)
     }
     if id in cx.s.adts_in_progress.items { return cx.unsupported(span, "constructions in defaults") }
     fields := cx.s.struct_fields(ty) else empty_slice(sema.FieldDef)

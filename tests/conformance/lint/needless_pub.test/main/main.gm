@@ -1,0 +1,11 @@
+//! stage: lint
+// In a program, `pub` and `pub(package)` names that no other module uses could be
+// private: nothing outside the package imports a program (§3.3).
+util :: import "./util"
+
+pub helper :: fn() -> u32 => 1                   //~ WARNING [needless-pub] the function `helper` is `pub`
+
+main :: fn() needs Out {
+    p := util.Point(x: 1, y: 2)
+    print("{} {} {} {}\n", helper(), util.sum(p), p.norm1(), util.LIMIT)
+}

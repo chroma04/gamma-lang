@@ -319,7 +319,7 @@ pub from_i64 :: fn(v: i64) -> Int needs Alloc {
 }
 
 /// `v`.
-pub from_u128 :: fn(v: u128) -> Int needs Alloc {
+from_u128 :: fn(v: u128) -> Int needs Alloc {
     l := list(u32)
     m := v
     while m > 0 {
@@ -330,7 +330,7 @@ pub from_u128 :: fn(v: u128) -> Int needs Alloc {
 }
 
 /// `v`.
-pub from_i128 :: fn(v: i128) -> Int needs Alloc {
+from_i128 :: fn(v: i128) -> Int needs Alloc {
     r := from_u128(v.unsigned_abs())
     r.negative = v < 0
     return r
@@ -344,7 +344,7 @@ pub from_nat :: fn(n: ^const bignum.Nat) -> Int needs Alloc {
 }
 
 /// A copy of `a` that shares no memory with it.
-pub copy :: fn(a: Int) -> Int needs Alloc {
+copy :: fn(a: Int) -> Int needs Alloc {
     l := list(u32)
     l.extend(a.mag.items)!
     return Int(negative: a.negative, mag: l)
@@ -360,10 +360,10 @@ pub is_negative :: fn(a: Int) -> bool => a.negative
 
 pub is_positive :: fn(a: Int) -> bool => not a.negative and a.mag.items.len > 0
 
-pub is_even :: fn(a: Int) -> bool => a.mag.items.len is 0 or (a.mag.items[0] & 1) is 0
+is_even :: fn(a: Int) -> bool => a.mag.items.len is 0 or (a.mag.items[0] & 1) is 0
 
 /// `-1`, `0` or `1` as `a` is negative, zero or positive.
-pub signum :: fn(a: Int) -> i32 {
+signum :: fn(a: Int) -> i32 {
     if a.mag.items.len is 0 { return 0 }
     if a.negative { return -1 }
     return 1
@@ -401,7 +401,7 @@ mag_to_u128 :: fn(a: Int) -> ?u128 {
     return r
 }
 
-pub to_u128 :: fn(a: Int) -> ?u128 {
+to_u128 :: fn(a: Int) -> ?u128 {
     if a.negative { return null }
     return mag_to_u128(a)
 }
@@ -411,7 +411,7 @@ pub to_u64 :: fn(a: Int) -> ?u64 {
     return v.checked(u64)
 }
 
-pub to_i128 :: fn(a: Int) -> ?i128 {
+to_i128 :: fn(a: Int) -> ?i128 {
     m := mag_to_u128(a) else return null
     if a.negative {
         if m > 0x8000_0000_0000_0000_0000_0000_0000_0000 { return null }
@@ -480,7 +480,7 @@ pub rem :: fn(a, b: Int) -> Int needs Alloc {
 
 /// The quotient of `a` and `b` rounded toward negative infinity, and the remainder, which
 /// has the sign of `b`.
-pub div_mod_floor :: fn(a, b: Int) -> (q: Int, r: Int) needs Alloc {
+div_mod_floor :: fn(a, b: Int) -> (q: Int, r: Int) needs Alloc {
     q, r := div_rem(a, b)
     if not r.is_zero() and r.negative is not b.negative {
         return (q.sub(one()), r.add(b))
@@ -495,7 +495,7 @@ pub div_floor :: fn(a, b: Int) -> Int needs Alloc {
 }
 
 /// `a` modulo `b`, with the sign of `b`.
-pub mod_floor :: fn(a, b: Int) -> Int needs Alloc {
+mod_floor :: fn(a, b: Int) -> Int needs Alloc {
     _, r := div_mod_floor(a, b)
     return r
 }
@@ -595,7 +595,7 @@ pub bit_or :: fn(a, b: Int) -> Int needs Alloc => bitwise(.Or, a, b)
 pub bit_xor :: fn(a, b: Int) -> Int needs Alloc => bitwise(.Xor, a, b)
 
 /// `!a`, which is `-a - 1`.
-pub bit_not :: fn(a: Int) -> Int needs Alloc => neg(a).sub(one())
+bit_not :: fn(a: Int) -> Int needs Alloc => neg(a).sub(one())
 
 // ---------------------------------------------------------------------------
 // Text
@@ -648,7 +648,7 @@ pub to_decimal :: fn(a: Int) -> []u8 needs Alloc {
 
 /// The non-negative number written by `digits` in `radix` (2, 8, 10 or 16), without sign
 /// or separators. Other bytes count as the digit 0.
-pub parse :: fn(digits: string, radix: u32) -> Int needs Alloc {
+parse :: fn(digits: string, radix: u32) -> Int needs Alloc {
     // Digits are taken in groups whose weight `radix^k` still fits in a limb.
     group: u32 = 1
     per: usize = 0

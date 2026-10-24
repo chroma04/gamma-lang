@@ -103,6 +103,7 @@ fn tight_paren_keyword(k: Keyword) -> bool {
             | Keyword::Ctl
             | Keyword::Esc
             | Keyword::Import
+            | Keyword::Pub
     )
 }
 

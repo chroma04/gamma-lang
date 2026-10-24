@@ -27,7 +27,7 @@ pub lookup_module_name :: fn(s: ^Sema, module: usize, name: string) -> ?usize {
     d := s.l.lookup(prelude, name) else return null
     m := &s.l.modules.items[module]
     if m.is_prelude { return d }
-    if not s.l.decls.items[d].item.is_pub { return null }
+    if s.l.decls.items[d].item.vis is not .Public { return null }
     // The name `core` for the core library itself is the standard library's (§22).
     if name is "core" { return if m.is_std { d } else { null } }
     return if s.universe_hidden(d) { null } else { d }
@@ -38,7 +38,7 @@ universe_hidden :: fn(s: ^const Sema, d: usize) -> bool => s.l.decls.items[d].na
 
 /// For an unknown name that the core library declares but leaves out of the universe
 /// scope, how to reach it.
-pub universe_hint :: fn(s: ^Sema, name: string) -> ?string needs Alloc {
+universe_hint :: fn(s: ^Sema, name: string) -> ?string needs Alloc {
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, name) else return null
     if not s.universe_hidden(d) or s.l.decls.items[d].state is .Module(_) { return null }
@@ -65,7 +65,7 @@ op_hint :: fn(effect_: string, name: string, qualifier: ?string) -> string needs
 /// A fix for an unknown name that `universe_hint` attributes to a standard module: write
 /// `m.Name`, after adding `m :: import "std/m"` unless the module has it already. `span`
 /// is the name at its use in the file of `module`.
-pub import_fix :: fn(s: ^Sema, module: usize, name: string, span: source.Span) -> ?List(diag.Edit) needs Alloc {
+import_fix :: fn(s: ^Sema, module: usize, name: string, span: source.Span) -> ?List(diag.Edit) needs Alloc {
     path := std_home(name) else return null
     m := &s.l.modules.items[module]
     if m.is_prelude or m.is_std { return null }
@@ -117,7 +117,7 @@ pub import_fix :: fn(s: ^Sema, module: usize, name: string, span: source.Span) -
 pub module_named :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?usize needs Load {
     if .Field(base, name) := e.kind {
         m := s.module_named(module, base) else return null
-        return s.public_module_member(m, name.name)
+        return s.public_module_member(m, name.name, module)
     }
     .Ident(id) := e.kind else return null
     d := s.lookup_module_name(module, id.name) else return null
@@ -125,24 +125,51 @@ pub module_named :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?usize ne
     return m
 }
 
-/// The module that the public declaration `name` of module `m` binds, if it is a module
-/// binding (reports nothing otherwise).
-public_module_member :: fn(s: ^Sema, m: usize, name: string) -> ?usize needs Load {
+/// Whether modules `a` and `b` belong to the same package (§3.1).
+same_package :: fn(s: ^const Sema, a: usize, b: usize) -> bool {
+    if a is b { return true }
+    ma := &s.l.modules.items[a]
+    mb := &s.l.modules.items[b]
+    return not ma.is_prelude and not mb.is_prelude and ma.package is mb.package
+}
+
+/// Whether a name of visibility `vis` declared in module `owner` can be named from module
+/// `from` (§3.3).
+pub(package) visible :: fn(s: ^const Sema, vis: ast.Visibility, owner: usize, from: usize) -> bool => match vis {
+    .Public => true
+    .Package => s.same_package(owner, from)
+    .Private => owner is from
+}
+
+/// Whether declaration `d` can be named from module `from` (§3.3).
+pub(package) decl_visible :: fn(s: ^const Sema, d: usize, from: usize) -> bool {
+    decl := &s.l.decls.items[d]
+    return s.visible(decl.item.vis, decl.module, from)
+}
+
+/// The module that the declaration `name` of module `m` binds, if it is a module binding
+/// that module `from` can see (reports nothing otherwise).
+pub(package) public_module_member :: fn(s: ^Sema, m: usize, name: string, from: usize) -> ?usize needs Load {
     d := s.l.lookup(m, name) else return null
-    if not s.l.decls.items[d].item.is_pub { return null }
+    if not s.decl_visible(d, from) { return null }
     .Module(r) := s.resolve_decl(d) else return null
     return r
 }
 
-/// The public declaration `name` of module `m`; reports a missing or private one.
-pub module_member :: fn(s: ^Sema, m: usize, name: ast.Ident) -> ?usize needs Alloc {
+/// The declaration `name` of module `m`, as named from module `from`; reports a missing
+/// one or one that `from` cannot see.
+pub module_member :: fn(s: ^Sema, m: usize, name: ast.Ident, from: usize) -> ?usize needs Alloc {
     module_name := s.l.modules.items[m].name
     if d := s.l.lookup(m, name.name) {
-        if s.l.decls.items[d].item.is_pub {
+        if s.decl_visible(d, from) {
             s.check_deprecated(d, name.span)
             return d
         }
-        s.error(name.span, str.format("`{}` is private to the module `{}` (§3.3)", name.name, module_name)!)
+        if s.l.decls.items[d].item.vis is .Package {
+            s.error(name.span, str.format("`{}` is visible only in the package of the module `{}` (§3.3)", name.name, module_name)!)
+        } else {
+            s.error(name.span, str.format("`{}` is private to the module `{}` (§3.3)", name.name, module_name)!)
+        }
         return null
     }
     if effect_ := s.public_op_effect(m, name.name) {
@@ -162,7 +189,7 @@ pub module_member :: fn(s: ^Sema, m: usize, name: ast.Ident) -> ?usize needs All
 public_op_effect :: fn(s: ^const Sema, m: usize, name: string) -> ?string {
     for n in s.l.modules.items[m].scope.items {
         d := &s.l.decls.items[n.decl]
-        if not d.item.is_pub { continue }
+        if d.item.vis is .Private { continue }
         .Binding(b) := d.item.kind else continue
         .Effect(lit) := b.init.kind else continue
         for op in lit.ops {

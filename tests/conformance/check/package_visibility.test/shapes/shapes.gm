@@ -1,0 +1,16 @@
+pub(package) Circle :: struct {
+    pub r: i32
+    pub(package) cx: i32
+}
+
+pub(package) unit :: fn() -> Circle => Circle(r: 1, cx: 0)
+
+pub(package) area :: fn(c: Circle) -> i32 => 3 * c.r * c.r
+
+hidden :: fn(c: Circle) -> i32 => c.cx
+
+Inner :: struct { v: i32 }
+
+// A declaration may not mention a type less visible than itself (§3.3).
+pub make :: fn() -> Circle => unit()                    //~ ERROR the `pub` declaration `make` mentions the `pub(package)` type `Circle`
+pub(package) peek :: fn() -> Inner => Inner(v: 1)       //~ ERROR the `pub(package)` declaration `peek` mentions the private type `Inner`

@@ -17,10 +17,10 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(info) = self.sema.soa_info(ty) {
             return self.soa_construct(ty, info, args, span);
         }
-        if let Some(f) = self.hidden_field(ty) {
+        if let Some((f, owner)) = self.hidden_field(ty) {
             self.error(
                 span,
-                format!("`{}` cannot be constructed outside its module: its field `{}` is private (§3.3)", ty, f),
+                format!("`{}` cannot be constructed outside its {owner}: its field `{}` is private (§3.3)", ty, f),
             );
             return error_expr(span);
         }

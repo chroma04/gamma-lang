@@ -90,6 +90,7 @@ A name that starts with `_` is never reported as unused: `_unused := f()` and
 | `unused-parameter` | a parameter of a named function that its body never uses. Parameters of function literals and handler clauses, and of functions used as values (passed to another function, exported), are left alone: their signature is not theirs to choose | — (name it `_x`) |
 | `unused-import` | an import binding that nothing in its module uses | the import line is removed |
 | `unused-declaration` | a private top-level function, type, constant, global or effect that nothing refers to | — |
+| `needless-pub` | a `pub(package)` function or constant that no other module of its package names, or a `pub` one of a program package (one whose root module declares `main`, which no other package imports) that no other module names, as a function, a constant, a method or a value. Types, effects and imports are not reported, since a `pub` signature may need them | — (remove the marker) |
 | `unused-label` | a label of a `for`, `while` or `with` that no `break` or `continue` names | the label is removed |
 
 A use in a part of the program that is evaluated at compile time counts: `a.len` of an

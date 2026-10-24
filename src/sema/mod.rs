@@ -216,6 +216,9 @@ pub struct Sema<'s> {
     /// Declarations that some name was resolved to (in their own module's scope or as a
     /// member of their module), for `gamma lint`'s unused declarations.
     pub decl_uses: std::collections::HashSet<DeclId>,
+    /// The declarations named from a module other than their own (`m.x`, `x.f()` for a
+    /// function `f` of another module), for `gamma lint`.
+    pub outside_uses: std::collections::HashSet<DeclId>,
     /// Each use of a local variable by name: the spans of its declaration and of the use.
     /// Unlike the typed program, it keeps the uses that checking evaluates away
     /// (`a.len` of an array, `@type_of(x)`), for `gamma lint`'s unused locals.
@@ -475,6 +478,7 @@ impl<'s> Sema<'s> {
             decls: vec![],
             deprecated_uses: std::collections::HashSet::new(),
             decl_uses: std::collections::HashSet::new(),
+            outside_uses: std::collections::HashSet::new(),
             local_uses: std::collections::HashSet::new(),
             inline_fns: vec![],
             nested_generic: HashMap::new(),

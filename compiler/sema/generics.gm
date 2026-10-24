@@ -78,7 +78,7 @@ pub satisfies :: fn(s: ^const Sema, t: Ty, c: Constraint) -> bool needs Alloc {
     }
 }
 
-has_ord :: fn(s: ^const Sema, t: Ty) -> bool => match s.tys.kind(t) {
+pub(package) has_ord :: fn(s: ^const Sema, t: Ty) -> bool => match s.tys.kind(t) {
     .Bool, .Int(_), .Usize, .Isize, .Float(_), .ManyPtr(_) => true
     .Tuple(elems, _) => all_ord(s, elems)
     // Vectors and math vectors are not ordered (§5.6.2, §5.6.3).
@@ -148,7 +148,7 @@ has_eq_in :: fn(s: ^const Sema, t: Ty, seen: ^List(Ty)) -> bool needs Alloc {
     }
 }
 
-is_plain :: fn(s: ^const Sema, t: Ty) -> bool => match s.tys.kind(t) {
+pub(package) is_plain :: fn(s: ^const Sema, t: Ty) -> bool => match s.tys.kind(t) {
     .Int(_), .Usize, .Isize, .Float(_) => true
     .Array(_, elem, _), .ParamArray(_, elem) => s.is_plain(elem)
     .Tuple(elems, _) => all_plain(s, elems)
@@ -184,7 +184,7 @@ plain_fields :: fn(s: ^const Sema, def: StructDef) -> bool {
 }
 
 /// The underlying integer type of a `#bits` struct, if `ty` is one.
-bits_struct_ty :: fn(s: ^const Sema, ty: Ty) -> ?Ty {
+pub(package) bits_struct_ty :: fn(s: ^const Sema, ty: Ty) -> ?Ty {
     .Adt(id, _) := s.tys.kind(ty) else return null
     .Struct(def) := s.adts.items[usize(id)].kind else return null
     return def.bits

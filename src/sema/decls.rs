@@ -5,7 +5,7 @@ use super::{DeclId, DeclState, EffectInfo, FnSig, ModuleId, OpInfo, ParamInfo, P
 use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::symbol::Symbol;
-use crate::syntax::ast::{self, BindingKind, ExprKind, ItemKind};
+use crate::syntax::ast::{self, BindingKind, ExprKind, ItemKind, Visibility};
 use crate::tir::{self, AdtKind, FnId};
 use crate::types::{EffectId, EffectRef, EffectSet, GenericArg, Ty, TyKind};
 use num_traits::ToPrimitive;
@@ -67,44 +67,54 @@ impl<'s> Sema<'s> {
         self.local_consts = s.local_consts;
     }
 
-    /// A `pub` declaration's signature must not mention a private type (§3.3): the
-    /// types of a function's parameters and result and its `needs` effect arguments, the
-    /// operations of an effect, the type of a constant or global, an alias's type, a
-    /// struct's `pub` fields and a union's payloads.
+    /// A declaration's signature must not mention a type less visible than the declaration
+    /// (§3.3): the types of a function's parameters and result and its `needs` effect
+    /// arguments, the operations of an effect, the type of a constant or global, an alias's
+    /// type, a struct's fields that are visible outside its module (up to the visibility of
+    /// the struct) and a union's payloads.
     pub(super) fn check_pub_signatures(&mut self) {
-        let private = |s: &Self, t: Ty| -> Option<Ty> {
+        // The first type in `t` that is less visible than `vis`, with its visibility.
+        let hidden = |s: &Self, t: Ty, vis: Visibility| -> Option<(Ty, Visibility)> {
             let mut found = None;
             t.walk(&mut |x| {
                 if found.is_none()
                     && let TyKind::Adt(id, _) = x.kind()
                     && let Some(d) = s.adt_decls.get(&id.template())
-                    && !s.decls[d.0 as usize].item.is_pub
+                    && s.decls[d.0 as usize].item.vis < vis
                 {
-                    found = Some(x);
+                    found = Some((x, s.decls[d.0 as usize].item.vis));
                 }
             });
             found
         };
         for i in 0..self.decls.len() {
             let d = &self.decls[i];
+            let vis = d.item.vis;
             // Members of foreign blocks have synthetic items: they are not `pub` declarations.
-            if !d.item.is_pub || d.op_of.is_some() || !matches!(d.item.kind, ItemKind::Binding(_)) {
+            if vis == Visibility::Private || d.op_of.is_some() || !matches!(d.item.kind, ItemKind::Binding(_)) {
                 continue;
             }
             let DeclState::Done(v) = &d.state else { continue };
-            let mut tys: Vec<Ty> = vec![];
-            let adt_fields =
-                |s: &Self, id: crate::types::AdtId, tys: &mut Vec<Ty>| match s.prog.adts.get(&id).map(|a| &a.kind) {
-                    Some(AdtKind::Struct { fields, .. }) | Some(AdtKind::CUnion { fields }) => {
-                        tys.extend(fields.iter().filter(|f| f.is_pub).map(|f| f.ty))
-                    }
-                    Some(AdtKind::Union { variants, .. }) => tys.extend(variants.iter().filter_map(|v| v.payload)),
-                    None => {}
-                };
-            let effect_arg_tys = |refs: &[crate::types::EffectRef], tys: &mut Vec<Ty>| {
+            // Each mentioned type with the visibility it needs.
+            let mut tys: Vec<(Ty, Visibility)> = vec![];
+            let adt_fields = |s: &Self, id: crate::types::AdtId, tys: &mut Vec<(Ty, Visibility)>| match s
+                .prog
+                .adts
+                .get(&id)
+                .map(|a| &a.kind)
+            {
+                Some(AdtKind::Struct { fields, .. }) | Some(AdtKind::CUnion { fields }) => {
+                    tys.extend(fields.iter().filter(|f| f.vis != Visibility::Private).map(|f| (f.ty, f.vis.min(vis))))
+                }
+                Some(AdtKind::Union { variants, .. }) => {
+                    tys.extend(variants.iter().filter_map(|v| v.payload).map(|t| (t, vis)))
+                }
+                None => {}
+            };
+            let effect_arg_tys = |refs: &[crate::types::EffectRef], tys: &mut Vec<(Ty, Visibility)>| {
                 for r in refs {
                     tys.extend(r.args.iter().filter_map(|a| match a {
-                        crate::types::GenericArg::Type(t) => Some(*t),
+                        crate::types::GenericArg::Type(t) => Some((*t, vis)),
                         crate::types::GenericArg::Value(_) => None,
                     }));
                 }
@@ -112,14 +122,14 @@ impl<'s> Sema<'s> {
             match v {
                 DeclValue::Fn(f) => {
                     let sig = &self.sigs[f];
-                    tys.extend(sig.params.iter().filter(|p| p.generic.is_none()).map(|p| p.ty));
-                    tys.push(sig.ret);
+                    tys.extend(sig.params.iter().filter(|p| p.generic.is_none()).map(|p| (p.ty, vis)));
+                    tys.push((sig.ret, vis));
                     effect_arg_tys(&sig.effects.effects, &mut tys);
                 }
                 DeclValue::Effect(e) => {
                     for op in &self.effects[e].ops {
-                        tys.extend(op.params.iter().filter(|p| p.generic.is_none()).map(|p| p.ty));
-                        tys.push(op.ret);
+                        tys.extend(op.params.iter().filter(|p| p.generic.is_none()).map(|p| (p.ty, vis)));
+                        tys.push((op.ret, vis));
                     }
                 }
                 DeclValue::EffectInst(r) => effect_arg_tys(std::slice::from_ref(r), &mut tys),
@@ -128,19 +138,21 @@ impl<'s> Sema<'s> {
                     TyKind::Adt(id, _) if self.adt_decls.get(id) == Some(&DeclId(i as u32)) => {
                         adt_fields(self, *id, &mut tys)
                     }
-                    _ => tys.push(*t),
+                    _ => tys.push((*t, vis)),
                 },
                 DeclValue::GenericType(id) if self.adt_decls.get(id) == Some(&DeclId(i as u32)) => {
                     adt_fields(self, *id, &mut tys)
                 }
-                DeclValue::Const { ty, .. } | DeclValue::Global { ty, .. } => tys.push(*ty),
+                DeclValue::Const { ty, .. } | DeclValue::Global { ty, .. } => tys.push((*ty, vis)),
                 _ => {}
             }
-            if let Some(p) = tys.into_iter().find_map(|t| private(self, t)) {
+            if let Some((p, pv)) = tys.into_iter().find_map(|(t, need)| hidden(self, t, need)) {
                 let name = self.decls[i].name;
+                let what = if vis == Visibility::Package { "pub(package)" } else { "pub" };
+                let kind = if pv == Visibility::Package { "`pub(package)`" } else { "private" };
                 self.error(
                     name.span,
-                    format!("the `pub` declaration `{}` mentions the private type `{}` (§3.3)", name.name, p),
+                    format!("the `{what}` declaration `{}` mentions the {kind} type `{}` (§3.3)", name.name, p),
                 );
             }
         }
@@ -458,9 +470,10 @@ impl<'s> Sema<'s> {
             ExprKind::Field { base, name } => {
                 let m = self.module_named(module, base)?;
                 let d = *self.modules[m.0 as usize].scope.get(&name.name)?;
-                if !self.decls[d.0 as usize].item.is_pub {
+                if !self.decl_visible(d, module) {
                     return None;
                 }
+                self.note_use_from(d, module);
                 match self.resolve_decl(d) {
                     DeclValue::Untyped(v) => Some(Ok(v)),
                     _ => None,
@@ -789,7 +802,7 @@ impl<'s> Sema<'s> {
         let d = match &head.kind {
             ExprKind::Ident(id) => self.lookup_module_name(module, id.name),
             ExprKind::Field { base, name } => {
-                self.module_named(module, base).and_then(|m| self.module_member(m, *name))
+                self.module_named(module, base).and_then(|m| self.module_member(m, *name, module))
             }
             _ => None,
         };
@@ -803,7 +816,7 @@ impl<'s> Sema<'s> {
             ExprKind::Ident(id) => self.lookup_module_name(module, id.name)?,
             ExprKind::Field { base, name } => {
                 let m = self.module_named(module, base)?;
-                self.module_member(m, *name)?
+                self.module_member(m, *name, module)?
             }
             _ => return None,
         };
@@ -872,7 +885,7 @@ impl<'s> Sema<'s> {
         if let ExprKind::Field { base, name } = &e.kind
             && let Some(m) = self.module_named(module, base)
         {
-            let d = self.module_member(m, *name)?;
+            let d = self.module_member(m, *name, module)?;
             return match self.resolve_decl(d) {
                 DeclValue::Effect(eff) => Some(self.bare_effect_ref(eff)),
                 DeclValue::EffectInst(r) => Some(r),
@@ -1067,7 +1080,7 @@ impl<'s> Sema<'s> {
             ast::ExprKind::Paren(inner) => self.aliased_decl(module, inner),
             ast::ExprKind::Field { base, name } => {
                 let m = self.module_named(module, base)?;
-                Some(self.module_member(m, *name))
+                Some(self.module_member(m, *name, module))
             }
             _ => None,
         }

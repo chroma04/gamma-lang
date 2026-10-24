@@ -7,7 +7,8 @@ parse_item :: fn(p: ^Parser) -> Abort!ast.Item needs Alloc {
     doc := p.doc_before(start)
     attrs := try p.parse_attrs()
     pub_span := p.span()
-    is_pub := p.eat_kw(.Pub)
+    vis := try p.parse_visibility()
+    is_pub := vis is not .Private
     k: ast.ItemKind = match p.kind() {
         .Keyword(.When) => {
             p.deny_pub(is_pub, pub_span, "a `when` block")
@@ -26,7 +27,17 @@ parse_item :: fn(p: ^Parser) -> Abort!ast.Item needs Alloc {
         .Ident(_), .Underscore, .Keyword(_) if p.binding_ahead() => .Binding(try p.parse_binding())
         _ => return !p.expected("a declaration")
     }
-    return ast.Item(id: p.next_id(), span: p.span_from(start), doc: doc, attrs: attrs, is_pub: is_pub, kind: k)
+    return ast.Item(id: p.next_id(), span: p.span_from(start), doc: doc, attrs: attrs, vis: vis, kind: k)
+}
+
+/// `pub`, `pub(package)` or nothing (§3.3).
+parse_visibility :: fn(p: ^Parser) -> Abort!ast.Visibility needs Alloc {
+    if not p.eat_kw(.Pub) { return .Private }
+    if not p.eat(.LParen) { return .Public }
+    if p.kind() is not .Ident("package") { return !p.expected("`package` in `pub(…)`") }
+    _ = p.bump()
+    _ = try p.expect(.RParen, "to close `pub(package`")
+    return .Package
 }
 
 deny_pub :: fn(p: ^Parser, is_pub: bool, at: source.Span, what: string) needs Alloc {
@@ -95,7 +106,7 @@ parse_when_items :: fn(p: ^Parser) -> Abort!ast.WhenItems needs Alloc {
                 span: p.span_from(nested_start),
                 doc: null,
                 attrs: empty_slice(ast.Attribute),
-                is_pub: false,
+                vis: .Private,
                 kind: .When(nested),
             ))!
             else_ = items.items

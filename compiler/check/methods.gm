@@ -438,6 +438,10 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.A
     module := cx.s.adts.items[usize(id)].module
     d := cx.s.l.lookup(module, name.name) else return cx.op_method(recv, rty, s, module, name, args, span)
     .Fn(f) := cx.s.resolve_decl(d) else return cx.op_method(recv, rty, s, module, name, args, span)
+    if not cx.s.decl_visible(d, cx.module) {
+        _ = cx.s.module_member(module, name, cx.module)
+        return error_expr(cx.s, span)
+    }
     sig := cx.s.fns.items[usize(f)]
     // A function whose first parameter is not the receiver's type leaves the name to an
     // operation that takes it (§7.10).
@@ -496,7 +500,7 @@ op_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, s: Ty, module: usize, name: ast
         .Effect(eff) := cx.s.resolve_decl(n.decl) else continue
         info := cx.s.effects.items[usize(eff)]
         if info.module is not module or info.params.len > 0 { continue }
-        if cx.module is not module and not cx.s.l.decls.items[n.decl].item.is_pub { continue }
+        if not cx.s.decl_visible(n.decl, cx.module) { continue }
         for op_i, o in enumerate(info.ops) {
             if o.name is not name.name or o.params.len is 0 { continue }
             t := o.params[0].ty
@@ -548,7 +552,7 @@ effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
         }
         .Field(base, name) => {
             m := cx.module_of(base) else return null
-            d = cx.s.module_member(m, name) else return null
+            d = cx.s.module_member(m, name, cx.module) else return null
         }
         _ => return null
     }

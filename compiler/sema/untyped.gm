@@ -26,7 +26,7 @@ pub UntypedResult :: union {
 /// that untyped constant arithmetic produces (§6.2).
 MAX_CONST_BITS :: 1 << 22
 
-pub describe :: fn(v: ^const Untyped) -> string => match v^ {
+describe :: fn(v: ^const Untyped) -> string => match v^ {
     .Int(_) => "integer constant"
     .Float(_), .NegZero => "float constant"
     .Bool(_) => "boolean constant"
@@ -210,7 +210,7 @@ is_zero :: fn(v: ^const Untyped) -> bool needs Alloc {
 
 /// An untyped constant as `gamma decls` shows it: `int 5`, `float 1/3`, `float -0`,
 /// `bool true` or `complex 0 1/2`.
-pub dump_untyped :: fn(v: ^const Untyped) -> string needs Alloc => match v^ {
+dump_untyped :: fn(v: ^const Untyped) -> string needs Alloc => match v^ {
     .Int(i) => str.format("int {}", show_int(i))!
     .Float(q) => str.format("float {}", show_rational(q))!
     .NegZero => "float -0"
@@ -224,7 +224,7 @@ show_rational :: fn(q: Rat) -> string needs Alloc {
 }
 
 /// The exact value of a literal's natural number.
-pub nat_int :: fn(n: ^const bignum.Nat) -> Int needs Alloc => bigint.from_nat(n)
+nat_int :: fn(n: ^const bignum.Nat) -> Int needs Alloc => bigint.from_nat(n)
 
 pub literal_rational :: fn(r: ^const bignum.Rational) -> Rat needs Alloc => ratio.new(bigint.from_nat(&r.num), bigint.from_nat(&r.den))
 
@@ -252,7 +252,7 @@ pub try_untyped :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedRe
         .Field(base, name) => {
             m := s.module_named(module, base) else return null
             d := s.l.lookup(m, name.name) else return null
-            if not s.l.decls.items[d].item.is_pub { return null }
+            if not s.decl_visible(d, module) { return null }
             .Untyped(v) := s.resolve_decl(d) else return null
             return .Ok(v)
         }

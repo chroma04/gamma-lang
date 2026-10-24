@@ -8,10 +8,12 @@ Versions and what each kind of change means are described in
 
 ### Language
 
-- A `match` left incomplete by a bare name in the position of an optional inside a
-  pattern (which matches only a present value, §9.3) now points at that name and says how
-  to bind the optional as it is: bind the value that holds it, such as `.Break(b)` for the
-  whole payload.
+- **`pub(package)`** makes a declaration or a struct field visible to every module of its
+  package, and to nothing outside it (§3.3): for what a package's modules share with each
+  other but not with its users. A declaration may not mention a type less visible than
+  itself. `gamma doc` shows only `pub` names.
+- A private function of a type's module is no longer callable as a method of the type from
+  other modules, as §7.10 always said (`x.helper()` where `helper` is private was accepted).
 - A member of an inline tuple of `in` may be a pattern form, as on the right of `is`:
   `k in (.Fn(_), .Handler(_), .Type)` tests whether `k` matches any of them (§7.7).
 - **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the
@@ -92,6 +94,10 @@ Versions and what each kind of change means are described in
 
 ### Diagnostics
 
+- A `match` left incomplete by a bare name in the position of an optional inside a
+  pattern (which matches only a present value, §9.3) now points at that name and says how
+  to bind the optional as it is: bind the value that holds it, such as `.Break(b)` for the
+  whole payload.
 - An `else` arm of a `match` gets the plain "expected a pattern" error, without a fix.
 - The hint to write `is` for `=` is given only after an `if` or `while` condition.
 - `#allow` with a name that is not a lint rule no longer stops compilation; `gamma lint`

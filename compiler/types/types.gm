@@ -284,14 +284,14 @@ pub len_expr :: fn(t: ^Types, op: LenOp, lhs, rhs: Ty) -> Ty needs Alloc {
 }
 
 /// The key of the `usize` value `n`.
-pub usize_key :: fn(t: ^Types, n: u64) -> ConstKey needs Alloc {
+usize_key :: fn(t: ^Types, n: u64) -> ConstKey needs Alloc {
     bytes := list(u8)
     for i in 0..8 { bytes.push((n >> u64(i * 8)).trunc(u8))! }
     return .Bytes(t.usize_ty(), bytes.items)
 }
 
 /// The result of `op` on `usize` operands, or `null` where the operation traps.
-pub apply :: fn(op: LenOp, a, b: u64) -> ?u64 {
+apply :: fn(op: LenOp, a, b: u64) -> ?u64 {
     match op {
         .Add => return a +? b
         .Sub => return a -? b
@@ -310,7 +310,7 @@ pub apply :: fn(op: LenOp, a, b: u64) -> ?u64 {
     }
 }
 
-pub len_op_symbol :: fn(op: LenOp) -> string => match op {
+len_op_symbol :: fn(op: LenOp) -> string => match op {
     .Add => "+"
     .Sub => "-"
     .Mul => "*"

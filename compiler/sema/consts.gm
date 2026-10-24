@@ -90,7 +90,7 @@ expect_type :: fn(s: ^const Sema, t: Ty, expected: ?Ty) -> ?Ty {
     return if x is t { t } else { null }
 }
 
-suffix_type :: fn(s: ^Sema, suffix: syntax.IntSuffix) -> Ty needs Alloc => match suffix {
+pub(package) suffix_type :: fn(s: ^Sema, suffix: syntax.IntSuffix) -> Ty needs Alloc => match suffix {
     .U(bits) => s.tys.int(false, bits.trunc(u16))
     .I(bits) => s.tys.int(true, bits.trunc(u16))
     .Usize => s.tys.usize_ty()
@@ -182,9 +182,8 @@ const_construction :: fn(s: ^Sema, module: usize, callee: ^const ast.Expr, args:
     return s.expect_type(t, expected)
 }
 
-/// Whether field `f` of struct `id` may be named in `module`: it is `pub`, or the struct
-/// is declared there.
-field_visible :: fn(s: ^const Sema, module: usize, id: u32, f: ^const FieldDef) -> bool => f.is_pub or s.adts.items[usize(id)].module is module
+/// Whether field `f` of struct `id` may be named in `module` (§3.3).
+field_visible :: fn(s: ^const Sema, module: usize, id: u32, f: ^const FieldDef) -> bool => s.visible(f.vis, s.adts.items[usize(id)].module, module)
 
 /// Whether `e` is an untyped constant expression whose value is a valid value of type
 /// `t` (or of the type an optional `t` holds).

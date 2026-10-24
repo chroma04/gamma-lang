@@ -30,6 +30,11 @@ pub enum Finding {
     SelfComparison { span: Span, always: bool },
     /// `x = x`: `span` is the whole assignment.
     SelfAssignment { span: Span },
+    /// A `pub` or `pub(package)` function or constant that no other module names, in a
+    /// package where it could be private: any `pub(package)` one, and a `pub` one of a
+    /// program package (whose root module declares `main`, so other packages do not import
+    /// it).
+    NeedlessPub { name: Symbol, span: Span, vis: ast::Visibility, what: &'static str },
 }
 
 /// Checks the program rooted at `root` with its tests, and with the other modules of its
@@ -51,8 +56,12 @@ pub fn analyze_for_lint(sess: &mut Session, root: &Path, in_scope: &dyn Fn(&Path
     if sema.sess.diags.has_errors() {
         return None;
     }
+    // A program package: no other package imports it.
+    let program = crate::pkg::find_root(root).is_some()
+        && sema.modules[root_mod.0 as usize].scope.contains_key(&Symbol::intern("main"));
     let mut lint = Lint {
         sema: &sema,
+        program,
         uses: HashMap::new(),
         fn_uses: HashSet::new(),
         as_value: HashSet::new(),
@@ -74,6 +83,8 @@ struct Use {
 
 struct Lint<'a, 's> {
     sema: &'a Sema<'s>,
+    /// Whether the root module is the root of a package and declares `main`.
+    program: bool,
     /// By the function whose frame holds the local.
     uses: HashMap<(FnId, LocalId), Use>,
     /// Declarations of functions called or named by another declaration.
@@ -167,7 +178,10 @@ impl Lint<'_, '_> {
         for (i, d) in sema.decls.iter().enumerate() {
             let id = DeclId(i as u32);
             let name = d.name.name.as_str();
-            if d.item.is_pub
+            if let Some(what) = self.needless_pub(id, &file_ok) {
+                self.out.push(Finding::NeedlessPub { name: d.name.name, span: d.name.span, vis: d.item.vis, what });
+            }
+            if d.item.vis == ast::Visibility::Public
                 || d.op_of.is_some()
                 || name == "main"
                 || name.starts_with('_')
@@ -212,6 +226,35 @@ impl Lint<'_, '_> {
             | Finding::SelfAssignment { span } => file_ok(*span),
             _ => true,
         });
+    }
+
+    /// For a `pub` or `pub(package)` function or constant `d` that could be private (see
+    /// [`Finding::NeedlessPub`]), what it declares.
+    fn needless_pub(&self, d: DeclId, file_ok: &dyn Fn(Span) -> bool) -> Option<&'static str> {
+        let sema = self.sema;
+        let decl = &sema.decls[d.0 as usize];
+        let name = decl.name.name.as_str();
+        let candidate = match decl.item.vis {
+            ast::Visibility::Private => false,
+            ast::Visibility::Package => true,
+            ast::Visibility::Public => self.program,
+        };
+        if !candidate
+            || decl.op_of.is_some()
+            || name == "main"
+            || sema.modules[decl.module.0 as usize].is_prelude
+            || !file_ok(decl.name.span)
+            || sema.outside_uses.contains(&d)
+            || decl.item.attrs.iter().any(|a| matches!(a.name.name.as_str(), "export" | "trap_hook"))
+        {
+            return None;
+        }
+        let ast::ItemKind::Binding(b) = &decl.item.kind else { return None };
+        match (&b.init.kind, &decl.state) {
+            (ast::ExprKind::Fn(_), DeclState::Done(DeclValue::Fn(_))) => Some("function"),
+            (_, DeclState::Done(DeclValue::Const { .. } | DeclValue::Untyped(_))) => Some("constant"),
+            _ => None,
+        }
     }
 
     /// The function whose frame holds the local that an upvar `levels` frames up from `f`

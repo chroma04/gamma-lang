@@ -85,7 +85,7 @@ The list is (URL REVISION SOURCE-DIR).")
   '("if" "else" "match" "when" "while" "for" "in" "return" "break" "continue"
     "resume" "cancel" "with" "on" "needs" "defer" "errdefer" "try" "fn"
     "struct" "union" "effect" "handler" "foreign" "where" "test" "bench"
-    "import" "pub" "using" "const" "ctl" "esc" "and" "or" "not" "is")
+    "import" "pub" "package" "using" "const" "ctl" "esc" "and" "or" "not" "is")
   "Keywords of Gamma.")
 
 (defconst gamma-ts-mode--builtin-type-regexp

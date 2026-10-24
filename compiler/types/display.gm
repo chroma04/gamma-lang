@@ -12,7 +12,7 @@ pub Printer :: struct {
     left: u32
 }
 
-pub printer :: fn(t: ^const Types, out: ^List(u8)) -> Printer => Printer(t: t, out: out, depth: 0, left: 0)
+printer :: fn(t: ^const Types, out: ^List(u8)) -> Printer => Printer(t: t, out: out, depth: 0, left: 0)
 
 /// The text of `ty`.
 pub show :: fn(t: ^const Types, ty: Ty) -> string needs Alloc {
@@ -38,7 +38,7 @@ pub show_ref :: fn(t: ^const Types, e: ^const EffectRef) -> string needs Alloc {
     return out.items
 }
 
-pub ty :: fn(p: ^Printer, ty: Ty) needs Alloc {
+ty :: fn(p: ^Printer, ty: Ty) needs Alloc {
     left: u32 = if p.depth is 0 { DISPLAY_BUDGET } else { p.left }
     if left is 0 {
         p.out.extend("...")!
@@ -175,7 +175,7 @@ sig :: fn(p: ^Printer, head: string, sig: ^const FnTy) needs Alloc {
 }
 
 /// `A + B + …`; the empty set has no written form and shows as `()`.
-pub effects :: fn(p: ^Printer, set: ^const EffectSet) needs Alloc {
+effects :: fn(p: ^Printer, set: ^const EffectSet) needs Alloc {
     if set.effects.len is 0 {
         p.out.extend("()")!
         return
@@ -186,7 +186,7 @@ pub effects :: fn(p: ^Printer, set: ^const EffectSet) needs Alloc {
     }
 }
 
-pub effect_ref :: fn(p: ^Printer, e: ^const EffectRef) needs Alloc {
+effect_ref :: fn(p: ^Printer, e: ^const EffectRef) needs Alloc {
     if e.eff is SPLICE and e.args.len > 0 {
         if .Type(t) := e.args[0] {
             p.ty(t)
@@ -220,7 +220,7 @@ is_empty_set :: fn(p: ^const Printer, a: GenericArg) -> bool {
     return set.effects.len is 0
 }
 
-pub key :: fn(p: ^Printer, k: ^const ConstKey) needs Alloc {
+key :: fn(p: ^Printer, k: ^const ConstKey) needs Alloc {
     out := p.out
     match k^ {
         .Fn(_, name) => out.extend(name)!
@@ -269,7 +269,7 @@ write_int :: fn(b: []const u8, signed: bool, out: ^List(u8)) needs Alloc {
 
 /// `s` as Rust's `{:?}` writes a string: in quotes, with `"` and `\` escaped and the
 /// control characters written as escapes.
-pub write_debug_string :: fn(s: []const u8, out: ^List(u8)) needs Alloc {
+write_debug_string :: fn(s: []const u8, out: ^List(u8)) needs Alloc {
     out.push('"')!
     for c in s {
         match c {

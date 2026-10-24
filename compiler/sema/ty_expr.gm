@@ -26,7 +26,7 @@ is_oversized_int_name :: fn(name: string) -> bool {
 
 /// A predeclared type name: the reserved names and the aliases `string`, `cstring` and
 /// `rune`.
-builtin_type :: fn(s: ^Sema, name: string) -> ?Ty needs Alloc {
+pub(package) builtin_type :: fn(s: ^Sema, name: string) -> ?Ty needs Alloc {
     if i := int_type_name(name) { return s.tys.int(i.signed, i.bits) }
     return match name {
         "usize" => s.tys.usize_ty()
@@ -70,7 +70,7 @@ pub value_param :: fn(s: ^const Sema, name: string) -> ?u32 {
 /// True if `name` denotes a type in `module`: a predeclared type, a type parameter in
 /// scope, or a type declared at top level (§4.6). Decided from the syntax of declarations
 /// not resolved yet, so that it never starts an evaluation.
-names_type :: fn(s: ^Sema, module: usize, name: string) -> bool needs Load {
+pub(package) names_type :: fn(s: ^Sema, module: usize, name: string) -> bool needs Load {
     if s.type_param(name) is not null { return true }
     if d := s.lookup_module_name(module, name) { return s.decl_is_type(d, 0) }
     return is_builtin_type_name(name)
@@ -107,7 +107,7 @@ syntax_is_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, depth: u32) ->
         .Field(base, name) => {
             m := s.syntax_module(module, base, depth) else return false
             d := s.l.lookup(m, name.name) else return false
-            if not s.l.decls.items[d].item.is_pub { return false }
+            if not s.decl_visible(d, module) { return false }
             return s.decl_is_type(d, depth + 1)
         }
         _ => return false
@@ -124,7 +124,7 @@ syntax_module :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, depth: u32) -> 
         .Field(base, name) => {
             m := s.syntax_module(module, base, depth + 1) else return null
             d = s.l.lookup(m, name.name) else return null
-            if not s.l.decls.items[d].item.is_pub { return null }
+            if not s.decl_visible(d, module) { return null }
         }
         _ => return null
     }
@@ -437,7 +437,7 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
         // `m.T`: a type declared in another module.
         .Field(base, name) => {
             if m := s.module_named(module, base) {
-                d := s.module_member(m, name) else return tys.error()
+                d := s.module_member(m, name, module) else return tys.error()
                 match s.resolve_decl(d) {
                     .Type(t) => return t
                     .Error => return tys.error()
@@ -491,11 +491,11 @@ generic_decl :: fn(s: ^Sema, module: usize, callee: ^const ast.Expr, report: boo
         .Field(base, name) => {
             m := s.module_named(module, base) else return null
             if report {
-                d := s.module_member(m, name) else return null
+                d := s.module_member(m, name, module) else return null
                 return NamedDecl(decl: d, span: name.span)
             }
             d := s.l.lookup(m, name.name) else return null
-            if not s.l.decls.items[d].item.is_pub { return null }
+            if not s.decl_visible(d, module) { return null }
             return NamedDecl(decl: d, span: name.span)
         }
         _ => return null
@@ -719,7 +719,7 @@ fn_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?u32 needs 
         .Field(base, name) => {
             m := s.module_named(module, base) else return null
             d = s.l.lookup(m, name.name) else return null
-            if not s.l.decls.items[d].item.is_pub { return null }
+            if not s.decl_visible(d, module) { return null }
         }
         _ => return null
     }

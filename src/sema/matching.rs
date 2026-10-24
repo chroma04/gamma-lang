@@ -91,7 +91,8 @@ impl<'a, 's> FnCx<'a, 's> {
 
     pub fn report_match(&mut self, report: super::exhaust::MatchReport, span: Span, arms: &[Span]) {
         if let Some(missing) = report.missing {
-            let mut d = Diagnostic::error(span, format!("this `match` is not exhaustive: `{}` is not covered", missing));
+            let mut d =
+                Diagnostic::error(span, format!("this `match` is not exhaustive: `{}` is not covered", missing));
             if let Some(at) = report.present_only {
                 d = d.with_label(at, "this name matches only a present value").with_note(
                     "a name in the position of an optional matches only a present value (§9.3); to get the \

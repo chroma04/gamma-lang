@@ -33,7 +33,7 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
         }
         .Field(base, name) => {
             if m := cx.module_of(base) {
-                d := cx.s.module_member(m, name) else return error_expr(cx.s, span)
+                d := cx.s.module_member(m, name, cx.module) else return error_expr(cx.s, span)
                 return cx.call_decl(d, name.name, callee, args, span)
             }
             if t := cx.type_of_name(base) { return cx.construct_variant(t, name, args, span) }

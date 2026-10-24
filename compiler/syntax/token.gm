@@ -12,7 +12,7 @@ pub Keyword :: union {
 }
 
 /// The keyword spelled `s`, if it is one.
-pub keyword_from :: fn(s: string) -> ?Keyword => match s {
+keyword_from :: fn(s: string) -> ?Keyword => match s {
     "and" => .And
     "break" => .Break
     "cancel" => .Cancel
@@ -271,7 +271,7 @@ pub LexOutput :: struct {
     pub joined_lines: List(u32)
 }
 
-pub is_punct :: fn(k: TokenKind, p: Punct) -> bool => match k {
+is_punct :: fn(k: TokenKind, p: Punct) -> bool => match k {
     .Punct(q) => q is p
     _ => false
 }
@@ -291,7 +291,7 @@ pub describe :: fn(k: TokenKind) -> string needs Alloc => match k {
     .Eof => "end of file"
 }
 
-pub is_keyword :: fn(k: TokenKind, kw: Keyword) -> bool => match k {
+is_keyword :: fn(k: TokenKind, kw: Keyword) -> bool => match k {
     .Keyword(x) => x is kw
     _ => false
 }

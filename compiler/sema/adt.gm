@@ -188,7 +188,7 @@ struct_kind :: fn(s: ^Sema, module: usize, id: u32, st: ^const ast.StructLit, at
                     }
                 }
             }
-            fields.push(FieldDef(name: n.name, ty: ty, is_pub: f.is_pub, align: field_align))!
+            fields.push(FieldDef(name: n.name, ty: ty, vis: f.vis, align: field_align))!
             defaults.push(f.default is not null)!
             default_exprs.push(f.default)!
         }
@@ -300,7 +300,7 @@ union_kind :: fn(s: ^Sema, module: usize, u: ^const ast.UnionLit, attrs: []const
         fields := list(FieldDef)
         for i, v in enumerate(variants.items) {
             if p := v.payload {
-                fields.push(FieldDef(name: v.name, ty: p, is_pub: true, align: null))!
+                fields.push(FieldDef(name: v.name, ty: p, vis: .Public, align: null))!
             } else {
                 s.error(spans.items[i], "every field of a `#c_union` needs a type")
             }
@@ -558,7 +558,7 @@ instance_args :: fn(s: ^const Sema, inst: u32) -> []GenericArg needs Alloc {
 
 subst_fields :: fn(s: ^Sema, fields: []const FieldDef, map: []const Subst) -> []FieldDef needs Load {
     out := list(FieldDef)
-    for f in fields { out.push(FieldDef(name: f.name, ty: s.subst(f.ty, map), is_pub: f.is_pub, align: f.align))! }
+    for f in fields { out.push(FieldDef(name: f.name, ty: s.subst(f.ty, map), vis: f.vis, align: f.align))! }
     return out.items
 }
 
@@ -677,7 +677,7 @@ subst_sig :: fn(s: ^Sema, sig: ^const types.FnTy, map: []const Subst) -> types.F
 
 /// `subst` on the arguments of each effect in `set`, splicing in the effect sets that
 /// `E` terms become.
-subst_effects :: fn(s: ^Sema, set: ^const EffectSet, map: []const Subst) -> EffectSet needs Load {
+pub(package) subst_effects :: fn(s: ^Sema, set: ^const EffectSet, map: []const Subst) -> EffectSet needs Load {
     refs := list(EffectRef)
     for e in set.effects {
         args := list(GenericArg)

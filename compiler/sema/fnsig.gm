@@ -269,7 +269,7 @@ is_effect_sum :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs L
     match head.kind {
         .Ident(id) => { d = s.lookup_module_name(module, id.name) }
         .Field(base, name) => {
-            if m := s.module_named(module, base) { d = s.module_member(m, name) }
+            if m := s.module_named(module, base) { d = s.module_member(m, name, module) }
         }
         _ => {}
     }
@@ -284,7 +284,7 @@ named_effect_set :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?EffectSe
         .Ident(id) => { d = s.lookup_module_name(module, id.name) else return null }
         .Field(base, name) => {
             m := s.module_named(module, base) else return null
-            d = s.module_member(m, name) else return null
+            d = s.module_member(m, name, module) else return null
         }
         _ => return null
     }
@@ -351,7 +351,7 @@ resolve_effect_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?Effect
     // `m.E`: an effect declared in another module.
     if .Field(base, name) := e.kind {
         if m := s.module_named(module, base) {
-            d := s.module_member(m, name) else return null
+            d := s.module_member(m, name, module) else return null
             match s.resolve_decl(d) {
                 .Effect(eff) => return s.bare_effect_ref(eff)
                 .EffectInst(r) => return r
@@ -370,7 +370,7 @@ resolve_effect_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?Effect
 
 /// An effect named without arguments. An effect whose parameters are all effect sets
 /// gets empty ones; otherwise the arguments stay empty.
-bare_effect_ref :: fn(s: ^Sema, eff: u32) -> EffectRef needs Alloc {
+pub(package) bare_effect_ref :: fn(s: ^Sema, eff: u32) -> EffectRef needs Alloc {
     params := s.effects.items[usize(eff)].params
     all_sets := params.len > 0
     for p in params {

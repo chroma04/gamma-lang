@@ -375,7 +375,12 @@ impl Tb {
         let id = AdtId::fresh(Symbol::intern(name));
         let fields = fields
             .iter()
-            .map(|(n, t)| FieldDef { name: Symbol::intern(n), ty: *t, is_pub: true, align: None })
+            .map(|(n, t)| FieldDef {
+                name: Symbol::intern(n),
+                ty: *t,
+                vis: crate::syntax::ast::Visibility::Public,
+                align: None,
+            })
             .collect();
         self.prog.adts.insert(
             id,
@@ -391,7 +396,12 @@ impl Tb {
         let id = AdtId::fresh(Symbol::intern(name));
         let fields = fields
             .iter()
-            .map(|(n, t)| FieldDef { name: Symbol::intern(n), ty: *t, is_pub: true, align: None })
+            .map(|(n, t)| FieldDef {
+                name: Symbol::intern(n),
+                ty: *t,
+                vis: crate::syntax::ast::Visibility::Public,
+                align: None,
+            })
             .collect();
         self.prog.adts.insert(
             id,

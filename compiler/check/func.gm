@@ -160,7 +160,7 @@ unsupported :: fn(cx: ^FnCx, span: source.Span, what: string) -> ^Expr needs All
     return error_expr(cx.s, span)
 }
 
-show :: fn(cx: ^FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
+show :: fn(cx: ^const FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
 
 // ---------------------------------------------------------------------------------
 // Function bodies
@@ -168,7 +168,7 @@ show :: fn(cx: ^FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
 
 /// Checks the bodies of the functions declared so far, newest first, as the reference
 /// implementation does, except those of the core library.
-pub check_bodies :: fn(s: ^Sema) needs Load {
+check_bodies :: fn(s: ^Sema) needs Load {
     while body := s.pending_bodies.pop() {
         if s.l.modules.items[body.module].is_prelude { continue }
         check_fn_body(s, body.fn_id, body.module, body.lit)
@@ -574,7 +574,7 @@ local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
         .Field(base, name) => {
             m := cx.s.module_named(cx.module, base) else return false
             d := cx.s.l.lookup(m, name.name) else return false
-            return cx.s.l.decls.items[d].item.is_pub and cx.s.resolve_decl(d) is .Type(_)
+            return cx.s.decl_visible(d, cx.module) and cx.s.resolve_decl(d) is .Type(_)
         }
         .Intrinsic(i) => return i.name.name is "type_of"
         _ => return false
@@ -814,9 +814,9 @@ expect_bool :: fn(cx: ^FnCx, e: ^Expr) -> ^Expr needs Load {
 // Helpers
 // ---------------------------------------------------------------------------------
 
-pub unit :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.unit(), .Aggregate(empty_slice(Expr)), span)
+unit :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.unit(), .Aggregate(empty_slice(Expr)), span)
 
-pub error_expr :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.error(), .Aggregate(empty_slice(Expr)), span)
+error_expr :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.error(), .Aggregate(empty_slice(Expr)), span)
 
 /// The error for `---` at a type that is not plain data (§4.4).
 uninit_message :: fn(s: ^Sema, ty: Ty) -> string needs Alloc {

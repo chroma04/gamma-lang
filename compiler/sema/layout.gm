@@ -37,7 +37,7 @@ pair :: fn(a, b: Layout) -> Layout {
 }
 
 /// True for the pointer kinds whose optional uses address 0 as null (§5.12).
-is_nullable_pointer :: fn(s: ^Sema, t: Ty) -> bool => s.tys.kind(t) in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_))
+pub(package) is_nullable_pointer :: fn(s: ^Sema, t: Ty) -> bool => s.tys.kind(t) in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_))
 
 /// The layout of `t`, computed once per query: types are shared DAGs whose expanded
 /// trees can be exponentially large.

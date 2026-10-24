@@ -149,7 +149,17 @@ impl Sema<'_> {
         match &def.kind {
             AdtKind::Struct { fields, .. } | AdtKind::CUnion { fields } => {
                 for (i, f) in fields.iter().enumerate() {
-                    let _ = write!(out, "    {}{}: {}", if f.is_pub { "pub " } else { "" }, f.name, f.ty);
+                    let _ = write!(
+                        out,
+                        "    {}{}: {}",
+                        match f.vis {
+                            crate::syntax::ast::Visibility::Public => "pub ",
+                            crate::syntax::ast::Visibility::Package => "pub(package) ",
+                            crate::syntax::ast::Visibility::Private => "",
+                        },
+                        f.name,
+                        f.ty
+                    );
                     if let Some(n) = f.align {
                         let _ = write!(out, " #align({})", n);
                     }

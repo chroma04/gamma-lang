@@ -303,13 +303,9 @@ struct_pattern :: fn(cx: ^FnCx, path: ^const ast.Expr, t0: ?Ty, args0: ?[]ast.Pa
         cx.error(path.span, str.format("`{}` is not a struct type", cx.show(t))!)
         return wild
     }
-    if not cx.sees_private(t) {
-        for f in fields {
-            if not f.is_pub {
-                cx.error(span, str.format("`{}` cannot be matched with a struct pattern outside its module: its field `{}` is private (§3.3)", cx.show(t), f.name)!)
-                return wild
-            }
-        }
+    if h := cx.hidden_field(t) {
+        cx.error(span, str.format("`{}` cannot be matched with a struct pattern outside its {}: its field `{}` is private (§3.3)", cx.show(t), h.owner, h.name)!)
+        return wild
     }
     names := list(string)
     ftys := list(Ty)

@@ -67,7 +67,7 @@ impl<'s> Sema<'s> {
             ExprKind::Field { base, name } => {
                 let Some(m) = self.syntax_module(module, base, depth) else { return false };
                 match self.modules[m.0 as usize].scope.get(&name.name).copied() {
-                    Some(d) if self.decls[d.0 as usize].item.is_pub => self.decl_is_type(d, depth + 1),
+                    Some(d) if self.decl_visible(d, module) => self.decl_is_type(d, depth + 1),
                     _ => false,
                 }
             }
@@ -86,7 +86,7 @@ impl<'s> Sema<'s> {
             ExprKind::Field { base, name } => {
                 let m = self.syntax_module(module, base, depth + 1)?;
                 let d = self.modules[m.0 as usize].scope.get(&name.name).copied()?;
-                if !self.decls[d.0 as usize].item.is_pub {
+                if !self.decl_visible(d, module) {
                     return None;
                 }
                 d
@@ -384,7 +384,7 @@ impl<'s> Sema<'s> {
             // `m.T` — a type declared in another module.
             ExprKind::Field { base, name } if self.module_named(module, base).is_some() => {
                 let m = self.module_named(module, base).unwrap();
-                let Some(d) = self.module_member(m, *name) else { return Ty::error() };
+                let Some(d) = self.module_member(m, *name, module) else { return Ty::error() };
                 match self.resolve_decl(d) {
                     DeclValue::Type(t) => t,
                     DeclValue::Error => Ty::error(),
@@ -428,10 +428,14 @@ impl<'s> Sema<'s> {
             ExprKind::Field { base, name } => {
                 let m = self.module_named(module, base)?;
                 if report {
-                    return Some((self.module_member(m, *name)?, name.span));
+                    return Some((self.module_member(m, *name, module)?, name.span));
                 }
                 let d = *self.modules[m.0 as usize].scope.get(&name.name)?;
-                self.decls[d.0 as usize].item.is_pub.then_some((d, name.span))
+                let seen = self.decl_visible(d, module);
+                if seen {
+                    self.note_use_from(d, module);
+                }
+                seen.then_some((d, name.span))
             }
             _ => None,
         }

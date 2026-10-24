@@ -414,7 +414,7 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
     }
 }
 
-pub block_children :: fn(b: ^Block, f: fn(c: ^Expr)) {
+block_children :: fn(b: ^Block, f: fn(c: ^Expr)) {
     for s in b.stmts {
         match s {
             .Let(_, null) => {}
@@ -442,7 +442,7 @@ conds_children :: fn(cond: []CondPart, f: fn(c: ^Expr)) {
 }
 
 /// Calls `f` on the constant expressions inside pattern `p`.
-pub pat_children :: fn(p: ^Pat, f: fn(c: ^Expr)) {
+pat_children :: fn(p: ^Pat, f: fn(c: ^Expr)) {
     match p.kind {
         .Const(e) => f(e)
         .Some(q), .Ok(q), .Err(q) => pat_children(q, f)

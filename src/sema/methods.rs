@@ -618,7 +618,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let module = self.sema.adts.get(id)?.module;
         let f = match self.sema.modules[module.0 as usize].scope.get(&name.name).copied() {
             Some(d) => match self.sema.resolve_decl(d) {
+                DeclValue::Fn(_) if !self.sema.decl_visible(d, self.module) => {
+                    let _ = self.sema.module_member(module, name, self.module);
+                    return Some(error_expr(span));
+                }
                 DeclValue::Fn(f) => {
+                    self.sema.note_use_from(d, self.module);
                     // A function whose first parameter is not the receiver's type leaves the
                     // name to an operation that takes it (§7.10).
                     let takes = |ty: Ty| {
@@ -684,7 +689,7 @@ impl<'a, 's> FnCx<'a, 's> {
             let Some((_, op)) = self.sema.decls[od.0 as usize].op_of else { continue };
             let DeclValue::Effect(eff) = self.sema.resolve_decl(ed) else { continue };
             let info = &self.sema.effects[&eff];
-            if !info.params.is_empty() || (self.module != module && !self.sema.decls[ed.0 as usize].item.is_pub) {
+            if !info.params.is_empty() || !self.sema.decl_visible(ed, self.module) {
                 continue;
             }
             let o = info.ops[op as usize].clone();
@@ -696,6 +701,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if !fit {
                 continue;
             }
+            self.sema.note_use_from(ed, self.module);
             let Ok(recv) = self.adjust_receiver(recv, rty, first.ty, name, span) else { return Some(error_expr(span)) };
             let mut vals = vec![recv];
             let (rest, pre) = self.bind_args(&o.params[1..], module, args, span, "operation");

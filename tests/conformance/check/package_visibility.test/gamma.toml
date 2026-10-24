@@ -1,0 +1,7 @@
+# A package whose modules share `pub(package)` declarations, with a dependency
+# whose `pub(package)` declarations it cannot see.
+[package]
+name = "package_visibility"
+
+[dependencies]
+geom = { path = "deps/geom" }

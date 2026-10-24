@@ -121,10 +121,13 @@ module.exports = grammar({
       $.intrinsic_expression,
       seq(
         optional($._attributes),
-        optional('pub'),
+        optional($.visibility),
         choice($.const_declaration, $.typed_declaration, $.short_declaration),
       ),
     ),
+
+    // `pub` or `pub(package)` (§3.3).
+    visibility: $ => prec.right(seq('pub', optional(seq('(', 'package', ')')))),
 
     _attribute_line: $ => seq($.attribute, optional($._newline)),
     _attributes: $ => repeat1($._attribute_line),
@@ -694,7 +697,7 @@ module.exports = grammar({
     _field_member: $ => choice($.field_declaration, $.when_fields),
     field_declaration: $ => seq(
       optional($._attributes),
-      optional('pub'),
+      optional($.visibility),
       optional('using'),
       commaSep1(field('name', $.identifier)),
       ':',

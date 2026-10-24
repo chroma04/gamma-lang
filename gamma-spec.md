@@ -364,17 +364,24 @@ An imported module's `pub` declarations are accessed as `name.member`. A module 
 
 ### 3.3 Visibility
 
-Top-level declarations and struct fields are private to their module unless marked `pub`. A private name is accessible from any file in the same module, and from nowhere else.
+```
+visibility = 'pub' [ '(' 'package' ')' ]
+```
 
-- A `pub` declaration's signature must not mention a private type. (A private type may appear inside a `pub` struct's private fields.)
-- A struct with any private field cannot be constructed, spread, or matched with a struct pattern outside its module. It can still be copied, passed and compared with `is`.
+Top-level declarations and struct fields are private to their module unless marked. A private name is accessible from any file in the same module, and from nowhere else. A name marked `pub(package)` is accessible from every module of the same package (§3.1), and one marked `pub` from everywhere. `package` is not a keyword; it has this meaning only in `pub(…)`.
+
+`pub(package)` is for what the modules of a package share with each other but not with its users: a compiler's checker calling helpers of its type module, a library's modules sharing a representation. Tools that document a package's interface (`gamma doc`) show only `pub` names.
+
+- A declaration's signature must not mention a type less visible than the declaration: a `pub` declaration no private or `pub(package)` type, a `pub(package)` declaration no private type. The fields of a struct count with the visibility of the field, up to the struct's own: the `pub(package)` fields of a `pub` struct may mention `pub(package)` types, and its private fields any type.
+- A struct with any field that is not visible at a place cannot be constructed, spread, or matched with a struct pattern there. It can still be copied, passed and compared with `is`.
+- A method call (§7.10) finds a function only where the function's name is visible: a private function of a type's module is not a method of the type in other modules.
 - Union variants are public whenever the union is.
 - Effect operations are public whenever the effect is.
 
 ### 3.4 Top-level declarations
 
 ```
-top_decl = [ doc ] { attribute } [ 'pub' ] binding
+top_decl = [ doc ] { attribute } [ visibility ] binding
          | 'when' expr top_block { 'else' 'when' expr top_block } [ 'else' top_block ]
          | handler_decl
          | 'test' string_lit block
@@ -3205,7 +3212,7 @@ This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `
 ```
 file          = { NL } [ top_decl { NL { NL } top_decl } { NL } ]   // the last NL may be omitted
 
-top_decl      = { attribute } [ 'pub' ] binding
+top_decl      = { attribute } [ visibility ] binding
               | 'when' expr top_block { 'else' 'when' expr top_block } [ 'else' top_block ]
               | handler_decl
               | 'test' STRING block
@@ -3220,6 +3227,7 @@ binding       = IDENT '::' expr
               | ident_list ( '::' | ':=' ) expr                 // destructuring
               | ident_list ':' type ( ':' | '=' ) expr
 ident_list    = IDENT ',' IDENT { ',' IDENT }
+visibility    = 'pub' [ '(' 'package' ')' ]                    // `package` is an identifier here
 
 attribute     = ATTR [ '(' [ expr % ',' ] ')' ]
 ```
@@ -3254,7 +3262,7 @@ effect_set    = effect_ref { '+' effect_ref }                   // also an effec
 effect_ref    = postfix_expr                                    // Log, Yield(T), m.Net, Sched(Out), Io, E
 
 struct_lit    = { attribute } 'struct' [ '(' param_list ')' ] [ where_clause ] '{' { NL } [ field_decl { ( ',' | NL ) { NL } field_decl } ] { NL } '}'
-field_decl    = [ 'pub' ] [ 'using' ] IDENT { ',' IDENT } ':' type [ '=' expr ]
+field_decl    = [ visibility ] [ 'using' ] IDENT { ',' IDENT } ':' type [ '=' expr ]
               | { attribute } field_decl
               | 'when' expr '{' { field_decl NL } '}' [ 'else' '{' { field_decl NL } '}' ]
 union_lit     = { attribute } 'union' [ '(' type ')' | '(' param_list ')' ] [ where_clause ]

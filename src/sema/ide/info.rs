@@ -154,14 +154,10 @@ impl<'s> Sema<'s> {
         Item { label: decl.name.name.to_string(), kind, detail, doc: hover.doc }
     }
 
-    /// The public declarations of module `m`, as the members of `m.`.
-    pub(super) fn module_members(&self, m: ModuleId) -> Vec<Item> {
-        let mut ds: Vec<DeclId> = self.modules[m.0 as usize]
-            .scope
-            .values()
-            .copied()
-            .filter(|d| self.decls[d.0 as usize].item.is_pub)
-            .collect();
+    /// The declarations of module `m` that module `from` can see, as the members of `m.`.
+    pub(super) fn module_members(&self, m: ModuleId, from: ModuleId) -> Vec<Item> {
+        let mut ds: Vec<DeclId> =
+            self.modules[m.0 as usize].scope.values().copied().filter(|&d| self.decl_visible(d, from)).collect();
         ds.sort();
         ds.into_iter().map(|d| self.decl_item(d)).collect()
     }
@@ -176,7 +172,9 @@ impl<'s> Sema<'s> {
                 .copied()
                 .filter(|d| {
                     let decl = &self.decls[d.0 as usize];
-                    decl.item.is_pub && !self.universe_hidden(*d) && decl.name.name.as_str() != "core"
+                    decl.item.vis == crate::syntax::ast::Visibility::Public
+                        && !self.universe_hidden(*d)
+                        && decl.name.name.as_str() != "core"
                 })
                 .collect();
             ds.sort();

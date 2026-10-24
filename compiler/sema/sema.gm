@@ -122,7 +122,7 @@ pub EffectInfo :: struct {
 pub FieldDef :: struct {
     pub name: string
     pub ty: Ty
-    pub is_pub: bool
+    pub vis: ast.Visibility
     /// `#align(n)` on the field.
     pub align: ?u64
 }
@@ -303,7 +303,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
 }
 
 /// The prefix of the message of every construct gammac cannot check yet.
-pub UNSUPPORTED :: "gammac cannot check"
+UNSUPPORTED :: "gammac cannot check"
 
 /// Reports that gammac cannot check `what` yet.
 pub unsupported :: fn(s: ^Sema, span: source.Span, what: string) needs Alloc {
@@ -680,7 +680,7 @@ aliased_decl :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?AliasTarget 
         .Paren(inner) => return s.aliased_decl(module, inner)
         .Field(base, name) => {
             m := s.module_named(module, base) else return null
-            return AliasTarget(decl: s.module_member(m, name))
+            return AliasTarget(decl: s.module_member(m, name, module))
         }
         _ => return null
     }
@@ -761,85 +761,104 @@ check_method_candidates :: fn(s: ^Sema) needs Alloc {
     s.method_candidates.clear()
 }
 
-/// A `pub` declaration's signature must not mention a private type (§3.3).
+/// A declaration's signature must not mention a type less visible than the declaration
+/// (§3.3).
 check_pub_signatures :: fn(s: ^Sema) needs Alloc {
     for i in 0..s.l.decls.items.len {
         d := &s.l.decls.items[i]
-        if not d.item.is_pub or d.item.kind is not .Binding(_) { continue }
+        vis := d.item.vis
+        if vis is .Private or d.item.kind is not .Binding(_) { continue }
         if i >= s.states.items.len { continue }
         .Done(v) := s.states.items[i] else continue
-        tys := list(Ty)
+        // Each mentioned type with the visibility it needs.
+        tys := list(Mention)
         match v {
             .Fn(f) => {
                 sig := &s.fns.items[usize(f)]
                 for p in sig.params {
-                    if p.generic is null { tys.push(p.ty)! }
+                    if p.generic is null { tys.push(Mention(ty: p.ty, need: vis))! }
                 }
-                tys.push(sig.ret)!
-                effect_arg_tys(sig.effects.effects, &tys)
+                tys.push(Mention(ty: sig.ret, need: vis))!
+                effect_arg_tys(sig.effects.effects, vis, &tys)
             }
             .Effect(e) => {
                 for op in s.effects.items[usize(e)].ops {
                     for p in op.params {
-                        if p.generic is null { tys.push(p.ty)! }
+                        if p.generic is null { tys.push(Mention(ty: p.ty, need: vis))! }
                     }
-                    tys.push(op.ret)!
+                    tys.push(Mention(ty: op.ret, need: vis))!
                 }
             }
-            .EffectInst(r) => effect_arg_tys([1]EffectRef(r)[..], &tys)
-            .EffectSet(set) => effect_arg_tys(set.effects, &tys)
+            .EffectInst(r) => effect_arg_tys([1]EffectRef(r)[..], vis, &tys)
+            .EffectSet(set) => effect_arg_tys(set.effects, vis, &tys)
             .Type(t) => {
                 if .Adt(id, _) := s.tys.kind(t) and s.adts.items[usize(id)].decl is i {
-                    s.adt_field_tys(id, &tys)
+                    s.adt_field_tys(id, vis, &tys)
                 } else {
-                    tys.push(t)!
+                    tys.push(Mention(ty: t, need: vis))!
                 }
             }
             .GenericType(id) => {
-                if s.adts.items[usize(id)].decl is i { s.adt_field_tys(id, &tys) }
+                if s.adts.items[usize(id)].decl is i { s.adt_field_tys(id, vis, &tys) }
             }
-            .Const(t), .Global(t) => tys.push(t)!
+            .Const(t), .Global(t) => tys.push(Mention(ty: t, need: vis))!
             _ => {}
         }
-        for t in tys.items {
-            if p := s.private_part(t) {
-                s.error(d.name.span, str.format("the `pub` declaration `{}` mentions the private type `{}` (§3.3)", d.name.name, s.show(p))!)
+        for m in tys.items {
+            if h := s.hidden_part(m.ty, m.need) {
+                what := if vis is .Package { "pub(package)" } else { "pub" }
+                kind := if h.vis is .Package { "`pub(package)`" } else { "private" }
+                s.error(d.name.span, str.format("the `{}` declaration `{}` mentions the {} type `{}` (§3.3)", what, d.name.name, kind, s.show(h.ty))!)
                 break
             }
         }
     }
 }
 
-effect_arg_tys :: fn(refs: []const EffectRef, tys: ^List(Ty)) needs Alloc {
+/// A type that a declaration's signature mentions, and the visibility it needs.
+Mention :: struct {
+    ty: Ty
+    need: ast.Visibility
+}
+
+effect_arg_tys :: fn(refs: []const EffectRef, need: ast.Visibility, tys: ^List(Mention)) needs Alloc {
     for r in refs {
         for a in r.args {
-            if .Type(t) := a { tys.push(t)! }
+            if .Type(t) := a { tys.push(Mention(ty: t, need: need))! }
         }
     }
 }
 
-adt_field_tys :: fn(s: ^const Sema, id: u32, tys: ^List(Ty)) needs Alloc {
+/// The types of the fields of struct `id` that are visible outside its module, each
+/// needing at most the visibility `vis` of the struct, or of the payloads of a union.
+adt_field_tys :: fn(s: ^const Sema, id: u32, vis: ast.Visibility, tys: ^List(Mention)) needs Alloc {
     match s.adts.items[usize(id)].kind {
-        .Struct(def) => for f in def.fields {
-            if f.is_pub { tys.push(f.ty)! }
-        }
-        .CUnion(fields) => for f in fields {
-            if f.is_pub { tys.push(f.ty)! }
-        }
+        .Struct(def) => push_field_tys(def.fields, vis, tys)
+        .CUnion(fields) => push_field_tys(fields, vis, tys)
         .Union(_, variants) => for v in variants {
-            if p := v.payload { tys.push(p)! }
+            if p := v.payload { tys.push(Mention(ty: p, need: vis))! }
         }
     }
 }
 
-/// The first type in `t` that a private declaration names.
-private_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
-    found: ?Ty = null
+push_field_tys :: fn(fields: []const FieldDef, vis: ast.Visibility, tys: ^List(Mention)) needs Alloc {
+    for f in fields {
+        if f.vis is .Private { continue }
+        need := if f.vis.tag() < vis.tag() { f.vis } else { vis }
+        tys.push(Mention(ty: f.ty, need: need))!
+    }
+}
+
+/// The first type in `t` that a declaration less visible than `need` names, with that
+/// declaration's visibility.
+hidden_part :: fn(s: ^const Sema, t: Ty, need: ast.Visibility) -> ?(ty: Ty, vis: ast.Visibility) {
+    found: ?(ty: Ty, vis: ast.Visibility) = null
     s.walk(t, fn(x: Ty) {
         if found is null {
             if .Adt(id, _) := s.tys.kind(x) {
                 if d := s.adts.items[usize(s.tys.template(id))].decl {
-                    if not s.l.decls.items[d].item.is_pub { found = x }
+                    vis := s.l.decls.items[d].item.vis
+                    if vis.tag() < need.tag() { found = (ty: x, vis: vis) }
                 }
             }
         }

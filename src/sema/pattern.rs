@@ -388,11 +388,11 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(path.span, format!("`{}` is not a struct type", t));
             return pat(ty, PatKind::Wild, span);
         };
-        if let Some(f) = self.hidden_field(t) {
+        if let Some((f, owner)) = self.hidden_field(t) {
             self.error(
                 span,
                 format!(
-                    "`{}` cannot be matched with a struct pattern outside its module: its field `{}` is private (§3.3)",
+                    "`{}` cannot be matched with a struct pattern outside its {owner}: its field `{}` is private (§3.3)",
                     t, f
                 ),
             );

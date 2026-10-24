@@ -53,7 +53,7 @@ build :: fn(root: string, names: []const string) -> string needs Alloc {
     return out.items
 }
 
-pub is_absolute :: fn(p: string) -> bool => split_root_len(p) > 0
+is_absolute :: fn(p: string) -> bool => split_root_len(p) > 0
 
 split_root_len :: fn(p: string) -> usize {
     when target.os is .Windows {
@@ -75,7 +75,7 @@ pub join :: fn(a, b: string) -> string needs Alloc {
 
 /// `p` without `.` and `..` names, without looking at the file system. A `..` at the start
 /// of a relative path stays: `../lib` is not `lib`.
-pub normalize :: fn(p: string) -> string needs Alloc {
+normalize :: fn(p: string) -> string needs Alloc {
     parts := split(p)
     out := list(string)
     for n in parts.names.items {
@@ -102,10 +102,10 @@ pub parent :: fn(p: string) -> ?string needs Alloc {
 }
 
 /// The last name of `p`, if it has one.
-pub file_name :: fn(p: string) -> ?string needs Alloc => split(p).names.items.last()
+file_name :: fn(p: string) -> ?string needs Alloc => split(p).names.items.last()
 
 /// The last name of `p` without its extension: `main` for `src/main.gm`.
-pub file_stem :: fn(p: string) -> ?string needs Alloc {
+file_stem :: fn(p: string) -> ?string needs Alloc {
     name := file_name(p) else return null
     i := name.len
     while i > 1 {
@@ -117,11 +117,11 @@ pub file_stem :: fn(p: string) -> ?string needs Alloc {
 
 /// Whether `p` begins with the names of `base` (comparing whole names, so `/a/bc` does not
 /// begin with `/a/b`).
-pub starts_with :: fn(p, base: string) -> bool needs Alloc => strip_prefix(p, base) is not null
+starts_with :: fn(p, base: string) -> bool needs Alloc => strip_prefix(p, base) is not null
 
 /// `p` without the leading names of `base` (empty if they are equal), or `null` if `p`
 /// does not begin with `base`.
-pub strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
+strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
     a := split(p)
     b := split(base)
     if a.root is not b.root or a.names.items.len < b.names.items.len { return null }
@@ -132,7 +132,7 @@ pub strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
 }
 
 /// `p` with `/` for every separator, for output that is the same on every platform.
-pub slashes :: fn(p: string) -> string needs Alloc {
+slashes :: fn(p: string) -> string needs Alloc {
     out := list(u8)
     for c in p { out.push(if is_sep(c) { '/' } else { c })! }
     return out.items

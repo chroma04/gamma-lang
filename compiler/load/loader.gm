@@ -158,7 +158,7 @@ imports_of :: fn(l: ^const Loader, m: usize) -> []usize needs Alloc {
 }
 
 /// Whether `item` is a binding initialized by `import`.
-pub is_import :: fn(item: ^const ast.Item) -> bool {
+is_import :: fn(item: ^const ast.Item) -> bool {
     .Binding(b) := item.kind else return false
     return b.init.kind is .Import(_)
 }
@@ -386,7 +386,7 @@ same_import :: fn(l: ^const Loader, prev: usize, item: ^const ast.Item) -> bool 
     d := &l.decls.items[prev]
     a := import_path(&d.item) else return false
     b := import_path(item) else return false
-    return d.item.is_pub is item.is_pub and a is b
+    return d.item.vis is item.vis and a is b
 }
 
 /// The path of an import binding without attributes or a type.

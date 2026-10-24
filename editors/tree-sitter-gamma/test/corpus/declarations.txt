@@ -37,9 +37,11 @@ pub f :: fn() {}
 --------------------------------------------------------------------------------
 
 (source_file
+  (visibility)
   (const_declaration
     (identifier)
     (integer_literal))
+  (visibility)
   (const_declaration
     (identifier)
     (struct_type
@@ -47,6 +49,7 @@ pub f :: fn() {}
         (field_declaration
           (identifier)
           (identifier)))))
+  (visibility)
   (const_declaration
     (identifier)
     (function_expression
@@ -480,3 +483,31 @@ f :: fn() {
             (identifier)
             (integer_literal)))
         (block)))))
+
+================================================================================
+Package visibility
+================================================================================
+
+pub(package) helper :: fn() {}
+
+S :: struct {
+    pub(package) x: i32
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (visibility)
+  (const_declaration
+    (identifier)
+    (function_expression
+      (parameters)
+      (block)))
+  (const_declaration
+    (identifier)
+    (struct_type
+      (field_declaration_list
+        (field_declaration
+          (visibility)
+          (identifier)
+          (identifier))))))

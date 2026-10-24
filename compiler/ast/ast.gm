@@ -36,8 +36,19 @@ pub Item :: struct {
     /// The text of the doc comments (`///`) directly before the item, joined by newlines.
     pub doc: ?string
     pub attrs: []Attribute
-    pub is_pub: bool
+    pub vis: Visibility
     pub kind: ItemKind
+}
+
+/// Where a declaration or a struct field can be named from (§3.3), from the least to the
+/// most visible.
+pub Visibility :: union {
+    /// No marker: the files of its own module.
+    Private
+    /// `pub(package)`: every module of its package.
+    Package
+    /// `pub`: everywhere.
+    Public
 }
 
 pub ItemKind :: union {
@@ -555,7 +566,7 @@ pub StructWhen :: struct {
 
 pub FieldDecl :: struct {
     pub attrs: []Attribute
-    pub is_pub: bool
+    pub vis: Visibility
     pub is_using: bool
     /// `a, b: T` declares several fields; `_` (padding in `#bits` structs) is named `_`.
     pub names: []Ident

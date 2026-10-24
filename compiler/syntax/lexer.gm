@@ -785,7 +785,7 @@ inline_raw_string_end :: fn(s: string, lo: usize) -> ?usize {
 /// True if the rest of a line, `rest`, has a `:=` outside brackets, which makes a line
 /// starting with `.name` a pattern binding (§2.8 rule 2). A literal or comment that goes
 /// on past the line ends the search: the line does not bind.
-pub line_binds :: fn(rest: string) -> bool {
+line_binds :: fn(rest: string) -> bool {
     depth := 0
     i: usize = 0
     while i < rest.len {

@@ -1,0 +1,4 @@
+//! stage: parse
+// `pub(…)` takes only `package` (§3.3).
+
+pub(crate) helper :: fn() {} //~ ERROR expected `package` in `pub(…)`
