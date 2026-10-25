@@ -58,6 +58,44 @@ pub type_param :: fn(s: ^const Sema, name: string) -> ?Ty {
     return null
 }
 
+/// Brings the local alias `name` of `ty` into scope for type expressions.
+pub push_type_alias :: fn(s: ^Sema, name: string, ty: Ty) needs Alloc {
+    s.type_params.push(Scoped(name: name, ty: ty))!
+}
+
+/// How much of the names that a body adds to the scope of its type and compile-time
+/// expressions is in scope.
+pub ScopeMark :: (types: usize, fns: usize, consts: usize)
+
+pub scope_mark :: fn(s: ^const Sema) -> ScopeMark => (types: s.type_params.items.len, fns: s.local_fns.items.len, consts: s.local_consts.items.len)
+
+/// Takes the names added since `mark` out of scope.
+pub restore_scope :: fn(s: ^Sema, mark: ScopeMark) {
+    s.type_params.truncate(mark.types)
+    s.local_fns.truncate(mark.fns)
+    s.local_consts.truncate(mark.consts)
+}
+
+/// The innermost local of the body being checked named `name`.
+pub local_const :: fn(s: ^const Sema, name: string) -> ?LocalConst {
+    i := s.local_consts.items.len
+    while i > 0 {
+        i -= 1
+        if s.local_consts.items[i].name is name { return s.local_consts.items[i] }
+    }
+    return null
+}
+
+/// The innermost nested function of the body being checked named `name`.
+pub local_fn :: fn(s: ^const Sema, name: string) -> ?u32 {
+    i := s.local_fns.items.len
+    while i > 0 {
+        i -= 1
+        if s.local_fns.items[i].name is name { return s.local_fns.items[i].fn_id }
+    }
+    return null
+}
+
 pub value_param :: fn(s: ^const Sema, name: string) -> ?u32 {
     i := s.value_scope.items.len
     while i > 0 {
@@ -731,16 +769,26 @@ fn_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?u32 needs 
     if .Optional(inner) := s.tys.kind(ty) { want = inner }
     .FnPtr(sig) := s.tys.kind(want) else return null
     d: usize = 0
+    f: u32 = 0
     match e.kind {
-        .Ident(id) => { d = s.lookup_module_name(module, id.name) else return null }
+        .Ident(id) => {
+            if g := s.local_fn(id.name) {
+                f = g
+            } else {
+                d = s.lookup_module_name(module, id.name) else return null
+                .Fn(g) := s.resolve_decl(d) else return null
+                f = g
+            }
+        }
         .Field(base, name) => {
             m := s.module_named(module, base) else return null
             d = s.l.lookup(m, name.name) else return null
             if not s.decl_visible(d, module) { return null }
+            .Fn(g) := s.resolve_decl(d) else return null
+            f = g
         }
         _ => return null
     }
-    .Fn(f) := s.resolve_decl(d) else return null
     info := &s.fns.items[usize(f)]
     if info.generics.len > 0 { return null }
     have := s.fn_ty(info)

@@ -248,6 +248,28 @@ ValueScoped :: struct {
     param: u32
 }
 
+/// What a local of the body being checked is to the compile-time expressions in it
+/// (§17.2).
+pub LocalConstKind :: union {
+    /// An untyped constant (`x :: 5`).
+    Untyped: Untyped
+    /// A constant evaluated at compile time: its type, and the place of its name.
+    Const: (ty: Ty, name: string, span: source.Span)
+    /// A variable, whose value is not known at compile time.
+    Var
+}
+
+pub LocalConst :: struct {
+    pub name: string
+    pub kind: LocalConstKind
+}
+
+/// A function declared in the body with `name :: fn …` that takes no captures.
+pub LocalFn :: struct {
+    pub name: string
+    pub fn_id: u32
+}
+
 /// A constraint on a type argument to check when the `where` clause of the signature or
 /// type being declared is known.
 Deferred :: struct {
@@ -308,6 +330,10 @@ pub Sema :: struct {
     pub variadic_fns: List(u32)
     type_params: List(Scoped)
     value_scope: List(ValueScoped)
+    /// The locals and nested functions of the body being checked, for the compile-time
+    /// expressions in it.
+    pub local_consts: List(LocalConst)
+    pub local_fns: List(LocalFn)
     /// The declarations being resolved, for cycle reports.
     resolving: List(usize)
     /// Structural type aliases being resolved a second time (see `resolve_decl`).
@@ -372,6 +398,8 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         variadic_fns: list(u32),
         type_params: list(Scoped),
         value_scope: list(ValueScoped),
+        local_consts: list(LocalConst),
+        local_fns: list(LocalFn),
         resolving: list(usize),
         alias_reentry: list(usize),
         adts_in_progress: list(u32),
@@ -568,11 +596,17 @@ pub resolve_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     // first are not visible.
     type_params := s.type_params
     value_scope := s.value_scope
+    local_consts := s.local_consts
+    local_fns := s.local_fns
     s.type_params = list(Scoped)
     s.value_scope = list(ValueScoped)
+    s.local_consts = list(LocalConst)
+    s.local_fns = list(LocalFn)
     v := s.compute_decl(id)
     s.type_params = type_params
     s.value_scope = value_scope
+    s.local_consts = local_consts
+    s.local_fns = local_fns
     _ = s.resolving.pop()
     // A cycle report may already have marked this declaration as failed.
     if s.states.items[id] is .InProgress { s.states.items[id] = .Done(v) }

@@ -226,16 +226,41 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
                 cx.error(span, str.format("`{}` is a label, not a value", name)!)
                 return error_expr(cx.s, span)
             }
+            .Type(t) => {
+                if not cx.s.tys.is_error(t) { cx.error(span, str.format("expected a value, found the type `{}`", cx.show(t))!) }
+                return error_expr(cx.s, span)
+            }
         }
     }
     if pid := cx.s.value_param(name) { return tir.mk(cx.value_param_ty(pid), .ValueParam(pid), span) }
+    // A constant of the body whose compile-time expression this is (§17.2).
+    if c := cx.s.local_const(name) {
+        match c.kind {
+            .Untyped(v) => return cx.untyped_literal(&v, span)
+            .Const(k) => return tir.mk(k.ty, .Const(k.name, k.span), span)
+            .Var => {
+                d := diag.error(span, str.format("`{}` is a variable, so its value is not known at compile time", name)!)
+                d.add_note("declare it with `::` to make it a compile-time constant (§17.2)")
+                cx.s.emit(d)
+                return error_expr(cx.s, span)
+            }
+        }
+    }
+    // A nested function of the body whose compile-time argument this is.
+    if f := cx.s.local_fn(name) { return cx.fn_ref(f, span) }
     if d := cx.s.lookup_module_name(cx.module, name) { return cx.decl_expr(d, name, expect, span) }
-    if sema.is_builtin_type_name(name) {
+    effect_param := false
+    if t := cx.s.type_param(name) {
+        if .Param(p) := cx.s.tys.kind(t) { effect_param = cx.s.param_kind(p) is .Effects }
+    }
+    if effect_param {
+        cx.error(span, str.format("expected a value, found the effect set `{}`", name)!)
+    } else if sema.is_builtin_type_name(name) {
         cx.error(span, str.format("expected a value, found the type `{}`", name)!)
     } else if name in ("print", "eprint", "trap", "assert", "expect_eq") {
         cx.error(span, str.format("the builtin function `{}` can only be called", name)!)
     } else {
-        return cx.unsupported(span, str.format("the name `{}`", name)!)
+        cx.s.unknown_name(cx.module, name, span)
     }
     return error_expr(cx.s, span)
 }
@@ -713,7 +738,11 @@ type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
         return t
     }
     .Ident(id) := e.kind else return null
-    if cx.lookup_local(id.name) is not null { return null }
+    // A local alias: `Cols :: #soa []T` then `Cols.make(n)`.
+    if b := cx.lookup_local(id.name) {
+        if .Type(t) := b { return t }
+        return null
+    }
     if d := cx.s.lookup_module_name(cx.module, id.name) {
         .Type(t) := cx.s.resolve_decl(d) else return null
         return t

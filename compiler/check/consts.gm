@@ -219,7 +219,8 @@ pub local_const :: fn(s: ^Sema, module: usize, init: ^const ast.Expr, annot: ?Ty
     if not ok or s.tys.is_error(ex.ty) or s.non_constant_part(ex.ty) is not null { return null }
     m2 := s.l.diags.mark()
     if not prepare(s, ex) {
-        if not s.l.diags.any_since(m2, sema.UNSUPPORTED) and s.l.diags.error_count() is m2.raised { s.l.diags.reset(m2) }
+        // What cannot be evaluated yet (it calls a function nested in this one) runs.
+        if not s.l.diags.any_since(m2, sema.UNSUPPORTED) { s.l.diags.reset(m2) }
         return null
     }
     v: Value = .Null

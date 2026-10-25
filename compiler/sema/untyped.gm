@@ -244,6 +244,10 @@ pub try_untyped :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedRe
         }
         .Paren(inner) => return s.try_untyped(module, inner)
         .Ident(id) => {
+            if c := s.local_const(id.name) {
+                .Untyped(v) := c.kind else return null
+                return .Ok(v)
+            }
             d := s.lookup_module_name(module, id.name) else return null
             .Untyped(v) := s.resolve_decl(d) else return null
             return .Ok(v)

@@ -39,6 +39,8 @@ LocalBinding :: union {
     /// An immutable local evaluated at compile time (§17.2): its type and the place of its
     /// name, which identify the constant.
     Const: (ty: Ty, name: string, span: source.Span)
+    /// A local alias of a type (`T :: [4]i32`), also visible to type expressions.
+    Type: Ty
 }
 
 /// The state of an enclosing function while a nested one (a literal or a clause) is
@@ -199,6 +201,10 @@ pub FnCx :: struct {
     outer: List(Frame)
     /// For each scope, the depth of the function it belongs to.
     scope_depths: List(u32)
+    /// For each scope, the names in scope for type and compile-time expressions when it
+    /// began: the local aliases, constants and functions it declares go out of scope with
+    /// it.
+    scope_marks: List(sema.ScopeMark)
     /// Whether the function being checked uses a local of an enclosing one.
     captures: bool
     nested: List(NestedFn)
@@ -238,6 +244,8 @@ PendingHandler :: struct {
     depth: usize
     /// The length of each scope there.
     scope_lens: []usize
+    /// The number of constants of the body in scope.
+    local_consts: usize
     labels: usize
     handled: usize
 }
@@ -276,6 +284,7 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         fn_performs: list(source.Span),
         outer: list(Frame),
         scope_depths: depths,
+        scope_marks: list(sema.ScopeMark),
         captures: false,
         nested: list(NestedFn),
         open_ret: false,
@@ -520,10 +529,18 @@ declare :: fn(cx: ^FnCx, name: string, b: LocalBinding, span: source.Span) needs
     if name is "_" { return }
     if cx.lookup_local(name) is not null {
         cx.error(span, str.format("`{}` is already declared in this function; locals may not be shadowed", name)!)
-    } else if b is not .Label and cx.s.names_type(cx.module, name) {
+    } else if b is not .Label and b is not .Type(_) and cx.s.names_type(cx.module, name) {
         cx.error(span, str.format("`{}` names a type; a local may not have the name of a type (§4.6)", name)!)
     } else if load.is_reserved_type_name(name) {
         cx.error(span, str.format("`{}` is a reserved type name and cannot be redeclared", name)!)
+    }
+    // Compile-time expressions of the body see its constants, and its variables hide the
+    // top-level names they shadow (`n := 3; a: [n]u8` is an error, §4.6).
+    match b {
+        .Untyped(v) => cx.s.local_consts.push(sema.LocalConst(name: name, kind: .Untyped(v)))!
+        .Const(c) => cx.s.local_consts.push(sema.LocalConst(name: name, kind: .Const(..c)))!
+        .Var(_) => cx.s.local_consts.push(sema.LocalConst(name: name, kind: .Var))!
+        _ => {}
     }
     cx.scopes.items[cx.scopes.items.len - 1].push(Binding(name: name, value: b))!
 }
@@ -531,11 +548,13 @@ declare :: fn(cx: ^FnCx, name: string, b: LocalBinding, span: source.Span) needs
 push_scope :: fn(cx: ^FnCx) needs Alloc {
     cx.scopes.push(list(Binding))!
     cx.scope_depths.push(cx.depth())!
+    cx.scope_marks.push(cx.s.scope_mark())!
 }
 
 pop_scope :: fn(cx: ^FnCx) {
     _ = cx.scopes.pop()
     _ = cx.scope_depths.pop()
+    if m := cx.scope_marks.pop() { cx.s.restore_scope(m) }
 }
 
 /// A local name's binding and the depth of the function it belongs to.
@@ -748,8 +767,40 @@ block_expected :: fn(cx: ^FnCx, b: ^const ast.Block, value: bool, expected: ?Ty)
             cx.s.emit(d)
             break
         }
-        if s.kind is .LetElse(_) {
-            _ = cx.unsupported(s.span, "bindings with an `else`")
+        // `P := v else d`: `if P := v { rest of the block } else { d }` (§4.5).
+        if .LetElse(pat, v, fallback) := s.kind {
+            rest_span := if i + 1 < n { b.stmts[i + 1].span.to(source.Span(file: b.span.file, lo: b.span.hi, hi: b.span.hi)) } else { source.Span(file: s.span.file, lo: s.span.hi, hi: s.span.hi) }
+            rest := ast.Block(id: b.id, stmts: b.stmts[i + 1..], span: rest_span)
+            fb_stmts := list(ast.Stmt)
+            fb_stmts.push(ast.Stmt(id: s.id, kind: .Expr(fallback), span: fallback.span))!
+            fb := ast.Block(id: b.id, stmts: fb_stmts.items, span: fallback.span)
+            parts := list(ast.CondPart)
+            parts.push(.Bind(pat, v))!
+            branches := list(ast.IfBranch)
+            branches.push(ast.IfBranch(cond: ast.Cond(parts: parts.items, span: pat.span.to(v.span)), block: rest))!
+            lowered := new(ast.IfExpr(branches: branches.items, else_: .Block(fb), span: s.span))!
+            ex := cx.if_expr(lowered, value, expected)
+            diverges = cx.s.tys.kind(ex.ty) is .Never
+            if .If(x) := ex.kind {
+                if e := x.else_ {
+                    // In value position the fallback may be coerced to the expected type.
+                    fallback_ty := if .Coerce(kind, inner) := e.kind and kind is .FromNever { inner.ty } else { e.ty }
+                    if cx.s.tys.kind(fallback_ty) is not .Never and not cx.s.tys.is_error(e.ty) {
+                        // One error, not also an unused value or a missing return after it.
+                        k := 0
+                        while k < cx.obligations.items.len {
+                            if .UnitStatement(_, ospan) := cx.obligations.items[k] and ospan is fallback.span {
+                                _ = cx.obligations.remove(k)
+                            } else {
+                                k += 1
+                            }
+                        }
+                        cx.error(fallback.span, "the `else` of a pattern binding must leave the block: `return`, `break`, `continue` or `trap(…)` (§4.5)")
+                        diverges = true
+                    }
+                }
+            }
+            if value { tail = ex } else { stmts.push(.Expr(ex))! }
             break
         }
         if i + 1 is n and value {
@@ -787,7 +838,10 @@ stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
         .Defer(is_err, body) => return cx.defer_stmt(is_err, body)
         .When(w) => return .Expr(cx.when_stmt(w))
         .Cancel(k) => return .Expr(cx.cancel_stmt(k, s.span))
-        .LetElse(_) => return .Expr(cx.unsupported(s.span, "pattern bindings with `else`"))
+        .LetElse(_, value, _) => {
+            cx.error(s.span, "a binding with a pattern that can fail must be a statement of a block")
+            return .Expr(cx.expr(value, null))
+        }
     }
 }
 
@@ -864,7 +918,11 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
     name := b.names[0]
     if b.kind is .Const and b.ty is null {
         if .Fn(lit) := b.init.kind { return cx.nested_fn_binding(name, lit, b.span) }
-        if cx.local_type_init(b.init) { return .Expr(cx.unsupported(b.span, "local type aliases")) }
+        if t := cx.local_type_init(b.init) {
+            cx.declare(name.name, .Type(t), name.span)
+            cx.s.push_type_alias(name.name, t)
+            return .Expr(unit(cx.s, b.span))
+        }
     }
     annot: ?Ty = null
     if t := b.ty { annot = cx.s.resolve_type(cx.module, t) }
@@ -1017,25 +1075,81 @@ assign_tuple :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value:
 /// Plain data (§5.19).
 is_plain_data :: fn(cx: ^FnCx, t: Ty) -> bool needs Alloc => cx.s.tys.is_error(t) or cx.s.is_plain(t)
 
-/// Whether the initializer of a local `::` binding is a type expression, making the
-/// binding a local alias (§3.5).
-local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+/// The type that the initializer `e` of a local `::` binding denotes, if it is a type
+/// expression: the binding is then a local alias (§3.5).
+local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
     match e.kind {
-        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return true
-        .Struct(_), .Union(_), .Effect(_), .Attributed(_) => return true
+        .ArrayType(_), .OptionalType(_) if cx.is_construction(e) => {
+            if cx.s.looks_like_type(cx.module, e) { return cx.s.resolve_type(cx.module, e) }
+            return null
+        }
+        .Tuple(_) => {
+            if cx.local_is_type(e) { return cx.s.resolve_type(cx.module, e) }
+            return null
+        }
+        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return cx.s.resolve_type(cx.module, e)
+        .Intrinsic(i) => {
+            if i.name.name is "type_of" { return cx.s.resolve_type(cx.module, e) }
+            return null
+        }
+        // `Cols :: #soa []T`; `#soa [2]P(…)` constructs a value.
+        .Attributed(_, inner) => {
+            if inner.kind is .SliceType(_) or (inner.kind is .ArrayType(_) and not cx.is_construction(inner)) { return cx.s.resolve_type(cx.module, e) }
+            return null
+        }
+        .Struct(_), .Union(_), .Effect(_) => {
+            cx.error(e.span, "types are declared at top level; inside a function only aliases are allowed (§3.5)")
+            return cx.s.tys.error()
+        }
         .Paren(inner) => return cx.local_type_init(inner)
-        .Tuple(_) => return cx.s.looks_like_type(cx.module, e)
         .Ident(id) => {
-            if cx.lookup_local(id.name) is not null { return false }
-            if d := cx.s.lookup_module_name(cx.module, id.name) { return cx.s.resolve_decl(d) is .Type(_) }
-            return sema.is_builtin_type_name(id.name)
+            if b := cx.lookup_local(id.name) {
+                if .Type(t) := b { return t }
+                return null
+            }
+            if t := cx.s.type_param(id.name) { return t }
+            if d := cx.s.lookup_module_name(cx.module, id.name) {
+                if .Type(t) := cx.s.resolve_decl(d) { return t }
+                return null
+            }
+            return cx.s.builtin_type(id.name)
         }
         .Field(base, name) => {
-            m := cx.s.module_named(cx.module, base) else return false
-            d := cx.s.l.lookup(m, name.name) else return false
-            return cx.s.decl_visible(d, cx.module) and cx.s.resolve_decl(d) is .Type(_)
+            m := cx.s.module_named(cx.module, base) else return null
+            d := cx.s.l.lookup(m, name.name) else return null
+            if not cx.s.decl_visible(d, cx.module) { return null }
+            if .Type(t) := cx.s.resolve_decl(d) { return t }
+            return null
         }
-        .Intrinsic(i) => return i.name.name is "type_of"
+        _ => return null
+    }
+}
+
+/// Whether `e` is `[N]T(…)` or `?T(…)`, possibly followed by a postfix chain: a
+/// construction rather than a type (§A.7 rule 12).
+is_construction :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Alloc {
+    inner := match e.kind {
+        .ArrayType(a) => a.elem
+        .OptionalType(x) => x
+        _ => return false
+    }
+    return sema.construction_call(inner) is not null or sema.hoist_prefix(e) is not null
+}
+
+/// Whether `e` denotes a type, given the local aliases in scope (the local counterpart of
+/// `looks_like_type`); reports nothing.
+local_is_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+    match e.kind {
+        .Tuple(elems) => {
+            for el in elems {
+                if not cx.local_is_type(&el.value) { return false }
+            }
+            return true
+        }
+        .Paren(inner) => return cx.local_is_type(inner)
+        .Ident(_), .Field(_) => return cx.local_type_init(e) is not null
+        .ArrayType(_), .OptionalType(_) if cx.is_construction(e) => return cx.s.looks_like_type(cx.module, e)
+        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return true
         _ => return false
     }
 }
