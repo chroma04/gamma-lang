@@ -17,6 +17,12 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
     match n {
         "size_of", "align_of" => return cx.layout_intrinsic(n, args, span)
         "min_value", "max_value" => return cx.limit_intrinsic(n, args, span)
+        // A parameter's default value `@caller_location()` is the call's location
+        // (`param_default`); anywhere else it has none.
+        "caller_location" => {
+            cx.error(span, "`@caller_location()` is allowed only as a parameter's default value")
+            return error_expr(cx.s, span)
+        }
         "black_box" => {
             if args.len is 1 and .Positional(x) := args[0].kind {
                 v := cx.expr(&x, null)
