@@ -575,6 +575,23 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
             return .Some(new(copy(v))!)
         }
         .BlackBox => return x
+        // A pointer cast keeps the address: the place is the same (§6.7).
+        .Cast => return x
+        // The evaluator's places have no addresses; one is made up from where the cell is
+        // in the compiler's memory and the element's position, which keeps differences
+        // and alignment of pointers into one object right.
+        .Addr => {
+            pv := if .Some(inner) := x { inner^ } else { x }
+            .Ptr(pl) := pv else return .Int(0)
+            elem: u64 = 1
+            match tys.kind(at) {
+                .Ptr(_, t), .ManyPtr(_, t) => { elem = m.s.layout(t).size.max(1) }
+                _ => {}
+            }
+            index: u64 = if pl.path.len > 0 { pl.path[pl.path.len - 1] } else { 0 }
+            base := u64(pl.cell.cast(rawptr).addr()) << 12
+            return .Int(m.wrap(u128(base +% index *% elem), e.ty))
+        }
         .ToPtr => {
             .Int(bits) := x else return !m.unsupported(span, "this builtin")
             if bits is 0 { return .Null }

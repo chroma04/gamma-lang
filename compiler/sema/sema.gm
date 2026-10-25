@@ -324,6 +324,8 @@ pub Sema :: struct {
     /// The handler literals of the bodies checked so far (§12.5).
     pub handlers: List(tir.HandlerLit)
     pub handler_decls: List(HandlerDeclInfo)
+    /// Whether the handler declarations have been declared.
+    pub handlers_declared: bool
     /// The handler declarations for generic types, and the declarations they gave so far.
     pub handler_templates: List(HandlerTemplate)
     pub handler_instances: List(TemplateInstance)
@@ -431,6 +433,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         pending_consts: list(PendingConst),
         handlers: list(tir.HandlerLit),
         handler_decls: list(HandlerDeclInfo),
+        handlers_declared: false,
         handler_templates: list(HandlerTemplate),
         handler_instances: list(TemplateInstance),
         in_test: false,

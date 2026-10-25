@@ -5,6 +5,9 @@
 
 /// Declares the handler declarations of the program and of the libraries it uses.
 declare_handlers :: fn(s: ^Sema) needs Load {
+    // A compile-time evaluation may need them before the bodies are checked.
+    if s.handlers_declared { return }
+    s.handlers_declared = true
     for o in s.l.other_items.items {
         .Handler(h) := o.item.kind else continue
         declare_handler(s, o.module, h)
@@ -12,7 +15,6 @@ declare_handlers :: fn(s: ^Sema) needs Load {
 }
 
 declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs Load {
-    prelude := s.l.modules.items[module].is_prelude
     // The parameters of a handler for a generic type (§12.6).
     params := list(sema.ParamInfo)
     if ps := h.params {
@@ -116,7 +118,7 @@ declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs 
         // A generic handler's clauses are generic functions of its parameters.
         s.fns.items[usize(fn_id)].generics = generics.items
         clauses.push(fn_id)!
-        if not prelude { s.pending_clauses.push(sema.PendingClause(module: module, clause: &h.clauses[ci], fn_id: fn_id, kind: o.kind, effect_: eref))! }
+        s.pending_clauses.push(sema.PendingClause(module: module, clause: &h.clauses[ci], fn_id: fn_id, kind: o.kind, effect_: eref))!
     }
     if generics.items.len is 0 {
         s.handler_decls.push(sema.HandlerDeclInfo(effect_: eref, for_ty: for_ty, effects: effects, clauses: clauses.items))!
@@ -239,52 +241,74 @@ decl_clause :: fn(h: ^const ast.HandlerDecl, name: string) -> ?usize {
 
 /// Checks the bodies of the clauses of handler declarations.
 check_handler_clauses :: fn(s: ^Sema) needs Load {
-    for i in 0..s.pending_clauses.items.len {
-        p := s.pending_clauses.items[i]
-        sig := s.fns.items[usize(p.fn_id)]
-        c := p.clause
-        outer := s.enter_module_scope()
-        // A generic handler's parameters are in scope in its clauses.
-        scope := s.scope_type_params(sig.params)
-        runtime := list(sema.ParamInfo)
-        for q in sig.params {
-            if q.generic is null { runtime.push(q)! }
+    taken := s.pending_clauses.items
+    s.pending_clauses = list(sema.PendingClause)
+    for p in taken {
+        // The core library's clauses are checked only when a compile-time evaluation
+        // runs them.
+        if s.l.modules.items[p.module].is_prelude {
+            s.pending_clauses.push(p)!
+        } else {
+            check_clause(s, p)
         }
-        cx := fn_cx(s, p.module, sig.ret, sig.effects)
-        cx.fn_id = p.fn_id
-        cx.clause = ClauseInfo(op_kind: p.kind, handler_: null, decl_clause: p.fn_id, with_expect: null, effect_: p.effect_)
-        if c.params.len is not runtime.items.len {
-            cx.error(c.span, str.format("the clause for `{}` takes {} parameters (the first is the handler value)", c.name.name, runtime.items.len)!)
-        }
-        ids := list(u32)
-        for k, param in enumerate(runtime.items) {
-            name := if k < c.params.len { c.params[k].name } else { param.name }
-            at := if k < c.params.len { c.params[k].span } else { c.span }
-            id := cx.new_local(name, param.ty, false, at)
-            if name is not "_" { cx.declare(name, .Var(id), at) }
-            ids.push(id)!
-        }
-        // A `ctl` clause must not finish normally (§14.3); see `clause_fn`.
-        expect: ?Ty = if p.kind is .Ctl { null } else { sig.ret }
-        body := match c.body.kind {
-            .Block(b) => cx.block_expected(&b, true, expect)
-            _ => cx.expr(c.body, expect)
-        }
-        body = cx.clause_body(body, p.kind, sig.ret)
-        // The types of untyped literals given to `break` are known now.
-        for j in 0..s.decl_clause_breaks.items.len {
-            b := &s.decl_clause_breaks.items[j]
-            if b.fn_id is p.fn_id { b.ty = cx.settle(b.ty, b.span) }
-        }
-        cx.finish(body)
-        def := &s.defs.items[usize(p.fn_id)]
-        def.params = ids.items
-        def.locals = cx.locals.items
-        def.body = body
-        s.unscope_type_params(scope)
-        s.leave_module_scope(outer)
     }
-    s.pending_clauses.clear()
+}
+
+/// Checks the clause of a handler declaration with function `f` now if it is still
+/// pending (a compile-time evaluation calls it); returns whether it was.
+pub check_pending_clause :: fn(s: ^Sema, f: u32) -> bool needs Load {
+    for i, p in enumerate(s.pending_clauses.items) {
+        if p.fn_id is not f { continue }
+        check_clause(s, s.pending_clauses.remove(i))
+        return true
+    }
+    return false
+}
+
+/// Checks one clause of a handler declaration and stores its body.
+check_clause :: fn(s: ^Sema, p: sema.PendingClause) needs Load {
+    sig := s.fns.items[usize(p.fn_id)]
+    c := p.clause
+    outer := s.enter_module_scope()
+    // A generic handler's parameters are in scope in its clauses.
+    scope := s.scope_type_params(sig.params)
+    runtime := list(sema.ParamInfo)
+    for q in sig.params {
+        if q.generic is null { runtime.push(q)! }
+    }
+    cx := fn_cx(s, p.module, sig.ret, sig.effects)
+    cx.fn_id = p.fn_id
+    cx.clause = ClauseInfo(op_kind: p.kind, handler_: null, decl_clause: p.fn_id, with_expect: null, effect_: p.effect_)
+    if c.params.len is not runtime.items.len {
+        cx.error(c.span, str.format("the clause for `{}` takes {} parameters (the first is the handler value)", c.name.name, runtime.items.len)!)
+    }
+    ids := list(u32)
+    for k, param in enumerate(runtime.items) {
+        name := if k < c.params.len { c.params[k].name } else { param.name }
+        at := if k < c.params.len { c.params[k].span } else { c.span }
+        id := cx.new_local(name, param.ty, false, at)
+        if name is not "_" { cx.declare(name, .Var(id), at) }
+        ids.push(id)!
+    }
+    // A `ctl` clause must not finish normally (§14.3); see `clause_fn`.
+    expect: ?Ty = if p.kind is .Ctl { null } else { sig.ret }
+    body := match c.body.kind {
+        .Block(b) => cx.block_expected(&b, true, expect)
+        _ => cx.expr(c.body, expect)
+    }
+    body = cx.clause_body(body, p.kind, sig.ret)
+    // The types of untyped literals given to `break` are known now.
+    for j in 0..s.decl_clause_breaks.items.len {
+        b := &s.decl_clause_breaks.items[j]
+        if b.fn_id is p.fn_id { b.ty = cx.settle(b.ty, b.span) }
+    }
+    cx.finish(body)
+    def := &s.defs.items[usize(p.fn_id)]
+    def.params = ids.items
+    def.locals = cx.locals.items
+    def.body = body
+    s.unscope_type_params(scope)
+    s.leave_module_scope(outer)
 }
 
 /// A `break` in a clause of a handler declaration exits the `with` that installed the
@@ -313,6 +337,7 @@ handlers_for :: fn(cx: ^FnCx, t: Ty) -> []u32 needs Load => handlers_of_type(cx.
 /// The handler declarations for values of type `t`, instantiating those for generic types
 /// that `t` matches.
 handlers_of_type :: fn(s: ^Sema, t: Ty) -> []u32 needs Load {
+    declare_handlers(s)
     out := list(u32)
     for i, d in enumerate(s.handler_decls.items) {
         if d.for_ty is t { out.push(i.trunc(u32))! }
