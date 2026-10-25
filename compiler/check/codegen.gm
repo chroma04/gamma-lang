@@ -1,0 +1,113 @@
+// Preparing a checked program for code generation: the function the runtime calls, and
+// the bodies of everything it can reach, including the core library's and the instances
+// of generic functions that checking leaves unproduced (it follows only the calls a
+// program's own code makes).
+
+hash_map :: import "std/collections/hash_map"
+
+/// The function the runtime calls for `main`: `main` itself, or `<entry>`, which wraps
+/// it in the core library's default handlers for the ambient effects it performs that
+/// the runtime does not serve directly: `Alloc` (the system heap) and `In`, `Clock`,
+/// `Rand`, `Fs`, `Net` and `Proc` (§3.7, §12.9). Mirrors `entry_point` in
+/// `src/sema/mod.rs`.
+pub entry_point :: fn(s: ^Sema, main: u32) -> u32 needs Load {
+    sig := s.fns.items[usize(main)]
+    performs :: fn(name: string) -> bool {
+        for e in sig.effects.effects {
+            if s.is_ambient(e.eff) and s.tys.effect_name(e.eff) is name { return true }
+        }
+        return false
+    }
+    providers := list(string)
+    if performs("Alloc") { providers.push("heap_allocator")! }
+    if performs("In") or performs("Clock") or performs("Rand") or performs("Fs") or performs("Net") or performs("Proc") {
+        providers.push("system_io")!
+    }
+    span := sig.span
+    handlers := list(tir.HandlerValue)
+    handled := list(u32)
+    prelude := s.l.prelude else return main
+    for name in providers.items {
+        d := s.l.lookup(prelude, name) else continue
+        .Fn(f) := s.resolve_decl(d) else continue
+        ty := s.fns.items[usize(f)].ret
+        decls := handlers_of_type(s, ty)
+        for x in decls { handled.push(s.handler_decls.items[usize(x)].effect_.eff)! }
+        value := tir.mk(ty, .Call(.Fn(f), empty_slice(Expr)), span)
+        handlers.push(.Decl(decls, value))!
+    }
+    if handlers.items.len is 0 { return main }
+    rest := list(types.EffectRef)
+    for e in sig.effects.effects {
+        if e.eff not in handled.items { rest.push(e)! }
+    }
+    entry := s.new_nested_fn(.Named, "<entry>", span, sig.module, empty_slice(sema.ParamInfo), sig.ret, types.effect_set(rest.items))
+    call := tir.mk(sig.ret, .Call(.Fn(main), empty_slice(Expr)), span)
+    w := tir.mk(sig.ret, .With(tir.WithExpr(label: 0, handlers: handlers.items, on: null, body: call)), span)
+    s.defs.items[usize(entry)].body = w
+    return entry
+}
+
+/// Makes sure every function reachable from `roots` has a body: pending bodies (the core
+/// library's among them) are checked and the instances of generic functions are
+/// produced. Returns `false` if checking reported errors.
+pub prepare_codegen :: fn(s: ^Sema, roots: []const u32) -> bool needs Load {
+    seen := hash_map.hash_map(u32, bool)
+    work := list(u32)
+    for r in roots { work.push(r)! }
+    span := source.DUMMY
+    while f := work.pop() {
+        if seen.get(f) is not null { continue }
+        seen.put(f, true)!
+        codegen_body(s, f, span)
+        def := s.def_of(f)
+        if p := def.parent { work.push(p)! }
+        b := def.body else continue
+        visit(b, fn(n: ^Expr) {
+            match n.kind {
+                .Call(.Fn(g), _), .FnRef(g), .Closure(g) => work.push(g)!
+                .HandlerRef(h) => work.extend(s.handlers.items[usize(h)].clauses)!
+                .With(w) => for h in w.handlers {
+                    if .Decl(decls, _) := h {
+                        for d in decls { work.extend(s.handler_decls.items[usize(d)].clauses)! }
+                    }
+                }
+                .Const(_, cspan) => if id := s.const_id(cspan, n.ty) {
+                    if cell := s.consts.items[usize(id)].cell { value_fns(cell.v, &work) }
+                }
+                _ => {}
+            }
+        })
+    }
+    return not s.l.diags.has_errors()
+}
+
+/// Adds the functions a compile-time value refers to.
+value_fns :: fn(v: tir.Value, out: ^List(u32)) needs Alloc {
+    match v {
+        .Fn(f) => out.push(f)!
+        .Agg(a) => for x in a.elems { value_fns(x, out) }
+        .Some(x), .Ok(x), .Err(x) => value_fns(x^, out)
+        .Variant(_, ?p) => if x := p { value_fns(x^, out) }
+        _ => {}
+    }
+}
+
+/// Checks the body of `f` now if it has none yet, producing an instance of a generic
+/// function from its template.
+codegen_body :: fn(s: ^Sema, f: u32, span: source.Span) needs Load {
+    if s.def_of(f).body is not null { return }
+    sig := s.fns.items[usize(f)]
+    inst := sig.instance else {
+        _ = ensure_body(s, f, span)
+        return
+    }
+    codegen_body(s, inst.template, span)
+    for i, r in enumerate(s.mono_queue.items) {
+        if r.instance is not f { continue }
+        req := s.mono_queue.remove(i)
+        produce_instance(s, req)
+        return
+    }
+    produce_instance(s, sema.MonoRequest(generic: inst.template, instance: f, args: inst.args, span: sig.span, depth: 0))
+}

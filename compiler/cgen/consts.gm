@@ -1,0 +1,229 @@
+// Compile-time values in static storage. The checker keeps a value's structure, with
+// pointers as places in cells (`tir/value.gm`); the generated program gets the value's
+// bytes in the target layout, initialized at startup with pointers patched in, as the
+// reference implementation does with its `ConstValue`s.
+
+/// A cell whose value the program has in static storage `gm_cN` (N its index), with the
+/// type of that value.
+pub StaticCell :: struct {
+    pub cell: ^tir.Cell
+    pub ty: Ty
+}
+
+/// A pointer stored at `offset` within a value: the address of `target` (a C expression
+/// for static storage) plus `addend` bytes.
+Reloc :: struct {
+    offset: u64
+    target: string
+    addend: u64
+}
+
+/// The declarations of the static storage of constants and the function that fills it.
+pub ConstsText :: struct {
+    pub decls: string
+    pub init: string
+}
+
+/// The storage of the constant declared at `span` with type `t`, named by an expression
+/// `Const(name, span)`.
+pub const_storage :: fn(g: ^Gen, span: source.Span, t: Ty, at: source.Span) -> Unsup!string needs sema.Load {
+    s := g.prog.s
+    id := s.const_id(span, t) else return !unsupported(at, "a constant that was not evaluated")
+    cell := s.consts.items[(id).trunc(usize)].cell else return !unsupported(at, "a constant without a compile-time value")
+    return g.cell_storage(cell, t)
+}
+
+/// The storage `gm_cN` of `cell`, holding a value of type `t`.
+cell_storage :: fn(g: ^Gen, cell: ^tir.Cell, t: Ty) -> string needs Alloc {
+    key := usize(cell.addr())
+    if i := g.cell_ids.get(key) { return str.format("gm_c{}", i)! }
+    i := g.statics_cells.items.len.trunc(u32)
+    g.statics_cells.push(StaticCell(cell: cell, ty: t))!
+    g.cell_ids.put(key, i)!
+    return str.format("gm_c{}", i)!
+}
+
+/// Static storage for every cell used so far, filled by `gm_init_consts`.
+gen_consts :: fn(g: ^Gen) -> Unsup!ConstsText needs sema.Load {
+    decls := list(u8)
+    init := list(u8)
+    init.extend("static void gm_init_consts(void) {\n")!
+    i: usize = 0
+    // Values may point into cells not seen yet, and the functions they reach may use
+    // more constants: both add to the list.
+    while true {
+        while i < g.statics_cells.items.len {
+            sc := g.statics_cells.items[i]
+            name := str.format("gm_c{}", i)!
+            i += 1
+            size := g.ty.size(sc.ty)
+            al := g.ty.align(sc.ty).max(1)
+            decls.write("static uint8_t {}[{}] __attribute__((aligned({})));\n", name, size.max(1), al)!
+            bytes := list(u8)
+            for _ in 0..size { bytes.push(0)! }
+            relocs := list(Reloc)
+            try g.value_bytes(sc.cell.v, sc.ty, bytes.items, 0, &relocs)
+            if bytes.items.len > 0 {
+                sb := g.static_bytes(bytes.items)
+                init.write("    memcpy({}, {}, {});\n", name, sb, bytes.items.len)!
+            }
+            for r in relocs.items {
+                init.write("    {{ void *p = (uint8_t *){} + {}; memcpy({} + {}, &p, sizeof p); }}\n", r.target, r.addend, name, r.offset)!
+            }
+        }
+        // Constants may refer to functions not otherwise reached.
+        try g.drain()
+        if i is g.statics_cells.items.len { break }
+    }
+    init.extend("}\n")!
+    return ConstsText(decls: decls.items, init: init.items)
+}
+
+/// Writes the bytes of `v`, of type `t`, at `off` in `out`, and records its pointers.
+value_bytes :: fn(g: ^Gen, v: tir.Value, t: Ty, out: []u8, off: u64, relocs: ^List(Reloc)) -> Unsup!() needs sema.Load {
+    match v {
+        .Int(bits) => {
+            n := g.ty.size(t)
+            for k in 0..n {
+                at := if g.ty.lay.target.little_endian { k } else { n - 1 - k }
+                out[(off + at).trunc(usize)] = (bits >> u128(8 * k)).trunc(u8)
+            }
+        }
+        .Float(x) => {
+            match g.ty.kind(t) {
+                .Float(64) => store_le(out, off, u128(x.bits(u64)), 8)
+                .Float(32) => store_le(out, off, u128(x.to(f32).bits(u32)), 4)
+                _ => return !unsupported(source.DUMMY, "a compile-time value of this float type")
+            }
+        }
+        .Bool(b) => { out[off.trunc(usize)] = if b { 1 } else { 0 } }
+        .Null => {}
+        .Some(x) => {
+            .Optional(inner) := g.ty.kind(t) else return !unsupported(source.DUMMY, "this compile-time optional")
+            try g.value_bytes(x^, inner, out, off, relocs)
+            if not nullable_pointer(g.prog.s, inner) { out[(off + g.ty.offsets(t)[1]).trunc(usize)] = 1 }
+        }
+        .Ok(x) => {
+            .Result(_, ok) := g.ty.kind(t) else return !unsupported(source.DUMMY, "this compile-time result")
+            offs := g.ty.offsets(t)
+            try g.value_bytes(x^, ok, out, off + offs[1], relocs)
+        }
+        .Err(x) => {
+            .Result(err, _) := g.ty.kind(t) else return !unsupported(source.DUMMY, "this compile-time result")
+            offs := g.ty.offsets(t)
+            out[(off + offs[0]).trunc(usize)] = 1
+            try g.value_bytes(x^, err, out, off + offs[1], relocs)
+        }
+        .Variant(index, ?payload) => {
+            .Adt(id, _) := g.ty.kind(t) else return !unsupported(source.DUMMY, "this compile-time union value")
+            .Union(tag_ty, variants) := g.prog.adt(id).kind else return !unsupported(source.DUMMY, "this compile-time union value")
+            vd := variants[(index).trunc(usize)]
+            offs := g.ty.offsets(t)
+            tag := bigint.to_i128(vd.tag) else 0
+            try g.value_bytes(.Int(u128(tag.trunc(u128))), tag_ty, out, off + offs[0], relocs)
+            if x := payload {
+                pt := vd.payload else return !unsupported(source.DUMMY, "this compile-time union value")
+                try g.value_bytes(x^, pt, out, off + offs[1], relocs)
+            }
+        }
+        .Agg(a) => {
+            match g.ty.kind(t) {
+                .Array(_, elem, _) => {
+                    esz := g.ty.size(elem)
+                    for k, x in enumerate(a.elems) { try g.value_bytes(x, elem, out, off + u64(k) * esz, relocs) }
+                }
+                .Tuple(elems, _) => {
+                    offs := g.ty.offsets(t)
+                    for k, x in enumerate(a.elems) { try g.value_bytes(x, elems[k], out, off + offs[k], relocs) }
+                }
+                .Adt(id, _) => match g.prog.adt(id).kind {
+                    .Struct(sd) => {
+                        if sd.bits is not null { return !unsupported(source.DUMMY, "a compile-time value of a `#bits` struct") }
+                        offs := g.ty.offsets(t)
+                        for k, x in enumerate(a.elems) { try g.value_bytes(x, sd.fields[k].ty, out, off + offs[k], relocs) }
+                    }
+                    _ => return !unsupported(source.DUMMY, "this compile-time value")
+                }
+                _ => return !unsupported(source.DUMMY, "this compile-time value")
+            }
+        }
+        .Ptr(pl) => {
+            pointee: Ty = match g.ty.kind(t) {
+                .Ptr(_, p) => p
+                .ManyPtr(_, p) => p
+                .Optional(inner) => match g.ty.kind(inner) {
+                    .Ptr(_, p) => p
+                    .ManyPtr(_, p) => p
+                    _ => return !unsupported(source.DUMMY, "a compile-time pointer of this type")
+                }
+                _ => return !unsupported(source.DUMMY, "a compile-time pointer of this type")
+            }
+            r := try g.place_reloc(pl, pointee, off)
+            relocs.push(r)!
+        }
+        .Slice(start, len) => {
+            .Slice(_, elem) := g.ty.kind(t) else return !unsupported(source.DUMMY, "this compile-time slice")
+            p := g.ty.lay.target.ptr_bytes
+            if len > 0 or start.path.len > 0 {
+                r := try g.place_reloc(start, elem, off)
+                relocs.push(r)!
+            }
+            store_le(out, off + p, u128(len), p)
+        }
+        .Fn(f) => {
+            g.queue(f)
+            match g.ty.kind(t) {
+                .FnPtr(_) => relocs.push(Reloc(offset: off, target: str.format("(void *){}", g.addr_name(f))!, addend: 0))!
+                .Optional(_) => relocs.push(Reloc(offset: off, target: str.format("(void *){}", g.addr_name(f))!, addend: 0))!
+                _ => return !unsupported(source.DUMMY, "a compile-time function value of this type")
+            }
+        }
+        .Closure(_), .Handler(_) => return !unsupported(source.DUMMY, "a compile-time function literal")
+    }
+}
+
+/// The relocation for a pointer to `pl`, whose pointee type is `pointee`, stored at `off`.
+place_reloc :: fn(g: ^Gen, pl: tir.Place, pointee: Ty, off: u64) -> Unsup!Reloc needs sema.Load {
+    // The type of the cell's whole value: a constant's own, or for a literal's cell,
+    // what the pointer says it holds.
+    root: Ty = if t := g.cell_type(pl.cell) {
+        t
+    } else if pl.path.len is 0 {
+        pointee
+    } else if pl.path.len is 1 and .Agg(a) := pl.cell.v {
+        g.prog.s.tys.array(u64(a.elems.len), pointee)
+    } else {
+        return !unsupported(source.DUMMY, "a compile-time pointer into this value")
+    }
+    addend: u64 = 0
+    cur := root
+    for i in pl.path {
+        match g.ty.kind(cur) {
+            .Array(len, elem, _) => {
+                addend += i * g.ty.size(elem)
+                if i < len { cur = elem }
+            }
+            .Tuple(elems, _) => {
+                addend += g.ty.offsets(cur)[(i).trunc(usize)]
+                cur = elems[(i).trunc(usize)]
+            }
+            .Adt(id, _) => {
+                .Struct(sd) := g.prog.adt(id).kind else return !unsupported(source.DUMMY, "a compile-time pointer into this value")
+                addend += g.ty.offsets(cur)[(i).trunc(usize)]
+                cur = sd.fields[(i).trunc(usize)].ty
+            }
+            _ => return !unsupported(source.DUMMY, "a compile-time pointer into this value")
+        }
+    }
+    return Reloc(offset: off, target: g.cell_storage(pl.cell, root), addend: addend)
+}
+
+/// The type of the value in `cell` if it already has storage.
+cell_type :: fn(g: ^Gen, cell: ^tir.Cell) -> ?Ty {
+    i := g.cell_ids.get(usize(cell.addr())) else return null
+    return g.statics_cells.items[(i).trunc(usize)].ty
+}
+
+store_le :: fn(out: []u8, off: u64, v: u128, n: u64) {
+    for k in 0..n { out[(off + k).trunc(usize)] = (v >> u128(8 * k)).trunc(u8) }
+}

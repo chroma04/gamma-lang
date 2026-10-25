@@ -93,6 +93,13 @@ pub FnSig :: struct {
     pub win64: bool = false
 }
 
+/// A function of a `foreign` block (§19.2): its library and its symbol.
+pub ForeignFn :: struct {
+    pub fn_id: u32
+    pub lib: string
+    pub link_name: string
+}
+
 /// A top-level function whose body is still to be checked.
 pub PendingBody :: struct {
     pub fn_id: u32
@@ -356,6 +363,8 @@ pub Sema :: struct {
     allow_variadic: bool
     /// The variadic foreign functions (§19.2).
     pub variadic_fns: List(u32)
+    /// The library and symbol of each foreign function.
+    pub foreign_fns: List(ForeignFn)
     type_params: List(Scoped)
     value_scope: List(ValueScoped)
     /// The locals and nested functions of the body being checked, for the compile-time
@@ -452,6 +461,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         mono_depth: 0,
         allow_variadic: false,
         variadic_fns: list(u32),
+        foreign_fns: list(ForeignFn),
         type_params: list(Scoped),
         value_scope: list(ValueScoped),
         local_consts: list(LocalConst),

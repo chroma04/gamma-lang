@@ -5,6 +5,7 @@
 //!     gammac modules [--diag-format=short|json] ROOT...
 //!     gammac decls [--diag-format=short|json] ROOT...
 //!     gammac tir [--diag-format=short|json] ROOT...
+//!     gammac build [--diag-format=short|json] [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT
 //!
 //! `lex` prints the tokens of each file in the format of `gamma lex`. `parse` parses each
 //! file and, with `--dump`, prints its syntax tree in the format of `gamma parse --dump`.
@@ -16,6 +17,11 @@
 //! `$GAMMA_CORE` or else the `core` directory next to the standard library's, resolves its
 //! declarations and prints them in the format of `gamma decls`. `tir` also checks the
 //! function bodies and, if there are no errors, prints them in the format of `gamma tir`.
+//! `build` checks the program and compiles it to the executable EXE (by default the
+//! root's name without `.gm`) through C: it writes the generated C next to EXE, with the
+//! extension `.c`, and runs the C compiler `$CC` (default `cc`) on it. The runtime's C
+//! sources are read from `$GAMMA_RUNTIME`, or else the `runtime` directory two levels
+//! above the standard library's. With `--emit-c` it stops after writing the C file.
 //! With several files, the output of each is preceded by a line `==> FILE <==` on both
 //! streams. `--recover` lexes with the layout heuristic that tools use after errors.
 //! The exit status is 1 if a file has errors, 2 for a usage error or a file that cannot
@@ -23,29 +29,39 @@
 
 arena :: import "std/arena"
 ast :: import "./ast"
+cgen :: import "./cgen"
 check :: import "./check"
 diag :: import "./diag"
 fs :: import "std/fs"
 load :: import "./load"
 parse :: import "./parse"
+process :: import "std/process"
 sema :: import "./sema"
 source :: import "./source"
+str :: import "std/str"
 syntax :: import "./syntax"
 types :: import "./types"
 
-USAGE :: "usage: gammac lex|parse|modules|decls|tir [--diag-format=short|json] [--recover] [--dump] FILE...\n"
+USAGE :: "usage: gammac lex|parse|modules|decls|tir|build [--diag-format=short|json] [--recover] [--dump] [--mode=debug|checked|fast] [-o EXE] [--emit-c] FILE...\n"
 
 /// What to do with each file.
-Command :: union { Lex, Parse, Modules, Decls, Tir }
+Command :: union { Lex, Parse, Modules, Decls, Tir, Build }
 
 Options :: struct {
     command: Command
     format: diag.Format = .Short
     recover: bool = false
     dump: bool = false
+    /// `build`: the build mode, the executable and whether to stop after writing C.
+    mode: Mode = .Debug
+    out: ?string = null
+    emit_c: bool = false
 }
 
-main :: fn() needs Alloc + Env + Err + Fs + Out {
+/// The build modes of §1.4 that gammac has (Safe needs Fil-C).
+Mode :: union { Debug, Checked, Fast }
+
+main :: fn() needs Alloc + Env + Err + Fs + Out + Proc {
     args := Env.args()
     opts := Options(command: match args.get(1) else "" {
         "lex" => .Lex
@@ -53,12 +69,24 @@ main :: fn() needs Alloc + Env + Err + Fs + Out {
         "modules" => .Modules
         "decls" => .Decls
         "tir" => .Tir
+        "build" => .Build
         _ => usage()
     })
     files := list(string)
     defer files.deinit()
+    expect_out := false
     for a in args[2..] {
+        if expect_out {
+            opts.out = a
+            expect_out = false
+            continue
+        }
         match a {
+            "--mode=debug" => { opts.mode = .Debug }
+            "--mode=checked" => { opts.mode = .Checked }
+            "--mode=fast" => { opts.mode = .Fast }
+            "-o" => { expect_out = true }
+            "--emit-c" => { opts.emit_c = true }
             "--diag-format=short" => { opts.format = .Short }
             "--diag-format=json" => { opts.format = .Json }
             "--recover" => { opts.recover = true }
@@ -69,14 +97,15 @@ main :: fn() needs Alloc + Env + Err + Fs + Out {
             }
         }
     }
-    if files.items.len is 0 { usage() }
+    if files.items.len is 0 or expect_out { usage() }
+    if opts.command is .Build and files.items.len > 1 { usage() }
     status: u8 = 0
     for path in files.items {
         if files.items.len > 1 {
             print("==> {} <==\n", path)
             eprint("==> {} <==\n", path)
         }
-        match process(path, opts) {
+        match process_file(path, opts) {
             !_ => {
                 eprint("gammac: cannot read `{}`\n", path)
                 status = 2
@@ -97,8 +126,8 @@ usage :: fn() -> never needs Env + Err {
 
 /// Runs the command on one file and prints its output and diagnostics. Returns whether
 /// the file had no errors.
-process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Env + Err + Fs + Out {
-    if opts.command in (Command.Modules, Command.Decls, Command.Tir) { return load_program(path, opts) }
+process_file :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Env + Err + Fs + Out + Proc {
+    if opts.command in (Command.Modules, Command.Decls, Command.Tir, Command.Build) { return load_program(path, opts) }
     text := try fs.read_all(path)
     defer free(text)
     a := arena.new()
@@ -111,7 +140,7 @@ process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + En
         out := list(u8)
         match opts.command {
             .Lex => syntax.dump_tokens(sm.file(id), lexed.tokens.items, &out)
-            .Modules, .Decls, .Tir => {}
+            .Modules, .Decls, .Tir, .Build => {}
             .Parse => {
                 next_id: ast.NodeId = 0
                 tree := parse.parse_file(id, &lexed, &next_id, &diags)
@@ -128,7 +157,7 @@ process :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + En
 }
 
 /// `modules`: loads the program rooted at `root` and prints its module graph.
-load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Out {
+load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Out + Proc {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {
@@ -137,7 +166,8 @@ load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err 
         next_id: ast.NodeId = 0
         std := std_root()
         l := load.loader(&sm, &diags, &next_id, std, opts.recover)
-        if opts.command in (Command.Decls, Command.Tir) {
+        built := true
+        if opts.command in (Command.Decls, Command.Tir, Command.Build) {
             if l.load_core(core_root(std), "Debug") {
                 s := sema.sema(&l)
                 check.install(&s)
@@ -149,7 +179,11 @@ load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err 
                         Out.write(s.decl_dump())
                     } else {
                         check.check_program(&s, m)
-                        if not diags.has_errors() { Out.write(check.tir_dump(&s)) }
+                        if opts.command is .Build {
+                            if not diags.has_errors() { built = build(&s, m, root, opts) }
+                        } else if not diags.has_errors() {
+                            Out.write(check.tir_dump(&s))
+                        }
                     }
                 }
             }
@@ -160,8 +194,87 @@ load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err 
         diags.sort()
         for d in diags.list.items { diag.render(&sm, &d, opts.format, &out) }
         Err.write(out.items)
-        return not diags.has_errors()
+        return built and not diags.has_errors()
     }
+}
+
+/// `build`: compiles the checked program rooted at module `root` (named `path`) to an
+/// executable. Returns whether it succeeded; problems after checking are reported here.
+build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc {
+    d := s.l.lookup(root, "main") else {
+        eprint("gammac: the program has no `main` function\n")
+        return false
+    }
+    .Fn(main) := s.resolve_decl(d) else return false
+    entry := check.entry_point(s, main)
+    entries := [1]u32(entry)
+    if not check.prepare_codegen(s, entries[..]) { return false }
+    p := cgen.prog(s)
+    copts := match opts.mode {
+        .Debug => cgen.Options(checks: true, debug: true)
+        .Checked => cgen.Options(checks: true, debug: false)
+        .Fast => cgen.Options(checks: false, debug: false)
+    }
+    generated := cgen.generate(&p, entry, copts) else u => {
+        place: string = if u.span is source.DUMMY { "" } else {
+            file := s.l.sm.file(u.span.file)
+            lc := file.line_col(u.span.lo)
+            str.format("{}:{}:{}: ", file.path, lc.line, lc.col)!
+        }
+        eprint("{}error: {}\n", place, u.message)
+        return false
+    }
+    exe := opts.out else default_exe(path)
+    c_file := str.format("{}.c", exe)!
+    rt := runtime_dir(std_root())
+    rt_h := fs.read_all(load.join(rt, "gm_rt.h")) else {
+        eprint("gammac: cannot read the runtime in `{}`\n", rt)
+        return false
+    }
+    rt_c := fs.read_all(load.join(rt, "gm_rt.c")) else {
+        eprint("gammac: cannot read the runtime in `{}`\n", rt)
+        return false
+    }
+    code := list(u8)
+    code.write("{}\n{}\n{}", rt_h, rt_c, generated.code)!
+    fs.write_all(c_file, code.items) else {
+        eprint("gammac: cannot write `{}`\n", c_file)
+        return false
+    }
+    if opts.emit_c { return true }
+    cc := Env.var("CC") else "cc"
+    argv := list(string)
+    argv.push(cc)!
+    for f in [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread") { argv.push(f)! }
+    argv.push(if opts.mode is .Debug { "-O1" } else { "-O2" })!
+    argv.push("-o")!
+    argv.push(exe)!
+    argv.push(c_file)!
+    for l in generated.libs { argv.push(str.format("-l{}", l)!)! }
+    argv.push("-lm")!
+    result := process.output(argv.items) else {
+        eprint("gammac: cannot run the C compiler `{}`\n", cc)
+        return false
+    }
+    if not process.success(result.status) {
+        eprint("gammac: the C compiler failed:\n{}", string(result.err.items))
+        return false
+    }
+    return true
+}
+
+/// The executable `build` writes by default: the root's name without `.gm`.
+default_exe :: fn(root: string) -> string {
+    if root.ends_with(".gm") { return root[0..root.len - 3] }
+    trimmed := if root.ends_with("/") { root[0..root.len - 1] } else { root }
+    return trimmed
+}
+
+/// The directory of the runtime's C sources: `$GAMMA_RUNTIME`, or else `runtime` two
+/// levels above the standard library's directory.
+runtime_dir :: fn(std: string) -> string needs Alloc + Env {
+    if dir := Env.var("GAMMA_RUNTIME") { return dir }
+    return load.join(load.join(load.join(std, ".."), ".."), "runtime")
 }
 
 /// The directory of the core library: `$GAMMA_CORE`, or else `core` next to the standard

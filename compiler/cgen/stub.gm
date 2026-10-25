@@ -1,0 +1,13 @@
+pub Helpers :: struct {
+    pub protos: List(u8)
+    pub bodies: List(u8)
+}
+
+new_helpers :: fn() -> Helpers needs Alloc => Helpers(protos: list(u8), bodies: list(u8))
+
+SUPPORT :: ""
+
+gen_fn :: fn(g: ^Gen, f: u32) -> Unsup!() needs sema.Load {
+    if g.prog.func(f).kind is .Foreign(_) { return g.foreign_decl(f) }
+    return !unsupported(source.DUMMY, "functions")
+}
