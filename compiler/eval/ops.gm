@@ -98,6 +98,20 @@ op_symbol :: fn(op: tir.BinOp) -> string => match op {
 
 unary :: fn(m: ^Machine, op: tir.UnOp, x: ^Expr, e: ^Expr) -> Flow!Value needs Load {
     v := try m.eval(x)
+    // A vector: the operator on each lane.
+    if .Agg(a) := v {
+        lane := m.s.tys.vector_parts(e.ty)?.elem
+        out := list(Value)
+        for el in a.elems { out.push(try m.unary_value(op, el, lane, x.span, e.span))! }
+        return .Agg(new(tir.Agg(elems: out.items))!)
+    }
+    return m.unary_value(op, v, x.ty, x.span, e.span)
+}
+
+/// The unary operator `op` on the scalar `v` of type `xt`.
+unary_value :: fn(m: ^Machine, op: tir.UnOp, v: Value, xt: Ty, xspan, span: source.Span) -> Flow!Value needs Load {
+    x := new(tir.Expr(ty: xt, kind: .Null, span: xspan))!
+    e := new(tir.Expr(ty: xt, kind: .Null, span: span))!
     match op {
         .Not => {
             .Bool(b) := v else return !m.unsupported(e.span, "this operator")
@@ -119,6 +133,22 @@ unary :: fn(m: ^Machine, op: tir.UnOp, x: ^Expr, e: ^Expr) -> Flow!Value needs L
 }
 
 binary :: fn(m: ^Machine, op: tir.BinOp, a, b: Value, lt, rt: Ty, span: source.Span) -> Flow!Value needs Load {
+    // Vectors: the operator on each pair of lanes, or each lane and a shift amount.
+    if lp := m.s.tys.vector_parts(lt) {
+        .Agg(xa) := a else return !m.unsupported(span, "this operator at compile time")
+        out := list(Value)
+        for i, x in enumerate(xa.elems) {
+            y := b
+            if .Agg(ya) := b { y = ya.elems[i] }
+            rlane := if m.s.tys.vector_parts(rt) is not null { lp.elem } else { rt }
+            out.push(try m.scalar_binary(op, x, y, lp.elem, rlane, span))!
+        }
+        return .Agg(new(tir.Agg(elems: out.items))!)
+    }
+    return m.scalar_binary(op, a, b, lt, rt, span)
+}
+
+scalar_binary :: fn(m: ^Machine, op: tir.BinOp, a, b: Value, lt, rt: Ty, span: source.Span) -> Flow!Value needs Load {
     match a {
         .Int(x) => {
             .Int(y) := b else return !m.unsupported(span, "this operator")
@@ -185,7 +215,11 @@ float_rem :: fn(x, y: f64) -> f64 needs Alloc {
 round_float :: fn(m: ^Machine, x: f64, t: Ty, span: source.Span) -> Flow!f64 needs Alloc {
     .Float(bits) := m.s.tys.kind(t) else return x
     if bits is 32 { return f64(x.to(f32)) }
-    if bits is 16 { return !m.unsupported(span, "`f16` arithmetic at compile time") }
+    if bits is 16 {
+        if x - x is not 0.0 { return x }
+        r := float_exact(x) else return x
+        return r.to_f16()
+    }
     return x
 }
 

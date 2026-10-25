@@ -249,11 +249,7 @@ fin_float :: fn(cx: ^FnCx, e: ^Expr, r: ratio.Rat, from_int: bool) needs Alloc {
         e.kind = .Float(0.0)
         return
     }
-    if bits is 16 {
-        _ = cx.unsupported(e.span, "`f16` literals")
-        return
-    }
-    x: f64 = if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
+    x: f64 = if bits is 16 { r.to_f16() } else if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
     if x - x is not 0.0 {
         cx.error(e.span, str.format("the literal is too large for `{}` (it would round to infinity)", cx.show(e.ty))!)
         e.kind = .Float(0.0)

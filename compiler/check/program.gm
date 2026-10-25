@@ -165,15 +165,11 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     }
     if .UntypedFloat(r) := e.kind {
         if .Float(bits) := s.tys.kind(t) {
-            if bits is 16 {
-                if mc.copying { s.unsupported(e.span, "`f16` literals") }
+            x: f64 = if bits is 16 { r.to_f16() } else if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
+            if x - x is not 0.0 {
+                s.error(span, str.format("a literal is too large for `{}` (in an instantiation used here)", s.show(t))!)
             } else {
-                x: f64 = if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
-                if x - x is not 0.0 {
-                    s.error(span, str.format("a literal is too large for `{}` (in an instantiation used here)", s.show(t))!)
-                } else {
-                    e.kind = .Float(x)
-                }
+                e.kind = .Float(x)
             }
         } else {
             s.error(span, str.format("a float literal cannot have the type `{}` (in an instantiation used here)", s.show(t))!)

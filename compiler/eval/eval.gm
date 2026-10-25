@@ -162,8 +162,7 @@ eval :: fn(m: ^Machine, e: ^Expr) -> Flow!Value needs Load {
         .Float(x) => return .Float(x)
         .UntypedFloat(r) => {
             .Float(bits) := tys.kind(e.ty) else return !m.unsupported(e.span, "float literals of this type")
-            if bits is 16 { return !m.unsupported(e.span, "`f16` values") }
-            return .Float(if bits is 32 { f64(r.to_f32()) } else { r.to_f64() })
+            return .Float(if bits is 16 { r.to_f16() } else if bits is 32 { f64(r.to_f32()) } else { r.to_f64() })
         }
         .Bool(b) => return .Bool(b)
         .Null => return .Null

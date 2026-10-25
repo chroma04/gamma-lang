@@ -205,6 +205,25 @@ pub to_f32 :: fn(r: Rat) -> f32 needs Alloc {
     return (sign | (field <<% 23) | (m.trunc(u32) - (u32(1) <<% 23))).bits(f32)
 }
 
+/// The `f16` nearest to `r`, ties to even, rounded directly from the exact value, as the
+/// `f64` that holds it exactly: infinite when `r` is too large.
+pub to_f16 :: fn(r: Rat) -> f64 needs Alloc {
+    neg := r.is_negative()
+    s := round_scaled(r, 11, -14, 15)
+    if s.overflow { return if neg { -1.0 / 0.0 } else { 1.0 / 0.0 } }
+    v := s.m.to(f64)
+    ue := s.ue
+    while ue > 0 {
+        v *= 2.0
+        ue -= 1
+    }
+    while ue < 0 {
+        v /= 2.0
+        ue += 1
+    }
+    return if neg { -v } else { v }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
