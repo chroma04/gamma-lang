@@ -7,6 +7,7 @@ coerce :: fn(cx: ^FnCx, e: ^Expr, target0: Ty) -> ^Expr needs Load {
     src := cx.infer.resolve(cx.s, e.ty)
     target := cx.infer.resolve(cx.s, target0)
     if src is target or tys.is_error(src) or tys.is_error(target) { return e }
+    if c := cx.soa_coerce(e, src, target) { return c }
     // `z: Complex(f64) = 1`: a real constant where a complex number is expected (§6.4).
     if elem := cx.s.complex_of(target) {
         if p := cx.promote_real_constant(e, target, elem) { return p }

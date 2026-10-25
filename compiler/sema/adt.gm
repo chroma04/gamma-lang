@@ -614,6 +614,12 @@ pub subst :: fn(s: ^Sema, t: Ty, map: []const Subst) -> Ty needs Load {
         }
         .Adt(id, args) => {
             if args.len is 0 { return t }
+            // `#soa []T` becomes the struct of the argument's fields (§5.6.4).
+            if shape := s.soa_shape_of(tys.template(id)) {
+                elem: Ty = tys.error()
+                if .Type(x) := args[0] { elem = s.subst(x, map) }
+                return s.subst_soa(elem, shape)
+            }
             new_args := list(Ty)
             for a in args {
                 new_args.push(match a {

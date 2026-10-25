@@ -9,6 +9,13 @@ mask_ty :: fn(tys: ^types.Types, len: u64) -> Ty needs Alloc => tys.simd(len, ty
 vector_construction :: fn(cx: ^FnCx, attrs: []const ast.Attribute, inner: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
     call := sema.construction_call(inner) else return error_expr(cx.s, span)
     .Call(_, args, _) := call.kind else return error_expr(cx.s, span)
+    for a in attrs {
+        if a.name.name is "soa" {
+            st := cx.s.soa_type_expr(cx.module, without_call(inner), span)
+            info := cx.s.soa_info(st) else return error_expr(cx.s, span)
+            return cx.soa_construct(st, info, args, span)
+        }
+    }
     t := cx.s.vector_type(cx.module, attrs, without_call(inner), span)
     tys := &cx.s.tys
     if p := tys.vector_parts(t) { return cx.construct_array(t, p.len, p.elem, args, span) }

@@ -112,6 +112,10 @@ pub ExprKind :: union {
     /// A `Write` whose template is a compile-time `string` parameter of a generic
     /// function: each instance splits the template and its arguments (§16.1).
     WriteDeferred: WriteDeferredExpr
+    /// An operation on a `#soa` value of a type parameter's elements, expanded in each
+    /// instance, where the element's fields are known (§5.6.4). The operands are variables,
+    /// places through a variable, or constants, so they may be used repeatedly.
+    SoaDeferred: (op: SoaOp, args: []Expr)
     With: WithExpr
 }
 
@@ -165,6 +169,26 @@ pub WriteExpr :: struct {
     pub pieces: []const []const u8
     pub specs: []const FmtSpec
     pub args: []Expr
+}
+
+/// The operations of `SoaDeferred`, with their operands.
+pub SoaOp :: union {
+    /// `a[i]` read: `[a, i]`.
+    Get
+    /// `a[i] = x`: `[a, i, x]`.
+    Set
+    /// `a.len` of a slice: `[a]`.
+    Len
+    /// `a[lo..hi]`: `[a]`, then `lo` and `hi` if written.
+    Slice: (lo: bool, hi: bool, inclusive: bool)
+    /// `#soa []S` to `#soa []const S`: `[a]`.
+    ToConst
+    /// `T.make(n)`: `[n, site]`; the expression's type is `AllocError!T`.
+    Make
+    /// `s.free()`: `[s, site]`.
+    Free
+    /// `a.copy_from(src)`: `[a, src]`, `src` a `#soa []const` slice.
+    CopyFrom
 }
 
 pub WriteDeferredExpr :: struct {
@@ -553,6 +577,7 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
             f(w.body)
         }
         .Builtin(_, args) => for i in 0..args.len { f(&args[i]) }
+        .SoaDeferred(x) => for i in 0..x.args.len { f(&x.args[i]) }
         .Call(callee, args) => {
             if .Indirect(c) := callee { f(c) }
             for i in 0..args.len { f(&args[i]) }

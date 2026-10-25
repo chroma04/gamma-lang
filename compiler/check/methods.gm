@@ -9,11 +9,22 @@ method_call :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, args: []con
     if t := cx.type_of_name(base) {
         if name.name is "from_tag" { return cx.check_from_tag(t, args, span) }
         if name.name is "load" and cx.s.tys.is_vector(t) { return cx.vector_load(t, args, span) }
+        if info := cx.s.soa_info(t) {
+            if name.name is "make" { return cx.soa_make(t, info, args, span) }
+        }
         return cx.construct_variant(t, name, args, span)
     }
     recv := cx.expr(base, null)
     rty := cx.infer.resolve(cx.s, recv.ty)
     if tys.is_error(rty) { return error_expr(cx.s, span) }
+    // `s.free()` and `a.copy_from(src)` on a `#soa`; it has no other methods (§5.6.4).
+    soa_recv := cx.soa_deref(recv)
+    if info := cx.soa_of(soa_recv) {
+        if name.name is "free" { return cx.soa_free(soa_recv, info, args, span) }
+        if name.name is "copy_from" { return cx.soa_copy_from(soa_recv, info, args, span) }
+        cx.error(span, str.format("`{}` has no method `.{}`; its columns, `a.f`, are arrays and slices with methods", cx.show(cx.infer.resolve(cx.s, soa_recv.ty)), name.name)!)
+        return error_expr(cx.s, span)
+    }
     // 1. A field (holding a function pointer).
     derefed_ty := rty
     if .Ptr(_, p) := tys.kind(cx.infer.shallow(tys, recv.ty)) { derefed_ty = p }

@@ -105,7 +105,6 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         }
         // `#simd [4]f32(…)` or `#vec [3]f32(…)`: constructing a vector or a math vector.
         .Attributed(attrs, inner) if inner.kind is .ArrayType(_) and sema.construction_call(inner) is not null => {
-            if attrs.len > 0 and attrs[0].name.name is "soa" { return cx.unsupported(span, "`#soa` types") }
             return cx.vector_construction(attrs, inner, span)
         }
         .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ErrorUnionType(_), .FnType(_), .ContType(_), .Struct(_), .Union(_), .Effect(_) => {
@@ -488,6 +487,10 @@ addr_of_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, expect: ?Ty, span: sourc
     if t := expect and .Ptr(_, pointee) := cx.s.tys.kind(cx.infer.shallow(&cx.s.tys, t)) { hint = pointee }
     v := cx.expr(operand, hint)
     if cx.reject_second_class(v, "the target of `&`") { return error_expr(cx.s, span) }
+    if v.span in cx.s.soa_gathers.items {
+        cx.error(span, "an element of a `#soa` has no address, since its fields are stored apart (§5.6.4); take the address of a field: `&a[i].f`")
+        return error_expr(cx.s, span)
+    }
     if .Field(base, _) := v.kind and cx.s.bits_struct_ty(base.ty) is not null {
         cx.error(span, "the fields of a `#bits` struct have no address (§5.10.5)")
         return error_expr(cx.s, span)
@@ -534,6 +537,14 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
         .Is, .IsNot => {
             if p := cx.is_pattern_operand(rhs, lhs.ty) { return cx.is_pattern_test(lhs, &p, op is .IsNot, span) }
             r := cx.expr(rhs, lhs.ty)
+            // `#soa` slices compare by content, column by column (§5.6.4).
+            if li := cx.soa_of(lhs) {
+                if ri := cx.soa_of(r) {
+                    if li.len is null and ri.len is null and ri.elem is li.elem {
+                        return cx.soa_eq(lhs, r, if li.is_const { li } else { ri }, op is .IsNot, span)
+                    }
+                }
+            }
             eq := cx.equalize(lhs, r, span)
             return tir.mk(tys.bool_ty(), .Eq(eq.l, eq.r, op is .IsNot), span)
         }
@@ -753,7 +764,20 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
     }
     // `U.V`: a payload-less variant of a union type.
     if t := cx.type_of_name(base) { return cx.construct_variant(t, name, null, span) }
-    b := cx.expr(base, null)
+    // `a[i].f` on a `#soa`: element `i` of column `f`, without gathering the element.
+    if .Index(inner, index) := base.kind {
+        ib := cx.soa_deref(cx.expr(inner, null))
+        if info := cx.soa_of(ib) { return cx.soa_element_field(ib, info, index, name, span) }
+        return cx.field_of(cx.index_value(ib, index, base.span), name, span)
+    }
+    return cx.field_of(cx.expr(base, null), name, span)
+}
+
+/// `b.name` with the base already checked.
+field_of :: fn(cx: ^FnCx, b0: ^Expr, name: ast.Ident, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    b := cx.soa_deref(b0)
+    if info := cx.soa_of(b) { return cx.soa_member(b, info, name, span) }
     b = cx.auto_deref(b)
     bt := cx.infer.resolve(cx.s, b.ty)
     match tys.kind(bt) {
@@ -1360,6 +1384,7 @@ field_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
 /// `S(field: value, …)`.
 construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     .Adt(id, _) := cx.s.tys.kind(ty) else return error_expr(cx.s, span)
+    if info := cx.s.soa_info(ty) { return cx.soa_construct(ty, info, args, span) }
     if h := cx.hidden_field(ty) {
         cx.error(span, str.format("`{}` cannot be constructed outside its {}: its field `{}` is private (§3.3)", cx.show(ty), h.owner, h.name)!)
         return error_expr(cx.s, span)

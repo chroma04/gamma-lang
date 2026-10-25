@@ -402,7 +402,9 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
             for a in targs {
                 if part := s.second_class_part(a) { s.error(e.span, s.not_first_class(a, part)) }
             }
-            return s.instantiate_adt(t, targs)
+            inst := s.instantiate_adt(t, targs)
+            s.report_soa_errors(e.span)
+            return inst
         }
         .Attributed(attrs, inner) => {
             if .PtrType(_, f) := inner.kind and f.kind is .FnType(_) {
@@ -411,8 +413,11 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
             }
             for a in attrs {
                 if a.name.name is "soa" and inner.kind in (.ArrayType(_), .SliceType(_)) {
-                    s.unsupported(e.span, "`#soa` types")
-                    return tys.error()
+                    if attrs.len > 1 or attrs[0].args is not null {
+                        s.error(e.span, "`#soa` takes no arguments and is written once: `#soa [N]S` or `#soa []S`")
+                        return tys.error()
+                    }
+                    return s.soa_type_expr(module, inner, e.span)
                 }
             }
             if inner.kind is .ArrayType(_) { return s.vector_type(module, attrs, inner, e.span) }
@@ -427,8 +432,17 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
         .Union(_) => return s.declare_adt(module, null, "union", e)
         .Intrinsic(i) => {
             if i.name.name is "type_of" {
-                s.unsupported(e.span, "`@type_of`")
-                return tys.error()
+                args := i.args else empty_slice(ast.Arg)
+                if args.len is not 1 or args[0].kind is not .Positional(_) {
+                    s.error(e.span, "`@type_of(e)` takes one expression")
+                    return tys.error()
+                }
+                .Positional(x) := args[0].kind else return tys.error()
+                hook := s.type_hook else {
+                    s.unsupported(e.span, "`@type_of`")
+                    return tys.error()
+                }
+                return hook(s, module, &x) else tys.error()
             }
         }
         // `m.T`: a type declared in another module.

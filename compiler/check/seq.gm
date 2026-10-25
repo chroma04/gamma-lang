@@ -205,7 +205,9 @@ index :: fn(cx: ^FnCx, base: ^const ast.Expr, i: ^const ast.Expr, span: source.S
 /// `b[index]` with the base already checked.
 index_value :: fn(cx: ^FnCx, b0: ^Expr, index_ast: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
     tys := &cx.s.tys
-    b := cx.auto_deref_array(b0)
+    b1 := cx.soa_deref(b0)
+    if info := cx.soa_of(b1) { return cx.soa_element(b1, info, index_ast, span) }
+    b := cx.auto_deref_array(b1)
     if .Array(_, _, kind) := tys.kind(cx.infer.resolve(cx.s, b.ty)) and kind is .Enum(_) { return cx.unsupported(span, "enum-indexed arrays") }
     i := cx.expr(index_ast, null)
     // `a[r]` with a range value `r` is the slice `a[r.lo..r.hi]` (§5.16).
@@ -291,6 +293,8 @@ slice_of :: fn(cx: ^FnCx, b0: ^Expr, base_span: source.Span, lo: ?^Expr, hi: ?^E
     if .Ptr(_, pointee) := tys.kind(cx.infer.resolve(cx.s, b.ty)) and tys.kind(pointee) in (.Array(_), .ParamArray(_)) {
         b = tir.mk(pointee, .Deref(b), span)
     }
+    b = cx.soa_deref(b)
+    if info := cx.soa_of(b) { return cx.soa_slice(b, info, lo, hi, inclusive, span) }
     bt := cx.infer.resolve(cx.s, b.ty)
     if .Array(_, _, kind) := tys.kind(bt) and kind is .Enum(_) and (lo is not null or hi is not null) {
         cx.error(span, str.format("`{}` is indexed by its enum, so it is sliced only whole: `a[..]`", cx.show(bt))!)
@@ -354,7 +358,7 @@ array_type_construction :: fn(cx: ^FnCx, e: ^const ast.Expr, len_ast: ?^ast.Expr
 
 /// The type that a construction (with its prefixes) spells, without the call.
 construction_elem_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
-    t := cx.s.resolve_type(cx.module, without_call(e))
+    t := cx.resolve_type(without_call(e))
     return if cx.s.tys.is_error(t) { null } else { t }
 }
 
@@ -463,9 +467,11 @@ given :: fn(n: usize) -> string needs Alloc => if n is 1 { "1 is" } else { str.f
 
 /// `for p in src` where `src` (already checked) is an array, a pointer to one, a slice, a
 /// tuple or a range value; `null` if it is none of these.
-for_each_value :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src: ^Expr) -> ?^Expr needs Load {
+for_each_value :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src0: ^Expr) -> ?^Expr needs Load {
     tys := &cx.s.tys
     span := f.span
+    src := cx.soa_deref(src0)
+    if info := cx.soa_of(src) { return cx.soa_for(f, src, info) }
     st := cx.infer.resolve(cx.s, src.ty)
     slice: ^Expr = src
     elem: Ty = st

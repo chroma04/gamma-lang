@@ -18,6 +18,7 @@ pub clone_expr :: fn(e: ^const Expr) -> ^Expr needs Alloc {
         .Logic(and_, a, b) => .Logic(and_, clone_expr(a), clone_expr(b))
         .Coerce(c, a) => .Coerce(c, clone_expr(a))
         .Builtin(op, args) => .Builtin(op, clone_exprs(args))
+        .SoaDeferred(x) => .SoaDeferred(op: x.op, args: clone_exprs(x.args))
         .Call(callee, args) => {
             c: Callee = callee
             if .Indirect(x) := callee { c = .Indirect(clone_expr(x)) }

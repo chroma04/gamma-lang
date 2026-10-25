@@ -336,9 +336,23 @@ pub Sema :: struct {
     /// constant `name` declared at `span`: its id once evaluated, or `null` after
     /// reporting why not (installed by the body checker).
     pub eval_hook: ?^fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, name: string, span: source.Span) -> ?u32 needs Alloc + Fs = null
+    /// The type of the expression `e`, which is checked but not evaluated, for
+    /// `@type_of(e)`; `null` after reporting why not (installed by the body checker).
+    pub type_hook: ?^fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?Ty needs Load = null
     /// The step budget of compile-time evaluations in the declaration being resolved
     /// (§17.3).
     pub fuel: u64 = 50_000_000
+    /// The structs that stand for `#soa` arrays and slices (§5.6.4), and what they store.
+    pub soa: hash_map.HashMap(u32, SoaInfo)
+    /// The struct made for each `#soa` type so far.
+    soa_types: List(SoaMade)
+    /// The generic stand-ins for `#soa` types of a type parameter, one for each shape.
+    soa_templates: List(SoaTemplate)
+    /// Why a `#soa` type of an instantiation's type argument cannot exist, until reported at
+    /// the instantiation.
+    pub soa_errors: List(string)
+    /// The spans of `a[i]` expressions that gather an element of a `#soa` (for errors).
+    pub soa_gathers: List(source.Span)
     /// Set while gammac tries an expression as an untyped constant without reporting why
     /// it is not one.
     pub quiet_untyped: bool = false
@@ -387,6 +401,11 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         const_ids: hash_map.hash_map((source.Span, Ty), u32),
         inst_defs: hash_map.hash_map(u32, tir.FnDef),
         checking: list(u32),
+        soa: hash_map.hash_map(u32, SoaInfo),
+        soa_types: list(SoaMade),
+        soa_templates: list(SoaTemplate),
+        soa_errors: list(string),
+        soa_gathers: list(source.Span),
     )
     s.effects.push(EffectInfo(name: "..", module: 0, params: empty_slice(u32), ops: empty_slice(OpInfo)))!
     return s

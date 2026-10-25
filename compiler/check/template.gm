@@ -259,6 +259,13 @@ build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template: ^const ast.Expr, res
         return cx.unsupported(template.span, "templates that are not literals")
     }
     ta := cx.template_args(bytes, template.span, rest, span) else return error_expr(cx.s, span)
+    // A `#soa` slice is written as its columns, not its pointers (§5.6.4).
+    for k in 0..ta.values.len {
+        if cx.soa_of(&ta.values[k]) is not null {
+            value := new(ta.values[k])!
+            ta.values[k] = cx.soa_columns_tuple(value, "formatting")^
+        }
+    }
     write := tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: ta.pieces, specs: ta.specs, args: ta.values)), span)
     if ta.stmts.len is 0 { return write }
     stmts := list(tir.Stmt)

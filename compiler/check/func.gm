@@ -1091,7 +1091,22 @@ assign :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^cons
         _ = cx.expr(value, null)
         return .Expr(unit(cx.s, span))
     }
-    place := cx.expr(place_ast, null)
+    // `a[i] = s` on a `#soa`: each field of `s` goes to its column (§5.6.4).
+    if .Index(base, index) := place_ast.kind {
+        b := cx.soa_deref(cx.expr(base, null))
+        if info := cx.soa_of(b) {
+            if op is not .Assign {
+                cx.error(span, "an element of a `#soa` is assigned whole with `=`; assign to its fields with `a[i].f`")
+            }
+            return cx.soa_store(b, info, index, value, span)
+        }
+        return cx.assign_place(cx.index_value(b, index, place_ast.span), place_ast, op, value, span)
+    }
+    return cx.assign_place(cx.expr(place_ast, null), place_ast, op, value, span)
+}
+
+/// `place op value` with the place already checked.
+assign_place :: fn(cx: ^FnCx, place: ^Expr, place_ast: ^const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
     cx.require_mutable_place(place, place_ast.span)
     match op {
         .Assign => {

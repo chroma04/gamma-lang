@@ -13,6 +13,12 @@ ESCAPE_MSG :: "constant contains a pointer to memory that does not outlive compi
 /// Lets resolving the declarations check and evaluate constant expressions.
 pub install :: fn(s: ^Sema) {
     s.eval_hook = const_hook
+    s.type_hook = type_hook
+}
+
+type_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?Ty needs Load {
+    ex := check_const_expr(s, module, e, null) else return null
+    return ex.ty
 }
 
 const_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, name: string, span: source.Span) -> ?u32 needs Alloc + Fs {

@@ -1,0 +1,507 @@
+// Structure-of-arrays types `#soa [N]S` and `#soa []S` (§5.6.4) (mirrors `src/sema/soa.rs`).
+//
+// Each `#soa` type is a struct made by the compiler: for an array, one field `[N]F` for
+// each field `f: F` of `S`; for a slice, one many-pointer `[^]F` for each field and then
+// `len: usize`. The operations of §5.6.4 are lowered here to field accesses, indexing and
+// slicing of those columns, so the back ends see only structs, arrays and slices.
+//
+// In a generic body, `#soa []T` of a type parameter `T` is a stand-in: an instance of a
+// compiler-made generic type that each instantiation replaces with the real struct
+// (`subst`). Its operations on whole elements are kept as `SoaDeferred` and lowered by
+// `soa_expand` in each instance, with the same builders as for a concrete struct.
+
+Expr :: tir.Expr
+Stmt :: tir.Stmt
+
+/// What a `#soa` type stores: elements of the struct `elem`, `len` of them for an array
+/// (`null` for a slice), read-only for a `#soa []const S`.
+pub SoaInfo :: struct {
+    pub elem: Ty
+    pub len: ?u64
+    pub is_const: bool
+}
+
+/// A compiler-made generic type of one shape of `#soa` type: the template of the
+/// stand-ins and of the real structs.
+SoaTemplate :: struct {
+    id: u32
+    len: ?u64
+    is_const: bool
+}
+
+/// The struct made for a `#soa` type.
+SoaMade :: struct {
+    elem: Ty
+    len: ?u64
+    is_const: bool
+    ty: Ty
+}
+
+/// A `#soa` type, or why the element cannot be stored by field.
+pub SoaTy :: union {
+    Ok: Ty
+    Err: string
+}
+
+same_len :: fn(a, b: ?u64) -> bool {
+    if x := a {
+        if y := b { return x is y }
+        return false
+    }
+    return b is null
+}
+
+/// Function `name` of the core module `core/<module>`.
+pub core_fn_of :: fn(s: ^Sema, module: string, name: string) -> ?u32 needs Load {
+    mname := str.format("core/{}", module)!
+    for m in s.l.core_modules.items {
+        if s.l.modules.items[m].name is not mname { continue }
+        d := s.l.lookup(m, name) else return null
+        .Fn(f) := s.resolve_decl(d) else return null
+        return f
+    }
+    return null
+}
+
+/// Whether the element type mentions a type parameter: the fields are not known, and the
+/// operations are lowered in each instance.
+pub soa_generic :: fn(s: ^const Sema, info: SoaInfo) -> bool => s.tys.has_param(info.elem)
+
+/// What the `#soa` type `t` stores, if it is one.
+pub soa_info :: fn(s: ^const Sema, t: Ty) -> ?SoaInfo {
+    .Adt(id, args) := s.tys.kind(t) else return null
+    for tm in s.soa_templates.items {
+        if tm.id is id {
+            if args.len > 0 and .Type(elem) := args[0] { return SoaInfo(elem: elem, len: tm.len, is_const: tm.is_const) }
+            return null
+        }
+    }
+    return s.soa.get(id)
+}
+
+/// The `#soa` type of the struct `elem`: an array of `len` elements, or a slice (`len` is
+/// `null`). Reports an error and gives the error type if `elem` cannot be stored by field.
+pub soa_type :: fn(s: ^Sema, elem: Ty, len: ?u64, is_const: bool, span: source.Span) -> Ty needs Load {
+    match s.soa_type_of(elem, len, is_const) {
+        .Ok(t) => return t
+        .Err(msg) => {
+            s.error(span, msg)
+            return s.tys.error()
+        }
+    }
+}
+
+/// `soa_type`, or why `elem` cannot be stored by field. A type parameter, or a generic type
+/// of one, gives the stand-in that each instantiation replaces.
+pub soa_type_of :: fn(s: ^Sema, elem: Ty, len: ?u64, is_const0: bool) -> SoaTy needs Load {
+    tys := &s.tys
+    if tys.is_error(elem) { return .Ok(elem) }
+    is_const := is_const0 and len is null
+    if tys.has_param(elem) and tys.kind(elem) in (.Param(_), .Adt(_)) { return .Ok(s.soa_stand_in(elem, len, is_const)) }
+    not_struct := str.format("`#soa` stores the fields of a struct, and `{}` is not a struct", s.show(elem))!
+    .Adt(id, _) := tys.kind(elem) else return .Err(not_struct)
+    info := s.adts.items[usize(id)]
+    fields: []const FieldDef = empty_slice(FieldDef)
+    match info.kind {
+        .Struct(def) => {
+            if def.bits is not null { return .Err(str.format("`#soa` cannot store `{}`: the fields of a `#bits` struct have no address", s.show(elem))!) }
+            fields = def.fields
+        }
+        _ => return .Err(not_struct)
+    }
+    if fields.len is 0 { return .Err(str.format("`#soa` needs a struct with fields, and `{}` has none", s.show(elem))!) }
+    for f in fields {
+        if f.name is "len" { return .Err(str.format("`#soa` cannot store `{}`: its field `len` would hide the length, `a.len`", s.show(elem))!) }
+    }
+    for m in s.soa_types.items {
+        if m.elem is elem and same_len(m.len, len) and m.is_const is is_const { return .Ok(m.ty) }
+    }
+    name := str.format("#soa {}{}", soa_shape(len, is_const), s.show(elem))!
+    columns := list(FieldDef)
+    for f in fields {
+        ct: Ty = if n := len { tys.array(n, f.ty) } else { tys.many_ptr(is_const, f.ty) }
+        columns.push(FieldDef(name: f.name, ty: ct, vis: .Public, align: null))!
+    }
+    if len is null { columns.push(FieldDef(name: "len", ty: tys.usize_ty(), vis: .Public, align: null))! }
+    // An instance of the stand-in's template, so that `#soa []T` binds `T` (§16.2).
+    template := s.soa_template(len, is_const)
+    soa := tys.fresh_adt(name)
+    tys.set_template(soa, template)
+    s.adts.push(compiler_adt(name, info.module, .Struct(StructDef(fields: columns.items, packed: false, align: null, bits: null)), columns.items.len))!
+    s.soa.put(soa, SoaInfo(elem: elem, len: len, is_const: is_const))!
+    t := tys.adt(soa, [1]GenericArg(.Type(elem))[..])
+    s.soa_types.push(SoaMade(elem: elem, len: len, is_const: is_const, ty: t))!
+    return .Ok(t)
+}
+
+/// A struct or union made by the compiler.
+compiler_adt :: fn(name: string, module: usize, kind: AdtKind, fields: usize) -> AdtInfo needs Alloc {
+    defaults := list(bool)
+    default_exprs := list(?^ast.Expr)
+    for _ in 0..fields {
+        defaults.push(false)!
+        default_exprs.push(null)!
+    }
+    return AdtInfo(
+        name: name,
+        module: module,
+        kind: kind,
+        defaults: defaults.items,
+        default_exprs: default_exprs.items,
+        has_using: false,
+        params: empty_slice(u32),
+        param_defaults: empty_slice(?^ast.Expr),
+        explicit_tag: false,
+        span: source.DUMMY,
+        decl: null,
+    )
+}
+
+/// The stand-in for a `#soa` type of the generic `elem`: the compiler-made generic type of
+/// its shape, applied to `elem`.
+soa_stand_in :: fn(s: ^Sema, elem: Ty, len: ?u64, is_const: bool) -> Ty needs Load {
+    id := s.soa_template(len, is_const)
+    return s.tys.adt(id, [1]GenericArg(.Type(elem))[..])
+}
+
+soa_template :: fn(s: ^Sema, len: ?u64, is_const: bool) -> u32 needs Load {
+    for tm in s.soa_templates.items {
+        if same_len(tm.len, len) and tm.is_const is is_const { return tm.id }
+    }
+    name := str.format("#soa {}", soa_shape(len, is_const))!
+    id := s.tys.fresh_adt(name)
+    s.adts.push(compiler_adt(name, 0, empty_struct(), 0))!
+    s.soa_templates.push(SoaTemplate(id: id, len: len, is_const: is_const))!
+    return id
+}
+
+/// Whether `id` is the template of a shape of `#soa` type.
+pub soa_shape_of :: fn(s: ^const Sema, id: u32) -> ?(len: ?u64, is_const: bool) {
+    for tm in s.soa_templates.items {
+        if tm.id is id { return (len: tm.len, is_const: tm.is_const) }
+    }
+    return null
+}
+
+/// `subst` of the stand-in `#soa` type of `elem`: the real type, or the error type, with
+/// the reason kept for `report_soa_errors`.
+pub subst_soa :: fn(s: ^Sema, elem: Ty, shape: (len: ?u64, is_const: bool)) -> Ty needs Load {
+    match s.soa_type_of(elem, shape.len, shape.is_const) {
+        .Ok(t) => return t
+        .Err(msg) => {
+            s.soa_errors.push(msg)!
+            return s.tys.error()
+        }
+    }
+}
+
+/// Reports, at the instantiation at `span`, the `#soa` types of its type arguments that
+/// cannot exist (§5.6.4, §16.1).
+pub report_soa_errors :: fn(s: ^Sema, span: source.Span) needs Load {
+    seen := list(string)
+    errors := s.soa_errors
+    s.soa_errors = list(string)
+    for msg in errors.items {
+        if msg in seen.items { continue }
+        s.error(span, str.format("{} (in an instantiation used here)", msg)!)
+        seen.push(msg)!
+    }
+}
+
+/// `#soa [N]S` or `#soa []S` written as a type: `inner` is the array or slice type.
+pub soa_type_expr :: fn(s: ^Sema, module: usize, inner: ^const ast.Expr, span: source.Span) -> Ty needs Load {
+    match inner.kind {
+        .ArrayType(a) => if len := a.len {
+            elem := s.resolve_type(module, a.elem)
+            n: u64 = 0
+            match s.array_len(module, len) {
+                .Known(k) => { n = k }
+                .Param(_) => {
+                    s.error(len.span, "a `#soa` array's length is a constant, not a compile-time parameter")
+                    return s.tys.error()
+                }
+                .Failed => return s.tys.error()
+            }
+            return s.soa_type(elem, n, false, span)
+        }
+        .SliceType(is_const, inner_ty) => {
+            elem := s.resolve_type(module, inner_ty)
+            return s.soa_type(elem, null, is_const, span)
+        }
+        _ => {}
+    }
+    s.error(span, "`#soa` precedes an array or slice type of a struct: `#soa [N]S` or `#soa []S`")
+    return s.tys.error()
+}
+
+/// How a `#soa` type's name shows its shape: `[4]`, `[]` or `[]const `.
+soa_shape :: fn(len: ?u64, is_const: bool) -> string needs Alloc {
+    if n := len { return str.format("[{}]", n)! }
+    return if is_const { "[]const " } else { "[]" }
+}
+
+// The builders below take operands that may be used repeatedly (see `soa_repeatable`, and
+// array places through a variable) and need the element's fields.
+
+pub soa_block :: fn(stmts: []tir.Stmt, tail: ^Expr, span: source.Span) -> ^Expr needs Alloc {
+    if stmts.len is 0 { return tail }
+    return tir.mk(tail.ty, .Block(new(tir.Block(stmts: stmts, tail: tail, span: span))!), span)
+}
+
+pub usize_lit :: fn(s: ^Sema, v: u64, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.usize_ty(), .Int(bigint.from_u64(v)), span)
+
+/// A new compiler temporary among `locals`.
+soa_temp :: fn(locals: ^List(tir.LocalDecl), ty: Ty, span: source.Span) -> u32 needs Alloc {
+    locals.push(tir.LocalDecl(name: "<tmp>", ty: ty, mutable: true, span: span))!
+    return (locals.items.len - 1).trunc(u32)
+}
+
+/// True for an expression that can be evaluated twice: it reads a variable or constant.
+pub soa_repeatable :: fn(e: ^const Expr) -> bool => e.kind in (.Local(_), .Upvar(_), .Const(_), .Global(_))
+
+/// The fields of the element struct of `info`.
+pub soa_fields :: fn(s: ^const Sema, info: SoaInfo) -> []const FieldDef => s.struct_fields(info.elem) else empty_slice(FieldDef)
+
+/// Column `k` of `v`: the array `[N]F` (a place when `v` is one), or the slice `[]F`.
+pub soa_column :: fn(s: ^Sema, v: ^const Expr, info: SoaInfo, k: usize, span: source.Span) -> ^Expr needs Alloc {
+    fields := s.struct_fields(v.ty) else empty_slice(FieldDef)
+    ft := fields[k].ty
+    col := tir.mk(ft, .Field(tir.clone_expr(v), k.trunc(u32)), span)
+    if info.len is not null { return col }
+    .ManyPtr(is_const, elem) := s.tys.kind(ft) else return col
+    len := tir.mk(s.tys.usize_ty(), .Field(tir.clone_expr(v), (fields.len - 1).trunc(u32)), span)
+    return tir.mk(s.tys.slice(is_const, elem), .Slice(tir.SliceExpr(base: col, lo: s.usize_lit(0, span), hi: len, inclusive: false)), span)
+}
+
+/// The length of `v`.
+pub soa_len_of :: fn(s: ^Sema, v: ^const Expr, info: SoaInfo, span: source.Span) -> ^Expr needs Alloc {
+    if n := info.len { return s.usize_lit(n, span) }
+    fields := s.struct_fields(v.ty) else empty_slice(FieldDef)
+    k := if fields.len is 0 { 0 } else { fields.len - 1 }
+    return tir.mk(s.tys.usize_ty(), .Field(tir.clone_expr(v), k.trunc(u32)), span)
+}
+
+/// Element `i` of every column of `v`, gathered into the element struct.
+pub soa_gather_of :: fn(s: ^Sema, v: ^const Expr, info: SoaInfo, i: ^const Expr, span: source.Span) -> ^Expr needs Alloc {
+    fields := s.soa_fields(info)
+    parts := list(Expr)
+    for k, f in enumerate(fields) {
+        col := s.soa_column(v, info, k, span)
+        parts.push(tir.mk(f.ty, .Index(col, tir.clone_expr(i), true), span)^)!
+    }
+    return tir.mk(info.elem, .Aggregate(parts.items), span)
+}
+
+/// `v[i] = x`: each field of `x` stored in its column.
+pub soa_scatter :: fn(s: ^Sema, v: ^const Expr, info: SoaInfo, i: ^const Expr, x: ^const Expr, span: source.Span) -> []tir.Stmt needs Alloc {
+    fields := s.soa_fields(info)
+    stmts := list(tir.Stmt)
+    for k, f in enumerate(fields) {
+        col := s.soa_column(v, info, k, span)
+        place := tir.mk(f.ty, .Index(col, tir.clone_expr(i), true), span)
+        part := tir.mk(f.ty, .Field(tir.clone_expr(x), k.trunc(u32)), span)
+        stmts.push(.Assign(place, part))!
+    }
+    return stmts.items
+}
+
+/// `v[lo..hi]` as a `#soa` slice, read-only with `is_const`: each column sliced alike.
+pub soa_slice_columns :: fn(s: ^Sema, v: ^const Expr, info: SoaInfo, is_const: bool, lo: ?^const Expr, hi: ?^const Expr, inclusive: bool, span: source.Span) -> ^Expr needs Load {
+    tys := &s.tys
+    t := s.soa_type(info.elem, null, is_const, span)
+    fields := s.soa_fields(info)
+    parts := list(Expr)
+    for k in 0..fields.len {
+        sl := s.soa_slice_column(v, info, k, is_const, lo, hi, inclusive, fields[k].ty, span)
+        parts.push(tir.mk(tys.many_ptr(is_const, fields[k].ty), .SlicePtr(sl), span)^)!
+    }
+    first := s.soa_slice_column(v, info, 0, is_const, lo, hi, inclusive, fields[0].ty, span)
+    parts.push(tir.mk(tys.usize_ty(), .SliceLen(first), span)^)!
+    return tir.mk(t, .Aggregate(parts.items), span)
+}
+
+soa_slice_column :: fn(s: ^Sema, v: ^const Expr, info: SoaInfo, k: usize, is_const: bool, lo: ?^const Expr, hi: ?^const Expr, inclusive: bool, ft: Ty, span: source.Span) -> ^Expr needs Alloc {
+    col := s.soa_column(v, info, k, span)
+    l: ?^Expr = null
+    if x := lo { l = tir.clone_expr(x) }
+    h: ?^Expr = null
+    if x := hi { h = tir.clone_expr(x) }
+    return tir.mk(s.tys.slice(is_const, ft), .Slice(tir.SliceExpr(base: col, lo: l, hi: h, inclusive: inclusive)), span)
+}
+
+/// The slice `v` of type `src` as the `#soa []const` type `target`.
+pub soa_to_const :: fn(s: ^Sema, v: ^const Expr, src: Ty, target: Ty, span: source.Span) -> ^Expr needs Alloc {
+    fields := s.struct_fields(src) else empty_slice(FieldDef)
+    target_fields := s.struct_fields(target) else empty_slice(FieldDef)
+    parts := list(Expr)
+    for k in 0..fields.len.min(target_fields.len) {
+        part := tir.mk(fields[k].ty, .Field(tir.clone_expr(v), k.trunc(u32)), span)
+        if fields[k].ty is target_fields[k].ty {
+            parts.push(part^)!
+        } else {
+            parts.push(tir.mk(target_fields[k].ty, .Coerce(.PtrToPtr, part), span)^)!
+        }
+    }
+    return tir.mk(target, .Aggregate(parts.items), span)
+}
+
+/// The instance of the core function `name` (`soa_alloc` or `soa_free`) for the element of
+/// `info`, with its layout arguments.
+soa_core :: fn(s: ^Sema, name: string, info: SoaInfo, span: source.Span) -> ?(f: u32, sizes: ^Expr, aligns: ^Expr) needs Load {
+    f := s.core_fn_of("slice", name) else {
+        s.error(span, "`#soa` allocation is missing from the core library")
+        return null
+    }
+    layouts := s.soa_layout(info, span)
+    k := s.tys.intern(.Value(s.int_key(s.tys.usize_ty(), bigint.from_u64(s.soa_fields(info).len.trunc(u64)))))
+    // Errors waiting for the instantiation being produced are reported there, not here.
+    pending := s.soa_errors
+    s.soa_errors = list(string)
+    inst := s.instantiate(f, [1]Ty(k)[..], span)
+    s.soa_errors = pending
+    return (f: inst, sizes: layouts.sizes, aligns: layouts.aligns)
+}
+
+/// The sizes and alignments of the element's fields, as `[K]usize` arrays.
+soa_layout :: fn(s: ^Sema, info: SoaInfo, span: source.Span) -> (sizes: ^Expr, aligns: ^Expr) needs Load {
+    fields := s.soa_fields(info)
+    sizes := list(Expr)
+    aligns := list(Expr)
+    for f in fields {
+        l := s.layout(f.ty)
+        sizes.push(s.usize_lit(l.size, span)^)!
+        aligns.push(s.usize_lit(l.align, span)^)!
+    }
+    n := u64(fields.len)
+    t := s.tys.array(n, s.tys.usize_ty())
+    return (sizes: tir.mk(t, .Array(sizes.items), span), aligns: tir.mk(t, .Array(aligns.items), span))
+}
+
+/// `T.make(n)`: one block holding every column, from `soa_alloc` (§5.6.4).
+pub soa_make_columns :: fn(s: ^Sema, locals: ^List(tir.LocalDecl), t: Ty, info: SoaInfo, n: ^Expr, site: ^Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &s.tys
+    c := s.soa_core("soa_alloc", info, span) else return tir.mk(tys.error(), .Aggregate(empty_slice(Expr)), span)
+    rt := s.fns.items[usize(c.f)].ret
+    args := list(Expr)
+    args.push(c.sizes^)!
+    args.push(c.aligns^)!
+    args.push(tir.clone_expr(n)^)!
+    args.push(site^)!
+    call := tir.mk(rt, .Call(.Fn(c.f), args.items), span)
+    // match call { ok(p) => T(p[0].cast(…), …, n), err(e) => !e }
+    .Result(err, ok) := tys.kind(rt) else return tir.mk(tys.error(), .Aggregate(empty_slice(Expr)), span)
+    p := soa_temp(locals, ok, span)
+    e := soa_temp(locals, err, span)
+    fields := s.struct_fields(t) else empty_slice(FieldDef)
+    parts := list(Expr)
+    for k in 0..fields.len - 1 {
+        raw := tir.mk(tys.intern(.Rawptr), .Index(tir.mk(ok, .Local(p), span), s.usize_lit(k.trunc(u64), span), false), span)
+        parts.push(tir.mk(fields[k].ty, .Builtin(.Cast, one_arg(raw)), span)^)!
+    }
+    parts.push(n^)!
+    result := tys.result(err, t)
+    value := tir.mk(t, .Aggregate(parts.items), span)
+    wrapped := tir.mk(result, .Coerce(.WrapOk, value), span)
+    failed := tir.mk(result, .MakeErr(tir.mk(err, .Local(e), span)), span)
+    arms := list(tir.Arm)
+    arms.push(tir.Arm(pat: tir.mk_pat(rt, .Ok(tir.mk_pat(ok, .Bind(p), span)), span), guard: null, body: wrapped))!
+    arms.push(tir.Arm(pat: tir.mk_pat(rt, .Err(tir.mk_pat(err, .Bind(e), span)), span), guard: null, body: failed))!
+    return tir.mk(result, .Match(call, arms.items), span)
+}
+
+one_arg :: fn(e: ^Expr) -> []Expr needs Alloc {
+    out := list(Expr)
+    out.push(e^)!
+    return out.items
+}
+
+/// `v.free()`: releases the block from `make` through `soa_free` (§5.6.4).
+pub soa_free_columns :: fn(s: ^Sema, v: ^const Expr, info: SoaInfo, site: ^Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &s.tys
+    c := s.soa_core("soa_free", info, span) else return tir.mk(tys.error(), .Aggregate(empty_slice(Expr)), span)
+    first := (s.struct_fields(v.ty) else empty_slice(FieldDef))[0].ty
+    base := tir.mk(first, .Field(tir.clone_expr(v), 0), span)
+    raw := tir.mk(tys.intern(.Rawptr), .Coerce(.PtrToPtr, base), span)
+    len := s.soa_len_of(v, info, span)
+    args := list(Expr)
+    args.push(c.sizes^)!
+    args.push(c.aligns^)!
+    args.push(len^)!
+    args.push(raw^)!
+    args.push(site^)!
+    return tir.mk(s.fns.items[usize(c.f)].ret, .Call(.Fn(c.f), args.items), span)
+}
+
+/// `dst.copy_from(src)`, `src` a `#soa []const` slice: each column copied with the slice
+/// method `copy_from`, which checks the lengths and allows overlap (§5.6.4).
+pub soa_copy_columns :: fn(s: ^Sema, dst: ^const Expr, info: SoaInfo, src: ^const Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &s.tys
+    f := s.core_fn_of("slice", "copy_from") else {
+        s.error(span, "`copy_from` is missing from the core library")
+        return tir.mk(tys.error(), .Aggregate(empty_slice(Expr)), span)
+    }
+    from := s.soa_info(src.ty) else return tir.mk(tys.error(), .Aggregate(empty_slice(Expr)), span)
+    fields := s.soa_fields(info)
+    stmts := list(tir.Stmt)
+    for k, field in enumerate(fields) {
+        d := s.soa_column(dst, info, k, span)
+        if info.len is not null {
+            // The array column of an array place, sliced whole.
+            d = tir.mk(tys.slice(false, field.ty), .Slice(tir.SliceExpr(base: d, lo: null, hi: null, inclusive: false)), span)
+        }
+        c := s.soa_column(src, from, k, span)
+        pending := s.soa_errors
+        s.soa_errors = list(string)
+        inst := s.instantiate(f, [1]Ty(field.ty)[..], span)
+        s.soa_errors = pending
+        args := list(Expr)
+        args.push(d^)!
+        args.push(c^)!
+        stmts.push(.Expr(tir.mk(s.fns.items[usize(inst)].ret, .Call(.Fn(inst), args.items), span)))!
+    }
+    return tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span)
+}
+
+/// Lowers a `SoaDeferred` of an instance, whose types are now concrete. New temporaries go
+/// to `locals`, those of the function the expression is in.
+pub soa_expand :: fn(s: ^Sema, locals: ^List(tir.LocalDecl), e: ^Expr) -> ^Expr needs Load {
+    span := e.span
+    .SoaDeferred(x) := e.kind else return e
+    op := x.op
+    args := x.args
+    err := tir.mk(s.tys.error(), .Aggregate(empty_slice(Expr)), span)
+    // A `#soa` type that cannot exist was reported at the instantiation.
+    operand: Ty = s.tys.error()
+    if op is .Make {
+        if .Result(_, ok) := s.tys.kind(e.ty) { operand = ok }
+    } else {
+        operand = args[0].ty
+    }
+    info := s.soa_info(operand) else return err
+    if s.soa_generic(info) { return err }
+    match op {
+        .Get => return s.soa_gather_of(&args[0], info, &args[1], span)
+        .Set => {
+            stmts := s.soa_scatter(&args[0], info, &args[1], &args[2], span)
+            return tir.mk(s.tys.unit(), .Block(new(tir.Block(stmts: stmts, tail: null, span: span))!), span)
+        }
+        .Len => return s.soa_len_of(&args[0], info, span)
+        .Slice(b) => {
+            to := s.soa_info(e.ty) else return err
+            if s.soa_generic(to) { return err }
+            next: usize = 1
+            lo: ?^const Expr = null
+            hi: ?^const Expr = null
+            if b.lo {
+                lo = &args[next]
+                next += 1
+            }
+            if b.hi { hi = &args[next] }
+            return s.soa_slice_columns(&args[0], info, to.is_const, lo, hi, b.inclusive, span)
+        }
+        .ToConst => return s.soa_to_const(&args[0], args[0].ty, e.ty, span)
+        .Make => return s.soa_make_columns(locals, operand, info, &args[0], &args[1], span)
+        .Free => return s.soa_free_columns(&args[0], info, &args[1], span)
+        .CopyFrom => return s.soa_copy_columns(&args[0], info, &args[1], span)
+    }
+}
