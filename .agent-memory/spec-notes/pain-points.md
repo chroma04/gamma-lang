@@ -42,6 +42,8 @@ dangling stores are now compile errors (decisions/045).
   once): `tys := fg.g.ty.s.tys` then `tys.ptr(…)` interned into the COPY → later
   `index out of bounds` in `kind`. Needed `tys := &…`. Idea: lint `mutated-copy` (a local
   initialized by copying a place whose type holds a List/pointer-owning struct, then
-  passed as `^T` to a method). Flagged to the user (s43).
+  passed as `^T` to a method). Flagged to the user (s43); user said implement → DONE s43:
+  lint `mutated-copy` (src/sema/lint_copy.rs; buffer = struct with mutable slice +
+  Allocator; exemptions: read whole, assigned whole, captured, original place assigned).
 - **`usize(u64)` rejected** (s43, ~10 sites in consts.gm): by design (§6.6, 32-bit
   targets); `.trunc(usize)` everywhere for indices computed in u64. Watch.

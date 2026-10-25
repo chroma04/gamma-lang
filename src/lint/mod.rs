@@ -80,6 +80,10 @@ pub const RULES: &[Rule] = &[
         "present-only-binding",
         "a name in a `match` pattern that matches only a present optional, leaving `null` to a catch-all arm",
     ),
+    rule_def(
+        "mutated-copy",
+        "a local holding a copy of a list, map or other value with a resizable buffer, changed as if it were the original",
+    ),
     rule_def("constant-condition", "an `if` or `while` whose condition is the literal `true` or `false`"),
     rule_def("useless-defer", "a `defer` or `errdefer` that is the last statement of its block"),
     rule_def("needless-bool", "`if c { true } else { false }` and the like, which are `c` or `not c`"),
@@ -343,6 +347,18 @@ fn finding_diag(
                 name
             ))
         }
+        Finding::MutatedCopy { span, name, local, source } => lint(
+            span,
+            "mutated-copy",
+            format!("this changes `{}`, a copy of `{}`, which does not see the change", name, text(source)),
+        )
+        .with_label(local, format!("`{}` is a copy", name))
+        .with_note(format!(
+            "the copy shares its elements with the original but not its length, so what is added through it is \
+             lost; to change the original, take its address: `{} := &{}`",
+            name,
+            text(source)
+        )),
         Finding::BoolComparison { span, operand, same } => {
             let whole = text(span);
             if !(whole.contains("true") || whole.contains("false")) {

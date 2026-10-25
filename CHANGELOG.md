@@ -117,6 +117,11 @@ Versions and what each kind of change means are described in
 
 ### Diagnostics
 
+- `gamma lint` has a new rule, `mutated-copy`: a local holding a copy of a `List`, a
+  `HashMap` or another value with a resizable buffer (`tys := cx.tys`) that is then
+  changed as if it were the original (`tys.intern(k)`), which loses the change; a pointer
+  (`tys := &cx.tys`) was meant. It was found when such copies broke the self-hosted
+  compiler.
 - `gamma lint` has three new rules: `dangling-address`, for the address of a local (a loop
   variable, a pattern binding) stored, passed to be stored or returned where it outlives the
   local; `needless-pub`, for `pub(package)` names no other module uses and `pub` ones of

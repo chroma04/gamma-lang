@@ -29,6 +29,7 @@ mod ide;
 mod imports;
 mod infer;
 mod lint;
+mod lint_copy;
 pub(crate) mod lint_escape;
 mod lint_present;
 mod matching;
