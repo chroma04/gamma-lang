@@ -9,7 +9,6 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
         cx.error(lit.span, "a function literal used as a value cannot be generic; bind it with `name :: fn …` (§11.8)")
         return error_expr(cx.s, span)
     }
-    if cx.in_generic_fn() { return cx.unsupported(span, "function literals in generic functions") }
     // A literal written for `?^fn(…)` is the function pointer it wraps.
     target: ?Ty = null
     if t0 := expect {

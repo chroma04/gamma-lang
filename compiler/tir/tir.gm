@@ -449,6 +449,9 @@ pub FnDef :: struct {
     pub body: ?^Expr
     /// For a nested function that uses locals of the enclosing one: that function.
     pub parent: ?u32 = null
+    /// Whether it is a function literal, nested function or handler clause written in
+    /// the body of another function.
+    pub nested: bool = false
 }
 
 // ---------------------------------------------------------------------------------
