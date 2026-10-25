@@ -798,7 +798,7 @@ stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
 /// A `when` in a body (§3.6): only the branch its compile-time condition selects is
 /// checked.
 when_stmt :: fn(cx: ^FnCx, w: ^const ast.WhenStmt) -> ^Expr needs Load {
-    taken := cx.s.l.when_cond(cx.module, w.cond) else return unit(cx.s, w.span)
+    taken := body_when_cond(cx.s, cx.module, w.cond) else return unit(cx.s, w.span)
     if taken { return cx.block(&w.then, false) }
     match w.else_ {
         .Block(b) => return cx.block(&b, false)

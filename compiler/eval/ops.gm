@@ -546,6 +546,52 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
             .Float(f) := x else return !m.unsupported(span, "this builtin")
             return .Float(try m.round_float(f.sqrt(), e.ty, span))
         }
+        .Clz, .Ctz, .Popcount, .Bswap, .Bitreverse, .Rotl, .Rotr => {
+            .Int(raw) := x else return !m.unsupported(span, "this builtin")
+            info := m.int_info(at)
+            n := info.bits
+            v := raw & mask(n)
+            bit :: fn(i: u32) -> bool => (v >> u128(i)) & 1 is 1
+            r: u128 = 0
+            match op {
+                .Clz => {
+                    c: u32 = 0
+                    while c < n and not bit(n - 1 - c) { c += 1 }
+                    return .Int(u128(c))
+                }
+                .Ctz => {
+                    c: u32 = 0
+                    while c < n and not bit(c) { c += 1 }
+                    return .Int(u128(c))
+                }
+                .Popcount => {
+                    c: u32 = 0
+                    for i in 0..n {
+                        if bit(i) { c += 1 }
+                    }
+                    return .Int(u128(c))
+                }
+                .Bswap => {
+                    if n % 8 is not 0 { return !m.trap(span, str.format("bswap requires a whole number of bytes, not {} bits", n)!) }
+                    for i in 0..n / 8 { r |= ((v >> u128(i * 8)) & 0xff) << u128((n / 8 - 1 - i) * 8) }
+                }
+                .Bitreverse => for i in 0..n {
+                    if bit(i) { r |= u128(1) << u128(n - 1 - i) }
+                }
+                _ => {
+                    .Int(amount_bits) := vals[1] else return !m.unsupported(span, "this builtin")
+                    amount := m.big_of(amount_bits, args[1].ty)
+                    k: u32 = 0
+                    if not amount.is_negative() { k = (amount.rem(bigint.from_u64(u64(n))).to_u64() else 0).trunc(u32) }
+                    if op is .Rotr { k = (n - k) % n }
+                    // Bit i moves to bit (i + k) mod n.
+                    for i in 0..n {
+                        if bit(i) { r |= u128(1) << u128((i + k) % n) }
+                    }
+                }
+            }
+            return .Int(m.wrap(r, at))
+        }
         other => return !m.unsupported(span, str.format("the builtin `{}` at compile time", other)!)
     }
 }

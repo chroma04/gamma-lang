@@ -374,6 +374,18 @@ pub check_static_assert :: fn(s: ^Sema, ex: ^Expr, msg: ?[]u8, span: source.Span
     }
 }
 
+/// The condition of a `when` in a body (§3.6, §8.9), which may not depend on a generic
+/// parameter (§16.7); `null` after an error.
+pub body_when_cond :: fn(s: ^Sema, module: usize, cond: ^const ast.Expr) -> ?bool needs Load {
+    ex := check_const_expr(s, module, cond, s.tys.bool_ty()) else return null
+    if depends_on_params(s, ex) {
+        s.error(cond.span, "a `when` condition may not depend on a generic parameter (§16.7)")
+        return null
+    }
+    .Bool(b) := evaluate(s, ex, s.fuel) else return null
+    return b
+}
+
 /// `@compile_error(msg)` (§20.3): reports `msg`.
 compile_error :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source.Span) needs Load {
     msg: ?[]u8 = null
