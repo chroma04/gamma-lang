@@ -182,6 +182,19 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
         .Loop(x) => mono_cond_pats(s, mc, x.cond)
         _ => {}
     }
+    // Format specs on generic arguments are checked in each instance; a template
+    // parameter is split.
+    if .Write(w) := e.kind and mc.map.len > 0 {
+        for k in 0..w.specs.len.min(w.args.len) {
+            if msg := check_spec(s, &w.specs[k], w.args[k].ty) {
+                s.error(span, str.format("{} (in an instantiation used here)", msg)!)
+            }
+        }
+    }
+    if e.kind is .WriteDeferred(_) {
+        resolve_write(s, mc, e)
+        return
+    }
     // `.bits` between types that mention parameters is size-checked per instance (§6.6).
     if .Builtin(.Bits, args) := e.kind and mc.map.len > 0 and not s.tys.has_param(t) {
         src := args[0].ty

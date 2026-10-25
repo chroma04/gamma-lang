@@ -1,0 +1,459 @@
+// Format templates (§21.6, §21.6.1): splitting a template into its pieces and
+// placeholder specs, checking the values against the specs, and the templates that a
+// generic function receives as a compile-time `string` parameter (mirrors
+// `build_write`, `template_args`, `parse_template` and `check_spec` in
+// `src/sema/call.rs` and `resolve_write` in `src/sema/generics.rs`).
+
+/// A parsed template: `pieces.len == specs.len + 1`.
+Template :: struct {
+    pieces: []const []const u8
+    specs: []const tir.FmtSpec
+}
+
+/// What is wrong with a template, and the byte offset of a lone `}` that should be
+/// written `}}`, when that is the mistake.
+TemplateError :: struct {
+    message: string
+    stray: ?usize
+}
+
+Parsed :: union {
+    Ok: Template
+    Bad: TemplateError
+}
+
+SpecResult :: union {
+    Ok: tir.FmtSpec
+    Bad: string
+}
+
+/// Splits the template `t` into the literal pieces around its placeholders and their
+/// specs, or explains what is wrong with it.
+parse_template :: fn(t: []const u8) -> Parsed needs Alloc {
+    pieces := list([]const u8)
+    specs := list(tir.FmtSpec)
+    cur := list(u8)
+    i: usize = 0
+    while i < t.len {
+        c := t[i]
+        next: ?u8 = if i + 1 < t.len { t[i + 1] } else { null }
+        if (c is '{' and next is '{') or (c is '}' and next is '}') {
+            cur.push(c)!
+            i += 2
+        } else if c is '{' and next is '}' {
+            pieces.push(cur.items)!
+            cur = list(u8)
+            specs.push(tir.default_spec())!
+            i += 2
+        } else if c is '{' and next is ':' {
+            close: ?usize = null
+            j := i + 2
+            while j < t.len {
+                if t[j] is '}' {
+                    close = j
+                    break
+                }
+                j += 1
+            }
+            end := close else return .Bad(TemplateError(message: "a `{:` placeholder has no closing `}`", stray: null))
+            r := parse_spec(t[i + 2..end])
+            spec := match r {
+                .Ok(sp) => sp
+                .Bad(m) => return .Bad(TemplateError(message: m, stray: null))
+            }
+            pieces.push(cur.items)!
+            cur = list(u8)
+            specs.push(spec)!
+            i = end + 1
+        } else if c is '{' {
+            return .Bad(TemplateError(message: "use `{}` or `{:spec}` for an argument and `{{` for a literal brace", stray: null))
+        } else if c is '}' {
+            return .Bad(TemplateError(message: "use `}}` for a literal `}`", stray: i))
+        } else {
+            cur.push(c)!
+            i += 1
+        }
+    }
+    pieces.push(cur.items)!
+    return .Ok(Template(pieces: pieces.items, specs: specs.items))
+}
+
+align_of :: fn(c: u8) -> ?tir.FmtAlign => match c {
+    '<' => .Left
+    '>' => .Right
+    '^' => .Center
+    _ => null
+}
+
+/// A decimal number at `s[start..]`: its value if there are digits and it is at most
+/// 65536, where it ends, and whether it is too large.
+Number :: struct {
+    value: ?u32
+    end: usize
+    bad: bool
+}
+
+number_at :: fn(s: []const u8, start: usize) -> Number {
+    i := start
+    n: u64 = 0
+    while i < s.len and s[i] in '0'..='9' {
+        n = n * 10 + u64(s[i] - '0')
+        if n > 65536 { n = 65537 }
+        i += 1
+    }
+    if i is start { return Number(value: null, end: start, bad: false) }
+    if n > 65536 { return Number(value: null, end: i, bad: true) }
+    return Number(value: n.trunc(u32), end: i, bad: false)
+}
+
+/// Parses a format spec, the text between `{:` and `}`:
+/// `[[fill]align][+][#][0][width][.precision][kind]`.
+parse_spec :: fn(s: []const u8) -> SpecResult needs Alloc {
+    spec := tir.default_spec()
+    i: usize = 0
+    second: ?tir.FmtAlign = null
+    if s.len >= 2 { second = align_of(s[1]) }
+    first: ?tir.FmtAlign = null
+    if s.len >= 1 { first = align_of(s[0]) }
+    if a := second {
+        if s[0] is '{' or s[0] >= 128 or s[0] < 32 or s[0] is 127 {
+            return .Bad("the fill character of a format spec is a printable ASCII character other than a brace")
+        }
+        spec.fill = s[0]
+        spec.align = a
+        i = 2
+    } else if a := first {
+        spec.align = a
+        i = 1
+    }
+    if s.get(i) is '+' {
+        spec.plus = true
+        i += 1
+    }
+    if s.get(i) is '#' {
+        spec.alt = true
+        i += 1
+    }
+    if s.get(i) is '0' {
+        spec.zero = true
+        i += 1
+    }
+    w := number_at(s, i)
+    if w.bad { return .Bad("a format width or precision is at most 65536") }
+    if v := w.value { spec.width = v }
+    i = w.end
+    if s.get(i) is '.' {
+        i += 1
+        p := number_at(s, i)
+        if p.bad { return .Bad("a format width or precision is at most 65536") }
+        pv := p.value else return .Bad("a `.` in a format spec is followed by the precision")
+        spec.precision = pv
+        i = p.end
+    }
+    if c := s.get(i) {
+        spec.kind = match c {
+            'x' => .Hex
+            'X' => .HexUpper
+            'o' => .Oct
+            'b' => .Bin
+            'e' => .Exp
+            _ => return .Bad(str.format("unknown format spec `{{:{}}}`", s)!)
+        }
+        i += 1
+    }
+    if i is not s.len {
+        return .Bad(str.format("invalid format spec `{{:{}}}`: expected `[[fill]align][+][#][0][width][.precision][kind]`", s)!)
+    }
+    if spec.zero and spec.align is not .Auto {
+        return .Bad("a format spec has either `0` padding or an alignment, not both")
+    }
+    based := spec.kind is .Hex or spec.kind is .HexUpper or spec.kind is .Oct or spec.kind is .Bin
+    if spec.alt and not based { return .Bad("`#` (the base prefix) goes with `x`, `X`, `o` or `b`") }
+    if spec.precision is not null and spec.kind is not .Display and spec.kind is not .Exp {
+        return .Bad("a precision goes with floats, not with an integer base")
+    }
+    return .Ok(spec)
+}
+
+/// Why a placeholder's spec does not suit an argument of type `t` (§21.6.1): a base needs
+/// an integer, a precision or `e` a float, and `+` or `0` a number.
+check_spec :: fn(s: ^Sema, spec: ^const tir.FmtSpec, t: Ty) -> ?string needs Alloc {
+    tys := &s.tys
+    int := tys.is_integer(t)
+    float := tys.kind(t) is .Float(_)
+    based := spec.kind is .Hex or spec.kind is .HexUpper or spec.kind is .Oct or spec.kind is .Bin
+    want: ?string = null
+    if based and not int {
+        want = "an integer, for a base"
+    } else if spec.kind is .Exp and not float {
+        want = "a float, for `e`"
+    } else if spec.precision is not null and not float {
+        want = "a float, for a precision"
+    } else if (spec.plus or spec.zero) and not (int or float) {
+        want = "a number, for `+` or `0`"
+    }
+    w := want else return null
+    if tys.is_error(t) { return null }
+    return str.format("this placeholder needs {}, not `{}`", w, s.show(t))!
+}
+
+/// The offset in the source text `lit` of a `"…"` string literal of the byte `at` of its
+/// value, when that byte is written as itself and the escapes before it are one-byte ones
+/// (`\n`, `\"` and the like).
+source_offset_of :: fn(lit: []const u8, at: usize) -> ?usize {
+    b := lit
+    if b.len < 2 or b[0] is not '"' or b[b.len - 1] is not '"' { return null }
+    if b.len >= 3 and b[1] is '"' and b[2] is '"' { return null }
+    i: usize = 1
+    n: usize = 0
+    while i < b.len - 1 {
+        if n is at { return if b[i] is not '\\' { i } else { null } }
+        if b[i] is '\\' {
+            if b.get(i + 1) not in ('n', 't', 'r', '0', '\\', '"', '\'') { return null }
+            i += 2
+        } else {
+            i += 1
+        }
+        n += 1
+    }
+    return null
+}
+
+/// The value of the constant string `e` of `module`, without evaluating anything: a
+/// literal, or a name of a constant initialized that way. `null` for anything else.
+const_template :: fn(cx: ^FnCx, e: ^const ast.Expr, module: usize, depth: u32) -> ?[]const u8 needs Load {
+    if depth > 8 { return null }
+    match e.kind {
+        .Paren(inner) => return cx.const_template(inner, module, depth)
+        .Str(lit) => return if lit.kind is .C { null } else { lit.bytes }
+        .Ident(id) => {
+            if depth is 0 and cx.lookup_local(id.name) is not null { return null }
+            d := cx.s.lookup_module_name(module, id.name) else return null
+            .Const(ty) := cx.s.resolve_decl(d) else return null
+            if ty is not cx.s.tys.string_ty() { return null }
+            item := &cx.s.l.decls.items[d]
+            .Binding(b) := item.item.kind else return null
+            if b.names.len is not 1 { return null }
+            return cx.const_template(b.init, item.module, depth + 1)
+        }
+        _ => return null
+    }
+}
+
+/// A write of the template `template` with the values `rest` (the arguments after the
+/// template: one per placeholder, or a single spread of a tuple of them) to `sink`. A
+/// template that is a compile-time `string` parameter is split in each instance of the
+/// generic function (§16.1).
+build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template: ^const ast.Expr, rest: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if template.kind is .Ident(_) {
+        t := cx.expr(template, cx.s.tys.string_ty())
+        if t.kind is .ValueParam(_) { return cx.write_deferred(sink, t, rest, span) }
+        if cx.s.tys.is_error(t.ty) { return cx.unsupported(template.span, "templates that are not literals") }
+    }
+    bytes: []const u8 = empty_slice(u8)
+    if .Str(lit) := template.kind {
+        bytes = lit.bytes
+    } else if b := cx.const_template(template, cx.module, 0) {
+        bytes = b
+    } else {
+        return cx.unsupported(template.span, "templates that are not literals")
+    }
+    ta := cx.template_args(bytes, template.span, rest, span) else return error_expr(cx.s, span)
+    write := tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: ta.pieces, specs: ta.specs, args: ta.values)), span)
+    if ta.stmts.len is 0 { return write }
+    stmts := list(tir.Stmt)
+    for st in ta.stmts { stmts.push(st)! }
+    stmts.push(.Expr(write))!
+    return tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span)
+}
+
+/// The pieces of a template, the values for its placeholders, and statements that must
+/// run before them.
+TemplateArgs :: struct {
+    pieces: []const []const u8
+    specs: []const tir.FmtSpec
+    values: []Expr
+    stmts: []tir.Stmt
+}
+
+placeholders_text :: fn(n: usize) -> string needs Alloc => if n is 1 { "1 placeholder" } else { str.format("{} placeholders", n)! }
+
+/// The pieces of the template `bytes` (§21.6.1) and the argument values for its
+/// placeholders, with statements that must run first. `null` after reporting.
+template_args :: fn(cx: ^FnCx, bytes: []const u8, template_span: source.Span, rest: []const ast.Arg, span: source.Span) -> ?TemplateArgs needs Load {
+    tys := &cx.s.tys
+    parsed := match parse_template(bytes) {
+        .Ok(t) => t
+        .Bad(err) => {
+            d := diag.error(template_span, str.format("invalid template: {}", err.message)!)
+            // A lone `}` in a string literal: found in the literal's source text.
+            if at := err.stray {
+                text := cx.s.l.sm.file(template_span.file).text[usize(template_span.lo)..usize(template_span.hi)]
+                if off := source_offset_of(text, at) {
+                    lo := template_span.lo + off.trunc(u32)
+                    d.add_fix("write `}}` for a literal `}`", source.Span(file: template_span.file, lo: lo, hi: lo + 1), "}}")
+                }
+            }
+            cx.s.emit(d)
+            return null
+        }
+    }
+    n := parsed.specs.len
+    stmts := list(tir.Stmt)
+    values := list(Expr)
+    if rest.len is 1 and .Spread(a) := rest[0].kind {
+        // `..t`: a tuple holding one value per placeholder.
+        v0 := cx.expr(&a, null)
+        written := cx.infer.resolve(cx.s, v0.ty)
+        v := cx.elements_tuple(v0, a.span) else return null
+        t := cx.infer.resolve(cx.s, v.ty)
+        if .Tuple(elems, _) := tys.kind(t) and elems.len is n {
+            tmp := cx.temp(t, a.span)
+            stmts.push(.Let(tmp, v))!
+            for i in 0..n {
+                base := tir.mk(t, .Local(tmp), a.span)
+                values.push(tir.mk(elems[i], .Field(base, i.trunc(u32)), a.span)^)!
+            }
+        } else if tys.is_error(t) {
+            return null
+        } else {
+            cx.error(a.span, str.format("the template has {}, so this spread must have {} values, not `{}`", placeholders_text(n), n, cx.show(written))!)
+            return null
+        }
+    } else {
+        vals := list(ast.Expr)
+        for a in rest {
+            .Positional(e) := a.kind else {
+                cx.error(a.span, "a spread passes a template's values only on its own")
+                return null
+            }
+            vals.push(e)!
+        }
+        if vals.items.len is not n {
+            given := if vals.items.len is 1 { "1 value is" } else { str.format("{} values are", vals.items.len)! }
+            cx.error(span, str.format("the template has {}, but {} given", placeholders_text(n), given)!)
+            return null
+        }
+        for k in 0..vals.items.len { values.push(cx.expr(&vals.items[k], null)^)! }
+    }
+    for k in 0..n {
+        spec := &parsed.specs[k]
+        if tir.is_default_spec(spec) { continue }
+        v := &values.items[k]
+        // An untyped literal takes the type the spec asks for, or its fallback.
+        wants_float := spec.kind is .Exp or spec.precision is not null
+        if wants_float and cx.infer.var_kind(tys, v.ty) is .Int {
+            _ = cx.infer.unify(tys, v.ty, tys.intern(.Float(64)))
+        }
+        t := cx.settle(v.ty, v.span)
+        // A generic argument is checked in each instance (§16.1).
+        if tys.has_param(t) { continue }
+        if msg := check_spec(cx.s, spec, t) { cx.error(v.span, msg) }
+    }
+    return TemplateArgs(pieces: parsed.pieces, specs: parsed.specs, values: values.items, stmts: stmts.items)
+}
+
+/// A write whose template `t` is a compile-time `string` parameter: split in each
+/// instance of the generic function.
+write_deferred :: fn(cx: ^FnCx, sink: tir.WriteSink, t: ^Expr, rest: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    args: ?^Expr = null
+    if rest.len is 1 and .Spread(e) := rest[0].kind {
+        v := cx.expr(&e, null)
+        a := cx.elements_tuple(v, e.span) else return error_expr(cx.s, span)
+        args = a
+    } else if rest.len > 0 {
+        elems := list(Expr)
+        for a in rest {
+            .Positional(e) := a.kind else {
+                cx.error(a.span, "a spread passes a template's values only on its own")
+                return error_expr(cx.s, span)
+            }
+            elems.push(cx.expr(&e, null)^)!
+        }
+        ts := list(Ty)
+        for x in elems.items { ts.push(cx.infer.resolve(cx.s, x.ty))! }
+        ty := tys.intern(.Tuple(ts.items, empty_slice(string)))
+        args = tir.mk(ty, .Aggregate(elems.items), span)
+    }
+    ty := if a := args { cx.infer.resolve(cx.s, a.ty) } else { tys.unit() }
+    tmp := cx.temp(ty, span)
+    return tir.mk(tys.unit(), .WriteDeferred(tir.WriteDeferredExpr(sink: sink, template: t, args: args, tmp: tmp)), span)
+}
+
+/// Splits the template of the `WriteDeferred` `e`, now a string, and its arguments
+/// (§21.6.1) for the instance, reporting a mismatch at the instantiating call (§16.1).
+/// `e` becomes the write.
+resolve_write :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
+    .WriteDeferred(w) := e.kind else return
+    span := mc.span
+    tys := &s.tys
+    e.kind = .Aggregate(empty_slice(Expr))
+    .Str(text) := w.template.kind else {
+        s.error(span, "internal error: a template parameter without a string value")
+        return
+    }
+    parsed := match parse_template(text) {
+        .Ok(t) => t
+        .Bad(err) => {
+            s.error(span, str.format("invalid template (in an instantiation used here): {}", err.message)!)
+            return
+        }
+    }
+    n := parsed.specs.len
+    // The values are a tuple of one per placeholder (§21.6.1).
+    elems: ?[]const Ty = empty_slice(Ty)
+    if a := w.args {
+        elems = null
+        if .Tuple(es, _) := tys.kind(a.ty) { elems = es }
+    }
+    es := elems else {
+        a := w.args else return
+        s.error(span, str.format("the template has {}, but a `{}` is given (in an instantiation used here)", placeholders_text(n), s.show(a.ty))!)
+        return
+    }
+    if es.len is not n {
+        given := if es.len is 1 { "1 value is" } else { str.format("{} values are", es.len)! }
+        s.error(span, str.format("the template has {}, but {} given (in an instantiation used here)", placeholders_text(n), given)!)
+        return
+    }
+    for k in 0..n {
+        if msg := check_spec(s, &parsed.specs[k], es[k]) {
+            s.error(span, str.format("{} (in an instantiation used here)", msg)!)
+        }
+    }
+    a := w.args else {
+        e.kind = .Write(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: empty_slice(Expr)))
+        return
+    }
+    stmts := list(tir.Stmt)
+    stmts.push(.Let(w.tmp, a))!
+    fields := list(Expr)
+    for i in 0..n {
+        base := tir.mk(a.ty, .Local(w.tmp), e.span)
+        fields.push(tir.mk(es[i], .Field(base, i.trunc(u32)), e.span)^)!
+    }
+    write := tir.mk(s.tys.unit(), .Write(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: fields.items)), e.span)
+    stmts.push(.Expr(write))!
+    e.kind = .Block(new(tir.Block(stmts: stmts.items, tail: null, span: e.span))!)
+}
+
+test "spec fields" {
+    match parse_spec("*^+#010.3e") {
+        .Ok(_) => expect(false)
+        .Bad(m) => expect(m is "a format spec has either `0` padding or an alignment, not both")
+    }
+    match parse_spec("+#x") {
+        .Ok(sp) => {
+            expect(sp.plus and sp.alt)
+            expect(sp.kind is .Hex)
+        }
+        .Bad(m) => expect(m is "")
+    }
+}
+
+test "source offsets" {
+    expect(source_offset_of("\"a } b\"", 2) is 3)
+    expect(source_offset_of("\"a\\n}\"", 2) is 4)
+    expect(source_offset_of("`a }`", 2) is null)
+}

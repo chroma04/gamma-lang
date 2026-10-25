@@ -51,6 +51,11 @@ pub clone_expr :: fn(e: ^const Expr) -> ^Expr needs Alloc {
             if .Fn(x) := w.sink { sink = .Fn(clone_expr(x)) }
             ExprKind.Write(WriteExpr(sink: sink, pieces: w.pieces, specs: w.specs, args: clone_exprs(w.args)))
         }
+        .WriteDeferred(w) => {
+            sink: WriteSink = w.sink
+            if .Fn(x) := w.sink { sink = .Fn(clone_expr(x)) }
+            ExprKind.WriteDeferred(WriteDeferredExpr(sink: sink, template: clone_expr(w.template), args: clone_opt(w.args), tmp: w.tmp))
+        }
         .With(w) => {
             hs := list(HandlerValue)
             for h in w.handlers {
