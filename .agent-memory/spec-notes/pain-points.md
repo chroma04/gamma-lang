@@ -12,7 +12,8 @@ dangling stores are now compile errors (decisions/045).
   `&list.items[i]` across a push, and `x[i] = f(&x[i])^` where f keeps the pointer (s38g
   finish_call). Escape analysis catches none. Idea: a lint/escape rule for storing the
   address of a loop variable or binding; warn on `p = f(&p)` shapes. Handbook covers it.
-- **Optional parts in tuple payloads** (6x, s38b–s38e): bare name at a `?T` position matches
+- **Optional parts in tuple payloads** (6x s38b–s38e, +4x s41 in eval: `.Variant(i, p)`,
+  `.Let(l, init)`): bare name at a `?T` position matches
   only present values (§9.3) → struct payloads everywhere. Idea: a lint, or `_?`/`?x` pattern
   that binds the optional as is.
 - **Cross-module helpers must be `pub`** (s38e, s38g: ~15 sema fns made pub just so
@@ -29,3 +30,7 @@ dangling stores are now compile errors (decisions/045).
   tir/clone.gm: `{ … \n .Call(c, …) }` reads as `c(...).Call`): note explains it; use
   `T.V(…)`. Low priority.
 - `[a, b]`: DONE s40, parse note `[_]i32(1, 2)` (decisions/045).
+- **One namespace across a module's files** (s41): the evaluator could not live in
+  check/ because `unsupported`, `block`, `stmt`, `coerce`, `load`, `builtin` already exist
+  there and there is no overloading → moved to its own module (fine design anyway). Low
+  priority; flagged to the user once.

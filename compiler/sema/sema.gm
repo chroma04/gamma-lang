@@ -419,7 +419,16 @@ pub add_const :: fn(s: ^Sema, c: tir.ConstDef) -> u32 needs Alloc {
 }
 
 /// The prefix of the message of every construct gammac cannot check yet.
-UNSUPPORTED :: "gammac cannot check"
+pub UNSUPPORTED :: "gammac cannot check"
+
+/// Whether a type or value parameter of a generic body is in scope.
+pub in_generic_scope :: fn(s: ^const Sema) -> bool {
+    if s.value_scope.items.len > 0 { return true }
+    for p in s.type_params.items {
+        if s.tys.has_param(p.ty) { return true }
+    }
+    return false
+}
 
 /// Reports that gammac cannot check `what` yet.
 pub unsupported :: fn(s: ^Sema, span: source.Span, what: string) needs Alloc {

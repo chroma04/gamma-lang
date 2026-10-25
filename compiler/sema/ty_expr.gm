@@ -574,8 +574,15 @@ pub array_len :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ArrayLen nee
         }
         .Failed => return .Failed
         null => {
-            s.unsupported(e.span, "array lengths that are typed constant expressions")
-            return .Failed
+            // A typed constant expression, evaluated now (§7.15).
+            hook := s.eval_hook else {
+                s.unsupported(e.span, "array lengths that are typed constant expressions")
+                return .Failed
+            }
+            id := hook(s, module, e, s.tys.usize_ty(), "<length>", e.span) else return .Failed
+            cell := s.consts.items[usize(id)].cell else return .Failed
+            .Int(n) := cell.v else return .Failed
+            return .Known(n.trunc(u64))
         }
     }
 }
@@ -677,6 +684,12 @@ pub comptime_value :: fn(s: ^Sema, module: usize, ty: Ty, e: ^const ast.Expr) ->
         }
     }
     if key := s.const_key_of(module, e, ty) { return s.tys.intern(.Value(key)) }
+    if hook := s.eval_hook and not s.tys.has_param(ty) {
+        id := hook(s, module, e, ty, "<argument>", e.span) else return null
+        cell := s.consts.items[usize(id)].cell else return null
+        key := s.value_key(cell.v, ty, e.span) else return null
+        return s.tys.intern(.Value(key))
+    }
     s.unsupported(e.span, "this compile-time argument")
     return null
 }

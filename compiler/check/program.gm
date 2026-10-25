@@ -9,6 +9,18 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
         if s.l.modules.items[o.module].is_prelude { continue }
         match o.item.kind {
             .Test(_), .Handler(_) => {}
+            .Intrinsic(e) => {
+                i: ?ast.IntrinsicExpr = null
+                if .Intrinsic(x) := e.kind { i = x }
+                x := i else continue
+                args := x.args else empty_slice(ast.Arg)
+                match x.name.name {
+                    "static_assert" => static_assert(s, o.module, args, e.span)
+                    // In a taken `when` branch, typically (§3.6, §20.3).
+                    "compile_error" => compile_error(s, o.module, args, e.span)
+                    _ => s.error(o.item.span, "only `@static_assert` may appear as a top-level declaration")
+                }
+            }
             _ => s.unsupported(o.item.span, "top-level intrinsic calls")
         }
     }

@@ -111,6 +111,31 @@ pub push :: fn(ds: ^Diagnostics, d: Diagnostic) {
     ds.list.push(d)!
 }
 
+/// How many diagnostics were recorded and raised, to drop the later ones with `reset`.
+pub Mark :: struct {
+    pub len: usize
+    pub raised: usize
+}
+
+pub mark :: fn(ds: ^const Diagnostics) -> Mark => Mark(len: ds.list.items.len, raised: ds.raised)
+
+/// Drops the diagnostics reported since `m` was taken.
+pub reset :: fn(ds: ^Diagnostics, m: Mark) {
+    for d in ds.list.items[m.len..] {
+        if d.severity is .Error { ds.errors -= 1 }
+    }
+    ds.list.truncate(m.len)
+    ds.raised = m.raised
+}
+
+/// Whether a diagnostic recorded since `m` was taken has a message starting with `prefix`.
+pub any_since :: fn(ds: ^const Diagnostics, m: Mark, prefix: string) -> bool {
+    for d in ds.list.items[m.len..] {
+        if d.message.starts_with(prefix) { return true }
+    }
+    return false
+}
+
 /// Drops the diagnostics reported until the matching `unsuppress`.
 pub suppress :: fn(ds: ^Diagnostics) {
     ds.suppressed += 1

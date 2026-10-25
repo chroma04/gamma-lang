@@ -541,10 +541,12 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
             return .Some(new(copy(v))!)
         }
         .BlackBox => return x
-        else_op => {
-            _ = else_op
-            return !m.unsupported(span, "this builtin at compile time")
+        .Bits => return m.reinterpret(x, at, e.ty, span)
+        .Sqrt => {
+            .Float(f) := x else return !m.unsupported(span, "this builtin")
+            return .Float(try m.round_float(f.sqrt(), e.ty, span))
         }
+        other => return !m.unsupported(span, str.format("the builtin `{}` at compile time", other)!)
     }
 }
 
@@ -698,5 +700,125 @@ const_cell :: fn(m: ^Machine, span: source.Span, ty: Ty, use_span: source.Span) 
         .Evaluating => return !m.trap(use_span, str.format("constant `{}` depends on itself", c.name)!)
         .Unchecked => return !m.unsupported(use_span, "this constant at compile time")
         _ => return !Flow.Blocked
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Bytes (`x.bits(T)`, §6.6)
+// ---------------------------------------------------------------------------------
+
+/// `x.bits(T)`: the plain-data value `v` of type `from` reinterpreted as type `to`, of
+/// the same size, through its bytes in the target's layout.
+reinterpret :: fn(m: ^Machine, v: Value, from: Ty, to: Ty, span: source.Span) -> Flow!Value needs Alloc {
+    if target.endian is .Big { return !m.unsupported(span, "`bits` on a big-endian target") }
+    size := m.s.layout(from).size
+    bytes := list(u8)
+    for _ in 0..size { bytes.push(0)! }
+    if not m.put_bytes(v, from, bytes.items, 0) { return !m.unsupported(span, "`bits` of this type at compile time") }
+    r := m.get_bytes(to, bytes.items, 0) else return !m.unsupported(span, "`bits` to this type at compile time")
+    return r
+}
+
+/// The byte offsets of the fields or elements of aggregate type `t`.
+offsets :: fn(m: ^Machine, t: Ty) -> ?(tys: []const Ty, offs: []const u64) needs Alloc {
+    s := m.s
+    match s.tys.kind(t) {
+        .Array(len, elem, _) => {
+            size := s.layout(elem).size
+            tys := list(Ty)
+            offs := list(u64)
+            for i in 0..len {
+                tys.push(elem)!
+                offs.push(i * size)!
+            }
+            return (tys: tys.items, offs: offs.items)
+        }
+        .Tuple(elems, _) => {
+            offs := list(u64)
+            off: u64 = 0
+            for e in elems {
+                l := s.layout(e)
+                off = (off + l.align - 1) / l.align * l.align
+                offs.push(off)!
+                off += l.size
+            }
+            return (tys: elems, offs: offs.items)
+        }
+        .Adt(id, _) => {
+            .Struct(def) := s.adts.items[usize(id)].kind else return null
+            if def.bits is not null { return null }
+            tys := list(Ty)
+            offs := list(u64)
+            for i, f in enumerate(def.fields) {
+                tys.push(f.ty)!
+                offs.push(s.field_offset(t, i))!
+            }
+            return (tys: tys.items, offs: offs.items)
+        }
+        _ => return null
+    }
+}
+
+/// Writes the plain-data value `v` of type `t` into `out` at `at`, little-endian; `false`
+/// if it is not plain data that gammac can lay out.
+put_bytes :: fn(m: ^Machine, v: Value, t: Ty, out: []u8, at: u64) -> bool needs Alloc {
+    match v {
+        .Int(bits) => {
+            size := m.s.layout(t).size
+            for i in 0..size { out[(at + i).trunc(usize)] = (bits >> u128(i * 8)).trunc(u8) }
+            return true
+        }
+        .Bool(b) => {
+            out[at.trunc(usize)] = if b { 1 } else { 0 }
+            return true
+        }
+        .Float(x) => {
+            .Float(w) := m.s.tys.kind(t) else return false
+            raw: u64 = 0
+            n: u64 = 8
+            match w {
+                64 => { raw = x.bits(u64) }
+                32 => {
+                    raw = u64(x.to(f32).bits(u32))
+                    n = 4
+                }
+                _ => return false
+            }
+            for i in 0..n { out[(at + i).trunc(usize)] = (raw >> (i * 8)).trunc(u8) }
+            return true
+        }
+        .Agg(a) => {
+            o := m.offsets(t) else return false
+            for i, x in enumerate(a.elems) {
+                if not m.put_bytes(x, o.tys[i], out, at + o.offs[i]) { return false }
+            }
+            return true
+        }
+        _ => return false
+    }
+}
+
+/// The plain-data value of type `t` whose bytes are in `b` at `at`.
+get_bytes :: fn(m: ^Machine, t: Ty, b: []const u8, at: u64) -> ?Value needs Alloc {
+    s := m.s
+    match s.tys.kind(t) {
+        .Int(_), .Usize, .Isize => {
+            size := s.layout(t).size
+            v: u128 = 0
+            for i in 0..size { v |= u128(b[(at + i).trunc(usize)]) << u128(i * 8) }
+            return .Int(m.wrap(v, t))
+        }
+        .Float(w) => {
+            n: u64 = if w is 64 { 8 } else if w is 32 { 4 } else { return null }
+            raw: u64 = 0
+            for i in 0..n { raw |= u64(b[(at + i).trunc(usize)]) << (i * 8) }
+            return .Float(if w is 64 { raw.bits(f64) } else { f64(raw.trunc(u32).bits(f32)) })
+        }
+        _ => {
+            o := m.offsets(t) else return null
+            elems := list(Value)
+            for i, et in enumerate(o.tys) { elems.push(m.get_bytes(et, b, at + o.offs[i]) else return null)! }
+            return .Agg(new(tir.Agg(elems: elems.items))!)
+        }
     }
 }

@@ -207,6 +207,7 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
                 return cx.fn_ref(f, span)
             }
             .Untyped(v) => return cx.untyped_literal(&v, span)
+            .Const(c) => return tir.mk(c.ty, .Const(c.name, c.span), span)
             .Label => {
                 cx.error(span, str.format("`{}` is a label, not a value", name)!)
                 return error_expr(cx.s, span)

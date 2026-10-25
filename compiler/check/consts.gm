@@ -19,7 +19,11 @@ const_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, nam
     errors := s.l.diags.error_count()
     ex := check_const_expr(s, module, e, expected) else return null
     if s.l.diags.error_count() is not errors or s.tys.is_error(ex.ty) { return null }
-    if name is not "<default>" {
+    if name in ("<length>", "<argument>") and depends_on_params(s, ex) {
+        s.unsupported(e.span, "compile-time values computed from parameters")
+        return null
+    }
+    if name not in ("<default>", "<length>", "<argument>") {
         if bad := s.non_constant_part(ex.ty) {
             s.error(e.span, str.format("a constant cannot hold `{}`, which contains `{}` (§17.4)", s.show(ex.ty), s.show(bad))!)
             return null
@@ -197,6 +201,51 @@ check_declared_defaults :: fn(s: ^Sema) needs Load {
     }
 }
 
+/// Evaluates the initializer `init` (of type `annot`, if given) of the immutable local
+/// `name`, declared at `span`, at compile time if it checks again as a constant whose
+/// value may live in static memory (§17.2, §17.4): the constant, or `null` to evaluate the
+/// local at run time. Running out of steps falls back to run time; any other failure is
+/// reported.
+pub local_const :: fn(s: ^Sema, module: usize, init: ^const ast.Expr, annot: ?Ty, name: string, span: source.Span) -> ?u32 needs Load {
+    if s.in_generic_scope() { return null }
+    m := s.l.diags.mark()
+    checked := check_const_expr(s, module, init, annot)
+    // Checked as a constant, the initializer may fail where it is fine at run time (it
+    // uses a local type alias, for instance): then it simply runs.
+    if s.l.diags.any_since(m, sema.UNSUPPORTED) { return null }
+    ok := s.l.diags.error_count() is m.raised
+    s.l.diags.reset(m)
+    ex := checked else return null
+    if not ok or s.tys.is_error(ex.ty) or s.non_constant_part(ex.ty) is not null { return null }
+    m2 := s.l.diags.mark()
+    if not prepare(s, ex) {
+        if not s.l.diags.any_since(m2, sema.UNSUPPORTED) and s.l.diags.error_count() is m2.raised { s.l.diags.reset(m2) }
+        return null
+    }
+    v: Value = .Null
+    match eval.run(s, ex, s.fuel) {
+        .Ok(x) => {
+            if escapes(x) {
+                s.error(ex.span, str.format("compile-time evaluation failed: {}", ESCAPE_MSG)!)
+                return null
+            }
+            v = x
+        }
+        .Trap(t) => {
+            if not str.contains(t.message, "step budget") { report_trap(s, ex, t) }
+            return null
+        }
+        .Unsupported(at, what) => {
+            s.unsupported(at, what)
+            return null
+        }
+        .Blocked => return null
+    }
+    id := s.add_const(tir.ConstDef(name: name, span: span, ty: ex.ty, module: module, ast: init, expected: annot, fuel: s.fuel, init: ex, state: .Done))
+    s.consts.items[usize(id)].cell = new(Cell(v: v, is_static: true))!
+    return id
+}
+
 // ---------------------------------------------------------------------------------
 // Values for the declarations
 // ---------------------------------------------------------------------------------
@@ -208,23 +257,56 @@ pub eval_typed :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?Va
     return evaluate(s, ex, s.fuel)
 }
 
-/// The key of compile-time value `v` of type `ty` used as a generic argument (§16.4).
-pub value_key :: fn(s: ^Sema, v: Value, ty: Ty, span: source.Span) -> ?types.ConstKey needs Load {
-    tys := &s.tys
-    match v {
-        .Int(bits) => if tys.is_integer(ty) { return s.int_key(ty, eval.int_of(s, bits, ty)) }
-        .Bool(b) => {
-            bytes := list(u8)
-            bytes.push(if b { 1 } else { 0 })!
-            return .Bytes(ty, bytes.items)
-        }
-        .Fn(f) => return .Fn(f, s.fns.items[usize(f)].name)
-        .Null => return .Null
-        .Slice(_) => if ty is tys.string_ty() {
-            if bytes := eval.string_bytes(s, v) { return .Str(bytes) }
-        }
-        _ => {}
+// ---------------------------------------------------------------------------------
+// Static assertions
+// ---------------------------------------------------------------------------------
+
+/// `@static_assert(cond, msg)` (§17.7), in `module`.
+static_assert :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source.Span) needs Load {
+    cond: ?ast.Expr = null
+    if args.len > 0 and .Positional(c) := args[0].kind { cond = c }
+    c := cond else {
+        s.error(span, "`@static_assert(cond, \"message\")` takes a condition and a message")
+        return
     }
-    s.unsupported(span, "compile-time arguments of this type")
-    return null
+    ex := check_const_expr(s, module, &c, s.tys.bool_ty()) else return
+    msg: ?[]u8 = null
+    if args.len > 1 and .Positional(m) := args[1].kind { msg = const_string(s, module, &m) }
+    if depends_on_params(s, ex) {
+        s.unsupported(span, "static assertions on compile-time parameters")
+        return
+    }
+    v := evaluate(s, ex, s.fuel) else return
+    if v is .Bool(false) {
+        text: string = if t := msg { t } else { "(no message)" }
+        s.error(span, str.format("static assertion failed: {}", text)!)
+    }
+}
+
+/// `@compile_error(msg)` (§20.3): reports `msg`.
+compile_error :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source.Span) needs Load {
+    msg: ?[]u8 = null
+    if args.len > 0 and .Positional(m) := args[0].kind { msg = const_string(s, module, &m) }
+    if t := msg {
+        s.error(span, t)
+    } else {
+        s.error(span, "`@compile_error` takes a constant string message")
+    }
+}
+
+/// The value of the constant string expression `e`.
+const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs Load {
+    ex := check_const_expr(s, module, e, s.tys.string_ty()) else return null
+    v := evaluate(s, ex, s.fuel) else return null
+    return eval.string_bytes(s, v)
+}
+
+/// Whether `e` depends on the type or value parameters of the generic body it is in.
+depends_on_params :: fn(s: ^Sema, e: ^Expr) -> bool {
+    found := false
+    visit(e, fn(x: ^Expr) {
+        if s.tys.has_param(x.ty) or x.kind in (.ValueParam(_), .TypeName(_), .IntLimit(_)) { found = true }
+        if .SizeOf(of, _) := x.kind and s.tys.has_param(of) { found = true }
+    })
+    return found
 }

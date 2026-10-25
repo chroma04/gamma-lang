@@ -1,6 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-25) — PRs #1–#79 merged, v0.1.0 tagged; PR #80 open (s40)
+## State (2026-10-25) — PRs #1–#80 merged, v0.1.0 tagged; s41 PR open
+- s41 (branch claude/project-thread-rqqvrh): gammac compile-time evaluator DONE
+  (decisions/046; compiler/eval, tir/value.gm, check/consts.gm + eval_prepare.gm). TIR
+  487 → 539, decls 693 → 739. Next buckets in roadmap/self-hosting.md s41 entry
+  (vector types, iterator args, literal-variable conversions, array construction).
 - s38–s39 (PRs #72–#79 merged): self-hosted compiler gammac in compiler/ (decisions/043,
   roadmap/self-hosting.md): lexer+parser+modules byte-identical on all files; decls and
   tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in
@@ -9,9 +13,7 @@
 - s40 (branch claude/admiring-wright-4lo3vq): gammac long tail, TIR 320 → 486 SAME, decls
   693 (see roadmap/self-hosting.md s40 entry). Two sonnet worktree subagents (intrinsics,
   format templates) worked well with precise briefs + the shared survey script
-  ($SP/tools/survey.sh REPO WORKDIR; STAGE=decls for decls). NEXT BIG ITEM: a compile-time
-  evaluator in gammac (~80 roots blocked: typed consts calling fns, static_assert, array
-  lengths, defaults, immutable locals) — plan in roadmap/self-hosting.md. Also s40 (user
+  ($SP/tools/survey.sh; STAGE=decls for decls; needs GAMMA_STD=lib/std). Also s40 (user
   approved): §15.1 dangling stores are errors, `[a, b]` note; no-shadowing stays (045).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
@@ -58,9 +60,9 @@
                   self-hosting.md (gammac stages),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–044, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–046, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
