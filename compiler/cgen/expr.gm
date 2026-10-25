@@ -741,7 +741,12 @@ target_ret :: fn(fg: ^FnGen, levels: u32) -> Ty needs sema.Load {
 pub place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
     match e.kind {
         .Local(l) => return fg.local_addr(l)
-        .Global(_) => return !unsupported(e.span, "global variables")
+        .Global(_, decl) => {
+            i := fg.g.prog.global_index(decl) else return !unsupported(e.span, "this variable")
+            gl := fg.g.prog.s.globals.items[i]
+            if gl.thread_local and gl.link_name is null { return str.format("gm_ga{}()", i)! }
+            return str.format("((uint8_t *)gm_g{})", i)!
+        }
         // Constants live in static storage, so their address is stable.
         .Const(_, span) => {
             name := try fg.g.const_storage(span, e.ty, e.span)
@@ -893,7 +898,7 @@ slice_expr :: fn(fg: ^FnGen, e: ^Expr, base: ^Expr, lo: ?^Expr, hi: ?^Expr, incl
         }
         _ => return !unsupported(e.span, str.format("slicing `{}`", fg.g.ty.show(base.ty))!)
     }
-    tys := fg.g.ty.s.tys
+    tys := &fg.g.ty.s.tys
     ptr = fg.tmp(tys.ptr(false, tys.u8_ty()), ptr)
     lo_v := "(uintptr_t)0"
     if x := lo {

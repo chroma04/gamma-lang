@@ -72,12 +72,26 @@ pub prepare_codegen :: fn(s: ^Sema, roots: []const u32) -> bool needs Load {
                         for d in decls { work.extend(s.handler_decls.items[usize(d)].clauses)! }
                     }
                 }
-                .Const(_, cspan) => if id := s.const_id(cspan, n.ty) {
-                    if cell := s.consts.items[usize(id)].cell { value_fns(cell.v, &work) }
-                }
+                // Constants are evaluated when something needs their value.
+                .Const(_, cspan) => if cell := const_value(s, cspan, n.ty) { value_fns(cell.v, &work) }
                 _ => {}
             }
         })
+    }
+    // The initial values of the variables, which their storage starts with.
+    for i in 0..s.globals.items.len {
+        gl := s.globals.items[i]
+        init := gl.init else continue
+        if v := eval_typed(s, gl.module, init, gl.ty) {
+            value_fns(v, &work)
+            s.globals.items[i].value = new(Cell(v: v, is_static: true))!
+        }
+    }
+    // The functions they refer to.
+    while f := work.pop() {
+        if seen.get(f) is not null { continue }
+        seen.put(f, true)!
+        codegen_body(s, f, span)
     }
     return not s.l.diags.has_errors()
 }

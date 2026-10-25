@@ -6,6 +6,15 @@ Versions and what each kind of change means are described in
 
 ## Unreleased
 
+### Self-hosting
+
+- **`gammac` compiles itself.** `compiler/cgen/` is a C back end for `gammac`, ported from
+  the reference implementation's, and `gammac build` compiles a program to an executable
+  with it (`--mode=debug|checked|fast`, `-o`, `--emit-c`). Every conformance `run` test
+  compiled by `gammac` behaves as expected, and the bootstrap reaches a fixed point: the
+  `gammac` that `gammac` builds generates byte-identical C for itself
+  (`docs/self-hosting.md`, `tests/selfhost.rs`).
+
 ### Language
 
 - **`?x`** in a pattern binds an optional or a result as it is, absent or failed value

@@ -118,8 +118,10 @@ pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs
         cell_ids: hash_map.hash_map(usize, u32),
     )
     g.queue(entry)
+    for f in p.s.export_fns.items { g.queue(f) }
     try g.drain()
     consts := try g.gen_consts()
+    exports := try g.gen_exports()
     entries := [1]u32(entry)
     main := try g.gen_main(entries[..], false)
     out := list(u8)
@@ -143,6 +145,7 @@ pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs
     out.extend(g.bodies.items)!
     // A program that switches fibers runs its entry under the runtime's fiber support.
     run_main := if str.contains(out.items, "gm_with_go(") { "gm_run_main_fibers" } else { "gm_run_main" }
+    out.extend(exports)!
     out.write("#define GM_RUN_MAIN {}\n", run_main)!
     out.extend(main)!
     return Generated(code: out.items, libs: g.libs.items)
@@ -264,6 +267,39 @@ pub decl_table :: fn(g: ^Gen, d: u32) -> Unsup!string needs Alloc {
         g.handler_tables.write("static void *const gm_hd{}[] = {{{}}};\n", d, str.join(names.items, ", ")!)!
     }
     return str.format("gm_hd{}", d)!
+}
+
+/// Exported functions (§19.4): external C-ABI wrappers under their symbols.
+gen_exports :: fn(g: ^Gen) -> Unsup!string needs sema.Load {
+    out := list(u8)
+    for k, sym in enumerate(g.prog.s.exports.items) {
+        f := g.prog.s.export_fns.items[k]
+        def := g.prog.func(f)
+        // A private C name bound to the symbol, so it cannot clash with declarations of
+        // the C headers the runtime includes.
+        cname := str.format("gm_xe{}", k)!
+        params := list(string)
+        args := list(string)
+        for i, p in enumerate(def.params) {
+            t := def.locals[usize(p)].ty
+            params.push(str.format("{} a{}", try g.c_abi_type(t, def.span), i)!)!
+            // The function takes mirrors itself (it has the plain convention).
+            args.push(if g.ty.mirror(t) is not null { str.format("a{}", i)! } else { str.format("({})a{}", g.ty.cty(t), i)! })!
+        }
+        call := str.format("{}({})", g.addr_name(f), str.join(args.items, ", ")!)!
+        param_text: string = if params.items.len is 0 { "void" } else { str.join(params.items, ", ")! }
+        ret := "void"
+        body := str.format("{};", call)!
+        if not g.ty.is_unit(def.ret) {
+            ret = try g.c_abi_type(def.ret, def.span)
+            value: string = if g.ty.mirror(def.ret) is not null { call } else { str.format("({}){}", ret, call)! }
+            body = str.format("return {};", value)!
+        }
+        cc := conv_attr(def.win64)
+        out.write("{}{} {}({}) __asm__(GM_SYM(\"{}\"));\n", cc, ret, cname, param_text, sym)!
+        out.write("{}{} {}({}) {{ {} }}\n", cc, ret, cname, param_text, body)!
+    }
+    return out.items
 }
 
 // ---------------------------------------------------------------------------------

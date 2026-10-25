@@ -143,7 +143,7 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
         .TypeIs(a, b, negated) => str.format("type-is{} {} {}", if negated { "-not" } else { "" }, s.show(a), s.show(b))!
         .Const(name, span) => str.format("const {}@{}", name, place(s, span))!
         .Local(l) => str.format("local {}", d.local_text(l))!
-        .Global(name) => str.format("global {}", name)!
+        .Global(name, _) => str.format("global {}", name)!
         .Upvar(levels, l) => str.format("upvar {} {}", levels, l)!
         .Deref(x) => {
             kids.push(x)!

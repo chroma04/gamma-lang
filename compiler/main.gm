@@ -168,7 +168,12 @@ load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err 
         l := load.loader(&sm, &diags, &next_id, std, opts.recover)
         built := true
         if opts.command in (Command.Decls, Command.Tir, Command.Build) {
-            if l.load_core(core_root(std), "Debug") {
+            mode_name := match opts.mode {
+                .Debug => "Debug"
+                .Checked => "Checked"
+                .Fast => "Fast"
+            }
+            if l.load_core(core_root(std), mode_name) {
                 s := sema.sema(&l)
                 check.install(&s)
                 s.resolve_ambient()
@@ -207,8 +212,10 @@ build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool nee
     }
     .Fn(main) := s.resolve_decl(d) else return false
     entry := check.entry_point(s, main)
-    entries := [1]u32(entry)
-    if not check.prepare_codegen(s, entries[..]) { return false }
+    roots := list(u32)
+    roots.push(entry)!
+    roots.extend(s.export_fns.items)!
+    if not check.prepare_codegen(s, roots.items) { return false }
     p := cgen.prog(s)
     copts := match opts.mode {
         .Debug => cgen.Options(checks: true, debug: true)

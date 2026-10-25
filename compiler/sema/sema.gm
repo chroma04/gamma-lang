@@ -93,6 +93,23 @@ pub FnSig :: struct {
     pub win64: bool = false
 }
 
+/// A `#global` variable (§19.3) or a variable of a `foreign` block, by its declaration.
+pub GlobalInfo :: struct {
+    pub decl: usize
+    pub name: string
+    pub ty: Ty
+    pub module: usize
+    /// The initializer of a `#global`; a foreign variable has none.
+    pub init: ?^const ast.Expr
+    pub thread_local: bool
+    /// For a foreign variable: its symbol.
+    pub link_name: ?string
+    /// The alignment `#align(n)` raises the variable's to.
+    pub align: ?u64
+    /// The initial value, once evaluated for code generation.
+    pub value: ?^tir.Cell = null
+}
+
 /// A function of a `foreign` block (§19.2): its library and its symbol.
 pub ForeignFn :: struct {
     pub fn_id: u32
@@ -345,6 +362,8 @@ pub Sema :: struct {
     pub inline_fns: List(InlineFn)
     /// The symbols the program exports (§19.4).
     pub exports: List(string)
+    /// The function exported under each symbol of `exports`.
+    pub export_fns: List(u32)
     /// The program's `#trap_hook` function (§3.7.1).
     pub trap_hook: ?u32
     /// By effect id; the first is the pseudo-effect of `..E` terms.
@@ -365,6 +384,8 @@ pub Sema :: struct {
     pub variadic_fns: List(u32)
     /// The library and symbol of each foreign function.
     pub foreign_fns: List(ForeignFn)
+    /// The `#global` and foreign variables.
+    pub globals: List(GlobalInfo)
     type_params: List(Scoped)
     value_scope: List(ValueScoped)
     /// The locals and nested functions of the body being checked, for the compile-time
@@ -451,6 +472,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         decl_with_checks: list(DeclWithCheck),
         inline_fns: list(InlineFn),
         exports: list(string),
+        export_fns: list(u32),
         trap_hook: null,
         effects: list(EffectInfo),
         adts: list(AdtInfo),
@@ -462,6 +484,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         allow_variadic: false,
         variadic_fns: list(u32),
         foreign_fns: list(ForeignFn),
+        globals: list(GlobalInfo),
         type_params: list(Scoped),
         value_scope: list(ValueScoped),
         local_consts: list(LocalConst),
@@ -796,9 +819,10 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
         }
     }
     if thread_local and not global { s.error(name.span, "`#thread_local` applies only to a `#global`") }
+    global_align: ?u64 = null
     if a := align_attr {
         if global {
-            _ = s.attr_power_of_two(module, &a)
+            global_align = s.attr_power_of_two(module, &a)
         } else {
             s.error(a.span, "`#align` goes directly before a `struct` or `union` literal, or on a `#global` (§20.2)")
         }
@@ -808,6 +832,9 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     s.fuel = fuel else STEP_BUDGET
     if global {
         v = s.declare_global(module, name, &b)
+        if .Global(ty) := v {
+            s.globals.push(GlobalInfo(decl: id, name: name.name, ty: ty, module: module, init: b.init, thread_local: thread_local, link_name: null, align: global_align))!
+        }
     } else {
         v = s.compute_binding(id, module, name, &item, &b)
     }

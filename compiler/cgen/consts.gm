@@ -75,6 +75,64 @@ gen_consts :: fn(g: ^Gen) -> Unsup!ConstsText needs sema.Load {
         try g.drain()
         if i is g.statics_cells.items.len { break }
     }
+    for gi, gl in enumerate(g.prog.s.globals.items) {
+        size := g.ty.size(gl.ty)
+        al := g.ty.align(gl.ty).max(gl.align else 1).max(1)
+        // `errno` is the C library's macro for the calling thread's variable, not a
+        // symbol to link with.
+        if gl.link_name is "errno" {
+            decls.write("#define gm_g{} ((uint8_t *)&errno)\n", gi)!
+            continue
+        }
+        if link := gl.link_name {
+            decls.write("extern uint8_t gm_g{}[] __asm__(GM_SYM({}));\n", gi, c_string(link))!
+            continue
+        }
+        tls := if gl.thread_local { "GM_TLS " } else { "" }
+        decls.write("static {}uint8_t gm_g{}[{}] __attribute__((aligned({})));\n", tls, gi, size.max(1), al)!
+        // A thread-local variable gets its initial value in each thread, on first use,
+        // through its accessor `gm_ga{gi}()`.
+        tls_init := list(u8)
+        target: ^List(u8) = if gl.thread_local { &tls_init } else { &init }
+        if cell := gl.value {
+            bytes := list(u8)
+            for _ in 0..size { bytes.push(0)! }
+            relocs := list(Reloc)
+            try g.value_bytes(cell.v, gl.ty, bytes.items, 0, &relocs)
+            if bytes.items.len > 0 {
+                sb := g.static_bytes(bytes.items)
+                target.write("    memcpy(gm_g{}, {}, {});\n", gi, sb, bytes.items.len)!
+            }
+            for r in relocs.items {
+                target.write("    {{ void *p = (uint8_t *){} + {}; memcpy(gm_g{} + {}, &p, sizeof p); }}\n", r.target, r.addend, gi, r.offset)!
+            }
+        }
+        if gl.thread_local {
+            decls.write("static GM_TLS uint8_t gm_gi{};\nstatic void gm_ginit{}(void);\nstatic inline uint8_t *gm_ga{}(void) {{ if (!gm_gi{}) {{ gm_gi{} = 1; gm_ginit{}(); }} return gm_g{}; }}\n", gi, gi, gi, gi, gi, gi, gi)!
+            g.bodies.write("static void gm_ginit{}(void) {{\n{}}}\n", gi, tls_init.items)!
+        }
+    }
+    // Their values may refer to cells and functions not seen yet.
+    while i < g.statics_cells.items.len {
+        sc := g.statics_cells.items[i]
+        name := str.format("gm_c{}", i)!
+        i += 1
+        size := g.ty.size(sc.ty)
+        decls.write("static uint8_t {}[{}] __attribute__((aligned({})));\n", name, size.max(1), g.ty.align(sc.ty).max(1))!
+        bytes := list(u8)
+        for _ in 0..size { bytes.push(0)! }
+        relocs := list(Reloc)
+        try g.value_bytes(sc.cell.v, sc.ty, bytes.items, 0, &relocs)
+        if bytes.items.len > 0 {
+            sb := g.static_bytes(bytes.items)
+            init.write("    memcpy({}, {}, {});\n", name, sb, bytes.items.len)!
+        }
+        for r in relocs.items {
+            init.write("    {{ void *p = (uint8_t *){} + {}; memcpy({} + {}, &p, sizeof p); }}\n", r.target, r.addend, name, r.offset)!
+        }
+    }
+    try g.drain()
+    if i is not g.statics_cells.items.len { return !unsupported(source.DUMMY, "a variable whose value reaches a function that uses a new constant") }
     init.extend("}\n")!
     return ConstsText(decls: decls.items, init: init.items)
 }
@@ -91,8 +149,8 @@ value_bytes :: fn(g: ^Gen, v: tir.Value, t: Ty, out: []u8, off: u64, relocs: ^Li
         }
         .Float(x) => {
             match g.ty.kind(t) {
-                .Float(64) => store_le(out, off, u128(x.bits(u64)), 8)
-                .Float(32) => store_le(out, off, u128(x.to(f32).bits(u32)), 4)
+                .Float(64) => g.store_int(out, off, u128(x.bits(u64)), 8)
+                .Float(32) => g.store_int(out, off, u128(x.to(f32).bits(u32)), 4)
                 _ => return !unsupported(source.DUMMY, "a compile-time value of this float type")
             }
         }
@@ -138,7 +196,10 @@ value_bytes :: fn(g: ^Gen, v: tir.Value, t: Ty, out: []u8, off: u64, relocs: ^Li
                 }
                 .Adt(id, _) => match g.prog.adt(id).kind {
                     .Struct(sd) => {
-                        if sd.bits is not null { return !unsupported(source.DUMMY, "a compile-time value of a `#bits` struct") }
+                        if u := sd.bits {
+                            raw := try g.bits_of(v, t)
+                            return g.value_bytes(.Int(raw), u, out, off, relocs)
+                        }
                         offs := g.ty.offsets(t)
                         for k, x in enumerate(a.elems) { try g.value_bytes(x, sd.fields[k].ty, out, off + offs[k], relocs) }
                     }
@@ -168,7 +229,7 @@ value_bytes :: fn(g: ^Gen, v: tir.Value, t: Ty, out: []u8, off: u64, relocs: ^Li
                 r := try g.place_reloc(start, elem, off)
                 relocs.push(r)!
             }
-            store_le(out, off + p, u128(len), p)
+            g.store_int(out, off + p, u128(len), p)
         }
         .Fn(f) => {
             g.queue(f)
@@ -224,6 +285,38 @@ cell_type :: fn(g: ^Gen, cell: ^tir.Cell) -> ?Ty {
     return g.statics_cells.items[(i).trunc(usize)].ty
 }
 
-store_le :: fn(out: []u8, off: u64, v: u128, n: u64) {
-    for k in 0..n { out[(off + k).trunc(usize)] = (v >> u128(8 * k)).trunc(u8) }
+/// Stores the `n` low bytes of `v` at `off`, in the target's byte order.
+store_int :: fn(g: ^const Gen, out: []u8, off: u64, v: u128, n: u64) {
+    for k in 0..n {
+        at := if g.ty.lay.target.little_endian { k } else { n - 1 - k }
+        out[(off + at).trunc(usize)] = (v >> u128(8 * k)).trunc(u8)
+    }
+}
+
+/// The bits of `v`, a value of a `#bits` field type `t` (§5.10.5): a `bool`, an integer, a
+/// union (its tag) or a `#bits` struct, from the least significant bit.
+bits_of :: fn(g: ^Gen, v: tir.Value, t: Ty) -> Unsup!u128 needs Alloc {
+    match v {
+        .Bool(b) => return if b { 1 } else { 0 }
+        .Int(bits) => {
+            w := g.ty.bit_width(t)
+            return if w >= 128 { bits } else { bits & ((u128(1) << u128(w)) - 1) }
+        }
+        .Variant(index, _) => {
+            .Adt(id, _) := g.ty.kind(t) else return !unsupported(source.DUMMY, "this `#bits` field value")
+            .Union(tag_ty, variants) := g.prog.adt(id).kind else return !unsupported(source.DUMMY, "this `#bits` field value")
+            tag := bigint.to_i128(variants[usize(index)].tag) else 0
+            return g.bits_of(.Int(u128(tag.trunc(u128))), tag_ty)
+        }
+        .Agg(a) => {
+            bl := g.ty.bits_layout(t) else return !unsupported(source.DUMMY, "this `#bits` field value")
+            raw: u128 = 0
+            for k, x in enumerate(a.elems) {
+                f := bl.fields[k]
+                raw |= (try g.bits_of(x, f.ty)) << u128(f.off)
+            }
+            return raw
+        }
+        _ => return !unsupported(source.DUMMY, "this `#bits` field value")
+    }
 }
