@@ -51,7 +51,7 @@ emit_with_continuation_note :: fn(cx: ^FnCx, d0: diag.Diagnostic, base: source.S
 /// The type written as argument `i`.
 type_arg :: fn(cx: ^FnCx, args: []const ast.Arg, i: usize, span: source.Span) -> ?Ty needs Load {
     if i < args.len and .Positional(e) := args[i].kind {
-        t := cx.s.resolve_type(cx.module, &e)
+        t := cx.resolve_type(&e)
         if cx.s.tys.is_error(t) { return null }
         return t
     }

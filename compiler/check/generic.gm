@@ -183,7 +183,7 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
                 v := cx.comptime_arg(cx.s.subst(p.ty, binds.items), e) else return error_expr(cx.s, span)
                 set_bind(&binds, pid, v)
             } else {
-                set_bind(&binds, pid, cx.s.resolve_type(cx.module, e))
+                set_bind(&binds, pid, cx.resolve_type(e))
             }
             continue
         }

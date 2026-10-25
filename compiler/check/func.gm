@@ -867,7 +867,7 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
         if cx.local_type_init(b.init) { return .Expr(cx.unsupported(b.span, "local type aliases")) }
     }
     annot: ?Ty = null
-    if t := b.ty { annot = cx.s.resolve_type(cx.module, t) }
+    if t := b.ty { annot = cx.resolve_type(t) }
     // An immutable binding of an untyped constant expression is an untyped constant (§6.2).
     if b.kind is .Const and annot is null {
         if r := cx.try_untyped(b.init) {
@@ -917,7 +917,7 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
 destructure :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
     tys := &cx.s.tys
     annot: ?Ty = null
-    if t := b.ty { annot = cx.s.resolve_type(cx.module, t) }
+    if t := b.ty { annot = cx.resolve_type(t) }
     init: ^Expr = error_expr(cx.s, b.init.span)
     if b.init.kind is .Uninit {
         if b.kind is not .Var { cx.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)") }

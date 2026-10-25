@@ -67,7 +67,7 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
 /// The type argument at position `i` of `@name(…)`, or `null` after an error.
 intrinsic_type_arg :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, i: usize, span: source.Span) -> ?Ty needs Load {
     if i < args.len and .Positional(e) := args[i].kind {
-        t := cx.s.resolve_type(cx.module, &e)
+        t := cx.resolve_type(&e)
         return if cx.s.tys.is_error(t) { null } else { t }
     }
     cx.error(span, str.format("`@{}` needs a type argument", name)!)
@@ -856,4 +856,23 @@ int_limit :: fn(s: ^Sema, t: Ty, max: bool) -> ?bigint.Int needs Alloc {
     if max { return bigint.sub(bigint.shl(bigint.one(), magnitude), bigint.one()) }
     if signed { return bigint.neg(bigint.shl(bigint.one(), magnitude)) }
     return bigint.zero()
+}
+
+/// The type that `e` denotes. `@type_of(e)` is the type of `e`, which is checked but not
+/// evaluated, so its effects do not count.
+resolve_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> Ty needs Load {
+    if .Intrinsic(i) := e.kind and i.name.name is "type_of" {
+        args := i.args else empty_slice(ast.Arg)
+        if args.len is not 1 or args[0].kind is not .Positional(_) {
+            cx.error(e.span, "`@type_of(e)` takes one expression")
+            return cx.s.tys.error()
+        }
+        .Positional(x) := args[0].kind else return cx.s.tys.error()
+        performed := cx.performed.items.len
+        v := cx.expr(&x, null)
+        cx.performed.items = cx.performed.items[0..performed]
+        // The type is needed now, so an untyped literal takes its fallback (§6.1).
+        return cx.settle(v.ty, e.span)
+    }
+    return cx.s.resolve_type(cx.module, e)
 }

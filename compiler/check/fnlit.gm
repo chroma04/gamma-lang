@@ -35,7 +35,7 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
     params := cx.literal_params(lit, expected)
     ret_known: ?Ty = null
     if r := lit.sig.ret {
-        ret_known = cx.s.resolve_type(cx.module, r)
+        ret_known = cx.resolve_type(r)
     } else if f := expected and not tys.has_param(f.ret) {
         ret_known = f.ret
     }
@@ -129,7 +129,7 @@ literal_params :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expected: ?types.FnTy) ->
     for p in lit.sig.params {
         if p.comptime { cx.error(p.span, "compile-time parameters are not supported in function literals") }
         annotated: ?Ty = null
-        if t := p.ty { annotated = cx.s.resolve_type(cx.module, t) }
+        if t := p.ty { annotated = cx.resolve_type(t) }
         for n in p.names {
             i := params.items.len
             ty := cx.s.tys.error()
