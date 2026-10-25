@@ -163,7 +163,7 @@ check_distinct :: fn(s: ^Sema, span: source.Span, refs: []const EffectRef) needs
     }
 }
 
-may_coincide :: fn(s: ^const Sema, a, b: ^const EffectRef) -> bool {
+pub may_coincide :: fn(s: ^const Sema, a, b: ^const EffectRef) -> bool {
     if a.eff is not b.eff or types.cmp_ref(a, b) is 0 { return false }
     for i in 0..a.args.len.min(b.args.len) {
         if .Type(x) := a.args[i] and .Type(y) := b.args[i] {

@@ -1,14 +1,12 @@
 // `with` and handler literals (§12.5, §12.7): each clause is checked as a nested
 // function of the enclosing one (mirrors `src/sema/effects.rs`), and `resume` and
-// `cancel` in `ctl` clauses (§14). Handlers of generic effects are reported as
-// unsupported.
+// `cancel` in `ctl` clauses (§14).
 
 /// `[label:] with h1, h2, … { body }` (§12.7). With `value`, the `with`'s value is used,
 /// and `expect` is the type expected of it.
 with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> ^Expr needs Load {
     span := w.span
     tys := &cx.s.tys
-    if cx.in_generic_fn() { return cx.unsupported(span, "`with` in generic functions") }
     with_expect: ?Ty = if value { expect } else { null }
     cx.push_scope()
     if l := w.label { cx.declare(l.name, .Label, l.span) }
@@ -103,6 +101,34 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     cx.handled.truncate(n)
     _ = cx.labels.pop()
     cx.pop_scope()
+    for p in cx.performed.items[start..] {
+        named := false
+        for x in handled.items {
+            if types.cmp_ref(&x, &p.effect_) is 0 { named = true }
+        }
+        if named { continue }
+        for x in handled.items {
+            if x.eff is p.effect_.eff {
+                cx.near_misses.push(Performed(effect_: x, span: p.span))!
+                break
+            }
+        }
+    }
+    // Whether this `with` handles a perform must not depend on type arguments (§16.6).
+    for p in cx.performed.items[start..] {
+        if p.effect_.eff is types.SPLICE {
+            if handled.items.len > 0 {
+                cx.error(p.span, str.format("this performs `{}` inside a `with` that handles `{}`, which the effect-set parameter might include (§16.6)", cx.s.tys.show_ref(&p.effect_), cx.s.tys.show_ref(&handled.items[0]))!)
+                continue
+            }
+        }
+        for x in handled.items {
+            if cx.s.may_coincide(&p.effect_, &x) {
+                cx.error(p.span, str.format("this performs `{}` inside a `with` that handles `{}`, which might be the same effect for some type arguments (§16.6)", cx.s.tys.show_ref(&p.effect_), cx.s.tys.show_ref(&x))!)
+                break
+            }
+        }
+    }
     // Effects handled here are not performed by the `with` (§12.3).
     i := start
     while i < cx.performed.items.len {
@@ -220,10 +246,6 @@ new_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: source.Sp
         cx.error(lit.effect_.span, str.format("`{}` needs {} type argument(s)", info.name, info.params.len)!)
         return null
     }
-    if info.params.len > 0 {
-        _ = cx.unsupported(span, "handlers of generic effects")
-        return null
-    }
     hid := cx.s.handlers.items.len.trunc(u32)
     cx.s.handlers.push(tir.HandlerLit(effect_: eref, clauses: empty_slice(u32)))!
     for c in lit.clauses {
@@ -244,14 +266,15 @@ new_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: source.Sp
 /// Checks the clauses of handler literal `hid`; `with_expect` is the type of the value
 /// of the `with` that installs it, which its `break`s give.
 handler_clauses :: fn(cx: ^FnCx, hid: u32, lit: ^const ast.HandlerLit, with_expect: ?Ty, span: source.Span) needs Load {
-    info := cx.s.effects.items[usize(cx.s.handlers.items[usize(hid)].effect_.eff)]
+    eref := cx.s.handlers.items[usize(hid)].effect_
+    info := cx.s.effects.items[usize(eref.eff)]
     clauses := list(u32)
     for o in info.ops {
         c := find_clause(lit, o.name) else {
             cx.error(span, str.format("this handler has no clause for the operation `{}`", o.name)!)
             continue
         }
-        sig := clause_signature(cx.s, &o)
+        sig := clause_signature(cx.s, &eref, &o)
         info_ := ClauseInfo(op_kind: o.kind, handler_: hid, decl_clause: null, with_expect: with_expect, effect_: cx.s.handlers.items[usize(hid)].effect_)
         clauses.push(cx.clause_fn(c, sig.params, sig.ret, info_))!
     }
@@ -391,15 +414,17 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
     return fn_id
 }
 
-/// The parameters and result type of a clause for operation `o` of an effect without
-/// type parameters: a `ctl` clause also takes the continuation `k` and never finishes
+/// The parameters and result type of a clause for operation `o` of the instantiated
+/// effect `eref`: a `ctl` clause also takes the continuation `k` and never finishes
 /// normally (§14.3).
-pub clause_signature :: fn(s: ^Sema, o: ^const sema.OpInfo) -> (params: []sema.ParamInfo, ret: Ty) needs Alloc {
+pub clause_signature :: fn(s: ^Sema, eref: ^const EffectRef, o: ^const sema.OpInfo) -> (params: []sema.ParamInfo, ret: Ty) needs Load {
+    m := effect_map(s.effects.items[usize(eref.eff)].params, eref.args)
     params := list(sema.ParamInfo)
-    for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: p.ty, span: p.span, default: null, generic: null, rest: false))! }
-    if o.kind is not .Ctl { return (params: params.items, ret: o.ret) }
+    for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: s.subst(p.ty, m), span: p.span, default: null, generic: null, rest: false))! }
+    ret := s.subst(o.ret, m)
+    if o.kind is not .Ctl { return (params: params.items, ret: ret) }
     span := if p := params.items.last() { p.span } else { source.DUMMY }
-    params.push(sema.ParamInfo(name: "k", ty: s.tys.intern(.Cont(o.ret)), span: span, default: null, generic: null, rest: false))!
+    params.push(sema.ParamInfo(name: "k", ty: s.tys.intern(.Cont(ret)), span: span, default: null, generic: null, rest: false))!
     return (params: params.items, ret: s.tys.never_ty())
 }
 

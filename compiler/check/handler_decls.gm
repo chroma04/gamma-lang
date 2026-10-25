@@ -50,7 +50,7 @@ declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs 
             continue
         }
         // The first clause parameter is the handler value itself.
-        sig := clause_signature(s, &o)
+        sig := clause_signature(s, &eref, &o)
         params := list(sema.ParamInfo)
         params.push(sema.ParamInfo(name: "self", ty: for_ty, span: h.for_ty.span, default: null, generic: null, rest: false))!
         params.extend(sig.params)!

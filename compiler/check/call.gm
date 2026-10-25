@@ -70,7 +70,7 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             }
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
             // `yield(x)`, the one operation in scope without its effect (§13.1).
-            if id.name is "yield" and y := cx.s.yield_effect { return cx.perform_generic(y, 0, args, span) }
+            if id.name is "yield" and y := cx.s.yield_effect { return cx.perform_op(y, 0, args, span) }
             return cx.unsupported(span, str.format("calls of `{}`", id.name)!)
         }
         .Call(_) => {
@@ -122,7 +122,7 @@ call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args
         .Fn(f) => return cx.call_fn(f, args, span)
         .Type(t) => return cx.conversion(t, args, span)
         .Error => return error_expr(cx.s, span)
-        .Op(_) => return cx.unsupported(span, "effect operations")
+        .Op(eff, op) => return cx.perform_op(eff, op, args, span)
         .Const(_) => return cx.unsupported(span, "calls of constants")
         _ => {
             cx.error(callee.span, str.format("`{}` cannot be called", name)!)

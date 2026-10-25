@@ -182,11 +182,12 @@ iterator_call_as_value :: fn(cx: ^FnCx, e0: ^const ast.Expr, v: ^Expr, param: Ty
     return true
 }
 
-/// The instantiations of effect `eff` that the enclosing functions declare.
+/// The instantiations of effect `eff` available here: declared by the enclosing functions
+/// or handled by enclosing `with`s.
 available :: fn(cx: ^const FnCx, eff: u32) -> []EffectRef needs Alloc {
     out := list(EffectRef)
-    add :: fn(set: ^const EffectSet) needs Alloc {
-        for e in set.effects {
+    add :: fn(set: []const EffectRef) needs Alloc {
+        for e in set {
             if e.eff is not eff { continue }
             seen := false
             for x in out.items {
@@ -195,21 +196,31 @@ available :: fn(cx: ^const FnCx, eff: u32) -> []EffectRef needs Alloc {
             if not seen { out.push(e)! }
         }
     }
-    add(&cx.declared)
-    for f in cx.outer.items { add(&f.declared) }
+    add(cx.declared.effects)
+    add(cx.handled.items)
+    for f in cx.outer.items {
+        add(f.declared.effects)
+        add(f.handled.items)
+    }
     return out.items
 }
 
-/// A call of operation `op` of the generic effect `eff`, written without the effect: the
-/// instantiation is the one available, or the one the arguments give (§12.1).
-perform_generic :: fn(cx: ^FnCx, eff: u32, op: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
-    tys := &cx.s.tys
+/// A call of operation `op` of effect `eff`, written through the effect or bare (§12.1).
+/// For a generic effect the instantiation is the one available, or the one the arguments
+/// give.
+perform_op :: fn(cx: ^FnCx, eff: u32, op: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     info := cx.s.effects.items[usize(eff)]
     o := info.ops[usize(op)]
+    if info.params.len is 0 {
+        bound := cx.bind_args(o.params, info.module, args, span, "operation") else return error_expr(cx.s, span)
+        eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
+        return cx.perform_bound(eref, op, o.ret, bound, span)
+    }
     avail := cx.available(eff)
+    // With exactly one instantiation available, that one is performed (§12.1), so the
+    // arguments are checked against its parameter types: `emit(.Opened(…))`.
     only: ?EffectRef = if avail.len is 1 { avail[0] } else { null }
-    binds := list(?Ty)
-    for _ in info.params { binds.push(null)! }
+    binds := list(Subst)
     probe := list(Expr)
     positional: usize = 0
     for a in args {
@@ -217,23 +228,19 @@ perform_generic :: fn(cx: ^FnCx, eff: u32, op: u32, args: []const ast.Arg, span:
         i := positional
         positional += 1
         expect: ?Ty = null
-        if one := only and i < o.params.len { expect = cx.s.subst(o.params[i].ty, effect_map(info.params, one.args)) }
+        if one := only {
+            if i < o.params.len { expect = cx.s.subst(o.params[i].ty, effect_map(info.params, one.args)) }
+        }
         v := cx.expr(&e, expect)
         if i < o.params.len {
-            pt := o.params[i].ty
-            t := cx.infer.resolve(cx.s, v.ty)
-            if .Param(p) := tys.kind(pt) {
-                if k := info.params.index_of(p) and binds.items[k] is null and not tys.has_infer(t) and not tys.is_error(t) { binds.items[k] = t }
-            } else if tys.has_param(pt) and only is null {
-                return cx.unsupported(span, "operations of generic effects")
-            }
+            cx.s.match_params(o.params[i].ty, cx.infer.resolve(cx.s, v.ty), &binds)
         }
         probe.push(v^)!
     }
     complete := true
     gargs := list(types.GenericArg)
-    for b in binds.items {
-        t := b else {
+    for p in info.params {
+        t := sema.bound_to(binds.items, p) else {
             complete = false
             break
         }
@@ -242,8 +249,11 @@ perform_generic :: fn(cx: ^FnCx, eff: u32, op: u32, args: []const ast.Arg, span:
     eref := types.EffectRef(eff: eff, args: gargs.items)
     if complete {
         // An instantiation that is not available, where exactly one is: the arguments
-        // are converted to that one.
-        if one := only { eref = one }
+        // are coerced to that one (`yield(buf)` with `buf: []u8` in a function performing
+        // `Yield(string)`).
+        if one := only {
+            if types.cmp_ref(&one, &eref) is not 0 { eref = one }
+        }
     } else if one := only {
         eref = one
     } else {
@@ -267,6 +277,33 @@ perform_generic :: fn(cx: ^FnCx, eff: u32, op: u32, args: []const ast.Arg, span:
     cx.performed.push(Performed(effect_: eref, span: span))!
     if o.kind is .Fn { cx.fn_performs.push(span)! }
     return tir.mk(cx.s.subst(o.ret, m), .Call(.Perform(eref, op), vals.items), span)
+}
+
+/// Performs operation `op` of the given instantiation of its effect (`Yield(u8).yield(x)`).
+perform_op_as :: fn(cx: ^FnCx, eref: types.EffectRef, op: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    info := cx.s.effects.items[usize(eref.eff)]
+    o := info.ops[usize(op)]
+    if eref.args.len is not info.params.len {
+        cx.error(span, str.format("`{}` needs {} type argument(s)", info.name, info.params.len)!)
+        return error_expr(cx.s, span)
+    }
+    m := effect_map(info.params, eref.args)
+    ps := list(sema.ParamInfo)
+    for p in o.params {
+        q := p
+        q.ty = cx.s.subst(p.ty, m)
+        ps.push(q)!
+    }
+    bound := cx.bind_args(ps.items, info.module, args, span, "operation") else return error_expr(cx.s, span)
+    return cx.perform_bound(eref, op, cx.s.subst(o.ret, m), bound, span)
+}
+
+/// The perform of operation `op` of `eref` with its bound arguments.
+perform_bound :: fn(cx: ^FnCx, eref: types.EffectRef, op: u32, ret: Ty, bound: Bound, span: source.Span) -> ^Expr needs Load {
+    cx.performed.push(Performed(effect_: eref, span: span))!
+    if cx.s.effects.items[usize(eref.eff)].ops[usize(op)].kind is .Fn { cx.fn_performs.push(span)! }
+    call := tir.mk(ret, .Call(.Perform(eref, op), bound.args), span)
+    return cx.finish_call(bound.pre, call, false)
 }
 
 /// The substitution of a generic effect's parameters by an instantiation's arguments.
