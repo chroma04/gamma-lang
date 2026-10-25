@@ -314,9 +314,13 @@ mono_fn :: fn(s: ^Sema, mc: ^MonoCx, id: u32) -> u32 needs Load {
     if b := def.body {
         copy := tir.clone_expr(b)
         was := mc.copying
+        outer_locals := mc.locals
         mc.copying = true
+        // The temporaries the copy needs are its own locals.
+        mc.locals = &locals
         mono_expr(s, mc, copy)
         mc.copying = was
+        mc.locals = outer_locals
         body = copy
     }
     nd := &s.defs.items[usize(new_id)]
