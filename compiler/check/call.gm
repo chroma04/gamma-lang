@@ -65,6 +65,7 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
                 "eprint" => return cx.print(false, args, span)
                 "trap" => return cx.trap(args, span)
                 "assert" => return cx.assert_(args, span)
+                "expect_eq" => return cx.expect_eq(args, span)
                 _ => {}
             }
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
@@ -446,6 +447,63 @@ assert_ :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr need
     both.push(cond^)!
     both.push(m^)!
     return tir.mk(cx.s.tys.unit(), .Builtin(.Assert, both.items), span)
+}
+
+/// `expect_eq(actual, expected)` (§21.6): unless the two are equal by `is`, writes both
+/// values into the failure report and fails the current test, performing `Test`.
+expect_eq :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if args.len is not 2 or args[0].kind is not .Positional(_) or args[1].kind is not .Positional(_) {
+        cx.error(span, "`expect_eq` takes the actual value and the expected one")
+        return error_expr(cx.s, span)
+    }
+    .Positional(a) := args[0].kind else return error_expr(cx.s, span)
+    .Positional(b) := args[1].kind else return error_expr(cx.s, span)
+    prelude := cx.s.l.prelude else return error_expr(cx.s, span)
+    d := cx.s.l.lookup(prelude, "Test") else return error_expr(cx.s, span)
+    .Effect(effect_) := cx.s.resolve_decl(d) else return error_expr(cx.s, span)
+    tys := &cx.s.tys
+    l0 := cx.expr(&a, null)
+    r0 := cx.expr(&b, l0.ty)
+    eq := cx.equalize(l0, r0, span)
+    lt := cx.settle(eq.l.ty, a.span)
+    rt := cx.settle(eq.r.ty, b.span)
+    x := cx.temp(lt, a.span)
+    y := cx.temp(rt, b.span)
+    differ := tir.mk(tys.bool_ty(), .Eq(tir.mk(lt, .Local(x), span), tir.mk(rt, .Local(y), span), true), span)
+    eref := types.EffectRef(eff: effect_, args: empty_slice(types.GenericArg))
+    one := list(EffectRef)
+    one.push(eref)!
+    set := types.effect_set(one.items)
+    cx.record_effects(&set, span)
+    // `Test.note` (operation 0) takes the report; `Test.fail` (operation 1) ends it.
+    pieces := list([]const u8)
+    pieces.push("expected: ")!
+    pieces.push("\nactual:   ")!
+    pieces.push("\n")!
+    specs := list(tir.FmtSpec)
+    specs.push(tir.default_spec())!
+    specs.push(tir.default_spec())!
+    vals := list(Expr)
+    vals.push(tir.mk(rt, .Local(y), span)^)!
+    vals.push(tir.mk(lt, .Local(x), span)^)!
+    write := tir.mk(tys.unit(), .Write(tir.WriteExpr(sink: .Perform(eref, 0), pieces: pieces.items, specs: specs.items, args: vals.items)), span)
+    msg := tir.mk(tys.string_ty(), .Str("expectation failed: the values differ"), span)
+    loc := cx.source_location(span)
+    stop_args := list(Expr)
+    stop_args.push(msg^)!
+    stop_args.push(loc^)!
+    stop := tir.mk(tys.never_ty(), .Call(.Perform(eref, 1), stop_args.items), span)
+    fail_stmts := list(tir.Stmt)
+    fail_stmts.push(.Expr(write))!
+    fail := tir.mk(tys.never_ty(), .Block(new(tir.Block(stmts: fail_stmts.items, tail: stop, span: span))!), span)
+    cond := list(tir.CondPart)
+    cond.push(.Bool(differ))!
+    check := tir.mk(tys.unit(), .If(tir.IfExpr(cond: cond.items, then: fail, else_: null)), span)
+    stmts := list(tir.Stmt)
+    stmts.push(.Let(x, eq.l))!
+    stmts.push(.Let(y, eq.r))!
+    stmts.push(.Expr(check))!
+    return tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span)
 }
 
 /// `print(template, args…)` (§21.6, §21.6.1).
