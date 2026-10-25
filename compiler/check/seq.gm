@@ -361,19 +361,26 @@ array_type_construction :: fn(cx: ^FnCx, e: ^const ast.Expr, len_ast: ?^ast.Expr
 
 /// The type that a construction (with its prefixes) spells, without the call.
 construction_elem_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
-    tys := &cx.s.tys
-    match e.kind {
-        .Call(callee, _, _) => return cx.s.resolve_type(cx.module, callee)
-        .OptionalType(inner) => {
-            t := cx.construction_elem_type(inner) else return null
-            return tys.optional(t)
-        }
-        _ => {
-            _ = cx.unsupported(e.span, "array construction")
-            return null
-        }
-    }
+    t := cx.s.resolve_type(cx.module, without_call(e))
+    return if cx.s.tys.is_error(t) { null } else { t }
 }
+
+/// The type a construction `e` builds: `e` with its final call replaced by the callee.
+without_call :: fn(e: ^const ast.Expr) -> ^const ast.Expr needs Alloc {
+    kind: ast.ExprKind = match e.kind {
+        .Call(callee, _, _) => return callee
+        .ArrayType(a) => .ArrayType(ast.ArrayTypeExpr(len: a.len, elem: box_mut(without_call(a.elem))))
+        .OptionalType(inner) => .OptionalType(box_mut(without_call(inner)))
+        .PtrType(c, inner) => .PtrType(c, box_mut(without_call(inner)))
+        .SliceType(c, inner) => .SliceType(c, box_mut(without_call(inner)))
+        .ManyPtrType(c, inner) => .ManyPtrType(c, box_mut(without_call(inner)))
+        _ => return e
+    }
+    return new(ast.Expr(id: e.id, kind: kind, span: e.span))!
+}
+
+/// A copy of `e` that the syntax tree may own.
+box_mut :: fn(e: ^const ast.Expr) -> ^ast.Expr needs Alloc => new(e^)!
 
 /// The elements of an array of `len` elements (or as many as given) of type `elem`.
 construct_array :: fn(cx: ^FnCx, ty: ?Ty, len: ?u64, elem: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {

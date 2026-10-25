@@ -747,3 +747,56 @@ fn_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?u32 needs 
     if s.tys.intern(.FnPtr(have)) is not s.tys.intern(.FnPtr(sig)) { return null }
     return f
 }
+
+/// A type prefix whose operand is a postfix chain on a construction, such as
+/// `[2]P(a, b)[1].y`, rewritten so that the prefix applies to the construction and the
+/// rest of the chain to the value it constructs: `(([2]P)(a, b))[1].y` (§A.7 rule 12).
+pub hoist_prefix :: fn(e: ^const ast.Expr) -> ?^const ast.Expr needs Alloc {
+    if not hoists(e) { return null }
+    return push_down(e, prefix_operand(e))
+}
+
+/// The postfix chain `inner` with the prefix `prefix` moved onto the construction at
+/// its start.
+push_down :: fn(prefix: ^const ast.Expr, inner: ^const ast.Expr) -> ?^const ast.Expr needs Alloc {
+    base := match inner.kind {
+        .Index(b, _), .Field(b, _), .OptUnwrap(b), .ResUnwrap(b), .Deref(b) => b
+        .TupleField(b, _, _) => b
+        .Slice(x) => x.base
+        .Call(callee, _, _) => if calls_on_value(callee) { callee } else { return null }
+        _ => return null
+    }
+    next: ^ast.Expr = new(base^)!
+    if .Call(callee, _, _) := base.kind and not calls_on_value(callee) {
+        next = with_operand(prefix, base)
+        next.span = prefix.span.to(base.span)
+    } else {
+        down := push_down(prefix, base) else return null
+        next = new(down^)!
+    }
+    kind: ast.ExprKind = match inner.kind {
+        .Index(_, i) => .Index(next, i)
+        .Field(_, name) => .Field(next, name)
+        .OptUnwrap(_) => .OptUnwrap(next)
+        .ResUnwrap(_) => .ResUnwrap(next)
+        .Deref(_) => .Deref(next)
+        .TupleField(_, i, at) => .TupleField(next, i, at)
+        .Slice(x) => .Slice(ast.SliceExpr(base: next, lo: x.lo, hi: x.hi, inclusive: x.inclusive))
+        .Call(_, args, trailing) => .Call(next, args, trailing)
+        _ => return null
+    }
+    return new(ast.Expr(id: inner.id, kind: kind, span: inner.span))!
+}
+
+/// The prefix chain `prefix` with its innermost operand replaced by `operand`.
+with_operand :: fn(prefix: ^const ast.Expr, operand: ^const ast.Expr) -> ^ast.Expr needs Alloc {
+    kind: ast.ExprKind = match prefix.kind {
+        .ArrayType(a) => .ArrayType(ast.ArrayTypeExpr(len: a.len, elem: with_operand(a.elem, operand)))
+        .OptionalType(inner) => .OptionalType(with_operand(inner, operand))
+        .PtrType(c, inner) => .PtrType(c, with_operand(inner, operand))
+        .SliceType(c, inner) => .SliceType(c, with_operand(inner, operand))
+        .ManyPtrType(c, inner) => .ManyPtrType(c, with_operand(inner, operand))
+        _ => return new(operand^)!
+    }
+    return new(ast.Expr(id: prefix.id, kind: kind, span: prefix.span))!
+}

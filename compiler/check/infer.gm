@@ -27,6 +27,9 @@ Var :: struct {
     fallback: Fallback
     resolved: ?Ty
     settled_at: ?source.Span
+    /// The conversion `T(x)` that gave the variable its type, if one did (§6.5), for
+    /// diagnostics about literals far from it.
+    fixed_by: ?source.Span = null
 }
 
 pub InferTable :: struct {
@@ -55,6 +58,19 @@ root :: fn(t: ^InferTable, v: u32) -> u32 {
 }
 
 /// Replaces resolved variables at the top level of `ty` (not inside it).
+/// Records that the conversion at `span` gave `ty`, a variable, its type.
+note_fixed_by :: fn(t: ^InferTable, tys: ^const types.Types, ty: Ty, span: source.Span) {
+    .Infer(v) := tys.kind(ty) else return
+    r := usize(t.root(v))
+    if t.vars.items[r].fixed_by is null { t.vars.items[r].fixed_by = span }
+}
+
+/// The conversion that gave `ty`, a variable, its type (see `note_fixed_by`).
+fixed_by :: fn(t: ^InferTable, tys: ^const types.Types, ty: Ty) -> ?source.Span {
+    .Infer(v) := tys.kind(ty) else return null
+    return t.vars.items[usize(t.root(v))].fixed_by
+}
+
 shallow :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> Ty needs Alloc {
     .Infer(v) := tys.kind(ty) else return ty
     r := t.root(v)

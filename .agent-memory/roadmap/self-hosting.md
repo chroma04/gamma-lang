@@ -95,7 +95,12 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   reachable bodies/instances on demand, cycle errors), sema array lengths + comptime args
   via the hook, layout-cycle errors (sema pending_layout), diag Mark/reset + `{error}`
   drop + raised count. TIR 487 → 539, decls 693 → 739, 0 DIFF.
-- Remaining first-blocker buckets (s41 end): vector types 19, iterator args 17,
+- s41b (same branch, after PR #81): literal-variable conversions (infer note_fixed_by +
+  finalize label), `?T(x)` / alias-array constructions (call.gm construct_optional,
+  conversion on .Array), nested construction prefixes (seq.gm without_call), prefix
+  hoisting `[2]P(…)[1].y` (sema hoist_prefix/push_down/with_operand; is_const_ref_arg
+  hoists too); source.to now = union like Rust's Span::to. TIR 571, decls 741, 0 DIFF.
+- Remaining first-blocker buckets (s41 end, before s41b): vector types 19, iterator args 17,
   literal-variable conversions 14, array construction 13, #bits/other struct attrs 13,
   intrinsics 12, attributes 11, generic effect ops 11, effect-set params 10, vector/complex
   ops 8, local type aliases 8, `the name X` 7, `bindings with an X` 7, comptime-param

@@ -56,8 +56,13 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         .Index(base, i) => return cx.index(base, i, span)
         .Slice(sl) => return cx.slice_expr(sl.base, sl.lo, sl.hi, sl.inclusive, span)
         .ArrayType(a) => {
-            // A type prefix before a construction applies to the whole type (§A.7 rule 12).
-            if sema.construction_call(a.elem) is null { return cx.unsupported(span, "postfix operators after a construction") }
+            // `[2]P(…)[1].y`: the prefix and the construction come first (§A.7 rule 12).
+            if r := sema.hoist_prefix(e) { return cx.expr(r, expect) }
+            // A type prefix before a construction applies to the whole type.
+            if sema.construction_call(a.elem) is null {
+                cx.error(span, "expected a value, found a type")
+                return error_expr(cx.s, span)
+            }
             return cx.array_type_construction(e, a.len, a.elem, span)
         }
         .Field(base, name) => return cx.field(base, name, span)
@@ -79,7 +84,16 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
             }
             return cx.construct_variant(cx.strip_wrappers(cx.infer.resolve(cx.s, t)), name, null, span)
         }
-        .OptionalType(inner) if prefix_on_call(inner) => return cx.unsupported(span, "constructions of optional types")
+        .OptionalType(_) if sema.hoist_prefix(e) is not null => {
+            r := sema.hoist_prefix(e) else return error_expr(cx.s, span)
+            return cx.expr(r, expect)
+        }
+        .OptionalType(inner) if prefix_on_call(inner) => {
+            call := sema.construction_call(inner) else return cx.unsupported(span, "postfix operators after a construction")
+            .Call(_, args, _) := call.kind else return error_expr(cx.s, span)
+            t := cx.construction_elem_type(inner) else return error_expr(cx.s, span)
+            return cx.construct_optional(cx.s.tys.optional(t), t, args, span)
+        }
         .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ErrorUnionType(_), .FnType(_), .ContType(_), .Struct(_), .Union(_), .Effect(_) => {
             cx.error(span, "expected a value, found a type")
             return error_expr(cx.s, span)

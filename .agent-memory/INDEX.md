@@ -5,7 +5,8 @@
   (decisions/046; compiler/eval, tir/value.gm, check/consts.gm + eval_prepare.gm). TIR
   487 → 539, decls 693 → 739. Next buckets in roadmap/self-hosting.md s41 entry
   (vector types, iterator args, literal-variable conversions, array construction).
-  Then (user-approved) `?x` whole-binding pattern (decisions/047), its own PR.
+  Then (user-approved) `?x` pattern (decisions/047) + gammac constructions: PR #82;
+  TIR 571, decls 741.
 - s38–s39 (PRs #72–#79 merged): self-hosted compiler gammac in compiler/ (decisions/043,
   roadmap/self-hosting.md): lexer+parser+modules byte-identical on all files; decls and
   tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in
