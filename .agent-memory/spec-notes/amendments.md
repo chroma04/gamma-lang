@@ -105,3 +105,4 @@
 - s35: §5.6.4 `#soa` (decisions/040); §20.2 `#soa` row; A grammar; C.2 bullet; C.8 rows (field reflection note, SoA containers/AoSoA, addressable elements).
 - s37: §5.6.4 "In generic code" bullet (generic `#soa []T`, decisions/042); element-type bullet drops "concrete"; C.8 SoA-containers row reworded.
 - s40: §15.1 rejects storing an address of a local where it certainly outlives it, and returning one inside a value (decisions/045).
+- s41: §9.1/§9.2/§9.3/§9.4/A.6 `?x` binds an optional or result as it is (decisions/047).

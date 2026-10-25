@@ -95,9 +95,8 @@ impl<'a, 's> FnCx<'a, 's> {
                 Diagnostic::error(span, format!("this `match` is not exhaustive: `{}` is not covered", missing));
             if let Some(at) = report.present_only {
                 d = d.with_label(at, "this name matches only a present value").with_note(
-                    "a name in the position of an optional matches only a present value (§9.3); to get the \
-                     optional as it is, bind the value that holds it, such as a whole payload with `.V(p)`, \
-                     and read the part from it (`p.field`)",
+                    "a name in the position of an optional matches only a present value (§9.3); to bind the \
+                     optional as it is, absent value included, write `?` before the name (`.V(?x)`)",
                 );
             }
             self.sema.emit(d);

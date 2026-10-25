@@ -654,7 +654,7 @@ impl<'a, 's> Walker<'a, 's> {
     pub fn pattern(&mut self, p: &ast::Pattern, ty: Option<Ty>, from: u32) {
         match &p.kind {
             ast::PatternKind::Wildcard | ast::PatternKind::Null => {}
-            ast::PatternKind::Bind(id) => self.declare(*id, Kind::Variable, from),
+            ast::PatternKind::Bind(id) | ast::PatternKind::Whole(id) => self.declare(*id, Kind::Variable, from),
             ast::PatternKind::Lit(e) => self.expr(e),
             ast::PatternKind::Range { lo, hi, .. } => {
                 self.expr(lo);

@@ -1,0 +1,20 @@
+// `?x` binds an optional or a result as it is, absent or failed included (§9.3).
+Ev :: union {
+    Break: (label: ?string, value: ?i32)
+    Stop
+}
+
+describe :: fn(e: Ev) -> i32 => match e {
+    .Break(?label, ?value) => if v := value { v } else if label is null { -1 } else { 0 }
+    .Stop => 1
+}
+
+first :: fn(r: (u8!i32, bool)) -> i32 => match r {
+    (?x, true) => if v := x { v } else { -2 }
+    (_, false) => 7
+}
+
+main :: fn() needs Out {
+    print("{} {} {} {}\n", describe(.Break(label: null, value: 3)), describe(.Break(label: null, value: null)), describe(.Break(label: "l", value: null)), describe(.Stop))
+    print("{} {} {}\n", first((4, true)), first((!1, true)), first((5, false)))
+}

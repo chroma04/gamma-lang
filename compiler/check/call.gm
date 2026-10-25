@@ -347,9 +347,11 @@ arg_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
 /// True if argument `e` is `&x` for a parameter of type `^const T`, or `x[…]` for a
 /// `[]const T` one: `x` may be a
 /// temporary (§7.2).
-is_const_ref_arg :: fn(s: ^Sema, e: ^const ast.Expr, ty: Ty) -> bool {
+is_const_ref_arg :: fn(s: ^Sema, e: ^const ast.Expr, ty: Ty) -> bool needs Alloc {
     x := e
     while .Paren(inner) := x.kind { x = inner }
+    // `[_]T(…)[..]` is parsed with the array type outermost.
+    if h := sema.hoist_prefix(x) { x = h }
     if .Unary(.AddrOf, _) := x.kind {
         if .Ptr(c, _) := s.tys.kind(ty) { return c }
     }
@@ -374,7 +376,12 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
     }
     match tys.kind(t) {
         .Tuple(elems, names) => return cx.construct_tuple(t, elems, names, args, span)
-        .Array(_), .ParamArray(_), .Optional(_) => return cx.unsupported(span, "this construction")
+        .Array(len, elem, kind) => {
+            if kind is not .Plain { return cx.unsupported(span, "this construction") }
+            return cx.construct_array(t, len, elem, args, span)
+        }
+        .Optional(inner) => return cx.construct_optional(t, inner, args, span)
+        .ParamArray(_) => return cx.unsupported(span, "this construction")
         _ => {}
     }
     if args.len is not 1 or args[0].kind is not .Positional(_) {
@@ -386,7 +393,7 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
     v := cx.expr(&x, if is_literal_tree(&x) { t } else { null })
     if cx.infer.var_kind(tys, v.ty) is not null and (tys.is_integer(t) or (tys.kind(t) is .Float(_) and tir_literal(v))) {
         if cx.infer.unify(tys, v.ty, t) is not !_ {
-            if not tir_literal(v) { return cx.unsupported(span, "conversions of literal variables") }
+            if not tir_literal(v) { cx.infer.note_fixed_by(tys, v.ty, span) }
             return v
         }
         if not tir_literal(v) or cx.infer.var_kind(tys, v.ty) is not .Float {
@@ -403,6 +410,18 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
     if not tys.has_infer(vt) and vt is t and not tys.is_error(vt) { return tir.mk(t, .Coerce(.TupleRename, v), span) }
     cx.obligations.push(.Conversion(v.ty, t, span))!
     return tir.mk(t, .Builtin(.Convert, one_expr(v)), span)
+}
+
+/// `?T(x)` holds `x`; `?T(null)` is the absent value (§7.11).
+construct_optional :: fn(cx: ^FnCx, t: Ty, inner: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if args.len is not 1 or args[0].kind is not .Positional(_) {
+        cx.error(span, str.format("`{}(…)` takes exactly one value", cx.show(t))!)
+        return error_expr(cx.s, span)
+    }
+    .Positional(x) := args[0].kind else return error_expr(cx.s, span)
+    if x.kind is .Null { return tir.mk(t, .Null, span) }
+    v := cx.coerce(cx.expr(&x, inner), inner)
+    return tir.mk(t, .Coerce(.WrapOptional, v), span)
 }
 
 /// True if the syntax tree `e` is built from literals, parentheses and operators only.

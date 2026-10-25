@@ -17,8 +17,12 @@ pub DUMMY :: Span(file: 0xFFFF_FFFF, lo: 0, hi: 0)
 /// The span `lo..hi` of `file`.
 pub span :: fn(file: FileId, lo, hi: usize) -> Span => Span(file: file, lo: lo.trunc(u32), hi: hi.trunc(u32))
 
-/// The span from the start of `a` to the end of `b`.
-pub to :: fn(a: Span, b: Span) -> Span => Span(file: a.file, lo: a.lo, hi: b.hi)
+/// The smallest span covering `a` and `b` (either of which may be `DUMMY`).
+pub to :: fn(a: Span, b: Span) -> Span {
+    if a is DUMMY { return b }
+    if b is DUMMY { return a }
+    return Span(file: a.file, lo: a.lo.min(b.lo), hi: a.hi.max(b.hi))
+}
 
 /// The empty span at the start of `a`.
 pub shrink_to_lo :: fn(a: Span) -> Span => Span(file: a.file, lo: a.lo, hi: a.lo)

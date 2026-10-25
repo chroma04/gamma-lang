@@ -240,6 +240,16 @@ impl<'a> Walk<'a> {
                 };
                 self.facts.sites.insert(id.span, site);
             }
+            PatternKind::Whole(id) => {
+                self.check_name(*id, Case::Snake, "local");
+                // An unused `?x` is `_`; at the top it could not be `_` (a condition that
+                // always succeeds), and in a struct pattern it names the field.
+                let fix = match ctx {
+                    PatSite::Nested => Some((p.span, "_")),
+                    PatSite::Top | PatSite::Shorthand => None,
+                };
+                self.facts.sites.insert(id.span, Site::Pattern { fix });
+            }
             PatternKind::Err(inner) => self.pattern(inner, PatSite::Nested),
             PatternKind::Path { path, args } => {
                 // `S(x)` names the field `x` (§9.1); `.V(x)` and `T.V(x)` bind the payload.

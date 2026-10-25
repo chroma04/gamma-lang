@@ -1,10 +1,12 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-25) — PRs #1–#80 merged, v0.1.0 tagged; s41 PR open
+## State (2026-10-25) — PRs #1–#81 merged, v0.1.0 tagged
 - s41 (branch claude/project-thread-rqqvrh): gammac compile-time evaluator DONE
   (decisions/046; compiler/eval, tir/value.gm, check/consts.gm + eval_prepare.gm). TIR
   487 → 539, decls 693 → 739. Next buckets in roadmap/self-hosting.md s41 entry
   (vector types, iterator args, literal-variable conversions, array construction).
+  Then (user-approved) `?x` pattern (decisions/047) + gammac constructions: PR #82;
+  TIR 571, decls 741.
 - s38–s39 (PRs #72–#79 merged): self-hosted compiler gammac in compiler/ (decisions/043,
   roadmap/self-hosting.md): lexer+parser+modules byte-identical on all files; decls and
   tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in
@@ -60,9 +62,9 @@
                   self-hosting.md (gammac stages),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–046, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–047, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

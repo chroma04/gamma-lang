@@ -12,10 +12,7 @@ dangling stores are now compile errors (decisions/045).
   `&list.items[i]` across a push, and `x[i] = f(&x[i])^` where f keeps the pointer (s38g
   finish_call). Escape analysis catches none. Idea: a lint/escape rule for storing the
   address of a loop variable or binding; warn on `p = f(&p)` shapes. Handbook covers it.
-- **Optional parts in tuple payloads** (6x s38b–s38e, +4x s41 in eval: `.Variant(i, p)`,
-  `.Let(l, init)`): bare name at a `?T` position matches
-  only present values (§9.3) → struct payloads everywhere. Idea: a lint, or `_?`/`?x` pattern
-  that binds the optional as is.
+- **Optional parts in tuple payloads**: DONE s41, user-approved `?x` pattern (decisions/047).
 - **Cross-module helpers must be `pub`** (s38e, s38g: ~15 sema fns made pub just so
   check/ can call `cx.s.f()`): no package-private visibility. Idea: package-level
   visibility (`pub(package)`), since a package's modules are one unit.

@@ -1,0 +1,23 @@
+//! stage: check
+// `?x` binds an optional or a result as it is (§9.3): against anything else it is an
+// error, and it always matches, so a condition made of it always succeeds.
+
+f :: fn(n: i32) -> i32 => match n {
+    ?x => x //~ ERROR `?x` binds an optional or a result as it is, but this is `i32`; write `x`
+}
+
+g :: fn(r: ?i32) -> bool {
+    if ?x := r { return x is null } //~ ERROR this condition always succeeds
+    return false
+}
+
+h :: fn(r: (?i32, bool)) -> i32 => match r {
+    (?x, _) => x else 0
+    (null, true) => 1 //~ ERROR this arm can never be chosen
+}
+
+main :: fn() {
+    _ = f(1)
+    _ = g(null)
+    _ = h((null, true))
+}

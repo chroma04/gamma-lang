@@ -1429,6 +1429,7 @@ A statement that follows a statement of type `never` in the same block is a comp
 ```
 pattern = '_'
         | ident                                   // binding
+        | '?' ident                               // binding of an optional or result as it is
         | literal | '-' literal                   // integer, char, string, bool literal
         | qualified_const                         // a constant reached through a module: m.MAX
         | range_pattern                           // lo..hi, lo..=hi
@@ -1450,6 +1451,7 @@ A pattern is matched against a value of a known type, the **scrutinee type**.
 | --- | --- | --- |
 | `_` | anything | nothing |
 | `x` | anything (but see §9.3) | `x` to the value |
+| `?x` | anything, against an optional or a result (§9.3) | `x` to the value as it is |
 | literal, constant | values `is`-equal to it | nothing |
 | `lo..hi`, `lo..=hi` | integers (or chars) in the range | nothing |
 | `null` | an absent optional | nothing |
@@ -1471,12 +1473,13 @@ A pattern is matched against a value of a known type, the **scrutinee type**.
 
 Values of `?T` and `E!T` implicitly wrap, and patterns implicitly unwrap:
 
-- Against a scrutinee of type `?T`, any pattern other than `null`, `_` and a bare binding is matched against the present value: `5` matches a present 5. A **bare binding** `x` against `?T` matches **only a present value** and binds `x: T`; to bind the whole optional, write `_` and use the scrutinee.
-- Against `E!T`, any pattern other than `!p` and `_` is matched against the success value, and a bare binding matches only success.
+- Against a scrutinee of type `?T`, any pattern other than `null`, `_` and `?x` is matched against the present value: `5` matches a present 5. A **bare binding** `x` against `?T` matches **only a present value** and binds `x: T`.
+- Against `E!T`, any pattern other than `!p`, `_` and `?x` is matched against the success value, and a bare binding matches only success.
+- The binding **`?x`** matches any value of `?T` or `E!T`, absent or failed included, and binds `x` to it as it is: `x: ?T` or `x: E!T`. It is irrefutable (§9.4). Against a type that is neither an optional nor a result it is a compile error, since `x` would bind the same.
 
 Each rule unwraps one level: against `??T` a bare binding binds the present `?T`, and against `E!?T` it binds the success value `?T`, so `null` and a binding are exhaustive for `??T`. A pattern that is neither a bare binding nor excluded above is matched against the present value by the same rules, so `5` against `??i32` matches only a doubly present 5.
 
-The rule applies at every depth of a pattern: in `.Return(x)` against a payload `?i32`, `x` matches only a present value, so `.Return(null)` and `.Return(x)` are exhaustive. To get an optional part as it is, bind the value that holds it: `.Break(b)` binds a payload `(label: ?string, value: ?i32)` whole (§9.2), and `b.label` is the optional. When a `match` is not exhaustive because of a bare binding at such a position, the error should point at the binding.
+The rule applies at every depth of a pattern: in `.Return(x)` against a payload `?i32`, `x` matches only a present value, so `.Return(null)` and `.Return(x)` are exhaustive. To get an optional part as it is, write `?x`: `.Break(?label, ?value)` against a payload `(label: ?string, value: ?i32)` matches every `.Break` and binds both optionals. When a `match` is not exhaustive because of a bare binding at such a position, the error should point at the binding and suggest `?x`.
 
 This is what makes `if user := find(id)` and `while line := next()` work. The implicit unwrapping applies only in refutable contexts (binding conditions and `match`). In a `for` pattern or a destructuring binding, a bare binding binds the whole value, so `for r in results() { … }` binds `r: E!T`. Within `match`, an exhaustive set for `?T` is `null` plus patterns covering `T`; for `E!T`, `!p` patterns covering `E` plus patterns covering `T`.
 
@@ -1484,7 +1487,7 @@ This is what makes `if user := find(id)` and `while line := next()` work. The im
 
 ### 9.4 Irrefutability
 
-A pattern is **irrefutable** for a type if it matches every value of the type. Irrefutable: `_`; a binding against a non-optional, non-result type; tuple and struct patterns of irrefutable sub-patterns; a variant pattern of a union with exactly one variant. `for` patterns and destructuring must be irrefutable. Binding conditions (§8.2) are normally refutable; an irrefutable binding condition is a compile error ("condition always succeeds").
+A pattern is **irrefutable** for a type if it matches every value of the type. Irrefutable: `_`; a binding against a non-optional, non-result type; `?x`; tuple and struct patterns of irrefutable sub-patterns; a variant pattern of a union with exactly one variant. `for` patterns and destructuring must be irrefutable. Binding conditions (§8.2) are normally refutable; an irrefutable binding condition is a compile error ("condition always succeeds").
 
 ### 9.5 Patterns in `is`
 
@@ -3380,7 +3383,7 @@ is_pattern    = pattern                                            // binding-fr
 ### A.6 Patterns
 
 ```
-pattern       = '_' | IDENT | 'null'
+pattern       = '_' | IDENT | '?' IDENT | 'null'
               | [ '-' ] literal
               | literal_bound ( '..' | '..=' ) literal_bound
               | '!' pattern

@@ -442,9 +442,9 @@ copy :: fn(v: Value) -> Value needs Alloc {
         .Some(p) => return .Some(new(copy(p^))!)
         .Ok(p) => return .Ok(new(copy(p^))!)
         .Err(p) => return .Err(new(copy(p^))!)
-        .Variant(x) => {
-            q := x.payload else return v
-            return .Variant(x.index, new(copy(q^))!)
+        .Variant(index, ?payload) => {
+            q := payload else return v
+            return .Variant(index, new(copy(q^))!)
         }
         _ => return v
     }
@@ -667,14 +667,14 @@ run_defers :: fn(m: ^Machine, defers: ^List(^Expr)) -> Flow!() needs Load {
 
 stmt :: fn(m: ^Machine, st: tir.Stmt, defers: ^List(^Expr)) -> Flow!() needs Load {
     match st {
-        .Let(let_) => {
+        .Let(local, ?init) => {
             v: Value = .Null
-            if x := let_.init {
+            if x := init {
                 v = copy(try m.eval(x))
             } else {
-                v = try m.zero(m.local_ty(let_.local), source.DUMMY)
+                v = try m.zero(m.local_ty(local), source.DUMMY)
             }
-            m.frame.cells[usize(let_.local)].v = v
+            m.frame.cells[usize(local)].v = v
         }
         .LetTuple(locals, init) => {
             v := try m.eval(init)
@@ -736,7 +736,7 @@ loop_ :: fn(m: ^Machine, x: tir.LoopExpr, e: ^Expr) -> Flow!Value needs Load {
         first = false
         if not try m.conds(x.cond) { break }
         match m.block(x.body) {
-            !.Break(b) if b.frame is frame and b.label is x.label => return b.value else unit_value()
+            !.Break(f, label, ?value) if f is frame and label is x.label => return value else unit_value()
             !.Continue(c) if c.frame is frame and c.label is x.label => {}
             !f => return !f
             _ => {}
@@ -779,11 +779,11 @@ matches :: fn(m: ^Machine, p: ^tir.Pat, v: Value) -> Flow!bool needs Load {
             .Err(x) := v else return false
             return m.matches(q, x^)
         }
-        .Variant(pv) => {
-            .Variant(x) := v else return false
-            if x.index is not pv.variant { return false }
-            if q := pv.payload {
-                y := x.payload else return false
+        .Variant(variant, ?sub) => {
+            .Variant(index, ?payload) := v else return false
+            if index is not variant { return false }
+            if q := sub {
+                y := payload else return false
                 return m.matches(q, y^)
             }
             return true
@@ -941,8 +941,8 @@ with_ :: fn(m: ^Machine, w: tir.WithExpr, e: ^Expr) -> Flow!Value needs Load {
     m.handlers.truncate(saved_len)
     m.top = saved_top
     match r {
-        !.BreakWith(b) if b.with_id is id => return b.value else unit_value()
-        !.Break(b) if b.frame is frame and b.label is w.label => return b.value else unit_value()
+        !.BreakWith(with_id, ?value) if with_id is id => return value else unit_value()
+        !.Break(f, label, ?value) if f is frame and label is w.label => return value else unit_value()
         !f => return !f
         v => return v
     }

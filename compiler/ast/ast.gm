@@ -294,9 +294,8 @@ pub ExprKind :: union {
     Error
 }
 
-// The payloads with optional parts are structs: in a pattern, a name in the position of
-// an optional matches only a present value (§9.3), so `.Break(b)` and then `b.label` is
-// the way to look at one that may be absent.
+// The payloads of several fields are structs, named as the variants with fields of
+// `src/syntax/ast.rs`.
 
 pub ElseExpr :: struct {
     pub lhs: ^Expr
@@ -687,6 +686,8 @@ pub PatternKind :: union {
     Wildcard
     /// A bare identifier: always a binding (§9.2).
     Bind: Ident
+    /// `?x`: binds an optional or a result as it is, without unwrapping it (§9.3).
+    Whole: Ident
     /// An integer, character, string or bool literal, optionally negated: `Int`, `Str`,
     /// `Bool`, or a `Unary` `Neg` of an `Int` or `Float`.
     Lit: ^Expr

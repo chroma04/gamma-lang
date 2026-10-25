@@ -707,6 +707,7 @@ dump_pattern :: fn(p: ^const Pattern) -> Sx needs Alloc {
     match p.kind {
         .Wildcard => return .Atom("wildcard")
         .Bind(id) => return node1("bind", ident_sx(id))
+        .Whole(id) => return node1("bind-whole", ident_sx(id))
         .Lit(e) => return node1("lit", dump_expr(e))
         .Null => return .Atom("null-pat")
         .Range(lo, hi, inclusive) => {

@@ -129,6 +129,7 @@ fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
         .Loop(x) => cx.fin_cond(x.cond)
         _ => {}
     }
+    fixed_by: ?source.Span = if e.kind is .Int(_) { cx.infer.fixed_by(&cx.s.tys, e.ty) } else { null }
     e.ty = cx.infer.resolve(cx.s, e.ty)
     tys := &cx.s.tys
     match e.kind {
@@ -137,7 +138,13 @@ fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
             if tys.kind(e.ty) is .Float(_) {
                 cx.fin_float(e, ratio.from_int(v), true)
             } else if not tys.is_error(e.ty) and not cx.s.int_fits(v, e.ty) {
-                cx.error(e.span, str.format("the literal {} does not fit in `{}`", sema.show_int(v), cx.show(e.ty))!)
+                d := diag.error(e.span, str.format("the literal {} does not fit in `{}`", sema.show_int(v), cx.show(e.ty))!)
+                // The type may come from a conversion of a variable the literal flows into.
+                if span := fixed_by {
+                    t := cx.show(e.ty)
+                    d.add_label(span, str.format("this conversion gives the literal's variable the type `{}` (§6.5); `.trunc({})` or `.checked({})` would convert from its own type", t, t, t)!)
+                }
+                cx.s.emit(d)
             }
         }
         .UntypedFloat(r) => {

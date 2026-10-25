@@ -41,6 +41,12 @@ impl Parser<'_> {
                 let span = self.span_from(start);
                 Ok(self.mk_pat(PatternKind::Path { path: Box::new(path), args }, span))
             }
+            TokenKind::Punct(Punct::Question) => {
+                self.bump();
+                let name = self.parse_ident("a name after `?`")?;
+                let span = self.span_from(start);
+                Ok(self.mk_pat(PatternKind::Whole(name), span))
+            }
             TokenKind::Punct(Punct::LParen) => self.parse_tuple_pattern(),
             TokenKind::Punct(Punct::Minus)
             | TokenKind::Int(_)

@@ -81,7 +81,7 @@ escapes :: fn(v: Value) -> bool => match v {
         found
     }
     .Some(p), .Ok(p), .Err(p) => escapes(p^)
-    .Variant(x) => if p := x.payload { escapes(p^) } else { false }
+    .Variant(_, ?payload) => if p := payload { escapes(p^) } else { false }
     _ => false
 }
 

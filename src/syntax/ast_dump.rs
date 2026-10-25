@@ -718,6 +718,7 @@ impl Dumper {
         match &p.kind {
             PatternKind::Wildcard => atom("wildcard"),
             PatternKind::Bind(id) => node("bind", vec![name(id)]),
+            PatternKind::Whole(id) => node("bind-whole", vec![name(id)]),
             PatternKind::Lit(e) => node("lit", vec![self.expr(e)]),
             PatternKind::Null => atom("null-pat"),
             PatternKind::Range { lo, hi, inclusive } => {

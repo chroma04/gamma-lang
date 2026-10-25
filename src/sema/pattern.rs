@@ -35,7 +35,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// be checked.
     fn bind_unchecked(&mut self, p: &ast::Pattern, ctx: PatCtx, binds: &mut Vec<(Symbol, tir::LocalId, Span)>) {
         match &p.kind {
-            PatternKind::Bind(name) if ctx != PatCtx::IsTest => {
+            PatternKind::Bind(name) | PatternKind::Whole(name) if ctx != PatCtx::IsTest => {
                 if !binds.iter().any(|(n, _, _)| *n == name.name) {
                     let id = self.new_local(name.name, Ty::error(), false, name.span);
                     binds.push((name.name, id, name.span));
@@ -63,6 +63,19 @@ impl<'a, 's> FnCx<'a, 's> {
             self.bind_unchecked(p, ctx, binds);
             return pat(ty, PatKind::Wild, p.span);
         }
+        // `?x` binds an optional or a result as it is (§9.3).
+        if let PatternKind::Whole(name) = &p.kind {
+            if !matches!(ty.kind(), TyKind::Optional(_) | TyKind::Result { .. }) {
+                self.error(
+                    p.span,
+                    format!(
+                        "`?{}` binds an optional or a result as it is, but this is `{}`; write `{}`",
+                        name.name, ty, name.name
+                    ),
+                );
+            }
+            return self.bind_pattern(*name, ty, ctx, binds, p.span);
+        }
         // Implicit unwrapping of optionals and results in refutable contexts (§9.3). A
         // bare binding unwraps one level: against `??T` it binds the present `?T`.
         if ctx != PatCtx::Irrefutable {
@@ -87,6 +100,39 @@ impl<'a, 's> FnCx<'a, 's> {
         self.pattern_here(p, ty, ctx, binds)
     }
 
+    /// The binding of `name` to a value of type `ty`, by the pattern at `span`.
+    fn bind_pattern(
+        &mut self,
+        name: ast::Ident,
+        ty: Ty,
+        ctx: PatCtx,
+        binds: &mut Vec<(Symbol, tir::LocalId, Span)>,
+        span: Span,
+    ) -> Pat {
+        if ctx == PatCtx::IsTest {
+            self.error(span, "a pattern on the right of `is` cannot bind names; use `if pattern := value`");
+            return pat(ty, PatKind::Wild, span);
+        }
+        if self.names_constant(name.name) {
+            self.error(
+                span,
+                format!(
+                    "`{}` is a constant, but a bare name in a pattern always binds a new name; \
+                     compare with a guard instead (`x if x is {}`)",
+                    name.name, name.name
+                ),
+            );
+        }
+        let id = self.new_local(name.name, ty, false, name.span);
+        if binds.iter().any(|(n, _, _)| *n == name.name) {
+            // The name is declared once, by its first binding.
+            self.error(name.span, format!("`{}` is bound twice in this pattern", name.name));
+        } else {
+            binds.push((name.name, id, name.span));
+        }
+        pat(ty, PatKind::Bind(id), span)
+    }
+
     /// Pattern `p` against a value of type `ty`, without unwrapping `ty`.
     fn pattern_here(
         &mut self,
@@ -98,30 +144,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let ty = self.infer.resolve(ty);
         match &p.kind {
             PatternKind::Wildcard => pat(ty, PatKind::Wild, p.span),
-            PatternKind::Bind(name) => {
-                if ctx == PatCtx::IsTest {
-                    self.error(p.span, "a pattern on the right of `is` cannot bind names; use `if pattern := value`");
-                    return pat(ty, PatKind::Wild, p.span);
-                }
-                if self.names_constant(name.name) {
-                    self.error(
-                        p.span,
-                        format!(
-                            "`{}` is a constant, but a bare name in a pattern always binds a new name; \
-                             compare with a guard instead (`x if x is {}`)",
-                            name.name, name.name
-                        ),
-                    );
-                }
-                let id = self.new_local(name.name, ty, false, name.span);
-                if binds.iter().any(|(n, _, _)| *n == name.name) {
-                    // The name is declared once, by its first binding.
-                    self.error(name.span, format!("`{}` is bound twice in this pattern", name.name));
-                } else {
-                    binds.push((name.name, id, name.span));
-                }
-                pat(ty, PatKind::Bind(id), p.span)
-            }
+            PatternKind::Bind(name) | PatternKind::Whole(name) => self.bind_pattern(*name, ty, ctx, binds, p.span),
             PatternKind::Null => {
                 if !matches!(ty.kind(), TyKind::Optional(_)) {
                     self.error(p.span, format!("`null` matches only optionals, but this is `{}`", ty));
