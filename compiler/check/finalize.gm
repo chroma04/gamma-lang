@@ -16,12 +16,13 @@ finalize :: fn(cx: ^FnCx, body: ^Expr) needs Load {
                 .Complex => "a complex"
                 _ => "an integer"
             }
+            hint: string = ""
             if tys.kind(core) is .Param(_) {
-                _ = cx.unsupported(p.span, "literals at type parameters")
-                continue
+                c := if kind is "a float" { "Float" } else { "Num" }
+                hint = str.format(" (a literal at `{}` needs `where {}({})`)", cx.show(core), c, cx.show(core))!
             }
             what := if kind is "a complex" { "constant" } else { "literal" }
-            cx.error(p.span, str.format("expected `{}`, found {} {}", cx.show(p.target), kind, what)!)
+            cx.error(p.span, str.format("expected `{}`, found {} {}{}", cx.show(p.target), kind, what, hint)!)
             cx.failed_coercions.push(p.span)!
         }
     }
