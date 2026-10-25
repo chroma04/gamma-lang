@@ -28,6 +28,7 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
         t := cx.settle(v.ty, h.span)
         match tys.kind(t) {
             .Handler(id) => {
+                if cx.pending_handlers.items.len > 0 { cx.check_pending_handler(id, with_expect) }
                 eref := cx.s.handlers.items[usize(id)].effect_
                 for x in handled.items {
                     if types.cmp_ref(&x, &eref) is 0 { cx.error(h.span, str.format("two handlers for `{}` in one `with`", tys.effect_name(eref.eff))!) }
@@ -38,10 +39,6 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
             }
             .Error => { bad_handler = true }
             _ => {
-                if handler_lit(&h) is null and tys.kind(t) is .Handler(_) {
-                    pop_with_scope(cx)
-                    return cx.unsupported(h.span, "handler literals bound to locals")
-                }
                 decls := cx.handlers_for(t)
                 if decls.len is 0 {
                     if cx.s.handler_templates and mentions_generic_adt(tys, t) {
@@ -100,7 +97,10 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     if l := w.label { label_name = l.name }
     label := cx.new_label(label_name, false, .With(with_expect))
     start := cx.performed.items.len
+    n := cx.handled.items.len
+    cx.handled.extend(handled.items)!
     body := cx.block_expected(&w.body, value, expect)
+    cx.handled.truncate(n)
     _ = cx.labels.pop()
     cx.pop_scope()
     // Effects handled here are not performed by the `with` (§12.3).
@@ -110,6 +110,10 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
         handles := bad_handler
         for x in handled.items {
             if types.cmp_ref(&x, &p.effect_) is 0 { handles = true }
+        }
+        // Not those of a handler literal written before this `with` began (§12.5).
+        for sh in cx.shielded_performs.items {
+            if sh.at is p.span and n >= sh.handled { handles = false }
         }
         if handles {
             _ = cx.performed.remove(i)
@@ -202,13 +206,24 @@ handler_lit :: fn(e: ^const ast.Expr) -> ?^const ast.HandlerLit => match e.kind 
 /// A handler literal (§12.5), installed by a `with` whose value is expected to have type
 /// `with_expect`: a second-class handler value.
 handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, with_expect: ?Ty, span: source.Span) -> ^Expr needs Load {
-    eref := cx.s.resolve_effect_ref(cx.module, lit.effect_) else return error_expr(cx.s, span)
+    hid := cx.new_handler_literal(lit, span) else return error_expr(cx.s, span)
+    cx.handler_clauses(hid, lit, with_expect, span)
+    return tir.mk(cx.s.tys.intern(.Handler(hid)), .HandlerRef(hid), span)
+}
+
+/// Starts a handler literal: resolves its effect and reserves its handler, whose clauses
+/// `handler_clauses` checks.
+new_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: source.Span) -> ?u32 needs Load {
+    eref := cx.s.resolve_effect_ref(cx.module, lit.effect_) else return null
     info := cx.s.effects.items[usize(eref.eff)]
     if eref.args.len is not info.params.len {
         cx.error(lit.effect_.span, str.format("`{}` needs {} type argument(s)", info.name, info.params.len)!)
-        return error_expr(cx.s, span)
+        return null
     }
-    if info.params.len > 0 { return cx.unsupported(span, "handlers of generic effects") }
+    if info.params.len > 0 {
+        _ = cx.unsupported(span, "handlers of generic effects")
+        return null
+    }
     hid := cx.s.handlers.items.len.trunc(u32)
     cx.s.handlers.push(tir.HandlerLit(effect_: eref, clauses: empty_slice(u32)))!
     for c in lit.clauses {
@@ -223,6 +238,13 @@ handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, with_expect: ?Ty, s
         }
         if n > 1 { cx.error(c.name.span, str.format("operation `{}` is handled twice", c.name.name)!) }
     }
+    return hid
+}
+
+/// Checks the clauses of handler literal `hid`; `with_expect` is the type of the value
+/// of the `with` that installs it, which its `break`s give.
+handler_clauses :: fn(cx: ^FnCx, hid: u32, lit: ^const ast.HandlerLit, with_expect: ?Ty, span: source.Span) needs Load {
+    info := cx.s.effects.items[usize(cx.s.handlers.items[usize(hid)].effect_.eff)]
     clauses := list(u32)
     for o in info.ops {
         c := find_clause(lit, o.name) else {
@@ -234,7 +256,100 @@ handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, with_expect: ?Ty, s
         clauses.push(cx.clause_fn(c, sig.params, sig.ret, info_))!
     }
     cx.s.handlers.items[usize(hid)].clauses = clauses.items
+}
+
+/// Binds `name :: handler E { … }`: the clauses are checked later (`check_pending_handler`).
+pending_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: source.Span) -> ^Expr needs Load {
+    hid := cx.new_handler_literal(lit, span) else return error_expr(cx.s, span)
+    lens := list(usize)
+    for sc in cx.scopes.items { lens.push(sc.items.len)! }
+    cx.pending_handlers.push(PendingHandler(hid: hid, lit: lit, span: span, depth: cx.outer.items.len, scope_lens: lens.items, labels: cx.labels.items.len, handled: cx.handled.items.len))!
     return tir.mk(cx.s.tys.intern(.Handler(hid)), .HandlerRef(hid), span)
+}
+
+/// Checks the clauses of the pending handler literal `hid`, if it is one, as if at the
+/// place where it was written, with `with_expect` as the type its `break`s give.
+check_pending_handler :: fn(cx: ^FnCx, hid: u32, with_expect: ?Ty) needs Load {
+    found: ?usize = null
+    for i, x in enumerate(cx.pending_handlers.items) {
+        if x.hid is hid {
+            found = i
+            break
+        }
+    }
+    i := found else return
+    p := cx.pending_handlers.remove(i)
+    // Return to the frame, scopes, labels and handlers of the literal's position.
+    frames := list(Frame)
+    while cx.outer.items.len > p.depth {
+        f := cx.outer.pop() else break
+        frames.push(cx.swap_frame(f))!
+    }
+    nscopes := p.scope_lens.len
+    hidden_scopes := list(List(Binding))
+    hidden_scopes.extend(cx.scopes.items[nscopes..])!
+    cx.scopes.truncate(nscopes)
+    hidden_depths := list(u32)
+    hidden_depths.extend(cx.scope_depths.items[nscopes..])!
+    cx.scope_depths.truncate(nscopes)
+    hidden_tails := list([]Binding)
+    for k in 0..nscopes {
+        sc := &cx.scopes.items[k]
+        len := p.scope_lens[k].min(sc.items.len)
+        tail := list(Binding)
+        tail.extend(sc.items[len..])!
+        hidden_tails.push(tail.items)!
+        sc.truncate(len)
+    }
+    hidden_labels := list(LabelInfo)
+    nl := p.labels.min(cx.labels.items.len)
+    hidden_labels.extend(cx.labels.items[nl..])!
+    cx.labels.truncate(nl)
+    hidden_handled := list(EffectRef)
+    nh := p.handled.min(cx.handled.items.len)
+    hidden_handled.extend(cx.handled.items[nh..])!
+    cx.handled.truncate(nh)
+    performed := cx.performed.items.len
+    cx.handler_clauses(hid, p.lit, with_expect, p.span)
+    for x in cx.performed.items[performed..] { cx.shield(x.span, p.handled) }
+    cx.handled.extend(hidden_handled.items)!
+    cx.labels.extend(hidden_labels.items)!
+    for k in 0..nscopes { cx.scopes.items[k].extend(hidden_tails.items[k])! }
+    cx.scopes.extend(hidden_scopes.items)!
+    cx.scope_depths.extend(hidden_depths.items)!
+    while f := frames.pop() {
+        outer := cx.swap_frame(f)
+        cx.outer.push(outer)!
+    }
+}
+
+/// Records that the perform at `at` is shielded from `with`s that began after `handled`
+/// handlers were in scope.
+shield :: fn(cx: ^FnCx, at: source.Span, handled: usize) needs Alloc {
+    for i in 0..cx.shielded_performs.items.len {
+        if cx.shielded_performs.items[i].at is at {
+            cx.shielded_performs.items[i].handled = handled
+            return
+        }
+    }
+    cx.shielded_performs.push(Shielded(at: at, handled: handled))!
+}
+
+/// Checks the pending handler literals written in the scope that is ending.
+check_pending_handlers_of_scope :: fn(cx: ^FnCx) needs Load {
+    depth := cx.outer.items.len
+    scopes := cx.scopes.items.len
+    while true {
+        hid: ?u32 = null
+        for p in cx.pending_handlers.items {
+            if p.depth is depth and p.scope_lens.len >= scopes {
+                hid = p.hid
+                break
+            }
+        }
+        h := hid else return
+        cx.check_pending_handler(h, null)
+    }
 }
 
 find_clause :: fn(lit: ^const ast.HandlerLit, name: string) -> ?^const ast.Clause {
