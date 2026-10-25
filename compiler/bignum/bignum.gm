@@ -25,16 +25,16 @@ pub from_u64 :: fn(n: u64) -> Nat needs Alloc {
 }
 
 /// A copy of `n` that shares no memory with it.
-pub copy :: fn(n: ^const Nat) -> Nat needs Alloc {
+copy :: fn(n: ^const Nat) -> Nat needs Alloc {
     r := zero()
     r.limbs.extend(n.limbs.items)!
     return r
 }
 
-pub is_zero :: fn(n: ^const Nat) -> bool => n.limbs.items.len is 0
+is_zero :: fn(n: ^const Nat) -> bool => n.limbs.items.len is 0
 
 /// Replaces `n` with `n * m + a`.
-pub mul_add :: fn(n: ^Nat, m: u32, a: u32) {
+mul_add :: fn(n: ^Nat, m: u32, a: u32) {
     carry := u64(a)
     for i in 0..n.limbs.items.len {
         t := u64(n.limbs.items[i]) * u64(m) + carry
@@ -46,7 +46,7 @@ pub mul_add :: fn(n: ^Nat, m: u32, a: u32) {
 }
 
 /// Replaces `n` with `n / d` and returns the remainder. `d` must not be zero.
-pub div_rem :: fn(n: ^Nat, d: u32) -> u32 {
+div_rem :: fn(n: ^Nat, d: u32) -> u32 {
     rem: u64 = 0
     i := n.limbs.items.len
     while i > 0 {
@@ -60,7 +60,7 @@ pub div_rem :: fn(n: ^Nat, d: u32) -> u32 {
 }
 
 /// The remainder of `n / d`, leaving `n` as it is. `d` must not be zero.
-pub rem :: fn(n: ^const Nat, d: u32) -> u32 {
+rem :: fn(n: ^const Nat, d: u32) -> u32 {
     r: u64 = 0
     i := n.limbs.items.len
     while i > 0 {
@@ -71,7 +71,7 @@ pub rem :: fn(n: ^const Nat, d: u32) -> u32 {
 }
 
 /// Replaces `n` with `n * base^exp`. `base` is at most 16.
-pub mul_pow :: fn(n: ^Nat, base: u32, exp: u64) {
+mul_pow :: fn(n: ^Nat, base: u32, exp: u64) {
     // Multiply by the largest power of `base` that fits in a limb at a time.
     chunk: u32 = 1
     per: u64 = 0

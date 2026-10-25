@@ -82,7 +82,9 @@ write_fn :: fn(d: ^Dump, f: u32) needs Alloc {
         .Clause => "clause"
         .Foreign => "foreign"
     }
-    d.write_line(0, str.format("fn {} {}", fn_label(s, f), kind)!)
+    head := str.format("fn {} {}", fn_label(s, f), kind)!
+    if p := def.parent { head = str.format("{} in {}", head, fn_label(s, p))! }
+    d.write_line(0, head)
     for i, l in enumerate(def.locals) {
         param := def.params.index_of(i.trunc(u32)) is not null
         d.write_line(1, str.format("{} {} {}: {}{}", if param { "param" } else { "local" }, i, l.name, s.show(l.ty), if l.mutable { " mut" } else { "" })!)
@@ -106,7 +108,10 @@ local_text :: fn(d: ^Dump, l: u32) -> string needs Alloc {
     return str.format("{} ?", l)!
 }
 
-target_text :: fn(t: tir.Target) -> string needs Alloc => str.format("{} {}", t.levels, t.label)!
+target_text :: fn(t: tir.Target) -> string needs Alloc => match t {
+    .Label(levels, label) => str.format("{} {}", levels, label)!
+    .InstallingWith => "with"
+}
 
 sink_text :: fn(d: ^Dump, sink: tir.WriteSink) -> string needs Alloc => match sink {
     .Perform(e, op) => str.format("perform {} {}", d.s.tys.show_ref(&e), op)!
@@ -165,6 +170,40 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             "addr-of-temp"
         }
         .FnRef(f) => str.format("fn-ref {}", fn_label(s, f))!
+        .Closure(f) => str.format("closure {}", fn_label(s, f))!
+        .HandlerRef(h) => {
+            lit := s.handlers.items[usize(h)]
+            labels := list(string)
+            for c in lit.clauses { labels.push(fn_label(s, c))! }
+            str.format("handler-ref {} [{}]", s.tys.show_ref(&lit.effect_), str.join(labels.items, ", ")!)!
+        }
+        .With(w) => {
+            d.write_line(depth, str.format("with {} : {}", w.label, ty)!)
+            for h in w.handlers {
+                match h {
+                    .Literal(x) => {
+                        d.write_line(depth + 1, "handler")
+                        d.write_expr(depth + 2, x)
+                    }
+                    .Decl(decls, x) => {
+                        names := list(string)
+                        for i in decls {
+                            hd := s.handler_decls.items[usize(i)]
+                            names.push(str.format("{} for {}", s.tys.show_ref(&hd.effect_), s.show(hd.for_ty))!)!
+                        }
+                        d.write_line(depth + 1, str.format("handlers {}", str.join(names.items, ", ")!)!)
+                        d.write_expr(depth + 2, x)
+                    }
+                }
+            }
+            if x := w.on {
+                d.write_line(depth + 1, "on")
+                d.write_expr(depth + 2, x)
+            }
+            d.write_line(depth + 1, "body")
+            d.write_expr(depth + 2, w.body)
+            return
+        }
         .Unary(op, x) => {
             kids.push(x)!
             str.format("unary {}", match op {
@@ -192,9 +231,13 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             str.format("builtin {}", builtin_text(op))!
         }
         .Call(callee, args) => {
-            h := match callee {
+            h: string = match callee {
                 .Fn(f) => str.format("call fn {}", fn_label(s, f))!
                 .Perform(eff, op) => str.format("call perform {} {}", s.tys.show_ref(&eff), op)!
+                .Indirect(c) => {
+                    kids.push(c)!
+                    "call indirect"
+                }
             }
             for i in 0..args.len { kids.push(&args[i])! }
             h
@@ -401,6 +444,10 @@ write_block :: fn(d: ^Dump, depth: usize, b: ^tir.Block) needs Alloc {
                 d.write_line(depth, "expr")
                 d.write_expr(depth + 1, x)
             }
+            .Defer(is_err, x) => {
+                d.write_line(depth, if is_err { "errdefer" } else { "defer" })
+                d.write_expr(depth + 1, x)
+            }
         }
     }
     if t := b.tail {
@@ -505,6 +552,15 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .IsFinite => "IsFinite"
     .SignBit => "SignBit"
     .Sqrt => "Sqrt"
+    .Fma => "Fma"
+    .Clz => "Clz"
+    .Ctz => "Ctz"
+    .Popcount => "Popcount"
+    .Bswap => "Bswap"
+    .Rotl => "Rotl"
+    .Rotr => "Rotr"
+    .Bitreverse => "Bitreverse"
+    .BlackBox => "BlackBox"
     .Get => "Get"
     .GetPtr => "GetPtr"
     .First => "First"

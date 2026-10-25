@@ -240,8 +240,8 @@ impl Dumper {
 
     fn item(&self, item: &Item) -> Sx {
         let mut v = Vec::new();
-        if item.is_pub {
-            v.push(atom("pub"));
+        if let Some(vis) = visibility(item.vis) {
+            v.push(atom(vis));
         }
         if let Some(doc) = &item.doc {
             v.push(node("doc", vec![atom(escape_bytes(doc.as_bytes()))]));
@@ -630,8 +630,8 @@ impl Dumper {
         match m {
             StructMember::Field(f) => {
                 let mut v = self.attrs(&f.attrs);
-                if f.is_pub {
-                    v.push(atom("pub"));
+                if let Some(vis) = visibility(f.vis) {
+                    v.push(atom(vis));
                 }
                 if f.is_using {
                     v.push(atom("using"));
@@ -746,5 +746,14 @@ impl Dumper {
             Some(n) => node("named", vec![name(n), self.pattern(&a.pat)]),
             None => self.pattern(&a.pat),
         }
+    }
+}
+
+/// The marker of a visibility in the dump.
+fn visibility(vis: Visibility) -> Option<&'static str> {
+    match vis {
+        Visibility::Private => None,
+        Visibility::Package => Some("pub(package)"),
+        Visibility::Public => Some("pub"),
     }
 }

@@ -1,0 +1,38 @@
+// The address of a local kept where it outlives the local (§15.1): a loop variable or
+// a pattern binding is a copy whose storage is reused or gone after its scope.
+//! stage: lint
+
+Node :: struct { v: i32 }
+Holder :: struct { p: ?^const Node }
+
+keep :: fn(h: ^Holder, n: Node) {
+    h.p = &n //~ WARNING [dangling-address] this address of `n` is stored where it outlives `n`
+}
+
+pair :: fn(n: Node) -> (i32, ^const Node) {
+    m := n
+    return (1, &m) //~ WARNING [dangling-address] this address of `m` is returned
+}
+
+main :: fn() needs Alloc + Out {
+    nodes := [_]Node(Node(v: 1), Node(v: 2))
+    ptrs := list(^const Node)
+    last: ?^const Node = null
+    for n in nodes {
+        ptrs.push(&n)! //~ WARNING [dangling-address] this address of `n` is passed to a call that may keep it
+        last = &n //~ WARNING [dangling-address] this address of `n` is stored where it outlives `n`
+    }
+    // Pointers into the original, and pointers used only within the scope, are fine.
+    ok := list(^const Node)
+    for i in 0..nodes.len { ok.push(&nodes[i])! }
+    for n in nodes {
+        local := &n
+        print("{}\n", local.v)
+    }
+    o: ?Node = Node(v: 3)
+    h := Holder(p: null)
+    if x := o { h.p = &x } //~ WARNING [dangling-address] this address of `x` is stored
+    keep(&h, nodes[0])
+    _ = pair(nodes[0])
+    print("{} {} {}\n", ptrs.items.len, last is null, ok.items.len)
+}

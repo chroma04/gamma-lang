@@ -6,7 +6,7 @@ source :: import "../source"
 
 pub Severity :: union { Note, Warning, Error }
 
-pub severity_name :: fn(s: Severity) -> string => match s {
+severity_name :: fn(s: Severity) -> string => match s {
     .Note => "note"
     .Warning => "warning"
     .Error => "error"
@@ -264,7 +264,7 @@ HEX :: "0123456789abcdef"
 
 /// Appends `s` as a JSON string. Control characters are escaped; everything else,
 /// including non-ASCII text, is copied.
-pub json_string :: fn(s: string, out: ^List(u8)) needs Alloc {
+json_string :: fn(s: string, out: ^List(u8)) needs Alloc {
     out.push('"')!
     for c in s {
         match c {

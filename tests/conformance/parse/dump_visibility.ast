@@ -1,0 +1,11 @@
+(file
+  (item pub
+    (binding const Shape
+      (struct
+        (field pub (names w) (ident f64))
+        (field pub(package) (names cache) (ident f64))
+        (field (names id) (ident u32)))))
+  (item pub(package)
+    (binding const helper (fn (params) (block))))
+  (item
+    (binding const private (int 1))))

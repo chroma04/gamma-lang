@@ -254,12 +254,9 @@ impl<'s> Sema<'s> {
             }
             ItemKind::When(_) => unreachable!("collected by `add_module`"),
             ItemKind::Handler(_) => self.handler_items.push((module, item.clone())),
-            // Tests are compiled only for `gamma test` (§3.8).
-            ItemKind::Test { .. } => {
-                if self.tests_enabled {
-                    self.test_items.push((module, item.clone()));
-                }
-            }
+            // Tests are compiled only for `gamma test` (§3.8), and checked by `gamma tir`
+            // for a library, which it recognizes once its root module is loaded.
+            ItemKind::Test { .. } => self.test_items.push((module, item.clone())),
             ItemKind::Intrinsic(_) => self.static_asserts.push((module, item.clone())),
         }
     }
@@ -275,9 +272,7 @@ impl<'s> Sema<'s> {
             _ => None,
         };
         let d = &self.decls[prev.0 as usize];
-        d.op_of.is_none()
-            && d.item.is_pub == item.is_pub
-            && import_of(&d.item).is_some_and(|p| Some(p) == import_of(item))
+        d.op_of.is_none() && d.item.vis == item.vis && import_of(&d.item).is_some_and(|p| Some(p) == import_of(item))
     }
 
     /// Reports a duplicate top-level name; returns true if `name` is already declared.
@@ -303,7 +298,7 @@ impl<'s> Sema<'s> {
         if m.is_prelude {
             return Some(d);
         }
-        if !self.decls[d.0 as usize].item.is_pub {
+        if self.decls[d.0 as usize].item.vis != ast::Visibility::Public {
             return None;
         }
         // The name `core` for the core library itself is the standard library's (§22).
@@ -347,7 +342,7 @@ impl<'s> Sema<'s> {
         let own = self.modules[module.0 as usize].effect_ops.get(&name).and_then(|v| v.first());
         let core = self.prelude.and_then(|p| {
             let (e, _) = *self.modules[p.0 as usize].effect_ops.get(&name)?.first()?;
-            self.decls[e.0 as usize].item.is_pub.then_some((e, ()))
+            (self.decls[e.0 as usize].item.vis == ast::Visibility::Public).then_some((e, ()))
         });
         let e = match (own, core) {
             (Some(&(e, _)), _) => e,
@@ -448,7 +443,7 @@ impl<'s> Sema<'s> {
     pub fn module_named(&mut self, module: ModuleId, e: &ast::Expr) -> Option<ModuleId> {
         if let ast::ExprKind::Field { base, name } = &e.kind {
             let m = self.module_named(module, base)?;
-            return self.public_module_member(m, name.name);
+            return self.public_module_member(m, name.name, module);
         }
         let ast::ExprKind::Ident(id) = &e.kind else { return None };
         let d = self.lookup_module_name(module, id.name)?;
@@ -458,37 +453,77 @@ impl<'s> Sema<'s> {
         }
     }
 
-    /// The module that the public declaration `name` of module `m` binds, if it is a
-    /// module binding (reports nothing otherwise).
-    pub fn public_module_member(&mut self, m: ModuleId, name: Symbol) -> Option<ModuleId> {
+    /// Whether modules `a` and `b` belong to the same package (§3.1).
+    pub fn same_package(&self, a: ModuleId, b: ModuleId) -> bool {
+        a == b
+            || matches!(
+                (self.modules[a.0 as usize].package, self.modules[b.0 as usize].package),
+                (Some(x), Some(y)) if x == y
+            )
+    }
+
+    /// Whether a name of visibility `vis` declared in module `owner` can be named from
+    /// module `from` (§3.3).
+    pub fn visible(&self, vis: ast::Visibility, owner: ModuleId, from: ModuleId) -> bool {
+        match vis {
+            ast::Visibility::Public => true,
+            ast::Visibility::Package => self.same_package(owner, from),
+            ast::Visibility::Private => owner == from,
+        }
+    }
+
+    /// Records that declaration `d` is named from module `from`.
+    pub fn note_use_from(&mut self, d: DeclId, from: ModuleId) {
+        if self.decls[d.0 as usize].module != from {
+            self.outside_uses.insert(d);
+        }
+    }
+
+    /// Whether declaration `d` can be named from module `from` (§3.3).
+    pub fn decl_visible(&self, d: DeclId, from: ModuleId) -> bool {
+        let decl = &self.decls[d.0 as usize];
+        self.visible(decl.item.vis, decl.module, from)
+    }
+
+    /// The module that the declaration `name` of module `m` binds, if it is a module
+    /// binding that module `from` can see (reports nothing otherwise).
+    pub fn public_module_member(&mut self, m: ModuleId, name: Symbol, from: ModuleId) -> Option<ModuleId> {
         let d = *self.modules[m.0 as usize].scope.get(&name)?;
-        if !self.decls[d.0 as usize].item.is_pub {
+        if !self.decl_visible(d, from) {
             return None;
         }
+        self.note_use_from(d, from);
         match self.resolve_decl(d) {
             super::DeclValue::Module(m) => Some(m),
             _ => None,
         }
     }
 
-    /// The public declaration `name` of module `m`; reports a missing or private one.
-    pub fn module_member(&mut self, m: ModuleId, name: ast::Ident) -> Option<DeclId> {
+    /// The declaration `name` of module `m`, as named from module `from`; reports a missing
+    /// one or one that `from` cannot see.
+    pub fn module_member(&mut self, m: ModuleId, name: ast::Ident, from: ModuleId) -> Option<DeclId> {
         let module_name = self.modules[m.0 as usize].name;
         match self.modules[m.0 as usize].scope.get(&name.name).copied() {
-            Some(d) if self.decls[d.0 as usize].item.is_pub => {
+            Some(d) if self.decl_visible(d, from) => {
                 self.decl_uses.insert(d);
+                self.note_use_from(d, from);
                 self.check_deprecated(d, name.span);
                 Some(d)
             }
-            Some(_) => {
-                self.error(name.span, format!("`{}` is private to the module `{}` (§3.3)", name.name, module_name));
+            Some(d) => {
+                let msg = if self.decls[d.0 as usize].item.vis == ast::Visibility::Package {
+                    format!("`{}` is visible only in the package of the module `{}` (§3.3)", name.name, module_name)
+                } else {
+                    format!("`{}` is private to the module `{}` (§3.3)", name.name, module_name)
+                };
+                self.error(name.span, msg);
                 None
             }
             None => {
                 let op_effect = self.modules[m.0 as usize]
                     .effect_ops
                     .get(&name.name)
-                    .and_then(|v| v.iter().map(|&(e, _)| &self.decls[e.0 as usize]).find(|e| e.item.is_pub))
+                    .and_then(|v| v.iter().map(|&(e, _)| &self.decls[e.0 as usize]).find(|e| e.item.vis.is_exported()))
                     .map(|e| e.name.name);
                 if let Some(effect) = op_effect {
                     let msg = Self::op_hint(effect, name.name, Some(module_name));
@@ -526,7 +561,7 @@ impl<'s> Sema<'s> {
             span: Span::DUMMY,
             doc: None,
             attrs: vec![],
-            is_pub: true,
+            vis: ast::Visibility::Public,
             kind: ItemKind::Intrinsic(ast::Expr {
                 id: ast::NodeId(u32::MAX),
                 kind: ast::ExprKind::Underscore,
@@ -572,7 +607,7 @@ impl<'s> Sema<'s> {
             span: Span::DUMMY,
             doc: None,
             attrs: vec![],
-            is_pub: true,
+            vis: ast::Visibility::Public,
             kind: ItemKind::Intrinsic(ast::Expr {
                 id: ast::NodeId(u32::MAX),
                 kind: ast::ExprKind::Underscore,

@@ -220,7 +220,15 @@ impl<'s> Sema<'s> {
     pub(super) fn load_package_modules(&mut self, root: ModuleId) {
         let Some(package) = self.modules[root.0 as usize].package else { return };
         let package_root = self.packages[package].root.clone();
-        let mut dirs = vec![package_root];
+        // Relative to the working directory when inside it, so that the files are named as
+        // the ones that imports load.
+        let cwd = std::env::current_dir().ok().and_then(|d| crate::source::canonicalize(&d).ok());
+        let start = match cwd.as_ref().and_then(|c| package_root.strip_prefix(c).ok()) {
+            Some(rel) if rel.as_os_str().is_empty() => PathBuf::from("."),
+            Some(rel) => rel.to_path_buf(),
+            None => package_root,
+        };
+        let mut dirs = vec![start];
         while let Some(dir) = dirs.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
             let mut subdirs: Vec<PathBuf> = vec![];

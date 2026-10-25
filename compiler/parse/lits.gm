@@ -69,7 +69,7 @@ parse_struct_member :: fn(p: ^Parser) -> Abort!ast.StructMember needs Alloc {
         if a := attrs.first() { p.report(a.span, "attributes cannot be applied to a `when` block") }
         return p.parse_struct_when()
     }
-    is_pub := p.eat_kw(.Pub)
+    vis := try p.parse_visibility()
     is_using := p.eat_kw(.Using)
     names := list(ast.Ident)
     names.push(try p.parse_name("a field name"))!
@@ -80,7 +80,7 @@ parse_struct_member :: fn(p: ^Parser) -> Abort!ast.StructMember needs Alloc {
     if p.eat(.Assign) { default = box(try p.parse_expr()) }
     return ast.StructMember.Field(ast.FieldDecl(
         attrs: attrs,
-        is_pub: is_pub,
+        vis: vis,
         is_using: is_using,
         names: names.items,
         ty: ty,

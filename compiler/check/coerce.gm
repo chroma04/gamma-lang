@@ -36,7 +36,31 @@ coerce :: fn(cx: ^FnCx, e: ^Expr, target0: Ty) -> ^Expr needs Load {
         }
         return e
     }
-    if tys.kind(src) in (.FnPtr(_), .Fn(_)) and tys.kind(target) is .Fn(_) { return cx.unsupported(e.span, "second-class function values") }
+    // A function pointer passed where a second-class function is expected: its effects
+    // outside the expected set are performed where it is written (§11.6). A second-class
+    // function may stand where one with more effects is expected (§12.3).
+    if .Fn(b) := tys.kind(target) {
+        match tys.kind(src) {
+            .FnPtr(a) => if same_shape(&a, &b) {
+                if a.win64 {
+                    cx.error(e.span, str.format("`{}` has a calling convention other than C, so it cannot be a second-class `fn` value (§19.2)", cx.show(src))!)
+                    return e
+                }
+                for x in a.effects.effects {
+                    if not set_contains(&b.effects, &x) { cx.performed.push(Performed(effect_: x, span: e.span))! }
+                }
+                return tir.mk(target, .Coerce(.FnToPtr, e), e.span)
+            }
+            .Fn(a) => if same_shape(&a, &b) {
+                subset := true
+                for x in a.effects.effects {
+                    if not set_contains(&b.effects, &x) { subset = false }
+                }
+                if subset { return tir.mk(target, .Coerce(.FnToPtr, e), e.span) }
+            }
+            _ => {}
+        }
+    }
     if .Ptr(_, outer) := tys.kind(src) and .Adt(id, _) := tys.kind(outer) and cx.s.adts.items[usize(id)].has_using {
         return cx.unsupported(e.span, "`using` fields")
     }
@@ -212,4 +236,13 @@ pointer_coercion :: fn(s: ^Sema, src, target: Ty) -> bool {
 src_array_ok :: fn(tys: ^types.Types, t: Ty) -> bool {
     .Array(_, _, kind) := tys.kind(t) else return true
     return kind is not .Enum(_)
+}
+
+/// Whether two function types take the same parameters and return the same type.
+same_shape :: fn(a, b: ^const types.FnTy) -> bool {
+    if a.params.len is not b.params.len or a.ret is not b.ret { return false }
+    for i in 0..a.params.len {
+        if a.params[i] is not b.params[i] { return false }
+    }
+    return true
 }

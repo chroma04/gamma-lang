@@ -1,0 +1,156 @@
+// Intrinsic calls `@name(args)` (§20.3): the layout and limit queries, the bit
+// operations, `@sqrt`, `@fma`, `@black_box` and `@type_name` (mirrors `intrinsic` in
+// `src/sema/expr.rs`). The others are reported as unsupported.
+
+intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr needs Load {
+    args := i.args else return cx.unsupported(span, "intrinsic calls")
+    n := i.name.name
+    match n {
+        "size_of", "align_of" => return cx.layout_intrinsic(n, args, span)
+        "min_value", "max_value" => return cx.limit_intrinsic(n, args, span)
+        "black_box" => {
+            if args.len is 1 and .Positional(x) := args[0].kind {
+                v := cx.expr(&x, null)
+                return tir.mk(v.ty, .Builtin(.BlackBox, one_expr(v)), span)
+            }
+            cx.error(span, "`@black_box` takes one value: `@black_box(x)`")
+            return error_expr(cx.s, span)
+        }
+        "sqrt", "fma", "clz", "ctz", "popcount", "bswap", "bitreverse", "rotl", "rotr" => return cx.numeric_intrinsic(n, args, span)
+        "type_name" => {
+            t := cx.intrinsic_type_arg(n, args, 0, span) else return error_expr(cx.s, span)
+            if cx.s.tys.has_param(t) { return cx.unsupported(span, "`@type_name` of a type parameter") }
+            return tir.mk(cx.s.tys.string_ty(), .Str(cx.show(t)), span)
+        }
+        _ => return cx.unsupported(span, if n is "size_of" { "`@size_of`" } else { "intrinsic calls" })
+    }
+}
+
+/// The type argument at position `i` of `@name(…)`, or `null` after an error.
+intrinsic_type_arg :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, i: usize, span: source.Span) -> ?Ty needs Load {
+    if i < args.len and .Positional(e) := args[i].kind {
+        t := cx.s.resolve_type(cx.module, &e)
+        return if cx.s.tys.is_error(t) { null } else { t }
+    }
+    cx.error(span, str.format("`@{}` needs a type argument", name)!)
+    return null
+}
+
+/// `@size_of(T)` and `@align_of(T)`.
+layout_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    t := cx.intrinsic_type_arg(name, args, 0, span) else return error_expr(cx.s, span)
+    if cx.s.tys.kind(t) is .Never {
+        cx.error(span, str.format("`never` has no values, so `@{}` does not apply to it", name)!)
+        return error_expr(cx.s, span)
+    }
+    if cx.s.tys.has_param(t) { return cx.unsupported(span, str.format("`@{}` of a type parameter", name)!) }
+    l := cx.s.layout(t)
+    v := if name is "size_of" { l.size } else { l.align }
+    return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(v)), span)
+}
+
+/// `@min_value(T)` and `@max_value(T)`.
+limit_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    t := cx.intrinsic_type_arg(name, args, 0, span) else return error_expr(cx.s, span)
+    tys := &cx.s.tys
+    if tys.kind(t) is .Param(_) { return cx.unsupported(span, str.format("`@{}` of a type parameter", name)!) }
+    signed := false
+    bits: u64 = 0
+    match tys.kind(t) {
+        .Int(sg, b) => {
+            signed = sg
+            bits = u64(b)
+        }
+        .Usize => { bits = u64(target.ptr_bits) }
+        .Isize => {
+            signed = true
+            bits = u64(target.ptr_bits)
+        }
+        _ => {
+            cx.error(span, str.format("`@{}` takes an integer type, not `{}`", name, cx.show(t))!)
+            return error_expr(cx.s, span)
+        }
+    }
+    magnitude := bits - u64(signed)
+    v := if name is "max_value" {
+        bigint.sub(bigint.shl(bigint.one(), magnitude), bigint.one())
+    } else if signed {
+        bigint.neg(bigint.shl(bigint.one(), magnitude))
+    } else {
+        bigint.zero()
+    }
+    return tir.mk(t, .Int(v), span)
+}
+
+/// `@sqrt(x)`, `@fma(a, b, c)` on floats and the bit operations on integers.
+numeric_intrinsic :: fn(cx: ^FnCx, n: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    rotate := n in ("rotl", "rotr")
+    arity: usize = if n is "fma" { 3 } else if rotate { 2 } else { 1 }
+    positional := true
+    for a in args {
+        if a.kind is not .Positional(_) { positional = false }
+    }
+    if args.len is not arity or not positional {
+        cx.error(span, str.format("`@{}` takes {} argument(s)", n, arity)!)
+        return error_expr(cx.s, span)
+    }
+    vals := list(Expr)
+    for a in args {
+        .Positional(e) := a.kind else return error_expr(cx.s, span)
+        // The amount of a rotation is a `u32`; the other operands share a type.
+        expect: ?Ty = if vals.items.len is 0 { null } else if rotate { tys.int(false, 32) } else { vals.items[0].ty }
+        v := cx.expr(&e, expect)
+        if t := expect { v = cx.coerce(v, t) }
+        vals.push(v^)!
+    }
+    float := n in ("sqrt", "fma")
+    // Untyped literals take the usual fallback types (§6.1).
+    t0 := cx.infer.resolve(cx.s, vals.items[0].ty)
+    if cx.infer.var_kind(tys, t0) is not null {
+        fallback := if float { tys.intern(.Float(64)) } else { tys.int(true, 32) }
+        _ = cx.infer.unify(tys, t0, fallback)
+    }
+    t := cx.infer.resolve(cx.s, vals.items[0].ty)
+    ok := if float { tys.kind(t) is .Float(_) } else { tys.is_integer(t) }
+    if not ok {
+        if not tys.is_error(t) {
+            want := if float { "a float" } else { "an integer" }
+            cx.error(span, str.format("`@{}` needs {} of a known type, not `{}`", n, want, cx.show(t))!)
+        }
+        return error_expr(cx.s, span)
+    }
+    u32_ty := tys.int(false, 32)
+    op: tir.Builtin = .Bitreverse
+    ty := t
+    match n {
+        "sqrt" => { op = .Sqrt }
+        "fma" => { op = .Fma }
+        "clz" => {
+            op = .Clz
+            ty = u32_ty
+        }
+        "ctz" => {
+            op = .Ctz
+            ty = u32_ty
+        }
+        "popcount" => {
+            op = .Popcount
+            ty = u32_ty
+        }
+        "bswap" => {
+            // A whole number of bytes, such as `u24` (stored in 4 bytes).
+            whole := match tys.kind(t) {
+                .Int(_, bits) => bits % 8 is 0
+                .Usize, .Isize => true
+                _ => false
+            }
+            if not whole { cx.error(span, str.format("`@bswap` needs an integer of whole bytes, not `{}`", cx.show(t))!) }
+            op = .Bswap
+        }
+        "rotl" => { op = .Rotl }
+        "rotr" => { op = .Rotr }
+        _ => {}
+    }
+    return tir.mk(ty, .Builtin(op, vals.items), span)
+}

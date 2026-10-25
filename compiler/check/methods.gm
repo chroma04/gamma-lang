@@ -17,8 +17,11 @@ method_call :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, args: []con
     derefed_ty := rty
     if .Ptr(_, p) := tys.kind(cx.infer.shallow(tys, recv.ty)) { derefed_ty = p }
     if fields := cx.s.struct_fields(derefed_ty) {
-        for f in fields {
-            if f.name is name.name { return cx.unsupported(span, "calls of function pointers") }
+        for i, f in enumerate(fields) {
+            if f.name is name.name {
+                field := tir.mk(f.ty, .Field(cx.auto_deref(recv), i.trunc(u32)), span)
+                return cx.call_value(field, args, span)
+            }
         }
     }
     // 2. A builtin method.
@@ -438,6 +441,10 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.A
     module := cx.s.adts.items[usize(id)].module
     d := cx.s.l.lookup(module, name.name) else return cx.op_method(recv, rty, s, module, name, args, span)
     .Fn(f) := cx.s.resolve_decl(d) else return cx.op_method(recv, rty, s, module, name, args, span)
+    if not cx.s.decl_visible(d, cx.module) {
+        _ = cx.s.module_member(module, name, cx.module)
+        return error_expr(cx.s, span)
+    }
     sig := cx.s.fns.items[usize(f)]
     // A function whose first parameter is not the receiver's type leaves the name to an
     // operation that takes it (§7.10).
@@ -496,7 +503,7 @@ op_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, s: Ty, module: usize, name: ast
         .Effect(eff) := cx.s.resolve_decl(n.decl) else continue
         info := cx.s.effects.items[usize(eff)]
         if info.module is not module or info.params.len > 0 { continue }
-        if cx.module is not module and not cx.s.l.decls.items[n.decl].item.is_pub { continue }
+        if not cx.s.decl_visible(n.decl, cx.module) { continue }
         for op_i, o in enumerate(info.ops) {
             if o.name is not name.name or o.params.len is 0 { continue }
             t := o.params[0].ty
@@ -509,6 +516,7 @@ op_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, s: Ty, module: usize, name: ast
             vals.extend(bound.args)!
             eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
             cx.performed.push(Performed(effect_: eref, span: span))!
+            if o.kind is .Fn { cx.fn_performs.push(span)! }
             call := tir.mk(o.ret, .Call(.Perform(eref, op_i.trunc(u32)), vals.items), span)
             return cx.finish_call(bound.pre, call, true)
         }
@@ -548,7 +556,7 @@ effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
         }
         .Field(base, name) => {
             m := cx.module_of(base) else return null
-            d = cx.s.module_member(m, name) else return null
+            d = cx.s.module_member(m, name, cx.module) else return null
         }
         _ => return null
     }
@@ -569,6 +577,7 @@ perform_named :: fn(cx: ^FnCx, named: EffectNamed, name: ast.Ident, args: []cons
         bound := cx.bind_args(o.params, info.module, args, span, "operation") else return error_expr(cx.s, span)
         eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
         cx.performed.push(Performed(effect_: eref, span: span))!
+        if o.kind is .Fn { cx.fn_performs.push(span)! }
         call := tir.mk(o.ret, .Call(.Perform(eref, i.trunc(u32)), bound.args), span)
         return cx.finish_call(bound.pre, call, false)
     }

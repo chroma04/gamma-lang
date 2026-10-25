@@ -410,7 +410,7 @@ impl<'a, 's> FnCx<'a, 's> {
             span,
             doc: None,
             attrs: vec![],
-            is_pub: false,
+            vis: ast::Visibility::Private,
             kind: ast::ItemKind::Binding(binding),
         });
         let module = self.module;

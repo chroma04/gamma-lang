@@ -90,6 +90,7 @@ A name that starts with `_` is never reported as unused: `_unused := f()` and
 | `unused-parameter` | a parameter of a named function that its body never uses. Parameters of function literals and handler clauses, and of functions used as values (passed to another function, exported), are left alone: their signature is not theirs to choose | — (name it `_x`) |
 | `unused-import` | an import binding that nothing in its module uses | the import line is removed |
 | `unused-declaration` | a private top-level function, type, constant, global or effect that nothing refers to | — |
+| `needless-pub` | a `pub(package)` function or constant that no other module of its package names, or a `pub` one of a program package (one whose root module declares `main`, which no other package imports) that no other module names, as a function, a constant, a method or a value. Types, effects and imports are not reported, since a `pub` signature may need them | — (remove the marker) |
 | `unused-label` | a label of a `for`, `while` or `with` that no `break` or `continue` names | the label is removed |
 
 A use in a part of the program that is evaluated at compile time counts: `a.len` of an
@@ -100,6 +101,8 @@ are not checked, a name written anywhere in a `when` is never reported as unused
 
 | Rule | Reports | Fix |
 | --- | --- | --- |
+| `dangling-address` | the address of a local, or a slice of a local array, kept where it outlives the local: assigned to a place of an enclosing scope, through a pointer or to a global; passed for a parameter whose type is a type parameter (`list.push(&x)`, `map.put(k, &x)`) to a call that also gets a mutable pointer to longer-lived storage; or returned inside a value. A loop variable or a pattern binding is a copy, whose storage is reused by the next iteration or gone after its scope (§15.1). Pointers into a growing list that a later `push` moves are not detected | — (point into the original, `&items[i]`, or keep the value) |
+| `present-only-binding` | a bare name in the position of an optional (or a result) below the top of a `match` arm's pattern, such as `.Return(v)` for `Return: ?Expr`, which matches only a present (or success) value (§9.3), when no other arm names the absent case there and a catch-all arm with a non-empty body takes it. A catch-all `_ => {}` ignores the rest on purpose and is not reported | — (add an arm such as `.Return(null)`, or bind the value that holds the optional) |
 | `self-comparison` | a value compared with itself (`n is n`, `p.x < p.x`), whose result is known; floats are left alone, since `x is x` is false for NaN | — |
 | `self-assignment` | a place assigned to itself (`x = x`) | — |
 | `constant-condition` | an `if` or `while` whose condition is the literal `true` or `false` (other than the loop `while true`); a condition known at compile time is written with `when` | — |

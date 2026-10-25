@@ -291,6 +291,10 @@
           "match": "\\bimport\\b"
         },
         {
+          "match": "\\b(pub)\\s*\\(\\s*(package)\\s*\\)",
+          "captures": { "1": { "name": "storage.modifier.gamma" }, "2": { "name": "storage.modifier.gamma" } }
+        },
+        {
           "name": "storage.modifier.gamma",
           "match": "\\b(?:pub|using)\\b"
         },

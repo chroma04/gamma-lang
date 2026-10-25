@@ -12,7 +12,8 @@ impl Parser<'_> {
         let doc = self.doc_before(start);
         let attrs = self.parse_attrs()?;
         let pub_span = self.span();
-        let is_pub = self.eat_kw(Keyword::Pub);
+        let vis = self.parse_visibility()?;
+        let is_pub = vis.is_exported();
         let kind = match self.kind() {
             TokenKind::Keyword(Keyword::When) => {
                 self.deny_pub(is_pub, pub_span, "a `when` block");
@@ -37,7 +38,25 @@ impl Parser<'_> {
             _ => return self.expected("a declaration"),
         };
         let id = self.ids.next();
-        Ok(Item { id, span: self.span_from(start), doc, attrs, is_pub, kind })
+        Ok(Item { id, span: self.span_from(start), doc, attrs, vis, kind })
+    }
+
+    /// `pub`, `pub(package)` or nothing (§3.3).
+    pub(super) fn parse_visibility(&mut self) -> PResult<Visibility> {
+        if !self.eat_kw(Keyword::Pub) {
+            return Ok(Visibility::Private);
+        }
+        if !self.eat(Punct::LParen) {
+            return Ok(Visibility::Public);
+        }
+        match self.kind() {
+            TokenKind::Ident(name) if name.as_str() == "package" => {
+                self.bump();
+            }
+            _ => return self.expected("`package` in `pub(…)`"),
+        }
+        self.expect(Punct::RParen, "to close `pub(package`")?;
+        Ok(Visibility::Package)
     }
 
     fn deny_pub(&mut self, is_pub: bool, span: crate::source::Span, what: &str) {
@@ -94,7 +113,7 @@ impl Parser<'_> {
                     span: self.span_from(nested_start),
                     doc: None,
                     attrs: Vec::new(),
-                    is_pub: false,
+                    vis: Visibility::Private,
                     kind: ItemKind::When(nested),
                 };
                 else_ = Some(vec![item]);

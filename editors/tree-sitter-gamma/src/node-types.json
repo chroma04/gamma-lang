@@ -1061,6 +1061,10 @@
           "named": true
         },
         {
+          "type": "visibility",
+          "named": true
+        },
+        {
           "type": "when_declaration",
           "named": true
         }
@@ -1367,6 +1371,10 @@
       "types": [
         {
           "type": "attribute",
+          "named": true
+        },
+        {
+          "type": "visibility",
           "named": true
         }
       ]
@@ -2677,6 +2685,10 @@
           "named": true
         },
         {
+          "type": "visibility",
+          "named": true
+        },
+        {
           "type": "when_declaration",
           "named": true
         }
@@ -3029,6 +3041,11 @@
         }
       ]
     }
+  },
+  {
+    "type": "visibility",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "when_declaration",
@@ -3722,6 +3739,10 @@
   },
   {
     "type": "or",
+    "named": false
+  },
+  {
+    "type": "package",
     "named": false
   },
   {

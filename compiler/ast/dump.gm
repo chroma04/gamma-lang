@@ -198,9 +198,16 @@ push_attrs :: fn(v: ^List(Sx), attrs: []const Attribute) needs Alloc {
 
 // ----- items -----
 
+/// The marker of a visibility in the dump.
+visibility :: fn(vis: Visibility) -> ?string => match vis {
+    .Private => null
+    .Package => "pub(package)"
+    .Public => "pub"
+}
+
 dump_item :: fn(item: ^const Item) -> Sx needs Alloc {
     v := list(Sx)
-    if item.is_pub { v.push(.Atom("pub"))! }
+    if vis := visibility(item.vis) { v.push(.Atom(vis))! }
     if doc := item.doc { v.push(node1("doc", atom_of_bytes(doc)))! }
     push_attrs(&v, item.attrs)
     v.push(match item.kind {
@@ -600,7 +607,7 @@ dump_struct_member :: fn(m: ^const StructMember) -> Sx needs Alloc {
     match m^ {
         .Field(f) => {
             push_attrs(&v, f.attrs)
-            if f.is_pub { v.push(.Atom("pub"))! }
+            if vis := visibility(f.vis) { v.push(.Atom(vis))! }
             if f.is_using { v.push(.Atom("using"))! }
             ns := list(Sx)
             for n in f.names { ns.push(ident_sx(n))! }

@@ -132,12 +132,17 @@ impl<'s> Sema<'s> {
                     Some(n) => Ty::array(n, f.ty),
                     None => Ty::many_ptr(is_const, f.ty),
                 },
-                is_pub: true,
+                vis: crate::syntax::ast::Visibility::Public,
                 align: None,
             })
             .collect();
         if len.is_none() {
-            columns.push(FieldDef { name: Symbol::intern("len"), ty: Ty::usize(), is_pub: true, align: None });
+            columns.push(FieldDef {
+                name: Symbol::intern("len"),
+                ty: Ty::usize(),
+                vis: crate::syntax::ast::Visibility::Public,
+                align: None,
+            });
         }
         let module = self.adts.get(&id).map(|a| a.module).unwrap_or(ModuleId(0));
         let soa = AdtId::fresh(name);
@@ -641,8 +646,8 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(name.span, format!("type `{}` has no field `{}`", info.elem, name.name));
             return error_expr(span);
         };
-        if !fields[k].is_pub && !self.sees_private(info.elem) {
-            self.error(span, format!("the field `{}` of `{}` is private to its module (§3.3)", name.name, info.elem));
+        if !self.field_visible(fields[k].vis, info.elem) {
+            self.error(span, super::expr::hidden_field_message(name.name, info.elem, fields[k].vis));
         }
         let col = self.soa_column_once(b, info, k, span);
         let i = self.soa_index_value(index);
@@ -667,8 +672,8 @@ impl<'a, 's> FnCx<'a, 's> {
             self.error(name.span, format!("type `{}` has no column `{}`", t, name.name));
             return error_expr(span);
         };
-        if !fields[k].is_pub && !self.sees_private(info.elem) {
-            self.error(span, format!("the field `{}` of `{}` is private to its module (§3.3)", name.name, info.elem));
+        if !self.field_visible(fields[k].vis, info.elem) {
+            self.error(span, super::expr::hidden_field_message(name.name, info.elem, fields[k].vis));
         }
         self.soa_column_once(b, info, k, span)
     }

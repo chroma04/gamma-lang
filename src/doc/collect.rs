@@ -206,7 +206,7 @@ impl Cx<'_> {
                         self.items(e, Some(&c), out);
                     }
                 }
-                ItemKind::Binding(b) if item.is_pub => self.binding(item, b, cond, out),
+                ItemKind::Binding(b) if item.vis == Visibility::Public => self.binding(item, b, cond, out),
                 ItemKind::Handler(h) => self.handler(item, h, cond, out),
                 _ => {}
             }
@@ -228,7 +228,7 @@ impl Cx<'_> {
             member_label: "",
             members: Vec::new(),
             location: self.location(item.span.lo),
-            handler_target: (!item.is_pub).then(|| self.base_name(&h.for_ty)),
+            handler_target: (item.vis != Visibility::Public).then(|| self.base_name(&h.for_ty)),
         });
     }
 
@@ -346,7 +346,7 @@ impl Cx<'_> {
     fn fields(&self, ms: &[StructMember], body: &mut Vec<String>, docs: &mut Vec<(String, String)>, hidden: &mut bool) {
         for m in ms {
             match m {
-                StructMember::Field(f) if f.is_pub => {
+                StructMember::Field(f) if f.vis == Visibility::Public => {
                     body.push(self.text(f.span).to_string());
                     let names = f.names.iter().map(|n| self.text(n.span)).collect::<Vec<_>>().join(", ");
                     self.member_doc(docs, &names, f.span.lo);

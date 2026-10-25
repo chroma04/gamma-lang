@@ -100,7 +100,7 @@ dump_adt :: fn(s: ^Sema, a: u32, out: ^List(u8)) needs Alloc {
 
 dump_fields :: fn(s: ^Sema, fields: []const FieldDef, defaults: []const bool, out: ^List(u8)) needs Alloc {
     for i, f in enumerate(fields) {
-        out.write("    {}{}: {}", if f.is_pub { "pub " } else { "" }, f.name, s.show(f.ty))!
+        out.write("    {}{}: {}", visibility_prefix(f.vis), f.name, s.show(f.ty))!
         if n := f.align { out.write(" #align({})", n)! }
         if i < defaults.len and defaults[i] { out.extend(" = …")! }
         out.push('\n')!
@@ -136,4 +136,11 @@ sig_text :: fn(s: ^Sema, params: []const ParamInfo, ret: Ty, effects: EffectSet)
     if not s.tys.is_unit(ret) { out.write(" -> {}", s.show(ret))! }
     if effects.effects.len > 0 { out.write(" needs {}", s.tys.show_effects(&effects))! }
     return out.items
+}
+
+/// How the visibility of a field is written before its name.
+visibility_prefix :: fn(vis: ast.Visibility) -> string => match vis {
+    .Public => "pub "
+    .Package => "pub(package) "
+    .Private => ""
 }

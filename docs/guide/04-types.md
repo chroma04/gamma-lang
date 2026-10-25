@@ -277,7 +277,7 @@ Fields can be left uninitialized with `---` if their type is plain data: `Buf(le
 
 ### Visibility and layout
 
-Fields are private to their module unless marked `pub`. A struct with a private field cannot be constructed, spread or matched with a struct pattern outside its module, but it can still be copied, passed around and compared with `is`.
+Fields are private to their module unless marked `pub` (or `pub(package)`, visible to the modules of the same package). A struct with a private field cannot be constructed, spread or matched with a struct pattern outside its module, but it can still be copied, passed around and compared with `is`.
 
 Layout is the C layout: fields in declaration order, each aligned to its own alignment, the whole struct rounded up to its alignment. A struct whose fields are all C-compatible types is layout-compatible with the corresponding C struct. `#packed` and `#align(n)` adjust it ([chapter 14](14-interop.md)). Structs are compared with `is` (field by field) but have no ordering; to order them, sort by a tuple of keys.
 

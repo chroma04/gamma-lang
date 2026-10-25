@@ -253,7 +253,7 @@ resolve_effect_set :: fn(s: ^Sema, module: usize, terms: []const ^const ast.Expr
 }
 
 /// `needs` lists hold expressions, not pointers to them.
-resolve_effect_list :: fn(s: ^Sema, module: usize, list_: []const ast.Expr) -> EffectSet needs Load {
+pub(package) resolve_effect_list :: fn(s: ^Sema, module: usize, list_: []const ast.Expr) -> EffectSet needs Load {
     terms := list(^const ast.Expr)
     for i in 0..list_.len { terms.push(&list_[i])! }
     return s.resolve_effect_set(module, terms.items)
@@ -269,7 +269,7 @@ is_effect_sum :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool needs L
     match head.kind {
         .Ident(id) => { d = s.lookup_module_name(module, id.name) }
         .Field(base, name) => {
-            if m := s.module_named(module, base) { d = s.module_member(m, name) }
+            if m := s.module_named(module, base) { d = s.module_member(m, name, module) }
         }
         _ => {}
     }
@@ -284,7 +284,7 @@ named_effect_set :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?EffectSe
         .Ident(id) => { d = s.lookup_module_name(module, id.name) else return null }
         .Field(base, name) => {
             m := s.module_named(module, base) else return null
-            d = s.module_member(m, name) else return null
+            d = s.module_member(m, name, module) else return null
         }
         _ => return null
     }
@@ -292,7 +292,7 @@ named_effect_set :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?EffectSe
     return set
 }
 
-resolve_effect_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?EffectRef needs Load {
+pub(package) resolve_effect_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?EffectRef needs Load {
     if p := s.effect_param_named(e) {
         s.error(e.span, str.format("`{}` is an effect set, not a single effect (§16.6)", s.show(p))!)
         return null
@@ -351,7 +351,7 @@ resolve_effect_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?Effect
     // `m.E`: an effect declared in another module.
     if .Field(base, name) := e.kind {
         if m := s.module_named(module, base) {
-            d := s.module_member(m, name) else return null
+            d := s.module_member(m, name, module) else return null
             match s.resolve_decl(d) {
                 .Effect(eff) => return s.bare_effect_ref(eff)
                 .EffectInst(r) => return r
@@ -370,7 +370,7 @@ resolve_effect_ref :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?Effect
 
 /// An effect named without arguments. An effect whose parameters are all effect sets
 /// gets empty ones; otherwise the arguments stay empty.
-bare_effect_ref :: fn(s: ^Sema, eff: u32) -> EffectRef needs Alloc {
+pub(package) bare_effect_ref :: fn(s: ^Sema, eff: u32) -> EffectRef needs Alloc {
     params := s.effects.items[usize(eff)].params
     all_sets := params.len > 0
     for p in params {
@@ -449,4 +449,17 @@ declare_effect :: fn(s: ^Sema, module: usize, decl: usize, name: ast.Ident, lit:
     s.type_params.truncate(s.type_params.items.len - params.items.len)
     s.effects.items[usize(eff)].ops = ops.items
     return .Effect(eff)
+}
+
+/// Declares a function literal or nested function of a body, whose body the body
+/// checker stores.
+pub new_literal_fn :: fn(s: ^Sema, name: string, span: source.Span, module: usize, params: []ParamInfo, ret: Ty, effects: EffectSet) -> u32 needs Alloc {
+    return s.new_nested_fn(.Literal, name, span, module, params, ret, effects)
+}
+
+/// A function checked with the body that contains it: a literal or a handler clause.
+pub new_nested_fn :: fn(s: ^Sema, kind: tir.FnKind, name: string, span: source.Span, module: usize, params: []ParamInfo, ret: Ty, effects: EffectSet) -> u32 needs Alloc {
+    s.fns.push(FnSig(name: name, span: span, module: module, params: params, ret: ret, effects: effects, generics: empty_slice(u32)))!
+    s.defs.push(tir.FnDef(kind: kind, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null))!
+    return (s.fns.items.len - 1).trunc(u32)
 }

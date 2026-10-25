@@ -35,7 +35,7 @@ pub InferTable :: struct {
     pub numeric_params: []u32
 }
 
-pub infer_table :: fn() -> InferTable needs Alloc => InferTable(vars: list(Var), numeric_params: empty_slice(u32))
+infer_table :: fn() -> InferTable needs Alloc => InferTable(vars: list(Var), numeric_params: empty_slice(u32))
 
 /// Unification failed.
 pub Mismatch :: struct {}
@@ -55,14 +55,14 @@ root :: fn(t: ^InferTable, v: u32) -> u32 {
 }
 
 /// Replaces resolved variables at the top level of `ty` (not inside it).
-pub shallow :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> Ty needs Alloc {
+shallow :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> Ty needs Alloc {
     .Infer(v) := tys.kind(ty) else return ty
     r := t.root(v)
     return t.vars.items[usize(r)].resolved else tys.intern(.Infer(r))
 }
 
 /// Replaces every resolved variable in `ty`.
-pub resolve :: fn(t: ^InferTable, s: ^Sema, ty: Ty) -> Ty needs Load {
+resolve :: fn(t: ^InferTable, s: ^Sema, ty: Ty) -> Ty needs Load {
     if not s.tys.has_infer(ty) { return ty }
     match s.tys.kind(ty) {
         .Infer(_) => {
@@ -95,14 +95,14 @@ pub resolve :: fn(t: ^InferTable, s: ^Sema, ty: Ty) -> Ty needs Load {
 }
 
 /// The kind of an unresolved variable type, if `ty` is one.
-pub var_kind :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> ?VarKind needs Alloc {
+var_kind :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> ?VarKind needs Alloc {
     .Infer(v) := tys.kind(t.shallow(tys, ty)) else return null
     return t.vars.items[usize(t.root(v))].kind
 }
 
 /// Restricts the variable `ty` (if unresolved, from an integer literal) to integer
 /// types. Returns false if it cannot be an integer.
-pub require_integer :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> bool needs Alloc {
+require_integer :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> bool needs Alloc {
     st := t.shallow(tys, ty)
     if .Infer(v) := tys.kind(st) {
         r := usize(t.root(v))
@@ -115,7 +115,7 @@ pub require_integer :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> bool nee
 
 /// Restricts the variable `ty` (if unresolved) to unsigned types and raises its fallback.
 /// Returns false if `ty` is a concrete type that is not an unsigned integer.
-pub require_unsigned :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: Fallback) -> bool needs Alloc {
+require_unsigned :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: Fallback) -> bool needs Alloc {
     st := t.shallow(tys, ty)
     if .Infer(v) := tys.kind(st) {
         r := usize(t.root(v))
@@ -129,7 +129,7 @@ pub require_unsigned :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: 
 
 /// Raises the fallback of an unresolved variable. If the variable was already given a
 /// different type early, returns that type and where it was settled.
-pub set_fallback :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: Fallback) -> ?(ty: Ty, at: source.Span) needs Alloc {
+set_fallback :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: Fallback) -> ?(ty: Ty, at: source.Span) needs Alloc {
     .Infer(v) := tys.kind(ty) else {
         if .Infer(w) := tys.kind(t.shallow(tys, ty)) {
             r := usize(t.root(w))
@@ -159,7 +159,7 @@ compatible :: fn(t: ^const InferTable, tys: ^types.Types, v: ^const Var, ty: Ty)
 }
 
 /// Makes `a` and `b` the same type.
-pub unify :: fn(t: ^InferTable, tys: ^types.Types, a0, b0: Ty) -> Mismatch!() needs Alloc {
+unify :: fn(t: ^InferTable, tys: ^types.Types, a0, b0: Ty) -> Mismatch!() needs Alloc {
     a := t.shallow(tys, a0)
     b := t.shallow(tys, b0)
     if a is b or tys.is_error(a) or tys.is_error(b) { return () }
@@ -239,7 +239,7 @@ fallback_type :: fn(tys: ^types.Types, v: ^const Var) -> Ty needs Alloc {
 }
 
 /// Gives the unresolved variables in `ty` their fallback types now (§6.1).
-pub settle_vars :: fn(t: ^InferTable, s: ^Sema, ty: Ty, at: source.Span) -> Ty needs Load {
+settle_vars :: fn(t: ^InferTable, s: ^Sema, ty: Ty, at: source.Span) -> Ty needs Load {
     r := t.resolve(s, ty)
     vars := list(u32)
     s.walk(r, fn(x: Ty) {
@@ -256,7 +256,7 @@ pub settle_vars :: fn(t: ^InferTable, s: ^Sema, ty: Ty, at: source.Span) -> Ty n
 }
 
 /// Gives every unresolved variable its fallback type (§6.1).
-pub apply_fallbacks :: fn(t: ^InferTable, tys: ^types.Types) needs Alloc {
+apply_fallbacks :: fn(t: ^InferTable, tys: ^types.Types) needs Alloc {
     for i in 0..t.vars.items.len {
         r := usize(t.root(i.trunc(u32)))
         if t.vars.items[r].resolved is null {

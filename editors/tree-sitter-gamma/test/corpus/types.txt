@@ -315,6 +315,7 @@ Empty :: struct {}
     (struct_type
       (field_declaration_list
         (field_declaration
+          (visibility)
           (identifier)
           (identifier))
         (field_declaration

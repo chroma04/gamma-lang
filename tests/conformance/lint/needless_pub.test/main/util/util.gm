@@ -1,0 +1,17 @@
+pub Point :: struct {
+    pub x: i32
+    pub y: i32
+}
+
+pub sum :: fn(p: Point) -> i32 => p.x + p.y
+
+// Used as a method in another module.
+pub norm1 :: fn(p: Point) -> i32 => abs(p.x) + abs(p.y)
+
+pub(package) abs :: fn(v: i32) -> i32 => if v < 0 { -v } else { v } //~ WARNING [needless-pub] the function `abs` is `pub(package)`, but no other module of its package uses it
+
+pub LIMIT :: 10
+
+pub(package) SCALE :: 2                          //~ WARNING [needless-pub] the constant `SCALE` is `pub(package)`
+
+pub twice :: fn(v: i32) -> i32 => v * SCALE      //~ WARNING [needless-pub] the function `twice` is `pub`

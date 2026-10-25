@@ -411,7 +411,7 @@ pub fn synthetic_item(span: Span) -> Rc<ast::Item> {
         span,
         doc: None,
         attrs: vec![],
-        is_pub: true,
+        vis: ast::Visibility::Public,
         kind: ItemKind::Intrinsic(ast::Expr { id: ast::NodeId(u32::MAX), kind: ExprKind::Underscore, span }),
     })
 }

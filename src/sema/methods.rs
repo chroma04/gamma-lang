@@ -76,16 +76,19 @@ impl<'a, 's> FnCx<'a, 's> {
         if let Some(e) = self.builtin_method(&mut recv, name, args, span) {
             return e;
         }
-        // `r.len()` of a range is a function of the core library (§21.3).
-        let name = match self.sema.range_of(rty) {
-            Some((inclusive, _)) if name.name.as_str() == "len" => ast::Ident {
-                name: crate::symbol::Symbol::intern(if inclusive { "range_incl_len" } else { "range_len" }),
-                span: name.span,
-            },
-            _ => name,
+        // `r.len()` of a range is a private function of the core library (§21.3).
+        let (name, internal) = match self.sema.range_of(rty) {
+            Some((inclusive, _)) if name.name.as_str() == "len" => (
+                ast::Ident {
+                    name: crate::symbol::Symbol::intern(if inclusive { "range_incl_len" } else { "range_len" }),
+                    span: name.span,
+                },
+                true,
+            ),
+            _ => (name, false),
         };
         // 3. A function of the module that declares the receiver's type.
-        if let Some(e) = self.module_method(recv, name, args, span) {
+        if let Some(e) = self.module_method(recv, name, internal, args, span) {
             return e;
         }
         let rty = self.infer.resolve(rty);
@@ -608,7 +611,15 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// A function `name` of the module that declares the receiver's type, whose first
     /// run-time parameter takes the receiver (§7.10 rule 3).
-    fn module_method(&mut self, recv: Expr, name: ast::Ident, args: &[ast::Arg], span: Span) -> Option<Expr> {
+    /// `internal` is set for a method the compiler names, which may be private.
+    fn module_method(
+        &mut self,
+        recv: Expr,
+        name: ast::Ident,
+        internal: bool,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Option<Expr> {
         let rty = self.infer.resolve(recv.ty);
         let s = match rty.kind() {
             TyKind::Ptr { pointee, .. } => *pointee,
@@ -618,7 +629,12 @@ impl<'a, 's> FnCx<'a, 's> {
         let module = self.sema.adts.get(id)?.module;
         let f = match self.sema.modules[module.0 as usize].scope.get(&name.name).copied() {
             Some(d) => match self.sema.resolve_decl(d) {
+                DeclValue::Fn(_) if !internal && !self.sema.decl_visible(d, self.module) => {
+                    let _ = self.sema.module_member(module, name, self.module);
+                    return Some(error_expr(span));
+                }
                 DeclValue::Fn(f) => {
+                    self.sema.note_use_from(d, self.module);
                     // A function whose first parameter is not the receiver's type leaves the
                     // name to an operation that takes it (§7.10).
                     let takes = |ty: Ty| {
@@ -684,7 +700,7 @@ impl<'a, 's> FnCx<'a, 's> {
             let Some((_, op)) = self.sema.decls[od.0 as usize].op_of else { continue };
             let DeclValue::Effect(eff) = self.sema.resolve_decl(ed) else { continue };
             let info = &self.sema.effects[&eff];
-            if !info.params.is_empty() || (self.module != module && !self.sema.decls[ed.0 as usize].item.is_pub) {
+            if !info.params.is_empty() || !self.sema.decl_visible(ed, self.module) {
                 continue;
             }
             let o = info.ops[op as usize].clone();
@@ -696,6 +712,7 @@ impl<'a, 's> FnCx<'a, 's> {
             if !fit {
                 continue;
             }
+            self.sema.note_use_from(ed, self.module);
             let Ok(recv) = self.adjust_receiver(recv, rty, first.ty, name, span) else { return Some(error_expr(span)) };
             let mut vals = vec![recv];
             let (rest, pre) = self.bind_args(&o.params[1..], module, args, span, "operation");

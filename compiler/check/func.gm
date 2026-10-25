@@ -32,6 +32,63 @@ LocalBinding :: union {
     Untyped: sema.Untyped
     /// A label of an enclosing loop.
     Label
+    /// A function declared in the body with `name :: fn …`.
+    NestedFn: u32
+}
+
+/// The state of an enclosing function while a nested one (a literal or a clause) is
+/// checked.
+Frame :: struct {
+    locals: List(tir.LocalDecl)
+    ret: Ty
+    declared: EffectSet
+    performed: List(Performed)
+    labels: List(LabelInfo)
+    next_label: u32
+    in_defer: bool
+    defer_label_base: usize
+    fn_id: ?u32
+    captures: bool
+    open_ret: bool
+    open_ty: ?Ty
+    clause: ?ClauseInfo
+}
+
+/// The handler clause a frame checks.
+ClauseInfo :: struct {
+    op_kind: ast.OpKind
+    /// The handler literal it belongs to, or the function of the clause of a handler
+    /// declaration.
+    handler_: ?u32
+    decl_clause: ?u32
+    /// The type of the value of the `with` that installs the handler, which its
+    /// `break`s give.
+    with_expect: ?Ty
+    /// For the body of a `for` over an iterator, which is the clause of its `yield`: the
+    /// loop's label, and the type of the iterator's result, which a `break` gives.
+    for_label: ?ForLabel = null
+    break_ty: ?Ty = null
+}
+
+ForLabel :: struct {
+    name: ?string
+    label: u32
+}
+
+/// A `break` to the `with` installing handler literal `handler`, from one of its clauses.
+HandlerBreak :: struct {
+    handler_: u32
+    ty: Ty
+    span: source.Span
+}
+
+/// A nested function of the body, finished with it: it shares the body's literal
+/// inference.
+NestedFn :: struct {
+    fn_id: u32
+    params: []u32
+    locals: []tir.LocalDecl
+    body: ^Expr
 }
 
 Binding :: struct {
@@ -45,6 +102,8 @@ LabelValue :: union {
     Nothing
     /// A `for` loop: the type of its value.
     Loop: Ty
+    /// A `with`: the type expected of its value, if it is used.
+    With: ?Ty
 }
 
 LabelInfo :: struct {
@@ -87,8 +146,10 @@ Performed :: struct {
     span: source.Span
 }
 
-/// A `break` to a loop of this function: the label and the value's type and place.
+/// A `break` to a label: the depth of the function the label belongs to, the label, and
+/// the value's type and place.
 LabelBreak :: struct {
+    depth: u32
     label: u32
     ty: Ty
     span: source.Span
@@ -123,11 +184,37 @@ pub FnCx :: struct {
     temp_ref_arg: bool
     /// The `match`es whose exhaustiveness waits for the final types of literals.
     deferred_matches: List(DeferredMatch)
+    /// Inside a deferred statement (§8.8), whose labels start at `defer_label_base`.
+    in_defer: bool
+    defer_label_base: usize
+    /// Where operations of kind `fn` are performed, which a deferred statement may do.
+    fn_performs: List(source.Span)
+    /// The enclosing functions of the one being checked, outermost first.
+    outer: List(Frame)
+    /// For each scope, the depth of the function it belongs to.
+    scope_depths: List(u32)
+    /// Whether the function being checked uses a local of an enclosing one.
+    captures: bool
+    nested: List(NestedFn)
+    /// Set while checking a literal whose return type is that of its `return`s:
+    /// `open_ty`, once the first `return` with a value fixes it.
+    open_ret: bool
+    open_ty: ?Ty
+    /// Named nested functions whose return type comes from their body, while it is
+    /// checked: they cannot call themselves.
+    open_fns: List(u32)
+    /// The handler clause being checked, if any.
+    clause: ?ClauseInfo
+    handler_breaks: List(HandlerBreak)
+    /// Where iterators are called (§13.2).
+    iterator_calls: List(source.Span)
 }
 
 fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs Alloc {
     scopes := list(List(Binding))
     scopes.push(list(Binding))!
+    depths := list(u32)
+    depths.push(0)!
     return FnCx(
         s: s,
         module: module,
@@ -147,6 +234,19 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         label_breaks: list(LabelBreak),
         temp_ref_arg: false,
         deferred_matches: list(DeferredMatch),
+        in_defer: false,
+        defer_label_base: 0,
+        fn_performs: list(source.Span),
+        outer: list(Frame),
+        scope_depths: depths,
+        captures: false,
+        nested: list(NestedFn),
+        open_ret: false,
+        open_ty: null,
+        open_fns: list(u32),
+        clause: null,
+        handler_breaks: list(HandlerBreak),
+        iterator_calls: list(source.Span),
     )
 }
 
@@ -160,7 +260,7 @@ unsupported :: fn(cx: ^FnCx, span: source.Span, what: string) -> ^Expr needs All
     return error_expr(cx.s, span)
 }
 
-show :: fn(cx: ^FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
+show :: fn(cx: ^const FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
 
 // ---------------------------------------------------------------------------------
 // Function bodies
@@ -168,7 +268,7 @@ show :: fn(cx: ^FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
 
 /// Checks the bodies of the functions declared so far, newest first, as the reference
 /// implementation does, except those of the core library.
-pub check_bodies :: fn(s: ^Sema) needs Load {
+check_bodies :: fn(s: ^Sema) needs Load {
     while body := s.pending_bodies.pop() {
         if s.l.modules.items[body.module].is_prelude { continue }
         check_fn_body(s, body.fn_id, body.module, body.lit)
@@ -207,13 +307,26 @@ check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) 
     s.defs.items[usize(fn_id)] = tir.FnDef(kind: .Named, params: params.items, locals: cx.locals.items, body: body)
 }
 
-/// Runs the final inference pass and the effect check.
+/// Runs the final inference pass and the effect check, and finishes the nested
+/// functions.
 finish :: fn(cx: ^FnCx, body: ^Expr) needs Load {
     cx.finalize(body)
     cx.check_effects()
     for i in 0..cx.locals.items.len {
         cx.locals.items[i].ty = cx.infer.resolve(cx.s, cx.locals.items[i].ty)
     }
+    for n in cx.nested.items {
+        cx.fin_expr(n.body)
+        for i in 0..n.locals.len { n.locals[i].ty = cx.infer.resolve(cx.s, n.locals[i].ty) }
+        // An inferred return type may still have been a literal's variable.
+        sig := &cx.s.fns.items[usize(n.fn_id)]
+        sig.ret = cx.infer.resolve(cx.s, sig.ret)
+        def := &cx.s.defs.items[usize(n.fn_id)]
+        def.params = n.params
+        def.locals = n.locals
+        def.body = n.body
+    }
+    cx.nested.clear()
 }
 
 check_effects :: fn(cx: ^FnCx) needs Load {
@@ -232,12 +345,34 @@ check_effects :: fn(cx: ^FnCx) needs Load {
                 _ = cx.unsupported(p.span, "effects declared with other arguments")
             }
         }
-        d := diag.error(p.span, str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!)
-        if fix := cx.needs_fix(&p.effect_) { d.add_fix(str.format("add `{}` to the function's effects", name)!, fix.span, fix.text) }
+        plain := true
+        msg: string = str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!
+        if m := cx.iterator_call_message(&p.effect_, p.span) {
+            plain = false
+            msg = m
+        }
+        d := diag.error(p.span, msg)
+        if fix := cx.needs_fix(&p.effect_) and plain { d.add_fix(str.format("add `{}` to the function's effects", name)!, fix.span, fix.text) }
         cx.s.emit(d)
         reported.push(p.effect_)!
     }
     cx.performed.clear()
+}
+
+/// The message for a call of an iterator from a function with no `Yield` of its own,
+/// which was most likely meant as the source of a `for` loop.
+iterator_call_message :: fn(cx: ^FnCx, e: ^const EffectRef, span: source.Span) -> ?string needs Alloc {
+    y := cx.s.yield_effect else return null
+    if e.eff is not y or span not in cx.iterator_calls.items { return null }
+    for d in cx.declared.effects {
+        if d.eff is y { return null }
+    }
+    // The call's callee: the text before its argument list, after any receiver.
+    text := cx.s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
+    if i := str.find(text, "(") { text = text[..i] }
+    if i := str.rfind(text, ".") { text = text[i + 1..] }
+    c := str.trim(text)
+    return str.format("`{}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {}(…)`) or pass it to a function that runs it, such as `collect({}(…))` (§13.5)", c, c, c)!
 }
 
 /// The edit that adds effect `e` to the signature of the function being checked, if it
@@ -259,9 +394,7 @@ needs_fix :: fn(cx: ^FnCx, e: ^const EffectRef) -> ?(span: source.Span, text: st
 
 record_effects :: fn(cx: ^FnCx, set: ^const EffectSet, span: source.Span) needs Alloc {
     for e in set.effects {
-        if y := cx.s.yield_effect and e.eff is y {
-            _ = cx.unsupported(span, "calls of iterators")
-        }
+        if y := cx.s.yield_effect and e.eff is y { cx.iterator_calls.push(span)! }
         cx.performed.push(Performed(effect_: e, span: span))!
     }
 }
@@ -354,10 +487,103 @@ declare :: fn(cx: ^FnCx, name: string, b: LocalBinding, span: source.Span) needs
 
 push_scope :: fn(cx: ^FnCx) needs Alloc {
     cx.scopes.push(list(Binding))!
+    cx.scope_depths.push(cx.depth())!
 }
 
 pop_scope :: fn(cx: ^FnCx) {
     _ = cx.scopes.pop()
+    _ = cx.scope_depths.pop()
+}
+
+/// A local name's binding and the depth of the function it belongs to.
+lookup_local_at :: fn(cx: ^const FnCx, name: string) -> ?(binding: LocalBinding, depth: u32) {
+    i := cx.scopes.items.len
+    while i > 0 {
+        i -= 1
+        scope := cx.scopes.items[i].items
+        j := scope.len
+        while j > 0 {
+            j -= 1
+            if scope[j].name is name { return (binding: scope[j].value, depth: cx.scope_depths.items[i]) }
+        }
+    }
+    return null
+}
+
+// ---------------------------------------------------------------------------------
+// Nested function frames
+// ---------------------------------------------------------------------------------
+
+/// The depth of the function being checked: 0 for the outermost.
+depth :: fn(cx: ^const FnCx) -> u32 => cx.outer.items.len.trunc(u32)
+
+/// The declaration of local `id` of the function at `depth`.
+local_at :: fn(cx: ^const FnCx, depth: u32, id: u32) -> tir.LocalDecl {
+    if depth is cx.depth() { return cx.locals.items[usize(id)] }
+    return cx.outer.items[usize(depth)].locals.items[usize(id)]
+}
+
+/// Marks the functions above `depth` as capturing: they use a local of that function.
+note_capture :: fn(cx: ^FnCx, depth: u32) {
+    if depth >= cx.depth() { return }
+    cx.captures = true
+    for i in usize(depth) + 1..cx.outer.items.len { cx.outer.items[i].captures = true }
+}
+
+/// Saves the current function's state and starts checking the body of nested function
+/// `fn_id`.
+enter_fn :: fn(cx: ^FnCx, fn_id: u32, ret: Ty, declared: EffectSet) needs Alloc {
+    cx.outer.push(Frame(
+        locals: cx.locals,
+        ret: cx.ret,
+        declared: cx.declared,
+        performed: cx.performed,
+        labels: cx.labels,
+        next_label: cx.next_label,
+        in_defer: cx.in_defer,
+        defer_label_base: cx.defer_label_base,
+        fn_id: cx.fn_id,
+        captures: cx.captures,
+        open_ret: cx.open_ret,
+        open_ty: cx.open_ty,
+        clause: cx.clause,
+    ))!
+    cx.clause = null
+    cx.open_ret = false
+    cx.open_ty = null
+    cx.locals = list(tir.LocalDecl)
+    cx.ret = ret
+    cx.declared = declared
+    cx.performed = list(Performed)
+    cx.labels = list(LabelInfo)
+    cx.next_label = 0
+    cx.in_defer = false
+    cx.defer_label_base = 0
+    cx.fn_id = fn_id
+    cx.captures = false
+    cx.push_scope()
+}
+
+/// Leaves a nested function, restoring the enclosing one's state: its locals, what it
+/// performed, and whether it captures.
+exit_fn :: fn(cx: ^FnCx) -> (locals: []tir.LocalDecl, performed: []Performed, captures: bool) {
+    cx.pop_scope()
+    f := cx.outer.pop() else return (locals: cx.locals.items, performed: cx.performed.items, captures: cx.captures)
+    out := (locals: cx.locals.items, performed: cx.performed.items, captures: cx.captures)
+    cx.locals = f.locals
+    cx.ret = f.ret
+    cx.declared = f.declared
+    cx.performed = f.performed
+    cx.labels = f.labels
+    cx.next_label = f.next_label
+    cx.in_defer = f.in_defer
+    cx.defer_label_base = f.defer_label_base
+    cx.fn_id = f.fn_id
+    cx.captures = f.captures
+    cx.open_ret = f.open_ret
+    cx.open_ty = f.open_ty
+    cx.clause = f.clause
+    return out
 }
 
 new_label :: fn(cx: ^FnCx, name: ?string, is_loop: bool, value: LabelValue) -> u32 needs Alloc {
@@ -476,11 +702,58 @@ stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
         .Expr(e) => return .Expr(cx.stmt_expr(e))
         .While(w) => return .Expr(cx.while_loop(w.label, &w.cond, &w.body, s.span))
         .Block(b) => return .Expr(cx.block(&b, false))
-        .Defer(_) => return .Expr(cx.unsupported(s.span, "`defer` and `errdefer`"))
-        .When(_) => return .Expr(cx.unsupported(s.span, "local `when`"))
+        .Defer(is_err, body) => return cx.defer_stmt(is_err, body)
+        .When(w) => return .Expr(cx.when_stmt(w))
         .Cancel(_) => return .Expr(cx.unsupported(s.span, "`cancel`"))
         .LetElse(_) => return .Expr(cx.unsupported(s.span, "pattern bindings with `else`"))
     }
+}
+
+/// A `when` in a body (§3.6): only the branch its compile-time condition selects is
+/// checked.
+when_stmt :: fn(cx: ^FnCx, w: ^const ast.WhenStmt) -> ^Expr needs Load {
+    taken := cx.s.l.when_cond(cx.module, w.cond) else return unit(cx.s, w.span)
+    if taken { return cx.block(&w.then, false) }
+    match w.else_ {
+        .Block(b) => return cx.block(&b, false)
+        .When(inner) => return cx.when_stmt(inner)
+        null => return unit(cx.s, w.span)
+    }
+}
+
+/// `defer body` or `errdefer body` (§8.8): `body` may not leave itself, and may perform
+/// only operations of kind `fn`, unless it handles the others itself.
+defer_stmt :: fn(cx: ^FnCx, is_err: bool, body: ^const ast.Stmt) -> tir.Stmt needs Load {
+    was := cx.in_defer
+    base := cx.defer_label_base
+    cx.in_defer = true
+    cx.defer_label_base = cx.labels.items.len
+    performed_base := cx.performed.items.len
+    cx.push_scope()
+    inner := cx.stmt(body)
+    cx.pop_scope()
+    for i in performed_base..cx.performed.items.len {
+        p := cx.performed.items[i]
+        if p.span in cx.fn_performs.items { continue }
+        exits := false
+        for o in cx.s.effects.items[usize(p.effect_.eff)].ops {
+            if o.kind is not .Fn { exits = true }
+        }
+        if exits {
+            cx.error(p.span, str.format("a deferred statement may not perform `{}`, whose operations can exit or suspend, unless it handles it (§8.8)", cx.s.tys.show_ref(&p.effect_))!)
+        }
+    }
+    cx.in_defer = was
+    cx.defer_label_base = base
+    x := match inner {
+        .Expr(e) => e
+        _ => {
+            stmts := list(tir.Stmt)
+            stmts.push(inner)!
+            tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: body.span))!), body.span)
+        }
+    }
+    return .Defer(is_err, x)
 }
 
 /// An expression in statement position: its value must be `()` or `never` (§7.14).
@@ -490,7 +763,7 @@ stmt_expr :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ^Expr needs Load {
         .Block(b) => cx.block(&b, false)
         .For(f) => cx.for_loop(f)
         .Match(m) => cx.match_expr(m, false, null)
-        .With(_) => cx.unsupported(e.span, expr_kind_text(&e.kind))
+        .With(w) => cx.with_expr(w, false, null)
         _ => {
             errors := cx.s.l.diags.error_count()
             x := cx.expr(e, null)
@@ -508,7 +781,7 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
     if b.names.len is not 1 { return .Expr(cx.unsupported(b.span, "destructuring")) }
     name := b.names[0]
     if b.kind is .Const and b.ty is null {
-        if b.init.kind is .Fn(_) { return .Expr(cx.unsupported(b.span, "nested functions")) }
+        if .Fn(lit) := b.init.kind { return cx.nested_fn_binding(name, lit, b.span) }
         if cx.local_type_init(b.init) { return .Expr(cx.unsupported(b.span, "local type aliases")) }
     }
     annot: ?Ty = null
@@ -574,7 +847,7 @@ local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
         .Field(base, name) => {
             m := cx.s.module_named(cx.module, base) else return false
             d := cx.s.l.lookup(m, name.name) else return false
-            return cx.s.l.decls.items[d].item.is_pub and cx.s.resolve_decl(d) is .Type(_)
+            return cx.s.decl_visible(d, cx.module) and cx.s.resolve_decl(d) is .Type(_)
         }
         .Intrinsic(i) => return i.name.name is "type_of"
         _ => return false
@@ -699,13 +972,12 @@ one_expr :: fn(e: ^Expr) -> []Expr needs Alloc {
 /// For an assignment to a plain name: whether it names mutable storage (reports it if not).
 assignable_name :: fn(cx: ^FnCx, place: ^const ast.Expr) -> bool needs Load {
     .Ident(id) := place.kind else return true
-    immutable := match cx.lookup_local(id.name) {
-        .Var(l) => not cx.locals.items[usize(l)].mutable
-        null => {
-            d := cx.s.lookup_module_name(cx.module, id.name)
-            if x := d { cx.s.resolve_decl(x) is not .Error } else { true }
-        }
-        _ => true
+    immutable := true
+    if found := cx.lookup_local_at(id.name) {
+        if .Var(l) := found.binding { immutable = not cx.local_at(found.depth, l).mutable }
+    } else {
+        d := cx.s.lookup_module_name(cx.module, id.name)
+        immutable = if x := d { cx.s.resolve_decl(x) is not .Error } else { true }
     }
     if immutable {
         cx.error(place.span, str.format("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name)!)
@@ -732,6 +1004,7 @@ place_mutability :: fn(cx: ^FnCx, e: ^Expr) -> ?bool {
     if tys.is_error(e.ty) { return true }
     match e.kind {
         .Local(l) => return cx.locals.items[usize(l)].mutable
+        .Upvar(levels, l) => return cx.local_at(cx.depth() - levels, l).mutable
         .Const(_) => return false
         .Deref(p) => {
             if .Ptr(c, _) := tys.kind(p.ty) { return not c }
@@ -814,9 +1087,9 @@ expect_bool :: fn(cx: ^FnCx, e: ^Expr) -> ^Expr needs Load {
 // Helpers
 // ---------------------------------------------------------------------------------
 
-pub unit :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.unit(), .Aggregate(empty_slice(Expr)), span)
+unit :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.unit(), .Aggregate(empty_slice(Expr)), span)
 
-pub error_expr :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.error(), .Aggregate(empty_slice(Expr)), span)
+error_expr :: fn(s: ^Sema, span: source.Span) -> ^Expr needs Alloc => tir.mk(s.tys.error(), .Aggregate(empty_slice(Expr)), span)
 
 /// The error for `---` at a type that is not plain data (§4.4).
 uninit_message :: fn(s: ^Sema, ty: Ty) -> string needs Alloc {
@@ -824,12 +1097,14 @@ uninit_message :: fn(s: ^Sema, ty: Ty) -> string needs Alloc {
     return str.format("`---` requires a plain-data type, but `{}` is not (§4.4){}", s.show(ty), hint)!
 }
 
-/// Forgets the `break`s to the loop with label `id`; returns whether there were any.
+/// Forgets the `break`s to the label `id` of the current function; returns whether
+/// there were any.
 forget_label_breaks :: fn(cx: ^FnCx, id: u32) -> bool {
     found := false
     i: usize = 0
+    depth := cx.depth()
     while i < cx.label_breaks.items.len {
-        if cx.label_breaks.items[i].label is id {
+        if cx.label_breaks.items[i].label is id and cx.label_breaks.items[i].depth is depth {
             found = true
             _ = cx.label_breaks.remove(i)
         } else {
@@ -857,6 +1132,7 @@ stmt_diverges :: fn(s: ^Sema, st: tir.Stmt) -> bool => match st {
     .Let(_, null) => false
     .Let(_, x) => s.tys.kind(x.ty) is .Never
     .Assign(_, v) => s.tys.kind(v.ty) is .Never
+    .Defer(_, _) => false
 }
 
 /// The expression that makes statement `st` diverge, with the reason it never completes.
@@ -866,6 +1142,7 @@ stmt_never_cause :: fn(s: ^Sema, st: tir.Stmt) -> ?(span: source.Span, why: stri
         .Let(_, null) => return null
         .Let(_, x) => return never_cause(s, x)
         .Assign(_, v) => return never_cause(s, v)
+        .Defer(_, _) => return null
     }
 }
 
@@ -879,6 +1156,9 @@ never_cause :: fn(s: ^Sema, e: ^Expr) -> ?(span: source.Span, why: string) {
         .Trap(_) => "this stops the program"
         .Call(callee, _) => if callee is .Perform(_) { "this operation never returns to its caller: its result type is `never`" } else { "this call never returns: its result type is `never`" }
         .If(_) => "this `if` never completes: each of its branches leaves"
+        .Try(_) => "this `try` always returns"
+        .Match(_) => "this `match` never completes: each of its arms leaves"
+        .With(_) => "the body of this `with` never completes"
         .Block(b) => {
             if t := b.tail and s.tys.kind(t.ty) is .Never { return never_cause(s, t) }
             if b.stmts.len > 0 { return stmt_never_cause(s, b.stmts[b.stmts.len - 1]) }

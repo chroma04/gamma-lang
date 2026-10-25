@@ -393,8 +393,18 @@ mod tests {
             name: Symbol::intern("S"),
             kind: AdtKind::Struct {
                 fields: vec![
-                    FieldDef { name: Symbol::intern("a"), ty: Ty::u8(), is_pub: false, align: None },
-                    FieldDef { name: Symbol::intern("b"), ty: Ty::int(false, 64), is_pub: false, align: None },
+                    FieldDef {
+                        name: Symbol::intern("a"),
+                        ty: Ty::u8(),
+                        vis: crate::syntax::ast::Visibility::Private,
+                        align: None,
+                    },
+                    FieldDef {
+                        name: Symbol::intern("b"),
+                        ty: Ty::int(false, 64),
+                        vis: crate::syntax::ast::Visibility::Private,
+                        align: None,
+                    },
                 ],
                 packed: false,
                 align: None,

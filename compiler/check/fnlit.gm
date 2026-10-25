@@ -1,0 +1,252 @@
+// Function literals and nested functions (§11.6, §11.8), checked as nested frames of the
+// enclosing function (mirrors `src/sema/fnlit.rs`).
+
+/// A function literal `fn(…) … => e` or `fn(…) { … }`, or the function of a binding
+/// `name :: fn …` when `name` is given.
+fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if name is null and is_generic(lit) {
+        cx.error(lit.span, "a function literal used as a value cannot be generic; bind it with `name :: fn …` (§11.8)")
+        return error_expr(cx.s, span)
+    }
+    if cx.in_generic_fn() { return cx.unsupported(span, "function literals in generic functions") }
+    // A literal written for `?^fn(…)` is the function pointer it wraps.
+    target: ?Ty = null
+    if t0 := expect {
+        t := cx.infer.resolve(cx.s, t0)
+        if .Optional(inner) := tys.kind(t) and tys.kind(inner) is .FnPtr(_) { t = inner }
+        target = t
+    }
+    expected: ?types.FnTy = null
+    wants_pointer := false
+    if t := target {
+        match tys.kind(t) {
+            .Fn(f) => { expected = f }
+            .FnPtr(f) => {
+                expected = f
+                wants_pointer = true
+            }
+            _ => {}
+        }
+    }
+    if f := expected and f.win64 and wants_pointer { return cx.unsupported(span, "function literals with a calling convention") }
+    for p in lit.sig.params {
+        if p.rest or p.default is not null { return cx.unsupported(span, "rest parameters and defaults of function literals") }
+    }
+    params := cx.literal_params(lit, expected)
+    ret_known: ?Ty = null
+    if r := lit.sig.ret {
+        ret_known = cx.s.resolve_type(cx.module, r)
+    } else if f := expected and not tys.has_param(f.ret) {
+        ret_known = f.ret
+    }
+    effects := types.empty_effects()
+    if list_ := lit.sig.effects {
+        effects = cx.s.resolve_effect_list(cx.module, list_)
+    } else if f := expected {
+        for e in f.effects.effects {
+            for a in e.args {
+                if .Type(at) := a and tys.has_param(at) { return cx.unsupported(span, "function literals with inferred effects") }
+            }
+        }
+        effects = f.effects
+    }
+    infer_ret := ret_known is null and lit.body is .Expr(_)
+    infer_block := ret_known is null and lit.body is .Block(_)
+    ret := ret_known else tys.unit()
+    fn_name := if n := name { n.name } else { "<fn>" }
+    fn_id := cx.s.new_literal_fn(fn_name, span, cx.module, params, ret, effects)
+    // Visible inside its own body, so that it can call itself.
+    if n := name { cx.declare(n.name, .NestedFn(fn_id), span) }
+    cx.enter_fn(fn_id, ret, effects)
+    cx.open_ret = infer_block
+    open := name is not null and (infer_ret or infer_block)
+    if open { cx.open_fns.push(fn_id)! }
+    param_ids := list(u32)
+    for p in params {
+        id := cx.new_local(p.name, p.ty, false, p.span)
+        if p.name is not "_" { cx.declare(p.name, .Var(id), p.span) }
+        param_ids.push(id)!
+    }
+    body := cx.literal_body(&lit.body, ret, infer_ret)
+    if open { _ = cx.open_fns.pop() }
+    final_ret := cx.ret
+    cx.reject_returned_closure(lit, final_ret)
+    frame := cx.exit_fn()
+    if infer_ret or infer_block { cx.s.fns.items[usize(fn_id)].ret = final_ret }
+    undeclared_is_error := name is not null and not frame.captures
+    own := cx.route_performed(frame.performed, &effects, wants_pointer and name is null, undeclared_is_error)
+    // The value carries the handler context where it is written for its own effects, so
+    // the function takes that context like any effectful function.
+    carries_context := own.len > 0
+    if carries_context {
+        all := list(EffectRef)
+        all.extend(effects.effects)!
+        all.extend(own)!
+        cx.s.fns.items[usize(fn_id)].effects = types.effect_set(all.items)
+    }
+    if frame.captures { cx.s.defs.items[usize(fn_id)].parent = cx.fn_id }
+    cx.nested.push(NestedFn(fn_id: fn_id, params: param_ids.items, locals: frame.locals, body: body))!
+    ptys := list(Ty)
+    for p in params { ptys.push(p.ty)! }
+    fty := types.FnTy(params: ptys.items, ret: final_ret, effects: effects, variadic: false, win64: false)
+    if frame.captures {
+        if wants_pointer {
+            cx.error(span, "a function literal that uses local variables cannot be a function pointer (§11.7)")
+            return error_expr(cx.s, span)
+        }
+        if n := name { cx.check_no_self_reference(fn_id, n.name, span) }
+        return tir.mk(tys.intern(.Fn(fty)), .Closure(fn_id), span)
+    }
+    expects_fn := false
+    if t := expect and tys.kind(t) is .Fn(_) { expects_fn = true }
+    // A literal that performs effects outside its type carries the handlers where it is
+    // written, so it is second-class like one that captures (§11.6).
+    ty := if carries_context or expects_fn { tys.intern(.Fn(fty)) } else { tys.intern(.FnPtr(fty)) }
+    return tir.mk(ty, .FnRef(fn_id), span)
+}
+
+/// Whether a function literal has compile-time parameters or constraints (§16.1).
+is_generic :: fn(lit: ^const ast.FnLit) -> bool {
+    if lit.where_.len > 0 { return true }
+    for p in lit.sig.params {
+        if p.comptime { return true }
+        if t := p.ty and .Ident(i) := t.kind and i.name is "type" { return true }
+    }
+    return false
+}
+
+/// Whether the outermost function being checked is generic.
+in_generic_fn :: fn(cx: ^const FnCx) -> bool {
+    root := if cx.outer.items.len > 0 { cx.outer.items[0].fn_id } else { cx.fn_id }
+    f := root else return false
+    return cx.s.fns.items[usize(f)].generics.len > 0
+}
+
+/// The parameters of a literal: their types come from annotations, or from the expected
+/// function type.
+literal_params :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expected: ?types.FnTy) -> []sema.ParamInfo needs Load {
+    params := list(sema.ParamInfo)
+    for p in lit.sig.params {
+        if p.comptime { cx.error(p.span, "compile-time parameters are not supported in function literals") }
+        annotated: ?Ty = null
+        if t := p.ty { annotated = cx.s.resolve_type(cx.module, t) }
+        for n in p.names {
+            i := params.items.len
+            ty := cx.s.tys.error()
+            if t := annotated {
+                ty = t
+            } else if f := expected and i < f.params.len and not cx.s.tys.has_param(f.params[i]) {
+                // Parts of the expectation that mention type parameters still to be
+                // inferred (a generic call's `K`) say nothing yet.
+                ty = f.params[i]
+            } else {
+                cx.error(n.span, str.format("the type of parameter `{}` cannot be inferred here; annotate it", n.name)!)
+            }
+            params.push(sema.ParamInfo(name: n.name, ty: ty, span: n.span, default: null, generic: null, rest: false))!
+        }
+    }
+    if f := expected and f.params.len is not params.items.len {
+        cx.error(lit.sig.span, str.format("expected a function with {} parameters, but this one has {}", f.params.len, params.items.len)!)
+    }
+    return params.items
+}
+
+/// Checks the body of a literal whose function has been entered.
+literal_body :: fn(cx: ^FnCx, body: ^const ast.FnBody, ret: Ty, infer_ret: bool) -> ^Expr needs Load {
+    match body^ {
+        .Expr(e) => {
+            if infer_ret {
+                b := cx.expr(e, null)
+                cx.ret = b.ty
+                return b
+            }
+            return cx.coerce(cx.expr(e, ret), ret)
+        }
+        .Block(b) => {
+            block := cx.block(&b, false)
+            // The return type is that of the `return`s: `()` if none has a value.
+            if cx.open_ret {
+                cx.ret = cx.open_ty else cx.s.tys.unit()
+                cx.open_ret = false
+            }
+            return cx.finish_block_body(block, &b)
+        }
+    }
+}
+
+/// A literal cannot return a second-class function (§11.6).
+reject_returned_closure :: fn(cx: ^FnCx, lit: ^const ast.FnLit, final_ret: Ty) needs Load {
+    if cx.s.tys.kind(cx.infer.resolve(cx.s, final_ret)) is not .Fn(_) { return }
+    at := lit.sig.span
+    if r := lit.sig.ret {
+        at = r.span
+    } else if .Expr(e) := lit.body {
+        at = e.span
+    }
+    cx.error(at, "a second-class function cannot be returned; return a function pointer `^fn(…)` instead (§11.6)")
+}
+
+/// The effects a literal performs that are in its own set are performed where it is
+/// called; the others where it is written (§11.6, §12.3). Returns those it performs
+/// outside its set.
+route_performed :: fn(cx: ^FnCx, performed: []const Performed, effects: ^const EffectSet, pointer_literal: bool, undeclared_is_error: bool) -> []EffectRef needs Load {
+    own := list(EffectRef)
+    for p in performed {
+        if set_contains(effects, &p.effect_) { continue }
+        if pointer_literal {
+            cx.error(p.span, str.format("a function pointer performs only the effects in its type, and `{}` is not among them (§11.7)", cx.s.tys.show_ref(&p.effect_))!)
+            continue
+        }
+        own.push(p.effect_)!
+        if undeclared_is_error {
+            name := cx.s.tys.show_ref(&p.effect_)
+            cx.error(p.span, str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!)
+        } else {
+            cx.performed.push(p)!
+        }
+    }
+    return own.items
+}
+
+recursive_without_ret :: fn(cx: ^FnCx, name: string, span: source.Span) needs Alloc {
+    cx.error(span, str.format("`{}` refers to itself, so it needs a declared return type: write `-> R` (§11.1)", name)!)
+}
+
+/// A capturing function cannot refer to itself (§11.8).
+check_no_self_reference :: fn(cx: ^FnCx, fn_id: u32, name: string, span: source.Span) needs Alloc {
+    refers := false
+    for n in cx.nested.items {
+        if n.fn_id is not fn_id { continue }
+        visit(n.body, fn(e: ^Expr) {
+            match e.kind {
+                .FnRef(f) => if f is fn_id { refers = true }
+                .Call(callee, _) => if .Fn(f) := callee and f is fn_id { refers = true }
+                _ => {}
+            }
+        })
+    }
+    if refers { cx.error(span, str.format("`{}` uses local variables of the enclosing function, so it cannot call itself (§11.8)", name)!) }
+}
+
+/// `name :: fn …` inside a function body.
+nested_fn_binding :: fn(cx: ^FnCx, name: ast.Ident, lit: ^const ast.FnLit, span: source.Span) -> tir.Stmt needs Load {
+    if is_generic(lit) { return .Expr(cx.unsupported(span, "generic nested functions")) }
+    v := cx.fn_literal(lit, null, name, span)
+    if .Closure(_) := v.kind {
+        // It captures: an immutable local holding a second-class value. The name,
+        // declared as a nested function for its body, now names the local.
+        id := cx.new_local(name.name, v.ty, false, name.span)
+        scope := &cx.scopes.items[cx.scopes.items.len - 1]
+        j := scope.items.len
+        while j > 0 {
+            j -= 1
+            if scope.items[j].name is name.name {
+                scope.items[j].value = .Var(id)
+                break
+            }
+        }
+        return .Let(id, v)
+    }
+    return .Expr(unit(cx.s, span))
+}

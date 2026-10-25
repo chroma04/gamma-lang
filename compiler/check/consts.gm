@@ -1,0 +1,56 @@
+// The initializers of typed constants and the default values of fields that resolving
+// the declarations left to the body checker (§17.2). Mirrors `Sema::check_const_expr`
+// in `src/sema/func.rs`.
+//
+// The reference implementation evaluates each initializer at compile time, which can
+// fail. gammac does not evaluate: it accepts an initializer whose evaluation cannot fail
+// (literals, constants, constructions, lossless conversions and the like) and reports
+// any other as unsupported.
+
+/// Checks the initializers queued while resolving declarations.
+pub check_consts :: fn(s: ^Sema) needs Load {
+    for i in 0..s.pending_consts.items.len {
+        c := s.pending_consts.items[i]
+        if s.l.modules.items[c.module].is_prelude { continue }
+        check_const(s, c)
+    }
+}
+
+check_const :: fn(s: ^Sema, c: sema.PendingConst) needs Load {
+    errors := s.l.diags.error_count()
+    cx := fn_cx(s, c.module, s.tys.unit(), types.empty_effects())
+    e := cx.coerce(cx.expr(c.init, c.ty), c.ty)
+    if cx.performed.items.len > 0 { cx.error(cx.performed.items[0].span, "a constant's initializer may not perform effects") }
+    cx.finish(e)
+    if s.l.diags.error_count() is not errors { return }
+    if cx.locals.items.len > 0 {
+        s.unsupported(c.init.span, "constant initializers with local variables")
+        return
+    }
+    if not cannot_fail(s, e) { s.unsupported(c.init.span, "the evaluation of this constant expression") }
+}
+
+/// Whether evaluating `e` cannot fail: it performs no call, and none of its operations
+/// can trap.
+cannot_fail :: fn(s: ^Sema, e: ^Expr) -> bool {
+    tys := &s.tys
+    ok := match e.kind {
+        .Int(_), .Float(_), .UntypedFloat(_), .Bool(_), .Str(_), .CStr(_), .Null, .Const(_), .FnRef(_) => true
+        .Field(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .MakeErr(_), .Eq(_), .Logic(_) => true
+        .Coerce(k, _) => k is not .Unresolved
+        .Builtin(op, _) => op in (tir.Builtin.Convert, tir.Builtin.Bits, tir.Builtin.Tag, tir.Builtin.Checked, tir.Builtin.Sat, tir.Builtin.Min, tir.Builtin.Max, tir.Builtin.IsNan, tir.Builtin.IsInf, tir.Builtin.IsFinite, tir.Builtin.SignBit)
+        .Unary(op, x) => op is not .Neg or tys.kind(x.ty) is .Float(_)
+        .Binary(op, l, _) => match op {
+            .Add(f), .Sub(f), .Mul(f) => f is not .Checked or tys.kind(l.ty) is .Float(_)
+            .Div, .Rem => tys.kind(l.ty) is .Float(_)
+            .Shl(_), .Shr => false
+            _ => true
+        }
+        _ => false
+    }
+    if not ok { return false }
+    tir.for_each_child(e, fn(c: ^Expr) {
+        if ok and not cannot_fail(s, c) { ok = false }
+    })
+    return ok
+}

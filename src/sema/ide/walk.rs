@@ -128,7 +128,7 @@ impl<'a, 's> Walker<'a, 's> {
             return;
         }
         let items = match self.sema.decl_done(d) {
-            Some(DeclValue::Module(m)) => self.sema.module_members(m),
+            Some(DeclValue::Module(m)) => self.sema.module_members(m, self.sema.decls[d.0 as usize].module),
             Some(DeclValue::Type(t)) => self.sema.variant_members(t),
             Some(DeclValue::Effect(_)) => self.sema.operation_members(d),
             _ => return,

@@ -144,6 +144,7 @@ load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err 
                 if m := l.load_root(root) {
                     s.resolve_declarations()
                     if opts.command is .Decls {
+                        check.check_consts(&s)
                         Out.write(s.decl_dump())
                     } else {
                         check.check_program(&s, m)

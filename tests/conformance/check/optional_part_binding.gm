@@ -1,0 +1,29 @@
+//! stage: check
+// A name in the position of an optional inside a pattern matches only a present value
+// (§9.3). When that leaves a `match` not exhaustive, the error points at the name and
+// says how to get the optional as it is: bind the value that holds it.
+
+Expr :: union {
+    Break: (label: ?string, value: ?i32)
+    Return: ?i32
+    Int: i32
+}
+
+describe :: fn(e: Expr) -> string => match e { //~ ERROR `.Break((null, null))` is not covered //~ NOTE bind the value that holds it
+    .Break(label, _) => label
+    .Return(_) => "return"
+    .Int(_) => "int"
+}
+
+// Binding the whole payload gets the optional parts as they are.
+describe_whole :: fn(e: Expr) -> string => match e {
+    .Break(b) => b.label else "break"
+    .Return(null) => "return"
+    .Return(x) => if x > 0 { "return a positive value" } else { "return a value" }
+    .Int(_) => "int"
+}
+
+main :: fn() {
+    _ = describe(.Int(1))
+    _ = describe_whole(.Int(1))
+}

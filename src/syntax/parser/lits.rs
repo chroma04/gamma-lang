@@ -79,7 +79,7 @@ impl Parser<'_> {
             }
             return self.parse_struct_when();
         }
-        let is_pub = self.eat_kw(Keyword::Pub);
+        let vis = self.parse_visibility()?;
         let is_using = self.eat_kw(Keyword::Using);
         let mut names = vec![self.parse_name("a field name")?];
         while self.eat(Punct::Comma) {
@@ -89,7 +89,7 @@ impl Parser<'_> {
         let ty = self.parse_type()?;
         let default = if self.eat(Punct::Assign) { Some(self.parse_expr()?) } else { None };
         let span = self.span_from(start);
-        Ok(StructMember::Field(FieldDecl { attrs, is_pub, is_using, names, ty, default, span }))
+        Ok(StructMember::Field(FieldDecl { attrs, vis, is_using, names, ty, default, span }))
     }
 
     fn parse_struct_when(&mut self) -> PResult<StructMember> {

@@ -91,7 +91,12 @@ check_arms :: fn(cx: ^FnCx, ty: Ty, arms: []const tir.Arm) -> MatchReport needs 
 
 report_match :: fn(cx: ^FnCx, report: MatchReport, span: source.Span, arms: []const source.Span) needs Alloc {
     if missing := report.missing {
-        cx.error(span, str.format("this `match` is not exhaustive: `{}` is not covered", missing)!)
+        d := diag.error(span, str.format("this `match` is not exhaustive: `{}` is not covered", missing)!)
+        if at := report.present_only {
+            d.add_label(at, "this name matches only a present value")
+            d.add_note("a name in the position of an optional matches only a present value (§9.3); to get the optional as it is, bind the value that holds it, such as a whole payload with `.V(p)`, and read the part from it (`p.field`)")
+        }
+        cx.s.emit(d)
     }
     for i in report.unreachable { cx.error(arms[i], "this arm can never be chosen: earlier arms cover it") }
 }

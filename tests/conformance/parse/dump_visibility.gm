@@ -1,0 +1,13 @@
+//! stage: parse
+//! dump
+// The three visibilities of declarations and fields (§3.3).
+
+pub Shape :: struct {
+    pub w: f64
+    pub(package) cache: f64
+    id: u32
+}
+
+pub(package) helper :: fn() {}
+
+private :: 1

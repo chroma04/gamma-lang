@@ -88,7 +88,7 @@ bind_module :: fn(l: ^Loader, prelude: usize, name: string, m: usize) needs Allo
         span: source.DUMMY,
         doc: null,
         attrs: empty_slice(ast.Attribute),
-        is_pub: true,
+        vis: .Public,
         kind: .Intrinsic(underscore),
     )
     ident := ast.Ident(name: name, span: source.DUMMY)

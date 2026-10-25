@@ -1,0 +1,279 @@
+// Iterators (§13): `for` over a call of an iterator, whose body becomes the clause of a
+// handler for the iterator's `Yield(T)`, and the operations of generic effects such as
+// `yield(x)` (mirrors `for_iterator` and `perform_op` in `src/sema/effects.rs`).
+
+/// `for p in f(args) { B }` where `f` is an iterator (§13.2).
+for_iterator :: fn(cx: ^FnCx, f: ^const ast.ForExpr) -> ^Expr needs Load {
+    span := f.span
+    tys := &cx.s.tys
+    yield_eff := cx.s.yield_effect else {
+        cx.error(span, "the `Yield` effect is not available")
+        return error_expr(cx.s, span)
+    }
+    // The source call is evaluated as written, outside the loop's handler.
+    start := cx.performed.items.len
+    call := cx.expr(f.iter, null)
+    // A call with spread or reordered arguments binds some of them first.
+    bound := empty_slice(tir.Stmt)
+    if .Block(b) := call.kind and t := b.tail and t.kind is .Call(_) {
+        bound = b.stmts
+        call = t
+    }
+    effects := types.empty_effects()
+    match call.kind {
+        .Call(callee, _) => match callee {
+            .Fn(id) => { effects = cx.s.fns.items[usize(id)].effects }
+            .Indirect(c) => match tys.kind(cx.infer.resolve(cx.s, c.ty)) {
+                .Fn(sig), .FnPtr(sig) => { effects = sig.effects }
+                _ => {}
+            }
+            _ => return cx.not_an_iterator(f, call)
+        }
+        _ => return cx.not_an_iterator(f, call)
+    }
+    yields := list(EffectRef)
+    for e in effects.effects {
+        if e.eff is yield_eff { yields.push(e)! }
+    }
+    if yields.items.len is 0 {
+        // A call returning an array or slice is iterated like any such value.
+        if e := cx.for_each_value(f, call) { return e }
+        cx.error(f.iter.span, "this call is not an iterator: its effects include no `Yield(T)`")
+        return error_expr(cx.s, span)
+    }
+    if yields.items.len > 1 {
+        cx.error(f.iter.span, "this call yields more than one type; `for` needs exactly one `Yield(T)`")
+        return error_expr(cx.s, span)
+    }
+    eref := yields.items[0]
+    elem := tys.error()
+    if eref.args.len > 0 and .Type(t) := eref.args[0] { elem = t }
+    // The loop handles the iterator's `Yield(T)`.
+    i := start
+    while i < cx.performed.items.len {
+        if types.cmp_ref(&cx.performed.items[i].effect_, &eref) is 0 {
+            _ = cx.performed.remove(i)
+        } else {
+            i += 1
+        }
+    }
+    result_ty := call.ty
+    // The arguments are bound first, so that they are evaluated outside the loop's handler.
+    pre := list(tir.Stmt)
+    pre.extend(bound)!
+    cx.hoist_args(call, &pre)
+    cx.push_scope()
+    label_name: ?string = null
+    if l := f.label {
+        cx.declare(l.name, .Label, l.span)
+        label_name = l.name
+    }
+    label := cx.new_label(label_name, true, .Loop(result_ty))
+    hid := cx.s.handlers.items.len.trunc(u32)
+    cx.s.handlers.push(tir.HandlerLit(effect_: eref, clauses: empty_slice(u32)))!
+    // The clause `yield(x) => { p :: x; B }`.
+    params := list(sema.ParamInfo)
+    params.push(sema.ParamInfo(name: "<item>", ty: elem, span: span, default: null, generic: null, rest: false))!
+    fn_id := cx.s.new_nested_fn(.Clause, "<for body>", span, cx.module, params.items, tys.unit(), types.empty_effects())
+    cx.enter_fn(fn_id, tys.unit(), types.empty_effects())
+    cx.clause = ClauseInfo(op_kind: .Esc, handler_: hid, decl_clause: null, with_expect: null, for_label: ForLabel(name: label_name, label: label), break_ty: result_ty)
+    xid := cx.new_local("<item>", elem, false, span)
+    // `for a, b in …` is the tuple pattern `(a, b)` (§8.4).
+    pat_ast := f.pats[0]
+    if f.pats.len is not 1 {
+        args := list(ast.PatArg)
+        for p in f.pats { args.push(ast.PatArg(name: null, pat: p, span: p.span))! }
+        pat_ast = ast.Pattern(id: f.pats[0].id, kind: .Tuple(args.items), span: f.pats[0].span)
+    }
+    binds := list(PatBind)
+    pat := cx.pattern(&pat_ast, elem, .Irrefutable, &binds)
+    if not tys.is_error(elem) and not irrefutable(cx.s, pat) {
+        cx.error(pat_ast.span, "a `for` pattern must match every value (it must be irrefutable)")
+    }
+    cx.declare_binds(&binds)
+    body := cx.block(&f.body, false)
+    arms := list(tir.Arm)
+    arms.push(tir.Arm(pat: pat, guard: null, body: body))!
+    m := tir.mk(tys.unit(), .Match(tir.mk(elem, .Local(xid), span), arms.items), span)
+    frame := cx.exit_fn()
+    cx.performed.extend(frame.performed)!
+    cx.s.defs.items[usize(fn_id)].parent = cx.fn_id
+    ids := list(u32)
+    ids.push(xid)!
+    cx.nested.push(NestedFn(fn_id: fn_id, params: ids.items, locals: frame.locals, body: m))!
+    _ = cx.labels.pop()
+    _ = cx.forget_label_breaks(label)
+    cx.pop_scope()
+    clauses := list(u32)
+    clauses.push(fn_id)!
+    cx.s.handlers.items[usize(hid)].clauses = clauses.items
+    handlers := list(tir.HandlerValue)
+    handlers.push(.Literal(tir.mk(tys.intern(.Handler(hid)), .HandlerRef(hid), span)))!
+    w := tir.mk(result_ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: null, body: call)), span)
+    if pre.items.len is 0 { return w }
+    return tir.mk(result_ty, .Block(new(tir.Block(stmts: pre.items, tail: w, span: span))!), span)
+}
+
+/// The source of a `for` that is a call of no function: iterated if it is an array or
+/// slice.
+not_an_iterator :: fn(cx: ^FnCx, f: ^const ast.ForExpr, call: ^Expr) -> ^Expr needs Load {
+    if e := cx.for_each_value(f, call) { return e }
+    if not cx.s.tys.is_error(call.ty) { cx.error(f.iter.span, "`for` iterates over a range, an array or slice, or a call to an iterator") }
+    return error_expr(cx.s, f.span)
+}
+
+/// Moves the call's non-constant arguments into temporaries bound by statements added
+/// to `pre`.
+hoist_args :: fn(cx: ^FnCx, call: ^Expr, pre: ^List(tir.Stmt)) needs Load {
+    .Call(_, args) := call.kind else return
+    for i in 0..args.len {
+        a := &args[i]
+        if a.kind in (.Int(_), .Str(_), .Bool(_)) { continue }
+        // A temporary the argument points to (`&mk()`, or a temporary array passed as a
+        // slice) lives for the call, which includes the loop (§7.2): it becomes a local
+        // too, rather than dying with the statement that binds the argument.
+        cx.lift_temps(a, pre)
+        t := cx.temp(a.ty, a.span)
+        v := new(a^)!
+        a^ = tir.mk(a.ty, .Local(t), a.span)^
+        pre.push(.Let(t, v))!
+    }
+}
+
+/// Replaces each `AddrOfTemp(v)` in `e` (outside nested calls) by the address of a local
+/// initialized with `v` by a statement added to `pre`.
+lift_temps :: fn(cx: ^FnCx, e: ^Expr, pre: ^List(tir.Stmt)) needs Load {
+    if e.kind in (.Call(_), .Closure(_)) { return }
+    if .AddrOfTemp(inner) := e.kind {
+        cx.lift_temps(inner, pre)
+        t := cx.temp(inner.ty, inner.span)
+        v := new(inner^)!
+        inner^ = tir.mk(inner.ty, .Local(t), inner.span)^
+        pre.push(.Let(t, v))!
+        e.kind = .AddrOf(inner)
+        return
+    }
+    tir.for_each_child(e, fn(c: ^Expr) { cx.lift_temps(c, pre) })
+}
+
+/// An iterator call passed for a parameter that is not an iterator parameter
+/// (`enumerate(bytes(s))`, §13.5): reports it once, in place of the type and effect
+/// errors it would cause, and returns true. `v` is the checked argument.
+iterator_call_as_value :: fn(cx: ^FnCx, e0: ^const ast.Expr, v: ^Expr, param: Ty) -> bool needs Load {
+    e := e0
+    while .Paren(x) := e.kind { e = x }
+    tys := &cx.s.tys
+    if e.kind is not .Call(_) or not tys.is_unit(cx.infer.resolve(cx.s, v.ty)) or tys.is_unit(cx.infer.resolve(cx.s, param)) { return false }
+    if e.span not in cx.iterator_calls.items { return false }
+    text := cx.s.l.sm.file(e.span.file).text[usize(e.span.lo)..usize(e.span.hi)]
+    if i := str.find(text, "(") { text = text[..i] }
+    if i := str.rfind(text, ".") { text = text[i + 1..] }
+    c := str.trim(text)
+    p := cx.show(cx.infer.resolve(cx.s, param))
+    cx.error(e.span, str.format("`{}(…)` is an iterator, not a value: it cannot be passed for a parameter of type `{}`; run it with `for x in {}(…)`, or gather its values with `collect({}(…))` (§13.5)", c, p, c, c)!)
+    i: usize = 0
+    while i < cx.performed.items.len {
+        if cx.performed.items[i].span is e.span {
+            _ = cx.performed.remove(i)
+        } else {
+            i += 1
+        }
+    }
+    return true
+}
+
+/// The instantiations of effect `eff` that the enclosing functions declare.
+available :: fn(cx: ^const FnCx, eff: u32) -> []EffectRef needs Alloc {
+    out := list(EffectRef)
+    add :: fn(set: ^const EffectSet) needs Alloc {
+        for e in set.effects {
+            if e.eff is not eff { continue }
+            seen := false
+            for x in out.items {
+                if types.cmp_ref(&x, &e) is 0 { seen = true }
+            }
+            if not seen { out.push(e)! }
+        }
+    }
+    add(&cx.declared)
+    for f in cx.outer.items { add(&f.declared) }
+    return out.items
+}
+
+/// A call of operation `op` of the generic effect `eff`, written without the effect: the
+/// instantiation is the one available, or the one the arguments give (§12.1).
+perform_generic :: fn(cx: ^FnCx, eff: u32, op: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    info := cx.s.effects.items[usize(eff)]
+    o := info.ops[usize(op)]
+    avail := cx.available(eff)
+    only: ?EffectRef = if avail.len is 1 { avail[0] } else { null }
+    binds := list(?Ty)
+    for _ in info.params { binds.push(null)! }
+    probe := list(Expr)
+    positional: usize = 0
+    for a in args {
+        .Positional(e) := a.kind else continue
+        i := positional
+        positional += 1
+        expect: ?Ty = null
+        if one := only and i < o.params.len { expect = cx.s.subst(o.params[i].ty, effect_map(info.params, one.args)) }
+        v := cx.expr(&e, expect)
+        if i < o.params.len {
+            pt := o.params[i].ty
+            t := cx.infer.resolve(cx.s, v.ty)
+            if .Param(p) := tys.kind(pt) {
+                if k := info.params.index_of(p) and binds.items[k] is null and not tys.has_infer(t) and not tys.is_error(t) { binds.items[k] = t }
+            } else if tys.has_param(pt) and only is null {
+                return cx.unsupported(span, "operations of generic effects")
+            }
+        }
+        probe.push(v^)!
+    }
+    complete := true
+    gargs := list(types.GenericArg)
+    for b in binds.items {
+        t := b else {
+            complete = false
+            break
+        }
+        gargs.push(.Type(t))!
+    }
+    eref := types.EffectRef(eff: eff, args: gargs.items)
+    if complete {
+        // An instantiation that is not available, where exactly one is: the arguments
+        // are converted to that one.
+        if one := only { eref = one }
+    } else if one := only {
+        eref = one
+    } else {
+        what := if avail.len is 0 { "no instantiation is available here" } else { "several are available" }
+        cx.error(span, str.format("cannot infer which `{}` this performs; {}", info.name, what)!)
+        return error_expr(cx.s, span)
+    }
+    m := effect_map(info.params, eref.args)
+    vals := list(Expr)
+    for i in 0..probe.items.len {
+        v := &probe.items[i]
+        if i < o.params.len {
+            vals.push(cx.coerce(v, cx.s.subst(o.params[i].ty, m))^)!
+        } else {
+            cx.error(v.span, "too many arguments")
+        }
+    }
+    if vals.items.len < o.params.len or positional is not args.len {
+        cx.error(span, str.format("`{}` takes {} positional argument(s)", o.name, o.params.len)!)
+    }
+    cx.performed.push(Performed(effect_: eref, span: span))!
+    if o.kind is .Fn { cx.fn_performs.push(span)! }
+    return tir.mk(cx.s.subst(o.ret, m), .Call(.Perform(eref, op), vals.items), span)
+}
+
+/// The substitution of a generic effect's parameters by an instantiation's arguments.
+effect_map :: fn(params: []const u32, args: []const types.GenericArg) -> []sema.Subst needs Alloc {
+    out := list(sema.Subst)
+    for i, p in enumerate(params) {
+        if i < args.len and .Type(t) := args[i] { out.push(sema.Subst(param: p, ty: t))! }
+    }
+    return out.items
+}

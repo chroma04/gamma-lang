@@ -1663,7 +1663,7 @@ impl<'a, 's> FnCx<'a, 's> {
             ExprKind::Field { base, name } => {
                 let module = self.module;
                 let m = self.sema.module_named(module, base)?;
-                let d = self.sema.module_member(m, *name)?;
+                let d = self.sema.module_member(m, *name, module)?;
                 match self.sema.resolve_decl(d) {
                     super::DeclValue::Type(t) => Some(t),
                     _ => None,

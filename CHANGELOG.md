@@ -8,6 +8,12 @@ Versions and what each kind of change means are described in
 
 ### Language
 
+- **`pub(package)`** makes a declaration or a struct field visible to every module of its
+  package, and to nothing outside it (§3.3): for what a package's modules share with each
+  other but not with its users. A declaration may not mention a type less visible than
+  itself. `gamma doc` shows only `pub` names.
+- A private function of a type's module is no longer callable as a method of the type from
+  other modules, as §7.10 always said (`x.helper()` where `helper` is private was accepted).
 - A member of an inline tuple of `in` may be a pattern form, as on the right of `is`:
   `k in (.Fn(_), .Handler(_), .Type)` tests whether `k` matches any of them (§7.7).
 - **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the
@@ -88,6 +94,17 @@ Versions and what each kind of change means are described in
 
 ### Diagnostics
 
+- `gamma lint` has three new rules: `dangling-address`, for the address of a local (a loop
+  variable, a pattern binding) stored, passed to be stored or returned where it outlives the
+  local; `needless-pub`, for `pub(package)` names no other module uses and `pub` ones of
+  a program package; and `present-only-binding`, for a `match` arm such as `.Return(v)`
+  whose name matches only a present optional, when no arm names `.Return(null)` and a
+  catch-all arm with a body takes it instead. Lint now names the files of a package's other modules relative to the
+  working directory, as `gamma check` does.
+- A `match` left incomplete by a bare name in the position of an optional inside a
+  pattern (which matches only a present value, §9.3) now points at that name and says how
+  to bind the optional as it is: bind the value that holds it, such as `.Break(b)` for the
+  whole payload.
 - An `else` arm of a `match` gets the plain "expected a pattern" error, without a fix.
 - The hint to write `is` for `=` is given only after an `if` or `while` condition.
 - `#allow` with a name that is not a lint rule no longer stops compilation; `gamma lint`
@@ -125,6 +142,8 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- `gamma tir` on a library (a root module without `main`) left out its tests and
+  benchmarks: they were not checked, and their functions were missing from the dump.
 - A pattern binding with `else` in a block whose value is coerced to an expected type
   (`x: i64 = if c { .A(v) := u else return 0; v } else { 0 }`) was rejected as not
   leaving the block.

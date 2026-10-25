@@ -212,7 +212,7 @@ impl<'s> Sema<'s> {
                 if n.name.as_str() != "_" && fields.iter().any(|x| x.name == n.name) {
                     self.error(n.span, format!("duplicate field `{}`", n.name));
                 }
-                fields.push(FieldDef { name: n.name, ty, is_pub: f.is_pub, align: field_align });
+                fields.push(FieldDef { name: n.name, ty, vis: f.vis, align: field_align });
                 defaults.push(default.clone());
             }
         }
@@ -322,7 +322,12 @@ impl<'s> Sema<'s> {
             let mut fields = vec![];
             for (v, span) in variants.iter().zip(&spans) {
                 match v.payload {
-                    Some(t) => fields.push(FieldDef { name: v.name, ty: t, is_pub: true, align: None }),
+                    Some(t) => fields.push(FieldDef {
+                        name: v.name,
+                        ty: t,
+                        vis: crate::syntax::ast::Visibility::Public,
+                        align: None,
+                    }),
                     None => self.error(*span, "every field of a `#c_union` needs a type"),
                 }
             }

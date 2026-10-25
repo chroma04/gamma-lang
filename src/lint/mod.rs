@@ -59,6 +59,10 @@ pub const RULES: &[Rule] = &[
     rule_def("unused-parameter", "a parameter of a function that its body never uses"),
     rule_def("unused-import", "an import that nothing in its module refers to"),
     rule_def("unused-declaration", "a private top-level function, type, constant or global that nothing refers to"),
+    rule_def(
+        "needless-pub",
+        "a `pub(package)` function or constant, or a `pub` one of a program package, that no other module uses",
+    ),
     rule_def("unused-label", "a loop or `with` label that no `break` or `continue` names"),
     Rule {
         name: "prefer-immutable",
@@ -68,6 +72,14 @@ pub const RULES: &[Rule] = &[
     rule_def("bool-comparison", "a `bool` compared with `true` or `false`"),
     rule_def("self-comparison", "a value compared with itself"),
     rule_def("self-assignment", "a place assigned to itself"),
+    rule_def(
+        "dangling-address",
+        "the address of a local, such as a loop variable or a pattern binding, kept where it outlives the local",
+    ),
+    rule_def(
+        "present-only-binding",
+        "a name in a `match` pattern that matches only a present optional, leaving `null` to a catch-all arm",
+    ),
     rule_def("constant-condition", "an `if` or `while` whose condition is the literal `true` or `false`"),
     rule_def("useless-defer", "a `defer` or `errdefer` that is the last statement of its block"),
     rule_def("needless-bool", "`if c { true } else { false }` and the like, which are `c` or `not c`"),
@@ -297,6 +309,46 @@ fn finding_diag(
                 lint(span, "unused-declaration", format!("the {} `{}` is never used", what, name))
                     .with_note("it is private to its module: mark it `pub` if other modules are to use it")
             }
+        }
+        Finding::NeedlessPub { name, span, vis, what } => {
+            if when_names.contains(&name) {
+                return None;
+            }
+            let (marker, why) = if vis == crate::syntax::ast::Visibility::Package {
+                ("pub(package)", "no other module of its package uses it")
+            } else {
+                ("pub", "no other module uses it, and other packages do not import a program")
+            };
+            lint(span, "needless-pub", format!("the {} `{}` is `{}`, but {}", what, name, marker, why))
+                .with_note("without the marker it is private to its module (§3.3)")
+        }
+        Finding::DanglingAddress { span, name, local, why } => {
+            let msg = match why {
+                "stored" => format!("this address of `{}` is stored where it outlives `{}`", name, name),
+                "returned" => format!("this address of `{}` is returned, but `{}` ends with the call", name, name),
+                _ => format!("this address of `{}` is passed to a call that may keep it after `{}` ends", name, name),
+            };
+            lint(span, "dangling-address", msg)
+                .with_label(local, format!("`{}` lives until the end of its scope", name))
+                .with_note(
+                    "a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope \
+                     (§15.1); point into the original (`&items[i]`), or keep the value instead",
+                )
+        }
+        Finding::PresentOnlyBinding { span, name, catch_all, is_result } => {
+            let (value, absent) =
+                if is_result { ("a success value", "an error") } else { ("a present value", "`null`") };
+            lint(
+                span,
+                "present-only-binding",
+                format!("`{}` matches only {}, so {} here goes to the catch-all arm", name, value, absent),
+            )
+            .with_label(catch_all, format!("{} is matched here", absent))
+            .with_note(
+                "a name in the position of an optional or a result below the top of a pattern matches only a \
+                     present or success value (§9.3); add an arm for the other case (such as `.V(null)`), or bind \
+                     the value that holds it",
+            )
         }
         Finding::BoolComparison { span, operand, same } => {
             let whole = text(span);

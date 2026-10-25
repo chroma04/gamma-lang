@@ -497,7 +497,7 @@ main :: fn() {
 
 Other differences:
 
-- **Visibility is per module.** Fields are private unless `pub`, and a struct with a private field cannot be constructed or destructured outside its module. Methods can be added only in the module that declares the type; for a foreign type you write a free function and call it normally.
+- **Visibility is per module.** Fields are private unless `pub`, and a struct with a private field cannot be constructed or destructured outside its module. `pub(package)` is Rust's `pub(crate)`: visible to the modules of the same package. Methods can be added only in the module that declares the type; for a foreign type you write a free function and call it normally.
 - **No inheritance, but `using` embeds a struct** as the first field, promoting its fields and letting a `^Outer` stand in for a `^Inner`. Rust has no direct equivalent; it is C's "struct-as-base-class" idiom made explicit.
 - **Layout is the C layout** (declaration order, natural alignment), not Rust's unspecified default. `#packed` and `#align(n)` adjust it, `#bits(u16)` structs pack named fields exactly, and `@size_of`, `@align_of` and `@offset_of` plus `@static_assert` pin it down.
 - **Structs are not ordered.** Rust's `#[derive(PartialOrd)]` orders by field order, which couples layout to meaning. In Gamma you order a tuple of keys: `people.sort_by_key(fn(p) => (p.last, p.first))`. Structs do compare with `is`, field by field.

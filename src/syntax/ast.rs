@@ -40,8 +40,26 @@ pub struct Item {
     /// Text of the doc comments (`///`) directly preceding the item, joined by newlines.
     pub doc: Option<String>,
     pub attrs: Vec<Attribute>,
-    pub is_pub: bool,
+    pub vis: Visibility,
     pub kind: ItemKind,
+}
+
+/// Where a declaration or a struct field can be named from (§3.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Visibility {
+    /// No marker: the files of its own module.
+    Private,
+    /// `pub(package)`: every module of its package.
+    Package,
+    /// `pub`: everywhere.
+    Public,
+}
+
+impl Visibility {
+    /// Whether the name can be reached from outside its module (`pub` or `pub(package)`).
+    pub fn is_exported(self) -> bool {
+        self != Visibility::Private
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -635,7 +653,7 @@ pub enum StructMember {
 #[derive(Clone, Debug)]
 pub struct FieldDecl {
     pub attrs: Vec<Attribute>,
-    pub is_pub: bool,
+    pub vis: Visibility,
     pub is_using: bool,
     /// `a, b: T` declares several fields; `_` (padding in `#bits` structs) is an `Ident` named `_`.
     pub names: Vec<Ident>,

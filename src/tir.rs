@@ -668,7 +668,7 @@ pub enum AdtKind {
 pub struct FieldDef {
     pub name: Symbol,
     pub ty: Ty,
-    pub is_pub: bool,
+    pub vis: crate::syntax::ast::Visibility,
     /// `#align(n)` on the field.
     pub align: Option<u64>,
 }

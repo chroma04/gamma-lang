@@ -68,8 +68,10 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         .For(f) => return cx.for_loop(f)
         .Block(b) => return cx.block_expected(&b, true, expect)
         .Return(v) => return cx.return_expr(v, span)
+        .Return(null) => return cx.return_expr(null, span)
         .Break(b) => return cx.break_expr(b.label, b.value, span)
         .Continue(label) => return cx.continue_expr(label, span)
+        .Continue(null) => return cx.continue_expr(null, span)
         .DotIdent(name) => {
             t := expect else {
                 cx.error(span, str.format("cannot infer the union type of `.{}` here", name.name)!)
@@ -77,12 +79,23 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
             }
             return cx.construct_variant(cx.strip_wrappers(cx.infer.resolve(cx.s, t)), name, null, span)
         }
+        .OptionalType(inner) if prefix_on_call(inner) => return cx.unsupported(span, "constructions of optional types")
         .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ErrorUnionType(_), .FnType(_), .ContType(_), .Struct(_), .Union(_), .Effect(_) => {
             cx.error(span, "expected a value, found a type")
             return error_expr(cx.s, span)
         }
+        .Intrinsic(i) => return cx.intrinsic(i, span)
+        .Fn(lit) => return cx.fn_literal(lit, expect, null, span)
+        .With(w) => return cx.with_expr(w, true, expect)
         _ => return cx.unsupported(span, expr_kind_text(&e.kind))
     }
+}
+
+/// Whether `e`, under any type prefixes, is a call: `?u8(null)` constructs a `?u8`.
+prefix_on_call :: fn(e: ^const ast.Expr) -> bool => match e.kind {
+    .Call(_) => true
+    .OptionalType(inner), .PtrType(_, inner), .SliceType(_, inner), .ManyPtrType(_, inner) => prefix_on_call(inner)
+    _ => false
 }
 
 /// What a construct gammac cannot check yet is called in its message.
@@ -104,7 +117,6 @@ expr_kind_text :: fn(k: ^const ast.ExprKind) -> string => match k^ {
     .With(_) => "`with`"
     .For(_) => "`for` loops"
     .Resume(_) => "`resume`"
-    .Intrinsic(i) => if i.name.name is "size_of" { "`@size_of`" } else { "intrinsic calls" }
     _ => "this kind of expression"
 }
 
@@ -171,9 +183,24 @@ auto_deref :: fn(cx: ^FnCx, b: ^Expr) -> ^Expr needs Alloc {
 
 /// A name used as a value.
 name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
-    if b := cx.lookup_local(name) {
-        match b {
-            .Var(id) => return tir.mk(cx.locals.items[usize(id)].ty, .Local(id), span)
+    if found := cx.lookup_local_at(name) {
+        match found.binding {
+            .Var(id) => {
+                ty := cx.local_at(found.depth, id).ty
+                if found.depth < cx.depth() {
+                    // A local of an enclosing function, captured by reference (§11.6).
+                    cx.note_capture(found.depth)
+                    return tir.mk(ty, .Upvar(cx.depth() - found.depth, id), span)
+                }
+                return tir.mk(ty, .Local(id), span)
+            }
+            .NestedFn(f) => {
+                if f in cx.open_fns.items {
+                    cx.recursive_without_ret(name, span)
+                    return error_expr(cx.s, span)
+                }
+                return cx.fn_ref(f, span)
+            }
             .Untyped(v) => return cx.untyped_literal(&v, span)
             .Label => {
                 cx.error(span, str.format("`{}` is a label, not a value", name)!)
@@ -573,7 +600,7 @@ equalize :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, span: source.Span) -> (l: ^Expr, r
 module_of :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?usize needs Load {
     if .Field(base, name) := e.kind {
         m := cx.module_of(base) else return null
-        return cx.s.public_module_member(m, name.name)
+        return cx.s.public_module_member(m, name.name, cx.module)
     }
     .Ident(id) := e.kind else return null
     if cx.lookup_local(id.name) is not null { return null }
@@ -586,7 +613,7 @@ module_of :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?usize needs Load {
 type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
     if .Field(base, name) := e.kind {
         if m := cx.module_of(base) {
-            d := cx.s.module_member(m, name) else return null
+            d := cx.s.module_member(m, name, cx.module) else return null
             .Type(t) := cx.s.resolve_decl(d) else return null
             return t
         }
@@ -602,7 +629,7 @@ type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
             .Field(base, name) => {
                 m := cx.module_of(base) else return null
                 d = cx.s.l.lookup(m, name.name) else return null
-                if not cx.s.l.decls.items[d].item.is_pub { return null }
+                if not cx.s.decl_visible(d, cx.module) { return null }
             }
             _ => return null
         }
@@ -624,7 +651,7 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
     tys := &cx.s.tys
     // `m.x`: a declaration of another module (§3.2).
     if m := cx.module_of(base) {
-        d := cx.s.module_member(m, name) else return error_expr(cx.s, span)
+        d := cx.s.module_member(m, name, cx.module) else return error_expr(cx.s, span)
         return cx.decl_expr(d, name.name, null, span)
     }
     // `U.V`: a payload-less variant of a union type.
@@ -652,9 +679,7 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
         if fields := cx.s.struct_fields(bt) {
             for i, f in enumerate(fields) {
                 if f.name is not name.name { continue }
-                if not f.is_pub and not cx.sees_private(bt) {
-                    cx.error(span, str.format("the field `{}` of `{}` is private to its module (§3.3)", name.name, cx.show(bt))!)
-                }
+                if not cx.field_visible_here(f.vis, bt) { cx.error(span, hidden_field_message(cx, name.name, bt, f.vis)) }
                 return tir.mk(f.ty, .Field(b, i.trunc(u32)), span)
             }
         }
@@ -664,9 +689,28 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
 }
 
 /// Whether the private fields of `t` are visible here.
-sees_private :: fn(cx: ^const FnCx, t: Ty) -> bool {
+/// Whether a field of visibility `vis` of type `t` can be named here (§3.3).
+field_visible_here :: fn(cx: ^const FnCx, vis: ast.Visibility, t: Ty) -> bool {
+    if vis is .Public { return true }
     .Adt(id, _) := cx.s.tys.kind(t) else return true
-    return cx.s.adts.items[usize(id)].module is cx.module
+    return cx.s.visible(vis, cx.s.adts.items[usize(id)].module, cx.module)
+}
+
+/// The first field of struct type `t` that is not visible here, if any, with what the
+/// field is visible to: "module" or "package".
+hidden_field :: fn(cx: ^const FnCx, t: Ty) -> ?(name: string, owner: string) {
+    fields := cx.s.struct_fields(t) else return null
+    for f in fields {
+        if not cx.field_visible_here(f.vis, t) { return (name: f.name, owner: if f.vis is .Package { "package" } else { "module" }) }
+    }
+    return null
+}
+
+/// The error for naming field `name` of type `t`, of visibility `vis`, where it is not
+/// visible (§3.3).
+hidden_field_message :: fn(cx: ^const FnCx, name: string, t: Ty, vis: ast.Visibility) -> string needs Alloc {
+    if vis is .Package { return str.format("the field `{}` of `{}` is visible only in the package of its module (§3.3)", name, cx.show(t))! }
+    return str.format("the field `{}` of `{}` is private to its module (§3.3)", name, cx.show(t))!
 }
 
 // ---------------------------------------------------------------------------------
@@ -738,7 +782,15 @@ join_branch :: fn(cx: ^FnCx, b: ^Expr, ty: Ty) -> ^Expr needs Load {
 }
 
 return_expr :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
-    ret := cx.ret
+    if cx.in_defer { cx.error(span, "`return` is not allowed in a deferred statement") }
+    target := cx.return_target()
+    levels := target.levels
+    cx.check_fn_clause_exit(levels, "return", span)
+    if levels is 0 and cx.open_ret { return cx.open_return(v, span) }
+    if levels > 0 and cx.outer.items[cx.outer.items.len - usize(levels)].open_ret {
+        return cx.unsupported(span, "`return` from a handler clause to a function literal")
+    }
+    ret := target.ret
     value := if x := v {
         cx.coerce(cx.expr(x, ret), ret)
     } else {
@@ -747,41 +799,212 @@ return_expr :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Lo
         }
         unit(cx.s, span)
     }
-    return tir.mk(cx.s.tys.never_ty(), .Return(0, value), span)
+    return tir.mk(cx.s.tys.never_ty(), .Return(levels, value), span)
 }
 
-/// The loop that `break` or `continue` with `label` targets, if any.
-find_loop :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span, is_continue: bool) -> ?LabelInfo needs Alloc {
-    i := cx.labels.items.len
+/// The function a `return` leaves, `levels` frames up, and its return type: a `return`
+/// in a handler clause leaves the function the clause is written in (§12.7.1).
+return_target :: fn(cx: ^const FnCx) -> (levels: u32, ret: Ty) {
+    if cx.clause is null { return (levels: 0, ret: cx.ret) }
+    levels: u32 = 0
+    k := cx.outer.items.len
+    while k > 0 {
+        k -= 1
+        levels += 1
+        f := &cx.outer.items[k]
+        if f.clause is null { return (levels: levels, ret: f.ret) }
+    }
+    return (levels: 0, ret: cx.ret)
+}
+
+/// An exit `levels` frames out may not leave a clause of a `fn` operation, which can
+/// only produce a value (§12.7.1).
+check_fn_clause_exit :: fn(cx: ^FnCx, levels: u32, what: string, span: source.Span) needs Alloc {
+    if levels is 0 { return }
+    crossed := false
+    if c := cx.clause and c.op_kind is .Fn { crossed = true }
+    n := cx.outer.items.len
+    for i in 0..usize(levels) - 1 {
+        if i + 1 > n { break }
+        if c := cx.outer.items[n - i - 1].clause and c.op_kind is .Fn { crossed = true }
+    }
+    if crossed { cx.error(span, str.format("a clause of a `fn` operation can only produce a value; it cannot `{}`", what)!) }
+}
+
+/// A `return` in a literal whose return type comes from its `return`s: the first one
+/// with a value fixes the type, the others convert to it.
+open_return :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    value := unit(cx.s, span)
+    if x := v {
+        if t := cx.open_ty {
+            value = cx.coerce(cx.expr(x, t), t)
+        } else {
+            value = cx.expr(x, null)
+            if tys.kind(value.ty) is not .Never and not tys.is_error(value.ty) { cx.open_ty = value.ty }
+        }
+    } else if t := cx.open_ty {
+        if not tys.is_unit(cx.infer.resolve(cx.s, t)) and not tys.is_error(t) { cx.error(span, str.format("`return` needs a value of type `{}`", cx.show(t))!) }
+    } else {
+        cx.open_ty = tys.unit()
+    }
+    return tir.mk(tys.never_ty(), .Return(0, value), span)
+}
+
+/// Where a `break` or `continue` goes.
+Jump :: union {
+    /// A loop or `with` of the function `levels` frames up.
+    Label: (levels: u32, info: LabelInfo)
+    /// Out of the `with` that installed the handler whose clause this is.
+    InstallingWith
+    /// The end of the clause `levels` frames up, with `()`.
+    ClauseReturn: u32
+}
+
+/// The last label of `labels` named `label`, or the innermost loop without one.
+find_label :: fn(labels: []const LabelInfo, label: ?ast.Ident) -> ?usize {
+    i := labels.len
     while i > 0 {
         i -= 1
-        x := cx.labels.items[i]
-        if l := label {
-            if x.name is l.name { return x }
-        } else if x.is_loop {
-            return x
-        }
+        x := labels[i]
+        found := if l := label { x.name is l.name } else { x.is_loop }
+        if found { return i }
     }
-    if l := label {
-        _ = cx.unsupported(span, "labels of enclosing functions")
+    return null
+}
+
+/// Resolves the target of `break` or `continue` (§8.5, §12.7.1).
+find_jump :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span, is_continue: bool) -> ?Jump needs Load {
+    if idx := find_label(cx.labels.items, label) {
+        if cx.in_defer and idx < cx.defer_label_base { cx.error(span, "a deferred statement may not `break` or `continue` out of itself") }
+        info := cx.labels.items[idx]
+        if is_continue and not info.is_loop { cx.error(span, "`continue` can only target a loop") }
+        return .Label(levels: 0, info: info)
+    }
+    if cx.in_defer {
+        cx.error(span, "a deferred statement may not `break` or `continue` out of itself")
         return null
     }
-    what := if is_continue { "continue" } else { "break" }
-    _ = cx.unsupported(span, str.format("`{}` outside a loop", what)!)
+    // At clause level: exit the installing `with`, or (for `continue`) finish the clause.
+    clause := cx.clause else {
+        if l := label {
+            cx.error(l.span, str.format("no enclosing loop or `with` is labeled `{}`", l.name)!)
+        } else {
+            cx.error(span, "`break` and `continue` must be inside a loop")
+        }
+        return null
+    }
+    l := label else {
+        if clause.op_kind is .Fn {
+            cx.error(span, "a clause of a `fn` operation can only produce a value; it cannot `break` or `continue`")
+            return null
+        }
+        if is_continue and clause.op_kind is .Ctl {
+            cx.error(span, "a `ctl` clause cannot `continue`: end it with `resume`, `break` or an exit (§12.7.1)")
+            return null
+        }
+        // `continue` produces `()` as the operation's result (§12.7.1).
+        ret := cx.infer.resolve(cx.s, cx.ret)
+        if is_continue and not cx.s.tys.is_unit(ret) and not cx.s.tys.is_error(ret) {
+            cx.error(span, str.format("`continue` finishes the clause with `()`, but the operation returns `{}` (§12.7.1)", cx.show(ret))!)
+            return null
+        }
+        return if is_continue { .ClauseReturn(0) } else { .InstallingWith }
+    }
+    // A labeled jump from a handler clause to a construct enclosing the handler.
+    frame_clause: ?ClauseInfo = clause
+    levels: u32 = 0
+    k := cx.outer.items.len
+    while k > 0 {
+        c := frame_clause else break
+        if is_continue and fl := c.for_label and n := fl.name and n is l.name {
+            cx.check_fn_clause_exit(levels + 1, "continue", span)
+            return .ClauseReturn(levels)
+        }
+        k -= 1
+        f := &cx.outer.items[k]
+        if idx := find_label(f.labels.items, label) {
+            info := f.labels.items[idx]
+            if is_continue and not info.is_loop { cx.error(span, "`continue` can only target a loop") }
+            cx.check_fn_clause_exit(levels + 1, if is_continue { "continue" } else { "break" }, span)
+            return .Label(levels: levels + 1, info: info)
+        }
+        frame_clause = f.clause
+        levels += 1
+    }
+    cx.error(l.span, str.format("no enclosing loop or `with` is labeled `{}`", l.name)!)
     return null
 }
 
 break_expr :: fn(cx: ^FnCx, label: ?ast.Ident, value: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
-    l := cx.find_loop(label, span, false) else return error_expr(cx.s, span)
-    if value is not null or l.value is not .Nothing { return cx.unsupported(span, "`break` with a value") }
-    cx.label_breaks.push(LabelBreak(label: l.id, ty: cx.s.tys.unit(), span: span))!
-    return tir.mk(cx.s.tys.never_ty(), .Break(tir.BreakExpr(target: tir.Target(levels: 0, label: l.id), value: null)), span)
+    jump := cx.find_jump(label, span, false) else return error_expr(cx.s, span)
+    nv := cx.s.tys.never_ty()
+    match jump {
+        .Label(levels, info) => {
+            depth := cx.depth() - levels
+            v: ?^Expr = null
+            match info.value {
+                .Nothing => {
+                    cx.label_breaks.push(LabelBreak(depth: depth, label: info.id, ty: cx.s.tys.unit(), span: span))!
+                    if x := value { cx.error(x.span, "a `while` loop has no value, so `break` takes no operand here") }
+                }
+                // A `break` that exits a `for` loop, whose value is `rt` (§13.2).
+                .Loop(rt) => {
+                    cx.label_breaks.push(LabelBreak(depth: depth, label: info.id, ty: cx.s.tys.unit(), span: span))!
+                    if x := value {
+                        v = cx.coerce(cx.expr(x, rt), rt)
+                    } else if not cx.s.tys.is_unit(rt) and not cx.s.tys.is_error(rt) {
+                        cx.error(span, str.format("this loop's value is `{}`, so `break` needs a value", cx.show(rt))!)
+                    }
+                }
+                .With(_) => {
+                    expect: ?Ty = if .With(t) := info.value { t } else { null }
+                    // Checked against the `with`'s value once the `with` is finished (§12.7).
+                    v = cx.break_value(value, expect)
+                    ty := if x := v { if t := expect { t } else { x.ty } } else { cx.s.tys.unit() }
+                    cx.label_breaks.push(LabelBreak(depth: depth, label: info.id, ty: ty, span: span))!
+                }
+            }
+            return tir.mk(nv, .Break(tir.BreakExpr(target: .Label(levels: levels, label: info.id), value: v)), span)
+        }
+        .InstallingWith => {
+            c := cx.clause else return error_expr(cx.s, span)
+            // A `break` that exits a `for` over an iterator (§13.2).
+            if rt := c.break_ty {
+                v: ?^Expr = null
+                if x := value {
+                    v = cx.coerce(cx.expr(x, rt), rt)
+                } else if not cx.s.tys.is_unit(rt) and not cx.s.tys.is_error(rt) {
+                    cx.error(span, str.format("this loop's value is `{}`, so `break` needs a value", cx.show(rt))!)
+                }
+                return tir.mk(nv, .Break(tir.BreakExpr(target: .InstallingWith, value: v)), span)
+            }
+            v := cx.break_value(value, c.with_expect)
+            ty := if x := v { if t := c.with_expect { t } else { x.ty } } else { cx.s.tys.unit() }
+            if h := c.handler_ { cx.handler_breaks.push(HandlerBreak(handler_: h, ty: ty, span: span))! }
+            if f := c.decl_clause { cx.s.decl_clause_breaks.push(sema.DeclBreak(fn_id: f, ty: cx.infer.resolve(cx.s, ty), span: span))! }
+            return tir.mk(nv, .Break(tir.BreakExpr(target: .InstallingWith, value: v)), span)
+        }
+        .ClauseReturn(_) => return error_expr(cx.s, span)
+    }
+}
+
+/// The value of a `break` out of a `with` whose value is expected to have type `expect`.
+break_value :: fn(cx: ^FnCx, value: ?^ast.Expr, expect: ?Ty) -> ?^Expr needs Load {
+    x := value else return null
+    ex := cx.expr(x, expect)
+    if t := expect { return cx.coerce(ex, t) }
+    return ex
 }
 
 continue_expr :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span) -> ^Expr needs Load {
-    l := cx.find_loop(label, span, true) else return error_expr(cx.s, span)
-    if not l.is_loop { return cx.unsupported(span, "`continue` to a `with`") }
-    return tir.mk(cx.s.tys.never_ty(), .Continue(tir.Target(levels: 0, label: l.id)), span)
+    nv := cx.s.tys.never_ty()
+    match cx.find_jump(label, span, true) {
+        .Label(levels, info) => return tir.mk(nv, .Continue(.Label(levels: levels, label: info.id)), span)
+        // `continue` at clause level finishes the clause with `()` (§12.7.1).
+        .ClauseReturn(levels) => return tir.mk(nv, .Return(levels, unit(cx.s, span)), span)
+        _ => return error_expr(cx.s, span)
+    }
 }
 
 // ---------------------------------------------------------------------------------
@@ -852,14 +1075,9 @@ field_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
 /// `S(field: value, …)`.
 construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     .Adt(id, _) := cx.s.tys.kind(ty) else return error_expr(cx.s, span)
-    if not cx.sees_private(ty) {
-        fields := cx.s.struct_fields(ty) else empty_slice(sema.FieldDef)
-        for f in fields {
-            if not f.is_pub {
-                cx.error(span, str.format("`{}` cannot be constructed outside its module: its field `{}` is private (§3.3)", cx.show(ty), f.name)!)
-                return error_expr(cx.s, span)
-            }
-        }
+    if h := cx.hidden_field(ty) {
+        cx.error(span, str.format("`{}` cannot be constructed outside its {}: its field `{}` is private (§3.3)", cx.show(ty), h.owner, h.name)!)
+        return error_expr(cx.s, span)
     }
     if id in cx.s.adts_in_progress.items { return cx.unsupported(span, "constructions in defaults") }
     fields := cx.s.struct_fields(ty) else empty_slice(sema.FieldDef)

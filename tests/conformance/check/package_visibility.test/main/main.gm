@@ -1,0 +1,19 @@
+//! stage: check
+// `pub(package)` declarations and fields are visible in every module of their package,
+// and nowhere else (§3.3).
+shapes :: import "../shapes"
+geom :: import "geom"
+
+main :: fn() {
+    c := shapes.unit()
+    _ = c.cx + shapes.area(c) + c.area()
+    _ = shapes.Circle(r: 2, cx: 1)
+    match c { shapes.Circle(r, cx) => { _ = r + cx } }
+    _ = c.hidden()                               //~ ERROR `hidden` is private to the module `shapes`
+    p := geom.origin()
+    _ = p.x
+    _ = p.y                                      //~ ERROR the field `y` of `Point` is visible only in the package of its module
+    _ = geom.scale(p, 2)                         //~ ERROR `scale` is visible only in the package of the module `geom`
+    _ = geom.LIMIT                               //~ ERROR `LIMIT` is visible only in the package of the module `geom`
+    _ = geom.Point(x: 1, y: 2)                   //~ ERROR `Point` cannot be constructed outside its package: its field `y` is private
+}

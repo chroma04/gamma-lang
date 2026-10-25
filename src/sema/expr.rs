@@ -456,7 +456,8 @@ impl<'a, 's> FnCx<'a, 's> {
             if self.not_module.contains(&key) {
                 return None;
             }
-            let found = self.module_of(base).and_then(|m| self.sema.public_module_member(m, name.name));
+            let from = self.module;
+            let found = self.module_of(base).and_then(|m| self.sema.public_module_member(m, name.name, from));
             if found.is_none() && key.0 != u32::MAX {
                 self.not_module.insert(key);
             }
@@ -479,7 +480,8 @@ impl<'a, 's> FnCx<'a, 's> {
     pub fn qualified_decl(&mut self, e: &ast::Expr) -> Option<Option<super::DeclId>> {
         let ExprKind::Field { base, name } = &e.kind else { return None };
         let m = self.module_of(base)?;
-        Some(self.sema.module_member(m, *name))
+        let from = self.module;
+        Some(self.sema.module_member(m, *name, from))
     }
 
     /// The named function `f` used as a value. A generic one needs its type arguments:
@@ -1300,7 +1302,7 @@ impl<'a, 's> FnCx<'a, 's> {
         {
             let d = self.sema.modules[m.0 as usize].scope.get(&name.name).copied();
             if let Some(d) = d
-                && self.sema.decls[d.0 as usize].item.is_pub
+                && self.sema.decl_visible(d, self.module)
                 && let DeclValue::GenericType(_) = self.sema.resolve_decl(d)
             {
                 let t = self.resolve_type(e);
@@ -1325,7 +1327,8 @@ impl<'a, 's> FnCx<'a, 's> {
     fn field(&mut self, base: &ast::Expr, name: ast::Ident, span: Span) -> Expr {
         // `m.x` — a declaration of another module (§3.2).
         if let Some(m) = self.module_of(base) {
-            return match self.sema.module_member(m, name) {
+            let from = self.module;
+            return match self.sema.module_member(m, name, from) {
                 Some(d) => self.decl_expr(d, name.name, None, span),
                 None => error_expr(span),
             };
@@ -1420,9 +1423,9 @@ impl<'a, 's> FnCx<'a, 's> {
         let fields = self.sema.struct_fields(b.ty).or_else(|| self.sema.c_union_fields(b.ty))?;
         if let Some(i) = fields.iter().position(|f| f.name == name) {
             let ty = fields[i].ty;
-            if !fields[i].is_pub && !self.sees_private(b.ty) {
+            if !self.field_visible(fields[i].vis, b.ty) {
                 let bt = b.ty;
-                self.error(span, format!("the field `{}` of `{}` is private to its module (§3.3)", name, bt));
+                self.error(span, hidden_field_message(name, bt, fields[i].vis));
             }
             return Some(mk(ty, tir::ExprKind::Field { base: Box::new(b), index: i as u32 }, span));
         }
@@ -2762,21 +2765,22 @@ impl<'a, 's> FnCx<'a, 's> {
         last.unwrap_or_else(|| crate::symbol::Symbol::intern(""))
     }
 
-    /// Whether the private fields of struct type `t` are visible here: only in
-    /// the module that declares it (§3.3).
-    pub fn sees_private(&self, t: Ty) -> bool {
-        match t.kind() {
-            TyKind::Adt(id, _) => self.sema.adts.get(id).is_none_or(|a| a.module == self.module),
+    /// Whether a field of visibility `vis` of type `t` can be named here (§3.3).
+    pub fn field_visible(&self, vis: ast::Visibility, t: Ty) -> bool {
+        match (vis, t.kind()) {
+            (ast::Visibility::Public, _) => true,
+            (_, TyKind::Adt(id, _)) => {
+                self.sema.adts.get(id).is_none_or(|a| self.sema.visible(vis, a.module, self.module))
+            }
             _ => true,
         }
     }
 
-    /// The first private field of struct type `t` if it is not visible here.
-    pub fn hidden_field(&self, t: Ty) -> Option<crate::symbol::Symbol> {
-        if self.sees_private(t) {
-            return None;
-        }
-        self.sema.struct_fields(t)?.iter().find(|f| !f.is_pub).map(|f| f.name)
+    /// The first field of struct type `t` that is not visible here, if any, with what
+    /// the field is visible to: "module" or "package".
+    pub fn hidden_field(&self, t: Ty) -> Option<(crate::symbol::Symbol, &'static str)> {
+        let f = self.sema.struct_fields(t)?.iter().find(|f| !self.field_visible(f.vis, t))?;
+        Some((f.name, if f.vis == ast::Visibility::Package { "package" } else { "module" }))
     }
 
     pub fn eq_allowed(&self, t: Ty) -> bool {
@@ -3177,4 +3181,14 @@ pub fn int_limit(t: Ty, max: bool, target: &crate::layout::Target) -> Option<num
         (true, false) => -(one << (bits - 1) as usize),
         (true, true) => (one << (bits - 1) as usize) - 1u8,
     })
+}
+
+/// The error for naming field `name` of type `t`, of visibility `vis`, where it is not
+/// visible (§3.3).
+pub(super) fn hidden_field_message(name: crate::symbol::Symbol, t: Ty, vis: ast::Visibility) -> String {
+    if vis == ast::Visibility::Package {
+        format!("the field `{}` of `{}` is visible only in the package of its module (§3.3)", name, t)
+    } else {
+        format!("the field `{}` of `{}` is private to its module (§3.3)", name, t)
+    }
 }

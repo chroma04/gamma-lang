@@ -7,14 +7,17 @@
 pub check_program :: fn(s: ^Sema, root: usize) needs Load {
     for o in s.l.other_items.items {
         if s.l.modules.items[o.module].is_prelude { continue }
-        what := match o.item.kind {
-            .Test(_) => "tests and benchmarks"
-            .Handler(_) => "handler declarations"
-            _ => "top-level intrinsic calls"
+        match o.item.kind {
+            .Test(_), .Handler(_) => {}
+            _ => s.unsupported(o.item.span, "top-level intrinsic calls")
         }
-        s.unsupported(o.item.span, what)
     }
-    if d := s.l.lookup(root, "main") { find_main(s, d) }
+    declare_handlers(s)
+    if d := s.l.lookup(root, "main") {
+        find_main(s, d)
+    } else {
+        check_tests(s, root)
+    }
     for f in s.fns.items {
         if s.l.modules.items[f.module].is_prelude { continue }
         for p in f.params {
@@ -24,7 +27,10 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
             }
         }
     }
+    check_consts(s)
     check_bodies(s)
+    check_handler_clauses(s)
+    check_decl_breaks(s)
     monomorphize(s)
     check_inline(s)
     check_escapes(s)

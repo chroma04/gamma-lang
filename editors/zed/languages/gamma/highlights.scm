@@ -188,6 +188,7 @@
 
 [
   "pub"
+  "package"
   "using"
   "const"
   "ctl"
