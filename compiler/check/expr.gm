@@ -777,25 +777,57 @@ hidden_field_message :: fn(cx: ^const FnCx, name: string, t: Ty, vis: ast.Visibi
 // ---------------------------------------------------------------------------------
 
 if_expr :: fn(cx: ^FnCx, i: ^const ast.IfExpr, value_: bool, expect: ?Ty) -> ^Expr needs Load {
-    if e := i.else_ {
-        if e is .Capture(_) { return cx.unsupported(i.span, "`else e =>`") }
-    }
     value := value_ and i.else_ is not null
+    tys := &cx.s.tys
     conds := list([]tir.CondPart)
     thens := list(^Expr)
-    for br in i.branches {
+    // With `else e => d`, the last branch becomes a `match` on its result (§8.2).
+    captured: ?Captured = null
+    else_: ?^Expr = null
+    for k, br in enumerate(i.branches) {
         cx.push_scope()
+        if .Capture(name, body) := i.else_ and k + 1 is i.branches.len {
+            if br.cond.parts.len is not 1 or br.cond.parts[0] is not .Bind(_) {
+                cx.error(br.cond.span, "`else e =>` needs a condition that is a single binding on a result (§8.2)")
+                cx.pop_scope()
+                return error_expr(cx.s, i.span)
+            }
+            .Bind(pat, x) := br.cond.parts[0] else return error_expr(cx.s, i.span)
+            .Match(p, v) := cx.binding_cond(&pat, x) else return error_expr(cx.s, i.span)
+            then := cx.block_expected(&br.block, value, expect)
+            cx.pop_scope()
+            vt := cx.infer.resolve(cx.s, v.ty)
+            .Result(err, _) := tys.kind(vt) else {
+                if not tys.is_error(vt) { cx.error(x.span, str.format("`else e =>` captures the error of a result, but this is `{}`", cx.show(vt))!) }
+                return error_expr(cx.s, i.span)
+            }
+            ok := false
+            if .Ok(q) := p.kind { ok = irrefutable(cx.s, q) }
+            if not ok { cx.error(pat.span, "with `else e =>`, the condition may fail only on an error (§8.2)") }
+            cx.push_scope()
+            id := cx.new_local(name.name, err, false, name.span)
+            cx.declare(name.name, .Var(id), name.span)
+            d := cx.expr(body, if value { expect } else { null })
+            cx.pop_scope()
+            if not value and tys.kind(d.ty) is not .Never {
+                // As a statement, the fallback's value is discarded.
+                stmts := list(tir.Stmt)
+                stmts.push(.Expr(d))!
+                d = tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: d.span))!), d.span)
+            }
+            err_pat := tir.mk_pat(vt, .Err(tir.mk_pat(err, .Bind(id), name.span)), name.span)
+            captured = Captured(value: v, pat: p, then: then, err_pat: err_pat)
+            // The fallback joins like an `else` block.
+            else_ = d
+            continue
+        }
         c := cx.cond(&br.cond)
         b := cx.block_expected(&br.block, value, expect)
         cx.pop_scope()
         conds.push(c)!
         thens.push(b)!
     }
-    else_: ?^Expr = null
-    if e := i.else_ {
-        if .Block(b) := e { else_ = cx.block_expected(&b, value, expect) }
-    }
-    tys := &cx.s.tys
+    if .Block(b) := i.else_ { else_ = cx.block_expected(&b, value, expect) }
     ty: Ty = tys.unit()
     if value {
         if x := expect {
@@ -806,6 +838,12 @@ if_expr :: fn(cx: ^FnCx, i: ^const ast.IfExpr, value_: bool, expect: ?Ty) -> ^Ex
             for t in thens.items {
                 if not found and tys.kind(t.ty) is not .Never {
                     ty = t.ty
+                    found = true
+                }
+            }
+            if not found {
+                if c := captured and tys.kind(c.then.ty) is not .Never {
+                    ty = c.then.ty
                     found = true
                 }
             }
@@ -821,7 +859,16 @@ if_expr :: fn(cx: ^FnCx, i: ^const ast.IfExpr, value_: bool, expect: ?Ty) -> ^Ex
         for t in thens.items {
             if tys.kind(t.ty) is not .Never { all_never = false }
         }
+        if c := captured and tys.kind(c.then.ty) is not .Never { all_never = false }
         if all_never { ty = tys.never_ty() }
+    }
+    if c := captured {
+        then := if value { cx.join_branch(c.then, ty) } else { c.then }
+        d := else_ else return error_expr(cx.s, i.span)
+        arms := list(tir.Arm)
+        arms.push(tir.Arm(pat: c.pat, guard: null, body: then))!
+        arms.push(tir.Arm(pat: c.err_pat, guard: null, body: d))!
+        else_ = tir.mk(ty, .Match(c.value, arms.items), then.span)
     }
     // Build the chain from the end.
     k := thens.items.len
@@ -833,6 +880,15 @@ if_expr :: fn(cx: ^FnCx, i: ^const ast.IfExpr, value_: bool, expect: ?Ty) -> ^Ex
     r := else_ else unit(cx.s, i.span)
     r.span = i.span
     return r
+}
+
+/// The last branch of an `if` with `else e => d`: the result it matches, the pattern of
+/// its success and the branch, and the pattern binding the error.
+Captured :: struct {
+    value: ^Expr
+    pat: ^tir.Pat
+    then: ^Expr
+    err_pat: ^tir.Pat
 }
 
 join_branch :: fn(cx: ^FnCx, b: ^Expr, ty: Ty) -> ^Expr needs Load {
