@@ -32,6 +32,34 @@ LocalBinding :: union {
     Untyped: sema.Untyped
     /// A label of an enclosing loop.
     Label
+    /// A function declared in the body with `name :: fn …`.
+    NestedFn: u32
+}
+
+/// The state of an enclosing function while a nested one (a literal or a clause) is
+/// checked.
+Frame :: struct {
+    locals: List(tir.LocalDecl)
+    ret: Ty
+    declared: EffectSet
+    performed: List(Performed)
+    labels: List(LabelInfo)
+    next_label: u32
+    in_defer: bool
+    defer_label_base: usize
+    fn_id: ?u32
+    captures: bool
+    open_ret: bool
+    open_ty: ?Ty
+}
+
+/// A nested function of the body, finished with it: it shares the body's literal
+/// inference.
+NestedFn :: struct {
+    fn_id: u32
+    params: []u32
+    locals: []tir.LocalDecl
+    body: ^Expr
 }
 
 Binding :: struct {
@@ -128,11 +156,27 @@ pub FnCx :: struct {
     defer_label_base: usize
     /// Where operations of kind `fn` are performed, which a deferred statement may do.
     fn_performs: List(source.Span)
+    /// The enclosing functions of the one being checked, outermost first.
+    outer: List(Frame)
+    /// For each scope, the depth of the function it belongs to.
+    scope_depths: List(u32)
+    /// Whether the function being checked uses a local of an enclosing one.
+    captures: bool
+    nested: List(NestedFn)
+    /// Set while checking a literal whose return type is that of its `return`s:
+    /// `open_ty`, once the first `return` with a value fixes it.
+    open_ret: bool
+    open_ty: ?Ty
+    /// Named nested functions whose return type comes from their body, while it is
+    /// checked: they cannot call themselves.
+    open_fns: List(u32)
 }
 
 fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs Alloc {
     scopes := list(List(Binding))
     scopes.push(list(Binding))!
+    depths := list(u32)
+    depths.push(0)!
     return FnCx(
         s: s,
         module: module,
@@ -155,6 +199,13 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         in_defer: false,
         defer_label_base: 0,
         fn_performs: list(source.Span),
+        outer: list(Frame),
+        scope_depths: depths,
+        captures: false,
+        nested: list(NestedFn),
+        open_ret: false,
+        open_ty: null,
+        open_fns: list(u32),
     )
 }
 
@@ -215,13 +266,26 @@ check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) 
     s.defs.items[usize(fn_id)] = tir.FnDef(kind: .Named, params: params.items, locals: cx.locals.items, body: body)
 }
 
-/// Runs the final inference pass and the effect check.
+/// Runs the final inference pass and the effect check, and finishes the nested
+/// functions.
 finish :: fn(cx: ^FnCx, body: ^Expr) needs Load {
     cx.finalize(body)
     cx.check_effects()
     for i in 0..cx.locals.items.len {
         cx.locals.items[i].ty = cx.infer.resolve(cx.s, cx.locals.items[i].ty)
     }
+    for n in cx.nested.items {
+        cx.fin_expr(n.body)
+        for i in 0..n.locals.len { n.locals[i].ty = cx.infer.resolve(cx.s, n.locals[i].ty) }
+        // An inferred return type may still have been a literal's variable.
+        sig := &cx.s.fns.items[usize(n.fn_id)]
+        sig.ret = cx.infer.resolve(cx.s, sig.ret)
+        def := &cx.s.defs.items[usize(n.fn_id)]
+        def.params = n.params
+        def.locals = n.locals
+        def.body = n.body
+    }
+    cx.nested.clear()
 }
 
 check_effects :: fn(cx: ^FnCx) needs Load {
@@ -362,10 +426,100 @@ declare :: fn(cx: ^FnCx, name: string, b: LocalBinding, span: source.Span) needs
 
 push_scope :: fn(cx: ^FnCx) needs Alloc {
     cx.scopes.push(list(Binding))!
+    cx.scope_depths.push(cx.depth())!
 }
 
 pop_scope :: fn(cx: ^FnCx) {
     _ = cx.scopes.pop()
+    _ = cx.scope_depths.pop()
+}
+
+/// A local name's binding and the depth of the function it belongs to.
+lookup_local_at :: fn(cx: ^const FnCx, name: string) -> ?(binding: LocalBinding, depth: u32) {
+    i := cx.scopes.items.len
+    while i > 0 {
+        i -= 1
+        scope := cx.scopes.items[i].items
+        j := scope.len
+        while j > 0 {
+            j -= 1
+            if scope[j].name is name { return (binding: scope[j].value, depth: cx.scope_depths.items[i]) }
+        }
+    }
+    return null
+}
+
+// ---------------------------------------------------------------------------------
+// Nested function frames
+// ---------------------------------------------------------------------------------
+
+/// The depth of the function being checked: 0 for the outermost.
+depth :: fn(cx: ^const FnCx) -> u32 => cx.outer.items.len.trunc(u32)
+
+/// The declaration of local `id` of the function at `depth`.
+local_at :: fn(cx: ^const FnCx, depth: u32, id: u32) -> tir.LocalDecl {
+    if depth is cx.depth() { return cx.locals.items[usize(id)] }
+    return cx.outer.items[usize(depth)].locals.items[usize(id)]
+}
+
+/// Marks the functions above `depth` as capturing: they use a local of that function.
+note_capture :: fn(cx: ^FnCx, depth: u32) {
+    if depth >= cx.depth() { return }
+    cx.captures = true
+    for i in usize(depth) + 1..cx.outer.items.len { cx.outer.items[i].captures = true }
+}
+
+/// Saves the current function's state and starts checking the body of nested function
+/// `fn_id`.
+enter_fn :: fn(cx: ^FnCx, fn_id: u32, ret: Ty, declared: EffectSet) needs Alloc {
+    cx.outer.push(Frame(
+        locals: cx.locals,
+        ret: cx.ret,
+        declared: cx.declared,
+        performed: cx.performed,
+        labels: cx.labels,
+        next_label: cx.next_label,
+        in_defer: cx.in_defer,
+        defer_label_base: cx.defer_label_base,
+        fn_id: cx.fn_id,
+        captures: cx.captures,
+        open_ret: cx.open_ret,
+        open_ty: cx.open_ty,
+    ))!
+    cx.open_ret = false
+    cx.open_ty = null
+    cx.locals = list(tir.LocalDecl)
+    cx.ret = ret
+    cx.declared = declared
+    cx.performed = list(Performed)
+    cx.labels = list(LabelInfo)
+    cx.next_label = 0
+    cx.in_defer = false
+    cx.defer_label_base = 0
+    cx.fn_id = fn_id
+    cx.captures = false
+    cx.push_scope()
+}
+
+/// Leaves a nested function, restoring the enclosing one's state: its locals, what it
+/// performed, and whether it captures.
+exit_fn :: fn(cx: ^FnCx) -> (locals: []tir.LocalDecl, performed: []Performed, captures: bool) {
+    cx.pop_scope()
+    f := cx.outer.pop() else return (locals: cx.locals.items, performed: cx.performed.items, captures: cx.captures)
+    out := (locals: cx.locals.items, performed: cx.performed.items, captures: cx.captures)
+    cx.locals = f.locals
+    cx.ret = f.ret
+    cx.declared = f.declared
+    cx.performed = f.performed
+    cx.labels = f.labels
+    cx.next_label = f.next_label
+    cx.in_defer = f.in_defer
+    cx.defer_label_base = f.defer_label_base
+    cx.fn_id = f.fn_id
+    cx.captures = f.captures
+    cx.open_ret = f.open_ret
+    cx.open_ty = f.open_ty
+    return out
 }
 
 new_label :: fn(cx: ^FnCx, name: ?string, is_loop: bool, value: LabelValue) -> u32 needs Alloc {
@@ -551,7 +705,7 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
     if b.names.len is not 1 { return .Expr(cx.unsupported(b.span, "destructuring")) }
     name := b.names[0]
     if b.kind is .Const and b.ty is null {
-        if b.init.kind is .Fn(_) { return .Expr(cx.unsupported(b.span, "nested functions")) }
+        if .Fn(lit) := b.init.kind { return cx.nested_fn_binding(name, lit, b.span) }
         if cx.local_type_init(b.init) { return .Expr(cx.unsupported(b.span, "local type aliases")) }
     }
     annot: ?Ty = null
@@ -742,13 +896,12 @@ one_expr :: fn(e: ^Expr) -> []Expr needs Alloc {
 /// For an assignment to a plain name: whether it names mutable storage (reports it if not).
 assignable_name :: fn(cx: ^FnCx, place: ^const ast.Expr) -> bool needs Load {
     .Ident(id) := place.kind else return true
-    immutable := match cx.lookup_local(id.name) {
-        .Var(l) => not cx.locals.items[usize(l)].mutable
-        null => {
-            d := cx.s.lookup_module_name(cx.module, id.name)
-            if x := d { cx.s.resolve_decl(x) is not .Error } else { true }
-        }
-        _ => true
+    immutable := true
+    if found := cx.lookup_local_at(id.name) {
+        if .Var(l) := found.binding { immutable = not cx.local_at(found.depth, l).mutable }
+    } else {
+        d := cx.s.lookup_module_name(cx.module, id.name)
+        immutable = if x := d { cx.s.resolve_decl(x) is not .Error } else { true }
     }
     if immutable {
         cx.error(place.span, str.format("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name)!)
@@ -775,6 +928,7 @@ place_mutability :: fn(cx: ^FnCx, e: ^Expr) -> ?bool {
     if tys.is_error(e.ty) { return true }
     match e.kind {
         .Local(l) => return cx.locals.items[usize(l)].mutable
+        .Upvar(levels, l) => return cx.local_at(cx.depth() - levels, l).mutable
         .Const(_) => return false
         .Deref(p) => {
             if .Ptr(c, _) := tys.kind(p.ty) { return not c }

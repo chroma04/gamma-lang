@@ -85,6 +85,7 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
             return error_expr(cx.s, span)
         }
         .Intrinsic(i) => return cx.intrinsic(i, span)
+        .Fn(lit) => return cx.fn_literal(lit, expect, null, span)
         _ => return cx.unsupported(span, expr_kind_text(&e.kind))
     }
 }
@@ -181,9 +182,24 @@ auto_deref :: fn(cx: ^FnCx, b: ^Expr) -> ^Expr needs Alloc {
 
 /// A name used as a value.
 name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
-    if b := cx.lookup_local(name) {
-        match b {
-            .Var(id) => return tir.mk(cx.locals.items[usize(id)].ty, .Local(id), span)
+    if found := cx.lookup_local_at(name) {
+        match found.binding {
+            .Var(id) => {
+                ty := cx.local_at(found.depth, id).ty
+                if found.depth < cx.depth() {
+                    // A local of an enclosing function, captured by reference (§11.6).
+                    cx.note_capture(found.depth)
+                    return tir.mk(ty, .Upvar(cx.depth() - found.depth, id), span)
+                }
+                return tir.mk(ty, .Local(id), span)
+            }
+            .NestedFn(f) => {
+                if f in cx.open_fns.items {
+                    cx.recursive_without_ret(name, span)
+                    return error_expr(cx.s, span)
+                }
+                return cx.fn_ref(f, span)
+            }
             .Untyped(v) => return cx.untyped_literal(&v, span)
             .Label => {
                 cx.error(span, str.format("`{}` is a label, not a value", name)!)
@@ -766,6 +782,7 @@ join_branch :: fn(cx: ^FnCx, b: ^Expr, ty: Ty) -> ^Expr needs Load {
 
 return_expr :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
     if cx.in_defer { cx.error(span, "`return` is not allowed in a deferred statement") }
+    if cx.open_ret { return cx.open_return(v, span) }
     ret := cx.ret
     value := if x := v {
         cx.coerce(cx.expr(x, ret), ret)
@@ -776,6 +793,26 @@ return_expr :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Lo
         unit(cx.s, span)
     }
     return tir.mk(cx.s.tys.never_ty(), .Return(0, value), span)
+}
+
+/// A `return` in a literal whose return type comes from its `return`s: the first one
+/// with a value fixes the type, the others convert to it.
+open_return :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    value := unit(cx.s, span)
+    if x := v {
+        if t := cx.open_ty {
+            value = cx.coerce(cx.expr(x, t), t)
+        } else {
+            value = cx.expr(x, null)
+            if tys.kind(value.ty) is not .Never and not tys.is_error(value.ty) { cx.open_ty = value.ty }
+        }
+    } else if t := cx.open_ty {
+        if not tys.is_unit(cx.infer.resolve(cx.s, t)) and not tys.is_error(t) { cx.error(span, str.format("`return` needs a value of type `{}`", cx.show(t))!) }
+    } else {
+        cx.open_ty = tys.unit()
+    }
+    return tir.mk(tys.never_ty(), .Return(0, value), span)
 }
 
 /// The loop that `break` or `continue` with `label` targets, if any.

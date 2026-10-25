@@ -82,7 +82,9 @@ write_fn :: fn(d: ^Dump, f: u32) needs Alloc {
         .Clause => "clause"
         .Foreign => "foreign"
     }
-    d.write_line(0, str.format("fn {} {}", fn_label(s, f), kind)!)
+    head := str.format("fn {} {}", fn_label(s, f), kind)!
+    if p := def.parent { head = str.format("{} in {}", head, fn_label(s, p))! }
+    d.write_line(0, head)
     for i, l in enumerate(def.locals) {
         param := def.params.index_of(i.trunc(u32)) is not null
         d.write_line(1, str.format("{} {} {}: {}{}", if param { "param" } else { "local" }, i, l.name, s.show(l.ty), if l.mutable { " mut" } else { "" })!)
@@ -165,6 +167,7 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             "addr-of-temp"
         }
         .FnRef(f) => str.format("fn-ref {}", fn_label(s, f))!
+        .Closure(f) => str.format("closure {}", fn_label(s, f))!
         .Unary(op, x) => {
             kids.push(x)!
             str.format("unary {}", match op {

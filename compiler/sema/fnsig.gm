@@ -253,7 +253,7 @@ resolve_effect_set :: fn(s: ^Sema, module: usize, terms: []const ^const ast.Expr
 }
 
 /// `needs` lists hold expressions, not pointers to them.
-resolve_effect_list :: fn(s: ^Sema, module: usize, list_: []const ast.Expr) -> EffectSet needs Load {
+pub(package) resolve_effect_list :: fn(s: ^Sema, module: usize, list_: []const ast.Expr) -> EffectSet needs Load {
     terms := list(^const ast.Expr)
     for i in 0..list_.len { terms.push(&list_[i])! }
     return s.resolve_effect_set(module, terms.items)
@@ -449,4 +449,12 @@ declare_effect :: fn(s: ^Sema, module: usize, decl: usize, name: ast.Ident, lit:
     s.type_params.truncate(s.type_params.items.len - params.items.len)
     s.effects.items[usize(eff)].ops = ops.items
     return .Effect(eff)
+}
+
+/// Declares a function literal or nested function of a body, whose body the body
+/// checker stores.
+pub new_literal_fn :: fn(s: ^Sema, name: string, span: source.Span, module: usize, params: []ParamInfo, ret: Ty, effects: EffectSet) -> u32 needs Alloc {
+    s.fns.push(FnSig(name: name, span: span, module: module, params: params, ret: ret, effects: effects, generics: empty_slice(u32)))!
+    s.defs.push(tir.FnDef(kind: .Literal, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null))!
+    return (s.fns.items.len - 1).trunc(u32)
 }

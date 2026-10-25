@@ -306,7 +306,7 @@ const DECLS_FLOOR: usize = 630;
 /// The number of programs whose function bodies `gammac tir` must check without
 /// reporting a construct it cannot check yet. Raise it as gammac learns more; it may not
 /// drop.
-const TIR_FLOOR: usize = 195;
+const TIR_FLOOR: usize = 210;
 
 /// The output for each file of a run over several, by the `==> FILE <==` lines.
 fn sections(text: &str) -> Vec<(String, String)> {

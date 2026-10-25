@@ -40,7 +40,17 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             return cx.unsupported(span, "calls of fields")
         }
         .Ident(id) => {
-            if cx.lookup_local(id.name) is not null { return cx.call_value(cx.expr(callee, null), args, span) }
+            if b := cx.lookup_local(id.name) {
+                // A nested named function is called directly.
+                if .NestedFn(f) := b {
+                    if f in cx.open_fns.items {
+                        cx.recursive_without_ret(id.name, id.span)
+                        return error_expr(cx.s, span)
+                    }
+                    return cx.call_fn(f, args, span)
+                }
+                return cx.call_value(cx.expr(callee, null), args, span)
+            }
             if cx.s.type_param(id.name) is not null {
                 n := id.name
                 cx.error(callee.span, str.format("`{}(x)` would be a conversion to a type parameter, which is not lossless for every type; use `x.trunc({})`, `x.sat({})` or `x.checked({})`", n, n, n, n)!)

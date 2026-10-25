@@ -56,6 +56,9 @@ pub ExprKind :: union {
     AddrOfTemp: ^Expr
     /// A named function as a value, by its index.
     FnRef: u32
+    /// A function literal that uses locals of the enclosing function: a second-class
+    /// function value (§11.6).
+    Closure: u32
     Unary: (op: UnOp, operand: ^Expr)
     Binary: (op: BinOp, lhs: ^Expr, rhs: ^Expr)
     Logic: (is_and: bool, lhs: ^Expr, rhs: ^Expr)
@@ -360,6 +363,8 @@ pub FnDef :: struct {
     pub params: []u32
     pub locals: []LocalDecl
     pub body: ?^Expr
+    /// For a nested function that uses locals of the enclosing one: that function.
+    pub parent: ?u32 = null
 }
 
 // ---------------------------------------------------------------------------------
