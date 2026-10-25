@@ -364,6 +364,12 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             for i in 0..w.args.len { kids.push(&w.args[i])! }
             h.items
         }
+        .WriteDeferred(w) => {
+            if .Fn(x) := w.sink { kids.push(x)! }
+            kids.push(w.template)!
+            if a := w.args { kids.push(a)! }
+            str.format("write-deferred {} {}", d.sink_text(w.sink), d.local_text(w.tmp))!
+        }
     }
     d.write_line(depth, str.format("{} : {}", head, ty)!)
     for k in kids.items { d.write_expr(depth + 1, k) }
