@@ -127,7 +127,7 @@ resolve_fn_sig :: fn(s: ^Sema, module: usize, sig: ^const ast.FnSig, literal: bo
         }
         break
     }
-    if sig.variadic {
+    if sig.variadic and not s.allow_variadic {
         s.error(sig.span, "variadic parameters are allowed only in foreign functions")
         ok = false
     }

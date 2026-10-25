@@ -1054,7 +1054,8 @@ assignable_name :: fn(cx: ^FnCx, place: ^const ast.Expr) -> bool needs Load {
         if .Var(l) := found.binding { immutable = not cx.local_at(found.depth, l).mutable }
     } else {
         d := cx.s.lookup_module_name(cx.module, id.name)
-        immutable = if x := d { cx.s.resolve_decl(x) is not .Error } else { true }
+        // A `#global` is mutable storage (§19.3); a declaration with errors was reported.
+        immutable = if x := d { cx.s.resolve_decl(x) not in (.Error, .Global(_)) } else { true }
     }
     if immutable {
         cx.error(place.span, str.format("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name)!)
@@ -1082,6 +1083,7 @@ place_mutability :: fn(cx: ^FnCx, e: ^Expr) -> ?bool {
     match e.kind {
         .Local(l) => return cx.locals.items[usize(l)].mutable
         .Upvar(levels, l) => return cx.local_at(cx.depth() - levels, l).mutable
+        .Global(_) => return true
         .Const(_) => return false
         .Deref(p) => {
             if .Ptr(c, _) := tys.kind(p.ty) { return not c }
@@ -1100,7 +1102,7 @@ place_mutability :: fn(cx: ^FnCx, e: ^Expr) -> ?bool {
 /// A place whose re-evaluation has no side effects and is cheap.
 is_simple_place :: fn(e: ^Expr) -> bool {
     match e.kind {
-        .Local(_), .Upvar(_) => return true
+        .Local(_), .Upvar(_), .Global(_) => return true
         .Field(base, _) => return is_simple_place(base)
         .Deref(p) => return p.kind is .Local(_)
         _ => return false

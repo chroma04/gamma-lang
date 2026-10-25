@@ -285,7 +285,12 @@ decl_expr :: fn(cx: ^FnCx, d: usize, name: string, expect: ?Ty, span: source.Spa
         .EffectSet(_) => cx.error(span, str.format("expected a value, found the effect set `{}`", name)!)
         .Op(_) => cx.error(span, str.format("the operation `{}` can only be called", name)!)
         .Module(_) => cx.error(span, str.format("`{}` is a module, which is not a value (§3.2)", name)!)
-        .Global(_) => return cx.unsupported(span, "`#global`s")
+        // Every access to a `#global` performs `Sys` (§19.3).
+        .Global(ty) => {
+            sys := cx.s.sys_set()
+            cx.record_effects(&sys, span)
+            return tir.mk(ty, .Global(cx.s.l.decls.items[d].name.name), span)
+        }
         .Error => {}
     }
     return error_expr(cx.s, span)

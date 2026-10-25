@@ -301,12 +301,12 @@ fn check(stage: Stage, recover: bool) {
 
 /// The number of programs whose declarations `gammac decls` must check without reporting
 /// a construct it cannot check yet. Raise it as gammac learns more; it may not drop.
-const DECLS_FLOOR: usize = 630;
+const DECLS_FLOOR: usize = 693;
 
 /// The number of programs whose function bodies `gammac tir` must check without
 /// reporting a construct it cannot check yet. Raise it as gammac learns more; it may not
 /// drop.
-const TIR_FLOOR: usize = 420;
+const TIR_FLOOR: usize = 439;
 
 /// The output for each file of a run over several, by the `==> FILE <==` lines.
 fn sections(text: &str) -> Vec<(String, String)> {

@@ -49,6 +49,8 @@ pub ExprKind :: union {
     // Places.
     Local: u32
     Upvar: (levels: u32, local: u32)
+    /// A `#global` variable or a foreign variable (§19.3), by its name.
+    Global: string
     Deref: ^Expr
     /// A struct field or tuple element, by index.
     Field: (base: ^Expr, index: u32)

@@ -292,7 +292,7 @@ load_dir_module :: fn(l: ^Loader, dir: string, at: source.Span, parent_package: 
 
 /// Creates a module from parsed files and collects its top-level names. Its top-level
 /// `when`s wait for `collect_whens`.
-add_module :: fn(l: ^Loader, name: string, files: []const ast.File) -> usize needs Alloc {
+pub(package) add_module :: fn(l: ^Loader, name: string, files: []const ast.File) -> usize needs Alloc {
     id := l.modules.items.len
     l.modules.push(Module(
         name: name,
@@ -645,4 +645,13 @@ show :: fn(l: ^const Loader, p: string) -> string needs Alloc {
     }
     if rest := strip_prefix(p, l.cwd) { return slashes(if rest.len is 0 { "." } else { rest }) }
     return slashes(p)
+}
+
+/// Adds a declaration that no top-level item of the module makes (a member of a
+/// `foreign` block), named `name` in `module`'s scope.
+pub(package) add_member :: fn(l: ^Loader, module: usize, name: ast.Ident, item: ast.Item) -> usize needs Alloc {
+    l.decls.push(Decl(name: name, module: module, item: item, state: .Unresolved))!
+    id := l.decls.items.len - 1
+    l.modules.items[module].scope.push(Named(name: name.name, decl: id))!
+    return id
 }

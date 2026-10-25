@@ -137,6 +137,7 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
         .TypeName(of) => str.format("type-name {}", s.show(of))!
         .Const(name, span) => str.format("const {}@{}", name, place(s, span))!
         .Local(l) => str.format("local {}", d.local_text(l))!
+        .Global(name) => str.format("global {}", name)!
         .Upvar(levels, l) => str.format("upvar {} {}", levels, l)!
         .Deref(x) => {
             kids.push(x)!

@@ -135,9 +135,19 @@ call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args
 call_fn :: fn(cx: ^FnCx, f: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     sig := cx.s.fns.items[usize(f)]
     if sig.generics.len > 0 { return cx.generic_call(f, null, args, span) }
-    bound := cx.bind_args(sig.params, sig.module, args, span, "function") else return error_expr(cx.s, span)
+    n := sig.params.len
+    variadic := f in cx.s.variadic_fns.items and args.len > n
+    fixed := if variadic { args[..n] } else { args }
+    bound := cx.bind_args(sig.params, sig.module, fixed, span, "function") else return error_expr(cx.s, span)
+    all := bound.args
+    if variadic {
+        vals := list(Expr)
+        vals.extend(bound.args)!
+        for a in args[n..] { vals.push(cx.variadic_arg(&a)^)! }
+        all = vals.items
+    }
     cx.record_effects(&sig.effects, span)
-    call := tir.mk(sig.ret, .Call(.Fn(f), bound.args), span)
+    call := tir.mk(sig.ret, .Call(.Fn(f), all), span)
     if bound.pre.len is 0 { return call }
     return tir.mk(call.ty, .Block(new(tir.Block(stmts: bound.pre, tail: call, span: span))!), span)
 }
@@ -574,4 +584,24 @@ build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template_span: source.Span, by
         values.push(cx.expr(&x, null)^)!
     }
     return tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: pieces.items, specs: specs.items, args: values.items)), span)
+}
+
+/// An argument in the variadic position of a foreign call (§19.2): a C-compatible scalar
+/// at least as wide as C `int` (integers) or `f64` (floats).
+variadic_arg :: fn(cx: ^FnCx, a: ^const ast.Arg) -> ^Expr needs Load {
+    .Positional(e) := a.kind else {
+        cx.error(a.span, "variadic arguments are written positionally")
+        return error_expr(cx.s, a.span)
+    }
+    v := cx.expr(&e, null)
+    t := cx.infer.resolve(cx.s, v.ty)
+    ok := match cx.s.tys.kind(t) {
+        .Int(_, bits) => bits in (32, 64)
+        .Usize, .Isize, .Rawptr, .Ptr(_), .ManyPtr(_), .Infer(_), .Error => true
+        .Float(bits) => bits is 64
+        .Optional(inner) => cx.s.is_nullable_pointer(inner)
+        _ => false
+    }
+    if not ok { cx.error(e.span, str.format("`{}` cannot be passed to a variadic parameter: use a C-compatible scalar of at least C `int` width or `f64`, converting explicitly (§19.2)", cx.show(t))!) }
+    return v
 }
