@@ -34,3 +34,7 @@ dangling stores are now compile errors (decisions/045).
 - **`str.format` gives `[]u8`, literals are `string`** (s42, 2x): mixing them in a list or
   `in` needs `n: string = str.format(…)!`. Low priority; the message names both types.
 - **`a is not b and c` on bools** (s42, subagent): needs parentheses; easy to forget.
+- **No `---` for pointers / no definite assignment** (s42, W1 subagent): `x: ^Expr = ---`
+  is rejected, so a pointer set in both branches of an `if` needs a helper function or an
+  `if` expression. Idea: definite-assignment analysis for locals declared without a value.
+  Seen once; watch for repeats.

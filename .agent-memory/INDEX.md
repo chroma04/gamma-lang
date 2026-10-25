@@ -3,8 +3,8 @@
 ## State (2026-10-25) — PRs #1–#82 merged, v0.1.0 tagged
 - s41: gammac compile-time evaluator (decisions/046), `?x` pattern (047); PRs #81, #82.
 - s42 (branch claude/project-thread-rqqvrh): user asked "finish the checker" (every program matches tir+decls, in
-  PRs). Round 1 PR: TIR 693 / decls 768, 0 DIFF; W1 (vectors/#soa) and W3 (effects,
-  iterators) worktree branches still to merge. See roadmap/self-hosting.md s42.
+  PRs). PR #83 = round 1 (693/768); round 2 = every program matches (800/800, floors
+  800): gammac checker stage DONE. See roadmap/self-hosting.md s42.
 - s38–s39 (PRs #72–#79 merged): self-hosted compiler gammac in compiler/ (decisions/043,
   roadmap/self-hosting.md): lexer+parser+modules byte-identical on all files; decls and
   tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in

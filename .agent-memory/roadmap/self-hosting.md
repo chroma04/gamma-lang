@@ -112,9 +112,15 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   Sema.nested_generic), float/aggregate ConstKeys (canonical_bytes; display write_float),
   bit intrinsics + ToPtr + many-ptr slices in eval, core bodies checked on demand,
   body-level `when` via check (body_when_cond), handler decls installed in eval.
-  PR 1: TIR 693, decls 768, 0 DIFF. Open: comptime_handler_decl needs handlers declared
-  before consts are evaluated (Rust ensure_handlers_declared in handlers_for) — do after
-  W3 merges (it rewrites handler_decls.gm).
+  PR 1 (#83): TIR 693, decls 768. Round 2 (merged W1 + W3 in a scratch worktree, then
+  into the branch): handlers declared on demand (Sema.handlers_declared, handlers_of_type),
+  core handler clauses kept pending and checked by eval (check_pending_clause), eval
+  Cast/Addr (synthetic addresses: host cell address << 12 + index * elem size), nested
+  copies get their own #soa temps (mono_fn swaps mc.locals). RESULT: 800/800 TIR and
+  decls, floors = 800. Checker stage DONE.
+- Next for self-hosting (not started): stage 5 = code generation in gammac (C back end
+  first, mirroring src/cgen), or making gammac self-compile (gammac checking compiler/).
+  Ask the user which.
 - Remaining first-blocker buckets (s41 end, before s41b): vector types 19, iterator args 17,
   literal-variable conversions 14, array construction 13, #bits/other struct attrs 13,
   intrinsics 12, attributes 11, generic effect ops 11, effect-set params 10, vector/complex
