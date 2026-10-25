@@ -1,6 +1,9 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-25) — PRs #1–#82 merged, v0.1.0 tagged
+## State (2026-10-25) — PRs #1–#84 merged, v0.1.0 tagged
+- s43 (branch claude/lucid-clarke-48k3cf): gammac COMPILES ITSELF. C back end
+  compiler/cgen/ (decisions/048), `gammac build`, bootstrap fixed point tested in
+  tests/selfhost.rs; all applicable conformance run tests pass via gammac.
 - s41: gammac compile-time evaluator (decisions/046), `?x` pattern (047); PRs #81, #82.
 - s42 (branch claude/project-thread-rqqvrh): user asked "finish the checker" (every program matches tir+decls, in
   PRs). PR #83 = round 1 (693/768); round 2 = every program matches (800/800, floors
@@ -48,7 +51,7 @@
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
 1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
-1b. Self-hosting: roadmap/self-hosting.md (stage 4b bodies in progress: widen coverage).
+1b. Self-hosting: roadmap/self-hosting.md (stages 1–6 done; next: back-end speed, -g, tests).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.
@@ -60,9 +63,9 @@
                   self-hosting.md (gammac stages),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–047, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–048, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

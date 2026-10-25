@@ -1,0 +1,666 @@
+// C representations of Gamma types, and the type descriptors that the runtime's
+// formatter reads (mirrors `src/cgen/types.rs`; debugger views and the Fil-C blob kinds
+// are not ported: `-g` and the Safe mode are left to the reference implementation).
+//
+// Scalars (integers up to 128 bits, floats, `bool`, pointers) are native C types.
+// Structs, tuples, arrays, optionals, results and tagged unions are *typed structs*:
+// members of the field types at the Gamma offsets, with explicit padding members, so
+// values have exactly the bytes the interpreter gives them. Every other first-class type
+// (`#packed` and `#bits` structs, zero-size types) is a *blob*: a struct holding its bytes
+// with the size and alignment of the Gamma layout. A struct or `#c_union` whose fields are
+// all C-compatible (§19.1) also gets a *mirror*, a C type with the same fields, for the
+// plain C calling convention.
+
+/// How a type is represented in C.
+pub Repr :: union {
+    /// A native integer of `bits` bits stored in a C type of `storage` bytes.
+    Int: (signed: bool, bits: u32, storage: u64)
+    /// A float of this width.
+    Float: u16
+    Bool
+    /// Any pointer, function pointer, or optional pointer (null is 0): `void *`.
+    Ptr
+    /// A second-class function value (`gm_closure`).
+    Closure
+    /// A handler value (`gm_hval`).
+    Handler
+    /// Bytes in a blob struct.
+    Blob
+}
+
+/// A field of a `#bits` struct: bit offset, width and type.
+pub BitField :: struct {
+    pub off: u32
+    pub width: u32
+    pub ty: Ty
+}
+
+pub BitsLayout :: struct {
+    /// The underlying integer type.
+    pub int_ty: Ty
+    pub fields: []const BitField
+}
+
+pub CTypes :: struct {
+    pub s: ^Sema
+    pub lay: Layouts
+    /// Blob typedefs needed, by name.
+    blobs: List(string)
+    blob_names: hash_map.HashMap(string, bool)
+    desc_ids: hash_map.HashMap(u32, usize)
+    desc_count: usize
+    desc_fwd: List(u8)
+    desc_parts: List(u8)
+    desc_defs: List(u8)
+    /// Typed C structs by type id (`null`: the type is a blob), and by their member list
+    /// so that types of the same shape share one.
+    typed_cache: hash_map.HashMap(u32, ?string)
+    typed_by_shape: hash_map.HashMap(string, string)
+    typed_count: usize
+    typed_defs: List(u8)
+    /// Mirror C types by type id (`null`: the type has none).
+    mirrors: hash_map.HashMap(u32, ?string)
+    mirror_defs: List(u8)
+    /// The vector types declared so far.
+    vector_names: hash_map.HashMap(string, bool)
+}
+
+pub ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
+    s: s,
+    lay: layouts(s, t),
+    blobs: list(string),
+    blob_names: hash_map.hash_map(string, bool),
+    desc_ids: hash_map.hash_map(u32, usize),
+    desc_count: 0,
+    desc_fwd: list(u8),
+    desc_parts: list(u8),
+    desc_defs: list(u8),
+    typed_cache: hash_map.hash_map(u32, ?string),
+    typed_by_shape: hash_map.hash_map(string, string),
+    typed_count: 0,
+    typed_defs: list(u8),
+    mirrors: hash_map.hash_map(u32, ?string),
+    mirror_defs: list(u8),
+    vector_names: hash_map.hash_map(string, bool),
+)
+
+// ---------------------------------------------------------------------------------
+// Type queries, so the rest of the back end need not reach into the checker
+// ---------------------------------------------------------------------------------
+
+pub kind :: fn(ty: ^const CTypes, t: Ty) -> TyKind => ty.s.tys.kind(t)
+
+pub show :: fn(ty: ^const CTypes, t: Ty) -> string needs Alloc => ty.s.tys.show(t)
+
+pub is_unit :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_unit(t)
+
+pub is_never :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) is .Never
+
+pub is_integer :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_integer(t)
+
+pub is_signed_integer :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_signed_integer(t)
+
+pub is_float :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) is .Float(_)
+
+/// A `#simd` or `#vec` array (§5.6.2, §5.6.3).
+pub is_vector :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) in (.Array(_, _, .Simd), .Array(_, _, .Math))
+
+pub unit_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.unit()
+
+pub bool_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.bool_ty()
+
+pub string_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.string_ty()
+
+pub int_ty :: fn(ty: ^CTypes, signed: bool, bits: u16) -> Ty needs Alloc => ty.s.tys.int(signed, bits)
+
+pub usize_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.usize_ty()
+
+/// The definition of the struct or union `t`.
+pub adt_of :: fn(ty: ^const CTypes, t: Ty) -> ^const sema.AdtInfo {
+    .Adt(id, _) := ty.s.tys.kind(t) else @unreachable()
+    return &ty.s.adts.items[usize(id)]
+}
+
+// ---------------------------------------------------------------------------------
+// Layouts and representations
+// ---------------------------------------------------------------------------------
+
+pub size :: fn(ty: ^CTypes, t: Ty) -> u64 needs Alloc => ty.lay.size_of(t)
+
+pub align :: fn(ty: ^CTypes, t: Ty) -> u64 needs Alloc => ty.lay.align_of(t)
+
+pub offsets :: fn(ty: ^CTypes, t: Ty) -> []const u64 needs Alloc => ty.lay.layout_of(t).offsets
+
+pub repr :: fn(ty: ^CTypes, t: Ty) -> Repr needs Alloc => match ty.kind(t) {
+    .Int(signed, bits) => .Int(signed: signed, bits: u32(bits), storage: ty.size(t))
+    .Usize => .Int(signed: false, bits: ty.lay.target.ptr_bits(), storage: ty.lay.target.ptr_bytes)
+    .Isize => .Int(signed: true, bits: ty.lay.target.ptr_bits(), storage: ty.lay.target.ptr_bytes)
+    .Float(bits) => .Float(bits)
+    .Bool => .Bool
+    .Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_) => .Ptr
+    .Optional(inner) => if nullable_pointer(ty.s, inner) { .Ptr } else { .Blob }
+    .Fn(_) => .Closure
+    .Handler(_) => .Handler
+    _ => .Blob
+}
+
+/// The C type of values of `t`.
+pub cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+    match ty.repr(t) {
+        .Int(signed, _, storage) => return int_cty(signed, storage)
+        .Float(16) => return "_Float16"
+        .Float(32) => return "float"
+        .Float(_) => return "double"
+        .Bool => return "uint8_t"
+        .Ptr => return "void *"
+        .Closure => return "gm_closure"
+        .Handler => return "gm_hval"
+        .Blob => {
+            if n := ty.typed(t) { return n }
+            s := ty.size(t)
+            a := ty.align(t).max(1)
+            name := blob_name(s, a)
+            if ty.blob_names.get(name) is null {
+                ty.blob_names.put(name, true)!
+                ty.blobs.push(str.format("typedef struct {{ _Alignas({}) uint8_t b[{}]; }} {};\n", a, s, name)!)!
+            }
+            return name
+        }
+    }
+}
+
+/// The typed C struct holding values of `t`, if it has one: a struct, tuple or array
+/// whose members are the fields (or elements) at their Gamma offsets, with explicit
+/// padding members. Packed and `#bits` structs, `#c_union`s, zero-size types and 32-bit
+/// targets use blobs.
+typed :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
+    if m := ty.typed_cache.get(t.id) { return m }
+    m := ty.make_typed(t)
+    ty.typed_cache.put(t.id, m)!
+    return m
+}
+
+/// A member of a typed struct: C type, size, alignment, explicit alignment and offset.
+Member :: struct {
+    cty: string
+    size: u64
+    align: u64
+    explicit: ?u64
+    off: u64
+}
+
+NamedOffset :: struct {
+    name: string
+    off: u64
+}
+
+make_typed :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
+    if ty.lay.target.filc or ty.lay.target.ptr_bytes is not 8 or ty.size(t) is 0 { return null }
+    items := list(Member)
+    match ty.kind(t) {
+        .Array(len, elem, _) => {
+            if len is 0 or ty.size(elem) is 0 { return null }
+            ec := ty.cty(elem)
+            members := str.format("{} a[{}];", ec, len)!
+            named := list(NamedOffset)
+            named.push(NamedOffset(name: "a", off: 0))!
+            return ty.define_typed(t, members, named.items, ty.align(elem))
+        }
+        .Tuple(elems, _) => {
+            offs := ty.offsets(t)
+            for i, ft in enumerate(elems) { items.push(Member(cty: ty.cty(ft), size: ty.size(ft), align: ty.align(ft), explicit: null, off: offs[i]))! }
+        }
+        .Optional(inner) => {
+            offs := ty.offsets(t)
+            items.push(Member(cty: ty.cty(inner), size: ty.size(inner), align: ty.align(inner), explicit: null, off: offs[0]))!
+            items.push(Member(cty: "uint8_t", size: 1, align: 1, explicit: null, off: offs[1]))!
+        }
+        .Result(err, ok) => {
+            offs := ty.offsets(t)
+            items.push(Member(cty: "uint8_t", size: 1, align: 1, explicit: null, off: offs[0]))!
+            pair := [2]Ty(err, ok)
+            if p := ty.payload_union(pair[..]) { items.push(Member(cty: p.cty, size: p.size, align: p.align, explicit: null, off: offs[1]))! }
+        }
+        .Adt(id, _) => match ty.s.adts.items[usize(id)].kind {
+            .Struct(def) => {
+                if def.packed or def.bits is not null { return null }
+                offs := ty.offsets(t)
+                for i, f in enumerate(def.fields) { items.push(Member(cty: ty.cty(f.ty), size: ty.size(f.ty), align: ty.align(f.ty), explicit: f.align, off: offs[i]))! }
+            }
+            .Union(tag, variants) => {
+                offs := ty.offsets(t)
+                items.push(Member(cty: ty.cty(tag), size: ty.size(tag), align: ty.align(tag), explicit: null, off: offs[0]))!
+                payloads := list(Ty)
+                for v in variants {
+                    if pt := v.payload { payloads.push(pt)! }
+                }
+                if offs.len > 1 {
+                    if p := ty.payload_union(payloads.items) { items.push(Member(cty: p.cty, size: p.size, align: p.align, explicit: null, off: offs[1]))! }
+                }
+            }
+            .CUnion(_) => return null
+        }
+        _ => return null
+    }
+    members := list(string)
+    named := list(NamedOffset)
+    cursor: u64 = 0
+    natural: u64 = 1
+    for i, m in enumerate(items.items) {
+        if m.size is 0 { continue }
+        if m.off > cursor { members.push(str.format("uint8_t p{}[{}];", i, m.off - cursor)!)! }
+        natural = natural.max(if x := m.explicit { x.max(m.align) } else { m.align })
+        alignas: string = if x := m.explicit { str.format("_Alignas({}) ", x)! } else { "" }
+        members.push(str.format("{}{} f{};", alignas, m.cty, i)!)!
+        named.push(NamedOffset(name: str.format("f{}", i)!, off: m.off))!
+        // A union member's size is rounded up to its alignment.
+        a := m.align.max(1)
+        cursor = m.off + (m.size + a - 1) / a * a
+    }
+    if ty.size(t) > cursor { members.push(str.format("uint8_t pe[{}];", ty.size(t) - cursor)!)! }
+    return ty.define_typed(t, str.join(members.items, " ")!, named.items, natural)
+}
+
+PayloadUnion :: struct {
+    cty: string
+    size: u64
+    align: u64
+}
+
+/// The C type of the payload of a union or result whose variants hold values of `tys`
+/// (zero-size ones need no storage), with its size and alignment.
+payload_union :: fn(ty: ^CTypes, tys: []const Ty) -> ?PayloadUnion needs Alloc {
+    members := list(string)
+    size: u64 = 0
+    align: u64 = 1
+    for i, t in enumerate(tys) {
+        if ty.size(t) > 0 {
+            members.push(str.format("{} v{};", ty.cty(t), i)!)!
+            size = size.max(ty.size(t))
+            align = align.max(ty.align(t))
+        }
+    }
+    if members.items.len is 0 { return null }
+    return PayloadUnion(cty: str.format("union {{ {} }}", str.join(members.items, " ")!)!, size: size, align: align)
+}
+
+/// Defines (or finds) the struct with `members` for `t`, whose named members sit at the
+/// given offsets and whose members' own alignment is `natural`.
+define_typed :: fn(ty: ^CTypes, t: Ty, members: string, named: []const NamedOffset, natural: u64) -> string needs Alloc {
+    size := ty.size(t)
+    al := ty.align(t)
+    attr: string = if al > natural { str.format(" __attribute__((aligned({})))", al)! } else { "" }
+    shape := str.format("{}{}", attr, members)!
+    if n := ty.typed_by_shape.get(shape) { return n }
+    name := str.format("gm_t{}", ty.typed_count)!
+    ty.typed_count += 1
+    ty.typed_defs.write("typedef struct{} {{ {} }} {};\n", attr, members, name)!
+    ty.typed_defs.write("_Static_assert(sizeof({}) == {} && _Alignof({}) == {}", name, size, name, al)!
+    for m in named { ty.typed_defs.write(" && offsetof({}, {}) == {}", name, m.name, m.off)! }
+    ty.typed_defs.write(", {});\n", assert_message(str.format("layout of `{}`", ty.show(t))!))!
+    ty.typed_by_shape.put(shape, name)!
+    return name
+}
+
+/// The name of a GCC/Clang vector type of `n` lanes of the C type `lane` (`tag` names it,
+/// as `u8` or `f32`), each `bytes` wide, declared once.
+pub vector_typedef :: fn(ty: ^CTypes, lane: string, tag: string, n: u64, bytes: u64) -> string needs Alloc {
+    name := str.format("gm_v{}{}", n, tag)!
+    if ty.vector_names.get(name) is null {
+        ty.vector_names.put(name, true)!
+        ty.typed_defs.write("typedef {} {} __attribute__((vector_size({})));\n", lane, name, n * bytes)!
+    }
+    return name
+}
+
+/// The mirror of `t`: a C type with its fields, for a C-compatible struct, `#c_union` or
+/// `#bits` struct (the latter is its integer). `null` for other types.
+pub mirror :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
+    if m := ty.mirrors.get(t.id) { return m }
+    m := ty.make_mirror(t)
+    ty.mirrors.put(t.id, m)!
+    return m
+}
+
+make_mirror :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
+    .Adt(id, _) := ty.kind(t) else return null
+    keyword := "struct"
+    fields: []const sema.FieldDef = empty_slice(sema.FieldDef)
+    packed := false
+    explicit: ?u64 = null
+    match ty.s.adts.items[usize(id)].kind {
+        .Struct(def) => {
+            if u := def.bits { return ty.cty(u) }
+            fields = def.fields
+            packed = def.packed
+            explicit = def.align
+        }
+        .CUnion(fs) => {
+            keyword = "union"
+            fields = fs
+        }
+        .Union(_) => return null
+    }
+    if fields.len is 0 or ty.size(t) is 0 { return null }
+    members := list(string)
+    for i, f in enumerate(fields) {
+        fc := ty.field_cty(f.ty) else return null
+        al: string = if a := f.align { str.format("_Alignas({}) ", a)! } else { "" }
+        members.push(str.format("{}{} f{}{};", al, fc.cty, i, fc.dims)!)!
+    }
+    // Numbered by how many mirrors were asked for, as the reference does.
+    name := str.format("gm_cs{}", ty.mirrors.len())!
+    attrs := list(string)
+    if packed { attrs.push("packed")! }
+    if a := explicit { attrs.push(str.format("aligned({})", a)!)! }
+    attr_text: string = if attrs.items.len is 0 { "" } else { str.format(" __attribute__(({}))", str.join(attrs.items, ", ")!)! }
+    ty.mirror_defs.write("typedef {} {}{} {{ {} }} {};\n", keyword, attr_text, name, str.join(members.items, " ")!, name)!
+    // The C compiler must agree with the Gamma layout.
+    ty.mirror_defs.write("_Static_assert(sizeof({}) == {} && _Alignof({}) == {}", name, ty.size(t), name, ty.align(t))!
+    offs := ty.offsets(t)
+    for i in 0..fields.len {
+        if i < offs.len { ty.mirror_defs.write(" && offsetof({}, f{}) == {}", name, i, offs[i])! }
+    }
+    ty.mirror_defs.write(", {});\n", assert_message(str.format("layout of `{}`", ty.show(t))!))!
+    return name
+}
+
+FieldCty :: struct {
+    cty: string
+    dims: string
+}
+
+/// The C type of a mirror's field of type `t`, and the array dimensions that follow the
+/// field's name.
+field_cty :: fn(ty: ^CTypes, t: Ty) -> ?FieldCty needs Alloc {
+    match ty.repr(t) {
+        .Bool => return FieldCty(cty: "_Bool", dims: "")
+        .Int(_), .Float(_), .Ptr => return FieldCty(cty: ty.cty(t), dims: "")
+        .Closure, .Handler => return null
+        .Blob => {}
+    }
+    match ty.kind(t) {
+        .Array(len, elem, _) => {
+            if len is 0 { return null }
+            inner := ty.field_cty(elem) else return null
+            return FieldCty(cty: inner.cty, dims: str.format("[{}]{}", len, inner.dims)!)
+        }
+        .Adt(_) => {
+            m := ty.mirror(t) else return null
+            return FieldCty(cty: m, dims: "")
+        }
+        _ => return null
+    }
+}
+
+/// Whether values of `t` cross calls between Gamma functions by address: blobs larger
+/// than two words, which the C ABI would copy through memory anyway.
+pub by_ref :: fn(ty: ^CTypes, t: Ty) -> bool needs Alloc => ty.repr(t) is .Blob and ty.size(t) > 16
+
+/// The C type of a parameter of type `t` of a Gamma function (not of a plain C
+/// signature): an address if `by_ref`.
+pub param_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc => if ty.by_ref(t) { "const void *" } else { ty.cty(t) }
+
+/// The C type of `t` in the plain C calling convention: its mirror if it has one.
+pub plain_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+    if m := ty.mirror(t) { return m }
+    return ty.cty(t)
+}
+
+/// The definitions of the mirrors used.
+pub mirror_text :: fn(ty: ^const CTypes) -> string => ty.mirror_defs.items
+
+/// Typedefs of the blob types used, then of the typed structs.
+pub blob_typedefs :: fn(ty: ^const CTypes) -> string needs Alloc {
+    out := list(u8)
+    // In the order of their sizes and alignments, as the reference's sorted set.
+    sorted := list(string)
+    sorted.extend(ty.blobs.items)!
+    sorted.items.sort_by(fn(a, b: ^const string) -> bool => blob_key(a^) < blob_key(b^))
+    for b in sorted.items { out.extend(b)! }
+    out.extend(ty.typed_defs.items)!
+    return out.items
+}
+
+/// The size and alignment in the definition of a blob typedef, for sorting.
+blob_key :: fn(def: string) -> u128 {
+    // `typedef struct { _Alignas(A) uint8_t b[S]; } gm_bS_A;`
+    a := number_after(def, "_Alignas(")
+    s := number_after(def, "uint8_t b[")
+    return (u128(s) << 64) | u128(a)
+}
+
+number_after :: fn(text: string, prefix: string) -> u64 {
+    i := str.find(text, prefix) else return 0
+    n: u64 = 0
+    for c in text[i + prefix.len..] {
+        if c not in '0'..='9' { break }
+        n = n * 10 + u64(c - '0')
+    }
+    return n
+}
+
+// ---------------------------------------------------------------------------------
+// Type descriptors (§21.6.1 formatting)
+// ---------------------------------------------------------------------------------
+
+/// The C expression `&gm_tyN` for the descriptor of `t`.
+pub desc :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+    if i := ty.desc_ids.get(t.id) { return str.format("&gm_ty{}", i)! }
+    i := ty.desc_count
+    ty.desc_count += 1
+    ty.desc_ids.put(t.id, i)!
+    ty.desc_fwd.write("static const gm_type gm_ty{};\n", i)!
+    f := list(string)
+    f.push(str.format(".size = {}", ty.size(t))!)!
+    f.push(str.format(".align = {}", ty.align(t))!)!
+    match ty.kind(t) {
+        .Int(signed, bits) => {
+            f.push("kind = GM_K_INT")!
+            f.push(str.format("bits = {}", bits)!)!
+            f.push(str.format("is_signed = {}", signed)!)!
+        }
+        .Usize, .Isize => {
+            f.push("kind = GM_K_INT")!
+            f.push(str.format("bits = {}", ty.lay.target.ptr_bits())!)!
+            f.push(str.format("is_signed = {}", ty.kind(t) is .Isize)!)!
+        }
+        .Float(bits) => {
+            f.push("kind = GM_K_FLOAT")!
+            f.push(str.format("bits = {}", bits)!)!
+        }
+        .Bool => f.push("kind = GM_K_BOOL")!
+        .Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_) => f.push("kind = GM_K_PTR")!
+        .Slice(_, elem) => {
+            e := ty.desc(elem)
+            f.push("kind = GM_K_SLICE")!
+            f.push(str.format("elem = {}", e)!)!
+        }
+        .Array(len, elem, _) => {
+            e := ty.desc(elem)
+            f.push("kind = GM_K_ARRAY")!
+            f.push(str.format("elem = {}", e)!)!
+            f.push(str.format("len = {}", len)!)!
+        }
+        .Tuple(elems, names) => {
+            offs := ty.offsets(t)
+            parts := list(string)
+            for k, et in enumerate(elems) {
+                d := ty.desc(et)
+                name: string = if names.len > 0 { c_string(names[k]) } else { "NULL" }
+                parts.push(str.format("{{{}, {}, {}}}", name, offs[k], d)!)!
+            }
+            f.push("kind = GM_K_TUPLE")!
+            f.push(str.format("named = {}", names.len > 0)!)!
+            ty.fields_array(i, parts.items, &f)
+        }
+        .Optional(inner) => {
+            e := ty.desc(inner)
+            f.push("kind = GM_K_OPTIONAL")!
+            f.push(str.format("elem = {}", e)!)!
+            if nullable_pointer(ty.s, inner) {
+                f.push("flag_offset = GM_NICHE")!
+            } else {
+                f.push(str.format("flag_offset = {}", ty.offsets(t)[1])!)!
+            }
+        }
+        .Result(err, ok) => {
+            e := ty.desc(err)
+            o := ty.desc(ok)
+            offs := ty.offsets(t)
+            f.push("kind = GM_K_RESULT")!
+            f.push(str.format("elem = {}", o)!)!
+            f.push(str.format("err = {}", e)!)!
+            f.push(str.format("tag_offset = {}", offs[0])!)!
+            f.push(str.format("payload_offset = {}", offs[1])!)!
+        }
+        .Adt(id, _) => {
+            def := &ty.s.adts.items[usize(id)]
+            f.push(str.format("name = {}", c_string(def.name))!)!
+            match def.kind {
+                .Struct(sd) => {
+                    if sd.bits is null {
+                        offs := ty.offsets(t)
+                        parts := list(string)
+                        for k, fd in enumerate(sd.fields) {
+                            d := ty.desc(fd.ty)
+                            parts.push(str.format("{{{}, {}, {}}}", c_string(fd.name), offs[k], d)!)!
+                        }
+                        f.push("kind = GM_K_STRUCT")!
+                        ty.fields_array(i, parts.items, &f)
+                    } else {
+                        bl := ty.bits_layout(t)?
+                        parts := list(string)
+                        for k, fd in enumerate(sd.fields) {
+                            bf := bl.fields[k]
+                            d := ty.desc(bf.ty)
+                            parts.push(str.format("{{{}, {}, {}}}", c_string(fd.name), bf.off, d)!)!
+                        }
+                        f.push("kind = GM_K_BITS")!
+                        f.push(str.format("bits = {}", ty.bit_width(t))!)!
+                        ty.fields_array(i, parts.items, &f)
+                    }
+                }
+                .Union(tag, variants) => {
+                    offs := ty.offsets(t)
+                    parts := list(string)
+                    for v in variants {
+                        p: string = if pt := v.payload { ty.desc(pt) } else { "NULL" }
+                        parts.push(str.format("{{{}, {}, {}}}", c_string(v.name), bigint.to_decimal(v.tag), p)!)!
+                    }
+                    ty.desc_parts.write("static const gm_variant gm_ty{}_v[] = {{{}}};\n", i, str.join(parts.items, ", ")!)!
+                    f.push("kind = GM_K_UNION")!
+                    f.push(str.format("nvariants = {}", variants.len)!)!
+                    f.push(str.format("variants = gm_ty{}_v", i)!)!
+                    f.push(str.format("tag_offset = {}", offs[0])!)!
+                    f.push(str.format("payload_offset = {}", if offs.len > 1 { offs[1] } else { 0 })!)!
+                    f.push(str.format("tag_size = {}", ty.size(tag))!)!
+                    f.push(str.format("bits = {}", ty.bit_width(tag))!)!
+                    f.push(str.format("tag_signed = {}", ty.is_signed_integer(tag))!)!
+                }
+                .CUnion(_) => {
+                    f.push("kind = GM_K_OPAQUE")!
+                    f.push(str.format("name = {}", c_string(str.format("<{}>", def.name)!))!)!
+                }
+            }
+        }
+        _ => {
+            f.push("kind = GM_K_OPAQUE")!
+            f.push(str.format("name = {}", c_string(str.format("<{}>", ty.show(t))!))!)!
+        }
+    }
+    fields := list(string)
+    for x in f.items { fields.push(if x.starts_with(".") { x } else { str.format(".{}", x)! })! }
+    ty.desc_defs.write("static const gm_type gm_ty{} = {{{}}};\n", i, str.join(fields.items, ", ")!)!
+    return str.format("&gm_ty{}", i)!
+}
+
+fields_array :: fn(ty: ^CTypes, i: usize, parts: []const string, f: ^List(string)) needs Alloc {
+    if parts.len is 0 {
+        f.push("nfields = 0")!
+        return
+    }
+    ty.desc_parts.write("static const gm_field gm_ty{}_f[] = {{{}}};\n", i, str.join(parts, ", ")!)!
+    f.push(str.format("nfields = {}", parts.len)!)!
+    f.push(str.format("fields = gm_ty{}_f", i)!)!
+}
+
+/// The width in bits of a `#bits` field of type `t` (§5.10.5).
+pub bit_width :: fn(ty: ^CTypes, t: Ty) -> u32 needs Alloc {
+    match ty.kind(t) {
+        .Bool => return 1
+        .Int(_, bits) => return u32(bits)
+        .Adt(id, _) => match ty.s.adts.items[usize(id)].kind {
+            .Union(tag, _) => return ty.bit_width(tag)
+            .Struct(sd) => if u := sd.bits { return ty.bit_width(u) }
+            _ => {}
+        }
+        _ => {}
+    }
+    return (8 * ty.size(t)).trunc(u32)
+}
+
+/// For a `#bits` struct: its underlying integer type and each field's bit offset, width
+/// and type, in declaration order from the least significant bit.
+pub bits_layout :: fn(ty: ^CTypes, t: Ty) -> ?BitsLayout needs Alloc {
+    .Adt(id, _) := ty.kind(t) else return null
+    .Struct(sd) := ty.s.adts.items[usize(id)].kind else return null
+    u := sd.bits else return null
+    off: u32 = 0
+    out := list(BitField)
+    for fd in sd.fields {
+        w := ty.bit_width(fd.ty)
+        out.push(BitField(off: off, width: w, ty: fd.ty))!
+        off += w
+    }
+    return BitsLayout(int_ty: u, fields: out.items)
+}
+
+/// The descriptor definitions, in dependency-safe order.
+pub descriptors :: fn(ty: ^const CTypes) -> string needs Alloc => str.format("{}{}{}", ty.desc_fwd.items, ty.desc_parts.items, ty.desc_defs.items)!
+
+pub int_cty :: fn(signed: bool, storage: u64) -> string => match storage {
+    1 => if signed { "int8_t" } else { "uint8_t" }
+    2 => if signed { "int16_t" } else { "uint16_t" }
+    4 => if signed { "int32_t" } else { "uint32_t" }
+    8 => if signed { "int64_t" } else { "uint64_t" }
+    _ => if signed { "__int128" } else { "unsigned __int128" }
+}
+
+pub blob_name :: fn(size: u64, align: u64) -> string needs Alloc => str.format("gm_b{}_{}", size, align)!
+
+/// A C string literal for a `_Static_assert` message. Such a literal is unevaluated, so
+/// clang rejects numeric escapes in it: only `\\` and `\"` are escaped, and characters
+/// outside printable ASCII are left out.
+assert_message :: fn(text: string) -> string needs Alloc {
+    out := list(u8)
+    out.push('"')!
+    for c in text {
+        match c {
+            '"', '\\' => {
+                out.push('\\')!
+                out.push(c)!
+            }
+            ' '..='~' => out.push(c)!
+            _ => {}
+        }
+    }
+    out.push('"')!
+    return out.items
+}
+
+/// A C string literal holding `bytes` (escaped so any byte is safe).
+pub c_string :: fn(bytes: []const u8) -> string needs Alloc {
+    out := list(u8)
+    out.push('"')!
+    for b in bytes {
+        match b {
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            0x20..=0x7e if b is not '?' => out.push(b)!
+            _ => out.write("\\{:03o}", b)!
+        }
+    }
+    out.push('"')!
+    return out.items
+}

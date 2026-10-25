@@ -9,8 +9,8 @@ users run until `gammac` can do everything it does. The work has two purposes:
   language, the standard library and all three back ends far more than examples and
   conformance tests do, and every awkward spot it hits is a candidate for a fix in the
   language or the library.
-- **Self-hosting.** Eventually `gammac` compiles itself, so that Gamma's own toolchain
-  is written in Gamma.
+- **Self-hosting.** `gammac` compiles itself, so that Gamma's own toolchain can be
+  written in Gamma.
 
 ## The parity contract
 
@@ -26,6 +26,7 @@ this checkable:
 | declarations | what `gamma decls` prints for every top-level declaration, and its diagnostics |
 | bodies | the typed program of `gamma tir`, and its diagnostics |
 | back end | the output and exit status of the compiled programs |
+| bootstrap | the C that `gammac` generates for itself, built by itself |
 
 Diagnostics are compared in the JSON format (`--diag-format=json`), which carries every
 part of a diagnostic: the message, the primary span, labels, notes and fixes.
@@ -100,6 +101,44 @@ leaves to implementations: message texts, spans and recovery after errors.
      literals and handler clauses written in a generic function are copied for each
      instance.
 
+5. **Back end** — done. `gammac build` compiles a program to an executable through C, as
+   `gamma build` does: it checks the program, generates C, puts the runtime
+   (`runtime/gm_rt.h` and `runtime/gm_rt.c`) in front of it and runs the C compiler. Every
+   conformance `run` test compiled this way gives the expected output and exit status.
+   The C back end (`compiler/cgen/`) is a port of `src/cgen/` with the same representation
+   of values and the same use of the runtime, so values have the same bytes, checks trap
+   with the same messages, and effects, handlers, fibers and continuations work the same. It leaves out
+   what only makes the generated code faster or quicker to compile — the specialization
+   of functions for the handler that is their context, reading parameters in place,
+   splitting long functions, constant arguments in static storage, splitting a build into
+   several C units — and what it has no use for yet: debug information (`-g`), the Safe
+   mode, freestanding targets, the cache of compiled runtimes and other targets than the
+   one `gammac` runs on.
+
+   Before generating code, `gammac` checks every function body the program can reach,
+   including the core library's (which `gammac tir`, like `gamma tir`, leaves out), and
+   produces the instances of generic functions that those bodies call. A program that
+   performs `Alloc` or one of the input and output effects runs inside the core library's
+   default handlers, as with `gamma`.
+6. **Bootstrap** — done. `gammac` compiles itself: the `gammac` built by `gamma build`
+   (stage 1) builds a second `gammac` (stage 2), and the C that stage 2 generates for
+   `gammac`'s sources is byte-identical to the C stage 1 generated, so the compiler built
+   by itself is a fixed point. Stage 2 also checks `gammac`'s sources exactly as stage 1
+   does.
+
+```sh
+gamma build compiler -o gammac1          # stage 1, built by the reference implementation
+GAMMA_STD=lib/std ./gammac1 build compiler -o gammac2
+GAMMA_STD=lib/std ./gammac2 build compiler --emit-c -o gammac3
+cmp gammac2.c gammac3.c                  # identical
+```
+
+`gammac build [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT` writes the C next to
+the executable (`EXE.c`) and compiles it with `$CC` (default `cc`); `--emit-c` stops after
+writing it. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
+`runtime` directory two levels above the standard library's. It runs on Unix-like systems;
+on Windows, use `gamma build`.
+
 `gammac decls` and `gammac tir` read the core library from `$GAMMA_CORE`, or else from
 the `core` directory next to the standard library's. A root module without `main` is
 checked as a library, as `gamma tir` does: the way `gamma test` would check it, with
@@ -118,7 +157,9 @@ checking fails the test.
 
 `tests/selfhost.rs` builds `gammac` through the C back end in the Debug mode, so that its
 overflow and bounds checks are on, when a C compiler is available, and otherwise runs it
-in the interpreter (slower, but the same results).
+in the interpreter (slower, but the same results). With a C compiler, on Unix, it also
+compiles every conformance `run` test with `gammac build` and runs it against the test's
+expectations, and runs the bootstrap above.
 
 ## Conventions
 

@@ -46,7 +46,7 @@ eval :: fn(l: ^Loader, module: usize, e: ^const ast.Expr, depth: u32) -> ?Const 
         .Field(base, name) => {
             .Ident(m) := base.kind else return null
             if m.name is not "target" or l.lookup(module, "target") is not null { return null }
-            return target_field(name.name)
+            return l.target_field(name.name)
         }
         .Ident(id) => {
             // A constant of the module: `DEBUG :: true`.
@@ -98,13 +98,13 @@ compare :: fn(op: ast.BinOp, a, b: Const) -> ?Const {
 }
 
 /// The value of `target.<name>` for the target gammac was built for, which is the target
-/// it compiles for, in the default build mode.
-target_field :: fn(name: string) -> ?Const => match name {
+/// it compiles for, in the build mode of the compilation.
+target_field :: fn(l: ^const Loader, name: string) -> ?Const => match name {
     "os" => Const.Variant(@variant_name(target.os))
     "arch" => Const.Variant(@variant_name(target.arch))
     "endian" => Const.Variant(@variant_name(target.endian))
     "ptr_bits" => Const.Int(i64(target.ptr_bits))
-    "mode" => Const.Variant("Debug")
+    "mode" => Const.Variant(l.mode)
     _ => null
 }
 

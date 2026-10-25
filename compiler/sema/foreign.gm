@@ -112,6 +112,7 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
             .Fn(n, sig) => {
                 if f := s.declare_foreign_fn(module, n, &sig) {
                     if c := callconv { s.apply_callconv(f, c.win64, c.span) }
+                    s.foreign_fns.push(ForeignFn(fn_id: f, lib: lib, link_name: sym))!
                     value = .Fn(f)
                 }
             }
@@ -128,6 +129,9 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
         item := ast.Item(id: 0xFFFF_FFFF, span: member.span, doc: null, attrs: empty_slice(ast.Attribute), vis: .Public, kind: .Intrinsic(new(ast.Expr(id: 0xFFFF_FFFF, kind: .Underscore, span: member.span))!))
         d := s.l.add_member(m, own_name, item)
         s.set_state(d, .Done(value))
+        if .Global(t) := value {
+            s.globals.push(GlobalInfo(decl: d, name: own_name.name, ty: t, module: module, init: null, thread_local: false, link_name: sym, align: null))!
+        }
     }
     return .Module(m)
 }
@@ -158,6 +162,14 @@ escape_debug :: fn(name: string) -> string needs Alloc {
         rest = rest[r.len..]
     }
     return out.items
+}
+
+/// The library and symbol of foreign function `f`.
+pub foreign_info :: fn(s: ^const Sema, f: u32) -> ForeignFn {
+    for x in s.foreign_fns.items {
+        if x.fn_id is f { return x }
+    }
+    return ForeignFn(fn_id: f, lib: "c", link_name: s.fns.items[usize(f)].name)
 }
 
 /// Reports that gammac cannot check `what` yet; the declaration has no value.
@@ -300,6 +312,7 @@ export_fn :: fn(s: ^Sema, f: u32, sym: string, span: source.Span) needs Load {
         s.error(span, str.format("`{}` is not a C-compatible result type (§19.1)", s.show(sig.ret))!)
     }
     s.exports.push(sym)!
+    s.export_fns.push(f)!
 }
 
 /// `#trap_hook` on the function `f` (§3.7.1): only on a freestanding target, at most one per

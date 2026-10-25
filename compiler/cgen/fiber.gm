@@ -1,0 +1,230 @@
+//! Fibers in generated C (§14): `with … on`, `ctl` performs, `resume`, `cancel` and
+//! `@fiber`. The run-time half (context switching, the fiber pool, the checks on
+//! continuations) is in `runtime/gm_rt.c`.
+//!
+//! The body of a `with … on` runs on a fiber, so it is moved out into a C function of its
+//! own (`gm_wb…`), which reaches the enclosing frame through a pointer: inside it, `F` is
+//! a macro for `(*gm_Fp)`, so the body's code is the same as if it were inline. Its
+//! ladder ends at the fiber's base with the exit still in progress; the driver loop then
+//! runs the ladder of the `with` itself.
+
+sema :: import "../sema"
+str :: import "std/str"
+
+/// Generates a C function from the code `emit` produces, with its own scopes and handler
+/// context `cx`. Returns the function's text.
+detached :: fn(fg: ^FnGen, head: string, cx: string, emit: fn() -> Unsup!() needs sema.Load) -> Unsup!string needs sema.Load {
+    saved_out := fg.out
+    fg.out = list(u8)
+    fg.out.write("{} {{\n", head)!
+    saved_scopes := fg.scopes
+    fg.scopes = list(Scope)
+    saved_cx := fg.cx
+    fg.cx = cx
+    saved_indent := fg.indent
+    fg.indent = 1
+    saved_check := fg.no_check
+    fg.no_check = false
+    saved_lad := fg.lad_used
+    fg.lad_used = false
+    r := emit()
+    text := fg.out
+    fg.out = saved_out
+    fg.scopes = saved_scopes
+    fg.cx = saved_cx
+    fg.indent = saved_indent
+    fg.no_check = saved_check
+    fg.lad_used = saved_lad
+    try r
+    return text.items
+}
+
+/// The rest of `with h on stack { body }`, once its handlers are installed in the context
+/// `cx`, whose nodes point at the `gm_with` named `w`.
+pub with_on :: fn(fg: ^FnGen, e: ^Expr, label: u32, w: string, cx: string, stack: ^Expr, body: ^Expr) -> Unsup!string needs sema.Load {
+    st := try fg.expr(stack)
+    sa := fg.addr_of(stack.ty, st)
+    p := fg.slice_ptr(sa)
+    l := fg.slice_len(sa)
+    loc := fg.loc(e)
+    body_fn := try fg.outline_body(label, e.ty, body)
+    fb := str.format("fb{}", fg.fresh())!
+    end := str.format("we{}", fg.fresh())!
+    fg.line(str.format("{}.body_cx = {};", w, cx)!)
+    fg.line(str.format("gm_fiber *{} = gm_fiber_new(&{}, (uint8_t *){}, {}, {}, 0, {});", fb, w, p, l, body_fn, loc)!)
+    fg.line(str.format("{}->frame = &F; {}->env = env; {}->inst = inst; {}->cx = {};", fb, fb, fb, fb, cx)!)
+    // The clauses of its `ctl` operations run here, as if called by the `with`.
+    fg.call_site(e.span)
+    fg.line(str.format("gm_with_go(&{}, {});", w, fb)!)
+    fg.line("for (;;) {")
+    fg.indent += 1
+    fg.line(str.format("if ({}.event == GM_EV_PERFORM) {{", w)!)
+    fg.line(str.format("    gm_with_clause(&{});", w)!)
+    fg.line(str.format("    if (gm_unw.kind == GM_RESUME) {{ gm_unw.kind = GM_NONE; gm_with_go(&{}, {}.next); continue; }}", w, w)!)
+    // A clause's exit crosses the `with` unless it is a `break` to the `with` (§14.4).
+    fg.line(str.format("    gm_with_end(&{}, !(gm_unw.kind == GM_BREAK && gm_unw.frame == &F.h && gm_unw.label == {}), {});", w, label, loc)!)
+    fg.line(str.format("}} else if ({}.event_fiber == {} && !gm_unw.kind) {{", w, fb)!)
+    fg.line(str.format("    gm_with_end(&{}, false, {});", w, loc)!)
+    fg.line(str.format("    goto {};", end)!)
+    fg.line("} else {")
+    fg.line(str.format("    if (!gm_unw.kind) gm_trap(\"a fiber's function returned\", {});", loc)!)
+    fg.line(str.format("    gm_with_end(&{}, true, {});", w, loc)!)
+    fg.line("}")
+    fg.line(str.format("if (!gm_unw.kind) gm_trap(\"internal error: a `ctl` clause finished normally\", {});", loc)!)
+    scope := fg.with_scope(label, end)
+    fg.scopes.push(scope)!
+    fg.ladder()
+    popped := fg.scopes.pop()?
+    fg.end_scope(popped, false)
+    fg.indent -= 1
+    fg.line("}")
+    fg.label(end)
+    if fg.g.ty.is_never(e.ty) { return fg.zero(e.ty) }
+    return fg.tmp(e.ty, str.format("F.w{}", label)!)
+}
+
+/// Moves the body of a `with … on` into a function that runs on its fiber.
+outline_body :: fn(fg: ^FnGen, label: u32, ty: Ty, body: ^Expr) -> Unsup!string needs sema.Load {
+    name := str.format("gm_wb{}_{}", fg.tag, label)!
+    fid := fg.fid
+    saved := fg.outlined
+    fg.outlined = true
+    emit :: fn() -> Unsup!() needs sema.Load {
+        fg.line(str.format("struct gm_fr{} *gm_Fp = (struct gm_fr{} *)fb->frame;", fid, fid)!)
+        fg.line("void *env = fb->env; gm_node *cx = fb->cx; gm_node *inst = fb->inst;")
+        fg.line("(void)env; (void)cx; (void)inst;")
+        // The body belongs to the frame of the enclosing function, whose record the
+        // driver's chain ends with: its record stands in for that one.
+        if fg.g.opts.debug {
+            fname := if n := fg.g.prog.backtrace_name(fg.fid) { c_string(n) } else { "NULL" }
+            fg.line(str.format("gm_bt B = {{ gm_bt_top ? gm_bt_top->prev : NULL, {}, NULL, 0, 0 }}; gm_bt_top = &B;", fname)!)
+        }
+        fg.out.extend("#define F (*gm_Fp)\n")!
+        v := try fg.expr(body)
+        if not fg.g.ty.is_never(body.ty) and not fg.g.ty.is_never(ty) {
+            fg.line(str.format("F.w{} = {};", label, v)!)
+        }
+        fg.out.extend("gm_fprop:\n    gm_fiber_finish(fb);\n#undef F\n}\n")!
+    }
+    text := detached(fg, str.format("static void {}(gm_fiber *fb)", name)!, "cx", emit)
+    fg.outlined = saved
+    t := try text
+    fg.g.protos.write("static void {}(gm_fiber *fb);\n", name)!
+    fg.g.bodies.extend(t)!
+    return name
+}
+
+/// Performs `ctl` operation `op` through node `n` (§14.2): the arguments go into a
+/// request on the fiber's stack, and a per-site thunk calls the clause on the driver.
+pub ctl_perform :: fn(fg: ^FnGen, n: string, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
+    id := fg.fresh()
+    req := str.format("gm_pr{}_{}", fg.tag, id)!
+    thunk := str.format("gm_pt{}_{}", fg.tag, id)!
+    fields := list(u8)
+    fields.extend("gm_node *n;")!
+    for i, t in enumerate(tys) {
+        fields.write(" {} a{};", fg.g.ty.cty(t), i)!
+    }
+    fg.g.frames.write("struct {} {{ {} }};\n", req, string(fields.items))!
+    kty := fg.g.ty.s.tys.intern(.Cont(ret))
+    ptys := list(Ty)
+    for t in tys { ptys.push(t)! }
+    ptys.push(kty)!
+    fp := fg.fn_ptr_type(fg.g.ty.s.tys.never_ty(), ptys.items)
+    kc := fg.g.ty.cty(kty)
+    args := list(string)
+    for i in 0..tys.len {
+        if fg.g.ty.by_ref(tys[i]) {
+            args.push(str.format("&r->a{}", i)!)!
+        } else {
+            args.push(str.format("r->a{}", i)!)!
+        }
+    }
+    args.push("kb")!
+    head := str.format("static void {}(void *req, gm_cont k)", thunk)!
+    fg.g.protos.write("{};\n", head)!
+    fg.g.bodies.write("{} {{ struct {} *r = (struct {} *)req; gm_node *n = r->n; {} kb; memcpy(&kb, &k, sizeof kb); (({})n->clauses[{}])(n->env, n->hctx, n, {}); }}\n", head, req, req, kc, fp, op, str.join(args.items, ", ")!)!
+    r := str.format("pr{}", fg.fresh())!
+    init := list(string)
+    init.push(n)!
+    for v in vals { init.push(v)! }
+    fg.line(str.format("struct {} {} = {{{}}};", req, r, str.join(init.items, ", ")!)!)
+    res: ?string = null
+    if not fg.g.ty.is_unit(ret) and not fg.g.ty.is_never(ret) { res = fg.tmp_uninit(ret) }
+    res_ptr: string = if x := res { str.format("&{}", x)! } else { "NULL" }
+    fg.line(str.format("gm_ctl_perform({}->fw, {}, &{}, {});", n, thunk, r, res_ptr)!)
+    fg.check_unwind()
+    if x := res { return x }
+    return fg.zero(ret)
+}
+
+/// `resume k(v)` (§14.3): stores `v` for the fiber and ends the clause with GM_RESUME.
+pub resume_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr, value: ^Expr) -> Unsup!string needs sema.Load {
+    k := try fg.expr(kont)
+    ka := fg.addr_of(kont.ty, k)
+    v := try fg.expr(value)
+    loc := fg.loc(e)
+    rp := str.format("rp{}", fg.fresh())!
+    fg.line(str.format("void *{} = gm_resume(inst->fw, {}, {});", rp, ka, loc)!)
+    if fg.g.ty.is_unit(value.ty) or fg.g.ty.is_never(value.ty) {
+        fg.line(str.format("(void){};", rp)!)
+    } else {
+        c := fg.g.ty.cty(value.ty)
+        fg.line(str.format("GM_ST({}, {}, {});", c, rp, v)!)
+    }
+    fg.start_exit("GM_RESUME", "(&F.h)", "0", "0")
+    return fg.zero(e.ty)
+}
+
+/// `cancel k` (§14.5).
+pub cancel_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr) -> Unsup!string needs sema.Load {
+    k := try fg.expr(kont)
+    ka := fg.addr_of(kont.ty, k)
+    loc := fg.loc(e)
+    fg.line(str.format("gm_cancel_cont(inst->fw, {}, {});", ka, loc)!)
+    fg.check_unwind()
+    return fg.unit()
+}
+
+/// `@fiber(f, arg, stack)` (§14.6): a fiber whose start function calls `f(arg)`.
+pub fiber_builtin :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load {
+    sig := match fg.g.ty.kind(args[0].ty) {
+        .FnPtr(s) => s
+        _ => return !unsupported(e.span, "`@fiber` with this function")
+    }
+    hidden := not fg.g.within_sys(&sig.effects)
+    f := try fg.expr(&args[0])
+    a := try fg.expr(&args[1])
+    s := try fg.expr(&args[2])
+    sa := fg.addr_of(args[2].ty, s)
+    p := fg.slice_ptr(sa)
+    l := fg.slice_len(sa)
+    aty := args[1].ty
+    ac := fg.g.ty.cty(aty)
+    size := fg.g.ty.size(aty)
+    k := fg.fresh()
+    start := str.format("gm_fs{}_{}", fg.tag, k)!
+    never_t := fg.g.ty.s.tys.never_ty()
+    emit :: fn() -> Unsup!() needs sema.Load {
+        arg0 := if size is 0 { fg.zero(aty) } else { str.format("GM_LD({}, fb->arg)", ac)! }
+        arg := fg.tmp(aty, arg0)
+        vals := [1]string(arg)
+        tys := [1]Ty(aty)
+        _ = fg.call_indirect("fb->fn", "NULL", "fb->cx", vals[..], tys[..], never_t, hidden, false)
+        fg.out.extend("}\n")!
+    }
+    text := try detached(fg, str.format("static void {}(gm_fiber *fb)", start)!, "fb->cx", emit)
+    fg.g.protos.write("static void {}(gm_fiber *fb);\n", start)!
+    fg.g.bodies.extend(text)!
+    loc := fg.loc(e)
+    fb := str.format("nf{}", fg.fresh())!
+    fg.line(str.format("gm_fiber *{} = gm_fiber_new(inst->fw, (uint8_t *){}, {}, {}, {}, {});", fb, p, l, start, size, loc)!)
+    fg.line(str.format("{}->fn = (void *){}; {}->cx = inst->fw->body_cx;", fb, f, fb)!)
+    if size > 0 {
+        fg.line(str.format("GM_ST({}, {}->arg, {});", ac, fb, a)!)
+    }
+    kc := str.format("kc{}", fg.fresh())!
+    fg.line(str.format("gm_cont {} = gm_fiber_cont(inst->fw, {});", kc, fb)!)
+    c := fg.g.ty.cty(e.ty)
+    return fg.tmp(e.ty, str.format("GM_LD({}, &{})", c, kc)!)
+}

@@ -6,6 +6,15 @@ Versions and what each kind of change means are described in
 
 ## Unreleased
 
+### Self-hosting
+
+- **`gammac` compiles itself.** `compiler/cgen/` is a C back end for `gammac`, ported from
+  the reference implementation's, and `gammac build` compiles a program to an executable
+  with it (`--mode=debug|checked|fast`, `-o`, `--emit-c`). Every conformance `run` test
+  compiled by `gammac` behaves as expected, and the bootstrap reaches a fixed point: the
+  `gammac` that `gammac` builds generates byte-identical C for itself
+  (`docs/self-hosting.md`, `tests/selfhost.rs`).
+
 ### Language
 
 - **`?x`** in a pattern binds an optional or a result as it is, absent or failed value
@@ -108,6 +117,11 @@ Versions and what each kind of change means are described in
 
 ### Diagnostics
 
+- `gamma lint` has a new rule, `mutated-copy`: a local holding a copy of a `List`, a
+  `HashMap` or another value with a resizable buffer (`tys := cx.tys`) that is then
+  changed as if it were the original (`tys.intern(k)`), which loses the change; a pointer
+  (`tys := &cx.tys`) was meant. It was found when such copies broke the self-hosted
+  compiler.
 - `gamma lint` has three new rules: `dangling-address`, for the address of a local (a loop
   variable, a pattern binding) stored, passed to be stored or returned where it outlives the
   local; `needless-pub`, for `pub(package)` names no other module uses and `pub` ones of

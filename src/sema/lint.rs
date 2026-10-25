@@ -42,6 +42,10 @@ pub enum Finding {
     /// optional (or of a result, if `is_result`), whose absent value (or error) no arm
     /// names, so that it goes to the catch-all arm at `catch_all`.
     PresentOnlyBinding { span: Span, name: Symbol, catch_all: Span, is_result: bool },
+    /// Local `name` (declared at `local`) holds a copy of the place at `source`, which keeps
+    /// its elements in a buffer it resizes, and is changed at `span` as if it were the
+    /// original.
+    MutatedCopy { span: Span, name: Symbol, local: Span, source: Span },
 }
 
 /// Checks the program rooted at `root` with its tests, and with the other modules of its
@@ -163,6 +167,7 @@ impl Lint<'_, '_> {
                 continue;
             }
             super::lint_escape::dangling_addresses(sema, def, &mut self.out);
+            super::lint_copy::mutated_copies(sema, def, &mut self.out);
             let own_params = def.kind == FnKind::Named && !self.as_value.contains(&f) && def.name.as_str() != "main";
             for (j, l) in def.locals.iter().enumerate() {
                 let name = l.name.as_str();

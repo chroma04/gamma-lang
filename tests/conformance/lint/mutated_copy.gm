@@ -1,0 +1,58 @@
+//! stage: lint
+// A local holding a copy of a value with a resizable buffer (a `List`, a `HashMap`, a
+// struct holding one) shares the elements but not the length: changing the copy as if it
+// were the original loses the change.
+
+Table :: struct {
+    names: List(string)
+    count: u32 = 0
+}
+
+Cx :: struct {
+    t: Table
+}
+
+add :: fn(t: ^Table, name: string) needs Alloc { t.names.push(name)! }
+
+size :: fn(t: ^const Table) -> usize => t.names.items.len
+
+lost :: fn(cx: ^Cx) needs Alloc {
+    t := cx.t
+    t.add("x") //~ WARNING [mutated-copy] this changes `t`, a copy of `cx.t`, which does not see the change
+    names := cx.t.names
+    names.push("y")! //~ WARNING [mutated-copy] this changes `names`, a copy of `cx.t.names`
+    u := cx.t
+    u.count = 2 //~ WARNING [mutated-copy] this changes `u`, a copy of `cx.t`
+}
+
+// Reading through a copy, changing it and storing it back, passing it on, and taking the
+// buffer over (the original replaced) are fine, as is a pointer to the original.
+fine :: fn(cx: ^Cx) -> usize needs Alloc {
+    a := cx.t
+    n := a.size() + a.names.items.len
+    b := cx.t
+    b.add("x")
+    cx.t = b
+    p := &cx.t
+    p.add("y")
+    c := cx.t.names
+    c.push("z")!
+    keep(c)
+    return n
+}
+
+take :: fn(cx: ^Cx) -> List(string) needs Alloc {
+    names := cx.t.names
+    cx.t.names = list(string)
+    names.push("w")!
+    return names
+}
+
+keep :: fn(_l: List(string)) {}
+
+main :: fn() needs Alloc {
+    cx := Cx(t: Table(names: list(string)))
+    lost(&cx)
+    _ = fine(&cx)
+    _ = take(&cx)
+}

@@ -367,7 +367,7 @@ decl_expr :: fn(cx: ^FnCx, d: usize, name: string, expect: ?Ty, span: source.Spa
         .Global(ty) => {
             sys := cx.s.sys_set()
             cx.record_effects(&sys, span)
-            return tir.mk(ty, .Global(cx.s.l.decls.items[d].name.name), span)
+            return tir.mk(ty, .Global(name: cx.s.l.decls.items[d].name.name, decl: d), span)
         }
         .Error => {}
     }
@@ -849,7 +849,7 @@ equalize :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, span: source.Span) -> (l: ^Expr, r
     tys := &cx.s.tys
     lt := cx.infer.resolve(cx.s, l.ty)
     rt := cx.infer.resolve(cx.s, r.ty)
-    if not tys.has_infer(lt) and not tys.is_error(lt) and not cx.s.has_eq(lt) {
+    if not tys.has_infer(lt) and not tys.is_error(lt) and not cx.eq_allowed(lt) {
         cx.error(span, str.format("`is` is not defined for `{}` (§7.6)", cx.show(lt))!)
     }
     // A literal compared with an optional or result is wrapped: `x is 1`.
@@ -1785,3 +1785,7 @@ bind_temp :: fn(cx: ^FnCx, v: ^Expr, stmts: ^List(tir.Stmt)) -> ^Expr needs Load
     stmts.push(.Let(t, v))!
     return tir.mk(v.ty, .Local(t), v.span)
 }
+
+/// Whether `is` applies to values of type `t`: types with equality, and in the core
+/// library also types that mention a type parameter.
+eq_allowed :: fn(cx: ^FnCx, t: Ty) -> bool needs Alloc => cx.s.has_eq(t) or (cx.s.l.modules.items[cx.module].is_prelude and cx.s.tys.has_param(t))

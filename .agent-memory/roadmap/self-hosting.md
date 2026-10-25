@@ -118,9 +118,16 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   Cast/Addr (synthetic addresses: host cell address << 12 + index * elem size), nested
   copies get their own #soa temps (mono_fn swaps mc.locals). RESULT: 800/800 TIR and
   decls, floors = 800. Checker stage DONE.
-- Next for self-hosting (not started): stage 5 = code generation in gammac (C back end
-  first, mirroring src/cgen), or making gammac self-compile (gammac checking compiler/).
-  Ask the user which.
+- s43 (branch claude/lucid-clarke-48k3cf, user: "get Gamma to compile itself"): stage 5 C
+  back end (compiler/cgen/, decisions/048) + stage 6 bootstrap DONE. 5 sonnet worktree
+  subagents ported func/expr(2 halves)/arith+vector/helpers+fiber against my scaffold
+  (gen/types/layout/program/consts/fngen.gm) with a common brief ($SP/brief-common.md:
+  conventions, stub_<agent>.gm stand-ins, report signatures); merge = cherry-pick + delete
+  stubs; integration needed only ~5 fixes (struct copy of Types, core bodies, consts).
+  Survey: $SP/survey.py GAMMAC (all run tests, parallel, categories PASS/UNSUP/CCFAIL/…).
+- Next ideas: port the optimizations (spec, borrow, outline, units for parallel cc — the
+  36 MB single unit takes ~100 s), `-g`, `gammac test` (test stage), Windows, a
+  `gammac run`; gammac TIR parity for core bodies (gamma tir only dumps non-core).
 - Remaining first-blocker buckets (s41 end, before s41b): vector types 19, iterator args 17,
   literal-variable conversions 14, array construction 13, #bits/other struct attrs 13,
   intrinsics 12, attributes 11, generic effect ops 11, effect-set params 10, vector/complex

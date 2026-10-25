@@ -1,0 +1,163 @@
+// The checked program as the back end sees it (the parts of `Program` in `src/tir.rs`
+// that it reads): every function with its signature and body, the ambient effects and
+// the operations that suspend.
+
+/// What kind of body a function has.
+pub FnKind :: union {
+    Named
+    Literal
+    Clause
+    /// A function of a `foreign` block: its library, symbol and whether it is variadic.
+    Foreign: (lib: string, link_name: string, variadic: bool)
+}
+
+/// `#fast_math`, `#inline`, `#noinline` and `#cold` (§11.10).
+pub Hints :: struct {
+    pub fast_math: bool = false
+    /// `true` for `#inline`, `false` for `#noinline`.
+    pub inline: ?bool = null
+    pub cold: bool = false
+}
+
+/// A function: its signature and checked body (`FnDef` in `src/tir.rs`).
+pub Func :: struct {
+    pub name: string
+    pub span: source.Span
+    pub params: []const u32
+    pub locals: []const tir.LocalDecl
+    pub ret: Ty
+    pub effects: EffectSet
+    pub parent: ?u32
+    pub kind: FnKind
+    /// `#callconv(.Win64)`.
+    pub win64: bool
+    pub hints: Hints
+    pub body: ?^Expr
+}
+
+/// The ids of the predeclared ambient effects, where the program has them.
+pub Ambient :: struct {
+    pub out: ?u32 = null
+    pub err: ?u32 = null
+    pub env: ?u32 = null
+    pub alloc: ?u32 = null
+    pub sys: ?u32 = null
+    pub input: ?u32 = null
+    pub clock: ?u32 = null
+    pub rand: ?u32 = null
+    pub fs: ?u32 = null
+    pub net: ?u32 = null
+    pub proc: ?u32 = null
+}
+
+pub Prog :: struct {
+    pub s: ^Sema
+    /// The functions by id, made on first use.
+    funcs: List(?^Func)
+    pub ambient: Ambient
+    pub target: Target
+    /// The function the runtime calls (see `check.entry_point`).
+    pub main: ?u32 = null
+}
+
+pub prog :: fn(s: ^Sema) -> Prog needs sema.Load {
+    a := Ambient()
+    if prelude := s.l.prelude {
+        names := [11]string("Out", "Err", "Env", "Alloc", "Sys", "In", "Clock", "Rand", "Fs", "Net", "Proc")
+        ids: [11]?u32 = [11]?u32(null, null, null, null, null, null, null, null, null, null, null)
+        for i, name in enumerate(names) {
+            d := s.l.lookup(prelude, name) else continue
+            if .Effect(e) := s.resolve_decl(d) { ids[i] = e }
+        }
+        a = Ambient(out: ids[0], err: ids[1], env: ids[2], alloc: ids[3], sys: ids[4], input: ids[5], clock: ids[6], rand: ids[7], fs: ids[8], net: ids[9], proc: ids[10])
+    }
+    return Prog(s: s, funcs: list(?^Func), ambient: a, target: host_target())
+}
+
+/// Function `f`.
+pub func :: fn(p: ^Prog, f: u32) -> ^const Func needs Alloc {
+    i := usize(f)
+    while p.funcs.items.len <= i { p.funcs.push(null)! }
+    if x := p.funcs.items[i] { return x }
+    s := p.s
+    sig := &s.fns.items[i]
+    def := s.def_of(f)
+    kind: FnKind = match def.kind {
+        .Named => .Named
+        .Literal => .Literal
+        .Clause => .Clause
+        .Foreign => {
+            info := s.foreign_info(f)
+            FnKind.Foreign(lib: info.lib, link_name: info.link_name, variadic: f in s.variadic_fns.items)
+        }
+    }
+    hints := Hints()
+    for x in s.inline_fns.items {
+        if x.fn_id is f { hints.inline = true }
+    }
+    made := new(Func(
+        name: sig.name,
+        span: sig.span,
+        params: def.params,
+        locals: def.locals,
+        ret: sig.ret,
+        effects: sig.effects,
+        parent: def.parent,
+        kind: kind,
+        win64: sig.win64,
+        hints: hints,
+        body: def.body,
+    ))!
+    p.funcs.items[i] = made
+    return made
+}
+
+/// The index in `Sema.globals` of the variable declared by `decl`.
+pub global_index :: fn(p: ^const Prog, decl: usize) -> ?usize {
+    for i, gl in enumerate(p.s.globals.items) {
+        if gl.decl is decl { return i }
+    }
+    return null
+}
+
+pub fn_count :: fn(p: ^const Prog) -> usize => p.s.fns.items.len
+
+/// Whether operation `op` of effect `eff` is a `ctl` operation (§14), which suspends the
+/// running fiber.
+pub is_ctl :: fn(p: ^const Prog, eff: u32, op: u32) -> bool {
+    ops := p.s.effects.items[usize(eff)].ops
+    return usize(op) < ops.len and ops[usize(op)].kind is .Ctl
+}
+
+/// The handler literal `h` (§12.5).
+pub handler_lit :: fn(p: ^const Prog, h: u32) -> tir.HandlerLit => p.s.handlers.items[usize(h)]
+
+/// The handler declaration `d` (§12.6).
+pub handler_decl :: fn(p: ^const Prog, d: u32) -> sema.HandlerDeclInfo => p.s.handler_decls.items[usize(d)]
+
+/// The definition of the struct or union `id`.
+pub adt :: fn(p: ^const Prog, id: u32) -> ^const sema.AdtInfo => &p.s.adts.items[usize(id)]
+
+/// How a debug build's backtrace names `f` (`None` for the core library's functions and
+/// `<entry>`), as `Program::backtrace_name` does.
+pub backtrace_name :: fn(p: ^Prog, f: u32) -> ?string needs Alloc {
+    def := p.func(f)
+    if def.span is not source.DUMMY and p.s.l.sm.file(def.span.file).path.starts_with("<core>") { return null }
+    if def.name is "<entry>" { return null }
+    name := def.name
+    parent: ?string = null
+    if x := def.parent { parent = p.backtrace_name(x) }
+    lit := name.len > 0 and name[0] is '<'
+    match def.kind {
+        .Clause => {
+            if pn := parent {
+                if lit { return str.format("{} in {}", name, pn)! }
+                return str.format("`{}` clause in {}", name, pn)!
+            }
+            return str.format("`{}` clause", name)!
+        }
+        .Literal => if pn := parent and lit { return str.format("{} in {}", name, pn)! }
+        _ => {}
+    }
+    return name
+}

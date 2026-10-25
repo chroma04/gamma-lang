@@ -1,0 +1,91 @@
+// The state of generating one C function (`FnGen` in `src/cgen/func.rs`).
+
+/// Who can observe the destination of `expr_into` while the value is evaluated.
+pub Observed :: union {
+    /// Nothing: a new variable, or a result slot of this function.
+    Fresh
+    /// The caller's destination (`gm_out`): only code that reads memory other than this
+    /// function's own frame can see it.
+    Out
+    /// Any code: an assignment to a place, which is part of this local if it is known to
+    /// be.
+    Any: ?u32
+}
+
+/// The kind of a scope of the function being generated.
+pub ScopeKind :: union {
+    /// A block, with its `defer`s.
+    Block
+    /// A loop, with C labels for leaving it and for its `continue` point.
+    Loop
+    /// A `with`, with the C label after it.
+    With
+}
+
+/// A `defer` (or `errdefer`) registered in a block.
+pub Defer :: struct {
+    pub is_err: bool
+    pub body: ^Expr
+}
+
+/// A scope of the function being generated (`Scope` in `src/cgen/func.rs`, whose
+/// variants are told apart by `kind` here).
+pub Scope :: struct {
+    pub kind: ScopeKind
+    pub id: u32
+    /// Block: its `defer`s registered so far.
+    pub defers: List(Defer)
+    /// Block: how many of the `defer`s the exits so far run (the deepest entry of its
+    /// segment in use). Loop and With: 1 once an exit uses the scope's rung.
+    pub used: usize = 0
+    /// Loop and With: the label of the loop or `with`.
+    pub label: u32 = 0
+    /// Loop: the C labels for leaving it and for its `continue` point.
+    pub brk: string = ""
+    pub cont: string = ""
+    /// With: the C label after it.
+    pub end: string = ""
+}
+
+/// A call whose large result goes straight into a destination (see `expr_into`).
+pub DestCall :: struct {
+    pub call: ^const Expr
+    /// A C lvalue.
+    pub dest: string
+    pub obs: Observed
+}
+
+pub FnGen :: struct {
+    pub g: ^Gen
+    pub fid: u32
+    /// Distinguishes the C names of this function's helpers.
+    pub tag: string
+    /// The call expression whose large result goes straight into a destination, and that
+    /// destination; see `expr_into`.
+    pub dest_call: ?DestCall = null
+    /// The destination of the call being emitted, from `dest_call`.
+    pub call_dest: ?string = null
+    pub def: ^const Func
+    pub out: List(u8)
+    pub indent: usize = 1
+    pub counter: u32 = 0
+    pub scopes: List(Scope)
+    /// The C expression for the current handler context.
+    pub cx: string = "cx"
+    /// Set while generating a `defer` body: it cannot exit non-locally.
+    pub no_check: bool = false
+    /// Set once an exit jumps to `gm_lad`, the outermost rung of the ladder.
+    pub lad_used: bool = false
+    /// Set while generating the body of a `with … on`, moved into a function of its own:
+    /// its ladder ends at the fiber's base.
+    pub outlined: bool = false
+    /// The bytes of the temporaries declared so far, for the stack check.
+    pub temp_bytes: u64 = 0
+    /// For each parameter, by position: whether it is read in place, through its address
+    /// `aN` (never, in gammac: parameters are always copied).
+    pub borrowed: []bool
+    /// For each local: whether it lives in the frame struct (`frame_locals`).
+    pub in_frame: []bool
+    /// The temporaries and labels of the C function being generated.
+    pub names: u32 = 0
+}

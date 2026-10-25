@@ -1,0 +1,1098 @@
+// Expressions, places and coercions (the first half of `src/cgen/expr.rs`).
+//
+// `expr` emits the statements an expression needs and returns a C expression for its
+// value (usually a temporary). Operands are evaluated into temporaries in order, so
+// evaluation order is the program's.
+
+ratio :: import "../ratio"
+
+/// A value computed into a C expression, with its type.
+ValTy :: struct {
+    v: string
+    ty: Ty
+}
+
+/// A piece of a value (offset and size) that is about to be stored.
+BlobPart :: struct {
+    off: u64
+    len: u64
+}
+
+ptr_bytes :: fn(fg: ^FnGen) -> u64 => fg.g.ty.lay.target.ptr_bytes
+
+/// An addressable copy of `v` (of type `t`); returns its `uint8_t *` address.
+pub addr_of :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
+    n := fg.tmp(t, v)
+    return str.format("((uint8_t *)&{})", n)!
+}
+
+/// Loads a value of type `t` from address `a`.
+pub load :: fn(fg: ^FnGen, t: Ty, a: string) -> string needs sema.Load {
+    c := fg.g.ty.cty(t)
+    ld := str.format("GM_LD({}, {})", c, a)!
+    // Padding bits of a narrow integer in memory are unspecified; ignore them.
+    if ii := fg.int_info(t) {
+        v := fg.normalize(ii, ld)
+        return fg.tmp(t, v)
+    }
+    return fg.tmp(t, ld)
+}
+
+/// A zero-filled blob temporary of type `t`.
+blob :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
+    n := fg.tmp_uninit(t)
+    fg.line(str.format("memset(&{}, 0, sizeof {});", n, n)!)
+    return n
+}
+
+/// A blob temporary of type `t` whose bytes outside `parts` (offset and size of each
+/// piece the caller is about to store) are zero. Only the gaps are cleared, with a few
+/// stores, rather than the whole value with `memset`.
+blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema.Load {
+    size := fg.g.ty.size(t).trunc(usize)
+    covered := list(bool)
+    for _ in 0..size { covered.push(false)! }
+    for p in parts {
+        i := p.off.trunc(usize)
+        end := (p.off + p.len).trunc(usize)
+        while i < end and i < size {
+            covered.items[i] = true
+            i += 1
+        }
+    }
+    gaps: usize = 0
+    for c in covered.items {
+        if not c { gaps += 1 }
+    }
+    if gaps > 32 { return fg.blob(t) }
+    n := fg.tmp_uninit(t)
+    i: usize = 0
+    while i < size {
+        if covered.items[i] {
+            i += 1
+            continue
+        }
+        // The largest aligned piece of the gap at `i`.
+        sizes := [4]usize(8, 4, 2, 1)
+        k: usize = 1
+        for s in sizes {
+            if i % s is 0 and i + s <= size {
+                all_free := true
+                for j in i..i + s {
+                    if covered.items[j] { all_free = false }
+                }
+                if all_free {
+                    k = s
+                    break
+                }
+            }
+        }
+        fg.line(str.format("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", k * 8, n, i)!)
+        i += k
+    }
+    return n
+}
+
+store :: fn(fg: ^FnGen, t: Ty, addr: string, v: string) needs sema.Load {
+    c := fg.g.ty.cty(t)
+    fg.line(str.format("GM_ST({}, {}, {});", c, addr, v)!)
+}
+
+pub loc :: fn(fg: ^FnGen, e: ^Expr) -> string needs Alloc => fg.g.src_loc(e.span)
+
+// --- optionals, results, unions ---------------------------------------------------------------
+
+/// A C condition: the optional at `addr` (of type `t`) is present.
+pub opt_present :: fn(fg: ^FnGen, t: Ty, addr: string) -> string needs sema.Load {
+    if fg.g.ty.repr(t) is .Ptr { return str.format("(GM_LD(void *, {}) != 0)", addr)! }
+    off := fg.g.ty.offsets(t)[1]
+    return str.format("(({})[{}] != 0)", addr, off)!
+}
+
+pub make_some :: fn(fg: ^FnGen, t: Ty, payload: string) -> string needs sema.Load {
+    if fg.g.ty.repr(t) is .Ptr { return payload }
+    .Optional(inner) := fg.g.ty.kind(t) else @unreachable()
+    off := fg.g.ty.offsets(t)[1]
+    parts := [2]BlobPart(BlobPart(off: 0, len: fg.g.ty.size(inner)), BlobPart(off: off, len: 1))
+    b := fg.blob_over(t, parts[..])
+    fg.store(inner, str.format("((uint8_t *)&{})", b)!, payload)
+    fg.line(str.format("((uint8_t *)&{})[{}] = 1;", b, off)!)
+    return b
+}
+
+pub make_none :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
+    if fg.g.ty.repr(t) is .Ptr { return "((void *)0)" }
+    return fg.blob(t)
+}
+
+/// The tag byte of the result at `addr` is set: it holds an error.
+pub res_is_err :: fn(fg: ^FnGen, t: Ty, addr: string) -> string needs sema.Load {
+    off := fg.g.ty.offsets(t)[0]
+    return str.format("(({})[{}] != 0)", addr, off)!
+}
+
+pub make_res :: fn(fg: ^FnGen, t: Ty, is_err: bool, payload_ty: Ty, payload: string) -> string needs sema.Load {
+    offs := fg.g.ty.offsets(t)
+    parts := [2]BlobPart(BlobPart(off: offs[0], len: 1), BlobPart(off: offs[1], len: fg.g.ty.size(payload_ty)))
+    b := fg.blob_over(t, parts[..])
+    fg.line(str.format("((uint8_t *)&{})[{}] = {};", b, offs[0], if is_err { 1 } else { 0 })!)
+    fg.store(payload_ty, str.format("((uint8_t *)&{} + {})", b, offs[1])!, payload)
+    return b
+}
+
+/// A union value of variant `v` with an optional payload.
+pub make_variant :: fn(fg: ^FnGen, t: Ty, v: usize, payload: ?string) -> string needs sema.Load {
+    def := fg.adt_def(t)
+    .Union(tag, variants) := def.kind else @unreachable()
+    variant := variants[v]
+    offs := fg.g.ty.offsets(t)
+    parts := list(BlobPart)
+    parts.push(BlobPart(off: offs[0], len: fg.g.ty.size(tag)))!
+    if payload is not null {
+        if pt := variant.payload { parts.push(BlobPart(off: offs[1], len: fg.g.ty.size(pt)))! }
+    }
+    b := fg.blob_over(t, parts.items)
+    tag_val := fg.int_lit(tag, variant.tag)
+    fg.store(tag, str.format("((uint8_t *)&{} + {})", b, offs[0])!, tag_val)
+    if p := payload {
+        if pt := variant.payload { fg.store(pt, str.format("((uint8_t *)&{} + {})", b, offs[1])!, p) }
+    }
+    return b
+}
+
+pub adt_def :: fn(fg: ^FnGen, t: Ty) -> ^const sema.AdtInfo => fg.g.ty.adt_of(t)
+
+// --- literals ---------------------------------------------------------------------------------
+
+/// A C literal of integer type `t` with value `v` (floats accept integer literals too).
+pub int_lit :: fn(fg: ^FnGen, t: Ty, v: bigint.Int) -> string needs sema.Load {
+    match fg.g.ty.repr(t) {
+        .Float(f) => return float_lit(f, ratio.to_f64(ratio.from_int(v)))
+        .Int(signed, _, storage) => {
+            c := int_cty(signed, storage)
+            lo, hi := split_u128(v)
+            if storage is 16 {
+                return str.format("(({})(((unsigned __int128){}u << 64) | {}u))", c, hi.trunc(u64), lo.trunc(u64))!
+            } else if signed {
+                x := v.to_i128() else i128(0)
+                if x is -9223372036854775808 { return str.format("(({})(-9223372036854775807LL - 1))", c)! }
+                return str.format("(({}){}LL)", c, x)!
+            } else {
+                return str.format("(({}){}ULL)", c, lo.trunc(u64))!
+            }
+        }
+        .Bool => return if v.is_zero() { "0" } else { "1" }
+        .Ptr => {
+            lo, _ := split_u128(v)
+            return str.format("((void *)(uintptr_t){}ULL)", lo.trunc(u64))!
+        }
+        _ => return "0"
+    }
+}
+
+/// A slice value `{ptr, len}` of type `t`.
+pub make_slice :: fn(fg: ^FnGen, t: Ty, ptr: string, len: string) -> string needs sema.Load {
+    b := fg.tmp_uninit(t)
+    p := fg.ptr_bytes()
+    fg.line(str.format("GM_ST(void *, (uint8_t *)&{}, (void *)({}));", b, ptr)!)
+    fg.line(str.format("GM_ST(uintptr_t, (uint8_t *)&{} + {}, (uintptr_t)({}));", b, p, len)!)
+    return b
+}
+
+pub slice_ptr :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.format("GM_LD(void *, {})", addr)!
+
+pub slice_len :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.format("GM_LD(uintptr_t, {} + {})", addr, fg.ptr_bytes())!
+
+// --- expressions ------------------------------------------------------------------------------
+
+pub expr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load => fg.expr_node(e)
+
+/// Emits `e` itself.
+pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    match e.kind {
+        .Int(v) => return fg.int_lit(t, v)
+        .Float(x) => {
+            if .Float(bits) := fg.g.ty.kind(t) { return float_lit(bits, x) }
+            return !unsupported(e.span, "a float literal of a non-float type")
+        }
+        .Bool(b) => return if b { "((uint8_t)1)" } else { "((uint8_t)0)" }
+        .Str(s) => {
+            a := fg.g.static_bytes(s)
+            return fg.make_slice(t, a, str.format("{}", s.len)!)
+        }
+        .CStr(s) => return str.format("((void *){})", fg.g.static_bytes(s))!
+        .Null => return fg.make_none(t)
+        .Uninit => {
+            n := fg.tmp_uninit(t)
+            if fg.g.opts.debug { fg.line(str.format("memset(&{}, 0xAA, sizeof {});", n, n)!) }
+            return n
+        }
+        .Const(_, span) => {
+            name := try fg.g.const_storage(span, t, e.span)
+            return fg.load(t, name)
+        }
+        // A field of a `#bits` struct is a range of bits of its integer (§5.10.5).
+        .Field(base, index) if fg.g.ty.bits_layout(base.ty) is not null => {
+            bl := fg.g.ty.bits_layout(base.ty)?
+            f := bl.fields[usize(index)]
+            v := try fg.expr(base)
+            a := fg.addr_of(base.ty, v)
+            uc := fg.g.ty.cty(bl.int_ty)
+            raw := str.format("((((unsigned __int128)GM_LD({}, {})) >> {}) & {})", uc, a, f.off, mask(f.width))!
+            raw2 := fg.tmp(fg.g.ty.int_ty(false, 128), raw)
+            return fg.bits_value(f.ty, raw2)
+        }
+        // A local read as its own type is its C lvalue: no load through its address.
+        .Local(l) if not fg.is_borrowed(l) and fg.def.locals[usize(l)].ty is t => {
+            lv := fg.local_lv(l)
+            return fg.tmp(t, lv)
+        }
+        .Local(_), .Upvar(_), .Deref(_), .Field(_), .Index(_) => {
+            a := try fg.place_addr(e)
+            return fg.load(t, a)
+        }
+        .Global(_) => {
+            a := try fg.place_addr(e)
+            return fg.load(t, a)
+        }
+        .Slice(sl) => return fg.slice_expr(e, sl.base, sl.lo, sl.hi, sl.inclusive)
+        .SliceLen(x) => {
+            a := try fg.place_addr(x)
+            l := fg.slice_len(a)
+            return fg.tmp(t, l)
+        }
+        .SlicePtr(x) => {
+            a := try fg.place_addr(x)
+            p := fg.slice_ptr(a)
+            return fg.tmp(t, p)
+        }
+        .AddrOf(p) => {
+            a := try fg.place_addr(p)
+            return fg.tmp(t, str.format("(void *){}", a)!)
+        }
+        .AddrOfTemp(x) => {
+            v := try fg.expr(x)
+            a := fg.addr_of(x.ty, v)
+            return fg.tmp(t, str.format("(void *){}", a)!)
+        }
+        .FnRef(f) => {
+            fg.g.queue(f)
+            name := fg.g.addr_name(f)
+            plain := fg.g.is_plain(f)
+            // A plain function where hidden-convention code is expected is marked by
+            // tagging its address (GM_PTR_TAG, see `call_indirect`).
+            code: string = if plain and not fg.ptr_type_plain(t) { str.format("GM_PTR_TAG({})", name)! } else { str.format("((void *){})", name)! }
+            if fg.g.ty.kind(t) is .Fn(_) {
+                return fg.tmp(t, str.format("((gm_closure){{{}, NULL, {}}})", code, fg.cx)!)
+            }
+            return code
+        }
+        .Closure(f) => {
+            fg.g.queue(f)
+            name := fg.g.fn_name(f)
+            return fg.tmp(t, str.format("((gm_closure){{(void *){}, (void *)&F.h, {}}})", name, fg.cx)!)
+        }
+        .HandlerRef(_) => return fg.tmp(t, str.format("((gm_hval){{(void *)&F.h, {}}})", fg.cx)!)
+        .Unary(op, operand) if fg.g.ty.is_vector(operand.ty) => return fg.vector_unary(e, op, operand)
+        .Binary(op, lhs, rhs) if fg.g.ty.is_vector(lhs.ty) => return fg.vector_binary(e, op, lhs, rhs)
+        .Unary(op, operand) => return fg.unary(e, op, operand)
+        .Binary(op, lhs, rhs) => return fg.binary(e, op, lhs, rhs)
+        .Logic(is_and, lhs, rhs) => {
+            r := fg.tmp(fg.g.ty.bool_ty(), "0")
+            l := try fg.expr(lhs)
+            if is_and {
+                fg.line(str.format("if ({}) {{", l)!)
+            } else {
+                fg.line(str.format("if (!{}) {{", l)!)
+            }
+            fg.indent += 1
+            v := try fg.expr(rhs)
+            fg.line(str.format("{} = {};", r, v)!)
+            fg.indent -= 1
+            fg.line(str.format("}} else {} = {};", r, if is_and { 0 } else { 1 })!)
+            return r
+        }
+        .Coerce(kind, x) => return fg.coerce(e, kind, x)
+        .Builtin(op, args) => return fg.builtin(e, op, args)
+        .Call(callee, args) => return fg.call(e, callee, args)
+        .Aggregate(elems) if fg.g.ty.bits_layout(t) is not null => {
+            bl := fg.g.ty.bits_layout(t)?
+            vals := list(string)
+            for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
+            acc := fg.tmp(fg.g.ty.int_ty(false, 128), "0")
+            for i in 0..elems.len {
+                f := bl.fields[i]
+                raw := fg.bits_raw(elems[i].ty, vals.items[i])
+                fg.line(str.format("{} |= (({}) & {}) << {};", acc, raw, mask(f.width), f.off)!)
+            }
+            b := fg.blob(t)
+            uc := fg.g.ty.cty(bl.int_ty)
+            fg.line(str.format("GM_ST({}, (uint8_t *)&{}, ({}){});", uc, b, uc, acc)!)
+            return b
+        }
+        .Aggregate(_), .Array(_) if fg.g.ty.by_ref(t) => {
+            // Built in place in a temporary, with nested aggregates built in theirs.
+            b := fg.tmp_uninit(t)
+            try fg.expr_into(e, b, .Fresh)
+            return b
+        }
+        .Aggregate(elems) => {
+            vals := list(string)
+            for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
+            offs := fg.g.ty.offsets(t)
+            parts := list(BlobPart)
+            for i in 0..elems.len { parts.push(BlobPart(off: offs[i], len: fg.g.ty.size(elems[i].ty)))! }
+            b := fg.blob_over(t, parts.items)
+            for i in 0..elems.len { fg.store(elems[i].ty, str.format("((uint8_t *)&{} + {})", b, offs[i])!, vals.items[i]) }
+            return b
+        }
+        .Array(elems) => {
+            vals := list(string)
+            for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
+            parts := list(BlobPart)
+            for i in 0..elems.len {
+                esz := fg.g.ty.size(elems[i].ty)
+                parts.push(BlobPart(off: u64(i.trunc(u32)) * esz, len: esz))!
+            }
+            b := fg.blob_over(t, parts.items)
+            for i in 0..elems.len {
+                esz := fg.g.ty.size(elems[i].ty)
+                fg.store(elems[i].ty, str.format("((uint8_t *)&{} + {})", b, u64(i.trunc(u32)) * esz)!, vals.items[i])
+            }
+            return b
+        }
+        .ArrayFill(x) => {
+            v := try fg.expr(x)
+            .Array(len, elem, _) := fg.g.ty.kind(t) else return !unsupported(e.span, "this array fill")
+            b := fg.tmp_uninit(t)
+            esz := fg.g.ty.size(elem)
+            c := fg.g.ty.cty(elem)
+            fg.line(str.format("for (uint64_t i = 0; i < {}; i++) GM_ST({}, (uint8_t *)&{} + i * {}, {});", len, c, b, esz, v)!)
+            return b
+        }
+        .Variant(vx) => {
+            p: ?string = null
+            if px := vx.payload { p = try fg.expr(px) }
+            return fg.make_variant(t, usize(vx.variant), p)
+        }
+        .MakeErr(x) => {
+            v := try fg.expr(x)
+            return fg.make_res(t, true, x.ty, v)
+        }
+        .Unwrap(x, is_result) => {
+            v := try fg.expr(x)
+            a := fg.addr_of(x.ty, v)
+            at := fg.loc(e)
+            if is_result {
+                bad := fg.res_is_err(x.ty, a)
+                .Result(err, _) := fg.g.ty.kind(x.ty) else @unreachable()
+                off := fg.g.ty.offsets(x.ty)[1]
+                d := fg.g.ty.desc(err)
+                if fg.g.opts.checks {
+                    fg.line(str.format("if ({}) {{", bad)!)
+                    fg.line(str.format("    gm_buf b = {{0}}; gm_buf_push(&b, \"unwrap of error value \", 22); gm_format(&b, {}, {} + {}, false); gm_trap_bytes(b.data, b.len, {});", d, a, off, at)!)
+                    fg.line("}")
+                }
+                return fg.load(t, str.format("({} + {})", a, off)!)
+            } else {
+                present := fg.opt_present(x.ty, a)
+                if fg.g.opts.checks { fg.line(str.format("if (!{}) gm_trap(\"unwrap of null\", {});", present, at)!) }
+                return fg.load(t, a)
+            }
+        }
+        .Eq(lhs, rhs, negated) => {
+            l := try fg.expr(lhs)
+            r := try fg.expr(rhs)
+            c := fg.equal(lhs.ty, l, r)
+            return fg.tmp(fg.g.ty.bool_ty(), str.format("({}{})", if negated { "!" } else { "" }, c)!)
+        }
+        .In(elem, container, negated) => return fg.in_expr(elem, container, negated)
+        .Block(b) => return fg.block(b)
+        .If(x) => {
+            res: ?string = null
+            if not fg.g.ty.is_never(t) and not fg.g.ty.is_unit(t) { res = fg.tmp_uninit(t) }
+            n := fg.fresh()
+            els := str.format("ie{}", n)!
+            end := str.format("ix{}", n)!
+            try fg.conds(x.cond, els)
+            v := try fg.expr(x.then)
+            if r := res {
+                if not fg.g.ty.is_never(x.then.ty) { fg.line(str.format("{} = {};", r, v)!) }
+            }
+            fg.line(str.format("goto {};", end)!)
+            fg.label(els)
+            if xe := x.else_ {
+                ev := try fg.expr(xe)
+                if r := res {
+                    if not fg.g.ty.is_never(xe.ty) { fg.line(str.format("{} = {};", r, ev)!) }
+                }
+            }
+            fg.label(end)
+            if r := res { return r }
+            return fg.zero(t)
+        }
+        .Match(scrutinee, arms) => return fg.match_expr(e, scrutinee, arms)
+        .Else(el) => {
+            lhs := el.lhs
+            l := try fg.expr(lhs)
+            a := fg.addr_of(lhs.ty, l)
+            res: ?string = null
+            if not fg.g.ty.is_never(t) { res = fg.tmp_uninit(t) }
+            present := ""
+            payload_ty := t
+            payload_off: u64 = 0
+            match fg.g.ty.kind(lhs.ty) {
+                .Optional(p) => {
+                    present = fg.opt_present(lhs.ty, a)
+                    payload_ty = p
+                }
+                .Result(_, ok) => {
+                    bad := fg.res_is_err(lhs.ty, a)
+                    present = str.format("!{}", bad)!
+                    payload_ty = ok
+                    payload_off = fg.g.ty.offsets(lhs.ty)[1]
+                }
+                _ => return !unsupported(e.span, "`else` on this type")
+            }
+            fg.line(str.format("if ({}) {{", present)!)
+            fg.indent += 1
+            if r := res {
+                v := ""
+                if t is payload_ty {
+                    v = fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
+                } else if t is lhs.ty {
+                    v = l
+                } else if fg.g.ty.kind(t) is .Optional(_) {
+                    p := fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
+                    v = fg.make_some(t, p)
+                } else {
+                    p := fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
+                    v = fg.make_res(t, false, payload_ty, p)
+                }
+                fg.line(str.format("{} = {};", r, v)!)
+            }
+            fg.indent -= 1
+            fg.line("} else {")
+            fg.indent += 1
+            if c := el.capture {
+                if .Result(err, _) := fg.g.ty.kind(lhs.ty) {
+                    off := fg.g.ty.offsets(lhs.ty)[1]
+                    ev := fg.load(err, str.format("({} + {})", a, off)!)
+                    lv := fg.local_lv(c)
+                    fg.line(str.format("{} = {};", lv, ev)!)
+                }
+            }
+            rv := try fg.expr(el.rhs)
+            if r := res {
+                if not fg.g.ty.is_never(el.rhs.ty) { fg.line(str.format("{} = {};", r, rv)!) }
+            }
+            fg.indent -= 1
+            fg.line("}")
+            if r := res { return r }
+            return fg.zero(t)
+        }
+        .Try(x) => return fg.try_expr(e, x.expr, x.lift, x.levels)
+        .Loop(x) => {
+            n := fg.fresh()
+            brk := str.format("lb{}", n)!
+            cnt := str.format("lc{}", n)!
+            fg.line("for (;;) {")
+            fg.indent += 1
+            try fg.conds(x.cond, brk)
+            scope := fg.loop_scope(x.label, brk, cnt)
+            fg.scopes.push(scope)!
+            r := fg.block(x.body)
+            popped := fg.scopes.pop()?
+            _ = try r
+            fg.label(cnt)
+            if s := x.step { _ = try fg.expr(s) }
+            fg.indent -= 1
+            fg.line("}")
+            // The loop is left only by jumping to `brk`.
+            fg.end_scope(popped, false)
+            fg.label(brk)
+            return fg.unit()
+        }
+        .Break(x) => {
+            val: ?ValTy = null
+            if bx := x.value { val = ValTy(v: try fg.expr(bx), ty: bx.ty) }
+            match x.target {
+                .Label(levels, lbl) => {
+                    if bv := val {
+                        if fg.is_with_label(levels, lbl) {
+                            slot := fg.frame_field(levels, str.format("w{}", lbl)!)
+                            if not fg.g.ty.is_never(bv.ty) { fg.line(str.format("{} = {};", slot, bv.v)!) }
+                        }
+                    }
+                    fr, _ := fg.frame_up(levels)
+                    fg.start_exit("GM_BREAK", fr, str.format("{}", lbl)!, "0")
+                }
+                .InstallingWith => {
+                    if bv := val {
+                        if not fg.g.ty.is_unit(bv.ty) and not fg.g.ty.is_never(bv.ty) { fg.store(bv.ty, "inst->result", bv.v) }
+                    }
+                    fg.start_exit("GM_BREAK", "inst->with_frame", "inst->with_label", "0")
+                }
+            }
+            return fg.zero(t)
+        }
+        .Continue(target) => {
+            match target {
+                .Label(levels, lbl) => {
+                    fr, _ := fg.frame_up(levels)
+                    fg.start_exit("GM_CONTINUE", fr, str.format("{}", lbl)!, "0")
+                }
+                // In a clause, `continue` ends the clause (the next iteration of a `for`).
+                .InstallingWith => {
+                    u := fg.unit()
+                    fg.line(str.format("F.ret = {};", u)!)
+                    fg.start_exit("GM_RETURN", "(&F.h)", "0", "0")
+                }
+            }
+            return fg.zero(t)
+        }
+        .Return(levels, value) if fg.builds_in_place(value) => {
+            // A large value is built in the result slot, or straight in the caller's
+            // destination when no deferred statement can run after it.
+            ct := fg.g.ty.cty(value.ty)
+            if levels is 0 and not fg.outlined and fg.no_defers() and fg.g.ty.by_ref(fg.def.ret) {
+                try fg.expr_into(value, str.format("(*({} *)gm_out)", ct)!, .Out)
+                fg.jump("gm_fdone", null)
+                return fg.zero(t)
+            }
+            slot := fg.frame_field(levels, "ret")
+            try fg.expr_into(value, slot, .Fresh)
+            ret := fg.target_ret(levels)
+            is_err := "0"
+            if fg.g.ty.kind(ret) is .Result(_) {
+                a := str.format("((uint8_t *)&{})", slot)!
+                is_err = fg.res_is_err(ret, a)
+            }
+            flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
+            fr, _ := fg.frame_up(levels)
+            fg.start_exit("GM_RETURN", fr, "0", flag)
+            return fg.zero(t)
+        }
+        // A large place is copied straight to the caller's destination.
+        .Return(levels, value) if levels is 0 and fg.g.ty.by_ref(value.ty) and fg.g.ty.by_ref(fg.def.ret) and not fg.outlined and fg.no_defers() and (value.kind is .Local(_) or value.kind is .Upvar(_) or value.kind is .Deref(_)) => {
+            addr := try fg.place_addr(value)
+            fg.line(str.format("memmove(gm_out, {}, {});", addr, fg.g.ty.size(value.ty))!)
+            fg.jump("gm_fdone", null)
+            return fg.zero(t)
+        }
+        .Return(levels, value) => {
+            ret := fg.target_ret(levels)
+            // A large value read from a place is copied into the slot directly.
+            v := ""
+            if fg.g.ty.by_ref(value.ty) and not (fg.g.ty.kind(ret) is .Result(_)) and (value.kind is .Local(_) or value.kind is .Upvar(_) or value.kind is .Deref(_)) {
+                addr := try fg.place_addr(value)
+                v = str.format("(*({} *){})", fg.g.ty.cty(value.ty), addr)!
+            } else {
+                v = try fg.expr(value)
+            }
+            is_err := "0"
+            if fg.g.ty.kind(ret) is .Result(_) and not fg.g.ty.is_never(value.ty) {
+                a := fg.addr_of(value.ty, v)
+                is_err = fg.res_is_err(ret, a)
+            }
+            flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
+            if not fg.g.ty.is_never(value.ty) {
+                slot := fg.frame_field(levels, "ret")
+                fg.line(str.format("{} = {};", slot, v)!)
+            }
+            fr, _ := fg.frame_up(levels)
+            fg.start_exit("GM_RETURN", fr, "0", flag)
+            return fg.zero(t)
+        }
+        .With(w) => return fg.with_expr(e, w.label, w.handlers, w.on, w.body)
+        .Resume(k, value) => return fg.resume_(e, k, value)
+        .Cancel(k) => return fg.cancel_(e, k)
+        .Trap(message) => {
+            m := try fg.expr(message)
+            a := fg.addr_of(message.ty, m)
+            p := fg.slice_ptr(a)
+            l := fg.slice_len(a)
+            at := fg.loc(e)
+            fg.line(str.format("gm_trap_bytes({}, {}, {});", p, l, at)!)
+            return fg.zero(t)
+        }
+        .WriteDeferred(_) => return !unsupported(e.span, "a template in a generic function that was not instantiated")
+        .SoaDeferred(_) => return !unsupported(e.span, "a `#soa` operation in a generic function that was not instantiated")
+        .Write(w) => {
+            sink_v: ?ValTy = null
+            if .Fn(sx) := w.sink { sink_v = ValTy(v: try fg.expr(sx), ty: sx.ty) }
+            vals := list(string)
+            for i in 0..w.args.len {
+                v := try fg.expr(&w.args[i])
+                vals.push(fg.addr_of(w.args[i].ty, v))!
+            }
+            str_ty := fg.g.ty.string_ty()
+            unit_ty := fg.g.ty.unit_ty()
+            // A write to the ambient output or error is one call per piece.
+            stub: ?string = null
+            match w.sink {
+                .Perform(effect_, op) => {
+                    id := fg.g.effect_id(&effect_)
+                    tys := [1]Ty(str_ty)
+                    stub = fg.out_stub(&effect_, id, op, tys[..], unit_ty)
+                }
+                .Fn(_) => {}
+            }
+            if core := stub {
+                ps := fg.piece_stub(core, 's', str_ty)
+                pf := fg.piece_stub(core, 'f', str_ty)
+                at := fg.loc(e)
+                for i in 0..w.pieces.len {
+                    if w.pieces[i].len > 0 {
+                        s := fg.g.static_bytes(w.pieces[i])
+                        fg.unwind_call(str.format("{}({}, {}, {}, {})", ps, fg.cx, s, w.pieces[i].len, at)!)
+                    }
+                    if i < w.args.len {
+                        d := fg.g.ty.desc(w.args[i].ty)
+                        custom: ?tir.FmtSpec = null
+                        if sp := w.specs.get(i) {
+                            if not tir.is_default_spec(&sp) { custom = sp }
+                        }
+                        if sp := custom {
+                            b := str.format("b{}", fg.fresh())!
+                            c := spec_literal(sp)
+                            fg.line(str.format("gm_buf {} = {{0}};", b)!)
+                            fg.line(str.format("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)!)
+                            try fg.emit_buf(w.sink, sink_v, b, e)
+                        } else {
+                            fg.unwind_call(str.format("{}({}, {}, {}, {})", pf, fg.cx, d, vals.items[i], at)!)
+                        }
+                    }
+                }
+                return fg.unit()
+            }
+            for i in 0..w.pieces.len {
+                if w.pieces[i].len > 0 {
+                    s := fg.g.static_bytes(w.pieces[i])
+                    sl := fg.make_slice(str_ty, s, str.format("{}", w.pieces[i].len)!)
+                    try fg.emit_to(w.sink, sink_v, sl, e)
+                }
+                if i < w.args.len {
+                    d := fg.g.ty.desc(w.args[i].ty)
+                    b := str.format("b{}", fg.fresh())!
+                    fg.line(str.format("gm_buf {} = {{0}};", b)!)
+                    custom: ?tir.FmtSpec = null
+                    if sp := w.specs.get(i) {
+                        if not tir.is_default_spec(&sp) { custom = sp }
+                    }
+                    if sp := custom {
+                        c := spec_literal(sp)
+                        fg.line(str.format("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)!)
+                    } else {
+                        fg.line(str.format("gm_format(&{}, {}, {}, true);", b, d, vals.items[i])!)
+                    }
+                    try fg.emit_buf(w.sink, sink_v, b, e)
+                }
+            }
+            return fg.unit()
+        }
+        .SizeOf(_), .TypeIs(_), .IntLimit(_), .TypeName(_), .UntypedFloat(_), .UntypedComplex(_), .ValueParam(_) => return !unsupported(e.span, "an expression left over from generic checking")
+    }
+}
+
+/// Sends the formatted argument in `gm_buf` variable `b` to an `@write` sink unless it
+/// is empty (the interpreter writes no empty chunks either), then frees it.
+emit_buf :: fn(fg: ^FnGen, sink: tir.WriteSink, sv: ?ValTy, b: string, e: ^Expr) -> Unsup!() needs sema.Load {
+    fg.line(str.format("if ({}.len != 0) {{", b)!)
+    fg.indent += 1
+    sl := fg.make_slice(fg.g.ty.string_ty(), str.format("{}.data", b)!, str.format("{}.len", b)!)
+    try fg.emit_to(sink, sv, sl, e)
+    fg.indent -= 1
+    fg.line("}")
+    fg.line(str.format("gm_buf_free(&{});", b)!)
+}
+
+/// Sends a `[]const u8` value to an `@write` sink.
+emit_to :: fn(fg: ^FnGen, sink: tir.WriteSink, sv: ?ValTy, slice: string, e: ^Expr) -> Unsup!() needs sema.Load {
+    unit_ty := fg.g.ty.unit_ty()
+    vals := [1]string(slice)
+    tys := [1]Ty(fg.g.ty.string_ty())
+    match sink {
+        .Fn(_) => {
+            cv := sv?
+            _ = try fg.call_closure(cv.v, cv.ty, vals[..], tys[..], unit_ty)
+        }
+        .Perform(effect_, op) => {
+            _ = try fg.perform(e, &effect_, op, vals[..], tys[..], unit_ty)
+        }
+    }
+}
+
+is_with_label :: fn(fg: ^FnGen, levels: u32, label: u32) -> bool needs sema.Load {
+    _, f := fg.frame_up(levels)
+    if b := fg.g.prog.func(f).body { return find_with(b, label) }
+    return false
+}
+
+target_ret :: fn(fg: ^FnGen, levels: u32) -> Ty needs sema.Load {
+    _, f := fg.frame_up(levels)
+    return fg.g.prog.func(f).ret
+}
+
+// --- places ---------------------------------------------------------------------------------
+
+/// The address (`uint8_t *`) of a place, or of a temporary holding a value.
+pub place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
+    match e.kind {
+        .Local(l) => return fg.local_addr(l)
+        .Global(_, decl) => {
+            i := fg.g.prog.global_index(decl) else return !unsupported(e.span, "this variable")
+            gl := fg.g.prog.s.globals.items[i]
+            if gl.thread_local and gl.link_name is null { return str.format("gm_ga{}()", i)! }
+            return str.format("((uint8_t *)gm_g{})", i)!
+        }
+        // Constants live in static storage, so their address is stable.
+        .Const(_, span) => {
+            name := try fg.g.const_storage(span, e.ty, e.span)
+            return str.format("((uint8_t *){})", name)!
+        }
+        .Upvar(levels, local) => {
+            f := fg.frame_field(levels, str.format("l{}", local)!)
+            return str.format("((uint8_t *)&{})", f)!
+        }
+        .Deref(p) => {
+            v := try fg.expr(p)
+            return str.format("((uint8_t *){})", v)!
+        }
+        .Field(base, index) => {
+            if fg.g.ty.kind(base.ty) is .Adt(_) {
+                if .Struct(sd) := fg.adt_def(base.ty).kind {
+                    if sd.bits is not null { return !unsupported(e.span, "fields of #bits structs") }
+                }
+            }
+            b := try fg.base_addr(base)
+            off := fg.g.ty.offsets(base.ty)[usize(index)]
+            return str.format("({} + {})", b, off)!
+        }
+        .Index(base, index, checked) => {
+            // The base is evaluated before the index (§7.1): when the index has effects,
+            // the base's address (or value) is computed first, into a temporary.
+            is_array := fg.g.ty.kind(base.ty) is .Array(_)
+            early: ?string = null
+            if not no_writes(index) {
+                b0 := ""
+                if is_array {
+                    b0 = try fg.base_addr(base)
+                } else {
+                    b0 = try fg.expr(base)
+                }
+                n := str.format("t{}", fg.fresh())!
+                cty := ""
+                b1 := b0
+                if is_array {
+                    cty = "uint8_t *"
+                    b1 = str.format("(uint8_t *)({})", b0)!
+                } else {
+                    cty = str.format("{} ", fg.g.ty.cty(base.ty))!
+                }
+                fg.line(str.format("{}{} = {};", cty, n, b1)!)
+                early = n
+            }
+            iv := try fg.expr(index)
+            bi := if checked { fg.bound(index.ty, iv) } else { str.format("(uintptr_t){}", iv)! }
+            i := fg.tmp(fg.g.ty.usize_ty(), bi)
+            at := fg.loc(e)
+            match fg.g.ty.kind(base.ty) {
+                .Array(len, elem, _) => {
+                    esz := fg.g.ty.size(elem)
+                    b := ""
+                    if x := early {
+                        b = x
+                    } else {
+                        b = try fg.base_addr(base)
+                    }
+                    fg.index_check(checked, i, str.format("{}", len)!, at)
+                    return str.format("({} + {} * {})", b, i, esz)!
+                }
+                .Slice(_, elem) => {
+                    esz := fg.g.ty.size(elem)
+                    // A slice that is a place is read in place.
+                    a := ""
+                    if v := early {
+                        a = fg.addr_of(base.ty, v)
+                    } else {
+                        a = try fg.place_addr(base)
+                    }
+                    sl := fg.slice_len(a)
+                    len := fg.tmp(fg.g.ty.usize_ty(), sl)
+                    fg.index_check(checked, i, len, at)
+                    p := fg.slice_ptr(a)
+                    return str.format("((uint8_t *){} + {} * {})", p, i, esz)!
+                }
+                .ManyPtr(_, elem) => {
+                    esz := fg.g.ty.size(elem)
+                    v := ""
+                    if x := early {
+                        v = x
+                    } else {
+                        v = try fg.expr(base)
+                    }
+                    return str.format("((uint8_t *){} + {} * {})", v, i, esz)!
+                }
+                _ => return !unsupported(e.span, str.format("indexing `{}`", fg.g.ty.show(base.ty))!)
+            }
+        }
+        _ => {
+            v := try fg.expr(e)
+            return fg.addr_of(e.ty, v)
+        }
+    }
+}
+
+/// The bounds check of an index `i` against length `len`.
+index_check :: fn(fg: ^FnGen, checked: bool, i: string, len: string, at: string) needs sema.Load {
+    if checked {
+        fg.line(str.format("if ({} >= (uintptr_t)({})) {{ char m[96]; snprintf(m, sizeof m, \"index %llu out of bounds for length %llu\", (unsigned long long){}, (unsigned long long)({})); gm_trap(m, {}); }}", i, len, i, len, at)!)
+    }
+}
+
+/// The address of an aggregate operand: the place itself, or a temporary copy.
+base_addr :: fn(fg: ^FnGen, base: ^Expr) -> Unsup!string needs sema.Load => fg.place_addr(base)
+
+/// An index or bound `v` of type `t` that is checked against a length, as a
+/// `uintptr_t`: a value too large for one becomes `UINTPTR_MAX`, so the check fails
+/// instead of seeing its low bits.
+pub bound :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs Alloc {
+    if fg.g.ty.size(t) > fg.g.ty.lay.target.ptr_bytes {
+        return str.format("(((unsigned __int128)({}) > (unsigned __int128)UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)({}))", v, v)!
+    }
+    return str.format("(uintptr_t){}", v)!
+}
+
+slice_expr :: fn(fg: ^FnGen, e: ^Expr, base: ^Expr, lo: ?^Expr, hi: ?^Expr, inclusive: bool) -> Unsup!string needs sema.Load {
+    ptr := ""
+    len: ?string = null
+    esz: u64 = 0
+    match fg.g.ty.kind(base.ty) {
+        .Array(n, elem, _) => {
+            ptr = try fg.place_addr(base)
+            len = str.format("{}", n)!
+            esz = fg.g.ty.size(elem)
+        }
+        .Slice(_, elem) => {
+            // The slice is read in place when the bounds cannot change it; otherwise it
+            // is copied before they are evaluated.
+            a := ""
+            if opt_no_writes(lo) and opt_no_writes(hi) {
+                a = try fg.place_addr(base)
+            } else {
+                v := try fg.expr(base)
+                a = fg.addr_of(base.ty, v)
+            }
+            p := fg.slice_ptr(a)
+            l := fg.slice_len(a)
+            ptr = str.format("((uint8_t *){})", p)!
+            len = fg.tmp(fg.g.ty.usize_ty(), l)
+            esz = fg.g.ty.size(elem)
+        }
+        .ManyPtr(_, elem) => {
+            v := try fg.expr(base)
+            ptr = str.format("((uint8_t *){})", v)!
+            esz = fg.g.ty.size(elem)
+        }
+        _ => return !unsupported(e.span, str.format("slicing `{}`", fg.g.ty.show(base.ty))!)
+    }
+    tys := &fg.g.ty.s.tys
+    ptr = fg.tmp(tys.ptr(false, tys.u8_ty()), ptr)
+    lo_v := "(uintptr_t)0"
+    if x := lo {
+        v := try fg.expr(x)
+        bv := if len is not null { fg.bound(x.ty, v) } else { str.format("(uintptr_t){}", v)! }
+        lo_v = fg.tmp(fg.g.ty.usize_ty(), bv)
+    }
+    hi_v := ""
+    if x := hi {
+        v := try fg.expr(x)
+        bv := if len is not null { fg.bound(x.ty, v) } else { str.format("(uintptr_t){}", v)! }
+        h := fg.tmp(fg.g.ty.usize_ty(), bv)
+        if inclusive and len is not null {
+            // An inclusive bound of `UINTPTR_MAX` stays past every length rather
+            // than wrapping to 0.
+            fg.line(str.format("{} += {} != UINTPTR_MAX;", h, h)!)
+        } else if inclusive {
+            fg.line(str.format("{} += 1;", h)!)
+        }
+        hi_v = h
+    } else {
+        l := len else return !unsupported(e.span, "slicing a many-pointer without an upper bound")
+        hi_v = str.format("(uintptr_t){}", l)!
+    }
+    if l := len {
+        at := fg.loc(e)
+        fg.line(str.format("if ({} > {} || {} > (uintptr_t){}) {{ char m[128]; snprintf(m, sizeof m, \"slice bounds %llu..%llu invalid for length %llu\", (unsigned long long){}, (unsigned long long){}, (unsigned long long){}); gm_trap(m, {}); }}", lo_v, hi_v, hi_v, l, lo_v, hi_v, l, at)!)
+    }
+    return fg.make_slice(e.ty, str.format("((uint8_t *){} + {} * {})", ptr, lo_v, esz)!, str.format("{} - {}", hi_v, lo_v)!)
+}
+
+// --- coercions ------------------------------------------------------------------------------
+
+coerce :: fn(fg: ^FnGen, e: ^Expr, kind: tir.Coercion, x: ^Expr) -> Unsup!string needs sema.Load {
+    v := try fg.expr(x)
+    t := e.ty
+    match kind {
+        .IntWiden, .FloatWiden => {
+            c := fg.g.ty.cty(t)
+            return fg.tmp(t, str.format("({}){}", c, v)!)
+        }
+        .WrapOptional => return fg.make_some(t, v)
+        .WrapOk => return fg.make_res(t, false, x.ty, v)
+        .LiftErr(variant) => {
+            a := fg.addr_of(x.ty, v)
+            .Result(e1, ok) := fg.g.ty.kind(x.ty) else return !unsupported(e.span, "this error lifting")
+            .Result(e2, _) := fg.g.ty.kind(t) else return !unsupported(e.span, "this error lifting")
+            res := fg.tmp_uninit(t)
+            bad := fg.res_is_err(x.ty, a)
+            off := fg.g.ty.offsets(x.ty)[1]
+            fg.line(str.format("if ({}) {{", bad)!)
+            fg.indent += 1
+            ev := fg.load(e1, str.format("({} + {})", a, off)!)
+            wrapped := fg.make_variant(e2, usize(variant), ev)
+            r := fg.make_res(t, true, e2, wrapped)
+            fg.line(str.format("{} = {};", res, r)!)
+            fg.indent -= 1
+            fg.line("} else {")
+            fg.indent += 1
+            ov := fg.load(ok, str.format("({} + {})", a, off)!)
+            r2 := fg.make_res(t, false, ok, ov)
+            fg.line(str.format("{} = {};", res, r2)!)
+            fg.indent -= 1
+            fg.line("}")
+            return res
+        }
+        .FromNever => return fg.zero(t)
+        // Widening a plain function pointer to an effectful type marks it (see `call_indirect`).
+        .FnPtrWiden if fg.ptr_type_plain(x.ty) and not fg.ptr_type_plain(t) => return fg.tmp(t, str.format("GM_PTR_TAG({})", v)!)
+        .PtrToPtr, .FnPtrWiden, .TupleRename, .InOptional => {
+            if fg.g.ty.repr(t) is fg.g.ty.repr(x.ty) and fg.g.ty.repr(t) is not .Blob { return v }
+            a := fg.addr_of(x.ty, v)
+            return fg.load(t, a)
+        }
+        .ArrayPtrToSlice => {
+            .Ptr(_, pointee) := fg.g.ty.kind(x.ty) else return !unsupported(e.span, "this array-to-slice coercion")
+            .Array(len, _, _) := fg.g.ty.kind(pointee) else return !unsupported(e.span, "this array-to-slice coercion")
+            return fg.make_slice(t, v, str.format("{}", len)!)
+        }
+        .FnToPtr => {
+            if fg.g.ty.repr(x.ty) is .Ptr and fg.g.ty.repr(t) is .Closure {
+                code: string = if fg.ptr_type_plain(x.ty) { str.format("GM_PTR_TAG({})", v)! } else { v }
+                return fg.tmp(t, str.format("((gm_closure){{{}, NULL, {}}})", code, fg.cx)!)
+            }
+            return v
+        }
+        .Unresolved => return !unsupported(e.span, "an unresolved coercion")
+    }
+}
+
+// --- helpers on expressions -----------------------------------------------------------------
+
+/// True if evaluating `e` cannot write memory or perform effects: it combines reads,
+/// literals and pure operators (it may still trap).
+no_writes :: fn(e: ^Expr) -> bool {
+    pure := match e.kind {
+        .Int(_), .Float(_), .SizeOf(_), .TypeIs(_), .IntLimit(_), .TypeName(_), .UntypedFloat(_), .UntypedComplex(_), .Bool(_), .Str(_), .CStr(_), .Null, .ValueParam(_), .Uninit, .Const(_), .Local(_), .Upvar(_), .Global(_), .Deref(_), .Field(_), .Index(_), .Slice(_), .SliceLen(_), .SlicePtr(_), .AddrOf(_), .FnRef(_), .Unary(_), .Binary(_), .Logic(_), .Coerce(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_) => true
+        _ => false
+    }
+    ok := pure
+    if ok {
+        tir.for_each_child(e, fn(c: ^Expr) {
+            ok = ok and no_writes(c)
+        })
+    }
+    return ok
+}
+
+/// `no_writes` of an optional expression, true if absent.
+opt_no_writes :: fn(e: ?^Expr) -> bool {
+    if x := e { return no_writes(x) }
+    return true
+}
+
+/// True if `e` performs `effect` or calls a function that does.
+uses_effect :: fn(prog: ^Prog, e: ^Expr, effect_: ^const EffectRef) -> bool needs Alloc {
+    found := false
+    if .Call(callee, _) := e.kind {
+        match callee {
+            .Perform(x, _) => { found = x is effect_^ }
+            .Fn(f) => {
+                for x in prog.func(f).effects.effects {
+                    if x is effect_^ { found = true }
+                }
+            }
+            .Indirect(_) => {}
+        }
+    }
+    tir.for_each_child(e, fn(c: ^Expr) {
+        if not found { found = uses_effect(prog, c, effect_) }
+    })
+    return found
+}
+
+/// True if `e` contains the `with` labeled `label`.
+find_with :: fn(e: ^Expr, label: u32) -> bool {
+    if .With(w) := e.kind {
+        if w.label is label { return true }
+    }
+    found := false
+    tir.for_each_child(e, fn(c: ^Expr) {
+        if not found { found = find_with(c, label) }
+    })
+    return found
+}
+
+/// The low and high 64-bit halves of `v` modulo 2^128 (two's complement).
+pub split_u128 :: fn(v: bigint.Int) -> (lo: u128, hi: u128) {
+    m: u128 = 0
+    i := v.mag.items.len.min(4)
+    while i > 0 {
+        i -= 1
+        m = (m <<% 32) | u128(v.mag.items[i])
+    }
+    if v.negative { m = u128(0) -% m }
+    return (m & 0xffff_ffff_ffff_ffff, m >> 64)
+}
+
+/// A C literal of float type of `bits` bits with value `x` (exactly representable in it).
+pub float_lit :: fn(bits: u16, x: f64) -> string needs Alloc {
+    c := match bits {
+        16 => "_Float16"
+        32 => "float"
+        _ => "double"
+    }
+    if x.is_nan() { return str.format("(({})__builtin_nan(\"\"))", c)! }
+    if x.is_inf() { return str.format("(({}){}__builtin_inf())", c, if x < 0.0 { "-" } else { "" })! }
+    // The shortest form that reads back as the same f64.
+    return str.format("(({}){:e})", c, x)!
+}
+
+/// The mask of the low `w` bits, as an `unsigned __int128` C expression.
+pub mask :: fn(w: u32) -> string needs Alloc {
+    if w >= 128 { return "(~(unsigned __int128)0)" }
+    return str.format("((((unsigned __int128)1) << {}) - 1)", w)!
+}
+
+/// A C compound literal for a format spec (`gm_spec` in the runtime).
+spec_literal :: fn(s: tir.FmtSpec) -> string needs Alloc {
+    align := match s.align {
+        .Auto => 0
+        .Left => 1
+        .Right => 2
+        .Center => 3
+    }
+    kind := match s.kind {
+        .Display => 0
+        .Hex => 1
+        .HexUpper => 2
+        .Oct => 3
+        .Bin => 4
+        .Exp => 5
+    }
+    precision: i64 = -1
+    if p := s.precision { precision = i64(p) }
+    return str.format("(gm_spec){{{}, {}, {}, {}, {}, {}, {}u, {}}}", s.fill, align, if s.plus { 1 } else { 0 }, if s.alt { 1 } else { 0 }, if s.zero { 1 } else { 0 }, kind, s.width, precision)!
+}

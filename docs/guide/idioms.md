@@ -368,6 +368,38 @@ args[0] = cx.bind_temp(&args[0], &stmts)^           // wrong: the kept pointer n
 args[0] = cx.bind_temp(new(args[0])!, &stmts)^      // the old value gets a place of its own
 ```
 
+## Copies of lists and maps
+
+A `List` or a `HashMap` is a small struct: a slice of its elements, their count or
+capacity, and its allocator. Assigning it copies that struct, not the elements, so the copy
+and the original share the elements but each has its own length. Reading through a copy is
+fine; changing one, with `push` or any method that takes `^T`, changes only the copy. To
+work on a list or a table kept in a larger structure, take its address:
+
+```gamma
+Table :: struct {
+    names: List(string)
+}
+
+Cx :: struct {
+    t: Table
+}
+
+main :: fn() needs Alloc + Out {
+    cx := Cx(t: Table(names: list(string)))
+    t := &cx.t                  // not `t := cx.t`, which would add to a copy
+    t.names.push("x")!
+    print("{}\n", cx.t.names.items.len)
+}
+```
+
+```output
+1
+```
+
+`gamma lint` reports a copy that is changed as if it were the original (rule
+`mutated-copy`).
+
 ## Building text
 
 Append to a `List(u8)` with `write`, which takes a `print` template, and write the result out once. Many small `print` calls are much slower than one large write:

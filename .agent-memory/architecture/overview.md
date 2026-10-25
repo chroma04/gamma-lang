@@ -61,7 +61,7 @@ compiler/          gammac, the self-hosted compiler in Gamma (decisions/043): so
                    types/, sema/ (decls; foreign.gm), tir/ (tir.gm, clone.gm deep copy),
                    check/ (bodies: expr/call/func/seq/pattern/…, generic.gm calls,
                    program.gm mono rewrite, handlers/cont_check/iterators, spread.gm,
-                   template.gm formatting, intrinsics.gm, dump.gm), main.gm; tests/selfhost.rs
+                   template.gm formatting, intrinsics.gm, dump.gm, codegen.gm entry+prepare), cgen/ (C back end, decisions/048), main.gm (lex/parse/modules/decls/tir/build); tests/selfhost.rs
 runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handlers
                    gm_node/gm_unw, fibers asm/ucontext, threads, Win32 + POSIX sys); rt_test.c
 lib/core/          prelude.gm, list.gm, map.gm, slice.gm (embedded via include_str!)

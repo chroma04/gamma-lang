@@ -1,0 +1,237 @@
+// The layouts of types with their field offsets, as the back end needs them (mirrors
+// `src/layout.rs`). The checker's layouts (`sema/layout.gm`) give sizes and alignments
+// only.
+
+/// The target the generated code is for: the one gammac itself was built for.
+pub Target :: struct {
+    pub ptr_bytes: u64
+    pub little_endian: bool
+    pub int128_align: u64
+    /// `Linux`, `MacOS`, `Windows`, `FreeBSD`, `Wasi` or `Freestanding`.
+    pub os: string
+    /// `X86_64`, `Aarch64`, `Riscv64`, `S390x`, `Wasm32` or `Other`.
+    pub arch: string
+    /// Fil-C, the memory-safe C implementation behind the Safe mode.
+    pub filc: bool
+    /// The C compiler has `_Float16`.
+    pub f16: bool
+}
+
+pub host_target :: fn() -> Target => Target(
+    ptr_bytes: u64(target.ptr_bits / 8),
+    little_endian: target.endian is .Little,
+    int128_align: 16,
+    os: @variant_name(target.os),
+    arch: @variant_name(target.arch),
+    filc: false,
+    f16: true,
+)
+
+pub ptr_bits :: fn(t: ^const Target) -> u32 => (t.ptr_bytes * 8).trunc(u32)
+
+/// A size, an alignment and the offsets of the fields (of a struct or tuple), of the flag
+/// (`[0, flag]` for an optional) or of the tag and payload (a result or union).
+pub Layout :: struct {
+    pub size: u64
+    pub align: u64
+    pub offsets: []const u64
+}
+
+/// The layouts of the program's types, computed once each.
+pub Layouts :: struct {
+    pub target: Target
+    s: ^Sema
+    cache: List(?Layout)
+}
+
+pub layouts :: fn(s: ^Sema, t: Target) -> Layouts needs Alloc => Layouts(target: t, s: s, cache: list(?Layout))
+
+scalar_layout :: fn(size: u64) -> Layout => Layout(size: size, align: size.max(1), offsets: empty_slice(u64))
+
+/// The size in bytes of the storage of an integer of `bits` bits (§5.2).
+pub int_storage_bytes :: fn(bits: u32) -> u64 => if bits <= 8 { 1 } else if bits <= 16 { 2 } else if bits <= 32 { 4 } else if bits <= 64 { 8 } else { 16 }
+
+round_up_to :: fn(x, align: u64) -> u64 {
+    q := x / align + (if x % align is 0 { 0 } else { 1 })
+    return q *| align
+}
+
+FieldLayout :: struct {
+    l: Layout
+    align: ?u64
+}
+
+/// Lays out fields in order with C rules.
+lay_fields :: fn(fields: []const FieldLayout, packed: bool, min_align: ?u64) -> Layout needs Alloc {
+    offset: u64 = 0
+    align: u64 = 1
+    offsets := list(u64)
+    for f in fields {
+        a := if packed { u64(1) } else if fa := f.align { fa.max(f.l.align) } else { f.l.align }
+        offset = round_up_to(offset, a)
+        offsets.push(offset)!
+        offset = offset +| f.l.size
+        align = align.max(a)
+    }
+    if m := min_align { align = align.max(m) }
+    return Layout(size: round_up_to(offset, align), align: align, offsets: offsets.items)
+}
+
+two_offsets :: fn(a, b: u64) -> []const u64 needs Alloc {
+    o := list(u64)
+    o.push(a)!
+    o.push(b)!
+    return o.items
+}
+
+lay_pair :: fn(a, b: Layout) -> Layout needs Alloc {
+    fields := [2]FieldLayout(FieldLayout(l: a, align: null), FieldLayout(l: b, align: null))
+    return lay_fields(fields[..], false, null)
+}
+
+/// True for the pointer kinds whose optional uses address 0 as null (§5.12).
+pub nullable_pointer :: fn(s: ^const Sema, t: Ty) -> bool => s.tys.kind(t) in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_))
+
+/// Whether `t` is a signed or unsigned integer type, with its width in bits.
+pub int_bits :: fn(lay: ^const Layouts, t: Ty) -> ?(signed: bool, bits: u32) => match lay.s.tys.kind(t) {
+    .Int(signed, bits) => (signed: signed, bits: u32(bits))
+    .Usize => (signed: false, bits: lay.target.ptr_bits())
+    .Isize => (signed: true, bits: lay.target.ptr_bits())
+    _ => null
+}
+
+pub layout_of :: fn(lay: ^Layouts, t: Ty) -> Layout needs Alloc {
+    i := usize(t.id)
+    while lay.cache.items.len <= i { lay.cache.push(null)! }
+    if l := lay.cache.items[i] { return l }
+    l := lay.compute(t)
+    while lay.cache.items.len <= i { lay.cache.push(null)! }
+    lay.cache.items[i] = l
+    return l
+}
+
+pub size_of :: fn(lay: ^Layouts, t: Ty) -> u64 needs Alloc => lay.layout_of(t).size
+
+pub align_of :: fn(lay: ^Layouts, t: Ty) -> u64 needs Alloc => lay.layout_of(t).align
+
+compute :: fn(lay: ^Layouts, t: Ty) -> Layout needs Alloc {
+    p := lay.target.ptr_bytes
+    s := lay.s
+    match s.tys.kind(t) {
+        .Int(_, bits) => {
+            size := int_storage_bytes(u32(bits))
+            return Layout(size: size, align: if size is 16 { lay.target.int128_align } else { size }, offsets: empty_slice(u64))
+        }
+        .Usize, .Isize => return scalar_layout(p)
+        .Float(bits) => return scalar_layout(u64(bits / 8))
+        .Bool => return scalar_layout(1)
+        .Rawptr, .Ptr(_), .ManyPtr(_), .FnPtr(_) => return scalar_layout(p)
+        .Slice(_) => return Layout(size: 2 * p, align: p, offsets: two_offsets(0, p))
+        .Array(len, elem, kind) => {
+            e := lay.layout_of(elem)
+            return Layout(size: e.size *| len, align: if kind is .Simd { e.size *| len } else { e.align }, offsets: empty_slice(u64))
+        }
+        .Tuple(elems, _) => {
+            fields := list(FieldLayout)
+            for e in elems { fields.push(FieldLayout(l: lay.layout_of(e), align: null))! }
+            return lay_fields(fields.items, false, null)
+        }
+        .Optional(inner) => {
+            if nullable_pointer(s, inner) { return lay.layout_of(inner) }
+            return lay_pair(lay.layout_of(inner), scalar_layout(1))
+        }
+        .Result(err, ok) => {
+            e := lay.layout_of(err)
+            o := lay.layout_of(ok)
+            return lay_pair(scalar_layout(1), Layout(size: e.size.max(o.size), align: e.align.max(o.align), offsets: empty_slice(u64)))
+        }
+        .Fn(_) => return Layout(size: 3 * p, align: p, offsets: empty_slice(u64))
+        .Handler(_), .Cont(_) => return Layout(size: 2 * p, align: p, offsets: empty_slice(u64))
+        .Adt(id, _) => return lay.adt_layout(id)
+        _ => return Layout(size: 0, align: 1, offsets: empty_slice(u64))
+    }
+}
+
+adt_layout :: fn(lay: ^Layouts, id: u32) -> Layout needs Alloc {
+    match lay.s.adts.items[usize(id)].kind {
+        .Struct(def) => {
+            if u := def.bits {
+                l := lay.layout_of(u)
+                return Layout(size: l.size, align: l.align, offsets: empty_slice(u64))
+            }
+            fields := list(FieldLayout)
+            for f in def.fields { fields.push(FieldLayout(l: lay.layout_of(f.ty), align: f.align))! }
+            return lay_fields(fields.items, def.packed, def.align)
+        }
+        .Union(tag, variants) => {
+            tag_l := lay.layout_of(tag)
+            size: u64 = 0
+            align: u64 = 1
+            any := false
+            for v in variants {
+                if pt := v.payload {
+                    l := lay.layout_of(pt)
+                    size = size.max(l.size)
+                    align = align.max(l.align)
+                    any = true
+                }
+            }
+            if not any {
+                zero := list(u64)
+                zero.push(0)!
+                return Layout(size: tag_l.size, align: tag_l.align, offsets: zero.items)
+            }
+            return lay_pair(tag_l, Layout(size: size, align: align, offsets: empty_slice(u64)))
+        }
+        .CUnion(fields) => {
+            size: u64 = 0
+            align: u64 = 1
+            offs := list(u64)
+            for f in fields {
+                l := lay.layout_of(f.ty)
+                size = size.max(l.size)
+                align = align.max(l.align)
+                offs.push(0)!
+            }
+            return Layout(size: round_up_to(size, align), align: align, offsets: offs.items)
+        }
+    }
+}
+
+/// Whether a value of `t` may hold a pointer (only Fil-C builds need to know).
+pub may_hold_pointers :: fn(lay: ^Layouts, t: Ty) -> bool needs Alloc {
+    match lay.s.tys.kind(t) {
+        .Int(_), .Usize, .Isize, .Float(_), .Bool, .Never => return false
+        .Array(_, elem, _) => return lay.may_hold_pointers(elem)
+        .Tuple(elems, _) => {
+            for e in elems {
+                if lay.may_hold_pointers(e) { return true }
+            }
+            return false
+        }
+        .Optional(inner) => return lay.may_hold_pointers(inner)
+        .Result(err, ok) => return lay.may_hold_pointers(err) or lay.may_hold_pointers(ok)
+        .Adt(id, _) => match lay.s.adts.items[usize(id)].kind {
+            .Struct(def) => {
+                if def.bits is not null { return false }
+                for f in def.fields {
+                    if lay.may_hold_pointers(f.ty) { return true }
+                }
+                return false
+            }
+            .CUnion(fields) => {
+                for f in fields {
+                    if lay.may_hold_pointers(f.ty) { return true }
+                }
+                return false
+            }
+            .Union(_, variants) => {
+                for v in variants {
+                    if pt := v.payload and lay.may_hold_pointers(pt) { return true }
+                }
+                return false
+            }
+        }
+        _ => return true
+    }
+}

@@ -1,0 +1,546 @@
+//! The C back end: translates a checked program to C, which the system C compiler
+//! compiles together with the runtime (`runtime/gm_rt.c`). Mirrors `src/cgen/`.
+//!
+//! The generated code follows the reference implementation's: values have the same
+//! bytes, checks trap with the same messages, and formatting goes through the runtime's
+//! type descriptors. Not ported: the specialization of functions for the handler that is
+//! their context, the reading of parameters in place, the outlining of long statement
+//! runs, the shortcuts for long operator chains, constant arguments in static storage,
+//! debug information (`-g`), the Safe mode and freestanding targets. They change how
+//! fast the generated code runs or compiles, not what it does.
+
+ast :: import "../ast"
+bigint :: import "../bigint"
+hash_map :: import "std/collections/hash_map"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+tir :: import "../tir"
+types :: import "../types"
+
+Sema :: sema.Sema
+Ty :: types.Ty
+TyKind :: types.TyKind
+EffectRef :: types.EffectRef
+EffectSet :: types.EffectSet
+Expr :: tir.Expr
+ExprKind :: tir.ExprKind
+
+/// A construct the C back end cannot translate.
+pub Unsup :: struct {
+    pub message: string
+    pub span: source.Span
+}
+
+/// The error for a construct the C back end cannot translate yet. Call sites write
+/// `return !unsupported(span, "...")`.
+pub unsupported :: fn(span: source.Span, what: string) -> Unsup needs Alloc {
+    return Unsup(message: str.format("not supported by the C back end yet: {}", what)!, span: span)
+}
+
+/// Options of a C build.
+pub Options :: struct {
+    /// Debug, Checked: checked operations trap (§1.4). Fast drops the checks.
+    pub checks: bool = true
+    /// Debug: heap blocks are tracked so double and invalid frees trap.
+    pub debug: bool = true
+}
+
+pub Gen :: struct {
+    pub prog: ^Prog
+    pub ty: CTypes
+    pub opts: Options
+    /// The number identifying each effect instance in handler contexts, by its text.
+    effect_ids: hash_map.HashMap(string, u32)
+    /// The shared functions that perform an ambient output effect, by signature.
+    pub stubs: hash_map.HashMap(string, string)
+    /// Static byte arrays by content.
+    statics: hash_map.HashMap([]const u8, usize)
+    static_defs: List(u8)
+    pub frames: List(u8)
+    pub protos: List(u8)
+    pub bodies: List(u8)
+    pub helpers: Helpers
+    reachable: List(u32)
+    queued: List(bool)
+    /// Functions whose frame struct has been emitted.
+    frames_done: List(bool)
+    /// Memo of `is_pure` (`0`: unknown, `1`: being computed, `2`: false, `3`: true).
+    pub pure_memo: hash_map.HashMap(u32, u8)
+    /// The locals that function literals or handler clauses reach through their
+    /// environment, by function and local (computed on first use, see `frame_locals`).
+    pub captured: ?hash_map.HashMap((u32, u32), bool) = null
+    pub handler_tables: List(u8)
+    /// Libraries to link, from foreign blocks.
+    pub libs: List(string)
+    handler_done: hash_map.HashMap(u32, bool)
+    decl_done: hash_map.HashMap(u32, bool)
+    /// The source files trap locations name; each path is one static string `gm_srcN`.
+    loc_files: List(u32)
+    /// The storage of compile-time values (`gm_cN`): constants and the static cells
+    /// their pointers point into.
+    pub statics_cells: List(StaticCell)
+    pub cell_ids: hash_map.HashMap(usize, u32)
+}
+
+/// What the back end produces.
+pub Generated :: struct {
+    /// The generated C code, which follows the runtime.
+    pub code: string
+    /// Libraries to link (from `foreign` blocks), beyond the C library.
+    pub libs: []const string
+}
+
+/// Translates the program to C source whose `main` runs `entry`.
+pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs sema.Load {
+    g := Gen(
+        prog: p,
+        ty: ctypes(p.s, p.target),
+        opts: opts,
+        effect_ids: hash_map.hash_map(string, u32),
+        stubs: hash_map.hash_map(string, string),
+        statics: hash_map.hash_map([]const u8, usize),
+        static_defs: list(u8),
+        frames: list(u8),
+        protos: list(u8),
+        bodies: list(u8),
+        helpers: new_helpers(),
+        reachable: list(u32),
+        queued: list(bool),
+        frames_done: list(bool),
+        pure_memo: hash_map.hash_map(u32, u8),
+        handler_tables: list(u8),
+        libs: list(string),
+        handler_done: hash_map.hash_map(u32, bool),
+        decl_done: hash_map.hash_map(u32, bool),
+        loc_files: list(u32),
+        statics_cells: list(StaticCell),
+        cell_ids: hash_map.hash_map(usize, u32),
+    )
+    g.queue(entry)
+    for f in p.s.export_fns.items { g.queue(f) }
+    try g.drain()
+    consts := try g.gen_consts()
+    exports := try g.gen_exports()
+    entries := [1]u32(entry)
+    main := try g.gen_main(entries[..], false)
+    out := list(u8)
+    out.extend("/* ---- generated ---- */\n")!
+    out.write("GM_API int gm_checks = {};\n", if opts.checks { 1 } else { 0 })!
+    out.extend(SUPPORT)!
+    out.extend(g.ty.blob_typedefs())!
+    out.extend(g.ty.mirror_text())!
+    out.extend(g.ty.descriptors())!
+    for id in g.loc_files.items {
+        out.write("static const char gm_src{}[] = {};\n", id, c_string(g.prog.s.l.sm.file(id).path))!
+    }
+    out.extend(g.static_defs.items)!
+    out.extend(g.frames.items)!
+    out.extend(g.protos.items)!
+    out.extend(g.helpers.protos.items)!
+    out.extend(g.handler_tables.items)!
+    out.extend(consts.decls)!
+    out.extend(consts.init)!
+    out.extend(g.helpers.bodies.items)!
+    out.extend(g.bodies.items)!
+    // A program that switches fibers runs its entry under the runtime's fiber support.
+    run_main := if str.contains(out.items, "gm_with_go(") { "gm_run_main_fibers" } else { "gm_run_main" }
+    out.extend(exports)!
+    out.write("#define GM_RUN_MAIN {}\n", run_main)!
+    out.extend(main)!
+    return Generated(code: out.items, libs: g.libs.items)
+}
+
+// ---------------------------------------------------------------------------------
+// Functions and their names
+// ---------------------------------------------------------------------------------
+
+/// Marks `f` as needed; it is generated later.
+pub queue :: fn(g: ^Gen, f: u32) needs Alloc {
+    i := usize(f)
+    while g.queued.items.len <= i { g.queued.push(false)! }
+    if not g.queued.items[i] {
+        g.queued.items[i] = true
+        g.reachable.push(f)!
+    }
+}
+
+pub fn_name :: fn(g: ^const Gen, f: u32) -> string needs Alloc => str.format("gm_f{}", f)!
+
+/// The C name of clause `c` of a handler (generated on demand).
+pub clause_name :: fn(g: ^Gen, c: u32) -> string needs Alloc {
+    g.queue(c)
+    return g.fn_name(c)
+}
+
+/// Generates every function queued so far, and those they reach.
+drain :: fn(g: ^Gen) -> Unsup!() needs sema.Load {
+    while f := g.reachable.pop() { try gen_fn(g, f) }
+}
+
+/// True if the frame struct of `f` has been emitted; marks it as emitted.
+pub frame_done :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
+    i := usize(f)
+    while g.frames_done.items.len <= i { g.frames_done.push(false)! }
+    done := g.frames_done.items[i]
+    g.frames_done.items[i] = true
+    return done
+}
+
+/// The number identifying an effect instance in handler contexts.
+pub effect_id :: fn(g: ^Gen, e: ^const EffectRef) -> u32 needs Alloc {
+    key := g.prog.s.tys.show_ref(e)
+    if id := g.effect_ids.get(key) { return id }
+    n := g.effect_ids.len().trunc(u32)
+    g.effect_ids.put(key, n)!
+    return n
+}
+
+/// The name of a static array holding `bytes` followed by a NUL byte.
+pub static_bytes :: fn(g: ^Gen, bytes: []const u8) -> string needs Alloc {
+    if i := g.statics.get(bytes) { return str.format("gm_s{}", i)! }
+    i := g.statics.len()
+    g.statics.put(bytes, i)!
+    g.static_defs.write("static const uint8_t gm_s{}[{}] = {};\n", i, bytes.len + 1, c_string(bytes))!
+    return str.format("gm_s{}", i)!
+}
+
+/// `"file", line, col` for a trap at `span` (NULL location for none).
+pub src_loc :: fn(g: ^Gen, span: source.Span) -> string needs Alloc {
+    if span is source.DUMMY { return "NULL, 0, 0" }
+    f := g.prog.s.l.sm.file(span.file)
+    lc := f.line_col(span.lo)
+    if span.file not in g.loc_files.items { g.loc_files.push(span.file)! }
+    return str.format("gm_src{}, {}, {}", span.file, lc.line, lc.col)!
+}
+
+/// The table of clause functions of handler literal `h`, generating it on first use.
+pub handler_table :: fn(g: ^Gen, h: u32) -> string needs Alloc {
+    if g.handler_done.get(h) is null {
+        g.handler_done.put(h, true)!
+        names := list(string)
+        for c in g.prog.handler_lit(h).clauses {
+            g.queue(c)
+            names.push(str.format("(void *){}", g.fn_name(c))!)!
+        }
+        g.handler_tables.write("static void *const gm_hl{}[] = {{{}}};\n", h, str.join(names.items, ", ")!)!
+    }
+    return str.format("gm_hl{}", h)!
+}
+
+/// The table of clause thunks of handler declaration `d`. A thunk has the uniform clause
+/// signature and loads `self` from the node's `env` before calling the clause.
+pub decl_table :: fn(g: ^Gen, d: u32) -> Unsup!string needs Alloc {
+    if g.decl_done.get(d) is null {
+        g.decl_done.put(d, true)!
+        names := list(string)
+        for k, c in enumerate(g.prog.handler_decl(d).clauses) {
+            g.queue(c)
+            def := g.prog.func(c)
+            ret := g.ty.cty(def.ret)
+            ptys := list(Ty)
+            for p in def.params { ptys.push(def.locals[usize(p)].ty)! }
+            self_ty := g.ty.cty(ptys.items[0])
+            params := list(string)
+            params.extend([3]string("void *env", "gm_node *cx", "gm_node *inst")[..])!
+            // `self` is passed by address when large, and `env` is that address.
+            self_arg: string = if g.ty.by_ref(ptys.items[0]) { "env" } else { str.format("GM_LD({}, env)", self_ty)! }
+            args := list(string)
+            args.extend([4]string("NULL", "cx", "inst", self_arg)[..])!
+            for i in 1..ptys.items.len {
+                params.push(str.format("{} a{}", g.ty.param_cty(ptys.items[i]), i)!)!
+                args.push(str.format("a{}", i)!)!
+            }
+            name := str.format("gm_dt{}_{}", d, k)!
+            // A large result goes to `gm_out`, as for every Gamma function.
+            ret_kw := "return "
+            if g.ty.by_ref(def.ret) {
+                params.insert(0, "void *gm_out")!
+                args.insert(0, "gm_out")!
+                ret = "void"
+                ret_kw = ""
+            }
+            g.protos.write("static {} {}({});\n", ret, name, str.join(params.items, ", ")!)!
+            g.bodies.write("static {} {}({}) {{ {}{}({}); }}\n", ret, name, str.join(params.items, ", ")!, ret_kw, g.fn_name(c), str.join(args.items, ", ")!)!
+            names.push(str.format("(void *){}", name)!)!
+        }
+        g.handler_tables.write("static void *const gm_hd{}[] = {{{}}};\n", d, str.join(names.items, ", ")!)!
+    }
+    return str.format("gm_hd{}", d)!
+}
+
+/// Exported functions (§19.4): external C-ABI wrappers under their symbols.
+gen_exports :: fn(g: ^Gen) -> Unsup!string needs sema.Load {
+    out := list(u8)
+    for k, sym in enumerate(g.prog.s.exports.items) {
+        f := g.prog.s.export_fns.items[k]
+        def := g.prog.func(f)
+        // A private C name bound to the symbol, so it cannot clash with declarations of
+        // the C headers the runtime includes.
+        cname := str.format("gm_xe{}", k)!
+        params := list(string)
+        args := list(string)
+        for i, p in enumerate(def.params) {
+            t := def.locals[usize(p)].ty
+            params.push(str.format("{} a{}", try g.c_abi_type(t, def.span), i)!)!
+            // The function takes mirrors itself (it has the plain convention).
+            args.push(if g.ty.mirror(t) is not null { str.format("a{}", i)! } else { str.format("({})a{}", g.ty.cty(t), i)! })!
+        }
+        call := str.format("{}({})", g.addr_name(f), str.join(args.items, ", ")!)!
+        param_text: string = if params.items.len is 0 { "void" } else { str.join(params.items, ", ")! }
+        ret := "void"
+        body := str.format("{};", call)!
+        if not g.ty.is_unit(def.ret) {
+            ret = try g.c_abi_type(def.ret, def.span)
+            value: string = if g.ty.mirror(def.ret) is not null { call } else { str.format("({}){}", ret, call)! }
+            body = str.format("return {};", value)!
+        }
+        cc := conv_attr(def.win64)
+        out.write("{}{} {}({}) __asm__(GM_SYM(\"{}\"));\n", cc, ret, cname, param_text, sym)!
+        out.write("{}{} {}({}) {{ {} }}\n", cc, ret, cname, param_text, body)!
+    }
+    return out.items
+}
+
+// ---------------------------------------------------------------------------------
+// The entry point
+// ---------------------------------------------------------------------------------
+
+/// The C `main`. With `select` it runs the entry whose index is the first argument;
+/// otherwise `entries` is the one entry to run.
+gen_main :: fn(g: ^Gen, entries: []const u32, select: bool) -> Unsup!string needs sema.Load {
+    s := list(u8)
+    calls := list(u8)
+    for i, entry in enumerate(entries) {
+        s.extend(try g.gen_entry(entry, i))!
+        calls.write("        case {}: return GM_RUN_MAIN(gm_entry{}, cx);\n", i, i)!
+    }
+    s.extend("int main(int argc, char **argv) {\n")!
+    if select {
+        s.extend("    if (argc < 2) { fputs(\"usage: test-binary INDEX\\n\", stderr); return 2; }\n")!
+        s.extend("    long which = strtol(argv[1], NULL, 10);\n    gm_set_args(1, argv);\n")!
+    } else {
+        s.extend("    gm_set_args(argc, argv);\n")!
+    }
+    s.extend("    gm_thread_stack();\n")!
+    s.write("    gm_debug = {};\n", if g.opts.debug { 1 } else { 0 })!
+    s.extend("    gm_init_consts();\n    gm_node *cx = NULL;\n")!
+    a := g.prog.ambient
+    amb := [3]?u32(a.out, a.err, a.env)
+    for k, e in enumerate(amb) {
+        eff := e else continue
+        r := EffectRef(eff: eff, args: empty_slice(types.GenericArg))
+        id := g.effect_id(&r)
+        s.write("    static gm_node amb{}; amb{} = (gm_node){{.eff = {}, .kind = GM_NATIVE, .next = cx}}; cx = &amb{};\n", k, k, id, k)!
+    }
+    if select {
+        s.write("    switch (which) {{\n{}        default: return 2;\n    }}\n", calls.items)!
+    } else {
+        s.extend("    return GM_RUN_MAIN(gm_entry0, cx);\n")!
+    }
+    s.extend("}\n")!
+    return s.items
+}
+
+/// `static int gm_entry<n>(gm_node *cx)`: runs `entry` under the ambient handlers `cx`
+/// and returns the process exit status.
+gen_entry :: fn(g: ^Gen, entry: u32, n: usize) -> Unsup!string needs sema.Load {
+    ret := g.prog.func(entry).ret
+    rc := g.ty.cty(ret)
+    s := list(u8)
+    s.write("static int gm_entry{}(gm_node *cx) {{\n", n)!
+    if g.ty.by_ref(ret) {
+        hidden := if g.is_plain(entry) { "" } else { ", NULL, cx, NULL" }
+        s.write("    {} r; {}(&r{});\n", rc, g.fn_name(entry), hidden)!
+    } else if g.is_plain(entry) {
+        if g.ty.is_unit(ret) or g.ty.is_never(ret) {
+            s.write("    {}();\n    {} r = GM_ZERO({});\n", g.fn_name(entry), rc, rc)!
+        } else {
+            s.write("    {} r = {}();\n", rc, g.fn_name(entry))!
+        }
+    } else {
+        s.write("    {} r = {}(NULL, cx, NULL);\n", rc, g.fn_name(entry))!
+    }
+    s.extend("    (void)cx;\n")!
+    s.extend("    if (gm_unw.kind == GM_EXIT) { gm_flush(); return gm_unw.code; }\n")!
+    match g.ty.kind(ret) {
+        .Result(err, ok) => {
+            offs := g.ty.offsets(ret)
+            d := g.ty.desc(err)
+            s.write("    if (((uint8_t *)&r)[{}]) {{\n", offs[0])!
+            s.extend("        gm_buf b = {0};\n        gm_buf_push(&b, \"error: \", 7);\n")!
+            // A union's value is named with its type: `E.NotFound` (§3.7).
+            if .Adt(id, _) := g.ty.kind(err) and g.prog.adt(id).kind is .Union(_) {
+                name := g.ty.show(err)
+                s.write("        gm_buf_push(&b, {}, {});\n", c_string(name), name.len)!
+            }
+            s.write("        gm_format(&b, {}, (uint8_t *)&r + {}, true);\n", d, offs[1])!
+            s.extend("        gm_buf_push(&b, \"\\n\", 1);\n        gm_flush();\n")!
+            s.extend("        gm_write_err(b.data, b.len);\n        return 1;\n    }\n")!
+            if g.ty.is_integer(ok) {
+                s.write("    gm_flush();\n    return (uint8_t)GM_LD({}, (uint8_t *)&r + {});\n", g.ty.cty(ok), offs[1])!
+            } else {
+                s.extend("    gm_flush();\n    return 0;\n")!
+            }
+        }
+        _ => {
+            if g.ty.is_integer(ret) {
+                s.extend("    gm_flush();\n    return (uint8_t)r;\n")!
+            } else {
+                s.extend("    (void)r;\n    gm_flush();\n    return 0;\n")!
+            }
+        }
+    }
+    s.extend("}\n")!
+    return s.items
+}
+
+// ---------------------------------------------------------------------------------
+// Calling conventions
+// ---------------------------------------------------------------------------------
+
+/// Whether a call of clause `c` may return with an exit in progress. False only when
+/// that is certain: its body leaves only locally, and its calls and performs reach only
+/// code that does too. The caller then needs no test of `gm_unw` after the call.
+pub clause_may_exit :: fn(g: ^Gen, c: u32) -> bool needs Alloc {
+    b := g.prog.func(c).body else return true
+    return g.expr_may_exit(b)
+}
+
+/// Whether evaluating `e` may leave its function by a non-local exit, or return from a
+/// call with one in progress.
+expr_may_exit :: fn(g: ^Gen, e: ^Expr) -> bool needs Alloc {
+    match e.kind {
+        .Break(b) => match b.target {
+            .InstallingWith => return true
+            .Label(levels, _) => if levels > 0 { return true }
+        }
+        .Continue(.Label(levels, _)) => if levels > 0 { return true }
+        .Continue(.InstallingWith) => {}
+        .Return(levels, _) => if levels > 0 { return true }
+        .Try(t) => if t.levels > 0 { return true }
+        // Handlers change the context, and fibers and continuations exit through the
+        // runtime.
+        .With(_), .Resume(_), .Cancel(_) => return true
+        .Builtin(.Fiber, _) => return true
+        // The sink is a perform or a function value.
+        .Write(_) => return true
+        .Call(callee, _) => match callee {
+            .Fn(f) => if g.may_unwind(f) { return true }
+            .Indirect(_), .Perform(_) => return true
+        }
+        _ => {}
+    }
+    may := false
+    tir.for_each_child(e, fn(c: ^Expr) {
+        if not may { may = g.expr_may_exit(c) }
+    })
+    return may
+}
+
+/// True if calls to `f` can leave by a non-local exit (Appendix D.2). A function that
+/// performs nothing itself can still leave that way through a second-class function it
+/// is passed, which may perform the caller's effects (§11.6).
+pub may_unwind :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
+    def := g.prog.func(f)
+    match def.kind {
+        .Foreign(_) => return false
+        .Clause, .Literal => return true
+        .Named => {
+            if not g.within_sys(&def.effects) { return true }
+            for p in def.params {
+                if g.ty.kind(def.locals[usize(p)].ty) is .Fn(_) { return true }
+            }
+            return false
+        }
+    }
+}
+
+/// True if every effect of `set` is `Sys`.
+pub within_sys :: fn(g: ^const Gen, set: ^const EffectSet) -> bool {
+    for e in set.effects {
+        if g.prog.ambient.sys is not e.eff { return false }
+    }
+    return true
+}
+
+/// Whether `f` has the plain C calling convention: a function (or non-capturing literal)
+/// whose effects are at most `{Sys}`, so it can be a C callback (§19.1).
+pub is_plain :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
+    def := g.prog.func(f)
+    return match def.kind {
+        .Foreign(_) => true
+        .Named, .Literal => def.parent is null and g.within_sys(&def.effects)
+        .Clause => false
+    }
+}
+
+/// The C name used to call `f`: foreign functions have a private alias.
+pub callee_name :: fn(g: ^Gen, f: u32) -> string needs Alloc {
+    if g.prog.func(f).kind is .Foreign(_) { return str.format("gm_x{}", f)! }
+    return g.fn_name(f)
+}
+
+/// Whether plain function `f` needs a separate C-ABI entry point: its own signature
+/// passes large values by address or returns a large value through `gm_out`, so C code
+/// and plain function pointers call a wrapper.
+pub needs_wrapper :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
+    def := g.prog.func(f)
+    if def.kind is .Foreign(_) or not g.is_plain(f) { return false }
+    for p in def.params {
+        if g.ty.by_ref(def.locals[usize(p)].ty) { return true }
+    }
+    return g.ty.by_ref(def.ret)
+}
+
+/// The C name of `f` where its address is taken: the C-ABI entry point of a plain
+/// function (see `needs_wrapper`), else the name it is called by.
+pub addr_name :: fn(g: ^Gen, f: u32) -> string needs Alloc {
+    if g.needs_wrapper(f) { return str.format("gm_f{}_c", f)! }
+    return g.callee_name(f)
+}
+
+/// Declares foreign function `f` under a private name bound to its symbol, so it cannot
+/// clash with the declarations of the runtime's C headers.
+pub foreign_decl :: fn(g: ^Gen, f: u32) -> Unsup!() needs Alloc {
+    def := g.prog.func(f)
+    .Foreign(lib, link_name, variadic) := def.kind else @unreachable()
+    if lib not in ("c", "m") and lib not in g.libs.items { g.libs.push(lib)! }
+    params := list(string)
+    for p in def.params { params.push(try g.c_abi_type(def.locals[usize(p)].ty, def.span))! }
+    if variadic { params.push("...")! }
+    if params.items.len is 0 { params.push("void")! }
+    ret: string = if g.ty.is_never(def.ret) {
+        "__attribute__((noreturn)) void"
+    } else if g.ty.is_unit(def.ret) {
+        "void"
+    } else {
+        try g.c_abi_type(def.ret, def.span)
+    }
+    g.protos.write("extern {}{} gm_x{}({}) __asm__(GM_SYM({}));\n", conv_attr(def.win64), ret, f, str.join(params.items, ", ")!, c_string(link_name))!
+}
+
+/// The C type passed across the C ABI for `t`.
+pub c_abi_type :: fn(g: ^Gen, t: Ty, span: source.Span) -> Unsup!string needs Alloc {
+    match g.ty.repr(t) {
+        .Bool => return "_Bool"
+        .Int(_), .Float(_), .Ptr => return g.ty.cty(t)
+        _ => {
+            if m := g.ty.mirror(t) { return m }
+            return !unsupported(span, str.format("passing `{}` by value to or from C", g.ty.show(t))!)
+        }
+    }
+}
+
+/// True if one of `params` is a second-class function (§11.6), through which a callee
+/// that performs nothing itself may still leave by a non-local exit.
+pub takes_fn :: fn(g: ^const Gen, params: []const Ty) -> bool {
+    for t in params {
+        if g.ty.kind(t) is .Fn(_) { return true }
+    }
+    return false
+}
+
+/// The C attribute (with a trailing space) selecting the calling convention; the
+/// target's C ABI needs none.
+pub conv_attr :: fn(win64: bool) -> string => if win64 { "__attribute__((ms_abi)) " } else { "" }

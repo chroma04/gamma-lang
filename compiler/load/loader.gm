@@ -92,6 +92,8 @@ pub Loader :: struct {
     ids: ^ast.NodeId
     /// Lex with the layout recovery that tools use after errors.
     recover: bool
+    /// The build mode, `target.mode` (§3.6): `Debug`, `Checked` or `Fast`.
+    pub mode: string = "Debug"
     /// The standard library's directory, as given and in canonical form.
     std_root: string
     std_canon: string

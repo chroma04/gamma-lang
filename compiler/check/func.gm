@@ -331,10 +331,17 @@ show :: fn(cx: ^const FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
 /// Checks the bodies of the functions declared so far, newest first, as the reference
 /// implementation does, except those of the core library.
 check_bodies :: fn(s: ^Sema) needs Load {
+    // The core library's stay pending, checked when something needs them (compile-time
+    // evaluation, code generation).
+    core := list(sema.PendingBody)
     while body := s.pending_bodies.pop() {
-        if s.l.modules.items[body.module].is_prelude { continue }
+        if s.l.modules.items[body.module].is_prelude {
+            core.push(body)!
+            continue
+        }
         check_fn_body(s, body.fn_id, body.module, body.lit)
     }
+    while body := core.pop() { s.pending_bodies.push(body)! }
 }
 
 /// Checks the body of a top-level function and stores it.

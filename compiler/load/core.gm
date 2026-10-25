@@ -17,6 +17,7 @@ CORE_PREFIX :: "<core>/"
 /// module for the target gammac compiles for in build mode `mode` (a variant of
 /// `target.Mode`). Returns whether it could be read.
 pub load_core :: fn(l: ^Loader, dir: string, mode: string) -> bool needs Alloc + Fs {
+    l.mode = mode
     prelude := l.load_core_module(dir, "prelude", "core") else return false
     l.collect_whens(prelude)
     l.prelude = prelude

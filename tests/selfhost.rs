@@ -14,6 +14,11 @@
 //! compared too, in the JSON format, which carries every field of a diagnostic: spans,
 //! labels, notes and fixes.
 //!
+//! On Unix, `gammac build` compiles every conformance `run` test through its own C back end,
+//! and the programs must give the expected output and exit status, as the reference's do.
+//! Finally `gammac` compiles itself: the `gammac` it builds (stage 2) must generate exactly the
+//! C that the `gammac` built by the reference implementation (stage 1) generated for it.
+//!
 //! `gammac`'s own unit tests run with `gamma test compiler`, and its sources must be
 //! formatted as `gamma fmt` formats them.
 
@@ -152,9 +157,14 @@ fn run_gammac(args: &[String]) -> std::process::Output {
         }
     };
     cmd.args(args);
-    // The standard library the reference implementation uses.
-    cmd.env("GAMMA_STD", gamma::sema::std_root());
+    gammac_env(&mut cmd);
     common::output(&mut cmd).unwrap()
+}
+
+/// The standard library and the runtime the reference implementation uses.
+fn gammac_env(cmd: &mut Command) {
+    cmd.env("GAMMA_STD", gamma::sema::std_root());
+    cmd.env("GAMMA_RUNTIME", root().join("runtime"));
 }
 
 /// A stage of the front end that `gammac` implements, with the output it is compared on.
@@ -439,4 +449,178 @@ fn sources_are_formatted() {
         })
         .collect();
     assert!(changed.is_empty(), "not formatted (run `gamma fmt compiler`): {:?}", changed);
+}
+
+/// A conformance `run` test that `gammac build` compiles: its root, build mode, standard
+/// input, expected output and exit status (see `tests/conformance.rs` for the directives).
+#[cfg(unix)]
+struct RunTest {
+    name: String,
+    root: PathBuf,
+    mode: String,
+    stdin: Vec<u8>,
+    stdout: Vec<u8>,
+    exit: i32,
+}
+
+/// The `run` tests that expect no compile errors and apply to this host.
+#[cfg(unix)]
+fn run_tests() -> Vec<RunTest> {
+    let dir = root().join("tests/conformance/run");
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    entries.sort();
+    let mut tests = vec![];
+    for p in entries {
+        let name = p.file_name().unwrap().to_str().unwrap().to_string();
+        let base = if let Some(b) = name.strip_suffix(".gm") {
+            b.to_string()
+        } else if let Some(b) = name.strip_suffix(".test") {
+            b.to_string()
+        } else {
+            continue;
+        };
+        let mut text = String::new();
+        if p.is_dir() {
+            let mut files = vec![];
+            gm_files(p.strip_prefix(root()).unwrap(), &mut files);
+            for f in files {
+                text.push_str(&std::fs::read_to_string(root().join(f)).unwrap());
+            }
+        } else {
+            text = std::fs::read_to_string(&p).unwrap();
+        }
+        let directive = |key: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix("//! ").and_then(|r| r.strip_prefix(key)).map(|v| v.trim().to_string()))
+        };
+        if text.contains("//~") || directive("stage:").is_some_and(|s| s != "run") {
+            continue;
+        }
+        let host = [
+            ("arch:", std::env::consts::ARCH.to_string()),
+            ("endian:", if cfg!(target_endian = "little") { "little" } else { "big" }.to_string()),
+            ("os:", if cfg!(windows) { "windows" } else { "unix" }.to_string()),
+            ("ptr_bits:", (8 * std::mem::size_of::<usize>()).to_string()),
+        ];
+        if host.iter().any(|(k, v)| directive(k).is_some_and(|d| &d != v)) {
+            continue;
+        }
+        let mode = directive("mode:").unwrap_or_else(|| "debug".to_string());
+        if mode == "safe" {
+            continue;
+        }
+        let root_dir = if p.is_dir() && p.join("main").is_dir() { p.join("main") } else { p.clone() };
+        let read = |ext: &str| std::fs::read(dir.join(format!("{}.{}", base, ext))).unwrap_or_default();
+        tests.push(RunTest {
+            name: format!("tests/conformance/run/{}", name),
+            root: root_dir,
+            mode,
+            stdin: read("stdin"),
+            stdout: read("stdout"),
+            exit: directive("exit:").map_or(0, |e| e.parse().unwrap()),
+        });
+    }
+    tests
+}
+
+/// Builds `t` with `gammac build` and runs it; returns why it failed, if it did.
+#[cfg(unix)]
+fn build_and_run(gammac: &Path, t: &RunTest, dir: &Path) -> Option<String> {
+    let exe = dir.join(t.name.replace('/', "_"));
+    let mut cmd = Command::new(gammac);
+    cmd.current_dir(root()).arg("build").arg(format!("--mode={}", t.mode)).arg("-o").arg(&exe).arg(&t.root);
+    gammac_env(&mut cmd);
+    let built = common::output(&mut cmd).unwrap();
+    if !built.status.success() {
+        return Some(format!("gammac build failed:\n{}", String::from_utf8_lossy(&built.stderr)));
+    }
+    let stdin = dir.join(format!("{}.stdin", t.name.replace('/', "_")));
+    std::fs::write(&stdin, &t.stdin).unwrap();
+    let mut run = Command::new(&exe);
+    run.current_dir(root()).stdin(std::fs::File::open(&stdin).unwrap());
+    let ran = common::output(&mut run).unwrap();
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(exe.with_extension("c"));
+    let _ = std::fs::remove_file(format!("{}.c", exe.display()));
+    let _ = std::fs::remove_file(&stdin);
+    if ran.status.code() != Some(t.exit) {
+        return Some(format!(
+            "exit status {:?}, expected {}:\n{}",
+            ran.status.code(),
+            t.exit,
+            String::from_utf8_lossy(&ran.stderr)
+        ));
+    }
+    if ran.stdout != t.stdout {
+        let (e, a) = (String::from_utf8_lossy(&t.stdout), String::from_utf8_lossy(&ran.stdout));
+        let (_, line, e, a) = first_difference(&e, &a).unwrap_or_default();
+        return Some(format!("output differs at line {}:\nexpected: {}\n  actual: {}", line, e, a));
+    }
+    None
+}
+
+#[test]
+#[cfg(unix)]
+fn programs_compiled_by_gammac_behave_as_expected() {
+    let Gammac::Native(gammac) = gammac() else { return };
+    let tests = run_tests();
+    assert!(tests.len() > 400, "only {} run tests found", tests.len());
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-run");
+    std::fs::create_dir_all(&dir).unwrap();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failures = std::sync::Mutex::new(vec![]);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(t) = tests.get(i) else { break };
+                    if let Some(why) = build_and_run(gammac, t, &dir) {
+                        failures.lock().unwrap().push(format!("{}: {}", t.name, why));
+                    }
+                }
+            });
+        }
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    assert!(failures.is_empty(), "{} of {} programs failed:\n{}", failures.len(), tests.len(), failures.join("\n\n"));
+}
+
+/// `gammac build --emit-c compiler` with `gammac`: the C it generates for itself.
+#[cfg(unix)]
+fn self_c(gammac: &Path, out: &Path) -> String {
+    let mut cmd = Command::new(gammac);
+    cmd.current_dir(root()).args(["build", "--emit-c", "-o"]).arg(out).arg("compiler");
+    gammac_env(&mut cmd);
+    let built = common::output(&mut cmd).unwrap();
+    assert!(
+        built.status.success(),
+        "{} failed to compile gammac:\n{}",
+        gammac.display(),
+        String::from_utf8_lossy(&built.stderr)
+    );
+    std::fs::read_to_string(format!("{}.c", out.display())).unwrap()
+}
+
+#[test]
+#[cfg(unix)]
+fn gammac_compiles_itself_to_a_fixed_point() {
+    let Gammac::Native(stage1) = gammac() else { return };
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-bootstrap");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Stage 1 (built by the reference implementation) builds stage 2.
+    let stage2 = dir.join("gammac2");
+    let mut cmd = Command::new(stage1);
+    cmd.current_dir(root()).args(["build", "-o"]).arg(&stage2).arg("compiler");
+    gammac_env(&mut cmd);
+    let built = common::output(&mut cmd).unwrap();
+    assert!(built.status.success(), "gammac failed to compile itself:\n{}", String::from_utf8_lossy(&built.stderr));
+    let c1 = std::fs::read_to_string(format!("{}.c", stage2.display())).unwrap();
+    // Stage 2 generates the same C for itself.
+    let c2 = self_c(&stage2, &dir.join("gammac3"));
+    if let Some((_, line, a, b)) = first_difference(&c1, &c2) {
+        panic!("the C that stage 2 generates differs from stage 1's at line {}:\nstage 1: {}\nstage 2: {}", line, a, b);
+    }
 }

@@ -67,7 +67,7 @@ in_expr :: fn(cx: ^FnCx, elem: ^Expr, container: ^const ast.Expr, negated: bool,
     _ = cx.unify_operands(elem.ty, item, span, "the element and the members of `in`")
     // The members are compared with `is` (§7.7).
     et := cx.infer.resolve(cx.s, item)
-    if not tys.has_infer(et) and not tys.is_error(et) and not cx.s.has_eq(et) {
+    if not tys.has_infer(et) and not tys.is_error(et) and not cx.eq_allowed(et) {
         cx.error(span, str.format("`in` compares with `is`, which is not defined for `{}` (§7.6)", cx.show(et))!)
     }
     return tir.mk(tys.bool_ty(), .In(elem, c, negated), span)
