@@ -86,6 +86,7 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         }
         .Intrinsic(i) => return cx.intrinsic(i, span)
         .Fn(lit) => return cx.fn_literal(lit, expect, null, span)
+        .With(w) => return cx.with_expr(w, true, expect)
         _ => return cx.unsupported(span, expr_kind_text(&e.kind))
     }
 }
@@ -782,8 +783,14 @@ join_branch :: fn(cx: ^FnCx, b: ^Expr, ty: Ty) -> ^Expr needs Load {
 
 return_expr :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
     if cx.in_defer { cx.error(span, "`return` is not allowed in a deferred statement") }
-    if cx.open_ret { return cx.open_return(v, span) }
-    ret := cx.ret
+    target := cx.return_target()
+    levels := target.levels
+    cx.check_fn_clause_exit(levels, "return", span)
+    if levels is 0 and cx.open_ret { return cx.open_return(v, span) }
+    if levels > 0 and cx.outer.items[cx.outer.items.len - usize(levels)].open_ret {
+        return cx.unsupported(span, "`return` from a handler clause to a function literal")
+    }
+    ret := target.ret
     value := if x := v {
         cx.coerce(cx.expr(x, ret), ret)
     } else {
@@ -792,7 +799,36 @@ return_expr :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Lo
         }
         unit(cx.s, span)
     }
-    return tir.mk(cx.s.tys.never_ty(), .Return(0, value), span)
+    return tir.mk(cx.s.tys.never_ty(), .Return(levels, value), span)
+}
+
+/// The function a `return` leaves, `levels` frames up, and its return type: a `return`
+/// in a handler clause leaves the function the clause is written in (§12.7.1).
+return_target :: fn(cx: ^const FnCx) -> (levels: u32, ret: Ty) {
+    if cx.clause is null { return (levels: 0, ret: cx.ret) }
+    levels: u32 = 0
+    k := cx.outer.items.len
+    while k > 0 {
+        k -= 1
+        levels += 1
+        f := &cx.outer.items[k]
+        if f.clause is null { return (levels: levels, ret: f.ret) }
+    }
+    return (levels: 0, ret: cx.ret)
+}
+
+/// An exit `levels` frames out may not leave a clause of a `fn` operation, which can
+/// only produce a value (§12.7.1).
+check_fn_clause_exit :: fn(cx: ^FnCx, levels: u32, what: string, span: source.Span) needs Alloc {
+    if levels is 0 { return }
+    crossed := false
+    if c := cx.clause and c.op_kind is .Fn { crossed = true }
+    n := cx.outer.items.len
+    for i in 0..usize(levels) - 1 {
+        if i + 1 > n { break }
+        if c := cx.outer.items[n - i - 1].clause and c.op_kind is .Fn { crossed = true }
+    }
+    if crossed { cx.error(span, str.format("a clause of a `fn` operation can only produce a value; it cannot `{}`", what)!) }
 }
 
 /// A `return` in a literal whose return type comes from its `return`s: the first one
@@ -815,42 +851,144 @@ open_return :: fn(cx: ^FnCx, v: ?^ast.Expr, span: source.Span) -> ^Expr needs Lo
     return tir.mk(tys.never_ty(), .Return(0, value), span)
 }
 
-/// The loop that `break` or `continue` with `label` targets, if any.
-find_loop :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span, is_continue: bool) -> ?LabelInfo needs Alloc {
-    i := cx.labels.items.len
+/// Where a `break` or `continue` goes.
+Jump :: union {
+    /// A loop or `with` of the function `levels` frames up.
+    Label: (levels: u32, info: LabelInfo)
+    /// Out of the `with` that installed the handler whose clause this is.
+    InstallingWith
+    /// The end of the clause `levels` frames up, with `()`.
+    ClauseReturn: u32
+}
+
+/// The last label of `labels` named `label`, or the innermost loop without one.
+find_label :: fn(labels: []const LabelInfo, label: ?ast.Ident) -> ?usize {
+    i := labels.len
     while i > 0 {
         i -= 1
-        x := cx.labels.items[i]
+        x := labels[i]
         found := if l := label { x.name is l.name } else { x.is_loop }
-        if found {
-            if cx.in_defer and i < cx.defer_label_base { cx.error(span, "a deferred statement may not `break` or `continue` out of itself") }
-            return x
-        }
+        if found { return i }
+    }
+    return null
+}
+
+/// Resolves the target of `break` or `continue` (§8.5, §12.7.1).
+find_jump :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span, is_continue: bool) -> ?Jump needs Load {
+    if idx := find_label(cx.labels.items, label) {
+        if cx.in_defer and idx < cx.defer_label_base { cx.error(span, "a deferred statement may not `break` or `continue` out of itself") }
+        info := cx.labels.items[idx]
+        if is_continue and not info.is_loop { cx.error(span, "`continue` can only target a loop") }
+        return .Label(levels: 0, info: info)
     }
     if cx.in_defer {
         cx.error(span, "a deferred statement may not `break` or `continue` out of itself")
         return null
     }
-    if l := label {
-        _ = cx.unsupported(span, "labels of enclosing functions")
+    // At clause level: exit the installing `with`, or (for `continue`) finish the clause.
+    clause := cx.clause else {
+        if l := label {
+            cx.error(l.span, str.format("no enclosing loop or `with` is labeled `{}`", l.name)!)
+        } else {
+            cx.error(span, "`break` and `continue` must be inside a loop")
+        }
         return null
     }
-    what := if is_continue { "continue" } else { "break" }
-    _ = cx.unsupported(span, str.format("`{}` outside a loop", what)!)
+    l := label else {
+        if clause.op_kind is .Fn {
+            cx.error(span, "a clause of a `fn` operation can only produce a value; it cannot `break` or `continue`")
+            return null
+        }
+        if is_continue and clause.op_kind is .Ctl {
+            cx.error(span, "a `ctl` clause cannot `continue`: end it with `resume`, `break` or an exit (§12.7.1)")
+            return null
+        }
+        // `continue` produces `()` as the operation's result (§12.7.1).
+        ret := cx.infer.resolve(cx.s, cx.ret)
+        if is_continue and not cx.s.tys.is_unit(ret) and not cx.s.tys.is_error(ret) {
+            cx.error(span, str.format("`continue` finishes the clause with `()`, but the operation returns `{}` (§12.7.1)", cx.show(ret))!)
+            return null
+        }
+        return if is_continue { .ClauseReturn(0) } else { .InstallingWith }
+    }
+    // A labeled jump from a handler clause to a construct enclosing the handler.
+    in_clause := true
+    levels: u32 = 0
+    k := cx.outer.items.len
+    while k > 0 and in_clause {
+        k -= 1
+        f := &cx.outer.items[k]
+        if idx := find_label(f.labels.items, label) {
+            info := f.labels.items[idx]
+            if is_continue and not info.is_loop { cx.error(span, "`continue` can only target a loop") }
+            cx.check_fn_clause_exit(levels + 1, if is_continue { "continue" } else { "break" }, span)
+            return .Label(levels: levels + 1, info: info)
+        }
+        in_clause = f.clause is not null
+        levels += 1
+    }
+    cx.error(l.span, str.format("no enclosing loop or `with` is labeled `{}`", l.name)!)
     return null
 }
 
 break_expr :: fn(cx: ^FnCx, label: ?ast.Ident, value: ?^ast.Expr, span: source.Span) -> ^Expr needs Load {
-    l := cx.find_loop(label, span, false) else return error_expr(cx.s, span)
-    if value is not null or l.value is not .Nothing { return cx.unsupported(span, "`break` with a value") }
-    cx.label_breaks.push(LabelBreak(label: l.id, ty: cx.s.tys.unit(), span: span))!
-    return tir.mk(cx.s.tys.never_ty(), .Break(tir.BreakExpr(target: tir.Target(levels: 0, label: l.id), value: null)), span)
+    jump := cx.find_jump(label, span, false) else return error_expr(cx.s, span)
+    nv := cx.s.tys.never_ty()
+    match jump {
+        .Label(levels, info) => {
+            depth := cx.depth() - levels
+            v: ?^Expr = null
+            match info.value {
+                .Nothing => {
+                    cx.label_breaks.push(LabelBreak(depth: depth, label: info.id, ty: cx.s.tys.unit(), span: span))!
+                    if x := value { cx.error(x.span, "a `while` loop has no value, so `break` takes no operand here") }
+                }
+                // A `break` that exits a `for` loop, whose value is `rt` (§13.2).
+                .Loop(rt) => {
+                    cx.label_breaks.push(LabelBreak(depth: depth, label: info.id, ty: cx.s.tys.unit(), span: span))!
+                    if x := value {
+                        v = cx.coerce(cx.expr(x, rt), rt)
+                    } else if not cx.s.tys.is_unit(rt) and not cx.s.tys.is_error(rt) {
+                        cx.error(span, str.format("this loop's value is `{}`, so `break` needs a value", cx.show(rt))!)
+                    }
+                }
+                .With(_) => {
+                    expect: ?Ty = if .With(t) := info.value { t } else { null }
+                    // Checked against the `with`'s value once the `with` is finished (§12.7).
+                    v = cx.break_value(value, expect)
+                    ty := if x := v { if t := expect { t } else { x.ty } } else { cx.s.tys.unit() }
+                    cx.label_breaks.push(LabelBreak(depth: depth, label: info.id, ty: ty, span: span))!
+                }
+            }
+            return tir.mk(nv, .Break(tir.BreakExpr(target: .Label(levels: levels, label: info.id), value: v)), span)
+        }
+        .InstallingWith => {
+            c := cx.clause else return error_expr(cx.s, span)
+            v := cx.break_value(value, c.with_expect)
+            ty := if x := v { if t := c.with_expect { t } else { x.ty } } else { cx.s.tys.unit() }
+            cx.handler_breaks.push(HandlerBreak(handler_: c.handler_, ty: ty, span: span))!
+            return tir.mk(nv, .Break(tir.BreakExpr(target: .InstallingWith, value: v)), span)
+        }
+        .ClauseReturn(_) => return error_expr(cx.s, span)
+    }
+}
+
+/// The value of a `break` out of a `with` whose value is expected to have type `expect`.
+break_value :: fn(cx: ^FnCx, value: ?^ast.Expr, expect: ?Ty) -> ?^Expr needs Load {
+    x := value else return null
+    ex := cx.expr(x, expect)
+    if t := expect { return cx.coerce(ex, t) }
+    return ex
 }
 
 continue_expr :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span) -> ^Expr needs Load {
-    l := cx.find_loop(label, span, true) else return error_expr(cx.s, span)
-    if not l.is_loop { return cx.unsupported(span, "`continue` to a `with`") }
-    return tir.mk(cx.s.tys.never_ty(), .Continue(tir.Target(levels: 0, label: l.id)), span)
+    nv := cx.s.tys.never_ty()
+    match cx.find_jump(label, span, true) {
+        .Label(levels, info) => return tir.mk(nv, .Continue(.Label(levels: levels, label: info.id)), span)
+        // `continue` at clause level finishes the clause with `()` (§12.7.1).
+        .ClauseReturn(levels) => return tir.mk(nv, .Return(levels, unit(cx.s, span)), span)
+        _ => return error_expr(cx.s, span)
+    }
 }
 
 // ---------------------------------------------------------------------------------

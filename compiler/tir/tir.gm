@@ -59,6 +59,8 @@ pub ExprKind :: union {
     /// A function literal that uses locals of the enclosing function: a second-class
     /// function value (§11.6).
     Closure: u32
+    /// A handler literal, by its index (§12.5).
+    HandlerRef: u32
     Unary: (op: UnOp, operand: ^Expr)
     Binary: (op: BinOp, lhs: ^Expr, rhs: ^Expr)
     Logic: (is_and: bool, lhs: ^Expr, rhs: ^Expr)
@@ -92,6 +94,7 @@ pub ExprKind :: union {
     /// Formatted output (`print`): the template's literal pieces, a spec per placeholder
     /// and the values.
     Write: WriteExpr
+    With: WithExpr
 }
 
 pub VariantExpr :: struct {
@@ -151,11 +154,32 @@ pub WriteSink :: union {
     Perform: (effect_: types.EffectRef, op: u32)
 }
 
-/// The target of a `break` or `continue`: a loop or `with` of the function `levels`
-/// frames up.
-pub Target :: struct {
-    pub levels: u32
+/// The target of a `break` or `continue`.
+pub Target :: union {
+    /// A loop or `with` of the function `levels` frames up (0: the current one).
+    Label: (levels: u32, label: u32)
+    /// The `with` that installed the handler whose clause is running (§12.7.1).
+    InstallingWith
+}
+
+/// `[label:] with h1, h2, … { body }` (§12.7).
+pub WithExpr :: struct {
     pub label: u32
+    pub handlers: []HandlerValue
+    pub on: ?^Expr
+    pub body: ^Expr
+}
+
+/// A handler a `with` installs.
+pub HandlerValue :: union {
+    /// A handler literal (a `HandlerRef`).
+    Literal: ^Expr
+}
+
+/// A handler literal: its effect and, per operation, the function of its clause.
+pub HandlerLit :: struct {
+    pub effect_: types.EffectRef
+    pub clauses: []u32
 }
 
 pub Block :: struct {
@@ -413,6 +437,15 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
                 if g := a.guard { f(g) }
                 f(a.body)
             }
+        }
+        .With(w) => {
+            for h in w.handlers {
+                match h {
+                    .Literal(x) => f(x)
+                }
+            }
+            if x := w.on { f(x) }
+            f(w.body)
         }
         .Builtin(_, args) => for i in 0..args.len { f(&args[i]) }
         .Call(callee, args) => {

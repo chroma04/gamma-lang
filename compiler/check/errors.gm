@@ -99,11 +99,18 @@ try_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, span: source.Span) -> ^Expr 
     tys := &cx.s.tys
     v := cx.expr(operand, null)
     vt := cx.infer.resolve(cx.s, v.ty)
-    ret := cx.ret
+    // In a handler clause, `try` returns from the function the clause is written in.
+    target := cx.return_target()
+    levels := target.levels
+    cx.check_fn_clause_exit(levels, "try", span)
+    if levels > 0 and cx.outer.items[cx.outer.items.len - usize(levels)].open_ret {
+        return cx.unsupported(span, "`try` from a handler clause to a function literal")
+    }
+    ret := target.ret
     match tys.kind(vt) {
         .Error => return error_expr(cx.s, span)
         .Optional(t) => if tys.kind(ret) is .Optional(_) {
-            return tir.mk(t, .Try(tir.TryExpr(expr: v, lift: null, levels: 0)), span)
+            return tir.mk(t, .Try(tir.TryExpr(expr: v, lift: null, levels: levels)), span)
         }
         .Result(err, ok) => if .Result(f, _) := tys.kind(ret) {
             lift: ?u32 = null
@@ -113,7 +120,7 @@ try_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, span: source.Span) -> ^Expr 
                     .Err(msg) => cx.error(span, msg)
                 }
             }
-            return tir.mk(ok, .Try(tir.TryExpr(expr: v, lift: lift, levels: 0)), span)
+            return tir.mk(ok, .Try(tir.TryExpr(expr: v, lift: lift, levels: levels)), span)
         }
         _ => {
             cx.error(span, str.format("`try` needs an optional or a result, but this is `{}`", cx.show(vt))!)

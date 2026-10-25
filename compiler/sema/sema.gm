@@ -244,6 +244,8 @@ pub Sema :: struct {
     /// The top-level functions whose bodies are still to be checked, in declaration order.
     pub pending_bodies: List(PendingBody)
     pub pending_consts: List(PendingConst)
+    /// The handler literals of the bodies checked so far (§12.5).
+    pub handlers: List(tir.HandlerLit)
     /// The functions marked `#inline` (§11.10), and where.
     pub inline_fns: List(InlineFn)
     /// By effect id; the first is the pseudo-effect of `..E` terms.
@@ -286,6 +288,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         defs: list(tir.FnDef),
         pending_bodies: list(PendingBody),
         pending_consts: list(PendingConst),
+        handlers: list(tir.HandlerLit),
         inline_fns: list(InlineFn),
         effects: list(EffectInfo),
         adts: list(AdtInfo),

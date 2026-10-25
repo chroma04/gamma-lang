@@ -55,9 +55,15 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   only if `cannot_fail` (no calls/trapping ops) — the reference evaluates, gammac does
   not), `E.V` untyped consts, intrinsics (check/intrinsics.gm: layout/limit/bit/float/
   black_box/type_name; params → unsupported), `?T(x)` → unsupported. 190 SAME / 0 DIFF.
-  Sole-blocker roots now: with 20 (+14 with handler decls), tests 14, iterators 13 (+16
-  with yield), vector types 9, #bits 7. `with` = effects.rs with_expr/handler_literal/
-  clause_fn (TIR: `with N`, `handler-ref E [clause@..]`, clause fns "clause in f@..").
+  Then fn literals (check/fnlit.gm: frames via enter_fn/exit_fn, FnCx.outer, Upvar,
+  Closure, nested fns finished in `finish`), call_value/Callee.Indirect, and `with` +
+  handler literals (check/handlers.gm; ClauseInfo per frame, find_jump across frames,
+  Target.InstallingWith, LabelBreak.depth, FnCx.handler_breaks, return_target levels).
+  Unsupported there: generic effects, ctl ops, `with … on`, handler decls, `with` in
+  generic fns, handler literals bound to locals. 223 SAME / 0 DIFF.
+  Sole-blocker roots now: handler decls 19 (+8 with local when), iterators 16 (+21 with
+  yield), tests 14, `with … on` 13, vector types 10, intrinsic calls 9, #bits 7.
+  Handler decls = src/sema/handler_decl.rs (~500 lines; clauses checked after bodies).
 - Survey script: $SP/one.sh per root (gammac tir vs gamma tir --diag-format=json), xargs
   -P6 over roots.txt (= program_roots); rewrite if scratch is gone (~60 s).
 - Biggest remaining buckets after s38g (roots mentioning): intrinsics 225 (+@size_of

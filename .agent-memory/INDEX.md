@@ -14,8 +14,9 @@
   gammac (check/generic.gm, sema instantiate + mono walk), TIR_FLOOR 137 (PR #78 merged).
   s39 (branch claude/project-thread-nhzd4o): pain-point language changes (decisions/044:
   pub(package), needless-pub/dangling-address/present-only-binding lints, payload-binding
-  note) + gammac defer, typed consts, intrinsics: TIR_FLOOR 190. Next: with/handlers,
-  iterators+yield, fn literals/pointers (roadmap/self-hosting.md).
+  note) + gammac defer, typed consts, intrinsics, fn literals/nested fns/fn pointers,
+  `with` + handler literals: TIR_FLOOR 223 (PR #79, ask user before merging). Next:
+  handler declarations, `ctl`/fibers (`with … on`), iterators+yield (roadmap/self-hosting.md).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
   in editors/tree-sitter-gamma (node 22 in /opt/node22).

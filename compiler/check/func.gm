@@ -51,6 +51,24 @@ Frame :: struct {
     captures: bool
     open_ret: bool
     open_ty: ?Ty
+    clause: ?ClauseInfo
+}
+
+/// The handler clause a frame checks.
+ClauseInfo :: struct {
+    op_kind: ast.OpKind
+    /// The handler literal it belongs to.
+    handler_: u32
+    /// The type of the value of the `with` that installs the handler, which its
+    /// `break`s give.
+    with_expect: ?Ty
+}
+
+/// A `break` to the `with` installing handler literal `handler`, from one of its clauses.
+HandlerBreak :: struct {
+    handler_: u32
+    ty: Ty
+    span: source.Span
 }
 
 /// A nested function of the body, finished with it: it shares the body's literal
@@ -73,6 +91,8 @@ LabelValue :: union {
     Nothing
     /// A `for` loop: the type of its value.
     Loop: Ty
+    /// A `with`: the type expected of its value, if it is used.
+    With: ?Ty
 }
 
 LabelInfo :: struct {
@@ -115,8 +135,10 @@ Performed :: struct {
     span: source.Span
 }
 
-/// A `break` to a loop of this function: the label and the value's type and place.
+/// A `break` to a label: the depth of the function the label belongs to, the label, and
+/// the value's type and place.
 LabelBreak :: struct {
+    depth: u32
     label: u32
     ty: Ty
     span: source.Span
@@ -170,6 +192,9 @@ pub FnCx :: struct {
     /// Named nested functions whose return type comes from their body, while it is
     /// checked: they cannot call themselves.
     open_fns: List(u32)
+    /// The handler clause being checked, if any.
+    clause: ?ClauseInfo
+    handler_breaks: List(HandlerBreak)
 }
 
 fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs Alloc {
@@ -206,6 +231,8 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         open_ret: false,
         open_ty: null,
         open_fns: list(u32),
+        clause: null,
+        handler_breaks: list(HandlerBreak),
     )
 }
 
@@ -485,7 +512,9 @@ enter_fn :: fn(cx: ^FnCx, fn_id: u32, ret: Ty, declared: EffectSet) needs Alloc 
         captures: cx.captures,
         open_ret: cx.open_ret,
         open_ty: cx.open_ty,
+        clause: cx.clause,
     ))!
+    cx.clause = null
     cx.open_ret = false
     cx.open_ty = null
     cx.locals = list(tir.LocalDecl)
@@ -519,6 +548,7 @@ exit_fn :: fn(cx: ^FnCx) -> (locals: []tir.LocalDecl, performed: []Performed, ca
     cx.captures = f.captures
     cx.open_ret = f.open_ret
     cx.open_ty = f.open_ty
+    cx.clause = f.clause
     return out
 }
 
@@ -687,7 +717,7 @@ stmt_expr :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ^Expr needs Load {
         .Block(b) => cx.block(&b, false)
         .For(f) => cx.for_loop(f)
         .Match(m) => cx.match_expr(m, false, null)
-        .With(_) => cx.unsupported(e.span, expr_kind_text(&e.kind))
+        .With(w) => cx.with_expr(w, false, null)
         _ => {
             errors := cx.s.l.diags.error_count()
             x := cx.expr(e, null)
@@ -1021,12 +1051,14 @@ uninit_message :: fn(s: ^Sema, ty: Ty) -> string needs Alloc {
     return str.format("`---` requires a plain-data type, but `{}` is not (§4.4){}", s.show(ty), hint)!
 }
 
-/// Forgets the `break`s to the loop with label `id`; returns whether there were any.
+/// Forgets the `break`s to the label `id` of the current function; returns whether
+/// there were any.
 forget_label_breaks :: fn(cx: ^FnCx, id: u32) -> bool {
     found := false
     i: usize = 0
+    depth := cx.depth()
     while i < cx.label_breaks.items.len {
-        if cx.label_breaks.items[i].label is id {
+        if cx.label_breaks.items[i].label is id and cx.label_breaks.items[i].depth is depth {
             found = true
             _ = cx.label_breaks.remove(i)
         } else {
@@ -1078,6 +1110,9 @@ never_cause :: fn(s: ^Sema, e: ^Expr) -> ?(span: source.Span, why: string) {
         .Trap(_) => "this stops the program"
         .Call(callee, _) => if callee is .Perform(_) { "this operation never returns to its caller: its result type is `never`" } else { "this call never returns: its result type is `never`" }
         .If(_) => "this `if` never completes: each of its branches leaves"
+        .Try(_) => "this `try` always returns"
+        .Match(_) => "this `match` never completes: each of its arms leaves"
+        .With(_) => "the body of this `with` never completes"
         .Block(b) => {
             if t := b.tail and s.tys.kind(t.ty) is .Never { return never_cause(s, t) }
             if b.stmts.len > 0 { return stmt_never_cause(s, b.stmts[b.stmts.len - 1]) }
