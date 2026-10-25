@@ -1122,14 +1122,39 @@ construct_variant :: fn(cx: ^FnCx, u: Ty, name: ast.Ident, args: ?[]const ast.Ar
     return tir.mk(u, .Variant(tir.VariantExpr(variant: i.trunc(u32), payload: payload)), span)
 }
 
+/// The named fields a spread of a value of type `vt` supplies to a construction.
+spread_source_fields :: fn(cx: ^FnCx, vt: Ty, e: ^const ast.Expr) -> ?[]SourceField needs Alloc {
+    out := list(SourceField)
+    if .Tuple(elems, names) := cx.s.tys.kind(vt) and names.len > 0 {
+        for i, n in enumerate(names) { out.push(SourceField(name: n, ty: elems[i]))! }
+        return out.items
+    }
+    fs := cx.s.struct_fields(vt) else {
+        if not cx.s.tys.is_error(vt) { cx.error(e.span, str.format("cannot spread a value of type `{}` into named arguments", cx.show(vt))!) }
+        return null
+    }
+    for f in fs { out.push(SourceField(name: f.name, ty: f.ty))! }
+    return out.items
+}
+
+SourceField :: struct {
+    name: string
+    ty: Ty
+}
+
 /// Builds a tuple of type `ty` from call-style arguments (positional or named).
 construct_tuple :: fn(cx: ^FnCx, ty: Ty, elems: []const Ty, names: []const string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
-    for a in args {
-        if a.kind is .Spread(_) { return cx.unsupported(a.span, "spreads") }
-    }
     slots := list(?^Expr)
     for _ in elems { slots.push(null)! }
     next: usize = 0
+    // With spreads, every value goes through a temporary, in the order written.
+    spreading := false
+    for a in args {
+        if a.kind is .Spread(_) { spreading = true }
+    }
+    stmts := list(tir.Stmt)
+    // A spread that could not be expanded already explains the missing elements.
+    spread_failed := false
     // `T(t)` with a tuple `t` is not a conversion: a tuple type takes one value per
     // element (§6.5), and `T(..t)` builds it from another tuple.
     if args.len is 1 and elems.len is not 1 and .Positional(e) := args[0].kind {
@@ -1150,34 +1175,48 @@ construct_tuple :: fn(cx: ^FnCx, ty: Ty, elems: []const Ty, names: []const strin
         }
     }
     for arg in args[next.min(args.len)..] {
+        parts := list(TuplePart)
         match arg.kind {
             .Positional(e) => {
                 if next >= elems.len {
                     cx.error(e.span, str.format("too many values for `{}`", cx.show(ty))!)
                     continue
                 }
-                v := cx.field_value(&e, elems[next])
-                next += 1
-                if slots.items[next - 1] is not null { cx.error(e.span, str.format("element {} of `{}` is given twice", next - 1, cx.show(ty))!) }
-                slots.items[next - 1] = cx.coerce(v, elems[next - 1])
+                parts.push(TuplePart(name: null, value: cx.field_value(&e, elems[next]), at: e.span))!
             }
             .Named(n, e) => {
-                found: ?usize = null
-                for i, x in enumerate(names) {
-                    if x is n.name {
-                        found = i
-                        break
-                    }
-                }
-                i := found else {
+                i := index_of_name(names, n.name) else {
                     cx.error(n.span, str.format("`{}` has no element named `{}`", cx.show(ty), n.name)!)
                     continue
                 }
-                v := cx.field_value(&e, elems[i])
-                if slots.items[i] is not null { cx.error(n.span, str.format("element {} of `{}` is given twice", i, cx.show(ty))!) }
-                slots.items[i] = cx.coerce(v, elems[i])
+                parts.push(TuplePart(name: n.name, value: cx.field_value(&e, elems[i]), at: n.span))!
             }
-            .Spread(_) => {}
+            .Spread(e) => {
+                ps := cx.spread_parts(&e, &stmts) else {
+                    spread_failed = true
+                    continue
+                }
+                for p in ps { parts.push(TuplePart(name: p.name, value: p.value, at: e.span))! }
+            }
+        }
+        for part in parts.items {
+            i: usize = 0
+            if n := part.name {
+                i = index_of_name(names, n) else {
+                    cx.error(part.at, str.format("`{}` has no element named `{}`", cx.show(ty), n)!)
+                    continue
+                }
+            } else {
+                if next >= elems.len {
+                    cx.error(part.at, str.format("too many values for `{}`", cx.show(ty))!)
+                    break
+                }
+                i = next
+                next += 1
+            }
+            if slots.items[i] is not null { cx.error(part.at, str.format("element {} of `{}` is given twice", i, cx.show(ty))!) }
+            v := cx.coerce(part.value, elems[i])
+            slots.items[i] = if spreading { cx.bind_temp(v, &stmts) } else { v }
         }
     }
     values := list(Expr)
@@ -1185,11 +1224,28 @@ construct_tuple :: fn(cx: ^FnCx, ty: Ty, elems: []const Ty, names: []const strin
         if v := slots.items[i] {
             values.push(v^)!
         } else {
-            cx.error(span, str.format("missing element {} of `{}`", i, cx.show(ty))!)
+            if not spread_failed { cx.error(span, str.format("missing element {} of `{}`", i, cx.show(ty))!) }
             values.push(error_expr(cx.s, span)^)!
         }
     }
-    return tir.mk(ty, .Aggregate(values.items), span)
+    agg := tir.mk(ty, .Aggregate(values.items), span)
+    if stmts.items.len is 0 { return agg }
+    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+}
+
+/// A value for a tuple element, with its name if it is given by name, and where.
+TuplePart :: struct {
+    name: ?string
+    value: ^Expr
+    at: source.Span
+}
+
+/// The index of `name` in `names`.
+index_of_name :: fn(names: []const string, name: string) -> ?usize {
+    for i, n in enumerate(names) {
+        if n is name { return i }
+    }
+    return null
 }
 
 /// A constructor field or argument value: `---` for plain data, else coerced.
@@ -1248,7 +1304,39 @@ construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Sp
                 written.push(i)!
                 slots.items[i] = v
             }
-            .Spread(_) => return cx.unsupported(arg.span, "spreads")
+            .Spread(e) => {
+                v := cx.expr(&e, null)
+                vt := cx.infer.resolve(cx.s, v.ty)
+                src := cx.spread_source_fields(vt, &e) else continue
+                // Values written before the spread are evaluated before it.
+                for w in written.items {
+                    if x := slots.items[w] { slots.items[w] = cx.bind_temp(x, &stmts) }
+                }
+                written.clear()
+                base := cx.bind_temp(v, &stmts)
+                for k, sf in enumerate(src) {
+                    found: ?usize = null
+                    for i, f in enumerate(fields) {
+                        if f.name is sf.name {
+                            found = i
+                            break
+                        }
+                    }
+                    i := found else {
+                        cx.error(e.span, str.format("`{}` has no field `{}` (supplied by this spread)", cx.show(ty), sf.name)!)
+                        continue
+                    }
+                    if explicit.items[i] {
+                        // A later explicit named argument overrides; an earlier one is a
+                        // conflict.
+                        cx.error(e.span, str.format("field `{}` is supplied twice", sf.name)!)
+                        continue
+                    }
+                    if slots.items[i] is not null { cx.error(e.span, str.format("field `{}` is supplied by two spreads", sf.name)!) }
+                    proj := tir.mk(sf.ty, .Field(base, k.trunc(u32)), e.span)
+                    slots.items[i] = cx.coerce(proj, fields[i].ty)
+                }
+            }
         }
     }
     // Arguments written out of field order are evaluated into temporaries first, so
