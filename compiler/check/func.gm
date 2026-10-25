@@ -64,6 +64,15 @@ ClauseInfo :: struct {
     /// The type of the value of the `with` that installs the handler, which its
     /// `break`s give.
     with_expect: ?Ty
+    /// For the body of a `for` over an iterator, which is the clause of its `yield`: the
+    /// loop's label, and the type of the iterator's result, which a `break` gives.
+    for_label: ?ForLabel = null
+    break_ty: ?Ty = null
+}
+
+ForLabel :: struct {
+    name: ?string
+    label: u32
 }
 
 /// A `break` to the `with` installing handler literal `handler`, from one of its clauses.
@@ -197,6 +206,8 @@ pub FnCx :: struct {
     /// The handler clause being checked, if any.
     clause: ?ClauseInfo
     handler_breaks: List(HandlerBreak)
+    /// Where iterators are called (§13.2).
+    iterator_calls: List(source.Span)
 }
 
 fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs Alloc {
@@ -235,6 +246,7 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         open_fns: list(u32),
         clause: null,
         handler_breaks: list(HandlerBreak),
+        iterator_calls: list(source.Span),
     )
 }
 
@@ -333,12 +345,34 @@ check_effects :: fn(cx: ^FnCx) needs Load {
                 _ = cx.unsupported(p.span, "effects declared with other arguments")
             }
         }
-        d := diag.error(p.span, str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!)
-        if fix := cx.needs_fix(&p.effect_) { d.add_fix(str.format("add `{}` to the function's effects", name)!, fix.span, fix.text) }
+        plain := true
+        msg: string = str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!
+        if m := cx.iterator_call_message(&p.effect_, p.span) {
+            plain = false
+            msg = m
+        }
+        d := diag.error(p.span, msg)
+        if fix := cx.needs_fix(&p.effect_) and plain { d.add_fix(str.format("add `{}` to the function's effects", name)!, fix.span, fix.text) }
         cx.s.emit(d)
         reported.push(p.effect_)!
     }
     cx.performed.clear()
+}
+
+/// The message for a call of an iterator from a function with no `Yield` of its own,
+/// which was most likely meant as the source of a `for` loop.
+iterator_call_message :: fn(cx: ^FnCx, e: ^const EffectRef, span: source.Span) -> ?string needs Alloc {
+    y := cx.s.yield_effect else return null
+    if e.eff is not y or span not in cx.iterator_calls.items { return null }
+    for d in cx.declared.effects {
+        if d.eff is y { return null }
+    }
+    // The call's callee: the text before its argument list, after any receiver.
+    text := cx.s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
+    if i := str.find(text, "(") { text = text[..i] }
+    if i := str.rfind(text, ".") { text = text[i + 1..] }
+    c := str.trim(text)
+    return str.format("`{}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {}(…)`) or pass it to a function that runs it, such as `collect({}(…))` (§13.5)", c, c, c)!
 }
 
 /// The edit that adds effect `e` to the signature of the function being checked, if it
@@ -360,9 +394,7 @@ needs_fix :: fn(cx: ^FnCx, e: ^const EffectRef) -> ?(span: source.Span, text: st
 
 record_effects :: fn(cx: ^FnCx, set: ^const EffectSet, span: source.Span) needs Alloc {
     for e in set.effects {
-        if y := cx.s.yield_effect and e.eff is y {
-            _ = cx.unsupported(span, "calls of iterators")
-        }
+        if y := cx.s.yield_effect and e.eff is y { cx.iterator_calls.push(span)! }
         cx.performed.push(Performed(effect_: e, span: span))!
     }
 }

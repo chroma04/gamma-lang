@@ -15,8 +15,8 @@
   s39 (branch claude/project-thread-nhzd4o): pain-point language changes (decisions/044:
   pub(package), needless-pub/dangling-address/present-only-binding lints, payload-binding
   note) + gammac defer, typed consts, intrinsics, fn literals/nested fns/fn pointers,
-  `with` + handler literals + handler decls: TIR_FLOOR 239 (PR #79, ask user before
-  merging). Next: iterators+yield, `ctl`/fibers (`with … on`) (roadmap/self-hosting.md).
+  `with` + handler literals + handler decls + iterators: TIR_FLOOR 278 (PR #79, ask user
+  before merging). Next: local `when`, tests, `ctl`/fibers (roadmap/self-hosting.md).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
   in editors/tree-sitter-gamma (node 22 in /opt/node22).

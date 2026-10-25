@@ -63,9 +63,13 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   bodies, Sema.handler_decls/pending_clauses/decl_clause_breaks/decl_with_checks; only
   non-generic, templates just set Sema.handler_templates). Unsupported: generic effects,
   ctl ops, `with … on`, handler decls for generic types, `with` in generic fns, handler
-  literals bound to locals (Rust pending_handlers, 5 roots). 239 SAME / 0 DIFF.
-  Sole-blocker roots now: iterators 18 (+23 with yield, +10 yield+local when), tests 15,
-  `with … on` 14, vector types 10, intrinsic calls 10, local when 8, @size_of(T) 8.
+  literals bound to locals (Rust pending_handlers, 8 roots). 239 SAME / 0 DIFF.
+  Iterators (check/iterators.gm: for_iterator = clause "<for body>" of a HandlerLit for
+  Yield(T), ClauseInfo.for_label/break_ty, hoist_args/lift_temps; perform_generic for
+  bare `yield(x)` via `available` = declared of all frames; iterator_calls +
+  iterator_call_as_value messages; location_function skips `<…>` frames). 278 / 0 DIFF.
+  Sole-blocker roots now: local when 20, tests 17, `with … on` 14, vector types 10,
+  intrinsic calls 10, @size_of(T) 9, handler literals in locals 8, iterator args 8.
 - Survey script: $SP/one.sh per root (gammac tir vs gamma tir --diag-format=json), xargs
   -P6 over roots.txt (= program_roots); rewrite if scratch is gone (~60 s).
 - Biggest remaining buckets after s38g (roots mentioning): intrinsics 225 (+@size_of

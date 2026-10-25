@@ -173,6 +173,7 @@ generic_call :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast.Arg, s
         cx.temp_ref_arg = is_const_ref_arg(cx.s, e, p.ty)
         v := cx.expr(e, if not unbound or partial { expect } else { null })
         cx.temp_ref_arg = false
+        if cx.iterator_call_as_value(e, v, p.ty) { return error_expr(cx.s, span) }
         v = cx.array_arg_as_slice(v, p.ty)
         mentions_free := false
         cx.s.walk(p.ty, fn(x: Ty) {
@@ -541,6 +542,25 @@ denotes_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
 /// The source text of `span`.
 span_text :: fn(cx: ^FnCx, span: source.Span) -> string => cx.s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
 
+/// The name of the function a location is reported in: the innermost enclosing one with
+/// a name of its own, which a literal (`<fn>`) or the body of a `for` (`<for body>`) is
+/// not.
+location_function :: fn(cx: ^const FnCx) -> string {
+    last: string = ""
+    if f := cx.fn_id {
+        last = cx.s.fns.items[usize(f)].name
+        if not last.starts_with("<") { return last }
+    }
+    k := cx.outer.items.len
+    while k > 0 {
+        k -= 1
+        f := cx.outer.items[k].fn_id else continue
+        last = cx.s.fns.items[usize(f)].name
+        if not last.starts_with("<") { return last }
+    }
+    return last
+}
+
 /// Whether a parameter of type `ty` is an iterator parameter (§13.5): a function type
 /// that performs `Yield`.
 is_iterator_param :: fn(cx: ^FnCx, ty: Ty) -> bool {
@@ -574,8 +594,7 @@ source_location :: fn(cx: ^FnCx, span: source.Span) -> ^Expr needs Load {
     }
     file := cx.s.l.sm.file(span.file)
     lc := file.line_col(span.lo)
-    function: string = ""
-    if f := cx.fn_id { function = cx.s.fns.items[usize(f)].name }
+    function := cx.location_function()
     fields := list(Expr)
     fields.push(tir.mk(tys.string_ty(), .Str(file.path), span)^)!
     fields.push(tir.mk(tys.int(false, 32), .Int(bigint.from_u64(u64(lc.line))), span)^)!

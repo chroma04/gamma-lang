@@ -93,7 +93,7 @@ for_loop :: fn(cx: ^FnCx, f: ^const ast.ForExpr) -> ^Expr needs Load {
     is_range := false
     if .Binary(op, _, _) := f.iter.kind { is_range = op in (ast.BinOp.Range, ast.BinOp.RangeIncl) }
     if not is_range {
-        if f.iter.kind is .Call(_) { return cx.unsupported(f.iter.span, "calls of iterators") }
+        if f.iter.kind is .Call(_) { return cx.for_iterator(f) }
         src := cx.expr(f.iter, null)
         if e := cx.for_each_value(f, src) { return e }
         cx.error(f.iter.span, "`for` iterates over a range, an array, slice or tuple, or a call to an iterator")

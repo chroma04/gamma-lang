@@ -68,6 +68,8 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
                 _ => {}
             }
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
+            // `yield(x)`, the one operation in scope without its effect (§13.1).
+            if id.name is "yield" and y := cx.s.yield_effect { return cx.perform_generic(y, 0, args, span) }
             return cx.unsupported(span, str.format("calls of `{}`", id.name)!)
         }
         .Call(_) => {
@@ -260,6 +262,7 @@ arg_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
     cx.temp_ref_arg = is_const_ref_arg(cx.s, e, ty)
     v := cx.expr(e, ty)
     cx.temp_ref_arg = false
+    if cx.iterator_call_as_value(e, v, ty) { return error_expr(cx.s, e.span) }
     v = cx.array_arg_as_slice(v, ty)
     return cx.coerce(v, ty)
 }

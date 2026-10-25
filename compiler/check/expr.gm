@@ -912,10 +912,15 @@ find_jump :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span, is_continue: bo
         return if is_continue { .ClauseReturn(0) } else { .InstallingWith }
     }
     // A labeled jump from a handler clause to a construct enclosing the handler.
-    in_clause := true
+    frame_clause: ?ClauseInfo = clause
     levels: u32 = 0
     k := cx.outer.items.len
-    while k > 0 and in_clause {
+    while k > 0 {
+        c := frame_clause else break
+        if is_continue and fl := c.for_label and n := fl.name and n is l.name {
+            cx.check_fn_clause_exit(levels + 1, "continue", span)
+            return .ClauseReturn(levels)
+        }
         k -= 1
         f := &cx.outer.items[k]
         if idx := find_label(f.labels.items, label) {
@@ -924,7 +929,7 @@ find_jump :: fn(cx: ^FnCx, label: ?ast.Ident, span: source.Span, is_continue: bo
             cx.check_fn_clause_exit(levels + 1, if is_continue { "continue" } else { "break" }, span)
             return .Label(levels: levels + 1, info: info)
         }
-        in_clause = f.clause is not null
+        frame_clause = f.clause
         levels += 1
     }
     cx.error(l.span, str.format("no enclosing loop or `with` is labeled `{}`", l.name)!)
@@ -964,6 +969,16 @@ break_expr :: fn(cx: ^FnCx, label: ?ast.Ident, value: ?^ast.Expr, span: source.S
         }
         .InstallingWith => {
             c := cx.clause else return error_expr(cx.s, span)
+            // A `break` that exits a `for` over an iterator (§13.2).
+            if rt := c.break_ty {
+                v: ?^Expr = null
+                if x := value {
+                    v = cx.coerce(cx.expr(x, rt), rt)
+                } else if not cx.s.tys.is_unit(rt) and not cx.s.tys.is_error(rt) {
+                    cx.error(span, str.format("this loop's value is `{}`, so `break` needs a value", cx.show(rt))!)
+                }
+                return tir.mk(nv, .Break(tir.BreakExpr(target: .InstallingWith, value: v)), span)
+            }
             v := cx.break_value(value, c.with_expect)
             ty := if x := v { if t := c.with_expect { t } else { x.ty } } else { cx.s.tys.unit() }
             if h := c.handler_ { cx.handler_breaks.push(HandlerBreak(handler_: h, ty: ty, span: span))! }
