@@ -28,14 +28,13 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
             _ => {}
         }
     }
-    if f := expected and f.win64 and wants_pointer { return cx.unsupported(span, "function literals with a calling convention") }
     for p in lit.sig.params {
         if p.rest or p.default is not null { return cx.unsupported(span, "rest parameters and defaults of function literals") }
     }
     params := cx.literal_params(lit, expected)
     ret_known: ?Ty = null
     if r := lit.sig.ret {
-        ret_known = cx.s.resolve_type(cx.module, r)
+        ret_known = cx.resolve_ty(r)
     } else if f := expected and not tys.has_param(f.ret) {
         ret_known = f.ret
     }
@@ -88,7 +87,17 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
     cx.nested.push(NestedFn(fn_id: fn_id, params: param_ids.items, locals: frame.locals, body: body))!
     ptys := list(Ty)
     for p in params { ptys.push(p.ty)! }
-    fty := types.FnTy(params: ptys.items, ret: final_ret, effects: effects, variadic: false, win64: false)
+    // A literal written where a pointer with a calling convention is expected has it.
+    win64 := false
+    if f := expected and wants_pointer and not frame.captures { win64 = f.win64 }
+    if win64 {
+        if cx.s.within_sys(&effects) {
+            cx.s.fns.items[usize(fn_id)].win64 = true
+        } else {
+            cx.error(span, "a function with a calling convention other than C must have effects at most `{Sys}` (§19.2)")
+        }
+    }
+    fty := types.FnTy(params: ptys.items, ret: final_ret, effects: effects, variadic: false, win64: win64)
     if frame.captures {
         if wants_pointer {
             cx.error(span, "a function literal that uses local variables cannot be a function pointer (§11.7)")
@@ -129,7 +138,7 @@ literal_params :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expected: ?types.FnTy) ->
     for p in lit.sig.params {
         if p.comptime { cx.error(p.span, "compile-time parameters are not supported in function literals") }
         annotated: ?Ty = null
-        if t := p.ty { annotated = cx.s.resolve_type(cx.module, t) }
+        if t := p.ty { annotated = cx.resolve_ty(t) }
         for n in p.names {
             i := params.items.len
             ty := cx.s.tys.error()
@@ -228,9 +237,21 @@ check_no_self_reference :: fn(cx: ^FnCx, fn_id: u32, name: string, span: source.
     if refers { cx.error(span, str.format("`{}` uses local variables of the enclosing function, so it cannot call itself (§11.8)", name)!) }
 }
 
+/// A generic nested function `name :: fn(T: type, …)`. It captures nothing (§11.8), so it
+/// is declared like a private top-level function of the module: checked once and
+/// instantiated per call. Its body sees the module's names and its own, not the enclosing
+/// function's locals.
+nested_generic_fn :: fn(cx: ^FnCx, name: ast.Ident, lit: ^const ast.FnLit, span: source.Span) -> tir.Stmt needs Load {
+    if .Fn(f) := cx.s.declare_fn(cx.module, name, lit) {
+        cx.s.nested_generic.push((fn_id: f, name: name))!
+        cx.declare(name.name, .NestedFn(f), name.span)
+    }
+    return .Expr(unit(cx.s, span))
+}
+
 /// `name :: fn …` inside a function body.
 nested_fn_binding :: fn(cx: ^FnCx, name: ast.Ident, lit: ^const ast.FnLit, span: source.Span) -> tir.Stmt needs Load {
-    if is_generic(lit) { return .Expr(cx.unsupported(span, "generic nested functions")) }
+    if is_generic(lit) { return cx.nested_generic_fn(name, lit, span) }
     v := cx.fn_literal(lit, null, name, span)
     if .Closure(_) := v.kind {
         // It captures: an immutable local holding a second-class value. The name,
@@ -247,5 +268,6 @@ nested_fn_binding :: fn(cx: ^FnCx, name: ast.Ident, lit: ^const ast.FnLit, span:
         }
         return .Let(id, v)
     }
+    if .FnRef(f) := v.kind { cx.s.local_fns.push(sema.LocalFn(name: name.name, fn_id: f))! }
     return .Expr(unit(cx.s, span))
 }

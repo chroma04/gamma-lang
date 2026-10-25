@@ -49,6 +49,15 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
                     }
                     return cx.call_fn(f, args, span)
                 }
+                // A local alias: a conversion or construction, as with the type itself.
+                if .Type(t) := b {
+                    if cx.s.tys.is_error(t) { return error_expr(cx.s, span) }
+                    return cx.conversion(t, args, span)
+                }
+                if b is .Label {
+                    cx.error(callee.span, str.format("`{}` is a label", id.name)!)
+                    return error_expr(cx.s, span)
+                }
                 return cx.call_value(cx.expr(callee, null), args, span)
             }
             if cx.s.type_param(id.name) is not null {
@@ -71,19 +80,19 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
             // `yield(x)`, the one operation in scope without its effect (§13.1).
             if id.name is "yield" and y := cx.s.yield_effect { return cx.perform_generic(y, 0, args, span) }
-            return cx.unsupported(span, str.format("calls of `{}`", id.name)!)
+            return cx.call_value(cx.expr(callee, null), args, span)
         }
         .Call(_) => {
             if t := cx.type_of_name(callee) { return cx.conversion(t, args, span) }
             // `Heap(T, N)(…)` with a wrong type application: the application's error is
             // the only one.
-            if cx.s.looks_like_type(cx.module, callee) and cx.s.tys.is_error(cx.s.resolve_type(cx.module, callee)) { return error_expr(cx.s, span) }
+            if cx.s.looks_like_type(cx.module, callee) and cx.s.tys.is_error(cx.resolve_ty(callee)) { return error_expr(cx.s, span) }
             return cx.call_value(cx.expr(callee, null), args, span)
         }
         .Tuple(es) => {
             // `(i32, string)(…)` constructs a tuple (§7.11).
             if es.len > 0 and cx.s.looks_like_type(cx.module, callee) {
-                t := cx.s.resolve_type(cx.module, callee)
+                t := cx.resolve_ty(callee)
                 if cx.s.tys.is_error(t) { return error_expr(cx.s, span) }
                 return cx.conversion(t, args, span)
             }
@@ -123,7 +132,7 @@ call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args
         .Type(t) => return cx.conversion(t, args, span)
         .Error => return error_expr(cx.s, span)
         .Op(_) => return cx.unsupported(span, "effect operations")
-        .Const(_) => return cx.unsupported(span, "calls of constants")
+        .Const(_) => return cx.call_value(cx.expr(callee, null), args, span)
         _ => {
             cx.error(callee.span, str.format("`{}` cannot be called", name)!)
             return error_expr(cx.s, span)
@@ -367,21 +376,42 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
     if .Adt(id, _) := tys.kind(t) {
         match cx.s.adts.items[usize(id)].kind {
             .Struct(def) => {
-                if def.bits is not null { return cx.unsupported(span, "`#bits` structs") }
-                return cx.construct_struct(t, args, span)
+                // `Mode(u)`: a `#bits` struct from its underlying integer (§5.10.5).
+                one_positional := args.len is 1 and args[0].kind is .Positional(_)
+                if not (one_positional and def.bits is not null) { return cx.construct_struct(t, args, span) }
             }
-            .CUnion(_) => return cx.unsupported(span, "`#c_union`s")
+            // A `#c_union` is built from exactly one of its fields (§5.11.1).
+            .CUnion(fields) => {
+                if args.len is not 1 or args[0].kind is not .Named(_) {
+                    cx.error(span, str.format("`{}(field: value)` names exactly one field of the union", cx.show(t))!)
+                    return error_expr(cx.s, span)
+                }
+                .Named(n, x) := args[0].kind else return error_expr(cx.s, span)
+                found: ?sema.FieldDef = null
+                for f in fields {
+                    if found is null and f.name is n.name { found = f }
+                }
+                f := found else {
+                    cx.error(n.span, str.format("`{}` has no field `{}`", cx.show(t), n.name)!)
+                    return error_expr(cx.s, span)
+                }
+                v := cx.coerce(cx.expr(&x, f.ty), f.ty)
+                one := list(Expr)
+                one.push(v^)!
+                return tir.mk(t, .Aggregate(one.items), span)
+            }
             _ => {}
         }
     }
     match tys.kind(t) {
         .Tuple(elems, names) => return cx.construct_tuple(t, elems, names, args, span)
         .Array(len, elem, kind) => {
+            if .Enum(index) := kind { return cx.construct_enum_array(t, index, elem, args, span) }
             if kind is not .Plain { return cx.unsupported(span, "this construction") }
             return cx.construct_array(t, len, elem, args, span)
         }
         .Optional(inner) => return cx.construct_optional(t, inner, args, span)
-        .ParamArray(_) => return cx.unsupported(span, "this construction")
+        .ParamArray(_, elem) => return cx.construct_param_array(t, elem, args, span)
         _ => {}
     }
     if args.len is not 1 or args[0].kind is not .Positional(_) {
@@ -389,6 +419,14 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
         return error_expr(cx.s, span)
     }
     .Positional(x) := args[0].kind else return error_expr(cx.s, span)
+    // `Mode(u)`: the integer is of the underlying type, so a literal takes it.
+    if u := cx.s.bits_struct_ty(t) {
+        v := cx.expr(&x, u)
+        if cx.infer.var_kind(tys, v.ty) is not null { v = cx.coerce(v, u) }
+        // Only a plain bit struct converts from its integer, a literal included.
+        cx.obligations.push(.Conversion(v.ty, t, span))!
+        return tir.mk(t, .Builtin(.Convert, one_expr(v)), span)
+    }
     // Only an untyped literal (or arithmetic on literals) takes its type from the target.
     v := cx.expr(&x, if is_literal_tree(&x) { t } else { null })
     if cx.infer.var_kind(tys, v.ty) is not null and (tys.is_integer(t) or (tys.kind(t) is .Float(_) and tir_literal(v))) {

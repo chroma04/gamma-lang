@@ -13,6 +13,86 @@ ESCAPE_MSG :: "constant contains a pointer to memory that does not outlive compi
 /// Lets resolving the declarations check and evaluate constant expressions.
 pub install :: fn(s: ^Sema) {
     s.eval_hook = const_hook
+    s.length_hook = array_length
+    s.type_of_hook = type_of_expr
+}
+
+/// The type of `e` for `@type_of(e)`.
+type_of_expr :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Load {
+    ex := check_const_expr(s, module, e, null) else return s.tys.error()
+    return ex.ty
+}
+
+/// The length of an array given by the typed constant expression `e` (§7.15): its value,
+/// or, when it is computed from compile-time value parameters, the length type known at
+/// instantiation (§16.5).
+array_length :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> sema.ArrayLen needs Alloc + Fs {
+    errors := s.l.diags.error_count()
+    ex := check_const_expr(s, module, e, s.tys.usize_ty()) else return .Failed
+    if s.l.diags.error_count() is not errors or s.tys.is_error(ex.ty) { return .Failed }
+    has_value_param := false
+    on_type := false
+    visit(ex, fn(n: ^Expr) {
+        if n.kind is .ValueParam(_) { has_value_param = true }
+        if s.tys.has_param(n.ty) or n.kind in (.SizeOf(_), .IntLimit(_), .TypeName(_), .TypeIs(_)) { on_type = true }
+    })
+    if on_type and not has_value_param {
+        s.error(e.span, "an array length computed from a type parameter is not supported in a type; use a slice, or make the length a compile-time parameter (§16.5)")
+        return .Failed
+    }
+    // A length computed from compile-time value parameters is known at instantiation.
+    if has_value_param {
+        t := len_ty(s, ex) else {
+            s.error(e.span, "this array length is not supported in a type: a length computed from compile-time parameters may use only `usize` parameters, integer constants and the plain operators `+ - * / % << >> & | ~` (§16.5)")
+            return .Failed
+        }
+        if s.tys.kind(t) is .LenExpr(_) {
+            known := false
+            for le in s.len_exprs.items {
+                if le.t is t and le.span is e.span { known = true }
+            }
+            if not known { s.len_exprs.push((t: t, span: e.span))! }
+        }
+        return .Param(t)
+    }
+    id := s.add_const(tir.ConstDef(name: "<length>", span: e.span, ty: ex.ty, module: module, ast: e, expected: s.tys.usize_ty(), fuel: s.fuel, init: ex, state: .Evaluating))
+    if not finish_const(s, id) { return .Failed }
+    cell := s.consts.items[usize(id)].cell else return .Failed
+    .Int(n) := cell.v else return .Failed
+    return .Known(n.trunc(u64))
+}
+
+/// The length type of a constant `usize` expression over compile-time value parameters,
+/// if it uses only what a `LenExpr` can express.
+len_ty :: fn(s: ^Sema, e: ^const Expr) -> ?Ty needs Alloc {
+    match e.kind {
+        .ValueParam(p) => return s.tys.param(p)
+        .Int(i) => {
+            n := i.to_u64() else return null
+            return s.tys.intern(.Value(s.tys.usize_key(n)))
+        }
+        .Coerce(.IntWiden, x) => return if s.tys.is_signed_integer(x.ty) { null } else { len_ty(s, x) }
+        .Binary(op, lhs, rhs) => {
+            if s.tys.kind(e.ty) is not .Usize { return null }
+            lop: types.LenOp = match op {
+                .Add(.Checked) => .Add
+                .Sub(.Checked) => .Sub
+                .Mul(.Checked) => .Mul
+                .Shl(.Checked) => .Shl
+                .Div => .Div
+                .Rem => .Rem
+                .Shr => .Shr
+                .BitAnd => .And
+                .BitOr => .Or
+                .BitXor => .Xor
+                _ => return null
+            }
+            a := len_ty(s, lhs) else return null
+            b := len_ty(s, rhs) else return null
+            return s.tys.len_expr(lop, a, b)
+        }
+        _ => return null
+    }
 }
 
 const_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, name: string, span: source.Span) -> ?u32 needs Alloc + Fs {
@@ -23,7 +103,7 @@ const_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, nam
         s.unsupported(e.span, "compile-time values computed from parameters")
         return null
     }
-    if name not in ("<default>", "<length>", "<argument>") {
+    if name not in ("<default>", "<length>", "<argument>", "<global>") {
         if bad := s.non_constant_part(ex.ty) {
             s.error(e.span, str.format("a constant cannot hold `{}`, which contains `{}` (§17.4)", s.show(ex.ty), s.show(bad))!)
             return null
@@ -219,7 +299,8 @@ pub local_const :: fn(s: ^Sema, module: usize, init: ^const ast.Expr, annot: ?Ty
     if not ok or s.tys.is_error(ex.ty) or s.non_constant_part(ex.ty) is not null { return null }
     m2 := s.l.diags.mark()
     if not prepare(s, ex) {
-        if not s.l.diags.any_since(m2, sema.UNSUPPORTED) and s.l.diags.error_count() is m2.raised { s.l.diags.reset(m2) }
+        // What cannot be evaluated yet (it calls a function nested in this one) runs.
+        if not s.l.diags.any_since(m2, sema.UNSUPPORTED) { s.l.diags.reset(m2) }
         return null
     }
     v: Value = .Null
@@ -261,26 +342,49 @@ pub eval_typed :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?Va
 // Static assertions
 // ---------------------------------------------------------------------------------
 
-/// `@static_assert(cond, msg)` (§17.7), in `module`.
-static_assert :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source.Span) needs Load {
+/// `@static_assert(cond, msg)` (§17.7), in `module`. A condition that depends on the
+/// parameters of the generic body it is in is returned, to be checked for each instance.
+static_assert :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
     cond: ?ast.Expr = null
     if args.len > 0 and .Positional(c) := args[0].kind { cond = c }
     c := cond else {
         s.error(span, "`@static_assert(cond, \"message\")` takes a condition and a message")
-        return
+        return null
     }
-    ex := check_const_expr(s, module, &c, s.tys.bool_ty()) else return
+    ex := check_const_expr(s, module, &c, s.tys.bool_ty()) else return null
     msg: ?[]u8 = null
     if args.len > 1 and .Positional(m) := args[1].kind { msg = const_string(s, module, &m) }
     if depends_on_params(s, ex) {
-        s.unsupported(span, "static assertions on compile-time parameters")
-        return
+        id := s.deferred_asserts.items.len.trunc(u32)
+        s.deferred_asserts.push(msg)!
+        return tir.mk(s.tys.unit(), .Builtin(.StaticAssert(id), one_expr(ex)), span)
     }
+    check_static_assert(s, ex, msg, span, null)
+    return null
+}
+
+/// Reports a failed static assertion with condition `ex`; `instance` is the use that
+/// instantiated the generic body it is in.
+pub check_static_assert :: fn(s: ^Sema, ex: ^Expr, msg: ?[]u8, span: source.Span, instance: ?source.Span) needs Load {
     v := evaluate(s, ex, s.fuel) else return
     if v is .Bool(false) {
         text: string = if t := msg { t } else { "(no message)" }
-        s.error(span, str.format("static assertion failed: {}", text)!)
+        d := diag.error(span, str.format("static assertion failed: {}", text)!)
+        if at := instance { d.add_label(at, "in the instance used here") }
+        s.emit(d)
     }
+}
+
+/// The condition of a `when` in a body (§3.6, §8.9), which may not depend on a generic
+/// parameter (§16.7); `null` after an error.
+pub body_when_cond :: fn(s: ^Sema, module: usize, cond: ^const ast.Expr) -> ?bool needs Load {
+    ex := check_const_expr(s, module, cond, s.tys.bool_ty()) else return null
+    if depends_on_params(s, ex) {
+        s.error(cond.span, "a `when` condition may not depend on a generic parameter (§16.7)")
+        return null
+    }
+    .Bool(b) := evaluate(s, ex, s.fuel) else return null
+    return b
 }
 
 /// `@compile_error(msg)` (§20.3): reports `msg`.
@@ -295,7 +399,7 @@ compile_error :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source
 }
 
 /// The value of the constant string expression `e`.
-const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs Load {
+pub const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs Load {
     ex := check_const_expr(s, module, e, s.tys.string_ty()) else return null
     v := evaluate(s, ex, s.fuel) else return null
     return eval.string_bytes(s, v)
@@ -305,7 +409,7 @@ const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs L
 depends_on_params :: fn(s: ^Sema, e: ^Expr) -> bool {
     found := false
     visit(e, fn(x: ^Expr) {
-        if s.tys.has_param(x.ty) or x.kind in (.ValueParam(_), .TypeName(_), .IntLimit(_)) { found = true }
+        if s.tys.has_param(x.ty) or x.kind in (.ValueParam(_), .TypeName(_), .TypeIs(_), .IntLimit(_)) { found = true }
         if .SizeOf(of, _) := x.kind and s.tys.has_param(of) { found = true }
     })
     return found

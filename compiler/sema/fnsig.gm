@@ -1,7 +1,7 @@
 // Function signatures (§11.1), effect declarations (§12.1) and effect sets (§12.3, §16.6).
 
 /// Resolves the signature of a top-level function.
-declare_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, lit: ^const ast.FnLit) -> DeclValue needs Load {
+pub declare_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, lit: ^const ast.FnLit) -> DeclValue needs Load {
     sig := s.resolve_fn_sig(module, &lit.sig, true, lit.where_) else return .Error
     for p in sig.params {
         if p.generic is null {

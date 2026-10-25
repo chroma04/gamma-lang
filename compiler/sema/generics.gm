@@ -491,15 +491,97 @@ pub value_key :: fn(s: ^Sema, v: tir.Value, ty: Ty, span: source.Span) -> ?types
         .Slice(sl) => if ty is tys.string_ty() {
             bytes := list(u8)
             for k in 0..sl.len {
-                .Int(b) := value_at(sl.start, k) else return null
+                .Int(b) := value_at(sl.start, k) else {
+                    s.error(span, "this compile-time string points outside its data (§17.4)")
+                    return null
+                }
                 bytes.push(b.trunc(u8))!
             }
             return .Str(bytes.items)
+        }
+        .Float(_), .Agg(_) => {
+            // Plain data by its bytes, so that values equal with `is` have one key.
+            bytes := list(u8)
+            for _ in 0..s.layout(ty).size.trunc(usize) { bytes.push(0)! }
+            if s.canonical_bytes(v, ty, bytes.items) { return .Bytes(ty, bytes.items) }
         }
         _ => {}
     }
     s.unsupported(span, "compile-time arguments of this type")
     return null
+}
+
+/// Writes plain value `v` of type `ty` to `out` (its size) in the target's layout, but
+/// with integers and floats little-endian, padding as zeros, `-0.0` as `0.0` and every
+/// NaN as one NaN, so that values equal with `is` (§5.18) have equal bytes. False for
+/// a value it cannot write.
+canonical_bytes :: fn(s: ^Sema, v: tir.Value, ty: Ty, out: []u8) -> bool needs Load {
+    tys := &s.tys
+    match v {
+        .Int(bits) => {
+            for i in 0..out.len { out[i] = (bits >> u128(i * 8)).trunc(u8) }
+            return tys.is_integer(ty)
+        }
+        .Bool(b) => {
+            if out.len > 0 { out[0] = if b { 1 } else { 0 } }
+            return true
+        }
+        .Float(x) => {
+            raw: u64 = 0
+            match tys.kind(ty) {
+                .Float(64) => {
+                    raw = x.bits(u64)
+                    if raw & 0xfffffffffffff is not 0 and (raw >> 52) & 0x7ff is 0x7ff { raw = 0x7ff8000000000000 }
+                    if raw & 0x7fffffffffffffff is 0 { raw = 0 }
+                }
+                .Float(32) => {
+                    raw = u64(x.to(f32).bits(u32))
+                    if raw & 0x7fffff is not 0 and (raw >> 23) & 0xff is 0xff { raw = 0x7fc00000 }
+                    if raw & 0x7fffffff is 0 { raw = 0 }
+                }
+                _ => return false
+            }
+            for i in 0..out.len { out[i] = (raw >> u64(i * 8)).trunc(u8) }
+            return true
+        }
+        .Agg(a) => match tys.kind(ty) {
+            .Array(_, elem, _) => {
+                size := s.layout(elem).size.trunc(usize)
+                for i, x in enumerate(a.elems) {
+                    if (i + 1) * size > out.len or not s.canonical_bytes(x, elem, out[i * size..(i + 1) * size]) { return false }
+                }
+                return true
+            }
+            .Tuple(elems, _) => {
+                offset: u64 = 0
+                for i, e in enumerate(elems) {
+                    l := s.layout(e)
+                    offset = (offset + l.align - 1) / l.align * l.align
+                    if i >= a.elems.len or not s.canonical_field(a.elems[i], e, offset, out) { return false }
+                    offset += l.size
+                }
+                return true
+            }
+            .Adt(id, _) => {
+                .Struct(def) := s.adts.items[usize(id)].kind else return false
+                if def.bits is not null { return false }
+                for i, f in enumerate(def.fields) {
+                    if i >= a.elems.len or not s.canonical_field(a.elems[i], f.ty, s.field_offset(ty, i), out) { return false }
+                }
+                return true
+            }
+            _ => return false
+        }
+        _ => return false
+    }
+}
+
+/// `canonical_bytes` for a field at byte `offset` of `out`.
+canonical_field :: fn(s: ^Sema, v: tir.Value, ty: Ty, offset: u64, out: []u8) -> bool needs Load {
+    start := offset.trunc(usize)
+    end := start + s.layout(ty).size.trunc(usize)
+    if end > out.len { return false }
+    return s.canonical_bytes(v, ty, out[start..end])
 }
 
 /// The value `k` elements after place `p`.

@@ -1333,3 +1333,24 @@ pub(crate) fn c_identifiers(code: &str) -> std::collections::HashSet<&str> {
     }
     out
 }
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod runtime_name_tests {
+    /// The self-hosted compiler keeps its own sorted list of the runtime's `gm_` names that
+    /// do not end in a digit (`compiler/sema/runtime_names.gm`); it must match the runtime.
+    #[test]
+    fn gammac_runtime_names_match_the_runtime() {
+        let all = format!("{}\n{}\n{}", super::RT_H, super::RT_C, crate::clif::runtime_source());
+        let mut want: Vec<&str> = super::c_identifiers(&all)
+            .into_iter()
+            .filter(|n| n.starts_with("gm_") && !n.ends_with(|c: char| c.is_ascii_digit()))
+            .collect();
+        want.sort_unstable();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/compiler/sema/runtime_names.gm");
+        let text = std::fs::read_to_string(path).unwrap();
+        let list = &text[text.find("RUNTIME_NAMES ::").unwrap()..];
+        let list = &list[..list.find("\n)").unwrap()];
+        let got: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        assert_eq!(got, want, "regenerate compiler/sema/runtime_names.gm from the runtime");
+    }
+}

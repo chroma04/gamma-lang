@@ -2,6 +2,7 @@
 // of types (mirrors `src/sema/foreign.rs`).
 
 ascii :: import "std/ascii"
+text :: import "std/text"
 
 /// The effect set `{Sys}` (§12.10).
 pub sys_set :: fn(s: ^Sema) -> EffectSet needs Load {
@@ -36,6 +37,12 @@ declare_global :: fn(s: ^Sema, module: usize, name: ast.Ident, b: ^const ast.Bin
     }
     ty := s.resolve_type(module, ty_expr)
     if s.tys.is_error(ty) { return .Error }
+    if s.const_check(module, b.init, ty) is not null { return .Global(ty) }
+    // Any other initializer is checked and evaluated now, as an expression.
+    if hook := s.eval_hook and not s.tys.has_param(ty) {
+        _ = hook(s, module, b.init, ty, "<global>", b.init.span) else return .Error
+        return .Global(ty)
+    }
     _ = s.const_type(module, b.init, ty) else return .Error
     return .Global(ty)
 }
@@ -50,14 +57,15 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
         if not (ascii.is_alnum(c) or c in "_.+-") { lib_ok = false }
     }
     if not lib_ok {
-        if not printable_ascii(lib) { return s.unsupported_value(name.span, "library names with special characters") }
-        s.error(name.span, str.format("`{}` is not a library name: use letters, digits and `_ . + -`", lib)!)
+        if not lib.utf8_valid() { return s.unsupported_value(name.span, "library names with special characters") }
+        s.error(name.span, str.format("`{}` is not a library name: use letters, digits and `_ . + -`", escape_debug(lib))!)
     }
     m := s.l.add_module(name.name, empty_slice(ast.File))
     s.l.modules.items[m].dir = s.l.modules.items[module].dir
     s.l.modules.items[m].package = s.l.modules.items[module].package
     for member in block.members {
         link_name: ?string = null
+        callconv: ?(win64: bool, span: source.Span) = null
         for a in member.attrs {
             match a.name.name {
                 "link_name" => {
@@ -72,15 +80,20 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
                         if good {
                             link_name = sym
                         } else {
-                            if not printable_ascii(sym) { return s.unsupported_value(args[0].span, "symbol names with special characters") }
-                            s.error(args[0].span, str.format("`{}` is not a symbol name: use letters, digits and `_ $ . @`", sym)!)
+                            if not sym.utf8_valid() { return s.unsupported_value(args[0].span, "symbol names with special characters") }
+                            s.error(args[0].span, str.format("`{}` is not a symbol name: use letters, digits and `_ $ . @`", escape_debug(sym))!)
                         }
                     }
                     if not ok { s.error(a.span, "`#link_name` takes the symbol name: `#link_name(\"sym\")`") }
                 }
                 "callconv" => {
-                    if member.kind is .Fn(_) { return s.unsupported_value(a.span, "the attribute `#callconv`") }
-                    s.error(a.span, "attribute `#callconv` does not apply to a foreign member")
+                    if member.kind is .Fn(_) {
+                        if callconv is not null { s.error(a.span, "a function has one calling convention") }
+                        callconv = null
+                        if w := s.callconv_attr(&a) { callconv = (win64: w, span: a.span) }
+                    } else {
+                        s.error(a.span, "attribute `#callconv` does not apply to a foreign member")
+                    }
                 }
                 other => s.error(a.span, str.format("attribute `#{}` does not apply to a foreign member", other)!)
             }
@@ -91,11 +104,16 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
         }
         sym := link_name else own_name.name
         // The runtime's own symbols cannot be foreign members (§23.5).
-        if sym.starts_with("gm_") { return s.unsupported_value(own_name.span, "foreign members named like runtime symbols") }
+        if is_runtime_symbol(sym) {
+            s.error(own_name.span, str.format("`{}` is a symbol of this implementation's runtime, so it cannot name a foreign member (§23.5)", sym)!)
+        }
         value: DeclValue = .Error
         match member.kind {
             .Fn(n, sig) => {
-                if f := s.declare_foreign_fn(module, n, &sig) { value = .Fn(f) }
+                if f := s.declare_foreign_fn(module, n, &sig) {
+                    if c := callconv { s.apply_callconv(f, c.win64, c.span) }
+                    value = .Fn(f)
+                }
             }
             .Global(n, ty_expr) => {
                 t := s.resolve_type(module, ty_expr)
@@ -114,12 +132,32 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
     return .Module(m)
 }
 
-/// Whether `bytes` are printable ASCII characters, shown as they are in a message.
-printable_ascii :: fn(bytes: []const u8) -> bool {
-    for c in bytes {
-        if c < 0x20 or c > 0x7E or c in "\"'\\" { return false }
+/// `name`, valid UTF-8, with quotes, backslashes and control characters escaped as Rust's
+/// `str::escape_debug` does, for a name shown in a message.
+escape_debug :: fn(name: string) -> string needs Alloc {
+    out := list(u8)
+    rest := name
+    while rest.len > 0 {
+        r := text.decode_rune(rest) else break
+        match r.rune {
+            '"' => out.extend("\\\"")!
+            '\'' => out.extend("\\'")!
+            '\\' => out.extend("\\\\")!
+            '\n' => out.extend("\\n")!
+            '\r' => out.extend("\\r")!
+            '\t' => out.extend("\\t")!
+            0 => out.extend("\\0")!
+            c => {
+                if c < 0x20 or (c >= 0x7F and c <= 0x9F) {
+                    out.write("\\u{{{:x}}}", c)!
+                } else {
+                    out.extend(rest[..r.len])!
+                }
+            }
+        }
+        rest = rest[r.len..]
     }
-    return true
+    return out.items
 }
 
 /// Reports that gammac cannot check `what` yet; the declaration has no value.
@@ -155,6 +193,148 @@ declare_foreign_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, sig: ^const a
     f := (s.fns.items.len - 1).trunc(u32)
     if sig.variadic { s.variadic_fns.push(f)! }
     return f
+}
+
+/// The convention named by `#callconv(.X)` (§19.2), as whether it is `.Win64`; `.SysV` is
+/// the C ABI of the targets that have it, so it normalizes to `.C`. `null` after reporting
+/// a malformed attribute.
+callconv_attr :: fn(s: ^Sema, a: ^const ast.Attribute) -> ?bool needs Alloc {
+    args := a.args else empty_slice(ast.Expr)
+    if args.len is not 1 or args[0].kind is not .DotIdent(_) {
+        s.error(a.span, "`#callconv` takes a convention name: `#callconv(.Win64)`")
+        return null
+    }
+    .DotIdent(id) := args[0].kind else return null
+    x86_64 := @variant_name(target.arch) is "X86_64"
+    match id.name {
+        "C" => return false
+        "SysV", "Win64" => {
+            if not x86_64 {
+                s.error(a.span, str.format("`.{}` is not supported on this target (x86-64 only)", id.name)!)
+                return null
+            }
+            return id.name is "Win64"
+        }
+        other => {
+            s.error(a.span, str.format("unknown calling convention `.{}`; the conventions are `.C`, `.SysV` and `.Win64`", other)!)
+            return null
+        }
+    }
+}
+
+/// Gives the function `f` the calling convention `.Win64` if `win64` (§19.2). It needs the
+/// plain calling convention: a non-generic function whose effects are at most `{Sys}`.
+apply_callconv :: fn(s: ^Sema, f: u32, win64: bool, span: source.Span) needs Load {
+    if not win64 { return }
+    sig := &s.fns.items[usize(f)]
+    if sig.generics.len > 0 {
+        s.error(span, "a generic function cannot have a calling convention other than C")
+    } else if not s.within_sys(&sig.effects) {
+        s.error(span, "a function with a calling convention other than C must have effects at most `{Sys}`: it cannot take hidden parameters (§19.2)")
+    } else {
+        sig.win64 = true
+    }
+}
+
+/// `#callconv(.X) ^fn(…)` (§19.2): a function pointer type with a calling convention.
+/// `inner` is the `^fn` type the attributes precede.
+callconv_fn_ptr :: fn(s: ^Sema, module: usize, attrs: []const ast.Attribute, inner: ^const ast.Expr, span: source.Span) -> Ty needs Load {
+    win64: ?bool = null
+    for a in attrs {
+        if a.name.name is not "callconv" {
+            s.error(a.span, str.format("attribute `#{}` does not apply to a function pointer type", a.name.name)!)
+        } else if win64 is not null {
+            s.error(a.span, "a function pointer type has one calling convention")
+        } else {
+            win64 = s.callconv_attr(&a)
+        }
+    }
+    ty := s.resolve_type(module, inner)
+    .FnPtr(sig) := s.tys.kind(ty) else return ty
+    w := win64 else return ty
+    if not w { return ty }
+    if not s.within_sys(&sig.effects) {
+        s.error(span, "a function pointer type with a calling convention other than C must have effects at most `{Sys}` (§19.2)")
+        return s.tys.error()
+    }
+    return s.tys.intern(.FnPtr(types.FnTy(params: sig.params, ret: sig.ret, effects: sig.effects, variadic: sig.variadic, win64: true)))
+}
+
+/// `#export("sym")` on the function `f` (§19.4): its signature must be C-compatible and its
+/// effects at most `{Sys}`.
+export_fn :: fn(s: ^Sema, f: u32, sym: string, span: source.Span) needs Load {
+    sig := s.fns.items[usize(f)]
+    // The symbol is a C identifier, unique among exports, and not the program's own entry
+    // point (§19.4).
+    ident := sym.len > 0 and (ascii.is_alpha(sym[0]) or sym[0] is '_')
+    for c in sym {
+        if not (ascii.is_alnum(c) or c is '_') { ident = false }
+    }
+    if not ident {
+        s.error(span, str.format("`{}` is not a valid C symbol name", sym)!)
+        return
+    }
+    if sym is "main" {
+        s.error(span, "`main` cannot be exported: it is the program's entry point")
+        return
+    }
+    if is_runtime_symbol(sym) {
+        s.error(span, str.format("`{}` is a symbol of this implementation's runtime, so it cannot be exported (§23.5)", sym)!)
+        return
+    }
+    if sym in s.exports.items {
+        s.error(span, str.format("another function is already exported as `{}`", sym)!)
+        return
+    }
+    if sig.generics.len > 0 {
+        s.error(span, "a generic function cannot be exported")
+        return
+    }
+    if not s.within_sys(&sig.effects) {
+        s.error(span, "an exported function's effects must be empty or `{Sys}`: C callers cannot supply handlers (§19.4)")
+    }
+    for p in sig.params {
+        if not s.is_c_compatible(p.ty, false) { s.error(p.span, str.format("`{}` is not a C-compatible parameter type (§19.1)", s.show(p.ty))!) }
+    }
+    if not s.tys.is_unit(sig.ret) and not s.is_c_compatible(sig.ret, false) {
+        s.error(span, str.format("`{}` is not a C-compatible result type (§19.1)", s.show(sig.ret))!)
+    }
+    s.exports.push(sym)!
+}
+
+/// `#trap_hook` on the function `f` (§3.7.1): only on a freestanding target, at most one per
+/// program, of type `fn(msg: string, loc: SourceLocation) -> never needs Sys`.
+trap_hook_fn :: fn(s: ^Sema, f: u32, span: source.Span) needs Load {
+    if @variant_name(target.os) is not "Freestanding" {
+        s.error(span, "`#trap_hook` applies only on a freestanding target (§3.7.1)")
+        return
+    }
+    sig := s.fns.items[usize(f)]
+    loc := s.source_location_ty()
+    params_ok := sig.params.len is 2 and sig.params[0].ty is s.tys.string_ty() and sig.generics.len is 0
+    if params_ok {
+        params_ok = false
+        if l := loc { params_ok = sig.params[1].ty is l }
+    }
+    if not params_ok or s.tys.kind(sig.ret) is not .Never or not s.within_sys(&sig.effects) {
+        s.error(span, "a `#trap_hook` function must have the type `fn(msg: string, loc: SourceLocation) -> never needs Sys` (§3.7.1)")
+        return
+    }
+    if h := s.trap_hook {
+        if h is not f {
+            s.error(span, "a program has at most one `#trap_hook` function (§3.7.1)")
+            return
+        }
+    }
+    s.trap_hook = f
+}
+
+/// The core library's `SourceLocation` type (§21.7).
+pub source_location_ty :: fn(s: ^Sema) -> ?Ty needs Load {
+    prelude := s.l.prelude else return null
+    d := s.l.lookup(prelude, "SourceLocation") else return null
+    .Type(t) := s.resolve_decl(d) else return null
+    return t
 }
 
 /// Whether `t` is C-compatible (§19.1). `in_struct` allows arrays (as struct fields).

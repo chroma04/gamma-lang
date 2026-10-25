@@ -261,8 +261,25 @@ const_pattern_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ?^Expr needs
         }
         return tir.mk(ty, .Int(i), e.span)
     }
-    _ = cx.unsupported(e.span, "typed constants in patterns")
-    return null
+    v = cx.coerce(v, ty)
+    if not (tys.is_integer(ty) or tys.kind(ty) is .Bool or ty is tys.string_ty()) {
+        cx.error(e.span, str.format("a constant pattern needs an integer, `bool` or string, not `{}`; compare with a guard", cx.show(ty))!)
+        return null
+    }
+    c := evaluate(cx.s, v, cx.s.fuel) else {
+        cx.error(e.span, "expected a constant here")
+        return null
+    }
+    key := cx.s.value_key(c, ty, e.span) else return null
+    match key {
+        .Str(b) => return tir.mk(ty, .Str(b), e.span)
+        .Bytes(_, b) => {
+            if tys.kind(ty) is .Bool { return tir.mk(ty, .Bool(b.len > 0 and b[0] is 1), e.span) }
+            n := cx.s.key_int(key) else return null
+            return tir.mk(ty, .Int(n), e.span)
+        }
+        _ => return null
+    }
 }
 
 /// The sub-patterns of a tuple or struct pattern, by element index.
@@ -372,7 +389,7 @@ path_pattern :: fn(cx: ^FnCx, path: ^const ast.Expr, args: ?[]ast.PatArg, ty: Ty
         .Ident(_) => return cx.struct_pattern(path, cx.type_of_name(path), args, ty, ctx, binds, span)
         // `G(T)(f: p, …)`: a struct pattern of an instance of a generic struct.
         .Call(_) => {
-            t := cx.s.resolve_type(cx.module, path)
+            t := cx.resolve_ty(path)
             return cx.struct_pattern(path, if cx.s.tys.is_error(t) { null } else { t }, args, ty, ctx, binds, span)
         }
         _ => {

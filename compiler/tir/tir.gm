@@ -42,6 +42,8 @@ pub ExprKind :: union {
     IntLimit: (of: Ty, max: bool)
     /// `@type_name(T)` of a type that mentions a type parameter.
     TypeName: Ty
+    /// `T is U` (or `negated`, `T is not U`) where a side mentions a type parameter.
+    TypeIs: (a: Ty, b: Ty, negated: bool)
     /// A constant in static memory: a typed top-level constant, or a default value
     /// (`<default>`), by its name and place.
     Const: (name: string, span: source.Span)
@@ -345,6 +347,11 @@ pub Builtin :: union {
     Cast
     /// `p.addr()`.
     Addr
+    /// `p + n` and `p - n` on a many-pointer, moving by whole elements; `p - q` is the
+    /// distance in elements, as an `isize`.
+    PtrAdd
+    PtrSub
+    PtrDiff
     /// `n.to_ptr(P)`.
     ToPtr
     /// `u.tag()` and `U.from_tag(x)`.
@@ -402,6 +409,9 @@ pub Builtin :: union {
     AllocCheck
     /// `@asm(template, outputs, inputs, clobbers)` (§19.5).
     Asm: (outputs: u32, inputs: u32)
+    /// `@static_assert` on a condition that depends on the parameters of the generic body
+    /// it is in, checked for each instance; the index of its message (§17.7).
+    StaticAssert: u32
 }
 
 /// The operation of an atomic read-modify-write (§19.6).

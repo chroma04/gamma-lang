@@ -220,7 +220,7 @@ check_bits_struct :: fn(s: ^Sema, span: source.Span, underlying: Ty, fields: []c
     }
 }
 
-bit_width :: fn(s: ^const Sema, t: Ty) -> ?u64 {
+pub(package) bit_width :: fn(s: ^const Sema, t: Ty) -> ?u64 {
     match s.tys.kind(t) {
         .Bool => return 1
         .Int(_, bits) => return u64(bits)
@@ -418,6 +418,13 @@ pub struct_fields :: fn(s: ^const Sema, ty: Ty) -> ?[]FieldDef {
     return def.fields
 }
 
+/// The fields of a `#c_union` type, if `ty` is one.
+pub c_union_fields :: fn(s: ^const Sema, ty: Ty) -> ?[]FieldDef {
+    .Adt(id, _) := s.tys.kind(ty) else return null
+    .CUnion(fields) := s.adts.items[usize(id)].kind else return null
+    return fields
+}
+
 /// The variants and tag type of a tagged union type, if `ty` is one.
 pub union_variants :: fn(s: ^const Sema, ty: Ty) -> ?(variants: []VariantDef, tag: Ty) {
     .Adt(id, _) := s.tys.kind(ty) else return null
@@ -458,7 +465,7 @@ taken_union_members :: fn(s: ^Sema, module: usize, members: []const ast.UnionMem
 // ---------------------------------------------------------------------------------
 
 /// The instance of generic struct or union `template` for `args` (§16.4).
-instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Load {
+pub instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Load {
     gargs := list(GenericArg)
     for a in args { gargs.push(.Type(a))! }
     for i in s.instances.items {
@@ -497,6 +504,7 @@ instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Loa
     for i, p in enumerate(info.params) {
         if i < args.len { map.push(Subst(param: p, ty: args[i]))! }
     }
+    s.check_len_exprs(map.items, null)
     s.adt_inst_depth += 1
     kind: AdtKind = match info.kind {
         .Struct(def) => AdtKind.Struct(StructDef(fields: s.subst_fields(def.fields, map.items), packed: def.packed, align: def.align, bits: def.bits))

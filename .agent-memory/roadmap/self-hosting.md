@@ -100,6 +100,21 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   conversion on .Array), nested construction prefixes (seq.gm without_call), prefix
   hoisting `[2]P(…)[1].y` (sema hoist_prefix/push_down/with_operand; is_const_ref_arg
   hoists too); source.to now = union like Rust's Span::to. TIR 571, decls 741, 0 DIFF.
+- s42 (same branch, "finish the checker": until every program matches, split in PRs).
+  5 workers (sonnet, worktrees, $SP/brief-common.md + per-worker roots in $SP/w/wN.roots):
+  W2 attrs/#bits/#c_union/using (merged), W5 local aliases/unknown names/local consts in
+  comptime/let-else/ptr arith/range values (merged), W1 vector/complex/#soa/f16 and W3
+  iterator args/generic effects/effect-set params/@fiber/@stack_size (running at PR 1).
+  Mine: ParamArray construction, LenExpr lengths (sema length_hook → consts.array_length,
+  check_len_exprs per instance), deferred static asserts (Builtin.StaticAssert(id) +
+  Sema.deferred_asserts, resolved in mono_expr), TypeIs, @type_of (FnCx.resolve_ty for
+  bodies + sema type_of_hook), enum arrays, generic nested fns (declare_fn +
+  Sema.nested_generic), float/aggregate ConstKeys (canonical_bytes; display write_float),
+  bit intrinsics + ToPtr + many-ptr slices in eval, core bodies checked on demand,
+  body-level `when` via check (body_when_cond), handler decls installed in eval.
+  PR 1: TIR 693, decls 768, 0 DIFF. Open: comptime_handler_decl needs handlers declared
+  before consts are evaluated (Rust ensure_handlers_declared in handlers_for) — do after
+  W3 merges (it rewrites handler_decls.gm).
 - Remaining first-blocker buckets (s41 end, before s41b): vector types 19, iterator args 17,
   literal-variable conversions 14, array construction 13, #bits/other struct attrs 13,
   intrinsics 12, attributes 11, generic effect ops 11, effect-set params 10, vector/complex

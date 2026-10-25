@@ -232,6 +232,18 @@ key :: fn(p: ^Printer, k: ^const ConstKey) needs Alloc {
                 .Usize => write_int(b, false, out)
                 .Isize => write_int(b, true, out)
                 .Bool => out.extend(if b.len > 0 and b[0] is 1 { "true" } else { "false" })!
+                .Float(bits) => {
+                    raw: u64 = 0
+                    for i, c in enumerate(b) { raw |= u64(c) << u64(i * 8) }
+                    if bits is 64 and b.len is 8 {
+                        write_float(raw.bits(f64), out)
+                    } else if bits is 32 and b.len is 4 {
+                        write_float(f64(raw.trunc(u32).bits(f32)), out)
+                    } else {
+                        p.ty(t)
+                        out.extend("(…)")!
+                    }
+                }
                 _ => {
                     p.ty(t)
                     out.extend("(…)")!
@@ -239,6 +251,62 @@ key :: fn(p: ^Printer, k: ^const ConstKey) needs Alloc {
             }
         }
     }
+}
+
+/// `x` in decimal, without an exponent: `1.5`, `-0.25`, `3`, `NaN`, `inf`.
+write_float :: fn(x: f64, out: ^List(u8)) needs Alloc {
+    if x - x is not 0.0 and x is x {
+        out.extend(if x < 0.0 { "-inf" } else { "inf" })!
+        return
+    }
+    if x is not x {
+        out.extend("NaN")!
+        return
+    }
+    text := str.format("{}", x)!
+    e := text.index_of('e') else {
+        out.extend(text)!
+        return
+    }
+    // `d.ddde±n`: the digits, with the point moved by the exponent.
+    mantissa := text[..e]
+    exp := parse_exponent(text[e + 1..])
+    negative := mantissa.len > 0 and mantissa[0] is '-'
+    if negative { mantissa = mantissa[1..] }
+    digits := list(u8)
+    point: i64 = mantissa.len.trunc(i64)
+    for i, c in enumerate(mantissa) {
+        if c is '.' {
+            point = i.trunc(i64)
+        } else {
+            digits.push(c)!
+        }
+    }
+    point += exp
+    if negative { out.push('-')! }
+    if point <= 0 {
+        out.extend("0.")!
+        for _ in 0..(-point).bits(u64).trunc(usize) { out.push('0')! }
+        out.extend(digits.items)!
+    } else if point >= digits.items.len.trunc(i64) {
+        out.extend(digits.items)!
+        for _ in 0..(point - digits.items.len.trunc(i64)).bits(u64).trunc(usize) { out.push('0')! }
+    } else {
+        k := point.bits(u64).trunc(usize)
+        out.extend(digits.items[..k])!
+        out.push('.')!
+        out.extend(digits.items[k..])!
+    }
+}
+
+/// The exponent after the `e` of a float's text.
+parse_exponent :: fn(t: []const u8) -> i64 {
+    negative := t.len > 0 and t[0] is '-'
+    v: i64 = 0
+    for c in t {
+        if c >= '0' and c <= '9' { v = v * 10 + i64(c - '0') }
+    }
+    return if negative { -v } else { v }
 }
 
 /// The little-endian integer `b` (at most 16 bytes) in decimal.

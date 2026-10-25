@@ -135,6 +135,7 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
         .SizeOf(of, align) => str.format("{} {}", if align { "align-of" } else { "size-of" }, s.show(of))!
         .IntLimit(of, max) => str.format("{} {}", if max { "max-value" } else { "min-value" }, s.show(of))!
         .TypeName(of) => str.format("type-name {}", s.show(of))!
+        .TypeIs(a, b, negated) => str.format("type-is{} {} {}", if negated { "-not" } else { "" }, s.show(a), s.show(b))!
         .Const(name, span) => str.format("const {}@{}", name, place(s, span))!
         .Local(l) => str.format("local {}", d.local_text(l))!
         .Global(name) => str.format("global {}", name)!
@@ -576,6 +577,9 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .Bits => "Bits"
     .Cast => "Cast"
     .Addr => "Addr"
+    .PtrAdd => "PtrAdd"
+    .PtrSub => "PtrSub"
+    .PtrDiff => "PtrDiff"
     .ToPtr => "ToPtr"
     .Tag => "Tag"
     .FromTag => "FromTag"
@@ -621,6 +625,7 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .AllocTag => "AllocTag"
     .AllocCheck => "AllocCheck"
     .Asm(outputs, inputs) => str.format("Asm {{ outputs: {}, inputs: {} }}", outputs, inputs)!
+    .StaticAssert(id) => str.format("StaticAssert({})", id)!
 }
 
 rmw_text :: fn(op: tir.RmwOp) -> string => match op {

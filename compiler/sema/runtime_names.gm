@@ -1,0 +1,75 @@
+// The C identifiers of the generated programs' runtime that start with `gm_` (§23.5): a
+// foreign member or an export of such a name would clash with the runtime. They are the
+// identifiers of `runtime/gm_rt.h`, `runtime/gm_rt.c` and `runtime/gm_clif.c`; a name that
+// ends in a digit is reserved for generated code and not listed.
+
+/// The runtime's `gm_` identifiers that do not end in a digit, sorted.
+RUNTIME_NAMES :: [320]string(
+    "gm_alloc_check", "gm_alloc_tag", "gm_altstack_free", "gm_altstack_init", "gm_altstack_key",
+    "gm_altstack_keyed", "gm_args", "gm_asyncify_start_rewind", "gm_asyncify_start_unwind",
+    "gm_asyncify_stop_rewind", "gm_asyncify_stop_unwind", "gm_atag", "gm_atag_cap", "gm_atag_find",
+    "gm_atag_grow", "gm_atag_slot", "gm_atag_used", "gm_atags", "gm_attr_kind", "gm_backtrace",
+    "gm_bt", "gm_bt_top", "gm_buf", "gm_buf_extend", "gm_buf_free", "gm_buf_push", "gm_cancel",
+    "gm_cancel_cont", "gm_checks", "gm_clause_thunk", "gm_clif_bitop", "gm_clif_black_box",
+    "gm_clif_bt_top", "gm_clif_emit", "gm_clif_entry", "gm_clif_eq", "gm_clif_errno",
+    "gm_clif_f64_to_int", "gm_clif_fiber_cont", "gm_clif_fits", "gm_clif_float", "gm_clif_fmax",
+    "gm_clif_fmin", "gm_clif_format", "gm_clif_hash", "gm_clif_hash_int", "gm_clif_hash_uint",
+    "gm_clif_int", "gm_clif_lt", "gm_clif_memmove", "gm_clif_memset", "gm_clif_mix", "gm_clif_norm",
+    "gm_clif_poison", "gm_clif_pow", "gm_clif_prog", "gm_clif_program", "gm_clif_ptr",
+    "gm_clif_run", "gm_clif_running", "gm_clif_stack_limit", "gm_clif_strlen", "gm_clif_tag",
+    "gm_clif_trap_assert", "gm_clif_trap_index", "gm_clif_trap_pow", "gm_clif_trap_shift",
+    "gm_clif_trap_slice", "gm_clif_trap_unhandled", "gm_clif_trap_unwrap", "gm_clif_trap_vec",
+    "gm_clif_unw", "gm_clif_vload", "gm_clif_vstore", "gm_clif_write", "gm_clif_write_fmt",
+    "gm_clock_now", "gm_clock_sleep", "gm_clock_wall", "gm_closure", "gm_cmd_unsafe", "gm_cont",
+    "gm_cont_take", "gm_cpu_count", "gm_cstr", "gm_cstr_array", "gm_ctl_perform", "gm_ctx_init",
+    "gm_cur_fiber", "gm_cv_u_", "gm_debug", "gm_dir", "gm_dir_put", "gm_dirs", "gm_env_cmp",
+    "gm_env_var", "gm_err_errno", "gm_errdefer_runs", "gm_exact_digits", "gm_f16_from",
+    "gm_fault_sp", "gm_fd_above_std", "gm_fiber", "gm_fiber_cont", "gm_fiber_entry",
+    "gm_fiber_finish", "gm_fiber_new", "gm_fiber_pool", "gm_fiber_slab", "gm_fiber_slab_used",
+    "gm_field", "gm_filc_ctx", "gm_filc_entry", "gm_filc_running", "gm_filc_starting",
+    "gm_file_exists", "gm_find", "gm_find_outer", "gm_find_program", "gm_finish_main", "gm_flush",
+    "gm_fmt_ch", "gm_fmt_fields", "gm_fmt_float", "gm_fmt_hex_escape", "gm_fmt_int", "gm_fmt_seq",
+    "gm_fmt_str", "gm_format", "gm_format_spec", "gm_frame", "gm_frame_overflow", "gm_free_cstrs",
+    "gm_fs_close", "gm_fs_close_dir", "gm_fs_cwd", "gm_fs_lstat", "gm_fs_make_dir",
+    "gm_fs_next_entry", "gm_fs_open", "gm_fs_open_dir", "gm_fs_read", "gm_fs_remove",
+    "gm_fs_remove_dir", "gm_fs_rename", "gm_fs_seek", "gm_fs_stat", "gm_fs_sync", "gm_fs_truncate",
+    "gm_fs_write", "gm_futex_wait", "gm_futex_wake", "gm_hb_cap", "gm_hb_find", "gm_hb_index",
+    "gm_hb_record", "gm_hb_slot", "gm_hb_tab", "gm_hb_used", "gm_hblock", "gm_heap_alloc",
+    "gm_heap_free", "gm_heap_release", "gm_hval", "gm_ibp", "gm_io_error", "gm_is_batch",
+    "gm_isize", "gm_kind", "gm_ld_v_", "gm_lexically_same", "gm_load_ptr", "gm_load_uint",
+    "gm_main_call", "gm_main_thread", "gm_make_pipe", "gm_mkdir", "gm_mode_kind", "gm_mulhi",
+    "gm_n_", "gm_net_accept", "gm_net_close", "gm_net_connect", "gm_net_error", "gm_net_init",
+    "gm_net_listen", "gm_net_local_port", "gm_net_peer", "gm_net_recv", "gm_net_send",
+    "gm_net_set_timeouts", "gm_net_shutdown", "gm_next_entry", "gm_node", "gm_note_failure",
+    "gm_ord", "gm_out_errno", "gm_overflow_handler", "gm_overflow_install", "gm_overflowing",
+    "gm_path", "gm_path_call", "gm_pdir", "gm_pipe_cloexec", "gm_pipe_err", "gm_pipe_ready",
+    "gm_poison", "gm_proc", "gm_proc_close_in", "gm_proc_get", "gm_proc_kill", "gm_proc_put",
+    "gm_proc_read", "gm_proc_read_out", "gm_proc_spawn", "gm_proc_wait", "gm_proc_write",
+    "gm_proc_write_in", "gm_procs", "gm_quote_bytes", "gm_rand_fill", "gm_resolve", "gm_resume",
+    "gm_rop", "gm_round_digits", "gm_rt_acquire", "gm_rt_argc", "gm_rt_args", "gm_rt_fiber_tramp",
+    "gm_rt_lock", "gm_rt_release", "gm_rt_str", "gm_rt_switch", "gm_run_main", "gm_run_main_fibers",
+    "gm_scratch", "gm_scratch_grow", "gm_scratch_live", "gm_scratch_release", "gm_scratch_top",
+    "gm_segv", "gm_set_args", "gm_set_cur_fiber", "gm_set_timeout", "gm_shortest", "gm_sink",
+    "gm_sink_float", "gm_sink_put", "gm_sink_unsigned", "gm_site_str", "gm_snprintf", "gm_socket",
+    "gm_spec", "gm_spec_exp", "gm_spec_pad", "gm_spec_radix", "gm_st_v_", "gm_stack_limit",
+    "gm_stack_overflow", "gm_stat_path", "gm_strcmp", "gm_strlen", "gm_susp_link", "gm_susp_unlink",
+    "gm_sys_read", "gm_sys_write", "gm_table", "gm_table_add", "gm_table_get", "gm_table_take",
+    "gm_thread", "gm_thread_detach", "gm_thread_join", "gm_thread_main", "gm_thread_spawn",
+    "gm_thread_stack", "gm_thread_stack_limit", "gm_thread_take", "gm_thread_yield", "gm_threads",
+    "gm_trap", "gm_trap_bytes", "gm_trap_hook_call", "gm_trap_misaligned", "gm_trap_pow", "gm_type",
+    "gm_u128_dec", "gm_unit", "gm_unw", "gm_unwind", "gm_utf8_arg", "gm_utf8_seq_ok", "gm_variant",
+    "gm_veh", "gm_veh_install", "gm_veh_once", "gm_wasi_arg", "gm_wasi_ctx", "gm_wasi_drive",
+    "gm_wasi_entry", "gm_wasi_fiber_entry", "gm_wasi_get_sp", "gm_wasi_main_ctx", "gm_wasi_next",
+    "gm_wasi_rewinding", "gm_wasi_running", "gm_wasi_set_sp", "gm_wdir", "gm_wide",
+    "gm_win_cmdline", "gm_win_err", "gm_with", "gm_with_clause", "gm_with_end", "gm_with_extension",
+    "gm_with_go", "gm_write_err", "gm_write_out", "gm_wsa_err", "gm_wsocket",
+)
+
+/// Whether `sym` is a name of the compiled program's runtime or of the kind generated code
+/// uses (`gm_` and a kind and number).
+pub is_runtime_symbol :: fn(sym: string) -> bool {
+    if not sym.starts_with("gm_") { return false }
+    last := sym[sym.len - 1]
+    if last >= '0' and last <= '9' { return true }
+    return sym in RUNTIME_NAMES[..]
+}
