@@ -56,96 +56,49 @@ leaves to implementations: message texts, spans and recovery after errors.
    the repository. Not yet: git and archive dependencies (which need the lock file and the
    package manager), the exact messages for a malformed `gamma.toml`, and `when`
    conditions beyond `target`, `@size_of`, literals and constants.
-4. **Checker** — in progress, in two parts:
+4. **Checker** — done, in two parts. `gammac decls` and `gammac tir` match `gamma decls`
+   and `gamma tir` on every program in the repository, error messages included.
    - **Declarations.** Resolving every top-level declaration without checking function
      bodies: types and type expressions, structs and unions (generic ones and their
-     instances), effects, function signatures, constraints, untyped constants with exact
-     arithmetic, and the typed constants made of literals and constructors. `gammac decls`
-     matches `gamma decls` on every program it does not report as using something it
-     cannot check yet (see below); that is most of the repository, `foreign` blocks and
-     `#global`s included, as are typed constants, array lengths and compile-time
-     arguments computed by calling functions. Not yet: `#soa` and vector types.
+     instances), vector, complex and `#soa` types, effects, function signatures,
+     constraints, untyped constants with exact arithmetic, typed constants, array
+     lengths and compile-time arguments (computed by calling functions where needed),
+     `foreign` blocks and `#global`s.
    - **Bodies.** Expressions, statements, patterns, inference, effects, the instantiation
      of generic functions and compile-time evaluation, producing the typed intermediate
      representation of `src/tir.rs` (`compiler/tir/`). `gamma tir` prints that
      representation in a stable text form: every function written outside the core
-     library, in source order, one line per expression with its type. `gammac tir` matches
-     it on the programs it supports, which is most of the language: statements and
-     expressions, patterns with exhaustiveness, optionals and results, `defer`, function
-     literals, nested functions and function pointers, effects, `with` and handler
-     literals (also bound with `::`), handler declarations, `ctl` operations with
-     `resume`, `cancel` and `with … on`, iterators and `for` over them, tests, rest
-     parameters and spread arguments, formatting templates with specs, foreign functions
-     and `#global`s, most intrinsics, and the checks of effects, `main`, `#inline`,
-     escaping pointers and continuations, `#bits` and `#c_union` structs, `using` fields,
-     `#export`, `#callconv` and `#trap_hook`, enum-indexed arrays, local type aliases,
-     `@type_of` and `is` on types, generic nested functions, range values, pointer
-     arithmetic, array lengths computed from compile-time parameters (checked per
-     instance, as are static assertions that depend on them), and compile-time
-     evaluation (§17): typed
-     constants, defaults of fields and parameters, array lengths, compile-time
-     arguments, `@static_assert`, `@compile_error` and immutable locals with constant
-     initializers are evaluated by a tree-walking evaluator over the typed representation
-     (`compiler/eval/`), which also runs the core library functions a computation
-     calls, with the step budget, `#fuel`, the trap messages and the compile-time call
-     stack of the reference. Generic functions are checked once with their
-     type parameters opaque, as the reference does; calls of them infer the type
-     arguments, check constraints and name the instance. Each instance is then produced
-     as the reference produces it: its body is rewritten for the type arguments, so that
-     what it calls is instantiated in turn (with the nesting limit of §16.7), what
-     depends on the type arguments (literals, layout queries, `.bits`, format specs,
-     templates that are compile-time parameters) is checked for it, and the function
+     library, in source order, one line per expression with its type. That covers the
+     whole language: patterns with exhaustiveness, optionals and results, `defer`,
+     function literals, nested functions (generic ones included) and function pointers,
+     effects and their checks, `with`, handler literals and declarations (for generic
+     types and effects too), effect-set parameters, `ctl` operations with `resume`,
+     `cancel` and `with … on`, iterators, `for` and arguments that are iterators,
+     `@fiber` and the `@stack_size` analysis, tests, rest parameters and spreads,
+     formatting templates, vectors, complex numbers, `f16` and `#soa`, struct attributes
+     (`#bits`, `#c_union`, `using`, `#export`, `#callconv`, `#trap_hook`), enum-indexed
+     arrays, local type aliases, `@type_of` and `is` on types, range values, pointer
+     arithmetic, intrinsics, and the checks of `main`, `#inline`, escaping pointers,
+     dangling addresses and continuations.
+
+     Compile-time evaluation (§17) of typed constants, defaults of fields and
+     parameters, array lengths, compile-time arguments, `@static_assert`,
+     `@compile_error`, `when` conditions in bodies and immutable locals with constant
+     initializers is done by a tree-walking evaluator over the typed representation
+     (`compiler/eval/`). It runs the core library functions and the handler declarations
+     a computation uses, checking their bodies on demand, with the step budget, `#fuel`,
+     the trap messages and the compile-time call stack of the reference.
+
+     Generic functions are checked once with their type parameters opaque, as the
+     reference does; calls of them infer the type arguments, check constraints and name
+     the instance. Each instance is then produced as the reference produces it: its body
+     is rewritten for the type arguments, so that what it calls is instantiated in turn
+     (with the nesting limit of §16.7), what depends on the type arguments (literals,
+     layout queries, `.bits`, format specs, templates that are compile-time parameters,
+     computed array lengths, static assertions, type tests, `#soa` operations, the
+     handler declarations a `with` chooses) is checked for it, and the function
      literals and handler clauses written in a generic function are copied for each
-     instance. Next: vector and `#soa` types, generic effects, effect-set parameters,
-     arguments that are iterators, `@fiber` and `@stack_size`.
-5. **Back end** — C generation, linking the existing C runtime (`runtime/`). Checked by
-   running the `run` conformance tests through `gammac` and comparing with the reference.
-6. **Bootstrap** — `gammac` built by `gamma` (stage 1) compiles `gammac` (stage 2), which
-   compiles it again (stage 3). The generated C of stages 2 and 3 must be identical.
-
-The stages mirror the reference implementation's module structure so that a reviewer can
-read the two side by side.
-
-## Layout
-
-| Path | Contents |
-| --- | --- |
-| `compiler/gamma.toml` | the package manifest (`gammac`) |
-| `compiler/main.gm` | the command line |
-| `compiler/source/` | source files, byte spans, line and column lookup (`src/source.rs`) |
-| `compiler/diag/` | diagnostics and their `short` and `json` rendering (`src/diag.rs`) |
-| `compiler/bignum/` | natural numbers and rationals of any size, for the exact values of literals |
-| `compiler/syntax/` | tokens (`token.gm`), the lexer (`lexer.gm`, `literal.gm`) and the token dump (`dump.gm`) (`src/syntax/`) |
-| `compiler/ast/` | the syntax tree (`ast.gm`) and its dump (`dump.gm`) (`src/syntax/ast.rs`, `ast_dump.rs`) |
-| `compiler/load/` | loading modules and packages (`loader.gm`), the core library (`core.gm`), file paths (`paths.gm`), the `gamma.toml` reader (`toml.gm`) and the conditions of top-level `when`s (`when.gm`) (`src/sema/modules.rs`, `imports.rs`) |
-| `compiler/types/` | types, hash-consed (`types.gm`), and their text in messages (`display.gm`) (`src/types.rs`) |
-| `compiler/bigint/`, `compiler/ratio/` | integers and rationals of any size, for the exact arithmetic of untyped constants |
-| `compiler/tir/` | the typed intermediate representation that checking produces (`src/tir.rs`), and compile-time values (`value.gm`) |
-| `compiler/eval/` | the compile-time evaluator: expressions, places, calls, effects and traps (`eval.gm`), operators, builtins, conversions and byte reinterpretation (`ops.gm`) (`src/sema/consteval.rs`) |
-| `compiler/check/` | checking function bodies (`src/sema/func.rs`, `expr.rs`, `finalize.rs` and the files named alike): the per-function context, statements and control flow (`func.gm`), expressions (`expr.gm`), calls and builtins (`call.gm`), intrinsics (`intrinsics.gm`), constants evaluated at compile time and static assertions (`consts.gm`), what an evaluation reaches (`eval_prepare.gm`), function literals and nested functions (`fnlit.gm`), `with` and handler literals (`handlers.gm`), handler declarations (`handler_decls.gm`), iterators and generic effect operations (`iterators.gm`), tests and benchmarks (`tests.gm`), calls of generic functions (`generic.gm`), method calls (`methods.gm`), implicit coercions (`coerce.gm`), optionals and results (`errors.gm`), patterns (`pattern.gm`), `match` and pattern tests (`matching.gm`), exhaustiveness (`exhaust.gm`), sequences, `in` and `for` (`seq.gm`), literal inference (`infer.gm`), the final pass over a body (`finalize.gm`), the checks of a whole program (`program.gm`, `escape.gm`) and the `tir` dump (`dump.gm`) |
-| `compiler/sema/` | checking: the state and the resolution of declarations (`sema.gm`), names (`names.gm`), type expressions (`ty_expr.gm`), structs and unions (`adt.gm`), signatures and effects (`fnsig.gm`), constraints (`generics.gm`), untyped constants (`untyped.gm`), typed constants (`consts.gm`), layouts (`layout.gm`) and the `decls` dump (`dump.gm`) (`src/sema/`) |
-| `compiler/parse/` | the parser: its state, errors and recovery (`parser.gm`), expressions, statements, declarations, types, patterns and the brace-delimited literals (`src/syntax/parser/`) |
-
-## Building and running
-
-```sh
-gamma build compiler -o gammac          # or: gamma run compiler lex FILE
-./gammac lex examples/hello.gm
-./gammac lex --diag-format=json tests/conformance/lex/errors_numbers.gm
-./gammac parse --dump examples/hello.gm
-GAMMA_STD=lib/std ./gammac modules examples/grep.gm
-GAMMA_STD=lib/std ./gammac decls examples/grep.gm
-GAMMA_STD=lib/std ./gammac tir examples/hello.gm
-gamma test compiler                     # gammac's own unit tests
-cargo test --test selfhost              # the parity tests
-```
-
-`gammac lex FILE...` prints each file's tokens to standard output, and `gammac parse --dump
-FILE...` its syntax tree; both print the diagnostics to standard error, sorted by
-position, in the `short` format by default. With several files,
-each file's output on both streams is preceded by a line `==> FILE <==`, so that one run
-can cover the whole repository. The exit status is 1 if a file has errors and 2 for a
-usage error or a file that cannot be read.
+     instance.
 
 `gammac decls` and `gammac tir` read the core library from `$GAMMA_CORE`, or else from
 the `core` directory next to the standard library's. A root module without `main` is
@@ -159,7 +112,9 @@ complete, `gammac` reports each construct it cannot handle yet with an error tha
 `gammac cannot`, and `tests/selfhost.rs` compares only the programs without such an
 error. Everything else must match exactly. The number of programs compared may only
 grow: the test fails if it drops below `DECLS_FLOOR` (declarations) or `TIR_FLOOR`
-(bodies), which are raised as `gammac` learns more.
+(bodies), which are raised as `gammac` learns more. Both checker stages are complete, so
+both floors are the number of programs in the repository: a program that `gammac` stops
+checking fails the test.
 
 `tests/selfhost.rs` builds `gammac` through the C back end in the Debug mode, so that its
 overflow and bounds checks are on, when a C compiler is available, and otherwise runs it

@@ -302,6 +302,7 @@ pub instantiate :: fn(s: ^Sema, f: u32, args: []const Ty, span: source.Span) -> 
         generics: empty_slice(u32),
         instance: FnInstance(template: f, args: kept.items),
     )
+    s.report_soa_errors(span)
     id := s.fns.items.len.trunc(u32)
     s.fns.push(inst)!
     kind: tir.FnKind = if s.defs.items[usize(f)].kind is .Clause { .Clause } else { .Named }

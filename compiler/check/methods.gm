@@ -8,11 +8,23 @@ method_call :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, args: []con
     // `U.from_tag(x)` on an enum type, or a variant `T.V(…)`.
     if t := cx.type_of_name(base) {
         if name.name is "from_tag" { return cx.check_from_tag(t, args, span) }
+        if name.name is "load" and cx.s.tys.is_vector(t) { return cx.vector_load(t, args, span) }
+        if info := cx.s.soa_info(t) {
+            if name.name is "make" { return cx.soa_make(t, info, args, span) }
+        }
         return cx.construct_variant(t, name, args, span)
     }
     recv := cx.expr(base, null)
     rty := cx.infer.resolve(cx.s, recv.ty)
     if tys.is_error(rty) { return error_expr(cx.s, span) }
+    // `s.free()` and `a.copy_from(src)` on a `#soa`; it has no other methods (§5.6.4).
+    soa_recv := cx.soa_deref(recv)
+    if info := cx.soa_of(soa_recv) {
+        if name.name is "free" { return cx.soa_free(soa_recv, info, args, span) }
+        if name.name is "copy_from" { return cx.soa_copy_from(soa_recv, info, args, span) }
+        cx.error(span, str.format("`{}` has no method `.{}`; its columns, `a.f`, are arrays and slices with methods", cx.show(cx.infer.resolve(cx.s, soa_recv.ty)), name.name)!)
+        return error_expr(cx.s, span)
+    }
     // 1. A field (holding a function pointer).
     derefed_ty := rty
     if .Ptr(_, p) := tys.kind(cx.infer.shallow(tys, recv.ty)) { derefed_ty = p }
@@ -327,7 +339,11 @@ collection_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, n: string, args: []cons
     tys := &cx.s.tys
     arr := rty
     if .Ptr(_, p) := tys.kind(rty) { arr = p }
-    if cx.is_vector(arr) { return cx.unsupported(span, "vector methods") }
+    if tys.is_vector(arr) or tys.is_math_vector(arr) {
+        v := if arr is rty { recv } else { tir.mk(arr, .Deref(recv), span) }
+        if tys.is_vector(arr) { return cx.vector_method(v, arr, n, args, span) }
+        return cx.math_vector_method(v, arr, n, args, span)
+    }
     if .Array(_, _, kind) := tys.kind(arr) and kind is .Enum(_) {
         cx.error(span, str.format("`{}` has no methods; `a[..]` is a slice of its elements, which has `.{}`", cx.show(arr), n)!)
         return error_expr(cx.s, span)
@@ -593,8 +609,7 @@ finish_call :: fn(cx: ^FnCx, pre: []tir.Stmt, call: ^Expr, receiver: bool) -> ^E
 /// The effect that `e` names, if it names one: `E`, `m.E`, or an instantiation `E(T)`.
 EffectNamed :: union {
     Plain: u32
-    /// An instantiated or generic effect, which gammac does not check yet.
-    Other
+    Inst: EffectRef
 }
 
 effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
@@ -602,7 +617,8 @@ effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
     match e.kind {
         .Call(callee, _, _) => {
             _ = cx.effect_named(callee) else return null
-            return .Other
+            r := cx.s.resolve_effect_ref(cx.module, e) else return null
+            return .Inst(r)
         }
         .Ident(id) => {
             if cx.lookup_local(id.name) is not null { return null }
@@ -616,24 +632,27 @@ effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
     }
     match cx.s.resolve_decl(d) {
         .Effect(eff) => return .Plain(eff)
-        .EffectInst(_) => return .Other
+        .EffectInst(r) => return .Inst(r)
         _ => return null
     }
 }
 
 /// `E.op(args)`: an operation named through its effect (§12.1).
 perform_named :: fn(cx: ^FnCx, named: EffectNamed, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
-    .Plain(eff) := named else return cx.unsupported(span, "operations of generic effects")
+    eff: u32 = 0
+    inst: ?EffectRef = null
+    match named {
+        .Plain(e) => { eff = e }
+        .Inst(r) => {
+            eff = r.eff
+            inst = r
+        }
+    }
     info := cx.s.effects.items[usize(eff)]
     for i, o in enumerate(info.ops) {
         if o.name is not name.name { continue }
-        if info.params.len > 0 { return cx.unsupported(span, "operations of generic effects") }
-        bound := cx.bind_args(o.params, info.module, args, span, "operation") else return error_expr(cx.s, span)
-        eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
-        cx.performed.push(Performed(effect_: eref, span: span))!
-        if o.kind is .Fn { cx.fn_performs.push(span)! }
-        call := tir.mk(o.ret, .Call(.Perform(eref, i.trunc(u32)), bound.args), span)
-        return cx.finish_call(bound.pre, call, false)
+        if r := inst { return cx.perform_op_as(r, i.trunc(u32), args, span) }
+        return cx.perform_op(eff, i.trunc(u32), args, span)
     }
     cx.error(name.span, str.format("the effect `{}` has no operation `{}`", info.name, name.name)!)
     return error_expr(cx.s, span)

@@ -140,10 +140,8 @@ Versions and what each kind of change means are described in
   15 of the guide. `gammac tir` checks the function bodies of a growing subset of
   programs the same way, generic functions and their calls included, and evaluates
   constants, defaults, array lengths, static assertions and immutable locals at compile
-  time. It now also covers struct attributes (`#bits`, `#c_union`, `using`, `#export`,
-  `#callconv`, `#trap_hook`), enum-indexed arrays, local type aliases, `@type_of`, `is` on
-  types, generic nested functions, range values, pointer arithmetic and array lengths
-  computed from compile-time parameters.
+  time. `gammac decls` and `gammac tir` now match `gamma decls` and `gamma tir` on every
+  program in the repository.
 - `&e` where a pointer `^T` is expected checks `e` with `T` expected, so a variant or tuple
   takes its type from it: `area(&.Circle(2.0))` (§7.2).
 - `gamma decls`: resolves the top-level declarations of a program without checking

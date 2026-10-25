@@ -17,7 +17,7 @@ param_kind_of :: fn(s: ^Sema, module: usize, p: ^const ast.Param) -> ParamKind n
     return .Value(s.resolve_type(module, t))
 }
 
-new_param :: fn(s: ^Sema, name: string, kind: ParamKind) -> u32 needs Alloc {
+pub(package) new_param :: fn(s: ^Sema, name: string, kind: ParamKind) -> u32 needs Alloc {
     id := s.tys.fresh_param(name)
     s.params.push(ParamData(kind: kind, constraints: list(Constraint)))!
     return id
@@ -622,6 +622,12 @@ pub subst :: fn(s: ^Sema, t: Ty, map: []const Subst) -> Ty needs Load {
         }
         .Adt(id, args) => {
             if args.len is 0 { return t }
+            // `#soa []T` becomes the struct of the argument's fields (§5.6.4).
+            if shape := s.soa_shape_of(tys.template(id)) {
+                elem: Ty = tys.error()
+                if .Type(x) := args[0] { elem = s.subst(x, map) }
+                return s.subst_soa(elem, shape)
+            }
             new_args := list(Ty)
             for a in args {
                 new_args.push(match a {

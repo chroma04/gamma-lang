@@ -126,6 +126,11 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
         .Int(v) => str.format("int {}", sema.show_int(v))!
         .Float(x) => str.format("float 0x{:016x}", x.bits(u64))!
         .UntypedFloat(r) => str.format("untyped-float {}", show_rat(r))!
+        .SoaDeferred(x) => {
+            for i in 0..x.args.len { kids.push(&x.args[i])! }
+            str.format("soa {}", soa_op_text(x.op))!
+        }
+        .UntypedComplex(c) => str.format("untyped-complex {} {}", show_rat(c.re), show_rat(c.im))!
         .Bool(b) => str.format("bool {}", b)!
         .Str(b) => escaped("str ", b)
         .CStr(b) => escaped("cstr ", b)
@@ -607,6 +612,26 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .GetPtr => "GetPtr"
     .First => "First"
     .Last => "Last"
+    .LaneEq => "LaneEq"
+    .LaneNe => "LaneNe"
+    .LaneLt => "LaneLt"
+    .LaneLe => "LaneLe"
+    .LaneGt => "LaneGt"
+    .LaneGe => "LaneGe"
+    .ReduceSum => "ReduceSum"
+    .ReduceMin => "ReduceMin"
+    .ReduceMax => "ReduceMax"
+    .MaskAll => "MaskAll"
+    .MaskAny => "MaskAny"
+    .MaskCount => "MaskCount"
+    .Select => "Select"
+    .LaneMin => "LaneMin"
+    .LaneMax => "LaneMax"
+    .LaneAbs => "LaneAbs"
+    .LaneConvert => "LaneConvert"
+    .Shuffle => "Shuffle"
+    .VecLoad => "VecLoad"
+    .VecStore => "VecStore"
     .CstrLen => "CstrLen"
     .Assert => "Assert"
     .Hash => "Hash"
@@ -620,6 +645,7 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .VolatileLoad => "VolatileLoad"
     .VolatileStore => "VolatileStore"
     .Sys(s) => str.format("Sys({})", sys_text(s))!
+    .Fiber => "Fiber"
     .HeapAlloc => "HeapAlloc"
     .HeapFree => "HeapFree"
     .AllocTag => "AllocTag"
@@ -685,4 +711,15 @@ sys_text :: fn(op: tir.SysOp) -> string => match op {
     .FutexWake => "FutexWake"
     .CpuCount => "CpuCount"
     .SysWrite => "SysWrite"
+}
+
+soa_op_text :: fn(op: tir.SoaOp) -> string needs Alloc => match op {
+    .Get => "Get"
+    .Set => "Set"
+    .Len => "Len"
+    .Slice(x) => str.format("Slice {{ lo: {}, hi: {}, inclusive: {} }}", x.lo, x.hi, x.inclusive)!
+    .ToConst => "ToConst"
+    .Make => "Make"
+    .Free => "Free"
+    .CopyFrom => "CopyFrom"
 }

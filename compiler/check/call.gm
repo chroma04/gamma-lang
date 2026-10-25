@@ -79,7 +79,7 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             }
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
             // `yield(x)`, the one operation in scope without its effect (§13.1).
-            if id.name is "yield" and y := cx.s.yield_effect { return cx.perform_generic(y, 0, args, span) }
+            if id.name is "yield" and y := cx.s.yield_effect { return cx.perform_op(y, 0, args, span) }
             return cx.call_value(cx.expr(callee, null), args, span)
         }
         .Call(_) => {
@@ -131,7 +131,7 @@ call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args
         .Fn(f) => return cx.call_fn(f, args, span)
         .Type(t) => return cx.conversion(t, args, span)
         .Error => return error_expr(cx.s, span)
-        .Op(_) => return cx.unsupported(span, "effect operations")
+        .Op(eff, op) => return cx.perform_op(eff, op, args, span)
         .Const(_) => return cx.call_value(cx.expr(callee, null), args, span)
         _ => {
             cx.error(callee.span, str.format("`{}` cannot be called", name)!)
@@ -220,6 +220,7 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
         explicit.push(false)!
     }
     stmts := list(tir.Stmt)
+    written := list(usize)
     next: usize = 0
     seen_named := false
     spread_failed := false
@@ -235,6 +236,7 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
                 }
                 v := cx.arg_value(&e, params[next].ty)
                 if spreading { v = cx.bind_temp(v, &stmts) }
+                cx.place_iter_pre(&bound, &written, next, &stmts)
                 bound.items[next] = v
                 next += 1
             }
@@ -258,6 +260,7 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
                 // A later explicit named argument overrides one supplied by a spread.
                 v := cx.arg_value(&e, params[i].ty)
                 if spreading { v = cx.bind_temp(v, &stmts) }
+                cx.place_iter_pre(&bound, &written, i, &stmts)
                 bound.items[i] = v
             }
             .Spread(e) => {
@@ -334,12 +337,13 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
 
 /// An argument for a parameter of type `ty`.
 arg_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
-    if .Fn(sig) := cx.s.tys.kind(ty) {
-        if y := cx.s.yield_effect {
-            for x in sig.effects.effects {
-                if x.eff is y { return cx.unsupported(e.span, "iterator arguments") }
-            }
-        }
+    if lit := cx.iterator_arg(e, ty) {
+        // Checking the literal's own call must not place the statements made above.
+        pre := cx.iter_pre
+        cx.iter_pre = list(tir.Stmt)
+        v := cx.arg_value(&lit, ty)
+        cx.iter_pre = pre
+        return v
     }
     if e.kind is .Uninit {
         if not cx.is_plain_data(ty) { cx.error(e.span, uninit_message(cx.s, ty)) }
@@ -407,7 +411,6 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
         .Tuple(elems, names) => return cx.construct_tuple(t, elems, names, args, span)
         .Array(len, elem, kind) => {
             if .Enum(index) := kind { return cx.construct_enum_array(t, index, elem, args, span) }
-            if kind is not .Plain { return cx.unsupported(span, "this construction") }
             return cx.construct_array(t, len, elem, args, span)
         }
         .Optional(inner) => return cx.construct_optional(t, inner, args, span)
