@@ -367,10 +367,30 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
     if .Adt(id, _) := tys.kind(t) {
         match cx.s.adts.items[usize(id)].kind {
             .Struct(def) => {
-                if def.bits is not null { return cx.unsupported(span, "`#bits` structs") }
-                return cx.construct_struct(t, args, span)
+                // `Mode(u)`: a `#bits` struct from its underlying integer (§5.10.5).
+                one_positional := args.len is 1 and args[0].kind is .Positional(_)
+                if not (one_positional and def.bits is not null) { return cx.construct_struct(t, args, span) }
             }
-            .CUnion(_) => return cx.unsupported(span, "`#c_union`s")
+            // A `#c_union` is built from exactly one of its fields (§5.11.1).
+            .CUnion(fields) => {
+                if args.len is not 1 or args[0].kind is not .Named(_) {
+                    cx.error(span, str.format("`{}(field: value)` names exactly one field of the union", cx.show(t))!)
+                    return error_expr(cx.s, span)
+                }
+                .Named(n, x) := args[0].kind else return error_expr(cx.s, span)
+                found: ?sema.FieldDef = null
+                for f in fields {
+                    if found is null and f.name is n.name { found = f }
+                }
+                f := found else {
+                    cx.error(n.span, str.format("`{}` has no field `{}`", cx.show(t), n.name)!)
+                    return error_expr(cx.s, span)
+                }
+                v := cx.coerce(cx.expr(&x, f.ty), f.ty)
+                one := list(Expr)
+                one.push(v^)!
+                return tir.mk(t, .Aggregate(one.items), span)
+            }
             _ => {}
         }
     }
@@ -389,6 +409,14 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
         return error_expr(cx.s, span)
     }
     .Positional(x) := args[0].kind else return error_expr(cx.s, span)
+    // `Mode(u)`: the integer is of the underlying type, so a literal takes it.
+    if u := cx.s.bits_struct_ty(t) {
+        v := cx.expr(&x, u)
+        if cx.infer.var_kind(tys, v.ty) is not null { v = cx.coerce(v, u) }
+        // Only a plain bit struct converts from its integer, a literal included.
+        cx.obligations.push(.Conversion(v.ty, t, span))!
+        return tir.mk(t, .Builtin(.Convert, one_expr(v)), span)
+    }
     // Only an untyped literal (or arithmetic on literals) takes its type from the target.
     v := cx.expr(&x, if is_literal_tree(&x) { t } else { null })
     if cx.infer.var_kind(tys, v.ty) is not null and (tys.is_integer(t) or (tys.kind(t) is .Float(_) and tir_literal(v))) {

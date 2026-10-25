@@ -220,7 +220,7 @@ check_bits_struct :: fn(s: ^Sema, span: source.Span, underlying: Ty, fields: []c
     }
 }
 
-bit_width :: fn(s: ^const Sema, t: Ty) -> ?u64 {
+pub(package) bit_width :: fn(s: ^const Sema, t: Ty) -> ?u64 {
     match s.tys.kind(t) {
         .Bool => return 1
         .Int(_, bits) => return u64(bits)
@@ -416,6 +416,13 @@ pub struct_fields :: fn(s: ^const Sema, ty: Ty) -> ?[]FieldDef {
     .Adt(id, _) := s.tys.kind(ty) else return null
     .Struct(def) := s.adts.items[usize(id)].kind else return null
     return def.fields
+}
+
+/// The fields of a `#c_union` type, if `ty` is one.
+pub c_union_fields :: fn(s: ^const Sema, ty: Ty) -> ?[]FieldDef {
+    .Adt(id, _) := s.tys.kind(ty) else return null
+    .CUnion(fields) := s.adts.items[usize(id)].kind else return null
+    return fields
 }
 
 /// The variants and tag type of a tagged union type, if `ty` is one.

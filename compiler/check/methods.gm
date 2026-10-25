@@ -93,7 +93,16 @@ builtin_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, name: ast.Ident, args: []c
         return builtin(.Addr, tys.usize_ty(), [1]^Expr(recv)[..], span)
     }
     if n is "cast" and k in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_), .Optional(_)) { return cx.pointer_cast(recv, rty, args, span) }
-    if n is "downcast_unchecked" and k is .Ptr(_) { return cx.unsupported(span, "`downcast_unchecked`") }
+    // From an embedded struct back to the struct embedding it (§5.10.3); unchecked.
+    if n is "downcast_unchecked" and .Ptr(is_const, pointee) := k {
+        outer := cx.type_arg(args, 0, span) else return null
+        target := tys.ptr(is_const, outer)
+        if not cx.embeds(target, tys.ptr(is_const, pointee)) {
+            cx.error(span, str.format("`{}` does not embed `{}` with `using`", cx.show(outer), cx.show(pointee))!)
+            return error_expr(cx.s, span)
+        }
+        return tir.mk(target, .Coerce(.PtrToPtr, recv), span)
+    }
     if n is "cstr_len" and .ManyPtr(_, e) := k and e is tys.u8_ty() {
         _ = cx.arity(args, 0, n, span)
         return builtin(.CstrLen, tys.usize_ty(), [1]^Expr(recv)[..], span)

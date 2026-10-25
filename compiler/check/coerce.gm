@@ -61,9 +61,9 @@ coerce :: fn(cx: ^FnCx, e: ^Expr, target0: Ty) -> ^Expr needs Load {
             _ => {}
         }
     }
-    if .Ptr(_, outer) := tys.kind(src) and .Adt(id, _) := tys.kind(outer) and cx.s.adts.items[usize(id)].has_using {
-        return cx.unsupported(e.span, "`using` fields")
-    }
+    // `^Outer` → `^S` through `using` fields (§5.10.3); free, like the other pointer
+    // coercions.
+    if cx.embeds(src, target) { return tir.mk(target, .Coerce(.PtrToPtr, e), e.span) }
     steps := cx.coercion_steps(src, target) else {
         cx.error(e.span, str.format("expected `{}`, found `{}`", cx.show(target), cx.show(src))!)
         return e

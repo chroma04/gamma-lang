@@ -28,7 +28,6 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
             _ => {}
         }
     }
-    if f := expected and f.win64 and wants_pointer { return cx.unsupported(span, "function literals with a calling convention") }
     for p in lit.sig.params {
         if p.rest or p.default is not null { return cx.unsupported(span, "rest parameters and defaults of function literals") }
     }
@@ -88,7 +87,17 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
     cx.nested.push(NestedFn(fn_id: fn_id, params: param_ids.items, locals: frame.locals, body: body))!
     ptys := list(Ty)
     for p in params { ptys.push(p.ty)! }
-    fty := types.FnTy(params: ptys.items, ret: final_ret, effects: effects, variadic: false, win64: false)
+    // A literal written where a pointer with a calling convention is expected has it.
+    win64 := false
+    if f := expected and wants_pointer and not frame.captures { win64 = f.win64 }
+    if win64 {
+        if cx.s.within_sys(&effects) {
+            cx.s.fns.items[usize(fn_id)].win64 = true
+        } else {
+            cx.error(span, "a function with a calling convention other than C must have effects at most `{Sys}` (§19.2)")
+        }
+    }
+    fty := types.FnTy(params: ptys.items, ret: final_ret, effects: effects, variadic: false, win64: win64)
     if frame.captures {
         if wants_pointer {
             cx.error(span, "a function literal that uses local variables cannot be a function pointer (§11.7)")
