@@ -406,8 +406,7 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
         }
         .Attributed(attrs, inner) => {
             if .PtrType(_, f) := inner.kind and f.kind is .FnType(_) {
-                s.unsupported(e.span, "`#callconv` on function pointer types")
-                return tys.error()
+                return s.callconv_fn_ptr(module, attrs, inner, e.span)
             }
             for a in attrs {
                 if a.name.name is "soa" and inner.kind in (.ArrayType(_), .SliceType(_)) {
@@ -460,7 +459,7 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
 pub fn_ty :: fn(s: ^const Sema, f: ^const FnSig) -> types.FnTy needs Alloc {
     params := list(Ty)
     for p in f.params { params.push(p.ty)! }
-    return types.FnTy(params: params.items, ret: f.ret, effects: f.effects, variadic: false, win64: false)
+    return types.FnTy(params: params.items, ret: f.ret, effects: f.effects, variadic: false, win64: f.win64)
 }
 
 /// Resolves a type that is part of a larger type (an element, a pointee, a payload): a

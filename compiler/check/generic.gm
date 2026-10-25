@@ -626,13 +626,7 @@ param_default :: fn(cx: ^FnCx, p: ^const sema.ParamInfo, module: usize, d: ^cons
 /// A `SourceLocation` value (§21.7) for `span` in the function being checked.
 source_location :: fn(cx: ^FnCx, span: source.Span) -> ^Expr needs Load {
     tys := &cx.s.tys
-    found: ?Ty = null
-    if prelude := cx.s.l.prelude {
-        if d := cx.s.l.lookup(prelude, "SourceLocation") {
-            if .Type(t) := cx.s.resolve_decl(d) { found = t }
-        }
-    }
-    ty := found else {
+    ty := cx.s.source_location_ty() else {
         cx.error(span, "the core library does not declare `SourceLocation`")
         return error_expr(cx.s, span)
     }

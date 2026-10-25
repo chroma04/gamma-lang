@@ -89,6 +89,8 @@ pub FnSig :: struct {
     pub generics: []u32
     /// For an instance of a generic function: the generic function and the arguments.
     pub instance: ?FnInstance = null
+    /// Whether the function has the Win64 calling convention (`#callconv(.Win64)`, §19.2).
+    pub win64: bool = false
 }
 
 /// A top-level function whose body is still to be checked.
@@ -290,6 +292,10 @@ pub Sema :: struct {
     pub decl_with_checks: List(DeclWithCheck)
     /// The functions marked `#inline` (§11.10), and where.
     pub inline_fns: List(InlineFn)
+    /// The symbols the program exports (§19.4).
+    pub exports: List(string)
+    /// The program's `#trap_hook` function (§3.7.1).
+    pub trap_hook: ?u32
     /// By effect id; the first is the pseudo-effect of `..E` terms.
     pub effects: List(EffectInfo)
     pub adts: List(AdtInfo)
@@ -361,6 +367,8 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         decl_clause_breaks: list(DeclBreak),
         decl_with_checks: list(DeclWithCheck),
         inline_fns: list(InlineFn),
+        exports: list(string),
+        trap_hook: null,
         effects: list(EffectInfo),
         adts: list(AdtInfo),
         params: list(ParamData),
@@ -618,6 +626,9 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     hints: ?ast.Attribute = null
     inline := false
     align_attr: ?ast.Attribute = null
+    export: ?(sym: string, span: source.Span) = null
+    callconv: ?(win64: bool, span: source.Span) = null
+    trap_hook: ?source.Span = null
     for attr in item.attrs {
         match attr.name.name {
             "global" => { global = true }
@@ -643,7 +654,24 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
                 }
                 if not ok { s.error(attr.span, "`#fuel(n)` takes a positive integer constant") }
             }
-            "export", "trap_hook", "callconv" => s.unsupported(attr.span, str.format("the attribute `#{}`", attr.name.name)!)
+            "export" => {
+                ok := false
+                if args := attr.args and args.len is 1 and .Str(lit) := args[0].kind {
+                    if not lit.bytes.utf8_valid() { s.unsupported(args[0].span, "symbol names with special characters") }
+                    export = (sym: lit.bytes, span: attr.span)
+                    ok = true
+                }
+                if not ok { s.error(attr.span, "`#export` takes the symbol name: `#export(\"sym\")`") }
+            }
+            "trap_hook" => {
+                if args := attr.args and args.len > 0 { s.error(attr.span, "`#trap_hook` takes no arguments") }
+                trap_hook = attr.span
+            }
+            "callconv" => {
+                if callconv is not null { s.error(attr.span, "a function has one calling convention") }
+                callconv = null
+                if w := s.callconv_attr(&attr) { callconv = (win64: w, span: attr.span) }
+            }
             // Inlining hints (§11.10) do not change the meaning of a program.
             "inline", "noinline", "cold", "fast_math" => {
                 if attr.name.name in ("inline", "noinline") { inline = attr.name.name is "inline" }
@@ -667,7 +695,7 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     if thread_local and not global { s.error(name.span, "`#thread_local` applies only to a `#global`") }
     if a := align_attr {
         if global {
-            s.unsupported(a.span, "`#global #align`")
+            _ = s.attr_power_of_two(module, &a)
         } else {
             s.error(a.span, "`#align` goes directly before a `struct` or `union` literal, or on a `#global` (§20.2)")
         }
@@ -681,10 +709,31 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
         v = s.compute_binding(id, module, name, &item, &b)
     }
     s.fuel = saved_fuel
+    if c := callconv {
+        match v {
+            .Fn(f) => s.apply_callconv(f, c.win64, c.span)
+            .Error => {}
+            _ => s.error(c.span, "`#callconv` applies only to a function, a foreign function or a `^fn` type")
+        }
+    }
     if h := hints {
         if .Fn(f) := v and inline { s.inline_fns.push(InlineFn(fn_id: f, span: h.span))! }
         if v is not .Fn(_) and v is not .Error {
             s.error(h.span, str.format("`#{}` applies only to a function (§20.2)", h.name.name)!)
+        }
+    }
+    if span := trap_hook {
+        match v {
+            .Fn(f) => s.trap_hook_fn(f, span)
+            .Error => {}
+            _ => s.error(span, "`#trap_hook` applies only to a function")
+        }
+    }
+    if e := export {
+        match v {
+            .Fn(f) => s.export_fn(f, e.sym, e.span)
+            .Error => {}
+            _ => s.error(e.span, "`#export` applies only to a function")
         }
     }
     return v
