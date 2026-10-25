@@ -28,6 +28,11 @@ parse_pattern :: fn(p: ^Parser) -> Abort!ast.Pattern needs Alloc {
             if p.at(.LParen) { args = try p.parse_pat_args() }
             return p.mk_pat(.Path(ast.PathPattern(path: path, args: args)), p.span_from(start))
         }
+        .Punct(.Question) => {
+            _ = p.bump()
+            name := try p.parse_ident("a name after `?`")
+            return p.mk_pat(.Whole(name), p.span_from(start))
+        }
         .Punct(.LParen) => return p.parse_tuple_pattern()
         .Punct(.Minus), .Int(_), .Float(_), .Str(_), .Keyword(.True), .Keyword(.False) => return p.parse_literal_pattern()
         .Ident(_) => return p.parse_path_pattern()

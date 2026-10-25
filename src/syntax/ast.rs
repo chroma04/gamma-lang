@@ -785,6 +785,8 @@ pub enum PatternKind {
     Wildcard,
     /// A bare identifier: always a binding (§9.2).
     Bind(Ident),
+    /// `?x`: binds an optional or a result as it is, without unwrapping it (§9.3).
+    Whole(Ident),
     /// An integer, character, string or bool literal, optionally negated:
     /// the expression is `Int`, `Str`, `Bool`, or `Unary { Neg, Int|Float }`.
     /// (Float literal patterns are rejected after parsing.)

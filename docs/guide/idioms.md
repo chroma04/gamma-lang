@@ -152,7 +152,7 @@ main :: fn() needs Out {
 
 ## Optional parts of variants
 
-In a pattern, a name in the position of an optional matches only a *present* value (§9.3). That is what makes `if x := opt` work, and it makes `.Return(null)` and `.Return(x)` a natural pair of arms. But it also means that `.Break(label, value)`, for a payload `(label: ?string, value: ?i32)`, does not match a `break` without a label (the compiler points at `label` when the `match` is left incomplete). To look at optional parts as they are, bind the whole payload with one name and read its fields:
+In a pattern, a name in the position of an optional matches only a *present* value (§9.3). That is what makes `if x := opt` work, and it makes `.Return(null)` and `.Return(x)` a natural pair of arms. But it also means that `.Break(label, value)`, for a payload `(label: ?string, value: ?i32)`, does not match a `break` without a label (the compiler points at `label` when the `match` is left incomplete). To bind an optional part as it is, absent value included, write `?` before its name:
 
 ```gamma
 Expr :: union {
@@ -162,7 +162,7 @@ Expr :: union {
 }
 
 describe :: fn(e: Expr) -> string => match e {
-    .Break(b) => if b.label is null { "break" } else { "labeled break" }
+    .Break(?label, _) => if label is null { "break" } else { "labeled break" }
     .Return(null) => "return"
     .Return(_) => "return a value"
     .Int(_) => "integer"

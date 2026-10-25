@@ -1,0 +1,18 @@
+(file
+  (item
+    (binding const f
+      (fn (params)
+        (block
+          (expr
+            (match
+              (ident v)
+              (arm (pats (bind-whole a)) (ident a))
+              (arm (pats (path (dot Break) (args (bind-whole label) (bind-whole value))))
+                (ident b))
+              (arm (pats (tuple (bind-whole x) (err (bind e)))) (ident c))))
+          (expr
+            (if
+              (branch
+                (cond (bind (path (dot Some) (args (bind-whole y))) (ident w)))
+                (block
+                  (expr (ident d)))))))))))

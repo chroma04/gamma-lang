@@ -336,11 +336,12 @@ fn finding_diag(
                 format!("`{}` matches only {}, so {} here goes to the catch-all arm", name, value, absent),
             )
             .with_label(catch_all, format!("{} is matched here", absent))
-            .with_note(
+            .with_note(format!(
                 "a name in the position of an optional or a result below the top of a pattern matches only a \
-                     present or success value (§9.3); add an arm for the other case (such as `.V(null)`), or bind \
-                     the value that holds it",
-            )
+                 present or success value (§9.3); add an arm for the other case (such as `.V(null)`), or write \
+                 `?{}` to bind the value as it is",
+                name
+            ))
         }
         Finding::BoolComparison { span, operand, same } => {
             let whole = text(span);

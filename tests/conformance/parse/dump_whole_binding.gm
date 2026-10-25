@@ -1,0 +1,12 @@
+//! stage: parse
+//! dump
+// 9.1 and 9.3: `?x` binds an optional or a result as it is.
+
+f :: fn() {
+    match v {
+        ?a => a
+        .Break(?label, ?value) => b
+        (?x, !e) => c
+    }
+    if .Some(?y) := w { d }
+}

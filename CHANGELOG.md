@@ -8,6 +8,11 @@ Versions and what each kind of change means are described in
 
 ### Language
 
+- **`?x`** in a pattern binds an optional or a result as it is, absent or failed value
+  included, where a bare name would match only a present or success value (§9.3):
+  `.Break(?label, ?value)` matches every `.Break` and binds both optionals. It is
+  irrefutable; against any other type it is an error. The "not exhaustive" error and the
+  `present-only-binding` lint now suggest it.
 - Storing the address of a local where it certainly outlives the local is a compile error,
   as returning it already was (§15.1): assigning `&x` (or a slice of a local array), by
   itself or inside another value, to a local of an enclosing scope, a captured local or a

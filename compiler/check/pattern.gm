@@ -24,7 +24,7 @@ Pat :: tir.Pat
 /// checked.
 bind_unchecked :: fn(cx: ^FnCx, p: ^const ast.Pattern, ctx: PatCtx, binds: ^List(PatBind)) needs Load {
     match p.kind {
-        .Bind(name) => if ctx is not .IsTest and not bound(binds, name.name) {
+        .Bind(name), .Whole(name) => if ctx is not .IsTest and not bound(binds, name.name) {
             id := cx.new_local(name.name, cx.s.tys.error(), false, name.span)
             binds.push(PatBind(name: name.name, local: id, span: name.span))!
         }
@@ -53,6 +53,13 @@ pattern :: fn(cx: ^FnCx, p: ^const ast.Pattern, ty0: Ty, ctx: PatCtx, binds: ^Li
         cx.bind_unchecked(p, ctx, binds)
         return tir.mk_pat(ty, .Wild, p.span)
     }
+    // `?x` binds an optional or a result as it is (§9.3).
+    if .Whole(name) := p.kind {
+        if tys.kind(ty) not in (.Optional(_), .Result(_)) {
+            cx.error(p.span, str.format("`?{}` binds an optional or a result as it is, but this is `{}`; write `{}`", name.name, cx.show(ty), name.name)!)
+        }
+        return cx.bind_pattern(name, ty, ctx, binds, p.span)
+    }
     // Implicit unwrapping of optionals and results in refutable contexts (§9.3). A bare
     // binding unwraps one level: against `??T` it binds the present `?T`.
     if ctx is not .Irrefutable {
@@ -72,6 +79,25 @@ pattern :: fn(cx: ^FnCx, p: ^const ast.Pattern, ty0: Ty, ctx: PatCtx, binds: ^Li
     return cx.pattern_here(p, ty, ctx, binds)
 }
 
+/// The binding of `name` to a value of type `ty`, by the pattern at `span`.
+bind_pattern :: fn(cx: ^FnCx, name: ast.Ident, ty: Ty, ctx: PatCtx, binds: ^List(PatBind), span: source.Span) -> ^Pat needs Load {
+    if ctx is .IsTest {
+        cx.error(span, "a pattern on the right of `is` cannot bind names; use `if pattern := value`")
+        return tir.mk_pat(ty, .Wild, span)
+    }
+    if cx.names_constant(name.name) {
+        cx.error(span, str.format("`{}` is a constant, but a bare name in a pattern always binds a new name; compare with a guard instead (`x if x is {}`)", name.name, name.name)!)
+    }
+    id := cx.new_local(name.name, ty, false, name.span)
+    if bound(binds, name.name) {
+        // The name is declared once, by its first binding.
+        cx.error(name.span, str.format("`{}` is bound twice in this pattern", name.name)!)
+    } else {
+        binds.push(PatBind(name: name.name, local: id, span: name.span))!
+    }
+    return tir.mk_pat(ty, .Bind(id), span)
+}
+
 /// Pattern `p` against a value of type `ty`, without unwrapping `ty`.
 pattern_here :: fn(cx: ^FnCx, p: ^const ast.Pattern, ty0: Ty, ctx: PatCtx, binds: ^List(PatBind)) -> ^Pat needs Load {
     tys := &cx.s.tys
@@ -80,23 +106,7 @@ pattern_here :: fn(cx: ^FnCx, p: ^const ast.Pattern, ty0: Ty, ctx: PatCtx, binds
     wild := tir.mk_pat(ty, .Wild, span)
     match p.kind {
         .Wildcard => return wild
-        .Bind(name) => {
-            if ctx is .IsTest {
-                cx.error(span, "a pattern on the right of `is` cannot bind names; use `if pattern := value`")
-                return wild
-            }
-            if cx.names_constant(name.name) {
-                cx.error(span, str.format("`{}` is a constant, but a bare name in a pattern always binds a new name; compare with a guard instead (`x if x is {}`)", name.name, name.name)!)
-            }
-            id := cx.new_local(name.name, ty, false, name.span)
-            if bound(binds, name.name) {
-                // The name is declared once, by its first binding.
-                cx.error(name.span, str.format("`{}` is bound twice in this pattern", name.name)!)
-            } else {
-                binds.push(PatBind(name: name.name, local: id, span: name.span))!
-            }
-            return tir.mk_pat(ty, .Bind(id), span)
-        }
+        .Bind(name), .Whole(name) => return cx.bind_pattern(name, ty, ctx, binds, span)
         .Null => {
             if tys.kind(ty) is not .Optional(_) {
                 cx.error(span, str.format("`null` matches only optionals, but this is `{}`", cx.show(ty))!)

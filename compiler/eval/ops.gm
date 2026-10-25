@@ -601,12 +601,12 @@ equal :: fn(m: ^Machine, a, b: Value, t: Ty, span: source.Span) -> Flow!bool nee
             .Result(err, _) := tys.kind(t) else return !m.unsupported(span, "this comparison")
             return m.equal(x^, y^, err, span)
         }
-        .Variant(va) => {
-            .Variant(vb) := b else return false
-            if va.index is not vb.index { return false }
-            x := va.payload else return true
-            y := vb.payload else return true
-            pt := m.payload_ty(t, va.index) else return !m.unsupported(span, "this comparison")
+        .Variant(index, ?pa) => {
+            .Variant(index_b, ?pb) := b else return false
+            if index is not index_b { return false }
+            x := pa else return true
+            y := pb else return true
+            pt := m.payload_ty(t, index) else return !m.unsupported(span, "this comparison")
             return m.equal(x^, y^, pt, span)
         }
         .Agg(x) => {
@@ -676,10 +676,10 @@ display :: fn(m: ^Machine, v: Value, t: Ty) -> ?[]u8 needs Alloc {
     match v {
         .Int(bits) => if m.s.tys.is_integer(t) { return m.big_of(bits, t).to_decimal() }
         .Bool(b) => return str.format("{}", b)!
-        .Variant(x) => if x.payload is null {
+        .Variant(index, null) => {
             .Adt(id, _) := m.s.tys.kind(t) else return null
             .Union(_, variants) := m.s.adts.items[usize(id)].kind else return null
-            return str.format(".{}", variants[usize(x.index)].name)!
+            return str.format(".{}", variants[usize(index)].name)!
         }
         _ => {}
     }

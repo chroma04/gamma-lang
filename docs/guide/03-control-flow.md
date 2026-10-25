@@ -56,7 +56,7 @@ greet :: fn(id: u32) needs Out {
 }
 ```
 
-Against an optional `?T`, a bare name matches **only a present value** and binds a `T`. Against a result `E!T` it matches only success. The same works with union variants:
+Against an optional `?T`, a bare name matches **only a present value** and binds a `T`. Against a result `E!T` it matches only success. To bind an optional or a result as it is, absent or failed included, write `?` before the name: in a `match` on a payload `(label: ?string, value: ?i32)`, `.Break(?label, _)` matches every `.Break` and binds `label: ?string`. Binding conditions work with union variants too:
 
 ```gamma
 Shape :: union {
