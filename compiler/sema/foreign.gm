@@ -36,6 +36,12 @@ declare_global :: fn(s: ^Sema, module: usize, name: ast.Ident, b: ^const ast.Bin
     }
     ty := s.resolve_type(module, ty_expr)
     if s.tys.is_error(ty) { return .Error }
+    if s.const_check(module, b.init, ty) is not null { return .Global(ty) }
+    // Any other initializer is checked and evaluated now, as an expression.
+    if hook := s.eval_hook and not s.tys.has_param(ty) {
+        _ = hook(s, module, b.init, ty, "<global>", b.init.span) else return .Error
+        return .Global(ty)
+    }
     _ = s.const_type(module, b.init, ty) else return .Error
     return .Global(ty)
 }

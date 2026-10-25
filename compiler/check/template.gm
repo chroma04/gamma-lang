@@ -248,15 +248,17 @@ build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template: ^const ast.Expr, res
     if template.kind is .Ident(_) {
         t := cx.expr(template, cx.s.tys.string_ty())
         if t.kind is .ValueParam(_) { return cx.write_deferred(sink, t, rest, span) }
-        if cx.s.tys.is_error(t.ty) { return cx.unsupported(template.span, "templates that are not literals") }
     }
     bytes: []const u8 = empty_slice(u8)
     if .Str(lit) := template.kind {
         bytes = lit.bytes
     } else if b := cx.const_template(template, cx.module, 0) {
         bytes = b
+    } else if b := const_string(cx.s, cx.module, template) {
+        bytes = b
     } else {
-        return cx.unsupported(template.span, "templates that are not literals")
+        cx.error(template.span, "the template must be a compile-time string: a literal, a constant, or a `string` compile-time parameter")
+        return error_expr(cx.s, span)
     }
     ta := cx.template_args(bytes, template.span, rest, span) else return error_expr(cx.s, span)
     write := tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: ta.pieces, specs: ta.specs, args: ta.values)), span)

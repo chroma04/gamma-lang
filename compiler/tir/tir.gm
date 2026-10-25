@@ -345,6 +345,11 @@ pub Builtin :: union {
     Cast
     /// `p.addr()`.
     Addr
+    /// `p + n` and `p - n` on a many-pointer, moving by whole elements; `p - q` is the
+    /// distance in elements, as an `isize`.
+    PtrAdd
+    PtrSub
+    PtrDiff
     /// `n.to_ptr(P)`.
     ToPtr
     /// `u.tag()` and `U.from_tag(x)`.

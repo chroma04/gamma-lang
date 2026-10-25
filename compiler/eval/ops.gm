@@ -541,6 +541,13 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
             return .Some(new(copy(v))!)
         }
         .BlackBox => return x
+        // A pointer made from an address, such as the dangling pointer of an empty slice:
+        // a place that holds nothing.
+        .ToPtr => {
+            .Int(bits) := x else return !m.unsupported(span, "this builtin")
+            if bits is 0 { return .Null }
+            return .Some(new(Value.Ptr(Place(cell: new(Cell(v: .Null, is_static: true))!, path: empty_slice(u64))))!)
+        }
         .Bits => return m.reinterpret(x, at, e.ty, span)
         .Sqrt => {
             .Float(f) := x else return !m.unsupported(span, "this builtin")

@@ -499,6 +499,9 @@ prelude_template :: fn(s: ^Sema, name: string) -> ?u32 needs Load {
     return template
 }
 
+/// The core library's `Range` or `RangeIncl`.
+pub range_template :: fn(s: ^Sema, inclusive: bool) -> ?u32 needs Load => s.prelude_template(if inclusive { "RangeIncl" } else { "Range" })
+
 /// The type argument of `t` if `t` is an instance of the prelude's generic type `name`.
 prelude_instance_arg :: fn(s: ^Sema, t: Ty, name: string) -> ?Ty needs Load {
     .Adt(id, args) := s.tys.kind(t) else return null

@@ -615,6 +615,13 @@ slice :: fn(m: ^Machine, sl: tir.SliceExpr, span: source.Span) -> Flow!Value nee
             start = s.start
             len = s.len
         }
+        // A many-pointer has no length: both bounds are given.
+        .ManyPtr(_) => {
+            if sl.hi is null { return !m.unsupported(span, "slicing a many-pointer without an upper bound") }
+            .Ptr(pl) := (try m.eval(sl.base)) else return !m.unsupported(span, "slicing this pointer")
+            start = pl
+            len = 0xFFFF_FFFF_FFFF_FFFF
+        }
         _ => return !m.unsupported(span, "slicing this type at compile time")
     }
     lo: i128 = 0

@@ -335,6 +335,8 @@ check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) 
     }
     s.checking.push(fn_id)!
     defer _ = s.checking.pop()
+    outer := s.enter_module_scope()
+    defer s.leave_module_scope(outer)
     cx := fn_cx(s, module, sig.ret, sig.effects)
     cx.fn_id = fn_id
     cx.infer.numeric_params = numeric.items

@@ -76,6 +76,26 @@ pub restore_scope :: fn(s: ^Sema, mark: ScopeMark) {
     s.local_consts.truncate(mark.consts)
 }
 
+/// The locals and nested functions of a body, set aside while something that is not part
+/// of it is checked (another body).
+pub BodyLocals :: struct {
+    consts: List(LocalConst)
+    fns: List(LocalFn)
+}
+
+/// Hides the names of the body being checked; `leave_module_scope` brings them back.
+pub enter_module_scope :: fn(s: ^Sema) -> BodyLocals needs Alloc {
+    saved := BodyLocals(consts: s.local_consts, fns: s.local_fns)
+    s.local_consts = list(LocalConst)
+    s.local_fns = list(LocalFn)
+    return saved
+}
+
+pub leave_module_scope :: fn(s: ^Sema, saved: BodyLocals) {
+    s.local_consts = saved.consts
+    s.local_fns = saved.fns
+}
+
 /// The innermost local of the body being checked named `name`.
 pub local_const :: fn(s: ^const Sema, name: string) -> ?LocalConst {
     i := s.local_consts.items.len

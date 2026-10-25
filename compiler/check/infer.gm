@@ -103,11 +103,35 @@ resolve :: fn(t: ^InferTable, s: ^Sema, ty: Ty) -> Ty needs Load {
             for x in elems { out.push(t.resolve(s, x))! }
             return s.tys.intern(.Tuple(out.items, names))
         }
+        .Fn(sig) => return s.tys.intern(.Fn(t.resolve_sig(s, sig)))
+        .FnPtr(sig) => return s.tys.intern(.FnPtr(t.resolve_sig(s, sig)))
+        .Adt(id, args) => return s.tys.intern(.Adt(id, t.resolve_args(s, args)))
+        .Effects(set) => return s.tys.intern(.Effects(t.resolve_effects(s, set)))
         _ => {
             s.unsupported(source.DUMMY, "inference inside this type")
             return ty
         }
     }
+}
+
+resolve_args :: fn(t: ^InferTable, s: ^Sema, args: []const types.GenericArg) -> []const types.GenericArg needs Load {
+    out := list(types.GenericArg)
+    for a in args {
+        if .Type(x) := a { out.push(.Type(t.resolve(s, x)))! } else { out.push(a)! }
+    }
+    return out.items
+}
+
+resolve_effects :: fn(t: ^InferTable, s: ^Sema, set: types.EffectSet) -> types.EffectSet needs Load {
+    out := list(types.EffectRef)
+    for e in set.effects { out.push(types.EffectRef(eff: e.eff, args: t.resolve_args(s, e.args)))! }
+    return types.effect_set(out.items)
+}
+
+resolve_sig :: fn(t: ^InferTable, s: ^Sema, sig: types.FnTy) -> types.FnTy needs Load {
+    params := list(Ty)
+    for p in sig.params { params.push(t.resolve(s, p))! }
+    return types.FnTy(params: params.items, ret: t.resolve(s, sig.ret), effects: t.resolve_effects(s, sig.effects), variadic: sig.variadic, win64: sig.win64)
 }
 
 /// The kind of an unresolved variable type, if `ty` is one.
