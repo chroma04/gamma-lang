@@ -56,7 +56,9 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
         }
         effects = if open_effects.items.len is 0 { f.effects } else { types.effect_set(kept.items) }
     }
-    infer_ret := ret_known is null and lit.body is .Expr(_)
+    // The literal passed for an iterator argument (§13.5), checked for being one below.
+    iterator_arg := lit.span in cx.iterator_args.items
+    infer_ret := (ret_known is null or iterator_arg) and lit.body is .Expr(_)
     infer_block := ret_known is null and lit.body is .Block(_)
     ret := ret_known else tys.unit()
     fn_name := if n := name { n.name } else { "<fn>" }
@@ -78,6 +80,21 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
     final_ret := cx.ret
     cx.reject_returned_closure(lit, final_ret)
     frame := cx.exit_fn()
+    if iterator_arg {
+        yields := false
+        if y := cx.s.yield_effect {
+            for p in frame.performed {
+                if p.effect_.eff is y { yields = true }
+            }
+        }
+        if not yields {
+            ty := cx.infer.resolve(cx.s, final_ret)
+            if not tys.is_error(ty) {
+                cx.error(span, str.format("this call is not an iterator (it returns `{}` and yields nothing), but the parameter takes an iterator (§13.5)", cx.show(ty))!)
+            }
+            return error_expr(cx.s, span)
+        }
+    }
     for id in open_effects.items {
         if not cx.infer_open_effect(id, frame.performed, &effects, fn_id, span) { return error_expr(cx.s, span) }
     }

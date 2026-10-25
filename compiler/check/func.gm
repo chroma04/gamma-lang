@@ -231,6 +231,11 @@ pub FnCx :: struct {
     /// Effects performed inside a `with` that handles another instantiation of the same
     /// effect, by where they are performed.
     near_misses: List(Performed)
+    /// Statements that evaluate the call arguments of an iterator argument, to be placed
+    /// before the call (§13.5).
+    iter_pre: List(tir.Stmt)
+    /// The function literals made for iterator arguments, by place.
+    iterator_args: List(source.Span)
 }
 
 /// A handler literal bound with `::` whose clauses are checked later, in the scope where
@@ -293,6 +298,8 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         pending_handlers: list(PendingHandler),
         shielded_performs: list(Shielded),
         near_misses: list(Performed),
+        iter_pre: list(tir.Stmt),
+        iterator_args: list(source.Span),
     )
 }
 

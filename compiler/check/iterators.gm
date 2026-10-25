@@ -182,6 +182,152 @@ iterator_call_as_value :: fn(cx: ^FnCx, e0: ^const ast.Expr, v: ^Expr, param: Ty
     return true
 }
 
+/// For an argument written as a call where the parameter is an iterator parameter
+/// (§13.5), the function literal `fn() => call` that is passed instead.
+iterator_arg :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ?ast.Expr needs Load {
+    .Fn(sig) := cx.s.tys.kind(ty) else return null
+    y := cx.s.yield_effect else return null
+    if sig.params.len > 0 { return null }
+    yields := false
+    for x in sig.effects.effects {
+        if x.eff is y { yields = true }
+    }
+    if not yields { return null }
+    inner := e
+    while .Paren(x) := inner.kind { inner = x }
+    if inner.kind is not .Call(_) { return null }
+    // The callee's arguments and receiver are evaluated here, once; the literal only makes
+    // the call (§13.5).
+    call := cx.hoist_iterator_call(inner)
+    fsig := ast.FnSig(params: empty_slice(ast.Param), variadic: false, ret: null, effects: null, span: e.span)
+    lit := new(ast.FnLit(sig: fsig, where_: empty_slice(ast.Constraint), body: .Expr(new(call)!), span: e.span))!
+    cx.iterator_args.push(e.span)!
+    return ast.Expr(id: e.id, kind: .Fn(lit), span: e.span)
+}
+
+/// After the argument for parameter `i` was checked: if it is an iterator whose call
+/// arguments are evaluated first (§13.5), the arguments written before it are evaluated
+/// into temporaries, then those statements are added to `stmts`; this keeps the
+/// left-to-right order.
+place_iter_pre :: fn(cx: ^FnCx, bound: ^List(?^Expr), written: ^List(usize), i: usize, stmts: ^List(tir.Stmt)) needs Alloc {
+    if cx.iter_pre.items.len > 0 {
+        for j in written.items {
+            if v := bound.items[j] { bound.items[j] = cx.bind_temp(v, stmts) }
+        }
+        stmts.extend(cx.iter_pre.items)!
+        cx.iter_pre = list(tir.Stmt)
+    }
+    written.push(i)!
+}
+
+/// `f(a1, …, an)` rewritten so that `a1 … an` and a method call's receiver are evaluated
+/// now, into hidden locals (statements in `iter_pre`), leaving a call of those locals for
+/// the iterator literal to make each time it runs.
+hoist_iterator_call :: fn(cx: ^FnCx, call: ^const ast.Expr) -> ast.Expr needs Load {
+    .Call(callee, args, trailing_comma) := call.kind else return call^
+    new_callee := callee^
+    if .Field(base, name) := callee.kind {
+        if not cx.denotes_type(base) {
+            b := cx.hoist_iter_value(base, true)
+            new_callee = ast.Expr(id: callee.id, kind: .Field(base: new(b)!, name: name), span: callee.span)
+        }
+    }
+    out := list(ast.Arg)
+    for a in args {
+        kind: ast.ArgKind = match a.kind {
+            .Positional(e) => .Positional(cx.hoist_iter_value(&e, false))
+            .Named(n, e) => .Named(name: n, value: cx.hoist_iter_value(&e, false))
+            .Spread(e) => .Spread(e)
+        }
+        out.push(ast.Arg(kind: kind, span: a.span))!
+    }
+    return ast.Expr(id: call.id, kind: .Call(callee: new(new_callee)!, args: out.items, trailing_comma: trailing_comma), span: call.span)
+}
+
+/// Whether `e` is a constant expression or names a global: evaluating it again is
+/// unobservable, and it may depend on the type expected where it is written.
+iter_stable :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+    match e.kind {
+        .Int(_), .Float(_), .Str(_), .Bool(_), .Null, .Uninit, .Underscore, .DotIdent(_) => return true
+        .Ident(id) => return cx.lookup_local(id.name) is null
+        .Paren(x) => return cx.iter_stable(x)
+        .Field(base, _) => return cx.iter_stable(base)
+        .Unary(op, operand) => return op in (ast.UnOp.Neg, ast.UnOp.BitNot, ast.UnOp.Not) and cx.iter_stable(operand)
+        .Binary(_, lhs, rhs) => return cx.iter_stable(lhs) and cx.iter_stable(rhs)
+        // `.V(args)`: a union value built from its context.
+        .Call(callee, args, _) => {
+            if callee.kind is not .DotIdent(_) { return false }
+            for a in args {
+                match a.kind {
+                    .Positional(x) => if not cx.iter_stable(&x) { return false }
+                    .Named(_, x) => if not cx.iter_stable(&x) { return false }
+                    .Spread(_) => return false
+                }
+            }
+            return true
+        }
+        _ => return cx.denotes_type(e)
+    }
+}
+
+/// The expression that stands for `e` in the literal made for an iterator argument: `e`
+/// is evaluated now. A place (`receiver`, or an array, which would otherwise be copied)
+/// stays a place, with the pointers and indexes in it evaluated now; any other value goes
+/// into a hidden local.
+hoist_iter_value :: fn(cx: ^FnCx, e: ^const ast.Expr, receiver: bool) -> ast.Expr needs Load {
+    if cx.iter_stable(e) { return e^ }
+    place: ?ast.Expr = null
+    match e.kind {
+        .Paren(x) => return cx.hoist_iter_value(x, receiver)
+        .Ident(_) => { place = e^ }
+        .Field(base, name) => {
+            b := cx.hoist_iter_value(base, true)
+            place = ast.Expr(id: ast.NodeId(0xFFFF_FFFF), kind: .Field(base: new(b)!, name: name), span: e.span)
+        }
+        .TupleField(base, index, index_span) => {
+            b := cx.hoist_iter_value(base, true)
+            place = ast.Expr(id: ast.NodeId(0xFFFF_FFFF), kind: .TupleField(base: new(b)!, index: index, index_span: index_span), span: e.span)
+        }
+        .Index(base, index) => {
+            b := cx.hoist_iter_value(base, true)
+            i := cx.hoist_iter_value(index, false)
+            place = ast.Expr(id: ast.NodeId(0xFFFF_FFFF), kind: .Index(base: new(b)!, index: new(i)!), span: e.span)
+        }
+        .Deref(x) => {
+            v := cx.hoist_iter_value(x, false)
+            place = ast.Expr(id: ast.NodeId(0xFFFF_FFFF), kind: .Deref(new(v)!), span: e.span)
+        }
+        .Unary(.AddrOf, operand) => {
+            o := cx.hoist_iter_value(operand, true)
+            return ast.Expr(id: ast.NodeId(0xFFFF_FFFF), kind: .Unary(op: .AddrOf, operand: new(o)!), span: e.span)
+        }
+        _ => {}
+    }
+    expr: ast.Expr = if p := place { p } else { e^ }
+    mark := cx.performed.items.len
+    v := cx.expr(&expr, null)
+    // An iterator passed on (`filtered(fib(), f)`): not a value; its own arguments are
+    // evaluated now too, and the call stays where it is.
+    if expr.kind is .Call(_) and expr.span in cx.iterator_calls.items {
+        cx.performed.truncate(mark)
+        return cx.hoist_iterator_call(&expr)
+    }
+    ty := cx.infer.resolve(cx.s, v.ty)
+    keep_place := place is not null and (receiver or cx.s.tys.kind(ty) is .Array(_))
+    // A second-class function cannot be stored, and an untyped constant takes its type
+    // from the parameter it is passed for: both are evaluated where they are used.
+    if cx.s.tys.is_error(ty) or cx.s.tys.has_infer(ty) or cx.s.tys.kind(ty) is .Fn(_) or keep_place { return expr }
+    pre := cx.iter_pre
+    cx.iter_pre = list(tir.Stmt)
+    cx.lift_temps(v, &pre)
+    name: string = str.format("<iter{}>", cx.locals.items.len)!
+    local := cx.new_local(name, ty, true, e.span)
+    pre.push(.Let(local, v))!
+    cx.iter_pre = pre
+    cx.declare(name, .Var(local), e.span)
+    return ast.Expr(id: ast.NodeId(0xFFFF_FFFF), kind: .Ident(ast.Ident(name: name, span: e.span)), span: e.span)
+}
+
 /// The instantiations of effect `eff` available here: declared by the enclosing functions
 /// or handled by enclosing `with`s.
 available :: fn(cx: ^const FnCx, eff: u32) -> []EffectRef needs Alloc {
