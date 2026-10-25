@@ -800,6 +800,26 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
     return cx.unsupported(span, "this field")
 }
 
+/// Whether pointer type `src` is `^Outer` (or `^const Outer`) and `target` is `^S` (resp.
+/// `^const S`) for a struct `S` embedded by `using`, directly or through the embedded
+/// structs' own `using` fields.
+embeds :: fn(cx: ^FnCx, src, target: Ty) -> bool {
+    tys := &cx.s.tys
+    .Ptr(sc, outer) := tys.kind(src) else return false
+    .Ptr(tc, inner) := tys.kind(target) else return false
+    if sc and not tc { return false }
+    cur := outer
+    for _ in 0..64 {
+        .Adt(id, _) := tys.kind(cur) else return false
+        if not cx.s.adts.items[usize(id)].has_using { return false }
+        fields := cx.s.struct_fields(cur) else return false
+        if fields.len is 0 { return false }
+        cur = fields[0].ty
+        if cur is inner { return true }
+    }
+    return false
+}
+
 /// Field `name` of a struct or `#c_union` value, looking through `using` fields (§5.10.3).
 struct_field :: fn(cx: ^FnCx, b: ^Expr, name: string, span: source.Span, depth: u32) -> ?^Expr needs Load {
     bt := cx.infer.resolve(cx.s, b.ty)
