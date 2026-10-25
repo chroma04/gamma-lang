@@ -90,30 +90,9 @@ limit_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: sour
         }
         return tir.mk(t, .IntLimit(t, name is "max_value"), span)
     }
-    signed := false
-    bits: u64 = 0
-    match tys.kind(t) {
-        .Int(sg, b) => {
-            signed = sg
-            bits = u64(b)
-        }
-        .Usize => { bits = u64(target.ptr_bits) }
-        .Isize => {
-            signed = true
-            bits = u64(target.ptr_bits)
-        }
-        _ => {
-            cx.error(span, str.format("`@{}` takes an integer type, not `{}`", name, cx.show(t))!)
-            return error_expr(cx.s, span)
-        }
-    }
-    magnitude := bits - u64(signed)
-    v := if name is "max_value" {
-        bigint.sub(bigint.shl(bigint.one(), magnitude), bigint.one())
-    } else if signed {
-        bigint.neg(bigint.shl(bigint.one(), magnitude))
-    } else {
-        bigint.zero()
+    v := int_limit(cx.s, t, name is "max_value") else {
+        cx.error(span, str.format("`@{}` takes an integer type, not `{}`", name, cx.show(t))!)
+        return error_expr(cx.s, span)
     }
     return tir.mk(t, .Int(v), span)
 }
@@ -841,4 +820,26 @@ ConstStr :: union {
     Str: []const u8
     No
     Unsupported
+}
+
+/// `@max_value(t)` or (not `max`) `@min_value(t)` of an integer type `t`, else `null`.
+int_limit :: fn(s: ^Sema, t: Ty, max: bool) -> ?bigint.Int needs Alloc {
+    signed := false
+    bits: u64 = 0
+    match s.tys.kind(t) {
+        .Int(sg, b) => {
+            signed = sg
+            bits = u64(b)
+        }
+        .Usize => { bits = u64(target.ptr_bits) }
+        .Isize => {
+            signed = true
+            bits = u64(target.ptr_bits)
+        }
+        _ => return null
+    }
+    magnitude := bits - u64(signed)
+    if max { return bigint.sub(bigint.shl(bigint.one(), magnitude), bigint.one()) }
+    if signed { return bigint.neg(bigint.shl(bigint.one(), magnitude)) }
+    return bigint.zero()
 }

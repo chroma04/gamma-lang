@@ -362,6 +362,7 @@ finish :: fn(cx: ^FnCx, body: ^Expr) needs Load {
         def.params = n.params
         def.locals = n.locals
         def.body = n.body
+        def.nested = true
     }
     cx.nested.clear()
 }
