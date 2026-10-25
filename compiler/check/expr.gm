@@ -239,7 +239,7 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
                     cx.recursive_without_ret(name, span)
                     return error_expr(cx.s, span)
                 }
-                return cx.fn_ref(f, span)
+                return cx.named_fn_value(f, name, expect, span)
             }
             .Untyped(v) => return cx.untyped_literal(&v, span)
             .Const(c) => return tir.mk(c.ty, .Const(c.name, c.span), span)
@@ -302,18 +302,21 @@ len_value :: fn(cx: ^FnCx, len: Ty, span: source.Span) -> ^Expr needs Load {
     }
 }
 
+/// A named function used as a value; a generic one needs its compile-time arguments.
+named_fn_value :: fn(cx: ^FnCx, f: u32, name: string, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    if cx.s.fns.items[usize(f)].generics.len > 0 {
+        if e := cx.generic_fn_from_expected(f, expect, span) { return e }
+        cx.error(span, str.format("`{}` is generic, so it needs its compile-time arguments to be a function value: write `{}(…)` with only the types and `::` values, or give a function pointer type that determines them (§16.7)", name, name)!)
+        return error_expr(cx.s, span)
+    }
+    return cx.fn_ref(f, span)
+}
+
 /// The value of a top-level declaration named `name`.
 decl_expr :: fn(cx: ^FnCx, d: usize, name: string, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
     cx.s.check_deprecated(d, span)
     match cx.s.resolve_decl(d) {
-        .Fn(f) => {
-            if cx.s.fns.items[usize(f)].generics.len > 0 {
-                if e := cx.generic_fn_from_expected(f, expect, span) { return e }
-                cx.error(span, str.format("`{}` is generic, so it needs its compile-time arguments to be a function value: write `{}(…)` with only the types and `::` values, or give a function pointer type that determines them (§16.7)", name, name)!)
-                return error_expr(cx.s, span)
-            }
-            return cx.fn_ref(f, span)
-        }
+        .Fn(f) => return cx.named_fn_value(f, name, expect, span)
         .Const(ty) => return tir.mk(ty, .Const(name, cx.s.l.decls.items[d].name.span), span)
         .Untyped(v) => return cx.untyped_literal(&v, span)
         .Type(_), .GenericType(_) => cx.error(span, str.format("expected a value, found the type `{}`", name)!)

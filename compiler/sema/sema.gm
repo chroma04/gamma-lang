@@ -353,6 +353,8 @@ pub Sema :: struct {
     pub len_exprs: List((t: Ty, span: source.Span))
     /// The messages of the static assertions checked for each instance (§17.7).
     pub deferred_asserts: List(?[]u8)
+    /// The generic nested functions, declared like top-level ones, by id with their name.
+    pub nested_generic: List((fn_id: u32, name: ast.Ident))
     /// The step budget of compile-time evaluations in the declaration being resolved
     /// (§17.3).
     pub fuel: u64 = 50_000_000
@@ -408,6 +410,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         checking: list(u32),
         len_exprs: list((t: Ty, span: source.Span)),
         deferred_asserts: list(?[]u8),
+        nested_generic: list((fn_id: u32, name: ast.Ident)),
     )
     s.effects.push(EffectInfo(name: "..", module: 0, params: empty_slice(u32), ops: empty_slice(OpInfo)))!
     return s

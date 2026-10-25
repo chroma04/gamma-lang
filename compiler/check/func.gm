@@ -336,6 +336,10 @@ check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) 
         hi := lit.sig.span.hi
         cx.needs_at = NeedsAt(span: source.Span(file: lit.sig.span.file, lo: hi, hi: hi), has_needs: lit.sig.effects is not null)
     }
+    // A generic nested function can call itself by name (§11.8).
+    for g in s.nested_generic.items {
+        if g.fn_id is fn_id { cx.declare(g.name.name, .NestedFn(fn_id), g.name.span) }
+    }
     params := list(u32)
     for p in sig.params {
         if p.generic is not null { continue }

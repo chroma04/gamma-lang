@@ -237,9 +237,21 @@ check_no_self_reference :: fn(cx: ^FnCx, fn_id: u32, name: string, span: source.
     if refers { cx.error(span, str.format("`{}` uses local variables of the enclosing function, so it cannot call itself (§11.8)", name)!) }
 }
 
+/// A generic nested function `name :: fn(T: type, …)`. It captures nothing (§11.8), so it
+/// is declared like a private top-level function of the module: checked once and
+/// instantiated per call. Its body sees the module's names and its own, not the enclosing
+/// function's locals.
+nested_generic_fn :: fn(cx: ^FnCx, name: ast.Ident, lit: ^const ast.FnLit, span: source.Span) -> tir.Stmt needs Load {
+    if .Fn(f) := cx.s.declare_fn(cx.module, name, lit) {
+        cx.s.nested_generic.push((fn_id: f, name: name))!
+        cx.declare(name.name, .NestedFn(f), name.span)
+    }
+    return .Expr(unit(cx.s, span))
+}
+
 /// `name :: fn …` inside a function body.
 nested_fn_binding :: fn(cx: ^FnCx, name: ast.Ident, lit: ^const ast.FnLit, span: source.Span) -> tir.Stmt needs Load {
-    if is_generic(lit) { return .Expr(cx.unsupported(span, "generic nested functions")) }
+    if is_generic(lit) { return cx.nested_generic_fn(name, lit, span) }
     v := cx.fn_literal(lit, null, name, span)
     if .Closure(_) := v.kind {
         // It captures: an immutable local holding a second-class value. The name,
