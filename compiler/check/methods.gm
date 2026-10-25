@@ -27,9 +27,16 @@ method_call :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, args: []con
     // 2. A builtin method.
     if e := cx.builtin_method(recv, rty, name, args, span) { return e }
     // `r.len()` of a range is a function of the core library (§21.3).
-    if cx.s.range_of(rty) is not null and name.name is "len" { return cx.unsupported(span, "lengths of ranges") }
+    mname := name
+    internal := false
+    if r := cx.s.range_of(rty) {
+        if name.name is "len" {
+            mname = ast.Ident(name: if r.inclusive { "range_incl_len" } else { "range_len" }, span: name.span)
+            internal = true
+        }
+    }
     // 3. A function of the module that declares the receiver's type.
-    if e := cx.module_method(recv, name, args, span) { return e }
+    if e := cx.module_method(recv, mname, internal, args, span) { return e }
     d := diag.error(name.span, str.format("type `{}` has no method `{}`", cx.show(cx.infer.resolve(cx.s, rty)), name.name)!)
     cx.emit_with_continuation_note(d, base.span, name.span)
     return error_expr(cx.s, span)
@@ -270,8 +277,49 @@ pointer_cast :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, args: []const ast.Arg, span:
         cx.error(span, str.format("`cast` converts between pointer types, not from `{}` to `{}`; use `.addr()` for an address", cx.show(rty), cx.show(t))!)
         return error_expr(cx.s, span)
     }
-    if kind(t) is 2 or kind(rty) is 2 { return cx.unsupported(span, "casts of function pointers") }
+    // A function pointer converts to one with the same shape (§6.6).
+    fa := if .Optional(i) := tys.kind(rty) { tys.kind(i) } else { tys.kind(rty) }
+    fb := if .Optional(i) := tys.kind(t) { tys.kind(i) } else { tys.kind(t) }
+    if .FnPtr(a) := fa and .FnPtr(b) := fb {
+        if why := cx.fn_cast_mismatch(&a, &b) {
+            cx.error(span, str.format("cannot cast `{}` to `{}`: {}", cx.show(rty), cx.show(t), why)!)
+            return error_expr(cx.s, span)
+        }
+    }
     return builtin(.Cast, t, [1]^Expr(recv)[..], span)
+}
+
+/// Why a function pointer type `from` cannot be cast to `to`, if it cannot: the calling
+/// convention and the number of parameters must agree, and each parameter and the result
+/// must be the same type or both be pointers (§6.6). Effect sets may differ.
+fn_cast_mismatch :: fn(cx: ^FnCx, from, to: ^const types.FnTy) -> ?string needs Alloc {
+    tys := &cx.s.tys
+    pointer :: fn(t: Ty) -> u8 {
+        x := if .Optional(i) := tys.kind(t) { i } else { t }
+        return match tys.kind(x) {
+            .Ptr(_), .ManyPtr(_), .Rawptr => 1
+            .FnPtr(_) => 2
+            _ => 0
+        }
+    }
+    same_repr :: fn(a, b: Ty) -> bool {
+        if a is b { return true }
+        return pointer(a) is not 0 and pointer(a) is pointer(b) and (tys.kind(a) is .Optional(_)) is (tys.kind(b) is .Optional(_))
+    }
+    if from.win64 is not to.win64 { return "the calling conventions differ" }
+    if from.variadic is not to.variadic { return "only one of them is variadic" }
+    if from.params.len is not to.params.len { return str.format("they take {} and {} parameters", from.params.len, to.params.len)! }
+    for i in 0..from.params.len {
+        a := from.params[i]
+        b := to.params[i]
+        if not same_repr(a, b) {
+            return str.format("parameter {} is `{}` in one and `{}` in the other; only pointers convert to pointers", i + 1, cx.show(a), cx.show(b))!
+        }
+    }
+    if not same_repr(from.ret, to.ret) {
+        return str.format("the results `{}` and `{}` differ and are not both pointers", cx.show(from.ret), cx.show(to.ret))!
+    }
+    return null
 }
 
 /// The methods of arrays and slices; a pointer to an array also works.
@@ -441,7 +489,7 @@ adjust_receiver :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, param: Ty, name: ast.Iden
 
 /// A function `name` of the module that declares the receiver's type, whose first
 /// run-time parameter takes the receiver (§7.10 rule 3).
-module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
+module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, internal: bool, args: []const ast.Arg, span: source.Span) -> ?^Expr needs Load {
     tys := &cx.s.tys
     rty := cx.infer.resolve(cx.s, recv.ty)
     s := rty
@@ -450,7 +498,7 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.A
     module := cx.s.adts.items[usize(id)].module
     d := cx.s.l.lookup(module, name.name) else return cx.op_method(recv, rty, s, module, name, args, span)
     .Fn(f) := cx.s.resolve_decl(d) else return cx.op_method(recv, rty, s, module, name, args, span)
-    if not cx.s.decl_visible(d, cx.module) {
+    if not internal and not cx.s.decl_visible(d, cx.module) {
         _ = cx.s.module_member(module, name, cx.module)
         return error_expr(cx.s, span)
     }

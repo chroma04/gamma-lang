@@ -546,10 +546,29 @@ construct_array :: fn(cx: ^FnCx, ty: ?Ty, len: ?u64, elem: Ty, args: []const ast
         }
     }
     values := list(Expr)
+    // `[N]T(..t)` spreads a tuple's elements (§11.4); with spreads, every value goes
+    // through a temporary, in the order written.
+    spreading := false
+    for a in args {
+        if a.kind is .Spread(_) { spreading = true }
+    }
+    stmts := list(tir.Stmt)
     for a in args {
         match a.kind {
-            .Positional(e) => values.push(cx.field_value(&e, elem)^)!
-            .Spread(_) => return cx.unsupported(a.span, "spreads")
+            .Positional(e) => {
+                v := cx.field_value(&e, elem)
+                values.push((if spreading { cx.bind_temp(v, &stmts) } else { v })^)!
+            }
+            .Spread(e) => {
+                parts := cx.spread_parts(&e, &stmts) else return error_expr(cx.s, span)
+                for p in parts {
+                    if p.name is not null {
+                        cx.error(e.span, "array elements are written positionally; this spread has named parts")
+                        return error_expr(cx.s, span)
+                    }
+                    values.push(cx.coerce(p.value, elem)^)!
+                }
+            }
             _ => cx.error(a.span, "array elements are written positionally")
         }
     }
@@ -559,7 +578,9 @@ construct_array :: fn(cx: ^FnCx, ty: ?Ty, len: ?u64, elem: Ty, args: []const ast
         return error_expr(cx.s, span)
     }
     t := ty else tys.array(u64(values.items.len), elem)
-    return tir.mk(t, .Array(values.items), span)
+    arr := tir.mk(t, .Array(values.items), span)
+    if stmts.items.len is 0 { return arr }
+    return tir.mk(t, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
 }
 
 /// "1 is" or "3 are", for a count of given values.

@@ -268,5 +268,6 @@ nested_fn_binding :: fn(cx: ^FnCx, name: ast.Ident, lit: ^const ast.FnLit, span:
         }
         return .Let(id, v)
     }
+    if .FnRef(f) := v.kind { cx.s.local_fns.push(sema.LocalFn(name: name.name, fn_id: f))! }
     return .Expr(unit(cx.s, span))
 }

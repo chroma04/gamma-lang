@@ -391,7 +391,7 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
 /// Evaluates the argument of a compile-time value parameter of type `ty` (§16.5).
 comptime_arg :: fn(cx: ^FnCx, ty: Ty, e: ^const ast.Expr) -> ?Ty needs Load {
     if .Ident(id) := e.kind {
-        if b := cx.lookup_local(id.name) and b is not .Untyped(_) {
+        if b := cx.lookup_local(id.name) and b not in (.NestedFn(_), .Untyped(_), .Const(_)) {
             cx.error(e.span, str.format("a compile-time argument must be a constant expression, but `{}` is a variable", id.name)!)
             return null
         }
@@ -564,7 +564,7 @@ generic_fn_from_expected :: fn(cx: ^FnCx, f: u32, expect: ?Ty, span: source.Span
 
 /// True if `e` cannot denote a type: a literal or a local variable.
 clearly_value :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool => match e.kind {
-    .Ident(id) => cx.lookup_local(id.name) is not null
+    .Ident(id) => if b := cx.lookup_local(id.name) { b is not .Type(_) } else { false }
     .Int(_), .Float(_), .Str(_), .Bool(_) => true
     _ => false
 }

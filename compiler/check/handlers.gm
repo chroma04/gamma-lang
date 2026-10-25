@@ -125,15 +125,9 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     // with the body's value (§8.5, §12.7).
     breaks := list(HandlerBreak)
     for id in literal_ids.items {
-        k: usize = 0
-        while k < cx.handler_breaks.items.len {
-            b := cx.handler_breaks.items[k]
-            if b.handler_ is id {
-                breaks.push(b)!
-                _ = cx.handler_breaks.remove(k)
-            } else {
-                k += 1
-            }
+        // A literal bound with `::` can be installed again: its breaks stay recorded.
+        for b in cx.handler_breaks.items {
+            if b.handler_ is id { breaks.push(b)! }
         }
     }
     depth := cx.depth()
@@ -263,7 +257,7 @@ pending_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: sourc
     hid := cx.new_handler_literal(lit, span) else return error_expr(cx.s, span)
     lens := list(usize)
     for sc in cx.scopes.items { lens.push(sc.items.len)! }
-    cx.pending_handlers.push(PendingHandler(hid: hid, lit: lit, span: span, depth: cx.outer.items.len, scope_lens: lens.items, labels: cx.labels.items.len, handled: cx.handled.items.len))!
+    cx.pending_handlers.push(PendingHandler(hid: hid, lit: lit, span: span, depth: cx.outer.items.len, scope_lens: lens.items, local_consts: cx.s.local_consts.items.len, labels: cx.labels.items.len, handled: cx.handled.items.len))!
     return tir.mk(cx.s.tys.intern(.Handler(hid)), .HandlerRef(hid), span)
 }
 
@@ -301,6 +295,10 @@ check_pending_handler :: fn(cx: ^FnCx, hid: u32, with_expect: ?Ty) needs Load {
         hidden_tails.push(tail.items)!
         sc.truncate(len)
     }
+    hidden_consts := list(sema.LocalConst)
+    nc := p.local_consts.min(cx.s.local_consts.items.len)
+    hidden_consts.extend(cx.s.local_consts.items[nc..])!
+    cx.s.local_consts.truncate(nc)
     hidden_labels := list(LabelInfo)
     nl := p.labels.min(cx.labels.items.len)
     hidden_labels.extend(cx.labels.items[nl..])!
@@ -314,6 +312,7 @@ check_pending_handler :: fn(cx: ^FnCx, hid: u32, with_expect: ?Ty) needs Load {
     for x in cx.performed.items[performed..] { cx.shield(x.span, p.handled) }
     cx.handled.extend(hidden_handled.items)!
     cx.labels.extend(hidden_labels.items)!
+    cx.s.local_consts.extend(hidden_consts.items)!
     for k in 0..nscopes { cx.scopes.items[k].extend(hidden_tails.items[k])! }
     cx.scopes.extend(hidden_scopes.items)!
     cx.scope_depths.extend(hidden_depths.items)!

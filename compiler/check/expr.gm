@@ -42,7 +42,7 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         .Tuple(elems) => return cx.tuple(elems, expect, span)
         .Unary(op, operand) => return cx.unary(op, operand, expect, span)
         .Binary(op, lhs, rhs) => {
-            if op in (ast.BinOp.Range, ast.BinOp.RangeIncl) { return cx.unsupported(span, "range values") }
+            if op in (ast.BinOp.Range, ast.BinOp.RangeIncl) { return cx.range_value(op is .RangeIncl, lhs, rhs, expect, span) }
             if op in (ast.BinOp.Is, ast.BinOp.IsNot) and (cx.type_operand(lhs) or cx.type_operand(rhs)) {
                 return cx.type_is(op is ast.BinOp.IsNot, lhs, rhs, span)
             }
@@ -247,16 +247,41 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
                 cx.error(span, str.format("`{}` is a label, not a value", name)!)
                 return error_expr(cx.s, span)
             }
+            .Type(t) => {
+                if not cx.s.tys.is_error(t) { cx.error(span, str.format("expected a value, found the type `{}`", cx.show(t))!) }
+                return error_expr(cx.s, span)
+            }
         }
     }
     if pid := cx.s.value_param(name) { return tir.mk(cx.value_param_ty(pid), .ValueParam(pid), span) }
+    // A constant of the body whose compile-time expression this is (§17.2).
+    if c := cx.s.local_const(name) {
+        match c.kind {
+            .Untyped(v) => return cx.untyped_literal(&v, span)
+            .Const(k) => return tir.mk(k.ty, .Const(k.name, k.span), span)
+            .Var => {
+                d := diag.error(span, str.format("`{}` is a variable, so its value is not known at compile time", name)!)
+                d.add_note("declare it with `::` to make it a compile-time constant (§17.2)")
+                cx.s.emit(d)
+                return error_expr(cx.s, span)
+            }
+        }
+    }
+    // A nested function of the body whose compile-time argument this is.
+    if f := cx.s.local_fn(name) { return cx.fn_ref(f, span) }
     if d := cx.s.lookup_module_name(cx.module, name) { return cx.decl_expr(d, name, expect, span) }
-    if sema.is_builtin_type_name(name) {
+    effect_param := false
+    if t := cx.s.type_param(name) {
+        if .Param(p) := cx.s.tys.kind(t) { effect_param = cx.s.param_kind(p) is .Effects }
+    }
+    if effect_param {
+        cx.error(span, str.format("expected a value, found the effect set `{}`", name)!)
+    } else if sema.is_builtin_type_name(name) {
         cx.error(span, str.format("expected a value, found the type `{}`", name)!)
     } else if name in ("print", "eprint", "trap", "assert", "expect_eq") {
         cx.error(span, str.format("the builtin function `{}` can only be called", name)!)
     } else {
-        return cx.unsupported(span, str.format("the name `{}`", name)!)
+        cx.s.unknown_name(cx.module, name, span)
     }
     return error_expr(cx.s, span)
 }
@@ -527,7 +552,14 @@ unify_operands :: fn(cx: ^FnCx, a, b: Ty, span: source.Span, what: string) -> Ty
     if cx.infer.unify(&cx.s.tys, a, b) is !_ {
         ra := cx.infer.resolve(cx.s, a)
         rb := cx.infer.resolve(cx.s, b)
-        cx.error(span, str.format("{} have different types: `{}` and `{}`", what, cx.show(ra), cx.show(rb))!)
+        d := diag.error(span, str.format("{} have different types: `{}` and `{}`", what, cx.show(ra), cx.show(rb))!)
+        // `a..b else c` is `(a..b) else c`: `else` binds more loosely than `..`.
+        wrapped_a := cx.s.tys.kind(ra) in (.Optional(_), .Result(_))
+        wrapped_b := cx.s.tys.kind(rb) in (.Optional(_), .Result(_))
+        if what is "range bounds" and wrapped_a is not wrapped_b {
+            d.add_note("`else` binds more loosely than `..`; parenthesize the bound: `lo..(x else d)` (§B.1)")
+        }
+        cx.s.emit(d)
         return cx.s.tys.error()
     }
     return cx.infer.shallow(&cx.s.tys, a)
@@ -576,7 +608,12 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
             return tir.mk(ty, .Binary(top, lhs, r), span)
         }
         .Add(_), .Sub(_), .Mul(_), .Div, .Rem, .BitAnd, .BitOr, .BitXor => {
-            if tys.kind(lt) in (.ManyPtr(_), .Ptr(_), .Rawptr) { return cx.unsupported(span, "pointer arithmetic") }
+            if tys.kind(lt) is .ManyPtr(_) and op in (ast.BinOp.Add(.Checked), ast.BinOp.Sub(.Checked)) { return cx.pointer_arith(op, lhs, rhs, span) }
+            if tys.kind(lt) in (.Ptr(_), .Rawptr) and (op is .Add(_) or op is .Sub(_)) {
+                _ = cx.expr(rhs, null)
+                cx.error(span, str.format("`{}` has no arithmetic: only many-pointers `[^]T` do (§5.5)", cx.show(lt))!)
+                return error_expr(cx.s, span)
+            }
             expect := lhs.ty
             if op in (ast.BinOp.Add(.Opt), ast.BinOp.Sub(.Opt), ast.BinOp.Mul(.Opt)) {
                 if .Optional(inner) := tys.kind(lt) { expect = inner }
@@ -592,6 +629,70 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
             return error_expr(cx.s, span)
         }
     }
+}
+
+/// `lo..hi` or `lo..=hi` as a value: a `Range(T)` or `RangeIncl(T)` (§5.16).
+range_value :: fn(cx: ^FnCx, inclusive: bool, lo, hi: ^const ast.Expr, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    template := cx.s.range_template(inclusive) else {
+        cx.error(span, "the core library's range types are not available")
+        return error_expr(cx.s, span)
+    }
+    // The bound type comes from the expected range type, if there is one.
+    want: ?Ty = null
+    if x := expect {
+        if r := cx.s.range_of(cx.infer.resolve(cx.s, x)) {
+            if r.inclusive is inclusive { want = r.elem }
+        }
+    }
+    l := cx.expr(lo, want)
+    h := cx.expr(hi, if w := want { w } else { l.ty })
+    elem := if w := want { w } else { cx.unify_operands(l.ty, h.ty, span, "range bounds") }
+    // The struct type needs a concrete `T` now: untyped bounds take the range fallback
+    // (§6.1).
+    if tys.has_infer(cx.infer.resolve(cx.s, elem)) { _ = cx.infer.unify(tys, elem, tys.usize_ty()) }
+    elem = cx.infer.resolve(cx.s, elem)
+    // `Range(T)` needs `Ord(T)`; `RangeIncl(T)` an integer type (§5.16).
+    if inclusive {
+        cx.obligations.push(.Numeric(NumericObligation(ty: elem, span: span, op: "..=", int_only: true, signed_only: false)))!
+    } else {
+        cx.obligations.push(.Ord(elem, span))!
+    }
+    l = cx.coerce(l, elem)
+    h = cx.coerce(h, elem)
+    ty := cx.s.instantiate_adt(template, [1]Ty(elem))
+    parts := list(Expr)
+    parts.push(l^)!
+    parts.push(h^)!
+    return tir.mk(ty, .Aggregate(parts.items), span)
+}
+
+/// `p + n`, `p - n` and `p - q` on a many-pointer `p` (§5.5).
+pointer_arith :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    lt := cx.infer.resolve(cx.s, lhs.ty)
+    r := cx.expr(rhs, null)
+    rt := cx.infer.resolve(cx.s, r.ty)
+    sub := op is .Sub(_)
+    if .ManyPtr(_, elem) := tys.kind(rt) {
+        .ManyPtr(_, le) := tys.kind(lt) else return error_expr(cx.s, span)
+        if not sub or elem is not le {
+            cx.error(span, str.format("cannot {} `{}` and `{}`", if sub { "subtract" } else { "add" }, cx.show(lt), cx.show(rt))!)
+            return error_expr(cx.s, span)
+        }
+        // The distance does not depend on `const`: make both sides read-only.
+        ro := tys.many_ptr(true, elem)
+        l := cx.coerce(lhs, ro)
+        r2 := cx.coerce(r, ro)
+        return builtin(.PtrDiff, tys.intern(.Isize), [2]^Expr(l, r2), span)
+    }
+    if tys.kind(rt) is .Infer(_) {
+        _ = cx.unify_operands(rt, tys.usize_ty(), span, "a pointer offset")
+    } else if rt is not tys.usize_ty() and rt is not tys.intern(.Isize) and not tys.is_error(rt) {
+        cx.error(r.span, str.format("a pointer offset must be a `usize` or an `isize`, not `{}`", cx.show(rt))!)
+        return error_expr(cx.s, span)
+    }
+    return builtin(if sub { tir.Builtin.PtrSub } else { tir.Builtin.PtrAdd }, lt, [2]^Expr(lhs, r), span)
 }
 
 /// True if `a` or `b` has an optional type.
@@ -785,7 +886,11 @@ type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
         return t
     }
     .Ident(id) := e.kind else return null
-    if cx.lookup_local(id.name) is not null { return null }
+    // A local alias: `Cols :: #soa []T` then `Cols.make(n)`.
+    if b := cx.lookup_local(id.name) {
+        if .Type(t) := b { return t }
+        return null
+    }
     if d := cx.s.lookup_module_name(cx.module, id.name) {
         .Type(t) := cx.s.resolve_decl(d) else return null
         return t
@@ -821,7 +926,9 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
         _ => {}
     }
     if e := cx.struct_field(b, name.name, span, 0) { return e }
-    return cx.unsupported(span, "this field")
+    d := diag.error(name.span, str.format("type `{}` has no field `{}`", cx.show(bt), name.name)!)
+    cx.emit_with_continuation_note(d, base.span, name.span)
+    return error_expr(cx.s, span)
 }
 
 /// Whether pointer type `src` is `^Outer` (or `^const Outer`) and `target` is `^S` (resp.
@@ -1610,18 +1717,12 @@ float_value :: fn(cx: ^FnCx, r: ratio.Rat, ty: Ty, span: source.Span) -> ^Expr n
 
 /// Binds `v` to a temporary (appending the `let` to `stmts`) unless it is a constant, and
 /// returns an expression reading it.
-bind_temp :: fn(cx: ^FnCx, v: ^Expr, stmts: ^List(tir.Stmt)) -> ^Expr needs Alloc {
+bind_temp :: fn(cx: ^FnCx, v: ^Expr, stmts: ^List(tir.Stmt)) -> ^Expr needs Load {
     if v.kind in (.Int(_), .Float(_), .UntypedFloat(_), .Bool(_), .Str(_), .Null, .Uninit, .Const(_)) { return v }
-    if contains_temp_ref(v) { return cx.unsupported(v.span, "temporaries in arguments") }
+    // A temporary the value points to (`&mk()` for a `^const T` parameter) must live for
+    // the whole call, not just for the statement that binds the value.
+    cx.lift_temps(v, stmts)
     t := cx.temp(v.ty, v.span)
     stmts.push(.Let(t, v))!
     return tir.mk(v.ty, .Local(t), v.span)
-}
-
-contains_temp_ref :: fn(e: ^Expr) -> bool {
-    found := false
-    visit(e, fn(x: ^Expr) {
-        if x.kind is .AddrOfTemp(_) { found = true }
-    })
-    return found
 }

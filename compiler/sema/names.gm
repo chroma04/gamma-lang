@@ -185,6 +185,46 @@ pub module_member :: fn(s: ^Sema, m: usize, name: ast.Ident, from: usize) -> ?us
     return null
 }
 
+/// For an unknown name that is an operation of an effect declared in `module` or in the
+/// core library: the effect's name, to write in front of it (`Log.log`, `Clock.now`).
+op_effect :: fn(s: ^const Sema, module: usize, name: string) -> ?string {
+    if e := s.effect_with_op(module, name, false) { return e }
+    prelude := s.l.prelude else return null
+    return s.effect_with_op(prelude, name, true)
+}
+
+/// The first effect of module `m` that has an operation `name`.
+effect_with_op :: fn(s: ^const Sema, m: usize, name: string, public_only: bool) -> ?string {
+    for n in s.l.modules.items[m].scope.items {
+        d := &s.l.decls.items[n.decl]
+        if public_only and d.item.vis is not .Public { continue }
+        .Binding(b) := d.item.kind else continue
+        .Effect(lit) := b.init.kind else continue
+        for op in lit.ops {
+            if op.name.name is name { return d.name.name }
+        }
+    }
+    return null
+}
+
+/// Reports a name used as a value that nothing declares.
+pub unknown_name :: fn(s: ^Sema, module: usize, name: string, span: source.Span) needs Alloc {
+    if effect_ := s.op_effect(module, name) {
+        d := diag.error(span, op_hint(effect_, name, null))
+        d.add_fix(str.format("write `{}.{}`", effect_, name)!, source.Span(file: span.file, lo: span.lo, hi: span.lo), str.format("{}.", effect_)!)
+        s.emit(d)
+        return
+    }
+    d := diag.error(span, str.format("unknown name `{}`", name)!)
+    if hint := s.universe_hint(name) {
+        d.add_note(hint)
+        if edits := s.import_fix(module, name, span) {
+            d.add_fix_edits(str.format("write `{}`", edits.items[edits.items.len - 1].text)!, edits.items)
+        }
+    }
+    s.emit(d)
+}
+
 /// The name of a public effect of module `m` that has an operation `name`.
 public_op_effect :: fn(s: ^const Sema, m: usize, name: string) -> ?string {
     for n in s.l.modules.items[m].scope.items {

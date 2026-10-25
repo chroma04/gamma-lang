@@ -74,6 +74,7 @@ check_handler_clauses :: fn(s: ^Sema) needs Load {
         p := s.pending_clauses.items[i]
         sig := s.fns.items[usize(p.fn_id)]
         c := p.clause
+        outer := s.enter_module_scope()
         cx := fn_cx(s, p.module, sig.ret, sig.effects)
         cx.fn_id = p.fn_id
         cx.clause = ClauseInfo(op_kind: p.kind, handler_: null, decl_clause: p.fn_id, with_expect: null)
@@ -105,6 +106,7 @@ check_handler_clauses :: fn(s: ^Sema) needs Load {
         def.params = ids.items
         def.locals = cx.locals.items
         def.body = body
+        s.leave_module_scope(outer)
     }
     s.pending_clauses.clear()
 }

@@ -49,6 +49,15 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
                     }
                     return cx.call_fn(f, args, span)
                 }
+                // A local alias: a conversion or construction, as with the type itself.
+                if .Type(t) := b {
+                    if cx.s.tys.is_error(t) { return error_expr(cx.s, span) }
+                    return cx.conversion(t, args, span)
+                }
+                if b is .Label {
+                    cx.error(callee.span, str.format("`{}` is a label", id.name)!)
+                    return error_expr(cx.s, span)
+                }
                 return cx.call_value(cx.expr(callee, null), args, span)
             }
             if cx.s.type_param(id.name) is not null {
@@ -71,7 +80,7 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
             // `yield(x)`, the one operation in scope without its effect (§13.1).
             if id.name is "yield" and y := cx.s.yield_effect { return cx.perform_generic(y, 0, args, span) }
-            return cx.unsupported(span, str.format("calls of `{}`", id.name)!)
+            return cx.call_value(cx.expr(callee, null), args, span)
         }
         .Call(_) => {
             if t := cx.type_of_name(callee) { return cx.conversion(t, args, span) }
@@ -123,7 +132,7 @@ call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args
         .Type(t) => return cx.conversion(t, args, span)
         .Error => return error_expr(cx.s, span)
         .Op(_) => return cx.unsupported(span, "effect operations")
-        .Const(_) => return cx.unsupported(span, "calls of constants")
+        .Const(_) => return cx.call_value(cx.expr(callee, null), args, span)
         _ => {
             cx.error(callee.span, str.format("`{}` cannot be called", name)!)
             return error_expr(cx.s, span)

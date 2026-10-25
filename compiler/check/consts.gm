@@ -103,7 +103,7 @@ const_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, nam
         s.unsupported(e.span, "compile-time values computed from parameters")
         return null
     }
-    if name not in ("<default>", "<length>", "<argument>") {
+    if name not in ("<default>", "<length>", "<argument>", "<global>") {
         if bad := s.non_constant_part(ex.ty) {
             s.error(e.span, str.format("a constant cannot hold `{}`, which contains `{}` (§17.4)", s.show(ex.ty), s.show(bad))!)
             return null
@@ -299,7 +299,8 @@ pub local_const :: fn(s: ^Sema, module: usize, init: ^const ast.Expr, annot: ?Ty
     if not ok or s.tys.is_error(ex.ty) or s.non_constant_part(ex.ty) is not null { return null }
     m2 := s.l.diags.mark()
     if not prepare(s, ex) {
-        if not s.l.diags.any_since(m2, sema.UNSUPPORTED) and s.l.diags.error_count() is m2.raised { s.l.diags.reset(m2) }
+        // What cannot be evaluated yet (it calls a function nested in this one) runs.
+        if not s.l.diags.any_since(m2, sema.UNSUPPORTED) { s.l.diags.reset(m2) }
         return null
     }
     v: Value = .Null
@@ -398,7 +399,7 @@ compile_error :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source
 }
 
 /// The value of the constant string expression `e`.
-const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs Load {
+pub const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs Load {
     ex := check_const_expr(s, module, e, s.tys.string_ty()) else return null
     v := evaluate(s, ex, s.fuel) else return null
     return eval.string_bytes(s, v)
