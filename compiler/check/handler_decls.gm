@@ -13,28 +13,85 @@ declare_handlers :: fn(s: ^Sema) needs Load {
 
 declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs Load {
     prelude := s.l.modules.items[module].is_prelude
-    if h.params is not null {
-        s.handler_templates = true
-        if not prelude { s.unsupported(h.span, "handler declarations for generic types") }
-        return
+    // The parameters of a handler for a generic type (§12.6).
+    params := list(sema.ParamInfo)
+    if ps := h.params {
+        for p in ps {
+            kind: sema.ParamKind = .Type
+            ty := s.tys.type_ty()
+            if t := p.ty {
+                if sema.is_effects_kind(t) {
+                    kind = .Effects
+                } else if not (t.kind is .Ident(_) and ident_is(t, "type")) {
+                    ty = s.resolve_type(module, t)
+                    kind = .Value(ty)
+                }
+            } else {
+                s.error(p.span, "a handler parameter needs a type: `T: type` or `N: usize`")
+                continue
+            }
+            for n in p.names {
+                pid := s.new_param(n.name, kind)
+                params.push(sema.ParamInfo(name: n.name, ty: ty, span: h.span, default: null, generic: pid, rest: false))!
+            }
+        }
     }
+    saved := s.scope_type_params(params.items)
     r := s.resolve_effect_ref(module, h.effect_)
     for_ty := s.resolve_type(module, h.for_ty)
     effects := types.empty_effects()
     if list_ := h.effects { effects = s.resolve_effect_list(module, list_) }
+    s.unscope_type_params(saved)
     eref := r else return
     if s.tys.is_error(for_ty) { return }
-    info := s.effects.items[usize(eref.eff)]
-    if info.params.len > 0 and not prelude {
-        s.unsupported(h.span, "handlers of generic effects")
-        return
+    generics := list(u32)
+    for p in params.items {
+        if g := p.generic { generics.push(g)! }
     }
-    // No type may match two declarations of one effect (§12.6).
-    for d in s.handler_decls.items {
-        if types.cmp_ref(&d.effect_, &eref) is 0 and d.for_ty is for_ty {
-            s.error(h.span, str.format("a handler of `{}` that applies to `{}` is already declared; a type may match only one declaration of an effect", info.name, s.show(for_ty))!)
-            return
+    if generics.items.len > 0 {
+        seen := list(u32)
+        s.walk(for_ty, fn(t: Ty) {
+            if .Param(p) := s.tys.kind(t) { seen.push(p)! }
+        })
+        for p in params.items {
+            g := p.generic else continue
+            if g not in seen.items {
+                s.error(h.span, str.format("the parameter `{}` must appear in the type the handler is for", p.name)!)
+                return
+            }
         }
+    }
+    info := s.effects.items[usize(eref.eff)]
+    // No type may match two declarations of one effect (§12.6): neither two for the same
+    // type, nor a specific one that a generic one also matches.
+    duplicate := false
+    if generics.items.len is 0 {
+        for d in s.handler_decls.items {
+            if types.cmp_ref(&d.effect_, &eref) is 0 and d.for_ty is for_ty { duplicate = true }
+        }
+        if not duplicate {
+            for k in 0..s.handler_templates.items.len {
+                if template_instance_is(s, k, &eref, for_ty) { duplicate = true }
+            }
+        }
+    } else {
+        probe := sema.HandlerTemplate(generics: generics.items, effect_: eref, for_ty: for_ty, effects: effects, clauses: empty_slice(u32), span: h.span)
+        for d in s.handler_decls.items {
+            if template_probe_is(s, &probe, &d.effect_, d.for_ty) { duplicate = true }
+        }
+        for t in s.handler_templates.items {
+            if t.effect_.eff is eref.eff and may_unify(s, t.for_ty, for_ty) and t.effect_.args.len is eref.args.len {
+                all := true
+                for i, x in enumerate(t.effect_.args) {
+                    if not arg_may_unify(s, x, eref.args[i]) { all = false }
+                }
+                if all { duplicate = true }
+            }
+        }
+    }
+    if duplicate {
+        s.error(h.span, str.format("a handler of `{}` that applies to `{}` is already declared; a type may match only one declaration of an effect", info.name, s.show(for_ty))!)
+        return
     }
     for c in h.clauses {
         known := false
@@ -51,14 +108,126 @@ declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs 
         }
         // The first clause parameter is the handler value itself.
         sig := clause_signature(s, &eref, &o)
-        params := list(sema.ParamInfo)
-        params.push(sema.ParamInfo(name: "self", ty: for_ty, span: h.for_ty.span, default: null, generic: null, rest: false))!
-        params.extend(sig.params)!
-        fn_id := s.new_nested_fn(.Clause, o.name, h.clauses[ci].span, module, params.items, sig.ret, effects)
+        cparams := list(sema.ParamInfo)
+        cparams.extend(params.items)!
+        cparams.push(sema.ParamInfo(name: "self", ty: for_ty, span: h.for_ty.span, default: null, generic: null, rest: false))!
+        cparams.extend(sig.params)!
+        fn_id := s.new_nested_fn(.Clause, o.name, h.clauses[ci].span, module, cparams.items, sig.ret, effects)
+        // A generic handler's clauses are generic functions of its parameters.
+        s.fns.items[usize(fn_id)].generics = generics.items
         clauses.push(fn_id)!
         if not prelude { s.pending_clauses.push(sema.PendingClause(module: module, clause: &h.clauses[ci], fn_id: fn_id, kind: o.kind, effect_: eref))! }
     }
-    s.handler_decls.push(sema.HandlerDeclInfo(effect_: eref, for_ty: for_ty, effects: effects, clauses: clauses.items))!
+    if generics.items.len is 0 {
+        s.handler_decls.push(sema.HandlerDeclInfo(effect_: eref, for_ty: for_ty, effects: effects, clauses: clauses.items))!
+    } else {
+        s.handler_templates.push(sema.HandlerTemplate(generics: generics.items, effect_: eref, for_ty: for_ty, effects: effects, clauses: clauses.items, span: h.span))!
+    }
+}
+
+ident_is :: fn(e: ^const ast.Expr, name: string) -> bool {
+    .Ident(i) := e.kind else return false
+    return i.name is name
+}
+
+/// Binds the parameters of `tpl` by matching its type against `t`; `null` unless every
+/// parameter is bound.
+handler_template_args :: fn(s: ^Sema, tpl: ^const sema.HandlerTemplate, t: Ty) -> ?[]Ty needs Load {
+    binds := list(sema.Subst)
+    s.match_params(tpl.for_ty, t, &binds)
+    args := list(Ty)
+    for p in tpl.generics { args.push(sema.bound_to(binds.items, p) else return null)! }
+    return args.items
+}
+
+template_map :: fn(tpl: ^const sema.HandlerTemplate, args: []const Ty) -> []sema.Subst needs Alloc {
+    map := list(sema.Subst)
+    for i, p in enumerate(tpl.generics) { map.push(sema.Subst(param: p, ty: args[i]))! }
+    return map.items
+}
+
+/// Whether instantiating template `k` for the type `t` gives a handler of `eref`.
+template_instance_is :: fn(s: ^Sema, k: usize, eref: ^const EffectRef, t: Ty) -> bool needs Load {
+    tpl := s.handler_templates.items[k]
+    return template_probe_is(s, &tpl, eref, t)
+}
+
+template_probe_is :: fn(s: ^Sema, tpl: ^const sema.HandlerTemplate, eref: ^const EffectRef, t: Ty) -> bool needs Load {
+    if tpl.effect_.eff is not eref.eff { return false }
+    args := handler_template_args(s, tpl, t) else return false
+    map := template_map(tpl, args)
+    if s.subst(tpl.for_ty, map) is not t { return false }
+    inst := subst_eref(s, &tpl.effect_, map)
+    return types.cmp_ref(&inst, eref) is 0
+}
+
+/// Whether two types of generic handler declarations could be the same type for some
+/// arguments. A parameter matches anything; the check over-approximates when one
+/// parameter occurs twice.
+may_unify :: fn(s: ^Sema, a, b: Ty) -> bool {
+    if a is b { return true }
+    ka := s.tys.kind(a)
+    kb := s.tys.kind(b)
+    if ka is .Param(_) or kb is .Param(_) { return true }
+    match ka {
+        .ParamArray(_, x) => match kb {
+            .ParamArray(_, y), .Array(_, y, _) => return may_unify(s, x, y)
+            _ => return false
+        }
+        .Array(m, x, i) => match kb {
+            .ParamArray(_, y) => return may_unify(s, x, y)
+            .Array(n, y, j) => return m is n and array_kind_same(i, j) and may_unify(s, x, y)
+            _ => return false
+        }
+        .Ptr(c, x) => if .Ptr(d, y) := kb { return c is d and may_unify(s, x, y) }
+        .Slice(c, x) => if .Slice(d, y) := kb { return c is d and may_unify(s, x, y) }
+        .ManyPtr(c, x) => if .ManyPtr(d, y) := kb { return c is d and may_unify(s, x, y) }
+        .Optional(x) => if .Optional(y) := kb { return may_unify(s, x, y) }
+        .Cont(x) => if .Cont(y) := kb { return may_unify(s, x, y) }
+        .Result(e1, o1) => if .Result(e2, o2) := kb { return may_unify(s, e1, e2) and may_unify(s, o1, o2) }
+        .Tuple(x, n) => if .Tuple(y, m) := kb {
+            if x.len is not y.len or n.len is not m.len { return false }
+            for i, nm in enumerate(n) {
+                if nm is not m[i] { return false }
+            }
+            for i, p in enumerate(x) {
+                if not may_unify(s, p, y[i]) { return false }
+            }
+            return true
+        }
+        .Adt(x, xs) => if .Adt(y, ys) := kb {
+            if s.tys.template(x) is not s.tys.template(y) or xs.len is not ys.len { return false }
+            for i, p in enumerate(xs) {
+                if not arg_may_unify(s, p, ys[i]) { return false }
+            }
+            return true
+        }
+        // Function types may differ only in parts this check does not look into.
+        .Fn(_) => return kb is .Fn(_)
+        .FnPtr(_) => return kb is .FnPtr(_)
+        _ => {}
+    }
+    return false
+}
+
+array_kind_same :: fn(a, b: types.ArrayKind) -> bool => match a {
+    .Plain => b is .Plain
+    .Enum(x) => if .Enum(y) := b { x is y } else { false }
+    .Simd => b is .Simd
+    .Math => b is .Math
+}
+
+arg_may_unify :: fn(s: ^Sema, a, b: types.GenericArg) -> bool {
+    match a {
+        .Type(x) => match b {
+            .Type(y) => return may_unify(s, x, y)
+            .Value(_) => return s.tys.kind(x) is .Param(_)
+        }
+        .Value(x) => match b {
+            .Value(y) => return types.cmp_key(&x, &y) is 0
+            .Type(t) => return s.tys.kind(t) is .Param(_)
+        }
+    }
 }
 
 decl_clause :: fn(h: ^const ast.HandlerDecl, name: string) -> ?usize {
@@ -74,14 +243,20 @@ check_handler_clauses :: fn(s: ^Sema) needs Load {
         p := s.pending_clauses.items[i]
         sig := s.fns.items[usize(p.fn_id)]
         c := p.clause
+        // A generic handler's parameters are in scope in its clauses.
+        scope := s.scope_type_params(sig.params)
+        runtime := list(sema.ParamInfo)
+        for q in sig.params {
+            if q.generic is null { runtime.push(q)! }
+        }
         cx := fn_cx(s, p.module, sig.ret, sig.effects)
         cx.fn_id = p.fn_id
         cx.clause = ClauseInfo(op_kind: p.kind, handler_: null, decl_clause: p.fn_id, with_expect: null, effect_: p.effect_)
-        if c.params.len is not sig.params.len {
-            cx.error(c.span, str.format("the clause for `{}` takes {} parameters (the first is the handler value)", c.name.name, sig.params.len)!)
+        if c.params.len is not runtime.items.len {
+            cx.error(c.span, str.format("the clause for `{}` takes {} parameters (the first is the handler value)", c.name.name, runtime.items.len)!)
         }
         ids := list(u32)
-        for k, param in enumerate(sig.params) {
+        for k, param in enumerate(runtime.items) {
             name := if k < c.params.len { c.params[k].name } else { param.name }
             at := if k < c.params.len { c.params[k].span } else { c.span }
             id := cx.new_local(name, param.ty, false, at)
@@ -105,6 +280,7 @@ check_handler_clauses :: fn(s: ^Sema) needs Load {
         def.params = ids.items
         def.locals = cx.locals.items
         def.body = body
+        s.unscope_type_params(scope)
     }
     s.pending_clauses.clear()
 }
@@ -130,10 +306,46 @@ check_decl_breaks :: fn(s: ^Sema) needs Load {
 }
 
 /// The handler declarations for values of type `t`.
-handlers_for :: fn(cx: ^FnCx, t: Ty) -> []u32 needs Load {
+handlers_for :: fn(cx: ^FnCx, t: Ty) -> []u32 needs Load => handlers_of_type(cx.s, t)
+
+/// The handler declarations for values of type `t`, instantiating those for generic types
+/// that `t` matches.
+handlers_of_type :: fn(s: ^Sema, t: Ty) -> []u32 needs Load {
     out := list(u32)
-    for i, d in enumerate(cx.s.handler_decls.items) {
+    for i, d in enumerate(s.handler_decls.items) {
         if d.for_ty is t { out.push(i.trunc(u32))! }
+    }
+    for k in 0..s.handler_templates.items.len {
+        tpl := s.handler_templates.items[k]
+        args := handler_template_args(s, &tpl, t) else continue
+        map := template_map(&tpl, args)
+        if s.subst(tpl.for_ty, map) is not t { continue }
+        // Declarations never overlap (§12.6), so this only skips a repeated match.
+        repeated := false
+        for d in out.items {
+            if s.handler_decls.items[usize(d)].effect_.eff is tpl.effect_.eff { repeated = true }
+        }
+        if repeated { continue }
+        found: ?u32 = null
+        for inst in s.handler_instances.items {
+            if inst.template is k and inst.args.len is args.len {
+                same := true
+                for i, a in enumerate(args) {
+                    if inst.args[i] is not a { same = false }
+                }
+                if same { found = inst.decl }
+            }
+        }
+        if d := found {
+            out.push(d)!
+            continue
+        }
+        clauses := list(u32)
+        for c in tpl.clauses { clauses.push(s.instantiate(c, args, tpl.span))! }
+        id := s.handler_decls.items.len.trunc(u32)
+        s.handler_decls.push(sema.HandlerDeclInfo(effect_: subst_eref(s, &tpl.effect_, map), for_ty: t, effects: s.subst_effects(&tpl.effects, map), clauses: clauses.items))!
+        s.handler_instances.push(sema.TemplateInstance(template: k, args: args, decl: id))!
+        out.push(id)!
     }
     return out.items
 }

@@ -179,6 +179,14 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
             s.error(span, str.format("a float literal cannot have the type `{}` (in an instantiation used here)", s.show(t))!)
         }
     }
+    // The handler declarations for a handler value are chosen again for its instantiated type.
+    if .With(w) := e.kind {
+        for i in 0..w.handlers.len {
+            if .Decl(_, value) := w.handlers[i] {
+                w.handlers[i] = .Decl(handlers_of_type(s, s.subst(value.ty, mc.map)), value)
+            }
+        }
+    }
     match e.kind {
         .Call(.Fn(c), args) => { e.kind = .Call(.Fn(mono_fn(s, mc, c)), args) }
         .Call(.Perform(eref, op), args) => { e.kind = .Call(.Perform(subst_eref(s, &eref, mc.map), op), args) }

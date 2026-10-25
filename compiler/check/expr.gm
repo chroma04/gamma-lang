@@ -100,6 +100,7 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         }
         .Intrinsic(i) => return cx.intrinsic(i, span)
         .Fn(lit) => return cx.fn_literal(lit, expect, null, span)
+        .Handler(lit) => return cx.handler_literal(lit, null, span)
         .With(w) => return cx.with_expr(w, true, expect)
         .Resume(r) => return cx.resume_expr(r.cont, r.value, span)
         .Elements(inner) => {

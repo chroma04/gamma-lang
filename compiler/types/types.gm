@@ -429,7 +429,7 @@ cmp_arg :: fn(a, b: ^const GenericArg) -> i32 {
     }
 }
 
-cmp_key :: fn(a, b: ^const ConstKey) -> i32 {
+pub cmp_key :: fn(a, b: ^const ConstKey) -> i32 {
     ia := key_rank(a)
     ib := key_rank(b)
     if ia is not ib { return cmp_u32(ia, ib) }

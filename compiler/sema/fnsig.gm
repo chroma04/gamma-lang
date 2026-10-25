@@ -205,7 +205,7 @@ provably_distinct :: fn(s: ^const Sema, a, b: Ty) -> bool {
 }
 
 /// Whether a parameter's annotation is `effects`: an effect-set parameter (§16.6).
-is_effects_kind :: fn(t: ^const ast.Expr) -> bool {
+pub(package) is_effects_kind :: fn(t: ^const ast.Expr) -> bool {
     .Ident(i) := t.kind else return false
     return i.name is "effects"
 }

@@ -116,6 +116,24 @@ pub HandlerDeclInfo :: struct {
     pub clauses: []u32
 }
 
+/// A handler declaration for a generic type: `handler(T: type) E for X(T) { … }`. Its
+/// clauses are generic functions of the parameters.
+pub HandlerTemplate :: struct {
+    pub generics: []u32
+    pub effect_: EffectRef
+    pub for_ty: Ty
+    pub effects: EffectSet
+    pub clauses: []u32
+    pub span: source.Span
+}
+
+/// The declaration a template gave for some arguments.
+pub TemplateInstance :: struct {
+    pub template: usize
+    pub args: []const Ty
+    pub decl: u32
+}
+
 /// A clause of a handler declaration whose body is still to be checked.
 pub PendingClause :: struct {
     pub module: usize
@@ -282,8 +300,9 @@ pub Sema :: struct {
     /// The handler literals of the bodies checked so far (§12.5).
     pub handlers: List(tir.HandlerLit)
     pub handler_decls: List(HandlerDeclInfo)
-    /// Whether a handler declaration for a generic type was seen.
-    pub handler_templates: bool
+    /// The handler declarations for generic types, and the declarations they gave so far.
+    pub handler_templates: List(HandlerTemplate)
+    pub handler_instances: List(TemplateInstance)
     /// Set while the body of a test or benchmark is checked.
     pub in_test: bool
     pub pending_clauses: List(PendingClause)
@@ -356,7 +375,8 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         pending_consts: list(PendingConst),
         handlers: list(tir.HandlerLit),
         handler_decls: list(HandlerDeclInfo),
-        handler_templates: false,
+        handler_templates: list(HandlerTemplate),
+        handler_instances: list(TemplateInstance),
         in_test: false,
         pending_clauses: list(PendingClause),
         decl_clause_breaks: list(DeclBreak),

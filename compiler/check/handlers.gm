@@ -39,10 +39,6 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
             _ => {
                 decls := cx.handlers_for(t)
                 if decls.len is 0 {
-                    if cx.s.handler_templates and mentions_generic_adt(tys, t) {
-                        pop_with_scope(cx)
-                        return cx.unsupported(h.span, "handler declarations for generic types")
-                    }
                     bad_handler = true
                     d := diag.error(h.span, str.format("expected a handler, but no handler is declared for `{}`", cx.show(t))!)
                     if tys.kind(t) is not .Ptr(_) and cx.handlers_for(tys.ptr(false, t)).len > 0 {
@@ -210,16 +206,6 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     }
     if not value and tys.kind(body.ty) is .Never and breaks.items.len is 0 and not decl_exits { ty = tys.never_ty() }
     return tir.mk(ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: on, body: body)), span)
-}
-
-/// Leaves the scope of a `with` that was not checked.
-pop_with_scope :: fn(cx: ^FnCx) { cx.pop_scope() }
-
-/// Whether `t`, under pointers, is an instance of a generic type.
-mentions_generic_adt :: fn(tys: ^const types.Types, t: Ty) -> bool => match tys.kind(t) {
-    .Ptr(_, x) => mentions_generic_adt(tys, x)
-    .Adt(_, args) => args.len > 0
-    _ => false
 }
 
 /// The handler literal `e` is, under parentheses.
