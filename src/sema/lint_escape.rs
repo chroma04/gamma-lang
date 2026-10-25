@@ -1,18 +1,24 @@
-//! The `dangling-address` lint: the address of a local, or a slice of a local array,
-//! stored where it outlives the local (§15.1). Each binding of a loop body, a `match` arm
-//! or a binding condition lives until the end of its scope, and a loop variable's storage
-//! is reused by every iteration, so a pointer to one that is kept longer points to a copy
-//! that is gone or that holds another element.
+//! Dangling addresses: the address of a local, or a slice of a local array, kept where it
+//! outlives the local (§15.1). Each binding of a loop body, a `match` arm or a binding
+//! condition lives until the end of its scope, and a loop variable's storage is reused by
+//! every iteration, so a pointer to one that is kept longer points to a copy that is gone
+//! or that holds another element.
 //!
 //! The address is followed through the values that hold it (tuples, structs, arrays,
-//! variants, optionals, blocks and `if`s). It is reported when it is
+//! variants, optionals, blocks and `if`s). Where it certainly outlives the local, it is a
+//! compile error (`check_dangling_addresses`):
 //!
-//! - assigned to a place that lives longer: rooted at a local of an enclosing scope, or
-//!   reached through a pointer, a slice or a global;
+//! - assigned to a place rooted at a local of an enclosing scope, a captured local of an
+//!   enclosing function, or a global;
+//! - returned, inside a value (returning the address itself is rejected by
+//!   `check_escapes`).
+//!
+//! Where it only may, the `dangling-address` lint reports it:
+//!
+//! - assigned to a place reached through a pointer or a slice;
 //! - passed to a function, for a parameter whose declared type is a type parameter (the
 //!   element of `l.push(x)`, the value of `m.put(k, v)`), together with a mutable pointer
-//!   to something that lives longer, which the function may store it in;
-//! - returned, inside a value (returning the address itself is a compile error).
+//!   to something that lives longer, which the function may store it in.
 
 use super::Sema;
 use super::lint::Finding;
@@ -25,14 +31,73 @@ use std::collections::HashMap;
 /// through a pointer, a slice or a global outlives every scope of the function.
 const OUTER: i64 = -1;
 
-/// Reports the dangling addresses in the body of function `def`.
+/// Reports the addresses in the body of function `def` that may dangle, for the lint.
 pub(super) fn dangling_addresses(sema: &Sema, def: &FnDef, out: &mut Vec<Finding>) {
-    let Some(body) = &def.body else { return };
-    let mut w = Walk { sema, def, depth: HashMap::new(), cur: 0, out, reported: vec![] };
+    for (f, certain) in walk(sema, def) {
+        if !certain {
+            out.push(f);
+        }
+    }
+}
+
+/// The addresses in the body of function `def` that certainly dangle (§15.1).
+pub(super) fn certain_dangling_addresses(sema: &Sema, def: &FnDef) -> Vec<Finding> {
+    walk(sema, def).into_iter().filter(|(_, certain)| *certain).map(|(f, _)| f).collect()
+}
+
+/// The dangling addresses in the body of `def`, each with whether it certainly dangles.
+fn walk(sema: &Sema, def: &FnDef) -> Vec<(Finding, bool)> {
+    let mut out = vec![];
+    let Some(body) = &def.body else { return out };
+    let mut w = Walk { sema, def, depth: HashMap::new(), cur: 0, out: &mut out, reported: vec![] };
     for p in &def.params {
         w.depth.insert(*p, 0);
     }
     w.expr(body, true);
+    out
+}
+
+impl Sema<'_> {
+    /// Reports the addresses of locals that are kept where they certainly outlive the
+    /// local (§15.1). Instances of generic functions repeat their template's.
+    pub(super) fn check_dangling_addresses(&mut self) {
+        let mut found = vec![];
+        for (i, def) in self.prog.fns.iter().enumerate() {
+            if self.instance_of.contains_key(&FnId(i as u32)) {
+                continue;
+            }
+            found.extend(certain_dangling_addresses(self, def));
+        }
+        for f in found {
+            let Finding::DanglingAddress { span, name, local, why } = f else { continue };
+            self.emit(dangling_diagnostic(
+                crate::diag::Diagnostic::error(span, dangling_message(name, why)),
+                name,
+                local,
+            ));
+        }
+    }
+}
+
+/// The message about the address of `name` kept as `why` says.
+pub fn dangling_message(name: crate::symbol::Symbol, why: &str) -> String {
+    match why {
+        "stored" => format!("this address of `{}` is stored where it outlives `{}`", name, name),
+        "returned" => format!("this address of `{}` is returned, but `{}` ends with the call", name, name),
+        _ => format!("this address of `{}` is passed to a call that may keep it after `{}` ends", name, name),
+    }
+}
+
+/// `d` with the label and note of a dangling address of `name`, declared at `local`.
+pub fn dangling_diagnostic(
+    d: crate::diag::Diagnostic,
+    name: crate::symbol::Symbol,
+    local: Span,
+) -> crate::diag::Diagnostic {
+    d.with_label(local, format!("`{}` lives until the end of its scope", name)).with_note(
+        "a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope \
+         (§15.1); point into the original (`&items[i]`), or keep the value instead",
+    )
 }
 
 struct Walk<'a, 's> {
@@ -41,7 +106,7 @@ struct Walk<'a, 's> {
     /// The scope depth of each local declared so far.
     depth: HashMap<LocalId, i64>,
     cur: i64,
-    out: &'a mut Vec<Finding>,
+    out: &'a mut Vec<(Finding, bool)>,
     reported: Vec<Span>,
 }
 
@@ -76,71 +141,84 @@ impl Walk<'_, '_> {
     }
 
     /// How long the storage of place `p` lives (see [`OUTER`]), or `None` for a place
-    /// this lint does not judge (a temporary).
+    /// this check does not judge (a temporary).
     fn lifetime(&self, p: &Expr) -> Option<i64> {
+        self.storage(p).map(|(t, _)| t)
+    }
+
+    /// How long the storage of place `p` lives, and whether that is certain: storage
+    /// reached through a pointer or a slice may also be a local of this function.
+    fn storage(&self, p: &Expr) -> Option<(i64, bool)> {
         match &p.kind {
-            ExprKind::Local(l) => self.depth.get(l).copied(),
-            ExprKind::Upvar { .. } | ExprKind::Global(_) | ExprKind::Deref(_) => Some(OUTER),
-            ExprKind::Field { base, .. } | ExprKind::VariantPayload { base, .. } => self.lifetime(base),
+            ExprKind::Local(l) => self.depth.get(l).map(|&d| (d, true)),
+            ExprKind::Upvar { .. } | ExprKind::Global(_) => Some((OUTER, true)),
+            ExprKind::Deref(_) => Some((OUTER, false)),
+            ExprKind::Field { base, .. } | ExprKind::VariantPayload { base, .. } => self.storage(base),
             ExprKind::Index { base, .. } | ExprKind::Slice { base, .. } => {
                 if matches!(base.ty.kind(), TyKind::Array { .. } | TyKind::ParamArray { .. }) {
-                    self.lifetime(base)
+                    self.storage(base)
                 } else {
-                    Some(OUTER)
+                    Some((OUTER, false))
                 }
             }
             _ => None,
         }
     }
 
-    /// The addresses of locals that the value of `e` holds: `(span of the address, local)`.
-    fn held(e: &Expr, out: &mut Vec<(Span, LocalId)>) {
+    /// The addresses of locals that the value of `e` holds: `(span of the address, local,
+    /// whether it is inside another value)`; `inside` is whether `e` itself is.
+    fn held(e: &Expr, inside: bool, out: &mut Vec<(Span, LocalId, bool)>) {
         match &e.kind {
             ExprKind::AddrOf(p) => {
                 if let Some(l) = Self::root(p) {
-                    out.push((e.span, l));
+                    out.push((e.span, l, inside));
                 }
             }
             ExprKind::Slice { base, .. } if matches!(base.ty.kind(), TyKind::Array { .. }) => {
                 if let Some(l) = Self::root(base) {
-                    out.push((e.span, l));
+                    out.push((e.span, l, inside));
                 }
             }
-            ExprKind::Coerce { expr, .. } | ExprKind::MakeErr(expr) => Self::held(expr, out),
-            ExprKind::Aggregate(xs) | ExprKind::Array(xs) => xs.iter().for_each(|x| Self::held(x, out)),
-            ExprKind::Variant { payload: Some(x), .. } => Self::held(x, out),
+            ExprKind::Coerce { expr, .. } => Self::held(expr, inside, out),
+            ExprKind::MakeErr(expr) => Self::held(expr, true, out),
+            ExprKind::Aggregate(xs) | ExprKind::Array(xs) => xs.iter().for_each(|x| Self::held(x, true, out)),
+            ExprKind::Variant { payload: Some(x), .. } => Self::held(x, true, out),
             ExprKind::Block(b) => {
                 if let Some(t) = &b.tail {
-                    Self::held(t, out)
+                    Self::held(t, inside, out)
                 }
             }
             ExprKind::If { then, else_, .. } => {
-                Self::held(then, out);
+                Self::held(then, inside, out);
                 if let Some(x) = else_ {
-                    Self::held(x, out);
+                    Self::held(x, inside, out);
                 }
             }
             _ => {}
         }
     }
 
-    fn report(&mut self, at: Span, l: LocalId, why: &'static str) {
+    fn report(&mut self, at: Span, l: LocalId, why: &'static str, certain: bool) {
         let local = &self.def.locals[l.index()];
         if at == Span::DUMMY || local.name.as_str().starts_with('<') || self.reported.contains(&at) {
             return;
         }
         self.reported.push(at);
-        self.out.push(Finding::DanglingAddress { span: at, name: local.name, local: local.span, why });
+        self.out.push((Finding::DanglingAddress { span: at, name: local.name, local: local.span, why }, certain));
     }
 
     /// Reports the addresses that `value` holds of locals that `target` (a lifetime)
-    /// outlives.
-    fn check_store(&mut self, value: &Expr, target: i64, why: &'static str) {
+    /// outlives; `certain` if the target's lifetime is.
+    fn check_store(&mut self, value: &Expr, target: i64, why: &'static str, certain: bool) {
         let mut held = vec![];
-        Self::held(value, &mut held);
-        for (at, l) in held {
+        Self::held(value, false, &mut held);
+        for (at, l, inside) in held {
+            // Returning the address itself is rejected by `check_escapes`.
+            if why == "returned" && !inside {
+                continue;
+            }
             if self.depth.get(&l).is_some_and(|&d| target < d) {
-                self.report(at, l, why);
+                self.report(at, l, why, certain);
             }
         }
     }
@@ -161,7 +239,7 @@ impl Walk<'_, '_> {
         let Some(target) = target else { return };
         for (a, t) in args.iter().zip(params) {
             if matches!(t.kind(), TyKind::Param(_)) {
-                self.check_store(a, target, "passed to be stored");
+                self.check_store(a, target, "passed to be stored", false);
             }
         }
     }
@@ -181,7 +259,7 @@ impl Walk<'_, '_> {
                 return;
             }
             ExprKind::Return { levels: 0, value } => {
-                self.check_store(value, OUTER, "returned");
+                self.check_store(value, OUTER, "returned", true);
                 self.expr(value, false);
                 return;
             }
@@ -232,7 +310,7 @@ impl Walk<'_, '_> {
             _ => {}
         }
         if tail {
-            self.check_store(e, OUTER, "returned");
+            self.check_store(e, OUTER, "returned", true);
         }
         e.for_each_child(&mut |c| self.expr(c, false));
     }
@@ -277,8 +355,8 @@ impl Walk<'_, '_> {
             Stmt::Assign { place, value } => {
                 self.expr(place, false);
                 self.expr(value, false);
-                if let Some(t) = self.lifetime(place) {
-                    self.check_store(value, t, "stored");
+                if let Some((t, certain)) = self.storage(place) {
+                    self.check_store(value, t, "stored", certain);
                 }
             }
             Stmt::AssignTuple { places, value } => {

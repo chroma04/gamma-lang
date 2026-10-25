@@ -26,12 +26,56 @@ LiteralArg :: struct {
 /// the first run-time parameter (§7.10).
 generic_call :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     sig := cx.s.fns.items[usize(f)]
-    for a in args {
-        if a.kind is .Spread(_) { return cx.unsupported(a.span, "spread arguments") }
-    }
+    written := args
+    // A rest parameter's arguments become one tuple argument (§11.3).
+    rest := false
     for p in sig.params {
-        if p.rest { return cx.unsupported(span, "rest parameters") }
+        if p.rest { rest = true }
     }
+    if rest {
+        recv: ?usize = null
+        if receiver is not null {
+            for i, p in enumerate(sig.params) {
+                if p.generic is null {
+                    recv = i
+                    break
+                }
+            }
+        }
+        named := list(string)
+        for a in args {
+            if .Named(n, _) := a.kind { named.push(n.name)! }
+        }
+        slot := list(bool)
+        for i, p in enumerate(sig.params) { slot.push(recv is not i and not inferable_param(cx.s, &sig, i) and not sema.is_site(&p) and p.name not in named.items)! }
+        if packed := pack_rest_args(sig.params, slot.items, args, span) {
+            match packed {
+                .Args(a) => { written = a }
+                .Error(sp, msg) => {
+                    cx.error(sp, msg)
+                    return error_expr(cx.s, span)
+                }
+            }
+        }
+    }
+    for a in written {
+        if a.kind is .Spread(_) {
+            // Type inference works on the written arguments, so the spreads are expanded
+            // into arguments naming their parts (§11.4).
+            stmts := list(tir.Stmt)
+            r: ?^Expr = null
+            if x := receiver { r = cx.bind_temp(x, &stmts) }
+            spread := cx.spread_generic_args(written, &stmts, span) else return error_expr(cx.s, span)
+            call := cx.generic_call_packed(f, r, spread, span)
+            return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
+        }
+    }
+    return cx.generic_call_packed(f, receiver, written, span)
+}
+
+/// A generic call whose rest arguments are packed and whose spreads are expanded.
+generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    sig := cx.s.fns.items[usize(f)]
     for g in sig.generics {
         if cx.s.param_kind(g) is .Effects { return cx.unsupported(span, "effect-set parameters") }
     }

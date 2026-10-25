@@ -1,0 +1,137 @@
+// Deep copies of checked expressions, for instantiating the nested functions of a
+// generic function: the copy shares no node with the original, so it can be rewritten
+// in place.
+
+/// A copy of `e` and everything under it.
+pub clone_expr :: fn(e: ^const Expr) -> ^Expr needs Alloc {
+    k: ExprKind = match e.kind {
+        .Deref(a) => .Deref(clone_expr(a))
+        .Field(b, i) => .Field(clone_expr(b), i)
+        .Index(b, i, c) => .Index(clone_expr(b), clone_expr(i), c)
+        .Slice(sl) => .Slice(SliceExpr(base: clone_expr(sl.base), lo: clone_opt(sl.lo), hi: clone_opt(sl.hi), inclusive: sl.inclusive))
+        .SliceLen(a) => .SliceLen(clone_expr(a))
+        .SlicePtr(a) => .SlicePtr(clone_expr(a))
+        .AddrOf(a) => .AddrOf(clone_expr(a))
+        .AddrOfTemp(a) => .AddrOfTemp(clone_expr(a))
+        .Unary(op, a) => .Unary(op, clone_expr(a))
+        .Binary(op, a, b) => .Binary(op, clone_expr(a), clone_expr(b))
+        .Logic(and_, a, b) => .Logic(and_, clone_expr(a), clone_expr(b))
+        .Coerce(c, a) => .Coerce(c, clone_expr(a))
+        .Builtin(op, args) => .Builtin(op, clone_exprs(args))
+        .Call(callee, args) => {
+            c: Callee = callee
+            if .Indirect(x) := callee { c = .Indirect(clone_expr(x)) }
+            ExprKind.Call(c, clone_exprs(args))
+        }
+        .Aggregate(xs) => .Aggregate(clone_exprs(xs))
+        .Array(xs) => .Array(clone_exprs(xs))
+        .ArrayFill(a) => .ArrayFill(clone_expr(a))
+        .Variant(v) => .Variant(VariantExpr(variant: v.variant, payload: clone_opt(v.payload)))
+        .MakeErr(a) => .MakeErr(clone_expr(a))
+        .Unwrap(a, r) => .Unwrap(clone_expr(a), r)
+        .Else(x) => .Else(ElseExpr(lhs: clone_expr(x.lhs), capture: x.capture, rhs: clone_expr(x.rhs)))
+        .Try(x) => .Try(TryExpr(expr: clone_expr(x.expr), lift: x.lift, levels: x.levels))
+        .Eq(a, b, n) => .Eq(clone_expr(a), clone_expr(b), n)
+        .Match(sc, arms) => {
+            out := list(Arm)
+            for a in arms { out.push(Arm(pat: clone_pat(a.pat), guard: clone_opt(a.guard), body: clone_expr(a.body)))! }
+            ExprKind.Match(clone_expr(sc), out.items)
+        }
+        .In(a, b, n) => .In(clone_expr(a), clone_expr(b), n)
+        .Block(b) => .Block(clone_block(b))
+        .If(x) => .If(IfExpr(cond: clone_conds(x.cond), then: clone_expr(x.then), else_: clone_opt(x.else_)))
+        .Loop(x) => .Loop(LoopExpr(label: x.label, cond: clone_conds(x.cond), body: clone_block(x.body), step: clone_opt(x.step)))
+        .Break(x) => .Break(BreakExpr(target: x.target, value: clone_opt(x.value)))
+        .Return(l, v) => .Return(l, clone_expr(v))
+        .Trap(a) => .Trap(clone_expr(a))
+        .Resume(k, v) => .Resume(clone_expr(k), clone_expr(v))
+        .Cancel(k) => .Cancel(clone_expr(k))
+        .Write(w) => {
+            sink: WriteSink = w.sink
+            if .Fn(x) := w.sink { sink = .Fn(clone_expr(x)) }
+            ExprKind.Write(WriteExpr(sink: sink, pieces: w.pieces, specs: w.specs, args: clone_exprs(w.args)))
+        }
+        .WriteDeferred(w) => {
+            sink: WriteSink = w.sink
+            if .Fn(x) := w.sink { sink = .Fn(clone_expr(x)) }
+            ExprKind.WriteDeferred(WriteDeferredExpr(sink: sink, template: clone_expr(w.template), args: clone_opt(w.args), tmp: w.tmp))
+        }
+        .With(w) => {
+            hs := list(HandlerValue)
+            for h in w.handlers {
+                match h {
+                    .Literal(x) => hs.push(.Literal(clone_expr(x)))!
+                    .Decl(decls, x) => hs.push(.Decl(decls, clone_expr(x)))!
+                }
+            }
+            ExprKind.With(WithExpr(label: w.label, handlers: hs.items, on: clone_opt(w.on), body: clone_expr(w.body)))
+        }
+        _ => e.kind
+    }
+    return mk(e.ty, k, e.span)
+}
+
+clone_opt :: fn(e: ?^Expr) -> ?^Expr needs Alloc {
+    x := e else return null
+    return clone_expr(x)
+}
+
+clone_exprs :: fn(xs: []const Expr) -> []Expr needs Alloc {
+    out := list(Expr)
+    for i in 0..xs.len { out.push(clone_expr(&xs[i])^)! }
+    return out.items
+}
+
+clone_block :: fn(b: ^const Block) -> ^Block needs Alloc {
+    stmts := list(Stmt)
+    for s in b.stmts {
+        match s {
+            .Let(l, null) => stmts.push(.Let(l, null))!
+            .Let(l, x) => stmts.push(.Let(l, clone_expr(x)))!
+            .LetTuple(ls, x) => stmts.push(.LetTuple(ls, clone_expr(x)))!
+            .Assign(p, v) => stmts.push(.Assign(clone_expr(p), clone_expr(v)))!
+            .AssignTuple(ps, v) => {
+                out := list(?^Expr)
+                for p in ps { out.push(clone_opt(p))! }
+                stmts.push(.AssignTuple(out.items, clone_expr(v)))!
+            }
+            .Expr(x) => stmts.push(.Expr(clone_expr(x)))!
+            .Defer(is_err, x) => stmts.push(.Defer(is_err, clone_expr(x)))!
+        }
+    }
+    return new(Block(stmts: stmts.items, tail: clone_opt(b.tail), span: b.span))!
+}
+
+clone_conds :: fn(cond: []const CondPart) -> []CondPart needs Alloc {
+    out := list(CondPart)
+    for c in cond {
+        match c {
+            .Bool(x) => out.push(.Bool(clone_expr(x)))!
+            .Match(p, v) => out.push(.Match(clone_pat(p), clone_expr(v)))!
+        }
+    }
+    return out.items
+}
+
+pub clone_pat :: fn(p: ^const Pat) -> ^Pat needs Alloc {
+    k: PatKind = match p.kind {
+        .Const(e) => .Const(clone_expr(e))
+        .Some(q) => .Some(clone_pat(q))
+        .Ok(q) => .Ok(clone_pat(q))
+        .Err(q) => .Err(clone_pat(q))
+        .Variant(v, null) => .Variant(v, null)
+        .Variant(v, q) => .Variant(v, clone_pat(q))
+        .Fields(fs) => {
+            out := list(FieldPat)
+            for f in fs { out.push(FieldPat(index: f.index, pat: clone_pat(f.pat)))! }
+            PatKind.Fields(out.items)
+        }
+        .Or(ps) => {
+            out := list(^Pat)
+            for q in ps { out.push(clone_pat(q))! }
+            PatKind.Or(out.items)
+        }
+        _ => p.kind
+    }
+    return mk_pat(p.ty, k, p.span)
+}

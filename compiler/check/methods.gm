@@ -466,9 +466,6 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, args: []const ast.A
     }
     r := cx.adjust_receiver(recv, rty, fp.ty, name, span) else return error_expr(cx.s, span)
     if sig.generics.len > 0 { return cx.generic_call(f, r, args, span) }
-    for p in sig.params {
-        if p.rest { return cx.unsupported(span, "rest parameters") }
-    }
     bound := cx.bind_args(sig.params[1..], sig.module, args, span, "method") else return error_expr(cx.s, span)
     vals := list(Expr)
     vals.push(r^)!

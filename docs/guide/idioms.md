@@ -331,6 +331,17 @@ A loop variable and a name a pattern binds hold a *copy* of the element or the p
 for e in exprs { terms.push(&e)! }          // wrong: every pointer is to `e`
 ```
 
+Storing such an address where it certainly outlives the binding is a compile error (§15.1), and `gamma lint` reports a call like `push` that may keep it:
+
+```gamma error
+main :: fn() needs Out {
+    words := [3]string("one", "two", "three")
+    last: ?^const string = null
+    for w in words { last = &w }            // error: `w` ends with the iteration
+    print("{}\n", last is null)
+}
+```
+
 Point into the data itself, by index:
 
 ```gamma

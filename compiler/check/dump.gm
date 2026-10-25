@@ -115,6 +115,7 @@ target_text :: fn(t: tir.Target) -> string needs Alloc => match t {
 
 sink_text :: fn(d: ^Dump, sink: tir.WriteSink) -> string needs Alloc => match sink {
     .Perform(e, op) => str.format("perform {} {}", d.s.tys.show_ref(&e), op)!
+    .Fn(_) => "fn"
 }
 
 write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
@@ -131,8 +132,12 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
         .Null => "null"
         .Uninit => "uninit"
         .ValueParam(p) => str.format("value-param {}", d.s.tys.param_name(p))!
+        .SizeOf(of, align) => str.format("{} {}", if align { "align-of" } else { "size-of" }, s.show(of))!
+        .IntLimit(of, max) => str.format("{} {}", if max { "max-value" } else { "min-value" }, s.show(of))!
+        .TypeName(of) => str.format("type-name {}", s.show(of))!
         .Const(name, span) => str.format("const {}@{}", name, place(s, span))!
         .Local(l) => str.format("local {}", d.local_text(l))!
+        .Global(name) => str.format("global {}", name)!
         .Upvar(levels, l) => str.format("upvar {} {}", levels, l)!
         .Deref(x) => {
             kids.push(x)!
@@ -331,6 +336,15 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             kids.push(x)!
             "trap"
         }
+        .Resume(k, v) => {
+            kids.push(k)!
+            kids.push(v)!
+            "resume"
+        }
+        .Cancel(k) => {
+            kids.push(k)!
+            "cancel"
+        }
         .Write(w) => {
             h := list(u8)
             h.write("write {}", d.sink_text(w.sink))!
@@ -347,8 +361,15 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
                     spec_text(spec, &h)
                 }
             }
+            if .Fn(x) := w.sink { kids.push(x)! }
             for i in 0..w.args.len { kids.push(&w.args[i])! }
             h.items
+        }
+        .WriteDeferred(w) => {
+            if .Fn(x) := w.sink { kids.push(x)! }
+            kids.push(w.template)!
+            if a := w.args { kids.push(a)! }
+            str.format("write-deferred {} {}", d.sink_text(w.sink), d.local_text(w.tmp))!
         }
     }
     d.write_line(depth, str.format("{} : {}", head, ty)!)
@@ -435,9 +456,26 @@ write_block :: fn(d: ^Dump, depth: usize, b: ^tir.Block) needs Alloc {
                 d.write_line(depth, str.format("let {}", d.local_text(l))!)
                 d.write_expr(depth + 1, x)
             }
+            .LetTuple(ls, x) => {
+                names := list(string)
+                for l in ls { names.push(if id := l { d.local_text(id) } else { "_" })! }
+                d.write_line(depth, str.format("let-tuple {}", str.join(names.items, ", ")!)!)
+                d.write_expr(depth + 1, x)
+            }
             .Assign(p, v) => {
                 d.write_line(depth, "assign")
                 d.write_expr(depth + 1, p)
+                d.write_expr(depth + 1, v)
+            }
+            .AssignTuple(ps, v) => {
+                d.write_line(depth, "assign-tuple")
+                for p in ps {
+                    if x := p {
+                        d.write_expr(depth + 1, x)
+                    } else {
+                        d.write_line(depth + 1, "_")
+                    }
+                }
                 d.write_expr(depth + 1, v)
             }
             .Expr(x) => {
@@ -567,4 +605,79 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .Last => "Last"
     .CstrLen => "CstrLen"
     .Assert => "Assert"
+    .Hash => "Hash"
+    .Unreachable => "Unreachable"
+    .AtomicLoad => "AtomicLoad"
+    .AtomicStore => "AtomicStore"
+    .AtomicSwap => "AtomicSwap"
+    .AtomicCas => "AtomicCas"
+    .AtomicRmw(r) => str.format("AtomicRmw({})", rmw_text(r))!
+    .Fence => "Fence"
+    .VolatileLoad => "VolatileLoad"
+    .VolatileStore => "VolatileStore"
+    .Sys(s) => str.format("Sys({})", sys_text(s))!
+    .HeapAlloc => "HeapAlloc"
+    .HeapFree => "HeapFree"
+    .AllocTag => "AllocTag"
+    .AllocCheck => "AllocCheck"
+    .Asm(outputs, inputs) => str.format("Asm {{ outputs: {}, inputs: {} }}", outputs, inputs)!
+}
+
+rmw_text :: fn(op: tir.RmwOp) -> string => match op {
+    .Add => "Add"
+    .Sub => "Sub"
+    .And => "And"
+    .Or => "Or"
+    .Xor => "Xor"
+    .Max => "Max"
+    .Min => "Min"
+}
+
+sys_text :: fn(op: tir.SysOp) -> string => match op {
+    .Read => "Read"
+    .ClockNow => "ClockNow"
+    .ClockWall => "ClockWall"
+    .Sleep => "Sleep"
+    .RandFill => "RandFill"
+    .FsOpen => "FsOpen"
+    .FsClose => "FsClose"
+    .FsRead => "FsRead"
+    .FsWrite => "FsWrite"
+    .FsSeek => "FsSeek"
+    .FsStat => "FsStat"
+    .FsRemove => "FsRemove"
+    .FsRename => "FsRename"
+    .FsMakeDir => "FsMakeDir"
+    .FsRemoveDir => "FsRemoveDir"
+    .FsOpenDir => "FsOpenDir"
+    .FsNextEntry => "FsNextEntry"
+    .FsCloseDir => "FsCloseDir"
+    .FsLstat => "FsLstat"
+    .FsTruncate => "FsTruncate"
+    .FsSync => "FsSync"
+    .FsCwd => "FsCwd"
+    .NetConnect => "NetConnect"
+    .NetListen => "NetListen"
+    .NetLocalPort => "NetLocalPort"
+    .NetAccept => "NetAccept"
+    .NetSend => "NetSend"
+    .NetRecv => "NetRecv"
+    .NetClose => "NetClose"
+    .NetShutdown => "NetShutdown"
+    .NetSetTimeouts => "NetSetTimeouts"
+    .NetPeer => "NetPeer"
+    .ProcSpawn => "ProcSpawn"
+    .ProcWriteIn => "ProcWriteIn"
+    .ProcCloseIn => "ProcCloseIn"
+    .ProcReadOut => "ProcReadOut"
+    .ProcWait => "ProcWait"
+    .ProcKill => "ProcKill"
+    .ThreadSpawn => "ThreadSpawn"
+    .ThreadJoin => "ThreadJoin"
+    .ThreadDetach => "ThreadDetach"
+    .ThreadYield => "ThreadYield"
+    .FutexWait => "FutexWait"
+    .FutexWake => "FutexWake"
+    .CpuCount => "CpuCount"
+    .SysWrite => "SysWrite"
 }

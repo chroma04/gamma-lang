@@ -10,11 +10,13 @@
 ast :: import "../ast"
 load :: import "../load"
 bigint :: import "../bigint"
+bignum :: import "../bignum"
 diag :: import "../diag"
 ratio :: import "../ratio"
 sema :: import "../sema"
 source :: import "../source"
 str :: import "std/str"
+syntax :: import "../syntax"
 tir :: import "../tir"
 types :: import "../types"
 
@@ -52,6 +54,7 @@ Frame :: struct {
     open_ret: bool
     open_ty: ?Ty
     clause: ?ClauseInfo
+    handled: List(EffectRef)
 }
 
 /// The handler clause a frame checks.
@@ -208,6 +211,37 @@ pub FnCx :: struct {
     handler_breaks: List(HandlerBreak)
     /// Where iterators are called (§13.2).
     iterator_calls: List(source.Span)
+    /// The effects handled by the `with`s enclosing the point being checked, in the
+    /// current function.
+    handled: List(EffectRef)
+    /// Handler literals bound with `::` whose clauses are not checked yet: they are
+    /// checked at the first `with` that installs them, which gives their `break`s an
+    /// expected type, or else at the end of their scope.
+    pending_handlers: List(PendingHandler)
+    /// Effects performed by the clauses of a handler literal checked at a later `with`,
+    /// by where they are performed, with the number of handlers in scope where the
+    /// literal was written: `with`s that began after that point must not handle them
+    /// (§12.5).
+    shielded_performs: List(Shielded)
+}
+
+/// A handler literal bound with `::` whose clauses are checked later, in the scope where
+/// it was written.
+PendingHandler :: struct {
+    hid: u32
+    lit: ^const ast.HandlerLit
+    span: source.Span
+    /// The frame depth where it was written.
+    depth: usize
+    /// The length of each scope there.
+    scope_lens: []usize
+    labels: usize
+    handled: usize
+}
+
+Shielded :: struct {
+    at: source.Span
+    handled: usize
 }
 
 fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs Alloc {
@@ -247,6 +281,9 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         clause: null,
         handler_breaks: list(HandlerBreak),
         iterator_calls: list(source.Span),
+        handled: list(EffectRef),
+        pending_handlers: list(PendingHandler),
+        shielded_performs: list(Shielded),
     )
 }
 
@@ -325,6 +362,7 @@ finish :: fn(cx: ^FnCx, body: ^Expr) needs Load {
         def.params = n.params
         def.locals = n.locals
         def.body = n.body
+        def.nested = true
     }
     cx.nested.clear()
 }
@@ -547,7 +585,9 @@ enter_fn :: fn(cx: ^FnCx, fn_id: u32, ret: Ty, declared: EffectSet) needs Alloc 
         open_ret: cx.open_ret,
         open_ty: cx.open_ty,
         clause: cx.clause,
+        handled: cx.handled,
     ))!
+    cx.handled = list(EffectRef)
     cx.clause = null
     cx.open_ret = false
     cx.open_ty = null
@@ -583,6 +623,42 @@ exit_fn :: fn(cx: ^FnCx) -> (locals: []tir.LocalDecl, performed: []Performed, ca
     cx.open_ret = f.open_ret
     cx.open_ty = f.open_ty
     cx.clause = f.clause
+    cx.handled = f.handled
+    return out
+}
+
+/// Puts frame `f`'s state in place of the current function's, which it returns.
+swap_frame :: fn(cx: ^FnCx, f: Frame) -> Frame {
+    out := Frame(
+        locals: cx.locals,
+        ret: cx.ret,
+        declared: cx.declared,
+        performed: cx.performed,
+        labels: cx.labels,
+        next_label: cx.next_label,
+        in_defer: cx.in_defer,
+        defer_label_base: cx.defer_label_base,
+        fn_id: cx.fn_id,
+        captures: cx.captures,
+        open_ret: cx.open_ret,
+        open_ty: cx.open_ty,
+        clause: cx.clause,
+        handled: cx.handled,
+    )
+    cx.locals = f.locals
+    cx.ret = f.ret
+    cx.declared = f.declared
+    cx.performed = f.performed
+    cx.labels = f.labels
+    cx.next_label = f.next_label
+    cx.in_defer = f.in_defer
+    cx.defer_label_base = f.defer_label_base
+    cx.fn_id = f.fn_id
+    cx.captures = f.captures
+    cx.open_ret = f.open_ret
+    cx.open_ty = f.open_ty
+    cx.clause = f.clause
+    cx.handled = f.handled
     return out
 }
 
@@ -684,6 +760,7 @@ block_expected :: fn(cx: ^FnCx, b: ^const ast.Block, value: bool, expected: ?Ty)
         if diverges { cause = stmt_never_cause(cx.s, st) }
         stmts.push(st)!
     }
+    if cx.pending_handlers.items.len > 0 { cx.check_pending_handlers_of_scope() }
     cx.pop_scope()
     ty := if t := tail { t.ty } else if diverges { cx.s.tys.never_ty() } else { cx.s.tys.unit() }
     blk := new(tir.Block(stmts: stmts.items, tail: tail, span: b.span))!
@@ -704,7 +781,7 @@ stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
         .Block(b) => return .Expr(cx.block(&b, false))
         .Defer(is_err, body) => return cx.defer_stmt(is_err, body)
         .When(w) => return .Expr(cx.when_stmt(w))
-        .Cancel(_) => return .Expr(cx.unsupported(s.span, "`cancel`"))
+        .Cancel(k) => return .Expr(cx.cancel_stmt(k, s.span))
         .LetElse(_) => return .Expr(cx.unsupported(s.span, "pattern bindings with `else`"))
     }
 }
@@ -778,7 +855,7 @@ stmt_expr :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ^Expr needs Load {
 }
 
 binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
-    if b.names.len is not 1 { return .Expr(cx.unsupported(b.span, "destructuring")) }
+    if b.names.len is not 1 { return cx.destructure(b) }
     name := b.names[0]
     if b.kind is .Const and b.ty is null {
         if .Fn(lit) := b.init.kind { return cx.nested_fn_binding(name, lit, b.span) }
@@ -804,8 +881,8 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
             cx.error(b.init.span, "`---` needs a type annotation")
             error_expr(cx.s, b.init.span)
         }
-    } else if b.init.kind is .Handler(_) {
-        cx.unsupported(b.init.span, "handler literals")
+    } else if lit := handler_lit(b.init) and b.kind is .Const and annot is null and not cx.in_defer {
+        cx.pending_handler_literal(lit, b.init.span)
     } else {
         ex := cx.expr(b.init, annot)
         if t := annot { cx.coerce(ex, t) } else { ex }
@@ -826,6 +903,107 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
     // The name is in scope only after its initializer (§4.6).
     cx.declare(name.name, .Var(id), name.span)
     return .Let(id, init)
+}
+
+/// `a, b := e`: binds the elements of a tuple (§4.5).
+destructure :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
+    tys := &cx.s.tys
+    annot: ?Ty = null
+    if t := b.ty { annot = cx.s.resolve_type(cx.module, t) }
+    init: ^Expr = error_expr(cx.s, b.init.span)
+    if b.init.kind is .Uninit {
+        if b.kind is not .Var { cx.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)") }
+        if t := annot and cx.is_plain_data(t) {
+            init = tir.mk(t, .Uninit, b.init.span)
+        } else {
+            cx.error(b.init.span, "`---` needs a plain-data tuple type annotation")
+        }
+    } else {
+        ex := cx.expr(b.init, annot)
+        init = if t := annot { cx.coerce(ex, t) } else { ex }
+    }
+    t := cx.infer.resolve(cx.s, init.ty)
+    elems := list(Ty)
+    n := b.names.len
+    match tys.kind(t) {
+        .Tuple(es, _) => if es.len is n {
+            elems.extend(es)!
+        } else {
+            cx.error(b.span, str.format("{} names cannot destructure a tuple of {} elements", n, es.len)!)
+        }
+        .Error => {}
+        _ => cx.error(b.init.span, str.format("destructuring needs a tuple, but this is `{}` (§4.5)", cx.show(t))!)
+    }
+    while elems.items.len < n { elems.push(tys.error())! }
+    mutable := b.kind is .Var
+    locals := list(?u32)
+    declared := list(Declared)
+    for i, name in enumerate(b.names) {
+        if name.name is "_" {
+            locals.push(null)!
+            continue
+        }
+        id := cx.new_local(name.name, elems.items[i], mutable, name.span)
+        locals.push(id)!
+        declared.push(Declared(name: name.name, id: id, span: name.span))!
+    }
+    // The names are in scope only after the initializer (§4.6).
+    for d in declared.items { cx.declare(d.name, .Var(d.id), d.span) }
+    return .LetTuple(locals.items, init)
+}
+
+Declared :: struct {
+    name: string
+    id: u32
+    span: source.Span
+}
+
+/// `a, b = e`: assigns the elements of a tuple; every element is computed before any
+/// store (§4.7).
+assign_tuple :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
+    tys := &cx.s.tys
+    if op is not .Assign { cx.error(span, "a compound assignment takes one place") }
+    targets := list(?^Expr)
+    all_known := true
+    for i in 0..places.len {
+        p := &places[i]
+        if p.kind is .Underscore {
+            targets.push(null)!
+            all_known = false
+            continue
+        }
+        if not cx.assignable_name(p) {
+            _ = cx.expr(value, null)
+            return .Expr(unit(cx.s, span))
+        }
+        place := cx.expr(p, null)
+        cx.require_mutable_place(place, p.span)
+        targets.push(place)!
+    }
+    expect: ?Ty = null
+    if all_known {
+        ts := list(Ty)
+        for t in targets.items {
+            if x := t { ts.push(x.ty)! }
+        }
+        expect = tys.tuple(ts.items)
+    }
+    v := cx.expr(value, expect)
+    vt := cx.infer.resolve(cx.s, v.ty)
+    elems: []const Ty = empty_slice(Ty)
+    match tys.kind(vt) {
+        .Tuple(es, _) => if es.len is targets.items.len { elems = es }
+        .Error => return .Expr(unit(cx.s, span))
+        _ => {}
+    }
+    if elems.len is not targets.items.len {
+        n := targets.items.len
+        cx.error(value.span, str.format("assigning to {} places needs a tuple of {} elements, not `{}`", n, n, cx.show(vt))!)
+        return .Expr(unit(cx.s, span))
+    }
+    ts := list(Ty)
+    for i, t in enumerate(targets.items) { ts.push(if x := t { x.ty } else { elems[i] })! }
+    return .AssignTuple(targets.items, cx.coerce(v, tys.tuple(ts.items)))
 }
 
 /// Plain data (§5.19).
@@ -882,7 +1060,7 @@ visit :: fn(e: ^Expr, f: fn(x: ^Expr)) {
 closed_const :: fn(s: ^Sema, e: ^Expr) -> bool {
     ok := true
     visit(e, fn(x: ^Expr) {
-        if s.tys.has_param(x.ty) or x.kind in (.Local(_), .Upvar(_)) { ok = false }
+        if s.tys.has_param(x.ty) or x.kind in (.Local(_), .Upvar(_), .ValueParam(_), .SizeOf(_), .IntLimit(_), .TypeName(_), .Closure(_), .HandlerRef(_)) { ok = false }
     })
     return ok
 }
@@ -892,7 +1070,7 @@ closed_const :: fn(s: ^Sema, e: ^Expr) -> bool {
 // ---------------------------------------------------------------------------------
 
 assign :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
-    if places.len is not 1 { return .Expr(cx.unsupported(span, "assignments to several places")) }
+    if places.len is not 1 { return cx.assign_tuple(places, op, value, span) }
     place_ast := &places[0]
     if place_ast.kind is .Underscore {
         if op is not .Assign { cx.error(span, "`_` can only be assigned with `=`") }
@@ -977,7 +1155,8 @@ assignable_name :: fn(cx: ^FnCx, place: ^const ast.Expr) -> bool needs Load {
         if .Var(l) := found.binding { immutable = not cx.local_at(found.depth, l).mutable }
     } else {
         d := cx.s.lookup_module_name(cx.module, id.name)
-        immutable = if x := d { cx.s.resolve_decl(x) is not .Error } else { true }
+        // A `#global` is mutable storage (§19.3); a declaration with errors was reported.
+        immutable = if x := d { cx.s.resolve_decl(x) not in (.Error, .Global(_)) } else { true }
     }
     if immutable {
         cx.error(place.span, str.format("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name)!)
@@ -1005,6 +1184,7 @@ place_mutability :: fn(cx: ^FnCx, e: ^Expr) -> ?bool {
     match e.kind {
         .Local(l) => return cx.locals.items[usize(l)].mutable
         .Upvar(levels, l) => return cx.local_at(cx.depth() - levels, l).mutable
+        .Global(_) => return true
         .Const(_) => return false
         .Deref(p) => {
             if .Ptr(c, _) := tys.kind(p.ty) { return not c }
@@ -1023,7 +1203,7 @@ place_mutability :: fn(cx: ^FnCx, e: ^Expr) -> ?bool {
 /// A place whose re-evaluation has no side effects and is cheap.
 is_simple_place :: fn(e: ^Expr) -> bool {
     match e.kind {
-        .Local(_), .Upvar(_) => return true
+        .Local(_), .Upvar(_), .Global(_) => return true
         .Field(base, _) => return is_simple_place(base)
         .Deref(p) => return p.kind is .Local(_)
         _ => return false
@@ -1132,7 +1312,7 @@ stmt_diverges :: fn(s: ^Sema, st: tir.Stmt) -> bool => match st {
     .Let(_, null) => false
     .Let(_, x) => s.tys.kind(x.ty) is .Never
     .Assign(_, v) => s.tys.kind(v.ty) is .Never
-    .Defer(_, _) => false
+    .LetTuple(_), .AssignTuple(_), .Defer(_, _) => false
 }
 
 /// The expression that makes statement `st` diverge, with the reason it never completes.
@@ -1142,7 +1322,7 @@ stmt_never_cause :: fn(s: ^Sema, st: tir.Stmt) -> ?(span: source.Span, why: stri
         .Let(_, null) => return null
         .Let(_, x) => return never_cause(s, x)
         .Assign(_, v) => return never_cause(s, v)
-        .Defer(_, _) => return null
+        .LetTuple(_), .AssignTuple(_), .Defer(_, _) => return null
     }
 }
 
@@ -1157,6 +1337,8 @@ never_cause :: fn(s: ^Sema, e: ^Expr) -> ?(span: source.Span, why: string) {
         .Call(callee, _) => if callee is .Perform(_) { "this operation never returns to its caller: its result type is `never`" } else { "this call never returns: its result type is `never`" }
         .If(_) => "this `if` never completes: each of its branches leaves"
         .Try(_) => "this `try` always returns"
+        .Resume(_) => "this `resume` ends the handler clause"
+        .Cancel(_) => "this `cancel` ends the handler clause"
         .Match(_) => "this `match` never completes: each of its arms leaves"
         .With(_) => "the body of this `with` never completes"
         .Block(b) => {

@@ -139,3 +139,21 @@ pub type_size_ok :: fn(s: ^Sema, ty: Ty, span: source.Span) -> bool needs Alloc 
     s.error(span, str.format("the type `{}` is too large: an object is at most {} bytes", s.show(ty), max)!)
     return false
 }
+
+/// The byte offset of field `i` of the struct `t` (0 for a `#bits` struct, which has no
+/// field offsets).
+pub field_offset :: fn(s: ^Sema, t: Ty, i: usize) -> u64 needs Alloc {
+    .Adt(id, _) := s.tys.kind(t) else return 0
+    .Struct(def) := s.adts.items[usize(id)].kind else return 0
+    if def.bits is not null { return 0 }
+    offset: u64 = 0
+    for k in 0..def.fields.len {
+        f := def.fields[k]
+        l := s.layout(f.ty)
+        a := if def.packed { u64(1) } else if fa := f.align { fa.max(l.align) } else { l.align }
+        offset = round_up(offset, a)
+        if k is i { return offset }
+        offset = offset +| l.size
+    }
+    return 0
+}

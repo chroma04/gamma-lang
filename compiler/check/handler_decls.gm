@@ -1,7 +1,7 @@
 // Handler declarations `handler E for T needs A { … }` (§12.6): declared before the
 // function bodies are checked, so that `with` finds them, and their clauses checked
-// after (mirrors `src/sema/handler_decl.rs`). Declarations for generic types and
-// handlers of `ctl` operations are reported as unsupported.
+// after (mirrors `src/sema/handler_decl.rs`). Declarations for generic types are
+// reported as unsupported.
 
 /// Declares the handler declarations of the program and of the libraries it uses.
 declare_handlers :: fn(s: ^Sema) needs Load {
@@ -29,12 +29,6 @@ declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs 
         s.unsupported(h.span, "handlers of generic effects")
         return
     }
-    for o in info.ops {
-        if o.kind is .Ctl and not prelude {
-            s.unsupported(h.span, "handlers of `ctl` operations")
-            return
-        }
-    }
     // No type may match two declarations of one effect (§12.6).
     for d in s.handler_decls.items {
         if types.cmp_ref(&d.effect_, &eref) is 0 and d.for_ty is for_ty {
@@ -56,10 +50,11 @@ declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs 
             continue
         }
         // The first clause parameter is the handler value itself.
+        sig := clause_signature(s, &o)
         params := list(sema.ParamInfo)
         params.push(sema.ParamInfo(name: "self", ty: for_ty, span: h.for_ty.span, default: null, generic: null, rest: false))!
-        for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: p.ty, span: p.span, default: null, generic: null, rest: false))! }
-        fn_id := s.new_nested_fn(.Clause, o.name, h.clauses[ci].span, module, params.items, o.ret, effects)
+        params.extend(sig.params)!
+        fn_id := s.new_nested_fn(.Clause, o.name, h.clauses[ci].span, module, params.items, sig.ret, effects)
         clauses.push(fn_id)!
         if not prelude { s.pending_clauses.push(sema.PendingClause(module: module, clause: &h.clauses[ci], fn_id: fn_id, kind: o.kind))! }
     }
@@ -93,11 +88,13 @@ check_handler_clauses :: fn(s: ^Sema) needs Load {
             if name is not "_" { cx.declare(name, .Var(id), at) }
             ids.push(id)!
         }
+        // A `ctl` clause must not finish normally (§14.3); see `clause_fn`.
+        expect: ?Ty = if p.kind is .Ctl { null } else { sig.ret }
         body := match c.body.kind {
-            .Block(b) => cx.block_expected(&b, true, sig.ret)
-            _ => cx.expr(c.body, sig.ret)
+            .Block(b) => cx.block_expected(&b, true, expect)
+            _ => cx.expr(c.body, expect)
         }
-        if s.tys.kind(body.ty) is not .Never { body = cx.coerce(body, sig.ret) }
+        body = cx.clause_body(body, p.kind, sig.ret)
         // The types of untyped literals given to `break` are known now.
         for j in 0..s.decl_clause_breaks.items.len {
             b := &s.decl_clause_breaks.items[j]

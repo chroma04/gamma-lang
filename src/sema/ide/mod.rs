@@ -37,6 +37,7 @@ pub fn analyze_for_ide(sess: &mut Session, root: &Path) -> IdeIndex {
         sema.check_all(m);
         sema.check_inline();
         sema.check_escapes();
+        sema.check_dangling_addresses();
         sema.check_continuations();
     }
     build(&mut sema, root, root_mod)

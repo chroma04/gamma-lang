@@ -1,6 +1,7 @@
 // `with` and handler literals (§12.5, §12.7): each clause is checked as a nested
-// function of the enclosing one (mirrors `src/sema/effects.rs`). Handlers of generic
-// effects, `ctl` operations and handler declarations are reported as unsupported.
+// function of the enclosing one (mirrors `src/sema/effects.rs`), and `resume` and
+// `cancel` in `ctl` clauses (§14). Handlers of generic effects are reported as
+// unsupported.
 
 /// `[label:] with h1, h2, … { body }` (§12.7). With `value`, the `with`'s value is used,
 /// and `expect` is the type expected of it.
@@ -8,7 +9,6 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     span := w.span
     tys := &cx.s.tys
     if cx.in_generic_fn() { return cx.unsupported(span, "`with` in generic functions") }
-    if w.on is not null { return cx.unsupported(span, "`with … on`") }
     with_expect: ?Ty = if value { expect } else { null }
     cx.push_scope()
     if l := w.label { cx.declare(l.name, .Label, l.span) }
@@ -28,6 +28,7 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
         t := cx.settle(v.ty, h.span)
         match tys.kind(t) {
             .Handler(id) => {
+                if cx.pending_handlers.items.len > 0 { cx.check_pending_handler(id, with_expect) }
                 eref := cx.s.handlers.items[usize(id)].effect_
                 for x in handled.items {
                     if types.cmp_ref(&x, &eref) is 0 { cx.error(h.span, str.format("two handlers for `{}` in one `with`", tys.effect_name(eref.eff))!) }
@@ -38,10 +39,6 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
             }
             .Error => { bad_handler = true }
             _ => {
-                if handler_lit(&h) is null and tys.kind(t) is .Handler(_) {
-                    pop_with_scope(cx)
-                    return cx.unsupported(h.span, "handler literals bound to locals")
-                }
                 decls := cx.handlers_for(t)
                 if decls.len is 0 {
                     if cx.s.handler_templates and mentions_generic_adt(tys, t) {
@@ -80,11 +77,30 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
             }
         }
     }
+    // A `ctl` operation needs a stack to suspend: `on` is required exactly then (§14.1).
+    has_ctl := false
+    for e in handled.items {
+        for o in cx.s.effects.items[usize(e.eff)].ops {
+            if o.kind is .Ctl { has_ctl = true }
+        }
+    }
+    on: ?^Expr = null
+    if st := w.on {
+        if not has_ctl { cx.error(st.span, "`on` gives a stack to fibers, but none of these handlers handles a `ctl` operation") }
+        stack_ty := tys.slice(false, tys.int(false, 8))
+        v := cx.expr(st, stack_ty)
+        on = cx.coerce(v, stack_ty)
+    } else if has_ctl {
+        cx.error(span, "this `with` handles `ctl` operations, so it needs a stack: `with h on stack { … }` (§14.1)")
+    }
     label_name: ?string = null
     if l := w.label { label_name = l.name }
     label := cx.new_label(label_name, false, .With(with_expect))
     start := cx.performed.items.len
+    n := cx.handled.items.len
+    cx.handled.extend(handled.items)!
     body := cx.block_expected(&w.body, value, expect)
+    cx.handled.truncate(n)
     _ = cx.labels.pop()
     cx.pop_scope()
     // Effects handled here are not performed by the `with` (§12.3).
@@ -94,6 +110,10 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
         handles := bad_handler
         for x in handled.items {
             if types.cmp_ref(&x, &p.effect_) is 0 { handles = true }
+        }
+        // Not those of a handler literal written before this `with` began (§12.5).
+        for sh in cx.shielded_performs.items {
+            if sh.at is p.span and n >= sh.handled { handles = false }
         }
         if handles {
             _ = cx.performed.remove(i)
@@ -163,7 +183,7 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
         cx.s.decl_with_checks.push(sema.DeclWithCheck(decls: decl_ids.items, ty: with_ty, span: span))!
     }
     if not value and tys.kind(body.ty) is .Never and breaks.items.len is 0 and not decl_exits { ty = tys.never_ty() }
-    return tir.mk(ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: null, body: body)), span)
+    return tir.mk(ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: on, body: body)), span)
 }
 
 /// Leaves the scope of a `with` that was not checked.
@@ -186,15 +206,23 @@ handler_lit :: fn(e: ^const ast.Expr) -> ?^const ast.HandlerLit => match e.kind 
 /// A handler literal (§12.5), installed by a `with` whose value is expected to have type
 /// `with_expect`: a second-class handler value.
 handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, with_expect: ?Ty, span: source.Span) -> ^Expr needs Load {
-    eref := cx.s.resolve_effect_ref(cx.module, lit.effect_) else return error_expr(cx.s, span)
+    hid := cx.new_handler_literal(lit, span) else return error_expr(cx.s, span)
+    cx.handler_clauses(hid, lit, with_expect, span)
+    return tir.mk(cx.s.tys.intern(.Handler(hid)), .HandlerRef(hid), span)
+}
+
+/// Starts a handler literal: resolves its effect and reserves its handler, whose clauses
+/// `handler_clauses` checks.
+new_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: source.Span) -> ?u32 needs Load {
+    eref := cx.s.resolve_effect_ref(cx.module, lit.effect_) else return null
     info := cx.s.effects.items[usize(eref.eff)]
     if eref.args.len is not info.params.len {
         cx.error(lit.effect_.span, str.format("`{}` needs {} type argument(s)", info.name, info.params.len)!)
-        return error_expr(cx.s, span)
+        return null
     }
-    if info.params.len > 0 { return cx.unsupported(span, "handlers of generic effects") }
-    for o in info.ops {
-        if o.kind is .Ctl { return cx.unsupported(span, "handlers of `ctl` operations") }
+    if info.params.len > 0 {
+        _ = cx.unsupported(span, "handlers of generic effects")
+        return null
     }
     hid := cx.s.handlers.items.len.trunc(u32)
     cx.s.handlers.push(tir.HandlerLit(effect_: eref, clauses: empty_slice(u32)))!
@@ -210,19 +238,118 @@ handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, with_expect: ?Ty, s
         }
         if n > 1 { cx.error(c.name.span, str.format("operation `{}` is handled twice", c.name.name)!) }
     }
+    return hid
+}
+
+/// Checks the clauses of handler literal `hid`; `with_expect` is the type of the value
+/// of the `with` that installs it, which its `break`s give.
+handler_clauses :: fn(cx: ^FnCx, hid: u32, lit: ^const ast.HandlerLit, with_expect: ?Ty, span: source.Span) needs Load {
+    info := cx.s.effects.items[usize(cx.s.handlers.items[usize(hid)].effect_.eff)]
     clauses := list(u32)
     for o in info.ops {
         c := find_clause(lit, o.name) else {
             cx.error(span, str.format("this handler has no clause for the operation `{}`", o.name)!)
             continue
         }
-        params := list(sema.ParamInfo)
-        for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: p.ty, span: p.span, default: null, generic: null, rest: false))! }
+        sig := clause_signature(cx.s, &o)
         info_ := ClauseInfo(op_kind: o.kind, handler_: hid, decl_clause: null, with_expect: with_expect)
-        clauses.push(cx.clause_fn(c, params.items, o.ret, info_))!
+        clauses.push(cx.clause_fn(c, sig.params, sig.ret, info_))!
     }
     cx.s.handlers.items[usize(hid)].clauses = clauses.items
+}
+
+/// Binds `name :: handler E { … }`: the clauses are checked later (`check_pending_handler`).
+pending_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: source.Span) -> ^Expr needs Load {
+    hid := cx.new_handler_literal(lit, span) else return error_expr(cx.s, span)
+    lens := list(usize)
+    for sc in cx.scopes.items { lens.push(sc.items.len)! }
+    cx.pending_handlers.push(PendingHandler(hid: hid, lit: lit, span: span, depth: cx.outer.items.len, scope_lens: lens.items, labels: cx.labels.items.len, handled: cx.handled.items.len))!
     return tir.mk(cx.s.tys.intern(.Handler(hid)), .HandlerRef(hid), span)
+}
+
+/// Checks the clauses of the pending handler literal `hid`, if it is one, as if at the
+/// place where it was written, with `with_expect` as the type its `break`s give.
+check_pending_handler :: fn(cx: ^FnCx, hid: u32, with_expect: ?Ty) needs Load {
+    found: ?usize = null
+    for i, x in enumerate(cx.pending_handlers.items) {
+        if x.hid is hid {
+            found = i
+            break
+        }
+    }
+    i := found else return
+    p := cx.pending_handlers.remove(i)
+    // Return to the frame, scopes, labels and handlers of the literal's position.
+    frames := list(Frame)
+    while cx.outer.items.len > p.depth {
+        f := cx.outer.pop() else break
+        frames.push(cx.swap_frame(f))!
+    }
+    nscopes := p.scope_lens.len
+    hidden_scopes := list(List(Binding))
+    hidden_scopes.extend(cx.scopes.items[nscopes..])!
+    cx.scopes.truncate(nscopes)
+    hidden_depths := list(u32)
+    hidden_depths.extend(cx.scope_depths.items[nscopes..])!
+    cx.scope_depths.truncate(nscopes)
+    hidden_tails := list([]Binding)
+    for k in 0..nscopes {
+        sc := &cx.scopes.items[k]
+        len := p.scope_lens[k].min(sc.items.len)
+        tail := list(Binding)
+        tail.extend(sc.items[len..])!
+        hidden_tails.push(tail.items)!
+        sc.truncate(len)
+    }
+    hidden_labels := list(LabelInfo)
+    nl := p.labels.min(cx.labels.items.len)
+    hidden_labels.extend(cx.labels.items[nl..])!
+    cx.labels.truncate(nl)
+    hidden_handled := list(EffectRef)
+    nh := p.handled.min(cx.handled.items.len)
+    hidden_handled.extend(cx.handled.items[nh..])!
+    cx.handled.truncate(nh)
+    performed := cx.performed.items.len
+    cx.handler_clauses(hid, p.lit, with_expect, p.span)
+    for x in cx.performed.items[performed..] { cx.shield(x.span, p.handled) }
+    cx.handled.extend(hidden_handled.items)!
+    cx.labels.extend(hidden_labels.items)!
+    for k in 0..nscopes { cx.scopes.items[k].extend(hidden_tails.items[k])! }
+    cx.scopes.extend(hidden_scopes.items)!
+    cx.scope_depths.extend(hidden_depths.items)!
+    while f := frames.pop() {
+        outer := cx.swap_frame(f)
+        cx.outer.push(outer)!
+    }
+}
+
+/// Records that the perform at `at` is shielded from `with`s that began after `handled`
+/// handlers were in scope.
+shield :: fn(cx: ^FnCx, at: source.Span, handled: usize) needs Alloc {
+    for i in 0..cx.shielded_performs.items.len {
+        if cx.shielded_performs.items[i].at is at {
+            cx.shielded_performs.items[i].handled = handled
+            return
+        }
+    }
+    cx.shielded_performs.push(Shielded(at: at, handled: handled))!
+}
+
+/// Checks the pending handler literals written in the scope that is ending.
+check_pending_handlers_of_scope :: fn(cx: ^FnCx) needs Load {
+    depth := cx.outer.items.len
+    scopes := cx.scopes.items.len
+    while true {
+        hid: ?u32 = null
+        for p in cx.pending_handlers.items {
+            if p.depth is depth and p.scope_lens.len >= scopes {
+                hid = p.hid
+                break
+            }
+        }
+        h := hid else return
+        cx.check_pending_handler(h, null)
+    }
 }
 
 find_clause :: fn(lit: ^const ast.HandlerLit, name: string) -> ?^const ast.Clause {
@@ -249,14 +376,88 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
         if name is not "_" { cx.declare(name, .Var(id), at) }
         ids.push(id)!
     }
+    // A `ctl` clause must not finish normally (§14.3): its body is checked without an
+    // expected type, so that a branch that finishes gives it a type other than `never`.
+    expect: ?Ty = if info.op_kind is .Ctl { null } else { ret }
     body := match c.body.kind {
-        .Block(b) => cx.block_expected(&b, true, ret)
-        _ => cx.expr(c.body, ret)
+        .Block(b) => cx.block_expected(&b, true, expect)
+        _ => cx.expr(c.body, expect)
     }
-    if cx.s.tys.kind(body.ty) is not .Never { body = cx.coerce(body, ret) }
+    body = cx.clause_body(body, info.op_kind, ret)
     frame := cx.exit_fn()
     cx.performed.extend(frame.performed)!
     cx.s.defs.items[usize(fn_id)].parent = cx.fn_id
     cx.nested.push(NestedFn(fn_id: fn_id, params: ids.items, locals: frame.locals, body: body))!
     return fn_id
+}
+
+/// The parameters and result type of a clause for operation `o` of an effect without
+/// type parameters: a `ctl` clause also takes the continuation `k` and never finishes
+/// normally (§14.3).
+pub clause_signature :: fn(s: ^Sema, o: ^const sema.OpInfo) -> (params: []sema.ParamInfo, ret: Ty) needs Alloc {
+    params := list(sema.ParamInfo)
+    for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: p.ty, span: p.span, default: null, generic: null, rest: false))! }
+    if o.kind is not .Ctl { return (params: params.items, ret: o.ret) }
+    span := if p := params.items.last() { p.span } else { source.DUMMY }
+    params.push(sema.ParamInfo(name: "k", ty: s.tys.intern(.Cont(o.ret)), span: span, default: null, generic: null, rest: false))!
+    return (params: params.items, ret: s.tys.never_ty())
+}
+
+/// Checks a clause body against the clause's result type. A `ctl` clause never
+/// finishes normally (§14.3).
+clause_body :: fn(cx: ^FnCx, body: ^Expr, kind: ast.OpKind, ret: Ty) -> ^Expr needs Load {
+    if cx.s.tys.kind(body.ty) is .Never { return body }
+    if kind is .Ctl {
+        if not cx.s.tys.is_error(body.ty) { cx.error(body.span, "a `ctl` clause must not finish normally: end every path with `resume`, an exit or a `never` call (§14.3)") }
+        return body
+    }
+    return cx.coerce(body, ret)
+}
+
+/// Whether the current frame is the body of a `ctl` clause.
+in_ctl_clause :: fn(cx: ^const FnCx) -> bool {
+    c := cx.clause else return false
+    return c.op_kind is .Ctl and c.for_label is null
+}
+
+/// Checks a continuation operand of `resume` or `cancel`; returns it and its `R`.
+cont_operand :: fn(cx: ^FnCx, what: string, k: ^const ast.Expr) -> ?(cont: ^Expr, r: Ty) needs Load {
+    if not cx.in_ctl_clause() {
+        cx.error(k.span, str.format("`{}` is permitted only in the body of a `ctl` clause (§14)", what)!)
+    } else if cx.in_defer {
+        cx.error(k.span, str.format("`{}` cannot appear in a deferred statement", what)!)
+    }
+    v := cx.expr(k, null)
+    t := cx.infer.resolve(cx.s, v.ty)
+    match cx.s.tys.kind(t) {
+        .Cont(r) => return (cont: v, r: r)
+        .Error => return null
+        _ => {
+            cx.error(k.span, str.format("expected a continuation `cont(R)`, found `{}`", cx.show(t))!)
+            return null
+        }
+    }
+}
+
+/// `resume k(v)` (§14.3).
+resume_expr :: fn(cx: ^FnCx, k: ^const ast.Expr, value: ?^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    c := cx.cont_operand("resume", k) else {
+        if v := value { _ = cx.expr(v, null) }
+        return error_expr(cx.s, span)
+    }
+    tys := &cx.s.tys
+    v: ^Expr = unit(cx.s, span)
+    if x := value {
+        e := cx.expr(x, c.r)
+        v = cx.coerce(e, c.r)
+    } else if not tys.is_unit(c.r) and not tys.is_error(c.r) {
+        cx.error(span, str.format("this continuation needs a value of type `{}`: `resume k(value)`", cx.show(c.r))!)
+    }
+    return tir.mk(tys.never_ty(), .Resume(c.cont, v), span)
+}
+
+/// `cancel k` (§14.5).
+cancel_stmt :: fn(cx: ^FnCx, k: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    c := cx.cont_operand("cancel", k) else return error_expr(cx.s, span)
+    return tir.mk(cx.s.tys.unit(), .Cancel(c.cont), span)
 }

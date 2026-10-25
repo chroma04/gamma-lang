@@ -1,0 +1,9 @@
+//! stage: parse
+// `[a, b]` is not an array value: `[n]T` is an array type, and an array is constructed
+// with its type (§7.11). The error says how to write one.
+
+f :: fn() {
+    xs := [1, 2, 3] //~ ERROR expected `]` to close the array length, found `,` //~ NOTE an array value is written with its type, `[_]i32(1, 2)`
+    ys := [_]i32(1, 2, 3)
+    t := (1, "two")
+}

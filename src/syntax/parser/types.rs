@@ -7,6 +7,7 @@
 //! syntax is reached through [`Parser::parse_primary`] with [`Mode::Expr`].
 
 use super::{PResult, Parser, Restr};
+use crate::diag::Diagnostic;
 use crate::syntax::ast::*;
 use crate::syntax::token::{Keyword, Punct, TokenKind};
 
@@ -137,6 +138,15 @@ impl Parser<'_> {
                     Ok(self.mk_expr(ExprKind::ArrayType { len: None, elem: Box::new(elem) }, span))
                 } else {
                     let len = self.unrestricted(|p| p.parse_expr())?;
+                    if self.at(Punct::Comma) {
+                        // `[1, 2]`: an array value written as in other languages.
+                        let span = self.span();
+                        let d = Diagnostic::error(span, "expected `]` to close the array length, found `,`").with_note(
+                            "`[n]T` is an array type: an array value is written with its type, `[_]i32(1, 2)` (§7.11), \
+                             and a tuple as `(a, b)`",
+                        );
+                        return self.fail_diag(d);
+                    }
                     self.expect(Punct::RBracket, "to close the array length")?;
                     let elem = self.parse_type_operand(mode)?;
                     let span = self.span_from(start);

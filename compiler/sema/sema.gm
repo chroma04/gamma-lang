@@ -302,6 +302,10 @@ pub Sema :: struct {
     /// deeply instantiations nest at the one being followed (§16.7).
     pub mono_queue: List(MonoRequest)
     pub mono_depth: u32
+    /// Set while resolving the signature of a foreign function, which may be variadic.
+    allow_variadic: bool
+    /// The variadic foreign functions (§19.2).
+    pub variadic_fns: List(u32)
     type_params: List(Scoped)
     value_scope: List(ValueScoped)
     /// The declarations being resolved, for cycle reports.
@@ -345,6 +349,8 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         fn_instances: hash_map.hash_map((u32, []const Ty), u32),
         mono_queue: list(MonoRequest),
         mono_depth: 0,
+        allow_variadic: false,
+        variadic_fns: list(u32),
         type_params: list(Scoped),
         value_scope: list(ValueScoped),
         resolving: list(usize),
@@ -592,7 +598,7 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     }
     v: DeclValue = .Error
     if global {
-        s.unsupported(name.span, "`#global` declarations")
+        v = s.declare_global(module, name, &b)
     } else {
         v = s.compute_binding(id, module, name, &item, &b)
     }
@@ -637,12 +643,7 @@ compute_binding :: fn(s: ^Sema, id: usize, module: usize, name: ast.Ident, item:
                 _ => DeclValue.Error
             }
         }
-        .Foreign(_) => {
-            if b.ty is null {
-                s.unsupported(init.span, "foreign blocks")
-                return .Error
-            }
-        }
+        .Foreign(blk) => if b.ty is null { return s.declare_foreign(module, name, blk) }
         .Fn(lit) => if b.ty is null { return s.declare_fn(module, name, lit) }
         .Effect(lit) => if b.ty is null { return s.declare_effect(module, id, name, lit) }
         // `Io :: Fs + Alloc`: a named effect set (§12.3).

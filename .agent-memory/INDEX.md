@@ -1,22 +1,18 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-24) — PRs #1–#71 merged, v0.1.0 tagged
-- s38 (PR #72 merged; then s38b on the same branch): self-hosted compiler (decisions/043,
-  roadmap/self-hosting.md): compiler/ = gammac; lexer + parser byte-identical to
-  `gamma lex`/`parse --dump` (+ JSON diags) on all ~980 .gm files, tests/selfhost.rs.
-  docs/guide/idioms.md = growing idioms handbook (doc_examples-checked; ADD to it whenever
-  a pattern is learned). `?T in (..)` fix (§7.7). s38c: stage 3 modules (`gamma modules`),
-  C-backend assignment-order bug fixed. s38d: stage 4a declarations (`gamma decls`,
-  compiler/types+sema+bigint+ratio, "gammac cannot" skip protocol + DECLS_FLOOR ratchet);
-  `in` takes patterns (§7.7). s38e: stage 4b bodies started (`gamma tir`, compiler/tir +
-  compiler/check, PR #76); s38f: patterns/for/methods/errors/sequences, TIR_FLOOR 100,
-  `&e` expected-pointee hint. s38g (branch claude/project-thread-735qf0): generics in
-  gammac (check/generic.gm, sema instantiate + mono walk), TIR_FLOOR 137 (PR #78 merged).
-  s39 (branch claude/project-thread-nhzd4o): pain-point language changes (decisions/044:
-  pub(package), needless-pub/dangling-address/present-only-binding lints, payload-binding
-  note) + gammac defer, typed consts, intrinsics, fn literals/nested fns/fn pointers,
-  `with` + handler literals/decls + iterators + local when + tests: TIR_FLOOR 320 (PR #79,
-  ask user before merging). Next: `ctl`/fibers (`with … on`), long tail (roadmap/self-hosting.md).
+## State (2026-10-25) — PRs #1–#79 merged, v0.1.0 tagged; PR #80 open (s40)
+- s38–s39 (PRs #72–#79 merged): self-hosted compiler gammac in compiler/ (decisions/043,
+  roadmap/self-hosting.md): lexer+parser+modules byte-identical on all files; decls and
+  tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in
+  tests/selfhost.rs. docs/guide/idioms.md = idioms handbook (doc_examples-checked; ADD to
+  it whenever a pattern is learned). s39 pain-point changes: decisions/044.
+- s40 (branch claude/admiring-wright-4lo3vq): gammac long tail, TIR 320 → 486 SAME, decls
+  693 (see roadmap/self-hosting.md s40 entry). Two sonnet worktree subagents (intrinsics,
+  format templates) worked well with precise briefs + the shared survey script
+  ($SP/tools/survey.sh REPO WORKDIR; STAGE=decls for decls). NEXT BIG ITEM: a compile-time
+  evaluator in gammac (~80 roots blocked: typed consts calling fns, static_assert, array
+  lengths, defaults, immutable locals) — plan in roadmap/self-hosting.md. Also s40 (user
+  approved): §15.1 dangling stores are errors, `[a, b]` note; no-shadowing stays (045).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
   in editors/tree-sitter-gamma (node 22 in /opt/node22).
@@ -64,7 +60,7 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–044, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

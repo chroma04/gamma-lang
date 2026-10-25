@@ -34,13 +34,16 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
     monomorphize(s)
     check_inline(s)
     check_escapes(s)
+    check_dangling_addresses(s)
+    check_continuations(s)
 }
 
 /// Follows the bodies of the instances of generic functions requested so far, as
 /// producing them would (§16.7): what they call is instantiated for the instance's type
-/// arguments, which may request more, and what depends on the type arguments is checked
-/// for them. Generic functions of the core library, whose bodies gammac does not check,
-/// are not followed.
+/// arguments, which may request more, what depends on the type arguments is checked for
+/// them, and the nested functions of the generic one (function literals, handler
+/// clauses) are copied for the instance with its types substituted. Generic functions of
+/// the core library, whose bodies gammac does not check, are not followed.
 monomorphize :: fn(s: ^Sema) needs Load {
     while req := s.mono_queue.pop() {
         def := s.defs.items[usize(req.generic)]
@@ -49,7 +52,10 @@ monomorphize :: fn(s: ^Sema) needs Load {
         for i, g in enumerate(s.fns.items[usize(req.generic)].generics) { map.push(sema.Subst(param: g, ty: req.args[i]))! }
         outer := s.mono_depth
         s.mono_depth = req.depth
-        mono_check(s, body, map.items, req.span)
+        mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false)
+        mc.fn_map.push(FnPair(from: req.generic, to: req.instance))!
+        for l in def.locals { _ = mono_ty(s, &mc, l.ty) }
+        mono_expr(s, &mc, tir.clone_expr(body))
         s.mono_depth = outer
         // An instance may need a type larger than any object (a computed array length).
         for l in def.locals {
@@ -58,44 +64,141 @@ monomorphize :: fn(s: ^Sema) needs Load {
     }
 }
 
-/// Checks expression `e` of a generic body for the instance with type arguments `map`,
-/// reporting at `span`, where the instance is used.
-mono_check :: fn(s: ^Sema, e: ^Expr, map: []const sema.Subst, span: source.Span) needs Load {
+/// The state of instantiating one generic function.
+MonoCx :: struct {
+    map: []const sema.Subst
+    /// The functions and handler literals of the generic body and their copies for this
+    /// instance.
+    fn_map: List(FnPair)
+    handler_map: List(FnPair)
+    /// Where the instance is used, where its errors are reported.
+    span: source.Span
+    /// Whether the expression is part of a copy that is kept (a nested function's body).
+    copying: bool
+}
+
+FnPair :: struct {
+    from: u32
+    to: u32
+}
+
+find_pair :: fn(l: ^const List(FnPair), from: u32) -> ?u32 {
+    for p in l.items {
+        if p.from is from { return p.to }
+    }
+    return null
+}
+
+/// Rewrites `e`, a copy of an expression of a generic body, for the instance with type
+/// arguments `mc.map`, reporting what fails for them at `mc.span`.
+mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     had_param := s.tys.has_param(e.ty)
-    t := s.subst(e.ty, map)
+    e.ty = mono_ty(s, mc, e.ty)
+    t := e.ty
+    span := mc.span
+    // A compile-time value parameter becomes its argument (§16.5).
+    if .ValueParam(p) := e.kind {
+        for b in mc.map {
+            if b.param is not p { continue }
+            .Value(k) := s.tys.kind(b.ty) else break
+            match k {
+                .Bytes(kt, bytes) => {
+                    if i := s.key_int(k) {
+                        e.kind = .Int(i)
+                    } else if s.tys.kind(kt) is .Bool {
+                        e.kind = .Bool(bytes.len > 0 and bytes[0] is 1)
+                    } else if mc.copying {
+                        s.unsupported(e.span, "compile-time arguments of this type in nested functions")
+                    }
+                }
+                .Fn(f, _) => { e.kind = .FnRef(f) }
+                .Null => { e.kind = .Null }
+                .Str(bytes) => { e.kind = .Str(bytes) }
+            }
+            return
+        }
+        return
+    }
     // Literals typed by a parameter are checked against each instantiation (§16.1).
-    match e.kind {
-        .Int(v) => if had_param and s.tys.kind(t) is not .Float(_) and not s.int_fits(v, t) {
+    if .Int(v) := e.kind and had_param {
+        if s.tys.kind(t) is .Float(_) {
+            e.kind = .UntypedFloat(ratio.from_int(v))
+        } else if not s.int_fits(v, t) {
             s.error(span, str.format("the literal {} does not fit in `{}` (in an instantiation used here)", sema.show_int(v), s.show(t))!)
         }
-        .UntypedFloat(_) => if s.tys.kind(t) is not .Float(_) {
+    }
+    match e.kind {
+        .SizeOf(of, align) => {
+            ot := s.subst(of, mc.map)
+            if s.tys.has_param(ot) {
+                e.kind = .SizeOf(ot, align)
+            } else {
+                l := s.layout(ot)
+                e.kind = .Int(bigint.from_u64(if align { l.align } else { l.size }))
+            }
+        }
+        .IntLimit(of, max) => {
+            ot := s.subst(of, mc.map)
+            e.kind = if v := int_limit(s, ot, max) { .Int(v) } else { .IntLimit(ot, max) }
+        }
+        .TypeName(of) => {
+            ot := s.subst(of, mc.map)
+            e.kind = if s.tys.has_param(ot) { .TypeName(ot) } else { .Str(s.show(ot)) }
+        }
+        _ => {}
+    }
+    if .UntypedFloat(r) := e.kind {
+        if .Float(bits) := s.tys.kind(t) {
+            if bits is 16 {
+                if mc.copying { s.unsupported(e.span, "`f16` literals") }
+            } else {
+                x: f64 = if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
+                if x - x is not 0.0 {
+                    s.error(span, str.format("a literal is too large for `{}` (in an instantiation used here)", s.show(t))!)
+                } else {
+                    e.kind = .Float(x)
+                }
+            }
+        } else {
             s.error(span, str.format("a float literal cannot have the type `{}` (in an instantiation used here)", s.show(t))!)
         }
-        _ => {}
     }
-    callee: ?u32 = null
     match e.kind {
-        .Call(.Fn(c), _) => { callee = c }
-        .FnRef(c) => { callee = c }
+        .Call(.Fn(c), args) => { e.kind = .Call(.Fn(mono_fn(s, mc, c)), args) }
+        .Call(.Perform(eref, op), args) => { e.kind = .Call(.Perform(subst_eref(s, &eref, mc.map), op), args) }
+        .FnRef(c) => { e.kind = .FnRef(mono_fn(s, mc, c)) }
+        .Closure(c) => { e.kind = .Closure(mono_fn(s, mc, c)) }
+        .HandlerRef(h) => { e.kind = .HandlerRef(mono_handler(s, mc, h)) }
+        .Write(w) => if .Perform(eref, op) := w.sink {
+            w2 := w
+            w2.sink = .Perform(subst_eref(s, &eref, mc.map), op)
+            e.kind = .Write(w2)
+        }
         _ => {}
     }
-    if c := callee {
-        if inst := s.fns.items[usize(c)].instance {
-            has_param := false
-            for a in inst.args {
-                if s.tys.has_param(a) { has_param = true }
-            }
-            if has_param {
-                args := list(Ty)
-                for a in inst.args { args.push(s.subst(a, map))! }
-                _ = s.instantiate(inst.template, args.items, span)
+    tir.for_each_child(e, fn(x: ^Expr) { mono_expr(s, mc, x) })
+    match e.kind {
+        .Match(_, arms) => for a in arms { mono_pat(s, mc, a.pat) }
+        .If(x) => mono_cond_pats(s, mc, x.cond)
+        .Loop(x) => mono_cond_pats(s, mc, x.cond)
+        _ => {}
+    }
+    // Format specs on generic arguments are checked in each instance; a template
+    // parameter is split.
+    if .Write(w) := e.kind and mc.map.len > 0 {
+        for k in 0..w.specs.len.min(w.args.len) {
+            if msg := check_spec(s, &w.specs[k], w.args[k].ty) {
+                s.error(span, str.format("{} (in an instantiation used here)", msg)!)
             }
         }
     }
-    tir.for_each_child(e, fn(x: ^Expr) { mono_check(s, x, map, span) })
+    if e.kind is .WriteDeferred(_) {
+        resolve_write(s, mc, e)
+        return
+    }
     // `.bits` between types that mention parameters is size-checked per instance (§6.6).
-    if .Builtin(.Bits, args) := e.kind and map.len > 0 and not s.tys.has_param(t) {
-        src := s.subst(args[0].ty, map)
+    if .Builtin(.Bits, args) := e.kind and mc.map.len > 0 and not s.tys.has_param(t) {
+        src := args[0].ty
         if not s.tys.has_param(src) {
             a := s.layout(src).size
             b := s.layout(t).size
@@ -104,6 +207,107 @@ mono_check :: fn(s: ^Sema, e: ^Expr, map: []const sema.Subst, span: source.Span)
             }
         }
     }
+}
+
+mono_cond_pats :: fn(s: ^Sema, mc: ^MonoCx, cond: []tir.CondPart) needs Load {
+    for c in cond {
+        if .Match(p, _) := c { mono_pat(s, mc, p) }
+    }
+}
+
+/// Substitutes the types of pattern `p`.
+mono_pat :: fn(s: ^Sema, mc: ^MonoCx, p: ^tir.Pat) needs Load {
+    p.ty = s.subst(p.ty, mc.map)
+    match p.kind {
+        .Some(q), .Ok(q), .Err(q) => mono_pat(s, mc, q)
+        .Variant(_, q) => mono_pat(s, mc, q)
+        .Fields(fs) => for f in fs { mono_pat(s, mc, f.pat) }
+        .Or(ps) => for q in ps { mono_pat(s, mc, q) }
+        _ => {}
+    }
+}
+
+/// Substitutes type parameters in `t`; the type of a handler literal of the generic
+/// becomes that of its copy.
+mono_ty :: fn(s: ^Sema, mc: ^MonoCx, t: Ty) -> Ty needs Load {
+    if .Handler(h) := s.tys.kind(t) { return s.tys.intern(.Handler(mono_handler(s, mc, h))) }
+    return s.subst(t, mc.map)
+}
+
+subst_eref :: fn(s: ^Sema, e: ^const EffectRef, map: []const sema.Subst) -> EffectRef needs Load {
+    args := list(types.GenericArg)
+    for a in e.args {
+        args.push(match a {
+            .Type(t) => types.GenericArg.Type(s.subst(t, map))
+            v => v
+        })!
+    }
+    return EffectRef(eff: e.eff, args: args.items)
+}
+
+/// The function that a reference from the generic body to `id` means in this instance:
+/// a nested function is copied, an instance re-instantiated with the type arguments.
+mono_fn :: fn(s: ^Sema, mc: ^MonoCx, id: u32) -> u32 needs Load {
+    if n := find_pair(&mc.fn_map, id) { return n }
+    if inst := s.fns.items[usize(id)].instance {
+        has_param := false
+        for a in inst.args {
+            if s.tys.has_param(a) { has_param = true }
+        }
+        if not has_param { return id }
+        args := list(Ty)
+        for a in inst.args { args.push(s.subst(a, mc.map))! }
+        return s.instantiate(inst.template, args.items, mc.span)
+    }
+    if not s.defs.items[usize(id)].nested { return id }
+    // A nested function of the generic: copied for this instance.
+    sig := s.fns.items[usize(id)]
+    params := list(sema.ParamInfo)
+    for p in sig.params {
+        q := p
+        q.ty = s.subst(p.ty, mc.map)
+        params.push(q)!
+    }
+    def := s.defs.items[usize(id)]
+    new_id := s.new_nested_fn(def.kind, sig.name, sig.span, sig.module, params.items, s.subst(sig.ret, mc.map), s.subst_effects(&sig.effects, mc.map))
+    mc.fn_map.push(FnPair(from: id, to: new_id))!
+    locals := list(tir.LocalDecl)
+    for l in def.locals {
+        x := l
+        x.ty = mono_ty(s, mc, l.ty)
+        locals.push(x)!
+    }
+    parent: ?u32 = null
+    if p := def.parent { parent = mono_fn(s, mc, p) }
+    body: ?^Expr = null
+    if b := def.body {
+        copy := tir.clone_expr(b)
+        was := mc.copying
+        mc.copying = true
+        mono_expr(s, mc, copy)
+        mc.copying = was
+        body = copy
+    }
+    nd := &s.defs.items[usize(new_id)]
+    nd.params = def.params
+    nd.locals = locals.items
+    nd.body = body
+    nd.parent = parent
+    nd.nested = true
+    return new_id
+}
+
+/// The copy for this instance of handler literal `h` of the generic body.
+mono_handler :: fn(s: ^Sema, mc: ^MonoCx, h: u32) -> u32 needs Load {
+    if n := find_pair(&mc.handler_map, h) { return n }
+    lit := s.handlers.items[usize(h)]
+    new_h := s.handlers.items.len.trunc(u32)
+    s.handlers.push(tir.HandlerLit(effect_: subst_eref(s, &lit.effect_, mc.map), clauses: empty_slice(u32)))!
+    mc.handler_map.push(FnPair(from: h, to: new_h))!
+    clauses := list(u32)
+    for c in lit.clauses { clauses.push(mono_fn(s, mc, c))! }
+    s.handlers.items[usize(new_h)].clauses = clauses.items
+    return new_h
 }
 
 /// Whether a parameter default is a literal, which needs no compile-time evaluation.

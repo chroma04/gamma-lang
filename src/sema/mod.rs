@@ -29,7 +29,7 @@ mod ide;
 mod imports;
 mod infer;
 mod lint;
-mod lint_escape;
+pub(crate) mod lint_escape;
 mod lint_present;
 mod matching;
 mod mathvec;
@@ -424,6 +424,7 @@ pub fn typed_program(sess: &mut Session, root: &Path) -> Option<String> {
     sema.check_all(root_mod);
     sema.check_inline();
     sema.check_escapes();
+    sema.check_dangling_addresses();
     sema.check_continuations();
     if sema.sess.diags.has_errors() {
         return None;
@@ -442,6 +443,7 @@ fn analyze_with(sess: &mut Session, root: &Path, tests: Option<bool>) -> Option<
     sema.check_all(root_mod);
     sema.check_inline();
     sema.check_escapes();
+    sema.check_dangling_addresses();
     sema.check_continuations();
     if sema.sess.diags.has_errors() {
         return None;

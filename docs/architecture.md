@@ -75,7 +75,7 @@ cycle, reported with every declaration in it (spec §3.4).
 | `src/fix.rs` | `gamma fix`: choosing and applying the fixes diagnostics carry |
 | `src/lint/` | `gamma lint`: the rules, their levels and fixes; `syntax.rs` holds the rules that need only the syntax tree |
 | `src/sema/lint.rs` | the lint rules that need the checker: unused names and declarations, comparisons and assignments of a value with itself |
-| `src/sema/lint_escape.rs` | the `dangling-address` lint: addresses of locals kept where they outlive the local |
+| `src/sema/lint_escape.rs` | addresses of locals kept where they outlive the local: the compile error where certain (§15.1), the `dangling-address` lint where likely |
 | `src/sema/lint_present.rs` | the `present-only-binding` lint: `match` arms whose present-only bindings leave the absent case to a catch-all arm |
 | `src/linting.rs` | the `gamma lint` command line and its `--fix` loop (in the binary) |
 | `src/ice.rs` | the report printed for an internal compiler error |

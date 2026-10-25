@@ -1,0 +1,293 @@
+// The static check of continuations (§14.2): when a `ctl` clause uses its continuation
+// `k` only as the operand of `resume` and `cancel`, every path through the clause must
+// consume it exactly once (mirrors `src/sema/cont_check.rs`).
+//
+// The analysis walks the clause body in evaluation order with a small state: whether
+// `k` may still be unconsumed and whether it may already be consumed on the paths
+// reaching a point. Loops are iterated to a fixed point. `resume` and a `break` to the
+// installing `with` need `k` consumed on every path; consuming needs it unconsumed on
+// every path. Other exits leave the `with`, which discards `k`.
+
+/// `k` may be unconsumed on some path reaching this point.
+OPEN :: 1u8
+/// `k` may be consumed on some path reaching this point.
+DONE :: 2u8
+
+/// Checks every `ctl` clause whose continuation is used only by `resume` and `cancel`.
+check_continuations :: fn(s: ^Sema) needs Alloc {
+    errors := list(ContError)
+    for i, def in enumerate(s.defs.items) {
+        body := def.body else continue
+        k := def.params.last() else continue
+        if s.tys.kind(def.locals[usize(k)].ty) is not .Cont(_) { continue }
+        // A nested function that captures `k` may consume it at any time.
+        captured := false
+        for f in s.defs.items {
+            if f.parent is i.trunc(u32) and fb := f.body and mentions_upvar(fb, k) { captured = true }
+        }
+        if captured or not only_consumed(body, k) { continue }
+        cx := ContCheck(tys: &s.tys, k: k, loops: list(LoopState), errors: list(ContError))
+        // A clause that finishes normally is reported elsewhere (§14.3).
+        _ = cx.k_expr(body, OPEN)
+        errors.extend(cx.errors.items)!
+    }
+    seen := list(ContError)
+    for e in errors.items {
+        dup := false
+        for x in seen.items {
+            if x.span is e.span and x.message is e.message { dup = true }
+        }
+        if dup { continue }
+        seen.push(e)!
+        s.error(e.span, e.message)
+    }
+}
+
+ContError :: struct {
+    span: source.Span
+    message: string
+}
+
+/// An enclosing loop or `with` of the clause: its label, and the states at its
+/// `continue`s and at its `break`s.
+LoopState :: struct {
+    label: u32
+    cont: u8
+    brk: u8
+}
+
+ContCheck :: struct {
+    tys: ^const types.Types
+    k: u32
+    loops: List(LoopState)
+    errors: List(ContError)
+}
+
+/// True if every use of `k` in `e` is the operand of `resume` or `cancel`, outside
+/// deferred statements.
+only_consumed :: fn(e: ^Expr, k: u32) -> bool {
+    match e.kind {
+        .Local(l) => return l is not k
+        .Block(b) => for st in b.stmts {
+            if .Defer(_, body) := st and mentions_local(body, k) { return false }
+        }
+        .Resume(c, v) => if is_k(c, k) { return only_consumed(v, k) }
+        .Cancel(c) => if is_k(c, k) { return true }
+        _ => {}
+    }
+    ok := true
+    tir.for_each_child(e, fn(c: ^Expr) { ok = ok and only_consumed(c, k) })
+    return ok
+}
+
+mentions_local :: fn(e: ^Expr, k: u32) -> bool {
+    if is_k(e, k) { return true }
+    found := false
+    tir.for_each_child(e, fn(c: ^Expr) { found = found or mentions_local(c, k) })
+    return found
+}
+
+mentions_upvar :: fn(e: ^Expr, k: u32) -> bool {
+    if .Upvar(_, l) := e.kind and l is k { return true }
+    found := false
+    tir.for_each_child(e, fn(c: ^Expr) { found = found or mentions_upvar(c, k) })
+    return found
+}
+
+is_k :: fn(e: ^Expr, k: u32) -> bool {
+    .Local(l) := e.kind else return false
+    return l is k
+}
+
+/// Leaving the clause with state `st`.
+k_exit :: fn(cx: ^ContCheck, st: u8, span: source.Span) needs Alloc {
+    if st & OPEN is not 0 { cx.errors.push(ContError(span: span, message: "the continuation may be left unconsumed on this path (§14.2)"))! }
+}
+
+k_consume :: fn(cx: ^ContCheck, st: u8, span: source.Span) needs Alloc {
+    if st & DONE is not 0 { cx.errors.push(ContError(span: span, message: "the continuation may already have been consumed here (§14.2)"))! }
+}
+
+/// The state after `e` completes normally, given state `st` before it; 0 if it never
+/// does.
+k_expr :: fn(cx: ^ContCheck, e: ^Expr, st: u8) -> u8 needs Alloc {
+    if st is 0 { return 0 }
+    out: u8 = 0
+    match e.kind {
+        .Resume(c, v) => {
+            sv := cx.k_expr(v, st)
+            if sv is not 0 {
+                if is_k(c, cx.k) {
+                    cx.k_consume(sv, e.span)
+                } else {
+                    sc := cx.k_expr(c, sv)
+                    cx.k_exit(sc, e.span)
+                }
+            }
+            out = 0
+        }
+        .Cancel(c) => {
+            if is_k(c, cx.k) {
+                cx.k_consume(st, e.span)
+                out = DONE
+            } else {
+                out = cx.k_children(e, st)
+            }
+        }
+        .Break(b) => {
+            sv := st
+            if v := b.value { sv = cx.k_expr(v, st) }
+            cx.k_jump(b.target, sv, true, e.span)
+            out = 0
+        }
+        .Continue(t) => {
+            cx.k_jump(t, st, false, e.span)
+            out = 0
+        }
+        // Leaving the function crosses the `with`, which discards `k` (§14.4).
+        .Return(_, v) => {
+            _ = cx.k_expr(v, st)
+            out = 0
+        }
+        .Block(b) => { out = cx.k_block(b, st) }
+        .If(x) => {
+            r := cx.k_cond(x.cond, st)
+            t := cx.k_expr(x.then, r.pass)
+            f := r.fail
+            if el := x.else_ { f = cx.k_expr(el, r.fail) }
+            out = t | f
+        }
+        .Match(scrutinee, arms) => {
+            ss := cx.k_expr(scrutinee, st)
+            guard_fail := ss
+            for a in arms {
+                entry := guard_fail | ss
+                g := entry
+                if gx := a.guard { g = cx.k_expr(gx, entry) }
+                guard_fail |= g
+                out |= cx.k_expr(a.body, g)
+            }
+        }
+        .Logic(_, lhs, rhs) => {
+            l := cx.k_expr(lhs, st)
+            out = l | cx.k_expr(rhs, l)
+        }
+        .Else(x) => {
+            l := cx.k_expr(x.lhs, st)
+            out = l | cx.k_expr(x.rhs, l)
+        }
+        .Loop(l) => { out = cx.k_loop(l.label, l.cond, l.body, l.step, st) }
+        .With(w) => {
+            sw := st
+            for h in w.handlers {
+                x := match h {
+                    .Literal(x) => x
+                    .Decl(_, x) => x
+                }
+                sw = cx.k_expr(x, sw)
+            }
+            if o := w.on { sw = cx.k_expr(o, sw) }
+            cx.loops.push(LoopState(label: w.label, cont: 0, brk: 0))!
+            b := cx.k_expr(w.body, sw)
+            top := cx.loops.pop() else return 0
+            out = b | top.brk
+        }
+        .Trap(m) => {
+            _ = cx.k_expr(m, st)
+            out = 0
+        }
+        _ => { out = cx.k_children(e, st) }
+    }
+    if cx.tys.kind(e.ty) is .Never { return 0 }
+    return out
+}
+
+/// The state after the children of `e`, evaluated in order.
+k_children :: fn(cx: ^ContCheck, e: ^Expr, st: u8) -> u8 needs Alloc {
+    sc := st
+    tir.for_each_child(e, fn(c: ^Expr) { sc = cx.k_expr(c, sc) })
+    return sc
+}
+
+k_jump :: fn(cx: ^ContCheck, target: tir.Target, st: u8, is_break: bool, span: source.Span) needs Alloc {
+    if .Label(levels, label) := target and levels is 0 {
+        i := cx.loops.items.len
+        while i > 0 {
+            i -= 1
+            l := &cx.loops.items[i]
+            if l.label is not label { continue }
+            if is_break {
+                l.brk |= st
+            } else {
+                l.cont |= st
+            }
+            return
+        }
+    }
+    // A `break` completing the installing `with` needs `k` consumed; a jump to an outer
+    // label crosses the `with`, which discards it (§14.4).
+    if target is .InstallingWith { cx.k_exit(st, span) }
+}
+
+/// The states after `cond` succeeds and after it fails.
+k_cond :: fn(cx: ^ContCheck, cond: []tir.CondPart, st: u8) -> (pass: u8, fail: u8) needs Alloc {
+    pass := st
+    fail: u8 = 0
+    for c in cond {
+        match c {
+            .Bool(x) => {
+                pass = cx.k_expr(x, pass)
+                if x.kind is not .Bool(true) { fail |= pass }
+            }
+            .Match(_, value) => {
+                pass = cx.k_expr(value, pass)
+                fail |= pass
+            }
+        }
+    }
+    return (pass: pass, fail: fail)
+}
+
+k_loop :: fn(cx: ^ContCheck, label: u32, cond: []tir.CondPart, body: ^tir.Block, step: ?^Expr, st: u8) -> u8 needs Alloc {
+    entry := st
+    while true {
+        saved := cx.errors.items.len
+        r := cx.k_cond(cond, entry)
+        cx.loops.push(LoopState(label: label, cont: 0, brk: 0))!
+        b := cx.k_block(body, r.pass)
+        top := cx.loops.pop() else return 0
+        back := b | top.cont
+        if x := step { back = cx.k_expr(x, back) }
+        next := entry | back
+        if next is entry { return r.fail | top.brk }
+        // Report only what the final iteration of the fixed point finds.
+        cx.errors.truncate(saved)
+        entry = next
+    }
+}
+
+k_block :: fn(cx: ^ContCheck, b: ^tir.Block, st: u8) -> u8 needs Alloc {
+    sb := st
+    for x in b.stmts {
+        match x {
+            .Let(_, null) => {}
+            .Let(_, i) => { sb = cx.k_expr(i, sb) }
+            .LetTuple(_, i) => { sb = cx.k_expr(i, sb) }
+            .Assign(place, value) => {
+                sb = cx.k_expr(place, sb)
+                sb = cx.k_expr(value, sb)
+            }
+            .AssignTuple(places, value) => {
+                for p in places {
+                    if px := p { sb = cx.k_expr(px, sb) }
+                }
+                sb = cx.k_expr(value, sb)
+            }
+            .Expr(e) => { sb = cx.k_expr(e, sb) }
+            // Deferred statements do not use `k` (`only_consumed`).
+            .Defer(_) => {}
+        }
+    }
+    if t := b.tail { sb = cx.k_expr(t, sb) }
+    return sb
+}

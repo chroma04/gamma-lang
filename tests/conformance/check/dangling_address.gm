@@ -1,0 +1,46 @@
+//! stage: check
+// The address of a local kept where it certainly outlives the local is an error (§15.1):
+// a loop variable or a pattern binding is a copy, whose storage is reused by the next
+// iteration or gone after its scope.
+Node :: struct { v: i32 }
+Holder :: struct { p: ?^const Node }
+
+#global keep: ?^const Node = null
+
+pair :: fn(n: Node) -> (i32, ^const Node) {
+    m := n
+    return (1, &m) //~ ERROR this address of `m` is returned, but `m` ends with the call
+}
+
+wrapped :: fn(n: Node) -> ?^const Node => &n //~ ERROR this returns the address of the parameter `n`
+
+main :: fn() needs Out + Sys {
+    nodes := [_]Node(Node(v: 1), Node(v: 2))
+    last: ?^const Node = null
+    for n in nodes {
+        last = &n //~ ERROR this address of `n` is stored where it outlives `n`
+    }
+    o: ?Node = Node(v: 3)
+    h := Holder(p: null)
+    if x := o { h.p = &x } //~ ERROR this address of `x` is stored where it outlives `x`
+    match o {
+        null => {}
+        y => { keep = &y } //~ ERROR this address of `y` is stored
+    }
+    count := 0
+    bump :: fn() {
+        z := Node(v: count)
+        last = &z //~ ERROR this address of `z` is stored
+    }
+    bump()
+    // Pointers into the original, and pointers used only within the scope, are fine.
+    first := &nodes[0]
+    for i in 0..nodes.len { last = &nodes[i] }
+    for n in nodes {
+        local := &n
+        print("{}\n", local.v)
+    }
+    _ = pair(nodes[0])
+    _ = wrapped(nodes[0])
+    print("{} {} {}\n", first.v, last is null, h.p is null)
+}

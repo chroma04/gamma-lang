@@ -16,6 +16,7 @@ This repo implements the Gamma language (spec: `gamma-spec.md`) in Rust. Work sp
 
 ## Standing rules
 - The spec is a living document: fix contradictions/ambiguities/impractical features directly in `gamma-spec.md`, keep it coherent, update examples and tests. Note non-obvious amendments in `.agent-memory/spec-notes/` if useful.
+- Gamma is evidence-driven: when writing Gamma (gammac, std, examples), a usability pain point hit repeatedly is flagged as a possible language change (log it in `.agent-memory/spec-notes/pain-points.md` and tell the user). If it is minor and has a clear design in the spirit of the language, implement the change directly (spec, implementation, tests, docs) instead of working around it; prefer refinements and generalizations of existing rules over exceptions and additions.
 - Autonomy: make design decisions yourself; record non-obvious ones in `.agent-memory/decisions/`. Only stop to ask when truly blocked (e.g. missing access), after finishing all unblocked work.
 - Repo hygiene: nothing outside `.agent-memory/` and this file may reference them, previous sessions, or "notes" — not code comments, docs, commit messages or PR descriptions. Build, tests and CI must not depend on the memory folder. Contributor-relevant rationale goes in real docs (`docs/`).
 - Write real documentation as you go (README, `docs/guide/`, `docs/architecture.md`, `docs/contributing.md`) and thorough tests, including conformance tests derived from the spec (`tests/conformance/`, format documented in `tests/conformance.rs`).

@@ -65,6 +65,7 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
                 "eprint" => return cx.print(false, args, span)
                 "trap" => return cx.trap(args, span)
                 "assert" => return cx.assert_(args, span)
+                "expect_eq" => return cx.expect_eq(args, span)
                 _ => {}
             }
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
@@ -77,6 +78,15 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             // `Heap(T, N)(…)` with a wrong type application: the application's error is
             // the only one.
             if cx.s.looks_like_type(cx.module, callee) and cx.s.tys.is_error(cx.s.resolve_type(cx.module, callee)) { return error_expr(cx.s, span) }
+            return cx.call_value(cx.expr(callee, null), args, span)
+        }
+        .Tuple(es) => {
+            // `(i32, string)(…)` constructs a tuple (§7.11).
+            if es.len > 0 and cx.s.looks_like_type(cx.module, callee) {
+                t := cx.s.resolve_type(cx.module, callee)
+                if cx.s.tys.is_error(t) { return error_expr(cx.s, span) }
+                return cx.conversion(t, args, span)
+            }
             return cx.call_value(cx.expr(callee, null), args, span)
         }
         _ => return cx.call_value(cx.expr(callee, null), args, span)
@@ -125,12 +135,19 @@ call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args
 call_fn :: fn(cx: ^FnCx, f: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     sig := cx.s.fns.items[usize(f)]
     if sig.generics.len > 0 { return cx.generic_call(f, null, args, span) }
-    for p in sig.params {
-        if p.rest { return cx.unsupported(span, "rest parameters") }
+    n := sig.params.len
+    variadic := f in cx.s.variadic_fns.items and args.len > n
+    fixed := if variadic { args[..n] } else { args }
+    bound := cx.bind_args(sig.params, sig.module, fixed, span, "function") else return error_expr(cx.s, span)
+    all := bound.args
+    if variadic {
+        vals := list(Expr)
+        vals.extend(bound.args)!
+        for a in args[n..] { vals.push(cx.variadic_arg(&a)^)! }
+        all = vals.items
     }
-    bound := cx.bind_args(sig.params, sig.module, args, span, "function") else return error_expr(cx.s, span)
     cx.record_effects(&sig.effects, span)
-    call := tir.mk(sig.ret, .Call(.Fn(f), bound.args), span)
+    call := tir.mk(sig.ret, .Call(.Fn(f), all), span)
     if bound.pre.len is 0 { return call }
     return tir.mk(call.ty, .Block(new(tir.Block(stmts: bound.pre, tail: call, span: span))!), span)
 }
@@ -141,18 +158,13 @@ Bound :: struct {
     pre: []tir.Stmt
 }
 
-/// Binds call arguments to parameters (§11.3) and coerces each to its type.
-bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize, args: []const ast.Arg, span: source.Span, what: string) -> ?Bound needs Load {
+/// Binds call arguments to parameters (§11.3) and coerces each to its type. With spread
+/// arguments (§11.4), every argument is evaluated into a temporary, in the order written,
+/// by the returned statements, which must run before the call.
+bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize, args0: []const ast.Arg, span: source.Span, what: string) -> ?Bound needs Load {
     named_here := list(string)
-    for a in args {
-        match a.kind {
-            .Named(n, _) => named_here.push(n.name)!
-            .Spread(_) => {
-                _ = cx.unsupported(a.span, "spread arguments")
-                return null
-            }
-            _ => {}
-        }
+    for a in args0 {
+        if .Named(n, _) := a.kind { named_here.push(n.name)! }
     }
     positional := list(bool)
     max: usize = 0
@@ -161,8 +173,21 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
         positional.push(ok)!
         if ok { max += 1 }
     }
+    args := args0
+    if packed := pack_rest_args(params, positional.items, args0, span) {
+        match packed {
+            .Args(a) => { args = a }
+            .Error(sp, msg) => {
+                cx.error(sp, msg)
+                out := list(Expr)
+                for _ in params { out.push(error_expr(cx.s, span)^)! }
+                return Bound(args: out.items, pre: empty_slice(tir.Stmt))
+            }
+        }
+    }
     // Arguments out of parameter order go through temporaries, in the order written.
     order := list(usize)
+    has_spread := false
     for a in args {
         match a.kind {
             .Positional(_) => order.push(order.items.len)!
@@ -172,10 +197,10 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
                     break
                 }
             }
-            _ => {}
+            .Spread(_) => { has_spread = true }
         }
     }
-    spreading := false
+    spreading := has_spread
     for k in 1..order.items.len.max(1) {
         if order.items[k - 1] > order.items[k] { spreading = true }
     }
@@ -187,9 +212,12 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
     }
     stmts := list(tir.Stmt)
     next: usize = 0
+    seen_named := false
+    spread_failed := false
     for a in args {
         match a.kind {
             .Positional(e) => {
+                if seen_named { cx.error(a.span, "positional arguments must come before a spread that supplies names") }
                 while next < params.len and not positional.items[next] { next += 1 }
                 if next >= params.len {
                     cx.error(a.span, str.format("too many arguments: the {} takes {}", what, max)!)
@@ -214,15 +242,62 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
                     _ = cx.expr(&e, null)
                     continue
                 }
-                if explicit.items[i] or bound.items[i] is not null {
+                if explicit.items[i] or (bound.items[i] is not null and not has_spread) {
                     cx.error(n.span, str.format("parameter `{}` is given more than once", n.name)!)
                 }
                 explicit.items[i] = true
+                // A later explicit named argument overrides one supplied by a spread.
                 v := cx.arg_value(&e, params[i].ty)
                 if spreading { v = cx.bind_temp(v, &stmts) }
                 bound.items[i] = v
             }
-            .Spread(_) => {}
+            .Spread(e) => {
+                parts := cx.spread_parts(&e, &stmts) else {
+                    spread_failed = true
+                    continue
+                }
+                // The first part that fits no parameter ends it.
+                for part in parts {
+                    i: usize = 0
+                    if n := part.name {
+                        seen_named = true
+                        found: ?usize = null
+                        for j, p in enumerate(params) {
+                            if p.name is n {
+                                found = j
+                                break
+                            }
+                        }
+                        j := found else {
+                            cx.error(e.span, str.format("the {} has no parameter named `{}` (supplied by this spread)", what, n)!)
+                            spread_failed = true
+                            break
+                        }
+                        if explicit.items[j] or bound.items[j] is not null {
+                            cx.error(e.span, str.format("parameter `{}` is given more than once", n)!)
+                            spread_failed = true
+                            break
+                        }
+                        i = j
+                    } else {
+                        // An unnamed tuple's elements are positional arguments.
+                        if seen_named {
+                            cx.error(e.span, "positional arguments must come before a spread that supplies names")
+                            spread_failed = true
+                            break
+                        }
+                        while next < params.len and not positional.items[next] { next += 1 }
+                        if next >= params.len {
+                            cx.error(e.span, str.format("too many arguments: the {} takes {}", what, max)!)
+                            spread_failed = true
+                            break
+                        }
+                        i = next
+                        next += 1
+                    }
+                    bound.items[i] = cx.coerce(part.value, params[i].ty)
+                }
+            }
         }
     }
     out := list(Expr)
@@ -236,10 +311,12 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
             out.push(cx.param_default(p, d, p.ty, span)^)!
             continue
         }
-        if p.name is "_" {
-            cx.error(span, str.format("missing argument: the {} takes {}", what, params.len)!)
-        } else {
-            cx.error(span, str.format("missing argument for parameter `{}`", p.name)!)
+        if not spread_failed {
+            if p.name is "_" {
+                cx.error(span, str.format("missing argument: the {} takes {}", what, params.len)!)
+            } else {
+                cx.error(span, str.format("missing argument for parameter `{}`", p.name)!)
+            }
         }
         out.push(error_expr(cx.s, span)^)!
     }
@@ -267,13 +344,17 @@ arg_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
     return cx.coerce(v, ty)
 }
 
-/// True if argument `e` is `&x` for a parameter of type `^const T`: `x` may be a
+/// True if argument `e` is `&x` for a parameter of type `^const T`, or `x[…]` for a
+/// `[]const T` one: `x` may be a
 /// temporary (§7.2).
 is_const_ref_arg :: fn(s: ^Sema, e: ^const ast.Expr, ty: Ty) -> bool {
     x := e
     while .Paren(inner) := x.kind { x = inner }
     if .Unary(.AddrOf, _) := x.kind {
         if .Ptr(c, _) := s.tys.kind(ty) { return c }
+    }
+    if x.kind is .Slice(_) {
+        if .Slice(c, _) := s.tys.kind(ty) { return c }
     }
     return false
 }
@@ -292,7 +373,8 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
         }
     }
     match tys.kind(t) {
-        .Tuple(_), .Array(_), .ParamArray(_), .Optional(_) => return cx.unsupported(span, "this construction")
+        .Tuple(elems, names) => return cx.construct_tuple(t, elems, names, args, span)
+        .Array(_), .ParamArray(_), .Optional(_) => return cx.unsupported(span, "this construction")
         _ => {}
     }
     if args.len is not 1 or args[0].kind is not .Positional(_) {
@@ -381,6 +463,63 @@ assert_ :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr need
     return tir.mk(cx.s.tys.unit(), .Builtin(.Assert, both.items), span)
 }
 
+/// `expect_eq(actual, expected)` (§21.6): unless the two are equal by `is`, writes both
+/// values into the failure report and fails the current test, performing `Test`.
+expect_eq :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if args.len is not 2 or args[0].kind is not .Positional(_) or args[1].kind is not .Positional(_) {
+        cx.error(span, "`expect_eq` takes the actual value and the expected one")
+        return error_expr(cx.s, span)
+    }
+    .Positional(a) := args[0].kind else return error_expr(cx.s, span)
+    .Positional(b) := args[1].kind else return error_expr(cx.s, span)
+    prelude := cx.s.l.prelude else return error_expr(cx.s, span)
+    d := cx.s.l.lookup(prelude, "Test") else return error_expr(cx.s, span)
+    .Effect(effect_) := cx.s.resolve_decl(d) else return error_expr(cx.s, span)
+    tys := &cx.s.tys
+    l0 := cx.expr(&a, null)
+    r0 := cx.expr(&b, l0.ty)
+    eq := cx.equalize(l0, r0, span)
+    lt := cx.settle(eq.l.ty, a.span)
+    rt := cx.settle(eq.r.ty, b.span)
+    x := cx.temp(lt, a.span)
+    y := cx.temp(rt, b.span)
+    differ := tir.mk(tys.bool_ty(), .Eq(tir.mk(lt, .Local(x), span), tir.mk(rt, .Local(y), span), true), span)
+    eref := types.EffectRef(eff: effect_, args: empty_slice(types.GenericArg))
+    one := list(EffectRef)
+    one.push(eref)!
+    set := types.effect_set(one.items)
+    cx.record_effects(&set, span)
+    // `Test.note` (operation 0) takes the report; `Test.fail` (operation 1) ends it.
+    pieces := list([]const u8)
+    pieces.push("expected: ")!
+    pieces.push("\nactual:   ")!
+    pieces.push("\n")!
+    specs := list(tir.FmtSpec)
+    specs.push(tir.default_spec())!
+    specs.push(tir.default_spec())!
+    vals := list(Expr)
+    vals.push(tir.mk(rt, .Local(y), span)^)!
+    vals.push(tir.mk(lt, .Local(x), span)^)!
+    write := tir.mk(tys.unit(), .Write(tir.WriteExpr(sink: .Perform(eref, 0), pieces: pieces.items, specs: specs.items, args: vals.items)), span)
+    msg := tir.mk(tys.string_ty(), .Str("expectation failed: the values differ"), span)
+    loc := cx.source_location(span)
+    stop_args := list(Expr)
+    stop_args.push(msg^)!
+    stop_args.push(loc^)!
+    stop := tir.mk(tys.never_ty(), .Call(.Perform(eref, 1), stop_args.items), span)
+    fail_stmts := list(tir.Stmt)
+    fail_stmts.push(.Expr(write))!
+    fail := tir.mk(tys.never_ty(), .Block(new(tir.Block(stmts: fail_stmts.items, tail: stop, span: span))!), span)
+    cond := list(tir.CondPart)
+    cond.push(.Bool(differ))!
+    check := tir.mk(tys.unit(), .If(tir.IfExpr(cond: cond.items, then: fail, else_: null)), span)
+    stmts := list(tir.Stmt)
+    stmts.push(.Let(x, eq.l))!
+    stmts.push(.Let(y, eq.r))!
+    stmts.push(.Expr(check))!
+    return tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span)
+}
+
 /// `print(template, args…)` (§21.6, §21.6.1).
 print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     if args.len is 0 or args[0].kind is not .Positional(_) {
@@ -392,10 +531,8 @@ print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -
             cx.error(span, "`print` takes a template string and the values for its placeholders")
             return error_expr(cx.s, span)
         }
-        if a.kind is .Spread(_) { return cx.unsupported(a.span, "spread arguments") }
     }
     .Positional(template) := args[0].kind else return error_expr(cx.s, span)
-    .Str(lit) := template.kind else return cx.unsupported(template.span, "templates that are not literals")
     effect_name := if to_out { "Out" } else { "Err" }
     prelude := cx.s.l.prelude else return error_expr(cx.s, span)
     d := cx.s.l.lookup(prelude, effect_name) else return error_expr(cx.s, span)
@@ -405,43 +542,25 @@ print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -
     one.push(eref)!
     set := types.effect_set(one.items)
     cx.record_effects(&set, span)
-    // The template's pieces around its placeholders, each `{}`.
-    pieces := list([]const u8)
-    specs := list(tir.FmtSpec)
-    cur := list(u8)
-    t := lit.bytes
-    i: usize = 0
-    while i < t.len {
-        c := t[i]
-        next: ?u8 = if i + 1 < t.len { t[i + 1] } else { null }
-        if (c is '{' and next is '{') or (c is '}' and next is '}') {
-            cur.push(c)!
-            i += 2
-        } else if c is '{' and next is '}' {
-            pieces.push(cur.items)!
-            cur = list(u8)
-            specs.push(tir.default_spec())!
-            i += 2
-        } else if c is '{' or c is '}' {
-            return cx.unsupported(template.span, "format specs and invalid templates")
-        } else {
-            cur.push(c)!
-            i += 1
-        }
+    return cx.build_write(.Perform(eref, 0), &template, args[1..], span)
+}
+
+/// An argument in the variadic position of a foreign call (§19.2): a C-compatible scalar
+/// at least as wide as C `int` (integers) or `f64` (floats).
+variadic_arg :: fn(cx: ^FnCx, a: ^const ast.Arg) -> ^Expr needs Load {
+    .Positional(e) := a.kind else {
+        cx.error(a.span, "variadic arguments are written positionally")
+        return error_expr(cx.s, a.span)
     }
-    pieces.push(cur.items)!
-    n := specs.items.len
-    if args.len - 1 is not n {
-        placeholders := if n is 1 { "1 placeholder" } else { str.format("{} placeholders", n)! }
-        given := if args.len - 1 is 1 { "1 value is" } else { str.format("{} values are", args.len - 1)! }
-        cx.error(span, str.format("the template has {}, but {} given", placeholders, given)!)
-        return error_expr(cx.s, span)
+    v := cx.expr(&e, null)
+    t := cx.infer.resolve(cx.s, v.ty)
+    ok := match cx.s.tys.kind(t) {
+        .Int(_, bits) => bits in (32, 64)
+        .Usize, .Isize, .Rawptr, .Ptr(_), .ManyPtr(_), .Infer(_), .Error => true
+        .Float(bits) => bits is 64
+        .Optional(inner) => cx.s.is_nullable_pointer(inner)
+        _ => false
     }
-    values := list(Expr)
-    for a in args[1..] {
-        .Positional(x) := a.kind else continue
-        values.push(cx.expr(&x, null)^)!
-    }
-    sink: tir.WriteSink = .Perform(eref, 0)
-    return tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: pieces.items, specs: specs.items, args: values.items)), span)
+    if not ok { cx.error(e.span, str.format("`{}` cannot be passed to a variadic parameter: use a C-compatible scalar of at least C `int` width or `f64`, converting explicitly (§19.2)", cx.show(t))!) }
+    return v
 }

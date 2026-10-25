@@ -468,7 +468,7 @@ These conversions happen implicitly: `^T` to `^const T` (and likewise for `[^]T`
 
 Everything else is explicit and spelled as a method: `p.cast(P)` changes the pointee type, constness or kind (the address must be suitably aligned, which is checked), `p.addr()` gives the `usize` address, and `n.to_ptr(P)` turns a `usize` into a `?P` (null for 0). Casting away `const` is possible with `cast`; writing through a pointer derived that way to read-only memory is undefined behavior.
 
-Gamma does not track pointer lifetimes in general, but it rejects the simplest dangling-pointer bugs: returning `&x`, `x[..]`, or a slice of a local or parameter is a compile error.
+Gamma does not track pointer lifetimes in general, but it rejects the dangling-pointer bugs it can see for certain: returning `&x`, `x[..]`, or a slice of a local or parameter, by itself or inside another value, and storing one where it outlives the local, such as in a variable declared before the loop or block that declares the local, or in a `#global`. Loop variables and pattern bindings are copies, so this catches the common mistake of keeping `&x` from `for x in xs` after the iteration; point into the original with `&xs[i]` instead.
 
 ## Conversions
 

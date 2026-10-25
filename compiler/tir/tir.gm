@@ -35,6 +35,13 @@ pub ExprKind :: union {
     Uninit
     /// A compile-time value parameter of a generic function, by its id (§16.5).
     ValueParam: u32
+    /// `@size_of(T)` or (`align`) `@align_of(T)` of a type that mentions a type parameter,
+    /// known per instance (§16.1).
+    SizeOf: (of: Ty, align: bool)
+    /// `@max_value(T)` or `@min_value(T)` of a type parameter.
+    IntLimit: (of: Ty, max: bool)
+    /// `@type_name(T)` of a type that mentions a type parameter.
+    TypeName: Ty
     /// A constant in static memory: a typed top-level constant, or a default value
     /// (`<default>`), by its name and place.
     Const: (name: string, span: source.Span)
@@ -42,6 +49,8 @@ pub ExprKind :: union {
     // Places.
     Local: u32
     Upvar: (levels: u32, local: u32)
+    /// A `#global` variable or a foreign variable (§19.3), by its name.
+    Global: string
     Deref: ^Expr
     /// A struct field or tuple element, by index.
     Field: (base: ^Expr, index: u32)
@@ -91,9 +100,16 @@ pub ExprKind :: union {
     Continue: Target
     Return: (levels: u32, value: ^Expr)
     Trap: ^Expr
+    /// `resume k(v)` (§14.3).
+    Resume: (cont: ^Expr, value: ^Expr)
+    /// `cancel k` (§14.5).
+    Cancel: ^Expr
     /// Formatted output (`print`): the template's literal pieces, a spec per placeholder
     /// and the values.
     Write: WriteExpr
+    /// A `Write` whose template is a compile-time `string` parameter of a generic
+    /// function: each instance splits the template and its arguments (§16.1).
+    WriteDeferred: WriteDeferredExpr
     With: WithExpr
 }
 
@@ -149,9 +165,20 @@ pub WriteExpr :: struct {
     pub args: []Expr
 }
 
+pub WriteDeferredExpr :: struct {
+    pub sink: WriteSink
+    pub template: ^Expr
+    /// The values: a tuple of one per placeholder, or a spread tuple whole.
+    pub args: ?^Expr
+    /// Holds the arguments when they are a tuple of several values.
+    pub tmp: u32
+}
+
 /// Where a write goes: an operation taking `[]const u8` (`Out.write` for `print`).
 pub WriteSink :: union {
     Perform: (effect_: types.EffectRef, op: u32)
+    /// A second-class function taking `[]const u8` (`@write`).
+    Fn: ^Expr
 }
 
 /// The target of a `break` or `continue`.
@@ -194,7 +221,11 @@ pub Block :: struct {
 
 pub Stmt :: union {
     Let: (local: u32, init: ?^Expr)
+    /// Binds several locals from a tuple value (destructuring, §4.5); `null` discards.
+    LetTuple: (locals: []?u32, init: ^Expr)
     Assign: (place: ^Expr, value: ^Expr)
+    /// `a, b = (x, y)`: all values computed before any store (`null` for `_`).
+    AssignTuple: (places: []?^Expr, value: ^Expr)
     Expr: ^Expr
     /// `defer` or (`is_err`) `errdefer` (§8.8).
     Defer: (is_err: bool, body: ^Expr)
@@ -349,6 +380,39 @@ pub Builtin :: union {
     /// `p.cstr_len()`.
     CstrLen
     Assert
+    /// `@hash(x, seed)`.
+    Hash
+    /// `@unreachable()`: traps when reached.
+    Unreachable
+    /// The atomic (§19.6) and volatile (§19.5) intrinsics.
+    AtomicLoad
+    AtomicStore
+    AtomicSwap
+    AtomicCas
+    AtomicRmw: RmwOp
+    Fence
+    VolatileLoad
+    VolatileStore
+    /// A system service behind a default handler of the core library (§12.9).
+    Sys: SysOp
+    /// The heap primitives behind the core library's allocator.
+    HeapAlloc
+    HeapFree
+    AllocTag
+    AllocCheck
+    /// `@asm(template, outputs, inputs, clobbers)` (§19.5).
+    Asm: (outputs: u32, inputs: u32)
+}
+
+/// The operation of an atomic read-modify-write (§19.6).
+pub RmwOp :: union {
+    Add
+    Sub
+    And
+    Or
+    Xor
+    Max
+    Min
 }
 
 /// A placeholder of a format template (§21.6.1).
@@ -391,6 +455,9 @@ pub FnDef :: struct {
     pub body: ?^Expr
     /// For a nested function that uses locals of the enclosing one: that function.
     pub parent: ?u32 = null
+    /// Whether it is a function literal, nested function or handler clause written in
+    /// the body of another function.
+    pub nested: bool = false
 }
 
 // ---------------------------------------------------------------------------------
@@ -420,6 +487,11 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
         .Try(x) => f(x.expr)
         .Field(a, _) => f(a)
         .Return(_, a) => f(a)
+        .Resume(k, v) => {
+            f(k)
+            f(v)
+        }
+        .Cancel(k) => f(k)
         .Index(a, b, _) => {
             f(a)
             f(b)
@@ -469,7 +541,15 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
             if st := x.step { f(st) }
         }
         .Break(x) => if v := x.value { f(v) }
-        .Write(w) => for i in 0..w.args.len { f(&w.args[i]) }
+        .Write(w) => {
+            if .Fn(x) := w.sink { f(x) }
+            for i in 0..w.args.len { f(&w.args[i]) }
+        }
+        .WriteDeferred(w) => {
+            if .Fn(x) := w.sink { f(x) }
+            f(w.template)
+            if a := w.args { f(a) }
+        }
         _ => {}
     }
 }
@@ -479,8 +559,15 @@ block_children :: fn(b: ^Block, f: fn(c: ^Expr)) {
         match s {
             .Let(_, null) => {}
             .Let(_, x) => f(x)
+            .LetTuple(_, x) => f(x)
             .Assign(p, v) => {
                 f(p)
+                f(v)
+            }
+            .AssignTuple(ps, v) => {
+                for p in ps {
+                    if x := p { f(x) }
+                }
                 f(v)
             }
             .Expr(x), .Defer(_, x) => f(x)
@@ -511,4 +598,54 @@ pat_children :: fn(p: ^Pat, f: fn(c: ^Expr)) {
         .Or(ps) => for q in ps { pat_children(q, f) }
         _ => {}
     }
+}
+
+/// A system service behind a default handler of the core library (§12.9).
+pub SysOp :: union {
+    Read
+    ClockNow
+    ClockWall
+    Sleep
+    RandFill
+    FsOpen
+    FsClose
+    FsRead
+    FsWrite
+    FsSeek
+    FsStat
+    FsRemove
+    FsRename
+    FsMakeDir
+    FsRemoveDir
+    FsOpenDir
+    FsNextEntry
+    FsCloseDir
+    FsLstat
+    FsTruncate
+    FsSync
+    FsCwd
+    NetConnect
+    NetListen
+    NetLocalPort
+    NetAccept
+    NetSend
+    NetRecv
+    NetClose
+    NetShutdown
+    NetSetTimeouts
+    NetPeer
+    ProcSpawn
+    ProcWriteIn
+    ProcCloseIn
+    ProcReadOut
+    ProcWait
+    ProcKill
+    ThreadSpawn
+    ThreadJoin
+    ThreadDetach
+    ThreadYield
+    FutexWait
+    FutexWake
+    CpuCount
+    SysWrite
 }

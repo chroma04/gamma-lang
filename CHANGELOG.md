@@ -8,6 +8,15 @@ Versions and what each kind of change means are described in
 
 ### Language
 
+- Storing the address of a local where it certainly outlives the local is a compile error,
+  as returning it already was (§15.1): assigning `&x` (or a slice of a local array), by
+  itself or inside another value, to a local of an enclosing scope, a captured local or a
+  `#global`, and returning it inside a value. This catches keeping `&x` from
+  `for x in xs` or from a pattern binding, which are copies. The cases that only may
+  dangle (through a pointer, or passed to a call that may keep it) stay the
+  `dangling-address` lint.
+- `[1, 2]` gets a note saying how an array value is written (`[_]i32(1, 2)`), and that a
+  tuple is `(a, b)`.
 - **`pub(package)`** makes a declaration or a struct field visible to every module of its
   package, and to nothing outside it (§3.3): for what a package's modules share with each
   other but not with its users. A declaration may not mention a type less visible than

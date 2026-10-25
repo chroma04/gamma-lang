@@ -1,0 +1,195 @@
+// Interoperability (§19): `#global` variables, `foreign` blocks and the C-compatibility
+// of types (mirrors `src/sema/foreign.rs`).
+
+ascii :: import "std/ascii"
+
+/// The effect set `{Sys}` (§12.10).
+pub sys_set :: fn(s: ^Sema) -> EffectSet needs Load {
+    sys := s.sys_effect() else return types.empty_effects()
+    one := list(EffectRef)
+    one.push(EffectRef(eff: sys, args: empty_slice(types.GenericArg)))!
+    return types.effect_set(one.items)
+}
+
+/// The core library's `Sys` effect.
+sys_effect :: fn(s: ^Sema) -> ?u32 needs Load {
+    prelude := s.l.prelude else return null
+    d := s.l.lookup(prelude, "Sys") else return null
+    .Effect(e) := s.resolve_decl(d) else return null
+    return e
+}
+
+/// True if every effect in `set` is `Sys`.
+pub within_sys :: fn(s: ^Sema, set: ^const EffectSet) -> bool needs Load {
+    sys := s.sys_effect()
+    for e in set.effects {
+        if sys is not e.eff { return false }
+    }
+    return true
+}
+
+/// `#global name: T = e` (§19.3).
+declare_global :: fn(s: ^Sema, module: usize, name: ast.Ident, b: ^const ast.Binding) -> DeclValue needs Load {
+    ty_expr := b.ty else {
+        s.error(name.span, "a `#global` needs a type: `#global name: T = value`")
+        return .Error
+    }
+    ty := s.resolve_type(module, ty_expr)
+    if s.tys.is_error(ty) { return .Error }
+    _ = s.const_type(module, b.init, ty) else return .Error
+    return .Global(ty)
+}
+
+/// `name :: foreign "lib" { … }` (§19.2): a module-like block of foreign functions and
+/// variables.
+declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const ast.ForeignBlock) -> DeclValue needs Load {
+    lib := block.lib.bytes
+    // The name becomes one `-l<name>` argument of the linker.
+    lib_ok := lib.len > 0 and lib[0] is not '-'
+    for c in lib {
+        if not (ascii.is_alnum(c) or c in "_.+-") { lib_ok = false }
+    }
+    if not lib_ok {
+        if not printable_ascii(lib) { return s.unsupported_value(name.span, "library names with special characters") }
+        s.error(name.span, str.format("`{}` is not a library name: use letters, digits and `_ . + -`", lib)!)
+    }
+    m := s.l.add_module(name.name, empty_slice(ast.File))
+    s.l.modules.items[m].dir = s.l.modules.items[module].dir
+    s.l.modules.items[m].package = s.l.modules.items[module].package
+    for member in block.members {
+        link_name: ?string = null
+        for a in member.attrs {
+            match a.name.name {
+                "link_name" => {
+                    ok := false
+                    if args := a.args and args.len is 1 and .Str(lit) := args[0].kind {
+                        ok = true
+                        sym := lit.bytes
+                        good := sym.len > 0
+                        for c in sym {
+                            if not (ascii.is_alnum(c) or c in "_$.@") { good = false }
+                        }
+                        if good {
+                            link_name = sym
+                        } else {
+                            if not printable_ascii(sym) { return s.unsupported_value(args[0].span, "symbol names with special characters") }
+                            s.error(args[0].span, str.format("`{}` is not a symbol name: use letters, digits and `_ $ . @`", sym)!)
+                        }
+                    }
+                    if not ok { s.error(a.span, "`#link_name` takes the symbol name: `#link_name(\"sym\")`") }
+                }
+                "callconv" => {
+                    if member.kind is .Fn(_) { return s.unsupported_value(a.span, "the attribute `#callconv`") }
+                    s.error(a.span, "attribute `#callconv` does not apply to a foreign member")
+                }
+                other => s.error(a.span, str.format("attribute `#{}` does not apply to a foreign member", other)!)
+            }
+        }
+        own_name := match member.kind {
+            .Fn(n, _) => n
+            .Global(n, _) => n
+        }
+        sym := link_name else own_name.name
+        // The runtime's own symbols cannot be foreign members (§23.5).
+        if sym.starts_with("gm_") { return s.unsupported_value(own_name.span, "foreign members named like runtime symbols") }
+        value: DeclValue = .Error
+        match member.kind {
+            .Fn(n, sig) => {
+                if f := s.declare_foreign_fn(module, n, &sig) { value = .Fn(f) }
+            }
+            .Global(n, ty_expr) => {
+                t := s.resolve_type(module, ty_expr)
+                if not s.tys.is_error(t) and not s.is_c_compatible(t, false) { s.error(ty_expr.span, str.format("`{}` is not a C-compatible type (§19.1)", s.show(t))!) }
+                value = .Global(t)
+            }
+        }
+        if s.l.lookup(m, own_name.name) is not null {
+            s.error(own_name.span, str.format("`{}` is declared twice in this foreign block", own_name.name)!)
+            continue
+        }
+        item := ast.Item(id: 0xFFFF_FFFF, span: member.span, doc: null, attrs: empty_slice(ast.Attribute), vis: .Public, kind: .Intrinsic(new(ast.Expr(id: 0xFFFF_FFFF, kind: .Underscore, span: member.span))!))
+        d := s.l.add_member(m, own_name, item)
+        s.set_state(d, .Done(value))
+    }
+    return .Module(m)
+}
+
+/// Whether `bytes` are printable ASCII characters, shown as they are in a message.
+printable_ascii :: fn(bytes: []const u8) -> bool {
+    for c in bytes {
+        if c < 0x20 or c > 0x7E or c in "\"'\\" { return false }
+    }
+    return true
+}
+
+/// Reports that gammac cannot check `what` yet; the declaration has no value.
+unsupported_value :: fn(s: ^Sema, span: source.Span, what: string) -> DeclValue needs Alloc {
+    s.unsupported(span, what)
+    return .Error
+}
+
+declare_foreign_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, sig: ^const ast.FnSig) -> ?u32 needs Load {
+    s.allow_variadic = true
+    resolved := s.resolve_fn_sig(module, sig, false, empty_slice(ast.Constraint))
+    s.allow_variadic = false
+    r := resolved else return null
+    // Foreign functions perform `Sys` unless annotated (§19.2).
+    effects := r.effects
+    if sig.effects is null { effects = s.sys_set() }
+    for p in r.params {
+        if not s.tys.is_error(p.ty) and not s.is_c_compatible(p.ty, false) { s.error(p.span, str.format("`{}` is not a C-compatible parameter type (§19.1)", s.show(p.ty))!) }
+    }
+    // `never`: a C function that does not return, such as `exit` (§19.2).
+    ret := r.ret
+    if not s.tys.is_error(ret) and not s.tys.is_unit(ret) and s.tys.kind(ret) is not .Never and not s.is_c_compatible(ret, false) {
+        s.error(name.span, str.format("`{}` is not a C-compatible result type (§19.1)", s.show(ret))!)
+    }
+    s.fns.push(FnSig(name: name.name, span: name.span, module: module, params: r.params, ret: ret, effects: effects, generics: empty_slice(u32)))!
+    params := list(u32)
+    locals := list(tir.LocalDecl)
+    for i, p in enumerate(r.params) {
+        locals.push(tir.LocalDecl(name: p.name, ty: p.ty, mutable: false, span: p.span))!
+        params.push(i.trunc(u32))!
+    }
+    s.defs.push(tir.FnDef(kind: .Foreign, params: params.items, locals: locals.items, body: null))!
+    f := (s.fns.items.len - 1).trunc(u32)
+    if sig.variadic { s.variadic_fns.push(f)! }
+    return f
+}
+
+/// Whether `t` is C-compatible (§19.1). `in_struct` allows arrays (as struct fields).
+pub is_c_compatible :: fn(s: ^Sema, t: Ty, in_struct: bool) -> bool needs Load {
+    match s.tys.kind(t) {
+        .Int(_, bits) => return bits in (8, 16, 32, 64, 128)
+        .Usize, .Isize, .Float(_), .Bool, .Rawptr, .Ptr(_), .ManyPtr(_), .Error => return true
+        .Optional(inner) => return s.is_nullable_pointer(inner) and s.is_c_compatible(inner, false)
+        .FnPtr(sig) => {
+            if not s.within_sys(&sig.effects) { return false }
+            for p in sig.params {
+                if not s.is_c_compatible(p, false) { return false }
+            }
+            return s.tys.is_unit(sig.ret) or s.is_c_compatible(sig.ret, false)
+        }
+        .Array(_, elem, kind) => return in_struct and kind is not .Simd and s.is_c_compatible(elem, true)
+        .Adt(id, _) => {
+            match s.adts.items[usize(id)].kind {
+                .Struct(def) => {
+                    if def.bits is not null { return true }
+                    fs := s.struct_fields(t) else return false
+                    for f in fs {
+                        if not s.is_c_compatible(f.ty, true) { return false }
+                    }
+                    return true
+                }
+                .CUnion(fields) => {
+                    for f in fields {
+                        if not s.is_c_compatible(f.ty, true) { return false }
+                    }
+                    return true
+                }
+                _ => return false
+            }
+        }
+        _ => return false
+    }
+}

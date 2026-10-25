@@ -690,6 +690,10 @@ const_key_of :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?type
     }
     if f := s.fn_ref(module, e, ty) { return .Fn(f, s.fns.items[usize(f)].name) }
     if s.tys.has_param(ty) { return null }
+    // A string literal is keyed by its contents.
+    x := e
+    while .Paren(inner) := x.kind { x = inner }
+    if .Str(lit) := x.kind and lit.kind is not .C and ty is s.tys.string_ty() { return .Str(lit.bytes) }
     r := s.untyped_if_plain(module, e) else return null
     .Ok(v) := r else return null
     match v {
