@@ -362,7 +362,7 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
         if v := values.items[i] {
             out.push(cx.coerce(v, pty)^)!
         } else if d := p.default {
-            out.push(cx.param_default(&p, d, pty, span)^)!
+            out.push(cx.param_default(&p, sig.module, d, pty, span)^)!
         } else {
             cx.error(span, str.format("missing argument for parameter `{}`", p.name)!)
             out.push(error_expr(cx.s, span)^)!
@@ -618,8 +618,8 @@ is_iterator_param :: fn(cx: ^FnCx, ty: Ty) -> bool {
 
 /// The value of the default `d` of parameter `p`, of type `ty`, for a call at `span`
 /// that omits the argument; `@caller_location()` is the call's location (§20.3).
-param_default :: fn(cx: ^FnCx, p: ^const sema.ParamInfo, d: ^const ast.Expr, ty: Ty, span: source.Span) -> ^Expr needs Load {
-    if not sema.is_site(p) { return cx.default_value(d, ty) }
+param_default :: fn(cx: ^FnCx, p: ^const sema.ParamInfo, module: usize, d: ^const ast.Expr, ty: Ty, span: source.Span) -> ^Expr needs Load {
+    if not sema.is_site(p) { return cx.default_value(module, d, ty) }
     return cx.source_location(span)
 }
 

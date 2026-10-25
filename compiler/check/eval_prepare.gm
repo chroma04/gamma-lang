@@ -1,0 +1,101 @@
+// Making sure that what a compile-time evaluation runs is checked (mirrors
+// `prepare_for_eval` and `ensure_body` in `src/sema/consteval.rs`): the bodies of the
+// functions it can reach are checked now if they are still pending, and the instances
+// of generic functions it calls are produced.
+
+hash_map :: import "std/collections/hash_map"
+
+/// Makes sure every function reachable from `e` has a body. Returns `false` if one of
+/// them (or `e`) has an error, or depends on a body being checked.
+prepare :: fn(s: ^Sema, e: ^Expr) -> bool needs Load {
+    seen := hash_map.hash_map(u32, bool)
+    work := list(^Expr)
+    work.push(e)!
+    while x := work.pop() {
+        fns := list(u32)
+        consts := list(^Expr)
+        ok := true
+        param: ?^Expr = null
+        visit(x, fn(n: ^Expr) {
+            if s.tys.mentions_error(n.ty) { ok = false }
+            match n.kind {
+                .ValueParam(_) => { param = n }
+                .Call(.Fn(f), _), .FnRef(f), .Closure(f) => fns.push(f)!
+                .HandlerRef(h) => fns.extend(s.handlers.items[usize(h)].clauses)!
+                .With(w) => for h in w.handlers {
+                    if .Decl(decls, _) := h {
+                        for d in decls { fns.extend(s.handler_decls.items[usize(d)].clauses)! }
+                    }
+                }
+                .Const(_) => consts.push(n)!
+                _ => {}
+            }
+        })
+        if not ok { return false }
+        if p := param {
+            .ValueParam(id) := p.kind else return false
+            // Generic bodies are checked once, so their parameters have no value yet.
+            s.error(p.span, str.format("`{}` is a compile-time parameter, whose value is not known here (§16.5)", s.tys.param_name(id))!)
+            return false
+        }
+        for c in consts.items {
+            .Const(_, span) := c.kind else continue
+            id := s.const_id(span, c.ty) else continue
+            state := s.consts.items[usize(id)].state
+            if state is .Unchecked and const_value(s, span, c.ty) is null { return false }
+            if state in (.Failed, .Unsupported) { return false }
+        }
+        for f in fns.items {
+            if seen.get(f) is not null { continue }
+            seen.put(f, true)!
+            if not ensure_body(s, f, e.span) { return false }
+            def := s.def_of(f)
+            if b := def.body { work.push(b)! }
+            if p := def.parent and seen.get(p) is null {
+                seen.put(p, true)!
+                if not ensure_body(s, p, e.span) { return false }
+            }
+        }
+    }
+    return true
+}
+
+/// Checks `f`'s body now if it is still pending. Returns `false` if it cannot have one
+/// yet (it is being checked).
+ensure_body :: fn(s: ^Sema, f: u32, span: source.Span) -> bool needs Load {
+    if s.def_of(f).body is not null { return true }
+    sig := s.fns.items[usize(f)]
+    if sig.instance is not null {
+        for i, r in enumerate(s.mono_queue.items) {
+            if r.instance is not f { continue }
+            req := s.mono_queue.remove(i)
+            if not ensure_body(s, req.generic, span) { return false }
+            produce_instance(s, req)
+            return true
+        }
+        return true
+    }
+    for i, p in enumerate(s.pending_bodies.items) {
+        if p.fn_id is not f { continue }
+        // gammac does not check the bodies of the core library: calling one is reported
+        // when it runs.
+        if s.l.modules.items[p.module].is_prelude { return true }
+        body := s.pending_bodies.remove(i)
+        check_fn_body(s, body.fn_id, body.module, body.lit)
+        return true
+    }
+    for c in s.pending_clauses.items {
+        if c.fn_id is f { return true }
+    }
+    if s.checking.items.index_of(f) is not null {
+        s.error(span, str.format("this compile-time evaluation calls `{}`, which depends on it; the cycle cannot be evaluated", sig.name)!)
+        return false
+    }
+    def := s.defs.items[usize(f)]
+    if def.kind is .Foreign or s.l.modules.items[sig.module].is_prelude { return true }
+    if def.kind is .Named and not def.nested { return true }
+    // A nested function or literal of the function being checked gets its body when that
+    // function is finished.
+    s.error(span, str.format("this compile-time evaluation calls `{}`, which is nested in the function being checked; it cannot run before that function is complete", sig.name)!)
+    return false
+}

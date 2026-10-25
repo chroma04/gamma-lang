@@ -36,6 +36,9 @@ LocalBinding :: union {
     Label
     /// A function declared in the body with `name :: fn …`.
     NestedFn: u32
+    /// An immutable local evaluated at compile time (§17.2): its type and the place of its
+    /// name, which identify the constant.
+    Const: (ty: Ty, name: string, span: source.Span)
 }
 
 /// The state of an enclosing function while a nested one (a literal or a clause) is
@@ -321,6 +324,8 @@ check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) 
     for g in sig.generics {
         if s.param_has(g, .Num) { numeric.push(g)! }
     }
+    s.checking.push(fn_id)!
+    defer _ = s.checking.pop()
     cx := fn_cx(s, module, sig.ret, sig.effects)
     cx.fn_id = fn_id
     cx.infer.numeric_params = numeric.items
@@ -888,9 +893,12 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
         if t := annot { cx.coerce(ex, t) } else { ex }
     }
     // An immutable local whose initializer is a constant expression is evaluated at
-    // compile time (§17.2): gammac cannot evaluate yet.
+    // compile time when that succeeds within the step budget (§17.2).
     if b.kind is .Const and errors_before is cx.s.l.diags.list.items.len and b.init.kind is not .Uninit and closed_const(cx.s, init) and not cx.unsettled(init) {
-        return .Expr(cx.unsupported(b.span, "immutable locals with constant initializers"))
+        if id := local_const(cx.s, cx.module, b.init, annot, name.name, name.span) {
+            cx.declare(name.name, .Const(ty: cx.s.consts.items[usize(id)].ty, name: name.name, span: name.span), name.span)
+            return .Expr(unit(cx.s, b.span))
+        }
     }
     ty := annot else init.ty
     if cx.s.tys.kind(ty) is .Type {

@@ -709,3 +709,46 @@ flatten :: fn(s: ^const Sema, set: EffectSet) -> EffectSet needs Alloc {
     if not spliced { return set }
     return types.effect_set(out.items)
 }
+
+/// The struct or union whose layout `ty` needs and that is still being resolved, if any.
+pub pending_layout :: fn(s: ^const Sema, ty: Ty) -> ?u32 {
+    if s.adts_in_progress.items.len is 0 { return null }
+    match s.tys.kind(ty) {
+        .Adt(id, _) => {
+            if s.adts_in_progress.items.index_of(id) is not null { return id }
+            match s.adts.items[usize(id)].kind {
+                .Struct(def) => {
+                    for f in def.fields {
+                        if p := s.pending_layout(f.ty) { return p }
+                    }
+                }
+                .CUnion(fields) => {
+                    for f in fields {
+                        if p := s.pending_layout(f.ty) { return p }
+                    }
+                }
+                .Union(u) => {
+                    for v in u.variants {
+                        t := v.payload else continue
+                        if p := s.pending_layout(t) { return p }
+                    }
+                }
+            }
+            return null
+        }
+        .Array(a) => return s.pending_layout(a.elem)
+        .ParamArray(a) => return s.pending_layout(a.elem)
+        .Optional(t) => return s.pending_layout(t)
+        .Tuple(t) => {
+            for e in t.elems {
+                if p := s.pending_layout(e) { return p }
+            }
+            return null
+        }
+        .Result(r) => {
+            if p := s.pending_layout(r.err) { return p }
+            return s.pending_layout(r.ok)
+        }
+        _ => return null
+    }
+}

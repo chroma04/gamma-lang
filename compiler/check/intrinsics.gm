@@ -44,6 +44,14 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
             cx.error(span, str.format("`@{}` takes one `bool`", n)!)
             return error_expr(cx.s, span)
         }
+        "static_assert" => {
+            static_assert(cx.s, cx.module, args, span)
+            return unit(cx.s, span)
+        }
+        "compile_error" => {
+            compile_error(cx.s, cx.module, args, span)
+            return error_expr(cx.s, span)
+        }
         "min_stack" => return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(16384)), span)
         "offset_of" => return cx.offset_of_intrinsic(n, args, span)
         "asm" => return cx.asm_intrinsic(args, span)
@@ -74,9 +82,18 @@ layout_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: sou
         return error_expr(cx.s, span)
     }
     if cx.s.tys.has_param(t) { return tir.mk(cx.s.tys.usize_ty(), .SizeOf(t, name is "align_of"), span) }
+    if cx.layout_pending(name, t, span) { return error_expr(cx.s, span) }
     l := cx.s.layout(t)
     v := if name is "size_of" { l.size } else { l.align }
     return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(v)), span)
+}
+
+/// Whether the layout of `t` is still being resolved (and so not known); reports the
+/// cycle if so.
+layout_pending :: fn(cx: ^FnCx, name: string, t: Ty, span: source.Span) -> bool needs Alloc {
+    id := cx.s.pending_layout(t) else return false
+    cx.error(span, str.format("`@{}` needs the layout of `{}`, which depends on this value: the declarations form a cycle (§3.4)", name, cx.s.tys.adt_name(id))!)
+    return true
 }
 
 /// `@min_value(T)` and `@max_value(T)`.
@@ -632,6 +649,7 @@ heap_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: sourc
 /// `@offset_of(S, field)`.
 offset_of_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     t := cx.intrinsic_type_arg(name, args, 0, span) else return error_expr(cx.s, span)
+    if cx.layout_pending(name, t, span) { return error_expr(cx.s, span) }
     field := ""
     ok := false
     if args.len > 1 {

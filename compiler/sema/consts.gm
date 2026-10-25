@@ -27,8 +27,14 @@ const_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> 
 
 /// Checks the default value `d` of a field of type `ty`.
 check_default :: fn(s: ^Sema, module: usize, d: ^const ast.Expr, ty: Ty) needs Load {
-    if s.tys.is_error(ty) { return }
-    if s.const_check(module, d, ty) is null { s.pending_consts.push(PendingConst(module: module, init: d, ty: ty))! }
+    if s.tys.is_error(ty) or s.const_check(module, d, ty) is not null { return }
+    // A default is evaluated once, where it is declared (§17.2), unless its type mentions
+    // a type parameter of the struct.
+    if hook := s.eval_hook and not s.tys.has_param(ty) {
+        _ = hook(s, module, d, ty, "<default>", d.span)
+        return
+    }
+    s.pending_consts.push(PendingConst(module: module, init: d, ty: ty))!
 }
 
 /// The type of `e` if gammac can tell that it is a valid constant expression (of type
@@ -232,8 +238,11 @@ untyped_fits :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, t: Ty) -> bool n
 /// reports nothing.
 untyped_if_plain :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedResult needs Load {
     errors := s.l.diags.list.items.len
-    r := s.try_untyped(module, e) else return null
-    if s.l.diags.list.items.len is not errors { return null }
+    was := s.quiet_untyped
+    s.quiet_untyped = true
+    r := s.try_untyped(module, e)
+    s.quiet_untyped = was
+    if s.l.diags.list.items.len is not errors or r is .Failed { return null }
     return r
 }
 

@@ -323,6 +323,25 @@ pub Sema :: struct {
     layout_cache: List(?Layout)
     /// The ambient effects (§12.9), once resolved.
     pub yield_effect: ?u32
+    /// The typed constants and evaluated defaults (§17.2), by where they are declared and
+    /// their type.
+    pub consts: List(tir.ConstDef)
+    const_ids: hash_map.HashMap((source.Span, Ty), u32)
+    /// The bodies of the instances of generic functions produced so far (§16.7).
+    inst_defs: hash_map.HashMap(u32, tir.FnDef)
+    /// The functions whose bodies are being checked, for cycles of compile-time
+    /// evaluation.
+    pub checking: List(u32)
+    /// Checks the constant expression `e` against `expected` and evaluates it, as the
+    /// constant `name` declared at `span`: its id once evaluated, or `null` after
+    /// reporting why not (installed by the body checker).
+    pub eval_hook: ?^fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, name: string, span: source.Span) -> ?u32 needs Alloc + Fs = null
+    /// The step budget of compile-time evaluations in the declaration being resolved
+    /// (§17.3).
+    pub fuel: u64 = 50_000_000
+    /// Set while gammac tries an expression as an untyped constant without reporting why
+    /// it is not one.
+    pub quiet_untyped: bool = false
 }
 
 pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
@@ -364,13 +383,52 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         method_candidates: list(MethodCandidate),
         layout_cache: list(?Layout),
         yield_effect: null,
+        consts: list(tir.ConstDef),
+        const_ids: hash_map.hash_map((source.Span, Ty), u32),
+        inst_defs: hash_map.hash_map(u32, tir.FnDef),
+        checking: list(u32),
     )
     s.effects.push(EffectInfo(name: "..", module: 0, params: empty_slice(u32), ops: empty_slice(OpInfo)))!
     return s
 }
 
+/// The default number of steps of one compile-time evaluation (§17.3).
+pub STEP_BUDGET: u64 : 50_000_000
+
+/// The checked form of function `f`: an instance of a generic function has the body
+/// produced for its arguments, once it is.
+pub def_of :: fn(s: ^const Sema, f: u32) -> tir.FnDef {
+    if d := s.inst_defs.get(f) { return d }
+    return s.defs.items[usize(f)]
+}
+
+/// Records the body produced for instance `f`.
+pub set_inst_def :: fn(s: ^Sema, f: u32, d: tir.FnDef) needs Alloc {
+    s.inst_defs.put(f, d)!
+}
+
+/// The constant declared at `span` with type `ty`, if it is registered.
+pub const_id :: fn(s: ^const Sema, span: source.Span, ty: Ty) -> ?u32 => s.const_ids.get((span, ty))
+
+/// Registers a constant to evaluate when its value is needed.
+pub add_const :: fn(s: ^Sema, c: tir.ConstDef) -> u32 needs Alloc {
+    id := s.consts.items.len.trunc(u32)
+    s.consts.push(c)!
+    s.const_ids.put((c.span, c.ty), id)!
+    return id
+}
+
 /// The prefix of the message of every construct gammac cannot check yet.
-UNSUPPORTED :: "gammac cannot check"
+pub UNSUPPORTED :: "gammac cannot check"
+
+/// Whether a type or value parameter of a generic body is in scope.
+pub in_generic_scope :: fn(s: ^const Sema) -> bool {
+    if s.value_scope.items.len > 0 { return true }
+    for p in s.type_params.items {
+        if s.tys.has_param(p.ty) { return true }
+    }
+    return false
+}
 
 /// Reports that gammac cannot check `what` yet.
 pub unsupported :: fn(s: ^Sema, span: source.Span, what: string) needs Alloc {
@@ -502,6 +560,10 @@ pub resolve_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     }
     s.set_state(id, .InProgress)
     s.resolving.push(id)!
+    // Its own errors are reported, whatever needed it.
+    quiet := s.quiet_untyped
+    s.quiet_untyped = false
+    defer s.quiet_untyped = quiet
     // A declaration is resolved in its module's scope: the names of whatever needed it
     // first are not visible.
     type_params := s.type_params
@@ -552,6 +614,7 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     .Binding(b) := item.kind else return .Error
     global := false
     thread_local := false
+    fuel: ?u64 = null
     hints: ?ast.Attribute = null
     inline := false
     align_attr: ?ast.Attribute = null
@@ -567,7 +630,20 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
                 }
             }
             "thread_local" => { thread_local = true }
-            "export", "trap_hook", "callconv", "fuel" => s.unsupported(attr.span, str.format("the attribute `#{}`", attr.name.name)!)
+            // `#fuel(n)` raises the step budget of this declaration's evaluations (§17.3).
+            "fuel" => {
+                ok := false
+                if args := attr.args and args.len is 1 {
+                    if r := s.try_untyped(module, &args[0]) and .Ok(.Int(i)) := r and i.is_positive() {
+                        if n := i.to_u64() {
+                            fuel = n
+                            ok = true
+                        }
+                    }
+                }
+                if not ok { s.error(attr.span, "`#fuel(n)` takes a positive integer constant") }
+            }
+            "export", "trap_hook", "callconv" => s.unsupported(attr.span, str.format("the attribute `#{}`", attr.name.name)!)
             // Inlining hints (§11.10) do not change the meaning of a program.
             "inline", "noinline", "cold", "fast_math" => {
                 if attr.name.name in ("inline", "noinline") { inline = attr.name.name is "inline" }
@@ -597,11 +673,14 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
         }
     }
     v: DeclValue = .Error
+    saved_fuel := s.fuel
+    s.fuel = fuel else STEP_BUDGET
     if global {
         v = s.declare_global(module, name, &b)
     } else {
         v = s.compute_binding(id, module, name, &item, &b)
     }
+    s.fuel = saved_fuel
     if h := hints {
         if .Fn(f) := v and inline { s.inline_fns.push(InlineFn(fn_id: f, span: h.span))! }
         if v is not .Fn(_) and v is not .Error {
@@ -717,7 +796,17 @@ declare_const_or_type :: fn(s: ^Sema, module: usize, name: ast.Ident, annot: ?^a
     }
     expected: ?Ty = null
     if a := annot { expected = s.resolve_type(module, a) }
+    if t := expected and s.tys.is_error(t) { return .Error }
+    // What gammac can type without checking it as an expression is evaluated when its
+    // value is needed; anything else is checked and evaluated now (§17.2).
+    if hook := s.eval_hook and s.const_check(module, init, expected) is null {
+        id := hook(s, module, init, expected, name.name, name.span) else return .Error
+        return .Const(s.consts.items[usize(id)].ty)
+    }
     ty := s.const_type(module, init, expected) else return .Error
+    if s.eval_hook is not null {
+        _ = s.add_const(tir.ConstDef(name: name.name, span: name.span, ty: ty, module: module, ast: init, expected: expected, fuel: s.fuel))
+    }
     if s.tys.is_error(ty) { return .Error }
     if bad := s.non_constant_part(ty) {
         s.error(init.span, str.format("a constant cannot hold `{}`, which contains `{}` (§17.4)", s.show(ty), s.show(bad))!)
@@ -750,7 +839,7 @@ aliased_decl :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?AliasTarget 
 
 /// The part of a type that a constant may not contain (§17.4): mutable pointers,
 /// `rawptr`, continuations, and allocator handles.
-non_constant_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
+pub non_constant_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
     bad: ?Ty = null
     s.walk(t, fn(x: Ty) {
         is_bad := match s.tys.kind(x) {

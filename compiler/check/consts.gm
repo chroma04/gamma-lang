@@ -1,56 +1,312 @@
-// The initializers of typed constants and the default values of fields that resolving
-// the declarations left to the body checker (§17.2). Mirrors `Sema::check_const_expr`
-// in `src/sema/func.rs`.
-//
-// The reference implementation evaluates each initializer at compile time, which can
-// fail. gammac does not evaluate: it accepts an initializer whose evaluation cannot fail
-// (literals, constants, constructions, lossless conversions and the like) and reports
-// any other as unsupported.
+// Constants and defaults evaluated at compile time (§17.2): typed top-level constants,
+// default values of fields and parameters, array lengths and compile-time arguments
+// given by typed expressions, and `@static_assert` (mirrors `src/sema/consteval.rs` and
+// `Sema::check_const_expr` in `src/sema/func.rs`).
 
-/// Checks the initializers queued while resolving declarations.
+eval :: import "../eval"
+
+Value :: tir.Value
+Cell :: tir.Cell
+
+ESCAPE_MSG :: "constant contains a pointer to memory that does not outlive compile-time evaluation"
+
+/// Lets resolving the declarations check and evaluate constant expressions.
+pub install :: fn(s: ^Sema) {
+    s.eval_hook = const_hook
+}
+
+const_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, name: string, span: source.Span) -> ?u32 needs Alloc + Fs {
+    errors := s.l.diags.error_count()
+    ex := check_const_expr(s, module, e, expected) else return null
+    if s.l.diags.error_count() is not errors or s.tys.is_error(ex.ty) { return null }
+    if name in ("<length>", "<argument>") and depends_on_params(s, ex) {
+        s.unsupported(e.span, "compile-time values computed from parameters")
+        return null
+    }
+    if name not in ("<default>", "<length>", "<argument>") {
+        if bad := s.non_constant_part(ex.ty) {
+            s.error(e.span, str.format("a constant cannot hold `{}`, which contains `{}` (§17.4)", s.show(ex.ty), s.show(bad))!)
+            return null
+        }
+    }
+    id := s.add_const(tir.ConstDef(name: name, span: span, ty: ex.ty, module: module, ast: e, expected: expected, fuel: s.fuel, init: ex, state: .Evaluating))
+    return if finish_const(s, id) { id } else { null }
+}
+
+/// Checks the constant expression `e` (against `expected`), as a function body without
+/// parameters; `null` if it has errors.
+pub check_const_expr :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?^Expr needs Load {
+    errors := s.l.diags.error_count()
+    cx := fn_cx(s, module, s.tys.unit(), types.empty_effects())
+    ex := cx.expr(e, expected)
+    if t := expected { ex = cx.coerce(ex, t) }
+    if cx.performed.items.len > 0 { cx.error(cx.performed.items[0].span, "a constant's initializer may not perform effects") }
+    cx.finish(ex)
+    if s.l.diags.error_count() is not errors { return null }
+    if cx.locals.items.len is 0 { return ex }
+    // An initializer that needs locals (such as one with a spread) becomes the body of a
+    // function without parameters, called where the value is needed.
+    f := s.new_nested_fn(.Named, "<constant>", ex.span, module, empty_slice(sema.ParamInfo), ex.ty, types.empty_effects())
+    s.defs.items[usize(f)] = tir.FnDef(kind: .Named, params: empty_slice(u32), locals: cx.locals.items, body: ex)
+    return tir.mk(ex.ty, .Call(.Fn(f), empty_slice(Expr)), ex.span)
+}
+
+/// Evaluates constant `id`, whose initializer is checked, and records its value; reports
+/// and returns `false` if that fails.
+finish_const :: fn(s: ^Sema, id: u32) -> bool needs Load {
+    c := s.consts.items[usize(id)]
+    ex := c.init else return false
+    s.consts.items[usize(id)].state = .Evaluating
+    state: tir.ConstState = .Failed
+    if v := evaluate(s, ex, c.fuel) {
+        s.consts.items[usize(id)].cell = new(Cell(v: v, is_static: true))!
+        state = .Done
+    }
+    s.consts.items[usize(id)].state = state
+    return state is .Done
+}
+
+/// Whether `v` points into memory that exists only during its evaluation (§17.4).
+escapes :: fn(v: Value) -> bool => match v {
+    .Ptr(pl) => not pl.cell.is_static
+    .Slice(sl) => not sl.start.cell.is_static
+    .Agg(a) => {
+        found := false
+        for x in a.elems {
+            if escapes(x) {
+                found = true
+                break
+            }
+        }
+        found
+    }
+    .Some(p), .Ok(p), .Err(p) => escapes(p^)
+    .Variant(x) => if p := x.payload { escapes(p^) } else { false }
+    _ => false
+}
+
+/// Evaluates the checked, closed expression `e` with `budget` steps: its value, or
+/// `null` after reporting why not. Nothing is reported if `e`, or a function it can
+/// reach, has errors.
+pub evaluate :: fn(s: ^Sema, e: ^Expr, budget: u64) -> ?Value needs Load {
+    if s.tys.mentions_error(e.ty) or not prepare(s, e) { return null }
+    match eval.run(s, e, budget) {
+        .Ok(v) => {
+            if not escapes(v) { return v }
+            s.error(e.span, str.format("compile-time evaluation failed: {}", ESCAPE_MSG)!)
+        }
+        .Trap(t) => report_trap(s, e, t)
+        .Unsupported(span, what) => s.unsupported(span, what)
+        .Blocked => {}
+    }
+    return null
+}
+
+/// Reports the failed evaluation of `e` with its call stack (§17.1).
+report_trap :: fn(s: ^Sema, e: ^const Expr, t: ^eval.EvalTrap) needs Alloc {
+    d := diag.error(e.span, str.format("compile-time evaluation failed: {}", t.message)!)
+    if t.span is not source.DUMMY and t.span is not e.span { d.add_label(t.span, "the evaluation stopped here") }
+    // The compile-time call stack, innermost call first.
+    shown: usize = 12
+    for c in t.trace.items[0..t.trace.items.len.min(shown)] {
+        if c.span is source.DUMMY or c.span is e.span { continue }
+        what: string = if name := backtrace_name(s, c.fn_id) { str.format("`{}`", name)! } else { "a core library function" }
+        d.add_label(c.span, str.format("{} was called here", what)!)
+    }
+    if t.trace.items.len > shown { d.add_note(str.format("{} more calls are not shown", t.trace.items.len - shown)!) }
+    s.emit(d)
+}
+
+/// How a call stack names function `f`; `null` for a function of the core library.
+backtrace_name :: fn(s: ^const Sema, f: u32) -> ?string needs Alloc {
+    sig := &s.fns.items[usize(f)]
+    if s.l.modules.items[sig.module].is_prelude or sig.name is "<entry>" { return null }
+    def := s.def_of(f)
+    parent: ?string = null
+    if p := def.parent { parent = backtrace_name(s, p) }
+    clause := def.kind is .Clause
+    special := sig.name.len > 0 and sig.name[0] is '<'
+    if p := parent {
+        if clause and special { return str.format("{} in {}", sig.name, p)! }
+        if clause { return str.format("`{}` clause in {}", sig.name, p)! }
+        if def.kind is .Literal and special { return str.format("{} in {}", sig.name, p)! }
+    } else if clause {
+        return str.format("`{}` clause", sig.name)!
+    }
+    return sig.name
+}
+
+/// The cell of the constant declared at `span` with type `ty`, evaluated now if it was
+/// not yet: `null` if it has no value.
+pub const_value :: fn(s: ^Sema, span: source.Span, ty: Ty) -> ?^Cell needs Load {
+    id := s.const_id(span, ty) else return null
+    c := s.consts.items[usize(id)]
+    match c.state {
+        .Done => return c.cell
+        .Unchecked => {
+            s.consts.items[usize(id)].state = .Evaluating
+            ex := check_const_expr(s, c.module, c.ast, c.expected) else {
+                s.consts.items[usize(id)].state = .Failed
+                return null
+            }
+            s.consts.items[usize(id)].init = ex
+            if not finish_const(s, id) { return null }
+            return s.consts.items[usize(id)].cell
+        }
+        _ => return null
+    }
+}
+
+/// The constant holding the default `d` (declared in `module`) of a field or parameter of
+/// type `ty`: each default is checked and evaluated once per type (§17.2); a failure is
+/// reported once, at the default.
+pub default_const :: fn(s: ^Sema, module: usize, d: ^const ast.Expr, ty: Ty) -> bool needs Load {
+    if id := s.const_id(d.span, ty) {
+        c := s.consts.items[usize(id)]
+        if c.state is .Unchecked { return const_value(s, d.span, ty) is not null }
+        if c.state is .Evaluating {
+            s.error(d.span, "this default depends on itself; the cycle cannot be evaluated (§3.4)")
+            return false
+        }
+        return c.state is .Done
+    }
+    return const_hook(s, module, d, ty, "<default>", d.span) is not null
+}
+
+/// Checks the initializers left to the body checker: the defaults of fields of generic
+/// types, checked once as expressions (gammac does not evaluate them per use yet).
 pub check_consts :: fn(s: ^Sema) needs Load {
     for i in 0..s.pending_consts.items.len {
         c := s.pending_consts.items[i]
         if s.l.modules.items[c.module].is_prelude { continue }
-        check_const(s, c)
+        if s.tys.has_param(c.ty) {
+            s.unsupported(c.init.span, "defaults of fields of generic types")
+            continue
+        }
+        _ = default_const(s, c.module, c.init, c.ty)
     }
 }
 
-check_const :: fn(s: ^Sema, c: sema.PendingConst) needs Load {
-    errors := s.l.diags.error_count()
-    cx := fn_cx(s, c.module, s.tys.unit(), types.empty_effects())
-    e := cx.coerce(cx.expr(c.init, c.ty), c.ty)
-    if cx.performed.items.len > 0 { cx.error(cx.performed.items[0].span, "a constant's initializer may not perform effects") }
-    cx.finish(e)
-    if s.l.diags.error_count() is not errors { return }
-    if cx.locals.items.len > 0 {
-        s.unsupported(c.init.span, "constant initializers with local variables")
+/// Evaluates the defaults of declared parameters, so that a default that fails is an
+/// error even if no call omits its argument.
+check_declared_defaults :: fn(s: ^Sema) needs Load {
+    for i in 0..s.fns.items.len {
+        f := s.fns.items[i]
+        if f.instance is not null or s.l.modules.items[f.module].is_prelude { continue }
+        for p in f.params {
+            d := p.default else continue
+            if sema.is_site(&p) or s.tys.has_param(p.ty) or p.generic is not null { continue }
+            _ = default_const(s, f.module, d, p.ty)
+        }
+    }
+}
+
+/// Evaluates the initializer `init` (of type `annot`, if given) of the immutable local
+/// `name`, declared at `span`, at compile time if it checks again as a constant whose
+/// value may live in static memory (§17.2, §17.4): the constant, or `null` to evaluate the
+/// local at run time. Running out of steps falls back to run time; any other failure is
+/// reported.
+pub local_const :: fn(s: ^Sema, module: usize, init: ^const ast.Expr, annot: ?Ty, name: string, span: source.Span) -> ?u32 needs Load {
+    if s.in_generic_scope() { return null }
+    m := s.l.diags.mark()
+    checked := check_const_expr(s, module, init, annot)
+    // Checked as a constant, the initializer may fail where it is fine at run time (it
+    // uses a local type alias, for instance): then it simply runs.
+    if s.l.diags.any_since(m, sema.UNSUPPORTED) { return null }
+    ok := s.l.diags.error_count() is m.raised
+    s.l.diags.reset(m)
+    ex := checked else return null
+    if not ok or s.tys.is_error(ex.ty) or s.non_constant_part(ex.ty) is not null { return null }
+    m2 := s.l.diags.mark()
+    if not prepare(s, ex) {
+        if not s.l.diags.any_since(m2, sema.UNSUPPORTED) and s.l.diags.error_count() is m2.raised { s.l.diags.reset(m2) }
+        return null
+    }
+    v: Value = .Null
+    match eval.run(s, ex, s.fuel) {
+        .Ok(x) => {
+            if escapes(x) {
+                s.error(ex.span, str.format("compile-time evaluation failed: {}", ESCAPE_MSG)!)
+                return null
+            }
+            v = x
+        }
+        .Trap(t) => {
+            if not str.contains(t.message, "step budget") { report_trap(s, ex, t) }
+            return null
+        }
+        .Unsupported(at, what) => {
+            s.unsupported(at, what)
+            return null
+        }
+        .Blocked => return null
+    }
+    id := s.add_const(tir.ConstDef(name: name, span: span, ty: ex.ty, module: module, ast: init, expected: annot, fuel: s.fuel, init: ex, state: .Done))
+    s.consts.items[usize(id)].cell = new(Cell(v: v, is_static: true))!
+    return id
+}
+
+// ---------------------------------------------------------------------------------
+// Values for the declarations
+// ---------------------------------------------------------------------------------
+
+/// Evaluates the typed constant expression `e` of type `ty` (an array length or a
+/// compile-time argument), declared in `module`: its value, or `null` after reporting.
+pub eval_typed :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?Value needs Load {
+    ex := check_const_expr(s, module, e, ty) else return null
+    return evaluate(s, ex, s.fuel)
+}
+
+// ---------------------------------------------------------------------------------
+// Static assertions
+// ---------------------------------------------------------------------------------
+
+/// `@static_assert(cond, msg)` (§17.7), in `module`.
+static_assert :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source.Span) needs Load {
+    cond: ?ast.Expr = null
+    if args.len > 0 and .Positional(c) := args[0].kind { cond = c }
+    c := cond else {
+        s.error(span, "`@static_assert(cond, \"message\")` takes a condition and a message")
         return
     }
-    if not cannot_fail(s, e) { s.unsupported(c.init.span, "the evaluation of this constant expression") }
+    ex := check_const_expr(s, module, &c, s.tys.bool_ty()) else return
+    msg: ?[]u8 = null
+    if args.len > 1 and .Positional(m) := args[1].kind { msg = const_string(s, module, &m) }
+    if depends_on_params(s, ex) {
+        s.unsupported(span, "static assertions on compile-time parameters")
+        return
+    }
+    v := evaluate(s, ex, s.fuel) else return
+    if v is .Bool(false) {
+        text: string = if t := msg { t } else { "(no message)" }
+        s.error(span, str.format("static assertion failed: {}", text)!)
+    }
 }
 
-/// Whether evaluating `e` cannot fail: it performs no call, and none of its operations
-/// can trap.
-cannot_fail :: fn(s: ^Sema, e: ^Expr) -> bool {
-    tys := &s.tys
-    ok := match e.kind {
-        .Int(_), .Float(_), .UntypedFloat(_), .Bool(_), .Str(_), .CStr(_), .Null, .Const(_), .FnRef(_) => true
-        .Field(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .MakeErr(_), .Eq(_), .Logic(_) => true
-        .Coerce(k, _) => k is not .Unresolved
-        .Builtin(op, _) => op in (tir.Builtin.Convert, tir.Builtin.Bits, tir.Builtin.Tag, tir.Builtin.Checked, tir.Builtin.Sat, tir.Builtin.Min, tir.Builtin.Max, tir.Builtin.IsNan, tir.Builtin.IsInf, tir.Builtin.IsFinite, tir.Builtin.SignBit)
-        .Unary(op, x) => op is not .Neg or tys.kind(x.ty) is .Float(_)
-        .Binary(op, l, _) => match op {
-            .Add(f), .Sub(f), .Mul(f) => f is not .Checked or tys.kind(l.ty) is .Float(_)
-            .Div, .Rem => tys.kind(l.ty) is .Float(_)
-            .Shl(_), .Shr => false
-            _ => true
-        }
-        _ => false
+/// `@compile_error(msg)` (§20.3): reports `msg`.
+compile_error :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source.Span) needs Load {
+    msg: ?[]u8 = null
+    if args.len > 0 and .Positional(m) := args[0].kind { msg = const_string(s, module, &m) }
+    if t := msg {
+        s.error(span, t)
+    } else {
+        s.error(span, "`@compile_error` takes a constant string message")
     }
-    if not ok { return false }
-    tir.for_each_child(e, fn(c: ^Expr) {
-        if ok and not cannot_fail(s, c) { ok = false }
+}
+
+/// The value of the constant string expression `e`.
+const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs Load {
+    ex := check_const_expr(s, module, e, s.tys.string_ty()) else return null
+    v := evaluate(s, ex, s.fuel) else return null
+    return eval.string_bytes(s, v)
+}
+
+/// Whether `e` depends on the type or value parameters of the generic body it is in.
+depends_on_params :: fn(s: ^Sema, e: ^Expr) -> bool {
+    found := false
+    visit(e, fn(x: ^Expr) {
+        if s.tys.has_param(x.ty) or x.kind in (.ValueParam(_), .TypeName(_), .IntLimit(_)) { found = true }
+        if .SizeOf(of, _) := x.kind and s.tys.has_param(of) { found = true }
     })
-    return ok
+    return found
 }

@@ -1,0 +1,949 @@
+//! Compile-time evaluation (§17): runs checked expressions and the bodies of the
+//! functions they call. The reference implementation compiles them to bytecode and runs
+//! its VM on the target's memory layout (`src/interp`); gammac walks the tree, with values
+//! that keep their structure (`tir.Value`). It traps where the VM does, with the same
+//! messages, and reports what it cannot evaluate yet as unsupported.
+//!
+//! The functions an evaluation reaches must have their bodies checked first, and the
+//! constants it reads must be evaluated (the body checker's `prepare` does both).
+
+ast :: import "../ast"
+bigint :: import "../bigint"
+ratio :: import "../ratio"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+tir :: import "../tir"
+types :: import "../types"
+
+Sema :: sema.Sema
+Load :: sema.Load
+Ty :: types.Ty
+Expr :: tir.Expr
+Value :: tir.Value
+Place :: tir.Place
+Cell :: tir.Cell
+EvalFrame :: tir.Frame
+
+/// How an evaluation leaves an expression other than with its value: a jump to an
+/// enclosing construct, a trap, or a construct gammac cannot evaluate.
+Flow :: union {
+    Break: (frame: ^EvalFrame, label: u32, value: ?Value)
+    Continue: (frame: ^EvalFrame, label: u32)
+    Return: (frame: ^EvalFrame, value: Value)
+    /// A `break` out of a handler clause to the `with` that installed the handler
+    /// (§12.7.1), by the number of that `with`.
+    BreakWith: (with_id: u32, value: ?Value)
+    Trap: ^EvalTrap
+    Unsupported: (span: source.Span, what: string)
+    /// Something it needs has errors, already reported.
+    Blocked
+}
+
+/// A failed evaluation: the message, where it stopped, and the calls that led there,
+/// innermost first.
+pub EvalTrap :: struct {
+    pub message: string
+    pub span: source.Span
+    pub trace: List(TraceCall)
+}
+
+/// A call of function `fn_id` at `span`.
+pub TraceCall :: struct {
+    pub fn_id: u32
+    pub span: source.Span
+}
+
+/// A handler installed by a `with` being evaluated.
+Installed :: struct {
+    effect_: types.EffectRef
+    clauses: []const u32
+    frame: ^EvalFrame
+    with_id: u32
+    /// Where the search for a handler continues below this one (see `Machine.top`).
+    below: usize
+    /// What its clauses see: the handlers visible where its `with` began.
+    base: usize
+}
+
+/// The state of one evaluation.
+Machine :: struct {
+    s: ^Sema
+    frame: ^EvalFrame
+    steps: u64
+    budget: u64
+    depth: u32
+    /// The handlers of the `with`s being evaluated, innermost last. The code being run
+    /// sees a chain of them: the one below index `top`, then the one below its `below`,
+    /// and so on (a clause does not see the handlers of its own `with`).
+    handlers: List(Installed)
+    top: usize
+    /// The `with`s whose handlers' clauses are running, innermost last.
+    clause_withs: List(u32)
+    next_with: u32
+}
+
+/// The function of the frame of an evaluation's own expression.
+NO_FN: u32 : 0xFFFF_FFFF
+
+/// The default number of steps of one evaluation (§17.3); `#fuel(n)` changes it.
+STEP_BUDGET: u64 : 50_000_000
+/// How deeply calls may nest.
+MAX_DEPTH: u32 : 200_000
+
+/// What evaluating an expression gives.
+pub EvalResult :: union {
+    Ok: Value
+    Trap: ^EvalTrap
+    Unsupported: (span: source.Span, what: string)
+    Blocked
+}
+
+/// Evaluates the closed expression `e` with `budget` steps.
+pub run :: fn(s: ^Sema, e: ^Expr, budget: u64) -> EvalResult needs Load {
+    m := machine(s, budget)
+    return match m.eval(e) {
+        !.Trap(t) => .Trap(t)
+        !.Unsupported(u) => .Unsupported(u.span, u.what)
+        !.Blocked => .Blocked
+        !_ => .Unsupported(e.span, "jumps out of a constant expression")
+        v => .Ok(v)
+    }
+}
+
+machine :: fn(s: ^Sema, budget: u64) -> Machine needs Alloc => Machine(s: s, frame: new_frame(NO_FN, empty_slice(tir.LocalDecl), null), steps: 0, budget: budget, depth: 0, handlers: list(Installed), top: 0, clause_withs: list(u32), next_with: 0)
+
+/// The bytes of `v` if it is a `string`.
+pub string_bytes :: fn(s: ^Sema, v: Value) -> ?[]u8 needs Alloc {
+    m := machine(s, 0)
+    return m.string_of(v)
+}
+
+/// The value of the integer `bits` of type `t`.
+pub int_of :: fn(s: ^Sema, bits: u128, t: Ty) -> bigint.Int needs Alloc {
+    m := machine(s, 0)
+    return m.big_of(bits, t)
+}
+
+new_frame :: fn(fn_id: u32, locals: []const tir.LocalDecl, parent: ?^EvalFrame) -> ^EvalFrame needs Alloc {
+    cells := list(^Cell)
+    for _ in locals { cells.push(new(Cell(v: .Null, is_static: false))!)! }
+    return new(EvalFrame(fn_id: fn_id, cells: cells.items, parent: parent))!
+}
+
+unsupported :: fn(m: ^const Machine, span: source.Span, what: string) -> Flow => .Unsupported(span, what)
+
+trap :: fn(m: ^const Machine, span: source.Span, message: string) -> Flow needs Alloc => .Trap(new(EvalTrap(message: message, span: span, trace: list(TraceCall)))!)
+
+unit_value :: fn() -> Value needs Alloc => .Agg(new(tir.Agg(elems: empty_slice(Value)))!)
+
+/// Counts a step, and checks the budget at a loop's jump back or a call (§17.3).
+tick :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Alloc {
+    m.steps += 1
+    if m.steps > m.budget { return !m.trap(span, "compile-time evaluation exceeded its step budget") }
+}
+
+/// The frame `levels` functions out from the current one.
+frame_up :: fn(m: ^Machine, levels: u32) -> ^EvalFrame {
+    f := m.frame
+    for _ in 0..levels { f = f.parent else return f }
+    return f
+}
+
+// ---------------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------------
+
+eval :: fn(m: ^Machine, e: ^Expr) -> Flow!Value needs Load {
+    m.steps += 1
+    tys := &m.s.tys
+    match e.kind {
+        .Int(i) => return .Int(int_bits(i))
+        .Float(x) => return .Float(x)
+        .UntypedFloat(r) => {
+            .Float(bits) := tys.kind(e.ty) else return !m.unsupported(e.span, "float literals of this type")
+            if bits is 16 { return !m.unsupported(e.span, "`f16` values") }
+            return .Float(if bits is 32 { f64(r.to_f32()) } else { r.to_f64() })
+        }
+        .Bool(b) => return .Bool(b)
+        .Null => return .Null
+        .Str(bytes) => return string_value(bytes)
+        .CStr(bytes) => {
+            elems := list(Value)
+            for b in bytes { elems.push(.Int(u128(b)))! }
+            elems.push(.Int(0))!
+            cell := new(Cell(v: .Agg(new(tir.Agg(elems: elems.items))!), is_static: true))!
+            return .Ptr(Place(cell: cell, path: one_index(0)))
+        }
+        .Uninit => return m.zero(e.ty, e.span)
+        .Const(_, span) => {
+            cell := try m.const_cell(span, e.ty, e.span)
+            return cell.v
+        }
+        .Local(_), .Upvar(_), .Deref(_), .Global(_) => return m.load(try m.place(e), e.span)
+        .Field(base, index) => {
+            if is_place(base) { return m.load(try m.place(e), e.span) }
+            v := try m.eval(base)
+            .Agg(a) := v else return !m.unsupported(e.span, "this field access")
+            return a.elems[usize(index)]
+        }
+        .Index(base, _, _) => {
+            if is_place(base) or tys.kind(base.ty) in (.Slice(_), .ManyPtr(_)) { return m.load(try m.place(e), e.span) }
+            return m.load(try m.place(e), e.span)
+        }
+        .Slice(sl) => return m.slice(sl, e.span)
+        .SliceLen(x) => {
+            match try m.eval(x) {
+                .Slice(sl) => return .Int(u128(sl.len))
+                _ => return !m.unsupported(e.span, "this slice")
+            }
+        }
+        .SlicePtr(x) => {
+            match try m.eval(x) {
+                .Slice(sl) => return .Ptr(sl.start)
+                _ => return !m.unsupported(e.span, "this slice")
+            }
+        }
+        .AddrOf(x) => return .Ptr(try m.place(x))
+        .AddrOfTemp(x) => {
+            v := try m.eval(x)
+            return .Ptr(Place(cell: new(Cell(v: copy(v), is_static: false))!, path: empty_slice(u64)))
+        }
+        .FnRef(f) => return .Fn(f)
+        .Closure(f) => return .Closure(f, m.frame)
+        .HandlerRef(h) => return .Handler(h, m.frame)
+        .Unary(op, x) => return m.unary(op, x, e)
+        .Binary(op, l, r) => {
+            a := try m.eval(l)
+            b := try m.eval(r)
+            return m.binary(op, a, b, l.ty, r.ty, e.span)
+        }
+        .Logic(is_and, l, r) => {
+            a := try m.eval(l)
+            .Bool(x) := a else return !m.unsupported(e.span, "this condition")
+            if x is not is_and { return .Bool(x) }
+            return m.eval(r)
+        }
+        .Coerce(kind, x) => return m.coerce(kind, x, e)
+        .Builtin(op, args) => return m.builtin(op, args, e)
+        .Call(callee, args) => return m.call_expr(callee, args, e)
+        .Aggregate(xs), .Array(xs) => {
+            elems := list(Value)
+            for i in 0..xs.len { elems.push(copy(try m.eval(&xs[i])))! }
+            return .Agg(new(tir.Agg(elems: elems.items))!)
+        }
+        .ArrayFill(x) => {
+            .Array(len, _, _) := tys.kind(e.ty) else return !m.unsupported(e.span, "this array")
+            v := try m.eval(x)
+            elems := list(Value)
+            for _ in 0..len {
+                m.steps += 1
+                elems.push(copy(v))!
+            }
+            return .Agg(new(tir.Agg(elems: elems.items))!)
+        }
+        .Variant(v) => {
+            p: ?^Value = null
+            if x := v.payload { p = new(copy(try m.eval(x)))! }
+            return .Variant(v.variant, p)
+        }
+        .MakeErr(x) => return .Err(new(copy(try m.eval(x)))!)
+        .Unwrap(x, is_result) => {
+            v := try m.eval(x)
+            match v {
+                .Some(p), .Ok(p) => return p^
+                .Null => return !m.trap(e.span, "unwrap of null")
+                .Err(p) => {
+                    .Result(et, _) := tys.kind(x.ty) else return !m.unsupported(e.span, "this unwrap")
+                    text := m.display(p^, et) else return !m.unsupported(e.span, "unwrapping this error value")
+                    return !m.trap(e.span, str.format("unwrap of error value {}", text)!)
+                }
+                _ => return !m.unsupported(e.span, "this unwrap")
+            }
+        }
+        .Else(x) => {
+            v := try m.eval(x.lhs)
+            match v {
+                .Some(p), .Ok(p) => {
+                    if e.ty is x.lhs.ty { return v }
+                    return wrap_as(tys, e.ty, x.rhs.ty, p^)
+                }
+                .Null => return m.eval(x.rhs)
+                .Err(p) => {
+                    if c := x.capture { m.frame.cells[usize(c)].v = copy(p^) }
+                    return m.eval(x.rhs)
+                }
+                _ => return !m.unsupported(e.span, "this `else`")
+            }
+        }
+        .Try(x) => {
+            v := try m.eval(x.expr)
+            match v {
+                .Some(p), .Ok(p) => return p^
+                .Null => return !Flow.Return(m.frame_up(x.levels), .Null)
+                .Err(p) => {
+                    err: Value = p^
+                    if i := x.lift { err = .Variant(i, new(err)!) }
+                    return !Flow.Return(m.frame_up(x.levels), .Err(new(err)!))
+                }
+                _ => return !m.unsupported(e.span, "this `try`")
+            }
+        }
+        .Eq(l, r, negated) => {
+            a := try m.eval(l)
+            b := try m.eval(r)
+            same := try m.equal(a, b, l.ty, e.span)
+            return .Bool(same is not negated)
+        }
+        .In(x, container, negated) => {
+            v := try m.eval(x)
+            c := try m.eval(container)
+            found := false
+            match c {
+                .Agg(a) => {
+                    elems := tuple_elems(tys, container.ty, a.elems.len)
+                    for i, el in enumerate(a.elems) {
+                        if try m.equal(v, el, elems[i], e.span) {
+                            found = true
+                            break
+                        }
+                    }
+                }
+                .Slice(sl) => {
+                    .Slice(_, et) := tys.kind(container.ty) else return !m.unsupported(e.span, "this `in`")
+                    for i in 0..sl.len {
+                        el := m.load(offset(sl.start, i), e.span)
+                        if try m.equal(v, el, et, e.span) {
+                            found = true
+                            break
+                        }
+                    }
+                }
+                _ => return !m.unsupported(e.span, "this `in`")
+            }
+            return .Bool(found is not negated)
+        }
+        .Match(scrutinee, arms) => {
+            v := try m.eval(scrutinee)
+            for a in arms {
+                if not try m.matches(a.pat, v) { continue }
+                if g := a.guard {
+                    .Bool(ok) := (try m.eval(g)) else return !m.unsupported(g.span, "this guard")
+                    if not ok { continue }
+                }
+                return m.eval(a.body)
+            }
+            return !m.unsupported(e.span, "a `match` that no arm matches")
+        }
+        .Block(b) => return m.block(b)
+        .If(x) => {
+            if try m.conds(x.cond) { return m.eval(x.then) }
+            if el := x.else_ { return m.eval(el) }
+            return unit_value()
+        }
+        .Loop(x) => return m.loop_(x, e)
+        .Break(x) => {
+            v: ?Value = null
+            if val := x.value { v = try m.eval(val) }
+            match x.target {
+                .Label(levels, label) => return !Flow.Break(m.frame_up(levels), label, v)
+                .InstallingWith => return !m.break_with(v, e.span)
+            }
+        }
+        .Continue(target) => match target {
+            .Label(levels, label) => return !Flow.Continue(m.frame_up(levels), label)
+            .InstallingWith => return !m.unsupported(e.span, "`continue` to a `with`")
+        }
+        .Return(levels, x) => {
+            v := try m.eval(x)
+            return !Flow.Return(m.frame_up(levels), v)
+        }
+        .Trap(x) => {
+            v := try m.eval(x)
+            text := m.string_of(v) else return !m.unsupported(e.span, "this trap message")
+            return !m.trap(e.span, text)
+        }
+        .With(w) => return m.with_(w, e)
+        .SizeOf(of, align) => {
+            if tys.has_param(of) { return !m.unsupported(e.span, "this size") }
+            l := m.s.layout(of)
+            return .Int(u128(if align { l.align } else { l.size }))
+        }
+        _ => return !m.unsupported(e.span, "this expression at compile time")
+    }
+}
+
+/// Whether `e` denotes a place whose value is read in place.
+is_place :: fn(e: ^const Expr) -> bool => match e.kind {
+    .Local(_), .Upvar(_), .Deref(_), .Global(_), .Const(_) => true
+    .Field(b, _) => is_place(b)
+    .Index(b, _, _) => is_place(b)
+    _ => false
+}
+
+/// The element types of a tuple or array type with `n` elements.
+tuple_elems :: fn(tys: ^types.Types, t: Ty, n: usize) -> []const Ty needs Alloc {
+    match tys.kind(t) {
+        .Tuple(elems, _) => return elems
+        .Array(_, elem, _) => {
+            out := list(Ty)
+            for _ in 0..n { out.push(elem)! }
+            return out.items
+        }
+        _ => return empty_slice(Ty)
+    }
+}
+
+/// `x`, a present value of type `present`, as a value of type `t`: itself, or wrapped in
+/// an optional or a successful result.
+wrap_as :: fn(tys: ^types.Types, t: Ty, present: Ty, x: Value) -> Value needs Alloc {
+    match tys.kind(t) {
+        .Optional(inner) => if inner is not t and tys.kind(present) is not .Optional(_) { return .Some(new(x)!) }
+        .Result(_) => if tys.kind(present) is not .Result(_) { return .Ok(new(x)!) }
+        _ => {}
+    }
+    return x
+}
+
+/// A string literal: a slice of static bytes.
+string_value :: fn(bytes: []const u8) -> Value needs Alloc {
+    elems := list(Value)
+    for b in bytes { elems.push(.Int(u128(b)))! }
+    cell := new(Cell(v: .Agg(new(tir.Agg(elems: elems.items))!), is_static: true))!
+    return .Slice(Place(cell: cell, path: one_index(0)), u64(bytes.len))
+}
+
+one_index :: fn(i: u64) -> []const u64 needs Alloc {
+    out := list(u64)
+    out.push(i)!
+    return out.items
+}
+
+/// The bytes of a `string` value, if it is one.
+string_of :: fn(m: ^Machine, v: Value) -> ?[]u8 needs Alloc {
+    .Slice(sl) := v else return null
+    out := list(u8)
+    for i in 0..sl.len {
+        .Int(b) := m.load(offset(sl.start, i), source.DUMMY) else return null
+        out.push(b.trunc(u8))!
+    }
+    return out.items
+}
+
+/// A deep copy of `v`, which shares no aggregate with it (pointers still point to the
+/// same places).
+copy :: fn(v: Value) -> Value needs Alloc {
+    match v {
+        .Agg(a) => {
+            elems := list(Value)
+            for x in a.elems { elems.push(copy(x))! }
+            return .Agg(new(tir.Agg(elems: elems.items))!)
+        }
+        .Some(p) => return .Some(new(copy(p^))!)
+        .Ok(p) => return .Ok(new(copy(p^))!)
+        .Err(p) => return .Err(new(copy(p^))!)
+        .Variant(x) => {
+            q := x.payload else return v
+            return .Variant(x.index, new(copy(q^))!)
+        }
+        _ => return v
+    }
+}
+
+/// The value of type `t` that memory left uninitialized holds: zeros.
+zero :: fn(m: ^Machine, t: Ty, span: source.Span) -> Flow!Value needs Load {
+    tys := &m.s.tys
+    match tys.kind(t) {
+        .Int(_), .Usize, .Isize => return .Int(0)
+        .Float(_) => return .Float(0.0)
+        .Bool => return .Bool(false)
+        .Array(len, elem, _) => {
+            elems := list(Value)
+            for _ in 0..len {
+                m.steps += 1
+                elems.push(try m.zero(elem, span))!
+            }
+            return .Agg(new(tir.Agg(elems: elems.items))!)
+        }
+        .Tuple(elems, _) => {
+            out := list(Value)
+            for x in elems { out.push(try m.zero(x, span))! }
+            return .Agg(new(tir.Agg(elems: out.items))!)
+        }
+        .Adt(id, _) => match m.s.adts.items[usize(id)].kind {
+            .Struct(def) => {
+                if def.bits is not null { return !m.unsupported(span, "`#bits` structs") }
+                out := list(Value)
+                for f in def.fields { out.push(try m.zero(f.ty, span))! }
+                return .Agg(new(tir.Agg(elems: out.items))!)
+            }
+            _ => return !m.unsupported(span, "uninitialized unions")
+        }
+        .Optional(_), .Ptr(_), .ManyPtr(_), .FnPtr(_), .Rawptr => return .Null
+        _ => return !m.unsupported(span, "uninitialized values of this type")
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Places
+// ---------------------------------------------------------------------------------
+
+/// The place that `e` denotes; an expression that is not a place is evaluated into a
+/// temporary.
+place :: fn(m: ^Machine, e: ^Expr) -> Flow!Place needs Load {
+    tys := &m.s.tys
+    match e.kind {
+        .Local(l) => return Place(cell: m.frame.cells[usize(l)], path: empty_slice(u64))
+        .Upvar(levels, l) => {
+            f := m.frame_up(levels)
+            return Place(cell: f.cells[usize(l)], path: empty_slice(u64))
+        }
+        .Const(_, span) => return Place(cell: try m.const_cell(span, e.ty, e.span), path: empty_slice(u64))
+        .Deref(p) => {
+            match try m.eval(p) {
+                .Ptr(pl) => return pl
+                .Null => return !m.trap(e.span, "null pointer dereference")
+                _ => return !m.unsupported(e.span, "this dereference")
+            }
+        }
+        .Global(_) => return !m.unsupported(e.span, "global variables at compile time")
+        .Field(base, index) => {
+            pl := try m.place(base)
+            return Place(cell: pl.cell, path: append(pl.path, u64(index)))
+        }
+        .Index(base, index, _) => {
+            bt := tys.kind(base.ty)
+            match bt {
+                .Array(len, _, _) => {
+                    pl := try m.place(base)
+                    i := try m.index_value(index, len, e.span)
+                    return Place(cell: pl.cell, path: append(pl.path, i))
+                }
+                .Slice(_) => {
+                    .Slice(sl) := (try m.eval(base)) else return !m.unsupported(e.span, "this slice")
+                    i := try m.index_value(index, sl.len, e.span)
+                    return offset(sl.start, i)
+                }
+                .ManyPtr(_) => {
+                    .Ptr(pl) := (try m.eval(base)) else return !m.unsupported(e.span, "this pointer")
+                    .Int(i) := (try m.eval(index)) else return !m.unsupported(e.span, "this index")
+                    return offset(pl, i.trunc(u64))
+                }
+                _ => return !m.unsupported(e.span, "indexing this type at compile time")
+            }
+        }
+        _ => {
+            v := try m.eval(e)
+            return Place(cell: new(Cell(v: copy(v), is_static: false))!, path: empty_slice(u64))
+        }
+    }
+}
+
+/// The index `index` checked against length `len` (§7.9).
+index_value :: fn(m: ^Machine, index: ^Expr, len: u64, span: source.Span) -> Flow!u64 needs Load {
+    v := try m.eval(index)
+    .Int(bits) := v else return !m.unsupported(span, "this index")
+    i := m.int_value(bits, index.ty)
+    if i < 0 or i >= i128(len) { return !m.trap(span, str.format("index {} out of bounds for length {}", i, len)!) }
+    return u64(i.trunc(u64))
+}
+
+append :: fn(path: []const u64, i: u64) -> []const u64 needs Alloc {
+    out := list(u64)
+    out.extend(path)!
+    out.push(i)!
+    return out.items
+}
+
+/// The place `k` elements after `pl`, which is an element of an array.
+offset :: fn(pl: Place, k: u64) -> Place needs Alloc {
+    if k is 0 { return pl }
+    out := list(u64)
+    out.extend(pl.path)!
+    if out.items.len is 0 { out.push(k)! } else { out.items[out.items.len - 1] +%= k }
+    return Place(cell: pl.cell, path: out.items)
+}
+
+/// The value at `pl`, shared with the place (copy it before keeping it in another).
+load :: fn(m: ^Machine, pl: Place, span: source.Span) -> Value {
+    v := pl.cell.v
+    for i in pl.path {
+        .Agg(a) := v else return .Null
+        if i >= u64(a.elems.len) { return .Null }
+        v = a.elems[i.trunc(usize)]
+    }
+    return v
+}
+
+/// Stores `v`, which nothing else shares, at `pl`.
+store :: fn(m: ^Machine, pl: Place, v: Value, span: source.Span) -> Flow!() needs Alloc {
+    if pl.path.len is 0 {
+        pl.cell.v = v
+        return ()
+    }
+    cur := pl.cell.v
+    for k, i in enumerate(pl.path) {
+        .Agg(a) := cur else return !m.unsupported(span, "this store")
+        if i >= u64(a.elems.len) { return !m.unsupported(span, "a store outside an object") }
+        if k + 1 is pl.path.len {
+            a.elems[i.trunc(usize)] = v
+            return ()
+        }
+        cur = a.elems[i.trunc(usize)]
+    }
+}
+
+/// `base[lo..hi]`.
+slice :: fn(m: ^Machine, sl: tir.SliceExpr, span: source.Span) -> Flow!Value needs Load {
+    tys := &m.s.tys
+    start: Place = Place(cell: new(Cell(v: .Null, is_static: false))!, path: empty_slice(u64))
+    len: u64 = 0
+    match tys.kind(sl.base.ty) {
+        .Array(n, _, _) => {
+            pl := try m.place(sl.base)
+            start = Place(cell: pl.cell, path: append(pl.path, 0))
+            len = n
+        }
+        .Ptr(_, pointee) => {
+            .Array(n, _, _) := tys.kind(pointee) else return !m.unsupported(span, "slicing this pointer")
+            .Ptr(pl) := (try m.eval(sl.base)) else return !m.unsupported(span, "slicing this pointer")
+            start = Place(cell: pl.cell, path: append(pl.path, 0))
+            len = n
+        }
+        .Slice(_) => {
+            .Slice(s) := (try m.eval(sl.base)) else return !m.unsupported(span, "this slice")
+            start = s.start
+            len = s.len
+        }
+        _ => return !m.unsupported(span, "slicing this type at compile time")
+    }
+    lo: i128 = 0
+    hi: i128 = i128(len)
+    if x := sl.lo {
+        .Int(b) := (try m.eval(x)) else return !m.unsupported(span, "this bound")
+        lo = m.int_value(b, x.ty)
+    }
+    if x := sl.hi {
+        .Int(b) := (try m.eval(x)) else return !m.unsupported(span, "this bound")
+        hi = m.int_value(b, x.ty)
+        if sl.inclusive { hi += 1 }
+    }
+    if lo < 0 or hi < lo or hi > i128(len) {
+        return !m.trap(span, str.format("slice bounds {}..{} invalid for length {}", lo, hi, len)!)
+    }
+    return .Slice(offset(start, lo.trunc(u64)), (hi - lo).trunc(u64))
+}
+
+// ---------------------------------------------------------------------------------
+// Statements and control flow
+// ---------------------------------------------------------------------------------
+
+block :: fn(m: ^Machine, b: ^tir.Block) -> Flow!Value needs Load {
+    defers := list(^Expr)
+    for st in b.stmts {
+        r := m.stmt(st, &defers)
+        if !f := r {
+            try m.run_defers(&defers)
+            return !f
+        }
+    }
+    v: Value = unit_value()
+    if t := b.tail {
+        match m.eval(t) {
+            !f => {
+                try m.run_defers(&defers)
+                return !f
+            }
+            x => { v = x }
+        }
+    }
+    try m.run_defers(&defers)
+    return v
+}
+
+run_defers :: fn(m: ^Machine, defers: ^List(^Expr)) -> Flow!() needs Load {
+    while d := defers.pop() { _ = try m.eval(d) }
+}
+
+stmt :: fn(m: ^Machine, st: tir.Stmt, defers: ^List(^Expr)) -> Flow!() needs Load {
+    match st {
+        .Let(let_) => {
+            v: Value = .Null
+            if x := let_.init {
+                v = copy(try m.eval(x))
+            } else {
+                v = try m.zero(m.local_ty(let_.local), source.DUMMY)
+            }
+            m.frame.cells[usize(let_.local)].v = v
+        }
+        .LetTuple(locals, init) => {
+            v := try m.eval(init)
+            .Agg(a) := v else return !m.unsupported(init.span, "this destructuring")
+            for i, l in enumerate(locals) {
+                if id := l { m.frame.cells[usize(id)].v = copy(a.elems[i]) }
+            }
+        }
+        .Assign(p, value) => {
+            pl := try m.place(p)
+            v := try m.eval(value)
+            try m.store(pl, copy(v), p.span)
+        }
+        .AssignTuple(places, value) => {
+            pls := list(?Place)
+            for p in places {
+                if x := p { pls.push(try m.place(x))! } else { pls.push(null)! }
+            }
+            v := try m.eval(value)
+            .Agg(a) := v else return !m.unsupported(value.span, "this assignment")
+            for i, p in enumerate(pls.items) {
+                if pl := p { try m.store(pl, copy(a.elems[i]), value.span) }
+            }
+        }
+        .Expr(x) => { _ = try m.eval(x) }
+        .Defer(is_err, body) => {
+            if is_err { return !m.unsupported(body.span, "`errdefer` at compile time") }
+            defers.push(body)!
+        }
+    }
+}
+
+/// The type of local `l` of the function being run.
+local_ty :: fn(m: ^Machine, l: u32) -> Ty needs Alloc {
+    f := m.frame.fn_id
+    if f is NO_FN { return m.s.tys.error() }
+    return m.s.def_of(f).locals[usize(l)].ty
+}
+
+/// Whether every part of a condition holds; a pattern binds its names.
+conds :: fn(m: ^Machine, parts: []tir.CondPart) -> Flow!bool needs Load {
+    for c in parts {
+        match c {
+            .Bool(x) => {
+                .Bool(b) := (try m.eval(x)) else return !m.unsupported(x.span, "this condition")
+                if not b { return false }
+            }
+            .Match(pat, x) => if not try m.matches(pat, try m.eval(x)) { return false }
+        }
+    }
+    return true
+}
+
+loop_ :: fn(m: ^Machine, x: tir.LoopExpr, e: ^Expr) -> Flow!Value needs Load {
+    frame := m.frame
+    first := true
+    while true {
+        if not first { try m.tick(e.span) }
+        first = false
+        if not try m.conds(x.cond) { break }
+        match m.block(x.body) {
+            !.Break(b) if b.frame is frame and b.label is x.label => return b.value else unit_value()
+            !.Continue(c) if c.frame is frame and c.label is x.label => {}
+            !f => return !f
+            _ => {}
+        }
+        if st := x.step { _ = try m.eval(st) }
+    }
+    return unit_value()
+}
+
+// ---------------------------------------------------------------------------------
+// Patterns
+// ---------------------------------------------------------------------------------
+
+/// Whether `v` matches `p`; binds the names of `p` if it does.
+matches :: fn(m: ^Machine, p: ^tir.Pat, v: Value) -> Flow!bool needs Load {
+    match p.kind {
+        .Wild => return true
+        .Bind(l) => {
+            m.frame.cells[usize(l)].v = copy(v)
+            return true
+        }
+        .Const(c) => return m.equal(v, try m.eval(c), p.ty, p.span)
+        .Range(lo, hi, inclusive) => {
+            .Int(bits) := v else return false
+            x := m.int_value(bits, p.ty)
+            l := bigint_i128(lo) else return false
+            h := bigint_i128(hi) else return false
+            return x >= l and (if inclusive { x <= h } else { x < h })
+        }
+        .Null => return v is .Null
+        .Some(q) => {
+            .Some(x) := v else return false
+            return m.matches(q, x^)
+        }
+        .Ok(q) => {
+            .Ok(x) := v else return false
+            return m.matches(q, x^)
+        }
+        .Err(q) => {
+            .Err(x) := v else return false
+            return m.matches(q, x^)
+        }
+        .Variant(pv) => {
+            .Variant(x) := v else return false
+            if x.index is not pv.variant { return false }
+            if q := pv.payload {
+                y := x.payload else return false
+                return m.matches(q, y^)
+            }
+            return true
+        }
+        .Fields(fs) => {
+            .Agg(a) := v else return false
+            for f in fs {
+                if not try m.matches(f.pat, a.elems[usize(f.index)]) { return false }
+            }
+            return true
+        }
+        .Or(alts) => {
+            for q in alts {
+                if try m.matches(q, v) { return true }
+            }
+            return false
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Calls and effects
+// ---------------------------------------------------------------------------------
+
+call_expr :: fn(m: ^Machine, callee: tir.Callee, args: []Expr, e: ^Expr) -> Flow!Value needs Load {
+    match callee {
+        .Fn(f) => {
+            vals := try m.args(args)
+            return m.call(f, vals, null, e.span)
+        }
+        .Indirect(c) => {
+            fv := try m.eval(c)
+            vals := try m.args(args)
+            match fv {
+                .Fn(f) => return m.call(f, vals, null, e.span)
+                .Closure(f, frame) => return m.call(f, vals, frame, e.span)
+                .Null => return !m.trap(e.span, "call through a null function pointer")
+                _ => return !m.unsupported(e.span, "this call")
+            }
+        }
+        .Perform(eref, op) => {
+            vals := try m.args(args)
+            return m.perform(eref, op, vals, e.span)
+        }
+    }
+}
+
+args :: fn(m: ^Machine, args: []Expr) -> Flow![]Value needs Load {
+    vals := list(Value)
+    for i in 0..args.len { vals.push(try m.eval(&args[i]))! }
+    return vals.items
+}
+
+/// Calls function `f` with `args`. A function literal runs in the frame it was made in
+/// (`env`); a nested function called by name finds the frame of its parent.
+call :: fn(m: ^Machine, f: u32, args: []Value, env: ?^EvalFrame, span: source.Span) -> Flow!Value needs Load {
+    if m.depth >= MAX_DEPTH { return !m.trap(span, "stack overflow") }
+    try m.tick(span)
+    sig := &m.s.fns.items[usize(f)]
+    def := m.s.def_of(f)
+    body := def.body else {
+        if def.kind is .Foreign { return !m.trap(span, str.format("foreign function `{}` cannot be called at compile time", sig.name)!) }
+        if m.s.l.modules.items[sig.module].is_prelude { return !m.unsupported(span, "calls of core library functions at compile time") }
+        return !m.unsupported(span, "calls of functions whose bodies are not checked yet")
+    }
+    parent: ?^EvalFrame = env
+    if parent is null and def.parent is not null {
+        p := def.parent?
+        fr: ?^EvalFrame = m.frame
+        while x := fr {
+            if x.fn_id is p { break }
+            fr = x.parent
+        }
+        parent = fr
+    }
+    frame := new_frame(f, def.locals, parent)
+    for i, l in enumerate(def.params) {
+        if i < args.len { frame.cells[usize(l)].v = copy(args[i]) }
+    }
+    outer := m.frame
+    m.frame = frame
+    m.depth += 1
+    r := m.eval(body)
+    m.depth -= 1
+    m.frame = outer
+    match r {
+        !.Return(ret) if ret.frame is frame => return ret.value
+        !.Trap(t) => {
+            t.trace.push(TraceCall(fn_id: f, span: span))!
+            return !Flow.Trap(t)
+        }
+        !x => return !x
+        v => return v
+    }
+}
+
+/// Performs operation `op` of effect `eref` with `args`: runs the clause of the
+/// innermost handler of the effect the code sees.
+perform :: fn(m: ^Machine, eref: types.EffectRef, op: u32, args: []Value, span: source.Span) -> Flow!Value needs Load {
+    i := m.top
+    while i > 0 {
+        h := m.handlers.items[i - 1]
+        if not same_effect(&h.effect_, &eref) {
+            i = h.below
+            continue
+        }
+        if usize(op) >= h.clauses.len { return !m.unsupported(span, "this operation") }
+        clause := h.clauses[usize(op)]
+        info := &m.s.effects.items[usize(eref.eff)].ops[usize(op)]
+        if info.kind is .Ctl { return !m.unsupported(span, "`ctl` operations at compile time") }
+        saved := m.top
+        m.top = h.base
+        m.clause_withs.push(h.with_id)!
+        r := m.call(clause, args, h.frame, span)
+        _ = m.clause_withs.pop()
+        m.top = saved
+        return r
+    }
+    return !m.unsupported(span, "effects without a handler at compile time")
+}
+
+same_effect :: fn(a, b: ^const types.EffectRef) -> bool => types.cmp_ref(a, b) is 0
+
+/// The `break` of a clause out of the `with` that installed its handler.
+break_with :: fn(m: ^Machine, v: ?Value, span: source.Span) -> Flow {
+    id := m.clause_withs.items.last() else return m.unsupported(span, "this `break`")
+    return .BreakWith(id, v)
+}
+
+with_ :: fn(m: ^Machine, w: tir.WithExpr, e: ^Expr) -> Flow!Value needs Load {
+    if w.on is not null { return !m.unsupported(e.span, "`with … on` at compile time") }
+    id := m.next_with
+    m.next_with += 1
+    vals := list(Installed)
+    for h in w.handlers {
+        match h {
+            .Literal(x) => {
+                .Handler(index, frame) := (try m.eval(x)) else return !m.unsupported(x.span, "this handler")
+                lit := m.s.handlers.items[usize(index)]
+                vals.push(Installed(effect_: lit.effect_, clauses: lit.clauses, frame: frame, with_id: id, below: 0, base: m.top))!
+            }
+            .Decl(_, x) => return !m.unsupported(x.span, "handler declarations at compile time")
+        }
+    }
+    saved_len := m.handlers.items.len
+    saved_top := m.top
+    for v in vals.items {
+        x := v
+        x.below = m.top
+        m.handlers.push(x)!
+        m.top = m.handlers.items.len
+    }
+    frame := m.frame
+    r := m.eval(w.body)
+    m.handlers.truncate(saved_len)
+    m.top = saved_top
+    match r {
+        !.BreakWith(b) if b.with_id is id => return b.value else unit_value()
+        !.Break(b) if b.frame is frame and b.label is w.label => return b.value else unit_value()
+        !f => return !f
+        v => return v
+    }
+}

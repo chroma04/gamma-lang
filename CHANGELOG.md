@@ -133,7 +133,9 @@ Versions and what each kind of change means are described in
 - `gamma tir`: checks a program and prints the typed form the checker produces for each
   of its functions (resolved names, typed operators, explicit conversions), see chapter
   15 of the guide. `gammac tir` checks the function bodies of a growing subset of
-  programs the same way, generic functions and their calls included.
+  programs the same way, generic functions and their calls included, and evaluates
+  constants, defaults, array lengths, static assertions and immutable locals at compile
+  time.
 - `&e` where a pointer `^T` is expected checks `e` with `T` expected, so a variant or tuple
   takes its type from it: `area(&.Circle(2.0))` (§7.2).
 - `gamma decls`: resolves the top-level declarations of a program without checking

@@ -319,7 +319,7 @@ pub from_i64 :: fn(v: i64) -> Int needs Alloc {
 }
 
 /// `v`.
-from_u128 :: fn(v: u128) -> Int needs Alloc {
+pub from_u128 :: fn(v: u128) -> Int needs Alloc {
     l := list(u32)
     m := v
     while m > 0 {
@@ -330,7 +330,7 @@ from_u128 :: fn(v: u128) -> Int needs Alloc {
 }
 
 /// `v`.
-from_i128 :: fn(v: i128) -> Int needs Alloc {
+pub from_i128 :: fn(v: i128) -> Int needs Alloc {
     r := from_u128(v.unsigned_abs())
     r.negative = v < 0
     return r
@@ -360,7 +360,7 @@ pub is_negative :: fn(a: Int) -> bool => a.negative
 
 pub is_positive :: fn(a: Int) -> bool => not a.negative and a.mag.items.len > 0
 
-is_even :: fn(a: Int) -> bool => a.mag.items.len is 0 or (a.mag.items[0] & 1) is 0
+pub is_even :: fn(a: Int) -> bool => a.mag.items.len is 0 or (a.mag.items[0] & 1) is 0
 
 /// `-1`, `0` or `1` as `a` is negative, zero or positive.
 signum :: fn(a: Int) -> i32 {
@@ -390,7 +390,7 @@ pub bits :: fn(a: Int) -> u64 {
 }
 
 /// The magnitude as a `u128`, if it fits.
-mag_to_u128 :: fn(a: Int) -> ?u128 {
+pub mag_to_u128 :: fn(a: Int) -> ?u128 {
     if a.mag.items.len > 4 { return null }
     r: u128 = 0
     i := a.mag.items.len
@@ -401,7 +401,7 @@ mag_to_u128 :: fn(a: Int) -> ?u128 {
     return r
 }
 
-to_u128 :: fn(a: Int) -> ?u128 {
+pub to_u128 :: fn(a: Int) -> ?u128 {
     if a.negative { return null }
     return mag_to_u128(a)
 }
@@ -411,7 +411,7 @@ pub to_u64 :: fn(a: Int) -> ?u64 {
     return v.checked(u64)
 }
 
-to_i128 :: fn(a: Int) -> ?i128 {
+pub to_i128 :: fn(a: Int) -> ?i128 {
     m := mag_to_u128(a) else return null
     if a.negative {
         if m > 0x8000_0000_0000_0000_0000_0000_0000_0000 { return null }

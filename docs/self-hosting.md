@@ -63,8 +63,8 @@ leaves to implementations: message texts, spans and recovery after errors.
      arithmetic, and the typed constants made of literals and constructors. `gammac decls`
      matches `gamma decls` on every program it does not report as using something it
      cannot check yet (see below); that is most of the repository, `foreign` blocks and
-     `#global`s included. Not yet: `#soa` and vector types, and constants that call
-     functions, which need compile-time evaluation.
+     `#global`s included, as are typed constants, array lengths and compile-time
+     arguments computed by calling functions. Not yet: `#soa` and vector types.
    - **Bodies.** Expressions, statements, patterns, inference, effects, the instantiation
      of generic functions and compile-time evaluation, producing the typed intermediate
      representation of `src/tir.rs` (`compiler/tir/`). `gamma tir` prints that
@@ -77,7 +77,12 @@ leaves to implementations: message texts, spans and recovery after errors.
      `resume`, `cancel` and `with … on`, iterators and `for` over them, tests, rest
      parameters and spread arguments, formatting templates with specs, foreign functions
      and `#global`s, most intrinsics, and the checks of effects, `main`, `#inline`,
-     escaping pointers and continuations. Generic functions are checked once with their
+     escaping pointers and continuations, and compile-time evaluation (§17): typed
+     constants, defaults of fields and parameters, array lengths, compile-time
+     arguments, `@static_assert`, `@compile_error` and immutable locals with constant
+     initializers are evaluated by a tree-walking evaluator over the typed representation
+     (`compiler/eval/`), with the step budget, `#fuel`, the trap messages and the
+     compile-time call stack of the reference. Generic functions are checked once with their
      type parameters opaque, as the reference does; calls of them infer the type
      arguments, check constraints and name the instance. Each instance is then produced
      as the reference produces it: its body is rewritten for the type arguments, so that
@@ -85,10 +90,9 @@ leaves to implementations: message texts, spans and recovery after errors.
      depends on the type arguments (literals, layout queries, `.bits`, format specs,
      templates that are compile-time parameters) is checked for it, and the function
      literals and handler clauses written in a generic function are copied for each
-     instance. Next: compile-time evaluation (constants that call functions, `when`
-     conditions and static assertions in general, array lengths and defaults computed
-     at compile time), then vector and `#soa` types, generic effects, effect-set
-     parameters and arguments that are iterators.
+     instance. Next: vector and `#soa` types, generic effects, effect-set parameters,
+     arguments that are iterators, and compile-time evaluation of what depends on
+     compile-time parameters.
 5. **Back end** — C generation, linking the existing C runtime (`runtime/`). Checked by
    running the `run` conformance tests through `gammac` and comparing with the reference.
 6. **Bootstrap** — `gammac` built by `gamma` (stage 1) compiles `gammac` (stage 2), which
@@ -111,8 +115,9 @@ read the two side by side.
 | `compiler/load/` | loading modules and packages (`loader.gm`), the core library (`core.gm`), file paths (`paths.gm`), the `gamma.toml` reader (`toml.gm`) and the conditions of top-level `when`s (`when.gm`) (`src/sema/modules.rs`, `imports.rs`) |
 | `compiler/types/` | types, hash-consed (`types.gm`), and their text in messages (`display.gm`) (`src/types.rs`) |
 | `compiler/bigint/`, `compiler/ratio/` | integers and rationals of any size, for the exact arithmetic of untyped constants |
-| `compiler/tir/` | the typed intermediate representation that checking produces (`src/tir.rs`) |
-| `compiler/check/` | checking function bodies (`src/sema/func.rs`, `expr.rs`, `finalize.rs` and the files named alike): the per-function context, statements and control flow (`func.gm`), expressions (`expr.gm`), calls and builtins (`call.gm`), intrinsics (`intrinsics.gm`), typed constant initializers (`consts.gm`), function literals and nested functions (`fnlit.gm`), `with` and handler literals (`handlers.gm`), handler declarations (`handler_decls.gm`), iterators and generic effect operations (`iterators.gm`), tests and benchmarks (`tests.gm`), calls of generic functions (`generic.gm`), method calls (`methods.gm`), implicit coercions (`coerce.gm`), optionals and results (`errors.gm`), patterns (`pattern.gm`), `match` and pattern tests (`matching.gm`), exhaustiveness (`exhaust.gm`), sequences, `in` and `for` (`seq.gm`), literal inference (`infer.gm`), the final pass over a body (`finalize.gm`), the checks of a whole program (`program.gm`, `escape.gm`) and the `tir` dump (`dump.gm`) |
+| `compiler/tir/` | the typed intermediate representation that checking produces (`src/tir.rs`), and compile-time values (`value.gm`) |
+| `compiler/eval/` | the compile-time evaluator: expressions, places, calls, effects and traps (`eval.gm`), operators, builtins, conversions and byte reinterpretation (`ops.gm`) (`src/sema/consteval.rs`) |
+| `compiler/check/` | checking function bodies (`src/sema/func.rs`, `expr.rs`, `finalize.rs` and the files named alike): the per-function context, statements and control flow (`func.gm`), expressions (`expr.gm`), calls and builtins (`call.gm`), intrinsics (`intrinsics.gm`), constants evaluated at compile time and static assertions (`consts.gm`), what an evaluation reaches (`eval_prepare.gm`), function literals and nested functions (`fnlit.gm`), `with` and handler literals (`handlers.gm`), handler declarations (`handler_decls.gm`), iterators and generic effect operations (`iterators.gm`), tests and benchmarks (`tests.gm`), calls of generic functions (`generic.gm`), method calls (`methods.gm`), implicit coercions (`coerce.gm`), optionals and results (`errors.gm`), patterns (`pattern.gm`), `match` and pattern tests (`matching.gm`), exhaustiveness (`exhaust.gm`), sequences, `in` and `for` (`seq.gm`), literal inference (`infer.gm`), the final pass over a body (`finalize.gm`), the checks of a whole program (`program.gm`, `escape.gm`) and the `tir` dump (`dump.gm`) |
 | `compiler/sema/` | checking: the state and the resolution of declarations (`sema.gm`), names (`names.gm`), type expressions (`ty_expr.gm`), structs and unions (`adt.gm`), signatures and effects (`fnsig.gm`), constraints (`generics.gm`), untyped constants (`untyped.gm`), typed constants (`consts.gm`), layouts (`layout.gm`) and the `decls` dump (`dump.gm`) (`src/sema/`) |
 | `compiler/parse/` | the parser: its state, errors and recovery (`parser.gm`), expressions, statements, declarations, types, patterns and the brace-delimited literals (`src/syntax/parser/`) |
 

@@ -140,6 +140,7 @@ load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err 
         if opts.command in (Command.Decls, Command.Tir) {
             if l.load_core(core_root(std), "Debug") {
                 s := sema.sema(&l)
+                check.install(&s)
                 s.resolve_ambient()
                 if m := l.load_root(root) {
                     s.resolve_declarations()

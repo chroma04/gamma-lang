@@ -466,3 +466,50 @@ pub int_key :: fn(s: ^Sema, ty: Ty, i: bigint.Int) -> types.ConstKey needs Load 
     }
     return .Bytes(ty, bytes.items)
 }
+
+/// The key of the compile-time value `v` of type `ty` used as a generic argument (§16.4),
+/// or `null` after reporting that gammac cannot key it.
+pub value_key :: fn(s: ^Sema, v: tir.Value, ty: Ty, span: source.Span) -> ?types.ConstKey needs Load {
+    tys := &s.tys
+    match v {
+        .Int(bits) => if tys.is_integer(ty) {
+            w: u32 = match tys.kind(ty) {
+                .Int(_, b) => u32(b)
+                _ => u32(target.ptr_bits)
+            }
+            i := bigint.from_u128(bits)
+            if tys.is_signed_integer(ty) and w > 0 and (bits >> u128(w - 1)) & 1 is 1 { i = i.sub(bigint.one().shl(u64(w))) }
+            return s.int_key(ty, i)
+        }
+        .Bool(b) => {
+            bytes := list(u8)
+            bytes.push(if b { 1 } else { 0 })!
+            return .Bytes(ty, bytes.items)
+        }
+        .Fn(f) => return .Fn(f, s.fns.items[usize(f)].name)
+        .Null => return .Null
+        .Slice(sl) => if ty is tys.string_ty() {
+            bytes := list(u8)
+            for k in 0..sl.len {
+                .Int(b) := value_at(sl.start, k) else return null
+                bytes.push(b.trunc(u8))!
+            }
+            return .Str(bytes.items)
+        }
+        _ => {}
+    }
+    s.unsupported(span, "compile-time arguments of this type")
+    return null
+}
+
+/// The value `k` elements after place `p`.
+value_at :: fn(p: tir.Place, k: u64) -> ?tir.Value {
+    v := p.cell.v
+    for i, x in enumerate(p.path) {
+        .Agg(a) := v else return null
+        j := if i + 1 is p.path.len { x + k } else { x }
+        if j >= u64(a.elems.len) { return null }
+        v = a.elems[j.trunc(usize)]
+    }
+    return v
+}

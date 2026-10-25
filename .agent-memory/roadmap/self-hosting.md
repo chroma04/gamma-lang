@@ -88,18 +88,19 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   #global + variadic calls (sema/foreign.gm; loader add_member; TIR Global(name)),
   LetTuple/AssignTuple, `if … else e =>`, format templates (subagent: check/template.gm,
   WriteDeferred resolved in mono_expr). 486 SAME / 0 DIFF; decls 693.
-- Remaining first-blocker buckets (s40 end): constant expressions 38 + evaluation 11 +
-  defaults 9 + immutable locals 8 + array lengths 8 + top-level intrinsics 7 (all need a
-  compile-time EVALUATOR), vector types 19 + vector/complex ops 7, iterator args 17,
-  literal-variable conversions 13, #bits 12, generic effect ops 11, effect-set params 10,
-  array construction 9, #export 8, local type aliases 8, #soa 8, @fiber 7.
-- Evaluator plan: Rust runs the bytecode VM on TIR (consteval.rs, ConstValue = bytes +
-  relocs). gammac needs a TIR tree-walking evaluator over a byte memory model (layouts
-  already in sema/layout.gm), reaching core function bodies (gammac does not check core
-  bodies yet → must check the reachable core fns first, as prepare_for_eval does), with
-  the step budget (§17.3, #fuel) and the same trap messages/labels (report_eval_failure).
-  Big; do it as its own session-sized project, maybe split: (1) check core bodies on
-  demand, (2) evaluator for scalars/aggregates/strings, (3) relocs + const keys.
+- s41 (branch claude/project-thread-rqqvrh): compile-time EVALUATOR (decisions/046):
+  tir/value.gm (structured values, places), eval/ module (eval.gm, ops.gm), check/consts.gm
+  (const_hook via Sema.eval_hook, check_const_expr, evaluate, report_trap, defaults,
+  static_assert/compile_error, local_const), check/eval_prepare.gm (ensure_body: checks
+  reachable bodies/instances on demand, cycle errors), sema array lengths + comptime args
+  via the hook, layout-cycle errors (sema pending_layout), diag Mark/reset + `{error}`
+  drop + raised count. TIR 487 → 539, decls 693 → 739, 0 DIFF.
+- Remaining first-blocker buckets (s41 end): vector types 19, iterator args 17,
+  literal-variable conversions 14, array construction 13, #bits/other struct attrs 13,
+  intrinsics 12, attributes 11, generic effect ops 11, effect-set params 10, vector/complex
+  ops 8, local type aliases 8, `the name X` 7, `bindings with an X` 7, comptime-param
+  array lengths 7. Evaluator gaps: big-endian targets, f16, ctl ops, `with … on`, handler
+  decls in eval, errdefer, comptime values computed from parameters (per instance).
 - Survey script: $SP/one.sh per root (gammac tir vs gamma tir --diag-format=json), xargs
   -P6 over roots.txt (= program_roots); rewrite if scratch is gone (~60 s).
 - Biggest remaining buckets after s38g (roots mentioning): intrinsics 225 (+@size_of
