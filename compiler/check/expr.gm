@@ -408,7 +408,15 @@ unary :: fn(cx: ^FnCx, op: ast.UnOp, operand: ^const ast.Expr, expect: ?Ty, span
         .BitNot => {
             v := cx.expr(operand, expect)
             st := cx.infer.resolve(cx.s, v.ty)
-            if cx.s.tys.kind(st) is .Adt(_) or cx.is_vector(st) { return cx.unsupported(span, "`~` on this type") }
+            if cx.is_vector(st) { return cx.unsupported(span, "`~` on this type") }
+            if u := cx.bits_operand(st, "~", span) {
+                x := cx.bits_convert(v, u)
+                n := tir.mk(u, .Unary(.BitNot, x), span)
+                // Padding fields `_` stay zero (§5.10.5): only the named fields are complemented.
+                if mask := cx.bits_padding_mask(st) { n = tir.mk(u, .Binary(.BitAnd, n, tir.mk(u, .Int(mask), span)), span) }
+                return cx.bits_convert(n, st)
+            }
+            if cx.s.tys.kind(st) is .Adt(_) { return cx.unsupported(span, "`~` on this type") }
             cx.obligations.push(.Numeric(NumericObligation(ty: v.ty, span: span, op: "~", int_only: true, signed_only: false)))!
             return tir.mk(v.ty, .Unary(.BitNot, v), span)
         }
@@ -625,8 +633,16 @@ arith_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs, r: ^Expr, span: source.Span) -> ^E
         _ => {
             ty := cx.unify_operands(lhs.ty, r.ty, span, what)
             st := cx.infer.resolve(cx.s, ty)
-            if op is not .Div and op is not .Rem and cx.s.bits_struct_ty(st) is not null {
-                return cx.unsupported(span, "bitwise operators on `#bits` structs")
+            if op is not .Div and op is not .Rem {
+                if u := cx.bits_operand(st, ast.binop_text(op), span) {
+                    top: tir.BinOp = match op {
+                        .BitAnd => .BitAnd
+                        .BitOr => .BitOr
+                        _ => .BitXor
+                    }
+                    n := tir.mk(u, .Binary(top, cx.bits_convert(lhs, u), cx.bits_convert(r, u)), span)
+                    return cx.bits_convert(n, st)
+                }
             }
             cx.obligations.push(.Numeric(NumericObligation(ty: ty, span: span, op: ast.binop_text(op), int_only: op is not .Div, signed_only: false)))!
             top: tir.BinOp = match op {
@@ -640,6 +656,38 @@ arith_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs, r: ^Expr, span: source.Span) -> ^E
         }
     }
 }
+
+/// The bits of the named (non-padding) fields of `#bits` struct `t`, if it has padding
+/// fields `_`.
+bits_padding_mask :: fn(cx: ^FnCx, t: Ty) -> ?bigint.Int needs Alloc {
+    fields := cx.s.struct_fields(t) else return null
+    padded := false
+    for f in fields {
+        if f.name is "_" { padded = true }
+    }
+    if not padded { return null }
+    mask := bigint.zero()
+    off: u64 = 0
+    for f in fields {
+        w := cx.s.bit_width(f.ty) else return null
+        if f.name is not "_" { mask = mask.bit_or(bigint.one().shl(w).sub(bigint.one()).shl(off)) }
+        off += w
+    }
+    return mask
+}
+
+/// The underlying integer of `t` if it is a `#bits` struct, for the bitwise operator `op`
+/// (§7.4.1); reports an error if some field is not a `bool` or an integer.
+bits_operand :: fn(cx: ^FnCx, t: Ty, op: string, span: source.Span) -> ?Ty needs Alloc {
+    u := cx.s.bits_struct_ty(t) else return null
+    if not cx.s.is_plain(t) {
+        cx.error(span, str.format("`{}` applies only to `#bits` structs whose fields are all `bool` or integers", op)!)
+    }
+    return u
+}
+
+/// Converts between a `#bits` struct and its underlying integer.
+bits_convert :: fn(cx: ^FnCx, v: ^Expr, to: Ty) -> ^Expr needs Alloc => tir.mk(to, .Builtin(.Convert, one_expr(v)), v.span)
 
 /// The operands of `is`, converted to one type.
 equalize :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, span: source.Span) -> (l: ^Expr, r: ^Expr) needs Load {
@@ -748,18 +796,25 @@ field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span
         .Error => return error_expr(cx.s, span)
         _ => {}
     }
-    if .Adt(id, _) := tys.kind(bt) {
-        if cx.s.adts.items[usize(id)].has_using { return cx.unsupported(span, "`using` fields") }
-        if fields := cx.s.struct_fields(bt) {
-            for i, f in enumerate(fields) {
-                if f.name is not name.name { continue }
-                if not cx.field_visible_here(f.vis, bt) { cx.error(span, hidden_field_message(cx, name.name, bt, f.vis)) }
-                return tir.mk(f.ty, .Field(b, i.trunc(u32)), span)
-            }
-        }
-        if .CUnion(_) := cx.s.adts.items[usize(id)].kind { return cx.unsupported(span, "`#c_union` fields") }
-    }
+    if e := cx.struct_field(b, name.name, span, 0) { return e }
     return cx.unsupported(span, "this field")
+}
+
+/// Field `name` of a struct or `#c_union` value, looking through `using` fields (§5.10.3).
+struct_field :: fn(cx: ^FnCx, b: ^Expr, name: string, span: source.Span, depth: u32) -> ?^Expr needs Load {
+    bt := cx.infer.resolve(cx.s, b.ty)
+    fields := cx.s.struct_fields(bt) else cx.s.c_union_fields(bt) else return null
+    for i, f in enumerate(fields) {
+        if f.name is not name { continue }
+        if not cx.field_visible_here(f.vis, bt) { cx.error(span, hidden_field_message(cx, name, bt, f.vis)) }
+        return tir.mk(f.ty, .Field(b, i.trunc(u32)), span)
+    }
+    .Adt(id, _) := cx.s.tys.kind(bt) else return null
+    if not cx.s.adts.items[usize(id)].has_using { return null }
+    // A `using` chain that contains itself is an error already; do not follow it forever.
+    if depth >= 64 or fields.len is 0 { return null }
+    inner := tir.mk(fields[0].ty, .Field(b, 0), span)
+    return cx.struct_field(inner, name, span, depth + 1)
 }
 
 /// Whether the private fields of `t` are visible here.
@@ -1437,7 +1492,12 @@ construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Sp
             values.push(v^)!
             continue
         }
-        if fields[i].name is "_" and cx.s.bits_struct_ty(ty) is not null { return cx.unsupported(span, "`#bits` structs") }
+        // Padding fields `_` of a `#bits` struct are zero (§5.10.5).
+        if fields[i].name is "_" and cx.s.bits_struct_ty(ty) is not null {
+            ft := fields[i].ty
+            values.push(if cx.s.tys.kind(ft) is .Bool { tir.mk(ft, .Bool(false), span)^ } else { tir.mk(ft, .Int(bigint.zero()), span)^ })!
+            continue
+        }
         if d := cx.field_default(id, i, fields[i].ty, span) {
             values.push(d^)!
         } else {
