@@ -1,0 +1,1187 @@
+// Functions: frames, blocks, statements, scopes, and the cleanup code that runs on
+// non-local exits (mirrors `src/cgen/func.rs`).
+//
+// Every Gamma function becomes `static RET gm_fN(void *env, gm_node *cx, gm_node *inst,
+// params…)`. The locals that function literals and handler clauses reach through `env`
+// live in a frame struct `F`; the others are plain C locals `gm_lN`, which the C
+// compiler can keep in registers even when the frame's address escapes (see
+// `frame_locals`).
+//
+// `break`, `continue`, `return`, `try` and `Env.exit` set `gm_unw` and run the *ladder*
+// for the current position: the pending `defer`s from the innermost scope outwards, with
+// a test at each loop or `with` boundary for whether it is the exit's target. The same
+// ladder runs after any call that may exit non-locally, when `gm_unw.kind` is set on
+// return.
+//
+// The ladder is emitted once, not at every exit: each scope ends with its rung (a
+// *segment*), reached only by `goto`, that runs its part and jumps to the rung of the
+// enclosing scope. A block's segment has one entry per `defer`, so an exit runs only the
+// ones registered before it; the outermost rung (`gm_lad`) returns or propagates. An exit
+// is then a single `goto`, which keeps the C functions of code with many calls and
+// `defer`s small.
+
+/// The number of temporaries and labels (see `fresh`) above which a function is marked
+/// `GM_HUGE_FN`.
+HUGE_FN_NAMES: u32 : 20000
+
+/// The number of temporaries and labels above which a function is marked `GM_LONG_FN`,
+/// which recent versions of Clang compile without optimization (see `runtime/gm_rt.h`).
+LONG_FN_NAMES: u32 : 2000
+
+/// The number of temporaries and labels up to which an optimized build declares a
+/// function without an `#inline` hint `inline`.
+SMALL_FN_NAMES: u32 : 64
+
+/// The largest local, in bytes, that may be a C local of its own (`frame_locals`).
+MAX_C_LOCAL: u64 : 32
+
+/// The largest `frame_cost` a function may have: far above any real thread's stack.
+MAX_FRAME: u64 : 1073741824
+
+/// The label and type of a `with` of the function: its result has a slot `wN` in the frame.
+WithSlot :: struct {
+    label: u32
+    ty: Ty
+}
+
+/// `text` with the first occurrence of `from` replaced by `to`.
+replacen1 :: fn(text: string, from: string, to: string) -> string needs Alloc {
+    i := str.find(text, from) else return text
+    return str.format("{}{}{}", text[0..i], to, text[i + from.len..])!
+}
+
+/// The elements of `parts` joined with `sep`.
+join_parts :: fn(parts: []const string, sep: string) -> string needs Alloc => str.join(parts, sep)!
+
+/// Generates function `f` into `g`.
+pub gen_fn :: fn(g: ^Gen, f: u32) -> Unsup!() needs sema.Load {
+    def := g.prog.func(f)
+    if def.kind is .Foreign(_) { return g.foreign_decl(f) }
+    body := def.body else return !unsupported(def.span, str.format("the function `{}` has no body", def.name)!)
+    if g.frame_done(f) { return gen_body(g, f, def, body) }
+    in_frame := g.frame_locals(f)
+    // The frame struct, shared by the function and its clones.
+    frame := list(u8)
+    frame.write("struct gm_fr{} {{\n    gm_frame h;\n", f)!
+    for i, l in enumerate(def.locals) {
+        if not in_frame[i] { continue }
+        c := g.ty.cty(l.ty)
+        frame.write("    {} l{}; /* {} */\n", c, i, l.name)!
+    }
+    frame.write("    {} ret;\n", g.ty.cty(def.ret))!
+    withs := list(WithSlot)
+    collect_withs(body, &withs)
+    for w in withs.items {
+        frame.write("    {} w{};\n", g.ty.cty(w.ty), w.label)!
+    }
+    frame.extend("};\n")!
+    g.frames.extend(frame.items)!
+    return gen_body(g, f, def, body)
+}
+
+gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr) -> Unsup!() needs sema.Load {
+    // The signature: plain functions have the C calling convention (decisions in
+    // docs/architecture.md); the others take the hidden env, cx and inst first.
+    plain := g.is_plain(f)
+    // Large values cross by address (`CTypes.by_ref`): a large result is written to
+    // `gm_out`, and a plain function's C-ABI entry point is then a wrapper
+    // (`needs_wrapper`).
+    out_ret := g.ty.by_ref(def.ret)
+    void_ret := (plain and g.ty.is_unit(def.ret)) or out_ret
+    blob_ret := not plain
+    ret := ""
+    if void_ret {
+        ret = "void"
+    } else if blob_ret {
+        ret = g.ty.cty(def.ret)
+    } else {
+        ret = g.ty.plain_cty(def.ret)
+    }
+    params := list(string)
+    if out_ret { params.push("void *gm_out")! }
+    if not plain {
+        params.push("void *env")!
+        params.push("gm_node *cx")!
+        params.push("gm_node *inst")!
+    }
+    for i, p in enumerate(def.params) {
+        t := def.locals[usize(p)].ty
+        c := ""
+        if plain and not g.ty.by_ref(t) { c = g.ty.plain_cty(t) } else { c = g.ty.param_cty(t) }
+        params.push(str.format("{} a{}", c, i)!)!
+    }
+    if params.items.len is 0 { params.push("void")! }
+    if g.needs_wrapper(f) { c_abi_wrapper(g, f, def) }
+    borrowed := g.borrowed_params(f)
+    in_frame := g.frame_locals(f)
+    sig := str.format("static __attribute__((aligned(4))) {}{}{} {}({})", hint_attrs(def.hints), conv_attr(def.win64), ret, g.fn_name(f), join_parts(params.items, ", "))!
+    g.protos.write("{};\n", sig)!
+    // A frame that no stack can hold makes every call a stack overflow: the body is only
+    // the trap, which names the function and its frame as the interpreter's does.
+    cost := frame_cost(g, def)
+    if cost > MAX_FRAME {
+        name := c_string(def.name)
+        g.bodies.write("{} {{\n    gm_frame_overflow({}, {}ull);\n}}\n", sig, name, cost)!
+        return ()
+    }
+    fg := FnGen(
+        g: g,
+        fid: f,
+        tag: str.format("{}", f)!,
+        def: def,
+        out: list(u8),
+        scopes: list(Scope),
+        borrowed: borrowed,
+        in_frame: in_frame,
+    )
+    fg.out.write("{} {{\n", sig)!
+    fg.src_line(def.span)
+    if def.hints.fast_math { fg.line("GM_FAST_MATH_BODY") }
+    if plain { fg.line("void *env = NULL; gm_node *cx = NULL; gm_node *inst = NULL;") }
+    fg.line(str.format("struct gm_fr{} F;", f)!)
+    for i, l in enumerate(def.locals) {
+        if not fg.in_frame[i] {
+            fg.temp_bytes += fg.g.ty.size(l.ty)
+            c := fg.g.ty.cty(l.ty)
+            fg.line(str.format("{} gm_l{}; /* {} */", c, i, l.name)!)
+        }
+    }
+    // Running out of stack is checked (§14.1, §18): the thread's or the fiber's.
+    if fg.g.opts.checks { fg.line("GM_STACK_CHECK(&F, GM_TEMP_BYTES);") }
+    // Debug builds keep a backtrace chain (see gm_bt in the runtime).
+    pop := ""
+    if fg.g.opts.debug {
+        name := "NULL"
+        if n := fg.g.prog.backtrace_name(f) { name = c_string(n) }
+        fg.line(str.format("gm_bt B = {{ gm_bt_top, {}, NULL, 0, 0 }}; gm_bt_top = &B;", name)!)
+        pop = "gm_bt_top = B.prev; "
+    }
+    fg.line("F.h.up = (gm_frame *)env;")
+    clause_lit := if def.kind is .Clause { 1 } else { 0 }
+    fg.line(str.format("F.h.clause_lit = {} && env != NULL;", clause_lit)!)
+    fg.line("(void)inst;")
+    for i, p in enumerate(def.params) {
+        t := def.locals[usize(p)].ty
+        if fg.borrowed[i] { continue }
+        if fg.g.ty.by_ref(t) {
+            lv := fg.local_lv(p)
+            fg.line(str.format("memcpy(&{}, a{}, sizeof {});", lv, i, lv)!)
+            continue
+        }
+        an := str.format("a{}", i)!
+        a: string = an
+        if plain { a = fg.gamma_value(t, an) }
+        lv := fg.local_lv(p)
+        fg.line(str.format("{} = {};", lv, a)!)
+    }
+    if out_ret and fg.builds_in_place(body) {
+        // Built straight in the caller's destination: the body has no `defer`.
+        ct := fg.g.ty.cty(def.ret)
+        try fg.expr_into(body, str.format("(*({} *)gm_out)", ct)!, .Out)
+        fg.line("goto gm_fdone;")
+    } else if not fg.g.ty.is_never(body.ty) {
+        try fg.expr_into(body, "F.ret", .Fresh)
+    } else {
+        _ = try fg.expr(body)
+    }
+    if fg.lad_used {
+        fg.line("goto gm_fret;")
+        fg.label("gm_lad")
+        fg.line("if (gm_unw.kind == GM_RETURN && gm_unw.frame == &F.h) { gm_unw.kind = GM_NONE; goto gm_fret; }")
+        fg.line("goto gm_fprop;")
+    }
+    // Debug builds fill a dead frame with 0xDD (§18.3).
+    kill := ""
+    if fg.g.opts.debug { kill = str.format("{}gm_poison(&F, 0xDD, sizeof F); ", pop)! }
+    if out_ret {
+        // `gm_fdone`: a `return` that wrote its value to `gm_out` itself.
+        fg.out.write("gm_fret:\n    memcpy(gm_out, &F.ret, sizeof F.ret);\ngm_fdone:\n    {}return;\ngm_fprop:\n    {}return;\n}}\n", kill, kill)!
+    } else if void_ret {
+        fg.out.write("gm_fret:\n    {}return;\ngm_fprop:\n    {}return;\n}}\n", kill, kill)!
+    } else if kill.len is 0 {
+        r := "F.ret"
+        if not blob_ret { r = fg.plain_value(def.ret, "F.ret") }
+        fg.out.write("gm_fret:\n    return {};\ngm_fprop:\n    return {};\n}}\n", r, r)!
+    } else {
+        r := "gm_r"
+        if not blob_ret { r = fg.plain_value(def.ret, "gm_r") }
+        ct := fg.g.ty.cty(def.ret)
+        tail := str.format("{{ {} gm_r = F.ret; {}return {}; }}", ct, kill, r)!
+        fg.out.write("gm_fret:\n    {}\ngm_fprop:\n    {}\n}}\n", tail, tail)!
+    }
+    // The epilogue copies the result (and a plain function converts it).
+    if not out_ret { fg.temp_bytes += 2 * fg.g.ty.size(def.ret) }
+    fg.end_lines()
+    text := replacen1(fg.out.items, "GM_TEMP_BYTES", str.format("{}u", fg.temp_bytes)!)
+    if not fg.g.opts.debug and fg.counter <= SMALL_FN_NAMES and def.hints.inline is null {
+        text = replacen1(text, "static __attribute__", "static inline __attribute__")
+    }
+    if fg.names > HUGE_FN_NAMES {
+        text = replacen1(text, "static __attribute__", "static GM_HUGE_FN __attribute__")
+    }
+    // `optnone` conflicts with `always_inline` (an `#inline` hint, which such a function
+    // will hardly carry).
+    header := text
+    if nl := str.find(text, "\n") { header = text[0..nl] }
+    if fg.names > LONG_FN_NAMES and header.starts_with("static ") and not str.contains(header, "always_inline") {
+        text = replacen1(text, "static ", "static GM_LONG_FN ")
+    }
+    g.bodies.extend(text)!
+}
+
+/// The attributes (each with a trailing space) for a C function with `names` temporaries
+/// and labels: `GM_HUGE_FN` and `GM_LONG_FN` for the very long ones.
+pub size_attrs :: fn(names: u32) -> string {
+    if names > HUGE_FN_NAMES { return "GM_HUGE_FN GM_LONG_FN " }
+    if names > LONG_FN_NAMES { return "GM_LONG_FN " }
+    return ""
+}
+
+/// Emits `gm_fN_c`, the C-ABI entry point of plain function `f` (see `needs_wrapper`): it
+/// takes and returns values as C does and calls `gm_fN`.
+c_abi_wrapper :: fn(g: ^Gen, f: u32, def: ^const Func) needs Alloc {
+    params := list(string)
+    args := list(string)
+    for i, p in enumerate(def.params) {
+        t := def.locals[usize(p)].ty
+        params.push(str.format("{} a{}", g.ty.plain_cty(t), i)!)!
+        if g.ty.by_ref(t) { args.push(str.format("&a{}", i)!)! } else { args.push(str.format("a{}", i)!)! }
+    }
+    if params.items.len is 0 { params.push("void")! }
+    call := str.format("{}({})", g.fn_name(f), join_parts(args.items, ", "))!
+    ret := ""
+    body := ""
+    if g.ty.is_unit(def.ret) {
+        ret = "void"
+        body = str.format("{};", call)!
+    } else if g.ty.by_ref(def.ret) {
+        ret = g.ty.plain_cty(def.ret)
+        c := g.ty.cty(def.ret)
+        with_out := list(string)
+        with_out.push("&gm_r")!
+        with_out.extend(args.items)!
+        out_call := str.format("{}({})", g.fn_name(f), join_parts(with_out.items, ", "))!
+        v := "gm_r"
+        if m := g.ty.mirror(def.ret) { v = str.format("GM_CONV({}, gm_r)", m)! }
+        body = str.format("{} gm_r; {}; return {};", c, out_call, v)!
+    } else {
+        ret = g.ty.plain_cty(def.ret)
+        v := call
+        if m := g.ty.mirror(def.ret) {
+            if g.ty.by_ref(def.ret) { v = str.format("GM_CONV({}, {})", m, call)! }
+        }
+        body = str.format("return {};", v)!
+    }
+    sig := str.format("static __attribute__((aligned(4))) {}{} gm_f{}_c({})", conv_attr(def.win64), ret, f, join_parts(params.items, ", "))!
+    g.protos.write("{};\n", sig)!
+    g.bodies.write("{} {{ {} }}\n", sig, body)!
+}
+
+/// The C attributes (each with a trailing space) for a function's hints (§11.10).
+hint_attrs :: fn(h: Hints) -> string needs Alloc {
+    s := list(u8)
+    if x := h.inline {
+        if x { s.extend("__attribute__((always_inline)) inline ")! } else { s.extend("__attribute__((noinline)) ")! }
+    }
+    if h.cold { s.extend("__attribute__((cold)) ")! }
+    if h.fast_math { s.extend("GM_FAST_MATH_ATTR ")! }
+    return s.items
+}
+
+/// Where statement `s` starts, for debug information.
+stmt_span :: fn(s: ^const tir.Stmt) -> ?source.Span {
+    match s^ {
+        .Let(_, e), .LetTuple(_, e), .Expr(e) => return e.span
+        .Assign(place, _) => return place.span
+        .AssignTuple(places, value) => {
+            for p in places {
+                if x := p { return x.span }
+            }
+            return value.span
+        }
+        _ => return null
+    }
+}
+
+/// The labels and types of the `with`s in `e` (excluding nested functions).
+collect_withs :: fn(e: ^Expr, out: ^List(WithSlot)) needs Alloc {
+    if .With(w) := e.kind { out.push(WithSlot(label: w.label, ty: e.ty))! }
+    tir.for_each_child(e, fn(c: ^Expr) { collect_withs(c, out) })
+}
+
+/// For each parameter of `f`: whether it is read in place (never, in gammac: parameters are
+/// always copied).
+borrowed_params :: fn(g: ^Gen, f: u32) -> []bool needs Alloc {
+    out := list(bool)
+    for _ in g.prog.func(f).params { out.push(false)! }
+    return out.items
+}
+
+/// The local that place `e` is part of, if it is not reached through a pointer.
+root_local :: fn(g: ^Gen, e: ^Expr) -> ?u32 {
+    match e.kind {
+        .Local(l) => return l
+        .Field(base, _) => return root_local(g, base)
+        .Index(base, _, _) => if g.ty.kind(base.ty) is .Array(_, _, _) { return root_local(g, base) }
+        _ => {}
+    }
+    return null
+}
+
+/// The number of bytes `frame_cost` charges for one call of the function `def`: a fixed
+/// overhead for the return address, saved registers and spills; the locals; every
+/// composite temporary bigger than a register (call results, constructed values, and the
+/// copies made by reading a large value, but not by using it as a place); and the records
+/// of the handlers its `with`s install.
+frame_cost :: fn(g: ^Gen, def: ^const Func) -> u64 needs Alloc {
+    c: u64 = 256
+    for l in def.locals { c = c +| round8(g.ty.size(l.ty)) }
+    if b := def.body { frame_temps(g, b, false, &c) }
+    return c
+}
+
+round8 :: fn(n: u64) -> u64 => (n +| 7) & 0xFFFF_FFFF_FFFF_FFF8
+
+/// Adds the temporaries of `e` to `c`; `place` is set for an expression used as a place
+/// (the base of an index, field or slice, an operand of `&`, the target of an
+/// assignment): reading it makes no copy.
+frame_temps :: fn(g: ^Gen, e: ^Expr, place: bool, c: ^u64) needs Alloc {
+    add :: fn(t: Ty) needs Alloc {
+        n := g.ty.size(t)
+        if n > 8 { c^ = c^ +| round8(n) }
+    }
+    match e.kind {
+        .With(w) => { c^ = c^ +| 128 * u64(w.handlers.len) }
+        .Call(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .Builtin(_) => add(e.ty)
+        .Local(_), .Upvar(_), .Global(_) => if not place { add(e.ty) }
+        _ => {}
+    }
+    match e.kind {
+        .Deref(x), .Field(x, _), .Index(x, _, _) => {
+            if not place { add(e.ty) }
+            frame_temps(g, x, true, c)
+            if .Index(_, index, _) := e.kind { frame_temps(g, index, false, c) }
+            return ()
+        }
+        .AddrOf(x), .SliceLen(x), .SlicePtr(x) => {
+            frame_temps(g, x, true, c)
+            return ()
+        }
+        .Slice(sl) => {
+            frame_temps(g, sl.base, true, c)
+            if x := sl.lo { frame_temps(g, x, false, c) }
+            if x := sl.hi { frame_temps(g, x, false, c) }
+            return ()
+        }
+        .Block(b) => {
+            for st in b.stmts {
+                match st {
+                    .Assign(place_, value) => {
+                        frame_temps(g, place_, true, c)
+                        frame_temps(g, value, false, c)
+                    }
+                    .AssignTuple(places, value) => {
+                        for p in places {
+                            if x := p { frame_temps(g, x, true, c) }
+                        }
+                        frame_temps(g, value, false, c)
+                    }
+                    .Let(_, init) => frame_temps(g, init, false, c)
+                    .LetTuple(_, init) => frame_temps(g, init, false, c)
+                    .Expr(x) => frame_temps(g, x, false, c)
+                    .Defer(_, x) => frame_temps(g, x, false, c)
+                    _ => {}
+                }
+            }
+            if t := b.tail { frame_temps(g, t, false, c) }
+            return ()
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { frame_temps(g, x, false, c) })
+}
+
+// --- the generator's helpers ------------------------------------------------------------
+
+/// With `-g`, maps the code that follows to the source line where `span` starts (not
+/// ported: emits nothing).
+src_line :: fn(fg: ^FnGen, span: source.Span) {}
+
+/// With `-g`, ends the text of a C function (not ported: emits nothing).
+end_lines :: fn(fg: ^FnGen) {}
+
+/// Emits `s` as a line at the current indentation.
+line :: fn(fg: ^FnGen, s: string) needs Alloc {
+    for _ in 0..fg.indent { fg.out.extend("    ")! }
+    fg.out.extend(s)!
+    fg.out.push('\n')!
+}
+
+/// A fresh number for temporaries and labels.
+fresh :: fn(fg: ^FnGen) -> u32 {
+    fg.counter += 1
+    fg.names += 1
+    return fg.counter
+}
+
+/// Declares a temporary of type `t` initialized to `init`; returns its name.
+tmp :: fn(fg: ^FnGen, t: Ty, init: string) -> string needs Alloc {
+    fg.temp_bytes += fg.g.ty.size(t)
+    c := fg.g.ty.cty(t)
+    n := str.format("t{}", fg.fresh())!
+    fg.line(str.format("{} {} = {};", c, n, init)!)
+    return n
+}
+
+/// Declares an uninitialized temporary of type `t`.
+tmp_uninit :: fn(fg: ^FnGen, t: Ty) -> string needs Alloc {
+    fg.temp_bytes += fg.g.ty.size(t)
+    c := fg.g.ty.cty(t)
+    n := str.format("t{}", fg.fresh())!
+    fg.line(str.format("{} {};", c, n)!)
+    return n
+}
+
+/// The address of `place` for an assignment of `value`. The place is evaluated before the
+/// value (§4.7), so where its address is read from memory (through a pointer, a slice, an
+/// index) and `value` may change memory, the address is computed into a temporary first:
+/// `s.xs[0] = f(&s)` stores into the slice `s.xs` held before the call.
+assign_addr :: fn(fg: ^FnGen, place: ^Expr, value: ^Expr) -> Unsup!string needs sema.Load {
+    p := try fg.place_addr(place)
+    if fixed_address(place) or not may_write(value) { return p }
+    fg.temp_bytes += 8
+    n := str.format("t{}", fg.fresh())!
+    fg.line(str.format("uint8_t *{} = {};", n, p)!)
+    return n
+}
+
+zero :: fn(fg: ^FnGen, t: Ty) -> string needs Alloc => str.format("GM_ZERO({})", fg.g.ty.cty(t))!
+
+unit :: fn(fg: ^FnGen) -> string needs Alloc => fg.zero(fg.g.ty.unit_ty())
+
+label :: fn(fg: ^FnGen, name: string) needs Alloc {
+    fg.out.write("{}:;\n", name)!
+}
+
+// --- frames ------------------------------------------------------------------------------
+
+/// The position of local `l` among the parameters.
+param_index :: fn(fg: ^const FnGen, l: u32) -> ?usize {
+    for i, p in enumerate(fg.def.params) {
+        if p is l { return i }
+    }
+    return null
+}
+
+/// The address (`uint8_t *`) of local `l`: in the frame, or the caller's value for a
+/// parameter read in place.
+local_addr :: fn(fg: ^const FnGen, l: u32) -> string needs Alloc {
+    if i := fg.param_index(l) {
+        if fg.borrowed[i] { return str.format("((uint8_t *)a{})", i)! }
+    }
+    return str.format("((uint8_t *)&{})", fg.local_lv(l))!
+}
+
+/// Whether `l` is a parameter read in place from the caller's value (`local_addr`).
+is_borrowed :: fn(fg: ^const FnGen, l: u32) -> bool {
+    if i := fg.param_index(l) { return fg.borrowed[i] }
+    return false
+}
+
+/// The C lvalue of local `l`: a frame field, or a C local of its own.
+local_lv :: fn(fg: ^const FnGen, l: u32) -> string needs Alloc {
+    if fg.in_frame[usize(l)] { return str.format("F.l{}", l)! }
+    return str.format("gm_l{}", l)!
+}
+
+/// The frame `levels` up the capture chain: a `gm_frame *` expression and its function.
+frame_up :: fn(fg: ^FnGen, levels: u32) -> (string, u32) needs Alloc {
+    expr := "(&F.h)"
+    f := fg.fid
+    for _ in 0..levels {
+        expr = str.format("({}->up)", expr)!
+        if p := fg.g.prog.func(f).parent { f = p }
+    }
+    return (expr, f)
+}
+
+/// The C lvalue of field `field` of the frame `levels` up.
+frame_field :: fn(fg: ^FnGen, levels: u32, field: string) -> string needs Alloc {
+    if levels is 0 { return str.format("F.{}", field)! }
+    p, f := fg.frame_up(levels)
+    return str.format("((struct gm_fr{} *){})->{}", f, p, field)!
+}
+
+/// True if `e` reads a place whose type is large enough that copying it through a C
+/// temporary would cost noticeable stack.
+big_place :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
+    return fg.reads_place(e) and fg.g.ty.size(e.ty) > 256
+}
+
+// --- non-local exits ---------------------------------------------------------------------
+
+/// After a call that may exit non-locally: run the ladder if an exit is in progress.
+check_unwind :: fn(fg: ^FnGen) needs Alloc {
+    if fg.no_check { return }
+    fg.line("if (gm_unw.kind) {")
+    fg.unwind_ladder()
+}
+
+/// A call of `call`, a C function that returns whether it started an unwind, and the check
+/// of that result.
+unwind_call :: fn(fg: ^FnGen, call: string) needs Alloc {
+    if fg.no_check {
+        fg.line(str.format("{};", call)!)
+    } else {
+        fg.line(str.format("if ({}) {{", call)!)
+        fg.unwind_ladder()
+    }
+}
+
+/// The rest of a `check_unwind` whose `if` line was emitted already: the jump and the
+/// closing brace.
+unwind_ladder :: fn(fg: ^FnGen) needs Alloc {
+    fg.indent += 1
+    fg.ladder()
+    fg.indent -= 1
+    fg.line("}")
+}
+
+/// Runs pending defers outwards, stopping at the exit's target (see the file's comment):
+/// jumps to the rung of the ladder for the current position.
+ladder :: fn(fg: ^FnGen) needs Alloc {
+    target, scope := fg.ladder_target()
+    fg.jump(target, scope)
+}
+
+/// The C label of the rung of the ladder for the current position, marked as used, and the
+/// index of its scope (`null` for the function's last rung).
+ladder_target :: fn(fg: ^FnGen) -> (string, ?usize) needs Alloc {
+    i := fg.scopes.items.len
+    while i > 0 {
+        i -= 1
+        s := &fg.scopes.items[i]
+        found: ?usize = i
+        match s.kind {
+            .Block => {
+                if s.defers.items.len is 0 { continue }
+                if s.defers.items.len > s.used { s.used = s.defers.items.len }
+                return (str.format("gm_ld{}_{}", s.id, s.defers.items.len)!, found)
+            }
+            .Loop, .With => {
+                s.used = 1
+                return (str.format("gm_ll{}", s.id)!, found)
+            }
+        }
+    }
+    none: ?usize = null
+    if fg.outlined { return ("gm_fprop", none) }
+    fg.lad_used = true
+    return ("gm_lad", none)
+}
+
+/// A new block scope.
+block_scope :: fn(fg: ^FnGen) -> Scope needs Alloc => Scope(kind: .Block, id: fg.fresh(), defers: list(Defer))
+
+/// A new loop scope.
+loop_scope :: fn(fg: ^FnGen, label: u32, brk: string, cont_: string) -> Scope needs Alloc => Scope(kind: .Loop, id: fg.fresh(), defers: list(Defer), label: label, brk: brk, cont: cont_)
+
+/// A new `with` scope.
+with_scope :: fn(fg: ^FnGen, label: u32, end: string) -> Scope needs Alloc => Scope(kind: .With, id: fg.fresh(), defers: list(Defer), label: label, end: end)
+
+/// Emits the rung of the ladder for scope `s`, just popped, if an exit uses it: it runs the
+/// scope's part of the ladder and jumps to the rung of the enclosing scope. `fallthrough`
+/// is true when control can reach this point normally, so the rung is jumped over.
+end_scope :: fn(fg: ^FnGen, s: Scope, fallthrough: bool) needs sema.Load {
+    if s.used is 0 { return }
+    skip := ""
+    if fallthrough {
+        skip = str.format("gm_ls{}", fg.fresh())!
+        fg.line(str.format("goto {};", skip)!)
+    }
+    match s.kind {
+        .Block => {
+            k := s.used
+            while k >= 1 {
+                fg.label(str.format("gm_ld{}_{}", s.id, k)!)
+                d := s.defers.items[k - 1]
+                guard: ?string = null
+                if d.is_err { guard = "gm_errdefer_runs(&F.h)" }
+                fg.defer_body(guard, d.body, true)
+                k -= 1
+            }
+        }
+        .Loop => {
+            fg.label(str.format("gm_ll{}", s.id)!)
+            fg.line(str.format("if (gm_unw.frame == &F.h && gm_unw.label == {}) {{", s.label)!)
+            fg.line(str.format("    if (gm_unw.kind == GM_BREAK) {{ gm_unw.kind = GM_NONE; goto {}; }}", s.brk)!)
+            fg.line(str.format("    if (gm_unw.kind == GM_CONTINUE) {{ gm_unw.kind = GM_NONE; goto {}; }}", s.cont)!)
+            fg.line("}")
+        }
+        .With => {
+            fg.label(str.format("gm_ll{}", s.id)!)
+            fg.line(str.format("if (gm_unw.kind == GM_BREAK && gm_unw.frame == &F.h && gm_unw.label == {}) {{ gm_unw.kind = GM_NONE; goto {}; }}", s.label, s.end)!)
+        }
+    }
+    fg.ladder()
+    if fallthrough { fg.label(skip) }
+}
+
+/// The code of a deferred statement, run by a ladder or at the end of its block, only if
+/// `guard` (a C condition) holds when there is one. `unwinding` is true when it runs during
+/// a non-local exit: the exit in progress is set aside while it runs, so the calls it makes
+/// return normally.
+defer_body :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
+    fg.defer_body_inner(guard, body, unwinding)
+}
+
+defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
+    saved_scopes := fg.scopes
+    fg.scopes = list(Scope)
+    saved_check := fg.no_check
+    fg.no_check = true
+    if g := guard {
+        fg.line(str.format("if ({}) {{", g)!)
+    } else {
+        fg.line("{")
+    }
+    fg.indent += 1
+    if unwinding { fg.line("gm_unwind gm_saved = gm_unw; gm_unw.kind = GM_NONE;") }
+    // A defer body cannot fail to translate here if it translated before; errors are
+    // reported where the defer statement is first seen.
+    _ = fg.expr(body)
+    if unwinding { fg.line("gm_unw = gm_saved;") }
+    fg.indent -= 1
+    fg.line("}")
+    fg.no_check = saved_check
+    fg.scopes = saved_scopes
+}
+
+/// Starts a non-local exit of `kind` to `frame` (a `gm_frame *`) and `label`.
+start_exit :: fn(fg: ^FnGen, kind: string, frame: string, label: string, is_err: string) needs Alloc {
+    if frame is "(&F.h)" and not fg.outlined and fg.local_exit(kind, label, is_err) { return }
+    fg.line(str.format("gm_unw.kind = {}; gm_unw.frame = {}; gm_unw.label = {}; gm_unw.is_err = {};", kind, frame, label, is_err)!)
+    saved := fg.no_check
+    fg.no_check = false
+    fg.ladder()
+    fg.no_check = saved
+}
+
+/// An exit whose target is in this C function jumps there directly, running the defers it
+/// crosses, without going through `gm_unw`: the frame's address need not be taken, so the C
+/// compiler can keep its locals in registers. Returns false (emitting nothing) when the
+/// target is not statically known.
+local_exit :: fn(fg: ^FnGen, kind: string, label: string, is_err: string) -> bool needs Alloc {
+    target: ?usize = null
+    if kind is "GM_RETURN" {
+    } else if kind is "GM_BREAK" or kind is "GM_CONTINUE" {
+        found: ?usize = null
+        i := fg.scopes.items.len
+        while i > 0 {
+            i -= 1
+            s := fg.scopes.items[i]
+            hit := false
+            match s.kind {
+                .Loop => { hit = str.format("{}", s.label)! is label }
+                .With => { hit = kind is "GM_BREAK" and str.format("{}", s.label)! is label }
+                .Block => {}
+            }
+            if hit {
+                found = i
+                break
+            }
+        }
+        if found is null { return false }
+        target = found
+    } else {
+        return false
+    }
+    start: usize = 0
+    if t := target { start = t + 1 }
+    // Errdefers run on a `return` of an error only: a `break` or `continue` within the
+    // function never runs them. An exit that crosses a `defer` takes the ladder, so that
+    // each deferred body is emitted once.
+    err := kind is "GM_RETURN" and not (is_err is "0")
+    for j in start..fg.scopes.items.len {
+        s := fg.scopes.items[j]
+        if s.kind is .Block {
+            for d in s.defers.items {
+                if not d.is_err or err { return false }
+            }
+        }
+    }
+    dest := "gm_fret"
+    if t := target {
+        s := fg.scopes.items[t]
+        match s.kind {
+            .Loop => if kind is "GM_BREAK" { dest = s.brk } else { dest = s.cont }
+            .With => { dest = s.end }
+            .Block => @unreachable()
+        }
+    }
+    fg.jump(dest, target)
+    return true
+}
+
+/// Jumps to C label `label`, whose scope has index `scope` in the scope stack (`null` for
+/// a label of the function itself: the ladder's last rung, the return). Without outlined
+/// runs of statements this is a `goto`.
+jump :: fn(fg: ^FnGen, label: string, scope: ?usize) needs Alloc {
+    fg.line(str.format("goto {};", label)!)
+}
+
+/// Generates `f` with no helper in progress and with the scope stack set aside, as the code
+/// of a deferred statement or of a function of its own is. Without outlined runs of
+/// statements it just runs `f`.
+without_runs :: fn(T: type, fg: ^FnGen, f: fn(fg: ^FnGen) -> T) -> T => f(fg)
+
+/// The statements of a block, each in a C block of its own (so the C compiler can reuse
+/// their temporaries' stack space).
+stmt_list :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
+    for i in 0..stmts.len { try fg.stmt_block(&stmts[i]) }
+}
+
+// --- blocks and statements ------------------------------------------------------------------
+
+/// True if `e` is a large value (`CTypes.by_ref`) that `expr_into` builds in its
+/// destination rather than in a temporary copied there.
+builds_in_place :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
+    if not fg.g.ty.by_ref(e.ty) or fg.g.ty.is_never(e.ty) { return false }
+    match e.kind {
+        .Call(_), .Array(_) => return true
+        .Aggregate(_) => return fg.g.ty.bits_layout(e.ty) is null
+        .Block(b) => {
+            for s in b.stmts {
+                if s is .Defer(_, _) { return false }
+            }
+            t := b.tail else return false
+            return fg.builds_in_place(t)
+        }
+        _ => return false
+    }
+}
+
+/// True if no deferred statement is pending in the function: a `return` runs none.
+no_defers :: fn(fg: ^const FnGen) -> bool {
+    for s in fg.scopes.items {
+        if s.kind is .Block and s.defers.items.len > 0 { return false }
+    }
+    return true
+}
+
+/// Evaluates `e` and stores its value in `dest`, a C lvalue of its type. A large value (see
+/// `builds_in_place`) is built there instead of in a temporary: a call writes its result
+/// there and an aggregate stores its elements there. Either way `dest` is written only once
+/// everything in `e` has been evaluated, as an assignment would, so `e` may read what
+/// `dest` holds.
+///
+/// The exception is an element that is itself an aggregate (or a call, where `obs` is
+/// `Fresh`): it is built directly in its place in `dest`, so `dest` is then written before
+/// the elements after it are evaluated. That is done only when nothing evaluated meanwhile
+/// can read `dest`, as `obs` says.
+expr_into :: fn(fg: ^FnGen, e: ^Expr, dest: string, obs: Observed) -> Unsup!() needs sema.Load {
+    if not fg.builds_in_place(e) {
+        v := try fg.expr(e)
+        if not fg.g.ty.is_never(e.ty) { fg.line(str.format("{} = {};", dest, v)!) }
+        return ()
+    }
+    match e.kind {
+        .Call(_) => {
+            fg.dest_call = DestCall(call: e, dest: dest, obs: obs)
+            r := fg.expr(e)
+            fg.dest_call = null
+            v := try r
+            if not (v is dest) { fg.line(str.format("{} = {};", dest, v)!) }
+        }
+        .Aggregate(elems), .Array(elems) => {
+            nested := false
+            for i in 0..elems.len {
+                if fg.nests_in_place(&elems[i], obs) { nested = true }
+            }
+            if nested and obs is .Any(_) {
+                // Built in a temporary of its own, so `dest` is written once at the end.
+                t := fg.tmp_uninit(e.ty)
+                try fg.expr_into(e, t, .Fresh)
+                c := fg.g.ty.cty(e.ty)
+                fg.line(str.format("GM_ST({}, (uint8_t *)&{}, {});", c, dest, t)!)
+                return ()
+            }
+            eager := false
+            match obs {
+                .Fresh => { eager = true }
+                .Out => { eager = fg.frame_pure(e) }
+                .Any(_) => { eager = false }
+            }
+            l := list(u64)
+            if e.kind is .Aggregate(_) {
+                l.extend(fg.g.ty.offsets(e.ty))!
+            } else {
+                for i in 0..elems.len { l.push(u64(i) * fg.g.ty.size(elems[i].ty))! }
+            }
+            offs := l.items
+            // Padding is zero, as in the interpreter.
+            cursor: u64 = 0
+            for i in 0..elems.len {
+                off := offs[i]
+                sz := fg.g.ty.size(elems[i].ty)
+                if sz > 0 {
+                    if off > cursor { fg.line(str.format("memset((uint8_t *)&{} + {}, 0, {});", dest, cursor, off - cursor)!) }
+                    cursor = off + sz
+                }
+            }
+            total := fg.g.ty.size(e.ty)
+            if total > cursor { fg.line(str.format("memset((uint8_t *)&{} + {}, 0, {});", dest, cursor, total - cursor)!) }
+            if eager {
+                for i in 0..elems.len {
+                    x := &elems[i]
+                    off := offs[i]
+                    c := fg.g.ty.cty(x.ty)
+                    if fg.nests_in_place(x, obs) {
+                        sub := str.format("(*({} *)((uint8_t *)&{} + {}))", c, dest, off)!
+                        try fg.expr_into(x, sub, obs)
+                    } else if fg.g.ty.by_ref(x.ty) and fg.reads_place(x) {
+                        // Copied from where it is, not through a temporary.
+                        a := try fg.place_addr(x)
+                        sz := fg.g.ty.size(x.ty)
+                        fg.line(str.format("memcpy((uint8_t *)&{} + {}, {}, {});", dest, off, a, sz)!)
+                    } else {
+                        v := try fg.expr(x)
+                        fg.line(str.format("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, off, v)!)
+                    }
+                }
+            } else {
+                vals := list(string)
+                for i in 0..elems.len {
+                    v := try fg.expr(&elems[i])
+                    vals.push(v)!
+                }
+                for i in 0..elems.len {
+                    c := fg.g.ty.cty(elems[i].ty)
+                    fg.line(str.format("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, offs[i], vals.items[i])!)
+                }
+            }
+        }
+        .Block(b) => {
+            scope := fg.block_scope()
+            fg.scopes.push(scope)!
+            try fg.stmts(b)
+            t := b.tail?
+            fg.src_line(t.span)
+            try fg.expr_into(t, dest, obs)
+            popped := fg.scopes.pop()?
+            fg.end_scope(popped, true)
+        }
+        _ => @unreachable()
+    }
+}
+
+/// True if element `x` of an aggregate is built straight in its place in the aggregate
+/// rather than in a temporary: a large aggregate or array, or where the destination is
+/// `Fresh` a large value that is the result of a call.
+nests_in_place :: fn(fg: ^FnGen, x: ^Expr, obs: Observed) -> bool needs Alloc {
+    if not fg.builds_in_place(x) { return false }
+    match x.kind {
+        .Aggregate(_), .Array(_) => return true
+        .Call(_) => return obs is .Fresh
+        _ => return false
+    }
+}
+
+/// True if `e` reads the value of a place that `place_addr` gives the address of.
+reads_place :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
+    match e.kind {
+        .Local(_), .Upvar(_), .Deref(_), .Global(_) => return true
+        .Field(base, _) => return fg.g.ty.bits_layout(base.ty) is null
+        .Index(_, _, _) => return true
+        _ => return false
+    }
+}
+
+/// True if evaluating `e` only reads constants, this function's own locals and parameters,
+/// and has no effect but a failed check. A callee's result destination does not overlap a
+/// parameter read in place, so nothing in `e` can read a destination `Observed.Out`.
+frame_pure :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
+    match e.kind {
+        .Int(_), .Float(_), .Bool(_), .Null, .Str(_), .CStr(_), .Uninit, .Const(_) => return true
+        .Local(_) => return true
+        .Field(base, _) => return fg.frame_pure(base)
+        .Index(base, index, _) => return fg.g.ty.kind(base.ty) is .Array(_, _, _) and fg.frame_pure(base) and fg.frame_pure(index)
+        .Unary(_, operand) => return not (fg.g.ty.repr(e.ty) is .Blob) and fg.frame_pure(operand)
+        .Binary(_, lhs, rhs) => {
+            return not (fg.g.ty.repr(e.ty) is .Blob) and not (fg.g.ty.repr(lhs.ty) is .Blob) and fg.frame_pure(lhs) and fg.frame_pure(rhs)
+        }
+        .Aggregate(elems), .Array(elems) => {
+            for i in 0..elems.len {
+                if not fg.frame_pure(&elems[i]) { return false }
+            }
+            return true
+        }
+        _ => return false
+    }
+}
+
+/// A block. Temporaries have unique names, so no C braces are needed and the block's value
+/// stays visible after it.
+block :: fn(fg: ^FnGen, b: ^tir.Block) -> Unsup!string needs sema.Load {
+    scope := fg.block_scope()
+    fg.scopes.push(scope)!
+    result: ?string = null
+    try fg.block_inner(b, &result)
+    popped := fg.scopes.pop()?
+    // Leaving normally runs the plain defers (not the errdefers), last first.
+    k := popped.defers.items.len
+    while k > 0 {
+        k -= 1
+        d := popped.defers.items[k]
+        if not d.is_err { fg.defer_body(null, d.body, false) }
+    }
+    fg.end_scope(popped, true)
+    if r := result { return r }
+    return fg.unit()
+}
+
+block_inner :: fn(fg: ^FnGen, b: ^tir.Block, result: ^?string) -> Unsup!() needs sema.Load {
+    try fg.stmts(b)
+    if t := b.tail {
+        fg.src_line(t.span)
+        v := try fg.expr(t)
+        // Defers run after the value is computed, so it is kept in a temporary.
+        if fg.g.ty.is_never(t.ty) { result^ = fg.zero(t.ty) } else { result^ = fg.tmp(t.ty, v) }
+    }
+}
+
+/// The statements of block `b` (see `stmt_list`).
+stmts :: fn(fg: ^FnGen, b: ^tir.Block) -> Unsup!() needs sema.Load => fg.stmt_list(b.stmts)
+
+/// Statement `s` in a C block of its own, so the C compiler can reuse the stack space of
+/// its temporaries for the next statement's.
+stmt_block :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
+    if span := stmt_span(s) { fg.src_line(span) }
+    fg.line("{")
+    fg.indent += 1
+    r := fg.stmt(s)
+    fg.indent -= 1
+    fg.line("}")
+    return r
+}
+
+stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
+    match s^ {
+        .Let(local, ?init) => {
+            x := init else return ()
+            // `---` leaves the local as it is (filled with 0xAA in Debug builds, §18.3).
+            if x.kind is .Uninit {
+                if fg.g.opts.debug {
+                    lv := fg.local_lv(local)
+                    fg.line(str.format("memset(&{}, 0xAA, sizeof {});", lv, lv)!)
+                }
+                return ()
+            }
+            // A large value read from a place is copied directly, without a temporary.
+            if fg.big_place(x) {
+                a := try fg.place_addr(x)
+                lv := fg.local_lv(local)
+                fg.line(str.format("memmove(&{}, {}, sizeof {});", lv, a, lv)!)
+                return ()
+            }
+            lv := fg.local_lv(local)
+            try fg.expr_into(x, lv, .Fresh)
+        }
+        .LetTuple(locals, init) => {
+            v := try fg.expr(init)
+            t := fg.tmp(init.ty, v)
+            offs := fg.g.ty.offsets(init.ty)
+            for i, l in enumerate(locals) {
+                if x := l {
+                    lt := fg.def.locals[usize(x)].ty
+                    c := fg.g.ty.cty(lt)
+                    lv := fg.local_lv(x)
+                    fg.line(str.format("{} = GM_LD({}, (uint8_t *)&{} + {});", lv, c, t, offs[i])!)
+                }
+            }
+        }
+        .Assign(place, value) => {
+            // Assigning a `#bits` field rewrites its bits in the integer.
+            if .Field(base, index) := place.kind {
+                if bl := fg.g.ty.bits_layout(base.ty) {
+                    foff := bl.fields[usize(index)].off
+                    w := bl.fields[usize(index)].width
+                    // A field of a nested `#bits` field: bits of the outermost integer.
+                    outer := base
+                    off := foff
+                    while true {
+                        .Field(b, i) := outer.kind else break
+                        fs := fg.g.ty.bits_layout(b.ty) else break
+                        off += fs.fields[usize(i)].off
+                        outer = b
+                    }
+                    ol := fg.g.ty.bits_layout(outer.ty)?
+                    a := try fg.assign_addr(outer, value)
+                    v := try fg.expr(value)
+                    raw := fg.bits_raw(value.ty, v)
+                    uc := fg.g.ty.cty(ol.int_ty)
+                    m := mask(w)
+                    fg.line(str.format("GM_ST({}, {}, ({})(((unsigned __int128)GM_LD({}, {}) & ~({} << {})) | ((({}) & {}) << {})));", uc, a, uc, uc, a, m, off, raw, m, off)!)
+                    return ()
+                }
+            }
+            if fg.big_place(value) {
+                p := try fg.assign_addr(place, value)
+                a := try fg.place_addr(value)
+                fg.line(str.format("memmove({}, {}, {});", p, a, fg.g.ty.size(value.ty))!)
+                return ()
+            }
+            if fg.builds_in_place(value) {
+                p := try fg.assign_addr(place, value)
+                c := fg.g.ty.cty(place.ty)
+                root := root_local(fg.g, place)
+                try fg.expr_into(value, str.format("(*({} *){})", c, p)!, Observed.Any(root))
+                return ()
+            }
+            // A local assigned a value of its own type is assigned as a C lvalue.
+            if .Local(l) := place.kind {
+                if value.ty is place.ty and fg.def.locals[usize(l)].ty is place.ty and not fg.is_borrowed(l) {
+                    v := try fg.expr(value)
+                    lv := fg.local_lv(l)
+                    fg.line(str.format("{} = {};", lv, v)!)
+                    return ()
+                }
+            }
+            p := try fg.assign_addr(place, value)
+            v := try fg.expr(value)
+            c := fg.g.ty.cty(place.ty)
+            fg.line(str.format("GM_ST({}, {}, {});", c, p, v)!)
+        }
+        .AssignTuple(places, value) => {
+            addrs := list(?string)
+            for pl in places {
+                if x := pl {
+                    a := try fg.assign_addr(x, value)
+                    addrs.push(a)!
+                } else {
+                    addrs.push(null)!
+                }
+            }
+            v := try fg.expr(value)
+            t := fg.tmp(value.ty, v)
+            offs := fg.g.ty.offsets(value.ty)
+            for i in 0..addrs.items.len {
+                if a := addrs.items[i] {
+                    if pe := places[i] {
+                        c := fg.g.ty.cty(pe.ty)
+                        fg.line(str.format("GM_ST({}, {}, GM_LD({}, (uint8_t *)&{} + {}));", c, a, c, t, offs[i])!)
+                    }
+                }
+            }
+        }
+        .Expr(e) => {
+            _ = try fg.expr(e)
+        }
+        .Defer(is_err, body) => {
+            // Check that it translates; its code is emitted where it runs.
+            saved := fg.out
+            fg.out = list(u8)
+            saved_scopes := fg.scopes
+            fg.scopes = list(Scope)
+            r := fg.expr(body)
+            fg.scopes = saved_scopes
+            fg.out = saved
+            _ = try r
+            if fg.scopes.items.len > 0 {
+                top := &fg.scopes.items[fg.scopes.items.len - 1]
+                if top.kind is .Block { top.defers.push(Defer(is_err: is_err, body: body))! }
+            }
+        }
+    }
+}
+
+// --- frame layout --------------------------------------------------------------------------
+
+/// For each local of `f`: whether it lives in the frame struct `F` instead of in a C local
+/// of its own. A local must be in the frame when a function literal or handler clause
+/// reaches it through `env` (an `Upvar`), and every local is when the body of a `with … on`,
+/// moved into a function of its own, reaches the frame through a pointer. Debug builds keep
+/// them all in the frame: the dead frame is filled with 0xDD (§18.3).
+///
+/// Locals larger than `MAX_C_LOCAL` stay in the frame too. They gain nothing from
+/// registers, and the stack check, which counts the C locals with the temporaries that may
+/// lie below the frame, would otherwise also count them when the C compiler places them
+/// above it, and could report an overflow on a stack that suffices.
+frame_locals :: fn(g: ^Gen, f: u32) -> []bool needs Alloc {
+    def := g.prog.func(f)
+    out := list(bool)
+    all := g.opts.debug
+    if b := def.body { all = all or has_fiber_with(b) }
+    if all {
+        for _ in def.locals { out.push(true)! }
+        return out.items
+    }
+    set := captured_locals(g)
+    for i, l in enumerate(def.locals) {
+        out.push(g.ty.size(l.ty) > MAX_C_LOCAL or set.get((f, i.trunc(u32))) is not null)!
+    }
+    return out.items
+}
+
+/// The locals that function literals or handler clauses capture, by owner.
+captured_locals :: fn(g: ^Gen) -> hash_map.HashMap((u32, u32), bool) needs Alloc {
+    if set := g.captured { return set }
+    set := hash_map.hash_map((u32, u32), bool)
+    n := g.prog.fn_count()
+    for i in 0..n {
+        d := g.prog.func(i.trunc(u32))
+        if b := d.body { collect_upvars(g.prog, i.trunc(u32), b, &set) }
+    }
+    g.captured = set
+    return set
+}
+
+/// Whether `e` contains a `with … on` (excluding nested functions).
+has_fiber_with :: fn(e: ^Expr) -> bool {
+    if .With(w) := e.kind {
+        if w.on is not null { return true }
+    }
+    found := false
+    tir.for_each_child(e, fn(c: ^Expr) { found = found or has_fiber_with(c) })
+    return found
+}
+
+/// Adds the locals of enclosing functions that `e`, in the body of `f`, refers to.
+collect_upvars :: fn(prog: ^Prog, f: u32, e: ^Expr, out: ^hash_map.HashMap((u32, u32), bool)) needs Alloc {
+    if .Upvar(levels, local) := e.kind {
+        owner := f
+        for _ in 0..levels {
+            if p := prog.func(owner).parent { owner = p }
+        }
+        out.put((owner, local), true)!
+    }
+    tir.for_each_child(e, fn(c: ^Expr) { collect_upvars(prog, f, c, out) })
+}
+
+/// Whether the address of `place` is fixed: a local, global, constant or captured variable,
+/// or a field of one, whose address no store can change.
+fixed_address :: fn(place: ^Expr) -> bool {
+    match place.kind {
+        .Local(_), .Global(_), .Const(_), .Upvar(_) => return true
+        .Field(base, _) => return fixed_address(base)
+        _ => return false
+    }
+}
+
+/// Whether evaluating `e` may store to memory: it calls a function, runs statements or
+/// performs an operation with side effects.
+may_write :: fn(e: ^Expr) -> bool {
+    writes := false
+    match e.kind {
+        .Call(_), .Block(_), .Loop(_), .With(_), .Closure(_), .Resume(_), .Cancel(_), .Write(_), .WriteDeferred(_), .SoaDeferred(_) => { writes = true }
+        .Builtin(op, _) => match op {
+            .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileStore, .Sys(_), .Fiber, .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .Asm(_, _) => { writes = true }
+            _ => {}
+        }
+        _ => {}
+    }
+    if writes { return true }
+    r := false
+    tir.for_each_child(e, fn(c: ^Expr) { r = r or may_write(c) })
+    return r
+}
