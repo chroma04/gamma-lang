@@ -74,6 +74,8 @@ ClauseInfo :: struct {
     /// loop's label, and the type of the iterator's result, which a `break` gives.
     for_label: ?ForLabel = null
     break_ty: ?Ty = null
+    /// The instantiated effect the clause handles.
+    effect_: ?EffectRef = null
 }
 
 ForLabel :: struct {

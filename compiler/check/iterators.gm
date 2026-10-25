@@ -76,7 +76,7 @@ for_iterator :: fn(cx: ^FnCx, f: ^const ast.ForExpr) -> ^Expr needs Load {
     params.push(sema.ParamInfo(name: "<item>", ty: elem, span: span, default: null, generic: null, rest: false))!
     fn_id := cx.s.new_nested_fn(.Clause, "<for body>", span, cx.module, params.items, tys.unit(), types.empty_effects())
     cx.enter_fn(fn_id, tys.unit(), types.empty_effects())
-    cx.clause = ClauseInfo(op_kind: .Esc, handler_: hid, decl_clause: null, with_expect: null, for_label: ForLabel(name: label_name, label: label), break_ty: result_ty)
+    cx.clause = ClauseInfo(op_kind: .Esc, handler_: hid, decl_clause: null, with_expect: null, for_label: ForLabel(name: label_name, label: label), break_ty: result_ty, effect_: eref)
     xid := cx.new_local("<item>", elem, false, span)
     // `for a, b in …` is the tuple pattern `(a, b)` (§8.4).
     pat_ast := f.pats[0]

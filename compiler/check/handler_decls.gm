@@ -56,7 +56,7 @@ declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs 
         params.extend(sig.params)!
         fn_id := s.new_nested_fn(.Clause, o.name, h.clauses[ci].span, module, params.items, sig.ret, effects)
         clauses.push(fn_id)!
-        if not prelude { s.pending_clauses.push(sema.PendingClause(module: module, clause: &h.clauses[ci], fn_id: fn_id, kind: o.kind))! }
+        if not prelude { s.pending_clauses.push(sema.PendingClause(module: module, clause: &h.clauses[ci], fn_id: fn_id, kind: o.kind, effect_: eref))! }
     }
     s.handler_decls.push(sema.HandlerDeclInfo(effect_: eref, for_ty: for_ty, effects: effects, clauses: clauses.items))!
 }
@@ -76,7 +76,7 @@ check_handler_clauses :: fn(s: ^Sema) needs Load {
         c := p.clause
         cx := fn_cx(s, p.module, sig.ret, sig.effects)
         cx.fn_id = p.fn_id
-        cx.clause = ClauseInfo(op_kind: p.kind, handler_: null, decl_clause: p.fn_id, with_expect: null)
+        cx.clause = ClauseInfo(op_kind: p.kind, handler_: null, decl_clause: p.fn_id, with_expect: null, effect_: p.effect_)
         if c.params.len is not sig.params.len {
             cx.error(c.span, str.format("the clause for `{}` takes {} parameters (the first is the handler value)", c.name.name, sig.params.len)!)
         }

@@ -122,6 +122,7 @@ pub PendingClause :: struct {
     pub clause: ^const ast.Clause
     pub fn_id: u32
     pub kind: ast.OpKind
+    pub effect_: EffectRef
 }
 
 /// A `break` in a clause of a handler declaration, which exits the `with` installing

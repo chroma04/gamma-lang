@@ -252,7 +252,7 @@ handler_clauses :: fn(cx: ^FnCx, hid: u32, lit: ^const ast.HandlerLit, with_expe
             continue
         }
         sig := clause_signature(cx.s, &o)
-        info_ := ClauseInfo(op_kind: o.kind, handler_: hid, decl_clause: null, with_expect: with_expect)
+        info_ := ClauseInfo(op_kind: o.kind, handler_: hid, decl_clause: null, with_expect: with_expect, effect_: cx.s.handlers.items[usize(hid)].effect_)
         clauses.push(cx.clause_fn(c, sig.params, sig.ret, info_))!
     }
     cx.s.handlers.items[usize(hid)].clauses = clauses.items
@@ -460,4 +460,52 @@ resume_expr :: fn(cx: ^FnCx, k: ^const ast.Expr, value: ?^const ast.Expr, span: 
 cancel_stmt :: fn(cx: ^FnCx, k: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
     c := cx.cont_operand("cancel", k) else return error_expr(cx.s, span)
     return tir.mk(cx.s.tys.unit(), .Cancel(c.cont), span)
+}
+
+/// `@fiber(f, arg, stack)` (§14.6).
+fiber_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if not cx.in_ctl_clause() or cx.in_defer { cx.error(span, "`@fiber` may be used only in the body of a `ctl` clause (§14.6)") }
+    positional := list(ast.Expr)
+    for a in args {
+        if .Positional(e) := a.kind { positional.push(e)! }
+    }
+    if positional.items.len is not 3 {
+        cx.error(span, "`@fiber` takes a function pointer, its argument and a stack: `@fiber(f, arg, stack)`")
+        return error_expr(cx.s, span)
+    }
+    f := &positional.items[0]
+    fv := cx.expr(f, null)
+    ft := cx.infer.resolve(cx.s, fv.ty)
+    sig: ?types.FnTy = null
+    if .FnPtr(g) := tys.kind(ft) {
+        if g.params.len is 1 and tys.kind(g.ret) is .Never and not g.win64 { sig = g }
+    }
+    fsig := sig else {
+        if tys.is_error(ft) { return error_expr(cx.s, span) }
+        cx.error(f.span, str.format("`@fiber` needs a function pointer `^fn(a: A) -> never needs …` with the C calling convention, found `{}`", cx.show(ft))!)
+        return error_expr(cx.s, span)
+    }
+    a := fsig.params[0]
+    if tys.kind(a) in (.Fn(_), .Handler(_)) {
+        cx.error(positional.items[1].span, str.format("a fiber's argument must have a first-class type, not `{}` (§14.6)", cx.show(a))!)
+    }
+    av := cx.coerce(cx.expr(&positional.items[1], a), a)
+    stack_ty := tys.slice(false, tys.int(false, 8))
+    sv := cx.coerce(cx.expr(&positional.items[2], stack_ty), stack_ty)
+    // The fiber runs in the context of the `with`'s body: its effects other than the
+    // clause's own are required from outside the `with` (§14.6).
+    rest := list(EffectRef)
+    for e in fsig.effects.effects {
+        own := false
+        if c := cx.clause and o := c.effect_ and types.cmp_ref(&o, &e) is 0 { own = true }
+        if not own { rest.push(e)! }
+    }
+    set := types.effect_set(rest.items)
+    cx.record_effects(&set, span)
+    vals := list(Expr)
+    vals.push(fv^)!
+    vals.push(av^)!
+    vals.push(sv^)!
+    return tir.mk(tys.intern(.Cont(tys.unit())), .Builtin(.Fiber, vals.items), span)
 }
