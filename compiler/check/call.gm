@@ -79,6 +79,15 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             if cx.s.looks_like_type(cx.module, callee) and cx.s.tys.is_error(cx.s.resolve_type(cx.module, callee)) { return error_expr(cx.s, span) }
             return cx.call_value(cx.expr(callee, null), args, span)
         }
+        .Tuple(es) => {
+            // `(i32, string)(…)` constructs a tuple (§7.11).
+            if es.len > 0 and cx.s.looks_like_type(cx.module, callee) {
+                t := cx.s.resolve_type(cx.module, callee)
+                if cx.s.tys.is_error(t) { return error_expr(cx.s, span) }
+                return cx.conversion(t, args, span)
+            }
+            return cx.call_value(cx.expr(callee, null), args, span)
+        }
         _ => return cx.call_value(cx.expr(callee, null), args, span)
     }
 }
@@ -292,7 +301,8 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
         }
     }
     match tys.kind(t) {
-        .Tuple(_), .Array(_), .ParamArray(_), .Optional(_) => return cx.unsupported(span, "this construction")
+        .Tuple(elems, names) => return cx.construct_tuple(t, elems, names, args, span)
+        .Array(_), .ParamArray(_), .Optional(_) => return cx.unsupported(span, "this construction")
         _ => {}
     }
     if args.len is not 1 or args[0].kind is not .Positional(_) {

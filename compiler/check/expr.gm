@@ -512,15 +512,19 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
                 t := cx.infer.resolve(cx.s, r.ty)
                 cx.error(r.span, str.format("a shift amount must have an unsigned integer type, not `{}`", cx.show(t))!)
             }
-            if op is .Shl(.Opt) { return cx.unsupported(span, "`<<?`") }
+            if op is .Shl(.Opt) and cx.has_optional_operand(lhs, lhs) { return cx.chained_opt_op(op, lhs, r, span) }
             cx.obligations.push(.Numeric(NumericObligation(ty: lhs.ty, span: span, op: ast.binop_text(op), int_only: true, signed_only: false)))!
             top: tir.BinOp = if .Shl(f) := op { .Shl(f) } else { .Shr }
-            return tir.mk(lhs.ty, .Binary(top, lhs, r), span)
+            ty := if op is .Shl(.Opt) { tys.optional(lhs.ty) } else { lhs.ty }
+            return tir.mk(ty, .Binary(top, lhs, r), span)
         }
         .Add(_), .Sub(_), .Mul(_), .Div, .Rem, .BitAnd, .BitOr, .BitXor => {
             if tys.kind(lt) in (.ManyPtr(_), .Ptr(_), .Rawptr) { return cx.unsupported(span, "pointer arithmetic") }
-            if op in (ast.BinOp.Add(.Opt), ast.BinOp.Sub(.Opt), ast.BinOp.Mul(.Opt)) { return cx.unsupported(span, "optional arithmetic") }
-            r := cx.expr(rhs, lhs.ty)
+            expect := lhs.ty
+            if op in (ast.BinOp.Add(.Opt), ast.BinOp.Sub(.Opt), ast.BinOp.Mul(.Opt)) {
+                if .Optional(inner) := tys.kind(lt) { expect = inner }
+            }
+            r := cx.expr(rhs, expect)
             rt := cx.infer.resolve(cx.s, r.ty)
             if cx.is_vector(rt) or cx.s.complex_of(rt) is not null { return cx.unsupported(span, "operators on vectors and complex numbers") }
             return cx.arith_op(op, lhs, r, span)
@@ -533,9 +537,54 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
     }
 }
 
+/// True if `a` or `b` has an optional type.
+has_optional_operand :: fn(cx: ^FnCx, a, b: ^Expr) -> bool needs Load {
+    for t in (a.ty, b.ty) {
+        if cx.s.tys.kind(cx.infer.resolve(cx.s, t)) is .Optional(_) { return true }
+    }
+    return false
+}
+
+/// `a +? b` with an optional operand, as in `a *? b +? c` (§7.4.2): both operands are
+/// evaluated, and the result is `null` if either is `null`, else the operator applied
+/// to their values.
+chained_opt_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs, r: ^Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    stmts := list(tir.Stmt)
+    cond := list(tir.CondPart)
+    operands := list(^Expr)
+    for e in (lhs, r) {
+        t := cx.infer.resolve(cx.s, e.ty)
+        tmp := cx.temp(t, e.span)
+        stmts.push(.Let(tmp, e))!
+        value := tir.mk(t, .Local(tmp), e.span)
+        if .Optional(inner) := tys.kind(t) {
+            x := cx.temp(inner, e.span)
+            bind := tir.mk_pat(inner, .Bind(x), e.span)
+            cond.push(.Match(tir.mk_pat(t, .Some(bind), e.span), value))!
+            operands.push(tir.mk(inner, .Local(x), e.span))!
+        } else {
+            operands.push(value)!
+        }
+    }
+    l := operands.items[0]
+    rv := operands.items[1]
+    then: ^Expr = rv
+    if op is .Shl(_) {
+        cx.obligations.push(.Numeric(NumericObligation(ty: l.ty, span: span, op: ast.binop_text(op), int_only: true, signed_only: false)))!
+        then = tir.mk(tys.optional(l.ty), .Binary(.Shl(.Opt), l, rv), span)
+    } else {
+        then = cx.arith_op(op, l, rv, span)
+    }
+    ty := then.ty
+    test := tir.mk(ty, .If(tir.IfExpr(cond: cond.items, then: then, else_: tir.mk(ty, .Null, span))), span)
+    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: test, span: span))!), span)
+}
+
 /// An arithmetic or bitwise operator applied to checked operands.
 arith_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs, r: ^Expr, span: source.Span) -> ^Expr needs Load {
     what := str.format("the operands of `{}`", ast.binop_text(op))!
+    if op in (ast.BinOp.Add(.Opt), ast.BinOp.Sub(.Opt), ast.BinOp.Mul(.Opt)) and cx.has_optional_operand(lhs, r) { return cx.chained_opt_op(op, lhs, r, span) }
     match op {
         .Add(f), .Sub(f), .Mul(f) => {
             ty := cx.unify_operands(lhs.ty, r.ty, span, what)
@@ -1048,7 +1097,13 @@ construct_variant :: fn(cx: ^FnCx, u: Ty, name: ast.Ident, args: ?[]const ast.Ar
             cx.error(span, str.format("variant `{}` needs a payload: `.{}(…)`", name.name, name.name)!)
             return error_expr(cx.s, span)
         }
-        if .Tuple(_) := cx.s.tys.kind(pt) { return cx.unsupported(span, "tuple payloads") }
+        // A tuple payload's elements are written directly (§5.11).
+        if .Tuple(elems, names) := cx.s.tys.kind(pt) {
+            if a.len is not 1 or elems.len is not 1 or a[0].kind is .Named(_) {
+                payload = cx.construct_tuple(pt, elems, names, a, span)
+                return tir.mk(u, .Variant(tir.VariantExpr(variant: i.trunc(u32), payload: payload)), span)
+            }
+        }
         if a.len is not 1 or a[0].kind is not .Positional(_) {
             cx.error(span, str.format("expected one payload value of type `{}`", cx.show(pt))!)
             return error_expr(cx.s, span)
@@ -1060,6 +1115,76 @@ construct_variant :: fn(cx: ^FnCx, u: Ty, name: ast.Ident, args: ?[]const ast.Ar
         return error_expr(cx.s, span)
     }
     return tir.mk(u, .Variant(tir.VariantExpr(variant: i.trunc(u32), payload: payload)), span)
+}
+
+/// Builds a tuple of type `ty` from call-style arguments (positional or named).
+construct_tuple :: fn(cx: ^FnCx, ty: Ty, elems: []const Ty, names: []const string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    for a in args {
+        if a.kind is .Spread(_) { return cx.unsupported(a.span, "spreads") }
+    }
+    slots := list(?^Expr)
+    for _ in elems { slots.push(null)! }
+    next: usize = 0
+    // `T(t)` with a tuple `t` is not a conversion: a tuple type takes one value per
+    // element (§6.5), and `T(..t)` builds it from another tuple.
+    if args.len is 1 and elems.len is not 1 and .Positional(e) := args[0].kind {
+        v := cx.expr(&e, null)
+        vt := cx.infer.resolve(cx.s, v.ty)
+        what: ?string = match cx.s.tys.kind(vt) {
+            .Tuple(_) => "a tuple"
+            .Array(_, _, kind) => if kind in (.Plain, .Simd) { "an array" } else { null }
+            _ => null
+        }
+        if w := what {
+            cx.error(span, str.format("`{}` takes one value per element, so {} is not converted to it; spread it: `{}(..x)` (§6.5)", cx.show(ty), w, cx.show(ty))!)
+            return error_expr(cx.s, span)
+        }
+        if elems.len > 0 {
+            slots.items[0] = cx.coerce(v, elems[0])
+            next = 1
+        }
+    }
+    for arg in args[next.min(args.len)..] {
+        match arg.kind {
+            .Positional(e) => {
+                if next >= elems.len {
+                    cx.error(e.span, str.format("too many values for `{}`", cx.show(ty))!)
+                    continue
+                }
+                v := cx.field_value(&e, elems[next])
+                next += 1
+                if slots.items[next - 1] is not null { cx.error(e.span, str.format("element {} of `{}` is given twice", next - 1, cx.show(ty))!) }
+                slots.items[next - 1] = cx.coerce(v, elems[next - 1])
+            }
+            .Named(n, e) => {
+                found: ?usize = null
+                for i, x in enumerate(names) {
+                    if x is n.name {
+                        found = i
+                        break
+                    }
+                }
+                i := found else {
+                    cx.error(n.span, str.format("`{}` has no element named `{}`", cx.show(ty), n.name)!)
+                    continue
+                }
+                v := cx.field_value(&e, elems[i])
+                if slots.items[i] is not null { cx.error(n.span, str.format("element {} of `{}` is given twice", i, cx.show(ty))!) }
+                slots.items[i] = cx.coerce(v, elems[i])
+            }
+            .Spread(_) => {}
+        }
+    }
+    values := list(Expr)
+    for i in 0..elems.len {
+        if v := slots.items[i] {
+            values.push(v^)!
+        } else {
+            cx.error(span, str.format("missing element {} of `{}`", i, cx.show(ty))!)
+            values.push(error_expr(cx.s, span)^)!
+        }
+    }
+    return tir.mk(ty, .Aggregate(values.items), span)
 }
 
 /// A constructor field or argument value: `---` for plain data, else coerced.
