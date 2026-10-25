@@ -672,9 +672,6 @@ write_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^E
     }
     .Positional(sink_e) := args[0].kind else return error_expr(cx.s, span)
     .Positional(template) := args[1].kind else return error_expr(cx.s, span)
-    for a in args {
-        if a.kind is .Spread(_) { return cx.unsupported(a.span, "spread arguments") }
-    }
     bytes := tys.string_ty()
     sink_ty := tys.intern(.Fn(types.FnTy(params: tys1(bytes), ret: tys.unit(), effects: types.empty_effects(), variadic: false, win64: false)))
     sink := cx.expr(&sink_e, sink_ty)
@@ -693,8 +690,7 @@ write_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^E
     }
     // The sink's effects are the effects of the `@write`.
     cx.record_effects(&sig.effects, span)
-    .Str(lit) := template.kind else return cx.unsupported(template.span, "templates that are not literals")
-    return cx.build_write(.Fn(sink), template.span, lit.bytes, args[2..], span)
+    return cx.build_write(.Fn(sink), &template, args[2..], span)
 }
 
 /// The entries of an `@asm` operand or clobber list: `()`, one entry, or a tuple of

@@ -107,6 +107,9 @@ pub ExprKind :: union {
     /// Formatted output (`print`): the template's literal pieces, a spec per placeholder
     /// and the values.
     Write: WriteExpr
+    /// A `Write` whose template is a compile-time `string` parameter of a generic
+    /// function: each instance splits the template and its arguments (§16.1).
+    WriteDeferred: WriteDeferredExpr
     With: WithExpr
 }
 
@@ -160,6 +163,15 @@ pub WriteExpr :: struct {
     pub pieces: []const []const u8
     pub specs: []const FmtSpec
     pub args: []Expr
+}
+
+pub WriteDeferredExpr :: struct {
+    pub sink: WriteSink
+    pub template: ^Expr
+    /// The values: a tuple of one per placeholder, or a spread tuple whole.
+    pub args: ?^Expr
+    /// Holds the arguments when they are a tuple of several values.
+    pub tmp: u32
 }
 
 /// Where a write goes: an operation taking `[]const u8` (`Out.write` for `print`).
@@ -532,6 +544,11 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
         .Write(w) => {
             if .Fn(x) := w.sink { f(x) }
             for i in 0..w.args.len { f(&w.args[i]) }
+        }
+        .WriteDeferred(w) => {
+            if .Fn(x) := w.sink { f(x) }
+            f(w.template)
+            if a := w.args { f(a) }
         }
         _ => {}
     }

@@ -344,13 +344,17 @@ arg_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
     return cx.coerce(v, ty)
 }
 
-/// True if argument `e` is `&x` for a parameter of type `^const T`: `x` may be a
+/// True if argument `e` is `&x` for a parameter of type `^const T`, or `x[…]` for a
+/// `[]const T` one: `x` may be a
 /// temporary (§7.2).
 is_const_ref_arg :: fn(s: ^Sema, e: ^const ast.Expr, ty: Ty) -> bool {
     x := e
     while .Paren(inner) := x.kind { x = inner }
     if .Unary(.AddrOf, _) := x.kind {
         if .Ptr(c, _) := s.tys.kind(ty) { return c }
+    }
+    if x.kind is .Slice(_) {
+        if .Slice(c, _) := s.tys.kind(ty) { return c }
     }
     return false
 }
@@ -527,10 +531,8 @@ print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -
             cx.error(span, "`print` takes a template string and the values for its placeholders")
             return error_expr(cx.s, span)
         }
-        if a.kind is .Spread(_) { return cx.unsupported(a.span, "spread arguments") }
     }
     .Positional(template) := args[0].kind else return error_expr(cx.s, span)
-    .Str(lit) := template.kind else return cx.unsupported(template.span, "templates that are not literals")
     effect_name := if to_out { "Out" } else { "Err" }
     prelude := cx.s.l.prelude else return error_expr(cx.s, span)
     d := cx.s.l.lookup(prelude, effect_name) else return error_expr(cx.s, span)
@@ -540,50 +542,7 @@ print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -
     one.push(eref)!
     set := types.effect_set(one.items)
     cx.record_effects(&set, span)
-    return cx.build_write(.Perform(eref, 0), template.span, lit.bytes, args[1..], span)
-}
-
-/// A write of the template `bytes` (from the source at `template_span`) with the values
-/// `rest` for its placeholders to `sink`.
-build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template_span: source.Span, bytes: []const u8, rest: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
-    // The template's pieces around its placeholders, each `{}`.
-    pieces := list([]const u8)
-    specs := list(tir.FmtSpec)
-    cur := list(u8)
-    t := bytes
-    i: usize = 0
-    while i < t.len {
-        c := t[i]
-        next: ?u8 = if i + 1 < t.len { t[i + 1] } else { null }
-        if (c is '{' and next is '{') or (c is '}' and next is '}') {
-            cur.push(c)!
-            i += 2
-        } else if c is '{' and next is '}' {
-            pieces.push(cur.items)!
-            cur = list(u8)
-            specs.push(tir.default_spec())!
-            i += 2
-        } else if c is '{' or c is '}' {
-            return cx.unsupported(template_span, "format specs and invalid templates")
-        } else {
-            cur.push(c)!
-            i += 1
-        }
-    }
-    pieces.push(cur.items)!
-    n := specs.items.len
-    if rest.len is not n {
-        placeholders := if n is 1 { "1 placeholder" } else { str.format("{} placeholders", n)! }
-        given := if rest.len is 1 { "1 value is" } else { str.format("{} values are", rest.len)! }
-        cx.error(span, str.format("the template has {}, but {} given", placeholders, given)!)
-        return error_expr(cx.s, span)
-    }
-    values := list(Expr)
-    for a in rest {
-        .Positional(x) := a.kind else continue
-        values.push(cx.expr(&x, null)^)!
-    }
-    return tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: pieces.items, specs: specs.items, args: values.items)), span)
+    return cx.build_write(.Perform(eref, 0), &template, args[1..], span)
 }
 
 /// An argument in the variadic position of a foreign call (§19.2): a C-compatible scalar
