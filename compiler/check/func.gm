@@ -1086,21 +1086,21 @@ is_plain_data :: fn(cx: ^FnCx, t: Ty) -> bool needs Alloc => cx.s.tys.is_error(t
 local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
     match e.kind {
         .ArrayType(_), .OptionalType(_) if cx.is_construction(e) => {
-            if cx.s.looks_like_type(cx.module, e) { return cx.s.resolve_type(cx.module, e) }
+            if cx.s.looks_like_type(cx.module, e) { return cx.resolve_ty(e) }
             return null
         }
         .Tuple(_) => {
-            if cx.local_is_type(e) { return cx.s.resolve_type(cx.module, e) }
+            if cx.local_is_type(e) { return cx.resolve_ty(e) }
             return null
         }
-        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return cx.s.resolve_type(cx.module, e)
+        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return cx.resolve_ty(e)
         .Intrinsic(i) => {
-            if i.name.name is "type_of" { return cx.s.resolve_type(cx.module, e) }
+            if i.name.name is "type_of" { return cx.resolve_ty(e) }
             return null
         }
         // `Cols :: #soa []T`; `#soa [2]P(…)` constructs a value.
         .Attributed(_, inner) => {
-            if inner.kind is .SliceType(_) or (inner.kind is .ArrayType(_) and not cx.is_construction(inner)) { return cx.s.resolve_type(cx.module, e) }
+            if inner.kind is .SliceType(_) or (inner.kind is .ArrayType(_) and not cx.is_construction(inner)) { return cx.resolve_ty(e) }
             return null
         }
         .Struct(_), .Union(_), .Effect(_) => {
