@@ -31,3 +31,6 @@ dangling stores are now compile errors (decisions/045).
   check/ because `unsupported`, `block`, `stmt`, `coerce`, `load`, `builtin` already exist
   there and there is no overloading → moved to its own module (fine design anyway). Low
   priority; flagged to the user once.
+- **`str.format` gives `[]u8`, literals are `string`** (s42, 2x): mixing them in a list or
+  `in` needs `n: string = str.format(…)!`. Low priority; the message names both types.
+- **`a is not b and c` on bools** (s42, subagent): needs parentheses; easy to forget.

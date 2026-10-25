@@ -1,12 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-25) — PRs #1–#81 merged, v0.1.0 tagged
-- s41 (branch claude/project-thread-rqqvrh): gammac compile-time evaluator DONE
-  (decisions/046; compiler/eval, tir/value.gm, check/consts.gm + eval_prepare.gm). TIR
-  487 → 539, decls 693 → 739. Next buckets in roadmap/self-hosting.md s41 entry
-  (vector types, iterator args, literal-variable conversions, array construction).
-  Then (user-approved) `?x` pattern (decisions/047) + gammac constructions: PR #82;
-  TIR 571, decls 741.
+## State (2026-10-25) — PRs #1–#82 merged, v0.1.0 tagged
+- s41: gammac compile-time evaluator (decisions/046), `?x` pattern (047); PRs #81, #82.
+- s42 (branch claude/project-thread-rqqvrh): user asked "finish the checker" (every program matches tir+decls, in
+  PRs). Round 1 PR: TIR 693 / decls 768, 0 DIFF; W1 (vectors/#soa) and W3 (effects,
+  iterators) worktree branches still to merge. See roadmap/self-hosting.md s42.
 - s38–s39 (PRs #72–#79 merged): self-hosted compiler gammac in compiler/ (decisions/043,
   roadmap/self-hosting.md): lexer+parser+modules byte-identical on all files; decls and
   tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in

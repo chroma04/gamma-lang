@@ -77,12 +77,18 @@ leaves to implementations: message texts, spans and recovery after errors.
      `resume`, `cancel` and `with … on`, iterators and `for` over them, tests, rest
      parameters and spread arguments, formatting templates with specs, foreign functions
      and `#global`s, most intrinsics, and the checks of effects, `main`, `#inline`,
-     escaping pointers and continuations, and compile-time evaluation (§17): typed
+     escaping pointers and continuations, `#bits` and `#c_union` structs, `using` fields,
+     `#export`, `#callconv` and `#trap_hook`, enum-indexed arrays, local type aliases,
+     `@type_of` and `is` on types, generic nested functions, range values, pointer
+     arithmetic, array lengths computed from compile-time parameters (checked per
+     instance, as are static assertions that depend on them), and compile-time
+     evaluation (§17): typed
      constants, defaults of fields and parameters, array lengths, compile-time
      arguments, `@static_assert`, `@compile_error` and immutable locals with constant
      initializers are evaluated by a tree-walking evaluator over the typed representation
-     (`compiler/eval/`), with the step budget, `#fuel`, the trap messages and the
-     compile-time call stack of the reference. Generic functions are checked once with their
+     (`compiler/eval/`), which also runs the core library functions a computation
+     calls, with the step budget, `#fuel`, the trap messages and the compile-time call
+     stack of the reference. Generic functions are checked once with their
      type parameters opaque, as the reference does; calls of them infer the type
      arguments, check constraints and name the instance. Each instance is then produced
      as the reference produces it: its body is rewritten for the type arguments, so that
@@ -91,8 +97,7 @@ leaves to implementations: message texts, spans and recovery after errors.
      templates that are compile-time parameters) is checked for it, and the function
      literals and handler clauses written in a generic function are copied for each
      instance. Next: vector and `#soa` types, generic effects, effect-set parameters,
-     arguments that are iterators, and compile-time evaluation of what depends on
-     compile-time parameters.
+     arguments that are iterators, `@fiber` and `@stack_size`.
 5. **Back end** — C generation, linking the existing C runtime (`runtime/`). Checked by
    running the `run` conformance tests through `gammac` and comparing with the reference.
 6. **Bootstrap** — `gammac` built by `gamma` (stage 1) compiles `gammac` (stage 2), which
