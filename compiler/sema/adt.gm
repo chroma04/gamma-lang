@@ -458,7 +458,7 @@ taken_union_members :: fn(s: ^Sema, module: usize, members: []const ast.UnionMem
 // ---------------------------------------------------------------------------------
 
 /// The instance of generic struct or union `template` for `args` (§16.4).
-instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Load {
+pub instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Load {
     gargs := list(GenericArg)
     for a in args { gargs.push(.Type(a))! }
     for i in s.instances.items {

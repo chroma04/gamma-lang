@@ -377,7 +377,7 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
     match tys.kind(t) {
         .Tuple(elems, names) => return cx.construct_tuple(t, elems, names, args, span)
         .Array(len, elem, kind) => {
-            if kind is not .Plain { return cx.unsupported(span, "this construction") }
+            if kind is .Enum(_) { return cx.unsupported(span, "this construction") }
             return cx.construct_array(t, len, elem, args, span)
         }
         .Optional(inner) => return cx.construct_optional(t, inner, args, span)

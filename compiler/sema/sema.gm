@@ -464,7 +464,7 @@ pub resolve_ambient :: fn(s: ^Sema) needs Load {
 }
 
 /// The generic type `name` of the core prelude, if it declares one.
-prelude_template :: fn(s: ^Sema, name: string) -> ?u32 needs Load {
+pub prelude_template :: fn(s: ^Sema, name: string) -> ?u32 needs Load {
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, name) else return null
     .GenericType(template) := s.resolve_decl(d) else return null

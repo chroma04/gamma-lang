@@ -156,6 +156,22 @@ fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
                 cx.fin_float(e, r, false)
             }
         }
+        // An untyped complex constant: the struct of its parts (§5.3.1).
+        .UntypedComplex(c) => {
+            elem := cx.s.complex_of(e.ty) else {
+                cx.error(e.span, str.format("expected `{}`, found a complex constant", cx.show(e.ty))!)
+                e^ = error_expr(cx.s, e.span)^
+                return
+            }
+            span := e.span
+            fields := list(Expr)
+            for r in [2]ratio.Rat(c.re, c.im) {
+                x := tir.mk(elem, .UntypedFloat(r), span)
+                if tys.kind(elem) is not .Param(_) { cx.fin_float(x, r, false) }
+                fields.push(x^)!
+            }
+            e.kind = .Aggregate(fields.items)
+        }
         .Coerce(kind, inner) => if kind is .Unresolved {
             target := e.ty
             if inner.ty is target {

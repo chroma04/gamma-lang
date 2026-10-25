@@ -6,13 +6,22 @@
 expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
     span := e.span
     tys := &cx.s.tys
+    // `3 + 4j`: an untyped complex constant expression is evaluated exactly (§6.2).
+    if (e.kind is .Binary(_) or e.kind is .Unary(.Neg, _)) and cx.mentions_complex_constant(e) {
+        if r := cx.try_untyped(e) {
+            match r {
+                .Ok(v) => return cx.untyped_literal(&v, span)
+                .Failed => return error_expr(cx.s, span)
+            }
+        }
+    }
     match e.kind {
         .Int(lit) => {
             ty := if suffix := lit.suffix { cx.s.suffix_type(suffix) } else { cx.infer.new_var(tys, .Int) }
             return tir.mk(ty, .Int(bigint.from_nat(&lit.value)), span)
         }
         .Float(lit) => {
-            if lit.imag { return cx.unsupported(span, "imaginary literals") }
+            if lit.imag { return cx.imaginary_literal(&lit, span) }
             ty: Ty = cx.infer.new_var(tys, .Float)
             if suffix := lit.suffix {
                 ty = tys.intern(.Float(match suffix {
@@ -93,6 +102,11 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
             .Call(_, args, _) := call.kind else return error_expr(cx.s, span)
             t := cx.construction_elem_type(inner) else return error_expr(cx.s, span)
             return cx.construct_optional(cx.s.tys.optional(t), t, args, span)
+        }
+        // `#simd [4]f32(…)` or `#vec [3]f32(…)`: constructing a vector or a math vector.
+        .Attributed(attrs, inner) if inner.kind is .ArrayType(_) and sema.construction_call(inner) is not null => {
+            if attrs.len > 0 and attrs[0].name.name is "soa" { return cx.unsupported(span, "`#soa` types") }
+            return cx.vector_construction(attrs, inner, span)
         }
         .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ErrorUnionType(_), .FnType(_), .ContType(_), .Struct(_), .Union(_), .Effect(_) => {
             cx.error(span, "expected a value, found a type")
@@ -328,7 +342,7 @@ untyped_literal :: fn(cx: ^FnCx, v: ^const sema.Untyped, span: source.Span) -> ^
             return tir.mk(zero.ty, .Unary(.Neg, zero), span)
         }
         .Bool(b) => return tir.mk(tys.bool_ty(), .Bool(b), span)
-        .Complex(_) => return cx.unsupported(span, "complex constants")
+        .Complex(c) => return tir.mk(cx.literal_var(.Complex), .UntypedComplex(re: c.re, im: c.im), span)
     }
 }
 
@@ -408,13 +422,15 @@ unary :: fn(cx: ^FnCx, op: ast.UnOp, operand: ^const ast.Expr, expect: ?Ty, span
         .BitNot => {
             v := cx.expr(operand, expect)
             st := cx.infer.resolve(cx.s, v.ty)
-            if cx.s.tys.kind(st) is .Adt(_) or cx.is_vector(st) { return cx.unsupported(span, "`~` on this type") }
+            if cx.s.tys.is_vector(st) { return cx.vector_unary(.BitNot, v, span) }
+            if cx.is_compound_number(st) { return cx.compound_number_unary(.BitNot, v, span) }
+            if cx.s.tys.kind(st) is .Adt(_) { return cx.unsupported(span, "`~` on this type") }
             cx.obligations.push(.Numeric(NumericObligation(ty: v.ty, span: span, op: "~", int_only: true, signed_only: false)))!
             return tir.mk(v.ty, .Unary(.BitNot, v), span)
         }
         .Not => {
             v := cx.expr(operand, cx.s.tys.bool_ty())
-            if cx.is_vector(cx.infer.resolve(cx.s, v.ty)) { return cx.unsupported(span, "`not` on vectors") }
+            if cx.s.tys.is_vector(cx.infer.resolve(cx.s, v.ty)) { return cx.vector_unary(.Not, v, span) }
             v = cx.expect_bool(v)
             return tir.mk(cx.s.tys.bool_ty(), .Unary(.Not, v), span)
         }
@@ -429,11 +445,6 @@ unary :: fn(cx: ^FnCx, op: ast.UnOp, operand: ^const ast.Expr, expect: ?Ty, span
         }
         .Try => return cx.try_expr(operand, span)
     }
-}
-
-is_vector :: fn(cx: ^FnCx, t: Ty) -> bool {
-    .Array(_, _, kind) := cx.s.tys.kind(t) else return false
-    return kind in (types.ArrayKind.Simd, types.ArrayKind.Math)
 }
 
 /// `-x`. A minus applied directly to a literal is part of the literal (§7.4.1).
@@ -455,7 +466,9 @@ neg_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, expect: ?Ty, span: source.Sp
         _ => {}
     }
     t := cx.infer.resolve(cx.s, v.ty)
-    if cx.is_vector(t) or cx.s.tys.kind(t) is .Adt(_) { return cx.unsupported(span, "`-` on this type") }
+    if cx.s.tys.is_vector(t) { return cx.vector_unary(.Neg, v, span) }
+    if cx.is_compound_number(v.ty) { return cx.compound_number_unary(.Neg, v, span) }
+    if cx.s.tys.kind(t) is .Adt(_) { return cx.unsupported(span, "`-` on this type") }
     cx.obligations.push(.Numeric(NumericObligation(ty: v.ty, span: span, op: "-", int_only: false, signed_only: true)))!
     return tir.mk(v.ty, .Unary(.Neg, v), span)
 }
@@ -505,7 +518,12 @@ unify_operands :: fn(cx: ^FnCx, a, b: Ty, span: source.Span, what: string) -> Ty
 binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
     tys := &cx.s.tys
     lt := cx.infer.resolve(cx.s, lhs.ty)
-    if cx.is_vector(lt) or cx.s.complex_of(lt) is not null { return cx.unsupported(span, "operators on vectors and complex numbers") }
+    if cx.s.tys.is_vector(lt) and op not in (ast.BinOp.Is, ast.BinOp.IsNot) { return cx.vector_binary(op, lhs, rhs, span) }
+    // Math vectors and complex numbers (§7.4.7): the right operand may be a scalar.
+    if op not in (ast.BinOp.Is, ast.BinOp.IsNot, ast.BinOp.And, ast.BinOp.Or, ast.BinOp.In, ast.BinOp.NotIn, ast.BinOp.Range, ast.BinOp.RangeIncl) and cx.is_compound_number(lhs.ty) {
+        r := cx.expr(rhs, null)
+        return cx.compound_number_binary(op, lhs, r, span)
+    }
     match op {
         .And, .Or => {
             l := cx.expect_bool(lhs)
@@ -551,7 +569,8 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
             }
             r := cx.expr(rhs, expect)
             rt := cx.infer.resolve(cx.s, r.ty)
-            if cx.is_vector(rt) or cx.s.complex_of(rt) is not null { return cx.unsupported(span, "operators on vectors and complex numbers") }
+            // `2 * v`: a scalar times a math vector or a complex number (§7.4.7).
+            if cx.is_compound_number(r.ty) { return cx.compound_number_binary(op, lhs, r, span) }
             return cx.arith_op(op, lhs, r, span)
         }
         .In, .NotIn => return cx.in_expr(lhs, rhs, op is .NotIn, span)
@@ -653,8 +672,12 @@ equalize :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, span: source.Span) -> (l: ^Expr, r
     wraps :: fn(t: Ty) -> bool => tys.kind(t) in (.Optional(_), .Result(_)) and not tys.has_infer(t)
     if tys.kind(rt) is .Infer(_) and wraps(lt) { return (l: l, r: cx.coerce(r, lt)) }
     if tys.kind(lt) is .Infer(_) and wraps(rt) { return (l: cx.coerce(l, rt), r: r) }
-    if cx.s.complex_of(lt) is not null or cx.s.complex_of(rt) is not null {
-        return (l: l, r: cx.unsupported(span, "complex numbers"))
+    // `z is 0`: a real constant compared with a complex number (§7.4.7).
+    if elem := cx.s.complex_of(lt) {
+        if p := cx.promote_real_constant(r, lt, elem) { return (l: l, r: p) }
+    }
+    if elem := cx.s.complex_of(rt) {
+        if p := cx.promote_real_constant(l, rt, elem) { return (l: p, r: r) }
     }
     if tys.has_infer(lt) or tys.has_infer(rt) or lt is rt {
         _ = cx.unify_operands(l.ty, r.ty, span, "the operands of `is`")

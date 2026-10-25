@@ -274,7 +274,7 @@ array_arg_as_slice :: fn(cx: ^FnCx, v: ^Expr, param0: Ty) -> ^Expr needs Load {
     param := cx.infer.resolve(cx.s, param0)
     vt := cx.infer.resolve(cx.s, v.ty)
     .Slice(c, _) := tys.kind(param) else return v
-    if not c or not is_positional_array(tys, vt) { return v }
+    if not c or not tys.is_positional_array(vt) { return v }
     span := v.span
     b := v
     if cx.place_mutability(v) is null {
@@ -282,13 +282,6 @@ array_arg_as_slice :: fn(cx: ^FnCx, v: ^Expr, param0: Ty) -> ^Expr needs Load {
         b = tir.mk(v.ty, .Deref(p), span)
     }
     return cx.slice_of(b, span, null, null, false, span)
-}
-
-/// An array indexed by position (not by an enum).
-is_positional_array :: fn(tys: ^types.Types, t: Ty) -> bool => match tys.kind(t) {
-    .Array(_, _, kind) => kind is .Plain
-    .ParamArray(_) => true
-    _ => false
 }
 
 /// Slices the checked `b` (written at `base_span`) with the checked bounds.
@@ -405,7 +398,14 @@ construct_array :: fn(cx: ^FnCx, ty: ?Ty, len: ?u64, elem: Ty, args: []const ast
             v := cx.expr(&e, elem)
             vt := cx.infer.resolve(cx.s, v.ty)
             target := ty else tys.array(n, elem)
-            if tys.kind(vt) is .Array(_) and vt is not elem { return cx.unsupported(span, "vector conversions") }
+            if tys.kind(vt) is .Array(_) and vt is not elem {
+                if tys.is_vector(vt) or tys.is_vector(target) {
+                    if c := cx.vector_conversion(target, v, span) { return c }
+                }
+                if tys.is_math_vector(vt) or tys.is_math_vector(target) {
+                    if c := cx.math_vector_conversion(target, v, span) { return c }
+                }
+            }
             v = cx.coerce(v, elem)
             if n is not 1 {
                 cx.error(span, str.format("`{}` needs exactly {} elements, but 1 is given", cx.show(target), n)!)

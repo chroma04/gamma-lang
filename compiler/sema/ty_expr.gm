@@ -415,10 +415,7 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
                     return tys.error()
                 }
             }
-            if inner.kind is .ArrayType(_) {
-                s.unsupported(e.span, "vector types")
-                return tys.error()
-            }
+            if inner.kind is .ArrayType(_) { return s.vector_type(module, attrs, inner, e.span) }
             if inner.kind not in (.Struct(_), .Union(_)) {
                 s.error(e.span, "attributes here must precede a `struct`, a `union`, an array type or a `^fn` type")
                 return tys.error()

@@ -1266,7 +1266,10 @@ expect_bool :: fn(cx: ^FnCx, e: ^Expr) -> ^Expr needs Load {
     k := cx.s.tys.kind(e.ty)
     if k is not .Bool and k is not .Never and k is not .Error {
         t := cx.infer.resolve(cx.s, e.ty)
-        cx.error(e.span, str.format("expected `bool`, found `{}` (there are no truthy values)", cx.show(t))!)
+        mask := false
+        if p := cx.s.tys.vector_parts(t) { mask = cx.s.tys.is_bool(p.elem) }
+        hint := if mask { "; a mask is tested with `.all()` or `.any()`" } else { " (there are no truthy values)" }
+        cx.error(e.span, str.format("expected `bool`, found `{}`{}", cx.show(t), hint)!)
     }
     return e
 }
