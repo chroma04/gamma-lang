@@ -10,11 +10,13 @@
 ast :: import "../ast"
 load :: import "../load"
 bigint :: import "../bigint"
+bignum :: import "../bignum"
 diag :: import "../diag"
 ratio :: import "../ratio"
 sema :: import "../sema"
 source :: import "../source"
 str :: import "std/str"
+syntax :: import "../syntax"
 tir :: import "../tir"
 types :: import "../types"
 

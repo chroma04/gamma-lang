@@ -134,9 +134,6 @@ call_decl :: fn(cx: ^FnCx, d: usize, name: string, callee: ^const ast.Expr, args
 call_fn :: fn(cx: ^FnCx, f: u32, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     sig := cx.s.fns.items[usize(f)]
     if sig.generics.len > 0 { return cx.generic_call(f, null, args, span) }
-    for p in sig.params {
-        if p.rest { return cx.unsupported(span, "rest parameters") }
-    }
     bound := cx.bind_args(sig.params, sig.module, args, span, "function") else return error_expr(cx.s, span)
     cx.record_effects(&sig.effects, span)
     call := tir.mk(sig.ret, .Call(.Fn(f), bound.args), span)
@@ -150,18 +147,13 @@ Bound :: struct {
     pre: []tir.Stmt
 }
 
-/// Binds call arguments to parameters (§11.3) and coerces each to its type.
-bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize, args: []const ast.Arg, span: source.Span, what: string) -> ?Bound needs Load {
+/// Binds call arguments to parameters (§11.3) and coerces each to its type. With spread
+/// arguments (§11.4), every argument is evaluated into a temporary, in the order written,
+/// by the returned statements, which must run before the call.
+bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize, args0: []const ast.Arg, span: source.Span, what: string) -> ?Bound needs Load {
     named_here := list(string)
-    for a in args {
-        match a.kind {
-            .Named(n, _) => named_here.push(n.name)!
-            .Spread(_) => {
-                _ = cx.unsupported(a.span, "spread arguments")
-                return null
-            }
-            _ => {}
-        }
+    for a in args0 {
+        if .Named(n, _) := a.kind { named_here.push(n.name)! }
     }
     positional := list(bool)
     max: usize = 0
@@ -170,8 +162,21 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
         positional.push(ok)!
         if ok { max += 1 }
     }
+    args := args0
+    if packed := pack_rest_args(params, positional.items, args0, span) {
+        match packed {
+            .Args(a) => { args = a }
+            .Error(sp, msg) => {
+                cx.error(sp, msg)
+                out := list(Expr)
+                for _ in params { out.push(error_expr(cx.s, span)^)! }
+                return Bound(args: out.items, pre: empty_slice(tir.Stmt))
+            }
+        }
+    }
     // Arguments out of parameter order go through temporaries, in the order written.
     order := list(usize)
+    has_spread := false
     for a in args {
         match a.kind {
             .Positional(_) => order.push(order.items.len)!
@@ -181,10 +186,10 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
                     break
                 }
             }
-            _ => {}
+            .Spread(_) => { has_spread = true }
         }
     }
-    spreading := false
+    spreading := has_spread
     for k in 1..order.items.len.max(1) {
         if order.items[k - 1] > order.items[k] { spreading = true }
     }
@@ -196,9 +201,12 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
     }
     stmts := list(tir.Stmt)
     next: usize = 0
+    seen_named := false
+    spread_failed := false
     for a in args {
         match a.kind {
             .Positional(e) => {
+                if seen_named { cx.error(a.span, "positional arguments must come before a spread that supplies names") }
                 while next < params.len and not positional.items[next] { next += 1 }
                 if next >= params.len {
                     cx.error(a.span, str.format("too many arguments: the {} takes {}", what, max)!)
@@ -223,15 +231,62 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
                     _ = cx.expr(&e, null)
                     continue
                 }
-                if explicit.items[i] or bound.items[i] is not null {
+                if explicit.items[i] or (bound.items[i] is not null and not has_spread) {
                     cx.error(n.span, str.format("parameter `{}` is given more than once", n.name)!)
                 }
                 explicit.items[i] = true
+                // A later explicit named argument overrides one supplied by a spread.
                 v := cx.arg_value(&e, params[i].ty)
                 if spreading { v = cx.bind_temp(v, &stmts) }
                 bound.items[i] = v
             }
-            .Spread(_) => {}
+            .Spread(e) => {
+                parts := cx.spread_parts(&e, &stmts) else {
+                    spread_failed = true
+                    continue
+                }
+                // The first part that fits no parameter ends it.
+                for part in parts {
+                    i: usize = 0
+                    if n := part.name {
+                        seen_named = true
+                        found: ?usize = null
+                        for j, p in enumerate(params) {
+                            if p.name is n {
+                                found = j
+                                break
+                            }
+                        }
+                        j := found else {
+                            cx.error(e.span, str.format("the {} has no parameter named `{}` (supplied by this spread)", what, n)!)
+                            spread_failed = true
+                            break
+                        }
+                        if explicit.items[j] or bound.items[j] is not null {
+                            cx.error(e.span, str.format("parameter `{}` is given more than once", n)!)
+                            spread_failed = true
+                            break
+                        }
+                        i = j
+                    } else {
+                        // An unnamed tuple's elements are positional arguments.
+                        if seen_named {
+                            cx.error(e.span, "positional arguments must come before a spread that supplies names")
+                            spread_failed = true
+                            break
+                        }
+                        while next < params.len and not positional.items[next] { next += 1 }
+                        if next >= params.len {
+                            cx.error(e.span, str.format("too many arguments: the {} takes {}", what, max)!)
+                            spread_failed = true
+                            break
+                        }
+                        i = next
+                        next += 1
+                    }
+                    bound.items[i] = cx.coerce(part.value, params[i].ty)
+                }
+            }
         }
     }
     out := list(Expr)
@@ -245,10 +300,12 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
             out.push(cx.param_default(p, d, p.ty, span)^)!
             continue
         }
-        if p.name is "_" {
-            cx.error(span, str.format("missing argument: the {} takes {}", what, params.len)!)
-        } else {
-            cx.error(span, str.format("missing argument for parameter `{}`", p.name)!)
+        if not spread_failed {
+            if p.name is "_" {
+                cx.error(span, str.format("missing argument: the {} takes {}", what, params.len)!)
+            } else {
+                cx.error(span, str.format("missing argument for parameter `{}`", p.name)!)
+            }
         }
         out.push(error_expr(cx.s, span)^)!
     }

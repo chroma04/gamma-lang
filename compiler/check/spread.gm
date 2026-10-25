@@ -1,0 +1,287 @@
+// Rest parameters (§11.2) and spread arguments (§11.4) (mirrors `pack_rest_args` in
+// `src/sema/call.rs` and the spreads of `src/sema/construct.rs` and
+// `src/sema/generics.rs`).
+
+/// The outcome of packing rest arguments: the arguments with the rest ones replaced by
+/// one tuple argument, or an error.
+Packed :: union {
+    Args: []ast.Arg
+    Error: (span: source.Span, message: string)
+}
+
+/// A rest parameter's arguments as one tuple argument (§11.3): `null` if `params` has no
+/// rest parameter. `slot[i]` says whether positional arguments may bind parameter `i`.
+pack_rest_args :: fn(params: []const sema.ParamInfo, slot: []const bool, args: []const ast.Arg, span: source.Span) -> ?Packed needs Alloc {
+    r: ?usize = null
+    for i, p in enumerate(params) {
+        if p.rest {
+            r = i
+            break
+        }
+    }
+    ri := r else return null
+    before: usize = 0
+    for i in 0..ri {
+        if slot[i] { before += 1 }
+    }
+    out := list(ast.Arg)
+    rest := list(usize)
+    seen: usize = 0
+    for k, a in enumerate(args) {
+        match a.kind {
+            .Named(n, _) => {
+                if n.name is params[ri].name {
+                    return .Error(span: a.span, message: str.format("the rest parameter `{}` takes the remaining positional arguments; it cannot be named", n.name)!)
+                }
+                out.push(a)!
+            }
+            .Positional(_) => if seen < before {
+                seen += 1
+                out.push(a)!
+            } else {
+                rest.push(k)!
+            }
+            .Spread(_) => {
+                if seen < before { return .Error(span: a.span, message: "a function with a rest parameter takes a spread only as its whole rest arguments") }
+                rest.push(k)!
+            }
+        }
+    }
+    packed := ast.Arg(kind: .Positional(synthetic(.Underscore, span)), span: span)
+    if rest.items.len is 1 and .Spread(e) := args[rest.items[0]].kind {
+        inner := new(e)!
+        packed = ast.Arg(kind: .Positional(synthetic(.Elements(inner), e.span)), span: args[rest.items[0]].span)
+    } else {
+        elems := list(ast.TupleElem)
+        for k in rest.items {
+            match args[k].kind {
+                .Positional(e) => elems.push(ast.TupleElem(name: null, value: e))!
+                _ => return .Error(span: args[k].span, message: "a spread passes the rest arguments only on its own: `f(a, ..t)`")
+            }
+        }
+        sp := span
+        if rest.items.len > 0 {
+            first := args[rest.items[0]].span
+            last := args[rest.items[rest.items.len - 1]].span
+            sp = source.Span(file: first.file, lo: first.lo, hi: last.hi)
+        } else {
+            at := span.hi.max(1) - 1
+            sp = source.Span(file: span.file, lo: at, hi: at)
+        }
+        packed = ast.Arg(kind: .Positional(synthetic(.Tuple(elems.items), sp)), span: sp)
+    }
+    // The rest arguments go where the first of them stood (named arguments keep their
+    // places).
+    pos := out.items.len
+    if rest.items.len > 0 {
+        first := rest.items[0]
+        n: usize = 0
+        for k in 0..first {
+            if k not in rest.items { n += 1 }
+        }
+        pos = n
+    }
+    out.insert(pos.min(out.items.len), packed)!
+    return .Args(out.items)
+}
+
+/// A syntax node made by the checker.
+synthetic :: fn(kind: ast.ExprKind, span: source.Span) -> ast.Expr => ast.Expr(id: 0xFFFF_FFFF, kind: kind, span: span)
+
+/// A part of a spread: an element or field, with its name if it has one.
+SpreadPart :: struct {
+    name: ?string
+    value: ^Expr
+}
+
+/// The parts of a spread `..e` (§11.4), evaluated once into a temporary by `stmts`: an
+/// unnamed tuple's elements (without names), or a named tuple's elements or a struct's
+/// fields (with names). `null` (after reporting) if `e` cannot be spread.
+spread_parts :: fn(cx: ^FnCx, e: ^const ast.Expr, stmts: ^List(tir.Stmt)) -> ?[]SpreadPart needs Load {
+    tys := &cx.s.tys
+    v := cx.expr(e, null)
+    vt := cx.infer.resolve(cx.s, v.ty)
+    elems: []const Ty = empty_slice(Ty)
+    names: []const string = empty_slice(string)
+    match tys.kind(vt) {
+        .Tuple(es, ns) => {
+            elems = es
+            names = ns
+        }
+        .Error => return null
+        .Array(_), .ParamArray(_) => {
+            a := cx.spread_array(vt, e.span) else return null
+            base := cx.bind_temp(v, stmts)
+            parts := list(SpreadPart)
+            for i in 0..a.len { parts.push(SpreadPart(name: null, value: array_element(cx.s, base, a.elem, i, e.span)))! }
+            return parts.items
+        }
+        _ => {
+            fs := cx.s.struct_fields(vt)
+            if f := fs and cx.hidden_field(vt) is null {
+                ts := list(Ty)
+                ns := list(string)
+                for x in f {
+                    ts.push(x.ty)!
+                    ns.push(x.name)!
+                }
+                elems = ts.items
+                names = ns.items
+            } else {
+                cx.error(e.span, str.format("a spread needs a tuple, an array or a struct with visible fields, not `{}`", cx.show(vt))!)
+                return null
+            }
+        }
+    }
+    base := cx.bind_temp(v, stmts)
+    parts := list(SpreadPart)
+    for k, t in enumerate(elems) {
+        proj := tir.mk(t, .Field(base, k.trunc(u32)), e.span)
+        name: ?string = if names.len > 0 { names[k] } else { null }
+        parts.push(SpreadPart(name: name, value: proj))!
+    }
+    return parts.items
+}
+
+/// The length and element type of an array that a spread may expand (§11.4): `[N]T` or
+/// a vector, whose length is known where it is written. `null` (after reporting) for an
+/// enum-indexed array or an array whose length depends on a compile-time parameter.
+spread_array :: fn(cx: ^FnCx, vt: Ty, span: source.Span) -> ?(len: u64, elem: Ty) needs Alloc {
+    match cx.s.tys.kind(vt) {
+        .Array(_, _, .Enum(_)) => {
+            cx.error(span, str.format("`{}` cannot be spread: its elements are named by its variants, not positions (§5.6.1)", cx.show(vt))!)
+            return null
+        }
+        .Array(len, elem, _) => return (len: len, elem: elem)
+        _ => {
+            cx.error(span, str.format("`{}` cannot be spread: its length depends on a compile-time parameter (§11.4)", cx.show(vt))!)
+            return null
+        }
+    }
+}
+
+/// Element `i` of the array `base` (a constant index, so never checked).
+array_element :: fn(s: ^Sema, base: ^Expr, elem: Ty, i: u64, span: source.Span) -> ^Expr needs Alloc {
+    index := tir.mk(s.tys.usize_ty(), .Int(bigint.from_u64(i)), span)
+    return tir.mk(elem, .Index(base, index, false), span)
+}
+
+/// For a spread that passes a tuple whole (as rest arguments or a template's values): an
+/// array's elements as an unnamed tuple, and any other `v` unchanged. `null` (after
+/// reporting) for an array that cannot be spread.
+elements_tuple :: fn(cx: ^FnCx, v: ^Expr, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    vt := cx.infer.resolve(cx.s, v.ty)
+    match tys.kind(vt) {
+        .Error => return null
+        .Array(_), .ParamArray(_) => {
+            a := cx.spread_array(vt, span) else return null
+            stmts := list(tir.Stmt)
+            base := cx.bind_temp(v, &stmts)
+            elems := list(Expr)
+            ts := list(Ty)
+            for i in 0..a.len {
+                elems.push(array_element(cx.s, base, a.elem, i, span)^)!
+                ts.push(a.elem)!
+            }
+            ty := tys.intern(.Tuple(ts.items, empty_slice(string)))
+            agg := tir.mk(ty, .Aggregate(elems.items), span)
+            if stmts.items.len is 0 { return agg }
+            return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+        }
+        // Anything else is passed on as it is, for the caller to check.
+        _ => return v
+    }
+}
+
+/// The written arguments of a generic call with spreads (§11.4), rewritten for type
+/// inference, which works on the written arguments: each spread (and each argument
+/// before one, to keep the written evaluation order) is evaluated into a local first by
+/// `stmts`, and the spread is replaced by arguments naming that local's elements. `null`
+/// (after reporting) if a spread cannot be expanded.
+spread_generic_args :: fn(cx: ^FnCx, args: []const ast.Arg, stmts: ^List(tir.Stmt), span: source.Span) -> ?[]ast.Arg needs Load {
+    tys := &cx.s.tys
+    last_spread: usize = 0
+    for k, a in enumerate(args) {
+        if a.kind is .Spread(_) { last_spread = k }
+    }
+    written := list(ast.Arg)
+    for k, a in enumerate(args) {
+        e := match a.kind {
+            .Spread(x), .Positional(x) => x
+            .Named(_, x) => x
+        }
+        // For an argument before the last spread: whether it is named, and its name.
+        named: ?(name: ?ast.Ident) = null
+        match a.kind {
+            .Spread(_) => {}
+            .Positional(_) => {
+                if k >= last_spread {
+                    written.push(a)!
+                    continue
+                }
+                named = (name: null)
+            }
+            .Named(n, _) => {
+                if k >= last_spread {
+                    written.push(a)!
+                    continue
+                }
+                named = (name: n)
+            }
+        }
+        // A literal or a name has no effects, so it can stay where it is.
+        if named is not null and e.kind in (.Ident(_), .Int(_), .Str(_)) {
+            written.push(a)!
+            continue
+        }
+        v := cx.expr(&e, null)
+        vt := cx.infer.resolve(cx.s, v.ty)
+        name := str.format("<arg{}>", cx.locals.items.len)!
+        local := cx.new_local(name, vt, false, e.span)
+        stmts.push(.Let(local, v))!
+        cx.declare(name, .Var(local), e.span)
+        base := synthetic(.Ident(ast.Ident(name: name, span: e.span)), e.span)
+        if nm := named {
+            if n := nm.name {
+                written.push(ast.Arg(kind: .Named(n, base), span: a.span))!
+            } else {
+                written.push(ast.Arg(kind: .Positional(base), span: a.span))!
+            }
+            continue
+        }
+        parts := list(?string)
+        match tys.kind(vt) {
+            .Tuple(es, ns) => for i in 0..es.len { parts.push(if ns.len > 0 { ns[i] } else { null })! }
+            .Error => return null
+            .Array(_), .ParamArray(_) => {
+                arr := cx.spread_array(vt, e.span) else return null
+                for i in 0..arr.len {
+                    lit := syntax.IntLit(value: bignum.from_u64(i), suffix: null, is_char: false)
+                    index := new(synthetic(.Int(lit), e.span))!
+                    elem := synthetic(.Index(new(base)!, index), e.span)
+                    written.push(ast.Arg(kind: .Positional(elem), span: e.span))!
+                }
+                continue
+            }
+            _ => {
+                fs := cx.s.struct_fields(vt)
+                if f := fs and cx.hidden_field(vt) is null {
+                    for x in f { parts.push(x.name)! }
+                } else {
+                    cx.error(e.span, str.format("a spread needs a tuple, an array or a struct with visible fields, not `{}`", cx.show(vt))!)
+                    return null
+                }
+            }
+        }
+        for i, p in enumerate(parts.items) {
+            if n := p {
+                id := ast.Ident(name: n, span: e.span)
+                written.push(ast.Arg(kind: .Named(id, synthetic(.Field(new(base)!, id), e.span)), span: e.span))!
+            } else {
+                written.push(ast.Arg(kind: .Positional(synthetic(.TupleField(new(base)!, i.trunc(u32), e.span), e.span)), span: e.span))!
+            }
+        }
+    }
+    return written.items
+}
