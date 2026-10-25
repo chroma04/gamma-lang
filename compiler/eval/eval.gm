@@ -58,7 +58,11 @@ pub TraceCall :: struct {
 Installed :: struct {
     effect_: types.EffectRef
     clauses: []const u32
-    frame: ^EvalFrame
+    /// The frame a handler literal was made in; a declaration's clauses are named
+    /// functions.
+    frame: ?^EvalFrame
+    /// The value a handler declaration was installed for, its clauses' first argument.
+    receiver: ?Value
     with_id: u32
     /// Where the search for a handler continues below this one (see `Machine.top`).
     below: usize
@@ -905,7 +909,14 @@ perform :: fn(m: ^Machine, eref: types.EffectRef, op: u32, args: []Value, span: 
         saved := m.top
         m.top = h.base
         m.clause_withs.push(h.with_id)!
-        r := m.call(clause, args, h.frame, span)
+        all := args
+        if v := h.receiver {
+            with_receiver := list(Value)
+            with_receiver.push(copy(v))!
+            with_receiver.extend(args)!
+            all = with_receiver.items
+        }
+        r := m.call(clause, all, h.frame, span)
         _ = m.clause_withs.pop()
         m.top = saved
         return r
@@ -931,9 +942,15 @@ with_ :: fn(m: ^Machine, w: tir.WithExpr, e: ^Expr) -> Flow!Value needs Load {
             .Literal(x) => {
                 .Handler(index, frame) := (try m.eval(x)) else return !m.unsupported(x.span, "this handler")
                 lit := m.s.handlers.items[usize(index)]
-                vals.push(Installed(effect_: lit.effect_, clauses: lit.clauses, frame: frame, with_id: id, below: 0, base: m.top))!
+                vals.push(Installed(effect_: lit.effect_, clauses: lit.clauses, frame: frame, receiver: null, with_id: id, below: 0, base: m.top))!
             }
-            .Decl(_, x) => return !m.unsupported(x.span, "handler declarations at compile time")
+            .Decl(decls, x) => {
+                v := try m.eval(x)
+                for d in decls {
+                    info := m.s.handler_decls.items[usize(d)]
+                    vals.push(Installed(effect_: info.effect_, clauses: info.clauses, frame: null, receiver: v, with_id: id, below: 0, base: m.top))!
+                }
+            }
         }
     }
     saved_len := m.handlers.items.len
