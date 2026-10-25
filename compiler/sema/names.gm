@@ -38,7 +38,7 @@ universe_hidden :: fn(s: ^const Sema, d: usize) -> bool => s.l.decls.items[d].na
 
 /// For an unknown name that the core library declares but leaves out of the universe
 /// scope, how to reach it.
-universe_hint :: fn(s: ^Sema, name: string) -> ?string needs Alloc {
+pub universe_hint :: fn(s: ^Sema, name: string) -> ?string needs Alloc {
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, name) else return null
     if not s.universe_hidden(d) or s.l.decls.items[d].state is .Module(_) { return null }
@@ -57,7 +57,7 @@ std_home :: fn(name: string) -> ?string {
 }
 
 /// The hint for a bare or module-qualified use of the operation `name` of `effect_`.
-op_hint :: fn(effect_: string, name: string, qualifier: ?string) -> string needs Alloc {
+pub op_hint :: fn(effect_: string, name: string, qualifier: ?string) -> string needs Alloc {
     q: string = if m := qualifier { str.format("{}.", m)! } else { "" }
     return str.format("`{}` is an operation of `{}`; call it as `{}{}.{}(…)` (§12.1)", name, effect_, q, effect_, name)!
 }
@@ -65,7 +65,7 @@ op_hint :: fn(effect_: string, name: string, qualifier: ?string) -> string needs
 /// A fix for an unknown name that `universe_hint` attributes to a standard module: write
 /// `m.Name`, after adding `m :: import "std/m"` unless the module has it already. `span`
 /// is the name at its use in the file of `module`.
-import_fix :: fn(s: ^Sema, module: usize, name: string, span: source.Span) -> ?List(diag.Edit) needs Alloc {
+pub import_fix :: fn(s: ^Sema, module: usize, name: string, span: source.Span) -> ?List(diag.Edit) needs Alloc {
     path := std_home(name) else return null
     m := &s.l.modules.items[module]
     if m.is_prelude or m.is_std { return null }
@@ -187,7 +187,7 @@ pub module_member :: fn(s: ^Sema, m: usize, name: ast.Ident, from: usize) -> ?us
 
 /// For an unknown name that is an operation of an effect declared in `module` or in the
 /// core library: the effect's name, to write in front of it (`Log.log`, `Clock.now`).
-op_effect :: fn(s: ^const Sema, module: usize, name: string) -> ?string {
+pub op_effect :: fn(s: ^const Sema, module: usize, name: string) -> ?string {
     if e := s.effect_with_op(module, name, false) { return e }
     prelude := s.l.prelude else return null
     return s.effect_with_op(prelude, name, true)

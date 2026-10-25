@@ -39,17 +39,25 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
         ret_known = f.ret
     }
     effects := types.empty_effects()
+    // Expected effects that mention type parameters still to be inferred (a generic call's
+    // `Yield(T)`) are taken from what the body performs.
+    open_effects := list(u32)
     if list_ := lit.sig.effects {
         effects = cx.s.resolve_effect_list(cx.module, list_)
     } else if f := expected {
+        kept := list(EffectRef)
         for e in f.effects.effects {
-            for a in e.args {
-                if .Type(at) := a and tys.has_param(at) { return cx.unsupported(span, "function literals with inferred effects") }
+            if effect_has_param_args(tys, &e) {
+                open_effects.push(e.eff)!
+            } else {
+                kept.push(e)!
             }
         }
-        effects = f.effects
+        effects = if open_effects.items.len is 0 { f.effects } else { types.effect_set(kept.items) }
     }
-    infer_ret := ret_known is null and lit.body is .Expr(_)
+    // The literal passed for an iterator argument (§13.5), checked for being one below.
+    iterator_arg := lit.span in cx.iterator_args.items
+    infer_ret := (ret_known is null or iterator_arg) and lit.body is .Expr(_)
     infer_block := ret_known is null and lit.body is .Block(_)
     ret := ret_known else tys.unit()
     fn_name := if n := name { n.name } else { "<fn>" }
@@ -71,6 +79,24 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
     final_ret := cx.ret
     cx.reject_returned_closure(lit, final_ret)
     frame := cx.exit_fn()
+    if iterator_arg {
+        yields := false
+        if y := cx.s.yield_effect {
+            for p in frame.performed {
+                if p.effect_.eff is y { yields = true }
+            }
+        }
+        if not yields {
+            ty := cx.infer.resolve(cx.s, final_ret)
+            if not tys.is_error(ty) {
+                cx.error(span, str.format("this call is not an iterator (it returns `{}` and yields nothing), but the parameter takes an iterator (§13.5)", cx.show(ty))!)
+            }
+            return error_expr(cx.s, span)
+        }
+    }
+    for id in open_effects.items {
+        if not cx.infer_open_effect(id, frame.performed, &effects, fn_id, span) { return error_expr(cx.s, span) }
+    }
     if infer_ret or infer_block { cx.s.fns.items[usize(fn_id)].ret = final_ret }
     undeclared_is_error := name is not null and not frame.captures
     own := cx.route_performed(frame.performed, &effects, wants_pointer and name is null, undeclared_is_error)
@@ -208,13 +234,50 @@ route_performed :: fn(cx: ^FnCx, performed: []const Performed, effects: ^const E
         }
         own.push(p.effect_)!
         if undeclared_is_error {
-            name := cx.s.tys.show_ref(&p.effect_)
-            cx.error(p.span, str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!)
+            cx.error(p.span, cx.undeclared_message(&p.effect_, p.span, effects).msg)
         } else {
             cx.performed.push(p)!
         }
     }
     return own.items
+}
+
+/// Whether an effect's arguments mention a type parameter.
+effect_has_param_args :: fn(tys: ^const types.Types, e: ^const EffectRef) -> bool {
+    for a in e.args {
+        if .Type(t) := a {
+            if tys.has_param(t) { return true }
+        }
+    }
+    return false
+}
+
+/// Adds to `effects` (and the function's signature) the instance of the open effect `id`
+/// that the body performed. False after an error: the instance is ambiguous.
+infer_open_effect :: fn(cx: ^FnCx, id: u32, performed: []const Performed, effects: ^EffectSet, fn_id: u32, span: source.Span) -> bool needs Load {
+    found := list(EffectRef)
+    for p in performed {
+        if p.effect_.eff is not id { continue }
+        seen := false
+        for x in found.items {
+            if types.cmp_ref(&x, &p.effect_) is 0 { seen = true }
+        }
+        if not seen { found.push(p.effect_)! }
+    }
+    if found.items.len > 1 {
+        names := list(string)
+        for e in found.items { names.push(str.format("`{}`", cx.s.tys.show_ref(&e))!)! }
+        cx.error(span, str.format("this performs {}, so the type it is passed at cannot be inferred; write the type argument", str.join(names.items, " and ")!)!)
+        return false
+    }
+    if found.items.len is 1 {
+        all := list(EffectRef)
+        all.extend(effects.effects)!
+        all.push(found.items[0])!
+        effects^ = types.effect_set(all.items)
+        cx.s.fns.items[usize(fn_id)].effects = effects^
+    }
+    return true
 }
 
 recursive_without_ret :: fn(cx: ^FnCx, name: string, span: source.Span) needs Alloc {

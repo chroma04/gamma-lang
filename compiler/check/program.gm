@@ -63,9 +63,9 @@ produce_instance :: fn(s: ^Sema, req: sema.MonoRequest) needs Load {
     outer := s.mono_depth
     s.mono_depth = req.depth
     s.check_len_exprs(map.items, req.span)
-    mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false)
-    mc.fn_map.push(FnPair(from: req.generic, to: req.instance))!
     locals := list(tir.LocalDecl)
+    mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false, locals: &locals)
+    mc.fn_map.push(FnPair(from: req.generic, to: req.instance))!
     for l in def.locals {
         x := l
         x.ty = mono_ty(s, &mc, l.ty)
@@ -73,6 +73,7 @@ produce_instance :: fn(s: ^Sema, req: sema.MonoRequest) needs Load {
     }
     copy := tir.clone_expr(body)
     mono_expr(s, &mc, copy)
+    s.report_soa_errors(req.span)
     s.mono_depth = outer
     s.set_inst_def(req.instance, tir.FnDef(kind: def.kind, params: def.params, locals: locals.items, body: copy, parent: def.parent, nested: def.nested))
     // An instance may need a type larger than any object (a computed array length).
@@ -92,6 +93,8 @@ MonoCx :: struct {
     span: source.Span
     /// Whether the expression is part of a copy that is kept (a nested function's body).
     copying: bool
+    /// The locals of the instance, which expanding an operation may add to.
+    locals: ^List(tir.LocalDecl)
 }
 
 FnPair :: struct {
@@ -171,18 +174,22 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     }
     if .UntypedFloat(r) := e.kind {
         if .Float(bits) := s.tys.kind(t) {
-            if bits is 16 {
-                if mc.copying { s.unsupported(e.span, "`f16` literals") }
+            x: f64 = if bits is 16 { r.to_f16() } else if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
+            if x - x is not 0.0 {
+                s.error(span, str.format("a literal is too large for `{}` (in an instantiation used here)", s.show(t))!)
             } else {
-                x: f64 = if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
-                if x - x is not 0.0 {
-                    s.error(span, str.format("a literal is too large for `{}` (in an instantiation used here)", s.show(t))!)
-                } else {
-                    e.kind = .Float(x)
-                }
+                e.kind = .Float(x)
             }
         } else {
             s.error(span, str.format("a float literal cannot have the type `{}` (in an instantiation used here)", s.show(t))!)
+        }
+    }
+    // The handler declarations for a handler value are chosen again for its instantiated type.
+    if .With(w) := e.kind {
+        for i in 0..w.handlers.len {
+            if .Decl(_, value) := w.handlers[i] {
+                w.handlers[i] = .Decl(handlers_of_type(s, s.subst(value.ty, mc.map)), value)
+            }
         }
     }
     match e.kind {
@@ -222,6 +229,10 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     if .Builtin(.StaticAssert(id), args) := e.kind {
         check_static_assert(s, &args[0], s.deferred_asserts.items[usize(id)], e.span, mc.span)
         e^ = unit(s, e.span)^
+        return
+    }
+    if e.kind is .SoaDeferred(_) {
+        e^ = s.soa_expand(mc.locals, e)^
         return
     }
     // `.bits` between types that mention parameters is size-checked per instance (§6.6).
@@ -311,9 +322,13 @@ mono_fn :: fn(s: ^Sema, mc: ^MonoCx, id: u32) -> u32 needs Load {
     if b := def.body {
         copy := tir.clone_expr(b)
         was := mc.copying
+        outer_locals := mc.locals
         mc.copying = true
+        // The temporaries the copy needs are its own locals.
+        mc.locals = &locals
         mono_expr(s, mc, copy)
         mc.copying = was
+        mc.locals = outer_locals
         body = copy
     }
     nd := &s.defs.items[usize(new_id)]

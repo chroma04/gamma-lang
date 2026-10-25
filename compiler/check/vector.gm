@@ -1,0 +1,331 @@
+// Vector types `#simd [N]T` (§5.6.2): their construction, lane-wise operators,
+// conversions and builtin methods (mirrors `src/sema/vector.rs`).
+
+/// The mask type for vectors of `len` lanes: `#simd [len]bool`.
+mask_ty :: fn(tys: ^types.Types, len: u64) -> Ty needs Alloc => tys.simd(len, tys.bool_ty())
+
+/// `#simd [4]f32(…)` or `#vec [3]f32(…)`: constructing a vector (§5.6.2) or a math
+/// vector (§5.6.3).
+vector_construction :: fn(cx: ^FnCx, attrs: []const ast.Attribute, inner: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    call := sema.construction_call(inner) else return error_expr(cx.s, span)
+    .Call(_, args, _) := call.kind else return error_expr(cx.s, span)
+    for a in attrs {
+        if a.name.name is "soa" {
+            st := cx.s.soa_type_expr(cx.module, without_call(inner), span)
+            info := cx.s.soa_info(st) else return error_expr(cx.s, span)
+            return cx.soa_construct(st, info, args, span)
+        }
+    }
+    t := cx.s.vector_type(cx.module, attrs, without_call(inner), span)
+    tys := &cx.s.tys
+    if p := tys.vector_parts(t) { return cx.construct_array(t, p.len, p.elem, args, span) }
+    if p := tys.math_vector_parts(t) { return cx.construct_array(t, p.len, p.elem, args, span) }
+    return error_expr(cx.s, span)
+}
+
+/// A binary operator whose left operand is the vector `lhs` (§7.4.6): every operator
+/// works lane by lane; `is` compares whole vectors and is handled as for arrays.
+vector_binary :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    vt := cx.infer.resolve(cx.s, lhs.ty)
+    parts := tys.vector_parts(vt) else return error_expr(cx.s, span)
+    lane := parts.elem
+    opn := ast.binop_text(op)
+    match op {
+        .And, .Or => {
+            _ = cx.expr(rhs, null)
+            cx.error(span, str.format("`{}` takes `bool` values; on the lanes of a mask use `&`, `|` and `~`", opn)!)
+            return error_expr(cx.s, span)
+        }
+        .In, .NotIn, .Range, .RangeIncl => {
+            _ = cx.expr(rhs, null)
+            cx.error(span, str.format("`{}` has no meaning on vectors", opn)!)
+            return error_expr(cx.s, span)
+        }
+        .Shl(_), .Shr => {
+            r := cx.expr(rhs, null)
+            if not tys.is_integer(lane) {
+                cx.error(span, str.format("`{}` shifts integer lanes, not the lanes of `{}`", opn, cx.show(vt))!)
+                return error_expr(cx.s, span)
+            }
+            if op is .Shl(.Opt) {
+                cx.error(span, "`<<?` is not available on vectors: a lane cannot be `null`")
+                return error_expr(cx.s, span)
+            }
+            if not cx.infer.require_unsigned(tys, r.ty, .Usize) and not tys.is_error(r.ty) {
+                t := cx.infer.resolve(cx.s, r.ty)
+                cx.error(r.span, str.format("a shift amount must have an unsigned integer type, not `{}`", cx.show(t))!)
+            }
+            top: tir.BinOp = if .Shl(f) := op { .Shl(f) } else { .Shr }
+            return tir.mk(vt, .Binary(top, lhs, r), span)
+        }
+        _ => {}
+    }
+    r := cx.expr(rhs, vt)
+    rt := cx.infer.resolve(cx.s, r.ty)
+    if tys.is_error(rt) { return error_expr(cx.s, span) }
+    if rt is not vt {
+        hint := if tys.is_vector(rt) { "" } else { "; a scalar is not spread over the lanes: use `V(fill: x)`" }
+        cx.error(span, str.format("the operands of `{}` have different types: `{}` and `{}`{}", opn, cx.show(vt), cx.show(rt), hint)!)
+        return error_expr(cx.s, span)
+    }
+    lane_int := tys.is_integer(lane)
+    lane_float := tys.is_float(lane)
+    numeric := lane_int or lane_float
+    match op {
+        .Lt, .Le, .Gt, .Ge => {
+            m: string = match op {
+                .Lt => "lanes_lt"
+                .Le => "lanes_le"
+                .Gt => "lanes_gt"
+                _ => "lanes_ge"
+            }
+            cx.error(span, str.format("vectors are not ordered; compare lanes with `.{}(w)` (§5.6.2)", m)!)
+            return error_expr(cx.s, span)
+        }
+        .Add(f), .Sub(f), .Mul(f) => {
+            if not numeric { return cx.lane_error(opn, "numeric lanes", vt, span) }
+            if f is .Opt {
+                cx.error(span, str.format("`{}` is not available on vectors: a lane cannot be `null`", opn)!)
+                return error_expr(cx.s, span)
+            }
+            if f is not .Checked and not lane_int { return cx.lane_error(opn, "integer lanes", vt, span) }
+            top: tir.BinOp = match op {
+                .Add(_) => .Add(f)
+                .Sub(_) => .Sub(f)
+                _ => .Mul(f)
+            }
+            return tir.mk(vt, .Binary(top, lhs, r), span)
+        }
+        .Div => if lane_float { return tir.mk(vt, .Binary(.Div, lhs, r), span) }
+        .BitAnd, .BitOr, .BitXor => {
+            if lane_float { return cx.lane_error(opn, "integer and `bool` lanes", vt, span) }
+            top: tir.BinOp = match op {
+                .BitAnd => .BitAnd
+                .BitOr => .BitOr
+                _ => .BitXor
+            }
+            return tir.mk(vt, .Binary(top, lhs, r), span)
+        }
+        _ => {}
+    }
+    // `/` and `%` on integer lanes.
+    cx.error(span, str.format("`{}` is not available on vectors of `{}`: targets have no instruction that divides integer lanes, so the cost would be hidden; divide the lanes one by one", opn, cx.show(lane))!)
+    return error_expr(cx.s, span)
+}
+
+lane_needs :: fn(cx: ^FnCx, n: string, vt: Ty, what: string, span: source.Span) -> ^Expr needs Load {
+    lane := cx.s.tys.vector_parts(vt)?.elem
+    cx.error(span, str.format("`.{}` needs {}, and `{}` has `{}` lanes", n, what, cx.show(vt), cx.show(lane))!)
+    return error_expr(cx.s, span)
+}
+
+lane_error :: fn(cx: ^FnCx, opn: string, what: string, vt: Ty, span: source.Span) -> ^Expr needs Load {
+    cx.error(span, str.format("`{}` applies to {}, not to the lanes of `{}`", opn, what, cx.show(vt))!)
+    return error_expr(cx.s, span)
+}
+
+/// A unary operator on the vector `v` (§7.4.6).
+vector_unary :: fn(cx: ^FnCx, op: ast.UnOp, v: ^Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    vt := cx.infer.resolve(cx.s, v.ty)
+    parts := tys.vector_parts(vt) else return error_expr(cx.s, span)
+    lane := parts.elem
+    match op {
+        .Neg => if tys.is_signed_integer(lane) or tys.is_float(lane) { return tir.mk(vt, .Unary(.Neg, v), span) }
+        .BitNot => if not tys.is_float(lane) { return tir.mk(vt, .Unary(.BitNot, v), span) }
+        .Not => {
+            hint := if tys.is_bool(lane) { "; the lanes of a mask are complemented by `~m`" } else { "" }
+            cx.error(span, str.format("`not` takes a `bool`, not `{}`{}", cx.show(vt), hint)!)
+            return error_expr(cx.s, span)
+        }
+        _ => {}
+    }
+    s := if op is .Neg { "-" } else { "~" }
+    cx.error(span, str.format("`{}` does not apply to the lanes of `{}`", s, cx.show(vt))!)
+    return error_expr(cx.s, span)
+}
+
+/// A builtin method of the vector `recv` (§21.3).
+vector_method :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, n: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    parts := tys.vector_parts(vt) else return error_expr(cx.s, span)
+    len := parts.len
+    lane := parts.elem
+    numeric := tys.is_integer(lane) or tys.is_float(lane)
+    one := [1]^Expr(recv)
+    match n {
+        "reduce_sum", "reduce_min", "reduce_max" => {
+            if not cx.arity(args, 0, n, span) { return error_expr(cx.s, span) }
+            if not numeric { return cx.lane_needs(n, vt, "numeric lanes", span) }
+            op: tir.Builtin = match n {
+                "reduce_sum" => .ReduceSum
+                "reduce_min" => .ReduceMin
+                _ => .ReduceMax
+            }
+            return builtin(op, lane, one[..], span)
+        }
+        "lanes_eq", "lanes_ne", "lanes_lt", "lanes_le", "lanes_gt", "lanes_ge" => {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            if n not in ("lanes_eq", "lanes_ne") and not numeric { return cx.lane_needs(n, vt, "numeric lanes", span) }
+            y := cx.value_arg(args, 0, vt, span)
+            op: tir.Builtin = match n {
+                "lanes_eq" => .LaneEq
+                "lanes_ne" => .LaneNe
+                "lanes_lt" => .LaneLt
+                "lanes_le" => .LaneLe
+                "lanes_gt" => .LaneGt
+                _ => .LaneGe
+            }
+            return builtin(op, mask_ty(tys, len), [2]^Expr(recv, y)[..], span)
+        }
+        "all", "any", "count" => {
+            if not cx.arity(args, 0, n, span) { return error_expr(cx.s, span) }
+            if not tys.is_bool(lane) { return cx.lane_needs(n, vt, "a mask (`bool` lanes)", span) }
+            if n is "all" { return builtin(.MaskAll, tys.bool_ty(), one[..], span) }
+            if n is "any" { return builtin(.MaskAny, tys.bool_ty(), one[..], span) }
+            return builtin(.MaskCount, tys.usize_ty(), one[..], span)
+        }
+        "select" => {
+            if not cx.arity(args, 2, n, span) { return error_expr(cx.s, span) }
+            if not tys.is_bool(lane) { return cx.lane_needs(n, vt, "a mask (`bool` lanes)", span) }
+            .Positional(xe) := args[0].kind else return error_expr(cx.s, span)
+            x := cx.expr(&xe, null)
+            xt := cx.infer.resolve(cx.s, x.ty)
+            if tys.is_error(xt) { return error_expr(cx.s, span) }
+            same_lanes := false
+            if xp := tys.vector_parts(xt) { same_lanes = xp.len is len }
+            if not same_lanes {
+                cx.error(x.span, str.format("`m.select(a, b)` takes vectors of {} lanes, like `{}`; not `{}`", len, cx.show(vt), cx.show(xt))!)
+                return error_expr(cx.s, span)
+            }
+            y := cx.value_arg(args, 1, xt, span)
+            return builtin(.Select, xt, [3]^Expr(recv, x, y)[..], span)
+        }
+        "min", "max" => {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            if not numeric { return cx.lane_needs(n, vt, "numeric lanes", span) }
+            y := cx.value_arg(args, 0, vt, span)
+            return builtin(if n is "min" { tir.Builtin.LaneMin } else { tir.Builtin.LaneMax }, vt, [2]^Expr(recv, y)[..], span)
+        }
+        "abs" => {
+            if not cx.arity(args, 0, n, span) { return error_expr(cx.s, span) }
+            if not (tys.is_signed_integer(lane) or tys.is_float(lane)) { return cx.lane_needs(n, vt, "signed integer or float lanes", span) }
+            return builtin(.LaneAbs, vt, one[..], span)
+        }
+        "to" => {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            f := cx.type_arg(args, 0, span) else return error_expr(cx.s, span)
+            if not tys.is_float(f) or not sema.lane_type_ok(tys, f) or not numeric {
+                cx.error(span, str.format("`.to(F)` converts numeric lanes to `f32` or `f64` lanes, not `{}` to `{}`", cx.show(lane), cx.show(f))!)
+                return error_expr(cx.s, span)
+            }
+            if msg := cx.s.vector_shape_error(len, f) {
+                cx.error(span, msg)
+                return error_expr(cx.s, span)
+            }
+            return builtin(.LaneConvert, tys.simd(len, f), one[..], span)
+        }
+        "shuffle" => return cx.vector_shuffle(recv, vt, args, span)
+        "store" => {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            dst := cx.value_arg(args, 0, tys.slice(false, lane), span)
+            return builtin(.VecStore, tys.unit(), [2]^Expr(recv, dst)[..], span)
+        }
+        _ => {}
+    }
+    cx.error(span, str.format("vectors have no method `.{}`; they have `reduce_sum`, `reduce_min`, `reduce_max`, `min`, `max`, `abs`, `to`, `shuffle`, `store` and the comparisons `lanes_eq`, `lanes_ne`, `lanes_lt`, `lanes_le`, `lanes_gt` and `lanes_ge`, and masks `all`, `any`, `count` and `select` (§21.3)", n)!)
+    return error_expr(cx.s, span)
+}
+
+/// `v.shuffle(i0, i1, …)`: a vector of the lanes `v[i0], v[i1], …`, whose indices are
+/// compile-time constants below the lane count.
+vector_shuffle :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    parts := tys.vector_parts(vt) else return error_expr(cx.s, span)
+    len := parts.len
+    usize_t := tys.usize_ty()
+    idx := list(Expr)
+    for a in args {
+        .Positional(e) := a.kind else {
+            cx.error(a.span, "`.shuffle` takes lane indices, written positionally")
+            return error_expr(cx.s, span)
+        }
+        v := cx.expr(&e, usize_t)
+        k: ?u64 = null
+        int_ok := false
+        if v.kind is .Int(_) { int_ok = not (cx.infer.unify(tys, v.ty, usize_t) is !_) }
+        if int_ok {
+            .Int(i) := v.kind else return error_expr(cx.s, span)
+            k = i.to_u64()
+        } else if tys.is_error(v.ty) {
+            return error_expr(cx.s, span)
+        } else if cx.infer.resolve(cx.s, v.ty) is not usize_t {
+            t := cx.infer.resolve(cx.s, v.ty)
+            cx.error(v.span, str.format("a lane index is a `usize`, not `{}`", cx.show(t))!)
+            return error_expr(cx.s, span)
+        } else if .Const(_, at) := v.kind {
+            if cell := const_value(cx.s, at, v.ty) {
+                if .Int(n) := cell.v { k = n.checked(u64) }
+            }
+        }
+        if x := k {
+            if x >= len {
+                cx.error(v.span, str.format("lane {} does not exist: `{}` has lanes 0 to {}", x, cx.show(vt), len - 1)!)
+                return error_expr(cx.s, span)
+            }
+            idx.push(tir.mk(usize_t, .Int(bigint.from_u64(x)), v.span)^)!
+        } else {
+            if .Int(i) := v.kind {
+                cx.error(v.span, str.format("lane {} does not exist: `{}` has lanes 0 to {}", i.to_decimal(), cx.show(vt), len - 1)!)
+                return error_expr(cx.s, span)
+            }
+            cx.error(v.span, "a lane index of `.shuffle` must be a compile-time constant")
+            return error_expr(cx.s, span)
+        }
+    }
+    m := u64(idx.items.len)
+    if msg := cx.s.vector_shape_error(m, parts.elem) {
+        cx.error(span, str.format("`.shuffle` makes a vector of one lane per index: {}", msg)!)
+        return error_expr(cx.s, span)
+    }
+    all := list(Expr)
+    all.push(recv^)!
+    for i in idx.items { all.push(i)! }
+    return tir.mk(tys.simd(m, parts.elem), .Builtin(.Shuffle, all.items), span)
+}
+
+/// `V.load(xs)`: a vector of the first lanes of the slice `xs` (checked: long enough).
+vector_load :: fn(cx: ^FnCx, vt: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    parts := tys.vector_parts(vt) else return error_expr(cx.s, span)
+    if not cx.arity(args, 1, "load", span) { return error_expr(cx.s, span) }
+    s := cx.value_arg(args, 0, tys.slice(true, parts.elem), span)
+    return builtin(.VecLoad, vt, [1]^Expr(s)[..], span)
+}
+
+/// `T(x)` where `T` or `x`'s type is a vector (§6.5), or `null` if neither is. A vector
+/// converts to and from the array of its lanes, and to a vector of as many lanes whose
+/// type each lane converts to losslessly.
+vector_conversion :: fn(cx: ^FnCx, target: Ty, x: ^Expr, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    st := cx.infer.resolve(cx.s, x.ty)
+    if not tys.is_vector(target) and not tys.is_vector(st) { return null }
+    .Array(n, a, _) := tys.kind(st) else {
+        cx.error(span, str.format("cannot convert `{}` to `{}`", cx.show(st), cx.show(target))!)
+        return error_expr(cx.s, span)
+    }
+    .Array(m, b, _) := tys.kind(target) else {
+        cx.error(span, str.format("cannot convert `{}` to `{}`", cx.show(st), cx.show(target))!)
+        return error_expr(cx.s, span)
+    }
+    both := tys.is_vector(st) and tys.is_vector(target)
+    if n is m and a is b and (both or tys.is_positional_array(st) or tys.is_positional_array(target)) {
+        // The same lanes: a vector and its array differ only in alignment.
+        return builtin(.Bits, target, [1]^Expr(x)[..], span)
+    }
+    if both and n is m and lossless(cx.s, a, b) { return builtin(.LaneConvert, target, [1]^Expr(x)[..], span) }
+    why: string = if both and n is m { str.format("; `{}` does not convert to `{}` losslessly", cx.show(a), cx.show(b))! } else { "" }
+    cx.error(span, str.format("cannot convert `{}` to `{}`{}", cx.show(st), cx.show(target), why)!)
+    return error_expr(cx.s, span)
+}

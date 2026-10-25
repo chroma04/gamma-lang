@@ -36,9 +36,12 @@ pub InferTable :: struct {
     vars: List(Var)
     /// Type parameters with a `Num` constraint, at which untyped literals are allowed.
     pub numeric_params: []u32
+    /// The generic struct `Complex` and its instance `Complex(f64)`, the fallback of
+    /// imaginary literals (§6.1), when the core library provides them.
+    pub complex: ?(template: u32, ty: Ty)
 }
 
-infer_table :: fn() -> InferTable needs Alloc => InferTable(vars: list(Var), numeric_params: empty_slice(u32))
+infer_table :: fn() -> InferTable needs Alloc => InferTable(vars: list(Var), numeric_params: empty_slice(u32), complex: null)
 
 /// Unification failed.
 pub Mismatch :: struct {}
@@ -188,8 +191,15 @@ set_fallback :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty, fallback: Fallback
     return null
 }
 
+/// Whether `ty` is `Complex(T)` for some `T`.
+is_complex :: fn(t: ^const InferTable, tys: ^const types.Types, ty: Ty) -> bool {
+    .Adt(id, _) := tys.kind(ty) else return false
+    c := t.complex else return false
+    return tys.template(id) is c.template
+}
+
 compatible :: fn(t: ^const InferTable, tys: ^types.Types, v: ^const Var, ty: Ty) -> bool {
-    if v.kind is .Complex { return false }
+    if v.kind is .Complex { return t.is_complex(tys, ty) }
     if .Param(p) := tys.kind(ty) { return not v.unsigned and p in t.numeric_params }
     is_float := tys.kind(ty) is .Float(_)
     if v.kind is .Float { return is_float }
@@ -267,10 +277,10 @@ unify_structural :: fn(t: ^InferTable, tys: ^types.Types, a, b: Ty) -> Mismatch!
 }
 
 /// The type a variable without a resolution takes.
-fallback_type :: fn(tys: ^types.Types, v: ^const Var) -> Ty needs Alloc {
+fallback_type :: fn(t: ^const InferTable, tys: ^types.Types, v: ^const Var) -> Ty needs Alloc {
     match v.kind {
         .Float => return tys.intern(.Float(64))
-        .Complex => return tys.error()
+        .Complex => return if c := t.complex { c.ty } else { tys.error() }
         .Int => {
             if v.fallback is .Usize { return tys.usize_ty() }
             return if v.unsigned { tys.int(false, 32) } else { tys.int(true, 32) }
@@ -288,7 +298,7 @@ settle_vars :: fn(t: ^InferTable, s: ^Sema, ty: Ty, at: source.Span) -> Ty needs
     for v in vars.items {
         root_ := usize(t.root(v))
         if t.vars.items[root_].resolved is null {
-            t.vars.items[root_].resolved = fallback_type(&s.tys, &t.vars.items[root_])
+            t.vars.items[root_].resolved = fallback_type(t, &s.tys, &t.vars.items[root_])
             t.vars.items[root_].settled_at = at
         }
     }
@@ -300,7 +310,7 @@ apply_fallbacks :: fn(t: ^InferTable, tys: ^types.Types) needs Alloc {
     for i in 0..t.vars.items.len {
         r := usize(t.root(i.trunc(u32)))
         if t.vars.items[r].resolved is null {
-            t.vars.items[r].resolved = fallback_type(tys, &t.vars.items[r])
+            t.vars.items[r].resolved = fallback_type(t, tys, &t.vars.items[r])
         }
     }
 }

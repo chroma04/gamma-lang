@@ -81,9 +81,7 @@ ensure_body :: fn(s: ^Sema, f: u32, span: source.Span) -> bool needs Load {
         check_fn_body(s, body.fn_id, body.module, body.lit)
         return true
     }
-    for c in s.pending_clauses.items {
-        if c.fn_id is f { return true }
-    }
+    if check_pending_clause(s, f) { return true }
     if s.checking.items.index_of(f) is not null {
         s.error(span, str.format("this compile-time evaluation calls `{}`, which depends on it; the cycle cannot be evaluated", sig.name)!)
         return false

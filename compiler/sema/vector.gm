@@ -1,0 +1,101 @@
+// Vector types `#simd [N]T` (§5.6.2) and math vectors `#vec [N]T` (§5.6.3): forming them
+// (mirrors `src/sema/vector.rs` and `mathvec.rs`).
+
+/// The largest vector, in bytes (§5.6.2).
+pub MAX_VECTOR_BYTES :: 64
+
+/// Whether `t` may be the lane type of a vector: a fixed-width integer of 8, 16, 32 or 64
+/// bits, `f32`, `f64` or `bool`.
+pub lane_type_ok :: fn(tys: ^const types.Types, t: Ty) -> bool => match tys.kind(t) {
+    .Int(_, bits) => bits in (8, 16, 32, 64)
+    .Float(bits) => bits in (32, 64)
+    .Bool => true
+    _ => false
+}
+
+/// The size of a lane of type `t` (one of `lane_type_ok`), in bytes.
+pub lane_bytes :: fn(tys: ^const types.Types, t: Ty) -> u64 => match tys.kind(t) {
+    .Int(_, bits) => u64(bits) / 8
+    .Float(bits) => u64(bits) / 8
+    _ => 1
+}
+
+/// Why `len` lanes of `elem` do not make a vector, if they do not.
+pub vector_shape_error :: fn(s: ^Sema, len: u64, elem: Ty) -> ?string needs Load {
+    tys := &s.tys
+    if not lane_type_ok(tys, elem) {
+        return str.format("a vector's lanes are `i8`–`i64`, `u8`–`u64`, `f32`, `f64` or `bool`, not `{}`", s.show(elem))!
+    }
+    if len < 2 or len & (len - 1) is not 0 {
+        return str.format("a vector has a power of two lanes, at least 2, not {}", len)!
+    }
+    bytes := len *| lane_bytes(tys, elem)
+    if bytes > MAX_VECTOR_BYTES {
+        return str.format("a vector holds at most {} bytes; {} lanes of `{}` are {}", MAX_VECTOR_BYTES, len, s.show(elem), bytes)!
+    }
+    return null
+}
+
+/// Why `len` elements of `elem` do not make a math vector, if they do not.
+pub math_vector_shape_error :: fn(s: ^Sema, len: u64, elem: Ty) -> ?string needs Load {
+    if not (s.tys.is_integer(elem) or s.tys.is_float(elem)) {
+        return str.format("a math vector's elements are integers or floats, not `{}`", s.show(elem))!
+    }
+    if len < 2 or len > 4 { return str.format("a math vector has 2, 3 or 4 elements, not {}", len)! }
+    return null
+}
+
+/// `#simd [N]T` or `#vec [N]T`: `attrs` are the attributes before the array type `inner`.
+pub vector_type :: fn(s: ^Sema, module: usize, attrs: []const ast.Attribute, inner: ^const ast.Expr, span: source.Span) -> Ty needs Load {
+    tys := &s.tys
+    for a in attrs {
+        if a.name.name not in ("simd", "vec") {
+            s.error(a.span, str.format("`#{}` cannot precede an array type; only `#simd` and `#vec` can", a.name.name)!)
+            return tys.error()
+        }
+    }
+    math := attrs[0].name.name is "vec"
+    attr := if math { "vec" } else { "simd" }
+    what := if math { "a math vector" } else { "a vector" }
+    example := if math { "#vec [3]f32" } else { "#simd [4]f32" }
+    if attrs.len > 1 or attrs[0].args is not null {
+        s.error(span, str.format("`#{}` takes no arguments and is written once: `#{} [N]T`", attr, attr)!)
+        return tys.error()
+    }
+    arr: ?ast.ArrayTypeExpr = null
+    if .ArrayType(a) := inner.kind and a.len is not null { arr = a }
+    a := arr else {
+        s.error(span, str.format("`#{}` makes {} of an array type with a constant length: `{}`", attr, what, example)!)
+        return tys.error()
+    }
+    len := a.len else return tys.error()
+    elem := s.resolve_type(module, a.elem)
+    if tys.is_error(elem) { return tys.error() }
+    if tys.has_param(elem) {
+        part := if math { "element" } else { "lane" }
+        s.error(span, str.format("{} needs a concrete {} type, not `{}`", what, part, s.show(elem))!)
+        return tys.error()
+    }
+    n: u64 = 0
+    match s.array_len(module, len) {
+        .Known(k) => { n = k }
+        .Param(_) => {
+            part := if math { "length" } else { "lane count" }
+            s.error(len.span, str.format("{}'s {} is a constant, not a compile-time parameter", what, part)!)
+            return tys.error()
+        }
+        .Failed => return tys.error()
+    }
+    if math {
+        if msg := s.math_vector_shape_error(n, elem) {
+            s.error(span, msg)
+            return tys.error()
+        }
+        return tys.math_vec(n, elem)
+    }
+    if msg := s.vector_shape_error(n, elem) {
+        s.error(span, msg)
+        return tys.error()
+    }
+    return tys.simd(n, elem)
+}

@@ -1,0 +1,444 @@
+// Math vectors `#vec [N]T` (§5.6.3) and complex numbers `Complex(T)` (§5.3.1): their
+// operators (§7.4.7), methods and conversions (mirrors `src/sema/mathvec.rs`).
+//
+// A math vector's operator is checked as the scalar operator on each pair of elements and
+// becomes a block that evaluates the operands once and builds the result element by
+// element, so every back end sees only scalar operations and their checks keep the
+// operator's span. A complex operator becomes a call of a function of `core/complex`.
+
+/// True if `t` is the still unresolved type of an imaginary literal (§6.1).
+is_complex_var :: fn(cx: ^FnCx, t: Ty) -> bool needs Alloc => cx.infer.var_kind(&cx.s.tys, t) is .Complex
+
+/// True if `t` is a math vector or a complex number.
+is_compound_number :: fn(cx: ^FnCx, t0: Ty) -> bool needs Load {
+    t := cx.infer.resolve(cx.s, t0)
+    return cx.s.tys.is_math_vector(t) or cx.s.complex_of(t) is not null or cx.is_complex_var(t)
+}
+
+/// The element type of `t` if its arithmetic is one of §7.4.7: a math vector or a
+/// complex number.
+compound_number_elem :: fn(cx: ^FnCx, t: Ty) -> ?Ty needs Load {
+    if p := cx.s.tys.math_vector_parts(t) { return p.elem }
+    return cx.s.complex_of(t)
+}
+
+/// An operand's type for a diagnostic: `T`, or what kind of untyped number it is.
+describe_operand :: fn(cx: ^FnCx, t: Ty) -> string needs Load {
+    match cx.infer.var_kind(&cx.s.tys, t) {
+        .Int => return "an untyped integer"
+        .Float => return "an untyped float"
+        .Complex => return "an untyped complex number"
+        null => {}
+    }
+    return str.format("`{}`", cx.show(cx.infer.resolve(cx.s, t)))!
+}
+
+/// `4j`, `2.5j32`: an untyped complex constant whose real part is zero (§2.5.2).
+imaginary_literal :: fn(cx: ^FnCx, l: ^const syntax.FloatLit, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    ty: Ty = tys.error()
+    if suffix := l.suffix {
+        part := tys.intern(.Float(match suffix {
+            .F16 => 16
+            .F32 => 32
+            .F64 => 64
+        }))
+        if c := cx.s.prelude_template("Complex") { ty = cx.s.instantiate_adt(c, [1]Ty(part)[..]) }
+    } else {
+        ty = cx.literal_var(.Complex)
+    }
+    if cx.infer.complex is null and not tys.is_error(ty) { _ = cx.literal_var(.Complex) }
+    return tir.mk(ty, .UntypedComplex(re: ratio.from_int(bigint.zero()), im: sema.literal_rational(&l.value)), span)
+}
+
+/// The type of a fresh variable for an untyped literal.
+literal_var :: fn(cx: ^FnCx, kind: VarKind) -> Ty needs Load {
+    if kind is .Complex and cx.infer.complex is null {
+        if c := cx.s.prelude_template("Complex") {
+            cx.infer.complex = (template: c, ty: cx.s.instantiate_adt(c, [1]Ty(cx.s.tys.intern(.Float(64)))[..]))
+        }
+    }
+    return cx.infer.new_var(&cx.s.tys, kind)
+}
+
+/// True if `e` is made of constants with operators and mentions a complex constant, so
+/// that it is an untyped complex constant expression to evaluate exactly (§6.2).
+mentions_complex_constant :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+    match e.kind {
+        .Float(l) => return l.imag
+        .Paren(inner) => return cx.mentions_complex_constant(inner)
+        .Unary(_, inner) => return cx.mentions_complex_constant(inner)
+        .Binary(_, lhs, rhs) => return cx.mentions_complex_constant(lhs) or cx.mentions_complex_constant(rhs)
+        .Ident(_), .Field(_) => {
+            if r := cx.try_untyped(e) {
+                if .Ok(v) := r and v is .Complex(_) { return true }
+            }
+            return false
+        }
+        _ => return false
+    }
+}
+
+/// Gives the types of imaginary literals among the operands of `op` (§6.1): from a
+/// complex operand, from a float scalar that scales them, else their fallback.
+settle_complex_operands :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, r: ^Expr, span: source.Span) needs Load {
+    tys := &cx.s.tys
+    lc := cx.is_complex_var(lhs.ty)
+    rc := cx.is_complex_var(r.ty)
+    if not lc and not rc { return }
+    if lc and rc { _ = cx.infer.unify(tys, lhs.ty, r.ty) }
+    for side in 0..2 {
+        var := if side is 0 { lhs.ty } else { r.ty }
+        other0 := if side is 0 { r.ty } else { lhs.ty }
+        var_left := side is 0
+        if not cx.is_complex_var(var) { continue }
+        other := cx.infer.resolve(cx.s, other0)
+        if cx.s.complex_of(other) is not null {
+            _ = cx.infer.unify(tys, var, other)
+        } else if (tys.is_float(other) or tys.kind(other) is .Param(_)) and (op is .Mul(_) or (op is .Div and var_left)) {
+            // `x * 2j` with `x: f32` is a `Complex(f32)`.
+            if c := cx.s.prelude_template("Complex") {
+                t := cx.s.instantiate_adt(c, [1]Ty(other)[..])
+                _ = cx.infer.unify(tys, var, t)
+            }
+        }
+    }
+    for t in [2]Ty(lhs.ty, r.ty) {
+        if cx.is_complex_var(t) { _ = cx.settle(t, span) }
+    }
+}
+
+/// A real untyped constant beside a complex number of type `agg`, as that complex number
+/// with a zero imaginary part (§7.4.7), or `null` if `v` is not one.
+promote_real_constant :: fn(cx: ^FnCx, v: ^Expr, agg: Ty, elem: Ty) -> ?^Expr needs Load {
+    if v.kind not in (.Int(_), .UntypedFloat(_)) { return null }
+    k := cx.infer.var_kind(&cx.s.tys, v.ty)
+    if k is null or k is .Complex { return null }
+    if cx.infer.unify(&cx.s.tys, v.ty, elem) is !_ { return null }
+    zero := tir.mk(elem, .UntypedFloat(ratio.from_int(bigint.zero())), v.span)
+    parts := list(Expr)
+    parts.push(v^)!
+    parts.push(zero^)!
+    return tir.mk(agg, .Aggregate(parts.items), v.span)
+}
+
+/// `lhs op rhs` where an operand is a math vector or a complex number (§7.4.7). Both
+/// operands are checked; `lhs` is evaluated first.
+compound_number_binary :: fn(cx: ^FnCx, op: ast.BinOp, lhs0: ^Expr, r0: ^Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    lhs := lhs0
+    r := r0
+    opn := ast.binop_text(op)
+    cx.settle_complex_operands(op, lhs, r, span)
+    lt := cx.infer.resolve(cx.s, lhs.ty)
+    rt := cx.infer.resolve(cx.s, r.ty)
+    if tys.is_error(lt) or tys.is_error(rt) { return error_expr(cx.s, span) }
+    // `z + 1`, `1 - z`, `1 / z`: a real constant is a complex number (§7.4.7).
+    if op is .Add(.Checked) or op is .Sub(.Checked) or op is .Div {
+        promoted := false
+        if elem := cx.s.complex_of(lt) {
+            if op is not .Div {
+                if p := cx.promote_real_constant(r, lt, elem) {
+                    r = p
+                    rt = lt
+                    promoted = true
+                }
+            }
+        }
+        if not promoted {
+            if elem := cx.s.complex_of(rt) {
+                if p := cx.promote_real_constant(lhs, rt, elem) {
+                    lhs = p
+                    lt = rt
+                }
+            }
+        }
+    }
+    left_is_agg := cx.is_compound_number(lt)
+    agg := if left_is_agg { lt } else { rt }
+    elem := cx.compound_number_elem(agg) else return error_expr(cx.s, span)
+    other := if left_is_agg { rt } else { lt }
+    both := cx.is_compound_number(other)
+    complex := not tys.is_math_vector(agg)
+    what := if complex { "complex numbers" } else { "math vectors" }
+    match op {
+        .Lt, .Le, .Gt, .Ge => {
+            cx.error(span, str.format("{} are not ordered (§7.5)", what)!)
+            return error_expr(cx.s, span)
+        }
+        _ => {}
+    }
+    if op in (ast.BinOp.Add(.Opt), ast.BinOp.Sub(.Opt), ast.BinOp.Mul(.Opt), ast.BinOp.Shl(.Opt)) {
+        cx.error(span, str.format("`{}` is not available on {}: an element cannot be `null`", opn, what)!)
+        return error_expr(cx.s, span)
+    }
+    shift := op is .Shl(_) or op is .Shr
+    if complex and not (op is .Add(.Checked) or op is .Sub(.Checked) or op is .Mul(.Checked) or op is .Div) {
+        cx.error(span, str.format("`{}` does not apply to complex numbers; they have `+`, `-`, `*` and `/` (§7.4.7)", opn)!)
+        return error_expr(cx.s, span)
+    }
+    if shift {
+        // `v << n`: one scalar amount for every element.
+        if not left_is_agg or both {
+            cx.error(span, "a shift takes a math vector on the left and one scalar amount on the right")
+            return error_expr(cx.s, span)
+        }
+        if not cx.infer.require_unsigned(tys, r.ty, .Usize) {
+            cx.error(r.span, str.format("a shift amount must have an unsigned integer type, not `{}`", cx.show(rt))!)
+            return error_expr(cx.s, span)
+        }
+    } else if both {
+        if tys.is_error(cx.unify_operands(lt, rt, span, str.format("the operands of `{}`", opn)!)) { return error_expr(cx.s, span) }
+    } else {
+        // A scalar operand: `*` on either side, `/` on the right (§7.4.7).
+        scales := op is .Mul(_) or (op is .Div and left_is_agg)
+        if not scales {
+            hint: string = match op {
+                .Div => "; divide by a scalar on the right"
+                .Add(_), .Sub(_) => if complex {
+                    "; only a real constant is added to a complex number (§7.4.7): write a variable `x` as `Complex(T)(re: x, im: 0)`"
+                } else {
+                    str.format("; a scalar is not added to {} (§7.4.7): write the other operand as one", what)!
+                }
+                _ => ""
+            }
+            l := cx.describe_operand(lt)
+            rr := cx.describe_operand(rt)
+            cx.error(span, str.format("`{}` takes two `{}`, not {} and {}{}", opn, cx.show(agg), l, rr, hint)!)
+            return error_expr(cx.s, span)
+        }
+        if cx.infer.unify(tys, other, elem) is !_ {
+            shown := cx.describe_operand(cx.infer.resolve(cx.s, other))
+            cx.error(span, str.format("`{}` scales `{}` by its element type `{}`, not by {}", opn, cx.show(agg), cx.show(elem), shown)!)
+            return error_expr(cx.s, span)
+        }
+    }
+    if complex {
+        name: string = match op {
+            .Add(_) => "op_add"
+            .Sub(_) => "op_sub"
+            .Mul(_) => if both { "op_mul" } else { "op_scale" }
+            _ => if both { "op_div" } else { "op_div_scalar" }
+        }
+        // `x * z` is `z * x` with `x` evaluated first.
+        swap := not both and not left_is_agg
+        return cx.complex_call(name, [2]^Expr(lhs, r)[..], swap, span)
+    }
+    n := cx.s.tys.math_vector_parts(agg)?.len
+    stmts := list(tir.Stmt)
+    l := cx.bind_temp(lhs, &stmts)
+    rv := cx.bind_temp(r, &stmts)
+    elems := list(Expr)
+    for i in 0..n {
+        a := if left_is_agg { cx.math_elem(l, elem, i) } else { l }
+        b := if not left_is_agg or both { cx.math_elem(rv, elem, i) } else { rv }
+        e: ^Expr = error_expr(cx.s, span)
+        if shift {
+            cx.obligations.push(.Numeric(NumericObligation(ty: elem, span: span, op: opn, int_only: true, signed_only: false)))!
+            top: tir.BinOp = if .Shl(f) := op { .Shl(f) } else { .Shr }
+            e = tir.mk(elem, .Binary(top, a, b), span)
+        } else {
+            e = cx.arith_op(op, a, b, span)
+        }
+        if tys.is_error(e.ty) { return e }
+        elems.push(e^)!
+    }
+    arr := tir.mk(agg, .Array(elems.items), span)
+    return tir.mk(agg, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+}
+
+/// A unary operator on a math vector or complex number `v` (§7.4.7).
+compound_number_unary :: fn(cx: ^FnCx, op: ast.UnOp, v: ^Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if cx.is_complex_var(v.ty) { _ = cx.settle(v.ty, span) }
+    vt := cx.infer.resolve(cx.s, v.ty)
+    if tys.is_error(vt) { return error_expr(cx.s, span) }
+    p := tys.math_vector_parts(vt) else {
+        if op is .Neg { return cx.complex_call("op_neg", [1]^Expr(v)[..], false, span) }
+        cx.error(span, str.format("`{}` does not apply to complex numbers", if op is .BitNot { "~" } else { "not" })!)
+        return error_expr(cx.s, span)
+    }
+    top: tir.UnOp = .Neg
+    int_only := false
+    signed_only := false
+    s := "-"
+    match op {
+        .Neg => { signed_only = true }
+        .BitNot => {
+            top = .BitNot
+            int_only = true
+            s = "~"
+        }
+        _ => {
+            cx.error(span, str.format("`not` takes a `bool`, not `{}`", cx.show(vt))!)
+            return error_expr(cx.s, span)
+        }
+    }
+    stmts := list(tir.Stmt)
+    x := cx.bind_temp(v, &stmts)
+    elems := list(Expr)
+    for i in 0..p.len {
+        cx.obligations.push(.Numeric(NumericObligation(ty: p.elem, span: span, op: s, int_only: int_only, signed_only: signed_only)))!
+        elems.push(tir.mk(p.elem, .Unary(top, cx.math_elem(x, p.elem, i)), span)^)!
+    }
+    arr := tir.mk(vt, .Array(elems.items), span)
+    return tir.mk(vt, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+}
+
+/// Element `i` of the math vector `v` (a local or a constant).
+math_elem :: fn(cx: ^FnCx, v: ^Expr, elem: Ty, i: u64) -> ^Expr needs Alloc {
+    index := tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(i)), v.span)
+    return tir.mk(elem, .Index(v, index, false), v.span)
+}
+
+/// A call of the function `name` of `core/complex` on checked arguments, evaluated in the
+/// order given; with `swap`, the first two are passed in the other order.
+complex_call :: fn(cx: ^FnCx, name: string, args0: []const ^Expr, swap: bool, span: source.Span) -> ^Expr needs Load {
+    f := cx.core_fn("complex", name) else {
+        cx.error(span, str.format("the complex operation `{}` is missing from the core library", name)!)
+        return error_expr(cx.s, span)
+    }
+    args := list(^Expr)
+    for a in args0 { args.push(a)! }
+    if swap {
+        // The arguments are evaluated in the order written: bind the first one first.
+        stmts := list(tir.Stmt)
+        first := cx.bind_temp(args.items[0], &stmts)
+        call := cx.core_call_values(f, [2]^Expr(args.items[1], first)[..], span)
+        return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
+    }
+    return cx.core_call_values(f, args.items, span)
+}
+
+/// A call of the core function `f` on checked arguments, evaluated in order.
+core_call_values :: fn(cx: ^FnCx, f: u32, args: []const ^Expr, span: source.Span) -> ^Expr needs Load {
+    stmts := list(tir.Stmt)
+    written := list(ast.Arg)
+    for v in args {
+        vt := cx.infer.resolve(cx.s, v.ty)
+        local_name := str.format("<arg{}>", cx.locals.items.len)!
+        local := cx.new_local(local_name, vt, false, v.span)
+        stmts.push(.Let(local, v))!
+        cx.declare(local_name, .Var(local), v.span)
+        id := ast.Ident(name: local_name, span: v.span)
+        e := ast.Expr(id: 0xFFFFFFFF, kind: .Ident(id), span: v.span)
+        written.push(ast.Arg(kind: .Positional(e), span: v.span))!
+    }
+    call := cx.generic_call(f, null, written.items, span)
+    return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
+}
+
+/// A builtin method of the math vector `recv` (§21.3).
+math_vector_method :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, n: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    parts := tys.math_vector_parts(vt) else return error_expr(cx.s, span)
+    len := parts.len
+    elem := parts.elem
+    stmts := list(tir.Stmt)
+    x := cx.bind_temp(recv, &stmts)
+    mul := ast.BinOp.Mul(.Checked)
+    add := ast.BinOp.Add(.Checked)
+    sub := ast.BinOp.Sub(.Checked)
+    match n {
+        "dot", "cross", "min", "max" => {
+            if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+            y0 := cx.value_arg(args, 0, vt, span)
+            y := cx.bind_temp(y0, &stmts)
+            if n is "cross" and len is not 3 {
+                cx.error(span, str.format("`.cross` needs three elements, and `{}` has {}", cx.show(vt), len)!)
+                return error_expr(cx.s, span)
+            }
+            tail: ^Expr = error_expr(cx.s, span)
+            if n is "dot" {
+                acc: ?^Expr = null
+                for i in 0..len {
+                    p := cx.arith_op(mul, cx.math_elem(x, elem, i), cx.math_elem(y, elem, i), span)
+                    acc = if a := acc { cx.arith_op(add, a, p, span) } else { p }
+                }
+                tail = acc else return error_expr(cx.s, span)
+            } else if n is "cross" {
+                elems := list(Expr)
+                for ij in [3](u64, u64)((1, 2), (2, 0), (0, 1)) {
+                    i := ij.0
+                    j := ij.1
+                    p := cx.arith_op(mul, cx.math_elem(x, elem, i), cx.math_elem(y, elem, j), span)
+                    q := cx.arith_op(mul, cx.math_elem(x, elem, j), cx.math_elem(y, elem, i), span)
+                    elems.push(cx.arith_op(sub, p, q, span)^)!
+                }
+                tail = tir.mk(vt, .Array(elems.items), span)
+            } else {
+                op: tir.Builtin = if n is "min" { .Min } else { .Max }
+                elems := list(Expr)
+                for i in 0..len { elems.push(builtin(op, elem, [2]^Expr(cx.math_elem(x, elem, i), cx.math_elem(y, elem, i))[..], span)^)! }
+                tail = tir.mk(vt, .Array(elems.items), span)
+            }
+            return tir.mk(tail.ty, .Block(new(tir.Block(stmts: stmts.items, tail: tail, span: span))!), span)
+        }
+        "abs" => {
+            if not cx.arity(args, 0, n, span) { return error_expr(cx.s, span) }
+            if not (tys.is_signed_integer(elem) or tys.is_float(elem)) {
+                cx.error(span, str.format("`.abs` needs signed integer or float elements, not `{}`", cx.show(elem))!)
+                return error_expr(cx.s, span)
+            }
+            elems := list(Expr)
+            for i in 0..len { elems.push(builtin(.Abs, elem, [1]^Expr(cx.math_elem(x, elem, i))[..], span)^)! }
+            tail := tir.mk(vt, .Array(elems.items), span)
+            return tir.mk(vt, .Block(new(tir.Block(stmts: stmts.items, tail: tail, span: span))!), span)
+        }
+        "norm" => {
+            if not cx.arity(args, 0, n, span) { return error_expr(cx.s, span) }
+            if not tys.is_float(elem) {
+                cx.error(span, str.format("`.norm` needs float elements, not `{}`", cx.show(elem))!)
+                return error_expr(cx.s, span)
+            }
+            acc: ?^Expr = null
+            for i in 0..len {
+                e := cx.math_elem(x, elem, i)
+                p := cx.arith_op(mul, e, e, span)
+                acc = if a := acc { cx.arith_op(add, a, p, span) } else { p }
+            }
+            total := acc else return error_expr(cx.s, span)
+            tail := builtin(.Sqrt, elem, [1]^Expr(total)[..], span)
+            return tir.mk(tail.ty, .Block(new(tir.Block(stmts: stmts.items, tail: tail, span: span))!), span)
+        }
+        _ => {}
+    }
+    hint: string = if n in SLICE_FNS or n in ("get", "first", "last") {
+        str.format("; `v[..]` is a slice of its elements, which has `.{}`", n)!
+    } else {
+        ""
+    }
+    cx.error(span, str.format("math vectors have no method `.{}`; they have `dot`, `cross`, `norm`, `min`, `max` and `abs` (§21.3){}", n, hint)!)
+    return error_expr(cx.s, span)
+}
+
+/// `T(x)` where `T` or `x`'s type is a math vector (§5.6.3), or `null` if neither is: to
+/// and from the array of its elements, and to a math vector of as many elements whose
+/// type each element converts to losslessly.
+math_vector_conversion :: fn(cx: ^FnCx, target: Ty, x: ^Expr, span: source.Span) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    st := cx.infer.resolve(cx.s, x.ty)
+    if not tys.is_math_vector(target) and not tys.is_math_vector(st) { return null }
+    .Array(n, a, _) := tys.kind(st) else {
+        cx.error(span, str.format("cannot convert `{}` to `{}`", cx.show(st), cx.show(target))!)
+        return error_expr(cx.s, span)
+    }
+    .Array(m, b, _) := tys.kind(target) else {
+        cx.error(span, str.format("cannot convert `{}` to `{}`", cx.show(st), cx.show(target))!)
+        return error_expr(cx.s, span)
+    }
+    plain :: fn(ts: ^types.Types, t: Ty) -> bool => ts.kind(t) is .Array(_, _, .Plain)
+    both := tys.is_math_vector(st) and tys.is_math_vector(target)
+    if n is m and a is b and (both or plain(tys, st) or plain(tys, target)) { return builtin(.Bits, target, [1]^Expr(x)[..], span) }
+    if both and n is m and lossless(cx.s, a, b) {
+        stmts := list(tir.Stmt)
+        v := cx.bind_temp(x, &stmts)
+        elems := list(Expr)
+        for i in 0..n { elems.push(builtin(.Convert, b, [1]^Expr(cx.math_elem(v, a, i))[..], span)^)! }
+        arr := tir.mk(target, .Array(elems.items), span)
+        return tir.mk(target, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+    }
+    why: string = if both and n is m { str.format("; `{}` does not convert to `{}` losslessly", cx.show(a), cx.show(b))! } else { "" }
+    cx.error(span, str.format("cannot convert `{}` to `{}`{}", cx.show(st), cx.show(target), why)!)
+    return error_expr(cx.s, span)
+}

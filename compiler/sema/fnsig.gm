@@ -163,7 +163,7 @@ check_distinct :: fn(s: ^Sema, span: source.Span, refs: []const EffectRef) needs
     }
 }
 
-may_coincide :: fn(s: ^const Sema, a, b: ^const EffectRef) -> bool {
+pub may_coincide :: fn(s: ^const Sema, a, b: ^const EffectRef) -> bool {
     if a.eff is not b.eff or types.cmp_ref(a, b) is 0 { return false }
     for i in 0..a.args.len.min(b.args.len) {
         if .Type(x) := a.args[i] and .Type(y) := b.args[i] {
@@ -205,7 +205,7 @@ provably_distinct :: fn(s: ^const Sema, a, b: Ty) -> bool {
 }
 
 /// Whether a parameter's annotation is `effects`: an effect-set parameter (§16.6).
-is_effects_kind :: fn(t: ^const ast.Expr) -> bool {
+pub(package) is_effects_kind :: fn(t: ^const ast.Expr) -> bool {
     .Ident(i) := t.kind else return false
     return i.name is "effects"
 }
@@ -393,7 +393,7 @@ effect_param_named :: fn(s: ^const Sema, e: ^const ast.Expr) -> ?Ty {
 
 /// The argument of an effect-set parameter (§16.6): a set expression `E1 + E2`, a single
 /// effect, a named effect set, or another effect-set parameter.
-resolve_effect_arg :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Load {
+pub(package) resolve_effect_arg :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Load {
     if p := s.effect_param_named(e) { return p }
     if set := s.named_effect_set(module, e) { return s.tys.intern(.Effects(set)) }
     if e.kind is .Binary(.Add(.Checked), _, _) {
