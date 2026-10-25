@@ -336,6 +336,17 @@ pub Sema :: struct {
     /// constant `name` declared at `span`: its id once evaluated, or `null` after
     /// reporting why not (installed by the body checker).
     pub eval_hook: ?^fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, name: string, span: source.Span) -> ?u32 needs Alloc + Fs = null
+    /// The length of an array given by the typed constant expression `e` (installed by
+    /// the body checker).
+    pub length_hook: ?^fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ArrayLen needs Alloc + Fs = null
+    /// The type of the constant expression `e`, for `@type_of(e)` (installed by the body
+    /// checker).
+    pub type_of_hook: ?^fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty needs Alloc + Fs = null
+    /// The array lengths computed from compile-time parameters, with where they are
+    /// written, checked for each instantiation (§16.5).
+    pub len_exprs: List((t: Ty, span: source.Span))
+    /// The messages of the static assertions checked for each instance (§17.7).
+    pub deferred_asserts: List(?[]u8)
     /// The step budget of compile-time evaluations in the declaration being resolved
     /// (§17.3).
     pub fuel: u64 = 50_000_000
@@ -387,6 +398,8 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         const_ids: hash_map.hash_map((source.Span, Ty), u32),
         inst_defs: hash_map.hash_map(u32, tir.FnDef),
         checking: list(u32),
+        len_exprs: list((t: Ty, span: source.Span)),
+        deferred_asserts: list(?[]u8),
     )
     s.effects.push(EffectInfo(name: "..", module: 0, params: empty_slice(u32), ops: empty_slice(OpInfo)))!
     return s

@@ -43,8 +43,8 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         .Unary(op, operand) => return cx.unary(op, operand, expect, span)
         .Binary(op, lhs, rhs) => {
             if op in (ast.BinOp.Range, ast.BinOp.RangeIncl) { return cx.unsupported(span, "range values") }
-            if op in (ast.BinOp.Is, ast.BinOp.IsNot) and (cx.maybe_type(lhs) or cx.maybe_type(rhs)) {
-                return cx.unsupported(span, "`is` on types")
+            if op in (ast.BinOp.Is, ast.BinOp.IsNot) and (cx.type_operand(lhs) or cx.type_operand(rhs)) {
+                return cx.type_is(op is ast.BinOp.IsNot, lhs, rhs, span)
             }
             l := cx.expr(lhs, null)
             return cx.binary_op(op, l, rhs, span)
@@ -139,20 +139,41 @@ expr_kind_text :: fn(k: ^const ast.ExprKind) -> string => match k^ {
     _ => "this kind of expression"
 }
 
-/// Whether `e` may denote a type rather than a value (`T is U`), which gammac does not
-/// check yet.
-maybe_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
-    match e.kind {
-        .Paren(inner) => return cx.maybe_type(inner)
-        .Ident(id) => {
-            if cx.lookup_local(id.name) is not null { return false }
-            if d := cx.s.lookup_module_name(cx.module, id.name) { return cx.s.resolve_decl(d) in (.Type(_), .GenericType(_)) }
-            return sema.is_builtin_type_name(id.name)
+/// Whether `e`, an operand of `is`, denotes a type (`T is U`); `()` is the unit value.
+type_operand :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+    if .Tuple(elems) := e.kind and elems.len is 0 { return false }
+    return cx.denotes_type(e)
+}
+
+/// The type `e` denotes in this body: `@type_of(x)` checks `x` here, without evaluating
+/// it, so its effects do not count.
+resolve_ty :: fn(cx: ^FnCx, e: ^const ast.Expr) -> Ty needs Load {
+    if .Intrinsic(i) := e.kind and i.name.name is "type_of" {
+        if args := i.args and args.len is 1 and .Positional(x) := args[0].kind {
+            performed := cx.performed.items.len
+            v := cx.expr(&x, null)
+            cx.performed.truncate(performed)
+            // The type is needed now, so an untyped literal takes its fallback (§6.1).
+            return cx.settle(v.ty, e.span)
         }
-        .Call(_), .Field(_), .Intrinsic(_) => return false
-        .Tuple(elems) => return elems.len > 0 and cx.s.looks_like_type(cx.module, e)
-        _ => return cx.s.looks_like_type(cx.module, e)
+        cx.error(e.span, "`@type_of(e)` takes one expression")
+        return cx.s.tys.error()
     }
+    return cx.s.resolve_type(cx.module, e)
+}
+
+/// `T is U` and `T is not U`: known now, or per instance where a side mentions a type
+/// parameter (§16.1).
+type_is :: fn(cx: ^FnCx, negated: bool, lhs: ^const ast.Expr, rhs: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    if not cx.denotes_type(lhs) or not cx.denotes_type(rhs) {
+        cx.error(span, "`is` compares a type only with another type")
+        return error_expr(cx.s, span)
+    }
+    a := cx.resolve_ty(lhs)
+    b := cx.resolve_ty(rhs)
+    if cx.s.tys.is_error(a) or cx.s.tys.is_error(b) { return error_expr(cx.s, span) }
+    if cx.s.tys.has_param(a) or cx.s.tys.has_param(b) { return tir.mk(cx.s.tys.bool_ty(), .TypeIs(a, b, negated), span) }
+    return tir.mk(cx.s.tys.bool_ty(), .Bool((a is b) is not negated), span)
 }
 
 /// `null`, typed by the optional it is expected to be.
@@ -708,7 +729,7 @@ type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
             _ => return null
         }
         if cx.s.resolve_decl(d) is not .GenericType(_) { return null }
-        t := cx.s.resolve_type(cx.module, e)
+        t := cx.resolve_ty(e)
         if cx.s.tys.is_error(t) { return null }
         return t
     }

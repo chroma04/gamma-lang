@@ -430,7 +430,14 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
         .Union(_) => return s.declare_adt(module, null, "union", e)
         .Intrinsic(i) => {
             if i.name.name is "type_of" {
-                s.unsupported(e.span, "`@type_of`")
+                if args := i.args and args.len is 1 and .Positional(x) := args[0].kind {
+                    hook := s.type_of_hook else {
+                        s.unsupported(e.span, "`@type_of`")
+                        return tys.error()
+                    }
+                    return hook(s, module, &x)
+                }
+                s.error(e.span, "`@type_of(e)` takes one expression")
                 return tys.error()
             }
         }
@@ -575,15 +582,60 @@ pub array_len :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ArrayLen nee
         .Failed => return .Failed
         null => {
             // A typed constant expression, evaluated now (§7.15).
-            hook := s.eval_hook else {
+            hook := s.length_hook else {
                 s.unsupported(e.span, "array lengths that are typed constant expressions")
                 return .Failed
             }
-            id := hook(s, module, e, s.tys.usize_ty(), "<length>", e.span) else return .Failed
-            cell := s.consts.items[usize(id)].cell else return .Failed
-            .Int(n) := cell.v else return .Failed
-            return .Known(n.trunc(u64))
+            return hook(s, module, e)
         }
+    }
+}
+
+/// Reports the array lengths computed from the parameters bound by `map` that trap for
+/// these arguments (§16.5), such as `[N - 1]T` with `N` = 0.
+pub check_len_exprs :: fn(s: ^Sema, map: []const Subst, at: ?source.Span) needs Load {
+    for i in 0..s.len_exprs.items.len {
+        le := s.len_exprs.items[i]
+        if not s.len_params_bound(le.t, map) or not s.tys.is_error(s.subst(le.t, map)) { continue }
+        names := list(string)
+        s.len_param_names(le.t, map, &names)
+        d := diag.error(le.span, str.format("the array length `{}` overflows or divides by zero with {} (§16.5)", s.show(le.t), str.join(names.items, ", ")!)!)
+        if a := at { d.add_label(a, "instantiated here") }
+        s.emit(d)
+    }
+}
+
+/// Whether every parameter in the length `t` is bound by `map` to an integer value.
+len_params_bound :: fn(s: ^Sema, t: Ty, map: []const Subst) -> bool {
+    match s.tys.kind(t) {
+        .Param(p) => {
+            for m in map {
+                if m.param is p {
+                    if .Value(k) := s.tys.kind(m.ty) { return types.key_u64(k) is not null }
+                    return false
+                }
+            }
+            return false
+        }
+        .LenExpr(_, a, b) => return s.len_params_bound(a, map) and s.len_params_bound(b, map)
+        _ => return true
+    }
+}
+
+/// "`N` = 3" for each parameter of the length `t` bound by `map`, once each.
+len_param_names :: fn(s: ^Sema, t: Ty, map: []const Subst, out: ^List(string)) needs Alloc {
+    match s.tys.kind(t) {
+        .Param(p) => for m in map {
+            if m.param is p {
+                n: string = str.format("`{}` = {}", s.tys.param_name(p), s.show(m.ty))!
+                if n not in out.items { out.push(n)! }
+            }
+        }
+        .LenExpr(_, a, b) => {
+            s.len_param_names(a, map, out)
+            s.len_param_names(b, map, out)
+        }
+        _ => {}
     }
 }
 

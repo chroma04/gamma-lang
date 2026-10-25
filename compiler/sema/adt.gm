@@ -497,6 +497,7 @@ instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Loa
     for i, p in enumerate(info.params) {
         if i < args.len { map.push(Subst(param: p, ty: args[i]))! }
     }
+    s.check_len_exprs(map.items, null)
     s.adt_inst_depth += 1
     kind: AdtKind = match info.kind {
         .Struct(def) => AdtKind.Struct(StructDef(fields: s.subst_fields(def.fields, map.items), packed: def.packed, align: def.align, bits: def.bits))

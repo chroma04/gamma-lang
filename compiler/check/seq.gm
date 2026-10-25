@@ -352,7 +352,10 @@ array_type_construction :: fn(cx: ^FnCx, e: ^const ast.Expr, len_ast: ?^ast.Expr
     if l := len_ast {
         match cx.s.array_len(cx.module, l) {
             .Known(n) => { len = n }
-            .Param(_) => return cx.unsupported(span, "arrays with compile-time parameter lengths")
+            .Param(pl) => {
+                t := cx.s.tys.intern(.ParamArray(pl, elem_ty))
+                return cx.construct_param_array(t, elem_ty, args, span)
+            }
             .Failed => return error_expr(cx.s, span)
         }
     }
@@ -361,7 +364,7 @@ array_type_construction :: fn(cx: ^FnCx, e: ^const ast.Expr, len_ast: ?^ast.Expr
 
 /// The type that a construction (with its prefixes) spells, without the call.
 construction_elem_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
-    t := cx.s.resolve_type(cx.module, without_call(e))
+    t := cx.resolve_ty(without_call(e))
     return if cx.s.tys.is_error(t) { null } else { t }
 }
 
@@ -381,6 +384,17 @@ without_call :: fn(e: ^const ast.Expr) -> ^const ast.Expr needs Alloc {
 
 /// A copy of `e` that the syntax tree may own.
 box_mut :: fn(e: ^const ast.Expr) -> ^ast.Expr needs Alloc => new(e^)!
+
+/// `[N]T(fill: x)` where `N` is a compile-time parameter: the only way to construct such
+/// an array (§16.5).
+construct_param_array :: fn(cx: ^FnCx, t: Ty, elem: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if args.len is 1 and .Named(n, x) := args[0].kind and n.name is "fill" {
+        v := cx.field_value(&x, elem)
+        return tir.mk(t, .ArrayFill(v), span)
+    }
+    cx.error(span, str.format("`{}` has a length that is a compile-time parameter; construct it with `fill:`", cx.show(t))!)
+    return error_expr(cx.s, span)
+}
 
 /// The elements of an array of `len` elements (or as many as given) of type `elem`.
 construct_array :: fn(cx: ^FnCx, ty: ?Ty, len: ?u64, elem: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {

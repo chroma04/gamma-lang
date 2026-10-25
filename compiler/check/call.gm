@@ -77,13 +77,13 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             if t := cx.type_of_name(callee) { return cx.conversion(t, args, span) }
             // `Heap(T, N)(…)` with a wrong type application: the application's error is
             // the only one.
-            if cx.s.looks_like_type(cx.module, callee) and cx.s.tys.is_error(cx.s.resolve_type(cx.module, callee)) { return error_expr(cx.s, span) }
+            if cx.s.looks_like_type(cx.module, callee) and cx.s.tys.is_error(cx.resolve_ty(callee)) { return error_expr(cx.s, span) }
             return cx.call_value(cx.expr(callee, null), args, span)
         }
         .Tuple(es) => {
             // `(i32, string)(…)` constructs a tuple (§7.11).
             if es.len > 0 and cx.s.looks_like_type(cx.module, callee) {
-                t := cx.s.resolve_type(cx.module, callee)
+                t := cx.resolve_ty(callee)
                 if cx.s.tys.is_error(t) { return error_expr(cx.s, span) }
                 return cx.conversion(t, args, span)
             }
@@ -381,7 +381,7 @@ conversion :: fn(cx: ^FnCx, t: Ty, args: []const ast.Arg, span: source.Span) -> 
             return cx.construct_array(t, len, elem, args, span)
         }
         .Optional(inner) => return cx.construct_optional(t, inner, args, span)
-        .ParamArray(_) => return cx.unsupported(span, "this construction")
+        .ParamArray(_, elem) => return cx.construct_param_array(t, elem, args, span)
         _ => {}
     }
     if args.len is not 1 or args[0].kind is not .Positional(_) {

@@ -44,10 +44,7 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
             cx.error(span, str.format("`@{}` takes one `bool`", n)!)
             return error_expr(cx.s, span)
         }
-        "static_assert" => {
-            static_assert(cx.s, cx.module, args, span)
-            return unit(cx.s, span)
-        }
+        "static_assert" => return static_assert(cx.s, cx.module, args, span) else unit(cx.s, span)
         "compile_error" => {
             compile_error(cx.s, cx.module, args, span)
             return error_expr(cx.s, span)
@@ -67,7 +64,7 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
 /// The type argument at position `i` of `@name(…)`, or `null` after an error.
 intrinsic_type_arg :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, i: usize, span: source.Span) -> ?Ty needs Load {
     if i < args.len and .Positional(e) := args[i].kind {
-        t := cx.s.resolve_type(cx.module, &e)
+        t := cx.resolve_ty(&e)
         return if cx.s.tys.is_error(t) { null } else { t }
     }
     cx.error(span, str.format("`@{}` needs a type argument", name)!)

@@ -328,7 +328,7 @@ pub len_expr :: fn(t: ^Types, op: LenOp, lhs, rhs: Ty) -> Ty needs Alloc {
 }
 
 /// The key of the `usize` value `n`.
-usize_key :: fn(t: ^Types, n: u64) -> ConstKey needs Alloc {
+pub usize_key :: fn(t: ^Types, n: u64) -> ConstKey needs Alloc {
     bytes := list(u8)
     for i in 0..8 { bytes.push((n >> u64(i * 8)).trunc(u8))! }
     return .Bytes(t.usize_ty(), bytes.items)

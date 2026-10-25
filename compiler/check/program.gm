@@ -15,7 +15,7 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
                 x := i else continue
                 args := x.args else empty_slice(ast.Arg)
                 match x.name.name {
-                    "static_assert" => static_assert(s, o.module, args, e.span)
+                    "static_assert" => { _ = static_assert(s, o.module, args, e.span) }
                     // In a taken `when` branch, typically (§3.6, §20.3).
                     "compile_error" => compile_error(s, o.module, args, e.span)
                     _ => s.error(o.item.span, "only `@static_assert` may appear as a top-level declaration")
@@ -62,6 +62,7 @@ produce_instance :: fn(s: ^Sema, req: sema.MonoRequest) needs Load {
     for i, g in enumerate(s.fns.items[usize(req.generic)].generics) { map.push(sema.Subst(param: g, ty: req.args[i]))! }
     outer := s.mono_depth
     s.mono_depth = req.depth
+    s.check_len_exprs(map.items, req.span)
     mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false)
     mc.fn_map.push(FnPair(from: req.generic, to: req.instance))!
     locals := list(tir.LocalDecl)
@@ -161,6 +162,11 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
             ot := s.subst(of, mc.map)
             e.kind = if s.tys.has_param(ot) { .TypeName(ot) } else { .Str(s.show(ot)) }
         }
+        .TypeIs(a, b, negated) => {
+            sa := s.subst(a, mc.map)
+            sb := s.subst(b, mc.map)
+            e.kind = if s.tys.has_param(sa) or s.tys.has_param(sb) { .TypeIs(sa, sb, negated) } else { .Bool((sa is sb) is not negated) }
+        }
         _ => {}
     }
     if .UntypedFloat(r) := e.kind {
@@ -210,6 +216,12 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     }
     if e.kind is .WriteDeferred(_) {
         resolve_write(s, mc, e)
+        return
+    }
+    // A static assertion of the generic body, checked for this instance.
+    if .Builtin(.StaticAssert(id), args) := e.kind {
+        check_static_assert(s, &args[0], s.deferred_asserts.items[usize(id)], e.span, mc.span)
+        e^ = unit(s, e.span)^
         return
     }
     // `.bits` between types that mention parameters is size-checked per instance (§6.6).
