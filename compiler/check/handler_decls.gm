@@ -1,0 +1,142 @@
+// Handler declarations `handler E for T needs A { … }` (§12.6): declared before the
+// function bodies are checked, so that `with` finds them, and their clauses checked
+// after (mirrors `src/sema/handler_decl.rs`). Declarations for generic types and
+// handlers of `ctl` operations are reported as unsupported.
+
+/// Declares the handler declarations of the program and of the libraries it uses.
+declare_handlers :: fn(s: ^Sema) needs Load {
+    for o in s.l.other_items.items {
+        .Handler(h) := o.item.kind else continue
+        declare_handler(s, o.module, h)
+    }
+}
+
+declare_handler :: fn(s: ^Sema, module: usize, h: ^const ast.HandlerDecl) needs Load {
+    prelude := s.l.modules.items[module].is_prelude
+    if h.params is not null {
+        s.handler_templates = true
+        if not prelude { s.unsupported(h.span, "handler declarations for generic types") }
+        return
+    }
+    r := s.resolve_effect_ref(module, h.effect_)
+    for_ty := s.resolve_type(module, h.for_ty)
+    effects := types.empty_effects()
+    if list_ := h.effects { effects = s.resolve_effect_list(module, list_) }
+    eref := r else return
+    if s.tys.is_error(for_ty) { return }
+    info := s.effects.items[usize(eref.eff)]
+    if info.params.len > 0 and not prelude {
+        s.unsupported(h.span, "handlers of generic effects")
+        return
+    }
+    for o in info.ops {
+        if o.kind is .Ctl and not prelude {
+            s.unsupported(h.span, "handlers of `ctl` operations")
+            return
+        }
+    }
+    // No type may match two declarations of one effect (§12.6).
+    for d in s.handler_decls.items {
+        if types.cmp_ref(&d.effect_, &eref) is 0 and d.for_ty is for_ty {
+            s.error(h.span, str.format("a handler of `{}` that applies to `{}` is already declared; a type may match only one declaration of an effect", info.name, s.show(for_ty))!)
+            return
+        }
+    }
+    for c in h.clauses {
+        known := false
+        for o in info.ops {
+            if o.name is c.name.name { known = true }
+        }
+        if not known { s.error(c.name.span, str.format("`{}` has no operation `{}`", info.name, c.name.name)!) }
+    }
+    clauses := list(u32)
+    for o in info.ops {
+        ci := decl_clause(h, o.name) else {
+            s.error(h.span, str.format("this handler has no clause for the operation `{}`", o.name)!)
+            continue
+        }
+        // The first clause parameter is the handler value itself.
+        params := list(sema.ParamInfo)
+        params.push(sema.ParamInfo(name: "self", ty: for_ty, span: h.for_ty.span, default: null, generic: null, rest: false))!
+        for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: p.ty, span: p.span, default: null, generic: null, rest: false))! }
+        fn_id := s.new_nested_fn(.Clause, o.name, h.clauses[ci].span, module, params.items, o.ret, effects)
+        clauses.push(fn_id)!
+        if not prelude { s.pending_clauses.push(sema.PendingClause(module: module, clause: &h.clauses[ci], fn_id: fn_id, kind: o.kind))! }
+    }
+    s.handler_decls.push(sema.HandlerDeclInfo(effect_: eref, for_ty: for_ty, effects: effects, clauses: clauses.items))!
+}
+
+decl_clause :: fn(h: ^const ast.HandlerDecl, name: string) -> ?usize {
+    for i in 0..h.clauses.len {
+        if h.clauses[i].name.name is name { return i }
+    }
+    return null
+}
+
+/// Checks the bodies of the clauses of handler declarations.
+check_handler_clauses :: fn(s: ^Sema) needs Load {
+    for i in 0..s.pending_clauses.items.len {
+        p := s.pending_clauses.items[i]
+        sig := s.fns.items[usize(p.fn_id)]
+        c := p.clause
+        cx := fn_cx(s, p.module, sig.ret, sig.effects)
+        cx.fn_id = p.fn_id
+        cx.clause = ClauseInfo(op_kind: p.kind, handler_: null, decl_clause: p.fn_id, with_expect: null)
+        if c.params.len is not sig.params.len {
+            cx.error(c.span, str.format("the clause for `{}` takes {} parameters (the first is the handler value)", c.name.name, sig.params.len)!)
+        }
+        ids := list(u32)
+        for k, param in enumerate(sig.params) {
+            name := if k < c.params.len { c.params[k].name } else { param.name }
+            at := if k < c.params.len { c.params[k].span } else { c.span }
+            id := cx.new_local(name, param.ty, false, at)
+            if name is not "_" { cx.declare(name, .Var(id), at) }
+            ids.push(id)!
+        }
+        body := match c.body.kind {
+            .Block(b) => cx.block_expected(&b, true, sig.ret)
+            _ => cx.expr(c.body, sig.ret)
+        }
+        if s.tys.kind(body.ty) is not .Never { body = cx.coerce(body, sig.ret) }
+        // The types of untyped literals given to `break` are known now.
+        for j in 0..s.decl_clause_breaks.items.len {
+            b := &s.decl_clause_breaks.items[j]
+            if b.fn_id is p.fn_id { b.ty = cx.settle(b.ty, b.span) }
+        }
+        cx.finish(body)
+        def := &s.defs.items[usize(p.fn_id)]
+        def.params = ids.items
+        def.locals = cx.locals.items
+        def.body = body
+    }
+    s.pending_clauses.clear()
+}
+
+/// A `break` in a clause of a handler declaration exits the `with` that installed the
+/// handler, so its value must have that `with`'s type (§12.7).
+check_decl_breaks :: fn(s: ^Sema) needs Load {
+    reported := list(source.Span)
+    for w in s.decl_with_checks.items {
+        for d in w.decls {
+            for f in s.handler_decls.items[usize(d)].clauses {
+                for b in s.decl_clause_breaks.items {
+                    if b.fn_id is not f or b.ty is w.ty { continue }
+                    if s.tys.kind(b.ty) is .Never or s.tys.is_error(b.ty) or b.span in reported.items { continue }
+                    reported.push(b.span)!
+                    e := diag.error(b.span, str.format("this `break` gives a `with` a `{}`, but the `with` has the type `{}` (§12.7)", s.show(b.ty), s.show(w.ty))!)
+                    e.add_label(w.span, "the `with` that installs the handler")
+                    s.emit(e)
+                }
+            }
+        }
+    }
+}
+
+/// The handler declarations for values of type `t`.
+handlers_for :: fn(cx: ^FnCx, t: Ty) -> []u32 needs Load {
+    out := list(u32)
+    for i, d in enumerate(cx.s.handler_decls.items) {
+        if d.for_ty is t { out.push(i.trunc(u32))! }
+    }
+    return out.items
+}

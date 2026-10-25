@@ -59,11 +59,13 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   Closure, nested fns finished in `finish`), call_value/Callee.Indirect, and `with` +
   handler literals (check/handlers.gm; ClauseInfo per frame, find_jump across frames,
   Target.InstallingWith, LabelBreak.depth, FnCx.handler_breaks, return_target levels).
-  Unsupported there: generic effects, ctl ops, `with … on`, handler decls, `with` in
-  generic fns, handler literals bound to locals. 223 SAME / 0 DIFF.
-  Sole-blocker roots now: handler decls 19 (+8 with local when), iterators 16 (+21 with
-  yield), tests 14, `with … on` 13, vector types 10, intrinsic calls 9, #bits 7.
-  Handler decls = src/sema/handler_decl.rs (~500 lines; clauses checked after bodies).
+  Handler decls (check/handler_decls.gm: declared before main, clauses checked after
+  bodies, Sema.handler_decls/pending_clauses/decl_clause_breaks/decl_with_checks; only
+  non-generic, templates just set Sema.handler_templates). Unsupported: generic effects,
+  ctl ops, `with … on`, handler decls for generic types, `with` in generic fns, handler
+  literals bound to locals (Rust pending_handlers, 5 roots). 239 SAME / 0 DIFF.
+  Sole-blocker roots now: iterators 18 (+23 with yield, +10 yield+local when), tests 15,
+  `with … on` 14, vector types 10, intrinsic calls 10, local when 8, @size_of(T) 8.
 - Survey script: $SP/one.sh per root (gammac tir vs gamma tir --diag-format=json), xargs
   -P6 over roots.txt (= program_roots); rewrite if scratch is gone (~60 s).
 - Biggest remaining buckets after s38g (roots mentioning): intrinsics 225 (+@size_of

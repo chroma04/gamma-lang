@@ -106,6 +106,40 @@ pub PendingConst :: struct {
     pub ty: Ty
 }
 
+/// A handler declaration `handler E for T needs A { … }` for a non-generic type (§12.6).
+pub HandlerDeclInfo :: struct {
+    pub effect_: EffectRef
+    pub for_ty: Ty
+    /// The effects its clauses perform, where the `with` installing it is.
+    pub effects: EffectSet
+    /// By operation; an operation without a clause has none.
+    pub clauses: []u32
+}
+
+/// A clause of a handler declaration whose body is still to be checked.
+pub PendingClause :: struct {
+    pub module: usize
+    pub clause: ^const ast.Clause
+    pub fn_id: u32
+    pub kind: ast.OpKind
+}
+
+/// A `break` in a clause of a handler declaration, which exits the `with` installing
+/// the handler (§12.7).
+pub DeclBreak :: struct {
+    pub fn_id: u32
+    pub ty: Ty
+    pub span: source.Span
+}
+
+/// A `with` installing handler declarations, whose clauses' `break`s must give values of
+/// its type.
+pub DeclWithCheck :: struct {
+    pub decls: []u32
+    pub ty: Ty
+    pub span: source.Span
+}
+
 pub InlineFn :: struct {
     pub fn_id: u32
     pub span: source.Span
@@ -246,6 +280,12 @@ pub Sema :: struct {
     pub pending_consts: List(PendingConst)
     /// The handler literals of the bodies checked so far (§12.5).
     pub handlers: List(tir.HandlerLit)
+    pub handler_decls: List(HandlerDeclInfo)
+    /// Whether a handler declaration for a generic type was seen.
+    pub handler_templates: bool
+    pub pending_clauses: List(PendingClause)
+    pub decl_clause_breaks: List(DeclBreak)
+    pub decl_with_checks: List(DeclWithCheck)
     /// The functions marked `#inline` (§11.10), and where.
     pub inline_fns: List(InlineFn)
     /// By effect id; the first is the pseudo-effect of `..E` terms.
@@ -289,6 +329,11 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         pending_bodies: list(PendingBody),
         pending_consts: list(PendingConst),
         handlers: list(tir.HandlerLit),
+        handler_decls: list(HandlerDeclInfo),
+        handler_templates: false,
+        pending_clauses: list(PendingClause),
+        decl_clause_breaks: list(DeclBreak),
+        decl_with_checks: list(DeclWithCheck),
         inline_fns: list(InlineFn),
         effects: list(EffectInfo),
         adts: list(AdtInfo),

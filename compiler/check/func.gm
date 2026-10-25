@@ -57,8 +57,10 @@ Frame :: struct {
 /// The handler clause a frame checks.
 ClauseInfo :: struct {
     op_kind: ast.OpKind
-    /// The handler literal it belongs to.
-    handler_: u32
+    /// The handler literal it belongs to, or the function of the clause of a handler
+    /// declaration.
+    handler_: ?u32
+    decl_clause: ?u32
     /// The type of the value of the `with` that installs the handler, which its
     /// `break`s give.
     with_expect: ?Ty

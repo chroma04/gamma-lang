@@ -185,6 +185,15 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
                         d.write_line(depth + 1, "handler")
                         d.write_expr(depth + 2, x)
                     }
+                    .Decl(decls, x) => {
+                        names := list(string)
+                        for i in decls {
+                            hd := s.handler_decls.items[usize(i)]
+                            names.push(str.format("{} for {}", s.tys.show_ref(&hd.effect_), s.show(hd.for_ty))!)!
+                        }
+                        d.write_line(depth + 1, str.format("handlers {}", str.join(names.items, ", ")!)!)
+                        d.write_expr(depth + 2, x)
+                    }
                 }
             }
             if x := w.on {

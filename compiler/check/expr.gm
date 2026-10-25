@@ -966,7 +966,8 @@ break_expr :: fn(cx: ^FnCx, label: ?ast.Ident, value: ?^ast.Expr, span: source.S
             c := cx.clause else return error_expr(cx.s, span)
             v := cx.break_value(value, c.with_expect)
             ty := if x := v { if t := c.with_expect { t } else { x.ty } } else { cx.s.tys.unit() }
-            cx.handler_breaks.push(HandlerBreak(handler_: c.handler_, ty: ty, span: span))!
+            if h := c.handler_ { cx.handler_breaks.push(HandlerBreak(handler_: h, ty: ty, span: span))! }
+            if f := c.decl_clause { cx.s.decl_clause_breaks.push(sema.DeclBreak(fn_id: f, ty: cx.infer.resolve(cx.s, ty), span: span))! }
             return tir.mk(nv, .Break(tir.BreakExpr(target: .InstallingWith, value: v)), span)
         }
         .ClauseReturn(_) => return error_expr(cx.s, span)
