@@ -35,6 +35,13 @@ pub ExprKind :: union {
     Uninit
     /// A compile-time value parameter of a generic function, by its id (§16.5).
     ValueParam: u32
+    /// `@size_of(T)` or (`align`) `@align_of(T)` of a type that mentions a type parameter,
+    /// known per instance (§16.1).
+    SizeOf: (of: Ty, align: bool)
+    /// `@max_value(T)` or `@min_value(T)` of a type parameter.
+    IntLimit: (of: Ty, max: bool)
+    /// `@type_name(T)` of a type that mentions a type parameter.
+    TypeName: Ty
     /// A constant in static memory: a typed top-level constant, or a default value
     /// (`<default>`), by its name and place.
     Const: (name: string, span: source.Span)

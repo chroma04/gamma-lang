@@ -19,7 +19,8 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
         "sqrt", "fma", "clz", "ctz", "popcount", "bswap", "bitreverse", "rotl", "rotr" => return cx.numeric_intrinsic(n, args, span)
         "type_name" => {
             t := cx.intrinsic_type_arg(n, args, 0, span) else return error_expr(cx.s, span)
-            if cx.s.tys.has_param(t) { return cx.unsupported(span, "`@type_name` of a type parameter") }
+            // Named in each instance (§16.1).
+            if cx.s.tys.has_param(t) { return tir.mk(cx.s.tys.string_ty(), .TypeName(t), span) }
             return tir.mk(cx.s.tys.string_ty(), .Str(cx.show(t)), span)
         }
         _ => return cx.unsupported(span, if n is "size_of" { "`@size_of`" } else { "intrinsic calls" })
@@ -43,7 +44,7 @@ layout_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: sou
         cx.error(span, str.format("`never` has no values, so `@{}` does not apply to it", name)!)
         return error_expr(cx.s, span)
     }
-    if cx.s.tys.has_param(t) { return cx.unsupported(span, str.format("`@{}` of a type parameter", name)!) }
+    if cx.s.tys.has_param(t) { return tir.mk(cx.s.tys.usize_ty(), .SizeOf(t, name is "align_of"), span) }
     l := cx.s.layout(t)
     v := if name is "size_of" { l.size } else { l.align }
     return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(v)), span)
@@ -53,7 +54,13 @@ layout_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: sou
 limit_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     t := cx.intrinsic_type_arg(name, args, 0, span) else return error_expr(cx.s, span)
     tys := &cx.s.tys
-    if tys.kind(t) is .Param(_) { return cx.unsupported(span, str.format("`@{}` of a type parameter", name)!) }
+    if .Param(p) := tys.kind(t) {
+        if not cx.s.param_has(p, .Int) {
+            cx.error(span, str.format("`@{}({})` needs `where Int({})`", name, cx.show(t), cx.show(t))!)
+            return error_expr(cx.s, span)
+        }
+        return tir.mk(t, .IntLimit(t, name is "max_value"), span)
+    }
     signed := false
     bits: u64 = 0
     match tys.kind(t) {
