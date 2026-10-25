@@ -2204,10 +2204,13 @@ Storage comes from four places:
 | fiber stack | locals of code running on a fiber | as automatic, on the fiber's stack (§14.1) |
 | allocated | an allocator (§15.2) | freed through the same allocator |
 
-Using a pointer to an object after its lifetime ends is undefined behavior (§18.4). Gamma does not track lifetimes in general; it rejects only the direct cases:
+Using a pointer to an object after its lifetime ends is undefined behavior (§18.4). Gamma does not track lifetimes in general; it rejects only the cases where an address certainly outlives its object. With `x` a local or parameter of the function, and *an address of `x`* meaning `&x` (or `&` of a field or element of `x`), `x[..]` or a slice of an array `x`, those are:
 
-- returning `&x`, `x[..]`, or a slice of `x`, where `x` is a local or parameter of the returning function;
+- returning an address of `x`, by itself or held in another value (a tuple, struct, array, variant or error);
+- storing an address of `x`, by itself or held in another value, by assignment to a place that outlives `x`: one rooted at a local declared in an enclosing scope, at a local of an enclosing function (from a function literal or nested function, §11.6), or at a `#global`;
 - returning a second-class value (always rejected, §11.6).
+
+Every local lives until the end of the block, arm or condition that declares it, so these rules matter most for the bindings of a loop and of patterns: a loop variable or pattern binding is a copy of the element or payload, and its storage is gone after its scope, or reused by the next iteration. A pointer into the original is written `&xs[i]`. Storing an address through a pointer or a slice, or passing it to a function that may keep it, is not rejected, since the target may live no longer than `x`; `gamma lint` reports the likely cases (`dangling-address`).
 
 *Note:* Debug builds poison freed allocations and dead stack frames, which detects most other dangling uses (§18.3).
 

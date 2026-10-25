@@ -1,0 +1,301 @@
+// Dangling addresses (§15.1): the address of a local, or a slice of a local array, kept
+// where it certainly outlives the local, which is a compile error (mirrors
+// `src/sema/lint_escape.rs`). The cases where it only may are the reference
+// implementation's `dangling-address` lint, which gammac does not run; they are followed
+// all the same, so that each address is judged once, as there.
+
+/// How long a place lives, as the depth of the scope that holds it; storage reached
+/// through a pointer, a slice or a global outlives every scope of the function.
+OUTER :: -1i64
+/// The depth of a local not declared yet.
+UNKNOWN :: -2i64
+
+/// Reports the addresses kept where they certainly outlive their local, in every function
+/// but the instances of generic ones, which repeat their template's.
+check_dangling_addresses :: fn(s: ^Sema) needs Alloc {
+    found := list(Dangling)
+    for i in 0..s.defs.items.len {
+        if s.fns.items[i].instance is not null { continue }
+        def := &s.defs.items[i]
+        body := def.body else continue
+        depth := list(i64)
+        for _ in def.locals { depth.push(UNKNOWN)! }
+        for p in def.params { depth.items[usize(p)] = 0 }
+        w := DWalk(s: s, def: def, depth: depth, cur: 0, out: &found, reported: list(source.Span))
+        w.d_expr(body, true)
+    }
+    for f in found.items {
+        if not f.certain { continue }
+        d := diag.error(f.span, dangling_message(f.name, f.why))
+        d.add_label(f.local, str.format("`{}` lives until the end of its scope", f.name)!)
+        d.add_note("a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope (§15.1); point into the original (`&items[i]`), or keep the value instead")
+        s.emit(d)
+    }
+}
+
+dangling_message :: fn(name: string, why: string) -> string needs Alloc => match why {
+    "stored" => str.format("this address of `{}` is stored where it outlives `{}`", name, name)!
+    "returned" => str.format("this address of `{}` is returned, but `{}` ends with the call", name, name)!
+    _ => str.format("this address of `{}` is passed to a call that may keep it after `{}` ends", name, name)!
+}
+
+/// An address of local `name` (declared at `local`), taken at `span`, kept as `why` says.
+Dangling :: struct {
+    span: source.Span
+    name: string
+    local: source.Span
+    why: string
+    certain: bool
+}
+
+DWalk :: struct {
+    s: ^Sema
+    def: ^const tir.FnDef
+    /// The scope depth of each local declared so far.
+    depth: List(i64)
+    cur: i64
+    out: ^List(Dangling)
+    reported: List(source.Span)
+}
+
+/// An address held by a value: where it is taken, of which local, and whether it is
+/// inside another value.
+Held :: struct {
+    span: source.Span
+    local: u32
+    inside: bool
+}
+
+/// How long a place lives, and whether that is certain.
+Storage :: struct {
+    depth: i64
+    certain: bool
+}
+
+d_declare :: fn(w: ^DWalk, l: u32) { w.depth.items[usize(l)] = w.cur }
+
+d_declare_pat :: fn(w: ^DWalk, p: ^tir.Pat) {
+    match p.kind {
+        .Bind(l) => w.d_declare(l)
+        .Some(q), .Ok(q), .Err(q) => w.d_declare_pat(q)
+        .Variant(_, q) => w.d_declare_pat(q)
+        .Fields(fs) => for f in fs { w.d_declare_pat(f.pat) }
+        .Or(ps) => for q in ps { w.d_declare_pat(q) }
+        _ => {}
+    }
+}
+
+/// The local a place is rooted at, through fields and array elements.
+d_root :: fn(s: ^Sema, e: ^Expr) -> ?u32 {
+    match e.kind {
+        .Local(l) => return l
+        .Field(base, _) => return d_root(s, base)
+        .Index(base, _, _) => if s.tys.kind(base.ty) in (.Array(_), .ParamArray(_)) { return d_root(s, base) }
+        .Slice(sl) => if s.tys.kind(sl.base.ty) in (.Array(_), .ParamArray(_)) { return d_root(s, sl.base) }
+        _ => {}
+    }
+    return null
+}
+
+/// How long the storage of place `p` lives, or `null` for a place not judged (a
+/// temporary); storage reached through a pointer or a slice may also be a local of this
+/// function.
+d_storage :: fn(w: ^DWalk, p: ^Expr) -> ?Storage {
+    match p.kind {
+        .Local(l) => {
+            d := w.depth.items[usize(l)]
+            if d is UNKNOWN { return null }
+            return Storage(depth: d, certain: true)
+        }
+        .Upvar(_), .Global(_) => return Storage(depth: OUTER, certain: true)
+        .Deref(_) => return Storage(depth: OUTER, certain: false)
+        .Field(base, _) => return w.d_storage(base)
+        .Index(base, _, _) => {
+            if w.s.tys.kind(base.ty) in (.Array(_), .ParamArray(_)) { return w.d_storage(base) }
+            return Storage(depth: OUTER, certain: false)
+        }
+        .Slice(sl) => {
+            if w.s.tys.kind(sl.base.ty) in (.Array(_), .ParamArray(_)) { return w.d_storage(sl.base) }
+            return Storage(depth: OUTER, certain: false)
+        }
+        _ => return null
+    }
+}
+
+/// The addresses of locals that the value of `e` holds; `inside` is whether `e` is itself
+/// inside another value.
+d_held :: fn(s: ^Sema, e: ^Expr, inside: bool, out: ^List(Held)) needs Alloc {
+    match e.kind {
+        .AddrOf(p) => if l := d_root(s, p) { out.push(Held(span: e.span, local: l, inside: inside))! }
+        .Slice(sl) => if s.tys.kind(sl.base.ty) is .Array(_) {
+            if l := d_root(s, sl.base) { out.push(Held(span: e.span, local: l, inside: inside))! }
+        }
+        .Coerce(_, x) => d_held(s, x, inside, out)
+        .MakeErr(x) => d_held(s, x, true, out)
+        .Aggregate(xs), .Array(xs) => for i in 0..xs.len { d_held(s, &xs[i], true, out) }
+        .Variant(v) => if x := v.payload { d_held(s, x, true, out) }
+        .Block(b) => if t := b.tail { d_held(s, t, inside, out) }
+        .If(x) => {
+            d_held(s, x.then, inside, out)
+            if el := x.else_ { d_held(s, el, inside, out) }
+        }
+        _ => {}
+    }
+}
+
+d_report :: fn(w: ^DWalk, at: source.Span, l: u32, why: string, certain: bool) needs Alloc {
+    local := w.def.locals[usize(l)]
+    if at is source.DUMMY or local.name.starts_with("<") or at in w.reported.items { return }
+    w.reported.push(at)!
+    w.out.push(Dangling(span: at, name: local.name, local: local.span, why: why, certain: certain))!
+}
+
+/// Reports the addresses that `value` holds of locals that `target` (a lifetime)
+/// outlives; `certain` if the target's lifetime is.
+d_check_store :: fn(w: ^DWalk, value: ^Expr, target: i64, why: string, certain: bool) needs Alloc {
+    held := list(Held)
+    d_held(w.s, value, false, &held)
+    for h in held.items {
+        // Returning the address itself is rejected by `check_escapes`.
+        if why is "returned" and not h.inside { continue }
+        d := w.depth.items[usize(h.local)]
+        if d is not UNKNOWN and target < d { w.d_report(h.span, h.local, why, certain) }
+    }
+}
+
+d_call :: fn(w: ^DWalk, c: u32, args: []Expr) needs Alloc {
+    template := c
+    if inst := w.s.fns.items[usize(c)].instance { template = inst.template }
+    params := list(Ty)
+    for p in w.s.fns.items[usize(template)].params {
+        if p.generic is null { params.push(p.ty)! }
+    }
+    // The longest-lived storage that the call may write to, through a mutable pointer.
+    target: ?i64 = null
+    for i in 0..args.len {
+        a := &args[i]
+        if .Ptr(c2, _) := w.s.tys.kind(a.ty) and not c2 {
+            t: ?i64 = OUTER
+            if .AddrOf(p) := a.kind {
+                t = null
+                if st := w.d_storage(p) { t = st.depth }
+            }
+            if x := t {
+                if cur := target {
+                    if x < cur { target = x }
+                } else {
+                    target = x
+                }
+            }
+        }
+    }
+    t := target else return
+    for i in 0..args.len.min(params.items.len) {
+        if w.s.tys.kind(params.items[i]) is .Param(_) { w.d_check_store(&args[i], t, "passed to be stored", false) }
+    }
+}
+
+/// Walks `e`; `tail` is whether its value is the function's result.
+d_expr :: fn(w: ^DWalk, e: ^Expr, tail: bool) needs Alloc {
+    match e.kind {
+        .Block(b) => {
+            w.cur += 1
+            for st in b.stmts { w.d_stmt(st) }
+            if t := b.tail { w.d_expr(t, tail) }
+            w.cur -= 1
+            return
+        }
+        .Return(levels, value) => if levels is 0 {
+            w.d_check_store(value, OUTER, "returned", true)
+            w.d_expr(value, false)
+            return
+        }
+        .Match(scrutinee, arms) => {
+            w.d_expr(scrutinee, false)
+            for a in arms {
+                w.cur += 1
+                w.d_declare_pat(a.pat)
+                if g := a.guard { w.d_expr(g, false) }
+                w.d_expr(a.body, tail)
+                w.cur -= 1
+            }
+            return
+        }
+        .If(x) => {
+            w.cur += 1
+            w.d_cond(x.cond)
+            w.d_expr(x.then, tail)
+            w.cur -= 1
+            if el := x.else_ { w.d_expr(el, tail) }
+            return
+        }
+        .Loop(x) => {
+            w.cur += 1
+            w.d_cond(x.cond)
+            w.d_block(x.body)
+            if st := x.step { w.d_expr(st, false) }
+            w.cur -= 1
+            return
+        }
+        .Else(x) => {
+            w.d_expr(x.lhs, false)
+            w.cur += 1
+            if l := x.capture { w.d_declare(l) }
+            w.d_expr(x.rhs, tail)
+            w.cur -= 1
+            return
+        }
+        .Call(.Fn(c), args) => w.d_call(c, args)
+        _ => {}
+    }
+    if tail { w.d_check_store(e, OUTER, "returned", true) }
+    tir.for_each_child(e, fn(c: ^Expr) { w.d_expr(c, false) })
+}
+
+d_block :: fn(w: ^DWalk, b: ^tir.Block) needs Alloc {
+    w.cur += 1
+    for st in b.stmts { w.d_stmt(st) }
+    if t := b.tail { w.d_expr(t, false) }
+    w.cur -= 1
+}
+
+d_cond :: fn(w: ^DWalk, cond: []tir.CondPart) needs Alloc {
+    for c in cond {
+        match c {
+            .Bool(x) => w.d_expr(x, false)
+            .Match(p, v) => {
+                w.d_expr(v, false)
+                w.d_declare_pat(p)
+            }
+        }
+    }
+}
+
+d_stmt :: fn(w: ^DWalk, st: tir.Stmt) needs Alloc {
+    match st {
+        .Let(l, null) => w.d_declare(l)
+        .Let(l, x) => {
+            w.d_expr(x, false)
+            w.d_declare(l)
+        }
+        .LetTuple(ls, x) => {
+            w.d_expr(x, false)
+            for l in ls {
+                if id := l { w.d_declare(id) }
+            }
+        }
+        .Assign(place, value) => {
+            w.d_expr(place, false)
+            w.d_expr(value, false)
+            if t := w.d_storage(place) { w.d_check_store(value, t.depth, "stored", t.certain) }
+        }
+        .AssignTuple(places, value) => {
+            for p in places {
+                if x := p { w.d_expr(x, false) }
+            }
+            w.d_expr(value, false)
+        }
+        .Expr(x) => w.d_expr(x, false)
+        .Defer(_, body) => w.d_expr(body, false)
+    }
+}

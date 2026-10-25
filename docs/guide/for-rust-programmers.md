@@ -639,7 +639,7 @@ Everything below is by comparison with what a Rust program gets for free from th
 | --- | --- | --- |
 | use after free | compile error | undefined behavior; Debug builds fill freed memory with `0xDD` to make stale reads stand out; Safe builds trap |
 | double free | impossible (ownership) | undefined behavior; Debug builds detect it in many cases; Safe builds trap |
-| dangling reference to a local | compile error | the direct cases are compile errors (returning `&x` or a slice of a local); other cases are undefined behavior, trapped in Safe builds |
+| dangling reference to a local | compile error | the certain cases are compile errors (returning `&x` or a slice of a local, or storing it where it outlives the local); other cases are undefined behavior, reported by `gamma lint` when likely and trapped in Safe builds |
 | leaks | allowed (`mem::forget`, cycles) | tests fail on leaks |
 | out-of-bounds index | panic | trap; undefined behavior only in Fast builds |
 | data race | compile error (`Send`/`Sync`) | undefined behavior (C11 memory model); Safe builds make it unspecified, not memory-corrupting |

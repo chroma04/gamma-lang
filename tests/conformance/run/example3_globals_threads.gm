@@ -8,6 +8,7 @@ thread :: import "std/thread"
 #thread_local #global tl: u32 = 100
 #global msg: cstring = c"hi"
 #global ptr: ?^u32 = null
+#global nine: u32 = 9
 
 worker :: fn(arg: ^u32) needs Sys {
     id := arg^
@@ -26,8 +27,7 @@ main :: fn() -> IoError!() needs Out + Sys {
     print("hits {} flag {} tl {}\n", @atomic_load(&hits, .SeqCst), @atomic_load(&flag, .SeqCst), tl)
     table[2] = 30
     print("{} {}\n", table[2], msg.cstr_len())
-    x: u32 = 9
-    ptr = &x
+    ptr = &nine
     if p := ptr { print("{}\n", p^) }
     m := thread.mutex()
     print("try {} {}\n", m.try_lock(), m.try_lock())

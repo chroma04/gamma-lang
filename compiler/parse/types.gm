@@ -114,6 +114,12 @@ parse_type_prefix :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
     len := p.parse_expr()
     p.restr = old
     length := box(try len)
+    if p.at(.Comma) {
+        // `[1, 2]`: an array value written as in other languages.
+        d := diag.error(p.span(), "expected `]` to close the array length, found `,`")
+        d.add_note("`[n]T` is an array type: an array value is written with its type, `[_]i32(1, 2)` (§7.11), and a tuple as `(a, b)`")
+        return !p.fail_diag(d)
+    }
     _ = try p.expect(.RBracket, "to close the array length")
     elem := try p.parse_type_operand(mode)
     return p.mk_expr(.ArrayType(ast.ArrayTypeExpr(len: length, elem: box(elem))), p.span_from(start))

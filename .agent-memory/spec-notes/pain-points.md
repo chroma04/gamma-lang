@@ -4,7 +4,8 @@ Gamma gets flagged here (and to the user) as a possible improvement. Note how of
 
 STATUS s39 (decisions/044): the four below were addressed — dangling-address lint, §9.3
 note + diagnostic, pub(package) + needless-pub lint, and composite keys already worked.
-Still open: pointers into a growing List across push (lint can't see it).
+Still open: pointers into a growing List across push (lint can't see it). s40: certain
+dangling stores are now compile errors (decisions/045).
 
 - **Pointers to copies / to slots** (≥9x across s38–s40; s40 subagent: `&e` of a pattern
   binding pushed into a list → bogus inference errors): `&loop_var`, `&pattern_binding`,
@@ -23,13 +24,8 @@ Still open: pointers into a growing List across push (lint can't see it).
   for core) so HashMap((u32, []Ty), u32) works; or a small assoc-list type in std.
 - **Function literals must be bound with `::`** (2x): `f := fn(..)` is an error; the
   message is clear, so low priority.
-- **No shadowing, even for short-lived pattern/`if x :=` names** (s40: 2x — me `if x := p`
-  inside a loop whose arm already bound `x`; subagent: arm pattern `.AtomicRmw(op)` in a
-  fn with a local `op`). The message is clear; renaming is cheap but noisy. Candidate:
-  allow shadowing by bindings of a nested scope when the outer is a pattern binding? Flag.
+- No shadowing: user keeps the rule on principle (decisions/045); do not re-flag.
 - **Variant at the start of a line in a block-valued match arm** (s40, 6 sites at once in
   tir/clone.gm: `{ … \n .Call(c, …) }` reads as `c(...).Call`): note explains it; use
   `T.V(…)`. Low priority.
-- **`[a, b]` is not an array literal** (s40 1x): `for t in [x, y]` gave "this kind of
-  expression is not supported yet" + an array-length parse error; a hint "use `(a, b)` or
-  `[2]T(a, b)`" would help.
+- `[a, b]`: DONE s40, parse note `[_]i32(1, 2)` (decisions/045).

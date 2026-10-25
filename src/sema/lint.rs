@@ -59,6 +59,7 @@ pub fn analyze_for_lint(sess: &mut Session, root: &Path, in_scope: &dyn Fn(&Path
     sema.check_all(root_mod);
     sema.check_inline();
     sema.check_escapes();
+    sema.check_dangling_addresses();
     sema.check_continuations();
     if sema.sess.diags.has_errors() {
         return None;
