@@ -83,7 +83,13 @@ clone_block :: fn(b: ^const Block) -> ^Block needs Alloc {
         match s {
             .Let(l, null) => stmts.push(.Let(l, null))!
             .Let(l, x) => stmts.push(.Let(l, clone_expr(x)))!
+            .LetTuple(ls, x) => stmts.push(.LetTuple(ls, clone_expr(x)))!
             .Assign(p, v) => stmts.push(.Assign(clone_expr(p), clone_expr(v)))!
+            .AssignTuple(ps, v) => {
+                out := list(?^Expr)
+                for p in ps { out.push(clone_opt(p))! }
+                stmts.push(.AssignTuple(out.items, clone_expr(v)))!
+            }
             .Expr(x) => stmts.push(.Expr(clone_expr(x)))!
             .Defer(is_err, x) => stmts.push(.Defer(is_err, clone_expr(x)))!
         }

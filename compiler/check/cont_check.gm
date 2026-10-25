@@ -272,8 +272,15 @@ k_block :: fn(cx: ^ContCheck, b: ^tir.Block, st: u8) -> u8 needs Alloc {
         match x {
             .Let(_, null) => {}
             .Let(_, i) => { sb = cx.k_expr(i, sb) }
+            .LetTuple(_, i) => { sb = cx.k_expr(i, sb) }
             .Assign(place, value) => {
                 sb = cx.k_expr(place, sb)
+                sb = cx.k_expr(value, sb)
+            }
+            .AssignTuple(places, value) => {
+                for p in places {
+                    if px := p { sb = cx.k_expr(px, sb) }
+                }
                 sb = cx.k_expr(value, sb)
             }
             .Expr(e) => { sb = cx.k_expr(e, sb) }

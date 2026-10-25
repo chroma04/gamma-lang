@@ -450,9 +450,26 @@ write_block :: fn(d: ^Dump, depth: usize, b: ^tir.Block) needs Alloc {
                 d.write_line(depth, str.format("let {}", d.local_text(l))!)
                 d.write_expr(depth + 1, x)
             }
+            .LetTuple(ls, x) => {
+                names := list(string)
+                for l in ls { names.push(if id := l { d.local_text(id) } else { "_" })! }
+                d.write_line(depth, str.format("let-tuple {}", str.join(names.items, ", ")!)!)
+                d.write_expr(depth + 1, x)
+            }
             .Assign(p, v) => {
                 d.write_line(depth, "assign")
                 d.write_expr(depth + 1, p)
+                d.write_expr(depth + 1, v)
+            }
+            .AssignTuple(ps, v) => {
+                d.write_line(depth, "assign-tuple")
+                for p in ps {
+                    if x := p {
+                        d.write_expr(depth + 1, x)
+                    } else {
+                        d.write_line(depth + 1, "_")
+                    }
+                }
                 d.write_expr(depth + 1, v)
             }
             .Expr(x) => {

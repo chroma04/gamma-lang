@@ -209,7 +209,11 @@ pub Block :: struct {
 
 pub Stmt :: union {
     Let: (local: u32, init: ?^Expr)
+    /// Binds several locals from a tuple value (destructuring, §4.5); `null` discards.
+    LetTuple: (locals: []?u32, init: ^Expr)
     Assign: (place: ^Expr, value: ^Expr)
+    /// `a, b = (x, y)`: all values computed before any store (`null` for `_`).
+    AssignTuple: (places: []?^Expr, value: ^Expr)
     Expr: ^Expr
     /// `defer` or (`is_err`) `errdefer` (§8.8).
     Defer: (is_err: bool, body: ^Expr)
@@ -538,8 +542,15 @@ block_children :: fn(b: ^Block, f: fn(c: ^Expr)) {
         match s {
             .Let(_, null) => {}
             .Let(_, x) => f(x)
+            .LetTuple(_, x) => f(x)
             .Assign(p, v) => {
                 f(p)
+                f(v)
+            }
+            .AssignTuple(ps, v) => {
+                for p in ps {
+                    if x := p { f(x) }
+                }
                 f(v)
             }
             .Expr(x), .Defer(_, x) => f(x)

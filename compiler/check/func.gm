@@ -855,7 +855,7 @@ stmt_expr :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ^Expr needs Load {
 }
 
 binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
-    if b.names.len is not 1 { return .Expr(cx.unsupported(b.span, "destructuring")) }
+    if b.names.len is not 1 { return cx.destructure(b) }
     name := b.names[0]
     if b.kind is .Const and b.ty is null {
         if .Fn(lit) := b.init.kind { return cx.nested_fn_binding(name, lit, b.span) }
@@ -903,6 +903,107 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
     // The name is in scope only after its initializer (§4.6).
     cx.declare(name.name, .Var(id), name.span)
     return .Let(id, init)
+}
+
+/// `a, b := e`: binds the elements of a tuple (§4.5).
+destructure :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
+    tys := &cx.s.tys
+    annot: ?Ty = null
+    if t := b.ty { annot = cx.s.resolve_type(cx.module, t) }
+    init: ^Expr = error_expr(cx.s, b.init.span)
+    if b.init.kind is .Uninit {
+        if b.kind is not .Var { cx.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)") }
+        if t := annot and cx.is_plain_data(t) {
+            init = tir.mk(t, .Uninit, b.init.span)
+        } else {
+            cx.error(b.init.span, "`---` needs a plain-data tuple type annotation")
+        }
+    } else {
+        ex := cx.expr(b.init, annot)
+        init = if t := annot { cx.coerce(ex, t) } else { ex }
+    }
+    t := cx.infer.resolve(cx.s, init.ty)
+    elems := list(Ty)
+    n := b.names.len
+    match tys.kind(t) {
+        .Tuple(es, _) => if es.len is n {
+            elems.extend(es)!
+        } else {
+            cx.error(b.span, str.format("{} names cannot destructure a tuple of {} elements", n, es.len)!)
+        }
+        .Error => {}
+        _ => cx.error(b.init.span, str.format("destructuring needs a tuple, but this is `{}` (§4.5)", cx.show(t))!)
+    }
+    while elems.items.len < n { elems.push(tys.error())! }
+    mutable := b.kind is .Var
+    locals := list(?u32)
+    declared := list(Declared)
+    for i, name in enumerate(b.names) {
+        if name.name is "_" {
+            locals.push(null)!
+            continue
+        }
+        id := cx.new_local(name.name, elems.items[i], mutable, name.span)
+        locals.push(id)!
+        declared.push(Declared(name: name.name, id: id, span: name.span))!
+    }
+    // The names are in scope only after the initializer (§4.6).
+    for d in declared.items { cx.declare(d.name, .Var(d.id), d.span) }
+    return .LetTuple(locals.items, init)
+}
+
+Declared :: struct {
+    name: string
+    id: u32
+    span: source.Span
+}
+
+/// `a, b = e`: assigns the elements of a tuple; every element is computed before any
+/// store (§4.7).
+assign_tuple :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
+    tys := &cx.s.tys
+    if op is not .Assign { cx.error(span, "a compound assignment takes one place") }
+    targets := list(?^Expr)
+    all_known := true
+    for i in 0..places.len {
+        p := &places[i]
+        if p.kind is .Underscore {
+            targets.push(null)!
+            all_known = false
+            continue
+        }
+        if not cx.assignable_name(p) {
+            _ = cx.expr(value, null)
+            return .Expr(unit(cx.s, span))
+        }
+        place := cx.expr(p, null)
+        cx.require_mutable_place(place, p.span)
+        targets.push(place)!
+    }
+    expect: ?Ty = null
+    if all_known {
+        ts := list(Ty)
+        for t in targets.items {
+            if x := t { ts.push(x.ty)! }
+        }
+        expect = tys.tuple(ts.items)
+    }
+    v := cx.expr(value, expect)
+    vt := cx.infer.resolve(cx.s, v.ty)
+    elems: []const Ty = empty_slice(Ty)
+    match tys.kind(vt) {
+        .Tuple(es, _) => if es.len is targets.items.len { elems = es }
+        .Error => return .Expr(unit(cx.s, span))
+        _ => {}
+    }
+    if elems.len is not targets.items.len {
+        n := targets.items.len
+        cx.error(value.span, str.format("assigning to {} places needs a tuple of {} elements, not `{}`", n, n, cx.show(vt))!)
+        return .Expr(unit(cx.s, span))
+    }
+    ts := list(Ty)
+    for i, t in enumerate(targets.items) { ts.push(if x := t { x.ty } else { elems[i] })! }
+    return .AssignTuple(targets.items, cx.coerce(v, tys.tuple(ts.items)))
 }
 
 /// Plain data (§5.19).
@@ -969,7 +1070,7 @@ closed_const :: fn(s: ^Sema, e: ^Expr) -> bool {
 // ---------------------------------------------------------------------------------
 
 assign :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
-    if places.len is not 1 { return .Expr(cx.unsupported(span, "assignments to several places")) }
+    if places.len is not 1 { return cx.assign_tuple(places, op, value, span) }
     place_ast := &places[0]
     if place_ast.kind is .Underscore {
         if op is not .Assign { cx.error(span, "`_` can only be assigned with `=`") }
@@ -1211,7 +1312,7 @@ stmt_diverges :: fn(s: ^Sema, st: tir.Stmt) -> bool => match st {
     .Let(_, null) => false
     .Let(_, x) => s.tys.kind(x.ty) is .Never
     .Assign(_, v) => s.tys.kind(v.ty) is .Never
-    .Defer(_, _) => false
+    .LetTuple(_), .AssignTuple(_), .Defer(_, _) => false
 }
 
 /// The expression that makes statement `st` diverge, with the reason it never completes.
@@ -1221,7 +1322,7 @@ stmt_never_cause :: fn(s: ^Sema, st: tir.Stmt) -> ?(span: source.Span, why: stri
         .Let(_, null) => return null
         .Let(_, x) => return never_cause(s, x)
         .Assign(_, v) => return never_cause(s, v)
-        .Defer(_, _) => return null
+        .LetTuple(_), .AssignTuple(_), .Defer(_, _) => return null
     }
 }
 

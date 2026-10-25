@@ -75,6 +75,16 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   Sole-blocker roots now: `with … on` 14, intrinsic calls 11, vector types 10,
   @size_of(T) 9, handler literals in locals 8, tuple payloads 8, iterator args 8,
   foreign blocks 8, #bits 7.
+- s40 (branch claude/admiring-wright-4lo3vq): type-param intrinsics (SizeOf/IntLimit/
+  TypeName TIR), tuple payloads + tuple constructions (construct_tuple), optional
+  arithmetic (chained_opt_op), `ctl` + resume/cancel + `with … on` + cont_check.gm,
+  handler literals bound with `::` (pending_handlers, swap_frame, shielded performs,
+  FnCx.handled), rest params + spreads (spread.gm: pack_rest_args with synthetic ast,
+  spread_parts, generic spreads), comptime string args (ConstKey.Str), expect_eq,
+  intrinsics batch (sonnet subagent: atomics/asm/@write/sys/heap/offset_of/variants...),
+  monomorphization now REWRITES a tir.clone_expr copy per instance (program.gm
+  mono_expr/mono_fn/mono_handler; FnDef.nested) and copies nested fns of generic fns
+  (dumped as `<fn>@..literal in g@..[args]`). 420 SAME / 0 DIFF.
 - Survey script: $SP/one.sh per root (gammac tir vs gamma tir --diag-format=json), xargs
   -P6 over roots.txt (= program_roots); rewrite if scratch is gone (~60 s).
 - Biggest remaining buckets after s38g (roots mentioning): intrinsics 225 (+@size_of
