@@ -206,7 +206,7 @@ index :: fn(cx: ^FnCx, base: ^const ast.Expr, i: ^const ast.Expr, span: source.S
 index_value :: fn(cx: ^FnCx, b0: ^Expr, index_ast: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
     tys := &cx.s.tys
     b := cx.auto_deref_array(b0)
-    if .Array(_, _, kind) := tys.kind(cx.infer.resolve(cx.s, b.ty)) and kind is .Enum(_) { return cx.unsupported(span, "enum-indexed arrays") }
+    if .Array(_, elem, kind) := tys.kind(cx.infer.resolve(cx.s, b.ty)) and .Enum(e) := kind { return cx.enum_array_index(b, e, elem, index_ast, span) }
     i := cx.expr(index_ast, null)
     // `a[r]` with a range value `r` is the slice `a[r.lo..r.hi]` (§5.16).
     it := cx.infer.resolve(cx.s, i.ty)
@@ -346,7 +346,12 @@ slice_of :: fn(cx: ^FnCx, b0: ^Expr, base_span: source.Span, lo: ?^Expr, hi: ?^E
 array_type_construction :: fn(cx: ^FnCx, e: ^const ast.Expr, len_ast: ?^ast.Expr, elem: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
     call := sema.construction_call(elem) else return cx.unsupported(span, "array construction")
     .Call(_, args, _) := call.kind else return cx.unsupported(span, "array construction")
-    if l := len_ast and cx.s.length_is_type(cx.module, l) { return cx.unsupported(span, "enum-indexed arrays") }
+    // `[E][3]i32(…)`: the element type is everything after the outer prefix.
+    if l := len_ast and cx.s.length_is_type(cx.module, l) {
+        t := cx.resolve_ty(without_call(e))
+        if .Array(_, et, kind) := cx.s.tys.kind(t) and .Enum(index) := kind { return cx.construct_enum_array(t, index, et, args, span) }
+        return error_expr(cx.s, span)
+    }
     elem_ty := cx.construction_elem_type(elem) else return error_expr(cx.s, span)
     len: ?u64 = null
     if l := len_ast {
@@ -394,6 +399,116 @@ construct_param_array :: fn(cx: ^FnCx, t: Ty, elem: Ty, args: []const ast.Arg, s
     }
     cx.error(span, str.format("`{}` has a length that is a compile-time parameter; construct it with `fill:`", cx.show(t))!)
     return error_expr(cx.s, span)
+}
+
+/// `[E]T(fill: x)` and `[E]T(A: a, B: b, …)`, naming every variant of the enum `E` once
+/// (§5.6). Values are evaluated in the order written.
+construct_enum_array :: fn(cx: ^FnCx, ty: Ty, index: Ty, elem: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    names := list(string)
+    if uv := cx.s.union_variants(index) {
+        for v in uv.variants { names.push(v.name)! }
+    }
+    if args.len is 1 and .Named(n, x) := args[0].kind and n.name is "fill" and n.name not in names.items {
+        v := cx.field_value(&x, elem)
+        return tir.mk(ty, .ArrayFill(v), span)
+    }
+    stmts := list(tir.Stmt)
+    slots := list(?^Expr)
+    for _ in names.items { slots.push(null)! }
+    written := list(usize)
+    bad_args := false
+    for a in args {
+        match a.kind {
+            .Named(name, x) => {
+                i := position(names.items, name.name) else {
+                    fill := if name.name is "fill" { " (`fill:` must be the only argument)" } else { "" }
+                    cx.error(name.span, str.format("`{}` has no variant `{}`{}", cx.show(index), name.name, fill)!)
+                    _ = cx.expr(&x, null)
+                    bad_args = true
+                    continue
+                }
+                if slots.items[i] is not null { cx.error(name.span, str.format("the element for `{}` is given twice", name.name)!) }
+                v := cx.field_value(&x, elem)
+                written.push(i)!
+                slots.items[i] = v
+            }
+            _ => {
+                if not bad_args {
+                    first := if names.items.len > 0 { names.items[0] } else { "A" }
+                    cx.error(a.span, str.format("`{}` is constructed by naming each variant of `{}`: `{}({}: …)`, or with `fill:`", cx.show(ty), cx.show(index), cx.show(ty), first)!)
+                }
+                bad_args = true
+            }
+        }
+    }
+    out_of_order := false
+    for k in 1..written.items.len.max(1) {
+        if written.items[k - 1] > written.items[k] { out_of_order = true }
+    }
+    if out_of_order {
+        for w in written.items {
+            if v := slots.items[w] { slots.items[w] = cx.bind_temp(v, &stmts) }
+        }
+    }
+    missing := list(u8)
+    for i, n in enumerate(names.items) {
+        if slots.items[i] is null {
+            if missing.items.len > 0 { missing.extend(", ")! }
+            missing.extend(str.format("`{}`", n)!)!
+        }
+    }
+    if missing.items.len > 0 and not bad_args {
+        cx.error(span, str.format("`{}` needs an element for every variant: missing {}", cx.show(ty), missing.items)!)
+    }
+    values := list(Expr)
+    for s in slots.items { values.push((s else error_expr(cx.s, span))^)! }
+    arr := tir.mk(ty, .Array(values.items), span)
+    if stmts.items.len is 0 { return arr }
+    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+}
+
+/// The position of `name` in `names`.
+position :: fn(names: []const string, name: string) -> ?usize {
+    for i, n in enumerate(names) {
+        if n is name { return i }
+    }
+    return null
+}
+
+/// `a[e]` on an enum-indexed array `[E]T`: `e` is an `E`, and the element is the one at
+/// the position of `e`'s variant among `@variants(E)` (§5.6). It needs no check.
+enum_array_index :: fn(cx: ^FnCx, b: ^Expr, e: Ty, elem: Ty, index_ast: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    i := cx.expr(index_ast, e)
+    it := cx.infer.resolve(cx.s, i.ty)
+    if cx.s.tys.is_error(it) { return error_expr(cx.s, span) }
+    if it is not e {
+        bt := cx.infer.resolve(cx.s, b.ty)
+        hint := if cx.s.tys.kind(it) is .Infer(_) or cx.s.tys.is_integer(it) or cx.s.range_of(it) is not null { "; its elements in the order of the variants are the slice `a[..]`" } else { "" }
+        cx.error(i.span, str.format("`{}` is indexed by `{}` values, not `{}`{}", cx.show(bt), cx.show(e), cx.show(it), hint)!)
+        return error_expr(cx.s, span)
+    }
+    pos := cx.variant_position(i, e, span)
+    return tir.mk(elem, .Index(b, pos, false), span)
+}
+
+/// The position (`usize`) of the variant of the enum value `v` among `@variants(e)`: its
+/// tag when the tags count up from 0 in declaration order, otherwise a `match`.
+variant_position :: fn(cx: ^FnCx, v: ^Expr, e: Ty, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    uv := cx.s.union_variants(e) else return error_expr(cx.s, span)
+    counts_up := true
+    for i, var in enumerate(uv.variants) {
+        if not bigint.eq(var.tag, bigint.from_u64(u64(i))) { counts_up = false }
+    }
+    if counts_up and .Int(signed, bits) := tys.kind(uv.tag) and not signed and bits <= 32 {
+        t := builtin(.Tag, uv.tag, [1]^Expr(v)[..], span)
+        return cx.coerce(t, tys.usize_ty())
+    }
+    arms := list(tir.Arm)
+    for i in 0..uv.variants.len {
+        arms.push(tir.Arm(pat: tir.mk_pat(e, .Variant(i.trunc(u32), null), span), guard: null, body: tir.mk(tys.usize_ty(), .Int(bigint.from_u64(u64(i))), span)))!
+    }
+    return tir.mk(tys.usize_ty(), .Match(v, arms.items), span)
 }
 
 /// The elements of an array of `len` elements (or as many as given) of type `elem`.
