@@ -453,6 +453,7 @@ fn sources_are_formatted() {
 
 /// A conformance `run` test that `gammac build` compiles: its root, build mode, standard
 /// input, expected output and exit status (see `tests/conformance.rs` for the directives).
+#[cfg(unix)]
 struct RunTest {
     name: String,
     root: PathBuf,
@@ -463,6 +464,7 @@ struct RunTest {
 }
 
 /// The `run` tests that expect no compile errors and apply to this host.
+#[cfg(unix)]
 fn run_tests() -> Vec<RunTest> {
     let dir = root().join("tests/conformance/run");
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
@@ -522,6 +524,7 @@ fn run_tests() -> Vec<RunTest> {
 }
 
 /// Builds `t` with `gammac build` and runs it; returns why it failed, if it did.
+#[cfg(unix)]
 fn build_and_run(gammac: &Path, t: &RunTest, dir: &Path) -> Option<String> {
     let exe = dir.join(t.name.replace('/', "_"));
     let mut cmd = Command::new(gammac);
@@ -586,6 +589,7 @@ fn programs_compiled_by_gammac_behave_as_expected() {
 }
 
 /// `gammac build --emit-c compiler` with `gammac`: the C it generates for itself.
+#[cfg(unix)]
 fn self_c(gammac: &Path, out: &Path) -> String {
     let mut cmd = Command::new(gammac);
     cmd.current_dir(root()).args(["build", "--emit-c", "-o"]).arg(out).arg("compiler");
