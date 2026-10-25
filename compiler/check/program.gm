@@ -8,13 +8,16 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
     for o in s.l.other_items.items {
         if s.l.modules.items[o.module].is_prelude { continue }
         match o.item.kind {
-            .Test(_) => s.unsupported(o.item.span, "tests and benchmarks")
-            .Handler(_) => {}
+            .Test(_), .Handler(_) => {}
             _ => s.unsupported(o.item.span, "top-level intrinsic calls")
         }
     }
     declare_handlers(s)
-    if d := s.l.lookup(root, "main") { find_main(s, d) }
+    if d := s.l.lookup(root, "main") {
+        find_main(s, d)
+    } else {
+        check_tests(s, root)
+    }
     for f in s.fns.items {
         if s.l.modules.items[f.module].is_prelude { continue }
         for p in f.params {

@@ -283,6 +283,8 @@ pub Sema :: struct {
     pub handler_decls: List(HandlerDeclInfo)
     /// Whether a handler declaration for a generic type was seen.
     pub handler_templates: bool
+    /// Set while the body of a test or benchmark is checked.
+    pub in_test: bool
     pub pending_clauses: List(PendingClause)
     pub decl_clause_breaks: List(DeclBreak)
     pub decl_with_checks: List(DeclWithCheck)
@@ -331,6 +333,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         handlers: list(tir.HandlerLit),
         handler_decls: list(HandlerDeclInfo),
         handler_templates: false,
+        in_test: false,
         pending_clauses: list(PendingClause),
         decl_clause_breaks: list(DeclBreak),
         decl_with_checks: list(DeclWithCheck),

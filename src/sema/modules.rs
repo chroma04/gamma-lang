@@ -254,12 +254,9 @@ impl<'s> Sema<'s> {
             }
             ItemKind::When(_) => unreachable!("collected by `add_module`"),
             ItemKind::Handler(_) => self.handler_items.push((module, item.clone())),
-            // Tests are compiled only for `gamma test` (§3.8).
-            ItemKind::Test { .. } => {
-                if self.tests_enabled {
-                    self.test_items.push((module, item.clone()));
-                }
-            }
+            // Tests are compiled only for `gamma test` (§3.8), and checked by `gamma tir`
+            // for a library, which it recognizes once its root module is loaded.
+            ItemKind::Test { .. } => self.test_items.push((module, item.clone())),
             ItemKind::Intrinsic(_) => self.static_asserts.push((module, item.clone())),
         }
     }

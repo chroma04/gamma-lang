@@ -115,7 +115,7 @@ read the two side by side.
 | `compiler/types/` | types, hash-consed (`types.gm`), and their text in messages (`display.gm`) (`src/types.rs`) |
 | `compiler/bigint/`, `compiler/ratio/` | integers and rationals of any size, for the exact arithmetic of untyped constants |
 | `compiler/tir/` | the typed intermediate representation that checking produces (`src/tir.rs`) |
-| `compiler/check/` | checking function bodies (`src/sema/func.rs`, `expr.rs`, `finalize.rs` and the files named alike): the per-function context, statements and control flow (`func.gm`), expressions (`expr.gm`), calls and builtins (`call.gm`), intrinsics (`intrinsics.gm`), typed constant initializers (`consts.gm`), function literals and nested functions (`fnlit.gm`), `with` and handler literals (`handlers.gm`), handler declarations (`handler_decls.gm`), iterators and generic effect operations (`iterators.gm`), calls of generic functions (`generic.gm`), method calls (`methods.gm`), implicit coercions (`coerce.gm`), optionals and results (`errors.gm`), patterns (`pattern.gm`), `match` and pattern tests (`matching.gm`), exhaustiveness (`exhaust.gm`), sequences, `in` and `for` (`seq.gm`), literal inference (`infer.gm`), the final pass over a body (`finalize.gm`), the checks of a whole program (`program.gm`, `escape.gm`) and the `tir` dump (`dump.gm`) |
+| `compiler/check/` | checking function bodies (`src/sema/func.rs`, `expr.rs`, `finalize.rs` and the files named alike): the per-function context, statements and control flow (`func.gm`), expressions (`expr.gm`), calls and builtins (`call.gm`), intrinsics (`intrinsics.gm`), typed constant initializers (`consts.gm`), function literals and nested functions (`fnlit.gm`), `with` and handler literals (`handlers.gm`), handler declarations (`handler_decls.gm`), iterators and generic effect operations (`iterators.gm`), tests and benchmarks (`tests.gm`), calls of generic functions (`generic.gm`), method calls (`methods.gm`), implicit coercions (`coerce.gm`), optionals and results (`errors.gm`), patterns (`pattern.gm`), `match` and pattern tests (`matching.gm`), exhaustiveness (`exhaust.gm`), sequences, `in` and `for` (`seq.gm`), literal inference (`infer.gm`), the final pass over a body (`finalize.gm`), the checks of a whole program (`program.gm`, `escape.gm`) and the `tir` dump (`dump.gm`) |
 | `compiler/sema/` | checking: the state and the resolution of declarations (`sema.gm`), names (`names.gm`), type expressions (`ty_expr.gm`), structs and unions (`adt.gm`), signatures and effects (`fnsig.gm`), constraints (`generics.gm`), untyped constants (`untyped.gm`), typed constants (`consts.gm`), layouts (`layout.gm`) and the `decls` dump (`dump.gm`) (`src/sema/`) |
 | `compiler/parse/` | the parser: its state, errors and recovery (`parser.gm`), expressions, statements, declarations, types, patterns and the brace-delimited literals (`src/syntax/parser/`) |
 
@@ -142,7 +142,8 @@ usage error or a file that cannot be read.
 
 `gammac decls` and `gammac tir` read the core library from `$GAMMA_CORE`, or else from
 the `core` directory next to the standard library's. A root module without `main` is
-checked as a library, as `gamma tir` does: the way `gamma test` would check it.
+checked as a library, as `gamma tir` does: the way `gamma test` would check it, with
+its tests and benchmarks and those of the modules of its package that it imports.
 
 ### Growing a stage
 

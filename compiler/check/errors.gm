@@ -129,6 +129,16 @@ try_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, span: source.Span) -> ^Expr 
     }
     if tys.kind(ret) in (.Optional(_), .Result(_)) {
         cx.error(span, "`try` does not convert between optionals and results; give the absent value an error: `try (x else !.Missing)`")
+    } else if cx.s.in_test and usize(levels) is cx.outer.items.len {
+        d := diag.error(span, "a test returns no value, so `try` cannot propagate from it; write `ok(x)` to fail the test on an error (§3.8)")
+        // `try x` becomes `ok(x)` (only `ok` of a result is defined).
+        if tys.kind(vt) is .Result(_) {
+            edits := list(diag.Edit)
+            edits.push(diag.Edit(span: source.Span(file: span.file, lo: span.lo, hi: operand.span.lo), text: "ok("))!
+            edits.push(diag.Edit(span: source.Span(file: span.file, lo: operand.span.hi, hi: operand.span.hi), text: ")"))!
+            d.add_fix_edits("write `ok(x)`", edits.items)
+        }
+        cx.s.emit(d)
     } else {
         cx.error(span, str.format("`try` needs the function to return an optional or a result, not `{}`", cx.show(ret))!)
     }

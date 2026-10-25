@@ -1,0 +1,83 @@
+// Tests and benchmarks (§3.8, §3.9): a library is checked as for running its tests, and
+// each test or benchmark body is checked as a function performing the ambient effects
+// and `Test` (mirrors `src/sema/tests_decl.rs`).
+
+/// Checks the tests and benchmarks of the root module `root` and of the other modules of
+/// its package.
+check_tests :: fn(s: ^Sema, root: usize) needs Load {
+    package := s.l.modules.items[root].package
+    // The root module's tests first, then each other module's.
+    order := list(usize)
+    order.push(root)!
+    for o in s.l.other_items.items {
+        m := &s.l.modules.items[o.module]
+        if o.module is root or m.package is not package or m.is_prelude or o.module in order.items { continue }
+        order.push(o.module)!
+    }
+    for module in order.items {
+        names := list((bench: bool, name: string, span: source.Span))
+        for o in s.l.other_items.items {
+            if o.module is not module { continue }
+            .Test(t) := o.item.kind else continue
+            text := string(t.name.bytes)
+            prev: ?source.Span = null
+            for n in names.items {
+                if n.bench is t.bench and n.name is text { prev = n.span }
+            }
+            if p := prev {
+                d := diag.error(t.name_span, str.format("the {} \"{}\" is declared twice", if t.bench { "benchmark" } else { "test" }, text)!)
+                d.add_label(p, "first declared here")
+                s.emit(d)
+                continue
+            }
+            names.push((bench: t.bench, name: text, span: t.name_span))!
+            check_test(s, module, text, t.name_span, &t.body, t.bench)
+        }
+    }
+}
+
+/// The ambient effects of the core library (§12.9), with `Test` if `test`.
+ambient_effects :: fn(s: ^Sema, test: bool) -> EffectSet needs Load {
+    out := list(EffectRef)
+    prelude := s.l.prelude else return types.empty_effects()
+    names := [12]string("Out", "Err", "Env", "Sys", "Alloc", "In", "Clock", "Rand", "Fs", "Net", "Proc", "Test")
+    for i, name in enumerate(names) {
+        if i is 11 and not test { break }
+        d := s.l.lookup(prelude, name) else continue
+        .Effect(e) := s.resolve_decl(d) else continue
+        out.push(types.EffectRef(eff: e, args: empty_slice(types.GenericArg)))!
+    }
+    return types.effect_set(out.items)
+}
+
+check_test :: fn(s: ^Sema, module: usize, name: string, span: source.Span, body: ^const ast.Block, bench: bool) needs Load {
+    effects := ambient_effects(s, true)
+    label := str.format("{} \"{}\"", if bench { "bench" } else { "test" }, name)!
+    f := s.new_nested_fn(.Named, label, span, module, empty_slice(sema.ParamInfo), s.tys.unit(), effects)
+    s.in_test = true
+    cx := fn_cx(s, module, s.tys.unit(), effects)
+    cx.fn_id = f
+    fb: ast.FnBody = .Block(body^)
+    b := cx.fn_body(&fb)
+    cx.finish(b)
+    s.in_test = false
+    def := &s.defs.items[usize(f)]
+    def.locals = cx.locals.items
+    def.body = b
+    if bench { bench_entry(s, f, span) }
+}
+
+/// The function that runs benchmark `f` with `run_bench`. (A test's runner is called by
+/// an entry function, which is not part of the program's text.)
+bench_entry :: fn(s: ^Sema, f: u32, span: source.Span) needs Load {
+    prelude := s.l.prelude else return
+    d := s.l.lookup(prelude, "run_bench") else return
+    .Fn(g) := s.resolve_decl(d) else return
+    fn_ty := s.tys.intern(.FnPtr(types.FnTy(params: empty_slice(Ty), ret: s.tys.unit(), effects: ambient_effects(s, true), variadic: false, win64: false)))
+    args := list(Expr)
+    args.push(tir.mk(fn_ty, .FnRef(f), span)^)!
+    u8_ty := s.tys.u8_ty()
+    module := s.fns.items[usize(f)].module
+    inner := s.new_nested_fn(.Named, "<bench>", span, module, empty_slice(sema.ParamInfo), u8_ty, ambient_effects(s, false))
+    s.defs.items[usize(inner)].body = tir.mk(u8_ty, .Call(.Fn(g), args.items), span)
+}

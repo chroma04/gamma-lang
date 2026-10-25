@@ -142,6 +142,8 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- `gamma tir` on a library (a root module without `main`) left out its tests and
+  benchmarks: they were not checked, and their functions were missing from the dump.
 - A pattern binding with `else` in a block whose value is coerced to an expected type
   (`x: i64 = if c { .A(v) := u else return 0; v } else { 0 }`) was rejected as not
   leaving the block.

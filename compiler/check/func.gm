@@ -703,9 +703,21 @@ stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
         .While(w) => return .Expr(cx.while_loop(w.label, &w.cond, &w.body, s.span))
         .Block(b) => return .Expr(cx.block(&b, false))
         .Defer(is_err, body) => return cx.defer_stmt(is_err, body)
-        .When(_) => return .Expr(cx.unsupported(s.span, "local `when`"))
+        .When(w) => return .Expr(cx.when_stmt(w))
         .Cancel(_) => return .Expr(cx.unsupported(s.span, "`cancel`"))
         .LetElse(_) => return .Expr(cx.unsupported(s.span, "pattern bindings with `else`"))
+    }
+}
+
+/// A `when` in a body (§3.6): only the branch its compile-time condition selects is
+/// checked.
+when_stmt :: fn(cx: ^FnCx, w: ^const ast.WhenStmt) -> ^Expr needs Load {
+    taken := cx.s.l.when_cond(cx.module, w.cond) else return unit(cx.s, w.span)
+    if taken { return cx.block(&w.then, false) }
+    match w.else_ {
+        .Block(b) => return cx.block(&b, false)
+        .When(inner) => return cx.when_stmt(inner)
+        null => return unit(cx.s, w.span)
     }
 }
 

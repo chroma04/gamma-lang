@@ -68,8 +68,13 @@ Gaps: git/url deps, malformed-manifest messages, general `when` conds (decisions
   Yield(T), ClauseInfo.for_label/break_ty, hoist_args/lift_temps; perform_generic for
   bare `yield(x)` via `available` = declared of all frames; iterator_calls +
   iterator_call_as_value messages; location_function skips `<…>` frames). 278 / 0 DIFF.
-  Sole-blocker roots now: local when 20, tests 17, `with … on` 14, vector types 10,
-  intrinsic calls 10, @size_of(T) 9, handler literals in locals 8, iterator args 8.
+  Local `when` (loader's when_cond; only the taken branch). Tests: the Rust `gamma tir`
+  dropped test items (tests_enabled set after load); fixed (modules.rs always collects),
+  gammac check/tests.gm mirrors check_tests (`test "n"` fns, `<bench>` fn calling
+  run_bench, Sema.in_test try message). 320 SAME / 0 DIFF.
+  Sole-blocker roots now: `with … on` 14, intrinsic calls 11, vector types 10,
+  @size_of(T) 9, handler literals in locals 8, tuple payloads 8, iterator args 8,
+  foreign blocks 8, #bits 7.
 - Survey script: $SP/one.sh per root (gammac tir vs gamma tir --diag-format=json), xargs
   -P6 over roots.txt (= program_roots); rewrite if scratch is gone (~60 s).
 - Biggest remaining buckets after s38g (roots mentioning): intrinsics 225 (+@size_of
