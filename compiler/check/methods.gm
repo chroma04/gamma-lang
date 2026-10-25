@@ -609,8 +609,7 @@ finish_call :: fn(cx: ^FnCx, pre: []tir.Stmt, call: ^Expr, receiver: bool) -> ^E
 /// The effect that `e` names, if it names one: `E`, `m.E`, or an instantiation `E(T)`.
 EffectNamed :: union {
     Plain: u32
-    /// An instantiated or generic effect, which gammac does not check yet.
-    Other
+    Inst: EffectRef
 }
 
 effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
@@ -618,7 +617,8 @@ effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
     match e.kind {
         .Call(callee, _, _) => {
             _ = cx.effect_named(callee) else return null
-            return .Other
+            r := cx.s.resolve_effect_ref(cx.module, e) else return null
+            return .Inst(r)
         }
         .Ident(id) => {
             if cx.lookup_local(id.name) is not null { return null }
@@ -632,24 +632,27 @@ effect_named :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?EffectNamed needs Load {
     }
     match cx.s.resolve_decl(d) {
         .Effect(eff) => return .Plain(eff)
-        .EffectInst(_) => return .Other
+        .EffectInst(r) => return .Inst(r)
         _ => return null
     }
 }
 
 /// `E.op(args)`: an operation named through its effect (§12.1).
 perform_named :: fn(cx: ^FnCx, named: EffectNamed, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
-    .Plain(eff) := named else return cx.unsupported(span, "operations of generic effects")
+    eff: u32 = 0
+    inst: ?EffectRef = null
+    match named {
+        .Plain(e) => { eff = e }
+        .Inst(r) => {
+            eff = r.eff
+            inst = r
+        }
+    }
     info := cx.s.effects.items[usize(eff)]
     for i, o in enumerate(info.ops) {
         if o.name is not name.name { continue }
-        if info.params.len > 0 { return cx.unsupported(span, "operations of generic effects") }
-        bound := cx.bind_args(o.params, info.module, args, span, "operation") else return error_expr(cx.s, span)
-        eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
-        cx.performed.push(Performed(effect_: eref, span: span))!
-        if o.kind is .Fn { cx.fn_performs.push(span)! }
-        call := tir.mk(o.ret, .Call(.Perform(eref, i.trunc(u32)), bound.args), span)
-        return cx.finish_call(bound.pre, call, false)
+        if r := inst { return cx.perform_op_as(r, i.trunc(u32), args, span) }
+        return cx.perform_op(eff, i.trunc(u32), args, span)
     }
     cx.error(name.span, str.format("the effect `{}` has no operation `{}`", info.name, name.name)!)
     return error_expr(cx.s, span)

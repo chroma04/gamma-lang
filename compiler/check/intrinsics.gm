@@ -6,7 +6,7 @@
 // as unsupported.
 
 intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr needs Load {
-    args := i.args else return cx.unsupported(span, "intrinsic calls")
+    args := i.args else empty_slice(ast.Arg)
     n := i.name.name
     in_prelude := cx.s.l.modules.items[cx.module].is_prelude
     // Compiler-internal heap primitives behind the core library's heap allocator.
@@ -55,7 +55,9 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
             compile_error(cx.s, cx.module, args, span)
             return error_expr(cx.s, span)
         }
-        "min_stack" => return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(16384)), span)
+        "fiber" => return cx.fiber_intrinsic(args, span)
+        "min_stack" => return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(MIN_STACK)), span)
+        "stack_size" => return cx.stack_size_intrinsic(args, span)
         "offset_of" => return cx.offset_of_intrinsic(n, args, span)
         "asm" => return cx.asm_intrinsic(args, span)
         "write" => return cx.write_intrinsic(args, span)
@@ -861,4 +863,19 @@ int_limit :: fn(s: ^Sema, t: Ty, max: bool) -> ?bigint.Int needs Alloc {
     if max { return bigint.sub(bigint.shl(bigint.one(), magnitude), bigint.one()) }
     if signed { return bigint.neg(bigint.shl(bigint.one(), magnitude)) }
     return bigint.zero()
+}
+
+/// `@stack_size(f)`.
+stack_size_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if args.len is 1 and .Positional(fe) := args[0].kind {
+        f := cx.expr(&fe, null)
+        if .FnRef(id) := f.kind {
+            n := stack_size(cx.s, id, span) else return error_expr(cx.s, span)
+            return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(n)), span)
+        }
+        if not cx.s.tys.is_error(f.ty) { cx.error(f.span, "`@stack_size` needs the name of a function (§14.8)") }
+        return error_expr(cx.s, span)
+    }
+    cx.error(span, "`@stack_size` takes one function: `@stack_size(f)`")
+    return error_expr(cx.s, span)
 }

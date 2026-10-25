@@ -645,6 +645,7 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .VolatileLoad => "VolatileLoad"
     .VolatileStore => "VolatileStore"
     .Sys(s) => str.format("Sys({})", sys_text(s))!
+    .Fiber => "Fiber"
     .HeapAlloc => "HeapAlloc"
     .HeapFree => "HeapFree"
     .AllocTag => "AllocTag"

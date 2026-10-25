@@ -76,6 +76,8 @@ ClauseInfo :: struct {
     /// loop's label, and the type of the iterator's result, which a `break` gives.
     for_label: ?ForLabel = null
     break_ty: ?Ty = null
+    /// The instantiated effect the clause handles.
+    effect_: ?EffectRef = null
 }
 
 ForLabel :: struct {
@@ -232,6 +234,14 @@ pub FnCx :: struct {
     /// literal was written: `with`s that began after that point must not handle them
     /// (§12.5).
     shielded_performs: List(Shielded)
+    /// Effects performed inside a `with` that handles another instantiation of the same
+    /// effect, by where they are performed.
+    near_misses: List(Performed)
+    /// Statements that evaluate the call arguments of an iterator argument, to be placed
+    /// before the call (§13.5).
+    iter_pre: List(tir.Stmt)
+    /// The function literals made for iterator arguments, by place.
+    iterator_args: List(source.Span)
 }
 
 /// A handler literal bound with `::` whose clauses are checked later, in the scope where
@@ -296,6 +306,9 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         handled: list(EffectRef),
         pending_handlers: list(PendingHandler),
         shielded_performs: list(Shielded),
+        near_misses: list(Performed),
+        iter_pre: list(tir.Stmt),
+        iterator_args: list(source.Span),
     )
 }
 
@@ -396,41 +409,55 @@ check_effects :: fn(cx: ^FnCx) needs Load {
             if types.cmp_ref(&r, &p.effect_) is 0 { seen = true }
         }
         if seen { continue }
+        m := cx.undeclared_message(&p.effect_, p.span, &cx.declared)
+        d := diag.error(p.span, m.msg)
         name := cx.s.tys.show_ref(&p.effect_)
-        // Another instantiation of the same effect declared: a different message.
-        for d in cx.declared.effects {
-            if d.eff is p.effect_.eff {
-                _ = cx.unsupported(p.span, "effects declared with other arguments")
-            }
-        }
-        plain := true
-        msg: string = str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!
-        if m := cx.iterator_call_message(&p.effect_, p.span) {
-            plain = false
-            msg = m
-        }
-        d := diag.error(p.span, msg)
-        if fix := cx.needs_fix(&p.effect_) and plain { d.add_fix(str.format("add `{}` to the function's effects", name)!, fix.span, fix.text) }
+        if fix := cx.needs_fix(&p.effect_) and m.plain { d.add_fix(str.format("add `{}` to the function's effects", name)!, fix.span, fix.text) }
         cx.s.emit(d)
         reported.push(p.effect_)!
     }
     cx.performed.clear()
 }
 
-/// The message for a call of an iterator from a function with no `Yield` of its own,
-/// which was most likely meant as the source of a `for` loop.
-iterator_call_message :: fn(cx: ^FnCx, e: ^const EffectRef, span: source.Span) -> ?string needs Alloc {
-    y := cx.s.yield_effect else return null
-    if e.eff is not y or span not in cx.iterator_calls.items { return null }
-    for d in cx.declared.effects {
-        if d.eff is y { return null }
+/// The message for an effect performed at `span` that the function, which declares
+/// `declared`, does not declare, and whether it is the plain message, which only says to
+/// add the effect. A call of an iterator from a function with no `Yield` of its own was
+/// most likely meant as the source of a `for` loop.
+undeclared_message :: fn(cx: ^FnCx, e: ^const EffectRef, span: source.Span, declared: ^const EffectSet) -> (msg: string, plain: bool) needs Alloc {
+    name := cx.s.tys.show_ref(e)
+    if y := cx.s.yield_effect {
+        if e.eff is y and span in cx.iterator_calls.items {
+            has_yield := false
+            for d in declared.effects {
+                if d.eff is y { has_yield = true }
+            }
+            if not has_yield {
+                // The call's callee: the text before its argument list, after any receiver.
+                text := cx.s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
+                if i := str.find(text, "(") { text = text[..i] }
+                if i := str.rfind(text, ".") { text = text[i + 1..] }
+                c := str.trim(text)
+                return (msg: str.format("`{}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {}(…)`) or pass it to a function that runs it, such as `collect({}(…))` (§13.5)", c, c, c)!, plain: false)
+            }
+        }
     }
-    // The call's callee: the text before its argument list, after any receiver.
-    text := cx.s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
-    if i := str.find(text, "(") { text = text[..i] }
-    if i := str.rfind(text, ".") { text = text[i + 1..] }
-    c := str.trim(text)
-    return str.format("`{}` is an iterator, not a value: call it as the source of a `for` loop (`for x in {}(…)`) or pass it to a function that runs it, such as `collect({}(…))` (§13.5)", c, c, c)!
+    // Another instantiation of the same effect is declared or handled around the
+    // perform: `Sched` against `Sched(Out)`.
+    others := list(string)
+    for d in declared.effects {
+        if d.eff is e.eff and types.cmp_ref(&d, e) is not 0 { others.push(str.format("`{}`", cx.s.tys.show_ref(&d))!)! }
+    }
+    what: string = if others.items.len is 0 { "an enclosing `with` handles" } else { "the function declares" }
+    for nm in cx.near_misses.items {
+        if nm.span is span and nm.effect_.eff is e.eff {
+            h: string = str.format("`{}`", cx.s.tys.show_ref(&nm.effect_))!
+            if h not in others.items { others.push(h)! }
+        }
+    }
+    if others.items.len > 0 {
+        return (msg: str.format("this performs the effect `{}`, but {} {}: instantiations with different arguments are different effects (§12.3)", name, what, str.join(others.items, " and ")!)!, plain: false)
+    }
+    return (msg: str.format("this performs the effect `{}`, which the function does not declare (add `needs {}`)", name, name)!, plain: true)
 }
 
 /// The edit that adds effect `e` to the signature of the function being checked, if it

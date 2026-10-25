@@ -456,6 +456,8 @@ pub Builtin :: union {
     VolatileStore
     /// A system service behind a default handler of the core library (§12.9).
     Sys: SysOp
+    /// `@fiber(f, arg, stack)` in a `ctl` clause (§14.6): a new fiber of the clause's `with`.
+    Fiber
     /// The heap primitives behind the core library's allocator.
     HeapAlloc
     HeapFree

@@ -1,0 +1,376 @@
+// `@stack_size(f)` (§14.8): a compile-time bound on the stack a call of `f` needs (mirrors
+// `src/sema/stack_size.rs`).
+//
+// The bound is the costliest chain of frames from `f` down, each frame costed by
+// `frame_cost`, plus what the run time needs on a fiber stack. The analysis follows the
+// calls of the program with what is statically known at each point: the handlers
+// installed by enclosing `with` statements, and the functions passed for parameters and
+// bound to immutable locals. A `with … on` body runs on a fiber of its own, so only its
+// `ctl` clauses count for the function containing it.
+
+/// The smallest fiber stack (§14.1), in bytes.
+MIN_STACK: u64 : 16384
+
+/// The bytes at the end of every fiber stack that Gamma frames may not use.
+STACK_RESERVE: u64 : 8192
+
+/// What `@stack_size` adds for the fiber's own start-up frames and for a `ctl` perform.
+STACK_BASE: u64 : 1024
+
+/// A handler installed by an enclosing `with`, and its clauses by operation.
+StackHandler :: struct {
+    effect_: EffectRef
+    clauses: []u32
+}
+
+/// Why no bound exists.
+StackFail :: union {
+    /// The program has errors that were already reported, or uses what gammac cannot
+    /// check yet.
+    Quiet
+    /// The analysis met something it cannot bound.
+    At: (span: source.Span, why: string)
+}
+
+/// A function known to be the value of a local.
+BoundFn :: struct {
+    local: u32
+    fn_id: u32
+}
+
+/// An activation on the current call chain.
+StackFrame :: struct {
+    f: u32
+    bound: List(BoundFn)
+}
+
+/// The cost of a function, as computed.
+StackCost :: struct {
+    fn_id: u32
+    cost: u64
+}
+
+StackAnalysis :: struct {
+    s: ^Sema
+    path: List(StackFrame)
+    /// The handlers installed around the code being analyzed, innermost last.
+    env: List(StackHandler)
+    /// The costs of the calls that depend on nothing but the function.
+    memo: List(StackCost)
+    /// The frame costs of the functions seen.
+    costs: List(StackCost)
+}
+
+/// The value of `@stack_size(f)`, or `null` after reporting why there is none.
+stack_size :: fn(s: ^Sema, f: u32, span: source.Span) -> ?u64 needs Load {
+    a := StackAnalysis(s: s, path: list(StackFrame), env: list(StackHandler), memo: list(StackCost), costs: list(StackCost))
+    r := stack_call(&a, f, empty_slice(Expr), empty_slice(StackHandler), span)
+    match r {
+        !.Quiet => return null
+        !.At(at, why) => {
+            chain := list(string)
+            for fr in a.path.items { chain.push(str.format("`{}`", s.fns.items[usize(fr.f)].name)!)! }
+            name := s.fns.items[usize(f)].name
+            d := diag.error(at, str.format("`@stack_size({})` has no bound: {}", name, why)!)
+            d.add_label(span, "stack size needed here")
+            if chain.items.len > 1 { d.add_note(str.format("reached through {}", str.join(chain.items, " → ")!)!) }
+            s.emit(d)
+            return null
+        }
+        frames => return ((STACK_RESERVE + STACK_BASE) +| frames).max(MIN_STACK)
+    }
+}
+
+/// The stack used by a call of `g` (its frame and everything below it) with `args` (when
+/// they are known), in the handler context `env`.
+stack_call :: fn(a: ^StackAnalysis, g: u32, args: []const Expr, env: []const StackHandler, span: source.Span) -> StackFail!u64 needs Load {
+    name := a.s.fns.items[usize(g)].name
+    for fr in a.path.items {
+        if fr.f is g { return !StackFail.At(span, str.format("`{}` is recursive", name)!) }
+    }
+    if not ensure_body(a.s, g, span) { return !StackFail.Quiet }
+    def := a.s.def_of(g)
+    body := def.body else {
+        if def.kind is .Foreign { return !StackFail.At(span, str.format("`{}` is a foreign function", name)!) }
+        a.s.unsupported(span, "stack sizes through functions of the core library")
+        return !StackFail.Quiet
+    }
+    bound := list(BoundFn)
+    for i, p in enumerate(def.params) {
+        if i < args.len {
+            if t := stack_target(a, &args[i]) { bound.push(BoundFn(local: p, fn_id: t))! }
+        }
+    }
+    // A function that captures nothing and is called without handlers or known function
+    // arguments depends only on itself.
+    memoizable := def.parent is null and env.len is 0 and bound.items.len is 0
+    if memoizable {
+        for m in a.memo.items {
+            if m.fn_id is g { return m.cost }
+        }
+    }
+    saved := a.env
+    a.env = list(StackHandler)
+    a.env.extend(env)!
+    r := stack_push_expr(a, g, bound, body)
+    a.env = saved
+    c := (try r) +| stack_frame(a, g)
+    if memoizable { a.memo.push(StackCost(fn_id: g, cost: c))! }
+    return c
+}
+
+/// Analyzes `body` of `g` as the innermost activation; the activation stays on the chain
+/// when the analysis fails, to name the chain in the error.
+stack_push_expr :: fn(a: ^StackAnalysis, g: u32, bound: List(BoundFn), body: ^Expr) -> StackFail!u64 needs Load {
+    a.path.push(StackFrame(f: g, bound: bound))!
+    r := stack_expr(a, body)
+    if r is not !_ { _ = a.path.pop() }
+    return r
+}
+
+/// The frame cost of `g`.
+stack_frame :: fn(a: ^StackAnalysis, g: u32) -> u64 needs Alloc {
+    for c in a.costs.items {
+        if c.fn_id is g { return c.cost }
+    }
+    c := frame_cost(a.s, g)
+    a.costs.push(StackCost(fn_id: g, cost: c))!
+    return c
+}
+
+/// The function `e` is known to evaluate to, if any.
+stack_target :: fn(a: ^StackAnalysis, e: ^const Expr) -> ?u32 {
+    match e.kind {
+        .FnRef(f), .Closure(f) => return f
+        .Coerce(_, x) => return stack_target(a, x)
+        .Local(l) => {
+            top := a.path.items.last() else return null
+            return bound_of(&top.bound, l)
+        }
+        .Upvar(levels, local) => {
+            top := a.path.items.last() else return null
+            owner := top.f
+            for _ in 0..levels {
+                owner = a.s.def_of(owner).parent else return null
+            }
+            k := a.path.items.len
+            while k > 0 {
+                k -= 1
+                if a.path.items[k].f is owner { return bound_of(&a.path.items[k].bound, local) }
+            }
+            return null
+        }
+        _ => return null
+    }
+}
+
+bound_of :: fn(bound: ^const List(BoundFn), local: u32) -> ?u32 {
+    for b in bound.items {
+        if b.local is local { return b.fn_id }
+    }
+    return null
+}
+
+/// The stack used below the current frame while evaluating `e`.
+stack_expr :: fn(a: ^StackAnalysis, e: ^Expr) -> StackFail!u64 needs Load {
+    if a.s.tys.mentions_error(e.ty) { return !StackFail.Quiet }
+    m: u64 = 0
+    match e.kind {
+        .Call(callee, args) => {
+            for i in 0..args.len { m = m.max(try stack_expr(a, &args[i])) }
+            c: u64 = 0
+            match callee {
+                .Fn(g) => { c = try stack_call(a, g, args, a.env.items, e.span) }
+                .Indirect(f) => {
+                    m = m.max(try stack_expr(a, f))
+                    g := stack_target(a, f) else {
+                        return !StackFail.At(e.span, "this calls a function value whose target is not known statically")
+                    }
+                    c = try stack_call(a, g, args, a.env.items, e.span)
+                }
+                .Perform(eref, op) => { c = try stack_perform(a, &eref, op, args, e.span) }
+            }
+            m = m.max(c)
+        }
+        .Write(w) => {
+            for i in 0..w.args.len { m = m.max(try stack_expr(a, &w.args[i])) }
+            c: u64 = 0
+            match w.sink {
+                .Fn(f) => {
+                    m = m.max(try stack_expr(a, f))
+                    g := stack_target(a, f) else {
+                        return !StackFail.At(e.span, "this writes to a function whose target is not known statically")
+                    }
+                    c = try stack_call(a, g, empty_slice(Expr), a.env.items, e.span)
+                }
+                .Perform(eref, op) => { c = try stack_perform(a, &eref, op, empty_slice(Expr), e.span) }
+            }
+            m = m.max(c)
+        }
+        .With(w) => {
+            installed := list(StackHandler)
+            for h in w.handlers {
+                match h {
+                    .Literal(x) => {
+                        m = m.max(try stack_expr(a, x))
+                        .Handler(id) := a.s.tys.kind(x.ty) else return !StackFail.Quiet
+                        lit := a.s.handlers.items[usize(id)]
+                        installed.push(StackHandler(effect_: lit.effect_, clauses: lit.clauses))!
+                    }
+                    .Decl(decls, value) => {
+                        m = m.max(try stack_expr(a, value))
+                        for d in decls {
+                            info := a.s.handler_decls.items[usize(d)]
+                            installed.push(StackHandler(effect_: info.effect_, clauses: info.clauses))!
+                        }
+                    }
+                }
+            }
+            if stack := w.on {
+                // The body runs on its own fiber; the `ctl` clauses run here, called from
+                // the `with`, in the handler context outside it.
+                m = m.max(try stack_expr(a, stack))
+                for h in installed.items {
+                    ops := a.s.effects.items[usize(h.effect_.eff)].ops
+                    for op, c in enumerate(h.clauses) {
+                        if op < ops.len and ops[op].kind is .Ctl { m = m.max(try stack_call(a, c, empty_slice(Expr), a.env.items, e.span)) }
+                    }
+                }
+            } else {
+                depth := a.env.items.len
+                a.env.extend(installed.items)!
+                r := stack_expr(a, w.body)
+                a.env.truncate(depth)
+                m = m.max(try r)
+            }
+        }
+        .Block(b) => {
+            // Locals are distinct within a function, so binding them all first is the
+            // same as binding each at its `let`.
+            top := a.path.items.last() else return !StackFail.Quiet
+            def := a.s.def_of(top.f)
+            for st in b.stmts {
+                if .Let(local, init) := st {
+                    if not def.locals[usize(local)].mutable {
+                        if t := stack_target(a, init) {
+                            bind_fn(&a.path.items[a.path.items.len - 1].bound, local, t)
+                        }
+                    }
+                }
+            }
+            for c in stack_children(e) { m = m.max(try stack_expr(a, c)) }
+        }
+        _ => {
+            for c in stack_children(e) { m = m.max(try stack_expr(a, c)) }
+        }
+    }
+    return m
+}
+
+bind_fn :: fn(bound: ^List(BoundFn), local: u32, f: u32) needs Alloc {
+    for i in 0..bound.items.len {
+        if bound.items[i].local is local {
+            bound.items[i].fn_id = f
+            return
+        }
+    }
+    bound.push(BoundFn(local: local, fn_id: f))!
+}
+
+/// The direct sub-expressions of `e`.
+stack_children :: fn(e: ^Expr) -> []^Expr needs Alloc {
+    kids := list(^Expr)
+    tir.for_each_child(e, fn(c: ^Expr) { kids.push(c)! })
+    return kids.items
+}
+
+/// The stack used by performing operation `op` of `eref`.
+stack_perform :: fn(a: ^StackAnalysis, eref: ^const EffectRef, op: u32, args: []const Expr, span: source.Span) -> StackFail!u64 needs Load {
+    ops := a.s.effects.items[usize(eref.eff)].ops
+    // The fiber suspends; the clause runs on its driver's stack.
+    if usize(op) < ops.len and ops[usize(op)].kind is .Ctl { return 0 }
+    unknown := str.format("the handler of `{}` performed here is not known statically", a.s.tys.show_ref(eref))!
+    k := a.env.items.len
+    while k > 0 {
+        k -= 1
+        if types.cmp_ref(&a.env.items[k].effect_, eref) is not 0 { continue }
+        h := a.env.items[k]
+        if usize(op) >= h.clauses.len { return !StackFail.At(span, unknown) }
+        return stack_call(a, h.clauses[usize(op)], args, a.env.items[..k], span)
+    }
+    return !StackFail.At(span, unknown)
+}
+
+/// The stack bytes charged for one call of `g`: a fixed overhead for the return address,
+/// saved registers and spills; the locals; every composite temporary bigger than a
+/// register (call results, constructed values, and the copies made by reading a large
+/// value, but not by using it as a place); and the records of the handlers its `with`s
+/// install.
+frame_cost :: fn(s: ^Sema, g: u32) -> u64 needs Alloc {
+    def := s.def_of(g)
+    c: u64 = 256
+    for l in def.locals { c = c +| round8(s.layout(l.ty).size) }
+    if b := def.body { frame_temps(s, b, false, &c) }
+    return c
+}
+
+round8 :: fn(n: u64) -> u64 => (n +| 7) & 0xFFFF_FFFF_FFFF_FFF8
+
+/// Adds the temporaries of `e`; `place` is set for an expression used as a place (the base
+/// of an index, field or slice, an operand of `&`, the target of an assignment): reading
+/// it makes no copy.
+frame_temps :: fn(s: ^Sema, e: ^Expr, place: bool, c: ^u64) needs Alloc {
+    add :: fn(t: Ty) needs Alloc {
+        n := s.layout(t).size
+        if n > 8 { c^ = c^ +| round8(n) }
+    }
+    match e.kind {
+        .With(w) => { c^ = c^ +| 128 * u64(w.handlers.len) }
+        .Call(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .Builtin(_) => add(e.ty)
+        .Local(_), .Upvar(_), .Global(_) => if not place { add(e.ty) }
+        _ => {}
+    }
+    match e.kind {
+        .Deref(x), .Field(x, _), .Index(x, _, _) => {
+            if not place { add(e.ty) }
+            frame_temps(s, x, true, c)
+            if .Index(_, index, _) := e.kind { frame_temps(s, index, false, c) }
+            return
+        }
+        .AddrOf(x), .SliceLen(x), .SlicePtr(x) => {
+            frame_temps(s, x, true, c)
+            return
+        }
+        .Slice(sl) => {
+            frame_temps(s, sl.base, true, c)
+            if x := sl.lo { frame_temps(s, x, false, c) }
+            if x := sl.hi { frame_temps(s, x, false, c) }
+            return
+        }
+        .Block(b) => {
+            for st in b.stmts {
+                match st {
+                    .Assign(place_, value) => {
+                        frame_temps(s, place_, true, c)
+                        frame_temps(s, value, false, c)
+                    }
+                    .AssignTuple(places, value) => {
+                        for p in places {
+                            if x := p { frame_temps(s, x, true, c) }
+                        }
+                        frame_temps(s, value, false, c)
+                    }
+                    .Let(_, init) => frame_temps(s, init, false, c)
+                    .LetTuple(_, init) => frame_temps(s, init, false, c)
+                    .Expr(x) => frame_temps(s, x, false, c)
+                    .Defer(_, x) => frame_temps(s, x, false, c)
+                    _ => {}
+                }
+            }
+            if t := b.tail { frame_temps(s, t, false, c) }
+            return
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { frame_temps(s, x, false, c) })
+}

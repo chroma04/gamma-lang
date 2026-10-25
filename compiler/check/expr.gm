@@ -113,6 +113,7 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         }
         .Intrinsic(i) => return cx.intrinsic(i, span)
         .Fn(lit) => return cx.fn_literal(lit, expect, null, span)
+        .Handler(lit) => return cx.handler_literal(lit, null, span)
         .With(w) => return cx.with_expr(w, true, expect)
         .Resume(r) => return cx.resume_expr(r.cont, r.value, span)
         .Elements(inner) => {
@@ -1715,6 +1716,17 @@ field_default :: fn(cx: ^FnCx, id: u32, i: usize, ty: Ty, span: source.Span) -> 
     defaults := cx.s.adts.items[usize(id)].defaults
     if i >= defaults.len or not defaults[i] { return null }
     d := cx.s.field_default_expr(id, i) else return null
+    // A default whose type mentions a type parameter of the struct is checked as an
+    // expression of the declared field type, not of the instance's.
+    tid := cx.s.tys.template(id)
+    if tid is not id {
+        if .Struct(def) := cx.s.adts.items[usize(tid)].kind {
+            if i < def.fields.len and cx.s.tys.has_param(def.fields[i].ty) {
+                v := check_const_expr(cx.s, cx.s.adts.items[usize(id)].module, d, def.fields[i].ty)
+                return v else error_expr(cx.s, d.span)
+            }
+        }
+    }
     return cx.default_value(cx.s.adts.items[usize(id)].module, d, ty)
 }
 

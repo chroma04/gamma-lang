@@ -17,7 +17,7 @@ param_kind_of :: fn(s: ^Sema, module: usize, p: ^const ast.Param) -> ParamKind n
     return .Value(s.resolve_type(module, t))
 }
 
-new_param :: fn(s: ^Sema, name: string, kind: ParamKind) -> u32 needs Alloc {
+pub(package) new_param :: fn(s: ^Sema, name: string, kind: ParamKind) -> u32 needs Alloc {
     id := s.tys.fresh_param(name)
     s.params.push(ParamData(kind: kind, constraints: list(Constraint)))!
     return id
