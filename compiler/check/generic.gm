@@ -76,9 +76,6 @@ generic_call :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast.Arg, s
 /// A generic call whose rest arguments are packed and whose spreads are expanded.
 generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     sig := cx.s.fns.items[usize(f)]
-    for g in sig.generics {
-        if cx.s.param_kind(g) is .Effects { return cx.unsupported(span, "effect-set parameters") }
-    }
     tys := &cx.s.tys
     recv_index: ?usize = null
     if receiver is not null {
@@ -182,6 +179,8 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
             if cx.s.param_kind(pid) is .Value(_) {
                 v := cx.comptime_arg(cx.s.subst(p.ty, binds.items), e) else return error_expr(cx.s, span)
                 set_bind(&binds, pid, v)
+            } else if cx.s.param_kind(pid) is .Effects {
+                set_bind(&binds, pid, cx.s.resolve_effect_arg(cx.module, e))
             } else {
                 set_bind(&binds, pid, cx.s.resolve_type(cx.module, e))
             }
@@ -273,6 +272,20 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
         d := p.default else continue
         if .Tuple(elems) := d.kind and elems.len is 0 and sema.bound_to(binds.items, pid) is null { binds.push(Subst(param: pid, ty: tys.unit()))! }
     }
+    // An effect-set parameter named in an effect of the function's own set (`needs
+    // Sched(E)`) takes its effects from the one instantiation of that effect available
+    // here, as an operation call does (§12.1, §16.6).
+    for pid in sig.generics {
+        if sema.bound_to(binds.items, pid) is not null or cx.s.param_kind(pid) is not .Effects { continue }
+        for e in sig.effects.effects {
+            if not effect_args_name(cx.s, &e, pid) { continue }
+            avail := cx.available(e.eff)
+            if avail.len is not 1 { continue }
+            for i, x in enumerate(e.args) {
+                if i < avail[0].args.len and .Type(xt) := x and .Type(yt) := avail[0].args[i] { cx.s.match_params(xt, yt, &binds) }
+            }
+        }
+    }
     // An argument with an error (already reported) leaves its parameters unbound; say
     // nothing more about them.
     failed_arg := false
@@ -301,6 +314,11 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
         }
         if t := sema.bound_to(binds.items, pid) {
             targs.push(t)!
+            continue
+        }
+        // An effect-set parameter that nothing determines is empty (§16.6).
+        if cx.s.param_kind(pid) is .Effects {
+            targs.push(tys.intern(.Effects(types.empty_effects())))!
             continue
         }
         // An array where a slice is expected says nothing about the slice's element type:

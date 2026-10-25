@@ -261,8 +261,42 @@ pointer_cast :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, args: []const ast.Arg, span:
         cx.error(span, str.format("`cast` converts between pointer types, not from `{}` to `{}`; use `.addr()` for an address", cx.show(rty), cx.show(t))!)
         return error_expr(cx.s, span)
     }
-    if kind(t) is 2 or kind(rty) is 2 { return cx.unsupported(span, "casts of function pointers") }
+    // A function pointer converts to one with the same shape (§6.6).
+    from := tys.kind(if .Optional(i) := tys.kind(rty) { i } else { rty })
+    to := tys.kind(if .Optional(i) := tys.kind(t) { i } else { t })
+    if .FnPtr(f) := from and .FnPtr(g) := to {
+        if why := cx.fn_cast_mismatch(&f, &g) {
+            cx.error(span, str.format("cannot cast `{}` to `{}`: {}", cx.show(rty), cx.show(t), why)!)
+            return error_expr(cx.s, span)
+        }
+    }
     return builtin(.Cast, t, [1]^Expr(recv)[..], span)
+}
+
+/// Why a function pointer type `from` cannot be cast to `to`, if it cannot: the calling
+/// convention and the number of parameters must agree, and each parameter and the result
+/// must be the same type or both be pointers (§6.6). Effect sets may differ.
+fn_cast_mismatch :: fn(cx: ^FnCx, from: ^const types.FnTy, to: ^const types.FnTy) -> ?string needs Alloc {
+    tys := &cx.s.tys
+    pointer :: fn(ts: ^const types.Types, t0: Ty) -> u8 {
+        t := if .Optional(i) := ts.kind(t0) { i } else { t0 }
+        return match ts.kind(t) {
+            .Ptr(_), .ManyPtr(_), .Rawptr => 1
+            .FnPtr(_) => 2
+            _ => 0
+        }
+    }
+    same_repr :: fn(ts: ^const types.Types, a, b: Ty) -> bool => a is b or (pointer(ts, a) is not 0 and pointer(ts, a) is pointer(ts, b) and (ts.kind(a) is .Optional(_)) is (ts.kind(b) is .Optional(_)))
+    if from.win64 is not to.win64 { return "the calling conventions differ" }
+    if from.variadic is not to.variadic { return "only one of them is variadic" }
+    if from.params.len is not to.params.len { return str.format("they take {} and {} parameters", from.params.len, to.params.len)! }
+    for i, a in enumerate(from.params) {
+        if not same_repr(tys, a, to.params[i]) {
+            return str.format("parameter {} is `{}` in one and `{}` in the other; only pointers convert to pointers", i + 1, cx.show(a), cx.show(to.params[i]))!
+        }
+    }
+    if not same_repr(tys, from.ret, to.ret) { return str.format("the results `{}` and `{}` differ and are not both pointers", cx.show(from.ret), cx.show(to.ret))! }
+    return null
 }
 
 /// The methods of arrays and slices; a pointer to an array also works.
