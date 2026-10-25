@@ -541,6 +541,15 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
             return .Some(new(copy(v))!)
         }
         .BlackBox => return x
+        .ToPtr => {
+            .Int(bits) := x else return !m.unsupported(span, "this builtin")
+            if bits is 0 { return .Null }
+            // An address made from an integer is in no object the evaluator has: only a
+            // read through it would need one.
+            path := list(u64)
+            path.push(0)!
+            return .Some(new(Value.Ptr(Place(cell: new(Cell(v: unit_value(), is_static: true))!, path: path.items)))!)
+        }
         .Bits => return m.reinterpret(x, at, e.ty, span)
         .Sqrt => {
             .Float(f) := x else return !m.unsupported(span, "this builtin")

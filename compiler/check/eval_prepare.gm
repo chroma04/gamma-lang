@@ -77,9 +77,6 @@ ensure_body :: fn(s: ^Sema, f: u32, span: source.Span) -> bool needs Load {
     }
     for i, p in enumerate(s.pending_bodies.items) {
         if p.fn_id is not f { continue }
-        // gammac does not check the bodies of the core library: calling one is reported
-        // when it runs.
-        if s.l.modules.items[p.module].is_prelude { return true }
         body := s.pending_bodies.remove(i)
         check_fn_body(s, body.fn_id, body.module, body.lit)
         return true

@@ -491,7 +491,10 @@ pub value_key :: fn(s: ^Sema, v: tir.Value, ty: Ty, span: source.Span) -> ?types
         .Slice(sl) => if ty is tys.string_ty() {
             bytes := list(u8)
             for k in 0..sl.len {
-                .Int(b) := value_at(sl.start, k) else return null
+                .Int(b) := value_at(sl.start, k) else {
+                    s.error(span, "this compile-time string points outside its data (§17.4)")
+                    return null
+                }
                 bytes.push(b.trunc(u8))!
             }
             return .Str(bytes.items)

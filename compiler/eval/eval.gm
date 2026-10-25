@@ -598,6 +598,8 @@ slice :: fn(m: ^Machine, sl: tir.SliceExpr, span: source.Span) -> Flow!Value nee
     tys := &m.s.tys
     start: Place = Place(cell: new(Cell(v: .Null, is_static: false))!, path: empty_slice(u64))
     len: u64 = 0
+    // A many-item pointer has no length; what lies past its object is found when read.
+    unbounded := false
     match tys.kind(sl.base.ty) {
         .Array(n, _, _) => {
             pl := try m.place(sl.base)
@@ -615,6 +617,11 @@ slice :: fn(m: ^Machine, sl: tir.SliceExpr, span: source.Span) -> Flow!Value nee
             start = s.start
             len = s.len
         }
+        .ManyPtr(_) => {
+            .Ptr(pl) := (try m.eval(sl.base)) else return !m.unsupported(span, "slicing this pointer")
+            start = pl
+            unbounded = true
+        }
         _ => return !m.unsupported(span, "slicing this type at compile time")
     }
     lo: i128 = 0
@@ -628,7 +635,8 @@ slice :: fn(m: ^Machine, sl: tir.SliceExpr, span: source.Span) -> Flow!Value nee
         hi = m.int_value(b, x.ty)
         if sl.inclusive { hi += 1 }
     }
-    if lo < 0 or hi < lo or hi > i128(len) {
+    if unbounded and sl.hi is null { return !m.unsupported(span, "slicing this pointer") }
+    if lo < 0 or hi < lo or (hi > i128(len) and not unbounded) {
         return !m.trap(span, str.format("slice bounds {}..{} invalid for length {}", lo, hi, len)!)
     }
     return .Slice(offset(start, lo.trunc(u64)), (hi - lo).trunc(u64))
