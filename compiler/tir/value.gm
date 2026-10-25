@@ -1,0 +1,93 @@
+// Compile-time values (§17): what evaluating a checked expression gives. The reference
+// implementation keeps a value as its bytes in the target's layout (`ConstValue` in
+// `src/tir.rs`); gammac keeps its structure, and pointers as places in that structure.
+
+/// A value computed at compile time. Its type is the type of the expression that gave
+/// it, which says how to read it.
+pub Value :: union {
+    /// An integer: its two's-complement bits, truncated to the width of its type.
+    Int: u128
+    /// A float, rounded to its type.
+    Float: f64
+    Bool: bool
+    /// A struct, a tuple or an array: its fields or elements in order.
+    Agg: ^Agg
+    /// A pointer, to a place.
+    Ptr: Place
+    /// A slice: the place of its first element and its length.
+    Slice: (start: Place, len: u64)
+    /// The absent optional (and so the null pointer).
+    Null
+    /// A present optional.
+    Some: ^Value
+    /// A successful result.
+    Ok: ^Value
+    /// A failed result.
+    Err: ^Value
+    /// A union value: the index of its variant and its payload.
+    Variant: (index: u32, payload: ?^Value)
+    /// A named function, or a function literal that uses no locals, by its index.
+    Fn: u32
+    /// A function literal that uses the locals of the frame it was made in.
+    Closure: (fn_id: u32, frame: ^Frame)
+    /// A handler literal, by its index, and the frame it was made in.
+    Handler: (index: u32, frame: ^Frame)
+}
+
+/// The fields or elements of an aggregate value. Values held in places are changed in
+/// place; every other value is a copy that nothing else shares.
+pub Agg :: struct {
+    pub elems: []Value
+}
+
+/// A piece of memory holding one value: a local variable, a temporary, a constant or a
+/// string literal.
+pub Cell :: struct {
+    pub v: Value
+    /// Whether it outlives the evaluation: a constant or a literal (§17.4).
+    pub is_static: bool
+}
+
+/// A place: a cell, and the indices of the fields and elements leading from its value
+/// to the place's.
+pub Place :: struct {
+    pub cell: ^Cell
+    pub path: []const u64
+}
+
+/// The locals of one call of a function, and the frame of the function that its own
+/// function is nested in (for `Upvar`s).
+pub Frame :: struct {
+    pub fn_id: u32
+    pub cells: []^Cell
+    pub parent: ?^Frame
+}
+
+/// A typed constant or a default value, by the place it is declared (§17.2), with its
+/// checked initializer and, once evaluated, its value.
+pub ConstDef :: struct {
+    pub name: string
+    pub span: source.Span
+    pub ty: Ty
+    pub module: usize
+    /// The initializer as written, and the type it is checked against.
+    pub ast: ^const ast.Expr
+    pub expected: ?Ty
+    /// The step budget of its evaluation (§17.3).
+    pub fuel: u64
+    /// The checked initializer.
+    pub init: ?^Expr = null
+    pub state: ConstState = .Unchecked
+    /// The cell holding the value, which pointers into the constant point into.
+    pub cell: ?^Cell = null
+}
+
+pub ConstState :: union {
+    Unchecked
+    Evaluating
+    Done
+    /// Its initializer has errors, or its evaluation failed (reported).
+    Failed
+    /// gammac cannot evaluate it (reported).
+    Unsupported
+}

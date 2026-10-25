@@ -18,18 +18,12 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
     } else {
         check_tests(s, root)
     }
-    for f in s.fns.items {
-        if s.l.modules.items[f.module].is_prelude { continue }
-        for p in f.params {
-            d := p.default else continue
-            if not sema.is_site(&p) and not is_literal_default(d) {
-                s.unsupported(d.span, "parameter defaults evaluated at compile time")
-            }
-        }
-    }
     check_consts(s)
     check_bodies(s)
     check_handler_clauses(s)
+    check_bodies(s)
+    check_declared_defaults(s)
+    check_bodies(s)
     check_decl_breaks(s)
     monomorphize(s)
     check_inline(s)
@@ -45,22 +39,32 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
 /// clauses) are copied for the instance with its types substituted. Generic functions of
 /// the core library, whose bodies gammac does not check, are not followed.
 monomorphize :: fn(s: ^Sema) needs Load {
-    while req := s.mono_queue.pop() {
-        def := s.defs.items[usize(req.generic)]
-        body := def.body else continue
-        map := list(sema.Subst)
-        for i, g in enumerate(s.fns.items[usize(req.generic)].generics) { map.push(sema.Subst(param: g, ty: req.args[i]))! }
-        outer := s.mono_depth
-        s.mono_depth = req.depth
-        mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false)
-        mc.fn_map.push(FnPair(from: req.generic, to: req.instance))!
-        for l in def.locals { _ = mono_ty(s, &mc, l.ty) }
-        mono_expr(s, &mc, tir.clone_expr(body))
-        s.mono_depth = outer
-        // An instance may need a type larger than any object (a computed array length).
-        for l in def.locals {
-            if not s.type_size_ok(s.subst(l.ty, map.items), req.span) { break }
-        }
+    while req := s.mono_queue.pop() { produce_instance(s, req) }
+}
+
+/// Produces the body of the instance `req` asks for, and records it.
+produce_instance :: fn(s: ^Sema, req: sema.MonoRequest) needs Load {
+    def := s.defs.items[usize(req.generic)]
+    body := def.body else return
+    map := list(sema.Subst)
+    for i, g in enumerate(s.fns.items[usize(req.generic)].generics) { map.push(sema.Subst(param: g, ty: req.args[i]))! }
+    outer := s.mono_depth
+    s.mono_depth = req.depth
+    mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false)
+    mc.fn_map.push(FnPair(from: req.generic, to: req.instance))!
+    locals := list(tir.LocalDecl)
+    for l in def.locals {
+        x := l
+        x.ty = mono_ty(s, &mc, l.ty)
+        locals.push(x)!
+    }
+    copy := tir.clone_expr(body)
+    mono_expr(s, &mc, copy)
+    s.mono_depth = outer
+    s.set_inst_def(req.instance, tir.FnDef(kind: def.kind, params: def.params, locals: locals.items, body: copy, parent: def.parent, nested: def.nested))
+    // An instance may need a type larger than any object (a computed array length).
+    for l in def.locals {
+        if not s.type_size_ok(s.subst(l.ty, map.items), req.span) { break }
     }
 }
 
@@ -308,13 +312,6 @@ mono_handler :: fn(s: ^Sema, mc: ^MonoCx, h: u32) -> u32 needs Load {
     for c in lit.clauses { clauses.push(mono_fn(s, mc, c))! }
     s.handlers.items[usize(new_h)].clauses = clauses.items
     return new_h
-}
-
-/// Whether a parameter default is a literal, which needs no compile-time evaluation.
-is_literal_default :: fn(d: ^const ast.Expr) -> bool => match d.kind {
-    .Int(_), .Float(_), .Bool(_), .Null, .Str(_) => true
-    .Unary(.Neg, x) => x.kind in (.Int(_), .Float(_))
-    _ => false
 }
 
 /// Reports the `#inline` functions that can call themselves (§11.10).

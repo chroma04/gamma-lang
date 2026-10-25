@@ -3,6 +3,7 @@
 //! `gamma --diag-format` (the same text, byte for byte).
 
 source :: import "../source"
+str :: import "std/str"
 
 pub Severity :: union { Note, Warning, Error }
 
@@ -43,12 +44,15 @@ pub Diagnostic :: struct {
 /// The diagnostics of a compilation, in the order they were reported.
 pub Diagnostics :: struct {
     pub list: List(Diagnostic)
+    /// The errors in `list`.
     errors: usize
+    /// The errors raised, including those dropped.
+    raised: usize
     /// While above zero, diagnostics are dropped (a parser trying an alternative).
     suppressed: u32
 }
 
-pub diagnostics :: fn() -> Diagnostics needs Alloc => Diagnostics(list: list(Diagnostic), errors: 0, suppressed: 0)
+pub diagnostics :: fn() -> Diagnostics needs Alloc => Diagnostics(list: list(Diagnostic), errors: 0, raised: 0, suppressed: 0)
 
 /// A new error at `span`.
 pub error :: fn(span: source.Span, message: string) -> Diagnostic needs Alloc {
@@ -91,10 +95,13 @@ pub add_fix_edits :: fn(d: ^Diagnostic, message: string, edits: []const Edit) ne
     d.fixes.push(Fix(message: message, edits: l))!
 }
 
-/// Records `d`, unless diagnostics are suppressed, or it repeats one with the same
-/// severity, location and message.
+/// Records `d`, unless diagnostics are suppressed, it repeats one with the same
+/// severity, location and message, or it is an error about the error type `{error}`.
 pub push :: fn(ds: ^Diagnostics, d: Diagnostic) {
+    if d.severity is .Error { ds.raised += 1 }
     if ds.suppressed > 0 { return }
+    // An error about the error type only restates an earlier error.
+    if d.severity is .Error and str.contains(d.message, "{error}") { return }
     if d.span is not source.DUMMY {
         for old in ds.list.items {
             if old.span is d.span and old.severity is d.severity and old.message is d.message { return }
@@ -120,8 +127,8 @@ pub report :: fn(ds: ^Diagnostics, span: source.Span, message: string) needs All
 
 pub has_errors :: fn(ds: ^const Diagnostics) -> bool => ds.errors > 0
 
-/// The number of errors reported so far.
-pub error_count :: fn(ds: ^const Diagnostics) -> usize => ds.errors
+/// The number of errors raised so far, including those dropped.
+pub error_count :: fn(ds: ^const Diagnostics) -> usize => ds.raised
 
 /// Sorts the diagnostics by file and position, keeping the order of those at one place.
 pub sort :: fn(ds: ^Diagnostics) {

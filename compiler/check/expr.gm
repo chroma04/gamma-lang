@@ -1326,7 +1326,12 @@ construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Sp
         cx.error(span, str.format("`{}` cannot be constructed outside its {}: its field `{}` is private (§3.3)", cx.show(ty), h.owner, h.name)!)
         return error_expr(cx.s, span)
     }
-    if id in cx.s.adts_in_progress.items { return cx.unsupported(span, "constructions in defaults") }
+    // The defaults of a struct's fields are evaluated while the struct is declared (§17.2),
+    // so a default that reaches a construction of the struct needs the struct complete.
+    if id in cx.s.adts_in_progress.items {
+        cx.error(span, str.format("dependency cycle: `{}` is constructed while the default of one of its fields is evaluated (§3.4)", cx.show(ty))!)
+        return error_expr(cx.s, span)
+    }
     fields := cx.s.struct_fields(ty) else empty_slice(sema.FieldDef)
     n := fields.len
     stmts := list(tir.Stmt)
@@ -1437,11 +1442,11 @@ field_default :: fn(cx: ^FnCx, id: u32, i: usize, ty: Ty, span: source.Span) -> 
     defaults := cx.s.adts.items[usize(id)].defaults
     if i >= defaults.len or not defaults[i] { return null }
     d := cx.s.field_default_expr(id, i) else return null
-    return cx.default_value(d, ty)
+    return cx.default_value(cx.s.adts.items[usize(id)].module, d, ty)
 }
 
-/// The value of the default `d` (written in the declaring module) of type `ty`.
-default_value :: fn(cx: ^FnCx, d: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
+/// The value of the default `d` (written in `module`) of type `ty`.
+default_value :: fn(cx: ^FnCx, module: usize, d: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
     tys := &cx.s.tys
     e := d
     while .Paren(inner) := e.kind { e = inner }
@@ -1461,7 +1466,10 @@ default_value :: fn(cx: ^FnCx, d: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
         .Float(lit) => if tys.kind(ty) is .Float(_) and lit.suffix is null and not lit.imag {
             r := sema.literal_rational(&lit.value)
             if negative {
-                if r.is_zero() { return tir.mk(ty, .Const("<default>", d.span), d.span) }
+                if r.is_zero() {
+                    if not default_const(cx.s, module, d, ty) { return error_expr(cx.s, d.span) }
+                    return tir.mk(ty, .Const("<default>", d.span), d.span)
+                }
                 r = r.neg()
             }
             return cx.float_value(r, ty, d.span)
@@ -1470,6 +1478,7 @@ default_value :: fn(cx: ^FnCx, d: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
         .Null => if tys.kind(ty) is .Optional(_) { return tir.mk(ty, .Null, d.span) }
         _ => {}
     }
+    if not default_const(cx.s, module, d, ty) { return error_expr(cx.s, d.span) }
     return tir.mk(ty, .Const("<default>", d.span), d.span)
 }
 

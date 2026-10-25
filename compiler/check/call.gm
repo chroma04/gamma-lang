@@ -308,7 +308,7 @@ bind_args :: fn(cx: ^FnCx, params: []const sema.ParamInfo, callee_module: usize,
         }
         p := &params[i]
         if d := p.default {
-            out.push(cx.param_default(p, d, p.ty, span)^)!
+            out.push(cx.param_default(p, callee_module, d, p.ty, span)^)!
             continue
         }
         if not spread_failed {

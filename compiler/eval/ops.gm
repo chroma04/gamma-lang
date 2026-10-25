@@ -1,0 +1,702 @@
+// The operations of compile-time evaluation: integer and float arithmetic, coercions,
+// conversions, builtins and comparisons, trapping as the reference implementation's VM
+// does (`src/interp/fast.rs`, `src/interp/num.rs`, `src/interp/vm/exec.rs`).
+
+/// The signedness and width of integer type `t` (a `bool` is one unsigned bit).
+int_info :: fn(m: ^const Machine, t: Ty) -> (signed: bool, bits: u32) => match m.s.tys.kind(t) {
+    .Int(signed, bits) => (signed: signed, bits: u32(bits))
+    .Usize => (signed: false, bits: u32(target.ptr_bits))
+    .Isize => (signed: true, bits: u32(target.ptr_bits))
+    _ => (signed: false, bits: 128)
+}
+
+/// The low `bits` bits set.
+mask :: fn(bits: u32) -> u128 => if bits >= 128 { ~u128(0) } else { (u128(1) << u128(bits)) - 1 }
+
+/// The two's-complement bits of `i`, modulo 2^128.
+int_bits :: fn(i: bigint.Int) -> u128 {
+    l := i.mag.items
+    v: u128 = 0
+    k := l.len.min(4)
+    while k > 0 {
+        k -= 1
+        v = (v <<% 32) | u128(l[k])
+    }
+    return if i.negative { 0 -% v } else { v }
+}
+
+/// `bits`, the value of an integer of type `t`, truncated to the type's width.
+wrap :: fn(m: ^const Machine, bits: u128, t: Ty) -> u128 => bits & mask(m.int_info(t).bits)
+
+/// The value of the integer `bits` of type `t`, as an `i128` (a `u128` above `i128`'s
+/// range wraps).
+int_value :: fn(m: ^const Machine, bits: u128, t: Ty) -> i128 {
+    info := m.int_info(t)
+    if info.signed and info.bits < 128 and (bits >> u128(info.bits - 1)) & 1 is 1 { return (bits | ~mask(info.bits)).bits(i128) }
+    return bits.bits(i128)
+}
+
+/// The value of the integer `bits` of type `t`, exactly.
+big_of :: fn(m: ^const Machine, bits: u128, t: Ty) -> bigint.Int needs Alloc {
+    if m.int_info(t).signed { return bigint.from_i128(m.int_value(bits, t)) }
+    return bigint.from_u128(bits)
+}
+
+bigint_i128 :: fn(i: bigint.Int) -> ?i128 => i.to_i128()
+
+/// The smallest and largest values of integer type `t`.
+int_range :: fn(m: ^const Machine, t: Ty) -> (lo: bigint.Int, hi: bigint.Int) needs Alloc {
+    info := m.int_info(t)
+    if info.signed {
+        half := bigint.one().shl(u64(info.bits - 1))
+        return (lo: half.neg(), hi: half.sub(bigint.one()))
+    }
+    return (lo: bigint.zero(), hi: bigint.one().shl(u64(info.bits)).sub(bigint.one()))
+}
+
+/// The exact result `exact` of an operation `sym` on integers of type `t`, as a value of
+/// `t` according to `flavor`: checked operations trap when it does not fit.
+fit :: fn(m: ^Machine, exact: bigint.Int, flavor: ast.Flavor, t: Ty, sym: string, span: source.Span) -> Flow!u128 needs Alloc {
+    r := m.int_range(t)
+    if exact.cmp(r.lo) >= 0 and exact.cmp(r.hi) <= 0 { return m.wrap(int_bits(exact), t) }
+    match flavor {
+        .Wrap => return m.wrap(int_bits(exact), t)
+        .Sat => return m.wrap(int_bits(if exact.is_negative() { r.lo } else { r.hi }), t)
+        _ => return !m.trap(span, str.format("integer overflow in `{}`", sym)!)
+    }
+}
+
+/// `exact`, small, as `fit` takes it.
+fit_small :: fn(m: ^Machine, exact: i128, flavor: ast.Flavor, t: Ty, sym: string, span: source.Span) -> Flow!u128 needs Alloc {
+    info := m.int_info(t)
+    lo: i128 = if info.signed { -(i128(1) << (info.bits - 1)) } else { 0 }
+    hi: i128 = if info.signed { (i128(1) << (info.bits - 1)) - 1 } else { (i128(1) << info.bits) - 1 }
+    if exact >= lo and exact <= hi { return m.wrap(exact.bits(u128), t) }
+    match flavor {
+        .Wrap => return m.wrap(exact.bits(u128), t)
+        .Sat => return m.wrap((if exact < 0 { lo } else { hi }).bits(u128), t)
+        _ => return !m.trap(span, str.format("integer overflow in `{}`", sym)!)
+    }
+}
+
+op_symbol :: fn(op: tir.BinOp) -> string => match op {
+    .Add(_) => "+"
+    .Sub(_) => "-"
+    .Mul(_) => "*"
+    .Shl(_) => "<<"
+    .Div => "/"
+    .Rem => "%"
+    .Shr => ">>"
+    .BitAnd => "&"
+    .BitOr => "|"
+    .BitXor => "~"
+    .Lt => "<"
+    .Le => "<="
+    .Gt => ">"
+    .Ge => ">="
+}
+
+unary :: fn(m: ^Machine, op: tir.UnOp, x: ^Expr, e: ^Expr) -> Flow!Value needs Load {
+    v := try m.eval(x)
+    match op {
+        .Not => {
+            .Bool(b) := v else return !m.unsupported(e.span, "this operator")
+            return .Bool(not b)
+        }
+        .BitNot => {
+            .Int(bits) := v else return !m.unsupported(e.span, "this operator")
+            return .Int(m.wrap(~bits, e.ty))
+        }
+        .Neg => match v {
+            .Float(f) => return .Float(-f)
+            .Int(bits) => {
+                if m.int_info(e.ty).bits <= 63 { return .Int(try m.fit_small(-m.int_value(bits, x.ty), .Checked, e.ty, "-", e.span)) }
+                return .Int(try m.fit(m.big_of(bits, x.ty).neg(), .Checked, e.ty, "-", e.span))
+            }
+            _ => return !m.unsupported(e.span, "this operator")
+        }
+    }
+}
+
+binary :: fn(m: ^Machine, op: tir.BinOp, a, b: Value, lt, rt: Ty, span: source.Span) -> Flow!Value needs Load {
+    match a {
+        .Int(x) => {
+            .Int(y) := b else return !m.unsupported(span, "this operator")
+            match op {
+                .Lt, .Le, .Gt, .Ge => {
+                    c := m.big_of(x, lt).cmp(m.big_of(y, rt))
+                    return .Bool(match op {
+                        .Lt => c < 0
+                        .Le => c <= 0
+                        .Gt => c > 0
+                        _ => c >= 0
+                    })
+                }
+                .BitAnd => return .Int(x & y)
+                .BitOr => return .Int(x | y)
+                .BitXor => return .Int(x ~ y)
+                _ => return .Int(try m.int_op(op, x, y, lt, rt, span))
+            }
+        }
+        .Float(x) => {
+            .Float(y) := b else return !m.unsupported(span, "this operator")
+            r := match op {
+                .Add(_) => x + y
+                .Sub(_) => x - y
+                .Mul(_) => x * y
+                .Div => x / y
+                .Rem => float_rem(x, y)
+                .Lt => return .Bool(x < y)
+                .Le => return .Bool(x <= y)
+                .Gt => return .Bool(x > y)
+                .Ge => return .Bool(x >= y)
+                _ => return !m.unsupported(span, "this operator on floats")
+            }
+            return .Float(try m.round_float(r, lt, span))
+        }
+        .Bool(x) => {
+            .Bool(y) := b else return !m.unsupported(span, "this operator")
+            match op {
+                .BitAnd => return .Bool(x and y)
+                .BitOr => return .Bool(x or y)
+                .BitXor => return .Bool(x is not y)
+                _ => return !m.unsupported(span, "this operator on `bool`s")
+            }
+        }
+        _ => return !m.unsupported(span, "this operator at compile time")
+    }
+}
+
+/// `x % y` for floats: the remainder of the division rounded toward zero, with the sign of
+/// `x` (exact, as C's `fmod`).
+float_rem :: fn(x, y: f64) -> f64 needs Alloc {
+    if x - x is not 0.0 or y is 0.0 or y is not y { return 0.0 / 0.0 }
+    if y - y is not 0.0 { return x }
+    a := float_exact(x) else return 0.0 / 0.0
+    b := float_exact(y) else return 0.0 / 0.0
+    q := a.div(b)
+    t := q.num.div(q.den)
+    r := a.sub(b.mul(ratio.from_int(t)))
+    if r.is_zero() { return if x < 0.0 { -0.0 } else { 0.0 } }
+    return r.to_f64()
+}
+
+/// `x`, computed in `f64`, rounded to float type `t`.
+round_float :: fn(m: ^Machine, x: f64, t: Ty, span: source.Span) -> Flow!f64 needs Alloc {
+    .Float(bits) := m.s.tys.kind(t) else return x
+    if bits is 32 { return f64(x.to(f32)) }
+    if bits is 16 { return !m.unsupported(span, "`f16` arithmetic at compile time") }
+    return x
+}
+
+/// An arithmetic or shift operator on integers.
+int_op :: fn(m: ^Machine, op: tir.BinOp, x, y: u128, lt, rt: Ty, span: source.Span) -> Flow!u128 needs Alloc {
+    info := m.int_info(lt)
+    sym := op_symbol(op)
+    match op {
+        .Shl(_), .Shr => {
+            amount := m.int_value(y, rt)
+            if amount < 0 or amount >= i128(info.bits) { return !m.trap(span, str.format("shift amount {} too large for {}", amount, m.s.show(lt))!) }
+            n := amount.trunc(u32)
+            if .Shl(flavor) := op {
+                if info.bits <= 63 { return m.fit_small(m.int_value(x, lt) << n, flavor, lt, sym, span) }
+                return m.fit(m.big_of(x, lt).shl(u64(n)), flavor, lt, sym, span)
+            }
+            if info.signed { return m.wrap((m.int_value(x, lt) >> n).bits(u128), lt) }
+            return x >> u128(n)
+        }
+        .Div, .Rem => {
+            if y is 0 { return !m.trap(span, "division by zero") }
+            is_div := op is .Div
+            if info.bits <= 63 {
+                a := m.int_value(x, lt)
+                c := m.int_value(y, rt)
+                exact := if is_div { a / c } else { a % c }
+                return m.fit_small(exact, .Checked, lt, sym, span)
+            }
+            a := m.big_of(x, lt)
+            c := m.big_of(y, rt)
+            if info.signed and not is_div and c.eq(bigint.one().neg()) and a.eq(m.int_range(lt).lo) { return !m.trap(span, "integer overflow in `%`") }
+            exact := if is_div { a.div(c) } else { a.rem(c) }
+            return m.fit(exact, .Checked, lt, sym, span)
+        }
+        .Add(flavor), .Sub(flavor), .Mul(flavor) => {
+            if info.bits <= 63 {
+                a := m.int_value(x, lt)
+                c := m.int_value(y, rt)
+                exact := match op {
+                    .Add(_) => a + c
+                    .Sub(_) => a - c
+                    _ => a * c
+                }
+                return m.fit_small(exact, flavor, lt, sym, span)
+            }
+            a := m.big_of(x, lt)
+            c := m.big_of(y, rt)
+            exact := match op {
+                .Add(_) => a.add(c)
+                .Sub(_) => a.sub(c)
+                _ => a.mul(c)
+            }
+            return m.fit(exact, flavor, lt, sym, span)
+        }
+        _ => return !m.unsupported(span, "this operator")
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Coercions and conversions
+// ---------------------------------------------------------------------------------
+
+coerce :: fn(m: ^Machine, kind: tir.Coercion, x: ^Expr, e: ^Expr) -> Flow!Value needs Load {
+    v := try m.eval(x)
+    match kind {
+        .IntWiden => {
+            .Int(bits) := v else return v
+            return .Int(m.wrap(m.int_value(bits, x.ty).bits(u128), e.ty))
+        }
+        .FloatWiden => return v
+        .WrapOptional => return .Some(new(v)!)
+        .WrapOk => return .Ok(new(v)!)
+        .LiftErr(i) => match v {
+            .Err(p) => return .Err(new(Value.Variant(i, p))!)
+            _ => return v
+        }
+        .ArrayPtrToSlice => {
+            .Ptr(pl) := v else return !m.unsupported(e.span, "this coercion")
+            .Ptr(_, pointee) := m.s.tys.kind(x.ty) else return !m.unsupported(e.span, "this coercion")
+            .Array(n, _, _) := m.s.tys.kind(pointee) else return !m.unsupported(e.span, "this coercion")
+            return .Slice(Place(cell: pl.cell, path: append(pl.path, 0)), n)
+        }
+        .InOptional => match v {
+            .Some(p) => {
+                .Optional(inner) := m.s.tys.kind(e.ty) else return v
+                .Optional(from) := m.s.tys.kind(x.ty) else return v
+                return .Some(new(try m.convert_value(p^, from, inner, e.span))!)
+            }
+            _ => return v
+        }
+        .Unresolved, .FromNever => return !m.unsupported(e.span, "this coercion")
+        _ => return v
+    }
+}
+
+/// `v` of type `from` coerced to `to`, for the coercions inside an optional.
+convert_value :: fn(m: ^Machine, v: Value, from: Ty, to: Ty, span: source.Span) -> Flow!Value needs Alloc {
+    if from is to { return v }
+    match v {
+        .Int(bits) => return .Int(m.wrap(m.int_value(bits, from).bits(u128), to))
+        .Ptr(pl) => {
+            .Ptr(_, pointee) := m.s.tys.kind(from) else return v
+            if .Slice(_) := m.s.tys.kind(to) and .Array(n, _, _) := m.s.tys.kind(pointee) { return .Slice(Place(cell: pl.cell, path: append(pl.path, 0)), n) }
+            return v
+        }
+        _ => return v
+    }
+}
+
+/// The exact value of a float, as a rational; `null` for an infinity or a NaN.
+float_exact :: fn(x: f64) -> ?ratio.Rat needs Alloc {
+    if x - x is not 0.0 { return null }
+    raw := x.bits(u64)
+    negative := raw >> 63 is 1
+    exp := ((raw >> 52) & 0x7FF).bits(i64)
+    mant := raw & 0xF_FFFF_FFFF_FFFF
+    if exp is 0 {
+        exp = 1
+    } else {
+        mant |= u64(1) << 52
+    }
+    e := exp - 1075
+    num := bigint.from_u64(mant)
+    if negative { num = num.neg() }
+    if e >= 0 { return ratio.from_int(num.shl(e.bits(u64))) }
+    return ratio.new(num, bigint.one().shl((-e).bits(u64)))
+}
+
+/// The float `x` converted to an integer of type `t` with `mode` (`Trunc`, `Round`,
+/// `Floor` or `Ceil`), or `null` if it is not finite or does not fit.
+float_to_int :: fn(m: ^Machine, x: f64, t: Ty, mode: tir.Builtin) -> ?bigint.Int needs Alloc {
+    q := float_exact(x) else return null
+    // Floor of q.
+    fl := q.num.div_floor(q.den)
+    frac := q.sub(ratio.from_int(fl))
+    i: bigint.Int = fl
+    exact := frac.is_zero()
+    match mode {
+        .Trunc => if not exact and q.is_negative() { i = fl.add(bigint.one()) }
+        .Ceil => if not exact { i = fl.add(bigint.one()) }
+        .Round => {
+            if not exact {
+                half := ratio.new(bigint.one(), bigint.from_u64(2))
+                c := frac.cmp(half)
+                if c > 0 or (c is 0 and not fl.is_even()) { i = fl.add(bigint.one()) }
+            }
+        }
+        _ => {}
+    }
+    r := m.int_range(t)
+    if i.cmp(r.lo) < 0 or i.cmp(r.hi) > 0 { return null }
+    return i
+}
+
+// ---------------------------------------------------------------------------------
+// Builtins
+// ---------------------------------------------------------------------------------
+
+builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Value needs Load {
+    tys := &m.s.tys
+    span := e.span
+    match op {
+        .Unreachable => return !m.trap(span, "reached `@unreachable()`")
+        .Assert => {
+            .Bool(ok) := (try m.eval(&args[0])) else return !m.unsupported(span, "this assertion")
+            msg := try m.eval(&args[1])
+            if ok { return unit_value() }
+            text := m.string_of(msg) else return !m.unsupported(span, "this assertion message")
+            return !m.trap(span, if text is "assertion failed" { text } else { str.format("assertion failed: {}", text)! })
+        }
+        _ => {}
+    }
+    vals := try m.args(args)
+    x := if vals.len > 0 { vals[0] } else { Value.Null }
+    at := if args.len > 0 { args[0].ty } else { e.ty }
+    match op {
+        .Convert => match x {
+            .Int(bits) => match tys.kind(e.ty) {
+                .Float(_) => return .Float(try m.round_float(m.big_float(m.big_of(bits, at)), e.ty, span))
+                .Int(_), .Usize, .Isize => return .Int(m.wrap(m.int_value(bits, at).bits(u128), e.ty))
+                _ => return !m.unsupported(span, "this conversion")
+            }
+            .Bool(b) => return .Int(if b { 1 } else { 0 })
+            .Float(f) => return .Float(try m.round_float(f, e.ty, span))
+            .Variant(i, _) => {
+                tag := m.variant_tag(at, i) else return !m.unsupported(span, "this conversion")
+                return .Int(m.wrap(int_bits(tag), e.ty))
+            }
+            _ => return !m.unsupported(span, "this conversion")
+        }
+        .Trunc, .Round, .Floor, .Ceil => match x {
+            .Int(bits) => {
+                if .Float(_) := tys.kind(e.ty) { return .Float(try m.round_float(m.big_float(m.big_of(bits, at)), e.ty, span)) }
+                return .Int(m.wrap(bits, e.ty))
+            }
+            .Float(f) => {
+                if .Float(_) := tys.kind(e.ty) { return .Float(try m.round_float(f, e.ty, span)) }
+                i := m.float_to_int(f, e.ty, op) else return !m.trap(span, "float to integer conversion out of range")
+                return .Int(m.wrap(int_bits(i), e.ty))
+            }
+            _ => return !m.unsupported(span, "this conversion")
+        }
+        .Checked => {
+            .Optional(t) := tys.kind(e.ty) else return !m.unsupported(span, "this conversion")
+            match x {
+                .Int(bits) => {
+                    v := m.big_of(bits, at)
+                    r := m.int_range(t)
+                    if v.cmp(r.lo) < 0 or v.cmp(r.hi) > 0 { return .Null }
+                    return .Some(new(Value.Int(m.wrap(int_bits(v), t)))!)
+                }
+                .Float(f) => {
+                    q := float_exact(f) else return .Null
+                    if not q.is_integer() { return .Null }
+                    r := m.int_range(t)
+                    if q.num.cmp(r.lo) < 0 or q.num.cmp(r.hi) > 0 { return .Null }
+                    return .Some(new(Value.Int(m.wrap(int_bits(q.num), t)))!)
+                }
+                _ => return !m.unsupported(span, "this conversion")
+            }
+        }
+        .Sat => {
+            r := m.int_range(e.ty)
+            v: bigint.Int = bigint.zero()
+            match x {
+                .Int(bits) => { v = m.big_of(bits, at) }
+                .Float(f) => {
+                    if f is not f { return .Int(0) }
+                    if q := float_exact(f) {
+                        v = q.num.div_floor(q.den)
+                        if q.is_negative() and not q.is_integer() { v = v.add(bigint.one()) }
+                    } else {
+                        v = if f < 0.0 { r.lo } else { r.hi }
+                    }
+                }
+                _ => return !m.unsupported(span, "this conversion")
+            }
+            if v.cmp(r.lo) < 0 { v = r.lo }
+            if v.cmp(r.hi) > 0 { v = r.hi }
+            return .Int(m.wrap(int_bits(v), e.ty))
+        }
+        .Min, .Max => {
+            y := vals[1]
+            match x {
+                .Int(a) => {
+                    .Int(b) := y else return !m.unsupported(span, "this builtin")
+                    c := m.big_of(a, at).cmp(m.big_of(b, args[1].ty))
+                    return if (c <= 0) is (op is .Min) { x } else { y }
+                }
+                .Float(a) => {
+                    .Float(b) := y else return !m.unsupported(span, "this builtin")
+                    if a is not a { return y }
+                    if b is not b { return x }
+                    return if (a <= b) is (op is .Min) { x } else { y }
+                }
+                _ => return !m.unsupported(span, "this builtin")
+            }
+        }
+        .Clamp => {
+            .Int(v) := x else return !m.unsupported(span, "`clamp` of floats at compile time")
+            .Int(lo) := vals[1] else return !m.unsupported(span, "this builtin")
+            .Int(hi) := vals[2] else return !m.unsupported(span, "this builtin")
+            a := m.big_of(v, at)
+            if a.cmp(m.big_of(lo, at)) < 0 { return vals[1] }
+            if a.cmp(m.big_of(hi, at)) > 0 { return vals[2] }
+            return x
+        }
+        .Abs => match x {
+            .Int(bits) => {
+                v := m.big_of(bits, at)
+                r := m.int_range(e.ty)
+                a := v.abs()
+                if a.cmp(r.hi) > 0 { return !m.trap(span, "integer overflow in `abs`") }
+                return .Int(m.wrap(int_bits(a), e.ty))
+            }
+            .Float(f) => return .Float(if f < 0.0 or (f is 0.0 and f.bits(u64) >> 63 is 1) { -f } else { f })
+            _ => return !m.unsupported(span, "this builtin")
+        }
+        .AbsDiff => {
+            .Int(a) := x else return !m.unsupported(span, "this builtin")
+            .Int(b) := vals[1] else return !m.unsupported(span, "this builtin")
+            d := m.big_of(a, at).sub(m.big_of(b, args[1].ty)).abs()
+            return .Int(m.wrap(int_bits(d), e.ty))
+        }
+        .Pow(flavor) => {
+            .Int(base) := x else return !m.unsupported(span, "this builtin")
+            .Int(n) := vals[1] else return !m.unsupported(span, "this builtin")
+            exact := m.big_of(base, at).pow(n.trunc(u32))
+            t := at
+            r := m.int_range(t)
+            fits := exact.cmp(r.lo) >= 0 and exact.cmp(r.hi) <= 0
+            match flavor {
+                .Opt => return if fits { Value.Some(new(Value.Int(m.wrap(int_bits(exact), t)))!) } else { Value.Null }
+                .Checked => if not fits {
+                    text := m.big_of(base, at).to_decimal()
+                    return !m.trap(span, str.format("integer overflow in `pow` ({}^{})", text, n)!)
+                }
+                _ => {}
+            }
+            return .Int(try m.fit(exact, flavor, t, "pow", span))
+        }
+        .IsNan => {
+            .Float(f) := x else return !m.unsupported(span, "this builtin")
+            return .Bool(f is not f)
+        }
+        .IsInf => {
+            .Float(f) := x else return !m.unsupported(span, "this builtin")
+            return .Bool(f is f and f - f is not 0.0)
+        }
+        .IsFinite => {
+            .Float(f) := x else return !m.unsupported(span, "this builtin")
+            return .Bool(f - f is 0.0)
+        }
+        .SignBit => {
+            .Float(f) := x else return !m.unsupported(span, "this builtin")
+            return .Bool(f.bits(u64) >> 63 is 1)
+        }
+        .Tag => {
+            .Variant(i, _) := x else return !m.unsupported(span, "this builtin")
+            tag := m.variant_tag(at, i) else return !m.unsupported(span, "this builtin")
+            return .Int(m.wrap(int_bits(tag), e.ty))
+        }
+        .Get, .GetPtr, .First, .Last => {
+            n: u64 = 0
+            start: ?Place = null
+            match x {
+                .Agg(a) => { n = u64(a.elems.len) }
+                .Slice(sl) => {
+                    n = sl.len
+                    start = sl.start
+                }
+                _ => return !m.unsupported(span, "this builtin")
+            }
+            i: i128 = match op {
+                .First => 0
+                .Last => i128(n) - 1
+                _ => {
+                    .Int(bits) := vals[1] else return !m.unsupported(span, "this builtin")
+                    m.int_value(bits, args[1].ty)
+                }
+            }
+            if i < 0 or i >= i128(n) { return .Null }
+            k := i.trunc(u64)
+            if op is .GetPtr {
+                if pl := start { return .Some(new(Value.Ptr(offset(pl, k)))!) }
+                pl := try m.place(&args[0])
+                return .Some(new(Value.Ptr(Place(cell: pl.cell, path: append(pl.path, k))))!)
+            }
+            v := if pl := start { m.load(offset(pl, k), span) } else {
+                .Agg(a) := x else return !m.unsupported(span, "this builtin")
+                a.elems[k.trunc(usize)]
+            }
+            return .Some(new(copy(v))!)
+        }
+        .BlackBox => return x
+        else_op => {
+            _ = else_op
+            return !m.unsupported(span, "this builtin at compile time")
+        }
+    }
+}
+
+/// The nearest `f64` to `i`.
+big_float :: fn(m: ^const Machine, i: bigint.Int) -> f64 needs Alloc => ratio.from_int(i).to_f64()
+
+/// The tag value of variant `i` of union type `t`.
+variant_tag :: fn(m: ^const Machine, t: Ty, i: u32) -> ?bigint.Int {
+    .Adt(id, _) := m.s.tys.kind(t) else return null
+    .Union(_, variants) := m.s.adts.items[usize(id)].kind else return null
+    if usize(i) >= variants.len { return null }
+    return variants[usize(i)].tag
+}
+
+// ---------------------------------------------------------------------------------
+// Comparisons
+// ---------------------------------------------------------------------------------
+
+/// Whether `a` and `b`, of type `t`, are equal (`is`, §7.7).
+equal :: fn(m: ^Machine, a, b: Value, t: Ty, span: source.Span) -> Flow!bool needs Load {
+    tys := &m.s.tys
+    match a {
+        .Int(x) => {
+            .Int(y) := b else return false
+            return x is y
+        }
+        .Float(x) => {
+            .Float(y) := b else return false
+            return x is y
+        }
+        .Bool(x) => {
+            .Bool(y) := b else return false
+            return x is y
+        }
+        .Null => return b is .Null
+        .Fn(f) => {
+            .Fn(g) := b else return false
+            return f is g
+        }
+        .Some(x) => {
+            .Some(y) := b else return false
+            .Optional(inner) := tys.kind(t) else return !m.unsupported(span, "this comparison")
+            return m.equal(x^, y^, inner, span)
+        }
+        .Ok(x) => {
+            .Ok(y) := b else return false
+            .Result(_, ok) := tys.kind(t) else return !m.unsupported(span, "this comparison")
+            return m.equal(x^, y^, ok, span)
+        }
+        .Err(x) => {
+            .Err(y) := b else return false
+            .Result(err, _) := tys.kind(t) else return !m.unsupported(span, "this comparison")
+            return m.equal(x^, y^, err, span)
+        }
+        .Variant(va) => {
+            .Variant(vb) := b else return false
+            if va.index is not vb.index { return false }
+            x := va.payload else return true
+            y := vb.payload else return true
+            pt := m.payload_ty(t, va.index) else return !m.unsupported(span, "this comparison")
+            return m.equal(x^, y^, pt, span)
+        }
+        .Agg(x) => {
+            .Agg(y) := b else return false
+            if x.elems.len is not y.elems.len { return false }
+            elems := m.field_tys(t, x.elems.len) else return !m.unsupported(span, "this comparison")
+            for i in 0..x.elems.len {
+                if not try m.equal(x.elems[i], y.elems[i], elems[i], span) { return false }
+            }
+            return true
+        }
+        .Slice(x) => {
+            .Slice(y) := b else return false
+            .Slice(_, et) := tys.kind(t) else return !m.unsupported(span, "this comparison")
+            if x.len is not y.len { return false }
+            for i in 0..x.len {
+                if not try m.equal(m.load(offset(x.start, i), span), m.load(offset(y.start, i), span), et, span) { return false }
+            }
+            return true
+        }
+        .Ptr(x) => {
+            .Ptr(y) := b else return false
+            return same_place(x, y)
+        }
+        _ => return !m.unsupported(span, "this comparison at compile time")
+    }
+}
+
+same_place :: fn(a, b: Place) -> bool {
+    if a.cell is not b.cell or a.path.len is not b.path.len { return false }
+    for i, x in enumerate(a.path) {
+        if x is not b.path[i] { return false }
+    }
+    return true
+}
+
+/// The types of the fields or elements of the aggregate type `t` with `n` of them.
+field_tys :: fn(m: ^Machine, t: Ty, n: usize) -> ?[]const Ty needs Alloc {
+    tys := &m.s.tys
+    match tys.kind(t) {
+        .Tuple(elems, _) => return elems
+        .Array(_, elem, _) => {
+            out := list(Ty)
+            for _ in 0..n { out.push(elem)! }
+            return out.items
+        }
+        .Adt(id, _) => {
+            .Struct(def) := m.s.adts.items[usize(id)].kind else return null
+            out := list(Ty)
+            for f in def.fields { out.push(f.ty)! }
+            return out.items
+        }
+        _ => return null
+    }
+}
+
+/// The payload type of variant `i` of union type `t`.
+payload_ty :: fn(m: ^const Machine, t: Ty, i: u32) -> ?Ty {
+    .Adt(id, _) := m.s.tys.kind(t) else return null
+    .Union(_, variants) := m.s.adts.items[usize(id)].kind else return null
+    if usize(i) >= variants.len { return null }
+    return variants[usize(i)].payload
+}
+
+/// How `print` shows `v` of type `t`, for the simple values whose text gammac knows.
+display :: fn(m: ^Machine, v: Value, t: Ty) -> ?[]u8 needs Alloc {
+    match v {
+        .Int(bits) => if m.s.tys.is_integer(t) { return m.big_of(bits, t).to_decimal() }
+        .Bool(b) => return str.format("{}", b)!
+        .Variant(x) => if x.payload is null {
+            .Adt(id, _) := m.s.tys.kind(t) else return null
+            .Union(_, variants) := m.s.adts.items[usize(id)].kind else return null
+            return str.format(".{}", variants[usize(x.index)].name)!
+        }
+        _ => {}
+    }
+    return null
+}
+
+// ---------------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------------
+
+/// The cell of the constant declared at `span` with type `ty`, which was evaluated
+/// before the evaluation began (or is being evaluated: then it depends on itself).
+const_cell :: fn(m: ^Machine, span: source.Span, ty: Ty, use_span: source.Span) -> Flow!^Cell needs Alloc {
+    id := m.s.const_id(span, ty) else return !m.unsupported(use_span, "this constant at compile time")
+    c := m.s.consts.items[usize(id)]
+    match c.state {
+        .Done => return c.cell?
+        .Evaluating => return !m.trap(use_span, str.format("constant `{}` depends on itself", c.name)!)
+        .Unchecked => return !m.unsupported(use_span, "this constant at compile time")
+        _ => return !Flow.Blocked
+    }
+}

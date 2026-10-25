@@ -321,6 +321,8 @@ check_fn_body :: fn(s: ^Sema, fn_id: u32, module: usize, lit: ^const ast.FnLit) 
     for g in sig.generics {
         if s.param_has(g, .Num) { numeric.push(g)! }
     }
+    s.checking.push(fn_id)!
+    defer _ = s.checking.pop()
     cx := fn_cx(s, module, sig.ret, sig.effects)
     cx.fn_id = fn_id
     cx.infer.numeric_params = numeric.items
