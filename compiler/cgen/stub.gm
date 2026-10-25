@@ -1,4 +1,0 @@
-gen_fn :: fn(g: ^Gen, f: u32) -> Unsup!() needs sema.Load {
-    if g.prog.func(f).kind is .Foreign(_) { return g.foreign_decl(f) }
-    return !unsupported(source.DUMMY, "functions")
-}
