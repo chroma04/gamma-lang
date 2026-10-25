@@ -87,6 +87,7 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
         .Intrinsic(i) => return cx.intrinsic(i, span)
         .Fn(lit) => return cx.fn_literal(lit, expect, null, span)
         .With(w) => return cx.with_expr(w, true, expect)
+        .Resume(r) => return cx.resume_expr(r.cont, r.value, span)
         _ => return cx.unsupported(span, expr_kind_text(&e.kind))
     }
 }

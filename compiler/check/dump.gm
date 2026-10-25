@@ -334,6 +334,15 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             kids.push(x)!
             "trap"
         }
+        .Resume(k, v) => {
+            kids.push(k)!
+            kids.push(v)!
+            "resume"
+        }
+        .Cancel(k) => {
+            kids.push(k)!
+            "cancel"
+        }
         .Write(w) => {
             h := list(u8)
             h.write("write {}", d.sink_text(w.sink))!

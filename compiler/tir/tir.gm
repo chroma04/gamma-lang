@@ -98,6 +98,10 @@ pub ExprKind :: union {
     Continue: Target
     Return: (levels: u32, value: ^Expr)
     Trap: ^Expr
+    /// `resume k(v)` (§14.3).
+    Resume: (cont: ^Expr, value: ^Expr)
+    /// `cancel k` (§14.5).
+    Cancel: ^Expr
     /// Formatted output (`print`): the template's literal pieces, a spec per placeholder
     /// and the values.
     Write: WriteExpr
@@ -427,6 +431,11 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
         .Try(x) => f(x.expr)
         .Field(a, _) => f(a)
         .Return(_, a) => f(a)
+        .Resume(k, v) => {
+            f(k)
+            f(v)
+        }
+        .Cancel(k) => f(k)
         .Index(a, b, _) => {
             f(a)
             f(b)

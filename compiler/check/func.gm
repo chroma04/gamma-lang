@@ -704,7 +704,7 @@ stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
         .Block(b) => return .Expr(cx.block(&b, false))
         .Defer(is_err, body) => return cx.defer_stmt(is_err, body)
         .When(w) => return .Expr(cx.when_stmt(w))
-        .Cancel(_) => return .Expr(cx.unsupported(s.span, "`cancel`"))
+        .Cancel(k) => return .Expr(cx.cancel_stmt(k, s.span))
         .LetElse(_) => return .Expr(cx.unsupported(s.span, "pattern bindings with `else`"))
     }
 }
@@ -1157,6 +1157,8 @@ never_cause :: fn(s: ^Sema, e: ^Expr) -> ?(span: source.Span, why: string) {
         .Call(callee, _) => if callee is .Perform(_) { "this operation never returns to its caller: its result type is `never`" } else { "this call never returns: its result type is `never`" }
         .If(_) => "this `if` never completes: each of its branches leaves"
         .Try(_) => "this `try` always returns"
+        .Resume(_) => "this `resume` ends the handler clause"
+        .Cancel(_) => "this `cancel` ends the handler clause"
         .Match(_) => "this `match` never completes: each of its arms leaves"
         .With(_) => "the body of this `with` never completes"
         .Block(b) => {

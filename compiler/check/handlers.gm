@@ -1,6 +1,7 @@
 // `with` and handler literals (§12.5, §12.7): each clause is checked as a nested
-// function of the enclosing one (mirrors `src/sema/effects.rs`). Handlers of generic
-// effects, `ctl` operations and handler declarations are reported as unsupported.
+// function of the enclosing one (mirrors `src/sema/effects.rs`), and `resume` and
+// `cancel` in `ctl` clauses (§14). Handlers of generic effects are reported as
+// unsupported.
 
 /// `[label:] with h1, h2, … { body }` (§12.7). With `value`, the `with`'s value is used,
 /// and `expect` is the type expected of it.
@@ -8,7 +9,6 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     span := w.span
     tys := &cx.s.tys
     if cx.in_generic_fn() { return cx.unsupported(span, "`with` in generic functions") }
-    if w.on is not null { return cx.unsupported(span, "`with … on`") }
     with_expect: ?Ty = if value { expect } else { null }
     cx.push_scope()
     if l := w.label { cx.declare(l.name, .Label, l.span) }
@@ -79,6 +79,22 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
                 handlers.push(.Decl(decls: decls, value: v))!
             }
         }
+    }
+    // A `ctl` operation needs a stack to suspend: `on` is required exactly then (§14.1).
+    has_ctl := false
+    for e in handled.items {
+        for o in cx.s.effects.items[usize(e.eff)].ops {
+            if o.kind is .Ctl { has_ctl = true }
+        }
+    }
+    on: ?^Expr = null
+    if st := w.on {
+        if not has_ctl { cx.error(st.span, "`on` gives a stack to fibers, but none of these handlers handles a `ctl` operation") }
+        stack_ty := tys.slice(false, tys.int(false, 8))
+        v := cx.expr(st, stack_ty)
+        on = cx.coerce(v, stack_ty)
+    } else if has_ctl {
+        cx.error(span, "this `with` handles `ctl` operations, so it needs a stack: `with h on stack { … }` (§14.1)")
     }
     label_name: ?string = null
     if l := w.label { label_name = l.name }
@@ -163,7 +179,7 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
         cx.s.decl_with_checks.push(sema.DeclWithCheck(decls: decl_ids.items, ty: with_ty, span: span))!
     }
     if not value and tys.kind(body.ty) is .Never and breaks.items.len is 0 and not decl_exits { ty = tys.never_ty() }
-    return tir.mk(ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: null, body: body)), span)
+    return tir.mk(ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: on, body: body)), span)
 }
 
 /// Leaves the scope of a `with` that was not checked.
@@ -193,9 +209,6 @@ handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, with_expect: ?Ty, s
         return error_expr(cx.s, span)
     }
     if info.params.len > 0 { return cx.unsupported(span, "handlers of generic effects") }
-    for o in info.ops {
-        if o.kind is .Ctl { return cx.unsupported(span, "handlers of `ctl` operations") }
-    }
     hid := cx.s.handlers.items.len.trunc(u32)
     cx.s.handlers.push(tir.HandlerLit(effect_: eref, clauses: empty_slice(u32)))!
     for c in lit.clauses {
@@ -216,10 +229,9 @@ handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, with_expect: ?Ty, s
             cx.error(span, str.format("this handler has no clause for the operation `{}`", o.name)!)
             continue
         }
-        params := list(sema.ParamInfo)
-        for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: p.ty, span: p.span, default: null, generic: null, rest: false))! }
+        sig := clause_signature(cx.s, &o)
         info_ := ClauseInfo(op_kind: o.kind, handler_: hid, decl_clause: null, with_expect: with_expect)
-        clauses.push(cx.clause_fn(c, params.items, o.ret, info_))!
+        clauses.push(cx.clause_fn(c, sig.params, sig.ret, info_))!
     }
     cx.s.handlers.items[usize(hid)].clauses = clauses.items
     return tir.mk(cx.s.tys.intern(.Handler(hid)), .HandlerRef(hid), span)
@@ -249,14 +261,88 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
         if name is not "_" { cx.declare(name, .Var(id), at) }
         ids.push(id)!
     }
+    // A `ctl` clause must not finish normally (§14.3): its body is checked without an
+    // expected type, so that a branch that finishes gives it a type other than `never`.
+    expect: ?Ty = if info.op_kind is .Ctl { null } else { ret }
     body := match c.body.kind {
-        .Block(b) => cx.block_expected(&b, true, ret)
-        _ => cx.expr(c.body, ret)
+        .Block(b) => cx.block_expected(&b, true, expect)
+        _ => cx.expr(c.body, expect)
     }
-    if cx.s.tys.kind(body.ty) is not .Never { body = cx.coerce(body, ret) }
+    body = cx.clause_body(body, info.op_kind, ret)
     frame := cx.exit_fn()
     cx.performed.extend(frame.performed)!
     cx.s.defs.items[usize(fn_id)].parent = cx.fn_id
     cx.nested.push(NestedFn(fn_id: fn_id, params: ids.items, locals: frame.locals, body: body))!
     return fn_id
+}
+
+/// The parameters and result type of a clause for operation `o` of an effect without
+/// type parameters: a `ctl` clause also takes the continuation `k` and never finishes
+/// normally (§14.3).
+pub clause_signature :: fn(s: ^Sema, o: ^const sema.OpInfo) -> (params: []sema.ParamInfo, ret: Ty) needs Alloc {
+    params := list(sema.ParamInfo)
+    for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: p.ty, span: p.span, default: null, generic: null, rest: false))! }
+    if o.kind is not .Ctl { return (params: params.items, ret: o.ret) }
+    span := if p := params.items.last() { p.span } else { source.DUMMY }
+    params.push(sema.ParamInfo(name: "k", ty: s.tys.intern(.Cont(o.ret)), span: span, default: null, generic: null, rest: false))!
+    return (params: params.items, ret: s.tys.never_ty())
+}
+
+/// Checks a clause body against the clause's result type. A `ctl` clause never
+/// finishes normally (§14.3).
+clause_body :: fn(cx: ^FnCx, body: ^Expr, kind: ast.OpKind, ret: Ty) -> ^Expr needs Load {
+    if cx.s.tys.kind(body.ty) is .Never { return body }
+    if kind is .Ctl {
+        if not cx.s.tys.is_error(body.ty) { cx.error(body.span, "a `ctl` clause must not finish normally: end every path with `resume`, an exit or a `never` call (§14.3)") }
+        return body
+    }
+    return cx.coerce(body, ret)
+}
+
+/// Whether the current frame is the body of a `ctl` clause.
+in_ctl_clause :: fn(cx: ^const FnCx) -> bool {
+    c := cx.clause else return false
+    return c.op_kind is .Ctl and c.for_label is null
+}
+
+/// Checks a continuation operand of `resume` or `cancel`; returns it and its `R`.
+cont_operand :: fn(cx: ^FnCx, what: string, k: ^const ast.Expr) -> ?(cont: ^Expr, r: Ty) needs Load {
+    if not cx.in_ctl_clause() {
+        cx.error(k.span, str.format("`{}` is permitted only in the body of a `ctl` clause (§14)", what)!)
+    } else if cx.in_defer {
+        cx.error(k.span, str.format("`{}` cannot appear in a deferred statement", what)!)
+    }
+    v := cx.expr(k, null)
+    t := cx.infer.resolve(cx.s, v.ty)
+    match cx.s.tys.kind(t) {
+        .Cont(r) => return (cont: v, r: r)
+        .Error => return null
+        _ => {
+            cx.error(k.span, str.format("expected a continuation `cont(R)`, found `{}`", cx.show(t))!)
+            return null
+        }
+    }
+}
+
+/// `resume k(v)` (§14.3).
+resume_expr :: fn(cx: ^FnCx, k: ^const ast.Expr, value: ?^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    c := cx.cont_operand("resume", k) else {
+        if v := value { _ = cx.expr(v, null) }
+        return error_expr(cx.s, span)
+    }
+    tys := &cx.s.tys
+    v: ^Expr = unit(cx.s, span)
+    if x := value {
+        e := cx.expr(x, c.r)
+        v = cx.coerce(e, c.r)
+    } else if not tys.is_unit(c.r) and not tys.is_error(c.r) {
+        cx.error(span, str.format("this continuation needs a value of type `{}`: `resume k(value)`", cx.show(c.r))!)
+    }
+    return tir.mk(tys.never_ty(), .Resume(c.cont, v), span)
+}
+
+/// `cancel k` (§14.5).
+cancel_stmt :: fn(cx: ^FnCx, k: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    c := cx.cont_operand("cancel", k) else return error_expr(cx.s, span)
+    return tir.mk(cx.s.tys.unit(), .Cancel(c.cont), span)
 }

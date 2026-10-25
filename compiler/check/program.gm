@@ -34,6 +34,7 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
     monomorphize(s)
     check_inline(s)
     check_escapes(s)
+    check_continuations(s)
 }
 
 /// Follows the bodies of the instances of generic functions requested so far, as
