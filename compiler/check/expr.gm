@@ -231,12 +231,30 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
     }
     if pid := cx.s.value_param(name) { return tir.mk(cx.value_param_ty(pid), .ValueParam(pid), span) }
     if d := cx.s.lookup_module_name(cx.module, name) { return cx.decl_expr(d, name, expect, span) }
-    if sema.is_builtin_type_name(name) {
+    effect_param := false
+    if t := cx.s.type_param(name) {
+        if .Param(p) := cx.s.tys.kind(t) { effect_param = cx.s.param_kind(p) is .Effects }
+    }
+    if effect_param {
+        cx.error(span, str.format("expected a value, found the effect set `{}`", name)!)
+    } else if sema.is_builtin_type_name(name) {
         cx.error(span, str.format("expected a value, found the type `{}`", name)!)
     } else if name in ("print", "eprint", "trap", "assert", "expect_eq") {
         cx.error(span, str.format("the builtin function `{}` can only be called", name)!)
     } else {
-        return cx.unsupported(span, str.format("the name `{}`", name)!)
+        // Compile-time contexts see the names of nested functions and constants.
+        if cx.fn_id is null { return cx.unsupported(span, str.format("the name `{}`", name)!) }
+        d := diag.error(span, str.format("unknown name `{}`", name)!)
+        if effect_ := cx.s.op_effect(cx.module, name) {
+            d = diag.error(span, sema.op_hint(effect_, name, null))
+            d.add_fix(str.format("write `{}.{}`", effect_, name)!, source.span(span.file, span.lo, span.lo), str.format("{}.", effect_)!)
+        } else if hint := cx.s.universe_hint(name) {
+            d.add_note(hint)
+            if edits := cx.s.import_fix(cx.module, name, span) {
+                d.add_fix_edits(str.format("write `{}`", edits.items[edits.items.len - 1].text)!, edits.items)
+            }
+        }
+        cx.s.emit(d)
     }
     return error_expr(cx.s, span)
 }

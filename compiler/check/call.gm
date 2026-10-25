@@ -71,7 +71,8 @@ call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?T
             if t := cx.s.builtin_type(id.name) { return cx.conversion(t, args, span) }
             // `yield(x)`, the one operation in scope without its effect (§13.1).
             if id.name is "yield" and y := cx.s.yield_effect { return cx.perform_op(y, 0, args, span) }
-            return cx.unsupported(span, str.format("calls of `{}`", id.name)!)
+            if cx.fn_id is null { return cx.unsupported(span, str.format("calls of `{}`", id.name)!) }
+            return cx.call_value(cx.expr(callee, null), args, span)
         }
         .Call(_) => {
             if t := cx.type_of_name(callee) { return cx.conversion(t, args, span) }

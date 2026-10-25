@@ -147,15 +147,8 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     // with the body's value (§8.5, §12.7).
     breaks := list(HandlerBreak)
     for id in literal_ids.items {
-        k: usize = 0
-        while k < cx.handler_breaks.items.len {
-            b := cx.handler_breaks.items[k]
-            if b.handler_ is id {
-                breaks.push(b)!
-                _ = cx.handler_breaks.remove(k)
-            } else {
-                k += 1
-            }
+        for b in cx.handler_breaks.items {
+            if b.handler_ is id { breaks.push(b)! }
         }
     }
     depth := cx.depth()
