@@ -384,6 +384,17 @@ pub Sema :: struct {
     /// The step budget of compile-time evaluations in the declaration being resolved
     /// (§17.3).
     pub fuel: u64 = 50_000_000
+    /// The structs that stand for `#soa` arrays and slices (§5.6.4), and what they store.
+    pub soa: hash_map.HashMap(u32, SoaInfo)
+    /// The struct made for each `#soa` type so far.
+    soa_types: List(SoaMade)
+    /// The generic stand-ins for `#soa` types of a type parameter, one for each shape.
+    soa_templates: List(SoaTemplate)
+    /// Why a `#soa` type of an instantiation's type argument cannot exist, until reported at
+    /// the instantiation.
+    pub soa_errors: List(string)
+    /// The spans of `a[i]` expressions that gather an element of a `#soa` (for errors).
+    pub soa_gathers: List(source.Span)
     /// Set while gammac tries an expression as an untyped constant without reporting why
     /// it is not one.
     pub quiet_untyped: bool = false
@@ -439,6 +450,11 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         len_exprs: list((t: Ty, span: source.Span)),
         deferred_asserts: list(?[]u8),
         nested_generic: list((fn_id: u32, name: ast.Ident)),
+        soa: hash_map.hash_map(u32, SoaInfo),
+        soa_types: list(SoaMade),
+        soa_templates: list(SoaTemplate),
+        soa_errors: list(string),
+        soa_gathers: list(source.Span),
     )
     s.effects.push(EffectInfo(name: "..", module: 0, params: empty_slice(u32), ops: empty_slice(OpInfo)))!
     return s
@@ -516,7 +532,7 @@ pub resolve_ambient :: fn(s: ^Sema) needs Load {
 }
 
 /// The generic type `name` of the core prelude, if it declares one.
-prelude_template :: fn(s: ^Sema, name: string) -> ?u32 needs Load {
+pub prelude_template :: fn(s: ^Sema, name: string) -> ?u32 needs Load {
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, name) else return null
     .GenericType(template) := s.resolve_decl(d) else return null

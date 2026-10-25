@@ -352,6 +352,10 @@ pub is_c_compatible :: fn(s: ^Sema, t: Ty, in_struct: bool) -> bool needs Load {
         }
         .Array(_, elem, kind) => return in_struct and kind is not .Simd and s.is_c_compatible(elem, true)
         .Adt(id, _) => {
+            // A `#soa` slice, like a slice, is not (§5.6.4).
+            if info := s.soa.get(id) {
+                if info.len is null { return false }
+            }
             match s.adts.items[usize(id)].kind {
                 .Struct(def) => {
                     if def.bits is not null { return true }

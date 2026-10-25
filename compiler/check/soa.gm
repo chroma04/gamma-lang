@@ -1,0 +1,462 @@
+// `#soa` arrays and slices in function bodies (§5.6.4): indexing, fields, slicing,
+// iteration, construction, `make`, `free` and `copy_from` (mirrors `src/sema/soa.rs`).
+//
+// The builders of `sema/soa.gm` produce the lowered form for operands that may be used
+// repeatedly; the functions here check the source forms, bind their operands to
+// temporaries when needed and keep an operation on a `#soa` of a type parameter's
+// elements as `SoaDeferred` for each instance to expand.
+
+/// What the type of `e` stores, if it is a `#soa` type.
+soa_of :: fn(cx: ^FnCx, e: ^Expr) -> ?sema.SoaInfo needs Load {
+    t := cx.infer.resolve(cx.s, e.ty)
+    info := cx.s.soa_info(t) else return null
+    // The builders look at the struct behind the type.
+    e.ty = t
+    return info
+}
+
+/// `p^` if `b` is a pointer to a `#soa` array, else `b`.
+soa_deref :: fn(cx: ^FnCx, b: ^Expr) -> ^Expr needs Load {
+    t := cx.infer.resolve(cx.s, b.ty)
+    if .Ptr(_, pointee) := cx.s.tys.kind(t) {
+        if cx.s.soa_info(pointee) is not null { return tir.mk(pointee, .Deref(b), b.span) }
+    }
+    return b
+}
+
+/// The operands as expressions, for an operation kept as `SoaDeferred`.
+soa_args :: fn(items: []const ^Expr) -> []Expr needs Alloc {
+    out := list(Expr)
+    for a in items { out.push(a^)! }
+    return out.items
+}
+
+/// The `#soa` value `b` in a form that can be used several times, with the statements
+/// that compute it: an array place through a pointer, so that its columns stay places;
+/// anything else through a temporary.
+soa_operand :: fn(cx: ^FnCx, b: ^Expr, info: sema.SoaInfo, stmts: ^List(tir.Stmt)) -> ^Expr needs Load {
+    if sema.soa_repeatable(b) { return b }
+    if info.len is not null {
+        if m := cx.place_mutability(b) {
+            t := b.ty
+            span := b.span
+            pty := cx.s.tys.ptr(not m, t)
+            p := cx.temp(pty, span)
+            stmts.push(.Let(p, tir.mk(pty, .AddrOf(b), span)))!
+            return tir.mk(t, .Deref(tir.mk(pty, .Local(p), span)), span)
+        }
+    }
+    return cx.bind_temp(b, stmts)
+}
+
+/// The error for an operation on a `#soa` of a type parameter that needs the fields.
+soa_needs_fields :: fn(cx: ^FnCx, info: sema.SoaInfo, what: string, span: source.Span) -> ^Expr needs Load {
+    cx.error(span, str.format("{} needs the fields of `{}`, which a generic function does not know; a `#soa` of a type parameter has whole elements (`a[i]`), `len`, slicing, `copy_from`, `make` and `free` (§5.6.4)", what, cx.show(info.elem))!)
+    return error_expr(cx.s, span)
+}
+
+/// The position of the field `name` among `fields`.
+soa_field_index :: fn(fields: []const sema.FieldDef, name: string) -> ?usize {
+    for k, f in enumerate(fields) {
+        if f.name is name { return k }
+    }
+    return null
+}
+
+/// Column `k` of `b`, which is used once.
+soa_column_once :: fn(cx: ^FnCx, b: ^Expr, info: sema.SoaInfo, k: usize, span: source.Span) -> ^Expr needs Load {
+    if info.len is not null or sema.soa_repeatable(b) { return cx.s.soa_column(b, info, k, span) }
+    stmts := list(tir.Stmt)
+    v := cx.bind_temp(b, &stmts)
+    col := cx.s.soa_column(v, info, k, span)
+    return sema.soa_block(stmts.items, col, span)
+}
+
+/// The length of the repeatable `#soa` value `v`.
+soa_len :: fn(cx: ^FnCx, v: ^Expr, info: sema.SoaInfo, span: source.Span) -> ^Expr needs Load {
+    if info.len is null and cx.s.soa_generic(info) {
+        return tir.mk(cx.s.tys.usize_ty(), .SoaDeferred(op: .Len, args: soa_args([1]^Expr(v)[..])), span)
+    }
+    return cx.s.soa_len_of(v, info, span)
+}
+
+/// Element `i` of the repeatable `v`, gathered from the columns.
+soa_gather :: fn(cx: ^FnCx, v: ^Expr, info: sema.SoaInfo, i: ^Expr, span: source.Span) -> ^Expr needs Load {
+    if cx.s.soa_generic(info) {
+        return tir.mk(info.elem, .SoaDeferred(op: .Get, args: soa_args([2]^Expr(v, i)[..])), span)
+    }
+    return cx.s.soa_gather_of(v, info, i, span)
+}
+
+/// Checks an index of a `#soa` value: an unsigned integer.
+soa_index_value :: fn(cx: ^FnCx, index_ast: ^const ast.Expr) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    i := cx.expr(index_ast, null)
+    if not cx.infer.require_unsigned(tys, i.ty, .Usize) and not tys.is_error(i.ty) {
+        cx.error(i.span, str.format("an index must have an unsigned integer type, not `{}`", cx.show(cx.infer.resolve(cx.s, i.ty)))!)
+    }
+    return i
+}
+
+/// `a[i]` read: the element, gathered from the columns (§5.6.4).
+soa_element :: fn(cx: ^FnCx, b: ^Expr, info: sema.SoaInfo, index_ast: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    stmts := list(tir.Stmt)
+    v := cx.soa_operand(b, info, &stmts)
+    i := cx.soa_index_value(index_ast)
+    i = cx.bind_temp(i, &stmts)
+    g := cx.soa_gather(v, info, i, span)
+    if not span in cx.s.soa_gathers.items { cx.s.soa_gathers.push(span)! }
+    return sema.soa_block(stmts.items, g, span)
+}
+
+/// `a[i].f`: element `i` of column `f`, a place (§5.6.4).
+soa_element_field :: fn(cx: ^FnCx, b: ^Expr, info: sema.SoaInfo, index_ast: ^const ast.Expr, name: ast.Ident, span: source.Span) -> ^Expr needs Load {
+    if cx.s.soa_generic(info) {
+        _ = cx.expr(index_ast, null)
+        return cx.soa_needs_fields(info, str.format("`a[i].{}`", name.name)!, span)
+    }
+    fields := cx.s.soa_fields(info)
+    k := soa_field_index(fields, name.name) else {
+        _ = cx.expr(index_ast, null)
+        cx.error(name.span, str.format("type `{}` has no field `{}`", cx.show(info.elem), name.name)!)
+        return error_expr(cx.s, span)
+    }
+    if not cx.field_visible_here(fields[k].vis, info.elem) {
+        cx.error(span, hidden_field_message(cx, name.name, info.elem, fields[k].vis))
+    }
+    col := cx.soa_column_once(b, info, k, span)
+    i := cx.soa_index_value(index_ast)
+    return tir.mk(fields[k].ty, .Index(col, i, true), span)
+}
+
+/// `a.f` (the column of `f`) or `a.len` on a `#soa` value.
+soa_member :: fn(cx: ^FnCx, b: ^Expr, info: sema.SoaInfo, name: ast.Ident, span: source.Span) -> ^Expr needs Load {
+    if name.name is "len" {
+        stmts := list(tir.Stmt)
+        v := if info.len is not null { b } else { cx.soa_operand(b, info, &stmts) }
+        len := cx.soa_len(v, info, span)
+        return sema.soa_block(stmts.items, len, span)
+    }
+    if cx.s.soa_generic(info) {
+        return cx.soa_needs_fields(info, str.format("the column `a.{}`", name.name)!, span)
+    }
+    fields := cx.s.soa_fields(info)
+    k := soa_field_index(fields, name.name) else {
+        t := cx.infer.resolve(cx.s, b.ty)
+        cx.error(name.span, str.format("type `{}` has no column `{}`", cx.show(t), name.name)!)
+        return error_expr(cx.s, span)
+    }
+    if not cx.field_visible_here(fields[k].vis, info.elem) {
+        cx.error(span, hidden_field_message(cx, name.name, info.elem, fields[k].vis))
+    }
+    return cx.soa_column_once(b, info, k, span)
+}
+
+/// `a[i] = value`: stores each field of the value in its column (§5.6.4).
+soa_store :: fn(cx: ^FnCx, b: ^Expr, info: sema.SoaInfo, index_ast: ^const ast.Expr, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
+    tys := &cx.s.tys
+    writable := not info.is_const
+    if info.len is not null {
+        writable = false
+        if m := cx.place_mutability(b) { writable = m }
+    }
+    if not writable {
+        what := if info.len is not null { "an immutable `#soa` array" } else { "a `#soa []const` slice" }
+        cx.error(span, str.format("cannot assign to an element of {}", what)!)
+    }
+    stmts := list(tir.Stmt)
+    v := cx.soa_operand(b, info, &stmts)
+    i := cx.soa_index_value(index_ast)
+    i = cx.bind_temp(i, &stmts)
+    x := cx.expr(value, info.elem)
+    x = cx.coerce(x, info.elem)
+    x = cx.bind_temp(x, &stmts)
+    if cx.s.soa_generic(info) {
+        stmts.push(.Expr(tir.mk(tys.unit(), .SoaDeferred(op: .Set, args: soa_args([3]^Expr(v, i, x)[..])), span)))!
+    } else {
+        for st in cx.s.soa_scatter(v, info, i, x, span) { stmts.push(st)! }
+    }
+    return .Expr(tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span))
+}
+
+/// A slice bound of a `#soa`, bound to a temporary.
+soa_bound :: fn(cx: ^FnCx, e: ?^Expr, stmts: ^List(tir.Stmt)) -> ?^Expr needs Load {
+    v := e else return null
+    tys := &cx.s.tys
+    if not cx.infer.require_unsigned(tys, v.ty, .Usize) and not tys.is_error(v.ty) {
+        cx.error(v.span, str.format("a slice bound must have an unsigned integer type, not `{}`", cx.show(cx.infer.resolve(cx.s, v.ty)))!)
+    }
+    return cx.bind_temp(v, stmts)
+}
+
+/// `a[lo..hi]` (or `a[..]`) on a `#soa` array place or slice: a `#soa` slice.
+soa_slice :: fn(cx: ^FnCx, b: ^Expr, info: sema.SoaInfo, lo: ?^Expr, hi: ?^Expr, inclusive: bool, span: source.Span) -> ^Expr needs Load {
+    base_span := b.span
+    is_const := info.is_const
+    if info.len is not null {
+        m := cx.place_mutability(b) else {
+            cx.error(base_span, "only a `#soa` array variable (a place) can be sliced, not a temporary")
+            return error_expr(cx.s, span)
+        }
+        is_const = not m
+    }
+    stmts := list(tir.Stmt)
+    v := cx.soa_operand(b, info, &stmts)
+    lo2 := cx.soa_bound(lo, &stmts)
+    hi2 := cx.soa_bound(hi, &stmts)
+    if cx.s.soa_generic(info) {
+        t := cx.s.soa_type(info.elem, null, is_const, span)
+        args := list(Expr)
+        args.push(v^)!
+        if x := lo2 { args.push(x^)! }
+        if x := hi2 { args.push(x^)! }
+        op := tir.SoaOp.Slice(lo: lo2 is not null, hi: hi2 is not null, inclusive: inclusive)
+        return sema.soa_block(stmts.items, tir.mk(t, .SoaDeferred(op: op, args: args.items), span), span)
+    }
+    s := cx.s.soa_slice_columns(v, info, is_const, lo2, hi2, inclusive, span)
+    return sema.soa_block(stmts.items, s, span)
+}
+
+/// The coercions of §5.6.4: `^#soa [N]S` to `#soa []S` (or `[]const`), and `#soa []S` to
+/// `#soa []const S`. `null` if neither applies.
+soa_coerce :: fn(cx: ^FnCx, e: ^Expr, src: Ty, target: Ty) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    to := cx.s.soa_info(target) else return null
+    if to.len is not null { return null }
+    span := e.span
+    if .Ptr(is_const, pointee) := tys.kind(src) {
+        if from := cx.s.soa_info(pointee) {
+            if from.len is not null and from.elem is to.elem and (to.is_const or not is_const) {
+                arr := tir.mk(pointee, .Deref(e), span)
+                s := cx.soa_slice(arr, from, null, null, false, span)
+                if to.is_const {
+                    if c := cx.soa_coerce(s, s.ty, target) { return c }
+                }
+                return s
+            }
+        }
+    }
+    from := cx.s.soa_info(src) else return null
+    if from.len is not null or from.elem is not to.elem or from.is_const or not to.is_const { return null }
+    stmts := list(tir.Stmt)
+    v := cx.bind_temp(e, &stmts)
+    c := if cx.s.soa_generic(from) {
+        tir.mk(target, .SoaDeferred(op: .ToConst, args: soa_args([1]^Expr(v)[..])), span)
+    } else {
+        cx.s.soa_to_const(v, src, target, span)
+    }
+    return sema.soa_block(stmts.items, c, span)
+}
+
+/// `#soa [N]S(e1, …, eN)` and `#soa [N]S(fill: s)` (§5.6.4).
+soa_construct :: fn(cx: ^FnCx, t: Ty, info: sema.SoaInfo, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    n := info.len else {
+        cx.error(span, str.format("`{}` is made by slicing an array or by `.make(n)`, not constructed", cx.show(t))!)
+        return error_expr(cx.s, span)
+    }
+    if cx.s.soa_generic(info) {
+        return cx.soa_needs_fields(info, str.format("constructing `{}`", cx.show(t))!, span)
+    }
+    fields := cx.s.soa_fields(info)
+    stmts := list(tir.Stmt)
+    columns := list(Expr)
+    fill := false
+    if args.len is 1 and .Named(a) := args[0].kind {
+        if a.name.name is "fill" {
+            fill = true
+            x := cx.field_value(&a.value, info.elem)
+            x = cx.bind_temp(x, &stmts)
+            for k, f in enumerate(fields) {
+                part := tir.mk(f.ty, .Field(tir.clone_expr(x), k.trunc(u32)), span)
+                columns.push(tir.mk(tys.array(n, f.ty), .ArrayFill(part), span)^)!
+            }
+        }
+    }
+    if not fill {
+        elems := list(^Expr)
+        for a in args {
+            match a.kind {
+                .Positional(e) => {
+                    x := cx.field_value(&e, info.elem)
+                    elems.push(cx.bind_temp(x, &stmts))!
+                }
+                _ => {
+                    cx.error(a.span, "the elements of a `#soa` array are written positionally, or as `fill: s`")
+                    return error_expr(cx.s, span)
+                }
+            }
+        }
+        if u64(elems.items.len) is not n {
+            cx.error(span, str.format("`{}` needs exactly {} elements, but {} given", cx.show(t), n, given(elems.items.len))!)
+            return error_expr(cx.s, span)
+        }
+        for k, f in enumerate(fields) {
+            parts := list(Expr)
+            for x in elems.items { parts.push(tir.mk(f.ty, .Field(tir.clone_expr(x), k.trunc(u32)), span)^)! }
+            columns.push(tir.mk(tys.array(n, f.ty), .Array(parts.items), span)^)!
+        }
+    }
+    return sema.soa_block(stmts.items, tir.mk(t, .Aggregate(columns.items), span), span)
+}
+
+/// `for s in a` over a `#soa` value: each element in order, gathered.
+soa_for :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src: ^Expr, info: sema.SoaInfo) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    span := f.span
+    usize_ := tys.usize_ty()
+    stmts := list(tir.Stmt)
+    v := cx.soa_operand(src, info, &stmts)
+    i := cx.temp(usize_, span)
+    n := cx.temp(usize_, span)
+    len := cx.soa_len(v, info, span)
+    stmts.push(.Let(i, cx.s.usize_lit(0, span)))!
+    stmts.push(.Let(n, len))!
+    lt := tir.mk(tys.bool_ty(), .Binary(.Lt, tir.mk(usize_, .Local(i), span), tir.mk(usize_, .Local(n), span)), span)
+    next := tir.mk(usize_, .Binary(.Add(.Wrap), tir.mk(usize_, .Local(i), span), cx.s.usize_lit(1, span)), span)
+    incr := list(tir.Stmt)
+    incr.push(.Assign(tir.mk(usize_, .Local(i), span), next))!
+    step := tir.mk(tys.unit(), .Block(new(tir.Block(stmts: incr.items, tail: null, span: span))!), span)
+    item := cx.soa_gather(v, info, tir.mk(usize_, .Local(i), span), span)
+    cond := list(tir.CondPart)
+    cond.push(.Bool(lt))!
+    lp := cx.loop_with_pattern(f, info.elem, item, cond.items, step)
+    stmts.push(.Expr(lp))!
+    return tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span)
+}
+
+/// `a is b` (or `is not`) on `#soa` slices: the columns compare by content (§5.6.4).
+soa_eq :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, info: sema.SoaInfo, negated: bool, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if cx.s.soa_generic(info) { return cx.soa_needs_fields(info, "`is` on `#soa` slices", span) }
+    stmts := list(tir.Stmt)
+    lv := cx.soa_operand(l, info, &stmts)
+    rv := cx.soa_operand(r, info, &stmts)
+    all: ?^Expr = null
+    for k in 0..cx.s.soa_fields(info).len {
+        a := cx.s.soa_column(lv, info, k, span)
+        b := cx.s.soa_column(rv, info, k, span)
+        eq := tir.mk(tys.bool_ty(), .Eq(a, b, false), span)
+        if x := all {
+            all = tir.mk(tys.bool_ty(), .Logic(true, x, eq), span)
+        } else {
+            all = eq
+        }
+    }
+    e := all else return error_expr(cx.s, span)
+    if negated { e = tir.mk(tys.bool_ty(), .Unary(.Not, e), span) }
+    return sema.soa_block(stmts.items, e, span)
+}
+
+/// The columns of a `#soa` slice as a tuple named by the fields, for formatting and
+/// hashing, which see a slice by its contents. `what` names the use, for the error on a
+/// `#soa` of a type parameter.
+soa_columns_tuple :: fn(cx: ^FnCx, e: ^Expr, what: string) -> ^Expr needs Load {
+    info := cx.soa_of(e) else return e
+    if cx.s.soa_generic(info) { return cx.soa_needs_fields(info, what, e.span) }
+    if info.len is not null { return e }
+    span := e.span
+    stmts := list(tir.Stmt)
+    v := cx.soa_operand(e, info, &stmts)
+    fields := cx.s.soa_fields(info)
+    cols := list(Expr)
+    elems := list(Ty)
+    names := list(string)
+    for k, f in enumerate(fields) {
+        c := cx.s.soa_column(v, info, k, span)
+        elems.push(c.ty)!
+        names.push(f.name)!
+        cols.push(c^)!
+    }
+    ty := cx.s.tys.intern(.Tuple(elems.items, names.items))
+    return sema.soa_block(stmts.items, tir.mk(ty, .Aggregate(cols.items), span), span)
+}
+
+/// The effects of the core function `name` count as performed here; returns the source
+/// location argument it is given.
+soa_core_use :: fn(cx: ^FnCx, name: string, span: source.Span) -> ?^Expr needs Load {
+    f := cx.core_fn("slice", name) else {
+        cx.error(span, "`#soa` allocation is missing from the core library")
+        return null
+    }
+    effects := cx.s.fns.items[usize(f)].effects
+    cx.record_effects(&effects, span)
+    return cx.source_location(span)
+}
+
+/// `T.make(n)` for a `#soa` slice type `T`: one block holding every column (§5.6.4).
+soa_make :: fn(cx: ^FnCx, t: Ty, info: sema.SoaInfo, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if info.len is not null {
+        cx.error(span, str.format("`.make(n)` makes a `#soa` slice; `{}` is an array", cx.show(t))!)
+        return error_expr(cx.s, span)
+    }
+    if not cx.arity(args, 1, "make", span) { return error_expr(cx.s, span) }
+    n := cx.value_arg(args, 0, tys.usize_ty(), span)
+    site := cx.soa_core_use("soa_alloc", span) else return error_expr(cx.s, span)
+    stmts := list(tir.Stmt)
+    n = cx.bind_temp(n, &stmts)
+    m: ^Expr = n
+    if cx.s.soa_generic(info) {
+        err := tys.error()
+        if f := cx.core_fn("slice", "soa_alloc") {
+            if .Result(e, _) := tys.kind(cx.s.fns.items[usize(f)].ret) { err = e }
+        }
+        m = tir.mk(tys.result(err, t), .SoaDeferred(op: .Make, args: soa_args([2]^Expr(n, site)[..])), span)
+    } else {
+        m = cx.s.soa_make_columns(&cx.locals, t, info, n, site, span)
+    }
+    return sema.soa_block(stmts.items, m, span)
+}
+
+/// `s.free()` for a `#soa` slice from `make` (§5.6.4).
+soa_free :: fn(cx: ^FnCx, recv: ^Expr, info: sema.SoaInfo, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if info.len is not null {
+        cx.error(span, "only a `#soa` slice from `.make(n)` is freed, not an array")
+        return error_expr(cx.s, span)
+    }
+    _ = cx.arity(args, 0, "free", span)
+    site := cx.soa_core_use("soa_free", span) else return error_expr(cx.s, span)
+    stmts := list(tir.Stmt)
+    v := cx.soa_operand(recv, info, &stmts)
+    call := if cx.s.soa_generic(info) {
+        tir.mk(tys.unit(), .SoaDeferred(op: .Free, args: soa_args([2]^Expr(v, site)[..])), span)
+    } else {
+        cx.s.soa_free_columns(v, info, site, span)
+    }
+    return sema.soa_block(stmts.items, call, span)
+}
+
+/// `a.copy_from(src)` on a `#soa` array place or slice: `src` is coerced to a
+/// `#soa []const S` of the same length, and may overlap `a` (§5.6.4).
+soa_copy_from :: fn(cx: ^FnCx, recv: ^Expr, info: sema.SoaInfo, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    mutability: ?bool = null
+    writable := not info.is_const
+    if info.len is not null {
+        mutability = cx.place_mutability(recv)
+        writable = false
+        if m := mutability { writable = m }
+    }
+    if not writable {
+        what := "a `#soa []const` slice"
+        if info.len is not null {
+            what = if mutability is null { "a temporary `#soa` array" } else { "an immutable `#soa` array" }
+        }
+        cx.error(span, str.format("cannot copy into {}", what)!)
+    }
+    if not cx.arity(args, 1, "copy_from", span) { return error_expr(cx.s, span) }
+    stmts := list(tir.Stmt)
+    dst := cx.soa_operand(recv, info, &stmts)
+    src_ty := cx.s.soa_type(info.elem, null, true, span)
+    src := cx.value_arg(args, 0, src_ty, span)
+    if tys.is_error(src.ty) { return error_expr(cx.s, span) }
+    src = cx.bind_temp(src, &stmts)
+    copy := if cx.s.soa_generic(info) {
+        tir.mk(tys.unit(), .SoaDeferred(op: .CopyFrom, args: soa_args([2]^Expr(dst, src)[..])), span)
+    } else {
+        cx.s.soa_copy_columns(dst, info, src, span)
+    }
+    return sema.soa_block(stmts.items, copy, span)
+}

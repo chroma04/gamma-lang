@@ -157,6 +157,22 @@ fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
                 cx.fin_float(e, r, false)
             }
         }
+        // An untyped complex constant: the struct of its parts (§5.3.1).
+        .UntypedComplex(c) => {
+            elem := cx.s.complex_of(e.ty) else {
+                cx.error(e.span, str.format("expected `{}`, found a complex constant", cx.show(e.ty))!)
+                e^ = error_expr(cx.s, e.span)^
+                return
+            }
+            span := e.span
+            fields := list(Expr)
+            for r in [2]ratio.Rat(c.re, c.im) {
+                x := tir.mk(elem, .UntypedFloat(r), span)
+                if tys.kind(elem) is not .Param(_) { cx.fin_float(x, r, false) }
+                fields.push(x^)!
+            }
+            e.kind = .Aggregate(fields.items)
+        }
         .Coerce(kind, inner) => if kind is .Unresolved {
             target := e.ty
             if inner.ty is target {
@@ -234,11 +250,7 @@ fin_float :: fn(cx: ^FnCx, e: ^Expr, r: ratio.Rat, from_int: bool) needs Alloc {
         e.kind = .Float(0.0)
         return
     }
-    if bits is 16 {
-        _ = cx.unsupported(e.span, "`f16` literals")
-        return
-    }
-    x: f64 = if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
+    x: f64 = if bits is 16 { r.to_f16() } else if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
     if x - x is not 0.0 {
         cx.error(e.span, str.format("the literal is too large for `{}` (it would round to infinity)", cx.show(e.ty))!)
         e.kind = .Float(0.0)

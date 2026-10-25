@@ -1211,7 +1211,22 @@ assign :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^cons
         _ = cx.expr(value, null)
         return .Expr(unit(cx.s, span))
     }
-    place := cx.expr(place_ast, null)
+    // `a[i] = s` on a `#soa`: each field of `s` goes to its column (§5.6.4).
+    if .Index(base, index) := place_ast.kind {
+        b := cx.soa_deref(cx.expr(base, null))
+        if info := cx.soa_of(b) {
+            if op is not .Assign {
+                cx.error(span, "an element of a `#soa` is assigned whole with `=`; assign to its fields with `a[i].f`")
+            }
+            return cx.soa_store(b, info, index, value, span)
+        }
+        return cx.assign_place(cx.index_value(b, index, place_ast.span), place_ast, op, value, span)
+    }
+    return cx.assign_place(cx.expr(place_ast, null), place_ast, op, value, span)
+}
+
+/// `place op value` with the place already checked.
+assign_place :: fn(cx: ^FnCx, place: ^Expr, place_ast: ^const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
     cx.require_mutable_place(place, place_ast.span)
     match op {
         .Assign => {
@@ -1386,7 +1401,10 @@ expect_bool :: fn(cx: ^FnCx, e: ^Expr) -> ^Expr needs Load {
     k := cx.s.tys.kind(e.ty)
     if k is not .Bool and k is not .Never and k is not .Error {
         t := cx.infer.resolve(cx.s, e.ty)
-        cx.error(e.span, str.format("expected `bool`, found `{}` (there are no truthy values)", cx.show(t))!)
+        mask := false
+        if p := cx.s.tys.vector_parts(t) { mask = cx.s.tys.is_bool(p.elem) }
+        hint := if mask { "; a mask is tested with `.all()` or `.any()`" } else { " (there are no truthy values)" }
+        cx.error(e.span, str.format("expected `bool`, found `{}`{}", cx.show(t), hint)!)
     }
     return e
 }

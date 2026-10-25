@@ -368,6 +368,8 @@ hash_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Ex
     tys := &cx.s.tys
     if args.len is 2 and .Positional(xe) := args[0].kind and .Positional(se) := args[1].kind {
         x := cx.expr(&xe, null)
+        // A `#soa` slice hashes by its contents, as `is` compares it (§5.6.4).
+        x = cx.soa_columns_tuple(x, "`@hash`")
         xt := cx.infer.resolve(cx.s, x.ty)
         allowed := cx.s.has_eq(xt) or (cx.s.l.modules.items[cx.module].is_prelude and tys.has_param(xt))
         if not tys.has_infer(xt) and not tys.is_error(xt) and not allowed {
