@@ -115,6 +115,7 @@ target_text :: fn(t: tir.Target) -> string needs Alloc => match t {
 
 sink_text :: fn(d: ^Dump, sink: tir.WriteSink) -> string needs Alloc => match sink {
     .Perform(e, op) => str.format("perform {} {}", d.s.tys.show_ref(&e), op)!
+    .Fn(_) => "fn"
 }
 
 write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
@@ -350,6 +351,7 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
                     spec_text(spec, &h)
                 }
             }
+            if .Fn(x) := w.sink { kids.push(x)! }
             for i in 0..w.args.len { kids.push(&w.args[i])! }
             h.items
         }
@@ -570,4 +572,79 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .Last => "Last"
     .CstrLen => "CstrLen"
     .Assert => "Assert"
+    .Hash => "Hash"
+    .Unreachable => "Unreachable"
+    .AtomicLoad => "AtomicLoad"
+    .AtomicStore => "AtomicStore"
+    .AtomicSwap => "AtomicSwap"
+    .AtomicCas => "AtomicCas"
+    .AtomicRmw(r) => str.format("AtomicRmw({})", rmw_text(r))!
+    .Fence => "Fence"
+    .VolatileLoad => "VolatileLoad"
+    .VolatileStore => "VolatileStore"
+    .Sys(s) => str.format("Sys({})", sys_text(s))!
+    .HeapAlloc => "HeapAlloc"
+    .HeapFree => "HeapFree"
+    .AllocTag => "AllocTag"
+    .AllocCheck => "AllocCheck"
+    .Asm(outputs, inputs) => str.format("Asm {{ outputs: {}, inputs: {} }}", outputs, inputs)!
+}
+
+rmw_text :: fn(op: tir.RmwOp) -> string => match op {
+    .Add => "Add"
+    .Sub => "Sub"
+    .And => "And"
+    .Or => "Or"
+    .Xor => "Xor"
+    .Max => "Max"
+    .Min => "Min"
+}
+
+sys_text :: fn(op: tir.SysOp) -> string => match op {
+    .Read => "Read"
+    .ClockNow => "ClockNow"
+    .ClockWall => "ClockWall"
+    .Sleep => "Sleep"
+    .RandFill => "RandFill"
+    .FsOpen => "FsOpen"
+    .FsClose => "FsClose"
+    .FsRead => "FsRead"
+    .FsWrite => "FsWrite"
+    .FsSeek => "FsSeek"
+    .FsStat => "FsStat"
+    .FsRemove => "FsRemove"
+    .FsRename => "FsRename"
+    .FsMakeDir => "FsMakeDir"
+    .FsRemoveDir => "FsRemoveDir"
+    .FsOpenDir => "FsOpenDir"
+    .FsNextEntry => "FsNextEntry"
+    .FsCloseDir => "FsCloseDir"
+    .FsLstat => "FsLstat"
+    .FsTruncate => "FsTruncate"
+    .FsSync => "FsSync"
+    .FsCwd => "FsCwd"
+    .NetConnect => "NetConnect"
+    .NetListen => "NetListen"
+    .NetLocalPort => "NetLocalPort"
+    .NetAccept => "NetAccept"
+    .NetSend => "NetSend"
+    .NetRecv => "NetRecv"
+    .NetClose => "NetClose"
+    .NetShutdown => "NetShutdown"
+    .NetSetTimeouts => "NetSetTimeouts"
+    .NetPeer => "NetPeer"
+    .ProcSpawn => "ProcSpawn"
+    .ProcWriteIn => "ProcWriteIn"
+    .ProcCloseIn => "ProcCloseIn"
+    .ProcReadOut => "ProcReadOut"
+    .ProcWait => "ProcWait"
+    .ProcKill => "ProcKill"
+    .ThreadSpawn => "ThreadSpawn"
+    .ThreadJoin => "ThreadJoin"
+    .ThreadDetach => "ThreadDetach"
+    .ThreadYield => "ThreadYield"
+    .FutexWait => "FutexWait"
+    .FutexWake => "FutexWake"
+    .CpuCount => "CpuCount"
+    .SysWrite => "SysWrite"
 }

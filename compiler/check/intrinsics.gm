@@ -1,10 +1,19 @@
 // Intrinsic calls `@name(args)` (§20.3): the layout and limit queries, the bit
-// operations, `@sqrt`, `@fma`, `@black_box` and `@type_name` (mirrors `intrinsic` in
-// `src/sema/expr.rs`). The others are reported as unsupported.
+// operations, atomics and volatile accesses, `@write`, `@asm`, the system and heap
+// primitives of the core library and the small ones (mirrors `intrinsic` in
+// `src/sema/expr.rs`). `@static_assert`, `@compile_error`, `@caller_location`,
+// `@stack_size`, `@fiber` and those that need the compile-time evaluator are reported
+// as unsupported.
 
 intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr needs Load {
     args := i.args else return cx.unsupported(span, "intrinsic calls")
     n := i.name.name
+    in_prelude := cx.s.l.modules.items[cx.module].is_prelude
+    // Compiler-internal heap primitives behind the core library's heap allocator.
+    if in_prelude and n in ("alloc_tag", "alloc_check", "heap_alloc", "heap_free") { return cx.heap_intrinsic(n, args, span) }
+    if in_prelude or cx.s.l.modules.items[cx.module].is_std {
+        if sig := sys_sig(&cx.s.tys, n) { return cx.sys_intrinsic(n, sig, args, span) }
+    }
     match n {
         "size_of", "align_of" => return cx.layout_intrinsic(n, args, span)
         "min_value", "max_value" => return cx.limit_intrinsic(n, args, span)
@@ -23,7 +32,27 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
             if cx.s.tys.has_param(t) { return tir.mk(cx.s.tys.string_ty(), .TypeName(t), span) }
             return tir.mk(cx.s.tys.string_ty(), .Str(cx.show(t)), span)
         }
-        _ => return cx.unsupported(span, if n is "size_of" { "`@size_of`" } else { "intrinsic calls" })
+        "atomic_load", "atomic_store", "atomic_swap", "atomic_cas", "atomic_add", "atomic_sub", "atomic_and", "atomic_or", "atomic_xor", "atomic_max", "atomic_min", "fence", "volatile_load", "volatile_store" => return cx.atomic_intrinsic(n, args, span)
+        "location" => return cx.source_location(span)
+        "unreachable" => return tir.mk(cx.s.tys.never_ty(), .Builtin(.Unreachable, empty_slice(Expr)), span)
+        "expect_true", "expect_false" => {
+            if args.len is 1 and .Positional(b) := args[0].kind {
+                bool_ty := cx.s.tys.bool_ty()
+                v := cx.expr(&b, bool_ty)
+                return cx.coerce(v, bool_ty)
+            }
+            cx.error(span, str.format("`@{}` takes one `bool`", n)!)
+            return error_expr(cx.s, span)
+        }
+        "min_stack" => return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(16384)), span)
+        "offset_of" => return cx.offset_of_intrinsic(n, args, span)
+        "asm" => return cx.asm_intrinsic(args, span)
+        "write" => return cx.write_intrinsic(args, span)
+        "hash" => return cx.hash_intrinsic(args, span)
+        "prefetch" => return cx.prefetch_intrinsic(args, span)
+        "variants" => return cx.variants_intrinsic(n, args, span)
+        "variant_name" => return cx.variant_name_intrinsic(args, span)
+        _ => return cx.unsupported(span, str.format("intrinsic `@{}`", n)!)
     }
 }
 
@@ -160,4 +189,656 @@ numeric_intrinsic :: fn(cx: ^FnCx, n: string, args: []const ast.Arg, span: sourc
         _ => {}
     }
     return tir.mk(ty, .Builtin(op, vals.items), span)
+}
+
+/// The core library's `Sys` effect as a set.
+sys_set :: fn(cx: ^FnCx) -> EffectSet needs Load {
+    prelude := cx.s.l.prelude else return types.empty_effects()
+    d := cx.s.l.lookup(prelude, "Sys") else return types.empty_effects()
+    .Effect(e) := cx.s.resolve_decl(d) else return types.empty_effects()
+    one := list(EffectRef)
+    one.push(types.EffectRef(eff: e, args: empty_slice(types.GenericArg)))!
+    return types.effect_set(one.items)
+}
+
+/// The core library's `MemoryOrder` type.
+memory_order_ty :: fn(cx: ^FnCx) -> Ty needs Load {
+    if prelude := cx.s.l.prelude {
+        if d := cx.s.l.lookup(prelude, "MemoryOrder") {
+            if .Type(t) := cx.s.resolve_decl(d) { return t }
+        }
+    }
+    return cx.s.tys.intern(.Error)
+}
+
+/// The atomic (§19.6) and volatile (§19.5) intrinsics.
+atomic_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    op: tir.Builtin = .Fence
+    n_values: usize = 0
+    n_orders: usize = 1
+    writes := true
+    match name {
+        "atomic_load" => {
+            op = .AtomicLoad
+            writes = false
+        }
+        "atomic_store" => {
+            op = .AtomicStore
+            n_values = 1
+        }
+        "atomic_swap" => {
+            op = .AtomicSwap
+            n_values = 1
+        }
+        "atomic_cas" => {
+            op = .AtomicCas
+            n_values = 2
+            n_orders = 2
+        }
+        "atomic_add" => {
+            op = .AtomicRmw(.Add)
+            n_values = 1
+        }
+        "atomic_sub" => {
+            op = .AtomicRmw(.Sub)
+            n_values = 1
+        }
+        "atomic_and" => {
+            op = .AtomicRmw(.And)
+            n_values = 1
+        }
+        "atomic_or" => {
+            op = .AtomicRmw(.Or)
+            n_values = 1
+        }
+        "atomic_xor" => {
+            op = .AtomicRmw(.Xor)
+            n_values = 1
+        }
+        "atomic_max" => {
+            op = .AtomicRmw(.Max)
+            n_values = 1
+        }
+        "atomic_min" => {
+            op = .AtomicRmw(.Min)
+            n_values = 1
+        }
+        "fence" => { writes = false }
+        "volatile_load" => {
+            op = .VolatileLoad
+            n_orders = 0
+            writes = false
+        }
+        _ => {
+            op = .VolatileStore
+            n_values = 1
+            n_orders = 0
+        }
+    }
+    has_ptr := op is not .Fence
+    expected: usize = (if has_ptr { 1 } else { 0 }) + n_values + n_orders
+    exprs := list(ast.Expr)
+    for i in 0..args.len {
+        if .Positional(e) := args[i].kind { exprs.push(e)! }
+    }
+    if exprs.items.len is not expected or exprs.items.len is not args.len {
+        cx.error(span, str.format("`@{}` takes {} positional arguments", name, expected)!)
+        return error_expr(cx.s, span)
+    }
+    order_ty := cx.memory_order_ty()
+    vals := list(Expr)
+    elem := tys.unit()
+    volatile := op is .VolatileLoad or op is .VolatileStore
+    if has_ptr {
+        p := cx.expr(&exprs.items[0], null)
+        // The operation depends on the pointee type, so an untyped literal's type is
+        // settled here (`x := 0; @atomic_add(&x, 1, .SeqCst)`, §6.1).
+        pt := cx.settle(p.ty, p.span)
+        match tys.kind(pt) {
+            .Ptr(is_const, pointee) => {
+                if writes and is_const {
+                    cx.error(exprs.items[0].span, str.format("`@{}` writes through the pointer, so it needs a `^T`, not `{}`", name, cx.show(pt))!)
+                }
+                elem = pointee
+            }
+            .Error => return error_expr(cx.s, span)
+            _ => {
+                cx.error(exprs.items[0].span, str.format("`@{}` needs a pointer `^T`, not `{}`", name, cx.show(pt))!)
+                return error_expr(cx.s, span)
+            }
+        }
+        ek := tys.kind(elem)
+        int := (ek is .Int(_, 8) or ek is .Int(_, 16) or ek is .Int(_, 32) or ek is .Int(_, 64)) or ek is .Usize or ek is .Isize
+        ptr := ek in (.Ptr(_), .ManyPtr(_), .Rawptr)
+        if .Optional(inner) := ek {
+            if cx.s.is_nullable_pointer(inner) { ptr = true }
+        }
+        ok := match op {
+            .AtomicRmw(_) => int
+            _ => if volatile { int or ptr or ek is .Float(_) or cx.s.bits_struct_ty(elem) is not null } else { int or ptr or ek is .Bool }
+        }
+        if not ok {
+            cx.error(exprs.items[0].span, str.format("`@{}` is not defined on `{}`", name, cx.show(elem))!)
+        }
+        vals.push(p^)!
+        if volatile {
+            sys := cx.sys_set()
+            cx.record_effects(&sys, span)
+        }
+    }
+    first_value: usize = if has_ptr { 1 } else { 0 }
+    for k in 0..n_values {
+        v := cx.expr(&exprs.items[first_value + k], elem)
+        vals.push(cx.coerce(v, elem)^)!
+    }
+    for k in 0..n_orders {
+        e := &exprs.items[first_value + n_values + k]
+        v := cx.expr(e, order_ty)
+        v = cx.coerce(v, order_ty)
+        // Orders C11 does not allow for this operation, when written as constants.
+        if .Variant(ve) := v.kind {
+            if ve.payload is null {
+                if uv := cx.s.union_variants(order_ty) {
+                    order := uv.variants[usize(ve.variant)].name
+                    bad := match op {
+                        .AtomicLoad => order in ("Release", "AcqRel")
+                        .AtomicCas => k is 1 and order in ("Release", "AcqRel")
+                        .AtomicStore => order in ("Acquire", "AcqRel")
+                        _ => false
+                    }
+                    if bad {
+                        what := if op is .AtomicCas { "as the failure order of `@atomic_cas`" } else { "for this operation" }
+                        cx.error(e.span, str.format("`.{}` is not a valid memory order {} (§19.6)", order, what)!)
+                    }
+                }
+            }
+        }
+        vals.push(v^)!
+    }
+    ty := match op {
+        .AtomicLoad, .AtomicSwap, .AtomicRmw(_), .VolatileLoad => elem
+        .AtomicCas => tys.optional(elem)
+        _ => tys.unit()
+    }
+    return tir.mk(ty, .Builtin(op, vals.items), span)
+}
+
+/// `@hash(x, seed)`.
+hash_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if args.len is 2 and .Positional(xe) := args[0].kind and .Positional(se) := args[1].kind {
+        x := cx.expr(&xe, null)
+        xt := cx.infer.resolve(cx.s, x.ty)
+        allowed := cx.s.has_eq(xt) or (cx.s.l.modules.items[cx.module].is_prelude and tys.has_param(xt))
+        if not tys.has_infer(xt) and not tys.is_error(xt) and not allowed {
+            cx.error(span, str.format("`@hash` is defined only for types with `is`, and `{}` has none (§16.8)", cx.show(xt))!)
+        }
+        u64_ty := tys.int(false, 64)
+        seed := cx.expr(&se, u64_ty)
+        seed = cx.coerce(seed, u64_ty)
+        vals := list(Expr)
+        vals.push(x^)!
+        vals.push(seed^)!
+        return tir.mk(u64_ty, .Builtin(.Hash, vals.items), span)
+    }
+    cx.error(span, "`@hash(x, seed)` takes a value and a `u64` seed")
+    return error_expr(cx.s, span)
+}
+
+/// `@prefetch(p)`: a hint that `p` will be read soon; it has no effect on the program.
+prefetch_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if args.len is 1 and .Positional(pe) := args[0].kind {
+        v := cx.expr(&pe, null)
+        t := cx.infer.resolve(cx.s, v.ty)
+        if not cx.s.tys.is_error(t) and cx.s.tys.kind(t) not in (.Ptr(_), .ManyPtr(_), .Rawptr) {
+            cx.error(pe.span, str.format("`@prefetch` takes a pointer, not `{}`", cx.show(t))!)
+        }
+        stmts := list(tir.Stmt)
+        stmts.push(.Expr(v))!
+        return block_of(cx.s, stmts.items, span)
+    }
+    cx.error(span, "`@prefetch` takes one pointer: `@prefetch(p)`")
+    return error_expr(cx.s, span)
+}
+
+/// `@variants(U)`: every variant of a union without payloads, as an array.
+variants_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    t := cx.intrinsic_type_arg(name, args, 0, span) else return error_expr(cx.s, span)
+    if tys.kind(t) is .Param(_) {
+        cx.error(span, str.format("`@variants` needs a concrete union type, not the type parameter `{}`", cx.show(t))!)
+        return error_expr(cx.s, span)
+    }
+    uv := cx.s.union_variants(t) else {
+        why := if cx.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" }
+        cx.error(span, str.format("`@variants` takes a tagged union type, not `{}`{}", cx.show(t), why)!)
+        return error_expr(cx.s, span)
+    }
+    for v in uv.variants {
+        if v.payload is not null {
+            cx.error(span, str.format("`@variants({})` needs a union without payloads, but variant `{}` has one", cx.show(t), v.name)!)
+            return error_expr(cx.s, span)
+        }
+    }
+    elems := list(Expr)
+    for i in 0..uv.variants.len {
+        elems.push(tir.mk(t, .Variant(tir.VariantExpr(variant: i.trunc(u32), payload: null)), span)^)!
+    }
+    return tir.mk(tys.array(u64(elems.items.len), t), .Array(elems.items), span)
+}
+
+/// `@variant_name(x)`: the name of the variant `x` holds.
+variant_name_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if not (args.len is 1 and args[0].kind is .Positional(_)) {
+        cx.error(span, "`@variant_name` takes one union value: `@variant_name(x)`")
+        return error_expr(cx.s, span)
+    }
+    .Positional(xe) := args[0].kind else return error_expr(cx.s, span)
+    x := cx.expr(&xe, null)
+    t := cx.infer.resolve(cx.s, x.ty)
+    if tys.is_error(t) { return error_expr(cx.s, span) }
+    uv := cx.s.union_variants(t) else {
+        why := if cx.is_c_union(t) { " (a `#c_union` has no tag)" } else { "" }
+        cx.error(span, str.format("`@variant_name` takes a value of a tagged union type, not `{}`{}", cx.show(t), why)!)
+        return error_expr(cx.s, span)
+    }
+    arms := list(tir.Arm)
+    for i in 0..uv.variants.len {
+        pat := tir.mk_pat(t, .Variant(i.trunc(u32), null), span)
+        body := tir.mk(tys.string_ty(), .Str(uv.variants[i].name), span)
+        arms.push(tir.Arm(pat: pat, guard: null, body: body))!
+    }
+    return tir.mk(tys.string_ty(), .Match(x, arms.items), span)
+}
+
+/// A system operation: its parameter types and its result type.
+SysSig :: struct {
+    op: tir.SysOp
+    params: []Ty
+    ret: Ty
+}
+
+tys1 :: fn(a: Ty) -> []Ty needs Alloc {
+    l := list(Ty)
+    l.push(a)!
+    return l.items
+}
+
+tys2 :: fn(a, b: Ty) -> []Ty needs Alloc {
+    l := list(Ty)
+    l.push(a)!
+    l.push(b)!
+    return l.items
+}
+
+tys3 :: fn(a, b, c: Ty) -> []Ty needs Alloc {
+    l := list(Ty)
+    l.push(a)!
+    l.push(b)!
+    l.push(c)!
+    return l.items
+}
+
+tys4 :: fn(a, b, c, d: Ty) -> []Ty needs Alloc {
+    l := list(Ty)
+    l.push(a)!
+    l.push(b)!
+    l.push(c)!
+    l.push(d)!
+    return l.items
+}
+
+/// The system operation `@name(..)` of the core library, if there is one (`SysOp::signature`).
+sys_sig :: fn(tys: ^types.Types, name: string) -> ?SysSig needs Alloc {
+    i64_ty := tys.int(true, 64)
+    u64_ty := tys.int(false, 64)
+    u32_ty := tys.int(false, 32)
+    u16_ty := tys.int(false, 16)
+    buf := tys.intern(.Slice(false, tys.int(false, 8)))
+    string_ty := tys.string_ty()
+    raw := tys.intern(.Rawptr)
+    unit := tys.unit()
+    stat_buf := tys.intern(.Slice(false, i64_ty))
+    none := empty_slice(Ty)
+    return match name {
+        "sys_read" => SysSig(op: .Read, params: tys1(buf), ret: i64_ty)
+        "clock_now" => SysSig(op: .ClockNow, params: none, ret: u64_ty)
+        "clock_wall" => SysSig(op: .ClockWall, params: none, ret: i64_ty)
+        "clock_sleep" => SysSig(op: .Sleep, params: tys1(u64_ty), ret: unit)
+        "rand_fill" => SysSig(op: .RandFill, params: tys1(buf), ret: unit)
+        "fs_open" => SysSig(op: .FsOpen, params: tys2(string_ty, u32_ty), ret: i64_ty)
+        "fs_close" => SysSig(op: .FsClose, params: tys1(i64_ty), ret: i64_ty)
+        "fs_read" => SysSig(op: .FsRead, params: tys2(i64_ty, buf), ret: i64_ty)
+        "fs_write" => SysSig(op: .FsWrite, params: tys2(i64_ty, string_ty), ret: i64_ty)
+        "fs_seek" => SysSig(op: .FsSeek, params: tys3(i64_ty, i64_ty, u32_ty), ret: i64_ty)
+        "fs_stat" => SysSig(op: .FsStat, params: tys2(string_ty, stat_buf), ret: i64_ty)
+        "fs_remove" => SysSig(op: .FsRemove, params: tys1(string_ty), ret: i64_ty)
+        "fs_rename" => SysSig(op: .FsRename, params: tys2(string_ty, string_ty), ret: i64_ty)
+        "fs_make_dir" => SysSig(op: .FsMakeDir, params: tys1(string_ty), ret: i64_ty)
+        "fs_remove_dir" => SysSig(op: .FsRemoveDir, params: tys1(string_ty), ret: i64_ty)
+        "fs_open_dir" => SysSig(op: .FsOpenDir, params: tys1(string_ty), ret: i64_ty)
+        "fs_next_entry" => SysSig(op: .FsNextEntry, params: tys2(i64_ty, buf), ret: i64_ty)
+        "fs_close_dir" => SysSig(op: .FsCloseDir, params: tys1(i64_ty), ret: i64_ty)
+        "fs_lstat" => SysSig(op: .FsLstat, params: tys2(string_ty, stat_buf), ret: i64_ty)
+        "fs_truncate" => SysSig(op: .FsTruncate, params: tys2(i64_ty, u64_ty), ret: i64_ty)
+        "fs_sync" => SysSig(op: .FsSync, params: tys1(i64_ty), ret: i64_ty)
+        "fs_cwd" => SysSig(op: .FsCwd, params: tys1(buf), ret: i64_ty)
+        "net_connect" => SysSig(op: .NetConnect, params: tys2(string_ty, u16_ty), ret: i64_ty)
+        "net_listen" => SysSig(op: .NetListen, params: tys2(string_ty, u16_ty), ret: i64_ty)
+        "net_local_port" => SysSig(op: .NetLocalPort, params: tys1(i64_ty), ret: i64_ty)
+        "net_accept" => SysSig(op: .NetAccept, params: tys1(i64_ty), ret: i64_ty)
+        "net_send" => SysSig(op: .NetSend, params: tys2(i64_ty, string_ty), ret: i64_ty)
+        "net_recv" => SysSig(op: .NetRecv, params: tys2(i64_ty, buf), ret: i64_ty)
+        "net_close" => SysSig(op: .NetClose, params: tys1(i64_ty), ret: i64_ty)
+        "net_shutdown" => SysSig(op: .NetShutdown, params: tys2(i64_ty, u32_ty), ret: i64_ty)
+        "net_set_timeouts" => SysSig(op: .NetSetTimeouts, params: tys3(i64_ty, u64_ty, u64_ty), ret: i64_ty)
+        "net_peer" => SysSig(op: .NetPeer, params: tys2(i64_ty, buf), ret: i64_ty)
+        "proc_spawn" => {
+            strs := tys.intern(.Slice(true, string_ty))
+            SysSig(op: .ProcSpawn, params: tys4(strs, strs, string_ty, u32_ty), ret: i64_ty)
+        }
+        "proc_write_in" => SysSig(op: .ProcWriteIn, params: tys2(i64_ty, string_ty), ret: i64_ty)
+        "proc_close_in" => SysSig(op: .ProcCloseIn, params: tys1(i64_ty), ret: i64_ty)
+        "proc_read_out" => SysSig(op: .ProcReadOut, params: tys2(i64_ty, buf), ret: i64_ty)
+        "proc_wait" => SysSig(op: .ProcWait, params: tys1(i64_ty), ret: i64_ty)
+        "proc_kill" => SysSig(op: .ProcKill, params: tys1(i64_ty), ret: i64_ty)
+        "thread_spawn" => SysSig(op: .ThreadSpawn, params: tys2(raw, raw), ret: i64_ty)
+        "thread_join" => SysSig(op: .ThreadJoin, params: tys1(i64_ty), ret: i64_ty)
+        "thread_detach" => SysSig(op: .ThreadDetach, params: tys1(i64_ty), ret: i64_ty)
+        "thread_yield" => SysSig(op: .ThreadYield, params: none, ret: unit)
+        "futex_wait" => SysSig(op: .FutexWait, params: tys3(tys.ptr(false, u32_ty), u32_ty, i64_ty), ret: i64_ty)
+        "futex_wake" => SysSig(op: .FutexWake, params: tys2(tys.ptr(false, u32_ty), u32_ty), ret: i64_ty)
+        "cpu_count" => SysSig(op: .CpuCount, params: none, ret: u32_ty)
+        "sys_write" => SysSig(op: .SysWrite, params: tys2(tys.int(true, 32), string_ty), ret: unit)
+        _ => return null
+    }
+}
+
+/// The `Sys` effect's id.
+sys_effect :: fn(cx: ^FnCx) -> ?u32 needs Load {
+    prelude := cx.s.l.prelude else return null
+    d := cx.s.l.lookup(prelude, "Sys") else return null
+    .Effect(e) := cx.s.resolve_decl(d) else return null
+    return e
+}
+
+/// A system operation of the core library (`SysOp`), called as `@name(..)`.
+sys_intrinsic :: fn(cx: ^FnCx, name: string, sig: SysSig, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    if args.len is not sig.params.len {
+        cx.error(span, str.format("`@{}` takes {} argument(s)", name, sig.params.len)!)
+        return error_expr(cx.s, span)
+    }
+    vals := list(Expr)
+    for i in 0..args.len {
+        .Positional(e) := args[i].kind else return error_expr(cx.s, span)
+        if sig.op is .ThreadSpawn and i is 0 {
+            vals.push(cx.thread_entry_arg(&e)^)!
+            continue
+        }
+        t := sig.params[i]
+        v := cx.expr(&e, t)
+        vals.push(cx.coerce(v, t)^)!
+    }
+    return tir.mk(sig.ret, .Builtin(.Sys(sig.op), vals.items), span)
+}
+
+/// The entry function of a spawned thread: a plain function `^fn(arg: rawptr) needs Sys`
+/// (§19.6); a typed `^T` argument has the same representation as `rawptr`.
+thread_entry_arg :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    v := cx.expr(e, null)
+    vt := cx.infer.resolve(cx.s, v.ty)
+    ok := false
+    if .FnPtr(sig) := tys.kind(vt) {
+        ok = sig.params.len is 1 and tys.kind(sig.params[0]) in (.Rawptr, .Ptr(_)) and tys.is_unit(sig.ret) and not sig.win64
+        sys := cx.sys_effect()
+        for x in sig.effects.effects {
+            if s := sys {
+                if x.eff is not s { ok = false }
+            } else {
+                ok = false
+            }
+        }
+    }
+    if not ok and not tys.is_error(vt) {
+        cx.error(e.span, str.format("a thread runs a `^fn(arg: rawptr) needs Sys` with the C calling convention, not `{}`", cx.show(vt))!)
+    }
+    return v
+}
+
+/// The positional arguments, each checked against and coerced to the matching type of `tys`;
+/// `null` when one is missing or not positional.
+coerced_args :: fn(cx: ^FnCx, tys: []const Ty, args: []const ast.Arg) -> ?[]Expr needs Load {
+    vals := list(Expr)
+    for i in 0..tys.len {
+        if i >= args.len { return null }
+        .Positional(e) := args[i].kind else return null
+        v := cx.expr(&e, tys[i])
+        vals.push(cx.coerce(v, tys[i])^)!
+    }
+    return vals.items
+}
+
+/// The heap primitives behind the core library's allocator (`@alloc_tag`, `@alloc_check`,
+/// `@heap_alloc`, `@heap_free`).
+heap_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    usize_ty := tys.usize_ty()
+    bytes := tys.intern(.ManyPtr(false, tys.int(false, 8)))
+    params := empty_slice(Ty)
+    op: tir.Builtin = .HeapFree
+    ty := tys.unit()
+    match name {
+        "alloc_tag", "alloc_check" => {
+            raw := tys.intern(.Rawptr)
+            u32_ty := tys.int(false, 32)
+            l := list(Ty)
+            for t in [6]Ty(bytes, raw, raw, tys.string_ty(), u32_ty, u32_ty) { l.push(t)! }
+            params = l.items
+            op = if name is "alloc_tag" { .AllocTag } else { .AllocCheck }
+        }
+        "heap_alloc" => {
+            params = tys2(usize_ty, usize_ty)
+            op = .HeapAlloc
+            ty = tys.optional(bytes)
+        }
+        _ => { params = tys3(bytes, usize_ty, usize_ty) }
+    }
+    vals := cx.coerced_args(params, args) else return error_expr(cx.s, span)
+    return tir.mk(ty, .Builtin(op, vals), span)
+}
+
+/// `@offset_of(S, field)`.
+offset_of_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    t := cx.intrinsic_type_arg(name, args, 0, span) else return error_expr(cx.s, span)
+    field := ""
+    ok := false
+    if args.len > 1 {
+        if .Positional(fe) := args[1].kind {
+            if .Ident(f) := fe.kind {
+                field = f.name
+                ok = true
+            }
+        }
+    }
+    if not ok {
+        cx.error(span, "`@offset_of(S, field)` needs a struct type and a field name")
+        return error_expr(cx.s, span)
+    }
+    fields := cx.s.struct_fields(t) else {
+        cx.error(span, str.format("`{}` has no field `{}`", cx.show(t), field)!)
+        return error_expr(cx.s, span)
+    }
+    for i in 0..fields.len {
+        if fields[i].name is field {
+            return tir.mk(cx.s.tys.usize_ty(), .Int(bigint.from_u64(cx.s.field_offset(t, i))), span)
+        }
+    }
+    cx.error(span, str.format("`{}` has no field `{}`", cx.show(t), field)!)
+    return error_expr(cx.s, span)
+}
+
+/// `@write(sink, template, args…)` (§21.6.1): formatting into a second-class function.
+write_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    bad := args.len < 2 or args[0].kind is not .Positional(_) or args[1].kind is not .Positional(_)
+    for a in args {
+        if a.kind is .Named(_) { bad = true }
+    }
+    if bad {
+        cx.error(span, "`@write` takes a sink, a template string and the values for its placeholders")
+        return error_expr(cx.s, span)
+    }
+    .Positional(sink_e) := args[0].kind else return error_expr(cx.s, span)
+    .Positional(template) := args[1].kind else return error_expr(cx.s, span)
+    for a in args {
+        if a.kind is .Spread(_) { return cx.unsupported(a.span, "spread arguments") }
+    }
+    bytes := tys.string_ty()
+    sink_ty := tys.intern(.Fn(types.FnTy(params: tys1(bytes), ret: tys.unit(), effects: types.empty_effects(), variadic: false, win64: false)))
+    sink := cx.expr(&sink_e, sink_ty)
+    st := cx.infer.resolve(cx.s, sink.ty)
+    mut_sig: ?types.FnTy = null
+    match tys.kind(st) {
+        .Fn(sig), .FnPtr(sig) => {
+            if sig.params.len is 1 and sig.params[0] is bytes and tys.is_unit(sig.ret) { mut_sig = sig }
+        }
+        .Error => return error_expr(cx.s, span)
+        _ => {}
+    }
+    sig := mut_sig else {
+        cx.error(sink_e.span, str.format("a `@write` sink is a `fn(bytes: []const u8)`, not `{}`", cx.show(st))!)
+        return error_expr(cx.s, span)
+    }
+    // The sink's effects are the effects of the `@write`.
+    cx.record_effects(&sig.effects, span)
+    .Str(lit) := template.kind else return cx.unsupported(template.span, "templates that are not literals")
+    return cx.build_write(.Fn(sink), template.span, lit.bytes, args[2..], span)
+}
+
+/// The entries of an `@asm` operand or clobber list: `()`, one entry, or a tuple of
+/// entries. An operand entry is itself a pair `(constraint, operand)`, so a pair whose
+/// first element is a string literal is one entry.
+asm_entries :: fn(list_e: ^const ast.Expr, pairs: bool) -> []ast.Expr needs Alloc {
+    l := list_e
+    if .Paren(inner) := l.kind { l = inner }
+    out := list(ast.Expr)
+    if .Tuple(elems) := l.kind {
+        if pairs and elems.len > 0 and elems[0].value.kind is .Str(_) {
+            out.push(l^)!
+        } else {
+            for el in elems { out.push(el.value)! }
+        }
+    } else {
+        out.push(l^)!
+    }
+    return out.items
+}
+
+/// The value of `e` if it is a compile-time string, checked in the current scope: a
+/// string literal (a constant needs the compile-time evaluator, so it is unsupported).
+const_str_here :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ConstStr needs Load {
+    v := cx.expr(e, cx.s.tys.string_ty())
+    if .Str(b) := v.kind { return .Str(b) }
+    if cx.s.tys.is_error(v.ty) or v.kind is not .Const(_) { return .No }
+    return .Unsupported
+}
+
+/// `@asm(template, outputs, inputs, clobbers)` (§19.5).
+asm_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    exprs := list(ast.Expr)
+    for a in args {
+        if .Positional(e) := a.kind { exprs.push(e)! }
+    }
+    if exprs.items.len is not 4 {
+        cx.error(span, "`@asm` takes a template, outputs, inputs and clobbers: `@asm(template, outputs, inputs, clobbers)`")
+        return error_expr(cx.s, span)
+    }
+    if exprs.items.len is not args.len { cx.error(span, "`@asm` takes positional arguments only") }
+    sys := cx.sys_set()
+    cx.record_effects(&sys, span)
+    vals := list(Expr)
+    ok := true
+    template := &exprs.items[0]
+    match cx.const_str_here(template) {
+        .Str(s) => vals.push(tir.mk(tys.string_ty(), .Str(s), template.span)^)!
+        .No => {
+            cx.error(template.span, "the template of `@asm` must be a compile-time string")
+            ok = false
+        }
+        .Unsupported => return cx.unsupported(template.span, "constant `@asm` templates")
+    }
+    outputs: u32 = 0
+    inputs: u32 = 0
+    for k in 0..2 {
+        entries := asm_entries(&exprs.items[k + 1], true)
+        for en in entries {
+            parts: []ast.TupleElem = empty_slice(ast.TupleElem)
+            if .Tuple(ps) := en.kind { parts = ps }
+            if parts.len is not 2 {
+                cx.error(en.span, "an `@asm` operand is a pair: `(constraint, operand)`")
+                ok = false
+                continue
+            }
+            cs: []const u8 = empty_slice(u8)
+            match cx.const_str_here(&parts[0].value) {
+                .Str(s) => { cs = s }
+                .No => {
+                    cx.error(parts[0].value.span, "an `@asm` constraint must be a compile-time string")
+                    ok = false
+                    continue
+                }
+                .Unsupported => return cx.unsupported(parts[0].value.span, "constant `@asm` constraints")
+            }
+            v := cx.expr(&parts[1].value, null)
+            t := cx.infer.resolve(cx.s, v.ty)
+            fine := if k is 0 {
+                // An output is written through a pointer to its place.
+                if .Ptr(is_const, pointee) := tys.kind(t) { not is_const and cx.asm_scalar(pointee) } else { false }
+            } else {
+                cx.asm_scalar(t) or tys.is_error(t)
+            }
+            if not fine and not tys.is_error(t) {
+                what := if k is 0 { "an output needs a `^T` pointer to" } else { "an input must be" }
+                cx.error(parts[1].value.span, str.format("{} an integer, float, `bool` or pointer, not `{}`", what, cx.show(t))!)
+                ok = false
+            }
+            vals.push(tir.mk(tys.string_ty(), .Str(cs), parts[0].value.span)^)!
+            vals.push(v^)!
+            if k is 0 { outputs += 1 } else { inputs += 1 }
+        }
+    }
+    for c in asm_entries(&exprs.items[3], false) {
+        match cx.const_str_here(&c) {
+            .Str(s) => vals.push(tir.mk(tys.string_ty(), .Str(s), c.span)^)!
+            .No => {
+                cx.error(c.span, "an `@asm` clobber must be a compile-time string")
+                ok = false
+            }
+            .Unsupported => return cx.unsupported(c.span, "constant `@asm` clobbers")
+        }
+    }
+    if not ok { return error_expr(cx.s, span) }
+    return tir.mk(tys.unit(), .Builtin(.Asm(outputs, inputs), vals.items), span)
+}
+
+/// Whether `t` can be an operand of `@asm`.
+asm_scalar :: fn(cx: ^FnCx, t: Ty) -> bool {
+    tys := &cx.s.tys
+    k := tys.kind(t)
+    if .Int(_, bits) := k { return bits in (8, 16, 32, 64) }
+    if .Float(bits) := k { return bits is not 16 }
+    if k in (.Usize, .Isize, .Bool, .Rawptr, .Ptr(_), .ManyPtr(_), .FnPtr(_)) { return true }
+    if .Optional(p) := k { return cx.s.is_nullable_pointer(p) }
+    return false
+}
+
+/// The result of asking for a compile-time string.
+ConstStr :: union {
+    Str: []const u8
+    No
+    Unsupported
 }

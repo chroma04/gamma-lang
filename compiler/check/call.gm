@@ -405,11 +405,17 @@ print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -
     one.push(eref)!
     set := types.effect_set(one.items)
     cx.record_effects(&set, span)
+    return cx.build_write(.Perform(eref, 0), template.span, lit.bytes, args[1..], span)
+}
+
+/// A write of the template `bytes` (from the source at `template_span`) with the values
+/// `rest` for its placeholders to `sink`.
+build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template_span: source.Span, bytes: []const u8, rest: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     // The template's pieces around its placeholders, each `{}`.
     pieces := list([]const u8)
     specs := list(tir.FmtSpec)
     cur := list(u8)
-    t := lit.bytes
+    t := bytes
     i: usize = 0
     while i < t.len {
         c := t[i]
@@ -423,7 +429,7 @@ print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -
             specs.push(tir.default_spec())!
             i += 2
         } else if c is '{' or c is '}' {
-            return cx.unsupported(template.span, "format specs and invalid templates")
+            return cx.unsupported(template_span, "format specs and invalid templates")
         } else {
             cur.push(c)!
             i += 1
@@ -431,17 +437,16 @@ print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -
     }
     pieces.push(cur.items)!
     n := specs.items.len
-    if args.len - 1 is not n {
+    if rest.len is not n {
         placeholders := if n is 1 { "1 placeholder" } else { str.format("{} placeholders", n)! }
-        given := if args.len - 1 is 1 { "1 value is" } else { str.format("{} values are", args.len - 1)! }
+        given := if rest.len is 1 { "1 value is" } else { str.format("{} values are", rest.len)! }
         cx.error(span, str.format("the template has {}, but {} given", placeholders, given)!)
         return error_expr(cx.s, span)
     }
     values := list(Expr)
-    for a in args[1..] {
+    for a in rest {
         .Positional(x) := a.kind else continue
         values.push(cx.expr(&x, null)^)!
     }
-    sink: tir.WriteSink = .Perform(eref, 0)
     return tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: pieces.items, specs: specs.items, args: values.items)), span)
 }

@@ -159,6 +159,8 @@ pub WriteExpr :: struct {
 /// Where a write goes: an operation taking `[]const u8` (`Out.write` for `print`).
 pub WriteSink :: union {
     Perform: (effect_: types.EffectRef, op: u32)
+    /// A second-class function taking `[]const u8` (`@write`).
+    Fn: ^Expr
 }
 
 /// The target of a `break` or `continue`.
@@ -356,6 +358,39 @@ pub Builtin :: union {
     /// `p.cstr_len()`.
     CstrLen
     Assert
+    /// `@hash(x, seed)`.
+    Hash
+    /// `@unreachable()`: traps when reached.
+    Unreachable
+    /// The atomic (§19.6) and volatile (§19.5) intrinsics.
+    AtomicLoad
+    AtomicStore
+    AtomicSwap
+    AtomicCas
+    AtomicRmw: RmwOp
+    Fence
+    VolatileLoad
+    VolatileStore
+    /// A system service behind a default handler of the core library (§12.9).
+    Sys: SysOp
+    /// The heap primitives behind the core library's allocator.
+    HeapAlloc
+    HeapFree
+    AllocTag
+    AllocCheck
+    /// `@asm(template, outputs, inputs, clobbers)` (§19.5).
+    Asm: (outputs: u32, inputs: u32)
+}
+
+/// The operation of an atomic read-modify-write (§19.6).
+pub RmwOp :: union {
+    Add
+    Sub
+    And
+    Or
+    Xor
+    Max
+    Min
 }
 
 /// A placeholder of a format template (§21.6.1).
@@ -476,7 +511,10 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
             if st := x.step { f(st) }
         }
         .Break(x) => if v := x.value { f(v) }
-        .Write(w) => for i in 0..w.args.len { f(&w.args[i]) }
+        .Write(w) => {
+            if .Fn(x) := w.sink { f(x) }
+            for i in 0..w.args.len { f(&w.args[i]) }
+        }
         _ => {}
     }
 }
@@ -518,4 +556,54 @@ pat_children :: fn(p: ^Pat, f: fn(c: ^Expr)) {
         .Or(ps) => for q in ps { pat_children(q, f) }
         _ => {}
     }
+}
+
+/// A system service behind a default handler of the core library (§12.9).
+pub SysOp :: union {
+    Read
+    ClockNow
+    ClockWall
+    Sleep
+    RandFill
+    FsOpen
+    FsClose
+    FsRead
+    FsWrite
+    FsSeek
+    FsStat
+    FsRemove
+    FsRename
+    FsMakeDir
+    FsRemoveDir
+    FsOpenDir
+    FsNextEntry
+    FsCloseDir
+    FsLstat
+    FsTruncate
+    FsSync
+    FsCwd
+    NetConnect
+    NetListen
+    NetLocalPort
+    NetAccept
+    NetSend
+    NetRecv
+    NetClose
+    NetShutdown
+    NetSetTimeouts
+    NetPeer
+    ProcSpawn
+    ProcWriteIn
+    ProcCloseIn
+    ProcReadOut
+    ProcWait
+    ProcKill
+    ThreadSpawn
+    ThreadJoin
+    ThreadDetach
+    ThreadYield
+    FutexWait
+    FutexWake
+    CpuCount
+    SysWrite
 }
