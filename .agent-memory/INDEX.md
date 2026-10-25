@@ -16,7 +16,13 @@
   pub(package), needless-pub/dangling-address/present-only-binding lints, payload-binding
   note) + gammac defer, typed consts, intrinsics, fn literals/nested fns/fn pointers,
   `with` + handler literals/decls + iterators + local when + tests: TIR_FLOOR 320 (PR #79,
-  ask user before merging). Next: `ctl`/fibers (`with … on`), long tail (roadmap/self-hosting.md).
+  ask user before merging; merged as #79).
+- s40 (branch claude/admiring-wright-4lo3vq): gammac long tail, TIR 320 → 486 SAME, decls
+  693 (see roadmap/self-hosting.md s40 entry). Two sonnet worktree subagents (intrinsics,
+  format templates) worked well with precise briefs + the shared survey script
+  ($SP/tools/survey.sh REPO WORKDIR; STAGE=decls for decls). NEXT BIG ITEM: a compile-time
+  evaluator in gammac (~80 roots blocked: typed consts calling fns, static_assert, array
+  lengths, defaults, immutable locals) — plan in roadmap/self-hosting.md.
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
   in editors/tree-sitter-gamma (node 22 in /opt/node22).

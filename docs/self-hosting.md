@@ -62,36 +62,33 @@ leaves to implementations: message texts, spans and recovery after errors.
      instances), effects, function signatures, constraints, untyped constants with exact
      arithmetic, and the typed constants made of literals and constructors. `gammac decls`
      matches `gamma decls` on every program it does not report as using something it
-     cannot check yet (see below); that is most of the repository. Not yet: foreign blocks,
-     `#global`s, `#soa` and vector types, and constants that call functions, which need
-     the second part.
+     cannot check yet (see below); that is most of the repository, `foreign` blocks and
+     `#global`s included. Not yet: `#soa` and vector types, and constants that call
+     functions, which need compile-time evaluation.
    - **Bodies.** Expressions, statements, patterns, inference, effects, the instantiation
      of generic functions and compile-time evaluation, producing the typed intermediate
      representation of `src/tir.rs` (`compiler/tir/`). `gamma tir` prints that
      representation in a stable text form: every function written outside the core
      library, in source order, one line per expression with its type. `gammac tir` matches
-     it on the programs it supports, which so far are those made of functions with
-     locals, assignments, arithmetic and comparisons, `if` and `while` with binding
-     conditions, `match` and patterns with exhaustiveness, `is` and `in` with patterns,
-     `for` over ranges, arrays, slices and tuples, `return`, `break` and `continue`, calls,
-     method calls (builtin methods, functions of the receiver's module and effect
-     operations), `E.op(…)`, struct, variant and array construction, indexing, slicing,
-     `.len` and `.ptr`, optionals and results (`else`, `try`, `!e`, `x?`, `x!`, error
-     lifting), `print` with plain `{}` placeholders, `assert` and `trap`, literal inference
-     with its fallbacks, and the checks of effects, of `main`, of `#inline` and of
-     escaping pointers. Generic functions are checked once with their type parameters
-     opaque, as the reference does; calls of them infer the type arguments (from the
-     arguments, a method receiver, literal fallbacks and `()` defaults), check
-     constraints, and name the instance, as do generic functions used as function
-     pointers. Compile-time value parameters, `@caller_location()` defaults, generic
-     types written in bodies (constructions and struct patterns), methods of generic
-     types such as `List`, and the slice methods of the core library are supported. The
-     bodies of instances are not produced, since the dump shows templates, but they are
-     followed as producing them would be: what they call is instantiated in turn, with
-     the nesting limit of §16.7, and literals and `.bits` that depend on the type
-     arguments are checked for each instance. Next: `defer`, `with` and handlers,
-     intrinsics, function literals and calls of function pointers, generic effects,
-     rest and spread arguments.
+     it on the programs it supports, which is most of the language: statements and
+     expressions, patterns with exhaustiveness, optionals and results, `defer`, function
+     literals, nested functions and function pointers, effects, `with` and handler
+     literals (also bound with `::`), handler declarations, `ctl` operations with
+     `resume`, `cancel` and `with … on`, iterators and `for` over them, tests, rest
+     parameters and spread arguments, formatting templates with specs, foreign functions
+     and `#global`s, most intrinsics, and the checks of effects, `main`, `#inline`,
+     escaping pointers and continuations. Generic functions are checked once with their
+     type parameters opaque, as the reference does; calls of them infer the type
+     arguments, check constraints and name the instance. Each instance is then produced
+     as the reference produces it: its body is rewritten for the type arguments, so that
+     what it calls is instantiated in turn (with the nesting limit of §16.7), what
+     depends on the type arguments (literals, layout queries, `.bits`, format specs,
+     templates that are compile-time parameters) is checked for it, and the function
+     literals and handler clauses written in a generic function are copied for each
+     instance. Next: compile-time evaluation (constants that call functions, `when`
+     conditions and static assertions in general, array lengths and defaults computed
+     at compile time), then vector and `#soa` types, generic effects, effect-set
+     parameters and arguments that are iterators.
 5. **Back end** — C generation, linking the existing C runtime (`runtime/`). Checked by
    running the `run` conformance tests through `gammac` and comparing with the reference.
 6. **Bootstrap** — `gammac` built by `gamma` (stage 1) compiles `gammac` (stage 2), which
