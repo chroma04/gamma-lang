@@ -47,3 +47,13 @@ dangling stores are now compile errors (decisions/045).
   Allocator; exemptions: read whole, assigned whole, captured, original place assigned).
 - **`usize(u64)` rejected** (s43, ~10 sites in consts.gm): by design (§6.6, 32-bit
   targets); `.trunc(usize)` everywhere for indices computed in u64. Watch.
+- **No way to set a child's argv[0]** (s45, gammac run): `Proc.spawn` uses argv[0] as both
+  the program and the name the child sees, so `gammac run` cannot show the source path as
+  the program name as `gamma run` does. Idea: `SpawnOptions.program: ?string` (the file
+  to run; argv[0] is then only the name), like execv(path, argv). Seen once.
+- **`x is .V(b)` does not bind** (s45, W-fmt subagent, ~6x): needs `if .V(b) := x`, so
+  `if prev is .Tok(p) and n > 0` becomes nested ifs. Idea: binding patterns in `and`
+  chains of conditions (`if .Tok(p) := prev and n > 0`?) — check spec §8.2 first; maybe
+  already allowed with `:=` in chains. Watch.
+- **`for x in (a, b)` over a homogeneous tuple** not accepted (s45 W-fmt, once): use an array.
+- **`assert` takes no message/format args; no `{:?}` escaped-debug spec** (s45 W-fmt, tests).

@@ -1,6 +1,9 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-26) — PRs #1–#85 merged, v0.1.0 tagged
+## State (2026-10-26) — PRs #1–#86 merged, v0.1.0 tagged
+- s45 (branch claude/project-thread-dhnfw3, user: "expand gammac to cover the rest of gamma"):
+  roadmap/gammac-cli.md = inventory + status. Driver (check/run/help/version/human diags)
+  done; fmt, test/bench, lint+fix, doc ported by 4 sonnet worktree subagents.
 - s43 (branch claude/lucid-clarke-48k3cf): gammac COMPILES ITSELF. C back end
   compiler/cgen/ (decisions/048), `gammac build`, bootstrap fixed point tested in
   tests/selfhost.rs; all applicable conformance run tests pass via gammac.
@@ -60,7 +63,7 @@
 
 ## Map
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
-                  self-hosting.md (gammac stages),
+                  self-hosting.md (gammac stages), gammac-cli.md (porting the gamma commands),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–048, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
