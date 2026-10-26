@@ -1,0 +1,517 @@
+//! The C compiler a native build invokes, and the target it compiles for (a port of
+//! `src/toolchain.rs`).
+//!
+//! The compiler comes from the environment, as for `make`: `CC` is the compiler command,
+//! which may carry arguments (`zig cc -target aarch64-linux-gnu`, `clang
+//! --target=riscv64-linux-gnu`) and defaults to `cc`; `CFLAGS` are extra compiler options,
+//! given after the back end's own; `LDFLAGS` are extra linker options, given after the
+//! source file. `--target=<triple>` picks a cross compiler for a target triple, and
+//! `GAMMA_RUNNER` names the emulator that runs the executables such a compiler builds.
+//!
+//! When any of them is set, the target is asked of the compiler itself (`target`), so a
+//! cross compiler yields layouts for the machine it compiles for rather than the one gammac
+//! runs on.
+
+arena :: import "std/arena"
+hash_map :: import "std/collections/hash_map"
+load :: import "../load"
+pkg :: import "../pkg"
+process :: import "std/process"
+str :: import "std/str"
+
+/// A C compiler command and the extra options it is given.
+pub Toolchain :: pkg.Toolchain
+
+/// The compiler used when `CC` is unset.
+DEFAULT_CC :: "cc"
+
+/// The value of the environment variable `name`, if it is set to something other than white
+/// space.
+env_var :: fn(name: string) -> ?string needs Alloc + Env {
+    v := Env.var(name) else return null
+    return if str.trim(v).len is 0 { null } else { v }
+}
+
+/// Whether `prog` is a file in a `PATH` directory.
+pub program_on_path :: fn(prog: string) -> bool needs Alloc + Env + Fs {
+    path := Env.var("PATH") else return false
+    for dir in str.split(path, ":") {
+        if load.is_file(load.join(dir, prog)) { return true }
+    }
+    return false
+}
+
+/// The toolchain `CC`, `CFLAGS` and `LDFLAGS` describe.
+pub from_env :: fn() -> string!Toolchain needs Alloc + Env {
+    return from_vars(env_var("CC"), env_var("CFLAGS"), env_var("LDFLAGS"))
+}
+
+/// The toolchain given the values of `CC`, `CFLAGS` and `LDFLAGS` (`null` when unset).
+pub from_vars :: fn(cc, cflags, ldflags: ?string) -> string!Toolchain needs Alloc {
+    t := Toolchain(cc: words_of(DEFAULT_CC, null), cflags: empty_slice(string), ldflags: empty_slice(string))
+    if c := cc {
+        words := pkg.split_words(c) else e => { return !str.format("cannot read CC: {}", e)! }
+        if words.items.len > 0 { t.cc = words.items }
+    }
+    if f := cflags {
+        words := pkg.split_words(f) else e => { return !str.format("cannot read CFLAGS: {}", e)! }
+        t.cflags = words.items
+    }
+    if f := ldflags {
+        words := pkg.split_words(f) else e => { return !str.format("cannot read LDFLAGS: {}", e)! }
+        t.ldflags = words.items
+    }
+    return t
+}
+
+/// The toolchain for building for the target triple `triple` (`--target=s390x-linux-gnu`),
+/// from the environment.
+pub for_target :: fn(triple: string) -> string!Toolchain needs Alloc + Env + Fs {
+    // For WASI without `CC`, the clang of a wasi-sdk named by `WASI_SDK_PATH`, with its
+    // sysroot.
+    cc := env_var("CC")
+    if cc is null and triple.starts_with("wasm32-wasi") {
+        if sdk := env_var("WASI_SDK_PATH") {
+            end := sdk.len
+            while end > 0 and (sdk[end - 1] is '/' or sdk[end - 1] is '\\') { end -= 1 }
+            root := sdk[0..end]
+            cc = str.format("{} {}", quote_word(str.format("{}/bin/clang", root)!), quote_word(str.format("--sysroot={}/share/wasi-sysroot", root)!))!
+        }
+    }
+    return for_triple(triple, cc, env_var("CFLAGS"), env_var("LDFLAGS"), program_on_path(str.format("{}-gcc", triple)!), program_on_path("clang"))
+}
+
+/// The toolchain for `triple` given the values of `CC`, `CFLAGS` and `LDFLAGS` and whether
+/// `<triple>-gcc` and `clang` are on `PATH`:
+///
+/// - With `CC` unset, the compiler is `<triple>-gcc` if that is on `PATH`, and otherwise
+///   `clang --target=<triple>` if `clang` is.
+/// - With `CC` set, it is used as written, except that `--target=<triple>` is added when
+///   it is clang (`-target <triple>` for `zig cc`) and names no target itself. A gcc must
+///   already be the cross compiler for the triple.
+///
+/// Whether the resulting compiler really produces code for `triple` is checked by
+/// `target_for`.
+pub for_triple :: fn(triple: string, cc, cflags, ldflags: ?string, have_gcc, have_clang: bool) -> string!Toolchain needs Alloc {
+    if triple.len is 0 or has_white_space(triple) {
+        return !str.format("`{}` is not a target triple (such as `aarch64-linux-gnu`)", triple)!
+    }
+    if c := cc {
+        t := try from_vars(c, cflags, ldflags)
+        prog := load.file_name(t.cc[0]) else ""
+        names_target := false
+        for w in t.cc {
+            if w is "-target" or w.starts_with("--target") { names_target = true }
+        }
+        if not names_target {
+            words := list(string)
+            words.extend(t.cc)!
+            if str.contains(prog, "clang") {
+                words.push(str.format("--target={}", triple)!)!
+            } else if prog is "zig" and t.cc.len > 1 and (t.cc[1] is "cc" or t.cc[1] is "c++") {
+                words.push("-target")!
+                words.push(triple)!
+            }
+            t.cc = words.items
+        }
+        return t
+    }
+    t := try from_vars(null, cflags, ldflags)
+    gcc := str.format("{}-gcc", triple)!
+    if have_gcc {
+        t.cc = words_of(gcc, null)
+    } else if have_clang {
+        t.cc = words_of("clang", str.format("--target={}", triple)!)
+    } else {
+        return !str.format("no C compiler for the target `{}`: `{}-gcc` and `clang` are not on PATH; install a cross compiler or set CC", triple, triple)!
+    }
+    return t
+}
+
+/// One or two words as a list.
+words_of :: fn(a: string, b: ?string) -> []const string needs Alloc {
+    l := list(string)
+    l.push(a)!
+    if w := b { l.push(w)! }
+    return l.items
+}
+
+has_white_space :: fn(s: string) -> bool {
+    for c in s {
+        if c in (' ', '\t', '\n', '\r', 0x0b, 0x0c) { return true }
+    }
+    return false
+}
+
+/// The toolchain of a Safe build (§18.7), which compiles with Fil-C: as `from_env`, except
+/// that without `CC` the compiler is Fil-C's `filcc`, found on `PATH` or in `/opt/fil/bin`.
+/// Whether the compiler really is Fil-C is up to the caller to check, with `target`.
+pub for_safe_build :: fn() -> string!Toolchain needs Alloc + Env + Fs {
+    t := try from_env()
+    if env_var("CC") is not null { return t }
+    found: ?string = null
+    if path := Env.var("PATH") {
+        for dir in str.split(path, ":") {
+            f := load.join(dir, "filcc")
+            if found is null and load.is_file(f) { found = f }
+        }
+    }
+    if found is null and load.is_file("/opt/fil/bin/filcc") { found = "/opt/fil/bin/filcc" }
+    filcc := found else return !"Safe builds compile with the Fil-C compiler (https://fil-c.org), but `filcc` is neither on PATH nor in /opt/fil/bin; install it or set CC"
+    t.cc = words_of(filcc, null)
+    return t
+}
+
+/// Whether this is the plain system compiler (`cc` with no extra options), which compiles
+/// for the host.
+pub is_default :: fn(t: ^const Toolchain) -> bool => t.cc.len is 1 and t.cc[0] is DEFAULT_CC and t.cflags.len is 0 and t.ldflags.len is 0
+
+/// `t` with the flags of gamma.toml placed before those of the environment.
+pub with_manifest_flags :: fn(t: Toolchain, cflags, ldflags: []const string) -> Toolchain needs Alloc {
+    r := t
+    if cflags.len > 0 {
+        words := list(string)
+        words.extend(cflags)!
+        words.extend(t.cflags)!
+        r.cflags = words.items
+    }
+    if ldflags.len > 0 {
+        words := list(string)
+        words.extend(ldflags)!
+        words.extend(t.ldflags)!
+        r.ldflags = words.items
+    }
+    return r
+}
+
+/// The target the compiler produces code for. The host when this is the default toolchain;
+/// otherwise the compiler is asked for its predefined macros.
+pub target :: fn(t: ^const Toolchain) -> string!load.Target needs Alloc + Proc {
+    if is_default(t) { return load.host_target() }
+    m := try macros(t)
+    return target_from_macros(m) else e => { return !str.format("the C compiler `{}` {}", pkg.display(t), e)! }
+}
+
+/// As `target`, and checks that the compiler produces code for the target triple `triple`
+/// (its architecture, operating system and byte order).
+pub target_for :: fn(t: ^const Toolchain, triple: string) -> string!load.Target needs Alloc + Proc {
+    m := try macros(t)
+    tg := target_from_macros(m) else e => { return !str.format("the C compiler `{}` {}", pkg.display(t), e)! }
+    check_triple(triple, m) else e => { return !str.format("the C compiler `{}` {}", pkg.display(t), e)! }
+    return tg
+}
+
+/// The compiler's predefined macros (`cc -dM -E`).
+macros :: fn(t: ^const Toolchain) -> string!string needs Alloc + Proc {
+    tail := [5]string("-dM", "-E", "-x", "c", "-")
+    argv := pkg.command(t, empty_slice(string), tail[..])
+    out := process.output(argv.items, process.SpawnOptions(stdin: .Null)) else e => {
+        return !str.format("cannot run the C compiler `{}`: {}", pkg.display(t), run_error(e))!
+    }
+    if not process.success(out.status) {
+        return !str.format("cannot ask the C compiler `{}` for its target:\n{}", pkg.display(t), string(out.err.items))!
+    }
+    return string(out.out.items)
+}
+
+/// An error of starting a program as the operating system words it.
+pub run_error :: fn(e: process.RunError) -> string needs Alloc => match e {
+    .Io(io) => pkg.io_message(io)
+    .Alloc(_) => "out of memory"
+}
+
+/// The command prefix from `GAMMA_RUNNER` that runs executables built for another machine
+/// (`qemu-s390x -L /usr/s390x-linux-gnu`), empty when it is unset.
+pub runner_from_env :: fn() -> string!List(string) needs Alloc + Env {
+    v := Env.var("GAMMA_RUNNER") else return list(string)
+    return pkg.split_words(v) else e => { return !str.format("cannot read GAMMA_RUNNER: {}", e)! }
+}
+
+/// The command prefix that runs the executable `exe`: `GAMMA_RUNNER` if it is set;
+/// otherwise, for a WebAssembly module (`.wasm`, built for WASI), Wasmtime with the current
+/// directory and the environment passed on (`WASI_RUNNER`); otherwise none.
+pub runner_for :: fn(exe: string) -> string!List(string) needs Alloc + Env {
+    runner := try runner_from_env()
+    if runner.items.len is 0 and exe.ends_with(".wasm") {
+        words := list(string)
+        words.extend(WASI_RUNNER[..])!
+        return words
+    }
+    return runner
+}
+
+/// How a WASI module is run when `GAMMA_RUNNER` does not say: by Wasmtime, which gives it the
+/// current directory (and everything below it) and the environment variables. Its stack for
+/// WebAssembly frames is made large enough that the program's own stack (whose overflow
+/// the program reports) runs out first.
+WASI_RUNNER :: [7]string("wasmtime", "run", "--dir=.", "-S", "inherit-env", "-W", "max-wasm-stack=268435456")
+
+/// `stderr` of a WebAssembly module run by Wasmtime without the report Wasmtime adds when
+/// the module traps, which follows the program's own report of the trap (the module traps
+/// to end itself, as WASI offers no exit status for that).
+pub strip_wasm_trap_report :: fn(stderr: string) -> string {
+    START :: "Error: failed to run main module"
+    i := str.find(stderr, START) else return stderr
+    if i is 0 or stderr[i - 1] is '\n' { return stderr[0..i] }
+    return stderr
+}
+
+/// Checks that the compiler whose predefined macros are `macros` produces code for the
+/// target triple `triple`. The error completes the sentence "the C compiler … ".
+pub check_triple :: fn(triple: string, macros: string) -> string!() needs Alloc {
+    parts := list(string)
+    for p in str.split(triple, "-") { parts.push(p)! }
+    arch := parts.items[0]
+    rest := parts.items[1..]
+    // The architecture's own macros, and whether it is big-endian.
+    m1: string = ""
+    m2: string = ""
+    big := false
+    match arch {
+        "x86_64", "amd64", "x86_64h" => { m1 = "__x86_64__" }
+        "aarch64", "arm64", "arm64e" => { m1 = "__aarch64__" }
+        "aarch64_be", "arm64_be" => {
+            m1 = "__aarch64__"
+            big = true
+        }
+        "riscv64" => { m1 = "__riscv" }
+        "s390x" => {
+            m1 = "__s390x__"
+            big = true
+        }
+        "powerpc64", "ppc64" => {
+            m1 = "__powerpc64__"
+            m2 = "__PPC64__"
+            big = true
+        }
+        "powerpc64le", "ppc64le" => {
+            m1 = "__powerpc64__"
+            m2 = "__PPC64__"
+        }
+        "mips64" => {
+            m1 = "__mips64"
+            m2 = "__mips64__"
+            big = true
+        }
+        "mips64el" => {
+            m1 = "__mips64"
+            m2 = "__mips64__"
+        }
+        "sparc64" => {
+            m1 = "__sparc__"
+            big = true
+        }
+        "wasm32" => { m1 = "__wasm32__" }
+        "loongarch64" => { m1 = "__loongarch64" }
+        _ => return !str.format("cannot be checked against `{}`: unknown architecture `{}`", triple, arch)!
+    }
+    if not defined(macros, m1) and (m2.len is 0 or not defined(macros, m2)) {
+        return !str.format("does not target the architecture of `{}` (it does not define {})", triple, m1)!
+    }
+    tg := try target_from_macros(macros)
+    if big is tg.little_endian {
+        return !str.format("targets a {}-endian machine, but `{}` is {}-endian", if tg.little_endian { "little" } else { "big" }, triple, if big { "big" } else { "little" })!
+    }
+    os_name: string = ""
+    os_macro: string = ""
+    if any_starts(rest, "linux") {
+        os_name, os_macro = "linux", "__linux__"
+    } else if any_starts(rest, "darwin") or any_is(rest, "apple") {
+        os_name, os_macro = "darwin", "__APPLE__"
+    } else if any_starts(rest, "freebsd") {
+        os_name, os_macro = "freebsd", "__FreeBSD__"
+    } else if any_starts(rest, "windows") or any_is(rest, "mingw32") {
+        os_name, os_macro = "windows", "_WIN32"
+    } else if any_starts(rest, "wasi") {
+        os_name, os_macro = "WASI", "__wasi__"
+    }
+    if os_macro.len > 0 and not defined(macros, os_macro) {
+        return !str.format("does not target {}, which `{}` names", os_name, triple)!
+    }
+    return ()
+}
+
+any_starts :: fn(words: []const string, prefix: string) -> bool {
+    for w in words {
+        if w.starts_with(prefix) { return true }
+    }
+    return false
+}
+
+any_is :: fn(words: []const string, word: string) -> bool {
+    for w in words {
+        if w is word { return true }
+    }
+    return false
+}
+
+/// Whether the macro `name` is defined in `macros`.
+defined :: fn(macros: string, name: string) -> bool {
+    for line in str.lines(macros) {
+        rest := str.strip_prefix(line, "#define ") else continue
+        first := str.split_once(rest, " ")
+        word := if f := first { f.before } else { rest }
+        if word is name { return true }
+    }
+    return false
+}
+
+/// The target described by a C compiler's predefined macros (the output of `cc -dM -E`).
+/// The error completes the sentence "the C compiler … ".
+pub target_from_macros :: fn(macros: string) -> string!load.Target needs Alloc {
+    defs := hash_map.hash_map(string, string)
+    for line in str.lines(macros) {
+        rest := str.strip_prefix(line, "#define ") else continue
+        name := rest
+        value := ""
+        if kv := str.split_once(rest, " ") {
+            name = kv.before
+            value = str.trim(kv.after)
+        }
+        if name.len > 0 { defs.put(name, value)! }
+    }
+    num :: fn(m: string) -> ?u64 {
+        v := defs.get(m) else return null
+        if str.contains(v, "_") { return null }
+        return str.parse_int(u64, v) else null
+    }
+    ptr_bytes := num("__SIZEOF_POINTER__") else return !"does not define __SIZEOF_POINTER__"
+    if ptr_bytes is not 4 and ptr_bytes is not 8 {
+        return !str.format("targets {}-byte pointers; only 4 and 8 are supported", ptr_bytes)!
+    }
+    if defs.get("__SIZEOF_INT128__") is null {
+        return !"targets a machine without `__int128`, which the C back end needs (a 64-bit target)"
+    }
+    // `__BYTE_ORDER__` is defined as one of the `__ORDER_…__` macros or as its value.
+    value :: fn(m: string) -> ?string {
+        v := defs.get(m) else return null
+        return defs.get(v) else v
+    }
+    little_endian := true
+    if order := value("__BYTE_ORDER__") {
+        if big := value("__ORDER_BIG_ENDIAN__") { little_endian = order is not big }
+    }
+    has :: fn(m: string) -> bool => defs.get(m) is not null
+    arch := "Other"
+    if has("__x86_64__") {
+        arch = "X86_64"
+    } else if has("__aarch64__") {
+        arch = "Aarch64"
+    } else if has("__riscv") and num("__riscv_xlen") is 64 {
+        arch = "Riscv64"
+    } else if has("__s390x__") {
+        arch = "S390x"
+    } else if has("__wasm32__") {
+        arch = "Wasm32"
+    }
+    os_name := "Freestanding"
+    if has("__linux__") {
+        os_name = "Linux"
+    } else if has("__APPLE__") {
+        os_name = "MacOS"
+    } else if has("_WIN32") {
+        os_name = "Windows"
+    } else if has("__FreeBSD__") {
+        os_name = "FreeBSD"
+    } else if has("__wasi__") {
+        os_name = "Wasi"
+    }
+    return load.Target(
+        ptr_bytes: ptr_bytes,
+        little_endian: little_endian,
+        // `__int128` is 16-byte aligned everywhere it exists except on s390x.
+        int128_align: if has("__s390x__") { 8 } else { 16 },
+        os: os_name,
+        arch: arch,
+        filc: has("__FILC__"),
+        f16: has("__FLT16_MANT_DIG__"),
+    )
+}
+
+/// `w` quoted so that `split_words` gives it back as one word.
+quote_word :: fn(w: string) -> string needs Alloc {
+    out := list(u8)
+    out.push('"')!
+    for c in w {
+        if c is '\\' or c is '"' { out.push('\\')! }
+        out.push(c)!
+    }
+    out.push('"')!
+    return string(out.items)
+}
+
+/// The error of a toolchain choice, or "" when it succeeded.
+toolchain_error :: fn(r: string!Toolchain) -> string {
+    _ = r else e => {
+        return e
+    }
+    return ""
+}
+
+/// The error of a triple check, or "" when it succeeded.
+triple_error :: fn(r: string!()) -> string {
+    r else e => {
+        return e
+    }
+    return ""
+}
+
+test "a target triple picks the cross compiler" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        gcc := for_triple("s390x-linux-gnu", null, null, null, true, true) else e => {
+            expect_eq(e, "")
+            return
+        }
+        expect_eq(gcc.cc.len, 1)
+        expect_eq(gcc.cc[0], "s390x-linux-gnu-gcc")
+        clang := for_triple("s390x-linux-gnu", null, null, null, false, true) else e => {
+            expect_eq(e, "")
+            return
+        }
+        expect_eq(clang.cc.len, 2)
+        expect_eq(clang.cc[0], "clang")
+        expect_eq(clang.cc[1], "--target=s390x-linux-gnu")
+        expect(toolchain_error(for_triple("s390x-linux-gnu", null, null, null, false, false)).len > 0)
+        expect(toolchain_error(for_triple("a b", null, null, null, true, true)).len > 0)
+    }
+}
+
+test "CC names the compiler for the target" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        c := for_triple("aarch64-linux-gnu", "clang", null, null, false, false) else e => {
+            expect_eq(e, "")
+            return
+        }
+        expect_eq(c.cc[1], "--target=aarch64-linux-gnu")
+        named := for_triple("aarch64-linux-gnu", "clang --target=x86_64-linux-gnu", null, null, false, false) else e => {
+            expect_eq(e, "")
+            return
+        }
+        expect_eq(named.cc.len, 2)
+        gcc := for_triple("aarch64-linux-gnu", "gcc", null, null, false, false) else e => {
+            expect_eq(e, "")
+            return
+        }
+        expect_eq(gcc.cc.len, 1)
+    }
+}
+
+test "the predefined macros give the target" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        macros := "#define __x86_64__ 1\n#define __linux__ 1\n#define __SIZEOF_POINTER__ 8\n#define __SIZEOF_INT128__ 16\n#define __ORDER_LITTLE_ENDIAN__ 1234\n#define __BYTE_ORDER__ 1234\n"
+        t := target_from_macros(macros) else e => {
+            expect_eq(e, "")
+            return
+        }
+        expect_eq(t.ptr_bytes, 8)
+        expect(t.little_endian)
+        expect_eq(triple_error(check_triple("x86_64-linux-gnu", macros)), "")
+        expect(triple_error(check_triple("aarch64-linux-gnu", macros)).len > 0)
+    }
+}

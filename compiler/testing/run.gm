@@ -55,16 +55,23 @@ run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCa
         return null
     }
     defer _ = fs.remove_all(dir)
-    exe := load.join(dir, "tests")
+    exe := load.join(dir, driver.native_exe_name(&opts, "tests"))
     if not driver.compile_entries(s, entries.items, true, exe, opts) { return null }
+    // Executables for another machine run behind `GAMMA_RUNNER`; WebAssembly modules behind
+    // a WebAssembly runtime.
+    runner := driver.runner_for(exe) else e => {
+        eprint("gammac: {}\n", e)
+        Env.exit(2)
+    }
     // Benchmarks time themselves, so they take turns.
     jobs := if bench { 1 } else { opts.jobs }
-    run_all(exe, cases, chosen, jobs, opts.timeout, report)
+    run_all(runner.items, exe, cases, chosen, jobs, opts.timeout, report)
     return ()
 }
 
 /// What the threads that run tests share: the next test to take and the results so far.
 Pool :: struct {
+    runner: []const string
     exe: string
     timeout: ?f64
     /// The number of tests, and the next one to run.
@@ -78,10 +85,10 @@ Pool :: struct {
 /// Runs the tests `chosen` of `cases` with the executable `exe`, `jobs` at a time, and
 /// hands each result to `report` in the order of the tests, as soon as it and all before it
 /// are done.
-run_all :: fn(exe: string, cases: []const sema.TestCase, chosen: []const usize, jobs: usize, timeout: ?f64, report: ^Report) needs Alloc + Clock + Out + Proc + Sys {
+run_all :: fn(runner: []const string, exe: string, cases: []const sema.TestCase, chosen: []const usize, jobs: usize, timeout: ?f64, report: ^Report) needs Alloc + Clock + Out + Proc + Sys {
     n := chosen.len
     threads := list(thread.Thread)
-    pool := Pool(exe: exe, timeout: timeout, n: n, next: 0, results: list(?Finished), lock: thread.mutex(), ready: thread.condvar())
+    pool := Pool(runner: runner, exe: exe, timeout: timeout, n: n, next: 0, results: list(?Finished), lock: thread.mutex(), ready: thread.condvar())
     if jobs > 1 and n > 1 {
         for _ in 0..n { pool.results.push(null)! }
         for _ in 0..(if jobs < n { jobs } else { n }) {
@@ -90,7 +97,7 @@ run_all :: fn(exe: string, cases: []const sema.TestCase, chosen: []const usize, 
         }
     }
     if threads.items.len is 0 {
-        for j in 0..n { report.record(cases[chosen[j]], run_exe(exe, j, timeout)) }
+        for j in 0..n { report.record(cases[chosen[j]], run_exe(runner, exe, j, timeout)) }
         return
     }
     for j in 0..n {
@@ -112,7 +119,7 @@ worker :: fn(p: ^Pool) needs Sys {
             p.next += 1
             thread.unlock(&p.lock)
             if j >= p.n { break }
-            f := run_exe(p.exe, j, p.timeout)
+            f := run_exe(p.runner, p.exe, j, p.timeout)
             thread.lock(&p.lock)
             p.results.items[j] = f
             thread.broadcast(&p.ready)

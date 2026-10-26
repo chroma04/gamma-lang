@@ -71,7 +71,7 @@ pub prog :: fn(s: ^Sema) -> Prog needs sema.Load {
         }
         a = Ambient(out: ids[0], err: ids[1], env: ids[2], alloc: ids[3], sys: ids[4], input: ids[5], clock: ids[6], rand: ids[7], fs: ids[8], net: ids[9], proc: ids[10])
     }
-    return Prog(s: s, funcs: list(?^Func), ambient: a, target: host_target())
+    return Prog(s: s, funcs: list(?^Func), ambient: a, target: s.l.target)
 }
 
 /// Function `f`.

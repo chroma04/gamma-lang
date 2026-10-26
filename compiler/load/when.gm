@@ -61,7 +61,7 @@ eval :: fn(l: ^Loader, module: usize, e: ^const ast.Expr, depth: u32) -> ?Const 
             if args.len is not 1 { return null }
             .Positional(arg) := args[0].kind else return null
             .Ident(t) := arg.kind else return null
-            bytes := type_size(t.name) else return null
+            bytes := l.type_size(t.name) else return null
             return Const.Int(bytes)
         }
         .Binary(op, lhs, rhs) => {
@@ -97,20 +97,19 @@ compare :: fn(op: ast.BinOp, a, b: Const) -> ?Const {
     }
 }
 
-/// The value of `target.<name>` for the target gammac was built for, which is the target
-/// it compiles for, in the build mode of the compilation.
+/// The value of `target.<name>` for the target of the compilation, in its build mode.
 target_field :: fn(l: ^const Loader, name: string) -> ?Const => match name {
-    "os" => Const.Variant(@variant_name(target.os))
-    "arch" => Const.Variant(@variant_name(target.arch))
-    "endian" => Const.Variant(@variant_name(target.endian))
-    "ptr_bits" => Const.Int(i64(target.ptr_bits))
+    "os" => Const.Variant(l.target.os)
+    "arch" => Const.Variant(l.target.arch)
+    "endian" => Const.Variant(if l.target.little_endian { "Little" } else { "Big" })
+    "ptr_bits" => Const.Int(i64(l.target.ptr_bits()))
     "mode" => Const.Variant(l.mode)
     _ => null
 }
 
 /// The size in bytes of an integer or float type named `name`.
-type_size :: fn(name: string) -> ?i64 {
-    if name in ("usize", "isize") { return i64(target.ptr_bits / 8) }
+type_size :: fn(l: ^const Loader, name: string) -> ?i64 {
+    if name in ("usize", "isize") { return l.target.ptr_bytes.trunc(i64) }
     if name in ("f16", "f32", "f64") { return if name is "f16" { 2 } else if name is "f32" { 4 } else { 8 } }
     if name is "bool" { return 1 }
     if not is_reserved_type_name(name) or name.len < 2 or name[0] not in ('u', 'i') { return null }

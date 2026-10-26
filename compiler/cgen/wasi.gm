@@ -1,0 +1,209 @@
+//! Building for WASI (`wasm32-wasi`): the link options and the Asyncify step (mirrors
+//! `src/cgen/wasi.rs`).
+//!
+//! WebAssembly gives a program no way to switch stacks, so the runtime implements fiber
+//! switches with Binaryen's Asyncify transformation (see "context switching" in
+//! `runtime/gm_rt.c`). The runtime reaches it through imports from the module `asyncify`;
+//! when the linked module still has such an import, the program can switch fibers, and
+//! `asyncify` runs `wasm-opt --asyncify` over it, which replaces those imports by the
+//! functions that do the work. A program without fibers needs no transformation, and is
+//! left as the C compiler made it.
+//!
+//! The C compiler is not allowed to optimize the linked module itself (Clang runs `wasm-opt`
+//! on it when it finds one and the link is optimized): Binaryen's inlining before the
+//! transformation could move code into the runtime functions that start and stop unwinding,
+//! which the transformation leaves alone. The objects are optimized as usual, and the module
+//! is optimized after the transformation.
+
+fs :: import "std/fs"
+process :: import "std/process"
+arena :: import "std/arena"
+str :: import "std/str"
+
+/// The size of the module's own stack: as large as the stack the runtime gives the entry
+/// function's thread on other systems, so deep recursion behaves alike everywhere.
+WASI_STACK_SIZE :: 64 << 20
+
+/// The linker options of every WASI module: the stack comes first in memory, so that running
+/// off its end is an out-of-bounds access rather than a write over the data.
+pub wasi_link_flags :: fn() -> []const string needs Alloc {
+    flags := list(string)
+    flags.push("-Wl,--stack-first")!
+    flags.push(str.format("-Wl,-z,stack-size={}", WASI_STACK_SIZE)!)!
+    return flags.items
+}
+
+/// The `wasm-opt` command: `WASM_OPT` (a path) if set, else `wasm-opt` from `PATH`.
+wasm_opt :: fn() -> string needs Alloc + Env {
+    v := Env.var("WASM_OPT") else return "wasm-opt"
+    return if str.trim(v).len is 0 { "wasm-opt" } else { v }
+}
+
+/// The output of `wasm-opt --version` (empty if it cannot be run), which belongs in the cache
+/// key of a module that goes through it.
+pub wasm_opt_version :: fn() -> string needs Alloc + Env + Proc {
+    argv := [2]string(wasm_opt(), "--version")
+    out := process.output(argv[..]) else return ""
+    return string(out.out.items)
+}
+
+/// Applies the Asyncify transformation to the module at `path` in place when it needs it
+/// (it imports from `asyncify`), then optimizes it at the build's level `opt` (`-O1`, ...).
+/// `debug_info` keeps the debugging information.
+pub asyncify :: fn(path: string, opt: string, debug_info: bool) -> string!() needs Alloc + Env + Fs + Proc {
+    bytes := fs.read_all(path) else e => { return !str.format("cannot read {}: {}", path, read_error(e))! }
+    modules := import_modules(bytes) else e => { return !str.format("{} is not a WebAssembly module I can read: {}", path, e)! }
+    asyncified := false
+    for m in modules.items {
+        if m is "asyncify" { asyncified = true }
+    }
+    if not asyncified { return () }
+    tool := wasm_opt()
+    argv := list(string)
+    argv.push(tool)!
+    argv.push(path)!
+    argv.push("--asyncify")!
+    // No import starts an unwind except those of the module `asyncify`, which the pass knows
+    // about: naming a module that does not exist says so.
+    argv.push("--pass-arg=asyncify-imports@gamma.none")!
+    // Optimizing after the transformation recovers most of what it costs.
+    if opt is not "-O0" { argv.push(opt)! }
+    if debug_info { argv.push("-g")! }
+    argv.push("-o")!
+    argv.push(path)!
+    out := process.output(argv.items) else e => {
+        return !str.format("this program switches fibers, which on WASI needs Binaryen's `wasm-opt` (https://github.com/WebAssembly/binaryen), but `{}` cannot be run: {}; install Binaryen or set WASM_OPT to its wasm-opt", tool, run_error_text(e))!
+    }
+    if not process.success(out.status) {
+        return !str.format("`{} --asyncify` failed:\n{}", tool, string(out.err.items))!
+    }
+    return ()
+}
+
+read_error :: fn(e: fs.ReadError) -> string needs Alloc => match e {
+    .Io(io) => io_error_text(io)
+    .Alloc(_) => "out of memory"
+}
+
+run_error_text :: fn(e: process.RunError) -> string needs Alloc => match e {
+    .Io(io) => io_error_text(io)
+    .Alloc(_) => "out of memory"
+}
+
+/// An IO error as the operating system words it.
+io_error_text :: fn(e: IoError) -> string needs Alloc => match e {
+    .NotFound => "No such file or directory (os error 2)"
+    .PermissionDenied => "Permission denied (os error 13)"
+    .AlreadyExists => "File exists (os error 17)"
+    .InvalidInput => "Invalid argument (os error 22)"
+    .NoSpace => "No space left on device (os error 28)"
+    .Other(code) => str.format("os error {}", code)!
+    _ => "input/output error"
+}
+
+/// The module names of the imports of WebAssembly module `wasm`.
+pub import_modules :: fn(wasm: []const u8) -> string!List(string) needs Alloc {
+    r := WasmReader(b: wasm, at: 0)
+    head := try r.wasm_bytes(4)
+    if not (head[0] is 0 and head[1] is 'a' and head[2] is 's' and head[3] is 'm') { return !"no WebAssembly header" }
+    _ = try r.wasm_bytes(4)
+    modules := list(string)
+    while r.at < wasm.len {
+        id := try r.wasm_byte()
+        size := (try r.wasm_uleb()).trunc(usize)
+        body := try r.wasm_bytes(size)
+        if id is not 2 { continue }
+        s := WasmReader(b: body, at: 0)
+        count := try s.wasm_uleb()
+        for _ in 0..count {
+            modules.push(try s.wasm_name())!
+            _ = try s.wasm_name()
+            kind := try s.wasm_byte()
+            match kind {
+                // A function: its type index.
+                0 => { _ = try s.wasm_uleb() }
+                // A table: its element type and limits.
+                1 => {
+                    _ = try s.wasm_byte()
+                    try s.wasm_limits()
+                }
+                // A memory.
+                2 => { try s.wasm_limits() }
+                // A global: its type and mutability.
+                3 => { _ = try s.wasm_bytes(2) }
+                // A tag: its attribute and type index.
+                4 => {
+                    _ = try s.wasm_byte()
+                    _ = try s.wasm_uleb()
+                }
+                _ => { return !str.format("unknown import kind {}", kind)! }
+            }
+        }
+    }
+    return modules
+}
+
+WasmReader :: struct {
+    b: []const u8
+    at: usize
+}
+
+wasm_bytes :: fn(r: ^WasmReader, n: usize) -> string![]const u8 {
+    if n > r.b.len - r.at { return !"truncated" }
+    s := r.b[r.at..r.at + n]
+    r.at += n
+    return s
+}
+
+wasm_byte :: fn(r: ^WasmReader) -> string!u8 {
+    s := try r.wasm_bytes(1)
+    return s[0]
+}
+
+wasm_uleb :: fn(r: ^WasmReader) -> string!u64 {
+    v: u64 = 0
+    shift: u64 = 0
+    while shift < 64 {
+        b := try r.wasm_byte()
+        v |= u64(b & 0x7f) << shift
+        if b & 0x80 is 0 { return v }
+        shift += 7
+    }
+    return !"integer too long"
+}
+
+wasm_name :: fn(r: ^WasmReader) -> string!string {
+    n := (try r.wasm_uleb()).trunc(usize)
+    return string(try r.wasm_bytes(n))
+}
+
+wasm_limits :: fn(r: ^WasmReader) -> string!() {
+    flags := try r.wasm_byte()
+    _ = try r.wasm_uleb()
+    if flags & 1 is not 0 { _ = try r.wasm_uleb() }
+    return ()
+}
+
+/// The error of reading imports, or "" when it succeeded.
+modules_error :: fn(r: string!List(string)) -> string {
+    _ = r else e => {
+        return e
+    }
+    return ""
+}
+
+test "the imports of a module are read" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        wasm := [19]u8(0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 2, 9, 1, 3, 'e', 'n', 'v', 1, 'f', 0, 0)
+        mods := import_modules(wasm[..]) else e => {
+            expect_eq(e, "")
+            return
+        }
+        expect_eq(mods.items.len, 1)
+        expect_eq(mods.items[0], "env")
+        bad := [4]u8(1, 2, 3, 4)
+        expect(modules_error(import_modules(bad[..])).len > 0)
+    }
+}

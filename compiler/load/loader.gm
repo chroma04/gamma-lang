@@ -113,6 +113,8 @@ pub Loader :: struct {
     recover: bool
     /// The build mode, `target.mode` (§3.6): `Debug`, `Checked` or `Fast`.
     pub mode: string = "Debug"
+    /// The machine the program is compiled for (`target`, §3.6).
+    pub target: Target
     /// The standard library's directory, as given and in canonical form.
     std_root: string
     std_canon: string
@@ -139,6 +141,7 @@ pub loader :: fn(sm: ^source.SourceMap, diags: ^diag.Diagnostics, ids: ^ast.Node
         diags: diags,
         ids: ids,
         recover: recover,
+        target: host_target(),
         std_root: std_root,
         std_canon: std_root,
         cwd: working_dir(),

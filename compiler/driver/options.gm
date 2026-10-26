@@ -5,13 +5,14 @@
 
 diag :: import "../diag"
 lint :: import "../lint"
+load :: import "../load"
 pkg :: import "../pkg"
 
 /// What gammac was asked to do.
 pub Command :: union { Lex, Parse, Modules, Decls, Tir, Check, Lint, Fix, Build, Run, Test, Bench }
 
-/// The build modes of §1.4 that gammac has (Safe needs Fil-C).
-pub Mode :: union { Debug, Checked, Fast }
+/// The build modes of §1.4 (Safe compiles with Fil-C).
+pub Mode :: union { Debug, Checked, Safe, Fast }
 
 pub Options :: struct {
     pub command: Command
@@ -56,6 +57,14 @@ pub Options :: struct {
     pub manifest_ldflags: []const string = empty_slice(string)
     /// `build`, `run`: the C sources and libraries the packages add to the build.
     pub extras: ?pkg.Extras = null
+    /// `check`, `build`, `run`, `test`, `bench`: the target triple to compile for
+    /// (`--target=`).
+    pub target_triple: ?string = null
+    /// The machine the program is compiled for, and the C toolchain that builds for it
+    /// (or why there is none), as `new_session` chose them.
+    pub target: load.Target = load.host_target()
+    pub toolchain: ?pkg.Toolchain = null
+    pub toolchain_error: ?string = null
     /// `lint`: the options of the command.
     pub lint: lint.Options
 }
@@ -64,5 +73,6 @@ pub Options :: struct {
 pub mode_name :: fn(m: Mode) -> string => match m {
     .Debug => "Debug"
     .Checked => "Checked"
+    .Safe => "Safe"
     .Fast => "Fast"
 }

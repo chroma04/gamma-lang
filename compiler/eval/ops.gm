@@ -5,8 +5,8 @@
 /// The signedness and width of integer type `t` (a `bool` is one unsigned bit).
 int_info :: fn(m: ^const Machine, t: Ty) -> (signed: bool, bits: u32) => match m.s.tys.kind(t) {
     .Int(signed, bits) => (signed: signed, bits: u32(bits))
-    .Usize => (signed: false, bits: u32(target.ptr_bits))
-    .Isize => (signed: true, bits: u32(target.ptr_bits))
+    .Usize => (signed: false, bits: m.s.l.target.ptr_bits())
+    .Isize => (signed: true, bits: m.s.l.target.ptr_bits())
     _ => (signed: false, bits: 128)
 }
 
@@ -816,7 +816,6 @@ const_cell :: fn(m: ^Machine, span: source.Span, ty: Ty, use_span: source.Span) 
 /// `x.bits(T)`: the plain-data value `v` of type `from` reinterpreted as type `to`, of
 /// the same size, through its bytes in the target's layout.
 reinterpret :: fn(m: ^Machine, v: Value, from: Ty, to: Ty, span: source.Span) -> Flow!Value needs Alloc {
-    if target.endian is .Big { return !m.unsupported(span, "`bits` on a big-endian target") }
     size := m.s.layout(from).size
     bytes := list(u8)
     for _ in 0..size { bytes.push(0)! }
@@ -865,13 +864,17 @@ offsets :: fn(m: ^Machine, t: Ty) -> ?(tys: []const Ty, offs: []const u64) needs
     }
 }
 
-/// Writes the plain-data value `v` of type `t` into `out` at `at`, little-endian; `false`
-/// if it is not plain data that gammac can lay out.
+/// The position, among the `n` bytes of a scalar, of its byte number `i` counting from the
+/// least significant, in the target's byte order.
+byte_at :: fn(m: ^const Machine, i, n: u64) -> u64 => if m.s.l.target.little_endian { i } else { n - 1 - i }
+
+/// Writes the plain-data value `v` of type `t` into `out` at `at`, in the target's byte
+/// order; `false` if it is not plain data that gammac can lay out.
 put_bytes :: fn(m: ^Machine, v: Value, t: Ty, out: []u8, at: u64) -> bool needs Alloc {
     match v {
         .Int(bits) => {
             size := m.s.layout(t).size
-            for i in 0..size { out[(at + i).trunc(usize)] = (bits >> u128(i * 8)).trunc(u8) }
+            for i in 0..size { out[(at + m.byte_at(i, size)).trunc(usize)] = (bits >> u128(i * 8)).trunc(u8) }
             return true
         }
         .Bool(b) => {
@@ -890,7 +893,7 @@ put_bytes :: fn(m: ^Machine, v: Value, t: Ty, out: []u8, at: u64) -> bool needs 
                 }
                 _ => return false
             }
-            for i in 0..n { out[(at + i).trunc(usize)] = (raw >> (i * 8)).trunc(u8) }
+            for i in 0..n { out[(at + m.byte_at(i, n)).trunc(usize)] = (raw >> (i * 8)).trunc(u8) }
             return true
         }
         .Agg(a) => {
@@ -911,13 +914,13 @@ get_bytes :: fn(m: ^Machine, t: Ty, b: []const u8, at: u64) -> ?Value needs Allo
         .Int(_), .Usize, .Isize => {
             size := s.layout(t).size
             v: u128 = 0
-            for i in 0..size { v |= u128(b[(at + i).trunc(usize)]) << u128(i * 8) }
+            for i in 0..size { v |= u128(b[(at + m.byte_at(i, size)).trunc(usize)]) << u128(i * 8) }
             return .Int(m.wrap(v, t))
         }
         .Float(w) => {
             n: u64 = if w is 64 { 8 } else if w is 32 { 4 } else { return null }
             raw: u64 = 0
-            for i in 0..n { raw |= u64(b[(at + i).trunc(usize)]) << (i * 8) }
+            for i in 0..n { raw |= u64(b[(at + m.byte_at(i, n)).trunc(usize)]) << (i * 8) }
             return .Float(if w is 64 { raw.bits(f64) } else { f64(raw.trunc(u32).bits(f32)) })
         }
         _ => {

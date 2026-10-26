@@ -3,8 +3,9 @@
 
 /// The standard error of a failed native test as the interpreter reports it: a trap's
 /// message and location are in it, without the `trap: ` prefix.
-native_stderr :: fn(err: string) -> string needs Alloc {
+native_stderr :: fn(raw: string) -> string needs Alloc {
     PREFIX :: "trap: "
+    err := driver.strip_wasm_trap_report(raw)
     i := str.rfind(err, PREFIX) else return err
     if i is not 0 and err[i - 1] is not '\n' { return err }
     return str.format("{}{}", err[0..i], err[i + PREFIX.len..])!
@@ -55,12 +56,15 @@ watch :: fn(w: ^Watch) needs Sys {
     }
 }
 
-/// Runs the test executable `exe` on its `j`th test. A test that is still running after
-/// `timeout` seconds is killed and fails.
-run_exe :: fn(exe: string, j: usize, timeout: ?f64) -> Finished needs Alloc + Clock + Proc + Sys {
-    argv := [2]string(exe, str.format("{}", j)!)
+/// Runs the test executable `exe`, behind the `runner` command if there is one, on its `j`th
+/// test. A test that is still running after `timeout` seconds is killed and fails.
+run_exe :: fn(runner: []const string, exe: string, j: usize, timeout: ?f64) -> Finished needs Alloc + Clock + Proc + Sys {
+    argv := list(string)
+    argv.extend(runner)!
+    argv.push(exe)!
+    argv.push(str.format("{}", j)!)!
     started := Clock.now().ns
-    child := Proc.spawn(argv[..], process.SpawnOptions(stdin: .Null, stdout: .Pipe, stderr: .Pipe)) else {
+    child := Proc.spawn(argv.items, process.SpawnOptions(stdin: .Null, stdout: .Pipe, stderr: .Pipe)) else {
         return failed_to_run(str.format("cannot run {}: the process cannot be started\n", exe)!)
     }
     w := Watch(lock: thread.mutex(), wake: thread.condvar(), child: child, deadline: 0, done: false, fired: false)

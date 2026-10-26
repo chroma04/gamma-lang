@@ -52,11 +52,11 @@ pub layout :: fn(s: ^Sema, t: Ty) -> Layout needs Alloc {
 }
 
 compute_layout :: fn(s: ^Sema, t: Ty) -> Layout needs Alloc {
-    p := u64(target.ptr_bits / 8)
+    p := s.l.target.ptr_bytes
     match s.tys.kind(t) {
         .Int(_, bits) => {
             size := int_storage_bytes(bits)
-            return Layout(size: size, align: if size is 16 { u64(@align_of(i128)) } else { size })
+            return Layout(size: size, align: if size is 16 { s.l.target.int128_align } else { size })
         }
         .Usize, .Isize => return scalar(p)
         .Float(bits) => return scalar(u64(bits / 8))
@@ -126,13 +126,10 @@ adt_layout :: fn(s: ^Sema, id: u32) -> Layout needs Alloc {
     }
 }
 
-/// The largest size of an object, `isize::MAX` for the target.
-max_object_size :: fn() -> u64 => (u64(1) << u64(target.ptr_bits - 1)) - 1
-
 /// Reports `ty` if it is larger than any object can be, and returns whether it is fine.
 pub type_size_ok :: fn(s: ^Sema, ty: Ty, span: source.Span) -> bool needs Alloc {
     aggregate := s.tys.kind(ty) in (.Array(_), .Tuple(_), .Optional(_), .Result(_), .Adt(_))
-    max := max_object_size()
+    max := load.max_object_size(&s.l.target)
     // Definitions change while types are declared: layouts are remembered for one query.
     s.layout_cache.clear()
     if not aggregate or s.tys.has_param(ty) or s.layout(ty).size <= max { return true }

@@ -630,11 +630,22 @@ fn gammac_compiles_itself_to_a_fixed_point() {
     let mut cmd = Command::new(stage1);
     cmd.current_dir(root()).args(["build", "-o"]).arg(&stage2).arg("compiler");
     gammac_env(&mut cmd);
+    // One C unit, so that `gammac2.c` holds the whole program.
+    cmd.env("GAMMA_C_UNITS", "1");
     let built = common::output(&mut cmd).unwrap();
     assert!(built.status.success(), "gammac failed to compile itself:\n{}", String::from_utf8_lossy(&built.stderr));
-    let c1 = std::fs::read_to_string(format!("{}.c", stage2.display())).unwrap();
+    let mut c1 = std::fs::read_to_string(format!("{}.c", stage2.display())).unwrap();
     // Stage 2 generates the same C for itself.
-    let c2 = self_c(&stage2, &dir.join("gammac3"));
+    let mut c2 = self_c(&stage2, &dir.join("gammac3"));
+    // A Debug build links the cached runtime, so its C file starts with the runtime's
+    // header only; `--emit-c` writes the runtime too. Compare the program's own C.
+    let rt_h = std::fs::read_to_string(root().join("runtime/gm_rt.h")).unwrap();
+    let rt_c = std::fs::read_to_string(root().join("runtime/gm_rt.c")).unwrap();
+    let separate = format!("#define GM_RT_SEPARATE 1\n{rt_h}\n");
+    if let Some(rest) = c1.strip_prefix(&separate) {
+        c1 = rest.to_string();
+        c2 = c2.strip_prefix(&format!("{rt_h}\n{rt_c}\n")).expect("--emit-c starts with the runtime").to_string();
+    }
     if let Some((_, line, a, b)) = first_difference(&c1, &c2) {
         panic!("the C that stage 2 generates differs from stage 1's at line {}:\nstage 1: {}\nstage 2: {}", line, a, b);
     }
@@ -1460,7 +1471,7 @@ fn testing_matches_the_reference() {
         assert_eq!(want, got, "{} {:?}", command, args);
     }
     // Options gammac does not have are usage errors.
-    for bad in ["--backend=interp", "--backend=cranelift", "--coverage", "--target=x86_64-linux-gnu"] {
+    for bad in ["--backend=interp", "--backend=cranelift", "--coverage"] {
         let out = common::output(Command::new(gammac).current_dir(root()).args(["test", bad, "x.gm"])).unwrap();
         assert_eq!(out.status.code(), Some(2), "{}", bad);
     }
@@ -2011,4 +2022,200 @@ fn dependencies_of_tests_lint_and_fix_match_the_reference() {
     t.write("app2/gamma.lock", "");
     t.both("app2", &["test", "--package=remote", "main.gm"]);
     t.same_files("app2");
+}
+
+/// Runs `args` on both sides with `env`; returns the reference's result when it succeeded
+/// and `None` (after comparing anyway) when it failed.
+#[cfg(unix)]
+fn both_if_ok(t: &Twin, args: &[&str], env: &[(&str, &str)]) -> Option<Ran> {
+    let r = t.both_env(".", args, env);
+    (r.2 == Some(0)).then_some(r)
+}
+
+/// `--target`, the cross toolchain rules, freestanding programs and `--mode=safe` give the
+/// reference's output, diagnostics and exit status; what needs a cross compiler, an emulator
+/// or Fil-C is skipped when the tool is missing.
+#[test]
+#[cfg(unix)]
+fn targets_and_toolchains_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("targets");
+    let hello = root().join("examples/hello.gm");
+    let hello = hello.to_str().unwrap();
+    let arena = root().join("tests/conformance/test/arena.gm");
+    let arena = arena.to_str().unwrap();
+    let no_path = [("PATH", "/nonexistent")];
+
+    // Command-line and toolchain errors.
+    t.both_env(".", &["check", "--target=nowhere-linux-gnu", hello], &no_path);
+    t.both(".", &["run", "--backend=c", "--target=nowhere-linux-gnu", hello]);
+    t.both(".", &["check", "--target=a b", hello]);
+    t.both(".", &["check", "--target=", hello]);
+    t.both_env(".", &["build", "-o", "m1.out", hello], &[("CC", "no-such-cc")]);
+    t.both_env(".", &["check", hello], &[("CC", "no-such-cc")]);
+    t.both_env(".", &["run", "--backend=c", hello], &[("CC", "no-such-cc")]);
+    t.both_env(".", &["build", "-o", "m2.out", hello], &[("CC", "cc 'x")]);
+    t.both(".", &["check", "--mode=safe", "--target=s390x-linux-gnu", hello]);
+    t.both_env(".", &["run", "--backend=c", hello], &[("GAMMA_RUNNER", "x 'y")]);
+    if !Path::new("/opt/fil/bin/filcc").exists() {
+        let usr = [("PATH", "/usr/bin:/bin")];
+        t.both_env(".", &["build", "--mode=safe", "-o", "m3.out", hello], &usr);
+        t.both_env(".", &["check", "--mode=safe", hello], &usr);
+    } else {
+        // Fil-C is installed: the Safe mode builds and runs the same programs.
+        t.both(".", &["run", "--backend=c", "--mode=safe", hello]);
+        t.both(".", &["test", "--backend=c", "--mode=safe", arena]);
+    }
+
+    // A compiler for another machine than the target.
+    if tool_available("clang") {
+        let cc = [("CC", "clang --target=aarch64-linux-gnu")];
+        t.both_env(".", &["check", "--target=s390x-linux-gnu", hello], &cc);
+        t.both_env(".", &["check", "--target=aarch64_be-linux-gnu", hello], &cc);
+        t.both_env(".", &["check", "--target=s390x-linux-gnu", hello], &[("CC", "clang")]);
+        t.both_env(".", &["check", hello], &[("CC", "clang --target=s390x-linux-gnu")]);
+    }
+
+    // `check --target` over every program, for a big-endian and a 32-bit target.
+    let roots = program_roots();
+    let mut targets = Vec::new();
+    if tool_available("clang") || tool_available("s390x-linux-gnu-gcc") {
+        targets.push("s390x-linux-gnu");
+    }
+    if tool_available("clang") {
+        targets.push("wasm32-wasi");
+    }
+    // Every third program: the whole set takes minutes.
+    let some: Vec<&String> = roots.iter().step_by(3).collect();
+    for triple in targets {
+        let target = format!("--target={triple}");
+        let problems = in_parallel(&some, |root_path| {
+            let args = vec!["check".to_string(), target.clone(), root_path.to_string()];
+            let mut cmd = gamma();
+            cmd.args(&args);
+            let want = ran(common::output(&mut cmd).unwrap());
+            let got = ran(run_gammac(&args));
+            let got = (got.0.replace("gammac", "gamma"), got.1.replace("gammac", "gamma"), got.2);
+            difference("check", root_path, &want, &got)
+        });
+        let problems: Vec<String> = problems.into_iter().flatten().collect();
+        assert!(problems.is_empty(), "check {target}: {} programs differ, first:\n{}", problems.len(), problems[0]);
+    }
+
+    // s390x: big-endian, run through an emulator.
+    let s390x = [("CFLAGS", "-static"), ("GAMMA_RUNNER", "qemu-s390x -L /usr/s390x-linux-gnu")];
+    if tool_available("s390x-linux-gnu-gcc")
+        && tool_available("qemu-s390x")
+        && Path::new("/usr/s390x-linux-gnu").exists()
+    {
+        for mode in ["debug", "checked", "fast"] {
+            let m = format!("--mode={mode}");
+            t.both_env(".", &["run", "--backend=c", "--target=s390x-linux-gnu", &m, hello], &s390x);
+        }
+        t.both_env(".", &["test", "--backend=c", "--target=s390x-linux-gnu", arena], &s390x);
+        t.both_env(".", &["test", "-j", "3", "--backend=c", "--target=s390x-linux-gnu", "lib/std/str"], &s390x);
+        t.both_env(".", &["bench", "--backend=c", "--target=s390x-linux-gnu", "--filter=zzz", "lib/std/str"], &s390x);
+        t.both_env(".", &["build", "--target=s390x-linux-gnu", "-o", "hello_s390x.out", hello], &s390x);
+    }
+
+    // wasm32-wasi: a .wasm file, run by wasmtime.
+    if tool_available("clang") && tool_available("wasmtime") {
+        let probe = both_if_ok(&t, &["run", "--backend=c", "--target=wasm32-wasi", hello], &[]);
+        if probe.is_some() {
+            t.both(".", &["test", "--backend=c", "--target=wasm32-wasi", arena]);
+            t.both(".", &["build", "--target=wasm32-wasi", "-o", "w.out", hello]);
+            for side in ["ref", "new"] {
+                assert!(
+                    t.dir(side).join("w.out.wasm").exists()
+                        || t.dir(side).join("w.wasm").exists()
+                        || t.dir(side).join("w.out").exists()
+                );
+            }
+            t.both_env(
+                ".",
+                &["run", "--backend=c", "--target=wasm32-wasi", hello],
+                &[("GAMMA_RUNNER", "wasmtime run --dir=.")],
+            );
+            t.both_env(
+                ".",
+                &["run", "--backend=c", "--target=wasm32-wasi", hello],
+                &[("WASM_OPT", "/no/such/wasm-opt")],
+            );
+        }
+    }
+
+    // Freestanding: an object file with the exported functions, and no run, test or bench.
+    let triple = "x86_64-unknown-none-elf";
+    let firmware = root().join("tests/freestanding/firmware.gm");
+    let firmware = firmware.to_str().unwrap();
+    t.both(".", &["check", &format!("--target={triple}"), firmware]);
+    t.both(".", &["run", "--backend=c", &format!("--target={triple}"), firmware]);
+    t.both(".", &["test", "--backend=c", &format!("--target={triple}"), arena]);
+    t.both(".", &["bench", "--backend=c", &format!("--target={triple}"), arena]);
+    t.both(".", &["build", &format!("--target={triple}"), hello, "-o", "h.o"]);
+    if cfg!(target_arch = "x86_64") {
+        let harness = root().join("tests/freestanding/harness.c");
+        for mode in ["debug", "checked", "fast"] {
+            let obj = format!("fw-{mode}.o");
+            let m = format!("--mode={mode}");
+            if both_if_ok(&t, &["build", &format!("--target={triple}"), &m, firmware, "-o", &obj], &[]).is_none() {
+                continue;
+            }
+            let mut outputs = Vec::new();
+            for side in ["ref", "new"] {
+                let exe = t.dir(side).join(format!("fw-{mode}.out"));
+                let linked = Command::new("cc")
+                    .args(["-no-pie", "-o"])
+                    .arg(&exe)
+                    .arg(&harness)
+                    .arg(t.dir(side).join(&obj))
+                    .output();
+                let Ok(linked) = linked else { break };
+                if !linked.status.success() {
+                    break;
+                }
+                let mut runs = Vec::new();
+                for extra in [None, Some("crash")] {
+                    let mut cmd = Command::new(&exe);
+                    cmd.args(extra);
+                    runs.push(ran(common::output(&mut cmd).unwrap()));
+                }
+                outputs.push(runs);
+            }
+            if outputs.len() == 2 {
+                assert_eq!(outputs[0], outputs[1], "the firmware built in {mode} mode behaves differently");
+            }
+        }
+    }
+}
+
+/// The cache of built programs and of the compiled runtime: a second `run` finds the program
+/// again and `cache clean` counts the same things for both.
+#[test]
+#[cfg(unix)]
+fn run_and_runtime_caches_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("caches");
+    let hello = root().join("examples/hello.gm");
+    let hello = hello.to_str().unwrap();
+    let files = |side: &str| -> Vec<String> {
+        let mut names: Vec<String> = tree(&t.root.join(side).join("cache"))
+            .into_iter()
+            .map(|(n, _)| n.split('-').next().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    for mode in ["debug", "fast"] {
+        let m = format!("--mode={mode}");
+        for _ in 0..2 {
+            assert_eq!(t.both(".", &["run", "--backend=c", &m, hello]).0, "hello, world\n");
+        }
+    }
+    assert_eq!(files("ref"), files("new"), "the cache holds different kinds of files");
+    assert!(files("new").iter().any(|n| n.starts_with("gm_rt")), "no compiled runtime was cached");
+    assert!(files("new").iter().any(|n| n.starts_with("run/prog")), "no built program was cached");
+    t.both(".", &["cache", "clean", "--dry-run"]);
+    t.both(".", &["cache", "clean"]);
+    assert_eq!(files("ref"), files("new"), "`cache clean` removed different files");
 }

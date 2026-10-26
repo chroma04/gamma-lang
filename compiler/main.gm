@@ -5,13 +5,13 @@
 //!     gammac modules ROOT...
 //!     gammac decls ROOT...
 //!     gammac tir ROOT...
-//!     gammac check ROOT...
+//!     gammac check [--target=TRIPLE] ROOT...
 //!     gammac lint [--fix] [--rules] [--allow=RULES] [--warn=RULES] [--deny=RULES] [-D] ROOT
 //!     gammac fix ROOT
-//!     gammac build [--mode=debug|checked|fast] [-g] [-o EXE] [--emit-c] ROOT
-//!     gammac run [--mode=debug|checked|fast] [-g] ROOT [ARG...]
-//!     gammac test [--filter=TEXT] [--all] [--show-output] [--jobs=N] [--timeout=SECONDS] [--time] [--mode=...] ROOT
-//!     gammac bench [--filter=TEXT] [--all] [--show-output] [--timeout=SECONDS] [--mode=...] ROOT
+//!     gammac build [--mode=debug|checked|safe|fast] [--target=TRIPLE] [-g] [-o EXE] [--emit-c] ROOT
+//!     gammac run [--mode=debug|checked|safe|fast] [--target=TRIPLE] [-g] ROOT [ARG...]
+//!     gammac test [--filter=TEXT] [--all] [--show-output] [--jobs=N] [--timeout=SECONDS] [--time] [--mode=...] [--target=TRIPLE] ROOT
+//!     gammac bench [--filter=TEXT] [--all] [--show-output] [--timeout=SECONDS] [--mode=...] [--target=TRIPLE] ROOT
 //!     gammac new|init|fetch|update|add|remove|cache ...      (the package manager)
 //!     gammac fmt [--check] FILE|DIR...
 //!     gammac doc [--format=markdown|html] [-o PATH] [--all] [--missing] MODULE
@@ -80,7 +80,10 @@ options:
                               how to print diagnostics (default: human)
   --recover                   (lex, parse) lex with the layout recovery tools use after errors
   --dump                      (parse) print the syntax tree
-  --mode=debug|checked|fast   (build, run) the build mode (default: debug)
+  --mode=debug|checked|safe|fast
+                              (build, run, test, bench) the build mode (default: debug); safe builds
+                              with Fil-C
+  --target=<triple>           (check, build, run, test, bench) the target (default: the C compiler's)
   -g                          (build, run) add debug information that maps the executable back to the
                               Gamma source (build also writes the lldb formatters, gamma_lldb.py,
                               next to the executable)
@@ -118,6 +121,9 @@ environment:
   GAMMA_CACHE_DIR
                  the package store (default: the user's cache directory; empty turns it off)
   GAMMA_C_UNITS  the number of C units of a Debug build (default: by size and processors)
+  GAMMA_RUNNER   the program that runs the executables of another target (e.g. qemu-s390x)
+  WASI_SDK_PATH  the WASI SDK (for wasm32-wasi; its clang is the default C compiler there)
+  WASM_OPT       the wasm-opt program (default: wasm-opt) for programs that use fibers
 
 `
 
@@ -183,6 +189,10 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
                 opts.mode = .Checked
                 opts.mode_given = true
             }
+            "--mode=safe" => {
+                opts.mode = .Safe
+                opts.mode_given = true
+            }
             "--mode=fast" => {
                 opts.mode = .Fast
                 opts.mode_given = true
@@ -243,13 +253,18 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
                     opts.package = a[10..]
                     continue
                 }
-                if a.starts_with("--target=") { usage_error("`--target` is not supported: gammac builds for the machine it runs on") }
+                if a.starts_with("--target=") {
+                    if a.len is 9 { usage_error("`--target=` needs a target triple") }
+                    if opts.command in (driver.Command.Lint, driver.Command.Fix) { usage_error("`--target` is not supported by `lint` and `fix`") }
+                    opts.target_triple = a[9..]
+                    continue
+                }
                 if a.starts_with("--profile=") {
                     if a.len is 10 { usage_error("`--profile=` needs a profile name") }
                     opts.profile = a[10..]
                     continue
                 }
-                if a.starts_with("--mode=") { usage_error(str.format("invalid value `{}` for --mode (expected debug, checked or fast)", a[7..])!) }
+                if a.starts_with("--mode=") { usage_error(str.format("invalid value `{}` for --mode (expected debug, checked, safe or fast)", a[7..])!) }
                 if a.starts_with("--diag-format=") { usage_error(str.format("invalid value `{}` for --diag-format (expected human, short or json)", a[14..])!) }
                 if a.starts_with("-") { usage_error(str.format("unknown option `{}`", a)!) }
                 files.push(a)!
@@ -315,7 +330,7 @@ usage_error :: fn(message: string) -> never needs Env + Err {
 /// status for the file: 0 if it had no errors.
 process_file :: fn(path: string, in_opts: driver.Options) -> fs.ReadError!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     opts := in_opts
-    if opts.command in (driver.Command.Check, driver.Command.Build, driver.Command.Run, driver.Command.Lint, driver.Command.Fix, driver.Command.Test, driver.Command.Bench) {
+    if opts.command in (driver.Command.Check, driver.Command.Build, driver.Command.Run, driver.Command.Test, driver.Command.Bench, driver.Command.Lint, driver.Command.Fix) {
         apply_build_settings(path, &opts) else e => {
             eprint("gammac: {}\n", e)
             return 1
@@ -356,14 +371,8 @@ apply_build_settings :: fn(input: string, opts: ^driver.Options) -> string!() ne
             opts.mode = match m {
                 .Debug => driver.Mode.Debug
                 .Checked => driver.Mode.Checked
+                .Safe => driver.Mode.Safe
                 .Fast => driver.Mode.Fast
-                // Safe needs Fil-C, which gammac does not support; analysis treats it as Checked.
-                .Safe => {
-                    if opts.command in (driver.Command.Build, driver.Command.Run) {
-                        return !"gamma.toml asks for `mode = \"safe\"`, which gammac does not support (Safe builds need Fil-C)"
-                    }
-                    driver.Mode.Checked
-                }
             }
         }
     }
@@ -412,10 +421,28 @@ load_program :: fn(input: string, in_opts: driver.Options) -> u8 needs Alloc + C
         next_id: ast.NodeId = 0
         std := driver.std_root()
         opts := in_opts
+        // The C toolchain and the target it compiles for, before anything is loaded.
+        if opts.command in (driver.Command.Check, driver.Command.Build, driver.Command.Run, driver.Command.Test, driver.Command.Bench) {
+            driver.new_session(&opts)
+            if opts.command is .Run and driver.refuse_freestanding(&opts, "run") { return 1 }
+            if opts.command is .Test and driver.refuse_freestanding(&opts, "test") { return 1 }
+            if opts.command is .Bench and driver.refuse_freestanding(&opts, "bench") { return 1 }
+            if opts.command is .Build {
+                if e := opts.toolchain_error {
+                    eprint("gammac: {}\n", e)
+                    return 1
+                }
+            }
+        }
         l := load.loader(&sm, &diags, &next_id, std, opts.recover)
+        l.target = opts.target
         root := input
         if opts.command in (driver.Command.Check, driver.Command.Build, driver.Command.Run, driver.Command.Test, driver.Command.Bench) {
             opts.extras = prepare_packages(input, opts, &l) else return 1
+            if opts.command is .Build and opts.target.os is "Freestanding" and not pkg.is_empty(&(opts.extras else pkg.extras())) {
+                eprint("gammac: a program for a freestanding target builds to an object file only, so the C sources and libraries of its packages are not linked in; link them with the object yourself\n")
+                return 1
+            }
         }
         // `--package=name`: the dependency's root module stands in for the input, and its
         // own dependencies resolve through this package's graph.

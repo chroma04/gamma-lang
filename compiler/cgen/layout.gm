@@ -2,32 +2,12 @@
 // `src/layout.rs`). The checker's layouts (`sema/layout.gm`) give sizes and alignments
 // only.
 
-/// The target the generated code is for: the one gammac itself was built for.
-pub Target :: struct {
-    pub ptr_bytes: u64
-    pub little_endian: bool
-    pub int128_align: u64
-    /// `Linux`, `MacOS`, `Windows`, `FreeBSD`, `Wasi` or `Freestanding`.
-    pub os: string
-    /// `X86_64`, `Aarch64`, `Riscv64`, `S390x`, `Wasm32` or `Other`.
-    pub arch: string
-    /// Fil-C, the memory-safe C implementation behind the Safe mode.
-    pub filc: bool
-    /// The C compiler has `_Float16`.
-    pub f16: bool
-}
+/// The target the generated code is for.
+pub Target :: loader.Target
 
-pub host_target :: fn() -> Target => Target(
-    ptr_bytes: u64(target.ptr_bits / 8),
-    little_endian: target.endian is .Little,
-    int128_align: 16,
-    os: @variant_name(target.os),
-    arch: @variant_name(target.arch),
-    filc: false,
-    f16: true,
-)
+pub host_target :: fn() -> Target => loader.host_target()
 
-pub ptr_bits :: fn(t: ^const Target) -> u32 => (t.ptr_bytes * 8).trunc(u32)
+pub ptr_bits :: fn(t: ^const Target) -> u32 => loader.ptr_bits(t)
 
 /// A size, an alignment and the offsets of the fields (of a struct or tuple), of the flag
 /// (`[0, flag]` for an optional) or of the tag and payload (a result or union).

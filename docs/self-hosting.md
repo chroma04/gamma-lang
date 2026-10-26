@@ -28,6 +28,7 @@ this checkable:
 | checking | the diagnostics of `gamma check`, in the human format |
 | back end | the output and exit status of the compiled programs |
 | test runner | the output and exit status of `gamma test --backend=c` and `gamma bench`, timings masked |
+| targets and caches | `check`, `build`, `run`, `test` and `bench` for other targets, freestanding and `--mode=safe`: the output, exit status and files of both, and the objects they cache |
 | formatter | the output, messages and exit status of `gamma fmt` |
 | `doc` | the standard output, standard error, exit status and files of `gamma doc` |
 | lint and fix | the diagnostics, messages, edited files and exit status of `gamma lint` and `gamma fix` |
@@ -117,8 +118,9 @@ leaves to implementations: message texts, spans and recovery after errors.
    what only makes the generated code faster or quicker to compile — the specialization
    of functions for the handler that is their context, reading parameters in place,
    splitting long functions, constant arguments in static storage — and what it has no use
-   for yet: the Safe mode, freestanding targets, the cache of compiled runtimes and other
-   targets than the one `gammac` runs on.
+   for yet: the cache of compiled package C sources. The Safe mode, freestanding targets,
+   other targets and the caches of the compiled runtime and of built programs are in
+   the section "Targets, modes and caches" below.
 
    Before generating code, `gammac` checks every function body the program can reach,
    including the core library's (which `gammac tir`, like `gamma tir`, leaves out), and
@@ -287,13 +289,46 @@ the `c-sources`, `include-dirs`, `libs` and `lib-dirs` of the package and its
 dependencies. The C sources are compiled again by every build (there is no object cache),
 each with the include directories of its own package. `CC` may hold arguments.
 
-Differences: `gammac` has no Safe mode, so `mode = "safe"` is an error for `build` and
-`run` (and `check` analyzes as Checked); `debug-info` of the manifest follows `-g`;
-`gammac modules`, `decls` and `tir` do not look at the lock
-file, as the reference's do not; there is no object cache, so `cache clean` has no
-runtime objects to count; and messages start `gammac:`.
+Differences: `debug-info` of the manifest follows `-g`; `gammac modules`, `decls` and
+`tir` do not look at the lock file, as the reference's do not; the C sources of packages
+have no object cache (so a program with such sources is not kept in the cache of built
+programs either); and messages start `gammac:`.
 `tests/selfhost.rs` runs both programs over the same steps in two scratch directories
 (local `file://` repositories and archives) and compares what they print and write.
+
+### Targets, modes and caches
+
+`gammac check`, `build`, `run`, `test` and `bench` take `--target=TRIPLE` and `--mode=safe`
+and read `CC`, `CFLAGS`, `LDFLAGS`, `GAMMA_RUNNER`, `WASI_SDK_PATH` and `WASM_OPT` as
+`gamma` does. The target is a run-time value (`load.Target`, in `compiler/load/target.gm`)
+that the loader, the checker, the evaluator and the C back end read: pointer size, byte
+order, the operating system, the architecture, whether it is a Fil-C target and whether
+`f16` exists. Without `--target` it is read from the predefined macros of the C compiler
+(`cc -dM -E`); with it, `compiler/driver/toolchain.gm` picks `<triple>-gcc`, else
+`clang --target=<triple>`, or adds the target to a `CC` that names clang or `zig cc`, and
+refuses a compiler that makes code for another machine.
+
+- **Freestanding targets** (`*-none-*`): there is no `main`; the functions marked
+  `#export` are the entry points, each of which starts the program (`gm_start`) first, and
+  `#trap_hook` receives the traps. `build` writes `<name>.o`; `run`, `test` and `bench`
+  are refused. The code is in `compiler/cgen/freestanding.gm`.
+- **`wasm32-wasi`**: the link flags, the `.wasm` name, `wasm-opt --asyncify` for programs
+  that switch fibers (`compiler/cgen/wasi.gm`; `WASM_OPT` names the program) and
+  `wasmtime` as the runner unless `GAMMA_RUNNER` is set.
+- **`--mode=safe`**: builds with Fil-C (`filcc` on `PATH` or in `/opt/fil/bin`) and links
+  the cached runtime. It cannot be combined with `--target`.
+- **Caches** (`compiler/driver/rtcache.gm`): Debug and Safe builds link a runtime object
+  compiled once (`gm_rt-<hash>.o` in the cache directory), and `run` keeps the programs
+  it built (`run/prog-<hash>`, the 32 most recent), keyed by the C, the compiler and its
+  flags. `cache clean` counts both.
+
+`tests/selfhost.rs` compares `gammac` with `gamma` on `check --target=...` over every
+program, on build, run, test and bench for other targets (when the cross compiler and the
+emulator are installed), on the freestanding firmware example, and on the error cases (an
+unknown triple, a missing compiler, Safe mode without `filcc`). The Safe mode itself is
+compared only where `/opt/fil/bin/filcc` exists. Not ported: `lint` and `fix` with
+`--target`, the quoting of Windows command lines, and the private (0700) mode of the cache
+directories, which the standard library cannot set.
 
 ### Growing a stage
 

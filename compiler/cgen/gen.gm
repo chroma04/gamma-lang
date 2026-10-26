@@ -100,12 +100,23 @@ pub Generated :: struct {
     pub parts: Parts
     /// Libraries to link (from `foreign` blocks), beyond the C library.
     pub libs: []const string
+    /// The program is for a freestanding target (§3.7.1): the code is compiled with the
+    /// runtime into one object, and has no `main`.
+    pub freestanding: bool = false
+    /// A freestanding program with a `#trap_hook`.
+    pub trap_hook: bool = false
 }
 
 /// Translates the program to C source whose `main` runs `entry`.
 pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs sema.Load {
     entries := [1]u32(entry)
     return generate_entries(p, entries[..], false, opts)
+}
+
+/// Translates a program for a freestanding target to C source: no `main`, and the program's
+/// exported functions as its entry points (§3.7.1).
+pub generate_object :: fn(p: ^Prog, opts: Options) -> Unsup!Generated needs sema.Load {
+    return generate_entries(p, empty_slice(u32), false, opts)
 }
 
 /// Translates the program to C source whose `main` runs one of `entries`, chosen by the
@@ -144,10 +155,14 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
     g.ty.debug_names = opts.debug_info
     for entry in entries { g.queue(entry) }
     for f in p.s.export_fns.items { g.queue(f) }
+    if hook := p.s.trap_hook { g.queue(hook) }
     try g.drain()
     consts := try g.gen_consts()
     exports := try g.gen_exports()
-    main := try g.gen_main(entries, select)
+    // A freestanding program has no `main`: its exports start it (§3.7.1).
+    freestanding := p.target.os is "Freestanding"
+    if freestanding { exports = str.format("{}{}{}", g.gen_start(), exports, try g.gen_trap_hook())! }
+    main: string = if freestanding { "" } else { try g.gen_main(entries, select) }
     checks := str.format("GM_API int gm_checks = {};\n", if opts.checks { 1 } else { 0 })!
     head := list(u8)
     head.extend(SUPPORT)!
@@ -181,9 +196,15 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
     out.extend(consts.init)!
     out.extend(g.helpers.bodies.items)!
     out.extend(g.bodies.items)!
+    if not p.target.f16 and str.contains(out.items, "_Float16") {
+        return !unsupported(source.DUMMY, "`f16` needs a C compiler with `_Float16`, which this target's compiler lacks")
+    }
+    if freestanding and str.contains(out.items, "gm_with_go(") and p.target.arch not in ("X86_64", "Aarch64", "S390x") {
+        return !Unsup(message: str.format("fibers (`with … on`) need a context switch, which the runtime has only for x86-64, AArch64 and s390x; this freestanding target ({}) has none", p.target.arch)!, span: source.DUMMY)
+    }
     // A program that switches fibers runs its entry under the runtime's fiber support.
     run_main := if str.contains(out.items, "gm_with_go(") { "gm_run_main_fibers" } else { "gm_run_main" }
-    main_text := str.format("#define GM_RUN_MAIN {}\n{}", run_main, main)!
+    main_text: string = if main.len is 0 { "" } else { str.format("#define GM_RUN_MAIN {}\n{}", run_main, main)! }
     out.extend(exports)!
     out.extend(main_text)!
     reset := ""
@@ -198,7 +219,7 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         // function (see `split`), so the tail starts with one of its own.
         tail: str.format("{}{}{}{}", reset, consts.init, exports, main_text)!,
     )
-    return Generated(code: out.items, parts: parts, libs: g.libs.items)
+    return Generated(code: out.items, parts: parts, libs: g.libs.items, freestanding: freestanding, trap_hook: freestanding and p.s.trap_hook is not null)
 }
 
 // ---------------------------------------------------------------------------------
@@ -358,12 +379,14 @@ gen_exports :: fn(g: ^Gen) -> Unsup!string needs sema.Load {
         }
         call := str.format("{}({})", g.addr_name(f), str.join(args.items, ", ")!)!
         param_text: string = if params.items.len is 0 { "void" } else { str.join(params.items, ", ")! }
+        // A freestanding program has no `main`: each export starts it first.
+        start := if g.prog.target.os is "Freestanding" { "gm_start(); " } else { "" }
         ret := "void"
-        body := str.format("{};", call)!
+        body := str.format("{}{};", start, call)!
         if not g.ty.is_unit(def.ret) {
             ret = try g.c_abi_type(def.ret, def.span)
             value: string = if g.ty.mirror(def.ret) is not null { call } else { str.format("({}){}", ret, call)! }
-            body = str.format("return {};", value)!
+            body = str.format("{}return {};", start, value)!
         }
         cc := conv_attr(def.win64)
         out.write("{}{} {}({}) __asm__(GM_SYM(\"{}\"));\n", cc, ret, cname, param_text, sym)!
