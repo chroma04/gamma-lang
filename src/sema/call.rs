@@ -1469,7 +1469,8 @@ pub(super) fn is_const_ref_arg(e: &ast::Expr, ty: Ty) -> bool {
     if let Some(h) = &hoisted {
         e = h;
     }
-    matches!(e.kind, ExprKind::Unary { op: ast::UnOp::AddrOf, .. }) && matches!(ty.kind(), TyKind::Ptr { is_const: true, .. })
+    matches!(e.kind, ExprKind::Unary { op: ast::UnOp::AddrOf, .. })
+        && matches!(ty.kind(), TyKind::Ptr { is_const: true, .. })
 }
 
 /// Packs the arguments for a rest parameter (§11.3): the positional arguments after those

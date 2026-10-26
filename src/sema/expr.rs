@@ -2535,7 +2535,8 @@ impl<'a, 's> FnCx<'a, 's> {
             let v = self.array_as_slice(e, target);
             return self.coerce(v, target);
         }
-        if let (TyKind::Slice { is_const: true, .. }, TyKind::Slice { is_const: false, .. }) = (src.kind(), target.kind())
+        if let (TyKind::Slice { is_const: true, .. }, TyKind::Slice { is_const: false, .. }) =
+            (src.kind(), target.kind())
             && super::seq::is_held_temp(&e)
         {
             let d = crate::diag::Diagnostic::error(e.span, format!("expected `{}`, found `{}`", target, src)).with_note(

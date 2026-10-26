@@ -81,11 +81,9 @@ dangling stores are now compile errors (decisions/045).
 - **Proc has no try_wait / process-group kill** (s45 W-test): `--timeout` needs a watchdog
   thread; children of a test are not killed. Library gap.
 - No sorted set / `keys_sorted` (W-debug); `[_]T(...)` count inference for constants (W-debug).
-- s45b: **no flush for buffered stdout** (W-lsp): `Out.write` → `@sys_write(1)` → stdio
-  buffer; a long-running server (lsp) must write `/dev/stdout` as a file. Fix needs a
-  design (an `Out.flush` op breaks every handler; maybe `std/io` flush of the system
-  output, or line buffering when interactive). Flagged to user.
+- s45b: no flush for buffered stdout (W-lsp) — RESOLVED s45c (decisions/049): runtime +
+  interp flush before every blocking op, spec §12.9 "Buffered output"; lsp uses Out.
 - s45b: thread entry points must be exactly `needs Sys` (W-lsp, 2x); `Channel` cannot tell
   empty from closed (W-lsp); no realpath in Fs (W-lsp, W-cross readlink); temporary array
-  slicing again (W-cross, 3rd+ time: `[N]T(..)[..]` outside an argument); `make_dir` has
+  slicing — RESOLVED s45c (decisions/049: array → []const T at every coercion site); `make_dir` has
   no mode; constant initializers unchecked until used (tooling must force them).

@@ -85,7 +85,9 @@ pub fn dangling_message(name: crate::symbol::Symbol, why: &str) -> String {
         return match why {
             "stored" => "this slice of a temporary array is stored where it outlives the array".to_string(),
             "returned" => "this slice of a temporary array is returned, but the array ends with the call".to_string(),
-            _ => "this slice of a temporary array is passed to a call that may keep it after the array ends".to_string(),
+            _ => {
+                "this slice of a temporary array is passed to a call that may keep it after the array ends".to_string()
+            }
         };
     }
     match why {
