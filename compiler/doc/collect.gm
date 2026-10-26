@@ -1,0 +1,527 @@
+// Reading a module: its public declarations, signatures and documentation.
+
+ast :: import "../ast"
+diag :: import "../diag"
+fs :: import "std/fs"
+parse :: import "../parse"
+source :: import "../source"
+str :: import "std/str"
+syntax :: import "../syntax"
+
+/// What a public declaration is. The order of `KINDS` is the order of the sections in
+/// the output.
+Kind :: union { Struct, Union, TypeAlias, Effect, Handler, Const, Var, Function, Foreign, Import }
+
+KINDS :: [10]Kind(.Struct, .Union, .TypeAlias, .Effect, .Handler, .Const, .Var, .Function, .Foreign, .Import)
+
+/// The title of the section listing declarations of this kind.
+section :: fn(k: Kind) -> string => match k {
+    .Struct => "Structs"
+    .Union => "Unions"
+    .TypeAlias => "Type aliases"
+    .Effect => "Effects"
+    .Handler => "Handlers"
+    .Const => "Constants"
+    .Var => "Variables"
+    .Function => "Functions"
+    .Foreign => "Foreign functions"
+    .Import => "Imports"
+}
+
+/// What to call the declaration in a warning.
+noun :: fn(k: Kind) -> string => match k {
+    .Struct => "struct"
+    .Union => "union"
+    .TypeAlias => "type alias"
+    .Effect => "effect"
+    .Handler => "handler"
+    .Const => "constant"
+    .Var => "variable"
+    .Function => "function"
+    .Foreign => "foreign block"
+    .Import => "import"
+}
+
+/// A documented field, variant or operation: its name(s) and its doc comment.
+Member :: struct {
+    name: string
+    doc: string
+}
+
+/// One public declaration.
+Decl :: struct {
+    kind: Kind
+    /// The declared name; for a handler, `handler E for T`.
+    name: string
+    /// The signature as written, in the order and layout of the source.
+    sig: string
+    doc: ?string
+    /// What the fields, variants or operations of the declaration are called, and the
+    /// documented ones among them with their doc comments.
+    member_label: string
+    members: []Member
+    /// Where the declaration is, for warnings: `file:line`.
+    location: string
+    /// For a handler declaration that is not `pub`: the name of the type it handles. It is
+    /// listed only if that type is a public declaration of the module, since a handler
+    /// declaration applies wherever its type is used (spec section 12.6).
+    handler_target: ?string
+}
+
+/// A documented module.
+Module :: struct {
+    /// The name shown in the documentation: the import path for the standard library
+    /// (`std/io`), else the directory name.
+    name: string
+    /// The output file of the module below the output directory, without extension.
+    path: string
+    /// The module's own documentation (`//!` lines).
+    doc: string
+    decls: []Decl
+    /// The first file of the module, for warnings.
+    location: string
+}
+
+/// Warnings for the public declarations (and the module itself) without documentation.
+missing :: fn(m: ^const Module) -> []string needs Alloc {
+    out := list(string)
+    if trim(m.doc).len is 0 {
+        out.push(str.format("{}: warning: module `{}` has no `//!` documentation", m.location, m.name)!)!
+    }
+    for d in m.decls {
+        if d.doc is null and d.handler_target is null {
+            out.push(str.format("{}: warning: public {} `{}` has no doc comment", d.location, noun(d.kind), d.name)!)!
+        }
+    }
+    return out.items
+}
+
+/// Why a module could not be read: the text to print.
+Failure :: struct {
+    message: string
+}
+
+/// A module being read: the files read so far.
+Reader :: struct {
+    sm: source.SourceMap
+    diags: diag.Diagnostics
+    next_id: ast.NodeId = 0
+    decls: List(Decl)
+    docs: List(string)
+    /// The path of the first file, for warnings.
+    location: string = ""
+}
+
+reader :: fn() -> Reader needs Alloc => Reader(sm: source.source_map(), diags: diag.diagnostics(), decls: list(Decl), docs: list(string))
+
+/// Reads the module made of `files` (parsed in the given order).
+///
+/// `name` is the module's name and `path` its output path. A file that does not parse is
+/// an error.
+load_module :: fn(files: []const string, name, path: string) -> Failure!Module needs Alloc + Fs {
+    r := reader()
+    for f in files {
+        src := fs.read_all(f) else e => {
+            r.diags.report(source.DUMMY, str.format("cannot read {}: {}", f, describe_read_error(e))!)
+            return !Failure(message: render_diagnostics(&r.sm, &r.diags))
+        }
+        try r.read_file(f, src)
+    }
+    return r.module_of(name, path)
+}
+
+/// Reads the file `path`, whose text is `src`, as the next file of the module.
+read_file :: fn(r: ^Reader, path, src: string) -> Failure!() needs Alloc {
+    if r.location.len is 0 { r.location = path }
+    if not src.utf8_valid() {
+        r.diags.report(source.DUMMY, str.format("{}: source file is not valid UTF-8 (at byte {})", path, valid_up_to(src))!)
+        return !Failure(message: render_diagnostics(&r.sm, &r.diags))
+    }
+    id := r.sm.add(path, src)
+    lexed := syntax.lex(id, src, &r.diags)
+    tree := parse.parse_file(id, &lexed, &r.next_id, &r.diags)
+    if r.diags.has_errors() { return !Failure(message: render_diagnostics(&r.sm, &r.diags)) }
+    first := if tree.items.len > 0 { usize(tree.items[0].span.lo) } else { src.len }
+    doc := module_doc(src[0..first])
+    if doc.len > 0 { r.docs.push(doc)! }
+    cx := Cx(src: src, path: path, sm: &r.sm, file: id)
+    cx.collect_items(tree.items, null, &r.decls)
+    return ()
+}
+
+/// The module of the files read.
+module_of :: fn(r: ^Reader, name, path: string) -> Module needs Alloc {
+    // Handler declarations are listed only for a type that is a public declaration.
+    public := list(string)
+    for d in r.decls.items {
+        if d.kind is not .Handler { public.push(d.name)! }
+    }
+    kept := list(Decl)
+    for d in r.decls.items {
+        if t := d.handler_target {
+            if t not in public.items { continue }
+        }
+        kept.push(d)!
+    }
+    return Module(name: name, path: path, doc: join(r.docs.items, "\n\n"), decls: kept.items, location: r.location)
+}
+
+/// All diagnostics, sorted by position, in the human-oriented format.
+render_diagnostics :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics) -> string needs Alloc {
+    diags.sort()
+    out := list(u8)
+    for d in diags.list.items { diag.render(sm, &d, .Human, &out) }
+    return out.items
+}
+
+describe_read_error :: fn(e: fs.ReadError) -> string needs Alloc => match e {
+    .Io(io) => describe_io_error(io)
+    .Alloc(_) => "out of memory"
+}
+
+/// The length of the longest prefix of `text` that is valid UTF-8.
+valid_up_to :: fn(text: string) -> usize {
+    i: usize = 0
+    while i < text.len {
+        c := text[i]
+        n: usize = match c {
+            0x00..=0x7F => 1
+            0xC2..=0xDF => 2
+            0xE0..=0xEF => 3
+            0xF0..=0xF4 => 4
+            _ => 0
+        }
+        if n is 0 or i + n > text.len or not text[i..i + n].utf8_valid() { return i }
+        i += n
+    }
+    return i
+}
+
+/// The `//!` lines of `head` (the text before the first item), as Markdown.
+module_doc :: fn(head: string) -> string needs Alloc {
+    lines := list(string)
+    for l in lines_of(head) {
+        rest := str.strip_prefix(trim_start(l), "//!") else continue
+        lines.push(strip_one_space(rest))!
+    }
+    all := join(lines.items, "\n")
+    start: usize = 0
+    end := all.len
+    while start < end and all[start] is '\n' { start += 1 }
+    while end > start and all[end - 1] is '\n' { end -= 1 }
+    return all[start..end]
+}
+
+/// Names of the builtin types, for telling `c_int :: i32` (a type alias) from a constant.
+PRIMITIVES :: [17]string(
+    "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize", "f32", "f64", "bool", "string", "i128",
+    "u128", "type",
+)
+
+/// A source file being read.
+Cx :: struct {
+    src: string
+    path: string
+    sm: ^const source.SourceMap
+    file: source.FileId
+}
+
+text :: fn(cx: ^const Cx, s: source.Span) -> string => cx.src[usize(s.lo)..usize(s.hi)]
+
+location :: fn(cx: ^const Cx, lo: u32) -> string needs Alloc {
+    lc := cx.sm.file(cx.file).line_col(lo)
+    return str.format("{}:{}", cx.path, lc.line)!
+}
+
+collect_items :: fn(cx: ^const Cx, items: []const ast.Item, cond: ?string, out: ^List(Decl)) needs Alloc {
+    for item in items {
+        match item.kind {
+            .When(w) => {
+                c0 := str.format("when {}", squash(cx.text(w.cond.span)))!
+                c: string = if outer := cond { str.format("{}; {}", outer, c0)! } else { c0 }
+                cx.collect_items(w.then, c, out)
+                if e := w.else_ {
+                    c1: string = if outer := cond { str.format("{}; otherwise", outer)! } else { "otherwise" }
+                    cx.collect_items(e, c1, out)
+                }
+            }
+            .Binding(b) => {
+                if item.vis is .Public { cx.binding(&item, &b, cond, out) }
+            }
+            .Handler(h) => cx.handler_decl(&item, h, cond, out)
+            _ => {}
+        }
+    }
+}
+
+handler_decl :: fn(cx: ^const Cx, item: ^const ast.Item, h: ^const ast.HandlerDecl, cond: ?string, out: ^List(Decl)) needs Alloc {
+    from := h.for_ty.span.hi
+    if effs := h.effects {
+        if e := effs.last() { from = e.span.hi }
+    }
+    open := usize(from)
+    open += str.find(cx.src[open..], "{") else 0
+    lo := usize(h.span.lo)
+    head := trim_end(cx.src[lo..open])
+    name := squash(cx.src[lo..usize(h.for_ty.span.hi)])
+    sig := cx.with_attrs(item, cond, head)
+    target: ?string = if item.vis is .Public { null } else { cx.base_name(h.for_ty) }
+    out.push(Decl(
+        kind: .Handler,
+        name: name,
+        sig: sig,
+        doc: item.doc,
+        member_label: "",
+        members: list(Member).items,
+        location: cx.location(item.span.lo),
+        handler_target: target,
+    ))!
+}
+
+/// The name of the type that `e` denotes, without pointers and generic arguments.
+base_name :: fn(cx: ^const Cx, e: ^const ast.Expr) -> string => match e.kind {
+    .PtrType(_, inner) => cx.base_name(inner)
+    .Paren(inner) => cx.base_name(inner)
+    .Call(callee, _, _) => cx.base_name(callee)
+    _ => cx.text(e.span)
+}
+
+binding :: fn(cx: ^const Cx, item: ^const ast.Item, b: ^const ast.Binding, cond: ?string, out: ^List(Decl)) needs Alloc {
+    name_lo := usize(b.names[0].span.lo)
+    names := list(string)
+    for n in b.names { names.push(cx.text(n.span))! }
+    name := join(names.items, ", ")
+    init := strip_attrs(b.init)
+    members := list(Member)
+    label := ""
+    kind: Kind = .Const
+    sig := ""
+    match init.kind {
+        .Fn(f) => {
+            end := usize(match f.body {
+                .Block(blk) => blk.span.lo
+                .Expr(e) => e.span.lo
+            })
+            t := trim_end(cx.src[name_lo..end])
+            t = trim_end(str.strip_suffix(t, "=>") else t)
+            kind = .Function
+            sig = t
+        }
+        .Struct(s) => {
+            label = "Fields"
+            body := list(string)
+            hidden := false
+            cx.fields(s.members, &body, &members, &hidden)
+            kind = .Struct
+            sig = cx.braced(name_lo, s.span.lo, body.items, hidden)
+        }
+        .Union(u) => {
+            label = "Variants"
+            body := list(string)
+            cx.variants(u.members, &body, &members)
+            kind = .Union
+            sig = cx.braced(name_lo, u.span.lo, body.items, false)
+        }
+        .Effect(e) => {
+            label = "Operations"
+            body := list(string)
+            for op in e.ops {
+                body.push(cx.text(op.span))!
+                cx.member_doc(&members, cx.text(op.name.span), op.span.lo)
+            }
+            kind = .Effect
+            sig = cx.braced(name_lo, e.span.lo, body.items, false)
+        }
+        .Foreign(f) => {
+            body := list(string)
+            for m in f.members { body.push(cx.text(m.span))! }
+            open := find_open_brace(cx.src, usize(init.span.lo))
+            head := trim_end(cx.src[name_lo..open])
+            kind = .Foreign
+            sig = join_braced(head, body.items, false)
+        }
+        .Import(_) => {
+            kind = .Import
+            sig = cx.src[name_lo..usize(b.init.span.hi)]
+        }
+        k => {
+            typed_value := false
+            if t := b.ty { typed_value = cx.text(t.span) is not "type" }
+            if b.kind is .Var {
+                kind = .Var
+            } else if typed_value {
+                kind = .Const
+            } else if k in (.OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_)) {
+                kind = .TypeAlias
+            } else if k in (.Ident(_), .Field(_), .Call(_)) and b.ty is null and (is_upper(name) or init_text_is_primitive(cx, init)) {
+                kind = .TypeAlias
+            } else {
+                kind = .Const
+            }
+            full := cx.src[name_lo..usize(b.init.span.hi)]
+            if full.index_of('\n') is not null or full.len > 100 {
+                // A long initializer is an implementation detail; show the declaration.
+                if kind is .TypeAlias {
+                    sig = str.format("{} :: ...", name)!
+                } else if t := b.ty {
+                    sig = str.format("{}: {}", name, cx.text(t.span))!
+                } else {
+                    sig = str.format("{} :: ...", name)!
+                }
+            } else {
+                sig = full
+            }
+        }
+    }
+    out.push(Decl(
+        kind: kind,
+        name: name,
+        sig: cx.with_attrs(item, cond, sig),
+        doc: item.doc,
+        member_label: label,
+        members: members.items,
+        location: cx.location(item.span.lo),
+        handler_target: null,
+    ))!
+}
+
+/// Whether `name` starts with an uppercase letter.
+is_upper :: fn(name: string) -> bool => name.len > 0 and name[0] in 'A'..='Z'
+
+init_text_is_primitive :: fn(cx: ^const Cx, init: ^const ast.Expr) -> bool => cx.text(init.span) in PRIMITIVES
+
+/// `head {` + the body lines + `}`, where the head is the source from `name_lo` to the
+/// opening brace of the literal that starts at `lit_lo`.
+braced :: fn(cx: ^const Cx, name_lo: usize, lit_lo: u32, body: []const string, hidden: bool) -> string needs Alloc {
+    open := find_open_brace(cx.src, usize(lit_lo))
+    head := trim_end(cx.src[name_lo..open])
+    return join_braced(head, body, hidden)
+}
+
+fields :: fn(cx: ^const Cx, ms: []const ast.StructMember, body: ^List(string), docs: ^List(Member), hidden: ^bool) needs Alloc {
+    for m in ms {
+        match m {
+            .Field(f) => {
+                if f.vis is .Public {
+                    body.push(cx.text(f.span))!
+                    names := list(string)
+                    for n in f.names { names.push(cx.text(n.span))! }
+                    cx.member_doc(docs, join(names.items, ", "), f.span.lo)
+                } else {
+                    hidden^ = true
+                }
+            }
+            .When(w) => {
+                cx.fields(w.then, body, docs, hidden)
+                if e := w.else_ { cx.fields(e, body, docs, hidden) }
+            }
+        }
+    }
+}
+
+variants :: fn(cx: ^const Cx, ms: []const ast.UnionMember, body: ^List(string), docs: ^List(Member)) needs Alloc {
+    for m in ms {
+        match m {
+            .Variant(v) => {
+                body.push(cx.text(v.span))!
+                cx.member_doc(docs, cx.text(v.name.span), v.span.lo)
+            }
+            .When(w) => {
+                cx.variants(w.then, body, docs)
+                if e := w.else_ { cx.variants(e, body, docs) }
+            }
+        }
+    }
+}
+
+/// Records the doc comment above the member that starts at `lo`, if it has one.
+member_doc :: fn(cx: ^const Cx, docs: ^List(Member), name: string, lo: u32) needs Alloc {
+    lo_ := usize(lo)
+    line_start: usize = 0
+    if i := str.rfind(cx.src[0..lo_], "\n") { line_start = i + 1 }
+    if trim(cx.src[line_start..lo_]).len > 0 {
+        return // Not the first on its line: a comment above belongs to something else.
+    }
+    lines := list(string)
+    end := line_start
+    while end > 0 {
+        start: usize = 0
+        if i := str.rfind(cx.src[0..end - 1], "\n") { start = i + 1 }
+        line := trim(cx.src[start..end])
+        rest := str.strip_prefix(line, "///") else break
+        if rest.starts_with("/") { break }
+        lines.push(strip_one_space(rest))!
+        end = start
+    }
+    if lines.items.len > 0 {
+        lines.items.reverse()
+        docs.push(Member(name: name, doc: join(lines.items, "\n")))!
+    }
+}
+
+/// The signature preceded by the attributes of the item and the `when` condition that
+/// makes it exist.
+with_attrs :: fn(cx: ^const Cx, item: ^const ast.Item, cond: ?string, sig: string) -> string needs Alloc {
+    out := list(u8)
+    if c := cond { out.write("// {}\n", c)! }
+    for a in item.attrs { out.write("{}\n", cx.text(a.span))! }
+    out.extend(sig)!
+    return out.items
+}
+
+/// `head {`, the lines of `body` indented, and `}`. `hidden` adds a line saying that
+/// private members were left out.
+join_braced :: fn(head: string, body: []const string, hidden: bool) -> string needs Alloc {
+    out := list(u8)
+    if body.len is 0 and not hidden {
+        out.write("{} {{}}", head)!
+        return out.items
+    }
+    out.write("{} {{\n", head)!
+    for b in body {
+        for i, line in enumerate(lines_of(b)) {
+            // Continuation lines keep their indentation relative to the declaration.
+            l := if i is 0 { trim_start(line) } else { line }
+            if trim(l).len is 0 {
+                out.push('\n')!
+            } else {
+                out.write("    {}\n", trim_end(l))!
+            }
+        }
+    }
+    if hidden { out.extend("    // private fields omitted\n")! }
+    out.push('}')!
+    return out.items
+}
+
+strip_attrs :: fn(e: ^const ast.Expr) -> ^const ast.Expr => match e.kind {
+    .Attributed(_, inner) => strip_attrs(inner)
+    _ => e
+}
+
+/// The offset of the `{` that opens the body of the literal starting at `from`, skipping
+/// brackets (generic parameters, `where` clauses), strings and comments.
+find_open_brace :: fn(src: string, from: usize) -> usize {
+    i := from
+    depth: i32 = 0
+    while i < src.len {
+        match src[i] {
+            '(', '[' => { depth += 1 }
+            ')', ']' => { depth -= 1 }
+            '{' if depth <= 0 => return i
+            '"' => {
+                i += 1
+                while i < src.len and src[i] is not '"' {
+                    if src[i] is '\\' { i += 1 }
+                    i += 1
+                }
+            }
+            '/' if src.get(i + 1) is '/' => {
+                while i < src.len and src[i] is not '\n' { i += 1 }
+            }
+            _ => {}
+        }
+        i += 1
+    }
+    return from
+}

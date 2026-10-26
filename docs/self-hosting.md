@@ -28,6 +28,7 @@ this checkable:
 | checking | the diagnostics of `gamma check`, in the human format |
 | back end | the output and exit status of the compiled programs |
 | formatter | the output, messages and exit status of `gamma fmt` |
+| `doc` | the standard output, standard error, exit status and files of `gamma doc` |
 | bootstrap | the C that `gammac` generates for itself, built by itself |
 
 Diagnostics are compared in the JSON format (`--diag-format=json`), which carries every
@@ -177,6 +178,27 @@ a bad command line start `gammac:` instead of `gamma:`, and the usage text is `g
 variants of each that the formatter must change (no indentation, collapsed or added
 spaces, CR LF line ends, cut off in the middle), and compares whole directories, in place
 and with `--check`.
+
+### Tools
+
+`gammac doc` is a port of `gamma doc` (`src/doc/`): it writes the API documentation of a
+module, or with `--all` of every module below a directory, as Markdown or HTML, from the
+public declarations and doc comments of the syntax tree that `gammac`'s parser builds. It
+takes the options of `gamma doc` (`--format=markdown|html`, `-o PATH`, `--all`,
+`--missing`; see `gammac doc --help`) and writes the same files byte for byte, so
+`gammac doc lib/std --all -o docs/std` regenerates the standard library reference. The
+code is in `compiler/doc/`, one file for each part of `src/doc/` (`collect.gm` reads a
+module, `markdown.gm`, `html.gm` and `md_html.gm` render it, `doc.gm` is the command line).
+A module with syntax errors is reported with the diagnostics of `gammac check` in the
+human format, and the command fails. It differs from the reference in two small ways: its
+messages start `gammac:` instead of `gamma:`, and the name of a module is found without
+resolving symbolic links, so a link to `lib/std` is documented under the link's name. Like
+the reference, it treats the Unicode white space characters as white space when it renders
+doc comments.
+
+`tests/selfhost.rs` runs both commands on `lib/std` in both formats, on single modules and
+files, on the fixtures of `tests/doc/` and on the error cases, and compares what they
+print and every file they write.
 
 ### Growing a stage
 

@@ -815,3 +815,150 @@ fn formatting_files_and_directories_matches_the_reference() {
         assert_eq!(contents(&r), contents(&c), "files after fmt {:?}", args);
     }
 }
+
+// ---------------------------------------------------------------------------------
+// gammac doc
+// ---------------------------------------------------------------------------------
+
+/// Every file below `dir`, as (path relative to `dir` with `/`, contents), in path order.
+fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let name = format!("{}{}", rel, e.file_name().to_string_lossy());
+            if e.path().is_dir() {
+                walk(&e.path(), &format!("{}/", name), out);
+            } else {
+                out.push((name, std::fs::read(e.path()).unwrap()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, "", &mut out);
+    out.sort();
+    out
+}
+
+/// A fresh directory for the output of one run of `doc`, below the tests' temporary directory.
+fn doc_dir(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-doc").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Runs `gamma doc` and `gammac doc` with `args`, in which `OUT` is replaced by an output
+/// path of its own for each, and requires the same standard output, standard error (the
+/// reference calls itself `gamma`), exit status and files written.
+fn doc_matches(name: &str, args: &[&str]) {
+    let run = |who: &str| {
+        let out = doc_dir(&format!("{}-{}", name, who));
+        let out_str = out.to_str().unwrap();
+        let args: Vec<String> = args.iter().map(|a| a.replace("OUT", out_str)).collect();
+        let got = if who == "gamma" {
+            let mut cmd = gamma();
+            cmd.arg("doc").args(&args);
+            common::output(&mut cmd).unwrap()
+        } else {
+            let mut full = vec!["doc".to_string()];
+            full.extend(args);
+            run_gammac(&full)
+        };
+        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).replace(out_str, "OUT");
+        // The reference names itself in its messages.
+        let stderr: String = text(&got.stderr)
+            .lines()
+            .map(|l| {
+                let l = l.strip_prefix("gamma: ").map_or(l.to_string(), |r| format!("gammac: {}", r));
+                format!("{}\n", l.replace("usage: gamma doc", "usage: gammac doc"))
+            })
+            .collect();
+        (text(&got.stdout), stderr, got.status.code(), tree(&out))
+    };
+    let (want, got) = (run("gamma"), run("gammac"));
+    assert_eq!(want.0, got.0, "doc {}: standard output differs", name);
+    assert_eq!(want.1, got.1, "doc {}: standard error differs", name);
+    assert_eq!(want.2, got.2, "doc {}: exit status differs", name);
+    assert_eq!(want.3.len(), got.3.len(), "doc {}: different files written", name);
+    for ((p, a), (q, b)) in want.3.iter().zip(&got.3) {
+        assert_eq!(p, q, "doc {}: different files written", name);
+        assert!(a == b, "doc {}: {} differs from the reference's", name, p);
+    }
+}
+
+#[test]
+fn doc_matches_the_reference_on_the_standard_library() {
+    for format in ["markdown", "html"] {
+        let fmt = format!("--format={}", format);
+        doc_matches(&format!("std-{}", format), &["lib/std", "--all", &fmt, "-o", "OUT"]);
+    }
+    doc_matches("std-missing", &["lib/std", "--all", "--missing", "-o", "OUT"]);
+}
+
+#[test]
+fn doc_matches_the_reference_on_single_modules() {
+    let modules = [
+        "lib/std/io",
+        "lib/std/str",
+        "lib/std/fs",
+        "lib/std/collections/hash_map",
+        "lib/core",
+        "compiler/doc",
+        "compiler/ast",
+        "compiler/load",
+        "compiler/main.gm",
+        "tests/doc/fixture/shapes",
+        "tests/doc/fixture/shapes/extra.gm",
+    ];
+    for (i, module) in modules.iter().enumerate() {
+        for format in ["markdown", "html"] {
+            let fmt = format!("--format={}", format);
+            doc_matches(&format!("module{}-{}", i, format), &[module, &fmt]);
+            doc_matches(&format!("module{}-{}-missing", i, format), &[module, &fmt, "--missing"]);
+        }
+    }
+}
+
+#[test]
+fn doc_matches_the_reference_on_trees_and_files() {
+    doc_matches("fixture-tree", &["tests/doc/fixture", "--all", "--format=html", "-o", "OUT"]);
+    doc_matches("fixture-file", &["tests/doc/fixture/shapes", "-o", "OUT/shapes.md"]);
+    doc_matches("fixture-dir", &["tests/doc/fixture/shapes", "-o", "OUT/sub/dir"]);
+    doc_matches("compiler-tree", &["compiler", "--all", "-o", "OUT"]);
+}
+
+#[test]
+fn doc_matches_the_reference_on_errors() {
+    let cases: [&[&str]; 11] = [
+        &["--format=pdf", "x"],
+        &["tests/doc/fixture/shapes", "--format"],
+        &["tests/doc/fixture/shapes", "-o"],
+        &["tests/doc/fixture/shapes", "--bogus"],
+        &["tests/doc/fixture/shapes", "lib/std/io"],
+        &[],
+        &["lib/std", "--all"],
+        &["no/such/dir"],
+        &["lib", "--missing"],
+        &["tests", "--all", "-o", "OUT"],
+        &["tests/doc/fixture/shapes", "-o", "/proc/nope/x"],
+    ];
+    for (i, args) in cases.iter().enumerate() {
+        doc_matches(&format!("error{}", i), args);
+    }
+    // Sources that do not parse, and one that is not text.
+    let dir = doc_dir("sources");
+    std::fs::create_dir_all(dir.join("broken")).unwrap();
+    std::fs::create_dir_all(dir.join("binary")).unwrap();
+    std::fs::write(dir.join("broken/broken.gm"), "pub f :: fn( {\n").unwrap();
+    std::fs::write(dir.join("binary/bad.gm"), b"pub g :: fn() {}\n\xff\n").unwrap();
+    for sub in ["broken", "binary"] {
+        // The diagnostics name the files as they are given.
+        let path = dir.join(sub).to_str().unwrap().to_string();
+        let want = common::output(gamma().arg("doc").arg(&path)).unwrap();
+        let got = run_gammac(&["doc".to_string(), path]);
+        assert_eq!(want.stdout, got.stdout);
+        assert_eq!(want.stderr, got.stderr, "doc {}: standard error differs", sub);
+        assert_eq!(want.status.code(), got.status.code());
+        assert_eq!(got.status.code(), Some(1));
+    }
+}

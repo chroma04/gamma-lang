@@ -1,0 +1,355 @@
+//! API documentation (`gammac doc`): the public declarations of a module, with their
+//! doc comments, rendered as Markdown or HTML, in the output of `gamma doc`.
+//!
+//! Documentation is built from the syntax tree alone, so a module needs to parse but not
+//! to type-check. Signatures are copied from the source text, between the spans the
+//! parser recorded; doc comments (`///`) come from the parser, and the module's own
+//! documentation is the `//!` lines at the top of its files. The output depends only on
+//! the sources, never on the machine or the time, so it can be checked in and compared.
+//!
+//! * `load_module` reads one module (a directory of `.gm` files, or a single file);
+//! * `markdown_module`, `html_module` and the `*_index` functions render a `Module` and
+//!   the index of a set of modules;
+//! * `command` is the command-line driver.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+load :: import "../load"
+str :: import "std/str"
+
+USAGE :: ```
+usage: gammac doc <module directory | file | package root> [options]
+
+Writes the documentation of the public declarations of a module (the directory of
+.gm files that `import` names, or one file), from their `///` comments, and the `//!`
+comments at the top of its files.
+
+options:
+  --format=markdown|html   the output format (default: markdown)
+  -o <path>                write to <path>: a directory gets one file per module and an
+                           index (index.md or index.html); a single module may also go
+                           to a file. Without -o one module is printed to stdout
+  --all                    document every module below the directory (needs -o)
+  --missing                warn about public declarations and modules without
+                           documentation
+```
+
+/// The output format.
+Format :: union { Markdown, Html }
+
+extension :: fn(f: Format) -> string => match f {
+    .Markdown => "md"
+    .Html => "html"
+}
+
+/// Renders one module. `index` is the relative link to the index page, if there is one.
+render_module :: fn(m: ^const Module, format: Format, index: ?string) -> string needs Alloc => match format {
+    .Markdown => markdown_module(m, index)
+    .Html => html_module(m, index)
+}
+
+/// Renders the index page of `modules`.
+render_index :: fn(title: string, modules: []const Module, format: Format) -> string needs Alloc => match format {
+    .Markdown => markdown_index(title, modules)
+    .Html => html_index(title, modules)
+}
+
+Args :: struct {
+    path: string
+    format: Format = .Markdown
+    out: ?string = null
+    all: bool = false
+    missing: bool = false
+}
+
+fail :: fn(message: string) -> Failure => Failure(message: message)
+
+parse_format :: fn(v: string) -> Failure!Format needs Alloc => match v {
+    "markdown", "md" => .Markdown
+    "html" => .Html
+    _ => !fail(str.format("unknown format `{}` (markdown or html)", v)!)
+}
+
+parse_args :: fn(args: []const string) -> Failure!Args needs Alloc {
+    path: ?string = null
+    opts := Args(path: "")
+    i: usize = 0
+    while i < args.len {
+        a := args[i]
+        i += 1
+        match a {
+            "--all" => { opts.all = true }
+            "--missing" => { opts.missing = true }
+            "-o" => {
+                opts.out = args.get(i) else return !fail("`-o` needs a path")
+                i += 1
+            }
+            "--format" => {
+                v := args.get(i) else return !fail("`--format` needs a value")
+                i += 1
+                opts.format = try parse_format(v)
+            }
+            _ => {
+                if v := str.strip_prefix(a, "--format=") {
+                    opts.format = try parse_format(v)
+                } else if a.starts_with("-") {
+                    return !fail(str.format("unknown option `{}`", a)!)
+                } else {
+                    if path is not null { return !fail("more than one input given") }
+                    path = a
+                }
+            }
+        }
+    }
+    opts.path = path else return !fail("no module given")
+    return opts
+}
+
+/// Runs `gammac doc` with the arguments after the command name; returns the exit status.
+pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + Out {
+    if "--help" in args or "-h" in args {
+        Out.write(USAGE)
+        return 0
+    }
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        opts := parse_args(args) else e => {
+            Err.write(str.format("gammac: {}\n\n{}\n", e.message, USAGE)!)
+            return 2
+        }
+        run_with(&opts) else e => {
+            Err.write(str.format("{}\n", trim_end(e.message))!)
+            return 1
+        }
+        return 0
+    }
+}
+
+run_with :: fn(args: ^const Args) -> Failure!() needs Alloc + Err + Fs + Out {
+    modules := try load_modules(args.path, args.all)
+    if args.missing {
+        warnings := list(u8)
+        for m in modules {
+            for w in missing(&m) { warnings.write("{}\n", w)! }
+        }
+        Err.write(warnings.items)
+    }
+    ext := extension(args.format)
+    if out := args.out {
+        if not args.all and has_extension(out, ext) and not is_dir(out) {
+            return write_file(out, render_module(&modules[0], args.format, null))
+        }
+        title := str.format("{} modules", try root_name(args.path))!
+        for f in output_files(title, modules, args.format) {
+            try write_file(load.join(out, f.path), f.text)
+        }
+        return ()
+    }
+    if args.all { return !fail("gammac: `--all` needs `-o <directory>`") }
+    Out.write(render_module(&modules[0], args.format, null))
+    return ()
+}
+
+/// A file of a documentation tree: its path below the tree's directory and its contents.
+OutFile :: struct {
+    path: string
+    text: string
+}
+
+/// The files of a documentation tree: one page per module and the index.
+output_files :: fn(title: string, modules: []const Module, format: Format) -> []OutFile needs Alloc {
+    ext := extension(format)
+    files := list(OutFile)
+    for m in modules {
+        index := list(u8)
+        for c in m.path {
+            if c is '/' { index.extend("../")! }
+        }
+        index.write("index.{}", ext)!
+        files.push(OutFile(path: str.format("{}.{}", m.path, ext)!, text: render_module(&m, format, index.items)))!
+    }
+    files.push(OutFile(path: str.format("index.{}", ext)!, text: render_index(title, modules, format)))!
+    return files.items
+}
+
+write_file :: fn(path, text: string) -> Failure!() needs Alloc + Fs {
+    parent := load.parent(path) else ""
+    if parent.len > 0 {
+        fs.make_dir_all(parent) else e => {
+            return !fail(str.format("gammac: {}: {}", parent, describe_io_error(e))!)
+        }
+    }
+    fs.write_all(path, text) else e => {
+        return !fail(str.format("gammac: {}: {}", path, describe_io_error(e))!)
+    }
+    return ()
+}
+
+/// The extension of the last name of `path`, if it has one.
+has_extension :: fn(path, ext: string) -> bool needs Alloc {
+    name := file_name(path) else return false
+    if name is ".." { return false }
+    i := name.len
+    while i > 1 {
+        i -= 1
+        if name[i] is '.' { return name[i + 1..] is ext }
+    }
+    return false
+}
+
+is_dir :: fn(path: string) -> bool needs Fs {
+    info := Fs.stat(path) else return false
+    return info.kind is .Dir
+}
+
+is_file :: fn(path: string) -> bool needs Fs {
+    info := Fs.stat(path) else return false
+    return info.kind is .File
+}
+
+/// The working directory.
+working_dir :: fn() -> string needs Alloc + Fs {
+    buf: [4096]u8 = ---
+    n := Fs.cwd(buf[..]) else return "."
+    return str.format("{}", buf[0..n])!
+}
+
+/// The names of `p`, without empty ones and `.`.
+path_names :: fn(p: string) -> []string needs Alloc {
+    names := list(string)
+    for name in str.split(p, "/") {
+        if name.len > 0 and name is not "." { names.push(name)! }
+    }
+    return names.items
+}
+
+/// The last name of `p`, if it has one.
+file_name :: fn(p: string) -> ?string needs Alloc => path_names(p).last()
+
+/// The last name of `p` without its extension.
+file_stem :: fn(p: string) -> ?string needs Alloc {
+    name := file_name(p) else return null
+    i := name.len
+    while i > 1 {
+        i -= 1
+        if name[i] is '.' { return name[0..i] }
+    }
+    return name
+}
+
+/// The absolute path `p` without `.` and `..` names, without looking at the file system.
+normalize :: fn(p: string) -> string needs Alloc {
+    names := list(string)
+    for name in path_names(p) {
+        if name is ".." {
+            _ = names.pop()
+        } else {
+            names.push(name)!
+        }
+    }
+    return str.format("/{}", join(names.items, "/"))!
+}
+
+/// The name of the module that `path` (a file or directory) denotes: its import path
+/// (`std/io`) inside the standard library (a `lib/std` directory), else the name of the
+/// directory or file with `.` and `..` resolved. (Symbolic links are not resolved.)
+root_name :: fn(path: string) -> Failure!string needs Alloc + Fs {
+    _ = Fs.stat(path) else e => {
+        return !fail(str.format("gammac: {}: {}", path, describe_io_error(e))!)
+    }
+    canon := normalize(load.join(working_dir(), path))
+    dir: ?string = if is_dir(canon) { canon } else { load.parent(canon) }
+    parts := list(string)
+    if d := dir {
+        if d.starts_with("/") { parts.push("/")! }
+        for name in str.split(d, "/") {
+            if name.len > 0 { parts.push(name)! }
+        }
+    }
+    p := parts.items
+    i := p.len
+    while i > 1 {
+        i -= 1
+        if p[i - 1] is "lib" and p[i] is "std" {
+            // Also for a file: it is named after its module's directory.
+            return join(p[i..], "/")
+        }
+    }
+    name := if is_dir(canon) { file_name(canon) } else { file_stem(canon) }
+    return name else "module"
+}
+
+/// A directory of `.gm` files, and its path below the directory given on the command line.
+ModuleDir :: struct {
+    dir: string
+    rel: string
+}
+
+/// The module(s) to document: a file or a directory, and with `all` every module below it.
+load_modules :: fn(path: string, all: bool) -> Failure![]Module needs Alloc + Fs {
+    if Fs.stat(path) is !_ {
+        return !fail(str.format("gammac: {}: no such file or directory", path)!)
+    }
+    root := try root_name(path)
+    if is_file(path) {
+        files := [1]string(path)
+        one := list(Module)
+        one.push(try load_module(files[..], root, root))!
+        return one.items
+    }
+    dirs := list(ModuleDir)
+    if all {
+        try module_dirs(path, "", &dirs)
+    } else if (try gm_files(path)).len > 0 {
+        dirs.push(ModuleDir(dir: path, rel: ""))!
+    }
+    if dirs.items.len is 0 {
+        hint := if all { "" } else { " (`--all` documents the modules below a directory)" }
+        return !fail(str.format("gammac: {} has no `.gm` files{}", path, hint)!)
+    }
+    modules := list(Module)
+    for d in dirs.items {
+        name: string = root
+        out_path: string = root
+        if d.rel.len > 0 and all {
+            name = str.format("{}/{}", root, d.rel)!
+            out_path = d.rel
+        }
+        modules.push(try load_module(try gm_files(d.dir), name, out_path))!
+    }
+    modules.items.stable_sort_by(fn(a, b) => a.name < b.name)
+    return modules.items
+}
+
+/// The `.gm` files directly in `dir`, in name order.
+gm_files :: fn(dir: string) -> Failure![]string needs Alloc + Fs {
+    files := list(string)
+    for r in fs.entries(dir) {
+        e := r else err => return !fail(str.format("gammac: {}: {}", dir, describe_io_error(err))!)
+        if e.name.len > 3 and e.name.ends_with(".gm") {
+            p := load.join(dir, e.name)
+            if is_file(p) { files.push(p)! }
+        }
+    }
+    files.items.sort()
+    return files.items
+}
+
+/// `dir` and the directories below it that hold `.gm` files, in name order. `rel` is the
+/// path of `dir` below the directory the search started in.
+module_dirs :: fn(dir, rel: string, out: ^List(ModuleDir)) -> Failure!() needs Alloc + Fs {
+    if (try gm_files(dir)).len > 0 { out.push(ModuleDir(dir: dir, rel: rel))! }
+    subs := list(string)
+    for r in fs.entries(dir) {
+        e := r else err => return !fail(str.format("gammac: {}: {}", dir, describe_io_error(err))!)
+        if is_dir(load.join(dir, e.name)) { subs.push(str.format("{}", e.name)!)! }
+    }
+    subs.items.sort()
+    for s in subs.items {
+        if s.starts_with(".") or s is "target" { continue }
+        sub_rel := if rel.len is 0 { s } else { str.format("{}/{}", rel, s)! }
+        try module_dirs(load.join(dir, s), sub_rel, out)
+    }
+    return ()
+}

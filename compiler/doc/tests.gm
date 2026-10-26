@@ -1,0 +1,380 @@
+// Tests of the documentation generator. They cover the renderers and the reading of a
+// module from text; `tests/selfhost.rs` compares the whole command with `gamma doc`.
+
+arena :: import "std/arena"
+str :: import "std/str"
+
+// ---------------------------------------------------------------------------------
+// The Markdown renderer
+// ---------------------------------------------------------------------------------
+
+test "escape" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(escape("a < b && c > \"d\" 'e'"), "a &lt; b &amp;&amp; c &gt; &quot;d&quot; &#39;e&#39;")
+    }
+}
+
+test "fences, links and headings" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(fence("x"), "```")
+        expect_eq(fence("a ``` b"), "````")
+        expect_eq(fence("`` ` ``"), "```")
+        expect_eq(url_path("my dir/a#b)"), "my%20dir/a%23b%29")
+        expect_eq(demote_headings("# A\ntext\n```\n# not\n```\n    # code\n## B", 3), "#### A\ntext\n```\n# not\n```\n    # code\n##### B")
+        expect_eq(demote_headings("###### deep", 3), "###### deep")
+    }
+}
+
+test "white space" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(squash("  a \n\t b\u{00A0}c  "), "a b c")
+        expect_eq(trim("\u{2003} x \u{3000}"), "x")
+        ls := lines_of("a\r\nb\n\nc\r")
+        expect_eq(ls.len, 4)
+        expect_eq(ls[0], "a")
+        expect_eq(ls[2], "")
+        expect_eq(ls[3], "c\r")
+    }
+}
+
+test "inline markdown" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(inline("`` a`b `` and ``` x``y ```"), "<code>a`b</code> and <code>x``y</code>")
+        expect_eq(inline("`` ` ``"), "<code>`</code>")
+        expect_eq(inline("***both*** and **s** and *e*"), "<em><strong>both</strong></em> and <strong>s</strong> and <em>e</em>")
+        expect_eq(inline("a * b * c"), "a * b * c")
+        expect_eq(inline("[x](https://a.test/?q=1&r=2)"), "<a href=\"https://a.test/?q=1&amp;r=2\">x</a>")
+        expect_eq(inline("[x](rel/path#frag)"), "<a href=\"rel/path#frag\">x</a>")
+        expect_eq(inline("<b>&</b>"), "&lt;b&gt;&amp;&lt;/b&gt;")
+    }
+}
+
+test "links with an unsafe scheme are shown as text" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        for url in ("javascript:alert(1)", "JaVaScRiPt:alert(1)", "data:text/html;base64,AA==", "file:///etc/passwd", "vbscript:x") {
+            html := inline(str.format("[x]({})", url)!)
+            expect(not str.contains(html, "<a "))
+            expect(str.contains(html, "[x]("))
+        }
+        // A space in the url: not a link at all.
+        expect_eq(inline("[x]( javascript:alert(1))"), "[x]( javascript:alert(1))")
+    }
+}
+
+test "blocks" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(render("# Title\n\nsome *text*\nmore"), "<h4>Title</h4>\n<p>some <em>text</em> more</p>\n")
+        expect_eq(render("- a\n- b `c`\n"), "<ul>\n<li>a</li>\n<li>b <code>c</code></li>\n</ul>\n")
+        expect_eq(render("1. one\n2. two\n"), "<ol>\n<li>one</li>\n<li>two</li>\n</ol>\n")
+        expect_eq(render("    code <x>\n    more\n\ntext"), "<pre><code>code &lt;x&gt;\nmore</code></pre>\n<p>text</p>\n")
+        expect_eq(render("```\n<script>\n```"), "<pre><code>&lt;script&gt;</code></pre>\n")
+        expect_eq(render("> quoted\n> text"), "<blockquote>\n<p>quoted text</p>\n</blockquote>\n")
+        expect_eq(
+            render("| a | b \\| c |\n| --- | --- |\n| 1 | **2** |"),
+            "<table>\n<thead><tr><th>a</th><th>b | c</th></tr></thead>\n<tbody>\n<tr><td>1</td><td><strong>2</strong></td></tr>\n</tbody>\n</table>\n",
+        )
+    }
+}
+
+test "raw HTML in doc comments is shown as text" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        hostile := [6]string(
+            "<script>alert(1)</script>",
+            "<img src=x onerror=alert(1)>",
+            "[<b>x</b>](http://a.test/\" onmouseover=\"alert(1))",
+            "# <script>alert(1)</script>",
+            "| <script> | b |\n| --- | --- |\n| <img onerror=x> | [x](javascript:1) |",
+            "```\n</code></pre><script>alert(1)</script>\n```",
+        )
+        for text in hostile[..] {
+            html := str.format("{}{}", render(text), inline(text))!
+            expect(not str.contains(html, "<script"))
+            expect(not str.contains(html, "<img"))
+            expect(not str.contains(html, "<b>"))
+            expect(not str.contains(html, "\" onmouseover"))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Reading a module
+// ---------------------------------------------------------------------------------
+
+// The module made of the single file `src`, named `m`.
+read_text :: fn(src: string) -> Module needs Alloc {
+    r := reader()
+    r.read_file("m.gm", src)!
+    return r.module_of("m", "m")
+}
+
+find_decl :: fn(m: ^const Module, name: string) -> ?Decl {
+    for d in m.decls {
+        if d.name is name { return d }
+    }
+    return null
+}
+
+SHAPES :: `//! Shapes. Second sentence.
+//!
+//! # Overview
+//!
+//! More.
+
+/// A point.
+pub Point :: struct {
+    /// The abscissa.
+    pub x, y: i32
+    secret: i32
+}
+
+/// Variants.
+pub Kind :: union {
+    /// A circle.
+    Circle: i32
+    Square
+}
+
+/// Draws.
+#inline
+pub draw :: fn(p: Point) -> i32 {
+    return p.x
+}
+
+sides_of :: fn() {}
+
+pub twice :: fn(x: i32) -> i32 => x * 2
+
+pub MAX: i32 : 10
+pub LONG :: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+pub Names :: []string
+
+Events :: effect {
+    /// Ping.
+    ping: fn()
+}
+
+Hidden :: struct {}
+
+/// For points.
+handler Events for ^Point {
+    ping(self) => {}
+}
+
+handler Events for Hidden {
+    ping(self) => {}
+}
+
+when target.os is .Linux {
+    /// Only here.
+    pub linux_only :: fn() {}
+}
+`
+
+test "only public declarations are documented" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        m := read_text(SHAPES)
+        expect_eq(m.doc, "Shapes. Second sentence.\n\n# Overview\n\nMore.")
+        for hidden in ("sides_of", "Hidden", "handler Events for Hidden", "Events") {
+            expect(find_decl(&m, hidden) is null)
+        }
+        expect(find_decl(&m, "handler Events for ^Point") is not null)
+        expect(find_decl(&m, "Point") is not null)
+    }
+}
+
+test "signatures and members" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        m := read_text(SHAPES)
+        point := find_decl(&m, "Point")?
+        expect_eq(point.sig, "Point :: struct {\n    pub x, y: i32\n    // private fields omitted\n}")
+        expect_eq(point.member_label, "Fields")
+        expect_eq(point.members.len, 1)
+        expect_eq(point.members[0].name, "x, y")
+        expect_eq(point.members[0].doc, "The abscissa.")
+        kind := find_decl(&m, "Kind")?
+        expect_eq(kind.sig, "Kind :: union {\n    Circle: i32\n    Square\n}")
+        expect_eq(kind.members.len, 1)
+        expect_eq(find_decl(&m, "draw")?.sig, "#inline\ndraw :: fn(p: Point) -> i32")
+        expect_eq(find_decl(&m, "twice")?.sig, "twice :: fn(x: i32) -> i32")
+        expect_eq(find_decl(&m, "MAX")?.sig, "MAX: i32 : 10")
+        expect_eq(find_decl(&m, "LONG")?.sig, "LONG :: ...")
+        expect_eq(find_decl(&m, "linux_only")?.sig, "// when target.os is .Linux\nlinux_only :: fn()")
+        expect(find_decl(&m, "MAX")?.kind is .Const)
+        expect(find_decl(&m, "Names")?.kind is .TypeAlias)
+        expect(find_decl(&m, "Point")?.location is "m.gm:8")
+    }
+}
+
+test "missing documentation is reported" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        m := read_text(SHAPES)
+        warnings := missing(&m)
+        text := join(warnings, "\n")
+        for name in ("twice", "MAX", "LONG", "Names") {
+            expect(str.contains(text, str.format("`{}`", name)!))
+        }
+        expect(not str.contains(text, "`draw`"))
+        expect(not str.contains(text, "module"))
+        // A handler declaration that is not public needs no documentation of its own.
+        expect(not str.contains(text, "handler"))
+        none := read_text("pub f :: fn() {}\n")
+        expect_eq(missing(&none)[0], "m.gm: warning: module `m` has no `//!` documentation")
+    }
+}
+
+test "a module is the files in order" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        r := reader()
+        r.read_file("a.gm", "//! First.\n\n/// A.\npub a :: fn() {}\n")!
+        r.read_file("b.gm", "//! Second.\n\n/// B.\npub b :: fn() {}\n")!
+        m := r.module_of("m", "m")
+        expect_eq(m.doc, "First.\n\nSecond.")
+        expect_eq(m.decls.len, 2)
+        expect_eq(m.location, "a.gm")
+        expect_eq(m.decls[1].location, "b.gm:4")
+    }
+}
+
+test "a file that does not parse is an error with the diagnostics" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        r := reader()
+        r.read_file("broken.gm", "pub f :: fn( {\n") else e => {
+            expect(str.contains(e.message, "broken.gm"))
+            expect(e.message.starts_with("error"))
+            return
+        }
+        expect(false)
+    }
+}
+
+test "the summary is the first sentence" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        m := read_text("//! Reads files. And\n//! more.\n//!\n//! Another paragraph.\npub f :: fn() {}\n")
+        expect_eq(summary(&m), "Reads files.")
+        m2 := read_text("//! No full\n//! stop\n\npub f :: fn() {}\n")
+        expect_eq(summary(&m2), "No full stop")
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------------
+
+test "Markdown output" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        m := read_text("//! Text.\n\n/// After the fence.\npub X :: \"```\"\n")
+        md := markdown_module(&m, "../index.md")
+        expect(str.contains(md, "````gamma\nX :: \"```\"\n````\n"))
+        expect(md.starts_with("# Module `m`\n\n[All modules](../index.md)\n\nText.\n\n## Constants\n\n### `X`\n"))
+        expect(md.ends_with("After the fence.\n"))
+    }
+}
+
+test "HTML output is escaped and has unique anchors" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        m := read_text("//! Text.\n\n/// Docs.\npub f: bool : 1 < 2 and 3 > 2\n\n/// More.\npub contents :: fn() {}\n")
+        html := html_module(&m, null)
+        expect(str.contains(html, "1 &lt; 2 and 3 &gt; 2"))
+        expect(not str.contains(html, "<script"))
+        expect(str.contains(html, "<h3 id=\"f\"><code>f</code></h3>"))
+        // `contents` is the anchor of the table of contents.
+        expect(str.contains(html, "<h3 id=\"contents-2\"><code>contents</code></h3>"))
+    }
+}
+
+test "index links are percent-encoded" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        r := reader()
+        r.read_file("m.gm", "//! Text | with a pipe.\npub f :: fn() {}\n")!
+        modules := [1]Module(r.module_of("m", "my dir/a#b)"))
+        md := markdown_index("T", modules[..])
+        expect(str.contains(md, "(my%20dir/a%23b%29.md)"))
+        expect(str.contains(md, "Text \\| with a pipe."))
+        html := html_index("T", modules[..])
+        expect(str.contains(html, "href=\"my%20dir/a%23b%29.html\""))
+    }
+}
+
+test "the files of a documentation tree" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        r := reader()
+        r.read_file("m.gm", "//! Text.\npub f :: fn() {}\n")!
+        modules := [1]Module(r.module_of("std/io", "io/io"))
+        files := output_files("std modules", modules[..], .Html)
+        expect_eq(files.len, 2)
+        expect_eq(files[0].path, "io/io.html")
+        expect(str.contains(files[0].text, "href=\"../index.html\""))
+        expect_eq(files[1].path, "index.html")
+    }
+}
+
+test "command line" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        o := cli("x --format=html --all --missing -o out")!
+        expect_eq(o.path, "x")
+        expect(o.format is .Html)
+        expect(o.all and o.missing)
+        expect_eq(o.out, "out")
+        o2 := cli("--format md m")!
+        expect(o2.format is .Markdown)
+        expect(cli("--format=pdf x") is !_)
+        expect(cli("x --bogus") is !_)
+        expect(cli("x y") is !_)
+        expect(cli("x -o") is !_)
+        expect(cli("") is !_)
+        match cli("--format=pdf x") {
+            !f => expect_eq(f.message, "unknown format `pdf` (markdown or html)")
+            _ => expect(false)
+        }
+        expect(has_extension("a/b.md", "md"))
+        expect(not has_extension("a/.md", "md"))
+        expect(not has_extension("a/b", "md"))
+        expect_eq(normalize("/a/b/../c/./d"), "/a/c/d")
+        expect_eq(file_stem("/a/b/io.gm"), "io")
+    }
+}
+
+// The options in `line`, separated by spaces, parsed.
+cli :: fn(line: string) -> Failure!Args needs Alloc {
+    words := list(string)
+    for w in str.split(line, " ") {
+        if w.len > 0 { words.push(w)! }
+    }
+    return parse_args(words.items)
+}

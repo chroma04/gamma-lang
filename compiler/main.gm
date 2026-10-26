@@ -9,10 +9,11 @@
 //!     gammac build [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT
 //!     gammac run [--mode=debug|checked|fast] ROOT [ARG...]
 //!     gammac fmt [--check] FILE|DIR...
+//!     gammac doc [--format=markdown|html] [-o PATH] [--all] [--missing] MODULE
 //!     gammac help | version
 //!
 //! Every command takes `--diag-format=human|short|json` (default `human`), the formats of
-//! `gamma`. See `USAGE` for what each command does and `docs/self-hosting.md` for how
+//! `gamma`; `doc` has its own options and diagnostics (`doc/doc.gm`). See `USAGE` for what each command does and `docs/self-hosting.md` for how
 //! each matches the reference implementation. With several files, the output of each is
 //! preceded by a line `==> FILE <==` on both streams. The exit status is 1 if a file has
 //! errors, 2 for a usage error or a file that cannot be read; `run` ends with the
@@ -22,6 +23,7 @@ arena :: import "std/arena"
 ast :: import "./ast"
 check :: import "./check"
 diag :: import "./diag"
+doc :: import "./doc"
 driver :: import "./driver"
 fmt :: import "./fmt"
 fs :: import "std/fs"
@@ -44,6 +46,7 @@ commands:
   decls   resolve a program's declarations without checking bodies and print them
   tir     check a program and print the typed program the checker produces
   check   type-check a program (a .gm file or a module directory)
+  doc     write the API documentation of a module as Markdown or HTML (gammac doc --help)
   build   compile a program to a native executable via the system C compiler
   run     compile a program via C and run it; arguments after the file go to the program
   fmt     format source files in place: gammac fmt [--check] <file or directory>... ("-" filters stdin to stdout)
@@ -80,6 +83,7 @@ main :: fn() needs Alloc + Env + Err + Fs + In + Out + Proc + Rand + Sys {
         print("gammac {}\n", VERSION)
         return
     }
+    if command is "doc" { Env.exit(doc.command(args[2..])) }
     opts := driver.Options(command: match command {
         "lex" => .Lex
         "parse" => .Parse

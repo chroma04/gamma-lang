@@ -1,0 +1,534 @@
+// A small Markdown renderer for doc comments: paragraphs, headings, fenced and indented
+// code, bullet and numbered lists, block quotes, tables, `code`, *emphasis*, **strong**
+// and links. Everything is escaped; raw HTML in the text is shown as text.
+
+str :: import "std/str"
+
+/// How many levels the headings of a doc comment move down, in Markdown and HTML output,
+/// so that they sit below the heading of the item they document.
+DEMOTE: usize : 3
+
+/// Appends `s` with the characters that are special in HTML replaced by entities.
+escape_into :: fn(s: string, out: ^List(u8)) needs Alloc {
+    for c in s {
+        match c {
+            '&' => out.extend("&amp;")!
+            '<' => out.extend("&lt;")!
+            '>' => out.extend("&gt;")!
+            '"' => out.extend("&quot;")!
+            '\'' => out.extend("&#39;")!
+            _ => out.push(c)!
+        }
+    }
+}
+
+escape :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    escape_into(s, &out)
+    return out.items
+}
+
+/// The lines of `text`, split on line feeds, with a carriage return before one dropped.
+/// There is no empty line after a final line feed.
+lines_of :: fn(text: string) -> []string needs Alloc {
+    out := list(string)
+    start: usize = 0
+    while start < text.len {
+        end := start
+        while end < text.len and text[end] is not '\n' { end += 1 }
+        line_end := end
+        if end < text.len and line_end > start and text[line_end - 1] is '\r' { line_end -= 1 }
+        out.push(text[start..line_end])!
+        start = end + 1
+    }
+    return out.items
+}
+
+/// The length in bytes of the white space character (in the Unicode sense) that starts at
+/// byte `i` of `s`, or 0 if there is none there.
+ws_at :: fn(s: string, i: usize) -> usize {
+    c := s.get(i) else return 0
+    if c in 9..=13 or c is ' ' { return 1 }
+    if c < 0xC2 { return 0 }
+    b1 := s.get(i + 1) else return 0
+    b2 := s.get(i + 2) else 0
+    if c is 0xC2 { return if b1 in (0x85, 0xA0) { 2 } else { 0 } }
+    if c is 0xE1 { return if b1 is 0x9A and b2 is 0x80 { 3 } else { 0 } }
+    if c is 0xE2 {
+        if b1 is 0x80 and (b2 in 0x80..=0x8A or b2 in (0xA8, 0xA9, 0xAF)) { return 3 }
+        return if b1 is 0x81 and b2 is 0x9F { 3 } else { 0 }
+    }
+    return if c is 0xE3 and b1 is 0x80 and b2 is 0x80 { 3 } else { 0 }
+}
+
+/// The length in bytes of the white space character that ends just before byte `end` of
+/// `s`, or 0 if there is none there.
+ws_before :: fn(s: string, end: usize) -> usize {
+    for n in 1..=3 {
+        if end >= n and ws_at(s, end - n) is n { return n }
+    }
+    return 0
+}
+
+/// `s` without leading white space.
+trim_start :: fn(s: string) -> string {
+    i: usize = 0
+    while true {
+        n := ws_at(s, i)
+        if n is 0 { break }
+        i += n
+    }
+    return s[i..]
+}
+
+/// `s` without trailing white space.
+trim_end :: fn(s: string) -> string {
+    end := s.len
+    while end > 0 {
+        n := ws_before(s, end)
+        if n is 0 { break }
+        end -= n
+    }
+    return s[0..end]
+}
+
+/// `s` without leading and trailing white space.
+trim :: fn(s: string) -> string => trim_end(trim_start(s))
+
+/// `s` with every run of white space (including line breaks) replaced by one space, and
+/// without white space at either end.
+squash :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    i: usize = 0
+    pending := false
+    while i < s.len {
+        n := ws_at(s, i)
+        if n > 0 {
+            pending = out.items.len > 0
+            i += n
+        } else {
+            if pending { out.push(' ')! }
+            pending = false
+            out.push(s[i])!
+            i += 1
+        }
+    }
+    return out.items
+}
+
+/// `s` with each line feed replaced by a space.
+unwrap_lines :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    for c in s { out.push(if c is '\n' { ' ' } else { c })! }
+    return out.items
+}
+
+/// The lines of `parts` joined by `sep`.
+join :: fn(parts: []const string, sep: string) -> string needs Alloc => str.join(parts, sep)!
+
+/// A code fence for `content`: backticks, three or one more than the longest run in it,
+/// so that the content cannot close the fence.
+fence :: fn(content: string) -> string needs Alloc {
+    longest: usize = 0
+    run: usize = 0
+    for c in content {
+        run = if c is '`' { run + 1 } else { 0 }
+        longest = longest.max(run)
+    }
+    out := list(u8)
+    for _ in 0..(longest + 1).max(3) { out.push('`')! }
+    return out.items
+}
+
+/// `path` for use in a link: each segment percent-encoded, the `/` between them kept.
+url_path :: fn(path: string) -> string needs Alloc {
+    out := list(u8)
+    for b in path {
+        match b {
+            'A'..='Z', 'a'..='z', '0'..='9', '-', '.', '_', '~', '/' => out.push(b)!
+            _ => out.write("%{:02X}", b)!
+        }
+    }
+    return out.items
+}
+
+/// Moves the headings of Markdown `text` down by `by` levels (to at most 6), so that
+/// they sit below the heading of the item they document. Fenced code is left alone.
+demote_headings :: fn(text: string, by: usize) -> string needs Alloc {
+    in_fence := false
+    out := list(u8)
+    for i, line in enumerate(lines_of(text)) {
+        t := trim_start(line)
+        if t.starts_with("```") { in_fence = not in_fence }
+        if i > 0 { out.push('\n')! }
+        if h := heading(t) {
+            if not in_fence and not is_indented(line) {
+                for _ in 0..(h.level + by).min(6) { out.push('#')! }
+                out.write(" {}", h.title)!
+                continue
+            }
+        }
+        out.extend(line)!
+    }
+    return out.items
+}
+
+/// Renders Markdown `text` to HTML.
+render :: fn(text: string) -> string needs Alloc {
+    out := list(u8)
+    render_into(text, &out)
+    return out.items
+}
+
+render_into :: fn(text: string, out: ^List(u8)) needs Alloc {
+    lines := lines_of(text)
+    i: usize = 0
+    while i < lines.len {
+        line := lines[i]
+        t := trim_start(line)
+        if trim(line).len is 0 {
+            i += 1
+        } else if t.starts_with("```") {
+            i += 1
+            code := list(string)
+            while i < lines.len and not trim_start(lines[i]).starts_with("```") {
+                code.push(lines[i])!
+                i += 1
+            }
+            i += 1
+            code_block(code.items, out)
+        } else if h := heading(t) {
+            level := (h.level + DEMOTE).min(6)
+            out.write("<h{}>", level)!
+            inline_into(h.title, out)
+            out.write("</h{}>\n", level)!
+            i += 1
+        } else if is_indented(line) {
+            code := list(string)
+            while i < lines.len and (is_indented(lines[i]) or trim(lines[i]).len is 0) {
+                code.push(if lines[i].len >= 4 { lines[i][4..] } else { "" })!
+                i += 1
+            }
+            while code.items.len > 0 and code.items[code.items.len - 1].len is 0 { _ = code.pop() }
+            code_block(code.items, out)
+        } else if t.starts_with(">") {
+            quote := list(string)
+            quote.push(strip_one_space(t[1..]))!
+            i += 1
+            while i < lines.len and trim_start(lines[i]).starts_with(">") {
+                quote.push(strip_one_space(trim_start(lines[i])[1..]))!
+                i += 1
+            }
+            out.extend("<blockquote>\n")!
+            render_into(join(quote.items, "\n"), out)
+            out.extend("</blockquote>\n")!
+        } else if item_marker(t) is not null {
+            i = render_list(lines, i, out)
+        } else if t.starts_with("|") and i + 1 < lines.len and is_table_rule(lines[i + 1]) {
+            i = render_table(lines, i, out)
+        } else {
+            para := list(string)
+            para.push(t)!
+            i += 1
+            while i < lines.len and not starts_block(lines[i]) {
+                para.push(trim(lines[i]))!
+                i += 1
+            }
+            out.extend("<p>")!
+            inline_into(join(para.items, " "), out)
+            out.extend("</p>\n")!
+        }
+    }
+}
+
+code_block :: fn(code: []const string, out: ^List(u8)) needs Alloc {
+    out.extend("<pre><code>")!
+    escape_into(join(code, "\n"), out)
+    out.extend("</code></pre>\n")!
+}
+
+strip_one_space :: fn(s: string) -> string => str.strip_prefix(s, " ") else s
+
+is_indented :: fn(line: string) -> bool => line.starts_with("    ") and trim(line).len > 0
+
+/// The level and title of a heading line (without indentation), if it is one.
+heading :: fn(t: string) -> ?(level: usize, title: string) {
+    n: usize = 0
+    while n < t.len and t[n] is '#' { n += 1 }
+    if n < 1 or n > 6 { return null }
+    rest := str.strip_prefix(t[n..], " ") else return null
+    return (level: n, title: trim(rest))
+}
+
+/// The marker length of a list item line, and whether it is numbered.
+item_marker :: fn(t: string) -> ?(len: usize, numbered: bool) {
+    if t.starts_with("- ") or t.starts_with("* ") { return (len: 2, numbered: false) }
+    digits: usize = 0
+    while digits < t.len and t[digits] in '0'..='9' { digits += 1 }
+    if digits > 0 and t[digits..].starts_with(". ") { return (len: digits + 2, numbered: true) }
+    return null
+}
+
+is_table_rule :: fn(l: string) -> bool {
+    t := trim(l)
+    if not t.starts_with("|") { return false }
+    for c in t {
+        if c not in ('|', '-', ':', ' ') { return false }
+    }
+    return true
+}
+
+starts_block :: fn(line: string) -> bool {
+    t := trim_start(line)
+    return trim(line).len is 0 or t.starts_with("```") or t.starts_with(">") or t.starts_with("|") or heading(t) is not null or item_marker(t) is not null
+}
+
+render_list :: fn(lines: []const string, start: usize, out: ^List(u8)) -> usize needs Alloc {
+    i := start
+    numbered := (item_marker(trim_start(lines[i])) else return i).numbered
+    tag := if numbered { "ol" } else { "ul" }
+    out.write("<{}>\n", tag)!
+    while i < lines.len {
+        t := trim_start(lines[i])
+        marker := item_marker(t) else break
+        if marker.numbered is not numbered { break }
+        body := list(string)
+        body.push(t[marker.len..])!
+        i += 1
+        // Continuation lines are indented; a blank line followed by more indented text
+        // continues the item as well.
+        while i < lines.len {
+            l := lines[i]
+            if trim(l).len is 0 {
+                if i + 1 < lines.len and lines[i + 1].starts_with("  ") {
+                    body.push("")!
+                    i += 1
+                    continue
+                }
+                break
+            }
+            if l.starts_with("  ") or not starts_block(l) {
+                body.push(trim_start(l))!
+                i += 1
+            } else {
+                break
+            }
+        }
+        text := join(body.items, "\n")
+        nested := false
+        for j, b in enumerate(body.items) {
+            if b.len is 0 or (j > 0 and item_marker(b) is not null) { nested = true }
+        }
+        if nested {
+            out.extend("<li>\n")!
+            render_into(text, out)
+            out.extend("</li>\n")!
+        } else {
+            out.extend("<li>")!
+            inline_into(unwrap_lines(text), out)
+            out.extend("</li>\n")!
+        }
+    }
+    out.write("</{}>\n", tag)!
+    return i
+}
+
+/// The cells of a table row.
+cells :: fn(line: string) -> []string needs Alloc {
+    t := trim(line)
+    skip: usize = 0
+    while skip < t.len and t[skip] is '|' { skip += 1 }
+    t = t[skip..]
+    if t.ends_with("|") { t = t[0..t.len - 1] }
+    out := list(string)
+    cur := list(u8)
+    i: usize = 0
+    while i < t.len {
+        c := t[i]
+        if c is '\\' and t.get(i + 1) is '|' {
+            cur.push('|')!
+            i += 2
+        } else {
+            if c is '|' {
+                out.push(trim(cur.items))!
+                cur = list(u8)
+            } else {
+                cur.push(c)!
+            }
+            i += 1
+        }
+    }
+    out.push(trim(cur.items))!
+    return out.items
+}
+
+render_table :: fn(lines: []const string, start: usize, out: ^List(u8)) -> usize needs Alloc {
+    i := start
+    out.extend("<table>\n<thead><tr>")!
+    for c in cells(lines[i]) {
+        out.extend("<th>")!
+        inline_into(c, out)
+        out.extend("</th>")!
+    }
+    out.extend("</tr></thead>\n<tbody>\n")!
+    i += 2
+    while i < lines.len and trim_start(lines[i]).starts_with("|") {
+        out.extend("<tr>")!
+        for c in cells(lines[i]) {
+            out.extend("<td>")!
+            inline_into(c, out)
+            out.extend("</td>")!
+        }
+        out.extend("</tr>\n")!
+        i += 1
+    }
+    out.extend("</tbody>\n</table>\n")!
+    return i
+}
+
+/// Inline Markdown: code spans, strong, emphasis and links.
+inline :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    inline_into(s, &out)
+    return out.items
+}
+
+inline_into :: fn(s: string, out: ^List(u8)) needs Alloc {
+    plain_from: usize = 0
+    pos: usize = 0
+    while pos < s.len {
+        off := s[pos..].index_of('`') else break
+        start := pos + off
+        n := backtick_run(s[start..])
+        after := start + n
+        if len := closing_run(s[after..], n) {
+            emphasis_into(s[plain_from..start], out)
+            out.extend("<code>")!
+            escape_into(code_span(s[after..after + len]), out)
+            out.extend("</code>")!
+            plain_from = after + len + n
+            pos = plain_from
+        } else {
+            // No matching run: the backticks are literal text.
+            pos = after
+        }
+    }
+    emphasis_into(s[plain_from..], out)
+}
+
+/// The number of backticks at the start of `s`.
+backtick_run :: fn(s: string) -> usize {
+    n: usize = 0
+    while n < s.len and s[n] is '`' { n += 1 }
+    return n
+}
+
+/// The offset of the next run of exactly `n` backticks in `s`.
+closing_run :: fn(s: string, n: usize) -> ?usize {
+    i: usize = 0
+    while i < s.len {
+        off := s[i..].index_of('`') else return null
+        start := i + off
+        len := backtick_run(s[start..])
+        if len is n { return start }
+        i = start + len
+    }
+    return null
+}
+
+/// The text of a code span: one space is removed from each end if both have one and
+/// the span is not only spaces.
+code_span :: fn(s: string) -> string {
+    if s.len > 2 and s.starts_with(" ") and s.ends_with(" ") {
+        for c in s {
+            if c is not ' ' { return s[1..s.len - 1] }
+        }
+    }
+    return s
+}
+
+/// Strong, emphasis and links in text without code spans.
+emphasis_into :: fn(s: string, out: ^List(u8)) needs Alloc {
+    i: usize = 0
+    while i < s.len {
+        c := s[i]
+        if c is '[' {
+            if l := link(s, i) {
+                if safe_url(l.url) {
+                    out.extend("<a href=\"")!
+                    escape_into(l.url, out)
+                    out.extend("\">")!
+                    emphasis_into(l.label, out)
+                    out.extend("</a>")!
+                } else {
+                    escape_into(s[i..l.next], out)
+                }
+                i = l.next
+                continue
+            }
+        }
+        if c is '*' {
+            n: usize = 0
+            while n < 3 and i + n < s.len and s[i + n] is '*' { n += 1 }
+            opens := false
+            if d := s.get(i + n) { opens = ws_at(s, i + n) is 0 and d is not '*' }
+            close: ?usize = if opens { find_close(s, i + n, n) } else { null }
+            if j := close {
+                out.extend(match n {
+                    1 => "<em>"
+                    2 => "<strong>"
+                    _ => "<em><strong>"
+                })!
+                emphasis_into(s[i + n..j], out)
+                out.extend(match n {
+                    1 => "</em>"
+                    2 => "</strong>"
+                    _ => "</strong></em>"
+                })!
+                i = j + n
+            } else {
+                out.push('*')!
+                i += 1
+            }
+            continue
+        }
+        escape_into(s[i..i + 1], out)
+        i += 1
+    }
+}
+
+/// The index of the closing `*` or `**` (of length `n`) after `from`, if the character
+/// before it is not white space.
+find_close :: fn(s: string, from, n: usize) -> ?usize {
+    j := from
+    while j + n <= s.len {
+        stars := true
+        for k in 0..n {
+            if s[j + k] is not '*' { stars = false }
+        }
+        if stars and ws_before(s, j) is 0 and s.get(j + n) is not '*' { return j }
+        j += 1
+    }
+    return null
+}
+
+/// `[label](url)` at `i`: the label, the url and the index after it.
+link :: fn(s: string, i: usize) -> ?(label: string, url: string, next: usize) {
+    close := i + 1 + (s[i + 1..].index_of(']') else return null)
+    if s.get(close + 1) is not '(' { return null }
+    end := close + 2 + (s[close + 2..].index_of(')') else return null)
+    url := s[close + 2..end]
+    for k in 0..url.len {
+        if ws_at(url, k) > 0 { return null }
+    }
+    return (label: s[i + 1..close], url: url, next: end + 1)
+}
+
+safe_url :: fn(url: string) -> bool {
+    colon := url.index_of(':') else return true
+    scheme := url[0..colon]
+    for c in scheme {
+        if c in ('/', '#', '?') { return true }
+    }
+    return str.eq_ignore_case(scheme, "http") or str.eq_ignore_case(scheme, "https") or str.eq_ignore_case(scheme, "mailto")
+}

@@ -1,0 +1,30 @@
+// The texts of operating system errors, as the reference implementation prints them.
+
+str :: import "std/str"
+
+/// The text of an operating system error, as Rust's `io::Error` displays it.
+describe_io_error :: fn(e: IoError) -> string needs Alloc => match e {
+    .NotFound => "No such file or directory (os error 2)"
+    .PermissionDenied => "Permission denied (os error 13)"
+    .AlreadyExists => "File exists (os error 17)"
+    .NoSpace => "No space left on device (os error 28)"
+    .Other(code) => os_error(code)
+    _ => "Input/output error (os error 5)"
+}
+
+os_error :: fn(code: i32) -> string needs Alloc {
+    what: ?string = match code {
+        1 => "Operation not permitted"
+        5 => "Input/output error"
+        20 => "Not a directory"
+        21 => "Is a directory"
+        22 => "Invalid argument"
+        30 => "Read-only file system"
+        36 => "File name too long"
+        39 => "Directory not empty"
+        40 => "Too many levels of symbolic links"
+        _ => null
+    }
+    if w := what { return str.format("{} (os error {})", w, code)! }
+    return str.format("Unknown error {} (os error {})", code, code)!
+}
