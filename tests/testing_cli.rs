@@ -194,6 +194,18 @@ never_called :: fn() -> u64 {
     return 3
 }
 
+// The bodies of function literals and of loops over iterators are counted too.
+letters :: fn() -> u64 {
+    s: u64 = 0
+    for b in bytes(\"abc\") {
+        s += u64(b)
+    }
+    add_one := fn(x: u64) -> u64 {
+        return x + 1
+    }
+    return add_one(s)
+}
+
 main :: fn() {}
 
 test \"small\" {
@@ -207,6 +219,13 @@ test \"large\" {
 test \"traps\" {
     x := count(2)
     assert(x is 0, \"x is {}\")
+}
+
+test \"literals\" {
+    in_test := fn(x: u64) -> u64 {
+        return x * 2
+    }
+    expect_eq(in_test(letters()), 590)
 }
 ";
     let p = Package::new("coverage_c", &[("main.gm", main)]);
@@ -222,6 +241,9 @@ test \"traps\" {
     let line_of = |needle: &str| main.lines().position(|l| l.contains(needle)).unwrap() + 1;
     assert!(c_lcov.contains(&format!("DA:{},3\n", line_of("s: u64 = 0"))), "{}", c_lcov);
     assert!(c_lcov.contains(&format!("DA:{},0\n", line_of("return 3"))), "{}", c_lcov);
+    assert!(c_lcov.contains(&format!("DA:{},3\n", line_of("s += u64(b)"))), "{}", c_lcov);
+    assert!(c_lcov.contains(&format!("DA:{},1\n", line_of("return x + 1"))), "{}", c_lcov);
+    assert!(!c_lcov.contains(&format!("DA:{},", line_of("return x * 2"))), "{}", c_lcov);
     let out = p.gamma(&["test", "--backend=cranelift", "--coverage"]);
     assert!(!out.ok);
     assert!(out.stderr.contains("not `--backend=cranelift`"), "{}", out.stderr);
