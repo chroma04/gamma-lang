@@ -53,7 +53,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         env:
           GAMMA_C_UNITS: "3"
-        run: cargo test --test conformance --test examples
+        run: |
+          cargo test --test conformance --test examples
+          cargo test --test selfhost programs_compiled_by_gammac
 
   fuzz:
     # The fuzz targets live outside the workspace (they need nightly to run): make sure

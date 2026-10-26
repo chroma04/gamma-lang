@@ -14,6 +14,9 @@ Versions and what each kind of change means are described in
   compiled by `gammac` behaves as expected, and the bootstrap reaches a fixed point: the
   `gammac` that `gammac` builds generates byte-identical C for itself
   (`docs/self-hosting.md`, `tests/selfhost.rs`).
+- `gammac build` in the Debug mode compiles the runtime on its own and splits the program
+  into several C units compiled in parallel, as `gamma build` does; building `gammac` with
+  itself takes about a third of the time on four cores.
 
 ### Language
 
@@ -173,6 +176,11 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- The fallback of an `else` whose left side has an error is now checked: its own errors
+  are reported, and a `break` in it counts for its loop, which was otherwise reported as
+  never ending, with the code after it as unreachable.
+- A Debug build split into C units (`GAMMA_C_UNITS`, or a large program) of a program
+  that uses `#global errno` failed with "the generated C cannot be split into units".
 - `gamma tir` on a library (a root module without `main`) left out its tests and
   benchmarks: they were not checked, and their functions were missing from the dump.
 - A pattern binding with `else` in a block whose value is coerced to an expected type

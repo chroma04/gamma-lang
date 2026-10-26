@@ -1,0 +1,16 @@
+//! stage: check
+// The fallback of an `else` whose left side has an error is still checked: a `break` in
+// it counts for its loop, so the code after the loop is not reported as unreachable, and
+// its own errors are reported (§10.4).
+main :: fn() needs Alloc + Out {
+    xs := list(?Missing)                  //~ ERROR unknown type `Missing`
+    for x in xs.items {
+        c := x else continue
+        while true {
+            n := (c.read() else break) else break
+            print("{}\n", n)
+            _ = c.next() else e => undefined_name + e       //~ ERROR unknown name `undefined_name`
+        }
+        print("after\n")
+    }
+}

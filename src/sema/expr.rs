@@ -1942,7 +1942,10 @@ impl<'a, 's> FnCx<'a, 's> {
         let (present, err) = match lt.kind() {
             TyKind::Optional(t) => (*t, None),
             TyKind::Result { err, ok } => (*ok, Some(*err)),
-            TyKind::Error => return error_expr(span),
+            TyKind::Error => {
+                self.else_after_error(capture, rhs);
+                return error_expr(span);
+            }
             _ => {
                 let mut broken = false;
                 lt.walk(&mut |t| broken |= t.is_error());
@@ -1952,6 +1955,7 @@ impl<'a, 's> FnCx<'a, 's> {
                         format!("`else` needs an optional or a result on its left, but this is `{}`", lt),
                     );
                 }
+                self.else_after_error(capture, rhs);
                 return error_expr(span);
             }
         };
@@ -1997,6 +2001,18 @@ impl<'a, 's> FnCx<'a, 's> {
             (present, r)
         };
         mk(ty, tir::ExprKind::Else { lhs: Box::new(l), capture: cap, rhs: Box::new(r) }, span)
+    }
+
+    /// Checks the fallback of an `else` whose left side has an error: its own errors are
+    /// reported, and a `break` in it still counts for its loop.
+    fn else_after_error(&mut self, capture: Option<ast::Ident>, rhs: &ast::Expr) {
+        self.push_scope();
+        if let Some(c) = capture {
+            let id = self.new_local(c.name, Ty::error(), false, c.span);
+            self.declare(c.name, super::func::LocalBinding::Var(id), c.span);
+        }
+        self.expr(rhs, None);
+        self.pop_scope();
     }
 
     /// `try x` (§10.5).

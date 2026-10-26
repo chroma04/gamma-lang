@@ -22,7 +22,7 @@ pub struct Parts {
     /// Function declarations, one per line.
     pub protos: String,
     /// Static data, one definition (or forward declaration) per line, and the `static
-    /// inline` accessors and `extern` declarations that go with it.
+    /// inline` accessors, `extern` declarations and macros that go with it.
     pub data: String,
     /// Text only unit 0 holds, ahead of the data (the `gm_checks` flag, the debugger's
     /// script section).
@@ -43,7 +43,11 @@ pub fn split(parts: &Parts, n: usize) -> Option<Vec<String>> {
         decls.push('\n');
     }
     for line in parts.data.lines() {
-        if line.is_empty() || line.starts_with("extern ") || line.starts_with("static inline ") {
+        if line.is_empty()
+            || line.starts_with(['#'])
+            || line.starts_with("extern ")
+            || line.starts_with("static inline ")
+        {
             decls.push_str(line);
             decls.push('\n');
             continue;
@@ -251,5 +255,13 @@ mod tests {
         let mut p = parts();
         p.data.push_str("int gm_z;\n");
         assert!(split(&p, 2).is_none());
+    }
+
+    #[test]
+    fn macros_of_the_data_are_shared() {
+        let mut p = parts();
+        p.data.push_str("#define gm_g0 ((uint8_t *)&errno)\n");
+        let units = split(&p, 2).unwrap();
+        assert!(units.iter().all(|u| u.contains("#define gm_g0 ((uint8_t *)&errno)\n")));
     }
 }
