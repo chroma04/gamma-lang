@@ -489,6 +489,72 @@ struct RunTest {
 /// The `run` tests that expect no compile errors and apply to this host.
 #[cfg(unix)]
 fn run_tests() -> Vec<RunTest> {
+    lane_tests(None)
+}
+
+/// A way of building the run tests other than for the host in their own mode, chosen with
+/// `GAMMAC_TEST_LANE`: `safe` (Fil-C), `s390x` (big-endian, under qemu) or `wasi`
+/// (WebAssembly, under Wasmtime).
+#[cfg(unix)]
+struct Lane {
+    name: String,
+    /// The options `gammac run` gets, before the mode.
+    args: Vec<String>,
+    /// The environment of `gammac run`.
+    env: Vec<(String, String)>,
+    /// The values of the `arch:`, `endian:`, `os:` and `ptr_bits:` directives it runs.
+    host: [(&'static str, String); 4],
+    /// The `needs:` requirements it lacks.
+    lacks: Vec<&'static str>,
+}
+
+#[cfg(unix)]
+fn lane() -> Option<Lane> {
+    let name = std::env::var("GAMMAC_TEST_LANE").ok().filter(|n| !n.is_empty())?;
+    let s = |v: &str| v.to_string();
+    let host = |arch: &str, endian: &str, os: &str, bits: &str| {
+        [("arch:", s(arch)), ("endian:", s(endian)), ("os:", s(os)), ("ptr_bits:", s(bits))]
+    };
+    let lane = match name.as_str() {
+        "safe" => Lane {
+            name,
+            args: vec![],
+            env: vec![],
+            host: host(std::env::consts::ARCH, "little", "unix", "64"),
+            lacks: vec![],
+        },
+        "s390x" => Lane {
+            name,
+            args: vec![s("--target=s390x-linux-gnu")],
+            env: vec![
+                (s("CC"), s("s390x-linux-gnu-gcc")),
+                (s("CFLAGS"), s("-static")),
+                (s("GAMMA_RUNNER"), s("qemu-s390x -L /usr/s390x-linux-gnu")),
+            ],
+            host: host("s390x", "big", "unix", "64"),
+            lacks: vec!["f16"],
+        },
+        "wasi" => Lane {
+            name,
+            args: vec![s("--target=wasm32-wasi")],
+            // A WebAssembly module sees only the current directory (the repository's root):
+            // its temporary files go below it.
+            env: vec![(s("TMPDIR"), {
+                let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-wasi-tmp");
+                std::fs::create_dir_all(&tmp).unwrap();
+                tmp.strip_prefix(root()).unwrap_or(&tmp).display().to_string()
+            })],
+            host: host("wasm32", "little", "wasi", "32"),
+            lacks: vec!["f16", "threads", "sockets"],
+        },
+        other => panic!("unknown GAMMAC_TEST_LANE `{}` (safe, s390x or wasi)", other),
+    };
+    Some(lane)
+}
+
+/// The run tests, for the host or for `lane`.
+#[cfg(unix)]
+fn lane_tests(lane: Option<&Lane>) -> Vec<RunTest> {
     let dir = root().join("tests/conformance/run");
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
     entries.sort();
@@ -519,18 +585,33 @@ fn run_tests() -> Vec<RunTest> {
         if text.contains("//~") || directive("stage:").is_some_and(|s| s != "run") {
             continue;
         }
-        let host = [
-            ("arch:", std::env::consts::ARCH.to_string()),
-            ("endian:", if cfg!(target_endian = "little") { "little" } else { "big" }.to_string()),
-            ("os:", if cfg!(windows) { "windows" } else { "unix" }.to_string()),
-            ("ptr_bits:", (8 * std::mem::size_of::<usize>()).to_string()),
-        ];
+        let host = match lane {
+            Some(l) => l.host.clone(),
+            None => [
+                ("arch:", std::env::consts::ARCH.to_string()),
+                ("endian:", if cfg!(target_endian = "little") { "little" } else { "big" }.to_string()),
+                ("os:", if cfg!(windows) { "windows" } else { "unix" }.to_string()),
+                ("ptr_bits:", (8 * std::mem::size_of::<usize>()).to_string()),
+            ],
+        };
         if host.iter().any(|(k, v)| directive(k).is_some_and(|d| &d != v)) {
             continue;
         }
-        let mode = directive("mode:").unwrap_or_else(|| "debug".to_string());
-        if mode == "safe" {
+        let needs = directive("needs:").unwrap_or_default();
+        if lane.is_some_and(|l| needs.split(',').any(|n| l.lacks.contains(&n.trim()))) {
             continue;
+        }
+        let mut mode = directive("mode:").unwrap_or_else(|| "debug".to_string());
+        match lane {
+            // Every test of the default and Checked modes also runs in a Safe build.
+            Some(l) if l.name == "safe" => {
+                if mode == "fast" || directive("safe:").is_some_and(|v| v.starts_with("skip")) {
+                    continue;
+                }
+                mode = "safe".to_string();
+            }
+            _ if mode == "safe" => continue,
+            _ => {}
         }
         let root_dir = if p.is_dir() && p.join("main").is_dir() { p.join("main") } else { p.clone() };
         let read = |ext: &str| std::fs::read(dir.join(format!("{}.{}", base, ext))).unwrap_or_default();
@@ -550,10 +631,20 @@ fn run_tests() -> Vec<RunTest> {
 /// failed, if it did.
 #[cfg(unix)]
 fn build_and_run(gammac: &Path, t: &RunTest, dir: &Path) -> Option<String> {
+    build_and_run_in(gammac, t, dir, None)
+}
+
+/// Like `build_and_run`, built and run as `lane` says.
+#[cfg(unix)]
+fn build_and_run_in(gammac: &Path, t: &RunTest, dir: &Path, lane: Option<&Lane>) -> Option<String> {
     let stdin = dir.join(format!("{}.stdin", t.name.replace('/', "_")));
     std::fs::write(&stdin, &t.stdin).unwrap();
     let mut cmd = Command::new(gammac);
-    cmd.current_dir(root()).arg("run").arg(format!("--mode={}", t.mode)).arg(&t.root);
+    cmd.current_dir(root()).arg("run");
+    if let Some(l) = lane {
+        cmd.args(&l.args).envs(l.env.iter().map(|(k, v)| (k, v)));
+    }
+    cmd.arg(format!("--mode={}", t.mode)).arg(&t.root);
     cmd.stdin(std::fs::File::open(&stdin).unwrap());
     gammac_env(&mut cmd);
     let ran = common::output(&mut cmd).unwrap();
@@ -603,6 +694,45 @@ fn programs_compiled_by_gammac_behave_as_expected() {
     assert!(failures.is_empty(), "{} of {} programs failed:\n{}", failures.len(), tests.len(), failures.join("\n\n"));
 }
 
+/// The run tests built by `gammac` for the lane `GAMMAC_TEST_LANE` names (see `lane`): CI
+/// runs this where the lane's tools are installed.
+#[test]
+#[cfg(unix)]
+fn programs_compiled_by_gammac_in_a_lane_behave_as_expected() {
+    let Some(lane) = lane() else { return };
+    let Gammac::Native(gammac) = gammac() else { return };
+    let tests = lane_tests(Some(&lane));
+    assert!(tests.len() > 300, "only {} run tests found", tests.len());
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("selfhost-lane-{}", lane.name));
+    std::fs::create_dir_all(&dir).unwrap();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failures = std::sync::Mutex::new(vec![]);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(t) = tests.get(i) else { break };
+                    if let Some(why) = build_and_run_in(gammac, t, &dir, Some(&lane)) {
+                        failures.lock().unwrap().push(format!("{}: {}", t.name, why));
+                    }
+                }
+            });
+        }
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    assert!(
+        failures.is_empty(),
+        "{}: {} of {} programs failed:\n{}",
+        lane.name,
+        failures.len(),
+        tests.len(),
+        failures.join("\n\n")
+    );
+}
+
 /// `gammac build --emit-c compiler` with `gammac`: the C it generates for itself.
 #[cfg(unix)]
 fn self_c(gammac: &Path, out: &Path) -> String {
@@ -630,11 +760,22 @@ fn gammac_compiles_itself_to_a_fixed_point() {
     let mut cmd = Command::new(stage1);
     cmd.current_dir(root()).args(["build", "-o"]).arg(&stage2).arg("compiler");
     gammac_env(&mut cmd);
+    // One C unit, so that `gammac2.c` holds the whole program.
+    cmd.env("GAMMA_C_UNITS", "1");
     let built = common::output(&mut cmd).unwrap();
     assert!(built.status.success(), "gammac failed to compile itself:\n{}", String::from_utf8_lossy(&built.stderr));
-    let c1 = std::fs::read_to_string(format!("{}.c", stage2.display())).unwrap();
+    let mut c1 = std::fs::read_to_string(format!("{}.c", stage2.display())).unwrap();
     // Stage 2 generates the same C for itself.
-    let c2 = self_c(&stage2, &dir.join("gammac3"));
+    let mut c2 = self_c(&stage2, &dir.join("gammac3"));
+    // A Debug build links the cached runtime, so its C file starts with the runtime's
+    // header only; `--emit-c` writes the runtime too. Compare the program's own C.
+    let rt_h = std::fs::read_to_string(root().join("runtime/gm_rt.h")).unwrap();
+    let rt_c = std::fs::read_to_string(root().join("runtime/gm_rt.c")).unwrap();
+    let separate = format!("#define GM_RT_SEPARATE 1\n{rt_h}\n");
+    if let Some(rest) = c1.strip_prefix(&separate) {
+        c1 = rest.to_string();
+        c2 = c2.strip_prefix(&format!("{rt_h}\n{rt_c}\n")).expect("--emit-c starts with the runtime").to_string();
+    }
     if let Some((_, line, a, b)) = first_difference(&c1, &c2) {
         panic!("the C that stage 2 generates differs from stage 1's at line {}:\nstage 1: {}\nstage 2: {}", line, a, b);
     }
@@ -1460,7 +1601,7 @@ fn testing_matches_the_reference() {
         assert_eq!(want, got, "{} {:?}", command, args);
     }
     // Options gammac does not have are usage errors.
-    for bad in ["--backend=interp", "--backend=cranelift", "--coverage", "--package=x", "--target=x86_64-linux-gnu"] {
+    for bad in ["--backend=interp", "--backend=cranelift", "--coverage"] {
         let out = common::output(Command::new(gammac).current_dir(root()).args(["test", bad, "x.gm"])).unwrap();
         assert_eq!(out.status.code(), Some(2), "{}", bad);
     }
@@ -1934,4 +2075,695 @@ fn build_settings_match_the_reference() {
     t.both("app3", &["build", ".", "-o", "a3"]);
     let built = Command::new(t.dir("new").join("app3/a3")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&built.stdout), "42 1000\n");
+}
+
+/// `test`, `lint` and `fix` fetch the dependencies too, and `test --package` tests a
+/// dependency of the input's package.
+#[test]
+#[cfg(unix)]
+fn dependencies_of_tests_lint_and_fix_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("deps");
+    let manifest = |name: &str, deps: &str| format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n{deps}");
+    t.write("app/gamma.toml", &manifest("app", "\n[dependencies]\ndep = { path = \"../dep\" }\n"));
+    t.write("dep/gamma.toml", &manifest("dep", "\n[dependencies]\nleaf = { path = \"../leaf\" }\n"));
+    t.write("leaf/gamma.toml", &manifest("leaf", ""));
+    t.write("leaf/leaf.gm", "pub two :: fn() -> i32 => 2\ntest \"two\" { expect(two() is 2, \"two\") }\n");
+    t.write(
+        "dep/dep.gm",
+        "leaf :: import \"leaf\"\npub three :: fn() -> i32 => leaf.two() + 1\n\
+         test \"three\" { expect(three() is 3, \"three\") }\ntest \"four\" { expect(three() is 4, \"four\") }\n",
+    );
+    t.write(
+        "app/main.gm",
+        "dep :: import \"dep\"\nmain :: fn() needs Out {\n    x := 1\n    print(\"{}\\n\", dep.three())\n}\n\
+         test \"app\" { expect(dep.three() is 3, \"app\") }\n",
+    );
+    for args in [
+        &["test", "main.gm"][..],
+        &["test", "--package=dep", "main.gm"],
+        &["test", "--package=leaf", "--filter=two", "main.gm"],
+        &["test", "--package=nope", "main.gm"],
+        &["test", "--package=dep", "/"],
+        &["lint", "main.gm"],
+        &["fix", "main.gm"],
+    ] {
+        t.both("app", args);
+    }
+    t.same_files("app");
+    // A git dependency that is not fetched yet: `--offline` refuses, and otherwise the
+    // commands fetch and lock it first.
+    if !have_vcs() {
+        eprintln!("skipped the git part: git is not installed");
+        return;
+    }
+    for side in ["ref", "new"] {
+        let repo = t.dir(side).join("remote");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("gamma.toml"), manifest("remote", "")).unwrap();
+        std::fs::write(
+            repo.join("remote.gm"),
+            "pub one :: fn() -> i32 => 1\ntest \"one\" { expect(one() is 1, \"one\") }\n",
+        )
+        .unwrap();
+        vcs(&repo, &["init", "-q"]);
+        vcs(&repo, &["add", "-A"]);
+        vcs(&repo, &["commit", "-q", "-m", "one"]);
+        vcs(&repo, &["tag", "v1.0.0"]);
+        let url = format!("file://{}", repo.display());
+        std::fs::create_dir_all(t.dir(side).join("app2")).unwrap();
+        std::fs::write(
+            t.dir(side).join("app2/gamma.toml"),
+            manifest("app2", &format!("\n[dependencies]\nremote = {{ git = \"{url}\", tag = \"v1.0.0\" }}\n")),
+        )
+        .unwrap();
+    }
+    t.write(
+        "app2/main.gm",
+        "remote :: import \"remote\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", remote.one())\n}\n",
+    );
+    for args in
+        [&["lint", "--offline", "main.gm"][..], &["fix", "--locked", "main.gm"], &["test", "--offline", "main.gm"]]
+    {
+        t.both("app2", args);
+    }
+    t.both("app2", &["lint", "main.gm"]);
+    t.same_files("app2");
+    t.write("app2/gamma.lock", "");
+    t.both("app2", &["test", "--package=remote", "main.gm"]);
+    t.same_files("app2");
+}
+
+/// Runs `args` on both sides with `env`; returns the reference's result when it succeeded
+/// and `None` (after comparing anyway) when it failed.
+#[cfg(unix)]
+fn both_if_ok(t: &Twin, args: &[&str], env: &[(&str, &str)]) -> Option<Ran> {
+    let r = t.both_env(".", args, env);
+    (r.2 == Some(0)).then_some(r)
+}
+
+/// `--target`, the cross toolchain rules, freestanding programs and `--mode=safe` give the
+/// reference's output, diagnostics and exit status; what needs a cross compiler, an emulator
+/// or Fil-C is skipped when the tool is missing.
+#[test]
+#[cfg(unix)]
+fn targets_and_toolchains_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("targets");
+    let hello = root().join("examples/hello.gm");
+    let hello = hello.to_str().unwrap();
+    let arena = root().join("tests/conformance/test/arena.gm");
+    let arena = arena.to_str().unwrap();
+    let no_path = [("PATH", "/nonexistent")];
+
+    // Command-line and toolchain errors.
+    t.both_env(".", &["check", "--target=nowhere-linux-gnu", hello], &no_path);
+    t.both(".", &["run", "--backend=c", "--target=nowhere-linux-gnu", hello]);
+    t.both(".", &["check", "--target=a b", hello]);
+    t.both(".", &["check", "--target=", hello]);
+    t.both_env(".", &["build", "-o", "m1.out", hello], &[("CC", "no-such-cc")]);
+    t.both_env(".", &["check", hello], &[("CC", "no-such-cc")]);
+    t.both_env(".", &["run", "--backend=c", hello], &[("CC", "no-such-cc")]);
+    t.both_env(".", &["build", "-o", "m2.out", hello], &[("CC", "cc 'x")]);
+    t.both(".", &["check", "--mode=safe", "--target=s390x-linux-gnu", hello]);
+    t.both_env(".", &["run", "--backend=c", hello], &[("GAMMA_RUNNER", "x 'y")]);
+    if !Path::new("/opt/fil/bin/filcc").exists() {
+        let usr = [("PATH", "/usr/bin:/bin")];
+        t.both_env(".", &["build", "--mode=safe", "-o", "m3.out", hello], &usr);
+        t.both_env(".", &["check", "--mode=safe", hello], &usr);
+    } else {
+        // Fil-C is installed: the Safe mode builds and runs the same programs.
+        t.both(".", &["run", "--backend=c", "--mode=safe", hello]);
+        t.both(".", &["test", "--backend=c", "--mode=safe", arena]);
+    }
+
+    // A compiler for another machine than the target.
+    if tool_available("clang") {
+        let cc = [("CC", "clang --target=aarch64-linux-gnu")];
+        t.both_env(".", &["check", "--target=s390x-linux-gnu", hello], &cc);
+        t.both_env(".", &["check", "--target=aarch64_be-linux-gnu", hello], &cc);
+        t.both_env(".", &["check", "--target=s390x-linux-gnu", hello], &[("CC", "clang")]);
+        t.both_env(".", &["check", hello], &[("CC", "clang --target=s390x-linux-gnu")]);
+    }
+
+    // `check --target` over every program, for a big-endian and a 32-bit target.
+    let roots = program_roots();
+    let mut targets = Vec::new();
+    if tool_available("clang") || tool_available("s390x-linux-gnu-gcc") {
+        targets.push("s390x-linux-gnu");
+    }
+    if tool_available("clang") {
+        targets.push("wasm32-wasi");
+    }
+    // Every third program: the whole set takes minutes.
+    let some: Vec<&String> = roots.iter().step_by(3).collect();
+    for triple in targets {
+        let target = format!("--target={triple}");
+        let problems = in_parallel(&some, |root_path| {
+            let args = vec!["check".to_string(), target.clone(), root_path.to_string()];
+            let mut cmd = gamma();
+            cmd.args(&args);
+            let want = ran(common::output(&mut cmd).unwrap());
+            let got = ran(run_gammac(&args));
+            let got = (got.0.replace("gammac", "gamma"), got.1.replace("gammac", "gamma"), got.2);
+            difference("check", root_path, &want, &got)
+        });
+        let problems: Vec<String> = problems.into_iter().flatten().collect();
+        assert!(problems.is_empty(), "check {target}: {} programs differ, first:\n{}", problems.len(), problems[0]);
+    }
+
+    // s390x: big-endian, run through an emulator.
+    let s390x = [("CFLAGS", "-static"), ("GAMMA_RUNNER", "qemu-s390x -L /usr/s390x-linux-gnu")];
+    if tool_available("s390x-linux-gnu-gcc")
+        && tool_available("qemu-s390x")
+        && Path::new("/usr/s390x-linux-gnu").exists()
+    {
+        for mode in ["debug", "checked", "fast"] {
+            let m = format!("--mode={mode}");
+            t.both_env(".", &["run", "--backend=c", "--target=s390x-linux-gnu", &m, hello], &s390x);
+        }
+        t.both_env(".", &["test", "--backend=c", "--target=s390x-linux-gnu", arena], &s390x);
+        t.both_env(".", &["test", "-j", "3", "--backend=c", "--target=s390x-linux-gnu", "lib/std/str"], &s390x);
+        t.both_env(".", &["bench", "--backend=c", "--target=s390x-linux-gnu", "--filter=zzz", "lib/std/str"], &s390x);
+        t.both_env(".", &["build", "--target=s390x-linux-gnu", "-o", "hello_s390x.out", hello], &s390x);
+    }
+
+    // wasm32-wasi: a .wasm file, run by wasmtime.
+    if tool_available("clang") && tool_available("wasmtime") {
+        let probe = both_if_ok(&t, &["run", "--backend=c", "--target=wasm32-wasi", hello], &[]);
+        if probe.is_some() {
+            t.both(".", &["test", "--backend=c", "--target=wasm32-wasi", arena]);
+            t.both(".", &["build", "--target=wasm32-wasi", "-o", "w.out", hello]);
+            for side in ["ref", "new"] {
+                assert!(
+                    t.dir(side).join("w.out.wasm").exists()
+                        || t.dir(side).join("w.wasm").exists()
+                        || t.dir(side).join("w.out").exists()
+                );
+            }
+            t.both_env(
+                ".",
+                &["run", "--backend=c", "--target=wasm32-wasi", hello],
+                &[("GAMMA_RUNNER", "wasmtime run --dir=.")],
+            );
+            t.both_env(
+                ".",
+                &["run", "--backend=c", "--target=wasm32-wasi", hello],
+                &[("WASM_OPT", "/no/such/wasm-opt")],
+            );
+        }
+    }
+
+    // Freestanding: an object file with the exported functions, and no run, test or bench.
+    let triple = "x86_64-unknown-none-elf";
+    let firmware = root().join("tests/freestanding/firmware.gm");
+    let firmware = firmware.to_str().unwrap();
+    t.both(".", &["check", &format!("--target={triple}"), firmware]);
+    t.both(".", &["run", "--backend=c", &format!("--target={triple}"), firmware]);
+    t.both(".", &["test", "--backend=c", &format!("--target={triple}"), arena]);
+    t.both(".", &["bench", "--backend=c", &format!("--target={triple}"), arena]);
+    t.both(".", &["build", &format!("--target={triple}"), hello, "-o", "h.o"]);
+    if cfg!(target_arch = "x86_64") {
+        let harness = root().join("tests/freestanding/harness.c");
+        for mode in ["debug", "checked", "fast"] {
+            let obj = format!("fw-{mode}.o");
+            let m = format!("--mode={mode}");
+            if both_if_ok(&t, &["build", &format!("--target={triple}"), &m, firmware, "-o", &obj], &[]).is_none() {
+                continue;
+            }
+            let mut outputs = Vec::new();
+            for side in ["ref", "new"] {
+                let exe = t.dir(side).join(format!("fw-{mode}.out"));
+                let linked = Command::new("cc")
+                    .args(["-no-pie", "-o"])
+                    .arg(&exe)
+                    .arg(&harness)
+                    .arg(t.dir(side).join(&obj))
+                    .output();
+                let Ok(linked) = linked else { break };
+                if !linked.status.success() {
+                    break;
+                }
+                let mut runs = Vec::new();
+                for extra in [None, Some("crash")] {
+                    let mut cmd = Command::new(&exe);
+                    cmd.args(extra);
+                    runs.push(ran(common::output(&mut cmd).unwrap()));
+                }
+                outputs.push(runs);
+            }
+            if outputs.len() == 2 {
+                assert_eq!(outputs[0], outputs[1], "the firmware built in {mode} mode behaves differently");
+            }
+        }
+    }
+}
+
+/// The cache of built programs and of the compiled runtime: a second `run` finds the program
+/// again and `cache clean` counts the same things for both.
+#[test]
+#[cfg(unix)]
+fn run_and_runtime_caches_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("caches");
+    let hello = root().join("examples/hello.gm");
+    let hello = hello.to_str().unwrap();
+    let files = |side: &str| -> Vec<String> {
+        let mut names: Vec<String> = tree(&t.root.join(side).join("cache"))
+            .into_iter()
+            .map(|(n, _)| n.split('-').next().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    for mode in ["debug", "fast"] {
+        let m = format!("--mode={mode}");
+        for _ in 0..2 {
+            assert_eq!(t.both(".", &["run", "--backend=c", &m, hello]).0, "hello, world\n");
+        }
+    }
+    assert_eq!(files("ref"), files("new"), "the cache holds different kinds of files");
+    assert!(files("new").iter().any(|n| n.starts_with("gm_rt")), "no compiled runtime was cached");
+    assert!(files("new").iter().any(|n| n.starts_with("run/prog")), "no built program was cached");
+    t.both(".", &["cache", "clean", "--dry-run"]);
+    t.both(".", &["cache", "clean"]);
+    assert_eq!(files("ref"), files("new"), "`cache clean` removed different files");
+}
+
+#[cfg(unix)]
+/// `text` with the numbers that depend on the order functions are checked in replaced by
+/// `N`: `gm_f12` and `gm_f12_s3` become `gm_fN`, `gm_c4_1` becomes `gm_cN`.
+fn normalize_c_names(text: &str) -> String {
+    const NUMBERED: [&str; 18] =
+        ["fs", "fr", "f", "s", "k", "c", "hl", "hd", "pf", "pr", "pt", "wb", "dt", "xe", "ga", "gi", "ginit", "g"];
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let word_start = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        if word_start && text[i..].starts_with("gm_") {
+            let letters = text[i + 3..].bytes().take_while(|b| b.is_ascii_lowercase()).count();
+            let digits = i + 3 + letters;
+            if NUMBERED.contains(&&text[i + 3..digits]) && bytes.get(digits).is_some_and(u8::is_ascii_digit) {
+                // The digits, then any `_digits` or `_sdigits` suffixes.
+                let mut end = digits;
+                loop {
+                    while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+                        end += 1;
+                    }
+                    let next = bytes.get(end + 1).copied().unwrap_or(0);
+                    let spec = next == b's' && bytes.get(end + 2).is_some_and(u8::is_ascii_digit);
+                    if bytes.get(end) == Some(&b'_') && (next.is_ascii_digit() || spec) {
+                        end += if spec { 2 } else { 1 };
+                    } else {
+                        break;
+                    }
+                }
+                // An outlined helper `gm_c4_1` is told from a constant `gm_c4`.
+                let helper = &text[i + 3..digits] == "c" && text[digits..end].contains('_');
+                out.push_str(&text[i..digits]);
+                out.push(if helper { 'H' } else { 'N' });
+                i = end;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+#[cfg(unix)]
+/// A function of generated C: its name, its text, and its text with the numbers that depend on
+/// the order functions are checked in replaced.
+struct CFunction {
+    name: String,
+    text: String,
+    normalized: String,
+}
+
+#[cfg(unix)]
+/// The functions of generated C. `gammac` numbers functions in the order it checks them, so
+/// the two compilers are compared on the set of normalized function bodies.
+fn c_functions(c: &str) -> Vec<CFunction> {
+    let generated = &c[c.find("/* ---- generated ---- */").expect("generated section")..];
+    let mut functions = Vec::new();
+    let mut current: Option<String> = None;
+    for line in generated.lines() {
+        if let Some(body) = &mut current {
+            body.push_str(line);
+            body.push('\n');
+            if line == "}" {
+                let text = current.take().unwrap();
+                let header = text.lines().next().unwrap();
+                let name = header[..header.rfind('(').unwrap()]
+                    .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap();
+                functions.push(CFunction { name: name.to_string(), normalized: normalize_c_names(&text), text });
+            }
+        } else {
+            let opens = line.starts_with("static") || line.starts_with("GM_NOINLINE") || line.starts_with("int main");
+            if opens
+                && line.ends_with(") {")
+                && !line.starts_with("static const")
+                && !line.starts_with("static void *const")
+            {
+                current = Some(format!("{line}\n"));
+            }
+        }
+    }
+    functions
+}
+
+#[cfg(unix)]
+/// The names of the functions and hash functions `text` mentions: `gm_f12`, `gm_f12_s3`, `gm_hash4`.
+fn mentioned_functions(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("gm_") {
+        let tail = &rest[i..];
+        let letters = tail[3..].bytes().take_while(u8::is_ascii_lowercase).count();
+        let mut end = 3 + letters;
+        if matches!(&tail[3..end], "f" | "hash") {
+            let digits = tail[end..].bytes().take_while(u8::is_ascii_digit).count();
+            if digits > 0 {
+                end += digits;
+                if tail[end..].starts_with("_s") {
+                    let spec = tail[end + 2..].bytes().take_while(u8::is_ascii_digit).count();
+                    if spec > 0 {
+                        end += 2 + spec;
+                    }
+                }
+                names.push(tail[..end].to_string());
+            }
+        }
+        rest = &tail[end.max(3)..];
+    }
+    names
+}
+
+/// The C the reference implementation generates for `program` in Fast mode.
+#[cfg(unix)]
+fn reference_c(program: &str, out: &Path) -> String {
+    let mut cmd = gamma();
+    cmd.args(["build", "--mode=fast", "-o"]).arg(out).arg(program).env("CFLAGS", "-O0 -w");
+    let built = common::output(&mut cmd).unwrap();
+    assert!(built.status.success(), "gamma failed to build {program}:\n{}", String::from_utf8_lossy(&built.stderr));
+    std::fs::read_to_string(format!("{}.c", out.display())).unwrap()
+}
+
+/// `gammac` generates the functions the reference does, for most of the examples and for a
+/// program with long bodies and a long operator chain, which the back end outlines and chains.
+/// Only the order of the functions and the constants nothing uses differ.
+#[test]
+#[cfg(unix)]
+fn gammac_generates_the_same_functions_as_the_reference() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-cgen");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut programs: Vec<String> = [
+        "allocators",
+        "c_interop",
+        "echo",
+        "fibers",
+        "generators",
+        "grep",
+        "hello",
+        "json_query",
+        "julia",
+        "life",
+        "logging",
+        "mandelbrot",
+        "nbody",
+        "sha256sum",
+        "threads",
+        "wordfreq",
+    ]
+    .iter()
+    .map(|n| format!("examples/{n}.gm"))
+    .collect();
+    // `continue`, `break` and `return` in long bodies with `defer`s, and a long operator chain.
+    let mut src = String::from("check :: fn(k: i64) -> i64 {\n    if k > 2 { return 2 }\n    return k\n}\n");
+    src += "loops :: fn(n: i64) -> i64 needs Out {\n    s := 0\n    defer print(\"done {}\\n\", n)\n    i := 0\n";
+    src += "    while i < n {\n        i += 1\n        defer print(\"iteration {}\\n\", i)\n";
+    src += &"        s = s + i % 3\n".repeat(600);
+    src += "        if i is 2 { continue }\n";
+    src += &"        s = s + i % 5\n".repeat(600);
+    src += "        if i is 4 { break }\n    }\n";
+    src += &"    s = s - check(n) % 7\n".repeat(600);
+    src += "    if n is 3 { return s }\n    return s + 1\n}\n";
+    let chain = vec!["y"; 3000].join(" + ");
+    src += &format!(
+        "main :: fn() needs Out {{\n    y := check(1)\n    x := {chain}\n    print(\"{{}} {{}} {{}}\\n\", x, loops(3), loops(5))\n}}\n"
+    );
+    let long = dir.join("long.gm");
+    std::fs::write(&long, src).unwrap();
+    programs.push(long.to_string_lossy().into_owned());
+    let mut outlined = false;
+    for program in &programs {
+        let name = Path::new(program).file_stem().unwrap().to_string_lossy().into_owned();
+        let expected = reference_c(program, &dir.join(format!("{name}_ref")));
+        let mine = dir.join(format!("{name}_gammac"));
+        let args: Vec<String> = ["build", "--mode=fast", "--emit-c", "-o"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain([mine.to_string_lossy().into_owned(), program.clone()])
+            .collect();
+        let out = run_gammac(&args);
+        assert!(out.status.success(), "gammac failed to build {program}:\n{}", String::from_utf8_lossy(&out.stderr));
+        let actual = std::fs::read_to_string(format!("{}.c", mine.display())).unwrap();
+        let (reference, mut ours) = (c_functions(&expected), c_functions(&actual));
+        outlined |= reference.iter().any(|f| f.normalized.contains("gm_cH"));
+        ours.retain(|f| f.name != "gm_init_consts");
+        // The reference initializes every constant, used or not, and generates the functions that
+        // only they reach; `gammac` generates the constants a program uses.
+        let mut reached: Vec<String> = Vec::new();
+        let mut work: Vec<String> = reference
+            .iter()
+            .filter(|f| f.name == "gm_init_consts")
+            .flat_map(|f| mentioned_functions(&f.text))
+            .collect();
+        while let Some(name) = work.pop() {
+            if !reached.contains(&name) {
+                for f in reference.iter().filter(|f| f.name == name) {
+                    work.extend(mentioned_functions(&f.text));
+                }
+                reached.push(name);
+            }
+        }
+        let mut ours: Vec<Option<CFunction>> = ours.into_iter().map(Some).collect();
+        for f in reference.iter().filter(|f| f.name != "gm_init_consts") {
+            match ours.iter_mut().find(|o| o.as_ref().is_some_and(|o| o.normalized == f.normalized)) {
+                Some(o) => *o = None,
+                None => assert!(
+                    reached.contains(&f.name),
+                    "the C of {program} lacks a function the reference generates:\n{}",
+                    f.text
+                ),
+            }
+        }
+        if let Some(f) = ours.iter().flatten().next() {
+            panic!("the C of {program} has a function the reference does not generate:\n{}", f.text);
+        }
+    }
+    assert!(outlined, "no function was outlined: the test no longer covers outlining");
+}
+
+/// A language server run as a child process and driven one message at a time: every
+/// message that has an answer is waited for, so the server's order of work, and with it
+/// its output, does not depend on timing.
+#[cfg(unix)]
+struct LspClient {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    out: std::io::BufReader<std::process::ChildStdout>,
+    raw: Vec<u8>,
+    next_id: u64,
+}
+
+#[cfg(unix)]
+impl LspClient {
+    fn start(mut cmd: Command) -> LspClient {
+        use std::process::Stdio;
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = cmd.spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        LspClient { child, stdin, out, raw: Vec::new(), next_id: 1 }
+    }
+
+    fn send(&mut self, body: &serde_json::Value) {
+        use std::io::Write;
+        let text = body.to_string();
+        write!(self.stdin, "Content-Length: {}\r\n\r\n{}", text.len(), text).unwrap();
+        self.stdin.flush().unwrap();
+    }
+
+    /// The next message the server wrote; its bytes are recorded as written.
+    fn read(&mut self) -> serde_json::Value {
+        use std::io::{BufRead, Read};
+        let mut length = 0usize;
+        loop {
+            let mut line = String::new();
+            assert!(self.out.read_line(&mut line).unwrap() > 0, "the server ended its output");
+            self.raw.extend_from_slice(line.as_bytes());
+            let line = line.trim_end();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(n) = line.strip_prefix("Content-Length: ") {
+                length = n.parse().unwrap();
+            }
+        }
+        let mut body = vec![0u8; length];
+        self.out.read_exact(&mut body).unwrap();
+        self.raw.extend_from_slice(&body);
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn request(&mut self, method: &str, params: serde_json::Value) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(&serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        while self.read().get("id").and_then(|v| v.as_u64()) != Some(id) {}
+    }
+
+    fn notify(&mut self, method: &str, params: serde_json::Value) {
+        self.send(&serde_json::json!({"jsonrpc": "2.0", "method": method, "params": params}));
+    }
+
+    /// Sends a document's text and waits for the diagnostics of that version.
+    fn open_or_change(&mut self, uri: &str, version: u64, text: &str, open: bool) {
+        if open {
+            let doc = serde_json::json!({"uri": uri, "languageId": "gamma", "version": version, "text": text});
+            self.notify("textDocument/didOpen", serde_json::json!({"textDocument": doc}));
+        } else {
+            let doc = serde_json::json!({"uri": uri, "version": version});
+            self.notify(
+                "textDocument/didChange",
+                serde_json::json!({"textDocument": doc, "contentChanges": [{"text": text}]}),
+            );
+        }
+        loop {
+            let m = self.read();
+            if m["method"] == "textDocument/publishDiagnostics"
+                && m["params"]["uri"] == uri
+                && m["params"]["version"] == version
+            {
+                break;
+            }
+        }
+    }
+
+    /// Ends the session and gives everything the server wrote and its exit status.
+    fn finish(mut self) -> (Vec<u8>, Option<i32>) {
+        self.request("shutdown", serde_json::Value::Null);
+        self.notify("exit", serde_json::Value::Null);
+        drop(self.stdin);
+        let code = self.child.wait().unwrap().code();
+        (self.raw, code)
+    }
+}
+
+/// The positions (line, UTF-16 column) where identifiers start in `text`.
+#[cfg(unix)]
+fn identifier_starts(text: &str) -> Vec<(usize, usize)> {
+    let mut out = vec![];
+    for (line_no, line) in text.lines().enumerate() {
+        let mut col = 0;
+        let mut prev_ident = false;
+        for ch in line.chars() {
+            let ident = ch.is_ascii_alphanumeric() || ch == '_';
+            if ident && !prev_ident && !ch.is_ascii_digit() {
+                out.push((line_no, col));
+            }
+            prev_ident = ident;
+            col += ch.len_utf16();
+        }
+    }
+    out
+}
+
+/// One session over the document at `path`: the requests the editors send, on a sample of
+/// the identifiers, then an edit that breaks the text and the same requests again.
+#[cfg(unix)]
+fn lsp_session(server: Command, path: &Path, text: &str) -> (Vec<u8>, Option<i32>) {
+    use serde_json::json;
+    let uri = format!("file://{}", path.display());
+    let mut c = LspClient::start(server);
+    c.request("initialize", json!({"processId": null, "rootUri": null, "capabilities": {}}));
+    c.notify("initialized", json!({}));
+    let doc = json!({"uri": uri});
+    let requests = |c: &mut LspClient, text: &str| {
+        let starts = identifier_starts(text);
+        let step = (starts.len() / 24).max(1);
+        for &(line, character) in starts.iter().step_by(step) {
+            let at = json!({"textDocument": doc, "position": {"line": line, "character": character}});
+            for method in [
+                "textDocument/hover",
+                "textDocument/definition",
+                "textDocument/completion",
+                "textDocument/signatureHelp",
+                "textDocument/prepareRename",
+            ] {
+                c.request(method, at.clone());
+            }
+            let mut refs = at.clone();
+            refs["context"] = json!({"includeDeclaration": true});
+            c.request("textDocument/references", refs);
+            let mut rename = at.clone();
+            rename["newName"] = json!("renamed_name");
+            c.request("textDocument/rename", rename);
+        }
+        c.request("textDocument/documentSymbol", json!({"textDocument": doc}));
+        c.request("textDocument/formatting", json!({"textDocument": doc, "options": {}}));
+        let range = json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}});
+        c.request(
+            "textDocument/codeAction",
+            json!({"textDocument": doc, "range": range, "context": {"diagnostics": []}}),
+        );
+    };
+    c.open_or_change(&uri, 1, text, true);
+    requests(&mut c, text);
+    let broken = text.replacen('{', "", 1) + "\nx := (\n";
+    c.open_or_change(&uri, 2, &broken, false);
+    requests(&mut c, &broken);
+    c.notify("textDocument/didClose", json!({"textDocument": doc}));
+    c.finish()
+}
+
+#[cfg(unix)]
+#[test]
+fn language_server_matches_the_reference() {
+    if !common::c_backend_available() {
+        return;
+    }
+    let Gammac::Native(exe) = gammac() else { return };
+    for example in ["examples/hello.gm", "examples/life.gm"] {
+        let text = std::fs::read_to_string(root().join(example)).unwrap();
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-lsp").join(example.replace('/', "_"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.canonicalize().unwrap().join("main.gm");
+        std::fs::write(&path, &text).unwrap();
+        let mut reference = gamma();
+        reference.arg("lsp");
+        let mut own = Command::new(exe);
+        own.arg("lsp").current_dir(root());
+        gammac_env(&mut own);
+        let (expected, expected_code) = lsp_session(reference, &path, &text);
+        let (actual, actual_code) = lsp_session(own, &path, &text);
+        assert_eq!(expected_code, actual_code, "{example}: exit status");
+        if expected != actual {
+            let (e, a) = (String::from_utf8_lossy(&expected), String::from_utf8_lossy(&actual));
+            let at = e.bytes().zip(a.bytes()).position(|(x, y)| x != y).unwrap_or(e.len().min(a.len()));
+            let from = e[..at].rfind("Content-Length").unwrap_or(0);
+            panic!(
+                "{example}: the language servers differ at byte {at}:\nreference: {}\ngammac:    {}",
+                e[from..].chars().take(400).collect::<String>(),
+                a[from.min(a.len())..].chars().take(400).collect::<String>()
+            );
+        }
+        assert!(expected.len() > 10_000, "{example}: the session produced only {} bytes", expected.len());
+    }
 }

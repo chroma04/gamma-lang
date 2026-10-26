@@ -1,0 +1,340 @@
+//! Requests about all uses of a declaration, across the modules of a package: find
+//! references and rename.
+
+/// What a request needs: the analysis of the module with the document, the cache of the
+/// other modules, and the open buffers.
+pub Request :: struct {
+    a: ^Analysis
+    ws: ^Workspace
+    dir: string
+    overlays: []const load.Overlay
+    enc: Encoding
+    uris: ^const UriMap
+}
+
+/// The declaration a request is about.
+Target :: struct {
+    span: source.Span
+    loc: Loc
+    name: string
+    /// A local or parameter: its uses are in its own module.
+    local: bool
+}
+
+is_local :: fn(rq: ^const Request, def: source.Span) -> bool {
+    for s in rq.a.index.scopes.items {
+        if s.def is def { return true }
+    }
+    return false
+}
+
+/// The declaration that the name at `off` refers to, if it is in a file that can be edited.
+declaration_at :: fn(rq: ^Request, file: source.FileId, off: u32) -> string!Target needs Alloc + Env + Fs {
+    span := rq.a.index.definition_at(file, off) else return !"there is nothing to rename here"
+    if span.hi <= span.lo { return !"this name has no declaration in the source that can be renamed" }
+    t := rq.a.source_text(span.file)
+    name := ""
+    if usize(span.hi) <= t.len and is_char_boundary(t, usize(span.lo)) and is_char_boundary(t, usize(span.hi)) { name = t[usize(span.lo)..usize(span.hi)] }
+    path := rq.a.real_path(span.file) else return !str.format("cannot rename `{}`: it is part of the core library", name)!
+    loc := Loc(path: path, lo: span.lo, hi: span.hi)
+    return Target(span: span, loc: loc, name: name, local: is_local(rq, span))
+}
+
+/// Refuses declarations outside the package being edited.
+check_editable :: fn(rq: ^const Request, t: ^const Target) -> ?string needs Alloc + Env + Fs {
+    if load.starts_with(t.loc.path, canon(driver.std_root())) {
+        return str.format("cannot rename `{}`: it is part of the standard library", t.name)!
+    }
+    roots := package_roots(rq.dir)
+    if not load.starts_with(t.loc.path, roots.items[0]) {
+        return str.format("cannot rename `{}`: it is declared in a dependency, outside this package", t.name)!
+    }
+    return null
+}
+
+/// The uses of the declaration in this module and, unless it is a local, in the other
+/// modules of the package and of its path dependencies.
+find :: fn(rq: ^Request, t: ^const Target) -> Found needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    modules := list(^ModuleFacts)
+    modules.push(rq.ws.store(rq.dir, rq.a, rq.overlays))!
+    if not t.local {
+        roots := package_roots(rq.dir)
+        under := false
+        for r in roots.items {
+            if load.starts_with(t.loc.path, r) { under = true }
+        }
+        if under {
+            for cand in module_dirs(roots.items, rq.overlays).items {
+                if cand is not rq.dir and mentions(cand, t.name, rq.overlays) {
+                    modules.push(rq.ws.facts(cand, rq.overlays))!
+                }
+            }
+        }
+    }
+    uses := list(Loc)
+    for m in modules.items {
+        for r in m.refs.items {
+            if loc_equal(&r.to, &t.loc) { uses.push(r.from)! }
+        }
+    }
+    uses.items.sort_by(loc_less)
+    n: usize = 0
+    for i in 0..uses.items.len {
+        if i > 0 and loc_equal(&uses.items[i], &uses.items[n - 1]) { continue }
+        uses.items[n] = uses.items[i]
+        n += 1
+    }
+    uses.truncate(n)
+    return Found(uses: uses, modules: modules)
+}
+
+/// The text of a file: from the open documents, an analysis, or the disk.
+text_of :: fn(rq: ^const Request, found: ^const Found, path: string) -> ?string needs Alloc + Fs {
+    if t := found_text(found, path) { return t }
+    for o in rq.overlays {
+        if o.path is path { return o.text }
+    }
+    bytes := fs.read_all(path) else return null
+    return bytes
+}
+
+location_in :: fn(rq: ^const Request, found: ^const Found, loc: ^const Loc) -> ?Value needs Alloc + Fs {
+    t := text_of(rq, found, loc.path) else return null
+    ix := line_index(t)
+    o := obj()
+    o.put("uri", text(uri_of(rq.uris, loc.path)))
+    o.put("range", range_json(&ix, usize(loc.lo), usize(loc.hi), rq.enc))
+    return o.value()
+}
+
+/// All references to the declaration of the name at `off`, in every module of the package
+/// that uses it.
+pub references_all :: fn(rq: ^Request, file: source.FileId, off: u32, include_declaration: bool) -> Value needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    t := declaration_at(rq, file, off) else {
+        // A declaration in the embedded core library, or none: the uses in this module.
+        cx := Ctx(a: rq.a, enc: rq.enc, uris: rq.uris)
+        return references(&cx, file, off, include_declaration)
+    }
+    found := find(rq, &t)
+    locs := list(Loc)
+    if include_declaration { locs.push(t.loc)! }
+    for u in found.uses.items { locs.push(u)! }
+    out := list(Value)
+    for i in 0..locs.items.len {
+        if l := location_in(rq, &found, &locs.items[i]) { out.push(l)! }
+    }
+    return array(out.items)
+}
+
+is_word_byte :: fn(c: u8) -> bool => c >= 0x80 or is_ident_byte(c)
+
+/// The range of `name` in `text[lo..hi]` (the whole of it, or the last whole word, as in
+/// the span of `a.name`).
+narrow :: fn(t: string, lo, hi: u32, name: string) -> ?(lo: u32, hi: u32) {
+    if usize(lo) > usize(hi) or usize(hi) > t.len or not is_char_boundary(t, usize(lo)) or not is_char_boundary(t, usize(hi)) { return null }
+    slice := t[usize(lo)..usize(hi)]
+    if slice is name { return (lo: lo, hi: hi) }
+    best: ?usize = null
+    from: usize = 0
+    while from <= slice.len {
+        i := str.find(slice[from..], name) else break
+        at := from + i
+        end := at + name.len
+        before_ok := at is 0 or not is_word_byte(slice[at - 1])
+        after_ok := end >= slice.len or not is_word_byte(slice[end])
+        if before_ok and after_ok { best = at }
+        from = at + 1
+    }
+    at := best else return null
+    return (lo: lo + at.trunc(u32), hi: lo + (at + name.len).trunc(u32))
+}
+
+/// The identifier at `off` that a rename would start from: the use or declaration of the
+/// name there.
+pub prepare_rename :: fn(rq: ^Request, file: source.FileId, off: u32) -> string!Value needs Alloc + Env + Fs {
+    t := try declaration_at(rq, file, off)
+    if msg := check_editable(rq, &t) { return !msg }
+    t_text := rq.a.source_text(file)
+    best: ?source.Span = null
+    for r in rq.a.index.refs.items {
+        if r.from.file is file and r.from.lo <= off and off <= r.from.hi and r.to is t.span {
+            if b := best {
+                if r.from.hi - r.from.lo >= b.hi - b.lo { continue }
+            }
+            best = r.from
+        }
+    }
+    if t.span.file is file and t.span.lo <= off and off <= t.span.hi {
+        if b := best {
+            if t.span.hi - t.span.lo < b.hi - b.lo { best = t.span }
+        } else {
+            best = t.span
+        }
+    }
+    span := best else return !"there is nothing to rename here"
+    r := narrow(t_text, span.lo, span.hi, t.name) else return !"this use cannot be renamed on its own"
+    ix := line_index(t_text)
+    o := obj()
+    o.put("range", range_json(&ix, usize(r.lo), usize(r.hi), rq.enc))
+    o.put("placeholder", text(t.name))
+    return o.value()
+}
+
+/// Whether `name` is the name of a builtin type that cannot be redeclared.
+is_reserved_type_name :: fn(name: string) -> bool {
+    if name in ("usize", "isize", "f16", "f32", "f64", "bool", "never", "type", "rawptr", "cont") { return true }
+    if name.len < 2 or (name[0] is not 'u' and name[0] is not 'i') or name[1] is '0' { return false }
+    bits: u32 = 0
+    for c in name[1..] {
+        if c < '0' or c > '9' { return false }
+        bits = bits * 10 + u32(c - '0')
+        if bits > 100000 { return false }
+    }
+    return bits >= 1 and bits <= 128
+}
+
+/// Why `name` cannot be the name of a declaration, if it cannot.
+pub check_new_name :: fn(name: string) -> ?string needs Alloc {
+    if not load.is_identifier(name) { return str.format("`{}` is not an identifier", name)! }
+    if name is "_" { return "`_` cannot be the name of a declaration" }
+    if name in syntax.KEYWORD_TEXTS[..] { return str.format("`{}` is a keyword", name)! }
+    if is_reserved_type_name(name) { return str.format("`{}` is the name of a builtin type", name)! }
+    return null
+}
+
+line_of :: fn(t: string, off: u32) -> usize {
+    if usize(off) > t.len or not is_char_boundary(t, usize(off)) { return 1 }
+    n: usize = 0
+    for c in t[0..usize(off)] {
+        if c is '\n' { n += 1 }
+    }
+    return n + 1
+}
+
+Span2 :: struct {
+    lo: u32
+    hi: u32
+}
+
+FileEdits :: struct {
+    path: string
+    spans: List(Span2)
+}
+
+/// The edits that rename the declaration at `off` and all its uses to `new_name`.
+pub rename :: fn(rq: ^Request, file: source.FileId, off: u32, new_name: string) -> string!Value needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    if msg := check_new_name(new_name) { return !msg }
+    t := try declaration_at(rq, file, off)
+    if msg := check_editable(rq, &t) { return !msg }
+    if t.name is new_name {
+        o := obj()
+        o.put("changes", obj().value())
+        return o.value()
+    }
+    found := find(rq, &t)
+    if msg := check_clashes(rq, &t, &found, new_name) { return !msg }
+    by_file := list(FileEdits)
+    texts := list(TextEntry)
+    locs := list(Loc)
+    locs.push(t.loc)!
+    for u in found.uses.items { locs.push(u)! }
+    for loc in locs.items {
+        known: ?string = null
+        for te in texts.items {
+            if te.path is loc.path { known = te.text }
+        }
+        if known is null {
+            body := text_of(rq, &found, loc.path) else return !str.format("cannot read {}", loc.path)!
+            texts.push(TextEntry(path: loc.path, text: body))!
+            known = body
+        }
+        t_text := known else ""
+        r := narrow(t_text, loc.lo, loc.hi, t.name) else {
+            return !str.format("cannot rename `{}`: a use at {}:{} is not a plain name", t.name, loc.path, line_of(t_text, loc.lo))!
+        }
+        idx: ?usize = null
+        for i in 0..by_file.items.len {
+            if by_file.items[i].path is loc.path { idx = i }
+        }
+        if idx is null {
+            by_file.push(FileEdits(path: loc.path, spans: list(Span2)))!
+            idx = by_file.items.len - 1
+        }
+        by_file.items[idx else 0].spans.push(Span2(lo: r.lo, hi: r.hi))!
+    }
+    changes := obj()
+    for k in 0..by_file.items.len {
+        fe := &by_file.items[k]
+        fe.spans.items.sort_by(fn(x, y: ^const Span2) -> bool => (x.lo, x.hi) < (y.lo, y.hi))
+        n: usize = 0
+        for i in 0..fe.spans.items.len {
+            if i > 0 and fe.spans.items[i].lo is fe.spans.items[n - 1].lo and fe.spans.items[i].hi is fe.spans.items[n - 1].hi { continue }
+            fe.spans.items[n] = fe.spans.items[i]
+            n += 1
+        }
+        fe.spans.truncate(n)
+        body := ""
+        for te in texts.items {
+            if te.path is fe.path { body = te.text }
+        }
+        ix := line_index(body)
+        edits := list(Value)
+        for sp in fe.spans.items {
+            e := obj()
+            e.put("range", range_json(&ix, usize(sp.lo), usize(sp.hi), rq.enc))
+            e.put("newText", text(new_name))
+            edits.push(e.value())!
+        }
+        changes.put(uri_of(rq.uris, fe.path), array(edits.items))
+    }
+    o := obj()
+    o.put("changes", changes.value())
+    return o.value()
+}
+
+/// Refuses a new name that is already taken where the declaration or one of its uses is.
+check_clashes :: fn(rq: ^Request, t: ^const Target, found: ^const Found, new_name: string) -> ?string needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    old := t.name
+    home := load.parent(t.loc.path) else ""
+    module: ?^ModuleFacts = null
+    for m in found.modules.items {
+        if m.dir is home { module = m }
+    }
+    m := module else rq.ws.facts(home, rq.overlays)
+    if names := m.siblings.get(loc_key(t.loc)) {
+        if new_name in names {
+            return str.format("cannot rename `{}` to `{}`: `{}` is already declared in the same scope", old, new_name, new_name)!
+        }
+    }
+    for me in m.locals.items {
+        if not loc_equal(&me.def, &t.loc) { continue }
+        if m.top_level.contains(new_name) {
+            return str.format("cannot rename `{}` to `{}`: it would hide the declaration `{}` of the module", old, new_name, new_name)!
+        }
+        for l in m.locals.items {
+            if l.label is new_name and not loc_equal(&l.def, &me.def) and l.def.path is me.def.path and l.from <= me.to and me.from <= l.to {
+                return str.format("cannot rename `{}` to `{}`: `{}` is already declared in a scope that overlaps", old, new_name, new_name)!
+            }
+        }
+        break
+    }
+    for u in found.uses.items {
+        for fm in found.modules.items {
+            for l in fm.locals.items {
+                if l.label is new_name and l.def.path is u.path and not loc_equal(&l.def, &t.loc) and l.from <= u.lo and u.lo <= l.to {
+                    line: usize = 0
+                    if body := text_in(fm, u.path) { line = line_of(body, u.lo) }
+                    return str.format("cannot rename `{}` to `{}`: `{}` is a local name where `{}` is used ({}:{})", old, new_name, new_name, old, u.path, line)!
+                }
+            }
+        }
+    }
+    return null
+}
+
+driver :: import "../driver"
+fs :: import "std/fs"
+load :: import "../load"
+source :: import "../source"
+str :: import "std/str"
+syntax :: import "../syntax"

@@ -71,7 +71,7 @@ pub prog :: fn(s: ^Sema) -> Prog needs sema.Load {
         }
         a = Ambient(out: ids[0], err: ids[1], env: ids[2], alloc: ids[3], sys: ids[4], input: ids[5], clock: ids[6], rand: ids[7], fs: ids[8], net: ids[9], proc: ids[10])
     }
-    return Prog(s: s, funcs: list(?^Func), ambient: a, target: host_target())
+    return Prog(s: s, funcs: list(?^Func), ambient: a, target: s.l.target)
 }
 
 /// Function `f`.
@@ -91,9 +91,14 @@ pub func :: fn(p: ^Prog, f: u32) -> ^const Func needs Alloc {
             FnKind.Foreign(lib: info.lib, link_name: info.link_name, variadic: f in s.variadic_fns.items)
         }
     }
+    // An instance of a generic function has its template's hints.
+    hint_fn := f
+    if inst := sig.instance { hint_fn = inst.template }
     hints := Hints()
-    for x in s.inline_fns.items {
-        if x.fn_id is f { hints.inline = true }
+    for x in s.fn_hints.items {
+        if x.fn_id is hint_fn {
+            hints = Hints(fast_math: x.fast_math, inline: x.inline, cold: x.cold)
+        }
     }
     made := new(Func(
         name: sig.name,

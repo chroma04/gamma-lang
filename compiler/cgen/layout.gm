@@ -2,32 +2,12 @@
 // `src/layout.rs`). The checker's layouts (`sema/layout.gm`) give sizes and alignments
 // only.
 
-/// The target the generated code is for: the one gammac itself was built for.
-pub Target :: struct {
-    pub ptr_bytes: u64
-    pub little_endian: bool
-    pub int128_align: u64
-    /// `Linux`, `MacOS`, `Windows`, `FreeBSD`, `Wasi` or `Freestanding`.
-    pub os: string
-    /// `X86_64`, `Aarch64`, `Riscv64`, `S390x`, `Wasm32` or `Other`.
-    pub arch: string
-    /// Fil-C, the memory-safe C implementation behind the Safe mode.
-    pub filc: bool
-    /// The C compiler has `_Float16`.
-    pub f16: bool
-}
+/// The target the generated code is for.
+pub Target :: loader.Target
 
-pub host_target :: fn() -> Target => Target(
-    ptr_bytes: u64(target.ptr_bits / 8),
-    little_endian: target.endian is .Little,
-    int128_align: 16,
-    os: @variant_name(target.os),
-    arch: @variant_name(target.arch),
-    filc: false,
-    f16: true,
-)
+pub host_target :: fn() -> Target => loader.host_target()
 
-pub ptr_bits :: fn(t: ^const Target) -> u32 => (t.ptr_bytes * 8).trunc(u32)
+pub ptr_bits :: fn(t: ^const Target) -> u32 => loader.ptr_bits(t)
 
 /// A size, an alignment and the offsets of the fields (of a struct or tuple), of the flag
 /// (`[0, flag]` for an optional) or of the tag and payload (a result or union).
@@ -234,4 +214,62 @@ pub may_hold_pointers :: fn(lay: ^Layouts, t: Ty) -> bool needs Alloc {
         }
         _ => return true
     }
+}
+
+/// For a value of `t` whose pointers are always at the same places (no union, optional or
+/// result holds one), which of its pointer-sized words hold a pointer; `null` when that
+/// depends on the value, or a pointer is not aligned to its size.
+pub pointer_words :: fn(lay: ^Layouts, t: Ty) -> ?[]bool needs Alloc {
+    p := lay.target.ptr_bytes
+    n := (lay.layout_of(t).size + p - 1) / p
+    words := list(bool)
+    for _ in 0..n { words.push(false)! }
+    if not lay.mark_pointer_words(t, 0, words.items) { return null }
+    return words.items
+}
+
+mark_pointer_words :: fn(lay: ^Layouts, t: Ty, off: u64, words: []bool) -> bool needs Alloc {
+    p := lay.target.ptr_bytes
+    match lay.s.tys.kind(t) {
+        .Rawptr, .Ptr(_), .ManyPtr(_), .FnPtr(_), .Slice(_) => return pointer_at(words, off, p)
+        .Optional(inner) => {
+            if nullable_pointer(lay.s, inner) { return pointer_at(words, off, p) }
+            return not lay.may_hold_pointers(t)
+        }
+        // A closure's code, environment and context; a handler value's frame and context.
+        .Fn(_) => return pointer_at(words, off, p) and pointer_at(words, off + p, p) and pointer_at(words, off + 2 * p, p)
+        .Handler(_) => return pointer_at(words, off, p) and pointer_at(words, off + p, p)
+        .Array(len, elem, _) => {
+            size := lay.layout_of(elem).size
+            for i in 0..u64(len) {
+                if not lay.mark_pointer_words(elem, off + i * size, words) { return false }
+            }
+            return true
+        }
+        .Tuple(elems, _) => {
+            offs := lay.layout_of(t).offsets
+            for i, e in enumerate(elems) {
+                if not lay.mark_pointer_words(e, off + offs[i], words) { return false }
+            }
+            return true
+        }
+        .Adt(id, _) => {
+            if .Struct(def) := lay.s.adts.items[usize(id)].kind and def.bits is null {
+                offs := lay.layout_of(t).offsets
+                for i, f in enumerate(def.fields) {
+                    if not lay.mark_pointer_words(f.ty, off + offs[i], words) { return false }
+                }
+                return true
+            }
+            return not lay.may_hold_pointers(t)
+        }
+        _ => return not lay.may_hold_pointers(t)
+    }
+}
+
+/// Marks the word at `off` as a pointer; false if `off` is not a word's start.
+pointer_at :: fn(words: []bool, off: u64, p: u64) -> bool {
+    if off % p is not 0 { return false }
+    words[(off / p).trunc(usize)] = true
+    return true
 }

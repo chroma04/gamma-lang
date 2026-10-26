@@ -53,12 +53,12 @@ replacen1 :: fn(text: string, from: string, to: string) -> string needs Alloc {
 /// The elements of `parts` joined with `sep`.
 join_parts :: fn(parts: []const string, sep: string) -> string needs Alloc => str.join(parts, sep)!
 
-/// Generates function `f` into `g`.
-pub gen_fn :: fn(g: ^Gen, f: u32) -> Unsup!() needs sema.Load {
+/// Generates function `f` into `g`, or its clone specialized by `spec`.
+pub gen_fn :: fn(g: ^Gen, f: u32, spec: ?u32) -> Unsup!() needs sema.Load {
     def := g.prog.func(f)
     if def.kind is .Foreign(_) { return g.foreign_decl(f) }
     body := def.body else return !unsupported(def.span, str.format("the function `{}` has no body", def.name)!)
-    if g.frame_done(f) { return gen_body(g, f, def, body) }
+    if g.frame_done(f) { return gen_body(g, f, def, body, spec) }
     in_frame := g.frame_locals(f)
     // The frame struct, shared by the function and its clones.
     frame := list(u8)
@@ -96,10 +96,10 @@ pub gen_fn :: fn(g: ^Gen, f: u32) -> Unsup!() needs sema.Load {
     }
     frame.extend("};\n")!
     g.frames.extend(frame.items)!
-    return gen_body(g, f, def, body)
+    return gen_body(g, f, def, body, spec)
 }
 
-gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr) -> Unsup!() needs sema.Load {
+gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Unsup!() needs sema.Load {
     // The signature: plain functions have the C calling convention (decisions in
     // docs/architecture.md); the others take the hidden env, cx and inst first.
     plain := g.is_plain(f)
@@ -131,10 +131,13 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr) -> Unsup!() needs
         params.push(str.format("{} a{}", c, i)!)!
     }
     if params.items.len is 0 { params.push("void")! }
-    if g.needs_wrapper(f) { c_abi_wrapper(g, f, def) }
+    if spec is null and g.needs_wrapper(f) { c_abi_wrapper(g, f, def) }
     borrowed := g.borrowed_params(f)
     in_frame := g.frame_locals(f)
-    sig := str.format("static __attribute__((aligned(4))) {}{}{} {}({})", hint_attrs(def.hints), conv_attr(def.win64), ret, g.fn_name(f), join_parts(params.items, ", "))!
+    split_runs := not g.opts.debug_info and long_body(def)
+    cname := ""
+    if sp := spec { cname = g.spec_name(f, sp) } else { cname = g.fn_name(f) }
+    sig := str.format("static __attribute__((aligned(4))) {}{}{} {}({})", hint_attrs(def.hints), conv_attr(def.win64), ret, cname, join_parts(params.items, ", "))!
     g.protos.write("{};\n", sig)!
     // A frame that no stack can hold makes every call a stack overflow: the body is only
     // the trap, which names the function and its frame as the interpreter's does.
@@ -144,15 +147,20 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr) -> Unsup!() needs
         g.bodies.write("{} {{\n    gm_frame_overflow({}, {}ull);\n}}\n", sig, name, cost)!
         return ()
     }
+    tag := ""
+    if sp := spec { tag = str.format("{}_s{}", f, sp)! } else { tag = str.format("{}", f)! }
     fg := FnGen(
         g: g,
         fid: f,
-        tag: str.format("{}", f)!,
+        tag: tag,
+        spec: spec,
         def: def,
         out: list(u8),
         scopes: list(Scope),
         borrowed: borrowed,
         in_frame: in_frame,
+        split_runs: split_runs,
+        runs: list(Run),
     )
     fg.out.write("{} {{\n", sig)!
     fg.src_line(def.span)
@@ -327,14 +335,6 @@ stmt_span :: fn(s: ^const tir.Stmt) -> ?source.Span {
 collect_withs :: fn(e: ^Expr, out: ^List(WithSlot)) needs Alloc {
     if .With(w) := e.kind { out.push(WithSlot(label: w.label, ty: e.ty))! }
     tir.for_each_child(e, fn(c: ^Expr) { collect_withs(c, out) })
-}
-
-/// For each parameter of `f`: whether it is read in place (never, in gammac: parameters are
-/// always copied).
-borrowed_params :: fn(g: ^Gen, f: u32) -> []bool needs Alloc {
-    out := list(bool)
-    for _ in g.prog.func(f).params { out.push(false)! }
-    return out.items
 }
 
 /// The local that place `e` is part of, if it is not reached through a pointer.
@@ -655,7 +655,10 @@ end_scope :: fn(fg: ^FnGen, s: Scope, fallthrough: bool) needs sema.Load {
 /// a non-local exit: the exit in progress is set aside while it runs, so the calls it makes
 /// return normally.
 defer_body :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
+    saved_runs := fg.runs
+    fg.runs = list(Run)
     fg.defer_body_inner(guard, body, unwinding)
+    fg.runs = saved_runs
 }
 
 defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
@@ -744,24 +747,6 @@ local_exit :: fn(fg: ^FnGen, kind: string, label: string, is_err: string) -> boo
     }
     fg.jump(dest, target)
     return true
-}
-
-/// Jumps to C label `label`, whose scope has index `scope` in the scope stack (`null` for
-/// a label of the function itself: the ladder's last rung, the return). Without outlined
-/// runs of statements this is a `goto`.
-jump :: fn(fg: ^FnGen, label: string, scope: ?usize) needs Alloc {
-    fg.line(str.format("goto {};", label)!)
-}
-
-/// Generates `f` with no helper in progress and with the scope stack set aside, as the code
-/// of a deferred statement or of a function of its own is. Without outlined runs of
-/// statements it just runs `f`.
-without_runs :: fn(T: type, fg: ^FnGen, f: fn(fg: ^FnGen) -> T) -> T => f(fg)
-
-/// The statements of a block, each in a C block of its own (so the C compiler can reuse
-/// their temporaries' stack space).
-stmt_list :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
-    for i in 0..stmts.len { try fg.stmt_block(&stmts[i]) }
 }
 
 // --- blocks and statements ------------------------------------------------------------------
@@ -1104,10 +1089,16 @@ stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
             // Check that it translates; its code is emitted where it runs.
             saved := fg.out
             fg.out = list(u8)
+            saved_split := fg.split_runs
+            fg.split_runs = false
+            saved_runs := fg.runs
+            fg.runs = list(Run)
             saved_scopes := fg.scopes
             fg.scopes = list(Scope)
             r := fg.expr(body)
             fg.scopes = saved_scopes
+            fg.runs = saved_runs
+            fg.split_runs = saved_split
             fg.out = saved
             _ = try r
             if fg.scopes.items.len > 0 {
@@ -1123,8 +1114,10 @@ stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
 /// For each local of `f`: whether it lives in the frame struct `F` instead of in a C local
 /// of its own. A local must be in the frame when a function literal or handler clause
 /// reaches it through `env` (an `Upvar`), and every local is when the body of a `with … on`,
-/// moved into a function of its own, reaches the frame through a pointer. Debug builds keep
-/// them all in the frame: the dead frame is filled with 0xDD (§18.3).
+/// moved into a function of its own, reaches the frame through a pointer, as does a long
+/// body split into helpers (see `outline.gm`). Debug builds and `-g` keep them all in the
+/// frame: the dead frame is filled with 0xDD (§18.3) and debuggers show the locals as its
+/// fields.
 ///
 /// Locals larger than `MAX_C_LOCAL` stay in the frame too. They gain nothing from
 /// registers, and the stack check, which counts the C locals with the temporaries that may
@@ -1133,15 +1126,16 @@ stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
 frame_locals :: fn(g: ^Gen, f: u32) -> []bool needs Alloc {
     def := g.prog.func(f)
     out := list(bool)
-    all := g.opts.debug or g.opts.debug_info
+    all := g.opts.debug or g.opts.debug_info or long_body(def)
     if b := def.body { all = all or has_fiber_with(b) }
     if all {
         for _ in def.locals { out.push(true)! }
         return out.items
     }
     set := captured_locals(g)
+    filc := g.ty.lay.target.filc
     for i, l in enumerate(def.locals) {
-        out.push(g.ty.size(l.ty) > MAX_C_LOCAL or set.get((f, i.trunc(u32))) is not null)!
+        out.push((not filc and g.ty.size(l.ty) > MAX_C_LOCAL) or set.get((f, i.trunc(u32))) is not null)!
     }
     return out.items
 }

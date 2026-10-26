@@ -334,10 +334,10 @@ pub int_fits :: fn(s: ^const Sema, v: bigint.Int, t: Ty) -> bool needs Alloc {
             signed = sg
             bits = u64(b)
         }
-        .Usize => { bits = u64(target.ptr_bits) }
+        .Usize => { bits = u64(s.l.target.ptr_bits()) }
         .Isize => {
             signed = true
-            bits = u64(target.ptr_bits)
+            bits = u64(s.l.target.ptr_bits())
         }
         _ => return false
     }

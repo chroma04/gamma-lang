@@ -27,7 +27,10 @@ detached :: fn(fg: ^FnGen, head: string, cx: string, emit: fn() -> Unsup!() need
     fg.no_check = false
     saved_lad := fg.lad_used
     fg.lad_used = false
+    saved_runs := fg.runs
+    fg.runs = list(Run)
     r := emit()
+    fg.runs = saved_runs
     fg.end_lines()
     text := fg.out
     fg.out = saved_out

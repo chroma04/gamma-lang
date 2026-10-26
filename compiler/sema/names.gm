@@ -64,7 +64,7 @@ pub is_decl_used :: fn(s: ^const Sema, d: usize) -> bool => d < s.decl_uses.item
 pub is_used_outside :: fn(s: ^const Sema, d: usize) -> bool => d < s.outside_uses.items.len and s.outside_uses.items[d]
 
 /// Whether the core library's public declaration `d` is left out of the universe scope.
-universe_hidden :: fn(s: ^const Sema, d: usize) -> bool => s.l.decls.items[d].name.name in UNIVERSE_HIDDEN[..]
+pub universe_hidden :: fn(s: ^const Sema, d: usize) -> bool => s.l.decls.items[d].name.name in UNIVERSE_HIDDEN[..]
 
 /// For an unknown name that the core library declares but leaves out of the universe
 /// scope, how to reach it.

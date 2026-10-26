@@ -1,0 +1,230 @@
+//! JSON-RPC 2.0 messages with `Content-Length` framing (the base protocol of LSP), and the
+//! thread that reads them from standard input.
+
+str :: import "std/str"
+thread :: import "std/thread"
+
+/// The longest header line and the largest body that are accepted.
+MAX_HEADER_LINE :: 8 * 1024
+MAX_BODY :: 256 * 1024 * 1024
+
+/// A message from the client (the text of its body), or the reason one could not be read.
+pub Incoming :: union {
+    Body: []u8
+    Bad: string
+}
+
+/// Messages that the reader thread has read and the server has not yet taken.
+pub Inbox :: struct {
+    lock: thread.Mutex
+    ready: thread.Condvar
+    items: List(Incoming)
+    head: usize
+    /// The reader has seen the end of the input.
+    closed: bool
+}
+
+pub inbox :: fn() -> Inbox needs Alloc => Inbox(lock: thread.mutex(), ready: thread.condvar(), items: list(Incoming), head: 0, closed: false)
+
+/// What taking a message found.
+pub Taken :: union {
+    Got: Incoming
+    Empty
+    Closed
+}
+
+push :: fn(b: ^Inbox, x: Incoming) needs Sys {
+    thread.lock(&b.lock)
+    b.items.push(x)!
+    thread.signal(&b.ready)
+    thread.unlock(&b.lock)
+}
+
+close :: fn(b: ^Inbox) needs Sys {
+    thread.lock(&b.lock)
+    b.closed = true
+    thread.broadcast(&b.ready)
+    thread.unlock(&b.lock)
+}
+
+/// Removes the oldest message; the inbox is locked and has one.
+pop_front :: fn(b: ^Inbox) -> Incoming {
+    x := b.items.items[b.head]
+    b.head += 1
+    if b.head is b.items.items.len {
+        b.items.clear()
+        b.head = 0
+    }
+    return x
+}
+
+/// The next message, waiting for one; `null` once the input has ended and all messages
+/// are taken.
+pub take :: fn(b: ^Inbox) -> ?Incoming needs Sys {
+    thread.lock(&b.lock)
+    while b.head is b.items.items.len and not b.closed { thread.wait(&b.ready, &b.lock) }
+    r: ?Incoming = null
+    if b.head < b.items.items.len { r = pop_front(b) }
+    thread.unlock(&b.lock)
+    return r
+}
+
+/// The next message if one is waiting.
+pub try_take :: fn(b: ^Inbox) -> Taken needs Sys {
+    thread.lock(&b.lock)
+    r := Taken.Empty
+    if b.head < b.items.items.len {
+        r = .Got(pop_front(b))
+    } else if b.closed {
+        r = .Closed
+    }
+    thread.unlock(&b.lock)
+    return r
+}
+
+/// Standard input with a buffer.
+pub Input :: struct {
+    buf: [65536]u8
+    pos: usize
+    end: usize
+    eof: bool
+}
+
+/// Reads more input; false at its end.
+fill :: fn(inp: ^Input) -> bool needs In {
+    if inp.eof { return false }
+    n := In.read(inp.buf[..]) else {
+        inp.eof = true
+        return false
+    }
+    if n is 0 {
+        inp.eof = true
+        return false
+    }
+    inp.pos = 0
+    inp.end = n
+    return true
+}
+
+/// Why a message could not be read.
+pub ReadError :: union {
+    /// Well-framed text that is not valid: report it and read on.
+    Invalid: string
+    /// The input ended inside a message, or could not be read.
+    Ended
+}
+
+/// A header line, up to `limit` bytes, including its line feed. `null` at the end of the
+/// input before any byte.
+read_line :: fn(inp: ^Input, limit: usize, line: ^List(u8)) needs Alloc + In {
+    line.clear()
+    while line.items.len < limit {
+        if inp.pos >= inp.end {
+            if not fill(inp) { return }
+        }
+        c := inp.buf[inp.pos]
+        inp.pos += 1
+        line.push(c)!
+        if c is '\n' { return }
+    }
+}
+
+/// Reads one message. `null` at the end of the input.
+pub read_message :: fn(inp: ^Input) -> ReadError!?[]u8 needs Alloc + In {
+    length: ?usize = null
+    line := list(u8)
+    defer line.deinit()
+    while true {
+        read_line(inp, MAX_HEADER_LINE + 1, &line)
+        if line.items.len is 0 { return null }
+        if line.items.len > MAX_HEADER_LINE { return !.Invalid("header line is too long") }
+        text := trim_end_newlines(line.items)
+        if text.len is 0 {
+            if length is not null { break }
+            // A stray blank line between messages.
+            continue
+        }
+        if split := str.split_once(text, ":") {
+            if str.eq_ignore_case(str.trim(split.before), "content-length") {
+                length = parse_length(str.trim(split.after)) else return !.Invalid("bad Content-Length header")
+            }
+        }
+        // Other headers (`Content-Type`) are ignored.
+    }
+    n := length else 0
+    if n > MAX_BODY { return !.Invalid("message body is too large") }
+    // Read at most `n` bytes without trusting it for an allocation.
+    body := list(u8)
+    while body.items.len < n {
+        if inp.pos >= inp.end {
+            if not fill(inp) { return !.Ended }
+        }
+        take := (inp.end - inp.pos).min(n - body.items.len)
+        body.extend(inp.buf[inp.pos..inp.pos + take])!
+        inp.pos += take
+    }
+    return body.items
+}
+
+trim_end_newlines :: fn(s: string) -> string {
+    end := s.len
+    while end > 0 and s[end - 1] in ('\r', '\n') { end -= 1 }
+    return s[0..end]
+}
+
+/// A length as Rust's `usize::from_str` reads it: digits, with an optional leading `+`.
+parse_length :: fn(s: string) -> ?usize {
+    t := if s.starts_with("+") { s[1..] } else { s }
+    if t.len is 0 { return null }
+    return str.parse_int(usize, t) else null
+}
+
+/// The reader thread: reads messages from standard input into the inbox until the input
+/// ends.
+pub reader :: fn(b: ^Inbox) needs Sys {
+    with heap_allocator(), system_io(), system_output() {
+        inp := new(Input(buf: ---, pos: 0, end: 0, eof: false))!
+        while true {
+            msg := read_message(inp) else e => {
+                match e {
+                    .Invalid(m) => {
+                        b.push(.Bad(dupe(m)!))
+                        continue
+                    }
+                    .Ended => break
+                }
+            }
+            body := msg else break
+            b.push(.Body(body))
+        }
+        b.close()
+    }
+}
+
+/// Writes one message with its header. The standard output is buffered when it is a pipe
+/// and nothing flushes it, so the messages go to the file `out`, which writes at once (the
+/// standard output opened by name), when there is one.
+pub write_message :: fn(out: ?fs.File, body: string) needs Alloc + Fs + Out {
+    msg := list(u8)
+    defer msg.deinit()
+    msg.write("Content-Length: {}\r\n\r\n", body.len)!
+    msg.extend(body)!
+    f := out else {
+        Out.write(msg.items)
+        return
+    }
+    done: usize = 0
+    while done < msg.items.len {
+        n := f.write(msg.items[done..]) else break
+        if n is 0 { break }
+        done += n
+    }
+}
+
+/// The standard output as a file that is not buffered, if the system has one by name.
+pub open_stdout :: fn() -> ?fs.File needs Fs {
+    f := Fs.open("/dev/stdout", fs.OpenOptions(read: false, write: true, append: true)) else return null
+    return f
+}
+
+fs :: import "std/fs"

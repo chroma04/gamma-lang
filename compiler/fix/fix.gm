@@ -113,6 +113,9 @@ pub Setup :: struct {
     pub mode: string
     pub recover: bool
     pub format: diag.Format
+    /// How the dependencies of the input's package are fetched, and the build profile.
+    pub packages: pkg.Options
+    pub profile: ?string
 }
 
 /// The directory of the files that `gammac fix` may change and `gammac lint` reports on:
@@ -137,7 +140,7 @@ pub render :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics, format: 
 
 /// `gammac fix`: checks the program and applies the fixes of its diagnostics, again until
 /// none is left to apply (a fix can let checking go further), then reports what is left.
-pub command :: fn(path: string, setup: Setup) -> u8 needs Alloc + Env + Err + Fs {
+pub command :: fn(path: string, setup: Setup) -> u8 needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     outer := Alloc.current()
     dir := own_files(path) else e => {
         eprint("gamma: {}\n", e)
@@ -156,6 +159,8 @@ pub command :: fn(path: string, setup: Setup) -> u8 needs Alloc + Env + Err + Fs
             diags := diag.diagnostics()
             next_id: ast.NodeId = 0
             l := load.loader(&sm, &diags, &next_id, setup.std, setup.recover)
+            prepared := pkg.prepare_build(path, setup.packages, setup.profile) else return 1
+            l.resolution = prepared.resolution
             if l.load_core(setup.core, setup.mode) {
                 s := sema.sema(&l)
                 check.install(&s)
@@ -232,6 +237,7 @@ diag :: import "../diag"
 fs :: import "std/fs"
 lint :: import "../lint"
 load :: import "../load"
+pkg :: import "../pkg"
 sema :: import "../sema"
 source :: import "../source"
 str :: import "std/str"

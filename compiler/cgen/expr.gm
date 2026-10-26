@@ -205,7 +205,11 @@ pub slice_len :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.f
 
 // --- expressions ------------------------------------------------------------------------------
 
-pub expr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load => fg.expr_node(e)
+pub expr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
+    if acc := fg.chain_operand(e) { return acc }
+    if fg.chain_links(e) > MIN_LINKS { return fg.emit_chain(e) }
+    return fg.expr_node(e)
+}
 
 /// Emits `e` itself.
 pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {

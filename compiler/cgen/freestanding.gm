@@ -1,0 +1,83 @@
+// Programs for a freestanding target (§3.7.1), which has no operating system and so no
+// `main`: the entry points are the exported functions, and a trap calls the program's
+// `#trap_hook` (mirrors the freestanding parts of `src/cgen/mod.rs`).
+
+/// `gm_start`, which every export of a freestanding program calls first: the program has no
+/// `main` to prepare its constants and the build mode before the first call.
+gen_start :: fn(g: ^const Gen) -> string needs Alloc {
+    return str.format("static void gm_start(void) {{\n    static int started;\n    if (started) return;\n    started = 1;\n    gm_debug = {};\n    gm_init_consts();\n}}\n", if g.opts.debug { 1 } else { 0 })!
+}
+
+/// `gm_trap_hook_call`, which the runtime calls on a trap in a freestanding program with a
+/// `#trap_hook` (§3.7.1): it builds the message and the `SourceLocation` and calls the hook.
+gen_trap_hook :: fn(g: ^Gen) -> Unsup!string needs sema.Load {
+    hook := g.prog.s.trap_hook else return ""
+    def := g.prog.func(hook)
+    loc_ty := def.locals[usize(def.params[1])].ty
+    msg_ty := def.locals[usize(def.params[0])].ty
+    p := g.ty.lay.target.ptr_bytes
+    msg_c := g.ty.cty(msg_ty)
+    loc_size := g.ty.size(loc_ty)
+    loc_align := g.ty.align(loc_ty).max(1)
+    offs := g.ty.offsets(loc_ty)
+    loc_arg: string = if g.ty.by_ref(loc_ty) { "loc" } else { str.format("GM_LD({}, loc)", g.ty.cty(loc_ty))! }
+    name := g.callee_name(hook)
+    s := list(u8)
+    s.write("static _Noreturn void gm_trap_hook_call(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {{\n")!
+    s.write("    {} m;\n    memset(&m, 0, sizeof m);\n", msg_c)!
+    s.write("    {{ const void *mp = msg; uintptr_t ml = len; memcpy((uint8_t *)&m, &mp, sizeof mp); memcpy((uint8_t *)&m + {}, &ml, sizeof ml); }}\n", p)!
+    s.write("    uint8_t loc[{}] __attribute__((aligned({})));\n    memset(loc, 0, sizeof loc);\n", loc_size.max(1), loc_align)!
+    s.write("    if (file != NULL) {{ const void *fp = file; uintptr_t fl = strlen(file); memcpy(loc + {}, &fp, sizeof fp); memcpy(loc + {} + {}, &fl, sizeof fl); }}\n", offs[0], offs[0], p)!
+    s.write("    GM_ST(uint32_t, loc + {}, line);\n    GM_ST(uint32_t, loc + {}, col);\n", offs[1], offs[2])!
+    s.write("    {}(m, {});\n    __builtin_trap();\n}}\n", name, loc_arg)!
+    return s.items
+}
+
+/// An exported symbol must not be a name the generated program uses itself: `rt` is the
+/// text of the runtime and `code` the generated C.
+pub check_export_names :: fn(p: ^Prog, rt: string, code: string) -> Unsup!() needs Alloc {
+    if p.s.exports.items.len is 0 { return () }
+    idents := c_identifiers(str.format("{}\n{}", rt, code)!)
+    for k, sym in enumerate(p.s.exports.items) {
+        if idents.get(sym) is not null {
+            return !Unsup(
+                message: str.format("the exported name `{}` is also a name of the compiled program's runtime; choose another", sym)!,
+                span: p.s.fns.items[usize(p.s.export_fns.items[k])].span,
+            )
+        }
+    }
+    return ()
+}
+
+/// The identifiers of C source `code`, outside comments and string and character literals.
+c_identifiers :: fn(code: string) -> hash_map.HashMap(string, bool) needs Alloc {
+    out := hash_map.hash_map(string, bool)
+    i: usize = 0
+    while i < code.len {
+        c := code[i]
+        if c is '"' or c is '\'' {
+            i += 1
+            while i < code.len and code[i] is not c { i += if code[i] is '\\' { 2 } else { 1 } }
+            i += 1
+        } else if c is '/' and code.get(i + 1) is '*' {
+            i += 2
+            while i + 1 < code.len and not (code[i] is '*' and code[i + 1] is '/') { i += 1 }
+            i += 2
+        } else if c is '/' and code.get(i + 1) is '/' {
+            while i < code.len and code[i] is not '\n' { i += 1 }
+        } else if is_ident_start(c) {
+            start := i
+            while i < code.len and is_ident_char(code[i]) { i += 1 }
+            out.put(code[start..i], true)!
+        } else if c >= '0' and c <= '9' {
+            while i < code.len and (is_ident_char(code[i]) or code[i] is '.') { i += 1 }
+        } else {
+            i += 1
+        }
+    }
+    return out
+}
+
+is_ident_start :: fn(c: u8) -> bool => (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c is '_'
+
+is_ident_char :: fn(c: u8) -> bool => is_ident_start(c) or (c >= '0' and c <= '9')

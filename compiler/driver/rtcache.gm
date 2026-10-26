@@ -1,0 +1,142 @@
+//! The cache of compiled runtimes and of built programs (mirrors `src/cgen/rtcache.rs`).
+//!
+//! Compiling the runtime is most of the work of compiling a small program, so Debug builds
+//! (and Safe ones) link with a runtime object compiled once. Objects are kept in the cache
+//! directory (`pkg.cache_dir`) under a name derived from everything that affects them: the
+//! runtime's source, the C compiler (its command with its arguments, `CFLAGS` and its
+//! `--version` output) and the flags.
+//!
+//! `cached_program` keeps whole executables in `run/` under a key that covers everything
+//! that affects them, for `gammac run`; the most recent few are kept.
+//!
+//! Concurrent builds may compile the same object at once: each writes a file of its own and
+//! renames it into place, so a reader never sees a partial object.
+
+fs :: import "std/fs"
+load :: import "../load"
+pkg :: import "../pkg"
+process :: import "std/process"
+str :: import "std/str"
+
+/// How many executables `gammac run` keeps; older ones are removed.
+KEPT_PROGRAMS :: 32
+
+NS_PER_SECOND :: 1_000_000_000
+
+/// A 16-digit key for `parts`: the start of their SHA-256, each part preceded by its length.
+pub cache_key :: fn(parts: []const string) -> string needs Alloc {
+    buf := list(u8)
+    defer buf.deinit()
+    for p in parts { buf.write("{}:{}", p.len, p)! }
+    return pkg.sha256_hex(buf.items)[0..16]
+}
+
+/// The first line of the output of `<compiler> --version` (all of its standard output), or
+/// `null` if the compiler cannot be run.
+pub compiler_version :: fn(tc: ^const pkg.Toolchain) -> ?string needs Alloc + Proc {
+    argv := list(string)
+    argv.extend(tc.cc)!
+    argv.push("--version")!
+    r := pkg.run(argv.items)
+    if not r.ok { return null }
+    return r.out
+}
+
+/// The object of the C file `source` compiled with `tc` and `flags`, kept in the cache under
+/// a name starting with `prefix`; compiled now if it is not there. `null` if there is no
+/// cache or the object cannot be made.
+pub runtime_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, source: string, prefix: string) -> ?string needs Alloc + Env + Fs + Proc + Rand {
+    dir := pkg.cache_dir() else return null
+    version := compiler_version(tc) else return null
+    key := cache_key([6]string("gammac", source, str.join(tc.cc, "\0")!, str.join(tc.cflags, "\0")!, str.join(flags, "\0")!, version)[..])
+    stem := str.format("{}-{}", prefix, key)!
+    obj := load.join(dir, str.format("{}.o", stem)!)
+    if load.is_file(obj) {
+        // Mark it as recently used, so the cache cleaner keeps it.
+        touch(obj)
+        return obj
+    }
+    pkg.make_dirs(dir) else return null
+    // The source stays next to the object (a debugger reads it); writing it is idempotent
+    // but goes through a private file too, so a concurrent build never compiles a partial one.
+    c_file := load.join(dir, str.format("{}.c", stem)!)
+    if not load.is_file(c_file) {
+        tmp := private_name(dir, stem, "c")
+        fs.write_all(tmp, source) else return null
+        rename_or_remove(tmp, c_file) else return null
+    }
+    tmp := private_name(dir, stem, "o")
+    tail := [4]string("-c", "-o", tmp, c_file)
+    argv := pkg.command(tc, flags, tail[..])
+    if not pkg.run(argv.items).ok {
+        _ = Fs.remove(tmp)
+        return null
+    }
+    rename_or_remove(tmp, obj) else return null
+    return obj
+}
+
+/// A file name in `dir` no other process or thread uses.
+pub private_name :: fn(dir, stem, ext: string) -> string needs Alloc + Rand {
+    r: [8]u8 = ---
+    Rand.fill(r[..])
+    return load.join(dir, str.format("{}.tmp-{}.{}", stem, pkg.hex(r[..]), ext)!)
+}
+
+/// Renames `from` to `to` (replacing it), removing `from` if that fails. `null` if it fails.
+pub rename_or_remove :: fn(from, to: string) -> ?() needs Fs {
+    Fs.rename(from, to) else {
+        _ = Fs.remove(from)
+        return null
+    }
+    return ()
+}
+
+/// Sets the modification time of the cached file `p` to now, so the cache cleaner keeps it.
+/// (The standard library has no call for it, so the `touch` program does it.)
+pub touch :: fn(p: string) needs Alloc + Proc {
+    argv := [3]string("touch", "-c", p)
+    _ = pkg.run(argv[..])
+}
+
+/// An executable in the cache of programs, with the time it was last used.
+CachedProgram :: struct {
+    modified: i64
+    path: string
+}
+
+/// Removes all but the most recently used `KEPT_PROGRAMS` executables in `dir`, sparing any
+/// used in the last ten minutes (another process may be about to run it), and the leftovers
+/// of builds that died, which are over an hour old.
+pub prune :: fn(dir: string) needs Alloc + Clock + Fs {
+    now := Clock.wall()
+    stale := now - 3600 * NS_PER_SECOND
+    progs := list(CachedProgram)
+    for r in fs.entries(dir) {
+        e := r else break
+        if not e.name.starts_with("prog-") { continue }
+        p := load.join(dir, e.name)
+        info := Fs.lstat(p) else continue
+        if str.contains(e.name, ".tmp-") {
+            if info.modified < stale { _ = Fs.remove(p) }
+            continue
+        }
+        progs.push(CachedProgram(modified: info.modified, path: p))!
+    }
+    if progs.items.len <= KEPT_PROGRAMS { return }
+    // Oldest first, by time and then name.
+    n := progs.items.len
+    for i in 1..n {
+        j := i
+        while j > 0 and (progs.items[j - 1].modified > progs.items[j].modified or (progs.items[j - 1].modified is progs.items[j].modified and progs.items[j - 1].path > progs.items[j].path)) {
+            tmp := progs.items[j - 1]
+            progs.items[j - 1] = progs.items[j]
+            progs.items[j] = tmp
+            j -= 1
+        }
+    }
+    recent := now - 600 * NS_PER_SECOND
+    for i in 0..(n - KEPT_PROGRAMS) {
+        if progs.items[i].modified < recent { _ = Fs.remove(progs.items[i].path) }
+    }
+}

@@ -6,17 +6,27 @@ check :: import "../check"
 fs :: import "std/fs"
 load :: import "../load"
 pkg :: import "../pkg"
-pkg :: import "../pkg"
 process :: import "std/process"
 sema :: import "../sema"
 source :: import "../source"
 str :: import "std/str"
 thread :: import "std/thread"
 
+/// Text every generated C file holds near its start (the first line of the runtime's
+/// header, which each translation unit includes).
+GENERATED_MARK :: "The runtime of programs compiled by the Gamma C back end."
+
 /// `build`: compiles the checked program rooted at module `root` (named `path`) to an
 /// executable. Returns whether it succeeded; problems after checking are reported here.
-pub build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
-    exe := opts.out else default_exe(path)
+pub build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+    // A program for a freestanding target builds to an object file of its exports.
+    if opts.target.os is "Freestanding" { return build_object(s, path, opts) }
+    // An output name without an extension gets `.exe` on Windows and `.wasm` for WASI.
+    exe: string = if o := opts.out {
+        if has_extension(o) { o } else { native_exe_name(&opts, o) }
+    } else {
+        native_exe_name(&opts, default_exe(path))
+    }
     if not compile(s, root, exe, opts) { return false }
     // A build with debug information comes with the lldb data formatters.
     if opts.debug_info and not opts.emit_c {
@@ -24,6 +34,39 @@ pub build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool
         return cgen.write_lldb_formatters(exe, printers)
     }
     return true
+}
+
+/// Whether the last name of the path `p` has an extension.
+has_extension :: fn(p: string) -> bool needs Alloc {
+    name := load.file_name(p) else return false
+    dot := str.rfind(name, ".") else return false
+    return dot > 0
+}
+
+/// `build` for a freestanding target (§3.7.1): the object file `<name>.o` (or `-o`) with
+/// the program's exported functions and the runtime support they use.
+build_object :: fn(s: ^sema.Sema, path: string, opts: Options) -> bool needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+    obj: string = if o := opts.out { o } else { str.format("{}.o", stem_of(path))! }
+    tc := opts.toolchain else {
+        eprint("gammac: {}\n", opts.toolchain_error else "")
+        return false
+    }
+    if s.exports.items.len is 0 {
+        eprint("gammac: the program exports no function (`#export(\"symbol\")`, §19.4), so its object file would have no entry point\n")
+        return false
+    }
+    roots := list(u32)
+    roots.extend(s.export_fns.items)!
+    b := generate_program(s, roots.items, empty_slice(u32), false, opts) else return false
+    return compile_object(&b, &tc, obj, opts)
+}
+
+/// The name of the file or directory `path` names, without a final `.gm`; `main` for a
+/// path that has no name.
+stem_of :: fn(path: string) -> string needs Alloc {
+    name := default_exe(path)
+    base := load.file_name(name) else return "main"
+    return if base.len is 0 { "main" } else { base }
 }
 
 /// The text of the file `name` of the runtime's sources, or `null` (reporting why) if it
@@ -37,7 +80,7 @@ runtime_text :: fn(name: string) -> ?string needs Alloc + Env + Err + Fs {
 }
 
 /// Compiles the checked program rooted at module `root` to the executable `exe`.
-compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
+compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
     d := s.l.lookup(root, "main") else {
         eprint("gammac: the program has no `main` function\n")
         return false
@@ -50,52 +93,91 @@ compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool ne
 /// Compiles the checked program to the executable `exe`. With `select`, `entries` are
 /// several functions, and the executable runs the one whose index is its first argument;
 /// otherwise it is the one function the executable runs.
-pub compile_entries :: fn(s: ^sema.Sema, entries: []const u32, select: bool, exe: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
+pub compile_entries :: fn(s: ^sema.Sema, entries: []const u32, select: bool, exe: string, opts: Options) -> bool needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+    b := generate_program(s, entries, entries, select, opts) else return false
+    return compile_built(&b, exe, opts)
+}
+
+/// A program translated to C, with the runtime it is compiled with.
+Built :: struct {
+    generated: cgen.Generated
+    rt_h: string
+    rt_c: string
+    /// `main` of an executable is `entries[0]`.
+    exe_kind: u8 = 0
+}
+
+/// Translates the checked program to C. `roots` are the functions the code starts from
+/// (`entries` are the ones the executable runs, which are among them). Reports why it
+/// cannot, and returns `null`.
+generate_program :: fn(s: ^sema.Sema, roots_in: []const u32, entries: []const u32, select: bool, opts: Options) -> ?Built needs Alloc + Env + Err + Fs + Proc + Rand + Sys {
     roots := list(u32)
-    roots.extend(entries)!
-    roots.extend(s.export_fns.items)!
-    if not check.prepare_codegen(s, roots.items) { return false }
+    roots.extend(roots_in)!
+    for f in s.export_fns.items { if f not in roots.items { roots.push(f)! } }
+    if not check.prepare_codegen(s, roots.items) { return null }
     p := cgen.prog(s)
     copts := match opts.mode {
         .Debug => cgen.Options(checks: true, debug: true, debug_info: opts.debug_info)
-        .Checked => cgen.Options(checks: true, debug: false, debug_info: opts.debug_info)
+        .Checked, .Safe => cgen.Options(checks: true, debug: false, debug_info: opts.debug_info)
         .Fast => cgen.Options(checks: false, debug: false, debug_info: opts.debug_info)
     }
-    // With debug information on an ELF target, the executable carries the gdb printers.
-    if opts.debug_info and p.target.os in ("Linux", "FreeBSD") {
-        copts.gdb_printers = runtime_text("gdb_printers.py") else return false
+    // With debug information on an ELF target, the executable carries the gdb printers (Fil-C
+    // compiles no top-level assembly).
+    if opts.debug_info and p.target.os in ("Linux", "FreeBSD") and not p.target.filc {
+        copts.gdb_printers = runtime_text("gdb_printers.py") else return null
     }
-    result := if select { cgen.generate_tests(&p, entries, copts) } else { cgen.generate(&p, entries[0], copts) }
-    generated := result else u => {
-        place: string = if u.span is source.DUMMY { "" } else {
-            file := s.l.sm.file(u.span.file)
-            lc := file.line_col(u.span.lo)
-            str.format("{}:{}:{}: ", file.path, lc.line, lc.col)!
-        }
-        eprint("{}error: {}\n", place, u.message)
-        return false
-    }
-    c_file := str.format("{}.c", exe)!
+    result := if select { cgen.generate_tests(&p, entries, copts) } else if entries.len is 0 { cgen.generate_object(&p, copts) } else { cgen.generate(&p, entries[0], copts) }
     rt := runtime_dir(std_root())
     rt_h := fs.read_all(load.join(rt, "gm_rt.h")) else {
         eprint("gammac: cannot read the runtime in `{}`\n", rt)
-        return false
+        return null
     }
     rt_c := fs.read_all(load.join(rt, "gm_rt.c")) else {
         eprint("gammac: cannot read the runtime in `{}`\n", rt)
-        return false
+        return null
     }
-    code := list(u8)
-    code.write("{}\n{}\n{}", rt_h, rt_c, generated.code)!
-    // The debugger finds the C file by its absolute name.
-    text: string = if opts.debug_info { cgen.resolve_lines(string(code.items), cgen.absolute(c_file)) } else { string(code.items) }
-    fs.write_all(c_file, text) else {
-        eprint("gammac: cannot write `{}`\n", c_file)
-        return false
+    generated := result else u => {
+        report_unsupported(s, u)
+        return null
     }
-    if opts.emit_c { return true }
-    tc := pkg.toolchain_from_env(opts.manifest_cflags, opts.manifest_ldflags) else e => {
-        eprint("gammac: {}\n", e)
+    cgen.check_export_names(&p, str.format("{}\n{}", rt_h, rt_c)!, generated.code) else u => {
+        report_unsupported(s, u)
+        return null
+    }
+    return Built(generated: generated, rt_h: rt_h, rt_c: rt_c)
+}
+
+/// Reports a construct the back end cannot translate.
+report_unsupported :: fn(s: ^sema.Sema, u: cgen.Unsup) needs Alloc + Err {
+    place: string = if u.span is source.DUMMY { "" } else {
+        file := s.l.sm.file(u.span.file)
+        lc := file.line_col(u.span.lo)
+        str.format("{}:{}:{}: ", file.path, lc.line, lc.col)!
+    }
+    eprint("{}error: {}\n", place, u.message)
+}
+
+/// The compiler options of a build in `opts`: the optimization level.
+opt_level :: fn(opts: ^const Options) -> string => match (opts.mode is .Debug, opts.debug_info) {
+    (true, true) => "-O0"
+    (true, false) => "-O1"
+    (false, _) => "-O2"
+}
+
+/// Compiles the translated program to the executable `exe`: the C is written next to it
+/// (`exe.c`, and `exe.N.c` for the other units of a split build) and compiled with the
+/// toolchain of the session. Returns whether it succeeded, reporting why not.
+compile_built :: fn(b: ^const Built, exe: string, opts: Options) -> bool needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+    generated := &b.generated
+    c_file := str.format("{}.c", exe)!
+    if opts.emit_c {
+        // The runtime and the program as one translation unit.
+        code := str.format("{}\n{}\n{}", b.rt_h, b.rt_c, generated.code)!
+        text: string = if opts.debug_info { cgen.resolve_lines(code, cgen.absolute(c_file)) } else { code }
+        return write_generated_c(c_file, text)
+    }
+    tc := opts.toolchain else {
+        eprint("gammac: {}\n", opts.toolchain_error else "")
         return false
     }
     extras := opts.extras else pkg.extras()
@@ -107,75 +189,219 @@ pub compile_entries :: fn(s: ^sema.Sema, entries: []const u32, select: bool, exe
         }
     }
     defer pkg.remove_objects(&link)
-    flags := list(string)
-    for f in [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread") { flags.push(f)! }
-    if opts.debug_info { flags.push("-g")! }
-    more := pkg.library_args(&link, generated.libs)
-    libs := list(string)
-    libs.extend(more.items)!
-    libs.push("-lm")!
-    if opts.mode is .Debug {
-        // The runtime and the program's units are compiled in parallel, then linked.
-        forced: ?usize = null
-        if v := Env.var("GAMMA_C_UNITS") { forced = str.parse_int(usize, v) else null }
-        n := cgen.unit_count(&generated.parts, usize(thread.cpu_count()), forced)
-        units := cgen.split(&generated.parts, n) else {
-            if forced is not null and n > 1 {
-                eprint("gammac: the generated C cannot be split into units\n")
-                return false
-            }
-            one := [1]string(generated.code)
-            return compile_units(exe, rt_h, rt_c, one[..], flags.items, libs.items, opts.debug_info, &tc, &link)
-        }
-        return compile_units(exe, rt_h, rt_c, units, flags.items, libs.items, opts.debug_info, &tc, &link)
-    }
-    flags.push("-O2")!
-    inputs := list(string)
-    inputs.push(c_file)!
-    inputs.extend(link.objects.items)!
-    return run_cc(&tc, flags.items, exe, inputs.items, libs.items)
+    return compile_c(b, &tc, &link, exe, opts)
 }
 
-/// A Debug build of `exe`: writes the runtime (`exe.rt.c`) and each of `units` (`exe.uN.c`)
-/// as its own translation unit next to `exe`, compiles them all at once to objects and
-/// links those.
-compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs: []const string, debug_info: bool, tc: ^const pkg.Toolchain, link: ^const pkg.Link) -> bool needs Alloc + Env + Err + Fs + Proc {
+/// The flags every build uses: `-std=gnu11`, no warnings, wrapping signed arithmetic and no
+/// type-based alias analysis (Gamma memory is untyped bytes), no floating-point contraction.
+BASE_CFLAGS :: [6]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off")
+
+/// The flags every build uses on `target`: `BASE_CFLAGS`, and `-pthread` except on Windows,
+/// where the runtime uses the Win32 API and programs need no thread library, and on WASI,
+/// which has no threads.
+base_cflags :: fn(target: load.Target) -> List(string) needs Alloc {
+    flags := list(string)
+    flags.extend(BASE_CFLAGS[..])!
+    if target.os is not "Windows" and target.os is not "Wasi" { flags.push("-pthread")! }
+    return flags
+}
+
+/// The option that has Fil-C convert between float and f16 with the F16C instructions, which
+/// it gets right, rather than with routines it miscompiles (see `GM_F16` in the runtime).
+f16c_flag :: fn(target: load.Target) -> ?string => if target.filc and target.arch is "X86_64" { "-mf16c" } else { null }
+
+/// The flags the separately compiled runtime object of a build with `opts` is compiled with.
+/// It is optimized whatever the build's optimization: it is compiled only once.
+rt_flags :: fn(opts: ^const Options) -> List(string) needs Alloc {
+    flags := base_cflags(opts.target)
+    flags.push("-O2")!
+    if f := f16c_flag(opts.target) { flags.push(f)! }
+    if opts.debug_info { flags.push("-g")! }
+    return flags
+}
+
+/// The libraries (and linking mode) a program for Windows needs: Winsock, the
+/// synchronization API behind the futex, `CommandLineToArgvW` and the random number
+/// generator. Linking statically keeps the executable free of the compiler's runtime DLLs.
+windows_libs :: fn(target: load.Target) -> []const string needs Alloc {
+    if target.os is not "Windows" { return empty_slice(string) }
+    libs := list(string)
+    for l in ("-static", "-lws2_32", "-lsynchronization", "-lshell32", "-lbcrypt") { libs.push(l)! }
+    return libs.items
+}
+
+/// Compiles the translated program with `tc` (mirrors `cgen::compile`).
+///
+/// Checked and Fast builds compile the runtime and the generated code as one translation
+/// unit at `-O2`, so the optimizer sees the whole program. Debug builds favor turnaround:
+/// they are compiled at `-O1` (`-O0` with debug information, so every variable and line is
+/// there in the debugger) and linked with a runtime object compiled once and cached; without
+/// a usable cache they fall back to one translation unit. Safe builds (Fil-C, which compiles
+/// slowly) are compiled at `-O2` but link the cached runtime too. A large Debug build is
+/// split into several units compiled in parallel; unit `i` > 0 is written to `exe.i.c`.
+///
+/// A WASI module is always compiled to objects first and linked without optimization
+/// options, and then goes through `cgen.asyncify`.
+compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link, exe: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Rand + Sys {
+    generated := &b.generated
+    if generated.freestanding { return compile_object(b, tc, exe, opts) }
+    opt := opt_level(&opts)
+    debug := opts.mode is .Debug
+    separate := debug or opts.target.filc
+    runtime: ?string = null
+    if separate {
+        flags := rt_flags(&opts)
+        runtime = runtime_object(tc, flags.items, str.format("#define GM_RT_SEPARATE 1\n{}\n{}", b.rt_h, b.rt_c)!, "gm_rt")
+    }
     sources := list(string)
-    sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, rt_c)!)!
-    for u in units { sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, u)!)! }
+    if runtime is not null {
+        prelude := str.format("#define GM_RT_SEPARATE 1\n{}\n", b.rt_h)!
+        // Safe builds are optimized, and keep every function in reach of inlining.
+        forced: ?usize = null
+        if v := Env.var("GAMMA_C_UNITS") { forced = str.parse_int(usize, v) else null }
+        n := if debug { cgen.unit_count(&generated.parts, usize(thread.cpu_count()), forced) } else { 1 }
+        split_units: ?[]string = if n > 1 { cgen.split(&generated.parts, n) } else { null }
+        if units := split_units {
+            for u in units { sources.push(str.format("{}{}", prelude, u)!)! }
+        } else {
+            if n > 1 and forced is not null {
+                eprint("the generated C cannot be split into units\n")
+                return false
+            }
+            sources.push(str.format("{}{}", prelude, generated.code)!)!
+        }
+    } else {
+        sources.push(str.format("{}\n{}\n{}", b.rt_h, b.rt_c, generated.code)!)!
+    }
     c_files := list(string)
-    objects := list(string)
     for i, src in enumerate(sources.items) {
-        name := if i is 0 { "rt" } else { str.format("u{}", i - 1)! }
-        c := str.format("{}.{}.c", exe, name)!
+        path := unit_path(exe, i)
         // The debugger finds the C file by its absolute name.
-        text: string = if debug_info and i > 0 { cgen.resolve_lines(src, cgen.absolute(c)) } else { src }
-        fs.write_all(c, text) else {
-            eprint("gammac: cannot write `{}`\n", c)
+        text: string = if opts.debug_info { cgen.resolve_lines(src, cgen.absolute(path)) } else { src }
+        if not write_generated_c(path, text) { return false }
+        c_files.push(path)!
+    }
+    // `CFLAGS` come after these options, so they can override them; `LDFLAGS` come after the
+    // source and the runtime object, before the libraries, as for `make`.
+    flags := base_cflags(opts.target)
+    flags.push(opt)!
+    if opts.debug_info { flags.push("-g")! }
+    if f := f16c_flag(opts.target) { flags.push(f)! }
+    wasi := opts.target.os is "Wasi"
+    // Several units are compiled to objects in parallel, then linked.
+    inputs := list(string)
+    objects := list(string)
+    if c_files.items.len > 1 or wasi {
+        for i in 0..c_files.items.len { objects.push(str.format("{}.{}.tmp-{}.o", exe, i, pid_token())!)! }
+        // A call to a function without a declaration would compile, wrongly, under C's old
+        // rules: make it an error.
+        unit_flags := list(string)
+        unit_flags.extend(flags.items)!
+        unit_flags.push("-Werror=implicit-function-declaration")!
+        ok := compile_objects(tc, unit_flags.items, c_files.items, objects.items)
+        if not ok {
+            for o in objects.items { _ = fs.remove_all(o) }
             return false
         }
-        c_files.push(c)!
-        objects.push(str.format("{}.{}.o", exe, name)!)!
+        inputs.extend(objects.items)!
+    } else {
+        inputs.extend(c_files.items)!
     }
+    link_flags := list(string)
+    for f in flags.items {
+        if not (wasi and f is opt) { link_flags.push(f)! }
+    }
+    if wasi { link_flags.extend(cgen.wasi_link_flags())! }
+    tail := list(string)
+    tail.push("-o")!
+    tail.push(exe)!
+    tail.extend(inputs.items)!
+    if r := runtime { tail.push(r)! }
+    tail.extend(link.objects.items)!
+    tail.extend(tc.ldflags)!
+    tail.extend(pkg.library_args(link, generated.libs).items)!
+    tail.push("-lm")!
+    tail.extend(windows_libs(opts.target))!
+    argv := pkg.command(tc, link_flags.items, tail.items)
+    ok := run_compiler(tc, argv.items)
+    for o in objects.items { _ = fs.remove_all(o) }
+    if not ok { return false }
+    if wasi {
+        cgen.asyncify(exe, opt, opts.debug_info) else e => {
+            eprint("{}\n", e)
+            return false
+        }
+    }
+    return true
+}
+
+/// A token that makes the names of the temporary objects of this process its own.
+pid_token :: fn() -> string needs Alloc + Rand {
+    r: [4]u8 = ---
+    Rand.fill(r[..])
+    return pkg.hex(r[..])
+}
+
+/// The C file of unit `i` of the executable `exe`.
+unit_path :: fn(exe: string, i: usize) -> string needs Alloc => if i is 0 { str.format("{}.c", exe)! } else { str.format("{}.{}.c", exe, i)! }
+
+/// Compiles the generated C of a freestanding program (§3.7.1) and the runtime, as one
+/// translation unit, to the object file `obj` (the source is written next to it, as
+/// `obj.c`). The object holds the program's exported functions and the runtime support they
+/// use; it is linked by the target's own toolchain, and has no `main`.
+///
+/// The runtime is compiled with the program, never as a separate cached object: it is small
+/// without the operating system parts, and the hook of a trap is code of the program.
+compile_object :: fn(b: ^const Built, tc: ^const pkg.Toolchain, obj: string, opts: Options) -> bool needs Alloc + Err + Fs + Proc {
+    c_file := str.format("{}.c", obj)!
+    opt := opt_level(&opts)
+    prelude := str.format("#define GM_FREESTANDING 1\n{}", if b.generated.trap_hook { "#define GM_TRAP_HOOK 1\n" } else { "" })!
+    code: string = str.format("{}{}\n{}\n{}", prelude, b.rt_h, b.rt_c, b.generated.code)!
+    if opts.debug_info { code = cgen.resolve_lines(code, cgen.absolute(c_file)) }
+    if not write_generated_c(c_file, code) { return false }
+    flags := list(string)
+    flags.extend(BASE_CFLAGS[..])!
+    flags.push("-ffreestanding")!
+    flags.push(opt)!
+    if opts.debug_info { flags.push("-g")! }
+    tail := [4]string("-c", "-o", obj, c_file)
+    argv := pkg.command(tc, flags.items, tail[..])
+    return run_compiler(tc, argv.items)
+}
+
+/// Writes generated C to `path`, which is named after the output and next to it. A file
+/// there that gammac did not generate (the user's own `hello.c` beside `hello.gm`) is never
+/// overwritten.
+write_generated_c :: fn(path: string, code: string) -> bool needs Alloc + Err + Fs {
+    if f := Fs.open(path, fs.OpenOptions(read: true)) {
+        buf: [4096]u8 = ---
+        n := Fs.read(f, buf[..]) else 0
+        Fs.close(f)
+        if n > 0 and not str.contains(string(buf[0..n]), GENERATED_MARK) {
+            eprint("{} exists and was not generated by gammac, so it is not overwritten; choose another output name with `-o`\n", path)
+            return false
+        }
+    }
+    fs.write_all(path, code) else {
+        eprint("cannot write {}\n", path)
+        return false
+    }
+    return true
+}
+
+/// Compiles each of `c_files` to the object of the same position in `objects`, all at once.
+/// Returns whether all succeeded, reporting the first failure.
+compile_objects :: fn(tc: ^const pkg.Toolchain, flags: []const string, c_files, objects: []const string) -> bool needs Alloc + Err + Proc {
     children := list(?process.Child)
-    for i, c in enumerate(c_files.items) {
-        argv := list(string)
-        argv.extend(tc.cc)!
-        argv.extend(flags)!
-        // The runtime is optimized like the cached runtime object of the reference
-        // implementation; the program's units favor turnaround.
-        argv.push(if i is 0 { "-O2" } else if debug_info { "-O0" } else { "-O1" })!
-        // A call to a function without a declaration would compile, wrongly, under C's
-        // old rules: make it an error.
-        argv.push("-Werror=implicit-function-declaration")!
-        argv.extend(tc.cflags)!
-        for a in [4]string("-c", "-o", objects.items[i], c) { argv.push(a)! }
+    for i, c in enumerate(c_files) {
+        tail := [4]string("-c", "-o", objects[i], c)
+        argv := pkg.command(tc, flags, tail[..])
         children.push(Proc.spawn(argv.items, process.SpawnOptions(stdout: .Null, stderr: .Pipe)) else null)!
     }
     ok := true
     for child in children.items {
         c := child else {
-            if ok { eprint("gammac: cannot run the C compiler `{}`\n", pkg.display(tc)) }
+            if ok { eprint("cannot run the C compiler `{}`: No such file or directory (os error 2)\n", pkg.display(tc)) }
             ok = false
             continue
         }
@@ -187,38 +413,21 @@ compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs:
         }
         status := c.wait() else .Exited(1)
         if not process.success(status) and ok {
-            eprint("gammac: the C compiler failed:\n{}", string(err.items))
+            eprint("the C compiler failed:\n{}", string(err.items))
             ok = false
         }
     }
-    if ok {
-        inputs := list(string)
-        inputs.extend(objects.items)!
-        inputs.extend(link.objects.items)!
-        ok = run_cc(tc, flags, exe, inputs.items, libs)
-    }
-    for o in objects.items { _ = fs.remove_all(o) }
     return ok
 }
 
-/// Runs the C compiler with `flags` on `inputs` to make the executable `exe`, linked with
-/// `libs`. Returns whether it succeeded, reporting why not.
-run_cc :: fn(tc: ^const pkg.Toolchain, flags: []const string, exe: string, inputs, libs: []const string) -> bool needs Alloc + Env + Err + Proc {
-    argv := list(string)
-    argv.extend(tc.cc)!
-    argv.extend(flags)!
-    argv.extend(tc.cflags)!
-    argv.push("-o")!
-    argv.push(exe)!
-    argv.extend(inputs)!
-    argv.extend(tc.ldflags)!
-    argv.extend(libs)!
-    result := process.output(argv.items) else {
-        eprint("gammac: cannot run the C compiler `{}`\n", pkg.display(tc))
+/// Runs the C compiler command `argv` and returns whether it succeeded, reporting why not.
+run_compiler :: fn(tc: ^const pkg.Toolchain, argv: []const string) -> bool needs Alloc + Err + Proc {
+    result := process.output(argv) else e => {
+        eprint("cannot run the C compiler `{}`: {}\n", pkg.display(tc), run_error(e))
         return false
     }
     if not process.success(result.status) {
-        eprint("gammac: the C compiler failed:\n{}", string(result.err.items))
+        eprint("the C compiler failed:\n{}", string(result.err.items))
         return false
     }
     return true
@@ -233,28 +442,92 @@ default_exe :: fn(root: string) -> string {
     return trimmed
 }
 
-/// `run`: compiles the checked program rooted at module `root` to an executable in a new
-/// temporary directory and runs it with the program's arguments, sharing our standard
-/// streams. Returns the exit status to end with: the program's, or 1 if it could not be
-/// built or started.
-pub run :: fn(s: ^sema.Sema, root: usize, opts: Options) -> u8 needs Alloc + Env + Err + Fs + Proc + Rand + Sys {
-    buf: [4096]u8 = ---
-    dir := fs.make_temp_dir(fs.temp_dir(), "gammac-run-", buf[..]) else {
-        eprint("gammac: cannot create a temporary directory in `{}`\n", fs.temp_dir())
+/// `run`: compiles the checked program rooted at module `root` to an executable (kept in the
+/// cache of programs, or else in a new temporary directory) and runs it with the program's
+/// arguments, sharing our standard streams. Returns the exit status to end with: the
+/// program's, or 1 if it could not be built or started.
+pub run :: fn(s: ^sema.Sema, root: usize, opts: Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+    d := s.l.lookup(root, "main") else {
+        eprint("gammac: the program has no `main` function\n")
         return 1
     }
-    defer _ = fs.remove_all(dir)
-    exe := load.join(dir, "prog")
-    if not compile(s, root, exe, opts) { return 1 }
+    .Fn(main) := s.resolve_decl(d) else return 1
+    entries := [1]u32(check.entry_point(s, main))
+    b := generate_program(s, entries[..], entries[..], false, opts) else return 1
+    // The executable comes from the cache when the same program was built before.
+    exe := ""
+    dir := ""
+    if cached := cached_program(&b, opts) {
+        exe = cached
+    } else {
+        buf: [4096]u8 = ---
+        dir = fs.make_temp_dir(fs.temp_dir(), "gammac-run-", buf[..]) else {
+            eprint("gammac: cannot create a temporary directory in `{}`\n", fs.temp_dir())
+            return 1
+        }
+        exe = load.join(dir, native_exe_name(&opts, "prog"))
+        if not compile_built(&b, exe, opts) {
+            _ = fs.remove_all(dir)
+            return 1
+        }
+    }
+    defer if dir.len > 0 { _ = fs.remove_all(dir) }
+    runner := runner_for(exe) else e => {
+        eprint("gammac: {}\n", e)
+        Env.exit(2)
+    }
     argv := list(string)
+    argv.extend(runner.items)!
     argv.push(exe)!
     argv.extend(opts.program_args)!
-    status := process.status(argv.items) else {
-        eprint("gammac: cannot run `{}`\n", exe)
+    status := process.status(argv.items) else e => {
+        eprint("gammac: cannot run {}: {}\n", exe, pkg.io_message(e))
         return 1
     }
     return exit_code(status)
 }
+
+/// The program's executable from the cache of built programs (built into it if missing),
+/// or `null` if there is no cache or the program cannot be cached. A key covers everything
+/// that affects the executable: the generated code and its options, the libraries, the
+/// target, the compiler and its flags.
+cached_program :: fn(b: ^const Built, opts: Options) -> ?string needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+    // The packages' C objects are named after the executable, so a program with them is
+    // built where it is run.
+    extras := opts.extras else pkg.extras()
+    if not pkg.is_empty(&extras) or opts.emit_c { return null }
+    tc := opts.toolchain else return null
+    cache := pkg.cache_dir() else return null
+    dir := load.join(cache, "run")
+    version := compiler_version(&tc) else return null
+    libs := str.join(b.generated.libs, "\0")!
+    parts := list(string)
+    parts.extend([9]string("gammac", b.rt_h, b.rt_c, b.generated.code, libs, mode_name(opts.mode), if opts.debug_info { "g" } else { "-" }, str.join(tc.cc, "\0")!, str.join(tc.cflags, "\0")!)[..])!
+    parts.extend([3]string(str.join(tc.ldflags, "\0")!, version, target_text(opts.target))[..])!
+    if opts.target.os is "Wasi" { parts.push(cgen.wasm_opt_version())! }
+    stem := str.format("prog-{}", cache_key(parts.items))!
+    exe := load.join(dir, native_exe_name(&opts, stem))
+    if load.is_file(exe) {
+        // Mark it as recently used, so pruning keeps it.
+        touch(exe)
+        return exe
+    }
+    pkg.make_dirs(dir) else return null
+    tmp := private_name(dir, stem, "exe")
+    built := compile_built(b, tmp, opts)
+    _ = fs.remove_all(str.format("{}.c", tmp)!)
+    for i in 1..8 { _ = fs.remove_all(str.format("{}.{}.c", tmp, i)!) }
+    if not built {
+        _ = fs.remove_all(tmp)
+        Env.exit(1)
+    }
+    rename_or_remove(tmp, exe) else return null
+    prune(dir)
+    return exe
+}
+
+/// A target as text, for cache keys.
+target_text :: fn(t: load.Target) -> string needs Alloc => str.format("{}/{}/{}/{}/{}/{}/{}/{}", t.ptr_bytes, t.little_endian, t.int128_align, t.os, t.arch, t.filc, t.f16, "")!
 
 /// The exit status a shell reports for a finished child: its exit code, or 128 plus the
 /// number of the signal that ended it. A trap gives 134 (`SIGABRT`), including one raised

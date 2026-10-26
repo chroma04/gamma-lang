@@ -1,0 +1,113 @@
+// Large arguments that are compile-time constants (Appendix D.5; mirrors
+// `src/cgen/constarg.rs`).
+//
+// A large argument (`CTypes.by_ref`) crosses a call as an address. When it is built from
+// literals only, such as the `SourceLocation` that `@caller_location()` fills in, the
+// caller would otherwise build it in a temporary at every call and pass that temporary's
+// address: under Fil-C a local whose address escapes is allocated on the
+// garbage-collected heap, once per call. Such an argument lives in static storage
+// instead, initialized at startup like a top-level constant, and every call passes its
+// address. The callee never writes it: it copies a large parameter before anything else
+// runs, or reads in place one it never writes.
+
+/// A pointer stored at `offset` within a constant argument: the address of the static
+/// bytes `data`.
+SiteReloc :: struct {
+    offset: u64
+    data: []const u8
+}
+
+/// A constant argument: the bytes of its value in the target layout and its pointers.
+pub SiteConst :: struct {
+    ty: Ty
+    bytes: List(u8)
+    relocs: List(SiteReloc)
+}
+
+/// Whether two byte strings are equal.
+same_bytes :: fn(a, b: []const u8) -> bool {
+    if a.len is not b.len { return false }
+    for i in 0..a.len {
+        if a[i] is not b[i] { return false }
+    }
+    return true
+}
+
+same_site_const :: fn(a, b: ^const SiteConst) -> bool {
+    if not (a.ty is b.ty) or not same_bytes(a.bytes.items, b.bytes.items) or a.relocs.items.len is not b.relocs.items.len { return false }
+    for i in 0..a.relocs.items.len {
+        x := a.relocs.items[i]
+        y := b.relocs.items[i]
+        if x.offset is not y.offset or not same_bytes(x.data, y.data) { return false }
+    }
+    return true
+}
+
+/// A zeroed constant of type `t`.
+new_site_const :: fn(g: ^Gen, t: Ty) -> SiteConst needs sema.Load {
+    size := g.ty.size(t)
+    v := SiteConst(ty: t, bytes: list(u8), relocs: list(SiteReloc))
+    for _ in 0..size { v.bytes.push(0)! }
+    return v
+}
+
+/// The C address (`uint8_t *`) of static storage holding the value of `e`, if `e` is built
+/// from literals only.
+pub const_arg :: fn(g: ^Gen, e: ^Expr) -> ?string needs sema.Load {
+    v := new_site_const(g, e.ty)
+    if not g.const_into(e, 0, &v) { return null }
+    i := g.site_consts.items.len
+    for k in 0..g.site_consts.items.len {
+        if same_site_const(&g.site_consts.items[k], &v) {
+            i = k
+            break
+        }
+    }
+    if i is g.site_consts.items.len { g.site_consts.push(v)! }
+    return str.format("((uint8_t *)gm_k{})", i)!
+}
+
+/// Whether `e` is built from literals only, so that `const_arg` passes it from static
+/// storage.
+pub is_const_arg :: fn(g: ^Gen, e: ^Expr) -> bool needs sema.Load {
+    v := new_site_const(g, e.ty)
+    return g.const_into(e, 0, &v)
+}
+
+/// Writes the value of `e` at `off` in `v`; false if `e` is not built from literals.
+const_into :: fn(g: ^Gen, e: ^Expr, off: u64, v: ^SiteConst) -> bool needs sema.Load {
+    size := g.ty.size(e.ty)
+    match e.kind {
+        .Int(n) => {
+            lo, hi := split_u128(n)
+            g.store_int(v.bytes.items, off, lo | (hi << 64), size.min(16))
+        }
+        .Bool(b) => { v.bytes.items[off.trunc(usize)] = if b { 1 } else { 0 } }
+        .Float(x) => match g.ty.kind(e.ty) {
+            .Float(32) => g.store_int(v.bytes.items, off, u128(x.to(f32).bits(u32)), 4)
+            .Float(64) => g.store_int(v.bytes.items, off, u128(x.bits(u64)), 8)
+            _ => return false
+        }
+        .Str(s) => {
+            p := g.ty.lay.target.ptr_bytes
+            v.relocs.push(SiteReloc(offset: off, data: s))!
+            g.store_int(v.bytes.items, off + p, u128(s.len), p)
+        }
+        .CStr(s) => v.relocs.push(SiteReloc(offset: off, data: s))!
+        .Aggregate(elems) => {
+            if g.ty.bits_layout(e.ty) is not null { return false }
+            offs := g.ty.offsets(e.ty)
+            for i in 0..elems.len {
+                if not g.const_into(&elems[i], off + offs[i], v) { return false }
+            }
+        }
+        .Array(elems) => {
+            for i in 0..elems.len {
+                esz := g.ty.size(elems[i].ty)
+                if not g.const_into(&elems[i], off + u64(i) * esz, v) { return false }
+            }
+        }
+        _ => return false
+    }
+    return true
+}

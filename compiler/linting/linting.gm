@@ -93,7 +93,7 @@ keep :: fn(st: ^const State, s: string) -> string {
 }
 
 /// `gammac lint` on the program at `path`.
-pub command :: fn(path: string, o: ^const lint.Options, setup: fix.Setup) -> u8 needs Alloc + Env + Err + Fs {
+pub command :: fn(path: string, o: ^const lint.Options, setup: fix.Setup) -> u8 needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     dir := fix.own_files(path) else e => {
         eprint("gamma: {}\n", e)
         return 1
@@ -133,13 +133,15 @@ pub command :: fn(path: string, o: ^const lint.Options, setup: fix.Setup) -> u8 
 
 /// One round: checks the program, and either reports and ends the command, or applies
 /// fixes (or undoes the last round's) for the next round.
-lint_round :: fn(path: string, o: ^const lint.Options, setup: fix.Setup, base: ^const lint.Scope, cfg: ^const lint.Config, st: ^State, round: usize) -> Step needs Alloc + Env + Err + Fs {
+lint_round :: fn(path: string, o: ^const lint.Options, setup: fix.Setup, base: ^const lint.Scope, cfg: ^const lint.Config, st: ^State, round: usize) -> Step needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     // The directories looked at are remembered for the round only.
     scope := lint.scope(base.dir, base.std_root, base.linting_std)
     sm := source.source_map()
     diags := diag.diagnostics()
     next_id: ast.NodeId = 0
     l := load.loader(&sm, &diags, &next_id, setup.std, setup.recover)
+    prepared := pkg.prepare_build(path, setup.packages, setup.profile) else return .Done(1)
+    l.resolution = prepared.resolution
     outcome: ?lint.Outcome = null
     if l.load_core(setup.core, setup.mode) {
         s := sema.sema(&l)
@@ -251,6 +253,7 @@ fs :: import "std/fs"
 hash_map :: import "std/collections/hash_map"
 lint :: import "../lint"
 load :: import "../load"
+pkg :: import "../pkg"
 sema :: import "../sema"
 source :: import "../source"
 str :: import "std/str"

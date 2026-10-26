@@ -1,0 +1,125 @@
+// Long chains of operations, such as `a + b + c + …` or `x.abs().abs()…` (mirrors
+// `src/cgen/chain.rs`).
+//
+// Each operation of a chain takes the value of the one before it as its first operand.
+// Emitted naively, every temporary of every link is declared in the same C block, and the
+// C compilers' cost for such a function grows much faster than its length (Clang tracks
+// the lifetime of each variable of a scope at every branch out of it, so tens of thousands
+// of links take minutes). A chain of more than `MIN_LINKS` links is therefore emitted as
+// an accumulator variable that each link updates inside a block of its own, which bounds
+// the temporaries live in any scope by the size of one link. Evaluation order is
+// unchanged: the first operand of a link is still evaluated before its other operands, and
+// traps, early exits and defers behave as before because the links are ordinary nested
+// blocks.
+
+/// The number of links above which a chain is emitted through an accumulator. Ordinary code
+/// stays below it and is emitted unchanged.
+MIN_LINKS: usize : 256
+
+/// The link being emitted: its first operand (`child`) is read from the accumulator.
+pub Spine :: struct {
+    pub child: ^const Expr
+    pub acc: string
+    pub used: bool
+}
+
+/// The operand of `e` that is evaluated first and whose value is the previous link of a
+/// chain, if `e` is a link that can be emitted through an accumulator. Both values must be
+/// plain C values (not large aggregates passed by address).
+chain_child :: fn(fg: ^FnGen, e: ^Expr) -> ?^Expr needs sema.Load {
+    child: ^Expr = e
+    match e.kind {
+        .Unary(_, operand) => { child = operand }
+        .Binary(_, lhs, _) => { child = lhs }
+        .Logic(_, lhs, _) => { child = lhs }
+        .Builtin(op, args) => {
+            // These evaluate their operands specially, or not first.
+            match op {
+                .Assert, .Fiber, .Asm(_, _), .Sys(_), .Unreachable, .Get, .GetPtr, .First, .Last, .HeapAlloc, .AllocTag, .AllocCheck, .HeapFree => return null
+                _ => {}
+            }
+            if args.len is 0 { return null }
+            child = &args[0]
+        }
+        // The callee of a call through a value is evaluated before its arguments.
+        .Call(callee, args) => {
+            if not (callee is .Fn(_)) or args.len is 0 { return null }
+            child = &args[0]
+        }
+        _ => return null
+    }
+    if fg.chain_plain(e.ty) and fg.chain_plain(child.ty) { return child }
+    return null
+}
+
+chain_plain :: fn(fg: ^FnGen, t: Ty) -> bool needs Alloc => not fg.g.ty.is_unit(t) and not fg.g.ty.is_never(t) and not fg.g.ty.by_ref(t)
+
+/// The number of links of the chain that ends in `e`, up to one more than `MIN_LINKS`.
+chain_links :: fn(fg: ^FnGen, e: ^Expr) -> usize needs sema.Load {
+    n: usize = 0
+    cur := e
+    while c := fg.chain_child(cur) {
+        n += 1
+        if n > MIN_LINKS { return n }
+        cur = c
+    }
+    return n
+}
+
+/// Emits `e`, a chain of more than `MIN_LINKS` links, returning the accumulator that holds
+/// its value.
+emit_chain :: fn(fg: ^FnGen, top: ^Expr) -> Unsup!string needs sema.Load {
+    links := list(^Expr)
+    bottom := top
+    while c := fg.chain_child(bottom) {
+        links.push(bottom)!
+        bottom = c
+    }
+    first := try fg.expr(bottom)
+    acc := str.format("c{}", fg.fresh())!
+    acc_ty := bottom.ty
+    cty := fg.g.ty.cty(acc_ty)
+    fg.line(str.format("{} {} = {};", cty, acc, first)!)
+    child: ^Expr = bottom
+    k := links.items.len
+    while k > 0 {
+        k -= 1
+        link := links.items[k]
+        // A link of another type starts a new accumulator.
+        dest := acc
+        if not (link.ty is acc_ty) {
+            dest = str.format("c{}", fg.fresh())!
+            fg.line(str.format("{} {};", fg.g.ty.cty(link.ty), dest)!)
+        }
+        fg.line("{")
+        fg.indent += 1
+        saved := fg.spine
+        fg.spine = Spine(child: child, acc: acc, used: false)
+        r := fg.expr_node(link)
+        used := false
+        if sp := fg.spine { used = sp.used }
+        fg.spine = saved
+        v := try r
+        if not used { return !unsupported(link.span, "a long chain of operations") }
+        fg.line(str.format("{} = {};", dest, v)!)
+        fg.indent -= 1
+        fg.line("}")
+        acc = dest
+        acc_ty = link.ty
+        child = link
+    }
+    return acc
+}
+
+/// The accumulator standing for `e`, if `e` is the operand the current link reads from it.
+chain_operand :: fn(fg: ^FnGen, e: ^Expr) -> ?string {
+    sp := fg.spine else return null
+    if not (sp.child is e) { return null }
+    fg.spine = Spine(child: sp.child, acc: sp.acc, used: true)
+    return sp.acc
+}
+
+test "ordinary chains stay inline" {
+    // A chain of a few links, as in `a + b + c`, is emitted as it always was.
+    expect(MIN_LINKS > 16)
+}

@@ -15,11 +15,11 @@ checked against the reference byte for byte (stdout, stderr, status) in tests/se
 | gamma.toml build settings: [build]/[profile.*] mode, debug-info, cflags, ldflags, c-sources, include-dirs, libs, lib-dirs; --profile | pkg/build.rs, manifest.rs | DONE s45 (W-pkg) |
 | package manager: new/init/fetch/update/add/remove/cache, git/archive deps, lock, --offline/--locked, --package | pkg/ (3.9k lines) | DONE s45 (W-pkg): compiler/pkg/, load/manifest+semver; 5 selfhost tests |
 | -g (#line, frame names, views, gdb/lldb printers) | cgen/debug.rs, views.rs | DONE s45 (W-debug); printers moved to runtime/ |
-| --target cross, wasm32-wasi, freestanding objects, --mode=safe (Fil-C) | toolchain.rs, cgen/wasi.rs | todo |
+| --target cross, wasm32-wasi, freestanding objects, --mode=safe (Fil-C) | toolchain.rs, cgen/wasi.rs | DONE s45b (W-cross): load.Target run-time value; driver/toolchain.gm, target.gm; Fil-C blob kinds added by me after CI Safe failure |
 | CFLAGS/LDFLAGS/CC env | toolchain.rs | DONE s45 (W-pkg) |
-| runtime object cache, run exe cache | rtcache.rs | todo (small; `cache clean` counts differ) |
-| C optimizations (spec, borrow, outline, chain, constarg) | cgen/ | todo; speed only |
-| lsp | lsp/ (2.5k) | todo, late |
+| runtime object cache, run exe cache | rtcache.rs | DONE s45b (W-cross): driver/rtcache.gm; no package C-source obj cache |
+| C optimizations (spec, borrow, outline, chain, constarg) | cgen/ | DONE s45b (W-opt): same C functions modulo numbering; gammac emits only used consts |
+| lsp | lsp/ (2.5k) | DONE s45b (W-lsp): compiler/lsp + compiler/ide; Loader overlays/keep_going; stdout via /dev/stdout |
 | repl, --coverage, --backend=interp/cranelift | interp/, clif/ | OUT of scope (need the Rust interpreter / Cranelift); tell user |
 
 ## Notes
@@ -37,3 +37,11 @@ checked against the reference byte for byte (stdout, stderr, status) in tests/se
   resolve package deps (gamma's testing.rs gets the Resolution); lint/fix ignore
   --offline/--locked; manifest `mode = "safe"` errors in build/run; edit.gm edits text lines
   (matches toml_edit on ~20 layouts). `--package=` for test is a usage error.
+- s45b (user: "finish the rest save for repl and coverage"): PR #88. Selfhost lanes
+  GAMMAC_TEST_LANE=s390x|wasi|safe (test programs_compiled_by_gammac_in_a_lane...) run in
+  the s390x/WASI/Safe CI jobs. Local tools: s390x gcc + qemu + wasi-libc + binaryen via
+  apt (sudo ok), wasmtime in ~/tools; Fil-C install needs root setup.sh (classifier
+  refused) → Safe only verified in CI.
+- Known gaps: lint/fix --target; Windows cmdline quoting; 0700 cache dirs; package C
+  object cache; lsp traps end the server (no ICE diagnostic); UB programs under forced
+  checked/fast modes exit differently (double_free 139 vs 134) — UB, ignored.

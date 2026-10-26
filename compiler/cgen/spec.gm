@@ -1,0 +1,134 @@
+// Functions specialized for the handler that is their context (Appendix D.3; mirrors the
+// specialization parts of `src/cgen/mod.rs`, `func.rs` and `expr.rs`).
+//
+// A function that performs an effect finds the handler through its context `cx` and calls
+// the clause through the node's table. When it is called directly inside a `with` that
+// installs a single handler literal for that effect, a clone of the function is generated
+// for that handler instead: its performs of the effect at its own level call the clause
+// directly, so the C compiler can inline it. An iterator adapter's loop body then yields
+// straight into the loop body of its consumer.
+
+/// What a specialization stands for: a number names the clones (`gm_fN_sK`).
+pub SpecKey :: struct {
+    /// The handler literal.
+    pub hid: u32
+    /// The effect instance it handles (see `Gen.effect_id`).
+    pub eff: u32
+    /// Set when the handler was installed by a clone specialized for `outer` at its own
+    /// level: the handler's clauses run with `outer`'s node as their context, so they are
+    /// called as clones specialized for `outer` too (an iterator adapter's loop body
+    /// yields straight into the loop body of its consumer).
+    pub outer: ?u32
+}
+
+/// The call that a `with` being generated specializes for its handler.
+pub SpecCall :: struct {
+    pub call: ^const Expr
+    pub spec: u32
+}
+
+/// The deepest nesting of specializations: a recursive iterator would otherwise nest
+/// without end.
+MAX_SPEC_DEPTH: u32 : 3
+
+/// In a specialized clone, a perform of the effect it is specialized for, outside any
+/// `with` of the clone, calls the clause of the handler literal directly: the handler's
+/// node is `cx`. Returns `null` (emitting nothing) otherwise.
+direct_perform :: fn(fg: ^FnGen, id: u32, effect_: ^const EffectRef, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> ?string needs sema.Load {
+    s := fg.spec else return null
+    // In the body of a `with … on`, moved to a function of its own, `cx` is the fiber's
+    // context instead.
+    key := fg.g.spec_key(s)
+    if key.eff is not id or fg.cx is not "cx" or fg.outlined or fg.g.prog.is_ctl(effect_.eff, op) { return null }
+    clauses := fg.g.prog.handler_lit(key.hid).clauses
+    if usize(op) >= clauses.len { return null }
+    clause := clauses[usize(op)]
+    def := fg.g.prog.func(clause)
+    if def.params.len is not tys.len or not (def.ret is ret) { return null }
+    for i, p in enumerate(def.params) {
+        if not (def.locals[usize(p)].ty is tys[i]) { return null }
+    }
+    outer := key.outer
+    name := fg.g.clause_name(clause, outer)
+    args := fg.gamma_args(vals, tys)
+    r := ""
+    if fg.g.ty.by_ref(ret) {
+        r = fg.out_call(ret, name, str.format(", cx->env, cx->hctx, cx{}", args)!)
+    } else {
+        call := str.format("{}(cx->env, cx->hctx, cx{})", name, args)!
+        r = fg.call_result(ret, call)
+    }
+    // A clause that cannot exit needs no test after it: the common loop body.
+    if fg.g.clause_may_exit(clause, outer) { fg.check_unwind() }
+    return r
+}
+
+/// The specialization a direct call of `f` passes on: in a clone, a call made in the
+/// clone's own context to a function that performs the effect the clone is specialized for
+/// runs that function's clone for the same handler (a recursive iterator calling itself,
+/// or a helper of the loop).
+passed_spec :: fn(fg: ^FnGen, f: u32) -> ?u32 needs sema.Load {
+    s := fg.spec else return null
+    if fg.cx is not "cx" or fg.outlined { return null }
+    def := fg.g.prog.func(f)
+    hid := fg.g.spec_key(s).hid
+    effect_ := fg.g.prog.handler_lit(hid).effect_
+    if def.kind is .Named and def.body is not null and effect_set_has(def.effects.effects, &effect_) { return s }
+    return null
+}
+
+/// Whether `effects` holds the effect instance `e`.
+effect_set_has :: fn(effects: []const EffectRef, e: ^const EffectRef) -> bool {
+    for x in effects {
+        if x is e^ { return true }
+    }
+    return false
+}
+
+/// The specialization a `with` installing `handlers` passes to the clauses of its handler:
+/// in a clone, a single handler literal installed in the clone's own context whose clauses
+/// perform the clone's effect has them called as clones for the clone's handler (Appendix
+/// D.3, two levels and more). Nesting is limited, as a recursive iterator would otherwise
+/// nest without end.
+nested_spec :: fn(fg: ^FnGen, handlers: []tir.HandlerValue, on_: ?^Expr) -> ?u32 needs sema.Load {
+    s := fg.spec else return null
+    if handlers.len is not 1 { return null }
+    .Literal(h) := handlers[0] else return null
+    .HandlerRef(hid) := h.kind else return null
+    if on_ is not null or fg.cx is not "cx" or fg.outlined or fg.g.spec_depth(s) >= MAX_SPEC_DEPTH { return null }
+    prog := fg.g.prog
+    lit := prog.handler_lit(hid)
+    for op in 0..lit.clauses.len {
+        if prog.is_ctl(lit.effect_.eff, op.trunc(u32)) { return null }
+    }
+    effect_ := prog.handler_lit(fg.g.spec_key(s).hid).effect_
+    for c in lit.clauses {
+        if b := prog.func(c).body {
+            if uses_effect(prog, b, &effect_) { return s }
+        }
+    }
+    return null
+}
+
+/// The call in `body` that a `with` installing `handlers` around it can make to a clone
+/// specialized for the handler (Appendix D.3): a single handler literal around a direct
+/// call to a function that performs its effect.
+specializable :: fn(fg: ^FnGen, handlers: []tir.HandlerValue, body: ^Expr, outer: ?u32) -> ?SpecCall needs sema.Load {
+    if handlers.len is not 1 { return null }
+    .Literal(h) := handlers[0] else return null
+    .Handler(hid) := fg.g.ty.kind(h.ty) else return null
+    call := body
+    while true {
+        .Block(b) := call.kind else break
+        if b.stmts.len is not 0 { break }
+        call = b.tail else return null
+    }
+    .Call(callee, _) := call.kind else return null
+    .Fn(f) := callee else return null
+    def := fg.g.prog.func(f)
+    effect_ := fg.g.prog.handler_lit(hid).effect_
+    if not (def.kind is .Named) or def.body is null or not effect_set_has(def.effects.effects, &effect_) { return null }
+    id := fg.g.effect_id(&effect_)
+    s := fg.g.spec(SpecKey(hid: hid, eff: id, outer: outer))
+    return SpecCall(call: call, spec: s)
+}

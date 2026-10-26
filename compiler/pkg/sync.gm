@@ -88,3 +88,80 @@ report_changes :: fn(old: ?Lock, new: ^const Lock, refresh: Refresh) needs Alloc
         }
     }
 }
+
+/// The directory of the package that the graph rooted at `root` knows as `name`: a
+/// dependency of `root`, or of one of its dependencies, nearest first. `res` holds the
+/// resolved git and archive dependencies; path dependencies are read from the manifests.
+pub dependency_dir :: fn(root_dir: string, res: ?load.Resolution, name: string) -> string!string needs Alloc + Fs {
+    root := canonicalize(root_dir) else root_dir
+    seen := list(string)
+    seen.push(root)!
+    queue := list(string)
+    queue.push(root)!
+    direct := list(string)
+    next: usize = 0
+    while next < queue.items.len {
+        dir := queue.items[next]
+        next += 1
+        deps := try direct_dependencies(dir, res)
+        for d in deps.items {
+            if dir is root { direct.push(d.name)! }
+            if d.name is name { return d.dir }
+            if d.dir not in seen.items {
+                seen.push(d.dir)!
+                queue.push(d.dir)!
+            }
+        }
+    }
+    if direct.items.len is 0 { return !str.format("the package in {} has no dependency `{}`; it has no dependencies", root, name)! }
+    names := list(u8)
+    for i, n in enumerate(direct.items) {
+        if i > 0 { names.extend(", ")! }
+        names.write("`{}`", n)!
+    }
+    return !str.format("the package in {} has no dependency `{}`; its dependencies are {}", root, name, names.items)!
+}
+
+/// The dependencies of the package in `dir`, by name: those of the resolution, or else the
+/// path dependencies of its manifest (none without one).
+direct_dependencies :: fn(dir: string, res: ?load.Resolution) -> string!List(load.Dep) needs Alloc + Fs {
+    if r := res {
+        if deps := load.deps_of(&r, dir) {
+            out := list(load.Dep)
+            for d in deps.items { out.push(d)! }
+            out.items.sort_by(fn(a, b: ^const load.Dep) -> bool => a.name < b.name or (a.name is b.name and a.dir < b.dir))
+            return out
+        }
+    }
+    out := list(load.Dep)
+    if not is_file(join(dir, "gamma.toml")) { return out }
+    manifest := try read_manifest(dir)
+    for dep in manifest.deps.items {
+        if .Path(p) := dep.source {
+            full := join(dir, p)
+            out.push(load.Dep(name: dep.name, dir: canonicalize(full) else full))!
+        }
+    }
+    return out
+}
+
+/// What preparing a build gives: where the packages' dependencies are, and what the
+/// packages add to a native build.
+pub Prepared :: struct {
+    pub resolution: ?load.Resolution
+    pub extras: Extras
+}
+
+/// Fetches the dependencies of the package that holds `input` (see `prepare`) and collects
+/// what the packages add to a native build, or reports the error and returns `null`.
+pub prepare_build :: fn(input: string, opts: Options, profile: ?string) -> ?Prepared needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    res := prepare(input, opts) else e => {
+        eprint("gammac: {}\n", e)
+        return null
+    }
+    extras := collect(input, res, profile) else e => {
+        eprint("gammac: {}\n", e)
+        return null
+    }
+    return Prepared(resolution: res, extras: extras)
+}

@@ -217,7 +217,7 @@ callconv_attr :: fn(s: ^Sema, a: ^const ast.Attribute) -> ?bool needs Alloc {
         return null
     }
     .DotIdent(id) := args[0].kind else return null
-    x86_64 := @variant_name(target.arch) is "X86_64"
+    x86_64 := s.l.target.arch is "X86_64"
     match id.name {
         "C" => return false
         "SysV", "Win64" => {
@@ -318,7 +318,7 @@ export_fn :: fn(s: ^Sema, f: u32, sym: string, span: source.Span) needs Load {
 /// `#trap_hook` on the function `f` (§3.7.1): only on a freestanding target, at most one per
 /// program, of type `fn(msg: string, loc: SourceLocation) -> never needs Sys`.
 trap_hook_fn :: fn(s: ^Sema, f: u32, span: source.Span) needs Load {
-    if @variant_name(target.os) is not "Freestanding" {
+    if s.l.target.os is not "Freestanding" {
         s.error(span, "`#trap_hook` applies only on a freestanding target (§3.7.1)")
         return
     }

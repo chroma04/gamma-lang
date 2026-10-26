@@ -1,0 +1,41 @@
+// The target a program is compiled for (mirrors `Target` of `src/layout.rs`): the machine
+// whose layouts, integer widths and `target` module the checker and the back end use. It
+// is the machine gammac runs on unless `--target` or the C compiler says otherwise;
+// gammac's own platform code (paths, operating system errors) keeps using its own
+// `target`.
+
+/// Properties of the compilation target that affect layout and arithmetic.
+pub Target :: struct {
+    /// Pointer width in bytes (4 or 8).
+    pub ptr_bytes: u64
+    pub little_endian: bool
+    /// Alignment the C ABI gives `__int128` (16 on x86-64 and AArch64).
+    pub int128_align: u64
+    /// `Linux`, `MacOS`, `Windows`, `FreeBSD`, `Wasi` or `Freestanding`.
+    pub os: string
+    /// `X86_64`, `Aarch64`, `Riscv64`, `S390x`, `Wasm32` or `Other`.
+    pub arch: string
+    /// The C compiler is Fil-C, whose pointers carry capabilities that are lost when a
+    /// pointer travels as an integer: the C back end keeps pointers as C pointers, and
+    /// Safe builds (§18.7) require it.
+    pub filc: bool
+    /// The C compiler has the `_Float16` type, which the C back end uses for `f16`.
+    pub f16: bool
+}
+
+/// The target gammac itself was built for.
+pub host_target :: fn() -> Target => Target(
+    ptr_bytes: u64(target.ptr_bits / 8),
+    little_endian: target.endian is .Little,
+    int128_align: 16,
+    os: @variant_name(target.os),
+    arch: @variant_name(target.arch),
+    filc: false,
+    f16: true,
+)
+
+pub ptr_bits :: fn(t: ^const Target) -> u32 => (t.ptr_bytes * 8).trunc(u32)
+
+/// The largest size of an object, `isize::MAX` for the target: a larger type is an error,
+/// since offsets and lengths of its values would not fit `isize`.
+pub max_object_size :: fn(t: ^const Target) -> u64 => (u64(1) << u64(t.ptr_bits() - 1)) - 1

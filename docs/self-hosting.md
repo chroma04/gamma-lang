@@ -28,9 +28,11 @@ this checkable:
 | checking | the diagnostics of `gamma check`, in the human format |
 | back end | the output and exit status of the compiled programs |
 | test runner | the output and exit status of `gamma test --backend=c` and `gamma bench`, timings masked |
+| targets and caches | `check`, `build`, `run`, `test` and `bench` for other targets, freestanding and `--mode=safe`: the output, exit status and files of both, and the objects they cache |
 | formatter | the output, messages and exit status of `gamma fmt` |
 | `doc` | the standard output, standard error, exit status and files of `gamma doc` |
 | lint and fix | the diagnostics, messages, edited files and exit status of `gamma lint` and `gamma fix` |
+| language server | the bytes `gamma lsp` writes for a session of requests, and its exit status |
 | package manager | the output, messages, files (`gamma.toml`, `gamma.lock`, the package store) and exit status of `gamma new`, `init`, `fetch`, `update`, `add`, `remove` and `cache`, and of the commands that use the build settings of `gamma.toml` |
 | bootstrap | the C that `gammac` generates for itself, built by itself |
 
@@ -113,12 +115,23 @@ leaves to implementations: message texts, spans and recovery after errors.
    conformance `run` test compiled this way gives the expected output and exit status.
    The C back end (`compiler/cgen/`) is a port of `src/cgen/` with the same representation
    of values and the same use of the runtime, so values have the same bytes, checks trap
-   with the same messages, and effects, handlers, fibers and continuations work the same. It leaves out
-   what only makes the generated code faster or quicker to compile — the specialization
-   of functions for the handler that is their context, reading parameters in place,
-   splitting long functions, constant arguments in static storage — and what it has no use
-   for yet: the Safe mode, freestanding targets, the cache of compiled runtimes and other
-   targets than the one `gammac` runs on.
+   with the same messages, and effects, handlers, fibers and continuations work the same.
+   It also makes the same optimizations, so the generated code is as fast: functions are
+   specialized for the handler that is their context (`spec.gm`), parameters a function
+   only reads are passed in place (`borrow.gm`), constant arguments live in static storage
+   (`constarg.gm`), long chains of operations go through an accumulator
+   variable (`chain.gm`), and long functions are split into helpers (`outline.gm`). The
+   Safe mode, freestanding targets, other targets and the caches of the compiled runtime
+   and of built programs are in the section "Targets, modes and caches" below; the only
+   thing left out is a cache of compiled package C sources.
+
+   For a program, `gammac build --emit-c` generates the same C functions as `gamma build`,
+   bar the numbers in their names, which follow the order the functions are checked in,
+   and the order they are written in. The two differ in the constants: `gamma` initializes
+   every constant of the program, including ones nothing uses, such as the handler tables
+   of the default allocator, and generates the functions that only those reach, where
+   `gammac` generates the constants a program uses. `tests/selfhost.rs` compares the
+   functions on the examples and on a program with long bodies and chains.
 
    Before generating code, `gammac` checks every function body the program can reach,
    including the core library's (which `gammac tir`, like `gamma tir`, leaves out), and
@@ -191,8 +204,10 @@ and run it once per test with captured output. They print what `gamma test --bac
 and `gamma bench` print, with the same options: `--filter=`, `--all`, `--show-output`,
 `--jobs=N` / `-j N` (0: one per processor; the output stays in order), `--timeout=SECONDS`,
 `--time`, `--mode=` and `--diag-format=`. A benchmark builds in fast mode unless `--mode`
-is given. `--backend=interp|cranelift`, `--coverage`, `--package` and `--target` are
-usage errors. A test that exceeds `--timeout` is killed by a watching thread, which
+is given. `--package=NAME` tests a dependency of the input's package (or one of its
+dependencies) instead, and `--target=TRIPLE` builds the tests for another target (see
+"Targets, modes and caches"). `--backend=interp|cranelift` and `--coverage` are usage
+errors: they need the interpreter or Cranelift, which `gammac` does not have. A test that exceeds `--timeout` is killed by a watching thread, which
 cannot reach processes the test started or a test that closed its output and then ran on.
 `tests/selfhost.rs` runs the `test` conformance tests through `gammac test` and compares
 a standard library module, options and failures with the reference.
@@ -235,6 +250,34 @@ doc comments.
 files, on the fixtures of `tests/doc/` and on the error cases, and compares what they
 print and every file they write.
 
+### Language server
+
+`gammac lsp` is `gamma lsp` (`src/lsp/`, `src/ide.rs`, `src/sema/ide/`): the Language
+Server Protocol over standard input and output, with the same capabilities (diagnostics,
+hover, go to definition, references, rename, completion, document symbols, signature help,
+formatting, quick fixes) and the same messages, byte for byte. The code is in `compiler/lsp/`
+(the transport, JSON writer, analysis, requests and workspace search) and `compiler/ide/`
+(the index of facts that hover, definition and completion read, built from a checked
+program).
+
+The server reads messages on a thread of its own and analyzes a directory only when no
+message is waiting, as the reference does. Each analysis allocates from an arena that is
+freed when the analysis is replaced. To check a module while its files are open in an
+editor, the loader takes overlays (the text of open documents stands in for the files
+on disk) and can keep a module whose files have syntax errors (`keep_going`).
+
+It differs from the reference in a few small ways: a failure inside the checker ends the
+server, since traps cannot be caught (the reference answers with an internal error
+diagnostic); the wording of JSON syntax errors in a malformed message is approximated;
+symbolic links are not resolved when paths are compared; the response to each request is not
+freed, so the process grows slowly; and the checker's own messages differ where `gammac check`
+differs from `gamma check` (for example for expressions it cannot check yet). On Windows,
+where output cannot be written unbuffered through `/dev/stdout`, responses can be held back
+until the buffer fills.
+
+`tests/selfhost.rs` runs a session of requests over two examples, with an edit that breaks
+the text halfway, against both servers and compares everything they write.
+
 ### Lint and fix
 
 `gammac lint [options] <file or directory>` is `gamma lint` and `gammac fix <file or
@@ -256,9 +299,8 @@ tests (as `gamma test` would), and, in a package, with the other modules of the 
 Warnings carry their rule: `warning[unused-variable]: …` in the human and short formats,
 and a `code` field in JSON. Messages that name the tool (`gamma: applied 2 fixes in 1
 file`, `gamma lint: 3 warnings`) keep the reference's text, so that output compares
-equal. Differences: `--target` is not an option of `gammac`, `--offline` and `--locked`
-are accepted but linting does not fetch dependencies, and messages for bad command lines
-start `gammac:`.
+equal. Differences: `--target` is not an option of `gammac`, and messages for bad command
+lines start `gammac:`.
 `tests/selfhost.rs` compares `gammac lint` with `gamma lint` in the JSON format on every
 program root at the default levels and with `--warn=all`, and `gammac fix` and `gammac
 lint --fix` on scratch copies of the single-file conformance programs, comparing the
@@ -279,22 +321,59 @@ words them, as far as a manifest can have them. `edit.gm` edits the lines of the
 instead of a document tree, which keeps comments and layout the same for the manifests
 the commands handle (line ends are written as `\n`, as the reference does).
 
-`gammac check`, `build` and `run` fetch what the lock file does not cover before they
-load the program, take `--offline`, `--locked` and `--profile=NAME`, and apply the
+`gammac check`, `build`, `run`, `test`, `bench`, `lint` and `fix` fetch what the lock
+file does not cover before they load the program, take `--offline`, `--locked` and `--profile=NAME`, and apply the
 `[build]` table and the profile of the root package's `gamma.toml`: `mode` (under
 `--mode`), `cflags` and `ldflags` (before `CFLAGS` and `LDFLAGS`), and, in a native build,
 the `c-sources`, `include-dirs`, `libs` and `lib-dirs` of the package and its
 dependencies. The C sources are compiled again by every build (there is no object cache),
 each with the include directories of its own package. `CC` may hold arguments.
 
-Differences: `gammac` has no Safe mode, so `mode = "safe"` is an error for `build` and
-`run` (and `check` analyzes as Checked); `debug-info` of the manifest follows `-g`;
-`lint` and `fix` do not fetch dependencies, so a package with git or archive dependencies
-needs a `gammac fetch` first; `gammac modules`, `decls` and `tir` do not look at the lock
-file, as the reference's do not; there is no object cache, so `cache clean` has no
-runtime objects to count; and messages start `gammac:`.
+Differences: `debug-info` of the manifest follows `-g`; `gammac modules`, `decls` and
+`tir` do not look at the lock file, as the reference's do not; the C sources of packages
+have no object cache (so a program with such sources is not kept in the cache of built
+programs either); and messages start `gammac:`.
 `tests/selfhost.rs` runs both programs over the same steps in two scratch directories
 (local `file://` repositories and archives) and compares what they print and write.
+
+### Targets, modes and caches
+
+`gammac check`, `build`, `run`, `test` and `bench` take `--target=TRIPLE` and `--mode=safe`
+and read `CC`, `CFLAGS`, `LDFLAGS`, `GAMMA_RUNNER`, `WASI_SDK_PATH` and `WASM_OPT` as
+`gamma` does. The target is a run-time value (`load.Target`, in `compiler/load/target.gm`)
+that the loader, the checker, the evaluator and the C back end read: pointer size, byte
+order, the operating system, the architecture, whether it is a Fil-C target and whether
+`f16` exists. Without `--target` it is read from the predefined macros of the C compiler
+(`cc -dM -E`); with it, `compiler/driver/toolchain.gm` picks `<triple>-gcc`, else
+`clang --target=<triple>`, or adds the target to a `CC` that names clang or `zig cc`, and
+refuses a compiler that makes code for another machine.
+
+- **Freestanding targets** (`*-none-*`): there is no `main`; the functions marked
+  `#export` are the entry points, each of which starts the program (`gm_start`) first, and
+  `#trap_hook` receives the traps. `build` writes `<name>.o`; `run`, `test` and `bench`
+  are refused. The code is in `compiler/cgen/freestanding.gm`.
+- **`wasm32-wasi`**: the link flags, the `.wasm` name, `wasm-opt --asyncify` for programs
+  that switch fibers (`compiler/cgen/wasi.gm`; `WASM_OPT` names the program) and
+  `wasmtime` as the runner unless `GAMMA_RUNNER` is set.
+- **`--mode=safe`**: builds with Fil-C (`filcc` on `PATH` or in `/opt/fil/bin`) and links
+  the cached runtime. It cannot be combined with `--target`.
+- **Caches** (`compiler/driver/rtcache.gm`): Debug and Safe builds link a runtime object
+  compiled once (`gm_rt-<hash>.o` in the cache directory), and `run` keeps the programs
+  it built (`run/prog-<hash>`, the 32 most recent), keyed by the C, the compiler and its
+  flags. `cache clean` counts both.
+
+`tests/selfhost.rs` compares `gammac` with `gamma` on `check --target=...` over every
+program, on build, run, test and bench for other targets (when the cross compiler and the
+emulator are installed), on the freestanding firmware example, and on the error cases (an
+unknown triple, a missing compiler, Safe mode without `filcc`). The Safe mode itself is
+compared only where `/opt/fil/bin/filcc` exists. With `GAMMAC_TEST_LANE=s390x`, `wasi` or
+`safe`, the selfhost test `programs_compiled_by_gammac_in_a_lane_behave_as_expected` builds
+every conformance `run` test with `gammac` for s390x (under qemu), for WASI (under
+Wasmtime) or in the Safe mode (every test of the default and Checked modes, as the
+conformance suite's Safe lane), with the directives of `docs/contributing.md` choosing the
+tests; the s390x, WASI and Safe jobs of CI run it. Not ported: `lint` and `fix` with
+`--target`, the quoting of Windows command lines, and the private (0700) mode of the cache
+directories, which the standard library cannot set.
 
 ### Growing a stage
 

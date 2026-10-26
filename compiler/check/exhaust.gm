@@ -264,7 +264,7 @@ all_ctors :: fn(s: ^Sema, ty: Ty, column: []const DPat) -> ?[]Ctor needs Alloc {
             }
         }
         _ => {
-            r := int_bounds(tys, ty) else return null
+            r := int_bounds(tys, ty, s.l.target.ptr_bits()) else return null
             min := r.min
             end := r.max.add(bigint.one())
             cuts := list(Int)
@@ -292,7 +292,7 @@ all_ctors :: fn(s: ^Sema, ty: Ty, column: []const DPat) -> ?[]Ctor needs Alloc {
 }
 
 /// The least and greatest values of an integer type, on the target.
-int_bounds :: fn(tys: ^types.Types, ty: Ty) -> ?(min: Int, max: Int) needs Alloc {
+int_bounds :: fn(tys: ^types.Types, ty: Ty, ptr_bits: u32) -> ?(min: Int, max: Int) needs Alloc {
     signed := false
     bits: u64 = 0
     match tys.kind(ty) {
@@ -300,10 +300,10 @@ int_bounds :: fn(tys: ^types.Types, ty: Ty) -> ?(min: Int, max: Int) needs Alloc
             signed = sg
             bits = u64(b)
         }
-        .Usize => { bits = u64(target.ptr_bits) }
+        .Usize => { bits = u64(ptr_bits) }
         .Isize => {
             signed = true
-            bits = u64(target.ptr_bits)
+            bits = u64(ptr_bits)
         }
         _ => return null
     }

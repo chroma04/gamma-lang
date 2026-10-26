@@ -200,6 +200,15 @@ pub InlineFn :: struct {
     pub span: source.Span
 }
 
+/// The inlining and code generation hints of a function (§11.10): `#inline` (`true`) or
+/// `#noinline` (`false`), `#cold` and `#fast_math`.
+pub FnHint :: struct {
+    pub fn_id: u32
+    pub inline: ?bool
+    pub cold: bool
+    pub fast_math: bool
+}
+
 pub OpInfo :: struct {
     pub name: string
     pub kind: ast.OpKind
@@ -370,6 +379,8 @@ pub Sema :: struct {
     pub decl_with_checks: List(DeclWithCheck)
     /// The functions marked `#inline` (§11.10), and where.
     pub inline_fns: List(InlineFn)
+    /// The hints of the functions that have any, by function.
+    pub fn_hints: List(FnHint)
     /// The symbols the program exports (§19.4).
     pub exports: List(string)
     /// The function exported under each symbol of `exports`.
@@ -499,6 +510,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         decl_clause_breaks: list(DeclBreak),
         decl_with_checks: list(DeclWithCheck),
         inline_fns: list(InlineFn),
+        fn_hints: list(FnHint),
         exports: list(string),
         export_fns: list(u32),
         trap_hook: null,
@@ -786,6 +798,7 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     fuel: ?u64 = null
     hints: ?ast.Attribute = null
     inline := false
+    hint_set := FnHint(fn_id: 0, inline: null, cold: false, fast_math: false)
     align_attr: ?ast.Attribute = null
     export: ?(sym: string, span: source.Span) = null
     callconv: ?(win64: bool, span: source.Span) = null
@@ -835,7 +848,14 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
             }
             // Inlining hints (§11.10) do not change the meaning of a program.
             "inline", "noinline", "cold", "fast_math" => {
-                if attr.name.name in ("inline", "noinline") { inline = attr.name.name is "inline" }
+                if attr.name.name in ("inline", "noinline") {
+                    inline = attr.name.name is "inline"
+                    hint_set.inline = inline
+                } else if attr.name.name is "cold" {
+                    hint_set.cold = true
+                } else {
+                    hint_set.fast_math = true
+                }
                 hints = attr
             }
             // Read by `gamma lint`.
@@ -883,6 +903,10 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
     }
     if h := hints {
         if .Fn(f) := v and inline { s.inline_fns.push(InlineFn(fn_id: f, span: h.span))! }
+        if .Fn(f) := v {
+            hint_set.fn_id = f
+            s.fn_hints.push(hint_set)!
+        }
         if v is not .Fn(_) and v is not .Error {
             s.error(h.span, str.format("`#{}` applies only to a function (§20.2)", h.name.name)!)
         }

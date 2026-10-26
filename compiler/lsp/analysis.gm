@@ -1,0 +1,441 @@
+//! Running the compiler on a module for the server, and turning its diagnostics into LSP
+//! diagnostics.
+
+/// The path as the compiler's overlays and file lookups spell it: absolute, without `.`
+/// and `..` names; for a file that does not exist (yet), its directory's canonical form
+/// joined with its name.
+pub canon :: fn(p: string) -> string needs Alloc + Fs {
+    if c := canonical_of(p) { return c }
+    name := load.file_name(p) else return p
+    dir := load.parent(p) else return p
+    if dir.len is 0 { return p }
+    if c := canonical_of(dir) { return load.join(c, name) }
+    return p
+}
+
+canonical_of :: fn(p: string) -> ?string needs Alloc + Fs {
+    if Fs.stat(p) is !_ { return null }
+    return load.normalize(load.join(load.working_dir(), p))
+}
+
+/// The directory of a path.
+pub dir_of :: fn(p: string) -> string needs Alloc => load.parent(p) else ""
+
+/// Whether `p` is a path of a `.gm` file.
+pub is_gm :: fn(p: string) -> bool => p.ends_with(".gm")
+
+/// A `file://` URI for `path`.
+pub path_to_uri :: fn(path: string) -> string needs Alloc {
+    out := list(u8)
+    out.extend("file://")!
+    for b in path {
+        match b {
+            'A'..='Z', 'a'..='z', '0'..='9', '-', '.', '_', '~', '/', ':' => out.push(b)!
+            _ => out.write("%{:02X}", b)!
+        }
+    }
+    return out.items
+}
+
+hex_value :: fn(c: u8) -> ?u8 {
+    if c >= '0' and c <= '9' { return c - '0' }
+    if c >= 'a' and c <= 'f' { return c - 'a' + 10 }
+    if c >= 'A' and c <= 'F' { return c - 'A' + 10 }
+    return null
+}
+
+/// The path of a `file://` URI.
+pub uri_to_path :: fn(uri: string) -> ?string needs Alloc {
+    if not uri.starts_with("file://") { return null }
+    rest := uri[7..]
+    // `file://host/path` and `file:///path`: the path starts at the next slash.
+    slash := rest.index_of('/') else return null
+    bytes := rest[slash..]
+    out := list(u8)
+    i: usize = 0
+    while i < bytes.len {
+        if bytes[i] is '%' and i + 2 < bytes.len {
+            hi := hex_value(bytes[i + 1])
+            lo := hex_value(bytes[i + 2])
+            if hi is not null and lo is not null {
+                out.push((hi else 0) * 16 + (lo else 0))!
+                i += 3
+                continue
+            }
+        }
+        out.push(bytes[i])!
+        i += 1
+    }
+    if not out.items.utf8_valid() { return null }
+    return out.items
+}
+
+/// The result of checking one module directory.
+pub Analysis :: struct {
+    /// Everything the analysis allocates: the sources, diagnostics and index.
+    arena: ^arena.Arena
+    sm: source.SourceMap
+    diags: diag.Diagnostics
+    next_id: ast.NodeId
+    index: ide.IdeIndex
+    /// The files of the analysis by canonical path.
+    files: hash_map.HashMap(string, source.FileId)
+    /// Where diagnostics without a location go.
+    primary: string
+    /// Files made for the embedded core library, by source file.
+    core_files: hash_map.HashMap(source.FileId, ?string)
+    /// The line index of each file already looked up, so that a request scans a file once.
+    line_cache: hash_map.HashMap(source.FileId, LineStarts)
+}
+
+make_analysis :: fn(ar: ^arena.Arena, primary: string) -> ^Analysis needs Alloc {
+    with ar.allocator() {
+        return new(Analysis(
+            arena: ar,
+            sm: source.source_map(),
+            diags: diag.diagnostics(),
+            next_id: 0,
+            index: ide.index(),
+            files: hash_map.hash_map(string, source.FileId),
+            primary: dupe(primary)!,
+            core_files: hash_map.hash_map(source.FileId, ?string),
+            line_cache: hash_map.hash_map(source.FileId, LineStarts),
+        ))!
+    }
+}
+
+/// Checks the module in `dir`, reading the open documents from `overlays`.
+pub check_module :: fn(dir: string, overlays: []const load.Overlay, primary: string) -> ^Analysis needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    ar := new(arena.new())!
+    a := make_analysis(ar, primary)
+    with ar.allocator() {
+        analyze(a, dir, overlays)
+        for i in 0..a.sm.files.items.len {
+            p := a.sm.files.items[i].path
+            if p.starts_with("<") { continue }
+            a.files.put(canon(p), i.trunc(u32))!
+        }
+    }
+    return a
+}
+
+/// Releases an analysis.
+pub release :: fn(a: ^Analysis) needs Alloc {
+    ar := a.arena
+    ar.deinit()
+    destroy(ar)
+}
+
+/// Loads, checks and indexes the module in `dir`, as the checker is run for `gamma test`
+/// but going on after syntax errors.
+analyze :: fn(a: ^Analysis, dir: string, overlays: []const load.Overlay) needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    std := driver.std_root()
+    l := load.loader(&a.sm, &a.diags, &a.next_id, std, true)
+    l.keep_going = true
+    for o in overlays { l.overlays.push(o)! }
+    // The git dependencies of the package are used as locked and fetched: the server never
+    // touches the network or rewrites gamma.lock. If they are not available, checking
+    // reports the dependency as needing `gamma fetch`.
+    if res := pkg.prepare(dir, pkg.Options(offline: true, locked: true)) { l.resolution = res }
+    if not l.load_core(driver.core_root(std), "Debug") { return }
+    s := sema.sema(&l)
+    check.install(&s)
+    s.resolve_ambient()
+    root_mod := l.load_root(dir)
+    if m := root_mod {
+        s.resolve_declarations()
+        resolve_core(&s)
+        check.check_program(&s, m, true)
+        check_constants(&s)
+    }
+    a.index = ide.build(&s, dir, root_mod)
+}
+
+/// Checks the initializers of the constants that nothing needed yet, so that their
+/// expressions have types to show.
+check_constants :: fn(s: ^sema.Sema) needs Alloc + Fs {
+    for i in 0..s.consts.items.len {
+        c := s.consts.items[i]
+        if c.state is not .Unchecked or s.l.modules.items[c.module].is_prelude { continue }
+        _ = check.const_value(s, c.span, c.ty)
+    }
+}
+
+/// Resolves the declarations of the core library, which checking resolves only as they are
+/// used: editors show what they are (a function's signature, a constant's type).
+resolve_core :: fn(s: ^sema.Sema) needs Alloc + Fs {
+    for m in 0..s.l.modules.items.len {
+        if not s.l.modules.items[m].is_prelude { continue }
+        ids := list(usize)
+        for n in s.l.modules.items[m].scope.items { ids.push(n.decl)! }
+        ids.items.sort()
+        for d in ids.items { _ = s.resolve_decl(d) }
+    }
+}
+
+pub file_id :: fn(a: ^const Analysis, path: string) -> ?source.FileId => a.files.get(path)
+
+pub source_text :: fn(a: ^const Analysis, file: source.FileId) -> string => a.sm.file(file).text
+
+/// The path of a file of the analysis, unless it is not a real file (the embedded core
+/// library).
+pub real_path :: fn(a: ^const Analysis, file: source.FileId) -> ?string needs Alloc + Fs {
+    if usize(file) >= a.sm.files.items.len { return null }
+    p := a.sm.file(file).path
+    if p.starts_with("<") { return null }
+    return canon(p)
+}
+
+/// Where an editor can open the file: its path, or for the embedded core library a file
+/// with its text (see `corelib.gm`).
+pub open_path :: fn(a: ^Analysis, file: source.FileId) -> ?string needs Alloc + Env + Fs + Rand {
+    if p := a.real_path(file) { return p }
+    if usize(file) >= a.sm.files.items.len { return null }
+    f := a.sm.file(file)
+    if not is_core(f.path) { return null }
+    if known := a.core_files.get(file) { return known }
+    found := core_path_for(f.path, f.text)
+    a.core_files.put(file, found)!
+    return found
+}
+
+scan_lines :: fn(a: ^Analysis, t: string) -> LineStarts needs Alloc {
+    with a.arena.allocator() { return line_starts(t) }
+}
+
+/// The line index of a file, scanning the file the first time only.
+pub lines :: fn(a: ^Analysis, file: source.FileId) -> LineIndex needs Alloc {
+    t := a.source_text(file)
+    if known := a.line_cache.get(file) { return line_index_from(t, known) }
+    starts := scan_lines(a, t)
+    a.line_cache.put(file, starts)!
+    return line_index_from(t, starts)
+}
+
+/// The LSP range of `span`; an empty span is widened to one character so that editors
+/// can underline it.
+pub range :: fn(a: ^Analysis, span: source.Span, enc: Encoding) -> Value needs Alloc {
+    t := a.source_text(span.file)
+    ix := a.lines(span.file)
+    lo := usize(span.lo)
+    hi := usize(span.hi)
+    if lo is hi {
+        if hi < t.len and is_char_boundary(t, hi) and t[hi] is not '\n' and t[hi] is not '\r' {
+            hi += char_len(t[hi])
+        } else if lo > 0 and lo <= t.len and is_char_boundary(t, lo) {
+            start := lo - 1
+            while start > 0 and not is_char_boundary(t, start) { start -= 1 }
+            if t[start] is not '\n' { lo = start }
+        }
+    }
+    return range_json(&ix, lo, hi, enc)
+}
+
+pub range_json :: fn(ix: ^const LineIndex, lo, hi: usize, enc: Encoding) -> Value needs Alloc {
+    s := position(ix, lo, enc)
+    e := position(ix, hi, enc)
+    o := obj()
+    o.put("start", pos_json(s.line, s.character))
+    o.put("end", pos_json(e.line, e.character))
+    return o.value()
+}
+
+pub pos_json :: fn(line, character: u32) -> Value needs Alloc {
+    o := obj()
+    o.put("line", int(i64(line)))
+    o.put("character", int(i64(character)))
+    return o.value()
+}
+
+/// The URIs the client uses for the open documents, by canonical path.
+pub UriMap :: struct {
+    uris: hash_map.HashMap(string, string)
+}
+
+/// The URI to use for the file at `path`.
+pub uri_of :: fn(m: ^const UriMap, path: string) -> string needs Alloc {
+    if u := m.uris.get(path) { return u }
+    return path_to_uri(path)
+}
+
+/// The diagnostics of one file.
+pub PathDiags :: struct {
+    path: string
+    items: List(Value)
+}
+
+/// The diagnostics of the analysis as LSP diagnostics, by canonical file path, in the order
+/// the files first have one.
+pub diagnostics :: fn(a: ^Analysis, enc: Encoding, uris: ^const UriMap) -> List(PathDiags) needs Alloc + Env + Fs {
+    out := list(PathDiags)
+    index := hash_map.hash_map(string, usize)
+    for i in 0..a.diags.list.items.len {
+        d := &a.diags.list.items[i]
+        path: string = a.primary
+        range_value := NULL
+        if d.span is source.DUMMY {
+            range_value = range_json_zero()
+        } else {
+            p := a.real_path(d.span.file) else continue
+            path = p
+            range_value = a.range(d.span, enc)
+        }
+        value := a.diagnostic(d, range_value, enc, uris)
+        if k := index.get(path) {
+            out.items[k].items.push(value)!
+        } else {
+            index.put(path, out.items.len)!
+            items := list(Value)
+            items.push(value)!
+            out.push(PathDiags(path: path, items: items))!
+        }
+    }
+    return out
+}
+
+range_json_zero :: fn() -> Value needs Alloc {
+    o := obj()
+    o.put("start", pos_json(0, 0))
+    o.put("end", pos_json(0, 0))
+    return o.value()
+}
+
+diagnostic :: fn(a: ^Analysis, d: ^const diag.Diagnostic, range_value: Value, enc: Encoding, uris: ^const UriMap) -> Value needs Alloc + Env + Fs {
+    message := list(u8)
+    message.extend(d.message)!
+    for n in d.notes.items {
+        message.extend("\nnote: ")!
+        message.extend(n)!
+    }
+    related := list(Value)
+    for l in d.labels.items {
+        if l.span is source.DUMMY { continue }
+        path := a.real_path(l.span.file) else continue
+        loc := obj()
+        loc.put("uri", text(uri_of(uris, path)))
+        loc.put("range", a.range(l.span, enc))
+        item := obj()
+        item.put("location", loc.value())
+        item.put("message", text(l.message))
+        related.push(item.value())!
+    }
+    severity: i64 = match d.severity {
+        .Error => 1
+        .Warning => 2
+        .Note => 3
+    }
+    v := obj()
+    v.put("range", range_value)
+    v.put("severity", int(severity))
+    v.put("source", text("gamma"))
+    v.put("message", text(message.items))
+    if related.items.len > 0 { v.put("relatedInformation", array(related.items)) }
+    // The fixes travel with the diagnostic, as LSP edits, and come back in the
+    // `textDocument/codeAction` requests that offer them.
+    fixes := list(Value)
+    for fx in d.fixes.items {
+        if j := a.fix_json(&fx, enc, uris) { fixes.push(j)! }
+    }
+    if fixes.items.len > 0 {
+        data := obj()
+        data.put("fixes", array(fixes.items))
+        v.put("data", data.value())
+    }
+    return v.value()
+}
+
+ChangeSet :: struct {
+    uri: string
+    edits: List(Value)
+}
+
+/// A fix as `{"title", "changes": {uri: [TextEdit]}}`, unless it edits a file that is not on
+/// disk.
+fix_json :: fn(a: ^Analysis, fx: ^const diag.Fix, enc: Encoding, uris: ^const UriMap) -> ?Value needs Alloc + Env + Fs {
+    changes := list(ChangeSet)
+    for e in fx.edits.items {
+        path := a.real_path(e.span.file) else return null
+        // The exact range, not widened as for showing a diagnostic.
+        ix := a.lines(e.span.file)
+        edit := obj()
+        edit.put("range", range_json(&ix, usize(e.span.lo), usize(e.span.hi), enc))
+        edit.put("newText", text(e.text))
+        uri := uri_of(uris, path)
+        found := false
+        for i in 0..changes.items.len {
+            if changes.items[i].uri is uri {
+                changes.items[i].edits.push(edit.value())!
+                found = true
+                break
+            }
+        }
+        if not found {
+            es := list(Value)
+            es.push(edit.value())!
+            changes.push(ChangeSet(uri: uri, edits: es))!
+        }
+    }
+    cs := obj()
+    for c in changes.items { cs.put(c.uri, array(c.edits.items)) }
+    v := obj()
+    v.put("title", text(fx.message))
+    v.put("changes", cs.value())
+    return v.value()
+}
+
+// --- the embedded core library ---
+
+/// The prefix of the names the compiler gives the embedded core sources.
+CORE_PREFIX :: "<core>/"
+
+/// Whether `name` (a source file's name in the compiler) is an embedded core source.
+pub is_core :: fn(name: string) -> bool => name.starts_with(CORE_PREFIX)
+
+/// The path of a file holding `text`, the embedded source named `name` (`<core>/list.gm`).
+/// It is `core/NAME` next to the standard library when that file has exactly the embedded
+/// text; otherwise the text is written once to a file in the cache directory (named after
+/// a hash of the text) and that file is used.
+core_path_for :: fn(name, body: string) -> ?string needs Alloc + Env + Fs + Rand {
+    file := name[CORE_PREFIX.len..]
+    if file.len is 0 or file.index_of('/') is not null or str.contains(file, "..") { return null }
+    in_tree := load.join(load.join(driver.std_root(), ".."), str.format("core/{}", file)!)
+    if existing := fs.read_all(in_tree) {
+        if existing is body { return canon(in_tree) }
+    }
+    h: u64 = 0xcbf29ce484222325
+    for b in body { h = (h ~ u64(b)) *% 0x100000001b3 }
+    dir := load.join(load.join(fs.temp_dir(), "gamma-cache/core"), str.format("{:016x}", h)!)
+    path := load.join(dir, file)
+    if existing := fs.read_all(path) {
+        if existing is body { return path }
+    }
+    fs.make_dir_all(dir) else return null
+    fs.write_atomic(path, body) else return null
+    return path
+}
+
+test "uris and paths convert" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        uri := path_to_uri("/tmp/a b/ü.gm")
+        expect(uri is "file:///tmp/a%20b/%C3%BC.gm")
+        back := uri_to_path(uri) else ""
+        expect(back is "/tmp/a b/ü.gm")
+        expect(uri_to_path("http://x/y") is null)
+    }
+}
+
+arena :: import "std/arena"
+ast :: import "../ast"
+check :: import "../check"
+diag :: import "../diag"
+driver :: import "../driver"
+fs :: import "std/fs"
+hash_map :: import "std/collections/hash_map"
+ide :: import "../ide"
+load :: import "../load"
+pkg :: import "../pkg"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"

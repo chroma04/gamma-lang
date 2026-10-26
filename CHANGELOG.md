@@ -24,6 +24,12 @@ Versions and what each kind of change means are described in
   `remove`, `cache`) and the `gamma.toml` build settings. Each matches the reference's
   output byte for byte (`tests/selfhost.rs`).
 - The gdb and lldb printers for `-g` builds live in `runtime/`, shared by both compilers.
+- `gammac` covers the rest of the `gamma` command line except `repl`, `--coverage` and
+  the interpreter and Cranelift back ends: `--target=TRIPLE` (cross compilers, freestanding
+  objects, `wasm32-wasi`), `--mode=safe` (Fil-C), the caches of compiled runtimes and of
+  programs built by `run`, `test --package`, dependencies for `test`, `bench`, `lint` and
+  `fix`, and `gammac lsp`. Its C back end makes the reference's optimizations, so the
+  programs it builds are as fast, and generates the same C functions.
 
 ### Language
 

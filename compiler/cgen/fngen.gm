@@ -60,6 +60,12 @@ pub FnGen :: struct {
     pub fid: u32
     /// Distinguishes the C names of this function's helpers.
     pub tag: string
+    /// Set when generating a specialized clone: the node of the handler is `cx`.
+    pub spec: ?u32 = null
+    /// The call that a `with` being generated specializes for its handler.
+    pub spec_call: ?SpecCall = null
+    /// The link of a long chain being emitted; see `chain.gm`.
+    pub spine: ?Spine = null
     /// The call expression whose large result goes straight into a destination, and that
     /// destination; see `expr_into`.
     pub dest_call: ?DestCall = null
@@ -82,10 +88,15 @@ pub FnGen :: struct {
     /// The bytes of the temporaries declared so far, for the stack check.
     pub temp_bytes: u64 = 0
     /// For each parameter, by position: whether it is read in place, through its address
-    /// `aN` (never, in gammac: parameters are always copied).
+    /// `aN` (see `borrowed_params`).
     pub borrowed: []bool
     /// For each local: whether it lives in the frame struct (`frame_locals`).
     pub in_frame: []bool
-    /// The temporaries and labels of the C function being generated.
+    /// The temporaries and labels of the C function being generated (`fresh` numbers them
+    /// across the helpers of the Gamma function, for unique names).
     pub names: u32 = 0
+    /// Set when long runs of statements go into helpers (see `outline.gm`).
+    pub split_runs: bool = false
+    /// The helpers being generated, innermost last.
+    pub runs: List(Run)
 }

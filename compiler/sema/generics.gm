@@ -476,7 +476,7 @@ pub value_key :: fn(s: ^Sema, v: tir.Value, ty: Ty, span: source.Span) -> ?types
         .Int(bits) => if tys.is_integer(ty) {
             w: u32 = match tys.kind(ty) {
                 .Int(_, b) => u32(b)
-                _ => u32(target.ptr_bits)
+                _ => s.l.target.ptr_bits()
             }
             i := bigint.from_u128(bits)
             if tys.is_signed_integer(ty) and w > 0 and (bits >> u128(w - 1)) & 1 is 1 { i = i.sub(bigint.one().shl(u64(w))) }

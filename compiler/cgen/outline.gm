@@ -1,0 +1,247 @@
+// Long runs of statements moved into C functions of their own (mirrors
+// `src/cgen/outline.rs`).
+//
+// C compilers take time superlinear in the size of one function, so a Gamma function with
+// thousands of statements compiles slowly as one C function, even when every statement is
+// simple. In a function whose body is long (see `long_body`), the statements of a long
+// block are dealt out in runs to helper functions `gm_cN_K`, each called where its run
+// was.
+//
+// A helper shares the frame: it gets its address, and inside it `F` is a macro for
+// `(*gm_Fp)`, so a statement's code is the same as it would be inline. The function's
+// locals then all live in the frame (`frame_locals`). The few C variables that statements
+// read besides (`env`, `cx`, `inst`, `gm_out`, the backtrace record `B`, the node of an
+// enclosing `with` and the parameters read in place) are passed along.
+//
+// An exit from a run jumps to a label outside the helper (a rung of the ladder, a loop's
+// end, the function's return): the helper returns a number for that label instead, and
+// the caller jumps there. Only `jump` emits such jumps, so it decides which ones leave the
+// helper.
+
+/// The size of a function body, in expression nodes, above which its long blocks are split
+/// into helpers. The largest functions of ordinary programs stay below it.
+LONG_BODY: u32 : 1500
+
+/// The most expression nodes in one run of statements moved into a helper. A helper of that
+/// size has some 1,000 C names, well below `GM_LONG_FN`'s threshold.
+RUN_WEIGHT: u32 : 400
+
+/// Runs this small are left inline: a call would cost more than it saves.
+MIN_RUN: u32 : RUN_WEIGHT / 8
+
+/// A label outside a helper that its code jumps to, with the index of its scope (`null`
+/// for the function's own labels).
+RunExit :: struct {
+    label: string
+    scope: ?usize
+}
+
+/// A helper being generated: the depth of the scope stack where its run starts (scopes
+/// below it are outside the helper) and the labels outside it that its code jumps to.
+pub Run :: struct {
+    depth: usize
+    exits: List(RunExit)
+}
+
+/// True if `def`'s body is long enough to split into helpers (see the file's comment).
+long_body :: fn(def: ^const Func) -> bool {
+    b := def.body else return false
+    return weight(b, LONG_BODY + 1) > LONG_BODY
+}
+
+/// The number of expression nodes in `e`, counting up to `cap` at most.
+weight :: fn(e: ^Expr, cap: u32) -> u32 {
+    n: u32 = 1
+    tir.for_each_child(e, fn(c: ^Expr) {
+        if n < cap { n += weight(c, cap - n) }
+    })
+    return n.min(cap)
+}
+
+/// The number of expression nodes in statement `s`, counting up to `cap` at most.
+stmt_weight :: fn(s: ^const tir.Stmt, cap: u32) -> u32 {
+    n: u32 = 1
+    match s^ {
+        .Let(_, ?init) => if x := init { if n < cap { n += weight(x, cap - n) } }
+        .LetTuple(_, init) => if n < cap { n += weight(init, cap - n) }
+        .Assign(place, value) => {
+            if n < cap { n += weight(place, cap - n) }
+            if n < cap { n += weight(value, cap - n) }
+        }
+        .AssignTuple(places, value) => {
+            for p in places {
+                if x := p {
+                    if n < cap { n += weight(x, cap - n) }
+                }
+            }
+            if n < cap { n += weight(value, cap - n) }
+        }
+        .Expr(e) => if n < cap { n += weight(e, cap - n) }
+        .Defer(_, e) => if n < cap { n += weight(e, cap - n) }
+    }
+    return n.min(cap)
+}
+
+/// Jumps to C label `label`, whose scope has index `scope` in the scope stack (`null` for a
+/// label of the function itself: the ladder's last rung, the return).
+jump :: fn(fg: ^FnGen, label: string, scope: ?usize) needs Alloc {
+    if fg.runs.items.len > 0 {
+        run := &fg.runs.items[fg.runs.items.len - 1]
+        outside := true
+        if i := scope { outside = i < run.depth }
+        if outside {
+            k := run.exits.items.len
+            for j in 0..run.exits.items.len {
+                if run.exits.items[j].label is label {
+                    k = j
+                    break
+                }
+            }
+            if k is run.exits.items.len { run.exits.push(RunExit(label: label, scope: scope))! }
+            fg.line(str.format("return {};", k + 1)!)
+            return ()
+        }
+    }
+    fg.line(str.format("goto {};", label)!)
+}
+
+/// The statements of a block, each in a C block of its own (so the C compiler can reuse
+/// their temporaries' stack space), runs of them in helpers in a long function.
+stmt_list :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
+    if not fg.split_runs or stmts.len < 2 {
+        for i in 0..stmts.len { try fg.stmt_block(&stmts[i]) }
+        return ()
+    }
+    weights := list(u32)
+    total_all: u64 = 0
+    for i in 0..stmts.len {
+        w := stmt_weight(&stmts[i], RUN_WEIGHT + 1)
+        weights.push(w)!
+        total_all += u64(w)
+    }
+    if total_all <= u64(RUN_WEIGHT) {
+        for i in 0..stmts.len { try fg.stmt_block(&stmts[i]) }
+        return ()
+    }
+    i: usize = 0
+    while i < stmts.len {
+        // A statement too big for a run stays here: its own blocks are split.
+        if weights.items[i] > RUN_WEIGHT {
+            try fg.stmt_block(&stmts[i])
+            i += 1
+            continue
+        }
+        start := i
+        total: u32 = 0
+        while i < stmts.len and weights.items[i] <= RUN_WEIGHT and total + weights.items[i] <= RUN_WEIGHT {
+            total += weights.items[i]
+            i += 1
+        }
+        if total < MIN_RUN {
+            for j in start..i { try fg.stmt_block(&stmts[j]) }
+        } else {
+            try fg.outline_run(stmts[start..i])
+        }
+    }
+}
+
+/// Emits the statements `stmts` as the body of a helper.
+outline_stmts :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
+    for i in 0..stmts.len { try fg.stmt_block(&stmts[i]) }
+}
+
+/// Moves the statements `stmts` into a helper and calls it (see the file's comment).
+outline_run :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
+    k := fg.fresh()
+    name := str.format("gm_c{}_{}", fg.tag, k)!
+    outer_cx := fg.cx
+    own_cx := outer_cx is "cx"
+    saved_out := fg.out
+    fg.out = list(u8)
+    saved_indent := fg.indent
+    fg.indent = 1
+    saved_names := fg.names
+    fg.names = 0
+    if not own_cx { fg.cx = "gm_hcx" }
+    fg.runs.push(Run(depth: fg.scopes.items.len, exits: list(RunExit)))!
+    r := fg.outline_stmts(stmts)
+    fg.end_lines()
+    run := fg.runs.pop()?
+    body := fg.out
+    fg.out = saved_out
+    names := fg.names
+    fg.names = saved_names
+    fg.indent = saved_indent
+    fg.cx = outer_cx
+    try r
+
+    fid := fg.fid
+    params := list(string)
+    params.push(str.format("struct gm_fr{} *gm_Fp", fid)!)!
+    params.push("void *env")!
+    params.push("gm_node *cx")!
+    params.push("gm_node *inst")!
+    args := list(string)
+    args.push("&F")!
+    args.push("env")!
+    args.push("cx")!
+    args.push("inst")!
+    // A `with … on` body (`outlined`) is a function without `gm_out` or parameters.
+    if not fg.outlined {
+        if fg.g.ty.by_ref(fg.def.ret) {
+            params.push("void *gm_out")!
+            args.push("gm_out")!
+        }
+        for i, p in enumerate(fg.def.params) {
+            if fg.borrowed[i] {
+                t := fg.def.locals[usize(p)].ty
+                params.push(str.format("{} a{}", fg.g.ty.param_cty(t), i)!)!
+                args.push(str.format("a{}", i)!)!
+            }
+        }
+    }
+    debug := fg.g.opts.debug
+    if debug {
+        params.push("gm_bt *gm_Bp")!
+        args.push("&B")!
+    }
+    if not own_cx {
+        params.push("gm_node *gm_hcx")!
+        args.push(outer_cx)!
+    }
+    attrs := list(u8)
+    attrs.extend("GM_NOINLINE ")!
+    if fg.def.hints.fast_math { attrs.extend("GM_FAST_MATH_ATTR ")! }
+    attrs.extend(size_attrs(names))!
+    head := str.format("static {}int {}({})", string(attrs.items), name, str.join(params.items, ", ")!)!
+    fg.g.protos.write("{};\n", head)!
+    text := list(u8)
+    text.write("{} {{\n#define F (*gm_Fp)\n", head)!
+    if debug { text.extend("#define B (*gm_Bp)\n")! }
+    if fg.def.hints.fast_math { text.extend("    GM_FAST_MATH_BODY\n")! }
+    text.extend(body.items)!
+    text.extend("    return 0;\n#undef F\n")!
+    if debug { text.extend("#undef B\n")! }
+    text.extend("}\n")!
+    fg.g.bodies.extend(text.items)!
+
+    call := str.format("{}({})", name, str.join(args.items, ", ")!)!
+    if run.exits.items.len is 0 {
+        fg.line(str.format("{};", call)!)
+    } else {
+        fg.line(str.format("switch ({}) {{", call)!)
+        for j, x in enumerate(run.exits.items) {
+            fg.line(str.format("case {}:", j + 1)!)
+            fg.indent += 1
+            fg.jump(x.label, x.scope)
+            fg.indent -= 1
+        }
+        fg.line("}")
+    }
+}
+
+test "thresholds" {
+    // A run never exceeds a long body, and the smallest run worth a call is smaller than a run.
+    expect(MIN_RUN < RUN_WEIGHT)
+    expect(RUN_WEIGHT < LONG_BODY)
+}

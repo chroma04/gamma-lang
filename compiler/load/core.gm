@@ -14,7 +14,7 @@ CoreModule :: struct {
 CORE_PREFIX :: "<core>/"
 
 /// Loads the core library from `dir`, the directory of its sources, with the `target`
-/// module for the target gammac compiles for in build mode `mode` (a variant of
+/// module for the loader's target in build mode `mode` (a variant of
 /// `target.Mode`). Returns whether it could be read.
 pub load_core :: fn(l: ^Loader, dir: string, mode: string) -> bool needs Alloc + Fs {
     l.mode = mode
@@ -70,10 +70,10 @@ add_core_module :: fn(l: ^Loader, name: string, file: ast.File) -> usize needs A
 load_target_module :: fn(l: ^Loader, prelude: usize, mode: string) needs Alloc {
     text := str.format(
         "pub Os :: union {{ Linux, MacOS, Windows, FreeBSD, Wasi, Freestanding }}\npub Arch :: union {{ X86_64, Aarch64, Riscv64, S390x, Wasm32, Other }}\npub Endian :: union {{ Little, Big }}\npub Mode :: union {{ Debug, Checked, Safe, Fast }}\npub os :: Os.{}\npub arch :: Arch.{}\npub endian :: Endian.{}\npub ptr_bits :: {}\npub mode :: Mode.{}\n",
-        @variant_name(target.os),
-        @variant_name(target.arch),
-        @variant_name(target.endian),
-        target.ptr_bits,
+        l.target.os,
+        l.target.arch,
+        if l.target.little_endian { "Little" } else { "Big" },
+        l.target.ptr_bits(),
         mode,
     )!
     m := l.add_core_module("target", l.parse_text("<core>/target.gm", text))

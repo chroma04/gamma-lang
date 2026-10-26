@@ -1,0 +1,70 @@
+//! The target of a compilation and the C toolchain that builds for it (mirrors `new_session`
+//! and the helpers around it in `src/main.rs`).
+
+load :: import "../load"
+pkg :: import "../pkg"
+str :: import "std/str"
+
+/// Chooses the C toolchain and the target of the compilation `opts` describe, from the
+/// command line (`--target`, `--mode`) and the environment (`CC`, `CFLAGS`, `LDFLAGS`; for a
+/// Safe build, Fil-C), and records them in `opts`. The target is the one the toolchain
+/// compiles for; if the toolchain cannot be used it stays the host, and the error is
+/// reported when a native build needs the toolchain. An explicit target must be reachable:
+/// there is nothing else to fall back to, so it ends the process.
+pub new_session :: fn(opts: ^Options) needs Alloc + Env + Err + Fs + Proc {
+    match chosen_toolchain(opts) {
+        !e => {
+            if opts.target_triple is not null {
+                eprint("gammac: {}\n", e)
+                Env.exit(1)
+            }
+            opts.toolchain_error = e
+        }
+        tc => { opts.toolchain = tc }
+    }
+}
+
+/// The toolchain `opts` ask for and, in `opts.target`, the machine it builds for.
+chosen_toolchain :: fn(opts: ^Options) -> string!Toolchain needs Alloc + Env + Fs + Proc {
+    if triple := opts.target_triple {
+        if opts.mode is .Safe {
+            return !"`--target` cannot be combined with `--mode=safe`, which builds for the host with Fil-C"
+        }
+        t := with_manifest_flags(try for_target(triple), opts.manifest_cflags, opts.manifest_ldflags)
+        opts.target = try target_for(&t, triple)
+        return t
+    }
+    if opts.mode is .Safe {
+        t := with_manifest_flags(try for_safe_build(), opts.manifest_cflags, opts.manifest_ldflags)
+        tg := try target(&t)
+        if not tg.filc {
+            return !str.format("Safe builds compile with the Fil-C compiler (https://fil-c.org), but the C compiler `{}` is not Fil-C", pkg.display(&t))!
+        }
+        opts.target = tg
+        return t
+    }
+    t := with_manifest_flags(try from_env(), opts.manifest_cflags, opts.manifest_ldflags)
+    opts.target = try target(&t)
+    return t
+}
+
+/// Reports that `command` cannot run a program for a freestanding target (§3.7.1), which
+/// has no operating system to run it on: it is built to an object file and linked with the
+/// code that starts it. Returns whether the target is freestanding.
+pub refuse_freestanding :: fn(opts: ^const Options, command: string) -> bool needs Alloc + Err {
+    if opts.target.os is not "Freestanding" { return false }
+    eprint("gammac: `gammac {}` cannot run a program for a freestanding target (the C compiler targets no operating system); build it with `gammac build`, which writes an object file to link into the firmware or kernel. Tests and benchmarks run on the host: leave out --target (and unset CC) for them\n", command)
+    return true
+}
+
+/// The file name of an executable called `stem`: it has the extension `.exe` when the
+/// toolchain builds for Windows (which cannot run a program without it), and `.wasm` when
+/// it builds a WebAssembly module for WASI (which says how to run it).
+pub native_exe_name :: fn(opts: ^const Options, stem: string) -> string needs Alloc {
+    if opts.toolchain is null { return stem }
+    return match opts.target.os {
+        "Windows" => str.format("{}.exe", stem)!
+        "Wasi" => str.format("{}.wasm", stem)!
+        _ => stem
+    }
+}

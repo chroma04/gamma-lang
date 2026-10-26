@@ -1,0 +1,378 @@
+// Parameters passed without a copy (Appendix D.5; mirrors `src/cgen/borrow.rs`).
+//
+// A large parameter (`CTypes.by_ref`) arrives as the address of the caller's value, and the
+// callee normally copies it into its frame, since a parameter is an object of its own
+// (§11.2). The copy is skipped when the difference cannot be observed: the callee never
+// writes the parameter or takes its address, and nothing can write the caller's value
+// while the callee runs. The second holds when the callee is *pure* here: it has no
+// effects, writes only its own locals, and calls only pure functions, so nothing else runs
+// during the call.
+//
+// It also holds when every call passes a value that nothing writes during the call
+// (`steady_params`): a constant from static storage (see `constarg.gm`), a local of the
+// caller that it never writes after its initialization, never takes the address of and
+// does not share with a function literal, or a temporary. This needs every call to be
+// visible, so a function whose address is taken, or that is a handler clause, exported or
+// a closure, is left out. Such a parameter is typically a `SourceLocation` that
+// `@caller_location()` fills in and that is handed down from `new` to the functions it
+// calls.
+
+/// For each parameter of `f`: whether it is used in place of a copy.
+pub borrowed_params :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
+    def := g.prog.func(f)
+    out := list(bool)
+    any := false
+    for p in def.params {
+        c := g.ty.by_ref(def.locals[usize(p)].ty)
+        out.push(c)!
+        if c { any = true }
+    }
+    if not any {
+        none := list(bool)
+        for _ in def.params { none.push(false)! }
+        return none.items
+    }
+    if not g.is_pure(f) { return g.steady_params(f) }
+    body := def.body else {
+        none := list(bool)
+        for _ in def.params { none.push(false)! }
+        return none.items
+    }
+    touched := list(u32)
+    mutated_locals(g, body, &touched)
+    for i, p in enumerate(def.params) {
+        if out.items[i] and contains_local(touched.items, p) { out.items[i] = false }
+    }
+    return out.items
+}
+
+contains_local :: fn(xs: []const u32, l: u32) -> bool {
+    for x in xs {
+        if x is l { return true }
+    }
+    return false
+}
+
+/// For each parameter of `f`: whether it is passed by address, `f` never writes it, takes
+/// its address or shares it with a function literal, and every call of `f` passes a value
+/// that nothing can write during the call (see the file's comment).
+steady_params :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
+    if g.steady is null {
+        s := compute_steady(g)
+        g.steady = s
+    }
+    all := g.steady?
+    // A copy: callers adjust it.
+    copy := list(bool)
+    for x in all.items[usize(f)] { copy.push(x)! }
+    return copy.items
+}
+
+compute_steady :: fn(g: ^Gen) -> List([]bool) needs sema.Load {
+    prog := g.prog
+    n := prog.fn_count()
+    // Functions called other than by a direct call.
+    escaping := list(bool)
+    for _ in 0..n { escaping.push(false)! }
+    for i in 0..n {
+        d := prog.func(i.trunc(u32))
+        if b := d.body { fn_refs(b, escaping.items) }
+    }
+    seen := hash_map.hash_map(usize, bool)
+    for c in prog.s.consts.items {
+        if x := c.init { fn_refs(x, escaping.items) }
+        if cell := c.cell { value_fn_refs(cell.v, escaping.items, &seen) }
+    }
+    for gl in prog.s.globals.items {
+        if cell := gl.value { value_fn_refs(cell.v, escaping.items, &seen) }
+    }
+    for f in prog.s.export_fns.items { escaping.items[usize(f)] = true }
+    if h := prog.s.trap_hook { escaping.items[usize(h)] = true }
+    // Debug information shows parameters in the frame, so they are copied there.
+    debug_info := g.opts.debug_info
+    written := list([]u32)
+    for i in 0..n {
+        w := list(u32)
+        d := prog.func(i.trunc(u32))
+        if b := d.body { mutated_locals(g, b, &w) }
+        written.push(w.items)!
+    }
+    captured := captured_locals(g)
+    steady := list([]bool)
+    for i in 0..n {
+        d := prog.func(i.trunc(u32))
+        f := i.trunc(u32)
+        eligible := not debug_info and d.kind is .Named and d.parent is null and d.body is not null and not escaping.items[i]
+        row := list(bool)
+        for p in d.params {
+            row.push(eligible and g.ty.by_ref(d.locals[usize(p)].ty) and not contains_local(written.items[i], p) and captured.get((f, p)) is null)!
+        }
+        steady.push(row.items)!
+    }
+    // Every call must pass a value that stays as it is during the call.
+    for i in 0..n {
+        d := prog.func(i.trunc(u32))
+        b := d.body else continue
+        caller := i.trunc(u32)
+        calls := list(DirectCall)
+        direct_calls(b, &calls)
+        for c in calls.items {
+            row := steady.items[usize(c.callee)]
+            for k in 0..c.args.len {
+                if k < row.len and row[k] and not steady_arg(g, caller, &c.args[k], written.items[i], &captured) {
+                    row[k] = false
+                }
+            }
+        }
+    }
+    return steady
+}
+
+/// Whether argument `a` of a call in `caller` is a value that nothing can write while the
+/// callee runs.
+steady_arg :: fn(g: ^Gen, caller: u32, a: ^Expr, written: []const u32, captured: ^hash_map.HashMap((u32, u32), bool)) -> bool needs sema.Load {
+    match a.kind {
+        // Built in a temporary of the call.
+        .Aggregate(_), .Array(_), .Call(_) => return true
+        _ => {}
+    }
+    // A by-address parameter of the caller is either its own copy or, when read in place,
+    // a value that is steady itself (or the caller is pure, and so is the callee, which
+    // then reads it in place regardless).
+    if l := root_local(g, a) { return not contains_local(written, l) and captured.get((caller, l)) is null }
+    return g.is_const_arg(a)
+}
+
+/// For each parameter of `f`: whether it is used in place and also appears inside an
+/// aggregate or array construction, which `expr_into` may build directly in the result
+/// destination while still reading the parameter. A caller must then not pass a
+/// destination that overlaps the parameter's value.
+pub read_during_build :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
+    if r := g.early_memo.get(f) { return r }
+    r := g.borrowed_params(f)
+    any := false
+    for x in r {
+        if x { any = true }
+    }
+    if any {
+        def := g.prog.func(f)
+        used := list(u32)
+        if body := def.body { locals_in_aggregates(body, false, &used) }
+        for i, p in enumerate(def.params) {
+            if r[i] and not contains_local(used.items, p) { r[i] = false }
+        }
+    }
+    g.early_memo.put(f, r)!
+    return r
+}
+
+/// Whether `f` is pure in the sense of the file's comment: a named function or a literal
+/// that captures nothing, with no effects, that stores only into its own locals and calls
+/// only pure functions.
+pub is_pure :: fn(g: ^Gen, f: u32) -> bool needs sema.Load {
+    // Being computed (recursion): assumed impure.
+    if m := g.pure_memo.get(f) { return m is 3 }
+    g.pure_memo.put(f, 1)!
+    def := g.prog.func(f)
+    r := (def.kind is .Named or def.kind is .Literal) and def.parent is null and def.effects.effects.len is 0
+    if r {
+        r = false
+        if b := def.body { r = g.pure_expr(b) }
+    }
+    g.pure_memo.put(f, if r { 3 } else { 2 })!
+    return r
+}
+
+pure_expr :: fn(g: ^Gen, e: ^Expr) -> bool needs sema.Load {
+    ok := true
+    match e.kind {
+        .Block(b) => return g.pure_block(b)
+        .Loop(l) => {
+            ok = true
+            each_cond(l.cond, fn(x: ^Expr) { ok = ok and g.pure_expr(x) })
+            if not ok { return false }
+            if not g.pure_block(l.body) { return false }
+            if s := l.step { return g.pure_expr(s) }
+            return true
+        }
+        .Call(callee, _) => match callee {
+            .Fn(h) => { ok = g.is_pure(h) }
+            _ => { ok = false }
+        }
+        .With(_), .Closure(_), .HandlerRef(_), .Resume(_), .Cancel(_), .Write(_), .WriteDeferred(_), .SoaDeferred(_), .Global(_), .Upvar(_) => { ok = false }
+        .Builtin(op, _) => match op {
+            .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileStore, .Sys(_), .Fiber, .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .Asm(_, _) => { ok = false }
+            _ => {}
+        }
+        _ => {}
+    }
+    if not ok { return false }
+    tir.for_each_child(e, fn(x: ^Expr) { ok = ok and g.pure_expr(x) })
+    return ok
+}
+
+pure_block :: fn(g: ^Gen, b: ^tir.Block) -> bool needs sema.Load {
+    for s in b.stmts {
+        ok := true
+        match s {
+            .Assign(place, value) => { ok = g.own_place(place) and g.pure_expr(place) and g.pure_expr(value) }
+            .AssignTuple(places, value) => {
+                for p in places {
+                    if x := p {
+                        if not (g.own_place(x) and g.pure_expr(x)) { ok = false }
+                    }
+                }
+                ok = ok and g.pure_expr(value)
+            }
+            .Let(_, ?init) => { if x := init { ok = g.pure_expr(x) } }
+            .LetTuple(_, init) => { ok = g.pure_expr(init) }
+            .Expr(x), .Defer(_, x) => { ok = g.pure_expr(x) }
+        }
+        if not ok { return false }
+    }
+    if t := b.tail { return g.pure_expr(t) }
+    return true
+}
+
+/// True if `place` is (part of) a local of the function itself, not reached through a
+/// pointer or a slice.
+own_place :: fn(g: ^Gen, place: ^Expr) -> bool => root_local(g, place) is not null
+
+/// Calls `f` on the expressions of the conditions `cond`, and of the patterns in them.
+each_cond :: fn(cond: []tir.CondPart, f: fn(c: ^Expr)) {
+    for c in cond {
+        match c {
+            .Bool(x) => f(x)
+            .Match(p, v) => {
+                each_pat(p, f)
+                f(v)
+            }
+        }
+    }
+}
+
+/// Calls `f` on the constant expressions inside pattern `p`.
+each_pat :: fn(p: ^tir.Pat, f: fn(c: ^Expr)) {
+    match p.kind {
+        .Const(e) => f(e)
+        .Some(q), .Ok(q), .Err(q) => each_pat(q, f)
+        .Variant(_, ?q) => if x := q { each_pat(x, f) }
+        .Fields(fs) => for x in fs { each_pat(x.pat, f) }
+        .Or(ps) => for q in ps { each_pat(q, f) }
+        _ => {}
+    }
+}
+
+/// Calls `f` on the expressions of the statements of `b`, and its tail.
+each_stmt :: fn(b: ^tir.Block, f: fn(c: ^Expr)) {
+    for s in b.stmts {
+        match s {
+            .Let(_, ?init) => if x := init { f(x) }
+            .LetTuple(_, x) => f(x)
+            .Assign(p, v) => {
+                f(p)
+                f(v)
+            }
+            .AssignTuple(ps, v) => {
+                for p in ps {
+                    if x := p { f(x) }
+                }
+                f(v)
+            }
+            .Expr(x), .Defer(_, x) => f(x)
+        }
+    }
+    if t := b.tail { f(t) }
+}
+
+/// Collects the locals of the function whose body is `e` that it stores into, takes the
+/// address of, or slices.
+mutated_locals :: fn(g: ^Gen, e: ^Expr, out: ^List(u32)) needs Alloc {
+    match e.kind {
+        .AddrOf(p) => { if l := root_local(g, p) { out.push(l)! } }
+        .Slice(sl) => { if l := root_local(g, sl.base) { out.push(l)! } }
+        .Block(b) => {
+            mutated_in_block(g, b, out)
+            return ()
+        }
+        .Loop(l) => {
+            each_cond(l.cond, fn(x: ^Expr) { mutated_locals(g, x, out) })
+            mutated_in_block(g, l.body, out)
+            if s := l.step { mutated_locals(g, s, out) }
+            return ()
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { mutated_locals(g, x, out) })
+}
+
+mutated_in_block :: fn(g: ^Gen, b: ^tir.Block, out: ^List(u32)) needs Alloc {
+    for s in b.stmts {
+        match s {
+            .Assign(place, _) => { if l := root_local(g, place) { out.push(l)! } }
+            .AssignTuple(places, _) => {
+                for p in places {
+                    if x := p {
+                        if l := root_local(g, x) { out.push(l)! }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    each_stmt(b, fn(x: ^Expr) { mutated_locals(g, x, out) })
+}
+
+/// Marks the functions that `e` refers to other than as the callee of a direct call.
+fn_refs :: fn(e: ^Expr, out: []bool) {
+    match e.kind {
+        .FnRef(f) => { out[usize(f)] = true }
+        .Closure(f) => { out[usize(f)] = true }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { fn_refs(x, out) })
+}
+
+/// Marks the functions that the compile-time value `v` holds as function pointers; `seen`
+/// holds the cells already visited.
+value_fn_refs :: fn(v: tir.Value, out: []bool, seen: ^hash_map.HashMap(usize, bool)) needs Alloc {
+    match v {
+        .Fn(f) => { out[usize(f)] = true }
+        .Agg(a) => for x in a.elems { value_fn_refs(x, out, seen) }
+        .Ptr(pl) => cell_fn_refs(pl.cell, out, seen)
+        .Slice(start, _) => cell_fn_refs(start.cell, out, seen)
+        .Some(x), .Ok(x), .Err(x) => value_fn_refs(x^, out, seen)
+        .Variant(_, ?payload) => if x := payload { value_fn_refs(x^, out, seen) }
+        _ => {}
+    }
+}
+
+cell_fn_refs :: fn(cell: ^tir.Cell, out: []bool, seen: ^hash_map.HashMap(usize, bool)) needs Alloc {
+    key := usize(cell.addr())
+    if seen.get(key) is not null { return }
+    seen.put(key, true)!
+    value_fn_refs(cell.v, out, seen)
+}
+
+/// A direct call in a function body, with its arguments.
+DirectCall :: struct {
+    callee: u32
+    args: []Expr
+}
+
+/// Collects the direct calls in `e` with their arguments.
+direct_calls :: fn(e: ^Expr, out: ^List(DirectCall)) needs Alloc {
+    if .Call(callee, args) := e.kind {
+        if .Fn(f) := callee { out.push(DirectCall(callee: f, args: args))! }
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { direct_calls(x, out) })
+}
+
+/// Collects the locals read inside the construction of an aggregate or array in `e`.
+locals_in_aggregates :: fn(e: ^Expr, inside: bool, out: ^List(u32)) needs Alloc {
+    if inside {
+        if .Local(l) := e.kind { out.push(l)! }
+    }
+    in2 := inside or e.kind is .Aggregate(_) or e.kind is .Array(_)
+    tir.for_each_child(e, fn(x: ^Expr) { locals_in_aggregates(x, in2, out) })
+}

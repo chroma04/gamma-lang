@@ -171,6 +171,10 @@ jobs:
           /opt/fil/bin/filcc --version
       - name: Test Safe builds
         run: GAMMA_TEST_SAFE=1 cargo test --test conformance --test native_build
+      - name: gammac's Safe builds against the reference's
+        env:
+          GAMMAC_TEST_LANE: safe
+        run: cargo test --release --test selfhost -- targets_and_toolchains_match_the_reference programs_compiled_by_gammac_in_a_lane
 
   s390x:
     # s390x is 64-bit big-endian: the suite runs cross-compiled under qemu-user.
@@ -194,6 +198,10 @@ jobs:
           CFLAGS_x86_64_unknown_linux_gnu: ""
           GAMMA_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
         run: cargo test --release --test conformance --test runtime --test cross
+      - name: gammac's s390x builds against the reference's
+        env:
+          GAMMAC_TEST_LANE: s390x
+        run: cargo test --release --test selfhost -- targets_and_toolchains_match_the_reference programs_compiled_by_gammac_in_a_lane
 
   aarch64:
     # The native back ends on AArch64 Linux, under an emulator. The macOS runners cover
@@ -247,6 +255,12 @@ jobs:
           # Build scripts (libffi-sys) compile C for the host: keep them off the cross compiler.
           CC_x86_64_unknown_linux_gnu: gcc
         run: cargo test --release --test conformance --test wasi
+      - name: gammac's WASI builds against the reference's
+        env:
+          GAMMAC_TEST_LANE: wasi
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin" && ln -sf "$(command -v clang-18)" "$RUNNER_TEMP/bin/clang"
+          PATH="$RUNNER_TEMP/bin:$PATH" cargo test --release --test selfhost -- targets_and_toolchains_match_the_reference programs_compiled_by_gammac_in_a_lane
 
   difftest:
     # Differential testing (tools/difftest): random well-typed programs must behave the same

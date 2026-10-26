@@ -45,7 +45,7 @@ pub CTypes :: struct {
     pub s: ^Sema
     pub lay: Layouts
     /// Blob typedefs needed, by name.
-    blobs: List(string)
+    blobs: List(BlobDef)
     blob_names: hash_map.HashMap(string, bool)
     desc_ids: hash_map.HashMap(u32, usize)
     desc_count: usize
@@ -74,7 +74,7 @@ pub CTypes :: struct {
 pub ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
     s: s,
     lay: layouts(s, t),
-    blobs: list(string),
+    blobs: list(BlobDef),
     blob_names: hash_map.hash_map(string, bool),
     desc_ids: hash_map.hash_map(u32, usize),
     desc_count: 0,
@@ -168,10 +168,11 @@ pub cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
             if n := ty.typed(t) { return n }
             s := ty.size(t)
             a := ty.align(t).max(1)
-            name := blob_name(s, a)
+            kind := ty.blob_kind(t, s, a)
+            name := blob_name(s, a, kind)
             if ty.blob_names.get(name) is null {
                 ty.blob_names.put(name, true)!
-                ty.blobs.push(str.format("typedef struct {{ _Alignas({}) uint8_t b[{}]; }} {};\n", a, s, name)!)!
+                ty.blobs.push(BlobDef(size: s, align: a, kind: kind, text: ty.blob_typedef(s, a, kind, name)))!
             }
             return name
         }
@@ -450,21 +451,13 @@ pub mirror_text :: fn(ty: ^const CTypes) -> string => ty.mirror_defs.items
 /// Typedefs of the blob types used, then of the typed structs.
 pub blob_typedefs :: fn(ty: ^const CTypes) -> string needs Alloc {
     out := list(u8)
-    // In the order of their sizes and alignments, as the reference's sorted set.
-    sorted := list(string)
+    // In the order of their sizes, alignments and kinds, as the reference's sorted set.
+    sorted := list(BlobDef)
     sorted.extend(ty.blobs.items)!
-    sorted.items.sort_by(fn(a, b: ^const string) -> bool => blob_key(a^) < blob_key(b^))
-    for b in sorted.items { out.extend(b)! }
+    sorted.items.sort_by(blob_before)
+    for b in sorted.items { out.extend(b.text)! }
     out.extend(ty.typed_defs.items)!
     return out.items
-}
-
-/// The size and alignment in the definition of a blob typedef, for sorting.
-blob_key :: fn(def: string) -> u128 {
-    // `typedef struct { _Alignas(A) uint8_t b[S]; } gm_bS_A;`
-    a := number_after(def, "_Alignas(")
-    s := number_after(def, "uint8_t b[")
-    return (u128(s) << 64) | u128(a)
 }
 
 number_after :: fn(text: string, prefix: string) -> u64 {
@@ -664,7 +657,97 @@ pub int_cty :: fn(signed: bool, storage: u64) -> string => match storage {
     _ => if signed { "__int128" } else { "unsigned __int128" }
 }
 
-pub blob_name :: fn(size: u64, align: u64) -> string needs Alloc => str.format("gm_b{}_{}", size, align)!
+pub blob_name :: fn(size: u64, align: u64, kind: BlobKind) -> string needs Alloc => match kind {
+    .Words => str.format("gm_w{}_{}", size, align)!
+    .Lanes(ptrs) => {
+        lanes := list(u8)
+        for p in ptrs { lanes.push(if p { 'p' } else { 'w' })! }
+        str.format("gm_l{}_{}_{}", size, align, lanes.items)!
+    }
+    _ => str.format("gm_b{}_{}", size, align)!
+}
+
+/// What a blob is made of in C. Under Fil-C a blob is copied fastest as a struct of
+/// pointer-sized members, which a copy moves one by one, with no call into the runtime:
+/// - a value that holds no pointer is a struct of words (`Words`), and the memory it lands
+///   in needs no capabilities;
+/// - a value whose pointers are always in the same words, such as a struct of pointers and
+///   numbers, is a struct of those words typed as pointers or as numbers (`Lanes`), so that
+///   a copy keeps the capabilities of its pointers;
+/// - any other value that may hold a pointer, such as a union whose variants hold a pointer
+///   and a number in the same word, is a union of its bytes with pointer-sized lanes
+///   (`Pointers`). A struct of pointers would not do: where the same word is also read as a
+///   number, the optimizer turns the pointer into a number and back, which drops its
+///   capability.
+pub BlobKind :: union {
+    Bytes
+    Pointers
+    Words
+    Lanes: []const bool
+}
+
+/// A blob typedef: what it is sorted by, and its text.
+BlobDef :: struct {
+    size: u64
+    align: u64
+    kind: BlobKind
+    text: string
+}
+
+/// The order of the reference's sorted set of blobs: by size, alignment, then kind (lanes
+/// compared word by word, numbers before pointers).
+blob_before :: fn(x, y: ^const BlobDef) -> bool {
+    if x.size is not y.size { return x.size < y.size }
+    if x.align is not y.align { return x.align < y.align }
+    rx := kind_rank(x.kind)
+    ry := kind_rank(y.kind)
+    if rx is not ry { return rx < ry }
+    if .Lanes(a) := x.kind and .Lanes(b) := y.kind {
+        for i in 0..a.len.min(b.len) {
+            if a[i] is not b[i] { return b[i] }
+        }
+        return a.len < b.len
+    }
+    return false
+}
+
+kind_rank :: fn(k: BlobKind) -> u8 => match k {
+    .Bytes => 0
+    .Pointers => 1
+    .Words => 2
+    .Lanes(_) => 3
+}
+
+/// The C representation of a blob of type `t`, of size `s` and alignment `a`.
+blob_kind :: fn(ty: ^CTypes, t: Ty, s: u64, a: u64) -> BlobKind needs Alloc {
+    pb := ty.lay.target.ptr_bytes
+    if not ty.lay.target.filc or a < pb or s < pb or s % pb is not 0 { return .Bytes }
+    if not ty.lay.may_hold_pointers(t) { return .Words }
+    if lanes := ty.lay.pointer_words(t) { return .Lanes(lanes) }
+    return .Pointers
+}
+
+/// The typedef of a blob. Under Fil-C a blob that may hold pointers keeps them in
+/// pointer-typed lanes: a pointer keeps its capability only while it is stored as a
+/// pointer, and a struct of bytes passed or returned by value travels in integer
+/// registers, which would drop the capabilities of the pointers in it.
+blob_typedef :: fn(ty: ^CTypes, s: u64, a: u64, kind: BlobKind, name: string) -> string needs Alloc {
+    pb := ty.lay.target.ptr_bytes
+    match kind {
+        .Bytes => return str.format("typedef struct {{ _Alignas({}) uint8_t b[{}]; }} {};\n", a, s, name)!
+        .Pointers => return str.format("typedef union {{ _Alignas({}) uint8_t b[{}]; void *gm_lanes[{}]; }} {};\n", a, s, s / pb, name)!
+        .Words => return str.format("typedef struct {{ _Alignas({}) uintptr_t gm_w[{}]; }} {};\n", a, s / pb, name)!
+        .Lanes(ptrs) => {
+            members := list(u8)
+            for i, p in enumerate(ptrs) {
+                if i > 0 { members.push(' ')! }
+                if i is 0 { members.write("_Alignas({}) ", a)! }
+                members.write("{} l{};", if p { "void *" } else { "uintptr_t" }, i)!
+            }
+            return str.format("typedef struct {{ {} }} {};\n", members.items, name)!
+        }
+    }
+}
 
 /// A C string literal for a `_Static_assert` message. Such a literal is unevaluated, so
 /// clang rejects numeric escapes in it: only `\\` and `\"` are escaped, and characters

@@ -27,6 +27,11 @@ pub check_program :: fn(s: ^Sema, root: usize, tests: bool) needs Load {
     declare_handlers(s)
     if tests {
         check_tests(s, root)
+    } else if s.l.target.os is "Freestanding" {
+        // A freestanding program has no `main` (§3.7.1): its entry points are its exports.
+        if d := s.l.lookup(root, "main") {
+            s.error(s.l.decls.items[d].name.span, "a program for a freestanding target does not declare `main`; its entry points are its `#export`ed functions (§3.7.1)")
+        }
     } else if d := s.l.lookup(root, "main") {
         find_main(s, d)
     } else {

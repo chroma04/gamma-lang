@@ -1,0 +1,425 @@
+//! Facts about the other modules of a package, for requests that cross module boundaries
+//! (find references, rename).
+//!
+//! An analysis covers one module directory. To find every use of a declaration, the
+//! modules of the package (and of its path dependencies) that mention the name are
+//! analyzed too, and what is kept of each analysis is a `ModuleFacts`: plain data keyed by
+//! file path. A module's facts are reused while the files its analysis read (and the lists
+//! of files of their directories) are unchanged.
+
+/// A place in a file, by path and byte offsets.
+pub Loc :: struct {
+    path: string
+    lo: u32
+    hi: u32
+}
+
+/// The order of paths: name by name, as `Path` compares components.
+pub path_less :: fn(a, b: string) -> bool {
+    i: usize = 0
+    j: usize = 0
+    while true {
+        // The next name of each, skipping empty names and `.`.
+        ai := next_name(a, &i)
+        bj := next_name(b, &j)
+        if ai is null { return bj is not null }
+        if bj is null { return false }
+        x := ai else ""
+        y := bj else ""
+        if x is not y { return x < y }
+    }
+}
+
+next_name :: fn(p: string, at: ^usize) -> ?string {
+    while at^ < p.len {
+        start := at^
+        // A leading `/` is the root: it sorts before every name.
+        if start is 0 and p[0] is '/' {
+            at^ = 1
+            return "/"
+        }
+        end := start
+        while end < p.len and p[end] is not '/' { end += 1 }
+        at^ = end + 1
+        name := p[start..end]
+        if name.len > 0 and name is not "." { return name }
+    }
+    return null
+}
+
+pub loc_less :: fn(a, b: ^const Loc) -> bool {
+    if a.path is not b.path { return path_less(a.path, b.path) }
+    if a.lo is not b.lo { return a.lo < b.lo }
+    return a.hi < b.hi
+}
+
+pub loc_equal :: fn(a, b: ^const Loc) -> bool => a.path is b.path and a.lo is b.lo and a.hi is b.hi
+
+loc_key :: fn(l: Loc) -> string needs Alloc => str.format("{}:{}:{}", l.path, l.lo, l.hi)!
+
+/// A local name and the offsets where it is visible.
+pub LocalName :: struct {
+    label: string
+    def: Loc
+    from: u32
+    to: u32
+}
+
+pub RefPair :: struct {
+    from: Loc
+    to: Loc
+}
+
+pub TextEntry :: struct {
+    path: string
+    text: string
+}
+
+/// What requests need to know of one analyzed module.
+pub ModuleFacts :: struct {
+    arena: ^arena.Arena
+    dir: string
+    /// Uses (in the module's own files) of declarations anywhere.
+    refs: List(RefPair)
+    /// The text of each of the module's files.
+    texts: List(TextEntry)
+    locals: List(LocalName)
+    /// For each declared name (a top-level declaration, field, variant, …), the names
+    /// declared in the same place.
+    siblings: hash_map.HashMap(string, []string)
+    /// The names declared at the top level of the module.
+    top_level: hash_map.HashMap(string, bool)
+}
+
+loc_of :: fn(a: ^Analysis, span: source.Span) -> ?Loc needs Alloc + Fs {
+    p := a.real_path(span.file) else return null
+    return Loc(path: p, lo: span.lo, hi: span.hi)
+}
+
+/// What is kept of the analysis of module directory `dir`.
+pub facts_of :: fn(a: ^Analysis, dir: string) -> ^ModuleFacts needs Alloc + Fs {
+    ar := new(arena.new())!
+    with ar.allocator() {
+        facts := new(ModuleFacts(
+            arena: ar,
+            dir: dupe(dir)!,
+            refs: list(RefPair),
+            texts: list(TextEntry),
+            locals: list(LocalName),
+            siblings: hash_map.hash_map(string, []string),
+            top_level: hash_map.hash_map(string, bool),
+        ))!
+        for kv in a.files.entries() {
+            if dir_of(kv.key) is dir {
+                facts.texts.push(TextEntry(path: dupe(kv.key)!, text: dupe(a.source_text(kv.value))!))!
+            }
+        }
+        for r in a.index.refs.items {
+            from := loc_of(a, r.from) else continue
+            to := loc_of(a, r.to) else continue
+            if dir_of(from.path) is dir { facts.refs.push(RefPair(from: from, to: to))! }
+        }
+        for s in a.index.scopes.items {
+            def := loc_of(a, s.def) else continue
+            if dir_of(def.path) is dir {
+                facts.locals.push(LocalName(label: dupe(s.item.label)!, def: def, from: s.from, to: s.to))!
+            }
+        }
+        top := list(string)
+        for o in a.index.outlines.items {
+            for i in 0..o.symbols.len { top.push(dupe(o.symbols[i].name)!)! }
+        }
+        for n in top.items { facts.top_level.put(n, true)! }
+        for o in a.index.outlines.items {
+            path := a.real_path(o.file) else continue
+            facts.add_siblings(path, o.symbols, top.items)
+        }
+        return facts
+    }
+}
+
+add_siblings :: fn(f: ^ModuleFacts, path: string, syms: []const ide.DocSymbol, group: []string) needs Alloc {
+    for i in 0..syms.len {
+        s := &syms[i]
+        loc := Loc(path: path, lo: s.name_span.lo, hi: s.name_span.hi)
+        f.siblings.put(loc_key(loc), group)!
+        names := list(string)
+        for j in 0..s.children.len { names.push(dupe(s.children[j].name)!)! }
+        f.add_siblings(path, s.children, names.items)
+    }
+}
+
+/// The text of the file at `path` among the module's files.
+pub text_in :: fn(f: ^const ModuleFacts, path: string) -> ?string {
+    for t in f.texts.items {
+        if t.path is path { return t.text }
+    }
+    return null
+}
+
+/// Releases the memory of the facts.
+pub release_facts :: fn(f: ^ModuleFacts) needs Alloc {
+    ar := f.arena
+    ar.deinit()
+    destroy(ar)
+}
+
+// --- hashing the files a module read ---
+
+fnv :: fn(h_in: u64, bytes: []const u8) -> u64 {
+    h := h_in
+    for b in bytes { h = (h ~ u64(b)) *% 0x100000001b3 }
+    return h
+}
+
+/// The `.gm` files of module directory `dir`, counting the open buffers (`overlays`) that
+/// stand in a file of that directory.
+pub module_files :: fn(dir: string, overlays: []const load.Overlay) -> List(string) needs Alloc + Fs {
+    out := list(string)
+    if load.is_dir(dir) {
+        for r in fs.entries(dir) {
+            e := r else break
+            if e.name.len > 3 and e.name.ends_with(".gm") {
+                p := load.join(dir, e.name)
+                if load.is_file(p) { out.push(p)! }
+            }
+        }
+    }
+    n := out.items.len
+    for o in overlays {
+        name := load.file_name(o.path) else continue
+        if (load.parent(o.path) else "") is not dir or not name.ends_with(".gm") or name.len <= 3 { continue }
+        present := false
+        for p in out.items[0..n] {
+            if canon(p) is o.path { present = true }
+        }
+        if not present { out.push(load.join(dir, name))! }
+    }
+    return out
+}
+
+/// The text of the buffer standing in for the file at `path`, if there is one.
+buffer_for :: fn(path: string, overlays: []const load.Overlay) -> ?string needs Alloc + Fs {
+    name := load.file_name(path) else return null
+    any := false
+    for o in overlays {
+        if (load.file_name(o.path) else "") is name { any = true }
+    }
+    if not any { return null }
+    c := canon(path)
+    for o in overlays {
+        if o.path is c { return o.text }
+    }
+    return null
+}
+
+/// A hash of the files of the module directories `dirs` (their lists of files and
+/// contents, the buffers standing in for the files on disk).
+stamp :: fn(dirs: []const string, overlays: []const load.Overlay) -> u64 needs Alloc + Fs {
+    h: u64 = 0xcbf29ce484222325
+    for dir in dirs {
+        h = fnv(h, dir)
+        names := module_files(dir, overlays)
+        names.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
+        for f in names.items {
+            h = fnv(h, f)
+            if t := buffer_for(f, overlays) {
+                h = fnv(h, t)
+            } else if bytes := fs.read_all(f) {
+                h = fnv(h, bytes)
+            }
+        }
+    }
+    return h
+}
+
+Entry :: struct {
+    facts: ^ModuleFacts
+    /// The directories whose files the analysis read, and their stamp.
+    dirs: []string
+    stamp: u64
+}
+
+pub Workspace :: struct {
+    cache: hash_map.HashMap(string, Entry)
+}
+
+pub workspace :: fn() -> Workspace needs Alloc => Workspace(cache: hash_map.hash_map(string, Entry))
+
+/// The directories to skip when looking for modules.
+skipped :: fn(name: string) -> bool => name.starts_with(".") or name is "target" or name is "node_modules"
+
+/// The most module directories looked at; larger trees are not searched further.
+MAX_DIRS :: 4000
+
+find_module_dirs :: fn(root: string, out: ^List(string)) needs Alloc + Fs {
+    has_gm := false
+    subdirs := list(string)
+    for r in fs.entries(root) {
+        e := r else break
+        p := load.join(root, e.name)
+        is_directory := false
+        if info := Fs.stat(p) { is_directory = info.kind is .Dir }
+        if is_directory {
+            if not skipped(e.name) { subdirs.push(p)! }
+        } else if e.name.len > 3 and e.name.ends_with(".gm") {
+            has_gm = true
+        }
+    }
+    if has_gm { out.push(canon(root))! }
+    subdirs.items.sort_by(fn(x, y: ^const string) -> bool => x^ < y^)
+    for d in subdirs.items {
+        if out.items.len >= MAX_DIRS { return }
+        find_module_dirs(d, out)
+    }
+}
+
+/// The root directory of the package that contains module directory `dir`: the nearest
+/// directory with a `gamma.toml`, or `dir` itself.
+pub package_root :: fn(dir: string) -> string needs Alloc + Fs {
+    cur: ?string = dir
+    while d := cur {
+        if load.is_file(load.join(d, "gamma.toml")) { return d }
+        cur = load.parent(d)
+    }
+    return dir
+}
+
+/// The roots of the packages that a package at `root` depends on by path, transitively.
+path_dependencies :: fn(root: string, seen: ^List(string)) needs Alloc + Fs {
+    body := fs.read_all(load.join(root, "gamma.toml")) else return
+    manifest := load.parse_manifest(body) else return
+    for dep in manifest.deps.items {
+        if .Path(p) := dep.source {
+            d := canon(load.join(root, p))
+            if d not in seen.items {
+                seen.push(d)!
+                path_dependencies(d, seen)
+            }
+        }
+    }
+}
+
+/// The roots of the package containing `dir` and of its path dependencies; the package's
+/// own root is first.
+pub package_roots :: fn(dir: string) -> List(string) needs Alloc + Fs {
+    root := canon(package_root(dir))
+    roots := list(string)
+    roots.push(root)!
+    path_dependencies(root, &roots)
+    return roots
+}
+
+/// The module directories of the packages rooted at `roots`, including directories that
+/// so far exist only as unsaved buffers.
+pub module_dirs :: fn(roots: []const string, overlays: []const load.Overlay) -> List(string) needs Alloc + Fs {
+    dirs := list(string)
+    for r in roots { find_module_dirs(r, &dirs) }
+    for o in overlays {
+        d := load.parent(o.path) else continue
+        under := false
+        for r in roots {
+            if load.starts_with(d, r) { under = true }
+        }
+        if not under { continue }
+        skip := false
+        for name in load.split(d).names.items {
+            if skipped(name) { skip = true }
+        }
+        if skip or d in dirs.items { continue }
+        dirs.push(d)!
+    }
+    dirs.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
+    n: usize = 0
+    for i in 0..dirs.items.len {
+        if i > 0 and dirs.items[i] is dirs.items[n - 1] { continue }
+        dirs.items[n] = dirs.items[i]
+        n += 1
+    }
+    dirs.truncate(n)
+    return dirs
+}
+
+/// Whether some file of module directory `dir` mentions `name`.
+pub mentions :: fn(dir: string, name: string, overlays: []const load.Overlay) -> bool needs Alloc + Fs {
+    for f in module_files(dir, overlays).items {
+        if t := buffer_for(f, overlays) {
+            if str.contains(t, name) { return true }
+        } else if bytes := fs.read_all(f) {
+            if str.contains(bytes, name) { return true }
+        }
+    }
+    return false
+}
+
+/// The facts of the module in `dir`, analyzed now unless the cached ones are still valid.
+pub facts :: fn(ws: ^Workspace, dir: string, overlays: []const load.Overlay) -> ^ModuleFacts needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    if e := ws.cache.get(dir) {
+        if stamp(e.dirs, overlays) is e.stamp { return e.facts }
+    }
+    primary: ?string = null
+    for f in module_files(dir, overlays).items {
+        if p := primary {
+            if path_less(f, p) { primary = f }
+        } else {
+            primary = f
+        }
+    }
+    main := load.join(dir, "main.gm")
+    a := check_module(dir, overlays, canon(primary else main))
+    result := ws.store(dir, a, overlays)
+    release(a)
+    return result
+}
+
+/// Keeps the facts of an analysis of the module in `dir` that is current.
+pub store :: fn(ws: ^Workspace, dir: string, a: ^Analysis, overlays: []const load.Overlay) -> ^ModuleFacts needs Alloc + Env + Fs {
+    f := facts_of(a, dir)
+    // The standard library is taken to stay as it is.
+    std := canon(driver.std_root())
+    dirs := list(string)
+    for kv in a.files.entries() {
+        d := dir_of(kv.key)
+        if d not in dirs.items { dirs.push(dupe(d)!)! }
+    }
+    if dir not in dirs.items { dirs.push(dir)! }
+    kept := list(string)
+    for d in dirs.items {
+        if not load.starts_with(d, std) { kept.push(d)! }
+    }
+    s := stamp(kept.items, overlays)
+    if old := ws.cache.get(dir) { release_facts(old.facts) }
+    ws.cache.put(dupe(dir)!, Entry(facts: f, dirs: kept.items, stamp: s))!
+    return f
+}
+
+/// The uses of a declaration, and the modules they were found in.
+pub Found :: struct {
+    uses: List(Loc)
+    modules: List(^ModuleFacts)
+}
+
+/// The text of a file of one of the modules found.
+pub found_text :: fn(f: ^const Found, path: string) -> ?string {
+    for m in f.modules.items {
+        if t := text_in(m, path) { return t }
+    }
+    return null
+}
+
+test "paths order by component" {
+    expect(path_less("/a/b", "/a-b"))
+    expect(not path_less("/a-b", "/a/b"))
+    expect(path_less("/a/b", "/a/b/c"))
+    expect(not path_less("/a/./b", "/a/b"))
+    expect(path_less("/a/b", "/a/c"))
+}
+
+arena :: import "std/arena"
+driver :: import "../driver"
+fs :: import "std/fs"
+hash_map :: import "std/collections/hash_map"
+ide :: import "../ide"
+load :: import "../load"
+source :: import "../source"
+str :: import "std/str"

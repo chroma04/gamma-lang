@@ -5,8 +5,8 @@
   roadmap/gammac-cli.md = inventory + status. Driver (check/run/help/version/human diags)
   done; fmt, doc, lint+fix, -g, test/bench, packages+gamma.toml ported by sonnet worktree
   subagents (all byte-identical tests in tests/selfhost.rs). §7.12 branch join refined
-  (pain point). Left: --target/wasm/freestanding/Safe, caches, C optimizations, lsp.
-  PR #87.
+  (pain point). PR #87 merged. s45b (PR #88): --target/wasm/freestanding/Safe, caches,
+  C optimizations, lsp, package gaps — everything but repl/coverage/interp/cranelift.
 - s43 (branch claude/lucid-clarke-48k3cf): gammac COMPILES ITSELF. C back end
   compiler/cgen/ (decisions/048), `gammac build`, bootstrap fixed point tested in
   tests/selfhost.rs; all applicable conformance run tests pass via gammac.

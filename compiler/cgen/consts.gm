@@ -133,6 +133,19 @@ gen_consts :: fn(g: ^Gen) -> Unsup!ConstsText needs sema.Load {
     }
     try g.drain()
     if i is not g.statics_cells.items.len { return !unsupported(source.DUMMY, "a variable whose value reaches a function that uses a new constant") }
+    // Large constant arguments of calls (see `constarg.gm`).
+    for k, sc in enumerate(g.site_consts.items) {
+        name := str.format("gm_k{}", k)!
+        decls.write("static uint8_t {}[{}] __attribute__((aligned({})));\n", name, g.ty.size(sc.ty).max(1), g.ty.align(sc.ty).max(1))!
+        if sc.bytes.items.len > 0 {
+            sb := g.static_bytes(sc.bytes.items)
+            init.write("    memcpy({}, {}, {});\n", name, sb, sc.bytes.items.len)!
+        }
+        for r in sc.relocs.items {
+            target := g.static_bytes(r.data)
+            init.write("    {{ void *p = (uint8_t *){} + 0; memcpy({} + {}, &p, sizeof p); }}\n", target, name, r.offset)!
+        }
+    }
     init.extend("}\n")!
     return ConstsText(decls: decls.items, init: init.items)
 }
