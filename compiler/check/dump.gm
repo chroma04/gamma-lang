@@ -652,6 +652,7 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .AllocCheck => "AllocCheck"
     .Asm(outputs, inputs) => str.format("Asm {{ outputs: {}, inputs: {} }}", outputs, inputs)!
     .StaticAssert(id) => str.format("StaticAssert({})", id)!
+    .Cover(id) => str.format("Cover({})", id)!
 }
 
 rmw_text :: fn(op: tir.RmwOp) -> string => match op {

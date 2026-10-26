@@ -81,7 +81,7 @@ Everything in [chapter 14](14-interop.md) works:
   pointers (`qsort` comparators, for example). One whose parameters or result are structs
   passed by value is rejected with an error at the call that passes it to C.
 - **`f16` across the C boundary**, and structs that contain one.
-- **Coverage.** `gamma test --coverage` runs in the interpreter.
+- **Coverage.** `gamma test --coverage` runs in the interpreter or the C back end.
 
 A construct the back end cannot compile is reported as an error that begins "not supported
 by the Cranelift back end yet" and points at the source; the C back end compiles the same

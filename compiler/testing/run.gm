@@ -6,12 +6,16 @@ arena :: import "std/arena"
 check :: import "../check"
 driver :: import "../driver"
 fs :: import "std/fs"
+hash_map :: import "std/collections/hash_map"
 load :: import "../load"
 math :: import "std/math"
+pkg :: import "../pkg"
 process :: import "std/process"
 sema :: import "../sema"
+source :: import "../source"
 str :: import "std/str"
 thread :: import "std/thread"
+tir :: import "../tir"
 
 /// Whether `t` is selected by `--filter`: its name or module path contains the filter text.
 selected :: fn(t: sema.TestCase, filter: ?string) -> bool {
@@ -24,9 +28,14 @@ selected :: fn(t: sema.TestCase, filter: ?string) -> bool {
 /// `gammac test` and `gammac bench`: runs each test (or benchmark) of the checked program
 /// (the root module's, and those of the modules of its package that it imports; all of
 /// them with `--all`) with captured output (§3.8). A failing test's output and failure
-/// reason are printed below its line. Returns the exit status.
-pub run :: fn(s: ^sema.Sema, opts: driver.Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+/// reason are printed below its line; with `--coverage`, the lines of the package of
+/// `input` that the tests ran follow. Returns the exit status.
+pub run :: fn(s: ^sema.Sema, input: string, opts: driver.Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     bench := opts.command is .Bench
+    if opts.coverage and bench {
+        eprint("gammac: `--coverage` is an option of `gammac test`\n")
+        return 2
+    }
     cases := if bench { s.benches.items } else { s.tests.items }
     chosen := list(usize)
     for i, c in enumerate(cases) {
@@ -35,14 +44,30 @@ pub run :: fn(s: ^sema.Sema, opts: driver.Options) -> u8 needs Alloc + Clock + E
     filtered_out: ?usize = null
     if opts.filter is not null { filtered_out = cases.len - chosen.items.len }
     report := Report(bench: bench, filtered_out: filtered_out, show_output: opts.show_output, time: opts.time, started: Clock.now().ns)
-    run_native(s, opts, cases, chosen.items, bench, &report) else return 1
-    return finish(&report)
+    if not opts.coverage {
+        run_native(s, opts, cases, chosen.items, bench, &report, null) else return 1
+        return finish(&report)
+    }
+    cover := Cover(scope: scope(input), map: CoverMap(points: list((file: source.FileId, line: u32))), counts: list(u32))
+    status: u8 = 1
+    if run_native(s, opts, cases, chosen.items, bench, &report, &cover) is not null { status = finish(&report) }
+    if not coverage_report(s, &cover.scope, &cover.map, cover.counts.items, opts.coverage_file) { return 1 }
+    return status
+}
+
+/// What coverage needs from running the tests: what it counts, the lines that carry a
+/// counter, and the counts added up over the tests.
+Cover :: struct {
+    scope: Scope
+    map: CoverMap
+    counts: List(u32)
 }
 
 /// Compiles the chosen tests into one executable, which runs the test whose position among
-/// them it is given, and runs it once per test, recording each result in `report`. Fails
-/// if the executable cannot be built, reporting why.
-run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCase, chosen: []const usize, bench: bool, report: ^Report) -> ?() needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+/// them it is given, and runs it once per test, recording each result in `report`. With
+/// `cover`, the program is instrumented for coverage and the counts of the tests are added
+/// up. Fails if the executable cannot be built, reporting why.
+run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCase, chosen: []const usize, bench: bool, report: ^Report, cover: ?^Cover) -> ?() needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     entries := list(u32)
     for i in chosen {
         // A benchmark runs under the system's handlers, as `main` does.
@@ -55,6 +80,14 @@ run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCa
         return null
     }
     defer _ = fs.remove_all(dir)
+    if c := cover {
+        // Every body the executable needs is produced first, so that all are instrumented.
+        roots := list(u32)
+        roots.extend(entries.items)!
+        for f in s.export_fns.items { if f not in roots.items { roots.push(f)! } }
+        if not check.prepare_codegen(s, roots.items) { return null }
+        c.map = instrument(s, &c.scope)
+    }
     exe := load.join(dir, driver.native_exe_name(&opts, "tests"))
     if not driver.compile_entries(s, entries.items, true, exe, opts) { return null }
     // Executables for another machine run behind `GAMMA_RUNNER`; WebAssembly modules behind
@@ -65,15 +98,27 @@ run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCa
     }
     // Benchmarks time themselves, so they take turns.
     jobs := if bench { 1 } else { opts.jobs }
-    run_all(runner.items, exe, cases, chosen, jobs, opts.timeout, report)
+    // Each test writes its counters to a file of its own.
+    cover_dir: ?string = if cover is not null { dir } else { null }
+    run_all(runner.items, exe, cases, chosen, jobs, opts.timeout, cover_dir, report)
+    if c := cover {
+        for j in 0..chosen.len {
+            text := fs.read_all(cover_file(dir, j)) else continue
+            add_counts(&c.counts, string(text))
+        }
+    }
     return ()
 }
+
+/// The file the `j`th test writes its coverage counters to.
+cover_file :: fn(dir: string, j: usize) -> string needs Alloc => load.join(dir, str.format("coverage-{}", j)!)
 
 /// What the threads that run tests share: the next test to take and the results so far.
 Pool :: struct {
     runner: []const string
     exe: string
     timeout: ?f64
+    cover_dir: ?string
     /// The number of tests, and the next one to run.
     n: usize
     next: usize
@@ -85,10 +130,10 @@ Pool :: struct {
 /// Runs the tests `chosen` of `cases` with the executable `exe`, `jobs` at a time, and
 /// hands each result to `report` in the order of the tests, as soon as it and all before it
 /// are done.
-run_all :: fn(runner: []const string, exe: string, cases: []const sema.TestCase, chosen: []const usize, jobs: usize, timeout: ?f64, report: ^Report) needs Alloc + Clock + Out + Proc + Sys {
+run_all :: fn(runner: []const string, exe: string, cases: []const sema.TestCase, chosen: []const usize, jobs: usize, timeout: ?f64, cover_dir: ?string, report: ^Report) needs Alloc + Clock + Out + Proc + Sys {
     n := chosen.len
     threads := list(thread.Thread)
-    pool := Pool(runner: runner, exe: exe, timeout: timeout, n: n, next: 0, results: list(?Finished), lock: thread.mutex(), ready: thread.condvar())
+    pool := Pool(runner: runner, exe: exe, timeout: timeout, cover_dir: cover_dir, n: n, next: 0, results: list(?Finished), lock: thread.mutex(), ready: thread.condvar())
     if jobs > 1 and n > 1 {
         for _ in 0..n { pool.results.push(null)! }
         for _ in 0..(if jobs < n { jobs } else { n }) {
@@ -97,7 +142,7 @@ run_all :: fn(runner: []const string, exe: string, cases: []const sema.TestCase,
         }
     }
     if threads.items.len is 0 {
-        for j in 0..n { report.record(cases[chosen[j]], run_exe(runner, exe, j, timeout)) }
+        for j in 0..n { report.record(cases[chosen[j]], run_exe(runner, exe, j, timeout, cover_dir)) }
         return
     }
     for j in 0..n {
@@ -119,7 +164,7 @@ worker :: fn(p: ^Pool) needs Sys {
             p.next += 1
             thread.unlock(&p.lock)
             if j >= p.n { break }
-            f := run_exe(p.runner, p.exe, j, p.timeout)
+            f := run_exe(p.runner, p.exe, j, p.timeout, p.cover_dir)
             thread.lock(&p.lock)
             p.results.items[j] = f
             thread.broadcast(&p.ready)

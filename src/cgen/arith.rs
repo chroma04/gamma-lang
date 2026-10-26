@@ -372,6 +372,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
                 return Ok(self.tmp(t, &call));
             }
+            Builtin::Cover(id) => {
+                self.line(&format!("GM_COVER({});", id));
+                return Ok(self.unit());
+            }
             Builtin::Unreachable => {
                 self.line(&format!("gm_trap(\"reached `@unreachable()`\", {});", loc));
                 return Ok(self.zero(t));

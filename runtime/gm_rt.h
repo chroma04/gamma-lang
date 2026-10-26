@@ -415,6 +415,11 @@ GM_API void gm_write_out(const uint8_t *p, size_t len);  /* buffered stdout */
 GM_API void gm_write_err(const uint8_t *p, size_t len);  /* stderr, flushed */
 GM_API void gm_flush(void);                              /* flushes stdout */
 
+/* Statement coverage: `n` counters, written out at exit to the file `path` (if not NULL). */
+GM_API void gm_cover_init(uint32_t n, const char *path);
+GM_API_VAR uint32_t *gm_cover_counts;
+#define GM_COVER(i) (gm_cover_counts != NULL ? (void)__atomic_fetch_add(&gm_cover_counts[i], 1, __ATOMIC_RELAXED) : (void)0)
+
 /* Process arguments as a Gamma `[]const string`: returns a pointer to `argc` slices
  * ({ptr, len} pairs, each 2 * sizeof(void*) bytes). Set by gm_set_args at startup. */
 GM_API void gm_set_args(int argc, char **argv);

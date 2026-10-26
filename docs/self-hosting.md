@@ -203,11 +203,15 @@ chosen tests into one executable whose `main` runs the test given by its first a
 and run it once per test with captured output. They print what `gamma test --backend=c`
 and `gamma bench` print, with the same options: `--filter=`, `--all`, `--show-output`,
 `--jobs=N` / `-j N` (0: one per processor; the output stays in order), `--timeout=SECONDS`,
-`--time`, `--mode=` and `--diag-format=`. A benchmark builds in fast mode unless `--mode`
+`--time`, `--coverage[=FILE]`, `--mode=` and `--diag-format=`. A benchmark builds in fast mode unless `--mode`
 is given. `--package=NAME` tests a dependency of the input's package (or one of its
 dependencies) instead, and `--target=TRIPLE` builds the tests for another target (see
-"Targets, modes and caches"). `--backend=interp|cranelift` and `--coverage` are usage
-errors: they need the interpreter or Cranelift, which `gammac` does not have. A test that exceeds `--timeout` is killed by a watching thread, which
+"Targets, modes and caches"). `--backend=interp|cranelift` are usage errors: `gammac`
+has no interpreter and no Cranelift back end. Coverage (`compiler/testing/coverage.gm`)
+instruments the bodies after every function the executable needs has one, so the
+instances of generic functions are counted too, and the executable writes its counters to
+the file named by its second argument; since `gammac` does not resolve symbolic links,
+the paths of a package reached through one are not those the reference prints. A test that exceeds `--timeout` is killed by a watching thread, which
 cannot reach processes the test started or a test that closed its output and then ran on.
 `tests/selfhost.rs` runs the `test` conformance tests through `gammac test` and compares
 a standard library module, options and failures with the reference.

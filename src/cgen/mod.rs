@@ -717,6 +717,12 @@ impl<'a> Gen<'a> {
         s.push_str("    gm_thread_stack();\n");
         let _ = writeln!(s, "    gm_debug = {};", self.opts.debug as u8);
         s.push_str("    gm_init_consts();\n    gm_node *cx = NULL;\n");
+        // A program instrumented for coverage keeps a counter per line (`crate::coverage`).
+        let counters = if select { crate::coverage::counters(self.prog) } else { 0 };
+        if counters > 0 {
+            // The file to write the counters to is the second argument.
+            let _ = writeln!(s, "    gm_cover_init({counters}, argc > 2 ? argv[2] : NULL);");
+        }
         let a = self.prog.ambient.clone();
         for (k, e) in [(0, a.out), (1, a.err), (2, a.env)] {
             if let Some(e) = e {

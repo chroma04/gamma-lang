@@ -1711,6 +1711,32 @@ static int gm_finish_main(int status) {
     return status;
 }
 
+/* ---- statement coverage (`gamma test --coverage`) ------------------------------- */
+
+GM_API uint32_t *gm_cover_counts;
+static uint32_t gm_cover_n;
+static const char *gm_cover_path;
+
+/* Writes the counters to `gm_cover_path`, as decimal numbers one per line: the test runner
+ * adds up those of every test it runs. */
+static void gm_cover_dump(void) {
+    FILE *f = fopen(gm_cover_path, "w");
+    if (f == NULL) return;
+    for (uint32_t i = 0; i < gm_cover_n; i++)
+        fprintf(f, "%u\n", (unsigned)__atomic_load_n(&gm_cover_counts[i], __ATOMIC_RELAXED));
+    fclose(f);
+}
+
+GM_API void gm_cover_init(uint32_t n, const char *path) {
+    if (path == NULL) return;
+    gm_cover_path = path;
+    gm_cover_counts = (uint32_t *)calloc(n > 0 ? n : 1, sizeof(uint32_t));
+    if (gm_cover_counts == NULL) return;
+    gm_cover_n = n;
+    /* Also when a trap ends the program, which exits through `exit`. */
+    atexit(gm_cover_dump);
+}
+
 typedef struct { const uint8_t *ptr; uintptr_t len; } gm_rt_str;
 
 /* The command line that starts a Windows process from `argc` arguments, as UTF-8 in a new

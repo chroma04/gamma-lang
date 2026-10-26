@@ -441,6 +441,9 @@ pub Sema :: struct {
     /// The functions whose bodies are being checked, for cycles of compile-time
     /// evaluation.
     pub checking: List(u32)
+    /// The number of coverage counters the program is instrumented with (`gammac test
+    /// --coverage`).
+    pub cover_counters: u32 = 0
     /// Checks the constant expression `e` against `expected` and evaluates it, as the
     /// constant `name` declared at `span`: its id once evaluated, or `null` after
     /// reporting why not (installed by the body checker).

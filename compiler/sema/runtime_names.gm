@@ -4,7 +4,7 @@
 // ends in a digit is reserved for generated code and not listed.
 
 /// The runtime's `gm_` identifiers that do not end in a digit, sorted.
-RUNTIME_NAMES :: [320]string(
+RUNTIME_NAMES :: [325]string(
     "gm_alloc_check", "gm_alloc_tag", "gm_altstack_free", "gm_altstack_init", "gm_altstack_key",
     "gm_altstack_keyed", "gm_args", "gm_asyncify_start_rewind", "gm_asyncify_start_unwind",
     "gm_asyncify_stop_rewind", "gm_asyncify_stop_unwind", "gm_atag", "gm_atag_cap", "gm_atag_find",
@@ -21,7 +21,8 @@ RUNTIME_NAMES :: [320]string(
     "gm_clif_trap_slice", "gm_clif_trap_unhandled", "gm_clif_trap_unwrap", "gm_clif_trap_vec",
     "gm_clif_unw", "gm_clif_vload", "gm_clif_vstore", "gm_clif_write", "gm_clif_write_fmt",
     "gm_clock_now", "gm_clock_sleep", "gm_clock_wall", "gm_closure", "gm_cmd_unsafe", "gm_cont",
-    "gm_cont_take", "gm_cpu_count", "gm_cstr", "gm_cstr_array", "gm_ctl_perform", "gm_ctx_init",
+    "gm_cont_take", "gm_cover_counts", "gm_cover_dump", "gm_cover_init", "gm_cover_n",
+    "gm_cover_path", "gm_cpu_count", "gm_cstr", "gm_cstr_array", "gm_ctl_perform", "gm_ctx_init",
     "gm_cur_fiber", "gm_cv_u_", "gm_debug", "gm_dir", "gm_dir_put", "gm_dirs", "gm_env_cmp",
     "gm_env_var", "gm_err_errno", "gm_errdefer_runs", "gm_exact_digits", "gm_f16_from",
     "gm_fault_sp", "gm_fd_above_std", "gm_fiber", "gm_fiber_cont", "gm_fiber_entry",

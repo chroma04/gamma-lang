@@ -105,6 +105,8 @@ options:
   --timeout=<seconds>         (test, bench) fail a test that runs longer than <seconds> (no
                               limit by default)
   --time                      (test, bench) print how long each test took and the total
+  --coverage[=<file>]         (test) count the lines of the package that the tests run; print
+                              a table, and with <file> write LCOV
   --backend=c                 (test, bench) accepted: gammac has only the C back end
   --offline                   (check, run, build) never use the network for dependencies
   --locked                    (check, run, build) fail if gamma.lock is missing or out of date
@@ -255,7 +257,15 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
                     if value in ("interp", "cranelift") { usage_error(str.format("`--backend={}` is not supported: gammac has only the C back end (`--backend=c`)", value)!) }
                     usage_error(str.format("invalid value `{}` for --backend (expected c, cranelift or interp)", value)!)
                 }
-                if a is "--coverage" or a.starts_with("--coverage=") { usage_error("`--coverage` is not supported: gammac has no interpreter to count the lines the tests run") }
+                if a is "--coverage" {
+                    opts.coverage = true
+                    continue
+                }
+                if a.starts_with("--coverage=") {
+                    opts.coverage = true
+                    opts.coverage_file = a[11..]
+                    continue
+                }
                 if a.starts_with("--package=") {
                     opts.package = a[10..]
                     continue
@@ -490,7 +500,7 @@ load_program :: fn(input: string, in_opts: driver.Options) -> u8 needs Alloc + C
                     render(&sm, &diags, opts.format)
                     if errors { return 1 }
                     match opts.command {
-                        .Test, .Bench => { status = testing.run(&s, opts) }
+                        .Test, .Bench => { status = testing.run(&s, root, opts) }
                         .Tir => Out.write(check.tir_dump(&s))
                         .Build => {
                             if not driver.build(&s, m, root, opts) { status = 1 }

@@ -1594,16 +1594,28 @@ fn testing_matches_the_reference() {
         ("test", with(&["--all", "--filter=quick"])),
         ("bench", with(&["--filter=fib"])),
         ("bench", with(&["--time"])),
+        ("test", with(&["--coverage", "--timeout=0.5", "-j", "4"])),
+        ("test", with(&["--coverage", "--filter=none"])),
     ];
     for (command, args) in jobs {
         let want = run(true, command, &args);
         let got = run(false, command, &args);
         assert_eq!(want, got, "{} {:?}", command, args);
     }
-    // Options gammac does not have are usage errors.
-    for bad in ["--backend=interp", "--backend=cranelift", "--coverage"] {
-        let out = common::output(Command::new(gammac).current_dir(root()).args(["test", bad, "x.gm"])).unwrap();
-        assert_eq!(out.status.code(), Some(2), "{}", bad);
+    // The LCOV tracefiles are the same too.
+    let lcov = |reference: bool| {
+        let file = dir.join(if reference { "ref.lcov" } else { "new.lcov" });
+        let _ = run(reference, "test", &with(&[&format!("--coverage={}", file.display()), "--filter=quick"]));
+        std::fs::read_to_string(&file).unwrap()
+    };
+    assert_eq!(lcov(true), lcov(false));
+    // Options gammac does not have are usage errors, and so is `--coverage` for `bench`.
+    for (command, bad) in [("test", "--backend=interp"), ("test", "--backend=cranelift"), ("bench", "--coverage")] {
+        let mut cmd = Command::new(gammac);
+        cmd.current_dir(root()).args([command, bad, &cases_path]);
+        gammac_env(&mut cmd);
+        let out = common::output(&mut cmd).unwrap();
+        assert_eq!(out.status.code(), Some(2), "{} {}", command, bad);
     }
 }
 

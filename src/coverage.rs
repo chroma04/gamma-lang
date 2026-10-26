@@ -3,15 +3,16 @@
 //! [`instrument`] rewrites a checked program: in front of every statement of the functions
 //! of the package under test (and in front of the value of each block) it inserts a
 //! [`Builtin::Cover`] that counts one execution of that source line. The interpreter keeps
-//! the counters ([`crate::interp::coverage_counts`]); the report is the lines whose counter
-//! is not zero among the lines that have one. Only the interpreter runs instrumented code.
+//! the counters ([`crate::interp::coverage_counts`]); a test executable built by the C back
+//! end keeps them in the runtime, which writes them to a file at exit. The report is the
+//! lines whose counter is not zero among the lines that have one.
 //!
-//! The functions counted are those the program contains: a generic function is counted
-//! through its instances, and one that nothing instantiates is not counted at all. The
-//! bodies of tests and benchmarks are left out.
+//! The functions counted are those the program contains: the lines of a generic function
+//! are counted by its instances, and show as not run if nothing instantiates it. The
+//! bodies of tests and benchmarks, and the functions written in them, are left out.
 
 use crate::source::{FileId, SourceMap, Span};
-use crate::tir::{Block, Builtin, Expr, ExprKind, FnId, Program, Stmt};
+use crate::tir::{Block, Builtin, Expr, ExprKind, Program, Stmt};
 use crate::types::Ty;
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,7 +26,7 @@ pub struct CoverMap {
 /// Inserts counters into the functions of `prog` whose source is a file for which `in_scope`
 /// holds.
 pub fn instrument(prog: &mut Program, sources: &SourceMap, in_scope: &dyn Fn(&Path) -> bool) -> CoverMap {
-    let counted: Vec<bool> = (0..prog.fns.len()).map(|i| counts(prog, FnId(i as u32))).collect();
+    let counted = counted(prog);
     let mut cx = Cx { ids: HashMap::new(), map: CoverMap::default(), sources, in_scope };
     for (i, f) in prog.fns.iter_mut().enumerate() {
         if !counted[i] {
@@ -48,18 +49,40 @@ pub fn instrument(prog: &mut Program, sources: &SourceMap, in_scope: &dyn Fn(&Pa
     cx.map
 }
 
-/// Whether the function `f` is part of the code under test: not generated, not a test.
-fn counts(prog: &Program, f: FnId) -> bool {
-    let mut cur = Some(f);
-    while let Some(id) = cur {
-        let def = &prog.fns[id.index()];
-        let name = def.name.as_str();
-        if name.starts_with('<') || name.starts_with("test \"") || name.starts_with("bench \"") {
-            return false;
+/// The number of counters in `prog`: one more than the largest counter id, or 0 if the
+/// program is not instrumented.
+pub fn counters(prog: &Program) -> u32 {
+    fn walk(e: &Expr, n: &mut u32) {
+        if let ExprKind::Builtin { op: Builtin::Cover(id), .. } = e.kind {
+            *n = (*n).max(id + 1);
         }
-        cur = def.parent;
+        e.for_each_child(&mut |c| walk(c, n));
     }
-    prog.fns[f.index()].body.is_some()
+    let mut n = 0;
+    for f in &prog.fns {
+        if let Some(b) = &f.body {
+            walk(b, &mut n);
+        }
+    }
+    n
+}
+
+/// Which functions are part of the code under test: those with a body that are neither
+/// generated (`<entry>`, `<constant>`, …; function literals and the bodies of `for` loops
+/// over iterators are written code) nor tests or benchmarks, nor written inside one.
+fn counted(prog: &Program) -> Vec<bool> {
+    let is_test = |name: &str| name.starts_with("test \"") || name.starts_with("bench \"");
+    let tests: Vec<Span> =
+        prog.fns.iter().filter(|f| is_test(f.name.as_str())).filter_map(|f| f.body.as_ref().map(|b| b.span)).collect();
+    prog.fns
+        .iter()
+        .map(|f| {
+            let name = f.name.as_str();
+            let generated = name.starts_with('<') && name != "<fn>" && name != "<for body>";
+            let in_test = tests.iter().any(|t| t.file == f.span.file && t.lo <= f.span.lo && f.span.hi <= t.hi);
+            f.body.is_some() && !generated && !is_test(name) && !in_test
+        })
+        .collect()
 }
 
 struct Cx<'a> {

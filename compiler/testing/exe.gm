@@ -57,12 +57,14 @@ watch :: fn(w: ^Watch) needs Sys {
 }
 
 /// Runs the test executable `exe`, behind the `runner` command if there is one, on its `j`th
-/// test. A test that is still running after `timeout` seconds is killed and fails.
-run_exe :: fn(runner: []const string, exe: string, j: usize, timeout: ?f64) -> Finished needs Alloc + Clock + Proc + Sys {
+/// test. A test that is still running after `timeout` seconds is killed and fails. With
+/// `cover_dir`, the test writes its coverage counters to its file there.
+run_exe :: fn(runner: []const string, exe: string, j: usize, timeout: ?f64, cover_dir: ?string) -> Finished needs Alloc + Clock + Proc + Sys {
     argv := list(string)
     argv.extend(runner)!
     argv.push(exe)!
     argv.push(str.format("{}", j)!)!
+    if dir := cover_dir { argv.push(cover_file(dir, j))! }
     started := Clock.now().ns
     child := Proc.spawn(argv.items, process.SpawnOptions(stdin: .Null, stdout: .Pipe, stderr: .Pipe)) else {
         return failed_to_run(str.format("cannot run {}: the process cannot be started\n", exe)!)
