@@ -1,0 +1,120 @@
+// Running the test executable on one test (mirrors `run_exe` and `native_stderr` in
+// `src/testing.rs` and `src/main.rs`).
+
+/// The standard error of a failed native test as the interpreter reports it: a trap's
+/// message and location are in it, without the `trap: ` prefix.
+native_stderr :: fn(err: string) -> string needs Alloc {
+    PREFIX :: "trap: "
+    i := str.rfind(err, PREFIX) else return err
+    if i is not 0 and err[i - 1] is not '\n' { return err }
+    return str.format("{}{}", err[0..i], err[i + PREFIX.len..])!
+}
+
+/// The failure detail of a test that ran out of time.
+timed_out :: fn(limit: ?f64) -> string needs Alloc {
+    return str.format("timed out after {} s\n", limit_seconds(limit))!
+}
+
+/// A time limit as the reference implementation's `Duration` holds it: whole nanoseconds.
+limit_seconds :: fn(limit: ?f64) -> f64 {
+    s := limit else return 0.0
+    ns := math.round(s * 1e9).sat(u64)
+    return ns.to(f64) / 1e9
+}
+
+/// The time limit of a test, in nanoseconds.
+limit_ns :: fn(limit: f64) -> u64 => math.round(limit * 1e9).sat(u64)
+
+/// A test that is still running when its time is up is killed by a thread that waits for
+/// that moment.
+Watch :: struct {
+    lock: thread.Mutex
+    wake: thread.Condvar
+    child: process.Child
+    /// When the test must be done, in nanoseconds of the clock.
+    deadline: u64
+    /// Set by the test's thread once nothing needs to be killed any more.
+    done: bool
+    /// Set by the watching thread once it killed the test.
+    fired: bool
+}
+
+watch :: fn(w: ^Watch) needs Sys {
+    with heap_allocator(), system_io(), system_output() {
+        thread.lock(&w.lock)
+        while not w.done {
+            now := Clock.now().ns
+            if now >= w.deadline {
+                _ = w.child.kill()
+                w.fired = true
+                break
+            }
+            _ = thread.wait_timeout(&w.wake, &w.lock, Duration(ns: w.deadline - now))
+        }
+        thread.unlock(&w.lock)
+    }
+}
+
+/// Runs the test executable `exe` on its `j`th test. A test that is still running after
+/// `timeout` seconds is killed and fails.
+run_exe :: fn(exe: string, j: usize, timeout: ?f64) -> Finished needs Alloc + Clock + Proc + Sys {
+    argv := [2]string(exe, str.format("{}", j)!)
+    started := Clock.now().ns
+    child := Proc.spawn(argv[..], process.SpawnOptions(stdin: .Null, stdout: .Pipe, stderr: .Pipe)) else {
+        return failed_to_run(str.format("cannot run {}: the process cannot be started\n", exe)!)
+    }
+    w := Watch(lock: thread.mutex(), wake: thread.condvar(), child: child, deadline: 0, done: false, fired: false)
+    watching: ?thread.Thread = null
+    if limit := timeout {
+        w.deadline = started + limit_ns(limit)
+        watching = thread.spawn(watch, &w) else null
+    }
+    out := list(u8)
+    err := list(u8)
+    buf: [4096]u8 = ---
+    while true {
+        chunk := (child.read(buf[..]) else break) else break
+        match chunk.from {
+            .Stdout => out.extend(buf[0..chunk.len])!
+            .Stderr => err.extend(buf[0..chunk.len])!
+        }
+    }
+    // From here on nothing is killed, unless the watching thread already did.
+    expired := false
+    if t := watching {
+        thread.lock(&w.lock)
+        expired = w.fired
+        w.done = true
+        thread.signal(&w.wake)
+        thread.unlock(&w.lock)
+        thread.join(t)
+    }
+    status := child.wait() else {
+        return failed_to_run(str.format("cannot run {}: the process cannot be waited for\n", exe)!)
+    }
+    elapsed := Clock.now().ns - started
+    output := list(u8)
+    output.extend(out.items)!
+    output.extend(native_stderr(string(err.items)))!
+    text := string(output.items)
+    failure: ?string = null
+    if expired {
+        failure = str.format("{}{}", text, timed_out(timeout))!
+    } else if not process.success(status) {
+        failure = text
+    }
+    return Finished(failure: failure, output: text, elapsed: elapsed)
+}
+
+test "native stderr" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(native_stderr("trap: boom\n  at f\n"), "boom\n  at f\n")
+        expect_eq(native_stderr("out\ntrap: boom\n"), "out\nboom\n")
+        expect_eq(native_stderr("a trap: boom\n"), "a trap: boom\n")
+        expect_eq(native_stderr("plain\n"), "plain\n")
+        expect_eq(string(timed_out(2.5)), "timed out after 2.5 s\n")
+        expect_eq(string(timed_out(null)), "timed out after 0 s\n")
+    }
+}

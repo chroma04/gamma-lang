@@ -1,0 +1,10 @@
+//! The names that identify a module in a test report.
+
+/// The path of `module`'s directory relative to its package's root, with `/` separators
+/// (`.` for the root itself), which names it in test reports.
+pub module_label :: fn(l: ^const Loader, module: usize) -> string needs Alloc + Fs {
+    m := &l.modules.items[module]
+    dir := l.canonicalize(m.dir) else m.dir
+    rest := strip_prefix(dir, l.packages.items[m.package].root) else return m.name
+    return if rest.len is 0 { "." } else { slashes(rest) }
+}

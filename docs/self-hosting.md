@@ -27,6 +27,7 @@ this checkable:
 | bodies | the typed program of `gamma tir`, and its diagnostics |
 | checking | the diagnostics of `gamma check`, in the human format |
 | back end | the output and exit status of the compiled programs |
+| test runner | the output and exit status of `gamma test --backend=c` and `gamma bench`, timings masked |
 | formatter | the output, messages and exit status of `gamma fmt` |
 | `doc` | the standard output, standard error, exit status and files of `gamma doc` |
 | lint and fix | the diagnostics, messages, edited files and exit status of `gamma lint` and `gamma fix` |
@@ -178,6 +179,22 @@ reference's on every program. Diagnostics are printed in the human format by def
 the `core` directory next to the standard library's. A root module without `main` is
 checked as a library, as `gamma tir` does: the way `gamma test` would check it, with
 its tests and benchmarks and those of the modules of its package that it imports.
+
+### The test runner
+
+`gammac test [options] ROOT` and `gammac bench [options] ROOT` (`compiler/testing/`, a port
+of `src/testing.rs` for the C back end) check the program as a library with its tests (the
+modules of the root's package that it imports; all of them with `--all`), compile the
+chosen tests into one executable whose `main` runs the test given by its first argument,
+and run it once per test with captured output. They print what `gamma test --backend=c`
+and `gamma bench` print, with the same options: `--filter=`, `--all`, `--show-output`,
+`--jobs=N` / `-j N` (0: one per processor; the output stays in order), `--timeout=SECONDS`,
+`--time`, `--mode=` and `--diag-format=`. A benchmark builds in fast mode unless `--mode`
+is given. `--backend=interp|cranelift`, `--coverage`, `--package` and `--target` are
+usage errors. A test that exceeds `--timeout` is killed by a watching thread, which
+cannot reach processes the test started or a test that closed its output and then ran on.
+`tests/selfhost.rs` runs the `test` conformance tests through `gammac test` and compares
+a standard library module, options and failures with the reference.
 
 ### The formatter
 

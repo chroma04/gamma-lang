@@ -1,0 +1,177 @@
+// The report of `gammac test` and `gammac bench`: what each test or benchmark did, and
+// the counts (mirrors `Report` and its helpers in `src/testing.rs`).
+
+/// The first words of the line a benchmark prints for `gammac bench`.
+BENCH_MARKER :: "gamma-bench: "
+
+/// The result of running one test or benchmark.
+Finished :: struct {
+    /// `null` if it passed; else what it wrote and why it failed.
+    failure: ?string
+    /// What it wrote to its standard output and error.
+    output: string
+    /// How long it ran, in nanoseconds.
+    elapsed: u64
+}
+
+failed_to_run :: fn(detail: string) -> Finished => Finished(failure: detail, output: detail, elapsed: 0)
+
+/// Counts and prints the results.
+Report :: struct {
+    bench: bool
+    passed: usize = 0
+    failed: usize = 0
+    /// The number of cases `--filter` left out, if it was given.
+    filtered_out: ?usize
+    show_output: bool
+    time: bool
+    /// When the run started, in nanoseconds of the clock.
+    started: u64
+}
+
+/// Prints the line for `t`; below it, a failure's detail (its output and the reason)
+/// and, with `--show-output`, the output of a case that passed, indented.
+record :: fn(r: ^Report, t: sema.TestCase, f: Finished) needs Alloc + Out {
+    word := if r.bench { "bench" } else { "test" }
+    name := str.format("\"{}\"", t.name)!
+    if m := t.module { name = str.format("\"{}\" in {}", t.name, m)! }
+    took: string = if r.time and not r.bench { str.format(" ({})", fmt_duration(f.elapsed))! } else { "" }
+    shown := ""
+    if detail := f.failure {
+        r.failed += 1
+        print("{} {} ... FAILED{}\n", word, name, took)
+        shown = detail
+    } else {
+        r.passed += 1
+        output := f.output
+        result := "ok"
+        if r.bench {
+            if summary := summarize(output) {
+                result = summary.line
+                output = summary.rest
+            }
+        }
+        print("{} {} ... {}{}\n", word, name, result, took)
+        if r.show_output { shown = output }
+    }
+    for line in str.lines(shown) { print("    {}\n", line) }
+}
+
+/// Prints the totals; returns the exit status.
+finish :: fn(r: ^const Report) -> u8 needs Alloc + Clock + Out {
+    line := if r.bench {
+        if n := r.filtered_out {
+            str.format("{} run, {} failed, {} filtered out", r.passed, r.failed, n)!
+        } else {
+            str.format("{} run, {} failed", r.passed, r.failed)!
+        }
+    } else {
+        if n := r.filtered_out {
+            str.format("{} passed, {} failed, {} filtered out", r.passed, r.failed, n)!
+        } else {
+            str.format("{} passed, {} failed", r.passed, r.failed)!
+        }
+    }
+    if r.time { line = str.format("{} (finished in {})", line, fmt_duration(Clock.now().ns - r.started))! }
+    print("{}\n", line)
+    return if r.failed is 0 { 0 } else { 1 }
+}
+
+/// A duration for a report: `850µs`, `12.3ms`, `1.52s`.
+fmt_duration :: fn(ns: u64) -> string needs Alloc {
+    us := ns.to(f64) / 1e3
+    if us < 1000.0 { return str.format("{}µs", math.round(us).sat(u64))! }
+    if us < 1e6 { return str.format("{:.1}ms", us / 1e3)! }
+    return str.format("{:.2}s", us / 1e6)!
+}
+
+/// A time per run in nanoseconds, with a unit that keeps the number short.
+fmt_per_run :: fn(ns: f64) -> string needs Alloc {
+    if ns < 1e3 { return str.format("{:.2} ns/run", ns)! }
+    if ns < 1e6 { return str.format("{:.3} µs/run", ns / 1e3)! }
+    if ns < 1e9 { return str.format("{:.3} ms/run", ns / 1e6)! }
+    return str.format("{:.3} s/run", ns / 1e9)!
+}
+
+/// A number as `f64::from_str` of the reference implementation reads it: the syntax of
+/// `str.parse_float`, but without the `_` separators.
+parse_number :: fn(text: string) -> ?f64 {
+    if str.contains(text, "_") { return null }
+    return str.parse_float(f64, text) else null
+}
+
+/// The summary of what a benchmark measured, and the rest of its output: the last line that
+/// starts with `BENCH_MARKER` holds the runs per sample and the nanoseconds each sample took.
+summarize :: fn(output: string) -> ?(line: string, rest: string) needs Alloc {
+    at := str.rfind(output, BENCH_MARKER) else return null
+    if at is not 0 and output[at - 1] is not '\n' { return null }
+    // The line, as `lines` reads it.
+    end := at
+    while end < output.len and output[end] is not '\n' { end += 1 }
+    line_end := end
+    if line_end > at and output[line_end - 1] is '\r' { line_end -= 1 }
+    line := output[at..line_end]
+    iters: ?f64 = null
+    per_run := list(f64)
+    samples: usize = 0
+    for word in str.fields(line[BENCH_MARKER.len..]) {
+        x := parse_number(word) else return null
+        if iters is null {
+            iters = x
+        } else {
+            per_run.push(x)!
+            samples += 1
+        }
+    }
+    n_iters := iters else return null
+    if samples is 0 or n_iters <= 0.0 { return null }
+    for i in 0..per_run.items.len { per_run.items[i] = per_run.items[i] / n_iters }
+    n := samples.to(f64)
+    total: f64 = 0.0
+    for x in per_run.items { total += x }
+    mean := total / n
+    squares: f64 = 0.0
+    for x in per_run.items { squares += (x - mean) * (x - mean) }
+    var := squares / n
+    rel: f64 = if mean > 0.0 { math.sqrt(var) / mean * 100.0 } else { 0.0 }
+    summary := str.format("{} (± {:.1}%, {} samples of {} runs)", fmt_per_run(mean), rel, samples, n_iters.sat(u64))!
+    // What the benchmark itself wrote precedes the line; the line ends the output.
+    rest := output[line_end..]
+    before := output[0..at]
+    if before.len > 0 { return (line: summary, rest: before) }
+    skip: usize = 0
+    while skip < rest.len and rest[skip] is '\n' { skip += 1 }
+    return (line: summary, rest: rest[skip..])
+}
+
+test "durations and rates" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(string(fmt_duration(850_000)), "850µs")
+        expect_eq(string(fmt_duration(12_340_000)), "12.3ms")
+        expect_eq(string(fmt_duration(1_520_000_000)), "1.52s")
+        expect_eq(string(fmt_per_run(12.345)), "12.35 ns/run")
+        expect_eq(string(fmt_per_run(2500.0)), "2.500 µs/run")
+        expect_eq(string(fmt_per_run(3.0e6)), "3.000 ms/run")
+        expect_eq(string(fmt_per_run(4.0e9)), "4.000 s/run")
+    }
+}
+
+test "benchmark summaries" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        s := summarize("gamma-bench: 10 100 100\n") else return
+        expect_eq(s.line, "10.00 ns/run (± 0.0%, 2 samples of 10 runs)")
+        expect_eq(s.rest, "")
+        t := summarize("noise\ngamma-bench: 4 40 80 120\n") else return
+        expect_eq(t.line, "20.00 ns/run (± 40.8%, 3 samples of 4 runs)")
+        expect_eq(t.rest, "noise\n")
+        expect(summarize("no marker") is null)
+        expect(summarize("x gamma-bench: 1 2") is null)
+        expect(summarize("gamma-bench: 0 5") is null)
+        expect(summarize("gamma-bench: 1") is null)
+        expect(summarize("gamma-bench: 1 x") is null)
+    }
+}

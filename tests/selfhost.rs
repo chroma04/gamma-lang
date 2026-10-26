@@ -1262,3 +1262,206 @@ fn gammac_debug_information_maps_to_the_source() {
         assert_eq!(ours, theirs, "gdb prints different values than for the reference's executable");
     }
 }
+
+/// A `test` conformance test: what `gammac test` is run with and the output it must have.
+#[cfg(unix)]
+struct TestStageTest {
+    name: String,
+    root: PathBuf,
+    mode: String,
+    filter: Option<String>,
+    stdout: Vec<u8>,
+    exit: i32,
+}
+
+/// The `test` tests that expect no compile errors and apply to this host.
+#[cfg(unix)]
+fn test_stage_tests() -> Vec<TestStageTest> {
+    let dir = root().join("tests/conformance/test");
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    entries.sort();
+    let mut tests = vec![];
+    for p in entries {
+        let name = p.file_name().unwrap().to_str().unwrap().to_string();
+        let Some(base) = name.strip_suffix(".gm").or_else(|| name.strip_suffix(".test")) else { continue };
+        let mut text = String::new();
+        if p.is_dir() {
+            let mut files = vec![];
+            gm_files(p.strip_prefix(root()).unwrap(), &mut files);
+            for f in files {
+                text.push_str(&std::fs::read_to_string(root().join(f)).unwrap());
+            }
+        } else {
+            text = std::fs::read_to_string(&p).unwrap();
+        }
+        let directive = |key: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix("//! ").and_then(|r| r.strip_prefix(key)).map(|v| v.trim().to_string()))
+        };
+        if text.contains("//~") || directive("stage:").is_some_and(|s| s != "test") {
+            continue;
+        }
+        let host = [
+            ("arch:", std::env::consts::ARCH.to_string()),
+            ("endian:", if cfg!(target_endian = "little") { "little" } else { "big" }.to_string()),
+            ("os:", if cfg!(windows) { "windows" } else { "unix" }.to_string()),
+            ("ptr_bits:", (8 * std::mem::size_of::<usize>()).to_string()),
+        ];
+        if host.iter().any(|(k, v)| directive(k).is_some_and(|d| &d != v)) {
+            continue;
+        }
+        let mode = directive("mode:").unwrap_or_else(|| "debug".to_string());
+        if mode == "safe" {
+            continue;
+        }
+        let root_dir = if p.is_dir() && p.join("main").is_dir() { p.join("main") } else { p.clone() };
+        tests.push(TestStageTest {
+            name: format!("tests/conformance/test/{}", name),
+            root: root_dir,
+            mode,
+            filter: directive("filter:"),
+            stdout: std::fs::read(dir.join(format!("{}.stdout", base))).unwrap_or_default(),
+            exit: directive("exit:").map_or(0, |e| e.parse().unwrap()),
+        });
+    }
+    tests
+}
+
+#[test]
+#[cfg(unix)]
+fn tests_run_by_gammac_behave_as_expected() {
+    let Gammac::Native(gammac) = gammac() else { return };
+    let tests = test_stage_tests();
+    assert!(tests.len() > 30, "only {} test tests found", tests.len());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failures = std::sync::Mutex::new(vec![]);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(t) = tests.get(i) else { break };
+                    let mut cmd = Command::new(gammac);
+                    cmd.current_dir(root()).arg("test").arg("--diag-format=short").arg(format!("--mode={}", t.mode));
+                    if let Some(f) = &t.filter {
+                        cmd.arg(format!("--filter={}", f));
+                    }
+                    cmd.arg(t.root.strip_prefix(root()).unwrap()).stdin(std::process::Stdio::null());
+                    gammac_env(&mut cmd);
+                    let ran = common::output(&mut cmd).unwrap();
+                    let why = if ran.status.code() != Some(t.exit) {
+                        Some(format!(
+                            "exit status {:?}, expected {}:\n{}",
+                            ran.status.code(),
+                            t.exit,
+                            String::from_utf8_lossy(&ran.stderr)
+                        ))
+                    } else if ran.stdout != t.stdout {
+                        let (e, a) = (String::from_utf8_lossy(&t.stdout), String::from_utf8_lossy(&ran.stdout));
+                        let (_, line, e, a) = first_difference(&e, &a).unwrap_or_default();
+                        Some(format!("output differs at line {}:\nexpected: {}\n  actual: {}", line, e, a))
+                    } else {
+                        None
+                    };
+                    if let Some(why) = why {
+                        failures.lock().unwrap().push(format!("{}: {}", t.name, why));
+                    }
+                }
+            });
+        }
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    assert!(failures.is_empty(), "{} of {} programs failed:\n{}", failures.len(), tests.len(), failures.join("\n\n"));
+}
+
+/// `gammac test` and `gammac bench` print what `gamma test --backend=c` and `gamma bench`
+/// do, for a standard library module and for options and failures (timings masked).
+#[test]
+#[cfg(unix)]
+fn testing_matches_the_reference() {
+    let Gammac::Native(gammac) = gammac() else { return };
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cases.gm"),
+        "fib :: fn(n: u32) -> u32 => if n < 2 { n } else { fib(n - 1) + fib(n - 2) }\n\
+         test \"quick\" { print(\"hello\\n\") }\n\
+         test \"spins\" {\n n: u64 = 0\n while true { n = @black_box(n + 1) }\n}\n\
+         test \"fails\" {\n print(\"out\\n\")\n expect(false, \"nope\")\n}\n\
+         test \"traps\" {\n xs := [3]i32(1, 2, 3)\n print(\"{}\\n\", xs[@black_box(usize(7))])\n}\n\
+         bench \"fib\" { _ = @black_box(fib(12)) }\n",
+    )
+    .unwrap();
+    let cases_path = dir.join("cases.gm").to_str().unwrap().to_string();
+    // Masks every timing: a number followed by a unit of time.
+    let mask = |s: &[u8]| {
+        let s = String::from_utf8_lossy(s).into_owned();
+        let mut out = String::new();
+        let mut rest = s.as_str();
+        while let Some(i) = rest.find(|c: char| c.is_ascii_digit()) {
+            let tail = &rest[i..];
+            let n = tail.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(tail.len());
+            let after = tail[n..].trim_start_matches(' ');
+            let unit =
+                ["ns/run", "µs/run", "ms/run", "s/run", "µs", "ms", "s"].into_iter().find(|u| after.starts_with(u));
+            out.push_str(&rest[..i]);
+            match unit {
+                Some(u) if rest[..i].ends_with('(') || rest[..i].ends_with("in ") || u.ends_with("/run") => {
+                    out.push('T');
+                    rest = &after[u.len()..];
+                    // The spread and the number of runs of a benchmark vary too.
+                    if rest.starts_with(" (± ") {
+                        rest = &rest[rest.find(')').unwrap() + 1..];
+                    }
+                }
+                _ => {
+                    out.push_str(&tail[..n]);
+                    rest = &tail[n..];
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    };
+    let run = |reference: bool, command: &str, args: &[String]| {
+        let mut cmd = if reference { gamma() } else { Command::new(gammac) };
+        cmd.current_dir(root()).arg(command);
+        if reference && command == "test" {
+            cmd.arg("--backend=c");
+        }
+        cmd.args(args).stdin(std::process::Stdio::null());
+        gammac_env(&mut cmd);
+        let out = common::output(&mut cmd).unwrap();
+        (mask(&out.stdout), mask(&out.stderr), out.status.code())
+    };
+    let s = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let with = |a: &[&str]| {
+        let mut v = s(a);
+        v.push(cases_path.clone());
+        v
+    };
+    let jobs: Vec<(&str, Vec<String>)> = vec![
+        ("test", s(&["lib/std/str"])),
+        ("test", s(&["tests/conformance/test/bench_not_run.gm"])),
+        ("test", with(&["--timeout=0.5"])),
+        ("test", with(&["--timeout=0.5", "-j", "4", "--time", "--show-output"])),
+        ("test", with(&["--filter=fail", "--show-output"])),
+        ("test", with(&["--filter=none"])),
+        ("test", with(&["--mode=fast", "--filter=traps"])),
+        ("test", with(&["--all", "--filter=quick"])),
+        ("bench", with(&["--filter=fib"])),
+        ("bench", with(&["--time"])),
+    ];
+    for (command, args) in jobs {
+        let want = run(true, command, &args);
+        let got = run(false, command, &args);
+        assert_eq!(want, got, "{} {:?}", command, args);
+    }
+    // Options gammac does not have are usage errors.
+    for bad in ["--backend=interp", "--backend=cranelift", "--coverage", "--package=x", "--target=x86_64-linux-gnu"] {
+        let out = common::output(Command::new(gammac).current_dir(root()).args(["test", bad, "x.gm"])).unwrap();
+        assert_eq!(out.status.code(), Some(2), "{}", bad);
+    }
+}

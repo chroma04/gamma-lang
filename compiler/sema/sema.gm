@@ -62,6 +62,16 @@ pub DeclState :: union {
     Done: DeclValue
 }
 
+/// A test or benchmark.
+pub TestCase :: struct {
+    pub name: string
+    /// The path of its module's directory relative to its package's root, if it is not
+    /// the root module.
+    pub module: ?string
+    /// The function that runs it (for a benchmark: the function to give `entry_point`).
+    pub entry: u32
+}
+
 /// A parameter of a function signature or of an effect operation.
 pub ParamInfo :: struct {
     pub name: string
@@ -366,6 +376,10 @@ pub Sema :: struct {
     pub export_fns: List(u32)
     /// The program's `#trap_hook` function (§3.7.1).
     pub trap_hook: ?u32
+    /// The tests and benchmarks checked (§3.8, §3.9), the root module's first, then each
+    /// other module's in the order of their paths.
+    pub tests: List(TestCase)
+    pub benches: List(TestCase)
     /// By effect id; the first is the pseudo-effect of `..E` terms.
     pub effects: List(EffectInfo)
     pub adts: List(AdtInfo)
@@ -488,6 +502,8 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         exports: list(string),
         export_fns: list(u32),
         trap_hook: null,
+        tests: list(TestCase),
+        benches: list(TestCase),
         effects: list(EffectInfo),
         adts: list(AdtInfo),
         params: list(ParamData),

@@ -7,7 +7,7 @@ diag :: import "../diag"
 lint :: import "../lint"
 
 /// What gammac was asked to do.
-pub Command :: union { Lex, Parse, Modules, Decls, Tir, Check, Lint, Fix, Build, Run }
+pub Command :: union { Lex, Parse, Modules, Decls, Tir, Check, Lint, Fix, Build, Run, Test, Bench }
 
 /// The build modes of §1.4 that gammac has (Safe needs Fil-C).
 pub Mode :: union { Debug, Checked, Fast }
@@ -27,6 +27,18 @@ pub Options :: struct {
     pub debug_info: bool = false
     /// `run`: the arguments after the file, for the program.
     pub program_args: []const string = empty_slice(string)
+    /// `test`, `bench`: only the tests whose name or module path contains this text.
+    pub filter: ?string = null
+    /// `test`, `bench`: also the tests of the modules of the package that nothing imports.
+    pub all: bool = false
+    /// `test`, `bench`: also print the output of the tests that pass.
+    pub show_output: bool = false
+    /// `test`: how many tests run at once (never 0).
+    pub jobs: usize = 1
+    /// `test`, `bench`: the longest a test may run, in seconds.
+    pub timeout: ?f64 = null
+    /// `test`, `bench`: print how long each test took and the total.
+    pub time: bool = false
     /// `lint`: the options of the command.
     pub lint: lint.Options
 }

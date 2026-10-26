@@ -41,9 +41,16 @@ compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool ne
         return false
     }
     .Fn(main) := s.resolve_decl(d) else return false
-    entry := check.entry_point(s, main)
+    entries := [1]u32(check.entry_point(s, main))
+    return compile_entries(s, entries[..], false, exe, opts)
+}
+
+/// Compiles the checked program to the executable `exe`. With `select`, `entries` are
+/// several functions, and the executable runs the one whose index is its first argument;
+/// otherwise it is the one function the executable runs.
+pub compile_entries :: fn(s: ^sema.Sema, entries: []const u32, select: bool, exe: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
     roots := list(u32)
-    roots.push(entry)!
+    roots.extend(entries)!
     roots.extend(s.export_fns.items)!
     if not check.prepare_codegen(s, roots.items) { return false }
     p := cgen.prog(s)
@@ -56,7 +63,8 @@ compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool ne
     if opts.debug_info and p.target.os in ("Linux", "FreeBSD") {
         copts.gdb_printers = runtime_text("gdb_printers.py") else return false
     }
-    generated := cgen.generate(&p, entry, copts) else u => {
+    result := if select { cgen.generate_tests(&p, entries, copts) } else { cgen.generate(&p, entries[0], copts) }
+    generated := result else u => {
         place: string = if u.span is source.DUMMY { "" } else {
             file := s.l.sm.file(u.span.file)
             lc := file.line_col(u.span.lo)

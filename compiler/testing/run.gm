@@ -1,0 +1,133 @@
+//! `gammac test` and `gammac bench`: running the `test` and `bench` declarations of a
+//! program (§3.8, §3.9), compiled into one native executable, in order or in parallel,
+//! with timing when asked for (mirrors `src/testing.rs`, for the C back end).
+
+arena :: import "std/arena"
+check :: import "../check"
+driver :: import "../driver"
+fs :: import "std/fs"
+load :: import "../load"
+math :: import "std/math"
+process :: import "std/process"
+sema :: import "../sema"
+str :: import "std/str"
+thread :: import "std/thread"
+
+/// Whether `t` is selected by `--filter`: its name or module path contains the filter text.
+selected :: fn(t: sema.TestCase, filter: ?string) -> bool {
+    f := filter else return true
+    if str.contains(t.name, f) { return true }
+    m := t.module else return false
+    return str.contains(m, f)
+}
+
+/// `gammac test` and `gammac bench`: runs each test (or benchmark) of the checked program
+/// (the root module's, and those of the modules of its package that it imports; all of
+/// them with `--all`) with captured output (§3.8). A failing test's output and failure
+/// reason are printed below its line. Returns the exit status.
+pub run :: fn(s: ^sema.Sema, opts: driver.Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    bench := opts.command is .Bench
+    cases := if bench { s.benches.items } else { s.tests.items }
+    chosen := list(usize)
+    for i, c in enumerate(cases) {
+        if selected(c, opts.filter) { chosen.push(i)! }
+    }
+    filtered_out: ?usize = null
+    if opts.filter is not null { filtered_out = cases.len - chosen.items.len }
+    report := Report(bench: bench, filtered_out: filtered_out, show_output: opts.show_output, time: opts.time, started: Clock.now().ns)
+    run_native(s, opts, cases, chosen.items, bench, &report) else return 1
+    return finish(&report)
+}
+
+/// Compiles the chosen tests into one executable, which runs the test whose position among
+/// them it is given, and runs it once per test, recording each result in `report`. Fails
+/// if the executable cannot be built, reporting why.
+run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCase, chosen: []const usize, bench: bool, report: ^Report) -> ?() needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    entries := list(u32)
+    for i in chosen {
+        // A benchmark runs under the system's handlers, as `main` does.
+        entry := cases[i].entry
+        entries.push(if bench { check.entry_point(s, entry) } else { entry })!
+    }
+    buf: [4096]u8 = ---
+    dir := fs.make_temp_dir(fs.temp_dir(), if bench { "gammac-bench-" } else { "gammac-test-" }, buf[..]) else {
+        eprint("gammac: cannot create a temporary directory in `{}`\n", fs.temp_dir())
+        return null
+    }
+    defer _ = fs.remove_all(dir)
+    exe := load.join(dir, "tests")
+    if not driver.compile_entries(s, entries.items, true, exe, opts) { return null }
+    // Benchmarks time themselves, so they take turns.
+    jobs := if bench { 1 } else { opts.jobs }
+    run_all(exe, cases, chosen, jobs, opts.timeout, report)
+    return ()
+}
+
+/// What the threads that run tests share: the next test to take and the results so far.
+Pool :: struct {
+    exe: string
+    timeout: ?f64
+    /// The number of tests, and the next one to run.
+    n: usize
+    next: usize
+    results: List(?Finished)
+    lock: thread.Mutex
+    ready: thread.Condvar
+}
+
+/// Runs the tests `chosen` of `cases` with the executable `exe`, `jobs` at a time, and
+/// hands each result to `report` in the order of the tests, as soon as it and all before it
+/// are done.
+run_all :: fn(exe: string, cases: []const sema.TestCase, chosen: []const usize, jobs: usize, timeout: ?f64, report: ^Report) needs Alloc + Clock + Out + Proc + Sys {
+    n := chosen.len
+    threads := list(thread.Thread)
+    pool := Pool(exe: exe, timeout: timeout, n: n, next: 0, results: list(?Finished), lock: thread.mutex(), ready: thread.condvar())
+    if jobs > 1 and n > 1 {
+        for _ in 0..n { pool.results.push(null)! }
+        for _ in 0..(if jobs < n { jobs } else { n }) {
+            t := thread.spawn(worker, &pool) else break
+            threads.push(t)!
+        }
+    }
+    if threads.items.len is 0 {
+        for j in 0..n { report.record(cases[chosen[j]], run_exe(exe, j, timeout)) }
+        return
+    }
+    for j in 0..n {
+        thread.lock(&pool.lock)
+        while pool.results.items[j] is null { thread.wait(&pool.ready, &pool.lock) }
+        f := pool.results.items[j] else @unreachable()
+        thread.unlock(&pool.lock)
+        report.record(cases[chosen[j]], f)
+    }
+    for t in threads.items { thread.join(t) }
+}
+
+/// A thread that takes tests in turn until none are left.
+worker :: fn(p: ^Pool) needs Sys {
+    with heap_allocator(), system_io(), system_output() {
+        while true {
+            thread.lock(&p.lock)
+            j := p.next
+            p.next += 1
+            thread.unlock(&p.lock)
+            if j >= p.n { break }
+            f := run_exe(p.exe, j, p.timeout)
+            thread.lock(&p.lock)
+            p.results.items[j] = f
+            thread.broadcast(&p.ready)
+            thread.unlock(&p.lock)
+        }
+    }
+}
+
+test "selection by filter" {
+    a := sema.TestCase(name: "parse digits", module: null, entry: 0)
+    b := sema.TestCase(name: "other", module: "lib/json", entry: 1)
+    expect(selected(a, null))
+    expect(selected(a, "digits"))
+    expect(not selected(a, "json"))
+    expect(selected(b, "json"))
+    expect(selected(b, "oth"))
+    expect(not selected(b, "digits"))
+}

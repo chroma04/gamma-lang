@@ -104,6 +104,18 @@ pub Generated :: struct {
 
 /// Translates the program to C source whose `main` runs `entry`.
 pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs sema.Load {
+    entries := [1]u32(entry)
+    return generate_entries(p, entries[..], false, opts)
+}
+
+/// Translates the program to C source whose `main` runs one of `entries`, chosen by the
+/// decimal index in its first command-line argument (`gammac test`). Each entry runs
+/// exactly as the entry of `generate` does.
+pub generate_tests :: fn(p: ^Prog, entries: []const u32, opts: Options) -> Unsup!Generated needs sema.Load {
+    return generate_entries(p, entries, true, opts)
+}
+
+generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Options) -> Unsup!Generated needs sema.Load {
     g := Gen(
         prog: p,
         ty: ctypes(p.s, p.target),
@@ -130,13 +142,12 @@ pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs
         cell_ids: hash_map.hash_map(usize, u32),
     )
     g.ty.debug_names = opts.debug_info
-    g.queue(entry)
+    for entry in entries { g.queue(entry) }
     for f in p.s.export_fns.items { g.queue(f) }
     try g.drain()
     consts := try g.gen_consts()
     exports := try g.gen_exports()
-    entries := [1]u32(entry)
-    main := try g.gen_main(entries[..], false)
+    main := try g.gen_main(entries, select)
     checks := str.format("GM_API int gm_checks = {};\n", if opts.checks { 1 } else { 0 })!
     head := list(u8)
     head.extend(SUPPORT)!
