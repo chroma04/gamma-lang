@@ -2350,6 +2350,7 @@ fn run_and_runtime_caches_match_the_reference() {
     assert_eq!(files("ref"), files("new"), "`cache clean` removed different files");
 }
 
+#[cfg(unix)]
 /// `text` with the numbers that depend on the order functions are checked in replaced by
 /// `N`: `gm_f12` and `gm_f12_s3` become `gm_fN`, `gm_c4_1` becomes `gm_cN`.
 fn normalize_c_names(text: &str) -> String {
@@ -2393,6 +2394,7 @@ fn normalize_c_names(text: &str) -> String {
     out
 }
 
+#[cfg(unix)]
 /// A function of generated C: its name, its text, and its text with the numbers that depend on
 /// the order functions are checked in replaced.
 struct CFunction {
@@ -2401,6 +2403,7 @@ struct CFunction {
     normalized: String,
 }
 
+#[cfg(unix)]
 /// The functions of generated C. `gammac` numbers functions in the order it checks them, so
 /// the two compilers are compared on the set of normalized function bodies.
 fn c_functions(c: &str) -> Vec<CFunction> {
@@ -2434,6 +2437,7 @@ fn c_functions(c: &str) -> Vec<CFunction> {
     functions
 }
 
+#[cfg(unix)]
 /// The names of the functions and hash functions `text` mentions: `gm_f12`, `gm_f12_s3`, `gm_hash4`.
 fn mentioned_functions(text: &str) -> Vec<String> {
     let mut names = Vec::new();
