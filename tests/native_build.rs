@@ -348,3 +348,81 @@ fn run_relinks_when_a_foreign_library_changes() {
     make_lib(7);
     assert_eq!(run(), "7\n");
 }
+
+/// What a program prints reaches its reader before the program waits on the outside, here
+/// a channel that another thread fills from standard input (§21.7). Without that, a program
+/// that answers requests (a language server) would never send its answer.
+#[cfg(unix)]
+#[test]
+fn output_is_flushed_before_waiting() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    if !c_compiler_available() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-build").join("flush_before_wait");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("ping.gm");
+    std::fs::write(&src, PING).unwrap();
+    for backend in ["--backend=interp", "--backend=c"] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_gamma"))
+            .args(["run", backend])
+            .arg(&src)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let (tx, rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut first = String::new();
+            out.read_line(&mut first).unwrap();
+            tx.send(first).unwrap();
+            let mut rest = String::new();
+            out.read_to_string(&mut rest).unwrap();
+            rest
+        });
+        let first = rx.recv_timeout(Duration::from_secs(60));
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"A").unwrap();
+        drop(stdin);
+        let rest = reader.join().unwrap();
+        assert!(child.wait().unwrap().success(), "{backend}");
+        assert_eq!(first.as_deref(), Ok("ping\n"), "{backend}: the output came only after the input");
+        assert_eq!(rest, "got 65\n", "{backend}");
+    }
+}
+
+const PING: &str = "\
+thread :: import \"std/thread\"
+
+Shared :: struct {
+    ch: thread.Channel(u8)
+    reading: u32
+}
+
+reader :: fn(s: ^Shared) needs Sys {
+    thread.defaults(fn() needs In {
+        @atomic_store(&s.reading, 1, .Release)
+        buf: [1]u8 = ---
+        n := In.read(buf[..]) else 0
+        _ = s.ch.send(if n is 1 { buf[0] } else { 0 })
+    })
+}
+
+main :: fn() needs Out + Alloc + Clock + Sys {
+    s := Shared(ch: thread.channel(u8, 1)!, reading: 0)
+    t := thread.spawn(reader, &s)!
+    // Print only once the reader waits on its input, so that its read does not flush.
+    while @atomic_load(&s.reading, .Acquire) is 0 { thread.yield_now() }
+    start := Clock.now()
+    while Clock.now().since(start).ns < 20_000_000 { thread.yield_now() }
+    print(\"ping\\n\")
+    b := s.ch.recv() else 0
+    print(\"got {}\\n\", b)
+    thread.join(t)
+}
+";

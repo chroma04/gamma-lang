@@ -1,0 +1,49 @@
+// An array stands for a `[]const T` at every coercion site (§6.4), and a temporary array
+// can be sliced (§7.9); the temporary is held until the end of the block of its
+// statement, or of the statement containing a block whose value it gives (§15.1).
+Options :: struct {
+    flags: []const string
+    level: i64 = 0
+}
+
+total :: fn(xs: []const i64) -> i64 {
+    s: i64 = 0
+    for x in xs { s += x }
+    return s
+}
+
+first :: fn(xs: []const i64) -> i64 => xs[0]
+
+pick :: fn(c: bool) -> i64 {
+    xs: []const i64 = if c { [_]i64(1, 2) } else { [_]i64(3, 4, 5) }
+    return total(xs)
+}
+
+main :: fn() needs Out {
+    // A binding, a struct field and a slice of a temporary.
+    args: []const string = [2]string("build", "--release")
+    opts := Options(flags: [_]string("-O2", "-g"), level: 2)
+    print("{} {} {} {}\n", args.len, args[1], opts.flags[0], opts.flags.len)
+    tail := [_]i64(1, 2, 3, 4)[1..]
+    print("{} {}\n", tail.len, total(tail))
+    // Arguments, as before, and an `else` fallback.
+    print("{}\n", total([_]i64(4, 5)))
+    o: ?[]const i64 = null
+    ys := o else [_]i64(7, 8)
+    print("{}\n", total(ys))
+    // `if` arms whose value is the array: it lives until the end of this block.
+    print("{} {}\n", pick(true), pick(false))
+    // In a loop, each iteration has its own array.
+    for i in 0..3 {
+        zs: []const i64 = [_]i64(i, i * 10)
+        print("{} ", total(zs))
+    }
+    print("\n")
+    // An assignment in the same block as the variable.
+    w: []const i64 = [_]i64(1)
+    w = [_]i64(2, 3, 4)
+    print("{} {}\n", w.len, first(w))
+    // A function literal's body.
+    f := fn(n: i64) -> i64 => total([_]i64(n, n, n))
+    print("{}\n", f(5))
+}

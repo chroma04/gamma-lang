@@ -1,0 +1,30 @@
+//! stage: check
+// A temporary array used as a slice lives until the end of its block (§15.1): a slice
+// of it may not be returned or stored where it outlives the block, and it is read-only
+// (§7.9).
+Options :: struct { flags: []const string }
+
+ret :: fn() -> []const i64 {
+    return [_]i64(1, 2)             //~ ERROR returns a slice of a temporary array
+}
+ret_expr :: fn() -> []const i64 => [_]i64(1, 2)[..]   //~ ERROR returns a slice of a temporary array
+ret_inside :: fn() -> Options {
+    return Options(flags: [_]string("a"))   //~ ERROR is returned, but the array ends
+}
+stored :: fn() {
+    xs: []const i64 = [_]i64(0)
+    for i in 0..3 {
+        xs = [_]i64(i)              //~ ERROR is stored where it outlives the array
+    }
+    _ = xs
+}
+fill :: fn(xs: []i64) { xs[0] = 9 }
+mutable :: fn() {
+    fill([_]i64(3, 1)[..])          //~ ERROR found `[]const i64`
+    ys: []i64 = [_]i64(3, 1)        //~ ERROR found `[2]i64`
+    _ = ys
+}
+WHOLE :: [_]i64(1, 2)
+KEPT : []const i64 : [_]i64(1, 2)   //~ ERROR does not outlive compile-time evaluation
+SLICED :: WHOLE[..]
+main :: fn() { _ = SLICED }

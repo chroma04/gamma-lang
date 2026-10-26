@@ -149,11 +149,26 @@ impl<'a> Machine<'a> {
         let int = |m: &Self, t: Ty, n: i128| {
             Value::Bytes(m.int_bytes(t, &super::num::Int::from_big(num_bigint::BigInt::from(n))))
         };
+        // What the program has written is out before it waits on the outside (§12.9).
+        if matches!(
+            op,
+            SysOp::Read
+                | SysOp::Sleep
+                | SysOp::FsRead
+                | SysOp::NetConnect
+                | SysOp::NetAccept
+                | SysOp::NetRecv
+                | SysOp::ProcReadOut
+                | SysOp::ProcWait
+                | SysOp::ThreadJoin
+                | SysOp::FutexWait
+        ) {
+            let _ = self.out.as_mut().map(|w| w.flush());
+        }
         match op {
             SysOp::Read => {
                 let (ptr, len) = self.slice_parts(&vals[0]);
                 let mut buf = self.dest_buf(span, ptr, len)?;
-                let _ = self.out.as_mut().map(|w| w.flush());
                 let r = self.without_gil(|| {
                     loop {
                         match std::io::stdin().lock().read(&mut buf) {

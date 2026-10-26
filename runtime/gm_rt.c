@@ -2010,6 +2010,7 @@ GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
 GM_API int64_t gm_fs_close(int64_t f) { return GM_RET_ERR(close((int)f) != 0); }
 
 GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n) {
+    gm_flush();
     for (;;) {
         ssize_t r = read((int)f, p, n);
         if (r >= 0) return (int64_t)r;
@@ -2284,6 +2285,7 @@ static int gm_socket(const struct addrinfo *a) {
 }
 
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+    gm_flush();
     int64_t err = 0;
     struct addrinfo *res = gm_resolve(host, len, port, false, &err);
     if (res == NULL) return err;
@@ -2345,6 +2347,7 @@ GM_API int64_t gm_net_local_port(int64_t h) {
 }
 
 GM_API int64_t gm_net_accept(int64_t h) {
+    gm_flush();
     for (;;) {
 #if defined(__linux__) && !defined(__FILC__)
         int fd = accept4((int)h, NULL, NULL, SOCK_CLOEXEC);
@@ -2384,6 +2387,7 @@ GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
 }
 
 GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) {
+    gm_flush();
     for (;;) {
         ssize_t r = recv((int)h, p, n, 0);
         if (r >= 0) return (int64_t)r;
@@ -2733,6 +2737,7 @@ GM_API int64_t gm_proc_close_in(int64_t h) {
 }
 
 GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
+    gm_flush();
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
     int64_t r = gm_proc_read(p, buf, n);
@@ -2777,6 +2782,7 @@ static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
 }
 
 GM_API int64_t gm_proc_wait(int64_t h) {
+    gm_flush();
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
     gm_rt_acquire();
@@ -2987,6 +2993,7 @@ GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
 GM_API int64_t gm_fs_close(int64_t f) { return GM_RET_ERR(_close((int)f) != 0); }
 
 GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n) {
+    gm_flush();
     for (;;) {
         int r = _read((int)f, p, (unsigned)(n < GM_CHUNK ? n : GM_CHUNK));
         if (r >= 0) return (int64_t)r;
@@ -3277,6 +3284,7 @@ static SOCKET gm_wsocket(const struct addrinfo *a) {
 }
 
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+    gm_flush();
     int64_t err = 0;
     struct addrinfo *res = gm_resolve(host, len, port, false, &err);
     if (res == NULL) return err;
@@ -3323,6 +3331,7 @@ GM_API int64_t gm_net_local_port(int64_t h) {
 }
 
 GM_API int64_t gm_net_accept(int64_t h) {
+    gm_flush();
     for (;;) {
         SOCKET fd = accept((SOCKET)h, NULL, NULL);
         if (fd != INVALID_SOCKET) {
@@ -3349,6 +3358,7 @@ GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
 }
 
 GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) {
+    gm_flush();
     for (;;) {
         int r = recv((SOCKET)h, (char *)p, (int)(n < GM_CHUNK ? n : GM_CHUNK), 0);
         if (r >= 0) return (int64_t)r;
@@ -3690,6 +3700,7 @@ static int gm_pipe_ready(HANDLE h) {
 static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n);
 
 GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
+    gm_flush();
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
     int64_t r = gm_proc_read(p, buf, n);
@@ -3726,6 +3737,7 @@ static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
 }
 
 GM_API int64_t gm_proc_wait(int64_t h) {
+    gm_flush();
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
     gm_rt_acquire();
@@ -4125,6 +4137,7 @@ static gm_thread *gm_thread_take(int64_t h) {
 }
 
 GM_API int64_t gm_thread_join(int64_t h) {
+    gm_flush();
     gm_thread *t = gm_thread_take(h);
     if (t == NULL) return gm_io_error(EBADF);
     int r = pthread_join(t->t, NULL);
@@ -4152,6 +4165,7 @@ GM_API void gm_thread_yield(void) { sched_yield(); }
 
 #if defined(__linux__) && defined(SYS_futex) && !defined(__FILC__)
 GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    gm_flush();
     struct timespec ts, *tp = NULL;
     if (timeout_ns >= 0) {
         ts.tv_sec = (time_t)(timeout_ns / 1000000000);
@@ -4174,6 +4188,7 @@ extern int __ulock_wait(uint32_t op, void *addr, uint64_t value, uint32_t timeou
 extern int __ulock_wake(uint32_t op, void *addr, uint64_t wake_value);
 
 GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    gm_flush();
     uint64_t us = timeout_ns < 0 ? 0 : (uint64_t)timeout_ns / 1000 + 1;
     if (us > 0xffffffffu) us = 0xffffffffu;
     /* UL_COMPARE_AND_WAIT; a timeout of 0 means forever */
@@ -4190,6 +4205,7 @@ GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
 #else
 /* No futex: poll the word, sleeping a little between looks. */
 GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    gm_flush();
     int64_t waited = 0;
     while (__atomic_load_n(addr, __ATOMIC_ACQUIRE) == expected) {
         if (timeout_ns >= 0 && waited >= timeout_ns) break;
@@ -4306,6 +4322,7 @@ static gm_thread *gm_thread_take(int64_t h) {
 }
 
 GM_API int64_t gm_thread_join(int64_t h) {
+    gm_flush();
     gm_thread *t = gm_thread_take(h);
     if (t == NULL) return gm_io_error(EBADF);
     WaitForSingleObject(t->t, INFINITE);
