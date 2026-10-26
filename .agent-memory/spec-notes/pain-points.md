@@ -57,3 +57,8 @@ dangling stores are now compile errors (decisions/045).
   already allowed with `:=` in chains. Watch.
 - **`for x in (a, b)` over a homogeneous tuple** not accepted (s45 W-fmt, once): use an array.
 - **`assert` takes no message/format args; no `{:?}` escaped-debug spec** (s45 W-fmt, tests).
+- **No realpath/canonicalize in std/fs** (s45 W-doc): module names from symlinked paths
+  differ from gamma's. Library gap; candidate `fs.canonical(path)`.
+- **No Unicode-aware trim/split_whitespace in std/str** (s45 W-fmt and W-doc both
+  hand-wrote them: 2x) → candidate for std/text. **`is !e` cannot bind** (W-doc).
+  **load/paths.gm helpers not pub** (fixed by making them pub if reused).
