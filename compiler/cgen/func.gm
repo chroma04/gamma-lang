@@ -1133,8 +1133,9 @@ frame_locals :: fn(g: ^Gen, f: u32) -> []bool needs Alloc {
         return out.items
     }
     set := captured_locals(g)
+    filc := g.ty.lay.target.filc
     for i, l in enumerate(def.locals) {
-        out.push(g.ty.size(l.ty) > MAX_C_LOCAL or set.get((f, i.trunc(u32))) is not null)!
+        out.push((not filc and g.ty.size(l.ty) > MAX_C_LOCAL) or set.get((f, i.trunc(u32))) is not null)!
     }
     return out.items
 }

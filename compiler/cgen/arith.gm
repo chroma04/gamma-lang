@@ -661,7 +661,7 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
             // program with thousands of sites would give the C compiler thousands of slots
             // to lay out); any other value goes through memory behind a volatile pointer.
             c := fg.g.ty.cty(t)
-            in_register: bool = match fg.g.ty.repr(t) {
+            in_register: bool = not fg.g.ty.lay.target.filc and match fg.g.ty.repr(t) {
                 .Int(_, _, storage) => storage <= 8
                 .Bool => true
                 _ => false
