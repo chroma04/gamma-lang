@@ -191,7 +191,8 @@ and run it once per test with captured output. They print what `gamma test --bac
 and `gamma bench` print, with the same options: `--filter=`, `--all`, `--show-output`,
 `--jobs=N` / `-j N` (0: one per processor; the output stays in order), `--timeout=SECONDS`,
 `--time`, `--mode=` and `--diag-format=`. A benchmark builds in fast mode unless `--mode`
-is given. `--backend=interp|cranelift`, `--coverage`, `--package` and `--target` are
+is given. `--package=NAME` tests a dependency of the input's package (or one of its
+dependencies) instead. `--backend=interp|cranelift`, `--coverage` and `--target` are
 usage errors. A test that exceeds `--timeout` is killed by a watching thread, which
 cannot reach processes the test started or a test that closed its output and then ran on.
 `tests/selfhost.rs` runs the `test` conformance tests through `gammac test` and compares
@@ -256,9 +257,8 @@ tests (as `gamma test` would), and, in a package, with the other modules of the 
 Warnings carry their rule: `warning[unused-variable]: …` in the human and short formats,
 and a `code` field in JSON. Messages that name the tool (`gamma: applied 2 fixes in 1
 file`, `gamma lint: 3 warnings`) keep the reference's text, so that output compares
-equal. Differences: `--target` is not an option of `gammac`, `--offline` and `--locked`
-are accepted but linting does not fetch dependencies, and messages for bad command lines
-start `gammac:`.
+equal. Differences: `--target` is not an option of `gammac`, and messages for bad command
+lines start `gammac:`.
 `tests/selfhost.rs` compares `gammac lint` with `gamma lint` in the JSON format on every
 program root at the default levels and with `--warn=all`, and `gammac fix` and `gammac
 lint --fix` on scratch copies of the single-file conformance programs, comparing the
@@ -279,8 +279,8 @@ words them, as far as a manifest can have them. `edit.gm` edits the lines of the
 instead of a document tree, which keeps comments and layout the same for the manifests
 the commands handle (line ends are written as `\n`, as the reference does).
 
-`gammac check`, `build` and `run` fetch what the lock file does not cover before they
-load the program, take `--offline`, `--locked` and `--profile=NAME`, and apply the
+`gammac check`, `build`, `run`, `test`, `bench`, `lint` and `fix` fetch what the lock
+file does not cover before they load the program, take `--offline`, `--locked` and `--profile=NAME`, and apply the
 `[build]` table and the profile of the root package's `gamma.toml`: `mode` (under
 `--mode`), `cflags` and `ldflags` (before `CFLAGS` and `LDFLAGS`), and, in a native build,
 the `c-sources`, `include-dirs`, `libs` and `lib-dirs` of the package and its
@@ -289,8 +289,7 @@ each with the include directories of its own package. `CC` may hold arguments.
 
 Differences: `gammac` has no Safe mode, so `mode = "safe"` is an error for `build` and
 `run` (and `check` analyzes as Checked); `debug-info` of the manifest follows `-g`;
-`lint` and `fix` do not fetch dependencies, so a package with git or archive dependencies
-needs a `gammac fetch` first; `gammac modules`, `decls` and `tir` do not look at the lock
+`gammac modules`, `decls` and `tir` do not look at the lock
 file, as the reference's do not; there is no object cache, so `cache clean` has no
 runtime objects to count; and messages start `gammac:`.
 `tests/selfhost.rs` runs both programs over the same steps in two scratch directories

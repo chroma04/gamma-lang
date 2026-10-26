@@ -1460,7 +1460,7 @@ fn testing_matches_the_reference() {
         assert_eq!(want, got, "{} {:?}", command, args);
     }
     // Options gammac does not have are usage errors.
-    for bad in ["--backend=interp", "--backend=cranelift", "--coverage", "--package=x", "--target=x86_64-linux-gnu"] {
+    for bad in ["--backend=interp", "--backend=cranelift", "--coverage", "--target=x86_64-linux-gnu"] {
         let out = common::output(Command::new(gammac).current_dir(root()).args(["test", bad, "x.gm"])).unwrap();
         assert_eq!(out.status.code(), Some(2), "{}", bad);
     }
@@ -1934,4 +1934,81 @@ fn build_settings_match_the_reference() {
     t.both("app3", &["build", ".", "-o", "a3"]);
     let built = Command::new(t.dir("new").join("app3/a3")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&built.stdout), "42 1000\n");
+}
+
+/// `test`, `lint` and `fix` fetch the dependencies too, and `test --package` tests a
+/// dependency of the input's package.
+#[test]
+#[cfg(unix)]
+fn dependencies_of_tests_lint_and_fix_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("deps");
+    let manifest = |name: &str, deps: &str| format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n{deps}");
+    t.write("app/gamma.toml", &manifest("app", "\n[dependencies]\ndep = { path = \"../dep\" }\n"));
+    t.write("dep/gamma.toml", &manifest("dep", "\n[dependencies]\nleaf = { path = \"../leaf\" }\n"));
+    t.write("leaf/gamma.toml", &manifest("leaf", ""));
+    t.write("leaf/leaf.gm", "pub two :: fn() -> i32 => 2\ntest \"two\" { expect(two() is 2, \"two\") }\n");
+    t.write(
+        "dep/dep.gm",
+        "leaf :: import \"leaf\"\npub three :: fn() -> i32 => leaf.two() + 1\n\
+         test \"three\" { expect(three() is 3, \"three\") }\ntest \"four\" { expect(three() is 4, \"four\") }\n",
+    );
+    t.write(
+        "app/main.gm",
+        "dep :: import \"dep\"\nmain :: fn() needs Out {\n    x := 1\n    print(\"{}\\n\", dep.three())\n}\n\
+         test \"app\" { expect(dep.three() is 3, \"app\") }\n",
+    );
+    for args in [
+        &["test", "main.gm"][..],
+        &["test", "--package=dep", "main.gm"],
+        &["test", "--package=leaf", "--filter=two", "main.gm"],
+        &["test", "--package=nope", "main.gm"],
+        &["test", "--package=dep", "/"],
+        &["lint", "main.gm"],
+        &["fix", "main.gm"],
+    ] {
+        t.both("app", args);
+    }
+    t.same_files("app");
+    // A git dependency that is not fetched yet: `--offline` refuses, and otherwise the
+    // commands fetch and lock it first.
+    if !have_vcs() {
+        eprintln!("skipped the git part: git is not installed");
+        return;
+    }
+    for side in ["ref", "new"] {
+        let repo = t.dir(side).join("remote");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("gamma.toml"), manifest("remote", "")).unwrap();
+        std::fs::write(
+            repo.join("remote.gm"),
+            "pub one :: fn() -> i32 => 1\ntest \"one\" { expect(one() is 1, \"one\") }\n",
+        )
+        .unwrap();
+        vcs(&repo, &["init", "-q"]);
+        vcs(&repo, &["add", "-A"]);
+        vcs(&repo, &["commit", "-q", "-m", "one"]);
+        vcs(&repo, &["tag", "v1.0.0"]);
+        let url = format!("file://{}", repo.display());
+        std::fs::create_dir_all(t.dir(side).join("app2")).unwrap();
+        std::fs::write(
+            t.dir(side).join("app2/gamma.toml"),
+            manifest("app2", &format!("\n[dependencies]\nremote = {{ git = \"{url}\", tag = \"v1.0.0\" }}\n")),
+        )
+        .unwrap();
+    }
+    t.write(
+        "app2/main.gm",
+        "remote :: import \"remote\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", remote.one())\n}\n",
+    );
+    for args in
+        [&["lint", "--offline", "main.gm"][..], &["fix", "--locked", "main.gm"], &["test", "--offline", "main.gm"]]
+    {
+        t.both("app2", args);
+    }
+    t.both("app2", &["lint", "main.gm"]);
+    t.same_files("app2");
+    t.write("app2/gamma.lock", "");
+    t.both("app2", &["test", "--package=remote", "main.gm"]);
+    t.same_files("app2");
 }

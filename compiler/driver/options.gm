@@ -42,6 +42,8 @@ pub Options :: struct {
     pub timeout: ?f64 = null
     /// `test`, `bench`: print how long each test took and the total.
     pub time: bool = false
+    /// `test`, `bench`: test the dependency of this name instead of the input's package.
+    pub package: ?string = null
     /// `check`, `build`, `run`: never use the network for dependencies (`--offline`), fail
     /// if `gamma.lock` is not up to date (`--locked`), and the `[profile.NAME]` to use.
     pub offline: bool = false
