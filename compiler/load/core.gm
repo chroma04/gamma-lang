@@ -23,13 +23,11 @@ pub load_core :: fn(l: ^Loader, dir: string, mode: string) -> bool needs Alloc +
     l.prelude = prelude
     l.load_target_module(prelude, mode)
     l.bind_module(prelude, "core", prelude)
-    list_exports := [2]string("List", "list")
-    complex_exports := [1]string("Complex")
     modules := [4]CoreModule(
-        CoreModule(name: "list", exports: list_exports[..], bind: false),
+        CoreModule(name: "list", exports: [2]string("List", "list"), bind: false),
         CoreModule(name: "map", exports: empty_slice(string), bind: true),
         CoreModule(name: "slice", exports: empty_slice(string), bind: false),
-        CoreModule(name: "complex", exports: complex_exports[..], bind: false),
+        CoreModule(name: "complex", exports: [1]string("Complex"), bind: false),
     )
     for c in modules {
         m := l.load_core_module(dir, c.name, str.format("core/{}", c.name)!) else return false

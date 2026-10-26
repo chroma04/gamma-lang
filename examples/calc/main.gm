@@ -36,8 +36,7 @@ report :: fn(e: CalcError) needs Out {
     print("^ ")
     match e.kind {
         .UnexpectedChar(c) => {
-            one := [1]u8(fill: c)
-            shown: string = one[..]
+            shown: string = [1]u8(fill: c)
             print("unexpected character '{}'\n", shown)
         }
         .BadNumber => print("malformed number\n")

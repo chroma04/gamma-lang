@@ -201,30 +201,12 @@ pub reader :: fn(b: ^Inbox) needs Sys {
     }
 }
 
-/// Writes one message with its header. The standard output is buffered when it is a pipe
-/// and nothing flushes it, so the messages go to the file `out`, which writes at once (the
-/// standard output opened by name), when there is one.
-pub write_message :: fn(out: ?fs.File, body: string) needs Alloc + Fs + Out {
+/// Writes one message with its header. The output is handed to the system before the
+/// server waits for the next message (§12.9), so the client gets it without a flush.
+pub write_message :: fn(body: string) needs Alloc + Out {
     msg := list(u8)
     defer msg.deinit()
     msg.write("Content-Length: {}\r\n\r\n", body.len)!
     msg.extend(body)!
-    f := out else {
-        Out.write(msg.items)
-        return
-    }
-    done: usize = 0
-    while done < msg.items.len {
-        n := f.write(msg.items[done..]) else break
-        if n is 0 { break }
-        done += n
-    }
+    Out.write(msg.items)
 }
-
-/// The standard output as a file that is not buffered, if the system has one by name.
-pub open_stdout :: fn() -> ?fs.File needs Fs {
-    f := Fs.open("/dev/stdout", fs.OpenOptions(read: false, write: true, append: true)) else return null
-    return f
-}
-
-fs :: import "std/fs"

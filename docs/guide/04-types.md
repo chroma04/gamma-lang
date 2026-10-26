@@ -27,7 +27,7 @@ Array constructors are calls on the array type: `[N]T(e1, ..., eN)` with exactly
 third :: fn(a: [4]i32) -> i32 => a.get(2) else 0
 ```
 
-Unlike C, an array never decays to a pointer. Passing an array to a function that wants a slice is explicit: take a slice of it (`a[..]`) or a pointer to it (`&a`).
+Unlike C, an array never decays to a pointer. Where a read-only slice `[]const T` is expected, an array is a slice of all of it, so `total(scores)` and `opts := Options(flags: [_]string("-O2", "-g"))` need nothing more. A mutable slice is explicit: `a[..]` of a variable. A temporary array, such as the one in `Options(…)` above or in `[_]i64(1, 2, 3)[1..]`, is held until the end of the block of its statement, like a local declared there, and its slice is read-only.
 
 ### Vectors
 

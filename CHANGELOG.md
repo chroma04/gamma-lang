@@ -33,6 +33,16 @@ Versions and what each kind of change means are described in
 
 ### Language
 
+- An array is a slice of all of it wherever a `[]const T` is expected, not only as a call
+  argument (§6.4): `xs: []const i64 = [_]i64(1, 2)`, `Options(flags: [_]string("-g"))`.
+  Any temporary array can be sliced (`[_]i64(1, 2, 3)[1..]`), giving a read-only slice.
+  The temporary lives until the end of the block of its statement (§15.1), and returning a
+  slice of it, or storing one where it outlives that block, is an error.
+- The default `Out` handler hands what it buffered to the system before the program waits
+  on anything: a lock, condition variable or channel, a thread, a socket, a child process
+  or a file read, as it already did before reading standard input and sleeping (§12.9).
+  A program that answers requests over its standard streams needs no flush.
+
 - Without an expected type, a value `if` or `match` takes the first branch type to which
   every other branch coerces (§7.12): `if c { str.format(…)! } else { "none" }` is a
   `string`, and `if c { u8(1) } else { u32(2) }` a `u32`. Before, the first branch's type
