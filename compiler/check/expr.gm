@@ -1103,23 +1103,11 @@ if_expr :: fn(cx: ^FnCx, i: ^const ast.IfExpr, value_: bool, expect: ?Ty) -> ^Ex
         if x := expect {
             ty = x
         } else {
-            ty = tys.never_ty()
-            found := false
-            for t in thens.items {
-                if not found and tys.kind(t.ty) is not .Never {
-                    ty = t.ty
-                    found = true
-                }
-            }
-            if not found {
-                if c := captured and tys.kind(c.then.ty) is not .Never {
-                    ty = c.then.ty
-                    found = true
-                }
-            }
-            if not found {
-                if e := else_ and tys.kind(e.ty) is not .Never { ty = e.ty }
-            }
+            branches := list(Ty)
+            for t in thens.items { branches.push(t.ty)! }
+            if c := captured { branches.push(c.then.ty)! }
+            if e := else_ { branches.push(e.ty)! }
+            ty = cx.join_type(branches.items)
         }
         for k in 0..thens.items.len { thens.items[k] = cx.join_branch(thens.items[k], ty) }
         if e := else_ { else_ = cx.join_branch(e, ty) }
@@ -1159,6 +1147,29 @@ Captured :: struct {
     pat: ^tir.Pat
     then: ^Expr
     err_pat: ^tir.Pat
+}
+
+/// The type of a value `if` or `match` without an expected type (§7.12): the first branch
+/// type other than `never` to which every other branch coerces, or failing that the first
+/// one (and the others are reported where they are coerced to it).
+pub join_type :: fn(cx: ^FnCx, branches: []const Ty) -> Ty needs Load {
+    tys := &cx.s.tys
+    live := list(Ty)
+    for t in branches {
+        if tys.kind(t) is not .Never { live.push(t)! }
+    }
+    if live.items.len is 0 { return tys.never_ty() }
+    for t in live.items {
+        rt := cx.infer.resolve(cx.s, t)
+        if tys.has_infer(rt) { continue }
+        joins := true
+        for u0 in live.items {
+            u := cx.infer.resolve(cx.s, u0)
+            if u is not rt and (tys.has_infer(u) or cx.coercion_steps(u, rt) is null) { joins = false }
+        }
+        if joins { return t }
+    }
+    return live.items[0]
 }
 
 join_branch :: fn(cx: ^FnCx, b: ^Expr, ty: Ty) -> ^Expr needs Load {

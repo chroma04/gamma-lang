@@ -1,0 +1,12 @@
+//! stage: check
+// When no branch type takes the others, the first one is the type and the other branches
+// must coerce to it (§7.12).
+main :: fn() {
+    a := if true { u8(1) } else { i8(2) }   //~ ERROR expected `u8`, found `i8`
+    b := match 3 {
+        3 => true
+        _ => 1.5                            //~ ERROR expected `bool`
+    }
+    _ = a
+    _ = b
+}

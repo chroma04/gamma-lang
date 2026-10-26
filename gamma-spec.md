@@ -1271,7 +1271,7 @@ Argument binding rules are in §11.3.
 
 ### 7.12 Conditional expressions
 
-`if` and `match` are expressions (§8.2, §8.6). Used as expressions, each branch's block yields its value: a block's value is the value of its final statement if that statement is an expression; otherwise `()`. All branches must have the same type after coercion to the expected type, if any; otherwise the type of the first branch that is not `never`. An `if` without `else` has type `()`.
+`if` and `match` are expressions (§8.2, §8.6). Used as expressions, each branch's block yields its value: a block's value is the value of its final statement if that statement is an expression; otherwise `()`. All branches must have the same type after coercion (§6.4) to the expected type, if any. Without one, the type is that of the first branch that is not `never` and to which every other branch coerces, so `if c { str.format("{}", n)! } else { "none" }` is a `string` (`[]u8` coerces to `[]const u8`) and `if c { u8(1) } else { u32(2) }` a `u32`; if no branch type qualifies, it is the type of the first branch that is not `never`, and the other branches must coerce to it. An `if` without `else` has type `()`.
 
 ### 7.13 Function and handler literals
 

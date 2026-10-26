@@ -73,7 +73,10 @@ impl<'a, 's> FnCx<'a, 's> {
         let ty = if value {
             match expect {
                 Some(t) => t,
-                None => arms.iter().map(|a| a.body.ty).find(|t| !t.is_never()).unwrap_or(Ty::never()),
+                None => {
+                    let tys: Vec<Ty> = arms.iter().map(|a| a.body.ty).collect();
+                    self.join_type(&tys)
+                }
             }
         } else if !arms.is_empty() && arms.iter().all(|a| a.body.ty.is_never()) || arms.is_empty() {
             Ty::never()

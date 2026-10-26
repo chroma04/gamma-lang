@@ -17,8 +17,20 @@ Versions and what each kind of change means are described in
 - `gammac build` in the Debug mode compiles the runtime on its own and splits the program
   into several C units compiled in parallel, as `gamma build` does; building `gammac` with
   itself takes about a third of the time on four cores.
+- `gammac` now covers the rest of the `gamma` command line that runs through the C back
+  end: `check` and `run` (with the human diagnostic format as the default), `fmt`, `doc`,
+  `lint` and `fix` (with diagnostic codes), `build -g` (source-level debugging),
+  `test` and `bench`, the package manager (`new`, `init`, `fetch`, `update`, `add`,
+  `remove`, `cache`) and the `gamma.toml` build settings. Each matches the reference's
+  output byte for byte (`tests/selfhost.rs`).
+- The gdb and lldb printers for `-g` builds live in `runtime/`, shared by both compilers.
 
 ### Language
+
+- Without an expected type, a value `if` or `match` takes the first branch type to which
+  every other branch coerces (§7.12): `if c { str.format(…)! } else { "none" }` is a
+  `string`, and `if c { u8(1) } else { u32(2) }` a `u32`. Before, the first branch's type
+  was used, and the others had to coerce to it.
 
 - **`?x`** in a pattern binds an optional or a result as it is, absent or failed value
   included, where a bare name would match only a present or success value (§9.3):
@@ -89,6 +101,7 @@ Versions and what each kind of change means are described in
 
 ### Standard library
 
+- `std/fs`: `make_dir_all` accepts `\` separators and a drive prefix on Windows.
 - `std/collections/soa_list`: `SoaList(S)`, a growable list stored by field, with `items` a
   `#soa []S` (`push`, `pop`, `insert`, `remove`, `swap_remove`, `extend`, `reserve`,
   `truncate`, `clear`, `deinit`). Like `List`, it keeps the allocator it was created with.

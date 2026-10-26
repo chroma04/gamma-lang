@@ -2190,7 +2190,7 @@ impl<'a, 's> FnCx<'a, 's> {
             }
             match expect {
                 Some(t) => t,
-                None => tys.iter().copied().find(|t| !t.is_never()).unwrap_or(Ty::never()),
+                None => self.join_type(&tys),
             }
         } else {
             let all_never = else_.as_ref().is_some_and(|e| e.ty.is_never())
@@ -2219,6 +2219,24 @@ impl<'a, 's> FnCx<'a, 's> {
         let mut r = else_.unwrap_or_else(|| unit(i.span));
         r.span = i.span;
         r
+    }
+
+    /// The type of a value `if` or `match` without an expected type (§7.12): the first
+    /// branch type other than `never` to which every other branch coerces, or failing
+    /// that the first one (and the others are reported where they are coerced to it).
+    pub fn join_type(&mut self, tys: &[Ty]) -> Ty {
+        let live: Vec<(Ty, Ty)> = tys.iter().filter(|t| !t.is_never()).map(|&t| (t, self.infer.resolve(t))).collect();
+        let Some(&(first, _)) = live.first() else { return Ty::never() };
+        for &(t, rt) in &live {
+            if rt.has_infer() {
+                continue;
+            }
+            let joins = live.iter().all(|&(_, u)| u == rt || (!u.has_infer() && self.coercion_steps(u, rt).is_some()));
+            if joins {
+                return t;
+            }
+        }
+        first
     }
 
     fn join_branch(&mut self, b: Expr, ty: Ty) -> Expr {

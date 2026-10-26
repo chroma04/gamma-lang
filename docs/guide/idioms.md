@@ -435,6 +435,5 @@ main :: fn() needs Alloc + Out {
 - **Name the effects a module keeps needing**: `Load :: Alloc + Fs` is a named effect set (§12.3), and `needs Load` reads better than the sum repeated on every function.
 - **A temporary array can be sliced only as an argument**: `f([2]string("a", "b")[..])` passes it for the call, but a struct field or a variable needs the array in a variable first (`names := [2]string(…)`, then `names[..]`).
 - **Choose a value with an expression, not a later assignment.** `---` leaves only plain data uninitialized (§4.4), so a pointer or a slice that depends on a condition is bound once: `msg := if args.len is 0 { default_msg() } else { check(args[0]) }`, with a branch that cannot produce one leaving through `return`.
-- **Name the type of a `match` whose arms differ in mutability.** The arms take the type of the first one (§7.12), so when it builds a `[]u8` (`str.format(…)!`) and a later one is a literal `string`, write `head: string = match …`.
 - **A helper that uses the surrounding locals is a `::` binding**: `deref :: fn() -> ^Expr => …` captures them; function literals are second-class (§11.6) and cannot be stored with `:=`.
 - **Tests live next to the code** in `test "…" { }` blocks; a test that allocates runs its body in an arena, or releases what it allocates.
