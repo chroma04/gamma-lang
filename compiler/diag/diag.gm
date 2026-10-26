@@ -1,6 +1,6 @@
 //! Diagnostics: errors and warnings with their locations, secondary labels, notes and
-//! machine-applicable fixes, and their rendering in the `short` and `json` formats of
-//! `gamma --diag-format` (the same text, byte for byte).
+//! machine-applicable fixes, and their rendering in the `human`, `short` and `json`
+//! formats of `gamma --diag-format` (the same text, byte for byte).
 
 source :: import "../source"
 str :: import "std/str"
@@ -174,6 +174,9 @@ before :: fn(a, b: source.Span) -> bool => (a.file, a.lo) < (b.file, b.lo)
 
 /// How diagnostics are printed.
 pub Format :: union {
+    /// The message, then the source line with the location marked, then the labels and
+    /// notes.
+    Human
     /// One line per diagnostic, `path:line:col: severity: message`, then one line per
     /// label and note.
     Short
@@ -184,9 +187,85 @@ pub Format :: union {
 /// Appends `d` to `out` in `format`.
 pub render :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, format: Format, out: ^List(u8)) needs Alloc {
     match format {
+        .Human => render_human(sm, d, out)
         .Short => render_short(sm, d, out)
         .Json => render_json(sm, d, out)
     }
+}
+
+/// Source lines longer than this (in characters) are shown as a window of `WINDOW`
+/// characters around the location of a diagnostic.
+LONG_LINE :: 200
+WINDOW :: 120
+
+render_human :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
+    out.write("{}: {}\n", severity_name(d.severity), d.message)!
+    if d.span is not source.DUMMY {
+        f := sm.file(d.span.file)
+        lc := f.line_col(d.span.lo)
+        line := lc.line
+        col := lc.col
+        number := str.format("{}", line)!
+        gutter := number.len.max(2)
+        pad := spaces(gutter)
+        out.write("{}--> {}:{}:{}\n", pad, f.path, line, col)!
+        text := f.line_text(line)
+        len := if f.is_ascii() { text.len.trunc(u32) } else { source.char_count(text).trunc(u32) }
+        end := f.line_col(d.span.hi)
+        width := if end.line is line { (end.col - col).max(1) } else { (len + 1 - col).max(1) }
+        shown := list(u8)
+        caret := col - 1
+        if len > LONG_LINE {
+            // A very long line is shown as a window around the location, so that many
+            // errors on one line do not repeat all of it.
+            start := (col - 1) -| WINDOW / 3
+            stop := (start + WINDOW).min(len)
+            if start > 0 { shown.extend("…")! }
+            body := if f.is_ascii() { text[usize(start)..usize(stop)] } else { text[char_offset(text, start)..char_offset(text, stop)] }
+            push_untabbed(&shown, body)
+            if stop < len { shown.extend("…")! }
+            width = width.min(stop + 1 - col)
+            caret = col - 1 - start + (if start > 0 { u32(1) } else { 0 })
+        } else {
+            push_untabbed(&shown, text)
+        }
+        out.write("{} |\n", pad)!
+        out.write("{}{} | {}\n", spaces(gutter - number.len), number, string(shown.items))!
+        out.write("{} | {}", pad, spaces(usize(caret)))!
+        for _ in 0..width.max(1) { out.push('^')! }
+        out.push('\n')!
+    }
+    for l in d.labels.items {
+        if l.span is source.DUMMY { continue }
+        f := sm.file(l.span.file)
+        lc := f.line_col(l.span.lo)
+        out.write("  note: {} ({}:{}:{})\n", l.message, f.path, lc.line, lc.col)!
+    }
+    for n in d.notes.items { out.write("  = note: {}\n", n)! }
+}
+
+/// `n` spaces.
+spaces :: fn(n: usize) -> string needs Alloc {
+    s := list(u8)
+    for _ in 0..n { s.push(' ')! }
+    return s.items
+}
+
+/// Appends `text` with each tab replaced by a space.
+push_untabbed :: fn(out: ^List(u8), text: string) needs Alloc {
+    for c in text { out.push(if c is '\t' { ' ' } else { c })! }
+}
+
+/// The byte offset of character `n` of UTF-8 `text` (its length if it has fewer).
+char_offset :: fn(text: string, n: u32) -> usize {
+    seen: u32 = 0
+    for i, c in enumerate(text) {
+        if c & 0xC0 is not 0x80 {
+            if seen is n { return i }
+            seen += 1
+        }
+    }
+    return text.len
 }
 
 render_short :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {

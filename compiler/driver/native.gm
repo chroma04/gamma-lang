@@ -1,0 +1,205 @@
+//! Native builds: generating C for a checked program and compiling it with the system C
+//! compiler, and running the result.
+
+cgen :: import "../cgen"
+check :: import "../check"
+fs :: import "std/fs"
+load :: import "../load"
+process :: import "std/process"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+thread :: import "std/thread"
+
+/// `build`: compiles the checked program rooted at module `root` (named `path`) to an
+/// executable. Returns whether it succeeded; problems after checking are reported here.
+pub build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
+    return compile(s, root, opts.out else default_exe(path), opts)
+}
+
+/// Compiles the checked program rooted at module `root` to the executable `exe`.
+compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
+    d := s.l.lookup(root, "main") else {
+        eprint("gammac: the program has no `main` function\n")
+        return false
+    }
+    .Fn(main) := s.resolve_decl(d) else return false
+    entry := check.entry_point(s, main)
+    roots := list(u32)
+    roots.push(entry)!
+    roots.extend(s.export_fns.items)!
+    if not check.prepare_codegen(s, roots.items) { return false }
+    p := cgen.prog(s)
+    copts := match opts.mode {
+        .Debug => cgen.Options(checks: true, debug: true)
+        .Checked => cgen.Options(checks: true, debug: false)
+        .Fast => cgen.Options(checks: false, debug: false)
+    }
+    generated := cgen.generate(&p, entry, copts) else u => {
+        place: string = if u.span is source.DUMMY { "" } else {
+            file := s.l.sm.file(u.span.file)
+            lc := file.line_col(u.span.lo)
+            str.format("{}:{}:{}: ", file.path, lc.line, lc.col)!
+        }
+        eprint("{}error: {}\n", place, u.message)
+        return false
+    }
+    c_file := str.format("{}.c", exe)!
+    rt := runtime_dir(std_root())
+    rt_h := fs.read_all(load.join(rt, "gm_rt.h")) else {
+        eprint("gammac: cannot read the runtime in `{}`\n", rt)
+        return false
+    }
+    rt_c := fs.read_all(load.join(rt, "gm_rt.c")) else {
+        eprint("gammac: cannot read the runtime in `{}`\n", rt)
+        return false
+    }
+    code := list(u8)
+    code.write("{}\n{}\n{}", rt_h, rt_c, generated.code)!
+    fs.write_all(c_file, code.items) else {
+        eprint("gammac: cannot write `{}`\n", c_file)
+        return false
+    }
+    if opts.emit_c { return true }
+    flags := list(string)
+    for f in [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread") { flags.push(f)! }
+    libs := list(string)
+    for l in generated.libs { libs.push(str.format("-l{}", l)!)! }
+    libs.push("-lm")!
+    if opts.mode is .Debug {
+        // The runtime and the program's units are compiled in parallel, then linked.
+        forced: ?usize = null
+        if v := Env.var("GAMMA_C_UNITS") { forced = str.parse_int(usize, v) else null }
+        n := cgen.unit_count(&generated.parts, usize(thread.cpu_count()), forced)
+        units := cgen.split(&generated.parts, n) else {
+            if forced is not null and n > 1 {
+                eprint("gammac: the generated C cannot be split into units\n")
+                return false
+            }
+            one := [1]string(generated.code)
+            return compile_units(exe, rt_h, rt_c, one[..], flags.items, libs.items)
+        }
+        return compile_units(exe, rt_h, rt_c, units, flags.items, libs.items)
+    }
+    flags.push("-O2")!
+    return run_cc(flags.items, exe, [1]string(c_file)[..], libs.items)
+}
+
+/// A Debug build of `exe`: writes the runtime (`exe.rt.c`) and each of `units` (`exe.uN.c`)
+/// as its own translation unit next to `exe`, compiles them all at once to objects and
+/// links those.
+compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs: []const string) -> bool needs Alloc + Env + Err + Fs + Proc {
+    sources := list(string)
+    sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, rt_c)!)!
+    for u in units { sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, u)!)! }
+    c_files := list(string)
+    objects := list(string)
+    for i, src in enumerate(sources.items) {
+        name := if i is 0 { "rt" } else { str.format("u{}", i - 1)! }
+        c := str.format("{}.{}.c", exe, name)!
+        fs.write_all(c, src) else {
+            eprint("gammac: cannot write `{}`\n", c)
+            return false
+        }
+        c_files.push(c)!
+        objects.push(str.format("{}.{}.o", exe, name)!)!
+    }
+    cc := Env.var("CC") else "cc"
+    children := list(?process.Child)
+    for i, c in enumerate(c_files.items) {
+        argv := list(string)
+        argv.push(cc)!
+        argv.extend(flags)!
+        // The runtime is optimized like the cached runtime object of the reference
+        // implementation; the program's units favor turnaround.
+        argv.push(if i is 0 { "-O2" } else { "-O1" })!
+        // A call to a function without a declaration would compile, wrongly, under C's
+        // old rules: make it an error.
+        argv.push("-Werror=implicit-function-declaration")!
+        for a in [4]string("-c", "-o", objects.items[i], c) { argv.push(a)! }
+        children.push(Proc.spawn(argv.items, process.SpawnOptions(stdout: .Null, stderr: .Pipe)) else null)!
+    }
+    ok := true
+    for child in children.items {
+        c := child else {
+            if ok { eprint("gammac: cannot run the C compiler `{}`\n", cc) }
+            ok = false
+            continue
+        }
+        err := list(u8)
+        buf: [4096]u8 = ---
+        while true {
+            chunk := (c.read(buf[..]) else break) else break
+            err.extend(buf[0..chunk.len])!
+        }
+        status := c.wait() else .Exited(1)
+        if not process.success(status) and ok {
+            eprint("gammac: the C compiler failed:\n{}", string(err.items))
+            ok = false
+        }
+    }
+    if ok { ok = run_cc(flags, exe, objects.items, libs) }
+    for o in objects.items { _ = fs.remove_all(o) }
+    return ok
+}
+
+/// Runs the C compiler with `flags` on `inputs` to make the executable `exe`, linked with
+/// `libs`. Returns whether it succeeded, reporting why not.
+run_cc :: fn(flags: []const string, exe: string, inputs, libs: []const string) -> bool needs Alloc + Env + Err + Proc {
+    cc := Env.var("CC") else "cc"
+    argv := list(string)
+    argv.push(cc)!
+    argv.extend(flags)!
+    argv.push("-o")!
+    argv.push(exe)!
+    argv.extend(inputs)!
+    argv.extend(libs)!
+    result := process.output(argv.items) else {
+        eprint("gammac: cannot run the C compiler `{}`\n", cc)
+        return false
+    }
+    if not process.success(result.status) {
+        eprint("gammac: the C compiler failed:\n{}", string(result.err.items))
+        return false
+    }
+    return true
+}
+
+/// The executable `build` writes by default: the root's name without `.gm`.
+default_exe :: fn(root: string) -> string {
+    if root.ends_with(".gm") { return root[0..root.len - 3] }
+    trimmed := if root.ends_with("/") { root[0..root.len - 1] } else { root }
+    return trimmed
+}
+
+/// `run`: compiles the checked program rooted at module `root` to an executable in a new
+/// temporary directory and runs it with the program's arguments, sharing our standard
+/// streams. Returns the exit status to end with: the program's, or 1 if it could not be
+/// built or started.
+pub run :: fn(s: ^sema.Sema, root: usize, opts: Options) -> u8 needs Alloc + Env + Err + Fs + Proc + Rand + Sys {
+    buf: [4096]u8 = ---
+    dir := fs.make_temp_dir(fs.temp_dir(), "gammac-run-", buf[..]) else {
+        eprint("gammac: cannot create a temporary directory in `{}`\n", fs.temp_dir())
+        return 1
+    }
+    defer _ = fs.remove_all(dir)
+    exe := load.join(dir, "prog")
+    if not compile(s, root, exe, opts) { return 1 }
+    argv := list(string)
+    argv.push(exe)!
+    argv.extend(opts.program_args)!
+    status := process.status(argv.items) else {
+        eprint("gammac: cannot run `{}`\n", exe)
+        return 1
+    }
+    return exit_code(status)
+}
+
+/// The exit status a shell reports for a finished child: its exit code, or 128 plus the
+/// number of the signal that ended it. A trap gives 134 (`SIGABRT`), including one raised
+/// by a trap instruction (`SIGILL`, `SIGTRAP`).
+exit_code :: fn(status: process.ExitStatus) -> u8 => match status {
+    .Exited(c) => c.trunc(u8)
+    .Signaled(4), .Signaled(5) => 134
+    .Signaled(sig) => (128 + sig).trunc(u8)
+}

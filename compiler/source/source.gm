@@ -98,6 +98,19 @@ pub line_col :: fn(f: ^const SourceFile, offset: u32) -> LineCol {
     return LineCol(line: (lo + 1).trunc(u32), col: (col + 1).trunc(u32))
 }
 
+/// The text of the 1-based line `line`, without its terminator.
+pub line_text :: fn(f: ^const SourceFile, line: u32) -> string {
+    i := usize(line.max(1) - 1)
+    starts := f.line_starts.items
+    start := usize(starts[i])
+    end := if i + 1 < starts.len { usize(starts[i + 1]) } else { f.text.len }
+    while end > start and f.text[end - 1] in ('\n', '\r') { end -= 1 }
+    return f.text[start..end]
+}
+
+/// Whether every byte of the file is ASCII.
+pub is_ascii :: fn(f: ^const SourceFile) -> bool => f.ascii
+
 /// The number of characters in UTF-8 text: the bytes that do not continue a character.
 pub char_count :: fn(s: string) -> usize {
     n: usize = 0

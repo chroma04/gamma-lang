@@ -1,0 +1,33 @@
+//! The driver: what gammac's commands share beyond the stages of the compiler.
+//!
+
+//! The command line of gammac: the commands and their options.
+
+diag :: import "../diag"
+
+/// What gammac was asked to do.
+pub Command :: union { Lex, Parse, Modules, Decls, Tir, Check, Build, Run }
+
+/// The build modes of §1.4 that gammac has (Safe needs Fil-C).
+pub Mode :: union { Debug, Checked, Fast }
+
+pub Options :: struct {
+    pub command: Command
+    pub format: diag.Format = .Human
+    pub recover: bool = false
+    pub dump: bool = false
+    /// `build`, `run`: the build mode.
+    pub mode: Mode = .Debug
+    /// `build`: the executable, and whether to stop after writing C.
+    pub out: ?string = null
+    pub emit_c: bool = false
+    /// `run`: the arguments after the file, for the program.
+    pub program_args: []const string = empty_slice(string)
+}
+
+/// The name of a mode as `target.mode` spells it.
+pub mode_name :: fn(m: Mode) -> string => match m {
+    .Debug => "Debug"
+    .Checked => "Checked"
+    .Fast => "Fast"
+}
