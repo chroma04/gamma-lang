@@ -14,7 +14,24 @@ thread :: import "std/thread"
 /// `build`: compiles the checked program rooted at module `root` (named `path`) to an
 /// executable. Returns whether it succeeded; problems after checking are reported here.
 pub build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
-    return compile(s, root, opts.out else default_exe(path), opts)
+    exe := opts.out else default_exe(path)
+    if not compile(s, root, exe, opts) { return false }
+    // A build with debug information comes with the lldb data formatters.
+    if opts.debug_info and not opts.emit_c {
+        printers := runtime_text("lldb_formatters.py") else return false
+        return cgen.write_lldb_formatters(exe, printers)
+    }
+    return true
+}
+
+/// The text of the file `name` of the runtime's sources, or `null` (reporting why) if it
+/// cannot be read.
+runtime_text :: fn(name: string) -> ?string needs Alloc + Env + Err + Fs {
+    rt := runtime_dir(std_root())
+    return fs.read_all(load.join(rt, name)) else {
+        eprint("gammac: cannot read the runtime in `{}`\n", rt)
+        return null
+    }
 }
 
 /// Compiles the checked program rooted at module `root` to the executable `exe`.
@@ -31,9 +48,13 @@ compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool ne
     if not check.prepare_codegen(s, roots.items) { return false }
     p := cgen.prog(s)
     copts := match opts.mode {
-        .Debug => cgen.Options(checks: true, debug: true)
-        .Checked => cgen.Options(checks: true, debug: false)
-        .Fast => cgen.Options(checks: false, debug: false)
+        .Debug => cgen.Options(checks: true, debug: true, debug_info: opts.debug_info)
+        .Checked => cgen.Options(checks: true, debug: false, debug_info: opts.debug_info)
+        .Fast => cgen.Options(checks: false, debug: false, debug_info: opts.debug_info)
+    }
+    // With debug information on an ELF target, the executable carries the gdb printers.
+    if opts.debug_info and p.target.os in ("Linux", "FreeBSD") {
+        copts.gdb_printers = runtime_text("gdb_printers.py") else return false
     }
     generated := cgen.generate(&p, entry, copts) else u => {
         place: string = if u.span is source.DUMMY { "" } else {
@@ -56,13 +77,16 @@ compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool ne
     }
     code := list(u8)
     code.write("{}\n{}\n{}", rt_h, rt_c, generated.code)!
-    fs.write_all(c_file, code.items) else {
+    // The debugger finds the C file by its absolute name.
+    text: string = if opts.debug_info { cgen.resolve_lines(string(code.items), cgen.absolute(c_file)) } else { string(code.items) }
+    fs.write_all(c_file, text) else {
         eprint("gammac: cannot write `{}`\n", c_file)
         return false
     }
     if opts.emit_c { return true }
     flags := list(string)
     for f in [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread") { flags.push(f)! }
+    if opts.debug_info { flags.push("-g")! }
     libs := list(string)
     for l in generated.libs { libs.push(str.format("-l{}", l)!)! }
     libs.push("-lm")!
@@ -77,9 +101,9 @@ compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool ne
                 return false
             }
             one := [1]string(generated.code)
-            return compile_units(exe, rt_h, rt_c, one[..], flags.items, libs.items)
+            return compile_units(exe, rt_h, rt_c, one[..], flags.items, libs.items, opts.debug_info)
         }
-        return compile_units(exe, rt_h, rt_c, units, flags.items, libs.items)
+        return compile_units(exe, rt_h, rt_c, units, flags.items, libs.items, opts.debug_info)
     }
     flags.push("-O2")!
     return run_cc(flags.items, exe, [1]string(c_file)[..], libs.items)
@@ -88,7 +112,7 @@ compile :: fn(s: ^sema.Sema, root: usize, exe: string, opts: Options) -> bool ne
 /// A Debug build of `exe`: writes the runtime (`exe.rt.c`) and each of `units` (`exe.uN.c`)
 /// as its own translation unit next to `exe`, compiles them all at once to objects and
 /// links those.
-compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs: []const string) -> bool needs Alloc + Env + Err + Fs + Proc {
+compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs: []const string, debug_info: bool) -> bool needs Alloc + Env + Err + Fs + Proc {
     sources := list(string)
     sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, rt_c)!)!
     for u in units { sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, u)!)! }
@@ -97,7 +121,9 @@ compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs:
     for i, src in enumerate(sources.items) {
         name := if i is 0 { "rt" } else { str.format("u{}", i - 1)! }
         c := str.format("{}.{}.c", exe, name)!
-        fs.write_all(c, src) else {
+        // The debugger finds the C file by its absolute name.
+        text: string = if debug_info and i > 0 { cgen.resolve_lines(src, cgen.absolute(c)) } else { src }
+        fs.write_all(c, text) else {
             eprint("gammac: cannot write `{}`\n", c)
             return false
         }
@@ -112,7 +138,7 @@ compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs:
         argv.extend(flags)!
         // The runtime is optimized like the cached runtime object of the reference
         // implementation; the program's units favor turnaround.
-        argv.push(if i is 0 { "-O2" } else { "-O1" })!
+        argv.push(if i is 0 { "-O2" } else if debug_info { "-O0" } else { "-O1" })!
         // A call to a function without a declaration would compile, wrongly, under C's
         // old rules: make it an error.
         argv.push("-Werror=implicit-function-declaration")!

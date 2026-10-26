@@ -115,8 +115,8 @@ leaves to implementations: message texts, spans and recovery after errors.
    what only makes the generated code faster or quicker to compile — the specialization
    of functions for the handler that is their context, reading parameters in place,
    splitting long functions, constant arguments in static storage — and what it has no use
-   for yet: debug information (`-g`), the Safe mode, freestanding targets, the cache of
-   compiled runtimes and other targets than the one `gammac` runs on.
+   for yet: the Safe mode, freestanding targets, the cache of compiled runtimes and other
+   targets than the one `gammac` runs on.
 
    Before generating code, `gammac` checks every function body the program can reach,
    including the core library's (which `gammac tir`, like `gamma tir`, leaves out), and
@@ -136,7 +136,7 @@ GAMMA_STD=lib/std ./gammac2 build compiler --emit-c -o gammac3
 cmp gammac2.c gammac3.c                  # identical
 ```
 
-`gammac build [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT` writes the C next to
+`gammac build [--mode=debug|checked|fast] [-g] [-o EXE] [--emit-c] ROOT` writes the C next to
 the executable (`EXE.c`, the runtime and the program as one translation unit) and compiles
 it with `$CC` (default `cc`); `--emit-c` stops after writing it. A Checked or Fast build
 compiles `EXE.c` itself at `-O2`, so the optimizer sees the whole program. A Debug build
@@ -149,6 +149,22 @@ then linked. On four cores this brings building `gammac` itself from about 110 t
 seconds. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
 `runtime` directory two levels above the standard library's. It runs on Unix-like systems;
 on Windows, use `gamma build`.
+
+`gammac build -g` (and `run -g`) adds debug information, as `gamma build -g` does
+(`compiler/cgen/debug.gm` and `views.gm` port `src/cgen/debug.rs` and `views.rs`). Each
+statement of the generated C is preceded by a `#line` directive naming its `.gm` file and
+line, so a debugger stops at Gamma lines (`break file.gm:17`), and the C between functions
+keeps its own location. Frame fields also have the names of their Gamma locals
+(`F.count`, `F.p.x`) with a debugger view of their type (a C type laid out like the Gamma
+value, with members named after fields, variants and the like), and struct mirrors name
+their fields after the Gamma fields; a Gamma name that is a macro of a system header is
+suspended around those declarations. The build is optimized no further than `-O0` (Debug) or
+`-O2` and compiled with `-g`. On Linux and FreeBSD the gdb pretty printers
+(`runtime/gdb_printers.py`) are embedded in the executable; `gammac build -g` also writes the
+lldb formatters (`runtime/lldb_formatters.py`) to `gamma_lldb.py` next to it. Both Python
+files are read from the runtime directory at build time. The `#line` directives name the
+absolute path of the source file, found from the working directory without resolving
+symbolic links.
 
 `gammac run [--mode=…] ROOT [ARG…]` builds the program the same way into a new temporary
 directory, runs it with the arguments after the file and ends with its exit status (128

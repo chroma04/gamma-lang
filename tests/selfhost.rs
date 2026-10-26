@@ -1125,3 +1125,140 @@ fn fixing_matches_the_reference() {
     .collect();
     assert!(failures.is_empty(), "{} of {} programs differ:\n{}", failures.len(), files.len(), failures.join("\n\n"));
 }
+
+/// The program of `gammac_debug_information_maps_to_the_source`: line 10 is `total += i`
+/// and line 26 the `print` that ends `main`, where its locals can be inspected.
+#[cfg(unix)]
+const DEBUG_PROGRAM: &str = "\
+Shape :: union {
+    Circle: f64,
+    Rect: (w: i64, h: i64),
+    Empty,
+}
+
+sum :: fn(n: i64) -> i64 {
+    total := 0
+    for i in 0..n {
+        total += i
+    }
+    return total
+}
+
+Point :: struct { x, y: i64 }
+
+main :: fn() needs Out {
+    p := Point(x: 3, y: 4)
+    rect := Shape.Rect(w: 2, h: 3)
+    xs := [3]i64(10, 20, 30)
+    slice := xs[0..3]
+    word := \"hello\"
+    some: ?i64 = 5
+    pair := (1, true)
+    stdout := sum(10)
+    print(\"{} {} {}\\n\", p.x + p.y, stdout, slice.len)
+}
+";
+
+/// The values `print`ed at the end of `main` in `DEBUG_PROGRAM`.
+#[cfg(unix)]
+const DEBUG_PRINTS: [&str; 8] = ["F.p", "F.p.y", "F.rect", "F.slice", "F.word", "F.some", "F.pair", "F.stdout"];
+
+/// Runs gdb in batch mode on `exe`, stopped at `breakpoint` (`file:line`), printing `exprs`;
+/// returns the `$N = …` lines and the first line of the backtrace, or `None` if gdb cannot
+/// trace processes here.
+#[cfg(unix)]
+fn gdb_session(exe: &Path, breakpoint: &str, exprs: &[&str]) -> Option<(Vec<String>, String)> {
+    let mut cmd = Command::new("gdb");
+    cmd.args(["-batch", "-nx", "-iex"]).arg(format!("add-auto-load-safe-path {}", exe.parent().unwrap().display()));
+    cmd.args(["-ex", &format!("break {breakpoint}"), "-ex", "run", "-ex", "backtrace 1"]);
+    for e in exprs {
+        cmd.args(["-ex", &format!("print {e}")]);
+    }
+    let out = cmd.arg(exe).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if !out.status.success() || text.contains("ptrace") || text.contains("Operation not permitted") {
+        eprintln!("note: skipping the debugger session: gdb cannot trace processes here");
+        return None;
+    }
+    let values = text.lines().filter(|l| l.starts_with('$')).map(String::from).collect();
+    let frame = text.lines().find(|l| l.starts_with("#0")).unwrap_or_default().to_string();
+    Some((values, frame))
+}
+
+/// `gammac build -g`: the C maps to the Gamma source with `#line` directives, frame
+/// fields have the names of the locals, and the lldb formatters are written next to the
+/// executable; with gdb installed, a breakpoint by `file.gm:line` stops, locals print by
+/// their Gamma names, and the values print through the pretty printers exactly as they do
+/// in an executable built by the reference implementation.
+#[test]
+#[cfg(unix)]
+fn gammac_debug_information_maps_to_the_source() {
+    let Gammac::Native(gammac) = gammac() else { return };
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-debug");
+    let _ = std::fs::remove_dir_all(&dir);
+    for flavor in ["ref", "gammac", "plain"] {
+        std::fs::create_dir_all(dir.join(flavor)).unwrap();
+    }
+    let src = dir.join("debuggee.gm");
+    std::fs::write(&src, DEBUG_PROGRAM).unwrap();
+    let build = |flavor: &str, args: &[&str]| {
+        let exe = dir.join(flavor).join("debuggee");
+        let mut cmd = if flavor == "ref" { gamma() } else { Command::new(gammac) };
+        cmd.current_dir(root()).arg("build").args(args).arg("-o").arg(&exe).arg(&src);
+        gammac_env(&mut cmd);
+        let built = common::output(&mut cmd).unwrap();
+        assert!(built.status.success(), "{flavor} build failed:\n{}", String::from_utf8_lossy(&built.stderr));
+        let ran = common::output(&mut Command::new(&exe)).unwrap();
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "7 45 3\n", "{flavor}: the program misbehaves");
+        exe
+    };
+    let reference = build("ref", &["-g"]);
+    let exe = build("gammac", &["-g"]);
+    let plain = build("plain", &[]);
+
+    // The C names the source file and line, and the local `total` by its Gamma name.
+    let c = std::fs::read_to_string(format!("{}.c", exe.display())).unwrap();
+    let directive = format!("#line 10 \"{}\"", std::fs::canonicalize(&src).unwrap().display());
+    assert!(c.contains(&directive), "no `{directive}` in the generated C");
+    assert!(c.contains(" total; };"), "the frame field of `total` has no name");
+    assert!(c.contains("_union {") && c.contains("_slice {"), "the frame has no debugger views");
+    let plain_c = std::fs::read_to_string(format!("{}.c", plain.display())).unwrap();
+    assert!(!plain_c.contains("#line") && !plain_c.contains("gm_dv"), "a build without -g has debug information");
+    // The lldb formatters come with a build with debug information only.
+    assert!(exe.with_file_name("gamma_lldb.py").is_file(), "no gamma_lldb.py next to the executable");
+    assert!(!plain.with_file_name("gamma_lldb.py").exists());
+    // The printers are embedded where gdb finds them.
+    if cfg!(target_os = "linux") {
+        assert!(c.contains(".debug_gdb_scripts"), "the gdb pretty printers are not embedded");
+    }
+
+    // gdb stops at a Gamma line and shows what the reference's executable shows.
+    let gdb_works = Command::new("gdb").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !gdb_works || !cfg!(target_os = "linux") {
+        eprintln!("note: skipping the debugger session: needs gdb on Linux");
+        return;
+    }
+    let Some((ours, frame)) = gdb_session(&exe, "debuggee.gm:26", &DEBUG_PRINTS) else { return };
+    assert!(frame.contains("debuggee.gm:26"), "gdb did not stop at debuggee.gm:26: {frame}");
+    let want = [
+        "{x = 3, y = 4}",
+        "4",
+        "Shape_Rect = {w = 2, h = 3}",
+        "length 3 = {10, 20, 30}",
+        "\"hello\"",
+        "5",
+        "{_0 = 1, _1 = true}",
+        "45",
+    ];
+    for (i, w) in want.iter().enumerate() {
+        assert_eq!(ours.get(i), Some(&format!("${} = {}", i + 1, w)), "gdb printed {:?}", ours);
+    }
+    // A breakpoint in `sum` stops at `total += i`, where `total` has its Gamma name.
+    let Some((values, frame)) = gdb_session(&exe, "debuggee.gm:10", &["F.total", "F.n"]) else { return };
+    assert!(frame.contains("debuggee.gm:10"), "gdb did not stop at debuggee.gm:10: {frame}");
+    assert_eq!(values, ["$1 = 0", "$2 = 10"]);
+    // The values print as in the reference's executable.
+    if let Some((theirs, _)) = gdb_session(&reference, "debuggee.gm:26", &DEBUG_PRINTS) {
+        assert_eq!(ours, theirs, "gdb prints different values than for the reference's executable");
+    }
+}

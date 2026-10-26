@@ -22,6 +22,9 @@ pub Options :: struct {
     /// `build`: the executable, and whether to stop after writing C.
     pub out: ?string = null
     pub emit_c: bool = false
+    /// `build`, `run`: add debug information that maps the executable back to the Gamma
+    /// source (`-g`).
+    pub debug_info: bool = false
     /// `run`: the arguments after the file, for the program.
     pub program_args: []const string = empty_slice(string)
     /// `lint`: the options of the command.

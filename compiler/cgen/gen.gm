@@ -6,7 +6,7 @@
 //! type descriptors. Not ported: the specialization of functions for the handler that is
 //! their context, the reading of parameters in place, the outlining of long statement
 //! runs, the shortcuts for long operator chains, constant arguments in static storage,
-//! debug information (`-g`), the Safe mode and freestanding targets. They change how
+//! the Safe mode and freestanding targets. They change how
 //! fast the generated code runs or compiles, not what it does.
 
 ast :: import "../ast"
@@ -44,6 +44,12 @@ pub Options :: struct {
     pub checks: bool = true
     /// Debug: heap blocks are tracked so double and invalid frees trap.
     pub debug: bool = true
+    /// `-g`: map the C to the Gamma source and name the frame fields after the locals
+    /// (see `debug.gm`).
+    pub debug_info: bool = false
+    /// With `debug_info` on an ELF target: the text of the gdb pretty printers
+    /// (`runtime/gdb_printers.py`) to embed in the executable. Empty for none.
+    pub gdb_printers: string = ""
 }
 
 pub Gen :: struct {
@@ -77,6 +83,9 @@ pub Gen :: struct {
     decl_done: hash_map.HashMap(u32, bool)
     /// The source files trap locations name; each path is one static string `gm_srcN`.
     loc_files: List(u32)
+    /// With `-g`: the path each source file's `#line` directives name (`null`: none), by
+    /// file.
+    line_paths: hash_map.HashMap(u32, ?string)
     /// The storage of compile-time values (`gm_cN`): constants and the static cells
     /// their pointers point into.
     pub statics_cells: List(StaticCell)
@@ -116,9 +125,11 @@ pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs
         handler_done: hash_map.hash_map(u32, bool),
         decl_done: hash_map.hash_map(u32, bool),
         loc_files: list(u32),
+        line_paths: hash_map.hash_map(u32, ?string),
         statics_cells: list(StaticCell),
         cell_ids: hash_map.hash_map(usize, u32),
     )
+    g.ty.debug_names = opts.debug_info
     g.queue(entry)
     for f in p.s.export_fns.items { g.queue(f) }
     try g.drain()
@@ -130,21 +141,29 @@ pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs
     head := list(u8)
     head.extend(SUPPORT)!
     head.extend(g.ty.blob_typedefs())!
-    head.extend(g.ty.mirror_text())!
+    // The Gamma names of frame fields and mirror fields (with `-g`) are declared with any
+    // macro of the same name suspended.
+    names := g.ty.member_names()
+    head.extend(guard(names, g.ty.mirror_text()))!
+    head.extend(guard(names, g.ty.view_defs()))!
+    // The gdb pretty printers are embedded in the executable.
+    gdb: string = if opts.debug_info and opts.gdb_printers.len > 0 { gdb_script_section(opts.gdb_printers) } else { "" }
     data := list(u8)
     data.extend(g.ty.descriptors())!
     for id in g.loc_files.items {
         data.write("static const char gm_src{}[] = {};\n", id, c_string(g.prog.s.l.sm.file(id).path))!
     }
     data.extend(g.static_defs.items)!
+    frames := guard(names, g.frames.items)
     protos := str.format("{}{}", g.protos.items, g.helpers.protos.items)!
     // One unit has the parts in this order.
     out := list(u8)
     out.extend("/* ---- generated ---- */\n")!
     out.extend(checks)!
     out.extend(head.items)!
+    out.extend(gdb)!
     out.extend(data.items)!
-    out.extend(g.frames.items)!
+    out.extend(frames)!
     out.extend(protos)!
     out.extend(g.handler_tables.items)!
     out.extend(consts.decls)!
@@ -156,13 +175,17 @@ pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs
     main_text := str.format("#define GM_RUN_MAIN {}\n{}", run_main, main)!
     out.extend(exports)!
     out.extend(main_text)!
+    reset := ""
+    if opts.debug_info { reset = str.format("{}\n", LINE_RESET)! }
     parts := Parts(
-        head: str.format("{}{}", head.items, g.frames.items)!,
+        head: str.format("{}{}", head.items, frames)!,
         protos: protos,
         data: str.format("{}{}{}", data.items, g.handler_tables.items, consts.decls)!,
-        once: checks,
+        once: str.format("{}{}", checks, gdb)!,
         funcs: str.format("{}{}", g.helpers.bodies.items, g.bodies.items)!,
-        tail: str.format("{}{}{}", consts.init, exports, main_text)!,
+        // The function text before it ends with a marker that a split leaves with the next
+        // function (see `split`), so the tail starts with one of its own.
+        tail: str.format("{}{}{}{}", reset, consts.init, exports, main_text)!,
     )
     return Generated(code: out.items, parts: parts, libs: g.libs.items)
 }
@@ -228,6 +251,26 @@ pub src_loc :: fn(g: ^Gen, span: source.Span) -> string needs Alloc {
     lc := f.line_col(span.lo)
     if span.file not in g.loc_files.items { g.loc_files.push(span.file)! }
     return str.format("gm_src{}, {}, {}", span.file, lc.line, lc.col)!
+}
+
+/// A `#line` directive for the start of `span`, with debug information on and the span in a
+/// file on disk.
+pub line_directive :: fn(g: ^Gen, span: source.Span) -> ?string needs Alloc + Fs {
+    if not g.opts.debug_info or span is source.DUMMY { return null }
+    f := g.prog.s.l.sm.file(span.file)
+    path: ?string = null
+    if cached := g.line_paths.get(span.file) {
+        path = cached
+    } else {
+        // Named with `/`, as source files are everywhere.
+        abs := absolute(f.path)
+        stat_failed := Fs.stat(abs) is !_
+        if not stat_failed { path = c_string(abs) }
+        g.line_paths.put(span.file, path)!
+    }
+    p := path else return null
+    lc := f.line_col(span.lo)
+    return str.format("#line {} {}", lc.line, p)!
 }
 
 /// The table of clause functions of handler literal `h`, generating it on first use.

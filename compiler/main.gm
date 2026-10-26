@@ -8,8 +8,8 @@
 //!     gammac check ROOT...
 //!     gammac lint [--fix] [--rules] [--allow=RULES] [--warn=RULES] [--deny=RULES] [-D] ROOT
 //!     gammac fix ROOT
-//!     gammac build [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT
-//!     gammac run [--mode=debug|checked|fast] ROOT [ARG...]
+//!     gammac build [--mode=debug|checked|fast] [-g] [-o EXE] [--emit-c] ROOT
+//!     gammac run [--mode=debug|checked|fast] [-g] ROOT [ARG...]
 //!     gammac fmt [--check] FILE|DIR...
 //!     gammac doc [--format=markdown|html] [-o PATH] [--all] [--missing] MODULE
 //!     gammac help | version
@@ -66,6 +66,9 @@ options:
   --recover                   (lex, parse) lex with the layout recovery tools use after errors
   --dump                      (parse) print the syntax tree
   --mode=debug|checked|fast   (build, run) the build mode (default: debug)
+  -g                          (build, run) add debug information that maps the executable back to the
+                              Gamma source (build also writes the lldb formatters, gamma_lldb.py,
+                              next to the executable)
   -o <file>                   (build) the executable to write (default: the input's name)
   --emit-c                    (build) stop after writing the C file (<exe>.c)
   --fix                       (lint) apply the fixes of the warnings that have one
@@ -135,6 +138,7 @@ main :: fn() needs Alloc + Env + Err + Fs + In + Out + Proc + Rand + Sys {
                 i += 1
             }
             "--emit-c" => { opts.emit_c = true }
+            "-g" => { opts.debug_info = true }
             "--diag-format=human" => { opts.format = .Human }
             "--diag-format=short" => { opts.format = .Short }
             "--diag-format=json" => { opts.format = .Json }

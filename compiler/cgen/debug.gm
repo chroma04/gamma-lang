@@ -1,0 +1,225 @@
+// Source-level debugging of compiled programs (`gammac build -g`; mirrors
+// `src/cgen/debug.rs`).
+//
+// With debug information on, the generated C maps back to the Gamma source:
+//
+// - Each statement is preceded by a `#line` directive naming its `.gm` file and line, so
+//   the C compiler's debug information (and sanitizer reports) point at Gamma lines. Each
+//   generated function ends with a marker that `resolve_lines` turns into a `#line` back
+//   to the C file itself, so code the back end adds between functions keeps its own
+//   location.
+// - Each frame field also has the Gamma name of its local (an anonymous union of `lN` and
+//   the name), and struct mirrors name their fields after the Gamma fields, so a debugger
+//   shows `F.count` and `F.p.x`.
+//
+// The Gamma names only appear in declarations the generated code never refers to. A name
+// can still be a macro of a system header (`linux`, `stdout`, `st_mtime`…), so `guard`
+// suspends any such macro around those declarations.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+hash_map :: import "std/collections/hash_map"
+loader :: import "../load"
+str :: import "std/str"
+
+/// The line that ends a function whose body carries `#line` directives.
+pub LINE_RESET :: "#line GM_C_SOURCE"
+
+/// The name under which the lldb formatters are written next to an executable built with
+/// debug information.
+pub LLDB_FORMATTERS_FILE :: "gamma_lldb.py"
+
+/// Prepares generated C with `#line` directives for the C file `c_file`. A directive
+/// numbers the lines after it consecutively, but all the C lines of a statement belong to
+/// the statement's one source line, so each of them gets the directive repeated. Each
+/// `LINE_RESET` line becomes a directive giving the next line its true position in the C
+/// file.
+pub resolve_lines :: fn(code: string, c_file: string) -> string needs Alloc {
+    out := list(u8)
+    n: usize = 0 // lines written so far
+    active: ?string = null
+    last := ""
+    for line in str.lines(code) {
+        if line is LINE_RESET {
+            active = null
+            // `#line N` numbers the line after the directive.
+            last = str.format("#line {} {}", n + 2, c_string(c_file))!
+        } else if line.starts_with("#line ") {
+            active = line
+            last = line
+        } else {
+            if d := active {
+                if last is not d {
+                    out.write("{}\n", d)!
+                    n += 1
+                }
+            }
+            last = line
+        }
+        out.write("{}\n", last)!
+        n += 1
+    }
+    return out.items
+}
+
+/// A top-level `asm` statement that embeds the gdb pretty printers `script` in the
+/// executable's `.debug_gdb_scripts` section (an inline Python script), which gdb loads
+/// with the executable where its auto-load safe path allows. ELF targets only.
+pub gdb_script_section :: fn(script: string) -> string needs Alloc {
+    asm := list(u8)
+    asm.extend(".pushsection \".debug_gdb_scripts\", \"MS\",%progbits,1\n.byte 4\n")!
+    asm.extend(".ascii \"gdb.inlined-script.gamma\\n\"\n")!
+    for line in str.lines(script) {
+        asm.extend(".ascii \"")!
+        for c in line {
+            if c is '\\' or c is '"' { asm.push('\\')! }
+            asm.push(c)!
+        }
+        asm.extend("\\n\"\n")!
+    }
+    asm.extend(".byte 0\n.popsection\n")!
+    return str.format("__asm__({});\n", c_string(asm.items))!
+}
+
+/// `name` if it can be the name of a struct member in the generated C: an ASCII C
+/// identifier that is neither a keyword nor a name the generated code itself uses.
+pub member_name :: fn(name: string) -> ?string needs Alloc {
+    if name.len is 0 { return null }
+    for i, c in enumerate(name) {
+        alpha := c in 'a'..='z' or c in 'A'..='Z' or c is '_'
+        if not (alpha or (i > 0 and c in '0'..='9')) { return null }
+    }
+    // Reserved identifiers, and the back end's and runtime's own prefixes.
+    if name.starts_with("__") or (name[0] is '_' and name.len > 1 and name[1] in 'A'..='Z') { return null }
+    if name.len >= 3 and (name[0] is 'g' or name[0] is 'G') and (name[1] is 'm' or name[1] is 'M') and name[2] is '_' { return null }
+    // The frame's own members (`h`, `ret`, `lN`, `wN`) and the macros generated code
+    // relies on inside the guarded declarations.
+    for p in [5]u8('l', 'w', 'f', 'a', 'b') {
+        if name[0] is p and name.len > 1 {
+            numbered := true
+            for c in name[1..name.len] {
+                if c not in '0'..='9' { numbered = false }
+            }
+            if numbered { return null }
+        }
+    }
+    for own in OWN {
+        if name is own { return null }
+    }
+    for k in KEYWORDS {
+        if name is k { return null }
+    }
+    return name
+}
+
+OWN :: [13]string("h", "ret", "b", "F", "B", "NULL", "offsetof", "bool", "true", "false", "uint8_t", "_Bool", "size_t")
+
+KEYWORDS :: [43]string(
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern", "float",
+    "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return", "short", "signed", "sizeof", "static",
+    "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "asm", "typeof", "alignas", "alignof",
+    "noreturn", "static_assert", "thread_local", "complex", "imaginary",
+)
+
+/// Picks member names for `names` (in order): the Gamma name where `member_name` accepts
+/// it and no other member has it, else none. `taken` holds names already in use in the
+/// same struct and receives the chosen ones.
+pub unique_members :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool)) -> []?string needs Alloc => unique_with(names, taken, false)
+
+/// `unique_members` for the members of a debugger view (`views`), where the names of a
+/// frame's own members are free.
+pub unique_view_members :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool)) -> []?string needs Alloc => unique_with(names, taken, true)
+
+unique_with :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool), view: bool) -> []?string needs Alloc {
+    count := hash_map.hash_map(string, u32)
+    for n in names {
+        c := count.get(n) else 0
+        count.put(n, c + 1)!
+    }
+    out := list(?string)
+    for n in names {
+        m: ?string = null
+        if view and (n is "h" or n is "ret") { m = n } else { m = member_name(n) }
+        name := m else {
+            out.push(null)!
+            continue
+        }
+        if (count.get(n) else 0) > 1 or taken.get(name) is not null {
+            out.push(null)!
+            continue
+        }
+        taken.put(name, true)!
+        out.push(name)!
+    }
+    return out.items
+}
+
+/// `decls`, with every macro named in `names` (sorted) suspended around it.
+pub guard :: fn(names: []const string, decls: string) -> string needs Alloc {
+    if names.len is 0 or decls.len is 0 { return decls }
+    out := list(u8)
+    for n in names { out.write("#pragma push_macro(\"{}\")\n#undef {}\n", n, n)! }
+    out.extend(decls)!
+    for n in names { out.write("#pragma pop_macro(\"{}\")\n", n)! }
+    return out.items
+}
+
+/// `p` made absolute (relative to the working directory) and without `.` and `..` names,
+/// without looking at the file system. The debugger finds source files by this name.
+pub absolute :: fn(p: string) -> string needs Alloc + Fs {
+    buf: [4096]u8 = ---
+    n := Fs.cwd(buf[..]) else return p
+    return loader.normalize(loader.join(buf[0..n], p))
+}
+
+/// The directory part of the executable `exe`, `.` if it has none.
+parent_dir :: fn(exe: string) -> string needs Alloc {
+    p := loader.parent(exe) else return "."
+    return if p.len is 0 { "." } else { p }
+}
+
+/// The text of the lldb data formatters is written to `gamma_lldb.py` in the directory of
+/// `exe`, replacing any earlier copy (every program gets the same file, so executables in
+/// one directory share it). Load it in lldb with `command script import`.
+pub write_lldb_formatters :: fn(exe: string, formatters: string) -> bool needs Alloc + Err + Fs {
+    path := loader.join(parent_dir(exe), LLDB_FORMATTERS_FILE)
+    fs.write_all(path, formatters) else {
+        eprint("cannot write {}\n", path)
+        return false
+    }
+    return true
+}
+
+test "member names" {
+    expect_eq(member_name("count") else "", "count")
+    expect_eq(member_name("st_mtime") else "", "st_mtime")
+    for bad in [14]string("", "1x", "héllo", "int", "l3", "w0", "ret", "h", "__x", "_Foo", "gm_x", "GM_LD", "<tmp>", "NULL") {
+        expect(member_name(bad) is null)
+    }
+    expect_eq(member_name("l") else "", "l")
+    expect_eq(member_name("l_2") else "", "l_2")
+}
+
+test "duplicates get no name" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        taken := hash_map.hash_map(string, bool)
+        m := unique_members([4]string("x", "y", "x", "int")[..], &taken)
+        expect_eq(m.len, 4)
+        expect(m[0] is null)
+        expect_eq(m[1] else "", "y")
+        expect(m[2] is null)
+        expect(m[3] is null)
+        expect(taken.get("y") is not null)
+    }
+}
+
+test "every mapped line keeps its source line" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        code := str.format("a\n#line 3 \"x.gm\"\nb\nc\n{}\nd\n", LINE_RESET)!
+        expect_eq(resolve_lines(code, "out.c"), "a\n#line 3 \"x.gm\"\nb\n#line 3 \"x.gm\"\nc\n#line 7 \"out.c\"\nd\n")
+    }
+}
