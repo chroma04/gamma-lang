@@ -14,8 +14,10 @@
 //! compared too, in the JSON format, which carries every field of a diagnostic: spans,
 //! labels, notes and fixes.
 //!
-//! On Unix, `gammac build` compiles every conformance `run` test through its own C back end,
-//! and the programs must give the expected output and exit status, as the reference's do.
+//! On Unix, `gammac run` compiles every conformance `run` test through its own C back end
+//! and runs it, and the programs must give the expected output and exit status, as the
+//! reference's do. `gammac check` must report what `gamma check` reports on every program,
+//! in the human format.
 //! Finally `gammac` compiles itself: the `gammac` it builds (stage 2) must generate exactly the
 //! C that the `gammac` built by the reference implementation (stage 1) generated for it.
 //!
@@ -180,6 +182,8 @@ enum Stage {
     Decls,
     /// `tir`: the checked function bodies of a program, from its root module.
     Tir,
+    /// `check`: the diagnostics of checking a program, in the human format.
+    Check,
 }
 
 impl Stage {
@@ -190,7 +194,14 @@ impl Stage {
             Stage::Modules => &["modules"],
             Stage::Decls => &["decls"],
             Stage::Tir => &["tir"],
+            Stage::Check => &["check"],
         }
+    }
+
+    /// The format the diagnostics are compared in: JSON, which carries every part of a
+    /// diagnostic, except for `check`, which tests the human format.
+    fn format(self) -> DiagFormat {
+        if let Stage::Check = self { DiagFormat::Human } else { DiagFormat::Json }
     }
 
     /// What the dump is called in messages.
@@ -201,6 +212,7 @@ impl Stage {
             Stage::Modules => "module graph",
             Stage::Decls => "declarations",
             Stage::Tir => "typed program",
+            Stage::Check => "output",
         }
     }
 }
@@ -211,8 +223,8 @@ fn on_big_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     std::thread::scope(|s| std::thread::Builder::new().stack_size(1 << 30).spawn_scoped(s, f).unwrap().join().unwrap())
 }
 
-/// What `gamma lex` or `gamma parse --dump` prints for each file with
-/// `--diag-format=json`, in the layout of `gammac` with several files: standard output,
+/// What `gamma <stage>` prints for each file with the stage's diagnostic format, in the
+/// layout of `gammac` with several files: standard output,
 /// standard error and the exit status.
 fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, i32) {
     let (mut out, mut err, mut status) = (String::new(), String::new(), 0);
@@ -221,14 +233,15 @@ fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, 
         err.push_str(&format!("==> {} <==\n", path));
         let mut sess = Session::new();
         sess.recover_layout = recover;
-        if let Stage::Modules | Stage::Decls | Stage::Tir = stage {
+        if let Stage::Modules | Stage::Decls | Stage::Tir | Stage::Check = stage {
             let dump = match stage {
                 Stage::Modules => gamma::sema::load_modules(&mut sess, Path::new(path)),
                 Stage::Decls => gamma::sema::declarations(&mut sess, Path::new(path)),
+                Stage::Check => gamma::sema::analyze(&mut sess, Path::new(path)).map(|_| String::new()),
                 _ => gamma::sema::typed_program(&mut sess, Path::new(path)),
             };
             out.push_str(&dump.unwrap_or_default());
-            err.push_str(&sess.render_diagnostics(DiagFormat::Json));
+            err.push_str(&sess.render_diagnostics(stage.format()));
             if sess.diags.has_errors() {
                 status = 1;
             }
@@ -246,7 +259,7 @@ fn reference(stage: Stage, files: &[String], recover: bool) -> (String, String, 
                 let tree = sess.parse(file);
                 out.push_str(&driver::dump_ast(&tree));
             }
-            Stage::Modules | Stage::Decls | Stage::Tir => unreachable!(),
+            Stage::Modules | Stage::Decls | Stage::Tir | Stage::Check => unreachable!(),
         }
         err.push_str(&sess.render_diagnostics(DiagFormat::Json));
         if sess.diags.has_errors() {
@@ -282,9 +295,12 @@ fn check(stage: Stage, recover: bool) {
     // In batches, since a command line is limited in length (to 32 KiB on Windows).
     let inputs = if let Stage::Lex | Stage::Parse = stage { corpus() } else { program_roots() };
     for files in inputs.chunks(100) {
-        let (out, err, status) = reference(stage, files, recover);
+        let (out, err, status) = on_big_stack(|| reference(stage, files, recover));
         let mut args: Vec<String> = stage.args().iter().map(|a| a.to_string()).collect();
-        args.push("--diag-format=json".to_string());
+        args.push(
+            if let DiagFormat::Human = stage.format() { "--diag-format=human" } else { "--diag-format=json" }
+                .to_string(),
+        );
         if recover {
             args.push("--recover".to_string());
         }
@@ -416,10 +432,17 @@ fn module_loading_matches_the_reference_on_every_program() {
 }
 
 #[test]
+fn checking_matches_the_reference_on_every_program() {
+    check(Stage::Check, false);
+}
+
+#[test]
 fn usage_errors() {
-    let got = run_gammac(&["check".to_string()]);
-    assert_eq!(got.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&got.stderr).starts_with("usage: gammac"));
+    for args in [&["check"][..], &["frobnicate", "x.gm"], &["build", "--mode=slow", "x.gm"]] {
+        let got = run_gammac(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+        assert_eq!(got.status.code(), Some(2), "gammac {:?}", args);
+        assert!(String::from_utf8_lossy(&got.stderr).contains("\nusage: gammac"), "gammac {:?}", args);
+    }
     let got = run_gammac(&["lex".to_string(), "no/such/file.gm".to_string()]);
     assert_eq!(got.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&got.stderr).contains("cannot read `no/such/file.gm`"));
@@ -523,25 +546,17 @@ fn run_tests() -> Vec<RunTest> {
     tests
 }
 
-/// Builds `t` with `gammac build` and runs it; returns why it failed, if it did.
+/// Runs `t` with `gammac run`, which compiles it to a temporary executable; returns why it
+/// failed, if it did.
 #[cfg(unix)]
 fn build_and_run(gammac: &Path, t: &RunTest, dir: &Path) -> Option<String> {
-    let exe = dir.join(t.name.replace('/', "_"));
-    let mut cmd = Command::new(gammac);
-    cmd.current_dir(root()).arg("build").arg(format!("--mode={}", t.mode)).arg("-o").arg(&exe).arg(&t.root);
-    gammac_env(&mut cmd);
-    let built = common::output(&mut cmd).unwrap();
-    if !built.status.success() {
-        return Some(format!("gammac build failed:\n{}", String::from_utf8_lossy(&built.stderr)));
-    }
     let stdin = dir.join(format!("{}.stdin", t.name.replace('/', "_")));
     std::fs::write(&stdin, &t.stdin).unwrap();
-    let mut run = Command::new(&exe);
-    run.current_dir(root()).stdin(std::fs::File::open(&stdin).unwrap());
-    let ran = common::output(&mut run).unwrap();
-    let _ = std::fs::remove_file(&exe);
-    let _ = std::fs::remove_file(exe.with_extension("c"));
-    let _ = std::fs::remove_file(format!("{}.c", exe.display()));
+    let mut cmd = Command::new(gammac);
+    cmd.current_dir(root()).arg("run").arg(format!("--mode={}", t.mode)).arg(&t.root);
+    cmd.stdin(std::fs::File::open(&stdin).unwrap());
+    gammac_env(&mut cmd);
+    let ran = common::output(&mut cmd).unwrap();
     let _ = std::fs::remove_file(&stdin);
     if ran.status.code() != Some(t.exit) {
         return Some(format!(

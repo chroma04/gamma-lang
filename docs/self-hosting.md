@@ -25,6 +25,7 @@ this checkable:
 | modules and packages | the module graph of `gamma modules`, and its diagnostics |
 | declarations | what `gamma decls` prints for every top-level declaration, and its diagnostics |
 | bodies | the typed program of `gamma tir`, and its diagnostics |
+| checking | the diagnostics of `gamma check`, in the human format |
 | back end | the output and exit status of the compiled programs |
 | bootstrap | the C that `gammac` generates for itself, built by itself |
 
@@ -145,6 +146,14 @@ then linked. On four cores this brings building `gammac` itself from about 110 t
 seconds. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
 `runtime` directory two levels above the standard library's. It runs on Unix-like systems;
 on Windows, use `gamma build`.
+
+`gammac run [--mode=…] ROOT [ARG…]` builds the program the same way into a new temporary
+directory, runs it with the arguments after the file and ends with its exit status (128
+plus the signal number if a signal ended it, 134 for a trap), as `gamma run
+--backend=c` does. `gammac check ROOT` checks a program as `gamma check` does and prints
+only the diagnostics; `tests/selfhost.rs` compares them, in the human format, with the
+reference's on every program. Diagnostics are printed in the human format by default, and
+`--diag-format=short|json` selects the others, as with `gamma`.
 
 `gammac decls` and `gammac tir` read the core library from `$GAMMA_CORE`, or else from
 the `core` directory next to the standard library's. A root module without `main` is

@@ -216,7 +216,9 @@ load_program :: fn(root: string, opts: driver.Options) -> u8 needs Alloc + Env +
                     check.check_consts(&s)
                     Out.write(s.decl_dump())
                 } else {
-                    check.check_program(&s, m)
+                    // `tir` checks a root without `main` as a library, with its tests, as
+                    // `gamma tir` does.
+                    check.check_program(&s, m, opts.command is .Tir and l.lookup(m, "main") is null)
                     errors := diags.has_errors()
                     // The diagnostics of checking come first, then what the back end says.
                     render(&sm, &diags, opts.format)
