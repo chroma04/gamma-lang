@@ -1,0 +1,177 @@
+//! The JSON values of the language server: building them, reading the fields of a request,
+//! and writing them with the members of every object in the order of their keys, as the
+//! reference implementation's JSON library does.
+
+json :: import "std/json"
+
+pub Value :: json.Value
+
+/// An object under construction. `put` replaces a member of the same name.
+pub Obj :: struct {
+    members: List(json.Member)
+}
+
+pub obj :: fn() -> Obj needs Alloc => Obj(members: list(json.Member))
+
+pub put :: fn(o: ^Obj, key: string, v: Value) needs Alloc {
+    for i in 0..o.members.items.len {
+        if o.members.items[i].key is key {
+            o.members.items[i].value = v
+            return
+        }
+    }
+    o.members.push(json.Member(key: key, value: v))!
+}
+
+/// The object with the members put so far.
+pub value :: fn(o: ^const Obj) -> Value => Value.Object(o.members.items)
+
+/// A string value.
+pub text :: fn(s: string) -> Value => Value.String(s)
+
+/// An integer value.
+pub int :: fn(n: i64) -> Value needs Alloc => Value.Number(json.Number(text: str.format("{}", n)!))
+
+pub bool_value :: fn(b: bool) -> Value => Value.Bool(b)
+
+pub NULL :: Value.Null
+
+/// An array value.
+pub array :: fn(items: []const Value) -> Value needs Alloc {
+    l := list(Value)
+    l.extend(items)!
+    return Value.Array(l.items)
+}
+
+/// The object `{k1: v1, k2: v2, …}` for the pairs of `kvs`.
+pub Pair :: struct {
+    key: string
+    value: Value
+}
+
+pub object :: fn(kvs: []const Pair) -> Value needs Alloc {
+    o := obj()
+    for kv in kvs { o.put(kv.key, kv.value) }
+    return o.value()
+}
+
+/// Member `key` of an object, or null if `v` is not an object or has no such member.
+pub field :: fn(v: Value, key: string) -> Value => json.get(v, key) else Value.Null
+
+/// Member `a` of member `b`, and so on: `v["a"]["b"]` of a language with such indexing.
+pub path2 :: fn(v: Value, a, b: string) -> Value => field(field(v, a), b)
+
+pub as_str :: fn(v: Value) -> ?string => match v {
+    .String(s) => s
+    _ => null
+}
+
+pub as_array :: fn(v: Value) -> ?[]Value => match v {
+    .Array(xs) => xs
+    _ => null
+}
+
+pub as_bool :: fn(v: Value) -> ?bool => match v {
+    .Bool(b) => b
+    _ => null
+}
+
+/// An integer value that fits an `i64` (and was written without a fraction).
+pub as_i64 :: fn(v: Value) -> ?i64 {
+    .Number(n) := v else return null
+    if n.text.index_of('.') is not null or n.text.index_of('e') is not null or n.text.index_of('E') is not null { return null }
+    return json.to_i64(n)
+}
+
+/// A non-negative integer value that fits a `u64`.
+pub as_u64 :: fn(v: Value) -> ?u64 {
+    .Number(n) := v else return null
+    if n.text.len is 0 { return null }
+    x: u64 = 0
+    for c in n.text {
+        if c not in '0'..='9' { return null }
+        d := u64(c - '0')
+        if x > (@max_value(u64) - d) / 10 { return null }
+        x = x * 10 + d
+    }
+    return x
+}
+
+/// Whether `v` is the boolean `true`.
+pub is_true :: fn(v: Value) -> bool => match v {
+    .Bool(b) => b
+    _ => false
+}
+
+/// Appends the compact JSON text of `v` to `out`, with the members of each object ordered
+/// by key (a later member of the same name replaces an earlier one).
+pub write_value :: fn(out: ^List(u8), v: Value) needs Alloc {
+    match v {
+        .Null => out.extend("null")!
+        .Bool(b) => out.extend(if b { "true" } else { "false" })!
+        .Number(n) => out.extend(n.text)!
+        .String(s) => write_string(out, s)
+        .Array(xs) => {
+            out.push('[')!
+            for i, x in enumerate(xs) {
+                if i > 0 { out.push(',')! }
+                write_value(out, x)
+            }
+            out.push(']')!
+        }
+        .Object(ms) => {
+            // The index of the member that counts for each key, in key order.
+            order := list(usize)
+            defer order.deinit()
+            for i in 0..ms.len {
+                last := true
+                for j in (i + 1)..ms.len {
+                    if ms[j].key is ms[i].key { last = false }
+                }
+                if last { order.push(i)! }
+            }
+            order.items.sort_by(fn(a, b: ^const usize) -> bool => ms[a^].key < ms[b^].key)
+            out.push('{')!
+            for k, i in enumerate(order.items) {
+                if k > 0 { out.push(',')! }
+                write_string(out, ms[i].key)
+                out.push(':')!
+                write_value(out, ms[i].value)
+            }
+            out.push('}')!
+        }
+    }
+}
+
+/// A string literal with the escapes JSON needs and nothing else.
+pub write_string :: fn(out: ^List(u8), s: string) needs Alloc {
+    out.push('"')!
+    start: usize = 0
+    for i in 0..s.len {
+        c := s[i]
+        if c >= 0x20 and c is not '"' and c is not '\\' { continue }
+        out.extend(s[start..i])!
+        start = i + 1
+        match c {
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            '\n' => out.extend("\\n")!
+            '\r' => out.extend("\\r")!
+            '\t' => out.extend("\\t")!
+            8 => out.extend("\\b")!
+            12 => out.extend("\\f")!
+            _ => out.write("\\u{:04x}", c)!
+        }
+    }
+    out.extend(s[start..])!
+    out.push('"')!
+}
+
+/// The compact JSON text of `v`.
+pub to_text :: fn(v: Value) -> string needs Alloc {
+    out := list(u8)
+    write_value(&out, v)
+    return out.items
+}
+
+str :: import "std/str"

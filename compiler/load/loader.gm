@@ -105,12 +105,23 @@ DirModule :: struct {
     module: usize
 }
 
+/// An unsaved buffer that stands in for the file at `path` (canonical).
+pub Overlay :: struct {
+    pub path: string
+    pub text: string
+}
+
 pub Loader :: struct {
     pub sm: ^source.SourceMap
     pub diags: ^diag.Diagnostics
     ids: ^ast.NodeId
     /// Lex with the layout recovery that tools use after errors.
     recover: bool
+    /// Keep the root module even if loading it reported errors, so that editors can go on
+    /// with what parsed.
+    pub keep_going: bool = false
+    /// Buffers that are read instead of the files on disk (`gammac lsp`).
+    pub overlays: List(Overlay)
     /// The build mode, `target.mode` (§3.6): `Debug`, `Checked` or `Fast`.
     pub mode: string = "Debug"
     /// The machine the program is compiled for (`target`, §3.6).
@@ -142,6 +153,7 @@ pub loader :: fn(sm: ^source.SourceMap, diags: ^diag.Diagnostics, ids: ^ast.Node
         ids: ids,
         recover: recover,
         target: host_target(),
+        overlays: list(Overlay),
         std_root: std_root,
         std_canon: std_root,
         cwd: working_dir(),
@@ -231,8 +243,51 @@ pub(package) module_files :: fn(dir: string) -> ?List(string) needs Alloc + Fs {
     return paths
 }
 
+/// The text of the buffer that stands in for the file at `path`, if there is one.
+pub overlay_text :: fn(l: ^const Loader, path: string) -> ?string needs Alloc + Fs {
+    if l.overlays.items.len is 0 { return null }
+    key := canonical_path(l, path)
+    for o in l.overlays.items {
+        if o.path is key { return o.text }
+    }
+    return null
+}
+
+/// The canonical form of `p`; for a file that does not exist (yet), its directory's
+/// canonical form joined with its name.
+pub canonical_path :: fn(l: ^const Loader, p: string) -> string needs Alloc + Fs {
+    if c := l.canonicalize(p) { return c }
+    name := file_name(p) else return p
+    dir := parent(p) else return p
+    if dir.len is 0 { return p }
+    if c := l.canonicalize(dir) { return join(c, name) }
+    return p
+}
+
+/// The `.gm` files of directory `dir`, counting the buffers (`overlays`) that stand in a
+/// file of that directory, or `null` if it cannot be read and holds no buffer.
+pub module_files_of :: fn(l: ^const Loader, dir: string) -> ?List(string) needs Alloc + Fs {
+    paths := module_files(dir)
+    if l.overlays.items.len is 0 { return paths }
+    key := canonical_path(l, dir)
+    out := paths else list(string)
+    n := out.items.len
+    for o in l.overlays.items {
+        name := file_name(o.path) else continue
+        if (parent(o.path) else "") is not key or not name.ends_with(".gm") or name.len <= 3 { continue }
+        present := false
+        for p in out.items[0..n] {
+            if canonical_path(l, p) is o.path { present = true }
+        }
+        if not present { out.push(join(dir, name))! }
+    }
+    if paths is null and out.items.len is 0 { return null }
+    return out
+}
+
 /// Reads and parses one source file; reports a file that cannot be read.
 load_file :: fn(l: ^Loader, path: string) -> ?ast.File needs Alloc + Fs {
+    if text := l.overlay_text(path) { return l.parse_text(path, text) }
     text := fs.read_all(path) else e => {
         l.diags.report(source.DUMMY, str.format("cannot read {}: {}", path, describe_read_error(e))!)
         return null
@@ -263,13 +318,13 @@ pub describe_read_error :: fn(e: fs.ReadError) -> string => match e {
 /// Loads the root module: a single `.gm` file, or every `.gm` file directly inside a
 /// directory (§3.1).
 pub load_root :: fn(l: ^Loader, root: string) -> ?usize needs Alloc + Fs {
-    if is_dir(root) or (not is_file(root) and module_files(root) is not null) {
+    if is_dir(root) or (not is_file(root) and l.module_files_of(root) is not null) {
         m := l.load_dir_module(root, source.DUMMY, null, null) else return null
-        if l.diags.has_errors() { return null }
+        if l.diags.has_errors() and not l.keep_going { return null }
         return m
     }
     file := l.load_file(root) else return null
-    if l.diags.has_errors() { return null }
+    if l.diags.has_errors() and not l.keep_going { return null }
     // `main.gm` has the empty path as its parent; the current directory is meant.
     dir := parent(root) else "."
     if dir.len is 0 { dir = "." }
@@ -292,7 +347,7 @@ load_dir_module :: fn(l: ^Loader, dir: string, at: source.Span, parent_package: 
     for d in l.by_dir.items {
         if d.key is key { return d.module }
     }
-    paths := module_files(dir) else {
+    paths := l.module_files_of(dir) else {
         l.diags.report(at, str.format("cannot find the module directory {}", dir)!)
         return null
     }

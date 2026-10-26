@@ -1,0 +1,338 @@
+//! The walk over declarations: functions, type literals, handlers and the outline
+//! (mirrors `src/sema/ide/items.rs`).
+
+ast :: import "../ast"
+load :: import "../load"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+
+// --- functions ---
+
+pub fn_literal :: fn(w: ^Walker, lit: ^const ast.FnLit) needs Alloc {
+    w.push_scope(lit.span.hi)
+    w.params(lit.sig.params, true)
+    w.sig_rest(&lit.sig)
+    for i in 0..lit.where_.len { w.expr(lit.where_[i].ty) }
+    match lit.body {
+        .Block(b) => w.block(&b)
+        .Expr(e) => w.expr(e)
+    }
+    w.pop_scope()
+}
+
+/// A function type: parameter types, result and effects.
+pub sig :: fn(w: ^Walker, sg: ^const ast.FnSig) needs Alloc {
+    w.push_scope(sg.span.hi)
+    w.params(sg.params, false)
+    w.sig_rest(sg)
+    w.pop_scope()
+}
+
+sig_rest :: fn(w: ^Walker, sg: ^const ast.FnSig) needs Alloc {
+    if r := sg.ret { w.expr(r) }
+    if effects := sg.effects {
+        for i in 0..effects.len { w.expr(&effects[i]) }
+    }
+}
+
+/// Parameter groups, in order; with `declare`, their names become locals.
+pub params :: fn(w: ^Walker, ps: []const ast.Param, declare: bool) needs Alloc {
+    for i in 0..ps.len {
+        p := &ps[i]
+        if t := p.ty { w.expr(t) }
+        if d := p.default { w.expr(d) }
+        if not declare {
+            // The names in a function type or an operation are only documentation.
+            ty := ""
+            if t := p.ty { ty = src(w.s, t.span) }
+            for n in p.names {
+                w.def_once(n.span, Hover(code: str.format("{}: {}", n.name, ty)!, doc: null))
+            }
+            continue
+        }
+        is_type := false
+        if t := p.ty {
+            if .Ident(id) := t.kind { is_type = id.name is "type" }
+        }
+        kind := if is_type { Kind.TypeParam } else if p.comptime { Kind.Const } else { Kind.Parameter }
+        for n in p.names { w.declare(n, kind, n.span.hi) }
+    }
+}
+
+// --- handlers ---
+
+pub handler_literal :: fn(w: ^Walker, h: ^const ast.HandlerLit) needs Alloc {
+    w.expr(h.effect_)
+    effect_: ?usize = null
+    if .Effect(d) := w.classify(h.effect_) { effect_ = d }
+    w.clauses(h.clauses, effect_)
+}
+
+/// Handler clauses.
+pub clauses :: fn(w: ^Walker, cs: []const ast.Clause, effect_: ?usize) needs Alloc {
+    for i in 0..cs.len {
+        c := &cs[i]
+        if d := effect_ { w.operation_use(d, c.name) }
+        w.push_scope(c.span.hi)
+        for p in c.params { w.declare(p, .Parameter, p.span.hi) }
+        w.expr(c.body)
+        w.pop_scope()
+    }
+}
+
+// --- type literals ---
+
+/// A struct, union or effect literal written inside an expression.
+pub type_literal :: fn(w: ^Walker, e: ^const ast.Expr) needs Alloc {
+    out := list(DocSymbol)
+    w.type_lit(e, &out)
+}
+
+/// Walks a struct, union or effect literal, collecting its members for the outline.
+pub type_lit :: fn(w: ^Walker, e: ^const ast.Expr, out: ^List(DocSymbol)) needs Alloc {
+    match e.kind {
+        .Struct(lit) => {
+            w.push_scope(lit.span.hi)
+            if ps := lit.params { w.params(ps, true) }
+            for i in 0..lit.where_.len { w.expr(lit.where_[i].ty) }
+            w.struct_members(lit.members, out)
+            w.pop_scope()
+        }
+        .Union(lit) => {
+            w.push_scope(lit.span.hi)
+            if ps := lit.params { w.params(ps, true) }
+            if t := lit.tag_type { w.expr(t) }
+            w.union_members(lit.members, out)
+            w.pop_scope()
+        }
+        .Effect(lit) => {
+            w.push_scope(lit.span.hi)
+            if ps := lit.params { w.params(ps, true) }
+            for i in 0..lit.ops.len {
+                op := &lit.ops[i]
+                w.push_scope(op.span.hi)
+                w.params(op.params, false)
+                if r := op.ret { w.expr(r) }
+                w.pop_scope()
+                detail := str.trim(src(w.s, op.span))
+                out.push(DocSymbol(
+                    name: op.name.name,
+                    kind: .Operation,
+                    detail: detail,
+                    range: op.span,
+                    name_span: op.name.span,
+                    children: empty_slice(DocSymbol),
+                ))!
+            }
+            w.pop_scope()
+        }
+        .Attributed(_, inner) => w.type_lit(inner, out)
+        _ => w.expr(e)
+    }
+}
+
+struct_members :: fn(w: ^Walker, members: []const ast.StructMember, out: ^List(DocSymbol)) needs Alloc {
+    for i in 0..members.len {
+        match members[i] {
+            .Field(f) => {
+                w.expr(f.ty)
+                if d := f.default { w.expr(d) }
+                text := str.trim(src(w.s, f.span))
+                ty := src(w.s, f.ty.span)
+                for n in f.names {
+                    w.def_once(n.span, Hover(code: text, doc: null))
+                    out.push(DocSymbol(
+                        name: n.name,
+                        kind: .Field,
+                        detail: ty,
+                        range: f.span,
+                        name_span: n.span,
+                        children: empty_slice(DocSymbol),
+                    ))!
+                }
+            }
+            .When(x) => {
+                w.expr(x.cond)
+                w.struct_members(x.then, out)
+                if e := x.else_ { w.struct_members(e, out) }
+            }
+        }
+    }
+}
+
+union_members :: fn(w: ^Walker, members: []const ast.UnionMember, out: ^List(DocSymbol)) needs Alloc {
+    for i in 0..members.len {
+        match members[i] {
+            .Variant(v) => {
+                if p := v.payload { w.expr(p) }
+                if x := v.value { w.expr(x) }
+                text := str.trim(src(w.s, v.span))
+                w.def_once(v.name.span, Hover(code: text, doc: null))
+                detail := ""
+                if p := v.payload { detail = str.format(": {}", src(w.s, p.span))! }
+                out.push(DocSymbol(
+                    name: v.name.name,
+                    kind: .Variant,
+                    detail: detail,
+                    range: v.span,
+                    name_span: v.name.span,
+                    children: empty_slice(DocSymbol),
+                ))!
+            }
+            .When(x) => {
+                w.expr(x.cond)
+                w.union_members(x.then, out)
+                if e := x.else_ { w.union_members(e, out) }
+            }
+        }
+    }
+}
+
+// --- top-level items ---
+
+pub item :: fn(w: ^Walker, it: ^const ast.Item, out: ^List(DocSymbol)) needs Alloc {
+    match it.kind {
+        .Binding(b) => w.top_binding(it, &b, out)
+        .When(x) => {
+            w.expr(x.cond)
+            for i in 0..x.then.len { w.item(&x.then[i], out) }
+            if e := x.else_ {
+                for i in 0..e.len { w.item(&e[i], out) }
+            }
+        }
+        .Handler(h) => {
+            w.push_scope(h.span.hi)
+            if ps := h.params { w.params(ps, true) }
+            w.expr(h.effect_)
+            w.expr(h.for_ty)
+            if effects := h.effects {
+                for i in 0..effects.len { w.expr(&effects[i]) }
+            }
+            effect_: ?usize = null
+            if .Effect(d) := w.classify(h.effect_) { effect_ = d }
+            w.clauses(h.clauses, effect_)
+            w.pop_scope()
+            text := src(w.s, it.span)
+            head := text
+            if i := text.index_of('{') { head = text[0..i] }
+            out.push(DocSymbol(
+                name: str.trim(head),
+                kind: .Handler,
+                detail: "",
+                range: it.span,
+                name_span: h.effect_.span,
+                children: empty_slice(DocSymbol),
+            ))!
+        }
+        .Test(t) => {
+            w.block(&t.body)
+            word := if t.bench { "bench" } else { "test" }
+            out.push(DocSymbol(
+                name: str.format("{} \"{}\"", word, t.name.bytes)!,
+                kind: .Test,
+                detail: "",
+                range: it.span,
+                name_span: t.name_span,
+                children: empty_slice(DocSymbol),
+            ))!
+        }
+        .Intrinsic(e) => w.expr(e)
+    }
+}
+
+top_binding :: fn(w: ^Walker, it: ^const ast.Item, b: ^const ast.Binding, out: ^List(DocSymbol)) needs Alloc {
+    if t := b.ty { w.expr(t) }
+    if b.names.len is not 1 {
+        w.expr(b.init)
+        return
+    }
+    name := b.names[0]
+    decl: ?usize = null
+    if d := w.s.l.lookup(w.module, name.name) {
+        if w.s.l.decls.items[d].name.span is name.span { decl = d }
+    }
+    kind := Kind.Const
+    detail := ""
+    if d := decl {
+        w.ensure_hover(DeclRef.Decl(d))
+        itm := decl_item(w.s, d)
+        kind = itm.kind
+        detail = itm.detail
+    }
+    children := list(DocSymbol)
+    init := b.init
+    while .Attributed(_, inner) := init.kind { init = inner }
+    match init.kind {
+        .Fn(lit) => {
+            if decl is null { kind = .Function }
+            w.fn_literal(lit)
+        }
+        .Struct(_), .Union(_), .Effect(_) => {
+            if decl is null {
+                kind = match init.kind {
+                    .Struct(_) => Kind.Struct
+                    .Union(_) => Kind.Union
+                    _ => Kind.Effect
+                }
+            }
+            w.type_lit(init, &children)
+            detail = ""
+            if d := decl {
+                if .Effect(lit) := init.kind {
+                    // The operations are declarations of the module too.
+                    for i in 0..lit.ops.len { w.ensure_hover(DeclRef.Op(d, i.trunc(u32))) }
+                }
+            }
+        }
+        .Import(_) => {
+            w.expr(b.init)
+            if d := decl {
+                if v := decl_done(w.s, d) {
+                    if .Module(m) := v {
+                        kind = .Module
+                        if first := w.first_file_of(m) {
+                            w.add_ref(init.span, Span(file: first, lo: 0, hi: 0))
+                        }
+                    }
+                }
+            }
+        }
+        .Foreign(f) => {
+            kind = .Module
+            w.expr(b.init)
+            for i in 0..f.members.len {
+                m := &f.members[i]
+                if .Fn(n, sg) := m.kind {
+                    children.push(DocSymbol(
+                        name: n.name,
+                        kind: .Function,
+                        detail: src(w.s, sg.span),
+                        range: m.span,
+                        name_span: n.span,
+                        children: empty_slice(DocSymbol),
+                    ))!
+                }
+            }
+        }
+        _ => w.expr(b.init)
+    }
+    out.push(DocSymbol(
+        name: name.name,
+        kind: kind,
+        detail: detail,
+        range: it.span,
+        name_span: name.span,
+        children: children.items,
+    ))!
+}
+
+/// The first file of module `m`, by file id.
+first_file_of :: fn(w: ^Walker, m: usize) -> ?source.FileId needs Alloc {
+    dir := w.s.l.modules.items[m].dir
+    sm := w.s.l.sm
+    for i in 0..sm.files.items.len {
+        if load.parent(sm.files.items[i].path) is dir { return i.trunc(u32) }
+    }
+    return null
+}

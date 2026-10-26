@@ -1,0 +1,442 @@
+//! The answers to language requests, as LSP JSON, computed from an `Analysis`.
+
+/// What a request needs to build its answer.
+pub Ctx :: struct {
+    a: ^Analysis
+    enc: Encoding
+    uris: ^const UriMap
+}
+
+pub offset_at :: fn(cx: ^const Ctx, file: source.FileId, line, character: u32) -> u32 needs Alloc {
+    ix := cx.a.lines(file)
+    return offset(&ix, line, character, cx.enc).trunc(u32)
+}
+
+pub location :: fn(cx: ^const Ctx, span: source.Span) -> ?Value needs Alloc + Env + Fs + Rand {
+    path := cx.a.open_path(span.file) else return null
+    o := obj()
+    o.put("uri", text(uri_of(cx.uris, path)))
+    o.put("range", cx.a.range(span, cx.enc))
+    return o.value()
+}
+
+pub markdown :: fn(code: string, doc_text: ?string) -> string needs Alloc {
+    fence := doc.fence(code)
+    out := list(u8)
+    out.write("{}gamma\n{}\n{}", fence, code, fence)!
+    if d := doc_text {
+        out.extend("\n\n")!
+        out.extend(d)!
+    }
+    return out.items
+}
+
+pub hover :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc {
+    h := cx.a.index.hover_at(file, off) else return NULL
+    contents := obj()
+    contents.put("kind", text("markdown"))
+    contents.put("value", text(markdown(h.hover.code, h.hover.doc)))
+    o := obj()
+    o.put("contents", contents.value())
+    o.put("range", cx.a.range(h.range, cx.enc))
+    return o.value()
+}
+
+pub definition :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc + Env + Fs + Rand {
+    s := cx.a.index.definition_at(file, off) else return NULL
+    return location(cx, s) else NULL
+}
+
+pub references :: fn(cx: ^const Ctx, file: source.FileId, off: u32, include_declaration: bool) -> Value needs Alloc + Env + Fs + Rand {
+    def := cx.a.index.definition_at(file, off) else return array(empty_slice(Value))
+    spans := cx.a.index.uses_of(def)
+    out := list(Value)
+    if include_declaration and def.hi > def.lo {
+        if l := location(cx, def) { out.push(l)! }
+    }
+    for s in spans.items {
+        if l := location(cx, s) { out.push(l)! }
+    }
+    return array(out.items)
+}
+
+symbol_kind :: fn(k: ide.Kind) -> i64 => match k {
+    .Module => 2
+    .Function, .Test => 12
+    .Method, .Operation => 6
+    .Struct => 23
+    .Union => 10
+    .Effect => 11
+    .Handler => 19
+    .Const => 14
+    .Variable, .Parameter => 13
+    .Field => 8
+    .Variant => 22
+    .TypeAlias => 5
+    .TypeParam => 26
+    .Keyword => 13
+}
+
+completion_kind :: fn(k: ide.Kind) -> i64 => match k {
+    .Module => 9
+    .Function, .Test => 3
+    .Method, .Operation => 2
+    .Struct => 22
+    .Union => 13
+    .Effect => 8
+    .Handler => 7
+    .Const => 21
+    .Variable, .Parameter => 6
+    .Field => 5
+    .Variant => 20
+    .TypeAlias => 7
+    .TypeParam => 25
+    .Keyword => 14
+}
+
+symbol_json :: fn(cx: ^const Ctx, s: ^const ide.DocSymbol) -> Value needs Alloc {
+    children := list(Value)
+    for i in 0..s.children.len { children.push(symbol_json(cx, &s.children[i]))! }
+    o := obj()
+    o.put("name", text(s.name))
+    o.put("detail", text(s.detail))
+    o.put("kind", int(symbol_kind(s.kind)))
+    o.put("range", cx.a.range(s.range, cx.enc))
+    o.put("selectionRange", cx.a.range(s.name_span, cx.enc))
+    o.put("children", array(children.items))
+    return o.value()
+}
+
+pub document_symbols :: fn(cx: ^const Ctx, file: source.FileId) -> Value needs Alloc {
+    syms := ide.outline_of(&cx.a.index, file)
+    out := list(Value)
+    for i in 0..syms.len { out.push(symbol_json(cx, &syms[i]))! }
+    return array(out.items)
+}
+
+item_json :: fn(i: ^const ide.Item, sort: ?string) -> Value needs Alloc {
+    o := obj()
+    o.put("label", text(dupe(i.label)!))
+    o.put("kind", int(completion_kind(i.kind)))
+    if i.detail.len > 0 { o.put("detail", text(dupe(i.detail)!)) }
+    if d := i.doc {
+        m := obj()
+        m.put("kind", text("markdown"))
+        m.put("value", text(dupe(d)!))
+        o.put("documentation", m.value())
+    }
+    if s := sort { o.put("sortText", text(str.format("{}{}", s, i.label)!)) }
+    return o.value()
+}
+
+/// Completions for a name written at `off`: the locals in scope, the module's
+/// declarations, then the universe scope (the core library, builtin types and keywords).
+pub names :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> List(Value) needs Alloc {
+    ix := &cx.a.index
+    seen := hash_map.hash_map(string, bool)
+    out := list(Value)
+    // Later locals shadow nothing (shadowing is an error), so order only matters for display.
+    locals := ix.locals_at(file, off)
+    locals.items.stable_sort_by(fn(x, y: ^const ide.LocalScope) -> bool => x.def.lo > y.def.lo)
+    for i in 0..locals.items.len {
+        l := &locals.items[i]
+        if not seen.contains(l.item.label) {
+            seen.put(l.item.label, true)!
+            out.push(item_json(&l.item, "0"))!
+        }
+    }
+    for i in 0..ix.module_items.len {
+        it := &ix.module_items[i]
+        if not seen.contains(it.label) {
+            seen.put(it.label, true)!
+            out.push(item_json(it, "1"))!
+        }
+    }
+    for i in 0..ix.universe.len {
+        it := &ix.universe[i]
+        if not seen.contains(it.label) {
+            seen.put(it.label, true)!
+            out.push(item_json(it, "2"))!
+        }
+    }
+    return out
+}
+
+/// Completions for the members of the expression written at `lo..hi`.
+pub members :: fn(cx: ^const Ctx, file: source.FileId, lo, hi: u32) -> ?List(Value) needs Alloc {
+    ix := &cx.a.index
+    found: ?[]const ide.Item = ix.members_at(file, lo, hi)
+    if found is null {
+        // `(a + b).`: the checker knows the expression inside the parentheses.
+        t := cx.a.source_text(file)
+        if usize(lo) <= usize(hi) and usize(hi) <= t.len and is_char_boundary(t, usize(lo)) and is_char_boundary(t, usize(hi)) {
+            inner := t[usize(lo)..usize(hi)]
+            if inner.starts_with("(") and inner.ends_with(")") { found = ix.members_at(file, lo + 1, hi - 1) }
+        }
+    }
+    items := found else return null
+    out := list(Value)
+    for i in 0..items.len { out.push(item_json(&items[i], null))! }
+    return out
+}
+
+is_ident_byte :: fn(c: u8) -> bool => (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c is '_'
+
+/// For a completion request after `receiver.prefix`, the offsets where the receiver
+/// starts and the dot is.
+pub member_context :: fn(t: string, off: usize) -> ?(start: usize, dot: usize) {
+    b := t
+    p := off.min(b.len)
+    while p > 0 and is_ident_byte(b[p - 1]) { p -= 1 }
+    if p is 0 or b[p - 1] is not '.' or (p >= 2 and b[p - 2] is '.') { return null }
+    dot := p - 1
+    i := dot
+    while i > 0 {
+        c := b[i - 1]
+        if is_ident_byte(c) or c is '.' or c is '^' {
+            i -= 1
+        } else if c is ')' or c is ']' {
+            open: u8 = if c is ')' { '(' } else { '[' }
+            close: u8 = c
+            depth: i64 = 0
+            j := i
+            while j > 0 {
+                j -= 1
+                if b[j] is close {
+                    depth += 1
+                } else if b[j] is open {
+                    depth -= 1
+                    if depth is 0 { break }
+                }
+            }
+            if depth is not 0 { return null }
+            i = j
+        } else {
+            break
+        }
+    }
+    // A leading `.` belongs to something else (`..`, `.Variant`).
+    while i < dot and b[i] is '.' { i += 1 }
+    if i < dot { return (start: i, dot: dot) }
+    return null
+}
+
+/// Where the cursor is in a call.
+pub CallContext :: struct {
+    /// The offset just after the callee's name.
+    end: usize
+    /// The index of the argument.
+    active: usize
+    /// The name of the parameter if the argument is written `name: value`.
+    named: ?string
+}
+
+is_space :: fn(c: u8) -> bool => c is ' ' or c is '\t' or c is '\n' or c is '\r' or c is 0x0b or c is 0x0c
+
+pub call_context :: fn(t: string, off_in: usize) -> ?CallContext needs Alloc {
+    b := t
+    off := off_in.min(b.len)
+    depth: usize = 0
+    commas: usize = 0
+    i := off
+    last_comma: ?usize = null
+    open: usize = 0
+    while true {
+        if i is 0 { return null }
+        i -= 1
+        c := b[i]
+        if c is ')' or c is ']' or c is '}' {
+            depth += 1
+        } else if c is '(' and depth is 0 {
+            open = i
+            break
+        } else if c is '(' {
+            depth -= 1
+        } else if (c is '[' or c is '{') and depth is 0 {
+            return null
+        } else if c is '[' or c is '{' {
+            depth -= 1
+        } else if c is ',' and depth is 0 {
+            commas += 1
+            if last_comma is null { last_comma = i }
+        } else if c is '"' {
+            // A string literal ends the search on its line: skip it whole.
+            j := i
+            while j > 0 and b[j - 1] is not '\n' {
+                j -= 1
+                if b[j] is '"' and (j is 0 or b[j - 1] is not '\\') { break }
+            }
+            i = j
+        }
+    }
+    end := open
+    while end > 0 and is_space(b[end - 1]) and b[end - 1] is not '\n' { end -= 1 }
+    if end is 0 or not is_ident_byte(b[end - 1]) { return null }
+    // `name: value`: the words before a colon at the start of the argument.
+    start := open + 1
+    if c := last_comma { start = c + 1 }
+    seg := ""
+    if start <= off and is_char_boundary(t, start) and is_char_boundary(t, off) { seg = str.trim_start(t[start..off]) }
+    named: ?string = null
+    if sp := str.split_once(seg, ":") {
+        n := str.trim(sp.before)
+        ok := n.len > 0
+        for ch in n {
+            if not is_ident_byte(ch) { ok = false }
+        }
+        if ok { named = n }
+    }
+    return CallContext(end: end, active: commas, named: named)
+}
+
+SplitSignature :: struct {
+    params: List(string)
+    tail: string
+}
+
+/// Splits the parameter list of the signature text `sig` (`fn(a: T, b: U) -> R`) into its
+/// parameters and the text after the closing parenthesis.
+split_signature :: fn(sig: string) -> ?SplitSignature needs Alloc {
+    at := str.find(sig, "fn(") else return null
+    start := at + 3
+    depth: i64 = 0
+    cur_start := start
+    params := list(string)
+    for i in start..sig.len {
+        c := sig[i]
+        if c is '(' or c is '[' or c is '{' {
+            depth += 1
+        } else if c is ')' or c is ']' or c is '}' {
+            if depth is 0 {
+                last := str.trim(sig[cur_start..i])
+                if last.len > 0 { params.push(last)! }
+                return SplitSignature(params: params, tail: sig[i + 1..])
+            }
+            depth -= 1
+        } else if c is ',' and depth is 0 {
+            params.push(str.trim(sig[cur_start..i]))!
+            cur_start = i + 1
+        }
+    }
+    return null
+}
+
+/// Help with the arguments of the call around `off`: the signature of the function called,
+/// with the parameter being written marked.
+pub signature_help :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc {
+    t := cx.a.source_text(file)
+    cc := call_context(t, usize(off)) else return NULL
+    active := cc.active
+    h := cx.a.index.hover_at(file, (cc.end - 1).trunc(u32)) else return NULL
+    code := h.hover.code
+    sp := split_signature(code) else return NULL
+    params := sp.params
+    name := ""
+    if str.contains(code, " :: ") {
+        name = code[0..(str.find(code, " ::") else 0)]
+    } else {
+        // The word before the callee's end.
+        s := cc.end
+        while s > 0 and (t[s - 1] >= 0x80 or is_ident_byte(t[s - 1])) { s -= 1 }
+        name = t[s..cc.end]
+    }
+    // A method call supplies the receiver and the type parameters itself.
+    before_end := cc.end
+    while before_end > 0 and (t[before_end - 1] >= 0x80 or is_ident_byte(t[before_end - 1])) { before_end -= 1 }
+    if before_end > 0 and t[before_end - 1] is '.' {
+        kept := list(string)
+        for p in params.items {
+            if not (p.ends_with(": type") or str.contains(p, " :: ")) { kept.push(p)! }
+        }
+        params = kept
+        if params.items.len > 0 { _ = params.remove(0) }
+    }
+    if n := cc.named {
+        for i in 0..params.items.len {
+            first := params.items[i]
+            if k := first.index_of(':') { first = first[0..k] }
+            if str.trim(first) is n {
+                active = i
+                break
+            }
+        }
+    }
+    label := str.format("{}({}){}", name, str.join(params.items, ", ")!, sp.tail)!
+    ps := list(Value)
+    for p in params.items {
+        po := obj()
+        po.put("label", text(p))
+        ps.push(po.value())!
+    }
+    sig := obj()
+    sig.put("label", text(label))
+    sig.put("parameters", array(ps.items))
+    if d := h.hover.doc {
+        m := obj()
+        m.put("kind", text("markdown"))
+        m.put("value", text(dupe(d)!))
+        sig.put("documentation", m.value())
+    }
+    o := obj()
+    o.put("signatures", array([1]Value(sig.value())[..]))
+    o.put("activeSignature", int(0))
+    o.put("activeParameter", int(active.trunc(i64)))
+    return o.value()
+}
+
+/// The edit that replaces the whole of `old` by `new`.
+pub full_edit :: fn(old, new: string, enc: Encoding) -> Value needs Alloc {
+    ix := line_index(old)
+    e := obj()
+    e.put("range", range_json(&ix, 0, old.len, enc))
+    e.put("newText", text(new))
+    return array([1]Value(e.value())[..])
+}
+
+test "member completion finds the receiver" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        text :: "x := foo.bar(1).ba"
+        mc := member_context(text, text.len) else { expect(false); return }
+        expect_eq(mc.start, 5)
+        expect_eq(mc.dot, 15)
+        expect(member_context("a..b", 4) is null)
+        expect(member_context("abc", 3) is null)
+    }
+}
+
+test "a call context counts the arguments" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        text :: "f(a, g(b, c), d"
+        cc := call_context(text, text.len) else { expect(false); return }
+        expect_eq(cc.end, 1)
+        expect_eq(cc.active, 2)
+        expect(cc.named is null)
+        named := call_context("f(x, count: ", 12) else { expect(false); return }
+        expect_eq(named.active, 1)
+        expect(named.named is "count")
+        expect(call_context("f(a)", 4) is null)
+    }
+}
+
+test "a signature splits into its parameters" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        sp := split_signature("fn(a: i32, b: fn(x: u8) -> bool) -> i32 needs Out") else { expect(false); return }
+        expect_eq(sp.params.items.len, 2)
+        expect(sp.params.items[0] is "a: i32")
+        expect(sp.params.items[1] is "b: fn(x: u8) -> bool")
+        expect(sp.tail is " -> i32 needs Out")
+    }
+}
+
+doc :: import "../doc"
+hash_map :: import "std/collections/hash_map"
+ide :: import "../ide"
+source :: import "../source"
+str :: import "std/str"
+arena :: import "std/arena"

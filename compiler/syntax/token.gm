@@ -89,6 +89,13 @@ pub keyword_text :: fn(k: Keyword) -> string => match k {
     .With => "with"
 }
 
+/// The spellings of the keywords, in alphabetical order.
+pub KEYWORD_TEXTS :: [35]string(
+    "and", "break", "cancel", "continue", "ctl", "defer", "effect", "else", "errdefer", "esc", "false", "fn",
+    "for", "foreign", "handler", "if", "import", "in", "is", "match", "needs", "not", "null", "or", "pub",
+    "resume", "return", "struct", "true", "try", "union", "using", "when", "while", "with",
+)
+
 /// Operators and punctuation (§2.6), plus the two-word operators `is not` and `not in`,
 /// which the lexer forms when both words are on one line.
 pub Punct :: union {

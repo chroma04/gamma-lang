@@ -128,7 +128,7 @@ join :: fn(parts: []const string, sep: string) -> string needs Alloc => str.join
 
 /// A code fence for `content`: backticks, three or one more than the longest run in it,
 /// so that the content cannot close the fence.
-fence :: fn(content: string) -> string needs Alloc {
+pub fence :: fn(content: string) -> string needs Alloc {
     longest: usize = 0
     run: usize = 0
     for c in content {

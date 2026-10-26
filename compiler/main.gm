@@ -15,6 +15,7 @@
 //!     gammac new|init|fetch|update|add|remove|cache ...      (the package manager)
 //!     gammac fmt [--check] FILE|DIR...
 //!     gammac doc [--format=markdown|html] [-o PATH] [--all] [--missing] MODULE
+//!     gammac lsp
 //!     gammac help | version
 //!
 //! `check`, `build` and `run` also take `--offline`, `--locked` and `--profile=NAME`, and
@@ -39,6 +40,7 @@ fs :: import "std/fs"
 lint :: import "./lint"
 linting :: import "./linting"
 load :: import "./load"
+lsp :: import "./lsp"
 parse :: import "./parse"
 pkg :: import "./pkg"
 sema :: import "./sema"
@@ -72,6 +74,7 @@ commands:
   new, init, fetch, update, add, remove, cache
           the package manager (gammac help)
   fmt     format source files in place: gammac fmt [--check] <file or directory>... ("-" filters stdin to stdout)
+  lsp     run the language server on standard input and output
   help    print this message
   version print the compiler version
 
@@ -147,6 +150,10 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
         return
     }
     if command is "doc" { Env.exit(doc.command(args[2..])) }
+    if command is "lsp" {
+        if args.len > 2 { usage_error(str.format("unknown option `{}`", args[2])!) }
+        Env.exit(lsp.command())
+    }
     opts := driver.Options(command: match command {
         "lex" => .Lex
         "parse" => .Parse

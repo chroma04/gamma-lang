@@ -1,0 +1,118 @@
+//! Facts read off the typed IR after checking: the type of every expression, the function
+//! each call resolves to, and what each local is (mirrors `src/sema/ide/facts.rs`).
+
+hash_map :: import "std/collections/hash_map"
+sema :: import "../sema"
+source :: import "../source"
+tir :: import "../tir"
+types :: import "../types"
+
+Ty :: types.Ty
+
+pub TypeFact :: struct {
+    ty: Ty
+    /// Worth showing on hover (not a block or a control-flow construct).
+    hover: bool
+}
+
+/// A declared local: its name, type and whether it is mutable.
+pub LocalFact :: struct {
+    name: string
+    ty: Ty
+    mutable: bool
+}
+
+pub Facts :: struct {
+    types: hash_map.HashMap(Span, TypeFact)
+    /// The types of all expressions at a span, innermost first: a variant payload built
+    /// from a call's arguments has the span of the call that builds the variant.
+    all_types: hash_map.HashMap(Span, List(Ty))
+    /// The function a call at a span resolves to (a generic's definition, not an instance).
+    calls: hash_map.HashMap(Span, u32)
+    /// Declared locals by the span of their name.
+    locals: hash_map.HashMap(Span, LocalFact)
+    /// References from uses of locals to their declarations.
+    refs: List(Ref)
+}
+
+/// The generic function that `f` instantiates, or `f`.
+pub generic_of :: fn(s: ^const sema.Sema, f: u32) -> u32 {
+    if inst := s.fns.items[usize(f)].instance { return inst.template }
+    return f
+}
+
+/// The facts of the program's functions, except those of the embedded core library, which
+/// no editor can open.
+pub collect_facts :: fn(s: ^const sema.Sema) -> Facts needs Alloc {
+    facts := Facts(
+        types: hash_map.hash_map(Span, TypeFact),
+        all_types: hash_map.hash_map(Span, List(Ty)),
+        calls: hash_map.hash_map(Span, u32),
+        locals: hash_map.hash_map(Span, LocalFact),
+        refs: list(Ref),
+    )
+    for i in 0..s.defs.items.len {
+        f := i.trunc(u32)
+        // Instances repeat the generic definition's spans with concrete types.
+        if s.fns.items[i].instance is not null or is_core_file(s, s.fns.items[i].span) { continue }
+        def := &s.defs.items[i]
+        for l in def.locals {
+            if l.span is not source.DUMMY and not l.name.starts_with("<") {
+                if facts.locals.contains(l.span) { continue }
+                facts.locals.put(l.span, LocalFact(name: l.name, ty: l.ty, mutable: l.mutable))!
+            }
+        }
+        if body := def.body { visit_fact(s, f, body, &facts) }
+    }
+    for c in s.consts.items {
+        if init := c.init { visit_fact(s, 0xFFFF_FFFF, init, &facts) }
+    }
+    return facts
+}
+
+/// The function whose frame holds the local that an upvar `levels` frames up names.
+frame_up :: fn(s: ^const sema.Sema, f_in: u32, levels: u32) -> ?u32 {
+    f := f_in
+    for _ in 0..levels {
+        if usize(f) >= s.defs.items.len { return null }
+        f = s.defs.items[usize(f)].parent else return null
+    }
+    return f
+}
+
+visit_fact :: fn(s: ^const sema.Sema, f: u32, e: ^tir.Expr, facts: ^Facts) needs Alloc {
+    // Children are visited first, so the innermost expression of a span wins.
+    tir.for_each_child(e, fn(c: ^tir.Expr) { visit_fact(s, f, c, facts) })
+    if e.span is source.DUMMY { return }
+    hover := match e.kind {
+        .Block(_), .If(_), .Match(_), .Loop(_), .With(_), .Coerce(_), .Return(_), .Break(_), .Continue(_) => false
+        _ => true
+    }
+    if not facts.types.contains(e.span) { facts.types.put(e.span, TypeFact(ty: e.ty, hover: hover))! }
+    all := facts.all_types.entry(e.span, list(Ty))!
+    if e.ty not in all.value.items { all.value.push(e.ty)! }
+    match e.kind {
+        .Local(id) => {
+            if usize(f) < s.defs.items.len {
+                locals := s.defs.items[usize(f)].locals
+                if usize(id) < locals.len { local_ref(e.span, locals[usize(id)], facts) }
+            }
+        }
+        .Upvar(levels, local) => {
+            if owner := frame_up(s, f, levels) {
+                locals := s.defs.items[usize(owner)].locals
+                if usize(local) < locals.len { local_ref(e.span, locals[usize(local)], facts) }
+            }
+        }
+        .Call(callee, _) => {
+            if .Fn(c) := callee {
+                if not facts.calls.contains(e.span) { facts.calls.put(e.span, generic_of(s, c))! }
+            }
+        }
+        _ => {}
+    }
+}
+
+local_ref :: fn(from: Span, l: tir.LocalDecl, facts: ^Facts) needs Alloc {
+    if l.span is not source.DUMMY and not l.name.starts_with("<") { facts.refs.push(Ref(from: from, to: l.span))! }
+}

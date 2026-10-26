@@ -32,6 +32,7 @@ this checkable:
 | formatter | the output, messages and exit status of `gamma fmt` |
 | `doc` | the standard output, standard error, exit status and files of `gamma doc` |
 | lint and fix | the diagnostics, messages, edited files and exit status of `gamma lint` and `gamma fix` |
+| language server | the bytes `gamma lsp` writes for a session of requests, and its exit status |
 | package manager | the output, messages, files (`gamma.toml`, `gamma.lock`, the package store) and exit status of `gamma new`, `init`, `fetch`, `update`, `add`, `remove` and `cache`, and of the commands that use the build settings of `gamma.toml` |
 | bootstrap | the C that `gammac` generates for itself, built by itself |
 
@@ -247,6 +248,34 @@ doc comments.
 `tests/selfhost.rs` runs both commands on `lib/std` in both formats, on single modules and
 files, on the fixtures of `tests/doc/` and on the error cases, and compares what they
 print and every file they write.
+
+### Language server
+
+`gammac lsp` is `gamma lsp` (`src/lsp/`, `src/ide.rs`, `src/sema/ide/`): the Language
+Server Protocol over standard input and output, with the same capabilities (diagnostics,
+hover, go to definition, references, rename, completion, document symbols, signature help,
+formatting, quick fixes) and the same messages, byte for byte. The code is in `compiler/lsp/`
+(the transport, JSON writer, analysis, requests and workspace search) and `compiler/ide/`
+(the index of facts that hover, definition and completion read, built from a checked
+program).
+
+The server reads messages on a thread of its own and analyzes a directory only when no
+message is waiting, as the reference does. Each analysis allocates from an arena that is
+freed when the analysis is replaced. To check a module while its files are open in an
+editor, the loader takes overlays (the text of open documents stands in for the files
+on disk) and can keep a module whose files have syntax errors (`keep_going`).
+
+It differs from the reference in a few small ways: a failure inside the checker ends the
+server, since traps cannot be caught (the reference answers with an internal error
+diagnostic); the wording of JSON syntax errors in a malformed message is approximated;
+symbolic links are not resolved when paths are compared; the response to each request is not
+freed, so the process grows slowly; and the checker's own messages differ where `gammac check`
+differs from `gamma check` (for example for expressions it cannot check yet). On Windows,
+where output cannot be written unbuffered through `/dev/stdout`, responses can be held back
+until the buffer fills.
+
+`tests/selfhost.rs` runs a session of requests over two examples, with an edit that breaks
+the text halfway, against both servers and compares everything they write.
 
 ### Lint and fix
 

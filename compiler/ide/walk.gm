@@ -1,0 +1,886 @@
+//! A walk over the syntax tree of the analyzed module that resolves names the way the
+//! checker does, recording a reference for each use and the visible locals at each point
+//! (mirrors `src/sema/ide/walk.rs`).
+//!
+//! The checker's own tables answer the questions that need types (which function a call
+//! resolves to, the type of a receiver); this walk answers the rest from the declarations
+//! of the module and from its own lexical scopes.
+
+ast :: import "../ast"
+hash_map :: import "std/collections/hash_map"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+types :: import "../types"
+
+pub ScopeName :: struct {
+    name: string
+    span: Span
+}
+
+pub Scope :: struct {
+    names: List(ScopeName)
+    /// Locals declared here are visible up to this offset.
+    end: u32
+}
+
+pub Label :: struct {
+    name: string
+    span: Span
+}
+
+/// What a name written as the base of `.` denotes.
+pub Base :: union {
+    Module: usize
+    /// A struct or union type, by its declaration.
+    Type: usize
+    Effect: usize
+    Value
+}
+
+/// A declaration that a name can refer to: a top-level one, or an operation of an effect
+/// (which the module's scope does not hold; only the core library's `yield` is a name).
+pub DeclRef :: union {
+    Decl: usize
+    /// The operation `index` of the effect declared by the declaration.
+    Op: (decl: usize, index: u32)
+}
+
+/// A field or variant found in a type's declaration.
+Found :: struct {
+    name_span: Span
+    whole: Span
+    is_variant: bool
+}
+
+pub Walker :: struct {
+    s: ^sema.Sema
+    facts: ^const Facts
+    idx: ^IdeIndex
+    module: usize
+    scopes: List(Scope)
+    /// The labels of the enclosing loops and `with`s.
+    labels: List(Label)
+    /// Declarations whose hover text is registered.
+    hovered: hash_map.HashMap(u64, bool)
+    receivers: hash_map.HashMap(u64, []const Item)
+    /// The declaration of each top-level function.
+    fn_decls: hash_map.HashMap(u32, usize)
+    /// The core library's `yield`, which is a name of the universe scope.
+    yield_ref: ?DeclRef
+}
+
+/// The effect literal that declaration `d` binds.
+pub effect_lit :: fn(s: ^const sema.Sema, d: usize) -> ?^ast.EffectLit {
+    decl := &s.l.decls.items[d]
+    .Binding(b) := decl.item.kind else return null
+    .Effect(lit) := b.init.kind else return null
+    return lit
+}
+
+/// The key of a declaration reference in the tables of a walk.
+ref_key :: fn(d: DeclRef) -> u64 => match d {
+    .Decl(x) => u64(x)
+    .Op(x, i) => (u64(1) << 60) | (u64(x) << 16) | u64(i)
+}
+
+pub walker :: fn(s: ^sema.Sema, facts: ^const Facts, idx: ^IdeIndex, module: usize) -> Walker needs Alloc {
+    w := Walker(
+        s: s,
+        facts: facts,
+        idx: idx,
+        module: module,
+        scopes: list(Scope),
+        labels: list(Label),
+        hovered: hash_map.hash_map(u64, bool),
+        receivers: hash_map.hash_map(u64, []const Item),
+        fn_decls: hash_map.hash_map(u32, usize),
+        yield_ref: null,
+    )
+    for i in 0..s.l.decls.items.len {
+        if .Done(v) := s.state(i) {
+            if .Fn(f) := v {
+                if not w.fn_decls.contains(f) { w.fn_decls.put(f, i)! }
+            }
+        }
+    }
+    if p := s.l.prelude {
+        if yd := s.l.lookup(p, "Yield") {
+            if s.l.decls.items[yd].item.vis is .Public {
+                if lit := effect_lit(s, yd) {
+                    for i in 0..lit.ops.len {
+                        if lit.ops[i].name.name is "yield" {
+                            w.yield_ref = DeclRef.Op(yd, i.trunc(u32))
+                            break
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return w
+}
+
+// --- scopes ---
+
+pub push_scope :: fn(w: ^Walker, end: u32) needs Alloc {
+    w.scopes.push(Scope(names: list(ScopeName), end: end))!
+}
+
+pub pop_scope :: fn(w: ^Walker) {
+    _ = w.scopes.pop()
+}
+
+lookup_local :: fn(w: ^Walker, name: string) -> ?Span {
+    i := w.scopes.items.len
+    while i > 0 {
+        i -= 1
+        names := &w.scopes.items[i].names
+        j := names.items.len
+        while j > 0 {
+            j -= 1
+            if names.items[j].name is name { return names.items[j].span }
+        }
+    }
+    return null
+}
+
+/// Registers `h` for the declared name at `span`, unless it has text already.
+pub def_once :: fn(w: ^Walker, span: Span, h: Hover) needs Alloc {
+    if not w.idx.defs.contains(span) { w.idx.defs.put(span, h)! }
+}
+
+/// Declares a local that is visible from offset `from` to the end of the scope.
+pub declare :: fn(w: ^Walker, id: ast.Ident, kind: Kind, from: u32) needs Alloc {
+    if id.name is "_" or w.scopes.items.len is 0 { return }
+    last := &w.scopes.items[w.scopes.items.len - 1]
+    end := last.end
+    last.names.push(ScopeName(name: id.name, span: id.span))!
+    code := id.name
+    detail := ""
+    if f := w.facts.locals.get(id.span) {
+        shown := w.s.show(f.ty)
+        code = str.format("{}: {}", f.name, shown)!
+        detail = shown
+    }
+    w.def_once(id.span, Hover(code: code, doc: null))
+    item := Item(label: id.name, kind: kind, detail: detail, doc: null)
+    w.idx.scopes.push(LocalScope(item: item, def: id.span, from: from, to: end))!
+}
+
+// --- references ---
+
+pub add_ref :: fn(w: ^Walker, from, to: Span) needs Alloc {
+    if from is not source.DUMMY and to is not source.DUMMY { w.idx.refs.push(Ref(from: from, to: to))! }
+}
+
+/// The span of the name that declaration `d` declares.
+decl_name_span :: fn(w: ^Walker, d: DeclRef) -> Span {
+    match d {
+        .Decl(x) => return w.s.l.decls.items[x].name.span
+        .Op(x, i) => {
+            if lit := effect_lit(w.s, x) { return lit.ops[usize(i)].name.span }
+            return source.DUMMY
+        }
+    }
+}
+
+pub ensure_hover :: fn(w: ^Walker, d: DeclRef) needs Alloc {
+    key := ref_key(d)
+    if w.hovered.contains(key) { return }
+    w.hovered.put(key, true)!
+    span := w.decl_name_span(d)
+    if span is source.DUMMY { return }
+    match d {
+        .Decl(x) => {
+            info := decl_info(w.s, x)
+            w.def_once(span, info.hover)
+        }
+        .Op(x, i) => {
+            info := op_info(w.s, x, i)
+            w.def_once(span, info.hover)
+        }
+    }
+}
+
+pub use_decl :: fn(w: ^Walker, from: Span, d: DeclRef) needs Alloc {
+    w.add_ref(from, w.decl_name_span(d))
+    w.ensure_hover(d)
+    w.note_receiver(from, d)
+}
+
+/// Remembers the members that `.` offers after the name at `span`, which denotes `d`.
+pub note_receiver :: fn(w: ^Walker, span: Span, d: DeclRef) needs Alloc {
+    key := ref_key(d)
+    if r := w.receivers.get(key) {
+        w.idx.receivers.put(span, r)!
+        return
+    }
+    .Decl(x) := d else return
+    v := decl_done(w.s, x) else return
+    items: List(Item) = match v {
+        .Module(m) => module_members(w.s, m, w.s.l.decls.items[x].module)
+        .Type(t) => variant_members(w.s, t)
+        .Effect(_) => operation_members(w.s, x)
+        _ => return
+    }
+    w.receivers.put(key, items.items)!
+    w.idx.receivers.put(span, items.items)!
+}
+
+lookup_decl :: fn(w: ^Walker, name: string) -> ?DeclRef needs Alloc {
+    if d := w.s.lookup_module_name(w.module, name) { return DeclRef.Decl(d) }
+    if name is "yield" { return w.yield_ref }
+    return null
+}
+
+/// Resolves the name `id`, used as a value or a type.
+pub name_use :: fn(w: ^Walker, id: ast.Ident) needs Alloc {
+    if def := w.lookup_local(id.name) {
+        w.add_ref(id.span, def)
+    } else if d := w.lookup_decl(id.name) {
+        w.use_decl(id.span, d)
+    }
+}
+
+/// What `e`, written before a `.`, denotes.
+pub classify :: fn(w: ^Walker, e: ^const ast.Expr) -> Base needs Alloc {
+    match e.kind {
+        .Paren(inner) => return w.classify(inner)
+        .Ident(id) => {
+            if w.lookup_local(id.name) is not null { return Base.Value }
+            if d := w.lookup_decl(id.name) { return w.base_of(d) }
+            return Base.Value
+        }
+        .Field(base, name) => {
+            if .Module(m) := w.classify(base) {
+                if d := w.s.l.lookup(m, name.name) { return w.base_of(DeclRef.Decl(d)) }
+            }
+            return Base.Value
+        }
+        // `List(i32).new()`: a generic type applied to arguments.
+        .Call(callee, _, _) => {
+            if .Type(d) := w.classify(callee) { return Base.Type(d) }
+            return Base.Value
+        }
+        _ => return Base.Value
+    }
+}
+
+base_of :: fn(w: ^Walker, d: DeclRef) -> Base needs Alloc {
+    .Decl(x) := d else return Base.Value
+    v := decl_done(w.s, x) else return Base.Value
+    return match v {
+        .Module(m) => Base.Module(m)
+        .Type(_), .GenericType(_) => Base.Type(x)
+        .Effect(_) => Base.Effect(x)
+        _ => Base.Value
+    }
+}
+
+// --- members ---
+
+find_field :: fn(members: []const ast.StructMember, name: string, found: ^?Found) {
+    for m in members {
+        match m {
+            .Field(f) => {
+                for n in f.names {
+                    if n.name is name {
+                        if found^ is null { found^ = Found(name_span: n.span, whole: f.span, is_variant: false) }
+                        break
+                    }
+                }
+            }
+            .When(wh) => {
+                find_field(wh.then, name, found)
+                if e := wh.else_ { find_field(e, name, found) }
+            }
+        }
+    }
+}
+
+find_variant :: fn(members: []const ast.UnionMember, name: string, found: ^?Found) {
+    for m in members {
+        match m {
+            .Variant(v) => {
+                if v.name.name is name {
+                    if found^ is null { found^ = Found(name_span: v.name.span, whole: v.span, is_variant: true) }
+                }
+            }
+            .When(wh) => {
+                find_variant(wh.then, name, found)
+                if e := wh.else_ { find_variant(e, name, found) }
+            }
+        }
+    }
+}
+
+find_payload_field :: fn(members: []const ast.UnionMember, variant, field: string, found: ^?Span) {
+    for m in members {
+        match m {
+            .Variant(v) => {
+                if v.name.name is variant {
+                    if p := v.payload {
+                        if .Tuple(elems) := p.kind {
+                            for el in elems {
+                                if n := el.name {
+                                    if n.name is field {
+                                        if found^ is null { found^ = n.span }
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .When(wh) => {
+                find_payload_field(wh.then, variant, field, found)
+                if e := wh.else_ { find_payload_field(e, variant, field, found) }
+            }
+        }
+    }
+}
+
+/// The span of the field or variant `name` declared by type `d`; registers its hover text.
+pub member_def :: fn(w: ^Walker, d: usize, name: string) -> ?Span needs Alloc {
+    decl := &w.s.l.decls.items[d]
+    owner := decl.name.name
+    .Binding(b) := decl.item.kind else return null
+    found: ?Found = null
+    match b.init.kind {
+        .Struct(lit) => find_field(lit.members, name, &found)
+        .Union(lit) => find_variant(lit.members, name, &found)
+        .Attributed(_, inner) => {
+            match inner.kind {
+                .Struct(lit) => find_field(lit.members, name, &found)
+                .Union(lit) => find_variant(lit.members, name, &found)
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    f := found else return null
+    text := str.trim(src(w.s, f.whole))
+    code := if f.is_variant { str.format("{}.{}", owner, text)! } else { text }
+    w.def_once(f.name_span, Hover(code: code, doc: null))
+    return f.name_span
+}
+
+/// The field `name` of the struct type `ty` (through pointers).
+field_use :: fn(w: ^Walker, ty: Ty, name: ast.Ident) -> bool needs Alloc {
+    d := adt_decl_of(w.s, ty) else return false
+    if to := w.member_def(d, name.name) {
+        w.add_ref(name.span, to)
+        return true
+    }
+    // A field reached through an embedded first field (`using`, §5.10.3).
+    t := ty
+    while .Ptr(_, pointee) := w.s.tys.kind(t) { t = pointee }
+    if .Adt(id, _) := w.s.tys.kind(t) {
+        info := &w.s.adts.items[usize(id)]
+        if info.has_using {
+            if .Struct(def) := info.kind {
+                if def.fields.len > 0 { return w.field_use(def.fields[0].ty, name) }
+            }
+        }
+    }
+    return false
+}
+
+/// The variant `name` of one of the union types of the expressions at `span`.
+variant_at :: fn(w: ^Walker, span: Span, name: ast.Ident) -> ?usize needs Alloc {
+    tys := w.facts.all_types.get(span) else return null
+    for t in tys.items {
+        if d := w.variant_use(t, name) { return d }
+    }
+    return null
+}
+
+/// The variant `name` of the union type `ty`, seen through optionals and results.
+variant_use :: fn(w: ^Walker, ty: Ty, name: ast.Ident) -> ?usize needs Alloc {
+    t := ty
+    while true {
+        match w.s.tys.kind(t) {
+            .Optional(i) => { t = i }
+            .Result(_, ok) => { t = ok }
+            .Ptr(_, pointee) => { t = pointee }
+            _ => break
+        }
+    }
+    if d := adt_decl_of(w.s, t) {
+        if to := w.member_def(d, name.name) {
+            w.add_ref(name.span, to)
+            return d
+        }
+    }
+    return null
+}
+
+/// The name `field` in the tuple payload of variant `variant` of union `d`.
+payload_field :: fn(w: ^Walker, d: usize, variant: string, field: ast.Ident) needs Alloc {
+    decl := &w.s.l.decls.items[d]
+    .Binding(b) := decl.item.kind else return
+    .Union(lit) := b.init.kind else return
+    found: ?Span = null
+    find_payload_field(lit.members, variant, field.name, &found)
+    if to := found { w.add_ref(field.span, to) }
+}
+
+type_of :: fn(w: ^Walker, span: Span) -> ?Ty {
+    if t := w.facts.types.get(span) { return t.ty }
+    return null
+}
+
+// --- expressions ---
+
+pub expr :: fn(w: ^Walker, e: ^const ast.Expr) needs Alloc {
+    match e.kind {
+        .Int(_), .Float(_), .Str(_), .Bool(_), .Null, .Uninit, .Underscore, .Error => {}
+        .Continue(?label) => w.label_use(label)
+        .Ident(id) => w.name_use(id)
+        .DotIdent(id) => { _ = w.variant_at(e.span, id) }
+        .Paren(i) => w.expr(i)
+        .Elements(i) => w.expr(i)
+        .OptUnwrap(i) => w.expr(i)
+        .ResUnwrap(i) => w.expr(i)
+        .Deref(i) => w.expr(i)
+        .OptionalType(i) => w.expr(i)
+        .ContType(i) => w.expr(i)
+        .Unary(_, operand) => w.expr(operand)
+        .PtrType(_, inner) => w.expr(inner)
+        .SliceType(_, inner) => w.expr(inner)
+        .ManyPtrType(_, inner) => w.expr(inner)
+        .Attributed(_, inner) => w.expr(inner)
+        .Tuple(elems) => {
+            for i in 0..elems.len { w.expr(&elems[i].value) }
+        }
+        .Binary(_, lhs, rhs) => {
+            w.expr(lhs)
+            w.expr(rhs)
+        }
+        .Bang(lhs, rhs) => {
+            w.expr(lhs)
+            w.expr(rhs)
+        }
+        .ErrorUnionType(err, ok) => {
+            w.expr(err)
+            w.expr(ok)
+        }
+        .ArrayType(a) => {
+            if l := a.len { w.expr(l) }
+            w.expr(a.elem)
+        }
+        .Else(x) => {
+            w.expr(x.lhs)
+            w.push_scope(x.rhs.span.hi)
+            if c := x.capture { w.declare(c, .Variable, c.span.hi) }
+            w.expr(x.rhs)
+            w.pop_scope()
+        }
+        .Index(base, index) => {
+            w.expr(base)
+            w.expr(index)
+        }
+        .Slice(x) => {
+            w.expr(x.base)
+            if lo := x.lo { w.expr(lo) }
+            if hi := x.hi { w.expr(hi) }
+        }
+        .TupleField(base, _, _) => w.expr(base)
+        .Field(base, name) => w.field(e, base, name)
+        .Call(callee, args, _) => w.call(e, callee, args)
+        .FnType(sg) => w.sig(sg)
+        .Struct(_) => w.type_literal(e)
+        .Union(_) => w.type_literal(e)
+        .Effect(_) => w.type_literal(e)
+        .Fn(lit) => w.fn_literal(lit)
+        .Handler(h) => w.handler_literal(h)
+        .Import(_) => {}
+        .Foreign(f) => {
+            for i in 0..f.members.len {
+                match f.members[i].kind {
+                    .Fn(_, sg) => w.sig(&sg)
+                    .Global(_, ty) => w.expr(ty)
+                }
+            }
+        }
+        .If(i) => w.if_expr(i)
+        .Match(m) => w.match_expr(m)
+        .With(x) => {
+            for i in 0..x.handlers.len { w.expr(&x.handlers[i]) }
+            if on := x.on { w.expr(on) }
+            w.push_label(x.label)
+            w.block(&x.body)
+            w.pop_label(x.label)
+        }
+        .For(f) => w.for_expr(f)
+        .Block(b) => w.block(&b)
+        .Return(?v) => {
+            if x := v { w.expr(x) }
+        }
+        .Break(x) => {
+            w.label_use(x.label)
+            if v := x.value { w.expr(v) }
+        }
+        .Resume(x) => {
+            w.expr(x.cont)
+            if v := x.value { w.expr(v) }
+        }
+        .Intrinsic(x) => {
+            if args := x.args {
+                for i in 0..args.len { w.arg(&args[i]) }
+            }
+        }
+    }
+}
+
+pub arg :: fn(w: ^Walker, a: ^const ast.Arg) needs Alloc {
+    match a.kind {
+        .Positional(e) => w.expr(&e)
+        .Named(_, e) => w.expr(&e)
+        .Spread(e) => w.expr(&e)
+    }
+}
+
+/// `base.name`.
+field :: fn(w: ^Walker, e: ^const ast.Expr, base: ^const ast.Expr, name: ast.Ident) needs Alloc {
+    match w.classify(base) {
+        .Module(m) => {
+            w.expr(base)
+            if d := w.s.l.lookup(m, name.name) {
+                w.use_decl(name.span, DeclRef.Decl(d))
+                // `a.b` may itself be a module: `.` after it offers its members.
+                w.note_receiver(e.span, DeclRef.Decl(d))
+            }
+        }
+        .Type(d) => {
+            w.expr(base)
+            if to := w.member_def(d, name.name) { w.add_ref(name.span, to) }
+        }
+        .Effect(d) => {
+            w.expr(base)
+            w.operation_use(d, name)
+        }
+        .Value => {
+            w.expr(base)
+            if t := w.type_of(base.span) { _ = w.field_use(t, name) }
+        }
+    }
+}
+
+/// The operation `name` of effect `d`.
+pub operation_use :: fn(w: ^Walker, d: usize, name: ast.Ident) needs Alloc {
+    lit := effect_lit(w.s, d) else return
+    for i in 0..lit.ops.len {
+        if lit.ops[i].name.name is name.name {
+            w.use_decl(name.span, DeclRef.Op(d, i.trunc(u32)))
+            return
+        }
+    }
+}
+
+Variant_ :: struct {
+    decl: usize
+    name: string
+}
+
+/// `callee(args)`.
+call :: fn(w: ^Walker, e: ^const ast.Expr, callee: ^const ast.Expr, args: []const ast.Arg) needs Alloc {
+    target := w.facts.calls.get(e.span)
+    // A union variant construction: the union's declaration and the variant.
+    variant: ?Variant_ = null
+    match callee.kind {
+        .Field(base, name) => {
+            cls := w.classify(base)
+            if cls is .Value {
+                w.expr(base)
+                is_field := false
+                if t := w.type_of(base.span) { is_field = w.field_use(t, name) }
+                if not is_field {
+                    if f := target { w.fn_use(name.span, f) }
+                }
+            } else {
+                if .Type(d) := cls { variant = Variant_(decl: d, name: name.name) }
+                w.expr(callee)
+            }
+        }
+        .DotIdent(id) => {
+            if d := w.variant_at(e.span, id) { variant = Variant_(decl: d, name: id.name) }
+        }
+        _ => w.expr(callee)
+    }
+    // Named arguments name parameters, or fields in a construction.
+    struct_decl: ?usize = null
+    if target is null and variant is null {
+        if t := w.type_of(e.span) { struct_decl = adt_decl_of(w.s, t) }
+    }
+    for i in 0..args.len {
+        a := &args[i]
+        if .Named(n, _) := a.kind {
+            if v := variant {
+                w.payload_field(v.decl, v.name, n)
+            } else if f := target {
+                for p in w.s.fns.items[usize(f)].params {
+                    if p.name is n.name {
+                        w.add_ref(n.span, p.span)
+                        w.def_once(p.span, Hover(code: str.format("{}: {}", p.name, w.s.show(p.ty))!, doc: null))
+                        break
+                    }
+                }
+            } else if d := struct_decl {
+                if to := w.member_def(d, n.name) { w.add_ref(n.span, to) }
+            }
+        }
+        w.arg(a)
+    }
+}
+
+/// A use of the function `f` at `from`: a method or an imported function.
+fn_use :: fn(w: ^Walker, from: Span, f: u32) needs Alloc {
+    to := w.s.fns.items[usize(f)].span
+    // The function's name is its declaration's name, when it is a top-level one.
+    if d := w.fn_decls.get(f) {
+        w.use_decl(from, DeclRef.Decl(d))
+    } else {
+        w.add_ref(from, to)
+    }
+}
+
+// --- statements and control flow ---
+
+pub block :: fn(w: ^Walker, b: ^const ast.Block) needs Alloc {
+    w.push_scope(b.span.hi)
+    for i in 0..b.stmts.len { w.stmt(&b.stmts[i]) }
+    w.pop_scope()
+}
+
+stmt :: fn(w: ^Walker, s: ^const ast.Stmt) needs Alloc {
+    match s.kind {
+        .Binding(_, binding) => w.local_binding(&binding)
+        .Assign(places, _, value) => {
+            for i in 0..places.len { w.expr(&places[i]) }
+            w.expr(value)
+        }
+        .Expr(e) => w.expr(e)
+        .Cancel(e) => w.expr(e)
+        .Defer(_, body) => w.stmt(body)
+        .When(x) => w.when_stmt(x)
+        .While(x) => {
+            w.push_scope(x.body.span.hi)
+            w.cond(&x.cond)
+            w.push_label(x.label)
+            w.block(&x.body)
+            w.pop_label(x.label)
+            w.pop_scope()
+        }
+        .LetElse(pat, value, fallback) => {
+            w.expr(value)
+            w.expr(fallback)
+            ty := w.type_of(value.span)
+            w.pattern(&pat, ty, s.span.hi)
+        }
+        .Block(b) => w.block(&b)
+    }
+}
+
+when_stmt :: fn(w: ^Walker, x: ^const ast.WhenStmt) needs Alloc {
+    w.expr(x.cond)
+    w.block(&x.then)
+    if el := x.else_ {
+        match el {
+            .Block(b) => w.block(&b)
+            .When(x2) => w.when_stmt(x2)
+        }
+    }
+}
+
+local_binding :: fn(w: ^Walker, b: ^const ast.Binding) needs Alloc {
+    if t := b.ty { w.expr(t) }
+    if .Fn(lit) := b.init.kind {
+        if b.names.len is 1 {
+            name := b.names[0]
+            // A nested function can call itself.
+            w.declare(name, .Function, name.span.hi)
+            head := Span(file: name.span.file, lo: name.span.lo, hi: lit.sig.span.hi)
+            w.idx.defs.put(name.span, Hover(code: str.trim(src(w.s, head)), doc: null))!
+            w.expr(b.init)
+            return
+        }
+    }
+    w.expr(b.init)
+    for n in b.names { w.declare(n, .Variable, b.span.hi) }
+}
+
+/// Walks a condition; its bindings are declared in the current scope.
+cond :: fn(w: ^Walker, c: ^const ast.Cond) needs Alloc {
+    for i in 0..c.parts.len {
+        match c.parts[i] {
+            .Bind(pat, value) => {
+                w.expr(value)
+                ty := w.type_of(value.span)
+                w.pattern(&pat, ty, pat.span.hi)
+            }
+            .Expr(e) => w.expr(e)
+        }
+    }
+}
+
+if_expr :: fn(w: ^Walker, x: ^const ast.IfExpr) needs Alloc {
+    for i in 0..x.branches.len {
+        br := &x.branches[i]
+        w.push_scope(br.block.span.hi)
+        w.cond(&br.cond)
+        w.block(&br.block)
+        w.pop_scope()
+    }
+    if el := x.else_ {
+        match el {
+            .Block(b) => w.block(&b)
+            .Capture(name, body) => {
+                w.push_scope(body.span.hi)
+                w.declare(name, .Variable, name.span.hi)
+                w.expr(body)
+                w.pop_scope()
+            }
+        }
+    }
+}
+
+match_expr :: fn(w: ^Walker, m: ^const ast.MatchExpr) needs Alloc {
+    w.expr(m.scrutinee)
+    ty := w.type_of(m.scrutinee.span)
+    for i in 0..m.arms.len {
+        arm := &m.arms[i]
+        w.push_scope(arm.span.hi)
+        for j in 0..arm.pats.len { w.pattern(&arm.pats[j], ty, arm.pats[j].span.hi) }
+        if g := arm.guard { w.expr(g) }
+        w.expr(arm.body)
+        w.pop_scope()
+    }
+}
+
+for_expr :: fn(w: ^Walker, f: ^const ast.ForExpr) needs Alloc {
+    w.expr(f.iter)
+    w.push_scope(f.body.span.hi)
+    for i in 0..f.pats.len { w.pattern(&f.pats[i], null, f.pats[i].span.hi) }
+    w.push_label(f.label)
+    w.block(&f.body)
+    w.pop_label(f.label)
+    w.pop_scope()
+}
+
+/// Puts `label`, if there is one, in scope.
+push_label :: fn(w: ^Walker, label: ?ast.Ident) needs Alloc {
+    if l := label {
+        w.labels.push(Label(name: l.name, span: l.span))!
+        w.def_once(l.span, Hover(code: str.format("label {}", l.name)!, doc: null))
+    }
+}
+
+pop_label :: fn(w: ^Walker, label: ?ast.Ident) {
+    if label is not null { _ = w.labels.pop() }
+}
+
+/// The label named by a `break` or `continue`.
+label_use :: fn(w: ^Walker, label: ?ast.Ident) needs Alloc {
+    l := label else return
+    i := w.labels.items.len
+    while i > 0 {
+        i -= 1
+        if w.labels.items[i].name is l.name {
+            w.add_ref(l.span, w.labels.items[i].span)
+            return
+        }
+    }
+}
+
+// --- patterns ---
+
+/// Walks pattern `p`, matched against a value of type `ty` when it is known; its
+/// bindings are visible from offset `from`.
+pub pattern :: fn(w: ^Walker, p: ^const ast.Pattern, ty: ?Ty, from: u32) needs Alloc {
+    match p.kind {
+        .Wildcard => {}
+        .Null => {}
+        .Bind(id) => w.declare(id, .Variable, from)
+        .Whole(id) => w.declare(id, .Variable, from)
+        .Lit(e) => w.expr(e)
+        .Range(lo, hi, _) => {
+            w.expr(lo)
+            w.expr(hi)
+        }
+        .Err(inner) => {
+            err: ?Ty = null
+            if t := ty {
+                if .Result(e, _) := w.s.tys.kind(t) { err = e }
+            }
+            w.pattern(inner, err, from)
+        }
+        .Path(pp) => {
+            // The type being matched: from the path (`T.V`, `S(…)`) or the context (`.V`).
+            owner := ty
+            if .DotIdent(id) := pp.path.kind {
+                if t := ty { _ = w.variant_use(t, id) }
+            } else {
+                w.expr(pp.path)
+                if pt := w.path_type(pp.path) { owner = pt }
+            }
+            if args := pp.args {
+                for i in 0..args.len {
+                    a := &args[i]
+                    sub: ?Ty = null
+                    if n := a.name {
+                        if t := owner { _ = w.field_use(t, n) }
+                    }
+                    if .DotIdent(v) := pp.path.kind {
+                        if t := ty { sub = w.variant_payload(t, v.name) }
+                    }
+                    w.pattern(&a.pat, sub, from)
+                }
+            }
+        }
+        .Tuple(args) => {
+            for i in 0..args.len { w.pattern(&args[i].pat, null, from) }
+        }
+    }
+}
+
+/// The type that the pattern path `path` names, when it names one.
+path_type :: fn(w: ^Walker, path: ^const ast.Expr) -> ?Ty needs Alloc {
+    match path.kind {
+        .Ident(id) => {
+            if w.lookup_local(id.name) is not null { return null }
+            d := w.lookup_decl(id.name) else return null
+            .Decl(x) := d else return null
+            v := decl_done(w.s, x) else return null
+            if .Type(t) := v { return t }
+            return null
+        }
+        .Field(base, _) => {
+            if .Type(d) := w.classify(base) {
+                v := decl_done(w.s, d) else return null
+                if .Type(t) := v { return t }
+            }
+            return null
+        }
+        _ => return null
+    }
+}
+
+variant_payload :: fn(w: ^Walker, ty: Ty, name: string) -> ?Ty {
+    t := ty
+    while true {
+        match w.s.tys.kind(t) {
+            .Optional(i) => { t = i }
+            .Ptr(_, pointee) => { t = pointee }
+            _ => break
+        }
+    }
+    .Adt(id, _) := w.s.tys.kind(t) else return null
+    .Union(_, variants) := w.s.adts.items[usize(id)].kind else return null
+    for v in variants {
+        if v.name is name { return v.payload }
+    }
+    return null
+}

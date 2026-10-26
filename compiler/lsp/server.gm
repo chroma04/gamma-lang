@@ -1,0 +1,819 @@
+//! The server loop: documents, scheduling of analyses, and request dispatch.
+
+/// The effects of serving: the compiler's, and the messages out.
+Fx :: Alloc + Clock + Env + Err + Fs + Out + Proc + Rand
+
+PARSE_ERROR :: -32700
+INVALID_REQUEST :: -32600
+METHOD_NOT_FOUND :: -32601
+SERVER_NOT_INITIALIZED :: -32002
+INVALID_PARAMS :: -32602
+INTERNAL_ERROR :: -32603
+REQUEST_FAILED :: -32803
+
+pub Doc :: struct {
+    uri: string
+    version: i64
+    text: string
+}
+
+pub Server :: struct {
+    /// Where messages are written (see `write_message`).
+    out: ?fs.File
+    enc: Encoding
+    docs: hash_map.HashMap(string, Doc)
+    /// The latest analysis of each module directory that has an open document.
+    analyses: hash_map.HashMap(string, ^Analysis)
+    /// Directories whose analysis is out of date.
+    stale: hash_map.HashMap(string, bool)
+    /// For each analyzed directory, the files it published diagnostics for.
+    published: hash_map.HashMap(string, List(string))
+    /// The other modules of the packages of the open documents.
+    ws: Workspace
+    shutdown: bool
+    /// Whether `initialize` has been received.
+    initialized: bool
+    /// Whether the client lets the server register for file-watching events.
+    can_watch: bool
+    /// The number of requests sent to the client.
+    next_request: u64
+}
+
+pub server :: fn() -> Server needs Alloc + Fs {
+    return Server(
+        out: open_stdout(),
+        enc: .Utf16,
+        docs: hash_map.hash_map(string, Doc),
+        analyses: hash_map.hash_map(string, ^Analysis),
+        stale: hash_map.hash_map(string, bool),
+        published: hash_map.hash_map(string, List(string)),
+        ws: workspace(),
+        shutdown: false,
+        initialized: false,
+        can_watch: false,
+        next_request: 0,
+    )
+}
+
+pub Flow :: union {
+    Continue
+    Exit: u8
+}
+
+/// A request that failed: the JSON-RPC error code and message.
+ReqError :: struct {
+    code: i64
+    msg: string
+}
+
+fail :: fn(code: i64, msg: string) -> ReqError => ReqError(code: code, msg: msg)
+
+/// The quick fixes for a `textDocument/codeAction` request: those of the diagnostics it
+/// names, which carry them as published. A diagnostic with only one fix marks it
+/// preferred.
+code_actions :: fn(params: Value) -> Value needs Alloc {
+    only := as_array(path2(params, "context", "only"))
+    if kinds := only {
+        any := false
+        for k in kinds {
+            if s := as_str(k) {
+                if "quickfix".starts_with(s) { any = true }
+            }
+        }
+        if not any { return array(empty_slice(Value)) }
+    }
+    actions := list(Value)
+    diags := as_array(path2(params, "context", "diagnostics")) else empty_slice(Value)
+    for d in diags {
+        fixes := as_array(path2(d, "data", "fixes")) else continue
+        for fx in fixes {
+            o := obj()
+            o.put("title", field(fx, "title"))
+            o.put("kind", text("quickfix"))
+            o.put("diagnostics", array([1]Value(d)[..]))
+            o.put("isPreferred", bool_value(fixes.len is 1))
+            e := obj()
+            e.put("changes", field(fx, "changes"))
+            o.put("edit", e.value())
+            actions.push(o.value())!
+        }
+    }
+    return array(actions.items)
+}
+
+// --- the loop ---
+
+/// Serves messages until `exit` or the end of the input; returns the exit code.
+pub run :: fn(srv: ^Server, inbox: ^Inbox) -> u8 needs Fx + Sys {
+    while true {
+        // Analyze when no newer message is waiting, so that a burst of edits costs one run.
+        msg: Incoming = .Bad("")
+        if srv.needs_analysis() {
+            match inbox.try_take() {
+                .Got(m) => { msg = m }
+                .Empty => {
+                    srv.refresh()
+                    continue
+                }
+                .Closed => break
+            }
+        } else {
+            m := inbox.take() else break
+            msg = m
+        }
+        match srv.handle_incoming(msg) {
+            .Exit(code) => return code
+            .Continue => {}
+        }
+    }
+    return if srv.shutdown { 0 } else { 1 }
+}
+
+/// Handles one message; returns the exit code if it was `exit`.
+pub handle_incoming :: fn(srv: ^Server, msg: Incoming) -> Flow needs Fx {
+    match msg {
+        .Bad(e) => {
+            srv.respond_error(NULL, PARSE_ERROR, e)
+            return .Continue
+        }
+        .Body(bytes) => {
+            doc := json.parse(bytes) else e => {
+                srv.respond_error(NULL, PARSE_ERROR, parse_error_text(bytes, e))
+                return .Continue
+            }
+            flow := srv.handle(doc.root)
+            doc.deinit()
+            return flow
+        }
+    }
+}
+
+/// What the reference implementation's JSON library says about a syntax error at `offset`
+/// (or at the end of the text), by what the text before it was waiting for.
+syntax_error :: fn(bytes: []const u8, offset: usize, at_end: bool) -> string needs Alloc {
+    // The states: `0` a value at the top, `e` the end; in an object `{` a key or `}`, `k`
+    // a key, `:` the colon, `v` a value, `,` a comma or `}`; in an array `[` a value or `]`,
+    // `a` a value, `;` a comma or `]`.
+    stack := list(u8)
+    stack.push('0')!
+    i: usize = 0
+    word_start: usize = 0
+    word_end: usize = 0
+    open_string := false
+    while i < offset and i < bytes.len {
+        c := bytes[i]
+        if c is ' ' or c is '\t' or c is '\n' or c is '\r' {
+            i += 1
+            continue
+        }
+        top := stack.items.len - 1
+        st := stack.items[top]
+        value_start := st is '0' or st is 'v' or st is '[' or st is 'a'
+        done := false
+        if (value_start or st is '{' or st is 'k') and c is '"' {
+            i += 1
+            while i < bytes.len and bytes[i] is not '"' {
+                if bytes[i] is '\\' { i += 1 }
+                i += 1
+            }
+            if i >= bytes.len { open_string = true }
+            i += 1
+            done = true
+            stack.items[top] = if value_start { after_value(st) } else { ':' }
+        } else if value_start and (c is '{' or c is '[') {
+            stack.items[top] = after_value(st)
+            stack.push(c)!
+            stack.items[stack.items.len - 1] = if c is '{' { '{' } else { '[' }
+            i += 1
+            done = true
+        } else if ((st is '{' or st is ',') and c is '}') or ((st is '[' or st is ';') and c is ']') {
+            stack.truncate(top)
+            i += 1
+            done = true
+        } else if value_start and not (c is ']' or c is '}' or c is ',' or c is ':') {
+            // A number or a literal.
+            word_start = i
+            while i < bytes.len and ((bytes[i] >= 'a' and bytes[i] <= 'z') or (bytes[i] >= '0' and bytes[i] <= '9') or bytes[i] is '-' or bytes[i] is '+' or bytes[i] is '.' or bytes[i] is 'E') {
+                i += 1
+            }
+            word_end = i
+            stack.items[top] = after_value(st)
+            done = true
+        } else if st is ':' and c is ':' {
+            stack.items[top] = 'v'
+            i += 1
+            done = true
+        } else if st is ',' and c is ',' {
+            stack.items[top] = 'k'
+            i += 1
+            done = true
+        } else if st is ';' and c is ',' {
+            stack.items[top] = 'a'
+            i += 1
+            done = true
+        }
+        if not done { break }
+    }
+    st := stack.items[stack.items.len - 1]
+    // A word that is not `true`, `false` or `null` ends at the error.
+    if word_end is offset and word_end > word_start and bytes[word_start] >= 'a' and bytes[word_start] <= 'z' {
+        word := bytes[word_start..word_end]
+        if word is not "true" and word is not "false" and word is not "null" { return "expected ident" }
+    }
+    if at_end {
+        if open_string { return "EOF while parsing a string" }
+        return match st {
+            '{', 'k', ':', ',' => "EOF while parsing an object"
+            ';' => "EOF while parsing a list"
+            _ => "EOF while parsing a value"
+        }
+    }
+    if offset < bytes.len and ((st is 'a' and bytes[offset] is ']') or (st is 'k' and bytes[offset] is '}')) { return "trailing comma" }
+    return match st {
+        '{', 'k' => "key must be a string"
+        ':' => "expected `:`"
+        ',' => "expected `,` or `}`"
+        ';' => "expected `,` or `]`"
+        _ => "expected value"
+    }
+}
+
+/// The state after a value in the state `st`.
+after_value :: fn(st: u8) -> u8 => match st {
+    'v' => ','
+    '[', 'a' => ';'
+    _ => 'e'
+}
+
+/// The text of a JSON syntax error, worded as the reference implementation's JSON library
+/// words it.
+parse_error_text :: fn(bytes: []const u8, e: json.ParseError) -> string needs Alloc {
+    offset: usize = 0
+    what := "expected value"
+    at_eof := false
+    match e {
+        .UnexpectedEnd(o) => {
+            offset = o
+            what = syntax_error(bytes, o, true)
+            at_eof = true
+        }
+        .UnexpectedByte(o) => {
+            offset = o
+            what = syntax_error(bytes, o, false)
+        }
+        .InvalidNumber(o) => {
+            offset = o
+            what = "invalid number"
+        }
+        .InvalidEscape(o) => {
+            offset = o
+            what = "invalid escape"
+        }
+        .InvalidSurrogate(o) => {
+            offset = o
+            what = "lone leading surrogate in hex escape"
+        }
+        .ControlCharacter(o) => {
+            offset = o
+            what = "control character (\\u0000-\\u001F) found while parsing a string"
+        }
+        .InvalidUtf8(o) => {
+            offset = o
+            what = "invalid unicode code point"
+        }
+        .TrailingData(o) => {
+            offset = o
+            what = "trailing characters"
+        }
+        .TooDeep(o) => {
+            offset = o
+            what = "recursion limit exceeded"
+        }
+        .Memory(_) => return "out of memory"
+    }
+    p := json.position(bytes, offset)
+    column := if at_eof and p.column > 0 { p.column - 1 } else { p.column }
+    return str.format("{} at line {} column {}", what, p.line, column)!
+}
+
+handle :: fn(srv: ^Server, msg: Value) -> Flow needs Fx {
+    // A response to a request of ours (there are none): ignore.
+    method := as_str(field(msg, "method")) else return .Continue
+    params := field(msg, "params")
+    id := json.get(msg, "id")
+    if not srv.initialized and method is not "initialize" {
+        // Before `initialize`, requests fail and notifications (except `exit`) are dropped.
+        if i := id {
+            srv.respond_error(i, SERVER_NOT_INITIALIZED, "the server is not initialized")
+        } else if method is "exit" {
+            return srv.notification(method, params)
+        }
+        return .Continue
+    }
+    if i := id {
+        srv.request(i, method, params)
+        return .Continue
+    }
+    return srv.notification(method, params)
+}
+
+// --- sending ---
+
+send :: fn(srv: ^Server, msg: Value) needs Alloc + Fs + Out {
+    write_message(srv.out, to_text(msg))
+}
+
+respond :: fn(srv: ^Server, id: Value, result: Value) needs Alloc + Fs + Out {
+    o := obj()
+    o.put("jsonrpc", text("2.0"))
+    o.put("id", id)
+    o.put("result", result)
+    srv.send(o.value())
+}
+
+respond_error :: fn(srv: ^Server, id: Value, code: i64, message: string) needs Alloc + Fs + Out {
+    e := obj()
+    e.put("code", int(code))
+    e.put("message", text(message))
+    o := obj()
+    o.put("jsonrpc", text("2.0"))
+    o.put("id", id)
+    o.put("error", e.value())
+    srv.send(o.value())
+}
+
+notify :: fn(srv: ^Server, method: string, params: Value) needs Alloc + Fs + Out {
+    o := obj()
+    o.put("jsonrpc", text("2.0"))
+    o.put("method", text(method))
+    o.put("params", params)
+    srv.send(o.value())
+}
+
+// --- notifications ---
+
+publish_empty :: fn(srv: ^Server, uri: string) needs Alloc + Fs + Out {
+    p := obj()
+    p.put("uri", text(uri))
+    p.put("diagnostics", array(empty_slice(Value)))
+    srv.notify("textDocument/publishDiagnostics", p.value())
+}
+
+notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx {
+    match method {
+        "exit" => return .Exit(if srv.shutdown { 0 } else { 1 })
+        "textDocument/didOpen" => {
+            td := field(params, "textDocument")
+            uri := as_str(field(td, "uri")) else return .Continue
+            body := as_str(field(td, "text")) else return .Continue
+            raw := uri_to_path(uri) else return .Continue
+            if not is_gm_file(raw) { return .Continue }
+            version := as_i64(field(td, "version")) else 0
+            path := canon(raw)
+            srv.docs.put(path, Doc(uri: dupe(uri)!, version: version, text: dupe(body)!))!
+            srv.invalidate(path)
+        }
+        "textDocument/didChange" => {
+            td := field(params, "textDocument")
+            uri := as_str(field(td, "uri")) else return .Continue
+            raw := uri_to_path(uri) else return .Continue
+            path := canon(raw)
+            d := srv.docs.get_ptr(path) else return .Continue
+            d.version = as_i64(field(td, "version")) else d.version
+            // Full synchronization: the last change holds the whole text.
+            if changes := as_array(field(params, "contentChanges")) {
+                if changes.len > 0 {
+                    if body := as_str(field(changes[changes.len - 1], "text")) { d.text = dupe(body)! }
+                }
+            }
+            srv.invalidate(path)
+        }
+        "textDocument/didSave" => {
+            if uri := as_str(path2(params, "textDocument", "uri")) {
+                if raw := uri_to_path(uri) { srv.invalidate(canon(raw)) }
+            }
+        }
+        "initialized" => {
+            if srv.can_watch {
+                srv.next_request += 1
+                id := str.format("gamma-register-{}", srv.next_request)!
+                w1 := obj()
+                w1.put("globPattern", text("**/*.gm"))
+                w2 := obj()
+                w2.put("globPattern", text("**/gamma.toml"))
+                ws := list(Value)
+                ws.push(w1.value())!
+                ws.push(w2.value())!
+                ro := obj()
+                ro.put("watchers", array(ws.items))
+                reg := obj()
+                reg.put("id", text("gamma-watched-files"))
+                reg.put("method", text("workspace/didChangeWatchedFiles"))
+                reg.put("registerOptions", ro.value())
+                p := obj()
+                p.put("registrations", array([1]Value(reg.value())[..]))
+                o := obj()
+                o.put("jsonrpc", text("2.0"))
+                o.put("id", text(id))
+                o.put("method", text("client/registerCapability"))
+                o.put("params", p.value())
+                srv.send(o.value())
+            }
+        }
+        "workspace/didChangeWatchedFiles" => srv.watched_files_changed(params)
+        "textDocument/didClose" => {
+            uri := as_str(path2(params, "textDocument", "uri")) else return .Continue
+            raw := uri_to_path(uri) else return .Continue
+            path := canon(raw)
+            if srv.docs.contains(path) {
+                _ = srv.docs.remove(path)
+                srv.publish_empty(uri)
+                srv.invalidate(path)
+                dir := dir_of(path)
+                still_open := false
+                for kv in srv.docs.entries() {
+                    if dir_of(kv.key) is dir { still_open = true }
+                }
+                if not still_open {
+                    if a := srv.analyses.get(dir) { release(a) }
+                    _ = srv.analyses.remove(dir)
+                    _ = srv.stale.remove(dir)
+                    // Other files of the directory keep no diagnostics once nothing is open.
+                    if old := srv.published.get(dir) {
+                        _ = srv.published.remove(dir)
+                        others := old
+                        others.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
+                        for other in others.items {
+                            if other is not path { srv.publish_empty(path_to_uri(other)) }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    return .Continue
+}
+
+test "syntax errors are worded as the reference does" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect(syntax_error("{not", 1, false) is "key must be a string")
+        expect(syntax_error("[1 2]", 3, false) is "expected `,` or `]`")
+        expect(syntax_error("[1,]", 3, false) is "trailing comma")
+        expect(syntax_error("{\"a\"", 4, true) is "EOF while parsing an object")
+        expect(syntax_error("\"abc", 4, true) is "EOF while parsing a string")
+        expect(syntax_error("[tru]", 4, false) is "expected ident")
+    }
+}
+
+is_gm_file :: fn(p: string) -> bool needs Alloc {
+    name := load.file_name(p) else return false
+    return name.len > 3 and name.ends_with(".gm")
+}
+
+/// Marks the analyses that read the file at `path` as out of date.
+invalidate :: fn(srv: ^Server, path: string) needs Alloc {
+    dir := dir_of(path)
+    srv.stale.put(dir, true)!
+    for kv in srv.analyses.entries() {
+        a := kv.value
+        for fe in a.files.entries() {
+            if dir_of(fe.key) is dir {
+                srv.stale.put(kv.key, true)!
+                break
+            }
+        }
+    }
+}
+
+/// Files changed on disk, as reported by the client's watcher: everything that read them
+/// is analyzed again. A file created or deleted, or a manifest changed, may affect any
+/// module, so all analyses are redone.
+watched_files_changed :: fn(srv: ^Server, params: Value) needs Alloc + Fs {
+    everything := false
+    changes := as_array(field(params, "changes")) else empty_slice(Value)
+    for change in changes {
+        uri := as_str(field(change, "uri")) else continue
+        raw := uri_to_path(uri) else continue
+        path := canon(raw)
+        if is_gm_file(path) {
+            // 1 is created, 2 changed, 3 deleted.
+            if (as_i64(field(change, "type")) else 0) is 2 {
+                srv.invalidate(path)
+                continue
+            }
+        } else if (load.file_name(path) else "") is not "gamma.toml" {
+            continue
+        }
+        everything = true
+    }
+    if everything {
+        for kv in srv.analyses.entries() { srv.stale.put(kv.key, true)! }
+        for d in srv.open_dirs().items { srv.stale.put(d, true)! }
+    }
+}
+
+// --- analysis ---
+
+open_dirs :: fn(srv: ^const Server) -> List(string) needs Alloc {
+    dirs := list(string)
+    for kv in srv.docs.entries() { dirs.push(dir_of(kv.key))! }
+    dirs.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
+    n: usize = 0
+    for i in 0..dirs.items.len {
+        if i > 0 and dirs.items[i] is dirs.items[n - 1] { continue }
+        dirs.items[n] = dirs.items[i]
+        n += 1
+    }
+    dirs.truncate(n)
+    return dirs
+}
+
+needs_analysis :: fn(srv: ^const Server) -> bool needs Alloc {
+    for d in srv.open_dirs().items {
+        if not srv.analyses.contains(d) or srv.stale.contains(d) { return true }
+    }
+    return false
+}
+
+/// Re-analyzes the directories that need it and publishes their diagnostics.
+refresh :: fn(srv: ^Server) needs Fx {
+    for d in srv.open_dirs().items { srv.ensure(d) }
+}
+
+overlays :: fn(srv: ^const Server) -> List(load.Overlay) needs Alloc {
+    out := list(load.Overlay)
+    for kv in srv.docs.entries() { out.push(load.Overlay(path: kv.key, text: kv.value.text))! }
+    return out
+}
+
+uri_map :: fn(srv: ^const Server) -> UriMap needs Alloc {
+    m := UriMap(uris: hash_map.hash_map(string, string))
+    for kv in srv.docs.entries() { m.uris.put(kv.key, kv.value.uri)! }
+    return m
+}
+
+/// Makes the analysis of `dir` current.
+ensure :: fn(srv: ^Server, dir: string) needs Fx {
+    if srv.analyses.contains(dir) and not srv.stale.contains(dir) { return }
+    ovs := srv.overlays()
+    primary: ?string = null
+    for kv in srv.docs.entries() {
+        if dir_of(kv.key) is dir {
+            if p := primary {
+                if path_less(kv.key, p) { primary = kv.key }
+            } else {
+                primary = kv.key
+            }
+        }
+    }
+    p := primary else return
+    a := check_module(dir, ovs.items, p)
+    _ = srv.stale.remove(dir)
+    srv.publish(dir, a)
+    if old := srv.analyses.get(dir) { release(old) }
+    srv.analyses.put(dir, a)!
+}
+
+publish :: fn(srv: ^Server, dir: string, a: ^Analysis) needs Fx {
+    uris := srv.uri_map()
+    diags := a.diagnostics(srv.enc, &uris)
+    targets := list(string)
+    for d in diags.items { targets.push(d.path)! }
+    for kv in srv.docs.entries() {
+        if dir_of(kv.key) is dir and kv.key not in targets.items { targets.push(kv.key)! }
+    }
+    if old := srv.published.get(dir) {
+        for p in old.items {
+            if p not in targets.items { targets.push(p)! }
+        }
+    }
+    targets.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
+    // A path twice (a diagnostic's file that also had a document) is one target.
+    n: usize = 0
+    for i in 0..targets.items.len {
+        if i > 0 and targets.items[i] is targets.items[n - 1] { continue }
+        targets.items[n] = targets.items[i]
+        n += 1
+    }
+    targets.truncate(n)
+    for path in targets.items {
+        items := empty_slice(Value)
+        for d in diags.items {
+            if d.path is path { items = d.items.items }
+        }
+        params := obj()
+        params.put("uri", text(uri_of(&uris, path)))
+        params.put("diagnostics", array(items))
+        if d := srv.docs.get(path) { params.put("version", int(d.version)) }
+        srv.notify("textDocument/publishDiagnostics", params.value())
+    }
+    paths := list(string)
+    for d in diags.items { paths.push(d.path)! }
+    srv.published.put(dir, paths)!
+}
+
+// --- requests ---
+
+request :: fn(srv: ^Server, id: Value, method: string, params: Value) needs Fx {
+    if srv.shutdown and method is not "shutdown" {
+        srv.respond_error(id, INVALID_REQUEST, "the server is shutting down")
+        return
+    }
+    match method {
+        "initialize" => {
+            srv.initialized = true
+            srv.respond(id, srv.initialize(params))
+        }
+        "shutdown" => {
+            srv.shutdown = true
+            srv.respond(id, NULL)
+        }
+        "textDocument/codeAction" => srv.respond(id, code_actions(params))
+        "textDocument/hover", "textDocument/definition", "textDocument/references", "textDocument/prepareRename",
+        "textDocument/rename", "textDocument/completion", "textDocument/documentSymbol", "textDocument/signatureHelp",
+        "textDocument/formatting" => {
+            r := srv.language_request(method, params) else e => {
+                srv.respond_error(id, e.code, e.msg)
+                return
+            }
+            srv.respond(id, r)
+        }
+        _ => srv.respond_error(id, METHOD_NOT_FOUND, str.format("method not found: {}", method)!)
+    }
+}
+
+initialize :: fn(srv: ^Server, params: Value) -> Value needs Alloc {
+    offered := as_array(path2(path2(params, "capabilities", "general"), "positionEncodings", ""))
+    _ = offered
+    encs := as_array(field(path2(params, "capabilities", "general"), "positionEncodings"))
+    if list_of := encs {
+        for e in list_of {
+            if s := as_str(e) {
+                if s is "utf-8" { srv.enc = .Utf8 }
+            }
+        }
+    }
+    reg := field(field(field(field(params, "capabilities"), "workspace"), "didChangeWatchedFiles"), "dynamicRegistration")
+    srv.can_watch = is_true(reg)
+    caps := obj()
+    caps.put("positionEncoding", text(encoding_name(srv.enc)))
+    sync := obj()
+    sync.put("openClose", bool_value(true))
+    sync.put("change", int(1))
+    save := obj()
+    save.put("includeText", bool_value(false))
+    sync.put("save", save.value())
+    caps.put("textDocumentSync", sync.value())
+    caps.put("hoverProvider", bool_value(true))
+    caps.put("definitionProvider", bool_value(true))
+    caps.put("referencesProvider", bool_value(true))
+    rename := obj()
+    rename.put("prepareProvider", bool_value(true))
+    caps.put("renameProvider", rename.value())
+    caps.put("documentSymbolProvider", bool_value(true))
+    caps.put("documentFormattingProvider", bool_value(true))
+    ca := obj()
+    ca.put("codeActionKinds", array([1]Value(text("quickfix"))[..]))
+    caps.put("codeActionProvider", ca.value())
+    comp := obj()
+    comp.put("triggerCharacters", array([1]Value(text("."))[..]))
+    comp.put("resolveProvider", bool_value(false))
+    caps.put("completionProvider", comp.value())
+    sig := obj()
+    sig.put("triggerCharacters", array([2]Value(text("("), text(","))[..]))
+    caps.put("signatureHelpProvider", sig.value())
+    info := obj()
+    info.put("name", text("gamma"))
+    info.put("version", text(VERSION))
+    result := obj()
+    result.put("capabilities", caps.value())
+    result.put("serverInfo", info.value())
+    return result.value()
+}
+
+/// The document a request is about.
+target :: fn(params: Value) -> ReqError!string needs Alloc + Fs {
+    uri := as_str(path2(params, "textDocument", "uri")) else return !fail(INVALID_PARAMS, "missing textDocument.uri")
+    raw := uri_to_path(uri) else return !fail(INVALID_PARAMS, str.format("unsupported URI {}", uri)!)
+    return canon(raw)
+}
+
+component :: fn(v: Value) -> u32 {
+    n := as_u64(v) else return 0
+    if n > 0xFFFF_FFFF { return 0xFFFF_FFFF }
+    return n.trunc(u32)
+}
+
+language_request :: fn(srv: ^Server, method: string, params: Value) -> ReqError!Value needs Fx {
+    path := try target(params)
+    if method is "textDocument/formatting" { return srv.formatting(path) }
+    if not srv.docs.contains(path) { return NULL }
+    dir := dir_of(path)
+    srv.ensure(dir)
+    uris := srv.uri_map()
+    ovs := srv.overlays()
+    a := srv.analyses.get(dir) else return NULL
+    file := a.file_id(path) else return NULL
+    cx := Ctx(a: a, enc: srv.enc, uris: &uris)
+    pos := field(params, "position")
+    off := offset_at(&cx, file, component(field(pos, "line")), component(field(pos, "character")))
+    match method {
+        "textDocument/hover" => return hover(&cx, file, off)
+        "textDocument/definition" => return definition(&cx, file, off)
+        "textDocument/references", "textDocument/prepareRename", "textDocument/rename" => {
+            rq := Request(a: a, ws: &srv.ws, dir: dir, overlays: ovs.items, enc: srv.enc, uris: &uris)
+            match method {
+                "textDocument/references" => {
+                    include := as_bool(path2(params, "context", "includeDeclaration")) else true
+                    return references_all(&rq, file, off, include)
+                }
+                "textDocument/prepareRename" => {
+                    r := prepare_rename(&rq, file, off) else e => { return !fail(REQUEST_FAILED, e) }
+                    return r
+                }
+                _ => {
+                    new := as_str(field(params, "newName")) else return !fail(INVALID_PARAMS, "missing newName")
+                    r := rename(&rq, file, off, new) else e => { return !fail(REQUEST_FAILED, e) }
+                    return r
+                }
+            }
+        }
+        "textDocument/documentSymbol" => return document_symbols(&cx, file)
+        "textDocument/signatureHelp" => return signature_help(&cx, file, off)
+        "textDocument/completion" => return srv.completion(path, off)
+        _ => return NULL
+    }
+}
+
+formatting :: fn(srv: ^Server, path: string) -> ReqError!Value needs Alloc {
+    d := srv.docs.get(path) else return NULL
+    // A document that does not parse is left alone.
+    sm := source.source_map()
+    diags := diag.diagnostics()
+    id := sm.add("<format>", d.text)
+    lexed := syntax.lex(id, d.text, &diags)
+    next_id: ast.NodeId = 0
+    _ = parse.parse_file(id, &lexed, &next_id, &diags)
+    if diags.has_errors() { return NULL }
+    // Text that does not parse cannot be formatted: no edits.
+    new := fmt.format_source(d.text) else return NULL
+    if new is d.text { return array(empty_slice(Value)) }
+    return full_edit(d.text, new, srv.enc)
+}
+
+completion :: fn(srv: ^Server, path: string, off_in: u32) -> Value needs Fx {
+    dir := dir_of(path)
+    uris := srv.uri_map()
+    a := srv.analyses.get(dir) else return NULL
+    file := a.file_id(path) else return NULL
+    t := a.source_text(file)
+    off := usize(off_in)
+    items := list(Value)
+    if mc := member_context(t, off) {
+        cx := Ctx(a: a, enc: srv.enc, uris: &uris)
+        if found := members(&cx, file, mc.start.trunc(u32), mc.dot.trunc(u32)) {
+            items = found
+        } else {
+            // The text up to the dot did not check as a receiver: check it again without
+            // the dot and what follows it up to the cursor.
+            patched := str.format("{}{}", t[0..mc.dot], t[off..])!
+            ovs := srv.overlays()
+            replaced := false
+            for i in 0..ovs.items.len {
+                if ovs.items[i].path is path {
+                    ovs.items[i].text = patched
+                    replaced = true
+                }
+            }
+            if not replaced { ovs.push(load.Overlay(path: path, text: patched))! }
+            b := check_module(dir, ovs.items, path)
+            if f := b.file_id(path) {
+                bcx := Ctx(a: b, enc: srv.enc, uris: &uris)
+                if found := members(&bcx, f, mc.start.trunc(u32), mc.dot.trunc(u32)) { items = found }
+            }
+            release(b)
+        }
+    } else {
+        cx := Ctx(a: a, enc: srv.enc, uris: &uris)
+        items = names(&cx, file, off_in)
+    }
+    o := obj()
+    o.put("isIncomplete", bool_value(false))
+    o.put("items", array(items.items))
+    return o.value()
+}
+
+ast :: import "../ast"
+diag :: import "../diag"
+fmt :: import "../fmt"
+fs :: import "std/fs"
+hash_map :: import "std/collections/hash_map"
+load :: import "../load"
+parse :: import "../parse"
+source :: import "../source"
+str :: import "std/str"
+syntax :: import "../syntax"
+arena :: import "std/arena"

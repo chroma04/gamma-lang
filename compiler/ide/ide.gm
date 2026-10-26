@@ -1,0 +1,281 @@
+//! Facts about a checked program for editors: what a name refers to, what to show on
+//! hover, which names are in scope, and the outline of each file (mirrors `src/ide.rs`).
+//!
+//! The index is built by `build` (`build.gm`) and holds no references into the compiler:
+//! positions are spans (byte offsets) and everything else is plain text. Queries are
+//! linear scans, which is fast enough for the size of one module.
+
+hash_map :: import "std/collections/hash_map"
+source :: import "../source"
+
+Span :: source.Span
+FileId :: source.FileId
+
+/// What a declaration, member or completion item is.
+pub Kind :: union {
+    Module
+    Function
+    Method
+    Struct
+    Union
+    Effect
+    Handler
+    Const
+    Variable
+    Parameter
+    Field
+    Variant
+    Operation
+    Test
+    TypeAlias
+    TypeParam
+    Keyword
+}
+
+/// A named thing: a completion item, and the data of an outline entry.
+pub Item :: struct {
+    pub label: string
+    pub kind: Kind
+    /// The type or signature, shown next to the label.
+    pub detail: string
+    pub doc: ?string
+}
+
+/// What to show for a declared name: the declaration written as source code, and the doc
+/// comment attached to it.
+pub Hover :: struct {
+    pub code: string
+    pub doc: ?string
+}
+
+/// The type of an expression, as text.
+pub TypeInfo :: struct {
+    /// An index into `IdeIndex.type_texts`.
+    pub text: u32
+    /// Worth showing on hover (not a block or a control-flow construct).
+    pub hover: bool
+}
+
+/// What a hover request finds: the text for the range `range`.
+pub HoverResult :: struct {
+    pub range: Span
+    pub hover: Hover
+}
+
+/// The name at `from` refers to the declaration whose name is at `to`.
+pub Ref :: struct {
+    pub from: Span
+    pub to: Span
+}
+
+/// An entry of a file's outline.
+pub DocSymbol :: struct {
+    pub name: string
+    pub kind: Kind
+    pub detail: string
+    /// The whole declaration.
+    pub range: Span
+    /// The declared name.
+    pub name_span: Span
+    pub children: []DocSymbol
+}
+
+/// A local name and the bytes where it is visible.
+pub LocalScope :: struct {
+    pub item: Item
+    pub def: Span
+    /// Visible at offsets `from..to` of the file of `def`.
+    pub from: u32
+    pub to: u32
+}
+
+/// The outline of one file.
+pub Outline :: struct {
+    pub file: FileId
+    pub symbols: []DocSymbol
+}
+
+pub IdeIndex :: struct {
+    pub refs: List(Ref)
+    /// Hover text by the span of a declared name. A use of the name shows the text of the
+    /// declaration it refers to.
+    pub defs: hash_map.HashMap(Span, Hover)
+    /// The outline of each file of the analyzed module.
+    pub outlines: List(Outline)
+    pub scopes: List(LocalScope)
+    /// The type of expressions, by span (the innermost expression for equal spans).
+    pub types: hash_map.HashMap(Span, TypeInfo)
+    /// The distinct types of `types`, written out.
+    pub type_texts: List(string)
+    /// The members offered after the expression, type or module at a span.
+    pub receivers: hash_map.HashMap(Span, []const Item)
+    /// Top-level names usable in each file: its module's declarations.
+    pub module_items: []const Item
+    /// The names of the universe scope.
+    pub universe: []const Item
+}
+
+pub index :: fn() -> IdeIndex needs Alloc {
+    return IdeIndex(
+        refs: list(Ref),
+        defs: hash_map.hash_map(Span, Hover),
+        outlines: list(Outline),
+        scopes: list(LocalScope),
+        types: hash_map.hash_map(Span, TypeInfo),
+        type_texts: list(string),
+        receivers: hash_map.hash_map(Span, []const Item),
+        module_items: empty_slice(Item),
+        universe: empty_slice(Item),
+    )
+}
+
+fn_contains :: fn(s: Span, file: FileId, off: u32) -> bool => s.file is file and s.lo <= off and off <= s.hi
+
+width :: fn(s: Span) -> u32 => s.hi - s.lo
+
+/// The outline of `file`.
+pub outline_of :: fn(ix: ^const IdeIndex, file: FileId) -> []const DocSymbol {
+    for o in ix.outlines.items {
+        if o.file is file { return o.symbols }
+    }
+    return empty_slice(DocSymbol)
+}
+
+/// What to show for the name or expression around `off`.
+pub hover_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?HoverResult {
+    // The narrowest use of a declared name around `off`, with the text of its declaration.
+    by_use: ?(range: Span, hover: Hover) = null
+    narrowest: ?Ref = null
+    for r in ix.refs.items {
+        if not fn_contains(r.from, file, off) { continue }
+        if b := narrowest {
+            if width(r.from) >= width(b.from) { continue }
+        }
+        narrowest = r
+    }
+    if r := narrowest {
+        if h := ix.defs.get(r.to) { by_use = (range: r.from, hover: h) }
+    }
+    by_def: ?(range: Span, hover: Hover) = null
+    for kv in ix.defs.entries() {
+        if not fn_contains(kv.key, file, off) { continue }
+        if u := by_def {
+            if width(kv.key) >= width(u.range) { continue }
+        }
+        by_def = (range: kv.key, hover: kv.value)
+    }
+    named: ?(range: Span, hover: Hover) = null
+    if a := by_use {
+        if b := by_def {
+            named = if width(b.range) < width(a.range) { b } else { a }
+        } else {
+            named = a
+        }
+    } else {
+        named = by_def
+    }
+    typed: ?(span: Span, info: TypeInfo) = null
+    for kv in ix.types.entries() {
+        if not kv.value.hover or not fn_contains(kv.key, file, off) or kv.key.hi <= kv.key.lo { continue }
+        if t := typed {
+            if width(kv.key) >= width(t.span) { continue }
+        }
+        typed = (span: kv.key, info: kv.value)
+    }
+    if n := named {
+        if t := typed {
+            if width(t.span) < width(n.range) {
+                return HoverResult(range: t.span, hover: Hover(code: ix.type_texts.items[usize(t.info.text)], doc: null))
+            }
+        }
+        return HoverResult(range: n.range, hover: n.hover)
+    }
+    if t := typed {
+        return HoverResult(range: t.span, hover: Hover(code: ix.type_texts.items[usize(t.info.text)], doc: null))
+    }
+    return null
+}
+
+/// The declaration that the name at `off` refers to (or, on a declared name, the
+/// declaration itself).
+pub definition_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
+    best: ?Ref = null
+    for r in ix.refs.items {
+        if not fn_contains(r.from, file, off) { continue }
+        if b := best {
+            if width(r.from) >= width(b.from) { continue }
+        }
+        best = r
+    }
+    if b := best { return b.to }
+    return ix.declared_at(file, off)
+}
+
+/// The span of a declared name that covers `off`: a name that is used somewhere, or that
+/// is listed in the outline, in scope as a local, or has hover text.
+pub declared_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
+    best: ?Span = null
+    consider :: fn(s: Span) {
+        if s.hi <= s.lo or not fn_contains(s, file, off) { return }
+        if b := best {
+            if width(s) >= width(b) { return }
+        }
+        best = s
+    }
+    for r in ix.refs.items { consider(r.to) }
+    for sc in ix.scopes.items { consider(sc.def) }
+    for kv in ix.defs.entries() { consider(kv.key) }
+    for o in ix.outlines.items {
+        if o.file is file { consider_symbols(o.symbols, consider) }
+    }
+    return best
+}
+
+consider_symbols :: fn(syms: []const DocSymbol, consider: fn(s: Span)) {
+    for s in syms {
+        consider(s.name_span)
+        consider_symbols(s.children, consider)
+    }
+}
+
+/// All uses of the declaration whose name is at `def`, sorted by position.
+pub uses_of :: fn(ix: ^const IdeIndex, def: Span) -> List(Span) needs Alloc {
+    out := list(Span)
+    for r in ix.refs.items {
+        if r.to is def { out.push(r.from)! }
+    }
+    out.items.sort_by(fn(a, b: ^const Span) -> bool => (a.file, a.lo, a.hi) < (b.file, b.lo, b.hi))
+    // Equal spans are adjacent now: keep one of each.
+    n: usize = 0
+    for i in 0..out.items.len {
+        if i > 0 and out.items[i] is out.items[n - 1] { continue }
+        out.items[n] = out.items[i]
+        n += 1
+    }
+    out.truncate(n)
+    return out
+}
+
+/// The locals visible at `off`, in the order they were declared.
+pub locals_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> List(LocalScope) needs Alloc {
+    out := list(LocalScope)
+    for s in ix.scopes.items {
+        if s.def.file is file and s.from <= off and off <= s.to { out.push(s)! }
+    }
+    return out
+}
+
+/// The members of the value, type or module written at `lo..hi`.
+pub members_at :: fn(ix: ^const IdeIndex, file: FileId, lo, hi: u32) -> ?[]const Item => ix.receivers.get(Span(file: file, lo: lo, hi: hi))
+
+/// Sorts the tables so that lookups and results are deterministic.
+pub finish :: fn(ix: ^IdeIndex) {
+    ix.refs.items.sort_by(fn(a, b: ^const Ref) -> bool => (a.from.file, a.from.lo, a.from.hi, a.to.file, a.to.lo, a.to.hi) < (b.from.file, b.from.lo, b.from.hi, b.to.file, b.to.lo, b.to.hi))
+    n: usize = 0
+    for i in 0..ix.refs.items.len {
+        if i > 0 and ix.refs.items[i].from is ix.refs.items[n - 1].from and ix.refs.items[i].to is ix.refs.items[n - 1].to { continue }
+        ix.refs.items[n] = ix.refs.items[i]
+        n += 1
+    }
+    ix.refs.truncate(n)
+}

@@ -1,0 +1,371 @@
+//! Describing declarations for editors: hover text, outline kinds and completion items
+//! (mirrors `src/sema/ide/info.rs`).
+
+ast :: import "../ast"
+sema :: import "../sema"
+source :: import "../source"
+types :: import "../types"
+
+/// Source text longer than this many lines is cut in a hover.
+HOVER_LINES :: 24
+
+/// The builtin methods of numbers (§6.6, §21.3).
+NUMBER_METHODS :: [12]string("abs_diff", "bits", "ceil", "checked", "floor", "max", "min", "round", "sat", "to", "trunc", "unsigned_abs")
+
+/// The builtin methods of arrays and slices (§21.3).
+SEQUENCE_METHODS :: [6]string("first", "get", "get_ptr", "last", "len", "ptr")
+
+TYPE_NAMES :: [20]string(
+    "bool", "cstring", "f16", "f32", "f64", "i16", "i32", "i64", "i8", "isize", "never", "rawptr", "rune", "string",
+    "type", "u16", "u32", "u64", "u8", "usize",
+)
+
+BUILTIN_FNS :: [5]string("assert", "eprint", "expect_eq", "print", "trap")
+
+/// The text of the source at `span`, or "" for no location.
+pub src :: fn(s: ^const sema.Sema, span: Span) -> string {
+    if span is source.DUMMY or usize(span.file) >= s.l.sm.files.items.len { return "" }
+    return s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
+}
+
+/// Whether `span` is in a file of the embedded core library.
+pub is_core_file :: fn(s: ^const sema.Sema, span: Span) -> bool {
+    if span is source.DUMMY or usize(span.file) >= s.l.sm.files.items.len { return false }
+    return s.l.sm.file(span.file).path.starts_with("<")
+}
+
+/// The lines of `text` as Rust's `str::lines` splits them: at line feeds, dropping a
+/// carriage return before one.
+lines_of :: fn(text: string) -> List(string) needs Alloc {
+    out := list(string)
+    start: usize = 0
+    for i in 0..text.len {
+        if text[i] is '\n' {
+            end := i
+            if end > start and text[end - 1] is '\r' { end -= 1 }
+            out.push(text[start..end])!
+            start = i + 1
+        }
+    }
+    if start < text.len { out.push(text[start..])! }
+    return out
+}
+
+/// The value of an already resolved declaration.
+pub decl_done :: fn(s: ^sema.Sema, d: usize) -> ?sema.DeclValue needs Alloc {
+    if .Done(v) := s.state(d) { return v }
+    return null
+}
+
+/// `fn(a: i32, b: string) -> bool needs Out`: the signature of function `f`.
+pub fn_signature :: fn(s: ^sema.Sema, f: u32, skip_receiver: bool) -> string needs Alloc {
+    sig := &s.fns.items[usize(f)]
+    params := list(string)
+    skipped := not skip_receiver
+    for p in sig.params {
+        if not skipped and p.generic is null {
+            skipped = true
+            continue
+        }
+        value_param := false
+        if g := p.generic { value_param = s.param_kind(g) is .Value(_) }
+        text := if value_param { str.format("{} :: {}", p.name, s.show(p.ty))! } else { str.format("{}: {}", p.name, s.show(p.ty))! }
+        if d := p.default { text = str.format("{} = {}", text, src(s, d.span))! }
+        params.push(text)!
+    }
+    out := list(u8)
+    out.write("fn({})", str.join(params.items, ", ")!)!
+    if not s.tys.is_unit(sig.ret) { out.write(" -> {}", s.show(sig.ret))! }
+    if sig.effects.effects.len > 0 { out.write(" needs {}", s.tys.show_effects(&sig.effects))! }
+    return out.items
+}
+
+/// The text of a declaration's source, cut to a reasonable length.
+item_text :: fn(s: ^const sema.Sema, span: Span) -> string needs Alloc {
+    text := src(s, span)
+    lines := lines_of(text)
+    if lines.items.len <= HOVER_LINES { return str.trim(text) }
+    out := list(u8)
+    out.extend(str.join(lines.items[0..HOVER_LINES], "\n")!)!
+    out.extend("\n    …\n}")!
+    return out.items
+}
+
+/// The first line of a declaration's source.
+first_line :: fn(s: ^const sema.Sema, span: Span) -> string needs Alloc {
+    lines := lines_of(src(s, span))
+    return str.trim_end(lines.items.first() else "")
+}
+
+/// The operation `index` of the effect declared by declaration `ed`, as a declaration
+/// shows it: `Eff.op :: fn(a: T) -> R`.
+pub op_info :: fn(s: ^sema.Sema, ed: usize, index: u32) -> (kind: Kind, hover: Hover) needs Alloc {
+    decl := &s.l.decls.items[ed]
+    name := ""
+    if .Binding(b) := decl.item.kind {
+        if .Effect(lit) := b.init.kind { name = lit.ops[usize(index)].name.name }
+    }
+    doc := decl.item.doc
+    code := name
+    if v := decl_done(s, ed) {
+        if .Effect(e) := v {
+            info := &s.effects.items[usize(e)]
+            if usize(index) < info.ops.len {
+                op := &info.ops[usize(index)]
+                ps := list(string)
+                for p in op.params { ps.push(str.format("{}: {}", p.name, s.show(p.ty))!)! }
+                ret := if s.tys.is_unit(op.ret) { "" } else { str.format(" -> {}", s.show(op.ret))! }
+                kw := match op.kind {
+                    .Fn => "fn"
+                    .Esc => "esc"
+                    .Ctl => "ctl"
+                }
+                code = str.format("{}.{} :: {}({}){}", info.name, op.name, kw, str.join(ps.items, ", ")!, ret)!
+            }
+        }
+    }
+    return (kind: Kind.Operation, hover: Hover(code: code, doc: doc))
+}
+
+/// The kind and hover text of declaration `d`.
+pub decl_info :: fn(s: ^sema.Sema, d: usize) -> (kind: Kind, hover: Hover) needs Alloc {
+    decl := &s.l.decls.items[d]
+    name := decl.name.name
+    doc := decl.item.doc
+    item := &decl.item
+    init_kind: ?ast.ExprKind = null
+    if .Binding(b) := item.kind { init_kind = b.init.kind }
+    kind := Kind.Const
+    code := name
+    value := decl_done(s, d)
+    handled := true
+    if v := value {
+        match v {
+            .Fn(f) => {
+                kind = .Function
+                code = str.format("{} :: {}", name, fn_signature(s, f, false))!
+            }
+            .Const(ty) => {
+                kind = .Const
+                code = str.format("{}: {}", name, s.show(ty))!
+            }
+            .Global(ty) => {
+                kind = .Variable
+                code = str.format("#global {}: {}", name, s.show(ty))!
+            }
+            .Module(_) => {
+                kind = .Module
+                code = first_line(s, item.span)
+            }
+            .Effect(_) => {
+                kind = .Effect
+                code = item_text(s, item.span)
+            }
+            .Untyped(_) => {
+                kind = .Const
+                code = first_line(s, item.span)
+            }
+            .Type(_), .GenericType(_), .Error => { handled = false }
+            _ => {}
+        }
+    } else {
+        handled = false
+    }
+    if not handled {
+        kind = Kind.TypeAlias
+        if k := init_kind {
+            kind = match k {
+                .Struct(_) => Kind.Struct
+                .Union(_) => Kind.Union
+                .Effect(_) => Kind.Effect
+                .Import(_), .Foreign(_) => Kind.Module
+                .Fn(_) => Kind.Function
+                _ => Kind.TypeAlias
+            }
+        }
+        code = match kind {
+            .Struct, .Union, .Effect => item_text(s, item.span)
+            _ => first_line(s, item.span)
+        }
+    }
+    return (kind: kind, hover: Hover(code: code, doc: doc))
+}
+
+/// A completion item for declaration `d`.
+pub decl_item :: fn(s: ^sema.Sema, d: usize) -> Item needs Alloc {
+    decl := &s.l.decls.items[d]
+    info := decl_info(s, d)
+    detail := ""
+    if v := decl_done(s, d) {
+        match v {
+            .Fn(f) => { detail = fn_signature(s, f, false) }
+            .Const(ty), .Global(ty) => { detail = s.show(ty) }
+            _ => { detail = (lines_of(info.hover.code).items.first() else "") }
+        }
+    } else {
+        detail = (lines_of(info.hover.code).items.first() else "")
+    }
+    return Item(label: decl.name.name, kind: info.kind, detail: detail, doc: info.hover.doc)
+}
+
+/// A completion item for the operation `index` of the effect declared by `ed`.
+op_item :: fn(s: ^sema.Sema, ed: usize, index: u32) -> Item needs Alloc {
+    info := op_info(s, ed, index)
+    detail := lines_of(info.hover.code).items.first() else ""
+    name := ""
+    if .Binding(b) := s.l.decls.items[ed].item.kind {
+        if .Effect(lit) := b.init.kind { name = lit.ops[usize(index)].name.name }
+    }
+    return Item(label: name, kind: info.kind, detail: detail, doc: info.hover.doc)
+}
+
+/// The declarations of module `m` that module `from` can see, as the members of `m.`.
+pub module_members :: fn(s: ^sema.Sema, m: usize, from: usize) -> List(Item) needs Alloc {
+    ds := list(usize)
+    for n in s.l.modules.items[m].scope.items {
+        if s.decl_visible(n.decl, from) { ds.push(n.decl)! }
+    }
+    ds.items.sort()
+    items := list(Item)
+    for d in ds.items { items.push(decl_item(s, d))! }
+    return items
+}
+
+/// Whether `d`, a public declaration of the prelude, stays out of the universe scope.
+universe_hidden_decl :: fn(s: ^const sema.Sema, d: usize) -> bool => sema.universe_hidden(s, d)
+
+/// The names of the universe scope: the prelude's public declarations and the builtins.
+pub universe_items :: fn(s: ^sema.Sema) -> List(Item) needs Alloc {
+    items := list(Item)
+    if p := s.l.prelude {
+        ds := list(usize)
+        for n in s.l.modules.items[p].scope.items {
+            decl := &s.l.decls.items[n.decl]
+            if decl.item.vis is .Public and not sema.universe_hidden(s, n.decl) and decl.name.name is not "core" { ds.push(n.decl)! }
+        }
+        ds.items.sort()
+        yield_decl := s.l.lookup(p, "Yield")
+        for d in ds.items {
+            items.push(decl_item(s, d))!
+            // `yield` is the one operation in the universe scope; its declaration follows
+            // its effect's.
+            if y := yield_decl {
+                if y is d { items.push(op_item(s, y, 0))! }
+            }
+        }
+    }
+    for n in TYPE_NAMES { items.push(Item(label: n, kind: .TypeAlias, detail: "builtin type", doc: null))! }
+    for n in BUILTIN_FNS { items.push(Item(label: n, kind: .Function, detail: "builtin function", doc: null))! }
+    for k in syntax.KEYWORD_TEXTS { items.push(Item(label: k, kind: .Keyword, detail: "", doc: null))! }
+    return items
+}
+
+/// The module-level names of module `m`: its own declarations.
+pub module_scope_items :: fn(s: ^sema.Sema, m: usize) -> List(Item) needs Alloc {
+    ds := list(usize)
+    for n in s.l.modules.items[m].scope.items { ds.push(n.decl)! }
+    ds.items.sort()
+    items := list(Item)
+    for d in ds.items { items.push(decl_item(s, d))! }
+    return items
+}
+
+builtin_methods :: fn(names: []const string, out: ^List(Item)) needs Alloc {
+    for n in names { out.push(Item(label: n, kind: .Method, detail: "builtin method", doc: null))! }
+}
+
+/// The members reached with `.` on a value of the nominal or builtin type `ty`: fields,
+/// then the functions of the type's module that take it as a receiver.
+pub value_members :: fn(s: ^sema.Sema, ty: Ty) -> List(Item) needs Alloc {
+    items := list(Item)
+    match s.tys.kind(ty) {
+        .Adt(id, _) => {
+            field_items(s, ty, &items, 0)
+            info := &s.adts.items[usize(id)]
+            template := s.tys.template(id)
+            ds := list(usize)
+            for n in s.l.modules.items[info.module].scope.items { ds.push(n.decl)! }
+            ds.items.sort()
+            for d in ds.items {
+                v := decl_done(s, d) else continue
+                .Fn(f) := v else continue
+                sig := &s.fns.items[usize(f)]
+                first: ?sema.ParamInfo = null
+                for p in sig.params {
+                    if p.generic is null {
+                        first = p
+                        break
+                    }
+                }
+                p := first else continue
+                recv := p.ty
+                if .Ptr(_, pointee) := s.tys.kind(recv) { recv = pointee }
+                fits := false
+                if .Adt(x, _) := s.tys.kind(recv) { fits = s.tys.template(x) is template }
+                if fits {
+                    decl := &s.l.decls.items[d]
+                    items.push(Item(label: decl.name.name, kind: .Method, detail: fn_signature(s, f, true), doc: decl.item.doc))!
+                }
+            }
+        }
+        .Int(_), .Usize, .Isize, .Float(_) => builtin_methods(NUMBER_METHODS[..], &items)
+        .Slice(_), .Array(_) => builtin_methods(SEQUENCE_METHODS[..], &items)
+        _ => {}
+    }
+    return items
+}
+
+/// Fields of the struct `ty`, including those it embeds with `using` (§5.10.3).
+field_items :: fn(s: ^sema.Sema, ty: Ty, items: ^List(Item), depth: u32) needs Alloc {
+    .Adt(id, _) := s.tys.kind(ty) else return
+    info := &s.adts.items[usize(id)]
+    fields: []const sema.FieldDef = match info.kind {
+        .Struct(def) => def.fields
+        .CUnion(fs) => fs
+        .Union(_) => return
+    }
+    for i, f in enumerate(fields) {
+        items.push(Item(label: f.name, kind: .Field, detail: s.show(f.ty), doc: null))!
+        if i is 0 and depth < 4 and info.has_using { field_items(s, f.ty, items, depth + 1) }
+    }
+}
+
+/// The variants of the union `ty`, as the members of the type's name.
+pub variant_members :: fn(s: ^sema.Sema, ty: Ty) -> List(Item) needs Alloc {
+    items := list(Item)
+    .Adt(id, _) := s.tys.kind(ty) else return items
+    info := &s.adts.items[usize(id)]
+    .Union(_, variants) := info.kind else return items
+    for v in variants {
+        detail := if p := v.payload { str.format(": {}", s.show(p))! } else { "" }
+        items.push(Item(label: v.name, kind: .Variant, detail: detail, doc: null))!
+    }
+    return items
+}
+
+/// The operations of effect declaration `d`, as the members of the effect's name.
+pub operation_members :: fn(s: ^sema.Sema, d: usize) -> List(Item) needs Alloc {
+    items := list(Item)
+    v := decl_done(s, d) else return items
+    .Effect(e) := v else return items
+    info := &s.effects.items[usize(e)]
+    for op in info.ops {
+        ps := list(string)
+        for p in op.params { ps.push(str.format("{}: {}", p.name, s.show(p.ty))!)! }
+        ret := if s.tys.is_unit(op.ret) { "" } else { str.format(" -> {}", s.show(op.ret))! }
+        items.push(Item(label: op.name, kind: .Operation, detail: str.format("({}){}", str.join(ps.items, ", ")!, ret)!, doc: null))!
+    }
+    return items
+}
+
+/// The declaration of the struct or union that type `ty` (or the type it points to)
+/// instantiates.
+pub adt_decl_of :: fn(s: ^const sema.Sema, ty_in: Ty) -> ?usize {
+    ty := ty_in
+    while .Ptr(_, pointee) := s.tys.kind(ty) { ty = pointee }
+    .Adt(id, _) := s.tys.kind(ty) else return null
+    return s.adts.items[usize(s.tys.template(id))].decl
+}
+
+str :: import "std/str"
+syntax :: import "../syntax"

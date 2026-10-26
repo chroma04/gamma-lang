@@ -2565,3 +2565,201 @@ fn gammac_generates_the_same_functions_as_the_reference() {
     }
     assert!(outlined, "no function was outlined: the test no longer covers outlining");
 }
+
+/// A language server run as a child process and driven one message at a time: every
+/// message that has an answer is waited for, so the server's order of work, and with it
+/// its output, does not depend on timing.
+#[cfg(unix)]
+struct LspClient {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    out: std::io::BufReader<std::process::ChildStdout>,
+    raw: Vec<u8>,
+    next_id: u64,
+}
+
+#[cfg(unix)]
+impl LspClient {
+    fn start(mut cmd: Command) -> LspClient {
+        use std::process::Stdio;
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = cmd.spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        LspClient { child, stdin, out, raw: Vec::new(), next_id: 1 }
+    }
+
+    fn send(&mut self, body: &serde_json::Value) {
+        use std::io::Write;
+        let text = body.to_string();
+        write!(self.stdin, "Content-Length: {}\r\n\r\n{}", text.len(), text).unwrap();
+        self.stdin.flush().unwrap();
+    }
+
+    /// The next message the server wrote; its bytes are recorded as written.
+    fn read(&mut self) -> serde_json::Value {
+        use std::io::{BufRead, Read};
+        let mut length = 0usize;
+        loop {
+            let mut line = String::new();
+            assert!(self.out.read_line(&mut line).unwrap() > 0, "the server ended its output");
+            self.raw.extend_from_slice(line.as_bytes());
+            let line = line.trim_end();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(n) = line.strip_prefix("Content-Length: ") {
+                length = n.parse().unwrap();
+            }
+        }
+        let mut body = vec![0u8; length];
+        self.out.read_exact(&mut body).unwrap();
+        self.raw.extend_from_slice(&body);
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn request(&mut self, method: &str, params: serde_json::Value) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(&serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        while self.read().get("id").and_then(|v| v.as_u64()) != Some(id) {}
+    }
+
+    fn notify(&mut self, method: &str, params: serde_json::Value) {
+        self.send(&serde_json::json!({"jsonrpc": "2.0", "method": method, "params": params}));
+    }
+
+    /// Sends a document's text and waits for the diagnostics of that version.
+    fn open_or_change(&mut self, uri: &str, version: u64, text: &str, open: bool) {
+        if open {
+            let doc = serde_json::json!({"uri": uri, "languageId": "gamma", "version": version, "text": text});
+            self.notify("textDocument/didOpen", serde_json::json!({"textDocument": doc}));
+        } else {
+            let doc = serde_json::json!({"uri": uri, "version": version});
+            self.notify(
+                "textDocument/didChange",
+                serde_json::json!({"textDocument": doc, "contentChanges": [{"text": text}]}),
+            );
+        }
+        loop {
+            let m = self.read();
+            if m["method"] == "textDocument/publishDiagnostics"
+                && m["params"]["uri"] == uri
+                && m["params"]["version"] == version
+            {
+                break;
+            }
+        }
+    }
+
+    /// Ends the session and gives everything the server wrote and its exit status.
+    fn finish(mut self) -> (Vec<u8>, Option<i32>) {
+        self.request("shutdown", serde_json::Value::Null);
+        self.notify("exit", serde_json::Value::Null);
+        drop(self.stdin);
+        let code = self.child.wait().unwrap().code();
+        (self.raw, code)
+    }
+}
+
+/// The positions (line, UTF-16 column) where identifiers start in `text`.
+#[cfg(unix)]
+fn identifier_starts(text: &str) -> Vec<(usize, usize)> {
+    let mut out = vec![];
+    for (line_no, line) in text.lines().enumerate() {
+        let mut col = 0;
+        let mut prev_ident = false;
+        for ch in line.chars() {
+            let ident = ch.is_ascii_alphanumeric() || ch == '_';
+            if ident && !prev_ident && !ch.is_ascii_digit() {
+                out.push((line_no, col));
+            }
+            prev_ident = ident;
+            col += ch.len_utf16();
+        }
+    }
+    out
+}
+
+/// One session over the document at `path`: the requests the editors send, on a sample of
+/// the identifiers, then an edit that breaks the text and the same requests again.
+#[cfg(unix)]
+fn lsp_session(server: Command, path: &Path, text: &str) -> (Vec<u8>, Option<i32>) {
+    use serde_json::json;
+    let uri = format!("file://{}", path.display());
+    let mut c = LspClient::start(server);
+    c.request("initialize", json!({"processId": null, "rootUri": null, "capabilities": {}}));
+    c.notify("initialized", json!({}));
+    let doc = json!({"uri": uri});
+    let requests = |c: &mut LspClient, text: &str| {
+        let starts = identifier_starts(text);
+        let step = (starts.len() / 24).max(1);
+        for &(line, character) in starts.iter().step_by(step) {
+            let at = json!({"textDocument": doc, "position": {"line": line, "character": character}});
+            for method in [
+                "textDocument/hover",
+                "textDocument/definition",
+                "textDocument/completion",
+                "textDocument/signatureHelp",
+                "textDocument/prepareRename",
+            ] {
+                c.request(method, at.clone());
+            }
+            let mut refs = at.clone();
+            refs["context"] = json!({"includeDeclaration": true});
+            c.request("textDocument/references", refs);
+            let mut rename = at.clone();
+            rename["newName"] = json!("renamed_name");
+            c.request("textDocument/rename", rename);
+        }
+        c.request("textDocument/documentSymbol", json!({"textDocument": doc}));
+        c.request("textDocument/formatting", json!({"textDocument": doc, "options": {}}));
+        let range = json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}});
+        c.request(
+            "textDocument/codeAction",
+            json!({"textDocument": doc, "range": range, "context": {"diagnostics": []}}),
+        );
+    };
+    c.open_or_change(&uri, 1, text, true);
+    requests(&mut c, text);
+    let broken = text.replacen('{', "", 1) + "\nx := (\n";
+    c.open_or_change(&uri, 2, &broken, false);
+    requests(&mut c, &broken);
+    c.notify("textDocument/didClose", json!({"textDocument": doc}));
+    c.finish()
+}
+
+#[cfg(unix)]
+#[test]
+fn language_server_matches_the_reference() {
+    if !common::c_backend_available() {
+        return;
+    }
+    let Gammac::Native(exe) = gammac() else { return };
+    for example in ["examples/hello.gm", "examples/life.gm"] {
+        let text = std::fs::read_to_string(root().join(example)).unwrap();
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-lsp").join(example.replace('/', "_"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.canonicalize().unwrap().join("main.gm");
+        std::fs::write(&path, &text).unwrap();
+        let mut reference = gamma();
+        reference.arg("lsp");
+        let mut own = Command::new(exe);
+        own.arg("lsp").current_dir(root());
+        gammac_env(&mut own);
+        let (expected, expected_code) = lsp_session(reference, &path, &text);
+        let (actual, actual_code) = lsp_session(own, &path, &text);
+        assert_eq!(expected_code, actual_code, "{example}: exit status");
+        if expected != actual {
+            let (e, a) = (String::from_utf8_lossy(&expected), String::from_utf8_lossy(&actual));
+            let at = e.bytes().zip(a.bytes()).position(|(x, y)| x != y).unwrap_or(e.len().min(a.len()));
+            let from = e[..at].rfind("Content-Length").unwrap_or(0);
+            panic!(
+                "{example}: the language servers differ at byte {at}:\nreference: {}\ngammac:    {}",
+                e[from..].chars().take(400).collect::<String>(),
+                a[from.min(a.len())..].chars().take(400).collect::<String>()
+            );
+        }
+        assert!(expected.len() > 10_000, "{example}: the session produced only {} bytes", expected.len());
+    }
+}

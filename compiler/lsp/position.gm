@@ -1,0 +1,157 @@
+//! Conversions between byte offsets and LSP positions (a line and a character, counted
+//! in UTF-16 code units by default, or in bytes when the client offers UTF-8).
+
+/// How the characters of a line are counted.
+pub Encoding :: union { Utf8, Utf16 }
+
+/// The name of the encoding in the protocol.
+pub encoding_name :: fn(e: Encoding) -> string => match e {
+    .Utf8 => "utf-8"
+    .Utf16 => "utf-16"
+}
+
+/// The bytes of the UTF-8 character that starts with `lead`.
+pub char_len :: fn(lead: u8) -> usize {
+    if lead < 0x80 { return 1 }
+    if lead >= 0xF0 { return 4 }
+    if lead >= 0xE0 { return 3 }
+    if lead >= 0xC0 { return 2 }
+    return 1
+}
+
+/// The width of the character with lead byte `lead` in `e`.
+width :: fn(e: Encoding, lead: u8) -> usize {
+    n := char_len(lead)
+    return match e {
+        .Utf8 => n
+        .Utf16 => if n is 4 { 2 } else { 1 }
+    }
+}
+
+/// Whether byte `i` of `text` starts a character (or is the end of the text).
+pub is_char_boundary :: fn(text: string, i: usize) -> bool {
+    if i >= text.len { return i is text.len }
+    return text[i] & 0xC0 is not 0x80
+}
+
+/// The start of each line of a text; shared, so that a text scanned once serves every
+/// lookup of a request.
+pub LineStarts :: struct {
+    pub starts: []usize
+}
+
+pub line_starts :: fn(text: string) -> LineStarts needs Alloc {
+    starts := list(usize)
+    starts.push(0)!
+    for i, b in enumerate(text) {
+        if b is '\n' { starts.push(i + 1)! }
+    }
+    return LineStarts(starts: starts.items)
+}
+
+pub LineIndex :: struct {
+    text: string
+    starts: []usize
+}
+
+pub line_index :: fn(text: string) -> LineIndex needs Alloc => LineIndex(text: text, starts: line_starts(text).starts)
+
+/// An index of `text` from the starts of its lines.
+pub line_index_from :: fn(text: string, starts: LineStarts) -> LineIndex => LineIndex(text: text, starts: starts.starts)
+
+/// The end of line `line`'s text: before its terminator.
+line_end :: fn(ix: ^const LineIndex, line: usize) -> usize {
+    end := if line + 1 < ix.starts.len { ix.starts[line + 1] } else { ix.text.len }
+    while end > ix.starts[line] and ix.text[end - 1] in ('\n', '\r') { end -= 1 }
+    return end
+}
+
+/// The position of byte `offset` (rounded down to a character boundary).
+pub position :: fn(ix: ^const LineIndex, offset_in: usize, enc: Encoding) -> (line: u32, character: u32) {
+    offset := offset_in.min(ix.text.len)
+    while not is_char_boundary(ix.text, offset) { offset -= 1 }
+    // The last line that starts at or before `offset`.
+    lo: usize = 0
+    hi := ix.starts.len
+    while hi - lo > 1 {
+        mid := lo + (hi - lo) / 2
+        if ix.starts[mid] <= offset {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    line := lo
+    // The `\r` of a `\r\n` is not a column.
+    offset = offset.min(line_end(ix, line))
+    col: usize = 0
+    i := ix.starts[line]
+    while i < offset {
+        col += width(enc, ix.text[i])
+        i += char_len(ix.text[i])
+    }
+    return (line: line.trunc(u32), character: col.trunc(u32))
+}
+
+/// The byte offset of a position. A character past the end of its line gives the end of
+/// the line, and a line past the end of the text gives the end of the text.
+pub offset :: fn(ix: ^const LineIndex, line_no, character: u32, enc: Encoding) -> usize {
+    line := usize(line_no)
+    if line >= ix.starts.len { return ix.text.len }
+    start := ix.starts[line]
+    end := line_end(ix, line)
+    units: usize = 0
+    i := start
+    while i < end {
+        w := width(enc, ix.text[i])
+        if units + w > usize(character) { return i }
+        units += w
+        i += char_len(ix.text[i])
+    }
+    return end
+}
+
+test "positions count UTF-16 units" {
+    text :: "ab\nçd✓e\n😀x\r\nlast"
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        ix := line_index(text)
+        expect_eq(ix.position(0, .Utf16), (line: 0, character: 0))
+        expect_eq(ix.position(3, .Utf16), (line: 1, character: 0))
+        e := text.index_of('e') else 0
+        expect_eq(ix.position(e, .Utf16), (line: 1, character: 3))
+        expect_eq(ix.position(e, .Utf8), (line: 1, character: 6))
+        x := text.index_of('x') else 0
+        expect_eq(ix.position(x, .Utf16), (line: 2, character: 2))
+        expect_eq(ix.position(x, .Utf8), (line: 2, character: 4))
+    }
+}
+
+test "offsets clamp and round" {
+    text :: "ab\nçd✓e\n😀x\r\nlast"
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        ix := line_index(text)
+        expect_eq(ix.offset(0, 99, .Utf16), 2)
+        x := text.index_of('x') else 0
+        expect_eq(ix.offset(2, 99, .Utf16), x + 1)
+        expect_eq(ix.offset(40, 0, .Utf16), text.len)
+        start := x - 4
+        expect_eq(ix.offset(2, 1, .Utf16), start)
+    }
+}
+
+test "a carriage return is not a column" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        ix := line_index("ab\r\ncd")
+        expect_eq(ix.position(2, .Utf16), (line: 0, character: 2))
+        expect_eq(ix.position(3, .Utf16), (line: 0, character: 2))
+        expect_eq(ix.position(4, .Utf16), (line: 1, character: 0))
+    }
+}
+
+arena :: import "std/arena"

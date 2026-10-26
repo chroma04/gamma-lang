@@ -1,0 +1,96 @@
+//! Building the editor index for a checked module (mirrors `build` of
+//! `src/sema/ide/mod.rs`).
+//!
+//! The checker's tables and typed IR are read once, without changing them, and the
+//! module's syntax is walked to resolve the names the typed IR no longer carries.
+
+ast :: import "../ast"
+diag :: import "../diag"
+hash_map :: import "std/collections/hash_map"
+load :: import "../load"
+parse :: import "../parse"
+sema :: import "../sema"
+source :: import "../source"
+syntax :: import "../syntax"
+types :: import "../types"
+
+/// A source file of the analyzed module.
+ModuleFile :: struct {
+    id: source.FileId
+    text: string
+}
+
+/// What editors need to know about the checked module rooted at `root` (a directory, or a
+/// single `.gm` file), whose declarations are resolved and bodies checked in `s`.
+pub build :: fn(s: ^sema.Sema, root: string, root_mod: ?usize) -> IdeIndex needs Alloc {
+    facts := collect_facts(s)
+    ix := index()
+    for r in facts.refs.items { ix.refs.push(r)! }
+    texts := hash_map.hash_map(string, u32)
+    for kv in facts.types.entries() {
+        text := s.show(kv.value.ty)
+        id: u32 = 0
+        if known := texts.get(text) {
+            id = known
+        } else {
+            id = texts.len().trunc(u32)
+            texts.put(text, id)!
+            ix.type_texts.push(text)!
+        }
+        ix.types.put(kv.key, TypeInfo(text: id, hover: kv.value.hover))!
+    }
+    ix.universe = universe_items(s).items
+    module := root_mod else {
+        ix.finish()
+        return ix
+    }
+    // The files of the analyzed module.
+    files := list(ModuleFile)
+    for i in 0..s.l.sm.files.items.len {
+        f := &s.l.sm.files.items[i]
+        in_module := f.path is root
+        if not in_module and f.path.ends_with(".gm") {
+            if p := load.parent(f.path) { in_module = p is root }
+        }
+        if in_module { files.push(ModuleFile(id: i.trunc(u32), text: f.text))! }
+    }
+    ix.module_items = module_scope_items(s, module).items
+    ids: ast.NodeId = 0
+    w := walker(s, &facts, &ix, module)
+    for f in files.items {
+        diags := diag.diagnostics()
+        lexed := syntax.lex_recovering(f.id, f.text, &diags)
+        tree := parse.parse_file(f.id, &lexed, &ids, &diags)
+        out := list(DocSymbol)
+        for i in 0..tree.items.len { w.item(&tree.items[i], &out) }
+        ix.outlines.push(Outline(file: f.id, symbols: out.items))!
+    }
+    // What `.` offers after each expression whose type has members.
+    by_type := hash_map.hash_map(types.Ty, []const Item)
+    for kv in facts.types.entries() {
+        ty := kv.value.ty
+        while true {
+            match s.tys.kind(ty) {
+                .Ptr(_, pointee) => { ty = pointee }
+                .Optional(inner) => { ty = inner }
+                _ => break
+            }
+        }
+        members: []const Item = empty_slice(Item)
+        if known := by_type.get(ty) {
+            members = known
+        } else {
+            members = value_members(s, ty).items
+            by_type.put(ty, members)!
+        }
+        if members.len > 0 and not ix.receivers.contains(kv.key) { ix.receivers.put(kv.key, members)! }
+    }
+    for i in 0..ix.scopes.items.len {
+        sc := &ix.scopes.items[i]
+        if sc.item.detail.len is 0 {
+            if f := facts.locals.get(sc.def) { sc.item.detail = s.show(f.ty) }
+        }
+    }
+    ix.finish()
+    return ix
+}
