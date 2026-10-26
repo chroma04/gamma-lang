@@ -528,7 +528,7 @@ fn run_exe(exe: &Path, j: usize, timeout: Option<Duration>, cover: Option<&Path>
     let mut cmd = runner_command(exe, None);
     cmd.arg(j.to_string()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(file) = cover {
-        cmd.env("GAMMA_COVERAGE_FILE", file);
+        cmd.arg(file);
     }
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
