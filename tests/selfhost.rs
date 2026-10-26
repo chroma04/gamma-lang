@@ -489,6 +489,72 @@ struct RunTest {
 /// The `run` tests that expect no compile errors and apply to this host.
 #[cfg(unix)]
 fn run_tests() -> Vec<RunTest> {
+    lane_tests(None)
+}
+
+/// A way of building the run tests other than for the host in their own mode, chosen with
+/// `GAMMAC_TEST_LANE`: `safe` (Fil-C), `s390x` (big-endian, under qemu) or `wasi`
+/// (WebAssembly, under Wasmtime).
+#[cfg(unix)]
+struct Lane {
+    name: String,
+    /// The options `gammac run` gets, before the mode.
+    args: Vec<String>,
+    /// The environment of `gammac run`.
+    env: Vec<(String, String)>,
+    /// The values of the `arch:`, `endian:`, `os:` and `ptr_bits:` directives it runs.
+    host: [(&'static str, String); 4],
+    /// The `needs:` requirements it lacks.
+    lacks: Vec<&'static str>,
+}
+
+#[cfg(unix)]
+fn lane() -> Option<Lane> {
+    let name = std::env::var("GAMMAC_TEST_LANE").ok().filter(|n| !n.is_empty())?;
+    let s = |v: &str| v.to_string();
+    let host = |arch: &str, endian: &str, os: &str, bits: &str| {
+        [("arch:", s(arch)), ("endian:", s(endian)), ("os:", s(os)), ("ptr_bits:", s(bits))]
+    };
+    let lane = match name.as_str() {
+        "safe" => Lane {
+            name,
+            args: vec![],
+            env: vec![],
+            host: host(std::env::consts::ARCH, "little", "unix", "64"),
+            lacks: vec![],
+        },
+        "s390x" => Lane {
+            name,
+            args: vec![s("--target=s390x-linux-gnu")],
+            env: vec![
+                (s("CC"), s("s390x-linux-gnu-gcc")),
+                (s("CFLAGS"), s("-static")),
+                (s("GAMMA_RUNNER"), s("qemu-s390x -L /usr/s390x-linux-gnu")),
+            ],
+            host: host("s390x", "big", "unix", "64"),
+            lacks: vec!["f16"],
+        },
+        "wasi" => Lane {
+            name,
+            args: vec![s("--target=wasm32-wasi")],
+            // A WebAssembly module sees only the current directory (the repository's root):
+            // its temporary files go below it.
+            env: vec![(s("TMPDIR"), {
+                let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-wasi-tmp");
+                std::fs::create_dir_all(&tmp).unwrap();
+                tmp.strip_prefix(root()).unwrap_or(&tmp).display().to_string()
+            })],
+            host: host("wasm32", "little", "wasi", "32"),
+            lacks: vec!["f16", "threads", "sockets"],
+        },
+        other => panic!("unknown GAMMAC_TEST_LANE `{}` (safe, s390x or wasi)", other),
+    };
+    Some(lane)
+}
+
+/// The run tests, for the host or for `lane`.
+#[cfg(unix)]
+fn lane_tests(lane: Option<&Lane>) -> Vec<RunTest> {
     let dir = root().join("tests/conformance/run");
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
     entries.sort();
@@ -519,18 +585,33 @@ fn run_tests() -> Vec<RunTest> {
         if text.contains("//~") || directive("stage:").is_some_and(|s| s != "run") {
             continue;
         }
-        let host = [
-            ("arch:", std::env::consts::ARCH.to_string()),
-            ("endian:", if cfg!(target_endian = "little") { "little" } else { "big" }.to_string()),
-            ("os:", if cfg!(windows) { "windows" } else { "unix" }.to_string()),
-            ("ptr_bits:", (8 * std::mem::size_of::<usize>()).to_string()),
-        ];
+        let host = match lane {
+            Some(l) => l.host.clone(),
+            None => [
+                ("arch:", std::env::consts::ARCH.to_string()),
+                ("endian:", if cfg!(target_endian = "little") { "little" } else { "big" }.to_string()),
+                ("os:", if cfg!(windows) { "windows" } else { "unix" }.to_string()),
+                ("ptr_bits:", (8 * std::mem::size_of::<usize>()).to_string()),
+            ],
+        };
         if host.iter().any(|(k, v)| directive(k).is_some_and(|d| &d != v)) {
             continue;
         }
-        let mode = directive("mode:").unwrap_or_else(|| "debug".to_string());
-        if mode == "safe" {
+        let needs = directive("needs:").unwrap_or_default();
+        if lane.is_some_and(|l| needs.split(',').any(|n| l.lacks.contains(&n.trim()))) {
             continue;
+        }
+        let mut mode = directive("mode:").unwrap_or_else(|| "debug".to_string());
+        match lane {
+            // Every test of the default and Checked modes also runs in a Safe build.
+            Some(l) if l.name == "safe" => {
+                if mode == "fast" || directive("safe:").is_some_and(|v| v.starts_with("skip")) {
+                    continue;
+                }
+                mode = "safe".to_string();
+            }
+            _ if mode == "safe" => continue,
+            _ => {}
         }
         let root_dir = if p.is_dir() && p.join("main").is_dir() { p.join("main") } else { p.clone() };
         let read = |ext: &str| std::fs::read(dir.join(format!("{}.{}", base, ext))).unwrap_or_default();
@@ -550,10 +631,20 @@ fn run_tests() -> Vec<RunTest> {
 /// failed, if it did.
 #[cfg(unix)]
 fn build_and_run(gammac: &Path, t: &RunTest, dir: &Path) -> Option<String> {
+    build_and_run_in(gammac, t, dir, None)
+}
+
+/// Like `build_and_run`, built and run as `lane` says.
+#[cfg(unix)]
+fn build_and_run_in(gammac: &Path, t: &RunTest, dir: &Path, lane: Option<&Lane>) -> Option<String> {
     let stdin = dir.join(format!("{}.stdin", t.name.replace('/', "_")));
     std::fs::write(&stdin, &t.stdin).unwrap();
     let mut cmd = Command::new(gammac);
-    cmd.current_dir(root()).arg("run").arg(format!("--mode={}", t.mode)).arg(&t.root);
+    cmd.current_dir(root()).arg("run");
+    if let Some(l) = lane {
+        cmd.args(&l.args).envs(l.env.iter().map(|(k, v)| (k, v)));
+    }
+    cmd.arg(format!("--mode={}", t.mode)).arg(&t.root);
     cmd.stdin(std::fs::File::open(&stdin).unwrap());
     gammac_env(&mut cmd);
     let ran = common::output(&mut cmd).unwrap();
@@ -601,6 +692,45 @@ fn programs_compiled_by_gammac_behave_as_expected() {
     let mut failures = failures.into_inner().unwrap();
     failures.sort();
     assert!(failures.is_empty(), "{} of {} programs failed:\n{}", failures.len(), tests.len(), failures.join("\n\n"));
+}
+
+/// The run tests built by `gammac` for the lane `GAMMAC_TEST_LANE` names (see `lane`): CI
+/// runs this where the lane's tools are installed.
+#[test]
+#[cfg(unix)]
+fn programs_compiled_by_gammac_in_a_lane_behave_as_expected() {
+    let Some(lane) = lane() else { return };
+    let Gammac::Native(gammac) = gammac() else { return };
+    let tests = lane_tests(Some(&lane));
+    assert!(tests.len() > 300, "only {} run tests found", tests.len());
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("selfhost-lane-{}", lane.name));
+    std::fs::create_dir_all(&dir).unwrap();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failures = std::sync::Mutex::new(vec![]);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(t) = tests.get(i) else { break };
+                    if let Some(why) = build_and_run_in(gammac, t, &dir, Some(&lane)) {
+                        failures.lock().unwrap().push(format!("{}: {}", t.name, why));
+                    }
+                }
+            });
+        }
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    assert!(
+        failures.is_empty(),
+        "{}: {} of {} programs failed:\n{}",
+        lane.name,
+        failures.len(),
+        tests.len(),
+        failures.join("\n\n")
+    );
 }
 
 /// `gammac build --emit-c compiler` with `gammac`: the C it generates for itself.
