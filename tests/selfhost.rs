@@ -964,6 +964,7 @@ fn doc_matches_the_reference_on_errors() {
 }
 
 /// Runs `f` on every item with one worker per processor; the results come back in order.
+#[cfg(unix)]
 fn in_parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results = std::sync::Mutex::new(Vec::new());
@@ -986,8 +987,10 @@ fn in_parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
 }
 
 /// What a command printed and how it ended.
+#[cfg(unix)]
 type Ran = (String, String, Option<i32>);
 
+#[cfg(unix)]
 fn ran(out: std::process::Output) -> Ran {
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
