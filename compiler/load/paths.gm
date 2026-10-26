@@ -19,12 +19,12 @@ is_sep :: fn(c: u8) -> bool {
 
 /// A path taken apart: its root (`/`, or a drive and separator on Windows; empty for a
 /// relative path) and its names, without `.` and empty ones.
-Parts :: struct {
-    root: string
-    names: List(string)
+pub(package) Parts :: struct {
+    pub root: string
+    pub names: List(string)
 }
 
-split :: fn(p: string) -> Parts needs Alloc {
+pub(package) split :: fn(p: string) -> Parts needs Alloc {
     root_len: usize = 0
     when target.os is .Windows {
         if p.len >= 2 and p[1] is ':' { root_len = 2 }
@@ -105,7 +105,7 @@ pub parent :: fn(p: string) -> ?string needs Alloc {
 pub(package) file_name :: fn(p: string) -> ?string needs Alloc => split(p).names.items.last()
 
 /// The last name of `p` without its extension: `main` for `src/main.gm`.
-file_stem :: fn(p: string) -> ?string needs Alloc {
+pub(package) file_stem :: fn(p: string) -> ?string needs Alloc {
     name := file_name(p) else return null
     i := name.len
     while i > 1 {

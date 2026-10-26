@@ -2,6 +2,7 @@
 // module from text; `tests/selfhost.rs` compares the whole command with `gamma doc`.
 
 arena :: import "std/arena"
+load :: import "../load"
 str :: import "std/str"
 
 // ---------------------------------------------------------------------------------
@@ -365,8 +366,8 @@ test "command line" {
         expect(has_extension("a/b.md", "md"))
         expect(not has_extension("a/.md", "md"))
         expect(not has_extension("a/b", "md"))
-        expect_eq(normalize("/a/b/../c/./d"), "/a/c/d")
-        expect_eq(file_stem("/a/b/io.gm"), "io")
+        expect_eq(load.normalize("/a/b/../c/./d"), "/a/c/d")
+        expect_eq(load.file_stem("/a/b/io.gm"), "io")
     }
 }
 

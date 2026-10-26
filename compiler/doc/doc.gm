@@ -188,7 +188,7 @@ write_file :: fn(path, text: string) -> Failure!() needs Alloc + Fs {
 
 /// The extension of the last name of `path`, if it has one.
 has_extension :: fn(path, ext: string) -> bool needs Alloc {
-    name := file_name(path) else return false
+    name := load.file_name(path) else return false
     if name is ".." { return false }
     i := name.len
     while i > 1 {
@@ -215,42 +215,6 @@ working_dir :: fn() -> string needs Alloc + Fs {
     return str.format("{}", buf[0..n])!
 }
 
-/// The names of `p`, without empty ones and `.`.
-path_names :: fn(p: string) -> []string needs Alloc {
-    names := list(string)
-    for name in str.split(p, "/") {
-        if name.len > 0 and name is not "." { names.push(name)! }
-    }
-    return names.items
-}
-
-/// The last name of `p`, if it has one.
-file_name :: fn(p: string) -> ?string needs Alloc => path_names(p).last()
-
-/// The last name of `p` without its extension.
-file_stem :: fn(p: string) -> ?string needs Alloc {
-    name := file_name(p) else return null
-    i := name.len
-    while i > 1 {
-        i -= 1
-        if name[i] is '.' { return name[0..i] }
-    }
-    return name
-}
-
-/// The absolute path `p` without `.` and `..` names, without looking at the file system.
-normalize :: fn(p: string) -> string needs Alloc {
-    names := list(string)
-    for name in path_names(p) {
-        if name is ".." {
-            _ = names.pop()
-        } else {
-            names.push(name)!
-        }
-    }
-    return str.format("/{}", join(names.items, "/"))!
-}
-
 /// The name of the module that `path` (a file or directory) denotes: its import path
 /// (`std/io`) inside the standard library (a `lib/std` directory), else the name of the
 /// directory or file with `.` and `..` resolved. (Symbolic links are not resolved.)
@@ -258,14 +222,13 @@ root_name :: fn(path: string) -> Failure!string needs Alloc + Fs {
     _ = Fs.stat(path) else e => {
         return !fail(str.format("gammac: {}: {}", path, describe_io_error(e))!)
     }
-    canon := normalize(load.join(working_dir(), path))
+    canon := load.normalize(load.join(working_dir(), path))
     dir: ?string = if is_dir(canon) { canon } else { load.parent(canon) }
     parts := list(string)
     if d := dir {
-        if d.starts_with("/") { parts.push("/")! }
-        for name in str.split(d, "/") {
-            if name.len > 0 { parts.push(name)! }
-        }
+        split := load.split(d)
+        if split.root.len > 0 { parts.push(split.root)! }
+        parts.extend(split.names.items)!
     }
     p := parts.items
     i := p.len
@@ -276,7 +239,7 @@ root_name :: fn(path: string) -> Failure!string needs Alloc + Fs {
             return join(p[i..], "/")
         }
     }
-    name := if is_dir(canon) { file_name(canon) } else { file_stem(canon) }
+    name := if is_dir(canon) { load.file_name(canon) } else { load.file_stem(canon) }
     return name else "module"
 }
 

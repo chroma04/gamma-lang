@@ -252,10 +252,14 @@ pub make_dir_all :: fn(path: string) -> IoError!() needs Fs {
     i: usize = 0
     while i < path.len {
         // The next prefix ends before a separator, or at the end of the path.
-        while i < path.len and path[i] is '/' { i += 1 }
+        while i < path.len and is_separator(path[i]) { i += 1 }
         if i >= path.len { break }
-        while i < path.len and path[i] is not '/' { i += 1 }
+        while i < path.len and not is_separator(path[i]) { i += 1 }
         prefix := path[0..i]
+        // A drive (`C:`) is not a directory to create.
+        when target.os is .Windows {
+            if prefix.len is 2 and prefix[1] is ':' { continue }
+        }
         Fs.make_dir(prefix) else e => {
             if e is not .AlreadyExists { return !e }
             info := try Fs.stat(prefix)
@@ -263,6 +267,15 @@ pub make_dir_all :: fn(path: string) -> IoError!() needs Fs {
         }
     }
     return ()
+}
+
+/// Whether `c` separates the names of a path: `/`, and on Windows also `\`.
+is_separator :: fn(c: u8) -> bool {
+    when target.os is .Windows {
+        return c in ('/', '\\')
+    } else {
+        return c is '/'
+    }
 }
 
 /// Removes `path` and everything in it: a file or a symbolic link is removed, a directory

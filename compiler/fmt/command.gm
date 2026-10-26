@@ -150,10 +150,16 @@ extension :: fn(name: string) -> string {
     return ""
 }
 
-/// `dir` and `name` as a path.
+/// `dir` and `name` as a path, joined as the reference's paths join: with `\` on
+/// Windows, where `/` also ends a directory name.
 join :: fn(dir, name: string) -> string needs Alloc {
-    if dir.len is 0 or dir[dir.len - 1] is '/' { return str.format("{}{}", dir, name)! }
-    return str.format("{}/{}", dir, name)!
+    when target.os is .Windows {
+        if dir.len is 0 or dir[dir.len - 1] in ('/', '\\') { return str.format("{}{}", dir, name)! }
+        return str.format("{}\\{}", dir, name)!
+    } else {
+        if dir.len is 0 or dir[dir.len - 1] is '/' { return str.format("{}{}", dir, name)! }
+        return str.format("{}/{}", dir, name)!
+    }
 }
 
 INVALID_UTF8 :: "stream did not contain valid UTF-8"
