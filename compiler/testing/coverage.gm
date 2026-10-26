@@ -1,0 +1,330 @@
+// Statement coverage for `gammac test --coverage` (mirrors `src/coverage.rs` and the
+// coverage report of `src/testing.rs`).
+//
+// `instrument` rewrites the checked program: in front of every statement of the functions
+// of the package under test (and in front of the value of each block) it inserts a
+// `Builtin.Cover` that counts one execution of that source line. The test executable keeps
+// the counters and writes them to a file when it exits; the report is the lines whose
+// counter is not zero among the lines that have one.
+//
+// The functions counted are those the program contains: the lines of a generic function
+// are counted by its instances, and show as not run if nothing instantiates it. The
+// bodies of tests and benchmarks, and the functions written in them, are left out.
+
+/// The files that coverage counts: those under the package root, but not the standard
+/// library.
+Scope :: struct {
+    root: string
+    std: string
+}
+
+/// The scope of the package that holds `input` (a file or a directory): the nearest
+/// directory with a `gamma.toml`, or else the directory of the input itself.
+scope :: fn(input: string) -> Scope needs Alloc + Env + Fs {
+    canon := pkg.canonicalize(input) else input
+    dir := if pkg.is_dir(canon) { canon } else { load.parent(canon) else "" }
+    root := pkg.find_root(dir) else dir
+    std := driver.std_root()
+    return Scope(root: root, std: pkg.canonicalize(std) else std)
+}
+
+/// Whether the path `p` is `dir` or inside it, comparing whole names.
+under :: fn(p, dir: string) -> bool {
+    if not p.starts_with(dir) { return false }
+    return p.len is dir.len or dir.ends_with("/") or p[dir.len] is '/'
+}
+
+/// The source lines that carry a counter: the line of counter `i` is `points[i]`.
+CoverMap :: struct {
+    points: List((file: source.FileId, line: u32))
+}
+
+/// What instrumenting needs while it walks the bodies.
+Instrument :: struct {
+    s: ^sema.Sema
+    scope: ^const Scope
+    /// The counter of each line, by its file and line.
+    ids: hash_map.HashMap((source.FileId, u32), u32)
+    /// Whether each file is in the scope.
+    in_scope: hash_map.HashMap(source.FileId, bool)
+    map: CoverMap
+}
+
+/// Inserts counters into the functions of the checked program whose source is a file of
+/// `scope`, and records how many there are for the code generator.
+instrument :: fn(s: ^sema.Sema, scope: ^const Scope) -> CoverMap needs Alloc + Fs {
+    cx := Instrument(s: s, scope: scope, ids: hash_map.hash_map((source.FileId, u32), u32), in_scope: hash_map.hash_map(source.FileId, bool), map: CoverMap(points: list((file: source.FileId, line: u32))))
+    counted := counted_fns(s)
+    for f in 0..s.fns.items.len {
+        if not counted.items[f] { continue }
+        body := s.def_of(f.trunc(u32)).body else continue
+        if body.kind is not .Block(_) {
+            // An expression body: `fn(x) => x + 1`.
+            span := body.span
+            if id := cx.point(span) {
+                old := tir.mk(body.ty, body.kind, span)
+                stmts := list(tir.Stmt)
+                stmts.push(cover_stmt(s, id, span))!
+                block := new(tir.Block(stmts: stmts.items, tail: old, span: span))!
+                body^ = tir.Expr(ty: body.ty, kind: .Block(block), span: span)
+            }
+        }
+        cx.visit(body)
+    }
+    s.cover_counters = cx.map.points.items.len.trunc(u32)
+    return cx.map
+}
+
+/// Which functions are part of the code under test: those with a body that are neither
+/// generated (`<entry>`, `<constant>`, …; function literals and the bodies of `for` loops
+/// over iterators are written code) nor tests or benchmarks, nor written inside one.
+counted_fns :: fn(s: ^sema.Sema) -> List(bool) needs Alloc {
+    is_test :: fn(name: string) -> bool => name.starts_with("test \"") or name.starts_with("bench \"")
+    tests := list(source.Span)
+    for i in 0..s.fns.items.len {
+        if not is_test(s.fns.items[i].name) { continue }
+        b := s.def_of(i.trunc(u32)).body else continue
+        tests.push(b.span)!
+    }
+    out := list(bool)
+    for i in 0..s.fns.items.len {
+        sig := &s.fns.items[i]
+        name := sig.name
+        generated := name.starts_with("<") and name is not "<fn>" and name is not "<for body>"
+        in_test := false
+        for t in tests.items {
+            if t.file is sig.span.file and t.lo <= sig.span.lo and sig.span.hi <= t.hi { in_test = true }
+        }
+        has_body := s.def_of(i.trunc(u32)).body is not null
+        out.push(has_body and not generated and not is_test(name) and not in_test)!
+    }
+    return out
+}
+
+/// The counter for the line `span` starts on, if that line is in a file to be covered.
+point :: fn(cx: ^Instrument, span: source.Span) -> ?u32 needs Alloc + Fs {
+    if span is source.DUMMY { return null }
+    inside := cx.in_scope.get(span.file) else {
+        path := cx.s.l.sm.file(span.file).path
+        canon := pkg.canonicalize(path) else path
+        yes := under(canon, cx.scope.root) and not under(canon, cx.scope.std)
+        cx.in_scope.put(span.file, yes)!
+        yes
+    }
+    if not inside { return null }
+    line := cx.s.l.sm.file(span.file).line_col(span.lo).line
+    key := (span.file, line)
+    if id := cx.ids.get(key) { return id }
+    id := cx.map.points.items.len.trunc(u32)
+    cx.map.points.push((file: span.file, line: line))!
+    cx.ids.put(key, id)!
+    return id
+}
+
+visit :: fn(cx: ^Instrument, e: ^tir.Expr) needs Alloc + Fs {
+    match e.kind {
+        .Block(b) => cx.block(b)
+        .Loop(l) => cx.block(l.body)
+        _ => {}
+    }
+    tir.for_each_child(e, fn(c: ^tir.Expr) { cx.visit(c) })
+}
+
+/// Puts a counter before each statement of `b`, and before its value.
+block :: fn(cx: ^Instrument, b: ^tir.Block) needs Alloc + Fs {
+    stmts := list(tir.Stmt)
+    for st in b.stmts {
+        if span := stmt_span(st) {
+            if id := cx.point(span) { stmts.push(cover_stmt(cx.s, id, span))! }
+        }
+        stmts.push(st)!
+    }
+    if t := b.tail {
+        if id := cx.point(t.span) { stmts.push(cover_stmt(cx.s, id, t.span))! }
+    }
+    b.stmts = stmts.items
+}
+
+/// Where a statement starts, if it has source text of its own.
+stmt_span :: fn(st: tir.Stmt) -> ?source.Span {
+    return match st {
+        .Let(_, null) => null
+        .Let(_, x) => x.span
+        .LetTuple(_, init) => init.span
+        .Assign(place, _) => place.span
+        .AssignTuple(_, value) => value.span
+        .Expr(x) => x.span
+        .Defer(_, _) => null
+    }
+}
+
+cover_stmt :: fn(s: ^sema.Sema, id: u32, span: source.Span) -> tir.Stmt needs Alloc {
+    return .Expr(tir.mk(s.tys.unit(), .Builtin(.Cover(id), empty_slice(tir.Expr)), span))
+}
+
+/// Adds the counters a test wrote, one decimal number per line, to `counts`.
+add_counts :: fn(counts: ^List(u32), text: string) needs Alloc {
+    i: usize = 0
+    for l in str.lines(text) {
+        n := str.parse_int(u32, str.trim(l)) else 0
+        while counts.items.len <= i { counts.push(0)! }
+        counts.items[i] = counts.items[i] +% n
+        i += 1
+    }
+}
+
+/// One line of the report: a file, a line of it, and how often the tests ran it.
+Hit :: struct {
+    path: string
+    line: u32
+    hits: u32
+}
+
+/// Whether path `a` sorts before path `b`, name by name (as the reference's `BTreeMap` of
+/// paths orders them).
+path_less :: fn(a, b: string) -> bool needs Alloc {
+    x := list(string)
+    for c in str.split(a, "/") { x.push(c)! }
+    y := list(string)
+    for c in str.split(b, "/") { y.push(c)! }
+    n := x.items.len.min(y.items.len)
+    for i in 0..n {
+        if x.items[i] is not y.items[i] { return bytes_less(x.items[i], y.items[i]) }
+    }
+    return x.items.len < y.items.len
+}
+
+/// Whether `a` sorts before `b`, byte by byte.
+bytes_less :: fn(a, b: string) -> bool {
+    for i in 0..a.len.min(b.len) {
+        if a[i] is not b[i] { return a[i] < b[i] }
+    }
+    return a.len < b.len
+}
+
+/// The number of characters of `s`, by which the report pads names.
+chars :: fn(s: string) -> usize {
+    n: usize = 0
+    for _ in runes(s) { n += 1 }
+    return n
+}
+
+/// `s` followed by spaces up to `width` characters.
+pad :: fn(s: string, width: usize) -> string needs Alloc {
+    out := list(u8)
+    out.extend(s)!
+    for _ in chars(s)..width { out.push(' ')! }
+    return out.items
+}
+
+percent :: fn(hit, all: usize) -> f64 => if all is 0 { 100.0 } else { hit.to(f64) * 100.0 / all.to(f64) }
+
+/// Prints the lines of each file that the tests ran, and writes them as an LCOV tracefile
+/// to `lcov` if that is given; false if the tracefile cannot be written.
+coverage_report :: fn(s: ^sema.Sema, scope: ^const Scope, map: ^const CoverMap, counts: []const u32, lcov: ?string) -> bool needs Alloc + Err + Fs + Out {
+    canon := hash_map.hash_map(source.FileId, string)
+    all := list(Hit)
+    for i, p in enumerate(map.points.items) {
+        path := canon.get(p.file) else {
+            given := s.l.sm.file(p.file).path
+            c := pkg.canonicalize(given) else given
+            canon.put(p.file, c)!
+            c
+        }
+        all.push(Hit(path: path, line: p.line, hits: if i < counts.len { counts[i] } else { 0 }))!
+    }
+    all.items.sort_by(fn(a, b: ^const Hit) -> bool {
+        if a.path is not b.path { return path_less(a.path, b.path) }
+        return a.line < b.line
+    })
+    // One entry per line of a file, with the most any of its counters counted.
+    lines := list(Hit)
+    for h in all.items {
+        n := lines.items.len
+        if n > 0 and lines.items[n - 1].path is h.path and lines.items[n - 1].line is h.line {
+            lines.items[n - 1].hits = lines.items[n - 1].hits.max(h.hits)
+        } else {
+            lines.push(h)!
+        }
+    }
+    // The files, as the ranges of their lines.
+    files := list((lo: usize, hi: usize))
+    for i, h in enumerate(lines.items) {
+        if i is 0 or lines.items[i - 1].path is not h.path { files.push((lo: i, hi: i + 1))! } else { files.items[files.items.len - 1].hi = i + 1 }
+    }
+    print("\n")
+    if files.items.len is 0 {
+        print("coverage: no code of the package ran\n")
+    } else {
+        names := list(string)
+        width := "total".len
+        for f in files.items {
+            path := lines.items[f.lo].path
+            rel := path
+            if under(path, scope.root) and path.len > scope.root.len {
+                rel = path[scope.root.len..]
+                if rel.starts_with("/") { rel = rel[1..] }
+            }
+            names.push(rel)!
+            width = width.max(chars(rel))
+        }
+        print("coverage (lines run):\n")
+        total_hit: usize = 0
+        total_all: usize = 0
+        for i, f in enumerate(files.items) {
+            hit: usize = 0
+            for h in lines.items[f.lo..f.hi] {
+                if h.hits > 0 { hit += 1 }
+            }
+            n := f.hi - f.lo
+            total_hit += hit
+            total_all += n
+            print("  {} {:>5}/{:<5} {:>6}%\n", pad(names.items[i], width), hit, n, str.format("{:.1}", percent(hit, n))!)
+        }
+        print("  {} {:>5}/{:<5} {:>6}%\n", pad("total", width), total_hit, total_all, str.format("{:.1}", percent(total_hit, total_all))!)
+    }
+    out := lcov else return true
+    text := list(u8)
+    for f in files.items {
+        text.write("TN:\nSF:{}\n", lines.items[f.lo].path)!
+        hit: usize = 0
+        for h in lines.items[f.lo..f.hi] {
+            text.write("DA:{},{}\n", h.line, h.hits)!
+            if h.hits > 0 { hit += 1 }
+        }
+        text.write("LF:{}\nLH:{}\nend_of_record\n", f.hi - f.lo, hit)!
+    }
+    fs.write_all(out, text.items) else e => {
+        eprint("gammac: cannot write {}: {}\n", out, load.os_error_text(e))
+        return false
+    }
+    return true
+}
+
+test "paths sort name by name" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect(path_less("/p/a/b.gm", "/p/a.gm"))
+        expect(not path_less("/p/a.gm", "/p/a/b.gm"))
+        expect(path_less("/p/a.gm", "/p/b.gm"))
+        expect(path_less("/p", "/p/a.gm"))
+        expect(under("/p/a.gm", "/p"))
+        expect(not under("/pq/a.gm", "/p"))
+        expect(under("/p", "/p"))
+    }
+}
+
+test "adding up counts" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        counts := list(u32)
+        add_counts(&counts, "1\n2\n")
+        add_counts(&counts, "3\n0\n5\n")
+        expect_eq(counts.items.len, 3)
+        expect_eq(counts.items[0], 4)
+        expect_eq(counts.items[1], 2)
+        expect_eq(counts.items[2], 5)
+    }
+}

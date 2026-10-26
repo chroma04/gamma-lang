@@ -14,7 +14,7 @@ User docs: docs/guide/native-backend.md; design: docs/architecture.md "The Crane
   that object, for @asm units and as linker driver (adds -lm, -pie on Linux).
 - Deps cranelift 0.135 (MSRV 1.95 = its rust-version; 0.136 needs 1.96). Features x86+arm64.
   Targets: 64-bit Linux/macOS x86-64/AArch64 only (check_target); Safe/Windows → C back end.
-- No `-g` (error points to --backend=c). Coverage stays interpreter-only.
+- No `-g` (error points to --backend=c). Coverage: interpreter or C (050), not Cranelift.
 
 ## Conventions
 - Own ABI between Gamma fns: non-plain ([sret], env, cx, inst, params…); plain ([sret],

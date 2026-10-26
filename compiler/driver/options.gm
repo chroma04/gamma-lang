@@ -43,6 +43,10 @@ pub Options :: struct {
     pub timeout: ?f64 = null
     /// `test`, `bench`: print how long each test took and the total.
     pub time: bool = false
+    /// `test`: count the lines of the package that the tests run (`--coverage`), and the
+    /// LCOV file to write them to (`--coverage=FILE`).
+    pub coverage: bool = false
+    pub coverage_file: ?string = null
     /// `test`, `bench`: test the dependency of this name instead of the input's package.
     pub package: ?string = null
     /// `check`, `build`, `run`: never use the network for dependencies (`--offline`), fail

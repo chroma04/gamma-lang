@@ -75,8 +75,8 @@ options:
                               limit by default; the interpreter cannot stop a test that is
                               blocked in a system call, but native tests are always killed)
   --time                      (test, bench) print how long each test took and the total
-  --coverage[=<file>]         (test) count the lines of the package that the tests run, with
-                              the interpreter; print a table, and with <file> write LCOV
+  --coverage[=<file>]         (test) count the lines of the package that the tests run (not
+                              with --backend=cranelift); print a table, and with <file> write LCOV
   --target=<triple>           (check, run --backend=c, test, bench, build) compile for the machine
                               <triple> names (`s390x-linux-gnu`) with a cross C compiler:
                               with CC unset <triple>-gcc, else `clang --target=<triple>`;

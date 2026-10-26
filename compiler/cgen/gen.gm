@@ -507,6 +507,11 @@ gen_main :: fn(g: ^Gen, entries: []const u32, select: bool) -> Unsup!string need
     s.extend("    gm_thread_stack();\n")!
     s.write("    gm_debug = {};\n", if g.opts.debug { 1 } else { 0 })!
     s.extend("    gm_init_consts();\n    gm_node *cx = NULL;\n")!
+    // A program instrumented for coverage keeps a counter per line (`testing.instrument`);
+    // the file to write the counters to is the second argument.
+    if select and g.prog.s.cover_counters > 0 {
+        s.write("    gm_cover_init({}, argc > 2 ? argv[2] : NULL);\n", g.prog.s.cover_counters)!
+    }
     a := g.prog.ambient
     amb := [3]?u32(a.out, a.err, a.env)
     for k, e in enumerate(amb) {

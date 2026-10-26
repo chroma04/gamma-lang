@@ -20,7 +20,9 @@ checked against the reference byte for byte (stdout, stderr, status) in tests/se
 | runtime object cache, run exe cache | rtcache.rs | DONE s45b (W-cross): driver/rtcache.gm; no package C-source obj cache |
 | C optimizations (spec, borrow, outline, chain, constarg) | cgen/ | DONE s45b (W-opt): same C functions modulo numbering; gammac emits only used consts |
 | lsp | lsp/ (2.5k) | DONE s45b (W-lsp): compiler/lsp + compiler/ide; Loader overlays/keep_going; stdout via /dev/stdout |
-| repl, --coverage, --backend=interp/cranelift | interp/, clif/ | OUT of scope (need the Rust interpreter / Cranelift); tell user |
+| --coverage | coverage.rs, testing.rs | DONE s45d (C back end in both, decisions/050) |
+| repl, --backend=interp | interp/ | needs a gammac interpreter: future, keep in mind (user) |
+| --backend=cranelift | clif/ | OUT of scope for gammac (user: Rust-specific; native codegen far future) |
 
 ## Notes
 - `gammac run` passes the temp exe path as argv[0]; gamma passes the source path. Needs a

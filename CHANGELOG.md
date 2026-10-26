@@ -24,8 +24,8 @@ Versions and what each kind of change means are described in
   `remove`, `cache`) and the `gamma.toml` build settings. Each matches the reference's
   output byte for byte (`tests/selfhost.rs`).
 - The gdb and lldb printers for `-g` builds live in `runtime/`, shared by both compilers.
-- `gammac` covers the rest of the `gamma` command line except `repl`, `--coverage` and
-  the interpreter and Cranelift back ends: `--target=TRIPLE` (cross compilers, freestanding
+- `gammac` covers the rest of the `gamma` command line except `repl` and the interpreter
+  and Cranelift back ends: `test --coverage[=FILE]`, `--target=TRIPLE` (cross compilers, freestanding
   objects, `wasm32-wasi`), `--mode=safe` (Fil-C), the caches of compiled runtimes and of
   programs built by `run`, `test --package`, dependencies for `test`, `bench`, `lint` and
   `fix`, and `gammac lsp`. Its C back end makes the reference's optimizations, so the
@@ -181,6 +181,9 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- `gamma test --coverage` runs with the C back end too (`--backend=c`, and tests of
+  modules that call C), with the same table and LCOV file as the interpreter's. Each test
+  process writes its counts to a file that the runner adds up.
 - `gamma tir`: checks a program and prints the typed form the checker produces for each
   of its functions (resolved names, typed operators, explicit conversions), see chapter
   15 of the guide. `gammac tir` checks the function bodies of a growing subset of
@@ -205,6 +208,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- `gamma test --coverage` counts the lines in function literals and in the bodies of `for`
+  loops over iterators, which it left out; functions written inside a test are still left
+  out.
 - The fallback of an `else` whose left side has an error is now checked: its own errors
   are reported, and a `break` in it counts for its loop, which was otherwise reported as
   never ending, with the code after it as unreachable.

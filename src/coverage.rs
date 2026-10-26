@@ -7,8 +7,8 @@
 //! end keeps them in the runtime, which writes them to a file at exit. The report is the
 //! lines whose counter is not zero among the lines that have one.
 //!
-//! The functions counted are those the program contains: a generic function is counted
-//! through its instances, and one that nothing instantiates is not counted at all. The
+//! The functions counted are those the program contains: the lines of a generic function
+//! are counted by its instances, and show as not run if nothing instantiates it. The
 //! bodies of tests and benchmarks, and the functions written in them, are left out.
 
 use crate::source::{FileId, SourceMap, Span};

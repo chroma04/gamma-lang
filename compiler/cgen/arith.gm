@@ -388,6 +388,10 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
             }
             return fg.tmp(t, call)
         }
+        .Cover(id) => {
+            fg.line(str.format("GM_COVER({});", id)!)
+            return fg.unit()
+        }
         .Unreachable => {
             fg.line(str.format("gm_trap(\"reached `@unreachable()`\", {});", loc)!)
             return fg.zero(t)

@@ -1,9 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-26) — PRs #1–#88 merged, v0.1.0 tagged
-- s45c (same branch, PR after #88): user-approved design doc → arrays coerce to
-  `[]const T` at every coercion site + any temp array sliceable (hidden block locals),
-  and stdout flushed before every blocking op (decisions/049). Both compilers.
+- s45d (same branch, PR after #89): `test --coverage` on the C back end in both compilers
+  + reference fix (literals/for bodies counted), decisions/050. Next for gammac CLI: only
+  repl/interp left (needs a gammac interpreter; user: future, keep in mind).
+- s45c (PR #89 merged): arrays coerce to `[]const T` everywhere, temp arrays sliceable,
+  stdout flushed before blocking ops (decisions/049).
 - s45 (branch claude/project-thread-dhnfw3, user: "expand gammac to cover the rest of gamma"):
   roadmap/gammac-cli.md = inventory + status. Driver (check/run/help/version/human diags)
   done; fmt, doc, lint+fix, -g, test/bench, packages+gamma.toml ported by sonnet worktree
@@ -14,11 +16,8 @@
   in tests/selfhost.rs); Debug builds split into parallel C units (roadmap/self-hosting.md).
 - s41–s42: gammac evaluator (046), `?x` pattern (047), checker DONE (800/800 tir+decls,
   floors 800; PRs #81–#84). See roadmap/self-hosting.md.
-- s38–s39 (PRs #72–#79 merged): self-hosted compiler gammac in compiler/ (decisions/043,
-  roadmap/self-hosting.md): lexer+parser+modules byte-identical on all files; decls and
-  tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in
-  tests/selfhost.rs. docs/guide/idioms.md = idioms handbook (doc_examples-checked; ADD to
-  it whenever a pattern is learned). s39 pain-point changes: decisions/044.
+- s38–s39 (PRs #72–#79): gammac in compiler/ (decisions/043, roadmap/self-hosting.md);
+  docs/guide/idioms.md = idioms handbook (doc_examples-checked; ADD learned patterns). 044.
 - s40: gammac long tail (roadmap/self-hosting.md); §15.1 dangling stores are errors,
   no-shadowing stays (045). Survey script $SP/tools/survey.sh (needs GAMMA_STD=lib/std).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
@@ -66,9 +65,9 @@
                   self-hosting.md (gammac stages), gammac-cli.md (porting the gamma commands),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–049, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–050, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
