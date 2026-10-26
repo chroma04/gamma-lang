@@ -27,6 +27,7 @@ this checkable:
 | bodies | the typed program of `gamma tir`, and its diagnostics |
 | checking | the diagnostics of `gamma check`, in the human format |
 | back end | the output and exit status of the compiled programs |
+| formatter | the output, messages and exit status of `gamma fmt` |
 | bootstrap | the C that `gammac` generates for itself, built by itself |
 
 Diagnostics are compared in the JSON format (`--diag-format=json`), which carries every
@@ -159,6 +160,23 @@ reference's on every program. Diagnostics are printed in the human format by def
 the `core` directory next to the standard library's. A root module without `main` is
 checked as a library, as `gamma tir` does: the way `gamma test` would check it, with
 its tests and benchmarks and those of the modules of its package that it imports.
+
+### The formatter
+
+`gammac fmt [--check] <file or directory>...` is `gamma fmt` (`compiler/fmt/`, a port of
+`src/fmt.rs` and the command in `src/main.rs`): it formats `.gm` files in place, walks
+directories in name order (skipping hidden directories and a package's `target`), with
+`--check` lists the files that would change instead, and with `-` filters standard input
+to standard output. It works on the tokens of `gammac`'s own lexer, and like the
+reference it lexes its result again and refuses to write anything that would change the
+tokens. For the same text it gives the same output, the same lexical error messages and
+the same exit statuses (1 if a file fails or, with `--check`, would change; 2 for a usage
+error). Only the texts that name the tool differ: the messages for an unreadable file or
+a bad command line start `gammac:` instead of `gamma:`, and the usage text is `gammac`'s.
+`tests/selfhost.rs` compares the output on every `.gm` file in the repository and on
+variants of each that the formatter must change (no indentation, collapsed or added
+spaces, CR LF line ends, cut off in the middle), and compares whole directories, in place
+and with `--check`.
 
 ### Growing a stage
 

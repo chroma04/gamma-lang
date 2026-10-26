@@ -639,3 +639,179 @@ fn gammac_compiles_itself_to_a_fixed_point() {
         panic!("the C that stage 2 generates differs from stage 1's at line {}:\nstage 1: {}\nstage 2: {}", line, a, b);
     }
 }
+
+/// `gammac fmt -` on `input`: standard output, standard error and exit status.
+fn gammac_fmt_filter(input: &[u8]) -> (Vec<u8>, Vec<u8>, i32) {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut cmd = match gammac() {
+        Gammac::Native(exe) => {
+            let mut c = Command::new(exe);
+            c.current_dir(root());
+            c
+        }
+        Gammac::Interpreted => {
+            let mut c = gamma();
+            c.args(["run", "compiler"]);
+            c
+        }
+    };
+    cmd.args(["fmt", "-"]);
+    gammac_env(&mut cmd);
+    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let data = input.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&data);
+    });
+    let out = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    (out.stdout, out.stderr, out.status.code().unwrap_or(-1))
+}
+
+/// What `gamma fmt -` gives for `src`, as `gammac fmt -` must.
+fn reference_fmt_filter(src: &str) -> (Vec<u8>, Vec<u8>, i32) {
+    match gamma::fmt::format_source(src) {
+        Ok(out) => (out.into_bytes(), Vec::new(), 0),
+        Err(e) => (Vec::new(), format!("<stdin>:{}\n", e).into_bytes(), 1),
+    }
+}
+
+/// Formats each input with both formatters, and fails on the first disagreement. Returns
+/// how many there were.
+fn check_fmt_filter(inputs: impl Iterator<Item = (String, String)>) -> usize {
+    let mut n = 0;
+    for (name, src) in inputs {
+        let want = reference_fmt_filter(&src);
+        let got = gammac_fmt_filter(src.as_bytes());
+        if want != got {
+            let (w, g) = (String::from_utf8_lossy(&want.0).into_owned(), String::from_utf8_lossy(&got.0).into_owned());
+            let line = first_difference(&w, &g).map_or(String::new(), |(_, line, a, b)| {
+                format!("\nfirst difference at line {}:\nreference: {}\ngammac:    {}", line, a, b)
+            });
+            panic!(
+                "{}: gammac fmt differs from the reference\nreference: status {}, stderr {:?}\ngammac:    status {}, stderr {:?}{}",
+                name,
+                want.2,
+                String::from_utf8_lossy(&want.1),
+                got.2,
+                String::from_utf8_lossy(&got.1),
+                line
+            );
+        }
+        n += 1;
+    }
+    n
+}
+
+#[test]
+fn formatter_matches_the_reference_on_the_whole_repository() {
+    let inputs = corpus().into_iter().map(|f| {
+        let src = std::fs::read_to_string(root().join(&f)).unwrap();
+        (f, src)
+    });
+    assert!(check_fmt_filter(inputs) > 500);
+}
+
+#[test]
+fn formatter_matches_the_reference_on_unformatted_text() {
+    // Variants of every file that the formatter has to change: no indentation, runs of
+    // spaces, spaces inside brackets, line ends as CR LF, and a cut in the middle (which
+    // may end in a lexical error).
+    let mut inputs = Vec::new();
+    for (i, f) in corpus().into_iter().enumerate() {
+        let src = std::fs::read_to_string(root().join(&f)).unwrap();
+        let noindent: String = src.split('\n').map(|l| l.trim_start()).collect::<Vec<_>>().join("\n");
+        let mut collapsed = String::new();
+        for c in src.chars() {
+            if !(c == ' ' && collapsed.ends_with(' ')) {
+                collapsed.push(c);
+            }
+        }
+        let spaced: String =
+            src.chars().flat_map(|c| if "(){},;[]".contains(c) { vec![' ', c, ' '] } else { vec![c] }).collect();
+        let cut = src.char_indices().map(|(j, _)| j).nth(src.len() * (i % 7 + 1) / 8 % src.len().max(1)).unwrap_or(0);
+        inputs.push((format!("{} (no indentation)", f), noindent));
+        inputs.push((format!("{} (spaces collapsed)", f), collapsed));
+        inputs.push((format!("{} (spaced brackets)", f), spaced));
+        inputs.push((format!("{} (CR LF)", f), src.replace('\n', "\r\n")));
+        inputs.push((format!("{} (cut)", f), src[..cut].to_string()));
+    }
+    assert!(check_fmt_filter(inputs.into_iter()) > 2500);
+}
+
+#[test]
+fn formatting_files_and_directories_matches_the_reference() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-fmt");
+    let setup = |dir: &Path| {
+        let _ = std::fs::remove_dir_all(dir);
+        let ugly = "main::fn(){\n   x:=1\n}\n";
+        for d in ["src", "src/sub", ".git", "target", "src/target", ".hidden/x"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+            std::fs::write(dir.join(d).join("a.gm"), ugly).unwrap();
+        }
+        std::fs::write(dir.join("src/good.gm"), "main :: fn() {\n    x := 1\n}\n").unwrap();
+        std::fs::write(dir.join("src/broken.gm"), "x := \"unterminated\n").unwrap();
+        std::fs::write(dir.join("src/sub/notes.txt"), ugly).unwrap();
+        std::fs::write(dir.join("gamma.toml"), "[package]\nname = \"w\"\nversion = \"0.1.0\"\n").unwrap();
+    };
+    // Runs the reference or `gammac` on paths below `dir`; the output names `dir` as `DIR`.
+    let run = |reference: bool, args: &[&str], dir: &Path| {
+        let mut cmd = match (reference, gammac()) {
+            (false, Gammac::Native(exe)) => Command::new(exe),
+            (false, Gammac::Interpreted) => {
+                let mut c = gamma();
+                c.args(["run", "compiler"]);
+                c
+            }
+            (true, _) => gamma(),
+        };
+        cmd.arg("fmt");
+        for a in args {
+            if a.starts_with('-') {
+                cmd.arg(a);
+            } else {
+                cmd.arg(dir.join(a));
+            }
+        }
+        gammac_env(&mut cmd);
+        let out = common::output(&mut cmd).unwrap();
+        let fix =
+            |s: &[u8]| String::from_utf8_lossy(s).replace(dir.to_str().unwrap(), "DIR").replace("gammac:", "gamma:");
+        (fix(&out.stdout), fix(&out.stderr), out.status.code())
+    };
+    let contents = |dir: &Path| {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    out.push((p.strip_prefix(dir).unwrap().to_path_buf(), std::fs::read(&p).unwrap()));
+                }
+            }
+        }
+        out.sort();
+        out
+    };
+    let cases: [&[&str]; 7] = [
+        &["--check", "."],
+        &["."],
+        &["src"],
+        &["--check", "src/good.gm"],
+        &["--check", "src/a.gm", "src/broken.gm"],
+        &["nothing"],
+        &["--check", "src", "src/sub"],
+    ];
+    for args in cases {
+        let (r, c) = (base.join("reference"), base.join("gammac"));
+        setup(&r);
+        setup(&c);
+        let want = run(true, args, &r);
+        let got = run(false, args, &c);
+        assert_eq!(want, got, "fmt {:?}", args);
+        assert_eq!(contents(&r), contents(&c), "files after fmt {:?}", args);
+    }
+}

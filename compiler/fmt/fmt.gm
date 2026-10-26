@@ -1,0 +1,134 @@
+//! The source formatter behind `gammac fmt`.
+//!
+//! The formatter works on the token stream and never changes meaning: it keeps
+//! every line break of the source (except for surplus blank lines), re-indents
+//! lines by bracket nesting, normalizes the spacing between the tokens of a
+//! line and copies comments and literals verbatim. The text between two
+//! consecutive tokens (the "gap") holds exactly the whitespace, comments and
+//! semicolons, and is re-read from the source. Before returning, the result is
+//! lexed again and must give the same tokens as the input.
+
+diag :: import "../diag"
+str :: import "std/str"
+syntax :: import "../syntax"
+
+/// Why a text cannot be formatted: a lexical error as `line:col: message`, or an internal
+/// error.
+pub FormatError :: struct {
+    pub message: string
+}
+
+/// Formats Gamma source text. Fails, without producing output, if the text has lexical
+/// errors. The result is allocated from the current allocator.
+pub format_source :: fn(src: string) -> FormatError!string needs Alloc {
+    toks := try lex_checked(src)
+    out := layout(src, toks)
+    toks2 := lex_checked(out.items) else e => {
+        return !FormatError(message: str.format("internal error: formatted output does not lex: {}", e.message)!)
+    }
+    if i := first_difference(src, toks, out.items, toks2) {
+        shown := str.format(
+            "internal error: formatting would change token {} ({} became {})",
+            i,
+            show_token(src, toks, i),
+            show_token(out.items, toks2, i),
+        )!
+        return !FormatError(message: shown)
+    }
+    return out.items
+}
+
+/// The tokens of `src`, or the first lexical error.
+lex_checked :: fn(src: string) -> FormatError![]const Token needs Alloc {
+    diags := diag.diagnostics()
+    lexed := syntax.lex(0, src, &diags)
+    for d in diags.list.items {
+        if d.severity is .Error {
+            lo := usize(d.span.lo)
+            if lo > src.len { lo = src.len }
+            // A position inside a character is taken to be at the start of the text.
+            before: string = if lo < src.len and not is_char_start(src[lo]) { "" } else { src[0..lo] }
+            line: usize = 1
+            for b in before {
+                if b is '\n' { line += 1 }
+            }
+            col := count_chars(last_line(before)) + 1
+            return !FormatError(message: str.format("{}:{}: {}", line, col, d.message)!)
+        }
+    }
+    return lexed.tokens.items
+}
+
+/// The text of a token.
+token_text :: fn(src: string, t: Token) -> string => src[usize(t.span.lo)..usize(t.span.hi)]
+
+/// The shape of a token kind, for comparing token streams: the variant, without its
+/// payload.
+kind_code :: fn(k: TokenKind) -> u32 => match k {
+    .Ident(_) => 0
+    .Underscore => 1
+    .Keyword(_) => 2
+    .Int(_) => 3
+    .Float(_) => 4
+    .Str(_) => 5
+    .Intrinsic(_) => 6
+    .Attribute(_) => 7
+    .Punct(_) => 8
+    .Newline => 9
+    .Eof => 10
+}
+
+punct_of :: fn(k: TokenKind) -> ?Punct => match k {
+    .Punct(p) => p
+    _ => null
+}
+
+/// The index of the first token at which the streams differ in kind or text.
+first_difference :: fn(a_src: string, a: []const Token, b_src: string, b: []const Token) -> ?usize {
+    // The end of the text and a line break right before it are not compared: the output
+    // always ends in a line break, the source may not.
+    a_len := trimmed_len(a)
+    b_len := trimmed_len(b)
+    n := if a_len > b_len { a_len } else { b_len }
+    for i in 0..n {
+        if i >= a_len or i >= b_len { return i }
+        x := a[i]
+        y := b[i]
+        if kind_code(x.kind) is not kind_code(y.kind) { return i }
+        if px := punct_of(x.kind) {
+            if punct_of(y.kind) is not px { return i }
+            // `is not` and `not in` are the same wherever they are written.
+            if px in (Punct.IsNot, Punct.NotIn) { continue }
+        }
+        if x.kind in (.Newline, .Eof) { continue }
+        if token_text(a_src, x) is not token_text(b_src, y) { return i }
+    }
+    return null
+}
+
+trimmed_len :: fn(t: []const Token) -> usize {
+    n := t.len
+    if n > 0 and t[n - 1].kind is .Eof { n -= 1 }
+    if n > 0 and t[n - 1].kind is .Newline { n -= 1 }
+    return n
+}
+
+/// The text of token `i` as `{:?}` shows a string, or `<end>`.
+show_token :: fn(src: string, toks: []const Token, i: usize) -> []u8 needs Alloc {
+    t := toks.get(i) else return str.format("{}", "<end>")!
+    out := list(u8)
+    out.push('"')!
+    for c in token_text(src, t) {
+        match c {
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            '\n' => out.extend("\\n")!
+            '\r' => out.extend("\\r")!
+            '\t' => out.extend("\\t")!
+            '\0' => out.extend("\\0")!
+            _ => out.push(c)!
+        }
+    }
+    out.push('"')!
+    return out.items
+}

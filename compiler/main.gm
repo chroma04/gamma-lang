@@ -8,6 +8,7 @@
 //!     gammac check ROOT...
 //!     gammac build [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT
 //!     gammac run [--mode=debug|checked|fast] ROOT [ARG...]
+//!     gammac fmt [--check] FILE|DIR...
 //!     gammac help | version
 //!
 //! Every command takes `--diag-format=human|short|json` (default `human`), the formats of
@@ -22,6 +23,7 @@ ast :: import "./ast"
 check :: import "./check"
 diag :: import "./diag"
 driver :: import "./driver"
+fmt :: import "./fmt"
 fs :: import "std/fs"
 load :: import "./load"
 parse :: import "./parse"
@@ -44,6 +46,7 @@ commands:
   check   type-check a program (a .gm file or a module directory)
   build   compile a program to a native executable via the system C compiler
   run     compile a program via C and run it; arguments after the file go to the program
+  fmt     format source files in place: gammac fmt [--check] <file or directory>... ("-" filters stdin to stdout)
   help    print this message
   version print the compiler version
 
@@ -65,9 +68,10 @@ environment:
 
 `
 
-main :: fn() needs Alloc + Env + Err + Fs + Out + Proc + Rand + Sys {
+main :: fn() needs Alloc + Env + Err + Fs + In + Out + Proc + Rand + Sys {
     args := Env.args()
     command := args.get(1) else ""
+    if command is "fmt" { Env.exit(fmt.command(args[2..])) }
     if command in ("help", "--help", "-h") {
         Out.write(USAGE)
         return
