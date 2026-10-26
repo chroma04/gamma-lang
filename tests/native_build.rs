@@ -396,6 +396,7 @@ fn output_is_flushed_before_waiting() {
     }
 }
 
+#[cfg(unix)]
 const PING: &str = "\
 thread :: import \"std/thread\"
 
