@@ -3,7 +3,10 @@
 ## State (2026-10-26) — PRs #1–#86 merged, v0.1.0 tagged
 - s45 (branch claude/project-thread-dhnfw3, user: "expand gammac to cover the rest of gamma"):
   roadmap/gammac-cli.md = inventory + status. Driver (check/run/help/version/human diags)
-  done; fmt, test/bench, lint+fix, doc ported by 4 sonnet worktree subagents.
+  done; fmt, doc, lint+fix, -g, test/bench, packages+gamma.toml ported by sonnet worktree
+  subagents (all byte-identical tests in tests/selfhost.rs). §7.12 branch join refined
+  (pain point). Left: --target/wasm/freestanding/Safe, caches, C optimizations, lsp.
+  PR #87.
 - s43 (branch claude/lucid-clarke-48k3cf): gammac COMPILES ITSELF. C back end
   compiler/cgen/ (decisions/048), `gammac build`, bootstrap fixed point tested in
   tests/selfhost.rs; all applicable conformance run tests pass via gammac.
@@ -16,11 +19,8 @@
   tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in
   tests/selfhost.rs. docs/guide/idioms.md = idioms handbook (doc_examples-checked; ADD to
   it whenever a pattern is learned). s39 pain-point changes: decisions/044.
-- s40 (branch claude/admiring-wright-4lo3vq): gammac long tail, TIR 320 → 486 SAME, decls
-  693 (see roadmap/self-hosting.md s40 entry). Two sonnet worktree subagents (intrinsics,
-  format templates) worked well with precise briefs + the shared survey script
-  ($SP/tools/survey.sh; STAGE=decls for decls; needs GAMMA_STD=lib/std). Also s40 (user
-  approved): §15.1 dangling stores are errors, `[a, b]` note; no-shadowing stays (045).
+- s40: gammac long tail (roadmap/self-hosting.md); §15.1 dangling stores are errors,
+  no-shadowing stays (045). Survey script $SP/tools/survey.sh (needs GAMMA_STD=lib/std).
 - s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
   stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
   in editors/tree-sitter-gamma (node 22 in /opt/node22).

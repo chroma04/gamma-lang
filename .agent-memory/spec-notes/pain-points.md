@@ -69,3 +69,15 @@ dangling stores are now compile errors (decisions/045).
 - **Containers created outside an arena storing arena strings** (s45 W-lint): segfault
   (dangling keys). Lifetime problem, not syntax; Debug free checks did not catch it.
 - `make(bool, n)` (bool not Plain), `[N]T(.V)` fill not valid (W-lint, once each).
+- **`str.format` → `[]u8` vs literal `string` in if-branches** (4x+) — FIXED s45: §7.12
+  branch join takes the first branch type every other branch coerces to (sema
+  `join_type`, gammac check `join_type`); conformance run/branch_type_join. Mixing in a
+  list or `in` still needs an annotation.
+- s45 W-pkg: no env var list/set, chmod, readlink, utimes, getpid in std (ran processes);
+  postfix `?` on an optional traps instead of returning (expected Rust meaning; candidate:
+  warn on `?` of `?T` in a `?T` fn); `x is y` between `?string` and `string` accepted
+  (unclear; candidate error); `make(string, n)` rejected (not Plain) → List needed;
+  `Test.fail` needs `loc`. Watch for repeats.
+- **Proc has no try_wait / process-group kill** (s45 W-test): `--timeout` needs a watchdog
+  thread; children of a test are not killed. Library gap.
+- No sorted set / `keys_sorted` (W-debug); `[_]T(...)` count inference for constants (W-debug).
