@@ -36,12 +36,17 @@ call_inner :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr, dest: ?
         }
         // A callee may build its result in the destination while reading a parameter in
         // place, so the destination must not overlap a place passed in place.
-        borrows := false
+        borrows := dest is not null and fg.callee_borrows(callee, i)
         root := fg.in_place_root(a)
         overlaps := true
         if r := root { overlaps = fg.arg_may_overlap(r, obs, borrows) }
+        // A large constant is passed from static storage (see `constarg.gm`).
+        k: ?string = null
+        if fg.g.ty.by_ref(a.ty) { k = fg.g.const_arg(a) }
         v: string = ""
-        if fg.g.ty.by_ref(a.ty) and root is not null and later_pure and not overlaps {
+        if kc := k {
+            v = str.format("(*({} *){})", fg.g.ty.cty(a.ty), kc)!
+        } else if fg.g.ty.by_ref(a.ty) and root is not null and later_pure and not overlaps {
             addr := try fg.place_addr(a)
             v = str.format("(*({} *){})", fg.g.ty.cty(a.ty), addr)!
         } else {
@@ -71,6 +76,19 @@ call_inner :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr, dest: ?
             }
         }
         .Perform(eff, op) => return fg.perform(e, &eff, op, vals.items, tys.items, e.ty)
+    }
+}
+
+/// Whether parameter `i` of `callee` may be read in place while the result is built (see
+/// `read_during_build`): a function called indirectly may be any, so it is assumed to.
+callee_borrows :: fn(fg: ^FnGen, callee: tir.Callee, i: usize) -> bool needs sema.Load {
+    match callee {
+        .Fn(f) => {
+            r := fg.g.read_during_build(f)
+            return i < r.len and r[i]
+        }
+        .Indirect(_) => return true
+        .Perform(_, _) => return false
     }
 }
 
@@ -231,7 +249,16 @@ call_fn :: fn(fg: ^FnGen, e: ^Expr, f: u32, vals: []const string) -> Unsup!strin
             }
         }
     }
-    name := fg.g.callee_name(f)
+    name := ""
+    if sc := fg.spec_call {
+        if sc.call is e {
+            fg.spec_call = null
+            name = fg.g.queue_spec(f, sc.spec)
+        }
+    }
+    if name.len is 0 {
+        if s := fg.passed_spec(f) { name = fg.g.queue_spec(f, s) } else { name = fg.g.callee_name(f) }
+    }
     tys := list(Ty)
     for p in def.params { tys.push(def.locals[usize(p)].ty)! }
     r := ""
@@ -487,13 +514,6 @@ stub_perform :: fn(fg: ^FnGen, e: ^Expr, effect_: ^const EffectRef, id: u32, op:
     return fg.zero(ret)
 }
 
-/// In a specialized clone, a perform of the effect it is specialized for calls the
-/// clause of the handler literal directly. Functions are not specialized, so there is
-/// never such a perform.
-direct_perform :: fn(fg: ^FnGen, id: u32, effect_: ^const EffectRef, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> ?string needs sema.Load {
-    return null
-}
-
 calls_native_set :: fn(fg: ^FnGen, res: ?string, v: string) needs sema.Load {
     if r := res { fg.line(str.format("{} = {};", r, v)!) }
 }
@@ -545,12 +565,14 @@ pub with_expr :: fn(fg: ^FnGen, e: ^Expr, label: u32, handlers: []tir.HandlerVal
         fw = w
     }
     fw_ref: string = if on_ is not null { str.format("&{}", fw)! } else { "NULL" }
+    nested := fg.nested_spec(handlers, on_)
     for h in handlers {
         match h {
             .Literal(x) => {
                 hv := try fg.expr(x)
                 .Handler(hid) := fg.g.ty.kind(x.ty) else return !unsupported(x.span, "this handler value")
-                table := fg.g.handler_table(hid)
+                table := ""
+                if ns := nested { table = fg.g.spec_handler_table(hid, ns) } else { table = fg.g.handler_table(hid) }
                 eref := fg.g.prog.handler_lit(hid).effect_
                 id := fg.g.effect_id(&eref)
                 n := str.format("wn{}", fg.fresh())!
@@ -578,7 +600,10 @@ pub with_expr :: fn(fg: ^FnGen, e: ^Expr, label: u32, handlers: []tir.HandlerVal
     end := str.format("we{}", fg.fresh())!
     scope := fg.with_scope(label, end)
     fg.scopes.push(scope)!
+    saved_spec := fg.spec_call
+    fg.spec_call = fg.specializable(handlers, body, nested)
     r := fg.expr(body)
+    fg.spec_call = saved_spec
     scope2 := fg.scopes.pop()?
     fg.cx = saved
     v := try r

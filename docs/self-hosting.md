@@ -114,13 +114,23 @@ leaves to implementations: message texts, spans and recovery after errors.
    conformance `run` test compiled this way gives the expected output and exit status.
    The C back end (`compiler/cgen/`) is a port of `src/cgen/` with the same representation
    of values and the same use of the runtime, so values have the same bytes, checks trap
-   with the same messages, and effects, handlers, fibers and continuations work the same. It leaves out
-   what only makes the generated code faster or quicker to compile — the specialization
-   of functions for the handler that is their context, reading parameters in place,
-   splitting long functions, constant arguments in static storage — and what it has no use
-   for yet: the cache of compiled package C sources. The Safe mode, freestanding targets,
-   other targets and the caches of the compiled runtime and of built programs are in
-   the section "Targets, modes and caches" below.
+   with the same messages, and effects, handlers, fibers and continuations work the same.
+   It also makes the same optimizations, so the generated code is as fast: functions are
+   specialized for the handler that is their context (`spec.gm`), parameters a function
+   only reads are passed in place (`borrow.gm`), constant arguments live in static storage
+   (`constarg.gm`), long chains of operations go through an accumulator
+   variable (`chain.gm`), and long functions are split into helpers (`outline.gm`). The
+   Safe mode, freestanding targets, other targets and the caches of the compiled runtime
+   and of built programs are in the section "Targets, modes and caches" below; the only
+   thing left out is a cache of compiled package C sources.
+
+   For a program, `gammac build --emit-c` generates the same C functions as `gamma build`,
+   bar the numbers in their names, which follow the order the functions are checked in,
+   and the order they are written in. The two differ in the constants: `gamma` initializes
+   every constant of the program, including ones nothing uses, such as the handler tables
+   of the default allocator, and generates the functions that only those reach, where
+   `gammac` generates the constants a program uses. `tests/selfhost.rs` compares the
+   functions on the examples and on a program with long bodies and chains.
 
    Before generating code, `gammac` checks every function body the program can reach,
    including the core library's (which `gammac tir`, like `gamma tir`, leaves out), and

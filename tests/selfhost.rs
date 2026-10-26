@@ -2349,3 +2349,219 @@ fn run_and_runtime_caches_match_the_reference() {
     t.both(".", &["cache", "clean"]);
     assert_eq!(files("ref"), files("new"), "`cache clean` removed different files");
 }
+
+/// `text` with the numbers that depend on the order functions are checked in replaced by
+/// `N`: `gm_f12` and `gm_f12_s3` become `gm_fN`, `gm_c4_1` becomes `gm_cN`.
+fn normalize_c_names(text: &str) -> String {
+    const NUMBERED: [&str; 18] =
+        ["fs", "fr", "f", "s", "k", "c", "hl", "hd", "pf", "pr", "pt", "wb", "dt", "xe", "ga", "gi", "ginit", "g"];
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let word_start = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        if word_start && text[i..].starts_with("gm_") {
+            let letters = text[i + 3..].bytes().take_while(|b| b.is_ascii_lowercase()).count();
+            let digits = i + 3 + letters;
+            if NUMBERED.contains(&&text[i + 3..digits]) && bytes.get(digits).is_some_and(u8::is_ascii_digit) {
+                // The digits, then any `_digits` or `_sdigits` suffixes.
+                let mut end = digits;
+                loop {
+                    while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+                        end += 1;
+                    }
+                    let next = bytes.get(end + 1).copied().unwrap_or(0);
+                    let spec = next == b's' && bytes.get(end + 2).is_some_and(u8::is_ascii_digit);
+                    if bytes.get(end) == Some(&b'_') && (next.is_ascii_digit() || spec) {
+                        end += if spec { 2 } else { 1 };
+                    } else {
+                        break;
+                    }
+                }
+                // An outlined helper `gm_c4_1` is told from a constant `gm_c4`.
+                let helper = &text[i + 3..digits] == "c" && text[digits..end].contains('_');
+                out.push_str(&text[i..digits]);
+                out.push(if helper { 'H' } else { 'N' });
+                i = end;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// A function of generated C: its name, its text, and its text with the numbers that depend on
+/// the order functions are checked in replaced.
+struct CFunction {
+    name: String,
+    text: String,
+    normalized: String,
+}
+
+/// The functions of generated C. `gammac` numbers functions in the order it checks them, so
+/// the two compilers are compared on the set of normalized function bodies.
+fn c_functions(c: &str) -> Vec<CFunction> {
+    let generated = &c[c.find("/* ---- generated ---- */").expect("generated section")..];
+    let mut functions = Vec::new();
+    let mut current: Option<String> = None;
+    for line in generated.lines() {
+        if let Some(body) = &mut current {
+            body.push_str(line);
+            body.push('\n');
+            if line == "}" {
+                let text = current.take().unwrap();
+                let header = text.lines().next().unwrap();
+                let name = header[..header.rfind('(').unwrap()]
+                    .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap();
+                functions.push(CFunction { name: name.to_string(), normalized: normalize_c_names(&text), text });
+            }
+        } else {
+            let opens = line.starts_with("static") || line.starts_with("GM_NOINLINE") || line.starts_with("int main");
+            if opens
+                && line.ends_with(") {")
+                && !line.starts_with("static const")
+                && !line.starts_with("static void *const")
+            {
+                current = Some(format!("{line}\n"));
+            }
+        }
+    }
+    functions
+}
+
+/// The names of the functions and hash functions `text` mentions: `gm_f12`, `gm_f12_s3`, `gm_hash4`.
+fn mentioned_functions(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("gm_") {
+        let tail = &rest[i..];
+        let letters = tail[3..].bytes().take_while(u8::is_ascii_lowercase).count();
+        let mut end = 3 + letters;
+        if matches!(&tail[3..end], "f" | "hash") {
+            let digits = tail[end..].bytes().take_while(u8::is_ascii_digit).count();
+            if digits > 0 {
+                end += digits;
+                if tail[end..].starts_with("_s") {
+                    let spec = tail[end + 2..].bytes().take_while(u8::is_ascii_digit).count();
+                    if spec > 0 {
+                        end += 2 + spec;
+                    }
+                }
+                names.push(tail[..end].to_string());
+            }
+        }
+        rest = &tail[end.max(3)..];
+    }
+    names
+}
+
+/// The C the reference implementation generates for `program` in Fast mode.
+#[cfg(unix)]
+fn reference_c(program: &str, out: &Path) -> String {
+    let mut cmd = gamma();
+    cmd.args(["build", "--mode=fast", "-o"]).arg(out).arg(program).env("CFLAGS", "-O0 -w");
+    let built = common::output(&mut cmd).unwrap();
+    assert!(built.status.success(), "gamma failed to build {program}:\n{}", String::from_utf8_lossy(&built.stderr));
+    std::fs::read_to_string(format!("{}.c", out.display())).unwrap()
+}
+
+/// `gammac` generates the functions the reference does, for most of the examples and for a
+/// program with long bodies and a long operator chain, which the back end outlines and chains.
+/// Only the order of the functions and the constants nothing uses differ.
+#[test]
+#[cfg(unix)]
+fn gammac_generates_the_same_functions_as_the_reference() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-cgen");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut programs: Vec<String> = [
+        "allocators",
+        "c_interop",
+        "echo",
+        "fibers",
+        "generators",
+        "grep",
+        "hello",
+        "json_query",
+        "julia",
+        "life",
+        "logging",
+        "mandelbrot",
+        "nbody",
+        "sha256sum",
+        "threads",
+        "wordfreq",
+    ]
+    .iter()
+    .map(|n| format!("examples/{n}.gm"))
+    .collect();
+    // `continue`, `break` and `return` in long bodies with `defer`s, and a long operator chain.
+    let mut src = String::from("check :: fn(k: i64) -> i64 {\n    if k > 2 { return 2 }\n    return k\n}\n");
+    src += "loops :: fn(n: i64) -> i64 needs Out {\n    s := 0\n    defer print(\"done {}\\n\", n)\n    i := 0\n";
+    src += "    while i < n {\n        i += 1\n        defer print(\"iteration {}\\n\", i)\n";
+    src += &"        s = s + i % 3\n".repeat(600);
+    src += "        if i is 2 { continue }\n";
+    src += &"        s = s + i % 5\n".repeat(600);
+    src += "        if i is 4 { break }\n    }\n";
+    src += &"    s = s - check(n) % 7\n".repeat(600);
+    src += "    if n is 3 { return s }\n    return s + 1\n}\n";
+    let chain = vec!["y"; 3000].join(" + ");
+    src += &format!(
+        "main :: fn() needs Out {{\n    y := check(1)\n    x := {chain}\n    print(\"{{}} {{}} {{}}\\n\", x, loops(3), loops(5))\n}}\n"
+    );
+    let long = dir.join("long.gm");
+    std::fs::write(&long, src).unwrap();
+    programs.push(long.to_string_lossy().into_owned());
+    let mut outlined = false;
+    for program in &programs {
+        let name = Path::new(program).file_stem().unwrap().to_string_lossy().into_owned();
+        let expected = reference_c(program, &dir.join(format!("{name}_ref")));
+        let mine = dir.join(format!("{name}_gammac"));
+        let args: Vec<String> = ["build", "--mode=fast", "--emit-c", "-o"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain([mine.to_string_lossy().into_owned(), program.clone()])
+            .collect();
+        let out = run_gammac(&args);
+        assert!(out.status.success(), "gammac failed to build {program}:\n{}", String::from_utf8_lossy(&out.stderr));
+        let actual = std::fs::read_to_string(format!("{}.c", mine.display())).unwrap();
+        let (reference, mut ours) = (c_functions(&expected), c_functions(&actual));
+        outlined |= reference.iter().any(|f| f.normalized.contains("gm_cH"));
+        ours.retain(|f| f.name != "gm_init_consts");
+        // The reference initializes every constant, used or not, and generates the functions that
+        // only they reach; `gammac` generates the constants a program uses.
+        let mut reached: Vec<String> = Vec::new();
+        let mut work: Vec<String> = reference
+            .iter()
+            .filter(|f| f.name == "gm_init_consts")
+            .flat_map(|f| mentioned_functions(&f.text))
+            .collect();
+        while let Some(name) = work.pop() {
+            if !reached.contains(&name) {
+                for f in reference.iter().filter(|f| f.name == name) {
+                    work.extend(mentioned_functions(&f.text));
+                }
+                reached.push(name);
+            }
+        }
+        let mut ours: Vec<Option<CFunction>> = ours.into_iter().map(Some).collect();
+        for f in reference.iter().filter(|f| f.name != "gm_init_consts") {
+            match ours.iter_mut().find(|o| o.as_ref().is_some_and(|o| o.normalized == f.normalized)) {
+                Some(o) => *o = None,
+                None => assert!(
+                    reached.contains(&f.name),
+                    "the C of {program} lacks a function the reference generates:\n{}",
+                    f.text
+                ),
+            }
+        }
+        if let Some(f) = ours.iter().flatten().next() {
+            panic!("the C of {program} has a function the reference does not generate:\n{}", f.text);
+        }
+    }
+    assert!(outlined, "no function was outlined: the test no longer covers outlining");
+}

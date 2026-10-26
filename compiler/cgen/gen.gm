@@ -3,11 +3,11 @@
 //!
 //! The generated code follows the reference implementation's: values have the same
 //! bytes, checks trap with the same messages, and formatting goes through the runtime's
-//! type descriptors. Not ported: the specialization of functions for the handler that is
-//! their context, the reading of parameters in place, the outlining of long statement
-//! runs, the shortcuts for long operator chains, constant arguments in static storage,
-//! the Safe mode and freestanding targets. They change how
-//! fast the generated code runs or compiles, not what it does.
+//! type descriptors. The optimizations are ported too: functions specialized for the
+//! handler that is their context (`spec.gm`), parameters read in place (`borrow.gm`),
+//! long runs of statements in helpers (`outline.gm`), shortcuts for long operator chains
+//! (`chain.gm`) and constant arguments in static storage (`constarg.gm`). Not ported: the
+//! Safe mode and freestanding targets.
 
 ast :: import "../ast"
 bigint :: import "../bigint"
@@ -73,6 +73,24 @@ pub Gen :: struct {
     frames_done: List(bool)
     /// Memo of `is_pure` (`0`: unknown, `1`: being computed, `2`: false, `3`: true).
     pub pure_memo: hash_map.HashMap(u32, u8)
+    /// Memo of `read_during_build`, by function.
+    pub early_memo: hash_map.HashMap(u32, []bool)
+    /// Per function, the parameters whose caller's value no call site lets change (see
+    /// `borrow.gm`); computed once for the whole program.
+    pub steady: ?List([]bool) = null
+    /// Constant large arguments, in static storage `gm_kN` (see `constarg.gm`).
+    pub site_consts: List(SiteConst)
+    /// The specializations interned so far, by number, and the numbers by key.
+    pub spec_keys: List(SpecKey)
+    spec_ids: hash_map.HashMap((u32, u32, u32), u32)
+    /// Specialized clones requested so far, and those still to generate.
+    clones: hash_map.HashMap((u32, u32), bool)
+    spec_queue: List((u32, u32))
+    /// Handler literals whose table of clause clones for a specialization was emitted.
+    spec_tables: hash_map.HashMap((u32, u32), bool)
+    /// Memo of `clause_may_exit`, by clause and specialization (see `spec_slot`): `1`
+    /// while being computed, `2` false, `3` true.
+    exits: hash_map.HashMap((u32, u32), u8)
     /// The locals that function literals or handler clauses reach through their
     /// environment, by function and local (computed on first use, see `frame_locals`).
     pub captured: ?hash_map.HashMap((u32, u32), bool) = null
@@ -143,6 +161,14 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         queued: list(bool),
         frames_done: list(bool),
         pure_memo: hash_map.hash_map(u32, u8),
+        early_memo: hash_map.hash_map(u32, []bool),
+        site_consts: list(SiteConst),
+        spec_keys: list(SpecKey),
+        spec_ids: hash_map.hash_map((u32, u32, u32), u32),
+        clones: hash_map.hash_map((u32, u32), bool),
+        spec_queue: list((u32, u32)),
+        spec_tables: hash_map.hash_map((u32, u32), bool),
+        exits: hash_map.hash_map((u32, u32), u8),
         handler_tables: list(u8),
         libs: list(string),
         handler_done: hash_map.hash_map(u32, bool),
@@ -238,15 +264,62 @@ pub queue :: fn(g: ^Gen, f: u32) needs Alloc {
 
 pub fn_name :: fn(g: ^const Gen, f: u32) -> string needs Alloc => str.format("gm_f{}", f)!
 
-/// The C name of clause `c` of a handler (generated on demand).
-pub clause_name :: fn(g: ^Gen, c: u32) -> string needs Alloc {
+/// The C name of the clone of `f` specialized by `s`.
+pub spec_name :: fn(g: ^const Gen, f: u32, s: u32) -> string needs Alloc => str.format("gm_f{}_s{}", f, s)!
+
+/// Marks the clone of `f` specialized by `s` as needed; returns its C name.
+pub queue_spec :: fn(g: ^Gen, f: u32, s: u32) -> string needs Alloc {
+    if g.clones.get((f, s)) is null {
+        g.clones.put((f, s), true)!
+        g.spec_queue.push((f, s))!
+    }
+    return g.spec_name(f, s)
+}
+
+/// The number of specialization `key`.
+pub spec :: fn(g: ^Gen, key: SpecKey) -> u32 needs Alloc {
+    k := (key.hid, key.eff, spec_slot(key.outer))
+    if s := g.spec_ids.get(k) { return s }
+    s := g.spec_keys.items.len.trunc(u32)
+    g.spec_keys.push(key)!
+    g.spec_ids.put(k, s)!
+    return s
+}
+
+pub spec_key :: fn(g: ^const Gen, s: u32) -> SpecKey => g.spec_keys.items[usize(s)]
+
+/// How many specializations `s` is nested in, itself included.
+pub spec_depth :: fn(g: ^const Gen, s: u32) -> u32 {
+    key := g.spec_key(s)
+    if o := key.outer { return 1 + g.spec_depth(o) }
+    return 1
+}
+
+/// `outer` as part of a hash key: `0` for none, else the specialization's number plus one.
+spec_slot :: fn(outer: ?u32) -> u32 {
+    if o := outer { return o + 1 }
+    return 0
+}
+
+/// The C name of clause `c` of a handler whose node is the context `outer` is specialized
+/// for (or of the clause itself).
+pub clause_name :: fn(g: ^Gen, c: u32, outer: ?u32) -> string needs Alloc {
+    if o := outer { return g.queue_spec(c, o) }
     g.queue(c)
     return g.fn_name(c)
 }
 
-/// Generates every function queued so far, and those they reach.
+/// Generates every function and clone queued so far, and those they reach.
 drain :: fn(g: ^Gen) -> Unsup!() needs sema.Load {
-    while f := g.reachable.pop() { try gen_fn(g, f) }
+    while true {
+        if f := g.reachable.pop() {
+            try gen_fn(g, f, null)
+        } else if c := g.spec_queue.pop() {
+            try gen_fn(g, c.0, c.1)
+        } else {
+            return ()
+        }
+    }
 }
 
 /// True if the frame struct of `f` has been emitted; marks it as emitted.
@@ -303,6 +376,22 @@ pub line_directive :: fn(g: ^Gen, span: source.Span) -> ?string needs Alloc + Fs
     p := path else return null
     lc := f.line_col(span.lo)
     return str.format("#line {} {}", lc.line, p)!
+}
+
+/// The table of the clauses of handler literal `h` as clones specialized for `s`: the
+/// handler is installed where `s`'s node is the context, so its clauses run with that node
+/// as theirs.
+pub spec_handler_table :: fn(g: ^Gen, h: u32, s: u32) -> string needs Alloc {
+    name := str.format("gm_hl{}_s{}", h, s)!
+    if g.spec_tables.get((h, s)) is null {
+        g.spec_tables.put((h, s), true)!
+        names := list(string)
+        for c in g.prog.handler_lit(h).clauses {
+            names.push(str.format("(void *){}", g.queue_spec(c, s))!)!
+        }
+        g.handler_tables.write("static void *const {}[] = {{{}}};\n", name, str.join(names.items, ", ")!)!
+    }
+    return name
 }
 
 /// The table of clause functions of handler literal `h`, generating it on first use.
@@ -492,17 +581,26 @@ gen_entry :: fn(g: ^Gen, entry: u32, n: usize) -> Unsup!string needs sema.Load {
 // Calling conventions
 // ---------------------------------------------------------------------------------
 
-/// Whether a call of clause `c` may return with an exit in progress. False only when
-/// that is certain: its body leaves only locally, and its calls and performs reach only
-/// code that does too. The caller then needs no test of `gm_unw` after the call.
-pub clause_may_exit :: fn(g: ^Gen, c: u32) -> bool needs Alloc {
-    b := g.prog.func(c).body else return true
-    return g.expr_may_exit(b)
+/// Whether a call of clause `c`, as a clone specialized for `outer` when given, may return
+/// with an exit in progress. False only when that is certain: its body leaves only
+/// locally, and its calls and performs reach only code that does too. The caller then
+/// needs no test of `gm_unw` after the call.
+pub clause_may_exit :: fn(g: ^Gen, c: u32, outer: ?u32) -> bool needs Alloc {
+    key := (c, spec_slot(outer))
+    if m := g.exits.get(key) {
+        // Recursion: assume the worst.
+        return m is not 2
+    }
+    g.exits.put(key, 1)!
+    r := true
+    if b := g.prog.func(c).body { r = g.expr_may_exit(b, outer) }
+    g.exits.put(key, if r { 3 } else { 2 })!
+    return r
 }
 
-/// Whether evaluating `e` may leave its function by a non-local exit, or return from a
-/// call with one in progress.
-expr_may_exit :: fn(g: ^Gen, e: ^Expr) -> bool needs Alloc {
+/// Whether evaluating `e` in a function whose context is the node of `spec` may leave it
+/// by a non-local exit, or return from a call with one in progress.
+expr_may_exit :: fn(g: ^Gen, e: ^Expr, spec_: ?u32) -> bool needs Alloc {
     match e.kind {
         .Break(b) => match b.target {
             .InstallingWith => return true
@@ -518,15 +616,31 @@ expr_may_exit :: fn(g: ^Gen, e: ^Expr) -> bool needs Alloc {
         .Builtin(.Fiber, _) => return true
         // The sink is a perform or a function value.
         .Write(_) => return true
-        .Call(callee, _) => match callee {
-            .Fn(f) => if g.may_unwind(f) { return true }
-            .Indirect(_), .Perform(_) => return true
+        .Call(callee, _) => {
+            may := false
+            match callee {
+                .Fn(f) => { may = g.may_unwind(f) }
+                .Indirect(_) => { may = true }
+                .Perform(eff, op) => {
+                    may = true
+                    if s := spec_ {
+                        if not g.prog.is_ctl(eff.eff, op) {
+                            key := g.spec_key(s)
+                            clauses := g.prog.handler_lit(key.hid).clauses
+                            if usize(op) < clauses.len and g.effect_id(&eff) is key.eff {
+                                may = g.clause_may_exit(clauses[usize(op)], key.outer)
+                            }
+                        }
+                    }
+                }
+            }
+            if may { return true }
         }
         _ => {}
     }
     may := false
     tir.for_each_child(e, fn(c: ^Expr) {
-        if not may { may = g.expr_may_exit(c) }
+        if not may { may = g.expr_may_exit(c, spec_) }
     })
     return may
 }
