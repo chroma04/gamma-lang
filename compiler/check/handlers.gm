@@ -392,6 +392,7 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
         _ => cx.expr(c.body, expect)
     }
     body = cx.clause_body(body, info.op_kind, ret)
+    body = cx.declare_temps(0, body)
     frame := cx.exit_fn()
     cx.performed.extend(frame.performed)!
     cx.s.defs.items[usize(fn_id)].parent = cx.fn_id

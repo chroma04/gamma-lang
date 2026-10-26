@@ -74,7 +74,7 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
         if p.name is not "_" { cx.declare(p.name, .Var(id), p.span) }
         param_ids.push(id)!
     }
-    body := cx.literal_body(&lit.body, ret, infer_ret)
+    body := cx.declare_temps(0, cx.literal_body(&lit.body, ret, infer_ret))
     if open { _ = cx.open_fns.pop() }
     final_ret := cx.ret
     cx.reject_returned_closure(lit, final_ret)

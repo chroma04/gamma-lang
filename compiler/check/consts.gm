@@ -118,6 +118,7 @@ const_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, nam
 pub check_const_expr :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?^Expr needs Load {
     errors := s.l.diags.error_count()
     cx := fn_cx(s, module, s.tys.unit(), types.empty_effects())
+    cx.const_init = true
     ex := cx.expr(e, expected)
     if t := expected { ex = cx.coerce(ex, t) }
     if cx.performed.items.len > 0 { cx.error(cx.performed.items[0].span, "a constant's initializer may not perform effects") }

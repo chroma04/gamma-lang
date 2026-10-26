@@ -353,12 +353,11 @@ arg_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
     v := cx.expr(e, ty)
     cx.temp_ref_arg = false
     if cx.iterator_call_as_value(e, v, ty) { return error_expr(cx.s, e.span) }
-    v = cx.array_arg_as_slice(v, ty)
+    v = cx.array_as_slice(v, ty)
     return cx.coerce(v, ty)
 }
 
-/// True if argument `e` is `&x` for a parameter of type `^const T`, or `x[…]` for a
-/// `[]const T` one: `x` may be a
+/// True if argument `e` is `&x` for a parameter of type `^const T`: `x` may be a
 /// temporary (§7.2).
 is_const_ref_arg :: fn(s: ^Sema, e: ^const ast.Expr, ty: Ty) -> bool needs Alloc {
     x := e
@@ -367,9 +366,6 @@ is_const_ref_arg :: fn(s: ^Sema, e: ^const ast.Expr, ty: Ty) -> bool needs Alloc
     if h := sema.hoist_prefix(x) { x = h }
     if .Unary(.AddrOf, _) := x.kind {
         if .Ptr(c, _) := s.tys.kind(ty) { return c }
-    }
-    if x.kind is .Slice(_) {
-        if .Slice(c, _) := s.tys.kind(ty) { return c }
     }
     return false
 }

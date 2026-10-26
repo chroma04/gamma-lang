@@ -1039,7 +1039,7 @@ impl<'a, 's> FnCx<'a, 's> {
                 if lit.is_none() && self.iterator_call_as_value(e, &v, p.ty) {
                     return error_expr(span);
                 }
-                let v = self.array_arg_as_slice(v, p.ty);
+                let v = self.array_as_slice(v, p.ty);
                 let mut mentions_free = false;
                 p.ty.walk(&mut |x| mentions_free |= matches!(x.kind(), TyKind::Param(q) if !fixed.contains(q)));
                 if !fixed.is_empty() && !mentions_free && !has_param(expect) {

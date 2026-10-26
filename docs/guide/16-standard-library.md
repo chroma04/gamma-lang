@@ -52,6 +52,8 @@ A spec after the colon sets alignment (`<`, `>`, `^`) with an optional fill char
 
 ### `@write`: formatting into your own sink
 
+Standard output is buffered, and there is no flush to call: what was printed is handed to the system before the program waits on anything (reading input, a socket, a child process, a lock or a channel, sleeping) and when it exits. A program that answers requests over its standard streams, such as a language server, gets each answer out before it waits for the next request. Standard error is not buffered.
+
 `print` is `@write` aimed at `Out`. `@write(sink, template, ..args)` takes the same template and arguments, but calls a function you give it with the pieces of output. It allocates nothing, which makes it the base of every formatting function:
 
 ```gamma

@@ -271,6 +271,7 @@ impl<'s> Sema<'s> {
                 _ => cx.expr(&c.body, expect),
             };
             let body = cx.clause_body(body, p.kind, p.ret);
+            let body = cx.declare_temps(0, body);
             // The types of untyped literals given to `break` are known now.
             let breaks = cx.sema.decl_clause_breaks.remove(&p.fn_id).unwrap_or_default();
             let breaks = breaks.into_iter().map(|(t, s)| (cx.settle(t, s), s)).collect();

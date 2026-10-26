@@ -393,6 +393,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     /// Leaves a clause frame: its performs count at the enclosing point (§12.5).
     fn finish_clause(&mut self, fn_id: tir::FnId, params: Vec<tir::LocalId>, body: Expr) -> tir::FnId {
+        let body = self.declare_temps(0, body);
         let (locals, performed, _) = self.exit_fn();
         self.performed.extend(performed);
         self.sema.prog.fns[fn_id.index()].parent = self.fn_id;

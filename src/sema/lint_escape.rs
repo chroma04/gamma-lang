@@ -81,6 +81,15 @@ impl Sema<'_> {
 
 /// The message about the address of `name` kept as `why` says.
 pub fn dangling_message(name: crate::symbol::Symbol, why: &str) -> String {
+    if name.as_str() == super::seq::TEMP_ARRAY {
+        return match why {
+            "stored" => "this slice of a temporary array is stored where it outlives the array".to_string(),
+            "returned" => "this slice of a temporary array is returned, but the array ends with the call".to_string(),
+            _ => {
+                "this slice of a temporary array is passed to a call that may keep it after the array ends".to_string()
+            }
+        };
+    }
     match why {
         "stored" => format!("this address of `{}` is stored where it outlives `{}`", name, name),
         "returned" => format!("this address of `{}` is returned, but `{}` ends with the call", name, name),
@@ -94,6 +103,11 @@ pub fn dangling_diagnostic(
     name: crate::symbol::Symbol,
     local: Span,
 ) -> crate::diag::Diagnostic {
+    if name.as_str() == super::seq::TEMP_ARRAY {
+        return d.with_label(local, "this array lives until the end of the block of the statement it is in").with_note(
+            "a temporary array used as a slice is held until the end of its block (§15.1); put it in a variable that lives long enough",
+        );
+    }
     d.with_label(local, format!("`{}` lives until the end of its scope", name)).with_note(
         "a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope \
          (§15.1); point into the original (`&items[i]`), or keep the value instead",
@@ -200,7 +214,8 @@ impl Walk<'_, '_> {
 
     fn report(&mut self, at: Span, l: LocalId, why: &'static str, certain: bool) {
         let local = &self.def.locals[l.index()];
-        if at == Span::DUMMY || local.name.as_str().starts_with('<') || self.reported.contains(&at) {
+        let hidden = local.name.as_str().starts_with('<') && local.name.as_str() != super::seq::TEMP_ARRAY;
+        if at == Span::DUMMY || hidden || self.reported.contains(&at) {
             return;
         }
         self.reported.push(at);

@@ -67,12 +67,14 @@ check_obligation :: fn(cx: ^FnCx, o: Obligation) needs Load {
             numeric :: fn(t: Ty) -> bool => tys.is_integer(t) or tys.kind(t) is .Float(_)
             ff := tys.kind(from) is .Float(_)
             tf := tys.kind(to) is .Float(_)
-            methods: []const string = empty_slice(string)
-            m1 := [3]string("trunc", "checked", "sat")
-            m2 := [4]string("trunc", "round", "checked", "sat")
-            m3 := [1]string("to")
-            if numeric(from) and numeric(to) {
-                methods = if not ff and not tf { m1[..] } else if ff and not tf { m2[..] } else { m3[..] }
+            methods: []const string = if not numeric(from) or not numeric(to) {
+                empty_slice(string)
+            } else if not ff and not tf {
+                [3]string("trunc", "checked", "sat")
+            } else if ff and not tf {
+                [4]string("trunc", "round", "checked", "sat")
+            } else {
+                [1]string("to")
             }
             hint := " (§6.5)"
             if cx.s.bits_struct_ty(to) is from {

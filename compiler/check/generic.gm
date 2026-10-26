@@ -226,7 +226,7 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
         v := cx.expr(&arg, if not unbound or partial { expect } else { null })
         cx.temp_ref_arg = false
         if lit is null and cx.iterator_call_as_value(&arg, v, p.ty) { return error_expr(cx.s, span) }
-        v = cx.array_arg_as_slice(v, p.ty)
+        v = cx.array_as_slice(v, p.ty)
         mentions_free := false
         cx.s.walk(p.ty, fn(x: Ty) {
             if .Param(q) := cx.s.tys.kind(x) and q not in fixed.items { mentions_free = true }

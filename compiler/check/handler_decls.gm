@@ -297,6 +297,7 @@ check_clause :: fn(s: ^Sema, p: sema.PendingClause) needs Load {
         _ => cx.expr(c.body, expect)
     }
     body = cx.clause_body(body, p.kind, sig.ret)
+    body = cx.declare_temps(0, body)
     // The types of untyped literals given to `break` are known now.
     for j in 0..s.decl_clause_breaks.items.len {
         b := &s.decl_clause_breaks.items[j]

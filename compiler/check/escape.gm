@@ -73,6 +73,10 @@ escaping :: fn(s: ^Sema, def: ^const tir.FnDef, e: ^Expr, found: ^List(Escape)) 
     }
     local := root_local(s, place) else return
     name := def.locals[usize(local)].name
+    if name is TEMP_ARRAY {
+        found.push(Escape(span: e.span, message: str.format("this returns {} a temporary array, which dies when the function returns (§15.1)", what)!))!
+        return
+    }
     kind := if def.params.index_of(local) is not null { "parameter" } else { "local" }
     found.push(Escape(span: e.span, message: str.format("this returns {} the {} `{}`, which dies when the function returns (§15.1)", what, kind, name)!))!
 }

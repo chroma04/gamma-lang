@@ -7,6 +7,16 @@ coerce :: fn(cx: ^FnCx, e: ^Expr, target0: Ty) -> ^Expr needs Load {
     src := cx.infer.resolve(cx.s, e.ty)
     target := cx.infer.resolve(cx.s, target0)
     if src is target or tys.is_error(src) or tys.is_error(target) { return e }
+    // An array where a `[]const T` is expected is a slice of the whole array (§6.4).
+    if .Array(_, a, _) := tys.kind(src) and .Slice(c, b) := tys.kind(target) and c and tys.is_positional_array(src) and cx.infer.unify(tys, a, b) is not !_ {
+        return cx.coerce(cx.array_as_slice(e, target), target)
+    }
+    if .Slice(sc, _) := tys.kind(src) and .Slice(tc, _) := tys.kind(target) and sc and not tc and is_held_temp(e) {
+        d := diag.error(e.span, str.format("expected `{}`, found `{}`", cx.show(target), cx.show(src))!)
+        d.add_note("a slice of a temporary array is read-only; to pass the array for mutation, put it in a variable first (§7.2)")
+        cx.s.emit(d)
+        return e
+    }
     if c := cx.soa_coerce(e, src, target) { return c }
     // `z: Complex(f64) = 1`: a real constant where a complex number is expected (§6.4).
     if elem := cx.s.complex_of(target) {

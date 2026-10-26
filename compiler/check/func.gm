@@ -60,6 +60,7 @@ Frame :: struct {
     open_ty: ?Ty
     clause: ?ClauseInfo
     handled: List(EffectRef)
+    block_temps: List(u32)
 }
 
 /// The handler clause a frame checks.
@@ -240,6 +241,12 @@ pub FnCx :: struct {
     /// Statements that evaluate the call arguments of an iterator argument, to be placed
     /// before the call (§13.5).
     iter_pre: List(tir.Stmt)
+    /// The hidden locals holding temporary arrays used as slices (§15.1), waiting to be
+    /// declared before the statement that contains them (see `block_expected`).
+    block_temps: List(u32)
+    /// Set while checking a constant's initializer, which is not in a block: there a
+    /// temporary array lives as long as the evaluation.
+    const_init: bool
     /// The function literals made for iterator arguments, by place.
     iterator_args: List(source.Span)
 }
@@ -308,6 +315,8 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         shielded_performs: list(Shielded),
         near_misses: list(Performed),
         iter_pre: list(tir.Stmt),
+        block_temps: list(u32),
+        const_init: false,
         iterator_args: list(source.Span),
     )
 }
@@ -651,7 +660,9 @@ enter_fn :: fn(cx: ^FnCx, fn_id: u32, ret: Ty, declared: EffectSet) needs Alloc 
         open_ty: cx.open_ty,
         clause: cx.clause,
         handled: cx.handled,
+        block_temps: cx.block_temps,
     ))!
+    cx.block_temps = list(u32)
     cx.handled = list(EffectRef)
     cx.clause = null
     cx.open_ret = false
@@ -689,6 +700,7 @@ exit_fn :: fn(cx: ^FnCx) -> (locals: []tir.LocalDecl, performed: []Performed, ca
     cx.open_ty = f.open_ty
     cx.clause = f.clause
     cx.handled = f.handled
+    cx.block_temps = f.block_temps
     return out
 }
 
@@ -709,6 +721,7 @@ swap_frame :: fn(cx: ^FnCx, f: Frame) -> Frame {
         open_ty: cx.open_ty,
         clause: cx.clause,
         handled: cx.handled,
+        block_temps: cx.block_temps,
     )
     cx.locals = f.locals
     cx.ret = f.ret
@@ -724,6 +737,7 @@ swap_frame :: fn(cx: ^FnCx, f: Frame) -> Frame {
     cx.open_ty = f.open_ty
     cx.clause = f.clause
     cx.handled = f.handled
+    cx.block_temps = f.block_temps
     return out
 }
 
@@ -740,16 +754,27 @@ new_label :: fn(cx: ^FnCx, name: ?string, is_loop: bool, value: LabelValue) -> u
 
 fn_body :: fn(cx: ^FnCx, body: ^const ast.FnBody) -> ^Expr needs Load {
     ret := cx.ret
-    match body^ {
-        .Expr(e) => {
-            ex := cx.expr(e, ret)
-            return cx.coerce(ex, ret)
-        }
-        .Block(b) => {
-            block := cx.block(&b, false)
-            return cx.finish_block_body(block, &b)
-        }
+    checked := match body^ {
+        .Expr(e) => cx.coerce(cx.expr(e, ret), ret)
+        .Block(b) => cx.finish_block_body(cx.block(&b, false), &b)
     }
+    return cx.declare_temps(0, checked)
+}
+
+/// `e` preceded by the declarations of the hidden locals made since `mark`: those of the
+/// temporary arrays in `e`, which live until the end of the enclosing block (§15.1).
+pub declare_temps :: fn(cx: ^FnCx, mark: usize, e: ^Expr) -> ^Expr needs Alloc {
+    if cx.block_temps.items.len <= mark { return e }
+    stmts := list(tir.Stmt)
+    cx.push_temps(mark, &stmts)
+    blk := new(tir.Block(stmts: stmts.items, tail: e, span: e.span))!
+    return tir.mk(e.ty, .Block(blk), e.span)
+}
+
+/// Adds to `stmts` the declarations of the hidden locals made since `mark`.
+push_temps :: fn(cx: ^FnCx, mark: usize, stmts: ^List(tir.Stmt)) needs Alloc {
+    for t in cx.block_temps.items[mark..] { stmts.push(.Let(t, null))! }
+    cx.block_temps.truncate(mark)
 }
 
 /// A block body that has been checked: falling off the end of an `E!()` function returns
@@ -820,7 +845,9 @@ block_expected :: fn(cx: ^FnCx, b: ^const ast.Block, value: bool, expected: ?Ty)
             branches := list(ast.IfBranch)
             branches.push(ast.IfBranch(cond: ast.Cond(parts: parts.items, span: pat.span.to(v.span)), block: rest))!
             lowered := new(ast.IfExpr(branches: branches.items, else_: .Block(fb), span: s.span))!
+            mark := cx.block_temps.items.len
             ex := cx.if_expr(lowered, value, expected)
+            if not value { cx.push_temps(mark, &stmts) }
             diverges = cx.s.tys.kind(ex.ty) is .Never
             if .If(x) := ex.kind {
                 if e := x.else_ {
@@ -852,7 +879,9 @@ block_expected :: fn(cx: ^FnCx, b: ^const ast.Block, value: bool, expected: ?Ty)
                 break
             }
         }
+        mark := cx.block_temps.items.len
         st := cx.stmt(s)
+        cx.push_temps(mark, &stmts)
         diverges = stmt_diverges(cx.s, st)
         if diverges { cause = stmt_never_cause(cx.s, st) }
         stmts.push(st)!
