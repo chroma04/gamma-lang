@@ -408,10 +408,8 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
             eprintln!("gamma: `--coverage` is an option of `gamma test`");
             return ExitCode::from(2);
         }
-        if native {
-            eprintln!(
-                "gamma: `--coverage` needs the interpreter, but these tests run natively (`--backend=c` or `--backend=cranelift`, or code that calls C)"
-            );
+        if native && opts.cranelift {
+            eprintln!("gamma: `--coverage` needs the interpreter or the C back end, not `--backend=cranelift`");
             return ExitCode::from(2);
         }
         let scope = Scope::new(path);
@@ -433,8 +431,11 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
     };
     // Benchmarks time themselves, so they take turns.
     let jobs = if kind == Kind::Bench { 1 } else { opts.jobs.max(1) };
+    // What the native tests counted, added up over the tests (the interpreter keeps its own).
+    let native_counts = std::sync::Mutex::new(Vec::new());
     let code = if native {
-        run_native(&me, kind, &chosen, &toolchain, &extras, jobs, opts.cranelift, opts.timeout, &mut report)
+        let counts = cover.as_ref().map(|_| &native_counts);
+        run_native(&me, kind, &chosen, &toolchain, &extras, jobs, opts.cranelift, opts.timeout, counts, &mut report)
     } else {
         let scope = cover.as_ref().map(|(s, _)| s);
         pool(
@@ -448,8 +449,9 @@ pub fn run(opts: &Options, kind: Kind) -> ExitCode {
         );
         report.finish()
     };
+    let counts = if native { native_counts.into_inner().unwrap_or_default() } else { gamma::interp::coverage_counts() };
     if let Some((scope, map)) = &cover
-        && !coverage_report(&me.sess, scope, map, opts.coverage.as_ref().and_then(|f| f.as_deref()))
+        && !coverage_report(&me.sess, scope, map, &counts, opts.coverage.as_ref().and_then(|f| f.as_deref()))
     {
         return ExitCode::FAILURE;
     }
@@ -468,6 +470,7 @@ fn run_native(
     jobs: usize,
     cranelift: bool,
     timeout: Option<Duration>,
+    counts: Option<&std::sync::Mutex<Vec<u32>>>,
     report: &mut Report,
 ) -> ExitCode {
     let cases = me.cases(kind);
@@ -495,7 +498,13 @@ fn run_native(
                 jobs,
                 Some(&()),
                 &|| Some(()),
-                &|_, j| run_exe(&exe, j, timeout),
+                &|_, j| {
+                    let Some(counts) = counts else { return run_exe(&exe, j, timeout, None) };
+                    let file = dir.join(format!("coverage-{j}"));
+                    let done = run_exe(&exe, j, timeout, Some(&file));
+                    add_counts(counts, &std::fs::read_to_string(&file).unwrap_or_default());
+                    done
+                },
                 &|_| Finished::failed("internal error: the test was not run\n".to_string()),
                 |j, f| report.record(&cases[chosen[j]], f),
             );
@@ -512,11 +521,15 @@ fn run_native(
 
 /// Runs the native test executable `exe` on its `j`th test. A test that is still running
 /// after `timeout` is killed, with everything it started, and fails.
-fn run_exe(exe: &Path, j: usize, timeout: Option<Duration>) -> Finished {
+/// With `cover`, the test writes its coverage counters to that file.
+fn run_exe(exe: &Path, j: usize, timeout: Option<Duration>, cover: Option<&Path>) -> Finished {
     use std::io::Read;
     use std::process::Stdio;
     let mut cmd = runner_command(exe, None);
     cmd.arg(j.to_string()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Some(file) = cover {
+        cmd.env("GAMMA_COVERAGE_FILE", file);
+    }
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let started = Instant::now();
@@ -572,10 +585,26 @@ fn run_exe(exe: &Path, j: usize, timeout: Option<Duration>) -> Finished {
     Finished { failure, output, elapsed }
 }
 
+/// Adds the counters a native test wrote (one decimal number per line) to `counts`.
+fn add_counts(counts: &std::sync::Mutex<Vec<u32>>, text: &str) {
+    let mut counts = counts.lock().unwrap_or_else(|e| e.into_inner());
+    for (i, n) in text.lines().map(|l| l.trim().parse::<u32>().unwrap_or(0)).enumerate() {
+        if counts.len() <= i {
+            counts.resize(i + 1, 0);
+        }
+        counts[i] = counts[i].wrapping_add(n);
+    }
+}
+
 /// Prints the lines of each file that the tests ran, and writes them as an LCOV tracefile
 /// to `lcov` if that is given; false if the tracefile cannot be written.
-fn coverage_report(sess: &Session, scope: &Scope, map: &gamma::coverage::CoverMap, lcov: Option<&Path>) -> bool {
-    let counts = gamma::interp::coverage_counts();
+fn coverage_report(
+    sess: &Session,
+    scope: &Scope,
+    map: &gamma::coverage::CoverMap,
+    counts: &[u32],
+    lcov: Option<&Path>,
+) -> bool {
     let mut files: BTreeMap<PathBuf, BTreeMap<u32, u32>> = BTreeMap::new();
     for (i, (file, line)) in map.points.iter().enumerate() {
         let path = &sess.sources.file(*file).path;

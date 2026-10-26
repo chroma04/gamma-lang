@@ -3,8 +3,9 @@
 //! [`instrument`] rewrites a checked program: in front of every statement of the functions
 //! of the package under test (and in front of the value of each block) it inserts a
 //! [`Builtin::Cover`] that counts one execution of that source line. The interpreter keeps
-//! the counters ([`crate::interp::coverage_counts`]); the report is the lines whose counter
-//! is not zero among the lines that have one. Only the interpreter runs instrumented code.
+//! the counters ([`crate::interp::coverage_counts`]); a test executable built by the C back
+//! end keeps them in the runtime, which writes them to a file at exit. The report is the
+//! lines whose counter is not zero among the lines that have one.
 //!
 //! The functions counted are those the program contains: a generic function is counted
 //! through its instances, and one that nothing instantiates is not counted at all. The
@@ -46,6 +47,24 @@ pub fn instrument(prog: &mut Program, sources: &SourceMap, in_scope: &dyn Fn(&Pa
         cx.visit(body);
     }
     cx.map
+}
+
+/// The number of counters in `prog`: one more than the largest counter id, or 0 if the
+/// program is not instrumented.
+pub fn counters(prog: &Program) -> u32 {
+    fn walk(e: &Expr, n: &mut u32) {
+        if let ExprKind::Builtin { op: Builtin::Cover(id), .. } = e.kind {
+            *n = (*n).max(id + 1);
+        }
+        e.for_each_child(&mut |c| walk(c, n));
+    }
+    let mut n = 0;
+    for f in &prog.fns {
+        if let Some(b) = &f.body {
+            walk(b, &mut n);
+        }
+    }
+    n
 }
 
 /// Whether the function `f` is part of the code under test: not generated, not a test.

@@ -176,14 +176,55 @@ fn a_tracefile_that_cannot_be_written_fails_the_run() {
 }
 
 #[test]
-fn coverage_needs_the_interpreter() {
+fn coverage_on_the_c_back_end_matches_the_interpreter() {
     if !have_cc() {
         return;
     }
-    let p = Package::new("coverage_native", &package());
-    let out = p.gamma(&["test", "--backend=c", "--coverage"]);
+    // Several tests add up, and a test that traps still counts the lines it ran.
+    let main = "\
+count :: fn(n: u64) -> u64 {
+    s: u64 = 0
+    for i in 0..n {
+        s += i
+    }
+    return s
+}
+
+never_called :: fn() -> u64 {
+    return 3
+}
+
+main :: fn() {}
+
+test \"small\" {
+    expect_eq(count(3), 3)
+}
+
+test \"large\" {
+    expect_eq(count(5), 10)
+}
+
+test \"traps\" {
+    x := count(2)
+    assert(x is 0, \"x is {}\")
+}
+";
+    let p = Package::new("coverage_c", &[("main.gm", main)]);
+    let run = |backend: &str| {
+        let lcov = p.root.join(format!("lcov-{}.info", &backend["--backend=".len()..]));
+        let out = p.gamma(&["test", backend, "-j", "2", &format!("--coverage={}", lcov.display())]);
+        (out.stdout, std::fs::read_to_string(&lcov).unwrap())
+    };
+    let (interp_out, interp_lcov) = run("--backend=interp");
+    let (c_out, c_lcov) = run("--backend=c");
+    assert_eq!(c_out, interp_out);
+    assert_eq!(c_lcov, interp_lcov);
+    let line_of = |needle: &str| main.lines().position(|l| l.contains(needle)).unwrap() + 1;
+    assert!(c_lcov.contains(&format!("DA:{},3\n", line_of("s: u64 = 0"))), "{}", c_lcov);
+    assert!(c_lcov.contains(&format!("DA:{},0\n", line_of("return 3"))), "{}", c_lcov);
+    let out = p.gamma(&["test", "--backend=cranelift", "--coverage"]);
     assert!(!out.ok);
-    assert!(out.stderr.contains("needs the interpreter"), "{}", out.stderr);
+    assert!(out.stderr.contains("not `--backend=cranelift`"), "{}", out.stderr);
 }
 
 #[test]
