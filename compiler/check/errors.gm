@@ -42,11 +42,15 @@ else_expr :: fn(cx: ^FnCx, lhs: ^const ast.Expr, capture: ?ast.Ident, rhs: ^cons
             present = ok
             err = e
         }
-        .Error => return error_expr(cx.s, span)
+        .Error => {
+            cx.else_after_error(capture, rhs)
+            return error_expr(cx.s, span)
+        }
         _ => {
             if not tys.mentions_error(lt) {
                 cx.error(lhs.span, str.format("`else` needs an optional or a result on its left, but this is `{}`", cx.show(lt))!)
             }
+            cx.else_after_error(capture, rhs)
             return error_expr(cx.s, span)
         }
     }
@@ -91,6 +95,18 @@ else_expr :: fn(cx: ^FnCx, lhs: ^const ast.Expr, capture: ?ast.Ident, rhs: ^cons
         r = cx.coerce(r, present)
     }
     return tir.mk(ty, .Else(tir.ElseExpr(lhs: l, capture: cap, rhs: r)), span)
+}
+
+/// Checks the fallback of an `else` whose left side has an error: its own errors are
+/// reported, and a `break` in it still counts for its loop.
+else_after_error :: fn(cx: ^FnCx, capture: ?ast.Ident, rhs: ^const ast.Expr) needs Load {
+    cx.push_scope()
+    if c := capture {
+        id := cx.new_local(c.name, cx.s.tys.error(), false, c.span)
+        cx.declare(c.name, .Var(id), c.span)
+    }
+    _ = cx.expr(rhs, null)
+    cx.pop_scope()
 }
 
 /// `try x` (§10.5).

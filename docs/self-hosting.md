@@ -110,10 +110,9 @@ leaves to implementations: message texts, spans and recovery after errors.
    with the same messages, and effects, handlers, fibers and continuations work the same. It leaves out
    what only makes the generated code faster or quicker to compile — the specialization
    of functions for the handler that is their context, reading parameters in place,
-   splitting long functions, constant arguments in static storage, splitting a build into
-   several C units — and what it has no use for yet: debug information (`-g`), the Safe
-   mode, freestanding targets, the cache of compiled runtimes and other targets than the
-   one `gammac` runs on.
+   splitting long functions, constant arguments in static storage — and what it has no use
+   for yet: debug information (`-g`), the Safe mode, freestanding targets, the cache of
+   compiled runtimes and other targets than the one `gammac` runs on.
 
    Before generating code, `gammac` checks every function body the program can reach,
    including the core library's (which `gammac tir`, like `gamma tir`, leaves out), and
@@ -134,8 +133,16 @@ cmp gammac2.c gammac3.c                  # identical
 ```
 
 `gammac build [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT` writes the C next to
-the executable (`EXE.c`) and compiles it with `$CC` (default `cc`); `--emit-c` stops after
-writing it. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
+the executable (`EXE.c`, the runtime and the program as one translation unit) and compiles
+it with `$CC` (default `cc`); `--emit-c` stops after writing it. A Checked or Fast build
+compiles `EXE.c` itself at `-O2`, so the optimizer sees the whole program. A Debug build
+favors turnaround, as `gamma build` does: it compiles the runtime on its own (`EXE.rt.c`)
+and splits the program into units (`EXE.u0.c`, `EXE.u1.c`, …) that share a header of
+types and declarations and divide the function bodies between them. One unit is made per
+96 KiB of function text, up to the number of processors and at most 8 (`GAMMA_C_UNITS`
+forces a number, which tests use to split small programs); all are compiled at once and
+then linked. On four cores this brings building `gammac` itself from about 110 to about 40
+seconds. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
 `runtime` directory two levels above the standard library's. It runs on Unix-like systems;
 on Windows, use `gamma build`.
 

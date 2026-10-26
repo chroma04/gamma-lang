@@ -19,7 +19,9 @@
 //! function bodies and, if there are no errors, prints them in the format of `gamma tir`.
 //! `build` checks the program and compiles it to the executable EXE (by default the
 //! root's name without `.gm`) through C: it writes the generated C next to EXE, with the
-//! extension `.c`, and runs the C compiler `$CC` (default `cc`) on it. The runtime's C
+//! extension `.c`, and runs the C compiler `$CC` (default `cc`) on it; a Debug build
+//! instead compiles the runtime and parts of the program as separate units in parallel
+//! (written next to EXE as `EXE.rt.c` and `EXE.uN.c`) and links them. The runtime's C
 //! sources are read from `$GAMMA_RUNTIME`, or else the `runtime` directory two levels
 //! above the standard library's. With `--emit-c` it stops after writing the C file.
 //! With several files, the output of each is preceded by a line `==> FILE <==` on both
@@ -36,6 +38,7 @@ fs :: import "std/fs"
 load :: import "./load"
 parse :: import "./parse"
 process :: import "std/process"
+thread :: import "std/thread"
 sema :: import "./sema"
 source :: import "./source"
 str :: import "std/str"
@@ -61,7 +64,7 @@ Options :: struct {
 /// The build modes of §1.4 that gammac has (Safe needs Fil-C).
 Mode :: union { Debug, Checked, Fast }
 
-main :: fn() needs Alloc + Env + Err + Fs + Out + Proc {
+main :: fn() needs Alloc + Env + Err + Fs + Out + Proc + Sys {
     args := Env.args()
     opts := Options(command: match args.get(1) else "" {
         "lex" => .Lex
@@ -126,7 +129,7 @@ usage :: fn() -> never needs Env + Err {
 
 /// Runs the command on one file and prints its output and diagnostics. Returns whether
 /// the file had no errors.
-process_file :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Env + Err + Fs + Out + Proc {
+process_file :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Env + Err + Fs + Out + Proc + Sys {
     if opts.command in (Command.Modules, Command.Decls, Command.Tir, Command.Build) { return load_program(path, opts) }
     text := try fs.read_all(path)
     defer free(text)
@@ -157,7 +160,7 @@ process_file :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc
 }
 
 /// `modules`: loads the program rooted at `root` and prints its module graph.
-load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Out + Proc {
+load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Out + Proc + Sys {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {
@@ -205,7 +208,7 @@ load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err 
 
 /// `build`: compiles the checked program rooted at module `root` (named `path`) to an
 /// executable. Returns whether it succeeded; problems after checking are reported here.
-build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc {
+build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
     d := s.l.lookup(root, "main") else {
         eprint("gammac: the program has no `main` function\n")
         return false
@@ -249,16 +252,99 @@ build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool nee
         return false
     }
     if opts.emit_c { return true }
+    flags := list(string)
+    for f in [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread") { flags.push(f)! }
+    libs := list(string)
+    for l in generated.libs { libs.push(str.format("-l{}", l)!)! }
+    libs.push("-lm")!
+    if opts.mode is .Debug {
+        // The runtime and the program's units are compiled in parallel, then linked.
+        forced: ?usize = null
+        if v := Env.var("GAMMA_C_UNITS") { forced = str.parse_int(usize, v) else null }
+        n := cgen.unit_count(&generated.parts, usize(thread.cpu_count()), forced)
+        units := cgen.split(&generated.parts, n) else {
+            if forced is not null and n > 1 {
+                eprint("gammac: the generated C cannot be split into units\n")
+                return false
+            }
+            one := [1]string(generated.code)
+            return compile_units(exe, rt_h, rt_c, one[..], flags.items, libs.items)
+        }
+        return compile_units(exe, rt_h, rt_c, units, flags.items, libs.items)
+    }
+    flags.push("-O2")!
+    return run_cc(flags.items, exe, [1]string(c_file)[..], libs.items)
+}
+
+/// A Debug build of `exe`: writes the runtime (`exe.rt.c`) and each of `units` (`exe.uN.c`)
+/// as its own translation unit next to `exe`, compiles them all at once to objects and
+/// links those.
+compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs: []const string) -> bool needs Alloc + Env + Err + Fs + Proc {
+    sources := list(string)
+    sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, rt_c)!)!
+    for u in units { sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, u)!)! }
+    c_files := list(string)
+    objects := list(string)
+    for i, src in enumerate(sources.items) {
+        name := if i is 0 { "rt" } else { str.format("u{}", i - 1)! }
+        c := str.format("{}.{}.c", exe, name)!
+        fs.write_all(c, src) else {
+            eprint("gammac: cannot write `{}`\n", c)
+            return false
+        }
+        c_files.push(c)!
+        objects.push(str.format("{}.{}.o", exe, name)!)!
+    }
+    cc := Env.var("CC") else "cc"
+    children := list(?process.Child)
+    for i, c in enumerate(c_files.items) {
+        argv := list(string)
+        argv.push(cc)!
+        argv.extend(flags)!
+        // The runtime is optimized like the cached runtime object of the reference
+        // implementation; the program's units favor turnaround.
+        argv.push(if i is 0 { "-O2" } else { "-O1" })!
+        // A call to a function without a declaration would compile, wrongly, under C's
+        // old rules: make it an error.
+        argv.push("-Werror=implicit-function-declaration")!
+        for a in [4]string("-c", "-o", objects.items[i], c) { argv.push(a)! }
+        children.push(Proc.spawn(argv.items, process.SpawnOptions(stdout: .Null, stderr: .Pipe)) else null)!
+    }
+    ok := true
+    for child in children.items {
+        c := child else {
+            if ok { eprint("gammac: cannot run the C compiler `{}`\n", cc) }
+            ok = false
+            continue
+        }
+        err := list(u8)
+        buf: [4096]u8 = ---
+        while true {
+            chunk := (c.read(buf[..]) else break) else break
+            err.extend(buf[0..chunk.len])!
+        }
+        status := c.wait() else .Exited(1)
+        if not process.success(status) and ok {
+            eprint("gammac: the C compiler failed:\n{}", string(err.items))
+            ok = false
+        }
+    }
+    if ok { ok = run_cc(flags, exe, objects.items, libs) }
+    for o in objects.items { _ = fs.remove_all(o) }
+    return ok
+}
+
+/// Runs the C compiler with `flags` on `inputs` to make the executable `exe`, linked with
+/// `libs`. Returns whether it succeeded, reporting why not.
+run_cc :: fn(flags: []const string, exe: string, inputs, libs: []const string) -> bool needs Alloc + Env + Err + Proc {
     cc := Env.var("CC") else "cc"
     argv := list(string)
     argv.push(cc)!
-    for f in [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread") { argv.push(f)! }
-    argv.push(if opts.mode is .Debug { "-O1" } else { "-O2" })!
+    argv.extend(flags)!
     argv.push("-o")!
     argv.push(exe)!
-    argv.push(c_file)!
-    for l in generated.libs { argv.push(str.format("-l{}", l)!)! }
-    argv.push("-lm")!
+    argv.extend(inputs)!
+    argv.extend(libs)!
     result := process.output(argv.items) else {
         eprint("gammac: cannot run the C compiler `{}`\n", cc)
         return false

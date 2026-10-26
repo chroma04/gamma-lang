@@ -1,0 +1,280 @@
+// Splitting the generated C into several translation units, compiled in parallel, as
+// `src/cgen/units.rs` does.
+//
+// A Debug build compiles the runtime on its own and favors turnaround over whole-program
+// optimization, and the C compiler's time is almost all spent on the function bodies. Such
+// a build splits the program: every unit includes a shared header (types, frames,
+// declarations of every function and every piece of static data), unit 0 also defines the
+// data and holds the entry code, and the function bodies are dealt out among the units.
+//
+// The generated code is written with internal linkage (`static`), as one unit needs. A
+// split gives the functions and data external linkage instead: their names all start
+// with `gm_`, as do the runtime's, so they cannot clash with the C library or the
+// program's own C code. Small `static` helpers of the shared header stay `static`, one
+// copy per unit.
+
+arena :: import "std/arena"
+str :: import "std/str"
+
+/// The generated code by role, as `generate` produces it in one unit.
+pub Parts :: struct {
+    /// Text every unit needs as it is: support code, types, frames.
+    pub head: string = ""
+    /// Function declarations, one per line.
+    pub protos: string = ""
+    /// Static data, one definition (or forward declaration) per line, and the `static
+    /// inline` accessors, `extern` declarations and macros that go with it.
+    pub data: string = ""
+    /// Text only unit 0 holds, ahead of the data (the `gm_checks` flag).
+    pub once: string = ""
+    /// Function definitions.
+    pub funcs: string = ""
+    /// The entry code, which unit 0 holds after its share of the functions.
+    pub tail: string = ""
+}
+
+/// The most units a build is split into.
+MAX_UNITS :: 8
+
+/// How much function text (in bytes) makes a unit worth its own compiler process.
+UNIT_BYTES :: 96 * 1024
+
+/// The number of units to compile `parts` as on `cpus` processors: `forced` (from
+/// `GAMMA_C_UNITS`, which tests use to split small programs) if given, else one per
+/// `UNIT_BYTES` of function text, at most one per processor and `MAX_UNITS`.
+pub unit_count :: fn(parts: ^const Parts, cpus: usize, forced: ?usize) -> usize {
+    if n := forced { return n.clamp(1, MAX_UNITS) }
+    return (parts.funcs.len / UNIT_BYTES).clamp(1, cpus.clamp(1, MAX_UNITS))
+}
+
+/// The source of each unit of `parts` split `n` ways, or `null` if the code has a shape
+/// the split does not handle (it is then compiled as one unit).
+pub split :: fn(parts: ^const Parts, n: usize) -> ?[]string needs Alloc {
+    decls := list(u8)
+    defs := list(u8)
+    for line in str.lines(parts.protos) {
+        decls.extend(external(line) else line)!
+        decls.push('\n')!
+    }
+    for line in str.lines(parts.data) {
+        if line.len is 0 or line.starts_with("#") or line.starts_with("extern ") or line.starts_with("static inline ") {
+            decls.extend(line)!
+            decls.push('\n')!
+            continue
+        }
+        def := str.strip_prefix(line, "static ") else return null
+        head: string = if eq := str.split_once(def, " = ") { eq.before } else { str.strip_suffix(def, ";") else return null }
+        decls.write("extern {};\n", head)!
+        defs.extend(def)!
+        defs.push('\n')!
+    }
+    items := list(string)
+    for item in items_of(parts.funcs) else return null {
+        f := function(item) else return null
+        decls.extend(f.decl)!
+        decls.push('\n')!
+        items.push(f.def)!
+    }
+    shared := str.format("{}{}", parts.head, decls.items)!
+    total: usize = 0
+    for item in items.items { total += item.len }
+    share := ((total + n.max(1) - 1) / n.max(1)).max(1)
+    units := list(List(u8))
+    first := list(u8)
+    first.write("{}{}{}", shared, parts.once, defs.items)!
+    units.push(first)!
+    size: usize = 0
+    for item in items.items {
+        if size >= share and units.items.len < n {
+            next := list(u8)
+            next.extend(shared)!
+            units.push(next)!
+            size = 0
+        }
+        size += item.len
+        units.items[units.items.len - 1].extend(item)!
+    }
+    units.items[0].extend(parts.tail)!
+    out := list(string)
+    for u in units.items { out.push(u.items)! }
+    return out.items
+}
+
+/// `line` as an external declaration, if it is a `static` one (not `static inline`).
+external :: fn(line: string) -> ?string needs Alloc {
+    if line.starts_with("static inline ") { return null }
+    if rest := str.strip_prefix(line, "static ") { return rest }
+    rest := str.strip_prefix(line, "GM_NOINLINE static ") else return null
+    return str.format("GM_NOINLINE {}", rest)!
+}
+
+/// The declaration and the external definition of function definition `item`.
+function :: fn(item: string) -> ?(decl: string, def: string) needs Alloc {
+    // `#line` directives may come first.
+    start: usize = 0
+    while start < item.len and item[start] is '#' {
+        end := str.find(item[start..item.len], "\n") else break
+        start += end + 1
+    }
+    pre := item[0..start]
+    text := item[start..item.len]
+    first_end := str.find(text, "\n") else text.len
+    first := text[0..first_end]
+    def := item
+    if ext := external(first) {
+        def = str.format("{}{}{}", pre, ext, text[first_end..text.len])!
+    } else if first.starts_with("static ") or first.starts_with("GM_NOINLINE static ") {
+        return null
+    }
+    // The header ends at the body's opening brace, outside the parentheses.
+    body := def[pre.len..def.len]
+    depth: i32 = 0
+    open: ?usize = null
+    for i, c in enumerate(body) {
+        if c is '(' {
+            depth += 1
+        } else if c is ')' {
+            depth -= 1
+        } else if c is '{' and depth is 0 {
+            open = i
+            break
+        }
+    }
+    at := open else return null
+    header := str.trim_end(body[0..at])
+    for c in header {
+        if c in ('\n', '"', '\'') { return null }
+    }
+    if str.contains(header, "static") { return null }
+    return (decl: str.format("{};", header)!, def: def)
+}
+
+/// The top-level items of C text that holds only function definitions, each with the
+/// preprocessor lines and blank lines before it; `null` if it holds anything else.
+items_of :: fn(code: string) -> ?[]string needs Alloc {
+    items := list(string)
+    start: usize = 0
+    depth: i32 = 0
+    i: usize = 0
+    line_start := true
+    while i < code.len {
+        c := code[i]
+        if c is '#' and line_start {
+            while i < code.len and code[i] is not '\n' { i += 1 }
+            continue
+        }
+        if c is '"' or c is '\'' {
+            i += 1
+            while i < code.len and code[i] is not c {
+                i += if code[i] is '\\' { 2 } else { 1 }
+            }
+        } else if c is '/' and i + 1 < code.len and code[i + 1] is '*' {
+            i += 2
+            while i + 1 < code.len and not (code[i] is '*' and code[i + 1] is '/') { i += 1 }
+            i += 1
+        } else if c is '/' and i + 1 < code.len and code[i + 1] is '/' {
+            while i + 1 < code.len and code[i + 1] is not '\n' { i += 1 }
+        } else if c is '{' {
+            depth += 1
+        } else if c is '}' {
+            depth -= 1
+            if depth < 0 { return null }
+            if depth is 0 and (i + 1 >= code.len or code[i + 1] is '\n') {
+                i = (i + 2).min(code.len)
+                items.push(code[start..i])!
+                start = i
+                line_start = true
+                continue
+            }
+        } else if c is ';' and depth is 0 {
+            return null
+        }
+        line_start = c is '\n'
+        i += 1
+    }
+    // Only blank lines and directives may follow the last item.
+    for l in str.lines(code[start..code.len]) {
+        if str.trim(l).len > 0 and not l.starts_with("#") { return null }
+    }
+    return items.items
+}
+
+test_parts :: fn() -> Parts => Parts(
+    head: "typedef int gm_t0;\n",
+    protos: "static int gm_f0(int a);\nGM_NOINLINE static void gm_pf0(void);\nstatic void gm_f1(void);\n",
+    data: "static const uint8_t gm_s0[3] = \"a;\";\nstatic uint8_t gm_c0[8] __attribute__((aligned(8)));\nstatic inline int gm_ga0(void) { return 0; }\n",
+    once: "int gm_checks = 1;\n",
+    funcs: "#line 3 \"a.gm\"\nstatic int gm_f0(int a) {\n    if (a) { return \"}\"[0]; }\n    return 0;\n}\nGM_NOINLINE static void gm_pf0(void) { }\nstatic __attribute__((aligned(4))) void gm_f1(void) {\n    /* } */\n}\n",
+    tail: "int main(void) { return gm_f0(1); }\n",
+)
+
+test "functions and data get external linkage" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := test_parts()
+        units := split(&p, 2) else {
+            expect(false)
+            return
+        }
+        expect_eq(units.len, 2)
+        for u in units {
+            expect(str.contains(u, "int gm_f0(int a);\nGM_NOINLINE void gm_pf0(void);\n"))
+            expect(str.contains(u, "extern const uint8_t gm_s0[3];\nextern uint8_t gm_c0[8] __attribute__((aligned(8)));\n"))
+            expect(str.contains(u, "static inline int gm_ga0(void)"))
+            expect(str.contains(u, "__attribute__((aligned(4))) void gm_f1(void);"))
+        }
+        u0 := units[0]
+        expect(str.contains(u0, "int gm_checks = 1;\nconst uint8_t gm_s0[3] = \"a;\";\nuint8_t gm_c0[8]"))
+        expect(str.contains(u0, "#line 3 \"a.gm\"\nint gm_f0(int a) {\n"))
+        expect(u0.ends_with("int main(void) { return gm_f0(1); }\n"))
+        expect(not str.contains(units[1], "gm_checks") and not str.contains(units[1], "main"))
+        expect(str.contains(units[1], "\n__attribute__((aligned(4))) void gm_f1(void) {\n"))
+    }
+}
+
+test "other shapes are not split" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := test_parts()
+        p.funcs = str.format("{}static int gm_x;\n", p.funcs)!
+        expect(split(&p, 2) is null)
+        p = test_parts()
+        p.funcs = str.format("{}static inline int gm_y(void) {{ return 1; }}\n", p.funcs)!
+        expect(split(&p, 2) is null)
+        p = test_parts()
+        p.data = str.format("{}int gm_z;\n", p.data)!
+        expect(split(&p, 2) is null)
+    }
+}
+
+test "macros of the data are shared" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := test_parts()
+        p.data = str.format("{}#define gm_g0 ((uint8_t *)&errno)\n", p.data)!
+        units := split(&p, 2) else {
+            expect(false)
+            return
+        }
+        for u in units { expect(str.contains(u, "#define gm_g0 ((uint8_t *)&errno)\n")) }
+    }
+}
+
+test "unit count" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := test_parts()
+        expect_eq(unit_count(&p, 4, null), 1)
+        expect_eq(unit_count(&p, 4, 3), 3)
+        expect_eq(unit_count(&p, 4, 20), MAX_UNITS)
+        big := list(u8)
+        str.repeat(&big, "x", 10 * UNIT_BYTES)!
+        p.funcs = big.items
+        expect_eq(unit_count(&p, 4, null), 4)
+        expect_eq(unit_count(&p, 64, null), MAX_UNITS)
+    }
+}

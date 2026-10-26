@@ -1,13 +1,13 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-25) — PRs #1–#84 merged, v0.1.0 tagged
+## State (2026-10-26) — PRs #1–#85 merged, v0.1.0 tagged
 - s43 (branch claude/lucid-clarke-48k3cf): gammac COMPILES ITSELF. C back end
   compiler/cgen/ (decisions/048), `gammac build`, bootstrap fixed point tested in
   tests/selfhost.rs; all applicable conformance run tests pass via gammac.
-- s41: gammac compile-time evaluator (decisions/046), `?x` pattern (047); PRs #81, #82.
-- s42 (branch claude/project-thread-rqqvrh): user asked "finish the checker" (every program matches tir+decls, in
-  PRs). PR #83 = round 1 (693/768); round 2 = every program matches (800/800, floors
-  800): gammac checker stage DONE. See roadmap/self-hosting.md s42.
+- s44 (branch claude/project-thread-rqqvrh): gammac Debug builds split into parallel C
+  units (cgen/units.gm); self-build 107 s → 38 s. See roadmap/self-hosting.md s44.
+- s41–s42: gammac evaluator (046), `?x` pattern (047), checker DONE (800/800 tir+decls,
+  floors 800; PRs #81–#84). See roadmap/self-hosting.md.
 - s38–s39 (PRs #72–#79 merged): self-hosted compiler gammac in compiler/ (decisions/043,
   roadmap/self-hosting.md): lexer+parser+modules byte-identical on all files; decls and
   tir stages behind the "gammac cannot" skip protocol + DECLS_FLOOR/TIR_FLOOR ratchets in

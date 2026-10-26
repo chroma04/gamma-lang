@@ -87,6 +87,8 @@ pub Gen :: struct {
 pub Generated :: struct {
     /// The generated C code, which follows the runtime.
     pub code: string
+    /// The same code by role, for a build split into several units (see `split`).
+    pub parts: Parts
     /// Libraries to link (from `foreign` blocks), beyond the C library.
     pub libs: []const string
 }
@@ -124,20 +126,26 @@ pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs
     exports := try g.gen_exports()
     entries := [1]u32(entry)
     main := try g.gen_main(entries[..], false)
+    checks := str.format("GM_API int gm_checks = {};\n", if opts.checks { 1 } else { 0 })!
+    head := list(u8)
+    head.extend(SUPPORT)!
+    head.extend(g.ty.blob_typedefs())!
+    head.extend(g.ty.mirror_text())!
+    data := list(u8)
+    data.extend(g.ty.descriptors())!
+    for id in g.loc_files.items {
+        data.write("static const char gm_src{}[] = {};\n", id, c_string(g.prog.s.l.sm.file(id).path))!
+    }
+    data.extend(g.static_defs.items)!
+    protos := str.format("{}{}", g.protos.items, g.helpers.protos.items)!
+    // One unit has the parts in this order.
     out := list(u8)
     out.extend("/* ---- generated ---- */\n")!
-    out.write("GM_API int gm_checks = {};\n", if opts.checks { 1 } else { 0 })!
-    out.extend(SUPPORT)!
-    out.extend(g.ty.blob_typedefs())!
-    out.extend(g.ty.mirror_text())!
-    out.extend(g.ty.descriptors())!
-    for id in g.loc_files.items {
-        out.write("static const char gm_src{}[] = {};\n", id, c_string(g.prog.s.l.sm.file(id).path))!
-    }
-    out.extend(g.static_defs.items)!
+    out.extend(checks)!
+    out.extend(head.items)!
+    out.extend(data.items)!
     out.extend(g.frames.items)!
-    out.extend(g.protos.items)!
-    out.extend(g.helpers.protos.items)!
+    out.extend(protos)!
     out.extend(g.handler_tables.items)!
     out.extend(consts.decls)!
     out.extend(consts.init)!
@@ -145,10 +153,18 @@ pub generate :: fn(p: ^Prog, entry: u32, opts: Options) -> Unsup!Generated needs
     out.extend(g.bodies.items)!
     // A program that switches fibers runs its entry under the runtime's fiber support.
     run_main := if str.contains(out.items, "gm_with_go(") { "gm_run_main_fibers" } else { "gm_run_main" }
+    main_text := str.format("#define GM_RUN_MAIN {}\n{}", run_main, main)!
     out.extend(exports)!
-    out.write("#define GM_RUN_MAIN {}\n", run_main)!
-    out.extend(main)!
-    return Generated(code: out.items, libs: g.libs.items)
+    out.extend(main_text)!
+    parts := Parts(
+        head: str.format("{}{}", head.items, g.frames.items)!,
+        protos: protos,
+        data: str.format("{}{}{}", data.items, g.handler_tables.items, consts.decls)!,
+        once: checks,
+        funcs: str.format("{}{}", g.helpers.bodies.items, g.bodies.items)!,
+        tail: str.format("{}{}{}", consts.init, exports, main_text)!,
+    )
+    return Generated(code: out.items, parts: parts, libs: g.libs.items)
 }
 
 // ---------------------------------------------------------------------------------
