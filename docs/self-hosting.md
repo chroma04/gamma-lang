@@ -205,8 +205,9 @@ and `gamma bench` print, with the same options: `--filter=`, `--all`, `--show-ou
 `--jobs=N` / `-j N` (0: one per processor; the output stays in order), `--timeout=SECONDS`,
 `--time`, `--mode=` and `--diag-format=`. A benchmark builds in fast mode unless `--mode`
 is given. `--package=NAME` tests a dependency of the input's package (or one of its
-dependencies) instead. `--backend=interp|cranelift`, `--coverage` and `--target` are
-usage errors. A test that exceeds `--timeout` is killed by a watching thread, which
+dependencies) instead, and `--target=TRIPLE` builds the tests for another target (see
+"Targets, modes and caches"). `--backend=interp|cranelift` and `--coverage` are usage
+errors: they need the interpreter or Cranelift, which `gammac` does not have. A test that exceeds `--timeout` is killed by a watching thread, which
 cannot reach processes the test started or a test that closed its output and then ran on.
 `tests/selfhost.rs` runs the `test` conformance tests through `gammac test` and compares
 a standard library module, options and failures with the reference.
@@ -365,7 +366,12 @@ refuses a compiler that makes code for another machine.
 program, on build, run, test and bench for other targets (when the cross compiler and the
 emulator are installed), on the freestanding firmware example, and on the error cases (an
 unknown triple, a missing compiler, Safe mode without `filcc`). The Safe mode itself is
-compared only where `/opt/fil/bin/filcc` exists. Not ported: `lint` and `fix` with
+compared only where `/opt/fil/bin/filcc` exists. With `GAMMAC_TEST_LANE=s390x`, `wasi` or
+`safe`, the selfhost test `programs_compiled_by_gammac_in_a_lane_behave_as_expected` builds
+every conformance `run` test with `gammac` for s390x (under qemu), for WASI (under
+Wasmtime) or in the Safe mode (every test of the default and Checked modes, as the
+conformance suite's Safe lane), with the directives of `docs/contributing.md` choosing the
+tests; the s390x, WASI and Safe jobs of CI run it. Not ported: `lint` and `fix` with
 `--target`, the quoting of Windows command lines, and the private (0700) mode of the cache
 directories, which the standard library cannot set.
 
