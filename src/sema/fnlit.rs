@@ -67,6 +67,7 @@ impl<'a, 's> FnCx<'a, 's> {
             param_ids.push(id);
         }
         let body = self.literal_body(&lit.body, ret, infer_ret);
+        let body = self.declare_temps(0, body);
         if open_fn.is_some() {
             self.open_fns.pop();
         }

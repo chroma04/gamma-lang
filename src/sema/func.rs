@@ -111,6 +111,12 @@ pub struct FnCx<'a, 's> {
     /// Statements that evaluate the arguments of iterator arguments (§13.5), waiting to be
     /// placed before the call that receives the iterators.
     pub iter_pre: Vec<Stmt>,
+    /// The hidden locals holding temporary arrays used as slices (§15.1), waiting to be
+    /// declared before the statement that contains them (see `block_expected`).
+    pub block_temps: Vec<LocalId>,
+    /// True while checking a constant's initializer, which is not in a block: there a
+    /// temporary array lives as long as the evaluation.
+    pub const_init: bool,
     /// The number of labels in scope when the innermost deferred statement began.
     pub defer_label_base: usize,
     /// Spans of literal coercions already reported as failing.
@@ -210,6 +216,7 @@ pub struct SavedFrame {
     pub captures: bool,
     pub clause: Option<ClauseInfo>,
     pub handled: Vec<EffectRef>,
+    pub block_temps: Vec<LocalId>,
 }
 
 /// A nested function checked as part of an enclosing body.
@@ -292,6 +299,7 @@ impl<'s> Sema<'s> {
 
     fn check_const_expr_inner(&mut self, module: ModuleId, e: &ast::Expr, expected: Option<Ty>) -> Option<Expr> {
         let mut cx = FnCx::new(self, module, Ty::unit(), EffectSet::empty());
+        cx.const_init = true;
         let mut ex = cx.expr(e, expected);
         if let Some(t) = expected {
             ex = cx.coerce(ex, t);
@@ -340,6 +348,8 @@ impl<'a, 's> FnCx<'a, 's> {
             temp_ref_arg: false,
             iterator_args: vec![],
             iter_pre: vec![],
+            block_temps: vec![],
+            const_init: false,
             defer_label_base: 0,
             failed_coercions: vec![],
             deferred_matches: vec![],
@@ -416,6 +426,7 @@ impl<'a, 's> FnCx<'a, 's> {
             captures: std::mem::replace(&mut self.captures, false),
             clause: self.clause.take(),
             handled: std::mem::take(&mut self.handled),
+            block_temps: std::mem::take(&mut self.block_temps),
         };
         self.outer.push(saved);
         self.push_scope();
@@ -437,6 +448,7 @@ impl<'a, 's> FnCx<'a, 's> {
             captures: std::mem::replace(&mut self.captures, f.captures),
             clause: std::mem::replace(&mut self.clause, f.clause),
             handled: std::mem::replace(&mut self.handled, f.handled),
+            block_temps: std::mem::replace(&mut self.block_temps, f.block_temps),
         }
     }
 
@@ -508,6 +520,7 @@ impl<'a, 's> FnCx<'a, 's> {
     /// Returns the nested function's locals, performed effects and whether it captures.
     pub fn exit_fn(&mut self) -> (Vec<tir::LocalDecl>, Vec<(EffectRef, Span)>, bool) {
         self.pop_scope();
+        debug_assert!(self.block_temps.is_empty(), "hidden locals left undeclared");
         let saved = self.outer.pop().expect("exit_fn without enter_fn");
         let locals = std::mem::replace(&mut self.locals, saved.locals);
         self.ret = saved.ret;
@@ -522,6 +535,7 @@ impl<'a, 's> FnCx<'a, 's> {
         let captures = std::mem::replace(&mut self.captures, saved.captures);
         self.clause = saved.clause;
         self.handled = saved.handled;
+        self.block_temps = saved.block_temps;
         (locals, performed, captures)
     }
 
@@ -754,7 +768,7 @@ impl<'a, 's> FnCx<'a, 's> {
 
     pub fn fn_body(&mut self, body: &ast::FnBody) -> Expr {
         let ret = self.ret;
-        match body {
+        let body = match body {
             ast::FnBody::Expr(e) => {
                 let ex = self.expr(e, Some(ret));
                 self.coerce(ex, ret)
@@ -763,7 +777,24 @@ impl<'a, 's> FnCx<'a, 's> {
                 let block = self.block(b, false);
                 self.finish_block_body(block, b)
             }
+        };
+        self.declare_temps(0, body)
+    }
+
+    /// `e` preceded by the declarations of the hidden locals made since `mark`: those of
+    /// the temporary arrays in `e`, which live until the end of the enclosing block (§15.1).
+    pub fn declare_temps(&mut self, mark: usize, e: Expr) -> Expr {
+        if self.block_temps.len() <= mark {
+            return e;
         }
+        let stmts = self.block_temps.drain(mark..).map(|local| Stmt::Let { local, init: None }).collect();
+        let (ty, span) = (e.ty, e.span);
+        Expr { ty, kind: tir::ExprKind::Block(Box::new(tir::Block { stmts, tail: Some(e), span })), span }
+    }
+
+    /// Adds to `stmts` the declarations of the hidden locals made since `mark`.
+    fn push_temps(&mut self, mark: usize, stmts: &mut Vec<Stmt>) {
+        stmts.extend(self.block_temps.drain(mark..).map(|local| Stmt::Let { local, init: None }));
     }
 
     /// A block body that has been checked: falling off the end of an `E!()` function returns
@@ -864,7 +895,11 @@ impl<'a, 's> FnCx<'a, 's> {
                 };
                 let lowered =
                     ast::IfExpr { branches: vec![(cond, rest)], else_: Some(ast::IfElse::Block(fb)), span: s.span };
+                let mark = self.block_temps.len();
                 let ex = self.if_expr(&lowered, value, expected);
+                if !value {
+                    self.push_temps(mark, &mut stmts);
+                }
                 diverges = ex.ty.is_never();
                 // In value position the fallback may be coerced to the expected type.
                 let fallback_ty = |e: &Expr| match &e.kind {
@@ -900,7 +935,9 @@ impl<'a, 's> FnCx<'a, 's> {
                 tail = Some(ex);
                 break;
             }
+            let mark = self.block_temps.len();
             let st = self.stmt(s);
+            self.push_temps(mark, &mut stmts);
             diverges = stmt_diverges(&st);
             if diverges {
                 cause = stmt_never_cause(&st);

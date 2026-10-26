@@ -1,5 +1,6 @@
 //! stage: check
-// `&` of a temporary is allowed only as an argument for a ^const T parameter (§7.2).
+// `&` of a temporary is allowed only as an argument for a ^const T parameter (§7.2);
+// a slice of a temporary array is read-only (§7.9).
 Pt :: struct { x, y: i32 }
 bump :: fn(p: ^Pt) { p.x += 1 }
 bump2 :: fn(a: i32, p: ^Pt) { p.x += a }
@@ -7,8 +8,8 @@ keep :: fn(p: ^const Pt) { }
 mk :: fn() -> Pt => Pt(x: 1, y: 2)
 fill :: fn(xs: []i64) { xs[0] = 9 }
 main :: fn() {
-    fill([_]i64(1, 2)[..])      //~ ERROR only an array variable
-    s := [_]i64(1)[..]          //~ ERROR only an array variable
+    fill([_]i64(1, 2)[..])      //~ ERROR found `[]const i64`
+    s: []i64 = [_]i64(1)[..]    //~ ERROR found `[]const i64`
     bump(&mk())                 //~ ERROR `&` needs a place
     q: ^const Pt = &mk()        //~ ERROR `&` needs a place
     bump2(a: 1, p: &mk())       //~ ERROR `&` needs a place

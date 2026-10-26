@@ -48,14 +48,28 @@ pub possible_dangling_addresses :: fn(s: ^Sema, f: usize) -> List(Dangling) need
 
 /// The label and note of a dangling address of `name`, declared at `local`.
 pub add_dangling_notes :: fn(d: ^diag.Diagnostic, name: string, local: source.Span) needs Alloc {
+    if name is TEMP_ARRAY {
+        d.add_label(local, "this array lives until the end of the block of the statement it is in")
+        d.add_note("a temporary array used as a slice is held until the end of its block (§15.1); put it in a variable that lives long enough")
+        return
+    }
     d.add_label(local, str.format("`{}` lives until the end of its scope", name)!)
     d.add_note("a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope (§15.1); point into the original (`&items[i]`), or keep the value instead")
 }
 
-pub dangling_message :: fn(name: string, why: string) -> string needs Alloc => match why {
-    "stored" => str.format("this address of `{}` is stored where it outlives `{}`", name, name)!
-    "returned" => str.format("this address of `{}` is returned, but `{}` ends with the call", name, name)!
-    _ => str.format("this address of `{}` is passed to a call that may keep it after `{}` ends", name, name)!
+pub dangling_message :: fn(name: string, why: string) -> string needs Alloc {
+    if name is TEMP_ARRAY {
+        return match why {
+            "stored" => "this slice of a temporary array is stored where it outlives the array"
+            "returned" => "this slice of a temporary array is returned, but the array ends with the call"
+            _ => "this slice of a temporary array is passed to a call that may keep it after the array ends"
+        }
+    }
+    return match why {
+        "stored" => str.format("this address of `{}` is stored where it outlives `{}`", name, name)!
+        "returned" => str.format("this address of `{}` is returned, but `{}` ends with the call", name, name)!
+        _ => str.format("this address of `{}` is passed to a call that may keep it after `{}` ends", name, name)!
+    }
 }
 
 /// An address of local `name` (declared at `local`), taken at `span`, kept as `why` says.
@@ -164,7 +178,8 @@ d_held :: fn(s: ^Sema, e: ^Expr, inside: bool, out: ^List(Held)) needs Alloc {
 
 d_report :: fn(w: ^DWalk, at: source.Span, l: u32, why: string, certain: bool) needs Alloc {
     local := w.def.locals[usize(l)]
-    if at is source.DUMMY or local.name.starts_with("<") or at in w.reported.items { return }
+    hidden := local.name.starts_with("<") and local.name is not TEMP_ARRAY
+    if at is source.DUMMY or hidden or at in w.reported.items { return }
     w.reported.push(at)!
     w.out.push(Dangling(span: at, name: local.name, local: local.span, why: why, certain: certain))!
 }

@@ -5,12 +5,28 @@ use super::func::{FnCx, LabelValue, LocalBinding, Obligation, block_of, error_ex
 use super::infer::Fallback;
 use super::pattern::PatCtx;
 use crate::source::Span;
+use crate::symbol::Symbol;
 use crate::syntax::ast::{self, ExprKind};
 use crate::tir::{self, Expr, Stmt};
 use crate::types::{Ty, TyKind};
 
 fn mk(ty: Ty, kind: tir::ExprKind, span: Span) -> Expr {
     Expr { ty, kind, span }
+}
+
+/// The name of the hidden local that holds a temporary array used as a slice.
+pub const TEMP_ARRAY: &str = "<temporary array>";
+
+/// Whether `e` is a slice of a temporary array held by `held`.
+pub fn is_held_temp(e: &Expr) -> bool {
+    matches!(&e.kind, tir::ExprKind::Block(b) if b.stmts.len() == 1 && matches!(&b.stmts[0], Stmt::Assign { .. })
+        && matches!(b.tail.as_ref().map(|t| &t.kind), Some(tir::ExprKind::Slice { .. })))
+}
+
+/// `{ hold; s }`: the slice `s` of a hidden local, after the assignment that fills it.
+fn held(hold: Stmt, s: Expr) -> Expr {
+    let (ty, span) = (s.ty, s.span);
+    mk(ty, tir::ExprKind::Block(Box::new(tir::Block { stmts: vec![hold], tail: Some(s), span })), span)
 }
 
 impl<'a, 's> FnCx<'a, 's> {
@@ -23,38 +39,64 @@ impl<'a, 's> FnCx<'a, 's> {
         inclusive: bool,
         span: Span,
     ) -> Expr {
-        let temp_ok = std::mem::take(&mut self.temp_ref_arg);
-        let mut b = self.expr(base, None);
-        // A temporary array sliced as an argument for a `[]const T` parameter lives for
-        // the call, like `&e` for a `^const T` one (§7.2).
-        if temp_ok && self.infer.resolve(b.ty).is_array() && self.place_mutability(&b).is_none() {
-            let t = b.ty;
-            let p = mk(Ty::ptr(true, t), tir::ExprKind::AddrOfTemp(Box::new(b)), base.span);
-            b = mk(t, tir::ExprKind::Deref(Box::new(p)), base.span);
-        }
+        self.temp_ref_arg = false;
+        let b = self.expr(base, None);
         let bound = |e: Option<&ast::Expr>, cx: &mut Self| e.map(|e| cx.expr(e, None));
+        // A temporary array is held in a hidden local, so the slice is of that (§7.9).
+        if self.infer.resolve(b.ty).is_array() && self.place_mutability(&b).is_none() && !self.const_init {
+            let (hold, local) = self.hold_temp_array(b);
+            let lo = bound(lo, self);
+            let hi = bound(hi, self);
+            let full = base.span.to(span);
+            let s = self.slice_of(local, base.span, lo, hi, inclusive, full);
+            return held(hold, s);
+        }
+        let b = if self.const_init { self.const_temp(b) } else { b };
         let lo = bound(lo, self);
         let hi = bound(hi, self);
         self.slice_of(b, base.span, lo, hi, inclusive, span)
     }
 
-    /// An array argument `v` for a `[]const T` parameter is passed as a slice of the whole
-    /// array; a temporary array lives for the call, like `&e` for a `^const T` one (§7.2).
-    pub fn array_arg_as_slice(&mut self, v: Expr, param: Ty) -> Expr {
-        let param = self.infer.resolve(param);
+    /// `v` as a `[]const T` where one is expected: an array is passed as a slice of the
+    /// whole array, held in a hidden local if it is a temporary (§6.4, §15.1).
+    pub fn array_as_slice(&mut self, v: Expr, target: Ty) -> Expr {
+        let target = self.infer.resolve(target);
         let vt = self.infer.resolve(v.ty);
-        if !matches!(param.kind(), TyKind::Slice { is_const: true, .. }) || !vt.is_positional_array() {
+        if !matches!(target.kind(), TyKind::Slice { is_const: true, .. }) || !vt.is_positional_array() {
             return v;
         }
         let span = v.span;
-        let b = if self.place_mutability(&v).is_none() {
-            let t = v.ty;
-            let p = mk(Ty::ptr(true, t), tir::ExprKind::AddrOfTemp(Box::new(v)), span);
-            mk(t, tir::ExprKind::Deref(Box::new(p)), span)
-        } else {
-            v
-        };
-        self.slice_of(b, span, None, None, false, span)
+        if self.place_mutability(&v).is_some() {
+            return self.slice_of(v, span, None, None, false, span);
+        }
+        if self.const_init {
+            let b = self.const_temp(v);
+            return self.slice_of(b, span, None, None, false, span);
+        }
+        let (hold, local) = self.hold_temp_array(v);
+        let s = self.slice_of(local, span, None, None, false, span);
+        held(hold, s)
+    }
+
+    /// A temporary array `v` in a constant's initializer, which lives as long as the
+    /// evaluation; a constant that keeps a pointer to it is rejected by the evaluator.
+    fn const_temp(&mut self, v: Expr) -> Expr {
+        if self.place_mutability(&v).is_some() || !self.infer.resolve(v.ty).is_array() {
+            return v;
+        }
+        let (t, span) = (v.ty, v.span);
+        let p = mk(Ty::ptr(true, t), tir::ExprKind::AddrOfTemp(Box::new(v)), span);
+        mk(t, tir::ExprKind::Deref(Box::new(p)), span)
+    }
+
+    /// Holds the temporary array `v` in a new hidden local of the enclosing block (§15.1):
+    /// the assignment that fills it, where `v` was, and the local.
+    pub fn hold_temp_array(&mut self, v: Expr) -> (Stmt, Expr) {
+        let (ty, span) = (v.ty, v.span);
+        let t = self.new_local(Symbol::intern(TEMP_ARRAY), ty, false, span);
+        self.block_temps.push(t);
+        let local = mk(ty, tir::ExprKind::Local(t), span);
+        (Stmt::Assign { place: local.clone(), value: v }, local)
     }
 
     /// Slices the evaluated `b` (written at `base_span`) with the evaluated bounds.

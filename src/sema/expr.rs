@@ -2527,6 +2527,23 @@ impl<'a, 's> FnCx<'a, 's> {
         if src == target || src.is_error() || target.is_error() {
             return e;
         }
+        // An array where a `[]const T` is expected is a slice of the whole array (§6.4).
+        if let (TyKind::Array { elem: a, .. }, TyKind::Slice { is_const: true, elem: b }) = (src.kind(), target.kind())
+            && src.is_positional_array()
+            && self.infer.unify(*a, *b).is_ok()
+        {
+            let v = self.array_as_slice(e, target);
+            return self.coerce(v, target);
+        }
+        if let (TyKind::Slice { is_const: true, .. }, TyKind::Slice { is_const: false, .. }) = (src.kind(), target.kind())
+            && super::seq::is_held_temp(&e)
+        {
+            let d = crate::diag::Diagnostic::error(e.span, format!("expected `{}`, found `{}`", target, src)).with_note(
+                "a slice of a temporary array is read-only; to pass the array for mutation, put it in a variable first (§7.2)",
+            );
+            self.sema.emit(d);
+            return e;
+        }
         if let Some(c) = self.soa_coerce(&e, src, target) {
             return c;
         }

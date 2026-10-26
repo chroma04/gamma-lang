@@ -98,6 +98,9 @@ fn escaping(def: &FnDef, e: &Expr) -> Option<String> {
     };
     let local = root_local(place)?;
     let name = def.locals[local.index()].name;
+    if name.as_str() == super::seq::TEMP_ARRAY {
+        return Some(format!("this returns {what} a temporary array, which dies when the function returns (§15.1)"));
+    }
     let kind = if def.params.contains(&local) { "parameter" } else { "local" };
     Some(format!("this returns {what} the {kind} `{name}`, which dies when the function returns (§15.1)"))
 }

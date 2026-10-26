@@ -252,16 +252,18 @@ auto_deref_array :: fn(cx: ^FnCx, b: ^Expr) -> ^Expr needs Alloc {
 
 /// `a[lo..hi]` and its open-ended forms.
 slice_expr :: fn(cx: ^FnCx, base: ^const ast.Expr, lo_ast: ?^ast.Expr, hi_ast: ?^ast.Expr, inclusive: bool, span: source.Span) -> ^Expr needs Load {
-    temp_ok := cx.temp_ref_arg
     cx.temp_ref_arg = false
     b := cx.expr(base, null)
-    // A temporary array sliced as an argument for a `[]const T` parameter lives for the
-    // call, like `&e` for a `^const T` one (§7.2).
-    if temp_ok and cx.s.tys.kind(cx.infer.resolve(cx.s, b.ty)) is .Array(_) and cx.place_mutability(b) is null {
-        t := b.ty
-        p := tir.mk(cx.s.tys.ptr(true, t), .AddrOfTemp(b), base.span)
-        b = tir.mk(t, .Deref(p), base.span)
+    // A temporary array is held in a hidden local, so the slice is of that (§7.9).
+    if cx.s.tys.kind(cx.infer.resolve(cx.s, b.ty)) in (.Array(_), .ParamArray(_)) and cx.place_mutability(b) is null and not cx.const_init {
+        held_by := cx.hold_temp_array(b)
+        lo: ?^Expr = null
+        if x := lo_ast { lo = cx.expr(x, null) }
+        hi: ?^Expr = null
+        if x := hi_ast { hi = cx.expr(x, null) }
+        return held(cx.s, held_by.hold, cx.slice_of(held_by.local, base.span, lo, hi, inclusive, base.span.to(span)))
     }
+    if cx.const_init { b = cx.const_temp(b) }
     lo: ?^Expr = null
     if x := lo_ast { lo = cx.expr(x, null) }
     hi: ?^Expr = null
@@ -269,21 +271,55 @@ slice_expr :: fn(cx: ^FnCx, base: ^const ast.Expr, lo_ast: ?^ast.Expr, hi_ast: ?
     return cx.slice_of(b, base.span, lo, hi, inclusive, span)
 }
 
-/// An array argument `v` for a `[]const T` parameter is passed as a slice of the whole
-/// array; a temporary array lives for the call, like `&e` for a `^const T` one (§7.2).
-array_arg_as_slice :: fn(cx: ^FnCx, v: ^Expr, param0: Ty) -> ^Expr needs Load {
+/// `v` as a `[]const T` where one is expected: an array is passed as a slice of the whole
+/// array, held in a hidden local if it is a temporary (§6.4, §15.1).
+pub array_as_slice :: fn(cx: ^FnCx, v: ^Expr, target0: Ty) -> ^Expr needs Load {
     tys := &cx.s.tys
-    param := cx.infer.resolve(cx.s, param0)
+    target := cx.infer.resolve(cx.s, target0)
     vt := cx.infer.resolve(cx.s, v.ty)
-    .Slice(c, _) := tys.kind(param) else return v
+    .Slice(c, _) := tys.kind(target) else return v
     if not c or not tys.is_positional_array(vt) { return v }
     span := v.span
-    b := v
-    if cx.place_mutability(v) is null {
-        p := tir.mk(tys.ptr(true, v.ty), .AddrOfTemp(v), span)
-        b = tir.mk(v.ty, .Deref(p), span)
-    }
-    return cx.slice_of(b, span, null, null, false, span)
+    if cx.place_mutability(v) is not null { return cx.slice_of(v, span, null, null, false, span) }
+    if cx.const_init { return cx.slice_of(cx.const_temp(v), span, null, null, false, span) }
+    held_by := cx.hold_temp_array(v)
+    return held(cx.s, held_by.hold, cx.slice_of(held_by.local, span, null, null, false, span))
+}
+
+/// A temporary array `v` in a constant's initializer, which lives as long as the
+/// evaluation; a constant that keeps a pointer to it is rejected by the evaluator.
+const_temp :: fn(cx: ^FnCx, v: ^Expr) -> ^Expr needs Load {
+    if cx.place_mutability(v) is not null or cx.s.tys.kind(cx.infer.resolve(cx.s, v.ty)) not in (.Array(_), .ParamArray(_)) { return v }
+    p := tir.mk(cx.s.tys.ptr(true, v.ty), .AddrOfTemp(v), v.span)
+    return tir.mk(v.ty, .Deref(p), v.span)
+}
+
+/// The name of the hidden local that holds a temporary array used as a slice.
+pub TEMP_ARRAY :: "<temporary array>"
+
+/// Holds the temporary array `v` in a new hidden local of the enclosing block (§15.1):
+/// the assignment that fills it, where `v` was, and the local.
+hold_temp_array :: fn(cx: ^FnCx, v: ^Expr) -> (hold: tir.Stmt, local: ^Expr) needs Alloc {
+    t := cx.new_local(TEMP_ARRAY, v.ty, false, v.span)
+    cx.block_temps.push(t)!
+    local := tir.mk(v.ty, .Local(t), v.span)
+    return (hold: .Assign(local, v), local: local)
+}
+
+/// `{ hold; s }`: the slice `s` of a hidden local, after the assignment that fills it.
+held :: fn(s: ^Sema, hold: tir.Stmt, sl: ^Expr) -> ^Expr needs Alloc {
+    stmts := list(tir.Stmt)
+    stmts.push(hold)!
+    blk := new(tir.Block(stmts: stmts.items, tail: sl, span: sl.span))!
+    return tir.mk(sl.ty, .Block(blk), sl.span)
+}
+
+/// Whether `e` is a slice of a temporary array held by `held`.
+pub is_held_temp :: fn(e: ^const Expr) -> bool {
+    .Block(b) := e.kind else return false
+    if b.stmts.len is not 1 or b.stmts[0] is not .Assign(_) { return false }
+    t := b.tail else return false
+    return t.kind is .Slice(_)
 }
 
 /// Slices the checked `b` (written at `base_span`) with the checked bounds.
