@@ -27,25 +27,44 @@ check_dangling_addresses :: fn(s: ^Sema) needs Alloc {
     for f in found.items {
         if not f.certain { continue }
         d := diag.error(f.span, dangling_message(f.name, f.why))
-        d.add_label(f.local, str.format("`{}` lives until the end of its scope", f.name)!)
-        d.add_note("a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope (§15.1); point into the original (`&items[i]`), or keep the value instead")
+        add_dangling_notes(&d, f.name, f.local)
         s.emit(d)
     }
 }
 
-dangling_message :: fn(name: string, why: string) -> string needs Alloc => match why {
+/// The addresses in the body of function `f` that only may dangle, which the
+/// `dangling-address` lint reports.
+pub possible_dangling_addresses :: fn(s: ^Sema, f: usize) -> List(Dangling) needs Alloc {
+    found := list(Dangling)
+    def := &s.defs.items[f]
+    body := def.body else return found
+    depth := list(i64)
+    for _ in def.locals { depth.push(UNKNOWN)! }
+    for p in def.params { depth.items[usize(p)] = 0 }
+    w := DWalk(s: s, def: def, depth: depth, cur: 0, out: &found, reported: list(source.Span))
+    w.d_expr(body, true)
+    return found
+}
+
+/// The label and note of a dangling address of `name`, declared at `local`.
+pub add_dangling_notes :: fn(d: ^diag.Diagnostic, name: string, local: source.Span) needs Alloc {
+    d.add_label(local, str.format("`{}` lives until the end of its scope", name)!)
+    d.add_note("a loop variable or a pattern binding is a copy, whose storage is gone or reused after its scope (§15.1); point into the original (`&items[i]`), or keep the value instead")
+}
+
+pub dangling_message :: fn(name: string, why: string) -> string needs Alloc => match why {
     "stored" => str.format("this address of `{}` is stored where it outlives `{}`", name, name)!
     "returned" => str.format("this address of `{}` is returned, but `{}` ends with the call", name, name)!
     _ => str.format("this address of `{}` is passed to a call that may keep it after `{}` ends", name, name)!
 }
 
 /// An address of local `name` (declared at `local`), taken at `span`, kept as `why` says.
-Dangling :: struct {
-    span: source.Span
-    name: string
-    local: source.Span
-    why: string
-    certain: bool
+pub Dangling :: struct {
+    pub span: source.Span
+    pub name: string
+    pub local: source.Span
+    pub why: string
+    pub certain: bool
 }
 
 DWalk :: struct {

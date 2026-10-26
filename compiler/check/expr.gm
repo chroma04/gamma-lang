@@ -240,7 +240,9 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
     if found := cx.lookup_local_at(name) {
         match found.binding {
             .Var(id) => {
-                ty := cx.local_at(found.depth, id).ty
+                local := cx.local_at(found.depth, id)
+                ty := local.ty
+                cx.s.note_local_use(local.span, span)
                 if found.depth < cx.depth() {
                     // A local of an enclosing function, captured by reference (§11.6).
                     cx.note_capture(found.depth)

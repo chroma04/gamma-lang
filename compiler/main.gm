@@ -6,6 +6,8 @@
 //!     gammac decls ROOT...
 //!     gammac tir ROOT...
 //!     gammac check ROOT...
+//!     gammac lint [--fix] [--rules] [--allow=RULES] [--warn=RULES] [--deny=RULES] [-D] ROOT
+//!     gammac fix ROOT
 //!     gammac build [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT
 //!     gammac run [--mode=debug|checked|fast] ROOT [ARG...]
 //!     gammac fmt [--check] FILE|DIR...
@@ -26,7 +28,10 @@ diag :: import "./diag"
 doc :: import "./doc"
 driver :: import "./driver"
 fmt :: import "./fmt"
+fix :: import "./fix"
 fs :: import "std/fs"
+lint :: import "./lint"
+linting :: import "./linting"
 load :: import "./load"
 parse :: import "./parse"
 sema :: import "./sema"
@@ -47,6 +52,8 @@ commands:
   tir     check a program and print the typed program the checker produces
   check   type-check a program (a .gm file or a module directory)
   doc     write the API documentation of a module as Markdown or HTML (gammac doc --help)
+  lint    check a package with its tests and report the findings of the lint rules
+  fix     check a program and apply the fixes its diagnostics suggest
   build   compile a program to a native executable via the system C compiler
   run     compile a program via C and run it; arguments after the file go to the program
   fmt     format source files in place: gammac fmt [--check] <file or directory>... ("-" filters stdin to stdout)
@@ -61,6 +68,11 @@ options:
   --mode=debug|checked|fast   (build, run) the build mode (default: debug)
   -o <file>                   (build) the executable to write (default: the input's name)
   --emit-c                    (build) stop after writing the C file (<exe>.c)
+  --fix                       (lint) apply the fixes of the warnings that have one
+  --rules                     (lint) list the rules and their default levels
+  --allow=<rules>, --warn=<rules>, --deny=<rules>
+                              (lint) set the level of rules (comma-separated; all is every rule)
+  -D, --deny-warnings         (lint) report every rule that would warn as an error
 
 environment:
   GAMMA_STD      the standard library (default: lib/gamma/std next to bin/)
@@ -91,11 +103,13 @@ main :: fn() needs Alloc + Env + Err + Fs + In + Out + Proc + Rand + Sys {
         "decls" => .Decls
         "tir" => .Tir
         "check" => .Check
+        "lint" => .Lint
+        "fix" => .Fix
         "build" => .Build
         "run" => .Run
         "" => usage_error("missing command")
         _ => usage_error(str.format("unknown command `{}`", command)!)
-    })
+    }, lint: lint.options())
     files := list(string)
     defer files.deinit()
     i: usize = 2
@@ -127,6 +141,13 @@ main :: fn() needs Alloc + Env + Err + Fs + In + Out + Proc + Rand + Sys {
             "--recover" => { opts.recover = true }
             "--dump" => { opts.dump = true }
             _ => {
+                if opts.command is .Lint {
+                    match lint.parse_arg(&opts.lint, a) {
+                        .Yes => continue
+                        .Bad(message) => usage_error(message)
+                        .No => {}
+                    }
+                }
                 if a.starts_with("--mode=") { usage_error(str.format("invalid value `{}` for --mode (expected debug, checked or fast)", a[7..])!) }
                 if a.starts_with("--diag-format=") { usage_error(str.format("invalid value `{}` for --diag-format (expected human, short or json)", a[14..])!) }
                 if a.starts_with("-") { usage_error(str.format("unknown option `{}`", a)!) }
@@ -134,8 +155,12 @@ main :: fn() needs Alloc + Env + Err + Fs + In + Out + Proc + Rand + Sys {
             }
         }
     }
+    if opts.command is .Lint and opts.lint.rules {
+        linting.list_rules()
+        return
+    }
     if files.items.len is 0 { usage_error("no input file") }
-    if opts.command in (driver.Command.Build, driver.Command.Run) and files.items.len > 1 { usage_error("more than one input file given") }
+    if opts.command in (driver.Command.Build, driver.Command.Run, driver.Command.Lint, driver.Command.Fix) and files.items.len > 1 { usage_error("more than one input file given") }
     status: u8 = 0
     for path in files.items {
         if files.items.len > 1 {
@@ -164,6 +189,7 @@ usage_error :: fn(message: string) -> never needs Env + Err {
 /// Runs the command on one file and prints its output and diagnostics. Returns the exit
 /// status for the file: 0 if it had no errors.
 process_file :: fn(path: string, opts: driver.Options) -> fs.ReadError!u8 needs Alloc + Env + Err + Fs + Out + Proc + Rand + Sys {
+    if opts.command in (driver.Command.Lint, driver.Command.Fix) { return lint_or_fix(path, opts) }
     if opts.command not in (driver.Command.Lex, driver.Command.Parse) { return load_program(path, opts) }
     text := try fs.read_all(path)
     defer free(text)
@@ -195,6 +221,14 @@ render :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics, format: diag
     for d in diags.list.items { diag.render(sm, &d, format, &out) }
     Err.write(out.items)
     diags.list.clear()
+}
+
+/// `lint` and `fix`: they load the program themselves, once for each round of fixes.
+lint_or_fix :: fn(path: string, opts: driver.Options) -> u8 needs Alloc + Env + Err + Fs + Out + Proc + Rand + Sys {
+    std := driver.std_root()
+    setup := fix.Setup(std: std, core: driver.core_root(std), mode: driver.mode_name(opts.mode), recover: opts.recover, format: opts.format)
+    if opts.command is .Fix { return fix.command(path, setup) }
+    return linting.command(path, &opts.lint, setup)
 }
 
 /// The commands that load a program: loads the program rooted at `root`, runs the

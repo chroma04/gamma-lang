@@ -1,0 +1,397 @@
+//! `gammac lint`: warnings about code that compiles but is probably not what was meant,
+//! or that has a simpler form (mirrors `src/lint/mod.rs`).
+//!
+//! The rules come in two kinds. Those that need names resolved and types known (unused
+//! locals and declarations, variables that never change, comparisons with a known
+//! result) read the checked program (`analyze`, in `checked.gm`); the rest walk the syntax
+//! tree (`syntax.gm`). Each warning names its rule, and the rules' levels come from
+//! `RULES`, the `[lint]` table of `gamma.toml`, the command line, and `#allow("rule")`
+//! attributes on declarations, in increasing order of precedence. Warnings with a fix are
+//! applied by `gammac lint --fix`.
+
+/// How a rule's findings are reported.
+pub Level :: union {
+    /// Not reported.
+    Allow
+    /// Reported as a warning.
+    Warn
+    /// Reported as an error: `gammac lint` fails.
+    Deny
+}
+
+pub parse_level :: fn(s: string) -> ?Level => match s {
+    "allow" => .Allow
+    "warn" => .Warn
+    "deny" => .Deny
+    _ => null
+}
+
+pub level_name :: fn(l: Level) -> string => match l {
+    .Allow => "allow"
+    .Warn => "warn"
+    .Deny => "deny"
+}
+
+pub Rule :: struct {
+    pub name: string
+    /// The level when nothing configures the rule.
+    pub default: Level
+    /// What the rule reports, in a line.
+    pub summary: string
+}
+
+rule_def :: fn(name, summary: string) -> Rule => Rule(name: name, default: .Warn, summary: summary)
+
+/// The number of rules.
+RULE_COUNT :: 22
+
+/// Every rule, grouped by kind.
+pub RULES :: [RULE_COUNT]Rule(
+    rule_def("unused-variable", "a local variable or pattern binding whose value is never read"),
+    rule_def("unused-parameter", "a parameter of a function that its body never uses"),
+    rule_def("unused-import", "an import that nothing in its module refers to"),
+    rule_def("unused-declaration", "a private top-level function, type, constant or global that nothing refers to"),
+    rule_def("needless-pub", "a `pub(package)` function or constant, or a `pub` one of a program package, that no other module uses"),
+    rule_def("unused-label", "a loop or `with` label that no `break` or `continue` names"),
+    Rule(name: "prefer-immutable", default: .Allow, summary: "a variable declared with `:=` that is never assigned, so `::` would do"),
+    rule_def("bool-comparison", "a `bool` compared with `true` or `false`"),
+    rule_def("self-comparison", "a value compared with itself"),
+    rule_def("self-assignment", "a place assigned to itself"),
+    rule_def("dangling-address", "the address of a local, such as a loop variable or a pattern binding, kept where it outlives the local"),
+    rule_def("present-only-binding", "a name in a `match` pattern that matches only a present optional, leaving `null` to a catch-all arm"),
+    rule_def("mutated-copy", "a local holding a copy of a list, map or other value with a resizable buffer, changed as if it were the original"),
+    rule_def("constant-condition", "an `if` or `while` whose condition is the literal `true` or `false`"),
+    rule_def("useless-defer", "a `defer` or `errdefer` that is the last statement of its block"),
+    rule_def("needless-bool", "`if c { true } else { false }` and the like, which are `c` or `not c`"),
+    rule_def("double-negation", "`not not x`, which is `x`"),
+    rule_def("collapsible-else-if", "`else { if … }`, which is `else if …`"),
+    rule_def("empty-branch", "an `if` with an empty body and no `else`, or an empty `else`"),
+    rule_def("identical-branches", "an `if` whose branches are all the same"),
+    rule_def("unnecessary-parens", "parentheses around a whole condition, initializer, assigned or returned value"),
+    rule_def("naming", "names not written in the usual case: types and variants in UpperCamelCase, the rest in snake_case"),
+)
+
+/// The index in `RULES` of the rule named `name`.
+pub rule :: fn(name: string) -> ?usize {
+    for i, r in enumerate(RULES[..]) {
+        if r.name is name { return i }
+    }
+    return null
+}
+
+/// The level of each rule.
+pub Config :: struct {
+    levels: List(Level)
+}
+
+/// The levels of the rules when nothing configures them.
+pub default_config :: fn() -> Config needs Alloc {
+    c := Config(levels: list(Level))
+    for r in RULES[..] { c.levels.push(r.default)! }
+    return c
+}
+
+/// Sets the level of rule `name`, or of every rule for `all`. Gives the message for a name
+/// that is no rule.
+pub set :: fn(c: ^Config, name: string, level: Level) -> ?string needs Alloc {
+    if name is "all" {
+        for i in 0..RULE_COUNT { c.levels.items[i] = level }
+        return null
+    }
+    i := rule(name) else return str.format("unknown lint rule `{}` (`gamma lint --rules` lists them)", name)!
+    c.levels.items[i] = level
+    return null
+}
+
+/// Makes every rule that warns an error instead.
+pub deny_warnings :: fn(c: ^Config) {
+    for i in 0..RULE_COUNT {
+        if c.levels.items[i] is .Warn { c.levels.items[i] = .Deny }
+    }
+}
+
+pub level :: fn(c: ^const Config, name: string) -> Level {
+    i := rule(name) else return .Allow
+    return c.levels.items[i]
+}
+
+/// A warning of rule `code`.
+lint_diag :: fn(span: source.Span, code: string, message: string) -> diag.Diagnostic needs Alloc => diag.lint(span, code, message)
+
+/// How a local's name is declared, which decides how an unused one can be fixed.
+pub Site :: union {
+    /// `x := e`, `x :: e`, `x: T = e` or `x: T : e`. `op` is the binding operator.
+    /// `keep_mutable`: making it immutable could change what the initializer means (a
+    /// literal becomes an untyped constant, an intrinsic may be evaluated at compile time),
+    /// so there is no fix; `fn_lit`: the initializer is a function literal, which would
+    /// become a nested function.
+    Single: (mutable: bool, typed: bool, op: ?source.Span, keep_mutable: bool, fn_lit: bool, uninit: bool)
+    /// A name of a destructuring binding: written `_` instead, it discards.
+    Replace: (at: source.Span, to: string)
+    /// A pattern binding, and the edit that discards it, if one can.
+    Pattern: (fix: ?(at: source.Span, to: string))
+}
+
+/// What linting found.
+pub Outcome :: struct {
+    /// Warnings and errors reported by the rules (also added to the diagnostics).
+    pub warnings: usize
+    pub errors: usize
+}
+
+/// Which files are the package's own: those in its directory, but not in the standard
+/// library (unless that is what is linted) or in another package inside it (a path
+/// dependency, say).
+pub Scope :: struct {
+    /// The canonical directory of the package.
+    pub dir: string
+    pub std_root: string
+    pub linting_std: bool
+    /// The package root found for each directory looked at, `""` for none.
+    owners: hash_map.HashMap(string, string)
+}
+
+pub scope :: fn(dir, std_root: string, linting_std: bool) -> Scope needs Alloc {
+    return Scope(dir: dir, std_root: std_root, linting_std: linting_std, owners: hash_map.hash_map(string, string))
+}
+
+/// Whether the file at `path` is one of the package's own.
+pub in_scope :: fn(sc: ^Scope, path: string) -> bool needs Alloc + Fs {
+    p := canonical(path)
+    if not load.starts_with(p, sc.dir) or (load.starts_with(p, sc.std_root) and not sc.linting_std) { return false }
+    dir := load.parent(p) else ""
+    owner := ""
+    if known := sc.owners.get(dir) {
+        owner = known
+    } else {
+        owner = find_root(dir) else ""
+        sc.owners.put(dir, owner)!
+    }
+    return owner.len is 0 or canonical(owner) is sc.dir
+}
+
+/// The absolute form of `path`, without `.` and `..`.
+pub canonical :: fn(path: string) -> string needs Alloc + Fs => load.normalize(load.join(load.working_dir(), path))
+
+/// The nearest directory at or above `start` that holds a `gamma.toml`.
+pub find_root :: fn(start: string) -> ?string needs Alloc + Fs {
+    abs := canonical(start)
+    cur: ?string = if load.is_dir(abs) { abs } else { load.parent(abs) }
+    while d := cur {
+        if load.is_file(load.join(d, "gamma.toml")) { return d }
+        cur = load.parent(d)
+    }
+    return null
+}
+
+/// The text of `span`.
+text_of :: fn(sm: ^const source.SourceMap, span: source.Span) -> string => sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
+
+/// Lints the package of the program rooted at `root`, which `s` has checked (with its
+/// tests): adds the findings of the rules in files for which `in_scope` holds to `diags`,
+/// at the levels of `config`. Returns `null` if the program does not compile (the errors
+/// are in `diags`).
+pub run :: fn(s: ^sema.Sema, program: bool, sc: ^Scope, cfg: ^const Config) -> ?Outcome needs Alloc + Fs {
+    sm := s.l.sm
+    diags := s.l.diags
+    if diags.has_errors() { return null }
+    scoped := list(bool)
+    for f in sm.files.items { scoped.push(in_scope(sc, f.path))! }
+    findings := analyze(s, program, scoped.items)
+    found := list(diag.Diagnostic)
+    w := walk(sm)
+    when_names := hash_map.hash_map(string, bool)
+    for i, f in enumerate(sm.files.items) {
+        if f.path.starts_with("<") or not scoped.items[i] { continue }
+        scratch := diag.diagnostics()
+        lexed := syntax.lex(i.trunc(u32), f.text, &scratch)
+        ids: ast.NodeId = 0
+        tree := parse.parse_file(i.trunc(u32), &lexed, &ids, &scratch)
+        if scratch.has_errors() { continue }
+        before := w.facts.whens.items.len
+        w.walk_file(&tree)
+        names_in(lexed.tokens.items, w.facts.whens.items[before..], &when_names)
+    }
+    facts := &w.facts
+    for f in findings.items {
+        if d := finding_diag(sm, &f, &facts.sites, &when_names) { found.push(d)! }
+    }
+    out := Outcome(warnings: 0, errors: facts.errors.items.len)
+    for d in facts.errors.items { diags.push(d) }
+    // The warnings of the syntax rules come before those of the checked program.
+    all := list(diag.Diagnostic)
+    all.extend(facts.diags.items)!
+    all.extend(found.items)!
+    for i in 0..all.items.len {
+        d := all.items[i]
+        code := d.code else ""
+        allowed := false
+        for a in facts.allows.items {
+            if a.item.file is d.span.file and a.item.lo <= d.span.lo and d.span.hi <= a.item.hi {
+                for r in a.rules.items {
+                    if r is code or r is "all" { allowed = true }
+                }
+            }
+        }
+        if allowed { continue }
+        match level(cfg, code) {
+            .Allow => continue
+            .Warn => { out.warnings += 1 }
+            .Deny => {
+                d.severity = .Error
+                out.errors += 1
+            }
+        }
+        diags.push(d)
+    }
+    return out
+}
+
+/// The diagnostic for a finding of the checker, or `null` if it is not to be reported:
+/// a name also written in a `when` branch may be used in the branch not taken, which
+/// is not checked.
+finding_diag :: fn(sm: ^const source.SourceMap, f: ^const Finding, sites: ^hash_map.HashMap(source.Span, Site), when_names: ^const hash_map.HashMap(string, bool)) -> ?diag.Diagnostic needs Alloc {
+    match f^ {
+        .UnusedLocal(name, span, param, assigned) => {
+            if when_names.contains(name) { return null }
+            if param {
+                d := lint_diag(span, "unused-parameter", str.format("the parameter `{}` is never used", name)!)
+                d.add_note(str.format("if the function must take it, name it `_{}`", name)!)
+                return d
+            }
+            msg := if assigned {
+                str.format("the variable `{}` is assigned but never read", name)!
+            } else {
+                str.format("the variable `{}` is never used", name)!
+            }
+            d := lint_diag(span, "unused-variable", msg)
+            if site := sites.get(span) {
+                match site {
+                    .Single(_, typed, ?op, _, _, _) => if not typed and not assigned {
+                        if o := op {
+                            d.add_fix("discard the value with `_ =`", source.Span(file: span.file, lo: span.lo, hi: o.hi), "_ =")
+                            return d
+                        }
+                    }
+                    .Replace(at, to) => if not assigned {
+                        d.add_fix(str.format("write `{}`", to)!, at, to)
+                        return d
+                    }
+                    .Pattern(?fix) => if p := fix {
+                        what := if p.to.len is 0 { "remove the capture" } else { "discard the value" }
+                        d.add_fix(what, p.at, p.to)
+                        return d
+                    }
+                }
+            }
+            d.add_note(str.format("if this is deliberate, name it `_{}`", name)!)
+            return d
+        }
+        .NeverAssigned(name, span) => {
+            if when_names.contains(name) { return null }
+            site := sites.get(span) else return null
+            .Single(mutable, typed, ?op, keep_mutable, fn_lit, uninit) := site else return null
+            if not mutable or fn_lit or uninit { return null }
+            marker := if typed { ":" } else { "::" }
+            d := lint_diag(span, "prefer-immutable", str.format("the variable `{}` is never assigned: declare it with `{}`", name, marker)!)
+            if o := op {
+                if not keep_mutable { d.add_fix("make the binding immutable", o, marker) }
+            }
+            return d
+        }
+        .UnusedDecl(name, span, item, what) => {
+            if when_names.contains(name) { return null }
+            if what is "import" {
+                d := lint_diag(span, "unused-import", str.format("the import `{}` is never used", name)!)
+                if lines := whole_lines(sm, item) { d.add_fix("remove the import", lines, "") }
+                return d
+            }
+            d := lint_diag(span, "unused-declaration", str.format("the {} `{}` is never used", what, name)!)
+            d.add_note("it is private to its module: mark it `pub` if other modules are to use it")
+            return d
+        }
+        .NeedlessPub(name, span, vis, what) => {
+            if when_names.contains(name) { return null }
+            marker := "pub"
+            why := "no other module uses it, and other packages do not import a program"
+            if vis is .Package {
+                marker = "pub(package)"
+                why = "no other module of its package uses it"
+            }
+            d := lint_diag(span, "needless-pub", str.format("the {} `{}` is `{}`, but {}", what, name, marker, why)!)
+            d.add_note("without the marker it is private to its module (§3.3)")
+            return d
+        }
+        .DanglingAddress(span, name, local, why) => {
+            d := lint_diag(span, "dangling-address", check.dangling_message(name, why))
+            check.add_dangling_notes(&d, name, local)
+            return d
+        }
+        .PresentOnlyBinding(span, name, catch_all, is_result) => {
+            value := if is_result { "a success value" } else { "a present value" }
+            absent := if is_result { "an error" } else { "`null`" }
+            d := lint_diag(span, "present-only-binding", str.format("`{}` matches only {}, so {} here goes to the catch-all arm", name, value, absent)!)
+            d.add_label(catch_all, str.format("{} is matched here", absent)!)
+            d.add_note(str.format("a name in the position of an optional or a result below the top of a pattern matches only a present or success value (§9.3); add an arm for the other case (such as `.V(null)`), or write `?{}` to bind the value as it is", name)!)
+            return d
+        }
+        .MutatedCopy(span, name, local, origin) => {
+            src := text_of(sm, origin)
+            d := lint_diag(span, "mutated-copy", str.format("this changes `{}`, a copy of `{}`, which does not see the change", name, src)!)
+            d.add_label(local, str.format("`{}` is a copy", name)!)
+            d.add_note(str.format("the copy shares its elements with the original but not its length, so what is added through it is lost; to change the original, take its address: `{} := &{}`", name, src)!)
+            return d
+        }
+        .BoolComparison(span, operand, same) => {
+            whole := text_of(sm, span)
+            if not (str.contains(whole, "true") or str.contains(whole, "false")) { return null }
+            o := text_of(sm, operand)
+            replacement := o
+            if not same {
+                if str.contains(o, " and ") or str.contains(o, " or ") or str.contains(o, " else ") {
+                    replacement = str.format("not ({})", o)!
+                } else {
+                    replacement = str.format("not {}", o)!
+                }
+            }
+            d := lint_diag(span, "bool-comparison", "comparing a `bool` with `true` or `false` is redundant")
+            d.add_fix(str.format("write `{}`", replacement)!, span, replacement)
+            return d
+        }
+        .SelfComparison(span, always) => return lint_diag(span, "self-comparison", str.format("this compares a value with itself, so it is always `{}`", always)!)
+        .SelfAssignment(span) => return lint_diag(span, "self-assignment", "this assigns a place to itself")
+    }
+}
+
+/// `span` widened to the whole lines it is on, with the line break after them, if
+/// nothing else is on those lines.
+whole_lines :: fn(sm: ^const source.SourceMap, span: source.Span) -> ?source.Span {
+    src := sm.file(span.file).text
+    lo := usize(span.lo)
+    hi := usize(span.hi)
+    start := lo
+    while start > 0 and src[start - 1] is not '\n' { start -= 1 }
+    end := hi
+    while end < src.len and src[end] is not '\n' { end += 1 }
+    if end < src.len { end += 1 }
+    before := src[start..lo]
+    after := src[hi..end]
+    if str.trim(before).len > 0 { return null }
+    t := str.trim_start(after)
+    if not (t.len is 0 or t.starts_with("//") or str.trim(after).len is 0) { return null }
+    // Removing the only line between a blank line (or the start of the file) and
+    // another blank line would leave two blank lines; take one with it.
+    if (start is 0 or src[..start].ends_with("\n\n")) and src[end..].starts_with("\n") { end += 1 }
+    return source.span(span.file, start, end)
+}
+
+ast :: import "../ast"
+check :: import "../check"
+diag :: import "../diag"
+hash_map :: import "std/collections/hash_map"
+load :: import "../load"
+parse :: import "../parse"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+syntax :: import "../syntax"

@@ -4,7 +4,7 @@
 // remembers its line, for messages.
 
 /// A TOML value.
-Value :: union {
+pub(package) Value :: union {
     Str: string
     Int: i64
     Bool: bool
@@ -13,27 +13,27 @@ Value :: union {
 }
 
 /// The entries of a table, in the order they were written.
-Table :: struct {
-    entries: List(Entry)
+pub(package) Table :: struct {
+    pub(package) entries: List(Entry)
 }
 
-Entry :: struct {
-    key: string
-    value: Value
+pub(package) Entry :: struct {
+    pub(package) key: string
+    pub(package) value: Value
     /// The line of the key, from 1.
-    line: usize
+    pub(package) line: usize
 }
 
 /// What went wrong, and on which line.
-TomlError :: struct {
-    line: usize
-    message: string
+pub(package) TomlError :: struct {
+    pub(package) line: usize
+    pub(package) message: string
 }
 
 new_table :: fn() -> ^Table needs Alloc => new(Table(entries: list(Entry)))!
 
 /// The entry `key` of `t`, if it has one.
-get :: fn(t: ^const Table, key: string) -> ?^Entry {
+pub(package) get :: fn(t: ^const Table, key: string) -> ?^Entry {
     for i in 0..t.entries.items.len {
         if t.entries.items[i].key is key { return &t.entries.items[i] }
     }
@@ -41,13 +41,13 @@ get :: fn(t: ^const Table, key: string) -> ?^Entry {
 }
 
 /// `v` as a string, if it is one.
-as_str :: fn(v: Value) -> ?string => match v {
+pub(package) as_str :: fn(v: Value) -> ?string => match v {
     .Str(s) => s
     _ => null
 }
 
 /// `v` as a table, if it is one.
-as_table :: fn(v: Value) -> ?^Table => match v {
+pub(package) as_table :: fn(v: Value) -> ?^Table => match v {
     .Table(t) => t
     _ => null
 }
@@ -59,7 +59,7 @@ Reader :: struct {
 }
 
 /// Parses a whole document into its root table.
-parse_toml :: fn(text: string) -> TomlError!^Table needs Alloc {
+pub(package) parse_toml :: fn(text: string) -> TomlError!^Table needs Alloc {
     r := Reader(text: text)
     root := new_table()
     current := root

@@ -962,3 +962,163 @@ fn doc_matches_the_reference_on_errors() {
         assert_eq!(got.status.code(), Some(1));
     }
 }
+
+/// Runs `f` on every item with one worker per processor; the results come back in order.
+fn in_parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(Vec::new());
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(item) = items.get(i) else { break };
+                    let r = f(item);
+                    results.lock().unwrap().push((i, r));
+                }
+            });
+        }
+    });
+    let mut results = results.into_inner().unwrap();
+    results.sort_by_key(|(i, _)| *i);
+    results.into_iter().map(|(_, r)| r).collect()
+}
+
+/// What a command printed and how it ended.
+type Ran = (String, String, Option<i32>);
+
+fn ran(out: std::process::Output) -> Ran {
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code(),
+    )
+}
+
+/// Runs `gammac` natively with `args` in `dir`.
+#[cfg(unix)]
+fn gammac_in(exe: &Path, dir: &Path, args: &[&str]) -> Ran {
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(dir).args(args);
+    gammac_env(&mut cmd);
+    ran(common::output(&mut cmd).unwrap())
+}
+
+/// Runs `gamma` with `args` in `dir`.
+#[cfg(unix)]
+fn gamma_in(dir: &Path, args: &[&str]) -> Ran {
+    let mut cmd = gamma();
+    cmd.current_dir(dir).args(args);
+    ran(common::output(&mut cmd).unwrap())
+}
+
+/// Why `actual` differs from `expected`, if it does.
+#[cfg(unix)]
+fn difference(what: &str, name: &str, expected: &Ran, actual: &Ran) -> Option<String> {
+    for (part, e, a) in [("standard output", &expected.0, &actual.0), ("diagnostics", &expected.1, &actual.1)] {
+        if let Some((_, line, e, a)) = first_difference(e, a) {
+            return Some(format!(
+                "{}: the {} of {} differ (line {}):\nexpected: {}\n  gammac: {}",
+                what, part, name, line, e, a
+            ));
+        }
+    }
+    (expected.2 != actual.2)
+        .then(|| format!("{}: exit status on {}: expected {:?}, gammac {:?}", what, name, expected.2, actual.2))
+}
+
+#[test]
+#[cfg(unix)]
+fn lint_matches_the_reference_on_every_program() {
+    let Gammac::Native(exe) = gammac() else { return };
+    let roots = program_roots();
+    for levels in [None, Some("--warn=all")] {
+        let failures: Vec<String> = in_parallel(&roots, |r| {
+            let mut args = vec!["lint", "--diag-format=json"];
+            args.extend(levels);
+            args.push(r);
+            difference("gammac lint", r, &gamma_in(root(), &args), &gammac_in(exe, root(), &args))
+        })
+        .into_iter()
+        .flatten()
+        .collect();
+        assert!(
+            failures.is_empty(),
+            "{} of {} programs differ:\n{}",
+            failures.len(),
+            roots.len(),
+            failures.join("\n\n")
+        );
+    }
+}
+
+/// The options that a conformance test's `//! lint:` lines give.
+#[cfg(unix)]
+fn lint_options(file: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(file).unwrap();
+    text.lines()
+        .filter_map(|l| l.strip_prefix("//! lint:"))
+        .flat_map(|o| o.split_whitespace().map(String::from).collect::<Vec<_>>())
+        .collect()
+}
+
+/// Runs a command on a scratch copy of `file` as `main.gm` (with `gammac` if `exe` is
+/// given, else with `gamma`), and gives what it printed and the file afterwards.
+#[cfg(unix)]
+fn fixed_copy(exe: Option<&Path>, file: &Path, name: &str, args: &[String]) -> (Ran, String) {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-fix").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(file, dir.join("main.gm")).unwrap();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = match exe {
+        Some(exe) => gammac_in(exe, &dir, &args),
+        None => gamma_in(&dir, &args),
+    };
+    (out, std::fs::read_to_string(dir.join("main.gm")).unwrap())
+}
+
+#[test]
+#[cfg(unix)]
+fn fixing_matches_the_reference() {
+    let Gammac::Native(exe) = gammac() else { return };
+    let mut files = Vec::new();
+    for dir in ["tests/conformance/lint", "tests/conformance/check"] {
+        gm_files(Path::new(dir), &mut files);
+    }
+    // Single-file programs only: a `.test` directory is several modules.
+    files.retain(|f| !f.contains(".test/"));
+    let commands: [&[&str]; 2] = [&["fix"], &["lint", "--fix"]];
+    let failures: Vec<String> = in_parallel(&files, |f| {
+        let path = root().join(f);
+        let mut failures = Vec::new();
+        for (i, command) in commands.iter().enumerate() {
+            let mut args: Vec<String> = command.iter().map(|a| a.to_string()).collect();
+            if command[0] == "lint" {
+                args.extend(lint_options(&path));
+            }
+            args.push("main.gm".to_string());
+            let name = format!("{}-{}", f.replace('/', "_"), i);
+            let (expected, expected_text) = fixed_copy(None, &path, &format!("{}-ref", name), &args);
+            let (actual, actual_text) = fixed_copy(Some(exe), &path, &format!("{}-gammac", name), &args);
+            if let Some(why) = difference(&command.join(" "), f, &expected, &actual) {
+                failures.push(why);
+            } else if let Some((_, line, e, a)) = first_difference(&expected_text, &actual_text) {
+                failures.push(format!(
+                    "{}: the fixed {} differs (line {}):\nexpected: {}\n  gammac: {}",
+                    command.join(" "),
+                    f,
+                    line,
+                    e,
+                    a
+                ));
+            }
+        }
+        failures
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    assert!(failures.is_empty(), "{} of {} programs differ:\n{}", failures.len(), files.len(), failures.join("\n\n"));
+}

@@ -170,31 +170,31 @@ is_import :: fn(item: ^const ast.Item) -> bool {
 // ---------------------------------------------------------------------------------
 
 /// The working directory.
-working_dir :: fn() -> string needs Alloc + Fs {
+pub(package) working_dir :: fn() -> string needs Alloc + Fs {
     buf: [4096]u8 = ---
     n := Fs.cwd(buf[..]) else return "."
     return dupe(buf[0..n])!
 }
 
-is_dir :: fn(p: string) -> bool needs Fs {
+pub(package) is_dir :: fn(p: string) -> bool needs Fs {
     info := Fs.stat(p) else return false
     return info.kind is .Dir
 }
 
-is_file :: fn(p: string) -> bool needs Fs {
+pub(package) is_file :: fn(p: string) -> bool needs Fs {
     info := Fs.stat(p) else return false
     return info.kind is .File
 }
 
 /// The canonical form of `p`: absolute and without `.` and `..`, or `null` if it does not
 /// exist. (Symbolic links are not resolved.)
-canonicalize :: fn(l: ^const Loader, p: string) -> ?string needs Alloc + Fs {
+pub(package) canonicalize :: fn(l: ^const Loader, p: string) -> ?string needs Alloc + Fs {
     if Fs.stat(p) is !_ { return null }
     return normalize(join(l.cwd, p))
 }
 
 /// The `.gm` files directly in directory `dir`, or `null` if it cannot be read.
-module_files :: fn(dir: string) -> ?List(string) needs Alloc + Fs {
+pub(package) module_files :: fn(dir: string) -> ?List(string) needs Alloc + Fs {
     if not is_dir(dir) { return null }
     paths := list(string)
     for r in fs.entries(dir) {
@@ -290,6 +290,51 @@ load_dir_module :: fn(l: ^Loader, dir: string, at: source.Span, parent_package: 
     // Its top-level `when`s are decided now that its directory is known.
     l.collect_whens(m)
     return m
+}
+
+/// Loads every module of the package of module `root` that is not loaded yet, so that
+/// their tests are found. The directories of the package are searched in path order;
+/// hidden ones, `target` and nested packages are skipped.
+pub load_package_modules :: fn(l: ^Loader, root: usize) needs Alloc + Fs {
+    package := l.modules.items[root].package
+    package_root := l.packages.items[package].root
+    // Relative to the working directory when inside it, so that the files are named as
+    // the ones that imports load.
+    start := package_root
+    if rel := strip_prefix(package_root, l.cwd) { start = if rel.len is 0 { "." } else { rel } }
+    root_dir := l.modules.items[root].dir
+    root_key := l.canonicalize(root_dir) else root_dir
+    dirs := list(string)
+    dirs.push(start)!
+    while dir := dirs.pop() {
+        subdirs := list(string)
+        readable := true
+        for r in fs.entries(dir) {
+            e := r else {
+                readable = false
+                break
+            }
+            p := join(dir, e.name)
+            if is_dir(p) and not e.name.starts_with(".") and e.name is not "target" and not is_file(join(p, "gamma.toml")) {
+                subdirs.push(p)!
+            }
+        }
+        if not readable { continue }
+        // The first directory searched comes last on the stack.
+        subdirs.items.sort()
+        subdirs.items.reverse()
+        dirs.extend(subdirs.items)!
+        key := l.canonicalize(dir) else dir
+        if key is root_key { continue }
+        loaded := false
+        for d in l.by_dir.items {
+            if d.key is key { loaded = true }
+        }
+        if loaded { continue }
+        if files := module_files(dir) {
+            if files.items.len > 0 { _ = l.load_dir_module(dir, source.DUMMY, package, null) }
+        }
+    }
 }
 
 /// Creates a module from parsed files and collects its top-level names. Its top-level

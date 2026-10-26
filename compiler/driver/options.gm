@@ -4,9 +4,10 @@
 //! The command line of gammac: the commands and their options.
 
 diag :: import "../diag"
+lint :: import "../lint"
 
 /// What gammac was asked to do.
-pub Command :: union { Lex, Parse, Modules, Decls, Tir, Check, Build, Run }
+pub Command :: union { Lex, Parse, Modules, Decls, Tir, Check, Lint, Fix, Build, Run }
 
 /// The build modes of §1.4 that gammac has (Safe needs Fil-C).
 pub Mode :: union { Debug, Checked, Fast }
@@ -23,6 +24,8 @@ pub Options :: struct {
     pub emit_c: bool = false
     /// `run`: the arguments after the file, for the program.
     pub program_args: []const string = empty_slice(string)
+    /// `lint`: the options of the command.
+    pub lint: lint.Options
 }
 
 /// The name of a mode as `target.mode` spells it.

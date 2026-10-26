@@ -312,6 +312,7 @@ mono_fn :: fn(s: ^Sema, mc: ^MonoCx, id: u32) -> u32 needs Load {
     def := s.defs.items[usize(id)]
     new_id := s.new_nested_fn(def.kind, sig.name, sig.span, sig.module, params.items, s.subst(sig.ret, mc.map), s.subst_effects(&sig.effects, mc.map))
     mc.fn_map.push(FnPair(from: id, to: new_id))!
+    s.nested_owner.put(new_id, new_id)!
     locals := list(tir.LocalDecl)
     for l in def.locals {
         x := l

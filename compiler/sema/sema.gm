@@ -56,7 +56,7 @@ pub DeclValue :: union {
     Error
 }
 
-DeclState :: union {
+pub DeclState :: union {
     Unresolved
     InProgress
     Done: DeclValue
@@ -450,6 +450,20 @@ pub Sema :: struct {
     /// Set while gammac tries an expression as an untyped constant without reporting why
     /// it is not one.
     pub quiet_untyped: bool = false
+    /// The declarations that some name was resolved to (in their own module's scope or as
+    /// a member of their module), by declaration; for `gammac lint`'s unused declarations.
+    pub decl_uses: List(bool)
+    /// The declarations named from a module other than their own, by declaration.
+    pub outside_uses: List(bool)
+    /// Each use of a local variable by name: the spans of its declaration and of the use.
+    /// Unlike the typed program, it keeps the uses that checking evaluates away
+    /// (`a.len` of an array, `@type_of(x)`), for `gammac lint`'s unused locals.
+    pub local_uses: hash_map.HashMap((source.Span, source.Span), bool)
+    /// How many distinct uses each local variable has, by the span of its declaration.
+    pub local_use_counts: hash_map.HashMap(source.Span, u32)
+    /// The top-level function that each nested function (function literal, nested function
+    /// or handler clause) is written in.
+    pub nested_owner: hash_map.HashMap(u32, u32)
 }
 
 pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
@@ -512,6 +526,11 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         soa_templates: list(SoaTemplate),
         soa_errors: list(string),
         soa_gathers: list(source.Span),
+        decl_uses: list(bool),
+        outside_uses: list(bool),
+        local_uses: hash_map.hash_map((source.Span, source.Span), bool),
+        local_use_counts: hash_map.hash_map(source.Span, u32),
+        nested_owner: hash_map.hash_map(u32, u32),
     )
     s.effects.push(EffectInfo(name: "..", module: 0, params: empty_slice(u32), ops: empty_slice(OpInfo)))!
     return s
@@ -653,7 +672,7 @@ pub resolve_declarations :: fn(s: ^Sema) needs Load {
     s.check_pub_signatures()
 }
 
-state :: fn(s: ^Sema, id: usize) -> DeclState needs Alloc {
+pub state :: fn(s: ^Sema, id: usize) -> DeclState needs Alloc {
     while s.states.items.len <= id { s.states.push(.Unresolved)! }
     // A module binding of the core library is resolved when it is declared.
     if s.states.items[id] is .Unresolved and s.l.decls.items[id].item.kind is .Intrinsic(_) {

@@ -1,0 +1,89 @@
+// Tests of planning and applying fixes.
+
+arena :: import "std/arena"
+diag :: import "../diag"
+source :: import "../source"
+
+sp :: fn(lo, hi: u32) -> source.Span => source.Span(file: 0, lo: lo, hi: hi)
+
+/// A diagnostic with the one fix that replaces `lo..hi` with `text`.
+fixing :: fn(lo, hi: u32, text: string) -> diag.Diagnostic needs Alloc {
+    d := diag.error(sp(lo, hi), "e")
+    d.add_fix("f", sp(lo, hi), text)
+    return d
+}
+
+all_files :: fn(f: source.FileId) -> bool => true
+
+test "applies the only fix of each diagnostic" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        src := "x := a && b\ny := 0X1F\n"
+        d1 := fixing(7, 9, "and")
+        d2 := fixing(17, 19, "0x")
+        // Two ways to resolve it: left alone.
+        d3 := diag.error(sp(0, 1), "two")
+        d3.add_fix("first", sp(0, 1), "p")
+        d3.add_fix("second", sp(0, 1), "q")
+        todo := list(^const diag.Diagnostic)
+        todo.push(&d1)!
+        todo.push(&d2)!
+        todo.push(&d3)!
+        p := plan(todo.items, all_files)
+        assert(p.count is 2)
+        assert(apply(src, p.files.items[0].edits.items) is "x := a and b\ny := 0x1F\n")
+    }
+}
+
+test "skips overlapping and repeated fixes" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        ds := list(diag.Diagnostic)
+        // Overlaps the first.
+        for x in ((1, 3, "BC"), (2, 4, "CD"), (1, 3, "BC"), (1, 1, "!"), (4, 4, "_")) {
+            ds.push(fixing(x.0, x.1, x.2))!
+        }
+        todo := list(^const diag.Diagnostic)
+        for i in 0..ds.items.len { todo.push(&ds.items[i])! }
+        p := plan(todo.items, all_files)
+        assert(p.count is 2)
+        assert(apply("abcdef", p.files.items[0].edits.items) is "aBCd_ef")
+    }
+}
+
+test "skips a fix in a file that may not be changed or without a location" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        far := diag.error(source.DUMMY, "e")
+        far.add_fix("f", source.DUMMY, "x")
+        near := fixing(0, 1, "A")
+        other := diag.error(source.Span(file: 1, lo: 0, hi: 1), "e")
+        other.add_fix("f", source.Span(file: 1, lo: 0, hi: 1), "X")
+        todo := list(^const diag.Diagnostic)
+        todo.push(&far)!
+        todo.push(&other)!
+        todo.push(&near)!
+        p := plan(todo.items, fn(f: source.FileId) -> bool => f is 0)
+        assert(p.count is 1)
+        assert(p.files.items.len is 1)
+        assert(apply("abc", p.files.items[0].edits.items) is "Abc")
+    }
+}
+
+test "adjacent edits both apply" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        d1 := fixing(0, 2, "AB")
+        d2 := fixing(3, 5, "DE")
+        todo := list(^const diag.Diagnostic)
+        todo.push(&d1)!
+        todo.push(&d2)!
+        p := plan(todo.items, all_files)
+        assert(p.count is 2)
+        assert(apply("abcdef", p.files.items[0].edits.items) is "ABcDEf")
+    }
+}

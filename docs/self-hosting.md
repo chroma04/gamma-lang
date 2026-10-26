@@ -29,6 +29,7 @@ this checkable:
 | back end | the output and exit status of the compiled programs |
 | formatter | the output, messages and exit status of `gamma fmt` |
 | `doc` | the standard output, standard error, exit status and files of `gamma doc` |
+| lint and fix | the diagnostics, messages, edited files and exit status of `gamma lint` and `gamma fix` |
 | bootstrap | the C that `gammac` generates for itself, built by itself |
 
 Diagnostics are compared in the JSON format (`--diag-format=json`), which carries every
@@ -179,7 +180,7 @@ variants of each that the formatter must change (no indentation, collapsed or ad
 spaces, CR LF line ends, cut off in the middle), and compares whole directories, in place
 and with `--check`.
 
-### Tools
+### API documentation
 
 `gammac doc` is a port of `gamma doc` (`src/doc/`): it writes the API documentation of a
 module, or with `--all` of every module below a directory, as Markdown or HTML, from the
@@ -199,6 +200,34 @@ doc comments.
 `tests/selfhost.rs` runs both commands on `lib/std` in both formats, on single modules and
 files, on the fixtures of `tests/doc/` and on the error cases, and compares what they
 print and every file they write.
+
+### Lint and fix
+
+`gammac lint [options] <file or directory>` is `gamma lint` and `gammac fix <file or
+directory>` is `gamma fix`. The lint rules are split as in the reference: those that
+walk the syntax tree are in `compiler/lint/syntax.gm`, those that read the checked
+program (unused locals and declarations, variables that never change, comparisons with a
+known result, dangling addresses, and the mutated-copy and present-only-binding rules) in
+`checked.gm`, `copy.gm` and `present.gm`; `lint.gm` holds the rules' table, their levels
+(defaults, the `[lint]` table of `gamma.toml`, the command line, `#allow`) and the
+diagnostics. `compiler/linting/` is the command line, with `--fix` and its rounds;
+`compiler/fix/` plans and applies the fixes that diagnostics carry, in rounds, for
+`gammac fix` and `gammac lint --fix`. Both only edit the package's own files, never the
+standard library.
+
+To report what the rules need, the checker records which declarations and locals are used
+(`Sema.decl_uses`, `outside_uses`, `local_uses`, `local_use_counts`, `nested_owner`);
+`gammac tir` and `gammac decls` do not look at them. Linting checks the program with its
+tests (as `gamma test` would), and, in a package, with the other modules of the package.
+Warnings carry their rule: `warning[unused-variable]: …` in the human and short formats,
+and a `code` field in JSON. Messages that name the tool (`gamma: applied 2 fixes in 1
+file`, `gamma lint: 3 warnings`) keep the reference's text, so that output compares
+equal. Differences: `--offline`, `--locked` and `--target` are not options of `gammac`, and
+messages for bad command lines start `gammac:`.
+`tests/selfhost.rs` compares `gammac lint` with `gamma lint` in the JSON format on every
+program root at the default levels and with `--warn=all`, and `gammac fix` and `gammac
+lint --fix` on scratch copies of the single-file conformance programs, comparing the
+output and the edited files.
 
 ### Growing a stage
 

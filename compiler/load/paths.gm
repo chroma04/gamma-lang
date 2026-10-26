@@ -75,7 +75,7 @@ pub join :: fn(a, b: string) -> string needs Alloc {
 
 /// `p` without `.` and `..` names, without looking at the file system. A `..` at the start
 /// of a relative path stays: `../lib` is not `lib`.
-normalize :: fn(p: string) -> string needs Alloc {
+pub(package) normalize :: fn(p: string) -> string needs Alloc {
     parts := split(p)
     out := list(string)
     for n in parts.names.items {
@@ -102,7 +102,7 @@ pub parent :: fn(p: string) -> ?string needs Alloc {
 }
 
 /// The last name of `p`, if it has one.
-file_name :: fn(p: string) -> ?string needs Alloc => split(p).names.items.last()
+pub(package) file_name :: fn(p: string) -> ?string needs Alloc => split(p).names.items.last()
 
 /// The last name of `p` without its extension: `main` for `src/main.gm`.
 file_stem :: fn(p: string) -> ?string needs Alloc {
@@ -117,11 +117,11 @@ file_stem :: fn(p: string) -> ?string needs Alloc {
 
 /// Whether `p` begins with the names of `base` (comparing whole names, so `/a/bc` does not
 /// begin with `/a/b`).
-starts_with :: fn(p, base: string) -> bool needs Alloc => strip_prefix(p, base) is not null
+pub(package) starts_with :: fn(p, base: string) -> bool needs Alloc => strip_prefix(p, base) is not null
 
 /// `p` without the leading names of `base` (empty if they are equal), or `null` if `p`
 /// does not begin with `base`.
-strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
+pub(package) strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
     a := split(p)
     b := split(base)
     if a.root is not b.root or a.names.items.len < b.names.items.len { return null }

@@ -49,7 +49,7 @@ pub LineCol :: struct {
 
 /// The source files of a compilation.
 pub SourceMap :: struct {
-    files: List(SourceFile)
+    pub files: List(SourceFile)
 }
 
 pub source_map :: fn() -> SourceMap needs Alloc => SourceMap(files: list(SourceFile))
