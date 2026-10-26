@@ -366,7 +366,11 @@ test "command line" {
         expect(has_extension("a/b.md", "md"))
         expect(not has_extension("a/.md", "md"))
         expect(not has_extension("a/b", "md"))
-        expect_eq(load.normalize("/a/b/../c/./d"), "/a/c/d")
+        when target.os is .Windows {
+            expect_eq(load.normalize("/a/b/../c/./d"), "/a\\c\\d")
+        } else {
+            expect_eq(load.normalize("/a/b/../c/./d"), "/a/c/d")
+        }
         expect_eq(load.file_stem("/a/b/io.gm"), "io")
     }
 }

@@ -1,6 +1,7 @@
 arena :: import "std/arena"
 fs :: import "std/fs"
 io :: import "std/io"
+load :: import "../load"
 str :: import "std/str"
 
 USAGE :: "usage: gammac fmt [--check] <file or directory>... (`-` filters stdin to stdout)\n"
@@ -170,46 +171,4 @@ read_message :: fn(e: fs.ReadError) -> string needs Alloc => match e {
 }
 
 /// The text of an I/O error as the operating system words it.
-io_message :: fn(e: IoError) -> string needs Alloc {
-    code: i32 = match e {
-        .NotFound => 2
-        .PermissionDenied => 13
-        .AlreadyExists => 17
-        .WouldBlock => 11
-        .Interrupted => 4
-        .BrokenPipe => 32
-        .ConnectionReset => 104
-        .InvalidInput => 22
-        .NoSpace => 28
-        .ConnectionRefused => 111
-        .TimedOut => 110
-        .UnexpectedEof, .Unsupported => 0
-        .Other(n) => n
-    }
-    text := match code {
-        1 => "Operation not permitted"
-        2 => "No such file or directory"
-        4 => "Interrupted system call"
-        5 => "Input/output error"
-        11 => "Resource temporarily unavailable"
-        12 => "Cannot allocate memory"
-        13 => "Permission denied"
-        17 => "File exists"
-        20 => "Not a directory"
-        21 => "Is a directory"
-        22 => "Invalid argument"
-        24 => "Too many open files"
-        28 => "No space left on device"
-        30 => "Read-only file system"
-        32 => "Broken pipe"
-        36 => "File name too long"
-        40 => "Too many levels of symbolic links"
-        104 => "Connection reset by peer"
-        110 => "Connection timed out"
-        111 => "Connection refused"
-        _ => ""
-    }
-    if code is 0 { return io.describe(e) }
-    if text.len is 0 { return str.format("Unknown error {} (os error {})", code, code)! }
-    return str.format("{} (os error {})", text, code)!
-}
+io_message :: fn(e: IoError) -> string needs Alloc => load.os_error_text(e)

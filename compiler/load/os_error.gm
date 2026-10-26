@@ -1,0 +1,87 @@
+// The texts of operating system errors, as the reference implementation prints them
+// (Rust's `io::Error`: the system's message and `(os error N)`).
+
+io :: import "std/io"
+str :: import "std/str"
+
+/// The text of `e` as Rust's `io::Error` displays the same error on this system.
+pub os_error_text :: fn(e: IoError) -> string needs Alloc {
+    when target.os is .Windows {
+        code: i32 = match e {
+            .NotFound => 2
+            .PermissionDenied => 5
+            .AlreadyExists => 183
+            .BrokenPipe => 109
+            .InvalidInput => 87
+            .NoSpace => 112
+            .WouldBlock => 10035
+            .Interrupted => 10004
+            .ConnectionReset => 10054
+            .ConnectionRefused => 10061
+            .TimedOut => 10060
+            .UnexpectedEof, .Unsupported => 0
+            .Other(n) => n
+        }
+        text := match code {
+            2 => "The system cannot find the file specified."
+            3 => "The system cannot find the path specified."
+            5 => "Access is denied."
+            32 => "The process cannot access the file because it is being used by another process."
+            87 => "The parameter is incorrect."
+            109 => "The pipe has been ended."
+            112 => "There is not enough space on the disk."
+            145 => "The directory is not empty."
+            183 => "Cannot create a file when that file already exists."
+            267 => "The directory name is invalid."
+            _ => ""
+        }
+        return with_code(e, code, text)
+    } else {
+        code: i32 = match e {
+            .NotFound => 2
+            .PermissionDenied => 13
+            .AlreadyExists => 17
+            .WouldBlock => 11
+            .Interrupted => 4
+            .BrokenPipe => 32
+            .ConnectionReset => 104
+            .InvalidInput => 22
+            .NoSpace => 28
+            .ConnectionRefused => 111
+            .TimedOut => 110
+            .UnexpectedEof, .Unsupported => 0
+            .Other(n) => n
+        }
+        text := match code {
+            1 => "Operation not permitted"
+            2 => "No such file or directory"
+            4 => "Interrupted system call"
+            5 => "Input/output error"
+            11 => "Resource temporarily unavailable"
+            12 => "Cannot allocate memory"
+            13 => "Permission denied"
+            17 => "File exists"
+            20 => "Not a directory"
+            21 => "Is a directory"
+            22 => "Invalid argument"
+            24 => "Too many open files"
+            28 => "No space left on device"
+            30 => "Read-only file system"
+            32 => "Broken pipe"
+            36 => "File name too long"
+            39 => "Directory not empty"
+            40 => "Too many levels of symbolic links"
+            104 => "Connection reset by peer"
+            110 => "Connection timed out"
+            111 => "Connection refused"
+            _ => ""
+        }
+        return with_code(e, code, text)
+    }
+}
+
+with_code :: fn(e: IoError, code: i32, text: string) -> string needs Alloc {
+    if code is 0 { return io.describe(e) }
+    if text.len is 0 { return str.format("Unknown error {} (os error {})", code, code)! }
+    return str.format("{} (os error {})", text, code)!
+}
