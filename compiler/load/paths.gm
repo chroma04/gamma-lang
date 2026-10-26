@@ -53,7 +53,7 @@ build :: fn(root: string, names: []const string) -> string needs Alloc {
     return out.items
 }
 
-is_absolute :: fn(p: string) -> bool => split_root_len(p) > 0
+pub is_absolute :: fn(p: string) -> bool => split_root_len(p) > 0
 
 split_root_len :: fn(p: string) -> usize {
     when target.os is .Windows {
@@ -132,7 +132,7 @@ pub(package) strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
 }
 
 /// `p` with `/` for every separator, for output that is the same on every platform.
-slashes :: fn(p: string) -> string needs Alloc {
+pub slashes :: fn(p: string) -> string needs Alloc {
     out := list(u8)
     for c in p { out.push(if is_sep(c) { '/' } else { c })! }
     return out.items

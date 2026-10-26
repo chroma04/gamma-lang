@@ -1,0 +1,721 @@
+// The package manifest, `gamma.toml` (mirrors `src/pkg/manifest.rs`).
+//
+// One parser serves the loader (to find import roots) and the package manager (to resolve
+// git and archive dependencies, and to read the build settings). Errors carry the line
+// they refer to, and the caller prints them as `gamma.toml:LINE: message`.
+
+/// A manifest error: a message and the 1-based line it refers to.
+arena :: import "std/arena"
+str :: import "std/str"
+
+pub ManifestError :: struct {
+    pub line: usize
+    pub msg: string
+}
+
+/// What a git dependency asks of the repository.
+pub GitSpec :: union {
+    /// The head of the default branch.
+    Default
+    /// The newest tag (`vX.Y.Z` or `X.Y.Z`) that matches a requirement.
+    Version: VersionReq
+    Tag: string
+    Branch: string
+    /// A commit, by its full id or a prefix.
+    Rev: string
+}
+
+/// How a spec reads in a message.
+pub spec_text :: fn(s: GitSpec) -> string needs Alloc => match s {
+    .Default => "the default branch"
+    .Version(r) => str.format("version `{}`", req_string(&r))!
+    .Tag(t) => str.format("tag `{}`", t)!
+    .Branch(b) => str.format("branch `{}`", b)!
+    .Rev(r) => str.format("rev `{}`", r)!
+}
+
+/// Whether two specs ask for the same thing.
+pub spec_equal :: fn(a, b: GitSpec) -> bool {
+    return match a {
+        .Default => b is .Default
+        .Version(x) => match b {
+            .Version(y) => req_equal(&x, &y)
+            _ => false
+        }
+        .Tag(x) => match b {
+            .Tag(y) => x is y
+            _ => false
+        }
+        .Branch(x) => match b {
+            .Branch(y) => x is y
+            _ => false
+        }
+        .Rev(x) => match b {
+            .Rev(y) => x is y
+            _ => false
+        }
+    }
+}
+
+pub GitSource :: struct {
+    /// The URL as written in the manifest.
+    pub url: string
+    pub spec: GitSpec
+    /// The directory of the package inside the repository, if it is not the root.
+    pub subdir: ?string
+}
+
+/// A dependency that is a source archive (`.tar.gz`) at a URL.
+pub UrlSource :: struct {
+    pub url: string
+    /// The expected SHA-256 of the archive file, lowercase hexadecimal.
+    pub sha256: ?string
+    /// The directory of the package inside the archive (after the single top-level
+    /// directory, if any, is stripped), if it is not the root.
+    pub subdir: ?string
+}
+
+pub Source :: union {
+    /// A directory, relative to the package that lists it.
+    Path: string
+    Git: GitSource
+    Url: UrlSource
+}
+
+/// The build modes `mode` may name.
+pub BuildMode :: union { Debug, Checked, Safe, Fast }
+
+/// The keys of a `[build]` table or a `[profile.*]` table. A key that is not written is
+/// `null`; a profile replaces (does not extend) the keys it writes.
+pub BuildSettings :: struct {
+    pub mode: ?BuildMode = null
+    pub debug_info: ?bool = null
+    pub cflags: ?[]const string = null
+    pub ldflags: ?[]const string = null
+    pub c_sources: ?[]const string = null
+    pub include_dirs: ?[]const string = null
+    pub libs: ?[]const string = null
+    pub lib_dirs: ?[]const string = null
+}
+
+/// These settings with every key `over` writes replaced by its value.
+pub overlay :: fn(base: BuildSettings, over: BuildSettings) -> BuildSettings {
+    return BuildSettings(
+        mode: over.mode else base.mode,
+        debug_info: over.debug_info else base.debug_info,
+        cflags: over.cflags else base.cflags,
+        ldflags: over.ldflags else base.ldflags,
+        c_sources: over.c_sources else base.c_sources,
+        include_dirs: over.include_dirs else base.include_dirs,
+        libs: over.libs else base.libs,
+        lib_dirs: over.lib_dirs else base.lib_dirs,
+    )
+}
+
+/// A named `[profile.<name>]` table.
+pub Profile :: struct {
+    pub name: string
+    pub line: usize
+    pub settings: BuildSettings
+}
+
+pub Dependency :: struct {
+    pub name: string
+    /// The line of the entry in the manifest.
+    pub line: usize
+    pub source: Source
+}
+
+pub Manifest :: struct {
+    pub name: ?string = null
+    pub version: ?string = null
+    pub deps: List(Dependency)
+    /// The `[build]` table.
+    pub build: BuildSettings = BuildSettings()
+    pub profiles: List(Profile)
+}
+
+/// Whether `s` can name a package: it is the first segment of an import path.
+pub is_identifier :: fn(s: string) -> bool {
+    if s.len is 0 { return false }
+    c := s[0]
+    if not (c in 'a'..='z' or c in 'A'..='Z' or c is '_') { return false }
+    for d in s {
+        if not (d in 'a'..='z' or d in 'A'..='Z' or d in '0'..='9' or d is '_') { return false }
+    }
+    return true
+}
+
+KEYWORDS :: [35]string(
+    "and", "break", "cancel", "continue", "ctl", "defer", "effect", "else", "errdefer", "esc",
+    "false", "fn", "for", "foreign", "handler", "if", "import", "in", "is", "match", "needs",
+    "not", "null", "or", "pub", "resume", "return", "struct", "true", "try", "union", "using",
+    "when", "while", "with",
+)
+
+/// Why `s` cannot name a package or a dependency, if it cannot: it is the first
+/// segment of an import path, so it must be an identifier that is no keyword,
+/// no builtin type name, and not the name of the core or standard library.
+pub name_problem :: fn(s: string, what: string) -> ?string needs Alloc {
+    if not is_identifier(s) {
+        return str.format("invalid {} name `{}`: use letters, digits and `_`, not starting with a digit", what, s)!
+    }
+    if s is "_" { return str.format("invalid {} name `_`: it is not a usable name", what)! }
+    for k in KEYWORDS {
+        if k is s { return str.format("invalid {} name `{}`: it is a keyword", what, s)! }
+    }
+    if is_reserved_type_name(s) or s in ("string", "cstring", "rune") {
+        return str.format("invalid {} name `{}`: it is the name of a builtin type", what, s)!
+    }
+    if s in ("std", "core") {
+        return str.format("invalid {} name `{}`: it is the name of the standard library", what, s)!
+    }
+    return null
+}
+
+/// `c` as Rust's `{:?}` shows a character.
+debug_char :: fn(c: u8) -> string needs Alloc => match c {
+    '\n' => "'\\n'"
+    '\t' => "'\\t'"
+    '\r' => "'\\r'"
+    '\'' => "'\\''"
+    '\\' => "'\\\\'"
+    _ => if c < 0x20 or c is 0x7f { str.format("'\\u{{{:x}}}'", c)! } else { str.format("'{}'", byte_text(c))! }
+}
+
+/// One byte as a string.
+byte_text :: fn(c: u8) -> string needs Alloc {
+    b := make(u8, 1)!
+    b[0] = c
+    return b
+}
+
+/// `s` as `str::escape_debug` writes it.
+debug_escape :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    for c in s {
+        match c {
+            '\n' => out.extend("\\n")!
+            '\t' => out.extend("\\t")!
+            '\r' => out.extend("\\r")!
+            '"' => out.extend("\\\"")!
+            '\'' => out.extend("\\'")!
+            '\\' => out.extend("\\\\")!
+            _ => if c < 0x20 or c is 0x7f { out.write("\\u{{{:x}}}", c)! } else { out.push(c)! }
+        }
+    }
+    return out.items
+}
+
+/// Whether `c` is white space or a control character (ASCII).
+is_space_or_control :: fn(c: u8) -> bool => c <= 0x20 or c is 0x7f
+
+/// Why `url` cannot be the location of a dependency, if it cannot. A URL is handed to
+/// `git` or `curl` as an argument, so one that starts with `-` would be read as an option.
+pub url_problem :: fn(url: string) -> ?string needs Alloc {
+    if url.starts_with("-") { return str.format("the URL `{}` starts with `-`", url)! }
+    for c in url {
+        if is_space_or_control(c) {
+            return str.format("the URL `{}` contains the character {}", debug_escape(url), debug_char(c))!
+        }
+    }
+    return null
+}
+
+/// The identity of a git repository: its URL without a trailing `/` or `.git`.
+pub normalize_url :: fn(url: string) -> string {
+    u := trim_ascii(url)
+    while u.ends_with("/") { u = u[0..u.len - 1] }
+    if u.ends_with(".git") {
+        u = u[0..u.len - 4]
+        while u.ends_with("/") { u = u[0..u.len - 1] }
+    }
+    return u
+}
+
+/// `s` without leading and trailing white space (ASCII).
+pub trim_ascii :: fn(s: string) -> string {
+    lo: usize = 0
+    hi := s.len
+    while lo < hi and is_ws(s[lo]) { lo += 1 }
+    while hi > lo and is_ws(s[hi - 1]) { hi -= 1 }
+    return s[lo..hi]
+}
+
+is_ws :: fn(c: u8) -> bool => c in (' ', '\t', '\n', '\r', 0x0b, 0x0c)
+
+/// `s` with ASCII capitals made small.
+pub lower_ascii :: fn(s: string) -> string needs Alloc {
+    out := make(u8, s.len)!
+    for i, c in enumerate(s) { out[i] = if c in 'A'..='Z' { c + 32 } else { c } }
+    return out
+}
+
+is_hex_digit :: fn(c: u8) -> bool => c in '0'..='9' or c in 'a'..='f' or c in 'A'..='F'
+
+mfail :: fn(line: usize, msg: string) -> ManifestError => ManifestError(line: line, msg: msg)
+
+/// Whether `s` is a relative path inside a repository, usable as a `subdir`.
+pub is_subdir :: fn(s: string) -> bool needs Alloc {
+    if s.len is 0 or s.starts_with("/") { return false }
+    for c in str.split(s, "/") {
+        if c.len is 0 or c in ("..", ".", ".git") { return false }
+    }
+    return true
+}
+
+/// Parses the text of a manifest.
+pub parse_manifest :: fn(text: string) -> ManifestError!Manifest needs Alloc {
+    doc := parse_toml(text) else e => { return !mfail(e.line, e.message) }
+    m := Manifest(deps: list(Dependency), profiles: list(Profile))
+    if pkg := doc.get("package") {
+        t := as_table(pkg.value) else return !mfail(pkg.line, "`package` must be a table")
+        if item := t.get("name") {
+            n := as_str(item.value) else return !mfail(item.line, "the package name must be a string")
+            if problem := name_problem(n, "package") { return !mfail(item.line, problem) }
+            m.name = n
+        }
+        if item := t.get("version") {
+            v := as_str(item.value) else return !mfail(item.line, "the package version must be a string")
+            _ = parse_version(v) else e => {
+                return !mfail(item.line, str.format("invalid package version `{}`: {}", v, e)!)
+            }
+            m.version = v
+        }
+    }
+    if deps := doc.get("dependencies") {
+        t := as_table(deps.value) else return !mfail(deps.line, "`dependencies` must be a table")
+        for e in t.entries.items {
+            if problem := name_problem(e.key, "dependency") { return !mfail(e.line, problem) }
+            source := try parse_dependency(e.key, e.value, e.line)
+            m.deps.push(Dependency(name: e.key, line: e.line, source: source))!
+        }
+    }
+    if b := doc.get("build") {
+        t := as_table(b.value) else return !mfail(b.line, "`build` must be a table")
+        m.build = try parse_build(t, "[build]")
+    }
+    if l := doc.get("lint") {
+        t := as_table(l.value) else return !mfail(l.line, "`lint` must be a table of rule names and levels")
+        for e in t.entries.items {
+            if e.key is not "all" and not is_lint_rule(e.key) {
+                return !mfail(e.line, str.format("unknown lint rule `{}` in [lint] (`gamma lint --rules` lists them)", e.key)!)
+            }
+            level := as_str(e.value) else ""
+            if level not in ("allow", "warn", "deny") {
+                return !mfail(e.line, str.format("the level of `{}` in [lint] must be \"allow\", \"warn\" or \"deny\"", e.key)!)
+            }
+        }
+    }
+    if ps := doc.get("profile") {
+        t := as_table(ps.value) else return !mfail(ps.line, "`profile` must be a table of `[profile.<name>]` tables")
+        for e in t.entries.items {
+            ok := e.key.len > 0
+            for c in e.key {
+                if not (c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c in ('_', '-')) { ok = false }
+            }
+            if not ok {
+                return !mfail(e.line, str.format("invalid profile name `{}`: use letters, digits, `-` and `_`", e.key)!)
+            }
+            pt := as_table(e.value) else return !mfail(e.line, str.format("profile `{}` must be a table", e.key)!)
+            settings := try parse_build(pt, str.format("[profile.{}]", e.key)!)
+            m.profiles.push(Profile(name: e.key, line: e.line, settings: settings))!
+        }
+    }
+    return m
+}
+
+/// The names of the rules of `gamma lint`.
+LINT_RULES :: [22]string(
+    "unused-variable", "unused-parameter", "unused-import", "unused-declaration", "needless-pub",
+    "unused-label", "prefer-immutable", "bool-comparison", "self-comparison", "self-assignment",
+    "dangling-address", "present-only-binding", "mutated-copy", "constant-condition",
+    "useless-defer", "needless-bool", "double-negation", "collapsible-else-if", "empty-branch",
+    "identical-branches", "unnecessary-parens", "naming",
+)
+
+is_lint_rule :: fn(name: string) -> bool {
+    for r in LINT_RULES {
+        if r is name { return true }
+    }
+    return false
+}
+
+/// The build settings for the profile `profile` (`null`: the `[build]` table alone).
+/// An unknown profile is an error naming the known ones.
+pub build_settings :: fn(m: ^const Manifest, profile: ?string) -> string!BuildSettings needs Alloc {
+    name := profile else return m.build
+    for p in m.profiles.items {
+        if p.name is name { return overlay(m.build, p.settings) }
+    }
+    if m.profiles.items.len is 0 {
+        return !str.format("unknown profile `{}`: gamma.toml defines no `[profile.<name>]` tables", name)!
+    }
+    known := list(string)
+    for p in m.profiles.items { known.push(p.name)! }
+    return !str.format("unknown profile `{}` (known profiles: {})", name, str.join(known.items, ", ")!)!
+}
+
+BUILD_KEYS :: [8]string("mode", "debug-info", "cflags", "ldflags", "c-sources", "include-dirs", "libs", "lib-dirs")
+
+/// The strings of the array value `v`, or `null` if it is not an array of strings.
+string_array :: fn(v: Value) -> ?[]const string needs Alloc {
+    .Array(items) := v else return null
+    out := list(string)
+    for it in items.items {
+        s := as_str(it) else return null
+        out.push(s)!
+    }
+    return out.items
+}
+
+parse_build :: fn(t: ^const Table, what: string) -> ManifestError!BuildSettings needs Alloc {
+    b := BuildSettings()
+    for e in t.entries.items {
+        line := e.line
+        k := e.key
+        known := false
+        for x in BUILD_KEYS {
+            if x is k { known = true }
+        }
+        if not known {
+            return !mfail(line, str.format("{} has an unknown key `{}` (known keys: {})", what, k, str.join(BUILD_KEYS[..], ", ")!)!)
+        }
+        match k {
+            "mode" => {
+                s := as_str(e.value) else return !mfail(line, str.format("`mode` in {} must be a string", what)!)
+                b.mode = match s {
+                    "debug" => BuildMode.Debug
+                    "checked" => BuildMode.Checked
+                    "safe" => BuildMode.Safe
+                    "fast" => BuildMode.Fast
+                    _ => return !mfail(line, str.format("invalid mode `{}` in {}: use debug, checked, safe or fast", s, what)!)
+                }
+            }
+            "debug-info" => {
+                .Bool(v) := e.value else return !mfail(line, str.format("`debug-info` in {} must be true or false", what)!)
+                b.debug_info = v
+            }
+            "cflags" => { b.cflags = try build_list(e, what) }
+            "ldflags" => { b.ldflags = try build_list(e, what) }
+            "c-sources", "include-dirs", "lib-dirs" => {
+                l := try build_list(e, what)
+                for p in l {
+                    if p.len is 0 { return !mfail(line, str.format("`{}` in {} holds an empty path", k, what)!) }
+                }
+                match k {
+                    "c-sources" => { b.c_sources = l }
+                    "include-dirs" => { b.include_dirs = l }
+                    _ => { b.lib_dirs = l }
+                }
+            }
+            _ => {
+                l := try build_list(e, what)
+                for n in l {
+                    bad := n.len is 0 or n.starts_with("-")
+                    for c in n {
+                        if is_ws(c) or c is '/' { bad = true }
+                    }
+                    if bad {
+                        return !mfail(line, str.format("invalid library name `{}` in {}: write `z`, not `-lz` or a path", n, what)!)
+                    }
+                }
+                b.libs = l
+            }
+        }
+    }
+    return b
+}
+
+build_list :: fn(e: Entry, what: string) -> ManifestError![]const string needs Alloc {
+    return string_array(e.value) else !mfail(e.line, str.format("`{}` in {} must be an array of strings", e.key, what)!)
+}
+
+DEP_KEYS :: [9]string("path", "git", "url", "sha256", "version", "tag", "branch", "rev", "subdir")
+
+/// The string value of `key` in `t`, `null` if absent; a value of another type is an error.
+dep_string :: fn(t: ^const Table, key, name: string) -> ManifestError!?string needs Alloc {
+    e := t.get(key) else return null
+    s := as_str(e.value) else return !mfail(e.line, str.format("`{}` of dependency `{}` must be a string", key, name)!)
+    return s
+}
+
+parse_dependency :: fn(name: string, item: Value, line: usize) -> ManifestError!Source needs Alloc {
+    t := as_table(item) else {
+        return !mfail(line, str.format("dependency `{}` must be a table: `{{ path = \"…\" }}` or `{{ git = \"…\" }}`", name)!)
+    }
+    for e in t.entries.items {
+        known := false
+        for k in DEP_KEYS {
+            if k is e.key { known = true }
+        }
+        if not known { return !mfail(e.line, str.format("dependency `{}` has an unknown key `{}`", name, e.key)!) }
+    }
+    sources := list(string)
+    for k in ("path", "git", "url") {
+        if t.get(k) is not null { sources.push(k)! }
+    }
+    if sources.items.len > 1 {
+        return !mfail(line, str.format("dependency `{}` has both `{}` and `{}`; use one of them", name, sources.items[0], sources.items[1])!)
+    }
+    if url0 := try dep_string(t, "url", name) {
+        for k in ("version", "tag", "branch", "rev") {
+            if t.get(k) is not null { return !mfail(line, str.format("`{}` of dependency `{}` needs `git`", k, name)!) }
+        }
+        if trim_ascii(url0).len is 0 { return !mfail(line, str.format("the `url` of dependency `{}` is empty", name)!) }
+        url := trim_ascii(url0)
+        if p := url_problem(url) {
+            return !mfail(line, str.format("invalid `url` of dependency `{}`: {}", name, p)!)
+        }
+        sha: ?string = null
+        if h0 := try dep_string(t, "sha256", name) {
+            h1 := trim_ascii(h0)
+            h1 = str.strip_prefix(h1, "sha256:") else h1
+            h := lower_ascii(h1)
+            ok := h.len is 64
+            for c in h {
+                if not is_hex_digit(c) { ok = false }
+            }
+            if not ok {
+                return !mfail(t.get("sha256")?.line, str.format("`sha256` of dependency `{}` must be 64 hexadecimal digits", name)!)
+            }
+            sha = h
+        }
+        subdir := try dep_string(t, "subdir", name)
+        try check_subdir(name, subdir, line)
+        return Source.Url(UrlSource(url: url, sha256: sha, subdir: subdir))
+    }
+    if t.get("sha256") is not null { return !mfail(line, str.format("`sha256` of dependency `{}` needs `url`", name)!) }
+    path := try dep_string(t, "path", name)
+    git_url := try dep_string(t, "git", name)
+    if path is null and git_url is null {
+        return !mfail(line, str.format("dependency `{}` needs a `path = \"…\"`, a `git = \"…\"` or a `url = \"…\"`", name)!)
+    }
+    if p := path {
+        for k in ("tag", "branch", "rev", "subdir") {
+            if t.get(k) is not null { return !mfail(line, str.format("`{}` of dependency `{}` needs `git`", k, name)!) }
+        }
+        // A `version` next to a path is informational.
+        _ = try dep_string(t, "version", name)
+        if p.len is 0 { return !mfail(line, str.format("the `path` of dependency `{}` is empty", name)!) }
+        return Source.Path(p)
+    }
+    url := git_url?
+    if normalize_url(url).len is 0 { return !mfail(line, str.format("the `git` URL of dependency `{}` is empty", name)!) }
+    if p := url_problem(trim_ascii(url)) {
+        return !mfail(line, str.format("invalid `git` URL of dependency `{}`: {}", name, p)!)
+    }
+    present := list(string)
+    for k in ("version", "tag", "branch", "rev") {
+        if t.get(k) is not null { present.push(k)! }
+    }
+    if present.items.len > 1 {
+        return !mfail(line, str.format(
+            "dependency `{}` combines `{}` and `{}`; use only one of version, tag, branch, rev",
+            name,
+            present.items[0],
+            present.items[1],
+        )!)
+    }
+    spec := GitSpec.Default
+    if v := try dep_string(t, "version", name) {
+        req := parse_version_req(trim_ascii(v)) else e => {
+            return !mfail(t.get("version")?.line, str.format("invalid version requirement `{}`: {}", v, e)!)
+        }
+        spec = .Version(req)
+    } else if v := try dep_string(t, "tag", name) {
+        spec = .Tag(v)
+    } else if v := try dep_string(t, "branch", name) {
+        spec = .Branch(v)
+    } else if v := try dep_string(t, "rev", name) {
+        ok := v.len > 0
+        for c in v {
+            if not is_hex_digit(c) { ok = false }
+        }
+        if not ok { return !mfail(line, str.format("`rev` of dependency `{}` must be a hexadecimal commit id", name)!) }
+        spec = .Rev(lower_ascii(v))
+    }
+    subdir := try dep_string(t, "subdir", name)
+    try check_subdir(name, subdir, line)
+    return Source.Git(GitSource(url: url, spec: spec, subdir: subdir))
+}
+
+check_subdir :: fn(name: string, subdir: ?string, line: usize) -> ManifestError!() needs Alloc {
+    if s := subdir {
+        if not is_subdir(s) {
+            return !mfail(line, str.format("`subdir` of dependency `{}` must be a relative path inside the repository", name)!)
+        }
+    }
+    return ()
+}
+
+fails :: fn(text: string) -> ManifestError needs Alloc {
+    match parse_manifest(text) {
+        !e => return e
+        _ => return ManifestError(line: 0, msg: "")
+    }
+}
+
+settings_error :: fn(m: ^const Manifest, profile: string) -> string needs Alloc {
+    match build_settings(m, profile) {
+        !e => return e
+        _ => return ""
+    }
+}
+
+dep_source :: fn(text: string) -> Source needs Alloc {
+    m := parse_manifest(str.format("[dependencies]\n{}\n", text)!) else e => { return Source.Path(e.msg) }
+    return m.deps.items[0].source
+}
+
+dep_spec :: fn(text: string) -> GitSpec needs Alloc {
+    match dep_source(text) {
+        .Git(g) => return g.spec
+        _ => return GitSpec.Default
+    }
+}
+
+test "path dependencies" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        m := parse_manifest("[package]\nname = \"app\"  # comment\nversion = \"0.1.0\"\n\n[dependencies]\njson = { path = \"../json\", version = \"1\" }\n") else e => {
+            expect(false, e.msg)
+            return
+        }
+        expect_eq(m.name, "app")
+        expect_eq(m.version, "0.1.0")
+        expect_eq(m.deps.items.len, 1)
+        .Path(p) := m.deps.items[0].source else return
+        expect_eq(p, "../json")
+        expect_eq(m.deps.items[0].line, 6)
+    }
+}
+
+test "git dependencies" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        .Version(req) := dep_spec("h = { git = \"https://x/h\", version = \"1.2\" }") else return
+        expect_eq(req_string(&req), "^1.2")
+        .Tag(t) := dep_spec("h = { git = \"u\", tag = \"v1\" }") else return
+        expect_eq(t, "v1")
+        .Branch(b) := dep_spec("h = { git = \"u\", branch = \"main\" }") else return
+        expect_eq(b, "main")
+        .Rev(r) := dep_spec("h = { git = \"u\", rev = \"ABC123\" }") else return
+        expect_eq(r, "abc123")
+        expect(dep_spec("h = { git = \"u\" }") is .Default)
+        .Git(g) := dep_source("h = { git = \"u\", subdir = \"a/b\" }") else return
+        expect_eq(g.subdir, "a/b")
+        // The table form.
+        m := parse_manifest("[dependencies.h]\ngit = \"u\"\ntag = \"t\"\n") else return
+        .Git(tg) := m.deps.items[0].source else return
+        .Tag(tt) := tg.spec else return
+        expect_eq(tt, "t")
+    }
+}
+
+test "errors have lines" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect(fails("[package\n").line >= 1)
+        e := fails("[dependencies]\n\nx = \"1.0\"\n")
+        expect_eq(e.line, 3)
+        expect(str.contains(e.msg, "must be a table"))
+        e = fails("[dependencies]\nx = { path = \"a\", color = \"red\" }\n")
+        expect_eq(e.line, 2)
+        expect_eq(e.msg, "dependency `x` has an unknown key `color`")
+        expect(str.contains(fails("[dependencies]\nx = { path = \"a\", git = \"b\" }\n").msg, "both `path` and `git`"))
+        expect(str.contains(fails("[dependencies]\nx = { git = \"b\", tag = \"t\", branch = \"m\" }\n").msg, "use only one"))
+        expect(str.contains(fails("[dependencies]\nx = {}\n").msg, "needs"))
+        expect(str.contains(fails("[dependencies]\nx = { git = \"b\", version = \"abc\" }\n").msg, "invalid version"))
+        expect(str.contains(fails("[dependencies]\nx = { git = \"b\", rev = \"zz\" }\n").msg, "hexadecimal"))
+        expect(str.contains(fails("[dependencies]\nx = { git = \"b\", subdir = \"../a\" }\n").msg, "subdir"))
+        expect(str.contains(fails("[dependencies]\nx = { path = \"b\", tag = \"v\" }\n").msg, "needs `git`"))
+        expect(str.contains(fails("[dependencies]\nx = { git = \"--upload-pack=touch x\" }\n").msg, "starts with `-`"))
+        expect(str.contains(fails("[dependencies]\nx = { git = \" -u\" }\n").msg, "starts with `-`"))
+        expect(str.contains(fails("[dependencies]\nx = { git = \"a b\" }\n").msg, "contains the character"))
+        expect(str.contains(fails("[dependencies]\nx = { url = \"-K/etc/x\" }\n").msg, "starts with `-`"))
+        expect_eq(fails("[dependencies]\n\"a-b\" = { path = \"b\" }\n").line, 2)
+        expect(str.contains(fails("[package]\nname = \"1x\"\n").msg, "invalid package name"))
+        expect(str.contains(fails("[package]\nname = \"a\"\nversion = \"x\"\n").msg, "invalid package version"))
+    }
+}
+
+test "build tables and profiles" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        m := parse_manifest("[build]\nmode = \"checked\"\ndebug-info = true\ncflags = [\"-O2\"]\nlibs = [\"z\"]\nc-sources = [\"c/a.c\"]\n\n[profile.release]\nmode = \"fast\"\ncflags = [\"-DX\"]\n") else return
+        expect(m.build.mode? is .Checked)
+        expect_eq(m.build.debug_info, true)
+        expect_eq(m.profiles.items.len, 1)
+        expect_eq(m.profiles.items[0].name, "release")
+        expect_eq(m.profiles.items[0].line, 8)
+        // No profile: [build] alone. A profile replaces the keys it writes.
+        plain := build_settings(&m, null) else return
+        expect(plain.mode? is .Checked)
+        r := build_settings(&m, "release") else return
+        expect(r.mode? is .Fast)
+        expect_eq(r.cflags?[0], "-DX")
+        expect_eq(r.libs?[0], "z")
+        expect_eq(r.debug_info, true)
+        e := settings_error(&m, "nope")
+        expect(str.contains(e, "unknown profile `nope`") and str.contains(e, "release"))
+        empty := parse_manifest("") else return
+        expect(str.contains(settings_error(&empty, "x"), "defines no"))
+        expect_eq(fails("[build]\nspeed = 1\n").line, 2)
+        expect(str.contains(fails("[profile.p]\nmode = \"warp\"\n").msg, "invalid mode"))
+    }
+}
+
+test "url dependencies" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        hash := "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
+        .Url(u) := dep_source(str.format("u = {{ url = \"https://h/u-1.tar.gz\", sha256 = \"{}\", subdir = \"p\" }}", hash)!) else return
+        expect_eq(u.url, "https://h/u-1.tar.gz")
+        expect_eq(u.sha256, "abababababababababababababababababababababababababababababababab")
+        expect_eq(u.subdir, "p")
+        .Url(bare) := dep_source("u = { url = \"x\" }") else return
+        expect(bare.sha256 is null and bare.subdir is null)
+        expect(str.contains(fails("[dependencies]\nu = { url = \"x\", sha256 = \"12\" }\n").msg, "64 hexadecimal"))
+        expect(str.contains(fails("[dependencies]\nu = { url = \"x\", path = \"p\" }\n").msg, "both"))
+        expect(str.contains(fails("[dependencies]\nu = { sha256 = \"12\", path = \"p\" }\n").msg, "needs `url`"))
+    }
+}
+
+test "identifiers and urls" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect(is_identifier("json"))
+        expect(is_identifier("_a1"))
+        expect(not is_identifier("1a"))
+        expect(not is_identifier("a-b"))
+        expect(not is_identifier(""))
+        expect_eq(normalize_url("https://h/x/y.git/"), "https://h/x/y")
+        expect_eq(normalize_url("https://h/x/y/"), "https://h/x/y")
+        expect_eq(normalize_url("/tmp/r.git"), "/tmp/r")
+    }
+}
+
+test "syntax errors read like the reference" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(fails("[package").msg, "unclosed table, expected `]`")
+        expect_eq(fails("name = ").msg, "string values must be quoted, expected literal string")
+        expect_eq(fails("x == 1").msg, "extra `=`, expected nothing")
+        expect_eq(fails("a = 01").msg, "unexpected leading zero, expected nothing")
+        expect_eq(fails("x = [1,").msg, "unclosed array, expected `]`")
+        expect_eq(fails("[package]\nname = \"x\n").msg, "invalid basic string, expected `\"`")
+        expect_eq(fails("a = 1\na = 2").msg, "duplicate key")
+        expect_eq(fails("[a]\n[a]").msg, "duplicate key")
+        expect_eq(fails("a = 1\na = 2").line, 2)
+        // Floats, dates and trailing commas are valid TOML that a manifest ignores.
+        expect(fails("a = 1.5\nb = 1979-05-27\nc = { x = 1, }\nd = 1e5\n").msg.len is 0)
+    }
+}

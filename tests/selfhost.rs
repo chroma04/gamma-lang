@@ -1465,3 +1465,473 @@ fn testing_matches_the_reference() {
         assert_eq!(out.status.code(), Some(2), "{}", bad);
     }
 }
+
+// ---------------------------------------------------------------------------------
+// gammac's package manager and gamma.toml build settings
+// ---------------------------------------------------------------------------------
+
+/// A scratch directory for the package tests: `ref` for the reference implementation, `new`
+/// for gammac, each with a cache of its own. Both run the same steps in the same relative
+/// places, so that what they print and write can be compared.
+#[cfg(unix)]
+struct Twin {
+    root: PathBuf,
+}
+
+#[cfg(unix)]
+impl Twin {
+    fn new(name: &str) -> Twin {
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-pkg").join(name);
+        let _ = std::fs::remove_dir_all(&root);
+        for side in ["ref", "new"] {
+            std::fs::create_dir_all(root.join(side).join("w")).unwrap();
+        }
+        Twin { root }
+    }
+
+    fn dir(&self, side: &str) -> PathBuf {
+        self.root.join(side).join("w")
+    }
+
+    /// The command for one side: `gamma` for `ref`, `gammac` for `new`, in `sub`.
+    fn command(&self, side: &str, sub: &str) -> Command {
+        let mut cmd = if side == "ref" {
+            gamma()
+        } else {
+            let Gammac::Native(exe) = gammac() else { unreachable!() };
+            let mut c = Command::new(exe);
+            gammac_env(&mut c);
+            c
+        };
+        cmd.current_dir(self.dir(side).join(sub));
+        cmd.env("GAMMA_CACHE_DIR", self.root.join(side).join("cache"));
+        cmd.env("HOME", self.root.join(side));
+        cmd.env_remove("CFLAGS").env_remove("LDFLAGS").env_remove("CC");
+        for (k, v) in [
+            ("GIT_AUTHOR_NAME", "t"),
+            ("GIT_AUTHOR_EMAIL", "t@example.com"),
+            ("GIT_COMMITTER_NAME", "t"),
+            ("GIT_COMMITTER_EMAIL", "t@example.com"),
+            ("GIT_AUTHOR_DATE", "2020-01-01T00:00:00Z"),
+            ("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z"),
+        ] {
+            cmd.env(k, v);
+        }
+        cmd
+    }
+
+    /// What `cmd` printed, with the side's directory and the program's name made alike.
+    fn run(&self, side: &str, mut cmd: Command) -> Ran {
+        let (out, err, code) = ran(common::output(&mut cmd).unwrap());
+        let normal = |s: String| s.replace(self.root.join(side).to_str().unwrap(), "TMP").replace("gammac", "gamma");
+        (normal(out), normal(err), code)
+    }
+
+    /// Runs `args` in `sub` on both sides and requires the same output, diagnostics and
+    /// exit status. Returns the reference's.
+    fn both(&self, sub: &str, args: &[&str]) -> Ran {
+        self.both_env(sub, args, &[])
+    }
+
+    fn both_env(&self, sub: &str, args: &[&str], env: &[(&str, &str)]) -> Ran {
+        let side = |name: &str| -> Ran {
+            let mut cmd = self.command(name, sub);
+            cmd.args(args).envs(env.iter().copied());
+            self.run(name, cmd)
+        };
+        let want = side("ref");
+        let got = side("new");
+        // The usage text differs in the commands each program has: compare up to it.
+        let cut = |s: &str| s.split("\nusage: ").next().unwrap().to_string();
+        assert_eq!(cut(&want.0), cut(&got.0), "`{}` standard output differs", args.join(" "));
+        assert_eq!(cut(&want.1), cut(&got.1), "`{}` diagnostics differ", args.join(" "));
+        assert_eq!(want.2, got.2, "`{}` exit status differs", args.join(" "));
+        want
+    }
+
+    /// Writes `text` to `rel` on both sides.
+    fn write(&self, rel: &str, text: &str) {
+        for side in ["ref", "new"] {
+            let p = self.dir(side).join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+    }
+
+    /// Requires the files below `rel` (except the C files and executables a build leaves) to
+    /// be the same.
+    fn same_files(&self, rel: &str) {
+        let files = |side: &str| -> Vec<(String, String)> {
+            tree(&self.dir(side).join(rel))
+                .into_iter()
+                .filter(|(n, _)| !n.starts_with(".git/") && !n.ends_with(".c") && !n.ends_with(".out"))
+                .map(|(n, c)| (n, String::from_utf8_lossy(&c).replace(self.root.join(side).to_str().unwrap(), "TMP")))
+                .collect()
+        };
+        assert_eq!(files("ref"), files("new"), "the files below {} differ", rel);
+    }
+}
+
+#[cfg(unix)]
+fn tool_available(tool: &str) -> bool {
+    Command::new(tool).arg("--version").output().is_ok_and(|o| o.status.success())
+}
+
+/// `new`, `init`, `add --path` and `remove`, and the command-line errors of the package
+/// commands, give the reference's output and files.
+#[test]
+#[cfg(unix)]
+fn package_scaffolding_and_editing_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("scaffold");
+    t.both(".", &["new", "my-app", "--vcs=none"]);
+    t.both(".", &["new", "my-app", "--vcs=none"]);
+    t.both(".", &["new", "other", "--name=thing", "--vcs=none"]);
+    t.both(".", &["new", "x", "--name=1x"]);
+    t.both(".", &["new", "--vcs=none", "ünï-cödé"]);
+    for name in ["fn", "std", "i32", "_"] {
+        t.both(".", &["new", "--vcs=none", &format!("--name={name}"), "d"]);
+    }
+    t.write("proj/main.gm", "main :: fn() needs Out {\n    print(\"mine\\n\")\n}\n");
+    t.write("proj/.gitignore", "custom\n");
+    t.both("proj", &["init", "--vcs=none"]);
+    t.both("proj", &["init", "--vcs=none"]);
+    t.write("bad/gamma.toml", "[package\n");
+    t.both("bad", &["init", "--vcs=none"]);
+    t.both(".", &["init", "missing"]);
+    t.write("lib/gamma.toml", "[package]\nname = \"lib\"\n");
+    t.write("lib/lib.gm", "pub value :: fn() -> i32 => 1\n");
+    t.write(
+        "app/gamma.toml",
+        "# my app\n[package]\nname = \"app\"\n\n[dependencies]\n# json\njson = { path = \"../lib\" }\n",
+    );
+    t.both("app", &["add", "other", "--path", "../lib"]);
+    t.both("app", &["add", "other", "--path", "../lib"]);
+    t.both("app", &["add", "bad-name", "--path", "../lib"]);
+    t.both("app", &["add", "x"]);
+    t.both("app", &["add", "x", "--bogus"]);
+    t.both("app", &["remove", "other"]);
+    t.both("app", &["remove", "json"]);
+    t.both("app", &["remove", "json"]);
+    t.same_files(".");
+    for (sub, text) in [
+        ("crlf", "[package]\r\nname = \"o\"\r\n\r\n[dependencies]\r\n"),
+        ("dotted", "[package]\nname = \"o\"\n[dependencies]\nz.path = \"../lib\"\n"),
+        ("subtable", "[package]\nname = \"o\"\n[dependencies.z]\npath = \"../lib\"\n"),
+        ("bare", "[package]\nname = \"o\""),
+    ] {
+        t.write(&format!("{sub}/gamma.toml"), text);
+        t.both(sub, &["add", "w", "--path", "../lib"]);
+        t.both(sub, &["remove", "w"]);
+        t.both(sub, &["remove", "z"]);
+    }
+    t.same_files(".");
+    // The usage differs in the commands each program has, but both end with the package commands.
+    let help = |side: &str| {
+        let mut cmd = t.command(side, ".");
+        cmd.args(["help", "packages"]);
+        t.run(side, cmd).0
+    };
+    let tail = |s: String| s[s.find("package commands:").unwrap()..].to_string();
+    assert_eq!(tail(help("ref")), tail(help("new")));
+    t.both(".", &["update", "--bogus"]);
+    t.both(".", &["fetch", "--offline=true"]);
+    t.both(".", &["cache", "tidy"]);
+    t.both(".", &["cache", "dir"]);
+}
+
+/// Every way a `gamma.toml` can be wrong is reported as the reference does, with its line.
+#[test]
+#[cfg(unix)]
+fn manifest_errors_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("manifest");
+    t.write("p/main.gm", "main :: fn() {}\n");
+    let cases = [
+        "package = 1",
+        "[package]\nname = 1",
+        "[package]\nname = \"a b\"",
+        "[package]\nname = \"fn\"",
+        "[package]\nname = \"ok\"\nversion = \"1.x\"",
+        "[package]\nname = \"ok\"\nversion = \"01.2.3\"",
+        "dependencies = 3",
+        "[dependencies]\nx = 3",
+        "[dependencies]\nx = { path = \"d\", bogus = 1 }",
+        "[dependencies]\nx = { path = \"d\", git = \"u\" }",
+        "[dependencies]\nx = { git = \"\" }",
+        "[dependencies]\nx = { git = \"https://h/r\", tag = \"a\", branch = \"b\" }",
+        "[dependencies]\nx = { git = \"https://h/r\", version = \"x.y\" }",
+        "[dependencies]\nx = { git = \"https://h/r\", version = \">=1, <\" }",
+        "[dependencies]\nx = { git = \"https://h/r\", rev = \"xyz\" }",
+        "[dependencies]\nx = { git = \"https://h/r\", subdir = \"../x\" }",
+        "[dependencies]\nx = { git = \"-oProxyCommand=x\" }",
+        "[dependencies]\nx = { git = \"a b\" }",
+        "[dependencies]\nx = { url = \"u\", sha256 = \"abc\" }",
+        "[dependencies]\nx = { url = \"u\", tag = \"t\" }",
+        "[dependencies]\nx = { url = \"u\" }\ny = {\n  path = \"d\",\n  bogus = 1 }",
+        "[dependencies.x]\npath = \"d\"\nbogus = 3",
+        "[build]\nmode = \"turbo\"",
+        "[build]\nbogus = 1",
+        "[build]\nlibs = [\"-lz\"]",
+        "[build]\nc-sources = [\"\"]",
+        "[build]\nc-sources = [\"nothere.c\"]",
+        "lint = 3",
+        "[lint]\nbogus = \"warn\"",
+        "[profile.\"a b\"]\nmode = \"fast\"",
+        "[profile.dev]\nmode = \"x\"",
+        "[package",
+        "name = ",
+        "x = [1,",
+        "a = 01",
+        "a = \"\\q\"",
+        "a = 1\na = 2",
+        "[a]\n[a]",
+        "[package]\nname = \"\"\"\nok\"\"\"\nversion = \"x\"",
+        "a = 1.5\nb = 1979-05-27\nc = { x = 1, }",
+    ];
+    for case in cases {
+        t.write("p/gamma.toml", &format!("{case}\n"));
+        t.both("p", &["check", "."]);
+    }
+    for args in [["check", ".", "--profile=nope"], ["check", ".", "--profile="], ["check", ".", "--profile"]] {
+        t.write("p/gamma.toml", "[build]\nmode = \"fast\"\n[profile.dev]\nmode = \"checked\"\n");
+        t.both("p", &args);
+    }
+    t.write("q/m.gm", "main :: fn() {}\n");
+    t.both("q", &["check", "m.gm", "--profile=dev"]);
+}
+
+#[cfg(unix)]
+fn have_vcs() -> bool {
+    Command::new("git").arg("--version").output().is_ok_and(|o| o.status.success())
+}
+
+/// Runs `git` in `dir` with a fixed identity and dates, so that the same commits come out on
+/// both sides.
+#[cfg(unix)]
+fn vcs(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(["-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_AUTHOR_DATE", "2020-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+}
+
+/// A git dependency is fetched, locked, built and run; `--locked`, `--offline`, `update`,
+/// `add`, `remove` and the cache commands behave as the reference's.
+#[test]
+#[cfg(unix)]
+fn git_dependencies_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    if !have_vcs() {
+        eprintln!("skipped: git is not installed");
+        return;
+    }
+    let t = Twin::new("git");
+    for side in ["ref", "new"] {
+        let w = t.dir(side);
+        let repo = w.join("util");
+        std::fs::create_dir_all(&repo).unwrap();
+        vcs(&repo, &["init", "-q"]);
+        for (version, value) in [("1.0.0", 1), ("1.1.0", 2)] {
+            std::fs::write(repo.join("gamma.toml"), format!("[package]\nname = \"util\"\nversion = \"{version}\"\n"))
+                .unwrap();
+            std::fs::write(repo.join("lib.gm"), format!("pub value :: fn() -> i32 => {value}\n")).unwrap();
+            vcs(&repo, &["add", "-A"]);
+            vcs(&repo, &["commit", "-q", "-m", version]);
+            vcs(&repo, &["tag", &format!("v{version}")]);
+        }
+        std::fs::create_dir_all(w.join("app")).unwrap();
+        std::fs::write(w.join("app/gamma.toml"), "[package]\nname = \"app\"\n").unwrap();
+        std::fs::write(
+            w.join("app/main.gm"),
+            "util :: import \"util\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", util.value())\n}\n",
+        )
+        .unwrap();
+    }
+    // `add` takes the URL, which contains the side's directory.
+    let add = |side: &str| -> Ran {
+        let mut cmd = t.command(side, "app");
+        let url = format!("file://{}", t.dir(side).join("util").display());
+        cmd.args(["add", "util", "--git", &url, "--version", "1"]);
+        t.run(side, cmd)
+    };
+    let (want, got) = (add("ref"), add("new"));
+    assert_eq!(want, got);
+    assert!(want.1.contains("Locking util v1.1.0"), "{}", want.1);
+    t.same_files("app");
+    assert_eq!(t.both("app", &["run", "."]).0, "2\n");
+    t.both("app", &["check", "."]);
+    t.both("app", &["build", ".", "-o", "app.out"]);
+    let built = Command::new(t.dir("new").join("app/app.out")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&built.stdout), "2\n");
+    t.both("app", &["fetch", "--locked"]);
+    t.both("app", &["run", "--offline", "--locked", "."]);
+    t.both("app", &["update"]);
+    // A diagnostic names the dependency's module.
+    t.write("app/main.gm", "util :: import \"util\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", util.nope())\n}\n");
+    t.both("app", &["check", "."]);
+    // A newer tag is picked up by `update`, not before.
+    t.write(
+        "app/main.gm",
+        "util :: import \"util\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", util.value())\n}\n",
+    );
+    for side in ["ref", "new"] {
+        let repo = t.dir(side).join("util");
+        std::fs::write(repo.join("lib.gm"), "pub value :: fn() -> i32 => 3\n").unwrap();
+        vcs(&repo, &["add", "-A"]);
+        vcs(&repo, &["commit", "-q", "-m", "next"]);
+        vcs(&repo, &["tag", "v1.2.0"]);
+    }
+    assert_eq!(t.both("app", &["run", "."]).0, "2\n");
+    t.both("app", &["update", "nope"]);
+    let updated = t.both("app", &["update"]);
+    assert!(updated.1.contains("Updating util v1.1.0 -> v1.2.0"), "{}", updated.1);
+    assert_eq!(t.both("app", &["run", "."]).0, "3\n");
+    // A lock that is edited, damaged or missing.
+    for side in ["ref", "new"] {
+        let p = t.dir(side).join("app/gamma.lock");
+        let text = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, text.replace("version = \"1.2.0\"", "version = \"9.9.9\"")).unwrap();
+    }
+    t.both("app", &["run", "--locked", "."]);
+    t.both("app", &["run", "."]);
+    t.write("app/gamma.lock", "garbage = [");
+    t.both("app", &["run", "."]);
+    t.write("app/gamma.lock", "");
+    t.both("app", &["run", "--locked", "."]);
+    t.both("app", &["run", "."]);
+    t.same_files("app");
+    t.both("app", &["cache", "clean", "--dry-run"]);
+    t.both("app", &["remove", "util"]);
+    t.same_files("app");
+}
+
+/// Archive dependencies: downloaded, locked and checked against their hash.
+#[test]
+#[cfg(unix)]
+fn archive_dependencies_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    if !tool_available("curl") || !tool_available("tar") {
+        eprintln!("skipped: curl or tar is not installed");
+        return;
+    }
+    let t = Twin::new("archive");
+    for side in ["ref", "new"] {
+        let w = t.dir(side);
+        std::fs::create_dir_all(w.join("util-1.0.0")).unwrap();
+        std::fs::write(w.join("util-1.0.0/gamma.toml"), "[package]\nname = \"util\"\nversion = \"1.0.0\"\n").unwrap();
+        std::fs::write(w.join("util-1.0.0/lib.gm"), "pub value :: fn() -> i32 => 5\n").unwrap();
+        let made = Command::new("tar")
+            .args(["--sort=name", "--mtime=@0", "--owner=0", "--group=0", "-czf", "util.tgz", "util-1.0.0"])
+            .current_dir(&w)
+            .output()
+            .unwrap();
+        if !made.status.success() {
+            eprintln!("skipped: tar does not take --sort");
+            return;
+        }
+        std::fs::create_dir_all(w.join("app")).unwrap();
+        std::fs::write(
+            w.join("app/gamma.toml"),
+            format!(
+                "[package]\nname = \"app\"\n[dependencies]\nutil = {{ url = \"file://{}\" }}\n",
+                w.join("util.tgz").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            w.join("app/main.gm"),
+            "util :: import \"util\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", util.value())\n}\n",
+        )
+        .unwrap();
+    }
+    t.both("app", &["run", "."]);
+    t.both("app", &["run", "--offline", "--locked", "."]);
+    t.both("app", &["build", ".", "-o", "app.out"]);
+    t.both("app", &["run", "--offline", "."]);
+    t.write("app/gamma.toml", "[package]\nname = \"app\"\n[dependencies]\nx = { url = \"u\", sha256 = \"abc\" }\n");
+    t.both("app", &["check", "."]);
+    t.same_files("app");
+}
+
+/// `[build]` and `[profile.*]`: the mode, flags and C sources of a package reach the build,
+/// and the command line wins over the manifest.
+#[test]
+#[cfg(unix)]
+fn build_settings_match_the_reference() {
+    let Gammac::Native(_) = gammac() else { return };
+    let t = Twin::new("settings");
+    t.write("app/c/include/shim.h", "int shim_add(int a, int b);\n");
+    t.write(
+        "app/c/shim.c",
+        "#include \"shim.h\"\n#ifndef BONUS\n#define BONUS 0\n#endif\nint shim_add(int a, int b) { return a + b + BONUS; }\n",
+    );
+    t.write(
+        "app/main.gm",
+        "c :: import \"std/c\"\n\nshim :: foreign \"c\" {\n    shim_add :: fn(a: c.c_int, b: c.c_int) -> c.c_int needs not\n}\n\nmain :: fn() needs Out + Sys {\n    print(\"{}\\n\", shim.shim_add(2, 3))\n}\n",
+    );
+    t.write(
+        "app/mode.gm",
+        "mode_name :: fn() -> string {\n    when target.mode is .Debug { return \"debug\" }\n        else when target.mode is .Checked { return \"checked\" }\n        else when target.mode is .Safe { return \"safe\" }\n        else { return \"fast\" }\n}\n\nmain :: fn() needs Out {\n    print(\"{}\\n\", mode_name())\n}\n",
+    );
+    t.write(
+        "app/gamma.toml",
+        "[package]\nname = \"app\"\n\n[build]\nmode = \"checked\"\nc-sources = [\"c/shim.c\"]\ninclude-dirs = [\"c/include\"]\n\n[profile.release]\nmode = \"fast\"\ncflags = [\"-DBONUS=100\"]\n\n[profile.dev]\nmode = \"debug\"\n",
+    );
+    assert_eq!(t.both("app", &["run", "main.gm"]).0, "5\n");
+    assert_eq!(t.both("app", &["run", "mode.gm"]).0, "checked\n");
+    assert_eq!(t.both("app", &["run", "--profile=release", "mode.gm"]).0, "fast\n");
+    assert_eq!(t.both("app", &["run", "--profile=dev", "mode.gm"]).0, "debug\n");
+    assert_eq!(t.both("app", &["run", "--profile=release", "--mode=checked", "mode.gm"]).0, "checked\n");
+    assert_eq!(t.both("app", &["run", "--mode=fast", "mode.gm"]).0, "fast\n");
+    assert_eq!(t.both("app", &["run", "--profile=release", "main.gm"]).0, "105\n");
+    t.both("app", &["run", "--profile=nope", "mode.gm"]);
+    t.both("app", &["check", "--profile=release", "mode.gm"]);
+    // The environment's flags come after the manifest's and win.
+    let flags = t.both_env("app", &["run", "--profile=release", "main.gm"], &[("CFLAGS", "-DBONUS=7")]);
+    assert_eq!(flags.0, "12\n");
+    // A C source that does not compile, and a missing one.
+    t.write("app/c/shim.c", "int shim_add(int a, int b) { return a +\n");
+    let (_, err, code) = t.both("app", &["build", "main.gm", "-o", "broken"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("the C compiler failed on"), "{err}");
+    t.write("app/gamma.toml", "[package]\nname = \"app\"\n[build]\nc-sources = [\"c/nope.c\"]\n");
+    t.both("app", &["build", "main.gm"]);
+    // A package that wraps C, with an include directory of its own, as a path dependency.
+    t.write(
+        "wrap/gamma.toml",
+        "[package]\nname = \"wrap\"\n\n[build]\nc-sources = [\"native/wrap.c\"]\ninclude-dirs = [\"native\"]\nlibs = [\"m\"]\n",
+    );
+    t.write("wrap/native/config.h", "#define WRAP_BASE 40\n");
+    t.write(
+        "wrap/native/wrap.c",
+        "#include \"config.h\"\n#include <math.h>\nint wrap_value(void) { return WRAP_BASE + (int)sqrt(4.0); }\n",
+    );
+    t.write(
+        "wrap/lib.gm",
+        "c :: import \"std/c\"\nlib :: foreign \"c\" {\n    wrap_value :: fn() -> c.c_int needs not\n}\npub value :: fn() -> i32 needs Sys => lib.wrap_value()\n",
+    );
+    t.write(
+        "app3/gamma.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nwrap = { path = \"../wrap\" }\n\n[build]\nc-sources = [\"own.c\"]\ninclude-dirs = [\"inc\"]\n",
+    );
+    t.write("app3/inc/config.h", "#define OWN_BASE 1000\n");
+    t.write("app3/own.c", "#include \"config.h\"\nint own_value(void) { return OWN_BASE; }\n");
+    t.write(
+        "app3/main.gm",
+        "wrap :: import \"wrap\"\nc :: import \"std/c\"\n\nown :: foreign \"c\" {\n    own_value :: fn() -> c.c_int needs not\n}\n\nmain :: fn() needs Out + Sys {\n    print(\"{} {}\\n\", wrap.value(), own.own_value())\n}\n",
+    );
+    assert_eq!(t.both("app3", &["run", "main.gm"]).0, "42 1000\n");
+    t.both("app3", &["build", ".", "-o", "a3"]);
+    let built = Command::new(t.dir("new").join("app3/a3")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&built.stdout), "42 1000\n");
+}

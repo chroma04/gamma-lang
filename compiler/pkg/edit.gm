@@ -1,0 +1,279 @@
+// Format-preserving edits of `gamma.toml` for `gamma add` and `gamma remove` (mirrors
+// `src/pkg/edit.rs`, which edits a TOML document tree; this works on the lines of the text,
+// which keeps the same comments and layout for the manifests the commands handle).
+
+arena :: import "std/arena"
+load :: import "../load"
+str :: import "std/str"
+
+/// A dependency to add.
+pub NewDep :: union {
+    Path: string
+    Git: (url: string, reference: ?(key: string, value: string), subdir: ?string)
+    Url: (url: string, sha256: ?string, subdir: ?string)
+}
+
+/// `text` with each line end as a single `\n` (the edited manifest is written that way).
+normalize_newlines :: fn(text: string) -> string needs Alloc {
+    if str.find(text, "\r\n") is null { return text }
+    return str.replace_alloc(text, "\r\n", "\n")!
+}
+
+/// The lines of `text`, each with its line end.
+split_lines :: fn(text: string) -> List(string) needs Alloc {
+    lines := list(string)
+    start: usize = 0
+    for i, c in enumerate(text) {
+        if c is '\n' {
+            lines.push(text[start..i + 1])!
+            start = i + 1
+        }
+    }
+    if start < text.len { lines.push(text[start..])! }
+    return lines
+}
+
+/// What the header line `line` names (`dependencies` for `[dependencies]`), if it is a
+/// table header (not an array of tables).
+header_of :: fn(line: string) -> ?string needs Alloc {
+    t := load.trim_ascii(line)
+    if not t.starts_with("[") or t.starts_with("[[") { return null }
+    end := str.find(t, "]") else return null
+    inner := load.trim_ascii(t[1..end])
+    if inner.len >= 2 and (inner[0] is '"' or inner[0] is '\'') and inner[inner.len - 1] is inner[0] {
+        return inner[1..inner.len - 1]
+    }
+    return inner
+}
+
+is_header :: fn(line: string) -> bool needs Alloc {
+    t := load.trim_ascii(line)
+    return t.starts_with("[")
+}
+
+/// Whether `line` holds no entry: blank, or only a comment.
+is_blank_or_comment :: fn(line: string) -> bool {
+    t := load.trim_ascii(line)
+    return t.len is 0 or t.starts_with("#")
+}
+
+/// The key a line starts, if it is `key = …`.
+key_of :: fn(line: string) -> ?string needs Alloc {
+    t := load.trim_ascii(line)
+    eq := str.find(t, "=") else return null
+    k := load.trim_ascii(t[0..eq])
+    if k.len >= 2 and (k[0] is '"' or k[0] is '\'') and k[k.len - 1] is k[0] { return k[1..k.len - 1] }
+    // A dotted key `name.rest` belongs to the table `name`.
+    if k.len > 0 and k[0] is not '"' and k[0] is not '\'' {
+        if dot := str.find(k, ".") { return load.trim_ascii(k[0..dot]) }
+    }
+    return k
+}
+
+/// How many lines, from `at`, the entry that starts there takes: a value may span lines
+/// when it is an array or a table that is not closed on the first.
+entry_lines :: fn(lines: []const string, at: usize) -> usize {
+    depth: i32 = 0
+    quote: u8 = 0
+    n: usize = 0
+    i := at
+    while i < lines.len {
+        for c in lines[i] {
+            if quote is not 0 {
+                if c is quote { quote = 0 }
+            } else if c is '"' or c is '\'' {
+                quote = c
+            } else if c is '#' {
+                break
+            } else if c in ('[', '{') {
+                depth += 1
+            } else if c in (']', '}') {
+                depth -= 1
+            }
+        }
+        quote = 0
+        n += 1
+        i += 1
+        if depth <= 0 { break }
+    }
+    return n
+}
+
+/// The range of lines `[header + 1, end)` of the table `[name]`, with the index of its
+/// header.
+table_range :: fn(lines: []const string, name: string) -> ?(header: usize, end: usize) needs Alloc {
+    for i, l in enumerate(lines) {
+        if h := header_of(l) {
+            if h is name {
+                end := i + 1
+                while end < lines.len and not is_header(lines[end]) { end += 1 }
+                return (header: i, end: end)
+            }
+        }
+    }
+    return null
+}
+
+inline_value :: fn(dep: NewDep) -> string needs Alloc {
+    out := list(u8)
+    out.extend("{ ")!
+    match dep {
+        .Path(p) => { out.write("path = {}", toml_string(p))! }
+        .Url(u) => {
+            out.write("url = {}", toml_string(u.url))!
+            if h := u.sha256 { out.write(", sha256 = {}", toml_string(h))! }
+            if s := u.subdir { out.write(", subdir = {}", toml_string(s))! }
+        }
+        .Git(g) => {
+            out.write("git = {}", toml_string(g.url))!
+            if r := g.reference { out.write(", {} = {}", r.key, toml_string(r.value))! }
+            if s := g.subdir { out.write(", subdir = {}", toml_string(s))! }
+        }
+    }
+    out.extend(" }")!
+    return out.items
+}
+
+/// `text` with the dependency `name` added to `[dependencies]`, which is created if missing.
+pub add_dependency :: fn(original: string, name: string, dep: NewDep) -> string!string needs Alloc {
+    text := normalize_newlines(original)
+    doc := load.parse_toml(text) else e => { return !str.format("gamma.toml: {}", e.message)! }
+    if d := doc.get("dependencies") {
+        t := load.as_table(d.value) else return !"`dependencies` in gamma.toml is not a table"
+        if t.get(name) is not null { return !str.format("dependency `{}` already exists in gamma.toml", name)! }
+    }
+    entry := str.format("{} = {}\n", name, inline_value(dep))!
+    lines := split_lines(text)
+    out := list(u8)
+    if r := table_range(lines.items, "dependencies") {
+        // After the last line of the table that holds an entry.
+        last := r.end
+        while last > r.header + 1 and is_blank_or_comment(lines.items[last - 1]) { last -= 1 }
+        for l in lines.items[0..last] { out.extend(l)! }
+        if last > 0 and not lines.items[last - 1].ends_with("\n") { out.push('\n')! }
+        out.extend(entry)!
+        for l in lines.items[last..] { out.extend(l)! }
+        return out.items
+    }
+    // Only subtables of `dependencies`: the table's own entries come first.
+    for i, l in enumerate(lines.items) {
+        if h := header_of(l) {
+            if h.starts_with("dependencies.") {
+                for x in lines.items[0..i] { out.extend(x)! }
+                if i > 0 and not is_blank_or_comment(lines.items[i - 1]) { out.push('\n')! }
+                out.extend("[dependencies]\n")!
+                out.extend(entry)!
+                for x in lines.items[i..] { out.extend(x)! }
+                return out.items
+            }
+        }
+    }
+    out.extend(text)!
+    if text.len > 0 {
+        if not text.ends_with("\n") { out.push('\n')! }
+        out.push('\n')!
+    }
+    out.extend("[dependencies]\n")!
+    out.extend(entry)!
+    return out.items
+}
+
+/// `text` without the dependency `name`.
+pub remove_dependency :: fn(original: string, name: string) -> string!string needs Alloc {
+    text := normalize_newlines(original)
+    lines := split_lines(text)
+    missing := str.format("gamma.toml has no dependency `{}`", name)!
+    // `[dependencies]` with an entry `name = …`.
+    if r := table_range(lines.items, "dependencies") {
+        keep := list(string)
+        found := false
+        i: usize = 0
+        while i < lines.items.len {
+            if i > r.header and i < r.end and not is_blank_or_comment(lines.items[i]) {
+                n := entry_lines(lines.items, i)
+                k := key_of(lines.items[i]) else ""
+                if k is name {
+                    // The entry goes, and the comments right above it.
+                    found = true
+                    while keep.items.len > r.header + 1 and is_blank_or_comment(keep.items[keep.items.len - 1]) { _ = keep.pop() }
+                    i += n
+                    continue
+                }
+                for j in 0..n { keep.push(lines.items[i + j])! }
+                i += n
+                continue
+            }
+            keep.push(lines.items[i])!
+            i += 1
+        }
+        if found { return join_without(keep.items, 0, 0) }
+    }
+    // `[dependencies.name]`.
+    wanted := str.format("dependencies.{}", name)!
+    if r := table_range(lines.items, wanted) {
+        first := r.header
+        while first > 0 and is_blank_or_comment(lines.items[first - 1]) { first -= 1 }
+        return join_without(lines.items, first, r.end)
+    }
+    return !missing
+}
+
+join_without :: fn(lines: []const string, from, to: usize) -> string needs Alloc {
+    out := list(u8)
+    for l in lines[0..from] { out.extend(l)! }
+    for l in lines[to..] { out.extend(l)! }
+    return out.items
+}
+
+test "an added dependency keeps the comments" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        text := "# my app\n[package]\nname = \"app\" # the name\n\n[dependencies]\n# json is needed\njson = { path = \"../json\" }\n"
+        out := add_dependency(text, "http", NewDep.Git(url: "https://h/x", reference: (key: "version", value: "^1.2.3"), subdir: null)) else return
+        expect(out.starts_with("# my app\n[package]\nname = \"app\" # the name\n"))
+        expect(str.contains(out, "# json is needed\njson = { path = \"../json\" }\n"))
+        expect(out.ends_with("http = { git = \"https://h/x\", version = \"^1.2.3\" }\n"))
+    }
+}
+
+test "the table is created" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        out := add_dependency("[package]\nname = \"app\"\n", "u", NewDep.Path("../u")) else return
+        expect_eq(out, "[package]\nname = \"app\"\n\n[dependencies]\nu = { path = \"../u\" }\n")
+        out = add_dependency("", "u", NewDep.Git(url: "https://h/x", reference: null, subdir: null)) else return
+        expect(str.contains(out, "[dependencies]\nu = { git = \"https://h/x\" }"))
+        // A table that only has subtables gets its own entries first.
+        out = add_dependency("[dependencies.z]\npath = \"z\"\n", "u", NewDep.Path("u")) else return
+        expect_eq(out, "[dependencies]\nu = { path = \"u\" }\n[dependencies.z]\npath = \"z\"\n")
+        out = add_dependency("[package]\nname = \"o\"\n[dependencies.z]\npath = \"z\"\n", "u", NewDep.Path("u")) else return
+        expect_eq(out, "[package]\nname = \"o\"\n\n[dependencies]\nu = { path = \"u\" }\n[dependencies.z]\npath = \"z\"\n")
+    }
+}
+
+test "duplicates are refused and entries removed" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        text := "[dependencies]\na = { path = \"a\" }\nb = { path = \"b\" }\n"
+        expect(str.contains(add_dependency(text, "a", NewDep.Path("x")) else e => e, "already exists"))
+        expect_eq(remove_dependency(text, "a") else "", "[dependencies]\nb = { path = \"b\" }\n")
+        expect(remove_dependency(text, "zz") is !_)
+        expect(remove_dependency("[package]\nname = \"x\"\n", "a") is !_)
+        // Comments above an entry go with it; dotted keys and subtables too.
+        expect_eq(remove_dependency("[dependencies]\n# the a library\na = { path = \"a\" }\nb = 1\n", "a") else "", "[dependencies]\nb = 1\n")
+        expect_eq(remove_dependency("[dependencies]\nz.path = \"z\"\nb = 1\n", "z") else "", "[dependencies]\nb = 1\n")
+        expect_eq(remove_dependency("[package]\n\n[dependencies.z]\npath = \"z\"\n", "z") else "", "[package]\n")
+    }
+}
+
+test "line ends are normalized" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        out := add_dependency("[package]\r\nname = \"o\"\r\n\r\n[dependencies]\r\n", "w", NewDep.Path("../w")) else return
+        expect_eq(out, "[package]\nname = \"o\"\n\n[dependencies]\nw = { path = \"../w\" }\n")
+    }
+}

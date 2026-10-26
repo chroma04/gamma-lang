@@ -1,0 +1,112 @@
+// `gamma new` and `gamma init`: the files of a fresh package (mirrors `src/pkg/scaffold.rs`).
+
+fs :: import "std/fs"
+load :: import "../load"
+str :: import "std/str"
+
+/// A package name for a directory name: other characters become `_`, and a leading digit
+/// gets a `_` in front.
+pub sanitize_name :: fn(dir_name: string) -> string needs Alloc {
+    out := list(u8)
+    for c in dir_name {
+        // One `_` for each character: the continuation bytes of a UTF-8 sequence add none.
+        if c >= 0x80 and c < 0xC0 { continue }
+        out.push(if c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' { c } else { '_' })!
+    }
+    all_underscores := true
+    for c in out.items {
+        if c is not '_' { all_underscores = false }
+    }
+    if out.items.len is 0 or all_underscores { return "app" }
+    if out.items[0] in '0'..='9' { out.insert(0, '_')! }
+    return out.items
+}
+
+pub manifest_text :: fn(name: string) -> string needs Alloc {
+    return str.format("[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[dependencies]\n", name)!
+}
+
+pub main_source :: fn(name: string) -> string needs Alloc {
+    return str.format(
+        "main :: fn() needs Out {{\n    print(\"hello from {}\\n\")\n}}\n\ndouble :: fn(n: i32) -> i32 => n * 2\n\ntest \"double\" {{\n    expect_eq(double(21), 42)\n}}\n",
+        name,
+    )!
+}
+
+/// Ignores what `gamma build` writes: the executable is named after the directory given
+/// (`main` for `.`), with `.exe` on Windows.
+pub gitignore :: fn(name: string) -> string needs Alloc {
+    return str.format("/main\n/main.exe\n/{}\n/{}.exe\n/.gamma/\n", name, name)!
+}
+
+/// What a scaffold did.
+pub ScaffoldReport :: struct {
+    pub created: List(string)
+    pub skipped: List(string)
+    pub git_initialized: bool = false
+}
+
+/// Writes the package files into `dir` (which exists), leaving existing files alone.
+pub scaffold :: fn(dir, name: string, git: bool) -> string!ScaffoldReport needs Alloc + Fs + Proc {
+    report := ScaffoldReport(created: list(string), skipped: list(string))
+    names := [3]string("gamma.toml", "main.gm", ".gitignore")
+    texts := [3]string(manifest_text(name), main_source(name), gitignore(name))
+    for i in 0..3 {
+        path := join(dir, names[i])
+        f := Fs.open(path, fs.OpenOptions(read: false, write: true, create: true, exclusive: true)) else e => {
+            if e is .AlreadyExists {
+                report.skipped.push(names[i])!
+                continue
+            }
+            return !str.format("cannot write {}: {}", path, io_message(e))!
+        }
+        fs.write_all_to(f, texts[i]) else e => {
+            Fs.close(f)
+            return !str.format("cannot write {}: {}", path, io_message(e))!
+        }
+        Fs.close(f)
+        report.created.push(names[i])!
+    }
+    if git and git_available() and not inside_work_tree(dir) {
+        args := [4]string("git", "init", "-q", dir)
+        r := run(args[..])
+        report.git_initialized = r.ok
+    }
+    return report
+}
+
+git_available :: fn() -> bool needs Alloc + Proc {
+    args := [2]string("git", "--version")
+    return run(args[..]).ok
+}
+
+inside_work_tree :: fn(dir: string) -> bool needs Alloc + Proc {
+    args := [5]string("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
+    return run(args[..]).ok
+}
+
+test "names become identifiers" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(sanitize_name("my-app"), "my_app")
+        expect_eq(sanitize_name("2fast"), "_2fast")
+        expect_eq(sanitize_name("app"), "app")
+        expect_eq(sanitize_name("a.b c"), "a_b_c")
+        expect_eq(sanitize_name("---"), "app")
+        expect_eq(sanitize_name(""), "app")
+        for n in ("my-app", "2fast", "x y", "ünï") { expect(load.is_identifier(sanitize_name(n))) }
+    }
+}
+
+test "templates" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect(str.contains(manifest_text("app"), "name = \"app\""))
+        expect(str.contains(main_source("app"), "hello from app\\n"))
+        expect_eq(gitignore("app"), "/main\n/main.exe\n/app\n/app.exe\n/.gamma/\n")
+    }
+}
+
+arena :: import "std/arena"

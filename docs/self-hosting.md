@@ -31,6 +31,7 @@ this checkable:
 | formatter | the output, messages and exit status of `gamma fmt` |
 | `doc` | the standard output, standard error, exit status and files of `gamma doc` |
 | lint and fix | the diagnostics, messages, edited files and exit status of `gamma lint` and `gamma fix` |
+| package manager | the output, messages, files (`gamma.toml`, `gamma.lock`, the package store) and exit status of `gamma new`, `init`, `fetch`, `update`, `add`, `remove` and `cache`, and of the commands that use the build settings of `gamma.toml` |
 | bootstrap | the C that `gammac` generates for itself, built by itself |
 
 Diagnostics are compared in the JSON format (`--diag-format=json`), which carries every
@@ -59,9 +60,9 @@ leaves to implementations: message texts, spans and recovery after errors.
    name, packages and their path dependencies from `gamma.toml`, collecting each
    module's top-level names (including the taken branches of top-level `when`s), and
    import cycles: `gammac modules` matches `gamma modules` on the root of every program in
-   the repository. Not yet: git and archive dependencies (which need the lock file and the
-   package manager), the exact messages for a malformed `gamma.toml`, and `when`
-   conditions beyond `target`, `@size_of`, literals and constants.
+   the repository. Git and archive dependencies come from the package manager (see
+   below), and a malformed `gamma.toml` is reported with the reference's messages. Not
+   yet: `when` conditions beyond `target`, `@size_of`, literals and constants.
 4. **Checker** — done, in two parts. `gammac decls` and `gammac tir` match `gamma decls`
    and `gamma tir` on every program in the repository, error messages included.
    - **Declarations.** Resolving every top-level declaration without checking function
@@ -255,12 +256,45 @@ tests (as `gamma test` would), and, in a package, with the other modules of the 
 Warnings carry their rule: `warning[unused-variable]: …` in the human and short formats,
 and a `code` field in JSON. Messages that name the tool (`gamma: applied 2 fixes in 1
 file`, `gamma lint: 3 warnings`) keep the reference's text, so that output compares
-equal. Differences: `--offline`, `--locked` and `--target` are not options of `gammac`, and
-messages for bad command lines start `gammac:`.
+equal. Differences: `--target` is not an option of `gammac`, `--offline` and `--locked`
+are accepted but linting does not fetch dependencies, and messages for bad command lines
+start `gammac:`.
 `tests/selfhost.rs` compares `gammac lint` with `gamma lint` in the JSON format on every
 program root at the default levels and with `--warn=all`, and `gammac fix` and `gammac
 lint --fix` on scratch copies of the single-file conformance programs, comparing the
 output and the edited files.
+
+### Packages and build settings
+
+`gammac new`, `init`, `fetch`, `update`, `add`, `remove` and `cache` are the package
+commands of `gamma`, with the same options, output and files. The code is in
+`compiler/pkg/`: `git.gm` and `archive.gm` run `git`, `curl` and `tar` (as the reference
+does, with the same flags), `resolve.gm` picks the revisions, `lock.gm` reads and writes
+`gamma.lock`, `cache.gm` is `cache clean`, `scaffold.gm` is `new` and `init`, `edit.gm`
+edits `gamma.toml` for `add` and `remove`, and `cli.gm` parses the command lines. The
+manifest itself (`manifest.gm`) and version requirements (`semver.gm`, with the messages
+of the `semver` crate) are in `compiler/load/`, because the loader reads manifests too.
+Syntax errors in `gamma.toml` and `gamma.lock` read as the TOML library of the reference
+words them, as far as a manifest can have them. `edit.gm` edits the lines of the text
+instead of a document tree, which keeps comments and layout the same for the manifests
+the commands handle (line ends are written as `\n`, as the reference does).
+
+`gammac check`, `build` and `run` fetch what the lock file does not cover before they
+load the program, take `--offline`, `--locked` and `--profile=NAME`, and apply the
+`[build]` table and the profile of the root package's `gamma.toml`: `mode` (under
+`--mode`), `cflags` and `ldflags` (before `CFLAGS` and `LDFLAGS`), and, in a native build,
+the `c-sources`, `include-dirs`, `libs` and `lib-dirs` of the package and its
+dependencies. The C sources are compiled again by every build (there is no object cache),
+each with the include directories of its own package. `CC` may hold arguments.
+
+Differences: `gammac` has no Safe mode, so `mode = "safe"` is an error for `build` and
+`run` (and `check` analyzes as Checked); `debug-info` of the manifest follows `-g`;
+`lint` and `fix` do not fetch dependencies, so a package with git or archive dependencies
+needs a `gammac fetch` first; `gammac modules`, `decls` and `tir` do not look at the lock
+file, as the reference's do not; there is no object cache, so `cache clean` has no
+runtime objects to count; and messages start `gammac:`.
+`tests/selfhost.rs` runs both programs over the same steps in two scratch directories
+(local `file://` repositories and archives) and compares what they print and write.
 
 ### Growing a stage
 

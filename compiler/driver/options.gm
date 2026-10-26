@@ -5,6 +5,7 @@
 
 diag :: import "../diag"
 lint :: import "../lint"
+pkg :: import "../pkg"
 
 /// What gammac was asked to do.
 pub Command :: union { Lex, Parse, Modules, Decls, Tir, Check, Lint, Fix, Build, Run, Test, Bench }
@@ -25,6 +26,8 @@ pub Options :: struct {
     /// `build`, `run`: add debug information that maps the executable back to the Gamma
     /// source (`-g`).
     pub debug_info: bool = false
+    /// Whether `-g` was given, which wins over the manifest's `debug-info`.
+    pub debug_info_given: bool = false
     /// `run`: the arguments after the file, for the program.
     pub program_args: []const string = empty_slice(string)
     /// `test`, `bench`: only the tests whose name or module path contains this text.
@@ -39,6 +42,18 @@ pub Options :: struct {
     pub timeout: ?f64 = null
     /// `test`, `bench`: print how long each test took and the total.
     pub time: bool = false
+    /// `check`, `build`, `run`: never use the network for dependencies (`--offline`), fail
+    /// if `gamma.lock` is not up to date (`--locked`), and the `[profile.NAME]` to use.
+    pub offline: bool = false
+    pub locked: bool = false
+    pub profile: ?string = null
+    /// Whether `--mode` was given, which wins over the manifest's `mode`.
+    pub mode_given: bool = false
+    /// `build`, `run`: the `cflags` and `ldflags` of the root package's `gamma.toml`.
+    pub manifest_cflags: []const string = empty_slice(string)
+    pub manifest_ldflags: []const string = empty_slice(string)
+    /// `build`, `run`: the C sources and libraries the packages add to the build.
+    pub extras: ?pkg.Extras = null
     /// `lint`: the options of the command.
     pub lint: lint.Options
 }

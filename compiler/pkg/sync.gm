@@ -1,0 +1,90 @@
+// Bringing a package's git and archive dependencies up to date (the entry points of
+// `src/pkg/mod.rs`).
+
+fs :: import "std/fs"
+load :: import "../load"
+str :: import "std/str"
+
+/// The root package for work at `start` (a file or a directory): the nearest directory at
+/// or above it that holds a `gamma.toml`.
+pub find_root :: fn(start: string) -> ?string needs Alloc + Fs {
+    abs := canonicalize(start) else return null
+    cur: ?string = if is_dir(abs) { abs } else { parent(abs) }
+    while d := cur {
+        if is_file(join(d, "gamma.toml")) { return d }
+        cur = parent(d)
+    }
+    return null
+}
+
+/// Brings the git and archive dependencies of the package at `root` up to date: resolves
+/// what the lockfile does not cover, fetches what the store lacks, and rewrites `gamma.lock`
+/// if it changed. Returns `null` if the graph has none. `explicit` is set for the package
+/// commands, which also delete a lockfile that is no longer needed.
+pub sync :: fn(root: string, opts: Options, refresh: Refresh, explicit: bool) -> string!?load.Resolution needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    lock_path := join(root, "gamma.lock")
+    old := try read_lock(lock_path)
+    r := resolver(root, opts, refresh, old)
+    found := try run_resolver(&r)
+    answer := found else {
+        if explicit and not opts.locked and fs.exists(lock_path) {
+            fs.remove_all(lock_path) else e => { return !str.format("cannot remove {}: {}", lock_path, io_message(e))! }
+        }
+        return null
+    }
+    text := render_lock(&answer.lock)
+    same := false
+    if o := old {
+        same = render_lock(&o) is text
+    }
+    if not same {
+        if opts.locked {
+            return !if old is null {
+                "gamma.lock is missing, but --locked was given; run `gamma fetch` and commit gamma.lock"
+            } else {
+                "gamma.lock needs to be updated, but --locked was given; run `gamma fetch` and commit gamma.lock"
+            }
+        }
+        report_changes(old, &answer.lock, refresh)
+        try write_atomic(lock_path, text)
+    }
+    return answer.res
+}
+
+/// What the compiler does before analyzing the program at `input`: sync the git and archive
+/// dependencies of its package. `null` if it has no package or none.
+pub prepare :: fn(input: string, opts: Options) -> string!?load.Resolution needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    root := find_root(input) else return null
+    return sync(root, opts, Refresh.None, false)
+}
+
+report_changes :: fn(old: ?Lock, new: ^const Lock, refresh: Refresh) needs Alloc + Err {
+    pkgs := list(LockedPackage)
+    for p in new.packages.items { pkgs.push(p)! }
+    pkgs.items.sort_by(fn(a, b: ^const LockedPackage) -> bool {
+        if a.name is not b.name { return a.name < b.name }
+        return a.url < b.url
+    })
+    for p in pkgs.items {
+        prev: ?LockedPackage = null
+        if o := old { prev = find_locked(&o, p.url, p.subdir) }
+        if o := prev {
+            if o.rev is not p.rev or o.archive is not p.archive {
+                if refresh is .None {
+                    eprint("     Locking {} {}\n", p.name, display_version(&p))
+                } else {
+                    eprint("    Updating {} {} -> {}\n", p.name, display_version(&o), display_version(&p))
+                }
+            }
+        } else {
+            eprint("     Locking {} {}\n", p.name, display_version(&p))
+        }
+    }
+    if o := old {
+        for p in o.packages.items {
+            if find_locked(new, p.url, p.subdir) is null {
+                eprint("    Removing {} {}\n", p.name, display_version(&p))
+            }
+        }
+    }
+}

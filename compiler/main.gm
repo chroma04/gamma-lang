@@ -12,9 +12,13 @@
 //!     gammac run [--mode=debug|checked|fast] [-g] ROOT [ARG...]
 //!     gammac test [--filter=TEXT] [--all] [--show-output] [--jobs=N] [--timeout=SECONDS] [--time] [--mode=...] ROOT
 //!     gammac bench [--filter=TEXT] [--all] [--show-output] [--timeout=SECONDS] [--mode=...] ROOT
+//!     gammac new|init|fetch|update|add|remove|cache ...      (the package manager)
 //!     gammac fmt [--check] FILE|DIR...
 //!     gammac doc [--format=markdown|html] [-o PATH] [--all] [--missing] MODULE
 //!     gammac help | version
+//!
+//! `check`, `build` and `run` also take `--offline`, `--locked` and `--profile=NAME`, and
+//! read the package's `gamma.toml` (`pkg/`).
 //!
 //! Every command takes `--diag-format=human|short|json` (default `human`), the formats of
 //! `gamma`; `doc` has its own options and diagnostics (`doc/doc.gm`). See `USAGE` for what each command does and `docs/self-hosting.md` for how
@@ -36,6 +40,7 @@ lint :: import "./lint"
 linting :: import "./linting"
 load :: import "./load"
 parse :: import "./parse"
+pkg :: import "./pkg"
 sema :: import "./sema"
 source :: import "./source"
 str :: import "std/str"
@@ -64,6 +69,8 @@ commands:
           that it imports, compiled into one executable via C
   bench   run the bench declarations the same way and report the time per run
           (compiled in fast mode unless --mode is given)
+  new, init, fetch, update, add, remove, cache
+          the package manager (gammac help)
   fmt     format source files in place: gammac fmt [--check] <file or directory>... ("-" filters stdin to stdout)
   help    print this message
   version print the compiler version
@@ -90,6 +97,9 @@ options:
                               limit by default)
   --time                      (test, bench) print how long each test took and the total
   --backend=c                 (test, bench) accepted: gammac has only the C back end
+  --offline                   (check, run, build) never use the network for dependencies
+  --locked                    (check, run, build) fail if gamma.lock is missing or out of date
+  --profile=<name>            (check, run, build) use the [profile.<name>] table of gamma.toml
   --fix                       (lint) apply the fixes of the warnings that have one
   --rules                     (lint) list the rules and their default levels
   --allow=<rules>, --warn=<rules>, --deny=<rules>
@@ -100,7 +110,10 @@ environment:
   GAMMA_STD      the standard library (default: lib/gamma/std next to bin/)
   GAMMA_CORE     the core library (default: core next to the standard library)
   GAMMA_RUNTIME  the runtime's C sources (default: runtime two levels above the standard library)
-  CC             the C compiler (default: cc)
+  CC             the C compiler (default: cc), with its arguments
+  CFLAGS         flags for every C compile, LDFLAGS flags for the link (after those of gamma.toml)
+  GAMMA_CACHE_DIR
+                 the package store (default: the user's cache directory; empty turns it off)
   GAMMA_C_UNITS  the number of C units of a Debug build (default: by size and processors)
 
 `
@@ -109,6 +122,13 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
     args := Env.args()
     command := args.get(1) else ""
     if command is "fmt" { Env.exit(fmt.command(args[2..])) }
+    if topic := help_topic(args) {
+        if pkg.is_package_command(topic) or topic is "packages" {
+            print("{}\n{}", USAGE, pkg.USAGE)
+            return
+        }
+    }
+    if pkg.is_package_command(command) { Env.exit(pkg.run_command("gammac", command, args[2..])) }
     if command in ("help", "--help", "-h") {
         Out.write(USAGE)
         return
@@ -152,16 +172,26 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
                 Out.write(USAGE)
                 return
             }
-            "--mode=debug" => { opts.mode = .Debug }
-            "--mode=checked" => { opts.mode = .Checked }
-            "--mode=fast" => { opts.mode = .Fast }
+            "--mode=debug" => {
+                opts.mode = .Debug
+                opts.mode_given = true
+            }
+            "--mode=checked" => {
+                opts.mode = .Checked
+                opts.mode_given = true
+            }
+            "--mode=fast" => {
+                opts.mode = .Fast
+                opts.mode_given = true
+            }
+            "--offline" => { opts.offline = true }
+            "--locked" => { opts.locked = true }
             "-o" => {
                 if i >= args.len { usage_error("`-o` needs a file name") }
                 opts.out = args[i]
                 i += 1
             }
             "--emit-c" => { opts.emit_c = true }
-            "-g" => { opts.debug_info = true }
             "--all" => { opts.all = true }
             "--show-output" => { opts.show_output = true }
             "--time" => { opts.time = true }
@@ -171,6 +201,10 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
                 i += 1
             }
             "--backend=c" => {}
+            "-g" => {
+                opts.debug_info = true
+                opts.debug_info_given = true
+            }
             "--diag-format=human" => { opts.format = .Human }
             "--diag-format=short" => { opts.format = .Short }
             "--diag-format=json" => { opts.format = .Json }
@@ -202,8 +236,13 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
                     usage_error(str.format("invalid value `{}` for --backend (expected c, cranelift or interp)", value)!)
                 }
                 if a is "--coverage" or a.starts_with("--coverage=") { usage_error("`--coverage` is not supported: gammac has no interpreter to count the lines the tests run") }
-                if a.starts_with("--package=") { usage_error("`--package` is not supported: gammac has no package manager") }
+                if a.starts_with("--package=") { usage_error("`--package` is not supported: gammac tests the root given on its command line") }
                 if a.starts_with("--target=") { usage_error("`--target` is not supported: gammac builds for the machine it runs on") }
+                if a.starts_with("--profile=") {
+                    if a.len is 10 { usage_error("`--profile=` needs a profile name") }
+                    opts.profile = a[10..]
+                    continue
+                }
                 if a.starts_with("--mode=") { usage_error(str.format("invalid value `{}` for --mode (expected debug, checked or fast)", a[7..])!) }
                 if a.starts_with("--diag-format=") { usage_error(str.format("invalid value `{}` for --diag-format (expected human, short or json)", a[14..])!) }
                 if a.starts_with("-") { usage_error(str.format("unknown option `{}`", a)!) }
@@ -250,6 +289,16 @@ parse_timeout :: fn(text: string) -> f64 needs Alloc + Env + Err {
     usage_error(str.format("`--timeout` needs a positive number of seconds, not `{}`", text)!)
 }
 
+/// The command whose help `gammac help COMMAND` or `gammac COMMAND --help` asks for.
+help_topic :: fn(args: []const string) -> ?string {
+    command := args.get(1) else return null
+    if command is "help" { return args.get(2) }
+    for a in args[2..] {
+        if a in ("--help", "-h") { return command }
+    }
+    return null
+}
+
 usage_error :: fn(message: string) -> never needs Env + Err {
     eprint("gammac: {}\n\n", message)
     Err.write(USAGE)
@@ -258,7 +307,14 @@ usage_error :: fn(message: string) -> never needs Env + Err {
 
 /// Runs the command on one file and prints its output and diagnostics. Returns the exit
 /// status for the file: 0 if it had no errors.
-process_file :: fn(path: string, opts: driver.Options) -> fs.ReadError!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+process_file :: fn(path: string, in_opts: driver.Options) -> fs.ReadError!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    opts := in_opts
+    if opts.command in (driver.Command.Check, driver.Command.Build, driver.Command.Run, driver.Command.Lint, driver.Command.Fix) {
+        apply_build_settings(path, &opts) else e => {
+            eprint("gammac: {}\n", e)
+            return 1
+        }
+    }
     if opts.command in (driver.Command.Lint, driver.Command.Fix) { return lint_or_fix(path, opts) }
     if opts.command not in (driver.Command.Lex, driver.Command.Parse) { return load_program(path, opts) }
     text := try fs.read_all(path)
@@ -284,6 +340,52 @@ process_file :: fn(path: string, opts: driver.Options) -> fs.ReadError!u8 needs 
     }
 }
 
+/// Applies the build settings of the package that holds `input` (the `[build]` table of
+/// its `gamma.toml` and the selected profile) under the command line: an option given
+/// there wins.
+apply_build_settings :: fn(input: string, opts: ^driver.Options) -> string!() needs Alloc + Fs {
+    settings := (try pkg.root_settings(input, opts.profile)) else return ()
+    if not opts.mode_given {
+        if m := settings.mode {
+            opts.mode = match m {
+                .Debug => driver.Mode.Debug
+                .Checked => driver.Mode.Checked
+                .Fast => driver.Mode.Fast
+                // Safe needs Fil-C, which gammac does not support; analysis treats it as Checked.
+                .Safe => {
+                    if opts.command in (driver.Command.Build, driver.Command.Run) {
+                        return !"gamma.toml asks for `mode = \"safe\"`, which gammac does not support (Safe builds need Fil-C)"
+                    }
+                    driver.Mode.Checked
+                }
+            }
+        }
+    }
+    if not opts.debug_info_given {
+        if d := settings.debug_info { opts.debug_info = d }
+    }
+    opts.manifest_cflags = settings.cflags else empty_slice(string)
+    opts.manifest_ldflags = settings.ldflags else empty_slice(string)
+    return ()
+}
+
+/// Fetches the dependencies of the package that holds `input` (see `pkg.prepare`) and tells
+/// the loader where they are. Returns what the packages add to a native build, or reports
+/// the error and returns `null`.
+prepare_packages :: fn(input: string, opts: driver.Options, l: ^load.Loader) -> ?pkg.Extras needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    popts := pkg.Options(offline: opts.offline, locked: opts.locked)
+    res := pkg.prepare(input, popts) else e => {
+        eprint("gammac: {}\n", e)
+        return null
+    }
+    l.resolution = res
+    extras := pkg.collect(input, res, opts.profile) else e => {
+        eprint("gammac: {}\n", e)
+        return null
+    }
+    return extras
+}
+
 /// Prints the diagnostics to standard error, in order, and empties the list.
 render :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics, format: diag.Format) needs Alloc + Err {
     out := list(u8)
@@ -303,7 +405,7 @@ lint_or_fix :: fn(path: string, opts: driver.Options) -> u8 needs Alloc + Env + 
 
 /// The commands that load a program: loads the program rooted at `root`, runs the
 /// command on it and prints its output and diagnostics. Returns the exit status.
-load_program :: fn(root: string, opts: driver.Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+load_program :: fn(root: string, in_opts: driver.Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {
@@ -311,7 +413,11 @@ load_program :: fn(root: string, opts: driver.Options) -> u8 needs Alloc + Clock
         diags := diag.diagnostics()
         next_id: ast.NodeId = 0
         std := driver.std_root()
+        opts := in_opts
         l := load.loader(&sm, &diags, &next_id, std, opts.recover)
+        if opts.command in (driver.Command.Check, driver.Command.Build, driver.Command.Run) {
+            opts.extras = prepare_packages(root, opts, &l) else return 1
+        }
         if opts.command is .Modules {
             if graph := l.load_modules(root) { Out.write(graph) }
             render(&sm, &diags, opts.format)

@@ -1,0 +1,628 @@
+// Semantic versions and version requirements, as the `semver` crate reads, orders and
+// matches them (Cargo's rules): `1.2.3-beta.1+build`, and `^1.2`, `~1.2.3`, `>=1, <2`, `*`.
+// Error messages are the crate's.
+
+/// A version: `major.minor.patch`, with an optional pre-release and build metadata.
+arena :: import "std/arena"
+str :: import "std/str"
+
+pub Version :: struct {
+    pub major: u64
+    pub minor: u64
+    pub patch: u64
+    pub pre: string = ""
+    pub build: string = ""
+}
+
+/// The operator of a comparator.
+pub CmpOp :: union { Exact, Greater, GreaterEq, Less, LessEq, Tilde, Caret, Wildcard }
+
+/// One comparison of a requirement: an operator and a (partial) version.
+pub Comparator :: struct {
+    pub op: CmpOp
+    pub major: u64
+    pub minor: ?u64
+    pub patch: ?u64
+    pub pre: string = ""
+}
+
+/// A requirement: all its comparators must hold; none means any version (`*`).
+pub VersionReq :: struct {
+    pub comparators: List(Comparator)
+}
+
+/// Where in a version a problem was found.
+SemPos :: union { Major, Minor, Patch, Pre, Build }
+
+sem_pos_name :: fn(p: SemPos) -> string => match p {
+    .Major => "major version number"
+    .Minor => "minor version number"
+    .Patch => "patch version number"
+    .Pre => "pre-release identifier"
+    .Build => "build metadata"
+}
+
+/// The rest of the input after a successful scan of one piece.
+SemStep :: struct {
+    value: u64
+    rest: string
+}
+
+/// A character as Rust's `{:?}` writes it.
+quoted_char :: fn(text: string) -> string needs Alloc {
+    c := first_char(text)
+    return match c {
+        0 => "'\\0'"
+        '\'' => "'\\''"
+        '\\' => "'\\\\'"
+        '\n' => "'\\n'"
+        '\t' => "'\\t'"
+        '\r' => "'\\r'"
+        _ => str.format("'{}'", text[0..char_len(text)])!
+    }
+}
+
+/// The first byte of `s` (0 if empty); only ASCII matters for the checks that use it.
+first_char :: fn(s: string) -> u8 => s.get(0) else 0
+
+/// The byte length of the UTF-8 character that starts `s`.
+char_len :: fn(s: string) -> usize {
+    if s.len is 0 { return 0 }
+    b := s[0]
+    n: usize = if b < 0x80 { 1 } else if b >= 0xF0 { 4 } else if b >= 0xE0 { 3 } else { 2 }
+    return if n > s.len { s.len } else { n }
+}
+
+sem_numeric :: fn(input: string, pos: SemPos) -> string!SemStep needs Alloc {
+    len: usize = 0
+    value: u64 = 0
+    while d := input.get(len) {
+        if d < '0' or d > '9' { break }
+        if value is 0 and len > 0 { return !str.format("invalid leading zero in {}", sem_pos_name(pos))! }
+        value = value *? 10 +? u64(d - '0') else return !str.format("value of {} exceeds u64::MAX", sem_pos_name(pos))!
+        len += 1
+    }
+    if len > 0 { return SemStep(value: value, rest: input[len..]) }
+    if input.len > 0 { return !str.format("unexpected character {} while parsing {}", quoted_char(input), sem_pos_name(pos))! }
+    return !str.format("unexpected end of input while parsing {}", sem_pos_name(pos))!
+}
+
+/// The text after a wildcard `*`, `x` or `X` at the start of `input`.
+sem_wildcard :: fn(input: string) -> ?(ch: u8, rest: string) {
+    c := input.get(0) else return null
+    if c in ('*', 'x', 'X') { return (ch: c, rest: input[1..]) }
+    return null
+}
+
+sem_dot :: fn(input: string, pos: SemPos) -> string!string needs Alloc {
+    if input.starts_with(".") { return input[1..] }
+    if input.len > 0 { return !str.format("unexpected character {} after {}", quoted_char(input), sem_pos_name(pos))! }
+    return !str.format("unexpected end of input while parsing {}", sem_pos_name(pos))!
+}
+
+/// A pre-release or build identifier: dot-separated segments of `[0-9A-Za-z-]`. Returns
+/// the identifier (possibly empty) and the rest.
+sem_identifier :: fn(input: string, pos: SemPos) -> string!(ident: string, rest: string) needs Alloc {
+    acc: usize = 0
+    seg: usize = 0
+    nondigit := false
+    while true {
+        c: u8 = input.get(acc + seg) else 0
+        if c in 'a'..='z' or c in 'A'..='Z' or c is '-' {
+            seg += 1
+            nondigit = true
+        } else if c in '0'..='9' {
+            seg += 1
+        } else {
+            if seg is 0 {
+                if acc is 0 and c is not '.' { return (ident: "", rest: input) }
+                return !str.format("empty identifier segment in {}", sem_pos_name(pos))!
+            }
+            if pos is .Pre and seg > 1 and not nondigit and input[acc] is '0' {
+                return !str.format("invalid leading zero in {}", sem_pos_name(pos))!
+            }
+            acc += seg
+            if c is '.' {
+                acc += 1
+                seg = 0
+                nondigit = false
+            } else {
+                return (ident: input[0..acc], rest: input[acc..])
+            }
+        }
+    }
+}
+
+/// Parses a version (`Version::parse`).
+pub parse_version :: fn(text: string) -> string!Version needs Alloc {
+    if text.len is 0 { return !"empty string, expected a semver version" }
+    v := Version(major: 0, minor: 0, patch: 0)
+    a := try sem_numeric(text, .Major)
+    v.major = a.value
+    rest := try sem_dot(a.rest, .Major)
+    b := try sem_numeric(rest, .Minor)
+    v.minor = b.value
+    rest = try sem_dot(b.rest, .Minor)
+    c := try sem_numeric(rest, .Patch)
+    v.patch = c.value
+    rest = c.rest
+    if rest.len is 0 { return v }
+    pos := SemPos.Patch
+    if rest.starts_with("-") {
+        pos = .Pre
+        id := try sem_identifier(rest[1..], .Pre)
+        if id.ident.len is 0 { return !"empty identifier segment in pre-release identifier" }
+        v.pre = id.ident
+        rest = id.rest
+    }
+    if rest.starts_with("+") {
+        pos = .Build
+        id := try sem_identifier(rest[1..], .Build)
+        if id.ident.len is 0 { return !"empty identifier segment in build metadata" }
+        v.build = id.ident
+        rest = id.rest
+    }
+    if rest.len > 0 { return !str.format("unexpected character {} after {}", quoted_char(rest), sem_pos_name(pos))! }
+    return v
+}
+
+/// A comparator and the position it ended at, and the rest of the text.
+SemComparator :: struct {
+    cmp: Comparator
+    pos: SemPos
+    rest: string
+}
+
+trim_spaces :: fn(s: string) -> string {
+    i: usize = 0
+    while s.get(i) is ' ' { i += 1 }
+    return s[i..]
+}
+
+sem_comparator :: fn(input: string) -> string!SemComparator needs Alloc {
+    op: CmpOp = .Caret
+    text := input
+    if input.starts_with("=") {
+        op = .Exact
+        text = input[1..]
+    } else if input.starts_with(">=") {
+        op = .GreaterEq
+        text = input[2..]
+    } else if input.starts_with(">") {
+        op = .Greater
+        text = input[1..]
+    } else if input.starts_with("<=") {
+        op = .LessEq
+        text = input[2..]
+    } else if input.starts_with("<") {
+        op = .Less
+        text = input[1..]
+    } else if input.starts_with("~") {
+        op = .Tilde
+        text = input[1..]
+    } else if input.starts_with("^") {
+        text = input[1..]
+    }
+    default_op := input.len is text.len
+    text = trim_spaces(text)
+    pos := SemPos.Major
+    major := try sem_numeric(text, pos)
+    text = major.rest
+    has_wildcard := false
+    minor: ?u64 = null
+    patch: ?u64 = null
+    if text.starts_with(".") {
+        text = text[1..]
+        pos = .Minor
+        if w := sem_wildcard(text) {
+            has_wildcard = true
+            if default_op { op = .Wildcard }
+            text = w.rest
+        } else {
+            m := try sem_numeric(text, pos)
+            minor = m.value
+            text = m.rest
+        }
+    }
+    if text.starts_with(".") {
+        text = text[1..]
+        pos = .Patch
+        if w := sem_wildcard(text) {
+            if default_op { op = .Wildcard }
+            text = w.rest
+        } else if has_wildcard {
+            return !"unexpected character after wildcard in version req"
+        } else {
+            p := try sem_numeric(text, pos)
+            patch = p.value
+            text = p.rest
+        }
+    }
+    pre := ""
+    if patch is not null and text.starts_with("-") {
+        pos = .Pre
+        id := try sem_identifier(text[1..], .Pre)
+        if id.ident.len is 0 { return !"empty identifier segment in pre-release identifier" }
+        pre = id.ident
+        text = id.rest
+    }
+    if patch is not null and text.starts_with("+") {
+        pos = .Build
+        id := try sem_identifier(text[1..], .Build)
+        if id.ident.len is 0 { return !"empty identifier segment in build metadata" }
+        text = id.rest
+    }
+    text = trim_spaces(text)
+    return SemComparator(cmp: Comparator(op: op, major: major.value, minor: minor, patch: patch, pre: pre), pos: pos, rest: text)
+}
+
+/// Parses a version requirement (`VersionReq::parse`).
+pub parse_version_req :: fn(input: string) -> string!VersionReq needs Alloc {
+    text := trim_spaces(input)
+    if w := sem_wildcard(text) {
+        rest := trim_spaces(w.rest)
+        if rest.len is 0 { return VersionReq(comparators: list(Comparator)) }
+        if rest.starts_with(",") {
+            return !str.format("wildcard req ({}) must be the only comparator in the version req", text[0..1])!
+        }
+        return !"unexpected character after wildcard in version req"
+    }
+    req := VersionReq(comparators: list(Comparator))
+    depth: usize = 0
+    while true {
+        parsed := sem_comparator(text) else e => {
+            if w := sem_wildcard(text) {
+                rest := trim_spaces(w.rest)
+                if rest.len is 0 or rest.starts_with(",") {
+                    return !str.format("wildcard req ({}) must be the only comparator in the version req", text[0..1])!
+                }
+            }
+            return !e
+        }
+        req.comparators.push(parsed.cmp)!
+        if parsed.rest.len is 0 { break }
+        if not parsed.rest.starts_with(",") {
+            return !str.format("expected comma after {}, found {}", sem_pos_name(parsed.pos), quoted_char(parsed.rest))!
+        }
+        text = trim_spaces(parsed.rest[1..])
+        if depth + 1 is 31 { return !"excessive number of version comparators" }
+        depth += 1
+    }
+    return req
+}
+
+// ---------------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------------
+
+/// `v` as text: `1.2.3-pre+build`.
+pub version_string :: fn(v: Version) -> string needs Alloc {
+    out := list(u8)
+    out.write("{}.{}.{}", v.major, v.minor, v.patch)!
+    if v.pre.len > 0 { out.write("-{}", v.pre)! }
+    if v.build.len > 0 { out.write("+{}", v.build)! }
+    return out.items
+}
+
+/// `req` as the crate prints it: `^1.2, <3` (`*` if empty).
+pub req_string :: fn(req: ^const VersionReq) -> string needs Alloc {
+    if req.comparators.items.len is 0 { return "*" }
+    out := list(u8)
+    for i, c in enumerate(req.comparators.items) {
+        if i > 0 { out.extend(", ")! }
+        out.extend(match c.op {
+            .Exact => "="
+            .Greater => ">"
+            .GreaterEq => ">="
+            .Less => "<"
+            .LessEq => "<="
+            .Tilde => "~"
+            .Caret => "^"
+            .Wildcard => ""
+        })!
+        out.write("{}", c.major)!
+        if m := c.minor {
+            out.write(".{}", m)!
+            if p := c.patch {
+                out.write(".{}", p)!
+                if c.pre.len > 0 { out.write("-{}", c.pre)! }
+            } else if c.op is .Wildcard {
+                out.extend(".*")!
+            }
+        } else if c.op is .Wildcard {
+            out.extend(".*")!
+        }
+    }
+    return out.items
+}
+
+// ---------------------------------------------------------------------------------
+// Order and matching
+// ---------------------------------------------------------------------------------
+
+all_digits :: fn(s: string) -> bool {
+    for c in s {
+        if c not in '0'..='9' { return false }
+    }
+    return true
+}
+
+/// -1, 0 or 1: `a` against `b` as byte strings.
+cmp_text :: fn(a, b: string) -> i32 {
+    n := if a.len < b.len { a.len } else { b.len }
+    for i in 0..n {
+        if a[i] < b[i] { return -1 }
+        if a[i] > b[i] { return 1 }
+    }
+    if a.len < b.len { return -1 }
+    if a.len > b.len { return 1 }
+    return 0
+}
+
+/// Compares two pre-release identifiers: a release (empty) is greater than any pre-release.
+pub cmp_pre :: fn(a, b: string) -> i32 {
+    if a.len is 0 {
+        return if b.len is 0 { 0 } else { 1 }
+    }
+    if b.len is 0 { return -1 }
+    return cmp_pre_parts(a, b)
+}
+
+/// The dot-separated parts of two non-empty pre-release identifiers, compared in turn.
+cmp_pre_parts :: fn(a, b: string) -> i32 {
+    ia: usize = 0
+    ib: usize = 0
+    while true {
+        if ia > a.len { return if ib > b.len { 0 } else { -1 } }
+        if ib > b.len { return 1 }
+        ea := ia
+        while ea < a.len and a[ea] is not '.' { ea += 1 }
+        eb := ib
+        while eb < b.len and b[eb] is not '.' { eb += 1 }
+        pa := a[ia..ea]
+        pb := b[ib..eb]
+        o: i32 = 0
+        da := all_digits(pa)
+        db := all_digits(pb)
+        if da and db {
+            o = if pa.len < pb.len { -1 } else if pa.len > pb.len { 1 } else { cmp_text(pa, pb) }
+        } else if da {
+            return -1
+        } else if db {
+            return 1
+        } else {
+            o = cmp_text(pa, pb)
+        }
+        if o is not 0 { return o }
+        ia = ea + 1
+        ib = eb + 1
+    }
+}
+
+/// Compares build metadata the way the crate does.
+cmp_build :: fn(a, b: string) -> i32 {
+    ia: usize = 0
+    ib: usize = 0
+    while true {
+        if ia > a.len { return if ib > b.len { 0 } else { -1 } }
+        if ib > b.len { return 1 }
+        ea := ia
+        while ea < a.len and a[ea] is not '.' { ea += 1 }
+        eb := ib
+        while eb < b.len and b[eb] is not '.' { eb += 1 }
+        pa := a[ia..ea]
+        pb := b[ib..eb]
+        o: i32 = 0
+        da := all_digits(pa)
+        db := all_digits(pb)
+        if da and db {
+            va := trim_zeros(pa)
+            vb := trim_zeros(pb)
+            o = if va.len < vb.len { -1 } else if va.len > vb.len { 1 } else { cmp_text(va, vb) }
+            if o is 0 { o = if pa.len < pb.len { -1 } else if pa.len > pb.len { 1 } else { 0 } }
+        } else if da {
+            return -1
+        } else if db {
+            return 1
+        } else {
+            o = cmp_text(pa, pb)
+        }
+        if o is not 0 { return o }
+        ia = ea + 1
+        ib = eb + 1
+    }
+}
+
+trim_zeros :: fn(s: string) -> string {
+    i: usize = 0
+    while s.get(i) is '0' { i += 1 }
+    return s[i..]
+}
+
+cmp_u64 :: fn(a, b: u64) -> i32 => if a < b { -1 } else if a > b { 1 } else { 0 }
+
+/// Orders versions: numbers, then pre-release, then build metadata.
+pub cmp_version :: fn(a, b: Version) -> i32 {
+    o := cmp_u64(a.major, b.major)
+    if o is not 0 { return o }
+    o = cmp_u64(a.minor, b.minor)
+    if o is not 0 { return o }
+    o = cmp_u64(a.patch, b.patch)
+    if o is not 0 { return o }
+    o = cmp_pre(a.pre, b.pre)
+    if o is not 0 { return o }
+    // An empty build string sorts before any other: it has no parts.
+    if a.build.len is 0 { return if b.build.len is 0 { 0 } else { -1 } }
+    if b.build.len is 0 { return 1 }
+    return cmp_build(a.build, b.build)
+}
+
+/// Whether `c` accepts `v` apart from the pre-release rule.
+cmp_matches :: fn(c: ^const Comparator, v: Version) -> bool {
+    return match c.op {
+        .Exact, .Wildcard => cmp_exact(c, v)
+        .Greater => cmp_greater(c, v)
+        .GreaterEq => cmp_exact(c, v) or cmp_greater(c, v)
+        .Less => cmp_less(c, v)
+        .LessEq => cmp_exact(c, v) or cmp_less(c, v)
+        .Tilde => cmp_tilde(c, v)
+        .Caret => cmp_caret(c, v)
+    }
+}
+
+cmp_exact :: fn(c: ^const Comparator, v: Version) -> bool {
+    if v.major is not c.major { return false }
+    if m := c.minor {
+        if v.minor is not m { return false }
+    }
+    if p := c.patch {
+        if v.patch is not p { return false }
+    }
+    return v.pre is c.pre
+}
+
+cmp_greater :: fn(c: ^const Comparator, v: Version) -> bool {
+    if v.major is not c.major { return v.major > c.major }
+    m := c.minor else return false
+    if v.minor is not m { return v.minor > m }
+    p := c.patch else return false
+    if v.patch is not p { return v.patch > p }
+    return cmp_pre(v.pre, c.pre) > 0
+}
+
+cmp_less :: fn(c: ^const Comparator, v: Version) -> bool {
+    if v.major is not c.major { return v.major < c.major }
+    m := c.minor else return false
+    if v.minor is not m { return v.minor < m }
+    p := c.patch else return false
+    if v.patch is not p { return v.patch < p }
+    return cmp_pre(v.pre, c.pre) < 0
+}
+
+cmp_tilde :: fn(c: ^const Comparator, v: Version) -> bool {
+    if v.major is not c.major { return false }
+    if m := c.minor {
+        if v.minor is not m { return false }
+    }
+    if p := c.patch {
+        if v.patch is not p { return v.patch > p }
+    }
+    return cmp_pre(v.pre, c.pre) >= 0
+}
+
+cmp_caret :: fn(c: ^const Comparator, v: Version) -> bool {
+    if v.major is not c.major { return false }
+    minor := c.minor else return true
+    patch := c.patch else {
+        if c.major > 0 { return v.minor >= minor }
+        return v.minor is minor
+    }
+    if c.major > 0 {
+        if v.minor is not minor { return v.minor > minor }
+        if v.patch is not patch { return v.patch > patch }
+    } else if minor > 0 {
+        if v.minor is not minor { return false }
+        if v.patch is not patch { return v.patch > patch }
+    } else if v.minor is not minor or v.patch is not patch {
+        return false
+    }
+    return cmp_pre(v.pre, c.pre) >= 0
+}
+
+/// Whether `v` satisfies every comparator of `req`; a pre-release version only does if
+/// a comparator with the same `major.minor.patch` is itself a pre-release.
+pub req_matches :: fn(req: ^const VersionReq, v: Version) -> bool {
+    for c in req.comparators.items {
+        if not cmp_matches(&c, v) { return false }
+    }
+    if v.pre.len is 0 { return true }
+    for c in req.comparators.items {
+        if c.major is v.major and c.minor is v.minor and c.patch is v.patch and c.pre.len > 0 { return true }
+    }
+    return false
+}
+
+/// Whether two requirements are written alike.
+pub req_equal :: fn(a, b: ^const VersionReq) -> bool {
+    if a.comparators.items.len is not b.comparators.items.len { return false }
+    for i, x in enumerate(a.comparators.items) {
+        y := b.comparators.items[i]
+        if not (x.op is y.op and x.major is y.major and x.minor is y.minor and x.patch is y.patch and x.pre is y.pre) { return false }
+    }
+    return true
+}
+
+version_error :: fn(text: string) -> string needs Alloc {
+    match parse_version(text) {
+        !e => return e
+        _ => return ""
+    }
+}
+
+req_error :: fn(text: string) -> string needs Alloc {
+    match parse_version_req(text) {
+        !e => return e
+        _ => return ""
+    }
+}
+
+version_of :: fn(text: string) -> Version needs Alloc {
+    return parse_version(text) else Version(major: 0, minor: 0, patch: 0)
+}
+
+matches :: fn(req: string, version: string) -> bool needs Alloc {
+    r := parse_version_req(req) else return false
+    return req_matches(&r, version_of(version))
+}
+
+test "versions order like the semver crate" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect(cmp_version(version_of("1.2.3"), version_of("1.2.4")) < 0)
+        expect(cmp_version(version_of("1.10.0"), version_of("1.9.0")) > 0)
+        expect(cmp_version(version_of("1.0.0-alpha"), version_of("1.0.0")) < 0)
+        expect(cmp_version(version_of("1.0.0-alpha.2"), version_of("1.0.0-alpha.10")) < 0)
+        expect(cmp_version(version_of("1.0.0-alpha"), version_of("1.0.0-alpha.1")) < 0)
+        expect(cmp_version(version_of("1.0.0-1"), version_of("1.0.0-alpha")) < 0)
+        expect_eq(cmp_version(version_of("1.0.0+a"), version_of("1.0.0+a")), 0)
+        expect_eq(version_string(version_of("1.2.3-rc.1+b5")), "1.2.3-rc.1+b5")
+    }
+}
+
+test "requirements match as Cargo's do" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect(matches("1", "1.9.0") and not matches("1", "2.0.0"))
+        expect(matches("^1.2", "1.2.0") and matches("^1.2", "1.9.9") and not matches("^1.2", "1.1.9"))
+        expect(matches("^0.2.3", "0.2.9") and not matches("^0.2.3", "0.3.0"))
+        expect(matches("~1.2", "1.2.7") and not matches("~1.2", "1.3.0"))
+        expect(matches("~1", "1.9.0") and not matches("~1", "2.0.0"))
+        expect(matches(">=1.2, <2", "1.5.0") and not matches(">=1.2, <2", "2.0.0"))
+        expect(matches("=1.0.0", "1.0.0") and not matches("=1.0.0", "1.0.1"))
+        expect(matches("*", "9.9.9"))
+        expect(matches("1.*", "1.4.0") and not matches("1.*", "2.0.0"))
+        // A pre-release matches only a requirement that names one of the same version.
+        expect(not matches("^1.0.0", "1.1.0-beta"))
+        expect(matches(">=1.1.0-beta.0", "1.1.0-beta.1"))
+        expect(not matches(">=1.1.0-beta.0", "1.2.0-beta.1"))
+    }
+}
+
+test "messages are the crates" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(version_error("x"), "unexpected character 'x' while parsing major version number")
+        expect_eq(version_error("1.2"), "unexpected end of input while parsing minor version number")
+        expect_eq(version_error("01.2.3"), "invalid leading zero in major version number")
+        expect_eq(version_error("1.2.3.4"), "unexpected character '.' after patch version number")
+        expect_eq(version_error(""), "empty string, expected a semver version")
+        expect_eq(req_error("1.2.3.4"), "expected comma after patch version number, found '.'")
+        r := parse_version_req("^1.2") else return
+        expect_eq(req_string(&r), "^1.2")
+        r = parse_version_req(">=1, <2") else return
+        expect_eq(req_string(&r), ">=1, <2")
+    }
+}

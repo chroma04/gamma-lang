@@ -1,0 +1,157 @@
+// Build settings from `gamma.toml`: the `[build]` table and the `[profile.*]` tables
+// (mirrors `src/pkg/build.rs`).
+//
+// The root package's settings (`mode`, `debug-info`, `cflags`, `ldflags`) configure the
+// compiler and the C toolchain; `root_settings` reads them before the program is analyzed.
+// The settings that add C code to a native build (`c-sources`, `include-dirs`, `libs`,
+// `lib-dirs`) are collected from the root package and every dependency by `collect`.
+
+load :: import "../load"
+str :: import "std/str"
+
+/// One C file of a package, with the include directories of that package.
+pub CSource :: struct {
+    pub path: string
+    pub include_dirs: []const string
+}
+
+/// Everything the packages of a program add to a native build, with absolute paths.
+pub Extras :: struct {
+    pub sources: List(CSource)
+    /// Libraries to link (`-l<name>`), beyond those of `foreign` blocks.
+    pub libs: List(string)
+    /// Directories searched for those libraries (`-L`).
+    pub lib_dirs: List(string)
+}
+
+pub extras :: fn() -> Extras needs Alloc => Extras(sources: list(CSource), libs: list(string), lib_dirs: list(string))
+
+/// Whether the packages add nothing to the build.
+pub is_empty :: fn(e: ^const Extras) -> bool => e.sources.items.len is 0 and e.libs.items.len is 0 and e.lib_dirs.items.len is 0
+
+/// The build settings of the package that contains `input`, for `profile`: the profile over
+/// `[build]`. `null` if `input` is not in a package. A profile needs a package.
+pub root_settings :: fn(input: string, profile: ?string) -> string!?load.BuildSettings needs Alloc + Fs {
+    root := find_root(input) else {
+        if p := profile {
+            return !str.format("`--profile={}` needs a package, but no gamma.toml was found for {}", p, input)!
+        }
+        return null
+    }
+    manifest := try read_manifest(root)
+    path := join(root, "gamma.toml")
+    settings := load.build_settings(&manifest, profile) else e => { return !str.format("{}: {}", path, e)! }
+    return settings
+}
+
+/// A path from a manifest of a dependency, resolved against its package: relative, and
+/// inside the package.
+dep_path :: fn(dir, rel, key, pkg: string) -> string!string needs Alloc {
+    joined := load.normalize(join(dir, rel))
+    if load.is_absolute(rel) or not load.starts_with(joined, dir) {
+        return !str.format(
+            "`{}` of dependency `{}` names `{}`, which is not inside the package; paths in a dependency's [build] must be relative and stay in its directory",
+            key,
+            pkg,
+            rel,
+        )!
+    }
+    return joined
+}
+
+Collector :: struct {
+    resolution: ?load.Resolution
+    seen: List(string)
+    extras: Extras
+}
+
+visit :: fn(c: ^Collector, dir: string, manifest: ^const load.Manifest, name: string, settings: load.BuildSettings, root: bool) -> string!() needs Alloc + Fs {
+    include_dirs := list(string)
+    for d in settings.include_dirs else empty_slice(string) {
+        include_dirs.push(try resolve_path(dir, d, "include-dirs", name, root))!
+    }
+    for s in settings.c_sources else empty_slice(string) {
+        path := try resolve_path(dir, s, "c-sources", name, root)
+        if not is_file(path) {
+            return !str.format("{}: c-sources of package `{}` lists `{}`, which is not a file", join(dir, "gamma.toml"), name, s)!
+        }
+        dup := false
+        for x in c.extras.sources.items {
+            if x.path is path and same_strings(x.include_dirs, include_dirs.items) { dup = true }
+        }
+        if not dup { c.extras.sources.push(CSource(path: path, include_dirs: include_dirs.items))! }
+    }
+    for l in settings.libs else empty_slice(string) {
+        dup := false
+        for x in c.extras.libs.items {
+            if x is l { dup = true }
+        }
+        if not dup { c.extras.libs.push(l)! }
+    }
+    for d in settings.lib_dirs else empty_slice(string) {
+        p := try resolve_path(dir, d, "lib-dirs", name, root)
+        dup := false
+        for x in c.extras.lib_dirs.items {
+            if x is p { dup = true }
+        }
+        if not dup { c.extras.lib_dirs.push(p)! }
+    }
+    for dep in manifest.deps.items {
+        target := ""
+        resolved: ?string = null
+        if res := c.resolution {
+            if deps := load.deps_of(&res, dir) {
+                for d in deps.items {
+                    if d.name is dep.name { resolved = d.dir }
+                }
+            }
+        }
+        if t := resolved {
+            target = t
+        } else {
+            match dep.source {
+                .Path(p) => { target = load.normalize(join(dir, p)) }
+                _ => continue
+            }
+        }
+        canon := canonicalize(target) else continue
+        if not is_file(join(canon, "gamma.toml")) { continue }
+        seen := false
+        for s in c.seen.items {
+            if s is canon { seen = true }
+        }
+        if seen { continue }
+        c.seen.push(canon)!
+        m := try read_manifest(canon)
+        // A dependency contributes its `[build]` table, not its profiles.
+        try visit(c, canon, &m, dep.name, m.build, false)
+    }
+    return ()
+}
+
+same_strings :: fn(a, b: []const string) -> bool {
+    if a.len is not b.len { return false }
+    for i in 0..a.len {
+        if a[i] is not b[i] { return false }
+    }
+    return true
+}
+
+resolve_path :: fn(dir, rel, key, name: string, root: bool) -> string!string needs Alloc {
+    if root { return load.normalize(join(dir, rel)) }
+    return dep_path(dir, rel, key, name)
+}
+
+/// The C sources and libraries that the package containing `input` and all its dependencies
+/// add to a native build. `resolution` locates the git and archive dependencies (see
+/// `prepare`). `profile` selects the root package's profile.
+pub collect :: fn(input: string, resolution: ?load.Resolution, profile: ?string) -> string!Extras needs Alloc + Fs {
+    root := find_root(input) else return extras()
+    manifest := try read_manifest(root)
+    settings := load.build_settings(&manifest, profile) else e => { return !str.format("{}: {}", join(root, "gamma.toml"), e)! }
+    c := Collector(resolution: resolution, seen: list(string), extras: extras())
+    c.seen.push(root)!
+    name := manifest.name else "the root package"
+    try visit(&c, root, &manifest, name, settings, true)
+    return c.extras
+}

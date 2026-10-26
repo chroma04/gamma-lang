@@ -5,6 +5,8 @@ cgen :: import "../cgen"
 check :: import "../check"
 fs :: import "std/fs"
 load :: import "../load"
+pkg :: import "../pkg"
+pkg :: import "../pkg"
 process :: import "std/process"
 sema :: import "../sema"
 source :: import "../source"
@@ -92,11 +94,25 @@ pub compile_entries :: fn(s: ^sema.Sema, entries: []const u32, select: bool, exe
         return false
     }
     if opts.emit_c { return true }
+    tc := pkg.toolchain_from_env(opts.manifest_cflags, opts.manifest_ldflags) else e => {
+        eprint("gammac: {}\n", e)
+        return false
+    }
+    extras := opts.extras else pkg.extras()
+    link := pkg.no_link()
+    if not pkg.is_empty(&extras) {
+        link = pkg.link_inputs(&extras, &tc, exe, opts.mode is .Debug, opts.debug_info) else e => {
+            eprint("{}\n", e)
+            return false
+        }
+    }
+    defer pkg.remove_objects(&link)
     flags := list(string)
     for f in [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread") { flags.push(f)! }
     if opts.debug_info { flags.push("-g")! }
+    more := pkg.library_args(&link, generated.libs)
     libs := list(string)
-    for l in generated.libs { libs.push(str.format("-l{}", l)!)! }
+    libs.extend(more.items)!
     libs.push("-lm")!
     if opts.mode is .Debug {
         // The runtime and the program's units are compiled in parallel, then linked.
@@ -109,18 +125,21 @@ pub compile_entries :: fn(s: ^sema.Sema, entries: []const u32, select: bool, exe
                 return false
             }
             one := [1]string(generated.code)
-            return compile_units(exe, rt_h, rt_c, one[..], flags.items, libs.items, opts.debug_info)
+            return compile_units(exe, rt_h, rt_c, one[..], flags.items, libs.items, opts.debug_info, &tc, &link)
         }
-        return compile_units(exe, rt_h, rt_c, units, flags.items, libs.items, opts.debug_info)
+        return compile_units(exe, rt_h, rt_c, units, flags.items, libs.items, opts.debug_info, &tc, &link)
     }
     flags.push("-O2")!
-    return run_cc(flags.items, exe, [1]string(c_file)[..], libs.items)
+    inputs := list(string)
+    inputs.push(c_file)!
+    inputs.extend(link.objects.items)!
+    return run_cc(&tc, flags.items, exe, inputs.items, libs.items)
 }
 
 /// A Debug build of `exe`: writes the runtime (`exe.rt.c`) and each of `units` (`exe.uN.c`)
 /// as its own translation unit next to `exe`, compiles them all at once to objects and
 /// links those.
-compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs: []const string, debug_info: bool) -> bool needs Alloc + Env + Err + Fs + Proc {
+compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs: []const string, debug_info: bool, tc: ^const pkg.Toolchain, link: ^const pkg.Link) -> bool needs Alloc + Env + Err + Fs + Proc {
     sources := list(string)
     sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, rt_c)!)!
     for u in units { sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, u)!)! }
@@ -138,11 +157,10 @@ compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs:
         c_files.push(c)!
         objects.push(str.format("{}.{}.o", exe, name)!)!
     }
-    cc := Env.var("CC") else "cc"
     children := list(?process.Child)
     for i, c in enumerate(c_files.items) {
         argv := list(string)
-        argv.push(cc)!
+        argv.extend(tc.cc)!
         argv.extend(flags)!
         // The runtime is optimized like the cached runtime object of the reference
         // implementation; the program's units favor turnaround.
@@ -150,13 +168,14 @@ compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs:
         // A call to a function without a declaration would compile, wrongly, under C's
         // old rules: make it an error.
         argv.push("-Werror=implicit-function-declaration")!
+        argv.extend(tc.cflags)!
         for a in [4]string("-c", "-o", objects.items[i], c) { argv.push(a)! }
         children.push(Proc.spawn(argv.items, process.SpawnOptions(stdout: .Null, stderr: .Pipe)) else null)!
     }
     ok := true
     for child in children.items {
         c := child else {
-            if ok { eprint("gammac: cannot run the C compiler `{}`\n", cc) }
+            if ok { eprint("gammac: cannot run the C compiler `{}`\n", pkg.display(tc)) }
             ok = false
             continue
         }
@@ -172,24 +191,30 @@ compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs:
             ok = false
         }
     }
-    if ok { ok = run_cc(flags, exe, objects.items, libs) }
+    if ok {
+        inputs := list(string)
+        inputs.extend(objects.items)!
+        inputs.extend(link.objects.items)!
+        ok = run_cc(tc, flags, exe, inputs.items, libs)
+    }
     for o in objects.items { _ = fs.remove_all(o) }
     return ok
 }
 
 /// Runs the C compiler with `flags` on `inputs` to make the executable `exe`, linked with
 /// `libs`. Returns whether it succeeded, reporting why not.
-run_cc :: fn(flags: []const string, exe: string, inputs, libs: []const string) -> bool needs Alloc + Env + Err + Proc {
-    cc := Env.var("CC") else "cc"
+run_cc :: fn(tc: ^const pkg.Toolchain, flags: []const string, exe: string, inputs, libs: []const string) -> bool needs Alloc + Env + Err + Proc {
     argv := list(string)
-    argv.push(cc)!
+    argv.extend(tc.cc)!
     argv.extend(flags)!
+    argv.extend(tc.cflags)!
     argv.push("-o")!
     argv.push(exe)!
     argv.extend(inputs)!
+    argv.extend(tc.ldflags)!
     argv.extend(libs)!
     result := process.output(argv.items) else {
-        eprint("gammac: cannot run the C compiler `{}`\n", cc)
+        eprint("gammac: cannot run the C compiler `{}`\n", pkg.display(tc))
         return false
     }
     if not process.success(result.status) {
@@ -203,6 +228,8 @@ run_cc :: fn(flags: []const string, exe: string, inputs, libs: []const string) -
 default_exe :: fn(root: string) -> string {
     if root.ends_with(".gm") { return root[0..root.len - 3] }
     trimmed := if root.ends_with("/") { root[0..root.len - 1] } else { root }
+    // The current directory has no name of its own: the program is `main`.
+    if trimmed in (".", "..") or trimmed.ends_with("/.") or trimmed.ends_with("/..") { return "main" }
     return trimmed
 }
 

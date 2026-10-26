@@ -68,9 +68,28 @@ Package :: struct {
     deps: List(Dep)
 }
 
-Dep :: struct {
-    name: string
-    dir: string
+pub Dep :: struct {
+    pub name: string
+    pub dir: string
+}
+
+/// Where every package of a dependency graph finds its dependencies (the package
+/// manager's answer): the package directory (canonical) and its dependencies by name.
+pub Resolution :: struct {
+    pub packages: List(ResolvedPackage)
+}
+
+pub ResolvedPackage :: struct {
+    pub dir: string
+    pub deps: List(Dep)
+}
+
+/// The dependencies of the package whose root is `root`, if the resolution has them.
+pub deps_of :: fn(res: ^const Resolution, root: string) -> ?List(Dep) {
+    for p in res.packages.items {
+        if p.dir is root { return p.deps }
+    }
+    return null
 }
 
 /// An import of module `to` by module `from`, written at `span`.
@@ -107,6 +126,8 @@ pub Loader :: struct {
     /// The core prelude and the other core modules, once loaded.
     pub prelude: ?usize
     pub core_modules: List(usize)
+    /// The git and archive dependencies the package manager resolved, if any.
+    pub resolution: ?Resolution = null
     packages: List(Package)
     by_dir: List(DirModule)
     edges: List(Edge)
@@ -223,7 +244,7 @@ parse_text :: fn(l: ^Loader, name, text: string) -> ast.File needs Alloc {
     return parse.parse_file(id, &lexed, l.ids, l.diags)
 }
 
-describe_read_error :: fn(e: fs.ReadError) -> string => match e {
+pub describe_read_error :: fn(e: fs.ReadError) -> string => match e {
     .Io(io) => match io {
         .NotFound => "No such file or directory (os error 2)"
         .PermissionDenied => "Permission denied (os error 13)"
@@ -585,33 +606,27 @@ package_of :: fn(l: ^Loader, dir: string, parent_package: ?usize) -> usize needs
     return l.packages.items.len - 1
 }
 
-/// The path dependencies of the package in `root`, from its manifest.
+/// The dependencies of the package in `root`: those the package manager resolved, or else
+/// the path dependencies of its manifest.
 read_manifest :: fn(l: ^Loader, root: string) -> List(Dep) needs Alloc + Fs {
+    if res := l.resolution {
+        if deps := deps_of(&res, root) { return deps }
+    }
     deps := list(Dep)
     path := join(root, "gamma.toml")
     text := fs.read_all(path) else e => {
         l.diags.report(source.DUMMY, str.format("cannot read {}: {}", path, describe_read_error(e))!)
         return deps
     }
-    doc := parse_toml(text) else e => {
-        l.diags.report(source.DUMMY, str.format("{}:{}: {}", path, e.line, e.message)!)
+    manifest := parse_manifest(text) else e => {
+        l.diags.report(source.DUMMY, str.format("{}:{}: {}", path, e.line, e.msg)!)
         return deps
     }
-    entry := doc.get("dependencies") else return deps
-    table := as_table(entry.value) else return deps
-    for dep in table.entries.items {
-        t := as_table(dep.value) else continue
-        if p := t.get("path") {
-            if s := as_str(p.value) { deps.push(Dep(name: dep.key, dir: join(root, s)))! }
-        } else {
-            kind := if t.get("git") is not null { "git" } else { "url" }
-            l.diags.report(source.DUMMY, str.format(
-                "{}:{}: dependency `{}` is a {} dependency; run `gamma fetch`",
-                path,
-                dep.line,
-                dep.key,
-                kind,
-            )!)
+    for dep in manifest.deps.items {
+        match dep.source {
+            .Path(p) => { deps.push(Dep(name: dep.name, dir: join(root, p)))! }
+            .Git(_) => { l.diags.report(source.DUMMY, str.format("{}:{}: dependency `{}` is a git dependency; run `gamma fetch`", path, dep.line, dep.name)!) }
+            .Url(_) => { l.diags.report(source.DUMMY, str.format("{}:{}: dependency `{}` is a url dependency; run `gamma fetch`", path, dep.line, dep.name)!) }
         }
     }
     return deps

@@ -1,0 +1,179 @@
+// What a native build links besides the generated program: the C compiler's command and
+// flags (`CC`, `CFLAGS`, `LDFLAGS` and the manifest's `cflags` and `ldflags`), the packages'
+// C sources compiled to objects, and their libraries (mirrors the parts of `src/toolchain.rs`
+// and `src/cgen/csrc.rs` that gammac needs).
+
+fs :: import "std/fs"
+str :: import "std/str"
+
+/// The C compiler and the flags a native build uses: the compiler as a command with its
+/// arguments, and the compiler and linker flags, those of `gamma.toml` first and then those
+/// of the environment, so that the user's win.
+pub Toolchain :: struct {
+    pub cc: []const string
+    pub cflags: []const string
+    pub ldflags: []const string
+}
+
+/// Splits `s` into words the way a POSIX shell does, without expansions: white space
+/// separates words, quotes and backslashes quote.
+pub split_words :: fn(s: string) -> string!List(string) needs Alloc {
+    words := list(string)
+    word := list(u8)
+    in_word := false
+    i: usize = 0
+    while i < s.len {
+        c := s[i]
+        i += 1
+        if c in (' ', '\t', '\n', '\r', 0x0b, 0x0c) {
+            if in_word {
+                words.push(word.items)!
+                word = list(u8)
+                in_word = false
+            }
+        } else if c is '\'' or c is '"' {
+            in_word = true
+            quote_text := s[i - 1..i]
+            while true {
+                x := s.get(i) else return !str.format("unterminated {} quote", quote_text)!
+                i += 1
+                if x is c { break }
+                if x is '\\' and c is '"' {
+                    e := s.get(i) else return !"`\\` at the end"
+                    i += 1
+                    word.push(e)!
+                } else {
+                    word.push(x)!
+                }
+            }
+        } else if c is '\\' {
+            in_word = true
+            e := s.get(i) else return !"`\\` at the end"
+            i += 1
+            word.push(e)!
+        } else {
+            in_word = true
+            word.push(c)!
+        }
+    }
+    if in_word { words.push(word.items)! }
+    return words
+}
+
+/// The toolchain `CC`, `CFLAGS` and `LDFLAGS` describe, with the manifest's flags before
+/// the environment's.
+pub toolchain_from_env :: fn(manifest_cflags, manifest_ldflags: []const string) -> string!Toolchain needs Alloc + Env {
+    cc := list(string)
+    cc.push("cc")!
+    if v := Env.var("CC") {
+        if str.trim(v).len > 0 {
+            words := split_words(v) else e => { return !str.format("cannot read CC: {}", e)! }
+            if words.items.len > 0 { cc = words }
+        }
+    }
+    cflags := list(string)
+    cflags.extend(manifest_cflags)!
+    if v := Env.var("CFLAGS") {
+        if str.trim(v).len > 0 {
+            words := split_words(v) else e => { return !str.format("cannot read CFLAGS: {}", e)! }
+            cflags.extend(words.items)!
+        }
+    }
+    ldflags := list(string)
+    ldflags.extend(manifest_ldflags)!
+    if v := Env.var("LDFLAGS") {
+        if str.trim(v).len > 0 {
+            words := split_words(v) else e => { return !str.format("cannot read LDFLAGS: {}", e)! }
+            ldflags.extend(words.items)!
+        }
+    }
+    return Toolchain(cc: cc.items, cflags: cflags.items, ldflags: ldflags.items)
+}
+
+/// The compiler as the user wrote it, for messages.
+pub display :: fn(tc: ^const Toolchain) -> string needs Alloc => str.join(tc.cc, " ")!
+
+/// The command that runs the compiler with `flags`, then `CFLAGS`, then `tail`.
+pub command :: fn(tc: ^const Toolchain, flags: []const string, tail: []const string) -> List(string) needs Alloc {
+    argv := list(string)
+    argv.extend(tc.cc)!
+    argv.extend(flags)!
+    argv.extend(tc.cflags)!
+    argv.extend(tail)!
+    return argv
+}
+
+/// What the link step of a native build adds: compiled C sources and libraries.
+pub Link :: struct {
+    pub objects: List(string)
+    pub libs: []const string
+    pub lib_dirs: []const string
+}
+
+pub no_link :: fn() -> Link needs Alloc => Link(objects: list(string), libs: empty_slice(string), lib_dirs: empty_slice(string))
+
+/// Removes the objects `link_inputs` made.
+pub remove_objects :: fn(link: ^const Link) needs Alloc + Fs {
+    for o in link.objects.items { _ = fs.remove_all(o) }
+}
+
+/// The compiler options for a package's C files in a build with `debug` checks and
+/// `debug_info`.
+object_flags :: fn(debug, debug_info: bool, src: ^const CSource) -> List(string) needs Alloc {
+    flags := list(string)
+    flags.push(if debug and debug_info { "-O0" } else if debug { "-O1" } else { "-O2" })!
+    flags.push("-fPIC")!
+    flags.push("-pthread")!
+    if debug_info { flags.push("-g")! }
+    for d in src.include_dirs { flags.push(str.format("-I{}", d)!)! }
+    return flags
+}
+
+/// Compiles the C sources of `extras` to objects named after `exe` and returns what a
+/// build links. The objects are removed by `remove_objects`.
+pub link_inputs :: fn(extras: ^const Extras, tc: ^const Toolchain, exe: string, debug, debug_info: bool) -> string!Link needs Alloc + Fs + Proc {
+    link := no_link()
+    link.libs = extras.libs.items
+    link.lib_dirs = extras.lib_dirs.items
+    for i, src in enumerate(extras.sources.items) {
+        flags := object_flags(debug, debug_info, &src)
+        obj := str.format("{}.p{}.o", exe, i)!
+        tail := [3]string("-c", "-o", obj)
+        argv := command(tc, flags.items, tail[..])
+        argv.push(src.path)!
+        r := run(argv.items)
+        if r.code is 127 and r.out.len is 0 and not str.contains(r.err, "error") and r.err.len > 0 {
+            remove_objects(&link)
+            return !str.format("cannot run the C compiler `{}`: {}", display(tc), r.err)!
+        }
+        if not r.ok {
+            remove_objects(&link)
+            return !str.format("the C compiler failed on {}:\n{}", src.path, r.err)!
+        }
+        link.objects.push(obj)!
+    }
+    return link
+}
+
+/// The linker arguments for the libraries: `-L` and run-time search directories, then
+/// `-l<name>` for each library of `foreign` blocks (`more`) and of the packages.
+pub library_args :: fn(link: ^const Link, more: []const string) -> List(string) needs Alloc {
+    args := list(string)
+    for d in link.lib_dirs {
+        args.push(str.format("-L{}", d)!)!
+        args.push(str.format("-Wl,-rpath,{}", d)!)!
+    }
+    seen := list(string)
+    for group in (more, link.libs) {
+        for l in group {
+            dup := false
+            for s in seen.items {
+                if s is l { dup = true }
+            }
+            if dup { continue }
+            seen.push(l)!
+            args.push(str.format("-l{}", l)!)!
+        }
+    }
+    return args
+}
