@@ -62,3 +62,10 @@ dangling stores are now compile errors (decisions/045).
 - **No Unicode-aware trim/split_whitespace in std/str** (s45 W-fmt and W-doc both
   hand-wrote them: 2x) → candidate for std/text. **`is !e` cannot bind** (W-doc).
   **load/paths.gm helpers not pub** (fixed by making them pub if reused).
+- **`?T` field in a variant pattern** (s45 W-lint, ~8x): `.Let(local, init)` with
+  `init: ?T` is not exhaustive / `if x := init` "always succeeds"; must write `?init`.
+  Same family as the s38 present-only-binding gotcha (7x). Strong candidate for a better
+  diagnostic (suggest `?init`) — the error is clear but the mistake keeps recurring.
+- **Containers created outside an arena storing arena strings** (s45 W-lint): segfault
+  (dangling keys). Lifetime problem, not syntax; Debug free checks did not catch it.
+- `make(bool, n)` (bool not Plain), `[N]T(.V)` fill not valid (W-lint, once each).

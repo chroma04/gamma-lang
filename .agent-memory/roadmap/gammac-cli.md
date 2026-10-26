@@ -10,11 +10,11 @@ checked against the reference byte for byte (stdout, stderr, status) in tests/se
 | check, run (via C), help, version, human diag format (default) | main.rs, diag.rs | DONE s45 (me): check 804/804 human |
 | fmt | fmt.rs + fmt_command | DONE s45 (W-fmt): 1088 files + 16k mutated inputs match |
 | test / bench (native path only) | testing.rs, analyze_package_tests | W-test |
-| lint + fix (+ diag codes) | lint/, sema/lint*.rs, linting.rs, fix.rs | W-lint |
-| doc | doc/ | W-doc |
+| lint + fix (+ diag codes) | lint/, sema/lint*.rs, linting.rs, fix.rs | DONE s45 (W-lint): 804 roots json+human, 188 fix copies |
+| doc | doc/ | DONE s45 (W-doc): ~1000 runs match |
 | gamma.toml build settings: [build]/[profile.*] mode, debug-info, cflags, ldflags, c-sources, include-dirs, libs, lib-dirs; --profile | pkg/build.rs, manifest.rs | W-pkg (with packages) |
 | package manager: new/init/fetch/update/add/remove/cache, git/archive deps, lock, --offline/--locked, --package | pkg/ (3.9k lines) | W-pkg |
-| -g (#line, frame names, views, gdb/lldb printers) | cgen/debug.rs, views.rs | todo (subagent) |
+| -g (#line, frame names, views, gdb/lldb printers) | cgen/debug.rs, views.rs | W-debug |
 | --target cross, wasm32-wasi, freestanding objects, --mode=safe (Fil-C) | toolchain.rs, cgen/wasi.rs | todo |
 | CFLAGS/LDFLAGS env, runtime object cache, run exe cache | toolchain.rs, rtcache.rs | todo (small) |
 | C optimizations (spec, borrow, outline, chain, constarg) | cgen/ | todo; speed only |
