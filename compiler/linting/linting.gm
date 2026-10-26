@@ -1,0 +1,256 @@
+//! `gammac lint`: the command line of the `lint` module, with `--fix` (mirrors
+//! `src/linting.rs`).
+
+/// The text of `RULES`'s listing: one line per rule, its name, default level and summary.
+pub list_rules :: fn() needs Alloc + Out {
+    width: usize = 0
+    for r in lint.RULES[..] {
+        if r.name.len > width { width = r.name.len }
+    }
+    out := list(u8)
+    for r in lint.RULES[..] {
+        out.extend(r.name)!
+        pad(&out, width - r.name.len)
+        out.extend("  ")!
+        level := lint.level_name(r.default)
+        out.extend(level)!
+        pad(&out, 5 - level.len)
+        out.extend("  ")!
+        out.extend(r.summary)!
+        out.push('\n')!
+    }
+    Out.write(out.items)
+}
+
+pad :: fn(out: ^List(u8), n: usize) needs Alloc {
+    for _ in 0..n { out.push(' ')! }
+}
+
+/// The levels for linting `path`: the defaults, gamma.toml's `[lint]`, the command line.
+/// Gives the message if gamma.toml is wrong.
+config :: fn(o: ^const lint.Options, path: string) -> string!lint.Config needs Alloc + Fs {
+    c := lint.default_config()
+    if root := lint.find_root(path) {
+        file := load.join(root, "gamma.toml")
+        text := fs.read_all(file) else _ => {
+            return !str.format("cannot read {}", file)!
+        }
+        doc := load.parse_toml(text) else e => {
+            return !str.format("{}:{}: {}", file, e.line, e.message)!
+        }
+        if entry := load.get(doc, "lint") {
+            table := load.as_table(entry.value) else {
+                return !str.format("{}:{}: `lint` must be a table of rule names and levels", file, entry.line)!
+            }
+            for item in table.entries.items {
+                if item.key is not "all" and lint.rule(item.key) is null {
+                    return !str.format("{}:{}: unknown lint rule `{}` in [lint] (`gamma lint --rules` lists them)", file, item.line, item.key)!
+                }
+                given := load.as_str(item.value) else ""
+                lv := lint.parse_level(given) else {
+                    return !str.format("{}:{}: the level of `{}` in [lint] must be \"allow\", \"warn\" or \"deny\"", file, item.line, item.key)!
+                }
+                _ = lint.set(&c, item.key, lv)
+            }
+        }
+    }
+    for st in o.levels.items {
+        if message := lint.set(&c, st.name, st.level) { return !message }
+    }
+    if o.deny_warnings { lint.deny_warnings(&c) }
+    return c
+}
+
+/// What the loop does after a round.
+Step :: union {
+    /// The command is over, with this exit status.
+    Done: u8
+    /// Another round.
+    Again
+}
+
+/// What lasts from one round to the next, allocated apart from the rounds'.
+State :: struct {
+    outer: Allocator
+    fixes: usize
+    files: List(string)
+    /// The text of the files the last round of fixes changed, to undo it if it breaks the
+    /// program.
+    undo: List((path: string, text: string))
+    /// The warnings the last round fixed, and how many fixes that was.
+    last: List(string)
+    last_n: usize
+    /// After a round of fixes breaks the program, fixes are applied one at a time, and
+    /// those that break it are left out.
+    careful: bool
+    blocked: hash_map.HashMap(string, bool)
+    refused: usize
+}
+
+/// A copy of `s` that outlives the round.
+keep :: fn(st: ^const State, s: string) -> string {
+    with st.outer { return dupe(s)! }
+}
+
+/// `gammac lint` on the program at `path`.
+pub command :: fn(path: string, o: ^const lint.Options, setup: fix.Setup) -> u8 needs Alloc + Env + Err + Fs {
+    dir := fix.own_files(path) else e => {
+        eprint("gamma: {}\n", e)
+        return 1
+    }
+    cfg := config(o, path) else e => {
+        eprint("gamma: {}\n", e)
+        return 1
+    }
+    std_root := lint.canonical(setup.std)
+    scope := lint.scope(dir, std_root, load.starts_with(lint.canonical(path), std_root))
+    st := State(
+        outer: Alloc.current(),
+        fixes: 0,
+        files: list(string),
+        undo: list((path: string, text: string)),
+        last: list(string),
+        last_n: 0,
+        careful: false,
+        blocked: hash_map.hash_map(string, bool),
+        refused: 0,
+    )
+    round: usize = 0
+    while true {
+        a := arena.new()
+        step := Step.Again
+        with a.allocator() {
+            step = lint_round(path, o, setup, &scope, &cfg, &st, round)
+        }
+        a.deinit()
+        match step {
+            .Done(code) => return code
+            .Again => {}
+        }
+        round += 1
+    }
+}
+
+/// One round: checks the program, and either reports and ends the command, or applies
+/// fixes (or undoes the last round's) for the next round.
+lint_round :: fn(path: string, o: ^const lint.Options, setup: fix.Setup, base: ^const lint.Scope, cfg: ^const lint.Config, st: ^State, round: usize) -> Step needs Alloc + Env + Err + Fs {
+    // The directories looked at are remembered for the round only.
+    scope := lint.scope(base.dir, base.std_root, base.linting_std)
+    sm := source.source_map()
+    diags := diag.diagnostics()
+    next_id: ast.NodeId = 0
+    l := load.loader(&sm, &diags, &next_id, setup.std, setup.recover)
+    outcome: ?lint.Outcome = null
+    if l.load_core(setup.core, setup.mode) {
+        s := sema.sema(&l)
+        check.install(&s)
+        s.resolve_ambient()
+        if m := l.load_root(path) {
+            packaged := lint.find_root(path) is not null
+            if packaged { l.load_package_modules(m) }
+            s.resolve_declarations()
+            check.check_program(&s, m, true)
+            program := packaged and l.lookup(m, "main") is not null
+            outcome = lint.run(&s, program, &scope, cfg)
+        }
+    }
+    if outcome is null and st.undo.items.len > 0 {
+        for u in st.undo.items {
+            if not fix.write_file(u.path, u.text) {
+                eprint("gamma: cannot write `{}`\n", u.path)
+                return .Done(1)
+            }
+        }
+        st.undo.clear()
+        st.fixes -= st.last_n
+        if st.careful {
+            st.refused += 1
+            for k in st.last.items { st.blocked.put(k, true)! }
+            st.last.clear()
+        }
+        st.careful = true
+        return .Again
+    }
+    rounds: usize = if st.careful { 1000 } else { 10 }
+    n: usize = 0
+    p := fix.Plan(files: list(fix.FileEdits), count: 0)
+    if outcome is not null and o.fix and round < rounds {
+        todo := list(^const diag.Diagnostic)
+        keys := list(string)
+        for i in 0..diags.list.items.len {
+            d := &diags.list.items[i]
+            code := d.code else continue
+            if d.fixes.items.len is not 1 { continue }
+            if st.blocked.contains(key_of(&sm, d, code)) { continue }
+            todo.push(d)!
+            if st.careful { break }
+        }
+        for d in todo.items { keys.push(keep(st, key_of(&sm, d, d.code else "")))! }
+        st.last.clear()
+        for k in keys.items { st.last.push(k)! }
+        p = fix.plan(todo.items, fn(f: source.FileId) -> bool => lint.in_scope(&scope, sm.file(f).path))
+        n = p.count
+    }
+    if n is 0 {
+        fix.render(&sm, &diags, setup.format)
+        if setup.format is not .Json {
+            if st.refused > 0 {
+                eprint("gamma: {} lint fix{} left the program failing to compile, so {} not applied\n", st.refused, fix.plural_es(st.refused), if st.refused is 1 { "it was" } else { "they were" })
+            }
+            if st.fixes > 0 {
+                eprint("gamma: applied {} fix{} in {} file{}\n", st.fixes, fix.plural_es(st.fixes), st.files.items.len, fix.plural_s(st.files.items.len))
+            }
+            if out := outcome {
+                if out.warnings + out.errors > 0 {
+                    parts := list(string)
+                    if out.errors > 0 { parts.push(str.format("{} error{}", out.errors, fix.plural_s(out.errors))!)! }
+                    if out.warnings > 0 { parts.push(str.format("{} warning{}", out.warnings, fix.plural_s(out.warnings))!)! }
+                    eprint("gamma lint: {}\n", str.join(parts.items, " and ")!)
+                }
+            }
+        }
+        if out := outcome {
+            if out.errors is 0 { return .Done(0) }
+        }
+        return .Done(1)
+    }
+    st.undo.clear()
+    st.last_n = n
+    for fe in p.files.items {
+        file := sm.file(fe.file)
+        text := fix.apply(file.text, fe.edits.items)
+        if not fix.write_file(file.path, text) {
+            eprint("gamma: cannot write `{}`\n", file.path)
+            return .Done(1)
+        }
+        st.undo.push((path: keep(st, file.path), text: keep(st, file.text)))!
+        if not contains(st.files.items, file.path) { st.files.push(keep(st, file.path))! }
+    }
+    st.fixes += n
+    return .Again
+}
+
+/// The identity of a warning across rounds: its file, position and rule.
+key_of :: fn(sm: ^const source.SourceMap, d: ^const diag.Diagnostic, code: string) -> string needs Alloc {
+    return str.format("{}\0{}\0{}", sm.file(d.span.file).path, d.span.lo, code)!
+}
+
+contains :: fn(paths: []const string, p: string) -> bool {
+    for x in paths {
+        if x is p { return true }
+    }
+    return false
+}
+
+arena :: import "std/arena"
+ast :: import "../ast"
+check :: import "../check"
+diag :: import "../diag"
+fix :: import "../fix"
+fs :: import "std/fs"
+hash_map :: import "std/collections/hash_map"
+lint :: import "../lint"
+load :: import "../load"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"

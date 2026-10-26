@@ -1,0 +1,171 @@
+// The `present-only-binding` lint: a `match` arm with a bare name in the position of an
+// optional (or a result) below the top of its pattern, which matches only a present
+// value (§9.3), where no arm names the absent case at that position and a catch-all
+// arm takes it instead. `.Return(v) => …` followed by `_ => …` sends `.Return(null)` to
+// the catch-all, which is rarely what was meant. A catch-all arm with an empty body
+// (`_ => {}`) ignores the rest on purpose, and is not reported (mirrors
+// `src/sema/lint_present.rs`).
+
+/// One step from a pattern's top to a position below it.
+Step :: union {
+    Variant: u32
+    Field: u32
+    /// Into the present value of an optional, or the success value of a result.
+    Present
+    Error
+}
+
+/// A bare binding below the top of a pattern that matches only a present value (or a
+/// success value): its path, span, local, and whether the value is a result's.
+PresentBinding :: struct {
+    path: []Step
+    span: source.Span
+    local: u32
+    is_result: bool
+}
+
+/// Reports the arms of a `match` (with `arms`, in function `def`) whose present-only
+/// bindings leave the absent case to a catch-all arm.
+present_only_bindings :: fn(def: ^const tir.FnDef, arms: []const tir.Arm, out: ^List(Finding)) needs Alloc {
+    catch_all: ?^const tir.Arm = null
+    for i in 0..arms.len {
+        if arms[i].guard is null and is_catch_all(arms[i].pat) {
+            catch_all = &arms[i]
+            break
+        }
+    }
+    ca := catch_all else return
+    // `_ => {}` ignores whatever the other arms do not take, the absent case included.
+    if is_empty(ca.body) { return }
+    for i in 0..arms.len {
+        found := list(PresentBinding)
+        path := list(Step)
+        present_bindings(arms[i].pat, true, &path, &found)
+        for b in found.items {
+            handled := false
+            for j in 0..arms.len {
+                if j is not i and arms[j].guard is null and not is_catch_all(arms[j].pat) and names_absent(arms[j].pat, b.path) { handled = true }
+            }
+            if not handled {
+                name := def.locals[usize(b.local)].name
+                out.push(Finding.PresentOnlyBinding(b.span, name, ca.pat.span, b.is_result))!
+            }
+        }
+    }
+}
+
+is_empty :: fn(e: ^const tir.Expr) -> bool {
+    match e.kind {
+        .Block(b) => {
+            if b.stmts.len > 0 { return false }
+            if t := b.tail { return is_empty(t) }
+            return true
+        }
+        .Aggregate(xs) => return xs.len is 0
+        _ => return false
+    }
+}
+
+is_catch_all :: fn(p: ^const tir.Pat) -> bool {
+    match p.kind {
+        .Wild, .Bind(_) => return true
+        .Or(alts) => {
+            for a in alts {
+                if is_catch_all(a) { return true }
+            }
+            return false
+        }
+        _ => return false
+    }
+}
+
+/// The bare bindings below the top of `p` that match only a present value (or a success
+/// value): their paths, spans, locals, and whether the value is a result's.
+present_bindings :: fn(p: ^const tir.Pat, top: bool, path: ^List(Step), out: ^List(PresentBinding)) needs Alloc {
+    match p.kind {
+        .Some(q), .Ok(q) => {
+            if .Bind(l) := q.kind {
+                if not top {
+                    out.push(PresentBinding(path: dupe(path.items)!, span: q.span, local: l, is_result: p.kind is .Ok(_)))!
+                    return
+                }
+            }
+            path.push(.Present)!
+            present_bindings(q, top, path, out)
+            _ = path.pop()
+        }
+        .Err(q) => {
+            path.push(.Error)!
+            present_bindings(q, top, path, out)
+            _ = path.pop()
+        }
+        .Variant(variant, ?payload) => if q := payload {
+            path.push(.Variant(variant))!
+            present_bindings(q, false, path, out)
+            _ = path.pop()
+        }
+        .Fields(fs) => {
+            for f in fs {
+                path.push(.Field(f.index))!
+                present_bindings(f.pat, false, path, out)
+                _ = path.pop()
+            }
+        }
+        .Or(alts) => {
+            for q in alts { present_bindings(q, top, path, out) }
+        }
+        _ => {}
+    }
+}
+
+/// Whether `p` matches the absent value (`null`, or an error) at `path` by naming it, or
+/// a pattern around it that takes any value there, below the top.
+names_absent :: fn(p: ^const tir.Pat, path: []const Step) -> bool {
+    if path.len is 0 { return p.kind is .Null or p.kind is .Err(_) or p.kind is .Wild or p.kind is .Bind(_) }
+    step := path[0]
+    rest := path[1..]
+    if .Or(alts) := p.kind {
+        for q in alts {
+            if names_absent(q, path) { return true }
+        }
+        return false
+    }
+    if p.kind is .Wild or p.kind is .Bind(_) { return true }
+    match step {
+        .Variant(v) => {
+            if .Variant(variant, ?payload) := p.kind {
+                if q := payload {
+                    if variant is v { return names_absent_below(q, rest) }
+                }
+            }
+            return false
+        }
+        .Field(k) => {
+            if .Fields(fs) := p.kind {
+                for f in fs {
+                    if f.index is k { return names_absent_below(f.pat, rest) }
+                }
+                return true
+            }
+            return false
+        }
+        .Present => {
+            if .Some(q) := p.kind { return names_absent_below(q, rest) }
+            if .Ok(q) := p.kind { return names_absent_below(q, rest) }
+            return false
+        }
+        .Error => {
+            if .Err(q) := p.kind { return names_absent_below(q, rest) }
+            return false
+        }
+    }
+}
+
+/// `names_absent` below the top of a pattern, where a binding or `_` takes any value.
+names_absent_below :: fn(p: ^const tir.Pat, path: []const Step) -> bool {
+    if p.kind is .Wild or p.kind is .Bind(_) { return true }
+    return names_absent(p, path)
+}
+
+source :: import "../source"
+tir :: import "../tir"

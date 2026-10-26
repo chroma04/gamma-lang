@@ -1,0 +1,468 @@
+// What `gammac lint` needs from the checker: the findings that depend on name resolution
+// and types (unused locals, parameters and declarations, locals that never change,
+// comparisons whose result is known) (mirrors `src/sema/lint.rs`). `lint.gm` turns them
+// into diagnostics.
+
+/// One fact `gammac lint` reports, located in the program's own files.
+pub Finding :: union {
+    /// A local (`param`: a parameter of a named function) whose value is never read;
+    /// `assigned` if it is assigned after its declaration.
+    UnusedLocal: (name: string, span: source.Span, param: bool, assigned: bool)
+    /// A mutable local (`x := e`) that is never assigned, nor borrowed or sliced mutably.
+    NeverAssigned: (name: string, span: source.Span)
+    /// A private top-level declaration that nothing refers to. `item` is the whole
+    /// declaration; `what` says what it declares ("function", "import", …).
+    UnusedDecl: (name: string, span: source.Span, item: source.Span, what: string)
+    /// `x is true` and its variants: `span` is the comparison, `operand` the other side,
+    /// and `same` whether the comparison means `operand` itself (rather than its negation).
+    BoolComparison: (span: source.Span, operand: source.Span, same: bool)
+    /// A comparison of a value with itself; `always` is its result.
+    SelfComparison: (span: source.Span, always: bool)
+    /// `x = x`: the whole assignment.
+    SelfAssignment: source.Span
+    /// A `pub` or `pub(package)` function or constant that no other module names, in a
+    /// package where it could be private: any `pub(package)` one, and a `pub` one of a
+    /// program package (whose root module declares `main`, so other packages do not import
+    /// it).
+    NeedlessPub: (name: string, span: source.Span, vis: ast.Visibility, what: string)
+    /// The address of local `name` (declared at `local`), taken at `span`, kept where it
+    /// outlives the local: `why` is "stored", "passed to be stored" or "returned".
+    DanglingAddress: (span: source.Span, name: string, local: source.Span, why: string)
+    /// A bare name below the top of a `match` arm's pattern, in the position of an
+    /// optional (or of a result, if `is_result`), whose absent value (or error) no arm
+    /// names, so that it goes to the catch-all arm at `catch_all`.
+    PresentOnlyBinding: (span: source.Span, name: string, catch_all: source.Span, is_result: bool)
+    /// Local `name` (declared at `local`) holds a copy of the place at `origin`, which keeps
+    /// its elements in a buffer it resizes, and is changed at `span` as if it were the
+    /// original.
+    MutatedCopy: (span: source.Span, name: string, local: source.Span, origin: source.Span)
+}
+
+/// How a local is changed (its uses by name are in `Sema.local_uses`).
+Use :: struct {
+    /// The uses that are the whole place of an assignment.
+    writes: List(source.Span)
+    /// Assigned through a place rooted at it, or borrowed or sliced mutably.
+    mutated: bool
+}
+
+/// The frame and index of a local.
+LocalKey :: (u32, u32)
+
+Checked :: struct {
+    s: ^sema.Sema
+    /// Whether the root module is the root of a package and declares `main`.
+    program: bool
+    /// By the function whose frame holds the local.
+    uses: hash_map.HashMap(LocalKey, Use)
+    /// Declarations of functions called or named by another declaration, by declaration.
+    fn_uses: List(bool)
+    /// Functions used as values (so their signature is not theirs to choose), by function.
+    as_value: List(bool)
+    /// The locals that a statement or pattern binds. Checking allocates a local for each
+    /// name of every alternative of `p1, p2 => …`, but binds those of the first only.
+    bound: hash_map.HashMap(LocalKey, bool)
+    out: List(Finding)
+}
+
+/// Finds what the rules about the checked program report in the files `scoped` holds
+/// (by file id).
+pub analyze :: fn(s: ^sema.Sema, program: bool, scoped: []const bool) -> List(Finding) needs Alloc + Fs {
+    // Constants are checked when first used; those that nothing used yet are checked now.
+    cn: usize = 0
+    while cn < s.consts.items.len {
+        if s.consts.items[cn].state is .Unchecked {
+            _ = check.const_value(s, s.consts.items[cn].span, s.consts.items[cn].ty)
+        }
+        cn += 1
+    }
+    c := Checked(
+        s: s,
+        program: program,
+        uses: hash_map.hash_map(LocalKey, Use),
+        fn_uses: list(bool),
+        as_value: list(bool),
+        bound: hash_map.hash_map(LocalKey, bool),
+        out: list(Finding),
+    )
+    for _ in 0..s.l.decls.items.len { c.fn_uses.push(false)! }
+    for _ in 0..s.fns.items.len { c.as_value.push(false)! }
+    c.run_checks(scoped)
+    return c.out
+}
+
+/// The function that `f` instantiates, or `f`.
+generic_of :: fn(s: ^const sema.Sema, f: u32) -> u32 {
+    if inst := s.fns.items[usize(f)].instance { return inst.template }
+    return f
+}
+
+run_checks :: fn(c: ^Checked, scoped: []const bool) needs Alloc + Fs {
+    s := c.s
+    file_ok :: fn(span: source.Span) -> bool => span is not source.DUMMY and span.file < scoped.len.trunc(u32) and scoped[usize(span.file)]
+    fn_decl := list(?usize)
+    for _ in 0..s.fns.items.len { fn_decl.push(null)! }
+    for i in 0..s.l.decls.items.len {
+        if .Done(v) := s.state(i) {
+            if .Fn(f) := v {
+                if fn_decl.items[usize(f)] is null { fn_decl.items[usize(f)] = i }
+            }
+        }
+    }
+    // The function each literal or clause belongs to.
+    for i in 0..s.defs.items.len {
+        f := i.trunc(u32)
+        if s.fns.items[i].instance is not null { continue }
+        body := s.defs.items[i].body else continue
+        calls := list(u32)
+        c.visit(f, body, &calls)
+        outer := s.nested_owner.get(f) else f
+        me := fn_decl.items[usize(outer)]
+        for callee in calls.items {
+            g := generic_of(s, callee)
+            if d := fn_decl.items[usize(g)] {
+                if me is not d { c.fn_uses.items[d] = true }
+            }
+        }
+    }
+    for k in 0..s.consts.items.len {
+        init := s.consts.items[k].init else continue
+        calls := list(u32)
+        c.visit(0xFFFF_FFFF, init, &calls)
+        for callee in calls.items {
+            if d := fn_decl.items[usize(generic_of(s, callee))] { c.fn_uses.items[d] = true }
+        }
+    }
+    for f in s.export_fns.items { c.as_value.items[usize(f)] = true }
+    // Locals and parameters.
+    for i in 0..s.defs.items.len {
+        f := i.trunc(u32)
+        def := &s.defs.items[i]
+        if s.fns.items[i].instance is not null or def.body is null or not file_ok(s.fns.items[i].span) { continue }
+        dangling := check.possible_dangling_addresses(s, i)
+        for d in dangling.items {
+            if not d.certain { c.out.push(Finding.DanglingAddress(d.span, d.name, d.local, d.why))! }
+        }
+        mutated_copies(s, i, &c.out)
+        own_params := def.kind is .Named and not c.as_value.items[i] and s.fns.items[i].name is not "main"
+        for j, l in enumerate(def.locals) {
+            lid := j.trunc(u32)
+            if l.span is source.DUMMY or l.name.starts_with("<") or l.name.starts_with("_") or not file_ok(l.span) { continue }
+            param := lid in def.params
+            if param and not own_params { continue }
+            if not param and not c.bound.contains((f, lid)) { continue }
+            writes: usize = 0
+            mutated := false
+            if u := c.uses.get_ptr((f, lid)) {
+                writes = u.writes.items.len
+                mutated = u.mutated
+            }
+            uses: usize = 0
+            if n := s.local_use_counts.get(l.span) { uses = usize(n) }
+            if uses is writes {
+                c.out.push(Finding.UnusedLocal(l.name, l.span, param, writes > 0))!
+            } else if l.mutable and not param and not mutated and writes is 0 {
+                c.out.push(Finding.NeverAssigned(l.name, l.span))!
+            }
+        }
+    }
+    // Top-level declarations.
+    for i in 0..s.l.decls.items.len {
+        d := &s.l.decls.items[i]
+        name := d.name.name
+        if what := c.needless_pub(i, scoped) {
+            c.out.push(Finding.NeedlessPub(d.name.name, d.name.span, d.item.vis, what))!
+        }
+        if d.item.vis is .Public or name is "main" or name.starts_with("_") or s.l.modules.items[d.module].is_prelude or not file_ok(d.name.span) or s.is_decl_used(i) or c.fn_uses.items[i] { continue }
+        .Binding(b) := d.item.kind else continue
+        skip := false
+        for a in d.item.attrs {
+            if a.name.name in ("export", "trap_hook") { skip = true }
+        }
+        if skip { continue }
+        state := s.state(i)
+        if state is not .Done(_) { continue }
+        what := "constant"
+        match b.init.kind {
+            .Fn(_) => { what = "function" }
+            .Import(_) => { what = "import" }
+            .Foreign(_) => { what = "foreign block" }
+            .Struct(_), .Union(_) => { what = "type" }
+            .Effect(_) => { what = "effect" }
+            .Attributed(_, inner) if inner.kind is .Struct(_) or inner.kind is .Union(_) => { what = "type" }
+            _ => {
+                if .Done(v) := state {
+                    match v {
+                        .Type(_), .GenericType(_) => { what = "type alias" }
+                        .EffectSet(_), .EffectInst(_) => { what = "effect" }
+                        .Global(_) => { what = "global" }
+                        .Module(_) => { what = "import" }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        c.out.push(Finding.UnusedDecl(d.name.name, d.name.span, d.item.span, what))!
+    }
+    kept := list(Finding)
+    for f in c.out.items {
+        keep := match f {
+            .BoolComparison(span, _, _) => file_ok(span)
+            .SelfComparison(span, _) => file_ok(span)
+            .SelfAssignment(span) => file_ok(span)
+            _ => true
+        }
+        if keep { kept.push(f)! }
+    }
+    c.out = kept
+}
+
+/// For a `pub` or `pub(package)` function or constant `d` that could be private (see
+/// `Finding.NeedlessPub`), what it declares.
+needless_pub :: fn(c: ^const Checked, d: usize, scoped: []const bool) -> ?string needs Alloc {
+    s := c.s
+    decl := &s.l.decls.items[d]
+    name := decl.name.name
+    candidate := match decl.item.vis {
+        .Private => false
+        .Package => true
+        .Public => c.program
+    }
+    span := decl.name.span
+    file_ok := span is not source.DUMMY and span.file < scoped.len.trunc(u32) and scoped[usize(span.file)]
+    if not candidate or name is "main" or s.l.modules.items[decl.module].is_prelude or not file_ok or s.is_used_outside(d) {
+        return null
+    }
+    for a in decl.item.attrs {
+        if a.name.name in ("export", "trap_hook") { return null }
+    }
+    .Binding(b) := decl.item.kind else return null
+    state := s.state(d)
+    .Done(v) := state else return null
+    if b.init.kind is .Fn(_) {
+        if v is .Fn(_) { return "function" }
+    }
+    if v is .Const(_) or v is .Untyped(_) { return "constant" }
+    return null
+}
+
+/// The function whose frame holds the local that an upvar `levels` frames up from `f`
+/// names.
+frame_up :: fn(c: ^const Checked, f: u32, levels: u32) -> ?u32 {
+    cur := f
+    for _ in 0..levels {
+        if usize(cur) >= c.s.defs.items.len { return null }
+        cur = c.s.defs.items[usize(cur)].parent else return null
+    }
+    return cur
+}
+
+/// The local a place expression in function `f` is rooted at, through fields and array
+/// elements (not through pointers or slices, which name other storage).
+root :: fn(c: ^const Checked, f: u32, e: ^const Expr) -> ?LocalKey {
+    match e.kind {
+        .Local(l) => return (f, l)
+        .Upvar(levels, local) => {
+            fr := c.frame_up(f, levels) else return null
+            return (fr, local)
+        }
+        .Field(base, _) => return c.root(f, base)
+        .Index(base, _, _) => if is_array(c.s, base.ty) { return c.root(f, base) }
+        .Slice(sl) => if is_array(c.s, sl.base.ty) { return c.root(f, sl.base) }
+        _ => {}
+    }
+    return null
+}
+
+is_array :: fn(s: ^const sema.Sema, t: types.Ty) -> bool => match s.tys.kind(t) {
+    .Array(_, _, _), .ParamArray(_, _) => true
+    _ => false
+}
+
+mutate :: fn(c: ^Checked, f: u32, place: ^const Expr) needs Alloc {
+    if k := c.root(f, place) { c.use_of(k).mutated = true }
+}
+
+/// The record of how local `k` is changed.
+use_of :: fn(c: ^Checked, k: LocalKey) -> ^Use needs Alloc {
+    if c.uses.get_ptr(k) is null { c.uses.put(k, Use(writes: list(source.Span), mutated: false))! }
+    return c.uses.get_ptr(k)?
+}
+
+/// Records the uses of locals in `e` (an expression of function `f`), and the functions it
+/// calls or names in `calls`.
+visit :: fn(c: ^Checked, f: u32, e: ^Expr, calls: ^List(u32)) needs Alloc {
+    tys := &c.s.tys
+    match e.kind {
+        .AddrOf(p) => if .Ptr(is_const, _) := tys.kind(e.ty) {
+            if not is_const { c.mutate(f, p) }
+        }
+        .Slice(sl) => if .Slice(is_const, _) := tys.kind(e.ty) {
+            if not is_const { c.mutate(f, sl.base) }
+        }
+        .Call(callee, _) => if .Fn(g) := callee { calls.push(g)! }
+        .FnRef(g), .Closure(g) => {
+            calls.push(g)!
+            c.as_value.items[usize(generic_of(c.s, g))] = true
+        }
+        .Block(b) => c.block_stmts(f, b.stmts)
+        .Match(_, arms) => {
+            for a in arms { c.binds(f, a.pat) }
+            if usize(f) < c.s.defs.items.len { present_only_bindings(&c.s.defs.items[usize(f)], arms, &c.out) }
+        }
+        .If(x) => {
+            for cp in x.cond {
+                if .Match(pat, _) := cp { c.binds(f, pat) }
+            }
+        }
+        .Loop(x) => {
+            for cp in x.cond {
+                if .Match(pat, _) := cp { c.binds(f, pat) }
+            }
+        }
+        .Else(x) => if l := x.capture { c.bound.put((f, l), true)! }
+        .Eq(lhs, rhs, negated) => {
+            lb := bool_lit(lhs)
+            rb := bool_lit(rhs)
+            if (lb is not null) is not (rb is not null) {
+                b := lb else rb?
+                other := if lb is not null { rhs } else { lhs }
+                if tys.kind(other.ty) is .Bool and e.span is not source.DUMMY {
+                    c.out.push(Finding.BoolComparison(e.span, other.span, b is not negated))!
+                }
+            } else if c.same_value(lhs, rhs) {
+                c.out.push(Finding.SelfComparison(e.span, not negated))!
+            }
+        }
+        .Binary(op, lhs, rhs) => {
+            if op in (tir.BinOp.Lt, tir.BinOp.Le, tir.BinOp.Gt, tir.BinOp.Ge) and c.same_value(lhs, rhs) {
+                c.out.push(Finding.SelfComparison(e.span, op in (tir.BinOp.Le, tir.BinOp.Ge)))!
+            }
+        }
+        _ => {}
+    }
+    if .Loop(x) := e.kind { c.block_stmts(f, x.body.stmts) }
+    // The clauses of handler literals are functions of their own, visited by `run`.
+    tir.for_each_child(e, fn(child: ^Expr) { c.visit(f, child, calls) })
+}
+
+bool_lit :: fn(x: ^const Expr) -> ?bool {
+    if .Bool(b) := x.kind { return b }
+    return null
+}
+
+/// Records the locals that pattern `p` binds.
+binds :: fn(c: ^Checked, f: u32, p: ^const tir.Pat) needs Alloc {
+    match p.kind {
+        .Bind(l) => c.bound.put((f, l), true)!
+        .Some(q), .Ok(q), .Err(q) => c.binds(f, q)
+        .Variant(_, ?payload) => if q := payload { c.binds(f, q) }
+        .Fields(fs) => {
+            for x in fs { c.binds(f, x.pat) }
+        }
+        .Or(alts) => {
+            for q in alts { c.binds(f, q) }
+        }
+        _ => {}
+    }
+}
+
+/// Records the assignments among `stmts` (their sub-expressions are visited by `visit`).
+block_stmts :: fn(c: ^Checked, f: u32, stmts: []const tir.Stmt) needs Alloc {
+    for st in stmts {
+        match st {
+            .Let(local, _) => c.bound.put((f, local), true)!
+            .LetTuple(locals, _) => {
+                for l in locals {
+                    if id := l { c.bound.put((f, id), true)! }
+                }
+            }
+            .Assign(place, value) => {
+                c.assigned(f, place)
+                if c.same_value(place, value) and place.span is not source.DUMMY and value.span is not source.DUMMY {
+                    c.out.push(Finding.SelfAssignment(source.to(place.span, value.span)))!
+                }
+            }
+            .AssignTuple(places, _) => {
+                for p in places {
+                    if x := p { c.assigned(f, x) }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+assigned :: fn(c: ^Checked, f: u32, place: ^const Expr) needs Alloc {
+    c.mutate(f, place)
+    if place.kind is .Local(_) or place.kind is .Upvar(_, _) {
+        if k := c.root(f, place) {
+            u := c.use_of(k)
+            seen := false
+            for w in u.writes.items {
+                if w is place.span { seen = true }
+            }
+            if not seen { u.writes.push(place.span)! }
+        }
+    }
+}
+
+/// Whether `a` and `b` are the same path of locals, fields and constant indices, of a
+/// type whose values always equal themselves (no floats).
+same_value :: fn(c: ^const Checked, a: ^const Expr, b: ^const Expr) -> bool {
+    tys := &c.s.tys
+    t := a.ty
+    plain := tys.is_integer(t)
+    match tys.kind(t) {
+        .Bool, .Ptr(_, _), .ManyPtr(_, _) => { plain = true }
+        _ => {}
+    }
+    return plain and a.span is not b.span and path_eq(a, b)
+}
+
+path_eq :: fn(a: ^const Expr, b: ^const Expr) -> bool {
+    match a.kind {
+        .Local(x) => {
+            if .Local(y) := b.kind { return x is y }
+            return false
+        }
+        .Upvar(l1, x) => {
+            if .Upvar(l2, y) := b.kind { return l1 is l2 and x is y }
+            return false
+        }
+        .Global(_, x) => {
+            if .Global(_, y) := b.kind { return x is y }
+            return false
+        }
+        .Field(b1, x1) => {
+            if .Field(b2, x2) := b.kind { return x1 is x2 and path_eq(b1, b2) }
+            return false
+        }
+        .Deref(x) => {
+            if .Deref(y) := b.kind { return path_eq(x, y) }
+            return false
+        }
+        .Index(b1, x1, _) => {
+            if .Index(b2, x2, _) := b.kind {
+                if not path_eq(b1, b2) { return false }
+                if .Int(x) := x1.kind {
+                    if .Int(y) := x2.kind { return bigint.eq(x, y) }
+                }
+                return path_eq(x1, x2)
+            }
+            return false
+        }
+        _ => return false
+    }
+}
+
+Expr :: tir.Expr
+
+ast :: import "../ast"
+bigint :: import "../bigint"
+check :: import "../check"
+hash_map :: import "std/collections/hash_map"
+sema :: import "../sema"
+source :: import "../source"
+tir :: import "../tir"
+types :: import "../types"

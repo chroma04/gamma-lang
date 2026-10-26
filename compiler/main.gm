@@ -1,107 +1,261 @@
 //! gammac: the Gamma compiler written in Gamma.
 //!
-//!     gammac lex [--diag-format=short|json] [--recover] FILE...
-//!     gammac parse [--diag-format=short|json] [--recover] [--dump] FILE...
-//!     gammac modules [--diag-format=short|json] ROOT...
-//!     gammac decls [--diag-format=short|json] ROOT...
-//!     gammac tir [--diag-format=short|json] ROOT...
-//!     gammac build [--diag-format=short|json] [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT
+//!     gammac lex [--recover] FILE...
+//!     gammac parse [--recover] [--dump] FILE...
+//!     gammac modules ROOT...
+//!     gammac decls ROOT...
+//!     gammac tir ROOT...
+//!     gammac check ROOT...
+//!     gammac lint [--fix] [--rules] [--allow=RULES] [--warn=RULES] [--deny=RULES] [-D] ROOT
+//!     gammac fix ROOT
+//!     gammac build [--mode=debug|checked|fast] [-g] [-o EXE] [--emit-c] ROOT
+//!     gammac run [--mode=debug|checked|fast] [-g] ROOT [ARG...]
+//!     gammac test [--filter=TEXT] [--all] [--show-output] [--jobs=N] [--timeout=SECONDS] [--time] [--mode=...] ROOT
+//!     gammac bench [--filter=TEXT] [--all] [--show-output] [--timeout=SECONDS] [--mode=...] ROOT
+//!     gammac new|init|fetch|update|add|remove|cache ...      (the package manager)
+//!     gammac fmt [--check] FILE|DIR...
+//!     gammac doc [--format=markdown|html] [-o PATH] [--all] [--missing] MODULE
+//!     gammac help | version
 //!
-//! `lex` prints the tokens of each file in the format of `gamma lex`. `parse` parses each
-//! file and, with `--dump`, prints its syntax tree in the format of `gamma parse --dump`.
-//! `modules` loads the program whose root module is ROOT (a `.gm` file or a module
-//! directory) and prints its module graph in the format of `gamma modules`; the standard
-//! library is the directory `$GAMMA_STD`, or else `lib/gamma/std` next to the directory of
-//! the executable. Each prints the diagnostics to standard error in the chosen format
-//! (default `short`). `decls` loads the program likewise, with the core library from
-//! `$GAMMA_CORE` or else the `core` directory next to the standard library's, resolves its
-//! declarations and prints them in the format of `gamma decls`. `tir` also checks the
-//! function bodies and, if there are no errors, prints them in the format of `gamma tir`.
-//! `build` checks the program and compiles it to the executable EXE (by default the
-//! root's name without `.gm`) through C: it writes the generated C next to EXE, with the
-//! extension `.c`, and runs the C compiler `$CC` (default `cc`) on it; a Debug build
-//! instead compiles the runtime and parts of the program as separate units in parallel
-//! (written next to EXE as `EXE.rt.c` and `EXE.uN.c`) and links them. The runtime's C
-//! sources are read from `$GAMMA_RUNTIME`, or else the `runtime` directory two levels
-//! above the standard library's. With `--emit-c` it stops after writing the C file.
-//! With several files, the output of each is preceded by a line `==> FILE <==` on both
-//! streams. `--recover` lexes with the layout heuristic that tools use after errors.
-//! The exit status is 1 if a file has errors, 2 for a usage error or a file that cannot
-//! be read.
+//! `check`, `build` and `run` also take `--offline`, `--locked` and `--profile=NAME`, and
+//! read the package's `gamma.toml` (`pkg/`).
+//!
+//! Every command takes `--diag-format=human|short|json` (default `human`), the formats of
+//! `gamma`; `doc` has its own options and diagnostics (`doc/doc.gm`). See `USAGE` for what each command does and `docs/self-hosting.md` for how
+//! each matches the reference implementation. With several files, the output of each is
+//! preceded by a line `==> FILE <==` on both streams. The exit status is 1 if a file has
+//! errors, 2 for a usage error or a file that cannot be read; `run` ends with the
+//! program's status, and `test` and `bench` with 1 if a test fails.
 
 arena :: import "std/arena"
 ast :: import "./ast"
-cgen :: import "./cgen"
 check :: import "./check"
 diag :: import "./diag"
+doc :: import "./doc"
+driver :: import "./driver"
+fmt :: import "./fmt"
+fix :: import "./fix"
 fs :: import "std/fs"
+lint :: import "./lint"
+linting :: import "./linting"
 load :: import "./load"
 parse :: import "./parse"
-process :: import "std/process"
-thread :: import "std/thread"
+pkg :: import "./pkg"
 sema :: import "./sema"
 source :: import "./source"
 str :: import "std/str"
 syntax :: import "./syntax"
-types :: import "./types"
+testing :: import "./testing"
+thread :: import "std/thread"
 
-USAGE :: "usage: gammac lex|parse|modules|decls|tir|build [--diag-format=short|json] [--recover] [--dump] [--mode=debug|checked|fast] [-o EXE] [--emit-c] FILE...\n"
+VERSION :: "0.1.0"
 
-/// What to do with each file.
-Command :: union { Lex, Parse, Modules, Decls, Tir, Build }
+USAGE :: `
+usage: gammac <command> [options] <file>
 
-Options :: struct {
-    command: Command
-    format: diag.Format = .Short
-    recover: bool = false
-    dump: bool = false
-    /// `build`: the build mode, the executable and whether to stop after writing C.
-    mode: Mode = .Debug
-    out: ?string = null
-    emit_c: bool = false
-}
+commands:
+  lex     print the tokens of source files
+  parse   check the syntax of source files (--dump prints the syntax tree)
+  modules load a program's modules without checking them and print the module graph
+  decls   resolve a program's declarations without checking bodies and print them
+  tir     check a program and print the typed program the checker produces
+  check   type-check a program (a .gm file or a module directory)
+  doc     write the API documentation of a module as Markdown or HTML (gammac doc --help)
+  lint    check a package with its tests and report the findings of the lint rules
+  fix     check a program and apply the fixes its diagnostics suggest
+  build   compile a program to a native executable via the system C compiler
+  run     compile a program via C and run it; arguments after the file go to the program
+  test    run the test declarations of a module and of the modules of its package
+          that it imports, compiled into one executable via C
+  bench   run the bench declarations the same way and report the time per run
+          (compiled in fast mode unless --mode is given)
+  new, init, fetch, update, add, remove, cache
+          the package manager (gammac help)
+  fmt     format source files in place: gammac fmt [--check] <file or directory>... ("-" filters stdin to stdout)
+  help    print this message
+  version print the compiler version
 
-/// The build modes of §1.4 that gammac has (Safe needs Fil-C).
-Mode :: union { Debug, Checked, Fast }
+options:
+  --diag-format=human|short|json
+                              how to print diagnostics (default: human)
+  --recover                   (lex, parse) lex with the layout recovery tools use after errors
+  --dump                      (parse) print the syntax tree
+  --mode=debug|checked|fast   (build, run) the build mode (default: debug)
+  -g                          (build, run) add debug information that maps the executable back to the
+                              Gamma source (build also writes the lldb formatters, gamma_lldb.py,
+                              next to the executable)
+  -o <file>                   (build) the executable to write (default: the input's name)
+  --emit-c                    (build) stop after writing the C file (<exe>.c)
+  --filter=<text>             (test, bench) run only the tests whose name or module path
+                              contains <text>
+  --all                       (test, bench) also run those of the modules of the package
+                              that nothing imports (every directory with .gm files)
+  --show-output               (test, bench) also print the output of the tests that pass
+  --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; 0: one per processor;
+                              the output is still in order)
+  --timeout=<seconds>         (test, bench) fail a test that runs longer than <seconds> (no
+                              limit by default)
+  --time                      (test, bench) print how long each test took and the total
+  --backend=c                 (test, bench) accepted: gammac has only the C back end
+  --offline                   (check, run, build) never use the network for dependencies
+  --locked                    (check, run, build) fail if gamma.lock is missing or out of date
+  --profile=<name>            (check, run, build) use the [profile.<name>] table of gamma.toml
+  --fix                       (lint) apply the fixes of the warnings that have one
+  --rules                     (lint) list the rules and their default levels
+  --allow=<rules>, --warn=<rules>, --deny=<rules>
+                              (lint) set the level of rules (comma-separated; all is every rule)
+  -D, --deny-warnings         (lint) report every rule that would warn as an error
 
-main :: fn() needs Alloc + Env + Err + Fs + Out + Proc + Sys {
+environment:
+  GAMMA_STD      the standard library (default: lib/gamma/std next to bin/)
+  GAMMA_CORE     the core library (default: core next to the standard library)
+  GAMMA_RUNTIME  the runtime's C sources (default: runtime two levels above the standard library)
+  CC             the C compiler (default: cc), with its arguments
+  CFLAGS         flags for every C compile, LDFLAGS flags for the link (after those of gamma.toml)
+  GAMMA_CACHE_DIR
+                 the package store (default: the user's cache directory; empty turns it off)
+  GAMMA_C_UNITS  the number of C units of a Debug build (default: by size and processors)
+
+`
+
+main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys {
     args := Env.args()
-    opts := Options(command: match args.get(1) else "" {
+    command := args.get(1) else ""
+    if command is "fmt" { Env.exit(fmt.command(args[2..])) }
+    if topic := help_topic(args) {
+        if pkg.is_package_command(topic) or topic is "packages" {
+            print("{}\n{}", USAGE, pkg.USAGE)
+            return
+        }
+    }
+    if pkg.is_package_command(command) { Env.exit(pkg.run_command("gammac", command, args[2..])) }
+    if command in ("help", "--help", "-h") {
+        Out.write(USAGE)
+        return
+    }
+    if command in ("version", "--version") {
+        print("gammac {}\n", VERSION)
+        return
+    }
+    if command is "doc" { Env.exit(doc.command(args[2..])) }
+    opts := driver.Options(command: match command {
         "lex" => .Lex
         "parse" => .Parse
         "modules" => .Modules
         "decls" => .Decls
         "tir" => .Tir
+        "check" => .Check
+        "lint" => .Lint
+        "fix" => .Fix
         "build" => .Build
-        _ => usage()
-    })
+        "run" => .Run
+        "test" => .Test
+        "bench" => .Bench
+        "" => usage_error("missing command")
+        _ => usage_error(str.format("unknown command `{}`", command)!)
+    }, lint: lint.options())
+    // Benchmarks are about speed: compiled without checks, unless asked otherwise.
+    if opts.command is .Bench { opts.mode = .Fast }
     files := list(string)
     defer files.deinit()
-    expect_out := false
-    for a in args[2..] {
-        if expect_out {
-            opts.out = a
-            expect_out = false
-            continue
+    i: usize = 2
+    while i < args.len {
+        a := args[i]
+        i += 1
+        // What follows the file of `gammac run` is the program's.
+        if opts.command is .Run and files.items.len > 0 {
+            opts.program_args = args[i - 1..]
+            break
         }
         match a {
-            "--mode=debug" => { opts.mode = .Debug }
-            "--mode=checked" => { opts.mode = .Checked }
-            "--mode=fast" => { opts.mode = .Fast }
-            "-o" => { expect_out = true }
+            "--help", "-h" => {
+                Out.write(USAGE)
+                return
+            }
+            "--mode=debug" => {
+                opts.mode = .Debug
+                opts.mode_given = true
+            }
+            "--mode=checked" => {
+                opts.mode = .Checked
+                opts.mode_given = true
+            }
+            "--mode=fast" => {
+                opts.mode = .Fast
+                opts.mode_given = true
+            }
+            "--offline" => { opts.offline = true }
+            "--locked" => { opts.locked = true }
+            "-o" => {
+                if i >= args.len { usage_error("`-o` needs a file name") }
+                opts.out = args[i]
+                i += 1
+            }
             "--emit-c" => { opts.emit_c = true }
+            "--all" => { opts.all = true }
+            "--show-output" => { opts.show_output = true }
+            "--time" => { opts.time = true }
+            "-j", "--jobs" => {
+                if i >= args.len { usage_error(str.format("`{}` needs a number", a)!) }
+                opts.jobs = parse_jobs(args[i])
+                i += 1
+            }
+            "--backend=c" => {}
+            "-g" => {
+                opts.debug_info = true
+                opts.debug_info_given = true
+            }
+            "--diag-format=human" => { opts.format = .Human }
             "--diag-format=short" => { opts.format = .Short }
             "--diag-format=json" => { opts.format = .Json }
             "--recover" => { opts.recover = true }
             "--dump" => { opts.dump = true }
             _ => {
-                if a.starts_with("-") { usage() }
+                if opts.command is .Lint {
+                    match lint.parse_arg(&opts.lint, a) {
+                        .Yes => continue
+                        .Bad(message) => usage_error(message)
+                        .No => {}
+                    }
+                }
+                if a.starts_with("--timeout=") {
+                    opts.timeout = parse_timeout(a[10..])
+                    continue
+                }
+                if a.starts_with("--jobs=") {
+                    opts.jobs = parse_jobs(a[7..])
+                    continue
+                }
+                if a.starts_with("--filter=") {
+                    opts.filter = a[9..]
+                    continue
+                }
+                if a.starts_with("--backend=") {
+                    value := a[10..]
+                    if value in ("interp", "cranelift") { usage_error(str.format("`--backend={}` is not supported: gammac has only the C back end (`--backend=c`)", value)!) }
+                    usage_error(str.format("invalid value `{}` for --backend (expected c, cranelift or interp)", value)!)
+                }
+                if a is "--coverage" or a.starts_with("--coverage=") { usage_error("`--coverage` is not supported: gammac has no interpreter to count the lines the tests run") }
+                if a.starts_with("--package=") { usage_error("`--package` is not supported: gammac tests the root given on its command line") }
+                if a.starts_with("--target=") { usage_error("`--target` is not supported: gammac builds for the machine it runs on") }
+                if a.starts_with("--profile=") {
+                    if a.len is 10 { usage_error("`--profile=` needs a profile name") }
+                    opts.profile = a[10..]
+                    continue
+                }
+                if a.starts_with("--mode=") { usage_error(str.format("invalid value `{}` for --mode (expected debug, checked or fast)", a[7..])!) }
+                if a.starts_with("--diag-format=") { usage_error(str.format("invalid value `{}` for --diag-format (expected human, short or json)", a[14..])!) }
+                if a.starts_with("-") { usage_error(str.format("unknown option `{}`", a)!) }
                 files.push(a)!
             }
         }
     }
-    if files.items.len is 0 or expect_out { usage() }
-    if opts.command is .Build and files.items.len > 1 { usage() }
+    if opts.command is .Lint and opts.lint.rules {
+        linting.list_rules()
+        return
+    }
+    if files.items.len is 0 { usage_error("no input file") }
+    if opts.command in (driver.Command.Build, driver.Command.Run, driver.Command.Lint, driver.Command.Fix, driver.Command.Test, driver.Command.Bench) and files.items.len > 1 { usage_error("more than one input file given") }
     status: u8 = 0
     for path in files.items {
         if files.items.len > 1 {
@@ -113,24 +267,56 @@ main :: fn() needs Alloc + Env + Err + Fs + Out + Proc + Sys {
                 eprint("gammac: cannot read `{}`\n", path)
                 status = 2
             }
-            false => {
-                if status is 0 { status = 1 }
+            code => {
+                if status is 0 { status = code }
             }
-            true => {}
         }
     }
     if status is not 0 { Env.exit(status) }
 }
 
-usage :: fn() -> never needs Env + Err {
+/// The number of tests to run at once: `--jobs=n`, where 0 means one per processor.
+parse_jobs :: fn(text: string) -> usize needs Alloc + Env + Err + Sys {
+    if str.contains(text, "_") { usage_error(str.format("`--jobs` needs a number, not `{}`", text)!) }
+    n := str.parse_int(usize, text) else usage_error(str.format("`--jobs` needs a number, not `{}`", text)!)
+    return if n is 0 { usize(thread.cpu_count()) } else { n }
+}
+
+/// The time limit of a test: `--timeout=seconds`, a positive number.
+parse_timeout :: fn(text: string) -> f64 needs Alloc + Env + Err {
+    seconds := if str.contains(text, "_") { 0.0 } else { str.parse_float(f64, text) else 0.0 }
+    if seconds > 0.0 and seconds < 1e9 { return seconds }
+    usage_error(str.format("`--timeout` needs a positive number of seconds, not `{}`", text)!)
+}
+
+/// The command whose help `gammac help COMMAND` or `gammac COMMAND --help` asks for.
+help_topic :: fn(args: []const string) -> ?string {
+    command := args.get(1) else return null
+    if command is "help" { return args.get(2) }
+    for a in args[2..] {
+        if a in ("--help", "-h") { return command }
+    }
+    return null
+}
+
+usage_error :: fn(message: string) -> never needs Env + Err {
+    eprint("gammac: {}\n\n", message)
     Err.write(USAGE)
     Env.exit(2)
 }
 
-/// Runs the command on one file and prints its output and diagnostics. Returns whether
-/// the file had no errors.
-process_file :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc + Env + Err + Fs + Out + Proc + Sys {
-    if opts.command in (Command.Modules, Command.Decls, Command.Tir, Command.Build) { return load_program(path, opts) }
+/// Runs the command on one file and prints its output and diagnostics. Returns the exit
+/// status for the file: 0 if it had no errors.
+process_file :: fn(path: string, in_opts: driver.Options) -> fs.ReadError!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    opts := in_opts
+    if opts.command in (driver.Command.Check, driver.Command.Build, driver.Command.Run, driver.Command.Lint, driver.Command.Fix) {
+        apply_build_settings(path, &opts) else e => {
+            eprint("gammac: {}\n", e)
+            return 1
+        }
+    }
+    if opts.command in (driver.Command.Lint, driver.Command.Fix) { return lint_or_fix(path, opts) }
+    if opts.command not in (driver.Command.Lex, driver.Command.Parse) { return load_program(path, opts) }
     text := try fs.read_all(path)
     defer free(text)
     a := arena.new()
@@ -141,247 +327,137 @@ process_file :: fn(path: string, opts: Options) -> fs.ReadError!bool needs Alloc
         diags := diag.diagnostics()
         lexed := if opts.recover { syntax.lex_recovering(id, text, &diags) } else { syntax.lex(id, text, &diags) }
         out := list(u8)
-        match opts.command {
-            .Lex => syntax.dump_tokens(sm.file(id), lexed.tokens.items, &out)
-            .Modules, .Decls, .Tir, .Build => {}
-            .Parse => {
-                next_id: ast.NodeId = 0
-                tree := parse.parse_file(id, &lexed, &next_id, &diags)
-                if opts.dump { ast.dump_file(&tree, &out) }
-            }
+        if opts.command is .Lex {
+            syntax.dump_tokens(sm.file(id), lexed.tokens.items, &out)
+        } else {
+            next_id: ast.NodeId = 0
+            tree := parse.parse_file(id, &lexed, &next_id, &diags)
+            if opts.dump { ast.dump_file(&tree, &out) }
         }
         Out.write(out.items)
-        out.clear()
-        diags.sort()
-        for d in diags.list.items { diag.render(&sm, &d, opts.format, &out) }
-        Err.write(out.items)
-        return not diags.has_errors()
+        render(&sm, &diags, opts.format)
+        return if diags.has_errors() { 1 } else { 0 }
     }
 }
 
-/// `modules`: loads the program rooted at `root` and prints its module graph.
-load_program :: fn(root: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Out + Proc + Sys {
+/// Applies the build settings of the package that holds `input` (the `[build]` table of
+/// its `gamma.toml` and the selected profile) under the command line: an option given
+/// there wins.
+apply_build_settings :: fn(input: string, opts: ^driver.Options) -> string!() needs Alloc + Fs {
+    settings := (try pkg.root_settings(input, opts.profile)) else return ()
+    if not opts.mode_given {
+        if m := settings.mode {
+            opts.mode = match m {
+                .Debug => driver.Mode.Debug
+                .Checked => driver.Mode.Checked
+                .Fast => driver.Mode.Fast
+                // Safe needs Fil-C, which gammac does not support; analysis treats it as Checked.
+                .Safe => {
+                    if opts.command in (driver.Command.Build, driver.Command.Run) {
+                        return !"gamma.toml asks for `mode = \"safe\"`, which gammac does not support (Safe builds need Fil-C)"
+                    }
+                    driver.Mode.Checked
+                }
+            }
+        }
+    }
+    if not opts.debug_info_given {
+        if d := settings.debug_info { opts.debug_info = d }
+    }
+    opts.manifest_cflags = settings.cflags else empty_slice(string)
+    opts.manifest_ldflags = settings.ldflags else empty_slice(string)
+    return ()
+}
+
+/// Fetches the dependencies of the package that holds `input` (see `pkg.prepare`) and tells
+/// the loader where they are. Returns what the packages add to a native build, or reports
+/// the error and returns `null`.
+prepare_packages :: fn(input: string, opts: driver.Options, l: ^load.Loader) -> ?pkg.Extras needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    popts := pkg.Options(offline: opts.offline, locked: opts.locked)
+    res := pkg.prepare(input, popts) else e => {
+        eprint("gammac: {}\n", e)
+        return null
+    }
+    l.resolution = res
+    extras := pkg.collect(input, res, opts.profile) else e => {
+        eprint("gammac: {}\n", e)
+        return null
+    }
+    return extras
+}
+
+/// Prints the diagnostics to standard error, in order, and empties the list.
+render :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics, format: diag.Format) needs Alloc + Err {
+    out := list(u8)
+    diags.sort()
+    for d in diags.list.items { diag.render(sm, &d, format, &out) }
+    Err.write(out.items)
+    diags.list.clear()
+}
+
+/// `lint` and `fix`: they load the program themselves, once for each round of fixes.
+lint_or_fix :: fn(path: string, opts: driver.Options) -> u8 needs Alloc + Env + Err + Fs + Out + Proc + Rand + Sys {
+    std := driver.std_root()
+    setup := fix.Setup(std: std, core: driver.core_root(std), mode: driver.mode_name(opts.mode), recover: opts.recover, format: opts.format)
+    if opts.command is .Fix { return fix.command(path, setup) }
+    return linting.command(path, &opts.lint, setup)
+}
+
+/// The commands that load a program: loads the program rooted at `root`, runs the
+/// command on it and prints its output and diagnostics. Returns the exit status.
+load_program :: fn(root: string, in_opts: driver.Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {
         sm := source.source_map()
         diags := diag.diagnostics()
         next_id: ast.NodeId = 0
-        std := std_root()
+        std := driver.std_root()
+        opts := in_opts
         l := load.loader(&sm, &diags, &next_id, std, opts.recover)
-        built := true
-        if opts.command in (Command.Decls, Command.Tir, Command.Build) {
-            mode_name := match opts.mode {
-                .Debug => "Debug"
-                .Checked => "Checked"
-                .Fast => "Fast"
-            }
-            if l.load_core(core_root(std), mode_name) {
-                s := sema.sema(&l)
-                check.install(&s)
-                s.resolve_ambient()
-                if m := l.load_root(root) {
-                    s.resolve_declarations()
-                    if opts.command is .Decls {
-                        check.check_consts(&s)
-                        Out.write(s.decl_dump())
-                    } else {
-                        check.check_program(&s, m)
-                        if opts.command is .Build {
-                            if not diags.has_errors() { built = build(&s, m, root, opts) }
-                        } else if not diags.has_errors() {
-                            Out.write(check.tir_dump(&s))
+        if opts.command in (driver.Command.Check, driver.Command.Build, driver.Command.Run) {
+            opts.extras = prepare_packages(root, opts, &l) else return 1
+        }
+        if opts.command is .Modules {
+            if graph := l.load_modules(root) { Out.write(graph) }
+            render(&sm, &diags, opts.format)
+            return if diags.has_errors() { 1 } else { 0 }
+        }
+        status: u8 = 0
+        if l.load_core(driver.core_root(std), driver.mode_name(opts.mode)) {
+            s := sema.sema(&l)
+            check.install(&s)
+            s.resolve_ambient()
+            if m := l.load_root(root) {
+                // Their tests are found even if nothing imports them.
+                if opts.all { load.load_package_modules(&l, m) }
+                s.resolve_declarations()
+                if opts.command is .Decls {
+                    check.check_consts(&s)
+                    Out.write(s.decl_dump())
+                } else {
+                    // `tir` checks a root without `main` as a library, with its tests, as
+                    // `gamma tir` does; `test` and `bench` check the tests.
+                    tests := opts.command in (driver.Command.Test, driver.Command.Bench) or (opts.command is .Tir and l.lookup(m, "main") is null)
+                    check.check_program(&s, m, tests)
+                    errors := diags.has_errors()
+                    // The diagnostics of checking come first, then what the back end says.
+                    render(&sm, &diags, opts.format)
+                    if errors { return 1 }
+                    match opts.command {
+                        .Test, .Bench => { status = testing.run(&s, opts) }
+                        .Tir => Out.write(check.tir_dump(&s))
+                        .Build => {
+                            if not driver.build(&s, m, root, opts) { status = 1 }
                         }
+                        .Run => { status = driver.run(&s, m, opts) }
+                        _ => {}
                     }
                 }
             }
-        } else if graph := l.load_modules(root) {
-            Out.write(graph)
         }
-        out := list(u8)
-        diags.sort()
-        for d in diags.list.items { diag.render(&sm, &d, opts.format, &out) }
-        Err.write(out.items)
-        return built and not diags.has_errors()
+        if diags.has_errors() and status is 0 { status = 1 }
+        render(&sm, &diags, opts.format)
+        return status
     }
-}
-
-/// `build`: compiles the checked program rooted at module `root` (named `path`) to an
-/// executable. Returns whether it succeeded; problems after checking are reported here.
-build :: fn(s: ^sema.Sema, root: usize, path: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Sys {
-    d := s.l.lookup(root, "main") else {
-        eprint("gammac: the program has no `main` function\n")
-        return false
-    }
-    .Fn(main) := s.resolve_decl(d) else return false
-    entry := check.entry_point(s, main)
-    roots := list(u32)
-    roots.push(entry)!
-    roots.extend(s.export_fns.items)!
-    if not check.prepare_codegen(s, roots.items) { return false }
-    p := cgen.prog(s)
-    copts := match opts.mode {
-        .Debug => cgen.Options(checks: true, debug: true)
-        .Checked => cgen.Options(checks: true, debug: false)
-        .Fast => cgen.Options(checks: false, debug: false)
-    }
-    generated := cgen.generate(&p, entry, copts) else u => {
-        place: string = if u.span is source.DUMMY { "" } else {
-            file := s.l.sm.file(u.span.file)
-            lc := file.line_col(u.span.lo)
-            str.format("{}:{}:{}: ", file.path, lc.line, lc.col)!
-        }
-        eprint("{}error: {}\n", place, u.message)
-        return false
-    }
-    exe := opts.out else default_exe(path)
-    c_file := str.format("{}.c", exe)!
-    rt := runtime_dir(std_root())
-    rt_h := fs.read_all(load.join(rt, "gm_rt.h")) else {
-        eprint("gammac: cannot read the runtime in `{}`\n", rt)
-        return false
-    }
-    rt_c := fs.read_all(load.join(rt, "gm_rt.c")) else {
-        eprint("gammac: cannot read the runtime in `{}`\n", rt)
-        return false
-    }
-    code := list(u8)
-    code.write("{}\n{}\n{}", rt_h, rt_c, generated.code)!
-    fs.write_all(c_file, code.items) else {
-        eprint("gammac: cannot write `{}`\n", c_file)
-        return false
-    }
-    if opts.emit_c { return true }
-    flags := list(string)
-    for f in [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread") { flags.push(f)! }
-    libs := list(string)
-    for l in generated.libs { libs.push(str.format("-l{}", l)!)! }
-    libs.push("-lm")!
-    if opts.mode is .Debug {
-        // The runtime and the program's units are compiled in parallel, then linked.
-        forced: ?usize = null
-        if v := Env.var("GAMMA_C_UNITS") { forced = str.parse_int(usize, v) else null }
-        n := cgen.unit_count(&generated.parts, usize(thread.cpu_count()), forced)
-        units := cgen.split(&generated.parts, n) else {
-            if forced is not null and n > 1 {
-                eprint("gammac: the generated C cannot be split into units\n")
-                return false
-            }
-            one := [1]string(generated.code)
-            return compile_units(exe, rt_h, rt_c, one[..], flags.items, libs.items)
-        }
-        return compile_units(exe, rt_h, rt_c, units, flags.items, libs.items)
-    }
-    flags.push("-O2")!
-    return run_cc(flags.items, exe, [1]string(c_file)[..], libs.items)
-}
-
-/// A Debug build of `exe`: writes the runtime (`exe.rt.c`) and each of `units` (`exe.uN.c`)
-/// as its own translation unit next to `exe`, compiles them all at once to objects and
-/// links those.
-compile_units :: fn(exe, rt_h, rt_c: string, units: []const string, flags, libs: []const string) -> bool needs Alloc + Env + Err + Fs + Proc {
-    sources := list(string)
-    sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, rt_c)!)!
-    for u in units { sources.push(str.format("#define GM_RT_SEPARATE 1\n{}\n{}", rt_h, u)!)! }
-    c_files := list(string)
-    objects := list(string)
-    for i, src in enumerate(sources.items) {
-        name := if i is 0 { "rt" } else { str.format("u{}", i - 1)! }
-        c := str.format("{}.{}.c", exe, name)!
-        fs.write_all(c, src) else {
-            eprint("gammac: cannot write `{}`\n", c)
-            return false
-        }
-        c_files.push(c)!
-        objects.push(str.format("{}.{}.o", exe, name)!)!
-    }
-    cc := Env.var("CC") else "cc"
-    children := list(?process.Child)
-    for i, c in enumerate(c_files.items) {
-        argv := list(string)
-        argv.push(cc)!
-        argv.extend(flags)!
-        // The runtime is optimized like the cached runtime object of the reference
-        // implementation; the program's units favor turnaround.
-        argv.push(if i is 0 { "-O2" } else { "-O1" })!
-        // A call to a function without a declaration would compile, wrongly, under C's
-        // old rules: make it an error.
-        argv.push("-Werror=implicit-function-declaration")!
-        for a in [4]string("-c", "-o", objects.items[i], c) { argv.push(a)! }
-        children.push(Proc.spawn(argv.items, process.SpawnOptions(stdout: .Null, stderr: .Pipe)) else null)!
-    }
-    ok := true
-    for child in children.items {
-        c := child else {
-            if ok { eprint("gammac: cannot run the C compiler `{}`\n", cc) }
-            ok = false
-            continue
-        }
-        err := list(u8)
-        buf: [4096]u8 = ---
-        while true {
-            chunk := (c.read(buf[..]) else break) else break
-            err.extend(buf[0..chunk.len])!
-        }
-        status := c.wait() else .Exited(1)
-        if not process.success(status) and ok {
-            eprint("gammac: the C compiler failed:\n{}", string(err.items))
-            ok = false
-        }
-    }
-    if ok { ok = run_cc(flags, exe, objects.items, libs) }
-    for o in objects.items { _ = fs.remove_all(o) }
-    return ok
-}
-
-/// Runs the C compiler with `flags` on `inputs` to make the executable `exe`, linked with
-/// `libs`. Returns whether it succeeded, reporting why not.
-run_cc :: fn(flags: []const string, exe: string, inputs, libs: []const string) -> bool needs Alloc + Env + Err + Proc {
-    cc := Env.var("CC") else "cc"
-    argv := list(string)
-    argv.push(cc)!
-    argv.extend(flags)!
-    argv.push("-o")!
-    argv.push(exe)!
-    argv.extend(inputs)!
-    argv.extend(libs)!
-    result := process.output(argv.items) else {
-        eprint("gammac: cannot run the C compiler `{}`\n", cc)
-        return false
-    }
-    if not process.success(result.status) {
-        eprint("gammac: the C compiler failed:\n{}", string(result.err.items))
-        return false
-    }
-    return true
-}
-
-/// The executable `build` writes by default: the root's name without `.gm`.
-default_exe :: fn(root: string) -> string {
-    if root.ends_with(".gm") { return root[0..root.len - 3] }
-    trimmed := if root.ends_with("/") { root[0..root.len - 1] } else { root }
-    return trimmed
-}
-
-/// The directory of the runtime's C sources: `$GAMMA_RUNTIME`, or else `runtime` two
-/// levels above the standard library's directory.
-runtime_dir :: fn(std: string) -> string needs Alloc + Env {
-    if dir := Env.var("GAMMA_RUNTIME") { return dir }
-    return load.join(load.join(load.join(std, ".."), ".."), "runtime")
-}
-
-/// The directory of the core library: `$GAMMA_CORE`, or else `core` next to the standard
-/// library's directory.
-core_root :: fn(std: string) -> string needs Alloc + Env {
-    if dir := Env.var("GAMMA_CORE") { return dir }
-    return load.join(load.join(std, ".."), "core")
-}
-
-/// The directory of the standard library: `$GAMMA_STD`, or else `lib/gamma/std` next to
-/// the directory of the executable, as in an installed release.
-std_root :: fn() -> string needs Alloc + Env {
-    if dir := Env.var("GAMMA_STD") { return dir }
-    exe := Env.args()[0]
-    bin := load.parent(exe) else "."
-    return load.join(load.join(if bin.len is 0 { "." } else { bin }, ".."), "lib/gamma/std")
 }

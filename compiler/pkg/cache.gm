@@ -1,0 +1,269 @@
+// Garbage collection of the cache directory (`gamma cache clean`; mirrors `src/pkg/cache.rs`).
+//
+// The cache holds:
+//
+//   - `git/checkouts/<repo>/<rev>/` and `git/url/<name>-<hash>/<hash>/`, read-only package
+//     trees, each with a `<rev>.used` stamp file next to it whose modification time is the
+//     last time a build used the tree;
+//   - `git/db/<repo>/`, bare mirrors of repositories;
+//   - `run/prog-*` (cached executables), `native/*` (compiled C sources) and `gm_rt-*` (the
+//     compiled runtime), whose modification times are their last use.
+//
+// A clean removes the trees unused for the given time, the mirrors that no checkout is left
+// for, the builds unused for that time and any half-written temporary file older than a day;
+// with `all` it removes all of them.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+str :: import "std/str"
+
+NS_PER_SECOND :: 1_000_000_000
+
+/// What a clean removed.
+pub CleanReport :: struct {
+    pub checkouts: usize = 0
+    pub mirrors: usize = 0
+    pub builds: usize = 0
+    pub bytes: u64 = 0
+    /// What could not be removed, and why.
+    pub failures: List(string)
+}
+
+pub report_is_empty :: fn(r: ^const CleanReport) -> bool => r.checkouts + r.mirrors + r.builds is 0
+
+plural :: fn(n: usize, one, many: string) -> string needs Alloc => str.format("{} {}", n, if n is 1 { one } else { many })!
+
+/// One line for the user.
+pub summary :: fn(r: ^const CleanReport, dry_run: bool) -> string needs Alloc {
+    if report_is_empty(r) { return "Nothing to remove" }
+    return str.format(
+        "{} {}, {}, {} ({} {})",
+        if dry_run { "Would remove" } else { "Removed" },
+        plural(r.checkouts, "package checkout", "package checkouts"),
+        plural(r.mirrors, "repository mirror", "repository mirrors"),
+        plural(r.builds, "cached build", "cached builds"),
+        human_size(r.bytes),
+        if dry_run { "to free" } else { "freed" },
+    )!
+}
+
+/// `n` bytes as `12.3 MiB`.
+pub human_size :: fn(n: u64) -> string needs Alloc {
+    units := [4]string("B", "KiB", "MiB", "GiB")
+    v := n.to(f64)
+    u: usize = 0
+    while v >= 1024.0 and u + 1 < units.len {
+        v /= 1024.0
+        u += 1
+    }
+    if u is 0 { return str.format("{} B", n)! }
+    return str.format("{:.1} {}", v, units[u])!
+}
+
+/// How a clean selects what to remove.
+pub Policy :: struct {
+    /// Remove what has not been used for this long (nanoseconds).
+    pub older_than: u64
+    /// Remove everything, whatever its age.
+    pub all: bool
+    /// Only count what would be removed.
+    pub dry_run: bool
+}
+
+/// Half-written files older than this are removed by every clean.
+TMP_MAX_AGE :: 24 * 3600 * NS_PER_SECOND
+
+Cleaner :: struct {
+    policy: Policy
+    now: i64
+    report: CleanReport
+}
+
+size_of_tree :: fn(path: string) -> u64 needs Alloc + Fs {
+    info := Fs.lstat(path) else return 0
+    if info.kind is not .Dir { return info.size }
+    total: u64 = 0
+    for p in subdirs(path).items { total += size_of_tree(p) }
+    return total
+}
+
+name_of :: fn(p: string) -> string needs Alloc => base_name(p)
+
+modified :: fn(p: string) -> ?i64 needs Fs {
+    info := Fs.lstat(p) else return null
+    return info.modified
+}
+
+/// The paths of the entries of `p`, sorted.
+subdirs :: fn(p: string) -> List(string) needs Alloc + Fs {
+    out := list(string)
+    for r in fs.entries(p) {
+        e := r else return out
+        out.push(join(p, e.name))!
+    }
+    out.items.sort()
+    return out
+}
+
+/// How long ago `t` was, in nanoseconds (0 if unknown or in the future).
+age :: fn(c: ^const Cleaner, t: ?i64) -> u64 {
+    v := t else return 0
+    if c.now <= v { return 0 }
+    return (c.now - v).trunc(u64)
+}
+
+stale :: fn(c: ^const Cleaner, t: ?i64) -> bool => c.policy.all or age(c, t) >= c.policy.older_than
+
+/// Deletes `path` (a tree or a file) and adds its size to the report; false (with the failure
+/// recorded) if it could not be deleted.
+delete :: fn(c: ^Cleaner, path: string) -> bool needs Alloc + Fs + Proc {
+    size := size_of_tree(path)
+    if not c.policy.dry_run {
+        res := if is_dir(path) { remove_tree(path) } else { Fs.remove(path) }
+        match res {
+            !e => {
+                // Gone already (a stamp removed with its tree) is fine.
+                if e is not .NotFound {
+                    c.report.failures.push(str.format("cannot remove {}: {}", path, io_message(e))!)!
+                    return false
+                }
+            }
+            _ => {}
+        }
+    }
+    c.report.bytes += size
+    return true
+}
+
+/// Removes a half-written temporary entry if it is old enough; true if it was one.
+tmp :: fn(c: ^Cleaner, path: string) -> bool needs Alloc + Fs + Proc {
+    if not name_of(path).starts_with(".tmp-") { return false }
+    if c.policy.all or age(c, modified(path)) >= TMP_MAX_AGE { _ = delete(c, path) }
+    return true
+}
+
+/// Cleans a directory of `<repo>/<tree>` package trees; returns the repositories that keep
+/// a tree.
+trees :: fn(c: ^Cleaner, root: string) -> List(string) needs Alloc + Fs + Proc {
+    kept := list(string)
+    for repo in subdirs(root).items {
+        if tmp(c, repo) or not is_dir(repo) { continue }
+        left: usize = 0
+        for entry in subdirs(repo).items {
+            name := name_of(entry)
+            if tmp(c, entry) { continue }
+            if name.ends_with(".used") {
+                // A stamp whose tree is gone.
+                if not is_dir(join(repo, name[0..name.len - 5])) { _ = delete(c, entry) }
+                continue
+            }
+            if is_dir(entry) and not stale(c, last_used(entry)) {
+                left += 1
+                continue
+            }
+            if is_dir(entry) {
+                if delete(c, entry) {
+                    c.report.checkouts += 1
+                    _ = delete(c, stamp_of(entry))
+                } else {
+                    left += 1
+                }
+            }
+        }
+        // Only an empty directory goes: a build may be writing a new tree into it.
+        if left is 0 and not c.policy.dry_run { _ = Fs.remove_dir(repo) }
+        if left > 0 { kept.push(name_of(repo))! }
+    }
+    return kept
+}
+
+mirrors :: fn(c: ^Cleaner, db_root: string, kept: []const string) needs Alloc + Fs + Proc {
+    for mirror in subdirs(db_root).items {
+        if tmp(c, mirror) or not is_dir(mirror) { continue }
+        is_kept := false
+        for k in kept {
+            if k is name_of(mirror) { is_kept = true }
+        }
+        if (c.policy.all or not is_kept) and delete(c, mirror) { c.report.mirrors += 1 }
+    }
+}
+
+/// Cleans the files of `dir` whose names start with one of `prefixes`, by their modification
+/// times.
+builds :: fn(c: ^Cleaner, dir: string, prefixes: []const string) needs Alloc + Fs + Proc {
+    for f in subdirs(dir).items {
+        name := name_of(f)
+        matches := false
+        for p in prefixes {
+            if name.starts_with(p) { matches = true }
+        }
+        if not matches { continue }
+        if str.contains(name, ".tmp-") {
+            if c.policy.all or age(c, modified(f)) >= TMP_MAX_AGE { _ = delete(c, f) }
+            continue
+        }
+        // The runtime's source goes with its object.
+        if name.ends_with(".c") and is_file(with_extension(f, "o")) { continue }
+        if not stale(c, modified(f)) { continue }
+        if not delete(c, f) { continue }
+        if not name.ends_with(".c") { c.report.builds += 1 }
+        if name.ends_with(".o") and name.starts_with("gm_rt-") { _ = delete(c, with_extension(f, "c")) }
+    }
+}
+
+/// `p` with its extension replaced by `ext`.
+with_extension :: fn(p: string, ext: string) -> string needs Alloc {
+    dot := str.rfind(p, ".")
+    slash := str.rfind(p, "/")
+    if d := dot {
+        if slash is null or d > slash? { return str.format("{}.{}", p[0..d], ext)! }
+    }
+    return str.format("{}.{}", p, ext)!
+}
+
+/// Cleans the cache directory `dir` as `policy` says.
+pub clean :: fn(dir: string, policy: Policy) -> CleanReport needs Alloc + Clock + Fs + Proc {
+    c := Cleaner(policy: policy, now: Clock.wall(), report: CleanReport(failures: list(string)))
+    if not is_dir(dir) { return c.report }
+    kept_git := trees(&c, join(join(dir, "git"), "checkouts"))
+    mirrors(&c, join(join(dir, "git"), "db"), kept_git.items)
+    _ = trees(&c, join(join(dir, "git"), "url"))
+    builds(&c, join(dir, "run"), [1]string("prog-")[..])
+    builds(&c, join(dir, "native"), [2]string("obj-", "lib-")[..])
+    builds(&c, dir, [1]string("gm_rt-")[..])
+    if policy.all and not policy.dry_run {
+        for sub in ("git", "run", "native") {
+            d := join(dir, sub)
+            if fs.exists(d) {
+                remove_tree(d) else e => {
+                    c.report.failures.push(str.format("cannot remove {}: {}", d, io_message(e))!)!
+                }
+            }
+        }
+    }
+    return c.report
+}
+
+test "sizes read as people write them" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        expect_eq(human_size(0), "0 B")
+        expect_eq(human_size(1023), "1023 B")
+        expect_eq(human_size(1024), "1.0 KiB")
+        expect_eq(human_size(1536), "1.5 KiB")
+        expect_eq(human_size(5 * 1024 * 1024), "5.0 MiB")
+    }
+}
+
+test "the summary counts what was removed" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        r := CleanReport(checkouts: 1, mirrors: 2, builds: 1, bytes: 2048, failures: list(string))
+        expect_eq(summary(&r, false), "Removed 1 package checkout, 2 repository mirrors, 1 cached build (2.0 KiB freed)")
+        expect(summary(&r, true).starts_with("Would remove 1 package checkout"))
+        empty := CleanReport(checkouts: 0, mirrors: 0, builds: 0, bytes: 0, failures: list(string))
+        expect(report_is_empty(&empty))
+    }
+}

@@ -1,0 +1,1014 @@
+// Dependency resolution: from a root manifest and an optional lockfile to the revision of
+// every git package, the archive of every URL package, their checkouts and the lockfile that
+// records them (mirrors `src/pkg/resolve.rs`).
+//
+// The graph is walked from the root package. Each git package is identified by its
+// repository URL (and subdirectory); every requirement on it is collected, and one revision
+// must satisfy all of them. A revision that is chosen, and whose own dependencies then add
+// a requirement it does not satisfy, makes the walk start over with the larger set of
+// requirements. Requirements only grow, so the walk ends.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+load :: import "../load"
+str :: import "std/str"
+
+/// How a resolution may use the network and the lockfile.
+pub Options :: struct {
+    /// Never touch the network: everything must be locked and in the store.
+    pub offline: bool = false
+    /// The lockfile must exist and stay unchanged.
+    pub locked: bool = false
+}
+
+/// Which locked packages to ignore in favor of the newest revisions that are allowed.
+pub Refresh :: union {
+    None
+    All
+    /// The packages with these names.
+    Names: []const string
+}
+
+/// A package source: a repository URL (or `url+` and an archive URL) and a subdirectory.
+pub Key :: struct {
+    pub url: string
+    pub subdir: ?string = null
+}
+
+key_equal :: fn(a, b: Key) -> bool => a.url is b.url and a.subdir is b.subdir
+
+/// One package's requirement on a git package.
+Req :: struct {
+    requirer: string
+    dep: string
+    /// The URL as written by the requirer.
+    url: string
+    spec: load.GitSpec
+}
+
+req_same :: fn(a, b: Req) -> bool => a.requirer is b.requirer and a.dep is b.dep and a.url is b.url and load.spec_equal(a.spec, b.spec)
+
+/// The revision chosen for a git package.
+Choice :: struct {
+    rev: string
+    version: ?string
+    reference: string
+}
+
+/// A downloaded and unpacked archive package.
+ArchiveInfo :: struct {
+    url: string
+    /// The SHA-256 of the archive file, hexadecimal.
+    sha256: string
+    /// The canonical directory it is unpacked in.
+    dir: string
+    /// The checksum of the unpacked tree.
+    checksum: string
+}
+
+/// The version a tag name stands for: `vX.Y.Z` or `X.Y.Z`.
+pub tag_version :: fn(tag: string) -> ?load.Version needs Alloc {
+    name := str.strip_prefix(tag, "v") else tag
+    return load.parse_version(name) else null
+}
+
+is_default :: fn(s: load.GitSpec) -> bool => s is .Default
+
+/// The requirements that matter: a request for the default branch gives way to any other.
+effective :: fn(reqs: []const Req) -> []const Req needs Alloc {
+    others := list(Req)
+    for r in reqs {
+        if not is_default(r.spec) { others.push(r)! }
+    }
+    if others.items.len is 0 { return reqs }
+    return others.items
+}
+
+/// The version a lock entry records for `reference`, given the requirements on it: the
+/// version of the tag when the tag was chosen by a version requirement (and not pinned by
+/// name), otherwise none.
+recorded_version :: fn(all: []const Req, reference: string) -> ?string needs Alloc {
+    reqs := effective(all)
+    pinned := false
+    versioned := false
+    for r in reqs {
+        match r.spec {
+            .Version(_) => { versioned = true }
+            .Default => {}
+            _ => { pinned = true }
+        }
+    }
+    if pinned or not versioned { return null }
+    tag := str.strip_prefix(reference, "tag=") else return null
+    v := tag_version(tag) else return null
+    return load.version_string(v)
+}
+
+/// Whether a revision with `reference` and `rev` is what `spec` asks for.
+satisfies :: fn(reference, rev: string, spec: load.GitSpec) -> bool needs Alloc {
+    return match spec {
+        .Default => reference is "default"
+        .Tag(t) => reference is str.format("tag={}", t)!
+        .Branch(b) => reference is str.format("branch={}", b)!
+        .Rev(r) => rev.starts_with(r)
+        .Version(req) => {
+            tag := str.strip_prefix(reference, "tag=") else return false
+            v := tag_version(tag) else return false
+            return load.req_matches(&req, v)
+        }
+    }
+}
+
+describe :: fn(reqs: []const Req) -> string needs Alloc {
+    parts := list(string)
+    for r in reqs { parts.push(str.format("`{}` requires {}", r.requirer, load.spec_text(r.spec))!)! }
+    parts.items.sort()
+    out := list(string)
+    for i, p in enumerate(parts.items) {
+        if i > 0 and parts.items[i - 1] is p { continue }
+        out.push(p)!
+    }
+    return str.join(out.items, ", ")!
+}
+
+/// The commit of `name` among `refs`.
+find_ref :: fn(refs: []const RefName, name: string) -> ?string {
+    for r in refs {
+        if r.name is name { return r.rev }
+    }
+    return null
+}
+
+/// Picks the revision for `reqs` among the references of a repository.
+pick :: fn(url: string, all: []const Req, refs: ^const Refs, db_dir: string) -> string!Choice needs Alloc + Proc {
+    reqs := effective(all)
+    pins := list(Req)
+    for r in reqs {
+        if r.spec is .Version(_) or r.spec is .Default { continue }
+        dup := false
+        for p in pins.items {
+            if load.spec_equal(p.spec, r.spec) { dup = true }
+        }
+        if not dup { pins.push(r)! }
+    }
+    versions := list(load.VersionReq)
+    for r in reqs {
+        if .Version(v) := r.spec { versions.push(v)! }
+    }
+    conflict := str.format("conflicting requirements for {}: {}", url, describe(reqs))!
+    if pins.items.len > 1 { return !conflict }
+    if pins.items.len > 0 {
+        pin := pins.items[0]
+        match pin.spec {
+            .Tag(t) => {
+                rev := find_ref(refs.tags.items, t) else {
+                    return !str.format("{} has no tag `{}` (required by `{}`)", url, t, pin.requirer)!
+                }
+                if versions.items.len > 0 {
+                    v := tag_version(t) else return !conflict
+                    for r in versions.items {
+                        if not load.req_matches(&r, v) { return !conflict }
+                    }
+                }
+                return Choice(rev: rev, version: null, reference: str.format("tag={}", t)!)
+            }
+            .Branch(b) => {
+                rev := find_ref(refs.branches.items, b) else {
+                    return !str.format("{} has no branch `{}` (required by `{}`)", url, b, pin.requirer)!
+                }
+                if versions.items.len > 0 { return !conflict }
+                return Choice(rev: rev, version: null, reference: str.format("branch={}", b)!)
+            }
+            .Rev(r) => {
+                rev := rev_parse(db_dir, r) else {
+                    return !str.format("{} has no commit `{}` on a branch or tag (required by `{}`)", url, r, pin.requirer)!
+                }
+                if versions.items.len > 0 { return !conflict }
+                return Choice(rev: rev, version: null, reference: str.format("rev={}", r)!)
+            }
+            _ => {}
+        }
+    }
+    if versions.items.len > 0 {
+        best_v: ?load.Version = null
+        best_name := ""
+        best_rev := ""
+        for t in refs.tags.items {
+            v := tag_version(t.name) else continue
+            ok := true
+            for r in versions.items {
+                if not load.req_matches(&r, v) { ok = false }
+            }
+            if not ok { continue }
+            // The last of equal versions wins, as `max_by` does.
+            if b := best_v {
+                if load.cmp_version(v, b) < 0 { continue }
+            }
+            best_v = v
+            best_name = t.name
+            best_rev = t.rev
+        }
+        v := best_v else {
+            return !str.format("no version tag of {} satisfies the requirements: {}", url, describe(reqs))!
+        }
+        return Choice(rev: best_rev, version: load.version_string(v), reference: str.format("tag={}", best_name)!)
+    }
+    rev := refs.head else {
+        return !str.format("{} has no default branch to use (required by `{}`)", url, reqs[0].requirer)!
+    }
+    return Choice(rev: rev, version: null, reference: "default")
+}
+
+/// Reads and parses the manifest in `dir`, with errors that name the file and line.
+pub read_manifest :: fn(dir: string) -> string!load.Manifest needs Alloc + Fs {
+    path := join(dir, "gamma.toml")
+    text := try read_text(path)
+    return load.parse_manifest(text) else e => { return !str.format("{}:{}: {}", path, e.line, e.msg)! }
+}
+
+/// The key/value pairs the walk keeps per package source.
+KeyText :: struct {
+    key: Key
+    text: string
+}
+
+KeyKeys :: struct {
+    key: Key
+    keys: List(Key)
+}
+
+Constraint :: struct {
+    key: Key
+    reqs: List(Req)
+}
+
+UrlRefs :: struct {
+    url: string
+    refs: Refs
+}
+
+ChosenEntry :: struct {
+    key: Key
+    choice: Choice
+}
+
+/// A package being walked: its directory, display name, and whether it is a git or
+/// archive package.
+StackItem :: struct {
+    dir: string
+    name: string
+    fetched: bool
+}
+
+/// The git or archive package a walked package belongs to, with the root of its checkout.
+Owner :: struct {
+    key: Key
+    root: string
+}
+
+pub Resolver :: struct {
+    root: string
+    opts: Options
+    refresh: Refresh
+    store: Store
+    old: ?Lock
+    constraints: List(Constraint)
+    fetched: List(string)
+    refs: List(UrlRefs)
+    /// The archives obtained so far, by URL (kept across walks).
+    archives: List(ArchiveInfo)
+    /// The names of the dependencies that are archives.
+    url_deps: List(string)
+    // State of one walk.
+    chosen: List(ChosenEntry)
+    used_archives: List(Key)
+    checkouts: List(KeyText)
+    checksums: List(KeyText)
+    pkg_names: List(KeyText)
+    pkg_deps: List(KeyKeys)
+    dirty: bool
+    res: load.Resolution
+    stack: List(StackItem)
+}
+
+pub resolver :: fn(root: string, opts: Options, refresh: Refresh, old: ?Lock) -> Resolver needs Alloc + Env {
+    return Resolver(
+        root: root,
+        opts: opts,
+        refresh: refresh,
+        store: store_for_package(root),
+        old: old,
+        constraints: list(Constraint),
+        fetched: list(string),
+        refs: list(UrlRefs),
+        archives: list(ArchiveInfo),
+        url_deps: list(string),
+        chosen: list(ChosenEntry),
+        used_archives: list(Key),
+        checkouts: list(KeyText),
+        checksums: list(KeyText),
+        pkg_names: list(KeyText),
+        pkg_deps: list(KeyKeys),
+        dirty: false,
+        res: load.Resolution(packages: list(load.ResolvedPackage)),
+        stack: list(StackItem),
+    )
+}
+
+find_text :: fn(items: []const KeyText, key: Key) -> ?string {
+    for it in items {
+        if key_equal(it.key, key) { return it.text }
+    }
+    return null
+}
+
+put_text :: fn(items: ^List(KeyText), key: Key, text: string) needs Alloc {
+    for i in 0..items.items.len {
+        if key_equal(items.items[i].key, key) {
+            items.items[i].text = text
+            return
+        }
+    }
+    items.push(KeyText(key: key, text: text))!
+}
+
+/// The locked entry for `key`, if there is a lock that has one.
+locked_entry :: fn(r: ^const Resolver, key: Key) -> ?LockedPackage {
+    old := r.old else return null
+    return find_locked(&old, key.url, key.subdir)
+}
+
+constraint_index :: fn(r: ^const Resolver, key: Key) -> ?usize {
+    for i, c in enumerate(r.constraints.items) {
+        if key_equal(c.key, key) { return i }
+    }
+    return null
+}
+
+chosen_index :: fn(r: ^const Resolver, key: Key) -> ?usize {
+    for i, c in enumerate(r.chosen.items) {
+        if key_equal(c.key, key) { return i }
+    }
+    return null
+}
+
+/// Resolves the graph of the root package. Returns the resolution and the lock it implies,
+/// or `null` if there are no git or archive dependencies.
+pub run_resolver :: fn(r: ^Resolver) -> string!?(res: load.Resolution, lock: Lock) needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    root := canonicalize(r.root) else return !str.format("cannot read {}: No such file or directory (os error 2)", r.root)!
+    manifest := try read_manifest(root)
+    while true {
+        r.chosen.clear()
+        r.used_archives.clear()
+        r.checkouts.clear()
+        r.pkg_names.clear()
+        r.pkg_deps.clear()
+        r.res = load.Resolution(packages: list(load.ResolvedPackage))
+        r.stack.clear()
+        r.dirty = false
+        name := manifest.name else (load.file_name(root) else "root")
+        try r.walk(root, &manifest, name, null)
+        if not r.dirty { break }
+    }
+    if r.chosen.items.len is 0 and r.used_archives.items.len is 0 { return null }
+    try r.check_refresh_names()
+    lock := try r.build_lock()
+    return (res: r.res, lock: lock)
+}
+
+check_refresh_names :: fn(r: ^Resolver) -> string!() needs Alloc {
+    names := match r.refresh {
+        .Names(n) => n
+        _ => return ()
+    }
+    for n in names {
+        known := false
+        for c in r.chosen.items {
+            if r.entry_name(c.key) is n { known = true }
+        }
+        for u in r.url_deps.items {
+            if u is n { known = true }
+        }
+        for c in r.constraints.items {
+            for q in c.reqs.items {
+                if q.dep is n { known = true }
+            }
+        }
+        if not known { return !str.format("`{}` is not a git dependency of this package", n)! }
+    }
+    return ()
+}
+
+entry_name :: fn(r: ^const Resolver, key: Key) -> string needs Alloc {
+    if n := find_text(r.pkg_names.items, key) { return n }
+    deps := list(string)
+    if ci := r.constraint_index(key) {
+        for q in r.constraints.items[ci].reqs.items { deps.push(q.dep)! }
+    }
+    deps.items.sort()
+    return deps.items.first() else "package"
+}
+
+add_req :: fn(r: ^Resolver, key: Key, req: Req) needs Alloc {
+    ci := r.constraint_index(key) else {
+        reqs := list(Req)
+        reqs.push(req)!
+        r.constraints.push(Constraint(key: key, reqs: reqs))!
+        r.after_req(key, req)
+        return
+    }
+    for q in r.constraints.items[ci].reqs.items {
+        if req_same(q, req) { return }
+    }
+    r.constraints.items[ci].reqs.push(req)!
+    r.after_req(key, req)
+}
+
+/// A new requirement on a package already chosen may no longer be satisfied: choose again.
+after_req :: fn(r: ^Resolver, key: Key, req: Req) needs Alloc {
+    ci := r.chosen_index(key) else return
+    c := r.chosen.items[ci].choice
+    if not is_default(req.spec) and not satisfies(c.reference, c.rev, req.spec) {
+        _ = r.chosen.remove(ci)
+        r.dirty = true
+    }
+}
+
+/// Fetches the mirror of the repository of `key` once per run.
+mirror :: fn(r: ^Resolver, key: Key) -> string!() needs Alloc + Err + Fs + Proc {
+    for u in r.fetched.items {
+        if u is key.url { return () }
+    }
+    ci := r.constraint_index(key)?
+    first := r.constraints.items[ci].reqs.items[0]
+    eprint("    Fetching {} ({})\n", first.dep, first.url)
+    db_dir := db(&r.store, key.url)
+    try fetch_mirror(db_dir, first.url)
+    refs := try list_refs(db_dir)
+    r.fetched.push(key.url)!
+    r.refs.push(UrlRefs(url: key.url, refs: refs))!
+    return ()
+}
+
+is_refreshed :: fn(r: ^const Resolver, key: Key) -> bool needs Alloc {
+    return match r.refresh {
+        .None => false
+        .All => true
+        .Names(names) => {
+            ci := r.constraint_index(key)?
+            for n in names {
+                for q in r.constraints.items[ci].reqs.items {
+                    if q.dep is n { return true }
+                }
+                if l := r.locked_entry(key) {
+                    if l.name is n { return true }
+                }
+            }
+            return false
+        }
+    }
+}
+
+LOCK_MISSING :: "gamma.lock is missing, but --locked was given; run `gamma fetch` and commit gamma.lock"
+
+refs_of :: fn(r: ^const Resolver, url: string) -> ?Refs {
+    for it in r.refs.items {
+        if it.url is url { return it.refs }
+    }
+    return null
+}
+
+choose :: fn(r: ^Resolver, key: Key) -> string!Choice needs Alloc + Err + Fs + Proc {
+    if ci := r.chosen_index(key) { return r.chosen.items[ci].choice }
+    cons := r.constraint_index(key)?
+    reqs := r.constraints.items[cons].reqs.items
+    locked := r.locked_entry(key)
+    reuse := false
+    if l := locked {
+        if not r.is_refreshed(key) {
+            reuse = true
+            for q in effective(reqs) {
+                if not satisfies(l.reference, l.rev, q.spec) { reuse = false }
+            }
+        }
+    }
+    choice := Choice(rev: "", version: null, reference: "")
+    if reuse {
+        l := locked?
+        // The version follows from the tag; one edited by hand is repaired (and `--locked`
+        // then reports that the lock would change).
+        choice = Choice(rev: l.rev, version: recorded_version(reqs, l.reference), reference: l.reference)
+    } else {
+        dep := reqs[0].dep
+        url := reqs[0].url
+        if r.opts.locked and r.old is null { return !LOCK_MISSING }
+        if r.opts.locked {
+            return !str.format(
+                "gamma.lock does not satisfy dependency `{}` ({}), and --locked was given; run `gamma fetch` and commit gamma.lock",
+                dep,
+                url,
+            )!
+        }
+        if r.opts.offline {
+            return !str.format(
+                "dependency `{}` ({}) is not in gamma.lock or the lock is out of date; it cannot be resolved with --offline (run `gamma fetch`)",
+                dep,
+                url,
+            )!
+        }
+        try r.mirror(key)
+        refs := r.refs_of(key.url)?
+        choice = try pick(url, reqs, &refs, db(&r.store, key.url))
+    }
+    r.chosen.push(ChosenEntry(key: key, choice: choice))!
+    return choice
+}
+
+short_rev :: fn(rev: string) -> string => rev[0..if rev.len < 12 { rev.len } else { 12 }]
+
+/// The checkout of the chosen revision, made if it is missing (and then verified against the
+/// lockfile's checksum). Returns its canonical path.
+ensure_checkout :: fn(r: ^Resolver, key: Key, choice: Choice) -> string!string needs Alloc + Err + Fs + Proc + Rand {
+    if p := find_text(r.checkouts.items, key) { return p }
+    dest := checkout_dir(&r.store, key.url, choice.rev)
+    cons := r.constraint_index(key)?
+    dep := r.constraints.items[cons].reqs.items[0].dep
+    url := r.constraints.items[cons].reqs.items[0].url
+    if not is_dir(dest) {
+        db_dir := db(&r.store, key.url)
+        has := is_file(join(db_dir, "HEAD")) and (rev_parse(db_dir, choice.rev) else "") is choice.rev
+        if not has {
+            if r.opts.offline {
+                return !str.format(
+                    "revision {} of `{}` ({}) is not in the cache, and --offline was given; run `gamma fetch`",
+                    short_rev(choice.rev),
+                    dep,
+                    url,
+                )!
+            }
+            try r.mirror(key)
+            has2 := is_file(join(db_dir, "HEAD")) and (rev_parse(db_dir, choice.rev) else "") is choice.rev
+            if not has2 {
+                return !str.format(
+                    "revision {} of `{}` ({}) is no longer available in the repository (a tag moved or history was rewritten?); run `gamma update {}`",
+                    choice.rev,
+                    dep,
+                    url,
+                    dep,
+                )!
+            }
+        }
+        try checkout(db_dir, choice.rev, dest)
+        sum := tree_checksum(dest) else e => {
+            _ = remove_tree(dest)
+            return !e
+        }
+        if l := r.locked_entry(key) {
+            if l.rev is choice.rev and l.checksum is not sum {
+                _ = remove_tree(dest)
+                return !str.format("checksum mismatch for package {} (expected {}, found {})", l.name, l.checksum, sum)!
+            }
+        }
+        put_text(&r.checksums, key, sum)
+        make_read_only(dest)
+    } else if find_text(r.checksums.items, key) is null {
+        if l := r.locked_entry(key) {
+            if l.rev is choice.rev {
+                // A checkout from an earlier run: it must still be what the lock vouches for.
+                sum := try tree_checksum(dest)
+                if l.checksum is not sum {
+                    return !str.format(
+                        "checksum mismatch for package {} (expected {}, found {}); gamma.lock was edited or the cached checkout {} was modified (`gamma cache clean --all` removes it)",
+                        l.name,
+                        l.checksum,
+                        sum,
+                        dest,
+                    )!
+                }
+                put_text(&r.checksums, key, sum)
+            }
+        }
+    }
+    mark_used(dest)
+    canon := canonicalize(dest) else return !str.format("cannot read {}: No such file or directory (os error 2)", dest)!
+    put_text(&r.checkouts, key, canon)
+    return canon
+}
+
+sha_mismatch :: fn(dep, url, found, expected, origin: string) -> string needs Alloc {
+    return str.format("the archive of dependency `{}` ({}) has the SHA-256 {}, but {} says {}", dep, url, found, origin, expected)!
+}
+
+/// Hashes an unpacked archive again: it must still be what the lock vouches for.
+summarize_archive :: fn(dep, url, hash, dir: string, locked: ?string) -> string!ArchiveInfo needs Alloc + Fs + Proc {
+    checksum := try tree_checksum(dir)
+    if l := locked {
+        if l is not checksum {
+            return !str.format(
+                "checksum mismatch for package {} (expected {}, found {}); gamma.lock was edited or the cached archive {} was modified (`gamma cache clean --all` removes it)",
+                dep,
+                l,
+                checksum,
+                dir,
+            )!
+        }
+    }
+    canon := canonicalize(dir) else return !str.format("cannot read {}: No such file or directory (os error 2)", dir)!
+    return ArchiveInfo(url: url, sha256: hash, dir: canon, checksum: checksum)
+}
+
+archive_info :: fn(r: ^const Resolver, url: string) -> ?ArchiveInfo {
+    for a in r.archives.items {
+        if a.url is url { return a }
+    }
+    return null
+}
+
+/// The unpacked archive of the dependency `dep` (downloaded if it is not in the store yet),
+/// verified against the manifest's `sha256` and the lockfile.
+ensure_archive :: fn(r: ^Resolver, dep: string, u: load.UrlSource) -> string!ArchiveInfo needs Alloc + Err + Fs + Proc + Rand {
+    if info := r.archive_info(u.url) {
+        if h := u.sha256 {
+            if h is not info.sha256 { return !sha_mismatch(dep, u.url, info.sha256, h, "gamma.toml") }
+        }
+        return info
+    }
+    lock_key := str.format("url+{}", u.url)!
+    locked: ?LockedPackage = null
+    if old := r.old {
+        for p in old.packages.items {
+            if p.url is lock_key { locked = p }
+        }
+    }
+    locked_hash: ?string = null
+    if l := locked {
+        if a := l.archive { locked_hash = str.strip_prefix(a, "sha256:") else a }
+    }
+    // What the archive must hash to, and where that comes from.
+    expected_hash: ?string = null
+    origin := ""
+    if h := u.sha256 {
+        expected_hash = h
+        origin = "gamma.toml"
+    } else if h := locked_hash {
+        expected_hash = h
+        origin = "gamma.lock"
+    }
+    // The lock vouches for the tree only if it vouches for this archive.
+    locked_sum: ?string = null
+    if l := locked {
+        if h := expected_hash {
+            if l.archive is str.format("sha256:{}", h)! { locked_sum = l.checksum }
+        }
+    }
+    if r.opts.locked and locked_sum is null {
+        if r.old is null { return !LOCK_MISSING }
+        return !str.format(
+            "gamma.lock does not satisfy dependency `{}` ({}), and --locked was given; run `gamma fetch` and commit gamma.lock",
+            dep,
+            u.url,
+        )!
+    }
+    if h := expected_hash {
+        dest := archive_dir(&r.store, u.url, h)
+        if is_dir(dest) {
+            mark_used(dest)
+            info := try summarize_archive(dep, u.url, h, dest, locked_sum)
+            r.archives.push(info)!
+            return info
+        }
+    }
+    if r.opts.offline {
+        return !str.format("the archive of `{}` ({}) is not in the cache, and --offline was given; run `gamma fetch`", dep, u.url)!
+    }
+    eprint("    Fetching {} ({})\n", dep, u.url)
+    dl := try download(u.url, downloads(&r.store))
+    defer discard(dl)
+    if h := expected_hash {
+        if h is not dl.sha256 { return !sha_mismatch(dep, u.url, dl.sha256, h, origin) }
+    }
+    dest := archive_dir(&r.store, u.url, dl.sha256)
+    if not is_dir(dest) {
+        unpack(dl.path, dest) else e => { return !str.format("dependency `{}` ({}): {}", dep, u.url, e)! }
+        sum := tree_checksum(dest) else e => {
+            _ = remove_tree(dest)
+            return !str.format("dependency `{}` ({}): {}", dep, u.url, e)!
+        }
+        if l := locked_sum {
+            if l is not sum {
+                _ = remove_tree(dest)
+                return !str.format("checksum mismatch for package {} (expected {}, found {})", dep, l, sum)!
+            }
+        }
+        make_read_only(dest)
+        mark_used(dest)
+        dir := canonicalize(dest) else return !str.format("cannot read {}: No such file or directory (os error 2)", dest)!
+        info := ArchiveInfo(url: u.url, sha256: dl.sha256, dir: dir, checksum: sum)
+        r.archives.push(info)!
+        return info
+    }
+    mark_used(dest)
+    info := try summarize_archive(dep, u.url, dl.sha256, dest, locked_sum)
+    r.archives.push(info)!
+    return info
+}
+
+/// The directory `sub` inside the checkout `co` (canonical), if it exists and stays inside.
+subdir_of :: fn(co: string, sub: ?string) -> ?string needs Alloc + Fs {
+    s := sub else return co
+    p := canonicalize(join(co, s)) else return null
+    if not load.starts_with(p, co) { return null }
+    return p
+}
+
+record_dep :: fn(r: ^Resolver, owner: ?Owner, key: Key) needs Alloc {
+    o := owner else return
+    for i in 0..r.pkg_deps.items.len {
+        if key_equal(r.pkg_deps.items[i].key, o.key) {
+            r.pkg_deps.items[i].keys.push(key)!
+            return
+        }
+    }
+    keys := list(Key)
+    keys.push(key)!
+    r.pkg_deps.push(KeyKeys(key: o.key, keys: keys))!
+}
+
+/// Visits the package in `dir`; `owner` is the git package it belongs to, with the root of
+/// its checkout.
+walk :: fn(r: ^Resolver, dir: string, manifest: ^const load.Manifest, display: string, owner: ?Owner) -> string!() needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    for i, s in enumerate(r.stack.items) {
+        if s.dir is dir {
+            any_fetched := false
+            for t in r.stack.items[i..] {
+                if t.fetched { any_fetched = true }
+            }
+            if owner is not null or any_fetched {
+                names := list(string)
+                for t in r.stack.items[i..] { names.push(t.name)! }
+                names.push(display)!
+                return !str.format("dependency cycle: {}", str.join(names.items, " -> ")!)!
+            }
+            return ()
+        }
+    }
+    if load.deps_of(&r.res, dir) is not null { return () }
+    r.stack.push(StackItem(dir: dir, name: display, fetched: owner is not null))!
+    deps := list(load.Dep)
+    for dep in manifest.deps.items {
+        match dep.source {
+            .Path(p) => {
+                joined := load.normalize(join(dir, p))
+                canon := canonicalize(joined)
+                if o := owner {
+                    if c := canon {
+                        if not load.starts_with(c, o.root) {
+                            return !str.format("dependency `{}` of `{}`: the path `{}` leaves the repository", dep.name, display, p)!
+                        }
+                    } else {
+                        return !str.format("dependency `{}` of `{}`: the path `{}` does not exist in the repository", dep.name, display, p)!
+                    }
+                }
+                target := canon else joined
+                deps.push(load.Dep(name: dep.name, dir: target))!
+                if canon is not null and is_file(join(target, "gamma.toml")) {
+                    m := try read_manifest(target)
+                    try r.walk(target, &m, dep.name, owner)
+                }
+            }
+            .Git(g) => {
+                key := Key(url: load.normalize_url(g.url), subdir: g.subdir)
+                r.add_req(key, Req(requirer: display, dep: dep.name, url: g.url, spec: g.spec))
+                choice := try r.choose(key)
+                co := try r.ensure_checkout(key, choice)
+                pkg_dir := subdir_of(co, g.subdir) else {
+                    return !str.format("dependency `{}`: {} has no directory `{}`", dep.name, g.url, g.subdir else "")!
+                }
+                if not is_file(join(pkg_dir, "gamma.toml")) {
+                    return !str.format("dependency `{}`: {} has no gamma.toml in its package directory", dep.name, g.url)!
+                }
+                r.record_dep(owner, key)
+                deps.push(load.Dep(name: dep.name, dir: pkg_dir))!
+                m := try read_manifest(pkg_dir)
+                if n := m.name { put_text(&r.pkg_names, key, n) }
+                try r.walk(pkg_dir, &m, dep.name, Owner(key: key, root: co))
+            }
+            .Url(u) => {
+                info := try r.ensure_archive(dep.name, u)
+                key := Key(url: str.format("url+{}", u.url)!, subdir: u.subdir)
+                co := info.dir
+                pkg_dir := subdir_of(co, u.subdir) else {
+                    return !str.format("dependency `{}`: {} has no directory `{}`", dep.name, u.url, u.subdir else "")!
+                }
+                if not is_file(join(pkg_dir, "gamma.toml")) {
+                    return !str.format("dependency `{}`: {} has no gamma.toml in its package directory", dep.name, u.url)!
+                }
+                r.record_dep(owner, key)
+                deps.push(load.Dep(name: dep.name, dir: pkg_dir))!
+                m := try read_manifest(pkg_dir)
+                put_text(&r.pkg_names, key, m.name else dep.name)
+                r.url_deps.push(dep.name)!
+                dup := false
+                for k in r.used_archives.items {
+                    if key_equal(k, key) { dup = true }
+                }
+                if not dup { r.used_archives.push(key)! }
+                try r.walk(pkg_dir, &m, dep.name, Owner(key: key, root: co))
+            }
+        }
+    }
+    _ = r.stack.pop()
+    r.res.packages.push(load.ResolvedPackage(dir: dir, deps: deps))!
+    return ()
+}
+
+/// The names of the packages `key` depends on, sorted and without repeats.
+dependency_names :: fn(r: ^const Resolver, key: Key) -> []const string needs Alloc {
+    names := list(string)
+    for e in r.pkg_deps.items {
+        if key_equal(e.key, key) {
+            for k in e.keys.items { names.push(r.entry_name(k))! }
+        }
+    }
+    names.items.sort()
+    out := list(string)
+    for i, n in enumerate(names.items) {
+        if i > 0 and names.items[i - 1] is n { continue }
+        out.push(n)!
+    }
+    return out.items
+}
+
+/// Orders keys the way a map keyed by (URL, subdirectory) would.
+key_less :: fn(a, b: ^const Key) -> bool {
+    if a.url is not b.url { return a.url < b.url }
+    return option_less(a.subdir, b.subdir)
+}
+
+build_lock :: fn(r: ^Resolver) -> string!Lock needs Alloc + Fs + Proc {
+    packages := list(LockedPackage)
+    keys := list(Key)
+    for c in r.chosen.items { keys.push(c.key)! }
+    keys.items.sort_by(key_less)
+    for key in keys.items {
+        choice := r.chosen.items[r.chosen_index(key)?].choice
+        checksum := ""
+        if s := find_text(r.checksums.items, key) {
+            checksum = s
+        } else if l := r.locked_entry(key) {
+            checksum = if l.rev is choice.rev { l.checksum } else { try tree_checksum(find_text(r.checkouts.items, key)?) }
+        } else {
+            checksum = try tree_checksum(find_text(r.checkouts.items, key)?)
+        }
+        packages.push(LockedPackage(
+            name: r.entry_name(key),
+            url: key.url,
+            subdir: key.subdir,
+            version: choice.version,
+            reference: choice.reference,
+            rev: choice.rev,
+            archive: null,
+            checksum: checksum,
+            dependencies: r.dependency_names(key),
+        ))!
+    }
+    used := list(Key)
+    for k in r.used_archives.items { used.push(k)! }
+    used.items.sort_by(key_less)
+    for key in used.items {
+        url := str.strip_prefix(key.url, "url+") else key.url
+        info := r.archive_info(url)?
+        packages.push(LockedPackage(
+            name: r.entry_name(key),
+            url: key.url,
+            subdir: key.subdir,
+            version: null,
+            reference: "",
+            rev: "",
+            archive: str.format("sha256:{}", info.sha256)!,
+            checksum: info.checksum,
+            dependencies: r.dependency_names(key),
+        ))!
+    }
+    return Lock(packages: packages)
+}
+
+req_of :: fn(who: string, spec: load.GitSpec) -> Req => Req(requirer: who, dep: "d", url: "u", spec: spec)
+
+vr :: fn(text: string) -> load.GitSpec needs Alloc {
+    r := load.parse_version_req(text) else return load.GitSpec.Default
+    return load.GitSpec.Version(r)
+}
+
+rep :: fn(s: string, n: usize) -> string needs Alloc {
+    out := list(u8)
+    str.repeat(&out, s, n)!
+    return out.items
+}
+
+test_refs :: fn() -> Refs needs Alloc {
+    refs := Refs(tags: list(RefName), branches: list(RefName))
+    names := [7]string("v1.0.0", "v1.2.0", "1.2.5", "v1.10.0", "v2.0.0", "v2.1.0-beta.1", "nightly")
+    for i, n in enumerate(names) {
+        refs.tags.push(RefName(name: n, rev: str.format("{:0>40}", i + 1)!))!
+    }
+    refs.branches.push(RefName(name: "main", rev: rep("b", 40)))!
+    refs.head = rep("b", 40)
+    return refs
+}
+
+picked :: fn(reqs: []const Req) -> string!Choice needs Alloc + Proc {
+    refs := test_refs()
+    return pick("u", reqs, &refs, "/nonexistent")
+}
+
+version_of_pick :: fn(reqs: []const Req) -> string needs Alloc + Proc {
+    c := picked(reqs) else e => { return e }
+    return c.version else "none"
+}
+
+test "tag names are versions" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        v := tag_version("v1.2.3") else return
+        expect_eq(load.version_string(v), "1.2.3")
+        v = tag_version("1.2.3") else return
+        expect_eq(load.version_string(v), "1.2.3")
+        expect(tag_version("nightly") is null)
+        expect(tag_version("v1.2") is null)
+    }
+}
+
+test "the highest matching version is picked" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        one := [1]Req(req_of("a", vr("1.2")))
+        c := picked(one[..]) else return
+        expect_eq(c.version, "1.10.0")
+        expect_eq(c.reference, "tag=v1.10.0")
+        t := [1]Req(req_of("a", vr("~1.2")))
+        expect_eq(version_of_pick(t[..]), "1.2.5")
+        c2 := [1]Req(req_of("a", vr("^2")))
+        expect_eq(version_of_pick(c2[..]), "2.0.0")
+        pre := [1]Req(req_of("a", vr(">=2.1.0-beta.0")))
+        expect_eq(version_of_pick(pre[..]), "2.1.0-beta.1")
+        both := [2]Req(req_of("a", vr("1")), req_of("b", vr("<1.5")))
+        expect_eq(version_of_pick(both[..]), "1.2.5")
+    }
+}
+
+test "conflicts name both requirers" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        two := [2]Req(req_of("alpha", vr("^1")), req_of("beta", vr("^2")))
+        e := version_of_pick(two[..])
+        expect(str.contains(e, "alpha") and str.contains(e, "beta") and str.contains(e, "no version tag"))
+        pins := [2]Req(req_of("alpha", load.GitSpec.Tag("v1.0.0")), req_of("beta", load.GitSpec.Branch("main")))
+        e = version_of_pick(pins[..])
+        expect(str.contains(e, "conflicting") and str.contains(e, "alpha") and str.contains(e, "beta"))
+        mixed := [2]Req(req_of("alpha", load.GitSpec.Branch("main")), req_of("beta", vr("1")))
+        expect(str.contains(version_of_pick(mixed[..]), "conflicting"))
+        missing := [1]Req(req_of("a", load.GitSpec.Tag("nope")))
+        expect(str.contains(version_of_pick(missing[..]), "no tag"))
+    }
+}
+
+test "pins and defaults" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        pinned := [2]Req(req_of("a", load.GitSpec.Tag("v1.0.0")), req_of("b", vr("^1")))
+        c := picked(pinned[..]) else return
+        expect_eq(c.reference, "tag=v1.0.0")
+        d := [1]Req(req_of("a", load.GitSpec.Default))
+        c = picked(d[..]) else return
+        expect_eq(c.reference, "default")
+        expect_eq(c.rev, rep("b", 40))
+        // A request for the default branch gives way to another.
+        db := [2]Req(req_of("a", load.GitSpec.Default), req_of("b", load.GitSpec.Branch("main")))
+        c = picked(db[..]) else return
+        expect_eq(c.reference, "branch=main")
+        same := [2]Req(req_of("a", load.GitSpec.Tag("v1.0.0")), req_of("b", load.GitSpec.Tag("v1.0.0")))
+        c = picked(same[..]) else return
+        expect_eq(c.reference, "tag=v1.0.0")
+    }
+}
+
+test "locked references satisfy requirements" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        rev := rep("ab", 20)
+        expect(satisfies("tag=v1.2.3", rev, vr("1.2")))
+        expect(not satisfies("tag=v1.2.3", rev, vr("1.3")))
+        expect(not satisfies("branch=main", rev, vr("1")))
+        expect(satisfies("branch=main", rev, load.GitSpec.Branch("main")))
+        expect(satisfies("default", rev, load.GitSpec.Default))
+        expect(satisfies("rev=abab", rev, load.GitSpec.Rev("abab")))
+        expect(not satisfies("rev=abab", rev, load.GitSpec.Rev("cd")))
+        expect(satisfies("tag=v1.0.0", rev, load.GitSpec.Tag("v1.0.0")))
+    }
+}

@@ -1,0 +1,148 @@
+//! The package manager: manifests, git and archive dependencies, the lockfile, build
+//! settings and project scaffolding (a port of `src/pkg/`). See `docs/guide/15-packages.md`
+//! for the user's view.
+//!
+//! The compiler asks `prepare` for a `Resolution` before it analyzes a program: the
+//! directory of every dependency of every package in the graph. Path dependencies need
+//! no resolution; git and archive (`url = …`) dependencies are fetched into the package
+//! store and locked in `gamma.lock`, next to the root package's manifest.
+
+fs :: import "std/fs"
+load :: import "../load"
+process :: import "std/process"
+sha256 :: import "std/hash/sha256"
+str :: import "std/str"
+
+/// An IO error as the operating system words it (Rust's wording, for the same messages).
+pub io_message :: fn(e: IoError) -> string needs Alloc => match e {
+    .NotFound => "No such file or directory (os error 2)"
+    .PermissionDenied => "Permission denied (os error 13)"
+    .AlreadyExists => "File exists (os error 17)"
+    .InvalidInput => "Invalid argument (os error 22)"
+    .NoSpace => "No space left on device (os error 28)"
+    .Other(code) => str.format("os error {}", code)!
+    _ => "input/output error"
+}
+
+pub read_message :: fn(e: fs.ReadError) -> string needs Alloc => match e {
+    .Io(io) => io_message(io)
+    .Alloc(_) => "out of memory"
+}
+
+/// The lowercase hexadecimal digits of `bytes`.
+pub hex :: fn(bytes: []const u8) -> string needs Alloc {
+    out := make(u8, bytes.len * 2)!
+    digits :: "0123456789abcdef"
+    for i, b in enumerate(bytes) {
+        out[2 * i] = digits[b >> 4]
+        out[2 * i + 1] = digits[b & 15]
+    }
+    return out
+}
+
+/// The SHA-256 of `data`, in hexadecimal.
+pub sha256_hex :: fn(data: []const u8) -> string needs Alloc {
+    d := sha256.sum(data)
+    return hex(d[..])
+}
+
+/// The canonical form of `p`: absolute and without `.` and `..`, or `null` if it does not
+/// exist. (Symbolic links are not resolved.)
+pub canonicalize :: fn(p: string) -> ?string needs Alloc + Fs {
+    if Fs.stat(p) is !_ { return null }
+    return load.normalize(load.join(load.working_dir(), p))
+}
+
+pub join :: fn(a, b: string) -> string needs Alloc => load.join(a, b)
+
+pub parent :: fn(p: string) -> ?string needs Alloc => load.parent(p)
+
+/// The last name of `p`.
+pub base_name :: fn(p: string) -> string needs Alloc => load.file_name(p) else ""
+
+pub is_dir :: fn(p: string) -> bool needs Fs => load.is_dir(p)
+
+pub is_file :: fn(p: string) -> bool needs Fs => load.is_file(p)
+
+/// The text of the file at `path`, or the message `cannot read PATH: REASON`.
+pub read_text :: fn(path: string) -> string!string needs Alloc + Fs {
+    data := fs.read_all(path) else e => { return !str.format("cannot read {}: {}", path, read_message(e))! }
+    return data
+}
+
+/// Writes `text` to `path` through a temporary file, so a reader never sees half a file.
+pub write_atomic :: fn(path: string, text: string) -> string!() needs Alloc + Fs + Rand {
+    fs.write_atomic(path, text) else e => { return !str.format("cannot write {}: {}", path, io_message(e))! }
+    return ()
+}
+
+/// A name no other process uses, for a temporary file or directory in `dir`.
+pub private_name :: fn(dir, what: string) -> string needs Alloc + Rand {
+    r: [8]u8 = ---
+    Rand.fill(r[..])
+    return join(dir, str.format(".tmp-{}-{}", what, hex(r[..]))!)
+}
+
+/// What a finished program wrote and how it ended.
+pub Ran :: struct {
+    pub ok: bool
+    /// The exit code (127 when the program could not be started).
+    pub code: u32
+    pub out: string
+    pub err: string
+}
+
+/// Runs `argv` (a program name and its arguments) and collects what it writes. A program
+/// that cannot be started gives code 127 and the system's reason in `err`.
+pub run :: fn(argv: []const string) -> Ran needs Alloc + Proc {
+    o := process.output(argv) else e => {
+        reason := match e {
+            .Io(io) => match io {
+                .NotFound => "No such file or directory (os error 2)"
+                .PermissionDenied => "Permission denied (os error 13)"
+                _ => "the program cannot be started"
+            }
+            .Alloc(_) => "out of memory"
+        }
+        return Ran(ok: false, code: 127, out: "", err: reason)
+    }
+    code: u32 = match o.status {
+        .Exited(c) => c
+        .Signaled(_) => 255
+    }
+    return Ran(ok: process.success(o.status), code: code, out: string(o.out.items), err: string(o.err.items))
+}
+
+/// The text of `ran.err` with white space at both ends removed.
+pub trimmed :: fn(s: string) -> string => str.trim(s)
+
+/// Makes `dir` and its parents, or says why not.
+pub make_dirs :: fn(dir: string) -> string!() needs Alloc + Fs {
+    fs.make_dir_all(dir) else e => { return !str.format("cannot create {}: {}", dir, io_message(e))! }
+    return ()
+}
+
+/// The cache directory, or `null` if there is none: `$GAMMA_CACHE_DIR` if set (an empty
+/// value turns the cache off), else `$XDG_CACHE_HOME/gamma`, else `~/Library/Caches/gamma`
+/// on macOS and `~/.cache/gamma` elsewhere.
+pub cache_dir :: fn() -> ?string needs Alloc + Env {
+    if dir := Env.var("GAMMA_CACHE_DIR") {
+        return if dir.len is 0 { null } else { dir }
+    }
+    if dir := Env.var("XDG_CACHE_HOME") {
+        if dir.len > 0 { return join(dir, "gamma") }
+    }
+    when target.os is .Windows {
+        base := Env.var("LOCALAPPDATA") else Env.var("USERPROFILE") else return null
+        if base.len is 0 { return null }
+        return join(base, "gamma")
+    } else {
+        home := Env.var("HOME") else return null
+        if home.len is 0 { return null }
+        when target.os is .MacOS {
+            return join(home, "Library/Caches/gamma")
+        } else {
+            return join(home, ".cache/gamma")
+        }
+    }
+}

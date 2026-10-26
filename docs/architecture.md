@@ -621,7 +621,7 @@ both use it. The files:
 | `rtcache.rs` | the cached runtime object of Debug and Safe builds |
 | `units.rs` | splitting a Debug build into translation units compiled in parallel |
 | `csrc.rs` | the C sources, libraries and directories of `[build]` settings (see [Build settings and C sources](#build-settings-and-c-sources)) |
-| `debug.rs`, `views.rs`, `gdb_printers.py`, `lldb_formatters.py` | debug information for `-g` |
+| `debug.rs`, `views.rs` (and `runtime/gdb_printers.py`, `runtime/lldb_formatters.py`) | debug information for `-g` |
 
 ### Freestanding targets
 
@@ -993,11 +993,11 @@ debuggers skip), so their size is the value's and their alignment 1: they never
 change the frame's layout, and a `_Static_assert` checks each size. Views reached
 only through a pointer are declared after the view that points at them, so
 recursive types work. On ELF targets the executable also carries gdb pretty
-printers (`src/cgen/gdb_printers.py`) in its `.debug_gdb_scripts` section; they
+printers (`runtime/gdb_printers.py`) in its `.debug_gdb_scripts` section; they
 recognize views by the suffix of their struct tag (`gm_dv3_union`, `_slice`,
 `_string`, `_optional`, `_result`) and show the active variant only, slice
 elements, string text, `null` and `!error`. For lldb, `gamma build -g` writes the
-same conventions as a Python module (`src/cgen/lldb_formatters.py`, embedded in the
+same conventions as a Python module (`runtime/lldb_formatters.py`, embedded in the
 compiler) to `gamma_lldb.py` next to the executable; it registers summaries and
 synthetic children providers for the view tags in a `gamma` category, looking through
 the anonymous union of tagged unions, and is loaded with `command script import`. The generated code never refers to these names, but

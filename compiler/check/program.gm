@@ -2,9 +2,9 @@
 // of `check_all` in `src/sema/mod.rs`).
 
 /// Checks the bodies of the functions of the program whose root module is `root`, after
-/// its declarations are resolved. A root without `main` is a library, checked as for
-/// running its tests.
-pub check_program :: fn(s: ^Sema, root: usize) needs Load {
+/// its declarations are resolved. With `tests`, its tests are checked as for running
+/// them, and `main` is not required; otherwise the root must declare `main`.
+pub check_program :: fn(s: ^Sema, root: usize, tests: bool) needs Load {
     for o in s.l.other_items.items {
         if s.l.modules.items[o.module].is_prelude { continue }
         match o.item.kind {
@@ -25,10 +25,12 @@ pub check_program :: fn(s: ^Sema, root: usize) needs Load {
         }
     }
     declare_handlers(s)
-    if d := s.l.lookup(root, "main") {
+    if tests {
+        check_tests(s, root)
+    } else if d := s.l.lookup(root, "main") {
         find_main(s, d)
     } else {
-        check_tests(s, root)
+        s.error(source.DUMMY, "the root module of a program must declare `main`")
     }
     check_consts(s)
     check_bodies(s)
@@ -310,6 +312,7 @@ mono_fn :: fn(s: ^Sema, mc: ^MonoCx, id: u32) -> u32 needs Load {
     def := s.defs.items[usize(id)]
     new_id := s.new_nested_fn(def.kind, sig.name, sig.span, sig.module, params.items, s.subst(sig.ret, mc.map), s.subst_effects(&sig.effects, mc.map))
     mc.fn_map.push(FnPair(from: id, to: new_id))!
+    s.nested_owner.put(new_id, new_id)!
     locals := list(tir.LocalDecl)
     for l in def.locals {
         x := l

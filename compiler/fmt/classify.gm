@@ -1,0 +1,268 @@
+// The classification pass of the formatter: for every token, whether it is written tight
+// against its neighbours.
+
+str :: import "std/str"
+syntax :: import "../syntax"
+
+Token :: syntax.Token
+TokenKind :: syntax.TokenKind
+Keyword :: syntax.Keyword
+Punct :: syntax.Punct
+
+/// What the layout needs to know about one (non-newline) token.
+Info :: struct {
+    lo: usize
+    hi: usize
+    text: string
+    /// No space before this token.
+    tb: bool
+    /// No space after this token.
+    ta: bool
+    open: bool
+    close: bool
+    /// An opening `{` that starts the body of a `match`.
+    match_body: bool
+}
+
+/// The kind of token `j`; past the end it is `Eof`, as it is for the last token.
+kind_at :: fn(toks: []const Token, j: usize) -> TokenKind {
+    if j < toks.len { return toks[j].kind }
+    return .Eof
+}
+
+/// Keywords that are written tight against a following `(`.
+tight_paren_keyword :: fn(k: Keyword) -> bool => k in (
+    Keyword.Fn,
+    Keyword.Struct,
+    Keyword.Union,
+    Keyword.Effect,
+    Keyword.Handler,
+    Keyword.Ctl,
+    Keyword.Esc,
+    Keyword.Import,
+    Keyword.Pub,
+)
+
+/// Whether the token is a keyword that is written tight against a following `(`.
+tight_paren_prev :: fn(k: TokenKind) -> bool => match k {
+    .Keyword(kw) => tight_paren_keyword(kw)
+    _ => false
+}
+
+/// Whether the token is the punctuation `p`.
+is_punct :: fn(k: TokenKind, p: Punct) -> bool => match k {
+    .Punct(q) => q is p
+    _ => false
+}
+
+/// True if the tokens from `j` on look like the type after an error-union `!`.
+type_follows :: fn(toks: []const Token, start: usize) -> bool {
+    j := start
+    while true {
+        match kind_at(toks, j) {
+            .Ident(_), .Underscore => return true
+            .Punct(.Question), .Punct(.Caret) => { j += 1 }
+            .Punct(.LBracket) => {
+                k1 := kind_at(toks, j + 1)
+                k2 := kind_at(toks, j + 2)
+                if is_punct(k1, .RBracket) { return true }
+                if is_punct(k1, .Caret) and is_punct(k2, .RBracket) { return true }
+                if k1 is .Int(_) and is_punct(k2, .RBracket) { return starts_type_after_bracket(kind_at(toks, j + 3)) }
+                return false
+            }
+            _ => return false
+        }
+    }
+}
+
+/// True if `next` can follow the `]` of a type prefix such as `[]`, `[^]` or `[N]`.
+starts_type_after_bracket :: fn(next: TokenKind) -> bool => match next {
+    .Ident(_), .Underscore, .Intrinsic(_), .Keyword(.Fn), .Punct(.Question), .Punct(.Caret), .Punct(.LBracket) => true
+    _ => false
+}
+
+Open :: struct {
+    info: usize
+    /// The `[` was not preceded by an operand: a type prefix or an array literal.
+    prefix: bool
+    /// The `(` is the argument list of an attribute such as `#align(8)`.
+    attr: bool
+    /// A `:` was seen in the current statement or argument at this level.
+    colon: bool
+}
+
+/// Marks the end of a statement or argument at the innermost level.
+reset_colon :: fn(stack: ^List(Open), top_colon: ^bool) {
+    if stack.items.len > 0 {
+        stack.items[stack.items.len - 1].colon = false
+    } else {
+        top_colon^ = false
+    }
+}
+
+/// Whether the `:` token `i` is a label: `name: with …`, also in an expression.
+is_label_colon :: fn(toks: []const Token, i: usize) -> bool => match kind_at(toks, i + 1) {
+    .Keyword(.With), .Keyword(.For), .Keyword(.While) => true
+    _ => false
+}
+
+/// Decides, for every token, whether it is written tight against its
+/// neighbours. The key question is whether the previous token ends an operand,
+/// which separates binary from prefix operators and postfix from prefix `?`/`^`.
+classify :: fn(src: string, toks: []const Token) -> List(Info) needs Alloc {
+    infos := list(Info)
+    ends := false
+    prev: ?usize = null
+    stack := list(Open)
+    defer stack.deinit()
+    // The same flag for the statements outside every bracket.
+    top_colon := false
+    pending_matches := list(usize)
+    defer pending_matches.deinit()
+    for i in 0..toks.len {
+        t := toks[i]
+        lo := usize(t.span.lo)
+        hi := usize(t.span.hi)
+        tb := false
+        ta := false
+        open := false
+        close := false
+        match_body := false
+        txt: string = ""
+        prev_kind := if p := prev { toks[p].kind } else { TokenKind.Newline }
+        match t.kind {
+            .Newline => {
+                ends = false
+                prev = null
+                reset_colon(&stack, &top_colon)
+                continue
+            }
+            .Eof => break
+            .Ident(s) => { ends = s is not "const" }
+            .Underscore, .Int(_), .Float(_), .Str(_), .Intrinsic(_) => { ends = true }
+            .Attribute(_) => { ends = false }
+            .Keyword(k) => {
+                if k is .Match { pending_matches.push(stack.items.len)! }
+                ends = k in (Keyword.True, Keyword.False, Keyword.Null)
+            }
+            .Punct(p) => match p {
+                .LParen => {
+                    tb = ends or tight_paren_prev(prev_kind) or prev_kind in (.Attribute(_), .Intrinsic(_)) or is_punct(prev_kind, .Bang)
+                    ta = true
+                    open = true
+                    attr := prev_kind is .Attribute(_)
+                    stack.push(Open(info: infos.items.len, prefix: false, attr: attr, colon: false))!
+                    ends = false
+                }
+                .LBracket => {
+                    tb = ends
+                    ta = true
+                    open = true
+                    stack.push(Open(info: infos.items.len, prefix: not ends, attr: false, colon: false))!
+                    ends = false
+                }
+                .LBrace => {
+                    if pending_matches.items.len > 0 and pending_matches.items[pending_matches.items.len - 1] is stack.items.len {
+                        _ = pending_matches.pop()
+                        match_body = true
+                    }
+                    ta = adjacent_close(src, toks, i)
+                    open = true
+                    stack.push(Open(info: infos.items.len, prefix: false, attr: false, colon: false))!
+                    ends = false
+                }
+                .RParen, .RBracket, .RBrace => {
+                    close = true
+                    tb = true
+                    popped := stack.pop()
+                    ends = true
+                    if o := popped {
+                        ends = not o.attr
+                        if p is .RBracket and o.prefix and starts_type_after_bracket(kind_at(toks, i + 1)) {
+                            ta = true
+                            ends = false
+                        }
+                        if p is .RBrace {
+                            tb = o.info + 1 is infos.items.len and all_white(src[infos.items[o.info].hi..lo])
+                        }
+                    }
+                }
+                .Comma => {
+                    tb = true
+                    ends = false
+                    reset_colon(&stack, &top_colon)
+                }
+                .Dot, .DotDot, .DotDotEq => {
+                    tb = ends
+                    ta = true
+                    // A `.` that starts a statement continues the previous line only
+                    // when a name follows immediately (§2.8).
+                    // The line break before it may not be a token (after `{`, say), so look at the text.
+                    starts_line := prev is null or all_white(last_line(src[0..lo]))
+                    if p is .Dot and starts_line and not starts_with_non_white(src[hi..]) { ta = false }
+                    // Between two integers (`t.0.1`, `1. 5`) keep the source spacing:
+                    // writing `1.` next to `5` would read as a float.
+                    if p is .Dot and prev_kind is .Int(_) and kind_at(toks, i + 1) is .Int(_) {
+                        tb = infos.items.len > 0 and infos.items[infos.items.len - 1].hi is lo
+                        ta = usize(toks[i + 1].span.lo) is hi
+                    }
+                    ends = false
+                }
+                .Colon => {
+                    if is_label_colon(toks, i) {
+                        tb = true
+                        ends = false
+                    } else {
+                        // `name: T : value` binds a constant; the second colon is spaced.
+                        seen := if stack.items.len > 0 { stack.items[stack.items.len - 1].colon } else { top_colon }
+                        tb = not seen
+                        ta = false
+                        if stack.items.len > 0 { stack.items[stack.items.len - 1].colon = true } else { top_colon = true }
+                        ends = false
+                    }
+                }
+                .Question, .Caret => {
+                    // Postfix after an operand, prefix otherwise.
+                    tb = ends
+                    ta = not ends
+                }
+                .Bang => {
+                    if not ends {
+                        ta = true
+                    } else if type_follows(toks, i + 1) {
+                        // The error-union type `E!T`.
+                        tb = true
+                        ta = true
+                        ends = false
+                    } else {
+                        tb = true
+                    }
+                }
+                .Minus, .Amp, .Tilde => {
+                    ta = not ends
+                    ends = false
+                }
+                .At, .Hash => { ends = false }
+                .Uninit => { ends = true }
+                .IsNot, .NotIn => {
+                    word := src[lo..hi]
+                    if not str.contains(word, "/*") and word.index_of('\n') is null { txt = syntax.punct_text(p) }
+                    ends = false
+                }
+                _ => { ends = false }
+            }
+        }
+        if txt.len is 0 { txt = src[lo..hi] }
+        infos.push(Info(lo: lo, hi: hi, text: txt, tb: tb, ta: ta, open: open, close: close, match_body: match_body))!
+        prev = i
+    }
+    return infos
+}
+
+/// True if the token after the `{` at `toks[i]` is `}` with only whitespace between.
+adjacent_close :: fn(src: string, toks: []const Token, i: usize) -> bool {
+    if i + 1 >= toks.len { return false }
+    a := toks[i]
+    b := toks[i + 1]
+    return is_punct(b.kind, .RBrace) and all_white(src[usize(a.span.hi)..usize(b.span.lo)])
+}

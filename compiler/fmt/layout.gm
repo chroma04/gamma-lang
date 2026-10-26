@@ -1,0 +1,394 @@
+// The layout pass of the formatter: spacing, indentation and line breaks.
+
+arena :: import "std/arena"
+diag :: import "../diag"
+str :: import "std/str"
+syntax :: import "../syntax"
+
+/// A piece of the text of the source, in order: a token or the contents of a gap.
+Item :: union {
+    /// The token with this index in the classification.
+    Tok: usize
+    Semi
+    Nl
+    /// A `//` comment, and the white space before it on its line.
+    Line: LineItem
+    /// A `/* … */` comment.
+    Block: string
+}
+
+LineItem :: struct {
+    text: string
+    ws: string
+}
+
+/// Splits the whitespace/comment gap between two tokens into items.
+scan_gap :: fn(gap: string, items: ^List(Item)) needs Alloc {
+    i: usize = 0
+    ws_start: usize = 0
+    while i < gap.len {
+        b := gap[i]
+        if b is '\n' {
+            items.push(.Nl)!
+            i += 1
+            ws_start = i
+        } else if b is ';' {
+            items.push(.Semi)!
+            i += 1
+            ws_start = i
+        } else if b is '/' and gap.get(i + 1) is '/' {
+            end := line_end(gap, i)
+            items.push(.Line(LineItem(text: trim_end(gap[i..end]), ws: gap[ws_start..i])))!
+            i = end
+            ws_start = i
+        } else if b is '/' and gap.get(i + 1) is '*' {
+            depth := 1
+            j := i + 2
+            while depth > 0 and j < gap.len {
+                if gap[j] is '/' and gap.get(j + 1) is '*' {
+                    depth += 1
+                    j += 2
+                } else if gap[j] is '*' and gap.get(j + 1) is '/' {
+                    depth -= 1
+                    j += 2
+                } else {
+                    j += 1
+                }
+            }
+            items.push(.Block(gap[i..j]))!
+            i = j
+            ws_start = i
+        } else {
+            i += 1
+        }
+    }
+}
+
+/// What the previous item of the line was.
+Prev :: union {
+    None
+    Tok: usize
+    Other
+}
+
+/// True if writing two tokens next to each other would lex differently.
+would_merge :: fn(a, b: string) -> bool needs Alloc {
+    if a.len is 0 or b.len is 0 { return false }
+    x := a[a.len - 1]
+    y := b[0]
+    glue :: "()[]{},;\"'`"
+    if glue.index_of(x) is not null or glue.index_of(y) is not null { return false }
+    scratch := arena.new()
+    defer scratch.deinit()
+    with scratch.allocator() {
+        joined := list(u8)
+        joined.extend(a)!
+        joined.extend(b)!
+        diags := diag.diagnostics()
+        lexed := syntax.lex(0, joined.items, &diags)
+        first: string = ""
+        second: string = ""
+        count: usize = 0
+        for t in lexed.tokens.items {
+            if t.kind in (.Newline, .Eof) { continue }
+            piece := joined.items[usize(t.span.lo)..usize(t.span.hi)]
+            if count is 0 { first = piece }
+            if count is 1 { second = piece }
+            count += 1
+        }
+        return count is not 2 or first is not a or second is not b or diags.has_errors()
+    }
+}
+
+/// True for a `.` directly followed by a name, which joins the line to the previous one,
+/// unless the line is a pattern binding `.V(…) := …` (§2.8).
+continues_with_name :: fn(src: string, info: Info) -> bool {
+    if info.text is not "." { return false }
+    c := src.get(info.hi) else return false
+    return (c in 'a'..='z' or c in 'A'..='Z' or c is '_') and not syntax.line_binds(src[info.hi..])
+}
+
+/// True if the lexer joins the next line to a line ending in this token (§2.8).
+continues_line :: fn(info: Info) -> bool {
+    if info.open or info.close { return false }
+    t := info.text
+    match t {
+        "is", "in", "and", "or", "else" => return true
+        ",", ";", "?", "!", "^", "@", "#", "...", "---" => return false
+        _ => {}
+    }
+    return "+-*/%<>&|~=:.\\".index_of(t[0]) is not null or t is "is not" or t is "not in"
+}
+
+/// Whether a run of spaces between `prev` and `cur` is kept: it aligns the
+/// operator of consecutive declarations, fields or match arms into a column,
+/// so it is kept only when the line above or below has the same operator in
+/// the same column (or, after `:`, a token in the same column). Columns count
+/// from each line's own indentation, which the formatter rewrites: the
+/// decision is the same for the source and for its formatted output.
+keeps_padding :: fn(src: string, prev: Info, cur: Info) -> bool {
+    op := cur.text in ("::", "=>")
+    if not op and prev.text is not ":" { return false }
+    start := line_start(src, cur.lo)
+    end := line_end(src, cur.lo)
+    above: ?string = null
+    if start > 0 { above = last_line(src[0..start - 1]) }
+    below: ?string = null
+    if end < src.len {
+        rest := src[end + 1..]
+        below = rest[0..line_end(rest, 0)]
+    }
+    own := src[start..end]
+    own_indent := indent_of(own)
+    here := column(src, cur.lo)
+    col := if here > own_indent { here - own_indent } else { 0 }
+    if line := above {
+        if aligned_with(line, col, op, cur.text) { return true }
+    }
+    if line := below {
+        if aligned_with(line, col, op, cur.text) { return true }
+    }
+    return false
+}
+
+/// Whether `line` has the operator `text` (if `op`, else some token) in the column `col`,
+/// counted from its indentation, after a space.
+aligned_with :: fn(line: string, col: usize, op: bool, text: string) -> bool {
+    cut := char_offset(line, col + indent_of(line))
+    rest := line[cut..]
+    before := line[0..cut]
+    spaced := before.ends_with(" ") and not all_white(before)
+    if op { return spaced and rest.starts_with(text) }
+    return spaced and starts_with_non_white(rest)
+}
+
+/// An open bracket during layout.
+Frame :: struct {
+    /// The indentation of the line the bracket was opened on.
+    base: usize
+    /// A `{` that does not start a `match` body.
+    plain: bool
+    /// A `(` or `[`.
+    paren: bool
+    /// Where the first token after the bracket on its line is, in the source
+    /// and in the output (as columns). Continuation lines that were aligned
+    /// to it in the source stay aligned to it.
+    visual: ?Visual
+    /// A `{` on a line that starts with `if`, `when` or `else`: an `else` line
+    /// right after its `}` continues the chain at the statement's indentation.
+    chain: bool
+}
+
+Visual :: struct {
+    orig: usize
+    col: usize
+}
+
+/// The first token among `items[from..]`.
+next_tok :: fn(items: []const Item, from: usize) -> ?usize {
+    for k in from..items.len {
+        if .Tok(j) := items[k] { return j }
+    }
+    return null
+}
+
+/// Writes `src` out again with the layout rules; `toks` are its tokens.
+layout :: fn(src: string, toks: []const Token) -> List(u8) needs Alloc {
+    infos := classify(src, toks)
+    defer infos.deinit()
+    bom := src.starts_with("\u{feff}")
+    base: usize = if bom { 3 } else { 0 }
+
+    items := list(Item)
+    defer items.deinit()
+    prev_end := base
+    for k in 0..infos.items.len {
+        info := infos.items[k]
+        scan_gap(src[prev_end..info.lo], &items)
+        items.push(.Tok(k))!
+        prev_end = info.hi
+    }
+    scan_gap(src[prev_end..], &items)
+
+    out := list(u8)
+    if bom { out.extend("\u{feff}")! }
+    line_open := false
+    nl: usize = 0
+    prev: Prev = .None
+    // For every open bracket, the indentation of the line it was opened on (its
+    // "base") and whether it is a `{` that does not start a `match` body.
+    stack := list(Frame)
+    defer stack.deinit()
+    // The base for brackets opened on the current line, and the stack depth
+    // below which it was last lowered.
+    cur_base: usize = 0
+    min_len: usize = 0
+    // The previous line ends in a token after which the lexer joins the next line.
+    cont_next := false
+    after_lbrace := false
+    // The first token of the current line, and whether the previous token was
+    // a `}` closing a `chain` block.
+    line_head: ?usize = null
+    after_chain := false
+
+    for idx in 0..items.items.len {
+        item := items.items[idx]
+        if item is .Nl {
+            nl += 1
+            continue
+        }
+        close_tok := false
+        close_brace := false
+        if .Tok(k) := item {
+            close_tok = infos.items[k].close
+            close_brace = close_tok and infos.items[k].text is "}"
+        }
+        trailing := line_open and nl is 0 and item is .Line(_)
+        if nl > 0 and line_open {
+            out.push('\n')!
+            if nl >= 2 and not after_lbrace and not close_brace { out.push('\n')! }
+            line_open = false
+        }
+        nl = 0
+        first := not line_open
+        if first {
+            head := next_tok(items.items, idx)
+            line_head = head
+            indent: usize = 0
+            if close_tok {
+                f := stack.pop()
+                after_chain = false
+                v: usize = 0
+                if fr := f {
+                    after_chain = fr.chain and close_brace
+                    v = fr.base
+                }
+                cur_base = v
+                indent = v * 4
+            } else {
+                cur_base = if stack.items.len > 0 { stack.items[stack.items.len - 1].base + 1 } else { 0 }
+                plain_ctx := stack.items.len is 0 or stack.items[stack.items.len - 1].plain
+                starts_cont := false
+                is_else := false
+                if h := head {
+                    starts_cont = infos.items[h].text in ("and", "or", "else") or continues_with_name(src, infos.items[h])
+                    is_else = infos.items[h].text is "else"
+                }
+                chain_else := after_chain and item is .Tok(_) and is_else
+                // The first line of a block continues nothing, even when it starts with
+                // `.Name` (a variant).
+                continues := plain_ctx and not chain_else and not after_lbrace and (cont_next or starts_cont)
+                aligned: ?usize = null
+                if stack.items.len > 0 {
+                    f := stack.items[stack.items.len - 1]
+                    if f.paren {
+                        if v := f.visual {
+                            if h := head {
+                                if column(src, infos.items[h].lo) is v.orig { aligned = v.col }
+                            }
+                        }
+                    }
+                }
+                level := cur_base
+                if continues { level += 1 }
+                indent = if col := aligned { col } else { level * 4 }
+            }
+            min_len = stack.items.len
+            push_spaces(&out, indent)
+            line_open = true
+            prev = .None
+        } else if close_tok {
+            if f := stack.pop() {
+                after_chain = f.chain and close_brace
+                if stack.items.len < min_len {
+                    cur_base = f.base
+                    min_len = stack.items.len
+                }
+            }
+        }
+        lbrace := false
+        match item {
+            .Nl => {}
+            .Semi => {
+                out.push(';')!
+                prev = .Other
+                cont_next = false
+            }
+            .Line(l) => {
+                if not first {
+                    if l.ws.len > 0 and only_spaces(l.ws) {
+                        out.extend(l.ws)!
+                    } else {
+                        out.push(' ')!
+                    }
+                }
+                out.extend(l.text)!
+                prev = .Other
+            }
+            .Block(text) => {
+                prev_ta := false
+                if .Tok(p) := prev { prev_ta = infos.items[p].ta }
+                if not first and not prev_ta { out.push(' ')! }
+                // The output has LF line ends, also inside the comment.
+                str.replace(&out, text, "\r\n", "\n")!
+                prev = .Other
+            }
+            .Tok(k) => {
+                info := infos.items[k]
+                pad: usize = 1
+                space := false
+                match prev {
+                    .None => {}
+                    .Tok(p) => {
+                        pinfo := infos.items[p]
+                        tight := pinfo.ta or info.tb
+                        gap := src[pinfo.hi..info.lo]
+                        if not tight and gap.len >= 2 and only_spaces(gap) and keeps_padding(src, pinfo, info) {
+                            // Columns of aligned declarations and match arms.
+                            pad = gap.len
+                        }
+                        // Words that touch in the source (`t.1u8`) stay together.
+                        glued := gap.len is 0 and is_word(pinfo.text[pinfo.text.len - 1]) and is_word(info.text[0])
+                        space = not glued and (not tight or would_merge(pinfo.text, info.text))
+                    }
+                    .Other => { space = not info.tb }
+                }
+                if space { push_spaces(&out, pad) }
+                if .Tok(p) := prev {
+                    if stack.items.len > 0 {
+                        f := &stack.items[stack.items.len - 1]
+                        if f.paren and f.visual is null and infos.items[p].open and not info.close {
+                            f.visual = Visual(orig: column(src, info.lo), col: out_column(&out))
+                        }
+                    }
+                }
+                out.extend(info.text)!
+                if info.open {
+                    brace := info.text is "{"
+                    chain := false
+                    if brace {
+                        if h := line_head { chain = infos.items[h].text in ("if", "when", "else") }
+                    }
+                    stack.push(Frame(
+                        base: cur_base,
+                        plain: brace and not info.match_body,
+                        paren: not brace,
+                        visual: null,
+                        chain: chain,
+                    ))!
+                }
+                cont_next = continues_line(info)
+                if not info.close { after_chain = false }
+                lbrace = info.text is "{" and not info.ta
+                prev = .Tok(k)
+            }
+        }
+        after_lbrace = lbrace or (trailing and after_lbrace)
+    }
+    if line_open { out.push('\n')! }
+    return out
+}
+
+/// Whether a character can be part of a word for the purpose of keeping touching words
+/// together: a letter, a digit, `_` or a quote.
+is_word :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c in ('_', '"', '\'', '`')

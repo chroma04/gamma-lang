@@ -1,0 +1,26 @@
+//! Where gammac finds the libraries and the runtime.
+
+load :: import "../load"
+
+/// The directory of the standard library: `$GAMMA_STD`, or else `lib/gamma/std` next to
+/// the directory of the executable, as in an installed release.
+pub std_root :: fn() -> string needs Alloc + Env {
+    if dir := Env.var("GAMMA_STD") { return dir }
+    exe := Env.args()[0]
+    bin := load.parent(exe) else "."
+    return load.join(load.join(if bin.len is 0 { "." } else { bin }, ".."), "lib/gamma/std")
+}
+
+/// The directory of the core library: `$GAMMA_CORE`, or else `core` next to the standard
+/// library's directory.
+pub core_root :: fn(std: string) -> string needs Alloc + Env {
+    if dir := Env.var("GAMMA_CORE") { return dir }
+    return load.join(load.join(std, ".."), "core")
+}
+
+/// The directory of the runtime's C sources: `$GAMMA_RUNTIME`, or else `runtime` two
+/// levels above the standard library's directory.
+pub runtime_dir :: fn(std: string) -> string needs Alloc + Env {
+    if dir := Env.var("GAMMA_RUNTIME") { return dir }
+    return load.join(load.join(load.join(std, ".."), ".."), "runtime")
+}

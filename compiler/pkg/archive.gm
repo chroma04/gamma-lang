@@ -1,0 +1,160 @@
+// Source archives as dependencies: download with the `curl` command-line tool (which
+// honours proxy settings and the system's certificate authorities, as `git` does for git
+// dependencies) and unpack `.tar.gz` / `.tgz` files into the package store with `tar`
+// (mirrors `src/pkg/archive.rs`).
+
+/// The largest archive file downloaded, and the most entries one may unpack to: a package
+/// is source code, and a compressed archive must not fill the disk.
+MAX_ARCHIVE_BYTES :: 1 << 30
+MAX_ENTRIES :: 1 << 20
+
+/// An archive downloaded to a temporary file.
+pub Download :: struct {
+    pub path: string
+    /// The SHA-256 of the file, hexadecimal.
+    pub sha256: string
+}
+
+/// Downloads `url` into a temporary file in `dir`.
+pub download :: fn(url: string, dir: string) -> string!Download needs Alloc + Fs + Proc + Rand {
+    try make_dirs(dir)
+    path := private_name(dir, "download")
+    max := str.format("{}", MAX_ARCHIVE_BYTES)!
+    args := list(string)
+    for a in [23]string(
+        "curl", "--fail", "--silent", "--show-error", "--location", "--retry", "2",
+        // A stalled server fails the download instead of hanging every build.
+        "--connect-timeout", "30", "--speed-limit", "1", "--speed-time", "60",
+        "--max-filesize", max,
+        "--proto", "=http,https,file", "--proto-redir", "=http,https",
+        "--output", path, "--", url,
+    ) { args.push(a)! }
+    r := run(args.items)
+    if r.code is 127 and r.err.len > 0 and not r.ok and not str.contains(r.err, "curl:") {
+        return !str.format("cannot run `curl` (is it installed?): {}", r.err)!
+    }
+    if not r.ok {
+        _ = fs.remove_all(path)
+        return !str.format("cannot download {}: {}", url, str.trim(r.err))!
+    }
+    sum := file_sha256(path) else e => {
+        _ = fs.remove_all(path)
+        return !e
+    }
+    return Download(path: path, sha256: sum)
+}
+
+/// Removes the temporary file of a download.
+pub discard :: fn(d: Download) needs Alloc + Fs {
+    _ = fs.remove_all(d.path)
+}
+
+/// The SHA-256 of the file at `path`, hexadecimal.
+pub file_sha256 :: fn(path: string) -> string!string needs Alloc + Fs {
+    f := Fs.open(path, fs.OpenOptions()) else e => { return !str.format("cannot read {}: {}", path, io_message(e))! }
+    defer Fs.close(f)
+    h := sha256.init()
+    buf := make(u8, 1 << 16)!
+    defer free(buf)
+    while true {
+        n := f.read(buf) else e => { return !str.format("cannot read {}: {}", path, io_message(e))! }
+        if n is 0 { break }
+        h.update(buf[0..n])
+    }
+    d := h.final()
+    return hex(d[..])
+}
+
+/// Unpacks the gzip-compressed tar file `archive` into the new directory `dest`.
+///
+/// If the archive holds a single top-level directory (as the archives of source hosts do),
+/// that directory becomes `dest`. The contents are written to a temporary directory next to
+/// `dest` and moved into place at the end, so a failure never leaves a partial `dest`. Paths
+/// that would leave the directory, hard links and special files are errors; symbolic links
+/// are allowed here and checked with the checksum of the tree.
+pub unpack :: fn(archive: string, dest: string) -> string!() needs Alloc + Fs + Proc + Rand {
+    parent_dir := parent(dest) else return !"bad archive path"
+    try make_dirs(parent_dir)
+    tmp := private_name(parent_dir, "unpack")
+    Fs.make_dir(tmp) else e => { return !str.format("cannot create {}: {}", tmp, io_message(e))! }
+    result := unpack_into(archive, tmp)
+    if result is not !_ { result = place(tmp, dest) }
+    _ = fs.remove_all(tmp)
+    return result
+}
+
+unpack_into :: fn(archive, dir: string) -> string!() needs Alloc + Fs + Proc {
+    f := Fs.open(archive, fs.OpenOptions()) else e => { return !str.format("cannot read {}: {}", archive, io_message(e))! }
+    magic: [2]u8 = ---
+    n := f.read(magic[..]) else 0
+    Fs.close(f)
+    if n < 2 or magic[0] is not 0x1f or magic[1] is not 0x8b {
+        return !"the archive is not a gzip-compressed tar file (only .tar.gz and .tgz are supported)"
+    }
+    // The entries are checked before anything is written: their types and paths.
+    names_args := [3]string("tar", "-tzf", archive)
+    names_run := run(names_args[..])
+    if not names_run.ok { return !str.format("cannot read the archive: {}", str.trim(names_run.err))! }
+    types_args := [3]string("tar", "-tvzf", archive)
+    types_run := run(types_args[..])
+    if not types_run.ok { return !str.format("cannot read the archive: {}", str.trim(types_run.err))! }
+    names := list(string)
+    for line in str.lines(names_run.out) { names.push(line)! }
+    types := list(u8)
+    for line in str.lines(types_run.out) { types.push(line.get(0) else '-')! }
+    count: usize = 0
+    for i, name in enumerate(names.items) {
+        count += 1
+        if count > MAX_ENTRIES {
+            return !str.format("the archive unpacks to more than {} GiB or {} entries, which is not allowed", 4, MAX_ENTRIES)!
+        }
+        kind: u8 = types.items.get(i) else '-'
+        if kind not in ('-', 'd', 'l') {
+            what := if kind is 'h' { "a hard link" } else { "a special file" }
+            return !str.format("the archive contains {} (`{}`), which is not allowed", what, name)!
+        }
+        if leaves_directory(name) {
+            return !str.format("the archive contains the path `{}`, which leaves its directory", name)!
+        }
+    }
+    // `-m`: the files get the time of unpacking, not the archive's.
+    args := [8]string("tar", "-xzmf", archive, "-C", dir, "--no-same-owner", "--no-same-permissions", "")
+    r := run(args[0..7])
+    if not r.ok { return !str.format("cannot unpack the archive: {}", str.trim(r.err))! }
+    sanitize_modes(dir)
+    return ()
+}
+
+/// Whether the archive path `name` is absolute or climbs out of the directory with `..`.
+leaves_directory :: fn(name: string) -> bool needs Alloc {
+    if name.starts_with("/") { return true }
+    for c in str.split(name, "/") {
+        if c is ".." { return true }
+    }
+    return false
+}
+
+/// Moves the contents of `tmp` (or its only directory) to `dest`.
+place :: fn(tmp, dest: string) -> string!() needs Alloc + Fs {
+    names := list(string)
+    for r in fs.entries(tmp) {
+        e := r else err => { return !str.format("cannot read {}: {}", tmp, io_message(err))! }
+        names.push(dupe(e.name)!)!
+    }
+    src := tmp
+    if names.items.len is 1 {
+        one := join(tmp, names.items[0])
+        if info := Fs.lstat(one) {
+            if info.kind is .Dir { src = one }
+        }
+    }
+    Fs.rename(src, dest) else e => {
+        // Another process may have finished the same job first.
+        if not is_dir(dest) { return !str.format("cannot create {}: {}", dest, io_message(e))! }
+    }
+    return ()
+}
+
+fs :: import "std/fs"
+sha256 :: import "std/hash/sha256"
+str :: import "std/str"

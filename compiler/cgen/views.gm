@@ -1,0 +1,446 @@
+// Debugger views of values (`gammac build -g`; mirrors `src/cgen/views.rs`).
+//
+// Values that are blobs in the generated C (see `types.gm`) would show as raw bytes in a
+// debugger. With debug information on, each frame field instead also has a *view*: a C
+// type laid out exactly like the Gamma value, whose members a debugger can name and
+// print:
+//
+// | Gamma type | View |
+// |---|---|
+// | struct, `#c_union` | its fields by name |
+// | tuple | `_0`, `_1`… or the element names |
+// | tagged union | `tag` (a C enum naming the variant, `Shape_Circle`) and a member per payload, named after its variant |
+// | enum (payload-less union) | the C enum alone |
+// | `?T` | `value`, `present` (a pointer optional is a pointer) |
+// | `E!T` | `is_err`, `ok`, `err` |
+// | `[]T` | `ptr` (a typed pointer), `len` |
+// | `^T`, `[^]T` | a pointer to the view of `T` |
+// | `bool` | `_Bool` |
+//
+// Views are only declared for the debugger: generated code never refers to them. Each
+// view is a packed struct whose members sit at the offsets of the Gamma layout, with
+// unnamed bit-fields (which debuggers do not print) as padding, so it has exactly the
+// size of the value. Its alignment is 1, so a frame field holding a view next to the blob
+// it aliases keeps the blob's layout.
+
+arena :: import "std/arena"
+bigint :: import "../bigint"
+hash_map :: import "std/collections/hash_map"
+sema :: import "../sema"
+str :: import "std/str"
+types :: import "../types"
+
+/// The C type of a view and the array dimensions that follow a member's name.
+pub View :: struct {
+    pub cty: string
+    pub dims: string = ""
+}
+
+pub Views :: struct {
+    /// Views by type id (`null`: the type has no bytes to show).
+    cache: hash_map.HashMap(u32, ?View)
+    /// Views whose names are given out but whose definitions are still to be written: the
+    /// targets of pointers, defined once the view that points at them is complete.
+    pending: List(Ty)
+    building: bool
+    defs: List(u8)
+    count: usize
+    /// The C enumerators declared, which share one namespace.
+    enumerators: hash_map.HashMap(string, bool)
+}
+
+pub views :: fn() -> Views needs Alloc => Views(
+    cache: hash_map.hash_map(u32, ?View),
+    pending: list(Ty),
+    building: false,
+    defs: list(u8),
+    count: 0,
+    enumerators: hash_map.hash_map(string, bool),
+)
+
+/// A member of a view at an offset of the Gamma layout.
+ViewMember :: struct {
+    offset: u64
+    size: u64
+    decl: string
+}
+
+scalar :: fn(cty: string) -> ?View => View(cty: cty)
+
+/// The debugger view of values of `t` (see the comment at the top of this file), or `null`
+/// if `t` has no bytes.
+pub debug_view :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
+    if ty.views.building { return ty.view(t) }
+    ty.views.building = true
+    v := ty.view(t)
+    while p := ty.views.pending.pop() { ty.define_view(p) }
+    ty.views.building = false
+    return v
+}
+
+/// The definitions of the views used.
+pub view_defs :: fn(ty: ^const CTypes) -> string => ty.views.defs.items
+
+view :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
+    if cached := ty.views.cache.get(t.id) {
+        // A pointer's target, now needed by value: it is defined first.
+        for k, p in enumerate(ty.views.pending.items) {
+            if p.id is t.id {
+                _ = ty.views.pending.remove(k)
+                ty.define_view(t)
+                break
+            }
+        }
+        return cached
+    }
+    if ty.size(t) is 0 {
+        ty.views.cache.put(t.id, null)!
+        return null
+    }
+    v: ?View = match ty.repr(t) {
+        .Bool => scalar("_Bool")
+        .Ptr => scalar(ty.pointer_view(t))
+        .Blob => {
+            if ty.is_aggregate(t) {
+                r := ty.reserve(t)
+                ty.define_view(t)
+                r
+            } else {
+                match ty.kind(t) {
+                    .Array(len, elem, _) => {
+                        if e := ty.view(elem) {
+                            View(cty: e.cty, dims: str.format("[{}]{}", len, e.dims)!)
+                        } else {
+                            scalar(ty.cty(t))
+                        }
+                    }
+                    .Adt(_, _) if ty.enum_info(t) is not null => {
+                        r := ty.reserve(t)
+                        ty.define_view(t)
+                        r
+                    }
+                    // Closures, handlers, continuations.
+                    _ => scalar(ty.cty(t))
+                }
+            }
+        }
+        _ => scalar(ty.cty(t))
+    }
+    ty.views.cache.put(t.id, v)!
+    return v
+}
+
+/// Whether the view of `t` is a struct (or union) of its own.
+is_aggregate :: fn(ty: ^CTypes, t: Ty) -> bool needs Alloc {
+    match ty.kind(t) {
+        .Tuple(_, _), .Slice(_, _), .Optional(_), .Result(_, _) => return true
+        .Adt(_, _) => {
+            match ty.adt_of(t).kind {
+                .Struct(def) => return def.bits is null
+                .CUnion(_) => return true
+                .Union(_, variants) => {
+                    for v in variants {
+                        if p := v.payload {
+                            if ty.size(p) > 0 { return true }
+                        }
+                    }
+                    return false
+                }
+            }
+        }
+        _ => return false
+    }
+}
+
+/// The suffix of the name of `t`'s view by which the gdb pretty printers
+/// (`gdb_script_section`) recognize views they show differently.
+view_kind :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+    match ty.kind(t) {
+        .Slice(_, elem) => {
+            if ty.kind(elem) is .Int(_, 8) { return "_string" }
+            return "_slice"
+        }
+        .Optional(_) => return "_optional"
+        .Result(_, _) => return "_result"
+        .Adt(_, _) => return if ty.enum_info(t) is not null { "_union" } else { "" }
+        _ => return ""
+    }
+}
+
+/// Gives `t`'s view its name before its definition, so pointers can refer to it.
+reserve :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
+    n := ty.views.count
+    ty.views.count += 1
+    cty: string = if ty.is_aggregate(t) { str.format("struct gm_dv{}{}", n, ty.view_kind(t))! } else { str.format("enum gm_dv{}", n)! }
+    v := scalar(cty)
+    ty.views.cache.put(t.id, v)!
+    return v
+}
+
+/// The C type of a pointer of type `t` to a value: a pointer to the target's view.
+pointer_view :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+    target: Ty = match ty.kind(t) {
+        .Ptr(_, pointee) => pointee
+        .ManyPtr(_, elem) => elem
+        .Optional(inner) => return ty.pointer_view(inner)
+        _ => return "void *"
+    }
+    return str.format("{} *", ty.target_view(target))!
+}
+
+/// The C type a pointer to a `t` points to.
+target_view :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+    if cached := ty.views.cache.get(t.id) {
+        if v := cached {
+            if v.dims.len is 0 and not v.cty.starts_with("enum ") { return v.cty }
+        }
+        return "void"
+    }
+    if ty.size(t) is 0 { return "void" }
+    if ty.is_aggregate(t) {
+        // Defined later: the target may contain the view being built.
+        v := ty.reserve(t)?
+        ty.views.pending.push(t)!
+        return v.cty
+    }
+    if v := ty.view(t) {
+        if v.dims.len is 0 and not v.cty.starts_with("enum ") { return v.cty }
+    }
+    // An array, or an enum (which C cannot point at before its definition).
+    return "void"
+}
+
+/// Writes the definition of the view of `t`, whose name is reserved.
+define_view :: fn(ty: ^CTypes, t: Ty) needs Alloc {
+    cached := ty.views.cache.get(t.id) else return
+    v := cached else return
+    cty := v.cty
+    size := ty.size(t)
+    offs := ty.offsets(t)
+    members := list(ViewMember)
+    taken := hash_map.hash_map(string, bool)
+    match ty.kind(t) {
+        .Tuple(elems, names) => {
+            labels := list(string)
+            if names.len > 0 {
+                chosen := unique_view_members(names, &taken)
+                for k, n in enumerate(chosen) { labels.push(n else str.format("_{}", k)!)! }
+            } else {
+                for k in 0..elems.len { labels.push(str.format("_{}", k)!)! }
+            }
+            for k, e in enumerate(elems) { ty.push_member(&members, offs[k], e, labels.items[k]) }
+        }
+        .Slice(_, elem) => {
+            target := ty.target_view(elem)
+            len := ty.cty(ty.usize_ty())
+            members.push(ViewMember(offset: offs[0], size: offs[1], decl: str.format("{} *ptr;", target)!))!
+            members.push(ViewMember(offset: offs[1], size: size - offs[1], decl: str.format("{} len;", len)!))!
+        }
+        .Optional(inner) => {
+            ty.push_member(&members, offs[0], inner, "value")
+            members.push(ViewMember(offset: offs[1], size: 1, decl: "_Bool present;"))!
+        }
+        .Result(err, ok) => {
+            members.push(ViewMember(offset: offs[0], size: 1, decl: "_Bool is_err;"))!
+            arms := list(Arm)
+            arms.push(Arm(ty: ok, name: "ok"))!
+            arms.push(Arm(ty: err, name: "err"))!
+            ty.push_union(&members, offs[1], arms.items)
+        }
+        .Adt(_, _) => {
+            match ty.adt_of(t).kind {
+                .Struct(def) => {
+                    names := list(string)
+                    for f in def.fields { names.push(f.name)! }
+                    chosen := unique_view_members(names.items, &taken)
+                    for k, f in enumerate(def.fields) {
+                        name := chosen[k] else str.format("f{}", k)!
+                        ty.push_member(&members, offs[k], f.ty, name)
+                    }
+                }
+                .CUnion(fields) => {
+                    names := list(string)
+                    for f in fields { names.push(f.name)! }
+                    chosen := unique_view_members(names.items, &taken)
+                    arms := list(Arm)
+                    for k, f in enumerate(fields) {
+                        arms.push(Arm(ty: f.ty, name: chosen[k] else str.format("f{}", k)!))!
+                    }
+                    ty.push_union(&members, 0, arms.items)
+                }
+                .Union(tag, variants) => {
+                    tag_cty := ty.define_enum(t, cty)
+                    if not ty.is_aggregate(t) { return }
+                    members.push(ViewMember(offset: offs[0], size: ty.size(tag), decl: str.format("{} tag;", tag_cty)!))!
+                    taken.put("tag", true)!
+                    names := list(string)
+                    for vd in variants { names.push(vd.name)! }
+                    chosen := unique_view_members(names.items, &taken)
+                    arms := list(Arm)
+                    for k, vd in enumerate(variants) {
+                        p := vd.payload else continue
+                        arms.push(Arm(ty: p, name: chosen[k] else str.format("v{}", k)!))!
+                    }
+                    ty.push_union(&members, offs[1], arms.items)
+                }
+            }
+        }
+        _ => return
+    }
+    body := list(u8)
+    at: u64 = 0
+    for m in members.items {
+        pad(&body, m.offset - at)
+        body.write(" {}", m.decl)!
+        at = m.offset + m.size
+    }
+    pad(&body, size - at)
+    ty.views.defs.write("{} {{{} }};\n", packed(cty), body.items)!
+    ty.static_assert(cty, size)
+}
+
+/// A member of a union of a view: a type and the name of its arm.
+Arm :: struct {
+    ty: Ty
+    name: string
+}
+
+/// Adds a member `name` of type `t` at `offset` (none if `t` has no bytes).
+push_member :: fn(ty: ^CTypes, members: ^List(ViewMember), offset: u64, t: Ty, name: string) needs Alloc {
+    v := ty.view(t) else return
+    ty.add_member_name(name)
+    members.push(ViewMember(offset: offset, size: ty.size(t), decl: str.format("{} {}{};", v.cty, name, v.dims)!))!
+}
+
+/// Adds an anonymous union of `arms` at `offset` (none if no arm has bytes).
+push_union :: fn(ty: ^CTypes, members: ^List(ViewMember), offset: u64, arms: []const Arm) needs Alloc {
+    decls := list(u8)
+    size: u64 = 0
+    for arm in arms {
+        v := ty.view(arm.ty) else continue
+        ty.add_member_name(arm.name)
+        decls.write(" {} {}{};", v.cty, arm.name, v.dims)!
+        size = size.max(ty.size(arm.ty))
+    }
+    if size > 0 {
+        members.push(ViewMember(offset: offset, size: size, decl: str.format("union __attribute__((packed)) {{{} }};", decls.items)!))!
+    }
+}
+
+static_assert :: fn(ty: ^CTypes, cty: string, size: u64) needs Alloc {
+    ty.views.defs.write("_Static_assert(sizeof({}) == {}, \"debugger view\");\n", cty, size)!
+}
+
+/// For a tagged union whose tag a C enum can name: the enumerator prefix's base (the
+/// union's name) and the tag's size and signedness.
+EnumInfo :: struct {
+    base: string
+    size: u64
+    signed: bool
+}
+
+enum_info :: fn(ty: ^CTypes, t: Ty) -> ?EnumInfo needs Alloc {
+    .Adt(_, _) := ty.kind(t) else return null
+    def := ty.adt_of(t)
+    .Union(tag, _) := def.kind else return null
+    size := ty.size(tag)
+    // Enumerators are `int`s: an 8-byte tag stays an integer.
+    if size > 4 { return null }
+    n: usize = 0
+    while n < def.name.len and (def.name[n] in 'a'..='z' or def.name[n] in 'A'..='Z' or def.name[n] in '0'..='9' or def.name[n] is '_') { n += 1 }
+    base := def.name[0..n]
+    if member_name(base) is null { return null }
+    return EnumInfo(base: base, size: size, signed: ty.is_signed_integer(tag))
+}
+
+/// Declares the C enum of a union's tag (if it has one) and returns the C type of the
+/// view's `tag` member. An enum view is named `view`; the tag of a union with payloads gets
+/// an enum of its own.
+define_enum :: fn(ty: ^CTypes, t: Ty, view: string) -> string needs Alloc {
+    def := ty.adt_of(t)
+    .Union(tag, variants) := def.kind else @unreachable()
+    info := ty.enum_info(t) else return ty.cty(tag)
+    name := view
+    if not view.starts_with("enum ") {
+        n := ty.views.count
+        ty.views.count += 1
+        name = str.format("enum gm_dv{}", n)!
+    }
+    // Generic instances share a name: the prefix gets a number.
+    prefix := info.base
+    k: u32 = 1
+    while true {
+        clash := false
+        for v in variants {
+            if ty.views.enumerators.get(str.format("{}_{}", prefix, v.name)!) is not null { clash = true }
+        }
+        if not clash { break }
+        k += 1
+        prefix = str.format("{}{}", info.base, k)!
+    }
+    items := list(string)
+    lo: i64 = 0
+    hi: i64 = 0
+    for v in variants {
+        e := str.format("{}_{}", prefix, v.name)!
+        value := bigint.to_i64(v.tag) else 0
+        lo = lo.min(value)
+        hi = hi.max(value)
+        ty.views.enumerators.put(e, true)!
+        ty.add_member_name(e)
+        items.push(str.format("{} = {}", e, value)!)!
+    }
+    // A packed enum takes the smallest size that holds its values; a wider tag gets an
+    // extra enumerator that needs the tag's size.
+    natural: u64 = 4
+    for s in [3]u64(1, 2, 4) {
+        bits := 8 * s
+        fits := if lo < 0 { lo >= -(i64(1) << (bits - 1)) and hi < (i64(1) << (bits - 1)) } else { hi < (i64(1) << bits) }
+        if fits {
+            natural = s
+            break
+        }
+    }
+    if natural < info.size {
+        bits := 8 * (info.size / 2)
+        wide: i64 = if info.signed { -(i64(1) << (bits - 1)) - 1 } else { i64(1) << bits }
+        e := str.format("{}__size", prefix)!
+        ty.views.enumerators.put(e, true)!
+        ty.add_member_name(e)
+        items.push(str.format("{} = {}", e, wide)!)!
+    }
+    ty.views.defs.write("{} {{ {} }};\n", packed(name), str.join(items.items, ", ")!)!
+    ty.static_assert(name, info.size)
+    return name
+}
+
+/// `struct x` or `enum x` as the head of a packed definition.
+packed :: fn(cty: string) -> string needs Alloc {
+    if sp := str.split_once(cty, " ") { return str.format("{} __attribute__((packed)) {}", sp.before, sp.after)! }
+    return str.format("struct __attribute__((packed)) {}", cty)!
+}
+
+/// Padding of `bytes` bytes: unnamed bit-fields, which debuggers do not show.
+pad :: fn(body: ^List(u8), bytes: u64) needs Alloc {
+    for _ in 0..bytes / 8 { body.extend(" uint64_t : 64;")! }
+    for _ in 0..bytes % 8 { body.extend(" uint8_t : 8;")! }
+}
+
+test "padding is unnamed bit-fields" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        s := list(u8)
+        pad(&s, 10)
+        expect_eq(string(s.items), " uint64_t : 64; uint8_t : 8; uint8_t : 8;")
+    }
+}
+
+test "packed heads" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(packed("struct gm_dv1_slice"), "struct __attribute__((packed)) gm_dv1_slice")
+        expect_eq(packed("enum gm_dv2"), "enum __attribute__((packed)) gm_dv2")
+    }
+}

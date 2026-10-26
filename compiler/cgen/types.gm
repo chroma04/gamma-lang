@@ -63,6 +63,12 @@ pub CTypes :: struct {
     mirror_defs: List(u8)
     /// The vector types declared so far.
     vector_names: hash_map.HashMap(string, bool)
+    /// `-g`: members get the Gamma names (see `debug.gm`).
+    pub debug_names: bool
+    /// The Gamma names given to members (see `debug.gm`'s `guard`).
+    member_set: hash_map.HashMap(string, bool)
+    /// `-g`: the debugger views built so far (see `views.gm`).
+    views: Views
 }
 
 pub ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
@@ -82,6 +88,9 @@ pub ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
     mirrors: hash_map.hash_map(u32, ?string),
     mirror_defs: list(u8),
     vector_names: hash_map.hash_map(string, bool),
+    debug_names: false,
+    member_set: hash_map.hash_map(string, bool),
+    views: views(),
 )
 
 // ---------------------------------------------------------------------------------
@@ -342,11 +351,26 @@ make_mirror :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
         .Union(_) => return null
     }
     if fields.len is 0 or ty.size(t) is 0 { return null }
+    // With `-g`, the fields have their Gamma names where they can.
+    names := list(string)
+    if ty.debug_names {
+        field_names := list(string)
+        for f in fields { field_names.push(f.name)! }
+        taken := hash_map.hash_map(string, bool)
+        for i, n in enumerate(unique_members(field_names.items, &taken)) { names.push(n else str.format("f{}", i)!)! }
+    } else {
+        for i in 0..fields.len { names.push(str.format("f{}", i)!)! }
+    }
     members := list(string)
     for i, f in enumerate(fields) {
         fc := ty.field_cty(f.ty) else return null
         al: string = if a := f.align { str.format("_Alignas({}) ", a)! } else { "" }
-        members.push(str.format("{}{} f{}{};", al, fc.cty, i, fc.dims)!)!
+        members.push(str.format("{}{} {}{};", al, fc.cty, names.items[i], fc.dims)!)!
+    }
+    if ty.debug_names {
+        for n in names.items {
+            if member_name(n) is not null { ty.add_member_name(n) }
+        }
     }
     // Numbered by how many mirrors were asked for, as the reference does.
     name := str.format("gm_cs{}", ty.mirrors.len())!
@@ -359,7 +383,7 @@ make_mirror :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
     ty.mirror_defs.write("_Static_assert(sizeof({}) == {} && _Alignof({}) == {}", name, ty.size(t), name, ty.align(t))!
     offs := ty.offsets(t)
     for i in 0..fields.len {
-        if i < offs.len { ty.mirror_defs.write(" && offsetof({}, f{}) == {}", name, i, offs[i])! }
+        if i < offs.len { ty.mirror_defs.write(" && offsetof({}, {}) == {}", name, names.items[i], offs[i])! }
     }
     ty.mirror_defs.write(", {});\n", assert_message(str.format("layout of `{}`", ty.show(t))!))!
     return name
@@ -405,6 +429,19 @@ pub param_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc => if ty.by_ref(t)
 pub plain_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
     if m := ty.mirror(t) { return m }
     return ty.cty(t)
+}
+
+/// Records `name` as a Gamma name given to a member (see `guard`).
+pub add_member_name :: fn(ty: ^CTypes, name: string) needs Alloc {
+    ty.member_set.put(name, true)!
+}
+
+/// The Gamma names given to members, sorted.
+pub member_names :: fn(ty: ^const CTypes) -> []string needs Alloc {
+    out := list(string)
+    for k in ty.member_set.keys() { out.push(k)! }
+    out.items.sort()
+    return out.items
 }
 
 /// The definitions of the mirrors used.

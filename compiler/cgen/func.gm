@@ -63,10 +63,30 @@ pub gen_fn :: fn(g: ^Gen, f: u32) -> Unsup!() needs sema.Load {
     // The frame struct, shared by the function and its clones.
     frame := list(u8)
     frame.write("struct gm_fr{} {{\n    gm_frame h;\n", f)!
+    // With `-g`, a field also has its local's name, with the type's debugger view.
+    names: []const ?string = empty_slice(?string)
+    if g.opts.debug_info {
+        local_names := list(string)
+        for l in def.locals { local_names.push(l.name)! }
+        taken := hash_map.hash_map(string, bool)
+        names = unique_members(local_names.items, &taken)
+    }
     for i, l in enumerate(def.locals) {
         if not in_frame[i] { continue }
         c := g.ty.cty(l.ty)
-        frame.write("    {} l{}; /* {} */\n", c, i, l.name)!
+        if i < names.len and names[i] is not null {
+            n := names[i]?
+            alias := c
+            dims := ""
+            if view := g.ty.debug_view(l.ty) {
+                alias = view.cty
+                dims = view.dims
+            }
+            g.ty.add_member_name(n)
+            frame.write("    union {{ {} l{}; {} {}{}; }};\n", c, i, alias, n, dims)!
+        } else {
+            frame.write("    {} l{}; /* {} */\n", c, i, l.name)!
+        }
     }
     frame.write("    {} ret;\n", g.ty.cty(def.ret))!
     withs := list(WithSlot)
@@ -403,12 +423,15 @@ frame_temps :: fn(g: ^Gen, e: ^Expr, place: bool, c: ^u64) needs Alloc {
 
 // --- the generator's helpers ------------------------------------------------------------
 
-/// With `-g`, maps the code that follows to the source line where `span` starts (not
-/// ported: emits nothing).
-src_line :: fn(fg: ^FnGen, span: source.Span) {}
+/// With `-g`, maps the code that follows to the source line where `span` starts.
+src_line :: fn(fg: ^FnGen, span: source.Span) needs sema.Load {
+    if d := fg.g.line_directive(span) { fg.out.write("{}\n", d)! }
+}
 
-/// With `-g`, ends the text of a C function (not ported: emits nothing).
-end_lines :: fn(fg: ^FnGen) {}
+/// With `-g`, ends the text of a C function: what follows is mapped to the C file.
+end_lines :: fn(fg: ^FnGen) needs Alloc {
+    if fg.g.opts.debug_info { fg.out.write("{}\n", LINE_RESET)! }
+}
 
 /// Emits `s` as a line at the current indentation.
 line :: fn(fg: ^FnGen, s: string) needs Alloc {
@@ -1110,7 +1133,7 @@ stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
 frame_locals :: fn(g: ^Gen, f: u32) -> []bool needs Alloc {
     def := g.prog.func(f)
     out := list(bool)
-    all := g.opts.debug
+    all := g.opts.debug or g.opts.debug_info
     if b := def.body { all = all or has_fiber_with(b) }
     if all {
         for _ in def.locals { out.push(true)! }

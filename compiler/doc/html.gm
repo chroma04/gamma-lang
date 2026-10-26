@@ -1,0 +1,132 @@
+// HTML output: one self-contained page per module (styles inline, no scripts) and an
+// index page.
+
+str :: import "std/str"
+
+STYLE :: `
+:root { color-scheme: light dark; --fg: #1f2328; --bg: #ffffff; --muted: #59636e; --code-bg: #f3f4f6; --rule: #d1d9e0; --link: #0550ae; }
+@media (prefers-color-scheme: dark) { :root { --fg: #e6edf3; --bg: #0d1117; --muted: #9198a1; --code-bg: #161b22; --rule: #30363d; --link: #58a6ff; } }
+body { margin: 0 auto; max-width: 52rem; padding: 1.5rem 1rem 4rem; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, sans-serif; }
+a { color: var(--link); }
+h1, h2, h3 { line-height: 1.25; }
+h2 { margin-top: 2.5rem; padding-bottom: .3rem; border-bottom: 1px solid var(--rule); }
+h3 { margin-top: 2rem; }
+code, pre { font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { background: var(--code-bg); padding: .1em .3em; border-radius: 4px; }
+pre { background: var(--code-bg); padding: .75rem 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; }
+th, td { border: 1px solid var(--rule); padding: .3rem .6rem; text-align: left; vertical-align: top; }
+blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--rule); color: var(--muted); }
+.contents { columns: 14rem; column-gap: 2rem; padding-left: 1.2rem; }
+.members dt { margin-top: .5rem; }
+.members dd { margin-left: 1.5rem; }
+`
+
+html_page :: fn(title, body: string) -> string needs Alloc {
+    out := list(u8)
+    out.extend("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")!
+    out.extend("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>")!
+    escape_into(title, &out)
+    out.write("</title>\n<style>\n{}</style>\n</head>\n<body>\n{}</body>\n</html>\n", STYLE, body)!
+    return out.items
+}
+
+/// The page of one module. `index` is the relative link to the index page, if there is one.
+html_module :: fn(m: ^const Module, index: ?string) -> string needs Alloc {
+    body := list(u8)
+    body.extend("<h1>Module <code>")!
+    escape_into(m.name, &body)
+    body.extend("</code></h1>\n")!
+    if link := index {
+        body.extend("<p><a href=\"")!
+        escape_into(link, &body)
+        body.extend("\">All modules</a></p>\n")!
+    }
+    if m.doc.len > 0 { body.extend(render(m.doc))! }
+    ids := declaration_ids(m)
+    if m.decls.len > 0 {
+        body.extend("<h2 id=\"contents\">Contents</h2>\n<ul class=\"contents\">\n")!
+        for kind in KINDS {
+            for i, d in enumerate(m.decls) {
+                if d.kind is not kind { continue }
+                body.write("<li><a href=\"#{}\"><code>", ids[i])!
+                escape_into(d.name, &body)
+                body.extend("</code></a></li>\n")!
+            }
+        }
+        body.extend("</ul>\n")!
+    }
+    for kind in KINDS {
+        found := false
+        for i, d in enumerate(m.decls) {
+            if d.kind is not kind { continue }
+            if not found {
+                body.write("<h2>{}</h2>\n", section(kind))!
+                found = true
+            }
+            html_declaration(&body, &d, ids[i])
+        }
+    }
+    title := str.format("Module {}", m.name)!
+    return html_page(title, body.items)
+}
+
+/// A unique anchor for each declaration.
+declaration_ids :: fn(m: ^const Module) -> []string needs Alloc {
+    seen := list(string)
+    for d in m.decls {
+        base := list(u8)
+        for c in d.name {
+            if c & 0xC0 is 0x80 { continue }
+            base.push(if c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c is '_' { c } else { '-' })!
+        }
+        id: string = base.items
+        n: u32 = 2
+        while id in seen.items or id is "contents" {
+            id = str.format("{}-{}", base.items, n)!
+            n += 1
+        }
+        seen.push(id)!
+    }
+    return seen.items
+}
+
+html_declaration :: fn(out: ^List(u8), d: ^const Decl, id: string) needs Alloc {
+    out.write("<h3 id=\"{}\"><code>", id)!
+    escape_into(d.name, out)
+    out.extend("</code></h3>\n<pre><code>")!
+    escape_into(d.sig, out)
+    out.extend("</code></pre>\n")!
+    if doc := d.doc { render_into(doc, out) }
+    if d.members.len > 0 {
+        out.write("<p>{}:</p>\n<dl class=\"members\">\n", d.member_label)!
+        for mem in d.members {
+            out.extend("<dt><code>")!
+            escape_into(mem.name, out)
+            out.extend("</code></dt>\n<dd>")!
+            inline_into(unwrap_lines(mem.doc), out)
+            out.extend("</dd>\n")!
+        }
+        out.extend("</dl>\n")!
+    }
+}
+
+/// The index of a set of modules.
+html_index :: fn(title: string, modules: []const Module) -> string needs Alloc {
+    body := list(u8)
+    body.extend("<h1>")!
+    escape_into(title, &body)
+    body.extend("</h1>\n<table>\n<thead><tr><th>Module</th><th>Description</th></tr></thead>\n<tbody>\n")!
+    for m in modules {
+        body.extend("<tr><td><a href=\"")!
+        escape_into(url_path(m.path), &body)
+        body.extend(".html\"><code>")!
+        escape_into(m.name, &body)
+        body.extend("</code></a></td><td>")!
+        inline_into(summary(&m), &body)
+        body.extend("</td></tr>\n")!
+    }
+    body.extend("</tbody>\n</table>\n")!
+    return html_page(title, body.items)
+}

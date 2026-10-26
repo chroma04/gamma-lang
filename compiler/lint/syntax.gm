@@ -1,0 +1,922 @@
+// The rules that need only the syntax tree, and the facts about the tree that the other
+// rules need: what kind of binding declares each name, the names written in `when`
+// branches, and the `#allow` attributes (mirrors `src/lint/syntax.rs`).
+
+/// What the walk of one file found.
+pub FileFacts :: struct {
+    pub diags: List(diag.Diagnostic)
+    /// How each local name is declared, by the span of the name.
+    pub sites: hash_map.HashMap(source.Span, Site)
+    /// The spans of `when` items and statements (§3.6, §8.9), whose untaken branches are
+    /// not checked.
+    pub whens: List(source.Span)
+    /// Top-level declarations with `#allow`: the declaration and the rules it allows.
+    pub allows: List(Allow)
+    /// Errors in the tool's own input: `#allow` arguments that name no rule.
+    pub errors: List(diag.Diagnostic)
+}
+
+/// A top-level declaration with `#allow("rule", …)` and the rules it allows.
+pub Allow :: struct {
+    pub item: source.Span
+    pub rules: List(string)
+}
+
+pub file_facts :: fn() -> FileFacts needs Alloc {
+    return FileFacts(
+        diags: list(diag.Diagnostic),
+        sites: hash_map.hash_map(source.Span, Site),
+        whens: list(source.Span),
+        allows: list(Allow),
+        errors: list(diag.Diagnostic),
+    )
+}
+
+/// A label in scope (of an enclosing loop or `with`) and whether it is used.
+LabelUse :: struct {
+    name: string
+    span: source.Span
+    used: bool
+}
+
+pub Walk :: struct {
+    sm: ^const source.SourceMap
+    pub facts: FileFacts
+    /// The labels in scope (of enclosing loops and `with`s) and whether they are used.
+    labels: List(LabelUse)
+}
+
+pub walk :: fn(sm: ^const source.SourceMap) -> Walk needs Alloc => Walk(sm: sm, facts: file_facts(), labels: list(LabelUse))
+
+/// Where a pattern is written, which decides how its unused bindings are fixed.
+PatSite :: union {
+    /// The whole pattern of a binding condition or `let … else`: `_` would change what
+    /// it matches.
+    Top
+    /// A sub-pattern, a match arm or a `for` pattern: `_` discards.
+    Nested
+    /// A positional name in a struct pattern, which names a field (`S(x)` is `S(x: x)`).
+    Shorthand
+}
+
+Case :: union {
+    Upper
+    Snake
+    /// snake_case, SCREAMING_SNAKE_CASE or UpperCamelCase.
+    Any
+}
+
+text :: fn(w: ^const Walk, span: source.Span) -> string => w.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
+
+push :: fn(w: ^Walk, d: diag.Diagnostic) needs Alloc {
+    w.facts.diags.push(d)!
+}
+
+pub walk_file :: fn(w: ^Walk, file: ^const ast.File) needs Alloc {
+    for i in 0..file.items.len { w.item(&file.items[i]) }
+}
+
+item :: fn(w: ^Walk, it: ^const ast.Item) needs Alloc {
+    allowed := list(string)
+    for a in it.attrs {
+        if a.name.name is not "allow" { continue }
+        args := a.args else continue
+        for e in args {
+            if .Str(s) := e.kind { allowed.push(s.bytes)! }
+        }
+    }
+    for a in it.attrs {
+        if a.name.name is not "allow" { continue }
+        args := a.args else continue
+        for e in args {
+            if .Str(s) := e.kind {
+                name := s.bytes
+                if name is not "all" and rule(name) is null {
+                    d := diag.error(e.span, str.format("unknown lint rule `{}`", name)!)
+                    d.add_note("`gamma lint --rules` lists the rules")
+                    w.facts.errors.push(d)!
+                }
+            }
+        }
+    }
+    if allowed.items.len > 0 { w.facts.allows.push(Allow(item: it.span, rules: allowed))! }
+    match it.kind {
+        .Binding(b) => {
+            foreign_ := b.init.kind is .Foreign(_)
+            if b.names.len > 0 and not foreign_ { w.top_level_name(b.names[0], &b) }
+            if t := b.ty { w.expr(t) }
+            w.expr(b.init)
+        }
+        .When(wh) => {
+            w.facts.whens.push(wh.span)!
+            w.expr(wh.cond)
+            for i in 0..wh.then.len { w.item(&wh.then[i]) }
+            if els := wh.else_ {
+                for i in 0..els.len { w.item(&els[i]) }
+            }
+        }
+        .Handler(h) => {
+            for c in h.clauses { w.expr(c.body) }
+        }
+        .Test(t) => w.block(&t.body)
+        .Intrinsic(e) => w.expr(e)
+    }
+}
+
+// --- naming ---
+
+top_level_name :: fn(w: ^Walk, name: ast.Ident, b: ^const ast.Binding) needs Alloc {
+    inner := b.init
+    while true {
+        .Attributed(_, i) := inner.kind else break
+        inner = i
+    }
+    match inner.kind {
+        .Struct(_), .Union(_), .Effect(_) => w.check_name(name, .Upper, "type")
+        .Fn(_) => w.check_name(name, .Snake, "function")
+        .Import(_) => w.check_name(name, .Snake, "import")
+        _ => {}
+    }
+    // The members of a `#c_union` mirror a C union's (§5.11.1).
+    c_union := false
+    if .Attributed(attrs, _) := b.init.kind {
+        for a in attrs {
+            if a.name.name is "c_union" { c_union = true }
+        }
+    }
+    match inner.kind {
+        .Struct(s) => w.fields(s.members)
+        .Union(u) => if not c_union { w.variants(u.members) }
+        .Effect(e) => {
+            for op in e.ops { w.check_name(op.name, .Snake, "operation") }
+        }
+        _ => {}
+    }
+}
+
+fields :: fn(w: ^Walk, members: []const ast.StructMember) needs Alloc {
+    for m in members {
+        match m {
+            .Field(f) => {
+                for n in f.names { w.check_name(n, .Snake, "field") }
+            }
+            .When(wh) => {
+                w.fields(wh.then)
+                w.fields(wh.else_ else empty_slice(ast.StructMember))
+            }
+        }
+    }
+}
+
+variants :: fn(w: ^Walk, members: []const ast.UnionMember) needs Alloc {
+    for m in members {
+        match m {
+            .Variant(v) => w.check_name(v.name, .Upper, "variant")
+            .When(wh) => {
+                w.variants(wh.then)
+                w.variants(wh.else_ else empty_slice(ast.UnionMember))
+            }
+        }
+    }
+}
+
+check_name :: fn(w: ^Walk, name: ast.Ident, case: Case, what: string) needs Alloc {
+    s := name.name
+    while s.len > 0 and s[0] is '_' { s = s[1..] }
+    if s.len is 0 or case.accepts(s) { return }
+    want := match case {
+        .Upper => "UpperCamelCase"
+        .Snake => "snake_case"
+        .Any => "snake_case, SCREAMING_SNAKE_CASE or UpperCamelCase"
+    }
+    d := lint_diag(name.span, "naming", str.format("the {} `{}` is not written in {}", what, name.name, want)!)
+    d.add_note(str.format("write `{}`", case.convert(s))!)
+    w.push(d)
+}
+
+// --- bindings ---
+
+binding_stmt :: fn(w: ^Walk, b: ^const ast.Binding) needs Alloc {
+    if b.names.len is 1 {
+        name := b.names[0]
+        if b.init.kind is .Fn(_) {
+            w.check_name(name, .Snake, "function")
+        } else {
+            // A local `::` binding may be a constant or a type alias.
+            case: Case = if b.kind is .Const { .Any } else { .Snake }
+            w.check_name(name, case, "local")
+        }
+        // The text from the name to the end of `:=` or `::`, when there is no type.
+        from := name.span.hi
+        if t := b.ty { from = t.span.hi }
+        op := w.binding_op(source.Span(file: name.span.file, lo: from, hi: b.init.span.lo))
+        init_text := w.text(b.init.span)
+        site := Site.Single(
+            mutable: b.kind is .Var,
+            typed: b.ty is not null,
+            op: op,
+            keep_mutable: is_literal(b.init) or is_constant_call(b.init) or '@' in init_text or init_text.starts_with("[") or init_text.starts_with("^") or init_text.starts_with("?"),
+            fn_lit: b.init.kind is .Fn(_),
+            uninit: b.init.kind is .Uninit,
+        )
+        w.facts.sites.put(name.span, site)!
+    } else {
+        for n in b.names {
+            w.check_name(n, .Snake, "local")
+            w.facts.sites.put(n.span, Site.Replace(at: n.span, to: "_"))!
+        }
+    }
+    if t := b.ty { w.expr(t) }
+    w.paren_at("the initializer", b.init, false)
+    w.expr(b.init)
+}
+
+/// The span of the binding operator (`:=`, `::`, `=` or `:`) in `between`.
+binding_op :: fn(w: ^const Walk, between: source.Span) -> ?source.Span {
+    t := w.text(between)
+    off: usize = 0
+    while off < t.len and ascii.is_space(t[off]) { off += 1 }
+    if off >= t.len { return null }
+    len: u32 = if t[off..].starts_with(":=") or t[off..].starts_with("::") { 2 } else { 1 }
+    lo := between.lo + off.trunc(u32)
+    return source.Span(file: between.file, lo: lo, hi: lo + len)
+}
+
+pattern :: fn(w: ^Walk, p: ^const ast.Pattern, ctx: PatSite) needs Alloc {
+    match p.kind {
+        .Bind(id) => {
+            w.check_name(id, .Snake, "local")
+            site: Site = match ctx {
+                .Top => Site.Pattern(fix: null)
+                .Nested => Site.Pattern(fix: (at: id.span, to: "_"))
+                .Shorthand => Site.Pattern(fix: (at: shrink_to_hi(id.span), to: ": _"))
+            }
+            w.facts.sites.put(id.span, site)!
+        }
+        .Whole(id) => {
+            w.check_name(id, .Snake, "local")
+            // An unused `?x` is `_`; at the top it could not be `_` (a condition that
+            // always succeeds), and in a struct pattern it names the field.
+            fix: ?(at: source.Span, to: string) = null
+            if ctx is .Nested { fix = (at: p.span, to: "_") }
+            w.facts.sites.put(id.span, Site.Pattern(fix: fix))!
+        }
+        .Err(inner) => w.pattern(inner, .Nested)
+        .Path(pp) => {
+            // `S(x)` names the field `x` (§9.1); `.V(x)` and `T.V(x)` bind the payload.
+            structish := pp.path.kind is .Ident(_)
+            args := pp.args else empty_slice(ast.PatArg)
+            for i in 0..args.len {
+                ctx2: PatSite = if args[i].name is null and structish { .Shorthand } else { .Nested }
+                w.pattern(&args[i].pat, ctx2)
+            }
+        }
+        .Tuple(args) => {
+            for i in 0..args.len { w.pattern(&args[i].pat, .Nested) }
+        }
+        .Lit(e) => w.expr(e)
+        .Range(lo, hi, _) => {
+            w.expr(lo)
+            w.expr(hi)
+        }
+        .Wildcard, .Null => {}
+    }
+}
+
+/// The error capture `else e => …`; `removable` if `else …` without it means the same.
+capture :: fn(w: ^Walk, name: ast.Ident, removable: bool) needs Alloc {
+    w.check_name(name, .Snake, "local")
+    src := w.sm.file(name.span.file).text[usize(name.span.hi)..]
+    fix: ?(at: source.Span, to: string) = null
+    trimmed := str.trim_start(src)
+    if removable and trimmed.starts_with("=>") {
+        rest := trimmed[2..]
+        k: usize = 0
+        while k < rest.len and rest[k] in (' ', '\t') { k += 1 }
+        end := src.len - (rest.len - k)
+        fix = (at: source.Span(file: name.span.file, lo: name.span.lo, hi: name.span.hi + end.trunc(u32)), to: "")
+    }
+    w.facts.sites.put(name.span, Site.Pattern(fix: fix))!
+}
+
+// --- statements ---
+
+block :: fn(w: ^Walk, b: ^const ast.Block) needs Alloc {
+    for i in 0..b.stmts.len { w.stmt(&b.stmts[i]) }
+    if b.stmts.len > 0 {
+        last := &b.stmts[b.stmts.len - 1]
+        if .Defer(is_err, _) := last.kind {
+            msg := if is_err {
+                "this `errdefer` never runs: it is the last statement of its block, so nothing after it can leave the block with an error"
+            } else {
+                "this `defer` runs at once: it is the last statement of its block"
+            }
+            w.push(lint_diag(last.span, "useless-defer", msg))
+        }
+    }
+}
+
+stmt :: fn(w: ^Walk, s: ^const ast.Stmt) needs Alloc {
+    match s.kind {
+        .Binding(_, binding) => w.binding_stmt(&binding)
+        .Assign(places, op, value) => {
+            for i in 0..places.len { w.expr(&places[i]) }
+            if op is .Assign { w.paren_at("the assigned value", value, false) }
+            w.expr(value)
+        }
+        .Expr(e) => w.expr(e)
+        .Defer(_, body) => w.stmt(body)
+        .When(wh) => w.when_stmt(wh)
+        .While(wl) => {
+            w.cond(&wl.cond, true)
+            for part in wl.cond.parts {
+                if .Expr(e) := part {
+                    if e.kind is .Bool(false) {
+                        w.push(lint_diag(e.span, "constant-condition", "this loop never runs: its condition is `false`"))
+                    }
+                }
+            }
+            w.push_label(wl.label)
+            w.block(&wl.body)
+            w.pop_label(wl.label)
+        }
+        .Cancel(e) => w.expr(e)
+        .LetElse(pat, value, fallback) => {
+            w.pattern(&pat, .Top)
+            w.expr(value)
+            w.expr(fallback)
+        }
+        .Block(b) => w.block(&b)
+    }
+}
+
+when_stmt :: fn(w: ^Walk, wh: ^const ast.WhenStmt) needs Alloc {
+    w.facts.whens.push(wh.span)!
+    w.expr(wh.cond)
+    w.block(&wh.then)
+    if els := wh.else_ {
+        match els {
+            .Block(b) => w.block(&b)
+            .When(inner) => w.when_stmt(inner)
+        }
+    }
+}
+
+cond :: fn(w: ^Walk, c: ^const ast.Cond, head: bool) needs Alloc {
+    for part in c.parts {
+        match part {
+            .Bind(pat, value) => {
+                w.pattern(&pat, .Top)
+                w.expr(value)
+            }
+            .Expr(e) => {
+                if c.parts.len is 1 { w.paren_at("the condition", e, head) }
+                w.expr(e)
+            }
+        }
+    }
+}
+
+/// Puts `label` in scope.
+push_label :: fn(w: ^Walk, label: ?ast.Ident) needs Alloc {
+    l := label else return
+    w.labels.push(LabelUse(name: l.name, span: l.span, used: false))!
+}
+
+/// Takes `label` out of scope, and reports it if nothing breaks to or continues it.
+pop_label :: fn(w: ^Walk, label: ?ast.Ident) needs Alloc {
+    l := label else return
+    entry := w.labels.pop() else return
+    if entry.used { return }
+    file := l.span.file
+    // `name:` and the blanks after it.
+    rest := w.sm.file(file).text[usize(l.span.hi)..]
+    colon := rest.index_of(':') else 0
+    after: usize = 0
+    while colon + 1 + after < rest.len and rest[colon + 1 + after] in (' ', '\t') { after += 1 }
+    end := l.span.hi + (colon + 1 + after).trunc(u32)
+    d := lint_diag(l.span, "unused-label", str.format("the label `{}` is never used", l.name)!)
+    d.add_fix("remove the label", source.Span(file: file, lo: l.span.lo, hi: end), "")
+    w.push(d)
+}
+
+use_label :: fn(w: ^Walk, label: ?ast.Ident) {
+    l := label else return
+    i := w.labels.items.len
+    while i > 0 {
+        i -= 1
+        if w.labels.items[i].name is l.name {
+            w.labels.items[i].used = true
+            return
+        }
+    }
+}
+
+// --- expressions ---
+
+expr :: fn(w: ^Walk, e: ^const ast.Expr) needs Alloc {
+    match e.kind {
+        .Int(_), .Float(_), .Str(_), .Bool(_), .Null, .Uninit, .Ident(_), .Underscore, .DotIdent(_), .Import(_), .Error => {}
+        .Paren(x), .Elements(x), .OptUnwrap(x), .ResUnwrap(x), .Deref(x), .OptionalType(x), .ContType(x) => w.expr(x)
+        .PtrType(_, x), .SliceType(_, x), .ManyPtrType(_, x) => w.expr(x)
+        .Tuple(elems) => {
+            for i in 0..elems.len { w.expr(&elems[i].value) }
+        }
+        .Unary(op, operand) => {
+            if op is .Not {
+                inner := operand
+                while true {
+                    .Paren(x) := inner.kind else break
+                    inner = x
+                }
+                if .Unary(op2, x) := inner.kind {
+                    if op2 is .Not {
+                        t := w.text(x.span)
+                        d := lint_diag(e.span, "double-negation", "`not not x` is `x`")
+                        d.add_fix("remove both `not`s", e.span, paren_unless_simple(x, t, false))
+                        w.push(d)
+                    }
+                }
+            }
+            w.expr(operand)
+        }
+        .Binary(_, lhs, rhs) => {
+            w.expr(lhs)
+            w.expr(rhs)
+        }
+        .Bang(lhs, rhs) => {
+            w.expr(lhs)
+            w.expr(rhs)
+        }
+        .ErrorUnionType(err, ok) => {
+            w.expr(err)
+            w.expr(ok)
+        }
+        .Else(x) => {
+            if c := x.capture { w.capture(c, true) }
+            w.expr(x.lhs)
+            w.expr(x.rhs)
+        }
+        .Call(callee, args, _) => {
+            w.expr(callee)
+            w.args(args)
+        }
+        .Intrinsic(x) => w.args(x.args else empty_slice(ast.Arg))
+        .Index(base, index) => {
+            w.expr(base)
+            w.expr(index)
+        }
+        .Slice(sl) => {
+            w.expr(sl.base)
+            if x := sl.lo { w.expr(x) }
+            if x := sl.hi { w.expr(x) }
+        }
+        .Field(base, _) => w.expr(base)
+        .TupleField(base, _, _) => w.expr(base)
+        .ArrayType(a) => {
+            if l := a.len { w.expr(l) }
+            w.expr(a.elem)
+        }
+        .FnType(sig) => w.sig(sig, false)
+        .Struct(_), .Union(_), .Effect(_), .Foreign(_) => {}
+        .Attributed(_, inner) => w.expr(inner)
+        .Fn(f) => w.fn_lit(f)
+        .Handler(h) => {
+            for c in h.clauses { w.expr(c.body) }
+        }
+        .If(i) => w.if_expr(e, i)
+        .Match(m) => {
+            w.paren_at("the matched value", m.scrutinee, true)
+            w.expr(m.scrutinee)
+            for arm in m.arms {
+                for i in 0..arm.pats.len { w.pattern(&arm.pats[i], .Nested) }
+                if g := arm.guard { w.expr(g) }
+                w.expr(arm.body)
+            }
+        }
+        .With(wi) => {
+            for i in 0..wi.handlers.len { w.expr(&wi.handlers[i]) }
+            if on := wi.on { w.expr(on) }
+            w.push_label(wi.label)
+            w.block(&wi.body)
+            w.pop_label(wi.label)
+        }
+        .For(f) => {
+            for i in 0..f.pats.len { w.pattern(&f.pats[i], .Nested) }
+            w.paren_at("the iterated value", f.iter, true)
+            w.expr(f.iter)
+            w.push_label(f.label)
+            w.block(&f.body)
+            w.pop_label(f.label)
+        }
+        .Block(b) => w.block(&b)
+        .Return(?v) => {
+            if x := v {
+                w.paren_at("the returned value", x, false)
+                w.expr(x)
+            }
+        }
+        .Break(b) => {
+            w.use_label(b.label)
+            if v := b.value { w.expr(v) }
+        }
+        .Continue(?label) => w.use_label(label)
+        .Resume(r) => {
+            w.expr(r.cont)
+            if v := r.value { w.expr(v) }
+        }
+    }
+}
+
+args :: fn(w: ^Walk, args: []const ast.Arg) needs Alloc {
+    for i in 0..args.len {
+        match args[i].kind {
+            .Positional(x) => w.expr(&x)
+            .Named(_, x) => w.expr(&x)
+            .Spread(x) => w.expr(&x)
+        }
+    }
+}
+
+sig :: fn(w: ^Walk, sg: ^const ast.FnSig, literal: bool) needs Alloc {
+    for p in sg.params {
+        if literal {
+            // Type and compile-time value parameters are named like types and constants.
+            ty_param := p.comptime
+            if t := p.ty {
+                if .Ident(i) := t.kind {
+                    if i.name in ("type", "effects") { ty_param = true }
+                }
+            }
+            if not ty_param {
+                for n in p.names { w.check_name(n, .Snake, "parameter") }
+            }
+        }
+        if t := p.ty { w.expr(t) }
+        if d := p.default { w.expr(d) }
+    }
+    if r := sg.ret { w.expr(r) }
+}
+
+fn_lit :: fn(w: ^Walk, f: ^const ast.FnLit) needs Alloc {
+    w.sig(&f.sig, true)
+    // Labels are not visible inside function literals (§A.7 rule 11).
+    labels := w.labels
+    w.labels = list(LabelUse)
+    match f.body {
+        .Block(b) => w.block(&b)
+        .Expr(e) => w.expr(e)
+    }
+    w.labels = labels
+}
+
+if_expr :: fn(w: ^Walk, e: ^const ast.Expr, i: ^const ast.IfExpr) needs Alloc {
+    for br in i.branches {
+        w.cond(&br.cond, true)
+        for part in br.cond.parts {
+            if .Expr(x) := part {
+                if .Bool(v) := x.kind {
+                    msg := if v { "this condition is always true" } else { "this condition is always false: the branch never runs" }
+                    d := lint_diag(x.span, "constant-condition", msg)
+                    d.add_note("for a condition known at compile time, `when` leaves the other branch unchecked")
+                    w.push(d)
+                }
+            }
+        }
+        w.block(&br.block)
+    }
+    if els := i.else_ {
+        match els {
+            .Block(b) => w.block(&b)
+            .Capture(name, body) => {
+                w.capture(name, body.kind is .Block(_))
+                w.expr(body)
+            }
+        }
+    }
+    w.needless_bool(e, i)
+    w.empty_branches(i)
+    w.collapsible_else(i)
+    w.identical_branches(i)
+}
+
+/// What a block of one statement gives, for `needless_bool`.
+Shape :: union {
+    Value: bool
+    Return: bool
+}
+
+shape :: fn(b: ^const ast.Block) -> ?Shape {
+    if b.stmts.len is not 1 { return null }
+    .Expr(x) := b.stmts[0].kind else return null
+    match x.kind {
+        .Bool(v) => return Shape.Value(v)
+        .Return(?r) => {
+            v := r else return null
+            .Bool(b2) := v.kind else return null
+            return Shape.Return(b2)
+        }
+        _ => return null
+    }
+}
+
+/// `if c { true } else { false }` is `c`.
+needless_bool :: fn(w: ^Walk, e: ^const ast.Expr, i: ^const ast.IfExpr) needs Alloc {
+    if i.branches.len is not 1 { return }
+    els := i.else_ else return
+    .Block(els_block) := els else return
+    br := &i.branches[0]
+    if br.cond.parts.len is not 1 { return }
+    .Expr(c) := br.cond.parts[0] else return
+    prefix := ""
+    negate := false
+    a := shape(&br.block) else return
+    b := shape(&els_block) else return
+    match a {
+        .Value(x) => {
+            .Value(y) := b else return
+            if x is y { return }
+            negate = not x
+        }
+        .Return(x) => {
+            .Return(y) := b else return
+            if x is y { return }
+            prefix = "return "
+            negate = not x
+        }
+    }
+    if w.has_comment(br.block.span) or w.has_comment(els_block.span) { return }
+    t := w.text(c.span)
+    value := if negate { w.negation(c) } else { t }
+    msg := if negate { "this `if` gives the negation of its condition" } else { "this `if` gives the value of its condition" }
+    d := lint_diag(e.span, "needless-bool", msg)
+    d.add_fix(str.format("replace the `if` with `{}{}`", prefix, value)!, e.span, str.format("{}{}", prefix, value)!)
+    w.push(d)
+}
+
+/// `not c`, written with `is not` or `not in` when `c` is an `is` or `in` test.
+negation :: fn(w: ^const Walk, c: ^const ast.Expr) -> string needs Alloc {
+    if .Binary(op, lhs, rhs) := c.kind {
+        flipped: ?ast.BinOp = match op {
+            .Is => .IsNot
+            .IsNot => .Is
+            .In => .NotIn
+            .NotIn => .In
+            _ => null
+        }
+        if f := flipped { return str.format("{} {} {}", w.text(lhs.span), ast.binop_text(f), w.text(rhs.span))! }
+    }
+    return str.format("not {}", paren_unless_simple(c, w.text(c.span), true))!
+}
+
+empty_branches :: fn(w: ^Walk, i: ^const ast.IfExpr) needs Alloc {
+    if i.branches.len is 1 and i.else_ is null {
+        then := &i.branches[0].block
+        if then.stmts.len is 0 and not w.has_comment(then.span) {
+            w.push(lint_diag(then.span, "empty-branch", "this `if` has an empty body and no `else`"))
+        }
+    }
+    if els := i.else_ {
+        if .Block(b) := els {
+            if b.stmts.len is 0 and not w.has_comment(b.span) {
+                prev := i.branches[i.branches.len - 1].block.span
+                span := source.Span(file: b.span.file, lo: prev.hi, hi: b.span.hi)
+                d := lint_diag(b.span, "empty-branch", "this `else` is empty")
+                d.add_fix("remove the `else`", span, "")
+                w.push(d)
+            }
+        }
+    }
+}
+
+/// `else { if c { … } }` is `else if c { … }`.
+collapsible_else :: fn(w: ^Walk, i: ^const ast.IfExpr) needs Alloc {
+    els := i.else_ else return
+    .Block(b) := els else return
+    if b.stmts.len is not 1 { return }
+    .Expr(inner) := b.stmts[0].kind else return
+    if inner.kind is not .If(_) { return }
+    d := lint_diag(b.span, "collapsible-else-if", "this `else` holds only an `if`: write `else if`")
+    file := b.span.file
+    before := w.text(source.Span(file: file, lo: b.span.lo, hi: inner.span.lo))
+    after := w.text(source.Span(file: file, lo: inner.span.hi, hi: b.span.hi))
+    // Re-indenting must not touch the content of a multi-line raw string or block comment.
+    inner_text := w.text(inner.span)
+    if blank(before) and blank(after) and '`' not in inner_text and not str.contains(inner_text, "/*") {
+        t := dedent(inner_text, w.indent_of(inner.span), w.indent_of(b.span))
+        d.add_fix("merge the `else` and the `if`", b.span, t)
+    }
+    w.push(d)
+}
+
+blank :: fn(t: string) -> bool {
+    for c in t {
+        if not ascii.is_space(c) and c is not '{' and c is not '}' { return false }
+    }
+    return true
+}
+
+identical_branches :: fn(w: ^Walk, i: ^const ast.IfExpr) needs Alloc {
+    els := i.else_ else return
+    .Block(b) := els else return
+    if b.stmts.len is 0 { return }
+    first := normalize_space(w.text(b.span))
+    for br in i.branches {
+        if normalize_space(w.text(br.block.span)) is not first { return }
+    }
+    span := i.branches[0].block.span
+    d := lint_diag(span, "identical-branches", "every branch of this `if` does the same")
+    d.add_label(b.span, "the same as this `else`")
+    w.push(d)
+}
+
+/// The words of `s` separated by single spaces.
+normalize_space :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    for word in str.fields(s) {
+        if out.items.len > 0 { out.push(' ')! }
+        out.extend(word)!
+    }
+    return out.items
+}
+
+/// Reports parentheses around the whole of `e` where none are needed. `head`: `e`
+/// is in the head of `if`, `while`, `for` or `match`, where a construct with a `{`
+/// must stay parenthesized (§A.7 rule 4).
+paren_at :: fn(w: ^Walk, what: string, e: ^const ast.Expr, head: bool) needs Alloc {
+    .Paren(inner) := e.kind else return
+    // Inside parentheses, newlines do not end the expression (§2.8).
+    t := w.text(e.span)
+    if '\n' in t or (head and '{' in t) { return }
+    file := e.span.file
+    d := lint_diag(e.span, "unnecessary-parens", str.format("unnecessary parentheses around {}", what)!)
+    edits := [2]diag.Edit(
+        diag.Edit(span: source.Span(file: file, lo: e.span.lo, hi: inner.span.lo), text: ""),
+        diag.Edit(span: source.Span(file: file, lo: inner.span.hi, hi: e.span.hi), text: ""),
+    )
+    d.add_fix_edits("remove the parentheses", edits[..])
+    w.push(d)
+}
+
+/// Whether the text at `span` holds a comment.
+has_comment :: fn(w: ^const Walk, span: source.Span) -> bool => str.contains(w.text(span), "//")
+
+/// The indentation of the line `span` starts on.
+indent_of :: fn(w: ^const Walk, span: source.Span) -> usize {
+    src := w.sm.file(span.file).text
+    start := usize(span.lo)
+    while start > 0 and src[start - 1] is not '\n' { start -= 1 }
+    n: usize = 0
+    while start + n < src.len and src[start + n] in (' ', '\t') { n += 1 }
+    return n
+}
+
+// --- cases ---
+
+is_upper :: fn(c: u8) -> bool => c in 'A'..='Z'
+
+is_lower :: fn(c: u8) -> bool => c in 'a'..='z'
+
+accepts :: fn(case: Case, s: string) -> bool {
+    snake := true
+    has_lower := false
+    for c in s {
+        if is_upper(c) { snake = false }
+        if is_lower(c) { has_lower = true }
+    }
+    return match case {
+        .Upper => upper_camel(s)
+        .Snake => snake
+        .Any => snake or not has_lower or upper_camel(s)
+    }
+}
+
+upper_camel :: fn(s: string) -> bool => s.len > 0 and is_upper(s[0]) and '_' not in s
+
+/// The name in this case, when the conversion is unambiguous.
+convert :: fn(case: Case, s: string) -> string needs Alloc {
+    out := list(u8)
+    match case {
+        .Upper => {
+            for word in str.split(s, "_") {
+                if word.len is 0 { continue }
+                out.push(if is_lower(word[0]) { word[0] - 32 } else { word[0] })!
+                out.extend(word[1..])!
+            }
+        }
+        .Snake, .Any => {
+            for i, c in enumerate(s) {
+                if is_upper(c) {
+                    prev_lower := i > 0 and (is_lower(s[i - 1]) or s[i - 1] in '0'..='9')
+                    next_lower := i + 1 < s.len and is_lower(s[i + 1])
+                    ends_us := out.items.len > 0 and out.items[out.items.len - 1] is '_'
+                    if i > 0 and not ends_us and (prev_lower or next_lower) { out.push('_')! }
+                    out.push(c + 32)!
+                } else {
+                    out.push(c)!
+                }
+            }
+        }
+    }
+    return out.items
+}
+
+/// Whether `e` is a literal (or a negated one), whose binding `x :: 1` would be an untyped
+/// constant rather than a variable of an inferred type (§4.1).
+is_literal :: fn(e: ^const ast.Expr) -> bool {
+    match e.kind {
+        .Int(_), .Float(_), .Str(_), .Bool(_) => return true
+        .Unary(op, operand) => return op in (ast.UnOp.Neg, ast.UnOp.BitNot) and is_literal(operand)
+        .Paren(operand) => return is_literal(operand)
+        .Binary(_, lhs, rhs) => return is_literal(lhs) and is_literal(rhs)
+        _ => return false
+    }
+}
+
+/// Whether `e` is a call or tuple whose arguments are all literals: as the initializer of
+/// a `::` binding it would be evaluated at compile time (§17.2), which a foreign function
+/// cannot be.
+is_constant_call :: fn(e: ^const ast.Expr) -> bool {
+    match e.kind {
+        .Call(_, args, _) => {
+            for a in args {
+                match a.kind {
+                    .Positional(x), .Named(_, x) => if not is_literal(&x) { return false }
+                    .Spread(_) => return false
+                }
+            }
+            return true
+        }
+        .Tuple(elems) => {
+            for el in elems {
+                if not is_literal(&el.value) { return false }
+            }
+            return true
+        }
+        _ => return false
+    }
+}
+
+/// `text` (the source of `e`), parenthesized if it is an `and`/`or` chain or an `else`,
+/// which `not` binds tighter than (§B.1); with `comparisons`, also a comparison, which
+/// reads better parenthesized after `not`.
+paren_unless_simple :: fn(e: ^const ast.Expr, t: string, comparisons: bool) -> string needs Alloc {
+    wrap := false
+    match e.kind {
+        .Binary(op, _, _) => {
+            if op in (ast.BinOp.And, ast.BinOp.Or) {
+                wrap = true
+            } else if comparisons {
+                wrap = op in (ast.BinOp.Is, ast.BinOp.IsNot, ast.BinOp.In, ast.BinOp.NotIn, ast.BinOp.Lt, ast.BinOp.Le, ast.BinOp.Gt, ast.BinOp.Ge)
+            }
+        }
+        .Else(_) => { wrap = true }
+        _ => {}
+    }
+    return if wrap { str.format("({})", t)! } else { t }
+}
+
+/// `t` with its lines after the first moved left from indentation `from` to `to`.
+dedent :: fn(t: string, from: usize, to: usize) -> string needs Alloc {
+    shift := from -| to
+    out := list(u8)
+    first := true
+    for line in str.split(t, "\n") {
+        if first {
+            out.extend(line)!
+            first = false
+            continue
+        }
+        out.push('\n')!
+        blanks: usize = 0
+        while blanks < line.len and line[blanks] in (' ', '\t') { blanks += 1 }
+        out.extend(line[blanks.min(shift)..])!
+    }
+    return out.items
+}
+
+/// The names written as identifiers in `spans` of the token list `tokens`.
+pub names_in :: fn(tokens: []const syntax.Token, spans: []const source.Span, out: ^hash_map.HashMap(string, bool)) needs Alloc {
+    if spans.len is 0 { return }
+    for t in tokens {
+        if .Ident(s) := t.kind {
+            for w in spans {
+                if w.file is t.span.file and w.lo <= t.span.lo and t.span.hi <= w.hi {
+                    if not out.contains(s) { out.put(s, true)! }
+                    break
+                }
+            }
+        }
+    }
+}
+
+/// The empty span at the end of `a`.
+shrink_to_hi :: fn(a: source.Span) -> source.Span => source.Span(file: a.file, lo: a.hi, hi: a.hi)
+
+ascii :: import "std/ascii"
+ast :: import "../ast"
+diag :: import "../diag"
+hash_map :: import "std/collections/hash_map"
+source :: import "../source"
+str :: import "std/str"
+syntax :: import "../syntax"

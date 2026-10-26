@@ -47,3 +47,37 @@ dangling stores are now compile errors (decisions/045).
   Allocator; exemptions: read whole, assigned whole, captured, original place assigned).
 - **`usize(u64)` rejected** (s43, ~10 sites in consts.gm): by design (§6.6, 32-bit
   targets); `.trunc(usize)` everywhere for indices computed in u64. Watch.
+- **No way to set a child's argv[0]** (s45, gammac run): `Proc.spawn` uses argv[0] as both
+  the program and the name the child sees, so `gammac run` cannot show the source path as
+  the program name as `gamma run` does. Idea: `SpawnOptions.program: ?string` (the file
+  to run; argv[0] is then only the name), like execv(path, argv). Seen once.
+- **`x is .V(b)` does not bind** (s45, W-fmt subagent, ~6x): needs `if .V(b) := x`, so
+  `if prev is .Tok(p) and n > 0` becomes nested ifs. Idea: binding patterns in `and`
+  chains of conditions (`if .Tok(p) := prev and n > 0`?) — check spec §8.2 first; maybe
+  already allowed with `:=` in chains. Watch.
+- **`for x in (a, b)` over a homogeneous tuple** not accepted (s45 W-fmt, once): use an array.
+- **`assert` takes no message/format args; no `{:?}` escaped-debug spec** (s45 W-fmt, tests).
+- **No realpath/canonicalize in std/fs** (s45 W-doc): module names from symlinked paths
+  differ from gamma's. Library gap; candidate `fs.canonical(path)`.
+- **No Unicode-aware trim/split_whitespace in std/str** (s45 W-fmt and W-doc both
+  hand-wrote them: 2x) → candidate for std/text. **`is !e` cannot bind** (W-doc).
+  **load/paths.gm helpers not pub** (fixed by making them pub if reused).
+- **`?T` field in a variant pattern** (s45 W-lint, ~8x): `.Let(local, init)` with
+  `init: ?T` is not exhaustive / `if x := init` "always succeeds"; must write `?init`.
+  Same family as the s38 present-only-binding gotcha (7x). Strong candidate for a better
+  diagnostic (suggest `?init`) — the error is clear but the mistake keeps recurring.
+- **Containers created outside an arena storing arena strings** (s45 W-lint): segfault
+  (dangling keys). Lifetime problem, not syntax; Debug free checks did not catch it.
+- `make(bool, n)` (bool not Plain), `[N]T(.V)` fill not valid (W-lint, once each).
+- **`str.format` → `[]u8` vs literal `string` in if-branches** (4x+) — FIXED s45: §7.12
+  branch join takes the first branch type every other branch coerces to (sema
+  `join_type`, gammac check `join_type`); conformance run/branch_type_join. Mixing in a
+  list or `in` still needs an annotation.
+- s45 W-pkg: no env var list/set, chmod, readlink, utimes, getpid in std (ran processes);
+  postfix `?` on an optional traps instead of returning (expected Rust meaning; candidate:
+  warn on `?` of `?T` in a `?T` fn); `x is y` between `?string` and `string` accepted
+  (unclear; candidate error); `make(string, n)` rejected (not Plain) → List needed;
+  `Test.fail` needs `loc`. Watch for repeats.
+- **Proc has no try_wait / process-group kill** (s45 W-test): `--timeout` needs a watchdog
+  thread; children of a test are not killed. Library gap.
+- No sorted set / `keys_sorted` (W-debug); `[_]T(...)` count inference for constants (W-debug).

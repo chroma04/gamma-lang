@@ -1,6 +1,6 @@
 //! Diagnostics: errors and warnings with their locations, secondary labels, notes and
-//! machine-applicable fixes, and their rendering in the `short` and `json` formats of
-//! `gamma --diag-format` (the same text, byte for byte).
+//! machine-applicable fixes, and their rendering in the `human`, `short` and `json`
+//! formats of `gamma --diag-format` (the same text, byte for byte).
 
 source :: import "../source"
 str :: import "std/str"
@@ -39,6 +39,8 @@ pub Diagnostic :: struct {
     pub labels: List(Label)
     pub notes: List(string)
     pub fixes: List(Fix)
+    /// The lint rule of a `gammac lint` warning, shown as `warning[rule]`.
+    pub code: ?string = null
 }
 
 /// The diagnostics of a compilation, in the order they were reported.
@@ -71,6 +73,19 @@ pub warning :: fn(span: source.Span, message: string) -> Diagnostic needs Alloc 
     d := error(span, message)
     d.severity = .Warning
     return d
+}
+
+/// A new warning of lint rule `code` at `span`.
+pub lint :: fn(span: source.Span, code: string, message: string) -> Diagnostic needs Alloc {
+    d := warning(span, message)
+    d.code = code
+    return d
+}
+
+/// The severity as printed: `warning`, or `warning[code]` for a lint.
+heading :: fn(d: ^const Diagnostic) -> string needs Alloc {
+    c := d.code else return severity_name(d.severity)
+    return str.format("{}[{}]", severity_name(d.severity), c)!
 }
 
 pub add_label :: fn(d: ^Diagnostic, span: source.Span, message: string) {
@@ -174,6 +189,9 @@ before :: fn(a, b: source.Span) -> bool => (a.file, a.lo) < (b.file, b.lo)
 
 /// How diagnostics are printed.
 pub Format :: union {
+    /// The message, then the source line with the location marked, then the labels and
+    /// notes.
+    Human
     /// One line per diagnostic, `path:line:col: severity: message`, then one line per
     /// label and note.
     Short
@@ -184,14 +202,90 @@ pub Format :: union {
 /// Appends `d` to `out` in `format`.
 pub render :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, format: Format, out: ^List(u8)) needs Alloc {
     match format {
+        .Human => render_human(sm, d, out)
         .Short => render_short(sm, d, out)
         .Json => render_json(sm, d, out)
     }
 }
 
+/// Source lines longer than this (in characters) are shown as a window of `WINDOW`
+/// characters around the location of a diagnostic.
+LONG_LINE :: 200
+WINDOW :: 120
+
+render_human :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
+    out.write("{}: {}\n", heading(d), d.message)!
+    if d.span is not source.DUMMY {
+        f := sm.file(d.span.file)
+        lc := f.line_col(d.span.lo)
+        line := lc.line
+        col := lc.col
+        number := str.format("{}", line)!
+        gutter := number.len.max(2)
+        pad := spaces(gutter)
+        out.write("{}--> {}:{}:{}\n", pad, f.path, line, col)!
+        text := f.line_text(line)
+        len := if f.is_ascii() { text.len.trunc(u32) } else { source.char_count(text).trunc(u32) }
+        end := f.line_col(d.span.hi)
+        width := if end.line is line { (end.col - col).max(1) } else { (len + 1 - col).max(1) }
+        shown := list(u8)
+        caret := col - 1
+        if len > LONG_LINE {
+            // A very long line is shown as a window around the location, so that many
+            // errors on one line do not repeat all of it.
+            start := (col - 1) -| WINDOW / 3
+            stop := (start + WINDOW).min(len)
+            if start > 0 { shown.extend("…")! }
+            body := if f.is_ascii() { text[usize(start)..usize(stop)] } else { text[char_offset(text, start)..char_offset(text, stop)] }
+            push_untabbed(&shown, body)
+            if stop < len { shown.extend("…")! }
+            width = width.min(stop + 1 - col)
+            caret = col - 1 - start + (if start > 0 { u32(1) } else { 0 })
+        } else {
+            push_untabbed(&shown, text)
+        }
+        out.write("{} |\n", pad)!
+        out.write("{}{} | {}\n", spaces(gutter - number.len), number, string(shown.items))!
+        out.write("{} | {}", pad, spaces(usize(caret)))!
+        for _ in 0..width.max(1) { out.push('^')! }
+        out.push('\n')!
+    }
+    for l in d.labels.items {
+        if l.span is source.DUMMY { continue }
+        f := sm.file(l.span.file)
+        lc := f.line_col(l.span.lo)
+        out.write("  note: {} ({}:{}:{})\n", l.message, f.path, lc.line, lc.col)!
+    }
+    for n in d.notes.items { out.write("  = note: {}\n", n)! }
+}
+
+/// `n` spaces.
+spaces :: fn(n: usize) -> string needs Alloc {
+    s := list(u8)
+    for _ in 0..n { s.push(' ')! }
+    return s.items
+}
+
+/// Appends `text` with each tab replaced by a space.
+push_untabbed :: fn(out: ^List(u8), text: string) needs Alloc {
+    for c in text { out.push(if c is '\t' { ' ' } else { c })! }
+}
+
+/// The byte offset of character `n` of UTF-8 `text` (its length if it has fewer).
+char_offset :: fn(text: string, n: u32) -> usize {
+    seen: u32 = 0
+    for i, c in enumerate(text) {
+        if c & 0xC0 is not 0x80 {
+            if seen is n { return i }
+            seen += 1
+        }
+    }
+    return text.len
+}
+
 render_short :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
     location(sm, d.span, out)
-    out.write("{}: {}\n", severity_name(d.severity), d.message)!
+    out.write("{}: {}\n", heading(d), d.message)!
     for l in d.labels.items {
         if l.span is source.DUMMY { continue }
         location(sm, l.span, out)
@@ -216,6 +310,11 @@ location :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8)) n
 render_json :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
     located := d.span is not source.DUMMY
     out.push('{')!
+    if c := d.code {
+        out.extend("\"code\":")!
+        json_string(c, out)
+        out.push(',')!
+    }
     if located {
         json_before_line(sm, d.span, out)
         out.push(',')!
@@ -336,6 +435,23 @@ test "short and json rendering" {
         expected :: ``{"column":3,"end_column":4,"end_line":1,"end_offset":3,"file":"t.gm","fixes":[{"edits":[{"column":3,"end_column":4,"end_line":2,"end_offset":9,"file":"t.gm","line":2,"offset":8,"text":")"}],"message":"write `)`"}],"labels":[{"column":3,"end_column":4,"end_line":2,"end_offset":9,"file":"t.gm","line":2,"message":"this `]` does not match","offset":8}],"line":1,"message":"unclosed `(`","notes":["a \"note\"\tthere"],"offset":2,"severity":"error"}
 ``
         expect_eq(string(out.items), expected)
+    }
+}
+
+test "a lint warning names its rule" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        sm := source.source_map()
+        id := sm.add("t.gm", "x := 1\n")
+        d := lint(source.span(id, 0, 1), "unused-variable", "the variable `x` is never used")
+        out := list(u8)
+        render(&sm, &d, .Short, &out)
+        expect_eq(string(out.items), "t.gm:1:1: warning[unused-variable]: the variable `x` is never used\n")
+        out.clear()
+        render(&sm, &d, .Json, &out)
+        assert(string(out.items).starts_with(`{"code":"unused-variable","column":1,`))
+        assert(str.contains(string(out.items), `"severity":"warning"`))
     }
 }
 

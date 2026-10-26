@@ -68,9 +68,28 @@ Package :: struct {
     deps: List(Dep)
 }
 
-Dep :: struct {
-    name: string
-    dir: string
+pub Dep :: struct {
+    pub name: string
+    pub dir: string
+}
+
+/// Where every package of a dependency graph finds its dependencies (the package
+/// manager's answer): the package directory (canonical) and its dependencies by name.
+pub Resolution :: struct {
+    pub packages: List(ResolvedPackage)
+}
+
+pub ResolvedPackage :: struct {
+    pub dir: string
+    pub deps: List(Dep)
+}
+
+/// The dependencies of the package whose root is `root`, if the resolution has them.
+pub deps_of :: fn(res: ^const Resolution, root: string) -> ?List(Dep) {
+    for p in res.packages.items {
+        if p.dir is root { return p.deps }
+    }
+    return null
 }
 
 /// An import of module `to` by module `from`, written at `span`.
@@ -107,6 +126,8 @@ pub Loader :: struct {
     /// The core prelude and the other core modules, once loaded.
     pub prelude: ?usize
     pub core_modules: List(usize)
+    /// The git and archive dependencies the package manager resolved, if any.
+    pub resolution: ?Resolution = null
     packages: List(Package)
     by_dir: List(DirModule)
     edges: List(Edge)
@@ -170,31 +191,31 @@ is_import :: fn(item: ^const ast.Item) -> bool {
 // ---------------------------------------------------------------------------------
 
 /// The working directory.
-working_dir :: fn() -> string needs Alloc + Fs {
+pub(package) working_dir :: fn() -> string needs Alloc + Fs {
     buf: [4096]u8 = ---
     n := Fs.cwd(buf[..]) else return "."
     return dupe(buf[0..n])!
 }
 
-is_dir :: fn(p: string) -> bool needs Fs {
+pub(package) is_dir :: fn(p: string) -> bool needs Fs {
     info := Fs.stat(p) else return false
     return info.kind is .Dir
 }
 
-is_file :: fn(p: string) -> bool needs Fs {
+pub(package) is_file :: fn(p: string) -> bool needs Fs {
     info := Fs.stat(p) else return false
     return info.kind is .File
 }
 
 /// The canonical form of `p`: absolute and without `.` and `..`, or `null` if it does not
 /// exist. (Symbolic links are not resolved.)
-canonicalize :: fn(l: ^const Loader, p: string) -> ?string needs Alloc + Fs {
+pub(package) canonicalize :: fn(l: ^const Loader, p: string) -> ?string needs Alloc + Fs {
     if Fs.stat(p) is !_ { return null }
     return normalize(join(l.cwd, p))
 }
 
 /// The `.gm` files directly in directory `dir`, or `null` if it cannot be read.
-module_files :: fn(dir: string) -> ?List(string) needs Alloc + Fs {
+pub(package) module_files :: fn(dir: string) -> ?List(string) needs Alloc + Fs {
     if not is_dir(dir) { return null }
     paths := list(string)
     for r in fs.entries(dir) {
@@ -223,7 +244,7 @@ parse_text :: fn(l: ^Loader, name, text: string) -> ast.File needs Alloc {
     return parse.parse_file(id, &lexed, l.ids, l.diags)
 }
 
-describe_read_error :: fn(e: fs.ReadError) -> string => match e {
+pub describe_read_error :: fn(e: fs.ReadError) -> string => match e {
     .Io(io) => match io {
         .NotFound => "No such file or directory (os error 2)"
         .PermissionDenied => "Permission denied (os error 13)"
@@ -290,6 +311,51 @@ load_dir_module :: fn(l: ^Loader, dir: string, at: source.Span, parent_package: 
     // Its top-level `when`s are decided now that its directory is known.
     l.collect_whens(m)
     return m
+}
+
+/// Loads every module of the package of module `root` that is not loaded yet, so that
+/// their tests are found. The directories of the package are searched in path order;
+/// hidden ones, `target` and nested packages are skipped.
+pub load_package_modules :: fn(l: ^Loader, root: usize) needs Alloc + Fs {
+    package := l.modules.items[root].package
+    package_root := l.packages.items[package].root
+    // Relative to the working directory when inside it, so that the files are named as
+    // the ones that imports load.
+    start := package_root
+    if rel := strip_prefix(package_root, l.cwd) { start = if rel.len is 0 { "." } else { rel } }
+    root_dir := l.modules.items[root].dir
+    root_key := l.canonicalize(root_dir) else root_dir
+    dirs := list(string)
+    dirs.push(start)!
+    while dir := dirs.pop() {
+        subdirs := list(string)
+        readable := true
+        for r in fs.entries(dir) {
+            e := r else {
+                readable = false
+                break
+            }
+            p := join(dir, e.name)
+            if is_dir(p) and not e.name.starts_with(".") and e.name is not "target" and not is_file(join(p, "gamma.toml")) {
+                subdirs.push(p)!
+            }
+        }
+        if not readable { continue }
+        // The first directory searched comes last on the stack.
+        subdirs.items.sort()
+        subdirs.items.reverse()
+        dirs.extend(subdirs.items)!
+        key := l.canonicalize(dir) else dir
+        if key is root_key { continue }
+        loaded := false
+        for d in l.by_dir.items {
+            if d.key is key { loaded = true }
+        }
+        if loaded { continue }
+        if files := module_files(dir) {
+            if files.items.len > 0 { _ = l.load_dir_module(dir, source.DUMMY, package, null) }
+        }
+    }
 }
 
 /// Creates a module from parsed files and collects its top-level names. Its top-level
@@ -540,33 +606,27 @@ package_of :: fn(l: ^Loader, dir: string, parent_package: ?usize) -> usize needs
     return l.packages.items.len - 1
 }
 
-/// The path dependencies of the package in `root`, from its manifest.
+/// The dependencies of the package in `root`: those the package manager resolved, or else
+/// the path dependencies of its manifest.
 read_manifest :: fn(l: ^Loader, root: string) -> List(Dep) needs Alloc + Fs {
+    if res := l.resolution {
+        if deps := deps_of(&res, root) { return deps }
+    }
     deps := list(Dep)
     path := join(root, "gamma.toml")
     text := fs.read_all(path) else e => {
         l.diags.report(source.DUMMY, str.format("cannot read {}: {}", path, describe_read_error(e))!)
         return deps
     }
-    doc := parse_toml(text) else e => {
-        l.diags.report(source.DUMMY, str.format("{}:{}: {}", path, e.line, e.message)!)
+    manifest := parse_manifest(text) else e => {
+        l.diags.report(source.DUMMY, str.format("{}:{}: {}", path, e.line, e.msg)!)
         return deps
     }
-    entry := doc.get("dependencies") else return deps
-    table := as_table(entry.value) else return deps
-    for dep in table.entries.items {
-        t := as_table(dep.value) else continue
-        if p := t.get("path") {
-            if s := as_str(p.value) { deps.push(Dep(name: dep.key, dir: join(root, s)))! }
-        } else {
-            kind := if t.get("git") is not null { "git" } else { "url" }
-            l.diags.report(source.DUMMY, str.format(
-                "{}:{}: dependency `{}` is a {} dependency; run `gamma fetch`",
-                path,
-                dep.line,
-                dep.key,
-                kind,
-            )!)
+    for dep in manifest.deps.items {
+        match dep.source {
+            .Path(p) => { deps.push(Dep(name: dep.name, dir: join(root, p)))! }
+            .Git(_) => { l.diags.report(source.DUMMY, str.format("{}:{}: dependency `{}` is a git dependency; run `gamma fetch`", path, dep.line, dep.name)!) }
+            .Url(_) => { l.diags.report(source.DUMMY, str.format("{}:{}: dependency `{}` is a url dependency; run `gamma fetch`", path, dep.line, dep.name)!) }
         }
     }
     return deps

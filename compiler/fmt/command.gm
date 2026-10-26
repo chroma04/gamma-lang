@@ -1,0 +1,174 @@
+arena :: import "std/arena"
+fs :: import "std/fs"
+io :: import "std/io"
+load :: import "../load"
+str :: import "std/str"
+
+USAGE :: "usage: gammac fmt [--check] <file or directory>... (`-` filters stdin to stdout)\n"
+
+/// `gammac fmt [--check] <file or directory>... (`-` filters stdin to stdout)`. Returns the
+/// exit status.
+pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + In + Out {
+    check := false
+    paths := list(string)
+    defer paths.deinit()
+    for a in args {
+        match a {
+            "--check" => { check = true }
+            _ => {
+                if a.starts_with("-") and a is not "-" {
+                    eprint("gammac: unknown option `{}`\n\n{}", a, USAGE)
+                    return 2
+                }
+                paths.push(a)!
+            }
+        }
+    }
+    if paths.items.len is 0 {
+        eprint("gammac: no input file\n\n{}", USAGE)
+        return 2
+    }
+    if paths.items.len is 1 and paths.items[0] is "-" { return filter() }
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        files := list(string)
+        for p in paths.items {
+            collect_gm_files(p, &files) else e => {
+                eprint("gammac: {}: {}\n", p, io_message(e))
+                return 1
+            }
+        }
+        failed := false
+        for f in files.items {
+            if not format_file(f, check) { failed = true }
+        }
+        return if failed { 1 } else { 0 }
+    }
+}
+
+/// Filter mode: standard input to standard output.
+filter :: fn() -> u8 needs Alloc + Err + In + Out {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        data := io.read_all() else e => {
+            eprint("gammac: <stdin>: {}\n", read_message(e))
+            return 1
+        }
+        if not data.utf8_valid() {
+            eprint("gammac: <stdin>: {}\n", INVALID_UTF8)
+            return 1
+        }
+        out := format_source(data) else e => {
+            eprint("<stdin>:{}\n", e.message)
+            return 1
+        }
+        Out.write(out)
+        return 0
+    }
+}
+
+/// Formats the file `path` in place, or with `check` only reports it if it would change.
+/// Returns whether all went well.
+format_file :: fn(path: string, check: bool) -> bool needs Alloc + Err + Fs + Out {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        src := fs.read_all(path) else e => {
+            eprint("gammac: {}: {}\n", path, read_message(e))
+            return false
+        }
+        if not src.utf8_valid() {
+            eprint("gammac: {}: {}\n", path, INVALID_UTF8)
+            return false
+        }
+        out := format_source(src) else e => {
+            eprint("{}:{}\n", path, e.message)
+            return false
+        }
+        if out is src { return true }
+        if check {
+            print("{}\n", path)
+            return false
+        }
+        fs.write_all(path, out) else e => {
+            eprint("gammac: {}: {}\n", path, io_message(e))
+            return false
+        }
+        return true
+    }
+}
+
+/// Adds `path` (a file) or every `.gm` file below it (a directory) to `out`, in name order.
+/// A file named explicitly is always included; the walk of a directory skips hidden
+/// directories (`.git`, …) and the `target` directory of a package.
+collect_gm_files :: fn(path: string, out: ^List(string)) -> IoError!() needs Alloc + Fs {
+    if is_kind(path, .Dir) { return collect_dir(path, out) }
+    _ = try Fs.stat(path)
+    out.push(path)!
+    return ()
+}
+
+collect_dir :: fn(dir: string, out: ^List(string)) -> IoError!() needs Alloc + Fs {
+    names := list(string)
+    for r in fs.entries(dir) {
+        e := try r
+        copy := make(u8, e.name.len)!
+        copy.copy_from(e.name)
+        names.push(copy)!
+    }
+    names.items.sort()
+    package_root := is_kind(join(dir, "gamma.toml"), .File)
+    for name in names.items {
+        entry := join(dir, name)
+        if is_kind(entry, .Dir) {
+            if name.starts_with(".") or (package_root and name is "target") { continue }
+            try collect_dir(entry, out)
+        } else if extension(name) is "gm" {
+            out.push(entry)!
+        }
+    }
+    return ()
+}
+
+/// Whether `path` names something of the given kind, following symbolic links.
+is_kind :: fn(path: string, kind: fs.FileKind) -> bool needs Fs {
+    info := Fs.stat(path) else return false
+    return info.kind is kind
+}
+
+/// The extension of a file name: what follows its last `.`, unless that is its start.
+extension :: fn(name: string) -> string {
+    i := name.len
+    while i > 0 {
+        i -= 1
+        if name[i] is '.' {
+            if i is 0 { return "" }
+            return name[i + 1..]
+        }
+    }
+    return ""
+}
+
+/// `dir` and `name` as a path, joined as the reference's paths join: with `\` on
+/// Windows, where `/` also ends a directory name.
+join :: fn(dir, name: string) -> string needs Alloc {
+    when target.os is .Windows {
+        if dir.len is 0 or dir[dir.len - 1] in ('/', '\\') { return str.format("{}{}", dir, name)! }
+        return str.format("{}\\{}", dir, name)!
+    } else {
+        if dir.len is 0 or dir[dir.len - 1] is '/' { return str.format("{}{}", dir, name)! }
+        return str.format("{}/{}", dir, name)!
+    }
+}
+
+INVALID_UTF8 :: "stream did not contain valid UTF-8"
+
+read_message :: fn(e: fs.ReadError) -> string needs Alloc => match e {
+    .Io(io_err) => io_message(io_err)
+    .Alloc(_) => "out of memory"
+}
+
+/// The text of an I/O error as the operating system words it.
+io_message :: fn(e: IoError) -> string needs Alloc => load.os_error_text(e)

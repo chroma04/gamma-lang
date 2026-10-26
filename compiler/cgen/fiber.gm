@@ -28,6 +28,7 @@ detached :: fn(fg: ^FnGen, head: string, cx: string, emit: fn() -> Unsup!() need
     saved_lad := fg.lad_used
     fg.lad_used = false
     r := emit()
+    fg.end_lines()
     text := fg.out
     fg.out = saved_out
     fg.scopes = saved_scopes

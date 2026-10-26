@@ -1,0 +1,257 @@
+// The `mutated-copy` lint: a local initialized with a copy of a value that keeps its
+// elements in a buffer it can resize, such as a `List` or a `HashMap` (a struct holding a
+// mutable slice and the `Allocator` that resizes it), which the function then changes as
+// if it were the original (mirrors `src/sema/lint_copy.rs`):
+//
+//     tys := cx.s.tys          // a copy of the table
+//     t := tys.intern(k)       // adds to the copy; `cx.s.tys` never sees it
+//
+// The copy shares the elements with the original but not its length or capacity, so
+// what is added through it is lost, or lands in a buffer the original then overwrites.
+// A pointer to the original (`tys := &cx.s.tys`) is what was meant. A copy that is then
+// read whole (stored back, passed on, returned) is taken to be deliberate, as is one
+// that is assigned again or that a function literal captures, and one whose original is
+// then replaced (`q := m.queue` then `m.queue = list(T)`: the copy takes over the buffer).
+
+/// What is known about the locals of one function body.
+CopyScan :: struct {
+    s: ^sema.Sema
+    /// The locals initialized with a copy of a place holding a buffer, by where the place
+    /// is written.
+    candidates: hash_map.HashMap(u32, source.Span)
+    /// The first change made through each local, in the order found.
+    changed: List((local: u32, at: source.Span))
+    /// The locals read whole, assigned whole or captured: their copies are deliberate.
+    whole: hash_map.HashMap(u32, bool)
+    /// The text of every place assigned whole.
+    assigned: hash_map.HashMap(string, bool)
+    /// The core library's `Allocator`.
+    allocator: types.Ty
+}
+
+/// Reports the locals of function `f` that are copies of such a value and are changed.
+mutated_copies :: fn(s: ^sema.Sema, f: usize, out: ^List(Finding)) needs Alloc {
+    def := &s.defs.items[f]
+    body := def.body else return
+    allocator := allocator_ty(s) else return
+    sc := CopyScan(
+        s: s,
+        candidates: hash_map.hash_map(u32, source.Span),
+        changed: list((local: u32, at: source.Span)),
+        whole: hash_map.hash_map(u32, bool),
+        assigned: hash_map.hash_map(string, bool),
+        allocator: allocator,
+    )
+    sc.copy_expr(body)
+    found := sc.changed
+    found.items.sort_by_key(fn(x: ^const (local: u32, at: source.Span)) -> u32 => x.local)
+    for c in found.items {
+        origin := sc.candidates.get(c.local) else continue
+        if sc.whole.contains(c.local) or sc.assigned.contains(text_of(s.l.sm, origin)) { continue }
+        local := def.locals[usize(c.local)]
+        out.push(Finding.MutatedCopy(c.at, local.name, local.span, origin))!
+    }
+}
+
+/// The core library's `Allocator` struct.
+allocator_ty :: fn(s: ^sema.Sema) -> ?types.Ty needs Alloc {
+    p := s.l.prelude else return null
+    d := s.l.lookup(p, "Allocator") else return null
+    if .Done(v) := s.state(d) {
+        if .Type(t) := v { return t }
+    }
+    return null
+}
+
+copy_block :: fn(sc: ^CopyScan, b: ^const tir.Block) needs Alloc {
+    for st in b.stmts {
+        match st {
+            .Let(local, ?init) => if x := init {
+                seen := list(types.Ty)
+                if is_place(x) and holds_buffer(sc.s, sc.allocator, x.ty, &seen) { sc.candidates.put(local, x.span)! }
+                sc.copy_expr(x)
+            }
+            .Assign(place, value) => {
+                sc.assigned.put(text_of(sc.s.l.sm, place.span), true)!
+                sc.assign_target(place)
+                sc.copy_expr(value)
+            }
+            .AssignTuple(places, value) => {
+                for p in places {
+                    if x := p { sc.assign_target(x) }
+                }
+                sc.copy_expr(value)
+            }
+            .LetTuple(_, x) => sc.copy_expr(x)
+            .Expr(x) => sc.copy_expr(x)
+            .Defer(_, x) => sc.copy_expr(x)
+        }
+    }
+    if t := b.tail { sc.copy_expr(t) }
+}
+
+/// An assigned place: the whole local is replaced, a part of it changed.
+assign_target :: fn(sc: ^CopyScan, place: ^Expr) needs Alloc {
+    if r := rooted_local(sc.s, place) {
+        if r.whole {
+            sc.whole.put(r.local, true)!
+        } else {
+            sc.change(r.local, place.span)
+        }
+    } else {
+        sc.copy_expr(place)
+    }
+}
+
+/// Records the first change made through local `l`.
+change :: fn(sc: ^CopyScan, l: u32, at: source.Span) needs Alloc {
+    for c in sc.changed.items {
+        if c.local is l { return }
+    }
+    sc.changed.push((local: l, at: at))!
+}
+
+copy_expr :: fn(sc: ^CopyScan, e: ^Expr) needs Alloc {
+    tys := &sc.s.tys
+    match e.kind {
+        .Block(b) => return sc.copy_block(b)
+        .Local(l) => {
+            sc.whole.put(l, true)!
+            return
+        }
+        // `&x` made a `^const` pointer: read only.
+        .Coerce(_, inner) => {
+            if .Ptr(c, _) := tys.kind(e.ty) {
+                if c {
+                    if .AddrOf(p) := inner.kind {
+                        if rooted_local(sc.s, p) is not null {
+                            sc.place_reads(p)
+                            return
+                        }
+                    }
+                }
+            }
+        }
+        // `&x` or `&x.f` as a pointer that may change it: a method of the copy that
+        // takes `^T`, such as `push`.
+        .AddrOf(p) => {
+            if r := rooted_local(sc.s, p) {
+                if .Ptr(c, _) := tys.kind(e.ty) {
+                    if not c { sc.change(r.local, e.span) }
+                }
+                return sc.place_reads(p)
+            }
+        }
+        // Reading a field of the copy (`x.items`) is fine.
+        .Field(_, _) => {
+            if rooted_local(sc.s, e) is not null { return sc.place_reads(e) }
+        }
+        // Function literals capture the locals they use: leave those alone.
+        .Closure(f), .FnRef(f) => {
+            if b := sc.s.defs.items[usize(f)].body { captured(b, &sc.whole) }
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(c: ^Expr) { sc.copy_expr(c) })
+}
+
+/// The index expressions inside a place rooted at a local.
+place_reads :: fn(sc: ^CopyScan, p: ^Expr) needs Alloc {
+    match p.kind {
+        .Field(base, _) => sc.place_reads(base)
+        .Index(base, index, _) => {
+            sc.place_reads(base)
+            sc.copy_expr(index)
+        }
+        _ => {}
+    }
+}
+
+/// The locals of the enclosing function that the body of a function literal uses.
+captured :: fn(e: ^Expr, out: ^hash_map.HashMap(u32, bool)) needs Alloc {
+    if .Upvar(levels, local) := e.kind {
+        if levels is 1 { out.put(local, true)! }
+    }
+    tir.for_each_child(e, fn(c: ^Expr) { captured(c, out) })
+}
+
+/// Whether evaluating `e` reads a place (rather than computing a new value).
+is_place :: fn(e: ^Expr) -> bool {
+    match e.kind {
+        .Local(_), .Upvar(_, _), .Deref(_), .Global(_, _) => return true
+        .Field(base, _) => return is_place(base) or base.kind is .Call(_, _)
+        .Index(_, _, _) => return true
+        _ => return false
+    }
+}
+
+/// A place rooted at a local, and whether it is the whole local.
+Rooted :: struct {
+    local: u32
+    whole: bool
+}
+
+/// The local a place is part of, through fields and elements of arrays (not through a
+/// pointer or a slice, whose target is elsewhere), and whether it is the whole local.
+rooted_local :: fn(s: ^const sema.Sema, p: ^Expr) -> ?Rooted {
+    match p.kind {
+        .Local(l) => return Rooted(local: l, whole: true)
+        .Field(base, _) => {
+            r := rooted_local(s, base) else return null
+            return Rooted(local: r.local, whole: false)
+        }
+        .Index(base, _, _) => {
+            if s.tys.kind(base.ty) is .Array(_, _, _) {
+                r := rooted_local(s, base) else return null
+                return Rooted(local: r.local, whole: false)
+            }
+            return null
+        }
+        _ => return null
+    }
+}
+
+/// Whether a value of type `t` holds, by value, a struct with a mutable slice and the
+/// `Allocator` that resizes it: the elements of a buffer whose length and capacity live in
+/// the value itself.
+holds_buffer :: fn(s: ^sema.Sema, allocator: types.Ty, t: types.Ty, seen: ^List(types.Ty)) -> bool needs Alloc {
+    for x in seen.items {
+        if x is t { return false }
+    }
+    seen.push(t)!
+    tys := &s.tys
+    match tys.kind(t) {
+        .Adt(id, _) => {
+            if usize(id) >= s.adts.items.len { return false }
+            .Struct(sd) := s.adts.items[usize(id)].kind else return false
+            if sd.bits is not null { return false }
+            has_slice := false
+            has_alloc := false
+            for f in sd.fields {
+                if .Slice(c, _) := tys.kind(f.ty) {
+                    if not c { has_slice = true }
+                }
+                if f.ty is allocator { has_alloc = true }
+            }
+            if has_slice and has_alloc { return true }
+            for f in sd.fields {
+                if holds_buffer(s, allocator, f.ty, seen) { return true }
+            }
+            return false
+        }
+        .Tuple(elems, _) => {
+            for x in elems {
+                if holds_buffer(s, allocator, x, seen) { return true }
+            }
+            return false
+        }
+        .Array(_, elem, _) => return holds_buffer(s, allocator, elem, seen)
+        _ => return false
+    }
+}
+
+hash_map :: import "std/collections/hash_map"
+sema :: import "../sema"
+source :: import "../source"
+tir :: import "../tir"
+types :: import "../types"

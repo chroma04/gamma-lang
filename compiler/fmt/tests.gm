@@ -1,0 +1,220 @@
+// Tests of the formatter: one spacing or indentation rule each.
+
+arena :: import "std/arena"
+str :: import "std/str"
+
+/// Formats `input` and returns the result, or the error message.
+formatted :: fn(input: string) -> string needs Alloc {
+    return format_source(input) else e => str.format("error: {}", e.message)!
+}
+
+/// Checks that `input` is formatted as `expected` and that the result is a fixed point.
+check :: fn(input, expected: string) needs Alloc + Out {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        out := formatted(input)
+        if out is not expected { print("formatting {} gave {}\n", input, out) }
+        assert(out is expected)
+        again := formatted(out)
+        if again is not out { print("not idempotent on {}: {}\n", input, again) }
+        assert(again is out)
+    }
+}
+
+test "dot after a space at line start stays apart" {
+    check("f :: fn() {\n    if b {\n.        p.q = 1\n    }\n}\n", "f :: fn() {\n    if b {\n        . p.q = 1\n    }\n}\n")
+}
+
+test "binary operators get spaces" {
+    check("x:=a+b*c\n", "x := a + b * c\n")
+    check("x   =   a<<2|b\n", "x = a << 2 | b\n")
+    check("y +%= 1\nz=a+%b\n", "y +%= 1\nz = a +% b\n")
+    check("f :: fn(a:i32)->i32=>a\n", "f :: fn(a: i32) -> i32 => a\n")
+    check("c = a and b or not d\n", "c = a and b or not d\n")
+    check("c = a   is   not b\nd = x not   in y\n", "c = a is not b\nd = x not in y\n")
+}
+
+test "unary and postfix operators are tight" {
+    check("x = - y\n", "x = -y\n")
+    check("x = a - -b\n", "x = a - -b\n")
+    check("x = a-b\n", "x = a - b\n")
+    check("p = & x\nq = ~ m\nr = a ~ b\n", "p = &x\nq = ~m\nr = a ~ b\n")
+    check("v = p ^ + 1\n", "v = p^ + 1\n")
+    check("v = x ? + 1\nw = y ! + 1\n", "v = x? + 1\nw = y! + 1\n")
+    check("return - 1\n", "return -1\n")
+    check("f(-1, - x, ! e)\n", "f(-1, -x, !e)\n")
+    check("return ! . OutOfMemory\n", "return !.OutOfMemory\n")
+}
+
+test "ranges and dots are tight" {
+    check("for i in 0 .. n { }\n", "for i in 0..n {}\n")
+    check("s = a[ 1 ..= 3 ]\nt = a[ .. n ]\n", "s = a[1..=3]\nt = a[..n]\n")
+    check("x = a . b . c ( )\n", "x = a.b.c()\n")
+    check("f(a, .. rest)\n", "f(a, ..rest)\n")
+    check("c = .Red\nd = f( .Red )\n", "c = .Red\nd = f(.Red)\n")
+}
+
+test "commas semicolons and colons" {
+    check("f(a ,b ,c)\n", "f(a, b, c)\n")
+    check("a ; b\n", "a; b\n")
+    check("x : i32 = 1\n", "x: i32 = 1\n")
+    check("struct { a : i32 ; b :u8 }\n", "struct { a: i32; b: u8 }\n")
+    check("MASK: u32 : 0xFF\n", "MASK: u32 : 0xFF\n")
+    check("MASK : u32 :0xFF\n", "MASK: u32 : 0xFF\n")
+}
+
+test "brackets" {
+    check("f ( a , b )\n", "f(a, b)\n")
+    check("x = a [ i ]\n", "x = a[i]\n")
+    check("x = ( a + b ) * c\n", "x = (a + b) * c\n")
+    check("x = fn ( a ) => a\n", "x = fn(a) => a\n")
+    check("x = @size_of ( T )\n", "x = @size_of(T)\n")
+    check("#align ( 8 )\nS :: struct { }\n", "#align(8)\nS :: struct {}\n")
+    check("x = f ( ) ( 1 )\n", "x = f()(1)\n")
+}
+
+test "braces" {
+    check("if a{ b }\n", "if a { b }\n")
+    check("if a {b}\n", "if a { b }\n")
+    check("S :: struct { }\n", "S :: struct {}\n")
+    check("f :: fn ( ) {\n}\n", "f :: fn() {\n}\n")
+    check("x = f({ a })\n", "x = f({ a })\n")
+}
+
+test "types" {
+    check("x : ? T\n", "x: ?T\n")
+    check("x : ^ T\ny: [ ] u8\nz:[ 4 ]u8\n", "x: ^T\ny: []u8\nz: [4]u8\n")
+    check("p : [ ^ ] u8\nq : [] const u8\nr : ^ const T\n", "p: [^]u8\nq: []const u8\nr: ^const T\n")
+    check("p : ? [ ^ ] u8\nq : [] ? u8\n", "p: ?[^]u8\nq: []?u8\n")
+    check("r : IoError ! usize\ns : E ! ? ^ T\n", "r: IoError!usize\ns: E!?^T\n")
+    check("f :: fn ( ) -> AllocError ! ( ) { }\n", "f :: fn() -> AllocError!() {}\n")
+    check("g :: fn ( ) -> E ! [ ] u8 { }\n", "g :: fn() -> E![]u8 {}\n")
+    check("h :: fn ( p : ^ fn ( a : i32 ) needs Out ) { }\n", "h :: fn(p: ^fn(a: i32) needs Out) {}\n")
+    check("x = f ( ) !\ny = z ^ . w\n", "x = f()!\ny = z^.w\n")
+}
+
+test "effect sets are tight" {
+    check("f :: fn() needs Out + Err { }\n", "f :: fn() needs Out + Err {}\n")
+    check("f :: fn() needs not  { }\n", "f :: fn() needs not {}\n")
+}
+
+test "indentation follows brackets" {
+    check("f :: fn() {\nx := 1\n  if a {\ny\n   }\n}\n", "f :: fn() {\n    x := 1\n    if a {\n        y\n    }\n}\n")
+    check("f(\na,\n   b\n)\n", "f(\n    a,\n    b\n)\n")
+    check("x := [\n1,\n2,\n]\n", "x := [\n    1,\n    2,\n]\n")
+    check("if a {\n  x\n} else {\n  y\n}\n", "if a {\n    x\n} else {\n    y\n}\n")
+    check("f(g(\na\n))\n", "f(g(\n    a\n))\n")
+}
+
+test "continuation lines" {
+    check("x := a +\nb\n", "x := a +\n    b\n")
+    check("x := obj\n.a()\n.b()\n", "x := obj\n    .a()\n    .b()\n")
+    check("if a\nand b {\nc\n}\n", "if a\n    and b {\n    c\n}\n")
+}
+
+test "aligned parameters stay aligned" {
+    check("f :: fn(a: i32,\n        b: i32) {\n  x\n}\n", "f :: fn(a: i32,\n        b: i32) {\n    x\n}\n")
+    check("    f :: fn(a: i32,\n            b: i32) {\n  x\n}\n", "f :: fn(a: i32,\n        b: i32) {\n    x\n}\n")
+}
+
+test "blank lines" {
+    check("a\n\n\n\nb\n", "a\n\nb\n")
+    check("{\n\n  a\n\n}\n", "{\n    a\n}\n")
+    check("\n\na\n", "a\n")
+    check("a\n\n\n", "a\n")
+    check("a   \nb\t\n", "a\nb\n")
+    check("", "")
+    check("\n\n", "")
+}
+
+test "comments" {
+    check("// a\n   // b\nx\n", "// a\n// b\nx\n")
+    check("f {\n// c\nx\n}\n", "f {\n    // c\n    x\n}\n")
+    check("x := 1 // c\n", "x := 1 // c\n")
+    check("x := 1// c\n", "x := 1 // c\n")
+    check("x := 1       // c\ny := 22      // d\n", "x := 1       // c\ny := 22      // d\n")
+    check("x   :=   1 // c   \n", "x := 1 // c\n")
+    check("/// doc\npub f :: fn() {}\n", "/// doc\npub f :: fn() {}\n")
+    check("x := /* c */ 1\n", "x := /* c */ 1\n")
+    check("  /* a\n   b */\nx\n", "/* a\n   b */\nx\n")
+    check("f {\n  x\n  // end\n}\n", "f {\n    x\n    // end\n}\n")
+}
+
+test "aligned columns are kept" {
+    check("a    :: 1\nbcde :: 2\n", "a    :: 1\nbcde :: 2\n")
+    check("match x {\n.A     => 1\n.Bcdef => 2\n}\n", "match x {\n    .A     => 1\n    .Bcdef => 2\n}\n")
+}
+
+test "literals are verbatim" {
+    check("x = \"a  +  b\"\ny = `raw\n   text`\n", "x = \"a  +  b\"\ny = `raw\n   text`\n")
+    check("x = 0x1_F + 1.5e3f32 + 'a'\n", "x = 0x1_F + 1.5e3f32 + 'a'\n")
+    check("x = c\"hi\"\n", "x = c\"hi\"\n")
+}
+
+test "padding is kept only when it aligns" {
+    check("f   :: fn() {}\n", "f :: fn() {}\n")
+    check("a    :: 1\nbcd  :: 2\n", "a    :: 1\nbcd  :: 2\n")
+    check("P :: struct {\n    x:    i32,\n    yy:   i32,\n}\n", "P :: struct {\n    x:    i32,\n    yy:   i32,\n}\n")
+}
+
+test "pattern bindings starting with a dot are statements" {
+    check("f :: fn(u: U) -> i32 {\n    x := 1\n    .A(n) := u else return 0\n    y := a\n        .b()\n    return n\n}\n", "f :: fn(u: U) -> i32 {\n    x := 1\n    .A(n) := u else return 0\n    y := a\n        .b()\n    return n\n}\n")
+}
+
+test "a variant starting a block is not a continuation" {
+    check("f :: fn(a: bool) -> V {\n    k: V = if a {\n            .A\n    } else {\n    .B\n    }\n    return k\n}\n", "f :: fn(a: bool) -> V {\n    k: V = if a {\n        .A\n    } else {\n        .B\n    }\n    return k\n}\n")
+}
+
+test "crlf input gives lf output inside block comments too" {
+    check("x := 1 /* a\r\n b */\r\ny := 2\r\n", "x := 1 /* a\n b */\ny := 2\n")
+}
+
+test "tokens that lex differently when joined stay apart" {
+    // `..` next to `..` would join into `...` and `.`.
+    check("x := a .. ..b\n", "x := a.. ..b\n")
+}
+
+test "lexical errors are reported" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        assert(formatted("x := \"abc\n") is "error: 1:6: unterminated string literal")
+        assert(formatted("a == b\n") is "error: 1:3: `==` is not an operator; compare with `is` (§7.6)")
+    }
+}
+
+test "else chains after blocks align with their statement" {
+    src :: "f :: fn() {\n    when A { g() }\n        else when B { h() }\n        else { k() }\n    if c {\n        g()\n    }\n    else { h() }\n    x := if c { 1 }\n        else { 2 }\n}\n"
+    want :: "f :: fn() {\n    when A { g() }\n    else when B { h() }\n    else { k() }\n    if c {\n        g()\n    }\n    else { h() }\n    x := if c { 1 }\n        else { 2 }\n}\n"
+    check(src, want)
+}
+
+test "missing final newline is added" {
+    check("a :: 1", "a :: 1\n")
+    check("f :: fn() {\n    g()\n}", "f :: fn() {\n    g()\n}\n")
+    check("a :: 1 // done", "a :: 1 // done\n")
+}
+
+test "aligned padding is decided the same after reindenting" {
+    // The lines are aligned at the same source column but indented differently, so a
+    // formatter that decided on the first pass alone would keep the padding and then
+    // collapse it.
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        for src in [3]string(
+            "main :: fn() {\n\ta   :: 1\n  bc :: 2\n}\n",
+            "main :: fn() {\n  bc :: 2\n\ta   :: 1\n}\n",
+            "T :: struct {\n\tab:   i32\n  c:  i32\n}\n",
+        ) {
+            once := formatted(src)
+            assert(formatted(once) is once)
+        }
+    }
+}
+
+test "characters outside ASCII count as one column" {
+    check("a   :: \"é\"\nbcd :: 2\n", "a   :: \"é\"\nbcd :: 2\n")
+    check("x := 1 // c\u{a0}\u{3000}\n", "x := 1 // c\n")
+}

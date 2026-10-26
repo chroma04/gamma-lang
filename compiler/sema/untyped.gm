@@ -257,6 +257,7 @@ pub try_untyped :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedRe
             m := s.module_named(module, base) else return null
             d := s.l.lookup(m, name.name) else return null
             if not s.decl_visible(d, module) { return null }
+            s.note_use_from(d, module)
             .Untyped(v) := s.resolve_decl(d) else return null
             return .Ok(v)
         }

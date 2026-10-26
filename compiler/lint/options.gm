@@ -1,0 +1,55 @@
+// The options of `gammac lint` (mirrors `LintOptions` in `src/linting.rs`).
+
+/// A level given on the command line for a rule, or for `all`.
+pub Setting :: struct {
+    pub name: string
+    pub level: Level
+}
+
+pub Options :: struct {
+    pub fix: bool = false
+    pub rules: bool = false
+    pub deny_warnings: bool = false
+    pub levels: List(Setting)
+}
+
+pub options :: fn() -> Options needs Alloc => Options(levels: list(Setting))
+
+/// What reading one argument came to.
+pub Parsed :: union {
+    /// Not a lint option.
+    No
+    Yes
+    /// A lint option with a bad value: the message.
+    Bad: string
+}
+
+/// Reads the lint option `arg`.
+pub parse_arg :: fn(o: ^Options, arg: string) -> Parsed needs Alloc {
+    match arg {
+        "--fix" => { o.fix = true }
+        "--rules" => { o.rules = true }
+        "-D", "--deny-warnings" => { o.deny_warnings = true }
+        _ => {
+            sp := str.split_once(arg, "=") else return .No
+            opt := sp.before
+            list_text := sp.after
+            level := match opt {
+                "--allow" => Level.Allow
+                "--warn" => Level.Warn
+                "--deny" => Level.Deny
+                _ => return .No
+            }
+            for name in str.split(list_text, ",") {
+                if name.len is 0 { continue }
+                if name is not "all" and rule(name) is null {
+                    return .Bad(str.format("unknown lint rule `{}` (`gamma lint --rules` lists them)", name)!)
+                }
+                o.levels.push(Setting(name: name, level: level))!
+            }
+        }
+    }
+    return .Yes
+}
+
+str :: import "std/str"

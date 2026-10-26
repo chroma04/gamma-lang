@@ -1,0 +1,24 @@
+// Without an expected type, an `if` or `match` takes the first branch type to which
+// every other branch coerces (§7.12).
+str :: import "std/str"
+
+describe :: fn(n: i32) -> string needs Alloc {
+    head := if n < 0 { "negative" } else { str.format("{} apples", n)! }
+    tail := match n {
+        0 => "none"
+        1 => "one"
+        _ => str.format("{}", n)!
+    }
+    return str.format("{}: {}", head, tail)!
+}
+
+main :: fn() needs Alloc + Out {
+    print("{}\n", describe(-1))
+    print("{}\n", describe(1))
+    print("{}\n", describe(12))
+    small := u8(200)
+    wide := if small > 100 { small } else { u32(70000) }
+    print("{}\n", wide + 70000)
+    ok := if small > 250 { return } else { u16(3) }
+    print("{}\n", ok)
+}

@@ -25,7 +25,13 @@ this checkable:
 | modules and packages | the module graph of `gamma modules`, and its diagnostics |
 | declarations | what `gamma decls` prints for every top-level declaration, and its diagnostics |
 | bodies | the typed program of `gamma tir`, and its diagnostics |
+| checking | the diagnostics of `gamma check`, in the human format |
 | back end | the output and exit status of the compiled programs |
+| test runner | the output and exit status of `gamma test --backend=c` and `gamma bench`, timings masked |
+| formatter | the output, messages and exit status of `gamma fmt` |
+| `doc` | the standard output, standard error, exit status and files of `gamma doc` |
+| lint and fix | the diagnostics, messages, edited files and exit status of `gamma lint` and `gamma fix` |
+| package manager | the output, messages, files (`gamma.toml`, `gamma.lock`, the package store) and exit status of `gamma new`, `init`, `fetch`, `update`, `add`, `remove` and `cache`, and of the commands that use the build settings of `gamma.toml` |
 | bootstrap | the C that `gammac` generates for itself, built by itself |
 
 Diagnostics are compared in the JSON format (`--diag-format=json`), which carries every
@@ -54,9 +60,9 @@ leaves to implementations: message texts, spans and recovery after errors.
    name, packages and their path dependencies from `gamma.toml`, collecting each
    module's top-level names (including the taken branches of top-level `when`s), and
    import cycles: `gammac modules` matches `gamma modules` on the root of every program in
-   the repository. Not yet: git and archive dependencies (which need the lock file and the
-   package manager), the exact messages for a malformed `gamma.toml`, and `when`
-   conditions beyond `target`, `@size_of`, literals and constants.
+   the repository. Git and archive dependencies come from the package manager (see
+   below), and a malformed `gamma.toml` is reported with the reference's messages. Not
+   yet: `when` conditions beyond `target`, `@size_of`, literals and constants.
 4. **Checker** — done, in two parts. `gammac decls` and `gammac tir` match `gamma decls`
    and `gamma tir` on every program in the repository, error messages included.
    - **Declarations.** Resolving every top-level declaration without checking function
@@ -111,8 +117,8 @@ leaves to implementations: message texts, spans and recovery after errors.
    what only makes the generated code faster or quicker to compile — the specialization
    of functions for the handler that is their context, reading parameters in place,
    splitting long functions, constant arguments in static storage — and what it has no use
-   for yet: debug information (`-g`), the Safe mode, freestanding targets, the cache of
-   compiled runtimes and other targets than the one `gammac` runs on.
+   for yet: the Safe mode, freestanding targets, the cache of compiled runtimes and other
+   targets than the one `gammac` runs on.
 
    Before generating code, `gammac` checks every function body the program can reach,
    including the core library's (which `gammac tir`, like `gamma tir`, leaves out), and
@@ -132,7 +138,7 @@ GAMMA_STD=lib/std ./gammac2 build compiler --emit-c -o gammac3
 cmp gammac2.c gammac3.c                  # identical
 ```
 
-`gammac build [--mode=debug|checked|fast] [-o EXE] [--emit-c] ROOT` writes the C next to
+`gammac build [--mode=debug|checked|fast] [-g] [-o EXE] [--emit-c] ROOT` writes the C next to
 the executable (`EXE.c`, the runtime and the program as one translation unit) and compiles
 it with `$CC` (default `cc`); `--emit-c` stops after writing it. A Checked or Fast build
 compiles `EXE.c` itself at `-O2`, so the optimizer sees the whole program. A Debug build
@@ -146,10 +152,149 @@ seconds. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
 `runtime` directory two levels above the standard library's. It runs on Unix-like systems;
 on Windows, use `gamma build`.
 
+`gammac build -g` (and `run -g`) adds debug information, as `gamma build -g` does
+(`compiler/cgen/debug.gm` and `views.gm` port `src/cgen/debug.rs` and `views.rs`). Each
+statement of the generated C is preceded by a `#line` directive naming its `.gm` file and
+line, so a debugger stops at Gamma lines (`break file.gm:17`), and the C between functions
+keeps its own location. Frame fields also have the names of their Gamma locals
+(`F.count`, `F.p.x`) with a debugger view of their type (a C type laid out like the Gamma
+value, with members named after fields, variants and the like), and struct mirrors name
+their fields after the Gamma fields; a Gamma name that is a macro of a system header is
+suspended around those declarations. The build is optimized no further than `-O0` (Debug) or
+`-O2` and compiled with `-g`. On Linux and FreeBSD the gdb pretty printers
+(`runtime/gdb_printers.py`) are embedded in the executable; `gammac build -g` also writes the
+lldb formatters (`runtime/lldb_formatters.py`) to `gamma_lldb.py` next to it. Both Python
+files are read from the runtime directory at build time. The `#line` directives name the
+absolute path of the source file, found from the working directory without resolving
+symbolic links.
+
+`gammac run [--mode=…] ROOT [ARG…]` builds the program the same way into a new temporary
+directory, runs it with the arguments after the file and ends with its exit status (128
+plus the signal number if a signal ended it, 134 for a trap), as `gamma run
+--backend=c` does. `gammac check ROOT` checks a program as `gamma check` does and prints
+only the diagnostics; `tests/selfhost.rs` compares them, in the human format, with the
+reference's on every program. Diagnostics are printed in the human format by default, and
+`--diag-format=short|json` selects the others, as with `gamma`.
+
 `gammac decls` and `gammac tir` read the core library from `$GAMMA_CORE`, or else from
 the `core` directory next to the standard library's. A root module without `main` is
 checked as a library, as `gamma tir` does: the way `gamma test` would check it, with
 its tests and benchmarks and those of the modules of its package that it imports.
+
+### The test runner
+
+`gammac test [options] ROOT` and `gammac bench [options] ROOT` (`compiler/testing/`, a port
+of `src/testing.rs` for the C back end) check the program as a library with its tests (the
+modules of the root's package that it imports; all of them with `--all`), compile the
+chosen tests into one executable whose `main` runs the test given by its first argument,
+and run it once per test with captured output. They print what `gamma test --backend=c`
+and `gamma bench` print, with the same options: `--filter=`, `--all`, `--show-output`,
+`--jobs=N` / `-j N` (0: one per processor; the output stays in order), `--timeout=SECONDS`,
+`--time`, `--mode=` and `--diag-format=`. A benchmark builds in fast mode unless `--mode`
+is given. `--backend=interp|cranelift`, `--coverage`, `--package` and `--target` are
+usage errors. A test that exceeds `--timeout` is killed by a watching thread, which
+cannot reach processes the test started or a test that closed its output and then ran on.
+`tests/selfhost.rs` runs the `test` conformance tests through `gammac test` and compares
+a standard library module, options and failures with the reference.
+
+### The formatter
+
+`gammac fmt [--check] <file or directory>...` is `gamma fmt` (`compiler/fmt/`, a port of
+`src/fmt.rs` and the command in `src/main.rs`): it formats `.gm` files in place, walks
+directories in name order (skipping hidden directories and a package's `target`), with
+`--check` lists the files that would change instead, and with `-` filters standard input
+to standard output. It works on the tokens of `gammac`'s own lexer, and like the
+reference it lexes its result again and refuses to write anything that would change the
+tokens. For the same text it gives the same output, the same lexical error messages and
+the same exit statuses (1 if a file fails or, with `--check`, would change; 2 for a usage
+error). Only the texts that name the tool differ: the messages for an unreadable file or
+a bad command line start `gammac:` instead of `gamma:`, and the usage text is `gammac`'s.
+`tests/selfhost.rs` compares the output on every `.gm` file in the repository and on
+variants of each that the formatter must change (no indentation, collapsed or added
+spaces, CR LF line ends, cut off in the middle), and compares whole directories, in place
+and with `--check`.
+
+### API documentation
+
+`gammac doc` is a port of `gamma doc` (`src/doc/`): it writes the API documentation of a
+module, or with `--all` of every module below a directory, as Markdown or HTML, from the
+public declarations and doc comments of the syntax tree that `gammac`'s parser builds. It
+takes the options of `gamma doc` (`--format=markdown|html`, `-o PATH`, `--all`,
+`--missing`; see `gammac doc --help`) and writes the same files byte for byte, so
+`gammac doc lib/std --all -o docs/std` regenerates the standard library reference. The
+code is in `compiler/doc/`, one file for each part of `src/doc/` (`collect.gm` reads a
+module, `markdown.gm`, `html.gm` and `md_html.gm` render it, `doc.gm` is the command line).
+A module with syntax errors is reported with the diagnostics of `gammac check` in the
+human format, and the command fails. It differs from the reference in two small ways: its
+messages start `gammac:` instead of `gamma:`, and the name of a module is found without
+resolving symbolic links, so a link to `lib/std` is documented under the link's name. Like
+the reference, it treats the Unicode white space characters as white space when it renders
+doc comments.
+
+`tests/selfhost.rs` runs both commands on `lib/std` in both formats, on single modules and
+files, on the fixtures of `tests/doc/` and on the error cases, and compares what they
+print and every file they write.
+
+### Lint and fix
+
+`gammac lint [options] <file or directory>` is `gamma lint` and `gammac fix <file or
+directory>` is `gamma fix`. The lint rules are split as in the reference: those that
+walk the syntax tree are in `compiler/lint/syntax.gm`, those that read the checked
+program (unused locals and declarations, variables that never change, comparisons with a
+known result, dangling addresses, and the mutated-copy and present-only-binding rules) in
+`checked.gm`, `copy.gm` and `present.gm`; `lint.gm` holds the rules' table, their levels
+(defaults, the `[lint]` table of `gamma.toml`, the command line, `#allow`) and the
+diagnostics. `compiler/linting/` is the command line, with `--fix` and its rounds;
+`compiler/fix/` plans and applies the fixes that diagnostics carry, in rounds, for
+`gammac fix` and `gammac lint --fix`. Both only edit the package's own files, never the
+standard library.
+
+To report what the rules need, the checker records which declarations and locals are used
+(`Sema.decl_uses`, `outside_uses`, `local_uses`, `local_use_counts`, `nested_owner`);
+`gammac tir` and `gammac decls` do not look at them. Linting checks the program with its
+tests (as `gamma test` would), and, in a package, with the other modules of the package.
+Warnings carry their rule: `warning[unused-variable]: …` in the human and short formats,
+and a `code` field in JSON. Messages that name the tool (`gamma: applied 2 fixes in 1
+file`, `gamma lint: 3 warnings`) keep the reference's text, so that output compares
+equal. Differences: `--target` is not an option of `gammac`, `--offline` and `--locked`
+are accepted but linting does not fetch dependencies, and messages for bad command lines
+start `gammac:`.
+`tests/selfhost.rs` compares `gammac lint` with `gamma lint` in the JSON format on every
+program root at the default levels and with `--warn=all`, and `gammac fix` and `gammac
+lint --fix` on scratch copies of the single-file conformance programs, comparing the
+output and the edited files.
+
+### Packages and build settings
+
+`gammac new`, `init`, `fetch`, `update`, `add`, `remove` and `cache` are the package
+commands of `gamma`, with the same options, output and files. The code is in
+`compiler/pkg/`: `git.gm` and `archive.gm` run `git`, `curl` and `tar` (as the reference
+does, with the same flags), `resolve.gm` picks the revisions, `lock.gm` reads and writes
+`gamma.lock`, `cache.gm` is `cache clean`, `scaffold.gm` is `new` and `init`, `edit.gm`
+edits `gamma.toml` for `add` and `remove`, and `cli.gm` parses the command lines. The
+manifest itself (`manifest.gm`) and version requirements (`semver.gm`, with the messages
+of the `semver` crate) are in `compiler/load/`, because the loader reads manifests too.
+Syntax errors in `gamma.toml` and `gamma.lock` read as the TOML library of the reference
+words them, as far as a manifest can have them. `edit.gm` edits the lines of the text
+instead of a document tree, which keeps comments and layout the same for the manifests
+the commands handle (line ends are written as `\n`, as the reference does).
+
+`gammac check`, `build` and `run` fetch what the lock file does not cover before they
+load the program, take `--offline`, `--locked` and `--profile=NAME`, and apply the
+`[build]` table and the profile of the root package's `gamma.toml`: `mode` (under
+`--mode`), `cflags` and `ldflags` (before `CFLAGS` and `LDFLAGS`), and, in a native build,
+the `c-sources`, `include-dirs`, `libs` and `lib-dirs` of the package and its
+dependencies. The C sources are compiled again by every build (there is no object cache),
+each with the include directories of its own package. `CC` may hold arguments.
+
+Differences: `gammac` has no Safe mode, so `mode = "safe"` is an error for `build` and
+`run` (and `check` analyzes as Checked); `debug-info` of the manifest follows `-g`;
+`lint` and `fix` do not fetch dependencies, so a package with git or archive dependencies
+needs a `gammac fetch` first; `gammac modules`, `decls` and `tir` do not look at the lock
+file, as the reference's do not; there is no object cache, so `cache clean` has no
+runtime objects to count; and messages start `gammac:`.
+`tests/selfhost.rs` runs both programs over the same steps in two scratch directories
+(local `file://` repositories and archives) and compares what they print and write.
 
 ### Growing a stage
 

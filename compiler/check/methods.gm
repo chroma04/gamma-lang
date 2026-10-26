@@ -518,6 +518,7 @@ module_method :: fn(cx: ^FnCx, recv: ^Expr, name: ast.Ident, internal: bool, arg
         _ = cx.s.module_member(module, name, cx.module)
         return error_expr(cx.s, span)
     }
+    cx.s.note_use_from(d, cx.module)
     sig := cx.s.fns.items[usize(f)]
     // A function whose first parameter is not the receiver's type leaves the name to an
     // operation that takes it (§7.10).
@@ -579,6 +580,7 @@ op_method :: fn(cx: ^FnCx, recv: ^Expr, rty: Ty, s: Ty, module: usize, name: ast
             t := o.params[0].ty
             if .Ptr(_, x) := tys.kind(t) { t = x }
             if t is not s { continue }
+            cx.s.note_use_from(n.decl, cx.module)
             r := cx.adjust_receiver(recv, rty, o.params[0].ty, name, span) else return error_expr(cx.s, span)
             bound := cx.bind_args(o.params[1..], module, args, span, "operation") else return error_expr(cx.s, span)
             vals := list(Expr)

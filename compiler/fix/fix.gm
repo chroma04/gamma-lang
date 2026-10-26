@@ -1,0 +1,237 @@
+//! Applying the fixes that diagnostics carry (`gammac fix`, mirroring `src/fix.rs`).
+//!
+//! A diagnostic with exactly one fix is resolved by applying it; one with several leaves the
+//! choice to the programmer. Fixes are applied whole: a fix that has an edit in a file that
+//! may not be changed, or an edit that overlaps one already planned, is skipped, and a later
+//! round (after checking the changed program again) can pick it up.
+
+/// The edits planned for one file, sorted by position and not overlapping.
+pub FileEdits :: struct {
+    pub file: source.FileId
+    pub edits: List(diag.Edit)
+}
+
+/// The edits to make, by file in the order of the files, and how many fixes they come from.
+pub Plan :: struct {
+    pub files: List(FileEdits)
+    pub count: usize
+}
+
+/// The edits to make for `diags`, by file, sorted by position and not overlapping, and
+/// how many fixes they come from. `editable` says which files may be changed.
+pub plan :: fn(diags: []const ^const diag.Diagnostic, editable: fn(f: source.FileId) -> bool) -> Plan needs Alloc {
+    p := Plan(files: list(FileEdits), count: 0)
+    for d in diags {
+        if d.fixes.items.len is not 1 { continue }
+        fix := &d.fixes.items[0]
+        if fix.edits.items.len is 0 { continue }
+        movable := true
+        for e in fix.edits.items {
+            if e.span is source.DUMMY or not editable(e.span.file) { movable = false }
+        }
+        if not movable { continue }
+        // A fix planned already (by the same diagnostic of another instantiation of
+        // generic code, say) is not applied twice.
+        again := true
+        for e in fix.edits.items {
+            if not p.planned(e) { again = false }
+        }
+        if again { continue }
+        if not p.fits(fix) { continue }
+        for e in fix.edits.items {
+            edits := p.edits_of(e.span.file)
+            at: usize = 0
+            while at < edits.items.len and (edits.items[at].span.lo, edits.items[at].span.hi) <= (e.span.lo, e.span.hi) { at += 1 }
+            edits.insert(at, e)!
+        }
+        p.count += 1
+    }
+    return p
+}
+
+/// The edits of `file`, added to the plan if it has none yet.
+edits_of :: fn(p: ^Plan, file: source.FileId) -> ^List(diag.Edit) needs Alloc {
+    mut_at: usize = 0
+    while mut_at < p.files.items.len and p.files.items[mut_at].file < file { mut_at += 1 }
+    if mut_at < p.files.items.len and p.files.items[mut_at].file is file { return &p.files.items[mut_at].edits }
+    p.files.insert(mut_at, FileEdits(file: file, edits: list(diag.Edit)))!
+    return &p.files.items[mut_at].edits
+}
+
+same_edit :: fn(a, b: diag.Edit) -> bool => a.span.file is b.span.file and a.span.lo is b.span.lo and a.span.hi is b.span.hi and a.text is b.text
+
+/// Whether `e` is planned already.
+planned :: fn(p: ^const Plan, e: diag.Edit) -> bool {
+    for f in p.files.items {
+        if f.file is e.span.file {
+            for o in f.edits.items {
+                if same_edit(o, e) { return true }
+            }
+        }
+    }
+    return false
+}
+
+/// Whether no edit of `fix` overlaps another of its edits or one in the plan. Two
+/// insertions at the same place overlap (their order would be arbitrary).
+fits :: fn(p: ^const Plan, fix: ^const diag.Fix) -> bool {
+    for i, e in enumerate(fix.edits.items) {
+        for o in fix.edits.items[..i] {
+            if overlap(e, o) { return false }
+        }
+        for f in p.files.items {
+            if f.file is e.span.file {
+                for o in f.edits.items {
+                    if overlap(e, o) { return false }
+                }
+            }
+        }
+    }
+    return true
+}
+
+overlap :: fn(a, b: diag.Edit) -> bool =>
+    a.span.file is b.span.file and ((a.span.lo < b.span.hi and b.span.lo < a.span.hi) or a.span.lo is b.span.lo or a.span.hi is b.span.hi)
+
+/// `text` with `edits` (sorted by position, not overlapping) made.
+pub apply :: fn(text: string, edits: []const diag.Edit) -> string needs Alloc {
+    out := list(u8)
+    at: usize = 0
+    for e in edits {
+        out.extend(text[at..usize(e.span.lo)])!
+        out.extend(e.text)!
+        at = usize(e.span.hi)
+    }
+    out.extend(text[at..])!
+    return out.items
+}
+
+/// Where the libraries are and how a program is loaded.
+pub Setup :: struct {
+    pub std: string
+    pub core: string
+    pub mode: string
+    pub recover: bool
+    pub format: diag.Format
+}
+
+/// The directory of the files that `gammac fix` may change and `gammac lint` reports on:
+/// the input's package, or outside a package, the input's directory; never the standard
+/// library or other packages. Gives the message if the input cannot be read.
+pub own_files :: fn(path: string) -> string!string needs Alloc + Fs {
+    if root := lint.find_root(path) { return root }
+    abs := lint.canonical(path)
+    if not (load.is_dir(abs) or load.is_file(abs)) { return !str.format("cannot read `{}`: No such file or directory (os error 2)", path)! }
+    if load.is_dir(abs) { return abs }
+    return load.parent(abs) else abs
+}
+
+/// Prints the diagnostics to standard error, in order, and empties the list.
+pub render :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics, format: diag.Format) needs Alloc + Err {
+    out := list(u8)
+    diags.sort()
+    for d in diags.list.items { diag.render(sm, &d, format, &out) }
+    Err.write(out.items)
+    diags.list.clear()
+}
+
+/// `gammac fix`: checks the program and applies the fixes of its diagnostics, again until
+/// none is left to apply (a fix can let checking go further), then reports what is left.
+pub command :: fn(path: string, setup: Setup) -> u8 needs Alloc + Env + Err + Fs {
+    outer := Alloc.current()
+    dir := own_files(path) else e => {
+        eprint("gamma: {}\n", e)
+        return 1
+    }
+    scope := lint.scope(dir, lint.canonical(setup.std), false)
+    fixes: usize = 0
+    files := list(string)
+    // Each round applies fixes that do not overlap; ten rounds are plenty for real code.
+    round: usize = 0
+    while true {
+        a := arena.new()
+        defer a.deinit()
+        with a.allocator() {
+            sm := source.source_map()
+            diags := diag.diagnostics()
+            next_id: ast.NodeId = 0
+            l := load.loader(&sm, &diags, &next_id, setup.std, setup.recover)
+            if l.load_core(setup.core, setup.mode) {
+                s := sema.sema(&l)
+                check.install(&s)
+                s.resolve_ambient()
+                if m := l.load_root(path) {
+                    s.resolve_declarations()
+                    check.check_program(&s, m, false)
+                }
+            }
+            ok := not diags.has_errors()
+            n: usize = 0
+            if round < 10 {
+                todo := list(^const diag.Diagnostic)
+                for i in 0..diags.list.items.len { todo.push(&diags.list.items[i])! }
+                p := plan(todo.items, fn(f: source.FileId) -> bool => editable(&scope, sm.file(f).path))
+                n = p.count
+                if n > 0 {
+                    for fe in p.files.items {
+                        file := sm.file(fe.file)
+                        text := apply(file.text, fe.edits.items)
+                        if not write_file(file.path, text) {
+                            eprint("gamma: cannot write `{}`\n", file.path)
+                            return 1
+                        }
+                        if not contains_path(files.items, file.path) {
+                            with outer { files.push(dupe(file.path)!)! }
+                        }
+                    }
+                    fixes += n
+                }
+            }
+            if n is 0 {
+                render(&sm, &diags, setup.format)
+                if fixes > 0 and setup.format is not .Json {
+                    eprint("gamma: applied {} fix{} in {} file{}\n", fixes, plural_es(fixes), files.items.len, plural_s(files.items.len))
+                }
+                return if ok { 0 } else { 1 }
+            }
+        }
+        round += 1
+    }
+}
+
+/// Whether the file at `path` is one that may be changed: in the package, not in the
+/// standard library.
+editable :: fn(sc: ^lint.Scope, path: string) -> bool needs Alloc + Fs {
+    p := lint.canonical(path)
+    return load.starts_with(p, sc.dir) and not load.starts_with(p, sc.std_root)
+}
+
+contains_path :: fn(paths: []const string, p: string) -> bool {
+    for x in paths {
+        if x is p { return true }
+    }
+    return false
+}
+
+pub plural_s :: fn(n: usize) -> string => if n is 1 { "" } else { "s" }
+
+pub plural_es :: fn(n: usize) -> string => if n is 1 { "" } else { "es" }
+
+/// Writes `text` to the file at `path`; false if it cannot be written.
+pub write_file :: fn(path, text: string) -> bool needs Fs {
+    return match fs.write_all(path, text) {
+        !_ => false
+        _ => true
+    }
+}
+
+arena :: import "std/arena"
+ast :: import "../ast"
+check :: import "../check"
+diag :: import "../diag"
+fs :: import "std/fs"
+lint :: import "../lint"
+load :: import "../load"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"

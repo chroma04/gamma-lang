@@ -1,0 +1,86 @@
+// Markdown output.
+
+str :: import "std/str"
+
+/// The page of one module. `index` is the relative link to the index page, if there is one.
+markdown_module :: fn(m: ^const Module, index: ?string) -> string needs Alloc {
+    out := list(u8)
+    out.write("# Module `{}`\n\n", m.name)!
+    if link := index { out.write("[All modules]({})\n\n", link)! }
+    if m.doc.len > 0 {
+        out.extend(demote_headings(m.doc, DEMOTE))!
+        out.extend("\n\n")!
+    }
+    for kind in KINDS {
+        found := false
+        for d in m.decls {
+            if d.kind is not kind { continue }
+            if not found {
+                out.write("## {}\n\n", section(kind))!
+                found = true
+            }
+            markdown_declaration(&out, &d)
+        }
+    }
+    return finish(out.items)
+}
+
+markdown_declaration :: fn(out: ^List(u8), d: ^const Decl) needs Alloc {
+    out.write("### `{}`\n\n", d.name)!
+    ticks := fence(d.sig)
+    out.write("{}gamma\n{}\n{}\n\n", ticks, d.sig, ticks)!
+    if doc := d.doc {
+        out.extend(demote_headings(doc, DEMOTE))!
+        out.extend("\n\n")!
+    }
+    if d.members.len > 0 {
+        out.write("{}:\n\n", d.member_label)!
+        for mem in d.members {
+            first := true
+            for l in lines_of(mem.doc) {
+                if first {
+                    out.write("- `{}`: {}\n", mem.name, l)!
+                    first = false
+                } else if l.len is 0 {
+                    out.push('\n')!
+                } else {
+                    out.write("  {}\n", l)!
+                }
+            }
+            if first { out.write("- `{}`: \n", mem.name)! }
+        }
+        out.push('\n')!
+    }
+}
+
+/// The index of a set of modules.
+markdown_index :: fn(title: string, modules: []const Module) -> string needs Alloc {
+    out := list(u8)
+    out.write("# {}\n\n| Module | Description |\n| --- | --- |\n", title)!
+    for m in modules {
+        out.write("| [`{}`]({}.md) | ", m.name, url_path(m.path))!
+        for c in summary(&m) {
+            if c is '|' { out.push('\\')! }
+            out.push(c)!
+        }
+        out.extend(" |\n")!
+    }
+    return finish(out.items)
+}
+
+/// The first sentence of the module's documentation.
+summary :: fn(m: ^const Module) -> string needs Alloc {
+    para := m.doc
+    if i := str.find(m.doc, "\n\n") { para = m.doc[0..i] }
+    line := squash(para)
+    if i := str.find(line, ". ") { return line[0..i + 1] }
+    return line
+}
+
+/// Ends the text with exactly one line feed.
+finish :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    out.extend(trim_end(s))!
+    out.push('\n')!
+    return out.items
+}

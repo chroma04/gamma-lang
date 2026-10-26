@@ -1,0 +1,50 @@
+// Tests of the lint options and levels.
+
+arena :: import "std/arena"
+
+test "options name rules and levels" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        o := options()
+        assert(parse_arg(&o, "--fix") is .Yes)
+        assert(parse_arg(&o, "-D") is .Yes)
+        assert(parse_arg(&o, "--allow=naming,,unused-import") is .Yes)
+        assert(parse_arg(&o, "--warn=all") is .Yes)
+        assert(parse_arg(&o, "--other") is .No)
+        assert(parse_arg(&o, "--format=x") is .No)
+        assert(o.fix and o.deny_warnings and not o.rules)
+        assert(o.levels.items.len is 3)
+        match parse_arg(&o, "--deny=nosuch") {
+            .Bad(m) => assert(m is "unknown lint rule `nosuch` (`gamma lint --rules` lists them)")
+            _ => assert(false)
+        }
+    }
+}
+
+test "levels start at the defaults and later settings win" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        c := default_config()
+        assert(level(&c, "unused-variable") is .Warn)
+        assert(level(&c, "prefer-immutable") is .Allow)
+        assert(set(&c, "all", .Deny) is null)
+        assert(level(&c, "prefer-immutable") is .Deny)
+        assert(set(&c, "naming", .Allow) is null)
+        assert(level(&c, "naming") is .Allow)
+        assert(set(&c, "nosuch", .Warn) is not null)
+        deny_warnings(&c)
+        assert(level(&c, "naming") is .Allow)
+        c2 := default_config()
+        deny_warnings(&c2)
+        assert(level(&c2, "unused-variable") is .Deny)
+        assert(level(&c2, "prefer-immutable") is .Allow)
+    }
+}
+
+test "every rule has a distinct name" {
+    for i in 0..RULE_COUNT {
+        assert(rule(RULES[i].name) is i)
+    }
+}

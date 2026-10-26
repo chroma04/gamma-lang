@@ -562,6 +562,7 @@ generic_decl :: fn(s: ^Sema, module: usize, callee: ^const ast.Expr, report: boo
             }
             d := s.l.lookup(m, name.name) else return null
             if not s.decl_visible(d, module) { return null }
+            s.note_use_from(d, module)
             return NamedDecl(decl: d, span: name.span)
         }
         _ => return null

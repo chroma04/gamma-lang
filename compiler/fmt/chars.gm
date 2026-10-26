@@ -1,0 +1,156 @@
+// Character-level helpers of the formatter. The source text is valid UTF-8, and where the
+// reference formatter counts characters or tests for white space it means Unicode
+// scalar values and the Unicode `White_Space` property, so these do too.
+
+/// A character decoded from UTF-8: its code point and its length in bytes.
+Char :: struct {
+    value: u32
+    len: usize
+}
+
+/// The character starting at byte `i` of `s`, which must be inside it.
+decode :: fn(s: string, i: usize) -> Char {
+    b := s[i]
+    if b < 0x80 { return Char(value: u32(b), len: 1) }
+    len: usize = 1
+    value: u32 = 0
+    if b >= 0xF0 {
+        len = 4
+        value = u32(b & 0x07)
+    } else if b >= 0xE0 {
+        len = 3
+        value = u32(b & 0x0F)
+    } else if b >= 0xC0 {
+        len = 2
+        value = u32(b & 0x1F)
+    } else {
+        return Char(value: u32(b), len: 1)
+    }
+    if i + len > s.len { return Char(value: u32(b), len: 1) }
+    for k in 1..len { value = (value << 6) | u32(s[i + k] & 0x3F) }
+    return Char(value: value, len: len)
+}
+
+/// Whether `s` consists of spaces only (it may be empty).
+only_spaces :: fn(s: string) -> bool {
+    for b in s {
+        if b is not ' ' { return false }
+    }
+    return true
+}
+
+/// Whether the byte starts a character (is not a UTF-8 continuation byte).
+is_char_start :: fn(b: u8) -> bool => (b & 0xC0) is not 0x80
+
+/// Unicode's `White_Space` property.
+is_white :: fn(c: u32) -> bool => match c {
+    0x09..=0x0D, 0x20, 0x85, 0xA0, 0x1680, 0x2000..=0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000 => true
+    _ => false
+}
+
+/// Whether `s` is empty or only white space (`s.trim().is_empty()`).
+all_white :: fn(s: string) -> bool {
+    i: usize = 0
+    while i < s.len {
+        c := decode(s, i)
+        if not is_white(c.value) { return false }
+        i += c.len
+    }
+    return true
+}
+
+/// `s` without trailing white space.
+trim_end :: fn(s: string) -> string {
+    n := s.len
+    while n > 0 {
+        start := n - 1
+        while start > 0 and not is_char_start(s[start]) { start -= 1 }
+        if not is_white(decode(s, start).value) { break }
+        n = start
+    }
+    return s[0..n]
+}
+
+/// Whether `s` starts with a character that is not white space.
+starts_with_non_white :: fn(s: string) -> bool {
+    if s.len is 0 { return false }
+    return not is_white(decode(s, 0).value)
+}
+
+/// The number of characters in `s`.
+count_chars :: fn(s: string) -> usize {
+    n: usize = 0
+    for b in s {
+        if is_char_start(b) { n += 1 }
+    }
+    return n
+}
+
+/// The byte offset of the `n`-th character of `s` (its length if there are fewer).
+char_offset :: fn(s: string, n: usize) -> usize {
+    i: usize = 0
+    k: usize = 0
+    while i < s.len and k < n {
+        i += decode(s, i).len
+        k += 1
+    }
+    return i
+}
+
+/// The number of leading characters of `line` that are white space.
+indent_of :: fn(line: string) -> usize {
+    n: usize = 0
+    i: usize = 0
+    while i < line.len {
+        c := decode(line, i)
+        if not is_white(c.value) { break }
+        i += c.len
+        n += 1
+    }
+    return n
+}
+
+/// The text after the last line break in `s` (all of it if there is none).
+last_line :: fn(s: string) -> string {
+    i := s.len
+    while i > 0 and s[i - 1] is not '\n' { i -= 1 }
+    return s[i..s.len]
+}
+
+/// The column of byte offset `pos` in `text`, counting characters from the line start.
+column :: fn(text: string, pos: usize) -> usize => count_chars(last_line(text[0..pos]))
+
+/// The byte offset where the line containing `pos` starts.
+line_start :: fn(text: string, pos: usize) -> usize {
+    i := pos
+    while i > 0 and text[i - 1] is not '\n' { i -= 1 }
+    return i
+}
+
+/// The byte offset of the line break at or after `pos`, or the length of `text`.
+line_end :: fn(text: string, pos: usize) -> usize {
+    i := pos
+    while i < text.len and text[i] is not '\n' { i += 1 }
+    return i
+}
+
+/// Appends `n` spaces.
+push_spaces :: fn(out: ^List(u8), n: usize) needs Alloc {
+    for _ in 0..n { out.push(' ')! }
+}
+
+/// The number of characters after the last line break of `out`.
+out_column :: fn(out: ^const List(u8)) -> usize => count_chars(last_line(out.items))
+
+test "characters and white space" {
+    assert(is_white(0x20) and is_white(0xA0) and is_white(0x3000) and not is_white('a'))
+    assert(all_white("") and all_white(" \t\r\n") and not all_white(" x "))
+    assert(trim_end("ab \u{a0}\t") is "ab")
+    assert(trim_end("é") is "é")
+    assert(count_chars("aé€😀") is 4)
+    assert(char_offset("aé€", 2) is 3)
+    assert(char_offset("ab", 9) is 2)
+    assert(indent_of(" \t x") is 3)
+    assert(column("ab\nécd", 6) is 2)
+    assert(last_line("a\nbc") is "bc")
+}

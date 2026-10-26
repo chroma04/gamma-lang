@@ -55,13 +55,9 @@ match_expr :: fn(cx: ^FnCx, m: ^const ast.MatchExpr, value: bool, expect: ?Ty) -
         if t := expect {
             ty = t
         } else {
-            ty = tys.never_ty()
-            for a in arms.items {
-                if tys.kind(a.body.ty) is not .Never {
-                    ty = a.body.ty
-                    break
-                }
-            }
+            branches := list(Ty)
+            for a in arms.items { branches.push(a.body.ty)! }
+            ty = cx.join_type(branches.items)
         }
     } else {
         all_never := true

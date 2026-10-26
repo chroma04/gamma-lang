@@ -1,0 +1,414 @@
+// The package commands: `fetch`, `update`, `add`, `remove`, `new`, `init` and `cache`. They
+// take their own arguments, so `main` hands them over before it parses the options of the
+// compiler commands (mirrors `src/pkg/cli.rs`).
+
+fs :: import "std/fs"
+load :: import "../load"
+str :: import "std/str"
+
+pub USAGE :: ``package commands:
+  new     create a package in a new directory: gamma new <dir> [--name=<name>] [--vcs=none]
+  init    create a package in an existing directory: gamma init [dir] [--name=<name>] [--vcs=none]
+  fetch   resolve and download the git and archive dependencies, and write gamma.lock:
+          gamma fetch [--dir <dir>] [--offline] [--locked]
+  update  move git dependencies to the newest revisions their requirements allow:
+          gamma update [name...] [--dir <dir>]
+  add     add a dependency to gamma.toml and fetch it:
+          gamma add <name> --path <dir> [--dir <dir>]
+          gamma add <name> --git <url> [--tag <tag> | --branch <branch> | --rev <rev> | --version <req>]
+                    [--subdir <path>] [--dir <dir>]
+          gamma add <name> --url <url.tar.gz> [--sha256 <hex>] [--subdir <path>] [--dir <dir>]
+  remove  remove a dependency: gamma remove <name> [--dir <dir>]
+  cache   the cache of fetched packages and native builds:
+          gamma cache dir                     print the cache directory
+          gamma cache clean [--older-than=<days>] [--all] [--dry-run]
+                    remove package checkouts and builds unused for <days> (default 30),
+                    and mirrors no checkout needs; --all removes everything
+
+build settings (`[build]`, `[profile.<name>]`) are described in docs/guide/15-packages.md;
+`--profile=<name>` selects a profile in check, run, build, test and bench.
+``
+
+/// Whether `command` is one of the package commands.
+pub is_package_command :: fn(command: string) -> bool => command in ("fetch", "update", "add", "remove", "new", "init", "cache")
+
+Pair :: struct {
+    name: string
+    value: string
+}
+
+Parsed :: struct {
+    pos: List(string)
+    values: List(Pair)
+    flags: List(string)
+}
+
+value_of :: fn(p: ^const Parsed, name: string) -> ?string {
+    for v in p.values.items {
+        if v.name is name { return v.value }
+    }
+    return null
+}
+
+has_flag :: fn(p: ^const Parsed, name: string) -> bool {
+    for f in p.flags.items {
+        if f is name { return true }
+    }
+    return false
+}
+
+contains :: fn(names: []const string, name: string) -> bool {
+    for n in names {
+        if n is name { return true }
+    }
+    return false
+}
+
+parse_args :: fn(args: []const string, value_opts, flag_opts: []const string) -> string!Parsed needs Alloc {
+    p := Parsed(pos: list(string), values: list(Pair), flags: list(string))
+    i: usize = 0
+    while i < args.len {
+        a := args[i]
+        i += 1
+        // After `--`, everything is positional (a directory named `-x`).
+        if a is "--" {
+            for rest in args[i..] { p.pos.push(rest)! }
+            break
+        }
+        if opt := str.strip_prefix(a, "--") {
+            name := opt
+            inline: ?string = null
+            if split := str.split_once(opt, "=") {
+                name = split.before
+                inline = split.after
+            }
+            if contains(flag_opts, name) and inline is not null {
+                return !str.format("`--{}` takes no value", name)!
+            } else if contains(flag_opts, name) {
+                if not has_flag(&p, name) { p.flags.push(name)! }
+            } else if contains(value_opts, name) {
+                v := inline else {
+                    if i >= args.len { return !str.format("`--{}` needs a value", name)! }
+                    i += 1
+                    args[i - 1]
+                }
+                if value_of(&p, name) is not null { return !str.format("`--{}` given twice", name)! }
+                p.values.push(Pair(name: name, value: v))!
+            } else {
+                return !str.format("unknown option `{}`", a)!
+            }
+        } else if a.starts_with("-") and a.len > 1 {
+            return !str.format("unknown option `{}`", a)!
+        } else {
+            p.pos.push(a)!
+        }
+    }
+    return p
+}
+
+root_of :: fn(dir: string) -> string!string needs Alloc + Fs {
+    if Fs.stat(dir) is !_ { return !str.format("{} does not exist", dir)! }
+    return find_root(dir) else !str.format("no gamma.toml found in {} or any parent directory (`gamma init` creates one)", dir)!
+}
+
+/// How a package command failed: a bad command line (with the usage) or a plain error.
+Failure :: union {
+    Usage: string
+    Error: string
+}
+
+/// Runs the package command `command` with `args`; returns the exit status. Messages start
+/// with `tool`.
+pub run_command :: fn(tool: string, command: string, args: []const string) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand {
+    result: Failure!() = match command {
+        "fetch" => fetch(args)
+        "update" => update(args)
+        "add" => add(args)
+        "remove" => remove(args)
+        "new" => new_package(args, true)
+        "init" => new_package(args, false)
+        "cache" => cache_command(args)
+        _ => !Failure.Usage(str.format("unknown command `{}`", command)!)
+    }
+    match result {
+        !.Usage(e) => {
+            eprint("{}: {}\n\n{}\n", tool, e, USAGE)
+            return 2
+        }
+        !.Error(e) => {
+            eprint("{}: {}\n", tool, e)
+            return 1
+        }
+        _ => return 0
+    }
+}
+
+usage_failure :: fn(r: string!Parsed) -> Failure!Parsed {
+    return r else e => !Failure.Usage(e)
+}
+
+fail :: fn(e: string) -> Failure => Failure.Error(e)
+
+fetch :: fn(args: []const string) -> Failure!() needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    p := try usage_failure(parse_args(args, [1]string("dir")[..], [2]string("offline", "locked")[..]))
+    // The directory may also be given as `--dir`, as for the other commands.
+    given := list(string)
+    for d in p.pos.items { given.push(d)! }
+    if d := value_of(&p, "dir") { given.push(d)! }
+    if given.items.len > 1 { return !Failure.Usage("more than one directory given") }
+    dir := given.items.first() else "."
+    root := root_of(dir) else e => { return !fail(e) }
+    opts := Options(offline: has_flag(&p, "offline"), locked: has_flag(&p, "locked"))
+    _ = sync(root, opts, Refresh.None, true) else e => { return !fail(e) }
+    return ()
+}
+
+update :: fn(args: []const string) -> Failure!() needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    p := try usage_failure(parse_args(args, [1]string("dir")[..], [0]string()[..]))
+    root := root_of(value_of(&p, "dir") else ".") else e => { return !fail(e) }
+    refresh := if p.pos.items.len is 0 { Refresh.All } else { Refresh.Names(p.pos.items) }
+    _ = sync(root, Options(), refresh, true) else e => { return !fail(e) }
+    return ()
+}
+
+/// `target` written relative to the directory `from` (both canonical).
+relative_path :: fn(from, target: string) -> string needs Alloc {
+    f := load.split(from).names
+    t := load.split(target).names
+    common: usize = 0
+    while common < f.items.len and common < t.items.len and f.items[common] is t.items[common] { common += 1 }
+    parts := list(string)
+    for _ in common..f.items.len { parts.push("..")! }
+    for x in t.items[common..] { parts.push(x)! }
+    if parts.items.len is 0 { return "." }
+    return str.join(parts.items, "/")!
+}
+
+add :: fn(args: []const string) -> Failure!() needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    keys := [10]string("path", "git", "url", "sha256", "tag", "branch", "rev", "version", "subdir", "dir")
+    p := try usage_failure(parse_args(args, keys[..], [0]string()[..]))
+    if p.pos.items.len is not 1 { return !Failure.Usage("`add` needs exactly one dependency name") }
+    name := p.pos.items[0]
+    if problem := load.name_problem(name, "dependency") { return !fail(problem) }
+    root := root_of(value_of(&p, "dir") else ".") else e => { return !fail(e) }
+    refs := list(string)
+    for k in ("tag", "branch", "rev", "version") {
+        if value_of(&p, k) is not null { refs.push(k)! }
+    }
+    sources: usize = 0
+    for k in ("path", "git", "url") {
+        if value_of(&p, k) is not null { sources += 1 }
+    }
+    if sources > 1 { return !Failure.Usage("use only one of `--path`, `--git` and `--url`") }
+    if value_of(&p, "sha256") is not null and value_of(&p, "url") is null {
+        return !Failure.Usage("`--sha256` needs `--url`")
+    }
+    dep: NewDep = .Path("")
+    if url := value_of(&p, "url") {
+        if refs.items.len > 0 { return !Failure.Usage("`--tag`, `--branch`, `--rev` and `--version` need `--git`") }
+        dep = NewDep.Url(url: url, sha256: value_of(&p, "sha256"), subdir: value_of(&p, "subdir"))
+    } else if path := value_of(&p, "path") {
+        if refs.items.len > 0 or value_of(&p, "subdir") is not null {
+            return !Failure.Usage("`--tag`, `--branch`, `--rev`, `--version` and `--subdir` need `--git`")
+        }
+        abs := canonicalize(path) else {
+            return !fail(str.format("cannot use the path {}: No such file or directory (os error 2)", path)!)
+        }
+        dep = NewDep.Path(relative_path(root, abs))
+    } else if url := value_of(&p, "git") {
+        if problem := load.url_problem(url) { return !Failure.Usage(problem) }
+        if refs.items.len > 1 { return !Failure.Usage("use only one of `--tag`, `--branch`, `--rev`, `--version`") }
+        reference: ?(key: string, value: string) = null
+        if refs.items.len is 1 {
+            k := refs.items[0]
+            v := value_of(&p, k)?
+            if k is "version" {
+                _ = load.parse_version_req(load.trim_ascii(v)) else e => {
+                    return !fail(str.format("invalid version requirement `{}`: {}", v, e)!)
+                }
+            }
+            reference = (key: k, value: v)
+        } else if v := try newest_version(url) {
+            reference = (key: "version", value: str.format("^{}", load.version_string(v))!)
+        }
+        dep = NewDep.Git(url: url, reference: reference, subdir: value_of(&p, "subdir"))
+    } else {
+        return !Failure.Usage("`add` needs `--path <dir>`, `--git <url>` or `--url <url>`")
+    }
+    manifest_path := join(root, "gamma.toml")
+    old_text := read_text(manifest_path) else e => { return !fail(e) }
+    _ = load.parse_manifest(old_text) else e => {
+        return !fail(str.format("{}:{}: {}", manifest_path, e.line, e.msg)!)
+    }
+    new_text := add_dependency(old_text, name, dep) else e => { return !fail(e) }
+    // The manifest is checked as it would be written, and put back if resolving fails.
+    _ = load.parse_manifest(new_text) else e => {
+        return !fail(str.format("{}:{}: {}", manifest_path, e.line, e.msg)!)
+    }
+    write_atomic(manifest_path, new_text) else e => { return !fail(e) }
+    _ = sync(root, Options(), Refresh.None, true) else e => {
+        write_atomic(manifest_path, old_text) else e2 => { return !fail(e2) }
+        return !fail(e)
+    }
+    eprint("      Adding {} to dependencies\n", name)
+    return ()
+}
+
+/// The newest release tag of the repository, if it has version tags.
+newest_version :: fn(url: string) -> Failure!?load.Version needs Alloc + Proc {
+    tags := remote_tags(url) else e => { return !fail(e) }
+    best: ?load.Version = null
+    for t in tags.items {
+        v := tag_version(t) else continue
+        if v.pre.len > 0 { continue }
+        if b := best {
+            if load.cmp_version(v, b) < 0 { continue }
+        }
+        best = v
+    }
+    return best
+}
+
+remove :: fn(args: []const string) -> Failure!() needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    p := try usage_failure(parse_args(args, [1]string("dir")[..], [0]string()[..]))
+    if p.pos.items.len is not 1 { return !Failure.Usage("`remove` needs exactly one dependency name") }
+    name := p.pos.items[0]
+    root := root_of(value_of(&p, "dir") else ".") else e => { return !fail(e) }
+    manifest_path := join(root, "gamma.toml")
+    old_text := read_text(manifest_path) else e => { return !fail(e) }
+    new_text := remove_dependency(old_text, name) else e => { return !fail(e) }
+    write_atomic(manifest_path, new_text) else e => { return !fail(e) }
+    _ = sync(root, Options(), Refresh.None, true) else e => {
+        write_atomic(manifest_path, old_text) else e2 => { return !fail(e2) }
+        return !fail(e)
+    }
+    eprint("    Removing {} from dependencies\n", name)
+    return ()
+}
+
+/// `gamma cache dir` and `gamma cache clean`.
+cache_command :: fn(args: []const string) -> Failure!() needs Alloc + Clock + Env + Fs + Out + Proc {
+    if args.len is 0 { return !Failure.Usage("`cache` needs a subcommand: `dir` or `clean`") }
+    sub := args[0]
+    rest := args[1..]
+    dir := cache_dir()
+    disabled :: "the cache is disabled (GAMMA_CACHE_DIR is empty)"
+    match sub {
+        "dir" => {
+            _ = try usage_failure(parse_args(rest, [0]string()[..], [0]string()[..]))
+            d := dir else return !fail(disabled)
+            print("{}\n", d)
+            return ()
+        }
+        "clean" => {
+            p := try usage_failure(parse_args(rest, [1]string("older-than")[..], [2]string("all", "dry-run")[..]))
+            if p.pos.items.len > 0 { return !Failure.Usage("`cache clean` takes no arguments") }
+            days: u64 = 30
+            if v := value_of(&p, "older-than") {
+                days = str.parse_int(u64, v) else {
+                    return !Failure.Usage(str.format("`--older-than` needs a number of days, not `{}`", v)!)
+                }
+            }
+            if has_flag(&p, "all") and value_of(&p, "older-than") is not null {
+                return !Failure.Usage("`--all` and `--older-than` cannot be combined")
+            }
+            d := dir else return !fail(disabled)
+            secs := days *? 86400 else 0xFFFF_FFFF_FFFF_FFFF / NS_PER_SECOND
+            policy := Policy(
+                older_than: secs *? NS_PER_SECOND else 0xFFFF_FFFF_FFFF_FFFF,
+                all: has_flag(&p, "all"),
+                dry_run: has_flag(&p, "dry-run"),
+            )
+            report := clean(d, policy)
+            print("{} in {}\n", summary(&report, policy.dry_run), d)
+            if report.failures.items.len > 0 { return !fail(str.join(report.failures.items, "\n")!) }
+            return ()
+        }
+        _ => return !Failure.Usage(str.format("unknown `cache` subcommand `{}`: use `dir` or `clean`", sub)!)
+    }
+}
+
+new_package :: fn(args: []const string, create: bool) -> Failure!() needs Alloc + Fs + Out + Proc {
+    p := try usage_failure(parse_args(args, [2]string("name", "vcs")[..], [0]string()[..]))
+    dir := "."
+    if p.pos.items.len is 1 {
+        dir = p.pos.items[0]
+    } else if p.pos.items.len is 0 {
+        if create { return !Failure.Usage("`new` needs a directory") }
+    } else {
+        return !Failure.Usage("more than one directory given")
+    }
+    git_init := true
+    if v := value_of(&p, "vcs") {
+        match v {
+            "git" => {}
+            "none" => { git_init = false }
+            _ => return !Failure.Usage(str.format("unknown --vcs `{}`: use `git` or `none`", v)!)
+        }
+    }
+    // A bad name is reported before anything is created.
+    if n := value_of(&p, "name") {
+        if problem := load.name_problem(n, "package") { return !fail(problem) }
+    }
+    created_here := false
+    if create {
+        non_empty := false
+        missing := false
+        for r in fs.entries(dir) {
+            _ = r else e => {
+                if e is .NotFound {
+                    missing = true
+                } else {
+                    return !fail(str.format("cannot use {}: {}", dir, io_message(e))!)
+                }
+                break
+            }
+            non_empty = true
+            break
+        }
+        if non_empty { return !fail(str.format("the directory {} exists and is not empty", dir)!) }
+        if missing {
+            fs.make_dir_all(dir) else e => { return !fail(str.format("cannot create {}: {}", dir, io_message(e))!) }
+            created_here = true
+        }
+    } else if not is_dir(dir) {
+        return !fail(str.format("{} is not a directory (`gamma new` creates one)", dir)!)
+    }
+    derived_from: ?string = null
+    name := ""
+    if n := value_of(&p, "name") {
+        name = n
+    } else {
+        abs := canonicalize(dir) else {
+            return !fail(str.format("cannot use {}: No such file or directory (os error 2)", dir)!)
+        }
+        dir_name := load.file_name(abs) else ""
+        name = sanitize_name(dir_name)
+        if problem := load.name_problem(name, "package") {
+            if created_here { _ = Fs.remove_dir(dir) }
+            return !fail(str.format("the directory name `{}` gives the package name `{}`: {}; choose one with `--name`", dir_name, name, problem)!)
+        }
+        if name is not dir_name { derived_from = dir_name }
+    }
+    report := scaffold(dir, name, git_init) else e => { return !fail(e) }
+    for f in report.skipped.items { print("     Skipped {} (already exists)\n", f) }
+    if report.created.items.len is 0 {
+        print("     Nothing to create in {}\n", dir)
+        return ()
+    }
+    existing_manifest := false
+    for f in report.skipped.items {
+        if f is "gamma.toml" { existing_manifest = true }
+    }
+    if existing_manifest {
+        print("     Created {} in {} (the existing gamma.toml is unchanged)\n", str.join(report.created.items, ", ")!, dir)
+    } else {
+        print("     Created package `{}` in {}\n", name, dir)
+    }
+    if d := derived_from {
+        print("        Note: `{}` is not a valid package name; use `--name` to choose another\n", d)
+    }
+    if report.git_initialized { print("     Initialized a git repository\n") }
+    print("\nNext steps:\n    gamma run {}\n    gamma test {}\n", dir, dir)
+    return ()
+}

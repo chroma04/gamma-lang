@@ -56,10 +56,10 @@ pub fn resolve_lines(code: &str, c_file: &str) -> String {
 }
 
 /// The gdb pretty printers for debugger views (`super::views`).
-const GDB_PRINTERS: &str = include_str!("gdb_printers.py");
+const GDB_PRINTERS: &str = include_str!("../../runtime/gdb_printers.py");
 
 /// The lldb data formatters for debugger views (`super::views`), a Python module.
-const LLDB_FORMATTERS: &str = include_str!("lldb_formatters.py");
+const LLDB_FORMATTERS: &str = include_str!("../../runtime/lldb_formatters.py");
 
 /// The name under which the lldb formatters are written next to an executable built with
 /// debug information.

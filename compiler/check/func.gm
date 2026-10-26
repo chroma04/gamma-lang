@@ -393,6 +393,7 @@ finish :: fn(cx: ^FnCx, body: ^Expr) needs Load {
         cx.locals.items[i].ty = cx.infer.resolve(cx.s, cx.locals.items[i].ty)
     }
     for n in cx.nested.items {
+        if root := cx.fn_id { cx.s.nested_owner.put(n.fn_id, root)! }
         cx.fin_expr(n.body)
         for i in 0..n.locals.len { n.locals[i].ty = cx.infer.resolve(cx.s, n.locals[i].ty) }
         // An inferred return type may still have been a literal's variable.

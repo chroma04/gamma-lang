@@ -4,36 +4,42 @@
 // remembers its line, for messages.
 
 /// A TOML value.
-Value :: union {
+pub(package) Value :: union {
     Str: string
     Int: i64
     Bool: bool
     Array: List(Value)
     Table: ^Table
+    /// A float, date or time, kept as its text.
+    Other: string
 }
 
 /// The entries of a table, in the order they were written.
-Table :: struct {
-    entries: List(Entry)
+pub(package) Table :: struct {
+    pub(package) entries: List(Entry)
+    /// Whether a header or an inline table has defined it.
+    defined: bool = false
 }
 
-Entry :: struct {
-    key: string
-    value: Value
+pub(package) Entry :: struct {
+    pub(package) key: string
+    pub(package) value: Value
     /// The line of the key, from 1.
-    line: usize
+    pub(package) line: usize
 }
 
 /// What went wrong, and on which line.
-TomlError :: struct {
-    line: usize
-    message: string
+pub(package) TomlError :: struct {
+    pub(package) line: usize
+    pub(package) message: string
+    /// The column of the error on its line, from 1.
+    pub(package) col: usize = 1
 }
 
-new_table :: fn() -> ^Table needs Alloc => new(Table(entries: list(Entry)))!
+pub(package) new_table :: fn() -> ^Table needs Alloc => new(Table(entries: list(Entry)))!
 
 /// The entry `key` of `t`, if it has one.
-get :: fn(t: ^const Table, key: string) -> ?^Entry {
+pub(package) get :: fn(t: ^const Table, key: string) -> ?^Entry {
     for i in 0..t.entries.items.len {
         if t.entries.items[i].key is key { return &t.entries.items[i] }
     }
@@ -41,13 +47,13 @@ get :: fn(t: ^const Table, key: string) -> ?^Entry {
 }
 
 /// `v` as a string, if it is one.
-as_str :: fn(v: Value) -> ?string => match v {
+pub(package) as_str :: fn(v: Value) -> ?string => match v {
     .Str(s) => s
     _ => null
 }
 
 /// `v` as a table, if it is one.
-as_table :: fn(v: Value) -> ?^Table => match v {
+pub(package) as_table :: fn(v: Value) -> ?^Table => match v {
     .Table(t) => t
     _ => null
 }
@@ -56,10 +62,13 @@ Reader :: struct {
     text: string
     pos: usize = 0
     line: usize = 1
+    /// Whether the value just read was a number or a boolean.
+    bare: bool = false
 }
 
-/// Parses a whole document into its root table.
-parse_toml :: fn(text: string) -> TomlError!^Table needs Alloc {
+/// Parses a whole document into its root table. The messages are those of the TOML library
+/// the reference implementation uses, as far as they matter to a `gamma.toml`.
+pub(package) parse_toml :: fn(text: string) -> TomlError!^Table needs Alloc {
     r := Reader(text: text)
     root := new_table()
     current := root
@@ -72,7 +81,7 @@ parse_toml :: fn(text: string) -> TomlError!^Table needs Alloc {
             line := r.line
             path := try r.key_path()
             r.skip_space()
-            if r.peek() is not '=' { return !r.error("expected `=` after a key") }
+            if r.peek() is not '=' { return !r.error("key with no value, expected `=`") }
             r.pos += 1
             r.skip_space()
             v := try r.value()
@@ -83,7 +92,18 @@ parse_toml :: fn(text: string) -> TomlError!^Table needs Alloc {
     return root
 }
 
-error :: fn(r: ^const Reader, message: string) -> TomlError => TomlError(line: r.line, message: message)
+error :: fn(r: ^const Reader, message: string) -> TomlError {
+    start: usize = 0
+    i := r.pos
+    while i > 0 {
+        if r.text[i - 1] is '\n' {
+            start = i
+            break
+        }
+        i -= 1
+    }
+    return TomlError(line: r.line, message: message, col: r.pos - start + 1)
+}
 
 peek :: fn(r: ^const Reader) -> ?u8 => r.text.get(r.pos)
 
@@ -109,15 +129,21 @@ skip_space_and_newlines :: fn(r: ^Reader) {
 
 /// After an entry or a header: blanks, an optional comment, and the end of the line.
 end_of_line :: fn(r: ^Reader) -> TomlError!() {
+    before := r.pos
     r.skip_space()
     if r.peek() is '#' {
         while r.peek() is not null and r.peek() is not '\n' { r.pos += 1 }
     }
     if r.peek() is '\r' { r.pos += 1 }
     if r.peek() is null { return () }
-    if r.peek() is not '\n' { return !r.error("expected the end of the line") }
+    if r.peek() is not '\n' {
+        if r.bare and r.pos > before { return !r.error(QUOTED) }
+        return !r.error("unexpected key or value, expected newline, `#`")
+    }
     return ()
 }
+
+QUOTED :: "string values must be quoted, expected literal string"
 
 /// `[a.b]` or `[[a.b]]`: the table that the following entries belong to.
 table_header :: fn(r: ^Reader, root: ^Table) -> TomlError!^Table needs Alloc {
@@ -128,10 +154,10 @@ table_header :: fn(r: ^Reader, root: ^Table) -> TomlError!^Table needs Alloc {
     line := r.line
     path := try r.key_path()
     r.skip_space()
-    if r.peek() is not ']' { return !r.error("expected `]` after the table name") }
+    if r.peek() is not ']' { return !r.error(if array { "unclosed array table, expected `]`" } else { "unclosed table, expected `]`" }) }
     r.pos += 1
     if array {
-        if r.peek() is not ']' { return !r.error("expected `]]` after the table name") }
+        if r.peek() is not ']' { return !r.error("unclosed array table, expected `]`") }
         r.pos += 1
     }
     names := path.items
@@ -140,7 +166,7 @@ table_header :: fn(r: ^Reader, root: ^Table) -> TomlError!^Table needs Alloc {
         last := i is names.len - 1
         if e := t.get(name) {
             if last and array {
-                .Array(items) := e.value else return !r.error("this key is not an array of tables")
+                .Array(items) := e.value else return !r.error("duplicate key")
                 fresh := new_table()
                 grown := items
                 grown.push(.Table(fresh))!
@@ -148,12 +174,16 @@ table_header :: fn(r: ^Reader, root: ^Table) -> TomlError!^Table needs Alloc {
                 return fresh
             }
             match e.value {
-                .Table(sub) => { t = sub }
-                .Array(items) if items.items.len > 0 => {
-                    .Table(sub) := items.items[items.items.len - 1] else return !r.error("this key is not a table")
+                .Table(sub) => {
+                    if last and not array and sub.defined { return !r.error("duplicate key") }
                     t = sub
                 }
-                _ => return !r.error("this key is not a table")
+                .Array(items) if items.items.len > 0 => {
+                    if last and not array { return !r.error("duplicate key") }
+                    .Table(sub) := items.items[items.items.len - 1] else return !r.error("duplicate key")
+                    t = sub
+                }
+                _ => return !r.error("duplicate key")
             }
         } else {
             fresh := new_table()
@@ -167,6 +197,7 @@ table_header :: fn(r: ^Reader, root: ^Table) -> TomlError!^Table needs Alloc {
             t = fresh
         }
     }
+    t.defined = true
     return t
 }
 
@@ -184,14 +215,16 @@ key_path :: fn(r: ^Reader) -> TomlError!List(string) needs Alloc {
 }
 
 key :: fn(r: ^Reader) -> TomlError!string needs Alloc {
-    c := r.peek() else return !r.error("expected a key")
-    if c in ('"', '\'') { return r.parse_string() }
+    c := r.peek() else return !r.error("key with no value, expected `=`")
+    if c in ('"', '\'') {
+        return r.parse_string() else e => { return !TomlError(line: e.line, message: "key with no value, expected `=`") }
+    }
     start := r.pos
     while k := r.peek() {
         if not (k in 'a'..='z' or k in 'A'..='Z' or k in '0'..='9' or k in ('_', '-')) { break }
         r.pos += 1
     }
-    if r.pos is start { return !r.error("expected a key") }
+    if r.pos is start { return !r.error("unquoted keys cannot be empty, expected letters, numbers, `-`, `_`") }
     return r.text[start..r.pos]
 }
 
@@ -200,7 +233,7 @@ insert_path :: fn(t: ^Table, path: []const string, v: Value, line: usize) -> Tom
     target := t
     for name in path[0..path.len - 1] {
         if e := target.get(name) {
-            sub := as_table(e.value) else return !TomlError(line: line, message: "this key is not a table")
+            sub := as_table(e.value) else return !TomlError(line: line, message: "duplicate key")
             target = sub
         } else {
             fresh := new_table()
@@ -209,68 +242,182 @@ insert_path :: fn(t: ^Table, path: []const string, v: Value, line: usize) -> Tom
         }
     }
     name := path[path.len - 1]
-    if target.get(name) is not null { return !TomlError(line: line, message: "this key is defined twice") }
+    if target.get(name) is not null { return !TomlError(line: line, message: "duplicate key") }
     target.entries.push(Entry(key: name, value: v, line: line))!
     return ()
 }
 
 value :: fn(r: ^Reader) -> TomlError!Value needs Alloc {
-    c := r.peek() else return !r.error("expected a value")
+    r.bare = false
+    c := r.peek() else return !r.error(QUOTED)
     match c {
         '"', '\'' => return Value.Str(try r.parse_string())
         '[' => return r.array()
         '{' => return r.inline_table()
-        't' if r.text[r.pos..].starts_with("true") => {
+        't' => {
+            if not r.text[r.pos..].starts_with("true") { return !r.error("invalid boolean, expected `true`") }
             r.pos += 4
+            r.bare = true
             return Value.Bool(true)
         }
-        'f' if r.text[r.pos..].starts_with("false") => {
+        'f' => {
+            if not r.text[r.pos..].starts_with("false") { return !r.error("invalid boolean, expected `false`") }
             r.pos += 5
+            r.bare = true
             return Value.Bool(false)
         }
-        '+', '-', '0'..='9' => return r.integer()
-        _ => return !r.error("expected a value")
+        '+', '-', '0'..='9' => return r.number()
+        'i', 'n' => {
+            rest := r.text[r.pos..]
+            if rest.starts_with("inf") or rest.starts_with("nan") {
+                r.pos += 3
+                r.bare = true
+                return Value.Other(rest[0..3])
+            }
+            return !r.error(QUOTED)
+        }
+        '=' => return !r.error("extra `=`, expected nothing")
+        _ => return !r.error(QUOTED)
     }
 }
 
-integer :: fn(r: ^Reader) -> TomlError!Value {
+/// An integer, or (kept as text) a float or a date.
+number :: fn(r: ^Reader) -> TomlError!Value {
+    start := r.pos
+    r.bare = true
     negative := r.peek() is '-'
     if r.peek() in ('+', '-') { r.pos += 1 }
+    if r.text[r.pos..].starts_with("inf") or r.text[r.pos..].starts_with("nan") {
+        r.pos += 3
+        return Value.Other(r.text[start..r.pos])
+    }
+    c := r.peek() else return !r.error(QUOTED)
+    if c not in '0'..='9' { return !r.error(QUOTED) }
+    radix: i64 = 10
+    if c is '0' {
+        if n := r.text.get(r.pos + 1) {
+            if n is 'x' { radix = 16 } else if n is 'o' { radix = 8 } else if n is 'b' { radix = 2 }
+        }
+    }
+    if radix is not 10 { r.pos += 2 }
     n: i64 = 0
     digits := 0
+    last_underscore := false
+    first := r.pos
     while d := r.peek() {
         if d is '_' {
+            if digits is 0 or last_underscore { return !r.error("`_` may only go between digits, expected nothing") }
+            last_underscore = true
             r.pos += 1
             continue
         }
-        if d not in '0'..='9' { break }
-        n = n *? 10 +? i64(d - '0') else return !r.error("the integer is too large")
+        v: i64 = if d in '0'..='9' {
+            i64(d - '0')
+        } else if radix is 16 and d in 'a'..='f' {
+            i64(d - 'a') + 10
+        } else if radix is 16 and d in 'A'..='F' {
+            i64(d - 'A') + 10
+        } else {
+            99
+        }
+        if v >= radix { break }
+        if digits is 1 and r.text[first] is '0' and radix is 10 { return !r.error("unexpected leading zero, expected nothing") }
+        n = n *? radix +? v else return !r.error("integer number overflowed")
         digits += 1
+        last_underscore = false
         r.pos += 1
     }
-    if digits is 0 { return !r.error("expected a value") }
+    if last_underscore { return !r.error("`_` may only go between digits, expected nothing") }
+    if digits is 0 { return !r.error("integer number overflowed") }
+    // A float or a date: kept as text.
+    if radix is 10 and r.peek() in ('.', 'e', 'E', '-', ':') {
+        while k := r.peek() {
+            if not (k in 'a'..='z' or k in 'A'..='Z' or k in '0'..='9' or k in ('.', ':', '-', '+', '_')) { break }
+            r.pos += 1
+        }
+        return Value.Other(r.text[start..r.pos])
+    }
     return Value.Int(if negative { -n } else { n })
 }
 
-/// `"basic"` with escapes, or `'literal'`.
+/// A string: `"basic"` with escapes, `'literal'`, or the multi-line forms of both.
 parse_string :: fn(r: ^Reader) -> TomlError!string needs Alloc {
     quote := r.text[r.pos]
-    r.pos += 1
+    triple := r.text[r.pos..].starts_with(if quote is '"' { "\"\"\"" } else { "'''" })
+    r.pos += if triple { 3 } else { 1 }
+    kind := if quote is '"' { "basic" } else { "literal" }
+    unclosed := if triple {
+        str.format("invalid multi-line {} string, expected `{}`", kind, r.text[r.pos - 1..r.pos])!
+    } else {
+        str.format("invalid {} string, expected `{}`", kind, r.text[r.pos - 1..r.pos])!
+    }
     out := list(u8)
+    if triple {
+        // A newline right after the opening quotes is not part of the string.
+        if r.peek() is '\r' and r.text.get(r.pos + 1) is '\n' { r.pos += 1 }
+        if r.peek() is '\n' {
+            r.pos += 1
+            r.line += 1
+        }
+    }
     while true {
-        c := r.peek() else return !r.error("unterminated string")
+        c := r.peek() else return !r.error(unclosed)
+        if c is quote {
+            if not triple {
+                r.pos += 1
+                break
+            }
+            if r.text[r.pos..].starts_with(if quote is '"' { "\"\"\"" } else { "'''" }) {
+                r.pos += 3
+                // Up to two more quotes belong to the string.
+                extra := 0
+                while extra < 2 and r.peek() is quote {
+                    out.push(quote)!
+                    r.pos += 1
+                    extra += 1
+                }
+                break
+            }
+            out.push(c)!
+            r.pos += 1
+            continue
+        }
+        if c is '\n' {
+            if not triple { return !r.error(unclosed) }
+            r.line += 1
+        }
         r.pos += 1
-        if c is quote { break }
-        if c is '\n' { return !r.error("unterminated string") }
         if c is '\\' and quote is '"' {
-            e := r.peek() else return !r.error("unterminated string")
+            e := r.peek() else return !r.error(unclosed)
             r.pos += 1
             match e {
+                'b' => out.push(8)!
+                'e' => out.push(27)!
+                'f' => out.push(12)!
                 'n' => out.push('\n')!
-                't' => out.push('\t')!
                 'r' => out.push('\r')!
+                't' => out.push('\t')!
                 '"', '\\' => out.push(e)!
-                _ => return !r.error("unknown escape in a string")
+                'x' => try r.hex_escape(&out, 2)
+                'u' => try r.hex_escape(&out, 4)
+                'U' => try r.hex_escape(&out, 8)
+                ' ', '\t', '\r', '\n' => {
+                    if not triple { return !r.error(MISSING_ESCAPE) }
+                    // A backslash at the end of a line removes the white space after it.
+                    r.pos -= 1
+                    broke := false
+                    while k := r.peek() {
+                        if k is '\n' {
+                            r.line += 1
+                            broke = true
+                        } else if k not in (' ', '\t', '\r') {
+                            break
+                        }
+                        r.pos += 1
+                    }
+                    if not broke { return !r.error(MISSING_ESCAPE) }
+                }
+                _ => return !r.error(MISSING_ESCAPE)
             }
         } else {
             out.push(c)!
@@ -279,22 +426,70 @@ parse_string :: fn(r: ^Reader) -> TomlError!string needs Alloc {
     return out.items
 }
 
+MISSING_ESCAPE :: "missing escaped value, expected `b`, `e`, `f`, `n`, `r`, `\\`, `\"`, `x`, `u`, `U`"
+
+/// The `digits` hexadecimal digits of a `\u` escape, as UTF-8.
+hex_escape :: fn(r: ^Reader, out: ^List(u8), digits: usize) -> TomlError!() needs Alloc {
+    code: u32 = 0
+    for _ in 0..digits {
+        d := r.peek() else return !r.error("too few unicode value digits, expected unicode hexadecimal value")
+        v: u32 = if d in '0'..='9' {
+            u32(d - '0')
+        } else if d in 'a'..='f' {
+            u32(d - 'a') + 10
+        } else if d in 'A'..='F' {
+            u32(d - 'A') + 10
+        } else {
+            return !r.error("too few unicode value digits, expected unicode hexadecimal value")
+        }
+        code = code * 16 + v
+        r.pos += 1
+    }
+    if code > 0x10ffff or (code >= 0xd800 and code < 0xe000) { return !r.error("invalid unicode value, expected a unicode scalar value") }
+    if code < 0x80 {
+        out.push(code.trunc(u8))!
+    } else if code < 0x800 {
+        out.push((0xc0 | (code >> 6)).trunc(u8))!
+        out.push((0x80 | (code & 0x3f)).trunc(u8))!
+    } else if code < 0x10000 {
+        out.push((0xe0 | (code >> 12)).trunc(u8))!
+        out.push((0x80 | ((code >> 6) & 0x3f)).trunc(u8))!
+        out.push((0x80 | (code & 0x3f)).trunc(u8))!
+    } else {
+        out.push((0xf0 | (code >> 18)).trunc(u8))!
+        out.push((0x80 | ((code >> 12) & 0x3f)).trunc(u8))!
+        out.push((0x80 | ((code >> 6) & 0x3f)).trunc(u8))!
+        out.push((0x80 | (code & 0x3f)).trunc(u8))!
+    }
+    return ()
+}
+
+/// `e` as if it were on `line`.
+at_line :: fn(e: TomlError, line: usize) -> TomlError => TomlError(line: line, message: e.message, col: e.col)
+
 /// `[a, b, …]`, which may span lines and end with a comma.
 array :: fn(r: ^Reader) -> TomlError!Value needs Alloc {
+    first_line := r.line
     r.pos += 1
     items := list(Value)
     while true {
         r.skip_space_and_newlines()
         if r.peek() is ']' { break }
+        if r.peek() is null { return !at_line(r.error("unclosed array, expected `]`"), first_line) }
+        if r.peek() is ',' { return !r.error("extra comma in array, expected value") }
         items.push(try r.value())!
+        before := r.pos
         r.skip_space_and_newlines()
         if r.peek() is ',' {
             r.pos += 1
         } else if r.peek() is not ']' {
-            return !r.error("expected `,` or `]` in an array")
+            if r.peek() is null { return !at_line(r.error("unclosed array, expected `]`"), first_line) }
+            if r.bare and r.pos > before { return !r.error(QUOTED) }
+            return !r.error("unclosed array, expected `]`")
         }
     }
     r.pos += 1
+    r.bare = false
     return Value.Array(items)
 }
 
@@ -302,26 +497,27 @@ array :: fn(r: ^Reader) -> TomlError!Value needs Alloc {
 inline_table :: fn(r: ^Reader) -> TomlError!Value needs Alloc {
     r.pos += 1
     t := new_table()
-    r.skip_space()
-    if r.peek() is '}' {
-        r.pos += 1
-        return Value.Table(t)
-    }
+    t.defined = true
     while true {
+        r.skip_space_and_newlines()
+        if r.peek() is '}' { break }
+        if r.peek() is null { return !r.error("unclosed inline table, expected `}`") }
         line := r.line
         path := try r.key_path()
-        r.skip_space()
-        if r.peek() is not '=' { return !r.error("expected `=` after a key") }
+        r.skip_space_and_newlines()
+        if r.peek() is not '=' { return !r.error("key with no value, expected `=`") }
         r.pos += 1
-        r.skip_space()
+        r.skip_space_and_newlines()
         v := try r.value()
         try insert_path(t, path.items, v, line)
-        r.skip_space()
+        r.skip_space_and_newlines()
         if r.peek() is '}' { break }
-        if r.peek() is not ',' { return !r.error("expected `,` or `}` in an inline table") }
+        if r.peek() is null { return !r.error("unclosed inline table, expected `}`") }
+        if r.peek() is not ',' { return !r.error("extra assignment between key-value pairs, expected `,`") }
         r.pos += 1
     }
     r.pos += 1
+    r.bare = false
     return Value.Table(t)
 }
 
@@ -367,3 +563,4 @@ name = 'b'
 }
 
 arena :: import "std/arena"
+str :: import "std/str"
