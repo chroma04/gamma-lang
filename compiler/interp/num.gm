@@ -1,0 +1,306 @@
+// Numbers of the interpreter: floats in the target's byte order, rounded to their type, and
+// exact integers of up to 129 bits for the conversions (mirrors `src/interp/num.rs`).
+
+bigint :: import "../bigint"
+ratio :: import "../ratio"
+
+/// The low `bits` bits set.
+num_mask :: fn(bits: u32) -> u128 => if bits >= 128 { ~u128(0) } else { (u128(1) << u128(bits)) - 1 }
+
+/// The two's-complement bits `v` of an integer of `bits` bits, as an integer type stores
+/// them: sign-extended to the whole storage if `signed`, else zero-extended.
+num_ext :: fn(signed: bool, bits: u32, v: u128) -> u128 {
+    if bits >= 128 { return v }
+    masked := v & num_mask(bits)
+    if signed and (masked >> u128(bits - 1)) & 1 is 1 { return masked | ~num_mask(bits) }
+    return masked
+}
+
+/// An exact integer of up to 129 bits: its sign and magnitude (zero is not negative).
+NumVal :: struct {
+    neg: bool
+    mag: u128
+}
+
+/// The integer whose bits (sign-extended to 128 if `signed`) are `v`.
+num_val :: fn(signed: bool, v: u128) -> NumVal {
+    if signed and (v >> 127) is 1 { return NumVal(neg: true, mag: 0 -% v) }
+    return NumVal(neg: false, mag: v)
+}
+
+/// The two's-complement bits of `x`, modulo 2^128.
+num_bits :: fn(x: NumVal) -> u128 => if x.neg { 0 -% x.mag } else { x.mag }
+
+/// Whether `x` is in the range of an integer type.
+num_fits :: fn(x: NumVal, signed: bool, bits: u32) -> bool {
+    if signed {
+        lim := u128(1) << u128(bits - 1)
+        return if x.neg { x.mag <= lim } else { x.mag < lim }
+    }
+    return not x.neg and x.mag <= num_mask(bits)
+}
+
+/// `x` clamped to the range of an integer type.
+num_sat :: fn(x: NumVal, signed: bool, bits: u32) -> NumVal {
+    if signed {
+        lim := u128(1) << u128(bits - 1)
+        if x.neg and x.mag > lim { return NumVal(neg: true, mag: lim) }
+        if not x.neg and x.mag >= lim { return NumVal(neg: false, mag: lim - 1) }
+        return x
+    }
+    if x.neg { return NumVal(neg: false, mag: 0) }
+    if x.mag > num_mask(bits) { return NumVal(neg: false, mag: num_mask(bits)) }
+    return x
+}
+
+/// The integer part of the finite float `x` rounded as `op` says (`Trunc`, `Round` to even,
+/// `Floor` or `Ceil`), or `null` if its magnitude is 2^128 or more.
+num_float_int :: fn(x: f64, op: tir.Builtin) -> ?NumVal {
+    raw := x.bits(u64)
+    neg := (raw >> 63) is 1
+    e := ((raw >> 52) & 0x7ff).bits(i64)
+    man := raw & 0xF_FFFF_FFFF_FFFF
+    if e is 0 {
+        e = 1
+    } else {
+        man |= u64(1) << 52
+    }
+    // x = man * 2^sh.
+    sh := e - 1075
+    mag: u128 = 0
+    if sh >= 0 {
+        if man is 0 { return NumVal(neg: false, mag: 0) }
+        if sh >= 128 or i64(64 - @clz(man)) + sh > 128 { return null }
+        mag = u128(man) << sh.trunc(u128)
+    } else {
+        k := -sh
+        q: u64 = 0
+        rem: u64 = 0
+        half: u64 = 0
+        if k >= 64 {
+            // man < 2^53 is below half of 2^k for k > 53.
+            rem = man
+            half = 0
+        } else {
+            q = man >> k.trunc(u64)
+            rem = man & ((u64(1) << k.trunc(u64)) - 1)
+            half = u64(1) << (k - 1).trunc(u64)
+        }
+        up := false
+        inexact := rem is not 0
+        match op {
+            .Floor => { up = neg and inexact }
+            .Ceil => { up = not neg and inexact }
+            .Round => {
+                if k >= 64 {
+                    up = false
+                } else {
+                    up = rem > half or (rem is half and q & 1 is 1)
+                }
+            }
+            _ => {}
+        }
+        mag = u128(q)
+        if up { mag += 1 }
+    }
+    return NumVal(neg: neg and mag is not 0, mag: mag)
+}
+
+// ---------------------------------------------------------------------------------
+// Floats
+// ---------------------------------------------------------------------------------
+
+/// The `f64` equal to the binary16 number with bits `h`.
+num_f16_to_f64 :: fn(h: u16) -> f64 {
+    sign := u64(h & 0x8000) << 48
+    exp := u64((h >> 10) & 0x1f)
+    man := u64(h & 0x3ff)
+    if exp is 0 {
+        v := man.to(f64) * 0x1.0p-24
+        return if sign is 0 { v } else { -v }
+    }
+    if exp is 0x1f {
+        if man is 0 { return (sign | 0x7FF0_0000_0000_0000).bits(f64) }
+        // As the hardware widens a NaN: sign and payload kept, quiet.
+        return (sign | 0x7FF8_0000_0000_0000 | (man << 42)).bits(f64)
+    }
+    return (sign | ((exp + 1008) << 52) | (man << 42)).bits(f64)
+}
+
+/// The bits of the binary16 number nearest `x` (ties to even).
+num_f64_to_f16 :: fn(x: f64) -> u16 {
+    bits := x.bits(u64)
+    sign := (bits >> 63).trunc(u16) << 15
+    exp := ((bits >> 52) & 0x7ff).bits(i64)
+    man := bits & 0xF_FFFF_FFFF_FFFF
+    if exp is 0x7ff {
+        // A NaN keeps its sign and the top of its payload, and is quiet.
+        if man is 0 { return sign | 0x7c00 }
+        return sign | 0x7e00 | (man >> 42).trunc(u16)
+    }
+    if exp is 0 { return sign }
+    e := exp - 1023
+    he := e + 15
+    if he >= 1 {
+        if he >= 0x1f { return sign | 0x7c00 }
+        keep := (man >> 42).trunc(u32)
+        rem := man & ((u64(1) << 42) - 1)
+        half := u64(1) << 41
+        r := (he.trunc(u32) << 10) | keep
+        if rem > half or (rem is half and keep & 1 is 1) { r += 1 }
+        return sign | r.trunc(u16)
+    }
+    mm := (u128(1) << 52) | u128(man)
+    shift := 28 - e
+    if shift >= 120 { return sign }
+    s := u128(shift.trunc(u32))
+    q := mm >> s
+    rem := mm & ((u128(1) << s) - 1)
+    half := u128(1) << (s - 1)
+    r := q.trunc(u32)
+    if rem > half or (rem is half and r & 1 is 1) { r += 1 }
+    return sign | r.trunc(u16)
+}
+
+/// `x` rounded to the precision of the float type of `width` bits.
+num_round :: fn(x: f64, width: u16) -> f64 {
+    if width is 32 { return f64(x.to(f32)) }
+    if width is 16 { return num_f16_to_f64(num_f64_to_f16(x)) }
+    return x
+}
+
+/// The width in bits of float type `t`, or of a float stored in `n` bytes.
+float_width :: fn(m: ^const Machine, t: Ty, n: usize) -> u16 {
+    if .Float(w) := m.kind(t) { return w }
+    return if n is 2 { 16 } else if n is 4 { 32 } else { 64 }
+}
+
+/// The float of type `t` in `b`, as an `f64`.
+get_float :: fn(m: ^const Machine, t: Ty, b: []const u8) -> f64 {
+    w := float_width(m, t, b.len)
+    if w is 16 { return num_f16_to_f64(m.get_uint(b[0..2]).trunc(u16)) }
+    if w is 32 { return f64(m.get_uint(b[0..4]).trunc(u32).bits(f32)) }
+    return m.get_uint(b[0..8]).trunc(u64).bits(f64)
+}
+
+/// Writes `x`, rounded to the float type `t`, to `dst`.
+put_float :: fn(m: ^const Machine, t: Ty, x: f64, dst: []u8) {
+    w := float_width(m, t, dst.len)
+    if w is 16 {
+        m.put_uint(dst, u128(num_f64_to_f16(x)))
+    } else if w is 32 {
+        m.put_uint(dst, u128(x.to(f32).bits(u32)))
+    } else {
+        m.put_uint(dst, u128(x.bits(u64)))
+    }
+}
+
+/// The nearest `f64` to the integer literal `i`.
+big_float :: fn(_m: ^const Machine, i: bigint.Int) -> f64 needs Alloc => ratio.from_int(i).to_f64()
+
+/// The float of `width` bits nearest the exact integer `x`, as an `f64`; `f16` goes through
+/// an `f64`, as in the reference.
+num_int_to_float :: fn(x: NumVal, width: u16) -> f64 {
+    if width is 32 {
+        v := f64(x.mag.to(f32))
+        return if x.neg { -v } else { v }
+    }
+    v := x.mag.to(f64)
+    if x.neg { v = -v }
+    return if width is 16 { num_round(v, 16) } else { v }
+}
+
+/// Whether the finite float `x` has no fractional part.
+num_integral :: fn(x: f64) -> bool {
+    raw := x.bits(u64)
+    e := ((raw >> 52) & 0x7ff).bits(i64)
+    man := raw & 0xF_FFFF_FFFF_FFFF
+    if e is 0 {
+        e = 1
+    } else {
+        man |= u64(1) << 52
+    }
+    if man is 0 { return true }
+    sh := e - 1075
+    if sh >= 0 { return true }
+    k := -sh
+    if k >= 64 { return false }
+    return (man & ((u64(1) << k.trunc(u64)) - 1)) is 0
+}
+
+/// `x` is a NaN.
+num_is_nan :: fn(x: f64) -> bool => x is not x
+
+/// `min` of two floats: a NaN gives way to the other operand, `-0.0` is below `0.0`.
+num_fmin :: fn(x, y: f64) -> f64 {
+    if num_is_nan(x) { return y }
+    if num_is_nan(y) { return x }
+    if x is 0.0 and y is 0.0 { return if x.bits(u64) >> 63 is 1 { x } else { y } }
+    return if x < y { x } else { y }
+}
+
+/// `max` of two floats, as `num_fmin`.
+num_fmax :: fn(x, y: f64) -> f64 {
+    if num_is_nan(x) { return y }
+    if num_is_nan(y) { return x }
+    if x is 0.0 and y is 0.0 { return if x.bits(u64) >> 63 is 1 { y } else { x } }
+    return if x > y { x } else { y }
+}
+
+// ---------------------------------------------------------------------------------
+// Reading and writing integers
+// ---------------------------------------------------------------------------------
+
+/// The integer in the bytes `b` (at most 16), zero-extended: as `get_uint`, quicker for the
+/// widths of the common integer types.
+rd_uint :: fn(m: ^const Machine, b: []const u8) -> u128 {
+    if m.little {
+        if b.len is 8 {
+            return u128(u64(b[0]) | (u64(b[1]) << 8) | (u64(b[2]) << 16) | (u64(b[3]) << 24) | (u64(b[4]) << 32) | (u64(b[5]) << 40) | (u64(b[6]) << 48) | (u64(b[7]) << 56))
+        }
+        if b.len is 4 { return u128(u32(b[0]) | (u32(b[1]) << 8) | (u32(b[2]) << 16) | (u32(b[3]) << 24)) }
+        if b.len is 1 { return u128(b[0]) }
+        if b.len is 2 { return u128(u16(b[0]) | (u16(b[1]) << 8)) }
+    }
+    return m.get_uint(b)
+}
+
+/// Writes the low bytes of `v` to `b`, as `put_uint`, quicker for the common widths.
+wr_uint :: fn(m: ^const Machine, b: []u8, v: u128) {
+    if m.little {
+        if b.len is 8 {
+            x := v.trunc(u64)
+            b[0] = x.trunc(u8)
+            b[1] = (x >> 8).trunc(u8)
+            b[2] = (x >> 16).trunc(u8)
+            b[3] = (x >> 24).trunc(u8)
+            b[4] = (x >> 32).trunc(u8)
+            b[5] = (x >> 40).trunc(u8)
+            b[6] = (x >> 48).trunc(u8)
+            b[7] = (x >> 56).trunc(u8)
+            return ()
+        }
+        if b.len is 4 {
+            x := v.trunc(u32)
+            b[0] = x.trunc(u8)
+            b[1] = (x >> 8).trunc(u8)
+            b[2] = (x >> 16).trunc(u8)
+            b[3] = (x >> 24).trunc(u8)
+            return ()
+        }
+        if b.len is 1 {
+            b[0] = v.trunc(u8)
+            return ()
+        }
+    }
+    m.put_uint(b, v)
+}
+
+/// The value of the integer in `b` whose type has signedness and width `info`, sign-extended
+/// to 128 bits if it is signed: as `get_int`.
+rd_int :: fn(m: ^const Machine, info: (signed: bool, bits: u32), b: []const u8) -> u128 {
+    v := rd_uint(m, b)
+    if info.bits >= 128 { return v }
+    if info.signed and (v >> u128(info.bits - 1)) & 1 is 1 { return v | ~num_mask(info.bits) }
+    return v & num_mask(info.bits)
+}

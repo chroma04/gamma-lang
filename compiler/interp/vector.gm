@@ -1,0 +1,114 @@
+// The builtins of vectors `#simd [N]T` (§5.6.2), lane by lane with the scalar rules (mirrors
+// `src/interp/vector.rs`). `VecLoad` and `VecStore` reach memory and are in `heap.gm`.
+
+/// A vector builtin on the argument values `v`, the types of the first two being `t0` and
+/// `t1`, giving a value of type `res_ty` in `dst`.
+vector_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, res_ty, t0, t1: Ty, v: [][]u8, dst: []u8) -> Flow!() needs Run {
+    match op {
+        .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe => {
+            .Array(n, lane, _) := m.kind(t0) else return !m.trap(span, "internal error: a lane comparison of a value that is not a vector")
+            sz := us(m.size(lane))
+            for i in 0..us(n) {
+                x := v[0][i * sz..(i + 1) * sz]
+                y := v[1][i * sz..(i + 1) * sz]
+                r := match op {
+                    .LaneEq => try m.equal(span, lane, x, y)
+                    .LaneNe => not try m.equal(span, lane, x, y)
+                    .LaneLt => try m.cmp_op(span, .Lt, lane, x, y)
+                    .LaneLe => try m.cmp_op(span, .Le, lane, x, y)
+                    .LaneGt => try m.cmp_op(span, .Gt, lane, x, y)
+                    _ => try m.cmp_op(span, .Ge, lane, x, y)
+                }
+                dst[i] = if r { 1 } else { 0 }
+            }
+        }
+        .ReduceSum, .ReduceMin, .ReduceMax => {
+            .Array(n, lane, _) := m.kind(t0) else return !m.trap(span, "internal error: a reduction of a value that is not a vector")
+            sz := us(m.size(lane))
+            mk := m.mark()
+            acc := m.tmp(u64(sz))
+            acc.copy_from(v[0][0..sz])
+            next := m.tmp(u64(sz))
+            args := list([]u8)
+            defer args.deinit()
+            for i in 1..us(n) {
+                x := v[0][i * sz..(i + 1) * sz]
+                if op is .ReduceSum {
+                    try m.binop(span, .Add(.Checked), lane, lane, lane, acc, x, next)
+                } else {
+                    args.truncate(0)
+                    args.push(acc)!
+                    args.push(x)!
+                    scalar: tir.Builtin = if op is .ReduceMin { .Min } else { .Max }
+                    try m.apply_builtin(span, scalar, lane, lane, lane, args.items, next)
+                }
+                acc.copy_from(next)
+            }
+            dst.copy_from(acc)
+            m.release(mk)
+        }
+        .MaskAll => {
+            r := true
+            for x in v[0] {
+                if x is 0 { r = false }
+            }
+            dst[0] = if r { 1 } else { 0 }
+        }
+        .MaskAny => {
+            r := false
+            for x in v[0] {
+                if x is not 0 { r = true }
+            }
+            dst[0] = if r { 1 } else { 0 }
+        }
+        .MaskCount => {
+            c: u64 = 0
+            for x in v[0] {
+                if x is not 0 { c += 1 }
+            }
+            m.put_uint(dst, u128(c))
+        }
+        .Select => {
+            .Array(n, lane, _) := m.kind(t1) else return !m.trap(span, "internal error: a select of a value that is not a vector")
+            sz := us(m.size(lane))
+            dst.copy_from(v[2])
+            for i in 0..us(n) {
+                if v[0][i] is not 0 { dst[i * sz..(i + 1) * sz].copy_from(v[1][i * sz..(i + 1) * sz]) }
+            }
+        }
+        .LaneMin, .LaneMax, .LaneAbs => {
+            .Array(n, lane, _) := m.kind(t0) else return !m.trap(span, "internal error: a lane operation on a value that is not a vector")
+            sz := us(m.size(lane))
+            scalar: tir.Builtin = match op {
+                .LaneMin => .Min
+                .LaneMax => .Max
+                _ => .Abs
+            }
+            args := list([]u8)
+            defer args.deinit()
+            for i in 0..us(n) {
+                args.truncate(0)
+                for x in v { args.push(x[i * sz..(i + 1) * sz])! }
+                try m.apply_builtin(span, scalar, lane, lane, lane, args.items, dst[i * sz..(i + 1) * sz])
+            }
+        }
+        .LaneConvert => {
+            .Array(n, from, _) := m.kind(t0) else return !m.trap(span, "internal error: a conversion of a value that is not a vector")
+            .Array(_, to, _) := m.kind(res_ty) else return !m.trap(span, "internal error: a conversion to a value that is not a vector")
+            fsz := us(m.size(from))
+            tsz := us(m.size(to))
+            how: tir.Builtin = if m.kind(to) is .Float(_) { .Round } else { .Convert }
+            for i in 0..us(n) { try m.convert(span, how, from, to, v[0][i * fsz..(i + 1) * fsz], dst[i * tsz..(i + 1) * tsz]) }
+        }
+        .Shuffle => {
+            .Array(n, lane, _) := m.kind(t0) else return !m.trap(span, "internal error: a shuffle of a value that is not a vector")
+            sz := us(m.size(lane))
+            for j in 1..v.len {
+                k := us(m.get_u64(v[j]))
+                if k >= us(n) { return !m.trap(span, "internal error: a shuffle index out of range") }
+                dst[(j - 1) * sz..j * sz].copy_from(v[0][k * sz..(k + 1) * sz])
+            }
+        }
+        _ => return !m.unsupported(span, "this vector builtin")
+    }
+}
