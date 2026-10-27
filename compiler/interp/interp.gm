@@ -215,6 +215,8 @@ pub Machine :: struct {
     alloc_tags: hash_map.HashMap(u64, AllocTag)
     /// The state of the system services (`sys.gm`).
     sys: SysState
+    /// The program's threads (`threads.gm`).
+    threads: Threads
     /// What the program writes to its standard output and error goes through it, if set.
     filter: ?^Filter
 }
@@ -295,6 +297,7 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         alloc_tags: hash_map.hash_map(u64, AllocTag),
         sys: sys_state(),
         filter: null,
+        threads: threads(),
     )
     m.scratch.chunks.push(make_fill(CHUNK, u8(0))!)!
     // Handle 0 is the empty context.

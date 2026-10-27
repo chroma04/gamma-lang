@@ -61,6 +61,7 @@ call_function :: fn(m: ^Machine, span: source.Span, f: u32, args: []const []u8, 
     if args.len is not def.params.len { return !m.trap(span, str.format("internal error: `{}` called with {} arguments, expected {}", def.name, args.len, def.params.len)!) }
     info := m.fn_info(f)
     if info.cost > MAX_FRAME { return !m.trap(span, str.format("stack overflow: `{}` needs a frame of {} bytes", def.name, info.cost)!) }
+    try m.tick(span)
     on_fiber := m.fiber_stack is not ~u64(0)
     if on_fiber and info.cost > m.fiber_stack and not m.fast() { return !m.trap(span, "stack overflow on a fiber stack") }
     mk := m.mark()

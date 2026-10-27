@@ -273,6 +273,7 @@ loop_body :: fn(m: ^Machine, a: Act, x: tir.LoopExpr) -> Flow!() needs Run {
     while true {
         tm := m.temps.items.len
         mk := m.mark()
+        try m.tick(source.DUMMY)
         if not try m.conds(a, x.cond) {
             m.kill_temps(tm)
             m.release(mk)

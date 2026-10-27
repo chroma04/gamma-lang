@@ -117,6 +117,8 @@ Start :: union {
     Body: (fr: ^Frame, cx: u32, body: ^Expr, dst: []u8)
     /// `f(arg)` for `@fiber`.
     Call: (f: []u8, fty: Ty, arg: []u8, cx: u32, span: source.Span)
+    /// A new thread calling function `f` with `arg` (`threads.gm`).
+    Thread: (f: u32, arg: []u8, span: source.Span)
 }
 
 FState :: union {
@@ -152,6 +154,8 @@ CoroRec :: struct {
     start: ?Start
     /// The size of its stack, less the part reserved for reporting an overflow.
     stack: u64
+    /// The thread it belongs to.
+    thread: u32
 }
 
 CoroArg :: struct {
@@ -173,6 +177,22 @@ pub Fibers :: struct {
 
 fibers :: fn() -> Fibers needs Alloc => Fibers(cur: 0, coros: list(CoroRec), withs: list(WithRec), mail: .None, resume_value: empty_slice(u8), free_stacks: list([]u8))
 
+/// Ends the coroutine `id` of a thread whose function returned, and lets the other threads
+/// run.
+end_thread :: fn(m: ^Machine, id: u32) needs Run {
+    m.kill_temps(0)
+    for c in m.scratch.chunks.items { free(c) }
+    m.scratch.chunks.deinit()
+    m.temps.deinit()
+    rec := &m.fib.coros.items[usize(id)]
+    rec.finished = true
+    t := rec.thread
+    m.threads.list.items[usize(t)].state = .Done
+    // A trap in a thread stops the program: the main thread reports it.
+    if m.threads.fatal is not null { m.threads.list.items[0].state = .Ready }
+    m.switch_thread(source.DUMMY) else {}
+}
+
 /// The size of a fiber's stack that `@min_stack` gives (§14.1).
 MIN_STACK: u64 : 16384
 /// The part of a fiber stack kept for reporting its overflow.
@@ -180,7 +200,7 @@ STACK_RESERVE: u64 : 8192
 
 /// Runs `body` as the root coroutine, under the scheduler; returns what it returns.
 run_coroutines :: fn(m: ^Machine, body: fn() -> Outcome needs Run) -> Outcome needs Host {
-    m.fib.coros.push(CoroRec(k: null, started: true, finished: false, arg: m.cast(rawptr), host_stack: empty_slice(u8), saved: null, owner: WithKey(frame: 0, label: 0), epoch: 0, state: .Running, start: null, stack: 0))!
+    m.fib.coros.push(CoroRec(k: null, started: true, finished: false, arg: m.cast(rawptr), host_stack: empty_slice(u8), saved: null, owner: WithKey(frame: 0, label: 0), epoch: 0, state: .Running, start: null, stack: 0, thread: 0))!
     sched := Sched(m: m)
     stack := make(u8, ROOT_STACK)!
     defer free(stack)
@@ -220,6 +240,7 @@ coro_main :: fn(m: ^Machine, id: u32) needs Run {
     m.fiber_stack = rec.stack
     first := m.fib.mail
     m.fib.mail = .None
+    if start := rec.start and start is .Thread(_) { first = .Resume(empty_slice(u8)) }
     flow: ?Flow = null
     match first {
         .Resume(v) => {
@@ -231,6 +252,11 @@ coro_main :: fn(m: ^Machine, id: u32) needs Run {
                 .Call(x) => {
                     args := [1][]u8(x.arg)
                     m.call_value(x.cx, x.span, x.f, x.fty, args[..], empty_slice(u8))
+                }
+                .Thread(x) => {
+                    m.thread_main(x.f, x.arg, x.span)
+                    m.end_thread(id)
+                    return ()
                 }
             }
             r else f => { flow = f }
@@ -293,7 +319,20 @@ new_fiber :: fn(m: ^Machine, owner: WithKey, start: Start, state: FState, stack:
     budget := if size > STACK_RESERVE { size - STACK_RESERVE } else { 0 }
     // The host stack of a fiber: room for the interpreter's own frames, which are larger
     // than the program's.
-    want := (us(size.min(16 << 20)) * 8).max(2 << 20)
+    id := m.add_coro(start, (us(size.min(16 << 20)) * 8).max(2 << 20), m.threads.cur)
+    rec := &m.fib.coros.items[usize(id)]
+    rec.owner = owner
+    rec.state = state
+    rec.stack = budget
+    if w := m.with_rec(owner) { w.owned.push(id)! }
+    return id
+}
+
+/// A new coroutine for thread `thread`, starting with `start`.
+new_coro :: fn(m: ^Machine, start: Start, thread: u32) -> u32 needs Alloc => m.add_coro(start, 8 << 20, thread)
+
+/// A new coroutine starting with `start` on a host stack of at least `want` bytes.
+add_coro :: fn(m: ^Machine, start: Start, want: usize, thread: u32) -> u32 needs Alloc {
     host := empty_slice(u8)
     for i in 0..m.fib.free_stacks.items.len {
         if m.fib.free_stacks.items[i].len >= want {
@@ -304,8 +343,7 @@ new_fiber :: fn(m: ^Machine, owner: WithKey, start: Start, state: FState, stack:
     if host.len is 0 { host = make(u8, want)! }
     id := m.fib.coros.items.len.trunc(u32)
     arg := new(CoroArg(m: m, id: id))!
-    m.fib.coros.push(CoroRec(k: null, started: false, finished: false, arg: arg.cast(rawptr), host_stack: host, saved: null, owner: owner, epoch: 1, state: state, start: start, stack: budget))!
-    if w := m.with_rec(owner) { w.owned.push(id)! }
+    m.fib.coros.push(CoroRec(k: null, started: false, finished: false, arg: arg.cast(rawptr), host_stack: host, saved: null, owner: WithKey(frame: 0, label: 0), epoch: 1, state: .Running, start: start, stack: ~u64(0), thread: thread))!
     return id
 }
 
