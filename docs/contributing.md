@@ -220,6 +220,19 @@ exit status (standard error is not compared). Mark a test that differs by design
 with `//! safe: skip <reason>`. `GAMMA_TEST_SAFE=0` turns the Safe tests off. CI has
 a job that installs Fil-C and runs the lane.
 
+**gammac.** The suite also tests `gammac`, the compiler written in Gamma, against the
+same expectations:
+
+```sh
+bootstrap/build.sh                      # or: gamma build compiler -o target/bootstrap/gammac
+GAMMA_TEST_COMPILER=$PWD/target/bootstrap/gammac cargo test --test conformance
+```
+
+`GAMMA_TEST_COMPILER` names any binary with `gamma`'s command line; it runs with the
+repository's `lib/std` and `runtime`. For `gammac`, `run` tests go through its interpreter
+and then through C, and `test` tests through C; there is no Cranelift lane. CI runs this on
+Linux and macOS with the `gammac` built from the seed.
+
 The suite also runs with a cross compiler, when the machine can run its output
 (for example through qemu-user and binfmt):
 
