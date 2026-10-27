@@ -1,0 +1,26 @@
+//! Lexes and parses arbitrary text, with and without error recovery. Diagnostics are
+//! fine; traps and hangs are bugs.
+
+c :: import "std/c"
+ast :: import "gammac/ast"
+diag :: import "gammac/diag"
+parse :: import "gammac/parse"
+syntax :: import "gammac/syntax"
+harness :: import "./harness"
+
+body :: fn(input: string) needs Alloc {
+    if not input.utf8_valid() { return }
+    diags := diag.diagnostics()
+    lexed := syntax.lex(0, input, &diags)
+    next_id: ast.NodeId = 0
+    _ = parse.parse_file(0, &lexed, &next_id, &diags)
+
+    diags = diag.diagnostics()
+    lexed = syntax.lex_recovering(0, input, &diags)
+    next_id = 0
+    _ = parse.parse_file(0, &lexed, &next_id, &diags)
+}
+
+entry :: fn(data: [^]const u8, size: usize) -> c.c_int needs Sys => harness.exec(data, size, body)
+
+main :: fn() needs Alloc + Env + Sys { harness.run(entry) }

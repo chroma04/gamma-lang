@@ -1,0 +1,47 @@
+//! Runs the whole front end (lexing, parsing, name resolution, type checking) on arbitrary
+//! text as a single-file program, with the real standard library (`$GAMMA_STD`).
+//! Diagnostics are fine; traps and hangs are bugs.
+
+c :: import "std/c"
+ast :: import "gammac/ast"
+check :: import "gammac/check"
+diag :: import "gammac/diag"
+driver :: import "gammac/driver"
+load :: import "gammac/load"
+sema :: import "gammac/sema"
+source :: import "gammac/source"
+harness :: import "./harness"
+
+/// The program lives in memory only: no file is read or written for it.
+PATH :: "/gamma-fuzz-input/main.gm"
+
+body :: fn(input: string) needs Alloc + Env + Fs + Proc + Rand + Clock {
+    if not input.utf8_valid() { return }
+    sm := source.source_map()
+    diags := diag.diagnostics()
+    next_id: ast.NodeId = 0
+    std := driver.std_root()
+    l := load.loader(&sm, &diags, &next_id, std, false)
+    l.overlays.push(load.Overlay(path: l.canonical_path(PATH), text: input))!
+    if l.load_core(driver.core_root(std), "Debug") {
+        s := sema.sema(&l)
+        check.install(&s)
+        s.resolve_ambient()
+        if m := l.load_root(PATH) {
+            s.resolve_declarations()
+            check.check_program(&s, m, false)
+        }
+    }
+    out := list(u8)
+    diags.sort()
+    for d in diags.list.items {
+        diag.render(&sm, &d, .Human, &out)
+        out.clear()
+        diag.render(&sm, &d, .Json, &out)
+        out.clear()
+    }
+}
+
+entry :: fn(data: [^]const u8, size: usize) -> c.c_int needs Sys => harness.exec(data, size, body)
+
+main :: fn() needs Alloc + Env + Sys { harness.run(entry) }

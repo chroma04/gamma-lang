@@ -1,0 +1,32 @@
+//! Parses arbitrary text as a package manifest (`gamma.toml`) and as a lockfile
+//! (`gamma.lock`): both come from other people's repositories. Errors are fine; traps are
+//! bugs, and so is a lock entry accepted with a value that could name a path outside the
+//! package store.
+
+c :: import "std/c"
+load :: import "gammac/load"
+pkg :: import "gammac/pkg"
+str :: import "std/str"
+harness :: import "./harness"
+
+body :: fn(input: string) needs Alloc {
+    if not input.utf8_valid() { return }
+    _ = load.parse_manifest(input)
+    lock := pkg.parse_lock(input) else return
+    for p in lock.packages.items {
+        if harness.has_any(p.rev, "/\\.") { trap(str.format("accepted revision {}", p.rev)!) }
+        if a := p.archive {
+            if harness.has_any(a, "/\\") or str.contains(a, "..") { trap(str.format("accepted archive {}", a)!) }
+        }
+    }
+    // What is accepted renders and parses again.
+    text := pkg.render_lock(&lock)
+    again := pkg.parse_lock(text) else e => {
+        trap(str.format("a rendered lock does not parse: {}", e)!)
+    }
+    if again.packages.items.len is not lock.packages.items.len { trap("a rendered lock has other packages") }
+}
+
+entry :: fn(data: [^]const u8, size: usize) -> c.c_int needs Sys => harness.exec(data, size, body)
+
+main :: fn() needs Alloc + Env + Sys { harness.run(entry) }

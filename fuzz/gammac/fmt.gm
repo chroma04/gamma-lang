@@ -1,0 +1,31 @@
+//! Formats text the parser accepts and checks that formatting never fails and is
+//! idempotent.
+
+c :: import "std/c"
+ast :: import "gammac/ast"
+diag :: import "gammac/diag"
+fmt :: import "gammac/fmt"
+parse :: import "gammac/parse"
+str :: import "std/str"
+syntax :: import "gammac/syntax"
+harness :: import "./harness"
+
+body :: fn(input: string) needs Alloc {
+    if not input.utf8_valid() { return }
+    diags := diag.diagnostics()
+    lexed := syntax.lex(0, input, &diags)
+    next_id: ast.NodeId = 0
+    _ = parse.parse_file(0, &lexed, &next_id, &diags)
+    if diags.has_errors() { return }
+    out := fmt.format_source(input) else e => {
+        trap(str.format("cannot format valid source: {}", e.message)!)
+    }
+    again := fmt.format_source(out) else e => {
+        trap(str.format("cannot format formatted source: {}", e.message)!)
+    }
+    if out is not again { trap("formatting is not idempotent") }
+}
+
+entry :: fn(data: [^]const u8, size: usize) -> c.c_int needs Sys => harness.exec(data, size, body)
+
+main :: fn() needs Alloc + Env + Sys { harness.run(entry) }

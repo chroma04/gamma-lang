@@ -1,0 +1,83 @@
+//! The plumbing the fuzz targets share. A target is a root module whose `main` calls `run`
+//! with an entry function, and whose entry function calls `exec` with a function that
+//! takes the bytes of one input. `run` hands control to libFuzzer (`shim.c`), which calls
+//! the entry function for every input.
+//!
+//! An input runs in an arena that is released afterwards, under the default handlers of
+//! the ambient effects, so memory does not grow from one input to the next. A trap ends
+//! the process with status 134, which libFuzzer records as a crash (it intercepts `exit`
+//! while it runs a target).
+
+c :: import "std/c"
+arena :: import "std/arena"
+
+libc :: foreign "c" {
+    exit :: fn(status: c.c_int) -> never
+}
+
+libfuzzer :: foreign "c" {
+    /// Runs libFuzzer with the command line of the process and `callback` as the target;
+    /// returns the exit status (`shim.c`).
+    gm_fuzz_run :: fn(callback: ^fn(data: [^]const u8, size: usize) -> c.c_int needs Sys) -> c.c_int
+}
+
+/// The environment variables the compiler reads, as the process had them at the start:
+/// the callback runs without the ambient handlers.
+Settings :: struct {
+    std: string
+    core: ?string
+    runtime: ?string
+}
+
+#global settings: Settings = Settings(std: "", core: null, runtime: null)
+
+/// An `Env` handler that serves the saved settings, no arguments and the real `exit`.
+FuzzEnv :: struct {}
+
+handler Env for FuzzEnv needs Sys {
+    args(self) => empty_slice(string)
+    var(self, name) => {
+        s := &settings
+        if name is "GAMMA_STD" { return s.std }
+        if name is "GAMMA_CORE" { return s.core }
+        if name is "GAMMA_RUNTIME" { return s.runtime }
+        return null
+    }
+    exit(self, code) => libc.exit(c.c_int(code))
+}
+
+/// Starts the fuzzer with `entry` as the target function. Returns the exit status of
+/// the fuzzer, which is also the status of the process.
+pub run :: fn(entry: ^fn(data: [^]const u8, size: usize) -> c.c_int needs Sys) needs Alloc + Env + Sys {
+    settings = Settings(
+        std: Env.var("GAMMA_STD") else "",
+        core: Env.var("GAMMA_CORE"),
+        runtime: Env.var("GAMMA_RUNTIME"),
+    )
+    status := libfuzzer.gm_fuzz_run(entry)
+    Env.exit(status.trunc(u8))
+}
+
+/// True if `s` holds one of the bytes of `set`.
+pub has_any :: fn(s, set: string) -> bool {
+    for b in bytes(s) {
+        for m in bytes(set) {
+            if b is m { return true }
+        }
+    }
+    return false
+}
+
+/// Runs `body` on the `size` bytes at `data`, in a fresh arena.
+pub exec :: fn(
+    data: [^]const u8,
+    size: usize,
+    body: fn(input: string) needs Alloc + Env + Out + Err + In + Clock + Rand + Fs + Proc,
+) -> c.c_int needs Sys {
+    with heap_allocator(), system_io(), system_output(), FuzzEnv() {
+        a := arena.new()
+        defer a.deinit()
+        with a.allocator() { body(data[0..size]) }
+    }
+    return 0
+}

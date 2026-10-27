@@ -1,0 +1,37 @@
+//! Unpacks arbitrary bytes as a `.tar.gz` package archive into a scratch directory.
+//! Errors are fine; traps are bugs, and so is any file written outside that directory.
+
+c :: import "std/c"
+fs :: import "std/fs"
+pkg :: import "gammac/pkg"
+str :: import "std/str"
+harness :: import "./harness"
+
+PREFIX :: "gamma-fuzz-archive-"
+
+body :: fn(input: string) needs Alloc + Env + Fs + Proc + Rand {
+    dir := fs.temp_dir()
+    buf := make(u8, dir.len + PREFIX.len + fs.TEMP_EXTRA)!
+    base := fs.make_temp_dir(dir, PREFIX, buf) else return
+    defer _ = fs.remove_all(base)
+    file := str.format("{}/in.tar.gz", base)!
+    dest := str.format("{}/store/pkg", base)!
+    fs.make_dir_all(str.format("{}/store", base)!) else trap("cannot create the scratch directory")
+    fs.write_all(file, input) else trap("cannot write the archive")
+    _ = pkg.unpack(file, dest)
+    // Nothing but the archive file and the store may exist in the scratch directory.
+    seen: u32 = 0
+    for r in fs.entries(base) {
+        e := r else trap("cannot list the scratch directory")
+        if e.name is "in.tar.gz" { seen |= 1 } else if e.name is "store" { seen |= 2 } else { seen |= 4 }
+    }
+    if seen is not 3 { trap("the scratch directory holds other files after unpacking") }
+    if fs.exists(dest) {
+        // Every link inside stays inside, which the checksum verifies.
+        _ = pkg.tree_checksum(dest)
+    }
+}
+
+entry :: fn(data: [^]const u8, size: usize) -> c.c_int needs Sys => harness.exec(data, size, body)
+
+main :: fn() needs Alloc + Env + Sys { harness.run(entry) }

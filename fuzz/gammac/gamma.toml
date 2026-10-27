@@ -1,0 +1,6 @@
+[package]
+name = "gammac_fuzz"
+version = "0.1.0"
+
+[dependencies]
+gammac = { path = "../../compiler" }
