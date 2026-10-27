@@ -179,6 +179,69 @@ pub graphemes :: fn(s: string) needs Yield(string) {
 }
 
 // ---------------------------------------------------------------------------------
+// Unicode whitespace
+// ---------------------------------------------------------------------------------
+
+/// Whether `r` has the Unicode `White_Space` property: U+0009 to U+000D, U+0020, U+0085,
+/// U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000. This is a
+/// superset of `ascii.is_space`; U+200B (zero width space) is not whitespace.
+pub is_space :: fn(r: rune) -> bool {
+    if r < 0x100 { return r is 0x20 or (r >= 0x09 and r <= 0x0d) or r is 0x85 or r is 0xa0 }
+    return r is 0x1680 or (r >= 0x2000 and r <= 0x200a) or r is 0x2028 or r is 0x2029
+        or r is 0x202f or r is 0x205f or r is 0x3000
+}
+
+/// `s` without leading Unicode whitespace (`is_space`). Unlike `str.trim_start`, which
+/// removes ASCII whitespace only, this also removes U+00A0, U+3000 and the rest. Ill-formed
+/// bytes are not whitespace and stay.
+pub trim_start :: fn(s: string) -> string {
+    i: usize = 0
+    while i < s.len {
+        d := decode(s, i)
+        if not is_space(d.r) { break }
+        i += d.len
+    }
+    return s[i..s.len]
+}
+
+/// `s` without trailing Unicode whitespace; see `trim_start`.
+pub trim_end :: fn(s: string) -> string {
+    i: usize = 0
+    end: usize = 0
+    while i < s.len {
+        d := decode(s, i)
+        i += d.len
+        if not is_space(d.r) { end = i }
+    }
+    return s[0..end]
+}
+
+/// `s` without leading and trailing Unicode whitespace; see `trim_start`.
+pub trim :: fn(s: string) -> string => trim_end(trim_start(s))
+
+/// The maximal runs of `s` without Unicode whitespace; empty fields are skipped. Unlike
+/// `str.fields`, which splits at ASCII whitespace only, this also splits at U+00A0, U+3000
+/// and the rest. Ill-formed bytes are not whitespace and belong to the fields.
+pub fields :: fn(s: string) needs Yield(string) {
+    i: usize = 0
+    while true {
+        while i < s.len {
+            d := decode(s, i)
+            if not is_space(d.r) { break }
+            i += d.len
+        }
+        if i >= s.len { return }
+        start := i
+        while i < s.len {
+            d := decode(s, i)
+            if is_space(d.r) { break }
+            i += d.len
+        }
+        yield(s[start..i])
+    }
+}
+
+// ---------------------------------------------------------------------------------
 // UTF-8 scalar values
 // ---------------------------------------------------------------------------------
 //

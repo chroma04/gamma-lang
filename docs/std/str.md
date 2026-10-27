@@ -67,7 +67,8 @@ Variants:
 trim_start :: fn(s: string) -> string
 ```
 
-`s` without leading ASCII whitespace (space, `\t`, `\n`, `\r`, `\v`, `\f`).
+`s` without leading ASCII whitespace (space, `\t`, `\n`, `\r`, `\v`, `\f`). For Unicode
+whitespace, see `text.trim_start`.
 
 ### `trim_end`
 
@@ -75,7 +76,7 @@ trim_start :: fn(s: string) -> string
 trim_end :: fn(s: string) -> string
 ```
 
-`s` without trailing ASCII whitespace.
+`s` without trailing ASCII whitespace. For Unicode whitespace, see `text.trim_end`.
 
 ### `trim`
 
@@ -83,7 +84,7 @@ trim_end :: fn(s: string) -> string
 trim :: fn(s: string) -> string
 ```
 
-`s` without leading and trailing ASCII whitespace.
+`s` without leading and trailing ASCII whitespace. For Unicode whitespace, see `text.trim`.
 
 ### `find`
 
@@ -210,7 +211,7 @@ fields :: fn(s: string) needs Yield(string)
 ```
 
 The maximal runs of non-whitespace bytes of `s` (ASCII whitespace separates them);
-empty fields are skipped.
+empty fields are skipped. For Unicode whitespace, see `text.fields`.
 
 ### `eq_ignore_case`
 

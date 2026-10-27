@@ -1,0 +1,21 @@
+8:false 9:true 13:true 14:false 31:false 32:true 33:false 132:false 133:true 134:false 159:false 160:true 161:false 5759:false 5760:true 5761:false 8191:false 8192:true 8202:true 8203:false 8231:false 8232:true 8233:true 8234:false 8238:false 8239:true 8240:false 8286:false 8287:true 8288:false 12287:false 12288:true 12289:false 65279:false 
+[] [] []
+[] [] []
+[abc] [abc] [abc]
+[a b  ] [  a b] [a b]
+[x ] [  x] [x]
+[あ い　] [　　あ い] [あ い]
+[x ] [ x] [x]
+[mixed   
+] [ 	  
+ mixed] [mixed]
+[​x​] [​x​] [​x​]
+[� x �] [ � x �] [� x �]
+[� x] [� x] [� x]
+1
+fields:
+fields:
+fields: [one] [two]
+fields: [a] [b] [c] [d] [e]
+fields: [x​y] [z]
+fields: [a�b] [c]

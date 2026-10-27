@@ -233,11 +233,22 @@ pub try_send :: fn(T: type, c: ^Channel(T), x: T) -> bool needs Sys {
     return ok
 }
 
-/// Receives a value if one is waiting right now.
+/// Receives a value if one is waiting right now. `null` means the channel is empty, or
+/// closed and drained; a polling consumer that gets `null` and then finds `drained` true
+/// knows the stream has ended.
 pub try_recv :: fn(T: type, c: ^Channel(T)) -> ?T needs Sys {
     lock(&c.m)
     r: ?T = null
     if c.count > 0 { r = pop(c) }
+    unlock(&c.m)
+    return r
+}
+
+/// Whether the channel is closed and holds no values. Once true it stays true, since no
+/// send succeeds after `close`.
+pub drained :: fn(T: type, c: ^Channel(T)) -> bool needs Sys {
+    lock(&c.m)
+    r := c.closed and c.count is 0
     unlock(&c.m)
     return r
 }

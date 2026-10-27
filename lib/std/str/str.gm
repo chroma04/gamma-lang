@@ -23,21 +23,22 @@ ascii :: import "std/ascii"
 // Trimming
 // ---------------------------------------------------------------------------------
 
-/// `s` without leading ASCII whitespace (space, `\t`, `\n`, `\r`, `\v`, `\f`).
+/// `s` without leading ASCII whitespace (space, `\t`, `\n`, `\r`, `\v`, `\f`). For Unicode
+/// whitespace, see `text.trim_start`.
 pub trim_start :: fn(s: string) -> string {
     i: usize = 0
     while i < s.len and ascii.is_space(s[i]) { i += 1 }
     return s[i..s.len]
 }
 
-/// `s` without trailing ASCII whitespace.
+/// `s` without trailing ASCII whitespace. For Unicode whitespace, see `text.trim_end`.
 pub trim_end :: fn(s: string) -> string {
     n := s.len
     while n > 0 and ascii.is_space(s[n - 1]) { n -= 1 }
     return s[0..n]
 }
 
-/// `s` without leading and trailing ASCII whitespace.
+/// `s` without leading and trailing ASCII whitespace. For Unicode whitespace, see `text.trim`.
 pub trim :: fn(s: string) -> string => trim_end(trim_start(s))
 
 // ---------------------------------------------------------------------------------
@@ -208,7 +209,7 @@ pub lines :: fn(s: string) needs Yield(string) {
 }
 
 /// The maximal runs of non-whitespace bytes of `s` (ASCII whitespace separates them);
-/// empty fields are skipped.
+/// empty fields are skipped. For Unicode whitespace, see `text.fields`.
 pub fields :: fn(s: string) needs Yield(string) {
     i: usize = 0
     while true {

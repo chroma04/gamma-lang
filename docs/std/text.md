@@ -46,6 +46,52 @@ The grapheme clusters of `s`, in order: what a reader sees as one character, suc
 as `e` with a combining accent, a flag, or an emoji sequence joined with ZWJs. `\r\n`
 is one cluster. Every byte of `s` is in exactly one cluster.
 
+### `is_space`
+
+```gamma
+is_space :: fn(r: rune) -> bool
+```
+
+Whether `r` has the Unicode `White_Space` property: U+0009 to U+000D, U+0020, U+0085,
+U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000. This is a
+superset of `ascii.is_space`; U+200B (zero width space) is not whitespace.
+
+### `trim_start`
+
+```gamma
+trim_start :: fn(s: string) -> string
+```
+
+`s` without leading Unicode whitespace (`is_space`). Unlike `str.trim_start`, which
+removes ASCII whitespace only, this also removes U+00A0, U+3000 and the rest. Ill-formed
+bytes are not whitespace and stay.
+
+### `trim_end`
+
+```gamma
+trim_end :: fn(s: string) -> string
+```
+
+`s` without trailing Unicode whitespace; see `trim_start`.
+
+### `trim`
+
+```gamma
+trim :: fn(s: string) -> string
+```
+
+`s` without leading and trailing Unicode whitespace; see `trim_start`.
+
+### `fields`
+
+```gamma
+fields :: fn(s: string) needs Yield(string)
+```
+
+The maximal runs of `s` without Unicode whitespace; empty fields are skipped. Unlike
+`str.fields`, which splits at ASCII whitespace only, this also splits at U+00A0, U+3000
+and the rest. Ill-formed bytes are not whitespace and belong to the fields.
+
 ### `decode_rune`
 
 ```gamma
