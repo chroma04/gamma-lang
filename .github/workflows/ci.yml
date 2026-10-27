@@ -112,8 +112,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build gammac from the seed
         run: bootstrap/build.sh
-      - name: Conformance tests
-        run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gammac" cargo test --test conformance
+      - name: Conformance tests and examples
+        run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gammac" cargo test --test conformance --test examples
 
   fuzz:
     # The fuzz targets live outside the workspace (they need nightly to run): make sure
@@ -131,6 +131,27 @@ jobs:
         env:
           RUSTC_BOOTSTRAP: "1"
         run: cargo check --manifest-path fuzz/Cargo.toml
+
+  fuzz-gammac:
+    # gammac's fuzz targets (libFuzzer) build, and each runs for a while on the seed corpus
+    # without a crash.
+    name: Fuzz gammac (smoke test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install clang and libFuzzer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-rt-dev
+      - name: Build gammac from the seed
+        run: bootstrap/build.sh
+      - name: Build the targets and run each for 30 seconds
+        env:
+          GAMMAC: ${{ github.workspace }}/target/bootstrap/gammac
+          GAMMA_STD: ${{ github.workspace }}/lib/std
+          GAMMA_RUNTIME: ${{ github.workspace }}/runtime
+        run: fuzz/gammac/smoke.sh 30
 
   audit:
     # The compiler unpacks archives and runs downloaded code (`gamma fetch`): a dependency

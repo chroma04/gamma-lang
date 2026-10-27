@@ -93,3 +93,13 @@ dangling stores are now compile errors (decisions/045).
   scope (e.g. `core.trap`) or let method-style declarations not hide free functions.
   Logged, not changed. Also `with … on` body locals live in the enclosing C frame (not on
   the fiber stack) — surprising when measuring stacks (implementation detail).
+- **`[]u8` results don't flow into `string`** (s47, sitegen worker 4x): `x: string = r else ""`
+  and `p := f()` where f returns `[]u8` need an annotation/conversion. Related to the
+  str.format pain point above (2x in s42). Now ≥6 total → FLAGGED to user (s47). Idea: let
+  `[]u8` coerce to `string` (or make str.format/read_all return string).
+- **User-written `Fs` handlers can't make `fs.File`/`fs.Dir`** (s47, playground worker 2x):
+  their `handle` fields are private, so a virtual file system must live outside Gamma (JS).
+  Idea: a pub constructor for handler authors (`fs.File.from_handle`). FLAGGED (s47).
+- **Nested results need typed temporaries** (s47, me, interp/sys.gm): returning `!e` or `!.V`
+  inside `Flow!(IoError!T)` targets the outer error type; existing code already writes
+  `failed: IoError!usize = !e; return failed` (≥3 sites). Watch.

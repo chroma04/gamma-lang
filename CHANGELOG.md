@@ -18,6 +18,21 @@ Versions and what each kind of change means are described in
   so the C it generates for itself is the same on every 64-bit little-endian Unix-like host.
 - `gammac build --emit-c` with `GAMMA_C_UNITS` above 1 writes the program split into units
   that include a shared header, with the runtime in a file of its own.
+- **The website is built by `gammac`.** `web/gen/` is the site generator written in Gamma
+  (a CommonMark renderer with tables, highlighting with `gammac`'s lexer, the link check);
+  it generates exactly the site the Rust generator does. The playground runs `gammac`'s
+  interpreter built for WASI (`web/play/`), which reads the libraries from an in-memory
+  file system in the page's worker. The Pages workflow builds both from the seed, without
+  cargo.
+- The conformance tests and the examples run with any compiler that has `gamma`'s command
+  line (`GAMMA_TEST_COMPILER`); CI runs them with `gammac` on Linux and macOS.
+- `fuzz/gammac/` fuzzes `gammac` with libFuzzer: the same five targets as the cargo-fuzz
+  crate, built without cargo; CI builds them and runs each briefly.
+- `gammac`'s interpreter makes the network calls that may block (connect, accept, send,
+  receive) on a host thread when the program has several threads, so a server thread no
+  longer stops the others.
+- `gammac` builds for wasm32-wasi: the checks for `f16` and fibers no longer look inside
+  string data.
 - **`gammac` compiles itself.** `compiler/cgen/` is a C back end for `gammac`, ported from
   the reference implementation's, and `gammac build` compiles a program to an executable
   with it (`--mode=debug|checked|fast`, `-o`, `--emit-c`). Every conformance `run` test

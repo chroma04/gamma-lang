@@ -14,7 +14,7 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 
 ## Phases (gate in brackets)
 1. DONE s47: seed next to Rust. [CI bootstraps on ubuntu x86/arm + macOS, fixed point]
-2. Close Rust-only gaps: all conformance lanes against gammac, Windows release by
+2. IN PROGRESS s47 (same branch): Close Rust-only gaps: all conformance lanes against gammac, Windows release by
    cross-compiling (--target=x86_64-windows, MinGW), playground + fuzz ported, release
    pipeline/install from seed, docs. [release + site without cargo]
 3. Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
@@ -40,3 +40,16 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 - Timings (4 cores): build.sh ~3 min (seed cc 46 s, two gammac builds ~1 min each with a
   cache in $out/cache; without a cache Debug builds are one TU → ~7 min). verify 11 s.
 - FreeBSD target C differs a lot from Linux (not investigated; not a seed host).
+
+## Phase 2 status (s47)
+- Conformance + examples: GAMMA_TEST_COMPILER=<gammac> in tests/conformance.rs and
+  examples.rs (run → --backend=interp first lane; test → C; no cranelift). All pass. CI
+  job conformance-gammac (ubuntu+macos, seed-built gammac).
+- Found+fixed: interp Net connect/accept/send/recv blocked all green threads → HostOp on
+  host threads (interp/threads.gm on_host_thread).
+- web/gen (Gamma site generator, path dep on compiler pkg; check-parity.sh vs Rust:
+  identical 79 files). web/play (gammac interp for wasm32-wasi; JS in-memory FS from
+  gamma-play-libs.json; 10.6 MB wasm vs 3.8 MB Rust; slower start, checks core each run).
+  pages.yml: build job = gammac only; rust-web job keeps Rust crates + parity.
+- fuzz/gammac: libFuzzer via -Dmain=gm_program_main + shim.c (SIGALRM fix); CI fuzz-gammac.
+- Release + Windows cross-build: worker (see report when merged).
