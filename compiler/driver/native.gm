@@ -531,7 +531,7 @@ cached_program :: fn(b: ^const Built, opts: Options) -> ?string needs Alloc + Cl
     libs := str.join(b.generated.libs, "\0")!
     parts := list(string)
     parts.extend([9]string("gammac", b.rt_h, b.rt_c, b.generated.code, libs, mode_name(opts.mode), if opts.debug_info { "g" } else { "-" }, str.join(tc.cc, "\0")!, str.join(tc.cflags, "\0")!)[..])!
-    parts.extend([3]string(str.join(tc.ldflags, "\0")!, version, target_text(opts.target))[..])!
+    parts.extend([4]string(str.join(tc.ldflags, "\0")!, version, target_text(opts.target), library_stamps(b.generated.libs, tc.ldflags))[..])!
     if opts.target.os is "Wasi" { parts.push(cgen.wasm_opt_version())! }
     stem := str.format("prog-{}", cache_key(parts.items))!
     exe := load.join(dir, native_exe_name(&opts, stem))
@@ -552,6 +552,32 @@ cached_program :: fn(b: ^const Built, opts: Options) -> ?string needs Alloc + Cl
     rename_or_remove(tmp, exe) else return null
     prune(dir)
     return exe
+}
+
+/// The size and modification time of each library file of `libs` (`foreign` blocks) found in
+/// a `-L` directory of `ldflags`, for cache keys: a program linked with a library built
+/// again must be linked again. Libraries in the system's directories are not stamped.
+library_stamps :: fn(libs: []const string, ldflags: []const string) -> string needs Alloc + Fs {
+    dirs := list(string)
+    for i, f in enumerate(ldflags) {
+        if f is "-L" and i + 1 < ldflags.len {
+            dirs.push(ldflags[i + 1])!
+        } else if f.starts_with("-L") {
+            dirs.push(f[2..])!
+        }
+    }
+    stamps := list(string)
+    for lib in libs {
+        for d in dirs.items {
+            for ext in ("a", "so", "dylib") {
+                path := load.join(d, str.format("lib{}.{}", lib, ext)!)
+                if info := Fs.stat(path) {
+                    stamps.push(str.format("{}:{}:{}", path, info.size, info.modified)!)!
+                }
+            }
+        }
+    }
+    return str.join(stamps.items, "\0")!
 }
 
 /// A target as text, for cache keys.

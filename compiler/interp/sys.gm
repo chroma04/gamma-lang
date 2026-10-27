@@ -204,6 +204,7 @@ sys_run :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals:
 /// `Read`: standard input into the slice `vals[0]`.
 sys_read :: fn(m: ^Machine, span: source.Span, vals: []const []u8) -> Flow!i64 needs Run {
     buf := try m.sys_dest(span, vals[0])
+    if m.threads.list.items.len > 1 { return sys_count((try m.on_host_thread(span, .Stdin(buf))).count) }
     r: IoError!usize = !.Unsupported
     thread.defaults(fn() needs In { r = In.read(buf) })
     return sys_count(r)

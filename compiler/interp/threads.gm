@@ -116,7 +116,9 @@ switch_thread :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Run {
             if t.state is .Host(_) and earliest is null { earliest = (now else Clock.now().ns) +| 1_000_000 }
         }
         e := earliest else return !m.trap(span, "deadlock: every thread is blocked")
-        if t := now and e > t { Clock.sleep(Duration(ns: e - t)) }
+        // Sleeping hands the output so far to the system.
+        t := now else Clock.now().ns
+        if e > t { Clock.sleep(Duration(ns: e - t)) }
     }
 }
 
@@ -214,6 +216,7 @@ sleep :: fn(m: ^Machine, span: source.Span, ns: u64) -> Flow!() needs Run {
 /// A call that may block, made on a host thread of its own when the program has several
 /// threads.
 pub HostOp :: union {
+    Stdin: []u8
     Read: (file: fs.File, buf: []u8)
     Connect: (host: string, port: u16)
     Accept: net.Listener
@@ -235,8 +238,9 @@ HostCall :: struct {
 }
 
 host_main :: fn(j: ^HostCall) needs Sys {
-    thread.defaults(fn() needs Fs + Net {
+    thread.defaults(fn() needs Fs + In + Net {
         j.result = match j.op {
+            .Stdin(buf) => HostResult(count: In.read(buf))
             .Read(f, buf) => HostResult(count: Fs.read(f, buf))
             .Send(s, data) => HostResult(count: Net.send(s, data))
             .Recv(s, buf) => HostResult(count: Net.recv(s, buf))
