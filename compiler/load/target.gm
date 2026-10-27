@@ -23,19 +23,79 @@ pub Target :: struct {
     pub f16: bool
 }
 
-/// The target gammac itself was built for.
-pub host_target :: fn() -> Target => Target(
-    ptr_bytes: u64(target.ptr_bits / 8),
-    little_endian: target.endian is .Little,
-    int128_align: 16,
-    os: @variant_name(target.os),
-    arch: @variant_name(target.arch),
-    filc: false,
-    f16: true,
-)
+/// The target gammac itself runs on. Its layout properties are those gammac was built
+/// for; on a Unix-like system the operating system and architecture are asked of the
+/// system when gammac runs, so that gammac's generated C for itself (the bootstrap seed)
+/// is the same for every 64-bit little-endian Unix-like host and makes, wherever it is
+/// compiled, a compiler for that host.
+pub host_target :: fn() -> Target {
+    os, arch := host_names()
+    return Target(
+        ptr_bytes: u64(target.ptr_bits / 8),
+        little_endian: target.endian is .Little,
+        int128_align: 16,
+        os: os,
+        arch: arch,
+        filc: false,
+        f16: true,
+    )
+}
+
+when target.os is .Linux or target.os is .MacOS or target.os is .FreeBSD {
+    libc :: foreign "c" {
+        uname :: fn(buf: [^]u8) -> i32 needs not
+    }
+
+    /// The host's operating system and architecture, named as in `Target`, from `uname`;
+    /// those gammac was built for if it fails or names a system gammac does not know.
+    host_names :: fn() -> (string, string) {
+        // `struct utsname` is five or six fixed-size strings: 65 bytes each on Linux,
+        // 256 on macOS and FreeBSD. `sysname` is the first and `machine` the fifth.
+        buf: [2048]u8 = ---
+        if libc.uname(buf[..].ptr) is not 0 { return built_names() }
+        sys := c_string(buf[0..256])
+        field: usize = if sys is "Linux" { 65 } else { 256 }
+        os := match sys {
+            "Linux" => "Linux"
+            "Darwin" => "MacOS"
+            "FreeBSD" => "FreeBSD"
+            _ => return built_names()
+        }
+        // The architecture comes from the system only where it is the one of a 64-bit
+        // build: a 32-bit program on a 64-bit kernel keeps its own.
+        if target.ptr_bits is not 64 { return (os, @variant_name(target.arch)) }
+        arch := match c_string(buf[4 * field..5 * field]) {
+            "x86_64", "amd64" => "X86_64"
+            "aarch64", "arm64" => "Aarch64"
+            "riscv64" => "Riscv64"
+            "s390x" => "S390x"
+            _ => @variant_name(target.arch)
+        }
+        return (os, arch)
+    }
+
+    /// The bytes of `b` before its first zero byte.
+    c_string :: fn(b: []const u8) -> string {
+        for i, c in enumerate(b) {
+            if c is 0 { return string(b[0..i]) }
+        }
+        return string(b)
+    }
+} else {
+    host_names :: fn() -> (string, string) => built_names()
+}
+
+/// The operating system and architecture gammac was built for.
+built_names :: fn() -> (string, string) => (@variant_name(target.os), @variant_name(target.arch))
 
 pub ptr_bits :: fn(t: ^const Target) -> u32 => (t.ptr_bytes * 8).trunc(u32)
 
 /// The largest size of an object, `isize::MAX` for the target: a larger type is an error,
 /// since offsets and lengths of its values would not fit `isize`.
 pub max_object_size :: fn(t: ^const Target) -> u64 => (u64(1) << u64(t.ptr_bits() - 1)) - 1
+
+test "the host is the system gammac was built for" {
+    t := host_target()
+    expect_eq(t.os, @variant_name(target.os))
+    expect_eq(t.arch, @variant_name(target.arch))
+}

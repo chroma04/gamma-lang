@@ -20,3 +20,5 @@
 tests/conformance/lex/crlf.gm -text
 tests/conformance/lex/errors_cr.gm -text
 tests/conformance/run/std_io.stdin -text
+# The bootstrap seed is generated C: no diffs or language statistics.
+bootstrap/seed/** -diff linguist-generated=true

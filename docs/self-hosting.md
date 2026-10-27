@@ -153,17 +153,31 @@ GAMMA_STD=lib/std ./gammac2 build compiler --emit-c -o gammac3
 cmp gammac2.c gammac3.c                  # identical
 ```
 
+`gammac` can also be built without the reference implementation, from the C it generates
+for itself. `bootstrap/seed/` holds that C, and `bootstrap/build.sh` builds `gammac` from
+it with nothing but a C compiler (see `bootstrap/README.md`): the seed's compiler builds
+the current sources, and the result builds itself. The seed is generated from committed
+sources, which `bootstrap/seed/SOURCE` names, and CI checks that it is exactly what the
+compiler of those sources generates for them, and that the build from it reaches the fixed
+point on Linux (x86-64 and AArch64) and macOS. One seed serves all of them because `gammac`
+asks the system for the operating system and architecture it runs on (`uname`) instead of
+fixing them when it is compiled, so its generated C is the same on every 64-bit
+little-endian Unix-like host.
+
 `gammac build [--mode=debug|checked|fast] [-g] [-o EXE] [--emit-c] ROOT` writes the C next to
 the executable (`EXE.c`, the runtime and the program as one translation unit) and compiles
 it with `$CC` (default `cc`); `--emit-c` stops after writing it. A Checked or Fast build
 compiles `EXE.c` itself at `-O2`, so the optimizer sees the whole program. A Debug build
 favors turnaround, as `gamma build` does: it compiles the runtime on its own (`EXE.rt.c`)
-and splits the program into units (`EXE.u0.c`, `EXE.u1.c`, …) that share a header of
-types and declarations and divide the function bodies between them. One unit is made per
+and splits the program into units (`EXE.c`, `EXE.1.c`, `EXE.2.c`, …) that share a header
+of types and declarations and divide the function bodies between them. One unit is made per
 96 KiB of function text, up to the number of processors and at most 8 (`GAMMA_C_UNITS`
 forces a number, which tests use to split small programs); all are compiled at once and
 then linked. On four cores this brings building `gammac` itself from about 110 to about 40
-seconds. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
+seconds. `--emit-c` with `GAMMA_C_UNITS` above 1 writes that split form instead of one
+file, whatever the mode: the shared text in `EXE.h`, the runtime in `EXE.rt.c` and the
+units, each of which includes `EXE.h`; compiled one by one and linked, they make the
+program. The bootstrap seed has this form. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
 `runtime` directory two levels above the standard library's. It runs on Unix-like systems;
 on Windows, use `gamma build`.
 

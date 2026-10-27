@@ -1,0 +1,5929 @@
+#define GM_RT_SEPARATE 1
+/* The runtime of programs compiled by the Gamma C back end.
+ *
+ * The runtime is linked into a program in one of two ways. Normally the compiler
+ * emits one C translation unit: this header, gm_rt.c, then the generated code, and
+ * everything here is `static` so the unit is self-contained (and the optimizer sees
+ * the whole program). With GM_RT_SEPARATE defined, this header and gm_rt.c are
+ * compiled on their own into an object that is reused across programs, and the
+ * generated code includes only this header: the declarations marked GM_API and
+ * GM_API_VAR then have external linkage.
+ * GNU C11 is required (statement expressions, zero-size arrays, __int128,
+ * __builtin_*_overflow).
+ */
+#ifndef GM_RT_H
+#define GM_RT_H
+
+#ifdef GM_FREESTANDING
+/* A freestanding target (spec 3.7.1): no operating system and no C library beyond the
+ * functions every freestanding toolchain provides (memcpy, memmove, memset, memcmp). The
+ * parts of the runtime that need an operating system are left out, and there is one thread
+ * of execution. */
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdarg.h>
+void *memcpy(void *, const void *, size_t);
+void *memmove(void *, const void *, size_t);
+void *memset(void *, int, size_t);
+int memcmp(const void *, const void *, size_t);
+#define strlen gm_strlen
+static inline size_t gm_strlen(const char *s) {
+    size_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+#define snprintf gm_snprintf
+static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
+#define GM_TLS
+/* The context switch is private to the object: only the program's exports are symbols. */
+#define GM_ASM_GLOBL ".local "
+#else
+#define GM_ASM_GLOBL ".globl "
+#if defined(__wasi__)
+/* WASI (wasm32-wasi): a hosted target with files, clocks, arguments and the environment,
+ * but no threads, child processes, sockets or signals; the runtime's functions for those
+ * report IoError.Unsupported. There is one thread of execution, and fibers switch stacks
+ * through Binaryen's Asyncify transformation, which the compiler applies to the module
+ * (see "context switching" in gm_rt.c). */
+#define GM_WASI 1
+#define GM_TLS
+#else
+#define GM_TLS _Thread_local
+#endif
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE /* pthread_getattr_np */
+#endif
+
+#if defined(_WIN32)
+/* The Windows API level of the runtime (WaitOnAddress, GetCurrentThreadStackLimits), set
+ * before any system header fixes a lower one. */
+#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0A00
+#undef _WIN32_WINNT
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#endif
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <time.h>
+#ifndef GM_WASI
+#include <signal.h>
+#endif
+#include <sys/types.h>
+#include <sys/stat.h>
+#if defined(_WIN32)
+/* Windows (MinGW-w64): the Win32 API and Winsock 2 stand in for the POSIX headers. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <shellapi.h>
+#include <io.h>
+#include <direct.h>
+#include <process.h>
+#include <bcrypt.h>
+#elif defined(GM_WASI)
+#include <unistd.h>
+#include <dirent.h>
+#else
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <sched.h>
+#include <poll.h>
+#include <sys/wait.h>
+#if defined(__linux__) && !defined(__FILC__)
+#include <sys/syscall.h>
+#endif
+#endif
+#endif /* GM_FREESTANDING */
+
+/* GM_API: the linkage of the runtime's functions (and of its variables' definitions);
+ * GM_API_VAR: of the declarations of its variables here. */
+#ifdef GM_RT_SEPARATE
+#define GM_API
+#define GM_API_VAR extern
+#else
+#define GM_API static
+#define GM_API_VAR static
+#endif
+
+/* GM_HUGE_FN: marks a generated function with an enormous body (a very long chain of
+ * operations). GCC's points-to analysis and jump threading take time that grows much
+ * faster than such a function, so they are switched off for it. */
+#if defined(__GNUC__) && !defined(__clang__)
+#define GM_HUGE_FN __attribute__((optimize("no-tree-pta", "no-thread-jumps")))
+#else
+#define GM_HUGE_FN
+#endif
+
+/* GM_LONG_FN: marks a generated function with a very long body (thousands of operations,
+ * such as a long chain). From LLVM 19 on, Clang's early common-subexpression pass asks for
+ * the known bits of values through the selects and checks of such a body at a cost that
+ * grows with its length, so the whole function takes time that grows about with the cube
+ * of its length (minutes for ten thousand links, hours for fifty thousand). Such a function
+ * is compiled without optimization there. Apple numbers its Clang differently: Apple clang
+ * 17 is the first based on LLVM 19. */
+#if defined(__clang__) && ((defined(__apple_build_version__) && __clang_major__ >= 17) || \
+                           (!defined(__apple_build_version__) && __clang_major__ >= 19))
+#define GM_LONG_FN __attribute__((optnone, noinline))
+#else
+#define GM_LONG_FN
+#endif
+
+#define GM_XSTR(x) GM_STR(x)
+#define GM_STR(x) #x
+/* The assembler name of C symbol `s` (macOS prefixes an underscore). */
+#define GM_SYM(s) GM_XSTR(__USER_LABEL_PREFIX__) s
+
+/* ---- byte order ------------------------------------------------------------
+ *
+ * Integers (of up to 128 bits) are stored as one number in the target's byte order. Code
+ * that addresses the bytes of an integer goes through gm_ibp, which names the i-th least
+ * significant byte, so it does not depend on the order. */
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define GM_BIG_ENDIAN 1
+#else
+#define GM_BIG_ENDIAN 0
+#endif
+
+/* The i-th least significant byte of the integer of `size` bytes at p. */
+static inline uint8_t *gm_ibp(const void *p, size_t size, size_t i) {
+    uint8_t *b = (uint8_t *)p;
+    if (!GM_BIG_ENDIAN) return b + i;
+    return b + (size - 1 - i);
+}
+
+/* The unsigned integer of `size` (at most 16) bytes at p. */
+static inline unsigned __int128 gm_load_u128(const void *p, size_t size) {
+    unsigned __int128 v = 0;
+    for (size_t i = size; i > 0; i--) v = (v << 8) | *gm_ibp(p, size, i - 1);
+    return v;
+}
+
+/* Stores the low `size` (at most 16) bytes of v at p. */
+static inline void gm_store_u128(void *p, size_t size, unsigned __int128 v) {
+    for (size_t i = 0; i < size; i++) *gm_ibp(p, size, i) = (uint8_t)(v >> (8 * i));
+}
+
+/* ---- memory helpers ------------------------------------------------------ */
+
+/* GM_LD loads a value of C type T from address p (any alignment); GM_ST stores the value
+ * v of C type T at address p. Under Fil-C a memcpy is a call into its runtime, and one
+ * on a local makes the local escape to the heap, so they are typed accesses through a
+ * packed struct (alignment 1, any type may alias) instead. */
+#ifdef __FILC__
+#define GM_UNALIGNED(T, p) (((struct __attribute__((packed, may_alias)) { T v; } *)(p))->v)
+#define GM_LD(T, p) ({ T gm_ld_v_ = GM_UNALIGNED(T, p); gm_ld_v_; })
+#define GM_ST(T, p, v) do { T gm_st_v_ = (v); GM_UNALIGNED(T, p) = gm_st_v_; } while (0)
+#else
+#define GM_LD(T, p) ({ T gm_ld_v_; memcpy(&gm_ld_v_, (const void *)(p), sizeof(T)); gm_ld_v_; })
+#define GM_ST(T, p, v) do { T gm_st_v_ = (v); memcpy((void *)(p), &gm_st_v_, sizeof(T)); } while (0)
+#endif
+/* The value v as C type T of the same size: a blob as its mirror or back. */
+#define GM_CONV(T, v) ({ union { __typeof__(v) s; T d; } gm_cv_u_; gm_cv_u_.s = (v); gm_cv_u_.d; })
+/* Round half to even. The MinGW C library lacks roundeven; rint does it in the default
+ * rounding mode, which programs never change. */
+#ifdef _WIN32
+#define GM_ROUNDEVEN(x) __builtin_rint(x)
+#else
+#define GM_ROUNDEVEN(x) __builtin_roundeven(x)
+#endif
+/* `#fast_math` functions: float contraction and reassociation are permitted (§5.3). */
+#if defined(__clang__)
+#define GM_FAST_MATH_ATTR
+#define GM_FAST_MATH_BODY _Pragma("clang fp contract(fast) reassociate(on)")
+#else
+#define GM_FAST_MATH_ATTR __attribute__((optimize("associative-math", "no-signed-zeros", "no-trapping-math", "fp-contract=fast")))
+#define GM_FAST_MATH_BODY
+#endif
+/* Pointer arithmetic and tagging. Under Fil-C a pointer keeps its capability only while
+ * it is computed as a pointer (an integer turned back into a pointer has none), so the
+ * address is changed with zmkptr, which keeps the capability; elsewhere through
+ * uintptr_t, whose arithmetic wraps. GM_PTR_ADD adds a byte offset (any value: a
+ * negative offset wraps around). GM_PTR_TAG and GM_PTR_UNTAG set and clear a mark on a
+ * function's address, and GM_PTR_TAGGED tells whether it is set: bit 0, as the generated
+ * functions are aligned; on WebAssembly, where a function's "address" is its index in the
+ * function table and alignment means nothing, the top bit, as no table is that large. */
+#ifdef __FILC__
+#include <stdfil.h>
+#define GM_PTR_ADD(p, n) zmkptr((void *)(p), (unsigned long)(p) + (unsigned long)(n))
+#define GM_PTR_TAG(p) zorptr((void *)(p), 1)
+#define GM_PTR_UNTAG(p) zandptr((void *)(p), ~1ul)
+/* An address as a pointer (`to_ptr`): it grants no access. The empty asm hides where
+ * the address came from: the optimizer could fold a plain cast back into the pointer it
+ * was taken from, which keeps its capability. (zmkptr(NULL, n) is no better: filcc 0.686
+ * at -O1 and above drops an access through it instead of trapping.) */
+#define GM_INT_TO_PTR(n) ({ uintptr_t gm_n_ = (n); __asm__("" : "+r"(gm_n_)); (void *)gm_n_; })
+#else
+#define GM_INT_TO_PTR(n) ((void *)(uintptr_t)(n))
+#define GM_PTR_ADD(p, n) ((void *)((uintptr_t)(p) + (uintptr_t)(n)))
+#ifdef __wasm__
+#define GM_PTR_TAG_BIT ((uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1))
+#else
+#define GM_PTR_TAG_BIT ((uintptr_t)1)
+#endif
+#define GM_PTR_TAG(p) ((void *)((uintptr_t)(p) | GM_PTR_TAG_BIT))
+#define GM_PTR_UNTAG(p) ((void *)((uintptr_t)(p) & ~GM_PTR_TAG_BIT))
+#endif
+#ifdef __FILC__
+#define GM_PTR_TAGGED(p) (((uintptr_t)(p) & 1) != 0)
+#else
+#define GM_PTR_TAGGED(p) (((uintptr_t)(p) & GM_PTR_TAG_BIT) != 0)
+#endif
+/* Rounds a double to the nearest binary16 (ties to even); returns its bits. */
+static inline uint16_t gm_f64_to_f16(double x) {
+    uint64_t bits;
+    memcpy(&bits, &x, 8);
+    uint16_t sign = (uint16_t)((bits >> 63) << 15);
+    int exp = (int)((bits >> 52) & 0x7ff);
+    uint64_t man = bits & ((1ull << 52) - 1);
+    if (exp == 0x7ff) return man == 0 ? (uint16_t)(sign | 0x7c00) : (uint16_t)(sign | 0x7e00);
+    if (exp == 0) return sign;
+    int e = exp - 1023;
+    int he = e + 15;
+    if (he >= 1) {
+        if (he >= 0x1f) return (uint16_t)(sign | 0x7c00);
+        uint32_t keep = (uint32_t)(man >> 42);
+        uint64_t rem = man & ((1ull << 42) - 1);
+        uint64_t half = 1ull << 41;
+        uint32_t r = ((uint32_t)he << 10) | keep;
+        if (rem > half || (rem == half && (keep & 1) == 1)) r += 1;
+        return (uint16_t)(sign | r);
+    }
+    unsigned __int128 m = ((unsigned __int128)1 << 52) | man;
+    int shift = 28 - e;
+    if (shift >= 120) return sign;
+    unsigned __int128 q = m >> shift;
+    unsigned __int128 rem = m & (((unsigned __int128)1 << shift) - 1);
+    unsigned __int128 half = (unsigned __int128)1 << (shift - 1);
+    uint32_t r = (uint32_t)q;
+    if (rem > half || (rem == half && (r & 1) == 1)) r += 1;
+    return (uint16_t)(sign | r);
+}
+
+/* The number x converted to f16. Fil-C (as of 0.686) miscompiles the compiler's own
+ * routines for converting to _Float16 (__truncdfhf2 and the like), so Fil-C builds round
+ * with gm_f64_to_f16 instead (every source value converts to double exactly or, if an
+ * integer, beyond f16's range either way); on x86-64 they also have the F16C
+ * instructions (-mf16c) do float <-> f16 for arithmetic. */
+#ifdef __FILC__
+static inline _Float16 gm_f16_from(double d) {
+    uint16_t h = gm_f64_to_f16(d);
+    _Float16 f;
+    memcpy(&f, &h, sizeof f);
+    return f;
+}
+#define GM_F16(x) gm_f16_from((double)(x))
+#else
+#define GM_F16(x) ((_Float16)(x))
+#endif
+/* A zero value of C type T (scalar or blob). */
+#define GM_ZERO(T) ((T){})
+
+typedef struct { uint8_t b[0]; } gm_unit;
+
+/* ---- traps ---------------------------------------------------------------- */
+
+/* Debug builds keep a chain of the running Gamma functions: each pushes a gm_bt on entry,
+ * pops it on exit, and records in it the location of each call it makes. Functions of the
+ * core library have no name; backtraces leave them out. Each thread and each fiber has a
+ * chain of its own; a fiber's continues into the chain of the `with` that runs it. */
+typedef struct gm_bt {
+    struct gm_bt *prev;
+    const char *fn;
+    const char *file;
+    uint32_t line, col;
+} gm_bt;
+GM_API_VAR GM_TLS gm_bt *gm_bt_top;
+
+/* Stops the program: flushes stdout, writes "trap: <msg>\n  at <file>:<line>:<col>\n" to
+ * stderr (the second line only if file is not NULL), followed in Debug builds by the calls
+ * leading there, and exits with status 134. */
+GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col);
+/* As gm_trap, with a message given as bytes (not NUL-terminated). */
+GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
+/* The trap of a pointer cast to a type of alignment `align` that `addr` lacks. */
+GM_API _Noreturn void gm_trap_misaligned(uintptr_t addr, unsigned align, const char *file, uint32_t line, uint32_t col);
+
+/* ---- growable byte buffer --------------------------------------------------- */
+
+typedef struct { uint8_t *data; size_t len, cap; } gm_buf;
+GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len);
+GM_API void gm_buf_free(gm_buf *b);
+
+/* Traps: "integer overflow in `pow` (<base>^<n>)", for an integer `base` of `bits` bits
+ * stored in the size of its type. */
+GM_API _Noreturn void gm_trap_pow(const uint8_t *base, uint32_t bits, bool sgn, uint32_t n, const char *file,
+                                  uint32_t line, uint32_t col);
+
+/* ---- type descriptors (for formatting, spec §21.6.1) -------------------------- */
+
+typedef enum {
+    GM_K_INT,      /* bits, is_signed; storage `size` bytes, target byte order */
+    GM_K_FLOAT,    /* bits: 16, 32 or 64 */
+    GM_K_BOOL,
+    GM_K_PTR,      /* any pointer or function pointer: printed as 0x<hex> */
+    GM_K_SLICE,    /* elem; {ptr at 0, len (uintptr_t) at sizeof(void*)} */
+    GM_K_ARRAY,    /* elem, len */
+    GM_K_TUPLE,    /* fields (named == true: print "name: "); 1 unnamed elem prints "(x,)" */
+    GM_K_OPTIONAL, /* elem = payload at offset 0; if flag_offset == GM_NICHE the payload is a
+                      pointer and null is address 0, else present iff byte at flag_offset != 0 */
+    GM_K_RESULT,   /* elem = ok, err; is_err iff byte at tag_offset != 0; payload at payload_offset */
+    GM_K_STRUCT,   /* name, fields; fields named "_" are skipped */
+    GM_K_UNION,    /* name, variants; tag (tag_size bytes, tag_signed) at tag_offset;
+                      payload at payload_offset */
+    GM_K_OPAQUE,   /* printed as `name` verbatim (e.g. "<handler>") */
+    GM_K_BITS      /* a #bits struct: name, fields with *bit* offsets, packed into an unsigned
+                      integer of `size` bytes. A field's width is 1 for GM_K_BOOL and `bits` for
+                      GM_K_INT, GM_K_BITS and GM_K_UNION (the tag's width); fields named "_" are
+                      skipped like a struct's */
+} gm_kind;
+
+#define GM_NICHE 0xffffffffu
+
+typedef struct gm_type gm_type;
+
+typedef struct {
+    const char *name;     /* field / element name, or NULL for unnamed tuple elements */
+    uint32_t offset;
+    const gm_type *type;
+} gm_field;
+
+typedef struct {
+    const char *name;
+    int64_t tag;          /* the tag value (as a signed 64-bit number) */
+    const gm_type *payload; /* NULL if the variant has no payload */
+} gm_variant;
+
+struct gm_type {
+    gm_kind kind;
+    uint32_t size, align;
+    const char *name;
+    uint16_t bits;
+    bool is_signed;
+    const gm_type *elem;
+    const gm_type *err;
+    uint64_t len;
+    uint32_t nfields;
+    const gm_field *fields;
+    bool named;
+    uint32_t flag_offset;
+    uint32_t tag_offset, payload_offset;
+    uint8_t tag_size;
+    bool tag_signed;
+    uint32_t nvariants;
+    const gm_variant *variants;
+};
+
+/* Appends the display form of the value of type t at address v (§21.6.1). `top` is true for
+ * the argument itself: a []u8 / []const u8 slice is then written raw, otherwise quoted. */
+GM_API void gm_format(gm_buf *out, const gm_type *t, const void *v, bool top);
+
+/* A placeholder's format spec (§21.6.1). align: 0 auto, 1 left, 2 right, 3 center; kind:
+ * 0 display, 1 x, 2 X, 3 o, 4 b, 5 e; precision -1 when absent. */
+typedef struct {
+    uint8_t fill, align, plus, alt, zero, kind;
+    uint32_t width;
+    int32_t precision;
+} gm_spec;
+
+/* Appends the value of type t at address v as a placeholder with the spec s. */
+GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *v, const gm_spec *s);
+
+/* ---- ambient effects ---------------------------------------------------------- */
+
+GM_API void gm_write_out(const uint8_t *p, size_t len);  /* buffered stdout */
+GM_API void gm_write_err(const uint8_t *p, size_t len);  /* stderr, flushed */
+GM_API void gm_flush(void);                              /* flushes stdout */
+
+/* Statement coverage: `n` counters, written out at exit to the file `path` (if not NULL). */
+GM_API void gm_cover_init(uint32_t n, const char *path);
+GM_API_VAR uint32_t *gm_cover_counts;
+#define GM_COVER(i) (gm_cover_counts != NULL ? (void)__atomic_fetch_add(&gm_cover_counts[i], 1, __ATOMIC_RELAXED) : (void)0)
+
+/* Process arguments as a Gamma `[]const string`: returns a pointer to `argc` slices
+ * ({ptr, len} pairs, each 2 * sizeof(void*) bytes). Set by gm_set_args at startup. */
+GM_API void gm_set_args(int argc, char **argv);
+GM_API const void *gm_args(size_t *count);
+/* Looks up an environment variable; returns false if unset. */
+GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len);
+
+/* ---- system services (behind the core library's default handlers, §12.9) --------- */
+
+/* Operations that can fail return a count, or an error code: -1 - i for the i-th
+ * variant of IoError other than Other, and -1000 - errno for Other(errno). */
+GM_API int64_t gm_io_error(int err);
+GM_API int64_t gm_sys_read(void *p, size_t n);      /* standard input */
+GM_API uint64_t gm_clock_now(void);                 /* monotonic nanoseconds */
+GM_API int64_t gm_clock_wall(void);                 /* Unix time in nanoseconds */
+GM_API void gm_clock_sleep(uint64_t ns);
+GM_API void gm_rand_fill(void *p, size_t n);
+/* Files and directories: the flags of gm_fs_open, and handles that are file descriptors
+ * (files; C runtime descriptors on Windows) or indexes into a table of open directories. */
+enum { GM_FS_READ = 1, GM_FS_WRITE = 2, GM_FS_APPEND = 4, GM_FS_CREATE = 8, GM_FS_TRUNCATE = 16, GM_FS_EXCLUSIVE = 32 };
+GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags);
+GM_API int64_t gm_fs_close(int64_t f);
+GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n);
+GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n);
+GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence);
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, kind (0 file, 1 directory, 2 symlink, 3 other), mtime */
+GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n);   /* as stat; no final symlink followed */
+GM_API int64_t gm_fs_remove(const void *path, size_t len);
+GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len);
+GM_API int64_t gm_fs_make_dir(const void *path, size_t len);
+GM_API int64_t gm_fs_remove_dir(const void *path, size_t len);
+GM_API int64_t gm_fs_open_dir(const void *path, size_t len);
+GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n);   /* length + kind * 2^32; 0 after the last */
+GM_API int64_t gm_fs_close_dir(int64_t d);
+GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size);
+GM_API int64_t gm_fs_sync(int64_t f);
+GM_API int64_t gm_fs_cwd(void *p, size_t n);          /* length; EINVAL if it does not fit */
+/* TCP sockets; handles are file descriptors (SOCKET values on Windows). Host names are resolved with getaddrinfo;
+ * a failed lookup is Other(0), as in the interpreter. */
+GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
+GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port);
+GM_API int64_t gm_net_local_port(int64_t h);
+GM_API int64_t gm_net_accept(int64_t h);
+GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n);
+GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n);
+GM_API int64_t gm_net_close(int64_t h);
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how);   /* 0 read, 1 write, 2 both */
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns);   /* 0: none */
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINVAL if it does not fit */
+
+/* Child processes. gm_proc_spawn takes the argument vector, the environment (used when flags has
+ * GM_PROC_ENV; "NAME=value" entries) and the working directory (empty: ours); the flags hold two
+ * bits per standard stream (stdin from bit 0, stdout from bit 2, stderr from bit 4: 0 inherit,
+ * 1 the null device, 2 a pipe). It returns a handle. gm_proc_read_out waits until a piped output
+ * stream has data and reads from it: the length plus 2^32 for stderr, or 0 once both streams
+ * have ended. gm_proc_wait returns the exit code, or the signal number plus 2^32. */
+enum { GM_PROC_ENV = 64 };
+GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                             size_t dir_len, uint32_t flags);
+GM_API int64_t gm_proc_write_in(int64_t h, const void *p, size_t n);
+GM_API int64_t gm_proc_close_in(int64_t h);
+GM_API int64_t gm_proc_read_out(int64_t h, void *p, size_t n);
+GM_API int64_t gm_proc_wait(int64_t h);
+GM_API int64_t gm_proc_kill(int64_t h);
+
+/* ---- threads (§19.6) ----------------------------------------------------------------
+ *
+ * A thread runs a plain function `void f(void *arg)`. Fibers, handler contexts and the exit in
+ * progress are per thread; the runtime's own shared tables are guarded by gm_rt_lock. */
+/* The lock guarding the runtime's shared tables. */
+GM_API void gm_rt_acquire(void);
+GM_API void gm_rt_release(void);
+GM_API int64_t gm_thread_spawn(void *f, void *arg);   /* a handle, or an error code */
+GM_API int64_t gm_thread_join(int64_t h);
+GM_API int64_t gm_thread_detach(int64_t h);
+GM_API void gm_thread_yield(void);
+/* Blocks while *addr == expected, until woken or the timeout (ns; negative: none) passes;
+ * 0 or an error code. May return early. */
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns);
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n);   /* UINT32_MAX: all */
+GM_API uint32_t gm_cpu_count(void);
+/* Writes to standard output (fd 1, buffered like Out) or standard error (fd 2). */
+GM_API void gm_sys_write(int32_t fd, const void *p, size_t n);
+
+/* ---- heap (behind the core library's @heap_alloc / @heap_free) ------------------ */
+
+/* Returns NULL when out of memory. In debug builds (gm_debug != 0) the block is filled with
+ * 0xAA, and gm_heap_free traps on double and invalid frees (it keeps track of live blocks). */
+GM_API void *gm_heap_alloc(size_t size, size_t align);
+GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col);
+/* Debug builds: records the allocator (owner, vt) and site of the block at p (§18.3). */
+GM_API void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col);
+/* Debug builds: traps if the block at p was allocated by another allocator, and forgets it. */
+GM_API void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
+                           const char *tfile, uint32_t tline, uint32_t tcol);
+/* Nonzero in Debug builds (initially 1; set by the generated code). */
+GM_API_VAR int gm_debug;
+/* memset, called through a volatile pointer so that filling a frame that is about to die
+ * (Debug builds) is not removed as a dead store. */
+GM_API_VAR void *(*volatile gm_poison)(void *, int, size_t);
+/* Nonzero in Debug, Checked and Safe builds; zero in Fast ones (set by the generated code). */
+GM_API_VAR int gm_checks;
+
+/* ---- frames, handler contexts and non-local exits ----------------------------------
+ *
+ * The calling convention of generated code is described in docs/architecture.md. Each
+ * function's locals live in a frame struct starting with a gm_frame; handler contexts are
+ * linked lists of gm_node; `break`, `continue`, `return`, `Env.exit`, `resume` and fiber
+ * cancellation travel as the exit in progress, gm_unw.
+ */
+
+typedef struct gm_frame { struct gm_frame *up; uint8_t clause_lit; } gm_frame;
+typedef struct gm_with gm_with;
+typedef struct gm_node {
+    uint32_t eff;
+    uint8_t kind;               /* GM_LIT, GM_DECL or GM_NATIVE */
+    void *const *clauses;       /* clause functions, by operation */
+    void *env;                  /* literal: its frame; declaration: the handler value */
+    struct gm_node *hctx;       /* the context clauses run in */
+    gm_frame *with_frame;       /* the installing `with`, for clause exits */
+    uint32_t with_label;
+    void *result;               /* where a `break` from a clause stores the `with`'s value */
+    gm_with *fw;                /* the installing `with … on`, or NULL (§14) */
+    struct gm_node *next;
+} gm_node;
+enum { GM_LIT, GM_DECL, GM_NATIVE };
+typedef struct { void *code; void *env; gm_node *cx; } gm_closure;
+typedef struct { void *env; gm_node *cx; } gm_hval;
+/* Exit kinds. GM_RESUME ends a `ctl` clause, after which its driver switches to the fiber
+ * named by `resume`; GM_CANCEL unwinds a discarded fiber to its base. */
+enum { GM_NONE, GM_BREAK, GM_CONTINUE, GM_RETURN, GM_EXIT, GM_RESUME, GM_CANCEL };
+/* C11 memory orders, indexed by the tag of `MemoryOrder` (§19.6). */
+static const int gm_ord[] = {__ATOMIC_RELAXED, __ATOMIC_ACQUIRE, __ATOMIC_RELEASE, __ATOMIC_ACQ_REL, __ATOMIC_SEQ_CST};
+typedef struct { int kind; gm_frame *frame; uint32_t label; uint8_t is_err; uint8_t code; } gm_unwind;
+/* Each thread has its own exit in progress (§19.6). */
+GM_API_VAR GM_TLS gm_unwind gm_unw;
+
+/* Runs entry `f` of the program under context `cx` on a thread with a large stack and
+ * returns its exit status. */
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx);
+/* The same for a program that switches fibers: on WASI, that takes the fiber driver at the
+ * bottom of the stack (which brings in the code of the switch, see gm_rt.c). */
+GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx);
+
+/* The innermost handler of effect `eff` in context `cx`, or NULL. The innermost node, most
+ * often the one, is looked at inline: a call is dear, under Fil-C especially. */
+GM_API gm_node *gm_find_outer(gm_node *cx, uint32_t eff);
+static inline gm_node *gm_find(gm_node *cx, uint32_t eff) {
+    return cx == NULL || cx->eff == eff ? cx : gm_find_outer(cx->next, eff);
+}
+/* Whether errdefers run as the current exit leaves a block of frame `fr` (§8.8). */
+GM_API bool gm_errdefer_runs(gm_frame *fr);
+
+/* ---- fibers (§14) ------------------------------------------------------------------------
+ *
+ * A `with … on` runs its body on a fiber: a gm_fiber with its own stack. The code that runs
+ * the `with` is the driver; it loops: switch to a fiber (gm_with_go), and when control comes
+ * back, look at why (w->event). A fiber that performs a `ctl` operation suspends in
+ * gm_ctl_perform; the driver then calls the clause (gm_with_clause) on its own stack. The
+ * clause ends with `resume`, which sets w->next and exits with GM_RESUME, or with another
+ * exit, which completes the `with`. A finished fiber switches to its driver for good
+ * (gm_fiber_finish).
+ *
+ * Fiber structs are never freed: a pool reuses them, and each suspension increments the
+ * fiber's epoch, so a continuation (fiber, epoch) that was already consumed is detected
+ * even after the fiber is reused.
+ */
+
+#define GM_MIN_STACK 16384
+/* Bytes at the bottom of a fiber stack kept for reporting an overflow. */
+#define GM_STACK_RESERVE 8192
+
+typedef struct gm_fiber gm_fiber;
+/* A continuation: the suspended fiber and its epoch. The layout of `cont(R)`. */
+typedef struct { gm_fiber *fiber; uintptr_t epoch; } gm_cont;
+/* Calls a `ctl` clause for a pending perform: `req` holds the node and the arguments. */
+typedef void (*gm_clause_thunk)(void *req, gm_cont k);
+
+enum { GM_EV_PERFORM = 1, GM_EV_DONE };
+
+struct gm_with {
+    void *driver_sp;            /* the driver's saved context while a fiber runs */
+    gm_fiber *suspended;        /* fibers suspended on this `with`'s operations, newest first */
+    uint32_t nsuspended;
+    gm_fiber *owned;            /* fibers created for this `with` */
+    gm_node *body_cx;           /* the body's handler context (for @fiber) */
+    uint8_t event;              /* why the driver runs again: GM_EV_PERFORM or GM_EV_DONE */
+    gm_fiber *event_fiber;
+    gm_fiber *next;             /* the fiber chosen by `resume` */
+};
+
+struct gm_fiber {
+    void *sp;                   /* saved context while not running */
+    uintptr_t limit;            /* the lowest address its frames may use (checked builds) */
+    gm_with *owner;             /* the `with` it was created for */
+    gm_with *susp_with;         /* while suspended: the `with` whose operation it performed */
+    uintptr_t epoch;
+    uint8_t state;              /* GM_FB_NEW, GM_FB_RUNNING, GM_FB_SUSPENDED or GM_FB_DONE */
+    uint8_t cancel;             /* set by `cancel` before switching to it */
+    uint8_t started;
+    gm_fiber *susp_next, *susp_prev;
+    gm_fiber *own_next;
+    gm_fiber *pool_next;
+    void (*start)(gm_fiber *);  /* the code it starts with */
+    /* the pending perform */
+    gm_clause_thunk thunk;
+    gm_bt *bt;                  /* its backtrace chain while it is not running */
+    void *req;
+    void *res;                  /* where `resume` stores the operation's result */
+    /* data for `start` */
+    void *frame, *env, *fn, *arg;
+    gm_node *cx, *inst;
+};
+
+enum { GM_FB_NEW, GM_FB_RUNNING, GM_FB_SUSPENDED, GM_FB_DONE };
+
+/* Creates a fiber of `w` on the memory [stack, stack + len), which will run start(fiber).
+ * `arg_size` bytes at the top of the stack are reserved for fiber->arg. Traps if the stack
+ * is smaller than GM_MIN_STACK (checked). */
+GM_API gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*start)(gm_fiber *), size_t arg_size,
+                              const char *file, uint32_t line, uint32_t col);
+/* Registers a new fiber as suspended on `w` (made by @fiber) and returns its continuation. */
+GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
+/* Checked builds compare each frame's address with the lowest address the running stack
+   may use: the fiber's limit, or the thread's (§14.1, §18). */
+#if defined(__SANITIZE_ADDRESS__)
+#define GM_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define GM_ASAN 1
+#endif
+#endif
+#if defined(GM_ASAN) || defined(__FILC__)
+/* AddressSanitizer may place frames on a separate "fake stack", and Fil-C allocates frames
+   whose address is taken on its heap and runs fibers on stacks of its own, so frame
+   addresses say nothing about the stack's depth; both report overflows themselves. */
+#define GM_NO_FRAME_PROBES 1
+#define GM_STACK_CHECK(p, n) ((void)(p))
+#else
+#if defined(GM_FREESTANDING) || defined(GM_WASI)
+/* No signal handler or exception port to report an overflow: the probes in each function
+   (against a fiber's limit, and on WASI the module's own stack) are all there is. */
+#define GM_NO_FRAME_PROBES 1
+#endif
+/* `n` bounds the bytes of the function's other locals, which may lie below its frame `p`. */
+#define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
+#endif
+GM_API_VAR GM_TLS gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
+GM_API_VAR GM_TLS uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
+GM_API_VAR GM_TLS uintptr_t gm_thread_stack_limit; /* of the thread's own stack */
+/* Records the stack limit of the calling thread (at the start of `main` or of a thread). */
+GM_API void gm_thread_stack(void);
+GM_API _Noreturn void gm_stack_overflow(void);
+/* The trap of a call of function `name`, whose frame of `bytes` no stack can hold. */
+GM_API _Noreturn void gm_frame_overflow(const char *name, uint64_t bytes);
+/* Driver: switches to `fb` until something happens on `w` (an event). */
+GM_API void gm_with_go(gm_with *w, gm_fiber *fb);
+/* Driver: calls the clause for the pending perform of w->event_fiber. */
+GM_API void gm_with_clause(gm_with *w);
+/* Fiber: suspends on `w` until resumed (or cancelled: gm_unw.kind is then GM_CANCEL). */
+GM_API void gm_ctl_perform(gm_with *w, gm_clause_thunk thunk, void *req, void *res);
+/* Fiber: ends the running fiber and switches to its driver. */
+GM_API _Noreturn void gm_fiber_finish(gm_fiber *fb);
+/* Clause of `w`: consumes continuation *k for `resume`; returns where to store the value. */
+GM_API void *gm_resume(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
+/* Clause of `w`: consumes continuation *k and cancels its fiber (§14.5). */
+GM_API void gm_cancel_cont(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col);
+/* Driver: completes `w`. `crossing`: an exit from a fiber is leaving the `with`, so the
+ * suspended fibers are discarded; otherwise any suspended fiber is a checked error (§14.4).
+ * Then the fibers return to the pool. */
+GM_API void gm_with_end(gm_with *w, bool crossing, const char *file, uint32_t line, uint32_t col);
+
+#endif
+
+/* The runtime of programs compiled by the Gamma C back end: implementations of the
+ * declarations in gm_rt.h. The compiler puts gm_rt.h before this file (and the generated
+ * code after it, unless GM_RT_SEPARATE is defined), so this file includes nothing itself.
+ *
+ * Observable behavior (trap output, value display, heap diagnostics) mirrors the reference
+ * interpreter byte for byte.
+ */
+
+/* Definitions of the variables declared in gm_rt.h (gm_checks is the generated code's). */
+GM_API GM_TLS gm_bt *gm_bt_top;
+#if defined(GM_FREESTANDING) || defined(GM_WASI)
+/* One thread of execution: nothing to lock. */
+GM_API void gm_rt_acquire(void) {}
+GM_API void gm_rt_release(void) {}
+#elif defined(_WIN32)
+static SRWLOCK gm_rt_lock = SRWLOCK_INIT;
+GM_API void gm_rt_acquire(void) { AcquireSRWLockExclusive(&gm_rt_lock); }
+GM_API void gm_rt_release(void) { ReleaseSRWLockExclusive(&gm_rt_lock); }
+#else
+static pthread_mutex_t gm_rt_lock = PTHREAD_MUTEX_INITIALIZER;
+GM_API void gm_rt_acquire(void) { pthread_mutex_lock(&gm_rt_lock); }
+GM_API void gm_rt_release(void) { pthread_mutex_unlock(&gm_rt_lock); }
+#endif
+GM_API int gm_debug = 1;
+GM_API void *(*volatile gm_poison)(void *, int, size_t) = memset;
+GM_API GM_TLS gm_unwind gm_unw;
+GM_API GM_TLS gm_fiber *gm_cur_fiber;
+GM_API GM_TLS uintptr_t gm_stack_limit;
+GM_API GM_TLS uintptr_t gm_thread_stack_limit;
+
+/* ---- traps ---------------------------------------------------------------- */
+
+/* Set while a stack overflow is reported: the report then ends the process without the
+ * C library's exit processing, which needs stack the overflowed thread may not have. */
+static GM_TLS int gm_overflowing;
+
+/* ---- freestanding support (GM_FREESTANDING) ------------------------------------------------
+ *
+ * Without a C library the runtime formats numbers itself (gm_snprintf, which understands only
+ * the conversions the runtime and the generated code use) and takes the memory of its
+ * temporary buffers from a small static arena: formatting needs scratch space, and a
+ * freestanding program owns no allocator. The arena is emptied whenever no buffer is live. */
+#ifdef GM_FREESTANDING
+
+#ifndef GM_SCRATCH_SIZE
+#define GM_SCRATCH_SIZE 16384
+#endif
+static uint8_t gm_scratch[GM_SCRATCH_SIZE] __attribute__((aligned(16)));
+static size_t gm_scratch_top, gm_scratch_live;
+
+/* A buffer of `cap` bytes holding the `oldcap` bytes at `old` (NULL: none). */
+static uint8_t *gm_scratch_grow(uint8_t *old, size_t oldcap, size_t cap) {
+    size_t base;
+    if (old != NULL && old + oldcap == gm_scratch + gm_scratch_top) {
+        base = (size_t)(old - gm_scratch); /* the newest buffer grows in place */
+    } else {
+        base = (gm_scratch_top + 15) & ~(size_t)15;
+    }
+    if (base > GM_SCRATCH_SIZE || cap > GM_SCRATCH_SIZE - base) {
+        gm_trap("out of memory (formatting buffer)", NULL, 0, 0);
+    }
+    if (old == NULL) gm_scratch_live++;
+    gm_scratch_top = base + cap;
+    if (old != NULL && gm_scratch + base != old) memcpy(gm_scratch + base, old, oldcap);
+    return gm_scratch + base;
+}
+
+static void gm_scratch_release(uint8_t *p, size_t cap) {
+    if (p == NULL) return;
+    if (p + cap == gm_scratch + gm_scratch_top) gm_scratch_top = (size_t)(p - gm_scratch);
+    if (--gm_scratch_live == 0) gm_scratch_top = 0;
+}
+
+typedef struct { char *dst; size_t cap, len; } gm_sink;
+
+static void gm_sink_put(gm_sink *s, char c) {
+    if (s->len + 1 < s->cap) s->dst[s->len] = c;
+    s->len++;
+}
+
+static void gm_sink_unsigned(gm_sink *s, unsigned long long v, unsigned base, int min_digits) {
+    char tmp[24];
+    int n = 0;
+    while (v != 0 || n < min_digits) {
+        unsigned d = (unsigned)(v % base);
+        tmp[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+        v /= base;
+    }
+    while (n > 0) gm_sink_put(s, tmp[--n]);
+}
+
+/* The decimal digits of the finite number a >= 0, exactly: *pt is the decimal point's place, so
+ * that a is 0.D * 10^pt for the returned digit string D (no leading zeros; empty for 0). The
+ * number is m * 2^e2: m * 2^e2 when e2 >= 0, else m * 5^-e2 / 10^-e2. */
+#define GM_BIG_LIMBS 90
+#define GM_DIGITS_MAX (GM_BIG_LIMBS * 9)
+static size_t gm_exact_digits(double a, char *digits, int *pt) {
+    uint64_t bits;
+    memcpy(&bits, &a, 8);
+    int ex = (int)((bits >> 52) & 0x7ff);
+    uint64_t m = bits & (((uint64_t)1 << 52) - 1);
+    int e2;
+    if (ex == 0) {
+        e2 = -1074;
+    } else {
+        m |= (uint64_t)1 << 52;
+        e2 = ex - 1075;
+    }
+    if (m == 0) {
+        *pt = 0;
+        return 0;
+    }
+    uint32_t limb[GM_BIG_LIMBS]; /* base 10^9, least significant first */
+    size_t n = 0;
+    for (uint64_t v = m; v != 0; v /= 1000000000u) limb[n++] = (uint32_t)(v % 1000000000u);
+    unsigned factor = e2 >= 0 ? 2 : 5;
+    int times = e2 >= 0 ? e2 : -e2;
+    for (int i = 0; i < times; i++) {
+        uint64_t carry = 0;
+        for (size_t k = 0; k < n; k++) {
+            uint64_t v = (uint64_t)limb[k] * factor + carry;
+            limb[k] = (uint32_t)(v % 1000000000u);
+            carry = v / 1000000000u;
+        }
+        if (carry != 0) limb[n++] = (uint32_t)carry;
+    }
+    size_t len = 0;
+    for (size_t k = n; k > 0; k--) {
+        uint32_t v = limb[k - 1];
+        char tmp[9];
+        for (int j = 8; j >= 0; j--) {
+            tmp[j] = (char)('0' + v % 10);
+            v /= 10;
+        }
+        for (int j = 0; j < 9; j++) {
+            if (len == 0 && tmp[j] == '0') continue;
+            digits[len++] = tmp[j];
+        }
+    }
+    *pt = (int)len - (e2 >= 0 ? 0 : -e2);
+    return len;
+}
+
+/* Rounds the digit string d[0..len) to its first `keep` digits (half to even, on the exact
+ * value); *nd is the number of digits left. Returns whether the rounding carried out of the
+ * first digit (the digits are then all zeros, and the result is 1 followed by them). */
+static bool gm_round_digits(char *d, size_t len, long keep, size_t *nd) {
+    if ((size_t)keep >= len) {
+        *nd = len;
+        return false;
+    }
+    *nd = (size_t)keep;
+    bool up = false;
+    if (d[keep] > '5') {
+        up = true;
+    } else if (d[keep] == '5') {
+        bool rest = false;
+        for (size_t i = (size_t)keep + 1; i < len; i++) rest |= d[i] != '0';
+        up = rest || (keep > 0 && ((d[keep - 1] - '0') & 1));
+    }
+    if (!up) return false;
+    long i = keep - 1;
+    while (i >= 0 && d[i] == '9') d[i--] = '0';
+    if (i >= 0) {
+        d[i]++;
+        return false;
+    }
+    return true;
+}
+
+/* printf's %.*f and %.*e (kind 'f' or 'e') of a >= 0. */
+static void gm_sink_float(gm_sink *s, char kind, int prec, double a) {
+    static char d[GM_DIGITS_MAX + 4];
+    int pt;
+    size_t nd, len = gm_exact_digits(a, d, &pt);
+    if (prec < 0) prec = 6;
+    if (kind == 'f') {
+        long keep = (long)pt + prec;
+        if (keep < 0) {
+            nd = 0;
+            pt = 0;
+        } else if (gm_round_digits(d, len, keep, &nd)) {
+            d[nd] = '0';
+            d[0] = '1';
+            nd++;
+            pt++;
+        }
+        if (pt <= 0) gm_sink_put(s, '0');
+        for (long i = 0; i < pt; i++) gm_sink_put(s, (size_t)i < nd ? d[i] : '0');
+        if (prec > 0) {
+            gm_sink_put(s, '.');
+            for (long i = 0; i < prec; i++) {
+                long q = (long)pt + i;
+                gm_sink_put(s, q >= 0 && (size_t)q < nd ? d[q] : '0');
+            }
+        }
+        return;
+    }
+    long keep = (long)prec + 1;
+    int x = len == 0 ? 0 : pt - 1;
+    nd = len;
+    if (len != 0 && gm_round_digits(d, len, keep, &nd)) {
+        d[nd] = '0';
+        d[0] = '1';
+        nd++;
+        x++;
+    }
+    if (len == 0) nd = 0;
+    gm_sink_put(s, nd > 0 ? d[0] : '0');
+    if (prec > 0) {
+        gm_sink_put(s, '.');
+        for (long i = 1; i < keep; i++) gm_sink_put(s, (size_t)i < nd ? d[i] : '0');
+    }
+    gm_sink_put(s, 'e');
+    gm_sink_put(s, x < 0 ? '-' : '+');
+    gm_sink_unsigned(s, (unsigned long long)(x < 0 ? -x : x), 10, 2);
+}
+
+static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    gm_sink s = {dst, cap, 0};
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') {
+            gm_sink_put(&s, *fmt);
+            continue;
+        }
+        fmt++;
+        int prec = -1, ll = 0;
+        if (fmt[0] == '.' && fmt[1] == '*') {
+            prec = va_arg(ap, int);
+            fmt += 2;
+        }
+        while (*fmt == 'l') {
+            ll++;
+            fmt++;
+        }
+        switch (*fmt) {
+        case 's': {
+            const char *p = va_arg(ap, const char *);
+            while (*p) gm_sink_put(&s, *p++);
+            break;
+        }
+        case 'u':
+        case 'x': {
+            unsigned long long v = ll ? va_arg(ap, unsigned long long) : va_arg(ap, unsigned);
+            gm_sink_unsigned(&s, v, *fmt == 'u' ? 10 : 16, 1);
+            break;
+        }
+        case 'd': {
+            long long v = ll ? va_arg(ap, long long) : va_arg(ap, int);
+            if (v < 0) gm_sink_put(&s, '-');
+            gm_sink_unsigned(&s, v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v, 10, 1);
+            break;
+        }
+        case 'e':
+        case 'f': gm_sink_float(&s, *fmt, prec, va_arg(ap, double)); break;
+        case '%': gm_sink_put(&s, '%'); break;
+        default: break;
+        }
+    }
+    va_end(ap);
+    if (cap > 0) dst[s.len < cap ? s.len : cap - 1] = 0;
+    return (int)s.len;
+}
+
+static int gm_strcmp(const char *a, const char *b) {
+    while (*a && *a == *b) a++, b++;
+    return (unsigned char)*a - (unsigned char)*b;
+}
+#define strcmp gm_strcmp
+#endif /* GM_FREESTANDING */
+
+#ifdef GM_FREESTANDING
+/* A trap calls the program's `#trap_hook` (spec 3.7.1) with the reason and location, or
+ * executes the target's trap instruction when there is none. */
+#ifdef GM_TRAP_HOOK
+static _Noreturn void gm_trap_hook_call(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
+#endif
+GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
+#ifdef GM_TRAP_HOOK
+    /* A trap inside the hook cannot call it again. */
+    static int in_hook;
+    if (!in_hook) {
+        in_hook = 1;
+        gm_trap_hook_call(msg, len, file, line, col);
+    }
+#else
+    (void)msg; (void)len; (void)file; (void)line; (void)col;
+#endif
+    __builtin_trap();
+}
+#else
+/* Prints the callers in the backtrace chain; past GM_BT_MAX of them, only the first and
+ * last GM_BT_MAX / 2, with a line that does not count the calls in between (the depth that
+ * a stack overflow reaches differs between back ends). */
+#define GM_BT_MAX 20
+static void gm_backtrace(void) {
+    size_t n = 0;
+    if (gm_bt_top == NULL) return;
+    for (gm_bt *b = gm_bt_top->prev; b != NULL; b = b->prev)
+        if (b->fn != NULL && b->file != NULL) n++;
+    size_t i = 0;
+    for (gm_bt *b = gm_bt_top->prev; b != NULL; b = b->prev) {
+        if (b->fn == NULL || b->file == NULL) continue;
+        if (n <= GM_BT_MAX || i < GM_BT_MAX / 2 || i >= n - GM_BT_MAX / 2)
+            fprintf(stderr, "  called from %s:%u:%u in %s\n", b->file, (unsigned)b->line, (unsigned)b->col, b->fn);
+        else if (i == GM_BT_MAX / 2)
+            fputs("  ... more calls\n", stderr);
+        i++;
+    }
+}
+
+GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col) {
+    gm_flush();
+    fputs("trap: ", stderr);
+    if (len > 0) fwrite(msg, 1, len, stderr);
+    fputc('\n', stderr);
+    if (file != NULL) {
+        fprintf(stderr, "  at %s:%u:%u", file, (unsigned)line, (unsigned)col);
+        if (gm_bt_top != NULL && gm_bt_top->fn != NULL) fprintf(stderr, " in %s", gm_bt_top->fn);
+        fputc('\n', stderr);
+    }
+    gm_backtrace();
+    fflush(stderr);
+    /* The status of a process terminated by `abort` (SIGABRT). */
+#ifdef _WIN32
+    if (gm_overflowing) TerminateProcess(GetCurrentProcess(), 134);
+#endif
+#ifdef GM_WASI
+    /* WASI has no such status (runtimes refuse those above 125): end as `abort` does there,
+     * with WebAssembly's trap, which runtimes report (Wasmtime exits with 134). */
+    __builtin_trap();
+#endif
+    exit(134);
+}
+#endif /* GM_FREESTANDING */
+
+GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, uint32_t col) {
+    gm_trap_bytes((const uint8_t *)msg, strlen(msg), file, line, col);
+}
+
+GM_API _Noreturn void gm_trap_misaligned(uintptr_t addr, unsigned align, const char *file, uint32_t line, uint32_t col) {
+    char m[128];
+    snprintf(m, sizeof m, "misaligned pointer cast: address 0x%llx is not aligned to %u bytes",
+             (unsigned long long)addr, align);
+    gm_trap(m, file, line, col);
+}
+
+/* ---- growable byte buffer --------------------------------------------------- */
+
+GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len) {
+    if (len == 0) return;
+    if (len > SIZE_MAX - b->len) gm_trap("out of memory", NULL, 0, 0);
+    size_t need = b->len + len;
+    if (need > b->cap) {
+        size_t cap = b->cap < 64 ? 64 : b->cap;
+        while (cap < need) {
+            if (cap > SIZE_MAX / 2) {
+                cap = need;
+                break;
+            }
+            cap *= 2;
+        }
+#ifdef GM_FREESTANDING
+        uint8_t *p = gm_scratch_grow(b->data, b->cap, cap);
+#else
+        uint8_t *p = (uint8_t *)realloc(b->data, cap);
+        if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
+#endif
+        b->data = p;
+        b->cap = cap;
+    }
+    memcpy(b->data + b->len, data, len);
+    b->len = need;
+}
+
+GM_API void gm_buf_free(gm_buf *b) {
+#ifdef GM_FREESTANDING
+    gm_scratch_release(b->data, b->cap);
+#else
+    free(b->data);
+#endif
+    b->data = NULL;
+    b->len = b->cap = 0;
+}
+
+static void gm_fmt_int(gm_buf *out, const gm_type *t, const uint8_t *p);
+
+/* The storage size of an integer of at most 128 bits. */
+static size_t gm_isize(uint32_t bits) { return bits <= 8 ? 1 : bits <= 16 ? 2 : bits <= 32 ? 4 : bits <= 64 ? 8 : 16; }
+
+GM_API _Noreturn void gm_trap_pow(const uint8_t *base, uint32_t bits, bool sgn, uint32_t n, const char *file,
+                                  uint32_t line, uint32_t col) {
+    gm_buf m = {0};
+    gm_buf_push(&m, "integer overflow in `pow` (", 27);
+    gm_type t = {0};
+    t.kind = GM_K_INT, t.bits = (uint16_t)bits, t.is_signed = sgn, t.size = (uint32_t)gm_isize(bits);
+    gm_fmt_int(&m, &t, base);
+    char s[16];
+    int k = snprintf(s, sizeof s, "^%u)", (unsigned)n);
+    gm_buf_push(&m, s, (size_t)k);
+    gm_trap_bytes(m.data, m.len, file, line, col);
+}
+
+/* ---- value display (spec §21.6.1) ---------------------------------------------- */
+
+static void gm_fmt_str(gm_buf *out, const char *s) { gm_buf_push(out, s, strlen(s)); }
+static void gm_fmt_ch(gm_buf *out, char c) { gm_buf_push(out, &c, 1); }
+
+/* Decimal digits of v into buf (at least 40 bytes); returns the length. */
+static size_t gm_u128_dec(char *buf, unsigned __int128 v) {
+    char tmp[40];
+    size_t n = 0;
+    do {
+        tmp[n++] = (char)('0' + (int)(v % 10));
+        v /= 10;
+    } while (v != 0);
+    for (size_t i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
+    return n;
+}
+
+/* The value of a `bits`-bit integer stored in `size` bytes at p. */
+static void gm_fmt_int(gm_buf *out, const gm_type *t, const uint8_t *p) {
+    unsigned __int128 raw = gm_load_u128(p, t->size);
+    unsigned bits = t->bits;
+    unsigned __int128 mask = bits >= 128 ? ~(unsigned __int128)0 : (((unsigned __int128)1 << bits) - 1);
+    raw &= mask;
+    char buf[48];
+    size_t n = 0;
+    if (t->is_signed && bits > 0 && ((raw >> (bits - 1)) & 1) != 0) {
+        unsigned __int128 mag = (~raw + 1) & mask; /* |value| as an unsigned number */
+        buf[n++] = '-';
+        n += gm_u128_dec(buf + n, mag);
+    } else {
+        n = gm_u128_dec(buf, raw);
+    }
+    gm_buf_push(out, buf, n);
+}
+
+/* binary16 -> double, exactly. */
+static double gm_f16_to_f64(uint16_t h) {
+    uint64_t sign = (uint64_t)(h >> 15) << 63;
+    unsigned exp = (h >> 10) & 0x1f;
+    uint64_t man = h & 0x3ff;
+    uint64_t bits;
+    double d;
+    if (exp == 0) {
+        d = (double)man / 16777216.0; /* man * 2^-24 */
+        memcpy(&bits, &d, 8);
+        bits |= sign;
+    } else if (exp == 0x1f) {
+        bits = sign | (0x7ffull << 52) | (man << 42);
+    } else {
+        bits = sign | ((uint64_t)(exp - 15 + 1023) << 52) | (man << 42);
+    }
+    memcpy(&d, &bits, 8);
+    return d;
+}
+
+/* Shortest-digits float printing: the Schubfach algorithm (R. Giulietti, "The Schubfach way
+ * to render doubles"). For a value c * 2^q it finds, among the decimals in the interval of
+ * reals that round to the value, those with the fewest digits, and then the one nearest the
+ * value (an exact tie goes to the even last digit). The table holds g(k) =
+ * floor(10^-k * 2^r) + 1 with 2^125 <= g < 2^126, as { g >> 63, g & (2^63 - 1) }, for
+ * k = -324..292; tools/gen_float_table.py generates it. */
+#define GM_G10_KMIN (-324)
+static const uint64_t gm_g10[][2] = {
+    {0x4f0cedc95a718dd4ULL, 0x5b01e8b09aa0d1b5ULL},
+    {0x7e7b160ef71c1621ULL, 0x119ca780f767b5eeULL},
+    {0x652f44d8c5b011b4ULL, 0x0e16ec672c52f7f2ULL},
+    {0x50f29d7a37c00e29ULL, 0x581256b8f0425ff5ULL},
+    {0x40c21794f96671baULL, 0x79a84560c0351991ULL},
+    {0x679cf287f570b5f7ULL, 0x75da089acd21c281ULL},
+    {0x52e3f5399126f7f9ULL, 0x44ae6d48a41b0201ULL},
+    {0x424ff76140ebf994ULL, 0x36f1f106e9af34cdULL},
+    {0x6a198bcece465c20ULL, 0x57e981a4a918547bULL},
+    {0x54e13ca571d1e34dULL, 0x2cbace1d541376c9ULL},
+    {0x43e763b78e4182a4ULL, 0x23c8a4e44342c56eULL},
+    {0x6ca56c58e39c043aULL, 0x060dd4a06b9e08b0ULL},
+    {0x56eabd13e9499cfbULL, 0x1e7176e6bc7e6d59ULL},
+    {0x458897432107b0c8ULL, 0x7ec12bebc9febde1ULL},
+    {0x6f40f20501a5e7a7ULL, 0x7e01dfdfa9979635ULL},
+    {0x5900c19d9aeb1fb9ULL, 0x4b34b319547944f7ULL},
+    {0x4733ce17af227fc7ULL, 0x55c3c27aa9fa9d93ULL},
+    {0x71ec7cf2b1d0cc72ULL, 0x560603f7765dc8eaULL},
+    {0x5b2397288e40a38eULL, 0x7804cff92b7e3a55ULL},
+    {0x48e945ba0b66e93fULL, 0x13370cc755fe9511ULL},
+    {0x74a86f90123e41feULL, 0x51f1ae0bbcca881bULL},
+    {0x5d538c7341cb67feULL, 0x74c1580963d539afULL},
+    {0x4aa93d29016f8665ULL, 0x43cde0078310faf3ULL},
+    {0x77752ea8024c0a3cULL, 0x0616333f381b2b1eULL},
+    {0x5f90f22001d66e96ULL, 0x3811c298f9af55b1ULL},
+    {0x4c73f4e667debedeULL, 0x600e35472e25de28ULL},
+    {0x7a532170a6313164ULL, 0x3349eed849d6303fULL},
+    {0x61dc1ac084f42783ULL, 0x42a18be03b11c033ULL},
+    {0x4e49af006a5cec69ULL, 0x1bb46fe695a7ccf5ULL},
+    {0x7d42b19a43c7e0a8ULL, 0x2c53e63dbc3fae55ULL},
+    {0x64355ae1cfd31a20ULL, 0x237651cafcffbeaaULL},
+    {0x502aaf1b0ca8e1b3ULL, 0x35f8416f30cc9888ULL},
+    {0x402225af3d53e7c2ULL, 0x5e603458f3d6e06dULL},
+    {0x669d0918621fd937ULL, 0x4a3386f4b957cd7bULL},
+    {0x52173a79e8197a92ULL, 0x6e8f9f2a2ddfd796ULL},
+    {0x41ac2ec7ece12edbULL, 0x720c7f54f17fdfabULL},
+    {0x69137e0cae3517c6ULL, 0x1ce0cbbb1bffcc45ULL},
+    {0x540f980a24f74638ULL, 0x171a3c95afffd69eULL},
+    {0x433facd4ea5f6b60ULL, 0x127b63aaf3331218ULL},
+    {0x6b991487dd657899ULL, 0x6a5f05de51eb5026ULL},
+    {0x5614106cb11dfa14ULL, 0x5518d17ea7ef7352ULL},
+    {0x44dcd9f08db194ddULL, 0x2a7a41321ff2c2a8ULL},
+    {0x6e2e2980e2b5bafbULL, 0x5d906850331e043fULL},
+    {0x5824ee00b55e2f2fULL, 0x647386a68f4b3699ULL},
+    {0x4683f19a2ab1bf59ULL, 0x36c2d21ed908f87bULL},
+    {0x70d31c29dde93228ULL, 0x579e1cfe280e5a5dULL},
+    {0x5a427cee4b20f4edULL, 0x2c7e7d98200b7b7eULL},
+    {0x483530bea280c3f1ULL, 0x09fecae019a2c932ULL},
+    {0x73884dfdd0ce064eULL, 0x43314499c29e0eb6ULL},
+    {0x5c6d0b3173d8050bULL, 0x4f5a9d47cee4d891ULL},
+    {0x49f0d5c129799da2ULL, 0x72aee4397250ad41ULL},
+    {0x764e22cea8c295d1ULL, 0x377e39f583b44868ULL},
+    {0x5ea4e8a553cede41ULL, 0x12cb61913629d387ULL},
+    {0x4bb72084430be500ULL, 0x756f8140f8217605ULL},
+    {0x792500d39e796e67ULL, 0x6f18cece59cf233cULL},
+    {0x60ea670fb1fabeb9ULL, 0x3f470bd847d8e8fdULL},
+    {0x4d885272f4c89894ULL, 0x329f3cad064720caULL},
+    {0x7c0d50b7ee0dc0edULL, 0x37652de1a3a50143ULL},
+    {0x633dda2cbe716724ULL, 0x2c50f1814fb73436ULL},
+    {0x4f64ae8a31f45283ULL, 0x3d0d8e010c92902bULL},
+    {0x7f077da9e986ea6bULL, 0x7b48e334e0ea8045ULL},
+    {0x659f97bb2138bb89ULL, 0x49071c2a4d88669dULL},
+    {0x514c796280fa2fa1ULL, 0x20d27ceea46d1ee4ULL},
+    {0x4109fab533fb594dULL, 0x670eca58838a7f1dULL},
+    {0x680ff788532bc216ULL, 0x0b4add5a6c10cb62ULL},
+    {0x533ff939dc2301abULL, 0x22a24aaebcda3c4eULL},
+    {0x4299942e49b59aefULL, 0x354ea22563e1c9d8ULL},
+    {0x6a8f537d42bc2b18ULL, 0x554a9d089fcfa95aULL},
+    {0x553f75fdcefcef46ULL, 0x776ee406e63fbaaeULL},
+    {0x4432c4cb0bfd8c38ULL, 0x5f8be99f1e996225ULL},
+    {0x6d1e07ab466279f4ULL, 0x327975cb64289d08ULL},
+    {0x574b3955d1e86190ULL, 0x28612b091ced4a6dULL},
+    {0x45d5c777db204e0dULL, 0x06b4226db0bdd524ULL},
+    {0x6fbc72595e9a167bULL, 0x24536a491ac95506ULL},
+    {0x59638eade54811fcULL, 0x1d0f883a7bd44405ULL},
+    {0x4782d88b1dd34196ULL, 0x4a72d361fca9d004ULL},
+    {0x726af411c952028aULL, 0x43eaebcffaa94cd3ULL},
+    {0x5b88c3416ddb353bULL, 0x4fef230cc88770a9ULL},
+    {0x493a35cdf17c2a96ULL, 0x0cbf4f3d6d3926eeULL},
+    {0x7529efafe8c6aa89ULL, 0x61321862485b717cULL},
+    {0x5dbb262653d22207ULL, 0x675b46b506af8dfdULL},
+    {0x4afc1e850fdb4e6cULL, 0x52af6bc405593e64ULL},
+    {0x77f9ca6e7fc54a47ULL, 0x377f12d33bc1fd6dULL},
+    {0x5ffb085866376e9fULL, 0x45ff42429634cabdULL},
+    {0x4cc8d379eb5f8bb2ULL, 0x6b329b68782a3bcbULL},
+    {0x7adaebf64565ac51ULL, 0x2b842bda59dd2c77ULL},
+    {0x6248bcc5045156a7ULL, 0x3c69bcaeae4a89f9ULL},
+    {0x4ea0970403744552ULL, 0x6387ca25583ba194ULL},
+    {0x7dcdbe6cd253a21eULL, 0x05a6103bc05f68edULL},
+    {0x64a498570ea94e7eULL, 0x37b80cfc99e5ed8aULL},
+    {0x5083ad1272210b98ULL, 0x2c933d96e184be08ULL},
+    {0x40695741f4e73c79ULL, 0x7075cadf1ad09807ULL},
+    {0x670ef2032171fa5cULL, 0x4d8944982ae759a4ULL},
+    {0x52725b35b45b2eb0ULL, 0x3e076a135585e150ULL},
+    {0x41f515c49048f226ULL, 0x64d2bb42aad1810dULL},
+    {0x698822d41a0e503eULL, 0x07b7920444826815ULL},
+    {0x546ce8a9ae71d9cbULL, 0x1fc60e69d0685344ULL},
+    {0x438a53baf1f4ae3cULL, 0x196b3ebb0d20429dULL},
+    {0x6c1085f7e9877d2dULL, 0x0f11fdf815006a94ULL},
+    {0x56739e5fee05fdbdULL, 0x58db319344005543ULL},
+    {0x45294b7ff19e6497ULL, 0x60af5adc3666aa9cULL},
+    {0x6ea878ccb5ca3a8cULL, 0x344bc4938a3dddc7ULL},
+    {0x5886c70a2b082ed6ULL, 0x5d096a0fa1cb17d2ULL},
+    {0x46d238d4ef39bf12ULL, 0x173abb3fb4a27975ULL},
+    {0x71505aee4b8f981dULL, 0x0b912b992103f588ULL},
+    {0x5aa6af25093face4ULL, 0x0940efadb4032ad3ULL},
+    {0x488558ea6dcc8a50ULL, 0x07672624900288a9ULL},
+    {0x74088e43e2e0dd4cULL, 0x723ea36db337410eULL},
+    {0x5cd3a5031be71770ULL, 0x5b654f8af5c5cda5ULL},
+    {0x4a42ea68e31f45f3ULL, 0x62b772d5916b0aebULL},
+    {0x76d1770e38320986ULL, 0x0458b7bc1bde77ddULL},
+    {0x5f0df8d82cf4d46bULL, 0x1d13c630164b9318ULL},
+    {0x4c0b2d79bd90a9efULL, 0x30dc9e8cdea2dc13ULL},
+    {0x79ab7bf5fc1aa97fULL, 0x0160fdae31049351ULL},
+    {0x6155fcc4c9aeedffULL, 0x1ab3fe24f403a90eULL},
+    {0x4dde63d0a158be65ULL, 0x6229981d9002eda5ULL},
+    {0x7c97061a9bc130a2ULL, 0x69dc2695b337e2a1ULL},
+    {0x63ac04e2163426e8ULL, 0x54b01ede28f9821bULL},
+    {0x4fbcd0b4de901f20ULL, 0x43c018b1ba6134e2ULL},
+    {0x7f9481216419cb67ULL, 0x1f99c11c5d68549dULL},
+    {0x6610674de9ae3c52ULL, 0x4c7b00e37ded107eULL},
+    {0x51a6b90b21583042ULL, 0x09fc00b5fe574065ULL},
+    {0x41522da2811359ceULL, 0x3b3000919845cd1dULL},
+    {0x68837c3734ebc2e3ULL, 0x784ccdb5c06fae95ULL},
+    {0x539c635f5d8968b6ULL, 0x2d0a3e2b00595877ULL},
+    {0x42e382b2b13aba2bULL, 0x3da1cb5599e11393ULL},
+    {0x6b059deab52ac378ULL, 0x629c7888f634ec1eULL},
+    {0x559e17eef755692dULL, 0x3549fa072b5d89b1ULL},
+    {0x447e798bf91120f1ULL, 0x1107fb38ef7e07c1ULL},
+    {0x6d9728dff4e834b5ULL, 0x01a65ec17f300c68ULL},
+    {0x57ac20b32a535d5dULL, 0x4e1eb23465c009edULL},
+    {0x46234d5c21dc4ab1ULL, 0x24e55b5d1e333b24ULL},
+    {0x70387bc69c93aab5ULL, 0x216ef894fd1ec506ULL},
+    {0x59c6c96bb076222aULL, 0x4df2607730e56a6cULL},
+    {0x47d23abc8d2b4e88ULL, 0x3e5b805f5a5121f0ULL},
+    {0x72e9f79415121740ULL, 0x63c59a322a1b697fULL},
+    {0x5bee5fa9aa74df67ULL, 0x03047b5b54e2baccULL},
+    {0x498b7fbaeec3e5ecULL, 0x0269fc4910b5623dULL},
+    {0x75abff917e063cacULL, 0x6a432d41b45569fbULL},
+    {0x5e2332dacb38308aULL, 0x21cf5767c37787fcULL},
+    {0x4b4f5be23c2cf3a1ULL, 0x67d912b9692c6ccaULL},
+    {0x787ef969f9e185cfULL, 0x595b5128a8471476ULL},
+    {0x60659454c7e79e3fULL, 0x6115da86ed05a9f8ULL},
+    {0x4d1e1043d31fb1ccULL, 0x4dab1538bd9e2193ULL},
+    {0x7b634d3951cc4fadULL, 0x62ab552795c9cf52ULL},
+    {0x62b5d7610e3d0c8bULL, 0x0222aa86116e3f75ULL},
+    {0x4ef7df80d830d6d5ULL, 0x4e822204dabe992aULL},
+    {0x7e59659af38157bcULL, 0x17369cd49130f510ULL},
+    {0x65145148c2cddfc9ULL, 0x5f5ee3dd40f3f740ULL},
+    {0x50dd0dd3cf0b196eULL, 0x1918b64a9a5cc5cdULL},
+    {0x40b0d7dca5a27abeULL, 0x4746f83baeb09e3eULL},
+    {0x678159610903f797ULL, 0x253e59f91780fd2fULL},
+    {0x52cde11a6d9cc612ULL, 0x50feae60df9a6426ULL},
+    {0x423e4daebe1704dbULL, 0x5a65584d7faeb685ULL},
+    {0x69fd4917968b3af9ULL, 0x10a226e265e4573bULL},
+    {0x54caa0dfaba29594ULL, 0x0d4e8581eb1d1295ULL},
+    {0x43d54d7fbc821143ULL, 0x243ed134bc174211ULL},
+    {0x6c887bff94034ed2ULL, 0x06cae85460253682ULL},
+    {0x56d396661002a574ULL, 0x6bd586a9e6842b9bULL},
+    {0x457611eb40021df7ULL, 0x09779eee52035616ULL},
+    {0x6f234fdeccd02ff1ULL, 0x5bf297e3b66bbcefULL},
+    {0x58e90cb23d73598eULL, 0x165bacb62b8963f3ULL},
+    {0x4720d6f4fdf5e13eULL, 0x451623c4efa11cc2ULL},
+    {0x71ce24bb2fefcecaULL, 0x3b569fa17f682e03ULL},
+    {0x5b0b5095bff30bd5ULL, 0x15dee61acc535803ULL},
+    {0x48d5da11665c0977ULL, 0x2b18b8157042accfULL},
+    {0x74895ce8a3c6758bULL, 0x5e8df355806aae18ULL},
+    {0x5d3ab0ba1c9ec46fULL, 0x653e5c4466bbbe7aULL},
+    {0x4a955a2e7d4bd059ULL, 0x3765169d1efc9861ULL},
+    {0x77555d172edfb3c2ULL, 0x256e8a94fe60f3cfULL},
+    {0x5f777dac257fc301ULL, 0x6abed543feb3f63fULL},
+    {0x4c5f97bceacc9c01ULL, 0x3bcbddcffef65e99ULL},
+    {0x7a328c6177adc668ULL, 0x5fac961997f0975bULL},
+    {0x61c209e792f16b86ULL, 0x7fbd44e1465a12afULL},
+    {0x4e34d4b9425abc6bULL, 0x7fca9d810514dbbfULL},
+    {0x7d21545b9d5dfa46ULL, 0x32ddc8ce6e87c5ffULL},
+    {0x641aa9e2e44b2e9eULL, 0x5be4a0a525396b32ULL},
+    {0x501554b5836f587eULL, 0x7cb6e6ea842def5cULL},
+    {0x4011109135f2ad32ULL, 0x30925255368b25e3ULL},
+    {0x6681b41b89844850ULL, 0x4db6ea21f0dea304ULL},
+    {0x52015ce2d469d373ULL, 0x57c5881b2718826aULL},
+    {0x419ab0b576bb0f8fULL, 0x5fd139af527a01efULL},
+    {0x68f781225791b27fULL, 0x4c81f5e550c3364aULL},
+    {0x53f9341b79415b99ULL, 0x239b2b1dda35c508ULL},
+    {0x432dc3492dcde2e1ULL, 0x02e288e4ae916a6dULL},
+    {0x6b7c6ba849496b01ULL, 0x516a74a1174f10aeULL},
+    {0x55fd22ed076def34ULL, 0x4121f6e745d8da25ULL},
+    {0x44ca82573924bf5dULL, 0x1a8192529e4714ebULL},
+    {0x6e10d08b8ea1322eULL, 0x5d9c1d50fd3e87ddULL},
+    {0x580d73a2d880f4f2ULL, 0x17b01773fdcb9fe4ULL},
+    {0x4671294f139a5d8eULL, 0x4626792997d61984ULL},
+    {0x70b50ee4ec2a2f4aULL, 0x3d0a5b75bfbcf59fULL},
+    {0x5a2a7250bcee8c3bULL, 0x4a6eaf916630c47fULL},
+    {0x4821f50d63f209c9ULL, 0x21f2260deb5a36ccULL},
+    {0x736988156cb6760eULL, 0x69837016455d247aULL},
+    {0x5c546cddf091f80bULL, 0x6e02c011d1175062ULL},
+    {0x49dd23e4c074c66fULL, 0x719bccdb0dac404eULL},
+    {0x762e9fd467213d7fULL, 0x68f947c4e2ad33b0ULL},
+    {0x5e8bb3105280fdffULL, 0x6d94396a4ef0f627ULL},
+    {0x4ba2f5a6a8673199ULL, 0x3e102deea58d91b9ULL},
+    {0x7904bc3dda3eb5c2ULL, 0x3019e3176f48e927ULL},
+    {0x60d09697e1cbc49bULL, 0x4014b5ac590720ecULL},
+    {0x4d73abacb4a303afULL, 0x4cdd5e237a6c1a57ULL},
+    {0x7bec45e12104d2b2ULL, 0x47c8969f2a46908aULL},
+    {0x63236b1a80d0a88eULL, 0x6ca0787f5505406fULL},
+    {0x4f4f88e200a6ed3fULL, 0x0a19f9ff773766bfULL},
+    {0x7ee5a7d0010b1531ULL, 0x5cf65ccbf1f23dfeULL},
+    {0x6584864000d5aa8eULL, 0x172b7d6ff4c1cb32ULL},
+    {0x5136d1cccd77bba4ULL, 0x78ef978cc3ce3c28ULL},
+    {0x40f8a7d70ac62fb7ULL, 0x13f2dfa3cfd83020ULL},
+    {0x67f43fbe77a37f8bULL, 0x398499061959e699ULL},
+    {0x5329cc985fb5ffa2ULL, 0x6136e0d1ade18548ULL},
+    {0x4287d6e04c91994fULL, 0x00f8b3daf181376dULL},
+    {0x6a72f166e0e8f54bULL, 0x1b27862b1c01f247ULL},
+    {0x5528c11f1a53f76fULL, 0x2f52d1bc1667f506ULL},
+    {0x44209a7f48432c59ULL, 0x0c424163451ff738ULL},
+    {0x6d00f7320d3846f4ULL, 0x7a039bd208332526ULL},
+    {0x5733f8f4d76038c3ULL, 0x7b361641a028ea85ULL},
+    {0x45c32d90ac4cfa36ULL, 0x2f5e78348020bb9eULL},
+    {0x6f9eaf4de07b29f0ULL, 0x4bca59ed99cdf8fcULL},
+    {0x594bbf71806287f3ULL, 0x563b7b247b0b2d96ULL},
+    {0x476fcc5acd1b9ff6ULL, 0x11c92f50626f57acULL},
+    {0x724c7a2ae1c5ccbdULL, 0x02db7ee703e55912ULL},
+    {0x5b7061bbe7d17097ULL, 0x1be2cbec031de0dcULL},
+    {0x4926b496530df3acULL, 0x164f09899c17e716ULL},
+    {0x750aba8a1e7cb913ULL, 0x3d4b4275c68ca4f0ULL},
+    {0x5da22ed4e530940fULL, 0x4aa29b916ba3b726ULL},
+    {0x4ae825771dc07672ULL, 0x6ee87c74561c9285ULL},
+    {0x77d9d58b62cd8a51ULL, 0x3173fa53bcfa8408ULL},
+    {0x5fe177a2b5713b74ULL, 0x278ffb7630c869a0ULL},
+    {0x4cb45fb55df42f90ULL, 0x1fa662c4f3d387b3ULL},
+    {0x7aba32bbc986b280ULL, 0x32a3d13b1fb8d91fULL},
+    {0x622e8efca1388ecdULL, 0x0ee9742f4c93e0e6ULL},
+    {0x4e8ba596e760723dULL, 0x58bac3590a0fe71eULL},
+    {0x7dac3c24a5671d2fULL, 0x412ad228101971c9ULL},
+    {0x6489c9b6eab8e426ULL, 0x00ef0e8673478e3bULL},
+    {0x506e3af8bbc71cebULL, 0x1a58d86b8f6c71c9ULL},
+    {0x40582f2d6305b0bcULL, 0x1513e0560c56c16eULL},
+    {0x66f37eaf04d5e793ULL, 0x3b530089ad579be2ULL},
+    {0x525c6558d0ab1fa9ULL, 0x15dc006e2446164fULL},
+    {0x41e384470d55b2edULL, 0x5e4999f1b69e783fULL},
+    {0x696c06d81555eb15ULL, 0x7d428fe92430c065ULL},
+    {0x54566be0111188deULL, 0x31020cba835a3384ULL},
+    {0x4378564cda746d7eULL, 0x5a680a2ecf7b5c69ULL},
+    {0x6bf3bd47c3ed7bfdULL, 0x770cdd17b25efa42ULL},
+    {0x565c976c9cbdfccbULL, 0x1270b0dfc1e59502ULL},
+    {0x4516df8a16fe63d5ULL, 0x5b8d5a4c9b1e10ceULL},
+    {0x6e8aff4357fd6c89ULL, 0x127bc3adc4fce7b0ULL},
+    {0x586f329c466456d4ULL, 0x0ec96957d0ca52f3ULL},
+    {0x46bf5bb038504576ULL, 0x3f07877973d50f29ULL},
+    {0x71322c4d26e6d58aULL, 0x31a5a58f1fbb4b75ULL},
+    {0x5a8e89d75252446eULL, 0x5aeaead8e62f6f91ULL},
+    {0x487207df750e9d25ULL, 0x2f22557a51bf8c74ULL},
+    {0x73e9a63254e42ea2ULL, 0x1836ef2a1c65ad86ULL},
+    {0x5cbaeb5b771cf21bULL, 0x2cf8bf54e3848ad2ULL},
+    {0x4a2f22af927d8e7cULL, 0x23fa32aa4f9d3bdbULL},
+    {0x76b1d118ea627d93ULL, 0x5329eaaa18fb92f8ULL},
+    {0x5ef4a74721e86476ULL, 0x0f54bbbb472fa8c6ULL},
+    {0x4bf6ec38e7ed1d2bULL, 0x25dd62fc38f2ed6cULL},
+    {0x798b138e3fe1c845ULL, 0x22fbd1938e517bdfULL},
+    {0x613c0fa4ffe7d36aULL, 0x4f2fdadc71dac97fULL},
+    {0x4dc9a61d998642bbULL, 0x58f3157d27e23accULL},
+    {0x7c75d695c2706ac5ULL, 0x74b82261d969f7adULL},
+    {0x63917877cec0556bULL, 0x10934eb4adee5fbeULL},
+    {0x4fa793930bcd1122ULL, 0x4075d8908b251965ULL},
+    {0x7f7285b812e1b504ULL, 0x00bc8db411d4f56eULL},
+    {0x65f537c675815d9cULL, 0x66fd3e29a7dd9125ULL},
+    {0x5190f96b91344ae3ULL, 0x6bfdcb54864ada84ULL},
+    {0x4140c78940f6a24fULL, 0x6ffe3c439ea2486aULL},
+    {0x6867a5a867f103b2ULL, 0x7ffd2d38fdd073dcULL},
+    {0x53861e2053273628ULL, 0x6664242d97d9f64aULL},
+    {0x42d1b1b375b8f820ULL, 0x51e9b68adfe191d5ULL},
+    {0x6ae91c5255f4c034ULL, 0x1ca924116635b621ULL},
+    {0x558749db77f70029ULL, 0x63ba83411e915e81ULL},
+    {0x446c3b15f9926687ULL, 0x6962029a7edab201ULL},
+    {0x6d79f82328ea3da6ULL, 0x0f03375d97c45001ULL},
+    {0x5794c6828721caebULL, 0x259c2c4adfd04001ULL},
+    {0x46109eced2816f22ULL, 0x5149bd08b30d0001ULL},
+    {0x701a97b150cf1837ULL, 0x3542c80deb480001ULL},
+    {0x59aedfc10d7279c5ULL, 0x7768a00b22a00001ULL},
+    {0x47bf19673df52e37ULL, 0x79208008e8800001ULL},
+    {0x72cb5bd86321e38cULL, 0x5b67334174000001ULL},
+    {0x5bd5e313828182d6ULL, 0x7c528f6790000001ULL},
+    {0x4977e8dc68679bdfULL, 0x16a872b940000001ULL},
+    {0x758ca7c70d7292feULL, 0x5773eac200000001ULL},
+    {0x5e0a1fd271287598ULL, 0x45f6556800000001ULL},
+    {0x4b3b4ca85a86c47aULL, 0x04c5112000000001ULL},
+    {0x785ee10d5da46d90ULL, 0x07a1b50000000001ULL},
+    {0x604be73de4838ad9ULL, 0x52e7c40000000001ULL},
+    {0x4d0985cb1d3608aeULL, 0x0f1fd00000000001ULL},
+    {0x7b426fab61f00de3ULL, 0x31cc800000000001ULL},
+    {0x629b8c891b267182ULL, 0x5b0a000000000001ULL},
+    {0x4ee2d6d415b85aceULL, 0x7c08000000000001ULL},
+    {0x7e37be2022c0914bULL, 0x1340000000000001ULL},
+    {0x64f964e68233a76fULL, 0x2900000000000001ULL},
+    {0x50c783eb9b5c85f2ULL, 0x5400000000000001ULL},
+    {0x409f9cbc7c4a04c2ULL, 0x1000000000000001ULL},
+    {0x6765c793fa10079dULL, 0x0000000000000001ULL},
+    {0x52b7d2dcc80cd2e4ULL, 0x0000000000000001ULL},
+    {0x422ca8b0a00a4250ULL, 0x0000000000000001ULL},
+    {0x69e10de76676d080ULL, 0x0000000000000001ULL},
+    {0x54b40b1f852bda00ULL, 0x0000000000000001ULL},
+    {0x43c33c1937564800ULL, 0x0000000000000001ULL},
+    {0x6c6b935b8bbd4000ULL, 0x0000000000000001ULL},
+    {0x56bc75e2d6310000ULL, 0x0000000000000001ULL},
+    {0x4563918244f40000ULL, 0x0000000000000001ULL},
+    {0x6f05b59d3b200000ULL, 0x0000000000000001ULL},
+    {0x58d15e1762800000ULL, 0x0000000000000001ULL},
+    {0x470de4df82000000ULL, 0x0000000000000001ULL},
+    {0x71afd498d0000000ULL, 0x0000000000000001ULL},
+    {0x5af3107a40000000ULL, 0x0000000000000001ULL},
+    {0x48c2739500000000ULL, 0x0000000000000001ULL},
+    {0x746a528800000000ULL, 0x0000000000000001ULL},
+    {0x5d21dba000000000ULL, 0x0000000000000001ULL},
+    {0x4a817c8000000000ULL, 0x0000000000000001ULL},
+    {0x7735940000000000ULL, 0x0000000000000001ULL},
+    {0x5f5e100000000000ULL, 0x0000000000000001ULL},
+    {0x4c4b400000000000ULL, 0x0000000000000001ULL},
+    {0x7a12000000000000ULL, 0x0000000000000001ULL},
+    {0x61a8000000000000ULL, 0x0000000000000001ULL},
+    {0x4e20000000000000ULL, 0x0000000000000001ULL},
+    {0x7d00000000000000ULL, 0x0000000000000001ULL},
+    {0x6400000000000000ULL, 0x0000000000000001ULL},
+    {0x5000000000000000ULL, 0x0000000000000001ULL},
+    {0x4000000000000000ULL, 0x0000000000000001ULL},
+    {0x6666666666666666ULL, 0x3333333333333334ULL},
+    {0x51eb851eb851eb85ULL, 0x0f5c28f5c28f5c29ULL},
+    {0x4189374bc6a7ef9dULL, 0x5916872b020c49bbULL},
+    {0x68db8bac710cb295ULL, 0x74f0d844d013a92bULL},
+    {0x53e2d6238da3c211ULL, 0x43f3e0370cdc8755ULL},
+    {0x431bde82d7b634daULL, 0x698fe69270b06c44ULL},
+    {0x6b5fca6af2bd215eULL, 0x0f4ca41d811a46d4ULL},
+    {0x55e63b88c230e77eULL, 0x3f70834acdae9f10ULL},
+    {0x44b82fa09b5a52cbULL, 0x4c5a02a23e254c0dULL},
+    {0x6df37f675ef6eadfULL, 0x2d5cd10396a21347ULL},
+    {0x57f5ff85e592557fULL, 0x3de3da69454e75d3ULL},
+    {0x465e6604b7a84465ULL, 0x7e4fe1edd10b9175ULL},
+    {0x709709a125da0709ULL, 0x4a19697c81ac1befULL},
+    {0x5a126e1a84ae6c07ULL, 0x54e1213067bce326ULL},
+    {0x480ebe7b9d58566cULL, 0x43e74dc052fd8285ULL},
+    {0x734aca5f6226f0adULL, 0x530baf9a1e626a6dULL},
+    {0x5c3bd5191b525a24ULL, 0x426fbfae7eb521f1ULL},
+    {0x49c97747490eae83ULL, 0x4ebfcc8b9890e7f4ULL},
+    {0x760f253edb4ab0d2ULL, 0x4acc7a78f41b0cbaULL},
+    {0x5e72843249088d75ULL, 0x223d2ec729af3d62ULL},
+    {0x4b8ed0283a6d3df7ULL, 0x34fdbf05baf29781ULL},
+    {0x78e480405d7b9658ULL, 0x54c931a2c4b758cfULL},
+    {0x60b6cd004ac94513ULL, 0x5d6dc14f03c5e0a5ULL},
+    {0x4d5f0a66a23a9da9ULL, 0x31249aa59c9e4d51ULL},
+    {0x7bcb43d769f762a8ULL, 0x4ea0f76f60fd4882ULL},
+    {0x63090312bb2c4eedULL, 0x254d92bf80caa068ULL},
+    {0x4f3a68dbc8f03f24ULL, 0x1dd7a89933d54d20ULL},
+    {0x7ec3daf941806506ULL, 0x62f2a75b86221500ULL},
+    {0x65697bfa9acd1d9fULL, 0x025bb91604e810cdULL},
+    {0x51212ffbaf0a7e18ULL, 0x684960de6a5340a4ULL},
+    {0x40e7599625a1fe7aULL, 0x203ab3e521dc33b6ULL},
+    {0x67d88f56a29cca5dULL, 0x19f7863b696052bdULL},
+    {0x5313a5dee87d6eb0ULL, 0x7b2c6b62bab37564ULL},
+    {0x42761e4bed31255aULL, 0x2f56bc4efbc2c450ULL},
+    {0x6a5696dfe1e83bc3ULL, 0x655793b192d13a1aULL},
+    {0x5512124cb4b9c969ULL, 0x377942f475742e7bULL},
+    {0x440e750a2a2e3abaULL, 0x5f9435905df68b96ULL},
+    {0x6ce3ee76a9e3912aULL, 0x65b9ef4d63241289ULL},
+    {0x571cbec554b60dbbULL, 0x6afb25d782834207ULL},
+    {0x45b0989ddd5e7163ULL, 0x08c8eb12cecf6806ULL},
+    {0x6f80f42fc8971bd1ULL, 0x5adb11b7b14bd9a3ULL},
+    {0x5933f68ca078e30eULL, 0x157c0e2c8dd647b5ULL},
+    {0x475cc53d4d2d8271ULL, 0x5dfcd823a4ab6c91ULL},
+    {0x722e086215159d82ULL, 0x632e269f6ddf141bULL},
+    {0x5b5806b4ddaae468ULL, 0x4f581ee5f17f4349ULL},
+    {0x49133890b1558386ULL, 0x72ace584c1329c3bULL},
+    {0x74eb8db44eef38d7ULL, 0x6aae3c079b842d2aULL},
+    {0x5d893e29d8bf60acULL, 0x5558300616035755ULL},
+    {0x4ad431bb13cc4d56ULL, 0x7779c004de6912abULL},
+    {0x77b9e92b52e07bbeULL, 0x258f99a163db5111ULL},
+    {0x5fc7edbc424d2fcbULL, 0x37a614811caf740dULL},
+    {0x4c9ff163683dbfd5ULL, 0x7951aa00e3bf900bULL},
+    {0x7a998238a6c932efULL, 0x754f7667d2cc19abULL},
+    {0x6214682d523a8f26ULL, 0x2aa5f8530f09ae22ULL},
+    {0x4e76b9bddb620c1eULL, 0x55519375a5a1581bULL},
+    {0x7d8ac2c95f034697ULL, 0x3bb5b8bc3c3559c5ULL},
+    {0x646f023ab2690545ULL, 0x7c9160969691149eULL},
+    {0x5058ce955b87376bULL, 0x16dab3ababa743b2ULL},
+    {0x40470baaaf9f5f88ULL, 0x78aef622efb902f5ULL},
+    {0x66d812aab29898dbULL, 0x0de4bd04b2c19e54ULL},
+    {0x524675555bad4715ULL, 0x57ea30d08f014b76ULL},
+    {0x41d1f7777c8a9f44ULL, 0x4654f3da0c01092cULL},
+    {0x694ff258c7443207ULL, 0x23bb1fc346680eacULL},
+    {0x543ff513d29cf4d2ULL, 0x4fc8e635d1ecd88aULL},
+    {0x43665da9754a5d75ULL, 0x263a51c4a7f0ad3bULL},
+    {0x6bd6fc425543c8bbULL, 0x56c3b607731aaec4ULL},
+    {0x5645969b77696d62ULL, 0x789c919f8f488bd0ULL},
+    {0x4504787c5f878ab5ULL, 0x46e3a7b2d906d640ULL},
+    {0x6e6d8d93cc0c1122ULL, 0x3e390c515b3e239aULL},
+    {0x5857a4763cd6741bULL, 0x4b60d6a77c31b615ULL},
+    {0x46ac8391ca4529afULL, 0x55e7121f968e2b44ULL},
+    {0x711405b6106ea919ULL, 0x0971b698f0e3786dULL},
+    {0x5a766af80d255414ULL, 0x078e2bad8d82c6bdULL},
+    {0x485ebbf9a41ddcdcULL, 0x6c71bc8ad79bd231ULL},
+    {0x73cac65c39c96161ULL, 0x2d82c7448c2c8382ULL},
+    {0x5ca23849c7d44de7ULL, 0x3e023903a356cf9bULL},
+    {0x4a1b603b06437185ULL, 0x7e682d9c82abd949ULL},
+    {0x76923391a39f1c09ULL, 0x4a4048fa6aac8edbULL},
+    {0x5edb5c7482e5b007ULL, 0x55003a61eef07249ULL},
+    {0x4be2b05d35848cd2ULL, 0x773361e7f259f507ULL},
+    {0x796ab3c855a0e151ULL, 0x3eb89ca6508fee71ULL},
+    {0x6122296d114d810dULL, 0x7efa16eb73a6585bULL},
+    {0x4db4edf0daa4673eULL, 0x3261abef8fb846afULL},
+    {0x7c54afe7c43a3ecaULL, 0x1d691318e5f3a44bULL},
+    {0x6376f31fd02e98a1ULL, 0x64540f471e5c836fULL},
+    {0x4f925c1973587a1bULL, 0x0376729f4b7d35f3ULL},
+    {0x7f50935bebc0c35eULL, 0x38bd84321261efebULL},
+    {0x65da0f7cbc9a35e5ULL, 0x13cad0280eb4bfefULL},
+    {0x517b3f96fd482b1dULL, 0x5ca240200bc3ccbfULL},
+    {0x412f66126439bc17ULL, 0x63b50019a3030a33ULL},
+    {0x684bd683d38f9359ULL, 0x1f88002904d1a9eaULL},
+    {0x536fdecfdc72dc47ULL, 0x32d3335403daee55ULL},
+    {0x42bfe57316c249d2ULL, 0x5bdc291003158b77ULL},
+    {0x6acca251be03a951ULL, 0x12f9db4cd1bc1258ULL},
+    {0x557081dafe695440ULL, 0x7594af70a7c9a847ULL},
+    {0x445a017bfebaa9cdULL, 0x4476f2c0863aed06ULL},
+    {0x6d5ccf2ccac442e2ULL, 0x3a57eacda3917b3cULL},
+    {0x577d728a3bd03581ULL, 0x7b7988a482dac8fdULL},
+    {0x45fdf53b630cf79bULL, 0x15fad3b6cf156d97ULL},
+    {0x6ffcbb923814bf5eULL, 0x565e1f8ae4ef15beULL},
+    {0x5996fc74f9aa32b2ULL, 0x11e4e608b725aaffULL},
+    {0x47abfd2a6154f55bULL, 0x27ea51a0928488ccULL},
+    {0x72acc843ceee555eULL, 0x7310829a84074146ULL},
+    {0x5bbd6d030bf1dde5ULL, 0x42739baed005cdd2ULL},
+    {0x49645735a327e4b7ULL, 0x4ec2e2f24004a4a8ULL},
+    {0x756d5855d1d96df2ULL, 0x4ad16b1d333aa10cULL},
+    {0x5df11377db1457f5ULL, 0x2241227dc2954da3ULL},
+    {0x4b2742c648dd132aULL, 0x4e9a81fe35443e1cULL},
+    {0x783ed13d4161b844ULL, 0x175d9cc9eed39694ULL},
+    {0x603240fdcde7c69cULL, 0x7917b0a18bdc7876ULL},
+    {0x4cf500cb0b1fd217ULL, 0x1412f3b46fe39392ULL},
+    {0x7b219ade7832e9beULL, 0x535185ed7fd285b6ULL},
+    {0x628148b1f9c25498ULL, 0x42a79e57997537c5ULL},
+    {0x4ecdd3c1949b76e0ULL, 0x3552e512e12a9304ULL},
+    {0x7e161f9c20f8be33ULL, 0x6eeb081e3510eb39ULL},
+    {0x64de7fb01a609829ULL, 0x3f226ce4f740bc2eULL},
+    {0x50b1ffc0151a1354ULL, 0x3281f0b72c33c9beULL},
+    {0x408e66334414dc43ULL, 0x42018d5f568fd498ULL},
+    {0x674a3d1ed354939fULL, 0x1ccf48988a7fba8dULL},
+    {0x52a1ca7f0f76dc7fULL, 0x30a5d3ad3b99620bULL},
+    {0x421b0865a5f8b065ULL, 0x73b7dc8a96144e6fULL},
+    {0x69c4da3c3cc11a3cULL, 0x52bfc7442353b0b1ULL},
+    {0x549d7b6363cdae96ULL, 0x756639034f7626f4ULL},
+    {0x43b12f82b63e2545ULL, 0x4451c735d92b525dULL},
+    {0x6c4eb26abd303ba2ULL, 0x3a1c71efc1deea2eULL},
+    {0x56a55b889759c94eULL, 0x61b05b2634b254f2ULL},
+    {0x45511606df7b0772ULL, 0x1af37c1e908eaa5bULL},
+    {0x6ee8233e325e7250ULL, 0x2b1f2cfdb41776f8ULL},
+    {0x58b9b5cb5b7ec1d9ULL, 0x6f4c23fe29ac5f2dULL},
+    {0x46faf7d5e2cbce47ULL, 0x72a34ffe87bd18f1ULL},
+    {0x71918c896adfb073ULL, 0x04387ffda5fb5b1bULL},
+    {0x5adad6d4557fc05cULL, 0x0360666484c915afULL},
+    {0x48af1243779966b0ULL, 0x02b3851d3707448cULL},
+    {0x744b506bf28f0ab3ULL, 0x1dec082ebe720746ULL},
+    {0x5d090d2328726ef5ULL, 0x64bcd358985b3905ULL},
+    {0x4a6da41c205b8bf7ULL, 0x6a30a913ad15c738ULL},
+    {0x7715d36033c5acbfULL, 0x5d1aa81f7b560b8cULL},
+    {0x5f44a919c3048a32ULL, 0x7daeece5fc44d609ULL},
+    {0x4c36edae359d3b5bULL, 0x7e258a51969d7808ULL},
+    {0x79f17c49ef61f893ULL, 0x16a276e8f0fbf33fULL},
+    {0x618dfd07f2b4c6dcULL, 0x121b9253f3fcc299ULL},
+    {0x4e0b30d328909f16ULL, 0x41afa84329970214ULL},
+    {0x7cdeb4850db431bdULL, 0x4f7f739ea8f19cedULL},
+    {0x63e55d373e29c164ULL, 0x3f99294bba5ae3f1ULL},
+    {0x4feab0f8fe87cde9ULL, 0x7fadbaa2fb7be98dULL},
+    {0x7fdde7f4ca72e30fULL, 0x7f7c5dd1925fdc15ULL},
+    {0x664b1ff7085be8d9ULL, 0x4c637e4141e649abULL},
+    {0x51d5b32c06afed7aULL, 0x704f983434b83aefULL},
+    {0x4177c2899ef32462ULL, 0x26a6135cf6f9c8bfULL},
+    {0x68bf9da8fe51d3d0ULL, 0x3dd685618b294132ULL},
+    {0x53cc7e20cb74a973ULL, 0x4b12044e08edcdc2ULL},
+    {0x4309fe80a2c3bac2ULL, 0x6f419d0b3a57d7ceULL},
+    {0x6b4330cdd1392ad1ULL, 0x320294dec3bfbfb0ULL},
+    {0x55cf5a3e40fa88a7ULL, 0x419baa4bcfcc995aULL},
+    {0x44a5e1cb672ed3b9ULL, 0x1ae2eea30ca3ade1ULL},
+    {0x6dd636123eb152c1ULL, 0x77d17dd1add2afcfULL},
+    {0x57de91a832277567ULL, 0x797464a7be42263fULL},
+    {0x464ba7b9c1b92ab9ULL, 0x4790508631ce84ffULL},
+    {0x70790c5c6928445cULL, 0x0c1a1a704fb0d4ccULL},
+    {0x59fa7049edb9d049ULL, 0x567b4859d95a43d6ULL},
+    {0x47fb8d07f161736eULL, 0x11fc39e17aae9cabULL},
+    {0x732c14d98235857dULL, 0x032d2968c44a9445ULL},
+    {0x5c2343e134f79dfdULL, 0x4f575453d03ba9d1ULL},
+    {0x49b5cfe75d92e4caULL, 0x72ac4376402fbb0eULL},
+    {0x75efb30bc8eb07abULL, 0x0446d256cd192b49ULL},
+    {0x5e595c096d88d2efULL, 0x1d0575123dadbc3aULL},
+    {0x4b7ab0078ad3dbf2ULL, 0x4a6ac40e97be302fULL},
+    {0x78c44cd8de1fc650ULL, 0x771139b0f2c9e6b1ULL},
+    {0x609d0a4718196b73ULL, 0x78da948d8f07ebc1ULL},
+    {0x4d4a6e9f467abc5cULL, 0x60aedd3e0c065634ULL},
+    {0x7baa4a9870c46094ULL, 0x344afb9679a3bd20ULL},
+    {0x62eea2138d69e6ddULL, 0x103bfc78614fca80ULL},
+    {0x4f254e760abb1f17ULL, 0x26966393810ca200ULL},
+    {0x7ea21723445e9825ULL, 0x2423d2859b476999ULL},
+    {0x654e78e9037ee01dULL, 0x69b642047c392148ULL},
+    {0x510b93ed9c658017ULL, 0x6e2b680396941aa0ULL},
+    {0x40d60ff149eaccdfULL, 0x71bc53361210154dULL},
+    {0x67bce64edcaae166ULL, 0x1c6085235019bbaeULL},
+    {0x52fd850be3bbe784ULL, 0x7d1a041c40149625ULL},
+    {0x42646a6fe9631f9dULL, 0x4a7b367d0010781dULL},
+    {0x6a3a43e642383295ULL, 0x5d91f0c8001a59c8ULL},
+    {0x54fb698501c68edeULL, 0x17a7f3d3334847d4ULL},
+    {0x43fc546a67d20be4ULL, 0x79532975c2a03976ULL},
+    {0x6cc6ed770c83463bULL, 0x0eeb75893766c256ULL},
+    {0x57058ac5a39c382fULL, 0x25892ad42c523512ULL},
+    {0x459e089e1c7cf9bfULL, 0x37a0ef102374f742ULL},
+    {0x6f6340fcfa618f98ULL, 0x59017e8038bb2536ULL},
+    {0x591c33fd951ad946ULL, 0x7a67986693c8ea91ULL},
+    {0x4749c33144157a9fULL, 0x151fad1edca0bba8ULL},
+    {0x720f9eb539bbf765ULL, 0x0832ae97c76792a5ULL},
+    {0x5b3fb22a94965f84ULL, 0x068ef21305ec7551ULL},
+    {0x48ffc1bbaa11e603ULL, 0x1ed8c1a8d189f774ULL},
+    {0x74cc692c434fd66bULL, 0x4af4690e1c0ff253ULL},
+    {0x5d705423690cab89ULL, 0x225d20d816732843ULL},
+    {0x4ac0434f873d5607ULL, 0x35174d79ab8f5369ULL},
+    {0x779a054c0b955672ULL, 0x21bee25c45b21f0eULL},
+    {0x5fae6aa33c77785bULL, 0x3498b5169e2818d8ULL},
+    {0x4c8b888296c5f9e2ULL, 0x5d46f7454b534713ULL},
+    {0x7a78da6a8ad65c9dULL, 0x7ba4bed545520b52ULL},
+    {0x61fa48553bdeb07eULL, 0x2fb6ff110441a2a8ULL},
+    {0x4e61d37763188d31ULL, 0x72f8cc0d9d014eedULL},
+    {0x7d6952589e8daeb6ULL, 0x1e5ae015c80217e1ULL},
+    {0x645441e07ed7bef8ULL, 0x1848b344a001acb4ULL},
+    {0x504367e6cbdfcbf9ULL, 0x603a2903b3348a2aULL},
+    {0x4035ecb8a3196ffbULL, 0x002e873628f6d4eeULL},
+    {0x66bcadf43828b32bULL, 0x19e40b89db2487e3ULL},
+    {0x52308b29c686f5bcULL, 0x14b66fa17c1d3983ULL},
+    {0x41c06f549ed25e30ULL, 0x1091f2e7967dc79cULL},
+    {0x6933e554315096b3ULL, 0x341cb7d8f0c93f5fULL},
+    {0x542984435aa6def5ULL, 0x767d5fe0c0a0ff80ULL},
+    {0x435469cf7bb8b25eULL, 0x2b977fe70080cc66ULL},
+    {0x6bba42e592c11d63ULL, 0x5f58cca4cd9ae0a3ULL},
+    {0x562e9beadbcdb11cULL, 0x4c470a1d7148b3b6ULL},
+    {0x44f216557ca48db0ULL, 0x3d05a1b1276d5c92ULL},
+    {0x6e5023bbfaa0e2b3ULL, 0x7b3c35e83f1560e9ULL},
+    {0x58401c96621a4ef6ULL, 0x2f635e5365aab3edULL},
+    {0x4699b0784e7b725eULL, 0x591c4b75eaeef658ULL},
+    {0x70f5e726e3f8b6fdULL, 0x74fa125644b18a26ULL},
+    {0x5a5e5285832d5f31ULL, 0x43fb41de9d5ad4ebULL},
+    {0x484b75379c244c27ULL, 0x4ffc34b2177bdd89ULL},
+    {0x73abeebf603a1372ULL, 0x4cc6bab68bf96274ULL},
+    {0x5c898bcc4cfb42c2ULL, 0x0a38955ed6611b90ULL},
+    {0x4a07a309d72f689bULL, 0x21c6dde5784dafa7ULL},
+    {0x76729e762518a75eULL, 0x693e2fd58d49190bULL},
+    {0x5ec2185e8413b918ULL, 0x5431bfde0aa0e0d5ULL},
+    {0x4bce79e536762dadULL, 0x29c1664b3bb3e711ULL},
+    {0x794a5ca1f0bd15e2ULL, 0x0f9bd6dec5eca4e8ULL},
+    {0x61084a1b26fdab1bULL, 0x2616457f04bd50baULL},
+    {0x4da03b48ebfe227cULL, 0x1e783798d09773c8ULL},
+    {0x7c33920e46636a60ULL, 0x30c058f480f252d9ULL},
+    {0x635c74d8384f884dULL, 0x0d66ad9067284247ULL},
+    {0x4f7d2a469372d370ULL, 0x711ef14052869b6cULL},
+    {0x7f2eaa0a85848581ULL, 0x34fe4ecd50d75f14ULL},
+    {0x65beee6ed136d134ULL, 0x2a650bd773df7f43ULL},
+    {0x51658b8bda9240f6ULL, 0x551da312c319329cULL},
+    {0x411e093caedb672bULL, 0x5db14f4235adc217ULL},
+    {0x68300ec77e2bd845ULL, 0x7c4ee536bc49368aULL},
+    {0x5359a56c64efe037ULL, 0x7d0bea92303a9208ULL},
+    {0x42ae1df050bfe693ULL, 0x173cbba8269541a0ULL},
+    {0x6ab02fe6e79970ebULL, 0x3ec792a6a422029aULL},
+    {0x5559bfebec7ac0bcULL, 0x3239421ee9b4cee1ULL},
+    {0x4447ccbcbd2f0096ULL, 0x5b6101b25490a581ULL},
+    {0x6d3fadfac84b3424ULL, 0x2bce691d541aa268ULL},
+    {0x576624c8a03c29b6ULL, 0x563eba7ddce21b87ULL},
+    {0x45eb50a08030215eULL, 0x78322ecb171b4939ULL},
+    {0x6fdee76733803564ULL, 0x59e9e47824f87527ULL},
+    {0x597f1f85c2ccf783ULL, 0x6187e9f9b72d2a86ULL},
+    {0x4798e6049bd72c69ULL, 0x346cbb2e2c242205ULL},
+    {0x728e3cd42c8b7a42ULL, 0x20adf849e039d007ULL},
+    {0x5ba4fd768a092e9bULL, 0x33be603b19c7d99fULL},
+    {0x4950cac53b3a8bafULL, 0x42feb3627b0647b3ULL},
+    {0x754e113b91f745e5ULL, 0x5197856a5e7072b8ULL},
+    {0x5dd80dc941929e51ULL, 0x27ac6abb7ec05bc6ULL},
+    {0x4b133e3a9adbb1daULL, 0x52f05562cbcd1638ULL},
+    {0x781ec9f75e2c4fc4ULL, 0x1e4d556adfae89f3ULL},
+    {0x6018a192b1bd0c9cULL, 0x7ea444557fbed4c3ULL},
+    {0x4ce0814227ca707dULL, 0x4bb69d1132ff109cULL},
+    {0x7b00ced03faa4d95ULL, 0x5f8a94e851981a93ULL},
+    {0x62670bd9cc883e11ULL, 0x32d543ed0e134875ULL},
+    {0x4eb8d647d6d364daULL, 0x5bddcff0d80f6d2bULL},
+    {0x7df48a0c8aebd491ULL, 0x12fc7fe7c018aeabULL},
+    {0x64c3a1a3a25643a7ULL, 0x28c9ffec99ad5889ULL},
+    {0x509c814fb511cfb9ULL, 0x0707fff07af113a1ULL},
+    {0x407d343fc40e3fc7ULL, 0x1f39998d2f2742e7ULL},
+    {0x672eb9ffa016cc71ULL, 0x7ec28f484b7204a4ULL},
+    {0x528bc7ffb345705bULL, 0x189ba5d36f8e6a1dULL},
+    {0x42096ccc8f6ac048ULL, 0x7a161e42bfa521b1ULL},
+    {0x69a8ae1418aacd41ULL, 0x435696d132a1cf81ULL},
+    {0x5486f1a9ad557101ULL, 0x1c454574288172ceULL},
+    {0x439f27baf1112734ULL, 0x169dd129ba0128a5ULL},
+    {0x6c31d92b1b4ea520ULL, 0x242fb50f9001daa1ULL},
+    {0x568e4755af721db3ULL, 0x368c90d940017bb4ULL},
+    {0x453e9f77bf8e7e29ULL, 0x120a0d7a999ac95dULL},
+    {0x6eca98bf98e3fd0eULL, 0x50101590f5c47561ULL},
+    {0x58a213cc7a4ffda5ULL, 0x26734473f7d05de8ULL},
+    {0x46e80fd6c83ffe1dULL, 0x6b8f69f65fd9e4b9ULL},
+    {0x71734c8ad9fffcfcULL, 0x45b24323cc8fd45cULL},
+    {0x5ac2a3a247fffd96ULL, 0x6af502830a0ca9e3ULL},
+    {0x489bb61b6ccccadfULL, 0x08c402026e7087e9ULL},
+    {0x742c569247ae1164ULL, 0x746cd003e3e73fdbULL},
+    {0x5cf04541d2f1a783ULL, 0x76bd73364fec3315ULL},
+    {0x4a59d101758e1f9cULL, 0x5efdf5c50cbcf5abULL},
+    {0x76f61b3588e365c7ULL, 0x4b2fefa1adfb22abULL},
+    {0x5f2b48f7a0b5eb06ULL, 0x08f3261af195b555ULL},
+    {0x4c22a0c61a2b226bULL, 0x20c284e25ade2aabULL},
+    {0x79d1013cf6ab6a45ULL, 0x1ad0d49d5e304444ULL},
+    {0x617400fd9222bb6aULL, 0x48a7107de4f369d0ULL},
+    {0x4df6673141b562bbULL, 0x53b8d9fe50c2bb0dULL},
+    {0x7cbd71e869223792ULL, 0x52c15cca1ad12b48ULL},
+    {0x63cac186ba81c60eULL, 0x75677d6e7bda8906ULL},
+    {0x4fd5679efb9b04d8ULL, 0x5dec645863153a6cULL},
+    {0x7fbbd8fe5f5e6e27ULL, 0x497a3a2704eec3dfULL},
+};
+
+#define GM_MASK63 0x7fffffffffffffffULL
+
+static uint64_t gm_mulhi(uint64_t a, uint64_t b) {
+    return (uint64_t)(((unsigned __int128)a * b) >> 64);
+}
+
+/* g * cp, scaled down by 2^125 and rounded to odd, so that comparisons with the scaled
+ * interval ends stay exact. */
+static uint64_t gm_rop(const uint64_t *g, uint64_t cp) {
+    uint64_t x1 = gm_mulhi(g[1], cp);
+    uint64_t y0 = g[0] * cp;
+    uint64_t y1 = gm_mulhi(g[0], cp);
+    uint64_t z = (y0 >> 1) + x1;
+    uint64_t vbp = y1 + (z >> 63);
+    return vbp | (((z & GM_MASK63) + GM_MASK63) >> 63);
+}
+
+/* The shortest decimal digits (no trailing zeros, at least one) that read back as the
+ * same value at the given width, and the decimal exponent of the first digit. Among the
+ * shortest digit strings that read back, the one nearest the exact value of x wins, and an
+ * exact tie goes to the even last digit. x is positive and finite, and exactly representable
+ * at that width. */
+static void gm_shortest(double x, unsigned bits, char *digits, int *exp10) {
+    /* x = c * 2^q; cmin is the smallest normal significand and qmin the exponent of the
+     * subnormals. */
+    uint64_t c, cmin;
+    int q, qmin;
+    if (bits == 16) {
+        uint16_t h = gm_f64_to_f16(x);
+        unsigned be = (h >> 10) & 0x1fu;
+        c = (h & 0x3ffu) | (be != 0 ? 0x400u : 0u);
+        q = be != 0 ? (int)be - 25 : -24;
+        qmin = -24;
+        cmin = 1u << 10;
+    } else if (bits == 32) {
+        float f = (float)x;
+        uint32_t u;
+        memcpy(&u, &f, 4);
+        unsigned be = (u >> 23) & 0xffu;
+        c = (u & 0x7fffffu) | (be != 0 ? 0x800000u : 0u);
+        q = be != 0 ? (int)be - 150 : -149;
+        qmin = -149;
+        cmin = 1u << 23;
+    } else {
+        uint64_t u;
+        memcpy(&u, &x, 8);
+        unsigned be = (unsigned)((u >> 52) & 0x7ffu);
+        c = (u & 0xfffffffffffffULL) | (be != 0 ? 1ULL << 52 : 0);
+        q = be != 0 ? (int)be - 1075 : -1074;
+        qmin = -1074;
+        cmin = 1ULL << 52;
+    }
+    unsigned out = (unsigned)(c & 1); /* the interval ends belong to it iff c is even */
+    uint64_t cb = c << 2, cbr = cb + 2, cbl;
+    int k;
+    if (c != cmin || q == qmin) {
+        cbl = cb - 2;
+        k = (int)(((int64_t)q * 661971961083LL) >> 41); /* floor(log10(2^q)) */
+    } else {
+        /* The interval below is half as wide: floor(log10(3/4 * 2^q)). */
+        cbl = cb - 1;
+        k = (int)(((int64_t)q * 661971961083LL - 274743187321LL) >> 41);
+    }
+    int h = q + (int)(((int64_t)(-k) * 913124641741LL) >> 38) + 2; /* floor(-k * log2(10)) */
+    const uint64_t *g = gm_g10[k - GM_G10_KMIN];
+    uint64_t vb = gm_rop(g, cb << h), vbl = gm_rop(g, cbl << h), vbr = gm_rop(g, cbr << h);
+    uint64_t s = vb >> 2, t = s + 1, r;
+    /* A candidate with one digit fewer is a multiple of ten around s; the interval is
+     * narrower than ten units, so at most one of them lies in it. */
+    uint64_t sp10 = s / 10 * 10, tp10 = sp10 + 10;
+    int upin = vbl + out <= sp10 << 2, wpin = (tp10 << 2) + out <= vbr;
+    if (upin != wpin) {
+        r = upin ? sp10 : tp10;
+    } else {
+        int uin = vbl + out <= s << 2, win = (t << 2) + out <= vbr;
+        if (uin != win) {
+            r = uin ? s : t;
+        } else {
+            int64_t cmp = (int64_t)(vb - ((s + t) << 1));
+            r = cmp < 0 || (cmp == 0 && (s & 1) == 0) ? s : t;
+        }
+    }
+    /* The digits of r * 10^k, without trailing zeros. */
+    while (r % 10 == 0) {
+        r /= 10;
+        k++;
+    }
+    char rev[24];
+    int n = 0;
+    for (; r > 0; r /= 10) rev[n++] = (char)('0' + r % 10);
+    for (int i = 0; i < n; i++) digits[i] = rev[n - 1 - i];
+    digits[n] = '\0';
+    *exp10 = k + n - 1;
+}
+
+/* The display form of a float (§21.6.1): "nan", "inf", "-inf", "0", "-0", else the shortest
+ * round-trip digits in positional notation for decimal exponents -6..=20 and scientific
+ * (`d.ddde<exp>`) otherwise. */
+static void gm_fmt_float(gm_buf *out, const gm_type *t, const uint8_t *p) {
+    double x;
+    if (t->bits == 16) {
+        uint16_t h;
+        memcpy(&h, p, 2);
+        x = gm_f16_to_f64(h);
+    } else if (t->bits == 32) {
+        float f;
+        memcpy(&f, p, 4);
+        x = (double)f;
+    } else {
+        memcpy(&x, p, 8);
+    }
+    if (__builtin_isnan(x)) return gm_fmt_str(out, "nan");
+    if (__builtin_isinf(x)) return gm_fmt_str(out, x > 0 ? "inf" : "-inf");
+    if (x == 0) return gm_fmt_str(out, __builtin_signbit(x) ? "-0" : "0");
+    if (x < 0) {
+        gm_fmt_ch(out, '-');
+        x = -x;
+    }
+    char digits[24];
+    int exp;
+    gm_shortest(x, t->bits, digits, &exp);
+    int nd = (int)strlen(digits);
+    if (exp >= -6 && exp <= 20) {
+        if (exp >= 0) {
+            int int_len = exp + 1;
+            if (nd <= int_len) {
+                gm_buf_push(out, digits, (size_t)nd);
+                for (int i = nd; i < int_len; i++) gm_fmt_ch(out, '0');
+            } else {
+                gm_buf_push(out, digits, (size_t)int_len);
+                gm_fmt_ch(out, '.');
+                gm_buf_push(out, digits + int_len, (size_t)(nd - int_len));
+            }
+        } else {
+            gm_fmt_str(out, "0.");
+            for (int i = 0; i < -exp - 1; i++) gm_fmt_ch(out, '0');
+            gm_buf_push(out, digits, (size_t)nd);
+        }
+    } else {
+        gm_fmt_ch(out, digits[0]);
+        if (nd > 1) {
+            gm_fmt_ch(out, '.');
+            gm_buf_push(out, digits + 1, (size_t)(nd - 1));
+        }
+        char e[16];
+        int n = snprintf(e, sizeof e, "e%d", exp);
+        gm_buf_push(out, e, (size_t)n);
+    }
+}
+
+/* Whether the n bytes at p are one complete, well-formed UTF-8 sequence. */
+static bool gm_utf8_seq_ok(const uint8_t *p, size_t n) {
+    uint8_t lo = 0x80, hi = 0xbf;
+    if (n == 2 && p[0] >= 0xc2 && p[0] <= 0xdf) {
+        /* any continuation byte */
+    } else if (n == 3 && p[0] >= 0xe0 && p[0] <= 0xef) {
+        if (p[0] == 0xe0) lo = 0xa0;
+        if (p[0] == 0xed) hi = 0x9f;
+    } else if (n == 4 && p[0] >= 0xf0 && p[0] <= 0xf4) {
+        if (p[0] == 0xf0) lo = 0x90;
+        if (p[0] == 0xf4) hi = 0x8f;
+    } else {
+        return false;
+    }
+    if (p[1] < lo || p[1] > hi) return false;
+    for (size_t i = 2; i < n; i++) {
+        if (p[i] < 0x80 || p[i] > 0xbf) return false;
+    }
+    return true;
+}
+
+static void gm_fmt_hex_escape(gm_buf *out, uint8_t b) {
+    static const char hex[] = "0123456789abcdef";
+    char e[4] = {'\\', 'x', hex[b >> 4], hex[b & 15]};
+    gm_buf_push(out, e, 4);
+}
+
+/* Appends the bytes quoted with escapes; valid UTF-8 sequences are kept as they are. */
+static void gm_quote_bytes(gm_buf *out, const uint8_t *s, size_t n) {
+    gm_fmt_ch(out, '"');
+    size_t i = 0;
+    while (i < n) {
+        uint8_t b = s[i];
+        switch (b) {
+        case '"': gm_fmt_str(out, "\\\""); break;
+        case '\\': gm_fmt_str(out, "\\\\"); break;
+        case '\n': gm_fmt_str(out, "\\n"); break;
+        case '\r': gm_fmt_str(out, "\\r"); break;
+        case '\t': gm_fmt_str(out, "\\t"); break;
+        case 0: gm_fmt_str(out, "\\0"); break;
+        default:
+            if (b >= 0x20 && b <= 0x7e) {
+                gm_fmt_ch(out, (char)b);
+            } else if (b >= 0x80) {
+                size_t len = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc2 ? 2 : 0;
+                if (b > 0xf4) len = 0;
+                if (len > 0 && i + len <= n && gm_utf8_seq_ok(s + i, len)) {
+                    gm_buf_push(out, s + i, len);
+                    i += len;
+                    continue;
+                }
+                gm_fmt_hex_escape(out, b);
+            } else {
+                gm_fmt_hex_escape(out, b);
+            }
+        }
+        i++;
+    }
+    gm_fmt_ch(out, '"');
+}
+
+/* Reads an unsigned integer of n (at most 8) bytes. */
+static uint64_t gm_load_uint(const uint8_t *p, uint32_t n) { return (uint64_t)gm_load_u128(p, n > 8 ? 8 : n); }
+
+static uint64_t gm_load_ptr(const uint8_t *p) {
+    uintptr_t v;
+    memcpy(&v, p, sizeof v);
+    return (uint64_t)v;
+}
+
+static void gm_fmt_seq(gm_buf *out, const gm_type *elem, const uint8_t *data, uint64_t n) {
+    gm_fmt_ch(out, '[');
+    for (uint64_t i = 0; i < n; i++) {
+        if (i > 0) gm_fmt_str(out, ", ");
+        gm_format(out, elem, data + i * elem->size, false);
+    }
+    gm_fmt_ch(out, ']');
+}
+
+/* The elements of a tuple-like list of fields, separated by ", " (named ones as `name: v`). */
+static void gm_fmt_fields(gm_buf *out, const gm_type *t, const uint8_t *v) {
+    for (uint32_t i = 0; i < t->nfields; i++) {
+        const gm_field *f = &t->fields[i];
+        if (i > 0) gm_fmt_str(out, ", ");
+        if (t->named && f->name != NULL) {
+            gm_fmt_str(out, f->name);
+            gm_fmt_str(out, ": ");
+        }
+        gm_format(out, f->type, v + f->offset, false);
+    }
+}
+
+GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
+    const uint8_t *v = (const uint8_t *)vp;
+    switch (t->kind) {
+    case GM_K_INT: gm_fmt_int(out, t, v); break;
+    case GM_K_FLOAT: gm_fmt_float(out, t, v); break;
+    case GM_K_BOOL: gm_fmt_str(out, v[0] != 0 ? "true" : "false"); break;
+    case GM_K_PTR: {
+        char buf[32];
+        int n = snprintf(buf, sizeof buf, "0x%llx", (unsigned long long)gm_load_ptr(v));
+        gm_buf_push(out, buf, (size_t)n);
+        break;
+    }
+    case GM_K_SLICE: {
+        const uint8_t *data;
+        memcpy(&data, v, sizeof data);
+        uint64_t n = gm_load_ptr(v + sizeof(void *));
+        const gm_type *e = t->elem;
+        if (e->kind == GM_K_INT && e->bits == 8 && !e->is_signed) {
+            if (top) {
+                gm_buf_push(out, data, (size_t)n);
+            } else {
+                gm_quote_bytes(out, data, (size_t)n);
+            }
+        } else {
+            gm_fmt_seq(out, e, data, n);
+        }
+        break;
+    }
+    case GM_K_ARRAY: gm_fmt_seq(out, t->elem, v, t->len); break;
+    case GM_K_TUPLE:
+        gm_fmt_ch(out, '(');
+        gm_fmt_fields(out, t, v);
+        if (t->nfields == 1 && !t->named) gm_fmt_ch(out, ',');
+        gm_fmt_ch(out, ')');
+        break;
+    case GM_K_OPTIONAL: {
+        bool present = t->flag_offset == GM_NICHE ? gm_load_ptr(v) != 0 : v[t->flag_offset] != 0;
+        if (present) {
+            gm_format(out, t->elem, v, false);
+        } else {
+            gm_fmt_str(out, "null");
+        }
+        break;
+    }
+    case GM_K_RESULT:
+        if (v[t->tag_offset] != 0) {
+            gm_fmt_ch(out, '!');
+            gm_format(out, t->err, v + t->payload_offset, false);
+        } else {
+            gm_format(out, t->elem, v + t->payload_offset, false);
+        }
+        break;
+    case GM_K_STRUCT: {
+        gm_fmt_str(out, t->name);
+        gm_fmt_ch(out, '(');
+        bool first = true;
+        for (uint32_t i = 0; i < t->nfields; i++) {
+            const gm_field *f = &t->fields[i];
+            if (f->name != NULL && strcmp(f->name, "_") == 0) continue;
+            if (!first) gm_fmt_str(out, ", ");
+            first = false;
+            gm_fmt_str(out, f->name != NULL ? f->name : "");
+            gm_fmt_str(out, ": ");
+            gm_format(out, f->type, v + f->offset, false);
+        }
+        gm_fmt_ch(out, ')');
+        break;
+    }
+    case GM_K_UNION: {
+        uint64_t raw = gm_load_uint(v + t->tag_offset, t->tag_size);
+        int64_t tag = (int64_t)raw;
+        if (t->tag_signed && t->tag_size > 0 && t->tag_size < 8) {
+            unsigned shift = 64 - 8u * t->tag_size;
+            tag = (int64_t)(raw << shift) >> shift;
+        }
+        const gm_variant *var = NULL;
+        for (uint32_t i = 0; i < t->nvariants; i++) {
+            if (t->variants[i].tag == tag) {
+                var = &t->variants[i];
+                break;
+            }
+        }
+        if (var == NULL) {
+            gm_fmt_str(out, ".?");
+            break;
+        }
+        gm_fmt_ch(out, '.');
+        gm_fmt_str(out, var->name);
+        if (var->payload != NULL) {
+            const gm_type *pt = var->payload;
+            const uint8_t *pv = v + t->payload_offset;
+            gm_fmt_ch(out, '(');
+            if (pt->kind == GM_K_TUPLE) {
+                gm_fmt_fields(out, pt, pv);
+            } else {
+                gm_format(out, pt, pv, false);
+            }
+            gm_fmt_ch(out, ')');
+        }
+        break;
+    }
+    case GM_K_OPAQUE: gm_fmt_str(out, t->name); break;
+    case GM_K_BITS: {
+        unsigned __int128 whole = gm_load_u128(v, t->size);
+        gm_fmt_str(out, t->name);
+        gm_fmt_ch(out, '(');
+        bool first = true;
+        for (uint32_t i = 0; i < t->nfields; i++) {
+            const gm_field *f = &t->fields[i];
+            if (f->name != NULL && strcmp(f->name, "_") == 0) continue;
+            if (!first) gm_fmt_str(out, ", ");
+            first = false;
+            gm_fmt_str(out, f->name != NULL ? f->name : "");
+            gm_fmt_str(out, ": ");
+            const gm_type *ft = f->type;
+            unsigned w = ft->kind == GM_K_BOOL ? 1u : ft->bits;
+            unsigned __int128 raw = whole >> f->offset;
+            if (w < 128) raw &= (((unsigned __int128)1) << w) - 1;
+            /* Sign-extend signed integers and signed tags from the field's width. */
+            bool sign = (ft->kind == GM_K_INT && ft->is_signed) || (ft->kind == GM_K_UNION && ft->tag_signed);
+            if (sign && w > 0 && w < 128 && ((raw >> (w - 1)) & 1)) raw |= ~(unsigned __int128)0 << w;
+            uint8_t tmp[16] = {0};
+            if (ft->kind == GM_K_UNION) {
+                /* An enum's value is its tag at the tag offset. */
+                gm_store_u128(tmp + ft->tag_offset, ft->tag_size, raw);
+            } else {
+                gm_store_u128(tmp, ft->size, raw);
+            }
+            gm_format(out, ft, tmp, false);
+        }
+        gm_fmt_ch(out, ')');
+        break;
+    }
+    }
+}
+
+/* ---- format specs (spec §21.6.1) ----------------------------------------------- */
+
+/* Writes head and body padded to the spec's width, counted in Unicode scalar values. */
+static void gm_spec_pad(gm_buf *out, const char *head, size_t hn, const uint8_t *body, size_t bn,
+                        const gm_spec *s, bool number) {
+    size_t len = 0;
+    for (size_t i = 0; i < hn; i++) len += ((uint8_t)head[i] & 0xc0) != 0x80;
+    for (size_t i = 0; i < bn; i++) len += (body[i] & 0xc0) != 0x80;
+    size_t gap = s->width > len ? s->width - len : 0, before, after;
+    if (s->zero) {
+        gm_buf_push(out, head, hn);
+        for (size_t i = 0; i < gap; i++) gm_fmt_ch(out, '0');
+        gm_buf_push(out, body, bn);
+        return;
+    }
+    switch (s->align) {
+    case 1: before = 0, after = gap; break;
+    case 2: before = gap, after = 0; break;
+    case 3: before = gap / 2, after = gap - gap / 2; break;
+    default: before = number ? gap : 0, after = number ? 0 : gap; break;
+    }
+    for (size_t i = 0; i < before; i++) gm_fmt_ch(out, (char)s->fill);
+    gm_buf_push(out, head, hn);
+    gm_buf_push(out, body, bn);
+    for (size_t i = 0; i < after; i++) gm_fmt_ch(out, (char)s->fill);
+}
+
+/* The magnitude of an integer in base 2^shift (2, 8 or 16) into body; returns whether it is
+ * negative. */
+static bool gm_spec_radix(gm_buf *body, const gm_type *t, const uint8_t *p, unsigned shift, bool upper) {
+    size_t n = t->size;
+    uint8_t mbuf[16], *m = mbuf; /* integers have at most 128 bits */
+    /* Work on the little-endian bytes of the value. */
+    for (size_t i = 0; i < n; i++) m[i] = *gm_ibp(p, n, i);
+    unsigned bits = t->bits;
+    /* Clear the bits above the width. */
+    for (size_t i = 0; i < n; i++) {
+        size_t lo = i * 8;
+        if (lo >= bits) m[i] = 0;
+        else if (lo + 8 > bits) m[i] &= (uint8_t)((1u << (bits - lo)) - 1);
+    }
+    bool neg = t->is_signed && bits > 0 && ((m[(bits - 1) / 8] >> ((bits - 1) % 8)) & 1);
+    if (neg) {
+        unsigned carry = 1;
+        for (size_t i = 0; i < n; i++) {
+            unsigned v = (uint8_t)~m[i] + carry;
+            m[i] = (uint8_t)v;
+            carry = v >> 8;
+        }
+        for (size_t i = 0; i < n; i++) {
+            size_t lo = i * 8;
+            if (lo >= bits) m[i] = 0;
+            else if (lo + 8 > bits) m[i] &= (uint8_t)((1u << (bits - lo)) - 1);
+        }
+    }
+    const char *dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    size_t ndig = (bits + shift - 1) / shift;
+    bool started = false;
+    for (size_t d = ndig; d > 0; d--) {
+        size_t bit = (d - 1) * shift;
+        unsigned v = 0;
+        for (unsigned k = 0; k < shift; k++) {
+            size_t b = bit + k;
+            if (b < (size_t)n * 8) v |= (unsigned)((m[b / 8] >> (b % 8)) & 1) << k;
+        }
+        if (v != 0) started = true;
+        if (started) gm_fmt_ch(body, dig[v]);
+    }
+    if (!started) gm_fmt_ch(body, '0');
+    return neg;
+}
+
+/* Rewrites printf's exponent ("e+05", "e-07") at the end of body, after its offset `from`,
+ * in the display style ("e5", "e-7"). */
+static void gm_spec_exp(gm_buf *body, size_t from) {
+    size_t e = from;
+    while (body->data[e] != 'e') e++;
+    int x = 0;
+    for (size_t i = e + 2; i < body->len; i++) x = x * 10 + (body->data[i] - '0');
+    if (body->data[e + 1] == '-') x = -x;
+    body->len = e;
+    char tmp[16];
+    int k = snprintf(tmp, sizeof tmp, "e%d", x);
+    gm_buf_push(body, tmp, (size_t)k);
+}
+
+/* Appends n bytes of unspecified content to b; returns the first. */
+static char *gm_buf_extend(gm_buf *b, size_t n) {
+    size_t at = b->len;
+    gm_buf_push(b, NULL, 0);
+    for (size_t i = 0; i < n; i++) gm_fmt_ch(b, 0);
+    return (char *)b->data + at;
+}
+
+GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const gm_spec *s) {
+    const uint8_t *v = (const uint8_t *)vp;
+    gm_buf body = {0};
+    bool neg = false, finite = true, nan = false, number = true;
+    if (t->kind == GM_K_INT) {
+        if (s->kind >= 1 && s->kind <= 4) {
+            unsigned shift = s->kind <= 2 ? 4 : s->kind == 3 ? 3 : 1;
+            neg = gm_spec_radix(&body, t, v, shift, s->kind == 2);
+        } else {
+            gm_fmt_int(&body, t, v);
+            if (body.len > 0 && body.data[0] == '-') {
+                neg = true;
+                memmove(body.data, body.data + 1, --body.len);
+            }
+        }
+    } else if (t->kind == GM_K_FLOAT) {
+        double x;
+        if (t->bits == 16) {
+            uint16_t h;
+            memcpy(&h, v, 2);
+            x = gm_f16_to_f64(h);
+        } else if (t->bits == 32) {
+            float f;
+            memcpy(&f, v, 4);
+            x = (double)f;
+        } else {
+            memcpy(&x, v, 8);
+        }
+        nan = __builtin_isnan(x);
+        finite = !nan && !__builtin_isinf(x);
+        neg = !nan && __builtin_signbit(x);
+        double a = __builtin_fabs(x);
+        if (nan) {
+            gm_fmt_str(&body, "nan");
+        } else if (!finite) {
+            gm_fmt_str(&body, "inf");
+        } else if (s->kind == 5 && s->precision >= 0) {
+            int k = snprintf(NULL, 0, "%.*e", s->precision, a);
+            size_t from = body.len;
+            snprintf(gm_buf_extend(&body, (size_t)k + 1), (size_t)k + 1, "%.*e", s->precision, a);
+            body.len--;
+            gm_spec_exp(&body, from);
+        } else if (s->kind == 5) {
+            if (a == 0) {
+                gm_fmt_str(&body, "0e0");
+            } else {
+                char digits[24], tmp[16];
+                int e;
+                gm_shortest(a, t->bits, digits, &e);
+                gm_fmt_ch(&body, digits[0]);
+                if (digits[1] != '\0') {
+                    gm_fmt_ch(&body, '.');
+                    gm_fmt_str(&body, digits + 1);
+                }
+                int k = snprintf(tmp, sizeof tmp, "e%d", e);
+                gm_buf_push(&body, tmp, (size_t)k);
+            }
+        } else if (s->precision >= 0) {
+            int k = snprintf(NULL, 0, "%.*f", s->precision, a);
+            snprintf(gm_buf_extend(&body, (size_t)k + 1), (size_t)k + 1, "%.*f", s->precision, a);
+            body.len--;
+        } else {
+            uint8_t pos[8];
+            if (t->bits == 16) {
+                uint16_t h = gm_f64_to_f16(a);
+                memcpy(pos, &h, 2);
+            } else if (t->bits == 32) {
+                float f = (float)a;
+                memcpy(pos, &f, 4);
+            } else {
+                memcpy(pos, &a, 8);
+            }
+            gm_fmt_float(&body, t, pos);
+        }
+    } else {
+        number = false;
+        gm_format(&body, t, v, true);
+        gm_spec_pad(out, "", 0, body.data, body.len, s, false);
+        gm_buf_free(&body);
+        return;
+    }
+    char head[4];
+    size_t hn = 0;
+    if (neg) head[hn++] = '-';
+    else if (s->plus && !nan) head[hn++] = '+';
+    if (s->alt) {
+        head[hn++] = '0';
+        head[hn++] = s->kind <= 2 ? 'x' : s->kind == 3 ? 'o' : 'b';
+    }
+    if (s->zero && !finite) {
+        gm_spec s2 = *s;
+        s2.zero = 0;
+        s2.align = 2;
+        gm_spec_pad(out, head, hn, body.data, body.len, &s2, number);
+    } else {
+        gm_spec_pad(out, head, hn, body.data, body.len, s, number);
+    }
+    gm_buf_free(&body);
+}
+
+/* ---- ambient effects ---------------------------------------------------------- */
+
+#ifdef GM_FREESTANDING
+/* No ambient handlers exist on a freestanding target (spec 3.7.1), so the generated code's
+ * branches for them never run; these keep it compilable. */
+GM_API void gm_write_out(const uint8_t *p, size_t len) { (void)p; (void)len; __builtin_trap(); }
+GM_API void gm_write_err(const uint8_t *p, size_t len) { (void)p; (void)len; __builtin_trap(); }
+GM_API void gm_flush(void) {}
+GM_API const void *gm_args(size_t *count) { *count = 0; return NULL; }
+GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len) {
+    (void)name; (void)len; (void)value; (void)value_len;
+    return false;
+}
+#else
+
+/* The first failure to write the standard output or error (an errno value; a closed pipe is
+ * not one: its reader has gone away), which makes the process end with status 1. */
+static int gm_out_errno, gm_err_errno;
+
+static void gm_note_failure(int *slot, int e) {
+    if (e != EPIPE && *slot == 0) *slot = e != 0 ? e : EIO;
+}
+
+GM_API void gm_write_out(const uint8_t *p, size_t len) {
+    if (len > 0 && fwrite(p, 1, len, stdout) != len) gm_note_failure(&gm_out_errno, errno);
+#if defined(__FILC__)
+    /* Fil-C ends the process on a memory error without running any code of ours, so
+     * output must not wait in the buffer for a trap or exit to flush it. */
+    fflush(stdout);
+#endif
+}
+
+GM_API void gm_write_err(const uint8_t *p, size_t len) {
+    if (len > 0 && fwrite(p, 1, len, stderr) != len) gm_note_failure(&gm_err_errno, errno);
+    if (fflush(stderr) != 0) gm_note_failure(&gm_err_errno, errno);
+}
+
+GM_API void gm_flush(void) {
+    if (fflush(stdout) != 0) gm_note_failure(&gm_out_errno, errno);
+}
+
+/* The exit status of a program whose entry returned `status`: 1 if writing the standard output
+ * or error failed, after flushing what is buffered, and saying so. */
+static int gm_finish_main(int status) {
+    gm_flush();
+    if (gm_out_errno != 0) {
+        fprintf(stderr, "gamma: cannot write the standard output: %s\n", strerror(gm_out_errno));
+        if (status == 0) status = 1;
+    }
+    if (gm_err_errno != 0 && status == 0) status = 1;
+    fflush(stderr);
+    return status;
+}
+
+/* ---- statement coverage (`gamma test --coverage`) ------------------------------- */
+
+GM_API uint32_t *gm_cover_counts;
+static uint32_t gm_cover_n;
+static const char *gm_cover_path;
+
+/* Writes the counters to `gm_cover_path`, as decimal numbers one per line: the test runner
+ * adds up those of every test it runs. */
+static void gm_cover_dump(void) {
+    FILE *f = fopen(gm_cover_path, "w");
+    if (f == NULL) return;
+    for (uint32_t i = 0; i < gm_cover_n; i++)
+        fprintf(f, "%u\n", (unsigned)__atomic_load_n(&gm_cover_counts[i], __ATOMIC_RELAXED));
+    fclose(f);
+}
+
+GM_API void gm_cover_init(uint32_t n, const char *path) {
+    if (path == NULL) return;
+    gm_cover_path = path;
+    gm_cover_counts = (uint32_t *)calloc(n > 0 ? n : 1, sizeof(uint32_t));
+    if (gm_cover_counts == NULL) return;
+    gm_cover_n = n;
+    /* Also when a trap ends the program, which exits through `exit`. */
+    atexit(gm_cover_dump);
+}
+
+typedef struct { const uint8_t *ptr; uintptr_t len; } gm_rt_str;
+
+/* The command line that starts a Windows process from `argc` arguments, as UTF-8 in a new
+ * NUL-terminated buffer of *len bytes: the arguments joined by spaces, each quoted by the
+ * rules of the Microsoft C runtime (which splits it again): an argument that is empty or has a
+ * space, tab, newline, vertical tab or quote is enclosed in quotes; a quote is preceded by a
+ * backslash, and the backslashes before a quote (or before the closing quote) are doubled.
+ * Defined on every system so that it can be tested everywhere. */
+static char *gm_win_cmdline(const gm_rt_str *argv, size_t argc, size_t *len) {
+    size_t cap = 1;
+    for (size_t i = 0; i < argc; i++) cap += 2 * argv[i].len + 3;
+    char *out = (char *)malloc(cap);
+    if (out == NULL) gm_trap("out of memory", NULL, 0, 0);
+    size_t n = 0;
+    for (size_t i = 0; i < argc; i++) {
+        const uint8_t *a = argv[i].ptr;
+        size_t al = argv[i].len;
+        if (i > 0) out[n++] = ' ';
+        int quote = al == 0;
+        for (size_t k = 0; k < al; k++)
+            if (a[k] == ' ' || a[k] == '\t' || a[k] == '\n' || a[k] == '\v' || a[k] == '"') quote = 1;
+        if (!quote) {
+            if (al > 0) memcpy(out + n, a, al);
+            n += al;
+            continue;
+        }
+        out[n++] = '"';
+        for (size_t k = 0; k < al;) {
+            size_t bs = 0;
+            while (k < al && a[k] == '\\') bs++, k++;
+            if (k == al) {
+                for (size_t j = 0; j < 2 * bs; j++) out[n++] = '\\';
+            } else if (a[k] == '"') {
+                for (size_t j = 0; j < 2 * bs + 1; j++) out[n++] = '\\';
+                out[n++] = '"';
+                k++;
+            } else {
+                for (size_t j = 0; j < bs; j++) out[n++] = '\\';
+                out[n++] = (char)a[k++];
+            }
+        }
+        out[n++] = '"';
+    }
+    out[n] = 0;
+    *len = n;
+    return out;
+}
+#ifdef _WIN32
+static char *gm_utf8_arg(const wchar_t *w, size_t *len) {
+    int wn = (int)wcslen(w);
+    int n = wn ? WideCharToMultiByte(CP_UTF8, 0, w, wn, NULL, 0, NULL, NULL) : 0;
+    char *s = (char *)malloc((size_t)n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (n) WideCharToMultiByte(CP_UTF8, 0, w, wn, s, n, NULL, NULL);
+    s[n] = 0;
+    *len = (size_t)n;
+    return s;
+}
+#endif
+static gm_rt_str *gm_rt_args;
+static size_t gm_rt_argc;
+
+GM_API void gm_set_args(int argc, char **argv) {
+    if (gm_rt_args != NULL || argc <= 0) return;
+#ifdef _WIN32
+    /* The arguments as UTF-8, from the command line (argv is in the ANSI code page). */
+    int wc = 0;
+    wchar_t **wv = CommandLineToArgvW(GetCommandLineW(), &wc);
+    if (wv != NULL && wc > 0) {
+        if (wc > argc) wc = argc;
+        gm_rt_args = (gm_rt_str *)malloc((size_t)wc * sizeof(gm_rt_str));
+        if (gm_rt_args == NULL) gm_trap("out of memory", NULL, 0, 0);
+        for (int i = 0; i < wc; i++) {
+            size_t len;
+            gm_rt_args[i].ptr = (const uint8_t *)gm_utf8_arg(wv[i], &len);
+            gm_rt_args[i].len = len;
+        }
+        gm_rt_argc = (size_t)wc;
+        LocalFree(wv);
+        return;
+    }
+#endif
+    gm_rt_args = (gm_rt_str *)malloc((size_t)argc * sizeof(gm_rt_str));
+    if (gm_rt_args == NULL) gm_trap("out of memory", NULL, 0, 0);
+    for (int i = 0; i < argc; i++) {
+        gm_rt_args[i].ptr = (const uint8_t *)argv[i];
+        gm_rt_args[i].len = strlen(argv[i]);
+    }
+    gm_rt_argc = (size_t)argc;
+}
+
+GM_API const void *gm_args(size_t *count) {
+    *count = gm_rt_argc;
+    return gm_rt_args;
+}
+
+GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len) {
+#ifdef _WIN32
+    if (len > 0x7fffffff || (len > 0 && memchr(name, 0, len) != NULL)) return false;
+    int wn = len ? MultiByteToWideChar(CP_UTF8, 0, (const char *)name, (int)len, NULL, 0) : 0;
+    wchar_t *wk = (wchar_t *)malloc(((size_t)wn + 1) * sizeof(wchar_t));
+    if (wk == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (wn) MultiByteToWideChar(CP_UTF8, 0, (const char *)name, (int)len, wk, wn);
+    wk[wn] = 0;
+    DWORD need = GetEnvironmentVariableW(wk, NULL, 0);
+    if (need == 0) {
+        free(wk);
+        return false;
+    }
+    wchar_t *wv = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+    if (wv == NULL) gm_trap("out of memory", NULL, 0, 0);
+    DWORD got = GetEnvironmentVariableW(wk, wv, need);
+    free(wk);
+    if (got >= need) {
+        free(wv);
+        return false;
+    }
+    size_t vl;
+    *value = (const uint8_t *)gm_utf8_arg(wv, &vl);   /* lives for the rest of the process */
+    *value_len = vl;
+    free(wv);
+    return true;
+#else
+    char *key = (char *)malloc(len + 1);
+    if (key == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (len > 0) memcpy(key, name, len);
+    key[len] = '\0';
+    const char *v = getenv(key);
+    free(key);
+    if (v == NULL) return false;
+    *value = (const uint8_t *)v;
+    *value_len = strlen(v);
+    return true;
+#endif
+}
+
+/* ---- system services ---------------------------------------------------------------- */
+
+GM_API int64_t gm_io_error(int err) {
+    switch (err) {
+    case ENOENT: return -1;
+    case EACCES: case EPERM: return -2;
+    case EEXIST: return -3;
+    case EAGAIN: return -4;
+    case EINTR: return -5;
+    case EPIPE: return -6;
+    case ECONNRESET: return -7;
+    case EINVAL: return -8;
+    case ENOSPC: return -10;
+    case ECONNREFUSED: return -11;
+    case ETIMEDOUT: return -12;
+    case ENOSYS: case ENOTSUP: return -13;
+    default: return -1000 - (int64_t)err;
+    }
+}
+
+/* Tables of the live objects that the system services hand out (directories, child
+ * processes, threads). A handle is the slot index plus one in the low 32 bits and the
+ * slot's generation in the next 31, so it is positive, and a handle that has been closed
+ * never names a newer object that took over its slot. The caller holds the runtime lock,
+ * except in gm_table_add. */
+typedef struct {
+    void **item;
+    uint32_t *gen;   /* per slot; advanced when the slot is vacated */
+    size_t n;
+} gm_table;
+
+/* Puts p in the lowest free slot and returns its handle; 0 if memory is exhausted. */
+static inline int64_t gm_table_add(gm_table *t, void *p) {
+    gm_rt_acquire();
+    size_t i = 0;
+    while (i < t->n && t->item[i] != NULL) i++;
+    if (i == t->n) {
+        size_t m = t->n * 2 + 4;
+        void **it = (void **)realloc(t->item, sizeof(void *) * m);
+        if (it != NULL) t->item = it;
+        uint32_t *g = (uint32_t *)realloc(t->gen, sizeof(uint32_t) * m);
+        if (g != NULL) t->gen = g;
+        if (it == NULL || g == NULL) {
+            gm_rt_release();
+            return 0;
+        }
+        memset(t->item + t->n, 0, sizeof(void *) * (m - t->n));
+        memset(t->gen + t->n, 0, sizeof(uint32_t) * (m - t->n));
+        t->n = m;
+    }
+    t->item[i] = p;
+    int64_t h = (int64_t)(i + 1) + ((int64_t)t->gen[i] << 32);
+    gm_rt_release();
+    return h;
+}
+
+/* The object that handle h names, or NULL if h is not the handle of a live object. */
+static inline void *gm_table_get(const gm_table *t, int64_t h) {
+    uint64_t i = (uint64_t)h & 0xffffffffu;
+    if (h < 1 || i < 1 || i > t->n || t->gen[i - 1] != (uint32_t)((uint64_t)h >> 32)) return NULL;
+    return t->item[i - 1];
+}
+
+/* Removes the object that handle h names and returns it (NULL if there is none); the
+ * handle is invalid from now on. */
+static inline void *gm_table_take(gm_table *t, int64_t h) {
+    void *p = gm_table_get(t, h);
+    if (p != NULL) {
+        size_t i = (size_t)((uint64_t)h & 0xffffffffu) - 1;
+        t->item[i] = NULL;
+        t->gen[i] = (t->gen[i] + 1) & 0x7fffffffu;
+    }
+    return p;
+}
+
+#ifndef _WIN32
+GM_API int64_t gm_sys_read(void *p, size_t n) {
+    gm_flush();
+    for (;;) {
+        ssize_t r = read(0, p, n);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API uint64_t gm_clock_now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+}
+
+GM_API int64_t gm_clock_wall(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    return (int64_t)t.tv_sec * 1000000000 + (int64_t)t.tv_nsec;
+}
+
+GM_API void gm_clock_sleep(uint64_t ns) {
+    gm_flush();
+    struct timespec t = {(time_t)(ns / 1000000000u), (long)(ns % 1000000000u)}, rest;
+    while (nanosleep(&t, &rest) != 0 && errno == EINTR) t = rest;
+}
+
+#ifdef GM_WASI
+GM_API void gm_rand_fill(void *vp, size_t n) {
+    uint8_t *p = (uint8_t *)vp;
+    while (n > 0) {
+        size_t k = n < 256 ? n : 256;   /* getentropy's limit per call */
+        if (getentropy(p, k) != 0) gm_trap("cannot read random bytes", NULL, 0, 0);
+        p += k;
+        n -= k;
+    }
+}
+#else
+GM_API void gm_rand_fill(void *vp, size_t n) {
+    static int fd = -1;
+    uint8_t *p = (uint8_t *)vp;
+    gm_rt_acquire();
+    if (fd < 0) fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    gm_rt_release();
+    while (n > 0) {
+        ssize_t r = fd < 0 ? -1 : read(fd, p, n);
+        if (r <= 0) {
+            if (r < 0 && errno == EINTR) continue;
+            gm_trap("cannot read random bytes", NULL, 0, 0);
+        }
+        p += r;
+        n -= (size_t)r;
+    }
+}
+#endif
+
+/* A NUL-terminated copy of a path (freed by the caller), or NULL if it contains a NUL. */
+static char *gm_path(const void *p, size_t n) {
+    if (n > 0 && memchr(p, 0, n) != NULL) return NULL;
+    char *s = (char *)malloc(n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(s, p, n);
+    s[n] = 0;
+    return s;
+}
+
+#define GM_RET_ERR(cond) ((cond) ? gm_io_error(errno) : 0)
+
+GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    int rw = (flags & GM_FS_READ) && (flags & (GM_FS_WRITE | GM_FS_APPEND)) ? O_RDWR
+             : (flags & (GM_FS_WRITE | GM_FS_APPEND)) ? O_WRONLY : O_RDONLY;
+    int f = rw | O_CLOEXEC;
+    if (flags & GM_FS_APPEND) f |= O_APPEND;
+    if (flags & GM_FS_CREATE) f |= O_CREAT;
+    if (flags & GM_FS_EXCLUSIVE) f |= O_CREAT | O_EXCL;
+    if (flags & GM_FS_TRUNCATE) f |= O_TRUNC;
+    int fd = open(s, f, 0666);
+    int err = errno;
+    free(s);
+    return fd < 0 ? gm_io_error(err) : (int64_t)fd;
+}
+
+GM_API int64_t gm_fs_close(int64_t f) { return GM_RET_ERR(close((int)f) != 0); }
+
+GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n) {
+    gm_flush();
+    for (;;) {
+        ssize_t r = read((int)f, p, n);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n) {
+    for (;;) {
+        ssize_t r = write((int)f, p, n);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence) {
+    if (whence > 2 || (whence == 0 && offset < 0)) return gm_io_error(EINVAL);
+    off_t r = lseek((int)f, (off_t)offset, whence == 0 ? SEEK_SET : whence == 1 ? SEEK_CUR : SEEK_END);
+    return r < 0 ? gm_io_error(errno) : (int64_t)r;
+}
+
+static int64_t gm_mode_kind(mode_t mode) {
+    return S_ISREG(mode) ? 0 : S_ISDIR(mode) ? 1 : S_ISLNK(mode) ? 2 : 3;
+}
+
+static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, bool follow) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    struct stat st;
+    int r = follow ? stat(s, &st) : lstat(s, &st);
+    int err = errno;
+    free(s);
+    if (r != 0) return gm_io_error(err);
+#if defined(__APPLE__)
+    int64_t mtime = (int64_t)st.st_mtimespec.tv_sec * 1000000000 + st.st_mtimespec.tv_nsec;
+#else
+    int64_t mtime = (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
+#endif
+    int64_t v[3] = {(int64_t)st.st_size, gm_mode_kind(st.st_mode), mtime};
+    memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
+    return 0;
+}
+
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, true);
+}
+
+GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, false);
+}
+
+/* Calls f on the NUL-terminated copy of a path. */
+static int64_t gm_path_call(const void *path, size_t len, int (*f)(const char *)) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    int r = f(s);
+    int err = errno;
+    free(s);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+
+static int gm_mkdir(const char *s) { return mkdir(s, 0777); }
+
+GM_API int64_t gm_fs_remove(const void *path, size_t len) { return gm_path_call(path, len, unlink); }
+GM_API int64_t gm_fs_make_dir(const void *path, size_t len) { return gm_path_call(path, len, gm_mkdir); }
+GM_API int64_t gm_fs_remove_dir(const void *path, size_t len) { return gm_path_call(path, len, rmdir); }
+
+GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len) {
+    char *a = gm_path(from, from_len), *b = gm_path(to, to_len);
+    int r = a && b ? rename(a, b) : -1;
+    int err = a && b ? errno : EINVAL;
+    free(a);
+    free(b);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+
+/* An open directory; refs counts the table's reference and the calls in progress. */
+typedef struct {
+    DIR *d;
+    int refs;   /* guarded by gm_rt_lock */
+} gm_pdir;
+static gm_table gm_dirs;
+
+GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
+    /* No directory has the empty name (WASI's opendir would open the current one). */
+    if (len == 0) return gm_io_error(ENOENT);
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    DIR *d = opendir(s);
+    int err = errno;
+    free(s);
+    if (d == NULL) return gm_io_error(err);
+    gm_pdir *e = (gm_pdir *)malloc(sizeof *e);
+    if (e == NULL) gm_trap("out of memory", NULL, 0, 0);
+    e->d = d;
+    e->refs = 1;
+    int64_t h = gm_table_add(&gm_dirs, e);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
+}
+
+/* The directory of handle d, with a reference that gm_dir_put drops; NULL if d is not open. */
+static gm_pdir *gm_dir(int64_t d) {
+    gm_rt_acquire();
+    gm_pdir *e = (gm_pdir *)gm_table_get(&gm_dirs, d);
+    if (e != NULL) e->refs++;
+    gm_rt_release();
+    return e;
+}
+
+/* Drops a reference; the last one closes the directory (and returns closedir's result). */
+static int gm_dir_put(gm_pdir *e) {
+    gm_rt_acquire();
+    int last = --e->refs == 0;
+    gm_rt_release();
+    if (!last) return 0;
+    int r = closedir(e->d), en = errno;
+    free(e);
+    errno = en;
+    return r;
+}
+
+static int64_t gm_next_entry(DIR *dir, void *p, size_t n);
+
+GM_API int64_t gm_fs_next_entry(int64_t d, void *p, size_t n) {
+    gm_pdir *e = gm_dir(d);
+    if (e == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_next_entry(e->d, p, n);
+    gm_dir_put(e);
+    return r;
+}
+
+static int64_t gm_next_entry(DIR *dir, void *p, size_t n) {
+    for (;;) {
+        errno = 0;
+        struct dirent *e = readdir(dir);
+        if (e == NULL) return errno ? gm_io_error(errno) : 0;
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        size_t len = strlen(e->d_name);
+        if (len > n) return gm_io_error(EINVAL);
+        int64_t kind;
+        switch (e->d_type) {
+        case DT_REG: kind = 0; break;
+        case DT_DIR: kind = 1; break;
+        case DT_LNK: kind = 2; break;
+        case DT_UNKNOWN: {
+            struct stat st;
+            if (fstatat(dirfd(dir), e->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) return gm_io_error(errno);
+            kind = gm_mode_kind(st.st_mode);
+            break;
+        }
+        default: kind = 3;
+        }
+        memcpy(p, e->d_name, len);
+        return (int64_t)len + (kind << 32);
+    }
+}
+
+GM_API int64_t gm_fs_close_dir(int64_t d) {
+    gm_rt_acquire();
+    gm_pdir *e = (gm_pdir *)gm_table_take(&gm_dirs, d);
+    gm_rt_release();
+    if (e == NULL) return gm_io_error(EBADF);
+    return GM_RET_ERR(gm_dir_put(e) != 0);
+}
+
+GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size) {
+    if (size > (uint64_t)INT64_MAX) return gm_io_error(EINVAL);
+    return GM_RET_ERR(ftruncate((int)f, (off_t)size) != 0);
+}
+
+GM_API int64_t gm_fs_sync(int64_t f) { return GM_RET_ERR(fsync((int)f) != 0); }
+
+GM_API int64_t gm_fs_cwd(void *p, size_t n) {
+    size_t cap = 4096;
+    for (;;) {
+        char *tmp = (char *)malloc(cap);
+        if (tmp == NULL) return gm_io_error(ENOMEM);
+        if (getcwd(tmp, cap) != NULL) {
+            size_t len = strlen(tmp);
+            int64_t r = (int64_t)len;
+            if (len > n) r = gm_io_error(EINVAL);
+            else if (len > 0) memcpy(p, tmp, len);
+            free(tmp);
+            return r;
+        }
+        int e = errno;
+        free(tmp);
+        if (e != ERANGE) return gm_io_error(e);
+        cap *= 2;
+    }
+}
+
+#ifdef GM_WASI
+/* WASI offers no sockets to open and no processes to start: every operation of the Net and
+ * Proc effects fails with IoError.Unsupported. */
+GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+    (void)host; (void)len; (void)port;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
+    (void)host; (void)len; (void)port;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_net_local_port(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_accept(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) { (void)h; (void)p; (void)n; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) { (void)h; (void)p; (void)n; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_close(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how) { (void)h; (void)how; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns) {
+    (void)h; (void)recv_ns; (void)send_ns;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) { (void)h; (void)p; (void)n; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                             size_t dir_len, uint32_t flags) {
+    (void)argv; (void)argc; (void)env; (void)envc; (void)dir; (void)dir_len; (void)flags;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
+    (void)h; (void)data; (void)n;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_proc_close_in(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) { (void)h; (void)buf; (void)n; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_wait(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_kill(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+#else
+/* Resolves host:port for a stream socket (passive: for listening). */
+static struct addrinfo *gm_resolve(const void *host, size_t len, uint16_t port, bool passive, int64_t *err) {
+    char *h = gm_path(host, len);
+    if (h == NULL) {
+        *err = gm_io_error(EINVAL);
+        return NULL;
+    }
+    char service[8];
+    snprintf(service, sizeof service, "%u", (unsigned)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = passive ? AI_PASSIVE : 0;
+    struct addrinfo *res = NULL;
+    int r = getaddrinfo(len ? h : NULL, service, &hints, &res);
+    free(h);
+    if (r != 0) {
+        *err = -1000;
+        return NULL;
+    }
+    return res;
+}
+
+/* Sockets are close-on-exec, like files and pipes: a started process inherits none. */
+#if defined(__linux__) && !defined(__FILC__)
+#define GM_SOCK_CLOEXEC SOCK_CLOEXEC
+#else
+#define GM_SOCK_CLOEXEC 0
+#endif
+
+static int gm_socket(const struct addrinfo *a) {
+    int fd = socket(a->ai_family, a->ai_socktype | GM_SOCK_CLOEXEC, a->ai_protocol);
+    if (fd < 0) return fd;
+#if !defined(__linux__) || defined(__FILC__)
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+#if defined(SO_NOSIGPIPE)
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+    return fd;
+}
+
+GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+    gm_flush();
+    int64_t err = 0;
+    struct addrinfo *res = gm_resolve(host, len, port, false, &err);
+    if (res == NULL) return err;
+    int fd = -1, e = 0;
+    for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+        fd = gm_socket(a);
+        if (fd < 0) { e = errno; continue; }
+        int r = connect(fd, a->ai_addr, a->ai_addrlen);
+        if (r != 0 && errno == EINTR) {
+            /* The connection goes on in the background: wait for it to finish, and ask how. */
+            struct pollfd pf = {.fd = fd, .events = POLLOUT};
+            int w;
+            do w = poll(&pf, 1, -1); while (w < 0 && errno == EINTR);
+            int soerr = 0;
+            socklen_t sl = sizeof soerr;
+            if (w < 0) {
+                soerr = errno;
+            } else if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) != 0) {
+                soerr = errno;
+            }
+            errno = soerr;
+            r = soerr == 0 ? 0 : -1;
+        }
+        if (r == 0) break;
+        e = errno;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd < 0 ? gm_io_error(e) : (int64_t)fd;
+}
+
+GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
+    int64_t err = 0;
+    struct addrinfo *res = gm_resolve(host, len, port, true, &err);
+    if (res == NULL) return err;
+    int fd = -1, e = 0;
+    for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+        fd = gm_socket(a);
+        if (fd < 0) { e = errno; continue; }
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        if (bind(fd, a->ai_addr, a->ai_addrlen) == 0 && listen(fd, 128) == 0) break;
+        e = errno;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd < 0 ? gm_io_error(e) : (int64_t)fd;
+}
+
+GM_API int64_t gm_net_local_port(int64_t h) {
+    struct sockaddr_storage a;
+    socklen_t n = sizeof a;
+    if (getsockname((int)h, (struct sockaddr *)&a, &n) != 0) return gm_io_error(errno);
+    if (a.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&a)->sin_port);
+    if (a.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
+    return gm_io_error(EINVAL);
+}
+
+GM_API int64_t gm_net_accept(int64_t h) {
+    gm_flush();
+    for (;;) {
+#if defined(__linux__) && !defined(__FILC__)
+        int fd = accept4((int)h, NULL, NULL, SOCK_CLOEXEC);
+#else
+        int fd = accept((int)h, NULL, NULL);
+#endif
+        if (fd >= 0) {
+#if !defined(__linux__) || defined(__FILC__)
+            fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+#if defined(SO_NOSIGPIPE)
+            int one = 1;
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+            return fd;
+        }
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+/* A timed-out blocking call fails with EAGAIN; sockets are never non-blocking. */
+static int64_t gm_net_error(int err) {
+    return err == EAGAIN || err == EWOULDBLOCK ? gm_io_error(ETIMEDOUT) : gm_io_error(err);
+}
+
+GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
+#if defined(MSG_NOSIGNAL)
+    int flags = MSG_NOSIGNAL;
+#else
+    int flags = 0;
+#endif
+    for (;;) {
+        ssize_t r = send((int)h, p, n, flags);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_net_error(errno);
+    }
+}
+
+GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) {
+    gm_flush();
+    for (;;) {
+        ssize_t r = recv((int)h, p, n, 0);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_net_error(errno);
+    }
+}
+
+GM_API int64_t gm_net_close(int64_t h) { return GM_RET_ERR(close((int)h) != 0); }
+
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how) {
+    return GM_RET_ERR(shutdown((int)h, how == 0 ? SHUT_RD : how == 1 ? SHUT_WR : SHUT_RDWR) != 0);
+}
+
+static int gm_set_timeout(int fd, int opt, uint64_t ns) {
+    struct timeval tv;
+    tv.tv_sec = (time_t)(ns / 1000000000u);
+    tv.tv_usec = (suseconds_t)((ns % 1000000000u) / 1000u);
+    if (ns > 0 && tv.tv_sec == 0 && tv.tv_usec == 0) tv.tv_usec = 1;   /* zero would mean no timeout */
+    return setsockopt(fd, SOL_SOCKET, opt, &tv, sizeof tv);
+}
+
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns) {
+    if (gm_set_timeout((int)h, SO_RCVTIMEO, recv_ns) != 0) return gm_io_error(errno);
+    return GM_RET_ERR(gm_set_timeout((int)h, SO_SNDTIMEO, send_ns) != 0);
+}
+
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
+    struct sockaddr_storage a;
+    socklen_t al = sizeof a;
+    if (getpeername((int)h, (struct sockaddr *)&a, &al) != 0) return gm_io_error(errno);
+    char text[INET6_ADDRSTRLEN + 16];
+    int len;
+    if (a.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&a;
+        char host[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &s->sin_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "%s:%u", host, (unsigned)ntohs(s->sin_port));
+    } else if (a.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&a;
+        char host[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &s->sin6_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "[%s]:%u", host, (unsigned)ntohs(s->sin6_port));
+    } else {
+        return gm_io_error(EINVAL);
+    }
+    if (len < 0 || (size_t)len > n) return gm_io_error(EINVAL);
+    memcpy(p, text, (size_t)len);
+    return len;
+}
+/* ---- child processes (the Proc effect) -------------------------------------------------
+ *
+ * A handle names the child in a table (see gm_table). Our ends of the pipes are
+ * close-on-exec, so no child inherits another's. */
+
+typedef struct {
+    pid_t pid;
+    int in_fd, out_fd, err_fd;   /* our ends of the pipes; -1 when there is none or it is closed */
+    int reaped;                  /* the process has been waited for (guarded by gm_rt_lock) */
+    int waiting;                 /* a wait is in progress (guarded by gm_rt_lock) */
+    int refs;                    /* the table's reference and the calls in progress (guarded by gm_rt_lock) */
+} gm_proc;
+
+static gm_table gm_procs;
+
+/* A pipe whose both ends are close-on-exec. */
+static int gm_pipe_cloexec(int fds[2]) {
+#if defined(__linux__) && !defined(__FILC__)
+    return pipe2(fds, O_CLOEXEC);
+#else
+    if (pipe(fds) != 0) return -1;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+#endif
+}
+
+/* Moves *fd to a descriptor above 2 (so that the child's dup2 calls cannot clobber it). */
+static int gm_fd_above_std(int *fd) {
+    if (*fd > 2) return 0;
+    int n = fcntl(*fd, F_DUPFD_CLOEXEC, 3);
+    if (n < 0) return -1;
+    close(*fd);
+    *fd = n;
+    return 0;
+}
+
+/* A NUL-terminated copy of n bytes, or NULL if they contain a NUL. */
+static char *gm_cstr(const void *p, size_t n) {
+    if (n > 0 && memchr(p, 0, n) != NULL) return NULL;
+    char *s = (char *)malloc(n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (n > 0) memcpy(s, p, n);
+    s[n] = 0;
+    return s;
+}
+
+/* The file that the program named in `name` stands for, as execvp finds it: a name with a
+ * slash is used as it is; any other is searched for in the directories of PATH (an empty
+ * entry is the current directory) and must be an executable file. Returns a new string, or
+ * NULL with *err set. */
+static char *gm_find_program(const char *name, int *err) {
+    if (strchr(name, '/') != NULL) return strdup(name);
+    if (name[0] == 0) {
+        *err = ENOENT;
+        return NULL;
+    }
+    const char *path = getenv("PATH");
+    if (path == NULL) path = "/usr/bin:/bin";
+    size_t nl = strlen(name);
+    int denied = 0;
+    for (const char *p = path;;) {
+        const char *end = strchr(p, ':');
+        size_t dl = end ? (size_t)(end - p) : strlen(p);
+        char *file = (char *)malloc(dl + nl + 3);
+        if (file == NULL) gm_trap("out of memory", NULL, 0, 0);
+        if (dl == 0) {
+            memcpy(file, ".", 1);
+            dl = 1;
+        } else {
+            memcpy(file, p, dl);
+        }
+        file[dl] = '/';
+        memcpy(file + dl + 1, name, nl + 1);
+        struct stat st;
+        if (stat(file, &st) == 0 && S_ISREG(st.st_mode)) {
+            if (access(file, X_OK) == 0) return file;
+            denied = 1;
+        }
+        free(file);
+        if (end == NULL) break;
+        p = end + 1;
+    }
+    *err = denied ? EACCES : ENOENT;
+    return NULL;
+}
+
+static void gm_free_cstrs(char **v, size_t n) {
+    if (v == NULL) return;
+    for (size_t i = 0; i < n; i++) free(v[i]);
+    free(v);
+}
+
+/* Copies n strings into a NULL-terminated array; NULL if one contains a NUL (or, for
+ * `env`, has no `=`). */
+static char **gm_cstr_array(const gm_rt_str *v, size_t n, int is_env) {
+    char **out = (char **)calloc(n + 1, sizeof(char *));
+    if (out == NULL) gm_trap("out of memory", NULL, 0, 0);
+    for (size_t i = 0; i < n; i++) {
+        if (is_env && (v[i].len == 0 || memchr(v[i].ptr, '=', v[i].len) == NULL)) {
+            gm_free_cstrs(out, i);
+            return NULL;
+        }
+        out[i] = gm_cstr(v[i].ptr, v[i].len);
+        if (out[i] == NULL) {
+            gm_free_cstrs(out, i);
+            return NULL;
+        }
+    }
+    return out;
+}
+
+extern char **environ;
+
+GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                             size_t dir_len, uint32_t flags) {
+    if (argc == 0) return gm_io_error(EINVAL);
+    char **av = gm_cstr_array((const gm_rt_str *)argv, argc, 0);
+    char **ev = (flags & 64) ? gm_cstr_array((const gm_rt_str *)env, envc, 1) : NULL;
+    char *cwd = gm_cstr(dir, dir_len);
+    int err = 0;
+    char *prog = NULL;
+    if (av == NULL || ((flags & 64) && ev == NULL) || cwd == NULL) {
+        err = EINVAL;
+    } else {
+        prog = gm_find_program(av[0], &err);
+    }
+    if (prog == NULL) {
+        gm_free_cstrs(av, argc);
+        gm_free_cstrs(ev, envc);
+        free(cwd);
+        return gm_io_error(err);
+    }
+    /* What we have printed comes before anything the child prints. */
+    gm_flush();
+    fflush(stderr);
+
+    /* Per stream: the child's end, and ours. */
+    int child_fd[3] = {-1, -1, -1}, mine[3] = {-1, -1, -1}, errp[2] = {-1, -1};
+    int null_fd = -1;
+    for (int i = 0; i < 3 && err == 0; i++) {
+        int mode = (int)((flags >> (2 * i)) & 3);
+        if (mode == 1) {
+            if (null_fd < 0) {
+                null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+                if (null_fd < 0 || gm_fd_above_std(&null_fd) != 0) err = errno;
+            }
+            child_fd[i] = null_fd;
+        } else if (mode == 2) {
+            int p[2];
+            if (gm_pipe_cloexec(p) != 0) {
+                err = errno;
+                break;
+            }
+            int c = i == 0 ? p[0] : p[1], m = i == 0 ? p[1] : p[0];
+            if (gm_fd_above_std(&c) != 0 || gm_fd_above_std(&m) != 0) {
+                err = errno;
+                close(c);
+                close(m);
+                break;
+            }
+            child_fd[i] = c;
+            mine[i] = m;
+#if defined(F_SETNOSIGPIPE)
+            if (i == 0) fcntl(m, F_SETNOSIGPIPE, 1);
+#endif
+        }
+    }
+    if (err == 0 && gm_pipe_cloexec(errp) != 0) err = errno;
+    pid_t pid = -1;
+    if (err == 0) {
+        sigset_t all, old;
+        sigfillset(&all);
+        pthread_sigmask(SIG_SETMASK, &all, &old);
+        pid = fork();
+        if (pid == 0) {
+            /* The child: only async-signal-safe calls. */
+            for (int i = 0; i < 3; i++)
+                if (child_fd[i] >= 0 && dup2(child_fd[i], i) < 0) goto child_fail;
+            signal(SIGPIPE, SIG_DFL);
+            sigset_t none;
+            sigemptyset(&none);
+            pthread_sigmask(SIG_SETMASK, &none, NULL);
+            if (cwd[0] != 0 && chdir(cwd) != 0) goto child_fail;
+            execve(prog, av, (flags & 64) ? ev : environ);
+        child_fail:;
+            int e = errno;
+            ssize_t w = write(errp[1], &e, sizeof e);
+            (void)w;
+            _exit(127);
+        }
+        pthread_sigmask(SIG_SETMASK, &old, NULL);
+        if (pid < 0) err = errno;
+    }
+    if (errp[1] >= 0) close(errp[1]);
+    if (err == 0) {
+        /* A failed exec (or chdir) reports its errno through the pipe, which closes on exec. */
+        int e = 0;
+        ssize_t r;
+        do r = read(errp[0], &e, sizeof e); while (r < 0 && errno == EINTR);
+        if (r == (ssize_t)sizeof e) {
+            err = e;
+            int st;
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+        }
+    }
+    if (errp[0] >= 0) close(errp[0]);
+    for (int i = 0; i < 3; i++)
+        if (child_fd[i] >= 0 && child_fd[i] != null_fd) close(child_fd[i]);
+    if (null_fd >= 0) close(null_fd);
+    gm_free_cstrs(av, argc);
+    gm_free_cstrs(ev, envc);
+    free(cwd);
+    free(prog);
+    if (err != 0) {
+        for (int i = 0; i < 3; i++)
+            if (mine[i] >= 0) close(mine[i]);
+        return gm_io_error(err);
+    }
+    gm_proc *p = (gm_proc *)calloc(1, sizeof(gm_proc));
+    if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
+    p->pid = pid;
+    p->in_fd = mine[0];
+    p->out_fd = mine[1];
+    p->err_fd = mine[2];
+    p->refs = 1;
+    int64_t h = gm_table_add(&gm_procs, p);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
+}
+
+/* The child of handle h, with a reference that gm_proc_put drops; NULL if h is not live. */
+static gm_proc *gm_proc_get(int64_t h) {
+    gm_rt_acquire();
+    gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
+    if (p != NULL) p->refs++;
+    gm_rt_release();
+    return p;
+}
+
+static void gm_proc_put(gm_proc *p) {
+    gm_rt_acquire();
+    int last = --p->refs == 0;
+    gm_rt_release();
+    if (last) free(p);
+}
+
+static int64_t gm_proc_write(gm_proc *p, const void *data, size_t n);
+static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n);
+
+GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_proc_write(p, data, n);
+    gm_proc_put(p);
+    return r;
+}
+
+static int64_t gm_proc_write(gm_proc *p, const void *data, size_t n) {
+    if (p->in_fd < 0) return gm_io_error(EINVAL);
+    if (n > ((size_t)1 << 30)) n = (size_t)1 << 30;
+#if defined(F_SETNOSIGPIPE)
+    for (;;) {
+        ssize_t r = write(p->in_fd, data, n);
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+#else
+    /* Block SIGPIPE for this thread while writing; a signal that the write raised is
+     * taken off again, so a closed pipe is only an error. */
+    sigset_t block, old, pending;
+    sigemptyset(&block);
+    sigaddset(&block, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &block, &old);
+    sigpending(&pending);
+    int was_pending = sigismember(&pending, SIGPIPE);
+    ssize_t r;
+    do r = write(p->in_fd, data, n); while (r < 0 && errno == EINTR);
+    int e = errno;
+    if (r < 0 && e == EPIPE && !was_pending) {
+        struct timespec zero = {0, 0};
+        while (sigtimedwait(&block, NULL, &zero) < 0 && errno == EINTR) {}
+    }
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    return r >= 0 ? (int64_t)r : gm_io_error(e);
+#endif
+}
+
+GM_API int64_t gm_proc_close_in(int64_t h) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (p->in_fd >= 0) {
+        close(p->in_fd);
+        p->in_fd = -1;
+    }
+    gm_proc_put(p);
+    return 0;
+}
+
+GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
+    gm_flush();
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_proc_read(p, buf, n);
+    gm_proc_put(p);
+    return r;
+}
+
+static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
+    if (n > 0xffffffffu) n = 0xffffffffu;
+    if (n > ((size_t)1 << 30)) n = (size_t)1 << 30;
+    for (;;) {
+        struct pollfd f[2];
+        int stream[2], nf = 0;
+        if (p->out_fd >= 0) {
+            f[nf] = (struct pollfd){.fd = p->out_fd, .events = POLLIN};
+            stream[nf++] = 0;
+        }
+        if (p->err_fd >= 0) {
+            f[nf] = (struct pollfd){.fd = p->err_fd, .events = POLLIN};
+            stream[nf++] = 1;
+        }
+        if (nf == 0) return 0;
+        if (n == 0) return gm_io_error(EINVAL);
+        if (poll(f, (nfds_t)nf, -1) < 0) {
+            if (errno == EINTR) continue;
+            return gm_io_error(errno);
+        }
+        for (int k = 0; k < nf; k++) {
+            if (f[k].revents == 0) continue;
+            int *fd = stream[k] == 0 ? &p->out_fd : &p->err_fd;
+            ssize_t r = read(*fd, buf, n);
+            if (r < 0 && errno == EINTR) break;
+            if (r < 0) return gm_io_error(errno);
+            if (r == 0) {
+                close(*fd);
+                *fd = -1;
+                break;
+            }
+            return (int64_t)r + ((int64_t)stream[k] << 32);
+        }
+    }
+}
+
+GM_API int64_t gm_proc_wait(int64_t h) {
+    gm_flush();
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    gm_rt_acquire();
+    int busy = p->waiting;
+    p->waiting = 1;
+    gm_rt_release();
+    if (busy) {
+        gm_proc_put(p);
+        return gm_io_error(EBADF);
+    }
+    if (p->in_fd >= 0) close(p->in_fd);
+    if (p->out_fd >= 0) close(p->out_fd);
+    if (p->err_fd >= 0) close(p->err_fd);
+    p->in_fd = p->out_fd = p->err_fd = -1;
+    /* Wait without reaping, so that no kill can reach a recycled process id. */
+    siginfo_t si;
+    while (waitid(P_PID, (id_t)p->pid, &si, WEXITED | WNOWAIT) != 0) {
+        if (errno != EINTR) {
+            int e = errno;
+            gm_rt_acquire();
+            p->waiting = 0;
+            gm_rt_release();
+            gm_proc_put(p);
+            return gm_io_error(e);
+        }
+    }
+    int st = 0;
+    gm_rt_acquire();
+    while (waitpid(p->pid, &st, 0) < 0 && errno == EINTR) {}
+    p->reaped = 1;
+    gm_table_take(&gm_procs, h);
+    p->refs -= 1;   /* the table's reference; ours is dropped below */
+    gm_rt_release();
+    gm_proc_put(p);
+    if (WIFSIGNALED(st)) return (int64_t)WTERMSIG(st) + ((int64_t)1 << 32);
+    return (int64_t)WEXITSTATUS(st);
+}
+
+GM_API int64_t gm_proc_kill(int64_t h) {
+    gm_rt_acquire();
+    gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
+    int64_t r = p == NULL || p->reaped ? gm_io_error(EBADF) : (kill(p->pid, SIGKILL) != 0 ? gm_io_error(errno) : 0);
+    gm_rt_release();
+    return r;
+}
+#endif /* GM_WASI */
+#else
+/* Windows: the system services on the Win32 API and Winsock 2. Paths and names cross the
+ * boundary as UTF-8 and are converted to UTF-16 for the wide-character calls. Files are
+ * C runtime descriptors (so a handle is an int, as elsewhere) opened in binary mode;
+ * sockets are SOCKET values. */
+
+/* The error code (see gm_io_error) of the Win32 error `e`. The kinds the interpreter
+ * distinguishes map to the same codes as there; any other error is Other(e). */
+static int64_t gm_win_err(DWORD e) {
+    switch (e) {
+    case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE:
+    case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME:
+        return gm_io_error(ENOENT);
+    case ERROR_ACCESS_DENIED: return gm_io_error(EACCES);
+    case ERROR_ALREADY_EXISTS: case ERROR_FILE_EXISTS: return gm_io_error(EEXIST);
+    case ERROR_INVALID_PARAMETER: return gm_io_error(EINVAL);
+    case ERROR_DISK_FULL: case ERROR_HANDLE_DISK_FULL: return gm_io_error(ENOSPC);
+    case ERROR_BROKEN_PIPE: return gm_io_error(EPIPE);
+    case ERROR_SEM_TIMEOUT: case WAIT_TIMEOUT: return gm_io_error(ETIMEDOUT);
+    default: return -1000 - (int64_t)e;
+    }
+}
+
+/* The error code of the Winsock error `e`. */
+static int64_t gm_wsa_err(int e) {
+    switch (e) {
+    case WSAEINTR: return gm_io_error(EINTR);
+    case WSAEWOULDBLOCK: return gm_io_error(EAGAIN);
+    case WSAEACCES: return gm_io_error(EACCES);
+    case WSAEINVAL: return gm_io_error(EINVAL);
+    case WSAECONNRESET: case WSAECONNABORTED: return gm_io_error(ECONNRESET);
+    case WSAECONNREFUSED: return gm_io_error(ECONNREFUSED);
+    case WSAETIMEDOUT: return gm_io_error(ETIMEDOUT);
+    case WSAESHUTDOWN: return gm_io_error(EPIPE);
+    default: return -1000 - (int64_t)e;
+    }
+}
+
+/* A NUL-terminated UTF-16 copy of the UTF-8 text at p (freed by the caller), or NULL if it
+ * contains a NUL or is not valid UTF-8. */
+static wchar_t *gm_wide(const void *p, size_t n) {
+    if ((n > 0 && memchr(p, 0, n) != NULL) || n > 0x7fffffff) return NULL;
+    int wn = n ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)p, (int)n, NULL, 0) : 0;
+    if (n && wn == 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc(((size_t)wn + 1) * sizeof(wchar_t));
+    if (w == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (wn) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)p, (int)n, w, wn);
+    w[wn] = 0;
+    return w;
+}
+
+/* The UTF-8 form of the UTF-16 text w (wn units) in a new NUL-terminated buffer; *len is its length. */
+static char *gm_utf8(const wchar_t *w, int wn, size_t *len) {
+    int n = wn ? WideCharToMultiByte(CP_UTF8, 0, w, wn, NULL, 0, NULL, NULL) : 0;
+    char *s = (char *)malloc((size_t)n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (n) WideCharToMultiByte(CP_UTF8, 0, w, wn, s, n, NULL, NULL);
+    s[n] = 0;
+    if (len) *len = (size_t)n;
+    return s;
+}
+
+static char *gm_path(const void *p, size_t n) {
+    if (n > 0 && memchr(p, 0, n) != NULL) return NULL;
+    char *s = (char *)malloc(n + 1);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(s, p, n);
+    s[n] = 0;
+    return s;
+}
+
+#define GM_RET_ERR(cond) ((cond) ? gm_io_error(errno) : 0)
+#define GM_CHUNK ((size_t)1 << 30)
+
+GM_API int64_t gm_sys_read(void *p, size_t n) {
+    gm_flush();
+    for (;;) {
+        int r = _read(0, p, (unsigned)(n < GM_CHUNK ? n : GM_CHUNK));
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API uint64_t gm_clock_now(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER c;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&c);
+    uint64_t f = (uint64_t)freq.QuadPart, v = (uint64_t)c.QuadPart;
+    return (v / f) * 1000000000u + (v % f) * 1000000000u / f;
+}
+
+GM_API int64_t gm_clock_wall(void) {
+    FILETIME ft;
+    GetSystemTimePreciseAsFileTime(&ft);
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;   /* 100 ns since 1601 */
+    return ((int64_t)t - 116444736000000000LL) * 100;
+}
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x2
+#endif
+
+GM_API void gm_clock_sleep(uint64_t ns) {
+    gm_flush();
+    HANDLE t = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (t != NULL) {
+        LARGE_INTEGER due;
+        due.QuadPart = -(int64_t)((ns + 99) / 100);
+        if (due.QuadPart < 0 && SetWaitableTimer(t, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(t, INFINITE);
+            CloseHandle(t);
+            return;
+        }
+        CloseHandle(t);
+    }
+    uint64_t ms = (ns + 999999) / 1000000;
+    while (ms > 0) {
+        DWORD step = ms > 0x7fffffffu ? 0x7fffffffu : (DWORD)ms;
+        Sleep(step);
+        ms -= step;
+    }
+}
+
+GM_API void gm_rand_fill(void *vp, size_t n) {
+    uint8_t *p = (uint8_t *)vp;
+    while (n > 0) {
+        ULONG k = n > 0x10000000u ? 0x10000000u : (ULONG)n;
+        if (BCryptGenRandom(NULL, p, k, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+            gm_trap("cannot read random bytes", NULL, 0, 0);
+        p += k;
+        n -= k;
+    }
+}
+
+/* Opens a file as a C runtime descriptor. All sharing is allowed, including deletion of an
+ * open file, as for the interpreter. */
+GM_API int64_t gm_fs_open(const void *path, size_t len, uint32_t flags) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    bool rd = (flags & GM_FS_READ) || !(flags & (GM_FS_WRITE | GM_FS_APPEND));
+    bool wr = (flags & GM_FS_WRITE) != 0, ap = (flags & GM_FS_APPEND) != 0;
+    DWORD access = (rd ? GENERIC_READ : 0) | (wr ? GENERIC_WRITE : 0) | (ap && !wr ? FILE_APPEND_DATA : 0);
+    DWORD disp = OPEN_EXISTING;
+    if (flags & GM_FS_EXCLUSIVE) disp = CREATE_NEW;
+    else if ((flags & GM_FS_CREATE) && (flags & GM_FS_TRUNCATE)) disp = CREATE_ALWAYS;
+    else if (flags & GM_FS_CREATE) disp = OPEN_ALWAYS;
+    else if (flags & GM_FS_TRUNCATE) disp = TRUNCATE_EXISTING;
+    HANDLE h = CreateFileW(w, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, disp,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return gm_win_err(err);
+    int fd = _open_osfhandle((intptr_t)h, _O_BINARY | (ap ? _O_APPEND : 0) | (rd && !wr && !ap ? _O_RDONLY : 0));
+    if (fd < 0) {
+        CloseHandle(h);
+        return gm_io_error(EMFILE);
+    }
+    return (int64_t)fd;
+}
+
+GM_API int64_t gm_fs_close(int64_t f) { return GM_RET_ERR(_close((int)f) != 0); }
+
+GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n) {
+    gm_flush();
+    for (;;) {
+        int r = _read((int)f, p, (unsigned)(n < GM_CHUNK ? n : GM_CHUNK));
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n) {
+    for (;;) {
+        int r = _write((int)f, p, (unsigned)(n < GM_CHUNK ? n : GM_CHUNK));
+        if (r >= 0) return (int64_t)r;
+        if (errno != EINTR) return gm_io_error(errno);
+    }
+}
+
+GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence) {
+    if (whence > 2 || (whence == 0 && offset < 0)) return gm_io_error(EINVAL);
+    __int64 r = _lseeki64((int)f, (__int64)offset, whence == 0 ? SEEK_SET : whence == 1 ? SEEK_CUR : SEEK_END);
+    return r < 0 ? gm_io_error(errno) : (int64_t)r;
+}
+
+static int64_t gm_attr_kind(DWORD attrs, DWORD tag) {
+    if ((attrs & FILE_ATTRIBUTE_REPARSE_POINT) && (tag == IO_REPARSE_TAG_SYMLINK || tag == IO_REPARSE_TAG_MOUNT_POINT))
+        return 2;
+    return (attrs & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+}
+
+static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, bool follow) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    HANDLE h = CreateFileW(w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | (follow ? 0 : FILE_FLAG_OPEN_REPARSE_POINT), NULL);
+    DWORD err = GetLastError();
+    if (h == INVALID_HANDLE_VALUE) {
+        free(w);
+        return gm_win_err(err);
+    }
+    BY_HANDLE_FILE_INFORMATION bi;
+    BOOL ok = GetFileInformationByHandle(h, &bi);
+    err = GetLastError();
+    CloseHandle(h);
+    if (!ok) {
+        free(w);
+        return gm_win_err(err);
+    }
+    DWORD tag = 0;
+    if (!follow && (bi.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        WIN32_FIND_DATAW fd;
+        HANDLE fh = FindFirstFileW(w, &fd);
+        if (fh != INVALID_HANDLE_VALUE) {
+            tag = fd.dwReserved0;
+            FindClose(fh);
+        }
+    }
+    free(w);
+    uint64_t t = ((uint64_t)bi.ftLastWriteTime.dwHighDateTime << 32) | bi.ftLastWriteTime.dwLowDateTime;
+    int64_t mtime = ((int64_t)t - 116444736000000000LL) * 100;
+    int64_t size = (int64_t)(((uint64_t)bi.nFileSizeHigh << 32) | bi.nFileSizeLow);
+    int64_t v[3] = {size, gm_attr_kind(bi.dwFileAttributes, tag), mtime};
+    memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
+    return 0;
+}
+
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, true);
+}
+
+GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n) {
+    return gm_stat_path(path, len, out, n, false);
+}
+
+GM_API int64_t gm_fs_remove(const void *path, size_t len) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    BOOL ok = DeleteFileW(w);
+    DWORD err = GetLastError();
+    if (!ok && err == ERROR_ACCESS_DENIED) {
+        /* A read-only file can be removed on POSIX systems. */
+        DWORD a = GetFileAttributesW(w);
+        if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_READONLY) && !(a & FILE_ATTRIBUTE_DIRECTORY)) {
+            SetFileAttributesW(w, a & ~(DWORD)FILE_ATTRIBUTE_READONLY);
+            ok = DeleteFileW(w);
+            if (!ok) SetFileAttributesW(w, a);
+            err = GetLastError();
+        }
+    }
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+GM_API int64_t gm_fs_make_dir(const void *path, size_t len) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    BOOL ok = CreateDirectoryW(w, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+GM_API int64_t gm_fs_remove_dir(const void *path, size_t len) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    BOOL ok = RemoveDirectoryW(w);
+    DWORD err = GetLastError();
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len) {
+    wchar_t *a = gm_wide(from, from_len), *b = gm_wide(to, to_len);
+    BOOL ok = FALSE;
+    DWORD err = ERROR_INVALID_PARAMETER;
+    if (a && b) {
+        ok = MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING);
+        err = GetLastError();
+    }
+    free(a);
+    free(b);
+    return ok ? 0 : gm_win_err(err);
+}
+
+/* refs counts the table's reference and the calls in progress (guarded by gm_rt_lock). */
+typedef struct { HANDLE h; WIN32_FIND_DATAW fd; bool pending; int refs; } gm_wdir;
+static gm_table gm_dirs;
+
+GM_API int64_t gm_fs_open_dir(const void *path, size_t len) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    size_t wl = wcslen(w);
+    /* The path is turned into a search pattern below, so one that is empty or holds pattern
+     * characters would list something other than the directory it names; none can exist. */
+    if (wl == 0 || wcspbrk(w, L"*?<>\"|") != NULL) {
+        free(w);
+        return gm_io_error(ENOENT);
+    }
+    wchar_t *pat = (wchar_t *)malloc((wl + 3) * sizeof(wchar_t));
+    if (pat == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(pat, w, wl * sizeof(wchar_t));
+    if (wl > 0 && w[wl - 1] != L'\\' && w[wl - 1] != L'/') pat[wl++] = L'\\';
+    pat[wl++] = L'*';
+    pat[wl] = 0;
+    free(w);
+    gm_wdir *d = (gm_wdir *)malloc(sizeof *d);
+    if (d == NULL) gm_trap("out of memory", NULL, 0, 0);
+    d->h = FindFirstFileW(pat, &d->fd);
+    DWORD err = GetLastError();
+    free(pat);
+    if (d->h == INVALID_HANDLE_VALUE) {
+        free(d);
+        return gm_win_err(err);
+    }
+    d->pending = true;
+    d->refs = 1;
+    int64_t h = gm_table_add(&gm_dirs, d);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
+}
+
+/* The directory of handle di, with a reference that gm_dir_put drops; NULL if di is not open. */
+static gm_wdir *gm_dir(int64_t di) {
+    gm_rt_acquire();
+    gm_wdir *d = (gm_wdir *)gm_table_get(&gm_dirs, di);
+    if (d != NULL) d->refs++;
+    gm_rt_release();
+    return d;
+}
+
+/* Drops a reference; the last one closes the directory. */
+static void gm_dir_put(gm_wdir *d) {
+    gm_rt_acquire();
+    int last = --d->refs == 0;
+    gm_rt_release();
+    if (!last) return;
+    FindClose(d->h);
+    free(d);
+}
+
+static int64_t gm_next_entry(gm_wdir *d, void *p, size_t n);
+
+GM_API int64_t gm_fs_next_entry(int64_t di, void *p, size_t n) {
+    gm_wdir *d = gm_dir(di);
+    if (d == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_next_entry(d, p, n);
+    gm_dir_put(d);
+    return r;
+}
+
+static int64_t gm_next_entry(gm_wdir *d, void *p, size_t n) {
+    for (;;) {
+        if (!d->pending) {
+            if (!FindNextFileW(d->h, &d->fd)) {
+                DWORD err = GetLastError();
+                return err == ERROR_NO_MORE_FILES ? 0 : gm_win_err(err);
+            }
+        }
+        d->pending = false;
+        const wchar_t *name = d->fd.cFileName;
+        if (wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0) continue;
+        size_t len;
+        char *u = gm_utf8(name, (int)wcslen(name), &len);
+        if (len > n) {
+            free(u);
+            return gm_io_error(EINVAL);
+        }
+        memcpy(p, u, len);
+        free(u);
+        return (int64_t)len + (gm_attr_kind(d->fd.dwFileAttributes, d->fd.dwReserved0) << 32);
+    }
+}
+
+GM_API int64_t gm_fs_close_dir(int64_t di) {
+    gm_rt_acquire();
+    gm_wdir *d = (gm_wdir *)gm_table_take(&gm_dirs, di);
+    gm_rt_release();
+    if (d == NULL) return gm_io_error(EBADF);
+    gm_dir_put(d);
+    return 0;
+}
+
+GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size) {
+    if (size > (uint64_t)INT64_MAX) return gm_io_error(EINVAL);
+    errno_t e = _chsize_s((int)f, (__int64)size);
+    return e != 0 ? gm_io_error(e) : 0;
+}
+
+GM_API int64_t gm_fs_sync(int64_t f) { return GM_RET_ERR(_commit((int)f) != 0); }
+
+GM_API int64_t gm_fs_cwd(void *p, size_t n) {
+    wchar_t tmp[32768];
+    DWORD wl = GetCurrentDirectoryW(32768, tmp);
+    if (wl == 0 || wl >= 32768) return gm_win_err(GetLastError());
+    size_t len;
+    char *u = gm_utf8(tmp, (int)wl, &len);
+    if (len > n) {
+        free(u);
+        return gm_io_error(EINVAL);
+    }
+    memcpy(p, u, len);
+    free(u);
+    return (int64_t)len;
+}
+
+/* Winsock must be started once per process before any socket call. */
+static void gm_net_init(void) {
+    static volatile LONG state;   /* 0 not started, 1 started */
+    if (state) return;
+    gm_rt_acquire();
+    if (!state) {
+        WSADATA d;
+        WSAStartup(MAKEWORD(2, 2), &d);
+        state = 1;
+    }
+    gm_rt_release();
+}
+
+/* Resolves host:port for a stream socket (passive: for listening). */
+static struct addrinfo *gm_resolve(const void *host, size_t len, uint16_t port, bool passive, int64_t *err) {
+    gm_net_init();
+    char *h = gm_path(host, len);
+    if (h == NULL) {
+        *err = gm_io_error(EINVAL);
+        return NULL;
+    }
+    char service[8];
+    snprintf(service, sizeof service, "%u", (unsigned)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = passive ? AI_PASSIVE : 0;
+    struct addrinfo *res = NULL;
+    int r = getaddrinfo(len ? h : NULL, service, &hints, &res);
+    free(h);
+    if (r != 0) {
+        *err = -1000;
+        return NULL;
+    }
+    return res;
+}
+
+/* A socket that a started process does not inherit. */
+#ifndef WSA_FLAG_NO_HANDLE_INHERIT
+#define WSA_FLAG_NO_HANDLE_INHERIT 0x80
+#endif
+static SOCKET gm_wsocket(const struct addrinfo *a) {
+    return WSASocketW(a->ai_family, a->ai_socktype, a->ai_protocol, NULL, 0,
+                      WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+}
+
+GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
+    gm_flush();
+    int64_t err = 0;
+    struct addrinfo *res = gm_resolve(host, len, port, false, &err);
+    if (res == NULL) return err;
+    SOCKET fd = INVALID_SOCKET;
+    int e = 0;
+    for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+        fd = gm_wsocket(a);
+        if (fd == INVALID_SOCKET) { e = WSAGetLastError(); continue; }
+        if (connect(fd, a->ai_addr, (int)a->ai_addrlen) == 0) break;
+        e = WSAGetLastError();
+        closesocket(fd);
+        fd = INVALID_SOCKET;
+    }
+    freeaddrinfo(res);
+    return fd == INVALID_SOCKET ? gm_wsa_err(e) : (int64_t)fd;
+}
+
+GM_API int64_t gm_net_listen(const void *host, size_t len, uint16_t port) {
+    int64_t err = 0;
+    struct addrinfo *res = gm_resolve(host, len, port, true, &err);
+    if (res == NULL) return err;
+    SOCKET fd = INVALID_SOCKET;
+    int e = 0;
+    for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+        fd = gm_wsocket(a);
+        if (fd == INVALID_SOCKET) { e = WSAGetLastError(); continue; }
+        /* No SO_REUSEADDR: on Windows it would let another socket take over a used port. */
+        if (bind(fd, a->ai_addr, (int)a->ai_addrlen) == 0 && listen(fd, 128) == 0) break;
+        e = WSAGetLastError();
+        closesocket(fd);
+        fd = INVALID_SOCKET;
+    }
+    freeaddrinfo(res);
+    return fd == INVALID_SOCKET ? gm_wsa_err(e) : (int64_t)fd;
+}
+
+GM_API int64_t gm_net_local_port(int64_t h) {
+    struct sockaddr_storage a;
+    int n = sizeof a;
+    if (getsockname((SOCKET)h, (struct sockaddr *)&a, &n) != 0) return gm_wsa_err(WSAGetLastError());
+    if (a.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&a)->sin_port);
+    if (a.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
+    return gm_io_error(EINVAL);
+}
+
+GM_API int64_t gm_net_accept(int64_t h) {
+    gm_flush();
+    for (;;) {
+        SOCKET fd = accept((SOCKET)h, NULL, NULL);
+        if (fd != INVALID_SOCKET) {
+            SetHandleInformation((HANDLE)fd, HANDLE_FLAG_INHERIT, 0);
+            return (int64_t)fd;
+        }
+        int e = WSAGetLastError();
+        if (e != WSAEINTR) return gm_wsa_err(e);
+    }
+}
+
+/* A timed-out blocking call fails with WSAETIMEDOUT; sockets are never non-blocking. */
+static int64_t gm_net_error(int e) {
+    return e == WSAEWOULDBLOCK ? gm_io_error(ETIMEDOUT) : gm_wsa_err(e);
+}
+
+GM_API int64_t gm_net_send(int64_t h, const void *p, size_t n) {
+    for (;;) {
+        int r = send((SOCKET)h, (const char *)p, (int)(n < GM_CHUNK ? n : GM_CHUNK), 0);
+        if (r >= 0) return (int64_t)r;
+        int e = WSAGetLastError();
+        if (e != WSAEINTR) return gm_net_error(e);
+    }
+}
+
+GM_API int64_t gm_net_recv(int64_t h, void *p, size_t n) {
+    gm_flush();
+    for (;;) {
+        int r = recv((SOCKET)h, (char *)p, (int)(n < GM_CHUNK ? n : GM_CHUNK), 0);
+        if (r >= 0) return (int64_t)r;
+        int e = WSAGetLastError();
+        if (e == WSAECONNRESET) return gm_io_error(ECONNRESET);
+        if (e != WSAEINTR) return gm_net_error(e);
+    }
+}
+
+GM_API int64_t gm_net_close(int64_t h) { return closesocket((SOCKET)h) != 0 ? gm_wsa_err(WSAGetLastError()) : 0; }
+
+GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how) {
+    /* SD_RECEIVE, SD_SEND and SD_BOTH are 0, 1 and 2. */
+    return shutdown((SOCKET)h, how == 0 ? SD_RECEIVE : how == 1 ? SD_SEND : SD_BOTH) != 0
+               ? gm_wsa_err(WSAGetLastError()) : 0;
+}
+
+static int gm_set_timeout(SOCKET fd, int opt, uint64_t ns) {
+    DWORD ms = (DWORD)(ns / 1000000u);
+    if (ns > 0 && ms == 0) ms = 1;   /* zero would mean no timeout */
+    return setsockopt(fd, SOL_SOCKET, opt, (const char *)&ms, sizeof ms);
+}
+
+GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns) {
+    if (gm_set_timeout((SOCKET)h, SO_RCVTIMEO, recv_ns) != 0) return gm_wsa_err(WSAGetLastError());
+    return gm_set_timeout((SOCKET)h, SO_SNDTIMEO, send_ns) != 0 ? gm_wsa_err(WSAGetLastError()) : 0;
+}
+
+GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
+    struct sockaddr_storage a;
+    int al = sizeof a;
+    if (getpeername((SOCKET)h, (struct sockaddr *)&a, &al) != 0) return gm_wsa_err(WSAGetLastError());
+    char text[INET6_ADDRSTRLEN + 16];
+    int len;
+    if (a.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&a;
+        char host[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &s->sin_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "%s:%u", host, (unsigned)ntohs(s->sin_port));
+    } else if (a.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&a;
+        char host[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &s->sin6_addr, host, sizeof host);
+        len = snprintf(text, sizeof text, "[%s]:%u", host, (unsigned)ntohs(s->sin6_port));
+    } else {
+        return gm_io_error(EINVAL);
+    }
+    if (len < 0 || (size_t)len > n) return gm_io_error(EINVAL);
+    memcpy(p, text, (size_t)len);
+    return len;
+}
+
+/* ---- child processes (the Proc effect) -------------------------------------------------
+ *
+ * A handle names the child in a table (see gm_table). The pipes are anonymous pipes;
+ * only the child's ends are inheritable, and starting a child is serialized, so no child
+ * gets another's. */
+
+typedef struct {
+    HANDLE process;
+    HANDLE in_h, out_h, err_h;   /* our ends of the pipes; NULL when there is none or it is closed */
+    int reaped;                  /* guarded by gm_rt_lock */
+    int waiting;                 /* a wait is in progress (guarded by gm_rt_lock) */
+    int refs;                    /* the table's reference and the calls in progress (guarded by gm_rt_lock) */
+} gm_proc;
+
+static gm_table gm_procs;
+
+static int gm_env_cmp(const void *a, const void *b) {
+    return _wcsicmp(*(const wchar_t *const *)a, *(const wchar_t *const *)b);
+}
+
+static int gm_file_exists(const wchar_t *path) {
+    DWORD a = GetFileAttributesW(path);
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* The file `base` + one of the executable extensions in PATHEXT (those CreateProcess can
+ * run), or `base` itself if it has an extension and exists. A new string, or NULL. */
+static wchar_t *gm_with_extension(const wchar_t *base) {
+    size_t bl = wcslen(base);
+    const wchar_t *dot = wcsrchr(base, L'.'), *sep = NULL;
+    for (const wchar_t *q = base; (q = wcspbrk(q, L"\\/")) != NULL; sep = q++) {}
+    if (dot != NULL && (sep == NULL || dot > sep) && gm_file_exists(base)) return _wcsdup(base);
+    wchar_t exts[1024];
+    DWORD n = GetEnvironmentVariableW(L"PATHEXT", exts, 1024);
+    if (n == 0 || n >= 1024) wcscpy(exts, L".COM;.EXE;.BAT;.CMD");
+    wchar_t *file = (wchar_t *)malloc((bl + 1024 + 1) * sizeof(wchar_t));
+    if (file == NULL) gm_trap("out of memory", NULL, 0, 0);
+    for (wchar_t *e = exts; *e != 0;) {
+        wchar_t *end = wcschr(e, L';');
+        size_t el = end ? (size_t)(end - e) : wcslen(e);
+        if ((el == 4 && (_wcsnicmp(e, L".com", 4) == 0 || _wcsnicmp(e, L".exe", 4) == 0 || _wcsnicmp(e, L".bat", 4) == 0 ||
+                         _wcsnicmp(e, L".cmd", 4) == 0))) {
+            memcpy(file, base, bl * sizeof(wchar_t));
+            memcpy(file + bl, e, el * sizeof(wchar_t));
+            file[bl + el] = 0;
+            if (gm_file_exists(file)) return file;
+        }
+        if (end == NULL) break;
+        e = end + 1;
+    }
+    free(file);
+    return NULL;
+}
+
+/* The file that the program named in `name` stands for, found the way gm_find_program does
+ * on other systems: a name with a directory part is used as it is; any other is searched for
+ * in the directories of PATH, and never in the current directory or the directory of this
+ * program (which CreateProcess would search first). Returns a new string, or NULL. */
+static wchar_t *gm_find_program(const wchar_t *name) {
+    if (name[0] == 0) return NULL;
+    if (wcspbrk(name, L":\\/") != NULL) return gm_with_extension(name);
+    DWORD pn = GetEnvironmentVariableW(L"PATH", NULL, 0);
+    if (pn == 0) return NULL;
+    wchar_t *path = (wchar_t *)malloc(((size_t)pn + 1) * sizeof(wchar_t));
+    if (path == NULL) gm_trap("out of memory", NULL, 0, 0);
+    if (GetEnvironmentVariableW(L"PATH", path, pn + 1) == 0) {
+        free(path);
+        return NULL;
+    }
+    size_t nl = wcslen(name);
+    wchar_t *found = NULL;
+    for (wchar_t *d = path; found == NULL && *d != 0;) {
+        wchar_t *end = wcschr(d, L';');
+        size_t dl = end ? (size_t)(end - d) : wcslen(d);
+        wchar_t *next = end ? end + 1 : d + dl;
+        if (dl >= 2 && d[0] == L'"' && d[dl - 1] == L'"') d++, dl -= 2;
+        if (dl > 0) {
+            wchar_t *base = (wchar_t *)malloc((dl + nl + 2) * sizeof(wchar_t));
+            if (base == NULL) gm_trap("out of memory", NULL, 0, 0);
+            memcpy(base, d, dl * sizeof(wchar_t));
+            size_t k = dl;
+            if (d[dl - 1] != L'\\' && d[dl - 1] != L'/') base[k++] = L'\\';
+            memcpy(base + k, name, (nl + 1) * sizeof(wchar_t));
+            found = gm_with_extension(base);
+            free(base);
+        }
+        d = next;
+    }
+    free(path);
+    return found;
+}
+
+/* True if `prog` is a batch file, which Windows runs through cmd.exe. */
+static int gm_is_batch(const wchar_t *prog) {
+    size_t n = wcslen(prog);
+    return n >= 4 && (_wcsicmp(prog + n - 4, L".bat") == 0 || _wcsicmp(prog + n - 4, L".cmd") == 0);
+}
+
+/* True if the argument holds a character that cmd.exe treats specially whatever the quoting
+ * of the command line, so that it cannot be passed to a batch file safely. */
+static int gm_cmd_unsafe(const gm_rt_str *a) {
+    for (size_t i = 0; i < a->len; i++)
+        if (strchr("\"%!^&|<>\r\n", a->ptr[i]) != NULL) return 1;
+    return 0;
+}
+
+/* A child's end of a pipe is inheritable; ours is not. */
+static int gm_make_pipe(HANDLE *child_end, HANDLE *our_end, int child_reads) {
+    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+    HANDLE r, w;
+    if (!CreatePipe(&r, &w, &sa, 0)) return -1;
+    *child_end = child_reads ? r : w;
+    *our_end = child_reads ? w : r;
+    SetHandleInformation(*our_end, HANDLE_FLAG_INHERIT, 0);
+    return 0;
+}
+
+GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                             size_t dir_len, uint32_t flags) {
+    if (argc == 0) return gm_io_error(EINVAL);
+    const gm_rt_str *av = (const gm_rt_str *)argv, *ev = (const gm_rt_str *)env;
+    size_t clen;
+    char *cmd8 = gm_win_cmdline(av, argc, &clen);
+    wchar_t *cmd = cmd8 ? gm_wide(cmd8, clen) : NULL;
+    free(cmd8);
+    wchar_t *cwd = dir_len ? gm_wide(dir, dir_len) : NULL;
+    wchar_t **entries = NULL;
+    wchar_t *block = NULL;
+    int bad = cmd == NULL || (dir_len && cwd == NULL);
+    if ((flags & 64) && !bad) {
+        entries = (wchar_t **)calloc(envc + 1, sizeof(wchar_t *));
+        if (entries == NULL) gm_trap("out of memory", NULL, 0, 0);
+        size_t total = 1;
+        for (size_t i = 0; i < envc && !bad; i++) {
+            entries[i] = gm_wide(ev[i].ptr, ev[i].len);
+            if (entries[i] == NULL || ev[i].len == 0 || memchr(ev[i].ptr, '=', ev[i].len) == NULL) bad = 1;
+            else total += wcslen(entries[i]) + 1;
+        }
+        if (!bad) {
+            qsort(entries, envc, sizeof(wchar_t *), gm_env_cmp);
+            block = (wchar_t *)calloc(total + 1, sizeof(wchar_t));
+            if (block == NULL) gm_trap("out of memory", NULL, 0, 0);
+            wchar_t *q = block;
+            for (size_t i = 0; i < envc; i++) {
+                size_t l = wcslen(entries[i]) + 1;
+                memcpy(q, entries[i], l * sizeof(wchar_t));
+                q += l;
+            }
+        }
+    }
+    int64_t result = 0;
+    wchar_t *prog = NULL;
+    if (!bad) {
+        wchar_t *name = gm_wide(av[0].ptr, av[0].len);
+        prog = name ? gm_find_program(name) : NULL;
+        free(name);
+        if (prog == NULL) {
+            result = gm_io_error(ENOENT);
+        } else if (gm_is_batch(prog)) {
+            for (size_t i = 0; i < argc && result == 0; i++)
+                if (gm_cmd_unsafe(&av[i])) result = gm_io_error(EINVAL);
+        }
+    }
+    HANDLE child_h[3] = {NULL, NULL, NULL}, mine[3] = {NULL, NULL, NULL};
+    HANDLE null_h = INVALID_HANDLE_VALUE;
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof pi);
+    if (bad) {
+        result = gm_io_error(EINVAL);
+    } else if (result == 0) {
+        gm_flush();
+        fflush(stderr);
+        gm_rt_acquire();   /* only one child's pipes are inheritable at a time */
+        for (int i = 0; i < 3 && result == 0; i++) {
+            int mode = (int)((flags >> (2 * i)) & 3);
+            if (mode == 0) {
+                child_h[i] = GetStdHandle(i == 0 ? STD_INPUT_HANDLE : i == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
+                if (child_h[i] != NULL && child_h[i] != INVALID_HANDLE_VALUE)
+                    SetHandleInformation(child_h[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            } else if (mode == 1) {
+                if (null_h == INVALID_HANDLE_VALUE) {
+                    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+                    null_h = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                         &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                    if (null_h == INVALID_HANDLE_VALUE) result = gm_win_err(GetLastError());
+                }
+                child_h[i] = null_h;
+            } else if (gm_make_pipe(&child_h[i], &mine[i], i == 0) != 0) {
+                result = gm_win_err(GetLastError());
+            }
+        }
+        if (result == 0) {
+            STARTUPINFOW si;
+            memset(&si, 0, sizeof si);
+            si.cb = sizeof si;
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = child_h[0];
+            si.hStdOutput = child_h[1];
+            si.hStdError = child_h[2];
+            if (!CreateProcessW(prog, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, block, cwd, &si, &pi))
+                result = gm_win_err(GetLastError());
+        }
+        for (int i = 0; i < 3; i++)
+            if (mine[i] != NULL && child_h[i] != NULL && child_h[i] != null_h) CloseHandle(child_h[i]);
+        if (null_h != INVALID_HANDLE_VALUE) CloseHandle(null_h);
+        gm_rt_release();
+    }
+    if (entries != NULL) {
+        for (size_t i = 0; i < envc; i++) free(entries[i]);
+        free(entries);
+    }
+    free(block);
+    free(cmd);
+    free(cwd);
+    free(prog);
+    if (result != 0) {
+        for (int i = 0; i < 3; i++)
+            if (mine[i] != NULL) CloseHandle(mine[i]);
+        return result;
+    }
+    CloseHandle(pi.hThread);
+    gm_proc *p = (gm_proc *)calloc(1, sizeof(gm_proc));
+    if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
+    p->process = pi.hProcess;
+    p->in_h = mine[0];
+    p->out_h = mine[1];
+    p->err_h = mine[2];
+    p->refs = 1;
+    int64_t h = gm_table_add(&gm_procs, p);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
+}
+
+/* The child of handle h, with a reference that gm_proc_put drops; NULL if h is not live. */
+static gm_proc *gm_proc_get(int64_t h) {
+    gm_rt_acquire();
+    gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
+    if (p != NULL) p->refs++;
+    gm_rt_release();
+    return p;
+}
+
+static void gm_proc_put(gm_proc *p) {
+    gm_rt_acquire();
+    int last = --p->refs == 0;
+    gm_rt_release();
+    if (!last) return;
+    CloseHandle(p->process);
+    free(p);
+}
+
+/* The error code of a failed pipe operation: a pipe whose other end is closed. */
+static int64_t gm_pipe_err(DWORD e) {
+    if (e == ERROR_NO_DATA || e == ERROR_BROKEN_PIPE) return gm_io_error(EPIPE);
+    return gm_win_err(e);
+}
+
+GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    int64_t r;
+    DWORD wrote = 0;
+    if (p->in_h == NULL) r = gm_io_error(EINVAL);
+    else if (!WriteFile(p->in_h, data, (DWORD)(n < GM_CHUNK ? n : GM_CHUNK), &wrote, NULL)) r = gm_pipe_err(GetLastError());
+    else r = (int64_t)wrote;
+    gm_proc_put(p);
+    return r;
+}
+
+GM_API int64_t gm_proc_close_in(int64_t h) {
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    if (p->in_h != NULL) {
+        CloseHandle(p->in_h);
+        p->in_h = NULL;
+    }
+    gm_proc_put(p);
+    return 0;
+}
+
+/* True if the pipe has data, or its writer has gone (a read then reports the end). */
+static int gm_pipe_ready(HANDLE h) {
+    DWORD avail = 0;
+    return !PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail > 0;
+}
+
+static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n);
+
+GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) {
+    gm_flush();
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    int64_t r = gm_proc_read(p, buf, n);
+    gm_proc_put(p);
+    return r;
+}
+
+static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
+    if (n > 0xffffffffu) n = 0xffffffffu;
+    if (n > GM_CHUNK) n = GM_CHUNK;
+    for (;;) {
+        if (p->out_h == NULL && p->err_h == NULL) return 0;
+        if (n == 0) return gm_io_error(EINVAL);
+        HANDLE *hs[2] = {&p->out_h, &p->err_h};
+        int took = 0;
+        for (int k = 0; k < 2; k++) {
+            if (*hs[k] == NULL || !gm_pipe_ready(*hs[k])) continue;
+            DWORD got = 0;
+            if (!ReadFile(*hs[k], buf, (DWORD)n, &got, NULL)) {
+                DWORD e = GetLastError();
+                if (e != ERROR_BROKEN_PIPE) return gm_pipe_err(e);
+                got = 0;
+            }
+            if (got == 0) {
+                CloseHandle(*hs[k]);
+                *hs[k] = NULL;
+                took = 1;
+                break;
+            }
+            return (int64_t)got + ((int64_t)k << 32);
+        }
+        if (!took) Sleep(1);
+    }
+}
+
+GM_API int64_t gm_proc_wait(int64_t h) {
+    gm_flush();
+    gm_proc *p = gm_proc_get(h);
+    if (p == NULL) return gm_io_error(EBADF);
+    gm_rt_acquire();
+    int busy = p->waiting;
+    p->waiting = 1;
+    gm_rt_release();
+    if (busy) {
+        gm_proc_put(p);
+        return gm_io_error(EBADF);
+    }
+    if (p->in_h != NULL) CloseHandle(p->in_h);
+    if (p->out_h != NULL) CloseHandle(p->out_h);
+    if (p->err_h != NULL) CloseHandle(p->err_h);
+    p->in_h = p->out_h = p->err_h = NULL;
+    if (WaitForSingleObject(p->process, INFINITE) != WAIT_OBJECT_0) {
+        int64_t e = gm_win_err(GetLastError());
+        gm_rt_acquire();
+        p->waiting = 0;
+        gm_rt_release();
+        gm_proc_put(p);
+        return e;
+    }
+    DWORD code = 0;
+    GetExitCodeProcess(p->process, &code);
+    gm_rt_acquire();
+    p->reaped = 1;
+    gm_table_take(&gm_procs, h);
+    p->refs -= 1;   /* the table's reference; ours is dropped below */
+    gm_rt_release();
+    gm_proc_put(p);
+    return (int64_t)code;
+}
+
+GM_API int64_t gm_proc_kill(int64_t h) {
+    gm_rt_acquire();
+    gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
+    int64_t r = 0;
+    if (p == NULL || p->reaped) {
+        r = gm_io_error(EBADF);
+    } else if (!TerminateProcess(p->process, 1)) {
+        /* Access is denied once the process has ended; killing it then is not an error. */
+        DWORD e = GetLastError();
+        if (WaitForSingleObject(p->process, 0) != WAIT_OBJECT_0) r = gm_win_err(e);
+    }
+    gm_rt_release();
+    return r;
+}
+#endif
+
+#endif /* GM_FREESTANDING */
+
+/* ---- heap ------------------------------------------------------------------------ */
+
+#ifdef GM_FREESTANDING
+/* The program supplies its own allocators; the system heap does not exist. The Debug-build
+ * records of which allocator owns a block are not kept. */
+GM_API void *gm_heap_alloc(size_t size, size_t align) { (void)size; (void)align; return NULL; }
+GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col) {
+    (void)p; (void)size; (void)align; (void)file; (void)line; (void)col;
+}
+GM_API void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+    (void)p; (void)owner; (void)vt; (void)file; (void)flen; (void)line; (void)col;
+}
+GM_API void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
+                           const char *tfile, uint32_t tline, uint32_t tcol) {
+    (void)p; (void)owner; (void)vt; (void)file; (void)flen; (void)line; (void)col;
+    (void)tfile; (void)tline; (void)tcol;
+}
+#else
+
+/* Blocks are over-allocated and aligned by hand so that any power-of-two alignment works on
+ * every libc; the address of the underlying allocation is stored just before the block. */
+
+/* In debug builds every block ever handed out is remembered: a hash table keyed by address
+ * (open addressing; entries are never removed, a freed block is only marked) tells a double
+ * free from a free of an address that was never a block. */
+enum { GM_HB_EMPTY = 0, GM_HB_LIVE = 1, GM_HB_FREED = 2 };
+typedef struct { uintptr_t addr; size_t size; uint8_t state; } gm_hblock;
+static gm_hblock *gm_hb_tab;
+static size_t gm_hb_cap, gm_hb_used;
+
+static size_t gm_hb_index(uintptr_t addr, size_t cap) {
+    uint64_t h = ((uint64_t)addr >> 3) * 0x9e3779b97f4a7c15ull;
+    return (size_t)(h >> 29) & (cap - 1);
+}
+
+/* The slot for addr: its entry if it has one, else the empty slot where it belongs. */
+static gm_hblock *gm_hb_slot(uintptr_t addr) {
+    size_t i = gm_hb_index(addr, gm_hb_cap);
+    while (gm_hb_tab[i].state != GM_HB_EMPTY && gm_hb_tab[i].addr != addr) i = (i + 1) & (gm_hb_cap - 1);
+    return &gm_hb_tab[i];
+}
+
+static gm_hblock *gm_hb_find(uintptr_t addr) {
+    if (gm_hb_cap == 0) return NULL;
+    gm_hblock *s = gm_hb_slot(addr);
+    return s->state == GM_HB_EMPTY ? NULL : s;
+}
+
+static void gm_hb_record(uintptr_t addr, size_t size) {
+    if ((gm_hb_used + 1) * 2 > gm_hb_cap) {
+        gm_hblock *old = gm_hb_tab;
+        size_t old_cap = gm_hb_cap;
+        size_t cap = old_cap == 0 ? 256 : old_cap * 2;
+        gm_hblock *tab = (gm_hblock *)calloc(cap, sizeof(gm_hblock));
+        if (tab == NULL) gm_trap("out of memory", NULL, 0, 0);
+        gm_hb_tab = tab;
+        gm_hb_cap = cap;
+        for (size_t i = 0; i < old_cap; i++) {
+            if (old[i].state != GM_HB_EMPTY) *gm_hb_slot(old[i].addr) = old[i];
+        }
+        free(old);
+    }
+    gm_hblock *s = gm_hb_slot(addr);
+    if (s->state == GM_HB_EMPTY) gm_hb_used++;
+    s->addr = addr;
+    s->size = size;
+    s->state = GM_HB_LIVE;
+}
+
+GM_API void *gm_heap_alloc(size_t size, size_t align) {
+    if (align == 0) align = 1;
+#ifdef __FILC__
+    /* Under Fil-C a block is an allocation of its own, so the capability of the pointer
+       covers exactly the block, and freeing it revokes every pointer into it. */
+    /* Fil-C stops the program on a request larger than it can ever serve; no address
+       space holds 2^47 bytes, so such a request fails like any other. */
+    if ((uint64_t)size >= ((uint64_t)1 << 47)) return NULL;
+    uint8_t *p = (uint8_t *)zgc_aligned_alloc(align, size);
+    if (p == NULL) return NULL;
+    uintptr_t a = (uintptr_t)p;
+#else
+    if (size > SIZE_MAX - align - sizeof(void *)) return NULL;
+    uint8_t *raw = (uint8_t *)malloc(size + align + sizeof(void *));
+    if (raw == NULL) return NULL;
+    uintptr_t a = ((uintptr_t)raw + sizeof(void *) + (align - 1)) & ~(uintptr_t)(align - 1);
+    uint8_t *p = raw + (a - (uintptr_t)raw);
+    memcpy(p - sizeof(void *), &raw, sizeof raw);
+#endif
+    if (gm_debug != 0) {
+        memset(p, 0xAA, size);
+        gm_rt_acquire();
+        gm_hb_record(a, size);
+        gm_rt_release();
+    }
+    return p;
+}
+
+static void gm_heap_release(void *p) {
+#ifdef __FILC__
+    free(p);
+#else
+    uint8_t *raw;
+    memcpy(&raw, (uint8_t *)p - sizeof(void *), sizeof raw);
+    free(raw);
+#endif
+}
+
+/* ---- allocation tags (Debug builds, §18.3) ---------------------------------------------- */
+
+typedef struct { void *p, *owner, *vt; char *site; } gm_atag;
+static gm_atag *gm_atags;      /* open addressing; p == NULL is empty, p == 1 a deleted entry */
+static size_t gm_atag_cap, gm_atag_used;
+
+static size_t gm_atag_slot(void *p) {
+    uintptr_t h = (uintptr_t)p * (uintptr_t)0x9E3779B97F4A7C15ull;
+    return (size_t)(h >> 7) & (gm_atag_cap - 1);
+}
+
+static char *gm_site_str(const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+    char *s = (char *)malloc(flen + 32);
+    if (s == NULL) gm_trap("out of memory", NULL, 0, 0);
+    memcpy(s, file, flen);
+    snprintf(s + flen, 32, ":%u:%u", (unsigned)line, (unsigned)col);
+    return s;
+}
+
+static void gm_atag_grow(void) {
+    gm_atag *old = gm_atags;
+    size_t old_cap = gm_atag_cap;
+    gm_atag_cap = old_cap ? old_cap * 2 : 256;
+    gm_atags = (gm_atag *)calloc(gm_atag_cap, sizeof(gm_atag));
+    if (gm_atags == NULL) gm_trap("out of memory", NULL, 0, 0);
+    gm_atag_used = 0;
+    for (size_t i = 0; i < old_cap; i++) {
+        if ((uintptr_t)old[i].p > 1) {
+            size_t j = gm_atag_slot(old[i].p);
+            while (gm_atags[j].p != NULL) j = (j + 1) & (gm_atag_cap - 1);
+            gm_atags[j] = old[i];
+            gm_atag_used++;
+        }
+    }
+    free(old);
+}
+
+/* The slot holding p, or NULL. */
+static gm_atag *gm_atag_find(void *p) {
+    if (gm_atag_cap == 0) return NULL;
+    for (size_t j = gm_atag_slot(p);; j = (j + 1) & (gm_atag_cap - 1)) {
+        if (gm_atags[j].p == NULL) return NULL;
+        if (gm_atags[j].p == p) return &gm_atags[j];
+    }
+}
+
+GM_API void gm_alloc_tag(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col) {
+    char *site = gm_site_str(file, flen, line, col);
+    gm_rt_acquire();
+    gm_atag *t = gm_atag_find(p);
+    if (t == NULL) {
+        if (2 * (gm_atag_used + 1) > gm_atag_cap) gm_atag_grow();
+        size_t j = gm_atag_slot(p);
+        while ((uintptr_t)gm_atags[j].p > 1) j = (j + 1) & (gm_atag_cap - 1);
+        t = &gm_atags[j];
+        if (t->p == NULL) gm_atag_used++;
+    } else {
+        free(t->site);
+    }
+    *t = (gm_atag){p, owner, vt, site};
+    gm_rt_release();
+}
+
+GM_API void gm_alloc_check(void *p, void *owner, void *vt, const uint8_t *file, size_t flen, uint32_t line, uint32_t col,
+                           const char *tfile, uint32_t tline, uint32_t tcol) {
+    gm_rt_acquire();
+    gm_atag *t = gm_atag_find(p);
+    if (t == NULL) {
+        gm_rt_release();
+        return;
+    }
+    if (t->owner != owner || t->vt != vt) {
+        char *at = gm_site_str(file, flen, line, col);
+        char msg[1024];
+        snprintf(msg, sizeof msg, "memory allocated at %s is freed at %s through a different allocator", t->site, at);
+        gm_rt_release();
+        gm_trap(msg, tfile, tline, tcol);
+    }
+    free(t->site);
+    *t = (gm_atag){(void *)1, NULL, NULL, NULL};
+    gm_rt_release();
+}
+
+GM_API void gm_heap_free(void *p, size_t size, size_t align, const char *file, uint32_t line, uint32_t col) {
+    (void)align;
+    if (gm_debug == 0) {
+        if (p != NULL) gm_heap_release(p);
+        return;
+    }
+    char msg[160];
+    gm_rt_acquire();
+    gm_hblock *b = gm_hb_find((uintptr_t)p);
+    if (b != NULL && b->state == GM_HB_FREED) {
+        snprintf(msg, sizeof msg, "double free of heap block 0x%llx", (unsigned long long)(uintptr_t)p);
+        gm_rt_release();
+        gm_trap(msg, file, line, col);
+    }
+    if (b != NULL && b->size != size) {
+        snprintf(msg, sizeof msg, "invalid free of 0x%llx: the heap block there has %llu bytes, not %llu",
+                 (unsigned long long)(uintptr_t)p, (unsigned long long)b->size, (unsigned long long)size);
+        gm_rt_release();
+        gm_trap(msg, file, line, col);
+    }
+    if (b == NULL) {
+        snprintf(msg, sizeof msg, "invalid free of 0x%llx: not the start of a live heap block of %llu bytes",
+                 (unsigned long long)(uintptr_t)p, (unsigned long long)size);
+        gm_rt_release();
+        gm_trap(msg, file, line, col);
+    }
+    b->state = GM_HB_FREED;
+    gm_rt_release();
+    memset(p, 0xDD, size);
+    gm_heap_release(p);
+}
+
+#endif /* GM_FREESTANDING */
+
+#ifndef GM_FREESTANDING
+#ifdef GM_WASI
+/* ---- threads ---------------------------------------------------------------------------- */
+
+/* WASI has one thread, whose stack the linker sets up, as large as GM_MAIN_STACK_SIZE
+ * elsewhere. A program that switches fibers runs its entry under the fiber driver
+ * (gm_wasi_drive), which the context switch needs at the bottom of the stack. */
+static int gm_wasi_drive(int (*f)(gm_node *), gm_node *cx);
+
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) { return gm_finish_main(f(cx)); }
+GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx) { return gm_finish_main(gm_wasi_drive(f, cx)); }
+
+GM_API int64_t gm_thread_spawn(void *f, void *arg) {
+    (void)f; (void)arg;
+    return gm_io_error(ENOTSUP);
+}
+/* No thread can have been spawned, so there is none to join or detach. */
+GM_API int64_t gm_thread_join(int64_t h) { (void)h; return gm_io_error(EINVAL); }
+GM_API int64_t gm_thread_detach(int64_t h) { (void)h; return gm_io_error(EINVAL); }
+GM_API void gm_thread_yield(void) {}
+
+/* No other thread can change the word: a wait with a timeout sleeps it out, and one without
+ * returns at once (a spurious wake-up, which callers allow for). */
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    if (timeout_ns > 0 && __atomic_load_n(addr, __ATOMIC_ACQUIRE) == expected) gm_clock_sleep((uint64_t)timeout_ns);
+    return 0;
+}
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    (void)addr; (void)n;
+    return 0;
+}
+GM_API uint32_t gm_cpu_count(void) { return 1; }
+#elif !defined(_WIN32)
+/* ---- threads ---------------------------------------------------------------------------- */
+
+/* `detached` and `finished` are guarded by gm_rt_lock: whichever of the thread's end and
+ * the call to detach it comes second frees the record. */
+typedef struct { pthread_t t; void (*f)(void *); void *arg; int detached, finished; } gm_thread;
+
+/* The stack size of the threads the runtime starts. */
+#define GM_THREAD_STACK_SIZE ((size_t)8 << 20)
+
+static void *gm_thread_main(void *p) {
+    gm_thread_stack();
+    gm_thread *t = (gm_thread *)p;
+    t->f(t->arg);
+    pthread_mutex_lock(&gm_rt_lock);
+    if (t->detached) {
+        pthread_mutex_unlock(&gm_rt_lock);
+        free(t);
+    } else {
+        t->finished = 1;
+        pthread_mutex_unlock(&gm_rt_lock);
+    }
+    return NULL;
+}
+
+/* The stack of the thread that runs the program's entry function: larger than a
+ * typical process default, so deep recursion behaves alike on every host. */
+#define GM_MAIN_STACK_SIZE ((size_t)64 << 20)
+
+typedef struct { int (*f)(gm_node *); gm_node *cx; int status; } gm_main_call;
+
+static void *gm_main_thread(void *p) {
+    gm_thread_stack();
+    gm_main_call *c = (gm_main_call *)p;
+    c->status = c->f(c->cx);
+    return NULL;
+}
+
+/* Runs entry `f` under context `cx` on a thread of its own and returns its status;
+ * on the calling thread if no such thread can be started. */
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
+    gm_main_call c = {f, cx, 0};
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, GM_MAIN_STACK_SIZE);
+    pthread_t t;
+    int r = pthread_create(&t, &attr, gm_main_thread, &c);
+    pthread_attr_destroy(&attr);
+    if (r != 0) return gm_finish_main(f(cx));
+    pthread_join(t, NULL);
+    return gm_finish_main(c.status);
+}
+
+/* A thread's handle names it in this table (see gm_table), rather than being its address: a
+ * pointer turned into an integer and back loses its capability under Fil-C. */
+static gm_table gm_threads;
+
+GM_API int64_t gm_thread_spawn(void *f, void *arg) {
+    gm_thread *t = (gm_thread *)malloc(sizeof *t);
+    if (t == NULL) return gm_io_error(ENOMEM);
+    t->f = (void (*)(void *))f;
+    t->arg = arg;
+    t->detached = t->finished = 0;
+    int64_t h = gm_table_add(&gm_threads, t);
+    if (h == 0) {
+        free(t);
+        return gm_io_error(ENOMEM);
+    }
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, GM_THREAD_STACK_SIZE);
+    int r = pthread_create(&t->t, &attr, gm_thread_main, t);
+    pthread_attr_destroy(&attr);
+    if (r != 0) {
+        gm_rt_acquire();
+        gm_table_take(&gm_threads, h);
+        gm_rt_release();
+        free(t);
+        return gm_io_error(r);
+    }
+    return h;
+}
+
+/* Takes the thread of handle h out of the table; NULL if h is not the handle of a live thread. */
+static gm_thread *gm_thread_take(int64_t h) {
+    gm_rt_acquire();
+    gm_thread *t = (gm_thread *)gm_table_take(&gm_threads, h);
+    gm_rt_release();
+    return t;
+}
+
+GM_API int64_t gm_thread_join(int64_t h) {
+    gm_flush();
+    gm_thread *t = gm_thread_take(h);
+    if (t == NULL) return gm_io_error(EBADF);
+    int r = pthread_join(t->t, NULL);
+    free(t);
+    return r == 0 ? 0 : gm_io_error(r);
+}
+
+GM_API int64_t gm_thread_detach(int64_t h) {
+    pthread_mutex_lock(&gm_rt_lock);
+    gm_thread *t = (gm_thread *)gm_table_take(&gm_threads, h);
+    if (t == NULL) {
+        pthread_mutex_unlock(&gm_rt_lock);
+        return gm_io_error(EBADF);
+    }
+    int done = t->finished;
+    pthread_t tid = t->t;
+    t->detached = 1;
+    pthread_mutex_unlock(&gm_rt_lock);
+    int r = pthread_detach(tid);
+    if (done) free(t);
+    return r == 0 ? 0 : gm_io_error(r);
+}
+
+GM_API void gm_thread_yield(void) { sched_yield(); }
+
+#if defined(__linux__) && defined(SYS_futex) && !defined(__FILC__)
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    gm_flush();
+    struct timespec ts, *tp = NULL;
+    if (timeout_ns >= 0) {
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000);
+        tp = &ts;
+    }
+    /* FUTEX_WAIT_PRIVATE */
+    long r = syscall(SYS_futex, addr, 128, expected, tp, NULL, 0);
+    if (r != 0 && errno != EAGAIN && errno != ETIMEDOUT && errno != EINTR) return gm_io_error(errno);
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    /* FUTEX_WAKE_PRIVATE */
+    syscall(SYS_futex, addr, 129, n > 0x7fffffffu ? 0x7fffffff : (int)n, NULL, NULL, 0);
+    return 0;
+}
+#elif defined(__APPLE__)
+extern int __ulock_wait(uint32_t op, void *addr, uint64_t value, uint32_t timeout_us);
+extern int __ulock_wake(uint32_t op, void *addr, uint64_t wake_value);
+
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    gm_flush();
+    uint64_t us = timeout_ns < 0 ? 0 : (uint64_t)timeout_ns / 1000 + 1;
+    if (us > 0xffffffffu) us = 0xffffffffu;
+    /* UL_COMPARE_AND_WAIT; a timeout of 0 means forever */
+    __ulock_wait(1, addr, expected, (uint32_t)us);
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    /* UL_COMPARE_AND_WAIT | ULF_WAKE_ALL: one wake-up per call is not offered */
+    (void)n;
+    __ulock_wake(1 | 0x100, addr, 0);
+    return 0;
+}
+#else
+/* No futex: poll the word, sleeping a little between looks. */
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    gm_flush();
+    int64_t waited = 0;
+    while (__atomic_load_n(addr, __ATOMIC_ACQUIRE) == expected) {
+        if (timeout_ns >= 0 && waited >= timeout_ns) break;
+        struct timespec t = {0, 50000};
+        nanosleep(&t, NULL);
+        waited += 50000;
+        if (waited >= 1000000) break; /* wake up spuriously now and then */
+    }
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    (void)addr;
+    (void)n;
+    return 0;
+}
+#endif
+
+GM_API uint32_t gm_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n < 1 ? 1 : (uint32_t)n;
+}
+#else
+/* Windows: threads from _beginthreadex, the futex from WaitOnAddress. */
+
+/* `detached` and `finished` are guarded by gm_rt_lock, as on other systems. */
+typedef struct { HANDLE t; void (*f)(void *); void *arg; int detached, finished; } gm_thread;
+
+/* The stack size of the threads the runtime starts (address space only: the pages are
+ * committed as the stack grows). */
+#define GM_THREAD_STACK_SIZE ((size_t)8 << 20)
+
+static unsigned __stdcall gm_thread_main(void *p) {
+    gm_thread_stack();
+    gm_thread *t = (gm_thread *)p;
+    t->f(t->arg);
+    gm_rt_acquire();
+    if (t->detached) {
+        gm_rt_release();
+        free(t);
+    } else {
+        t->finished = 1;
+        gm_rt_release();
+    }
+    return 0;
+}
+
+/* The stack of the thread that runs the program's entry function: larger than a
+ * typical process default, so deep recursion behaves alike on every host. */
+#define GM_MAIN_STACK_SIZE ((size_t)64 << 20)
+
+typedef struct { int (*f)(gm_node *); gm_node *cx; int status; } gm_main_call;
+
+static unsigned __stdcall gm_main_thread(void *p) {
+    gm_thread_stack();
+    gm_main_call *c = (gm_main_call *)p;
+    c->status = c->f(c->cx);
+    return 0;
+}
+
+/* Runs entry `f` under context `cx` on a thread of its own and returns its status;
+ * on the calling thread if no such thread can be started. */
+GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) {
+    /* Standard streams carry bytes: no newline translation, no end-of-file character. */
+    _setmode(0, _O_BINARY);
+    _setmode(1, _O_BINARY);
+    _setmode(2, _O_BINARY);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    DWORD mode;
+    if (GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode)) SetConsoleOutputCP(CP_UTF8);
+    gm_main_call c = {f, cx, 0};
+    uintptr_t h = _beginthreadex(NULL, (unsigned)GM_MAIN_STACK_SIZE, gm_main_thread, &c,
+                                 STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (h == 0) return gm_finish_main(f(cx));
+    WaitForSingleObject((HANDLE)h, INFINITE);
+    CloseHandle((HANDLE)h);
+    return gm_finish_main(c.status);
+}
+
+/* A thread's handle names it in this table (see gm_table). */
+static gm_table gm_threads;
+
+GM_API int64_t gm_thread_spawn(void *f, void *arg) {
+    gm_thread *t = (gm_thread *)malloc(sizeof *t);
+    if (t == NULL) return gm_io_error(ENOMEM);
+    t->f = (void (*)(void *))f;
+    t->arg = arg;
+    t->detached = t->finished = 0;
+    int64_t h = gm_table_add(&gm_threads, t);
+    if (h == 0) {
+        free(t);
+        return gm_io_error(ENOMEM);
+    }
+    uintptr_t th = _beginthreadex(NULL, (unsigned)GM_THREAD_STACK_SIZE, gm_thread_main, t,
+                                  STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (th == 0) {
+        int e = errno;
+        gm_rt_acquire();
+        gm_table_take(&gm_threads, h);
+        gm_rt_release();
+        free(t);
+        return gm_io_error(e);
+    }
+    t->t = (HANDLE)th;
+    return h;
+}
+
+/* Takes the thread of handle h out of the table; NULL if h is not the handle of a live thread. */
+static gm_thread *gm_thread_take(int64_t h) {
+    gm_rt_acquire();
+    gm_thread *t = (gm_thread *)gm_table_take(&gm_threads, h);
+    gm_rt_release();
+    return t;
+}
+
+GM_API int64_t gm_thread_join(int64_t h) {
+    gm_flush();
+    gm_thread *t = gm_thread_take(h);
+    if (t == NULL) return gm_io_error(EBADF);
+    WaitForSingleObject(t->t, INFINITE);
+    CloseHandle(t->t);
+    free(t);
+    return 0;
+}
+
+GM_API int64_t gm_thread_detach(int64_t h) {
+    gm_rt_acquire();
+    gm_thread *t = (gm_thread *)gm_table_take(&gm_threads, h);
+    if (t == NULL) {
+        gm_rt_release();
+        return gm_io_error(EBADF);
+    }
+    int done = t->finished;
+    t->detached = 1;
+    HANDLE th = t->t;
+    gm_rt_release();
+    /* Closing the handle does not stop the thread; it only gives up the right to join it. */
+    CloseHandle(th);
+    if (done) free(t);
+    return 0;
+}
+
+GM_API void gm_thread_yield(void) { SwitchToThread(); }
+
+GM_API int64_t gm_futex_wait(uint32_t *addr, uint32_t expected, int64_t timeout_ns) {
+    DWORD ms = INFINITE;
+    if (timeout_ns >= 0) {
+        int64_t m = timeout_ns / 1000000 + (timeout_ns % 1000000 != 0);
+        ms = m >= (int64_t)INFINITE ? INFINITE - 1 : (DWORD)m;
+    }
+    WaitOnAddress((volatile VOID *)addr, &expected, sizeof expected, ms);
+    return 0;
+}
+
+GM_API int64_t gm_futex_wake(uint32_t *addr, uint32_t n) {
+    if (n == 1) WakeByAddressSingle((PVOID)addr);
+    else if (n > 64) WakeByAddressAll((PVOID)addr);
+    else for (uint32_t i = 0; i < n; i++) WakeByAddressSingle((PVOID)addr);
+    return 0;
+}
+
+GM_API uint32_t gm_cpu_count(void) {
+    DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return n < 1 ? 1 : (uint32_t)n;
+}
+#endif
+
+GM_API void gm_sys_write(int32_t fd, const void *p, size_t n) {
+    if (fd == 2) gm_write_err((const uint8_t *)p, n);
+    else gm_write_out((const uint8_t *)p, n);
+}
+
+#ifndef GM_WASI
+GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx) { return gm_run_main(f, cx); }
+#endif
+
+#endif /* GM_FREESTANDING */
+
+/* ---- handler contexts and non-local exits ---------------------------------------------- */
+
+GM_API gm_node *gm_find_outer(gm_node *cx, uint32_t eff) {
+    for (; cx; cx = cx->next) {
+        if (cx->eff == eff) return cx;
+    }
+    return NULL;
+}
+
+/* Whether `target` is the function lexically containing the code of frame `fr`. */
+static bool gm_lexically_same(gm_frame *fr, gm_frame *target) {
+    for (;;) {
+        if (fr == target) return true;
+        if (!fr->clause_lit || !fr->up) return false;
+        fr = fr->up;
+    }
+}
+
+GM_API bool gm_errdefer_runs(gm_frame *fr) {
+    switch (gm_unw.kind) {
+    case GM_RETURN: return gm_lexically_same(fr, gm_unw.frame) ? gm_unw.is_err : true;
+    case GM_BREAK: case GM_CONTINUE: return !gm_lexically_same(fr, gm_unw.frame);
+    case GM_EXIT: case GM_CANCEL: return true;
+    default: return false;
+    }
+}
+
+/* ---- context switching ------------------------------------------------------------------
+ *
+ * gm_rt_switch(&save, to, arg) saves the callee-saved registers on the current stack, stores
+ * the stack pointer in `save`, loads `to` as the stack pointer, restores the registers saved
+ * there and returns into that context. A new fiber's stack is prepared so that the switch
+ * "returns" into gm_rt_fiber_tramp, which calls gm_fiber_entry(fiber).
+ * gm_ctx_init(top, len, fiber) prepares that context on the `len` bytes of stack that end
+ * at `top`.
+ */
+
+static void gm_fiber_entry(gm_fiber *fb);
+
+#if defined(__FILC__)
+/* Fil-C compiles no assembly that switches stacks; it provides ucontext instead, and
+ * runs each context on a stack it allocates itself (the stack given to makecontext only
+ * tells its size). A saved context is then a gm_filc_ctx: a ucontext and the fiber it
+ * starts. Fil-C saves only into the context that is running (or a new one), so each
+ * execution keeps one context object, `gm_filc_running` while it runs. */
+#include <ucontext.h>
+typedef struct { ucontext_t uc; gm_fiber *fb; } gm_filc_ctx;
+static GM_TLS gm_fiber *gm_filc_starting;
+/* The context running now; NULL on the thread's own stack before its first switch. */
+static GM_TLS gm_filc_ctx *gm_filc_running;
+
+static void gm_filc_entry(void) { gm_fiber_entry(gm_filc_starting); }
+
+static void *gm_rt_switch(void **save, void *to, void *arg) {
+    gm_filc_ctx *me = gm_filc_running;
+    if (me == NULL) {
+        me = (gm_filc_ctx *)calloc(1, sizeof *me);
+        if (me == NULL) gm_trap("out of memory switching fibers", NULL, 0, 0);
+    }
+    *save = me;
+    gm_filc_ctx *t = (gm_filc_ctx *)to;
+    gm_filc_starting = t->fb;
+    gm_filc_running = t;
+    swapcontext(&me->uc, &t->uc);
+    gm_filc_running = me;
+    return arg;
+}
+
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)top;
+    gm_filc_ctx *c = (gm_filc_ctx *)calloc(1, sizeof *c);
+    if (c == NULL || getcontext(&c->uc) != 0) gm_trap("out of memory creating a fiber", NULL, 0, 0);
+    c->fb = fb;
+    c->uc.uc_stack.ss_sp = c;
+    c->uc.uc_stack.ss_size = len;
+    c->uc.uc_link = NULL;
+    makecontext(&c->uc, gm_filc_entry, 0);
+    return c;
+}
+#elif defined(GM_WASI)
+/* WebAssembly cannot switch stacks: its call stack is out of the program's reach. The
+ * compiler therefore runs Binaryen's Asyncify transformation over a WASI module that
+ * switches (one that calls the asyncify.* imports below), which makes every function that
+ * may be on the stack during a switch able to save its state and return ("unwind"), and
+ * to be called again and resume from that state ("rewind").
+ *
+ * A context is the C (shadow) stack of the program or of a fiber, which stays where it is
+ * in linear memory, plus the state Asyncify saves for its frames. gm_wasi_drive, at the
+ * bottom of the real call stack, runs one context at a time. gm_rt_switch saves the
+ * shadow stack pointer and starts an unwind, which returns through every frame of the
+ * running context to gm_wasi_drive. That then rewinds the context switched to by calling
+ * the function at its base again (the program's entry, or gm_fiber_entry), which returns
+ * into the gm_rt_switch call that suspended it; a new fiber's context is simply started.
+ *
+ * The saved state of a context goes onto its own stack, below the frames: the memory
+ * between the bottom of the stack and the stack pointer is unused while it is suspended.
+ * Functions that start or stop an unwind or a rewind are not transformed, so gm_rt_switch
+ * and gm_wasi_drive must not be inlined into other code, nor other code into them. */
+__attribute__((import_module("asyncify"), import_name("start_unwind"))) void gm_asyncify_start_unwind(void *data);
+__attribute__((import_module("asyncify"), import_name("stop_unwind"))) void gm_asyncify_stop_unwind(void);
+__attribute__((import_module("asyncify"), import_name("start_rewind"))) void gm_asyncify_start_rewind(void *data);
+__attribute__((import_module("asyncify"), import_name("stop_rewind"))) void gm_asyncify_stop_rewind(void);
+/* The bounds of the module's own stack, from the linker. */
+extern char __stack_low, __stack_high;
+
+typedef struct {
+    uintptr_t cur, end;   /* Asyncify's data: where its saved state goes; must come first */
+    uintptr_t sp;         /* the shadow stack pointer while it is suspended or before it starts */
+    uintptr_t low;        /* the bottom of its stack */
+    gm_fiber *fb;         /* the fiber it runs (NULL: the program's entry) */
+    int suspended;        /* unwound; it is continued by rewinding */
+} gm_wasi_ctx;
+
+static gm_wasi_ctx gm_wasi_main_ctx;
+static gm_wasi_ctx *gm_wasi_running, *gm_wasi_next;
+static void *gm_wasi_arg;
+static int gm_wasi_rewinding;
+
+__attribute__((noinline)) static uintptr_t gm_wasi_get_sp(void) {
+    uintptr_t sp;
+    __asm__ volatile("global.get __stack_pointer\n\tlocal.set %0" : "=r"(sp));
+    return sp;
+}
+
+__attribute__((noinline)) static void gm_wasi_set_sp(uintptr_t sp) {
+    __asm__ volatile("local.get %0\n\tglobal.set __stack_pointer" : : "r"(sp));
+}
+
+/* Called through pointers, so that the C compiler cannot inline them into gm_wasi_drive. */
+static void (*volatile gm_wasi_fiber_entry)(gm_fiber *) = gm_fiber_entry;
+static int (*volatile gm_wasi_entry)(gm_node *);
+
+__attribute__((noinline)) static void *gm_rt_switch(void **save, void *to, void *arg) {
+    if (gm_wasi_rewinding) {
+        /* The rewind of the context that called this has arrived back here. */
+        gm_wasi_rewinding = 0;
+        gm_asyncify_stop_rewind();
+        return gm_wasi_arg;
+    }
+    gm_wasi_ctx *me = gm_wasi_running;
+    *save = me;
+    me->sp = gm_wasi_get_sp();
+    me->cur = (me->low + 15) & ~(uintptr_t)15;
+    /* Room for Asyncify's state; it checks the end only when the unwind is over, so the
+     * driver checks it with the real end itself (see gm_wasi_drive). */
+    me->end = UINTPTR_MAX & ~(uintptr_t)15;
+    me->suspended = 1;
+    gm_wasi_next = (gm_wasi_ctx *)to;
+    gm_wasi_arg = arg;
+    gm_asyncify_start_unwind(me);
+    return NULL;
+}
+
+__attribute__((noinline)) static int gm_wasi_drive(int (*f)(gm_node *), gm_node *cx) {
+    uintptr_t base = gm_wasi_get_sp();
+    gm_wasi_entry = f;
+    gm_wasi_main_ctx.low = (uintptr_t)&__stack_low;
+    gm_wasi_main_ctx.sp = base;
+    gm_wasi_ctx *c = &gm_wasi_main_ctx;
+    for (;;) {
+        gm_wasi_running = c;
+        gm_wasi_set_sp(c->sp);
+        if (c->suspended) {
+            c->suspended = 0;
+            gm_wasi_rewinding = 1;
+            gm_asyncify_start_rewind(c);
+        }
+        int status = 0;
+        if (c->fb == NULL) status = gm_wasi_entry(cx);
+        else gm_wasi_fiber_entry(c->fb);
+        gm_wasi_set_sp(base);
+        if (gm_wasi_next == NULL) return status;   /* the entry returned */
+        /* The saved state must have stayed below the frames it describes. */
+        if (c->cur > c->sp) {
+            gm_asyncify_stop_unwind();
+            gm_stack_overflow();
+        }
+        gm_asyncify_stop_unwind();
+        c = gm_wasi_next;
+        gm_wasi_next = NULL;
+    }
+}
+
+/* A fiber's context sits at the top of its stack, and its frames start below it. */
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    gm_wasi_ctx *c = (gm_wasi_ctx *)((top - sizeof(gm_wasi_ctx)) & ~(uintptr_t)15);
+    memset(c, 0, sizeof *c);
+    c->low = top - len;
+    c->sp = (uintptr_t)c;
+    c->fb = fb;
+    return c;
+}
+#elif defined(__x86_64__) && defined(_WIN32)
+/* The Win64 convention: arguments in rcx, rdx, r8; callee-saved are rbx, rbp, rdi, rsi,
+ * r12-r15 and xmm6-xmm15. A context also holds the stack bounds in the thread information
+ * block (StackBase, StackLimit, DeallocationStack at gs:0x08, 0x10, 0x1478), which the
+ * system consults when it dispatches an exception: they describe the running stack. The
+ * saved context is 192 bytes (xmm6-15 at 0, the three bounds at 160) below the eight
+ * saved registers and the return address. */
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    pushq %rbp\n"
+    "    pushq %rbx\n"
+    "    pushq %rdi\n"
+    "    pushq %rsi\n"
+    "    pushq %r12\n"
+    "    pushq %r13\n"
+    "    pushq %r14\n"
+    "    pushq %r15\n"
+    "    subq $192, %rsp\n"
+    "    movups %xmm6, 0(%rsp)\n"
+    "    movups %xmm7, 16(%rsp)\n"
+    "    movups %xmm8, 32(%rsp)\n"
+    "    movups %xmm9, 48(%rsp)\n"
+    "    movups %xmm10, 64(%rsp)\n"
+    "    movups %xmm11, 80(%rsp)\n"
+    "    movups %xmm12, 96(%rsp)\n"
+    "    movups %xmm13, 112(%rsp)\n"
+    "    movups %xmm14, 128(%rsp)\n"
+    "    movups %xmm15, 144(%rsp)\n"
+    "    movq %gs:0x08, %r10\n"
+    "    movq %r10, 160(%rsp)\n"
+    "    movq %gs:0x10, %r10\n"
+    "    movq %r10, 168(%rsp)\n"
+    "    movq %gs:0x1478, %r10\n"
+    "    movq %r10, 176(%rsp)\n"
+    "    movq %rsp, (%rcx)\n"
+    "    movq %rdx, %rsp\n"
+    "    movq 160(%rsp), %r10\n"
+    "    movq %r10, %gs:0x08\n"
+    "    movq 168(%rsp), %r10\n"
+    "    movq %r10, %gs:0x10\n"
+    "    movq 176(%rsp), %r10\n"
+    "    movq %r10, %gs:0x1478\n"
+    "    movups 0(%rsp), %xmm6\n"
+    "    movups 16(%rsp), %xmm7\n"
+    "    movups 32(%rsp), %xmm8\n"
+    "    movups 48(%rsp), %xmm9\n"
+    "    movups 64(%rsp), %xmm10\n"
+    "    movups 80(%rsp), %xmm11\n"
+    "    movups 96(%rsp), %xmm12\n"
+    "    movups 112(%rsp), %xmm13\n"
+    "    movups 128(%rsp), %xmm14\n"
+    "    movups 144(%rsp), %xmm15\n"
+    "    addq $192, %rsp\n"
+    "    popq %r15\n"
+    "    popq %r14\n"
+    "    popq %r13\n"
+    "    popq %r12\n"
+    "    popq %rsi\n"
+    "    popq %rdi\n"
+    "    popq %rbx\n"
+    "    popq %rbp\n"
+    "    movq %r8, %rax\n"
+    "    ret\n"
+    ".p2align 4\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    movq %r12, %rcx\n"
+    "    subq $32, %rsp\n"
+    "    callq *%r13\n"
+    "    ud2\n");
+
+/* The initial context of a fiber whose stack ends at `top` (16-byte aligned) and spans
+ * `len` bytes. After the switch "returns" into the trampoline, rsp is 16 bytes below top. */
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    void **sp = (void **)(top - 280);
+    memset(sp, 0, 264);
+    sp[20] = (void *)top;                 /* StackBase */
+    sp[21] = (void *)(top - len);         /* StackLimit */
+    sp[22] = (void *)(top - len);         /* DeallocationStack */
+    sp[24 + 2] = (void *)gm_fiber_entry;  /* r13 */
+    sp[24 + 3] = fb;                      /* r12 */
+    sp[24 + 8] = (void *)gm_rt_fiber_tramp;
+    return sp;
+}
+#elif defined(__x86_64__)
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    pushq %rbp\n"
+    "    pushq %rbx\n"
+    "    pushq %r12\n"
+    "    pushq %r13\n"
+    "    pushq %r14\n"
+    "    pushq %r15\n"
+    "    movq %rsp, (%rdi)\n"
+    "    movq %rsi, %rsp\n"
+    "    popq %r15\n"
+    "    popq %r14\n"
+    "    popq %r13\n"
+    "    popq %r12\n"
+    "    popq %rbx\n"
+    "    popq %rbp\n"
+    "    movq %rdx, %rax\n"
+    "    ret\n"
+    ".p2align 4\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    movq %r12, %rdi\n"
+    "    callq *%r13\n"
+    "    ud2\n");
+
+/* The initial context of a fiber whose stack ends at `top` (16-byte aligned). */
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)len;
+    void **sp = (void **)(top - 72);
+    sp[0] = NULL;                       /* r15 */
+    sp[1] = NULL;                       /* r14 */
+    sp[2] = (void *)gm_fiber_entry;     /* r13 */
+    sp[3] = fb;                         /* r12 */
+    sp[4] = NULL;                       /* rbx */
+    sp[5] = NULL;                       /* rbp */
+    sp[6] = (void *)gm_rt_fiber_tramp;  /* return address */
+    return sp;
+}
+#elif defined(__aarch64__)
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    sub sp, sp, #160\n"
+    "    stp x19, x20, [sp, #0]\n"
+    "    stp x21, x22, [sp, #16]\n"
+    "    stp x23, x24, [sp, #32]\n"
+    "    stp x25, x26, [sp, #48]\n"
+    "    stp x27, x28, [sp, #64]\n"
+    "    stp x29, x30, [sp, #80]\n"
+    "    stp d8, d9, [sp, #96]\n"
+    "    stp d10, d11, [sp, #112]\n"
+    "    stp d12, d13, [sp, #128]\n"
+    "    stp d14, d15, [sp, #144]\n"
+    "    mov x9, sp\n"
+    "    str x9, [x0]\n"
+    "    mov sp, x1\n"
+    "    ldp x19, x20, [sp, #0]\n"
+    "    ldp x21, x22, [sp, #16]\n"
+    "    ldp x23, x24, [sp, #32]\n"
+    "    ldp x25, x26, [sp, #48]\n"
+    "    ldp x27, x28, [sp, #64]\n"
+    "    ldp x29, x30, [sp, #80]\n"
+    "    ldp d8, d9, [sp, #96]\n"
+    "    ldp d10, d11, [sp, #112]\n"
+    "    ldp d12, d13, [sp, #128]\n"
+    "    ldp d14, d15, [sp, #144]\n"
+    "    add sp, sp, #160\n"
+    "    mov x0, x2\n"
+    "    ret\n"
+    ".p2align 4\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    mov x0, x19\n"
+    "    blr x20\n"
+    "    brk #0\n");
+
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)len;
+    void **sp = (void **)(top - 160);
+    memset(sp, 0, 160);
+    sp[0] = fb;                         /* x19 */
+    sp[1] = (void *)gm_fiber_entry;     /* x20 */
+    sp[11] = (void *)gm_rt_fiber_tramp; /* x30 */
+    return sp;
+}
+#elif defined(__s390x__)
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+/* The saved context is 144 bytes: r6-r14 at 0, f8-f15 at 72. */
+__asm__(
+    ".text\n"
+    ".align 8\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    aghi %r15, -144\n"
+    "    stmg %r6, %r14, 0(%r15)\n"
+    "    std %f8, 72(%r15)\n"
+    "    std %f9, 80(%r15)\n"
+    "    std %f10, 88(%r15)\n"
+    "    std %f11, 96(%r15)\n"
+    "    std %f12, 104(%r15)\n"
+    "    std %f13, 112(%r15)\n"
+    "    std %f14, 120(%r15)\n"
+    "    std %f15, 128(%r15)\n"
+    "    stg %r15, 0(%r2)\n"
+    "    lgr %r15, %r3\n"
+    "    lmg %r6, %r14, 0(%r15)\n"
+    "    ld %f8, 72(%r15)\n"
+    "    ld %f9, 80(%r15)\n"
+    "    ld %f10, 88(%r15)\n"
+    "    ld %f11, 96(%r15)\n"
+    "    ld %f12, 104(%r15)\n"
+    "    ld %f13, 112(%r15)\n"
+    "    ld %f14, 120(%r15)\n"
+    "    ld %f15, 128(%r15)\n"
+    "    aghi %r15, 144\n"
+    "    lgr %r2, %r4\n"
+    "    br %r14\n"
+    ".align 8\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    lgr %r2, %r6\n"
+    "    basr %r14, %r7\n"
+    "    .short 0\n");
+
+/* The initial context of a fiber whose stack ends at `top`: the 144 saved bytes, and above
+ * them the 160-byte register save area the entry function's frame sits on. */
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)len;
+    void **sp = (void **)(top - 144 - 160);
+    memset(sp, 0, 144);
+    sp[0] = fb;                         /* r6 */
+    sp[1] = (void *)gm_fiber_entry;     /* r7 */
+    sp[8] = (void *)gm_rt_fiber_tramp;  /* r14 */
+    return sp;
+}
+#else
+static void *gm_rt_switch(void **save, void *to, void *arg) {
+    (void)save; (void)to; (void)arg;
+    gm_trap("fibers are not supported on this architecture", NULL, 0, 0);
+}
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    (void)top; (void)len; (void)fb;
+    return NULL;
+}
+#endif
+
+/* ---- fibers ---------------------------------------------------------------------------- */
+
+static GM_TLS gm_fiber *gm_fiber_pool;
+#ifdef GM_FREESTANDING
+#ifndef GM_MAX_FIBERS
+#define GM_MAX_FIBERS 32
+#endif
+static gm_fiber gm_fiber_slab[GM_MAX_FIBERS];
+static size_t gm_fiber_slab_used;
+#endif
+
+GM_API _Noreturn void gm_stack_overflow(void) {
+    gm_overflowing = 1;
+    const char *msg = gm_cur_fiber ? "stack overflow on a fiber stack" : "stack overflow";
+    /* In Debug builds, the call that overflowed is the last one the caller recorded. */
+    gm_bt *b = gm_bt_top;
+    if (b != NULL && b->file != NULL) gm_trap(msg, b->file, b->line, b->col);
+    gm_trap(msg, NULL, 0, 0);
+}
+
+GM_API _Noreturn void gm_frame_overflow(const char *name, uint64_t bytes) {
+    char m[256];
+    snprintf(m, sizeof m, "stack overflow: `%s` needs a frame of %llu bytes", name, (unsigned long long)bytes);
+    gm_bt *b = gm_bt_top;
+    if (b != NULL && b->file != NULL) gm_trap(m, b->file, b->line, b->col);
+    gm_trap(m, NULL, 0, 0);
+}
+
+/* The space kept below a thread's limit for reporting the overflow. */
+#define GM_THREAD_STACK_RESERVE ((size_t)256 << 10)
+
+#if defined(_WIN32) && !defined(GM_NO_FRAME_PROBES)
+/* A fault just below a thread's stack limit, an access violation with the stack pointer
+ * below the running stack's limit, or the system's own stack overflow exception is the
+ * trap this is for; any other exception gets the default action. */
+static LONG CALLBACK gm_veh(PEXCEPTION_POINTERS ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_STACK_OVERFLOW) gm_stack_overflow();
+    if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
+        uintptr_t a = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+        uintptr_t limit = gm_thread_stack_limit;
+        uintptr_t sp = (uintptr_t)ep->ContextRecord->Rsp;
+        if (limit != 0 && a < limit && a + GM_THREAD_STACK_RESERVE + ((uintptr_t)1 << 20) >= limit)
+            gm_stack_overflow();
+        if (gm_stack_limit != 0 && sp < gm_stack_limit) gm_stack_overflow();
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static INIT_ONCE gm_veh_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK gm_veh_install(PINIT_ONCE o, PVOID p, PVOID *c) {
+    (void)o; (void)p; (void)c;
+    AddVectoredExceptionHandler(1, gm_veh);
+    return TRUE;
+}
+
+/* Keeps room on the calling thread's stack for gm_veh to report an overflow, and installs
+ * the handler once per process. */
+static void gm_overflow_handler(void) {
+    ULONG guarantee = 64 << 10;
+    SetThreadStackGuarantee(&guarantee);
+    InitOnceExecuteOnce(&gm_veh_once, gm_veh_install, NULL, NULL);
+}
+#elif !defined(GM_NO_FRAME_PROBES)
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#else
+#include <ucontext.h>
+#endif
+/* The stack pointer of the interrupted code, or 0 where it is not known. */
+static uintptr_t gm_fault_sp(void *uc) {
+    ucontext_t *u = uc;
+#if defined(__linux__) && defined(__x86_64__)
+    return (uintptr_t)u->uc_mcontext.gregs[REG_RSP];
+#elif defined(__linux__) && defined(__aarch64__)
+    return (uintptr_t)u->uc_mcontext.sp;
+#elif defined(__linux__) && defined(__s390x__)
+    return (uintptr_t)u->uc_mcontext.gregs[15];
+#elif defined(__APPLE__) && defined(__x86_64__)
+    return (uintptr_t)u->uc_mcontext->__ss.__rsp;
+#elif defined(__APPLE__) && defined(__aarch64__)
+    return (uintptr_t)u->uc_mcontext->__ss.__sp;
+#else
+    (void)u;
+    return 0;
+#endif
+}
+
+/* A fault just below a thread's stack limit is an overflow that a function's prologue
+ * hit before its stack check ran (compilers probe each page of a large frame), and so is
+ * any fault while the stack pointer is below the limit (a frame so large that it skipped
+ * the guard pages, with the check inlined after the frame was allocated): report it as
+ * the trap it is. Any other fault gets the default action. */
+static void gm_segv(int sig, siginfo_t *si, void *uc) {
+    uintptr_t a = (uintptr_t)si->si_addr;
+    uintptr_t limit = gm_thread_stack_limit;
+    uintptr_t sp = gm_fault_sp(uc);
+    if (limit != 0 && a < limit && a + GM_THREAD_STACK_RESERVE + ((uintptr_t)1 << 20) >= limit)
+        gm_stack_overflow();
+    /* The running stack may be a fiber's, whose limit is its own. */
+    if (gm_stack_limit != 0 && sp != 0 && sp < gm_stack_limit) gm_stack_overflow();
+    signal(sig, SIG_DFL);
+}
+
+static void gm_overflow_install(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = gm_segv;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+}
+
+/* The calling thread's alternate stack, released when the thread ends. */
+static pthread_key_t gm_altstack_key;
+static bool gm_altstack_keyed;
+
+static void gm_altstack_free(void *sp) {
+    stack_t ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_flags = SS_DISABLE;
+    sigaltstack(&ss, NULL);
+    free(sp);
+}
+
+static void gm_altstack_init(void) {
+    gm_overflow_install();
+    gm_altstack_keyed = pthread_key_create(&gm_altstack_key, gm_altstack_free) == 0;
+}
+
+/* Gives the calling thread a stack for gm_segv, and installs it once per process. */
+static void gm_overflow_handler(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, gm_altstack_init);
+    if (!gm_altstack_keyed || pthread_getspecific(gm_altstack_key) != NULL) return;
+    size_t size = (size_t)64 << 10;
+    stack_t ss;
+    ss.ss_sp = malloc(size);
+    ss.ss_size = size;
+    ss.ss_flags = 0;
+    if (ss.ss_sp == NULL) return;
+    if (sigaltstack(&ss, NULL) != 0) {
+        free(ss.ss_sp);
+    } else if (pthread_setspecific(gm_altstack_key, ss.ss_sp) != 0) {
+        gm_altstack_free(ss.ss_sp);
+    }
+}
+#endif
+
+GM_API void gm_thread_stack(void) {
+    uintptr_t low = 0;
+    size_t size = 0;
+#if defined(GM_FREESTANDING)
+    /* The program's stack is its own; no limit is known. */
+#elif defined(GM_WASI)
+    /* The module's stack, as the linker laid it out (first in memory, so that running off its
+     * end is an out-of-bounds access). It may start at address 0. */
+    low = (uintptr_t)&__stack_low;
+    size = (size_t)(&__stack_high - &__stack_low);
+    gm_thread_stack_limit = size > 2 * GM_THREAD_STACK_RESERVE ? low + GM_THREAD_STACK_RESERVE : 0;
+    gm_stack_limit = gm_thread_stack_limit;
+    return;
+#elif defined(__APPLE__)
+    pthread_t me = pthread_self();
+    size = pthread_get_stacksize_np(me);
+    low = (uintptr_t)pthread_get_stackaddr_np(me) - size;
+#elif defined(_WIN32)
+    ULONG_PTR lo, hi;
+    GetCurrentThreadStackLimits(&lo, &hi);
+    low = (uintptr_t)lo;
+    size = (size_t)(hi - lo);
+#elif defined(__linux__)
+    pthread_attr_t a;
+    void *addr;
+    if (pthread_getattr_np(pthread_self(), &a) == 0) {
+        if (pthread_attr_getstack(&a, &addr, &size) == 0) low = (uintptr_t)addr;
+        pthread_attr_destroy(&a);
+    }
+#endif
+    /* Without a known stack (other systems), nothing is checked. */
+    gm_thread_stack_limit = low != 0 && size > 2 * GM_THREAD_STACK_RESERVE ? low + GM_THREAD_STACK_RESERVE : 0;
+    gm_stack_limit = gm_thread_stack_limit;
+#ifndef GM_NO_FRAME_PROBES
+    if (gm_thread_stack_limit != 0) gm_overflow_handler();
+#endif
+}
+
+/* Makes `fb` (NULL: the thread's own stack) the running stack. */
+static void gm_set_cur_fiber(gm_fiber *fb) {
+    gm_cur_fiber = fb;
+    gm_stack_limit = fb ? fb->limit : gm_thread_stack_limit;
+}
+
+static void gm_fiber_entry(gm_fiber *fb) {
+    fb->start(fb);
+    gm_fiber_finish(fb);
+}
+
+GM_API gm_fiber *gm_fiber_new(gm_with *w, uint8_t *stack, size_t len, void (*start)(gm_fiber *), size_t arg_size,
+                              const char *file, uint32_t line, uint32_t col) {
+    if (gm_checks && len < GM_MIN_STACK) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "a fiber stack needs at least %d bytes (`@min_stack`), but this one has %llu",
+                 GM_MIN_STACK, (unsigned long long)len);
+        gm_trap(msg, file, line, col);
+    }
+    gm_fiber *fb = gm_fiber_pool;
+    if (fb != NULL) {
+        gm_fiber_pool = fb->pool_next;
+    } else {
+#ifdef GM_FREESTANDING
+        /* The fibers' records come from a static slab; their stacks are the program's. */
+        if (gm_fiber_slab_used < GM_MAX_FIBERS) fb = &gm_fiber_slab[gm_fiber_slab_used++];
+#else
+        fb = (gm_fiber *)calloc(1, sizeof *fb);
+#endif
+        if (fb == NULL) gm_trap("out of memory creating a fiber", file, line, col);
+    }
+    uintptr_t epoch = fb->epoch + 1;
+    memset(fb, 0, sizeof *fb);
+    fb->epoch = epoch;
+    fb->owner = w;
+    fb->start = start;
+    fb->state = GM_FB_NEW;
+    fb->own_next = w->owned;
+    w->owned = fb;
+    uintptr_t top = ((uintptr_t)stack + len) & ~(uintptr_t)15;
+    if (arg_size > 0) {
+        top = (top - arg_size) & ~(uintptr_t)15;
+        fb->arg = stack + (top - (uintptr_t)stack);
+    }
+    fb->limit = (uintptr_t)stack + GM_STACK_RESERVE;
+    fb->sp = gm_ctx_init(top, top - (uintptr_t)stack, fb);
+    return fb;
+}
+
+static void gm_susp_link(gm_with *w, gm_fiber *fb) {
+    fb->state = GM_FB_SUSPENDED;
+    fb->susp_with = w;
+    fb->susp_prev = NULL;
+    fb->susp_next = w->suspended;
+    if (w->suspended) w->suspended->susp_prev = fb;
+    w->suspended = fb;
+    w->nsuspended++;
+}
+
+static void gm_susp_unlink(gm_with *w, gm_fiber *fb) {
+    if (fb->susp_prev) fb->susp_prev->susp_next = fb->susp_next;
+    else w->suspended = fb->susp_next;
+    if (fb->susp_next) fb->susp_next->susp_prev = fb->susp_prev;
+    fb->susp_next = fb->susp_prev = NULL;
+    fb->susp_with = NULL;
+    fb->state = GM_FB_RUNNING;
+    w->nsuspended--;
+}
+
+GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb) {
+    fb->epoch++;
+    gm_susp_link(w, fb);
+    return (gm_cont){fb, fb->epoch};
+}
+
+GM_API void gm_with_go(gm_with *w, gm_fiber *fb) {
+    gm_fiber *me = gm_cur_fiber;
+    gm_bt *bt = gm_bt_top;
+    gm_set_cur_fiber(fb);
+    if (!fb->started) fb->bt = bt;
+    gm_bt_top = fb->bt;
+    fb->state = GM_FB_RUNNING;
+    fb->started = 1;
+    w->event = 0;
+    gm_rt_switch(&w->driver_sp, fb->sp, NULL);
+    fb->bt = gm_bt_top;
+    gm_bt_top = bt;
+    gm_set_cur_fiber(me);
+}
+
+GM_API void gm_with_clause(gm_with *w) {
+    gm_fiber *fb = w->event_fiber;
+    fb->thunk(fb->req, (gm_cont){fb, fb->epoch});
+}
+
+GM_API void gm_ctl_perform(gm_with *w, gm_clause_thunk thunk, void *req, void *res) {
+    gm_fiber *fb = gm_cur_fiber;
+    if (fb == NULL || w == NULL) gm_trap("internal error: a `ctl` operation performed outside a fiber", NULL, 0, 0);
+    fb->thunk = thunk;
+    fb->req = req;
+    fb->res = res;
+    fb->epoch++;
+    gm_susp_link(w, fb);
+    w->event = GM_EV_PERFORM;
+    w->event_fiber = fb;
+    gm_rt_switch(&fb->sp, w->driver_sp, NULL);
+    if (fb->cancel) {
+        fb->cancel = 0;
+        gm_unw.kind = GM_CANCEL;
+        gm_unw.frame = NULL;
+        gm_unw.label = 0;
+        gm_unw.is_err = 0;
+    }
+}
+
+GM_API _Noreturn void gm_fiber_finish(gm_fiber *fb) {
+    gm_with *w = fb->owner;
+    fb->state = GM_FB_DONE;
+    w->event = GM_EV_DONE;
+    w->event_fiber = fb;
+    gm_rt_switch(&fb->sp, w->driver_sp, NULL);
+    __builtin_trap();
+}
+
+/* Checks continuation *k for consumption by a clause of `w` and takes it off w's list. */
+static gm_fiber *gm_cont_take(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+    gm_cont c;
+    memcpy(&c, k, sizeof c);
+    gm_fiber *fb = c.fiber;
+    if (fb == NULL || fb->epoch != c.epoch || fb->state != GM_FB_SUSPENDED) {
+        gm_trap("this continuation was already consumed (§14.2)", file, line, col);
+    }
+    if (fb->susp_with != w) {
+        gm_trap("a continuation can be consumed only by a clause of the `with` that produced it (§14.2)", file, line,
+                col);
+    }
+    gm_susp_unlink(w, fb);
+    return fb;
+}
+
+GM_API void *gm_resume(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+    gm_fiber *fb = gm_cont_take(w, k, file, line, col);
+    w->next = fb;
+    return fb->res;
+}
+
+/* Cancels fiber `fb` (no longer on any list): it unwinds to its base, running its defers. */
+static void gm_cancel(gm_with *w, gm_fiber *fb, const char *file, uint32_t line, uint32_t col) {
+    if (!fb->started) {
+        fb->state = GM_FB_DONE;
+        return;
+    }
+    gm_unwind saved = gm_unw;
+    gm_unw.kind = GM_NONE;
+    fb->cancel = 1;
+    gm_with_go(w, fb);
+    if (w->event != GM_EV_DONE) {
+        gm_trap("a `ctl` operation was performed while a fiber was being discarded", file, line, col);
+    }
+    /* An exit started by a deferred statement of the fiber goes on; otherwise the code
+     * that discarded the fiber continues. */
+    if (gm_unw.kind == GM_CANCEL || gm_unw.kind == GM_NONE) gm_unw = saved;
+}
+
+GM_API void gm_cancel_cont(gm_with *w, const void *k, const char *file, uint32_t line, uint32_t col) {
+    gm_fiber *fb = gm_cont_take(w, k, file, line, col);
+    gm_cancel(w, fb, file, line, col);
+}
+
+GM_API void gm_with_end(gm_with *w, bool crossing, const char *file, uint32_t line, uint32_t col) {
+    if (gm_unw.kind != GM_EXIT) {
+        if (crossing) {
+            gm_unwind saved = gm_unw;
+            while (w->suspended) {
+                gm_fiber *fb = w->suspended;
+                gm_susp_unlink(w, fb);
+                gm_cancel(w, fb, file, line, col);
+            }
+            gm_unw = saved;
+        } else if (w->nsuspended > 0) {
+            char msg[96];
+            snprintf(msg, sizeof msg, "with completed while %u fiber%s suspended", (unsigned)w->nsuspended,
+                     w->nsuspended == 1 ? " is" : "s are");
+            gm_trap(msg, file, line, col);
+        }
+    }
+    while (w->owned) {
+        gm_fiber *fb = w->owned;
+        w->owned = fb->own_next;
+        fb->state = GM_FB_DONE;
+        fb->pool_next = gm_fiber_pool;
+        gm_fiber_pool = fb;
+    }
+}

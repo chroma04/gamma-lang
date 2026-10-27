@@ -171,6 +171,7 @@ compile_built :: fn(b: ^const Built, exe: string, opts: Options) -> bool needs A
     generated := &b.generated
     c_file := str.format("{}.c", exe)!
     if opts.emit_c {
+        if split := emitted_units(b, opts.debug_info) { return write_units(b, split, exe) }
         // The runtime and the program as one translation unit.
         code := str.format("{}\n{}\n{}", b.rt_h, b.rt_c, generated.code)!
         text: string = if opts.debug_info { cgen.resolve_lines(code, cgen.absolute(c_file)) } else { code }
@@ -190,6 +191,33 @@ compile_built :: fn(b: ^const Built, exe: string, opts: Options) -> bool needs A
     }
     defer pkg.remove_objects(&link)
     return compile_c(b, &tc, &link, exe, opts)
+}
+
+/// The split `--emit-c` writes when `GAMMA_C_UNITS` asks for more than one unit (and
+/// `-g` does not): the program split as a Debug build splits it.
+emitted_units :: fn(b: ^const Built, debug_info: bool) -> ?cgen.Split needs Alloc + Env {
+    if debug_info { return null }
+    v := Env.var("GAMMA_C_UNITS") else return null
+    n := str.parse_int(usize, v) else return null
+    if n < 2 { return null }
+    return cgen.split_shared(&b.generated.parts, cgen.unit_count(&b.generated.parts, n, n))
+}
+
+/// Writes a split program: the runtime's declarations and the text the units share to
+/// `exe.h`, the runtime to `exe.rt.c`, and unit `i` to `exe.c` (unit 0) or `exe.i.c`, each
+/// of them a translation unit that includes `exe.h`. Compiled separately and linked, they
+/// make the program.
+write_units :: fn(b: ^const Built, split: cgen.Split, exe: string) -> bool needs Alloc + Err + Fs {
+    header := str.format("{}.h", exe)!
+    if not write_generated_c(header, str.format("#define GM_RT_SEPARATE 1\n{}\n{}", b.rt_h, split.shared)!) { return false }
+    names := load.split(header).names.items
+    include := str.format("#include \"{}\"\n", names[names.len - 1])!
+    rt := str.format("#define GM_RT_SEPARATE 1\n{}\n{}", b.rt_h, b.rt_c)!
+    if not write_generated_c(str.format("{}.rt.c", exe)!, rt) { return false }
+    for i, u in enumerate(split.units) {
+        if not write_generated_c(unit_path(exe, i), str.format("{}{}", include, u)!) { return false }
+    }
+    return true
 }
 
 /// The flags every build uses: `-std=gnu11`, no warnings, wrapping signed arithmetic and no

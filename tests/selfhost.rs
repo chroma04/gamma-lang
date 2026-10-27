@@ -888,6 +888,8 @@ fn self_c(gammac: &Path, out: &Path) -> String {
     let mut cmd = Command::new(gammac);
     cmd.current_dir(root()).args(["build", "--emit-c", "-o"]).arg(out).arg("compiler");
     gammac_env(&mut cmd);
+    // One file, whatever the environment asks.
+    cmd.env_remove("GAMMA_C_UNITS");
     let built = common::output(&mut cmd).unwrap();
     assert!(
         built.status.success(),
@@ -928,6 +930,49 @@ fn gammac_compiles_itself_to_a_fixed_point() {
     if let Some((_, line, a, b)) = first_difference(&c1, &c2) {
         panic!("the C that stage 2 generates differs from stage 1's at line {}:\nstage 1: {}\nstage 2: {}", line, a, b);
     }
+}
+
+/// With `GAMMA_C_UNITS`, `gammac build --emit-c` writes a program as a header, the runtime
+/// and units that include the header (the form of the bootstrap seed): compiled one by one
+/// with the flags of a build and linked, they make the program.
+#[test]
+#[cfg(unix)]
+fn split_emitted_c_builds_the_program() {
+    let Gammac::Native(exe) = gammac() else { return };
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-split-emit");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(root()).args(["build", "--emit-c", "-o"]).arg(dir.join("life")).arg("examples/life.gm");
+    gammac_env(&mut cmd);
+    cmd.env("GAMMA_C_UNITS", "3");
+    let emitted = common::output(&mut cmd).unwrap();
+    assert!(emitted.status.success(), "gammac failed:\n{}", String::from_utf8_lossy(&emitted.stderr));
+    let sources = ["life.rt.c", "life.c", "life.1.c", "life.2.c"];
+    for name in sources.iter().chain(&["life.h"]) {
+        assert!(dir.join(name).exists(), "{name} was not written");
+    }
+    let toolchain = gamma::toolchain::Toolchain::from_env().unwrap();
+    let mut objects = Vec::new();
+    for name in sources {
+        let object = dir.join(format!("{name}.o"));
+        let mut cc = toolchain.base_command();
+        cc.args(["-std=gnu11", "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread", "-O1", "-c"])
+            .arg(dir.join(name))
+            .arg("-o")
+            .arg(&object);
+        let out = common::output(&mut cc).unwrap();
+        assert!(out.status.success(), "{name} does not compile:\n{}", String::from_utf8_lossy(&out.stderr));
+        objects.push(object);
+    }
+    let program = dir.join("life");
+    let mut link = toolchain.base_command();
+    link.arg("-pthread").arg("-o").arg(&program).args(&objects).arg("-lm");
+    let out = common::output(&mut link).unwrap();
+    assert!(out.status.success(), "the units do not link:\n{}", String::from_utf8_lossy(&out.stderr));
+    let run = common::output(&mut Command::new(&program)).unwrap();
+    let expected = std::fs::read_to_string(root().join("tests/examples/life.stdout")).unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
 
 /// `gammac fmt -` on `input`: standard output, standard error and exit status.
