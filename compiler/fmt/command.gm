@@ -15,6 +15,10 @@ pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + In + Out 
     for a in args {
         match a {
             "--check" => { check = true }
+            "--help", "-h" => {
+                Out.write(USAGE)
+                return 0
+            }
             _ => {
                 if a.starts_with("-") and a is not "-" {
                     eprint("gamma: unknown option `{}`\n\n{}", a, USAGE)

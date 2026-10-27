@@ -188,7 +188,7 @@ pub real_path :: fn(a: ^const Analysis, file: source.FileId) -> ?string needs Al
 
 /// Where an editor can open the file: its path, or for the embedded core library a file
 /// with its text (see `corelib.gm`).
-pub open_path :: fn(a: ^Analysis, file: source.FileId) -> ?string needs Alloc + Env + Fs + Rand {
+pub open_path :: fn(a: ^Analysis, file: source.FileId) -> ?string needs Alloc + Env + Fs + Proc + Rand {
     if p := a.real_path(file) { return p }
     if usize(file) >= a.sm.files.items.len { return null }
     f := a.sm.file(file)
@@ -393,9 +393,9 @@ pub is_core :: fn(name: string) -> bool => name.starts_with(CORE_PREFIX)
 
 /// The path of a file holding `text`, the embedded source named `name` (`<core>/list.gm`).
 /// It is `core/NAME` next to the standard library when that file has exactly the embedded
-/// text; otherwise the text is written once to a file in the cache directory (named after
-/// a hash of the text) and that file is used.
-core_path_for :: fn(name, body: string) -> ?string needs Alloc + Env + Fs + Rand {
+/// text; otherwise the text is written once to a read-only file in the cache directory
+/// (named after a hash of the text) and that file is used.
+core_path_for :: fn(name, body: string) -> ?string needs Alloc + Env + Fs + Proc + Rand {
     file := name[CORE_PREFIX.len..]
     if file.len is 0 or file.index_of('/') is not null or str.contains(file, "..") { return null }
     in_tree := load.join(load.join(driver.std_root(), ".."), str.format("core/{}", file)!)
@@ -404,13 +404,15 @@ core_path_for :: fn(name, body: string) -> ?string needs Alloc + Env + Fs + Rand
     }
     h: u64 = 0xcbf29ce484222325
     for b in body { h = (h ~ u64(b)) *% 0x100000001b3 }
-    dir := load.join(load.join(fs.temp_dir(), "gamma-cache/core"), str.format("{:016x}", h)!)
+    cache := pkg.cache_dir() else load.join(fs.temp_dir(), "gamma-cache")
+    dir := load.join(load.join(cache, "core"), str.format("{:016x}", h)!)
     path := load.join(dir, file)
     if existing := fs.read_all(path) {
         if existing is body { return path }
     }
     fs.make_dir_all(dir) else return null
     fs.write_atomic(path, body) else return null
+    pkg.make_read_only(path)
     return path
 }
 

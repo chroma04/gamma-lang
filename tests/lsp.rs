@@ -970,10 +970,16 @@ fn definition_in_the_core_library_points_into_the_source_tree() {
 fn definition_in_the_core_library_without_a_source_tree_uses_a_read_only_copy() {
     let dir = TempDir::new();
     let path = dir.write("main.gm", CORE_PROGRAM);
-    // A standard library root without the core sources next to it, and a cache directory.
+    // A standard library root without the core sources next to it (they are found through
+    // GAMMA_CORE), and a cache directory.
     let std = dir.write("nostd/std/placeholder.txt", "");
     let cache = dir.0.join("cache");
-    let mut lsp = Lsp::start_with(&[("GAMMA_STD", std.parent().unwrap()), ("GAMMA_CACHE_DIR", cache.as_path())]);
+    let core = common::root().join("lib/core");
+    let mut lsp = Lsp::start_with(&[
+        ("GAMMA_STD", std.parent().unwrap()),
+        ("GAMMA_CORE", core.as_path()),
+        ("GAMMA_CACHE_DIR", cache.as_path()),
+    ]);
     lsp.initialize();
     lsp.open(&path, CORE_PROGRAM);
     let d = lsp.result("textDocument/definition", lsp.at(&path, 1, 11));
