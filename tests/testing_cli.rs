@@ -176,7 +176,7 @@ fn a_tracefile_that_cannot_be_written_fails_the_run() {
 }
 
 #[test]
-fn coverage_on_the_c_back_end_matches_the_interpreter() {
+fn coverage_on_the_c_back_end_counts_the_lines_the_tests_run() {
     if !have_cc() {
         return;
     }
@@ -229,24 +229,21 @@ test \"literals\" {
 }
 ";
     let p = Package::new("coverage_c", &[("main.gm", main)]);
-    let run = |backend: &str| {
-        let lcov = p.root.join(format!("lcov-{}.info", &backend["--backend=".len()..]));
-        let out = p.gamma(&["test", backend, "-j", "2", &format!("--coverage={}", lcov.display())]);
-        (out.stdout, std::fs::read_to_string(&lcov).unwrap())
-    };
-    let (interp_out, interp_lcov) = run("--backend=interp");
-    let (c_out, c_lcov) = run("--backend=c");
-    assert_eq!(c_out, interp_out);
-    assert_eq!(c_lcov, interp_lcov);
+    let lcov_path = p.root.join("lcov.info");
+    let out = p.gamma(&["test", "--backend=c", "-j", "2", &format!("--coverage={}", lcov_path.display())]);
+    assert!(!out.ok, "{}", out.stdout);
+    assert!(out.stdout.contains("3 passed, 1 failed\n"), "{}", out.stdout);
+    let c_lcov = std::fs::read_to_string(&lcov_path).unwrap();
     let line_of = |needle: &str| main.lines().position(|l| l.contains(needle)).unwrap() + 1;
     assert!(c_lcov.contains(&format!("DA:{},3\n", line_of("s: u64 = 0"))), "{}", c_lcov);
     assert!(c_lcov.contains(&format!("DA:{},0\n", line_of("return 3"))), "{}", c_lcov);
     assert!(c_lcov.contains(&format!("DA:{},3\n", line_of("s += u64(b)"))), "{}", c_lcov);
     assert!(c_lcov.contains(&format!("DA:{},1\n", line_of("return x + 1"))), "{}", c_lcov);
     assert!(!c_lcov.contains(&format!("DA:{},", line_of("return x * 2"))), "{}", c_lcov);
-    let out = p.gamma(&["test", "--backend=cranelift", "--coverage"]);
+    // Tests run only through C.
+    let out = p.gamma(&["test", "--backend=interp", "--coverage"]);
     assert!(!out.ok);
-    assert!(out.stderr.contains("not `--backend=cranelift`"), "{}", out.stderr);
+    assert!(out.stderr.contains("`--backend=interp` is supported by `run` only"), "{}", out.stderr);
 }
 
 #[test]
@@ -261,8 +258,11 @@ fn duplicate_names_are_per_kind() {
 
 #[test]
 fn benchmarks_report_the_time_per_run() {
+    if !have_cc() {
+        return;
+    }
     let p = Package::new("bench", &package());
-    let out = p.gamma(&["bench", "--backend=interp", "--all"]);
+    let out = p.gamma(&["bench", "--all"]);
     assert!(out.ok, "{}{}", out.stdout, out.stderr);
     let lines: Vec<&str> = out.stdout.lines().collect();
     assert_eq!(lines.len(), 3, "{}", out.stdout);
@@ -270,7 +270,7 @@ fn benchmarks_report_the_time_per_run() {
     assert!(lines[0].contains("/run (± ") && lines[0].contains("20 samples of "), "{}", lines[0]);
     assert!(lines[1].starts_with("bench \"double\" in util ... "), "{}", lines[1]);
     assert_eq!(lines[2], "2 run, 0 failed");
-    let filtered = p.gamma(&["bench", "--backend=interp", "--all", "--filter=double"]);
+    let filtered = p.gamma(&["bench", "--all", "--filter=double"]);
     assert!(filtered.stdout.ends_with("1 run, 0 failed, 1 filtered out\n"), "{}", filtered.stdout);
 }
 
@@ -288,9 +288,12 @@ fn benchmarks_run_natively_by_default() {
 
 #[test]
 fn a_failing_benchmark_fails_the_command() {
+    if !have_cc() {
+        return;
+    }
     let main = "main :: fn() {}\nbench \"broken\" {\n    expect(false)\n}\n";
     let p = Package::new("bench_fails", &[("main.gm", main)]);
-    let out = p.gamma(&["bench", "--backend=interp"]);
+    let out = p.gamma(&["bench"]);
     assert!(!out.ok);
     assert!(out.stdout.contains("bench \"broken\" ... FAILED"), "{}", out.stdout);
     assert!(out.stdout.ends_with("0 run, 1 failed\n"), "{}", out.stdout);
@@ -352,17 +355,6 @@ fn check_timeout(out: &Out, elapsed: std::time::Duration) {
 }
 
 #[test]
-fn a_test_that_runs_too_long_fails_in_the_interpreter() {
-    let p = Package::new("timeout_interp", &[("main.gm", HANGS)]);
-    let started = std::time::Instant::now();
-    let out = p.gamma(&["test", "--backend=interp", "--timeout=1"]);
-    check_timeout(&out, started.elapsed());
-    // Parallel workers have a limit each.
-    let out = p.gamma(&["test", "--backend=interp", "--timeout=1", "--jobs=2"]);
-    check_timeout(&out, started.elapsed());
-}
-
-#[test]
 fn a_test_that_runs_too_long_fails_natively() {
     if !have_cc() {
         return;
@@ -370,6 +362,10 @@ fn a_test_that_runs_too_long_fails_natively() {
     let p = Package::new("timeout_native", &[("main.gm", HANGS)]);
     let started = std::time::Instant::now();
     let out = p.gamma(&["test", "--backend=c", "--timeout=1"]);
+    check_timeout(&out, started.elapsed());
+    // Parallel workers have a limit each.
+    let started = std::time::Instant::now();
+    let out = p.gamma(&["test", "--backend=c", "--timeout=1", "--jobs=2"]);
     check_timeout(&out, started.elapsed());
 }
 

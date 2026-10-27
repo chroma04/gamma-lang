@@ -1,6 +1,6 @@
 //! Tests of the build settings of gamma.toml: `[build]`, `[profile.<name>]`, C sources
 //! compiled into the program, libraries and their directories. They need a C compiler
-//! (the interpreter loads the C sources as a shared library) and, for the git
+//! (the C sources of packages are compiled into the program) and, for the git
 //! dependency, `git`. Each test has a directory and a cache directory of its own.
 
 mod common;
@@ -86,16 +86,23 @@ impl World {
         self.gamma_env(dir, args, &[])
     }
 
-    /// The names of the files in the cache's `native` directory with the extension `ext`.
-    fn native(&self, ext: &str) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_dir(self.cache().join("native"))
-            .map(|rd| {
-                rd.flatten()
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .filter(|n| n.ends_with(ext))
-                    .collect()
-            })
-            .unwrap_or_default();
+    /// The object files in the cache other than the runtime's. The C sources of packages are
+    /// compiled for each build into objects next to the executable, which are removed after
+    /// linking, so none stays in the cache.
+    fn package_objects(&self) -> Vec<String> {
+        fn walk(dir: &Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                let name = e.file_name().to_string_lossy().into_owned();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if name.ends_with(".o") && !name.starts_with("gm_rt-") {
+                    out.push(name);
+                }
+            }
+        }
+        let mut v = vec![];
+        walk(&self.cache(), &mut v);
         v.sort();
         v
     }
@@ -154,12 +161,10 @@ fn c_sources_work_with_every_command() {
     need_cc!();
     let w = World::new("c_sources");
     shim_package(&w, SHIM_BUILD);
-    // The interpreter loads the C source as a shared library.
+    // `run` compiles the C source and links its object into the program.
     assert_eq!(w.gamma("app", &["run", "main.gm"]).success().stdout, "5\n");
-    let libs = w.native(".so").len() + w.native(".dylib").len();
-    assert_eq!(libs, 1);
-    assert_eq!(w.native(".o").len(), 1);
-    // The C back end links the object, and so does `build`.
+    assert_eq!(w.package_objects(), Vec::<String>::new());
+    // So do the C back end by name and `build`.
     assert_eq!(w.gamma("app", &["run", "--backend=c", "main.gm"]).success().stdout, "5\n");
     w.gamma("app", &["build", "main.gm", "-o", "app.out"]).success();
     let built = Command::new(w.path("app/app.out")).output().unwrap();
@@ -167,33 +172,30 @@ fn c_sources_work_with_every_command() {
     // Tests of modules that call C run natively with the C sources.
     let out = w.gamma("app", &["test", "main.gm"]).success();
     assert!(out.stdout.contains("1 passed") || out.stdout.contains("ok"), "{}", out.stdout);
-    // One object served all of them.
-    assert_eq!(w.native(".o").len(), 1);
+    // No object of the package stays behind.
+    assert_eq!(w.package_objects(), Vec::<String>::new());
     // `check` does not need the C compiler's work.
     w.gamma("app", &["check", "main.gm"]).success();
 }
 
 #[test]
-fn c_objects_are_cached_and_follow_changes() {
+fn c_objects_follow_changes() {
     need_cc!();
     let w = World::new("c_cache");
     shim_package(&w, SHIM_BUILD);
-    w.gamma("app", &["run", "--backend=c", "main.gm"]).success();
-    let first = w.native(".o");
-    assert_eq!(first.len(), 1);
-    // Nothing changed: the object is reused, not rebuilt.
+    assert_eq!(w.gamma("app", &["run", "main.gm"]).success().stdout, "5\n");
+    // Nothing changed: the same result, and no object is kept in the cache.
     assert_eq!(w.gamma("app", &["run", "--backend=c", "main.gm"]).success().stdout, "5\n");
-    assert_eq!(w.native(".o"), first);
-    // A changed source gives a new object, and the cached executable follows.
+    assert_eq!(w.package_objects(), Vec::<String>::new());
+    // A changed source is compiled again, and the program follows.
     w.write("app/c/shim.c", &shim_c(10));
     assert_eq!(w.gamma("app", &["run", "--backend=c", "main.gm"]).success().stdout, "15\n");
     assert_eq!(w.gamma("app", &["run", "main.gm"]).success().stdout, "15\n");
-    assert_eq!(w.native(".o").len(), 2);
     // So does a changed header.
     w.write("app/c/include/shim.h", "#define BONUS 1000\nint shim_add(int a, int b);\n");
     assert_eq!(w.gamma("app", &["run", "--backend=c", "main.gm"]).success().stdout, "1015\n");
     assert_eq!(w.gamma("app", &["run", "main.gm"]).success().stdout, "1015\n");
-    assert_eq!(w.native(".o").len(), 3);
+    assert_eq!(w.package_objects(), Vec::<String>::new());
     // And a changed flag.
     w.write("app/c/include/shim.h", SHIM_H);
     let out = w.gamma_env("app", &["run", "--backend=c", "main.gm"], &[("CFLAGS", "-DBONUS=7")]).success();
@@ -371,7 +373,7 @@ fn path_dependencies_can_wrap_c() {
     assert_eq!(w.gamma("app", &["run", "--backend=c", "."]).success().stdout, "42 1000\n");
     w.gamma("app", &["build", ".", "-o", "app.out"]).success();
     assert_eq!(String::from_utf8_lossy(&Command::new(w.path("app/app.out")).output().unwrap().stdout), "42 1000\n");
-    assert_eq!(w.native(".o").len(), 2);
+    assert_eq!(w.package_objects(), Vec::<String>::new());
     // A dependency's paths stay inside it.
     w.write("wrap/gamma.toml", "[package]\nname = \"wrap\"\n[build]\nc-sources = [\"../app/own.c\"]\n");
     let out = w.gamma("app", &["run", "."]).failure();
@@ -411,8 +413,7 @@ fn git_dependencies_can_wrap_c() {
     assert_eq!(out.stdout, "42 1000\n", "{}", out.stderr);
     assert_eq!(w.gamma("app", &["run", "--backend=c", "."]).success().stdout, "42 1000\n");
     w.gamma("app", &["test", "."]).success();
-    // One object per package.
-    assert_eq!(w.native(".o").len(), 2);
+    assert_eq!(w.package_objects(), Vec::<String>::new());
 }
 
 #[cfg(unix)]
