@@ -484,6 +484,10 @@ struct RunTest {
     stdin: Vec<u8>,
     stdout: Vec<u8>,
     exit: i32,
+    /// The expected standard error, for tests of trap reports (`//! stderr`).
+    stderr: Option<Vec<u8>>,
+    /// Whether the test runs only through the C back end (`//! native:`).
+    native: bool,
 }
 
 /// The `run` tests that expect no compile errors and apply to this host.
@@ -622,6 +626,8 @@ fn lane_tests(lane: Option<&Lane>) -> Vec<RunTest> {
             stdin: read("stdin"),
             stdout: read("stdout"),
             exit: directive("exit:").map_or(0, |e| e.parse().unwrap()),
+            stderr: text.lines().any(|l| l.trim() == "//! stderr").then(|| read("stderr")),
+            native: directive("native:").is_some(),
         });
     }
     tests
@@ -731,6 +737,77 @@ fn programs_compiled_by_gammac_in_a_lane_behave_as_expected() {
         tests.len(),
         failures.join("\n\n")
     );
+}
+
+/// How many run tests `gammac run --backend=interp` must pass: those the interpreter
+/// cannot run yet (it reports them as not supported) are skipped, any other difference
+/// fails. Raise this as the interpreter grows.
+const INTERP_FLOOR: usize = 0;
+
+/// Runs `t` with `gammac run --backend=interp`; returns why it failed, if it did, and
+/// whether that is because the interpreter does not support something yet.
+#[cfg(unix)]
+fn interpret(gammac: &Path, t: &RunTest, dir: &Path) -> Option<(String, bool)> {
+    let stdin = dir.join(format!("{}.stdin", t.name.replace('/', "_")));
+    std::fs::write(&stdin, &t.stdin).unwrap();
+    let mut cmd = Command::new(gammac);
+    cmd.current_dir(root()).args(["run", "--backend=interp"]).arg(format!("--mode={}", t.mode)).arg(&t.root);
+    cmd.stdin(std::fs::File::open(&stdin).unwrap());
+    gammac_env(&mut cmd);
+    let ran = common::output(&mut cmd).unwrap();
+    let _ = std::fs::remove_file(&stdin);
+    let err = String::from_utf8_lossy(&ran.stderr).into_owned();
+    let unsupported = err.contains("not supported by gammac's interpreter yet");
+    if ran.status.code() != Some(t.exit) {
+        return Some((format!("exit status {:?}, expected {}:\n{}", ran.status.code(), t.exit, err), unsupported));
+    }
+    if ran.stdout != t.stdout {
+        let (e, a) = (String::from_utf8_lossy(&t.stdout), String::from_utf8_lossy(&ran.stdout));
+        let (_, line, e, a) = first_difference(&e, &a).unwrap_or_default();
+        return Some((format!("output differs at line {}:\nexpected: {}\n  actual: {}", line, e, a), unsupported));
+    }
+    if let Some(expected) = &t.stderr {
+        let std = gamma::sema::std_root().display().to_string();
+        let got = err.replace(&format!("{}/", std), "<std>/");
+        if got.as_bytes() != expected.as_slice() {
+            return Some((
+                format!("standard error differs:\nexpected: {}\n  actual: {}", String::from_utf8_lossy(expected), got),
+                unsupported,
+            ));
+        }
+    }
+    None
+}
+
+#[test]
+#[cfg(unix)]
+fn programs_interpreted_by_gammac_behave_as_expected() {
+    let Gammac::Native(gammac) = gammac() else { return };
+    let tests: Vec<RunTest> = run_tests().into_iter().filter(|t| !t.native).collect();
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-interp");
+    std::fs::create_dir_all(&dir).unwrap();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(vec![]);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(t) = tests.get(i) else { break };
+                    let r = interpret(gammac, t, &dir);
+                    results.lock().unwrap().push((t.name.clone(), r));
+                }
+            });
+        }
+    });
+    let results = results.into_inner().unwrap();
+    let passed = results.iter().filter(|r| r.1.is_none()).count();
+    let mut failures: Vec<String> =
+        results.iter().filter_map(|(n, r)| r.as_ref().filter(|r| !r.1).map(|r| format!("{}: {}", n, r.0))).collect();
+    failures.sort();
+    assert!(failures.is_empty(), "{} of {} programs failed:\n{}", failures.len(), tests.len(), failures.join("\n\n"));
+    assert!(passed >= INTERP_FLOOR, "only {} of {} programs ran (floor {})", passed, tests.len(), INTERP_FLOOR);
 }
 
 /// `gammac build --emit-c compiler` with `gammac`: the C it generates for itself.
