@@ -1,5 +1,226 @@
-//! The long_functions suite (being ported from tests/long_functions.rs).
+//! Functions with thousands of statements compile through C in time linear in their
+//! length: the C back end moves runs of their statements into helper functions that share
+//! the frame. These tests build such functions with every kind
+//! of exit that can leave a run (`break`, `continue`, `return`, `try`, an `esc` clause's
+//! `break`, a `with … on` body ending) and compare the native program with the interpreter.
 
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "long_functions_run_as_in_the_interpreter", run: run_as_in_the_interpreter))!
+    out.push(kit.Test(name: "long_functions_are_split_into_helpers", run: split_into_helpers))!
+}
+
+/// `stmt` on `n` lines indented by `indent` levels.
+rep :: fn(p: ^List(u8), stmt: string, n, indent: usize) needs Alloc {
+    for _ in 0..n {
+        for _ in 0..indent { p.extend("    ")! }
+        p.extend(stmt)!
+        p.push('\n')!
+    }
+}
+
+HEAD :: `
+Big :: struct { a: i64, b: i64, c: i64, d: i64 }
+Fail :: effect {
+    fail: esc(msg: string) -> never
+}
+Ids :: effect {
+    next_id: fn() -> i64
+}
+Ask :: effect {
+    ask: ctl(q: i64) -> i64
+}
+E :: union { Bad: i64 }
+
+check :: fn(k: i64) -> E!i64 {
+    if k > 2 { return !.Bad(k) }
+    return k
+}
+`
+
+/// `continue` and `break` in a long loop body, `return` past a `defer`.
+LOOPS_1 :: `
+loops :: fn(n: i64) -> i64 needs Out {
+    s := 0
+    defer print("loops done {}\n", n)
+    i := 0
+    while i < n {
+        i += 1
+        defer print("iteration {}\n", i)
+`
+
+/// `try` past an `errdefer`.
+RESULTS_1 :: `
+results :: fn(k: i64) -> E!i64 needs Out {
+    s := 0
+    errdefer print("errdefer {}\n", k)
+    defer print("defer {}\n", k)
+`
+
+/// Performs in the body of a `with`, and an `esc` clause leaving it.
+HANDLERS_1 :: `
+handlers :: fn(k: i64) -> i64 needs Out {
+    counter := 0
+    ids :: handler Ids {
+        next_id() => {
+            counter += 1
+            counter
+        }
+    }
+    stop :: handler Fail {
+        fail(msg) => {
+            print("fail: {}\n", msg)
+            break
+        }
+    }
+    s := 0
+    with stop {
+        with ids {
+`
+
+/// The body of a `with … on`, which runs on a fiber, suspending at each `ctl` perform.
+FIBER_1 :: `
+fiber :: fn() -> i64 needs Out {
+    stack: [65536]u8 = ---
+    n := 0
+    answerer :: handler Ask {
+        ask(q, k) => {
+            n += q
+            resume k(n)
+        }
+    }
+    total := with answerer on stack[..] {
+        s := 0
+`
+
+MAIN :: `
+main :: fn() needs Out {
+    print("{} {} {}\n", loops(3), loops(5), loops(1))
+    for k in 1..5 {
+        print("{}\n", results(k))
+    }
+    print("{} {}\n", handlers(1), handlers(2))
+    print("{} {}\n", big(1), big(2))
+    print("{}\n", pure_sum(Big(a: 7, b: 8, c: 9, d: 10)))
+    print("{}\n", fiber())
+}
+`
+
+/// A program whose functions each have `n` statements per run between their exits.
+program :: fn(n: usize) -> string needs Alloc {
+    p := list(u8)
+    p.extend(HEAD)!
+    p.extend(LOOPS_1)!
+    rep(&p, "s = s + i % 3", n, 2)
+    p.extend("        if i is 2 { continue }\n")!
+    rep(&p, "s = s + i % 5", n, 2)
+    p.extend("        if i is 4 { break }\n    }\n")!
+    rep(&p, "s = s - i % 7", n, 1)
+    p.extend("    if n is 3 { return s }\n")!
+    rep(&p, "s = s + n % 4", n, 1)
+    p.extend("    return s + 1\n}\n")!
+
+    p.extend(RESULTS_1)!
+    rep(&p, "s = s + k % 3", n, 1)
+    p.extend("    x := try check(k)\n")!
+    rep(&p, "s = s + x % 5", n, 1)
+    p.extend("    y := try check(k + 1)\n")!
+    rep(&p, "s = s + y % 2", n, 1)
+    p.extend("    return s + x + y\n}\n")!
+
+    p.extend(HANDLERS_1)!
+    rep(&p, "s = s + Ids.next_id() % 3", n, 3)
+    p.extend("            if k is 1 { Fail.fail(\"one\") }\n")!
+    rep(&p, "s = s + Ids.next_id() % 5", n, 3)
+    p.extend("        }\n    }\n    return s + counter\n}\n")!
+
+    // A large result returned from the middle, built in the caller's destination.
+    p.extend("big :: fn(k: i64) -> Big {\n    s := 0\n")!
+    rep(&p, "s = s + k % 3", n, 1)
+    p.extend("    if k is 1 { return Big(a: s, b: s + 1, c: s + 2, d: s + 3) }\n")!
+    rep(&p, "s = s + k % 5", n, 1)
+    p.extend("    return Big(a: s, b: k, c: 0, d: 1)\n}\n")!
+
+    // A large parameter read in place by a pure function.
+    p.extend("pure_sum :: fn(b: Big) -> i64 {\n    s := 0\n")!
+    rep(&p, "s = s + b.a % 3", n, 1)
+    rep(&p, "s = s + b.d % 5", n, 1)
+    p.extend("    return s\n}\n")!
+
+    p.extend(FIBER_1)!
+    rep(&p, "s = s + Ask.ask(1) % 3", n, 2)
+    rep(&p, "s = s + Ask.ask(2) % 5", n, 2)
+    p.extend("        s\n    }\n    return total + n\n}\n")!
+    p.extend(MAIN)!
+    return p.items
+}
+
+/// What `gamma` ended with on the program: its exit code and standard output.
+Result :: struct {
+    code: ?u32
+    out: string
+}
+
+/// Runs `gamma` with `args` and `env` (`NAME=value`) on the program at `path`.
+gamma :: fn(t: ^kit.T, args: []const string, env: []const string, path: string) -> kit.Fail!Result needs kit.Run {
+    c := t.gamma(args)
+    c.arg(path)
+    for e in env {
+        sp := str.split_once(e, "=") else continue
+        c.set(sp.before, sp.after)
+    }
+    out := try t.run(c)
+    try t.check(not str.contains(out.err, "C compiler"), "the C compiler failed:\n{}", out.err[0..min(out.err.len, 800)])
+    return Result(code: out.code(), out: out.out)
+}
+
+min :: fn(a, b: usize) -> usize => if a < b { a } else { b }
+
+/// Fails the test unless `a` and `b` are the same result.
+expect_same :: fn(t: ^kit.T, what: string, a, b: Result) -> kit.Fail!() needs Alloc {
+    try t.check(a.code is b.code, "{}: exit status {} instead of {}", what, a.code, b.code)
+    return t.expect_text(what, b.out, a.out)
+}
+
+run_as_in_the_interpreter :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    dir := try t.scratch("long_functions-exits")
+    path := kit.join(dir, "exits.gm")
+    try t.write(path, program(300))
+    interp := try gamma(t, [_]string("run"), empty_slice(string), path)
+    try t.check(interp.code is 0, "the interpreter ended with {}", interp.code)
+    for line in ("iteration 2\n", "loops done 5\n", "errdefer 2\n", "errdefer 3\n", "fail: one\n") {
+        try t.check(str.contains(interp.out, line), "missing {} in:\n{}", kit.quote(line), interp.out)
+    }
+    // Debug builds keep every local in the frame anyway; the others move them there.
+    for mode in ("--mode=debug", "--mode=checked", "--mode=fast") {
+        native := try gamma(t, [_]string("run", "--backend=c", mode), empty_slice(string), path)
+        try expect_same(t, str.format("{} differs from the interpreter", mode)!, native, interp)
+    }
+    // Split into several C files, the helpers must go with the functions that call them.
+    native := try gamma(t, [_]string("run", "--backend=c"), [_]string("GAMMA_C_UNITS=3"), path)
+    try expect_same(t, "the program split into units differs from the interpreter", native, interp)
+    return ()
+}
+
+split_into_helpers :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    dir := try t.scratch("long_functions-split")
+    path := kit.join(dir, "split.gm")
+    try t.write(path, program(300))
+    exe := kit.join(dir, "split")
+    c := t.gamma([_]string("build", "--mode=fast", path, "-o", exe))
+    c.set("GAMMA_C_UNITS", "1")
+    _ = try t.run_ok(c)
+    gen := try t.read(str.format("{}.c", exe)!)
+    try t.check(str.contains(gen, "static GM_NOINLINE int gm_c"), "no helpers in the C code")
+    // No function is long enough left to need Clang's `optnone`.
+    for line in str.lines(gen) {
+        if str.strip_prefix(line, "static ") is not null and str.contains(line, "GM_LONG_FN") {
+            return !t.fail("a function is still marked GM_LONG_FN: {}", kit.quote(line))
+        }
+    }
+    return ()
+}
