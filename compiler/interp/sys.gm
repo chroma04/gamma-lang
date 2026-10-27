@@ -240,7 +240,7 @@ sys_fs :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: 
         .FsRead => {
             buf := try m.sys_dest(span, vals[1])
             f := m.sys.files.get(h) else return SYS_BADF
-            if m.threads.list.items.len > 1 { return sys_count(try m.read_on_host_thread(span, f, buf)) }
+            if m.threads.list.items.len > 1 { return sys_count((try m.on_host_thread(span, .Read(f, buf))).count) }
             return sys_count(Fs.read(f, buf))
         }
         .FsWrite => {
@@ -325,7 +325,11 @@ sys_net :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals:
             host := try m.sys_src(span, vals[0])
             port := m.get_uint(vals[1]).trunc(u16)
             r: IoError!net.Socket = !.Unsupported
-            thread.defaults(fn() needs Net { r = Net.connect(host, port) })
+            if m.threads.list.items.len > 1 {
+                r = try m.socket_on_host_thread(span, .Connect(string(host), port))
+            } else {
+                thread.defaults(fn() needs Net { r = Net.connect(host, port) })
+            }
             s := r else err => return sys_code(err)
             handle := sys_next_handle(&m.sys)
             m.sys.streams.put(handle, s)!
@@ -351,7 +355,11 @@ sys_net :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals:
         .NetAccept => {
             l := m.sys.listeners.get(h) else return SYS_BADF
             r: IoError!net.Socket = !.Unsupported
-            thread.defaults(fn() needs Net { r = Net.accept(l) })
+            if m.threads.list.items.len > 1 {
+                r = try m.socket_on_host_thread(span, .Accept(l))
+            } else {
+                thread.defaults(fn() needs Net { r = Net.accept(l) })
+            }
             s := r else err => return sys_code(err)
             handle := sys_next_handle(&m.sys)
             m.sys.streams.put(handle, s)!
@@ -361,14 +369,22 @@ sys_net :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals:
             data := try m.sys_src(span, vals[1])
             s := m.sys.streams.get(h) else return SYS_BADF
             r: IoError!usize = !.Unsupported
-            thread.defaults(fn() needs Net { r = Net.send(s, data) })
+            if m.threads.list.items.len > 1 {
+                r = (try m.on_host_thread(span, .Send(s, data))).count
+            } else {
+                thread.defaults(fn() needs Net { r = Net.send(s, data) })
+            }
             return sys_net_count(r)
         }
         .NetRecv => {
             buf := try m.sys_dest(span, vals[1])
             s := m.sys.streams.get(h) else return SYS_BADF
             r: IoError!usize = !.Unsupported
-            thread.defaults(fn() needs Net { r = Net.recv(s, buf) })
+            if m.threads.list.items.len > 1 {
+                r = (try m.on_host_thread(span, .Recv(s, buf))).count
+            } else {
+                thread.defaults(fn() needs Net { r = Net.recv(s, buf) })
+            }
             return sys_net_count(r)
         }
         .NetClose => {
@@ -412,6 +428,18 @@ sys_net :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals:
         }
         _ => return !m.trap(span, "internal error: not a network service")
     }
+}
+
+/// A `Connect` or `Accept` on a host thread: the new socket.
+socket_on_host_thread :: fn(m: ^Machine, span: source.Span, op: HostOp) -> Flow!(IoError!net.Socket) needs Run {
+    r := try m.on_host_thread(span, op)
+    result: IoError!net.Socket = !.Unsupported
+    if s := r.socket { result = s }
+    _ = r.count else e => {
+        result = !e
+        return result
+    }
+    return result
 }
 
 /// The child-process services.

@@ -22,6 +22,9 @@
 //! The tests also check that every example has at least one case, and that the
 //! examples are formatted as `gamma fmt` formats them.
 //!
+//! `GAMMA_TEST_COMPILER=path` runs the cases with another compiler that has `gamma`'s
+//! command line, such as `gammac` (see `tests/conformance.rs`).
+//!
 //! Set `BLESS=1` to rewrite the `.stdout` files from the interpreter's output, and
 //! `GAMMA_TEST_FILTER=substring` to run only the cases whose name contains it.
 
@@ -105,12 +108,26 @@ fn cases() -> Vec<Case> {
 
 /// Runs `case`, through the C back end if `c` is set; returns (exit status, stdout, stderr).
 fn run(case: &Case, c: bool) -> Result<(i32, String, String), String> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    // `GAMMA_TEST_COMPILER` names another compiler with `gamma`'s command line (`gammac`),
+    // as for the conformance tests.
+    let other = std::env::var_os("GAMMA_TEST_COMPILER").filter(|v| !v.is_empty());
+    let mut cmd = match &other {
+        Some(exe) => {
+            let mut cmd = Command::new(exe);
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            cmd.env("GAMMA_STD", root.join("lib/std")).env("GAMMA_RUNTIME", root.join("runtime"));
+            cmd
+        }
+        None => Command::new(env!("CARGO_BIN_EXE_gamma")),
+    };
     cmd.env("GAMMA_CACHE_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"));
     cmd.current_dir(examples_dir());
     cmd.arg(&case.command);
     if c {
         cmd.arg("--backend=c");
+    } else if other.is_some() && case.command == "run" {
+        // gammac runs programs through C by default.
+        cmd.arg("--backend=interp");
     }
     cmd.arg(&case.example);
     cmd.args(&case.args);

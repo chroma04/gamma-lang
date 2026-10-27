@@ -9,6 +9,7 @@
 // compiled program; the main thread reports it when it next runs.
 
 fs :: import "std/fs"
+net :: import "std/net"
 thread :: import "std/thread"
 
 /// How many calls or loop iterations a thread runs before letting another one in.
@@ -210,36 +211,63 @@ sleep :: fn(m: ^Machine, span: source.Span, ns: u64) -> Flow!() needs Run {
     try m.switch_thread(span)
 }
 
-/// A read of a file on a host thread of its own.
-HostRead :: struct {
-    file: fs.File
-    buf: []u8
-    result: IoError!usize
+/// A call that may block, made on a host thread of its own when the program has several
+/// threads.
+pub HostOp :: union {
+    Read: (file: fs.File, buf: []u8)
+    Connect: (host: string, port: u16)
+    Accept: net.Listener
+    Send: (socket: net.Socket, data: []const u8)
+    Recv: (socket: net.Socket, buf: []u8)
+}
+
+/// What a call on a host thread gave: a count (0 for `Connect` and `Accept`) and the new
+/// socket of `Connect` or `Accept`.
+pub HostResult :: struct {
+    count: IoError!usize
+    socket: ?net.Socket = null
+}
+
+HostCall :: struct {
+    op: HostOp
+    result: HostResult
     done: u32
 }
 
-host_read_main :: fn(j: ^HostRead) needs Sys {
-    thread.defaults(fn() { j.result = Fs.read(j.file, j.buf) })
+host_main :: fn(j: ^HostCall) needs Sys {
+    thread.defaults(fn() needs Fs + Net {
+        j.result = match j.op {
+            .Read(f, buf) => HostResult(count: Fs.read(f, buf))
+            .Send(s, data) => HostResult(count: Net.send(s, data))
+            .Recv(s, buf) => HostResult(count: Net.recv(s, buf))
+            .Connect(host, port) => connected(Net.connect(host, port))
+            .Accept(l) => connected(Net.accept(l))
+        }
+    })
     @atomic_store(&j.done, 1, .Release)
 }
 
-/// `Fs.read(f, buf)` when the program has several threads: the read, which may block (a
-/// pipe), runs on a host thread while the other threads go on, as they do in the
-/// reference implementation, which releases its lock around calls that may block.
-read_on_host_thread :: fn(m: ^Machine, span: source.Span, f: fs.File, buf: []u8) -> Flow!(IoError!usize) needs Run {
-    j := new(HostRead(file: f, buf: buf, result: 0, done: 0))!
-    t := thread.spawn(host_read_main, j) else e => {
-        free(slice_of_read(j))
-        failed: IoError!usize = !e
-        return failed
+connected :: fn(r: IoError!net.Socket) -> HostResult {
+    s := r else e => return HostResult(count: !e)
+    return HostResult(count: 0, socket: s)
+}
+
+/// Makes the call `op`, which may block (reading a pipe, waiting for a connection), on a
+/// host thread while the other threads go on, as they do in the reference implementation,
+/// which releases its lock around calls that may block.
+on_host_thread :: fn(m: ^Machine, span: source.Span, op: HostOp) -> Flow!HostResult needs Run {
+    j := new(HostCall(op: op, result: HostResult(count: 0), done: 0))!
+    t := thread.spawn(host_main, j) else e => {
+        free(slice_of_call(j))
+        return HostResult(count: !e)
     }
     m.threads.list.items[usize(m.threads.cur)].state = .Host(&j.done)
     r := m.switch_thread(span)
     thread.join(t)
     result := j.result
-    free(slice_of_read(j))
+    free(slice_of_call(j))
     try r
     return result
 }
 
-slice_of_read :: fn(j: ^HostRead) -> []HostRead => j.cast([^]HostRead)[0..1]
+slice_of_call :: fn(j: ^HostCall) -> []HostCall => j.cast([^]HostCall)[0..1]
