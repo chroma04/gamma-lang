@@ -15,6 +15,7 @@
 //!     gammac new|init|fetch|update|add|remove|cache ...      (the package manager)
 //!     gammac fmt [--check] FILE|DIR...
 //!     gammac doc [--format=markdown|html] [-o PATH] [--all] [--missing] MODULE
+//!     gammac repl [--quiet] [--mode=debug|checked|safe|fast] [FILE]
 //!     gammac lsp
 //!     gammac help | version
 //!
@@ -43,6 +44,7 @@ load :: import "./load"
 lsp :: import "./lsp"
 parse :: import "./parse"
 pkg :: import "./pkg"
+repl :: import "./repl"
 sema :: import "./sema"
 source :: import "./source"
 str :: import "std/str"
@@ -75,6 +77,8 @@ commands:
   new, init, fetch, update, add, remove, cache
           the package manager (gammac help)
   fmt     format source files in place: gammac fmt [--check] <file or directory>... ("-" filters stdin to stdout)
+  repl    interactive read-eval-print loop on the interpreter: gammac repl [--quiet] [file]
+          (loads the file's declarations)
   lsp     run the language server on standard input and output
   help    print this message
   version print the compiler version
@@ -82,10 +86,11 @@ commands:
 options:
   --diag-format=human|short|json
                               how to print diagnostics (default: human)
+  --quiet                     (repl) no banner and prompts, even on a terminal
   --recover                   (lex, parse) lex with the layout recovery tools use after errors
   --dump                      (parse) print the syntax tree
   --mode=debug|checked|safe|fast
-                              (build, run, test, bench) the build mode (default: debug); safe builds
+                              (build, run, test, bench, repl) the build mode (default: debug); safe builds
                               with Fil-C
   --target=<triple>           (check, build, run, test, bench) the target (default: the C compiler's)
   -g                          (build, run) add debug information that maps the executable back to the
@@ -157,6 +162,20 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
     if command is "lsp" {
         if args.len > 2 { usage_error(str.format("unknown option `{}`", args[2])!) }
         Env.exit(lsp.command())
+    }
+    if command is "repl" {
+        match repl.parse_options(args[2..]) {
+            .Help => {
+                Out.write(USAGE)
+                return
+            }
+            .Bad(message) => usage_error(message)
+            .Run(o) => {
+                ro := o
+                ro.version = VERSION
+                Env.exit(repl.command_run(ro))
+            }
+        }
     }
     opts := driver.Options(command: match command {
         "lex" => .Lex

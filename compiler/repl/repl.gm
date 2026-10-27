@@ -1,0 +1,580 @@
+//! `gammac repl`: an interactive read-eval-print loop on the interpreter. Mirrors
+//! `src/repl/mod.rs`.
+//!
+//! There is no incremental compilation, so every input is checked and run as a complete
+//! program that is synthesized from the session so far:
+//!
+//! - Top-level declarations (functions, types, effects, imports, constants) are kept as
+//!   source text and form the module. A declaration with an existing name replaces the
+//!   old one.
+//! - Statements run inside a synthesized `main`. Variables cannot outlive a run of the
+//!   interpreter, so the statements that define them are replayed, with their output
+//!   hidden, before each new input. Only statements that can be repeated without visible
+//!   effect are kept: those that need no ambient effect other than `Alloc`, and variable
+//!   definitions.
+//! - A variable defined again gets a fresh internal name, because locals cannot be
+//!   shadowed; later inputs are rewritten to use it.
+//!
+//! Each synthesized program is checked and run in its own arena (`session.gm`); `input.gm`
+//! tells declarations from statements and unfinished inputs, and `report.gm` renders
+//! diagnostics and traps relative to the input.
+
+diag :: import "../diag"
+driver :: import "../driver"
+fs :: import "std/fs"
+load :: import "../load"
+str :: import "std/str"
+
+/// Everything the REPL needs from the host.
+Host :: Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
+
+libc :: foreign "c" {
+    isatty :: fn(fd: i32) -> i32 needs not
+}
+
+pub Options :: struct {
+    /// No banner and no prompts (always the case when stdin is not a terminal).
+    pub quiet: bool = false
+    pub mode: driver.Mode = .Debug
+    pub format: diag.Format = .Human
+    /// A file whose declarations are loaded before the first prompt.
+    pub preload: ?string = null
+    /// The compiler's version, for the banner.
+    pub version: string = ""
+}
+
+/// What the command line of `gammac repl` asks for.
+pub Cli :: union {
+    Run: Options
+    Help
+    Bad: string
+}
+
+/// Reads the arguments after `repl`.
+pub parse_options :: fn(args: []const string) -> Cli needs Alloc {
+    o := Options()
+    i: usize = 0
+    while i < args.len {
+        a := args[i]
+        i += 1
+        match a {
+            "--help", "-h" => return .Help
+            "--quiet" => { o.quiet = true }
+            "--mode=debug" => { o.mode = .Debug }
+            "--mode=checked" => { o.mode = .Checked }
+            "--mode=safe" => { o.mode = .Safe }
+            "--mode=fast" => { o.mode = .Fast }
+            "--diag-format=human" => { o.format = .Human }
+            "--diag-format=short" => { o.format = .Short }
+            "--diag-format=json" => { o.format = .Json }
+            "--dump", "--offline", "--locked", "--all", "--show-output", "--time", "--coverage", "-g" => {}
+            "-o", "-j", "--jobs" => {
+                if i >= args.len {
+                    if a is "-o" { return .Bad("`-o` needs a file name") }
+                    return .Bad(str.format("`{}` needs a number", a)!)
+                }
+                i += 1
+            }
+            _ => {
+                if a.starts_with("--mode=") { return .Bad(str.format("invalid value `{}` for --mode (expected debug, checked, safe or fast)", a[7..])!) }
+                if a.starts_with("--diag-format=") { return .Bad(str.format("invalid value `{}` for --diag-format (expected human, short or json)", a[14..])!) }
+                if a.starts_with("--backend=") {
+                    value := a[10..]
+                    if value not in ("c", "cranelift", "interp") { return .Bad(str.format("invalid value `{}` for --backend (expected c, cranelift or interp)", value)!) }
+                    continue
+                }
+                if a.starts_with("--profile=") {
+                    if a.len is 10 { return .Bad("`--profile=` needs a profile name") }
+                    continue
+                }
+                if a.starts_with("--target=") {
+                    if a.len is 9 { return .Bad("`--target=` needs a target triple") }
+                    continue
+                }
+                if a.starts_with("--timeout=") or a.starts_with("--jobs=") or a.starts_with("--coverage=") or a.starts_with("--filter=") or a.starts_with("--package=") { continue }
+                if a.starts_with("-") { return .Bad(str.format("unknown option `{}`", a)!) }
+                if o.preload is not null { return .Bad("more than one input file given") }
+                o.preload = a
+            }
+        }
+    }
+    return .Run(o)
+}
+
+HELP :: `Enter an expression to print its value, a statement or a definition to add it to the session.
+An input continues on the next line while brackets are open or it is incomplete.
+
+  :help             this text (:h, :?)
+  :quit             leave (:q, :exit; so does end of input)
+  :type <expr>      (:t) the type of an expression, which is not run unless it must be
+  :list             the definitions and variables of the session
+  :load <file>      add the declarations of a file
+  :reset            forget everything
+  :cancel           (on a continuation line) discard the input so far
+`
+
+/// A statement kept for replay.
+Rec :: struct {
+    /// As the user wrote it.
+    shown: string
+    /// As replayed: rewritten for variables that were defined again.
+    text: string
+    /// Replaying it repeats effects other than allocation: it defines a variable from
+    /// such an expression.
+    impure: bool
+}
+
+Chunk :: struct {
+    names: []string
+    text: string
+}
+
+Repl :: struct {
+    opts: Options
+    chunks: List(Chunk)
+    recs: List(Rec)
+    /// User variable name -> the name it has in the synthesized `main`.
+    vars: List(Var)
+    fresh: u32
+}
+
+/// How the last input is placed in the synthesized `main`.
+Tail :: struct {
+    prefix: string
+    input: string
+    suffix: string
+}
+
+/// Declared in every synthesized program: names the type an expression gets when its type
+/// is only fixed by use (`1 + 2`).
+HELPERS :: "__repl_type :: fn(T: type, v: T) -> string => @type_name(T)\n\n"
+
+ALL_EFFECTS :: "Alloc + Out + Err + In + Clock + Rand + Fs + Net + Proc + Env + Sys"
+
+new_repl :: fn(opts: Options) -> Repl needs Alloc => Repl(opts: opts, chunks: list(Chunk), recs: list(Rec), vars: list(Var), fresh: 0)
+
+/// Forgets the session.
+reset :: fn(r: ^Repl) {
+    r.chunks.clear()
+    r.recs.clear()
+    r.vars.clear()
+}
+
+/// Checks the session plus `new_decls` (replacing the chunks that declare `replaced`),
+/// the statements `replay`, and `tail`.
+compile :: fn(r: ^Repl, new_decls: ?string, replaced: []const string, replay: []const string, tail: ?Tail, effects: string, sentinel: bool) -> Compiled needs Host {
+    src := list(u8)
+    src.extend(HELPERS)!
+    for c in r.chunks.items {
+        skip := false
+        for n in c.names {
+            for x in replaced {
+                if n is x { skip = true }
+            }
+        }
+        if skip { continue }
+        src.extend(c.text)!
+        src.extend("\n\n")!
+    }
+    lo: usize = 0
+    input := ""
+    if d := new_decls {
+        lo = src.items.len
+        input = d
+        src.extend(d)!
+        src.extend("\n\n")!
+    }
+    src.write("main :: fn() -> AllocError!() needs {} {{\n", effects)!
+    for t in replay {
+        src.extend("    ")!
+        src.extend(t)!
+        src.push('\n')!
+    }
+    if sentinel and replay.len > 0 {
+        src.write("    print(\"{}\")\n    eprint(\"{}\")\n", SENTINEL, SENTINEL)!
+    }
+    if t := tail {
+        src.extend(t.prefix)!
+        lo = src.items.len
+        input = t.input
+        src.extend(t.input)!
+        src.extend(t.suffix)!
+    }
+    src.extend("}\n")!
+    c := check_source(src.items, r.opts.mode, lo.trunc(u32), input)
+    src.deinit()
+    return c
+}
+
+/// The text of the statements kept for replay; only the pure ones if `pure_only`.
+replay_texts :: fn(r: ^const Repl, pure_only: bool) -> List(string) needs Alloc {
+    out := list(string)
+    for rec in r.recs.items {
+        if pure_only and rec.impure { continue }
+        out.push(rec.text)!
+    }
+    return out
+}
+
+/// The variables that are called something else in the synthesized `main`.
+renamed_vars :: fn(r: ^const Repl) -> List(Var) needs Alloc {
+    out := list(Var)
+    for v in r.vars.items {
+        if v.name is not v.internal { out.push(v)! }
+    }
+    return out
+}
+
+/// Prints diagnostics (nothing if the text is empty).
+show :: fn(text: string) needs Err {
+    if text.len > 0 { Err.write(text) }
+}
+
+submit :: fn(r: ^Repl, text: string, c: Classified) needs Host {
+    if c.items is null and c.stmts is null {
+        show(syntax_errors(text, r.opts.format))
+        return
+    }
+    if items := c.items {
+        // `n :: 12` is a constant if it can be one, else a local variable.
+        local: ?StmtInfo = null
+        if s := c.stmts {
+            all := true
+            for i in items {
+                if not i.plain_const { all = false }
+            }
+            if all { local = s }
+        }
+        msg := r.try_decls(text, items) else return
+        if s := local {
+            _ = r.statements(text, s)
+        } else {
+            show(msg)
+        }
+        return
+    }
+    if s := c.stmts { _ = r.statements(text, s) }
+}
+
+/// Adds declarations. On failure the rendered diagnostics are returned.
+try_decls :: fn(r: ^Repl, text: string, items: []const Item) -> ?string needs Host {
+    names := list(string)
+    for i in items {
+        for n in i.names {
+            if n is "main" { return "error: `main` is reserved by the REPL\n" }
+            names.push(n)!
+        }
+    }
+    replay := r.replay_texts(false)
+    c := r.compile(text, names.items, replay.items, null, ALL_EFFECTS, false)
+    replay.deinit()
+    defer c.release()
+    if c.prog is null { return c.shown(r.opts.format) }
+    show(c.shown(r.opts.format))
+    kept := list(Chunk)
+    for ch in r.chunks.items {
+        replaced := false
+        for n in ch.names {
+            for x in names.items {
+                if n is x { replaced = true }
+            }
+        }
+        if not replaced { kept.push(ch)! }
+    }
+    for i in items { kept.push(Chunk(names: i.names, text: i.text))! }
+    r.chunks = kept
+    return null
+}
+
+/// Runs statements. Returns whether the input was accepted.
+statements :: fn(r: ^Repl, text: string, info: StmtInfo) -> bool needs Host {
+    // Variables defined again get fresh names; uses refer to the current ones.
+    defs := list(Def)
+    next_vars := list(Var)
+    next_vars.extend(r.vars.items)!
+    for b in info.bindings {
+        if b.name is "_" { continue }
+        internal := b.name
+        if lookup_var(r.vars.items, b.name) is not null {
+            r.fresh += 1
+            internal = str.format("{}__{}", b.name, r.fresh)!
+        }
+        defs.push(Def(lo: b.lo, hi: b.hi, name: internal))!
+        set_var(&next_vars, b.name, internal)
+    }
+    uses := r.renamed_vars()
+    body := text
+    changed := uses.items.len > 0
+    for d in defs.items {
+        if d.name is not text[usize(d.lo)..usize(d.hi)] { changed = true }
+    }
+    if changed { body = rename(text, defs.items, uses.items) }
+    replay := r.replay_texts(false)
+    raw := Tail(prefix: "    ", input: body, suffix: "\n")
+    c_raw := r.compile(null, empty_slice(string), replay.items, raw, ALL_EFFECTS, true)
+    chosen := c_raw
+    value := false
+    if c_raw.prog is not null {
+        // The raw reading is the one to run.
+    } else if info.single_expr {
+        tail := Tail(prefix: "    __repl_v := ", input: body, suffix: "\n    print(\"{}\\n\", __repl_v)\n")
+        c_val := r.compile(null, empty_slice(string), replay.items, tail, ALL_EFFECTS, true)
+        if c_val.prog is not null {
+            chosen = c_val
+            value = true
+            c_raw.release()
+        } else {
+            unused := false
+            if c_raw.diags.list.items.len > 0 { unused = str.contains(c_raw.diags.list.items[0].message, "is unused") }
+            shown_c := if unused { &c_val } else { &c_raw }
+            show(shown_c.shown(r.opts.format))
+            c_val.release()
+            c_raw.release()
+            replay.deinit()
+            return false
+        }
+    } else {
+        show(c_raw.shown(r.opts.format))
+        c_raw.release()
+        replay.deinit()
+        return false
+    }
+    replay.deinit()
+    defer chosen.release()
+    show(chosen.shown(r.opts.format))
+    // What to replay later: the statement itself, or for a printed expression only when it
+    // may change variables.
+    kept: ?string = null
+    if not value {
+        kept = body
+    } else if may_mutate(body) {
+        kept = str.format("_ = {}", body)!
+    }
+    impure := false
+    kept_text: ?string = null
+    if k := kept {
+        pure := r.replay_texts(true)
+        tail := Tail(prefix: "    ", input: k, suffix: "\n")
+        probe := r.compile(null, empty_slice(string), pure.items, tail, "Alloc", false)
+        impure = probe.prog is null
+        probe.release()
+        pure.deinit()
+        if not impure or info.bindings.len > 0 { kept_text = k }
+    }
+    ok := run(&chosen, r.opts.mode, r.recs.items.len > 0)
+    if not ok { return false }
+    if k := kept_text {
+        if impure {
+            names := list(string)
+            for b in info.bindings { names.push(b.name)! }
+            joined := str.join(names.items, ", ")!
+            eprint("note: {} will be evaluated again before each later input, because its definition has effects\n", joined)
+        }
+        r.recs.push(Rec(shown: dupe(text)!, text: k, impure: impure))!
+    }
+    r.vars = next_vars
+    return true
+}
+
+/// Sets the internal name of variable `name` in `vars`.
+set_var :: fn(vars: ^List(Var), name, internal: string) needs Alloc {
+    for i in 0..vars.items.len {
+        if vars.items[i].name is name {
+            vars.items[i].internal = internal
+            return
+        }
+    }
+    vars.push(Var(name: name, internal: internal))!
+}
+
+/// `:type EXPR`.
+type_of :: fn(r: ^Repl, source_text: string) needs Host {
+    replay := r.replay_texts(false)
+    defer replay.deinit()
+    uses := r.renamed_vars()
+    expr := source_text
+    if uses.items.len > 0 { expr = rename(source_text, empty_slice(Def), uses.items) }
+    direct := Tail(prefix: `    print("{}\n", @type_name(@type_of(`, input: expr, suffix: ")))\n")
+    c := r.compile(null, empty_slice(string), replay.items, direct, ALL_EFFECTS, true)
+    if c.prog is null {
+        bound := Tail(prefix: `    print("{}\n", __repl_type(`, input: expr, suffix: "))\n")
+        c2 := r.compile(null, empty_slice(string), replay.items, bound, ALL_EFFECTS, true)
+        if c2.prog is null {
+            show(c.shown(r.opts.format))
+            c.release()
+            c2.release()
+            return
+        }
+        c.release()
+        c = c2
+    }
+    _ = run(&c, r.opts.mode, r.recs.items.len > 0)
+    c.release()
+}
+
+/// Why a file could not be read, in the words of the operating system.
+read_error_text :: fn(e: fs.ReadError) -> string needs Alloc {
+    if .Io(.Other(code)) := e {
+        if code is 21 { return "Is a directory (os error 21)" }
+    }
+    return load.describe_read_error(e)
+}
+
+/// Adds the declarations of a file; false if that failed.
+load_file :: fn(r: ^Repl, path_text: string) -> bool needs Host {
+    path := str.trim(path_text)
+    bytes := fs.read_all(path) else e => {
+        eprint("error: cannot read {}: {}\n", path, read_error_text(e))
+        return false
+    }
+    if not bytes.utf8_valid() {
+        eprint("error: cannot read {}: stream did not contain valid UTF-8\n", path)
+        return false
+    }
+    text: string = bytes
+    c := classify(text)
+    items := c.items else {
+        show(syntax_errors(text, r.opts.format))
+        return false
+    }
+    rest := list(Item)
+    has_main := false
+    for i in items {
+        is_main := false
+        for n in i.names {
+            if n is "main" { is_main = true }
+        }
+        if is_main { has_main = true } else { rest.push(i)! }
+    }
+    load_text := text
+    if has_main {
+        eprint("note: `main` in {} is not loaded\n", path)
+        parts := list(string)
+        for i in rest.items { parts.push(i.text)! }
+        load_text = str.join(parts.items, "\n\n")!
+    }
+    msg := r.try_decls(load_text, rest.items) else return true
+    show(msg)
+    return false
+}
+
+/// `:list`: the definitions and variables of the session.
+list_session :: fn(r: ^const Repl) needs Host {
+    for c in r.chunks.items { print("{}\n", c.text) }
+    for rec in r.recs.items { print("{}\n", rec.shown) }
+}
+
+is_space :: fn(c: u8) -> bool => c in (' ', '\t', '\n', '\r', 0x0B, 0x0C)
+
+/// Runs a `:` command; false to leave.
+command :: fn(r: ^Repl, line: string) -> bool needs Host {
+    cmd := line
+    arg := ""
+    for i, c in enumerate(line) {
+        if is_space(c) {
+            cmd = line[0..i]
+            arg = str.trim(line[i + 1..])
+            break
+        }
+    }
+    match cmd {
+        ":quit", ":q", ":exit" => return false
+        ":help", ":h", ":?" => Out.write(HELP)
+        ":reset" => r.reset()
+        ":list" => r.list_session()
+        ":type", ":t" => {
+            if arg.len is 0 { eprint("error: `:type` needs an expression\n") } else { r.type_of(arg) }
+        }
+        ":load" => {
+            if arg.len is 0 { eprint("error: `:load` needs a file\n") } else { _ = r.load_file(arg) }
+        }
+        ":cancel" => {}
+        _ => eprint("error: unknown command `{}` (`:help` lists the commands)\n", cmd)
+    }
+    return true
+}
+
+/// What reading a line of input found.
+Next :: union {
+    Line: string
+    End
+    /// A line that is not UTF-8 text; its bytes are consumed.
+    Invalid
+}
+
+/// Reads one line, with its terminator. Reads a byte at a time, so that a program
+/// run by the REPL that reads `In` goes on where the REPL stopped.
+read_line :: fn() -> Next needs Alloc + In {
+    bytes := list(u8)
+    one: [1]u8 = ---
+    while true {
+        n := In.read(one[..]) else 0
+        if n is 0 { break }
+        bytes.push(one[0])!
+        if one[0] is '\n' { break }
+    }
+    if bytes.items.len is 0 { return .End }
+    if not bytes.items.utf8_valid() { return .Invalid }
+    return .Line(bytes.items)
+}
+
+/// Removes trailing `\n` and `\r` characters.
+trim_newlines :: fn(s: string) -> string {
+    n := s.len
+    while n > 0 and s[n - 1] in ('\n', '\r') { n -= 1 }
+    return s[0..n]
+}
+
+/// Runs the REPL on standard input until it ends or `:quit`. Returns the exit status.
+pub command_run :: fn(options: Options) -> u8 needs Host {
+    opts := options
+    interactive := libc.isatty(0) is not 0 and libc.isatty(1) is not 0
+    opts.quiet = opts.quiet or not interactive
+    quiet := opts.quiet
+    r := new_repl(opts)
+    if path := opts.preload {
+        if not r.load_file(path) { return 1 }
+    }
+    if not quiet { print("gammac {} repl; :help for commands, :quit to leave\n", opts.version) }
+    pending := list(u8)
+    while true {
+        if not quiet { Out.write(if pending.items.len is 0 { ">> " } else { ".. " }) }
+        next := read_line()
+        line_text := match next {
+            .End => {
+                if pending.items.len > 0 { r.submit_text(dupe(pending.items)!) }
+                break
+            }
+            .Invalid => {
+                eprint("error: input is not valid UTF-8; the line was ignored\n")
+                continue
+            }
+            .Line(l) => l
+        }
+        line := trim_newlines(line_text)
+        if pending.items.len is 0 {
+            if str.trim_start(line).starts_with(":") {
+                if not r.command(str.trim(line)) { break }
+                continue
+            }
+            if is_blank(line) { continue }
+        } else if str.trim(line) is ":cancel" {
+            pending.clear()
+            continue
+        }
+        if pending.items.len > 0 { pending.push('\n')! }
+        pending.extend(line)!
+        c := classify(pending.items)
+        // A blank line ends an input that only lacks its end, so that its error shows.
+        if c.incomplete and not (str.trim(line).len is 0 and not open_brackets(pending.items)) { continue }
+        text := dupe(pending.items)!
+        pending.clear()
+        r.submit(text, c)
+    }
+    return 0
+}
+
+/// Classifies and submits a complete input.
+submit_text :: fn(r: ^Repl, text: string) needs Host {
+    r.submit(text, classify(text))
+}
