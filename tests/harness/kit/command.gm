@@ -80,6 +80,15 @@ pub show :: fn(c: ^const Command) -> string needs Alloc => str.join(c.argv.items
 /// than the time limit is killed, together with everything it started, and fails the test,
 /// as does one that cannot be started.
 pub run :: fn(t: ^T, c: Command) -> Fail!Output needs Alloc + Clock + Proc + Sys {
+    o := try run_unless_missing(t, c, false)
+    return o?
+}
+
+/// Like `run`, but returns null instead of failing when the program cannot be started (it
+/// is not installed, or not an executable of this system).
+pub try_run :: fn(t: ^T, c: Command) -> Fail!?Output needs Alloc + Clock + Proc + Sys => run_unless_missing(t, c, true)
+
+run_unless_missing :: fn(t: ^T, c: Command, missing_ok: bool) -> Fail!?Output needs Alloc + Clock + Proc + Sys {
     opts := process.SpawnOptions(
         stdin: if c.input is .Null { .Null } else { .Pipe },
         stdout: .Pipe,
@@ -88,7 +97,10 @@ pub run :: fn(t: ^T, c: Command) -> Fail!Output needs Alloc + Clock + Proc + Sys
         env: c.env.items,
         group: true,
     )
-    child := Proc.spawn(c.argv.items, opts) else e => return !t.fail("cannot run `{}`: {}", c.show(), e)
+    child := Proc.spawn(c.argv.items, opts) else e => {
+        if missing_ok { return null }
+        return !t.fail("cannot run `{}`: {}", c.show(), e)
+    }
     w := Watch(child: child, limit: Duration(ns: t.cfg.timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar())
     watcher := thread.spawn(watch, &w) else e => {
         _ = Proc.kill(child)
@@ -184,4 +196,10 @@ feed_input :: fn(f: ^Feed) needs Sys {
         }
         Proc.close_in(f.child)
     })
+}
+
+/// True if `program --version` runs and succeeds: the program is installed.
+pub runs :: fn(program: string) -> bool needs Alloc + Proc {
+    out := process.output([_]string(program, "--version"), process.SpawnOptions(stdin: .Null)) else return false
+    return process.success(out.status)
 }

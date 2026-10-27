@@ -1,5 +1,167 @@
-//! The selfhost suite (being ported from tests/selfhost.rs).
+//! How the compiler in `compiler/` builds itself: `gamma`, the compiler under test
+//! (`GAMMA_TEST_COMPILER`), compiles its own sources to a fixed point, its unit tests pass,
+//! its sources and those of the harness are formatted, the split C form of the bootstrap
+//! seed builds, and a packaged release runs from its installed layout.
 
+driver :: import "gammac/driver"
+fs :: import "std/fs"
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "usage_errors", run: usage_errors))!
+    out.push(kit.Test(name: "unit_tests_pass", run: unit_tests_pass))!
+    out.push(kit.Test(name: "sources_are_formatted", run: sources_are_formatted))!
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "the_compiler_compiles_itself_to_a_fixed_point", run: fixed_point))!
+        out.push(kit.Test(name: "split_emitted_c_builds_the_program", run: split_emitted_c))!
+        out.push(kit.Test(name: "packaged_compiler_runs_from_its_installed_layout", run: packaged_compiler))!
+    }
+}
+
+usage_errors :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    cases := [_][]const string([_]string("check"), [_]string("frobnicate", "x.gm"), [_]string("build", "--mode=slow", "x.gm"))
+    for args in cases {
+        got := try t.run(t.gamma(args))
+        try t.check(got.code() is 2, "gamma {}: exit status {}", args, got.status)
+        try t.expect_contains("stderr", got.err, "\nusage: gamma")
+    }
+    got := try t.run(t.gamma([_]string("lex", "no/such/file.gm")))
+    try t.check(got.code() is 2, "exit status {}", got.status)
+    try t.expect_contains("stderr", got.err, "cannot read `no/such/file.gm`")
+    return ()
+}
+
+unit_tests_pass :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    _ = try t.run_ok(t.gamma([_]string("test", "compiler")))
+    return ()
+}
+
+sources_are_formatted :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // Run `gamma fmt compiler tests/harness` after editing them.
+    out := try t.run(t.gamma([_]string("fmt", "--check", "compiler", "tests/harness")))
+    try t.check(out.success(), "not formatted (run `gamma fmt compiler tests/harness`):\n{}{}", out.out, out.err)
+    return ()
+}
+
+/// The first line where `actual` differs from `expected`: its number, and the two lines.
+first_difference :: fn(expected, actual: string) -> ?(line: usize, expected: string, actual: string) needs Alloc {
+    e := kit.split_lines(expected)
+    a := kit.split_lines(actual)
+    i: usize = 0
+    while i < e.len or i < a.len {
+        x := e.get(i) else "(end of output)"
+        y := a.get(i) else "(end of output)"
+        if x is not y or (i >= e.len) is not (i >= a.len) { return (line: i + 1, expected: x, actual: y) }
+        i += 1
+    }
+    return null
+}
+
+/// `build --emit-c compiler` with the compiler `exe`: the C it generates for itself.
+self_c :: fn(t: ^kit.T, exe, out: string) -> kit.Fail!string needs kit.Run {
+    c := t.gamma_at(exe, [_]string("build", "--emit-c", "-o", out, "compiler"))
+    // One file, whatever the environment asks.
+    c.unset("GAMMA_C_UNITS")
+    built := try t.run(c)
+    try t.check(built.success(), "{} failed to compile itself:\n{}", exe, built.err)
+    return t.read(str.format("{}.c", out)!)
+}
+
+fixed_point :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("selfhost-bootstrap")
+    // Stage 1 (the compiler under test) builds stage 2.
+    stage2 := kit.join(dir, "gamma2")
+    c := t.gamma([_]string("build", "-o", stage2, "compiler"))
+    // One C unit, so that `gamma2.c` holds the whole program.
+    c.set("GAMMA_C_UNITS", "1")
+    built := try t.run(c)
+    try t.check(built.success(), "{} failed to compile itself:\n{}", t.cfg.compiler, built.err)
+    c1: string = try t.read(str.format("{}.c", stage2)!)
+    // Stage 2 generates the same C for itself.
+    c2 := try self_c(t, stage2, kit.join(dir, "gamma3"))
+    // A Debug build links the cached runtime, so its C file starts with the runtime's header
+    // only; `--emit-c` writes the runtime too. Compare the program's own C.
+    rt_h := try t.read(t.repo("runtime/gm_rt.h"))
+    rt_c := try t.read(t.repo("runtime/gm_rt.c"))
+    separate := str.format("#define GM_RT_SEPARATE 1\n{}\n", rt_h)!
+    if rest := str.strip_prefix(c1, separate) {
+        c1 = rest
+        whole := str.format("{}\n{}\n", rt_h, rt_c)!
+        c2 = str.strip_prefix(c2, whole) else return !t.fail("--emit-c does not start with the runtime")
+    }
+    if d := first_difference(c1, c2) {
+        return !t.fail("the C that stage 2 generates differs from stage 1's at line {}:\nstage 1: {}\nstage 2: {}", d.line, d.expected, d.actual)
+    }
+    return ()
+}
+
+/// With `GAMMA_C_UNITS`, `gamma build --emit-c` writes a program as a header, the runtime and
+/// units that include the header (the form of the bootstrap seed): compiled one by one with
+/// the flags of a build and linked, they make the program.
+split_emitted_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("selfhost-split-emit")
+    c := t.gamma([_]string("build", "--emit-c", "-o", kit.join(dir, "life"), "examples/life.gm"))
+    c.set("GAMMA_C_UNITS", "3")
+    emitted := try t.run(c)
+    try t.check(emitted.success(), "gamma build --emit-c failed:\n{}", emitted.err)
+    sources := [_]string("life.rt.c", "life.c", "life.1.c", "life.2.c")
+    for name in sources {
+        try t.check(fs.exists(kit.join(dir, name)), "{} was not written", name)
+    }
+    try t.check(fs.exists(kit.join(dir, "life.h")), "life.h was not written")
+    tc := driver.from_env() else e => return !t.fail("{}", e)
+    objects := list(string)
+    for name in sources {
+        object := str.format("{}.o", kit.join(dir, name))!
+        cc := cc_command(&tc)
+        cc.args([_]string("-std=gnu11", "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread", "-O1", "-c", kit.join(dir, name), "-o", object))
+        out := try t.run(cc)
+        try t.check(out.success(), "{} does not compile:\n{}", name, out.err)
+        objects.push(object)!
+    }
+    program := kit.join(dir, "life")
+    link := cc_command(&tc)
+    link.args([_]string("-pthread", "-o", program))
+    link.args(objects.items)
+    link.arg("-lm")
+    out := try t.run(link)
+    try t.check(out.success(), "the units do not link:\n{}", out.err)
+    run := try t.run(kit.command(program))
+    try t.expect_text("the output", try t.read(t.repo("tests/examples/life.stdout")), run.out)
+    return ()
+}
+
+/// The C compiler of the toolchain with its flags.
+cc_command :: fn(tc: ^const driver.Toolchain) -> kit.Command needs Alloc {
+    c := kit.command(tc.cc[0])
+    c.args(tc.cc[1..])
+    c.args(tc.cflags)
+    return c
+}
+
+/// A packaged `gamma` finds its libraries and runtime from where it is installed: with no
+/// environment variables, started through `PATH` from another directory, it runs a program
+/// on the interpreter, through C and as a built executable (`tools/smoke-release.sh`).
+packaged_compiler :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("selfhost-package")
+    package := kit.command("sh")
+    package.args([_]string("tools/package-release.sh", "test-asset", t.cfg.compiler, dir))
+    _ = try t.run_ok(package)
+    unpack := kit.command("tar")
+    unpack.args([_]string("-C", dir, "-xzf", kit.join(dir, "gamma-test-asset.tar.gz")))
+    _ = try t.run_ok(unpack)
+    installed: ?string = null
+    for r in fs.entries(dir) {
+        e := r else break
+        if e.kind is .Dir and str.strip_prefix(e.name, "gamma-") is not null { installed = kit.join(dir, e.name) }
+    }
+    inst := installed else return !t.fail("the archive holds no gamma directory")
+    for part in ("std", "core", "runtime") {
+        try t.check(fs.exists(kit.join(kit.join(inst, "lib/gamma"), part)), "the archive has no lib/gamma/{}", part)
+    }
+    smoke := kit.command("sh")
+    smoke.args([_]string("tools/smoke-release.sh", kit.join(inst, "bin/gamma")))
+    _ = try t.run_ok(smoke)
+    return ()
+}

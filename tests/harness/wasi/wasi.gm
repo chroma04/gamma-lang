@@ -1,5 +1,243 @@
-//! The wasi suite (being ported from tests/wasi.rs).
+//! WebAssembly for WASI (`--target=wasm32-wasi`): modules built with clang and a WASI
+//! sysroot, transformed by Binaryen's `wasm-opt` when they switch fibers, and run by
+//! Wasmtime. The tests are skipped, saying why, unless all three are available (clang able to
+//! link a C program for `wasm32-wasi`, `wasm-opt`, and `wasmtime` on `PATH`).
+//!
+//! The conformance suite runs the same way with `CC="clang --target=wasm32-wasi"` (the
+//! modules are started by Wasmtime, as `gamma run` does for any `.wasm` program).
 
+fs :: import "std/fs"
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "services", run: services))!
+    out.push(kit.Test(name: "fibers", run: fibers))!
+    out.push(kit.Test(name: "run_and_test_use_wasmtime", run: run_and_test_use_wasmtime))!
+    out.push(kit.Test(name: "traps_and_stack_overflow", run: traps_and_stack_overflow))!
+    out.push(kit.Test(name: "freestanding_wasm_is_still_freestanding", run: freestanding_wasm))!
+}
+
+/// A fresh directory for test `name`.
+tmp :: fn(t: ^kit.T, name: string) -> kit.Fail!string needs Alloc + Fs => t.scratch(kit.join("wasi", name))
+
+/// Whether the tools are there.
+available :: fn(t: ^kit.T) -> kit.Fail!bool needs kit.Run {
+    if not kit.runs("wasm-opt") or not kit.runs("wasmtime") or not kit.runs("clang") { return false }
+    dir := try tmp(t, str.format("probe-{}", t.name.len)!)
+    c := kit.join(dir, "probe.c")
+    try t.write(c, "#include <stdio.h>\nint main(void) { puts(\"ok\"); return 0; }\n")
+    cc := kit.command("clang")
+    cc.args([_]string("--target=wasm32-wasi", "-o", kit.join(dir, "probe.wasm"), c))
+    out := try t.run(cc)
+    return out.success()
+}
+
+/// A command running `gamma` in `dir` with `args`, without the toolchain variables of the
+/// environment.
+gamma :: fn(t: ^kit.T, dir: string, args: []const string) -> kit.Command needs Alloc {
+    c := t.gamma(args)
+    c.dir = dir
+    for v in ("CC", "CFLAGS", "LDFLAGS", "GAMMA_RUNNER", "WASI_SDK_PATH") { c.unset(v) }
+    return c
+}
+
+/// Writes `src` as `main.gm` in a fresh directory and builds it for WASI with the extra
+/// `args`; returns the directory and the module.
+build :: fn(t: ^kit.T, name, src: string, args: []const string) -> kit.Fail!(dir: string, module: string) needs kit.Run {
+    dir := try tmp(t, name)
+    try t.write(kit.join(dir, "main.gm"), src)
+    c := gamma(t, dir, [_]string("build", "--target=wasm32-wasi"))
+    c.args(args)
+    c.arg("main.gm")
+    out := try t.run(c)
+    try t.check(out.success(), "build failed:\n{}", out.err)
+    module := kit.join(dir, "main.wasm")
+    try t.check(fs.exists(module), "no main.wasm")
+    return (dir: dir, module: module)
+}
+
+/// Whether the module was transformed by Asyncify (which exports its functions).
+asyncified :: fn(t: ^kit.T, module: string) -> kit.Fail!bool needs Alloc + Fs {
+    bytes := try t.read(module)
+    return str.contains(bytes, "asyncify_start_unwind")
+}
+
+/// A command running `wasmtime` in `dir`.
+wasmtime :: fn(dir: string, args: []const string) -> kit.Command needs Alloc {
+    c := kit.command("wasmtime")
+    c.args(args)
+    c.dir = dir
+    return c
+}
+
+SERVICES :: `fs :: import "std/fs"
+thread :: import "std/thread"
+process :: import "std/process"
+
+work :: fn(n: ^u32) needs Sys {
+    n^ += 1
+}
+
+main :: fn() -> u8 needs Out + Err + In + Env + Fs + Net + Proc + Clock + Rand + Alloc + Sys {
+    when target.os is .Wasi { print("os: wasi\n") }
+    when target.arch is .Wasm32 { print("arch: wasm32\n") }
+    print("pointers: {} bits, usize: {} bytes\n", target.ptr_bits, @size_of(usize))
+    args := Env.args()
+    print("arguments:")
+    for i in 1..args.len { print(" {}", args[i]) }
+    print("\n")
+    print("variable: {}\n", Env.var("GAMMA_WASI_TEST") else "unset")
+
+    // Files: read one, write one, list the directory.
+    text := fs.read_all("input.txt") else e => {
+        print("cannot read input.txt: {}\n", e)
+        return 1
+    }
+    print("input: {}", string(text))
+    fs.write_all("output.txt", "written by wasm\n") else e => print("cannot write: {}\n", e)
+    print("exists: {} {}\n", fs.exists("output.txt"), fs.exists("missing.txt"))
+
+    // Clocks and random numbers.
+    t0 := Clock.now()
+    Clock.sleep(Duration(ns: 2_000_000))
+    print("clock advanced: {}\n", Clock.now().ns > t0.ns)
+    print("wall clock after 2020: {}\n", Clock.wall() > 1_577_836_800_000_000_000)
+    r: [16]u8 = ---
+    Rand.fill(r[..])
+
+    // What WASI does not offer.
+    if !e := Net.connect("127.0.0.1", 80) { print("connect: {}\n", e) }
+    if !e := Net.listen("127.0.0.1", 0) { print("listen: {}\n", e) }
+    argv := [_]string("echo", "hi")
+    if !e := process.status(argv[..]) { print("process: {}\n", e) }
+    n: u32 = 0
+    if !e := thread.spawn(work, &n) { print("thread: {}\n", e) }
+    Err.write("to standard error\n")
+    return 7
+}
+`
+
+services :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not try available(t) { return !t.skip("needs clang with a WASI sysroot, wasm-opt and wasmtime") }
+    b := try build(t, "services", SERVICES, empty_slice(string))
+    try t.write(kit.join(b.dir, "input.txt"), "hello from the host\n")
+    // No fibers: the module is left as the C compiler made it.
+    try t.check(not try asyncified(t, b.module), "a module without fibers was transformed")
+    out := try t.run(wasmtime(b.dir, [_]string("run", "--dir=.", "--env", "GAMMA_WASI_TEST=set", b.module, "one", "two words")))
+    try t.check(out.code() is 7, "exit status {}:\n{}{}", out.status, out.out, out.err)
+    try t.expect_text(
+        "the output",
+        "os: wasi\narch: wasm32\npointers: 32 bits, usize: 4 bytes\narguments: one two words\nvariable: set\ninput: hello from the host\nexists: true false\nclock advanced: true\nwall clock after 2020: true\nconnect: .Unsupported\nlisten: .Unsupported\nprocess: .Unsupported\nthread: .Unsupported\n",
+        out.out,
+    )
+    try t.expect_text("stderr", "to standard error\n", out.err)
+    try t.expect_text("output.txt", "written by wasm\n", try t.read(kit.join(b.dir, "output.txt")))
+    return ()
+}
+
+FIBERS :: `fiber :: import "std/fiber"
+
+Log :: struct {
+    n: u64
+    sum: u64
+}
+
+task :: fn(l: ^Log) needs fiber.Sched {
+    for i in 0..100 {
+        l.n += 1
+        d := deep(20, i)
+        l.sum += d
+        fiber.Sched.yield_now()
+    }
+}
+
+// Recursion, so that each switch saves and restores several frames.
+deep :: fn(n: u64, x: u64) -> u64 needs fiber.Sched {
+    if n is 0 {
+        fiber.Sched.yield_now()
+        return x
+    }
+    return deep(n - 1, x) + 1
+}
+
+below :: fn(n: u32) -> u64 needs Out + Alloc {
+    if n > 0 { return below(n - 1) + 1 }
+    return run()
+}
+
+run :: fn() -> u64 needs Out + Alloc {
+    l := Log(n: 0, sum: 0)
+    s := fiber.scheduler()
+    defer s.deinit()
+    main_stack: [32768]u8 = ---
+    s1: [32768]u8 = ---
+    s2: [32768]u8 = ---
+    s3: [32768]u8 = ---
+    with &s on main_stack[..] {
+        fiber.spawn(task, &l, s1[..])
+        fiber.spawn(task, &l, s2[..])
+        fiber.spawn(task, &l, s3[..])
+        task(&l)
+        fiber.Sched.join()
+    }
+    print("{} steps, sum {}\n", l.n, l.sum)
+    return l.sum
+}
+
+main :: fn() needs Out + Alloc {
+    // The scheduler runs below a deep stack on the module's own stack.
+    print("{}\n", below(2000))
+}
+`
+
+fibers :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not try available(t) { return !t.skip("needs clang with a WASI sysroot, wasm-opt and wasmtime") }
+    for mode in ("--mode=debug", "--mode=fast") {
+        b := try build(t, "fibers", FIBERS, [_]string(mode))
+        try t.check(try asyncified(t, b.module), "{}: the module was not transformed", mode)
+        out := try t.run(wasmtime(b.dir, [_]string("run", b.module)))
+        try t.check(out.success(), "{}: {}", mode, out.err)
+        try t.expect_text(mode, "400 steps, sum 27800\n29800\n", out.out)
+    }
+    return ()
+}
+
+run_and_test_use_wasmtime :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not try available(t) { return !t.skip("needs clang with a WASI sysroot, wasm-opt and wasmtime") }
+    dir := try tmp(t, "run-test")
+    try t.write(kit.join(dir, "main.gm"), "main :: fn() needs Out + Env {\n    print(\"{}\\n\", Env.args().len)\n}\n\ntest \"arithmetic\" {\n    expect(1 + 1 is 2)\n}\n")
+    out := try t.run(gamma(t, dir, [_]string("run", "--backend=c", "--target=wasm32-wasi", "main.gm", "a", "b")))
+    try t.check(out.success(), "{}", out.err)
+    try t.expect_text("the output", "3\n", out.out)
+    out = try t.run(gamma(t, dir, [_]string("test", "--backend=c", "--target=wasm32-wasi", "main.gm")))
+    try t.check(out.success(), "{}{}", out.out, out.err)
+    try t.expect_contains("the output", out.out, "arithmetic")
+    return ()
+}
+
+TRAPS :: "down :: fn(n: u64) -> u64 {\n    big: [256]u8 = ---\n    big[n % 256] = 1\n    return down(n + 1) + u64(big[3])\n}\n\nmain :: fn() needs Out + Env {\n    if Env.args().len > 1 { print(\"{}\\n\", down(0)) }\n    x: [3]u8 = ---\n    i := Env.args().len + 5\n    x[i] = 1\n}\n"
+
+traps_and_stack_overflow :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not try available(t) { return !t.skip("needs clang with a WASI sysroot, wasm-opt and wasmtime") }
+    b := try build(t, "traps", TRAPS, empty_slice(string))
+    out := try t.run(wasmtime(b.dir, [_]string("run", b.module)))
+    try t.check(out.code() is 134, "exit status {}: {}", out.status, out.err)
+    try t.check(str.strip_prefix(out.err, "trap: index 6 out of bounds for length 3") is not null, "{}", out.err)
+    // Wasmtime's own stack for WebAssembly frames must be the larger, as `gamma run` makes it.
+    out = try t.run(wasmtime(b.dir, [_]string("run", "-W", "max-wasm-stack=268435456", b.module, "deep")))
+    try t.check(out.code() is 134, "exit status {}: {}", out.status, out.err)
+    try t.check(str.strip_prefix(out.err, "trap: stack overflow") is not null, "{}", out.err)
+    return ()
+}
+
+/// A WebAssembly compiler without WASI targets no operating system.
+freestanding_wasm :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not try available(t) { return !t.skip("needs clang with a WASI sysroot, wasm-opt and wasmtime") }
+    dir := try tmp(t, "freestanding")
+    try t.write(kit.join(dir, "lib.gm"), "#export(\"add\")\nadd :: fn(a, b: i32) -> i32 => a + b\n")
+    out := try t.run(gamma(t, dir, [_]string("build", "--target=wasm32-unknown-unknown", "lib.gm")))
+    try t.check(out.success(), "{}", out.err)
+    try t.check(fs.exists(kit.join(dir, "lib.o")), "no lib.o")
+    return ()
+}

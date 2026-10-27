@@ -1,5 +1,235 @@
-//! The cross suite (being ported from tests/cross.rs).
+//! The C toolchain from the environment: `CC` with arguments, `CFLAGS`, `LDFLAGS`, and the
+//! target a cross compiler implies.
+//!
+//! The cross-compilation tests need `clang` (which targets every architecture it was built
+//! for); the end-to-end tests also need a cross gcc (`aarch64-linux-gnu-gcc`,
+//! `s390x-linux-gnu-gcc`) and a way to run its executables (qemu-user, with binfmt or
+//! through `GAMMA_RUNNER`). Each test is skipped, saying why, when what it needs is missing.
 
+driver :: import "gammac/driver"
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "cc_with_arguments", run: cc_with_arguments))!
+        out.push(kit.Test(name: "cflags_and_ldflags_reach_the_compiler", run: cflags_and_ldflags))!
+        out.push(kit.Test(name: "target_follows_the_compiler", run: target_follows_the_compiler))!
+        out.push(kit.Test(name: "unsupported_targets_are_reported", run: unsupported_targets))!
+        out.push(kit.Test(name: "cross_build_runs", run: cross_build_runs))!
+        out.push(kit.Test(name: "big_endian_cross_build_runs", run: big_endian_cross_build_runs))!
+        out.push(kit.Test(name: "target_flag_checks_the_compiler", run: target_flag_checks_the_compiler))!
+    }
+}
+
+PROGRAM :: `S :: struct { a: u8, p: rawptr, c: u16 }
+
+main :: fn() needs Out {
+    when target.arch is .Aarch64 {
+        print("aarch64\n")
+    } else when target.arch is .X86_64 {
+        print("x86_64\n")
+    } else when target.arch is .S390x {
+        print("s390x\n")
+    } else {
+        print("other\n")
+    }
+    when target.endian is .Big {
+        print("big\n")
+    } else {
+        print("little\n")
+    }
+    print("{} {} {}\n", target.ptr_bits, @size_of(S), @offset_of(S, c))
+}
+`
+
+/// A fresh directory holding the program, and the program's path.
+setup :: fn(t: ^kit.T, name: string) -> kit.Fail!(dir: string, src: string) needs Alloc + Fs {
+    dir := try t.scratch(kit.join("cross", name))
+    src := kit.join(dir, "layout.gm")
+    try t.write(src, PROGRAM)
+    return (dir: dir, src: src)
+}
+
+/// Runs `gamma` with `args` and the toolchain variables `env` (`NAME=value`), the others
+/// unset.
+gamma :: fn(t: ^kit.T, args: []const string, env: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    c := t.gamma(args)
+    c.unset("CC")
+    c.unset("CFLAGS")
+    c.unset("LDFLAGS")
+    for e in env { c.env.push(e)! }
+    return t.run(c)
+}
+
+/// `NAME=value`.
+var :: fn(name, value: string) -> string needs Alloc => str.format("{}={}", name, value)!
+
+/// Runs the executable `exe`, behind `GAMMA_RUNNER` if that is set; null if it cannot be
+/// started.
+run_exe :: fn(t: ^kit.T, exe: string) -> kit.Fail!?kit.Output needs kit.Run {
+    runner := driver.runner_from_env() else e => return !t.fail("{}", e)
+    argv := list(string)
+    argv.extend(runner.items)!
+    argv.push(exe)!
+    c := kit.command(argv.items[0])
+    c.args(argv.items[1..])
+    return t.try_run(c)
+}
+
+/// The C toolchain of the environment (`CC`, default `cc`), if its compiler runs.
+env_toolchain :: fn() -> ?driver.Toolchain needs Alloc + Env + Fs + Proc {
+    tc := driver.from_env() else return null
+    if not kit.runs(tc.cc[0]) { return null }
+    return tc
+}
+
+/// Words quoted for the toolchain variables.
+quote :: fn(words: []const string) -> string needs Alloc {
+    out := list(u8)
+    for i, w in enumerate(words) {
+        if i > 0 { out.push(' ')! }
+        out.write("'{}'", w)!
+    }
+    return out.items
+}
+
+cc_with_arguments :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    tc := env_toolchain() else return !t.skip("needs a C compiler")
+    s := try setup(t, "cc-args")
+    exe := kit.join(s.dir, "layout")
+    cflags, ldflags := quote(tc.cflags), quote(tc.ldflags)
+    tg := driver.target(&tc) else e => return !t.fail("{}", e)
+    order := if tg.little_endian { "little\n" } else { "big\n" }
+    // An argument added to CC, and CC with its program quoted.
+    for cc in [_]string(str.format("{} -DGAMMA_UNUSED=1", quote(tc.cc))!, str.format("'{}' -O1 {}", tc.cc[0], quote(tc.cc[1..]))!) {
+        out := try gamma(t, [_]string("build", "-o", exe, s.src), [_]string(var("CC", cc), var("CFLAGS", cflags), var("LDFLAGS", ldflags)))
+        try t.check(out.success(), "CC={}:\n{}", cc, out.err)
+        if run := try run_exe(t, exe) {
+            try t.expect_contains("the output", run.out, order)
+        } else {
+            t.log("built with CC={} but cannot run the result", cc)
+        }
+    }
+    return ()
+}
+
+cflags_and_ldflags :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    tc := env_toolchain() else return !t.skip("needs a C compiler")
+    cc := var("CC", quote(tc.cc))
+    s := try setup(t, "flags")
+    args := [_]string("build", "-o", kit.join(s.dir, "layout"), s.src)
+    out := try gamma(t, args, [_]string(cc, "CFLAGS=-include gamma-no-such-header.h"))
+    try t.check(not out.success(), "a missing header did not fail the build")
+    try t.expect_contains("stderr", out.err, "gamma-no-such-header.h")
+    out = try gamma(t, args, [_]string(cc, "LDFLAGS=-lgamma-no-such-library"))
+    try t.check(not out.success(), "a missing library did not fail the build")
+    try t.expect_contains("stderr", out.err, "gamma-no-such-library")
+    out = try gamma(t, args, [_]string(cc, "CFLAGS=-DX='unterminated"))
+    try t.check(not out.success(), "a bad CFLAGS did not fail the build")
+    try t.expect_contains("stderr", out.err, "CFLAGS")
+    return ()
+}
+
+/// The target follows the compiler: the interpreter, which needs no C headers or libraries,
+/// sees AArch64 layouts and constants when CC targets AArch64.
+target_follows_the_compiler :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not kit.runs("clang") { return !t.skip("needs clang") }
+    s := try setup(t, "target")
+    out := try gamma(t, [_]string("run", "--backend=interp", s.src), [_]string("CC=clang --target=aarch64-linux-gnu"))
+    try t.expect_text("the output for aarch64", "aarch64\nlittle\n64 24 16\n", out.out)
+    out = try gamma(t, [_]string("run", "--backend=interp", s.src), [_]string("CC=clang", "CFLAGS=--target=x86_64-linux-gnu"))
+    try t.expect_text("the output for x86_64", "x86_64\nlittle\n64 24 16\n", out.out)
+    // A 4-byte-pointer target with `__int128` (wasm32 in clang). A compiler that defines no
+    // operating system (WebAssembly without WASI) makes a freestanding program (§3.7.1),
+    // which has no `main` to run, so its layouts are checked at compile time.
+    wasm := kit.join(s.dir, "wasm_layout.gm")
+    try t.write(wasm, "S :: struct { a: u8, p: rawptr, c: u16 }\n@static_assert(target.ptr_bits is 32)\n@static_assert(@size_of(S) is 12)\n@static_assert(@offset_of(S, c) is 8)\n")
+    out = try gamma(t, [_]string("check", wasm), [_]string("CC=clang --target=wasm32-unknown-unknown"))
+    try t.check(out.success(), "{}", out.err)
+    out = try gamma(t, [_]string("run", "--backend=interp", s.src), [_]string("CC=clang --target=s390x-linux-gnu"))
+    try t.expect_text("the output for s390x", "s390x\nbig\n64 24 16\n", out.out)
+    return ()
+}
+
+unsupported_targets :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not kit.runs("clang") { return !t.skip("needs clang") }
+    s := try setup(t, "unsupported")
+    out := try gamma(t, [_]string("build", "-o", kit.join(s.dir, "layout"), s.src), [_]string("CC=clang --target=i686-linux-gnu"))
+    try t.check(not out.success(), "a target without __int128 was accepted")
+    try t.expect_contains("stderr", out.err, "without `__int128`")
+    return ()
+}
+
+/// A whole cross build: compiled by a cross compiler and run under emulation.
+cross_build_runs :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    cc :: "aarch64-linux-gnu-gcc"
+    if not kit.runs(cc) { return !t.skip("needs {}", cc) }
+    s := try setup(t, "aarch64")
+    exe := kit.join(s.dir, "layout")
+    out := try gamma(t, [_]string("build", "-o", exe, s.src), [_]string(var("CC", cc), "LDFLAGS=-static"))
+    try t.check(out.success(), "{}", out.err)
+    // Directly (binfmt), else under qemu-user.
+    ran: ?kit.Output = null
+    ran = try t.try_run(kit.command(exe))
+    if ran is null {
+        q := kit.command("qemu-aarch64")
+        q.arg(exe)
+        ran = try t.try_run(q)
+    }
+    if r := ran {
+        try t.expect_text("the output", "aarch64\nlittle\n64 24 16\n", r.out)
+    } else {
+        t.log("built for AArch64 but cannot run it here")
+    }
+    // `--target` finds the same compiler.
+    out = try gamma(t, [_]string("build", "--target=aarch64-linux-gnu", "-o", exe, s.src), empty_slice(string))
+    try t.check(out.success(), "{}", out.err)
+    return ()
+}
+
+/// A big-endian cross build with `--target`, run under emulation through `GAMMA_RUNNER`.
+big_endian_cross_build_runs :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    cc :: "s390x-linux-gnu-gcc"
+    if not kit.runs(cc) or not kit.runs("qemu-s390x") { return !t.skip("needs {} and qemu-s390x", cc) }
+    s := try setup(t, "s390x")
+    exe := kit.join(s.dir, "layout")
+    env := [_]string("LDFLAGS=-static", "GAMMA_RUNNER=qemu-s390x -L /usr/s390x-linux-gnu")
+    out := try gamma(t, [_]string("build", "--target=s390x-linux-gnu", "-o", exe, s.src), env)
+    try t.check(out.success(), "{}", out.err)
+    q := kit.command("qemu-s390x")
+    q.arg(exe)
+    run := try t.run(q)
+    try t.expect_text("the output", "s390x\nbig\n64 24 16\n", run.out)
+    // `run --backend=c` and `test` start the executable behind the runner.
+    out = try gamma(t, [_]string("run", "--backend=c", "--target=s390x-linux-gnu", s.src), env)
+    try t.expect_text("the output of run", "s390x\nbig\n64 24 16\n", out.out)
+    return ()
+}
+
+/// `--target` picks the compiler and checks that it produces code for the triple.
+target_flag_checks_the_compiler :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    s := try setup(t, "target-flag")
+    // Without a compiler for the triple, say so.
+    out := try gamma(t, [_]string("check", "--target=riscv64-nowhere-gnu", s.src), [_]string("PATH=/nonexistent"))
+    try t.check(not out.success(), "a target without a compiler was accepted")
+    try t.check(str.contains(out.err, "riscv64-nowhere-gnu-gcc") and str.contains(out.err, "CC"), "{}", out.err)
+    if kit.runs("clang") {
+        // clang takes the triple.
+        out = try gamma(t, [_]string("run", "--backend=interp", "--target=s390x-linux-gnu", s.src), [_]string("CC=clang"))
+        try t.expect_text("the output for s390x", "s390x\nbig\n64 24 16\n", out.out)
+        out = try gamma(t, [_]string("run", "--backend=interp", "--target=aarch64-linux-gnu", s.src), [_]string("CC=clang"))
+        try t.expect_text("the output for aarch64", "aarch64\nlittle\n64 24 16\n", out.out)
+        // A compiler for another target than the triple is an error.
+        out = try gamma(t, [_]string("run", "--target=s390x-linux-gnu", s.src), [_]string("CC=clang --target=aarch64-linux-gnu"))
+        try t.check(not out.success(), "a compiler for another target was accepted")
+        try t.expect_contains("stderr", out.err, "does not target")
+        out = try gamma(t, [_]string("run", "--target=aarch64_be-linux-gnu", s.src), [_]string("CC=clang --target=aarch64-linux-gnu"))
+        try t.check(str.contains(out.err, "big-endian") or str.contains(out.err, "little-endian"), "{}", out.err)
+    }
+    out = try gamma(t, [_]string("run", "--target=", s.src), empty_slice(string))
+    try t.check(not out.success(), "an empty --target was accepted")
+    out = try gamma(t, [_]string("run", "--target=s390x-linux-gnu", "--mode=safe", s.src), [_]string("CC=clang"))
+    try t.expect_contains("stderr", out.err, "--mode=safe")
+    return ()
+}
