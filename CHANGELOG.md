@@ -109,6 +109,10 @@ Rust implementation was still the one users ran; it is now `gamma`.
 - Arrays of one element type and different lengths join as a slice of it (§7.12): in the
   branches of `if` and `match`, and in `for x in (a, b)`, whose elements may now be of any
   types with a join (`for s in (bytes, "lit")`).
+- Format templates may number their placeholders (§21.6.1): `print("{1}: {0} ({0:x})", n,
+  name)` writes a value several times or out of order; each value is still evaluated once.
+- The format spec kind `q` writes a `string` or byte slice quoted with escapes, as inside
+  an aggregate: `print("{:q}", "a\tb")` writes `"a\tb"`.
 - In `x in (a, b, c)` and `x in list`, the element and the members are compared at one
   type, joined as the branches of an `if` are (§7.7, §7.12): with `p: []u8`,
   `p in ("get", "put")` and `p in names` (`names: []string`) are accepted; they used to be
