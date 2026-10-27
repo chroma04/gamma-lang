@@ -1,11 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-27) — PRs #1–#93 merged, v0.1.0 tagged
-- s48 (branch claude/retire-rust-phase-3, PR #94): PHASE 3 of retiring Rust (decisions/052):
+## State (2026-10-27) — PRs #1–#95 merged, v0.1.0 tagged
+- s48 (PR #94 MERGED; #95 fixed the same playground root-stack bug on main): PHASE 3 of retiring Rust (decisions/052):
   gamma = compiler/ (names itself gamma), tests run GAMMA_TEST_COMPILER (tools/test.sh),
   CI/release/site from the seed, Rust only compiled. First language change without Rust:
-  §7.7 `in` joins types (§7.12). NEXT: merge #94, user pushes tag rust-reference-final,
-  then phase 4 (delete src/, port the harness). Open: `else` join (pain-points), slow
+  §7.7 `in` joins types (§7.12). NEXT: user pushes tag rust-reference-final (proxy refuses
+  tag pushes), then phase 4 (delete src/, port the harness). Open: `else` join (pain-points), slow
   long expressions, interp speed.
 - s47 (PRs #92, #93): retiring Rust approved (decisions/052); phase 1 (C seed bootstrap/,
   tools/refresh-seed.sh) and phase 2 (lanes/release/site/fuzz without cargo) done.

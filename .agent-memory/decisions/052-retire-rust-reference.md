@@ -17,7 +17,7 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 2. DONE s47 (PR #93): Close Rust-only gaps: all conformance lanes against gammac, Windows release by
    cross-compiling (--target=x86_64-windows, MinGW), playground + fuzz ported, release
    pipeline/install from seed, docs. [release + site without cargo]
-3. DONE s48 (PR #94, pending merge): Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
+3. DONE s48 (PR #94 merged): Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
    (Rust-built vs seed-built gammac emit identical C); drop reference comparisons from
    tests/selfhost.rs. [first language change without Rust]
 4. Delete src/, Cargo, playground crate, msrv/audit jobs; port test harness to Gamma.
@@ -119,3 +119,8 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 - Phase 4 next: delete src/, Cargo, web/playground + web/sitegen crates, msrv/audit/fuzz
   (Rust) jobs, docs/architecture.md map of src/ (+ tests/architecture_doc.rs); port the
   test harness (tests/*.rs) to Gamma; tests/common uses gamma::toolchain (replace).
+- Late s48 fixes in #94: split C units drop always_inline from external decls (cgen/units.gm,
+  run/attributes.gm with GAMMA_C_UNITS=3); formatter kept padding verbatim → not idempotent
+  when text before an aligned `::`/`=>` shrank (fuzz fmt found it; same bug in Rust) → now
+  keeps the source column (fmt/layout.gm relative_column). Gate "first language change
+  without Rust" met by §7.7 `in` (PR #94).
