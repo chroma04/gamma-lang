@@ -900,8 +900,36 @@ pub run_entry :: fn(p: ^Prog, entry: u32, mode: Mode, args: []const string, filt
                 _ => .Exit(mp.exit_status(ret_ty, ret))
             }
         }
-        mp.run_coroutines(run)
+        outcome := mp.run_coroutines(run)
+        mp.deinit()
+        outcome
     }
+}
+
+/// Frees what the machine holds (the trap of an outcome is kept).
+deinit :: fn(m: ^Machine) needs Alloc {
+    for a in m.mem.allocs.items {
+        if a.data.len > 0 { free(a.data) }
+    }
+    m.mem.allocs.deinit()
+    free(m.mem.cache)
+    for c in m.scratch.chunks.items { free(c) }
+    m.scratch.chunks.deinit()
+    m.infos.deinit()
+    m.temps.deinit()
+    m.frames.deinit()
+    m.free_frames.deinit()
+    m.ctxs.deinit()
+    m.free_ctxs.deinit()
+    m.globals.deinit()
+    m.strings.deinit()
+    m.cstrings.deinit()
+    m.cells.deinit()
+    m.alloc_tags.deinit()
+    for s in m.fib.free_stacks.items { free(s) }
+    m.fib.free_stacks.deinit()
+    m.fib.coros.deinit()
+    m.fib.withs.deinit()
 }
 
 /// The exit status of a program whose entry returned `b` of type `t`.
