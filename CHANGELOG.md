@@ -9,8 +9,8 @@ Versions and what each kind of change means are described in
 ### The compiler is written in Gamma
 
 - **Breaking: `gamma` is now the compiler in `compiler/`, written in Gamma.** It replaces
-  the Rust implementation, which is frozen (`src/`, tagged `rust-reference-final`) and no
-  longer built or released. Commands, options and messages are those of `gamma` as
+  the Rust implementation, which has been removed from the repository (its last state is
+  the tag `rust-reference-final`). Commands, options and messages are those of `gamma` as
   before; `gamma --help` and `gamma version` name `gamma`. The earlier `gammac` is gone:
   use `gamma`.
 - **Breaking: `gamma run` compiles through C by default** (it used to interpret).
@@ -25,6 +25,17 @@ Versions and what each kind of change means are described in
   checked-in C seed and builds the current compiler with it, writing
   `target/bootstrap/gamma`. `tools/refresh-seed.sh` and `bootstrap/verify.sh` take a
   `gamma` executable.
+- **The repository builds and tests with a C compiler alone.** The test suites are a
+  Gamma program, `tests/harness/`: `tools/test.sh [-j N] [-v] [--list] [--filter TEXT]
+  [PREFIX...]` builds `gamma` and the harness and runs the tests whose names
+  (`suite/test`) start with a prefix. A program that outlives `GAMMA_TEST_TIMEOUT` is killed
+  with everything it started. The conformance test format is documented in
+  `tests/harness/conformance/conformance.gm`.
+- `tools/difftest` (differential testing of the interpreter against the C back end) is a
+  Gamma program; it generates the same program for a seed as before.
+- The libFuzzer targets moved from `fuzz/gammac/` to `fuzz/` (new inputs go to
+  `fuzz/found/`); the cargo-fuzz targets are gone, as are the Rust web playground and site
+  generator (`web/play` and `web/gen` replace them).
 - **Releases** are `gamma-<platform>.tar.gz` (`.zip` on Windows) for linux-x86_64,
   linux-aarch64, macos-x86_64, macos-aarch64 and windows-x86_64, laid out as
   `bin/gamma` and `lib/gamma/{std,core,runtime}`. `tools/install.sh` and

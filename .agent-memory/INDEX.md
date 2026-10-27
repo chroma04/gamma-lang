@@ -1,52 +1,38 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-27) — PRs #1–#95 merged, v0.1.0 tagged
-- s48 (PR #94 MERGED; #95 fixed the same playground root-stack bug on main): PHASE 3 of retiring Rust (decisions/052):
-  gamma = compiler/ (names itself gamma), tests run GAMMA_TEST_COMPILER (tools/test.sh),
-  CI/release/site from the seed, Rust only compiled. First language change without Rust:
-  §7.7 `in` joins types (§7.12). NEXT: user pushes tag rust-reference-final (proxy refuses
-  tag pushes), then phase 4 (delete src/, port the harness). Open: `else` join (pain-points), slow
-  long expressions, interp speed.
-- s47 (PRs #92, #93): retiring Rust approved (decisions/052); phase 1 (C seed bootstrap/,
-  tools/refresh-seed.sh) and phase 2 (lanes/release/site/fuzz without cargo) done.
-- s46 (PR #91): compiler/interp/ tree-walking interpreter + repl (decisions/051); slow
-  (~100x the old VM in Debug). s45–s45d (PRs #87–#90): every gamma command ported to
-  gammac (roadmap/gammac-cli.md), §7.12 branch join, coverage (050), temp arrays (049).
-- s38–s44: gammac in compiler/ (043): checker DONE (800/800, 046 evaluator, 047), C back
-  end + fixed point (048), parallel C units; roadmap/self-hosting.md. docs/guide/idioms.md =
-  idioms handbook (doc_examples-checked; ADD learned patterns). 044, 045.
-- s33–s37: errors policy + spread (037), HashMap module (038), complex/#vec (039), #soa
-  (040/042), stdlib batch 1 (041). tree-sitter CLI: `npm ci` in editors/tree-sitter-gamma.
-- s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
-  in roadmap/review-2026-10-20.md (P0/P1, most P2/P3 fixed; rest listed there). Fuzz
-  targets in fuzz/ (manifest, archive; seeds via fuzz/seed.sh). New infra:
-  tests/common (GAMMA_TEST_C=1 required in CI, GAMMA_TEST_TIMEOUT), cgen::is_runtime_symbol,
-  cgen::write_generated_c/scratch_path, clif c_abi_ptr/c_thunk/c_shim.
-- s31: website + playground in web/ (decisions/036); broken doc anchors fail the Website job.
-- s30: `gamma lint` (033), wasm32-wasi (034), Cranelift (035), C/Rust guides checked by
-  tests/doc_examples.rs (add a doc to CHECKED_DOCS to opt in). s29: outlining (031), perf (032).
-  s28: outside design review applied (030).
-- The whole spec is implemented in all back ends (interpreter = bytecode VM only since s29,
-  decisions/020; C back end, gcc and clang; Cranelift, 64-bit Linux/macOS only, no -g).
-  Every run test runs on each and must match.
-  Milestones: roadmap/milestones.md (all done; per-area gaps). Decisions: decisions/.
-- MSRV 1.95 (Cargo rust-version, CI job msrv). Tooling: packages (git/path/archive deps, lock, profiles), `gamma lsp`, editors/, release
-  pipeline + install.sh/.ps1, gamma doc/repl/fmt/test/bench/coverage, Windows (MinGW) port.
-  Left for the user: tag v0.1.0, publish the VS Code extension (Marketplace/Open VSX tokens).
-- Build modes: `--mode=debug|checked|safe|fast` (Safe needs Fil-C in /opt/fil). Core modules
-  (is_prelude) may use @heap_*, prelude privates, `is`/@hash on params.
-- CI = fmt + clippy -D warnings + test (ubuntu, macos, windows) + Safe + s390x cross +
-  aarch64 qemu (C + Cranelift) + editors + benchmarks. Verify locally (fmt, clippy -D warnings, cargo test, CC=clang
-  conformance for cgen changes) before pushing.
-- examples/: run by tests/examples.rs (cases in tests/examples/*.run, format in its
-  header); new examples need a case and `gamma fmt`.
-- Older history: sessions/ and decisions/ (s24 `gamma fix`/json diags 028, s27 wishes 029).
+## State (2026-10-27) — PRs #1–#96 merged, v0.1.0 + rust-reference-final tagged
+- s49 (branch claude/serene-cerf-gnjh9y): PHASE 4 of retiring Rust DONE (decisions/052,
+  053): no Rust left (except editors/zed). Tests = `tests/harness/` (Gamma program, ~1315
+  tests, `tools/test.sh [-j N] [-v] [--list] [--filter T] [PREFIX...]`), difftest in Gamma,
+  fuzz/ flattened. Std: SpawnOptions env changes inherited env, clear_env, group (§21.7).
+- s48 (#94/#96): phase 3 — gamma = compiler/, CI/release/site from the seed. First language
+  change without Rust: §7.7 `in` joins (§7.12). Open: `else` join (pain-points), slow long
+  expressions (long_expressions suite ~13 min), interp speed.
+- s47 (#92, #93): retiring Rust (052) phases 1–2: C seed bootstrap/, tools/refresh-seed.sh.
+- s46 (#91): compiler/interp tree-walking interpreter + repl (051); slow.
+- s38–s45d: gammac written in compiler/ (043–050); roadmap/self-hosting.md, gammac-cli.md.
+  docs/guide/idioms.md = idioms handbook (doc_examples-checked; ADD learned patterns).
+- s33–s37: errors policy + spread (037), HashMap (038), complex/#vec (039), #soa (040/042).
+- s32 (#63): whole-codebase review: roadmap/review-2026-10-20.md (written against Rust src;
+  re-check items against compiler/ before acting).
+- Back ends: interpreter (`--backend=interp`, tree-walking) and C (gcc/clang, MinGW, Fil-C
+  Safe, wasm32-wasi, freestanding). `run` defaults to C. Cranelift is gone.
+- Build modes: `--mode=debug|checked|safe|fast`. Core modules (is_prelude) may use @heap_*,
+  prelude privates, `is`/@hash on params.
+- CI (ci.yml): every job runs bootstrap/build.sh then tools/test.sh (subsets for safe,
+  s390x, aarch64, wasi lanes, windows via cross-built gamma.exe + harness.exe), fuzz smoke,
+  difftest, benchmarks, editors. Verify locally: tools/test.sh (or prefixes), gamma fmt
+  --check compiler tests/harness, gamma lint on touched code.
+- examples/: cases in tests/examples/*.run (format: tests/harness/examples/examples.gm);
+  new examples need a case and `gamma fmt`. Conformance format: tests/harness/conformance/.
+- Older history: sessions/ and decisions/.
 
 ## Next steps
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
 1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
-1b. Retiring Rust = decisions/052: phase 4 next (delete src/, port tests/*.rs to Gamma).
+1b. Rust is gone (052/053). Follow-ups: kit helpers (gamma_in, sorted dir listing, jsonl),
+   pain points from s49 workers (pain-points.md), Windows CI of the harness (untested).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.
@@ -60,16 +46,14 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–052, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed. `ls decisions/` for the rest.
+                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
 - gotchas/        environment.md
 
 ## Conventions
-- Session branch per harness; PR into main; CI = fmt + clippy -D warnings + test (ubuntu,
-  macos, windows) + Safe + cross + editors + benchmarks. Use source::canonicalize, never
-  Path::canonicalize (Windows \\?\ paths).
+- Session branch per harness; PR into main.
 - Work in git worktrees for parallel agents (`isolation: worktree`); merge their branches.
 - Docs for humans in docs/ and README.md; never reference this folder from them.
 - Effects: `fn() -> T needs Alloc + Out`; set args `Sched(Out + Clock)`; pure C fn `needs not`.

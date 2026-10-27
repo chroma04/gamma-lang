@@ -120,3 +120,16 @@ dangling stores are now compile errors (decisions/045).
 - s49: `needs` is a keyword, so `if needs := …` is a syntax error, and the recovery also
   printed "gamma cannot check this kind of expression yet" (a second, internal-sounding
   error after a parse error) — diagnostic bug, logged in bugs-open.
+- s49 harness workers (6 of them, ~10k lines of Gamma), repeated:
+  - `defer` cannot perform `Env` (cleanup helpers needed narrower effect sets) — 2 workers.
+  - Slice literal args: wanted `["a"]` for `[]const string`, must write `[_]string("a")` —
+    noisy call sites (pkg worker, me). Related to the tuple-of-arrays join above.
+  - `str.format(...)!` everywhere for paths/messages; positional-only placeholders (difftest
+    wanted `{0}`/named) — 3 workers. Path building verbose (`kit.join`).
+  - Keywords as names (`needs`, `handler`, `foreign`) — 3 workers (incl. me).
+  - Integer conversions `usize(i64)` → `.trunc` (2 workers; by design).
+  - No string ordering (`<` on strings) / sort for []string → insertion sorts written (native
+    worker); `items.sort()` works on []string in my code — check what they hit.
+  - No chmod/symlink/mtime/realpath in std/fs → shell out (pkg worker; known gap s45b).
+  - Local struct types not allowed in functions (native worker).
+  FLAGGED to user in s49 summary.

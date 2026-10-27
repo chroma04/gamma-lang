@@ -20,7 +20,8 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 3. DONE s48 (PR #94 merged): Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
    (Rust-built vs seed-built gammac emit identical C); drop reference comparisons from
    tests/selfhost.rs. [first language change without Rust]
-4. Delete src/, Cargo, playground crate, msrv/audit jobs; port test harness to Gamma.
+4. DONE s49 (decisions/053): src/, Cargo, Rust web crates, cargo-fuzz, msrv/audit jobs
+   deleted; tests/harness (Gamma) replaces tests/*.rs; difftest in Gamma. [cc + seed only]
 
 ## Seed design (phase 1)
 - bootstrap/seed/: Debug-mode C (checks on) from `GAMMA_C_UNITS=8 gammac build compiler
