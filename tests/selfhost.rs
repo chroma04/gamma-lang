@@ -785,6 +785,7 @@ fn interpret(gammac: &Path, t: &RunTest, dir: &Path) -> Option<(String, bool)> {
 
 #[test]
 #[cfg(unix)]
+#[allow(clippy::absurd_extreme_comparisons)] // while `INTERP_UNSUPPORTED_MAX` is 0
 fn programs_interpreted_by_gammac_behave_as_expected() {
     let Gammac::Native(gammac) = gammac() else { return };
     let tests: Vec<RunTest> = run_tests().into_iter().filter(|t| !t.native).collect();
