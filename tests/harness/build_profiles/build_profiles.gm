@@ -33,13 +33,6 @@ World :: struct {
     root: string
 }
 
-/// Whether the program `tool` runs.
-have :: fn(tool: string) -> bool needs Alloc + Proc {
-    argv := [_]string(tool, "--version")
-    out := process.output(argv, process.SpawnOptions(stdin: .Null)) else return false
-    return process.success(out.status)
-}
-
 /// Deletes a tree whose directories may be read-only (fetched packages are).
 force_remove :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
     if not fs.exists(p) { return () }
@@ -211,7 +204,7 @@ SHIM_BUILD :: "[build]\nc-sources = [\"c/shim.c\"]\ninclude-dirs = [\"c/include\
 // ---------------------------------------------------------------------------------
 
 c_sources_work_with_every_command :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("cc") { return !t.skip("no C compiler") }
+    if not kit.runs("cc") { return !t.skip("no C compiler") }
     w := try world(t, "c_sources")
     try w.shim_package(SHIM_BUILD)
     // `run` compiles the C source and links its object into the program.
@@ -232,7 +225,7 @@ c_sources_work_with_every_command :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run 
 }
 
 c_objects_follow_changes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("cc") { return !t.skip("no C compiler") }
+    if not kit.runs("cc") { return !t.skip("no C compiler") }
     w := try world(t, "c_cache")
     try w.shim_package(SHIM_BUILD)
     try w.prints("app", [_]string("run", "main.gm"), "5\n")
@@ -258,7 +251,7 @@ c_objects_follow_changes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 }
 
 c_compile_errors_are_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("cc") { return !t.skip("no C compiler") }
+    if not kit.runs("cc") { return !t.skip("no C compiler") }
     w := try world(t, "c_errors")
     try w.shim_package(SHIM_BUILD)
     try w.write("app/c/shim.c", "#include \"shim.h\"\nint shim_add(int a, int b) { return a +; }\n")
@@ -276,7 +269,7 @@ c_compile_errors_are_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 }
 
 profiles_and_precedence :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("cc") { return !t.skip("no C compiler") }
+    if not kit.runs("cc") { return !t.skip("no C compiler") }
     w := try world(t, "profiles")
     manifest :: `
 [build]
@@ -337,7 +330,7 @@ debug_info_comes_from_the_manifest :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run
     try w.write("app/gamma.toml", "[package]\nname = \"app\"\n[build]\ndebug-info = true\nmode = \"debug\"\n")
     try w.write("app/main.gm", MODE_MAIN)
     _ = try w.ok("app", [_]string("run", "main.gm"))
-    if have("cc") {
+    if kit.runs("cc") {
         // With debug information the executable keeps the generated C file's line map.
         _ = try w.ok("app", [_]string("build", "main.gm", "-o", "out"))
         exe := if target.os is .Windows { "app/out.exe" } else { "app/out" }
@@ -431,7 +424,7 @@ wrap_app :: fn(w: ^const World, dep: string) -> kit.Fail!() needs kit.Run {
 }
 
 path_dependencies_can_wrap_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("cc") { return !t.skip("no C compiler") }
+    if not kit.runs("cc") { return !t.skip("no C compiler") }
     w := try world(t, "dep_path")
     try c_dependency(&w, "wrap")
     try wrap_app(&w, "{ path = \"../wrap\" }")
@@ -456,8 +449,8 @@ file_url :: fn(p: string) -> string needs Alloc {
 }
 
 git_dependencies_can_wrap_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("cc") { return !t.skip("no C compiler") }
-    if not have("git") { return !t.skip("no git") }
+    if not kit.runs("cc") { return !t.skip("no C compiler") }
+    if not kit.runs("git") { return !t.skip("no git") }
     w := try world(t, "dep_git")
     try c_dependency(&w, "wrap")
     try w.git([_]string("init", "-q"))
@@ -488,7 +481,7 @@ git :: fn(w: ^const World, args: []const string) -> kit.Fail!() needs kit.Run {
 }
 
 libraries_and_library_directories :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("cc") { return !t.skip("no C compiler") }
+    if not kit.runs("cc") { return !t.skip("no C compiler") }
     w := try world(t, "libs")
     try w.write("app/gamma.toml", "[package]\nname = \"app\"\n[build]\nlibs = [\"vendored\"]\nlib-dirs = [\"vendor/lib\"]\n")
     try w.write("vendor/src/v.c", "int vendored_answer(void) { return 42; }\n")
@@ -520,7 +513,7 @@ main :: fn() needs Out + Sys {
 }
 
 ldflags_of_the_manifest_reach_the_linker :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("cc") { return !t.skip("no C compiler") }
+    if not kit.runs("cc") { return !t.skip("no C compiler") }
     w := try world(t, "ldflags")
     try w.shim_package(str.format("{}ldflags = [\"-lnonexistent_library_for_test\"]\n", SHIM_BUILD)!)
     try w.fails_with("app", [_]string("build", "main.gm"), "nonexistent_library_for_test")

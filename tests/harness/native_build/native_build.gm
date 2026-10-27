@@ -274,18 +274,11 @@ never_overwrite_own_files :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     return ()
 }
 
-/// Whether `program --version` runs.
-tool_runs :: fn(program: string) -> bool needs Alloc + Proc {
-    argv := [_]string(program, "--version")
-    out := process.output(argv[..], process.SpawnOptions(stdin: .Null)) else return false
-    return process.success(out.status)
-}
-
 /// The cached executable of `gamma run --backend=c` is rebuilt when a library that a
 /// `foreign` block names (found through `LDFLAGS`) is replaced.
 relinks_foreign_library :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
-    if not tool_runs("ar") { return !t.skip("no ar") }
+    if not kit.runs("ar") { return !t.skip("no ar") }
     dir := try t.scratch("native_build-foreign_lib")
     libs := kit.join(dir, "libs")
     try make_dir(t, libs)

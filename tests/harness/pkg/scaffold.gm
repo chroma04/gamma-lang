@@ -80,7 +80,7 @@ new_creates_a_working_package :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     ignore := w.get("my-app/.gitignore")
     try t.check(has_line(ignore, "/my_app"), "{}", kit.quote(ignore))
     try t.check(has_line(ignore, "/main"), "{}", kit.quote(ignore))
-    have_git := have("git")
+    have_git := kit.runs("git")
     if have_git { try t.check(w.has("my-app/.git"), "no repository was made") }
     try w.prints(".", [_]string("run", "my-app"), "hello from my_app\n")
     out = try w.ok(".", [_]string("test", "my-app"))
@@ -192,7 +192,7 @@ a_directory_name_that_is_changed_is_reported :: fn(t: ^kit.T) -> kit.Fail!() nee
 }
 
 init_leaves_an_enclosing_repository_alone :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip("git is not installed") }
+    if not kit.runs("git") { return !t.skip("git is not installed") }
     w := try world(t, "init_in_repo")
     try w.mkdir("outer")
     try w.git_run("outer", [_]string("init", "-q"))

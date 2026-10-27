@@ -14,47 +14,15 @@ Server :: struct {
     pending: List(u8)
     taken: usize = 0
     /// The watchdog that kills the server when the test's time limit is over.
-    watch: ^Watch
-    watcher: thread.Thread
-}
-
-Watch :: struct {
-    child: process.Child
-    limit: Duration
-    m: thread.Mutex
-    cv: thread.Condvar
-    done: bool = false
-    fired: bool = false
-}
-
-watch :: fn(w: ^Watch) needs Sys {
-    thread.defaults(fn() needs Clock + Proc {
-        start := Clock.now()
-        w.m.lock()
-        while not w.done {
-            spent := Clock.now().since(start)
-            if spent.ns >= w.limit.ns {
-                w.fired = true
-                _ = Proc.kill(w.child)
-                break
-            }
-            _ = w.cv.wait_timeout(&w.m, w.limit.minus(spent))
-        }
-        w.m.unlock()
-    })
+    watch: kit.Watchdog
 }
 
 /// Starts the server `c` runs, with its input and output connected to the test.
 start_server :: fn(t: ^kit.T, c: kit.Command) -> kit.Fail!Server needs kit.Run {
     opts := process.SpawnOptions(stdin: .Pipe, stdout: .Pipe, stderr: .Null, dir: c.dir, env: c.env.items, group: true)
     child := Proc.spawn(c.argv.items, opts) else e => return !t.fail("cannot run `{}`: {}", c.show(), e)
-    w := new(Watch(child: child, limit: Duration(ns: t.cfg.timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar()))!
-    watcher := thread.spawn(watch, w) else e => {
-        _ = Proc.kill(child)
-        _ = Proc.wait(child)
-        return !t.fail("cannot start a thread: {}", e)
-    }
-    return Server(t: t, child: child, pending: list(u8), watch: w, watcher: watcher)
+    w := try t.watchdog(child)
+    return Server(t: t, child: child, pending: list(u8), watch: w)
 }
 
 /// Sends one message.
@@ -102,12 +70,8 @@ read_until :: fn(s: ^Server, needle: string) -> kit.Fail!string needs kit.Run {
 /// whether it succeeded.
 finish :: fn(s: ^Server) -> kit.Fail!bool needs kit.Run {
     Proc.close_in(s.child)
-    s.watch.m.lock()
-    s.watch.done = true
-    s.watch.m.unlock()
-    s.watch.cv.signal()
-    thread.join(s.watcher)
+    fired := s.watch.disarm()
     status := Proc.wait(s.child) else e => return !s.t.fail("cannot wait for the server: {}", e)
-    if s.watch.fired { return !s.t.fail("the server did not exit within {} s (GAMMA_TEST_TIMEOUT)", s.t.cfg.timeout_s) }
+    if fired { return !s.t.fail("the server did not exit within {} s (GAMMA_TEST_TIMEOUT)", s.t.cfg.timeout_s) }
     return process.success(status)
 }

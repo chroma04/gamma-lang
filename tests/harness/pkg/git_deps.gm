@@ -8,7 +8,7 @@ str :: import "std/str"
 SKIP_GIT :: "git is not installed"
 
 add_fetch_and_run_a_git_dependency :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "add_run")
     try w.new_lib("http", 7, "v1.0.0")
     try w.put("app/gamma.toml", "# my app\n[package]\nname = \"app\"\n")
@@ -53,7 +53,7 @@ main :: fn() needs Out {
 `
 
 packages_are_found_from_a_subdirectory_and_by_file :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "subdir_root")
     try w.new_lib("http", 3, "v1.0.0")
     try w.sum_app(str.format("http = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url_of("http"))!, [_]string("http"))
@@ -70,7 +70,7 @@ packages_are_found_from_a_subdirectory_and_by_file :: fn(t: ^kit.T) -> kit.Fail!
 }
 
 version_requirements_and_update :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "versions")
     try w.new_lib("util", 1, "v1.0.0")
     try w.bump("util", 2, "v1.2.0")
@@ -126,7 +126,7 @@ Ref :: struct {
 }
 
 tags_branches_revs_and_the_default_branch :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "refs")
     try w.new_lib("lib", 1, "v1.0.0")
     first := try w.git("lib", [_]string("rev-parse", "HEAD"))
@@ -170,7 +170,7 @@ tags_branches_revs_and_the_default_branch :: fn(t: ^kit.T) -> kit.Fail!() needs 
 }
 
 the_lockfile_is_checked_with_locked :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "locked")
     try w.new_lib("a", 1, "v1.0.0")
     try w.new_lib("b", 2, "v1.0.0")
@@ -198,7 +198,7 @@ the_lockfile_is_checked_with_locked :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Ru
 }
 
 offline_uses_only_what_is_locked_and_fetched :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "offline")
     try w.new_lib("a", 5, "v1.0.0")
     try w.sum_app(str.format("a = {{ git = \"{}\", version = \"1\" }}\n", w.url_of("a"))!, [_]string("a"))
@@ -221,7 +221,7 @@ offline_uses_only_what_is_locked_and_fetched :: fn(t: ^kit.T) -> kit.Fail!() nee
 }
 
 transitive_dependencies_are_locked_in_the_root :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "transitive")
     try w.new_lib("util", 40, "v0.3.0")
     http_manifest := str.format(
@@ -272,7 +272,7 @@ util_user :: fn(w: ^const World, name, req: string) -> kit.Fail!() needs kit.Run
 }
 
 two_requirements_on_one_repository_share_a_revision :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "shared")
     try w.new_lib("util", 1, "v1.0.0")
     try w.bump("util", 2, "v1.4.0")
@@ -309,7 +309,7 @@ two_requirements_on_one_repository_share_a_revision :: fn(t: ^kit.T) -> kit.Fail
 
 // Names one repository two ways with a symbolic link, which creating on Windows needs a privilege.
 different_refs_of_one_repository_conflict :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "conflict")
     try w.new_lib("util", 1, "v1.0.0")
     try w.bump("util", 2, "v1.1.0")
@@ -344,7 +344,7 @@ cycle_member :: fn(w: ^const World, name, other: string) -> kit.Fail!() needs ki
 }
 
 dependency_cycles_are_errors :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "cycle")
     try w.cycle_member("a", "b")
     try w.cycle_member("b", "a")
@@ -354,7 +354,7 @@ dependency_cycles_are_errors :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 }
 
 a_git_package_cannot_reach_outside_its_checkout :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "escape")
     try w.new_repo(
         "evil",
@@ -370,7 +370,7 @@ a_git_package_cannot_reach_outside_its_checkout :: fn(t: ^kit.T) -> kit.Fail!() 
 }
 
 a_package_in_a_subdirectory :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "subdirs")
     try w.new_repo(
         "mono",
@@ -393,7 +393,7 @@ a_package_in_a_subdirectory :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 }
 
 a_changed_checkout_fails_its_checksum :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "checksum")
     try w.new_lib("a", 1, "v1.0.0")
     try w.sum_app(str.format("a = {{ git = \"{}\", version = \"1\" }}\n", w.url_of("a"))!, [_]string("a"))
@@ -435,7 +435,7 @@ a_changed_checkout_fails_its_checksum :: fn(t: ^kit.T) -> kit.Fail!() needs kit.
 }
 
 remove_drops_the_dependency_and_its_lock_entry :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "remove")
     try w.new_lib("a", 1, "v1.0.0")
     try w.new_lib("b", 2, "v1.0.0")
@@ -466,7 +466,7 @@ remove_drops_the_dependency_and_its_lock_entry :: fn(t: ^kit.T) -> kit.Fail!() n
 }
 
 add_chooses_a_version_or_the_default_branch_and_accepts_paths :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "add_kinds")
     try w.new_lib("tagged", 1, "v0.2.0")
     try w.bump("tagged", 2, "v0.10.1")
@@ -499,7 +499,7 @@ add_chooses_a_version_or_the_default_branch_and_accepts_paths :: fn(t: ^kit.T) -
 }
 
 a_hand_edited_lock_is_noticed :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "edited_lock")
     try w.new_lib("a", 1, "v1.2.3")
     try w.sum_app(str.format("a = {{ git = \"{}\", version = \"1\" }}\n", w.url_of("a"))!, [_]string("a"))
@@ -553,7 +553,7 @@ a_git_url_cannot_be_an_option :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 }
 
 an_empty_lock_is_a_missing_lock :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "empty_lock")
     try w.new_lib("a", 1, "v1.0.0")
     try w.sum_app(str.format("a = {{ git = \"{}\", version = \"1\" }}\n", w.url_of("a"))!, [_]string("a"))
@@ -579,7 +579,7 @@ path_dependencies_are_found_when_the_input_is_a_file :: fn(t: ^kit.T) -> kit.Fai
 }
 
 the_tests_of_a_dependency_run_with_package :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip(SKIP_GIT) }
+    if not kit.runs("git") { return !t.skip(SKIP_GIT) }
     w := try world(t, "dep_tests")
     try w.new_lib("util", 40, "v0.3.0")
     http_manifest := str.format(

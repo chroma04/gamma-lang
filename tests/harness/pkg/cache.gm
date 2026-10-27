@@ -11,7 +11,7 @@ git_dep_app :: fn(w: ^const World) -> kit.Fail!() needs kit.Run {
 }
 
 the_language_server_sees_fetched_git_dependencies :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip("git is not installed") }
+    if not kit.runs("git") { return !t.skip("git is not installed") }
     w := try world(t, "lsp")
     try w.new_lib("http", 7, "v1.0.0")
     try w.sum_app(str.format("http = {{ git = \"{}\" }}\n", w.url_of("http"))!, [_]string("http"))
@@ -52,7 +52,7 @@ talk :: fn(w: ^const World, s: ^Server) -> kit.Fail!() needs kit.Run {
 }
 
 checkouts_are_read_only_and_removable :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip("git is not installed") }
+    if not kit.runs("git") { return !t.skip("git is not installed") }
     w := try world(t, "readonly")
     try w.new_lib("http", 7, "v1.0.0")
     try git_dep_app(&w)
@@ -98,7 +98,7 @@ checkouts_are_read_only_and_removable :: fn(t: ^kit.T) -> kit.Fail!() needs kit.
 }
 
 cache_dir_and_clean :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip("git is not installed") }
+    if not kit.runs("git") { return !t.skip("git is not installed") }
     w := try world(t, "cache_clean")
     try w.new_lib("http", 7, "v1.0.0")
     try git_dep_app(&w)
@@ -160,7 +160,7 @@ cache_dir_and_clean :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 }
 
 symbolic_links_are_checksummed_and_must_stay_inside :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("git") { return !t.skip("git is not installed") }
+    if not kit.runs("git") { return !t.skip("git is not installed") }
     w := try world(t, "symlinks")
     files := lib_items("lnk", 3)
     try w.new_repo("lnk", files, null)

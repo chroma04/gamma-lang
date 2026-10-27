@@ -37,13 +37,6 @@ triple :: fn() -> ?string {
     }
 }
 
-/// Whether `program --version` runs.
-tool_runs :: fn(program: string) -> bool needs Alloc + Proc {
-    argv := [_]string(program, "--version")
-    out := process.output(argv[..], process.SpawnOptions(stdin: .Null)) else return false
-    return process.success(out.status)
-}
-
 /// What a test works with: the target triple and a fresh directory.
 Setup :: struct {
     triple: string
@@ -54,7 +47,7 @@ Setup :: struct {
 /// test is skipped.
 setup :: fn(t: ^kit.T, test: string) -> kit.Fail!Setup needs kit.Run {
     tr := triple() else return !t.skip("needs x86-64 or AArch64 Linux")
-    if not tool_runs("clang") or not tool_runs("nm") or not tool_runs("cc") {
+    if not kit.runs("clang") or not kit.runs("nm") or not kit.runs("cc") {
         return !t.skip("needs clang, nm and cc")
     }
     dir := try t.scratch(str.format("freestanding-{}", test)!)

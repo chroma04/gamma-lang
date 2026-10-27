@@ -126,13 +126,6 @@ on_linux :: fn() -> bool {
     }
 }
 
-/// Whether `program --version` runs.
-tool_runs :: fn(program: string) -> bool needs Alloc + Proc {
-    argv := [_]string(program, "--version")
-    out := process.output(argv[..], process.SpawnOptions(stdin: .Null)) else return false
-    return process.success(out.status)
-}
-
 debug_information_maps_to_the_source :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
     for mode in ("debug", "fast") {
@@ -156,7 +149,7 @@ debug_information_maps_to_the_source :: fn(t: ^kit.T) -> kit.Fail!() needs kit.R
 
 /// Whether the tests of gdb can run; says why not through `t.skip` otherwise.
 need_gdb :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not t.cfg.c or not tool_runs("gdb") or not on_linux() {
+    if not t.cfg.c or not kit.runs("gdb") or not on_linux() {
         return !t.skip("needs a C compiler and gdb on Linux")
     }
     return ()
@@ -294,7 +287,7 @@ gdb_shows_views_without_the_pretty_printers :: fn(t: ^kit.T) -> kit.Fail!() need
 
 /// Whether the tests of lldb can run; says why not through `t.skip` otherwise.
 need_lldb :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not t.cfg.c or not tool_runs("lldb") { return !t.skip("needs a C compiler and lldb") }
+    if not t.cfg.c or not kit.runs("lldb") { return !t.skip("needs a C compiler and lldb") }
     return ()
 }
 

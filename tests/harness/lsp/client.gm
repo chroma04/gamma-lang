@@ -27,8 +27,7 @@ Lsp :: struct {
     /// The server was waited for.
     stopped: bool = false
     err_logged: bool = false
-    watch: ^Watch
-    watcher: thread.Thread
+    watch: kit.Watchdog
 }
 
 /// Starts the server with extra environment settings (`NAME=value`).
@@ -37,44 +36,12 @@ start_with :: fn(t: ^kit.T, env: []const string) -> kit.Fail!Lsp needs kit.Run {
     for e in env { c.env.push(e)! }
     opts := process.SpawnOptions(stdin: .Pipe, stdout: .Pipe, stderr: .Pipe, env: c.env.items, group: true)
     child := Proc.spawn(c.argv.items, opts) else e => return !t.fail("cannot run `{}`: {}", c.show(), e)
-    w := new(Watch(child: child, limit: Duration(ns: t.cfg.timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar()))!
-    watcher := thread.spawn(watch, w) else e => {
-        _ = Proc.kill(child)
-        _ = Proc.wait(child)
-        return !t.fail("cannot start a thread: {}", e)
-    }
-    return Lsp(t: t, child: child, inbuf: list(u8), err: list(u8), queued: list(json.Value), watch: w, watcher: watcher)
+    w := try t.watchdog(child)
+    return Lsp(t: t, child: child, inbuf: list(u8), err: list(u8), queued: list(json.Value), watch: w)
 }
 
 /// Starts the server.
 start :: fn(t: ^kit.T) -> kit.Fail!Lsp needs kit.Run => start_with(t, empty_slice(string))
-
-// The watchdog: kills the server once the time limit is up, unless told it is done.
-Watch :: struct {
-    child: process.Child
-    limit: Duration
-    m: thread.Mutex
-    cv: thread.Condvar
-    done: bool = false
-    fired: bool = false
-}
-
-watch :: fn(w: ^Watch) needs Sys {
-    thread.defaults(fn() needs Clock + Proc {
-        start := Clock.now()
-        w.m.lock()
-        while not w.done {
-            spent := Clock.now().since(start)
-            if spent.ns >= w.limit.ns {
-                w.fired = true
-                _ = Proc.kill(w.child)
-                break
-            }
-            _ = w.cv.wait_timeout(&w.m, w.limit.minus(spent))
-        }
-        w.m.unlock()
-    })
-}
 
 // ---------------------------------------------------------------------------------
 // Ending the server
@@ -83,13 +50,9 @@ watch :: fn(w: ^Watch) needs Sys {
 /// Stops the watchdog and waits for the server, which must have ended or been killed.
 reap :: fn(l: ^Lsp) -> kit.Fail!process.ExitStatus needs Alloc + Proc + Sys {
     l.stopped = true
-    l.watch.m.lock()
-    l.watch.done = true
-    l.watch.m.unlock()
-    l.watch.cv.signal()
-    thread.join(l.watcher)
+    fired := l.watch.disarm()
     status := Proc.wait(l.child) else e => return !l.t.fail("cannot wait for the server: {}", e)
-    if l.watch.fired {
+    if fired {
         return !l.t.fail("the server did not finish within {} s (GAMMA_TEST_TIMEOUT)", l.t.cfg.timeout_s)
     }
     return status

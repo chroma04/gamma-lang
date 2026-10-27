@@ -20,13 +20,6 @@ Item :: struct {
     text: string
 }
 
-/// Whether the program `tool` runs.
-have :: fn(tool: string) -> bool needs Alloc + Proc {
-    argv := [_]string(tool, "--version")
-    out := process.output(argv, process.SpawnOptions(stdin: .Null)) else return false
-    return process.success(out.status)
-}
-
 starts_with :: fn(s, prefix: string) -> bool => str.strip_prefix(s, prefix) is not null
 
 ends_with :: fn(s, suffix: string) -> bool => str.strip_suffix(s, suffix) is not null

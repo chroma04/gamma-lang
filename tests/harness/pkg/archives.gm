@@ -124,7 +124,7 @@ SKIP_CURL :: "curl is not installed"
 // ---------------------------------------------------------------------------------
 
 archive_dependencies_are_downloaded_locked_and_verified :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("curl") { return !t.skip(SKIP_CURL) }
+    if not kit.runs("curl") { return !t.skip(SKIP_CURL) }
     w := try world(t, "archives")
     try util_archive(&w, "dist/util-1.0.0.tar.gz", 5)
     url := w.url_of("dist/util-1.0.0.tar.gz")
@@ -214,7 +214,7 @@ Bad :: struct {
 }
 
 archive_subdirectories_add_and_bad_archives :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    if not have("curl") { return !t.skip(SKIP_CURL) }
+    if not kit.runs("curl") { return !t.skip(SKIP_CURL) }
     w := try world(t, "archives2")
     try make_tgz(
         &w,

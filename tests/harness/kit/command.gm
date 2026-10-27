@@ -101,12 +101,7 @@ run_unless_missing :: fn(t: ^T, c: Command, missing_ok: bool) -> Fail!?Output ne
         if missing_ok { return null }
         return !t.fail("cannot run `{}`: {}", c.show(), e)
     }
-    w := Watch(child: child, limit: Duration(ns: t.cfg.timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar())
-    watcher := thread.spawn(watch, &w) else e => {
-        _ = Proc.kill(child)
-        _ = Proc.wait(child)
-        return !t.fail("cannot start a thread: {}", e)
-    }
+    w := try t.watchdog(child)
     feed := Feed(child: child, bytes: empty_slice(u8))
     feeder: ?thread.Thread = null
     if .Bytes(b) := c.input {
@@ -130,13 +125,9 @@ run_unless_missing :: fn(t: ^T, c: Command, missing_ok: bool) -> Fail!?Output ne
     // The other threads are done with the child before `wait` releases its handle, which a
     // later child may get.
     if f := feeder { thread.join(f) }
-    w.m.lock()
-    w.done = true
-    w.m.unlock()
-    w.cv.signal()
-    thread.join(watcher)
+    fired := w.disarm()
     status := Proc.wait(child)
-    if w.fired {
+    if fired {
         return !t.fail("`{}` did not finish within {} s (GAMMA_TEST_TIMEOUT); output so far:\n{}\n{}", c.show(), t.cfg.timeout_s, string(out.items), string(err.items))
     }
     if e := read_failed { return !t.fail("cannot read the output of `{}`: {}", c.show(), e) }
@@ -153,7 +144,37 @@ pub run_ok :: fn(t: ^T, c: Command) -> Fail!Output needs Alloc + Clock + Proc + 
     return o
 }
 
-// The watchdog of a running program: kills it once its time is up, unless told it is done.
+/// The watchdog of a running program: it kills the program (with everything in its process
+/// group) once the time limit of the tests is up, unless it is disarmed first.
+pub Watchdog :: struct {
+    state: ^Watch
+    thread: thread.Thread
+}
+
+/// Starts a watchdog for `child`. If it cannot be started, the child is killed and waited
+/// for, and the test fails.
+pub watchdog :: fn(t: ^T, child: process.Child) -> Fail!Watchdog needs Alloc + Proc + Sys {
+    w := new(Watch(child: child, limit: Duration(ns: t.cfg.timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar()))!
+    th := thread.spawn(watch, w) else e => {
+        _ = Proc.kill(child)
+        _ = Proc.wait(child)
+        return !t.fail("cannot start a thread: {}", e)
+    }
+    return Watchdog(state: w, thread: th)
+}
+
+/// Stops the watchdog, once, before the child is waited for (`wait` releases its handle,
+/// which a later child may get). Returns whether it killed the child.
+pub disarm :: fn(w: ^Watchdog) -> bool needs Sys {
+    s := w.state
+    s.m.lock()
+    s.done = true
+    s.m.unlock()
+    s.cv.signal()
+    thread.join(w.thread)
+    return s.fired
+}
+
 Watch :: struct {
     child: process.Child
     limit: Duration
