@@ -69,7 +69,20 @@ handler Coro for ^Sched needs Host {
 EXIT_ALL: u32 : 0xFFFF_FFFF
 
 /// The size of the host stack of the root coroutine, which runs the program's own thread.
-ROOT_STACK: usize : 128 << 20
+ROOT_STACK: usize : 1 << 30
+
+/// Host stacks come from `calloc`, whose large blocks the C library maps from fresh zero
+/// pages: they cost memory only as they are used (the heap allocator fills its blocks).
+libc :: foreign "c" {
+    calloc :: fn(n, size: usize) -> ?[^]u8 needs not
+    free :: fn(p: [^]u8) needs not
+}
+
+/// A new host stack of `n` bytes, if the host has the memory.
+host_stack :: fn(n: usize) -> ?[]u8 {
+    p := libc.calloc(1, n) else return null
+    return p[0..n]
+}
 
 /// How much of a host stack the evaluation may use: the rest is kept for the host.
 STACK_MARGIN: usize : 1 << 20
@@ -132,6 +145,7 @@ FState :: union {
 Saved :: struct {
     scratch: Scratch
     temps: List(u64)
+    argv: List([]u8)
     depth: u32
     fiber_stack: u64
     stack_floor: usize
@@ -184,6 +198,7 @@ end_thread :: fn(m: ^Machine, id: u32) needs Run {
     for c in m.scratch.chunks.items { free(c) }
     m.scratch.chunks.deinit()
     m.temps.deinit()
+    m.argv.deinit()
     rec := &m.fib.coros.items[usize(id)]
     rec.finished = true
     t := rec.thread
@@ -202,8 +217,8 @@ STACK_RESERVE: u64 : 8192
 run_coroutines :: fn(m: ^Machine, body: fn() -> Outcome needs Run) -> Outcome needs Host {
     m.fib.coros.push(CoroRec(k: null, started: true, finished: false, arg: m.cast(rawptr), host_stack: empty_slice(u8), saved: null, owner: WithKey(frame: 0, label: 0), epoch: 0, state: .Running, start: null, stack: 0, thread: 0))!
     sched := Sched(m: m)
-    stack := make(u8, ROOT_STACK)!
-    defer free(stack)
+    stack := host_stack(ROOT_STACK)?
+    defer libc.free(stack.ptr)
     return with &sched on stack {
         // The body's own locals are the enclosing function's: the stack is measured in a
         // function it calls.
@@ -236,6 +251,7 @@ coro_main :: fn(m: ^Machine, id: u32) needs Run {
     m.scratch = Scratch(chunks: list([]u8), cur: 0, top: 0)
     m.scratch.chunks.push(make_fill(FIBER_CHUNK, u8(0))!)!
     m.temps = list(u64)
+    m.argv = list([]u8)
     m.depth = 0
     m.fiber_stack = rec.stack
     first := m.fib.mail
@@ -268,6 +284,7 @@ coro_main :: fn(m: ^Machine, id: u32) needs Run {
     for c in m.scratch.chunks.items { free(c) }
     m.scratch.chunks.deinit()
     m.temps.deinit()
+    m.argv.deinit()
     rec = &m.fib.coros.items[us(id)]
     rec.finished = true
     driver := m.with_rec(rec.owner) else return ()
@@ -282,13 +299,14 @@ aborted :: fn() -> Flow needs Alloc => .Trap(new(Trap(message: "internal error: 
 /// Passes control to coroutine `to` with `msg` and waits until a message comes back.
 handoff :: fn(m: ^Machine, to: u32, msg: Msg) -> Msg needs Run {
     me := m.fib.cur
-    m.fib.coros.items[usize(me)].saved = Saved(scratch: m.scratch, temps: m.temps, depth: m.depth, fiber_stack: m.fiber_stack, stack_floor: m.stack_floor)
+    m.fib.coros.items[usize(me)].saved = Saved(scratch: m.scratch, temps: m.temps, argv: m.argv, depth: m.depth, fiber_stack: m.fiber_stack, stack_floor: m.stack_floor)
     m.fib.mail = msg
     Coro.transfer(to)
     s := m.fib.coros.items[usize(me)].saved else return .None
     m.fib.coros.items[usize(me)].saved = null
     m.scratch = s.scratch
     m.temps = s.temps
+    m.argv = s.argv
     m.depth = s.depth
     m.fiber_stack = s.fiber_stack
     m.stack_floor = s.stack_floor
@@ -319,7 +337,7 @@ new_fiber :: fn(m: ^Machine, owner: WithKey, start: Start, state: FState, stack:
     budget := if size > STACK_RESERVE { size - STACK_RESERVE } else { 0 }
     // The host stack of a fiber: room for the interpreter's own frames, which are larger
     // than the program's.
-    id := m.add_coro(start, (us(size.min(16 << 20)) * 8).max(2 << 20), m.threads.cur)
+    id := m.add_coro(start, (us(size.min(8 << 20)) * 32).max(4 << 20), m.threads.cur)
     rec := &m.fib.coros.items[usize(id)]
     rec.owner = owner
     rec.state = state
@@ -340,7 +358,7 @@ add_coro :: fn(m: ^Machine, start: Start, want: usize, thread: u32) -> u32 needs
             break
         }
     }
-    if host.len is 0 { host = make(u8, want)! }
+    if host.len is 0 { host = host_stack(want)? }
     id := m.fib.coros.items.len.trunc(u32)
     arg := new(CoroArg(m: m, id: id))!
     m.fib.coros.push(CoroRec(k: null, started: false, finished: false, arg: arg.cast(rawptr), host_stack: host, saved: null, owner: WithKey(frame: 0, label: 0), epoch: 1, state: .Running, start: start, stack: ~u64(0), thread: thread))!

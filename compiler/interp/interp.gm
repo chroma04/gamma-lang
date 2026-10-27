@@ -106,6 +106,8 @@ Frame :: struct {
     store: []u8
     /// The address of the allocation of each local that has one (0: none yet).
     mem: []u64
+    /// The storage of `mem`, kept when the frame is reused.
+    mem_buf: []u64
     /// Allocations that die with the frame.
     allocs: List(u64)
     /// The loops and `with`s running in it, innermost last.
@@ -188,6 +190,12 @@ pub Machine :: struct {
     /// Temporaries whose address was taken; each statement kills the ones it made.
     temps: List(u64)
     frames: List(?^Frame)
+    /// The sizes of types by id (`~0`: not known yet).
+    sizes: List(u64)
+    /// Finished frames, kept to be reused.
+    frame_pool: List(^Frame)
+    /// The argument values of the calls being made.
+    argv: List([]u8)
     free_frames: List(u32)
     /// The handler contexts, by handle (0: the empty context).
     ctxs: List(CtxNode)
@@ -204,6 +212,8 @@ pub Machine :: struct {
     cells: hash_map.HashMap(usize, (addr: u64, ty: Ty))
     /// The allocations of `#global`s, by index (0: not yet made).
     globals: List(u64)
+    /// The instances of `#thread_local` variables, by index and thread.
+    thread_globals: hash_map.HashMap((usize, u32), u64)
     args: []const string
     /// The slice `Env.args` returns, made on the first call.
     env_args: ?[]u8
@@ -279,6 +289,9 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         scratch: Scratch(chunks: list([]u8), cur: 0, top: 0),
         temps: list(u64),
         frames: list(?^Frame),
+        frame_pool: list(^Frame),
+        sizes: list(u64),
+        argv: list([]u8),
         free_frames: list(u32),
         ctxs: list(CtxNode),
         free_ctxs: list(u32),
@@ -290,6 +303,7 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         cstrings: hash_map.hash_map(usize, u64),
         cells: hash_map.hash_map(usize, (addr: u64, ty: Ty)),
         globals: list(u64),
+        thread_globals: hash_map.hash_map((usize, u32), u64),
         args: args,
         env_args: null,
         fib: fibers(),
@@ -371,7 +385,15 @@ mem_trap :: fn(m: ^const Machine, span: source.Span, e: MemError) -> Flow needs 
 
 kind :: fn(m: ^const Machine, t: Ty) -> TyKind => m.s.tys.kind(t)
 
-size :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc => m.lay.size_of(t)
+/// The size of `t`, cached by type (most operations ask for it).
+size :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc {
+    i := usize(t.id)
+    if i < m.sizes.items.len and m.sizes.items[i] is not ~u64(0) { return m.sizes.items[i] }
+    while m.sizes.items.len <= i { m.sizes.push(~u64(0))! }
+    n := m.lay.size_of(t)
+    m.sizes.items[i] = n
+    return n
+}
 
 align :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc => m.lay.align_of(t)
 
@@ -769,23 +791,24 @@ frame_of :: fn(m: ^const Machine, h: u64) -> ?^Frame {
 
 /// A new frame for a call of `fn_id` (with `info`) whose result goes to `ret`.
 new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret_ty: Ty, ret: []u8, env: ?^Frame) -> ^Frame needs Alloc {
-    mem := empty_slice(u64)
-    if info.addressed.len > 0 { mem = make_fill(info.addressed.len, u64(0))! }
-    fr := new(Frame(
-        id: m.next_frame,
-        handle: 0,
-        fn_id: fn_id,
-        info: info,
-        ret_ty: ret_ty,
-        ret: ret,
-        env: env,
-        store: m.tmp(info.store_size),
-        mem: mem,
-        allocs: list(u64),
-        labels: list(LabelDst),
-        installing: null,
-        is_clause_lit: false,
-    ))!
+    n := info.addressed.len
+    // Finished frames are reused, with their buffers: a call allocates nothing then.
+    fr := m.frame_pool.pop() else new(Frame(id: 0, handle: 0, fn_id: 0, info: info, ret_ty: ret_ty, ret: ret, env: null, store: empty_slice(u8), mem: empty_slice(u64), mem_buf: empty_slice(u64), allocs: list(u64), labels: list(LabelDst), installing: null, is_clause_lit: false))!
+    if fr.mem_buf.len < n {
+        if fr.mem_buf.len > 0 { free(fr.mem_buf) }
+        fr.mem_buf = make_fill(n.max(8), u64(0))!
+    }
+    fr.mem = fr.mem_buf[0..n]
+    fr.mem.fill(0)
+    fr.id = m.next_frame
+    fr.fn_id = fn_id
+    fr.info = info
+    fr.ret_ty = ret_ty
+    fr.ret = ret
+    fr.env = env
+    fr.store = m.tmp(info.store_size)
+    fr.installing = null
+    fr.is_clause_lit = false
     m.next_frame += 1
     if h := m.free_frames.pop() {
         m.frames.items[us(h)] = fr
@@ -800,11 +823,17 @@ new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret_ty: Ty, ret: []u8, e
 /// Ends frame `fr`: its allocations die and its handle is free again.
 end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
     for a in fr.allocs.items { _ = m.mem.kill(a) }
-    fr.allocs.deinit()
-    fr.labels.deinit()
-    if fr.mem.len > 0 { free(fr.mem) }
+    fr.allocs.clear()
+    fr.labels.clear()
     m.frames.items[us(fr.handle - 1)] = null
     m.free_frames.push(fr.handle - 1)!
+    if m.frame_pool.items.len < 256 {
+        m.frame_pool.push(fr)!
+        return ()
+    }
+    fr.allocs.deinit()
+    fr.labels.deinit()
+    if fr.mem_buf.len > 0 { free(fr.mem_buf) }
     free(slice_of(fr))
 }
 
@@ -917,16 +946,26 @@ deinit :: fn(m: ^Machine) needs Alloc {
     m.scratch.chunks.deinit()
     m.infos.deinit()
     m.temps.deinit()
+    for fr in m.frame_pool.items {
+        fr.allocs.deinit()
+        fr.labels.deinit()
+        if fr.mem_buf.len > 0 { free(fr.mem_buf) }
+        free(slice_of(fr))
+    }
+    m.frame_pool.deinit()
+    m.argv.deinit()
+    m.sizes.deinit()
     m.frames.deinit()
     m.free_frames.deinit()
     m.ctxs.deinit()
     m.free_ctxs.deinit()
     m.globals.deinit()
+    m.thread_globals.deinit()
     m.strings.deinit()
     m.cstrings.deinit()
     m.cells.deinit()
     m.alloc_tags.deinit()
-    for s in m.fib.free_stacks.items { free(s) }
+    for s in m.fib.free_stacks.items { libc.free(s.ptr) }
     m.fib.free_stacks.deinit()
     m.fib.coros.deinit()
     m.fib.withs.deinit()

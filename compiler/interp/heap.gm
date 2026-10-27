@@ -3,12 +3,21 @@
 // lengths and vector loads and stores. Atomics are plain accesses: one thread runs at a
 // time (§19.6).
 
+/// The largest alignment a heap allocation can get.
+MAX_HEAP_ALIGN: u64 : 1 << 32
+
 memory_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, args: []Expr, v: [][]u8, res_ty: Ty, dst: []u8) -> Flow!() needs Run {
     match op {
         .HeapAlloc => {
             size := m.get_u64(v[0])
             al := m.get_u64(v[1]).max(1)
             if al & (al - 1) is not 0 { return !m.trap(span, str.format("allocation alignment {} is not a power of two", al)!) }
+            // No host aligns blocks beyond what an address space can hold: such a request is
+            // one the host cannot serve.
+            if al > MAX_HEAP_ALIGN {
+                dst.fill(0)
+                return ()
+            }
             // An allocation the host cannot provide is a null result, not a trap.
             addr := m.mem.alloc(size, al, .Heap, true) else {
                 dst.fill(0)

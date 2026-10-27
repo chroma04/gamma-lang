@@ -28,17 +28,30 @@ cell_addr :: fn(m: ^Machine, span: source.Span, cell: ^tir.Cell, t: Ty, mutable:
 /// The address of the `#global` variable declared by `decl`.
 global_addr :: fn(m: ^Machine, span: source.Span, decl: usize) -> Flow!u64 needs Run {
     i := m.p.global_index(decl) else return !m.trap(span, "internal error: an unknown global variable")
-    if m.globals.items[i] is not 0 { return m.globals.items[i] }
     gl := m.s.globals.items[i]
+    // A `#thread_local` variable has an instance per thread (§19.3).
+    key := (i, if gl.thread_local { m.threads.cur } else { 0 })
+    if gl.thread_local {
+        if a := m.thread_globals.get(key) { return a }
+    } else if m.globals.items[i] is not 0 {
+        return m.globals.items[i]
+    }
     if gl.link_name is not null { return !m.unsupported(span, str.format("the foreign variable `{}`", gl.name)!) }
     al := m.align(gl.ty).max(gl.align else 1)
     addr: u64 = 0
-    if cell := gl.value {
+    if cell := gl.value and not gl.thread_local {
         addr = try m.cell_addr(span, cell, gl.ty, true)
+    } else if cell := gl.value {
+        // Each thread's instance starts from the initial value.
+        addr = try m.alloc_mem(span, m.size(gl.ty), al, .Global, true)
+        b := make_fill(us(m.size(gl.ty)), u8(0))!
+        defer free(b)
+        try m.value_bytes(span, cell.v, gl.ty, b, 0)
+        _ = m.mem.init(addr, b)
     } else {
         addr = try m.alloc_mem(span, m.size(gl.ty), al, .Global, true)
     }
-    m.globals.items[i] = addr
+    if gl.thread_local { m.thread_globals.put(key, addr)! } else { m.globals.items[i] = addr }
     return addr
 }
 

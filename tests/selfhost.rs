@@ -743,7 +743,7 @@ fn programs_compiled_by_gammac_in_a_lane_behave_as_expected() {
 /// cannot run yet (it reports them as not supported) are skipped, any other difference
 /// fails. Raise this as the interpreter grows.
 #[cfg(unix)]
-const INTERP_FLOOR: usize = 30;
+const INTERP_FLOOR: usize = 476;
 
 /// Runs `t` with `gammac run --backend=interp`; returns why it failed, if it did, and
 /// whether that is because the interpreter does not support something yet.
@@ -811,6 +811,66 @@ fn programs_interpreted_by_gammac_behave_as_expected() {
     failures.sort();
     assert!(failures.is_empty(), "{} of {} programs failed:\n{}", failures.len(), tests.len(), failures.join("\n\n"));
     assert!(passed >= INTERP_FLOOR, "only {} of {} programs ran (floor {})", passed, tests.len(), INTERP_FLOOR);
+}
+
+#[test]
+#[cfg(unix)]
+fn repl_matches_the_reference() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let Gammac::Native(gammac) = gammac() else { return };
+    // The sessions of `tests/repl.rs`, and output to compare with the reference's.
+    let sessions = [
+        "1 + 2\n\"hello\"\n(1, true)\n2.5 * 2.0\n",
+        "print(\"hi\\n\")\n",
+        "x := 10\nx * 2\ny :: x + 1\ny\nx = 7\nx + y\n",
+        "x := 5\ny := x + 1\nx := \"text\"\nx\ny\nx := x\nx\n",
+        "greet :: fn() needs Out { print(\"hello\\n\") }\nn := 1\ngreet()\nn := n + 1\nn\ngreet()\n",
+        "total := 0\nfor i in 0..5 {\n    total += i\n}\ntotal\nl := list(i32)\ntry l.push(3)\ntry l.push(4)\nl.items\n",
+        "sq :: fn(n: i32) -> i32 => n * n\nsq(7)\nsq :: fn(n: i32) -> i32 => n * n + 1\nsq(7)\nuse_sq :: fn() -> i32 => sq(2)\nuse_sq()\n",
+        "Point :: struct {\n    x: i32,\n    y: i32,\n}\np := Point(x: 1, y: 2)\np\np.x + p.y\nN :: 3\narr := [N]i32(1, 2, 3)\narr[N - 1]\n",
+        "total :: fn(n: i32) -> i32 {\n    s := 0\n    for i in 0..n {\n        s += i\n    }\n    return s\n}\ntotal(5)\n(1 +\n 2)\n",
+        "x := 5\n:type x\n:type 1 + 2\n:type \"s\"\n:type (x, true)\n:type [2]u8(1, 2)\n",
+        "noisy :: fn() -> i32 needs Out { print(\"ran\\n\"); return 1 }\n:type noisy()\n",
+        "x := 1\ny := undefined_name\nx + \"a\"\nx\nbad :: fn() -> i32 => \"s\"\nx + 1\n",
+        "f :: fn() -> i32 => 1\nf :: fn() -> i32 => \"s\"\nf()\n",
+        "x := 3\ny := 10 / (x - 3)\nx\ntrap(\"boom\")\nx + 1\n",
+        "math :: import \"std/math\"\nmath.sqrt(16.0)\nmath.floor(2.7)\n",
+        "get :: fn() -> i32 needs Out {\n    print(\"once\\n\")\n    return 7\n}\nv := get()\nv + 1\nv + 2\n",
+        "x := 4\nsq :: fn(n: i32) -> i32 => n * n\n:list\n:reset\n:list\nx\n",
+        ":help\n:quit\n1 + 1\n",
+        "1 + 1\nf :: fn() {\n",
+        "main :: fn() {}\n",
+        "}\n3\n4\n",
+        "/* a\n*/\n5\n",
+    ];
+    let run = |mut cmd: Command, input: &str| {
+        cmd.current_dir(root()).arg("repl").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        gammac_env(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let mut failures = vec![];
+    for input in sessions {
+        let expected = run(gamma(), input);
+        let actual = run(Command::new(gammac), input);
+        if expected != actual {
+            failures.push(format!("input {:?}:\nexpected {:?}\n  actual {:?}", input, expected, actual));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} sessions differ:\n{}",
+        failures.len(),
+        sessions.len(),
+        failures.join("\n\n")
+    );
 }
 
 /// `gammac build --emit-c compiler` with `gammac`: the C it generates for itself.

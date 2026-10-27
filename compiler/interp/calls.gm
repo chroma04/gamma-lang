@@ -9,18 +9,25 @@ eval_call :: fn(m: ^Machine, a: Act, callee: tir.Callee, args: []Expr, e: ^Expr,
         cv = m.tmp(m.size(c.ty))
         try m.eval(a, c, cv)
     }
-    vals := list([]u8)
-    defer vals.deinit()
+    // The argument values go on a stack shared by all calls: the callee copies them
+    // before anything else can push.
+    base := m.argv.items.len
     for i in 0..args.len {
         b := m.tmp(m.size(args[i].ty))
-        try m.eval(a, &args[i], b)
-        vals.push(b)!
+        m.eval(a, &args[i], b) else f => {
+            m.argv.truncate(base)
+            return !f
+        }
+        m.argv.push(b)!
     }
-    match callee {
-        .Fn(f) => try m.call_function(e.span, f, vals.items, null, a.cx, null, false, dst)
-        .Perform(effect_, op) => try m.perform(a.cx, e.span, &effect_, op, vals.items, dst)
-        .Indirect(c) => try m.call_value(a.cx, e.span, cv, c.ty, vals.items, dst)
+    vals := m.argv.items[base..m.argv.items.len]
+    r := match callee {
+        .Fn(f) => m.call_function(e.span, f, vals, null, a.cx, null, false, dst)
+        .Perform(effect_, op) => m.perform(a.cx, e.span, &effect_, op, vals, dst)
+        .Indirect(c) => m.call_value(a.cx, e.span, cv, c.ty, vals, dst)
     }
+    m.argv.truncate(base)
+    try r
     m.release(mk)
 }
 

@@ -240,6 +240,7 @@ sys_fs :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: 
         .FsRead => {
             buf := try m.sys_dest(span, vals[1])
             f := m.sys.files.get(h) else return SYS_BADF
+            if m.threads.list.items.len > 1 { return sys_count(try m.read_on_host_thread(span, f, buf)) }
             return sys_count(Fs.read(f, buf))
         }
         .FsWrite => {

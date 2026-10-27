@@ -90,6 +90,15 @@ exec_stmt :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
 
 exec_stmt_inner :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
     match st {
+        .Expr(e) => return m.eval_discard(a, e)
+        _ => return m.exec_other(a, st)
+    }
+}
+
+/// The statements other than expressions.
+#noinline
+exec_other :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
+    match st {
         .Expr(e) => try m.eval_discard(a, e)
         .Let(l, ?init) => {
             fr := a.fr
