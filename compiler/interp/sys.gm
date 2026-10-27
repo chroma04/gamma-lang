@@ -1,0 +1,478 @@
+// The system services of the interpreted program (§12.9; mirrors `src/interp/sys.rs` and
+// `src/interp/proc.rs`): standard input and output, clocks, random bytes, files and
+// directories, TCP sockets and child processes, behind the `Builtin.Sys` intrinsics that the
+// core library's default handlers call. gammac reaches the host's services through the
+// ambient effects (`Fs`, `Proc`, `Clock`, `Rand`, `Out`, `Err`) and, for `In` and `Net`,
+// through the default handlers `thread.defaults` installs, and maps their results back to
+// the raw conventions of the intrinsics: a count or handle, or a negative error code.
+// Threads and futexes are not supported.
+
+fs :: import "std/fs"
+hash_map :: import "std/collections/hash_map"
+net :: import "std/net"
+process :: import "std/process"
+source :: import "../source"
+thread :: import "std/thread"
+tir :: import "../tir"
+
+/// The error code of `EBADF`, which a handle that is not open gets.
+SYS_BADF: i64 : -1009
+/// The error code of `IoError.InvalidInput`.
+SYS_INVALID: i64 : -8
+/// The error code of `IoError.TimedOut`.
+SYS_TIMED_OUT: i64 : -12
+
+/// The open files, directories, sockets and children, by handle.
+SysState :: struct {
+    files: hash_map.HashMap(i64, fs.File)
+    dirs: hash_map.HashMap(i64, fs.Dir)
+    streams: hash_map.HashMap(i64, net.Socket)
+    listeners: hash_map.HashMap(i64, net.Listener)
+    procs: hash_map.HashMap(i64, process.Child)
+    last: i64
+    /// The monotonic clock's reading at the first `ClockNow`, which is time 0.
+    t0: ?u64
+}
+
+sys_state :: fn() -> SysState needs Alloc {
+    return SysState(
+        files: hash_map.hash_map(i64, fs.File),
+        dirs: hash_map.hash_map(i64, fs.Dir),
+        streams: hash_map.hash_map(i64, net.Socket),
+        listeners: hash_map.hash_map(i64, net.Listener),
+        procs: hash_map.hash_map(i64, process.Child),
+        last: 0,
+        t0: null,
+    )
+}
+
+/// The next handle; handles count up from 3.
+sys_next_handle :: fn(s: ^SysState) -> i64 {
+    s.last += 1
+    return s.last + 2
+}
+
+/// The code of the error `e`: `-1 - i` for the `i`th variant of `IoError` other than
+/// `Other`, and `-1000 - errno` for `Other(errno)`.
+sys_code :: fn(e: IoError) -> i64 => match e {
+    .NotFound => -1
+    .PermissionDenied => -2
+    .AlreadyExists => -3
+    .WouldBlock => -4
+    .Interrupted => -5
+    .BrokenPipe => -6
+    .ConnectionReset => -7
+    .InvalidInput => -8
+    .UnexpectedEof => -9
+    .NoSpace => -10
+    .ConnectionRefused => -11
+    .TimedOut => -12
+    .Unsupported => -13
+    .Other(c) => -1000 - i64(c)
+}
+
+/// The code of a failed network call: a timed-out blocking call is reported as `WouldBlock`
+/// by some systems, and callers see `TimedOut`.
+sys_net_code :: fn(e: IoError) -> i64 => if e is .WouldBlock { SYS_TIMED_OUT } else { sys_code(e) }
+
+/// A count, or the code of the error.
+sys_count :: fn(r: IoError!usize) -> i64 => match r {
+    !e => sys_code(e)
+    n => n.trunc(i64)
+}
+
+/// A count, or the code of the error, of a network call.
+sys_net_count :: fn(r: IoError!usize) -> i64 => match r {
+    !e => sys_net_code(e)
+    n => n.trunc(i64)
+}
+
+/// 0, or the code of the error.
+sys_unit :: fn(r: IoError!()) -> i64 => match r {
+    !e => sys_code(e)
+    _ => 0
+}
+
+/// The code that `FsStat` and `FsNextEntry` report for a kind of entry.
+sys_kind :: fn(k: fs.FileKind) -> i64 => match k {
+    .File => 0
+    .Dir => 1
+    .Symlink => 2
+    .Other => 3
+}
+
+sys_has :: fn(flags: u32, bit: u32) -> bool => (flags & bit) is not 0
+
+/// What a child's standard stream is connected to, from two bits of the spawn flags.
+sys_stdio :: fn(bits: u32) -> process.Stdio => match bits {
+    1 => .Null
+    2 => .Pipe
+    _ => .Inherit
+}
+
+/// An integer argument of type `ty`: its value, or -1 if it does not fit an `i64`.
+sys_int :: fn(m: ^const Machine, ty: Ty, b: []const u8) -> i64 {
+    v := m.get_int(ty, b).bits(i128)
+    if v < -9223372036854775808 or v > 9223372036854775807 { return -1 }
+    return v.trunc(i64)
+}
+
+/// Stores the integer result `n` in `dst`, whatever its width.
+sys_ret :: fn(m: ^const Machine, dst: []u8, n: i64) {
+    m.put_uint(dst, u128(n.bits(u64)))
+}
+
+/// The bytes of the slice `b` (a string or a `[]const u8`), as a view of the interpreter's
+/// memory.
+sys_src :: fn(m: ^Machine, span: source.Span, b: []const u8) -> Flow!string needs Alloc {
+    sp := m.slice_parts(b)
+    v := m.mem.read(sp.ptr, sp.len, 1) else e => return !m.mem_trap(span, e)
+    return v
+}
+
+/// The writable bytes of the slice `b`, as a view of the interpreter's memory.
+sys_dest :: fn(m: ^Machine, span: source.Span, b: []const u8) -> Flow![]u8 needs Alloc {
+    sp := m.slice_parts(b)
+    v := m.mem.write_view(sp.ptr, sp.len, 1) else e => return !m.mem_trap(span, e)
+    return v
+}
+
+/// The strings of a `[]const string` value, as views of the interpreter's memory.
+sys_strings :: fn(m: ^Machine, span: source.Span, b: []const u8) -> Flow!List(string) needs Alloc {
+    sp := m.slice_parts(b)
+    ps := us(m.ptr_bytes)
+    items := m.mem.read(sp.ptr, sp.len *| u64(2 * ps), 1) else e => return !m.mem_trap(span, e)
+    out := list(string)
+    for i in 0..us(sp.len) {
+        s := try m.sys_src(span, items[i * 2 * ps..(i + 1) * 2 * ps])
+        out.push(s)!
+    }
+    return out
+}
+
+/// Runs the system service `op`, whose arguments `args` are evaluated here, and stores its
+/// result in `dst`.
+sys_call :: fn(m: ^Machine, a: Act, op: tir.SysOp, args: []Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
+    match op {
+        .ThreadSpawn, .ThreadJoin, .ThreadDetach, .ThreadYield, .FutexWait, .FutexWake => return !m.unsupported(e.span, "threads")
+        _ => {}
+    }
+    mk := m.mark()
+    vals := list([]u8)
+    for i in 0..args.len {
+        b := m.tmp(m.size(args[i].ty))
+        try m.eval(a, &args[i], b)
+        vals.push(b)!
+    }
+    r := m.sys_run(e.span, op, args, vals.items, dst)
+    vals.deinit()
+    m.release(mk)
+    return r
+}
+
+/// Performs `op` on the evaluated arguments `vals`.
+sys_run :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: []const []u8, dst: []u8) -> Flow!() needs Run {
+    n: i64 = 0
+    match op {
+        .Read => { n = try m.sys_read(span, vals) }
+        .ClockNow => {
+            now := Clock.now().ns
+            if m.sys.t0 is null { m.sys.t0 = now }
+            base := m.sys.t0 else 0
+            m.put_uint(dst, u128(now -% base))
+            return ()
+        }
+        .ClockWall => { n = Clock.wall() }
+        .Sleep => {
+            Clock.sleep(Duration(ns: m.get_uint(vals[0]).trunc(u64)))
+            return ()
+        }
+        .RandFill => {
+            buf := try m.sys_dest(span, vals[0])
+            Rand.fill(buf)
+            return ()
+        }
+        .SysWrite => {
+            data := try m.sys_src(span, vals[1])
+            if sys_int(m, args[0].ty, vals[0]) is 2 { Err.write(data) } else { Out.write(data) }
+            return ()
+        }
+        .CpuCount => { n = i64(thread.cpu_count()) }
+        .FsOpen, .FsClose, .FsRead, .FsWrite, .FsSeek, .FsStat, .FsRemove, .FsRename, .FsMakeDir, .FsRemoveDir, .FsOpenDir, .FsNextEntry, .FsCloseDir, .FsLstat, .FsTruncate, .FsSync, .FsCwd => { n = try m.sys_fs(span, op, args, vals) }
+        .NetConnect, .NetListen, .NetLocalPort, .NetAccept, .NetSend, .NetRecv, .NetClose, .NetShutdown, .NetSetTimeouts, .NetPeer => { n = try m.sys_net(span, op, args, vals) }
+        .ProcSpawn, .ProcWriteIn, .ProcCloseIn, .ProcReadOut, .ProcWait, .ProcKill => { n = try m.sys_proc(span, op, args, vals) }
+        _ => return !m.unsupported(span, "threads")
+    }
+    m.sys_ret(dst, n)
+}
+
+/// `Read`: standard input into the slice `vals[0]`.
+sys_read :: fn(m: ^Machine, span: source.Span, vals: []const []u8) -> Flow!i64 needs Run {
+    buf := try m.sys_dest(span, vals[0])
+    r: IoError!usize = !.Unsupported
+    thread.defaults(fn() needs In { r = In.read(buf) })
+    return sys_count(r)
+}
+
+/// The file-system services.
+sys_fs :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: []const []u8) -> Flow!i64 needs Run {
+    h: i64 = -1
+    if args.len > 0 and op not in (tir.SysOp.FsOpen, .FsStat, .FsLstat, .FsRemove, .FsRename, .FsMakeDir, .FsRemoveDir, .FsOpenDir, .FsCwd) {
+        h = sys_int(m, args[0].ty, vals[0])
+    }
+    match op {
+        .FsOpen => {
+            path := try m.sys_src(span, vals[0])
+            flags := m.get_uint(vals[1]).trunc(u32)
+            opts := fs.OpenOptions(
+                read: sys_has(flags, 1),
+                write: sys_has(flags, 2),
+                append: sys_has(flags, 4),
+                create: sys_has(flags, 8),
+                truncate: sys_has(flags, 16),
+                exclusive: sys_has(flags, 32),
+            )
+            f := Fs.open(path, opts) else err => return sys_code(err)
+            handle := sys_next_handle(&m.sys)
+            m.sys.files.put(handle, f)!
+            return handle
+        }
+        .FsClose => {
+            f := m.sys.files.remove(h) else return SYS_BADF
+            Fs.close(f)
+            return 0
+        }
+        .FsRead => {
+            buf := try m.sys_dest(span, vals[1])
+            f := m.sys.files.get(h) else return SYS_BADF
+            return sys_count(Fs.read(f, buf))
+        }
+        .FsWrite => {
+            data := try m.sys_src(span, vals[1])
+            f := m.sys.files.get(h) else return SYS_BADF
+            return sys_count(Fs.write(f, data))
+        }
+        .FsSeek => {
+            off := sys_int(m, args[1].ty, vals[1])
+            whence := sys_int(m, args[2].ty, vals[2])
+            f := m.sys.files.get(h) else return SYS_BADF
+            if whence is 0 and off < 0 { return SYS_INVALID }
+            from: fs.SeekFrom = match whence {
+                0 => .Start
+                1 => .Current
+                2 => .End
+                _ => return SYS_INVALID
+            }
+            pos := Fs.seek(f, off, from) else err => return sys_code(err)
+            return pos.bits(i64)
+        }
+        .FsStat, .FsLstat => {
+            path := try m.sys_src(span, vals[0])
+            info := (if op is .FsStat { Fs.stat(path) } else { Fs.lstat(path) }) else err => return sys_code(err)
+            sp := m.slice_parts(vals[1])
+            count := sp.len.min(3)
+            view := m.mem.write_view(sp.ptr, count * 8, 8) else err => return !m.mem_trap(span, err)
+            fields := [3]i64(info.size.bits(i64), sys_kind(info.kind), info.modified)
+            for i in 0..us(count) { m.put_uint(view[i * 8..(i + 1) * 8], u128(fields[i].bits(u64))) }
+            return 0
+        }
+        .FsRemove => return sys_unit(Fs.remove(try m.sys_src(span, vals[0])))
+        .FsRename => {
+            from := try m.sys_src(span, vals[0])
+            to := try m.sys_src(span, vals[1])
+            return sys_unit(Fs.rename(from, to))
+        }
+        .FsMakeDir => return sys_unit(Fs.make_dir(try m.sys_src(span, vals[0])))
+        .FsRemoveDir => return sys_unit(Fs.remove_dir(try m.sys_src(span, vals[0])))
+        .FsOpenDir => {
+            path := try m.sys_src(span, vals[0])
+            d := Fs.open_dir(path) else err => return sys_code(err)
+            handle := sys_next_handle(&m.sys)
+            m.sys.dirs.put(handle, d)!
+            return handle
+        }
+        .FsNextEntry => {
+            d := m.sys.dirs.get(h) else return SYS_BADF
+            buf := try m.sys_dest(span, vals[1])
+            next := Fs.next_entry(d, buf) else err => return sys_code(err)
+            entry := next else return 0
+            return entry.len.trunc(i64) + (sys_kind(entry.kind) << 32)
+        }
+        .FsCloseDir => {
+            d := m.sys.dirs.remove(h) else return SYS_BADF
+            Fs.close_dir(d)
+            return 0
+        }
+        .FsTruncate => {
+            size := m.get_uint(vals[1]).trunc(u64)
+            f := m.sys.files.get(h) else return SYS_BADF
+            return sys_unit(Fs.truncate(f, size))
+        }
+        .FsSync => {
+            f := m.sys.files.get(h) else return SYS_BADF
+            return sys_unit(Fs.sync(f))
+        }
+        .FsCwd => {
+            buf := try m.sys_dest(span, vals[0])
+            return sys_count(Fs.cwd(buf))
+        }
+        _ => return !m.trap(span, "internal error: not a file-system service")
+    }
+}
+
+/// The network services, run under the system's default `Net` handler.
+sys_net :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: []const []u8) -> Flow!i64 needs Run {
+    h: i64 = -1
+    if op not in (tir.SysOp.NetConnect, .NetListen) { h = sys_int(m, args[0].ty, vals[0]) }
+    match op {
+        .NetConnect => {
+            host := try m.sys_src(span, vals[0])
+            port := m.get_uint(vals[1]).trunc(u16)
+            r: IoError!net.Socket = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.connect(host, port) })
+            s := r else err => return sys_code(err)
+            handle := sys_next_handle(&m.sys)
+            m.sys.streams.put(handle, s)!
+            return handle
+        }
+        .NetListen => {
+            host := try m.sys_src(span, vals[0])
+            port := m.get_uint(vals[1]).trunc(u16)
+            r: IoError!net.Listener = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.listen(host, port) })
+            l := r else err => return sys_code(err)
+            handle := sys_next_handle(&m.sys)
+            m.sys.listeners.put(handle, l)!
+            return handle
+        }
+        .NetLocalPort => {
+            l := m.sys.listeners.get(h) else return SYS_BADF
+            r: IoError!u16 = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.local_port(l) })
+            port := r else err => return sys_code(err)
+            return i64(port)
+        }
+        .NetAccept => {
+            l := m.sys.listeners.get(h) else return SYS_BADF
+            r: IoError!net.Socket = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.accept(l) })
+            s := r else err => return sys_code(err)
+            handle := sys_next_handle(&m.sys)
+            m.sys.streams.put(handle, s)!
+            return handle
+        }
+        .NetSend => {
+            data := try m.sys_src(span, vals[1])
+            s := m.sys.streams.get(h) else return SYS_BADF
+            r: IoError!usize = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.send(s, data) })
+            return sys_net_count(r)
+        }
+        .NetRecv => {
+            buf := try m.sys_dest(span, vals[1])
+            s := m.sys.streams.get(h) else return SYS_BADF
+            r: IoError!usize = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.recv(s, buf) })
+            return sys_net_count(r)
+        }
+        .NetClose => {
+            if s := m.sys.streams.remove(h) {
+                thread.defaults(fn() needs Net { Net.close(s) })
+                return 0
+            }
+            if l := m.sys.listeners.remove(h) {
+                thread.defaults(fn() needs Net { Net.close_listener(l) })
+                return 0
+            }
+            return SYS_BADF
+        }
+        .NetShutdown => {
+            how: net.Shutdown = match sys_int(m, args[1].ty, vals[1]) {
+                0 => .Read
+                1 => .Write
+                _ => .Both
+            }
+            s := m.sys.streams.get(h) else return SYS_BADF
+            r: IoError!() = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.shutdown(s, how) })
+            return sys_unit(r)
+        }
+        .NetSetTimeouts => {
+            recv_ns := m.get_uint(vals[1]).trunc(u64)
+            send_ns := m.get_uint(vals[2]).trunc(u64)
+            s := m.sys.streams.get(h) else return SYS_BADF
+            recv: ?Duration = if recv_ns > 0 { Duration(ns: recv_ns) } else { null }
+            send: ?Duration = if send_ns > 0 { Duration(ns: send_ns) } else { null }
+            r: IoError!() = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.set_timeouts(s, recv, send) })
+            return sys_unit(r)
+        }
+        .NetPeer => {
+            s := m.sys.streams.get(h) else return SYS_BADF
+            buf := try m.sys_dest(span, vals[1])
+            r: IoError!usize = !.Unsupported
+            thread.defaults(fn() needs Net { r = Net.peer(s, buf) })
+            return sys_count(r)
+        }
+        _ => return !m.trap(span, "internal error: not a network service")
+    }
+}
+
+/// The child-process services.
+sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: []const []u8) -> Flow!i64 needs Run {
+    if op is .ProcSpawn {
+        argv := try m.sys_strings(span, vals[0])
+        env := try m.sys_strings(span, vals[1])
+        dir := try m.sys_src(span, vals[2])
+        flags := m.get_uint(vals[3]).trunc(u32)
+        defer argv.deinit()
+        defer env.deinit()
+        if argv.items.len is 0 { return SYS_INVALID }
+        opts := process.SpawnOptions(
+            stdin: sys_stdio(flags & 3),
+            stdout: sys_stdio((flags >> 2) & 3),
+            stderr: sys_stdio((flags >> 4) & 3),
+            dir: if dir.len > 0 { dir } else { null },
+            env: if sys_has(flags, 64) { env.items } else { null },
+        )
+        c := Proc.spawn(argv.items, opts) else err => return sys_code(err)
+        handle := sys_next_handle(&m.sys)
+        m.sys.procs.put(handle, c)!
+        return handle
+    }
+    h := sys_int(m, args[0].ty, vals[0])
+    match op {
+        .ProcWriteIn => {
+            data := try m.sys_src(span, vals[1])
+            c := m.sys.procs.get(h) else return SYS_BADF
+            return sys_count(Proc.write(c, data))
+        }
+        .ProcCloseIn => {
+            c := m.sys.procs.get(h) else return SYS_BADF
+            Proc.close_in(c)
+            return 0
+        }
+        .ProcReadOut => {
+            buf := try m.sys_dest(span, vals[1])
+            c := m.sys.procs.get(h) else return SYS_BADF
+            got := Proc.read(c, buf) else err => return sys_code(err)
+            chunk := got else return 0
+            return chunk.len.trunc(i64) + (if chunk.from is .Stderr { i64(1) << 32 } else { 0 })
+        }
+        .ProcWait => {
+            c := m.sys.procs.get(h) else return SYS_BADF
+            r := Proc.wait(c)
+            _ = m.sys.procs.remove(h)
+            status := r else err => return sys_code(err)
+            return match status {
+                .Exited(code) => i64(code)
+                .Signaled(sig) => i64(sig) + (i64(1) << 32)
+            }
+        }
+        .ProcKill => {
+            c := m.sys.procs.get(h) else return SYS_BADF
+            return sys_unit(Proc.kill(c))
+        }
+        _ => return !m.trap(span, "internal error: not a process service")
+    }
+}
