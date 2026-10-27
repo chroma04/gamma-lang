@@ -288,8 +288,9 @@ server_request :: fn(l: ^Lsp) -> kit.Fail!json.Value needs kit.Run {
 uri :: fn(p: string) -> string needs Alloc {
     when target.os is .Windows {
         return str.format("file:///{}", str.replace_alloc(p, "\\", "/")!)!
+    } else {
+        return str.format("file://{}", p)!
     }
-    return str.format("file://{}", p)!
 }
 
 /// The path of a `file:` URI, as `uri` writes them.
@@ -299,8 +300,9 @@ uri_path :: fn(u: string) -> string {
         i: usize = 0
         while i < rest.len and rest[i] is '/' { i += 1 }
         return rest[i..]
+    } else {
+        return rest
     }
-    return rest
 }
 
 /// The parameters of a request at a position: `{textDocument, position}`.

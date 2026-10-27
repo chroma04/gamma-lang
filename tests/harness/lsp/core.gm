@@ -66,9 +66,10 @@ definition_in_the_core_library_without_a_source_tree_uses_a_read_only_copy :: fn
 expect_read_only :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
     when target.os is .Windows {
         return ()
+    } else {
+        c := kit.command("find")
+        c.args([_]string(p, "(", "-perm", "-200", "-o", "-perm", "-020", "-o", "-perm", "-002", ")"))
+        out := try t.run_ok(c)
+        return t.check(out.out.len is 0, "{} is writable", p)
     }
-    c := kit.command("find")
-    c.args([_]string(p, "(", "-perm", "-200", "-o", "-perm", "-020", "-o", "-perm", "-002", ")"))
-    out := try t.run_ok(c)
-    return t.check(out.out.len is 0, "{} is writable", p)
 }
