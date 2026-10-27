@@ -17,7 +17,7 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 2. DONE s47 (PR #93): Close Rust-only gaps: all conformance lanes against gammac, Windows release by
    cross-compiling (--target=x86_64-windows, MinGW), playground + fuzz ported, release
    pipeline/install from seed, docs. [release + site without cargo]
-3. IN PROGRESS s48: Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
+3. DONE s48 (PR #94, pending merge): Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
    (Rust-built vs seed-built gammac emit identical C); drop reference comparisons from
    tests/selfhost.rs. [first language change without Rust]
 4. Delete src/, Cargo, playground crate, msrv/audit jobs; port test harness to Gamma.
@@ -101,3 +101,21 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
   (check/seq.gm join_members); `else` fallback join NOT done (needs payload conversion in
   cgen/interp/eval: ElseExpr has no conversion) → follow-up, logged in pain-points.
 - Machine: 15 GB RAM; 3 compiler builds at once (cc1 ~0.8 GB per unit) + rustc → OOM kills.
+- s48 result: all 26 suites green locally on the merged compiler; CI new lanes green (s390x,
+  aarch64, wasi, safe conformance, difftest, benchmarks, editors, bootstrap x3, fuzz).
+  Worker fixes: compiler runs on a 1 GiB calloc'd fiber stack (main.gm, like interp root
+  stack); freestanding check_freestanding_use (sema/names.gm); fmt/lsp --help, non-UTF-8
+  args usage error (main.gm check_arguments_are_text); lsp core copy in cache, read-only;
+  run cache key stamps -L libraries (native.gm library_stamps); interp stdin on host
+  thread with several threads (HostOp.Stdin). Tests adapted: test/bench C only, package C
+  objects not cached (build_profiles), cross tests use --backend=interp for layout prints.
+- Base-branch bug fixed here: interp ROOT_STACK cap on 32-bit was 1 GB - 1 (< MIN) → every
+  playground run trapped (main red since 8e75cc1).
+- Fast-mode compiler: builds in 4.4 min (one TU), `check compiler` 1.9 s vs 5.0 s Debug.
+- long_expressions suite takes ~20 min (20000-term chains slow in gammac): perf follow-up.
+- Tag rust-reference-final created locally at d09a1a6 but the session's git proxy refuses
+  tag pushes → user must push it (`git push origin rust-reference-final` after
+  `git tag -a rust-reference-final d09a1a6`).
+- Phase 4 next: delete src/, Cargo, web/playground + web/sitegen crates, msrv/audit/fuzz
+  (Rust) jobs, docs/architecture.md map of src/ (+ tests/architecture_doc.rs); port the
+  test harness (tests/*.rs) to Gamma; tests/common uses gamma::toolchain (replace).

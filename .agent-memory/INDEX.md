@@ -1,9 +1,14 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-27) — PRs #1–#91 merged, v0.1.0 tagged
-- s47 (branch claude/project-thread-fgmh3g): user approved RETIRING the Rust reference in
-  4 phases (decisions/052). Phase 1 done: C seed bootstrap/ (build.sh, verify.sh, SOURCE),
-  tools/refresh-seed.sh, CI job `bootstrap`; gammac host via uname. NEXT: phase 2.
+## State (2026-10-27) — PRs #1–#93 merged, v0.1.0 tagged
+- s48 (branch claude/retire-rust-phase-3, PR #94): PHASE 3 of retiring Rust (decisions/052):
+  gamma = compiler/ (names itself gamma), tests run GAMMA_TEST_COMPILER (tools/test.sh),
+  CI/release/site from the seed, Rust only compiled. First language change without Rust:
+  §7.7 `in` joins types (§7.12). NEXT: merge #94, user pushes tag rust-reference-final,
+  then phase 4 (delete src/, port the harness). Open: `else` join (pain-points), slow
+  long expressions, interp speed.
+- s47 (PRs #92, #93): retiring Rust approved (decisions/052); phase 1 (C seed bootstrap/,
+  tools/refresh-seed.sh) and phase 2 (lanes/release/site/fuzz without cargo) done.
 - s46 (branch claude/gammac-interpreter, PR #91; user: "work on an interpreter for gammac
   so we can achieve parity in things like repl"): compiler/interp/ tree-walking
   interpreter (decisions/051), `gammac run --backend=interp` 476/476 run tests
@@ -56,7 +61,7 @@
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
 1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
-1b. Self-hosting: roadmap/self-hosting.md; retiring Rust = decisions/052 phases 2–4.
+1b. Retiring Rust = decisions/052: phase 4 next (delete src/, port tests/*.rs to Gamma).
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.
