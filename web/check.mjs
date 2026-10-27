@@ -4,18 +4,15 @@
 // formatted as the playground's Format button would format it.
 //
 //   node web/check.mjs web/play/target/gamma-play.wasm web/play/target/gamma-play-libs.json
-//   node web/check.mjs web/playground/target/wasm32-wasip1/release/gamma-playground.wasm
 //
-// With a libraries file (the JSON object that web/play/build.sh writes) the module is the
-// one built from gammac, and it runs inside web/static/play-worker.js, the page's worker,
-// with the file system that script serves from the libraries. Without one, the module is the
-// Rust interpreter, which embeds its library, and runs under Node's own WASI.
+// The module and the libraries file (the JSON object that web/play/build.sh writes) are
+// run inside web/static/play-worker.js, the page's worker, with the file system that script
+// serves from the libraries.
 //
 // Each program runs in a child process of its own (Node's WASI does not reliably survive
 // many instances in one process, and a trap in one must not end the others).
 
-import { WASI } from "node:wasi";
-import { readFileSync, openSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createContext, runInContext } from "node:vm";
 
@@ -23,8 +20,8 @@ const args = process.argv.slice(2);
 const oneAt = args.indexOf("--one");
 const [wasmPath, libsPath] = oneAt < 0 ? args : args.slice(0, oneAt);
 const [mode, path] = oneAt < 0 ? [] : args.slice(oneAt + 1);
-if (!wasmPath) {
-  console.error("usage: node web/check.mjs <module.wasm> [<libraries.json>]");
+if (!wasmPath || !libsPath) {
+  console.error("usage: node web/check.mjs <module.wasm> <libraries.json>");
   process.exit(2);
 }
 
@@ -54,16 +51,8 @@ async function inWorker(mode, path) {
 
 if (oneAt >= 0) {
   // Child: run `mode` on the program at `path`; its output becomes ours.
-  if (libsPath) {
-    await inWorker(mode, path);
-  } else {
-    const module = await WebAssembly.compile(readFileSync(wasmPath));
-    const wasi = new WASI({ version: "preview1", args: ["gamma-play", mode], env: {}, stdin: openSync(path, "r"), returnOnExit: true });
-    const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
-    process.exitCode = wasi.start(instance);
-  }
+  await inWorker(mode, path);
 } else {
-  const libs = libsPath ? [libsPath] : [];
   let failed = 0;
   for (const line of readFileSync("web/examples/list.txt", "utf8").split("\n")) {
     if (!line.trim() || line.startsWith("#")) continue;
@@ -73,7 +62,7 @@ if (oneAt >= 0) {
       let code = 0, out = "";
       const t0 = performance.now();
       try {
-        out = execFileSync(process.execPath, ["--no-warnings", process.argv[1], wasmPath, ...libs, "--one", m, file], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+        out = execFileSync(process.execPath, ["--no-warnings", process.argv[1], wasmPath, libsPath, "--one", m, file], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
       } catch (e) {
         code = e.status ?? -1;
         out = e.stdout || "";
