@@ -739,11 +739,12 @@ fn programs_compiled_by_gammac_in_a_lane_behave_as_expected() {
     );
 }
 
-/// How many run tests `gammac run --backend=interp` must pass: those the interpreter
-/// cannot run yet (it reports them as not supported) are skipped, any other difference
-/// fails. Raise this as the interpreter grows.
+/// How many run tests `gammac run --backend=interp` may skip because it cannot run them
+/// yet (it reports them as not supported); any other difference fails. A ceiling rather
+/// than a floor on the passes, since which run tests apply depends on the host (`os:`,
+/// `arch:`). Lower this as the interpreter grows.
 #[cfg(unix)]
-const INTERP_FLOOR: usize = 476;
+const INTERP_UNSUPPORTED_MAX: usize = 0;
 
 /// Runs `t` with `gammac run --backend=interp`; returns why it failed, if it did, and
 /// whether that is because the interpreter does not support something yet.
@@ -810,7 +811,14 @@ fn programs_interpreted_by_gammac_behave_as_expected() {
         results.iter().filter_map(|(n, r)| r.as_ref().filter(|r| !r.1).map(|r| format!("{}: {}", n, r.0))).collect();
     failures.sort();
     assert!(failures.is_empty(), "{} of {} programs failed:\n{}", failures.len(), tests.len(), failures.join("\n\n"));
-    assert!(passed >= INTERP_FLOOR, "only {} of {} programs ran (floor {})", passed, tests.len(), INTERP_FLOOR);
+    let unsupported = tests.len() - passed;
+    assert!(
+        unsupported <= INTERP_UNSUPPORTED_MAX,
+        "{} of {} programs are not supported (at most {})",
+        unsupported,
+        tests.len(),
+        INTERP_UNSUPPORTED_MAX
+    );
 }
 
 #[test]

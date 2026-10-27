@@ -232,7 +232,7 @@ What the interpreter cannot run yet traps with "internal error: not supported by
 gammac's interpreter yet". `tests/selfhost.rs` runs every conformance `run` test (but the
 `native:` ones) through `gammac run --backend=interp` and compares stdout, the exit status
 and, for the tests that check it, stderr with the expectations; those that hit something
-unsupported are skipped, and at least `INTERP_FLOOR` must pass (all of them now). The
+unsupported are skipped, but at most `INTERP_UNSUPPORTED_MAX` of them (none now). The
 interpreter is slower than the reference's VM, by about a hundred times on the slowest
 tests when `gammac` is a Debug build.
 
