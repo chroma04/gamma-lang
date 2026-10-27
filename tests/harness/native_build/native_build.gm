@@ -1,5 +1,509 @@
-//! The native_build suite (being ported from tests/native_build.rs).
+//! Tests of how native builds link the runtime: Debug builds link a runtime object
+//! compiled once and kept in the cache directory (`GAMMA_CACHE_DIR`); Checked and Fast
+//! builds, and Debug builds without a cache, compile it with the program. Each way must
+//! give the same program. Safe builds need Fil-C. Without a usable C compiler (or, for
+//! the Safe build itself, without Fil-C) the tests are skipped.
 
 kit :: import "../kit"
+driver :: import "gammac/driver"
+pkg :: import "gammac/pkg"
+fs :: import "std/fs"
+process :: import "std/process"
+str :: import "std/str"
+thread :: import "std/thread"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "debug_builds_reuse_a_cached_runtime", run: debug_builds_reuse_a_cached_runtime))!
+    out.push(kit.Test(name: "optimized_builds_and_builds_without_a_cache_are_one_unit", run: optimized_builds_are_one_unit))!
+    out.push(kit.Test(name: "safe_builds_need_fil_c", run: safe_builds_need_fil_c))!
+    out.push(kit.Test(name: "safe_builds_with_fil_c", run: safe_builds_with_fil_c))!
+    out.push(kit.Test(name: "run_reuses_cached_executables", run: run_reuses_cached_executables))!
+    out.push(kit.Test(name: "prints_and_black_boxes_do_not_grow_the_c_per_site", run: prints_do_not_grow_the_c))!
+    out.push(kit.Test(name: "builds_never_overwrite_files_they_did_not_generate", run: never_overwrite_own_files))!
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "run_reports_a_closed_pipe_as_a_signal_status", run: closed_pipe))!
+        out.push(kit.Test(name: "run_relinks_when_a_foreign_library_changes", run: relinks_foreign_library))!
+        out.push(kit.Test(name: "output_is_flushed_before_waiting", run: output_is_flushed_before_waiting))!
+    }
+}
+
+PROGRAM :: "main :: fn() needs Out {\n    total := 0\n    for i in 0..10 {\n        total += i\n    }\n    print(\"{}\\n\", total)\n}\n"
+
+SKIP_NO_CC :: "no C compiler"
+
+/// A fresh directory for the test `name`, holding the program; returns the directory and
+/// the source file.
+setup :: fn(t: ^kit.T, name: string) -> kit.Fail!(dir: string, src: string) needs kit.Run {
+    dir := try t.scratch(str.format("native_build-{}", name)!)
+    src := kit.join(dir, "sum.gm")
+    try t.write(src, PROGRAM)
+    return (dir: dir, src: src)
+}
+
+/// The generated C next to the executable `exe`.
+c_of :: fn(exe: string) -> string needs Alloc => str.format("{}.c", exe)!
+
+/// Builds `src` with `args` and the cache directory `cache`, runs it and checks its
+/// output; returns the generated C.
+build_and_run :: fn(t: ^kit.T, src, exe, cache: string, args: []const string) -> kit.Fail!string needs kit.Run {
+    c := t.gamma([_]string("build"))
+    c.set("GAMMA_CACHE_DIR", cache)
+    c.args(args)
+    c.args([_]string("-o", exe, src))
+    _ = try t.run_ok(c)
+    run := try t.run(kit.command(exe))
+    try t.expect_text("the output of the program", "45\n", run.out)
+    return t.read(c_of(exe))
+}
+
+/// Sorts `names` in byte order.
+sort_names :: fn(names: []string) {
+    for i in 1..names.len {
+        j := i
+        while j > 0 and less(names[j], names[j - 1]) {
+            tmp := names[j]
+            names[j] = names[j - 1]
+            names[j - 1] = tmp
+            j -= 1
+        }
+    }
+}
+
+less :: fn(a, b: string) -> bool {
+    n := if a.len < b.len { a.len } else { b.len }
+    for i in 0..n {
+        if a[i] is not b[i] { return a[i] < b[i] }
+    }
+    return a.len < b.len
+}
+
+/// The names in the directory `dir` (sorted), or none if there is no such directory.
+names_in :: fn(t: ^kit.T, dir: string) -> kit.Fail![]string needs kit.Run {
+    l := list(string)
+    if not fs.exists(dir) { return l.items }
+    for r in fs.entries(dir) {
+        e := r else err => return !t.fail("cannot list {}: {}", dir, err)
+        l.push(str.format("{}", e.name)!)!
+    }
+    sort_names(l.items)
+    return l.items
+}
+
+/// The runtime objects in `cache`.
+objects :: fn(t: ^kit.T, cache: string) -> kit.Fail![]string needs kit.Run {
+    all := try names_in(t, cache)
+    l := list(string)
+    for n in all {
+        if str.strip_suffix(n, ".o") is not null { l.push(n)! }
+    }
+    return l.items
+}
+
+same_names :: fn(a, b: []const string) -> bool {
+    if a.len is not b.len { return false }
+    for i in 0..a.len {
+        if a[i] is not b[i] { return false }
+    }
+    return true
+}
+
+debug_builds_reuse_a_cached_runtime :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    s := try setup(t, "cached")
+    cache := kit.join(s.dir, "cache")
+    c := try build_and_run(t, s.src, kit.join(s.dir, "a"), cache, empty_slice(string))
+    try t.check(str.strip_prefix(c, "#define GM_RT_SEPARATE") is not null, "a Debug build compiled the runtime with the program")
+    first := try objects(t, cache)
+    try t.check(first.len is 1, "expected one runtime object in {}, found {}", cache, first.len)
+    // A second build reuses it; no temporary files are left behind.
+    _ = try build_and_run(t, s.src, kit.join(s.dir, "b"), cache, empty_slice(string))
+    try t.check(same_names(try objects(t, cache), first), "the second build changed the runtime objects in {}", cache)
+    for name in try names_in(t, cache) {
+        try t.check(not str.contains(name, ".tmp-"), "temporary file {} left in the cache", name)
+    }
+    // Debug information needs an object of its own.
+    c = try build_and_run(t, s.src, kit.join(s.dir, "g"), cache, [_]string("-g"))
+    try t.check(str.strip_prefix(c, "#define GM_RT_SEPARATE") is not null, "a Debug build with -g compiled the runtime with the program")
+    n := (try objects(t, cache)).len
+    try t.check(n is 2, "expected two runtime objects, found {}", n)
+    return ()
+}
+
+optimized_builds_are_one_unit :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    s := try setup(t, "single")
+    cache := kit.join(s.dir, "cache")
+    modes := [_]string("checked", "fast")
+    for name in modes {
+        flag := str.format("--mode={}", name)!
+        c := try build_and_run(t, s.src, kit.join(s.dir, name), cache, [_]string(flag))
+        try t.check(not str.contains(c, "GM_RT_SEPARATE 1"), "{} build linked a separate runtime", name)
+    }
+    try t.check((try objects(t, cache)).len is 0, "optimized builds left runtime objects in the cache")
+    c := try build_and_run(t, s.src, kit.join(s.dir, "nocache"), "", empty_slice(string))
+    try t.check(not str.contains(c, "GM_RT_SEPARATE 1"), "a build without a cache linked a separate runtime")
+    return ()
+}
+
+safe_builds_need_fil_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // Pointing CC at a compiler that is not Fil-C must fail, naming the problem.
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    tc := driver.from_env() else e => return !t.skip("cannot read the C compiler settings: {}", e)
+    target := driver.target(&tc) else e => return !t.skip("the C compiler does not run: {}", e)
+    if target.filc { return !t.skip("CC is Fil-C") }
+    s := try setup(t, "not-filc")
+    c := t.gamma([_]string("build", "--mode=safe", "-o", kit.join(s.dir, "a"), s.src))
+    c.set("CC", Env.var("CC") else "cc")
+    out := try t.run(c)
+    try t.check(not out.success(), "a Safe build with a compiler that is not Fil-C succeeded")
+    try t.expect_contains("the error", out.err, "is not Fil-C")
+    return ()
+}
+
+safe_builds_with_fil_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // Only where Fil-C is installed: a Safe build runs and reports `target.mode`.
+    tc := driver.for_safe_build() else e => return !t.skip("{}", e)
+    target := driver.target(&tc) else e => return !t.skip("the C compiler does not run: {}", e)
+    if not target.filc { return !t.skip("no Fil-C") }
+    s := try setup(t, "filc")
+    try t.write(s.src, "main :: fn() needs Out {\n    when target.mode is .Safe { print(\"safe\\n\") } else { print(\"other\\n\") }\n}\n")
+    exe := kit.join(s.dir, "a")
+    c := t.gamma([_]string("build", "--mode=safe", "-o", exe, s.src))
+    c.set("GAMMA_CACHE_DIR", kit.join(s.dir, "cache"))
+    _ = try t.run_ok(c)
+    run := try t.run(kit.command(exe))
+    try t.expect_text("the output of the program", "safe\n", run.out)
+    return ()
+}
+
+/// `gamma run --backend=c` keeps the executable in the cache directory and reuses it while
+/// the program, its options and the compiler stay the same; a changed program is rebuilt.
+run_reuses_cached_executables :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    s := try setup(t, "run_cache")
+    cache := kit.join(s.dir, "cache")
+    programs := kit.join(cache, "run")
+    try t.expect_text("the output", "45\n", try run_cached(t, s.src, cache, empty_slice(string)))
+    first := try names_in(t, programs)
+    try t.check(first.len is 1, "expected one cached executable, found {}", first.len)
+    try t.expect_text("the output", "45\n", try run_cached(t, s.src, cache, empty_slice(string)))
+    try t.check(same_names(try names_in(t, programs), first), "the second run changed the cached executables")
+    // Another build mode is another executable.
+    try t.expect_text("the output", "45\n", try run_cached(t, s.src, cache, [_]string("--mode=fast")))
+    n := (try names_in(t, programs)).len
+    try t.check(n is 2, "expected two cached executables, found {}", n)
+    changed := str.replace_alloc(PROGRAM, "0..10", "0..11")!
+    try t.write(s.src, changed)
+    try t.expect_text("the output", "55\n", try run_cached(t, s.src, cache, empty_slice(string)))
+    n = (try names_in(t, programs)).len
+    try t.check(n is 3, "expected three cached executables, found {}", n)
+    return ()
+}
+
+/// Runs `src` with the C back end and `args`; returns its output.
+run_cached :: fn(t: ^kit.T, src, cache: string, args: []const string) -> kit.Fail!string needs kit.Run {
+    c := t.gamma([_]string("run", "--backend=c"))
+    c.set("GAMMA_CACHE_DIR", cache)
+    c.args(args)
+    c.arg(src)
+    out := try t.run_ok(c)
+    return out.out
+}
+
+/// A function with thousands of prints and `@black_box`es must not make the C compiler
+/// work through a copy of the effect dispatch for each: they call shared functions, so
+/// the C a statement takes stays small.
+prints_do_not_grow_the_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    N :: 200
+    s := try setup(t, "many-prints")
+    src := kit.join(s.dir, "many.gm")
+    text := list(u8)
+    text.extend("main :: fn() needs Out {\n")!
+    for i in 0..N {
+        text.extend("    { x: i32 = @black_box(")!
+        text.write("{}", i)!
+        text.extend("); print(\"v {} {}\\n\", x, x + 1) }\n")!
+    }
+    text.extend("}\n")!
+    try t.write(src, text.items)
+    exe := kit.join(s.dir, "a")
+    c := t.gamma([_]string("build", "-o", exe, src))
+    c.set("GAMMA_CACHE_DIR", kit.join(s.dir, "cache"))
+    // One C file, whatever the environment asks.
+    c.set("GAMMA_C_UNITS", "1")
+    _ = try t.run_ok(c)
+    run := try t.run(kit.command(exe))
+    n: usize = 0
+    for _ in str.lines(run.out) { n += 1 }
+    try t.check(n is N, "the program printed {} lines, not {}", n, N)
+    try t.check(str.strip_prefix(run.out, "v 0 1\n") is not null and str.strip_suffix(run.out, "v 199 200\n") is not null, "unexpected output {}", kit.quote(run.out))
+    gen := try t.read(c_of(exe))
+    // The C of `main` is its helpers and the function itself, up to the program's entry point.
+    start := str.find(gen, "\nstatic GM_NOINLINE int gm_c") else return !t.fail("no helper of main in the generated C")
+    end := str.find(gen[start..], "\n#define GM_RUN_MAIN") else return !t.fail("no entry point in the generated C")
+    lines: usize = 0
+    for _ in str.lines(gen[start..start + end]) { lines += 1 }
+    try t.check(lines > N * 10 and lines < N * 45, "main takes {} lines of C for {} statements", lines, N)
+    return ()
+}
+
+never_overwrite_own_files :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    s := try setup(t, "own-files")
+    cache := kit.join(s.dir, "cache")
+    // The user's own C file next to the program, named like the generated one.
+    own := kit.join(s.dir, "sum.c")
+    try t.write(own, "/* my own file */ int x;\n")
+    c := t.gamma([_]string("build", s.src))
+    c.set("GAMMA_CACHE_DIR", cache)
+    c.dir = s.dir
+    out := try t.run(c)
+    try t.check(not out.success(), "a build overwrote a file next to the program")
+    try t.expect_contains("stderr", out.err, "was not generated by gamma")
+    try t.expect_text("the user's file", "/* my own file */ int x;\n", try t.read(own))
+    // Another output name works, and a generated file is replaced by the next build.
+    exe := kit.join(s.dir, "prog")
+    _ = try build_and_run(t, s.src, exe, cache, empty_slice(string))
+    _ = try build_and_run(t, s.src, exe, cache, empty_slice(string))
+    // Intermediate objects never take the name of a file next to the output.
+    obj := kit.join(s.dir, "prog.0.o")
+    try t.write(obj, "mine")
+    _ = try build_and_run(t, s.src, exe, cache, empty_slice(string))
+    try t.expect_text("the user's object file", "mine", try t.read(obj))
+    return ()
+}
+
+/// Whether `program --version` runs.
+tool_runs :: fn(program: string) -> bool needs Alloc + Proc {
+    argv := [_]string(program, "--version")
+    out := process.output(argv[..], process.SpawnOptions(stdin: .Null)) else return false
+    return process.success(out.status)
+}
+
+/// The cached executable of `gamma run --backend=c` is rebuilt when a library that a
+/// `foreign` block names (found through `LDFLAGS`) is replaced.
+relinks_foreign_library :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    if not tool_runs("ar") { return !t.skip("no ar") }
+    dir := try t.scratch("native_build-foreign_lib")
+    libs := kit.join(dir, "libs")
+    try make_dir(t, libs)
+    tc := driver.from_env() else e => return !t.fail("cannot read the C compiler settings: {}", e)
+    src := kit.join(dir, "main.gm")
+    try t.write(src, "c :: import \"std/c\"\nfoo :: foreign \"gmfoo\" {\n    gm_foo_value :: fn() -> c.c_int needs not\n}\nmain :: fn() needs Out {\n    print(\"{}\\n\", foo.gm_foo_value())\n}\n")
+    try make_lib(t, &tc, dir, libs, 1)
+    try t.expect_text("the output", "1\n", try run_foreign(t, src, dir, libs))
+    // A different size, so the stamp changes whatever the file system's time resolution.
+    try make_lib(t, &tc, dir, libs, 7)
+    try t.expect_text("the output", "7\n", try run_foreign(t, src, dir, libs))
+    return ()
+}
+
+make_dir :: fn(t: ^kit.T, dir: string) -> kit.Fail!() needs kit.Run {
+    fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
+    return ()
+}
+
+/// Builds `libs/libgmfoo.a`, whose function returns `value`.
+make_lib :: fn(t: ^kit.T, tc: ^const pkg.Toolchain, dir, libs: string, value: i32) -> kit.Fail!() needs kit.Run {
+    c_file := kit.join(dir, "gmfoo.c")
+    text := str.format("const char gm_pad[{}] = {{1}};\nint gm_foo_value(void) {{ return {}; }}\n", value * 100, value)!
+    try t.write(c_file, text)
+    obj := kit.join(dir, "gmfoo.o")
+    cc := kit.command("")
+    cc.argv = pkg.command(tc, empty_slice(string), [_]string("-c", "-o", obj, c_file))
+    _ = try t.run_ok(cc)
+    lib := kit.join(libs, "libgmfoo.a")
+    fs.remove_all(lib) else e => {
+        if e is not .NotFound { return !t.fail("cannot remove {}: {}", lib, e) }
+    }
+    ar := kit.command("ar")
+    ar.args([_]string("rcs", lib, obj))
+    _ = try t.run_ok(ar)
+    return ()
+}
+
+run_foreign :: fn(t: ^kit.T, src, dir, libs: string) -> kit.Fail!string needs kit.Run {
+    c := t.gamma([_]string("run", "--backend=c", src))
+    c.set("GAMMA_CACHE_DIR", kit.join(dir, "cache"))
+    c.set("LDFLAGS", str.format("-L{}", libs)!)
+    out := try t.run_ok(c)
+    return out.out
+}
+
+// ---------------------------------------------------------------------------------
+// Programs that talk to their reader through a pipe
+// ---------------------------------------------------------------------------------
+
+/// A program killed by `SIGPIPE` (its output read only in part) ends with the status a
+/// shell reports for that signal, with the interpreter and the C back end alike, and
+/// without a trap message.
+closed_pipe :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    dir := try t.scratch("native_build-closed_pipe")
+    src := kit.join(dir, "lines.gm")
+    try t.write(src, "main :: fn() needs Out {\n    for i in 0..200000 { print(\"line {}\\n\", i) }\n}\n")
+    for backend in ("--backend=interp", "--backend=c") {
+        errfile := kit.join(dir, "stderr.txt")
+        c := t.gamma([_]string("run", backend, src))
+        child := try spawn_logged(t, c, errfile, .Null, backend)
+        g := Guard(child: child, feed: false, limit_s: t.cfg.timeout_s)
+        guard := try start_guard(t, &g)
+        // The first line, then the reading end closes: the program writes into a closed pipe.
+        first := list(u8)
+        buf: [4096]u8 = ---
+        while not str.contains(first.items, "\n") {
+            chunk := Proc.read(child, buf[..]) else e => return !t.fail("{}: cannot read: {}", backend, e)
+            got := chunk else break
+            first.extend(buf[0..got.len])!
+        }
+        status := end_child(&g, guard)
+        if g.timed_out { return !t.fail("{}: the program did not end after its output was closed", backend) }
+        try t.check(str.strip_prefix(first.items, "line 0\n") is not null, "{}: the first output was {}", backend, kit.quote(first.items))
+        st := status else e => return !t.fail("{}: cannot wait for the program: {}", backend, e)
+        shell_status: u32 = match st {
+            .Exited(code) => code
+            .Signaled(sig) => 128 + sig.trunc(u32)
+        }
+        err := try t.read(errfile)
+        try t.check(shell_status is 141, "{}: the program ended with status {} ({})", backend, shell_status, err)
+        try t.check(not str.contains(err, "trap"), "{}: {}", backend, err)
+    }
+    return ()
+}
+
+/// What a program prints reaches its reader before the program waits on the outside, here
+/// a channel that another thread fills from standard input (§21.7). Without that, a program
+/// that answers requests (a language server) would never send its answer.
+output_is_flushed_before_waiting :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    dir := try t.scratch("native_build-flush_before_wait")
+    src := kit.join(dir, "ping.gm")
+    try t.write(src, PING)
+    for backend in ("--backend=interp", "--backend=c") {
+        errfile := kit.join(dir, "stderr.txt")
+        c := t.gamma([_]string("run", backend, src))
+        child := try spawn_logged(t, c, errfile, .Pipe, backend)
+        g := Guard(child: child, feed: true, limit_s: t.cfg.timeout_s)
+        guard := try start_guard(t, &g)
+        // The first line must arrive before the input does: the guard sends the input once
+        // it has seen the line, or after 60 seconds.
+        out := list(u8)
+        buf: [4096]u8 = ---
+        read_failed: ?IoError = null
+        while true {
+            chunk := Proc.read(child, buf[..]) else e => {
+                read_failed = e
+                break
+            }
+            got := chunk else break
+            out.extend(buf[0..got.len])!
+            if g.seen is 0 and str.contains(out.items, "\n") { @atomic_store(&g.seen, 1, .Release) }
+        }
+        status := end_child(&g, guard)
+        if e := read_failed { return !t.fail("{}: cannot read: {}", backend, e) }
+        if g.timed_out { return !t.fail("{}: the program did not end", backend) }
+        st := status else e => return !t.fail("{}: cannot wait for the program: {}", backend, e)
+        try t.check(st is .Exited(0), "{}: the program ended with {}\n{}", backend, st, try t.read(errfile))
+        try t.check(not g.late, "{}: the output came only after the input", backend)
+        try t.expect_text(backend, "ping\ngot 65\n", out.items)
+    }
+    return ()
+}
+
+/// Starts the command `c` (wrapped in a shell that sends its standard error to the file
+/// `errfile`) with a pipe for its standard output and `input` for its input.
+spawn_logged :: fn(t: ^kit.T, c: kit.Command, errfile: string, input: process.Stdio, what: string) -> kit.Fail!process.Child needs kit.Run {
+    argv := list(string)
+    argv.extend([_]string("sh", "-c", "err=$1; shift; exec \"$@\" 2>\"$err\"", "sh", errfile))!
+    argv.extend(c.argv.items)!
+    opts := process.SpawnOptions(stdin: input, stdout: .Pipe, stderr: .Null, dir: c.dir, env: c.env.items, group: true)
+    return Proc.spawn(argv.items, opts) else e => return !t.fail("{}: cannot run `{}`: {}", what, c.show(), e)
+}
+
+/// Watches a running program: feeds it the input `A` once its first line has been seen
+/// (`feed`), and kills it if it runs longer than the time limit.
+Guard :: struct {
+    child: process.Child
+    feed: bool
+    limit_s: u64
+    /// Set (atomically) by the reader once the first line of output has come.
+    seen: u32 = 0
+    /// Set when the reader is done with the program.
+    done: u32 = 0
+    /// The input was sent without the output having come.
+    late: bool = false
+    timed_out: bool = false
+}
+
+start_guard :: fn(t: ^kit.T, g: ^Guard) -> kit.Fail!thread.Thread needs kit.Run {
+    return thread.spawn(guard_main, g) else e => {
+        _ = Proc.kill(g.child)
+        _ = Proc.wait(g.child)
+        return !t.fail("cannot start a thread: {}", e)
+    }
+}
+
+/// Stops the guard and waits for the program.
+end_child :: fn(g: ^Guard, guard: thread.Thread) -> IoError!process.ExitStatus needs Sys + Proc {
+    @atomic_store(&g.done, 1, .Release)
+    thread.join(guard)
+    return Proc.wait(g.child)
+}
+
+guard_main :: fn(g: ^Guard) needs Sys {
+    thread.defaults(fn() needs Clock + Proc {
+        if g.feed {
+            // Sixty seconds for the first line.
+            if not wait_for(&g.seen, 60) { g.late = true }
+            _ = Proc.write(g.child, "A")
+            Proc.close_in(g.child)
+        }
+        if not wait_for(&g.done, g.limit_s) {
+            g.timed_out = true
+            _ = Proc.kill(g.child)
+        }
+    })
+}
+
+/// Waits until `flag` is set, for at most `seconds`; false if it was not.
+wait_for :: fn(flag: ^u32, seconds: u64) -> bool needs Clock {
+    start := Clock.now()
+    while @atomic_load(flag, .Acquire) is 0 {
+        if Clock.now().since(start).ns >= seconds * 1_000_000_000 { return false }
+        Clock.sleep(Duration(ns: 5_000_000))
+    }
+    return true
+}
+
+PING :: `
+thread :: import "std/thread"
+
+Shared :: struct {
+    ch: thread.Channel(u8)
+    reading: u32
+}
+
+reader :: fn(s: ^Shared) needs Sys {
+    thread.defaults(fn() needs In {
+        @atomic_store(&s.reading, 1, .Release)
+        buf: [1]u8 = ---
+        n := In.read(buf[..]) else 0
+        _ = s.ch.send(if n is 1 { buf[0] } else { 0 })
+    })
+}
+
+main :: fn() needs Out + Alloc + Clock + Sys {
+    s := Shared(ch: thread.channel(u8, 1)!, reading: 0)
+    t := thread.spawn(reader, &s)!
+    // Print only once the reader waits on its input, so that its read does not flush.
+    while @atomic_load(&s.reading, .Acquire) is 0 { thread.yield_now() }
+    start := Clock.now()
+    while Clock.now().since(start).ns < 20_000_000 { thread.yield_now() }
+    print("ping\n")
+    b := s.ch.recv() else 0
+    print("got {}\n", b)
+    thread.join(t)
+}
+`

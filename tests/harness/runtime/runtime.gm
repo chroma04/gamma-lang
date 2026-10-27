@@ -1,5 +1,166 @@
-//! The runtime suite (being ported from tests/runtime.rs).
+//! Tests of the C back end's runtime (`runtime/gm_rt.c`).
+//!
+//! `runtime/rt_test.c` includes the runtime and checks it directly. These tests compile it
+//! with the C compiler of `CC`, `CFLAGS` and `LDFLAGS` (else `cc`), run the checks, and run the
+//! scenarios in which the runtime ends the process (traps) to check their exit status and
+//! output. Without a usable C compiler the tests are skipped. For a cross compiler in `CC`,
+//! `GAMMA_RUNNER` names what runs the executable (an emulator).
 
 kit :: import "../kit"
+driver :: import "gammac/driver"
+load :: import "gammac/load"
+pkg :: import "gammac/pkg"
+process :: import "std/process"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "checks_pass", run: checks_pass))!
+    out.push(kit.Test(name: "trap_flushes_stdout_and_reports_location", run: trap_flushes_stdout))!
+    when target.os is .Linux {
+        out.push(kit.Test(name: "failed_stdout_write_fails_the_program", run: failed_stdout_write))!
+    }
+    out.push(kit.Test(name: "trap_without_location_has_one_line", run: trap_without_location))!
+    out.push(kit.Test(name: "double_free_traps", run: double_free_traps))!
+    out.push(kit.Test(name: "invalid_free_traps", run: invalid_free_traps))!
+    out.push(kit.Test(name: "free_with_the_wrong_size_traps", run: wrong_size_free_traps))!
+    out.push(kit.Test(name: "compiles_separately", run: compiles_separately))!
+}
+
+/// The options the runtime is compiled with: warnings are errors.
+FLAGS :: [_]string("-std=gnu11", "-O1", "-pthread", "-Wall", "-Werror", "-Wno-unused-function")
+
+/// The C compiler of the environment.
+toolchain :: fn(t: ^kit.T) -> kit.Fail!pkg.Toolchain needs kit.Run {
+    return driver.from_env() else e => return !t.fail("CC, CFLAGS and LDFLAGS: {}", e)
+}
+
+WINDOWS_LIBS :: [_]string("-static", "-lws2_32", "-lsynchronization", "-lshell32", "-lbcrypt")
+
+Target :: load.Target
+
+/// The libraries a program for Windows needs.
+windows_libs :: fn(tgt: ^const Target) -> []const string {
+    if tgt.os is not "Windows" { return empty_slice(string) }
+    return WINDOWS_LIBS[..]
+}
+
+/// Compiles `rt_test.c` into the directory `name` of the test directory; null (after saying
+/// why in the report) if the C compiler does not run.
+test_binary :: fn(t: ^kit.T, name: string) -> kit.Fail!?string needs kit.Run {
+    tc := try toolchain(t)
+    cc := pkg.display(&tc)
+    dir := try t.scratch(str.format("runtime-{}", name)!)
+    tgt := driver.target(&tc) else e => return !t.fail("the target of the C compiler: {}", e)
+    exe := kit.join(dir, if tgt.os is "Windows" { "rt_test.exe" } else { "rt_test" })
+    tail := list(string)
+    tail.extend([_]string("-I", t.repo("runtime"), t.repo("runtime/rt_test.c"), "-o", exe))!
+    tail.extend(tc.ldflags)!
+    tail.extend(windows_libs(&tgt))!
+    argv := pkg.command(&tc, FLAGS[..], tail.items)
+    out := process.output(argv.items, process.SpawnOptions(stdin: .Null)) else e => {
+        t.log("skipping the runtime tests: cannot run the C compiler `{}`: {}", cc, driver.run_error(e))
+        return null
+    }
+    if not process.success(out.status) {
+        return !t.fail("`{}` failed to compile runtime/rt_test.c:\n{}{}", cc, string(out.out.items), string(out.err.items))
+    }
+    return exe
+}
+
+/// Runs the test binary of the test `name` with `args`, under `GAMMA_RUNNER` if that is set;
+/// the test is skipped if the binary cannot be built.
+run :: fn(t: ^kit.T, name: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    exe := (try test_binary(t, name)) else return !t.skip("no C compiler")
+    runner := driver.runner_from_env() else e => return !t.fail("GAMMA_RUNNER: {}", e)
+    argv := list(string)
+    argv.extend(runner.items)!
+    argv.push(exe)!
+    argv.extend(args)!
+    c := kit.Command(argv: argv, env: list(string))
+    return t.run(c)
+}
+
+/// Fails the test unless the process was ended by `abort`, as a shell reports it.
+assert_exit_134 :: fn(t: ^kit.T, out: kit.Output) -> kit.Fail!() {
+    return t.check(out.code() is 134, "exit status {}, stderr: {}", out.status, out.err)
+}
+
+checks_pass :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try run(t, "checks_pass", empty_slice(string))
+    try t.check(out.success(), "runtime checks failed:\n{}", out.err)
+    try t.expect_text("the output", "runtime ok\n", out.out)
+    return ()
+}
+
+trap_flushes_stdout :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try run(t, "trap", [_]string("trap"))
+    try assert_exit_134(t, out)
+    try t.expect_text("stdout", "before\n", out.out)
+    try t.expect_text("stderr", "err\ntrap: boom\n  at f.gm:3:4\n", out.err)
+    return ()
+}
+
+/// A program whose standard output cannot be written ends with status 1 and says why.
+failed_stdout_write :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    exe := (try test_binary(t, "write-failure")) else return !t.skip("no C compiler")
+    runner := driver.runner_from_env() else e => return !t.fail("GAMMA_RUNNER: {}", e)
+    if runner.items.len > 0 { return !t.skip("the program runs under an emulator") }
+    // The program's standard output is the full device.
+    c := kit.command("sh")
+    c.args([_]string("-c", "exec \"$0\" \"$@\" >/dev/full", exe, "write-failure"))
+    out := try t.run(c)
+    try t.check(out.code() is 1, "exit status {}", out.status)
+    try t.expect_text("stderr", "gamma: cannot write the standard output: No space left on device\n", out.err)
+    return ()
+}
+
+trap_without_location :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try run(t, "trap-nofile", [_]string("trap-nofile"))
+    try assert_exit_134(t, out)
+    try t.expect_text("stderr", "trap: bytes!\n", out.err)
+    return ()
+}
+
+double_free_traps :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try run(t, "double-free", [_]string("double-free"))
+    try assert_exit_134(t, out)
+    try t.check(str.strip_prefix(out.err, "trap: double free of heap block 0x") is not null, "{}", out.err)
+    try t.check(str.strip_suffix(out.err, "\n  at d.gm:7:8\n") is not null, "{}", out.err)
+    return ()
+}
+
+invalid_free_traps :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try run(t, "invalid-free", [_]string("invalid-free"))
+    try assert_exit_134(t, out)
+    try t.check(str.strip_prefix(out.err, "trap: invalid free of 0x") is not null, "{}", out.err)
+    try t.check(str.contains(out.err, ": not the start of a live heap block of 4 bytes\n  at i.gm:1:2\n"), "{}", out.err)
+    return ()
+}
+
+wrong_size_free_traps :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try run(t, "wrong-size", [_]string("wrong-size"))
+    try assert_exit_134(t, out)
+    try t.check(str.strip_prefix(out.err, "trap: invalid free of 0x") is not null, "{}", out.err)
+    try t.check(str.contains(out.err, ": the heap block there has 16 bytes, not 8\n  at w.gm:1:2\n"), "{}", out.err)
+    return ()
+}
+
+/// The runtime compiles on its own (`GM_RT_SEPARATE`), as Debug builds link it: every
+/// function declared `GM_API` is defined with that linkage, and nothing warns.
+compiles_separately :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    tc := try toolchain(t)
+    probe := pkg.command(&tc, empty_slice(string), [_]string("--version"))
+    ran := process.output(probe.items, process.SpawnOptions(stdin: .Null)) else return !t.skip("no C compiler")
+    if not process.success(ran.status) { return !t.skip("no C compiler") }
+    dir := try t.scratch("runtime-separate")
+    src := kit.join(dir, "gm_rt_separate.c")
+    try t.write(src, "#define GM_RT_SEPARATE 1\n#include \"gm_rt.h\"\n#include \"gm_rt.c\"\nint gm_checks = 1;\n")
+    flags := list(string)
+    flags.extend(FLAGS[..])!
+    flags.push("-c")!
+    argv := pkg.command(&tc, flags.items, [_]string("-I", t.repo("runtime"), src, "-o", kit.join(dir, "gm_rt_separate.o")))
+    c := kit.Command(argv: argv, env: list(string))
+    out := try t.run(c)
+    try t.check(out.success(), "the runtime does not compile separately:\n{}", out.err)
+    return ()
+}
