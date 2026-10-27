@@ -1,0 +1,121 @@
+// The builtins that reach memory: the heap primitives behind the core library's
+// allocator, the allocation tags of Debug builds, atomics, volatile accesses, C string
+// lengths and vector loads and stores. Atomics are plain accesses: one thread runs at a
+// time (§19.6).
+
+memory_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, args: []Expr, v: [][]u8, res_ty: Ty, dst: []u8) -> Flow!() needs Run {
+    match op {
+        .HeapAlloc => {
+            size := m.get_u64(v[0])
+            al := m.get_u64(v[1]).max(1)
+            if al & (al - 1) is not 0 { return !m.trap(span, str.format("allocation alignment {} is not a power of two", al)!) }
+            // An allocation the host cannot provide is a null result, not a trap.
+            addr := m.mem.alloc(size, al, .Heap, true) else {
+                dst.fill(0)
+                return ()
+            }
+            // Fresh storage is unspecified; Debug builds fill it with a pattern (§18.3).
+            if m.mode is .Debug and size > 0 {
+                d := m.mem.write_view(addr, size, 1) else return ()
+                d.fill(0xAA)
+            }
+            pb: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
+            p := pb[0..us(m.ptr_bytes)]
+            m.put_ptr(p, addr)
+            m.make_some(res_ty, dst, p)
+        }
+        .HeapFree => {
+            p := m.ptr_of(v[0])
+            size := m.get_u64(v[1])
+            d := m.mem.describe(p) else return !m.trap(span, str.format("invalid free of {:#x}: not the start of a live heap block of {} bytes", p, size)!)
+            if d.kind is .Heap and d.live and d.base is p and d.size is size {
+                _ = m.mem.kill(p)
+                return ()
+            }
+            if d.kind is .Heap and not d.live { return !m.trap(span, str.format("double free of heap block {:#x}", p)!) }
+            // A whole block freed with the wrong size, such as a slice of it.
+            if d.kind is .Heap and d.base is p { return !m.trap(span, str.format("invalid free of {:#x}: the heap block there has {} bytes, not {}", p, d.size, size)!) }
+            return !m.trap(span, str.format("invalid free of {:#x}: not the start of a live heap block of {} bytes", p, size)!)
+        }
+        .AllocTag, .AllocCheck => {
+            if m.mode is not .Debug { return () }
+            p := m.ptr_of(v[0])
+            owner := m.ptr_of(v[1])
+            vt := m.ptr_of(v[2])
+            file := try m.read_string(span, v[3])
+            site := str.format("{}:{}:{}", file, m.get_u64(v[4]), m.get_u64(v[5]))!
+            if op is .AllocTag {
+                m.alloc_tags.put(p, AllocTag(owner: owner, vt: vt, site: site))!
+                return ()
+            }
+            tag := m.alloc_tags.get(p) else return ()
+            _ = m.alloc_tags.remove(p)
+            if tag.owner is not owner or tag.vt is not vt { return !m.trap(span, str.format("memory allocated at {} is freed at {} through a different allocator", tag.site, site)!) }
+        }
+        .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore => {
+            addr := m.ptr_of(v[0])
+            .Ptr(_, ty) := m.kind(args[0].ty) else return !m.trap(span, "internal error: an atomic access through a value that is not a pointer")
+            al := m.align(ty)
+            old := m.tmp(m.size(ty))
+            try m.load_at(span, addr, al, old)
+            match op {
+                .AtomicLoad, .VolatileLoad => dst.copy_from(old)
+                .AtomicStore, .VolatileStore => try m.store_at(span, addr, al, v[1])
+                .AtomicSwap => {
+                    try m.store_at(span, addr, al, v[1])
+                    dst.copy_from(old)
+                }
+                .AtomicCas => {
+                    if try m.equal(span, ty, old, v[1]) {
+                        try m.store_at(span, addr, al, v[2])
+                        dst.fill(0)
+                    } else {
+                        m.make_some(res_ty, dst, old)
+                    }
+                }
+                .AtomicRmw(rmw) => {
+                    x := m.get_int(ty, old)
+                    y := m.get_int(ty, v[1])
+                    signed := (m.int_info(ty) else (signed: false, bits: 0)).signed
+                    r: u128 = match rmw {
+                        .Add => x +% y
+                        .Sub => x -% y
+                        .And => x & y
+                        .Or => x | y
+                        .Xor => x ~ y
+                        .Max => if (signed and y.bits(i128) > x.bits(i128)) or (not signed and y > x) { y } else { x }
+                        .Min => if (signed and y.bits(i128) < x.bits(i128)) or (not signed and y < x) { y } else { x }
+                    }
+                    nb := m.tmp(m.size(ty))
+                    m.put_uint(nb, r)
+                    try m.store_at(span, addr, al, nb)
+                    dst.copy_from(old)
+                }
+                _ => {}
+            }
+        }
+        .Fence => {}
+        .CstrLen => {
+            p := m.ptr_of(v[0])
+            n: u64 = 0
+            while true {
+                b := m.mem.read(p + n, 1, 1) else e => return !m.mem_trap(span, e)
+                if b[0] is 0 { break }
+                n += 1
+            }
+            m.put_u64(dst, n)
+        }
+        .VecLoad, .VecStore => {
+            vt := if op is .VecLoad { res_ty } else { args[0].ty }
+            sp := m.slice_parts(if op is .VecLoad { v[0] } else { v[1] })
+            .Array(n, lane, _) := m.kind(vt) else return !m.trap(span, "internal error: a vector access of a non-vector")
+            if sp.len < n and not m.fast() {
+                what := if op is .VecLoad { "load" } else { "store" }
+                return !m.trap(span, str.format("vector {} of {} lanes with a slice of {} elements", what, n, sp.len)!)
+            }
+            al := m.align(lane)
+            if op is .VecLoad { try m.load_at(span, sp.ptr, al, dst) } else { try m.store_at(span, sp.ptr, al, v[0]) }
+        }
+        _ => return !m.trap(span, "internal error: not a memory builtin")
+    }
+}

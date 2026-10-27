@@ -1,0 +1,233 @@
+// The interpreter's flat virtual address space (mirrors `src/interp/memory.rs`).
+//
+// Every allocation receives a fresh, never reused address range from a bump counter, so
+// the allocations are sorted by base address by construction and an address is found
+// with a binary search (after a look at the last allocation used and a small cache). A
+// freed allocation stays as a tombstone so that a use after free is reported precisely;
+// once most allocations are dead, all but the newest tombstones are dropped, after which
+// stale pointers are reported as unmapped addresses.
+
+/// The gap left between consecutive allocations, so that one-past-the-end addresses and
+/// small overruns never land inside another allocation.
+GAP: u64 : 16
+MIN_ALIGN: u64 : 16
+/// Entries of the direct-mapped cache from address to allocation index.
+CACHE: usize : 4096
+
+pub AllocKind :: union {
+    Stack
+    Temp
+    Heap
+    /// Static bytes such as a string literal.
+    Static
+    Const
+    Global
+}
+
+Allocation :: struct {
+    base: u64
+    size: u64
+    data: []u8
+    live: bool
+    mutable: bool
+    kind: AllocKind
+}
+
+/// Why an access or an allocation failed.
+pub MemError :: union {
+    Null
+    Unmapped: (addr: u64, len: u64)
+    Dead: (addr: u64, kind: AllocKind)
+    OutOfBounds: (addr: u64, len: u64, base: u64, size: u64)
+    Misaligned: (addr: u64, align: u64)
+    ReadOnly: u64
+    Exhausted
+    /// The host could not provide memory for an object of `size` bytes.
+    TooLarge: (size: u64, kind: AllocKind)
+}
+
+/// The message of the trap `e` causes.
+pub mem_message :: fn(e: MemError) -> string needs Alloc => match e {
+    .Null => "invalid memory access: null pointer dereference"
+    .Unmapped(addr, len) => str.format("invalid memory access: {} byte(s) at address {:#x} are not inside any allocation", len, addr)!
+    .Dead(addr, kind) => {
+        what := match kind {
+            .Stack, .Temp => "a local variable whose lifetime has ended"
+            .Heap => "freed memory"
+            _ => "a dead allocation"
+        }
+        str.format("invalid memory access: address {:#x} points into {}", addr, what)!
+    }
+    .OutOfBounds(x) => str.format("invalid memory access: {} byte(s) at address {:#x} are out of bounds of the allocation at {:#x} ({} bytes)", x.len, x.addr, x.base, x.size)!
+    .Misaligned(addr, align) => str.format("invalid memory access: address {:#x} is not aligned to {} bytes", addr, align)!
+    .ReadOnly(addr) => str.format("invalid memory access: write to read-only memory at address {:#x}", addr)!
+    .Exhausted => "address space exhausted"
+    .TooLarge(size, kind) => if kind in (AllocKind.Stack, AllocKind.Temp) { str.format("stack overflow: a local of {} bytes does not fit", size)! } else { str.format("out of memory allocating {} bytes", size)! }
+}
+
+pub Memory :: struct {
+    allocs: List(Allocation)
+    next: u64
+    limit: u64
+    live_count: usize
+    last: usize
+    cache: []u32
+}
+
+/// An empty address space whose first allocation is at or above `data_base`, for a
+/// target with pointers of `ptr_bytes` bytes.
+pub memory :: fn(data_base: u64, ptr_bytes: u64) -> Memory needs Alloc {
+    limit := if ptr_bytes >= 8 { ~u64(0) } else { u64(1) << (ptr_bytes * 8) }
+    return Memory(allocs: list(Allocation), next: data_base, limit: limit, live_count: 0, last: 0, cache: make_fill(CACHE, u32(0))!)
+}
+
+slot :: fn(addr: u64) -> usize => us((addr >> 4) % u64(CACHE))
+
+/// A new zero-filled allocation of `size` bytes aligned to `align`: its base address.
+pub alloc :: fn(m: ^Memory, size: u64, align: u64, kind: AllocKind, mutable: bool) -> MemError!u64 needs Alloc {
+    a := align.max(MIN_ALIGN)
+    q := m.next / a + (if m.next % a is 0 { 0 } else { 1 })
+    // Sums saturate: an address range past the end of the space is exhaustion.
+    base := q *| a
+    next := base +| size.max(1) +| GAP
+    if next >= m.limit { return !.Exhausted }
+    if size > (@max_value(isize)).bits(u64) { return !.TooLarge(size, kind) }
+    data := empty_slice(u8)
+    if size > 0 { data = make_fill(us(size), u8(0)) else return !.TooLarge(size, kind) }
+    m.next = next
+    m.cache[slot(base)] = m.allocs.items.len.trunc(u32)
+    m.allocs.push(Allocation(base: base, size: size, data: data, live: true, mutable: mutable, kind: kind))!
+    m.live_count += 1
+    return base
+}
+
+holds :: fn(a: ^const Allocation, addr: u64) -> bool => addr >= a.base and addr - a.base < a.size.max(1)
+
+/// The index of the allocation containing `addr` (or ending at it).
+find :: fn(m: ^Memory, addr: u64, len: u64) -> MemError!usize {
+    if addr is 0 { return !.Null }
+    items := m.allocs.items
+    if m.last < items.len and items[m.last].holds(addr) { return m.last }
+    c := us(m.cache[slot(addr)])
+    if c < items.len and items[c].holds(addr) {
+        m.last = c
+        return c
+    }
+    // The first allocation with a base above `addr`.
+    lo: usize = 0
+    hi := items.len
+    while lo < hi {
+        mid := lo + (hi - lo) / 2
+        if items[mid].base <= addr { lo = mid + 1 } else { hi = mid }
+    }
+    if lo is 0 { return !.Unmapped(addr, len) }
+    i := lo - 1
+    // One past the end of an allocation (for zero-length accesses) is also accepted.
+    if addr - items[i].base > items[i].size { return !.Unmapped(addr, len) }
+    m.last = i
+    m.cache[slot(addr)] = i.trunc(u32)
+    return i
+}
+
+/// The index of the live allocation holding the `len` bytes at `addr`.
+check :: fn(m: ^Memory, addr: u64, len: u64) -> MemError!usize {
+    i := try m.find(addr, len)
+    a := &m.allocs.items[i]
+    if not a.live { return !.Dead(addr, a.kind) }
+    off := addr - a.base
+    if off > a.size or len > a.size - off { return !.OutOfBounds(addr, len, a.base, a.size) }
+    return i
+}
+
+aligned :: fn(addr: u64, align: u64) -> bool {
+    if align <= 1 { return true }
+    if align & (align - 1) is 0 { return addr & (align - 1) is 0 }
+    return addr % align is 0
+}
+
+/// The `len` bytes at `addr`, aligned to `align`: a view of the allocation's storage,
+/// valid until the next allocation is freed.
+pub read :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
+    if len is 0 and align <= 1 { return empty_slice(u8) }
+    if not aligned(addr, align) { return !.Misaligned(addr, align) }
+    i := try m.check(addr, len)
+    a := &m.allocs.items[i]
+    off := us(addr - a.base)
+    return a.data[off..off + us(len)]
+}
+
+/// The `len` bytes at `addr` for writing (the allocation must be mutable).
+pub write_view :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
+    if len is 0 and align <= 1 { return empty_slice(u8) }
+    if not aligned(addr, align) { return !.Misaligned(addr, align) }
+    i := try m.check(addr, len)
+    a := &m.allocs.items[i]
+    if not a.mutable { return !.ReadOnly(addr) }
+    off := us(addr - a.base)
+    return a.data[off..off + us(len)]
+}
+
+/// Copies `data` to `addr`.
+pub write :: fn(m: ^Memory, addr: u64, data: []const u8, align: u64) -> MemError!() {
+    d := try m.write_view(addr, u64(data.len), align)
+    d.copy_from(data)
+}
+
+/// Copies `data` to `addr` without the read-only check (to initialize constants and
+/// static data).
+pub init :: fn(m: ^Memory, addr: u64, data: []const u8) -> MemError!() {
+    if data.len is 0 { return () }
+    i := try m.check(addr, u64(data.len))
+    a := &m.allocs.items[i]
+    off := us(addr - a.base)
+    a.data[off..off + data.len].copy_from(data)
+}
+
+/// Marks the allocation at `base` dead and releases its storage. Returns false if there
+/// is none (or it is already dead).
+pub kill :: fn(m: ^Memory, base: u64) -> bool needs Alloc {
+    items := m.allocs.items
+    idx := us(m.cache[slot(base)])
+    if idx >= items.len or items[idx].base is not base {
+        lo: usize = 0
+        hi := items.len
+        while lo < hi {
+            mid := lo + (hi - lo) / 2
+            if items[mid].base < base { lo = mid + 1 } else { hi = mid }
+        }
+        idx = lo
+    }
+    if idx >= items.len { return false }
+    a := &items[idx]
+    if a.base is not base or not a.live { return false }
+    a.live = false
+    free(a.data)
+    a.data = empty_slice(u8)
+    m.live_count -= 1
+    if items.len > (1 << 20) and items.len > 4 * m.live_count { m.compact() }
+    return true
+}
+
+/// Drops the tombstones but the newest 2^16.
+compact :: fn(m: ^Memory) {
+    items := m.allocs.items
+    keep_dead_from := if items.len > (1 << 16) { items.len - (1 << 16) } else { 0 }
+    n: usize = 0
+    for i in 0..items.len {
+        if items[i].live or i >= keep_dead_from {
+            items[n] = items[i]
+            n += 1
+        }
+    }
+    m.allocs.truncate(n)
+    m.last = 0
+    for i in 0..m.cache.len { m.cache[i] = 0 }
+}
+
+/// The allocation containing `addr` (a one-past-the-end address belongs to the allocation
+/// it ends): its base, size, kind and whether it is live.
+pub describe :: fn(m: ^Memory, addr: u64) -> ?(base: u64, size: u64, kind: AllocKind, live: bool) {
+    i := m.find(addr, 0) else return null
+    a := &m.allocs.items[i]
+    return (base: a.base, size: a.size, kind: a.kind, live: a.live)
+}

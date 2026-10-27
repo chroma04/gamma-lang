@@ -9,7 +9,7 @@
 //!     gammac lint [--fix] [--rules] [--allow=RULES] [--warn=RULES] [--deny=RULES] [-D] ROOT
 //!     gammac fix ROOT
 //!     gammac build [--mode=debug|checked|safe|fast] [--target=TRIPLE] [-g] [-o EXE] [--emit-c] ROOT
-//!     gammac run [--mode=debug|checked|safe|fast] [--target=TRIPLE] [-g] ROOT [ARG...]
+//!     gammac run [--mode=debug|checked|safe|fast] [--target=TRIPLE] [-g] [--backend=c|interp] ROOT [ARG...]
 //!     gammac test [--filter=TEXT] [--all] [--show-output] [--jobs=N] [--timeout=SECONDS] [--time] [--mode=...] [--target=TRIPLE] ROOT
 //!     gammac bench [--filter=TEXT] [--all] [--show-output] [--timeout=SECONDS] [--mode=...] [--target=TRIPLE] ROOT
 //!     gammac new|init|fetch|update|add|remove|cache ...      (the package manager)
@@ -66,7 +66,8 @@ commands:
   lint    check a package with its tests and report the findings of the lint rules
   fix     check a program and apply the fixes its diagnostics suggest
   build   compile a program to a native executable via the system C compiler
-  run     compile a program via C and run it; arguments after the file go to the program
+  run     compile a program via C and run it, or run it in the interpreter (--backend=interp);
+          arguments after the file go to the program
   test    run the test declarations of a module and of the modules of its package
           that it imports, compiled into one executable via C
   bench   run the bench declarations the same way and report the time per run
@@ -107,7 +108,8 @@ options:
   --time                      (test, bench) print how long each test took and the total
   --coverage[=<file>]         (test) count the lines of the package that the tests run; print
                               a table, and with <file> write LCOV
-  --backend=c                 (test, bench) accepted: gammac has only the C back end
+  --backend=c|interp          (run) compile via C (the default) or run in the interpreter;
+                              (test, bench) only c is accepted
   --offline                   (check, run, build) never use the network for dependencies
   --locked                    (check, run, build) fail if gamma.lock is missing or out of date
   --profile=<name>            (check, run, build) use the [profile.<name>] table of gamma.toml
@@ -222,7 +224,11 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
                 opts.jobs = parse_jobs(args[i])
                 i += 1
             }
-            "--backend=c" => {}
+            "--backend=c" => { opts.interp = false }
+            "--backend=interp" => {
+                if opts.command is not .Run { usage_error("`--backend=interp` is supported by `run` only: gammac's other commands use the C back end") }
+                opts.interp = true
+            }
             "-g" => {
                 opts.debug_info = true
                 opts.debug_info_given = true
@@ -254,7 +260,7 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
                 }
                 if a.starts_with("--backend=") {
                     value := a[10..]
-                    if value in ("interp", "cranelift") { usage_error(str.format("`--backend={}` is not supported: gammac has only the C back end (`--backend=c`)", value)!) }
+                    if value is "cranelift" { usage_error("`--backend=cranelift` is not supported: gammac has the C back end and, for `run`, the interpreter") }
                     usage_error(str.format("invalid value `{}` for --backend (expected c, cranelift or interp)", value)!)
                 }
                 if a is "--coverage" {
@@ -505,7 +511,7 @@ load_program :: fn(input: string, in_opts: driver.Options) -> u8 needs Alloc + C
                         .Build => {
                             if not driver.build(&s, m, root, opts) { status = 1 }
                         }
-                        .Run => { status = driver.run(&s, m, opts) }
+                        .Run => { status = if opts.interp { driver.run_interp(&s, m, root, opts) } else { driver.run(&s, m, opts) } }
                         _ => {}
                     }
                 }

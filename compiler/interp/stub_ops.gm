@@ -1,0 +1,19 @@
+// Stand-ins for ops.gm (numeric operations, comparisons, conversions, builtins).
+
+unary :: fn(m: ^Machine, a: Act, op: tir.UnOp, x: ^Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run => !m.unsupported(e.span, "unary operators")
+
+binary :: fn(m: ^Machine, a: Act, op: tir.BinOp, l, r: ^Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run => !m.unsupported(e.span, "binary operators")
+
+equal :: fn(m: ^Machine, span: source.Span, t: Ty, x, y: []u8) -> Flow!bool needs Run => !m.unsupported(span, "equality")
+
+contains :: fn(m: ^Machine, span: source.Span, elem_ty: Ty, x: []u8, cty: Ty, c: []u8) -> Flow!bool needs Run => !m.unsupported(span, "`in`")
+
+coerce_bytes :: fn(m: ^Machine, span: source.Span, kind: tir.Coercion, from, to: Ty, b: []u8, dst: []u8) -> Flow!() needs Run => !m.unsupported(span, "coercions")
+
+builtin :: fn(m: ^Machine, a: Act, op: tir.Builtin, args: []Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run => !m.unsupported(e.span, "builtins")
+
+put_float :: fn(m: ^Machine, t: Ty, x: f64, dst: []u8) needs Alloc {
+    if dst.len is 8 { m.put_u64(dst, x.bits(u64)) } else if dst.len is 4 { m.put_u64(dst, u64(x.to(f32).bits(u32))) }
+}
+
+big_float :: fn(m: ^const Machine, i: bigint.Int) -> f64 needs Alloc => 0.0

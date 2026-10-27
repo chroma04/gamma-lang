@@ -1,0 +1,15 @@
+// Stand-ins for format.gm (formatting values for `print` and friends).
+
+format_value :: fn(m: ^Machine, out: ^List(u8), t: Ty, b: []u8, top: bool) -> string!() needs Alloc {
+    match m.kind(t) {
+        .Slice(_, _) => {
+            sp := m.slice_parts(b)
+            data := m.mem.read(sp.ptr, sp.len, 1) else return !"bad string"
+            out.extend(data)!
+        }
+        .Int(_), .Usize, .Isize => out.write("{}", m.get_int(t, b).bits(i128))!
+        _ => return !"unsupported value"
+    }
+}
+
+format_spec :: fn(m: ^Machine, out: ^List(u8), t: Ty, b: []u8, spec: ^const tir.FmtSpec) -> string!() needs Alloc => m.format_value(out, t, b, true)

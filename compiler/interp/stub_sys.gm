@@ -1,0 +1,7 @@
+// Stand-ins for sys.gm (the system services).
+
+SysState :: struct {}
+
+sys_state :: fn() -> SysState => SysState()
+
+sys_call :: fn(m: ^Machine, a: Act, op: tir.SysOp, args: []Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run => !m.unsupported(e.span, "system services")

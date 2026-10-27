@@ -1,0 +1,100 @@
+// What the interpreter computes once per function: the stack bytes a call is charged
+// and which locals need an address.
+
+/// The number of bytes a call of `def` is charged on a fiber stack, as in the C back end
+/// (`frame_cost` in `src/tir.rs`): a fixed overhead, the locals, every composite
+/// temporary bigger than a register and the records of the handlers its `with`s install.
+frame_cost :: fn(m: ^Machine, def: ^const cgen.Func) -> u64 needs Alloc {
+    c: u64 = 256
+    for l in def.locals { c = c +| round8(m.size(l.ty)) }
+    if b := def.body { frame_temps(m, b, false, &c) }
+    return c
+}
+
+round8 :: fn(n: u64) -> u64 => (n +| 7) & 0xFFFF_FFFF_FFFF_FFF8
+
+/// Adds the temporaries of `e` to `c`; `place` is set for an expression used as a place
+/// (the base of an index, field or slice, an operand of `&`, the target of an
+/// assignment): reading it makes no copy.
+frame_temps :: fn(m: ^Machine, e: ^Expr, place: bool, c: ^u64) needs Alloc {
+    add :: fn(t: Ty) needs Alloc {
+        n := m.size(t)
+        if n > 8 { c^ = c^ +| round8(n) }
+    }
+    match e.kind {
+        .With(w) => { c^ = c^ +| 128 * u64(w.handlers.len) }
+        .Call(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .Builtin(_) => add(e.ty)
+        .Local(_), .Upvar(_), .Global(_) => if not place { add(e.ty) }
+        _ => {}
+    }
+    match e.kind {
+        .Deref(x), .Field(x, _), .Index(x, _, _) => {
+            if not place { add(e.ty) }
+            frame_temps(m, x, true, c)
+            if .Index(_, index, _) := e.kind { frame_temps(m, index, false, c) }
+            return ()
+        }
+        .AddrOf(x), .SliceLen(x), .SlicePtr(x) => {
+            frame_temps(m, x, true, c)
+            return ()
+        }
+        .Slice(sl) => {
+            frame_temps(m, sl.base, true, c)
+            if x := sl.lo { frame_temps(m, x, false, c) }
+            if x := sl.hi { frame_temps(m, x, false, c) }
+            return ()
+        }
+        .Block(b) => {
+            for st in b.stmts {
+                match st {
+                    .Assign(place_, value) => {
+                        frame_temps(m, place_, true, c)
+                        frame_temps(m, value, false, c)
+                    }
+                    .AssignTuple(places, value) => {
+                        for p in places {
+                            if x := p { frame_temps(m, x, true, c) }
+                        }
+                        frame_temps(m, value, false, c)
+                    }
+                    .Let(_, ?init) => if x := init { frame_temps(m, x, false, c) }
+                    .LetTuple(_, init) => frame_temps(m, init, false, c)
+                    .Expr(x) => frame_temps(m, x, false, c)
+                    .Defer(_, x) => frame_temps(m, x, false, c)
+                }
+            }
+            if t := b.tail { frame_temps(m, t, false, c) }
+            return ()
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { frame_temps(m, x, false, c) })
+}
+
+/// Marks in `addressed` the locals whose address the body `e` takes: they get an
+/// allocation of their own.
+mark_addressed :: fn(m: ^Machine, e: ^Expr, addressed: []bool) {
+    match e.kind {
+        .AddrOf(x) => if l := root_local(m, x) { addressed[us(l)] = true }
+        .Slice(sl) => if m.kind(sl.base.ty) is .Array(_, _, _) {
+            if l := root_local(m, sl.base) { addressed[us(l)] = true }
+        }
+        .Builtin(op, args) => if op in (tir.Builtin.GetPtr, tir.Builtin.VecStore) and args.len > 0 and m.kind(args[0].ty) is .Array(_, _, _) {
+            if l := root_local(m, &args[0]) { addressed[us(l)] = true }
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { mark_addressed(m, x, addressed) })
+}
+
+/// The local of this function that place `e` is part of, if it is not reached through a
+/// pointer.
+root_local :: fn(m: ^const Machine, e: ^Expr) -> ?u32 {
+    match e.kind {
+        .Local(l) => return l
+        .Field(base, _) => return root_local(m, base)
+        .Index(base, _, _) => if m.kind(base.ty) is .Array(_, _, _) { return root_local(m, base) }
+        _ => {}
+    }
+    return null
+}
