@@ -413,6 +413,47 @@ as a conformance test (for example `tests/conformance/parse/<name>.gm` with
 with `//! stage: check`) or a unit test in the module concerned.
 Fuzzing is not part of CI.
 
+### Fuzzing gammac
+
+`fuzz/gammac/` has the same five targets against `gammac`, so fuzzing needs no Rust
+toolchain: only a built `gammac` and clang with libFuzzer (on Debian and Ubuntu,
+`apt install clang libclang-rt-dev`). Each target is a Gamma program (`parse.gm`, `fmt.gm`,
+`check.gm`, `manifest.gm`, `archive.gm`) that imports the modules of `compiler/` through a
+path dependency (`fuzz/gammac/gamma.toml`) and does what the cargo-fuzz target of the same
+name does, with the same checks.
+
+How a Gamma program becomes a libFuzzer target: `gammac build --emit-c` writes the C of the
+program, and `build.sh` compiles it with `-fsanitize=fuzzer-no-link` (coverage
+instrumentation, plus `address` for every target but `check`) and links it with libFuzzer's
+driver library without its `main`. The generated C defines `main`, which `build.sh`
+renames (`-Dmain=gm_program_main`) so that `shim.c` can own the real one. It starts the
+Gamma program, whose `main` sets up the runtime and the ambient handlers and then calls
+`LLVMFuzzerRunDriver`; libFuzzer calls an `#export`ed Gamma function (§19.4) for every
+input. `harness/harness.gm` runs each input in a fresh arena under the default handlers
+and fixes the environment variables the compiler reads (`GAMMA_STD`, `GAMMA_CORE`,
+`GAMMA_RUNTIME`). A trap ends the process with status 134 through `exit`, which libFuzzer
+reports as "fuzz target exited" and records as a crash input like any other; a stack
+overflow is a signal and a hang is libFuzzer's timeout.
+
+```sh
+GAMMAC=target/gammac fuzz/gammac/build.sh           # every target; or name some: build.sh parse fmt
+fuzz/gammac/seed.sh                                 # corpus: fuzz/seed.sh plus sample package archives
+fuzz/gammac/run.sh parse -max_total_time=600        # options of the kind of target, then yours
+fuzz/gammac/run.sh check -max_total_time=600 -jobs=4 -workers=4
+fuzz/gammac/run.sh parse fuzz/gammac/artifacts/parse/crash-0123   # reproduce an input
+fuzz/gammac/smoke.sh 30                             # build all, run each for 30 s; fails on a crash
+```
+
+`build.sh` reads `GAMMAC` (default `gammac` on `PATH`), `CLANG`, `MODE` (default
+`checked`), `SAN` and `OPT`; `run.sh` reads `GAMMA_STD` and `GAMMA_RUNTIME` (default: those
+of the source tree) and passes everything after the target to libFuzzer. The `check` target
+loads and checks the standard library for every input, so it is slow (tens of inputs per
+second); `-jobs` and `-workers` use several cores. New inputs go to `fuzz/gammac/corpus/`
+and crashing inputs to `fuzz/gammac/artifacts/<target>/`, neither of which is checked in.
+`build.sh selftest` builds a target that traps, overflows the stack and hangs on purpose,
+to check that each is recorded (see `selftest.gm`). To turn a crash into a regression test,
+shrink it with `-minimize_crash=1` and add it as described above.
+
 ## Differential testing
 
 `tools/difftest/` is a small Rust crate (its own workspace, like `fuzz/`, with no
