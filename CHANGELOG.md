@@ -8,6 +8,16 @@ Versions and what each kind of change means are described in
 
 ### Self-hosting
 
+- **Bootstrapping without Rust.** `bootstrap/seed/` holds the C that `gammac` generates for
+  itself, and `bootstrap/build.sh` builds `gammac` from it with only a C compiler, on Linux
+  and macOS (x86-64 and AArch64). CI checks that the seed is exactly what its sources,
+  named in `bootstrap/seed/SOURCE`, compile to, and that the build from it is a fixed
+  point. `tools/refresh-seed.sh` regenerates it (`bootstrap/README.md`,
+  `docs/contributing.md`).
+- `gammac` asks the system (`uname`) for the operating system and architecture it runs on,
+  so the C it generates for itself is the same on every 64-bit little-endian Unix-like host.
+- `gammac build --emit-c` with `GAMMA_C_UNITS` above 1 writes the program split into units
+  that include a shared header, with the runtime in a file of its own.
 - **`gammac` compiles itself.** `compiler/cgen/` is a C back end for `gammac`, ported from
   the reference implementation's, and `gammac build` compiles a program to an executable
   with it (`--mode=debug|checked|fast`, `-o`, `--emit-c`). Every conformance `run` test

@@ -15,6 +15,10 @@ cargo build --release
 
 The binary is `target/<profile>/gamma`. `cargo run -- <args>` builds and runs it.
 
+`gammac`, the compiler written in Gamma (`compiler/`), is built by `gamma build compiler`,
+or without Rust from the C seed in `bootstrap/` with `bootstrap/build.sh`, which only needs
+a C compiler (see [The bootstrap seed](#the-bootstrap-seed)).
+
 ## Checks
 
 Continuous integration runs, on Linux and macOS (and the tests on Windows with MinGW-w64 gcc):
@@ -295,6 +299,26 @@ also checks the integer approximations of the logarithms the C and Rust code use
 interpreter (`src/interp/num.rs`) computes the same table at start-up. The algorithm is
 Schubfach; both implementations are tested against a slow search over the exact decimal
 expansion, which defines the result (spec §21.6.1).
+
+## The bootstrap seed
+
+`bootstrap/seed/` is the C that `gammac` generates for itself, from which
+`bootstrap/build.sh` builds `gammac` with only a C compiler (`bootstrap/README.md`). It is
+generated, never edited: `bootstrap/seed/SOURCE` names the git trees of `compiler/`,
+`lib/` and `runtime/` it comes from, and the CI job "Bootstrap from the seed" fails if the
+seed is not exactly what the compiler of those trees generates for them
+(`bootstrap/verify.sh`), if it no longer builds the current `gammac`, or if that build is
+not a fixed point.
+
+Refresh the seed when `gammac`'s sources stop building with it: commit the change to
+`compiler/`, `lib/` or `runtime/`, then run `tools/refresh-seed.sh` and commit
+`bootstrap/seed/`. The script builds `gammac` from the current seed (or with the `gammac`
+given as its argument, such as one built by `gamma build compiler`), has it build itself,
+and writes the C that compiler generates for itself. Because a refreshed seed has to be
+built by the previous one, a change that has `gammac`'s own sources use a new language
+feature comes in two steps: first teach the compiler the feature and refresh the seed,
+then use the feature in `compiler/`. Changes that do not need a refresh leave the seed
+alone, which keeps the repository from growing with every change.
 
 ## Releases
 

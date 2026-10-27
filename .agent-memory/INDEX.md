@@ -1,6 +1,9 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-27) — PRs #1–#90 merged, v0.1.0 tagged
+## State (2026-10-27) — PRs #1–#91 merged, v0.1.0 tagged
+- s47 (branch claude/project-thread-fgmh3g): user approved RETIRING the Rust reference in
+  4 phases (decisions/052). Phase 1 done: C seed bootstrap/ (build.sh, verify.sh, SOURCE),
+  tools/refresh-seed.sh, CI job `bootstrap`; gammac host via uname. NEXT: phase 2.
 - s46 (branch claude/gammac-interpreter, PR #91; user: "work on an interpreter for gammac
   so we can achieve parity in things like repl"): compiler/interp/ tree-walking
   interpreter (decisions/051), `gammac run --backend=interp` 476/476 run tests
@@ -53,7 +56,7 @@
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
 1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
-1b. Self-hosting: roadmap/self-hosting.md (stages 1–6 done; next: back-end speed, -g, tests).
+1b. Self-hosting: roadmap/self-hosting.md; retiring Rust = decisions/052 phases 2–4.
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.
@@ -65,9 +68,9 @@
                   self-hosting.md (gammac stages), gammac-cli.md (porting the gamma commands),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–050, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–052, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)
