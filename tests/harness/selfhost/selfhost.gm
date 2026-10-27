@@ -12,6 +12,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "usage_errors", run: usage_errors))!
     out.push(kit.Test(name: "unit_tests_pass", run: unit_tests_pass))!
     out.push(kit.Test(name: "sources_are_formatted", run: sources_are_formatted))!
+    out.push(kit.Test(name: "architecture_names_every_module", run: architecture_names_every_module))!
     when target.os is not .Windows {
         out.push(kit.Test(name: "the_compiler_compiles_itself_to_a_fixed_point", run: fixed_point))!
         out.push(kit.Test(name: "split_emitted_c_builds_the_program", run: split_emitted_c))!
@@ -41,6 +42,20 @@ sources_are_formatted :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     // Run `gamma fmt compiler tests/harness` after editing them.
     out := try t.run(t.gamma([_]string("fmt", "--check", "compiler", "tests/harness")))
     try t.check(out.success(), "not formatted (run `gamma fmt compiler tests/harness`):\n{}{}", out.out, out.err)
+    return ()
+}
+
+/// `docs/architecture.md` names every module of the compiler (as `compiler/<dir>/`), so that
+/// its map of the code does not drift as modules are added.
+architecture_names_every_module :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    doc := try t.read(t.repo("docs/architecture.md"))
+    missing := list(u8)
+    for r in fs.entries(t.repo("compiler")) {
+        e := r else break
+        if e.kind is not .Dir { continue }
+        if not str.contains(doc, str.format("compiler/{}/", e.name)!) { missing.write(" compiler/{}/", e.name)! }
+    }
+    try t.check(missing.items.len is 0, "docs/architecture.md does not mention:{}", missing.items)
     return ()
 }
 
