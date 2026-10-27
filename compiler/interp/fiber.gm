@@ -78,7 +78,7 @@ MIN_ROOT_STACK: u64 : 1 << 30
 
 /// The root coroutine's host stack: `ROOT_STACK` bytes, or as many as the host gives.
 root_host_stack :: fn() -> ?[]u8 {
-    n := ROOT_STACK.min(u64(@max_value(usize) >> 2)).trunc(usize)
+    n := if u64(@max_value(usize)) > ROOT_STACK { ROOT_STACK.trunc(usize) } else { MIN_ROOT_STACK.trunc(usize) }
     while u64(n) >= MIN_ROOT_STACK {
         if s := host_stack(n) { return s }
         n /= 2
