@@ -742,6 +742,7 @@ fn programs_compiled_by_gammac_in_a_lane_behave_as_expected() {
 /// How many run tests `gammac run --backend=interp` must pass: those the interpreter
 /// cannot run yet (it reports them as not supported) are skipped, any other difference
 /// fails. Raise this as the interpreter grows.
+#[cfg(unix)]
 const INTERP_FLOOR: usize = 30;
 
 /// Runs `t` with `gammac run --backend=interp`; returns why it failed, if it did, and
