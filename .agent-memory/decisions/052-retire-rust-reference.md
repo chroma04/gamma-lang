@@ -52,4 +52,12 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
   gamma-play-libs.json; 10.6 MB wasm vs 3.8 MB Rust; slower start, checks core each run).
   pages.yml: build job = gammac only; rust-web job keeps Rust crates + parity.
 - fuzz/gammac: libFuzzer via -Dmain=gm_program_main + shim.c (SIGALRM fix); CI fuzz-gammac.
-- Release + Windows cross-build: worker (see report when merged).
+- Release: tools/package-gammac.sh (layout bin/gammac + lib/gamma/{std,core,runtime};
+  version from compiler/gamma.toml, must equal Cargo.toml), tools/smoke-gammac.sh, release.yml
+  jobs gammac / gammac-windows (cross, MinGW on ubuntu-22.04) / gammac-windows-smoke; install
+  scripts GAMMA_ARCHIVE=gammac. load/exe.gm: executable() (/proc/self/exe, _NSGetExecutablePath,
+  GetModuleFileNameW), runtime next to std first. Windows quoting in pkg/link.gm.
+- Windows gammac runs under wine (check/fmt/interp); its C back end only tested in CI jobs
+  gammac-windows-build + gammac-windows (conformance+examples). Expect fixes there.
+- Pain: `when target.os` in a module that declares its own `target` → misleading "cannot
+  evaluate" (worker hit 2x). Release gammac is Debug mode (like bootstrap) — maybe Fast later.
