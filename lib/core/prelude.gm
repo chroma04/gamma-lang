@@ -157,7 +157,9 @@ pub Stream :: union { Stdout, Stderr }
 pub SpawnOptions :: struct {
     pub stdin, stdout, stderr: Stdio = .Inherit
     pub dir: ?string = null                 // the child's working directory; null: ours
-    pub env: ?[]const string = null         // `NAME=value` entries that replace the environment; null: ours
+    pub env: []const string = empty_slice(string)   // changes to the environment: `NAME=value` sets, `NAME` removes
+    pub clear_env: bool = false             // start from an empty environment instead of ours
+    pub group: bool = false                 // a process group of its own, which `kill` ends as a whole
 }
 
 /// What `Proc.read` reports: which stream the bytes it stored in the buffer came from, and
@@ -349,20 +351,20 @@ handler Net for SystemIo {
 }
 
 /// The flags of `@proc_spawn` for the options: two bits per standard stream (stdin from bit 0,
-/// stdout from bit 2, stderr from bit 4: 0 inherit, 1 null, 2 pipe), and 64 if `env` replaces
-/// the environment.
+/// stdout from bit 2, stderr from bit 4: 0 inherit, 1 null, 2 pipe), 64 if the environment
+/// starts empty and 128 for a process group.
 stdio_flags :: fn(o: SpawnOptions) -> u32 {
     flags := o.stdin.tag().trunc(u32) | (o.stdout.tag().trunc(u32) << 2) | (o.stderr.tag().trunc(u32) << 4)
-    if o.env is not null { flags |= 64 }
+    if o.clear_env { flags |= 64 }
+    if o.group { flags |= 128 }
     return flags
 }
 
 handler Proc for SystemIo {
     spawn(self, argv, o) => {
         if argv.len is 0 { return !.InvalidInput }
-        env := o.env else empty_slice(string)
         dir := o.dir else ""
-        h := try io_handle(@proc_spawn(argv, env, dir, stdio_flags(o)))
+        h := try io_handle(@proc_spawn(argv, o.env, dir, stdio_flags(o)))
         return Child(handle: h)
     }
     write(self, c, bytes) => io_result(@proc_write_in(c.handle, bytes))

@@ -178,6 +178,12 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Standard library
 
+- **Breaking: `SpawnOptions.env` changes the environment instead of replacing it.** Its
+  entries apply in order to the environment the child inherits: `NAME=value` sets a
+  variable, a bare `NAME` removes it. `clear_env: true` starts from an empty environment
+  instead (what `env` did before). `env` is now a plain `[]const string`, empty by default.
+- **`SpawnOptions.group`** starts the child in a process group of its own (a job object on
+  Windows), and `Proc.kill` then ends the whole group, including what the child started.
 - `std/fs`: `make_dir_all` accepts `\` separators and a drive prefix on Windows.
 - `std/collections/soa_list`: `SoaList(S)`, a growable list stored by field, with `items` a
   `#soa []S` (`push`, `pop`, `insert`, `remove`, `swap_remove`, `extend`, `reserve`,

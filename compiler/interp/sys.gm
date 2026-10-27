@@ -458,7 +458,9 @@ sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals
             stdout: sys_stdio((flags >> 2) & 3),
             stderr: sys_stdio((flags >> 4) & 3),
             dir: if dir.len > 0 { dir } else { null },
-            env: if sys_has(flags, 64) { env.items } else { null },
+            env: env.items,
+            clear_env: sys_has(flags, 64),
+            group: sys_has(flags, 128),
         )
         c := Proc.spawn(argv.items, opts) else err => return sys_code(err)
         handle := sys_next_handle(&m.sys)
