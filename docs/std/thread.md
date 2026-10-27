@@ -261,7 +261,18 @@ Sends `x` if there is room right now; returns whether it did.
 try_recv :: fn(T: type, c: ^Channel(T)) -> ?T needs Sys
 ```
 
-Receives a value if one is waiting right now.
+Receives a value if one is waiting right now. `null` means the channel is empty, or
+closed and drained; a polling consumer that gets `null` and then finds `drained` true
+knows the stream has ended.
+
+### `drained`
+
+```gamma
+drained :: fn(T: type, c: ^Channel(T)) -> bool needs Sys
+```
+
+Whether the channel is closed and holds no values. Once true it stays true, since no
+send succeeds after `close`.
 
 ### `close`
 

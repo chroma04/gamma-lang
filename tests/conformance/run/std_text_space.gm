@@ -1,0 +1,44 @@
+// std/text: Unicode whitespace (is_space, trim, trim_start, trim_end, fields).
+text :: import "std/text"
+
+show_trim :: fn(s: string) needs Out {
+    print("[{}] [{}] [{}]\n", text.trim_start(s), text.trim_end(s), text.trim(s))
+}
+
+show_fields :: fn(s: string) needs Out {
+    print("fields:")
+    for f in text.fields(s) { print(" [{}]", f) }
+    print("\n")
+}
+
+main :: fn() needs Out {
+    // The White_Space property, one value either side of each range.
+    all := [_]u32(
+        0x08, 0x09, 0x0d, 0x0e, 0x1f, 0x20, 0x21, 0x84, 0x85, 0x86, 0x9f, 0xa0, 0xa1,
+        0x167f, 0x1680, 0x1681, 0x1fff, 0x2000, 0x200a, 0x200b, 0x2027, 0x2028, 0x2029,
+        0x202a, 0x202e, 0x202f, 0x2030, 0x205e, 0x205f, 0x2060, 0x2fff, 0x3000, 0x3001, 0xfeff,
+    )
+    for cp in all[..] { print("{}:{} ", cp, text.is_space(cp)) }
+    print("\n")
+
+    show_trim("")
+    show_trim("   ")
+    show_trim("abc")
+    show_trim("  a b  ")
+    show_trim("\u{a0}\u{a0}x\u{a0}")
+    show_trim("\u{3000}\u{3000}あ い\u{3000}")
+    show_trim("\u{85}\u{2028}x\u{2029}\u{85}")
+    show_trim(" \t\u{a0}\u{2003}\n\u{202f}mixed\u{205f}\u{1680} \r\n")
+    show_trim("\u{200b}x\u{200b}")
+    // Ill-formed bytes are not whitespace: they stay, and stop the trimming.
+    show_trim(" \xff x \xc3")
+    show_trim("\xe3\x80 x")
+    print("{}\n", text.trim(" \xff ").len)
+
+    show_fields("")
+    show_fields(" \u{3000} ")
+    show_fields("one two")
+    show_fields("  a\u{a0}b\u{3000}\u{3000}c\u{85}d\n e  ")
+    show_fields("x\u{200b}y z")
+    show_fields("a\xffb c")
+}
