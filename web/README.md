@@ -60,3 +60,40 @@ form.
 
 In the repository's settings, *Pages* → *Build and deployment* → *Source* must be
 *GitHub Actions*. Pushes to `main` then publish the site.
+
+## The generator written in Gamma
+
+`gen/` is a second implementation of the generator, written in Gamma, so that the pages
+can be built without cargo. It takes the same options and inputs and writes the same site:
+`web/gen/check-parity.sh` builds the site with both generators and requires the two output
+trees to be identical, and the link check of both to fail with the same messages on a copy
+of the repository with a broken anchor. It needs `gammac` (see `bootstrap/README.md` for
+building one with only a C compiler):
+
+```sh
+gammac build web/gen -o _gen            # or: gammac run web/gen --out _site
+./_gen --out _site                      # --root DIR names the repository (default: .)
+gammac test web/gen                     # the unit tests
+web/gen/check-parity.sh                 # needs cargo too: compares with sitegen/
+```
+
+The modules follow `sitegen/`: `markdown/` (a CommonMark parser with pipe tables and
+strikethrough, and the HTML output), `highlight/`, `pages/`, `links/`, `check/` and
+`examples/`, with `main.gm` as the command line.
+
+- Highlighting uses the compiler's own lexer. `gen/gamma.toml` has a path dependency on
+  `compiler/` (the package `gammac`), and `highlight/` imports `gammac/syntax`; nothing is
+  copied, so a change to the lexer shows up in the site at once.
+- The Markdown parser implements what the documents in this repository use, and more of
+  CommonMark than that where it was cheap: block quotes, lists, indented and fenced code,
+  HTML blocks, reference definitions, setext and ATX headings, emphasis, links, images,
+  autolinks and raw inline HTML. It is checked against `pulldown-cmark` on the repository
+  and on a collection of edge cases. Not supported: footnotes, which `sitegen/` enables
+  but no document uses; named character references other than a common subset (all
+  numeric ones work); and, outside ASCII, letters and lower-casing in heading ids beyond
+  the Latin, Greek and Cyrillic alphabets.
+- Tests run on fakes of the file system and the allocator, so the one test of `sitegen/`
+  that reads the repository's own documents (every code block must survive highlighting
+  unchanged) has no counterpart in `gen/`. The comparison of the two sites in
+  `check-parity.sh` still shows that the highlighted output of every block is the same as
+  the Rust generator's.

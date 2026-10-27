@@ -1,0 +1,251 @@
+//! Syntax highlighting of Gamma code with the compiler's own lexer.
+//!
+//! The lexer drops comments, so the text between two tokens (the "gap") is whitespace and/or
+//! comments; comments in it are wrapped in `<span class="c">`. Highlighting never changes the
+//! text: stripping the tags from the output and unescaping it gives back the input exactly.
+
+arena :: import "std/arena"
+diag :: import "gammac/diag"
+source :: import "gammac/source"
+str :: import "std/str"
+syntax :: import "gammac/syntax"
+
+/// Escapes text for HTML content and attribute values.
+pub escape :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    push_escaped(&out, s)
+    return out.items
+}
+
+/// Appends `s` to `out`, escaped.
+pub push_escaped :: fn(out: ^List(u8), s: string) needs Alloc {
+    start: usize = 0
+    for i, c in enumerate(s) {
+        entity := match c {
+            '&' => "&amp;"
+            '<' => "&lt;"
+            '>' => "&gt;"
+            '"' => "&quot;"
+            _ => continue
+        }
+        out.extend(s[start..i])!
+        out.extend(entity)!
+        start = i + 1
+    }
+    out.extend(s[start..])!
+}
+
+/// Reverses `escape`.
+pub unescape :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    i: usize = 0
+    while i < s.len {
+        if s[i] is '&' {
+            rest := s[i..]
+            if rest.starts_with("&lt;") {
+                out.push('<')!
+                i += 4
+                continue
+            }
+            if rest.starts_with("&gt;") {
+                out.push('>')!
+                i += 4
+                continue
+            }
+            if rest.starts_with("&quot;") {
+                out.push('"')!
+                i += 6
+                continue
+            }
+            if rest.starts_with("&amp;") {
+                out.push('&')!
+                i += 5
+                continue
+            }
+        }
+        out.push(s[i])!
+        i += 1
+    }
+    return out.items
+}
+
+/// Whether `i` is a position between two characters of `s` (or at either end).
+is_char_boundary :: fn(s: string, i: usize) -> bool {
+    if i > s.len { return false }
+    return i is s.len or (s[i] & 0xC0) is not 0x80
+}
+
+/// Highlights Gamma source as HTML (the inside of a `<code>` element).
+pub highlight :: fn(src: string) -> string needs Alloc {
+    out := list(u8)
+    write_highlighted(&out, src)
+    return out.items
+}
+
+/// Appends the highlighted `src` to `out`.
+pub write_highlighted :: fn(out: ^List(u8), src: string) needs Alloc {
+    sm := source.source_map()
+    defer sm.files.deinit()
+    file := sm.add("snippet.gm", src)
+    diags := diag.diagnostics()
+    lexed := syntax.lex(file, src, &diags)
+    tokens := lexed.tokens.items
+    pos: usize = 0
+    for i, tok in enumerate(tokens) {
+        lo := usize(tok.span.lo)
+        hi := usize(tok.span.hi)
+        usable := lo >= pos and lo <= hi and hi <= src.len and is_char_boundary(src, lo) and is_char_boundary(src, hi)
+        // Unexpected spans (or `Eof`): stop here and show the rest as plain text.
+        if not usable { break }
+        gap(out, src[pos..lo])
+        text := src[lo..hi]
+        if c := class(src, tokens, i) {
+            out.extend("<span class=\"")!
+            out.extend(c)!
+            out.extend("\">")!
+            push_escaped(out, text)
+            out.extend("</span>")!
+        } else {
+            push_escaped(out, text)
+        }
+        pos = hi
+    }
+    gap(out, src[pos..])
+}
+
+/// The CSS class of token `i`, if it has one.
+class :: fn(src: string, tokens: []const syntax.Token, i: usize) -> ?string {
+    tok := tokens[i]
+    return match tok.kind {
+        .Keyword(_) => "k"
+        .Ident(name) => if name in ("const", "on", "where", "test") {
+            "k"
+        } else if name[0] in 'A'..='Z' {
+            "t"
+        } else if is_function_name(tokens, i) {
+            "f"
+        } else {
+            null
+        }
+        .Str(_) => "s"
+        .Int(_) => if src[usize(tok.span.lo)..].starts_with("'") { "s" } else { "n" }
+        .Float(_) => "n"
+        .Intrinsic(_), .Attribute(_) => "a"
+        _ => null
+    }
+}
+
+/// True for an identifier directly followed by `(`, or in a definition `name :: fn`.
+is_function_name :: fn(tokens: []const syntax.Token, i: usize) -> bool {
+    next := tokens.get(i + 1) else return false
+    if next.kind is .Punct(.LParen) and next.span.lo is tokens[i].span.hi { return true }
+    if next.kind is .Punct(.ColonColon) {
+        third := tokens.get(i + 2) else return false
+        return third.kind is .Keyword(.Fn)
+    }
+    return false
+}
+
+/// Emits the text between tokens: whitespace as is, comments wrapped in `<span class="c">`.
+gap :: fn(out: ^List(u8), text: string) needs Alloc {
+    rest := text
+    while rest.len > 0 {
+        line := str.find(rest, "//")
+        block := str.find(rest, "/*")
+        start := if line is not null and block is not null {
+            if line? < block? { line? } else { block? }
+        } else if line is not null {
+            line?
+        } else {
+            block else {
+                push_escaped(out, rest)
+                return
+            }
+        }
+        push_escaped(out, rest[..start])
+        comment := rest[start..]
+        len := if comment.starts_with("//") {
+            comment.index_of('\n') else comment.len
+        } else {
+            block_len(comment)
+        }
+        out.extend("<span class=\"c\">")!
+        push_escaped(out, comment[..len])
+        out.extend("</span>")!
+        rest = comment[len..]
+    }
+}
+
+/// The length of the (nesting) block comment at the start of `s`, or all of `s` if unclosed.
+block_len :: fn(s: string) -> usize {
+    depth: u32 = 0
+    i: usize = 0
+    while i < s.len {
+        rest := s[i..]
+        if rest.starts_with("/*") {
+            depth += 1
+            i += 2
+        } else if rest.starts_with("*/") {
+            depth -= 1
+            i += 2
+            if depth is 0 { return i }
+        } else {
+            i += 1
+        }
+    }
+    return s.len
+}
+
+with_arena :: fn(body: fn() needs Alloc) needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+/// Strips tags and unescapes, which must give back the original text.
+plain :: fn(html: string) -> string needs Alloc {
+    out := list(u8)
+    in_tag := false
+    for c in html {
+        if c is '<' {
+            in_tag = true
+        } else if c is '>' and in_tag {
+            in_tag = false
+        } else if not in_tag {
+            out.push(c)!
+        }
+    }
+    return unescape(out.items)
+}
+
+test "classes" {
+    with_arena(fn() {
+        h := highlight("main :: fn() needs Out {\n    x := foo(1) // hi\n    @write(\"a<b\", 'c', 2.5)\n}\n")
+        expect(str.contains(h, "<span class=\"f\">main</span>"))
+        expect(str.contains(h, "<span class=\"k\">fn</span>"))
+        expect(str.contains(h, "<span class=\"k\">needs</span>"))
+        expect(str.contains(h, "<span class=\"t\">Out</span>"))
+        expect(str.contains(h, "<span class=\"f\">foo</span>"))
+        expect(str.contains(h, "<span class=\"c\">// hi</span>"))
+        expect(str.contains(h, "<span class=\"a\">@write</span>"))
+        expect(str.contains(h, "<span class=\"s\">&quot;a&lt;b&quot;</span>"))
+        expect(str.contains(h, "<span class=\"s\">'c'</span>"))
+        expect(str.contains(h, "<span class=\"n\">2.5</span>"))
+    })
+}
+
+test "comments and garbage round trip" {
+    with_arena(fn() {
+        sources :: [8]string(
+            "/* a /* b */ c */ x := 1 /// doc\n//! mod\n",
+            "/* unclosed",
+            "\"unterminated",
+            "x := `raw\nmore`  é ∀ $ ?",
+            "{ ( [",
+            "",
+            "\n\n  ",
+            "a < b && \"q\" // c & d",
+        )
+        for src in sources { expect_eq(plain(highlight(src)), src) }
+    })
+}

@@ -1,0 +1,422 @@
+//! HTML output of a parsed document, together with what the site needs to know about it:
+//! the headings, the first paragraph and the links to files of the repository.
+
+highlight :: import "../highlight"
+links :: import "../links"
+str :: import "std/str"
+
+/// A heading of a rendered page.
+pub Heading :: struct {
+    pub level: u8
+    pub id: string
+    /// The plain text of the heading.
+    pub text: string
+}
+
+/// The result of rendering one Markdown file.
+pub Rendered :: struct {
+    pub html: string
+    pub headings: List(Heading)
+    /// Plain text of the first paragraph (not yet truncated).
+    pub first_paragraph: string
+    /// Repo-relative targets of the links that name files in the repo, in order of appearance.
+    pub link_targets: List(string)
+}
+
+/// Everything the renderer needs to know about the page being rendered.
+pub Context :: struct {
+    /// Repo-relative path of the Markdown source.
+    pub src: string
+    /// Output path of the page, relative to the site root.
+    pub out: string
+    /// The directory that repo-relative paths are looked up in, to tell files from directories.
+    pub root: string
+}
+
+Renderer :: struct {
+    t: ^Tree
+    cx: Context
+    out: List(u8)
+    headings: List(Heading)
+    ids: IdAllocator
+    link_targets: List(string)
+    first_paragraph: string = ""
+    seen_paragraph: bool = false
+}
+
+/// Hands out unique ids: a repeated slug gets `-1`, `-2`, ... appended.
+pub IdAllocator :: struct {
+    used: List(UsedId)
+}
+
+UsedId :: struct {
+    id: string
+    count: usize
+}
+
+id_allocator :: fn() -> IdAllocator needs Alloc => IdAllocator(used: list(UsedId))
+
+find_used :: fn(ids: ^const IdAllocator, id: string) -> ?usize {
+    for i, u in enumerate(ids.used.items) {
+        if u.id is id { return i }
+    }
+    return null
+}
+
+unique :: fn(ids: ^IdAllocator, base: string) -> string needs Alloc {
+    candidate := base
+    while find_used(ids, candidate) is not null {
+        i := find_used(ids, base) else 0
+        ids.used.items[i].count += 1
+        candidate = str.format("{}-{}", base, ids.used.items[i].count)!
+    }
+    ids.used.push(UsedId(id: candidate, count: 0))!
+    return candidate
+}
+
+/// Renders the parsed document to the HTML of an `<article class="prose">` body.
+render_tree :: fn(t: ^Tree, doc: usize, cx: Context) -> Rendered needs Alloc + Fs {
+    r := Renderer(
+        t: t,
+        cx: cx,
+        out: list(u8),
+        headings: list(Heading),
+        ids: id_allocator(),
+        link_targets: list(string),
+    )
+    r.render_children(doc)
+    return Rendered(
+        html: r.out.items,
+        headings: r.headings,
+        first_paragraph: r.first_paragraph,
+        link_targets: r.link_targets,
+    )
+}
+
+// ----- writing -----
+
+write :: fn(r: ^Renderer, s: string) needs Alloc {
+    r.out.extend(s)!
+}
+
+write_escaped :: fn(r: ^Renderer, s: string) needs Alloc {
+    start: usize = 0
+    for i, c in enumerate(s) {
+        entity := match c {
+            '&' => "&amp;"
+            '<' => "&lt;"
+            '>' => "&gt;"
+            _ => continue
+        }
+        r.out.extend(s[start..i])!
+        r.out.extend(entity)!
+        start = i + 1
+    }
+    r.out.extend(s[start..])!
+}
+
+/// Writes `s` as an attribute value: the body escapes and `"`.
+write_attr :: fn(r: ^Renderer, s: string) needs Alloc {
+    for c in s {
+        match c {
+            '&' => r.write("&amp;")
+            '<' => r.write("&lt;")
+            '>' => r.write("&gt;")
+            '"' => r.write("&quot;")
+            _ => r.out.push(c)!
+        }
+    }
+}
+
+/// Writes a link destination: unsafe bytes percent-encoded, `&` and `'` as entities.
+write_href :: fn(r: ^Renderer, s: string) needs Alloc {
+    hex :: "0123456789ABCDEF"
+    for c in s {
+        if is_ascii_alnum(c) or c in "!#$%()*+,-./:;=?@_~" {
+            r.out.push(c)!
+        } else if c is '&' {
+            r.write("&amp;")
+        } else if c is '\'' {
+            r.write("&#x27;")
+        } else {
+            r.out.push('%')!
+            r.out.push(hex[usize(c >> 4)])!
+            r.out.push(hex[usize(c & 15)])!
+        }
+    }
+}
+
+/// Starts a new line unless the output is at the start of one.
+ensure_newline :: fn(r: ^Renderer) needs Alloc {
+    if r.out.items.len > 0 and r.out.items[r.out.items.len - 1] is not '\n' { r.out.push('\n')! }
+}
+
+// ----- blocks -----
+
+render_children :: fn(r: ^Renderer, id: usize) needs Alloc + Fs {
+    child := r.t.nodes.items[id].first
+    while c := child {
+        r.render_block(c)
+        child = r.t.nodes.items[c].next
+    }
+}
+
+/// Whether the paragraph `id` is shown without `<p>` tags: it is in an item of a tight list.
+in_tight_item :: fn(r: ^const Renderer, id: usize) -> bool {
+    parent := r.t.nodes.items[id].parent else return false
+    if r.t.nodes.items[parent].kind is not .Item { return false }
+    list := r.t.nodes.items[parent].parent else return false
+    return r.t.nodes.items[list].tight
+}
+
+render_block :: fn(r: ^Renderer, id: usize) needs Alloc + Fs {
+    match r.t.nodes.items[id].kind {
+        .Paragraph => {
+            if r.in_tight_item(id) {
+                r.render_inlines(id)
+            } else {
+                if not r.seen_paragraph and r.has_prose(id) {
+                    r.seen_paragraph = true
+                    buf := list(u8)
+                    r.plain_text(id, &buf)
+                    r.first_paragraph = buf.items
+                }
+                r.ensure_newline()
+                r.write("<p>")
+                r.render_inlines(id)
+                r.write("</p>\n")
+            }
+        }
+        .Heading => r.render_heading(id)
+        .CodeBlock => {
+            n := &r.t.nodes.items[id]
+            info := if n.fenced { str.trim(n.info) } else { "" }
+            r.write(code_block(info, n.literal, r.cx.out))
+        }
+        .HtmlBlock => {
+            r.write(r.t.nodes.items[id].literal)
+            r.write("\n")
+        }
+        .ThematicBreak => {
+            r.ensure_newline()
+            r.write("<hr />\n")
+        }
+        .BlockQuote => {
+            r.ensure_newline()
+            r.write("<blockquote>\n")
+            r.render_children(id)
+            r.write("</blockquote>\n")
+        }
+        .List => {
+            r.ensure_newline()
+            n := &r.t.nodes.items[id]
+            if n.ordered {
+                if n.start is 1 {
+                    r.write("<ol>\n")
+                } else {
+                    r.write(str.format("<ol start=\"{}\">\n", n.start)!)
+                }
+            } else {
+                r.write("<ul>\n")
+            }
+            ordered := n.ordered
+            r.render_children(id)
+            r.write(if ordered { "</ol>\n" } else { "</ul>\n" })
+        }
+        .Item => {
+            r.write("<li>")
+            r.render_children(id)
+            r.write("</li>\n")
+        }
+        .Table => r.render_table(id)
+        _ => {}
+    }
+}
+
+render_heading :: fn(r: ^Renderer, id: usize) needs Alloc + Fs {
+    level := r.t.nodes.items[id].level
+    buf := list(u8)
+    r.plain_text(id, &buf)
+    text: string = buf.items
+    hid := unique(&r.ids, slug(text))
+    r.write(str.format("<h{} id=\"{}\">", level, hid)!)
+    r.render_inlines(id)
+    if level in 2..=4 { r.write(str.format("<a class=\"anchor\" href=\"#{}\">#</a>", hid)!) }
+    r.write(str.format("</h{}>\n", level)!)
+    r.headings.push(Heading(level: level, id: hid, text: text))!
+}
+
+render_table :: fn(r: ^Renderer, id: usize) needs Alloc + Fs {
+    aligns := r.t.nodes.items[id].aligns.items
+    r.write("<div class=\"table\"><table>")
+    row := r.t.nodes.items[id].first
+    head := true
+    while rw := row {
+        if head {
+            r.write("<thead><tr>")
+        } else {
+            r.write("<tr>")
+        }
+        cell := r.t.nodes.items[rw].first
+        col: usize = 0
+        while c := cell {
+            r.write(if head { "<th" } else { "<td" })
+            if col < aligns.len {
+                match aligns[col] {
+                    .Left => r.write(" style=\"text-align: left\"")
+                    .Center => r.write(" style=\"text-align: center\"")
+                    .Right => r.write(" style=\"text-align: right\"")
+                    .None => {}
+                }
+            }
+            r.write(">")
+            r.render_inlines(c)
+            r.write(if head { "</th>" } else { "</td>" })
+            col += 1
+            cell = r.t.nodes.items[c].next
+        }
+        if head {
+            r.write("</tr></thead><tbody>\n")
+            head = false
+        } else {
+            r.write("</tr>\n")
+        }
+        row = r.t.nodes.items[rw].next
+    }
+    if head { r.write("<thead></thead><tbody>\n") }
+    r.write("</tbody></table>\n</div>\n")
+}
+
+// ----- inlines -----
+
+render_inlines :: fn(r: ^Renderer, id: usize) needs Alloc + Fs {
+    child := r.t.nodes.items[id].first
+    while c := child {
+        r.render_inline(c)
+        child = r.t.nodes.items[c].next
+    }
+}
+
+render_inline :: fn(r: ^Renderer, id: usize) needs Alloc + Fs {
+    match r.t.nodes.items[id].kind {
+        .Text => r.write_escaped(r.t.nodes.items[id].literal)
+        .Code => {
+            r.write("<code>")
+            r.write_escaped(r.t.nodes.items[id].literal)
+            r.write("</code>")
+        }
+        .SoftBreak => r.write("\n")
+        .HardBreak => r.write("<br />\n")
+        .HtmlInline => r.write(r.t.nodes.items[id].literal)
+        .Emph => r.wrap("em", id)
+        .Strong => r.wrap("strong", id)
+        .Strike => r.wrap("del", id)
+        .Link => {
+            rw := links.rewrite_link(r.t.nodes.items[id].dest, r.cx.src, r.cx.out, r.cx.root)
+            if target := rw.target { r.link_targets.push(target)! }
+            r.write("<a href=\"")
+            if r.t.nodes.items[id].email { r.write("mailto:") }
+            r.write_href(rw.dest)
+            r.write("\"")
+            title := r.t.nodes.items[id].title
+            if title.len > 0 {
+                r.write(" title=\"")
+                r.write_attr(title)
+                r.write("\"")
+            }
+            r.write(">")
+            r.render_inlines(id)
+            r.write("</a>")
+        }
+        .Image => {
+            rw := links.rewrite_link(r.t.nodes.items[id].dest, r.cx.src, r.cx.out, r.cx.root)
+            if target := rw.target { r.link_targets.push(target)! }
+            r.write("<img src=\"")
+            r.write_href(rw.dest)
+            r.write("\" alt=\"")
+            alt := list(u8)
+            r.plain_text(id, &alt)
+            r.write_attr(alt.items)
+            r.write("\"")
+            title := r.t.nodes.items[id].title
+            if title.len > 0 {
+                r.write(" title=\"")
+                r.write_attr(title)
+                r.write("\"")
+            }
+            r.write(" />")
+        }
+        _ => {}
+    }
+}
+
+wrap :: fn(r: ^Renderer, tag: string, id: usize) needs Alloc + Fs {
+    r.write("<")
+    r.write(tag)
+    r.write(">")
+    r.render_inlines(id)
+    r.write("</")
+    r.write(tag)
+    r.write(">")
+}
+
+// ----- plain text -----
+
+/// Appends the text of the inline content below `id` with markup removed (soft breaks
+/// become spaces).
+plain_text :: fn(r: ^const Renderer, id: usize, out: ^List(u8)) needs Alloc {
+    child := r.t.nodes.items[id].first
+    while c := child {
+        match r.t.nodes.items[c].kind {
+            .Text, .Code => out.extend(r.t.nodes.items[c].literal)!
+            .SoftBreak, .HardBreak => out.push(' ')!
+            .HtmlInline => {}
+            _ => r.plain_text(c, out)
+        }
+        child = r.t.nodes.items[c].next
+    }
+}
+
+/// Whether a paragraph has words outside links: a line of navigation links does not
+/// describe the page.
+has_prose :: fn(r: ^const Renderer, id: usize) -> bool => r.has_prose_in(id, 0)
+
+has_prose_in :: fn(r: ^const Renderer, id: usize, depth: u32) -> bool {
+    child := r.t.nodes.items[id].first
+    while c := child {
+        match r.t.nodes.items[c].kind {
+            .Text, .Code => {
+                if depth is 0 and has_alphanumeric(r.t.nodes.items[c].literal) { return true }
+            }
+            .Link => if r.has_prose_in(c, depth + 1) { return true }
+            .Emph, .Strong, .Strike, .Image => if r.has_prose_in(c, depth) { return true }
+            _ => {}
+        }
+        child = r.t.nodes.items[c].next
+    }
+    return false
+}
+
+/// Whether the text has a letter or digit.
+has_alphanumeric :: fn(s: string) -> bool {
+    i: usize = 0
+    while i < s.len {
+        c := s[i]
+        if c < 0x80 {
+            if is_ascii_alnum(c) { return true }
+            i += 1
+        } else {
+            cp := char_at(s, i)
+            if not is_unicode_punct(cp) and not is_unicode_ws(cp) { return true }
+            i += utf8_len(c)
+        }
+    }
+    return false
+}
+
+utf8_len :: fn(first: u8) -> usize {
+    if first >= 0xF0 { return 4 }
+    if first >= 0xE0 { return 3 }
+    if first >= 0xC0 { return 2 }
+    return 1
+}
