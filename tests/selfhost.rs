@@ -2973,3 +2973,40 @@ fn language_server_matches_the_reference() {
         assert!(expected.len() > 10_000, "{example}: the session produced only {} bytes", expected.len());
     }
 }
+
+/// A packaged `gammac` finds its libraries and runtime from where it is installed: with no
+/// environment variables, started through `PATH` from another directory, it runs a program
+/// on the interpreter, through C and as a built executable (`tools/smoke-gammac.sh`).
+#[test]
+#[cfg(unix)]
+fn packaged_gammac_runs_from_its_installed_layout() {
+    let Gammac::Native(exe) = gammac() else { return };
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-package");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut package = Command::new("sh");
+    package.current_dir(root()).arg("tools/package-gammac.sh").arg("test-asset").arg(exe).arg(&dir);
+    let out = common::output(&mut package).unwrap();
+    assert!(out.status.success(), "packaging failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    let mut unpack = Command::new("tar");
+    unpack.arg("-C").arg(&dir).arg("-xzf").arg(dir.join("gammac-test-asset.tar.gz"));
+    let out = common::output(&mut unpack).unwrap();
+    assert!(out.status.success(), "unpacking failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    let installed = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir() && p.file_name().unwrap().to_string_lossy().starts_with("gammac-"))
+        .expect("the archive holds no gammac directory");
+    for part in ["std", "core", "runtime"] {
+        assert!(installed.join("lib/gamma").join(part).is_dir(), "the archive has no lib/gamma/{part}");
+    }
+    let mut smoke = Command::new("sh");
+    smoke.current_dir(root()).arg("tools/smoke-gammac.sh").arg(installed.join("bin/gammac"));
+    let out = common::output(&mut smoke).unwrap();
+    assert!(
+        out.status.success(),
+        "the installed gammac failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

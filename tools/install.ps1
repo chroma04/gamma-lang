@@ -1,17 +1,20 @@
-# Installs a prebuilt `gamma` release on Windows (x86_64):
+# Installs a prebuilt `gamma` release (or, with GAMMA_ARCHIVE=gammac, the self-hosted
+# compiler `gammac`) on Windows (x86_64):
 #
 #     irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex
 #
 # Environment:
 #   GAMMA_VERSION   the release to install, such as `v0.1.0` (default: the latest)
+#   GAMMA_ARCHIVE   what to install: `gamma` (default) or `gammac`
 #   GAMMA_INSTALL   the installation prefix (default: $HOME\.gamma); the compiler goes to
-#                   $GAMMA_INSTALL\bin\gamma.exe, the standard library to $GAMMA_INSTALL\lib\gamma
+#                   $GAMMA_INSTALL\bin\gamma.exe (or gammac.exe), its libraries to
+#                   $GAMMA_INSTALL\lib\gamma\<name>
 #   GAMMA_DOWNLOAD  the URL of the directory holding the release archives (default: the
 #                   GitHub release of GAMMA_VERSION); an https:// or file: URL
 #
 # The compiler and the interpreter need nothing else. `gamma build`, `gamma run --backend=c`
-# and `gamma test --backend=c` need a MinGW-w64 C compiler (gcc or clang) on PATH; MSVC's
-# cl.exe is not supported.
+# and `gamma test --backend=c` (`gammac build`, `gammac run` and `gammac test`) need a
+# MinGW-w64 C compiler (gcc or clang) on PATH; MSVC's cl.exe is not supported.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -23,7 +26,9 @@ function Fail($msg) { throw "install.ps1: $msg" }
 if (-not [Environment]::Is64BitOperatingSystem) { Fail "no prebuilt gamma for 32-bit Windows; build it from source: $repo" }
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($arch -ne 'AMD64') { Fail "no prebuilt gamma for $arch; build it from source: $repo" }
-$asset = 'gamma-windows-x86_64.zip'
+$product = if ($env:GAMMA_ARCHIVE) { $env:GAMMA_ARCHIVE } else { 'gamma' }
+if ($product -ne 'gamma' -and $product -ne 'gammac') { Fail "GAMMA_ARCHIVE must be gamma or gammac, not $product" }
+$asset = "$product-windows-x86_64.zip"
 
 if ($env:GAMMA_DOWNLOAD) {
     $base = $env:GAMMA_DOWNLOAD
@@ -65,39 +70,43 @@ try {
 
     $unpacked = Join-Path $work 'unpacked'
     Expand-Archive -Path (Join-Path $work $asset) -DestinationPath $unpacked
-    $dir = Get-ChildItem -Path $unpacked -Directory | Where-Object { $_.Name -like 'gamma-*' } | Select-Object -First 1
-    if (-not $dir) { Fail "$asset does not hold a gamma directory" }
+    $dir = Get-ChildItem -Path $unpacked -Directory | Where-Object { $_.Name -like "$product-*" } | Select-Object -First 1
+    if (-not $dir) { Fail "$asset does not hold a $product directory" }
 
-    if (-not (Test-Path (Join-Path $dir.FullName 'bin\gamma.exe'))) { Fail "$asset does not hold bin\gamma.exe" }
+    if (-not (Test-Path (Join-Path $dir.FullName "bin\$product.exe"))) { Fail "$asset does not hold bin\$product.exe" }
 
-    # Replace the previous installation's files only, leaving anything else in the prefix.
-    # The library is copied in full before the old one is swapped out, so a failed copy
-    # leaves the previous installation working.
+    # Replace the previous installation's files only, leaving anything else in the prefix
+    # (the other product's libraries included). Each library directory is copied in full
+    # before the old one is swapped out, so a failed copy leaves the previous installation
+    # working.
     $docDest = Join-Path $prefix 'share\doc\gamma'
-    New-Item -ItemType Directory -Force -Path (Join-Path $prefix 'bin'), (Join-Path $prefix 'lib'), $docDest | Out-Null
-    $stdDest = Join-Path $prefix 'lib\gamma'
-    $stdNew = Join-Path $prefix 'lib\gamma.new'
-    $stdOld = Join-Path $prefix 'lib\gamma.old'
-    foreach ($d in $stdNew, $stdOld) { if (Test-Path $d) { Remove-Item -Recurse -Force $d } }
-    Copy-Item -Recurse -Force (Join-Path $dir.FullName 'lib\gamma') $stdNew
-    if (Test-Path $stdDest) { Rename-Item $stdDest 'gamma.old' }
-    try {
-        Rename-Item $stdNew 'gamma'
-    } catch {
-        if (Test-Path $stdOld) { Rename-Item $stdOld 'gamma' }
-        throw
+    $libDest = Join-Path $prefix 'lib\gamma'
+    New-Item -ItemType Directory -Force -Path (Join-Path $prefix 'bin'), $libDest, $docDest | Out-Null
+    foreach ($lib in Get-ChildItem -Path (Join-Path $dir.FullName 'lib\gamma') -Directory) {
+        $libFinal = Join-Path $libDest $lib.Name
+        $libNew = "$libFinal.new"
+        $libOld = "$libFinal.old"
+        foreach ($d in $libNew, $libOld) { if (Test-Path $d) { Remove-Item -Recurse -Force $d } }
+        Copy-Item -Recurse -Force $lib.FullName $libNew
+        if (Test-Path $libFinal) { Rename-Item $libFinal "$($lib.Name).old" }
+        try {
+            Rename-Item $libNew $lib.Name
+        } catch {
+            if (Test-Path $libOld) { Rename-Item $libOld $lib.Name }
+            throw
+        }
+        Remove-Item -Recurse -Force $libOld -ErrorAction SilentlyContinue
     }
-    Remove-Item -Recurse -Force $stdOld -ErrorAction SilentlyContinue
     Copy-Item -Force (Join-Path $dir.FullName 'LICENSE'), (Join-Path $dir.FullName 'README.md') $docDest
-    $exeNew = Join-Path $prefix 'bin\gamma.exe.new'
-    Copy-Item -Force (Join-Path $dir.FullName 'bin\gamma.exe') $exeNew
-    Move-Item -Force $exeNew (Join-Path $prefix 'bin\gamma.exe')
+    $exeNew = Join-Path $prefix "bin\$product.exe.new"
+    Copy-Item -Force (Join-Path $dir.FullName "bin\$product.exe") $exeNew
+    Move-Item -Force $exeNew (Join-Path $prefix "bin\$product.exe")
 } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
 
 $bin = Join-Path $prefix 'bin'
-Write-Host "Installed gamma to $bin\gamma.exe"
+Write-Host "Installed $product to $bin\$product.exe"
 # The user PATH is read and written as stored, so entries such as %USERPROFILE%\bin stay
 # unexpanded and the value stays a REG_EXPAND_SZ.
 $envKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
@@ -112,13 +121,13 @@ try {
         # Deleting a variable that does not exist changes nothing, but makes Windows tell
         # running programs (Explorer) that the environment changed.
         [Environment]::SetEnvironmentVariable('GAMMA_ENV_REFRESH', $null, 'User')
-        Write-Host "Added $bin to your PATH; open a new terminal to use `gamma`."
+        Write-Host "Added $bin to your PATH; open a new terminal to use `$product`."
     }
 } finally {
     $envKey.Close()
 }
 if (-not (Get-Command gcc -ErrorAction SilentlyContinue) -and -not (Get-Command clang -ErrorAction SilentlyContinue)) {
-    Write-Host 'Note: gamma build and --backend=c need a MinGW-w64 C compiler (gcc or clang) on PATH.'
+    Write-Host "Note: $product build and run need a MinGW-w64 C compiler (gcc or clang) on PATH."
     Write-Host '      For example: winget install MSYS2.MSYS2, then pacman -S mingw-w64-ucrt-x86_64-gcc'
     Write-Host '      and add C:\msys64\ucrt64\bin to PATH.'
 }

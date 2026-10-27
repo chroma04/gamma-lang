@@ -1,12 +1,15 @@
 #!/bin/sh
-# Installs a prebuilt `gamma` release on Linux or macOS (x86_64 or arm64):
+# Installs a prebuilt `gamma` release (or, with GAMMA_ARCHIVE=gammac, the self-hosted
+# compiler `gammac`) on Linux or macOS (x86_64 or arm64):
 #
 #     curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh
 #
 # Environment:
 #   GAMMA_VERSION   the release to install, such as `v0.1.0` (default: the latest)
+#   GAMMA_ARCHIVE   what to install: `gamma` (default) or `gammac`
 #   GAMMA_INSTALL   the installation prefix (default: ~/.gamma); the compiler goes to
-#                   $GAMMA_INSTALL/bin/gamma, the standard library to $GAMMA_INSTALL/lib/gamma
+#                   $GAMMA_INSTALL/bin/gamma (or gammac), its libraries to
+#                   $GAMMA_INSTALL/lib/gamma/<name>
 #   GAMMA_DOWNLOAD  the URL of the directory holding the release archives (default: the
 #                   GitHub release of GAMMA_VERSION)
 set -eu
@@ -27,7 +30,12 @@ case "$(uname -m)" in
     aarch64 | arm64) arch=aarch64 ;;
     *) fail "no prebuilt gamma for $(uname -m); build it from source: $repo" ;;
 esac
-asset="gamma-$os-$arch.tar.gz"
+product="${GAMMA_ARCHIVE:-gamma}"
+case "$product" in
+    gamma | gammac) ;;
+    *) fail "GAMMA_ARCHIVE must be gamma or gammac, not $product" ;;
+esac
+asset="$product-$os-$arch.tar.gz"
 
 if [ -n "${GAMMA_DOWNLOAD:-}" ]; then
     base=$GAMMA_DOWNLOAD
@@ -72,28 +80,32 @@ actual=$(sha256 "$work/$asset")
 [ "$expected" = "$actual" ] || fail "checksum mismatch for $asset (expected $expected, got $actual)"
 
 tar -C "$work" -xzf "$work/$asset"
-src=$(echo "$work"/gamma-*-"$os-$arch")
-[ -x "$src/bin/gamma" ] || fail "the archive does not hold bin/gamma"
+src=$(echo "$work"/"$product"-*-"$os-$arch")
+[ -x "$src/bin/$product" ] || fail "the archive does not hold bin/$product"
 
-# Replace the previous installation's files only, leaving anything else in the prefix.
-# The library is copied in full before the old one is swapped out, so a failed copy
-# leaves the previous installation working.
-mkdir -p "$prefix/bin" "$prefix/lib" "$prefix/share/doc/gamma"
-rm -rf "$prefix/lib/gamma.new" "$prefix/lib/gamma.old"
-cp -R "$src/lib/gamma" "$prefix/lib/gamma.new"
-if [ -d "$prefix/lib/gamma" ]; then
-    mv "$prefix/lib/gamma" "$prefix/lib/gamma.old"
-fi
-mv "$prefix/lib/gamma.new" "$prefix/lib/gamma"
-rm -rf "$prefix/lib/gamma.old"
+# Replace the previous installation's files only, leaving anything else in the prefix
+# (the other product's libraries included). Each library directory is copied in full
+# before the old one is swapped out, so a failed copy leaves the previous installation
+# working.
+mkdir -p "$prefix/bin" "$prefix/lib/gamma" "$prefix/share/doc/gamma"
+for dir in "$src"/lib/gamma/*; do
+    name=$(basename "$dir")
+    rm -rf "$prefix/lib/gamma/$name.new" "$prefix/lib/gamma/$name.old"
+    cp -R "$dir" "$prefix/lib/gamma/$name.new"
+    if [ -d "$prefix/lib/gamma/$name" ]; then
+        mv "$prefix/lib/gamma/$name" "$prefix/lib/gamma/$name.old"
+    fi
+    mv "$prefix/lib/gamma/$name.new" "$prefix/lib/gamma/$name"
+    rm -rf "$prefix/lib/gamma/$name.old"
+done
 cp "$src/LICENSE" "$src/README.md" "$prefix/share/doc/gamma/"
-cp "$src/bin/gamma" "$prefix/bin/gamma.new"
-mv -f "$prefix/bin/gamma.new" "$prefix/bin/gamma"
+cp "$src/bin/$product" "$prefix/bin/$product.new"
+mv -f "$prefix/bin/$product.new" "$prefix/bin/$product"
 
-say "Installed $("$prefix/bin/gamma" version) in $prefix"
+say "Installed $("$prefix/bin/$product" version) in $prefix"
 case ":$PATH:" in
     *":$prefix/bin:"*) ;;
     *) say "Add $prefix/bin to your PATH, for example in your shell's profile:
     export PATH=\"$prefix/bin:\$PATH\"" ;;
 esac
-say "Native builds (gamma build, gamma run --backend=c) also need a C compiler: cc, gcc or clang."
+say "Native builds ($product build, $product run) also need a C compiler: cc, gcc or clang."

@@ -1,13 +1,16 @@
 //! Where gammac finds the libraries and the runtime.
+//!
+//! An installation is a prefix with `bin/gammac` and `lib/gamma/{std,core,runtime}`; the
+//! repository has `lib/std`, `lib/core` and `runtime`. Both work without environment
+//! variables.
 
 load :: import "../load"
 
 /// The directory of the standard library: `$GAMMA_STD`, or else `lib/gamma/std` next to
 /// the directory of the executable, as in an installed release.
-pub std_root :: fn() -> string needs Alloc + Env {
+pub std_root :: fn() -> string needs Alloc + Env + Fs {
     if dir := Env.var("GAMMA_STD") { return dir }
-    exe := Env.args()[0]
-    bin := load.parent(exe) else "."
+    bin := load.parent(load.executable()) else "."
     return load.join(load.join(if bin.len is 0 { "." } else { bin }, ".."), "lib/gamma/std")
 }
 
@@ -18,9 +21,12 @@ pub core_root :: fn(std: string) -> string needs Alloc + Env {
     return load.join(load.join(std, ".."), "core")
 }
 
-/// The directory of the runtime's C sources: `$GAMMA_RUNTIME`, or else `runtime` two
-/// levels above the standard library's directory.
-pub runtime_dir :: fn(std: string) -> string needs Alloc + Env {
+/// The directory of the runtime's C sources: `$GAMMA_RUNTIME`, or else `runtime` next to
+/// the standard library's directory (an installation), or else two levels above it (the
+/// repository).
+pub runtime_dir :: fn(std: string) -> string needs Alloc + Env + Fs {
     if dir := Env.var("GAMMA_RUNTIME") { return dir }
+    installed := load.join(load.join(std, ".."), "runtime")
+    if load.is_file(load.join(installed, "gm_rt.c")) { return installed }
     return load.join(load.join(load.join(std, ".."), ".."), "runtime")
 }

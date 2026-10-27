@@ -3,8 +3,11 @@ name: Release
 # Pushing a tag `vX.Y.Z` builds the `gamma` binaries for Linux and macOS (x86_64 and
 # arm64) and Windows (x86_64), checks that each one runs a program on the interpreter and
 # through C from its installed layout, and publishes them as a GitHub release whose notes
-# are the version's section of CHANGELOG.md. Running the workflow by hand builds and checks
-# the archives without publishing them.
+# are the version's section of CHANGELOG.md. The self-hosted compiler `gammac` is released
+# next to them for the same five platforms, built without cargo: on Linux and macOS from
+# the bootstrap seed with a C compiler, for Windows by cross-compiling with MinGW-w64 on
+# Linux. Running the workflow by hand builds and checks the archives without publishing
+# them.
 
 on:
   push:
@@ -127,9 +130,107 @@ jobs:
           name: gamma-${{ matrix.asset }}
           path: dist/*
 
+  gammac:
+    name: Build gammac (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            asset: linux-x86_64
+          - os: ubuntu-22.04-arm
+            asset: linux-aarch64
+          - os: macos-15-intel
+            asset: macos-x86_64
+          - os: macos-14
+            asset: macos-aarch64
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check that the tag matches the version of gammac
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version = / { gsub(/"/, "", $3); print $3; exit }' compiler/gamma.toml)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "the tag $GITHUB_REF_NAME does not match the version $version in compiler/gamma.toml" >&2
+            exit 1
+          fi
+      - name: Build gammac from the seed
+        run: bootstrap/build.sh
+      - name: Package
+        run: tools/package-gammac.sh "${{ matrix.asset }}" target/bootstrap/gammac dist
+      - name: Smoke test the installed layout
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke"
+          tar -C "$RUNNER_TEMP/smoke" -xzf "dist/gammac-${{ matrix.asset }}.tar.gz"
+          # Hide the source tree's libraries and runtime, so that only the packaged ones
+          # can be found.
+          mv lib lib.hidden
+          mv runtime runtime.hidden
+          tools/smoke-gammac.sh "$(echo "$RUNNER_TEMP"/smoke/gammac-*/bin/gammac)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gammac-${{ matrix.asset }}
+          path: dist/*
+
+  gammac-windows:
+    name: Cross-build gammac (windows-x86_64)
+    needs: gammac
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install MinGW-w64
+        run: sudo apt-get update -q && sudo apt-get install -y -q gcc-mingw-w64-x86-64 zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: gammac-linux-x86_64
+          path: linux
+      - name: Build gammac.exe with the Linux gammac
+        run: |
+          tar -C linux -xzf linux/gammac-linux-x86_64.tar.gz
+          # gammac finds its library and runtime from its own location.
+          linux/gammac-*/bin/gammac build compiler --target=x86_64-w64-mingw32 -o gammac.exe
+      - name: Package
+        run: tools/package-gammac.sh windows-x86_64 gammac.exe dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gammac-windows-x86_64
+          path: dist/*
+
+  gammac-windows-smoke:
+    name: Smoke test gammac (windows-x86_64)
+    needs: gammac-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: gammac-windows-x86_64
+          path: dist
+      - name: Install MinGW-w64 gcc (the C back end of gammac)
+        id: msys
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Smoke test the installed layout
+        shell: bash
+        env:
+          MSYS_LOCATION: ${{ steps.msys.outputs.msys2-location }}
+        run: |
+          export PATH="$(cygpath "$MSYS_LOCATION")/ucrt64/bin:$PATH"
+          mkdir -p "$RUNNER_TEMP/smoke"
+          7z x -y -bso0 -o"$RUNNER_TEMP/smoke" dist/gammac-windows-x86_64.zip
+          # Hide the source tree's libraries and runtime, so that only the packaged ones
+          # can be found.
+          mv lib lib.hidden
+          mv runtime runtime.hidden
+          tools/smoke-gammac.sh "$(echo "$RUNNER_TEMP"/smoke/gammac-*/bin/gammac.exe)"
+
   publish:
     name: Publish the release
-    needs: build
+    needs: [build, gammac, gammac-windows, gammac-windows-smoke]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
