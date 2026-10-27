@@ -44,3 +44,11 @@ src/, Cargo.*, rustfmt.toml, web/playground, web/sitegen, fuzz cargo crate (fuzz
 fuzz/, new inputs fuzz/found/), runtime/gm_clif.c (RUNTIME_NAMES regenerated from
 gm_rt.h+gm_rt.c, minus "gm_rt"), tools/difftest → Gamma (same programs per seed, verified
 0..300 against the Rust build). CI: no Rust except the Zed extension (editors/zed).
+
+## CI lessons (PR #97)
+- macOS: calling setpgid in BOTH parent and child raced → child's setpgid failed EPERM
+  (1–2 spawns in ~1300 reported PermissionDenied). Now child only (spawn waits for exec).
+- Building the harness for Windows: code after `when target.os is .Windows { return … }` is
+  "unreachable code" there → always write `when … { } else { }` for early returns.
+- editors/zed needs its own rustfmt.toml (was the root one).
+- All 17 CI jobs green on 78f042f (first run of Windows job objects/env merge passed).
