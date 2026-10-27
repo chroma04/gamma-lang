@@ -1,0 +1,86 @@
+//! The Gamma playground's program: a WASI command, built by `gammac build
+//! --target=wasm32-wasi`, that reads a Gamma program from standard input and
+//!
+//!     play run    checks it and runs it in the interpreter, as `gammac run --backend=interp` does
+//!     play fmt    prints it formatted, as `gammac fmt -` does
+//!
+//! The exit status is the program's; 1 for a program with errors; 134 after a trap.
+//! Diagnostics go to standard error in the human format.
+//!
+//! The standard and core libraries are read from the directories `/std` and `/core` that
+//! the host grants the module (the page's script serves them from memory); the program
+//! itself is an in-memory buffer that stands in for the file `/play/main.gm`, so the
+//! host needs no such file.
+
+arena :: import "std/arena"
+ast :: import "gammac/ast"
+check :: import "gammac/check"
+diag :: import "gammac/diag"
+driver :: import "gammac/driver"
+fmt :: import "gammac/fmt"
+io :: import "std/io"
+lint :: import "gammac/lint"
+load :: import "gammac/load"
+sema :: import "gammac/sema"
+source :: import "gammac/source"
+
+/// The file the program stands in for, and the directories of the libraries.
+PROGRAM :: "/play/main.gm"
+STD :: "/std"
+CORE :: "/core"
+
+main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys {
+    args := Env.args()
+    mode := args.get(1) else "run"
+    if mode is "fmt" { Env.exit(fmt.command([1]string("-")[..])) }
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        text := io.read_all() else {
+            eprint("gamma: cannot read the program\n")
+            Env.exit(2)
+        }
+        if not text.utf8_valid() {
+            eprint("gamma: the program is not valid UTF-8\n")
+            Env.exit(2)
+        }
+        Env.exit(run(string(text)))
+    }
+}
+
+/// Checks the program `text` and runs it. Returns the exit status.
+run :: fn(text: string) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    sm := source.source_map()
+    diags := diag.diagnostics()
+    next_id: ast.NodeId = 0
+    opts := driver.Options(command: .Run, interp: true, native_fallback: false, target: load.host_target(), lint: lint.options())
+    l := load.loader(&sm, &diags, &next_id, STD, false)
+    l.target = opts.target
+    l.overlays.push(load.Overlay(path: PROGRAM, text: text))!
+    status: u8 = 0
+    if l.load_core(CORE, driver.mode_name(opts.mode)) {
+        s := sema.sema(&l)
+        check.install(&s)
+        s.resolve_ambient()
+        if m := l.load_root(PROGRAM) {
+            s.resolve_declarations()
+            check.check_program(&s, m, false)
+            errors := diags.has_errors()
+            render(&sm, &diags)
+            if errors { return 1 }
+            status = driver.run_interp(&s, m, PROGRAM, opts)
+        }
+    }
+    if diags.has_errors() and status is 0 { status = 1 }
+    render(&sm, &diags)
+    return status
+}
+
+/// Prints the diagnostics to standard error, in order, and empties the list.
+render :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics) needs Alloc + Err {
+    out := list(u8)
+    diags.sort()
+    for d in diags.list.items { diag.render(sm, &d, .Human, &out) }
+    Err.write(out.items)
+    diags.list.clear()
+}

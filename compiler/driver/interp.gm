@@ -18,7 +18,11 @@ pub run_interp :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -
     p := cgen.prog(s)
     // The interpreter cannot call foreign code or run assembly: such programs run
     // natively, as the reference implementation runs those it cannot describe to libffi.
-    if needs_native(&p, entry) { return run(s, root, opts) }
+    if needs_native(&p, entry) {
+        if opts.native_fallback { return run(s, root, opts) }
+        eprint("gammac: cannot run this program here: foreign code and assembly are not available on this host\n")
+        return 1
+    }
     mode: interp.Mode = match opts.mode {
         .Debug => .Debug
         .Checked => .Checked

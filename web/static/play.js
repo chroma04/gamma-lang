@@ -9,6 +9,7 @@
   const editor = $("source"), shadow = $("shadow").firstChild, output = $("output");
   const runBtn = $("run"), fmtBtn = $("fmt"), shareBtn = $("share"), status = $("status"), menu = $("examples");
   const WASM = new URL("assets/gamma-play.wasm", location.href).href;
+  const LIBS = new URL("assets/gamma-play-libs.json", location.href).href;
   const KEY = "gamma-playground-source";
   const examples = window.GAMMA_EXAMPLES || [];
 
@@ -184,7 +185,7 @@
     worker = new Worker("assets/play-worker.js");
     worker.onmessage = onMessage;
     worker.onerror = (e) => { finish(); show("err", "The interpreter could not start: " + (e.message || "unknown error") + "\n"); };
-    worker.postMessage({ mode: "load", wasm: WASM });
+    worker.postMessage({ mode: "load", wasm: WASM, libs: LIBS });
   }
 
   function show(kind, text) {
@@ -260,7 +261,7 @@
       stopTimer = setTimeout(() => { if (busy) status.textContent = "Running…"; }, 400);
     }
     fmtBtn.disabled = true;
-    worker.postMessage({ mode, source: editor.value, wasm: WASM });
+    worker.postMessage({ mode, source: editor.value, wasm: WASM, libs: LIBS });
   }
 
   function finish() {

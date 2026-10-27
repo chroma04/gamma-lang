@@ -214,7 +214,9 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
     out.extend(checks)!
     out.extend(head.items)!
     out.extend(gdb)!
+    data_lo := out.items.len
     out.extend(data.items)!
+    data_hi := out.items.len
     out.extend(frames)!
     out.extend(protos)!
     out.extend(g.handler_tables.items)!
@@ -222,14 +224,17 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
     out.extend(consts.init)!
     out.extend(g.helpers.bodies.items)!
     out.extend(g.bodies.items)!
-    if not p.target.f16 and str.contains(out.items, "_Float16") {
+    // The text of the program's string literals is data, not code: a program that writes C
+    // (this compiler) holds names such as `_Float16` and `gm_with_go(` without using them.
+    code_has :: fn(needle: string) -> bool => str.contains(out.items[0..data_lo], needle) or str.contains(out.items[data_hi..], needle)
+    if not p.target.f16 and code_has("_Float16") {
         return !unsupported(source.DUMMY, "`f16` needs a C compiler with `_Float16`, which this target's compiler lacks")
     }
-    if freestanding and str.contains(out.items, "gm_with_go(") and p.target.arch not in ("X86_64", "Aarch64", "S390x") {
+    if freestanding and code_has("gm_with_go(") and p.target.arch not in ("X86_64", "Aarch64", "S390x") {
         return !Unsup(message: str.format("fibers (`with … on`) need a context switch, which the runtime has only for x86-64, AArch64 and s390x; this freestanding target ({}) has none", p.target.arch)!, span: source.DUMMY)
     }
     // A program that switches fibers runs its entry under the runtime's fiber support.
-    run_main := if str.contains(out.items, "gm_with_go(") { "gm_run_main_fibers" } else { "gm_run_main" }
+    run_main := if code_has("gm_with_go(") { "gm_run_main_fibers" } else { "gm_run_main" }
     main_text: string = if main.len is 0 { "" } else { str.format("#define GM_RUN_MAIN {}\n{}", run_main, main)! }
     out.extend(exports)!
     out.extend(main_text)!
