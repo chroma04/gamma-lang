@@ -1,5 +1,378 @@
-//! The fmt suite (being ported from tests/fmt.rs).
+//! Tests of the source formatter (`gamma fmt`).
+//!
+//! The corpus test formats every `.gm` file under `lib/` and `tests/conformance/`
+//! (without writing anything back) and checks the two safety properties: the
+//! output lexes to the same tokens as the input, and formatting is idempotent.
+//! The unit tests pin down one spacing or indentation rule each: they format a text
+//! through `gamma fmt -` and compare the result with the expected one, and check the
+//! same two properties on it. The tokens of a text are those `gamma lex` prints, without
+//! their positions.
 
+fs :: import "std/fs"
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "corpus_keeps_tokens_and_is_idempotent", run: corpus_keeps_tokens_and_is_idempotent))!
+    out.push(kit.Test(name: "library_is_formatted", run: library_is_formatted))!
+    out.push(kit.Test(name: "crlf_input_gives_lf_output_inside_block_comments_too", run: crlf_input_gives_lf_output_inside_block_comments_too))!
+    out.push(kit.Test(name: "tokens_that_lex_differently_when_joined_stay_apart", run: tokens_that_lex_differently_when_joined_stay_apart))!
+    out.push(kit.Test(name: "dot_after_a_space_at_line_start_stays_apart", run: dot_after_a_space_at_line_start_stays_apart))!
+    out.push(kit.Test(name: "binary_operators_get_spaces", run: binary_operators_get_spaces))!
+    out.push(kit.Test(name: "unary_and_postfix_operators_are_tight", run: unary_and_postfix_operators_are_tight))!
+    out.push(kit.Test(name: "ranges_and_dots_are_tight", run: ranges_and_dots_are_tight))!
+    out.push(kit.Test(name: "commas_semicolons_and_colons", run: commas_semicolons_and_colons))!
+    out.push(kit.Test(name: "brackets", run: brackets))!
+    out.push(kit.Test(name: "braces", run: braces))!
+    out.push(kit.Test(name: "types", run: types))!
+    out.push(kit.Test(name: "effect_sets_are_tight", run: effect_sets_are_tight))!
+    out.push(kit.Test(name: "indentation_follows_brackets", run: indentation_follows_brackets))!
+    out.push(kit.Test(name: "continuation_lines", run: continuation_lines))!
+    out.push(kit.Test(name: "aligned_parameters_stay_aligned", run: aligned_parameters_stay_aligned))!
+    out.push(kit.Test(name: "blank_lines", run: blank_lines))!
+    out.push(kit.Test(name: "comments", run: comments))!
+    out.push(kit.Test(name: "aligned_columns_are_kept", run: aligned_columns_are_kept))!
+    out.push(kit.Test(name: "literals_are_verbatim", run: literals_are_verbatim))!
+    out.push(kit.Test(name: "lexical_errors_are_reported", run: lexical_errors_are_reported))!
+    out.push(kit.Test(name: "padding_is_kept_only_when_it_aligns", run: padding_is_kept_only_when_it_aligns))!
+    out.push(kit.Test(name: "else_chains_after_blocks_align_with_their_statement", run: else_chains_after_blocks_align_with_their_statement))!
+    out.push(kit.Test(name: "pattern_bindings_starting_with_a_dot_are_statements", run: pattern_bindings_starting_with_a_dot_are_statements))!
+    out.push(kit.Test(name: "a_variant_starting_a_block_is_not_a_continuation", run: a_variant_starting_a_block_is_not_a_continuation))!
+    out.push(kit.Test(name: "missing_final_newline_is_added", run: missing_final_newline_is_added))!
+    out.push(kit.Test(name: "aligned_padding_is_decided_the_same_after_reindenting", run: aligned_padding_is_decided_the_same_after_reindenting))!
+    out.push(kit.Test(name: "directory_walk_skips_hidden_directories_and_package_target", run: directory_walk_skips_hidden_directories_and_package_target))!
+}
+
+/// What `gamma fmt -` did with a text.
+Formatted :: struct {
+    ok: bool
+    text: string
+    err: string
+}
+
+format :: fn(t: ^kit.T, src: string) -> kit.Fail!Formatted needs kit.Run {
+    c := t.gamma([_]string("fmt", "-"))
+    c.stdin(src)
+    out := try t.run(c)
+    return Formatted(ok: out.success(), text: out.out, err: out.err)
+}
+
+/// `src` formatted; the test fails if the formatter refuses it.
+format_ok :: fn(t: ^kit.T, src: string) -> kit.Fail!string needs kit.Run {
+    f := try format(t, src)
+    if not f.ok { return !t.fail("cannot format {}: {}", kit.quote(src), f.err) }
+    return f.text
+}
+
+/// The tokens of `src`, as `gamma lex` prints them without positions: one per line.
+tokens :: fn(t: ^kit.T, file: string, src: string) -> kit.Fail!string needs kit.Run {
+    try t.write(file, src)
+    out := try t.run(t.gamma([_]string("lex", file)))
+    text := list(u8)
+    for line in str.lines(out.out) {
+        sp := str.split_once(line, " ") else continue
+        text.extend(sp.after)!
+        text.push('\n')!
+    }
+    return string(text.items)
+}
+
+/// The file `name` in the directory of the running test.
+work_file :: fn(t: ^kit.T, name: string) -> string needs Alloc => kit.join(kit.join(t.cfg.tmp, t.name), name)
+
+/// Fails the test unless `input` formats to `expected`, which formatting leaves alone, and
+/// the tokens stay the same.
+expect_format :: fn(t: ^kit.T, input, expected: string) -> kit.Fail!() needs kit.Run {
+    out := try format_ok(t, input)
+    try t.expect_text(str.format("formatting {}", kit.quote(input))!, expected, out)
+    again := try format_ok(t, out)
+    try t.expect_text(str.format("a second pass over {}", kit.quote(input))!, out, again)
+    before := try tokens(t, work_file(t, "before.gm"), input)
+    after := try tokens(t, work_file(t, "after.gm"), out)
+    try t.expect_text(str.format("the tokens of {}", kit.quote(input))!, before, after)
+    return ()
+}
+
+/// The `.gm` files below `dir`, in name order.
+gm_files :: fn(t: ^kit.T, dir: string, out: ^List(string)) -> kit.Fail!() needs Alloc + Fs {
+    for r in fs.walk(dir) {
+        e := r else err => return !t.fail("cannot list {}: {}", dir, err)
+        if e.kind is .File and str.strip_suffix(e.path, ".gm") is not null { out.push(dupe(e.path)!)! }
+    }
+    out.items.sort()
+    return ()
+}
+
+corpus_keeps_tokens_and_is_idempotent :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    files := list(string)
+    try gm_files(t, t.repo("lib"), &files)
+    try gm_files(t, t.repo("tests/conformance"), &files)
+    try t.check(files.items.len > 50, "the corpus should not be empty")
+    formatted: usize = 0
+    for path in files.items {
+        src := try t.read(path)
+        f := try format(t, src)
+        if not f.ok {
+            // Files that test lexical errors cannot be formatted.
+            try t.check(not str.contains(f.err, "internal error"), "{}: {}", path, f.err)
+            continue
+        }
+        formatted += 1
+        before := try tokens(t, path, src)
+        after := try tokens(t, work_file(t, "out.gm"), f.text)
+        try t.expect_text(str.format("{}: tokens", path)!, before, after)
+        again := try format_ok(t, f.text)
+        try t.expect_text(str.format("{}: a second pass", path)!, f.text, again)
+    }
+    try t.check(formatted > 250, "only {} files were formatted", formatted)
+    return ()
+}
+
+/// The library is kept in the formatter's style: run `gamma fmt lib` after editing it.
+library_is_formatted :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    c := t.gamma([_]string("fmt", "--check", "lib"))
+    c.dir = t.cfg.root
+    out := try t.run(c)
+    try t.check(out.success(), "not formatted (run `gamma fmt lib`):\n{}{}", out.out, out.err)
+    return ()
+}
+
+crlf_input_gives_lf_output_inside_block_comments_too :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try format_ok(t, "x := 1 /* a\r\n b */\r\ny := 2\r\n")
+    try t.expect_text("the output", "x := 1 /* a\n b */\ny := 2\n", out)
+    return ()
+}
+
+/// `..` next to `..` would join into `...` and `.`.
+tokens_that_lex_differently_when_joined_stay_apart :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    src := "x := a .. ..b\n"
+    f := try format(t, src)
+    if f.ok {
+        before := try tokens(t, work_file(t, "before.gm"), src)
+        after := try tokens(t, work_file(t, "after.gm"), f.text)
+        try t.expect_text("the tokens", before, after)
+    }
+    return ()
+}
+
+else_chains_after_blocks_align_with_their_statement :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    src := "f :: fn() {\n    when A { g() }\n        else when B { h() }\n        else { k() }\n    if c {\n        g()\n    }\n    else { h() }\n    x := if c { 1 }\n        else { 2 }\n}\n"
+    want := "f :: fn() {\n    when A { g() }\n    else when B { h() }\n    else { k() }\n    if c {\n        g()\n    }\n    else { h() }\n    x := if c { 1 }\n        else { 2 }\n}\n"
+    try expect_format(t, src, want)
+    return ()
+}
+
+lexical_errors_are_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    f := try format(t, "x := \"abc\n")
+    try t.check(not f.ok, "an unterminated string was formatted")
+    try t.expect_contains("the message", f.err, "unterminated")
+    g := try format(t, "a == b\n")
+    try t.check(not g.ok, "`==` was formatted")
+    return ()
+}
+
+missing_final_newline_is_added :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try t.expect_text("a declaration", "a :: 1\n", try format_ok(t, "a :: 1"))
+    try t.expect_text("a function", "f :: fn() {\n    g()\n}\n", try format_ok(t, "f :: fn() {\n    g()\n}"))
+    try t.expect_text("a comment", "a :: 1 // done\n", try format_ok(t, "a :: 1 // done"))
+    return ()
+}
+
+/// The lines are aligned at the same source column but indented differently, so the
+/// first pass used to keep the padding and the second to collapse it.
+aligned_padding_is_decided_the_same_after_reindenting :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    for src in [_]string(
+        "main :: fn() {\n\ta   :: 1\n  bc :: 2\n}\n",
+        "main :: fn() {\n  bc :: 2\n\ta   :: 1\n}\n",
+        "T :: struct {\n\tab:   i32\n  c:  i32\n}\n",
+    ) {
+        once := try format_ok(t, src)
+        again := try format_ok(t, once)
+        try t.expect_text(str.format("a second pass over {}", kit.quote(src))!, once, again)
+    }
+    return ()
+}
+
+directory_walk_skips_hidden_directories_and_package_target :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    root := try t.scratch(t.name)
+    ugly :: "main::fn(){\n}\n"
+    for d in [_]string("src", ".git", "target", "src/target", ".claude/x") {
+        try t.write(kit.join(kit.join(root, d), "a.gm"), ugly)
+    }
+    try t.write(kit.join(root, "gamma.toml"), "[package]\nname = \"w\"\nversion = \"0.1.0\"\n")
+    _ = try t.run_ok(t.gamma([_]string("fmt", root)))
+    try t.check((try t.read(kit.join(root, "src/a.gm"))) is not ugly, "src was not formatted")
+    try t.check((try t.read(kit.join(root, "src/target/a.gm"))) is not ugly, "only the package's own target directory is skipped")
+    for d in [_]string(".git", "target", ".claude/x") {
+        try t.check((try t.read(kit.join(kit.join(root, d), "a.gm"))) is ugly, "{} must be left alone", d)
+    }
+    // A file named explicitly is always formatted.
+    _ = try t.run_ok(t.gamma([_]string("fmt", kit.join(root, "target/a.gm"))))
+    try t.check((try t.read(kit.join(root, "target/a.gm"))) is not ugly, "a file named explicitly was not formatted")
+    return ()
+}
+
+dot_after_a_space_at_line_start_stays_apart :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // `. p` is not a continuation line; gluing it to `p` would turn it into one (§2.8) and
+    // change the indentation the second time around.
+    try expect_format(t, "f :: fn() {\n    if b {\n.        p.q = 1\n    }\n}\n", "f :: fn() {\n    if b {\n        . p.q = 1\n    }\n}\n")
+    return ()
+}
+
+binary_operators_get_spaces :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "x:=a+b*c\n", "x := a + b * c\n")
+    try expect_format(t, "x   =   a<<2|b\n", "x = a << 2 | b\n")
+    try expect_format(t, "y +%= 1\nz=a+%b\n", "y +%= 1\nz = a +% b\n")
+    try expect_format(t, "f :: fn(a:i32)->i32=>a\n", "f :: fn(a: i32) -> i32 => a\n")
+    try expect_format(t, "c = a and b or not d\n", "c = a and b or not d\n")
+    try expect_format(t, "c = a   is   not b\nd = x not   in y\n", "c = a is not b\nd = x not in y\n")
+    return ()
+}
+
+unary_and_postfix_operators_are_tight :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "x = - y\n", "x = -y\n")
+    try expect_format(t, "x = a - -b\n", "x = a - -b\n")
+    try expect_format(t, "x = a-b\n", "x = a - b\n")
+    try expect_format(t, "p = & x\nq = ~ m\nr = a ~ b\n", "p = &x\nq = ~m\nr = a ~ b\n")
+    try expect_format(t, "v = p ^ + 1\n", "v = p^ + 1\n")
+    try expect_format(t, "v = x ? + 1\nw = y ! + 1\n", "v = x? + 1\nw = y! + 1\n")
+    try expect_format(t, "return - 1\n", "return -1\n")
+    try expect_format(t, "f(-1, - x, ! e)\n", "f(-1, -x, !e)\n")
+    try expect_format(t, "return ! . OutOfMemory\n", "return !.OutOfMemory\n")
+    return ()
+}
+
+ranges_and_dots_are_tight :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "for i in 0 .. n { }\n", "for i in 0..n {}\n")
+    try expect_format(t, "s = a[ 1 ..= 3 ]\nt = a[ .. n ]\n", "s = a[1..=3]\nt = a[..n]\n")
+    try expect_format(t, "x = a . b . c ( )\n", "x = a.b.c()\n")
+    try expect_format(t, "f(a, .. rest)\n", "f(a, ..rest)\n")
+    try expect_format(t, "c = .Red\nd = f( .Red )\n", "c = .Red\nd = f(.Red)\n")
+    return ()
+}
+
+commas_semicolons_and_colons :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "f(a ,b ,c)\n", "f(a, b, c)\n")
+    try expect_format(t, "a ; b\n", "a; b\n")
+    try expect_format(t, "x : i32 = 1\n", "x: i32 = 1\n")
+    try expect_format(t, "struct { a : i32 ; b :u8 }\n", "struct { a: i32; b: u8 }\n")
+    try expect_format(t, "MASK: u32 : 0xFF\n", "MASK: u32 : 0xFF\n")
+    try expect_format(t, "MASK : u32 :0xFF\n", "MASK: u32 : 0xFF\n")
+    return ()
+}
+
+brackets :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "f ( a , b )\n", "f(a, b)\n")
+    try expect_format(t, "x = a [ i ]\n", "x = a[i]\n")
+    try expect_format(t, "x = ( a + b ) * c\n", "x = (a + b) * c\n")
+    try expect_format(t, "x = fn ( a ) => a\n", "x = fn(a) => a\n")
+    try expect_format(t, "x = @size_of ( T )\n", "x = @size_of(T)\n")
+    try expect_format(t, "#align ( 8 )\nS :: struct { }\n", "#align(8)\nS :: struct {}\n")
+    try expect_format(t, "x = f ( ) ( 1 )\n", "x = f()(1)\n")
+    return ()
+}
+
+braces :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "if a{ b }\n", "if a { b }\n")
+    try expect_format(t, "if a {b}\n", "if a { b }\n")
+    try expect_format(t, "S :: struct { }\n", "S :: struct {}\n")
+    try expect_format(t, "f :: fn ( ) {\n}\n", "f :: fn() {\n}\n")
+    try expect_format(t, "x = f({ a })\n", "x = f({ a })\n")
+    return ()
+}
+
+types :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "x : ? T\n", "x: ?T\n")
+    try expect_format(t, "x : ^ T\ny: [ ] u8\nz:[ 4 ]u8\n", "x: ^T\ny: []u8\nz: [4]u8\n")
+    try expect_format(t, "p : [ ^ ] u8\nq : [] const u8\nr : ^ const T\n", "p: [^]u8\nq: []const u8\nr: ^const T\n")
+    try expect_format(t, "p : ? [ ^ ] u8\nq : [] ? u8\n", "p: ?[^]u8\nq: []?u8\n")
+    try expect_format(t, "r : IoError ! usize\ns : E ! ? ^ T\n", "r: IoError!usize\ns: E!?^T\n")
+    try expect_format(t, "f :: fn ( ) -> AllocError ! ( ) { }\n", "f :: fn() -> AllocError!() {}\n")
+    try expect_format(t, "g :: fn ( ) -> E ! [ ] u8 { }\n", "g :: fn() -> E![]u8 {}\n")
+    try expect_format(t, "h :: fn ( p : ^ fn ( a : i32 ) needs Out ) { }\n", "h :: fn(p: ^fn(a: i32) needs Out) {}\n")
+    try expect_format(t, "x = f ( ) !\ny = z ^ . w\n", "x = f()!\ny = z^.w\n")
+    return ()
+}
+
+effect_sets_are_tight :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "f :: fn() needs Out + Err { }\n", "f :: fn() needs Out + Err {}\n")
+    try expect_format(t, "f :: fn() needs not  { }\n", "f :: fn() needs not {}\n")
+    return ()
+}
+
+indentation_follows_brackets :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "f :: fn() {\nx := 1\n  if a {\ny\n   }\n}\n", "f :: fn() {\n    x := 1\n    if a {\n        y\n    }\n}\n")
+    try expect_format(t, "f(\na,\n   b\n)\n", "f(\n    a,\n    b\n)\n")
+    try expect_format(t, "x := [\n1,\n2,\n]\n", "x := [\n    1,\n    2,\n]\n")
+    try expect_format(t, "if a {\n  x\n} else {\n  y\n}\n", "if a {\n    x\n} else {\n    y\n}\n")
+    try expect_format(t, "f(g(\na\n))\n", "f(g(\n    a\n))\n")
+    return ()
+}
+
+continuation_lines :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "x := a +\nb\n", "x := a +\n    b\n")
+    try expect_format(t, "x := obj\n.a()\n.b()\n", "x := obj\n    .a()\n    .b()\n")
+    try expect_format(t, "if a\nand b {\nc\n}\n", "if a\n    and b {\n    c\n}\n")
+    return ()
+}
+
+aligned_parameters_stay_aligned :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "f :: fn(a: i32,\n        b: i32) {\n  x\n}\n", "f :: fn(a: i32,\n        b: i32) {\n    x\n}\n")
+    try expect_format(t, "    f :: fn(a: i32,\n            b: i32) {\n  x\n}\n", "f :: fn(a: i32,\n        b: i32) {\n    x\n}\n")
+    return ()
+}
+
+blank_lines :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "a\n\n\n\nb\n", "a\n\nb\n")
+    try expect_format(t, "{\n\n  a\n\n}\n", "{\n    a\n}\n")
+    try expect_format(t, "\n\na\n", "a\n")
+    try expect_format(t, "a\n\n\n", "a\n")
+    try expect_format(t, "a   \nb\t\n", "a\nb\n")
+    try expect_format(t, "", "")
+    try expect_format(t, "\n\n", "")
+    return ()
+}
+
+comments :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "// a\n   // b\nx\n", "// a\n// b\nx\n")
+    try expect_format(t, "f {\n// c\nx\n}\n", "f {\n    // c\n    x\n}\n")
+    try expect_format(t, "x := 1 // c\n", "x := 1 // c\n")
+    try expect_format(t, "x := 1// c\n", "x := 1 // c\n")
+    try expect_format(t, "x := 1       // c\ny := 22      // d\n", "x := 1       // c\ny := 22      // d\n")
+    try expect_format(t, "x   :=   1 // c   \n", "x := 1 // c\n")
+    try expect_format(t, "/// doc\npub f :: fn() {}\n", "/// doc\npub f :: fn() {}\n")
+    try expect_format(t, "x := /* c */ 1\n", "x := /* c */ 1\n")
+    try expect_format(t, "  /* a\n   b */\nx\n", "/* a\n   b */\nx\n")
+    try expect_format(t, "f {\n  x\n  // end\n}\n", "f {\n    x\n    // end\n}\n")
+    return ()
+}
+
+aligned_columns_are_kept :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "a    :: 1\nbcde :: 2\n", "a    :: 1\nbcde :: 2\n")
+    try expect_format(t, "match x {\n.A     => 1\n.Bcdef => 2\n}\n", "match x {\n    .A     => 1\n    .Bcdef => 2\n}\n")
+    return ()
+}
+
+literals_are_verbatim :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "x = \"a  +  b\"\ny = `raw\n   text`\n", "x = \"a  +  b\"\ny = `raw\n   text`\n")
+    try expect_format(t, "x = 0x1_F + 1.5e3f32 + 'a'\n", "x = 0x1_F + 1.5e3f32 + 'a'\n")
+    try expect_format(t, "x = c\"hi\"\n", "x = c\"hi\"\n")
+    return ()
+}
+
+padding_is_kept_only_when_it_aligns :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "f   :: fn() {}\n", "f :: fn() {}\n")
+    try expect_format(t, "a    :: 1\nbcd  :: 2\n", "a    :: 1\nbcd  :: 2\n")
+    try expect_format(t, "P :: struct {\n    x:    i32,\n    yy:   i32,\n}\n", "P :: struct {\n    x:    i32,\n    yy:   i32,\n}\n")
+    return ()
+}
+
+pattern_bindings_starting_with_a_dot_are_statements :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "f :: fn(u: U) -> i32 {\n    x := 1\n    .A(n) := u else return 0\n    y := a\n        .b()\n    return n\n}\n", "f :: fn(u: U) -> i32 {\n    x := 1\n    .A(n) := u else return 0\n    y := a\n        .b()\n    return n\n}\n")
+    return ()
+}
+
+a_variant_starting_a_block_is_not_a_continuation :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try expect_format(t, "f :: fn(a: bool) -> V {\n    k: V = if a {\n            .A\n    } else {\n    .B\n    }\n    return k\n}\n", "f :: fn(a: bool) -> V {\n    k: V = if a {\n        .A\n    } else {\n        .B\n    }\n    return k\n}\n")
+    return ()
+}

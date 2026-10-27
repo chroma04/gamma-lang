@@ -1,5 +1,265 @@
-//! The doc_examples suite (being ported from tests/doc_examples.rs).
+//! Checks the code examples in the documents listed in `CHECKED_DOCS`.
+//!
+//! In those documents every fenced code block whose info string starts with
+//! `gamma` is checked according to the words that follow it:
+//!
+//! - ```` ```gamma ```` is a complete program. It must be formatted as `gamma fmt`
+//!   formats it and must run with exit status 0. If the next fenced block is an
+//!   ```` ```output ```` block, that is the program's expected standard output.
+//! - ```` ```gamma test ```` is a complete module whose `test` declarations must all
+//!   pass under `gamma test`. It must be formatted, too.
+//! - ```` ```gamma error ```` is a program that must be rejected by `gamma check`.
+//!   Each line that ends in a `// error: ...` comment must get at least one error,
+//!   and every error must be on such a line, so the block fails for the reason
+//!   the text gives.
+//! - ```` ```gamma fragment ```` is part of a program and is not checked.
+//!
+//! Blocks in other languages (`c`, `rust`, `sh`, ...) are not checked. Programs run
+//! in the interpreter and, where a C compiler is available and `GAMMA_TEST_C` is not
+//! 0, through the C back end too; both must agree. Tests run through the C back end,
+//! so `test` blocks are checked only where it is available.
+//!
+//! There is one test per checked block, named `<document>:<line>` after
+//! the document and the line of the block's opening fence (so `GAMMA_TEST_FILTER` selects
+//! blocks), and one that checks that every document is well formed.
 
+fs :: import "std/fs"
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+/// The documents whose examples are checked, relative to the repository root.
+CHECKED_DOCS :: [_]string("docs/guide/for-c-programmers.md", "docs/guide/for-rust-programmers.md", "docs/guide/idioms.md")
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
+    out.push(kit.Test(name: "fence_parsing", run: fence_parsing))!
+    out.push(kit.Test(name: "documents_are_well_formed", run: documents_are_well_formed))!
+    for doc in CHECKED_DOCS {
+        text := fs.read_all(kit.join(cfg.root, doc)) else continue
+        bs := blocks(doc, text) else continue
+        for b in bs.items {
+            out.push(kit.Test(name: b.name, run: doc_example, param: b.name))!
+        }
+    }
+}
+
+Kind :: union { Run, Test, Error }
+
+Block :: struct {
+    /// `<document>:<line of the opening fence>`.
+    name: string
+    kind: Kind
+    code: string
+    expected: ?string
+}
+
+/// A fenced block: the line of its opening fence, its info string and its contents.
+Fence :: struct {
+    line: usize
+    info: string
+    body: string
+}
+
+/// The fenced blocks of `text`.
+fences :: fn(text: string) -> string!List(Fence) needs Alloc {
+    out := list(Fence)
+    is_open := false
+    start: usize = 0
+    info := ""
+    indent := ""
+    body := list(u8)
+    n: usize = 0
+    for line in str.lines(text) {
+        n += 1
+        trimmed := str.trim_start(line)
+        if not is_open {
+            if opening := str.strip_prefix(trimmed, "```") {
+                is_open = true
+                start = n
+                info = str.trim(opening)
+                indent = line[0..line.len - trimmed.len]
+                body = list(u8)
+            }
+        } else if str.strip_prefix(trimmed, "```") is not null and str.trim(trimmed) is "```" {
+            out.push(Fence(line: start, info: info, body: string(body.items)))!
+            is_open = false
+        } else {
+            body.extend(str.strip_prefix(line, indent) else line)!
+            body.push('\n')!
+        }
+    }
+    if is_open { return !str.format("line {}: unclosed code block", start)! }
+    return out
+}
+
+/// The blocks of the document `doc` with text `text` that are checked.
+blocks :: fn(doc, text: string) -> string!List(Block) needs Alloc {
+    found := try fences(text)
+    out := list(Block)
+    for f in found.items {
+        name := str.format("{}:{}", doc, f.line)!
+        lang := ""
+        kind_word: ?string = null
+        first := true
+        for word in str.fields(f.info) {
+            if first {
+                lang = word
+                first = false
+            } else if kind_word is null {
+                kind_word = word
+            }
+        }
+        if lang is "output" {
+            last := out.items.last() else return !str.format("{}: an `output` block must follow a `gamma` program block", name)!
+            if last.kind is not .Run or last.expected is not null {
+                return !str.format("{}: an `output` block must follow a `gamma` program block", name)!
+            }
+            out.items[out.items.len - 1].expected = f.body
+            continue
+        }
+        if lang is not "gamma" { continue }
+        kind := Kind.Run
+        if w := kind_word {
+            match w {
+                "test" => { kind = .Test }
+                "error" => { kind = .Error }
+                "fragment" => continue
+                _ => return !str.format("{}: unknown block kind `{}` (expected test, error or fragment)", name, w)!
+            }
+        }
+        out.push(Block(name: name, kind: kind, code: f.body, expected: null))!
+    }
+    return out
+}
+
+fence_parsing :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    text := "intro\n```gamma\nmain :: fn() {}\n```\n\n```output\nhi\n```\n  ```c\n  int x;\n  ```\n"
+    f := fences(text) else e => return !t.fail("cannot parse: {}", e)
+    try t.check(f.items.len is 3, "{} blocks", f.items.len)
+    try t.check(f.items[0].line is 2 and f.items[0].info is "gamma", "first block at line {}: {}", f.items[0].line, kit.quote(f.items[0].info))
+    try t.expect_text("the first block", "main :: fn() {}\n", f.items[0].body)
+    try t.expect_text("the second block's info", "output", f.items[1].info)
+    try t.expect_text("the indented block", "int x;\n", f.items[2].body)
+    match fences("```gamma\nx\n") {
+        !_ => {}
+        _ => return !t.fail("an unclosed block was accepted")
+    }
+    return ()
+}
+
+/// Every checked document has well-formed fences, block kinds and output blocks.
+documents_are_well_formed :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    for doc in CHECKED_DOCS {
+        text := try t.read(t.repo(doc))
+        _ = blocks(doc, text) else e => return !t.fail("{}: {}", doc, e)
+    }
+    return ()
+}
+
+/// The block `name` (`<document>:<line>`).
+find_block :: fn(t: ^kit.T, name: string) -> kit.Fail!Block needs Alloc + Fs {
+    colon := str.rfind(name, ":") else return !t.fail("bad block name {}", name)
+    doc := name[0..colon]
+    text := try t.read(t.repo(doc))
+    bs := blocks(doc, text) else e => return !t.fail("{}: {}", doc, e)
+    for b in bs.items {
+        if b.name is name { return b }
+    }
+    return !t.fail("{} has no block {}", doc, name)
+}
+
+/// Checks one block, as its kind says.
+doc_example :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    block := try find_block(t, t.param)
+    dir := try t.scratch(sanitize(str.format("doc-examples/{}", block.name)!))
+    file := kit.join(dir, "example.gm")
+    try t.write(file, block.code)
+    if block.kind is .Error { return check_error(t, &block, dir) }
+
+    out := try t.run(gamma_in(t, dir, [_]string("fmt", "--check", "example.gm")))
+    try t.check(out.success(), "not formatted as `gamma fmt` formats it:\n{}{}", out.out, out.err)
+    problems := list(u8)
+    if block.kind is .Test {
+        // `test` always compiles through C.
+        if t.cfg.c { try check_lane(t, dir, &block, "[C back end]", [_]string("test"), &problems) }
+    } else {
+        // `run` compiles through C unless it is asked for the interpreter.
+        try check_lane(t, dir, &block, "[interpreter]", [_]string("run", "--backend=interp"), &problems)
+        if t.cfg.c { try check_lane(t, dir, &block, "[C back end]", [_]string("run", "--backend=c"), &problems) }
+    }
+    if problems.items.len > 0 { return !t.fail("{}", string(problems.items)) }
+    return ()
+}
+
+check_lane :: fn(t: ^kit.T, dir: string, block: ^const Block, lane: string, args: []const string, problems: ^List(u8)) -> kit.Fail!() needs kit.Run {
+    out := try t.run(gamma_in(t, dir, args))
+    if not out.success() {
+        problems.write("{} exit status {}\nstdout:\n{}stderr:\n{}\n", lane, out.status, out.out, out.err)!
+        return ()
+    }
+    if expected := block.expected {
+        if expected is not out.out {
+            problems.write("{} output differs.\nexpected:\n{}actual:\n{}\n", lane, expected, out.out)!
+        }
+    }
+    return ()
+}
+
+/// `gamma args… example.gm`, run in `dir`.
+gamma_in :: fn(t: ^kit.T, dir: string, args: []const string) -> kit.Command needs Alloc {
+    c := t.gamma(args)
+    c.arg("example.gm")
+    c.dir = dir
+    return c
+}
+
+/// `name` with everything but ASCII letters and digits replaced by `_`.
+sanitize :: fn(name: string) -> string needs Alloc {
+    out := list(u8)
+    for c in name {
+        keep := match c {
+            'a'..='z', 'A'..='Z', '0'..='9' => true
+            _ => false
+        }
+        out.push(if keep { c } else { '_' })!
+    }
+    return out.items
+}
+
+/// Checks that the errors `gamma check` reports are exactly on the `// error:` lines.
+check_error :: fn(t: ^kit.T, block: ^const Block, dir: string) -> kit.Fail!() needs kit.Run {
+    out := try t.run(gamma_in(t, dir, [_]string("check", "--diag-format=short")))
+    if out.success() { return !t.fail("the program was accepted, but the block is marked `error`") }
+    marked := list(usize)
+    n: usize = 0
+    for line in str.lines(block.code) {
+        n += 1
+        if str.contains(line, "// error:") { marked.push(n)! }
+    }
+    if marked.items.len is 0 { return !t.fail("an `error` block needs at least one line with a `// error:` comment") }
+    reported := list(usize)
+    problems := list(u8)
+    for text in (out.err, out.out) {
+        for line in str.lines(text) {
+            rest := str.strip_prefix(line, "example.gm:") else continue
+            first := str.split_once(rest, ":") else continue
+            second := str.split_once(first.after, ":") else continue
+            if str.strip_prefix(str.trim_start(second.after), "error") is null { continue }
+            l := str.parse_int(usize, first.before) else return !t.fail("cannot read diagnostic `{}`", line)
+            reported.push(l)!
+            found := false
+            for m in marked.items {
+                if m is l { found = true }
+            }
+            if not found { problems.write("error on a line not marked `// error:`: {}\n", line)! }
+        }
+    }
+    for m in marked.items {
+        found := false
+        for r in reported.items {
+            if r is m { found = true }
+        }
+        if not found { problems.write("line {} is marked `// error:` but gets no error\n", m)! }
+    }
+    if problems.items.len > 0 { return !t.fail("{}\ndiagnostics:\n{}", string(problems.items), out.err) }
+    return ()
+}
