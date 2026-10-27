@@ -444,8 +444,7 @@ shrink it with `-minimize_crash=1` and add it as described above.
 
 ## Differential testing
 
-`tools/difftest/` is a small Rust crate (its own workspace, like `fuzz/`, with no
-dependencies) that generates random programs and checks that every back end gives the
+`tools/difftest/` is a small Gamma program (a package of its own) that generates random programs and checks that every back end gives the
 same result. A seed determines a program: well-typed, terminating (loops have constant
 bounds, calls only go to earlier functions, recursion is bounded by a depth argument),
 and covering integers of all widths from 8 to 64 bits with checked, wrapping, saturating
@@ -484,11 +483,11 @@ clang; compilers that are not installed are skipped). Standard output, standard 
 
 ```sh
 bootstrap/build.sh                        # the gamma executable it tests
-cargo build --release --manifest-path tools/difftest/Cargo.toml --target-dir target
-target/release/difftest --start 0 --count 1000      # seeds 0..1000, in parallel
-target/release/difftest --print 17                  # show the program of seed 17
-target/release/difftest --save 17 /tmp/p.gm         # write it to a file
-target/release/difftest --reduce /tmp/p.gm          # shrink a program that disagrees
+target/bootstrap/gamma build tools/difftest -o target/difftest
+target/difftest --start 0 --count 1000      # seeds 0..1000, in parallel
+target/difftest --print 17                  # show the program of seed 17
+target/difftest --save 17 /tmp/p.gm         # write it to a file
+target/difftest --reduce /tmp/p.gm          # shrink a program that disagrees
 ```
 
 Programs on which the back ends disagree are kept in the work directory (`--work`, by
@@ -496,12 +495,13 @@ default `difftest/` in the system temporary directory) and reported with all thr
 outputs; `--reduce` deletes lines while the same back ends keep disagreeing and writes
 `<file>.min.gm`. A program that the compiler rejects is reported too, since the
 generator should never produce one. `--mode=checked` tests Checked builds, `--gamma`
-(or `$GAMMA`, else `target/bootstrap/gamma`) selects the executable. To turn a disagreement into a regression test, decide
+(or `$GAMMA`, else `bootstrap/gamma` next to the `difftest` executable, else
+`target/bootstrap/gamma`) selects the executable. To turn a disagreement into a regression test, decide
 from the specification which side is wrong, fix it, and add the reduced program as
 `tests/conformance/run/<name>.gm`, which runs on both back ends. Like fuzzing,
 differential testing is not part of the main test job, but CI runs it in its own job
 ("Differential tests (gcc, clang)", Ubuntu only): it builds `gamma` from the seed and
-`difftest`, runs the fixed seeds 0..100 (reproducible anywhere), and then 200 seeds starting
+`difftest` with it, runs the fixed seeds 0..100 (reproducible anywhere), and then 200 seeds starting
 at a point that moves with the run number, so successive runs cover new programs. Both need
 gcc and clang. A failure prints the seed and the three outputs; `difftest --print SEED`
 shows the program and `--reduce` shrinks it. The job takes a few minutes.

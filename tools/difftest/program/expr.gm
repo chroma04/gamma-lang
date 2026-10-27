@@ -1,0 +1,695 @@
+// Expressions. Every expression is generated for a requested type and fully parenthesized,
+// so the operator-mixing rules of the language never apply.
+
+str :: import "std/str"
+
+ARITH: [3]string : [_]string("+", "-", "*")
+DIVS: [2]string : [_]string("/", "%")
+BITS: [3]string : [_]string("&", "|", "~")
+COMPARE: [6]string : [_]string("is", "is not", "<", "<=", ">", ">=")
+ORDER: [4]string : [_]string("<", "<=", ">", ">=")
+OPT_OPS: [3]string : [_]string("+?", "-?", "*?")
+ROUNDS: [3]string : [_]string("floor", "ceil", "round")
+ARR_GETS: [4]string : [_]string("first", "last", "min", "max")
+SHIFT_BITS: [2]u32 : [_]u32(32, 64)
+TUP_OPS: [6]string : [_]string("==", "!=", "<", "<=", ">", ">=")
+FLT_OPS: [4]string : [_]string("+", "-", "*", "/")
+
+/// Absence of a name: a candidate leaf, with the integer type it must be converted from.
+Cand :: struct {
+    src: ?It
+    text: string
+}
+
+any_int :: fn(g: ^Gen) -> It => pick_int(&g.rng)
+
+pick_int :: fn(r: ^rng.Rng) -> It {
+    if r.chance(8) { return r.pick(WIDE) }
+    return r.pick(INTS)
+}
+
+/// A type a function may return: no strings, whose storage the function might free.
+rand_ret_ty :: fn(g: ^Gen) -> Ty needs Alloc {
+    while true {
+        t := g.rand_ty()
+        if t is not .Str { return t }
+    }
+}
+
+rand_ty :: fn(g: ^Gen) -> Ty needs Alloc {
+    if g.feat.generics and g.rng.chance(9) { return .Gp(g.any_int()) }
+    if g.feat.strings and g.rng.chance(7) { return .Str }
+    return match g.rng.below(100) {
+        0..=54 => .Int(g.any_int())
+        55..=64 => .Bool
+        65..=71 => .Pt
+        72..=79 => {
+            t := g.any_int()
+            n := 1 + g.rng.below(5)
+            Ty.Arr(t, n)
+        }
+        80..=87 => .Opt(g.any_int())
+        88..=92 => .Res(g.any_int())
+        93..=94 => .Sh
+        95..=96 => {
+            a := g.any_int()
+            b := g.any_int()
+            Ty.Tup(a, b)
+        }
+        _ => .Flt(g.rng.pick(SHIFT_BITS))
+    }
+}
+
+fresh :: fn(g: ^Gen, prefix: string) -> string needs Alloc {
+    g.counter += 1
+    return format("{}{}", prefix, g.counter)!
+}
+
+/// An integer literal of type `t`, from a sign and a magnitude, since a 128-bit value does
+/// not fit a wider type.
+lit :: fn(g: ^Gen, t: It) -> string needs Alloc {
+    max := t.max_mag()
+    neg := false
+    mag: u128 = 0
+    k := g.rng.below(20)
+    if k <= 7 {
+        mag = u128(g.rng.below(10))
+    } else if k <= 9 and t.signed {
+        neg = true
+        mag = u128(g.rng.below(10))
+    } else if k <= 11 {
+        mag = u128(g.rng.below(200))
+        if mag > max { mag = max }
+    } else if k is 12 {
+        if t.signed {
+            neg = true
+            mag = max + 1
+        }
+    } else if k is 13 {
+        mag = max
+    } else if k is 14 {
+        mag = max - 1
+    } else if k is 15 {
+        if t.signed {
+            neg = true
+            mag = max
+        } else {
+            mag = 1
+        }
+    } else if k is 16 {
+        if t.signed { neg = true }
+        mag = 1
+    } else {
+        hi := g.rng.next()
+        lo := g.rng.next()
+        r := (u128(hi) << 64) | u128(lo)
+        mag = if max is @max_value(u128) { r } else { r % (max + 1) }
+        neg = t.signed and g.rng.chance(50)
+    }
+    tn := t.it_name()
+    if neg and mag is max + 1 { return format("@min_value({})", tn)! }
+    if not neg and mag is max and g.rng.chance(60) { return format("@max_value({})", tn)! }
+    if neg and mag > 0 { return format("(-{}{})", mag, tn)! }
+    return format("({}{})", mag, tn)!
+}
+
+/// Whether `e` mentions a variable in scope (so that it is not a compile-time constant).
+mentions_var :: fn(g: ^const Gen, e: string) -> bool {
+    start: usize = 0
+    i: usize = 0
+    while i <= e.len {
+        word_byte := false
+        if i < e.len {
+            c := e[i]
+            word_byte = c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c is '_' or c >= 128
+        }
+        if not word_byte {
+            if i > start {
+                w := e[start..i]
+                for v in g.vars.items {
+                    if v.name is w { return true }
+                }
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    return false
+}
+
+vars_of :: fn(g: ^const Gen, ty: Ty) -> List(usize) needs Alloc {
+    out := list(usize)
+    for i in 0..g.vars.items.len {
+        if g.vars.items[i].ty is ty { out.push(i)! }
+    }
+    return out
+}
+
+assignable_vars :: fn(g: ^const Gen) -> List(usize) needs Alloc {
+    out := list(usize)
+    for i in 0..g.vars.items.len {
+        if g.vars.items[i].assignable { out.push(i)! }
+    }
+    return out
+}
+
+/// The variables that are arrays of `t`.
+arr_vars :: fn(g: ^const Gen, t: It) -> List(usize) needs Alloc {
+    out := list(usize)
+    for i in 0..g.vars.items.len {
+        if .Arr(et, _) := g.vars.items[i].ty {
+            if et is t { out.push(i)! }
+        }
+    }
+    return out
+}
+
+funcs_returning :: fn(g: ^const Gen, ty: Ty) -> List(usize) needs Alloc {
+    out := list(usize)
+    for i in 0..g.callable {
+        f := g.funcs.items[i]
+        if f.ret is ty and (not f.ev or g.ev) and (not f.co or g.co) { out.push(i)! }
+    }
+    return out
+}
+
+/// The name of one of the variables `vars` (indexes).
+pick_name :: fn(g: ^Gen, vars: List(usize)) -> string => g.vars.items[g.rng.pick(vars.items)].name
+
+/// An expression of integer type `src` converted to `to`.
+conv :: fn(g: ^Gen, src: It, to: It, e: string) -> string needs Alloc {
+    if src is to { return e }
+    if to.widens_from(src) { return format("{}({})", to.it_name(), e)! }
+    return match g.rng.below(3) {
+        0 => format("{}.trunc({})", e, to.it_name())!
+        1 => format("{}.sat({})", e, to.it_name())!
+        _ => {
+            fb := g.lit(to)
+            format("({}.checked({}) else {})", e, to.it_name(), fb)!
+        }
+    }
+}
+
+/// A call of a function returning `ty`, if one exists and the cost budget allows.
+call :: fn(g: ^Gen, ty: Ty, d: u32) -> ?string needs Alloc {
+    cands := g.funcs_returning(ty)
+    if cands.items.len is 0 or d is 0 { return null }
+    i := g.rng.pick(cands.items)
+    c := g.funcs.items[i].cost *| g.mult
+    if g.cost +% c > COST_LIMIT { return null }
+    g.cost += c
+    f := g.funcs.items[i]
+    args := list(string)
+    for k in 0..f.params.len {
+        if f.recursive and k is 0 {
+            n := g.rng.below(5)
+            args.push(format("({}u32)", n)!)!
+        } else {
+            args.push(g.expr(f.params[k], d - 1))!
+        }
+    }
+    return format("{}({})", f.name, join(args.items, ", "))!
+}
+
+expr :: fn(g: ^Gen, ty: Ty, d: u32) -> string needs Alloc => match ty {
+    .Int(t) => g.int_expr(t, d)
+    .Bool => g.bool_expr(d)
+    .Pt => g.pt_expr(d)
+    .Arr(t, n) => g.arr_expr(t, n, d)
+    .Opt(t) => g.opt_expr(t, d)
+    .Res(t) => g.res_expr(t, d)
+    .Sh => g.sh_expr(d)
+    .Tup(a, b) => g.tup_expr(a, b, d)
+    .Flt(b) => g.flt_expr(b, d)
+    .Str => g.str_expr(d)
+    .Gp(t) => g.gp_expr(t, d)
+}
+
+int_leaf :: fn(g: ^Gen, t: It) -> string needs Alloc {
+    same := g.vars_of(.Int(t))
+    k := g.rng.below(10)
+    if k <= 3 and same.items.len > 0 { return g.pick_name(same) }
+    if k is 4 or k is 5 {
+        // A field or element of the right type, or another integer variable converted.
+        c := list(Cand)
+        for i in 0..g.vars.items.len {
+            v := g.vars.items[i]
+            match v.ty {
+                .Pt => {
+                    for f in 0..3 {
+                        if g.p_fields[f] is t { c.push(Cand(src: null, text: format("{}.{}", v.name, FIELDS[f])!))! }
+                    }
+                }
+                .Arr(et, n) if et is t => {
+                    idx := g.rng.below(n)
+                    c.push(Cand(src: null, text: format("{}[{}]", v.name, idx)!))!
+                }
+                .Gp(et) if et is t => {
+                    c.push(Cand(src: null, text: format("{}.a", v.name)!))!
+                    c.push(Cand(src: null, text: format("{}.b", v.name)!))!
+                }
+                .Tup(a, b) => {
+                    if a is t { c.push(Cand(src: null, text: format("{}.0", v.name)!))! }
+                    if b is t { c.push(Cand(src: null, text: format("{}.1", v.name)!))! }
+                }
+                .Int(s) if s is not t => c.push(Cand(src: s, text: v.name))!
+                _ => {}
+            }
+        }
+        if c.items.len is 0 { return g.lit(t) }
+        cand := c.items[g.rng.below(c.items.len)]
+        if s := cand.src { return g.conv(s, t, cand.text) }
+        return cand.text
+    }
+    return g.lit(t)
+}
+
+int_expr :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
+    if d is 0 or g.rng.chance(12) { return g.int_leaf(t) }
+    d1 := d - 1
+    if g.feat.feat_any() and g.rng.chance(10) {
+        if e := g.extra_int(t, d1) { return e }
+    }
+    tn := t.it_name()
+    return match g.rng.below(100) {
+        0..=29 => {
+            a := g.int_expr(t, d1)
+            b := g.int_expr(t, d1)
+            op := g.rng.pick(ARITH)
+            if g.rng.chance(g.trap_bias) {
+                format("({} {} {})", a, op, b)!
+            } else {
+                match g.rng.below(3) {
+                    0 => format("({} {}% {})", a, op, b)!
+                    1 => format("({} {}| {})", a, op, b)!
+                    _ => {
+                        fb := g.int_expr(t, 0)
+                        format("({} {}? {} else {})", a, op, b, fb)!
+                    }
+                }
+            }
+        }
+        30..=37 => {
+            a := g.int_expr(t, d1)
+            b := g.int_expr(t, d1)
+            op := g.rng.pick(DIVS)
+            if g.rng.chance(g.trap_bias) {
+                format("({} {} {})", a, op, b)!
+            } else {
+                format("({} {} ({} | 1))", a, op, b)!
+            }
+        }
+        38..=47 => {
+            a := g.int_expr(t, d1)
+            b := g.int_expr(t, d1)
+            op := g.rng.pick(BITS)
+            format("({} {} {})", a, op, b)!
+        }
+        48..=57 => {
+            a := g.int_expr(t, d1)
+            amount := g.int_expr(U8, d1)
+            masked := if g.rng.chance(min_of(g.trap_bias, 10)) { amount } else { format("({} % {}u8)", amount, t.bits)! }
+            match g.rng.below(5) {
+                0 => format("({} >> {})", a, masked)!
+                1 if g.rng.chance(g.trap_bias) => format("({} << {})", a, masked)!
+                1 => format("({} <<% {})", a, masked)!
+                2 => format("({} <<% {})", a, masked)!
+                3 => format("({} <<| {})", a, masked)!
+                _ => {
+                    fb := g.int_expr(t, 0)
+                    format("({} <<? {} else {})", a, masked, fb)!
+                }
+            }
+        }
+        58..=62 => {
+            a := g.int_expr(t, d1)
+            if t.signed and g.rng.chance(g.trap_bias) {
+                format("(-{})", a)!
+            } else if g.rng.chance(50) {
+                format("(~{})", a)!
+            } else {
+                l := g.lit(t)
+                format("({} -% {})", l, a)!
+            }
+        }
+        63..=75 if g.rng.chance(25) => {
+            bits := g.rng.pick(SHIFT_BITS)
+            f := g.flt_expr(bits, d1)
+            match g.rng.below(5) {
+                0 if g.rng.chance(g.trap_bias) => format("{}.trunc({})", f, tn)!
+                0, 1 => format("{}.sat({})", f, tn)!
+                2 if g.rng.chance(g.trap_bias) => {
+                    r := g.rng.pick(ROUNDS)
+                    format("{}.{}({})", f, r, tn)!
+                }
+                2 => format("{}.sat({})", f, tn)!
+                _ => {
+                    fb := g.int_expr(t, 0)
+                    format("({}.checked({}) else {})", f, tn, fb)!
+                }
+            }
+        }
+        63..=75 => {
+            s := g.any_int()
+            e := g.int_expr(s, d1)
+            g.conv(s, t, e)
+        }
+        76..=80 => {
+            c := g.bool_expr(d1)
+            a := g.int_expr(t, d1)
+            b := g.int_expr(t, d1)
+            format("(if {} {{ {} }} else {{ {} }})", c, a, b)!
+        }
+        81..=84 => {
+            if c := g.call(.Int(t), d1) { c } else { g.int_leaf(t) }
+        }
+        85, 86 => {
+            arrs := g.arr_vars(t)
+            if arrs.items.len is 0 { return g.int_leaf(t) }
+            v := g.vars.items[g.rng.pick(arrs.items)]
+            n: usize = 0
+            if .Arr(_, len) := v.ty { n = len }
+            match g.rng.below(3) {
+                0 => format("{}.min()?", v.name)!
+                1 => format("{}.max()?", v.name)!
+                _ => {
+                    lo := g.rng.below(n)
+                    hi := lo + g.rng.below(n - lo + 1)
+                    format("sum_{}({}[{}..{}])", tn, v.name, lo, hi)!
+                }
+            }
+        }
+        87..=90 => {
+            o := g.opt_expr(t, d1)
+            if g.rng.chance(min_of(g.trap_bias, 10)) {
+                format("({})?", o)!
+            } else {
+                fb := g.int_expr(t, d1)
+                format("({} else {})", o, fb)!
+            }
+        }
+        91..=93 => {
+            r := g.res_expr(t, d1)
+            fb := g.int_expr(t, d1)
+            format("({} else {})", r, fb)!
+        }
+        94..=96 => {
+            s := g.sh_expr(d1)
+            c := g.fresh("m")
+            w := g.fresh("m")
+            h := g.fresh("m")
+            a := g.conv(g.sh_circle, t, c)
+            b := g.conv(g.sh_rect[0], t, w)
+            b2 := g.conv(g.sh_rect[1], t, h)
+            e := g.int_expr(t, d1)
+            format("(match {} {{ .Circle({}) => {}; .Rect({}, {}) => ({} +% {}); .Empty => {} }})", s, c, a, w, h, b, b2, e)!
+        }
+        _ => {
+            r := g.res_expr(t, d1)
+            v := g.fresh("m")
+            bad := g.fresh("m")
+            a := g.conv(g.er_bad, t, bad)
+            w := g.int_expr(t, d1)
+            format("(match {} {{ !.Bad({}) => {}; !.Worse => {}; {} => {} }})", r, bad, a, w, v, v)!
+        }
+    }
+}
+
+bool_expr :: fn(g: ^Gen, d: u32) -> string needs Alloc {
+    vars := g.vars_of(.Bool)
+    if d is 0 or g.rng.chance(10) {
+        if vars.items.len > 0 and g.rng.chance(70) { return g.pick_name(vars) }
+        return if g.rng.chance(50) { "true" } else { "false" }
+    }
+    d1 := d - 1
+    if g.feat.strings and g.rng.chance(10) { return g.str_bool(d1) }
+    return match g.rng.below(100) {
+        0..=44 => {
+            t := g.any_int()
+            a := g.int_expr(t, d1)
+            b := g.int_expr(t, d1)
+            op := g.rng.pick(COMPARE)
+            format("({} {} {})", a, op, b)!
+        }
+        45..=52 => {
+            a := g.bool_expr(d1)
+            format("(not {})", a)!
+        }
+        53..=64 => {
+            a := g.bool_expr(d1)
+            b := g.bool_expr(d1)
+            op := if g.rng.chance(50) { "and" } else { "or" }
+            format("({} {} {})", a, op, b)!
+        }
+        65..=70 => {
+            t := g.any_int()
+            a := g.int_expr(t, d1)
+            lo := g.int_expr(t, 0)
+            hi := g.int_expr(t, 0)
+            format("({} in {}..={})", a, lo, hi)!
+        }
+        71..=76 => {
+            t := g.any_int()
+            o := g.opt_expr(t, d1)
+            op := if g.rng.chance(50) { "is" } else { "is not" }
+            format("({} {} null)", o, op)!
+        }
+        77..=81 => {
+            t := g.any_int()
+            r := g.res_expr(t, d1)
+            op := if g.rng.chance(50) { "is" } else { "is not" }
+            format("({} {} !_)", r, op)!
+        }
+        82..=86 => {
+            a := g.pt_expr(d1)
+            b := g.pt_expr(d1)
+            op := if g.rng.chance(50) { "is" } else { "is not" }
+            format("({} {} {})", a, op, b)!
+        }
+        87..=90 => {
+            t := g.any_int()
+            n := 1 + g.rng.below(4)
+            a := g.arr_expr(t, n, d1)
+            b := g.arr_expr(t, n, d1)
+            format("({} is {})", a, b)!
+        }
+        91..=92 if g.rng.chance(50) => {
+            bits := g.rng.pick(SHIFT_BITS)
+            a := g.flt_expr(bits, d1)
+            b := g.flt_expr(bits, d1)
+            op := g.rng.pick(ORDER)
+            format("({} {} {})", a, op, b)!
+        }
+        91..=92 => {
+            s := g.sh_expr(d1)
+            format("({} is .Empty)", s)!
+        }
+        93 => {
+            x := g.any_int()
+            y := g.any_int()
+            a := g.tup_expr(x, y, d1)
+            b := g.tup_expr(x, y, d1)
+            // The right side of `is` would be read as a pattern.
+            op := g.rng.pick(TUP_OPS)
+            if op is "==" {
+                format("(({} <= {}) and ({} >= {}))", a, b, a, b)!
+            } else if op is "!=" {
+                format("(({} < {}) or ({} > {}))", a, b, a, b)!
+            } else {
+                format("({} {} {})", a, op, b)!
+            }
+        }
+        _ => {
+            if c := g.call(.Bool, d1) { c } else { g.bool_expr(0) }
+        }
+    }
+}
+
+pt_expr :: fn(g: ^Gen, d: u32) -> string needs Alloc {
+    vars := g.vars_of(.Pt)
+    r := g.rng.below(10)
+    if (d is 0 or r < 3) and vars.items.len > 0 { return g.pick_name(vars) }
+    d1 := d -| 1
+    if r is 3 {
+        if c := g.call(.Pt, d1) { return c }
+    }
+    if r is 4 and vars.items.len > 0 {
+        v := g.pick_name(vars)
+        k := g.rng.below(3)
+        e := g.int_expr(g.p_fields[k], d1)
+        return format("P(..{}, {}: {})", v, FIELDS[k], e)!
+    }
+    f0 := g.int_expr(g.p_fields[0], d1)
+    f1 := g.int_expr(g.p_fields[1], d1)
+    f2 := g.int_expr(g.p_fields[2], d1)
+    return format("P(a: {}, b: {}, c: {})", f0, f1, f2)!
+}
+
+arr_expr :: fn(g: ^Gen, t: It, n: usize, d: u32) -> string needs Alloc {
+    ty := Ty.Arr(t, n)
+    vars := g.vars_of(ty)
+    r := g.rng.below(10)
+    if (d is 0 or r < 3) and vars.items.len > 0 { return g.pick_name(vars) }
+    d1 := d -| 1
+    if r is 3 {
+        if c := g.call(ty, d1) { return c }
+    } else if r is 6 {
+        e := g.int_expr(t, d1)
+        return format("[{}]{}(fill: {})", n, t.it_name(), e)!
+    }
+    items := list(string)
+    for _ in 0..n { items.push(g.int_expr(t, d1))! }
+    return format("[{}]{}({})", n, t.it_name(), join(items.items, ", "))!
+}
+
+opt_expr :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
+    ty := Ty.Opt(t)
+    vars := g.vars_of(ty)
+    r := g.rng.below(10)
+    if (d is 0 or r < 2) and vars.items.len > 0 { return g.pick_name(vars) }
+    d1 := d -| 1
+    if r is 2 {
+        if c := g.call(ty, d1) { return c }
+    } else if r is 3 or r is 4 {
+        a := g.int_expr(t, d1)
+        b := g.int_expr(t, d1)
+        op := g.rng.pick(OPT_OPS)
+        return format("({} {} {})", a, op, b)!
+    } else if r is 5 {
+        s := g.any_int()
+        if s is not t {
+            e := g.int_expr(s, d1)
+            return format("{}.checked({})", e, t.it_name())!
+        }
+    } else if r is 6 {
+        arrs := g.arr_vars(t)
+        if arrs.items.len > 0 {
+            a := g.pick_name(arrs)
+            i := g.int_expr(U8, d1)
+            m := g.rng.pick(ARR_GETS)
+            return if g.rng.chance(50) { format("{}.get({})", a, i)! } else { format("{}.{}()", a, m)! }
+        }
+    } else if r is 7 {
+        return format("?{}(null)", t.it_name())!
+    }
+    e := g.int_expr(t, d1)
+    return format("?{}({})", t.it_name(), e)!
+}
+
+res_expr :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
+    ty := Ty.Res(t)
+    vars := g.vars_of(ty)
+    r := g.rng.below(10)
+    if (d is 0 or r < 3) and vars.items.len > 0 { return g.pick_name(vars) }
+    d1 := d -| 1
+    if c := g.call(ty, d1) { return c }
+    // No function returns it: build one with the helper of that type.
+    e := g.int_expr(t, d1)
+    k := g.int_expr(U8, d1)
+    return format("mk_{}({}, {})", t.it_name(), k, e)!
+}
+
+flt_lit :: fn(g: ^Gen, bits: u32) -> string needs Alloc {
+    fname := format("f{}", bits)!
+    v := match g.rng.below(14) {
+        0 => "0.0"
+        1 => "1.0"
+        2 => "1.5"
+        3 => "-2.25"
+        4 => "0.1"
+        5 => "3.14159"
+        6 => "1e-5"
+        7 => "123456789.0"
+        8 => if bits is 32 { "3.0e38" } else { "1.7e308" }
+        9 => if bits is 32 { "1.0e-40" } else { "5.0e-324" }
+        10 => "-0.0"
+        11 => {
+            a := g.rng.below(1000)
+            b := g.rng.below(1000)
+            format("{}.{}", a, b)!
+        }
+        12 => {
+            a := g.rng.below(10)
+            b := g.rng.below(100)
+            c := g.rng.below(30)
+            format("-{}.{}e{}", a, b, c)!
+        }
+        _ => format("{}.5", g.rng.below(70000))!
+    }
+    if v.len > 0 and v[0] is '-' { return format("(-{}{})", v[1..], fname)! }
+    return format("({}{})", v, fname)!
+}
+
+flt_expr :: fn(g: ^Gen, bits: u32, d: u32) -> string needs Alloc {
+    ty := Ty.Flt(bits)
+    vars := g.vars_of(ty)
+    if d is 0 or g.rng.chance(12) {
+        if vars.items.len > 0 and g.rng.chance(60) { return g.pick_name(vars) }
+        return g.flt_lit(bits)
+    }
+    d1 := d - 1
+    fname := format("f{}", bits)!
+    return match g.rng.below(100) {
+        0..=44 => {
+            a := g.flt_expr(bits, d1)
+            b := g.flt_expr(bits, d1)
+            op := g.rng.pick(FLT_OPS)
+            format("({} {} {})", a, op, b)!
+        }
+        45..=52 => format("(-{})", g.flt_expr(bits, d1))!
+        53..=70 => {
+            t := g.any_int()
+            e := g.int_expr(t, d1)
+            exact := t.bits <= if bits is 32 { u32(16) } else { u32(32) }
+            if exact and g.rng.chance(60) { format("{}({})", fname, e)! } else { format("{}.to({})", e, fname)! }
+        }
+        71..=78 => {
+            other: u32 = if bits is 32 { 64 } else { 32 }
+            e := g.flt_expr(other, d1)
+            if bits is 64 { format("f64({})", e)! } else { format("{}.to(f32)", e)! }
+        }
+        79..=86 => {
+            c := g.bool_expr(d1)
+            a := g.flt_expr(bits, d1)
+            b := g.flt_expr(bits, d1)
+            format("(if {} {{ {} }} else {{ {} }})", c, a, b)!
+        }
+        87..=92 => {
+            if c := g.call(ty, d1) { c } else { g.flt_lit(bits) }
+        }
+        _ => g.flt_lit(bits)
+    }
+}
+
+tup_expr :: fn(g: ^Gen, a: It, b: It, d: u32) -> string needs Alloc {
+    ty := Ty.Tup(a, b)
+    vars := g.vars_of(ty)
+    r := g.rng.below(10)
+    if (d is 0 or r < 3) and vars.items.len > 0 { return g.pick_name(vars) }
+    d1 := d -| 1
+    if r is 3 {
+        if c := g.call(ty, d1) { return c }
+    }
+    x := g.int_expr(a, d1)
+    y := g.int_expr(b, d1)
+    return format("({}, {})", x, y)!
+}
+
+sh_expr :: fn(g: ^Gen, d: u32) -> string needs Alloc {
+    vars := g.vars_of(.Sh)
+    r := g.rng.below(10)
+    if (d is 0 or r < 3) and vars.items.len > 0 { return g.pick_name(vars) }
+    d1 := d -| 1
+    if r is 3 {
+        if c := g.call(.Sh, d1) { return c }
+    }
+    return match g.rng.below(3) {
+        0 => format("Sh.Circle({})", g.int_expr(g.sh_circle, d1))!
+        1 => {
+            w := g.int_expr(g.sh_rect[0], d1)
+            h := g.int_expr(g.sh_rect[1], d1)
+            format("Sh.Rect(w: {}, h: {})", w, h)!
+        }
+        _ => "Sh.Empty"
+    }
+}

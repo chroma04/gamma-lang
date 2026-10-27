@@ -1,0 +1,85 @@
+//! Shrinks a program that the back ends disagree on: delta debugging over its lines.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+path :: import "std/path"
+runner :: import "../runner"
+str :: import "std/str"
+
+Effects :: Alloc + Clock + Env + Err + Fs + Out + Proc + Sys
+
+/// `lines` as a program, one per line.
+program_text :: fn(lines: []const string) -> string needs Alloc {
+    text := list(u8)
+    for l in lines {
+        text.extend(l)!
+        text.push('\n')!
+    }
+    return text.items
+}
+
+/// Whether `lines` is still a program on which the same configurations disagree with the
+/// interpreter as in the original.
+interesting :: fn(cfg: ^const runner.Config, lines: []const string, signature: string, scratch: string) -> bool needs Effects {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        file := path.join_alloc([_]string(scratch, "main.gm"))!
+        fs.write_all(file, program_text(lines)) else return false
+        results := runner.run_all(cfg, file)
+        base := &results.items[0].outcome
+        if base.code is -1 or runner.rejected(base) { return false }
+        sig := runner.disagreement(results.items) else return false
+        return sig is signature
+    }
+}
+
+/// Reduces the program in `file` and writes the result to `FILE.min.gm`. Exits with status
+/// 2 if the program cannot be read or the back ends agree on it.
+pub reduce_file :: fn(cfg: ^const runner.Config, file: string) needs Effects {
+    text := fs.read_all(file) else e => {
+        eprint("difftest: cannot read {}: {}\n", file, e)
+        Env.exit(2)
+    }
+    scratch := path.join_alloc([_]string(cfg.work, "reduce"))!
+    _ = fs.make_dir_all(scratch)
+    lines := list(string)
+    for l in str.lines(text) { lines.push(l)! }
+    first := runner.run_all(cfg, file)
+    signature := runner.disagreement(first.items) else {
+        eprint("difftest: the back ends agree on {}\n", file)
+        Env.exit(2)
+    }
+    eprint("reducing: {} lines, interp disagrees with {}\n", lines.items.len, signature)
+    chunk := (lines.items.len + 1) / 2
+    while true {
+        changed := false
+        at: usize = 0
+        while at < lines.items.len {
+            end := if at + chunk < lines.items.len { at + chunk } else { lines.items.len }
+            candidate := list(string)
+            candidate.extend(lines.items[0..at])!
+            candidate.extend(lines.items[end..])!
+            if candidate.items.len > 0 and interesting(cfg, candidate.items, signature, scratch) {
+                lines = candidate
+                changed = true
+                eprint("  {} lines\n", lines.items.len)
+            } else {
+                at = end
+            }
+        }
+        if chunk is 1 {
+            if not changed { break }
+        } else {
+            chunk = (chunk + 1) / 2
+        }
+    }
+    ext := path.extension(file)
+    prefix := if ext.len > 0 { file[0..file.len - ext.len - 1] } else { file }
+    out := str.format("{}.min.gm", prefix)!
+    fs.write_all(out, program_text(lines.items)) else e => {
+        eprint("difftest: cannot write {}: {}\n", out, e)
+        Env.exit(2)
+    }
+    print("{}\n", out)
+}
