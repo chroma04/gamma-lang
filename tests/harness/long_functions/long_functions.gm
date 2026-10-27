@@ -1,0 +1,5 @@
+//! The long_functions suite (being ported from tests/long_functions.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

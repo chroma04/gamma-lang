@@ -1,0 +1,5 @@
+//! The repl suite (being ported from tests/repl.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

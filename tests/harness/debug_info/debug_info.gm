@@ -1,0 +1,5 @@
+//! The debug_info suite (being ported from tests/debug_info.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

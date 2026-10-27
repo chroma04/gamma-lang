@@ -1,0 +1,5 @@
+//! The testing_cli suite (being ported from tests/testing_cli.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

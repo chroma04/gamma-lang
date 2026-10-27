@@ -1,0 +1,5 @@
+//! The fix suite (being ported from tests/fix.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

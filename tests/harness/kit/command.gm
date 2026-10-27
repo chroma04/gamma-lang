@@ -1,0 +1,187 @@
+// Running programs: commands, their output, and the time limit.
+
+process :: import "std/process"
+str :: import "std/str"
+thread :: import "std/thread"
+
+/// What a command reads as its standard input.
+pub Input :: union {
+    /// Nothing: the null device.
+    Null
+    /// These bytes, through a pipe.
+    Bytes: []const u8
+}
+
+/// A program to run, with its arguments, changes to its environment (`NAME=value`, or
+/// `NAME` to remove one), working directory and input.
+pub Command :: struct {
+    pub argv: List(string)
+    pub env: List(string)
+    pub dir: ?string = null
+    pub input: Input = .Null
+}
+
+/// A command running `program`.
+pub command :: fn(program: string) -> Command needs Alloc {
+    c := Command(argv: list(string), env: list(string))
+    c.argv.push(program)!
+    return c
+}
+
+/// A command running the compiler under test with `args`, with the repository's standard
+/// library and runtime, and the cache directory of the tests.
+pub gamma :: fn(t: ^const T, args: []const string) -> Command needs Alloc => gamma_at(t, t.cfg.compiler, args)
+
+/// Like `gamma`, for the compiler `exe` (one that a test built).
+pub gamma_at :: fn(t: ^const T, exe: string, args: []const string) -> Command needs Alloc {
+    c := command(exe)
+    c.argv.extend(args)!
+    c.set("GAMMA_STD", t.repo("lib/std"))
+    c.set("GAMMA_RUNTIME", t.repo("runtime"))
+    c.set("GAMMA_CACHE_DIR", t.cfg.cache)
+    return c
+}
+
+/// Adds an argument.
+pub arg :: fn(c: ^Command, a: string) { c.argv.push(a)! }
+
+/// Adds arguments.
+pub args :: fn(c: ^Command, a: []const string) { c.argv.extend(a)! }
+
+/// Sets the variable `name` for the program.
+pub set :: fn(c: ^Command, name, value: string) needs Alloc { c.env.push(str.format("{}={}", name, value)!)! }
+
+/// Removes the variable `name` from the program's environment.
+pub unset :: fn(c: ^Command, name: string) { c.env.push(name)! }
+
+/// Gives the program `bytes` as its standard input.
+pub stdin :: fn(c: ^Command, bytes: []const u8) { c.input = .Bytes(bytes) }
+
+/// How a program ended, and what it wrote.
+pub Output :: struct {
+    pub status: process.ExitStatus
+    pub out: string
+    pub err: string
+}
+
+/// The program's exit code, or null if a signal ended it.
+pub code :: fn(o: ^const Output) -> ?u32 => match o.status {
+    .Exited(c) => c
+    .Signaled(_) => null
+}
+
+/// True if the program ended with exit code 0.
+pub success :: fn(o: ^const Output) -> bool => o.status is .Exited(0)
+
+/// The program's command line, for messages.
+pub show :: fn(c: ^const Command) -> string needs Alloc => str.join(c.argv.items, " ")!
+
+/// Runs the command to completion and collects its output. A program that runs longer
+/// than the time limit is killed, together with everything it started, and fails the test,
+/// as does one that cannot be started.
+pub run :: fn(t: ^T, c: Command) -> Fail!Output needs Alloc + Clock + Proc + Sys {
+    opts := process.SpawnOptions(
+        stdin: if c.input is .Null { .Null } else { .Pipe },
+        stdout: .Pipe,
+        stderr: .Pipe,
+        dir: c.dir,
+        env: c.env.items,
+        group: true,
+    )
+    child := Proc.spawn(c.argv.items, opts) else e => return !t.fail("cannot run `{}`: {}", c.show(), e)
+    w := Watch(child: child, limit: Duration(ns: t.cfg.timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar())
+    watcher := thread.spawn(watch, &w) else e => {
+        _ = Proc.kill(child)
+        _ = Proc.wait(child)
+        return !t.fail("cannot start a thread: {}", e)
+    }
+    feed := Feed(child: child, bytes: empty_slice(u8))
+    feeder: ?thread.Thread = null
+    if .Bytes(b) := c.input {
+        feed.bytes = b
+        if f := thread.spawn(feed_input, &feed) { feeder = f } else { _ = Proc.kill(child) }
+    }
+    out := list(u8)
+    err := list(u8)
+    buf: [16384]u8 = ---
+    read_failed: ?IoError = null
+    while true {
+        chunk := Proc.read(child, buf[..]) else e => {
+            read_failed = e
+            _ = Proc.kill(child)
+            break
+        }
+        got := chunk else break
+        dst := if got.from is .Stdout { &out } else { &err }
+        dst.extend(buf[0..got.len])!
+    }
+    // The other threads are done with the child before `wait` releases its handle, which a
+    // later child may get.
+    if f := feeder { thread.join(f) }
+    w.m.lock()
+    w.done = true
+    w.m.unlock()
+    w.cv.signal()
+    thread.join(watcher)
+    status := Proc.wait(child)
+    if w.fired {
+        return !t.fail("`{}` did not finish within {} s (GAMMA_TEST_TIMEOUT); output so far:\n{}\n{}", c.show(), t.cfg.timeout_s, string(out.items), string(err.items))
+    }
+    if e := read_failed { return !t.fail("cannot read the output of `{}`: {}", c.show(), e) }
+    s := status else e => return !t.fail("cannot wait for `{}`: {}", c.show(), e)
+    return Output(status: s, out: out.items, err: err.items)
+}
+
+/// Like `run`, and fails the test unless the program succeeds.
+pub run_ok :: fn(t: ^T, c: Command) -> Fail!Output needs Alloc + Clock + Proc + Sys {
+    o := try t.run(c)
+    if not o.success() {
+        return !t.fail("`{}` ended with {}\nstdout:\n{}\nstderr:\n{}", c.show(), o.status, o.out, o.err)
+    }
+    return o
+}
+
+// The watchdog of a running program: kills it once its time is up, unless told it is done.
+Watch :: struct {
+    child: process.Child
+    limit: Duration
+    m: thread.Mutex
+    cv: thread.Condvar
+    done: bool = false
+    fired: bool = false
+}
+
+watch :: fn(w: ^Watch) needs Sys {
+    thread.defaults(fn() needs Clock + Proc {
+        start := Clock.now()
+        w.m.lock()
+        while not w.done {
+            spent := Clock.now().since(start)
+            if spent.ns >= w.limit.ns {
+                w.fired = true
+                _ = Proc.kill(w.child)
+                break
+            }
+            _ = w.cv.wait_timeout(&w.m, w.limit.minus(spent))
+        }
+        w.m.unlock()
+    })
+}
+
+// The writer of a program's input, on a thread of its own so that the program's output is
+// read while it reads its input.
+Feed :: struct {
+    child: process.Child
+    bytes: []const u8
+}
+
+feed_input :: fn(f: ^Feed) needs Sys {
+    thread.defaults(fn() needs Proc {
+        rest := f.bytes
+        while rest.len > 0 {
+            n := Proc.write(f.child, rest) else break
+            rest = rest[n..]
+        }
+        Proc.close_in(f.child)
+    })
+}

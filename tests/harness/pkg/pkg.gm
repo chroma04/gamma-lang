@@ -1,0 +1,5 @@
+//! The pkg suite (being ported from tests/pkg.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

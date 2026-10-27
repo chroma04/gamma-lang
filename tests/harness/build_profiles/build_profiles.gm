@@ -1,0 +1,5 @@
+//! The build_profiles suite (being ported from tests/build_profiles.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

@@ -1,0 +1,5 @@
+//! The doc_examples suite (being ported from tests/doc_examples.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

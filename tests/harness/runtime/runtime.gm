@@ -1,0 +1,5 @@
+//! The runtime suite (being ported from tests/runtime.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}

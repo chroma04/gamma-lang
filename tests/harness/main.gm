@@ -1,0 +1,357 @@
+//! The test harness: runs the test suites of the repository against a `gamma` executable.
+//!
+//!     harness [-j N] [-v] [--list] [--filter TEXT] [PREFIX...]
+//!
+//! Run from the repository's root, with `GAMMA_TEST_COMPILER` naming the compiler under
+//! test (`tools/test.sh` builds both and runs this). A test runs if its name (`suite/test`,
+//! such as `conformance/run/std_process.gm`) starts with one of the prefixes, or there are
+//! none, and contains the text of `--filter` (or `GAMMA_TEST_FILTER`) if one is given. Tests run in parallel,
+//! on `-j` threads (default: one per processor), those that took longest in the previous
+//! run first. The exit status is 0 if no test failed.
+//!
+//! The suites are listed in `SUITES`; each is a module with a function adding its tests
+//! (see `kit`). `docs/contributing.md` describes the environment variables that select
+//! lanes and tools.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+kit :: import "./kit"
+path :: import "std/path"
+str :: import "std/str"
+thread :: import "std/thread"
+driver :: import "gammac/driver"
+
+build_profiles :: import "./build_profiles"
+cli :: import "./cli"
+conformance :: import "./conformance"
+cross :: import "./cross"
+debug_info :: import "./debug_info"
+doc :: import "./doc"
+doc_examples :: import "./doc_examples"
+examples :: import "./examples"
+fix :: import "./fix"
+fmt :: import "./fmt"
+freestanding :: import "./freestanding"
+lanes :: import "./lanes"
+lint :: import "./lint"
+long_expressions :: import "./long_expressions"
+long_functions :: import "./long_functions"
+lsp :: import "./lsp"
+native_build :: import "./native_build"
+pkg :: import "./pkg"
+repl :: import "./repl"
+runtime :: import "./runtime"
+selfhost :: import "./selfhost"
+testing_cli :: import "./testing_cli"
+wasi :: import "./wasi"
+selftest :: import "./selftest"
+
+USAGE :: "usage: harness [-j N] [-v] [--list] [--filter TEXT] [PREFIX...]"
+
+/// A suite: its name and the function that adds its tests.
+Suite :: struct {
+    name: string
+    add: ^fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Setup
+}
+
+/// What adding tests may use.
+Setup :: Alloc + Env + Err + Fs + Proc
+
+suites :: fn() -> [24]Suite => [_]Suite(
+    Suite(name: "cli", add: cli.tests),
+    Suite(name: "conformance", add: conformance.tests),
+    Suite(name: "examples", add: examples.tests),
+    Suite(name: "doc_examples", add: doc_examples.tests),
+    Suite(name: "fmt", add: fmt.tests),
+    Suite(name: "lint", add: lint.tests),
+    Suite(name: "fix", add: fix.tests),
+    Suite(name: "doc", add: doc.tests),
+    Suite(name: "pkg", add: pkg.tests),
+    Suite(name: "build_profiles", add: build_profiles.tests),
+    Suite(name: "lsp", add: lsp.tests),
+    Suite(name: "repl", add: repl.tests),
+    Suite(name: "testing_cli", add: testing_cli.tests),
+    Suite(name: "native_build", add: native_build.tests),
+    Suite(name: "debug_info", add: debug_info.tests),
+    Suite(name: "freestanding", add: freestanding.tests),
+    Suite(name: "runtime", add: runtime.tests),
+    Suite(name: "long_functions", add: long_functions.tests),
+    Suite(name: "long_expressions", add: long_expressions.tests),
+    Suite(name: "cross", add: cross.tests),
+    Suite(name: "lanes", add: lanes.tests),
+    Suite(name: "wasi", add: wasi.tests),
+    Suite(name: "selfhost", add: selfhost.tests),
+    Suite(name: "harness", add: selftest.tests),
+)
+
+main :: fn() needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    a := arena.new()
+    defer a.deinit()
+    code: u8 = 0
+    with a.allocator() {
+        code = run() else message => {
+            eprint("harness: {}\n", message)
+            2
+        }
+    }
+    if code is not 0 {
+        a.deinit()
+        Env.exit(code)
+    }
+}
+
+/// A test to run, and how it went.
+Job :: struct {
+    test: kit.Test
+    /// `suite/name`.
+    full: string
+    /// Milliseconds it took in the previous run (0 if unknown), then in this one.
+    before_ms: u64 = 0
+    ms: u64 = 0
+    outcome: Outcome = .Pass
+}
+
+Outcome :: union { Pass, Fail, Skip }
+
+run :: fn() -> string!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    jobs_n: u32 = thread.cpu_count()
+    verbose := false
+    listing := false
+    patterns := list(string)
+    filter: ?string = Env.var("GAMMA_TEST_FILTER")
+    args := Env.args()
+    i: usize = 1
+    while i < args.len {
+        arg := args[i]
+        i += 1
+        match arg {
+            "-j", "--jobs" => {
+                n := args.get(i) else return !str.format("-j needs a number\n{}", USAGE)!
+                i += 1
+                jobs_n = str.parse_int(u32, n) else return !str.format("-j needs a number, not `{}`", n)!
+                if jobs_n is 0 { jobs_n = 1 }
+            }
+            "-v", "--verbose" => { verbose = true }
+            "--list" => { listing = true }
+            "-f", "--filter" => {
+                filter = args.get(i) else return !str.format("--filter needs a text\n{}", USAGE)!
+                i += 1
+            }
+            "-h", "--help" => {
+                print("{}\n", USAGE)
+                return 0
+            }
+            _ => {
+                if arg.len > 0 and arg[0] is '-' { return !str.format("unknown option `{}`\n{}", arg, USAGE)! }
+                patterns.push(arg)!
+            }
+        }
+    }
+
+    cfg := try config()
+    all := list(Job)
+    for s in suites() {
+        tests := list(kit.Test)
+        s.add(&cfg, &tests)
+        for test in tests.items {
+            full := str.format("{}/{}", s.name, test.name)!
+            if not selected(full, patterns.items, filter) { continue }
+            all.push(Job(test: test, full: full))!
+        }
+    }
+    if listing {
+        for j in all.items { print("{}\n", j.full) }
+        return 0
+    }
+    if all.items.len is 0 { return !"no test matches" }
+
+    times_file := kit.join(cfg.tmp, "harness-times")
+    read_times(times_file, all.items)
+    all.items.sort_by(fn(x, y: ^const Job) -> bool => x.before_ms > y.before_ms)
+
+    shared := Shared(cfg: &cfg, jobs: all.items, verbose: verbose, print: thread.mutex())
+    start := Clock.now()
+    workers := list(thread.Thread)
+    n := if usize(jobs_n) < all.items.len { usize(jobs_n) } else { all.items.len }
+    for _ in 0..n {
+        w := thread.spawn(worker, &shared) else e => return !str.format("cannot start a thread: {}", e)!
+        workers.push(w)!
+    }
+    for w in workers.items { thread.join(w) }
+    took := Clock.now().since(start)
+
+    write_times(times_file, all.items)
+    passed: usize = 0
+    failed := list(string)
+    skipped: usize = 0
+    for j in all.items {
+        match j.outcome {
+            .Pass => { passed += 1 }
+            .Fail => failed.push(j.full)!
+            .Skip => { skipped += 1 }
+        }
+    }
+    if failed.items.len > 0 {
+        print("\nfailed:\n")
+        for name in failed.items { print("    {}\n", name) }
+    }
+    print("\n{} passed, {} failed, {} skipped in {}.{} s\n", passed, failed.items.len, skipped, took.to_ms() / 1000, took.to_ms() % 1000 / 100)
+    return if failed.items.len > 0 { 1 } else { 0 }
+}
+
+/// True if `name` starts with one of the prefixes, or there are none, and contains the
+/// filter, if there is one.
+selected :: fn(name: string, prefixes: []const string, filter: ?string) -> bool {
+    if f := filter {
+        if not str.contains(name, f) { return false }
+    }
+    if prefixes.len is 0 { return true }
+    for p in prefixes {
+        if str.strip_prefix(name, p) is not null { return true }
+    }
+    return false
+}
+
+/// The configuration, from the environment.
+config :: fn() -> string!kit.Config needs Alloc + Env + Err + Fs + Proc {
+    buf: [4096]u8 = ---
+    n := Fs.cwd(buf[..]) else e => return !str.format("cannot read the working directory: {}", e)!
+    root := dupe(buf[0..n])!
+    if not fs.exists(kit.join(root, "gamma-spec.md")) {
+        return !"run the harness from the repository's root"
+    }
+    compiler_var := Env.var("GAMMA_TEST_COMPILER") else ""
+    if compiler_var.len is 0 {
+        return !"GAMMA_TEST_COMPILER is not set: run the tests with tools/test.sh, which builds gamma from compiler/ and sets it, or set it to a gamma executable"
+    }
+    compiler := absolute(root, compiler_var)
+    if not fs.exists(compiler) { return !str.format("GAMMA_TEST_COMPILER names {}, which does not exist", compiler)! }
+    tmp := absolute(root, Env.var("GAMMA_TEST_TMPDIR") else "target/test-tmp")
+    fs.make_dir_all(tmp) else e => return !str.format("cannot make {}: {}", tmp, e)!
+    vars := list(kit.Var)
+    for name in kit.VARS {
+        if v := Env.var(name) { vars.push(kit.Var(name: name, value: v))! }
+    }
+    cfg := kit.Config(root: root, compiler: compiler, tmp: tmp, cache: kit.join(tmp, "gamma-cache"), vars: vars.items)
+    if t := Env.var("GAMMA_TEST_TIMEOUT") {
+        cfg.timeout_s = str.parse_int(u64, t) else return !str.format("GAMMA_TEST_TIMEOUT is not a number: `{}`", t)!
+    }
+    cfg.bless = Env.var("BLESS") is "1"
+    cfg.c = try c_backend_available()
+    return cfg
+}
+
+/// `p`, made absolute against `root` if it is relative.
+absolute :: fn(root, p: string) -> string needs Alloc {
+    if path.is_absolute(p) or (p.len > 2 and p[1] is ':') { return p }
+    return kit.join(root, p)
+}
+
+/// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
+/// With `GAMMA_TEST_C=1` a missing compiler is an error, so that a CI job meant to test C
+/// cannot pass by testing only the interpreter.
+c_backend_available :: fn() -> string!bool needs Alloc + Env + Fs + Proc {
+    setting := Env.var("GAMMA_TEST_C") else ""
+    if setting is "0" { return false }
+    found := false
+    if tc := driver.from_env() {
+        argv := list(string)
+        argv.extend(tc.cc)!
+        argv.push("--version")!
+        if out := process.output(argv.items, process.SpawnOptions(stdin: .Null)) {
+            found = process.success(out.status)
+        }
+    }
+    if not found and setting is "1" { return !"GAMMA_TEST_C=1, but no C compiler runs (set CC?)" }
+    return found
+}
+
+process :: import "std/process"
+
+// ---------------------------------------------------------------------------------
+// Running the tests
+// ---------------------------------------------------------------------------------
+
+/// What the workers share: the jobs, the next one to take, and the lock on the output.
+Shared :: struct {
+    cfg: ^const kit.Config
+    jobs: []Job
+    next: usize = 0
+    verbose: bool
+    print: thread.Mutex
+}
+
+worker :: fn(s: ^Shared) needs Sys {
+    with heap_allocator(), system_io(), system_output() {
+        while true {
+            i := @atomic_add(&s.next, 1, .SeqCst)
+            if i >= s.jobs.len { break }
+            run_job(s, &s.jobs[i])
+        }
+    }
+}
+
+/// Runs one test in an arena of its own, records how it went and reports it.
+run_job :: fn(s: ^Shared, j: ^Job) needs Alloc + Clock + Err + Fs + Out + Proc + Rand + Sys {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator(), kit.test_env(s.cfg) {
+        t := kit.new_test(s.cfg, j.full, j.test.param)
+        start := Clock.now()
+        _ = j.test.run(&t)
+        j.ms = Clock.now().since(start).to_ms()
+        j.outcome = if t.failed { .Fail } else if t.skipped { .Skip } else { .Pass }
+        text := list(u8)
+        match j.outcome {
+            .Fail => {
+                text.write("FAIL {} ({} ms)\n", j.full, j.ms)!
+                for line in str.lines(t.report.items) { text.write("    {}\n", line)! }
+            }
+            .Skip => if s.verbose { text.write("skip {}: {}", j.full, t.report.items)! }
+            .Pass => if s.verbose { text.write("ok   {} ({} ms)\n", j.full, j.ms)! }
+        }
+        if text.items.len > 0 {
+            s.print.lock()
+            Out.write(text.items)
+            s.print.unlock()
+        }
+    }
+}
+
+/// Reads the durations of the previous run (lines `ms name`).
+read_times :: fn(file: string, jobs: []Job) needs Alloc + Fs {
+    text := fs.read_all(file) else return
+    known := list(kit.Var)
+    for line in str.lines(text) {
+        sp := str.split_once(line, " ") else continue
+        known.push(kit.Var(name: sp.after, value: sp.before))!
+    }
+    for i in 0..jobs.len {
+        for k in known.items {
+            if k.name is jobs[i].full {
+                jobs[i].before_ms = str.parse_int(u64, k.value) else 0
+                break
+            }
+        }
+    }
+}
+
+/// Writes the durations of this run, keeping those of tests that did not run.
+write_times :: fn(file: string, jobs: []const Job) needs Alloc + Fs + Rand {
+    out := list(u8)
+    for j in jobs { out.write("{} {}\n", j.ms, j.full)! }
+    if old := fs.read_all(file) {
+        for line in str.lines(old) {
+            sp := str.split_once(line, " ") else continue
+            ran := false
+            for j in jobs {
+                if j.full is sp.after {
+                    ran = true
+                    break
+                }
+            }
+            if not ran { out.write("{}\n", line)! }
+        }
+    }
+    _ = fs.write_atomic(file, out.items)
+}

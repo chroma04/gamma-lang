@@ -1,0 +1,5 @@
+//! The long_expressions suite (being ported from tests/long_expressions.rs).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
