@@ -1,0 +1,96 @@
+// The lifecycle of a session: initialization, capabilities, shutdown and the ways a session
+// can end, and how the server treats messages it does not know or cannot read.
+
+kit :: import "../kit"
+
+lifecycle_and_capabilities :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    init := try l.initialize()
+    caps := field(init, "capabilities")
+    try expect_string(t, "positionEncoding", field(caps, "positionEncoding"), "utf-16")
+    try expect_bool(t, "hoverProvider", field(caps, "hoverProvider"), true)
+    try expect_bool(t, "definitionProvider", field(caps, "definitionProvider"), true)
+    try expect_bool(t, "documentSymbolProvider", field(caps, "documentSymbolProvider"), true)
+    try expect_bool(t, "documentFormattingProvider", field(caps, "documentFormattingProvider"), true)
+    try expect_string(t, "the first trigger character", dig(caps, "completionProvider.triggerCharacters.0"), ".")
+    try expect_int(t, "the sync kind", dig(caps, "textDocumentSync.change"), 1)
+    try expect_string(t, "the server name", dig(init, "serverInfo.name"), "gamma")
+    try l.shutdown()
+    return ()
+}
+
+utf8_is_negotiated_when_offered :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    r := try l.result("initialize", "{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-8\",\"utf-16\"]}}}")
+    try expect_string(t, "positionEncoding", dig(r, "capabilities.positionEncoding"), "utf-8")
+    try l.shutdown()
+    return ()
+}
+
+exit_without_shutdown_is_a_failure :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.notify("exit", "null")
+    status := try l.finish()
+    try t.check(status is .Exited(1), "the server ended with {}, not exit code 1", status)
+    return ()
+}
+
+end_of_input_ends_the_server :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    l.close_input()
+    status := try l.finish()
+    try t.check(status is .Exited(_), "the server ended with {}, not with an exit code", status)
+    return ()
+}
+
+unknown_requests_are_answered_and_unknown_notifications_ignored :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.notify("workspace/somethingNew", "{}")
+    r := try l.request("textDocument/somethingNew", "{}")
+    try expect_int(t, "the error code", dig(r, "error.code"), -32601)
+    // Still alive.
+    try l.shutdown()
+    return ()
+}
+
+invalid_json_gets_a_parse_error :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.send_raw("{not json")
+    m := try l.next_message()
+    try expect_int(t, "the error code", dig(m, "error.code"), -32700)
+    try l.shutdown()
+    return ()
+}
+
+requests_before_initialize_are_refused :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    r := try l.request("textDocument/hover", "{}")
+    try expect_int(t, "the error code", dig(r, "error.code"), -32002)
+    // Notifications are dropped; the server still initializes normally.
+    try l.notify("textDocument/didOpen", "{}")
+    _ = try l.initialize()
+    try l.shutdown()
+    return ()
+}
+
+a_huge_content_length_does_not_crash_the_server :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    try l.write_all("Content-Length: 99999999999999\r\n\r\n{}")
+    l.close_input()
+    // It stops cleanly (an exit code, not an abort by a signal).
+    status := try l.finish()
+    try t.check(status is .Exited(_), "the server ended with {}, not with an exit code", status)
+    return ()
+}

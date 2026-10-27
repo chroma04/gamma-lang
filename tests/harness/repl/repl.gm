@@ -1,5 +1,225 @@
-//! The repl suite (being ported from tests/repl.rs).
+//! Tests of `gamma repl`, driven through pipes: stdin is not a terminal, so the REPL prints
+//! no banner and no prompts, only what the inputs print.
 
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "expressions_print_their_values", run: expressions_print_their_values))!
+    out.push(kit.Test(name: "unit_expressions_print_nothing", run: unit_expressions_print_nothing))!
+    out.push(kit.Test(name: "bindings_persist", run: bindings_persist))!
+    out.push(kit.Test(name: "a_binding_can_be_defined_again_with_another_type", run: a_binding_can_be_defined_again))!
+    out.push(kit.Test(name: "statements_run_once", run: statements_run_once))!
+    out.push(kit.Test(name: "mutation_through_statements_and_methods_is_kept", run: mutation_is_kept))!
+    out.push(kit.Test(name: "functions_can_be_defined_and_redefined", run: functions_can_be_redefined))!
+    out.push(kit.Test(name: "types_and_constants", run: types_and_constants))!
+    out.push(kit.Test(name: "multi_line_input", run: multi_line_input))!
+    out.push(kit.Test(name: "type_command", run: type_command))!
+    out.push(kit.Test(name: "type_command_does_not_run_its_expression", run: type_command_does_not_run))!
+    out.push(kit.Test(name: "errors_leave_the_session_unchanged", run: errors_leave_the_session_unchanged))!
+    out.push(kit.Test(name: "a_failed_definition_is_not_remembered", run: a_failed_definition_is_not_remembered))!
+    out.push(kit.Test(name: "a_trap_is_reported_and_the_session_continues", run: a_trap_is_reported))!
+    out.push(kit.Test(name: "std_modules_can_be_imported", run: std_modules_can_be_imported))!
+    out.push(kit.Test(name: "effects_of_definitions_are_noted", run: effects_of_definitions_are_noted))!
+    out.push(kit.Test(name: "list_and_reset", run: list_and_reset))!
+    out.push(kit.Test(name: "load_adds_declarations", run: load_adds_declarations))!
+    out.push(kit.Test(name: "commands_help_and_quit", run: commands_help_and_quit))!
+    out.push(kit.Test(name: "unfinished_input_at_end_of_input_is_reported", run: unfinished_input_is_reported))!
+    out.push(kit.Test(name: "input_that_is_not_utf8_is_reported_and_the_session_continues", run: input_not_utf8))!
+    out.push(kit.Test(name: "main_is_reserved", run: main_is_reserved))!
+    out.push(kit.Test(name: "a_stray_closing_bracket_is_reported_at_once", run: a_stray_closing_bracket))!
+    out.push(kit.Test(name: "a_line_opening_a_block_comment_is_not_blank", run: a_line_opening_a_block_comment))!
+    out.push(kit.Test(name: "a_missing_preload_file_is_an_error_status", run: a_missing_preload_file))!
+}
+
+/// Feeds `input` (which need not be UTF-8) to a REPL and returns its standard output and
+/// error; the REPL must end successfully.
+repl :: fn(t: ^kit.T, input: []const u8) -> kit.Fail!kit.Output needs kit.Run {
+    c := t.gamma([_]string("repl"))
+    c.stdin(input)
+    out := try t.run(c)
+    try t.check(out.success(), "the REPL failed: {}\nstderr:\n{}", out.status, out.err)
+    return out
+}
+
+/// Runs the session `input` and expects exactly the output `out` and the error output `err`.
+expect_session :: fn(t: ^kit.T, input, out, err: string) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, input)
+    try t.expect_text("stdout", out, o.out)
+    try t.expect_text("stderr", err, o.err)
+    return ()
+}
+
+expressions_print_their_values :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(t, "1 + 2\n\"hello\"\n(1, true)\n2.5 * 2.0\n", "3\nhello\n(1, true)\n5\n", "")
+}
+
+unit_expressions_print_nothing :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(t, "print(\"hi\\n\")\n", "hi\n", "")
+}
+
+bindings_persist :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(t, "x := 10\nx * 2\ny :: x + 1\ny\nx = 7\nx + y\n", "20\n11\n18\n", "")
+}
+
+a_binding_can_be_defined_again :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(t, "x := 5\ny := x + 1\nx := \"text\"\nx\ny\nx := x\nx\n", "text\n6\ntext\n", "")
+}
+
+statements_run_once :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // Printing is not repeated by the replay that keeps variables alive.
+    o := try repl(t, "greet :: fn() needs Out { print(\"hello\\n\") }\nn := 1\ngreet()\nn := n + 1\nn\ngreet()\n")
+    try t.expect_text("stdout", "hello\n2\nhello\n", o.out)
+    return ()
+}
+
+mutation_is_kept :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(
+        t,
+        "total := 0\nfor i in 0..5 {\n    total += i\n}\ntotal\nl := list(i32)\ntry l.push(3)\ntry l.push(4)\nl.items\n",
+        "10\n[3, 4]\n",
+        "",
+    )
+}
+
+functions_can_be_redefined :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(
+        t,
+        "sq :: fn(n: i32) -> i32 => n * n\nsq(7)\nsq :: fn(n: i32) -> i32 => n * n + 1\nsq(7)\nuse_sq :: fn() -> i32 => sq(2)\nuse_sq()\n",
+        "49\n50\n5\n",
+        "",
+    )
+}
+
+types_and_constants :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(
+        t,
+        "Point :: struct {\n    x: i32,\n    y: i32,\n}\np := Point(x: 1, y: 2)\np\np.x + p.y\nN :: 3\narr := [N]i32(1, 2, 3)\narr[N - 1]\n",
+        "Point(x: 1, y: 2)\n3\n3\n",
+        "",
+    )
+}
+
+multi_line_input :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(
+        t,
+        "total :: fn(n: i32) -> i32 {\n    s := 0\n    for i in 0..n {\n        s += i\n    }\n    return s\n}\ntotal(5)\n(1 +\n 2)\n",
+        "10\n3\n",
+        "",
+    )
+}
+
+type_command :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(
+        t,
+        "x := 5\n:type x\n:type 1 + 2\n:type \"s\"\n:type (x, true)\n:type [2]u8(1, 2)\n",
+        "i32\ni32\nstring\n(i32, bool)\n[2]u8\n",
+        "",
+    )
+}
+
+type_command_does_not_run :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "noisy :: fn() -> i32 needs Out { print(\"ran\\n\"); return 1 }\n:type noisy()\n")
+    try t.expect_text("stdout", "i32\n", o.out)
+    return ()
+}
+
+errors_leave_the_session_unchanged :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "x := 1\ny := undefined_name\nx + \"a\"\nx\nbad :: fn() -> i32 => \"s\"\nx + 1\n")
+    try t.expect_text("stdout", "1\n2\n", o.out)
+    try t.expect_contains("stderr", o.err, "unknown name `undefined_name`")
+    // Positions are relative to the input, not to the synthesized program.
+    try t.expect_contains("stderr", o.err, "--> <repl>:1:6")
+    try t.check(not str.contains(o.err, "<session>"), "{}", o.err)
+    return ()
+}
+
+a_failed_definition_is_not_remembered :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "f :: fn() -> i32 => 1\nf :: fn() -> i32 => \"s\"\nf()\n")
+    try t.expect_text("stdout", "1\n", o.out)
+    try t.expect_contains("stderr", o.err, "error")
+    return ()
+}
+
+a_trap_is_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "x := 3\ny := 10 / (x - 3)\nx\ntrap(\"boom\")\nx + 1\n")
+    try t.expect_text("stdout", "3\n4\n", o.out)
+    try t.expect_contains("stderr", o.err, "trap: division by zero")
+    try t.expect_contains("stderr", o.err, "trap: boom")
+    try t.expect_contains("stderr", o.err, "at <repl>:1:")
+    return ()
+}
+
+std_modules_can_be_imported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(t, "math :: import \"std/math\"\nmath.sqrt(16.0)\nmath.floor(2.7)\n", "4\n2\n", "")
+}
+
+effects_of_definitions_are_noted :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "get :: fn() -> i32 needs Out {\n    print(\"once\\n\")\n    return 7\n}\nv := get()\nv + 1\nv + 2\n")
+    // `v` is evaluated again before each later input, but only the first run is visible.
+    try t.expect_text("stdout", "once\n8\n9\n", o.out)
+    try t.expect_contains("stderr", o.err, "note: v will be evaluated again")
+    return ()
+}
+
+list_and_reset :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "x := 4\nsq :: fn(n: i32) -> i32 => n * n\n:list\n:reset\n:list\nx\n")
+    try t.expect_contains("stdout", o.out, "sq :: fn(n: i32) -> i32 => n * n\nx := 4\n")
+    try t.expect_contains("stderr", o.err, "unknown name `x`")
+    return ()
+}
+
+load_adds_declarations :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("repl-load")
+    file := kit.join(dir, "lib.gm")
+    try t.write(file, "double :: fn(n: i32) -> i32 => n * 2\n\nmain :: fn() {\n}\n")
+    o := try repl(t, str.format(":load {}\ndouble(21)\n", file)!)
+    try t.expect_text("stdout", "42\n", o.out)
+    try t.expect_contains("stderr", o.err, "`main`")
+    return ()
+}
+
+commands_help_and_quit :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, ":help\n:quit\n1 + 1\n")
+    try t.expect_contains("stdout", o.out, ":type <expr>")
+    try t.check(not str.contains(o.out, "\n2\n"), "{}", o.out)
+    return ()
+}
+
+unfinished_input_is_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "1 + 1\nf :: fn() {\n")
+    try t.expect_text("stdout", "2\n", o.out)
+    try t.expect_contains("stderr", o.err, "error")
+    return ()
+}
+
+input_not_utf8 :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "1 + 1\n\"\xff\xfe\"\n2 + 2\n")
+    try t.expect_text("stdout", "2\n4\n", o.out)
+    try t.expect_contains("stderr", o.err, "not valid UTF-8")
+    return ()
+}
+
+main_is_reserved :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "main :: fn() {}\n")
+    try t.expect_contains("stderr", o.err, "`main` is reserved")
+    return ()
+}
+
+a_stray_closing_bracket :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    o := try repl(t, "}\n3\n4\n")
+    try t.expect_text("stdout", "3\n4\n", o.out)
+    try t.expect_contains("stderr", o.err, "unmatched")
+    return ()
+}
+
+a_line_opening_a_block_comment :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return expect_session(t, "/* a\n*/\n5\n", "5\n", "")
+}
+
+a_missing_preload_file :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try t.run(t.gamma([_]string("repl", "definitely_missing_file.gm")))
+    try t.check(out.code() is 1, "exit status {}: {}", out.status, out.err)
+    try t.expect_contains("stderr", out.err, "cannot read")
+    return ()
+}

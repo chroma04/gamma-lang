@@ -1,0 +1,59 @@
+// Watched files: the server asks a client that supports it to report changes on disk, and
+// refreshes the modules that import a changed file.
+
+kit :: import "../kit"
+str :: import "std/str"
+
+file_watchers_are_registered_and_changes_on_disk_refresh_importers :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-file_watchers")
+    util := try put(t, dir, "util/util.gm", "pub double :: fn(n: i32) -> i32 => n * 2\n")
+    text := "util :: import \"./util\"\n\nmain :: fn() {\n    x := util.double(2)\n    _ = x\n}\n"
+    main := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    try l.initialize_watching()
+    reg := try l.server_request()
+    try expect_string(t, "the method of the request", field(reg, "method"), "client/registerCapability")
+    r := dig(reg, "params.registrations.0")
+    try expect_string(t, "the registered method", field(r, "method"), "workspace/didChangeWatchedFiles")
+    watchers := elements(dig(r, "registerOptions.watchers"))
+    try t.expect_text("the globs", "**/*.gm,**/gamma.toml", names_of(watchers, "globPattern"))
+    try l.send_raw(str.format("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":null}}", show(field(reg, "id")))!)
+
+    try l.open(main, text)
+    try expect_clean(t, try l.diagnostics(main, 1))
+    // Another program rewrites the imported file, which is not open.
+    try t.write(util, "pub other :: fn() {}\n")
+    try l.notify("workspace/didChangeWatchedFiles", changed(util, 2))
+    try expect_message(t, try l.diagnostics(main, 1), "no declaration `double`")
+    // A file restored (as a creation) is noticed too.
+    try t.write(util, "pub double :: fn(n: i32) -> i32 => n * 2\n")
+    try l.notify("workspace/didChangeWatchedFiles", changed(util, 1))
+    try expect_clean(t, try l.diagnostics(main, 1))
+    try l.shutdown()
+    return ()
+}
+
+/// The parameters of a notification that the file `path` changed (type 1: created, 2:
+/// changed).
+changed :: fn(path: string, kind: u32) -> string needs Alloc {
+    return str.format("{{\"changes\":[{{\"uri\":{},\"type\":{}}}]}}", jq(uri(path)), kind)!
+}
+
+no_watchers_are_registered_without_client_support :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-no_watchers")
+    main := try put(t, dir, "main.gm", "main :: fn() {}\n")
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, "main :: fn() {}\n")
+    _ = try l.diagnostics(main, 1)
+    for m in l.queued.items {
+        try t.check(not text_is(field(m, "method"), "client/registerCapability"), "the server registered a capability: {}", show(m))
+    }
+    // The notification is accepted all the same.
+    try l.notify("workspace/didChangeWatchedFiles", changed(main, 2))
+    try expect_clean(t, try l.diagnostics(main, 1))
+    try l.shutdown()
+    return ()
+}

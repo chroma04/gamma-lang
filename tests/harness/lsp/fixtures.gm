@@ -1,0 +1,65 @@
+// Programs and helpers that several of the tests share.
+
+json :: import "std/json"
+kit :: import "../kit"
+str :: import "std/str"
+
+/// A small program with a struct, a documented function and a `main` that uses them.
+PROGRAM :: `Point :: struct {
+    x: i32
+    y: i32
+}
+
+/// Adds the coordinates.
+sum :: fn(p: Point) -> i32 {
+    return p.x + p.y
+}
+
+main :: fn() needs Out {
+    pt := Point(x: 1, y: 2)
+    total := sum(pt)
+    print("{}\n", total)
+}
+`
+
+/// A program that calls `list` (line 1, column 11).
+CORE_PROGRAM :: "main :: fn() needs Alloc {\n    xs := list(i32)\n    _ = xs\n}\n"
+
+/// Writes the file `name` below `dir` and returns its path.
+put :: fn(t: ^kit.T, dir, name, text: string) -> kit.Fail!string needs kit.Run {
+    p := kit.join(dir, name)
+    try t.write(p, text)
+    return p
+}
+
+/// Fails the test unless the diagnostics `d` are empty.
+expect_clean :: fn(t: ^kit.T, d: []json.Value) -> kit.Fail!() needs Alloc {
+    return t.check(d.len is 0, "expected no diagnostics, got {}", show(json.Value.Array(d)))
+}
+
+/// Fails the test if the diagnostics `d` are empty.
+expect_some :: fn(t: ^kit.T, d: []json.Value) -> kit.Fail!() {
+    return t.check(d.len > 0, "expected diagnostics, got none")
+}
+
+/// Fails the test unless a diagnostic in `d` has a message containing `needle`.
+expect_message :: fn(t: ^kit.T, d: []json.Value, needle: string) -> kit.Fail!() needs Alloc {
+    return t.check(any_containing(d, "message", needle), "no diagnostic mentions {}: {}", kit.quote(needle), show(json.Value.Array(d)))
+}
+
+/// The values of the member `key` of the elements of `xs`, as the strings joined by commas.
+names_of :: fn(xs: []json.Value, key: string) -> string needs Alloc {
+    names := list(string)
+    for x in xs { names.push(string_of(field(x, key)))! }
+    return str.join(names.items, ",")!
+}
+
+/// The line `n` of `text` (counting from 0), or "".
+nth_line :: fn(text: string, n: usize) -> string {
+    i: usize = 0
+    for line in str.lines(text) {
+        if i is n { return line }
+        i += 1
+    }
+    return ""
+}
