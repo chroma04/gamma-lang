@@ -2698,9 +2698,10 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
             _exit(127);
         }
         pthread_sigmask(SIG_SETMASK, &old, NULL);
+        /* The child makes its group before it execs, and we wait below for the exec, so the
+         * group exists when spawn returns. Calling setpgid here as well would race with the
+         * child's call, which some systems then fail with EPERM. */
         if (pid < 0) err = errno;
-        /* Also here, so that the group exists before spawn returns (and a kill reaches it). */
-        else if (flags & GM_PROC_GROUP) setpgid(pid, pid);
     }
     if (errp[1] >= 0) close(errp[1]);
     if (err == 0) {
