@@ -343,9 +343,16 @@ layout :: fn(src: string, toks: []const Token) -> List(u8) needs Alloc {
                         pinfo := infos.items[p]
                         tight := pinfo.ta or info.tb
                         gap := src[pinfo.hi..info.lo]
-                        if not tight and gap.len >= 2 and only_spaces(gap) and keeps_padding(src, pinfo, info) {
-                            // Columns of aligned declarations and match arms.
-                            pad = gap.len
+                        // A single space aligns an operator only when its neighbour's
+                        // operator is in the same column too (`keeps_padding`).
+                        min_gap: usize = if info.text in ("::", "=>") { 1 } else { 2 }
+                        if not tight and gap.len >= min_gap and only_spaces(gap) and keeps_padding(src, pinfo, info) {
+                            // Columns of aligned declarations and match arms: the operator
+                            // keeps its column, counted from the line's indentation, also
+                            // where the text before it changed (`.R(a ,)` → `.R(a,)`).
+                            want := relative_column(src[line_start(src, info.lo)..info.lo])
+                            have := relative_column(last_line(out.items))
+                            pad = if want > have { want - have } else { 1 }
                         }
                         // Words that touch in the source (`t.1u8`) stay together.
                         glued := gap.len is 0 and is_word(pinfo.text[pinfo.text.len - 1]) and is_word(info.text[0])
@@ -392,3 +399,10 @@ layout :: fn(src: string, toks: []const Token) -> List(u8) needs Alloc {
 /// Whether a character can be part of a word for the purpose of keeping touching words
 /// together: a letter, a digit, `_` or a quote.
 is_word :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c in ('_', '"', '\'', '`')
+
+/// The column after the text of a line, counted from the line's indentation.
+relative_column :: fn(line: string) -> usize {
+    n := count_chars(line)
+    i := indent_of(line)
+    return if n > i { n - i } else { 0 }
+}

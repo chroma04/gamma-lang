@@ -33,7 +33,7 @@ selected :: fn(t: sema.TestCase, filter: ?string) -> bool {
 pub run :: fn(s: ^sema.Sema, input: string, opts: driver.Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     bench := opts.command is .Bench
     if opts.coverage and bench {
-        eprint("gammac: `--coverage` is an option of `gammac test`\n")
+        eprint("gamma: `--coverage` is an option of `gamma test`\n")
         return 2
     }
     cases := if bench { s.benches.items } else { s.tests.items }
@@ -75,8 +75,8 @@ run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCa
         entries.push(if bench { check.entry_point(s, entry) } else { entry })!
     }
     buf: [4096]u8 = ---
-    dir := fs.make_temp_dir(fs.temp_dir(), if bench { "gammac-bench-" } else { "gammac-test-" }, buf[..]) else {
-        eprint("gammac: cannot create a temporary directory in `{}`\n", fs.temp_dir())
+    dir := fs.make_temp_dir(fs.temp_dir(), if bench { "gamma-bench-" } else { "gamma-test-" }, buf[..]) else {
+        eprint("gamma: cannot create a temporary directory in `{}`\n", fs.temp_dir())
         return null
     }
     defer _ = fs.remove_all(dir)
@@ -93,7 +93,7 @@ run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCa
     // Executables for another machine run behind `GAMMA_RUNNER`; WebAssembly modules behind
     // a WebAssembly runtime.
     runner := driver.runner_for(exe) else e => {
-        eprint("gammac: {}\n", e)
+        eprint("gamma: {}\n", e)
         Env.exit(2)
     }
     // Benchmarks time themselves, so they take turns.

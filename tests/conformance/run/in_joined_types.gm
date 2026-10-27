@@ -1,0 +1,14 @@
+// The element of `in` and its members are compared at one type, joined as the branches
+// of an `if` are (§7.7, §7.12): an inline tuple's members or the element convert to it.
+str :: import "std/str"
+
+main :: fn() needs Alloc + Out {
+    method := str.format("{}", "put")!
+    names := [_]string("get", "put")
+    print("{} {}\n", method in ("get", "put"), method not in ("head", "post"))
+    print("{} {}\n", method in names, method in names[..1])
+    small := u8(7)
+    print("{} {}\n", small in (u16(7), u16(300)), u16(300) in (small, 300))
+    found: ?u8 = 'b'
+    print("{}\n", found in ('a', 'b'))
+}

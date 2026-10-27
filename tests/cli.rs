@@ -1,14 +1,9 @@
 //! Tests of the `gamma` command line itself: help for every command.
 
-#[cfg(unix)]
 mod common;
 
-use std::process::Command;
-
-const GAMMA: &str = env!("CARGO_BIN_EXE_gamma");
-
 fn gamma(args: &[&str]) -> (bool, String) {
-    let out = Command::new(GAMMA).args(args).output().unwrap();
+    let out = common::gamma().args(args).output().unwrap();
     (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -48,7 +43,7 @@ fn help_after_the_program_belongs_to_the_program() {
 #[test]
 fn arguments_that_are_not_utf8_are_usage_errors() {
     use std::os::unix::ffi::OsStrExt;
-    let out = Command::new(GAMMA).arg("check").arg(std::ffi::OsStr::from_bytes(b"\xff.gm")).output().unwrap();
+    let out = common::gamma().arg("check").arg(std::ffi::OsStr::from_bytes(b"\xff.gm")).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("not valid UTF-8"));
 }
@@ -68,7 +63,7 @@ fn program_arguments_pass_through_as_bytes() {
         backends.push("--backend=c");
     }
     for backend in backends {
-        let mut cmd = Command::new(GAMMA);
+        let mut cmd = common::gamma();
         cmd.arg("run").arg(backend).arg(&file).arg(std::ffi::OsStr::from_bytes(b"a\xff\xfeb")).arg("plain");
         let out = common::output(&mut cmd).unwrap();
         assert!(out.status.success(), "{}: {}", backend, String::from_utf8_lossy(&out.stderr));
@@ -76,8 +71,7 @@ fn program_arguments_pass_through_as_bytes() {
         assert!(out.stdout.ends_with(tail), "{}: {:?}", backend, out.stdout);
     }
     // Options of gamma itself must still be text.
-    let out =
-        Command::new(GAMMA).arg("run").arg(std::ffi::OsStr::from_bytes(b"--mode=\xff")).arg(&file).output().unwrap();
+    let out = common::gamma().arg("run").arg(std::ffi::OsStr::from_bytes(b"--mode=\xff")).arg(&file).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("not valid UTF-8"));
 }

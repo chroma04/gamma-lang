@@ -2,11 +2,10 @@
 //! gamma.toml, `--rules`, JSON output, and that the library and examples lint clean.
 //! The findings of each rule are tested in `tests/conformance/lint/`.
 
+mod common;
+
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-const GAMMA: &str = env!("CARGO_BIN_EXE_gamma");
 
 /// A fresh directory for one test.
 fn dir(name: &str) -> PathBuf {
@@ -19,7 +18,7 @@ fn dir(name: &str) -> PathBuf {
 /// Runs `gamma` with `args`; returns whether it succeeded, its standard output and
 /// its standard error.
 fn gamma(args: &[&str], cwd: &Path) -> (bool, String, String) {
-    let out = Command::new(GAMMA).args(args).current_dir(cwd).output().unwrap();
+    let out = common::gamma().args(args).current_dir(cwd).output().unwrap();
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     (out.status.success(), text(&out.stdout), text(&out.stderr))
 }

@@ -1,14 +1,12 @@
 #!/bin/sh
-# Installs a prebuilt `gamma` release (or, with GAMMA_ARCHIVE=gammac, the self-hosted
-# compiler `gammac`) on Linux or macOS (x86_64 or arm64):
+# Installs a prebuilt `gamma` release on Linux or macOS (x86_64 or arm64):
 #
 #     curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh
 #
 # Environment:
 #   GAMMA_VERSION   the release to install, such as `v0.1.0` (default: the latest)
-#   GAMMA_ARCHIVE   what to install: `gamma` (default) or `gammac`
 #   GAMMA_INSTALL   the installation prefix (default: ~/.gamma); the compiler goes to
-#                   $GAMMA_INSTALL/bin/gamma (or gammac), its libraries to
+#                   $GAMMA_INSTALL/bin/gamma, its libraries to
 #                   $GAMMA_INSTALL/lib/gamma/<name>
 #   GAMMA_DOWNLOAD  the URL of the directory holding the release archives (default: the
 #                   GitHub release of GAMMA_VERSION)
@@ -30,11 +28,7 @@ case "$(uname -m)" in
     aarch64 | arm64) arch=aarch64 ;;
     *) fail "no prebuilt gamma for $(uname -m); build it from source: $repo" ;;
 esac
-product="${GAMMA_ARCHIVE:-gamma}"
-case "$product" in
-    gamma | gammac) ;;
-    *) fail "GAMMA_ARCHIVE must be gamma or gammac, not $product" ;;
-esac
+product=gamma
 asset="$product-$os-$arch.tar.gz"
 
 if [ -n "${GAMMA_DOWNLOAD:-}" ]; then
@@ -83,8 +77,8 @@ tar -C "$work" -xzf "$work/$asset"
 src=$(echo "$work"/"$product"-*-"$os-$arch")
 [ -x "$src/bin/$product" ] || fail "the archive does not hold bin/$product"
 
-# Replace the previous installation's files only, leaving anything else in the prefix
-# (the other product's libraries included). Each library directory is copied in full
+# Replace the previous installation's files only, leaving anything else in the prefix.
+# Each library directory is copied in full
 # before the old one is swapped out, so a failed copy leaves the previous installation
 # working.
 mkdir -p "$prefix/bin" "$prefix/lib/gamma" "$prefix/share/doc/gamma"

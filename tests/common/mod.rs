@@ -1,5 +1,49 @@
 //! Helpers shared by the integration test suites (`mod common;` in each).
 
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// The root of the repository.
+pub fn root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The compiler the suites test: the `gamma` executable that `GAMMA_TEST_COMPILER` names,
+/// built from `compiler/` (`tools/test.sh` builds it and sets the variable).
+pub fn compiler() -> &'static Path {
+    static COMPILER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    COMPILER.get_or_init(|| {
+        let exe = std::env::var_os("GAMMA_TEST_COMPILER").filter(|v| !v.is_empty()).map(PathBuf::from);
+        let exe = exe.unwrap_or_else(|| {
+            panic!(
+                "GAMMA_TEST_COMPILER is not set: run the tests with tools/test.sh, which builds \
+                 gamma from compiler/ and sets it, or set it to a gamma executable"
+            )
+        });
+        assert!(exe.is_file(), "GAMMA_TEST_COMPILER names {}, which is not a file", exe.display());
+        // Relative to the directory the tests started in, not to the ones they run in.
+        std::path::absolute(&exe).unwrap()
+    })
+}
+
+/// A command running the compiler under test with the repository's standard library and
+/// runtime, caching compiled runtime objects under the target directory rather than in the
+/// user's cache.
+pub fn gamma() -> Command {
+    compiler_command(compiler())
+}
+
+/// Like `gamma`, for the compiler `exe` (one that a test built).
+pub fn compiler_command(exe: &Path) -> Command {
+    let mut cmd = Command::new(exe);
+    cmd.env("GAMMA_STD", root().join("lib/std"))
+        .env("GAMMA_RUNTIME", root().join("runtime"))
+        .env("GAMMA_CACHE_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"));
+    cmd
+}
+
 /// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
 /// With `GAMMA_TEST_C=1` a missing compiler fails the tests instead of skipping the C
 /// lanes, so a CI job that is meant to test C cannot pass by testing only the interpreter.

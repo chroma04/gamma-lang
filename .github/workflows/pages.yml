@@ -1,7 +1,8 @@
 name: Website
 
 # Builds the website (web/) with the playground's WebAssembly interpreter on every pull
-# request, and publishes it to GitHub Pages from main. Both are built by gammac.
+# request, and publishes it to GitHub Pages from main. Both are built by gamma, from the
+# seed.
 
 on:
   push:
@@ -16,13 +17,8 @@ concurrency:
   group: pages-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
-
 jobs:
   build:
-    # The site and the playground's interpreter are built by gammac, from the seed: no cargo.
     name: Build the website
     runs-on: ubuntu-24.04
     steps:
@@ -34,20 +30,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 wasi-libc libclang-rt-18-dev-wasm32 binaryen
-      - name: Build gammac from the seed
+      - name: Build gamma from the seed
         run: bootstrap/build.sh
       - name: Test and build the site generator
         env:
           GAMMA_STD: ${{ github.workspace }}/lib/std
           GAMMA_RUNTIME: ${{ github.workspace }}/runtime
         run: |
-          target/bootstrap/gammac test web/gen
+          target/bootstrap/gamma test web/gen
           mkdir -p target/web
-          target/bootstrap/gammac build --mode=fast web/gen -o target/web/sitegen
+          target/bootstrap/gamma build --mode=fast web/gen -o target/web/sitegen
       - name: Build the playground interpreter (wasm32-wasi)
         env:
           CC: clang-18 --target=wasm32-wasi
-          GAMMAC: ${{ github.workspace }}/target/bootstrap/gammac
+          GAMMA: ${{ github.workspace }}/target/bootstrap/gamma
         run: web/play/build.sh target/web/play
       - name: Check the playground examples
         run: node web/check.mjs target/web/play/gamma-play.wasm target/web/play/gamma-play-libs.json
@@ -59,44 +55,6 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
-
-  rust-web:
-    # The Rust site generator and playground, until they are retired: they still build and
-    # pass their checks, and both site generators produce the same site.
-    name: Rust site generator and playground
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-wasip1
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            web/playground
-            web/sitegen
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Format and lint the web crates
-        run: |
-          cargo fmt --manifest-path web/playground/Cargo.toml -- --check
-          cargo fmt --manifest-path web/sitegen/Cargo.toml -- --check
-          cargo clippy --manifest-path web/playground/Cargo.toml
-          cargo clippy --manifest-path web/sitegen/Cargo.toml --all-targets
-      - name: Build the playground interpreter (wasm32-wasip1)
-        # The playground crate's .cargo/config.toml selects the target and stack size.
-        working-directory: web/playground
-        run: cargo build --release
-      - name: Check the playground examples
-        run: node web/check.mjs web/playground/target/wasm32-wasip1/release/gamma-playground.wasm
-      - name: Test the site generator
-        run: cargo test --manifest-path web/sitegen/Cargo.toml
-      - name: Both site generators produce the same site
-        run: |
-          bootstrap/build.sh
-          GAMMAC="$PWD/target/bootstrap/gammac" GAMMA_STD="$PWD/lib/std" GAMMA_RUNTIME="$PWD/runtime" web/gen/check-parity.sh
 
   deploy:
     name: Publish to GitHub Pages

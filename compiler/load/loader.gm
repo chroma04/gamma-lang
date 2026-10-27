@@ -127,8 +127,8 @@ pub Loader :: struct {
     /// The machine the program is compiled for (`target`, §3.6).
     pub target: Target
     /// The standard library's directory, as given and in canonical form.
-    std_root: string
-    std_canon: string
+    pub std_root: string
+    pub std_canon: string
     /// The working directory, for canonical paths.
     cwd: string
     pub modules: List(Module)

@@ -1,7 +1,7 @@
 //! Differential tester for the Gamma compiler.
 //!
 //! Generates random, well-typed, terminating programs from seeds and runs each with the
-//! interpreter (`gamma run`) and with the C back end compiled by gcc and by clang
+//! interpreter (`gamma run --backend=interp`) and with the C back end compiled by gcc and by clang
 //! (`gamma run --backend=c` with `CC` set). The three runs must agree on standard output,
 //! standard error and exit status. See `docs/contributing.md`.
 
@@ -24,7 +24,7 @@ Runs random programs through the interpreter and the C back end (gcc, clang).
   --start N          first seed (default 0)
   --count N          number of seeds to run (default 100)
   --jobs N           programs run in parallel (default: the number of CPUs)
-  --gamma PATH       the gamma executable (default: $GAMMA, else target/release/gamma
+  --gamma PATH       the gamma executable (default: $GAMMA, else target/bootstrap/gamma
                      of the repository)
   --cc LIST          C compilers to compare, comma separated (default gcc,clang);
                      compilers that are not installed are skipped
@@ -100,9 +100,10 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> (String, String,
 pub fn run_one(cfg: &Config, file: &Path, cc: Option<&str>) -> Outcome {
     let mut cmd = Command::new(&cfg.gamma);
     cmd.arg("run").arg(format!("--mode={}", cfg.mode));
-    if let Some(cc) = cc {
-        cmd.arg("--backend=c").env("CC", cc);
-    }
+    match cc {
+        Some(cc) => cmd.arg("--backend=c").env("CC", cc),
+        None => cmd.arg("--backend=interp"),
+    };
     cmd.arg("--diag-format=short").arg(file);
     cmd.env("GAMMA_CACHE_DIR", cfg.work.join("cache"));
     let (stdout, stderr, code) = run_with_timeout(cmd, cfg.timeout);
@@ -148,7 +149,7 @@ fn default_gamma() -> PathBuf {
     if let Some(p) = std::env::var_os("GAMMA") {
         return PathBuf::from(p);
     }
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/release/gamma")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/bootstrap/gamma")
 }
 
 struct Stats {

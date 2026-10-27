@@ -16,11 +16,11 @@ Const :: union {
 /// reporting it) if it cannot be evaluated.
 pub when_cond :: fn(l: ^Loader, module: usize, cond: ^const ast.Expr) -> ?bool needs Alloc {
     v := l.eval(module, cond, 0) else {
-        l.diags.report(cond.span, "gammac cannot evaluate this `when` condition yet: it handles `target`, `@size_of`, literals and constants")
+        l.diags.report(cond.span, "gamma cannot evaluate this `when` condition yet: it handles `target`, `@size_of`, literals and constants")
         return null
     }
     .Bool(b) := v else {
-        l.diags.report(cond.span, "gammac cannot evaluate this `when` condition yet: it is not a `bool`")
+        l.diags.report(cond.span, "gamma cannot evaluate this `when` condition yet: it is not a `bool`")
         return null
     }
     return b

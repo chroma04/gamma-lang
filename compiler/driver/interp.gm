@@ -8,7 +8,7 @@ tir :: import "../tir"
 /// interpreter; returns its exit status (134 after a trap, as for an aborted process).
 pub run_interp :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     d := s.l.lookup(root, "main") else {
-        eprint("gammac: the program has no `main` function\n")
+        eprint("gamma: the program has no `main` function\n")
         return 1
     }
     .Fn(main) := s.resolve_decl(d) else return 1
@@ -20,7 +20,7 @@ pub run_interp :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -
     // natively, as the reference implementation runs those it cannot describe to libffi.
     if needs_native(&p, entry) {
         if opts.native_fallback { return run(s, root, opts) }
-        eprint("gammac: cannot run this program here: foreign code and assembly are not available on this host\n")
+        eprint("gamma: cannot run this program here: foreign code and assembly are not available on this host\n")
         return 1
     }
     mode: interp.Mode = match opts.mode {

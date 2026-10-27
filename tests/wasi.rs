@@ -6,6 +6,8 @@
 //! The conformance suite runs the same way with `CC="clang --target=wasm32-wasi"` (the
 //! modules are started by Wasmtime, as `gamma run` does for any `.wasm` program).
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -41,7 +43,7 @@ fn tmp(name: &str) -> PathBuf {
 
 /// Runs `gamma` in `dir` with `args`, without the toolchain variables of the environment.
 fn gamma(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_gamma"))
+    common::gamma()
         .args(args)
         .current_dir(dir)
         .env_remove("CC")

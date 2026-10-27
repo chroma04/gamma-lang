@@ -1,21 +1,17 @@
 name: Release
 
-# Pushing a tag `vX.Y.Z` builds the `gamma` binaries for Linux and macOS (x86_64 and
-# arm64) and Windows (x86_64), checks that each one runs a program on the interpreter and
-# through C from its installed layout, and publishes them as a GitHub release whose notes
-# are the version's section of CHANGELOG.md. The self-hosted compiler `gammac` is released
-# next to them for the same five platforms, built without cargo: on Linux and macOS from
-# the bootstrap seed with a C compiler, for Windows by cross-compiling with MinGW-w64 on
-# Linux. Running the workflow by hand builds and checks the archives without publishing
-# them.
+# Pushing a tag `vX.Y.Z` builds `gamma` for Linux and macOS (x86_64 and arm64) and Windows
+# (x86_64), checks that each one runs a program on the interpreter and through C from its
+# installed layout, and publishes them as a GitHub release whose notes are the version's
+# section of CHANGELOG.md. The compiler is built without anything but a C compiler: on
+# Linux and macOS from the bootstrap seed, for Windows by cross-compiling with MinGW-w64 on
+# Linux. Release binaries are built in Fast mode. Running the workflow by hand builds and
+# checks the archives without publishing them.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-
-env:
-  CARGO_TERM_COLOR: always
 
 # Only the job that publishes the release writes to the repository.
 permissions:
@@ -38,116 +34,9 @@ jobs:
             asset: macos-x86_64
           - os: macos-14
             asset: macos-aarch64
-          - os: windows-latest
-            asset: windows-x86_64
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Check that the tag matches the crate version
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "the tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml" >&2
-            exit 1
-          fi
-      - name: Check that CHANGELOG.md has a section for the crate version
-        shell: bash
-        run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          if ! grep -q "^## $version\b" CHANGELOG.md; then
-            echo "CHANGELOG.md has no section for $version" >&2
-            exit 1
-          fi
-      - name: Build
-        # Windows builds link the C runtime statically, so gamma.exe needs no Visual C++
-        # redistributable.
-        env:
-          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
-        run: cargo build --release --locked
-      - name: Package
-        shell: bash
-        run: |
-          case "${{ matrix.asset }}" in
-            windows-*) bin=target/release/gamma.exe ;;
-            *) bin=target/release/gamma ;;
-          esac
-          tools/package-release.sh "${{ matrix.asset }}" "$bin" dist
-      - name: Install MinGW-w64 gcc (the C back end of Windows builds)
-        if: runner.os == 'Windows'
-        id: msys
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: false
-          install: mingw-w64-ucrt-x86_64-gcc
-      - name: Smoke test the installed layout (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          MSYS_LOCATION: ${{ steps.msys.outputs.msys2-location }}
-        run: |
-          export PATH="$(cygpath "$MSYS_LOCATION")/ucrt64/bin:$PATH"
-          mkdir -p "$RUNNER_TEMP/smoke"
-          7z x -y -bso0 -o"$RUNNER_TEMP/smoke" "dist/gamma-${{ matrix.asset }}.zip"
-          gamma="$(echo "$RUNNER_TEMP"/smoke/gamma-*/bin/gamma.exe)"
-          cat > "$RUNNER_TEMP/hello.gm" <<'EOF'
-          str :: import "std/str"
-
-          main :: fn() needs Out {
-              print("{}\n", str.contains("gamma", "mm"))
-          }
-          EOF
-          # Hide the source tree's library, so that only the packaged one can be found.
-          mv lib/std lib/std.hidden
-          cd "$RUNNER_TEMP"
-          test "$("$gamma" run hello.gm | tr -d '\r')" = true
-          test "$("$gamma" run --backend=c hello.gm | tr -d '\r')" = true
-          "$gamma" version
-      - name: Smoke test the installed layout
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/smoke"
-          tar -C "$RUNNER_TEMP/smoke" -xzf "dist/gamma-${{ matrix.asset }}.tar.gz"
-          gamma="$(echo "$RUNNER_TEMP"/smoke/gamma-*/bin/gamma)"
-          cat > "$RUNNER_TEMP/hello.gm" <<'EOF'
-          str :: import "std/str"
-
-          main :: fn() needs Out {
-              print("{}\n", str.contains("gamma", "mm"))
-          }
-          EOF
-          # Hide the source tree's library, so that only the packaged one can be found.
-          mv lib/std lib/std.hidden
-          cd "$RUNNER_TEMP"
-          test "$("$gamma" run hello.gm)" = true
-          test "$("$gamma" run --backend=c hello.gm)" = true
-          "$gamma" version
-      - uses: actions/upload-artifact@v7
-        with:
-          name: gamma-${{ matrix.asset }}
-          path: dist/*
-
-  gammac:
-    name: Build gammac (${{ matrix.asset }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            asset: linux-x86_64
-          - os: ubuntu-22.04-arm
-            asset: linux-aarch64
-          - os: macos-15-intel
-            asset: macos-x86_64
-          - os: macos-14
-            asset: macos-aarch64
-    steps:
-      - uses: actions/checkout@v7
-      - name: Check that the tag matches the version of gammac
+      - name: Check that the tag matches the compiler's version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           version=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version = / { gsub(/"/, "", $3); print $3; exit }' compiler/gamma.toml)
@@ -155,27 +44,39 @@ jobs:
             echo "the tag $GITHUB_REF_NAME does not match the version $version in compiler/gamma.toml" >&2
             exit 1
           fi
-      - name: Build gammac from the seed
+      - name: Check that CHANGELOG.md has a section for the version
+        run: |
+          version=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version = / { gsub(/"/, "", $3); print $3; exit }' compiler/gamma.toml)
+          if ! grep -q "^## $version\b" CHANGELOG.md; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+      - name: Build gamma from the seed
         run: bootstrap/build.sh
+      - name: Build the release binary (Fast mode)
+        env:
+          GAMMA_STD: ${{ github.workspace }}/lib/std
+          GAMMA_RUNTIME: ${{ github.workspace }}/runtime
+        run: target/bootstrap/gamma build --mode=fast compiler -o target/release-gamma
       - name: Package
-        run: tools/package-gammac.sh "${{ matrix.asset }}" target/bootstrap/gammac dist
+        run: tools/package-release.sh "${{ matrix.asset }}" target/release-gamma dist
       - name: Smoke test the installed layout
         run: |
           mkdir -p "$RUNNER_TEMP/smoke"
-          tar -C "$RUNNER_TEMP/smoke" -xzf "dist/gammac-${{ matrix.asset }}.tar.gz"
+          tar -C "$RUNNER_TEMP/smoke" -xzf "dist/gamma-${{ matrix.asset }}.tar.gz"
           # Hide the source tree's libraries and runtime, so that only the packaged ones
           # can be found.
           mv lib lib.hidden
           mv runtime runtime.hidden
-          tools/smoke-gammac.sh "$(echo "$RUNNER_TEMP"/smoke/gammac-*/bin/gammac)"
+          tools/smoke-release.sh "$(echo "$RUNNER_TEMP"/smoke/gamma-*/bin/gamma)"
       - uses: actions/upload-artifact@v7
         with:
-          name: gammac-${{ matrix.asset }}
+          name: gamma-${{ matrix.asset }}
           path: dist/*
 
-  gammac-windows:
-    name: Cross-build gammac (windows-x86_64)
-    needs: gammac
+  windows:
+    name: Cross-build (windows-x86_64)
+    needs: build
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
@@ -183,31 +84,31 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q gcc-mingw-w64-x86-64 zip
       - uses: actions/download-artifact@v4
         with:
-          name: gammac-linux-x86_64
+          name: gamma-linux-x86_64
           path: linux
-      - name: Build gammac.exe with the Linux gammac
+      - name: Build gamma.exe with the Linux gamma
         run: |
-          tar -C linux -xzf linux/gammac-linux-x86_64.tar.gz
-          # gammac finds its library and runtime from its own location.
-          linux/gammac-*/bin/gammac build compiler --target=x86_64-w64-mingw32 -o gammac.exe
+          tar -C linux -xzf linux/gamma-linux-x86_64.tar.gz
+          # gamma finds its library and runtime from its own location.
+          linux/gamma-*/bin/gamma build --mode=fast compiler --target=x86_64-w64-mingw32 -o gamma.exe
       - name: Package
-        run: tools/package-gammac.sh windows-x86_64 gammac.exe dist
+        run: tools/package-release.sh windows-x86_64 gamma.exe dist
       - uses: actions/upload-artifact@v7
         with:
-          name: gammac-windows-x86_64
+          name: gamma-windows-x86_64
           path: dist/*
 
-  gammac-windows-smoke:
-    name: Smoke test gammac (windows-x86_64)
-    needs: gammac-windows
+  windows-smoke:
+    name: Smoke test (windows-x86_64)
+    needs: windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
-          name: gammac-windows-x86_64
+          name: gamma-windows-x86_64
           path: dist
-      - name: Install MinGW-w64 gcc (the C back end of gammac)
+      - name: Install MinGW-w64 gcc (the C back end)
         id: msys
         uses: msys2/setup-msys2@v2
         with:
@@ -221,16 +122,16 @@ jobs:
         run: |
           export PATH="$(cygpath "$MSYS_LOCATION")/ucrt64/bin:$PATH"
           mkdir -p "$RUNNER_TEMP/smoke"
-          7z x -y -bso0 -o"$RUNNER_TEMP/smoke" dist/gammac-windows-x86_64.zip
+          7z x -y -bso0 -o"$RUNNER_TEMP/smoke" dist/gamma-windows-x86_64.zip
           # Hide the source tree's libraries and runtime, so that only the packaged ones
           # can be found.
           mv lib lib.hidden
           mv runtime runtime.hidden
-          tools/smoke-gammac.sh "$(echo "$RUNNER_TEMP"/smoke/gammac-*/bin/gammac.exe)"
+          tools/smoke-release.sh "$(echo "$RUNNER_TEMP"/smoke/gamma-*/bin/gamma.exe)"
 
   publish:
     name: Publish the release
-    needs: [build, gammac, gammac-windows, gammac-windows-smoke]
+    needs: [build, windows, windows-smoke]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

@@ -7,6 +7,8 @@
 //! * `std_reference_is_current` fails when the checked-in standard library reference in
 //!   `docs/std/` no longer matches `lib/std`.
 
+mod common;
+
 use gamma::doc::{self, Format};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,7 +22,7 @@ fn fixture() -> PathBuf {
 }
 
 fn gamma() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_gamma"))
+    common::gamma()
 }
 
 fn check_golden(name: &str, actual: &str) {

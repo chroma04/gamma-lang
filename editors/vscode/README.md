@@ -11,7 +11,7 @@ Syntax highlighting and language server support for [Gamma](../../README.md) (`.
 
 ## Requirements
 
-The language server needs the `gamma` executable. Build it from the repository root with `cargo build --release`, then put `target/release/gamma` on your `PATH` or set `gamma.path`. Highlighting works without it.
+The language server needs the `gamma` executable. Build it from the repository root with `bootstrap/build.sh`, then put `target/bootstrap/gamma` on your `PATH` or set `gamma.path`. Highlighting works without it.
 
 ## Settings
 

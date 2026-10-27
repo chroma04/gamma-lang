@@ -1,10 +1,12 @@
 //! End-to-end tests of `gamma lsp`: the real binary, driven over its standard input and
 //! output with framed JSON-RPC messages.
 
+mod common;
+
 use serde_json::{Value, json};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
@@ -60,7 +62,7 @@ impl Lsp {
 
     /// Starts the server with extra environment variables.
     fn start_with(envs: &[(&str, &Path)]) -> Lsp {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        let mut child = common::gamma()
             .arg("lsp")
             .envs(envs.iter().map(|(k, v)| (*k, *v)))
             .stdin(Stdio::piped())
@@ -968,10 +970,16 @@ fn definition_in_the_core_library_points_into_the_source_tree() {
 fn definition_in_the_core_library_without_a_source_tree_uses_a_read_only_copy() {
     let dir = TempDir::new();
     let path = dir.write("main.gm", CORE_PROGRAM);
-    // A standard library root without the core sources next to it, and a cache directory.
+    // A standard library root without the core sources next to it (they are found through
+    // GAMMA_CORE), and a cache directory.
     let std = dir.write("nostd/std/placeholder.txt", "");
     let cache = dir.0.join("cache");
-    let mut lsp = Lsp::start_with(&[("GAMMA_STD", std.parent().unwrap()), ("GAMMA_CACHE_DIR", cache.as_path())]);
+    let core = common::root().join("lib/core");
+    let mut lsp = Lsp::start_with(&[
+        ("GAMMA_STD", std.parent().unwrap()),
+        ("GAMMA_CORE", core.as_path()),
+        ("GAMMA_CACHE_DIR", cache.as_path()),
+    ]);
     lsp.initialize();
     lsp.open(&path, CORE_PROGRAM);
     let d = lsp.result("textDocument/definition", lsp.at(&path, 1, 11));

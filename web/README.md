@@ -11,48 +11,37 @@ playground that runs Gamma programs in the browser. It is built by
 | `pages/*.html` | Hand-written pages (the landing page, the playground); a front-matter comment on the first line sets the title, section, layout and description |
 | `static/` | Copied to `assets/`: the stylesheet, the playground's scripts, the icon |
 | `examples/` | The playground's own example programs; `examples/list.txt` is its menu |
-| `sitegen/` | The generator: Markdown → HTML, highlighting with Gamma's own lexer, sidebars, link rewriting and a link check |
-| `play/` | The playground's interpreter built from `gammac`, as a WASI command for the browser (`gamma-play.wasm`), and the script that builds it |
-| `playground/` | The same interpreter built from the Rust implementation (a separate Cargo workspace) |
-| `check.mjs` | Runs every menu example in a WebAssembly interpreter (either one) with Node |
+| `gen/` | The generator, written in Gamma: Markdown → HTML, highlighting with Gamma's own lexer, sidebars, link rewriting and a link check |
+| `play/` | The playground's interpreter built from `compiler/`, as a WASI command for the browser (`gamma-play.wasm`), and the script that builds it |
+| `check.mjs` | Runs every menu example in the WebAssembly interpreter with Node |
+| `sitegen/`, `playground/` | The generator and the playground interpreter of the retired Rust implementation: no longer built or tested, kept until that code is deleted |
 
 ## Building it locally
 
-The playground's interpreter is built by `gammac`, without cargo (see `play/build.sh` for
-the tools it needs: `gammac`, clang with the WASI C library, and Binaryen's `wasm-opt`):
+Everything is built by `gamma` (see `bootstrap/README.md` for building one with only a C
+compiler). The playground's interpreter needs, besides `gamma`, clang with the WASI C
+library and Binaryen's `wasm-opt` (see `play/build.sh`); the generator needs only `gamma`:
 
 ```sh
-web/play/build.sh                  # writes web/play/target/gamma-play.wasm and gamma-play-libs.json
-node web/check.mjs web/play/target/gamma-play.wasm web/play/target/gamma-play-libs.json
-```
-
-The pages come from the generator, a separate Cargo workspace; the two playground files
-go into `assets/` next to the scripts:
-
-```sh
-cargo run --release --manifest-path web/sitegen/Cargo.toml -- --out _site
-cp web/play/target/gamma-play.wasm web/play/target/gamma-play-libs.json _site/assets/
+GAMMA=target/bootstrap/gamma CC="clang --target=wasm32-wasi" web/play/build.sh target/web/play
+node web/check.mjs target/web/play/gamma-play.wasm target/web/play/gamma-play-libs.json
+gamma build web/gen -o target/web/sitegen
+target/web/sitegen --out _site          # --root DIR names the repository (default: .)
+cp target/web/play/gamma-play.wasm target/web/play/gamma-play-libs.json _site/assets/
 python3 -m http.server -d _site 8000     # then open http://localhost:8000
 ```
 
 The generator fails if any internal link or `#anchor` is broken: when a document links to
-a heading, keep the link in step with the heading.
-
-`playground/` builds the same page's interpreter from the Rust implementation instead
-(`rustup target add wasm32-wasip1`, `(cd web/playground && cargo build --release)`); it is
-a separate workspace, so `cargo test` at the root does not build it. `check.mjs` checks
-its module too, when given the module alone:
-`node web/check.mjs web/playground/target/wasm32-wasip1/release/gamma-playground.wasm`.
-Copy that module to `assets/gamma-play.wasm` to publish it; the page needs no other file
-for it.
+a heading, keep the link in step with the heading. `gamma test web/gen` runs its unit
+tests.
 
 ## How the playground works
 
 `play/main.gm` is a small Gamma program that depends on the `gammac` package
 (`compiler/`) and reuses its loader, checker, interpreter and formatter. Built with
-`gammac build --target=wasm32-wasi`, it is a WASI command that reads the program from
+`gamma build --target=wasm32-wasi`, it is a WASI command that reads the program from
 standard input and checks and runs it in the interpreter (`run`, as
-`gammac run --backend=interp` does), or formats it (`fmt`, as `gammac fmt -` does). The exit
+`gamma run --backend=interp` does), or formats it (`fmt`, as `gamma fmt -` does). The exit
 status is the program's, 1 for a program with errors and 134 after a trap; diagnostics
 and traps go to standard error in the human format. A program that calls foreign code or
 uses assembly is refused, since the module has no C compiler to fall back on.
@@ -68,8 +57,7 @@ directory.
 
 The interpreter runs fibers (`with … on`, generators, the scheduler of `std/fiber`) and
 threads, which the compiler's own interpreter provides itself; the module switches its
-fibers with Binaryen's Asyncify, which `gammac build` applies. Differences from the Rust
-interpreter that a program can notice: it runs several times slower on start-up (the
+fibers with Binaryen's Asyncify, which `gamma build` applies. What a program can notice: it is slow to start (the
 compiler checks the core library on every run, and the module is about 10 MB, 3 MB
 compressed), a trap's location line names the function (`at /play/main.gm:4:19 in main`),
 and a runaway recursion ends when the browser's stack does (status 134 with a message
@@ -90,25 +78,21 @@ the message protocol that the page uses.
 In the repository's settings, *Pages* → *Build and deployment* → *Source* must be
 *GitHub Actions*. Pushes to `main` then publish the site.
 
-## The generator written in Gamma
+## The generator
 
-`gen/` is a second implementation of the generator, written in Gamma, so that the pages
-can be built without cargo. It takes the same options and inputs and writes the same site:
-`web/gen/check-parity.sh` builds the site with both generators and requires the two output
-trees to be identical, and the link check of both to fail with the same messages on a copy
-of the repository with a broken anchor. It needs `gammac` (see `bootstrap/README.md` for
-building one with only a C compiler):
+`gen/` is the generator, written in Gamma. It takes `--out DIR` and `--root DIR` and writes
+the site. It needs `gamma` (see `bootstrap/README.md` for building one with only a C
+compiler):
 
 ```sh
-gammac build web/gen -o _gen            # or: gammac run web/gen --out _site
-./_gen --out _site                      # --root DIR names the repository (default: .)
-gammac test web/gen                     # the unit tests
-web/gen/check-parity.sh                 # needs cargo too: compares with sitegen/
+gamma build web/gen -o _gen            # or: gamma run web/gen --out _site
+./_gen --out _site                     # --root DIR names the repository (default: .)
+gamma test web/gen                     # the unit tests
 ```
 
-The modules follow `sitegen/`: `markdown/` (a CommonMark parser with pipe tables and
-strikethrough, and the HTML output), `highlight/`, `pages/`, `links/`, `check/` and
-`examples/`, with `main.gm` as the command line.
+The modules are `markdown/` (a CommonMark parser with pipe tables and strikethrough, and
+the HTML output), `highlight/`, `pages/`, `links/`, `check/` and `examples/`, with
+`main.gm` as the command line.
 
 - Highlighting uses the compiler's own lexer. `gen/gamma.toml` has a path dependency on
   `compiler/` (the package `gammac`), and `highlight/` imports `gammac/syntax`; nothing is
@@ -116,13 +100,7 @@ strikethrough, and the HTML output), `highlight/`, `pages/`, `links/`, `check/` 
 - The Markdown parser implements what the documents in this repository use, and more of
   CommonMark than that where it was cheap: block quotes, lists, indented and fenced code,
   HTML blocks, reference definitions, setext and ATX headings, emphasis, links, images,
-  autolinks and raw inline HTML. It is checked against `pulldown-cmark` on the repository
-  and on a collection of edge cases. Not supported: footnotes, which `sitegen/` enables
-  but no document uses; named character references other than a common subset (all
-  numeric ones work); and, outside ASCII, letters and lower-casing in heading ids beyond
-  the Latin, Greek and Cyrillic alphabets.
-- Tests run on fakes of the file system and the allocator, so the one test of `sitegen/`
-  that reads the repository's own documents (every code block must survive highlighting
-  unchanged) has no counterpart in `gen/`. The comparison of the two sites in
-  `check-parity.sh` still shows that the highlighted output of every block is the same as
-  the Rust generator's.
+  autolinks and raw inline HTML. Not supported: footnotes; named character references
+  other than a common subset (all numeric ones work); and, outside ASCII, letters and
+  lower-casing in heading ids beyond the Latin, Greek and Cyrillic alphabets.
+- Tests run on fakes of the file system and the allocator.

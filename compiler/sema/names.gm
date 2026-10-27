@@ -274,6 +274,7 @@ public_op_effect :: fn(s: ^const Sema, m: usize, name: string) -> ?string {
 
 /// Warns about a use at `span` of declaration `d` if it is `#deprecated("msg")` (§20.2).
 pub check_deprecated :: fn(s: ^Sema, d: usize, span: source.Span) needs Alloc {
+    s.check_freestanding_use(d, span)
     decl := &s.l.decls.items[d]
     for attr in decl.item.attrs {
         if attr.name.name is not "deprecated" { continue }
@@ -288,4 +289,16 @@ pub check_deprecated :: fn(s: ^Sema, d: usize, span: source.Span) needs Alloc {
         s.emit(w)
         return
     }
+}
+
+/// On a freestanding target (§3.7.1), naming one of the core library's default handler
+/// providers in a program's own code is an error: there is no operating system behind them.
+check_freestanding_use :: fn(s: ^Sema, d: usize, span: source.Span) needs Alloc {
+    if s.l.target.os is not "Freestanding" or span is source.DUMMY { return }
+    decl := &s.l.decls.items[d]
+    name := decl.name.name
+    if not s.l.modules.items[decl.module].is_prelude or name not in ("heap_allocator", "system_io", "system_output") { return }
+    path := s.l.sm.file(span.file).path
+    if path.starts_with("<core>") or path.starts_with(s.l.std_root) or path.starts_with(s.l.std_canon) { return }
+    s.error(span, str.format("`{}` does not exist on a freestanding target (§3.7.1)", name)!)
 }

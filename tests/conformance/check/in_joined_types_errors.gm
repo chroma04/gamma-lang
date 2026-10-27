@@ -1,0 +1,9 @@
+//! stage: check
+// `in` joins the element and the members only where one type coerces to the other
+// (§7.7): an array's elements are not converted, and unrelated types are not joined.
+main :: fn() {
+    narrow := [_]u8(1, 2)
+    signed := i8(-1)
+    _ = u16(1) in narrow //~ ERROR the element and the members of `in` have different types: `u16` and `u8`
+    _ = signed in (u8(1), u8(2)) //~ ERROR the element and the members //~ ERROR the element and the tuple members //~ ERROR the element and the tuple members
+}

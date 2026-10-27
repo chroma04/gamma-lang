@@ -156,11 +156,11 @@ pub Prepared :: struct {
 /// what the packages add to a native build, or reports the error and returns `null`.
 pub prepare_build :: fn(input: string, opts: Options, profile: ?string) -> ?Prepared needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     res := prepare(input, opts) else e => {
-        eprint("gammac: {}\n", e)
+        eprint("gamma: {}\n", e)
         return null
     }
     extras := collect(input, res, profile) else e => {
-        eprint("gammac: {}\n", e)
+        eprint("gamma: {}\n", e)
         return null
     }
     return Prepared(resolution: res, extras: extras)

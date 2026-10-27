@@ -7,6 +7,8 @@
 //! through `GAMMA_RUNNER`). Each test is skipped, with a note, when what it needs is
 //! missing.
 
+mod common;
+
 use gamma::toolchain::Toolchain;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -45,7 +47,7 @@ fn setup(name: &str) -> (PathBuf, PathBuf) {
 
 /// Runs `gamma` with `args` and the toolchain variables `env` (the others unset).
 fn gamma(args: &[&str], env: &[(&str, &str)]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    let mut cmd = common::gamma();
     cmd.args(args).env_remove("CC").env_remove("CFLAGS").env_remove("LDFLAGS");
     for (k, v) in env {
         cmd.env(k, v);
@@ -134,9 +136,9 @@ fn target_follows_the_compiler() {
     }
     let (dir, src) = setup("target");
     let src = src.to_str().unwrap();
-    let out = gamma(&["run", src], &[("CC", "clang --target=aarch64-linux-gnu")]);
+    let out = gamma(&["run", "--backend=interp", src], &[("CC", "clang --target=aarch64-linux-gnu")]);
     assert_eq!(text(&out.stdout), "aarch64\nlittle\n64 24 16\n", "{}", text(&out.stderr));
-    let out = gamma(&["run", src], &[("CC", "clang"), ("CFLAGS", "--target=x86_64-linux-gnu")]);
+    let out = gamma(&["run", "--backend=interp", src], &[("CC", "clang"), ("CFLAGS", "--target=x86_64-linux-gnu")]);
     assert_eq!(text(&out.stdout), "x86_64\nlittle\n64 24 16\n", "{}", text(&out.stderr));
     // A 4-byte-pointer target with `__int128` (wasm32 in clang). A compiler that defines no
     // operating system (WebAssembly without WASI) makes a freestanding program (§3.7.1),
@@ -149,7 +151,7 @@ fn target_follows_the_compiler() {
     .unwrap();
     let out = gamma(&["check", wasm.to_str().unwrap()], &[("CC", "clang --target=wasm32-unknown-unknown")]);
     assert!(out.status.success(), "{}", text(&out.stderr));
-    let out = gamma(&["run", src], &[("CC", "clang --target=s390x-linux-gnu")]);
+    let out = gamma(&["run", "--backend=interp", src], &[("CC", "clang --target=s390x-linux-gnu")]);
     assert_eq!(text(&out.stdout), "s390x\nbig\n64 24 16\n", "{}", text(&out.stderr));
 }
 
@@ -224,9 +226,9 @@ fn target_flag_checks_the_compiler() {
     assert!(err.contains("riscv64-nowhere-gnu-gcc") && err.contains("CC"), "{}", err);
     if runs("clang") {
         // clang takes the triple.
-        let out = gamma(&["run", "--target=s390x-linux-gnu", src], &[("CC", "clang")]);
+        let out = gamma(&["run", "--backend=interp", "--target=s390x-linux-gnu", src], &[("CC", "clang")]);
         assert_eq!(text(&out.stdout), "s390x\nbig\n64 24 16\n", "{}", text(&out.stderr));
-        let out = gamma(&["run", "--target=aarch64-linux-gnu", src], &[("CC", "clang")]);
+        let out = gamma(&["run", "--backend=interp", "--target=aarch64-linux-gnu", src], &[("CC", "clang")]);
         assert_eq!(text(&out.stdout), "aarch64\nlittle\n64 24 16\n", "{}", text(&out.stderr));
         // A compiler for another target than the triple is an error.
         let out = gamma(&["run", "--target=s390x-linux-gnu", src], &[("CC", "clang --target=aarch64-linux-gnu")]);
