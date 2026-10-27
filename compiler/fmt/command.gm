@@ -4,7 +4,7 @@ io :: import "std/io"
 load :: import "../load"
 str :: import "std/str"
 
-USAGE :: "usage: gammac fmt [--check] <file or directory>... (`-` filters stdin to stdout)\n"
+USAGE :: "usage: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)\n"
 
 /// `gammac fmt [--check] <file or directory>... (`-` filters stdin to stdout)`. Returns the
 /// exit status.
@@ -17,7 +17,7 @@ pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + In + Out 
             "--check" => { check = true }
             _ => {
                 if a.starts_with("-") and a is not "-" {
-                    eprint("gammac: unknown option `{}`\n\n{}", a, USAGE)
+                    eprint("gamma: unknown option `{}`\n\n{}", a, USAGE)
                     return 2
                 }
                 paths.push(a)!
@@ -25,7 +25,7 @@ pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + In + Out 
         }
     }
     if paths.items.len is 0 {
-        eprint("gammac: no input file\n\n{}", USAGE)
+        eprint("gamma: no input file\n\n{}", USAGE)
         return 2
     }
     if paths.items.len is 1 and paths.items[0] is "-" { return filter() }
@@ -35,7 +35,7 @@ pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + In + Out 
         files := list(string)
         for p in paths.items {
             collect_gm_files(p, &files) else e => {
-                eprint("gammac: {}: {}\n", p, io_message(e))
+                eprint("gamma: {}: {}\n", p, io_message(e))
                 return 1
             }
         }
@@ -53,11 +53,11 @@ filter :: fn() -> u8 needs Alloc + Err + In + Out {
     defer a.deinit()
     with a.allocator() {
         data := io.read_all() else e => {
-            eprint("gammac: <stdin>: {}\n", read_message(e))
+            eprint("gamma: <stdin>: {}\n", read_message(e))
             return 1
         }
         if not data.utf8_valid() {
-            eprint("gammac: <stdin>: {}\n", INVALID_UTF8)
+            eprint("gamma: <stdin>: {}\n", INVALID_UTF8)
             return 1
         }
         out := format_source(data) else e => {
@@ -76,11 +76,11 @@ format_file :: fn(path: string, check: bool) -> bool needs Alloc + Err + Fs + Ou
     defer a.deinit()
     with a.allocator() {
         src := fs.read_all(path) else e => {
-            eprint("gammac: {}: {}\n", path, read_message(e))
+            eprint("gamma: {}: {}\n", path, read_message(e))
             return false
         }
         if not src.utf8_valid() {
-            eprint("gammac: {}: {}\n", path, INVALID_UTF8)
+            eprint("gamma: {}: {}\n", path, INVALID_UTF8)
             return false
         }
         out := format_source(src) else e => {
@@ -93,7 +93,7 @@ format_file :: fn(path: string, check: bool) -> bool needs Alloc + Err + Fs + Ou
             return false
         }
         fs.write_all(path, out) else e => {
-            eprint("gammac: {}: {}\n", path, io_message(e))
+            eprint("gamma: {}: {}\n", path, io_message(e))
             return false
         }
         return true

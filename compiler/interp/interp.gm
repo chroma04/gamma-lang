@@ -375,7 +375,7 @@ tmp_copy :: fn(m: ^Machine, b: []const u8) -> []u8 needs Alloc {
 trap :: fn(m: ^const Machine, span: source.Span, message: string) -> Flow needs Alloc => .Trap(new(Trap(message: message, span: span, trace: list(TraceCall)))!)
 
 /// A construct the interpreter cannot run yet.
-unsupported :: fn(m: ^const Machine, span: source.Span, what: string) -> Flow needs Alloc => m.trap(span, str.format("internal error: not supported by gammac's interpreter yet: {}", what)!)
+unsupported :: fn(m: ^const Machine, span: source.Span, what: string) -> Flow needs Alloc => m.trap(span, str.format("internal error: not supported by the interpreter yet: {}", what)!)
 
 mem_trap :: fn(m: ^const Machine, span: source.Span, e: MemError) -> Flow needs Alloc => m.trap(span, mem_message(e))
 

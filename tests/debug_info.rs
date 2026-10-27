@@ -8,6 +8,8 @@
 //! the embedded pretty printers; when `lldb` is installed, it must show them too.
 //! Without a usable C compiler (or debugger) the tests are skipped.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -91,7 +93,7 @@ fn build_program(name: &str, stem: &str, program: &str, args: &[&str]) -> PathBu
     let src = dir.join(format!("{stem}.gm"));
     std::fs::write(&src, program).unwrap();
     let exe = dir.join(stem);
-    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+    let out = common::gamma()
         .env("GAMMA_CACHE_DIR", PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"))
         .arg("build")
         .args(args)

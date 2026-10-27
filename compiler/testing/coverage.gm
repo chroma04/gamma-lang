@@ -295,7 +295,7 @@ coverage_report :: fn(s: ^sema.Sema, scope: ^const Scope, map: ^const CoverMap, 
         text.write("LF:{}\nLH:{}\nend_of_record\n", f.hi - f.lo, hit)!
     }
     fs.write_all(out, text.items) else e => {
-        eprint("gammac: cannot write {}: {}\n", out, load.os_error_text(e))
+        eprint("gamma: cannot write {}: {}\n", out, load.os_error_text(e))
         return false
     }
     return true

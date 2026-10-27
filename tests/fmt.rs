@@ -5,6 +5,8 @@
 //! output lexes to the same tokens as the input, and formatting is idempotent.
 //! The unit tests pin down one spacing or indentation rule each.
 
+mod common;
+
 use gamma::diag::Diagnostics;
 use gamma::fmt::format_source;
 use gamma::source::FileId;
@@ -329,9 +331,7 @@ fn directory_walk_skips_hidden_directories_and_package_target() {
         std::fs::write(root.join(d).join("a.gm"), ugly).unwrap();
     }
     std::fs::write(root.join("gamma.toml"), "[package]\nname = \"w\"\nversion = \"0.1.0\"\n").unwrap();
-    let gamma = |args: &[&Path]| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_gamma")).arg("fmt").args(args).output().unwrap()
-    };
+    let gamma = |args: &[&Path]| common::gamma().arg("fmt").args(args).output().unwrap();
     assert!(gamma(&[&root]).status.success());
     let read = |d: &str| std::fs::read_to_string(root.join(d).join("a.gm")).unwrap();
     assert_ne!(read("src"), ugly);

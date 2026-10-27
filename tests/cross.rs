@@ -7,6 +7,8 @@
 //! through `GAMMA_RUNNER`). Each test is skipped, with a note, when what it needs is
 //! missing.
 
+mod common;
+
 use gamma::toolchain::Toolchain;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -45,7 +47,7 @@ fn setup(name: &str) -> (PathBuf, PathBuf) {
 
 /// Runs `gamma` with `args` and the toolchain variables `env` (the others unset).
 fn gamma(args: &[&str], env: &[(&str, &str)]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    let mut cmd = common::gamma();
     cmd.args(args).env_remove("CC").env_remove("CFLAGS").env_remove("LDFLAGS");
     for (k, v) in env {
         cmd.env(k, v);

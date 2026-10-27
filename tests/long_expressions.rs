@@ -1,8 +1,9 @@
 //! Very long expressions compile and run: the compiler's passes recurse over the syntax
 //! tree, so a long operator chain is as deep as it is long.
 
+mod common;
+
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Runs a program whose `main` prints a sum of `n` terms `term` with the interpreter.
 fn run_sum(name: &str, n: usize, term: &str) -> String {
@@ -15,7 +16,7 @@ fn run_sum(name: &str, n: usize, term: &str) -> String {
         format!("main :: fn() needs Out {{\n    y := 1\n    x := {sum}\n    print(\"{{}} {{}}\\n\", x, y)\n}}\n"),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_gamma")).arg("run").arg(&src).output().unwrap();
+    let out = common::gamma().arg("run").arg(&src).output().unwrap();
     assert!(out.status.success(), "gamma run failed:\n{}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -37,7 +38,7 @@ fn gamma(command: &str, name: &str, src: &str) -> (Option<i32>, String) {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.gm"));
     std::fs::write(&path, src).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_gamma")).arg(command).arg(&path).output().unwrap();
+    let out = common::gamma().arg(command).arg(&path).output().unwrap();
     (out.status.code(), String::from_utf8_lossy(&out.stderr).chars().take(600).collect())
 }
 
@@ -125,7 +126,7 @@ fn run_both(name: &str, src: &str) -> [(Option<i32>, String); 2] {
     let path = dir.join(format!("{name}.gm"));
     std::fs::write(&path, src).unwrap();
     ["interp", "c"].map(|backend| {
-        let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        let out = common::gamma()
             .arg("run")
             .arg(format!("--backend={backend}"))
             .arg(&path)
@@ -231,7 +232,7 @@ fn native_long_function_is_marked_for_clang() {
     let path = dir.join("long_fn.gm");
     std::fs::write(&path, &src).unwrap();
     let exe = dir.join("long_fn");
-    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+    let out = common::gamma()
         .arg("build")
         .arg(&path)
         .arg("-o")

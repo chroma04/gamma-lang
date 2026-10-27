@@ -8,7 +8,7 @@
 # reads, which web/static/play-worker.js serves from memory). OUT_DIR defaults to
 # web/play/target.
 #
-# Needs gammac (GAMMAC, or `gammac` on PATH), a C compiler for wasm32-wasi (clang with
+# Needs gamma (GAMMA, or `gamma` on PATH), a C compiler for wasm32-wasi (clang with
 # the WASI C library: WASI_SDK_PATH, or CC="clang --target=wasm32-wasi") and Binaryen's
 # wasm-opt (WASM_OPT), because the interpreter switches fibers. See "Targets, modes and
 # caches" in docs/self-hosting.md. GAMMA_STD and GAMMA_RUNTIME default to this checkout's.
@@ -21,7 +21,7 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out=${1:-$here/target}
-gammac=${GAMMAC:-gammac}
+gamma=${GAMMA:-gamma}
 : "${GAMMA_STD:=$root/lib/std}"
 : "${GAMMA_RUNTIME:=$root/runtime}"
 export GAMMA_STD GAMMA_RUNTIME
@@ -29,11 +29,11 @@ export GAMMA_STD GAMMA_RUNTIME
 mkdir -p "$out"
 
 # The libraries, one JSON object from path (/std/..., /core/...) to text.
-"$gammac" run --backend=interp "$here/tools/bundle.gm" "$out/gamma-play-libs.json" \
+"$gamma" run --backend=interp "$here/tools/bundle.gm" "$out/gamma-play-libs.json" \
     "/std=$GAMMA_STD" "/core=$(dirname "$GAMMA_STD")/core"
 
 # The interpreter. gammac writes the C next to the module; it is not needed afterwards.
-"$gammac" build --mode="${MODE:-checked}" --target=wasm32-wasi "$here" -o "$out/gamma-play.wasm"
+"$gamma" build --mode="${MODE:-checked}" --target=wasm32-wasi "$here" -o "$out/gamma-play.wasm"
 rm -f "$out"/gamma-play.wasm.c "$out"/gamma-play.wasm.*.c "$out"/gamma-play.wasm.*.h
 
 ls -l "$out/gamma-play.wasm" "$out/gamma-play-libs.json"

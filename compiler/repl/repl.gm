@@ -535,7 +535,7 @@ pub command_run :: fn(options: Options) -> u8 needs Host {
     if path := opts.preload {
         if not r.load_file(path) { return 1 }
     }
-    if not quiet { print("gammac {} repl; :help for commands, :quit to leave\n", opts.version) }
+    if not quiet { print("gamma {} repl; :help for commands, :quit to leave\n", opts.version) }
     pending := list(u8)
     while true {
         if not quiet { Out.write(if pending.items.len is 0 { ">> " } else { ".. " }) }

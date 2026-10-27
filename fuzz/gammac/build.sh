@@ -9,7 +9,7 @@
 # Debian and Ubuntu: `apt install clang libclang-rt-dev`).
 #
 # Environment:
-#   GAMMAC   the gammac to use (default: `gammac` on PATH)
+#   GAMMA    the gamma to use (default: `gamma` on PATH)
 #   CLANG    the C compiler (default: clang)
 #   MODE     the gammac build mode (default: checked, which keeps the safety checks)
 #   SAN      sanitizers for the generated C, as in `-fsanitize=` (default: address; the
@@ -20,7 +20,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-: "${GAMMAC:=gammac}"
+: "${GAMMA:=gamma}"
 : "${CLANG:=clang}"
 : "${MODE:=checked}"
 : "${OPT:=-O1}"
@@ -48,7 +48,7 @@ build_one() {
     if [ -z "${SAN:-}" ] && [ "$target" = check ]; then san=none; fi
     if [ "$san" = none ]; then flags=fuzzer-no-link; else flags=fuzzer-no-link,$san; fi
     echo "== $target (sanitizer: $san)"
-    "$GAMMAC" build --mode="$MODE" --emit-c "$here/$target.gm" -o "$out/$target"
+    "$GAMMA" build --mode="$MODE" --emit-c "$here/$target.gm" -o "$out/$target"
     # The generated C defines `main`; shim.c owns the real one (see there).
     "$CLANG" $OPT -g -w -fno-omit-frame-pointer -fsanitize="$flags" \
         -Dmain=gm_program_main -c "$out/$target.c" -o "$out/$target.o"

@@ -3,10 +3,10 @@
 //! local (`file://` URLs), made in a temporary directory, so the tests need `git` (and
 //! `curl` for archives) but not the network. Each test has a cache directory of its own.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-const GAMMA: &str = env!("CARGO_BIN_EXE_gamma");
 
 fn git_available() -> bool {
     Command::new("git").arg("--version").output().is_ok_and(|o| o.status.success())
@@ -133,7 +133,7 @@ impl World {
     }
 
     fn gamma(&self, dir: &str, args: &[&str]) -> Out {
-        let out = Command::new(GAMMA)
+        let out = common::gamma()
             .args(args)
             .current_dir(self.path(dir))
             .env("GAMMA_CACHE_DIR", self.cache())
@@ -915,7 +915,7 @@ fn usage_of_the_package_commands() {
     assert!(out.stderr.contains("unknown option `--bogus`"), "{}", out.stderr);
     let out = w.gamma(".", &["fetch", "--offline=true"]).failure();
     assert!(out.stderr.contains("`--offline` takes no value"), "{}", out.stderr);
-    assert!(Path::new(GAMMA).exists());
+    assert!(common::compiler().exists());
 }
 
 /// Writes one framed JSON-RPC message.
@@ -957,7 +957,7 @@ fn the_language_server_sees_fetched_git_dependencies() {
     w.gamma("app", &["fetch"]).success();
     let lock = w.read("app/gamma.lock");
     let main = gamma::source::canonicalize(&w.path("app/main.gm")).unwrap();
-    let mut child = Command::new(GAMMA)
+    let mut child = common::gamma()
         .arg("lsp")
         .env("GAMMA_CACHE_DIR", w.cache())
         .stdin(std::process::Stdio::piped())

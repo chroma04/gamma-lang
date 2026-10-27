@@ -3,10 +3,10 @@
 //! (the interpreter loads the C sources as a shared library) and, for the git
 //! dependency, `git`. Each test has a directory and a cache directory of its own.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-const GAMMA: &str = env!("CARGO_BIN_EXE_gamma");
 
 fn have(tool: &str) -> bool {
     Command::new(tool).arg("--version").output().is_ok_and(|o| o.status.success())
@@ -68,7 +68,7 @@ impl World {
     }
 
     fn gamma_env(&self, dir: &str, args: &[&str], env: &[(&str, &str)]) -> Out {
-        let mut cmd = Command::new(GAMMA);
+        let mut cmd = common::gamma();
         cmd.args(args).current_dir(self.path(dir)).env("GAMMA_CACHE_DIR", self.cache());
         cmd.env_remove("CFLAGS").env_remove("LDFLAGS").env_remove("CC");
         for (k, v) in env {

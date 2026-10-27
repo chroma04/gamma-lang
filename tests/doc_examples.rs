@@ -14,9 +14,10 @@
 //!   the text gives.
 //! - ```` ```gamma fragment ```` is part of a program and is not checked.
 //!
-//! Blocks in other languages (`c`, `rust`, `sh`, ...) are not checked. Runs go
-//! through the interpreter and, where a C compiler is available and
-//! `GAMMA_TEST_C` is not 0, through the C back end too; both must agree.
+//! Blocks in other languages (`c`, `rust`, `sh`, ...) are not checked. Programs run
+//! in the interpreter and, where a C compiler is available and `GAMMA_TEST_C` is not
+//! 0, through the C back end too; both must agree. Tests run through the C back end,
+//! so `test` blocks are checked only where it is available.
 //! `GAMMA_TEST_FILTER=substring` runs only the blocks whose name
 //! (`<document>:<line>`) contains it.
 
@@ -24,7 +25,7 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// The documents whose examples are checked, relative to the repository root.
 const CHECKED_DOCS: &[&str] =
@@ -123,7 +124,7 @@ fn write_block(block: &Block) -> PathBuf {
 }
 
 fn gamma(args: &[&str], file: &Path) -> (i32, String, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    let mut cmd = common::gamma();
     cmd.env("GAMMA_CACHE_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"))
         .current_dir(file.parent().unwrap())
         .args(args)
@@ -179,17 +180,19 @@ fn check(block: &Block, with_c: bool) -> Result<(), String> {
     if block.kind == Kind::Error {
         return check_error(block, &file);
     }
-    match gamma::fmt::format_source(&block.code) {
-        Ok(f) if f == block.code => {}
-        Ok(f) => return Err(format!("not formatted as `gamma fmt` formats it; formatted:\n{}", f)),
-        Err(_) => return Err("`gamma fmt` cannot parse the block".into()),
+    let (code, stdout, stderr) = gamma(&["fmt", "--check"], &file);
+    if code != 0 {
+        return Err(format!("not formatted as `gamma fmt` formats it:\n{}{}", stdout, stderr));
     }
-    let command = if block.kind == Kind::Test { "test" } else { "run" };
-    let lanes: &[bool] = if with_c { &[false, true] } else { &[false] };
+    // `run` compiles through C unless it is asked for the interpreter; `test` always does.
+    let lanes: &[(&str, &[&str])] = match (block.kind == Kind::Test, with_c) {
+        (true, true) => &[("[C back end]", &["test"])],
+        (true, false) => &[],
+        (false, true) => &[("[interpreter]", &["run", "--backend=interp"]), ("[C back end]", &["run", "--backend=c"])],
+        (false, false) => &[("[interpreter]", &["run", "--backend=interp"])],
+    };
     let mut problems = vec![];
-    for &c in lanes {
-        let lane = if c { "[C back end]" } else { "[interpreter]" };
-        let args: &[&str] = if c { &[command, "--backend=c"] } else { &[command] };
+    for &(lane, args) in lanes {
         let (code, stdout, stderr) = gamma(args, &file);
         if code != 0 {
             problems.push(format!("{} exit status {}\nstdout:\n{}stderr:\n{}", lane, code, stdout, stderr));

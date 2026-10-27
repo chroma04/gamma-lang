@@ -3,7 +3,7 @@
 # generates for the sources that bootstrap/seed/SOURCE names (git tree ids of compiler/,
 # lib/ and runtime/). A seed that was edited, or generated from other sources, fails.
 #
-#   bootstrap/verify.sh [GAMMAC0]      (default: target/bootstrap/gammac0, from build.sh)
+#   bootstrap/verify.sh [GAMMA0]       (default: target/bootstrap/gamma0, from build.sh)
 #
 # The seed is generated on x86-64 Linux, so this check runs there. It needs the git
 # history that holds those trees.
@@ -11,8 +11,8 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
-gammac0=${1:-$root/target/bootstrap/gammac0}
-case "$gammac0" in /*) ;; *) gammac0=$(pwd)/$gammac0 ;; esac
+gamma0=${1:-$root/target/bootstrap/gamma0}
+case "$gamma0" in /*) ;; *) gamma0=$(pwd)/$gamma0 ;; esac
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -24,10 +24,10 @@ done < "$here/seed/SOURCE"
 
 cd "$work/src"
 GAMMA_STD=lib/std GAMMA_RUNTIME=runtime GAMMA_CACHE_DIR= GAMMA_C_UNITS=8 \
-    "$gammac0" build compiler --emit-c -o "$work/out/gammac"
+    "$gamma0" build compiler --emit-c -o "$work/out/gammac"
 cp "$here/seed/SOURCE" "$work/out/SOURCE"
 if diff -r "$here/seed" "$work/out" > /dev/null; then
-    echo "verify: the seed is gammac's C for the sources it names"
+    echo "verify: the seed is the compiler's C for the sources it names"
 else
     echo "verify: the seed differs from what its compiler generates for the sources it names" >&2
     diff -rq "$here/seed" "$work/out" >&2 || true

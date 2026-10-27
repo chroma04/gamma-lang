@@ -7,6 +7,8 @@
 //! Tests that need `clang`, `nm` or a C compiler for the host are skipped, with a note, when they
 //! are missing.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -50,7 +52,7 @@ fn setup(test: &str) -> Option<(&'static str, PathBuf)> {
 /// Runs `gamma` with `args`, from the root of the repository, with the C toolchain variables unset
 /// (a bare-metal `--target` picks `clang`).
 fn gamma(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_gamma"))
+    common::gamma()
         .args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env_remove("CC")

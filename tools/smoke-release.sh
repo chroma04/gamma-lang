@@ -1,9 +1,9 @@
 #!/bin/sh
-# Checks an installed gammac (the contents of a gammac archive, unpacked):
+# Checks an installed gamma (the contents of a release archive, unpacked):
 #
-#     tools/smoke-gammac.sh <path to the installed bin/gammac>
+#     tools/smoke-release.sh <path to the installed bin/gamma>
 #
-# It starts gammac through PATH from an unrelated directory, without GAMMA_STD,
+# It starts gamma through PATH from an unrelated directory, without GAMMA_STD,
 # GAMMA_CORE or GAMMA_RUNTIME, so that everything it needs must be found from its own
 # location: the libraries and the runtime in lib/gamma next to bin. It checks the version,
 # runs a program that imports `std/...` on the interpreter and through C, and builds an
@@ -11,7 +11,7 @@
 set -eu
 
 if [ $# -ne 1 ]; then
-    echo "usage: $0 <installed gammac>" >&2
+    echo "usage: $0 <installed gamma>" >&2
     exit 2
 fi
 exe=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")

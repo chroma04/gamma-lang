@@ -12,7 +12,7 @@
 #   Directories default to lib/, tests/conformance/ and examples/.
 #
 # Environment:
-#   GAMMA         the gamma executable (default: target/{release,debug}/gamma, then PATH)
+#   GAMMA         the gamma executable (default: target/bootstrap/gamma, then PATH)
 #   TREE_SITTER   the tree-sitter command (default: the npm-installed one, then PATH)
 
 set -euo pipefail
@@ -34,7 +34,7 @@ fi
 
 gamma="${GAMMA:-}"
 if [[ -z "$gamma" ]]; then
-  for candidate in "$repo/target/release/gamma" "$repo/target/debug/gamma"; do
+  for candidate in "$repo/target/bootstrap/gamma"; do
     if [[ -x "$candidate" ]]; then
       gamma="$candidate"
       break
@@ -45,7 +45,7 @@ if [[ -z "$gamma" ]]; then
   gamma="$(command -v gamma || true)"
 fi
 if [[ -z "$gamma" ]]; then
-  echo "error: the gamma executable was not found; build it with 'cargo build' or set GAMMA" >&2
+  echo "error: the gamma executable was not found; build it with bootstrap/build.sh or set GAMMA" >&2
   exit 2
 fi
 

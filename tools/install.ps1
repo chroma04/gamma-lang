@@ -1,20 +1,18 @@
-# Installs a prebuilt `gamma` release (or, with GAMMA_ARCHIVE=gammac, the self-hosted
-# compiler `gammac`) on Windows (x86_64):
+# Installs a prebuilt `gamma` release on Windows (x86_64):
 #
 #     irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex
 #
 # Environment:
 #   GAMMA_VERSION   the release to install, such as `v0.1.0` (default: the latest)
-#   GAMMA_ARCHIVE   what to install: `gamma` (default) or `gammac`
 #   GAMMA_INSTALL   the installation prefix (default: $HOME\.gamma); the compiler goes to
-#                   $GAMMA_INSTALL\bin\gamma.exe (or gammac.exe), its libraries to
+#                   $GAMMA_INSTALL\bin\gamma.exe, its libraries to
 #                   $GAMMA_INSTALL\lib\gamma\<name>
 #   GAMMA_DOWNLOAD  the URL of the directory holding the release archives (default: the
 #                   GitHub release of GAMMA_VERSION); an https:// or file: URL
 #
-# The compiler and the interpreter need nothing else. `gamma build`, `gamma run --backend=c`
-# and `gamma test --backend=c` (`gammac build`, `gammac run` and `gammac test`) need a
-# MinGW-w64 C compiler (gcc or clang) on PATH; MSVC's cl.exe is not supported.
+# The interpreter (`gamma run --backend=interp`) needs nothing else. `gamma build`, `gamma run`
+# and `gamma test` need a MinGW-w64 C compiler (gcc or clang) on PATH; MSVC's cl.exe is not
+# supported.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -26,8 +24,7 @@ function Fail($msg) { throw "install.ps1: $msg" }
 if (-not [Environment]::Is64BitOperatingSystem) { Fail "no prebuilt gamma for 32-bit Windows; build it from source: $repo" }
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($arch -ne 'AMD64') { Fail "no prebuilt gamma for $arch; build it from source: $repo" }
-$product = if ($env:GAMMA_ARCHIVE) { $env:GAMMA_ARCHIVE } else { 'gamma' }
-if ($product -ne 'gamma' -and $product -ne 'gammac') { Fail "GAMMA_ARCHIVE must be gamma or gammac, not $product" }
+$product = 'gamma'
 $asset = "$product-windows-x86_64.zip"
 
 if ($env:GAMMA_DOWNLOAD) {
@@ -75,10 +72,9 @@ try {
 
     if (-not (Test-Path (Join-Path $dir.FullName "bin\$product.exe"))) { Fail "$asset does not hold bin\$product.exe" }
 
-    # Replace the previous installation's files only, leaving anything else in the prefix
-    # (the other product's libraries included). Each library directory is copied in full
-    # before the old one is swapped out, so a failed copy leaves the previous installation
-    # working.
+    # Replace the previous installation's files only, leaving anything else in the prefix.
+    # Each library directory is copied in full before the old one is swapped out, so a
+    # failed copy leaves the previous installation working.
     $docDest = Join-Path $prefix 'share\doc\gamma'
     $libDest = Join-Path $prefix 'lib\gamma'
     New-Item -ItemType Directory -Force -Path (Join-Path $prefix 'bin'), $libDest, $docDest | Out-Null

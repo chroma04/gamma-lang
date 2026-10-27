@@ -14,10 +14,10 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 
 ## Phases (gate in brackets)
 1. DONE s47: seed next to Rust. [CI bootstraps on ubuntu x86/arm + macOS, fixed point]
-2. IN PROGRESS s47 (same branch): Close Rust-only gaps: all conformance lanes against gammac, Windows release by
+2. DONE s47 (PR #93): Close Rust-only gaps: all conformance lanes against gammac, Windows release by
    cross-compiling (--target=x86_64-windows, MinGW), playground + fuzz ported, release
    pipeline/install from seed, docs. [release + site without cargo]
-3. Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
+3. IN PROGRESS s48: Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
    (Rust-built vs seed-built gammac emit identical C); drop reference comparisons from
    tests/selfhost.rs. [first language change without Rust]
 4. Delete src/, Cargo, playground crate, msrv/audit jobs; port test harness to Gamma.
@@ -61,3 +61,20 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
   gammac-windows-build + gammac-windows (conformance+examples). Expect fixes there.
 - Pain: `when target.os` in a module that declares its own `target` → misleading "cannot
   evaluate" (worker hit 2x). Release gammac is Debug mode (like bootstrap) — maybe Fast later.
+
+## Phase 3 plan (s48)
+- Rule: no CI job runs the Rust `gamma` on Gamma sources that can change (tests, lib,
+  compiler, docs); Rust is only compiled (fmt/clippy/msrv/audit/fuzz-compile) until phase 4.
+- gammac names itself `gamma` in every user-visible string; release archives
+  gamma-<asset> with bin/gamma (Fast mode build); Rust release job dropped.
+- tests/*.rs: one helper (common) for the compiler under test = GAMMA_TEST_COMPILER;
+  Rust-internal suites deleted (cranelift, ice, interp_children/deadline, architecture_doc
+  code map of src/), selfhost.rs loses every *_matches_the_reference test.
+- CI lanes (test, safe, s390x, aarch64, wasi, difftest, benchmarks) on seed-built gammac.
+- Tag rust-reference-final = the commit before the switch; cross-check recorded in
+  docs/self-hosting.md.
+- Final cross-check DONE (s48) at main d09a1a6 (= tag rust-reference-final): Rust release
+  `gamma build compiler` (1m50) → gammac_R; gammac_R and seed-built gammac `build compiler
+  --emit-c` (GAMMA_STD=lib/std relative, same cache env) → identical 61,253,433 bytes,
+  sha256 0584d6b50c606eb43f55f644abe299295c163fece27a82d609c99f0fb5b1831b.
+- Rebuilding gamma with target/bootstrap/gammac and its cache: ~2m10 on 4 cores.

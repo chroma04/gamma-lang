@@ -1,14 +1,14 @@
 #!/bin/sh
 # Regenerates bootstrap/seed from the committed sources of compiler/, lib/ and runtime/:
-# builds their gammac, has it build itself, and writes the C that this compiler generates
+# builds their compiler, has it build itself, and writes the C that this compiler generates
 # for itself, split into units, with the git trees of the sources in bootstrap/seed/SOURCE.
 #
-#   tools/refresh-seed.sh [GAMMAC]
+#   tools/refresh-seed.sh [GAMMA]
 #
-# GAMMAC is any gammac that can build the current sources (by default the one
-# bootstrap/build.sh makes from the current seed). A change that makes gammac use a
+# GAMMA is any compiler that can build the current sources (by default the one
+# bootstrap/build.sh makes from the current seed). A change that makes the compiler use a
 # language feature the seed's compiler lacks therefore comes in two steps: first the
-# compiler learns the feature and the seed is refreshed, then gammac's sources use it.
+# compiler learns the feature and the seed is refreshed, then its sources use it.
 set -eu
 
 root=$(git rev-parse --show-toplevel)
@@ -31,7 +31,7 @@ if [ $# -ge 1 ]; then
     start=$1
 else
     bootstrap/build.sh "$out/bootstrap"
-    start=$out/bootstrap/gammac
+    start=$out/bootstrap/gamma
 fi
 # The compiler of the current sources, built by a compiler of the current sources.
 "$start" build compiler -o "$out/stage1"
@@ -45,4 +45,4 @@ cp "$out"/c/*.c "$out"/c/*.h bootstrap/seed/
     printf 'lib %s\n' "$(git rev-parse HEAD:lib)"
     printf 'runtime %s\n' "$(git rev-parse HEAD:runtime)"
 } > bootstrap/seed/SOURCE
-echo "refresh-seed: bootstrap/seed now holds gammac's C for $(git rev-parse --short HEAD)"
+echo "refresh-seed: bootstrap/seed now holds the compiler's C for $(git rev-parse --short HEAD)"

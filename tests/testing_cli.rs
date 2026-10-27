@@ -1,10 +1,10 @@
 //! Tests of `gamma test` and `gamma bench`: which tests run (`--all`, `--filter`), what is
 //! printed (`--show-output`, `--time`), `--jobs`, `--timeout`, `--coverage`, and benchmarks.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
-
-const GAMMA: &str = env!("CARGO_BIN_EXE_gamma");
 
 struct Out {
     ok: bool,
@@ -33,7 +33,7 @@ impl Package {
     }
 
     fn gamma(&self, args: &[&str]) -> Out {
-        let out = Command::new(GAMMA)
+        let out = common::gamma()
             .args(args)
             .arg(&self.root)
             .env("GAMMA_CACHE_DIR", self.root.join("cache"))
@@ -306,7 +306,7 @@ fn gamma_test_checks_benchmarks_without_running_them() {
 }
 
 fn usage_error(args: &[&str]) -> String {
-    let out = Command::new(GAMMA).args(args).output().unwrap();
+    let out = common::gamma().args(args).output().unwrap();
     assert_eq!(out.status.code(), Some(2), "{:?}", args);
     String::from_utf8_lossy(&out.stderr).into_owned()
 }

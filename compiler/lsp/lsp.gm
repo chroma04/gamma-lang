@@ -13,7 +13,7 @@ VERSION :: "0.1.0"
 pub command :: fn() -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     box := new(inbox())!
     _ = thread.spawn(reader, box) else {
-        eprint("gammac: cannot start the reader thread\n")
+        eprint("gamma: cannot start the reader thread\n")
         return 1
     }
     srv := server()

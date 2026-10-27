@@ -18,7 +18,7 @@ load :: import "../load"
 str :: import "std/str"
 
 USAGE :: ```
-usage: gammac doc <module directory | file | package root> [options]
+usage: gamma doc <module directory | file | package root> [options]
 
 Writes the documentation of the public declarations of a module (the directory of
 .gm files that `import` names, or one file), from their `///` comments, and the `//!`
@@ -115,7 +115,7 @@ pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + Out {
     defer a.deinit()
     with a.allocator() {
         opts := parse_args(args) else e => {
-            Err.write(str.format("gammac: {}\n\n{}\n", e.message, USAGE)!)
+            Err.write(str.format("gamma: {}\n\n{}\n", e.message, USAGE)!)
             return 2
         }
         run_with(&opts) else e => {
@@ -146,7 +146,7 @@ run_with :: fn(args: ^const Args) -> Failure!() needs Alloc + Err + Fs + Out {
         }
         return ()
     }
-    if args.all { return !fail("gammac: `--all` needs `-o <directory>`") }
+    if args.all { return !fail("gamma: `--all` needs `-o <directory>`") }
     Out.write(render_module(&modules[0], args.format, null))
     return ()
 }
@@ -177,11 +177,11 @@ write_file :: fn(path, text: string) -> Failure!() needs Alloc + Fs {
     parent := load.parent(path) else ""
     if parent.len > 0 {
         fs.make_dir_all(parent) else e => {
-            return !fail(str.format("gammac: {}: {}", parent, describe_io_error(e))!)
+            return !fail(str.format("gamma: {}: {}", parent, describe_io_error(e))!)
         }
     }
     fs.write_all(path, text) else e => {
-        return !fail(str.format("gammac: {}: {}", path, describe_io_error(e))!)
+        return !fail(str.format("gamma: {}: {}", path, describe_io_error(e))!)
     }
     return ()
 }
@@ -220,7 +220,7 @@ working_dir :: fn() -> string needs Alloc + Fs {
 /// directory or file with `.` and `..` resolved. (Symbolic links are not resolved.)
 root_name :: fn(path: string) -> Failure!string needs Alloc + Fs {
     _ = Fs.stat(path) else e => {
-        return !fail(str.format("gammac: {}: {}", path, describe_io_error(e))!)
+        return !fail(str.format("gamma: {}: {}", path, describe_io_error(e))!)
     }
     canon := load.normalize(load.join(working_dir(), path))
     dir: ?string = if is_dir(canon) { canon } else { load.parent(canon) }
@@ -252,7 +252,7 @@ ModuleDir :: struct {
 /// The module(s) to document: a file or a directory, and with `all` every module below it.
 load_modules :: fn(path: string, all: bool) -> Failure![]Module needs Alloc + Fs {
     if Fs.stat(path) is !_ {
-        return !fail(str.format("gammac: {}: no such file or directory", path)!)
+        return !fail(str.format("gamma: {}: no such file or directory", path)!)
     }
     root := try root_name(path)
     if is_file(path) {
@@ -269,7 +269,7 @@ load_modules :: fn(path: string, all: bool) -> Failure![]Module needs Alloc + Fs
     }
     if dirs.items.len is 0 {
         hint := if all { "" } else { " (`--all` documents the modules below a directory)" }
-        return !fail(str.format("gammac: {} has no `.gm` files{}", path, hint)!)
+        return !fail(str.format("gamma: {} has no `.gm` files{}", path, hint)!)
     }
     modules := list(Module)
     for d in dirs.items {
@@ -289,7 +289,7 @@ load_modules :: fn(path: string, all: bool) -> Failure![]Module needs Alloc + Fs
 gm_files :: fn(dir: string) -> Failure![]string needs Alloc + Fs {
     files := list(string)
     for r in fs.entries(dir) {
-        e := r else err => return !fail(str.format("gammac: {}: {}", dir, describe_io_error(err))!)
+        e := r else err => return !fail(str.format("gamma: {}: {}", dir, describe_io_error(err))!)
         if e.name.len > 3 and e.name.ends_with(".gm") {
             p := load.join(dir, e.name)
             if is_file(p) { files.push(p)! }
@@ -305,7 +305,7 @@ module_dirs :: fn(dir, rel: string, out: ^List(ModuleDir)) -> Failure!() needs A
     if (try gm_files(dir)).len > 0 { out.push(ModuleDir(dir: dir, rel: rel))! }
     subs := list(string)
     for r in fs.entries(dir) {
-        e := r else err => return !fail(str.format("gammac: {}: {}", dir, describe_io_error(err))!)
+        e := r else err => return !fail(str.format("gamma: {}: {}", dir, describe_io_error(err))!)
         if is_dir(load.join(dir, e.name)) { subs.push(str.format("{}", e.name)!)! }
     }
     subs.items.sort()

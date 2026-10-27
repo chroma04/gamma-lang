@@ -1,5 +1,6 @@
 #!/bin/sh
-# Packages a release build of `gamma` as the archive the install script downloads:
+# Packages a build of `gamma` (the compiler in compiler/) as the archive the install script
+# downloads:
 #
 #     tools/package-release.sh <asset> <path to the gamma binary> <output directory>
 #
@@ -7,9 +8,16 @@
 # .sha256. The archive holds one directory, gamma-<version>-<asset>/, laid out as an
 # installation prefix:
 #
-#     bin/gamma             (bin/gamma.exe on Windows)
-#     lib/gamma/std/...     the standard library, found relative to the binary
+#     bin/gamma              (bin/gamma.exe on Windows)
+#     lib/gamma/std/...      the standard library
+#     lib/gamma/core/...     the core library
+#     lib/gamma/runtime/...  the C runtime that gamma compiles programs with, and the
+#                            debugger helper scripts it copies next to `-g` builds
 #     LICENSE, README.md
+#
+# gamma finds all of these relative to its own executable, so the installation needs no
+# environment variables. The version is that of compiler/gamma.toml, the manifest of the
+# compiler itself.
 set -eu
 
 if [ $# -ne 3 ]; then
@@ -21,19 +29,23 @@ binary=$2
 out=$3
 root=$(cd "$(dirname "$0")/.." && pwd)
 # The `version` of the `[package]` table (not of another table that may come first).
-version=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version = / { gsub(/"/, "", $3); print $3; exit }' "$root/Cargo.toml")
-[ -n "$version" ] || { echo "$0: no [package] version in Cargo.toml" >&2; exit 1; }
+version=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version = / { gsub(/"/, "", $3); print $3; exit }' "$root/compiler/gamma.toml")
+[ -n "$version" ] || { echo "$0: no [package] version in compiler/gamma.toml" >&2; exit 1; }
 name="gamma-$version-$asset"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/$name/bin" "$work/$name/lib/gamma"
+mkdir -p "$work/$name/bin" "$work/$name/lib/gamma/runtime"
 case "$asset" in
     windows-*) exe=gamma.exe ;;
     *) exe=gamma ;;
 esac
 cp "$binary" "$work/$name/bin/$exe"
 cp -R "$root/lib/std" "$work/$name/lib/gamma/std"
+cp -R "$root/lib/core" "$work/$name/lib/gamma/core"
+for f in gm_rt.c gm_rt.h gdb_printers.py lldb_formatters.py; do
+    cp "$root/runtime/$f" "$work/$name/lib/gamma/runtime/$f"
+done
 cp "$root/LICENSE" "$root/README.md" "$work/$name/"
 
 mkdir -p "$out"

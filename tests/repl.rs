@@ -1,10 +1,10 @@
 //! Tests of `gamma repl`, driven through pipes: stdin is not a terminal, so the
 //! REPL prints no banner and no prompts, only what the inputs print.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+mod common;
 
-const GAMMA: &str = env!("CARGO_BIN_EXE_gamma");
+use std::io::Write;
+use std::process::Stdio;
 
 /// Feeds `input` to a REPL and returns its standard output and error.
 fn repl(input: &str) -> (String, String) {
@@ -13,7 +13,7 @@ fn repl(input: &str) -> (String, String) {
 
 /// Like [`repl`], for input that need not be UTF-8.
 fn repl_bytes(input: &[u8]) -> (String, String) {
-    let mut child = Command::new(GAMMA)
+    let mut child = common::gamma()
         .arg("repl")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -213,7 +213,7 @@ fn a_line_opening_a_block_comment_is_not_blank() {
 
 #[test]
 fn a_missing_preload_file_is_an_error_status() {
-    let out = Command::new(GAMMA)
+    let out = common::gamma()
         .args(["repl", "definitely_missing_file.gm"])
         .stdin(Stdio::null())
         .output()

@@ -65,11 +65,6 @@
 //! the interpreter, unless the system has no C compiler or `GAMMA_TEST_C=0` is set;
 //! with `GAMMA_TEST_C=1` a missing C compiler fails the tests (CI sets it).
 //!
-//! The Cranelift lane runs the same tests through `--backend=cranelift` on the hosts that
-//! back end supports (64-bit Linux and macOS on x86-64 and AArch64), unless
-//! `GAMMA_TEST_CRANELIFT=0` is set, with the same expectations; `//! cranelift: skip
-//! <reason>` leaves a test out of the lane.
-//!
 //! Safe builds need Fil-C (found as for `gamma build --mode=safe`). Where it is
 //! found, the `mode: safe` tests run. `GAMMA_TEST_SAFE=1` requires it and adds
 //! the Safe lane: every `run` and `test` test in the default or Checked mode
@@ -81,11 +76,10 @@
 //! Tests run in parallel, those that took longest in the previous run first (the
 //! times are kept in Cargo's temporary directory for integration tests).
 //!
-//! `GAMMA_TEST_COMPILER=path` runs the tests with another compiler that has `gamma`'s
-//! command line: `gammac`, the compiler written in Gamma (`compiler/`). It reads the
-//! repository's standard library and runtime. Its first lane for `run` tests is its
-//! interpreter (`--backend=interp`) and its `test` runs through C, so the C lane repeats
-//! only the `run` tests; it has no Cranelift lane.
+//! The compiler under test is the `gamma` executable that `GAMMA_TEST_COMPILER` names
+//! (`tools/test.sh` builds it from `compiler/`). It reads the repository's standard library
+//! and runtime. The first lane of `run` tests is its interpreter (`--backend=interp`);
+//! `test` tests run through C, so the C lane repeats only the `run` tests.
 //!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, `GAMMA_TEST_FILTER=substring` to run only matching tests, and
@@ -135,8 +129,6 @@ struct Expectations {
     ptr_bits: Option<u32>,
     /// Run the test only through the C back end.
     native: bool,
-    /// Leave the test out of the Cranelift lane.
-    cranelift_skip: bool,
     /// The options of `gamma lint`.
     lint_args: Vec<String>,
     /// (file, line, severity, message substring); line 0 means no location.
@@ -160,7 +152,6 @@ fn parse_expectations(files: &[PathBuf]) -> Result<Expectations, String> {
         needs_sockets: false,
         ptr_bits: None,
         native: false,
-        cranelift_skip: false,
         lint_args: vec![],
         diags: vec![],
     };
@@ -225,11 +216,6 @@ fn parse_file_expectations(path: &Path, src: &str, e: &mut Expectations) -> Resu
                     return Err(format!("{}:{}: expected `safe: skip <reason>`", path.display(), i + 1));
                 }
                 e.safe_skip = true;
-            } else if let Some(c) = directive.strip_prefix("cranelift:") {
-                if !c.trim().starts_with("skip ") {
-                    return Err(format!("{}:{}: expected `cranelift: skip <reason>`", path.display(), i + 1));
-                }
-                e.cranelift_skip = true;
             } else if directive.starts_with("native:") {
                 e.native = true;
             } else if let Some(code) = directive.strip_prefix("exit:") {
@@ -444,30 +430,9 @@ fn safe_lane() -> bool {
     std::env::var("GAMMA_TEST_SAFE").is_ok_and(|v| v == "1") && safe_available()
 }
 
-/// The compiler the tests run when it is not this crate's `gamma`: the binary that
-/// `GAMMA_TEST_COMPILER` names, with the same command line (`gammac`, the compiler written
-/// in Gamma). It reads the repository's libraries and runtime.
-fn compiler_under_test() -> Option<&'static Path> {
-    static COMPILER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    COMPILER
-        .get_or_init(|| std::env::var_os("GAMMA_TEST_COMPILER").filter(|v| !v.is_empty()).map(PathBuf::from))
-        .as_deref()
-}
-
-/// A command running the compiler under test, which caches compiled runtime objects under
-/// the target directory rather than in the user's cache.
+/// A command running the compiler under test.
 fn gamma() -> Command {
-    let mut cmd = match compiler_under_test() {
-        Some(exe) => {
-            let mut cmd = Command::new(exe);
-            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            cmd.env("GAMMA_STD", root.join("lib/std")).env("GAMMA_RUNTIME", root.join("runtime"));
-            cmd
-        }
-        None => Command::new(env!("CARGO_BIN_EXE_gamma")),
-    };
-    cmd.env("GAMMA_CACHE_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"));
-    cmd
+    common::gamma()
 }
 
 /// Gives the command the file `input` as standard input, if it exists.
@@ -481,36 +446,8 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the Cranelift lane runs: `GAMMA_TEST_CRANELIFT` is not 0, the C toolchain targets
-/// what the Cranelift back end supports, and its programs run here (built for the host, or
-/// through `GAMMA_RUNNER`).
-fn cranelift_lane() -> bool {
-    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        if std::env::var("GAMMA_TEST_CRANELIFT").is_ok_and(|v| v == "0")
-            || !common::c_backend_available()
-            || compiler_under_test().is_some()
-        {
-            return false;
-        }
-        gamma::toolchain::Toolchain::from_env().and_then(|t| t.target()).is_ok_and(|t| {
-            gamma::clif::check_target(&t).is_ok()
-                && (t.arch == host_arch_name() || std::env::var_os("GAMMA_RUNNER").is_some())
-        })
-    })
-}
-
-/// The host's architecture as targets name it.
-fn host_arch_name() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "X86_64",
-        "aarch64" => "Aarch64",
-        other => other,
-    }
-}
-
-/// Runs a `run` or `test` test (`command`) through a native back end (`c` or `cranelift`)
-/// in build mode `mode` and compares it with the expectations.
+/// Runs a `run` or `test` test (`command`) through the C back end in build mode `mode`
+/// and compares it with the expectations.
 fn run_c(
     command: &str,
     target: &Path,
@@ -519,27 +456,14 @@ fn run_c(
     mode: Option<&str>,
     stderr_golden: Option<&Path>,
 ) -> Result<(), String> {
-    run_native(command, "c", target, golden, exp, mode, stderr_golden)
-}
-
-fn run_native(
-    command: &str,
-    backend: &str,
-    target: &Path,
-    golden: &Path,
-    exp: &Expectations,
-    mode: Option<&str>,
-    stderr_golden: Option<&Path>,
-) -> Result<(), String> {
     let exit = exp.exit;
-    let lane = match (backend, mode) {
-        ("cranelift", _) => "[Cranelift back end]",
-        (_, Some("safe")) => "[C back end, Safe build]",
+    let lane = match mode {
+        Some("safe") => "[C back end, Safe build]",
         _ => "[C back end]",
     };
     let mut cmd = gamma();
-    cmd.args([command, &format!("--backend={backend}"), "--diag-format=short"]);
-    if backend == "c" && std::env::var("GAMMA_TEST_DEBUG_INFO").is_ok_and(|v| v == "1") {
+    cmd.args([command, "--backend=c", "--diag-format=short"]);
+    if std::env::var("GAMMA_TEST_DEBUG_INFO").is_ok_and(|v| v == "1") {
         cmd.arg("-g");
     }
     if let Some(m) = mode {
@@ -638,8 +562,8 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
             return Ok(());
         }
         cmd.arg("--backend=c");
-    } else if exp.stage == Stage::Run && compiler_under_test().is_some() {
-        // gammac runs programs through C by default: the first lane is its interpreter.
+    } else if exp.stage == Stage::Run {
+        // `run` goes through C by default: the first lane is the interpreter.
         cmd.arg("--backend=interp");
     }
     cmd.arg(&target);
@@ -743,24 +667,14 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         && !(exp.needs_f16 && !target_has_f16())
         && !((exp.needs_threads || exp.needs_sockets) && target_os_kind() == "wasi");
     let golden = path.with_extension("stdout");
-    // gammac's `test` uses the C back end already.
-    let tested_by_c = exp.stage == Stage::Test && compiler_under_test().is_some();
+    // `test` uses the C back end already.
+    let tested_by_c = exp.stage == Stage::Test;
     if compiled
         && problems.is_empty()
         && !exp.native
         && !tested_by_c
         && common::c_backend_available()
         && let Err(p) = run_c(command, &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
-    {
-        problems.push(p);
-    }
-    if compiled
-        && problems.is_empty()
-        && !exp.native
-        && !exp.cranelift_skip
-        && exp.mode.as_deref() != Some("safe")
-        && cranelift_lane()
-        && let Err(p) = run_native(command, "cranelift", &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
     {
         problems.push(p);
     }

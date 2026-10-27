@@ -4,8 +4,9 @@
 //! of exit that can leave a run (`break`, `continue`, `return`, `try`, an `esc` clause's
 //! `break`, a `with … on` body ending) and compare the native program with the interpreter.
 
+mod common;
+
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Whether a C compiler is available (the tests are skipped otherwise, or with `GAMMA_TEST_C=0`).
 fn have_cc() -> bool {
@@ -111,7 +112,7 @@ check :: fn(k: i64) -> E!i64 {
 
 /// Runs `gamma` with `args` and `env` on the program; returns its exit code and output.
 fn gamma(args: &[&str], env: &[(&str, &str)], path: &std::path::Path) -> (Option<i32>, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    let mut cmd = common::gamma();
     cmd.args(args).arg(path).env("GAMMA_CACHE_DIR", dir().join("cache"));
     for (k, v) in env {
         cmd.env(k, v);
@@ -153,7 +154,7 @@ fn long_functions_are_split_into_helpers() {
     let path = dir().join("split.gm");
     std::fs::write(&path, program(300)).unwrap();
     let exe = dir().join("split");
-    let out = Command::new(env!("CARGO_BIN_EXE_gamma"))
+    let out = common::gamma()
         .args(["build", "--mode=fast"])
         .arg(&path)
         .arg("-o")

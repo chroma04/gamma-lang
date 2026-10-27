@@ -5,7 +5,7 @@
 #     fuzz/gammac/smoke.sh [SECONDS] [TARGET...]      # default: 30 seconds, every target
 #
 # Environment: NO_BUILD=1 reuses the executables of an earlier build; the variables of
-# build.sh (GAMMAC, CLANG, SAN, ...) and run.sh apply. Crashing inputs are left in
+# build.sh (GAMMA, CLANG, SAN, ...) and run.sh apply. Crashing inputs are left in
 # fuzz/gammac/artifacts/TARGET/.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)

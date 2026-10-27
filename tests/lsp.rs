@@ -1,10 +1,12 @@
 //! End-to-end tests of `gamma lsp`: the real binary, driven over its standard input and
 //! output with framed JSON-RPC messages.
 
+mod common;
+
 use serde_json::{Value, json};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
@@ -60,7 +62,7 @@ impl Lsp {
 
     /// Starts the server with extra environment variables.
     fn start_with(envs: &[(&str, &Path)]) -> Lsp {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_gamma"))
+        let mut child = common::gamma()
             .arg("lsp")
             .envs(envs.iter().map(|(k, v)| (*k, *v)))
             .stdin(Stdio::piped())
