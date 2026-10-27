@@ -28,7 +28,7 @@ main :: fn() needs Out {
     show_trim("\u{a0}\u{a0}x\u{a0}")
     show_trim("\u{3000}\u{3000}あ い\u{3000}")
     show_trim("\u{85}\u{2028}x\u{2029}\u{85}")
-    show_trim(" \t\u{a0}\u{2003}\n\u{202f}mixed\u{205f}\u{1680} \r\n")
+    show_trim(" \t\u{a0}\u{2003}\n\u{202f}mixed\u{205f}\u{1680} \x0c\n")
     show_trim("\u{200b}x\u{200b}")
     // Ill-formed bytes are not whitespace: they stay, and stop the trimming.
     show_trim(" \xff x \xc3")
