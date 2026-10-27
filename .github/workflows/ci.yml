@@ -134,7 +134,7 @@ jobs:
         shell: pwsh
         run: |
           "${{ steps.msys.outputs.msys2-location }}\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: gamma-exe
           path: gamma
