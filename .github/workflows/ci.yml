@@ -57,6 +57,45 @@ jobs:
           cargo test --test conformance --test examples
           cargo test --test selfhost programs_compiled_by_gammac
 
+  bootstrap:
+    # gammac built from the checked-in C seed with nothing but a C compiler, on each kind of
+    # host the seed serves; the compiler it makes must be a fixed point. On x86-64 Linux,
+    # where the seed is generated, the seed must also be exactly what its compiler generates
+    # for the sources it names.
+    name: Bootstrap from the seed (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The seed's sources are git trees, maybe of older commits.
+          fetch-depth: ${{ matrix.os == 'ubuntu-latest' && '0' || '1' }}
+      - name: Build gammac from the seed
+        run: bootstrap/build.sh
+      - name: Fixed point
+        env:
+          GAMMA_STD: lib/std
+          GAMMA_RUNTIME: runtime
+        run: |
+          target/bootstrap/gammac1 build compiler --emit-c -o "$RUNNER_TEMP/stage1"
+          target/bootstrap/gammac build compiler --emit-c -o "$RUNNER_TEMP/stage2"
+          cmp "$RUNNER_TEMP/stage1.c" "$RUNNER_TEMP/stage2.c"
+      - name: Run a program
+        env:
+          GAMMA_STD: lib/std
+          GAMMA_RUNTIME: runtime
+        run: |
+          printf 'm :: import "std/math"\nmain :: fn() needs Out { print("{}\\n", m.abs(-3)) }\n' > "$RUNNER_TEMP/hello.gm"
+          test "$(target/bootstrap/gammac run "$RUNNER_TEMP/hello.gm")" = 3
+          target/bootstrap/gammac test compiler
+      - name: The seed is what its sources compile to
+        if: matrix.os == 'ubuntu-latest'
+        run: bootstrap/verify.sh
+
   fuzz:
     # The fuzz targets live outside the workspace (they need nightly to run): make sure
     # they still compile against the crate's API.
