@@ -12,7 +12,7 @@ pub offset_at :: fn(cx: ^const Ctx, file: source.FileId, line, character: u32) -
     return offset(&ix, line, character, cx.enc).trunc(u32)
 }
 
-pub location :: fn(cx: ^const Ctx, span: source.Span) -> ?Value needs Alloc + Env + Fs + Rand {
+pub location :: fn(cx: ^const Ctx, span: source.Span) -> ?Value needs Alloc + Env + Fs + Proc + Rand {
     path := cx.a.open_path(span.file) else return null
     o := obj()
     o.put("uri", text(uri_of(cx.uris, path)))
@@ -42,12 +42,12 @@ pub hover :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Al
     return o.value()
 }
 
-pub definition :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc + Env + Fs + Rand {
+pub definition :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc + Env + Fs + Proc + Rand {
     s := cx.a.index.definition_at(file, off) else return NULL
     return location(cx, s) else NULL
 }
 
-pub references :: fn(cx: ^const Ctx, file: source.FileId, off: u32, include_declaration: bool) -> Value needs Alloc + Env + Fs + Rand {
+pub references :: fn(cx: ^const Ctx, file: source.FileId, off: u32, include_declaration: bool) -> Value needs Alloc + Env + Fs + Proc + Rand {
     def := cx.a.index.definition_at(file, off) else return array(empty_slice(Value))
     spans := cx.a.index.uses_of(def)
     out := list(Value)
