@@ -22,7 +22,7 @@ The generated parser (`src/parser.c`) is committed, so using the grammar does no
 npm install                  # installs the tree-sitter CLI (0.25.x)
 npx tree-sitter generate     # regenerate src/ after editing grammar.js
 npm test                     # corpus and highlight tests
-npm run parse-corpus         # needs the gamma executable (cargo build)
+npm run parse-corpus         # needs the gamma executable (bootstrap/build.sh)
 ```
 
 `npx tree-sitter test -u` rewrites the expected trees of the corpus. Read the diff before committing it.

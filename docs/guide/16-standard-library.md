@@ -4,7 +4,7 @@
 
 The earlier chapters used the library as they went. This one is a tour of all of it: what lives where, what each part is for, and a short, complete example of each. The exact functions of every module are in the [library reference](../std.md); the rule for what may be in the library at all is [§22 of the specification](../../gamma-spec.md#22-the-standard-library-scope-and-admission).
 
-Every example here is a whole program. Save one as `tour.gm` and run it with `gamma run tour.gm`, or compile it with `gamma run --backend=c tour.gm`: the output is the same.
+Every example here is a whole program. Save one as `tour.gm` and run it with `gamma run tour.gm`, or interpret it with `gamma run --backend=interp tour.gm`: the output is the same.
 
 ## Two tiers
 

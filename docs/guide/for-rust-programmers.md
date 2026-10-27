@@ -1242,7 +1242,7 @@ Other points:
 - **Exports** are `#export("sym")` on a top-level function, using the C ABI. Its effect set must be empty or `Sys`, since a C caller cannot supply handlers.
 - **Callbacks** are `^fn` values with C-compatible signatures and an empty (or `Sys`) effect set.
 - **Strings.** A `string` is not NUL-terminated and never converts implicitly to a `cstring`; `c"..."` literals are NUL-terminated.
-- **The C back end is the native path.** `gamma build` generates C and compiles it with the compiler named by `CC`, and cross-compiling means pointing `CC` (or `--target`) at a cross compiler. `gamma run` interprets by default and makes foreign calls itself; `gamma run --backend=c` compiles first.
+- **The C back end is the native path.** `gamma build` generates C and compiles it with the compiler named by `CC`, and cross-compiling means pointing `CC` (or `--target`) at a cross compiler. `gamma run` compiles through C and runs the result; `gamma run --backend=interp` interprets instead, needs no C compiler, and cannot make foreign calls.
 
 See [chapter 14](14-interop.md), which also covers `#global`, atomics (C11 memory model), volatile access, `#bits`, `#packed` and freestanding programs.
 
@@ -1253,7 +1253,7 @@ The `gamma` tool plays the role of `cargo` and `rustfmt` together:
 | Cargo | Gamma |
 | --- | --- |
 | `cargo new app` | `gamma new app` (also `gamma init`) |
-| `cargo run` | `gamma run app`, `gamma run --backend=c app` |
+| `cargo run` | `gamma run app`, `gamma run --backend=interp app` |
 | `cargo build --release` | `gamma build --mode=checked app` (or `--mode=fast`) |
 | `cargo check` | `gamma check app` |
 | `cargo test` | `gamma test app` (`--filter`, `--all`, `--coverage`) |
@@ -1324,7 +1324,7 @@ test "no leaks" {
 }
 ```
 
-Tests run in the interpreter by default (or compiled, with `--backend=c`) and in parallel with `-j`. Because the ambient effects are replaced during tests (captured output, in-memory file system, fixed clock and seed), tests are deterministic with no mocking code of your own. There is no `#[should_panic]`: a trap ends the process, so a test cannot expect one. Test a condition that would trap by checking it first, for example with `x.checked(u8)` instead of `x.trunc(u8)`.
+Tests are compiled through C and run in parallel with `-j`. Because the ambient effects are replaced during tests (captured output, in-memory file system, fixed clock and seed), tests are deterministic with no mocking code of your own. There is no `#[should_panic]`: a trap ends the process, so a test cannot expect one. Test a condition that would trap by checking it first, for example with `x.checked(u8)` instead of `x.trunc(u8)`.
 
 ## Rust habits to unlearn
 

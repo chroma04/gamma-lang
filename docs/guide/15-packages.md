@@ -189,10 +189,9 @@ shim :: foreign "c" {
 }
 ```
 
-- A native build (`build`, `run --backend=c`, `test`) compiles each C file with `-O2` (`-O1` in Debug mode, `-O0 -g` with debug information), `-fPIC`, `-pthread`, the package's `-I` directories and then the `cflags`, and links the objects with the program. `libs` become `-l` options and `lib-dirs` become `-L` options, with a run-time search path (`-Wl,-rpath`) for the same directories so the executable finds shared libraries there.
-- The interpreter (`gamma run` without `--backend=c`) links the same objects into a shared library, loads it, and finds the symbols in it whatever library the `foreign` block names; `foreign "lib"` blocks for libraries in `lib-dirs` are looked up there first, then in the `-L` directories of `ldflags` and `LDFLAGS`. Safe builds and cross builds (`--target`) cannot load code into the interpreter, so `run` compiles those natively.
-- Compiled objects and the interpreter's shared libraries are cached (in `<cache>/native`). The name of an object is a hash of the *preprocessed* C file (so a changed header counts), the compiler and its version, and all flags; a C file is compiled once per change, not once per build. The cached executables of `run --backend=c` also depend on the objects and on the size and date of the library files found in `lib-dirs`.
-- Without a cache directory the objects are compiled into a temporary directory for each build.
+- A build (`build`, `run`, `test`, `bench`) compiles each C file with `-O2` (`-O1` in Debug mode, `-O0 -g` with debug information), `-fPIC`, `-pthread`, the package's `-I` directories and then the `cflags`, and links the objects with the program. `libs` become `-l` options and `lib-dirs` become `-L` options, with a run-time search path (`-Wl,-rpath`) for the same directories so the executable finds shared libraries there.
+- The interpreter (`gamma run --backend=interp`) cannot call C, so a package with C sources runs only through C.
+- The C files are compiled again by every build, into a temporary directory; a program with C sources of its own is not kept in the cache of built programs either.
 
 ## Lint levels
 

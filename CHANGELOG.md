@@ -6,7 +6,34 @@ Versions and what each kind of change means are described in
 
 ## Unreleased
 
+### The compiler is written in Gamma
+
+- **Breaking: `gamma` is now the compiler in `compiler/`, written in Gamma.** It replaces
+  the Rust implementation, which is frozen (`src/`, tagged `rust-reference-final`) and no
+  longer built or released. Commands, options and messages are those of `gamma` as
+  before; `gamma --help` and `gamma version` name `gamma`. The earlier `gammac` is gone:
+  use `gamma`.
+- **Breaking: `gamma run` compiles through C by default** (it used to interpret).
+  `gamma run --backend=interp` interprets the program: it needs no C compiler, but it is
+  slower than the old interpreter, and a program that calls foreign C code or uses inline
+  assembly runs only through C. `gamma test` and `gamma bench` always compile through C,
+  and `gamma repl` runs on the interpreter. So a C compiler is needed for `build`, `run`,
+  `test` and `bench`.
+- **Breaking: the Cranelift back end is gone.** `--backend=cranelift` is rejected; use C.
+  The chapter on it in the guide is now about the two remaining back ends.
+- **Building from source needs only a C compiler:** `bootstrap/build.sh` compiles the
+  checked-in C seed and builds the current compiler with it, writing
+  `target/bootstrap/gamma`. `tools/refresh-seed.sh` and `bootstrap/verify.sh` take a
+  `gamma` executable.
+- **Releases** are `gamma-<platform>.tar.gz` (`.zip` on Windows) for linux-x86_64,
+  linux-aarch64, macos-x86_64, macos-aarch64 and windows-x86_64, laid out as
+  `bin/gamma` and `lib/gamma/{std,core,runtime}`. `tools/install.sh` and
+  `tools/install.ps1` install it; `GAMMA_ARCHIVE` is gone.
+
 ### Self-hosting
+
+In this section, `gammac` is the compiler in `compiler/` under the name it had while the
+Rust implementation was still the one users ran; it is now `gamma`.
 
 - **Bootstrapping without Rust.** `bootstrap/seed/` holds the C that `gammac` generates for
   itself, and `bootstrap/build.sh` builds `gammac` from it with only a C compiler, on Linux
@@ -63,6 +90,10 @@ Versions and what each kind of change means are described in
 
 ### Language
 
+- In `x in (a, b, c)` and `x in list`, the element and the members are compared at one
+  type, joined as the branches of an `if` are (§7.7, §7.12): with `p: []u8`,
+  `p in ("get", "put")` and `p in names` (`names: []string`) are accepted; they used to be
+  type errors. For an array or slice, the element must coerce to the element type.
 - An array is a slice of all of it wherever a `[]const T` is expected, not only as a call
   argument (§6.4): `xs: []const i64 = [_]i64(1, 2)`, `Options(flags: [_]string("-g"))`.
   Any temporary array can be sliced (`[_]i64(1, 2, 3)[1..]`), giving a read-only slice.

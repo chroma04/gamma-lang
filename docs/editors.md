@@ -22,13 +22,13 @@ welcome.
 
 ## The gamma executable
 
-The language server is part of the compiler. Use the `gamma` from a [release](../README.md#installing), or build it from the repository root:
+The language server is part of the compiler. Use the `gamma` from a [release](../README.md#installing), or build it from the repository root (it needs only a C compiler):
 
 ```sh
-cargo build --release
+bootstrap/build.sh
 ```
 
-For a build, put `target/release/gamma` on your `PATH`. The editor setups below start `gamma lsp`. The server speaks the Language Server Protocol over standard input and output. Highlighting does not need the executable.
+For a build, put `target/bootstrap/gamma` on your `PATH`. The editor setups below start `gamma lsp`. The server speaks the Language Server Protocol over standard input and output. Highlighting does not need the executable.
 
 ## Visual Studio Code
 

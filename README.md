@@ -49,27 +49,29 @@ early exit, coroutines, testing.
   Coming from another language? Read [Gamma for C programmers](docs/guide/for-c-programmers.md)
   or [Gamma for Rust programmers](docs/guide/for-rust-programmers.md).
 - [`docs/std.md`](docs/std.md) — the standard library.
-- [`docs/architecture.md`](docs/architecture.md) — how the compiler is organized.
+- [`docs/architecture.md`](docs/architecture.md) — how the retired Rust implementation is organized.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
-- [`docs/self-hosting.md`](docs/self-hosting.md) — `gammac`, the compiler written in Gamma
-  (in progress: its lexer matches the reference implementation's).
+- [`docs/self-hosting.md`](docs/self-hosting.md) — the compiler is written in Gamma: how
+  it was built, and how it builds itself.
 - [`CHANGELOG.md`](CHANGELOG.md) and [`docs/versioning.md`](docs/versioning.md) — what
   changed in each release, and what stays stable between releases.
 
 ## Status
 
-This repository contains the reference implementation, written in Rust. The whole
-specification is implemented, on three back ends that must agree on every test: an
-interpreter (the default for `gamma run` and `gamma test`), a C code generator
-(`gamma build`, `--backend=c`) and a Cranelift code generator (`--backend=cranelift`).
+The compiler, `gamma`, is written in Gamma (`compiler/`) and builds itself; the
+whole specification is implemented. A program runs on one of two back ends that must
+agree on every test: a C code generator (the default for `gamma build`, `gamma run`,
+`gamma test` and `gamma bench`) and an interpreter (`gamma run --backend=interp`, and
+`gamma repl`). The repository still holds the Rust implementation the compiler was
+first written against (`src/`), frozen and no longer built or tested; it is kept until
+it is deleted. Its last state is the tag `rust-reference-final`.
 
 | Component | Status |
 | --- | --- |
 | Lexer and parser (spec §2, Appendix A) | implemented; `gamma fmt` formats code |
 | Semantic analysis | the whole language: effects, handlers and fibers, generics with compile-time and effect-set parameters, compile-time evaluation and `when`, modules, packages, tests, and C interop |
-| Interpreter / compile-time evaluator | implemented: functions run as register bytecode, and foreign C functions are called through `dlsym` and libffi |
-| Native code generation (via C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x); WebAssembly for WASI (`--target=wasm32-wasi`, run with Wasmtime) |
-| Native code generation (via Cranelift) | the whole language, with C structs by value, variadic calls and `@asm`; builds several times faster than through C, code runs somewhat slower; 64-bit Linux and macOS on x86_64 and arm64 (see [`docs/guide/native-backend.md`](docs/guide/native-backend.md)) |
+| Interpreter / compile-time evaluator | implemented: a tree-walking interpreter written in Gamma; it needs no C compiler, but a program that calls foreign C code or uses inline assembly runs only through C |
+| Native code generation (through C) | the whole language; build modes Debug, Checked, Fast and Safe (memory-safe through [Fil-C](https://fil-c.org), Linux only); debug information with gdb views (`-g`); cross-compiling (`--target=`, tested on aarch64 and big-endian s390x); WebAssembly for WASI (`--target=wasm32-wasi`, run with Wasmtime) |
 | Platforms | Linux and macOS (x86_64 and arm64), and x86_64 Windows with a MinGW-w64 C compiler (gcc or clang; MSVC's `cl` is not supported) |
 | Standard library | the core library (output, environment, iterators, allocation, `List`, files, network) and 39 modules (see [`docs/std/`](docs/std/index.md)): `std/io`, `std/fs`, `std/fmt`, `std/str`, `std/text`, `std/ascii`, `std/bytes`, `std/encoding/base64`, `std/encoding/hex`, `std/hash` (with `crc32` and `sha256`), `std/json`, `std/math`, `std/complex`, `std/random`, `std/uuid`, `std/time`, `std/path`, `std/cli`, `std/process`, `std/log`, `std/net`, `std/collections` (hash_map, deque, heap, bitset, ordered_map, soa_list), `std/arena`, `std/fixed_buffer`, `std/fiber`, `std/thread` (with `wait_group`), `std/c` |
 | Packages | `gamma.toml` manifests with path, git and archive dependencies, version requirements, a `gamma.lock` lockfile, build profiles with C sources and libraries, and a package cache (`gamma new`, `add`, `fetch`, `update`, `cache`) |
@@ -77,15 +79,13 @@ interpreter (the default for `gamma run` and `gamma test`), a C code generator
 
 ### Which back end?
 
-`gamma run` and `gamma test` interpret the program: there is no C compiler involved, it
-starts at once, and it is the quickest way to iterate. Use `--backend=c` (or `gamma build`)
-when the program's speed matters (compute-heavy code often runs 10 to 30 times faster), when
-it uses inline assembly, when you want to debug it with gdb or lldb (`-g`), or to check it
-under `--mode=safe`. `--backend=cranelift` generates machine code without the C compiler's
-optimizer: it builds several times faster than `--backend=c` and the program runs
-somewhat slower, which suits the edit-and-run loop of a program too slow to interpret
-([details](docs/guide/native-backend.md)). All back ends give the same output; a program
-that differs between them is a bug.
+`gamma run` compiles the program through C and runs it, as do `gamma build`, `gamma test`
+and `gamma bench`, so a C compiler is needed. `gamma run --backend=interp` interprets the
+program instead: there is no C compiler involved and it starts at once, which suits a
+quick check, but it is slower (compute-heavy code runs far faster through C), and a
+program that calls foreign C code or uses inline assembly cannot run on it. Use C, with
+`-g`, to debug a program with gdb or lldb, and `--mode=safe` to check it under Fil-C.
+Both back ends give the same output; a program that differs between them is a bug.
 
 ## Installing
 
@@ -104,28 +104,39 @@ irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 
 ```
 
 which installs in `%USERPROFILE%\.gamma` and adds its `bin` directory to your `PATH`.
-Native builds also need a C compiler (`cc`, gcc or clang); on Windows it must be a
-MinGW-w64 compiler on `PATH` (for example gcc from [MSYS2](https://www.msys2.org)'s UCRT64
-environment, or an [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) clang). The
-interpreter (`gamma run`) needs none.
+`build`, `run` (by default), `test` and `bench` also need a C compiler (`cc`, gcc or
+clang); on Windows it must be a MinGW-w64 compiler on `PATH` (for example gcc from
+[MSYS2](https://www.msys2.org)'s UCRT64 environment, or an
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw) clang). `gamma run --backend=interp`
+needs none.
 
 ## Building from source
 
-You need Rust 1.95 or newer.
+You need only a C compiler (`cc`, gcc or clang) and nothing else: the repository holds the
+compiler as C, generated by an earlier version of itself (`bootstrap/seed/`).
 
 ```sh
-cargo build --release
-./target/release/gamma help
+bootstrap/build.sh
+target/bootstrap/gamma help
 ```
+
+compiles the seed and builds the current compiler with it, twice, so that the result is
+the compiler as generated by itself (a few minutes). After changing the compiler, rebuild
+it with the one you have:
+
+```sh
+GAMMA_STD=$PWD/lib/std GAMMA_RUNTIME=$PWD/runtime target/bootstrap/gamma build compiler -o <out>
+```
+
+See [`bootstrap/README.md`](bootstrap/README.md).
 
 ## Using it
 
 ```sh
 gamma new hello              # create a package: gamma.toml, main.gm with a test, .gitignore (and a git repository)
-gamma run hello              # type-check and run a program (a file or a module directory)
+gamma run hello              # compile through C and run a program (a file or a module directory)
 gamma test hello             # run the `test` declarations of a module and its imports
-gamma run --backend=c file.gm  # compile through C and run
-gamma run --backend=cranelift file.gm  # compile with Cranelift and run
+gamma run --backend=interp file.gm  # interpret instead of compiling (no C compiler needed)
 gamma build file.gm -o prog  # compile to a native executable via the system C compiler
 gamma build -g file.gm       # the same, with debug information for gdb/lldb at .gm lines
 gamma check file.gm          # type-check only
@@ -153,11 +164,14 @@ gamma parse --dump file.gm   # print the syntax tree
 ## Testing
 
 ```sh
-cargo test
+tools/test.sh
 ```
 
-runs the unit tests and the conformance suite in `tests/conformance/`. See
-[`docs/contributing.md`](docs/contributing.md) for the test file format.
+builds `target/bootstrap/gamma` (from the seed the first time) and runs the test suites
+with it: the conformance suite in `tests/conformance/`, the examples, the compiler's own
+tests and more. `tools/test.sh --test conformance` runs one suite. The suites are a cargo
+test harness, so Rust is needed to run them. See [`docs/contributing.md`](docs/contributing.md)
+for the test file format.
 
 ## License
 

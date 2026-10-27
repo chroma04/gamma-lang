@@ -4,7 +4,7 @@ Gamma has three things that change over time: the language (`gamma-spec.md`), th
 standard library (`lib/core` and `lib/std`), and the `gamma` tool (its commands, options
 and file formats). They share one version number, the version of the release, written
 `MAJOR.MINOR.PATCH` as in [Semantic Versioning](https://semver.org). The version is the
-`version` in `Cargo.toml` and, for `gammac`, in `compiler/gamma.toml`, which must agree; a release is the git tag `vMAJOR.MINOR.PATCH`, and every change
+`version` in `compiler/gamma.toml`, and a release is the git tag `vMAJOR.MINOR.PATCH`, and every change
 it brings is listed in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Before 1.0
@@ -26,7 +26,7 @@ Package version requirements follow the same rule as Cargo's: `0.1` means `>=0.1
 
 - **Language.** A program accepted by a `1.x` compiler is accepted by every later `1.y`
   compiler and means the same. A minor release may add features and fix the
-  specification where it contradicts itself or the reference implementation in a way
+  specification where it contradicts itself or the compiler in a way
   no program can rely on. A new keyword is introduced only in a major release. Behavior
   the specification calls undefined or implementation-defined is not covered.
 - **Standard library.** A released public name changes or disappears only after it has
@@ -55,8 +55,8 @@ change to the specification names the section it touches. When a release is cut,
 ## Cutting a release
 
 1. Move the `Unreleased` entries of `CHANGELOG.md` under a heading for the new version
-   and date (`## 0.2.0 - 2027-01-31`), and set `version` in `Cargo.toml` and in
-   `compiler/gamma.toml` to match (then `cargo build` to update `Cargo.lock`). That section becomes the release notes.
+   and date (`## 0.2.0 - 2027-01-31`), and set `version` in
+   `compiler/gamma.toml` to match. That section becomes the release notes.
 2. Run the Release workflow by hand on that commit (Actions → Release → Run workflow).
    It builds and smoke-tests the archives for every platform without publishing them.
 3. Merge, then tag the merge commit `vX.Y.Z` and push the tag. The workflow checks that

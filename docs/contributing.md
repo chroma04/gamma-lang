@@ -5,41 +5,51 @@ problems are reported privately, as [`SECURITY.md`](../SECURITY.md) describes.
 
 ## Building
 
-The compiler is a single Rust crate. With a stable Rust toolchain (1.95 or newer, the
-`rust-version` in `Cargo.toml`):
+`gamma` is written in Gamma (`compiler/`) and builds itself. From a checkout you need only
+a C compiler (`cc`, gcc or clang):
 
 ```sh
-cargo build            # debug build (lightly optimized)
-cargo build --release
+bootstrap/build.sh               # writes target/bootstrap/gamma (a few minutes)
 ```
 
-The binary is `target/<profile>/gamma`. `cargo run -- <args>` builds and runs it.
+The script compiles the C seed in `bootstrap/seed/` and builds the compiler of the
+current sources with it (see [The bootstrap seed](#the-bootstrap-seed)). After changing
+`compiler/`, `lib/` or `runtime/`, rebuild with the compiler you have:
 
-`gammac`, the compiler written in Gamma (`compiler/`), is built by `gamma build compiler`,
-or without Rust from the C seed in `bootstrap/` with `bootstrap/build.sh`, which only needs
-a C compiler (see [The bootstrap seed](#the-bootstrap-seed)).
+```sh
+GAMMA_STD=$PWD/lib/std GAMMA_RUNTIME=$PWD/runtime target/bootstrap/gamma build compiler -o <out>
+```
+
+The Rust implementation in `src/` that the compiler was first written against is frozen:
+it is not built, released or tested on Gamma code, and stays in the repository only until
+it is deleted. Its last state is the tag `rust-reference-final`
+([`self-hosting.md`](self-hosting.md#retiring-the-reference)). Do not change it.
 
 ## Checks
 
-Continuous integration runs, on Linux and macOS (and the tests on Windows with MinGW-w64 gcc):
+The test suites are a cargo test harness, so Rust (1.95 or newer) is still needed to run
+them, but they test the compiler in `compiler/`. Continuous integration builds `gamma`
+from the seed in every job and runs, on Linux and macOS (and the conformance tests and
+examples on Windows with MinGW-w64 gcc):
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets      # warnings are errors in CI
-cargo test --all-targets
+tools/test.sh                   # all the suites, with target/bootstrap/gamma
+gamma fmt --check compiler lib examples
+gamma test compiler             # the compiler's own unit tests
 ```
 
-Run them before sending a change. Formatting uses the settings in
-`rustfmt.toml`. CI also has jobs for Safe builds with Fil-C, for a big-endian
-cross build (s390x under qemu), for the editor grammars (see below and
-[`editors.md`](editors.md)) and, on pull requests, for benchmarks (see below).
+Run them before sending a change. CI also formats and lints the retired Rust crate
+(`cargo fmt --all -- --check`, `cargo clippy --all-targets`) and has jobs for the
+Safe, big-endian, AArch64 and WASI lanes (see Tests), differential testing and fuzzing
+(below), the editor grammars (see below and [`editors.md`](editors.md)) and, on pull
+requests, benchmarks.
 
 ## Formatting Gamma code
 
 `gamma fmt <file or directory>...` rewrites `.gm` files in the canonical style;
 `gamma fmt --check` only lists the files that would change (exit status 1 if
 there are any), and `gamma fmt -` filters standard input to standard output. The
-formatter (`src/fmt.rs`) works on tokens and never changes meaning: it keeps the
+formatter (`compiler/fmt/`) works on tokens and never changes meaning: it keeps the
 line breaks of the source, collapses runs of blank lines, indents by bracket
 nesting (four spaces), normalizes the spacing inside a line and copies comments
 and literals verbatim. Trailing comments and the columns of aligned `::`/`=>`
@@ -53,9 +63,9 @@ reformatted, since some pin columns in their expected output.
 
 `gamma lint` ([`lint.md`](lint.md)) is kept clean on `lib/std` and `examples/`:
 `tests/lint.rs` fails if either has a warning. To add a rule, give it an entry in
-`RULES` (`src/lint/mod.rs`) with its default level and a one-line summary, then
-report it from the AST walk (`src/lint/syntax.rs`) if the syntax tree is enough, or
-as a `Finding` from `src/sema/lint.rs` if it needs types or name resolution. Attach a
+`RULES` (`compiler/lint/lint.gm`) with its default level and a one-line summary, then
+report it from the AST walk (`compiler/lint/syntax.gm`) if the syntax tree is enough, or
+as a `Finding` from `compiler/lint/checked.gm` if it needs types or name resolution. Attach a
 fix only when it cannot change what the program does; `gamma lint --fix` undoes a
 fix that stops the program compiling, but not one that changes its behavior. Add a
 conformance test for it under `tests/conformance/lint/`, with the cases it must not
@@ -63,7 +73,7 @@ report, and a row to the tables of `docs/lint.md`.
 
 ## API documentation
 
-`gamma doc` (`src/doc/`) writes Markdown or HTML documentation for the `pub`
+`gamma doc` (`compiler/doc/`) writes Markdown or HTML documentation for the `pub`
 declarations of a module from the syntax tree, their `///` comments and the `//!`
 comments at the top of the module's files. It copies signatures from the source text,
 so a module needs to parse but not to type-check. Document the standard library in
@@ -73,36 +83,52 @@ The reference in `docs/std/` is generated, not written by hand. After changing a
 comment or a public declaration in `lib/std`, regenerate it:
 
 ```
-cargo run -- doc lib/std --all -o docs/std
+gamma doc lib/std --all -o docs/std
 ```
 
-`cargo test --test doc` fails with this command in its message while the checked-in files
+`tools/test.sh --test doc` fails with this command in its message while the checked-in files
 differ from the output. `gamma doc lib/std --all --missing -o /tmp/std` also lists the
 public declarations that have no doc comment. The generator's own tests compare against
 the files in `tests/doc/golden/`, which are rewritten by
-`GAMMA_BLESS=1 cargo test --test doc` after an intended change to the output.
+`GAMMA_BLESS=1 tools/test.sh --test doc` after an intended change to the output.
 
 ## Tests
 
 There are two kinds of tests.
 
-**Unit tests** live next to the code they test, in `#[cfg(test)]` modules.
+**Unit tests** are `test` declarations next to the code they test; `gamma test compiler`
+runs those of the compiler.
 
-**Integration tests** (`tests/*.rs`) run the real `gamma` binary: the formatter
-(`fmt.rs`), the package manager (`pkg.rs`, needs `git`), the language server
-(`lsp.rs`), the documentation generator (`doc.rs`), `gamma repl` (`repl.rs`),
-`gamma test` and `gamma bench` (`testing_cli.rs`), build settings in `gamma.toml`
-(`build_profiles.rs`), the internal compiler error report (`ice.rs`), the C runtime
-(`runtime.rs`), how native builds link the runtime (`native_build.rs`), debug
-information (`debug_info.rs`), the Cranelift back end (`cranelift.rs`), the C toolchain variables and cross compilation
-(`cross.rs`), foreign calls from the interpreter (`ffi_interp.rs`), the layout of an
-installed release (`install_layout.rs`), very long expressions
-(`long_expressions.rs`), functions with thousands of statements (`long_functions.rs`), the self-hosted compiler in `compiler/`, whose output must match the reference implementation's on every `.gm` file of the repository (`selfhost.rs`, see [`self-hosting.md`](self-hosting.md)), and the programs in `examples/` (`examples.rs`, below). The
-header comment of each file says what it needs and when it skips itself.
+**Integration tests** (`tests/*.rs`) run an executable of the compiler: the one that the
+environment variable `GAMMA_TEST_COMPILER` names. Without it the suites panic with a
+message saying so. `tools/test.sh [cargo test arguments]` sets it up: it builds
+`target/bootstrap/gamma` (from the seed the first time, then incrementally with the
+previous one, and only when `compiler/`, `lib/` or `runtime/` changed) and runs
+`cargo test` with it:
+
+```sh
+tools/test.sh                          # every suite
+tools/test.sh --test conformance       # one suite
+GAMMA_TEST_COMPILER=$PWD/target/bootstrap/gamma cargo test --test fmt   # a compiler you built yourself
+```
+
+The suites cover the formatter (`fmt.rs`), the package manager (`pkg.rs`, needs `git`),
+the language server (`lsp.rs`), the documentation generator (`doc.rs`), `gamma repl`
+(`repl.rs`), `gamma test` and `gamma bench` (`testing_cli.rs`), the command line
+(`cli.rs`), build settings in `gamma.toml` (`build_profiles.rs`), the C runtime
+(`runtime.rs`), how native builds link the runtime (`native_build.rs`), debug information
+(`debug_info.rs`), the C toolchain variables and cross compilation (`cross.rs`), very long
+expressions (`long_expressions.rs`), functions with thousands of statements
+(`long_functions.rs`), the programs in `examples/` (`examples.rs`, below), the lanes of
+other platforms (`lanes.rs`, below) and the compiler itself (`selfhost.rs`: it reaches a
+fixed point compiling itself, its unit tests pass, its sources are formatted, the split C
+units build, and a packaged release runs from its installed layout; see
+[`self-hosting.md`](self-hosting.md)). The header comment of each file says what it needs
+and when it skips itself.
 
 **Conformance tests** are Gamma source files under `tests/conformance/`,
 grouped into directories by area (`lex/`, `parse/`, …). The runner,
-`tests/conformance.rs`, runs each file through the `gamma` binary and checks the
+`tests/conformance.rs`, runs each file through the compiler under test and checks the
 outcome against expectations written in the file:
 
 ```gamma
@@ -124,9 +150,8 @@ main :: fn() {
 | `//! endian: little` | run the test only on targets of that byte order (`big`), for tests that show the layout of values in memory |
 | `//! needs: f16` | leave the test out of the C lanes where the target's C compiler has no `_Float16` |
 | `//! mode: fast` | build a `run` or `test` test in that mode (`debug`, `checked`, `safe`, `fast`; default `debug`); `safe` tests run only through the C back end and need Fil-C, and are skipped without it |
-| `//! native: <reason>` | run a `run` or `test` test only through the C back end, for what the interpreter cannot do |
+| `//! native: <reason>` | run a `run` or `test` test only through the C back end, for what the interpreter cannot do (foreign C code, inline assembly) |
 | `//! filter: text` | run a `test` test with `gamma test --filter=text` |
-| `//! cranelift: skip <reason>` | leave the test out of the Cranelift lane (below) |
 | `//! safe: skip <reason>` | leave the test out of the Safe lane (below), because its behavior differs in Safe builds by design |
 | `//! stderr` | also compare standard error with the sibling `<name>.stderr` (for trap reports) |
 | `//! exit: N` | expected exit status of a `run` or `test` test (default 0) |
@@ -153,115 +178,63 @@ library directory; by default it uses the one next to the installed binary, else
 `lib/std` of the source tree):
 
 ```sh
-GAMMA_TEST_FILTER=parse/match cargo test --test conformance   # run a subset
-BLESS=1 cargo test --test conformance                         # rewrite golden files
+GAMMA_TEST_FILTER=parse/match tools/test.sh --test conformance   # run a subset
+BLESS=1 tools/test.sh --test conformance                         # rewrite golden files
 ```
 
 Only bless after checking that the new output is correct; `git diff` shows what
 changed.
 
-Every `run` test that expects no errors also runs through the C back end and
-must produce the same output and exit status as with the interpreter. This
-needs a C compiler (`$CC` or `cc`); without one the C lanes are skipped, unless
-`GAMMA_TEST_C=1` is set (as in CI), which makes that a failure. Set `GAMMA_TEST_C=0` to skip it, and
-`GAMMA_TEST_DEBUG_INFO=1` to build every such program with `-g` (worth doing after
-changing `src/cgen/debug.rs` or `src/cgen/views.rs`). The C
-runtime has its own tests (`cargo test --test runtime`, in `runtime/rt_test.c`).
-
-**Cranelift lane.** The same tests also run through `--backend=cranelift` when the C
-toolchain targets 64-bit Linux or macOS on x86-64 or AArch64 and its programs can run
-(built for the host, or through `GAMMA_RUNNER`), with the same expectations; set
-`GAMMA_TEST_CRANELIFT=0` to skip the lane. CI runs it on Linux and macOS, and on AArch64
-Linux under QEMU, which is also how to run it locally for the other architecture:
-
-```sh
-CC=aarch64-linux-gnu-gcc CFLAGS=-static CC_x86_64_unknown_linux_gnu=gcc \
-  GAMMA_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
-  cargo test --test conformance --test cranelift
-```
-
-(`CC_x86_64_unknown_linux_gnu` keeps the build scripts of dependencies on the host's
-compiler.) `tests/cranelift.rs` checks the back end's C calling conventions against code
-the C compiler compiles. `GAMMA_DUMP_CLIF=1` makes the compiler print the Cranelift IR of
-every function it generates, the first thing to look at when the lane fails.
-
-To debug the interpreter's bytecode VM (see `docs/architecture.md`):
-
-- `GAMMA_VM_DUMP=name` (or `*`) prints the bytecode of each function of that name
-  as it is compiled, or the line of the compiler that could not translate it.
-- `cargo build --release --features vm-profile` builds a `gamma` that, with
-  `GAMMA_VM_PROFILE=1`, prints how often each opcode ran when `gamma run` exits;
-  with `GAMMA_VM_PAIRS=1` as well it lists the most frequent pairs of consecutive
-  opcodes, which is where to look for instructions worth fusing.
+A `run` test that expects no errors runs twice and must give the same output and exit
+status both times: first in the interpreter (`--backend=interp`), then compiled through C.
+A `test` test runs through C (`gamma test` always does). The C lane needs a C compiler
+(`$CC` or `cc`); without one it is skipped, unless `GAMMA_TEST_C=1` is set (as in CI),
+which makes that a failure. Set `GAMMA_TEST_C=0` to skip it, and `GAMMA_TEST_DEBUG_INFO=1`
+to build every such program with `-g`. The C runtime has its own tests
+(`tools/test.sh --test runtime`, in `runtime/rt_test.c`).
 
 Large Debug builds are split into several C files compiled in parallel (see
-`docs/architecture.md`). Test programs are too small to be split, so CI runs the
+`docs/self-hosting.md`). Test programs are too small to be split, so CI runs the
 conformance tests with `GAMMA_C_UNITS=3` as well, which splits every Debug build
 into three units (and fails a build that cannot be split):
 
 ```sh
-GAMMA_C_UNITS=3 cargo test --test conformance --test examples
+GAMMA_C_UNITS=3 tools/test.sh --test conformance --test examples
 ```
 
-**Safe lane.** Tests marked `//! mode: safe` (in `tests/conformance/safe/`) build
-with Fil-C and run when it is found. To install it, download a release from
-<https://github.com/pizlonator/fil-c/releases> (the `optfil` x86_64 tarball),
-extract it and run `sudo ./setup.sh`, which installs to `/opt/fil`; the build
-looks for `filcc` on `PATH`, then in `/opt/fil/bin`. Then
+**Other lanes.** `tests/lanes.rs` builds every conformance `run` test for a platform the
+host is not, and checks the output and exit status. `GAMMA_TEST_LANE` names the lane, and
+without it the suite does nothing:
+
+| `GAMMA_TEST_LANE` | What it does | Needs |
+| --- | --- | --- |
+| `safe` | builds each test as a Safe build and runs it (standard error is not compared) | [Fil-C](https://fil-c.org) |
+| `s390x` | cross-compiles for big-endian s390x, runs under qemu-user | `s390x-linux-gnu-gcc`, `qemu-s390x` |
+| `aarch64` | cross-compiles for AArch64 Linux, runs under qemu-user | `aarch64-linux-gnu-gcc`, `qemu-aarch64` |
+| `wasi` | builds for `wasm32-wasi`, runs under Wasmtime | clang with the WASI C library, `wasmtime` |
 
 ```sh
-GAMMA_TEST_SAFE=1 cargo test --test conformance
+GAMMA_TEST_LANE=aarch64 tools/test.sh --test lanes
 ```
 
-requires Fil-C and adds the lane: every `run` and `test` test in the default or
-Checked mode also runs as a Safe build and must match its expected output and
-exit status (standard error is not compared). Mark a test that differs by design
-(for example one that depends on a Debug-only trap or on the size of a stack)
-with `//! safe: skip <reason>`. `GAMMA_TEST_SAFE=0` turns the Safe tests off. CI has
-a job that installs Fil-C and runs the lane.
-
-**gammac.** The suite also tests `gammac`, the compiler written in Gamma, against the
-same expectations:
-
-```sh
-bootstrap/build.sh                      # or: gamma build compiler -o target/bootstrap/gammac
-GAMMA_TEST_COMPILER=$PWD/target/bootstrap/gammac cargo test --test conformance
-```
-
-`GAMMA_TEST_COMPILER` names any binary with `gamma`'s command line; it runs with the
-repository's `lib/std` and `runtime`. For `gammac`, `run` tests go through its interpreter
-and then through C, and `test` tests through C; there is no Cranelift lane. CI runs this on
-Linux and macOS with the `gammac` built from the seed.
-
-The suite also runs with a cross compiler, when the machine can run its output
-(for example through qemu-user and binfmt):
-
-```sh
-CC=aarch64-linux-gnu-gcc CFLAGS=-static cargo test --test conformance --test runtime
-```
-
-`CC` and `CFLAGS` also reach the build scripts of C dependencies (libffi), which
-must compile for the host. If the build fails to link, point them at the host
-compiler with the target-specific variables, as CI does:
-`CC_x86_64_unknown_linux_gnu=gcc CFLAGS_x86_64_unknown_linux_gnu=`.
-
-Without binfmt, `GAMMA_RUNNER` names the emulator that starts the executables, and
-a big-endian target works the same way (CI runs it on s390x):
-
-```sh
-sudo apt-get install gcc-s390x-linux-gnu qemu-user
-GAMMA_RUNNER="qemu-s390x -L /usr/s390x-linux-gnu" CC=s390x-linux-gnu-gcc CFLAGS=-static \
-    cargo test --release --test conformance --test runtime
-```
-
-Write tests so that they print the same on both byte orders: use `target.endian`
-in a `when` where a program inspects its own memory, or mark the test `//! endian:`.
+To install Fil-C, download a release from <https://github.com/pizlonator/fil-c/releases>
+(the `optfil` x86_64 tarball), extract it and run `sudo ./setup.sh`, which installs to
+`/opt/fil`; the build looks for `filcc` on `PATH`, then in `/opt/fil/bin`.
+`GAMMA_TEST_SAFE=1 tools/test.sh --test conformance` also adds the Safe lane to the
+conformance suite itself: every `run` and `test` test in the default or Checked mode also
+runs as a Safe build and must match. Mark a test that differs by design (for example one
+that depends on a Debug-only trap or on the size of a stack) with
+`//! safe: skip <reason>`. `GAMMA_TEST_SAFE=0` turns the Safe tests off. Write tests so
+that they print the same on both byte orders: use `target.endian` in a `when` where a
+program inspects its own memory, or mark the test `//! endian:`. CI has a job for each
+lane (the s390x one also runs the C runtime tests, the WASI one `tests/wasi.rs`).
 
 `tests/cross.rs` checks the toolchain variables and target detection; most of it
-needs `clang`.
+needs `clang`. `CC` and `CFLAGS` select the C compiler the suites use, and
+`GAMMA_RUNNER` names an emulator that starts executables built for another platform.
 
 **Examples.** The programs in `examples/` are run by `tests/examples.rs` on both back
-ends. Each run of an example is a file `tests/examples/<case>.run`, naming the example
+ends (the interpreter and C). Each run of an example is a file `tests/examples/<case>.run`, naming the example
 and giving its arguments, standard input and expected exit status, next to the
 expected output `<case>.stdout`; the format is described in the header of
 `tests/examples.rs`. A new example needs at least one case (a test checks this) and
@@ -270,20 +243,21 @@ directory, so a case's paths are the ones the example's doc comment tells reader
 type. `GAMMA_TEST_FILTER` and `BLESS=1` work as for the conformance tests:
 
 ```sh
-GAMMA_TEST_FILTER=wordfreq cargo test --test examples
+GAMMA_TEST_FILTER=wordfreq tools/test.sh --test examples
 ```
 
 **Documentation examples.** The code blocks of the guides for C and Rust programmers
 (`docs/guide/for-c-programmers.md`, `docs/guide/for-rust-programmers.md`) are checked
 by `tests/doc_examples.rs`. A block tagged `gamma` is a whole program that must be
-formatted and must run on both back ends, printing what the `output` block after it
-shows; `gamma test` blocks must pass `gamma test`; `gamma error` blocks must be rejected
+formatted (`gamma fmt --check`) and must run with `gamma run --backend=interp` and with
+`gamma run --backend=c`, printing what the `output` block after it
+shows; `gamma test` blocks must pass `gamma test` (through C); `gamma error` blocks must be rejected
 with errors exactly on the lines marked `// error:`; `gamma fragment` blocks are not
 checked. The format is described in the header of `tests/doc_examples.rs`, and
 `GAMMA_TEST_FILTER` selects blocks by `<document>:<line>`:
 
 ```sh
-GAMMA_TEST_FILTER=for-rust cargo test --test doc_examples
+GAMMA_TEST_FILTER=for-rust tools/test.sh --test doc_examples
 ```
 
 When adding a feature, add conformance tests that follow the specification
@@ -293,8 +267,7 @@ that check each compile error the section requires.
 ## Benchmarks
 
 `bench/benches.gm` holds `bench` declarations, run with `gamma bench bench/` (see
-`bench/README.md`); `bench/programs/` holds small programs for counting interpreter
-instructions. On pull requests CI runs `scripts/bench-compare.sh` to compare the
+`bench/README.md`); `bench/programs/` holds small programs that exercise the call, effect and allocation paths. On pull requests CI runs `scripts/bench-compare.sh` to compare the
 benchmarks of the branch with those of its base; the job only reports, it never fails.
 
 ## Generated files
@@ -308,78 +281,74 @@ repository root with the download directory as its argument. It checks the assum
 
 The table of powers of ten in `gm_shortest` (`runtime/gm_rt.c`, the shortest-digits float
 printer) is generated by `tools/gen_float_table.py` (Python 3, standard library only), which
-also checks the integer approximations of the logarithms the C and Rust code use. The
-interpreter (`src/interp/num.rs`) computes the same table at start-up. The algorithm is
+also checks the integer approximations of the logarithms the C code uses. The
+interpreter (`compiler/interp/`) computes the same table at start-up. The algorithm is
 Schubfach; both implementations are tested against a slow search over the exact decimal
 expansion, which defines the result (spec §21.6.1).
 
 ## The bootstrap seed
 
-`bootstrap/seed/` is the C that `gammac` generates for itself, from which
-`bootstrap/build.sh` builds `gammac` with only a C compiler (`bootstrap/README.md`). It is
+`bootstrap/seed/` is the C that `gamma` generates for itself, from which
+`bootstrap/build.sh` builds `gamma` with only a C compiler (`bootstrap/README.md`). It is
 generated, never edited: `bootstrap/seed/SOURCE` names the git trees of `compiler/`,
 `lib/` and `runtime/` it comes from, and the CI job "Bootstrap from the seed" fails if the
 seed is not exactly what the compiler of those trees generates for them
-(`bootstrap/verify.sh`), if it no longer builds the current `gammac`, or if that build is
-not a fixed point.
+(`bootstrap/verify.sh [GAMMA0]`), if it no longer builds the current compiler, or if that
+build is not a fixed point.
 
-Refresh the seed when `gammac`'s sources stop building with it: commit the change to
-`compiler/`, `lib/` or `runtime/`, then run `tools/refresh-seed.sh` and commit
-`bootstrap/seed/`. The script builds `gammac` from the current seed (or with the `gammac`
-given as its argument, such as one built by `gamma build compiler`), has it build itself,
-and writes the C that compiler generates for itself. Because a refreshed seed has to be
-built by the previous one, a change that has `gammac`'s own sources use a new language
-feature comes in two steps: first teach the compiler the feature and refresh the seed,
-then use the feature in `compiler/`. Changes that do not need a refresh leave the seed
-alone, which keeps the repository from growing with every change.
+Refresh the seed when the compiler's sources stop building with it: commit the change to
+`compiler/`, `lib/` or `runtime/`, then run `tools/refresh-seed.sh [GAMMA]` and commit
+`bootstrap/seed/`. The script builds the compiler from the current seed (or with the
+`gamma` given as its argument, such as one built by `gamma build compiler`), has it build
+itself, and writes the C that compiler generates for itself. Because a refreshed seed has
+to be built by the previous one, a change that has the compiler's own sources use a new
+language feature comes in two steps: first teach the compiler the feature and refresh the
+seed, then use the feature in `compiler/`. Changes that do not need a refresh leave the
+seed alone, which keeps the repository from growing with every change. Each seed is
+exactly what the previous seed's compiler generates, which ties the chain to the last
+compiler built by the Rust implementation (see
+[self-hosting.md](self-hosting.md#retiring-the-reference)).
 
 ## Releases
 
-A release is a tag `vX.Y.Z` on `main` whose version matches `version` in `Cargo.toml` and
-in `compiler/gamma.toml`. Pushing the tag runs `.github/workflows/release.yml`, which:
+A release is a tag `vX.Y.Z` on `main` whose version matches `version` in
+`compiler/gamma.toml`. Pushing the tag runs `.github/workflows/release.yml`, which:
 
-1. builds `gamma` in release mode on Linux (x86_64 and arm64, on Ubuntu 22.04 so that the
-   binaries run with older glibc versions), macOS (x86_64 and arm64) and Windows (x86_64,
-   with the C runtime linked statically);
-2. packages each with `tools/package-release.sh` as `gamma-<os>-<arch>.tar.gz` (a `.zip`
-   on Windows) plus a `.sha256` file. The archive is an installation prefix: `bin/gamma`, the standard library
-   in `lib/gamma/std` (an installed compiler finds it relative to its own path), `LICENSE`
-   and `README.md`;
-3. unpacks each archive, hides the source tree's `lib/std`, and checks that the packaged
-   compiler runs a program that imports `std/...`, on the interpreter and through C;
-4. builds `gammac` without cargo and releases it as `gammac-<os>-<arch>.tar.gz` (a `.zip`
-   on Windows) for the same five platforms. On each Linux and macOS runner,
-   `bootstrap/build.sh` builds it from the seed; the Windows one is cross-built on Linux
-   with the Linux `gammac` and MinGW-w64
-   (`gammac build compiler --target=x86_64-w64-mingw32`). `tools/package-gammac.sh` makes
-   the archive, an installation prefix with `bin/gammac`, `lib/gamma/{std,core,runtime}`,
-   `LICENSE` and `README.md`; its version is that of `compiler/gamma.toml`.
-   `tools/smoke-gammac.sh` then starts the unpacked `gammac` through `PATH` from another
-   directory, with the source tree's libraries and runtime hidden, and runs a program on
-   the interpreter, through C and as a built executable; the Windows archive is checked on
-   a Windows runner with MinGW-w64 gcc. See
-   [self-hosting.md](self-hosting.md#installing-gammac-and-windows);
-5. checks that the CI workflow passed on the tagged commit (a tag on a commit whose CI
+1. builds `gamma` for linux-x86_64, linux-aarch64, macos-x86_64 and macos-aarch64. On each
+   runner `bootstrap/build.sh` builds it from the seed, and that compiler then builds the
+   release binary in Fast mode (`gamma build --mode=fast compiler`). The Linux binaries
+   are built on Ubuntu 22.04 so that they run with older glibc versions. The Windows
+   binary (windows-x86_64) is cross-compiled on Linux by the Linux release `gamma` with
+   MinGW-w64 (`gamma build compiler --target=x86_64-w64-mingw32`);
+2. packages each with `tools/package-release.sh <asset> <gamma binary> <dir>` as
+   `gamma-<asset>.tar.gz` (a `.zip` on Windows) plus a `.sha256` file. The archive is an
+   installation prefix: `bin/gamma`, `lib/gamma/std`, `lib/gamma/core` and `lib/gamma/runtime`
+   (`gm_rt.c`, `gm_rt.h` and the debugger scripts; an installed compiler finds them
+   relative to its own path), `LICENSE` and `README.md`;
+3. smoke-tests each archive with `tools/smoke-release.sh`: it starts the unpacked `gamma`
+   through `PATH` from another directory, with the source tree's libraries and runtime
+   hidden, and runs a program on the interpreter, through C and as a built executable;
+   the Windows archive is checked on a Windows runner with MinGW-w64 gcc. See
+   [self-hosting.md](self-hosting.md#installing-gamma-and-windows);
+4. checks that the CI workflow passed on the tagged commit (a tag on a commit whose CI
    failed or never ran publishes nothing), records a build provenance attestation for each
    archive (`gh attestation verify <archive> --repo chroma04/gamma-lang` checks one), and
    creates the GitHub release with the archives, `SHA256SUMS`, `tools/install.sh` and
    `tools/install.ps1`.
 
 To cut a release, follow [`versioning.md`](versioning.md): in short, update
-`CHANGELOG.md`, bump `version` in `Cargo.toml` (and `Cargo.lock` with `cargo build`),
-merge that, then `git tag vX.Y.Z && git push origin vX.Y.Z`. Running the workflow by hand
+`CHANGELOG.md`, bump `version` in `compiler/gamma.toml`, merge that, then
+`git tag vX.Y.Z && git push origin vX.Y.Z`. Running the workflow by hand
 (workflow dispatch) builds and checks the archives without publishing anything, which is a
 good test after changing the workflow or the packaging script.
 
 `tools/install.sh` downloads the archive for the machine it runs on, checks its checksum and
 installs it under `$GAMMA_INSTALL` (default `~/.gamma`). `GAMMA_VERSION` picks a release and
 `GAMMA_DOWNLOAD` a different download directory; `GAMMA_DOWNLOAD=file:///path/to/dist` tests
-the script against archives built locally with `tools/package-release.sh`.
-`tools/install.ps1` does the same on Windows. `GAMMA_ARCHIVE=gammac` installs the `gammac`
-archive instead (`bin/gammac`, with its libraries in `lib/gamma`); `gamma` and `gammac` can
-share a prefix. To try it locally: `bootstrap/build.sh`, then
-`tools/package-gammac.sh linux-x86_64 target/bootstrap/gammac dist` and
-`GAMMA_ARCHIVE=gammac GAMMA_DOWNLOAD=file://$PWD/dist GAMMA_INSTALL=/tmp/prefix sh tools/install.sh`.
+the script against archives built locally. To try it: `bootstrap/build.sh`, then
+`tools/package-release.sh linux-x86_64 target/bootstrap/gamma dist` and
+`GAMMA_DOWNLOAD=file://$PWD/dist GAMMA_INSTALL=/tmp/prefix sh tools/install.sh`.
+`tools/install.ps1` does the same on Windows.
 
 ## The editor grammars
 
@@ -391,8 +360,11 @@ every conformance test the compiler accepts. Change the grammars along with the 
 
 ## Fuzzing
 
-`fuzz/` is a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) crate (outside the
-main workspace, so `cargo build` and `cargo test` never compile it). Its targets feed
+`fuzz/` holds fuzz targets for the compiler. The cargo-fuzz crate described first tests
+the retired Rust implementation: it is kept compiling (CI checks that) until that code is
+deleted, but nobody runs it any more; fuzz the compiler in Gamma as described under
+[Fuzzing gamma](#fuzzing-gamma). The crate is outside the main workspace, so `cargo build`
+and `cargo test` never compile it. Its targets feed
 arbitrary text to the front end: `parse` lexes and parses it, `fmt` formats
 text the parser accepts and checks that the result formats to itself, and `check` runs
 the whole front end (name resolution, type checking, lowering) on it as a single-file
@@ -402,7 +374,7 @@ cover what comes from other people's repositories: `manifest` parses text as a
 the package store), and `archive` unpacks bytes as a package archive into a scratch
 directory and checks that nothing is written outside it. Diagnostics for
 invalid input are expected; panics, stack overflows, hangs and quadratic blowups are bugs.
-CI checks that the targets compile (`RUSTC_BOOTSTRAP=1 cargo check --manifest-path
+CI checks that they compile (`RUSTC_BOOTSTRAP=1 cargo check --manifest-path
 fuzz/Cargo.toml`).
 
 ```sh
@@ -429,16 +401,16 @@ as a conformance test (for example `tests/conformance/parse/<name>.gm` with
 with `//! stage: check`) or a unit test in the module concerned.
 Fuzzing is not part of CI.
 
-### Fuzzing gammac
+### Fuzzing gamma
 
-`fuzz/gammac/` has the same five targets against `gammac`, so fuzzing needs no Rust
-toolchain: only a built `gammac` and clang with libFuzzer (on Debian and Ubuntu,
+`fuzz/gammac/` has the same five targets against `gamma`, so fuzzing needs no Rust
+toolchain: only a built `gamma` and clang with libFuzzer (on Debian and Ubuntu,
 `apt install clang libclang-rt-dev`). Each target is a Gamma program (`parse.gm`, `fmt.gm`,
 `check.gm`, `manifest.gm`, `archive.gm`) that imports the modules of `compiler/` through a
 path dependency (`fuzz/gammac/gamma.toml`) and does what the cargo-fuzz target of the same
 name does, with the same checks.
 
-How a Gamma program becomes a libFuzzer target: `gammac build --emit-c` writes the C of the
+How a Gamma program becomes a libFuzzer target: `gamma build --emit-c` writes the C of the
 program, and `build.sh` compiles it with `-fsanitize=fuzzer-no-link` (coverage
 instrumentation, plus `address` for every target but `check`) and links it with libFuzzer's
 driver library without its `main`. The generated C defines `main`, which `build.sh`
@@ -452,7 +424,7 @@ reports as "fuzz target exited" and records as a crash input like any other; a s
 overflow is a signal and a hang is libFuzzer's timeout.
 
 ```sh
-GAMMAC=target/gammac fuzz/gammac/build.sh           # every target; or name some: build.sh parse fmt
+GAMMA=target/bootstrap/gamma fuzz/gammac/build.sh           # every target; or name some: build.sh parse fmt
 fuzz/gammac/seed.sh                                 # corpus: fuzz/seed.sh plus sample package archives
 fuzz/gammac/run.sh parse -max_total_time=600        # options of the kind of target, then yours
 fuzz/gammac/run.sh check -max_total_time=600 -jobs=4 -workers=4
@@ -460,7 +432,7 @@ fuzz/gammac/run.sh parse fuzz/gammac/artifacts/parse/crash-0123   # reproduce an
 fuzz/gammac/smoke.sh 30                             # build all, run each for 30 s; fails on a crash
 ```
 
-`build.sh` reads `GAMMAC` (default `gammac` on `PATH`), `CLANG`, `MODE` (default
+`build.sh` reads `GAMMA` (default `gamma` on `PATH`), `CLANG`, `MODE` (default
 `checked`), `SAN` and `OPT`; `run.sh` reads `GAMMA_STD` and `GAMMA_RUNTIME` (default: those
 of the source tree) and passes everything after the target to libFuzzer. The `check` target
 loads and checks the standard library for every input, so it is slow (tens of inputs per
@@ -505,13 +477,13 @@ focused), and the generator keeps them well typed and terminating:
   cooperative scheduler of `std/fiber` (`fiber.spawn`, `fiber.Sched.yield_now`, `fiber.Sched.join`).
   Scheduling is round-robin and uses no clock, so the output is deterministic.
 
-Each program runs with the interpreter (`gamma run`) and with the C back end
-(`gamma run --backend=c`) compiled by every C compiler listed in `--cc` (default: gcc and
+Each program runs with the interpreter (`gamma run --backend=interp`) and with the C back
+end (`gamma run --backend=c`) compiled by every C compiler listed in `--cc` (default: gcc and
 clang; compilers that are not installed are skipped). Standard output, standard error
 (with the program's path replaced by `FILE`) and the exit status must be equal.
 
 ```sh
-cargo build --release                     # the gamma executable it tests
+bootstrap/build.sh                        # the gamma executable it tests
 cargo build --release --manifest-path tools/difftest/Cargo.toml --target-dir target
 target/release/difftest --start 0 --count 1000      # seeds 0..1000, in parallel
 target/release/difftest --print 17                  # show the program of seed 17
@@ -524,11 +496,11 @@ default `difftest/` in the system temporary directory) and reported with all thr
 outputs; `--reduce` deletes lines while the same back ends keep disagreeing and writes
 `<file>.min.gm`. A program that the compiler rejects is reported too, since the
 generator should never produce one. `--mode=checked` tests Checked builds, `--gamma`
-(or `$GAMMA`) selects the executable. To turn a disagreement into a regression test, decide
+(or `$GAMMA`, else `target/bootstrap/gamma`) selects the executable. To turn a disagreement into a regression test, decide
 from the specification which side is wrong, fix it, and add the reduced program as
 `tests/conformance/run/<name>.gm`, which runs on both back ends. Like fuzzing,
 differential testing is not part of the main test job, but CI runs it in its own job
-("Differential tests (gcc, clang)", Ubuntu only): it builds `gamma` in release mode and
+("Differential tests (gcc, clang)", Ubuntu only): it builds `gamma` from the seed and
 `difftest`, runs the fixed seeds 0..100 (reproducible anywhere), and then 200 seeds starting
 at a point that moves with the run number, so successive runs cover new programs. Both need
 gcc and clang. A failure prints the seed and the three outputs; `difftest --print SEED`
@@ -538,14 +510,16 @@ shows the program and `--reduce` shrinks it. The job takes a few minutes.
 
 `web/` holds the website: a generator that renders the guide, the specification, the
 library reference and these documents into pages, and a playground that runs the
-interpreter, compiled to WebAssembly, in the browser. The *Website* workflow builds it on
+interpreter, compiled to WebAssembly, in the browser. Both are built with `gamma`
+(`web/gen`, `web/play`; see below). The *Website* workflow builds `gamma` from the seed, then the site, on
 every pull request (failing on a broken internal link, or on a playground example that
 does not run) and publishes it from `main`. [`web/README.md`](../web/README.md) explains
 how to build and preview it locally.
 
-The compiler must keep building for `wasm32-wasip1`: code that needs threads, the C
-library or Cranelift goes behind `cfg(not(target_family = "wasm"))`, with a stand-in for
-WebAssembly hosts (see `src/interp/ffi_wasm.rs`).
+The interpreter in `compiler/` must keep building for `wasm32-wasi`, since the playground
+is built from it: code that needs threads or the C compiler must not be reached from the
+playground's `main` (`web/play/main.gm`). `web/check.mjs` runs every example of the
+playground's menu in the built module.
 
 ## The specification
 
@@ -556,7 +530,7 @@ examples), rather than letting the implementation silently diverge.
 
 ## Code style
 
-- Follow the existing structure described in [`architecture.md`](architecture.md).
+- Follow the existing structure of `compiler/` (see [`self-hosting.md`](self-hosting.md)).
 - Public items get doc comments; other comments explain *why*, not *what*.
 - Diagnostics follow chapter 23 of the specification: every compile error is a rule
   of the specification (an implementation limit says so), and hints come from the
@@ -567,4 +541,4 @@ examples), rather than letting the implementation silently diverge.
   the language server can apply it; when there are several reasonable edits, attach
   each (`gamma fix` then leaves the choice to the programmer). Test it in
   `tests/fix.rs`.
-- No `unwrap()` on user-controlled input: report a diagnostic instead.
+- No trap on user-controlled input: report a diagnostic instead.
