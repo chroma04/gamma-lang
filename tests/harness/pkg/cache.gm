@@ -1,0 +1,200 @@
+// Tests of the cache of fetched packages (read-only checkouts, `gamma cache`), of symbolic
+// links in checkouts, and of the language server's use of fetched dependencies.
+
+kit :: import "../kit"
+fs :: import "std/fs"
+str :: import "std/str"
+
+/// A package that depends on `http` at the tag v1.0.0.
+git_dep_app :: fn(w: ^const World) -> kit.Fail!() needs kit.Run {
+    return w.sum_app(str.format("http = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url_of("http"))!, [_]string("http"))
+}
+
+the_language_server_sees_fetched_git_dependencies :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("git") { return !t.skip("git is not installed") }
+    w := try world(t, "lsp")
+    try w.new_lib("http", 7, "v1.0.0")
+    try w.sum_app(str.format("http = {{ git = \"{}\" }}\n", w.url_of("http"))!, [_]string("http"))
+    _ = try w.ok("app", [_]string("fetch"))
+    lock := w.get("app/gamma.lock")
+    c := w.t.gamma([_]string("lsp"))
+    c.set("GAMMA_CACHE_DIR", w.cache_dir())
+    server := try start_server(t, c)
+    talk(&w, &server) else e => {
+        _ = Proc.kill(server.child)
+        _ = server.finish()
+        return !e
+    }
+    try t.check(try server.finish(), "the server did not exit successfully")
+    // The server leaves the lockfile alone.
+    try t.expect_text("gamma.lock", lock, w.get("app/gamma.lock"))
+    return ()
+}
+
+/// Opens the application's main file in the server, which must publish no diagnostics for
+/// it, and ends the session.
+talk :: fn(w: ^const World, s: ^Server) -> kit.Fail!() needs kit.Run {
+    file := w.at("app/main.gm")
+    try s.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}`)
+    _ = try s.read_until(`"id":1`)
+    try s.send(`{"jsonrpc":"2.0","method":"initialized","params":{}}`)
+    open := str.format(
+        `{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{}","languageId":"gamma","version":1,"text":{}}}}}}}`,
+        file_url(file),
+        kit.quote(w.get("app/main.gm")),
+    )!
+    try s.send(open)
+    diags := try s.read_until("publishDiagnostics")
+    try w.t.expect_contains("the diagnostics", diags, "\"diagnostics\":[]")
+    try s.send(`{"jsonrpc":"2.0","id":2,"method":"shutdown"}`)
+    _ = try s.read_until(`"id":2`)
+    return s.send(`{"jsonrpc":"2.0","method":"exit"}`)
+}
+
+checkouts_are_read_only_and_removable :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("git") { return !t.skip("git is not installed") }
+    w := try world(t, "readonly")
+    try w.new_lib("http", 7, "v1.0.0")
+    try git_dep_app(&w)
+    _ = try w.ok("app", [_]string("fetch"))
+    cos := w.checkouts()
+    try t.check(cos.len is 1, "{} checkouts", cos.len)
+    for p in (cos[0], kit.join(cos[0], "lib.gm"), kit.join(cos[0], "gamma.toml")) {
+        try expect_read_only(t, p)
+    }
+    // Editing a dependency in place is refused (a superuser can write anywhere).
+    if not (try is_root(t)) {
+        lib := kit.join(cos[0], "lib.gm")
+        wrote := true
+        fs.write_all(lib, "changed") else e => { wrote = false }
+        try t.check(not wrote, "{} was changed", lib)
+        created := true
+        fs.write_all(kit.join(cos[0], "new.gm"), "") else e => { created = false }
+        try t.check(not created, "a file was added to the checkout")
+        removed := true
+        Fs.remove(lib) else e => { removed = false }
+        try t.check(not removed, "{} was removed", lib)
+    }
+    try w.prints("app", [_]string("run", "."), "7\n")
+    // Deleting restores permissions first; the next build fetches and verifies again.
+    out := try w.ok("app", [_]string("cache", "clean", "--all"))
+    try t.expect_contains("the output", out.out, "Removed 1 package checkout, 1 repository mirror")
+    try t.check(w.checkouts().len is 0, "the checkout is still there")
+    out = try w.ok("app", [_]string("run", "."))
+    try t.expect_text("the output", "7\n", out.out)
+    try t.expect_contains("stderr", out.err, "Fetching http")
+    try t.check(w.checkouts().len is 1, "{} checkouts", w.checkouts().len)
+    // A tampered checkout (changed by a superuser, say) is found when it is rebuilt from the lock.
+    lock := w.get("app/gamma.lock")
+    _ = try w.ok("app", [_]string("cache", "clean", "--all"))
+    try w.git_run("http", [_]string("checkout", "-q", "-b", "other"))
+    try w.put("http/lib.gm", lib_source(99))
+    try w.put("http/gamma.toml", lib_manifest("http"))
+    try w.commit("http", "other", null)
+    // The lock still names the original revision, and the mirror has it.
+    try w.prints("app", [_]string("run", "."), "7\n")
+    try t.expect_text("gamma.lock", lock, w.get("app/gamma.lock"))
+    return ()
+}
+
+cache_dir_and_clean :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("git") { return !t.skip("git is not installed") }
+    w := try world(t, "cache_clean")
+    try w.new_lib("http", 7, "v1.0.0")
+    try git_dep_app(&w)
+    _ = try w.ok("app", [_]string("fetch"))
+    out := try w.ok("app", [_]string("cache", "dir"))
+    try t.expect_text("the cache directory", w.cache_dir(), str.trim(out.out))
+    // Native builds, as `run --backend=c` and the runtime cache leave them.
+    try w.put("cache/run/prog-0123456789abcdef", "binary")
+    try w.put("cache/gm_rt-0123456789abcdef.o", "object")
+    try w.put("cache/gm_rt-0123456789abcdef.c", "source")
+    try w.put("cache/native/obj-0123.o", "object")
+    try w.put("cache/unrelated.txt", "not ours")
+    try w.age("cache/run/prog-0123456789abcdef", 40)
+    try w.age("cache/gm_rt-0123456789abcdef.o", 40)
+
+    // Nothing is old enough for the default of 30 days: the checkout was just used.
+    out = try w.ok("app", [_]string("cache", "clean"))
+    try t.check(str.contains(out.out, "Removed 0 ") or str.contains(out.out, "2 cached builds"), "{}", out.out)
+    try t.check(not w.has("cache/run/prog-0123456789abcdef"), "an old build is kept")
+    try t.check(not w.has("cache/gm_rt-0123456789abcdef.o") and not w.has("cache/gm_rt-0123456789abcdef.c"), "an old runtime object is kept")
+    try t.check(w.has("cache/native/obj-0123.o"), "a native object was removed")
+    try t.check(w.checkouts().len is 1, "{} checkouts", w.checkouts().len)
+    try t.check(w.has("cache/unrelated.txt"), "an unrelated file was removed")
+    out = try w.ok("app", [_]string("cache", "clean"))
+    try t.check(starts_with(out.out, "Nothing to remove"), "{}", out.out)
+
+    // Unused for 40 days: removed, with the mirror nothing needs any more.
+    try w.age_stamp(w.checkouts()[0], 40)
+    out = try w.ok("app", [_]string("cache", "clean", "--dry-run"))
+    try t.expect_contains("the output", out.out, "Would remove 1 package checkout, 1 repository mirror")
+    try t.check(w.checkouts().len is 1, "a dry run removed the checkout")
+    // A build that uses it marks it used again.
+    try w.prints("app", [_]string("run", "."), "7\n")
+    out = try w.ok("app", [_]string("cache", "clean"))
+    try t.check(starts_with(out.out, "Nothing to remove"), "{}", out.out)
+    try w.age_stamp(w.checkouts()[0], 40)
+    out = try w.ok("app", [_]string("cache", "clean"))
+    try t.expect_contains("the output", out.out, "Removed 1 package checkout, 1 repository mirror, 0 cached builds")
+    try t.expect_contains("the output", out.out, "freed")
+    try t.check(w.checkouts().len is 0, "the checkout is still there")
+    try t.check(not w.has_entries("cache/git/db"), "a repository mirror is still there")
+    out = try w.ok("app", [_]string("run", "."))
+    try t.expect_text("the output", "7\n", out.out)
+    try t.expect_contains("stderr", out.err, "Fetching http")
+
+    // The age is a number of days; `--all` takes no age.
+    out = try w.ok("app", [_]string("cache", "clean", "--older-than=0"))
+    try t.expect_contains("the output", out.out, "1 package checkout")
+    _ = try w.bad("app", [_]string("cache", "clean", "--older-than=soon"))
+    _ = try w.bad("app", [_]string("cache", "clean", "--all", "--older-than=3"))
+    _ = try w.bad("app", [_]string("cache", "tidy"))
+    _ = try w.bad("app", [_]string("cache"))
+    _ = try w.ok("app", [_]string("run", "."))
+    out = try w.ok("app", [_]string("cache", "clean", "--all"))
+    try t.expect_contains("the output", out.out, "Removed 1 package checkout")
+    try t.check(w.has("cache/unrelated.txt"), "an unrelated file was removed")
+    try t.check(not w.has("cache/native"), "native objects are still there")
+    return ()
+}
+
+symbolic_links_are_checksummed_and_must_stay_inside :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("git") { return !t.skip("git is not installed") }
+    w := try world(t, "symlinks")
+    files := lib_items("lnk", 3)
+    try w.new_repo("lnk", files, null)
+    try w.symlink("lib.gm", "lnk/alias.txt")
+    try w.mkdir("lnk/sub/deep")
+    try w.symlink("../../lib.gm", "lnk/sub/deep/up.txt")
+    try w.commit("lnk", "links", "v1.0.0")
+    // The same tree with the links replaced by copies.
+    try w.new_repo("cpy", files, null)
+    try w.put("cpy/alias.txt", lib_source(3))
+    try w.put("cpy/sub/deep/up.txt", lib_source(3))
+    try w.commit("cpy", "copies", "v1.0.0")
+    sums := list(string)
+    for name in ("lnk", "cpy") {
+        try w.sum_app(str.format("{} = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", name, w.url_of(name))!, [_]string(name))
+        _ = try w.ok("app", [_]string("fetch"))
+        try w.prints("app", [_]string("run", "."), "3\n")
+        sums.push(try field(t, w.get("app/gamma.lock"), "lnk", "checksum"))!
+    }
+    try t.check(sums.items[0] is not sums.items[1], "links and copies have the checksum {}", sums.items[0])
+
+    // Links that leave the package are refused, and no checkout is left behind.
+    for i, target in enumerate([_]string("../../../etc/passwd", "/etc/passwd")) {
+        name := str.format("esc{}", i)!
+        try w.new_repo(name, files, null)
+        try w.symlink(target, str.format("{}/leak.txt", name)!)
+        try w.commit(name, "escape", "v1.0.0")
+        w.rm("app/gamma.lock")
+        try w.sum_app(str.format("lnk = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url_of(name))!, [_]string("lnk"))
+        before := w.checkouts().len
+        out := try w.bad("app", [_]string("fetch"))
+        try t.expect_contains("stderr", out.err, "leak.txt")
+        try t.expect_contains("stderr", out.err, "points outside the package")
+        try t.check(w.checkouts().len is before, "a checkout was left behind")
+    }
+    return ()
+}

@@ -1,5 +1,528 @@
-//! The build_profiles suite (being ported from tests/build_profiles.rs).
+//! Tests of the build settings of gamma.toml: `[build]`, `[profile.<name>]`, C sources
+//! compiled into the program, libraries and their directories. They need a C compiler
+//! (the C sources of packages are compiled into the program) and, for the git
+//! dependency, `git`. Each test has a directory and a cache directory of its own, below
+//! the harness's test directory (see `tests/harness/kit`).
 
 kit :: import "../kit"
+fs :: import "std/fs"
+process :: import "std/process"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "c_sources_work_with_every_command", run: c_sources_work_with_every_command))!
+    out.push(kit.Test(name: "c_objects_follow_changes", run: c_objects_follow_changes))!
+    out.push(kit.Test(name: "c_compile_errors_are_reported", run: c_compile_errors_are_reported))!
+    out.push(kit.Test(name: "profiles_and_precedence", run: profiles_and_precedence))!
+    out.push(kit.Test(name: "debug_info_comes_from_the_manifest", run: debug_info_comes_from_the_manifest))!
+    out.push(kit.Test(name: "manifest_errors_have_lines", run: manifest_errors_have_lines))!
+    out.push(kit.Test(name: "path_dependencies_can_wrap_c", run: path_dependencies_can_wrap_c))!
+    out.push(kit.Test(name: "git_dependencies_can_wrap_c", run: git_dependencies_can_wrap_c))!
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "libraries_and_library_directories", run: libraries_and_library_directories))!
+    }
+    out.push(kit.Test(name: "ldflags_of_the_manifest_reach_the_linker", run: ldflags_of_the_manifest_reach_the_linker))!
+}
+
+// ---------------------------------------------------------------------------------
+// The world of a test: a directory of its own with a cache directory below it
+// ---------------------------------------------------------------------------------
+
+World :: struct {
+    t: ^kit.T
+    root: string
+}
+
+/// Whether the program `tool` runs.
+have :: fn(tool: string) -> bool needs Alloc + Proc {
+    argv := [_]string(tool, "--version")
+    out := process.output(argv, process.SpawnOptions(stdin: .Null)) else return false
+    return process.success(out.status)
+}
+
+/// Deletes a tree whose directories may be read-only (fetched packages are).
+force_remove :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
+    if not fs.exists(p) { return () }
+    when target.os is not .Windows {
+        c := kit.command("chmod")
+        c.args([_]string("-R", "u+rwx", p))
+        _ = try t.run(c)
+    }
+    fs.remove_all(p) else e => {
+        if e is not .NotFound { return !t.fail("cannot remove {}: {}", p, e) }
+    }
+    return ()
+}
+
+/// The absolute path of `p` with symbolic links resolved.
+canonical :: fn(t: ^kit.T, p: string) -> kit.Fail!string needs kit.Run {
+    when target.os is .Windows {
+        return p
+    } else {
+        c := kit.command("sh")
+        c.args([_]string("-c", "cd \"$1\" && pwd -P", "sh", p))
+        out := try t.run_ok(c)
+        return str.trim(out.out)
+    }
+}
+
+/// A fresh directory for the test `name`.
+world :: fn(t: ^kit.T, name: string) -> kit.Fail!World needs kit.Run {
+    dir := kit.join(kit.join(t.cfg.tmp, "build_profiles"), name)
+    try force_remove(t, dir)
+    fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
+    return World(t: t, root: try canonical(t, dir))
+}
+
+at :: fn(w: ^const World, rel: string) -> string needs Alloc => kit.join(w.root, rel)
+
+cache :: fn(w: ^const World) -> string needs Alloc => w.at("cache")
+
+write :: fn(w: ^const World, rel, text: string) -> kit.Fail!() needs kit.Run => w.t.write(w.at(rel), text)
+
+/// A command running gamma in the directory `dir` of the world, with a cache directory of
+/// the world's and no C compiler settings from the environment.
+command :: fn(w: ^const World, dir: string, args: []const string) -> kit.Command needs Alloc {
+    c := w.t.gamma(args)
+    c.dir = w.at(dir)
+    c.set("GAMMA_CACHE_DIR", w.cache())
+    c.unset("CFLAGS")
+    c.unset("LDFLAGS")
+    c.unset("CC")
+    return c
+}
+
+gamma :: fn(w: ^const World, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run => w.t.run(w.command(dir, args))
+
+/// Runs gamma and fails the test unless it succeeds.
+ok :: fn(w: ^const World, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run => w.t.run_ok(w.command(dir, args))
+
+/// Runs gamma and fails the test if it succeeds.
+bad :: fn(w: ^const World, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    out := try w.gamma(dir, args)
+    if out.success() {
+        return !w.t.fail("`gamma {}` succeeded\nstdout:\n{}\nstderr:\n{}", str.join(args, " ")!, out.out, out.err)
+    }
+    return out
+}
+
+/// Runs gamma, which must succeed, and checks what it printed.
+prints :: fn(w: ^const World, dir: string, args: []const string, expected: string) -> kit.Fail!() needs kit.Run {
+    out := try w.ok(dir, args)
+    return w.t.expect_text("the output of `gamma {}`", expected, out.out)
+}
+
+/// Runs the executable `rel` of the world, which must succeed, and checks what it printed.
+built_prints :: fn(w: ^const World, rel, expected: string) -> kit.Fail!() needs kit.Run {
+    out := try w.t.run_ok(kit.command(w.at(rel)))
+    return w.t.expect_text("the output of the executable", expected, out.out)
+}
+
+/// Runs gamma, which must fail, and checks that its error message has `needle`.
+fails_with :: fn(w: ^const World, dir: string, args: []const string, needle: string) -> kit.Fail!() needs kit.Run {
+    out := try w.bad(dir, args)
+    return w.t.expect_contains("the error message", out.err, needle)
+}
+
+/// The names of the object files in the cache other than the runtime's. The C sources of
+/// packages are compiled for each build into objects next to the executable, which are
+/// removed after linking, so none stays in the cache.
+package_objects :: fn(w: ^const World) -> []string needs Alloc + Fs {
+    names := list(string)
+    for r in fs.walk(w.cache()) {
+        e := r else break
+        if e.kind is .Dir { continue }
+        name := dupe(base_name(e.path))!
+        if str.strip_suffix(name, ".o") is not null and str.strip_prefix(name, "gm_rt-") is null {
+            names.push(name)!
+        }
+    }
+    names.items.sort()
+    return names.items
+}
+
+base_name :: fn(p: string) -> string {
+    i := str.rfind(p, "/") else return p
+    return p[i + 1..]
+}
+
+/// Fails the test if the cache holds objects of packages.
+no_objects :: fn(w: ^const World) -> kit.Fail!() needs Alloc + Fs {
+    objects := w.package_objects()
+    if objects.len > 0 {
+        return !w.t.fail("object files of packages stay in the cache: {}", str.join(objects, ", ")!)
+    }
+    return ()
+}
+
+// ---------------------------------------------------------------------------------
+// Packages
+// ---------------------------------------------------------------------------------
+
+SHIM_H :: "int shim_add(int a, int b);\n"
+
+shim_c :: fn(extra: i32) -> string needs Alloc => str.format(
+    "#include \"shim.h\"\n#ifndef BONUS\n#define BONUS 0\n#endif\nint shim_add(int a, int b) {{ return a + b + BONUS + {}; }}\n",
+    extra,
+)!
+
+SHIM_MAIN :: `
+c :: import "std/c"
+
+shim :: foreign "c" {
+    shim_add :: fn(a: c.c_int, b: c.c_int) -> c.c_int needs not
+}
+
+main :: fn() needs Out + Sys {
+    print("{}\n", shim.shim_add(2, 3))
+}
+
+test "the C source is linked" {
+    expect(shim.shim_add(2, 3) >= 5)
+}
+`
+
+MODE_MAIN :: `
+mode_name :: fn() -> string {
+    when target.mode is .Debug { return "debug" }
+        else when target.mode is .Checked { return "checked" }
+        else when target.mode is .Safe { return "safe" }
+        else { return "fast" }
+}
+
+main :: fn() needs Out {
+    print("{}\n", mode_name())
+}
+`
+
+/// A package `app` with the C source `c/shim.c` and its header.
+shim_package :: fn(w: ^const World, build: string) -> kit.Fail!() needs kit.Run {
+    try w.write("app/gamma.toml", str.format("[package]\nname = \"app\"\n\n{}", build)!)
+    try w.write("app/c/include/shim.h", SHIM_H)
+    try w.write("app/c/shim.c", shim_c(0))
+    try w.write("app/main.gm", SHIM_MAIN)
+    return ()
+}
+
+SHIM_BUILD :: "[build]\nc-sources = [\"c/shim.c\"]\ninclude-dirs = [\"c/include\"]\n"
+
+// ---------------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------------
+
+c_sources_work_with_every_command :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("cc") { return !t.skip("no C compiler") }
+    w := try world(t, "c_sources")
+    try w.shim_package(SHIM_BUILD)
+    // `run` compiles the C source and links its object into the program.
+    try w.prints("app", [_]string("run", "main.gm"), "5\n")
+    try w.no_objects()
+    // So do the C back end by name and `build`.
+    try w.prints("app", [_]string("run", "--backend=c", "main.gm"), "5\n")
+    _ = try w.ok("app", [_]string("build", "main.gm", "-o", "app.out"))
+    try w.built_prints("app/app.out", "5\n")
+    // Tests of modules that call C run natively with the C sources.
+    out := try w.ok("app", [_]string("test", "main.gm"))
+    try t.check(str.contains(out.out, "1 passed") or str.contains(out.out, "ok"), "{}", out.out)
+    // No object of the package stays behind.
+    try w.no_objects()
+    // `check` does not need the C compiler's work.
+    _ = try w.ok("app", [_]string("check", "main.gm"))
+    return ()
+}
+
+c_objects_follow_changes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("cc") { return !t.skip("no C compiler") }
+    w := try world(t, "c_cache")
+    try w.shim_package(SHIM_BUILD)
+    try w.prints("app", [_]string("run", "main.gm"), "5\n")
+    // Nothing changed: the same result, and no object is kept in the cache.
+    try w.prints("app", [_]string("run", "--backend=c", "main.gm"), "5\n")
+    try w.no_objects()
+    // A changed source is compiled again, and the program follows.
+    try w.write("app/c/shim.c", shim_c(10))
+    try w.prints("app", [_]string("run", "--backend=c", "main.gm"), "15\n")
+    try w.prints("app", [_]string("run", "main.gm"), "15\n")
+    // So does a changed header.
+    try w.write("app/c/include/shim.h", "#define BONUS 1000\nint shim_add(int a, int b);\n")
+    try w.prints("app", [_]string("run", "--backend=c", "main.gm"), "1015\n")
+    try w.prints("app", [_]string("run", "main.gm"), "1015\n")
+    try w.no_objects()
+    // And a changed flag.
+    try w.write("app/c/include/shim.h", SHIM_H)
+    c := w.command("app", [_]string("run", "--backend=c", "main.gm"))
+    c.set("CFLAGS", "-DBONUS=7")
+    out := try t.run_ok(c)
+    try t.expect_text("the output", "22\n", out.out)
+    return ()
+}
+
+c_compile_errors_are_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("cc") { return !t.skip("no C compiler") }
+    w := try world(t, "c_errors")
+    try w.shim_package(SHIM_BUILD)
+    try w.write("app/c/shim.c", "#include \"shim.h\"\nint shim_add(int a, int b) { return a +; }\n")
+    try w.fails_with("app", [_]string("run", "main.gm"), "shim.c")
+    try w.fails_with("app", [_]string("run", "--backend=c", "main.gm"), "shim.c")
+    try w.fails_with("app", [_]string("build", "main.gm"), "shim.c")
+    try w.write("app/c/shim.c", "#include \"missing.h\"\n")
+    try w.fails_with("app", [_]string("run", "main.gm"), "missing.h")
+    // A listed file that does not exist.
+    try w.shim_package("[build]\nc-sources = [\"c/nope.c\"]\n")
+    out := try w.bad("app", [_]string("run", "main.gm"))
+    try t.expect_contains("the error message", out.err, "c/nope.c")
+    try t.expect_contains("the error message", out.err, "not a file")
+    return ()
+}
+
+profiles_and_precedence :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("cc") { return !t.skip("no C compiler") }
+    w := try world(t, "profiles")
+    manifest :: `
+[build]
+mode = "checked"
+c-sources = ["c/shim.c"]
+include-dirs = ["c/include"]
+
+[profile.release]
+mode = "fast"
+cflags = ["-DBONUS=100"]
+
+[profile.dev]
+mode = "debug"
+`
+    try w.shim_package(manifest)
+    try w.write("app/mode.gm", MODE_MAIN)
+    // [build] over the built-in defaults.
+    try w.prints("app", [_]string("run", "mode.gm"), "checked\n")
+    // The profile over [build].
+    try w.prints("app", [_]string("run", "--profile=release", "mode.gm"), "fast\n")
+    try w.prints("app", [_]string("run", "--profile=dev", "mode.gm"), "debug\n")
+    // The command line over the profile.
+    try w.prints("app", [_]string("run", "--profile=release", "--mode=checked", "mode.gm"), "checked\n")
+    try w.prints("app", [_]string("run", "--profile=release", "--mode=debug", "mode.gm"), "debug\n")
+    try w.prints("app", [_]string("run", "--mode=fast", "mode.gm"), "fast\n")
+    // The same for build, test and check.
+    _ = try w.ok("app", [_]string("build", "--profile=release", "mode.gm", "-o", "m.out"))
+    try w.built_prints("app/m.out", "fast\n")
+    _ = try w.ok("app", [_]string("check", "--profile=release", "mode.gm"))
+    // Flags of the profile reach the C compiler, in the interpreter and natively.
+    try w.prints("app", [_]string("run", "main.gm"), "5\n")
+    try w.prints("app", [_]string("run", "--profile=release", "main.gm"), "105\n")
+    try w.prints("app", [_]string("run", "--profile=release", "--backend=c", "main.gm"), "105\n")
+    _ = try w.ok("app", [_]string("test", "--profile=release", "main.gm"))
+    // The environment's CFLAGS come after those of the manifest and win.
+    c := w.command("app", [_]string("run", "--profile=release", "main.gm"))
+    c.set("CFLAGS", "-DBONUS=7")
+    out := try t.run_ok(c)
+    try t.expect_text("the output", "12\n", out.out)
+    // Unknown profiles name the known ones.
+    out = try w.bad("app", [_]string("run", "--profile=nope", "mode.gm"))
+    try t.expect_contains("the error message", out.err, "unknown profile `nope`")
+    try t.expect_contains("the error message", out.err, "release")
+    try t.expect_contains("the error message", out.err, "dev")
+    // Without a package there is nothing to select from.
+    try w.write("loose/main.gm", MODE_MAIN)
+    try w.fails_with("loose", [_]string("run", "--profile=release", "main.gm"), "needs a package")
+    try w.prints("loose", [_]string("run", "main.gm"), "debug\n")
+    // A profile on a package without profiles.
+    try w.write("plain/gamma.toml", "[package]\nname = \"plain\"\n")
+    try w.write("plain/main.gm", MODE_MAIN)
+    try w.fails_with("plain", [_]string("run", "--profile=x", "main.gm"), "defines no")
+    return ()
+}
+
+debug_info_comes_from_the_manifest :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try world(t, "debug_info")
+    try w.write("app/gamma.toml", "[package]\nname = \"app\"\n[build]\ndebug-info = true\nmode = \"debug\"\n")
+    try w.write("app/main.gm", MODE_MAIN)
+    _ = try w.ok("app", [_]string("run", "main.gm"))
+    if have("cc") {
+        // With debug information the executable keeps the generated C file's line map.
+        _ = try w.ok("app", [_]string("build", "main.gm", "-o", "out"))
+        exe := if target.os is .Windows { "app/out.exe" } else { "app/out" }
+        try t.check(fs.exists(w.at(exe)), "{} was not built", exe)
+    }
+    return ()
+}
+
+Case :: struct {
+    text: string
+    line: u32
+    msg: string
+}
+
+manifest_errors_have_lines :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try world(t, "errors")
+    try w.write("app/main.gm", MODE_MAIN)
+    cases :: [_]Case(
+        Case(text: "[package]\nname = \"a\"\n[build]\nmode = \"checked\"\nspeed = 3\n", line: 5, msg: "unknown key `speed`"),
+        Case(text: "[package]\nname = \"a\"\n[profile.x]\ncflags = \"-O2\"\n", line: 4, msg: "must be an array of strings"),
+        Case(text: "[package]\nname = \"a\"\n[profile.x]\nmode = \"turbo\"\n", line: 4, msg: "invalid mode `turbo`"),
+        Case(text: "[package]\nname = \"a\"\n[build]\ndebug-info = \"yes\"\n", line: 4, msg: "true or false"),
+        Case(text: "[package]\nname = \"a\"\n[build]\nlibs = [\"-lz\"]\n", line: 4, msg: "invalid library name"),
+        Case(text: "[package]\nname = \"a\"\n[build]\nc-sources = [\"\"]\n", line: 4, msg: "empty path"),
+        Case(text: "[package]\nname = \"a\"\n[profile]\nx = 1\n", line: 4, msg: "must be a table"),
+        Case(text: "build = 3\n[package]\nname = \"a\"\n", line: 1, msg: "`build` must be a table"),
+        Case(text: "[package]\nname = \"a\"\n[profile.\"a b\"]\n", line: 3, msg: "invalid profile name"),
+    )
+    for c in cases {
+        try w.write("app/gamma.toml", c.text)
+        out := try w.bad("app", [_]string("run", "main.gm"))
+        try t.expect_contains(str.format("the error message for {}", kit.quote(c.text))!, out.err, str.format("gamma.toml:{}: ", c.line)!)
+        try t.expect_contains(str.format("the error message for {}", kit.quote(c.text))!, out.err, c.msg)
+        checked := try w.gamma("app", [_]string("check", "main.gm"))
+        try t.expect_contains("the message of `check`", checked.err, c.msg)
+    }
+    return ()
+}
+
+/// A dependency package that wraps C: its own C source and include directory.
+c_dependency :: fn(w: ^const World, dir: string) -> kit.Fail!() needs kit.Run {
+    try w.write(
+        str.format("{}/gamma.toml", dir)!,
+        "[package]\nname = \"wrap\"\nversion = \"1.0.0\"\n\n[build]\nc-sources = [\"native/wrap.c\"]\ninclude-dirs = [\"native\"]\nlibs = [\"m\"]\n",
+    )
+    try w.write(str.format("{}/native/config.h", dir)!, "#define WRAP_BASE 40\n")
+    try w.write(
+        str.format("{}/native/wrap.c", dir)!,
+        "#include \"config.h\"\n#include <math.h>\nint wrap_value(void) { return WRAP_BASE + (int)sqrt(4.0); }\n",
+    )
+    try w.write(
+        str.format("{}/lib.gm", dir)!,
+        `
+c :: import "std/c"
+lib :: foreign "c" {
+    wrap_value :: fn() -> c.c_int needs not
+}
+pub value :: fn() -> i32 needs Sys => lib.wrap_value()
+`,
+    )
+    return ()
+}
+
+WRAP_MAIN :: `
+wrap :: import "wrap"
+c :: import "std/c"
+
+own :: foreign "c" {
+    own_value :: fn() -> c.c_int needs not
+}
+
+main :: fn() needs Out + Sys {
+    print("{} {}\n", wrap.value(), own.own_value())
+}
+`
+
+/// The root package has a `config.h` of its own, with another value: each package's C
+/// files are compiled with that package's include directories.
+wrap_app :: fn(w: ^const World, dep: string) -> kit.Fail!() needs kit.Run {
+    try w.write(
+        "app/gamma.toml",
+        str.format(
+            "[package]\nname = \"app\"\n\n[dependencies]\nwrap = {}\n\n[build]\nc-sources = [\"own.c\"]\ninclude-dirs = [\"inc\"]\n",
+            dep,
+        )!,
+    )
+    try w.write("app/inc/config.h", "#define OWN_BASE 1000\n")
+    try w.write("app/own.c", "#include \"config.h\"\nint own_value(void) { return OWN_BASE; }\n")
+    try w.write("app/main.gm", WRAP_MAIN)
+    return ()
+}
+
+path_dependencies_can_wrap_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("cc") { return !t.skip("no C compiler") }
+    w := try world(t, "dep_path")
+    try c_dependency(&w, "wrap")
+    try wrap_app(&w, "{ path = \"../wrap\" }")
+    try w.prints("app", [_]string("run", "."), "42 1000\n")
+    try w.prints("app", [_]string("run", "--backend=c", "."), "42 1000\n")
+    _ = try w.ok("app", [_]string("build", ".", "-o", "app.out"))
+    try w.built_prints("app/app.out", "42 1000\n")
+    try w.no_objects()
+    // A dependency's paths stay inside it.
+    try w.write("wrap/gamma.toml", "[package]\nname = \"wrap\"\n[build]\nc-sources = [\"../app/own.c\"]\n")
+    try w.fails_with("app", [_]string("run", "."), "not inside the package")
+    try w.write("wrap/gamma.toml", "[package]\nname = \"wrap\"\n[build]\nlib-dirs = [\"/usr/lib\"]\n")
+    try w.fails_with("app", [_]string("run", "."), "not inside the package")
+    return ()
+}
+
+/// The `file:` URL of the local directory `p`, as git takes it (`file:///D:/x` on Windows).
+file_url :: fn(p: string) -> string needs Alloc {
+    s := str.replace_alloc(p, "\\", "/")!
+    if s.len > 0 and s[0] is '/' { return str.format("file://{}", s)! }
+    return str.format("file:///{}", s)!
+}
+
+git_dependencies_can_wrap_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("cc") { return !t.skip("no C compiler") }
+    if not have("git") { return !t.skip("no git") }
+    w := try world(t, "dep_git")
+    try c_dependency(&w, "wrap")
+    try w.git([_]string("init", "-q"))
+    try w.git([_]string("add", "-A"))
+    try w.git([_]string("commit", "-q", "-m", "wrap"))
+    try w.git([_]string("tag", "v1.0.0"))
+    try wrap_app(&w, str.format("{{ git = \"{}\", version = \"1\" }}", file_url(w.at("wrap")))!)
+    out := try w.ok("app", [_]string("run", "."))
+    try t.expect_text(str.format("the output (stderr: {})", out.err)!, "42 1000\n", out.out)
+    try w.prints("app", [_]string("run", "--backend=c", "."), "42 1000\n")
+    _ = try w.ok("app", [_]string("test", "."))
+    try w.no_objects()
+    return ()
+}
+
+/// Runs git in the repository `wrap` of the world.
+git :: fn(w: ^const World, args: []const string) -> kit.Fail!() needs kit.Run {
+    c := kit.command("git")
+    c.args([_]string("-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"))
+    c.args(args)
+    c.dir = w.at("wrap")
+    c.set("GIT_AUTHOR_NAME", "t")
+    c.set("GIT_AUTHOR_EMAIL", "t@example.com")
+    c.set("GIT_COMMITTER_NAME", "t")
+    c.set("GIT_COMMITTER_EMAIL", "t@example.com")
+    _ = try w.t.run_ok(c)
+    return ()
+}
+
+libraries_and_library_directories :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("cc") { return !t.skip("no C compiler") }
+    w := try world(t, "libs")
+    try w.write("app/gamma.toml", "[package]\nname = \"app\"\n[build]\nlibs = [\"vendored\"]\nlib-dirs = [\"vendor/lib\"]\n")
+    try w.write("vendor/src/v.c", "int vendored_answer(void) { return 42; }\n")
+    lib_dir := w.at("app/vendor/lib")
+    fs.make_dir_all(lib_dir) else e => return !t.fail("cannot make {}: {}", lib_dir, e)
+    shared := if target.os is .MacOS { "-dynamiclib" } else { "-shared" }
+    cc := kit.command("cc")
+    cc.args([_]string(shared, "-fPIC", "-o", kit.join(lib_dir, "libvendored.so"), w.at("vendor/src/v.c")))
+    _ = try t.run_ok(cc)
+    try w.write(
+        "app/main.gm",
+        `
+c :: import "std/c"
+v :: foreign "vendored" {
+    vendored_answer :: fn() -> c.c_int needs not
+}
+main :: fn() needs Out + Sys {
+    print("{}\n", v.vendored_answer())
+}
+`,
+    )
+    // The interpreter opens the library from `lib-dirs`; the executable finds it by an
+    // rpath of the same directory.
+    try w.prints("app", [_]string("run", "main.gm"), "42\n")
+    try w.prints("app", [_]string("run", "--backend=c", "main.gm"), "42\n")
+    _ = try w.ok("app", [_]string("build", "main.gm", "-o", "app.out"))
+    try w.built_prints("app/app.out", "42\n")
+    return ()
+}
+
+ldflags_of_the_manifest_reach_the_linker :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not have("cc") { return !t.skip("no C compiler") }
+    w := try world(t, "ldflags")
+    try w.shim_package(str.format("{}ldflags = [\"-lnonexistent_library_for_test\"]\n", SHIM_BUILD)!)
+    try w.fails_with("app", [_]string("build", "main.gm"), "nonexistent_library_for_test")
+    return ()
+}

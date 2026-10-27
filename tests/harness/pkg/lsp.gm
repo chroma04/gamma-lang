@@ -1,0 +1,113 @@
+// A conversation with `gamma lsp`: messages are sent one at a time and the answers read
+// as they come, as an editor does.
+
+kit :: import "../kit"
+process :: import "std/process"
+str :: import "std/str"
+thread :: import "std/thread"
+
+/// A running language server.
+Server :: struct {
+    t: ^kit.T
+    child: process.Child
+    /// What the server wrote, and how much of it has been taken as messages.
+    pending: List(u8)
+    taken: usize = 0
+    /// The watchdog that kills the server when the test's time limit is over.
+    watch: ^Watch
+    watcher: thread.Thread
+}
+
+Watch :: struct {
+    child: process.Child
+    limit: Duration
+    m: thread.Mutex
+    cv: thread.Condvar
+    done: bool = false
+    fired: bool = false
+}
+
+watch :: fn(w: ^Watch) needs Sys {
+    thread.defaults(fn() needs Clock + Proc {
+        start := Clock.now()
+        w.m.lock()
+        while not w.done {
+            spent := Clock.now().since(start)
+            if spent.ns >= w.limit.ns {
+                w.fired = true
+                _ = Proc.kill(w.child)
+                break
+            }
+            _ = w.cv.wait_timeout(&w.m, w.limit.minus(spent))
+        }
+        w.m.unlock()
+    })
+}
+
+/// Starts the server `c` runs, with its input and output connected to the test.
+start_server :: fn(t: ^kit.T, c: kit.Command) -> kit.Fail!Server needs kit.Run {
+    opts := process.SpawnOptions(stdin: .Pipe, stdout: .Pipe, stderr: .Null, dir: c.dir, env: c.env.items, group: true)
+    child := Proc.spawn(c.argv.items, opts) else e => return !t.fail("cannot run `{}`: {}", c.show(), e)
+    w := new(Watch(child: child, limit: Duration(ns: t.cfg.timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar()))!
+    watcher := thread.spawn(watch, w) else e => {
+        _ = Proc.kill(child)
+        _ = Proc.wait(child)
+        return !t.fail("cannot start a thread: {}", e)
+    }
+    return Server(t: t, child: child, pending: list(u8), watch: w, watcher: watcher)
+}
+
+/// Sends one message.
+send :: fn(s: ^Server, body: string) -> kit.Fail!() needs kit.Run {
+    out := list(u8)
+    out.write("Content-Length: {}\r\n\r\n{}", body.len, body)!
+    rest: []const u8 = out.items
+    while rest.len > 0 {
+        n := Proc.write(s.child, rest) else e => return !s.t.fail("cannot write to the server: {}", e)
+        rest = rest[n..]
+    }
+    return ()
+}
+
+/// The length of the header of the message at the start of the server's pending output and
+/// the length of its body, if all of it has arrived.
+next_message :: fn(s: ^const Server) -> ?(head: usize, body: usize) {
+    text := string(s.pending.items)[s.taken..]
+    end := str.find(text, "\r\n\r\n") else return null
+    n: usize = 0
+    for line in str.lines(text[0..end]) {
+        if v := str.strip_prefix(line, "Content-Length: ") { n = str.parse_int(usize, v) else 0 }
+    }
+    if text.len < end + 4 + n { return null }
+    return (head: end + 4, body: n)
+}
+
+/// Reads messages until one contains `needle`, and returns it.
+read_until :: fn(s: ^Server, needle: string) -> kit.Fail!string needs kit.Run {
+    buf: [16384]u8 = ---
+    while true {
+        while m := s.next_message() {
+            from := s.taken + m.head
+            body := dupe(string(s.pending.items)[from..from + m.body])!
+            s.taken = from + m.body
+            if str.contains(body, needle) { return body }
+        }
+        chunk := Proc.read(s.child, buf[..]) else e => return !s.t.fail("cannot read from the server: {}", e)
+        got := chunk else return !s.t.fail("the server exited before it sent a message with {}", kit.quote(needle))
+        s.pending.extend(buf[0..got.len])!
+    }
+}
+
+/// Ends the conversation: closes the server's input, waits for it to exit and returns
+/// whether it succeeded.
+finish :: fn(s: ^Server) -> kit.Fail!bool needs kit.Run {
+    Proc.close_in(s.child)
+    s.watch.m.lock()
+    s.watch.done = true
+    s.watch.m.unlock()
+    s.watch.cv.signal()
+    thread.join(s.watcher)
+    status := Proc.wait(s.child) else e => return !s.t.fail("cannot wait for the server: {}", e)
+    if s.watch.fired { return !s.t.fail("the server did not exit within {} s (GAMMA_TEST_TIMEOUT)", s.t.cfg.timeout_s) }
+    return process.success(status)
+}
