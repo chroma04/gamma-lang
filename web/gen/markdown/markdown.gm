@@ -1,0 +1,258 @@
+//! Markdown to HTML: headings with GitHub-style ids, code blocks, link rewriting.
+//!
+//! This implements CommonMark with GitHub-style pipe tables and strikethrough, which is
+//! what the repository's documents use. Character references are limited to numeric ones
+//! and a list of common names, and "letter" and "lower case" outside ASCII cover the Latin,
+//! Greek and Cyrillic alphabets (enough for heading ids).
+
+arena :: import "std/arena"
+highlight :: import "../highlight"
+links :: import "../links"
+str :: import "std/str"
+text :: import "std/text"
+
+/// Renders a Markdown document to the HTML of an `<article class="prose">` body.
+pub render :: fn(markdown: string, cx: Context) -> Rendered needs Alloc + Fs {
+    parsed := parse_blocks(markdown)
+    parse_inlines(&parsed.tree, parsed.refs.items)
+    return render_tree(&parsed.tree, parsed.doc, cx)
+}
+
+/// The GitHub-compatible base slug of heading text: lowercase, punctuation removed except
+/// `-` and `_`, spaces to `-`.
+slug :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    i: usize = 0
+    while i < s.len {
+        c := s[i]
+        len := utf8_len(c)
+        cp := char_at(s, i)
+        if is_alphanumeric_cp(cp) {
+            text.append_rune(&out, to_lower_cp(cp))!
+        } else if c is '-' or c is '_' {
+            out.push(c)!
+        } else if c is ' ' {
+            out.push('-')!
+        }
+        i += len
+    }
+    return out.items
+}
+
+/// Whether the character is a letter or a digit (of the scripts this generator knows).
+is_alphanumeric_cp :: fn(cp: u32) -> bool {
+    if cp < 0x80 { return is_ascii_alnum(cp.trunc(u8)) }
+    if cp in (0xAA, 0xB5, 0xBA) { return true }
+    if cp in 0xC0..=0x24F { return cp not in (0xD7, 0xF7) }
+    return cp in 0x370..=0x3FF or cp in 0x400..=0x52F or cp in 0x3040..=0x30FF or cp in 0x4E00..=0x9FFF
+}
+
+to_lower_cp :: fn(cp: u32) -> u32 {
+    if cp in 'A'..='Z' { return cp + 32 }
+    if cp < 0x80 { return cp }
+    if cp in 0xC0..=0xDE and cp is not 0xD7 { return cp + 32 }
+    if cp in 0x391..=0x3A9 { return cp + 32 }
+    if cp in 0x410..=0x42F { return cp + 32 }
+    if cp in 0x400..=0x40F { return cp + 80 }
+    return cp
+}
+
+/// Standard base64url without padding, as the playground's `#code=` fragment expects.
+base64url :: fn(data: []const u8) -> string needs Alloc {
+    alphabet :: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    out := list(u8)
+    i: usize = 0
+    while i < data.len {
+        chunk := if data.len - i >= 3 { 3 } else { data.len - i }
+        n: u32 = 0
+        for k in 0..chunk { n |= u32(data[i + k]) << (16 - 8 * k.trunc(u32)) }
+        for k in 0..=chunk { out.push(alphabet[usize((n >> (18 - 6 * k.trunc(u32))) & 63)])! }
+        i += chunk
+    }
+    return out.items
+}
+
+/// The HTML for a fenced (or indented) code block with the given info string.
+code_block :: fn(info, code, cur_out: string) -> string needs Alloc {
+    first_word: string = ""
+    second_word: string = ""
+    n: usize = 0
+    for w in str.fields(info) {
+        if n is 0 { first_word = w }
+        if n is 1 { second_word = w }
+        n += 1
+    }
+    body := code
+    if body.ends_with("\n") { body = body[0..body.len - 1] }
+    match first_word {
+        "gamma" => {
+            extra := if second_word is "error" { " error" } else { "" }
+            pre := str.format("<pre class=\"code gamma{}\"><code>{}</code></pre>\n", extra, highlight.highlight(body))!
+            if info is "gamma" and has_main_line(body) {
+                href := str.format("{}playground.html#code={}", links.root_prefix(cur_out), base64url(body))!
+                return str.format(
+                    "<div class=\"runnable\">{}<a class=\"try\" href=\"{}\">Run in the playground</a></div>\n",
+                    pre,
+                    href,
+                )!
+            }
+            return pre
+        }
+        "output" => return str.format("<pre class=\"code output\"><code>{}</code></pre>\n", highlight.escape(body))!
+        "" => return str.format("<pre class=\"code\"><code>{}</code></pre>\n", highlight.escape(body))!
+        _ => {
+            safe := list(u8)
+            for c in first_word {
+                if is_ascii_alnum(c) or c is '-' or c is '_' { safe.push(c)! }
+            }
+            return str.format(
+                "<pre class=\"code lang-{}\"><code>{}</code></pre>\n",
+                safe.items,
+                highlight.escape(body),
+            )!
+        }
+    }
+}
+
+/// Whether some line of the code starts a `main` function.
+has_main_line :: fn(code: string) -> bool {
+    for line in str.lines(code) {
+        if line.starts_with("main :: fn") { return true }
+    }
+    return false
+}
+
+/// Truncates text to about `max` characters at a word boundary, adding an ellipsis.
+pub truncate :: fn(s: string, max: usize) -> string needs Alloc {
+    words := list(string)
+    defer words.deinit()
+    for w in str.fields(s) { words.push(w)! }
+    joined: string = str.join(words.items, " ")!
+    // Count characters, remembering where the first `max` end.
+    count: usize = 0
+    cut_at := joined.len
+    i: usize = 0
+    while i < joined.len {
+        if count is max { cut_at = i }
+        count += 1
+        i += utf8_len(joined[i])
+    }
+    if count <= max { return joined }
+    cut := joined[0..cut_at]
+    if sp := str.rfind(cut, " ") { cut = cut[0..sp] }
+    end := cut.len
+    while end > 0 and is_ascii_punct(cut[end - 1]) { end -= 1 }
+    return str.format("{}…", cut[0..end])!
+}
+
+with_arena :: fn(body: fn() needs Alloc + Fs) needs Alloc + Fs {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+render_str :: fn(md: string) -> Rendered needs Alloc + Fs => render(md, Context(src: "docs/guide/a.md", out: "guide/a.html", root: ""))
+
+test "slugs" {
+    with_arena(fn() {
+        expect_eq(slug("17.3 Compile-time `if`"), "173-compile-time-if")
+        expect_eq(slug("A_b: c & d?"), "a_b-c--d")
+        expect_eq(slug("Éclair"), "éclair")
+    })
+}
+
+test "duplicate ids" {
+    with_arena(fn() {
+        ids := id_allocator()
+        expect_eq(unique(&ids, "x"), "x")
+        expect_eq(unique(&ids, "x"), "x-1")
+        expect_eq(unique(&ids, "x"), "x-2")
+        expect_eq(unique(&ids, "x-1"), "x-1-1")
+    })
+}
+
+test "base64" {
+    with_arena(fn() {
+        expect_eq(base64url("a"), "YQ")
+        expect_eq(base64url("ab"), "YWI")
+        expect_eq(base64url("abc"), "YWJj")
+        bytes :: [2]u8(0xfb, 0xff)
+        expect_eq(base64url(bytes), "-_8")
+    })
+}
+
+test "headings and anchors" {
+    with_arena(fn() {
+        r := render_str("# T\n\n## One `x`\n\n## One `x`\n\n##### Deep\n")
+        expect(str.contains(r.html, "<h2 id=\"one-x\">One <code>x</code><a class=\"anchor\" href=\"#one-x\">#</a></h2>"))
+        expect(str.contains(r.html, "id=\"one-x-1\""))
+        expect(str.contains(r.html, "<h5 id=\"deep\">Deep</h5>"))
+        expect_eq(r.headings.items.len, 4)
+    })
+}
+
+test "code blocks" {
+    with_arena(fn() {
+        r := render_str(
+            "```gamma\nmain :: fn() {}\n```\n\n```output\n<hi>\n```\n\n```sh\nls\n```\n\n```gamma error\nx\n```\n",
+        )
+        expect(str.contains(r.html, "<div class=\"runnable\"><pre class=\"code gamma\">"))
+        expect(str.contains(r.html, "href=\"../playground.html#code=bWFpbiA6OiBmbigpIHt9\""))
+        expect(str.contains(r.html, "&lt;hi&gt;"))
+        expect(str.contains(r.html, "<pre class=\"code lang-sh\">"))
+        expect(str.contains(r.html, "<pre class=\"code gamma error\">"))
+        expect_eq(str.count(r.html, "class=\"try\""), 1)
+    })
+}
+
+test "tables and links" {
+    with_arena(fn() {
+        r := render_str("First *para* with `code`.\n\n| a | b |\n|---|---|\n| [x](b.md#s) | 1 |\n")
+        expect(str.contains(r.html, "<div class=\"table\"><table>"))
+        expect(str.contains(r.html, "href=\"b.html#s\""))
+        expect_eq(r.first_paragraph, "First para with code.")
+        expect_eq(r.link_targets.items.len, 1)
+        expect_eq(r.link_targets.items[0], "docs/guide/b.md")
+    })
+}
+
+test "truncation" {
+    with_arena(fn() {
+        expect_eq(truncate("short text", 200), "short text")
+        expect_eq(truncate("alpha beta gamma delta", 12), "alpha beta…")
+    })
+}
+
+test "inline markup" {
+    with_arena(fn() {
+        r := render_str("a *b* **c** `d` [e](#f \"t\") <https://x.org> ~~g~~ h\\*i &amp; \"q\"\n")
+        expect_eq(
+            r.html,
+            "<p>a <em>b</em> <strong>c</strong> <code>d</code> <a href=\"#f\" title=\"t\">e</a> <a href=\"https://x.org\">https://x.org</a> <del>g</del> h*i &amp; \"q\"</p>\n",
+        )
+    })
+}
+
+test "lists" {
+    with_arena(fn() {
+        r := render_str("- a\n- b\n  - c\n\n1. x\n2. y\n\n3. z\n")
+        expect_eq(
+            r.html,
+            "<ul>\n<li>a</li>\n<li>b\n<ul>\n<li>c</li>\n</ul>\n</li>\n</ul>\n<ol>\n<li>\n<p>x</p>\n</li>\n<li>\n<p>y</p>\n</li>\n<li>\n<p>z</p>\n</li>\n</ol>\n",
+        )
+    })
+}
+
+test "block quotes and rules" {
+    with_arena(fn() {
+        r := render_str("> q\n> r\n\n---\n\ntext\ncontinued\n")
+        expect_eq(r.html, "<blockquote>\n<p>q\nr</p>\n</blockquote>\n<hr />\n<p>text\ncontinued</p>\n")
+    })
+}
+
+test "reference links" {
+    with_arena(fn() {
+        r := render_str("see [spec][s] and [s]\n\n[s]: ../../gamma-spec.md#x\n")
+        expect(str.contains(r.html, "<a href=\"../spec.html#x\">spec</a> and <a href=\"../spec.html#x\">s</a>"))
+    })
+}

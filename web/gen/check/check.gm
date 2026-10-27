@@ -1,0 +1,197 @@
+//! Link checking of the written site: relative `href`s must point to existing files, and
+//! `#fragment`s into generated pages to existing ids.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+str :: import "std/str"
+
+/// All files below `dir`, recursively, as paths relative to `dir` in path order.
+pub walk :: fn(dir: string) -> List(string) needs Alloc + Fs {
+    files := list(string)
+    collect(dir, "", &files)
+    return files
+}
+
+collect :: fn(root, rel: string, files: ^List(string)) needs Alloc + Fs {
+    path := join(root, rel)
+    names := list(string)
+    defer names.deinit()
+    for r in fs.entries(path) {
+        e := r else return
+        copy := make(u8, e.name.len)!
+        copy.copy_from(e.name)
+        names.push(copy)!
+    }
+    names.items.sort()
+    for name in names.items {
+        child := join(rel, name)
+        info := Fs.stat(join(root, child)) else continue
+        if info.kind is .Dir {
+            collect(root, child, files)
+        } else {
+            files.push(child)!
+        }
+    }
+}
+
+/// `dir` and `name` joined with a `/`, unless one is empty.
+pub join :: fn(dir, name: string) -> string needs Alloc {
+    if dir.len is 0 { return name }
+    if name.len is 0 { return dir }
+    if dir.ends_with("/") { return str.format("{}{}", dir, name)! }
+    return str.format("{}/{}", dir, name)!
+}
+
+/// The values of attribute `name` (as in `name="…"`) in an HTML text.
+attr_values :: fn(html, name: string) -> List(string) needs Alloc {
+    needle := str.format(" {}=\"", name)!
+    values := list(string)
+    rest := html
+    while i := str.find(rest, needle) {
+        rest = rest[i + needle.len..]
+        if end := rest.index_of('"') {
+            values.push(rest[0..end])!
+            rest = rest[end..]
+        }
+    }
+    return values
+}
+
+/// Normalizes `a/b/../c` without touching the file system; `null` if it climbs above the start.
+normalize :: fn(path: string) -> ?string needs Alloc {
+    parts := list(string)
+    defer parts.deinit()
+    for seg in str.split(path, "/") {
+        if seg in ("", ".") { continue }
+        if seg is ".." {
+            _ = parts.pop() else return null
+        } else {
+            parts.push(seg)!
+        }
+    }
+    return str.join(parts.items, "/")!
+}
+
+/// The directory part of a `/`-separated path.
+dir_of :: fn(path: string) -> string {
+    i := str.rfind(path, "/") else return ""
+    return path[0..i]
+}
+
+/// The ids and names a page defines, which links may point to.
+Anchors :: struct {
+    path: string
+    ids: List(string)
+}
+
+/// Checks every HTML page under `out`; returns one message per broken link.
+pub check_site :: fn(out: string) -> List(string) needs Alloc + Fs {
+    problems := list(string)
+    cache := list(Anchors)
+    all := walk(out)
+    for page in all.items {
+        if not page.ends_with(".html") { continue }
+        html := read_text(join(out, page))
+        for href_raw in attr_values(html, "href").items {
+            href: string = str.replace_alloc(href_raw, "&amp;", "&")!
+            if href.len is 0 or href.starts_with("//") { continue }
+            head_end := 0
+            while head_end < href.len and href[head_end] not in ('/', '?', '#') { head_end += 1 }
+            if str.contains(href[0..head_end], ":") { continue }
+            path: string = href
+            frag: ?string = null
+            if sp := str.split_once(href, "#") {
+                path = sp.before
+                frag = sp.after
+            }
+            if q := path.index_of('?') { path = path[0..q] }
+            target := page
+            if path.len > 0 {
+                joined := join(dir_of(page), path)
+                resolved := normalize(joined) else {
+                    problems.push(str.format("{}: link {} leaves the site", page, href)!)!
+                    continue
+                }
+                target = resolved
+                if is_dir(join(out, target)) { target = join(target, "index.html") }
+            }
+            if not is_file(join(out, target)) {
+                problems.push(str.format("{}: broken link {}", page, href)!)!
+                continue
+            }
+            // Fragments with `=` are application state (the playground's `#code=…`), not ids.
+            f := frag else continue
+            if f.len is 0 or str.contains(f, "=") { continue }
+            if not target.ends_with(".html") { continue }
+            known := anchors_of(&cache, out, target)
+            if not contains(known, f) {
+                problems.push(str.format("{}: missing anchor in link {}", page, href)!)!
+            }
+        }
+    }
+    return problems
+}
+
+/// The ids and names defined by the page `target` (cached).
+anchors_of :: fn(cache: ^List(Anchors), out, target: string) -> []const string needs Alloc + Fs {
+    for a in cache.items { if a.path is target { return a.ids.items } }
+    text := read_text(join(out, target))
+    ids := attr_values(text, "id")
+    ids.extend(attr_values(text, "name").items)!
+    cache.push(Anchors(path: target, ids: ids))!
+    return ids.items
+}
+
+contains :: fn(items: []const string, s: string) -> bool {
+    for x in items { if x is s { return true } }
+    return false
+}
+
+read_text :: fn(path: string) -> string needs Alloc + Fs {
+    data := fs.read_all(path) else return ""
+    return data
+}
+
+is_dir :: fn(path: string) -> bool needs Fs {
+    info := Fs.stat(path) else return false
+    return info.kind is .Dir
+}
+
+is_file :: fn(path: string) -> bool needs Fs {
+    info := Fs.stat(path) else return false
+    return info.kind is .File
+}
+
+with_arena :: fn(body: fn() needs Alloc + Fs) needs Alloc + Fs {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+test "finds broken links" {
+    with_arena(fn() {
+        ok(fs.make_dir_all("site/a"))
+        index :: "<a href=\"a/p.html#x\">ok</a> <a href=\"a/p.html#nope\">b</a> <a href=\"gone.html\">c</a> <a href=\"https://x.org\">d</a>"
+        ok(fs.write_all("site/index.html", index))
+        page :: "<h2 id=\"x\"></h2><a href=\"../index.html\">up</a> <a href=\"#x\">self</a>"
+        ok(fs.write_all("site/a/p.html", page))
+        problems := check_site("site")
+        expect_eq(problems.items.len, 2)
+        expect(str.contains(problems.items[0], "nope"))
+        expect(str.contains(problems.items[1], "gone.html"))
+    })
+}
+
+test "walk lists files in path order" {
+    with_arena(fn() {
+        ok(fs.make_dir_all("w/a"))
+        ok(fs.write_all("w/a/x", ""))
+        ok(fs.write_all("w/a.txt", ""))
+        ok(fs.write_all("w/b", ""))
+        files := walk("w")
+        expect_eq(files.items.len, 3)
+        expect_eq(files.items[0], "a/x")
+        expect_eq(files.items[1], "a.txt")
+        expect_eq(files.items[2], "b")
+    })
+}

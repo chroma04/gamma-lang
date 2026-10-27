@@ -1,0 +1,795 @@
+//! The block structure of a Markdown document: block quotes, lists, code, HTML, headings,
+//! tables and paragraphs. The parser reads the text one line at a time, keeping a chain of
+//! open blocks; a line either continues the open blocks, starts new ones, or is added to
+//! the innermost one (CommonMark's own algorithm, plus pipe tables).
+
+str :: import "std/str"
+
+/// A link reference definition `[label]: dest "title"`.
+pub RefDef :: struct {
+    label: string
+    dest: string
+    title: string
+}
+
+/// The result of parsing the blocks of a document.
+pub Parsed :: struct {
+    tree: Tree
+    doc: usize
+    refs: List(RefDef)
+}
+
+CODE_INDENT :: 4
+
+Parser :: struct {
+    t: Tree
+    doc: usize
+    tip: usize
+    oldtip: usize
+    last_matched: usize
+    line: string
+    line_number: usize = 0
+    offset: usize = 0
+    column: usize = 0
+    next_nonspace: usize = 0
+    next_nonspace_column: usize = 0
+    indent: usize = 0
+    indented: bool = false
+    blank: bool = false
+    partially_consumed_tab: bool = false
+    all_closed: bool = true
+    refs: List(RefDef)
+}
+
+/// What a list marker says about its list.
+ListData :: struct {
+    ordered: bool
+    marker: u8
+    start: u64
+    padding: usize
+    marker_offset: usize
+}
+
+/// Parses the blocks of `src`. The text of paragraphs, headings and table cells is left
+/// unparsed in the nodes' `content`.
+parse_blocks :: fn(src: string) -> Parsed needs Alloc {
+    t := tree()
+    doc := t.new_node(.Document)
+    p := Parser(t: t, doc: doc, tip: doc, oldtip: doc, last_matched: doc, line: "", refs: list(RefDef))
+    rest := src
+    while rest.len > 0 {
+        end := 0
+        while end < rest.len and rest[end] not in ('\n', '\r') { end += 1 }
+        p.incorporate_line(rest[0..end])
+        next := end
+        if next < rest.len and rest[next] is '\r' { next += 1 }
+        if next < rest.len and rest[next] is '\n' { next += 1 }
+        rest = rest[next..]
+    }
+    while p.tip is not p.doc { p.finalize(p.tip) }
+    p.finalize(p.doc)
+    return Parsed(tree: p.t, doc: doc, refs: p.refs)
+}
+
+is_space_or_tab :: fn(c: ?u8) -> bool => c in (' ', '\t')
+
+// ----- the line cursor -----
+
+find_next_nonspace :: fn(p: ^Parser) {
+    i := p.offset
+    cols := p.column
+    while c := p.line.get(i) {
+        if c is ' ' {
+            i += 1
+            cols += 1
+        } else if c is '\t' {
+            i += 1
+            cols += 4 - (cols % 4)
+        } else {
+            break
+        }
+    }
+    p.blank = i >= p.line.len
+    p.next_nonspace = i
+    p.next_nonspace_column = cols
+    p.indent = cols - p.column
+    p.indented = p.indent >= CODE_INDENT
+}
+
+advance_next_nonspace :: fn(p: ^Parser) {
+    p.offset = p.next_nonspace
+    p.column = p.next_nonspace_column
+    p.partially_consumed_tab = false
+}
+
+/// Moves the cursor by `count` columns or characters.
+advance_offset :: fn(p: ^Parser, count: usize, columns: bool) {
+    left := count
+    while left > 0 {
+        c := p.line.get(p.offset) else break
+        if c is '\t' {
+            to_tab := 4 - (p.column % 4)
+            if columns {
+                p.partially_consumed_tab = to_tab > left
+                advance := if to_tab > left { left } else { to_tab }
+                p.column += advance
+                if not p.partially_consumed_tab { p.offset += 1 }
+                left -= advance
+            } else {
+                p.partially_consumed_tab = false
+                p.column += to_tab
+                p.offset += 1
+                left -= 1
+            }
+        } else {
+            p.partially_consumed_tab = false
+            p.offset += 1
+            p.column += 1
+            left -= 1
+        }
+    }
+}
+
+/// Appends the rest of the current line to the innermost open block.
+add_line :: fn(p: ^Parser) needs Alloc {
+    tip := p.tip
+    if p.partially_consumed_tab {
+        p.offset += 1
+        for _ in 0..4 - (p.column % 4) { p.t.nodes.items[tip].content.push(' ')! }
+    }
+    if p.offset <= p.line.len {
+        p.t.nodes.items[tip].content.extend(p.line[p.offset..])!
+    }
+    p.t.nodes.items[tip].content.push('\n')!
+}
+
+/// Adds a new block as a child of the innermost block that can contain it.
+add_child :: fn(p: ^Parser, kind: Kind) -> usize needs Alloc {
+    while not can_contain(p.t.nodes.items[p.tip].kind, kind) { p.finalize(p.tip) }
+    id := p.t.new_node(kind)
+    p.t.nodes.items[id].start_line = p.line_number
+    p.t.append_child(p.tip, id)
+    p.tip = id
+    return id
+}
+
+can_contain :: fn(parent, child: Kind) -> bool => match parent {
+    .Document, .BlockQuote, .Item => child is not .Item
+    .List => child is .Item
+    _ => false
+}
+
+accepts_lines :: fn(k: Kind) -> bool => k in (.Paragraph, .CodeBlock, .HtmlBlock, .Table)
+
+/// Finalizes the blocks that this line did not continue.
+close_unmatched_blocks :: fn(p: ^Parser) needs Alloc {
+    if not p.all_closed {
+        while p.oldtip is not p.last_matched {
+            parent := p.t.nodes.items[p.oldtip].parent?
+            p.finalize(p.oldtip)
+            p.oldtip = parent
+        }
+        p.all_closed = true
+    }
+}
+
+/// Whether the block ends with a blank line, looking into the last items of lists.
+ends_with_blank_line :: fn(p: ^Parser, start: usize) -> bool {
+    block := start
+    while true {
+        if p.t.nodes.items[block].last_line_blank { return true }
+        k := p.t.nodes.items[block].kind
+        if not p.t.nodes.items[block].last_line_checked and k in (.List, .Item) {
+            p.t.nodes.items[block].last_line_checked = true
+            block = p.t.nodes.items[block].last else return false
+        } else {
+            p.t.nodes.items[block].last_line_checked = true
+            break
+        }
+    }
+    return false
+}
+
+// ----- finishing blocks -----
+
+finalize :: fn(p: ^Parser, id: usize) needs Alloc {
+    above := p.t.nodes.items[id].parent
+    p.t.nodes.items[id].open = false
+    match p.t.nodes.items[id].kind {
+        .List => p.finalize_list(id)
+        .CodeBlock => p.finalize_code(id)
+        .HtmlBlock => {
+            content := p.t.nodes.items[id].content.items
+            p.t.nodes.items[id].literal = trim_trailing_blank_lines(content, false)
+        }
+        .Paragraph => p.finalize_paragraph(id)
+        .Table => p.finalize_table(id)
+        _ => {}
+    }
+    if a := above { p.tip = a }
+}
+
+finalize_list :: fn(p: ^Parser, id: usize) {
+    item := p.t.nodes.items[id].first
+    while it := item {
+        next := p.t.nodes.items[it].next
+        if p.ends_with_blank_line(it) and next is not null {
+            p.t.nodes.items[id].tight = false
+            break
+        }
+        sub := p.t.nodes.items[it].first
+        while s := sub {
+            sub_next := p.t.nodes.items[s].next
+            if p.ends_with_blank_line(s) and (next is not null or sub_next is not null) {
+                p.t.nodes.items[id].tight = false
+                break
+            }
+            sub = sub_next
+        }
+        item = next
+    }
+}
+
+/// `s` without the trailing run of lines that hold only spaces; with `keep_newline`, the
+/// last line keeps its terminator.
+trim_trailing_blank_lines :: fn(s: string, keep_newline: bool) -> string {
+    end := s.len
+    while true {
+        // Strip spaces, then a newline, while whole lines of spaces remain.
+        i := end
+        while i > 0 and s[i - 1] is ' ' { i -= 1 }
+        if i > 0 and s[i - 1] is '\n' {
+            end = i - 1
+        } else {
+            break
+        }
+    }
+    if keep_newline and end < s.len { return s[0..end + 1] }
+    return s[0..end]
+}
+
+finalize_code :: fn(p: ^Parser, id: usize) needs Alloc {
+    content := p.t.nodes.items[id].content.items
+    if p.t.nodes.items[id].fenced {
+        // The first line is the info string.
+        nl := content.index_of('\n') else content.len
+        p.t.nodes.items[id].info = unescape_string(str.trim(content[0..nl]))
+        p.t.nodes.items[id].literal = if nl < content.len { content[nl + 1..] } else { "" }
+    } else {
+        p.t.nodes.items[id].literal = trim_trailing_blank_lines(content, true)
+    }
+}
+
+finalize_paragraph :: fn(p: ^Parser, id: usize) needs Alloc {
+    content := p.t.nodes.items[id].content.items
+    start: usize = 0
+    defs := false
+    while start < content.len and content[start] is '[' {
+        used := parse_reference(content[start..], &p.refs)
+        if used is 0 { break }
+        start += used
+        defs = true
+    }
+    if defs {
+        rest := content[start..]
+        p.t.nodes.items[id].content = list(u8)
+        p.t.nodes.items[id].content.extend(rest)!
+        if str.trim(rest).len is 0 { p.t.unlink(id) }
+    }
+}
+
+// ----- tables -----
+
+/// The cells of a table row: split at unescaped pipes, without the outer pipes. A pipe
+/// escaped with a backslash stays in its cell, without the backslash.
+split_row :: fn(line: string) -> List(string) needs Alloc {
+    cells := list(string)
+    s := str.trim(line)
+    if s.starts_with("|") { s = s[1..] }
+    cur := list(u8)
+    i: usize = 0
+    last_was_pipe := false
+    while i < s.len {
+        c := s[i]
+        if c is '\\' and i + 1 < s.len and s[i + 1] is '|' {
+            cur.push('|')!
+            i += 2
+            last_was_pipe = false
+        } else if c is '|' {
+            cells.push(str.trim(cur.items))!
+            cur = list(u8)
+            i += 1
+            last_was_pipe = true
+        } else {
+            cur.push(c)!
+            i += 1
+            last_was_pipe = false
+        }
+    }
+    if not last_was_pipe or cur.items.len > 0 { cells.push(str.trim(cur.items))! }
+    return cells
+}
+
+/// The alignments of a delimiter row such as `| :-- | --: |`, or null if the line is not one.
+delimiter_row :: fn(line: string) -> ?List(Align) needs Alloc {
+    if not str.contains(line, "|") { return null }
+    cells := split_row(line)
+    aligns := list(Align)
+    for cell in cells.items {
+        c := cell
+        left := c.starts_with(":")
+        if left { c = c[1..] }
+        right := c.ends_with(":")
+        if right { c = c[0..c.len - 1] }
+        if c.len is 0 { return null }
+        for b in c { if b is not '-' { return null } }
+        aligns.push(if left and right { Align.Center } else if left { Align.Left } else if right { Align.Right } else { Align.None })!
+    }
+    if aligns.items.len is 0 { return null }
+    return aligns
+}
+
+/// Turns the last line of the paragraph `para` (the header row) into a table, which comes
+/// after what is left of the paragraph.
+start_table :: fn(p: ^Parser, para: usize, aligns: List(Align)) -> ?usize needs Alloc {
+    content: string = p.t.nodes.items[para].content.items
+    body := content[0..content.len - 1]
+    before := ""
+    header := body
+    if nl := str.rfind(body, "\n") {
+        before = body[0..nl + 1]
+        header = body[nl + 1..]
+    }
+    header = str.trim(header)
+    if not str.contains(header, "|") { return null }
+    cells := split_row(header)
+    if cells.items.len is not aligns.items.len { return null }
+    parent := p.t.nodes.items[para].parent?
+    table := p.t.new_node(.Table)
+    p.t.nodes.items[table].start_line = p.t.nodes.items[para].start_line
+    p.t.nodes.items[table].aligns = aligns
+    head := p.t.new_node(.TableHead)
+    p.t.nodes.items[head].open = false
+    p.t.append_child(table, head)
+    for cell in cells.items {
+        c := p.t.new_node(.TableCell)
+        p.t.nodes.items[c].open = false
+        p.t.nodes.items[c].content.extend(cell)!
+        p.t.append_child(head, c)
+    }
+    if before.len > 0 {
+        p.t.nodes.items[para].content = list(u8)
+        p.t.nodes.items[para].content.extend(before)!
+        p.finalize(para)
+        p.t.append_child(parent, table)
+    } else {
+        p.t.insert_after(para, table)
+        p.t.unlink(para)
+    }
+    return table
+}
+
+finalize_table :: fn(p: ^Parser, id: usize) needs Alloc {
+    columns := p.t.nodes.items[id].aligns.items.len
+    content := p.t.nodes.items[id].content.items
+    for line in str.lines(content) {
+        if str.trim(line).len is 0 { continue }
+        cells := split_row(line)
+        row := p.t.new_node(.TableRow)
+        p.t.nodes.items[row].open = false
+        p.t.append_child(id, row)
+        for i in 0..columns {
+            c := p.t.new_node(.TableCell)
+            p.t.nodes.items[c].open = false
+            if i < cells.items.len { p.t.nodes.items[c].content.extend(cells.items[i])! }
+            p.t.append_child(row, c)
+        }
+    }
+}
+
+/// Whether a line, after the container prefixes, ends an open table because it begins
+/// another kind of block.
+ends_table :: fn(p: ^Parser) -> bool {
+    rest := p.line[p.next_nonspace..]
+    if p.indented { return false }
+    return rest.starts_with(">") or atx_marker_len(rest) > 0 or fence_len(rest) > 0 or is_thematic_break(rest)
+}
+
+// ----- continuing blocks -----
+
+/// Tries to continue the open block `id` on this line: 0 if it continues, 1 if not, 2 if
+/// the line was the end of the block and is used up.
+continue_block :: fn(p: ^Parser, id: usize) -> u8 needs Alloc {
+    match p.t.nodes.items[id].kind {
+        .BlockQuote => {
+            if not p.indented and p.line.get(p.next_nonspace) is '>' {
+                p.advance_next_nonspace()
+                p.advance_offset(1, false)
+                if is_space_or_tab(p.line.get(p.offset)) { p.advance_offset(1, true) }
+                return 0
+            }
+            return 1
+        }
+        .Item => {
+            n := &p.t.nodes.items[id]
+            if p.blank {
+                if n.first is null { return 1 }
+                p.advance_next_nonspace()
+            } else if p.indent >= n.marker_offset + n.padding {
+                p.advance_offset(n.marker_offset + n.padding, true)
+            } else {
+                return 1
+            }
+            return 0
+        }
+        .Heading, .ThematicBreak => return 1
+        .CodeBlock => {
+            if p.t.nodes.items[id].fenced {
+                fence_char := p.t.nodes.items[id].fence_char
+                if p.indent <= 3 and p.line.get(p.next_nonspace) is fence_char {
+                    rest := p.line[p.next_nonspace..]
+                    run: usize = 0
+                    while run < rest.len and rest[run] is fence_char { run += 1 }
+                    if run >= p.t.nodes.items[id].fence_len and str.trim(rest[run..]).len is 0 {
+                        p.finalize(id)
+                        return 2
+                    }
+                }
+                skip := p.t.nodes.items[id].fence_offset
+                while skip > 0 and is_space_or_tab(p.line.get(p.offset)) {
+                    p.advance_offset(1, true)
+                    skip -= 1
+                }
+            } else if p.indent >= CODE_INDENT {
+                p.advance_offset(CODE_INDENT, true)
+            } else if p.blank {
+                p.advance_next_nonspace()
+            } else {
+                return 1
+            }
+            return 0
+        }
+        .HtmlBlock => {
+            t := p.t.nodes.items[id].html_type
+            return if p.blank and t in (6, 7) { 1 } else { 0 }
+        }
+        .Paragraph => return if p.blank { 1 } else { 0 }
+        .Table => return if p.blank or p.ends_table() { 1 } else { 0 }
+        _ => return 0
+    }
+}
+
+// ----- starting blocks -----
+
+/// The length of an ATX heading marker (`#` to `######` followed by a space, tab or the
+/// end of the line), or 0.
+atx_marker_len :: fn(rest: string) -> usize {
+    n: usize = 0
+    while n < rest.len and rest[n] is '#' { n += 1 }
+    if n is 0 or n > 6 { return 0 }
+    if n < rest.len and rest[n] not in (' ', '\t') { return 0 }
+    return n
+}
+
+/// The length of the opening code fence at the start of `rest`, or 0.
+fence_len :: fn(rest: string) -> usize {
+    c := rest.get(0) else return 0
+    if c not in ('`', '~') { return 0 }
+    n: usize = 0
+    while n < rest.len and rest[n] is c { n += 1 }
+    if n < 3 { return 0 }
+    if c is '`' and str.contains(rest[n..], "`") { return 0 }
+    return n
+}
+
+is_thematic_break :: fn(rest: string) -> bool {
+    c := rest.get(0) else return false
+    if c not in ('*', '_', '-') { return false }
+    count: usize = 0
+    for b in rest {
+        if b is c {
+            count += 1
+        } else if b not in (' ', '\t') {
+            return false
+        }
+    }
+    return count >= 3
+}
+
+/// The marker at the start of a list item, with the cursor moved past it and the spaces
+/// that follow; null if the line does not start an item.
+parse_list_marker :: fn(p: ^Parser, in_paragraph: bool) -> ?ListData {
+    rest := p.line[p.next_nonspace..]
+    if p.indent >= 4 { return null }
+    data := ListData(ordered: false, marker: 0, start: 0, padding: 0, marker_offset: p.indent)
+    marker_len: usize = 0
+    c := rest.get(0) else return null
+    if c in ('*', '+', '-') {
+        data.marker = c
+        marker_len = 1
+    } else if c in '0'..='9' {
+        digits: usize = 0
+        value: u64 = 0
+        while digits < rest.len and rest[digits] in '0'..='9' {
+            value = value * 10 + u64(rest[digits] - '0')
+            digits += 1
+        }
+        if digits > 9 { return null }
+        delim := rest.get(digits) else return null
+        if delim not in ('.', ')') { return null }
+        if in_paragraph and value is not 1 { return null }
+        data.ordered = true
+        data.start = value
+        data.marker = delim
+        marker_len = digits + 1
+    } else {
+        return null
+    }
+    after := p.line.get(p.next_nonspace + marker_len)
+    if after is not null and after not in (' ', '\t') { return null }
+    // A marker that interrupts a paragraph needs content on its line.
+    if in_paragraph and str.trim(p.line[p.next_nonspace + marker_len..]).len is 0 { return null }
+    p.advance_next_nonspace()
+    p.advance_offset(marker_len, true)
+    spaces_start_col := p.column
+    spaces_start_offset := p.offset
+    while true {
+        p.advance_offset(1, true)
+        nextc := p.line.get(p.offset)
+        if not (p.column - spaces_start_col < 5 and is_space_or_tab(nextc)) { break }
+    }
+    blank_item := p.line.get(p.offset) is null
+    spaces_after := p.column - spaces_start_col
+    if spaces_after >= 5 or spaces_after < 1 or blank_item {
+        data.padding = marker_len + 1
+        p.column = spaces_start_col
+        p.offset = spaces_start_offset
+        if is_space_or_tab(p.line.get(p.offset)) { p.advance_offset(1, true) }
+    } else {
+        data.padding = marker_len + spaces_after
+    }
+    return data
+}
+
+/// Tries the block starts in turn: 0 if none matches, 1 if a container started, 2 if a leaf.
+try_block_starts :: fn(p: ^Parser, container: usize) -> u8 needs Alloc {
+    rest := p.line[p.next_nonspace..]
+    cont_kind := p.t.nodes.items[container].kind
+    // Block quote.
+    if not p.indented and rest.starts_with(">") {
+        p.advance_next_nonspace()
+        p.advance_offset(1, false)
+        if is_space_or_tab(p.line.get(p.offset)) { p.advance_offset(1, true) }
+        p.close_unmatched_blocks()
+        _ = p.add_child(.BlockQuote)
+        return 1
+    }
+    // ATX heading.
+    if not p.indented {
+        n := atx_marker_len(rest)
+        if n > 0 {
+            p.advance_next_nonspace()
+            // The marker and the spaces after it.
+            after := n
+            while after < rest.len and rest[after] in (' ', '\t') { after += 1 }
+            p.advance_offset(after, false)
+            p.close_unmatched_blocks()
+            h := p.add_child(.Heading)
+            p.t.nodes.items[h].level = n.trunc(u8)
+            text := p.line[p.offset..]
+            // A closing sequence of `#`s, with the spaces around it, is not part of the text.
+            p.t.nodes.items[h].content.extend(strip_closing_hashes(text))!
+            p.advance_offset(p.line.len - p.offset, false)
+            return 2
+        }
+    }
+    // Fenced code block.
+    if not p.indented {
+        n := fence_len(rest)
+        if n > 0 {
+            p.close_unmatched_blocks()
+            c := p.add_child(.CodeBlock)
+            p.t.nodes.items[c].fenced = true
+            p.t.nodes.items[c].fence_len = n
+            p.t.nodes.items[c].fence_char = rest[0]
+            p.t.nodes.items[c].fence_offset = p.indent
+            p.advance_next_nonspace()
+            p.advance_offset(n, false)
+            return 2
+        }
+    }
+    // HTML block.
+    if not p.indented and rest.starts_with("<") {
+        for kind in 1..=7 {
+            if not html_block_start(rest, kind.trunc(u8)) { continue }
+            if kind is 7 {
+                // Type 7 cannot interrupt a paragraph.
+                if cont_kind is .Paragraph { continue }
+                if not p.all_closed and not p.blank and p.t.nodes.items[p.tip].kind is .Paragraph { continue }
+            }
+            p.close_unmatched_blocks()
+            // The offset stays where it is: the indentation belongs to the block.
+            b := p.add_child(.HtmlBlock)
+            p.t.nodes.items[b].html_type = kind.trunc(u8)
+            return 2
+        }
+    }
+    // Pipe table: the delimiter row under a paragraph whose last line is the header row.
+    if not p.indented and cont_kind is .Paragraph {
+        if aligns := delimiter_row(rest) {
+            p.close_unmatched_blocks()
+            if table := p.start_table(container, aligns) {
+                p.tip = table
+                p.advance_offset(p.line.len - p.offset, false)
+                return 2
+            }
+        }
+    }
+    // Setext heading.
+    if not p.indented and cont_kind is .Paragraph and is_setext_line(rest) {
+        p.close_unmatched_blocks()
+        // Reference definitions at the start of the paragraph are not part of the heading.
+        content := p.t.nodes.items[container].content.items
+        start: usize = 0
+        while start < content.len and content[start] is '[' {
+            used := parse_reference(content[start..], &p.refs)
+            if used is 0 { break }
+            start += used
+        }
+        if start < content.len {
+            h := p.t.new_node(.Heading)
+            p.t.nodes.items[h].start_line = p.t.nodes.items[container].start_line
+            p.t.nodes.items[h].level = if rest[0] is '=' { 1 } else { 2 }
+            p.t.nodes.items[h].content.extend(content[start..])!
+            p.t.insert_after(container, h)
+            p.t.unlink(container)
+            p.tip = h
+            p.advance_offset(p.line.len - p.offset, false)
+            return 2
+        }
+    }
+    // Thematic break.
+    if not p.indented and is_thematic_break(rest) {
+        p.close_unmatched_blocks()
+        _ = p.add_child(.ThematicBreak)
+        p.advance_offset(p.line.len - p.offset, false)
+        return 2
+    }
+    // List item.
+    if not p.indented or cont_kind is .List {
+        if data := p.parse_list_marker(cont_kind is .Paragraph) {
+            p.close_unmatched_blocks()
+            tip := p.tip
+            matches := false
+            if p.t.nodes.items[tip].kind is .List {
+                matches = p.t.nodes.items[tip].ordered is data.ordered and p.t.nodes.items[tip].marker is data.marker
+            }
+            if not matches {
+                list := p.add_child(.List)
+                p.t.nodes.items[list].ordered = data.ordered
+                p.t.nodes.items[list].marker = data.marker
+                p.t.nodes.items[list].start = data.start
+            }
+            item := p.add_child(.Item)
+            p.t.nodes.items[item].marker_offset = data.marker_offset
+            p.t.nodes.items[item].padding = data.padding
+            return 1
+        }
+    }
+    // Indented code block.
+    if p.indented and p.t.nodes.items[p.tip].kind is not .Paragraph and not p.blank {
+        p.advance_offset(CODE_INDENT, true)
+        p.close_unmatched_blocks()
+        _ = p.add_child(.CodeBlock)
+        return 2
+    }
+    return 0
+}
+
+is_setext_line :: fn(rest: string) -> bool {
+    c := rest.get(0) else return false
+    if c not in ('=', '-') { return false }
+    i: usize = 0
+    while i < rest.len and rest[i] is c { i += 1 }
+    return str.trim(rest[i..]).len is 0 and (rest[i..].len is 0 or rest[i] in (' ', '\t'))
+}
+
+/// A heading's text without its closing sequence of `#`s.
+strip_closing_hashes :: fn(text: string) -> string {
+    // A line that is only `#`s and spaces has no text.
+    t := str.trim(text)
+    only_hashes := t.len > 0
+    for b in t { if b is not '#' { only_hashes = false } }
+    if only_hashes { return "" }
+    end := text.len
+    while end > 0 and text[end - 1] in (' ', '\t') { end -= 1 }
+    hashes := end
+    while hashes > 0 and text[hashes - 1] is '#' { hashes -= 1 }
+    if hashes < end and hashes > 0 and text[hashes - 1] in (' ', '\t') {
+        end = hashes
+        while end > 0 and text[end - 1] in (' ', '\t') { end -= 1 }
+        return text[0..end]
+    }
+    return text
+}
+
+// ----- lines -----
+
+incorporate_line :: fn(p: ^Parser, ln: string) needs Alloc {
+    all_matched := true
+    container := p.doc
+    p.oldtip = p.tip
+    p.offset = 0
+    p.column = 0
+    p.blank = false
+    p.partially_consumed_tab = false
+    p.line_number += 1
+    p.line = ln
+    // Continue the open blocks as far as this line allows.
+    while last := p.t.nodes.items[container].last {
+        if not p.t.nodes.items[last].open { break }
+        container = last
+        p.find_next_nonspace()
+        match p.continue_block(container) {
+            0 => {}
+            1 => { all_matched = false }
+            _ => return
+        }
+        if not all_matched {
+            container = p.t.nodes.items[container].parent?
+            break
+        }
+    }
+    p.all_closed = container is p.oldtip
+    p.last_matched = container
+    cont_kind := p.t.nodes.items[container].kind
+    matched_leaf := cont_kind is not .Paragraph and accepts_lines(cont_kind)
+    // Unless a code block or the like is open, see which new blocks this line starts.
+    while not matched_leaf {
+        p.find_next_nonspace()
+        if not p.indented and not may_start_block(p.line.get(p.next_nonspace)) {
+            p.advance_next_nonspace()
+            break
+        }
+        res := p.try_block_starts(container)
+        if res is 0 {
+            p.advance_next_nonspace()
+            break
+        }
+        container = p.tip
+        if res is 2 { matched_leaf = true }
+    }
+    // What remains at the offset is text for the innermost block.
+    if not p.all_closed and not p.blank and p.t.nodes.items[p.tip].kind is .Paragraph {
+        p.add_line()
+    } else {
+        p.close_unmatched_blocks()
+        if p.blank {
+            if lc := p.t.nodes.items[container].last { p.t.nodes.items[lc].last_line_blank = true }
+        }
+        kind := p.t.nodes.items[container].kind
+        last_line_blank := p.blank and not (kind is .BlockQuote or (kind is .CodeBlock and p.t.nodes.items[container].fenced) or (kind is .Item and p.t.nodes.items[container].first is null and p.t.nodes.items[container].start_line is p.line_number))
+        walker: ?usize = container
+        while c := walker {
+            p.t.nodes.items[c].last_line_blank = last_line_blank
+            walker = p.t.nodes.items[c].parent
+        }
+        if accepts_lines(kind) {
+            p.add_line()
+            if kind is .HtmlBlock {
+                ht := p.t.nodes.items[container].html_type
+                if ht >= 1 and ht <= 5 and html_block_end(p.line[p.offset..], ht) { p.finalize(container) }
+            }
+        } else if p.offset < ln.len and not p.blank {
+            container = p.add_child(.Paragraph)
+            p.advance_next_nonspace()
+            p.add_line()
+        }
+    }
+}
+
+/// Whether a line starting with `c` can start a block at all (a shortcut for plain text).
+may_start_block :: fn(c: ?u8) -> bool {
+    b := c else return false
+    return b in ('#', '`', '~', '*', '+', '_', '=', '<', '>', '-', '|', ':') or b in '0'..='9'
+}
