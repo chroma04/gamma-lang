@@ -12,49 +12,78 @@ playground that runs Gamma programs in the browser. It is built by
 | `static/` | Copied to `assets/`: the stylesheet, the playground's scripts, the icon |
 | `examples/` | The playground's own example programs; `examples/list.txt` is its menu |
 | `sitegen/` | The generator: Markdown → HTML, highlighting with Gamma's own lexer, sidebars, link rewriting and a link check |
-| `playground/` | The interpreter as a WASI command for the browser (`gamma-play.wasm`) |
-| `check.mjs` | Runs every menu example in the WebAssembly interpreter with Node |
+| `play/` | The playground's interpreter built from `gammac`, as a WASI command for the browser (`gamma-play.wasm`), and the script that builds it |
+| `playground/` | The same interpreter built from the Rust implementation (a separate Cargo workspace) |
+| `check.mjs` | Runs every menu example in a WebAssembly interpreter (either one) with Node |
 
 ## Building it locally
 
-```sh
-# the interpreter for the playground (the crate's .cargo/config.toml picks the target)
-rustup target add wasm32-wasip1
-(cd web/playground && cargo build --release)
-node web/check.mjs web/playground/target/wasm32-wasip1/release/gamma-playground.wasm
+The playground's interpreter is built by `gammac`, without cargo (see `play/build.sh` for
+the tools it needs: `gammac`, clang with the WASI C library, and Binaryen's `wasm-opt`):
 
-# the pages
+```sh
+web/play/build.sh                  # writes web/play/target/gamma-play.wasm and gamma-play-libs.json
+node web/check.mjs web/play/target/gamma-play.wasm web/play/target/gamma-play-libs.json
+```
+
+The pages come from the generator, a separate Cargo workspace; the two playground files
+go into `assets/` next to the scripts:
+
+```sh
 cargo run --release --manifest-path web/sitegen/Cargo.toml -- --out _site
-cp web/playground/target/wasm32-wasip1/release/gamma-playground.wasm _site/assets/gamma-play.wasm
+cp web/play/target/gamma-play.wasm web/play/target/gamma-play-libs.json _site/assets/
 python3 -m http.server -d _site 8000     # then open http://localhost:8000
 ```
 
-Both crates are separate Cargo workspaces, so `cargo test` at the root does not build them.
 The generator fails if any internal link or `#anchor` is broken: when a document links to
 a heading, keep the link in step with the heading.
 
+`playground/` builds the same page's interpreter from the Rust implementation instead
+(`rustup target add wasm32-wasip1`, `(cd web/playground && cargo build --release)`); it is
+a separate workspace, so `cargo test` at the root does not build it. `check.mjs` checks
+its module too, when given the module alone:
+`node web/check.mjs web/playground/target/wasm32-wasip1/release/gamma-playground.wasm`.
+Copy that module to `assets/gamma-play.wasm` to publish it; the page needs no other file
+for it.
+
 ## How the playground works
 
-`playground/` builds the ordinary interpreter for `wasm32-wasip1`. It reads the program
-from standard input, checks it and runs it (or formats it, with the argument `fmt`),
-exactly as `gamma run` would; the standard library is compiled into the module and served
-to the compiler as in-memory files, so no file system is needed. The compiler builds
-for WebAssembly with a few differences, all behind `cfg(target_family = "wasm")`:
+`play/main.gm` is a small Gamma program that depends on the `gammac` package
+(`compiler/`) and reuses its loader, checker, interpreter and formatter. Built with
+`gammac build --target=wasm32-wasi`, it is a WASI command that reads the program from
+standard input and checks and runs it in the interpreter (`run`, as
+`gammac run --backend=interp` does), or formats it (`fmt`, as `gammac fmt -` does). The exit
+status is the program's, 1 for a program with errors and 134 after a trap; diagnostics
+and traps go to standard error in the human format. A program that calls foreign code or
+uses assembly is refused, since the module has no C compiler to fall back on.
 
-- the Cranelift back end and libffi are left out, and a program with foreign
-  declarations is rejected (`src/interp/ffi_wasm.rs`);
-- the interpreter runs on the calling thread instead of a thread with a 1 GiB stack (the
-  module is linked with a 32 MiB stack, `playground/.cargo/config.toml`);
-- threads, fibers (`with … on`) and child processes fail at run time, as they would on a
-  host that cannot create them.
+The compiler reads the standard and core libraries from files. A browser module has none,
+so the page serves them to it: `play/tools/bundle.gm` (run by `build.sh`) writes the
+`.gm` files of `lib/std` and `lib/core` into one JSON object, `gamma-play-libs.json`
+(about 600 KB, 160 KB compressed), and the worker keeps them as an in-memory tree
+that it presents to the module as a read-only preopened directory `/`, with `/std` and
+`/core` in it. The program itself is not a file: `main.gm` hands it to the loader as an
+in-memory buffer that stands in for `/play/main.gm`, so the module needs no writable
+directory.
+
+The interpreter runs fibers (`with … on`, generators, the scheduler of `std/fiber`) and
+threads, which the compiler's own interpreter provides itself; the module switches its
+fibers with Binaryen's Asyncify, which `gammac build` applies. Differences from the Rust
+interpreter that a program can notice: it runs several times slower on start-up (the
+compiler checks the core library on every run, and the module is about 10 MB, 3 MB
+compressed), a trap's location line names the function (`at /play/main.gm:4:19 in main`),
+and a runaway recursion ends when the browser's stack does (status 134 with a message
+from the worker) instead of at the interpreter's own limit.
 
 In the browser, `static/play-worker.js` runs the module in a Web Worker with a small WASI
-implementation: arguments, environment, standard streams, clocks, randomness and
-sleeping. Output is streamed to the page as it is written; *Stop* terminates the worker.
-`static/play.js` is the editor (a textarea over a highlighted copy), the examples menu,
-and sharing: a shared link carries the program in the address, `#code=<base64url>`.
-Code blocks in the guide that declare `main` get a "Run in the playground" link of that
-form.
+implementation: arguments, environment, standard streams, clocks, randomness, sleeping and
+the file system above. Output is streamed to the page as it is written; *Stop* terminates
+the worker. `static/play.js` is the editor (a textarea over a highlighted copy), the
+examples menu, and sharing: a shared link carries the program in the address,
+`#code=<base64url>`. Code blocks in the guide that declare `main` get a "Run in the
+playground" link of that form. `check.mjs` runs the same worker script under Node (with
+stand-ins for the page's `fetch` and `postMessage`), so it exercises the file system and
+the message protocol that the page uses.
 
 ## Publishing
 

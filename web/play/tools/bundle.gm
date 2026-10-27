@@ -1,0 +1,55 @@
+//! Writes the libraries the playground serves to the compiler as one JSON object:
+//!
+//!     gammac run web/play/tools/bundle.gm OUT.json /std=lib/std /core=lib/core
+//!
+//! Every `.gm` file below each directory becomes a member whose name is the mount point
+//! (`/std`) followed by the file's path in the directory, and whose value is the text.
+//! Members are in path order.
+
+fs :: import "std/fs"
+json :: import "std/json"
+str :: import "std/str"
+
+main :: fn() needs Alloc + Env + Err + Fs {
+    args := Env.args()
+    if args.len < 3 {
+        eprint("usage: bundle OUT.json MOUNT=DIR...\n")
+        Env.exit(2)
+    }
+    out := list(u8)
+    w := json.writer(&out)
+    json.begin_object(&w) else fail("cannot write JSON")
+    for spec in args[2..] {
+        eq := spec.index_of('=') else {
+            eprint("bundle: `{}` is not MOUNT=DIR\n", spec)
+            Env.exit(2)
+        }
+        add_files(&w, spec[0..eq], spec[eq + 1..])
+    }
+    json.end_object(&w) else fail("cannot write JSON")
+    out.push('\n')!
+    fs.write_all(args[1], out.items) else fail("cannot write the output")
+}
+
+fail :: fn(message: string) -> never needs Env + Err {
+    eprint("bundle: {}\n", message)
+    Env.exit(1)
+}
+
+/// Adds the `.gm` files below `dir`, in path order, as members named after their paths under
+/// `mount`.
+add_files :: fn(w: ^json.Writer, mount, dir: string) needs Alloc + Env + Err + Fs {
+    found := list(string)
+    for r in fs.walk(dir) {
+        e := r else fail("cannot read a directory")
+        if e.kind is not .File or not e.path.ends_with(".gm") { continue }
+        found.push(dupe(e.path)!)!
+    }
+    found.items.sort()
+    for path in found.items {
+        text := fs.read_all(path) else fail("cannot read a file")
+        defer free(text)
+        json.key(w, str.format("{}{}", mount, path[dir.len..])!) else fail("cannot write JSON")
+        json.write_string(w, string(text)) else fail("the file is not valid text")
+    }
+}
