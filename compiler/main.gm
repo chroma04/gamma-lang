@@ -192,7 +192,7 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
         "bench" => .Bench
         "" => usage_error("missing command")
         _ => usage_error(str.format("unknown command `{}`", command)!)
-    }, lint: lint.options())
+    }, target: load.host_target(), lint: lint.options())
     // Benchmarks are about speed: compiled without checks, unless asked otherwise.
     if opts.command is .Bench { opts.mode = .Fast }
     files := list(string)

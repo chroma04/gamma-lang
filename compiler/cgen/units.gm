@@ -50,6 +50,20 @@ pub unit_count :: fn(parts: ^const Parts, cpus: usize, forced: ?usize) -> usize 
 /// The source of each unit of `parts` split `n` ways, or `null` if the code has a shape
 /// the split does not handle (it is then compiled as one unit).
 pub split :: fn(parts: ^const Parts, n: usize) -> ?[]string needs Alloc {
+    s := split_shared(parts, n) else return null
+    out := list(string)
+    for u in s.units { out.push(str.format("{}{}", s.shared, u)!)! }
+    return out.items
+}
+
+/// The units of a split: the text every unit starts with, and what each adds to it.
+pub Split :: struct {
+    pub shared: string
+    pub units: []string
+}
+
+/// As `split`, with the text the units share kept apart.
+pub split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
     decls := list(u8)
     defs := list(u8)
     for line in str.lines(parts.protos) {
@@ -81,14 +95,12 @@ pub split :: fn(parts: ^const Parts, n: usize) -> ?[]string needs Alloc {
     share := ((total + n.max(1) - 1) / n.max(1)).max(1)
     units := list(List(u8))
     first := list(u8)
-    first.write("{}{}{}", shared, parts.once, defs.items)!
+    first.write("{}{}", parts.once, defs.items)!
     units.push(first)!
     size: usize = 0
     for item in items.items {
         if size >= share and units.items.len < n {
-            next := list(u8)
-            next.extend(shared)!
-            units.push(next)!
+            units.push(list(u8))!
             size = 0
         }
         size += item.len
@@ -97,7 +109,7 @@ pub split :: fn(parts: ^const Parts, n: usize) -> ?[]string needs Alloc {
     units.items[0].extend(parts.tail)!
     out := list(string)
     for u in units.items { out.push(u.items)! }
-    return out.items
+    return Split(shared: shared, units: out.items)
 }
 
 /// `line` as an external declaration, if it is a `static` one (not `static inline`).
@@ -276,5 +288,26 @@ test "unit count" {
         p.funcs = big.items
         expect_eq(unit_count(&p, 4, null), 4)
         expect_eq(unit_count(&p, 64, null), MAX_UNITS)
+    }
+}
+
+test "a split keeps the shared text apart" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := test_parts()
+        s := split_shared(&p, 2) else {
+            expect(false)
+            return
+        }
+        units := split(&p, 2) else {
+            expect(false)
+            return
+        }
+        expect_eq(s.units.len, units.len)
+        for i, u in enumerate(s.units) {
+            expect(not str.contains(u, "int gm_f0(int a);\n"))
+            expect_eq(str.format("{}{}", s.shared, u)!, units[i])
+        }
     }
 }
