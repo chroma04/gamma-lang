@@ -152,6 +152,10 @@ test "literals are verbatim" {
     check("x = c\"hi\"\n", "x = c\"hi\"\n")
 }
 
+test "aligned columns survive text that changes before them" {
+    check("match x {\n.Rect(hw ,) => 1\n.Empty      => 2\n}\n", "match x {\n    .Rect(hw,)  => 1\n    .Empty      => 2\n}\n")
+}
+
 test "padding is kept only when it aligns" {
     check("f   :: fn() {}\n", "f :: fn() {}\n")
     check("a    :: 1\nbcd  :: 2\n", "a    :: 1\nbcd  :: 2\n")
