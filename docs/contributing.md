@@ -335,8 +335,8 @@ alone, which keeps the repository from growing with every change.
 
 ## Releases
 
-A release is a tag `vX.Y.Z` on `main` whose version matches `version` in `Cargo.toml`.
-Pushing the tag runs `.github/workflows/release.yml`, which:
+A release is a tag `vX.Y.Z` on `main` whose version matches `version` in `Cargo.toml` and
+in `compiler/gamma.toml`. Pushing the tag runs `.github/workflows/release.yml`, which:
 
 1. builds `gamma` in release mode on Linux (x86_64 and arm64, on Ubuntu 22.04 so that the
    binaries run with older glibc versions), macOS (x86_64 and arm64) and Windows (x86_64,
@@ -347,7 +347,19 @@ Pushing the tag runs `.github/workflows/release.yml`, which:
    and `README.md`;
 3. unpacks each archive, hides the source tree's `lib/std`, and checks that the packaged
    compiler runs a program that imports `std/...`, on the interpreter and through C;
-4. checks that the CI workflow passed on the tagged commit (a tag on a commit whose CI
+4. builds `gammac` without cargo and releases it as `gammac-<os>-<arch>.tar.gz` (a `.zip`
+   on Windows) for the same five platforms. On each Linux and macOS runner,
+   `bootstrap/build.sh` builds it from the seed; the Windows one is cross-built on Linux
+   with the Linux `gammac` and MinGW-w64
+   (`gammac build compiler --target=x86_64-w64-mingw32`). `tools/package-gammac.sh` makes
+   the archive, an installation prefix with `bin/gammac`, `lib/gamma/{std,core,runtime}`,
+   `LICENSE` and `README.md`; its version is that of `compiler/gamma.toml`.
+   `tools/smoke-gammac.sh` then starts the unpacked `gammac` through `PATH` from another
+   directory, with the source tree's libraries and runtime hidden, and runs a program on
+   the interpreter, through C and as a built executable; the Windows archive is checked on
+   a Windows runner with MinGW-w64 gcc. See
+   [self-hosting.md](self-hosting.md#installing-gammac-and-windows);
+5. checks that the CI workflow passed on the tagged commit (a tag on a commit whose CI
    failed or never ran publishes nothing), records a build provenance attestation for each
    archive (`gh attestation verify <archive> --repo chroma04/gamma-lang` checks one), and
    creates the GitHub release with the archives, `SHA256SUMS`, `tools/install.sh` and
@@ -363,7 +375,11 @@ good test after changing the workflow or the packaging script.
 installs it under `$GAMMA_INSTALL` (default `~/.gamma`). `GAMMA_VERSION` picks a release and
 `GAMMA_DOWNLOAD` a different download directory; `GAMMA_DOWNLOAD=file:///path/to/dist` tests
 the script against archives built locally with `tools/package-release.sh`.
-`tools/install.ps1` does the same on Windows.
+`tools/install.ps1` does the same on Windows. `GAMMA_ARCHIVE=gammac` installs the `gammac`
+archive instead (`bin/gammac`, with its libraries in `lib/gamma`); `gamma` and `gammac` can
+share a prefix. To try it locally: `bootstrap/build.sh`, then
+`tools/package-gammac.sh linux-x86_64 target/bootstrap/gammac dist` and
+`GAMMA_ARCHIVE=gammac GAMMA_DOWNLOAD=file://$PWD/dist GAMMA_INSTALL=/tmp/prefix sh tools/install.sh`.
 
 ## The editor grammars
 

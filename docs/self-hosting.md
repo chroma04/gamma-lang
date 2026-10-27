@@ -178,8 +178,9 @@ seconds. `--emit-c` with `GAMMA_C_UNITS` above 1 writes that split form instead 
 file, whatever the mode: the shared text in `EXE.h`, the runtime in `EXE.rt.c` and the
 units, each of which includes `EXE.h`; compiled one by one and linked, they make the
 program. The bootstrap seed has this form. The runtime's sources are read from `$GAMMA_RUNTIME`, or else from the
-`runtime` directory two levels above the standard library's. It runs on Unix-like systems;
-on Windows, use `gamma build`.
+`runtime` directory next to the standard library's (an installation) or two levels above
+it (the repository). `gammac` runs on Unix-like systems and, cross-compiled, on Windows
+(see "Installing gammac, and Windows" below).
 
 `gammac build -g` (and `run -g`) adds debug information, as `gamma build -g` does
 (`compiler/cgen/debug.gm` and `views.gm` port `src/cgen/debug.rs` and `views.rs`). Each
@@ -443,6 +444,58 @@ conformance suite's Safe lane), with the directives of `docs/contributing.md` ch
 tests; the s390x, WASI and Safe jobs of CI run it. Not ported: `lint` and `fix` with
 `--target`, the quoting of Windows command lines, and the private (0700) mode of the cache
 directories, which the standard library cannot set.
+
+### Installing gammac, and Windows
+
+A `gammac` release archive (`gammac-<os>-<arch>.tar.gz`, a `.zip` on Windows) is an
+installation prefix:
+
+```
+bin/gammac            (bin/gammac.exe on Windows)
+lib/gamma/std/        the standard library
+lib/gamma/core/       the core library
+lib/gamma/runtime/    gm_rt.c and gm_rt.h, which every native build compiles, and the gdb
+                      and lldb helper scripts that `-g` builds use
+```
+
+`gammac` needs no environment variables to find them. `compiler/load/exe.gm` asks the
+system for the path of the running executable (`/proc/self/exe` on Linux,
+`_NSGetExecutablePath` and `realpath` on macOS, `GetModuleFileNameW` on Windows) instead of
+trusting `argv[0]`, which is only a name when the program is started through `PATH`. The
+standard library is then `../lib/gamma/std` from the executable's directory, the core
+library beside it, and the runtime `runtime` beside that (in a repository checkout, where
+there is none, two levels above `std`). `$GAMMA_STD`, `$GAMMA_CORE` and `$GAMMA_RUNTIME`
+override each. A native build also needs a C compiler on the machine, as everywhere.
+
+`tools/package-gammac.sh <asset> <gammac> <dir>` makes the archive from a built `gammac`
+and the repository's libraries; its version is the one in `compiler/gamma.toml`.
+`tools/smoke-gammac.sh` checks an unpacked archive: it starts `gammac` through `PATH` from
+another directory and runs a program on the interpreter, through C and as a built
+executable. `GAMMA_ARCHIVE=gammac tools/install.sh` (or `install.ps1`) installs the
+archive; it shares `lib/gamma` with a `gamma` installation without disturbing it. The
+release workflow (`.github/workflows/release.yml`) builds `gammac` with `bootstrap/build.sh`
+on each Unix platform, so that no step needs cargo.
+
+**Windows.** `gammac` is built for `x86_64-w64-mingw32` on Linux with MinGW-w64
+(`apt install gcc-mingw-w64-x86-64`), by any `gammac`:
+
+```sh
+gammac build compiler --target=x86_64-w64-mingw32 -o gammac.exe
+```
+
+The executable is linked statically and needs only system DLLs. The platform-dependent
+parts of the compiler are the ones the standard library already has per platform (paths,
+the temporary and cache directories, process creation, the runtime's Win32 code), plus:
+
+- the path of the executable (above);
+- the C compiler: without `CC`, the first of `cc`, `gcc` and `clang` that is on `PATH`
+  (with `.exe` appended), as `gamma` does, and `PATH` is split at `;`;
+- `CC`, `CFLAGS`, `LDFLAGS` and `GAMMA_RUNNER` are split with the rules of the Windows
+  command line, where a backslash is literal unless it precedes a double quote, so that
+  `CC=C:\msys64\ucrt64\bin\gcc.exe` works (`pkg.split_words`, `pkg.quote_word`).
+
+As with `gamma`, native builds need a MinGW-w64 `gcc` or `clang` on `PATH`; MSVC's `cl.exe`
+is not supported. The C files and libraries of packages have not been tried on Windows.
 
 ### Growing a stage
 

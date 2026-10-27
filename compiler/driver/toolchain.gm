@@ -32,18 +32,9 @@ env_var :: fn(name: string) -> ?string needs Alloc + Env {
     return if str.trim(v).len is 0 { null } else { v }
 }
 
-/// Whether `prog` is a file in a `PATH` directory.
-pub program_on_path :: fn(prog: string) -> bool needs Alloc + Env + Fs {
-    path := Env.var("PATH") else return false
-    for dir in str.split(path, ":") {
-        if load.is_file(load.join(dir, prog)) { return true }
-    }
-    return false
-}
-
 /// The toolchain `CC`, `CFLAGS` and `LDFLAGS` describe.
-pub from_env :: fn() -> string!Toolchain needs Alloc + Env {
-    return from_vars(env_var("CC"), env_var("CFLAGS"), env_var("LDFLAGS"))
+pub from_env :: fn() -> string!Toolchain needs Alloc + Env + Fs {
+    return from_vars(env_var("CC") else load.default_cc(), env_var("CFLAGS"), env_var("LDFLAGS"))
 }
 
 /// The toolchain given the values of `CC`, `CFLAGS` and `LDFLAGS` (`null` when unset).
@@ -75,10 +66,10 @@ pub for_target :: fn(triple: string) -> string!Toolchain needs Alloc + Env + Fs 
             end := sdk.len
             while end > 0 and (sdk[end - 1] is '/' or sdk[end - 1] is '\\') { end -= 1 }
             root := sdk[0..end]
-            cc = str.format("{} {}", quote_word(str.format("{}/bin/clang", root)!), quote_word(str.format("--sysroot={}/share/wasi-sysroot", root)!))!
+            cc = str.format("{} {}", pkg.quote_word(str.format("{}/bin/clang", root)!), pkg.quote_word(str.format("--sysroot={}/share/wasi-sysroot", root)!))!
         }
     }
-    return for_triple(triple, cc, env_var("CFLAGS"), env_var("LDFLAGS"), program_on_path(str.format("{}-gcc", triple)!), program_on_path("clang"))
+    return for_triple(triple, cc, env_var("CFLAGS"), env_var("LDFLAGS"), load.program_on_path(str.format("{}-gcc", triple)!), load.program_on_path("clang"))
 }
 
 /// The toolchain for `triple` given the values of `CC`, `CFLAGS` and `LDFLAGS` and whether
@@ -426,18 +417,6 @@ pub target_from_macros :: fn(macros: string) -> string!load.Target needs Alloc {
         filc: has("__FILC__"),
         f16: has("__FLT16_MANT_DIG__"),
     )
-}
-
-/// `w` quoted so that `split_words` gives it back as one word.
-quote_word :: fn(w: string) -> string needs Alloc {
-    out := list(u8)
-    out.push('"')!
-    for c in w {
-        if c is '\\' or c is '"' { out.push('\\')! }
-        out.push(c)!
-    }
-    out.push('"')!
-    return string(out.items)
 }
 
 /// The error of a toolchain choice, or "" when it succeeded.
