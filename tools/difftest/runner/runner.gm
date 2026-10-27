@@ -35,7 +35,7 @@ pub Result :: struct {
 }
 
 /// Whether two outcomes are the same.
-pub same :: fn(a, b: ^const Outcome) -> bool => a.code is b.code and a.stdout is b.stdout and a.stderr is b.stderr
+same :: fn(a, b: ^const Outcome) -> bool => a.code is b.code and a.stdout is b.stdout and a.stderr is b.stderr
 
 // The watchdog of a running program: kills it once its time is up, unless told it is done.
 Watch :: struct {
@@ -67,7 +67,7 @@ watch :: fn(w: ^Watch) needs Sys {
 /// Runs `argv` with the changes `env` (`NAME=value`) to its environment and collects its
 /// output. A program that runs longer than `timeout_s` seconds is killed, together with
 /// everything it started, which would otherwise keep the pipes open.
-pub run_with_timeout :: fn(argv: []const string, env: []const string, timeout_s: u64) -> Outcome needs Alloc + Clock + Proc + Sys {
+run_with_timeout :: fn(argv: []const string, env: []const string, timeout_s: u64) -> Outcome needs Alloc + Clock + Proc + Sys {
     opts := process.SpawnOptions(stdin: .Null, stdout: .Pipe, stderr: .Pipe, env: env, group: true)
     child := Proc.spawn(argv, opts) else return Outcome(stdout: "", stderr: "cannot run the process", code: -2)
     w := Watch(child: child, limit: Duration(ns: timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar())
@@ -111,7 +111,7 @@ pub run_with_timeout :: fn(argv: []const string, env: []const string, timeout_s:
 }
 
 /// Runs `file` with the interpreter (`cc` is null) or the C back end compiled by `cc`.
-pub run_one :: fn(cfg: ^const Config, file: string, cc: ?string) -> Outcome needs Alloc + Clock + Proc + Sys {
+run_one :: fn(cfg: ^const Config, file: string, cc: ?string) -> Outcome needs Alloc + Clock + Proc + Sys {
     argv := list(string)
     argv.push(cfg.gamma)!
     argv.push("run")!

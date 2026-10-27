@@ -703,7 +703,7 @@ test "identifiers and urls" {
     }
 }
 
-test "syntax errors read like the reference" {
+test "syntax errors are worded like the compiler's" {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {

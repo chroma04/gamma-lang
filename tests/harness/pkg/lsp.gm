@@ -4,7 +4,6 @@
 kit :: import "../kit"
 process :: import "std/process"
 str :: import "std/str"
-thread :: import "std/thread"
 
 /// A running language server.
 Server :: struct {

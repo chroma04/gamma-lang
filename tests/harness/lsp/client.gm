@@ -7,7 +7,6 @@ json :: import "std/json"
 kit :: import "../kit"
 process :: import "std/process"
 str :: import "std/str"
-thread :: import "std/thread"
 
 /// A running server and what is known of its output.
 Lsp :: struct {

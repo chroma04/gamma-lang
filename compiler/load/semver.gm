@@ -575,7 +575,7 @@ matches :: fn(req: string, version: string) -> bool needs Alloc {
     return req_matches(&r, version_of(version))
 }
 
-test "versions order like the semver crate" {
+test "versions order as semantic versioning says" {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {

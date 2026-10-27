@@ -66,13 +66,13 @@ checkouts_are_read_only_and_removable :: fn(t: ^kit.T) -> kit.Fail!() needs kit.
     if not (try is_root(t)) {
         lib := kit.join(cos[0], "lib.gm")
         wrote := true
-        fs.write_all(lib, "changed") else e => { wrote = false }
+        fs.write_all(lib, "changed") else { wrote = false }
         try t.check(not wrote, "{} was changed", lib)
         created := true
-        fs.write_all(kit.join(cos[0], "new.gm"), "") else e => { created = false }
+        fs.write_all(kit.join(cos[0], "new.gm"), "") else { created = false }
         try t.check(not created, "a file was added to the checkout")
         removed := true
-        Fs.remove(lib) else e => { removed = false }
+        Fs.remove(lib) else { removed = false }
         try t.check(not removed, "{} was removed", lib)
     }
     try w.prints("app", [_]string("run", "."), "7\n")

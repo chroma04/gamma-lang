@@ -451,7 +451,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
     return .Continue
 }
 
-test "syntax errors are worded as the reference does" {
+test "syntax errors are worded like those of the compiler" {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {
