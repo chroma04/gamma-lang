@@ -751,7 +751,9 @@ fn interpret(gammac: &Path, t: &RunTest, dir: &Path) -> Option<(String, bool)> {
     let stdin = dir.join(format!("{}.stdin", t.name.replace('/', "_")));
     std::fs::write(&stdin, &t.stdin).unwrap();
     let mut cmd = Command::new(gammac);
-    cmd.current_dir(root()).args(["run", "--backend=interp"]).arg(format!("--mode={}", t.mode)).arg(&t.root);
+    // The path as the reference reports it: relative to the repository's root.
+    let file = t.root.strip_prefix(root()).unwrap_or(&t.root);
+    cmd.current_dir(root()).args(["run", "--backend=interp"]).arg(format!("--mode={}", t.mode)).arg(file);
     cmd.stdin(std::fs::File::open(&stdin).unwrap());
     gammac_env(&mut cmd);
     let ran = common::output(&mut cmd).unwrap();
