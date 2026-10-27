@@ -18,6 +18,8 @@ ThreadState :: union {
     /// Waiting in `@futex_wait` until the wake-up count is no longer `seen` or until the
     /// deadline (in nanoseconds of `Clock.now`), if any.
     Futex: (seen: u64, deadline: ?u64)
+    /// Sleeping until the deadline.
+    Sleep: u64
     Done
 }
 
@@ -59,6 +61,7 @@ tick :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Run {
 runnable :: fn(m: ^Machine, t: ^const ThreadRec, now: ?u64) -> bool => match t.state {
     .Ready => true
     .Join(h) => m.threads.list.items[usize(h)].state is .Done
+    .Sleep(deadline) => now is not null and (now else 0) >= deadline
     .Futex(seen, ?deadline) => seen is not m.threads.futex_seq or (deadline is not null and now is not null and (now else 0) >= (deadline else 0))
     .Done => false
 }
@@ -75,6 +78,7 @@ switch_thread :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Run {
         // Look at the clock only when some thread waits with a deadline.
         for t in th.list.items {
             if .Futex(_, ?d) := t.state and d is not null { now = Clock.now().ns }
+            if t.state is .Sleep(_) { now = Clock.now().ns }
         }
         for k in 1..n + 1 {
             i := (usize(me) + k) % n
@@ -95,6 +99,9 @@ switch_thread :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Run {
         for t in th.list.items {
             if .Futex(_, ?d) := t.state and d is not null {
                 if e := earliest and e <= (d else 0) {} else { earliest = d }
+            }
+            if .Sleep(d) := t.state {
+                if e := earliest and e <= d {} else { earliest = d }
             }
         }
         e := earliest else return !m.trap(span, "deadlock: every thread is blocked")
@@ -181,4 +188,14 @@ thread_main :: fn(m: ^Machine, f: u32, arg: []u8, span: source.Span) needs Run {
         }
     }
     if arg.len > 0 { free(arg) }
+}
+
+/// `Clock.sleep` of the running thread: the other threads run meanwhile.
+sleep :: fn(m: ^Machine, span: source.Span, ns: u64) -> Flow!() needs Run {
+    if m.threads.list.items.len is 1 {
+        Clock.sleep(Duration(ns: ns))
+        return ()
+    }
+    m.threads.list.items[usize(m.threads.cur)].state = .Sleep(Clock.now().ns +| ns)
+    try m.switch_thread(span)
 }

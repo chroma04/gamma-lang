@@ -153,10 +153,6 @@ sys_strings :: fn(m: ^Machine, span: source.Span, b: []const u8) -> Flow!List(st
 /// Runs the system service `op`, whose arguments `args` are evaluated here, and stores its
 /// result in `dst`.
 sys_call :: fn(m: ^Machine, a: Act, op: tir.SysOp, args: []Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
-    match op {
-        .ThreadSpawn, .ThreadJoin, .ThreadDetach, .ThreadYield, .FutexWait, .FutexWake => return !m.unsupported(e.span, "threads")
-        _ => {}
-    }
     mk := m.mark()
     vals := list([]u8)
     for i in 0..args.len {
@@ -164,7 +160,7 @@ sys_call :: fn(m: ^Machine, a: Act, op: tir.SysOp, args: []Expr, e: ^Expr, dst: 
         try m.eval(a, &args[i], b)
         vals.push(b)!
     }
-    r := m.sys_run(e.span, op, args, vals.items, dst)
+    r := if op in (tir.SysOp.ThreadSpawn, tir.SysOp.ThreadJoin, tir.SysOp.ThreadDetach, tir.SysOp.ThreadYield, tir.SysOp.FutexWait, tir.SysOp.FutexWake) { m.thread_op(e.span, op, vals.items, dst) } else { m.sys_run(e.span, op, args, vals.items, dst) }
     vals.deinit()
     m.release(mk)
     return r
@@ -184,8 +180,7 @@ sys_run :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals:
         }
         .ClockWall => { n = Clock.wall() }
         .Sleep => {
-            Clock.sleep(Duration(ns: m.get_uint(vals[0]).trunc(u64)))
-            return ()
+            return m.sleep(span, m.get_uint(vals[0]).trunc(u64))
         }
         .RandFill => {
             buf := try m.sys_dest(span, vals[0])
@@ -194,14 +189,14 @@ sys_run :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals:
         }
         .SysWrite => {
             data := try m.sys_src(span, vals[1])
-            if sys_int(m, args[0].ty, vals[0]) is 2 { Err.write(data) } else { Out.write(data) }
+            m.host_write(if sys_int(m, args[0].ty, vals[0]) is 2 { 2 } else { 1 }, data)
             return ()
         }
         .CpuCount => { n = i64(thread.cpu_count()) }
         .FsOpen, .FsClose, .FsRead, .FsWrite, .FsSeek, .FsStat, .FsRemove, .FsRename, .FsMakeDir, .FsRemoveDir, .FsOpenDir, .FsNextEntry, .FsCloseDir, .FsLstat, .FsTruncate, .FsSync, .FsCwd => { n = try m.sys_fs(span, op, args, vals) }
         .NetConnect, .NetListen, .NetLocalPort, .NetAccept, .NetSend, .NetRecv, .NetClose, .NetShutdown, .NetSetTimeouts, .NetPeer => { n = try m.sys_net(span, op, args, vals) }
         .ProcSpawn, .ProcWriteIn, .ProcCloseIn, .ProcReadOut, .ProcWait, .ProcKill => { n = try m.sys_proc(span, op, args, vals) }
-        _ => return !m.unsupported(span, "threads")
+        _ => return !m.trap(span, "internal error: a thread operation reached the system services")
     }
     m.sys_ret(dst, n)
 }
