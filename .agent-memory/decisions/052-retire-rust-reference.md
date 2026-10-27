@@ -78,3 +78,26 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
   --emit-c` (GAMMA_STD=lib/std relative, same cache env) → identical 61,253,433 bytes,
   sha256 0584d6b50c606eb43f55f644abe299295c163fece27a82d609c99f0fb5b1831b.
 - Rebuilding gamma with target/bootstrap/gammac and its cache: ~2m10 on 4 cores.
+
+## Phase 3 status (s48, branch claude/retire-rust-phase-3)
+- Done: tests/common gamma()/compiler()/compiler_command() (GAMMA_TEST_COMPILER required,
+  panics without); tools/test.sh (bootstraps or rebuilds target/bootstrap/gamma when a
+  cksum of compiler/lib/runtime changes); bootstrap outputs gamma0/gamma1/gamma; compiler
+  strings say `gamma` (cache keys keep "gammac"); selfhost.rs = fixed point, unit tests,
+  fmt --check, split units, packaged layout; tests/lanes.rs (GAMMA_TEST_LANE
+  safe|s390x|aarch64|wasi; aarch64 lane new, untested locally: no cross tools here);
+  deleted suites cranelift/ice/interp_children/interp_deadline/ffi_interp/install_layout,
+  web/gen/check-parity.sh; conformance.rs lost the cranelift lane + directive.
+- `run` keeps C as default (gammac behavior; tree-walking interp too slow to be the
+  default); test/bench C only. Docs/CHANGELOG say so.
+- CI: every job bootstraps; Rust only fmt/clippy/msrv/audit/fuzz-compile. Release: Fast
+  mode `gamma build --mode=fast compiler` (single TU, untested in CI yet), archives
+  gamma-<asset>, Windows cross with --mode=fast. install.sh/.ps1: no GAMMA_ARCHIVE.
+- First run of all suites on gamma: 25 failures in 8 suites (long_expressions stack
+  overflow, cli fmt --help/non-UTF-8 args, build_profiles cache layout, testing_cli
+  interp test/bench, native_build relink + interp flush, freestanding rule, cross, lsp
+  core copy) → 3 sonnet worktree workers; docs worker (brief in $SP/brief-docs.md).
+- Language change for the gate: §7.7 `in` joins element/members by the §7.12 rule
+  (check/seq.gm join_members); `else` fallback join NOT done (needs payload conversion in
+  cgen/interp/eval: ElseExpr has no conversion) → follow-up, logged in pain-points.
+- Machine: 15 GB RAM; 3 compiler builds at once (cc1 ~0.8 GB per unit) + rustc → OOM kills.

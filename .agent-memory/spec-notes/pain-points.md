@@ -103,3 +103,8 @@ dangling stores are now compile errors (decisions/045).
 - **Nested results need typed temporaries** (s47, me, interp/sys.gm): returning `!e` or `!.V`
   inside `Flow!(IoError!T)` targets the outer error type; existing code already writes
   `failed: IoError!usize = !e; return failed` (≥3 sites). Watch.
+- s48: `[]u8`/`string` joins: `in` DONE (§7.7 joins element and members as §7.12 does);
+  still open: `str.format(..) else "none"` (expected `[]u8`, found `string`) and
+  `x: string = f() else ""` — the `else` fallback should join the same way, but the TIR
+  `.Else` needs a payload conversion in cgen/interp/eval. `?[]u8` does not coerce to
+  `?string` either (coercions under `?` don't exist). Next language change candidate.
