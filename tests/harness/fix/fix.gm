@@ -1,5 +1,340 @@
-//! The fix suite (being ported from tests/fix.rs).
+//! Tests of the fixes that diagnostics carry: `gamma fix` and `--diag-format=json`.
 
+json :: import "std/json"
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "fix_applies_every_single_fix_until_the_program_checks", run: fix_applies_every_single_fix))!
+    out.push(kit.Test(name: "fix_leaves_ambiguous_diagnostics_and_reports_them", run: fix_leaves_ambiguous_diagnostics))!
+    out.push(kit.Test(name: "fix_changes_only_the_files_of_the_package", run: fix_changes_only_the_files_of_the_package))!
+    out.push(kit.Test(name: "json_diagnostics_have_locations_and_fixes", run: json_diagnostics_have_locations_and_fixes))!
+    out.push(kit.Test(name: "fix_stray_braces_chained_comparisons_and_assignment_in_conditions", run: fix_stray_braces_chained_comparisons))!
+    out.push(kit.Test(name: "json_fixes_of_try_in_a_test_and_a_stray_brace", run: json_fixes_of_try_in_a_test_and_a_stray_brace))!
+    out.push(kit.Test(name: "fix_c_style_equality_operators", run: fix_c_style_equality_operators))!
+    out.push(kit.Test(name: "chained_comparisons_with_side_effects_or_under_not_are_left_alone", run: chained_comparisons_are_left_alone))!
+    out.push(kit.Test(name: "fix_adds_the_import_and_the_module_prefix_of_std_names", run: fix_adds_the_import_and_the_module_prefix))!
+    out.push(kit.Test(name: "fix_qualifies_effect_operations", run: fix_qualifies_effect_operations))!
+    out.push(kit.Test(name: "fix_adds_undeclared_effects_to_signatures", run: fix_adds_undeclared_effects))!
+    out.push(kit.Test(name: "effects_not_named_as_written_get_no_needs_fix", run: effects_not_named_as_written))!
+}
+
+/// Runs `gamma` with `args` in `dir`.
+gamma_in :: fn(t: ^kit.T, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    c := t.gamma(args)
+    c.dir = dir
+    return try t.run(c)
+}
+
+/// A program with one mistake of each kind that has a single fix.
+BROKEN :: `limit := 0X10
+
+Sh :: union {
+    Circle: i32,
+    Dot,
+}
+
+area :: fn(s: Sh) -> i32 {
+    return match s {
+        .Circle => 1,
+        _ => 0,
+    }
+}
+
+twice :: fn(x: i32) -> i32 => x * 2
+
+main :: fn() needs Out {
+    xs := [3]i32(1, 2, 3)
+    s := xs[..]
+    twice(4)
+    if s.len() > 2 && limit > 1 {
+        print("{}\n", area(.Dot))
+    }
+}
+`
+
+FIXED :: `limit :: 0x10
+
+Sh :: union {
+    Circle: i32,
+    Dot,
+}
+
+area :: fn(s: Sh) -> i32 {
+    return match s {
+        .Circle(_) => 1
+        _ => 0
+    }
+}
+
+twice :: fn(x: i32) -> i32 => x * 2
+
+main :: fn() needs Out {
+    xs := [3]i32(1, 2, 3)
+    s := xs[..]
+    _ = twice(4)
+    if s.len > 2 and limit > 1 {
+        print("{}\n", area(.Dot))
+    }
+}
+`
+
+fix_applies_every_single_fix :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    main_gm := kit.join(d, "main.gm")
+    try t.write(main_gm, BROKEN)
+    out := try gamma_in(t, d, [_]string("fix", "main.gm"))
+    try t.check(out.success(), "{}", out.err)
+    try t.expect_text("stderr", "gamma: applied 8 fixes in 1 file\n", out.err)
+    try t.expect_text("the fixed program", FIXED, try t.read(main_gm))
+    // Nothing is left to do.
+    again := try gamma_in(t, d, [_]string("fix", "main.gm"))
+    try t.check(again.success() and again.err.len is 0, "{}", again.err)
+    return ()
+}
+
+fix_leaves_ambiguous_diagnostics :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    main_gm := kit.join(d, "main.gm")
+    text := "g :: fn() -> ?i32 => 1\n\nh :: fn() -> ?i32 {\n    x := try g() else 0\n    return x\n}\n\nmain :: fn() {\n    _ = h()\n}\n"
+    try t.write(main_gm, text)
+    out := try gamma_in(t, d, [_]string("fix", "main.gm"))
+    try t.check(not out.success(), "an ambiguous diagnostic was not reported")
+    try t.expect_contains("stderr", out.err, "`try x else d` is ambiguous")
+    try t.check(not str.contains(out.err, "applied"), "{}", out.err)
+    try t.expect_text("the program", text, try t.read(main_gm))
+    return ()
+}
+
+fix_changes_only_the_files_of_the_package :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    // The program imports a module from outside its package, which has a fixable mistake.
+    outside := kit.join(d, "outside")
+    lib := "pub f :: fn() -> i32 => 0X1\n"
+    try t.write(kit.join(outside, "gamma.toml"), "[package]\nname = \"lib\"\n")
+    try t.write(kit.join(outside, "lib.gm"), lib)
+    pkg := kit.join(d, "pkg")
+    try t.write(kit.join(pkg, "gamma.toml"), "[package]\nname = \"p\"\n\n[dependencies]\nlib = { path = \"../outside\" }\n")
+    try t.write(kit.join(pkg, "main.gm"), "lib :: import \"lib\"\n\nmain :: fn() {\n    _ = lib.f() + 0B1\n}\n")
+    out := try gamma_in(t, pkg, [_]string("fix", "main.gm"))
+    try t.check(not out.success(), "{}", out.err)
+    try t.expect_contains("stderr", out.err, "radix prefixes must be lowercase")
+    try t.expect_contains("stderr", out.err, "applied 1 fix in 1 file")
+    try t.expect_contains("the fixed file", try t.read(kit.join(pkg, "main.gm")), "+ 0b1")
+    try t.expect_text("the module outside the package", lib, try t.read(kit.join(outside, "lib.gm")))
+    return ()
+}
+
+/// The member `key` of the object `v`.
+member :: fn(v: json.Value, key: string) -> ?json.Value => json.get(v, key)
+
+/// Whether the member `key` of `v` is the string `want`.
+string_is :: fn(v: json.Value, key, want: string) -> bool {
+    m := json.get(v, key) else return false
+    if .String(s) := m { return s is want }
+    return false
+}
+
+/// Whether the member `key` of `v` is the integer `want`.
+int_is :: fn(v: json.Value, key: string, want: usize) -> bool {
+    m := json.get(v, key) else return false
+    if .Number(n) := m {
+        got := json.to_i64(n) else return false
+        return got is want.trunc(i64)
+    }
+    return false
+}
+
+/// The first line of `text`, parsed as JSON.
+first_json :: fn(t: ^kit.T, text: string) -> kit.Fail!json.Value needs Alloc {
+    line := ""
+    for l in str.lines(text) {
+        line = l
+        break
+    }
+    doc := json.parse(line) else e => return !t.fail("not JSON ({}): {}", e, text)
+    return doc.root
+}
+
+json_diagnostics_have_locations_and_fixes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    try t.write(kit.join(d, "main.gm"), "main :: fn() {\n    x := 1 && 2\n}\n")
+    out := try gamma_in(t, d, [_]string("check", "--diag-format=json", "main.gm"))
+    try t.check(not out.success(), "a program with an error passed")
+    count: usize = 0
+    for _ in str.lines(out.err) { count += 1 }
+    try t.check(count is 1, "one JSON object per line expected:\n{}", out.err)
+    e := try first_json(t, out.err)
+    try t.check(string_is(e, "severity", "error"), "severity:\n{}", out.err)
+    try t.check(string_is(e, "message", "`&&` is not an operator; use `and`"), "message:\n{}", out.err)
+    try t.check(string_is(e, "file", "main.gm"), "file:\n{}", out.err)
+    try t.check(int_is(e, "line", 2) and int_is(e, "column", 12), "line and column:\n{}", out.err)
+    try t.check(int_is(e, "offset", 26) and int_is(e, "end_offset", 28), "offsets:\n{}", out.err)
+    notes := member(e, "notes") else return !t.fail("no notes:\n{}", out.err)
+    if .Array(items) := notes {
+        try t.check(items.len is 0, "notes should be empty:\n{}", out.err)
+    } else {
+        return !t.fail("notes is not an array:\n{}", out.err)
+    }
+    fixes := member(e, "fixes") else return !t.fail("no fixes:\n{}", out.err)
+    fix := json.at(fixes, 0) else return !t.fail("no fix:\n{}", out.err)
+    try t.check(string_is(fix, "message", "replace `&&` with `and`"), "fix message:\n{}", out.err)
+    edits := member(fix, "edits") else return !t.fail("no edits:\n{}", out.err)
+    edit := json.at(edits, 0) else return !t.fail("no edit:\n{}", out.err)
+    try t.check(string_is(edit, "text", "and"), "edit text:\n{}", out.err)
+    try t.check(int_is(edit, "offset", 26), "edit offset:\n{}", out.err)
+    try t.check(int_is(edit, "end_column", 14), "edit end_column:\n{}", out.err)
+    return ()
+}
+
+/// Runs `gamma fix main.gm` on `broken` in a directory of its own, expecting `fixed`
+/// afterwards and a clean check.
+fixes_to :: fn(t: ^kit.T, name, broken, fixed: string) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(str.format("{}/{}", t.name, name)!)
+    main_gm := kit.join(d, "main.gm")
+    try t.write(main_gm, broken)
+    out := try gamma_in(t, d, [_]string("fix", "main.gm"))
+    try t.check(out.success(), "{}: {}", name, out.err)
+    try t.expect_text(name, fixed, try t.read(main_gm))
+    checked := try gamma_in(t, d, [_]string("check", "main.gm"))
+    try t.check(checked.success(), "{}: {}", name, checked.err)
+    return ()
+}
+
+fix_stray_braces_chained_comparisons :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try fixes_to(
+        t,
+        "syntax2",
+        "main :: fn() needs Out {\n    a := 1\n    b := 2\n    c := 3\n    if a < b <= c {\n        print(\"100}\\n\")\n    }\n    if a = 1 {\n        print(\"{}\\n\", a)\n    }\n}\n",
+        "main :: fn() needs Out {\n    a := 1\n    b := 2\n    c := 3\n    if a < b and b <= c {\n        print(\"100}}\\n\")\n    }\n    if a is 1 {\n        print(\"{}\\n\", a)\n    }\n}\n",
+    )
+    return ()
+}
+
+json_fixes_of_try_in_a_test_and_a_stray_brace :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    main_gm := kit.join(d, "main.gm")
+    src := "main :: fn() {}\n\nf :: fn() -> i32!i32 => 1\n\ntest \"t\" {\n    x := try f()\n    expect(x is 1)\n}\n"
+    try t.write(main_gm, src)
+    out := try gamma_in(t, d, [_]string("test", "--diag-format=json", "main.gm"))
+    try t.check(not out.success(), "a test with a misused `try` passed")
+    e := try first_json(t, out.err)
+    fixes := member(e, "fixes") else return !t.fail("no fixes:\n{}", out.err)
+    fix := json.at(fixes, 0) else return !t.fail("no fix:\n{}", out.err)
+    edits := member(fix, "edits") else return !t.fail("no edits:\n{}", out.err)
+    first := json.at(edits, 0) else return !t.fail("no first edit:\n{}", out.err)
+    second := json.at(edits, 1) else return !t.fail("no second edit:\n{}", out.err)
+    at := str.find(src, "try f()") else return !t.fail("no `try f()` in the source")
+    try t.check(int_is(first, "offset", at) and int_is(first, "end_offset", at + 4), "first edit:\n{}", out.err)
+    try t.check(string_is(first, "text", "ok("), "first edit text:\n{}", out.err)
+    try t.check(int_is(second, "offset", at + 7) and string_is(second, "text", ")"), "second edit:\n{}", out.err)
+
+    src2 := "main :: fn() needs Out {\n    print(\"a}\\n\")\n}\n"
+    try t.write(main_gm, src2)
+    out2 := try gamma_in(t, d, [_]string("check", "--diag-format=json", "main.gm"))
+    try t.check(not out2.success(), "a stray brace passed")
+    e2 := try first_json(t, out2.err)
+    fixes2 := member(e2, "fixes") else return !t.fail("no fixes:\n{}", out2.err)
+    fix2 := json.at(fixes2, 0) else return !t.fail("no fix:\n{}", out2.err)
+    edits2 := member(fix2, "edits") else return !t.fail("no edits:\n{}", out2.err)
+    edit := json.at(edits2, 0) else return !t.fail("no edit:\n{}", out2.err)
+    brace := str.find(src2, "}") else return !t.fail("no brace in the source")
+    try t.check(int_is(edit, "offset", brace) and int_is(edit, "end_offset", brace + 1), "edit offsets:\n{}", out2.err)
+    try t.check(string_is(edit, "text", "}}"), "edit text:\n{}", out2.err)
+    return ()
+}
+
+fix_c_style_equality_operators :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try fixes_to(
+        t,
+        "equality",
+        "main :: fn() {\n    a := 1\n    if a==1 or a != 2 {\n    }\n}\n",
+        "main :: fn() {\n    a := 1\n    if a is 1 or a is not 2 {\n    }\n}\n",
+    )
+    return ()
+}
+
+chained_comparisons_are_left_alone :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    for cond in [_]string("a < f() < c", "not a < b < c", "a < b < c < a", "a is b < c") {
+        d := try t.scratch(t.name)
+        main_gm := kit.join(d, "main.gm")
+        template := "f :: fn() -> i32 => 2\n\nmain :: fn() {\n    a := 1\n    b := 2\n    c := 3\n    if COND {\n    }\n}\n"
+        text := str.replace_alloc(template, "COND", cond)!
+        try t.write(main_gm, text)
+        out := try gamma_in(t, d, [_]string("fix", "main.gm"))
+        try t.check(not out.success(), "{}: the program was fixed:\n{}", cond, out.err)
+        try t.expect_text(cond, text, try t.read(main_gm))
+    }
+    return ()
+}
+
+fix_adds_the_import_and_the_module_prefix :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // No import yet: it goes to the top of the file.
+    try fixes_to(
+        t,
+        "import_none",
+        "main :: fn() needs Fs {\n    f: ?File = null\n    _ = f\n}\n",
+        "fs :: import \"std/fs\"\n\nmain :: fn() needs Fs {\n    f: ?fs.File = null\n    _ = f\n}\n",
+    )
+    // Below the comments that document the file.
+    try fixes_to(
+        t,
+        "import_doc",
+        "//! A tool.\n//! It opens files.\n\nmain :: fn() needs Fs {\n    f: ?File = null\n    _ = f\n}\n",
+        "//! A tool.\n//! It opens files.\n\nfs :: import \"std/fs\"\n\nmain :: fn() needs Fs {\n    f: ?fs.File = null\n    _ = f\n}\n",
+    )
+    // After the last import; several uses share the one import.
+    try fixes_to(
+        t,
+        "import_after",
+        "io :: import \"std/io\"\n\nmain :: fn() needs Fs {\n    f: ?File = null\n    g: ?File = null\n    _ = f\n    _ = g\n}\n",
+        "io :: import \"std/io\"\nfs :: import \"std/fs\"\n\nmain :: fn() needs Fs {\n    f: ?fs.File = null\n    g: ?fs.File = null\n    _ = f\n    _ = g\n}\n",
+    )
+    // Already imported: only the prefix is added.
+    try fixes_to(
+        t,
+        "import_have",
+        "files :: import \"std/fs\"\n\nmain :: fn() needs Fs {\n    f: ?File = null\n    _ = f\n}\n",
+        "files :: import \"std/fs\"\n\nmain :: fn() needs Fs {\n    f: ?files.File = null\n    _ = f\n}\n",
+    )
+    return ()
+}
+
+fix_qualifies_effect_operations :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    try fixes_to(
+        t,
+        "ops",
+        "main :: fn() needs Fs {\n    make_dir(\"target/gamma-fix-ops\") else ()\n}\n",
+        "main :: fn() needs Fs {\n    Fs.make_dir(\"target/gamma-fix-ops\") else ()\n}\n",
+    )
+    return ()
+}
+
+/// Each round adds what the functions perform; the callers get theirs in the next.
+/// `main` gets only ambient effects: it must handle the others itself.
+fix_adds_undeclared_effects :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    main_gm := kit.join(d, "main.gm")
+    broken := "Log :: effect {\n    log: fn(msg: string)\n}\n\ngreet :: fn(name: string) {\n    print(\"hi {}\\n\", name)\n}\n\nwarn :: fn() -> i32 needs Out {\n    eprint(\"careful\\n\")\n    Log.log(\"tick\")\n    return 2\n}\n\nmain :: fn() {\n    greet(\"a\")\n    _ = warn()\n}\n"
+    fixed := "Log :: effect {\n    log: fn(msg: string)\n}\n\ngreet :: fn(name: string) needs Out {\n    print(\"hi {}\\n\", name)\n}\n\nwarn :: fn() -> i32 needs Out + Err + Log {\n    eprint(\"careful\\n\")\n    Log.log(\"tick\")\n    return 2\n}\n\nmain :: fn() needs Out + Err {\n    greet(\"a\")\n    _ = warn()\n}\n"
+    try t.write(main_gm, broken)
+    out := try gamma_in(t, d, [_]string("fix", "main.gm"))
+    try t.check(not out.success(), "the effect `Log` that main cannot have was not reported")
+    try t.expect_text("the fixed program", fixed, try t.read(main_gm))
+    try t.expect_contains("stderr", out.err, "performs the effect `Log`, which the function does not declare")
+    try t.check(str.count(out.err, "error:") is 1, "{}", out.err)
+    return ()
+}
+
+/// An effect of another module is written with its module's name, which the fix does
+/// not guess.
+effects_not_named_as_written :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    try t.write(kit.join(d, "lg/lg.gm"), "pub Log :: effect {\n    log: fn(msg: string)\n}\n")
+    try t.write(kit.join(d, "main.gm"), "lg :: import \"./lg\"\n\nmain :: fn() {\n    lg.Log.log(\"x\")\n}\n")
+    out := try gamma_in(t, d, [_]string("check", "--diag-format=json", "main.gm"))
+    try t.check(not out.success(), "the program was accepted")
+    try t.expect_contains("diagnostics", out.err, "does not declare")
+    try t.expect_contains("diagnostics", out.err, "\"fixes\":[]")
+    return ()
+}

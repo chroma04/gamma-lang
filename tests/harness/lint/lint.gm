@@ -1,5 +1,297 @@
-//! The lint suite (being ported from tests/lint.rs).
+//! Tests of the `gamma lint` command: `--fix`, levels from the command line and
+//! gamma.toml, `--rules`, JSON output, and that the library and examples lint clean.
+//! The findings of each rule are tested in `tests/conformance/lint/`.
+//!
+//! There is one test per module of the standard library and per example program for the
+//! last property, named `library_and_examples_lint_clean/<path>`.
 
+fs :: import "std/fs"
+json :: import "std/json"
 kit :: import "../kit"
+rules :: import "gammac/lint"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
+    out.push(kit.Test(name: "reports_each_rule_by_name", run: reports_each_rule_by_name))!
+    out.push(kit.Test(name: "fix_applies_every_fix_and_keeps_the_program_working", run: fix_applies_every_fix))!
+    out.push(kit.Test(name: "collapsible_else_if_fix_keeps_multi_line_raw_strings", run: collapsible_else_if_fix_keeps_raw_strings))!
+    out.push(kit.Test(name: "fix_leaves_out_fixes_that_break_the_program", run: fix_leaves_out_fixes_that_break_the_program))!
+    out.push(kit.Test(name: "deny_fails_the_command", run: deny_fails_the_command))!
+    out.push(kit.Test(name: "a_program_that_does_not_compile_gets_its_errors", run: a_program_that_does_not_compile_gets_its_errors))!
+    out.push(kit.Test(name: "manifest_lint_table_sets_levels", run: manifest_lint_table_sets_levels))!
+    out.push(kit.Test(name: "allow_attribute_silences_a_declaration", run: allow_attribute_silences_a_declaration))!
+    out.push(kit.Test(name: "json_output_names_the_rule", run: json_output_names_the_rule))!
+    out.push(kit.Test(name: "rules_lists_every_rule", run: rules_lists_every_rule))!
+    // Every module of the standard library, and every example program.
+    inputs := list(string)
+    modules(cfg, "lib/std", &inputs)
+    examples := kit.join(cfg.root, "examples")
+    for r in fs.entries(examples) {
+        e := r else break
+        is_program := e.kind is .Dir and fs.exists(kit.join(kit.join(examples, e.name), "main.gm"))
+        if is_program or (e.kind is .File and str.strip_suffix(e.name, ".gm") is not null) {
+            inputs.push(str.format("examples/{}", e.name)!)!
+        }
+    }
+    inputs.items.sort()
+    for input in inputs.items {
+        out.push(kit.Test(name: str.format("library_and_examples_lint_clean/{}", input)!, run: library_and_examples_lint_clean, param: input))!
+    }
+}
+
+/// Adds `rel` (below the repository's root) to `out` if it holds `.gm` files, and so do the
+/// directories below it that do.
+modules :: fn(cfg: ^const kit.Config, rel: string, out: ^List(string)) needs Alloc + Fs {
+    dir := kit.join(cfg.root, rel)
+    has_gm := false
+    subs := list(string)
+    for r in fs.entries(dir) {
+        e := r else break
+        if e.kind is .Dir {
+            subs.push(str.format("{}/{}", rel, e.name)!)!
+        } else if str.strip_suffix(e.name, ".gm") is not null {
+            has_gm = true
+        }
+    }
+    if has_gm { out.push(rel)! }
+    for s in subs.items { modules(cfg, s, out) }
+}
+
+/// Runs `gamma` with `args` in `dir`.
+gamma_in :: fn(t: ^kit.T, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    c := t.gamma(args)
+    c.dir = dir
+    return try t.run(c)
+}
+
+/// A program with warnings of several rules, each with a fix.
+MESSY :: `fmt :: import "std/fmt"
+
+main :: fn() needs Out {
+    unused := 5
+    done := false
+    if done is false {
+        print("hi\n")
+    } else {
+        if not not done { print("x\n") }
+    }
+    n := (3)
+    print("{}\n", n)
+}
+`
+
+TIDY :: `main :: fn() needs Out {
+    _ = 5
+    done := false
+    if not done {
+        print("hi\n")
+    } else if done { print("x\n") }
+    n := 3
+    print("{}\n", n)
+}
+`
+
+reports_each_rule_by_name :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    try t.write(kit.join(d, "main.gm"), MESSY)
+    out := try gamma_in(t, d, [_]string("lint", "main.gm"))
+    try t.check(out.success(), "warnings alone do not fail: {}", out.err)
+    for rule in [_]string("unused-import", "unused-variable", "bool-comparison", "collapsible-else-if", "double-negation") {
+        try t.check(str.contains(out.err, str.format("warning[{}]", rule)!), "no {} in:\n{}", rule, out.err)
+    }
+    try t.expect_contains("the summary", out.err, "gamma lint: 6 warnings")
+    return ()
+}
+
+fix_applies_every_fix :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    main_gm := kit.join(d, "main.gm")
+    try t.write(main_gm, MESSY)
+    out := try gamma_in(t, d, [_]string("lint", "--fix", "main.gm"))
+    try t.check(out.success(), "{}", out.err)
+    try t.expect_contains("stderr", out.err, "gamma: applied 6 fixes in 1 file")
+    try t.check(not str.contains(out.err, "warning"), "{}", out.err)
+    try t.expect_text("the fixed program", TIDY, try t.read(main_gm))
+    run := try gamma_in(t, d, [_]string("run", "main.gm"))
+    try t.check(run.success(), "{}", run.err)
+    try t.expect_text("the output", "hi\n3\n", run.out)
+    // A second run has nothing left to do.
+    again := try gamma_in(t, d, [_]string("lint", "--fix", "main.gm"))
+    try t.check(again.success() and again.err.len is 0, "{}", again.err)
+    return ()
+}
+
+collapsible_else_if_fix_keeps_raw_strings :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    main_gm := kit.join(d, "main.gm")
+    src := "f :: fn(a: bool, c: bool) -> string {\n    if a {\n        return \"a\"\n    } else {\n        if c {\n            return `line1\n            line2`\n        }\n    }\n    return \"z\"\n}\n\nmain :: fn() needs Out {\n    print(\"{}\\n\", f(false, true))\n}\n"
+    try t.write(main_gm, src)
+    out := try gamma_in(t, d, [_]string("lint", "--fix", "main.gm"))
+    try t.expect_contains("stderr", out.err, "collapsible-else-if")
+    try t.expect_text("the program", src, try t.read(main_gm))
+    return ()
+}
+
+/// `::` evaluates a call of a pure function with constant arguments at compile
+/// time, which a foreign function cannot be, so the prefer-immutable fix of `r`
+/// is undone and reported.
+fix_leaves_out_fixes_that_break_the_program :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    main_gm := kit.join(d, "main.gm")
+    src := `libc :: foreign "c" {
+    abs :: fn(n: i32) -> i32 needs not
+}
+
+main :: fn() needs Out {
+    r := libc.abs(i32(-4))
+    unused := r
+    print("{}\n", r)
+}
+`
+    try t.write(main_gm, src)
+    out := try gamma_in(t, d, [_]string("lint", "--fix", "--warn=prefer-immutable", "main.gm"))
+    try t.check(out.success(), "{}", out.err)
+    try t.expect_text("the program", str.replace_alloc(src, "unused := r", "_ = r")!, try t.read(main_gm))
+    try t.expect_contains("stderr", out.err, "1 lint fix left the program failing to compile, so it was not applied")
+    try t.expect_contains("stderr", out.err, "applied 1 fix in 1 file")
+    try t.expect_contains("stderr", out.err, "warning[prefer-immutable]")
+    return ()
+}
+
+deny_fails_the_command :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    try t.write(kit.join(d, "main.gm"), MESSY)
+    out := try gamma_in(t, d, [_]string("lint", "--deny=unused-variable", "main.gm"))
+    try t.check(not out.success(), "`--deny` did not fail the command")
+    try t.expect_contains("stderr", out.err, "error[unused-variable]")
+    try t.expect_contains("stderr", out.err, "warning[unused-import]")
+    try t.expect_contains("stderr", out.err, "gamma lint: 1 error and 5 warnings")
+    all := try gamma_in(t, d, [_]string("lint", "-D", "main.gm"))
+    try t.check(not all.success(), "`-D` did not fail the command")
+    try t.expect_contains("stderr", all.err, "gamma lint: 6 errors")
+    allowed := try gamma_in(t, d, [_]string("lint", "--allow=all", "main.gm"))
+    try t.check(allowed.success() and allowed.err.len is 0, "{}", allowed.err)
+    unknown := try gamma_in(t, d, [_]string("lint", "--allow=no-such-rule", "main.gm"))
+    try t.check(not unknown.success(), "an unknown rule was accepted")
+    try t.expect_contains("stderr", unknown.err, "unknown lint rule `no-such-rule`")
+    return ()
+}
+
+a_program_that_does_not_compile_gets_its_errors :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    try t.write(kit.join(d, "main.gm"), "main :: fn() {\n    unused := 5\n    x: i32 = true\n}\n")
+    out := try gamma_in(t, d, [_]string("lint", "main.gm"))
+    try t.check(not out.success(), "a program that does not compile passed")
+    try t.check(str.contains(out.err, "error") and not str.contains(out.err, "warning["), "{}", out.err)
+    return ()
+}
+
+manifest_lint_table_sets_levels :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    manifest := kit.join(d, "gamma.toml")
+    try t.write(manifest, "[package]\nname = \"tidy\"\nversion = \"0.1.0\"\n\n[lint]\nunused-variable = \"allow\"\nbool-comparison = \"deny\"\n")
+    try t.write(kit.join(d, "main.gm"), MESSY)
+    out := try gamma_in(t, d, [_]string("lint", "."))
+    try t.check(not out.success(), "a rule at `deny` did not fail the command")
+    try t.check(not str.contains(out.err, "unused-variable"), "{}", out.err)
+    try t.expect_contains("stderr", out.err, "error[bool-comparison]")
+    // The command line comes after the manifest.
+    warn := try gamma_in(t, d, [_]string("lint", "--warn=bool-comparison", "."))
+    try t.check(warn.success(), "{}", warn.err)
+    try t.expect_contains("stderr", warn.err, "warning[bool-comparison]")
+
+    try t.write(manifest, "[package]\nname = \"tidy\"\nversion = \"0.1.0\"\n\n[lint]\nunused-thing = \"allow\"\n")
+    bad := try gamma_in(t, d, [_]string("lint", "."))
+    try t.check(not bad.success() and str.contains(bad.err, "unused-thing"), "{}", bad.err)
+    return ()
+}
+
+allow_attribute_silences_a_declaration :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    main_gm := kit.join(d, "main.gm")
+    src := `#allow("unused-declaration")
+spare :: fn() -> i32 => 1
+
+#allow("all")
+helper :: fn(x: i32) -> i32 => 2
+
+main :: fn() needs Out {
+    print("{}\n", helper(1))
+}
+`
+    try t.write(main_gm, src)
+    out := try gamma_in(t, d, [_]string("lint", "main.gm"))
+    try t.check(out.success() and out.err.len is 0, "{}", out.err)
+    try t.write(main_gm, str.replace_alloc(src, "unused-declaration", "unused-decl")!)
+    // Which names are rules is the tool's concern: the program compiles, and the tool
+    // reports the name it does not know.
+    check := try gamma_in(t, d, [_]string("check", "main.gm"))
+    try t.check(check.success() and check.err.len is 0, "{}", check.err)
+    unknown := try gamma_in(t, d, [_]string("lint", "main.gm"))
+    try t.check(not unknown.success(), "an unknown rule in an attribute was accepted")
+    try t.expect_contains("stderr", unknown.err, "unknown lint rule `unused-decl`")
+    return ()
+}
+
+/// Whether the member `key` of the object `v` is the string `want`.
+member_is :: fn(v: json.Value, key, want: string) -> bool {
+    m := json.get(v, key) else return false
+    if .String(s) := m { return s is want }
+    return false
+}
+
+json_output_names_the_rule :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := try t.scratch(t.name)
+    try t.write(kit.join(d, "main.gm"), MESSY)
+    out := try gamma_in(t, d, [_]string("lint", "--diag-format=json", "main.gm"))
+    diags := list(json.Value)
+    for line in str.lines(out.err) {
+        doc := json.parse(line) else e => return !t.fail("not JSON ({}): {}", line, e)
+        diags.push(doc.root)!
+    }
+    try t.check(diags.items.len is 6, "{} diagnostics:\n{}", diags.items.len, out.err)
+    for diag in diags.items {
+        code_is_string := false
+        if c := json.get(diag, "code") {
+            if .String(_) := c { code_is_string = true }
+        }
+        try t.check(member_is(diag, "severity", "warning") and code_is_string, "not a warning with a code:\n{}", out.err)
+    }
+    found := false
+    for diag in diags.items {
+        if not member_is(diag, "code", "unused-variable") { continue }
+        found = true
+        fixes := json.get(diag, "fixes") else return !t.fail("no fixes:\n{}", out.err)
+        fix := json.at(fixes, 0) else return !t.fail("no fix:\n{}", out.err)
+        edits := json.get(fix, "edits") else return !t.fail("no edits:\n{}", out.err)
+        edit := json.at(edits, 0) else return !t.fail("no edit:\n{}", out.err)
+        try t.check(member_is(edit, "text", "_ ="), "the edit is not `_ =`:\n{}", out.err)
+        break
+    }
+    try t.check(found, "no unused-variable in:\n{}", out.err)
+    return ()
+}
+
+rules_lists_every_rule :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try t.run(t.gamma([_]string("lint", "--rules")))
+    try t.check(out.success(), "{}", out.err)
+    count: usize = 0
+    prefer_immutable_allowed := false
+    unused_variable_warns := false
+    for line in str.lines(out.out) {
+        count += 1
+        if str.strip_prefix(line, "prefer-immutable") is not null and str.contains(line, "allow") { prefer_immutable_allowed = true }
+        if str.strip_prefix(line, "unused-variable") is not null and str.contains(line, "warn") { unused_variable_warns = true }
+    }
+    try t.check(count is rules.RULES.len, "{} rules listed, {} exist", count, rules.RULES.len)
+    try t.check(prefer_immutable_allowed, "prefer-immutable is not listed as allowed:\n{}", out.out)
+    try t.check(unused_variable_warns, "unused-variable is not listed as a warning:\n{}", out.out)
+    return ()
+}
+
+/// The module or program `t.param` (a path below the repository's root) has no findings.
+library_and_examples_lint_clean :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try gamma_in(t, t.cfg.root, [_]string("lint", "--diag-format=short", t.param))
+    try t.check(out.success() and out.err.len is 0, "`gamma lint {}`:\n{}", t.param, out.err)
+    return ()
+}

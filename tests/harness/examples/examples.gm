@@ -1,5 +1,196 @@
-//! The examples suite (being ported from tests/examples.rs).
+//! Runs the programs in `examples/` and checks what they print.
+//!
+//! Each file `tests/examples/<case>.run` describes one run of one example, with
+//! one `key: value` setting per line (`#` starts a comment line):
+//!
+//! - `example: wordfreq.gm` names the example, a `.gm` file or a module
+//!   directory, relative to `examples/`. Required.
+//! - `command: run` (the default) runs the program with `gamma run`; `command: test`
+//!   runs its `test` declarations with `gamma test`.
+//! - `args: --top 3 data/words.txt` are the program's arguments, separated by
+//!   spaces (there is no quoting).
+//! - `stdin: data/words.txt` is the program's standard input (default: empty).
+//! - `exit: N` is the expected exit status (default 0).
+//! - `backend: interp` runs the case only on the interpreter. By default it also
+//!   runs through the C back end (`--backend=c`), where a C compiler is available
+//!   and `GAMMA_TEST_C` is not 0, and both must give the same result.
+//!
+//! The expected standard output is `tests/examples/<case>.stdout` (empty if the
+//! file does not exist). Programs run with `examples/` as their working directory,
+//! so the paths in `args` and `stdin` are the ones a reader would type there.
+//!
+//! The suite also checks that every example has at least one case, and that the
+//! examples are formatted as `gamma fmt` formats them.
+//!
+//! The cases run with the compiler under test, `GAMMA_TEST_COMPILER` (see
+//! `tests/harness/conformance`).
+//!
+//! Set `BLESS=1` to rewrite the `.stdout` files from the interpreter's output, and
+//! `GAMMA_TEST_FILTER=substring` to run only the cases whose name contains it. There
+//! is one test per case, named `examples_run/<case>`.
 
+fs :: import "std/fs"
 kit :: import "../kit"
+str :: import "std/str"
 
-pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {}
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
+    names := list(string)
+    cases_dir := kit.join(cfg.root, "tests/examples")
+    for r in fs.entries(cases_dir) {
+        e := r else err => {
+            out.push(kit.Test(name: "examples_run", run: cannot_list, param: str.format("{}: {}", cases_dir, err)!))!
+            break
+        }
+        if stem := str.strip_suffix(e.name, ".run") { names.push(dupe(stem)!)! }
+    }
+    names.items.sort()
+    for name in names.items {
+        out.push(kit.Test(name: str.format("examples_run/{}", name)!, run: examples_run, param: name))!
+    }
+    out.push(kit.Test(name: "every_example_has_a_case", run: every_example_has_a_case))!
+    out.push(kit.Test(name: "examples_are_formatted", run: examples_are_formatted))!
+}
+
+cannot_list :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run => !t.fail("cannot list the cases: {}", t.param)
+
+/// One run of an example.
+Case :: struct {
+    name: string
+    example: string = ""
+    command: string = "run"
+    args: List(string)
+    stdin: ?string = null
+    exit: u32 = 0
+    c_backend: bool = true
+}
+
+examples_dir :: fn(t: ^const kit.T) -> string needs Alloc => t.repo("examples")
+
+cases_dir :: fn(t: ^const kit.T) -> string needs Alloc => t.repo("tests/examples")
+
+/// The case described by the file `<name>.run`, or why it is not valid.
+parse_case :: fn(t: ^kit.T, name: string) -> kit.Fail!Case needs Alloc + Fs {
+    file := kit.join(cases_dir(t), str.format("{}.run", name)!)
+    text := try t.read(file)
+    case := Case(name: name, args: list(string))
+    n: usize = 0
+    for line in str.lines(text) {
+        n += 1
+        line_text := str.trim(line)
+        if line_text.len is 0 or line_text[0] is '#' { continue }
+        sp := str.split_once(line_text, ":") else return !t.fail("{}:{}: expected `key: value`", file, n)
+        value := str.trim(sp.after)
+        match str.trim(sp.before) {
+            "example" => { case.example = value }
+            "command" if value is "run" or value is "test" => { case.command = value }
+            "args" => {
+                for word in str.fields(value) { case.args.push(word)! }
+            }
+            "stdin" => { case.stdin = value }
+            "exit" => {
+                case.exit = str.parse_int(u32, value) else return !t.fail("{}:{}: `exit` takes a number", file, n)
+            }
+            "backend" if value is "interp" => { case.c_backend = false }
+            _ => return !t.fail("{}:{}: unknown setting", file, n)
+        }
+    }
+    if case.example.len is 0 { return !t.fail("{}: no `example:` line", file) }
+    if not fs.exists(kit.join(examples_dir(t), case.example)) {
+        return !t.fail("{}: example {} does not exist", file, case.example)
+    }
+    return case
+}
+
+/// Runs `case` on the interpreter, and through the C back end where it is available and
+/// the case wants it; both must give the expected output. With `BLESS=1` the interpreter's
+/// output becomes the expected one first.
+examples_run :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    case := try parse_case(t, t.param)
+    problems := list(u8)
+    try run_lane(t, &case, false, &problems)
+    if t.cfg.c and case.c_backend { try run_lane(t, &case, true, &problems) }
+    if problems.items.len > 0 { return !t.fail("{}", string(problems.items)) }
+    return ()
+}
+
+run_lane :: fn(t: ^kit.T, case: ^const Case, c_lane: bool, problems: ^List(u8)) -> kit.Fail!() needs kit.Run {
+    lane := if c_lane { "[C back end]" } else { "[interpreter]" }
+    c := t.gamma([_]string(case.command))
+    c.dir = examples_dir(t)
+    if c_lane {
+        c.arg("--backend=c")
+    } else if case.command is "run" {
+        // `run` goes through C by default.
+        c.arg("--backend=interp")
+    }
+    c.arg(case.example)
+    c.args(case.args.items)
+    if file := case.stdin { c.stdin(try t.read(kit.join(examples_dir(t), file))) }
+    out := try t.run(c)
+
+    golden := kit.join(cases_dir(t), str.format("{}.stdout", case.name)!)
+    if t.cfg.bless and not c_lane {
+        if out.out.len is 0 {
+            _ = Fs.remove(golden)
+        } else {
+            try t.write(golden, out.out)
+        }
+    }
+    expected := (try t.read_if_exists(golden)) else ""
+    if out.code() is not case.exit {
+        problems.write("{} exit status {} (expected {})\nstderr:\n{}\n", lane, out.status, case.exit, out.err)!
+    }
+    if expected is not out.out {
+        problems.write("{} output differs from {}:\n{}\n", lane, golden, kit.diff(expected, out.out))!
+    }
+    return ()
+}
+
+/// Every `.gm` file and module directory directly in `examples/` has a case.
+every_example_has_a_case :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    covered := list(string)
+    for e in fs.entries(cases_dir(t)) {
+        entry := e else err => return !t.fail("cannot list {}: {}", cases_dir(t), err)
+        if stem := str.strip_suffix(entry.name, ".run") {
+            case := try parse_case(t, dupe(stem)!)
+            example := case.example
+            if trimmed := str.strip_suffix(example, "/") { example = trimmed }
+            covered.push(example)!
+        }
+    }
+    missing := list(string)
+    for r in fs.entries(examples_dir(t)) {
+        e := r else err => return !t.fail("cannot list {}: {}", examples_dir(t), err)
+        p := kit.join(examples_dir(t), e.name)
+        is_example := false
+        if e.kind is .Dir {
+            is_example = fs.exists(kit.join(p, "gamma.toml"))
+            if not is_example {
+                for sub in fs.entries(p) {
+                    s := sub else continue
+                    if str.strip_suffix(s.name, ".gm") is not null { is_example = true }
+                }
+            }
+        } else {
+            is_example = str.strip_suffix(e.name, ".gm") is not null
+        }
+        if not is_example { continue }
+        found := false
+        for c in covered.items {
+            if c is e.name { found = true }
+        }
+        if not found { missing.push(dupe(e.name)!)! }
+    }
+    missing.items.sort()
+    try t.check(missing.items.len is 0, "examples without a case in tests/examples/: {}", str.join(missing.items, ", ")!)
+    return ()
+}
+
+/// The examples are formatted as `gamma fmt` formats them.
+examples_are_formatted :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    c := t.gamma([_]string("fmt", "--check", "examples"))
+    c.dir = t.cfg.root
+    out := try t.run(c)
+    try t.check(out.success(), "run `gamma fmt examples`; not formatted:\n{}{}", out.out, out.err)
+    return ()
+}
