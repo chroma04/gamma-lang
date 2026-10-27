@@ -91,7 +91,7 @@ pub alloc :: fn(m: ^Memory, size: u64, align: u64, kind: AllocKind, mutable: boo
     base := q *| a
     next := base +| size.max(1) +| GAP
     if next >= m.limit { return !.Exhausted }
-    if size > (@max_value(isize)).bits(u64) { return !.TooLarge(size, kind) }
+    if size > u64(@max_value(usize) >> 1) { return !.TooLarge(size, kind) }
     data := empty_slice(u8)
     if size > 0 { data = make_fill(us(size), u8(0)) else return !.TooLarge(size, kind) }
     m.next = next

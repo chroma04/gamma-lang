@@ -1,0 +1,123 @@
+//! The document tree that the block and inline parsers build and the renderer walks.
+//!
+//! Nodes live in one list and refer to each other by index, so building and rearranging
+//! the tree never invalidates a reference. Block and inline nodes share the type.
+
+pub Kind :: union {
+    Document, BlockQuote, List, Item, Paragraph, Heading, CodeBlock, HtmlBlock, ThematicBreak,
+    Table, TableHead, TableRow, TableCell,
+    Text, SoftBreak, HardBreak, Code, HtmlInline, Emph, Strong, Strike, Link, Image
+}
+
+/// Column alignment of a table, as written in its delimiter row.
+pub Align :: union { None, Left, Center, Right }
+
+pub Node :: struct {
+    kind: Kind
+    parent: ?usize = null
+    first: ?usize = null
+    last: ?usize = null
+    next: ?usize = null
+    prev: ?usize = null
+    /// Whether the block can still take lines.
+    open: bool = true
+    last_line_blank: bool = false
+    last_line_checked: bool = false
+    /// The line the block starts on (blocks only).
+    start_line: usize = 0
+    /// The raw text of a block while it is open (a paragraph's lines, a code block's lines).
+    content: List(u8)
+    /// The text of an inline `Text`, `Code` or `HtmlInline`, or of a finished code or HTML block.
+    literal: string = ""
+    /// The destination and title of a link or image.
+    dest: string = ""
+    title: string = ""
+    /// Whether the link is an autolinked email address (the destination lacks `mailto:`).
+    email: bool = false
+    /// The level of a heading.
+    level: u8 = 0
+    ordered: bool = false
+    /// The bullet character, or the character after the number of an ordered list.
+    marker: u8 = 0
+    start: u64 = 1
+    tight: bool = true
+    marker_offset: usize = 0
+    padding: usize = 0
+    fenced: bool = false
+    fence_char: u8 = 0
+    fence_len: usize = 0
+    fence_offset: usize = 0
+    /// The info string of a fenced code block.
+    info: string = ""
+    html_type: u8 = 0
+    /// The alignments of a table's columns.
+    aligns: List(Align)
+}
+
+pub Tree :: struct {
+    nodes: List(Node)
+}
+
+tree :: fn() -> Tree needs Alloc => Tree(nodes: list(Node))
+
+/// Adds a new, unattached node and returns its index.
+new_node :: fn(t: ^Tree, kind: Kind) -> usize needs Alloc {
+    t.nodes.push(Node(kind: kind, content: list(u8), aligns: list(Align)))!
+    return t.nodes.items.len - 1
+}
+
+/// Adds a text-like inline node holding `literal`.
+new_text :: fn(t: ^Tree, kind: Kind, literal: string) -> usize needs Alloc {
+    id := t.new_node(kind)
+    t.nodes.items[id].literal = literal
+    return id
+}
+
+/// Detaches node `id` from its parent and siblings.
+unlink :: fn(t: ^Tree, id: usize) {
+    prev := t.nodes.items[id].prev
+    next := t.nodes.items[id].next
+    parent := t.nodes.items[id].parent
+    if p := prev {
+        t.nodes.items[p].next = next
+    } else if par := parent {
+        t.nodes.items[par].first = next
+    }
+    if n := next {
+        t.nodes.items[n].prev = prev
+    } else if par := parent {
+        t.nodes.items[par].last = prev
+    }
+    t.nodes.items[id].parent = null
+    t.nodes.items[id].prev = null
+    t.nodes.items[id].next = null
+}
+
+/// Makes `child` the last child of `parent`.
+append_child :: fn(t: ^Tree, parent, child: usize) {
+    t.unlink(child)
+    t.nodes.items[child].parent = parent
+    if last := t.nodes.items[parent].last {
+        t.nodes.items[last].next = child
+        t.nodes.items[child].prev = last
+    } else {
+        t.nodes.items[parent].first = child
+    }
+    t.nodes.items[parent].last = child
+}
+
+/// Puts `sibling` right after `id`.
+insert_after :: fn(t: ^Tree, id, sibling: usize) {
+    t.unlink(sibling)
+    parent := t.nodes.items[id].parent
+    next := t.nodes.items[id].next
+    t.nodes.items[sibling].parent = parent
+    t.nodes.items[sibling].prev = id
+    t.nodes.items[sibling].next = next
+    t.nodes.items[id].next = sibling
+    if n := next {
+        t.nodes.items[n].prev = sibling
+    } else if par := parent {
+        t.nodes.items[par].last = sibling
+    }
+}

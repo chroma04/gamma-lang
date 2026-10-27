@@ -68,8 +68,23 @@ handler Coro for ^Sched needs Host {
 /// `Coro.transfer`'s target that ends every coroutine but the root.
 EXIT_ALL: u32 : 0xFFFF_FFFF
 
-/// The size of the host stack of the root coroutine, which runs the program's own thread.
-ROOT_STACK: usize : 1 << 30
+/// The size of the host stack of the root coroutine, which runs the program's own thread:
+/// room for `MAX_DEPTH` calls, each of which takes 10 to 15 KB of host stack (more in
+/// Debug builds of the interpreter and on Windows).
+ROOT_STACK: u64 : 4 << 30
+/// The smallest root stack tried when the host refuses a larger one (and the size on
+/// 32-bit hosts, whose address space has no room for more).
+MIN_ROOT_STACK: u64 : 1 << 30
+
+/// The root coroutine's host stack: `ROOT_STACK` bytes, or as many as the host gives.
+root_host_stack :: fn() -> ?[]u8 {
+    n := ROOT_STACK.min(u64(@max_value(usize) >> 2)).trunc(usize)
+    while u64(n) >= MIN_ROOT_STACK {
+        if s := host_stack(n) { return s }
+        n /= 2
+    }
+    return null
+}
 
 /// Host stacks come from `calloc`, whose large blocks the C library maps from fresh zero
 /// pages: they cost memory only as they are used (the heap allocator fills its blocks).
@@ -217,7 +232,7 @@ STACK_RESERVE: u64 : 8192
 run_coroutines :: fn(m: ^Machine, body: fn() -> Outcome needs Run) -> Outcome needs Host {
     m.fib.coros.push(CoroRec(k: null, started: true, finished: false, arg: m.cast(rawptr), host_stack: empty_slice(u8), saved: null, owner: WithKey(frame: 0, label: 0), epoch: 0, state: .Running, start: null, stack: 0, thread: 0))!
     sched := Sched(m: m)
-    stack := host_stack(ROOT_STACK)?
+    stack := root_host_stack()?
     defer libc.free(stack.ptr)
     return with &sched on stack {
         // The body's own locals are the enclosing function's: the stack is measured in a

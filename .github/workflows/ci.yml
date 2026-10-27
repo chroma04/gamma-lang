@@ -96,6 +96,25 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: bootstrap/verify.sh
 
+  conformance-gammac:
+    # The conformance tests with gammac, the compiler written in Gamma, built from the seed:
+    # its interpreter and its C back end must meet the same expectations as gamma.
+    name: Conformance tests with gammac (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build gammac from the seed
+        run: bootstrap/build.sh
+      - name: Conformance tests and examples
+        run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gammac" cargo test --test conformance --test examples
+
   fuzz:
     # The fuzz targets live outside the workspace (they need nightly to run): make sure
     # they still compile against the crate's API.
@@ -112,6 +131,79 @@ jobs:
         env:
           RUSTC_BOOTSTRAP: "1"
         run: cargo check --manifest-path fuzz/Cargo.toml
+
+  gammac-windows-build:
+    # gammac for Windows, cross-compiled on Linux with MinGW-w64 by the gammac built from
+    # the seed.
+    name: Cross-build gammac for Windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install MinGW-w64
+        run: sudo apt-get update -q && sudo apt-get install -y -q gcc-mingw-w64-x86-64
+      - name: Build gammac from the seed
+        run: bootstrap/build.sh
+      - name: Build gammac.exe
+        env:
+          GAMMA_STD: ${{ github.workspace }}/lib/std
+          GAMMA_RUNTIME: ${{ github.workspace }}/runtime
+        run: target/bootstrap/gammac build compiler --target=x86_64-w64-mingw32 -o gammac.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gammac-exe
+          path: gammac.exe
+
+  gammac-windows:
+    # The conformance tests and the examples with the cross-built gammac, on Windows, with
+    # MinGW-w64 gcc for its C back end.
+    name: Conformance tests with gammac (Windows, MinGW-w64 gcc)
+    needs: gammac-windows-build
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install MinGW-w64 gcc
+        id: msys
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Put gcc on PATH
+        shell: pwsh
+        run: |
+          "${{ steps.msys.outputs.msys2-location }}\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - uses: actions/download-artifact@v4
+        with:
+          name: gammac-exe
+          path: gammac
+      - name: Conformance tests and examples
+        shell: bash
+        run: GAMMA_TEST_COMPILER="$(cygpath -w "$PWD/gammac/gammac.exe")" cargo test --test conformance --test examples --no-fail-fast
+
+  fuzz-gammac:
+    # gammac's fuzz targets (libFuzzer) build, and each runs for a while on the seed corpus
+    # without a crash.
+    name: Fuzz gammac (smoke test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install clang and libFuzzer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-rt-dev
+      - name: Build gammac from the seed
+        run: bootstrap/build.sh
+      - name: Build the targets and run each for 30 seconds
+        env:
+          GAMMAC: ${{ github.workspace }}/target/bootstrap/gammac
+          GAMMA_STD: ${{ github.workspace }}/lib/std
+          GAMMA_RUNTIME: ${{ github.workspace }}/runtime
+        run: fuzz/gammac/smoke.sh 30
 
   audit:
     # The compiler unpacks archives and runs downloaded code (`gamma fetch`): a dependency

@@ -81,6 +81,12 @@
 //! Tests run in parallel, those that took longest in the previous run first (the
 //! times are kept in Cargo's temporary directory for integration tests).
 //!
+//! `GAMMA_TEST_COMPILER=path` runs the tests with another compiler that has `gamma`'s
+//! command line: `gammac`, the compiler written in Gamma (`compiler/`). It reads the
+//! repository's standard library and runtime. Its first lane for `run` tests is its
+//! interpreter (`--backend=interp`) and its `test` runs through C, so the C lane repeats
+//! only the `run` tests; it has no Cranelift lane.
+//!
 //! Set `BLESS=1` to rewrite golden files from the current output instead of
 //! comparing, `GAMMA_TEST_FILTER=substring` to run only matching tests, and
 //! `GAMMA_TEST_DEBUG_INFO=1` to build the C back end's programs with `-g`.
@@ -438,10 +444,28 @@ fn safe_lane() -> bool {
     std::env::var("GAMMA_TEST_SAFE").is_ok_and(|v| v == "1") && safe_available()
 }
 
-/// A command running `gamma`, which caches compiled runtime objects under the target
-/// directory rather than in the user's cache.
+/// The compiler the tests run when it is not this crate's `gamma`: the binary that
+/// `GAMMA_TEST_COMPILER` names, with the same command line (`gammac`, the compiler written
+/// in Gamma). It reads the repository's libraries and runtime.
+fn compiler_under_test() -> Option<&'static Path> {
+    static COMPILER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    COMPILER
+        .get_or_init(|| std::env::var_os("GAMMA_TEST_COMPILER").filter(|v| !v.is_empty()).map(PathBuf::from))
+        .as_deref()
+}
+
+/// A command running the compiler under test, which caches compiled runtime objects under
+/// the target directory rather than in the user's cache.
 fn gamma() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gamma"));
+    let mut cmd = match compiler_under_test() {
+        Some(exe) => {
+            let mut cmd = Command::new(exe);
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            cmd.env("GAMMA_STD", root.join("lib/std")).env("GAMMA_RUNTIME", root.join("runtime"));
+            cmd
+        }
+        None => Command::new(env!("CARGO_BIN_EXE_gamma")),
+    };
     cmd.env("GAMMA_CACHE_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("gamma-cache"));
     cmd
 }
@@ -463,7 +487,10 @@ fn set_stdin(cmd: &mut Command, input: &Path) -> Result<(), String> {
 fn cranelift_lane() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        if std::env::var("GAMMA_TEST_CRANELIFT").is_ok_and(|v| v == "0") || !common::c_backend_available() {
+        if std::env::var("GAMMA_TEST_CRANELIFT").is_ok_and(|v| v == "0")
+            || !common::c_backend_available()
+            || compiler_under_test().is_some()
+        {
             return false;
         }
         gamma::toolchain::Toolchain::from_env().and_then(|t| t.target()).is_ok_and(|t| {
@@ -611,6 +638,9 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
             return Ok(());
         }
         cmd.arg("--backend=c");
+    } else if exp.stage == Stage::Run && compiler_under_test().is_some() {
+        // gammac runs programs through C by default: the first lane is its interpreter.
+        cmd.arg("--backend=interp");
     }
     cmd.arg(&target);
     set_stdin(&mut cmd, &path.with_extension("stdin"))?;
@@ -713,9 +743,12 @@ fn run_one(path: &Path, bless: bool) -> Result<(), String> {
         && !(exp.needs_f16 && !target_has_f16())
         && !((exp.needs_threads || exp.needs_sockets) && target_os_kind() == "wasi");
     let golden = path.with_extension("stdout");
+    // gammac's `test` uses the C back end already.
+    let tested_by_c = exp.stage == Stage::Test && compiler_under_test().is_some();
     if compiled
         && problems.is_empty()
         && !exp.native
+        && !tested_by_c
         && common::c_backend_available()
         && let Err(p) = run_c(command, &target, &golden, &exp, exp.mode.as_deref(), stderr_golden)
     {

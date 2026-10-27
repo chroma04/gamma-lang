@@ -1,0 +1,143 @@
+//! The playground's example list, emitted as `assets/examples.js`.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+str :: import "std/str"
+
+/// One entry of the example list: a path from the repository root and the menu title.
+pub Entry :: struct {
+    pub path: string
+    pub title: string
+}
+
+/// One example with its source text.
+pub Example :: struct {
+    pub title: string
+    pub file: string
+    pub source: string
+}
+
+/// Parses `list.txt`: lines of `path | Title [| ignored…]`; blank lines and `#` comments are ignored.
+parse_list :: fn(text: string) -> List(Entry) needs Alloc {
+    entries := list(Entry)
+    for raw in str.lines(text) {
+        line := str.trim(raw)
+        if line.len is 0 or line.starts_with("#") { continue }
+        // Further `|`-separated fields belong to other tools.
+        first := str.split_once(line, "|") else continue
+        rest := first.after
+        title := rest
+        if more := str.split_once(rest, "|") { title = more.before }
+        entries.push(Entry(path: str.trim(first.before), title: str.trim(title)))!
+    }
+    return entries
+}
+
+/// Appends `s` as a JSON string, with `</` written as `<\/` so the text is safe in a script.
+write_json_string :: fn(out: ^List(u8), s: string) needs Alloc {
+    hex :: "0123456789abcdef"
+    out.push('"')!
+    for i, c in enumerate(s) {
+        match c {
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            '\n' => out.extend("\\n")!
+            '\r' => out.extend("\\r")!
+            '\t' => out.extend("\\t")!
+            0x08 => out.extend("\\b")!
+            0x0C => out.extend("\\f")!
+            '/' => {
+                if i > 0 and s[i - 1] is '<' {
+                    out.extend("\\/")!
+                } else {
+                    out.push('/')!
+                }
+            }
+            _ => {
+                if c < 0x20 {
+                    out.extend("\\u00")!
+                    out.push(hex[usize(c >> 4)])!
+                    out.push(hex[usize(c & 15)])!
+                } else {
+                    out.push(c)!
+                }
+            }
+        }
+    }
+    out.push('"')!
+}
+
+/// Renders the JavaScript file that defines `window.GAMMA_EXAMPLES`.
+to_js :: fn(examples: []const Example) -> string needs Alloc {
+    out := list(u8)
+    out.extend("window.GAMMA_EXAMPLES = [\n")!
+    for i, e in enumerate(examples) {
+        if i > 0 { out.extend(",\n")! }
+        out.extend("{\"file\":")!
+        write_json_string(&out, e.file)
+        out.extend(",\"source\":")!
+        write_json_string(&out, e.source)
+        out.extend(",\"title\":")!
+        write_json_string(&out, e.title)
+        out.push('}')!
+    }
+    out.extend("\n];\n")!
+    return out.items
+}
+
+/// The reason an example list could not be built.
+pub BuildError :: union {
+    Missing: string
+}
+
+/// Reads the example list (a missing list means no examples) and the sources it names.
+pub build :: fn(root: string) -> BuildError!string needs Alloc + Fs {
+    list_path := join(root, "web/examples/list.txt")
+    text := read_or_empty(list_path)
+    examples := list(Example)
+    for entry in parse_list(text).items {
+        source := fs.read_all(join(root, entry.path)) else return !.Missing(entry.path)
+        file := entry.path
+        if slash := str.rfind(file, "/") { file = file[slash + 1..] }
+        examples.push(Example(title: entry.title, file: file, source: source))!
+    }
+    return to_js(examples.items)
+}
+
+/// The contents of the file, or nothing if it cannot be read.
+read_or_empty :: fn(path: string) -> string needs Alloc + Fs {
+    data := fs.read_all(path) else return ""
+    return data
+}
+
+join :: fn(dir, name: string) -> string needs Alloc {
+    if dir.len is 0 { return name }
+    if dir.ends_with("/") { return str.format("{}{}", dir, name)! }
+    return str.format("{}/{}", dir, name)!
+}
+
+with_arena :: fn(body: fn() needs Alloc) needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+test "list parsing" {
+    with_arena(fn() {
+        l := parse_list("# c\n\nexamples/a.gm | Hello | exit 1\n  examples/b.gm|B  \nbad line\n")
+        expect_eq(l.items.len, 2)
+        expect_eq(l.items[0].path, "examples/a.gm")
+        expect_eq(l.items[0].title, "Hello")
+        expect_eq(l.items[1].path, "examples/b.gm")
+        expect_eq(l.items[1].title, "B")
+    })
+}
+
+test "js is script safe" {
+    with_arena(fn() {
+        e :: [1]Example(Example(title: "t", file: "f", source: "</script>\n\"q\""))
+        js := to_js(e)
+        expect(str.contains(js, "<\\/script>\\n\\\"q\\\""))
+        expect(not str.contains(js, "</"))
+    })
+}

@@ -220,6 +220,19 @@ exit status (standard error is not compared). Mark a test that differs by design
 with `//! safe: skip <reason>`. `GAMMA_TEST_SAFE=0` turns the Safe tests off. CI has
 a job that installs Fil-C and runs the lane.
 
+**gammac.** The suite also tests `gammac`, the compiler written in Gamma, against the
+same expectations:
+
+```sh
+bootstrap/build.sh                      # or: gamma build compiler -o target/bootstrap/gammac
+GAMMA_TEST_COMPILER=$PWD/target/bootstrap/gammac cargo test --test conformance
+```
+
+`GAMMA_TEST_COMPILER` names any binary with `gamma`'s command line; it runs with the
+repository's `lib/std` and `runtime`. For `gammac`, `run` tests go through its interpreter
+and then through C, and `test` tests through C; there is no Cranelift lane. CI runs this on
+Linux and macOS with the `gammac` built from the seed.
+
 The suite also runs with a cross compiler, when the machine can run its output
 (for example through qemu-user and binfmt):
 
@@ -322,8 +335,8 @@ alone, which keeps the repository from growing with every change.
 
 ## Releases
 
-A release is a tag `vX.Y.Z` on `main` whose version matches `version` in `Cargo.toml`.
-Pushing the tag runs `.github/workflows/release.yml`, which:
+A release is a tag `vX.Y.Z` on `main` whose version matches `version` in `Cargo.toml` and
+in `compiler/gamma.toml`. Pushing the tag runs `.github/workflows/release.yml`, which:
 
 1. builds `gamma` in release mode on Linux (x86_64 and arm64, on Ubuntu 22.04 so that the
    binaries run with older glibc versions), macOS (x86_64 and arm64) and Windows (x86_64,
@@ -334,7 +347,19 @@ Pushing the tag runs `.github/workflows/release.yml`, which:
    and `README.md`;
 3. unpacks each archive, hides the source tree's `lib/std`, and checks that the packaged
    compiler runs a program that imports `std/...`, on the interpreter and through C;
-4. checks that the CI workflow passed on the tagged commit (a tag on a commit whose CI
+4. builds `gammac` without cargo and releases it as `gammac-<os>-<arch>.tar.gz` (a `.zip`
+   on Windows) for the same five platforms. On each Linux and macOS runner,
+   `bootstrap/build.sh` builds it from the seed; the Windows one is cross-built on Linux
+   with the Linux `gammac` and MinGW-w64
+   (`gammac build compiler --target=x86_64-w64-mingw32`). `tools/package-gammac.sh` makes
+   the archive, an installation prefix with `bin/gammac`, `lib/gamma/{std,core,runtime}`,
+   `LICENSE` and `README.md`; its version is that of `compiler/gamma.toml`.
+   `tools/smoke-gammac.sh` then starts the unpacked `gammac` through `PATH` from another
+   directory, with the source tree's libraries and runtime hidden, and runs a program on
+   the interpreter, through C and as a built executable; the Windows archive is checked on
+   a Windows runner with MinGW-w64 gcc. See
+   [self-hosting.md](self-hosting.md#installing-gammac-and-windows);
+5. checks that the CI workflow passed on the tagged commit (a tag on a commit whose CI
    failed or never ran publishes nothing), records a build provenance attestation for each
    archive (`gh attestation verify <archive> --repo chroma04/gamma-lang` checks one), and
    creates the GitHub release with the archives, `SHA256SUMS`, `tools/install.sh` and
@@ -350,7 +375,11 @@ good test after changing the workflow or the packaging script.
 installs it under `$GAMMA_INSTALL` (default `~/.gamma`). `GAMMA_VERSION` picks a release and
 `GAMMA_DOWNLOAD` a different download directory; `GAMMA_DOWNLOAD=file:///path/to/dist` tests
 the script against archives built locally with `tools/package-release.sh`.
-`tools/install.ps1` does the same on Windows.
+`tools/install.ps1` does the same on Windows. `GAMMA_ARCHIVE=gammac` installs the `gammac`
+archive instead (`bin/gammac`, with its libraries in `lib/gamma`); `gamma` and `gammac` can
+share a prefix. To try it locally: `bootstrap/build.sh`, then
+`tools/package-gammac.sh linux-x86_64 target/bootstrap/gammac dist` and
+`GAMMA_ARCHIVE=gammac GAMMA_DOWNLOAD=file://$PWD/dist GAMMA_INSTALL=/tmp/prefix sh tools/install.sh`.
 
 ## The editor grammars
 
@@ -399,6 +428,47 @@ as a conformance test (for example `tests/conformance/parse/<name>.gm` with
 `//! stage: parse` and `//~ ERROR` annotations, or `tests/conformance/check/<name>.gm`
 with `//! stage: check`) or a unit test in the module concerned.
 Fuzzing is not part of CI.
+
+### Fuzzing gammac
+
+`fuzz/gammac/` has the same five targets against `gammac`, so fuzzing needs no Rust
+toolchain: only a built `gammac` and clang with libFuzzer (on Debian and Ubuntu,
+`apt install clang libclang-rt-dev`). Each target is a Gamma program (`parse.gm`, `fmt.gm`,
+`check.gm`, `manifest.gm`, `archive.gm`) that imports the modules of `compiler/` through a
+path dependency (`fuzz/gammac/gamma.toml`) and does what the cargo-fuzz target of the same
+name does, with the same checks.
+
+How a Gamma program becomes a libFuzzer target: `gammac build --emit-c` writes the C of the
+program, and `build.sh` compiles it with `-fsanitize=fuzzer-no-link` (coverage
+instrumentation, plus `address` for every target but `check`) and links it with libFuzzer's
+driver library without its `main`. The generated C defines `main`, which `build.sh`
+renames (`-Dmain=gm_program_main`) so that `shim.c` can own the real one. It starts the
+Gamma program, whose `main` sets up the runtime and the ambient handlers and then calls
+`LLVMFuzzerRunDriver`; libFuzzer calls an `#export`ed Gamma function (§19.4) for every
+input. `harness/harness.gm` runs each input in a fresh arena under the default handlers
+and fixes the environment variables the compiler reads (`GAMMA_STD`, `GAMMA_CORE`,
+`GAMMA_RUNTIME`). A trap ends the process with status 134 through `exit`, which libFuzzer
+reports as "fuzz target exited" and records as a crash input like any other; a stack
+overflow is a signal and a hang is libFuzzer's timeout.
+
+```sh
+GAMMAC=target/gammac fuzz/gammac/build.sh           # every target; or name some: build.sh parse fmt
+fuzz/gammac/seed.sh                                 # corpus: fuzz/seed.sh plus sample package archives
+fuzz/gammac/run.sh parse -max_total_time=600        # options of the kind of target, then yours
+fuzz/gammac/run.sh check -max_total_time=600 -jobs=4 -workers=4
+fuzz/gammac/run.sh parse fuzz/gammac/artifacts/parse/crash-0123   # reproduce an input
+fuzz/gammac/smoke.sh 30                             # build all, run each for 30 s; fails on a crash
+```
+
+`build.sh` reads `GAMMAC` (default `gammac` on `PATH`), `CLANG`, `MODE` (default
+`checked`), `SAN` and `OPT`; `run.sh` reads `GAMMA_STD` and `GAMMA_RUNTIME` (default: those
+of the source tree) and passes everything after the target to libFuzzer. The `check` target
+loads and checks the standard library for every input, so it is slow (tens of inputs per
+second); `-jobs` and `-workers` use several cores. New inputs go to `fuzz/gammac/corpus/`
+and crashing inputs to `fuzz/gammac/artifacts/<target>/`, neither of which is checked in.
+`build.sh selftest` builds a target that traps, overflows the stack and hangs on purpose,
+to check that each is recorded (see `selftest.gm`). To turn a crash into a regression test,
+shrink it with `-minimize_crash=1` and add it as described above.
 
 ## Differential testing
 

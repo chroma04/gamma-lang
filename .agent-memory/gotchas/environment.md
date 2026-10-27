@@ -89,3 +89,12 @@
   lazily-committed buffers from libc calloc (interp fiber.gm host_stack).
 - s46: a selfhost run with sources changed mid-run makes the fixed-point test fail
   spuriously (stage 1 and 2 built from different trees). Don't edit during `cargo test`.
+
+## gammac interpreter host stack (PR #93 CI fix)
+- compiler/interp uses 10-13 KB of host C stack per Gamma call (Linux Debug ~9.7 KB, Checked
+  -O2 ~12.7 KB, Windows Debug ~11.4 KB). Root coroutine stack = `ROOT_STACK` 4 GB (calloc,
+  lazily touched; halves down to 1 GB if refused; 1 GB on 32-bit/wasm) so MAX_DEPTH 200k fits.
+  With 1 GB, deep_recursion.gm (100k) failed on Windows. Shrinking eval/eval_slow frames
+  (Debug keeps all locals in a frame struct; eval_slow ~5 KB) is the real perf follow-up.
+- Windows repro locally: apt-get install gcc-mingw-w64-x86-64 wine64; `gammac build compiler
+  --target=x86_64-w64-mingw32 -o x.exe`; `WINEDEBUG=-all wine x.exe run --backend=interp f.gm`.

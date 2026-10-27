@@ -1,0 +1,166 @@
+//! Static site generator for the Gamma website.
+//!
+//! Renders the repository's Markdown documentation and the hand-written HTML fragments in
+//! `web/pages/` into the layout `web/layout.html`, copies `web/static/` to `assets/`, writes
+//! the playground's example list and finally checks all internal links.
+//!
+//! Usage: `gammac run web/gen --out <dir> [--root <repo dir>]` (the root defaults to the
+//! current directory). The exit status is 0 if the link check is clean.
+
+arena :: import "std/arena"
+check :: import "./check"
+examples :: import "./examples"
+fs :: import "std/fs"
+links :: import "./links"
+markdown :: import "./markdown"
+pages :: import "./pages"
+str :: import "std/str"
+
+USAGE :: "usage: sitegen --out <dir> [--root <repo dir>]"
+
+/// An error that ends the run, with the text to report.
+Failure :: struct {
+    message: string
+}
+
+main :: fn() needs Alloc + Env + Err + Fs + Out {
+    a := arena.new()
+    defer a.deinit()
+    clean := false
+    with a.allocator() {
+        clean = run() else f => {
+            eprint("error: {}\n", f.message)
+            false
+        }
+    }
+    if not clean {
+        a.deinit()
+        Env.exit(1)
+    }
+}
+
+/// Parses the arguments and builds the site. Returns whether the link check was clean.
+run :: fn() -> Failure!bool needs Alloc + Env + Err + Fs + Out {
+    args := Env.args()
+    out: ?string = null
+    root := "."
+    i: usize = 1
+    while i < args.len {
+        arg := args[i]
+        i += 1
+        match arg {
+            "--out" => {
+                out = args.get(i) else return !Failure(message: "--out needs a directory")
+                i += 1
+            }
+            "--root" => {
+                root = args.get(i) else return !Failure(message: "--root needs a directory")
+                i += 1
+            }
+            _ => return !Failure(message: str.format("unknown argument `{}`\n{}", arg, USAGE)!)
+        }
+    }
+    out_dir := out else return !Failure(message: "missing --out <dir>")
+    count := try build(root, out_dir)
+    print("wrote {} pages to {}\n", count, out_dir)
+    problems := check.check_site(out_dir)
+    for p in problems.items { eprint("{}\n", p) }
+    if problems.items.len > 0 { eprint("{} broken links\n", problems.items.len) }
+    return problems.items.len is 0
+}
+
+/// A failure with the path it concerns and what went wrong.
+failed :: fn(path, what: string) -> Failure needs Alloc => Failure(message: str.format("{}: {}", path, what)!)
+
+/// Writes `text` to `out/rel`, creating directories.
+write_file :: fn(out, rel: string, text: string) -> Failure!() needs Alloc + Fs {
+    path := check.join(out, rel)
+    if slash := str.rfind(path, "/") {
+        fs.make_dir_all(path[0..slash]) else _ => return !failed(path[0..slash], "cannot create the directory")
+    }
+    fs.write_all(path, text) else _ => return !failed(path, "cannot write the file")
+    return ()
+}
+
+read_file :: fn(path: string) -> Failure!string needs Alloc + Fs {
+    data := fs.read_all(path) else _ => return !failed(path, "cannot read the file")
+    return data
+}
+
+/// Repo-relative paths of the Markdown files that become pages.
+markdown_sources :: fn(root: string) -> List(string) needs Alloc + Fs {
+    found := list(string)
+    for f in ("gamma-spec.md", "CHANGELOG.md", "SECURITY.md") {
+        info := Fs.stat(check.join(root, f)) else continue
+        if info.kind is .File { found.push(f)! }
+    }
+    for rel in check.walk(check.join(root, "docs")).items {
+        if rel.ends_with(".md") {
+            src := str.format("docs/{}", rel)!
+            if links.page_for(src) is not null { found.push(src)! }
+        }
+    }
+    return found
+}
+
+/// The title of a page: its first level-1 heading, else its first heading, else the file stem.
+page_title :: fn(src: string, rendered: markdown.Rendered) -> string {
+    for h in rendered.headings.items { if h.level is 1 { return h.text } }
+    if first := rendered.headings.items.first() { return first.text }
+    stem := src
+    while stem.ends_with(".md") { stem = stem[0..stem.len - 3] }
+    if slash := str.rfind(stem, "/") { stem = stem[slash + 1..] }
+    return stem
+}
+
+/// Builds the whole site into `out` and returns the number of HTML pages written.
+build :: fn(root, out: string) -> Failure!usize needs Alloc + Fs {
+    layout := try read_file(check.join(root, "web/layout.html"))
+
+    // Static assets.
+    static_dir := check.join(root, "web/static")
+    for rel in check.walk(static_dir).items {
+        dest := check.join(out, check.join("assets", rel))
+        if slash := str.rfind(dest, "/") {
+            fs.make_dir_all(dest[0..slash]) else _ => return !failed(dest[0..slash], "cannot create the directory")
+        }
+        from := check.join(static_dir, rel)
+        fs.copy(from, dest) else _ => return !failed(from, "cannot copy the file")
+    }
+    js := examples.build(root) else e => match e {
+        .Missing(path) => return !failed(str.format("example {}", path)!, "cannot read the file")
+    }
+    try write_file(out, "assets/examples.js", js)
+
+    // Markdown pages.
+    docs := list(pages.Doc)
+    for src in markdown_sources(root).items {
+        target := links.page_for(src) else return !Failure(message: "unmapped source")
+        text := try read_file(check.join(root, src))
+        rendered := markdown.render(text, markdown.Context(src: src, out: target.out, root: root))
+        docs.push(pages.Doc(src: src, target: target, rendered: rendered, title: page_title(src, rendered)))!
+    }
+    site := pages.site(docs.items)
+    count: usize = 0
+    for i in 0..site.docs.len {
+        doc := &site.docs[i]
+        root_prefix := links.root_prefix(doc.target.out)
+        html := pages.apply_layout(layout, pages.meta(doc), root_prefix, pages.doc_body(&site, i))
+        try write_file(out, doc.target.out, html)
+        count += 1
+    }
+
+    // Hand-written fragments.
+    pages_dir := check.join(root, "web/pages")
+    for rel in check.walk(pages_dir).items {
+        if not rel.ends_with(".html") { continue }
+        text := try read_file(check.join(pages_dir, rel))
+        fragment := pages.parse_fragment(text)
+        root_prefix := links.root_prefix(rel)
+        body: string = str.replace_alloc(fragment.body, "{{root}}", root_prefix)!
+        body = pages.highlight_fragment_code(body)
+        try write_file(out, rel, pages.apply_layout(layout, fragment.meta, root_prefix, body))
+        count += 1
+    }
+    return count
+}

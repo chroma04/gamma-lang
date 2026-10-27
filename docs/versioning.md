@@ -4,7 +4,7 @@ Gamma has three things that change over time: the language (`gamma-spec.md`), th
 standard library (`lib/core` and `lib/std`), and the `gamma` tool (its commands, options
 and file formats). They share one version number, the version of the release, written
 `MAJOR.MINOR.PATCH` as in [Semantic Versioning](https://semver.org). The version is the
-`version` in `Cargo.toml`; a release is the git tag `vMAJOR.MINOR.PATCH`, and every change
+`version` in `Cargo.toml` and, for `gammac`, in `compiler/gamma.toml`, which must agree; a release is the git tag `vMAJOR.MINOR.PATCH`, and every change
 it brings is listed in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Before 1.0
@@ -55,12 +55,12 @@ change to the specification names the section it touches. When a release is cut,
 ## Cutting a release
 
 1. Move the `Unreleased` entries of `CHANGELOG.md` under a heading for the new version
-   and date (`## 0.2.0 - 2027-01-31`), and set `version` in `Cargo.toml` to match (then
-   `cargo build` to update `Cargo.lock`). That section becomes the release notes.
+   and date (`## 0.2.0 - 2027-01-31`), and set `version` in `Cargo.toml` and in
+   `compiler/gamma.toml` to match (then `cargo build` to update `Cargo.lock`). That section becomes the release notes.
 2. Run the Release workflow by hand on that commit (Actions → Release → Run workflow).
    It builds and smoke-tests the archives for every platform without publishing them.
 3. Merge, then tag the merge commit `vX.Y.Z` and push the tag. The workflow checks that
-   the tag matches `Cargo.toml`, builds the archives again and publishes the release with
+   the tag matches both versions, builds the archives again and publishes the release with
    the version's section of `CHANGELOG.md` as its notes and `install.sh`, `install.ps1`
    and `SHA256SUMS` attached.
 4. Check the installer on a clean Linux and macOS machine:

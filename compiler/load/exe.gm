@@ -1,0 +1,146 @@
+//! The path of the running executable, which is where an installed gammac finds its
+//! libraries.
+
+/// The path of the running executable. The system is asked first, so that the answer is
+/// the real file whatever the working directory is and however the program was started
+/// (through `PATH`, through a link); if it cannot say, this is the first argument, looked
+/// up in `PATH` when it names no directory.
+pub executable :: fn() -> string needs Alloc + Env + Fs {
+    if p := system_executable() { return p }
+    arg := Env.args()[0]
+    if arg.len is 0 { return arg }
+    for c in arg {
+        if c is '/' or c is '\\' { return arg }
+    }
+    path := Env.var("PATH") else return arg
+    for dir in str.split(path, PATH_SEP) {
+        cand := join(dir, arg)
+        if is_file(cand) { return cand }
+    }
+    return arg
+}
+
+when target.os is .Windows {
+    /// The separator of the `PATH` entries.
+    PATH_SEP :: ";"
+} else {
+    PATH_SEP :: ":"
+}
+
+when target.os is .Linux {
+    sys :: foreign "c" {
+        readlink :: fn(path: cstring, buf: [^]u8, size: usize) -> isize needs not
+    }
+
+    /// The path of the executable, from `/proc`.
+    system_executable :: fn() -> ?string needs Alloc {
+        buf: [4096]u8 = ---
+        n := sys.readlink(c"/proc/self/exe", buf[..].ptr, buf.len)
+        if n <= 0 or n.trunc(usize) >= buf.len { return null }
+        return clone(buf[0..n.trunc(usize)])
+    }
+} else when target.os is .MacOS {
+    sys :: foreign "c" {
+        _NSGetExecutablePath :: fn(buf: [^]u8, size: ^u32) -> i32 needs not
+        realpath :: fn(path: cstring, resolved: [^]u8) -> ?[^]u8 needs not
+    }
+
+    /// The path of the executable, with links resolved.
+    system_executable :: fn() -> ?string needs Alloc {
+        buf: [4096]u8 = ---
+        size: u32 = buf.len.trunc(u32)
+        if sys._NSGetExecutablePath(buf[..].ptr, &size) is not 0 { return null }
+        n: usize = 0
+        while n < buf.len and buf[n] is not 0 { n += 1 }
+        if n is buf.len { return null }
+        real: [4096]u8 = ---
+        if sys.realpath(cstring(buf[..].ptr), real[..].ptr) is null { return clone(buf[0..n]) }
+        m: usize = 0
+        while m < real.len and real[m] is not 0 { m += 1 }
+        return clone(real[0..m])
+    }
+} else when target.os is .Windows {
+    kernel32 :: foreign "kernel32" {
+        GetModuleFileNameW :: fn(module: ?rawptr, buf: [^]u16, size: u32) -> u32 needs not
+    }
+
+    /// The path of the executable, from UTF-16 to UTF-8.
+    system_executable :: fn() -> ?string needs Alloc {
+        wide: [4096]u16 = ---
+        n := usize(kernel32.GetModuleFileNameW(null, wide[..].ptr, wide.len.trunc(u32)))
+        if n is 0 or n >= wide.len { return null }
+        out := list(u8)
+        i: usize = 0
+        while i < n {
+            c := u32(wide[i])
+            i += 1
+            // A surrogate pair is one code point.
+            if c >= 0xd800 and c < 0xdc00 and i < n and wide[i] >= 0xdc00 and wide[i] < 0xe000 {
+                c = 0x10000 + ((c - 0xd800) << 10) + (u32(wide[i]) - 0xdc00)
+                i += 1
+            }
+            if c < 0x80 {
+                out.push(c.trunc(u8))!
+            } else if c < 0x800 {
+                out.push((0xc0 | (c >> 6)).trunc(u8))!
+                out.push((0x80 | (c & 0x3f)).trunc(u8))!
+            } else if c < 0x10000 {
+                out.push((0xe0 | (c >> 12)).trunc(u8))!
+                out.push((0x80 | ((c >> 6) & 0x3f)).trunc(u8))!
+                out.push((0x80 | (c & 0x3f)).trunc(u8))!
+            } else {
+                out.push((0xf0 | (c >> 18)).trunc(u8))!
+                out.push((0x80 | ((c >> 12) & 0x3f)).trunc(u8))!
+                out.push((0x80 | ((c >> 6) & 0x3f)).trunc(u8))!
+                out.push((0x80 | (c & 0x3f)).trunc(u8))!
+            }
+        }
+        return string(out.items)
+    }
+} else {
+    system_executable :: fn() -> ?string needs Alloc => null
+}
+
+/// A copy of `bytes` as a string.
+clone :: fn(bytes: []const u8) -> string needs Alloc {
+    out := list(u8)
+    out.extend(bytes)!
+    return string(out.items)
+}
+
+/// Whether `prog` is a file in a `PATH` directory (on Windows, with `.exe` appended too).
+pub program_on_path :: fn(prog: string) -> bool needs Alloc + Env + Fs {
+    path := Env.var("PATH") else return false
+    for dir in str.split(path, PATH_SEP) {
+        if is_file(join(dir, prog)) { return true }
+        when target.os is .Windows {
+            if is_file(join(dir, str.format("{}.exe", prog)!)) { return true }
+        }
+    }
+    return false
+}
+
+/// The C compiler to use when `CC` is unset, if it is not `cc`: on Windows, where MinGW-w64
+/// installations differ in which of these they provide, the first of `cc`, `gcc` and
+/// `clang` on `PATH`.
+pub default_cc :: fn() -> ?string needs Alloc + Env + Fs {
+    when target.os is .Windows {
+        for prog in ("cc", "gcc", "clang") {
+            if program_on_path(prog) { return prog }
+        }
+    }
+    return null
+}
+
+test "the executable is named by an absolute path" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        // The test runner may have removed its executable already, so only the name is
+        // checked.
+        exe := executable()
+        expect(is_absolute(exe))
+        expect(file_name(exe) is not null)
+        expect(not program_on_path("no-such-program-in-any-directory"))
+    }
+}

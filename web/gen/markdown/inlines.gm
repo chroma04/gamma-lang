@@ -1,0 +1,705 @@
+//! Inline structure: code spans, emphasis, links and images, autolinks, raw HTML, escapes,
+//! character references and line breaks (CommonMark's delimiter-stack algorithm).
+
+/// A run of `*`, `_` or `~` that may open or close emphasis.
+Delim :: struct {
+    cc: u8
+    numdelims: usize
+    origdelims: usize
+    node: usize
+    previous: ?usize
+    next: ?usize
+    can_open: bool
+    can_close: bool
+}
+
+/// An open `[` or `![` that a `]` may close.
+Bracket :: struct {
+    node: usize
+    previous: ?usize
+    previous_delim: ?usize
+    index: usize
+    image: bool
+    active: bool
+    bracket_after: bool
+}
+
+Inliner :: struct {
+    t: ^Tree
+    refs: []const RefDef
+    subject: string
+    pos: usize = 0
+    delims: List(Delim)
+    delimiters: ?usize = null
+    brackets: List(Bracket)
+    bracket_top: ?usize = null
+}
+
+/// Parses the inline content of every paragraph, heading and table cell of the tree.
+parse_inlines :: fn(t: ^Tree, refs: []const RefDef) needs Alloc {
+    count := t.nodes.items.len
+    for id in 0..count {
+        match t.nodes.items[id].kind {
+            .Paragraph, .Heading, .TableCell => {
+                content := str.trim(t.nodes.items[id].content.items)
+                p := Inliner(t: t, refs: refs, subject: content, delims: list(Delim), brackets: list(Bracket))
+                p.parse_into(id)
+            }
+            _ => {}
+        }
+    }
+}
+
+parse_into :: fn(p: ^Inliner, block: usize) needs Alloc {
+    while p.pos < p.subject.len { p.parse_inline(block) }
+    p.process_emphasis(null)
+}
+
+append_text :: fn(p: ^Inliner, block: usize, literal: string) needs Alloc {
+    id := p.t.new_text(.Text, literal)
+    p.t.append_child(block, id)
+}
+
+parse_inline :: fn(p: ^Inliner, block: usize) needs Alloc {
+    c := p.subject[p.pos]
+    handled := match c {
+        '\n' => p.parse_newline(block)
+        '\\' => p.parse_backslash(block)
+        '`' => p.parse_backticks(block)
+        '*', '_', '~' => p.handle_delim(c, block)
+        '[' => p.parse_open_bracket(block)
+        '!' => p.parse_bang(block)
+        ']' => p.parse_close_bracket(block)
+        '<' => p.parse_autolink(block) or p.parse_html_tag(block)
+        '&' => p.parse_entity(block)
+        _ => p.parse_string(block)
+    }
+    if not handled {
+        p.pos += 1
+        p.append_text(block, p.subject[p.pos - 1..p.pos])
+    }
+}
+
+/// Whether `c` always needs its own handling in running text.
+is_special :: fn(c: u8) -> bool => c in ('\n', '`', '[', ']', '\\', '!', '<', '&', '*', '_', '~')
+
+parse_string :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    start := p.pos
+    while p.pos < p.subject.len and not is_special(p.subject[p.pos]) { p.pos += 1 }
+    if p.pos is start { return false }
+    p.append_text(block, p.subject[start..p.pos])
+    return true
+}
+
+parse_newline :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    p.pos += 1
+    hard := false
+    if last := p.t.nodes.items[block].last {
+        if p.t.nodes.items[last].kind is .Text {
+            lit := p.t.nodes.items[last].literal
+            if lit.len > 0 and lit[lit.len - 1] is ' ' {
+                hard = lit.len > 1 and lit[lit.len - 2] is ' '
+                end := lit.len
+                while end > 0 and lit[end - 1] is ' ' { end -= 1 }
+                p.t.nodes.items[last].literal = lit[0..end]
+            }
+        }
+    }
+    id := p.t.new_node(if hard { Kind.HardBreak } else { Kind.SoftBreak })
+    p.t.append_child(block, id)
+    // Spaces at the start of the next line are dropped.
+    while p.pos < p.subject.len and p.subject[p.pos] is ' ' { p.pos += 1 }
+    return true
+}
+
+parse_backslash :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    p.pos += 1
+    next := p.subject.get(p.pos)
+    if next is '\n' {
+        id := p.t.new_node(.HardBreak)
+        p.t.append_child(block, id)
+        p.pos += 1
+        while p.pos < p.subject.len and p.subject[p.pos] is ' ' { p.pos += 1 }
+    } else if n := next {
+        if is_escapable(n) {
+            p.append_text(block, p.subject[p.pos..p.pos + 1])
+            p.pos += 1
+        } else {
+            p.append_text(block, "\\")
+        }
+    } else {
+        p.append_text(block, "\\")
+    }
+    return true
+}
+
+parse_backticks :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    start := p.pos
+    while p.pos < p.subject.len and p.subject[p.pos] is '`' { p.pos += 1 }
+    ticks := p.subject[start..p.pos]
+    after_open := p.pos
+    // Look for a closing run of the same length.
+    while p.pos < p.subject.len {
+        if p.subject[p.pos] is not '`' {
+            p.pos += 1
+            continue
+        }
+        run_start := p.pos
+        while p.pos < p.subject.len and p.subject[p.pos] is '`' { p.pos += 1 }
+        if p.pos - run_start is ticks.len {
+            raw := p.subject[after_open..run_start]
+            contents := list(u8)
+            for b in raw { contents.push(if b is '\n' { ' ' } else { b })! }
+            lit: string = contents.items
+            if lit.len > 0 and lit[0] is ' ' and lit[lit.len - 1] is ' ' {
+                all_space := true
+                for b in lit { if b is not ' ' { all_space = false } }
+                if not all_space { lit = lit[1..lit.len - 1] }
+            }
+            id := p.t.new_text(.Code, lit)
+            p.t.append_child(block, id)
+            return true
+        }
+    }
+    p.pos = after_open
+    p.append_text(block, ticks)
+    return true
+}
+
+// ----- emphasis -----
+
+/// What `scan_delims` finds: the length of the run and whether it can open or close.
+Scan :: struct {
+    count: usize
+    can_open: bool
+    can_close: bool
+}
+
+scan_delims :: fn(p: ^Inliner, cc: u8) -> Scan {
+    start := p.pos
+    n: usize = 0
+    while start + n < p.subject.len and p.subject[start + n] is cc { n += 1 }
+    before: u32 = '\n'
+    if start > 0 { before = char_before(p.subject, start) }
+    after: u32 = '\n'
+    if start + n < p.subject.len { after = char_at(p.subject, start + n) }
+    after_ws := is_unicode_ws(after)
+    after_punct := is_unicode_punct(after)
+    before_ws := is_unicode_ws(before)
+    before_punct := is_unicode_punct(before)
+    left := not after_ws and (not after_punct or before_ws or before_punct)
+    right := not before_ws and (not before_punct or after_ws or after_punct)
+    can_open := left
+    can_close := right
+    if cc is '_' {
+        can_open = left and (not right or before_punct)
+        can_close = right and (not left or after_punct)
+    }
+    return Scan(count: n, can_open: can_open, can_close: can_close)
+}
+
+handle_delim :: fn(p: ^Inliner, cc: u8, block: usize) -> bool needs Alloc {
+    scan := p.scan_delims(cc)
+    start := p.pos
+    p.pos += scan.count
+    node := p.t.new_text(.Text, p.subject[start..p.pos])
+    p.t.append_child(block, node)
+    // Strikethrough runs are one or two characters long; longer runs are plain text.
+    if (scan.can_open or scan.can_close) and (cc is not '~' or scan.count <= 2) {
+        p.delims.push(Delim(
+            cc: cc,
+            numdelims: scan.count,
+            origdelims: scan.count,
+            node: node,
+            previous: p.delimiters,
+            next: null,
+            can_open: scan.can_open,
+            can_close: scan.can_close,
+        ))!
+        id := p.delims.items.len - 1
+        if prev := p.delimiters { p.delims.items[prev].next = id }
+        p.delimiters = id
+    }
+    return true
+}
+
+remove_delimiter :: fn(p: ^Inliner, d: usize) {
+    prev := p.delims.items[d].previous
+    next := p.delims.items[d].next
+    if pr := prev { p.delims.items[pr].next = next }
+    if nx := next {
+        p.delims.items[nx].previous = prev
+    } else {
+        p.delimiters = prev
+    }
+}
+
+remove_delimiters_between :: fn(p: ^Inliner, bottom, top: usize) {
+    if p.delims.items[bottom].next is not top {
+        p.delims.items[bottom].next = top
+        p.delims.items[top].previous = bottom
+    }
+}
+
+/// The slot in the table of lower bounds for openers: kind of delimiter, whether the
+/// closer can also open, and its original length modulo 3.
+bottom_index :: fn(cc: u8, can_open: bool, orig: usize) -> usize {
+    kind: usize = match cc {
+        '*' => 0
+        '_' => 1
+        _ => 2
+    }
+    return kind * 6 + (if can_open { 3 } else { 0 }) + orig % 3
+}
+
+process_emphasis :: fn(p: ^Inliner, stack_bottom: ?usize) needs Alloc {
+    openers_bottom := [18]?usize(fill: stack_bottom)
+    // The first closer above the bottom of the stack.
+    closer := p.delimiters
+    while c := closer {
+        if p.delims.items[c].previous is stack_bottom { break }
+        closer = p.delims.items[c].previous
+    }
+    while cl := closer {
+        if not p.delims.items[cl].can_close {
+            closer = p.delims.items[cl].next
+            continue
+        }
+        cc := p.delims.items[cl].cc
+        slot := bottom_index(cc, p.delims.items[cl].can_open, p.delims.items[cl].origdelims)
+        // Look back for the first matching opener.
+        opener := p.delims.items[cl].previous
+        found: ?usize = null
+        while o := opener {
+            if o is stack_bottom or o is openers_bottom[slot] { break }
+            odd_match := (p.delims.items[cl].can_open or p.delims.items[o].can_close) and p.delims.items[cl].origdelims % 3 is not 0 and (p.delims.items[o].origdelims + p.delims.items[cl].origdelims) % 3 is 0
+            if p.delims.items[o].cc is cc and p.delims.items[o].can_open and not odd_match {
+                found = o
+                break
+            }
+            opener = p.delims.items[o].previous
+        }
+        old_closer := cl
+        if op := found {
+            // Use two delimiters (strong) if both runs have two, else one.
+            use: usize = 1
+            if cc is '~' {
+                use = if p.delims.items[op].numdelims > 1 and p.delims.items[cl].numdelims > 1 { 2 } else { 1 }
+                if p.delims.items[op].numdelims is not p.delims.items[cl].numdelims {
+                    // Strikethrough runs must be as long as each other.
+                    found = null
+                }
+            } else if p.delims.items[cl].numdelims >= 2 and p.delims.items[op].numdelims >= 2 {
+                use = 2
+            }
+            if found is not null {
+                opener_node := p.delims.items[op].node
+                closer_node := p.delims.items[cl].node
+                p.delims.items[op].numdelims -= use
+                p.delims.items[cl].numdelims -= use
+                ol := p.t.nodes.items[opener_node].literal
+                p.t.nodes.items[opener_node].literal = ol[0..ol.len - use]
+                cl_lit := p.t.nodes.items[closer_node].literal
+                p.t.nodes.items[closer_node].literal = cl_lit[0..cl_lit.len - use]
+                kind: Kind = if cc is '~' { Kind.Strike } else if use is 1 { Kind.Emph } else { Kind.Strong }
+                emph := p.t.new_node(kind)
+                tmp := p.t.nodes.items[opener_node].next
+                while tm := tmp {
+                    if tm is closer_node { break }
+                    next := p.t.nodes.items[tm].next
+                    p.t.append_child(emph, tm)
+                    tmp = next
+                }
+                p.t.insert_after(opener_node, emph)
+                p.remove_delimiters_between(op, cl)
+                if p.delims.items[op].numdelims is 0 {
+                    p.t.unlink(opener_node)
+                    p.remove_delimiter(op)
+                }
+                if p.delims.items[cl].numdelims is 0 {
+                    p.t.unlink(closer_node)
+                    after := p.delims.items[cl].next
+                    p.remove_delimiter(cl)
+                    closer = after
+                }
+            }
+        }
+        if found is null {
+            closer = p.delims.items[old_closer].next
+            openers_bottom[slot] = p.delims.items[old_closer].previous
+            if not p.delims.items[old_closer].can_open { p.remove_delimiter(old_closer) }
+        }
+    }
+    // Drop all delimiters above the bottom of the stack.
+    while d := p.delimiters {
+        if d is stack_bottom { break }
+        p.remove_delimiter(d)
+    }
+}
+
+// ----- links and images -----
+
+add_bracket :: fn(p: ^Inliner, node: usize, index: usize, image: bool) needs Alloc {
+    if top := p.bracket_top { p.brackets.items[top].bracket_after = true }
+    p.brackets.push(Bracket(
+        node: node,
+        previous: p.bracket_top,
+        previous_delim: p.delimiters,
+        index: index,
+        image: image,
+        active: true,
+        bracket_after: false,
+    ))!
+    p.bracket_top = p.brackets.items.len - 1
+}
+
+parse_open_bracket :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    start := p.pos
+    p.pos += 1
+    node := p.t.new_text(.Text, "[")
+    p.t.append_child(block, node)
+    p.add_bracket(node, start, false)
+    return true
+}
+
+parse_bang :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    start := p.pos
+    p.pos += 1
+    if p.subject.get(p.pos) is '[' {
+        p.pos += 1
+        node := p.t.new_text(.Text, "![")
+        p.t.append_child(block, node)
+        p.add_bracket(node, start + 1, true)
+    } else {
+        p.append_text(block, "!")
+    }
+    return true
+}
+
+/// Skips spaces and at most one line ending (with the spaces after it).
+spnl :: fn(p: ^Inliner) {
+    while p.subject.get(p.pos) is ' ' { p.pos += 1 }
+    if p.subject.get(p.pos) is '\n' {
+        p.pos += 1
+        while p.subject.get(p.pos) is ' ' { p.pos += 1 }
+    }
+}
+
+/// The length of the link label at the cursor (`[` to `]`, brackets included), or 0.
+parse_link_label :: fn(p: ^Inliner) -> usize {
+    s := p.subject
+    if s.get(p.pos) is not '[' { return 0 }
+    i := p.pos + 1
+    while i < s.len {
+        c := s[i]
+        if c is '\\' and i + 1 < s.len {
+            i += 2
+        } else if c is ']' {
+            len := i + 1 - p.pos
+            if len > 1001 { return 0 }
+            p.pos += len
+            return len
+        } else if c is '[' {
+            return 0
+        } else {
+            i += 1
+        }
+    }
+    return 0
+}
+
+/// The link destination at the cursor, with escapes resolved; null if there is none.
+parse_link_destination :: fn(p: ^Inliner) -> ?string needs Alloc {
+    s := p.subject
+    if s.get(p.pos) is '<' {
+        i := p.pos + 1
+        while i < s.len {
+            c := s[i]
+            if c is '\\' and i + 1 < s.len and is_escapable(s[i + 1]) {
+                i += 2
+            } else if c is '>' {
+                dest := unescape_string(s[p.pos + 1..i])
+                p.pos = i + 1
+                return dest
+            } else if c in ('<', '\n') {
+                return null
+            } else {
+                i += 1
+            }
+        }
+        return null
+    }
+    start := p.pos
+    parens: usize = 0
+    while p.pos < s.len {
+        c := s[p.pos]
+        if c is '\\' and p.pos + 1 < s.len and is_escapable(s[p.pos + 1]) {
+            p.pos += 2
+        } else if c is '(' {
+            p.pos += 1
+            parens += 1
+        } else if c is ')' {
+            if parens < 1 { break }
+            p.pos += 1
+            parens -= 1
+        } else if is_ws(c) or c < 0x20 {
+            break
+        } else {
+            p.pos += 1
+        }
+    }
+    if p.pos is start and s.get(p.pos) is not ')' { return null }
+    if parens is not 0 { return null }
+    return unescape_string(s[start..p.pos])
+}
+
+/// The link title at the cursor, with escapes resolved; null if there is none.
+parse_link_title :: fn(p: ^Inliner) -> ?string needs Alloc {
+    s := p.subject
+    open := s.get(p.pos) else return null
+    close: u8 = match open {
+        '"' => '"'
+        '\'' => '\''
+        '(' => ')'
+        _ => return null
+    }
+    i := p.pos + 1
+    while i < s.len {
+        c := s[i]
+        if c is '\\' and i + 1 < s.len and is_escapable(s[i + 1]) {
+            i += 2
+        } else if c is close {
+            title := unescape_string(s[p.pos + 1..i])
+            p.pos = i + 1
+            return title
+        } else if open is '(' and c is '(' {
+            return null
+        } else {
+            i += 1
+        }
+    }
+    return null
+}
+
+/// The key under which a reference label is stored: without brackets, trimmed, with runs of
+/// white space collapsed, in upper case.
+normalize_label :: fn(label: string) -> string needs Alloc {
+    inner := str.trim(label)
+    out := list(u8)
+    in_space := false
+    for c in inner {
+        if is_ws(c) {
+            in_space = true
+        } else {
+            if in_space and out.items.len > 0 { out.push(' ')! }
+            in_space = false
+            out.push(if c in 'a'..='z' { c - 32 } else { c })!
+        }
+    }
+    return out.items
+}
+
+find_ref :: fn(refs: []const RefDef, label: string) -> ?RefDef needs Alloc {
+    key := normalize_label(label[1..label.len - 1])
+    for r in refs {
+        if r.label is key { return r }
+    }
+    return null
+}
+
+parse_close_bracket :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    p.pos += 1
+    start := p.pos
+    top := p.bracket_top else {
+        p.append_text(block, "]")
+        return true
+    }
+    if not p.brackets.items[top].active {
+        p.append_text(block, "]")
+        p.bracket_top = p.brackets.items[top].previous
+        return true
+    }
+    is_image := p.brackets.items[top].image
+    saved := p.pos
+    dest: ?string = null
+    title: ?string = null
+    matched := false
+    // An inline link: `(dest "title")`.
+    if p.subject.get(p.pos) is '(' {
+        p.pos += 1
+        p.spnl()
+        d := p.parse_link_destination()
+        if d is not null {
+            dest = d
+            before_ws := p.pos
+            p.spnl()
+            if p.pos > before_ws { title = p.parse_link_title() }
+            p.spnl()
+            if p.subject.get(p.pos) is ')' {
+                p.pos += 1
+                matched = true
+            }
+        }
+        if not matched { p.pos = saved }
+    }
+    if not matched {
+        // A reference link: `[text][label]`, `[text][]` or `[text]`.
+        before_label := p.pos
+        n := p.parse_link_label()
+        label: ?string = null
+        if n > 2 {
+            label = p.subject[before_label..before_label + n]
+        } else if not p.brackets.items[top].bracket_after {
+            label = p.subject[p.brackets.items[top].index..start]
+        }
+        if n is 0 { p.pos = saved }
+        if l := label {
+            if r := find_ref(p.refs, l) {
+                dest = r.dest
+                title = r.title
+                matched = true
+            }
+        }
+    }
+    if matched {
+        opener_node := p.brackets.items[top].node
+        prev_delim := p.brackets.items[top].previous_delim
+        node := p.t.new_node(if is_image { Kind.Image } else { Kind.Link })
+        p.t.nodes.items[node].dest = dest else ""
+        p.t.nodes.items[node].title = title else ""
+        tmp := p.t.nodes.items[opener_node].next
+        while tm := tmp {
+            next := p.t.nodes.items[tm].next
+            p.t.append_child(node, tm)
+            tmp = next
+        }
+        p.t.append_child(block, node)
+        p.process_emphasis(prev_delim)
+        p.bracket_top = p.brackets.items[top].previous
+        p.t.unlink(opener_node)
+        if not is_image {
+            // Links do not nest: earlier link openers can no longer match.
+            b := p.bracket_top
+            while bb := b {
+                if not p.brackets.items[bb].image { p.brackets.items[bb].active = false }
+                b = p.brackets.items[bb].previous
+            }
+        }
+        return true
+    }
+    p.bracket_top = p.brackets.items[top].previous
+    p.pos = start
+    p.append_text(block, "]")
+    return true
+}
+
+// ----- autolinks, raw HTML and character references -----
+
+parse_autolink :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    s := p.subject
+    i := p.pos + 1
+    // A URI: a scheme, a colon, then anything but white space and angle brackets.
+    j := i
+    if j < s.len and is_ascii_alpha(s[j]) {
+        j += 1
+        while j < s.len and (is_ascii_alnum(s[j]) or s[j] in ('.', '+', '-')) { j += 1 }
+        if j - i >= 2 and j - i <= 32 and s.get(j) is ':' {
+            k := j + 1
+            while k < s.len and s[k] > 0x20 and s[k] not in ('<', '>') { k += 1 }
+            if s.get(k) is '>' {
+                text := s[i..k]
+                p.add_autolink(block, text, text)
+                p.pos = k + 1
+                return true
+            }
+        }
+    }
+    // An email address.
+    at := i
+    while at < s.len and (is_ascii_alnum(s[at]) or s[at] in ".!#$%&'*+/=?^_`{|}~-") { at += 1 }
+    if at > i and s.get(at) is '@' {
+        k := at + 1
+        while k < s.len and (is_ascii_alnum(s[k]) or s[k] in ('.', '-')) { k += 1 }
+        if k > at + 1 and s.get(k) is '>' and is_ascii_alnum(s[at + 1]) and is_ascii_alnum(s[k - 1]) {
+            text := s[i..k]
+            p.add_autolink(block, text, text)
+            p.t.nodes.items[p.t.nodes.items[block].last?].email = true
+            p.pos = k + 1
+            return true
+        }
+    }
+    return false
+}
+
+add_autolink :: fn(p: ^Inliner, block: usize, dest, text: string) needs Alloc {
+    link := p.t.new_node(.Link)
+    p.t.nodes.items[link].dest = dest
+    inner := p.t.new_text(.Text, text)
+    p.t.append_child(link, inner)
+    p.t.append_child(block, link)
+}
+
+parse_html_tag :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    n := html_tag_len(p.subject, p.pos)
+    if n is 0 { return false }
+    id := p.t.new_text(.HtmlInline, p.subject[p.pos..p.pos + n])
+    p.t.append_child(block, id)
+    p.pos += n
+    return true
+}
+
+parse_entity :: fn(p: ^Inliner, block: usize) -> bool needs Alloc {
+    e := match_entity(p.subject, p.pos) else return false
+    p.append_text(block, e.text)
+    p.pos += e.len
+    return true
+}
+
+// ----- link reference definitions -----
+
+/// Parses a link reference definition at the start of `s`; returns the number of bytes it
+/// takes (0 if there is none) and records it in `refs` unless the label is already defined.
+parse_reference :: fn(s: string, refs: ^List(RefDef)) -> usize needs Alloc {
+    t := tree()
+    p := Inliner(t: &t, refs: refs.items, subject: s, delims: list(Delim), brackets: list(Bracket))
+    label_len := p.parse_link_label()
+    if label_len is 0 { return 0 }
+    raw_label := s[0..label_len]
+    if p.subject.get(p.pos) is ':' {
+        p.pos += 1
+    } else {
+        return 0
+    }
+    p.spnl()
+    dest := p.parse_link_destination() else return 0
+    before_title := p.pos
+    p.spnl()
+    title: ?string = null
+    if p.pos is not before_title { title = p.parse_link_title() }
+    if title is null { p.pos = before_title }
+    if not p.at_line_end() {
+        if (title else "").len is 0 { return 0 }
+        // The title is not alone on its line: the definition may still end before it.
+        title = null
+        p.pos = before_title
+        if not p.at_line_end() { return 0 }
+    }
+    key := normalize_label(raw_label[1..raw_label.len - 1])
+    if key.len is 0 { return 0 }
+    for r in refs.items { if r.label is key { return p.pos } }
+    refs.push(RefDef(label: key, dest: dest, title: title else ""))!
+    return p.pos
+}
+
+/// Skips spaces and a line ending; whether the cursor then is at the end of a line.
+at_line_end :: fn(p: ^Inliner) -> bool {
+    while p.subject.get(p.pos) is ' ' { p.pos += 1 }
+    if p.pos >= p.subject.len { return true }
+    if p.subject[p.pos] is '\n' {
+        p.pos += 1
+        return true
+    }
+    return false
+}
+
+str :: import "std/str"

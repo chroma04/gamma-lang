@@ -1,0 +1,344 @@
+//! Page assembly: the layout template, hand-written fragments and the navigation of
+//! Markdown pages.
+
+arena :: import "std/arena"
+highlight :: import "../highlight"
+links :: import "../links"
+markdown :: import "../markdown"
+str :: import "std/str"
+
+/// The description used when a page has none of its own.
+SITE_DESCRIPTION :: "Gamma, a systems programming language in which everything a function depends on appears in its signature."
+
+/// The values substituted for the layout's placeholders (except the body).
+pub Meta :: struct {
+    pub title: string = "Gamma"
+    pub description: string = SITE_DESCRIPTION
+    pub section: string = "home"
+    pub layout: string = "page"
+}
+
+/// Fills the layout in a single pass, so substituted text is never scanned again.
+pub apply_layout :: fn(template: string, meta: Meta, root, body: string) -> string needs Alloc {
+    out := list(u8)
+    rest := template
+    while start := str.find(rest, "{{") {
+        out.extend(rest[0..start])!
+        after := rest[start + 2..]
+        end := str.find(after, "}}") else {
+            out.extend("{{")!
+            rest = after
+            continue
+        }
+        name := after[0..end]
+        match name {
+            "title" => highlight.push_escaped(&out, meta.title)
+            "description" => highlight.push_escaped(&out, meta.description)
+            "root" => out.extend(root)!
+            "layout" => highlight.push_escaped(&out, meta.layout)
+            "section" => highlight.push_escaped(&out, meta.section)
+            "body" => out.extend(body)!
+            _ => {
+                out.extend("{{")!
+                out.extend(name)!
+                out.extend("}}")!
+            }
+        }
+        rest = after[end + 2..]
+    }
+    out.extend(rest)!
+    return out.items
+}
+
+/// A fragment split into its front matter and body.
+pub Fragment :: struct {
+    pub meta: Meta
+    pub body: string
+}
+
+/// Splits a fragment into its front matter and body. The first line may be a comment such as
+/// `<!-- title: X; section: guide; layout: wide; description: Y -->`.
+pub parse_fragment :: fn(text: string) -> Fragment {
+    meta := Meta()
+    first := text
+    rest := ""
+    if split := str.split_once(text, "\n") {
+        first = split.before
+        rest = split.after
+    }
+    trimmed := str.trim(first)
+    prefix := str.strip_prefix(trimmed, "<!--") else return Fragment(meta: meta, body: text)
+    inner := str.strip_suffix(prefix, "-->") else return Fragment(meta: meta, body: text)
+    for item in str.split(inner, ";") {
+        pair := str.split_once(item, ":") else continue
+        value := str.trim(pair.after)
+        match str.trim(pair.before) {
+            "title" => { meta.title = value }
+            "section" => { meta.section = value }
+            "layout" => { meta.layout = value }
+            "description" => { meta.description = value }
+            _ => {}
+        }
+    }
+    return Fragment(meta: meta, body: rest)
+}
+
+/// Replaces the escaped source inside `<pre class="code gamma"><code>…</code></pre>` with its
+/// highlighted version.
+pub highlight_fragment_code :: fn(body: string) -> string needs Alloc {
+    open :: "<pre class=\"code gamma\"><code>"
+    close :: "</code></pre>"
+    out := list(u8)
+    rest := body
+    while start := str.find(rest, open) {
+        inner_start := start + open.len
+        len := str.find(rest[inner_start..], close) else break
+        out.extend(rest[0..inner_start])!
+        highlight.write_highlighted(&out, highlight.unescape(rest[inner_start..inner_start + len]))
+        rest = rest[inner_start + len..]
+    }
+    out.extend(rest)!
+    return out.items
+}
+
+/// A rendered Markdown page together with what navigation needs to know about it.
+pub Doc :: struct {
+    /// Repo-relative path of the source.
+    pub src: string
+    pub target: links.Target
+    pub rendered: markdown.Rendered
+    /// Text of the first heading, or the file stem.
+    pub title: string
+}
+
+/// The HTML title and meta description of the page.
+pub meta :: fn(doc: ^const Doc) -> Meta needs Alloc {
+    description := markdown.truncate(doc.rendered.first_paragraph, 200)
+    return Meta(
+        title: str.format("{} · Gamma", doc.title)!,
+        description: if description.len is 0 { SITE_DESCRIPTION } else { description },
+        section: doc.target.section,
+        layout: "doc",
+    )
+}
+
+/// The sidebar order of a group of pages under `prefix`: the index page first, then (unless
+/// `by_name`) the pages in the order the index links to them, then the others by path.
+/// Returns indices into `docs`.
+ordered :: fn(docs: []const Doc, index_src, prefix: string, by_name: bool) -> List(usize) needs Alloc {
+    order := list(usize)
+    index := position_of(docs, index_src) else return order
+    order.push(index)!
+    if not by_name {
+        for target in docs[index].rendered.link_targets.items {
+            if i := position_of(docs, target) {
+                if target.starts_with(prefix) and not contains_index(order.items, i) { order.push(i)! }
+            }
+        }
+    }
+    rest := list(usize)
+    defer rest.deinit()
+    for i in 0..docs.len {
+        if docs[i].src.starts_with(prefix) and not contains_index(order.items, i) { rest.push(i)! }
+    }
+    // Insertion sort by path: the lists are short.
+    for i in 1..rest.items.len {
+        j := i
+        while j > 0 and docs[rest.items[j]].src < docs[rest.items[j - 1]].src {
+            tmp := rest.items[j]
+            rest.items[j] = rest.items[j - 1]
+            rest.items[j - 1] = tmp
+            j -= 1
+        }
+    }
+    order.extend(rest.items)!
+    return order
+}
+
+position_of :: fn(docs: []const Doc, src: string) -> ?usize {
+    for i, d in enumerate(docs) {
+        if d.src is src { return i }
+    }
+    return null
+}
+
+contains_index :: fn(items: []const usize, i: usize) -> bool {
+    for x in items { if x is i { return true } }
+    return false
+}
+
+/// The pages of the site's Markdown sections, with the sidebar orders of the guide and library.
+pub Site :: struct {
+    pub docs: []const Doc
+    pub guide: List(usize)
+    pub std: List(usize)
+}
+
+pub site :: fn(docs: []const Doc) -> Site needs Alloc {
+    return Site(
+        docs: docs,
+        guide: ordered(docs, "docs/guide/README.md", "docs/guide/", true),
+        std: ordered(docs, "docs/std/index.md", "docs/std/", false),
+    )
+}
+
+/// The name a page has in lists: the first heading, except for the two index pages.
+label :: fn(s: ^const Site, i: usize) -> string {
+    return match s.docs[i].src {
+        "docs/guide/README.md" => "Contents"
+        "docs/std/index.md" => "Overview"
+        _ => s.docs[i].title
+    }
+}
+
+/// The `<div class="doc">` body for page `i`.
+pub doc_body :: fn(s: ^const Site, i: usize) -> string needs Alloc {
+    doc := &s.docs[i]
+    h2 := list(markdown.Heading)
+    defer h2.deinit()
+    for h in doc.rendered.headings.items { if h.level is 2 { h2.push(h)! } }
+    aside := list(u8)
+    match doc.target.section {
+        "guide" => {
+            aside.extend(s.chapter_list(s.guide.items, i, "ol"))!
+            aside.extend(flat_toc(h2.items, 1))!
+        }
+        "std" => {
+            aside.extend(s.chapter_list(s.std.items, i, "ul"))!
+            aside.extend(flat_toc(h2.items, 2))!
+        }
+        "spec" => aside.extend(nested_toc(doc.rendered.headings.items))!
+        _ => aside.extend(flat_toc(h2.items, 2))!
+    }
+    article := list(u8)
+    article.write("<article class=\"prose\">\n{}", doc.rendered.html)!
+    if doc.target.section is "guide" { article.extend(s.pager(i))! }
+    article.extend("</article>\n")!
+    if aside.items.len is 0 { return str.format("<div class=\"doc solo\">\n{}</div>\n", article.items)! }
+    return str.format("<div class=\"doc\">\n<aside class=\"side\">\n{}</aside>\n{}</div>\n", aside.items, article.items)!
+}
+
+/// A `<nav class="chapters">` list of the pages in `order`, marking page `current`.
+chapter_list :: fn(s: ^const Site, order: []const usize, current: usize, tag: string) -> string needs Alloc {
+    cur := s.docs[current].target.out
+    out := list(u8)
+    out.write("<nav class=\"chapters\"><{}>\n", tag)!
+    for j in order {
+        here := if j is current { " class=\"here\"" } else { "" }
+        href := links.relative(cur, s.docs[j].target.out)
+        out.write("<li><a{} href=\"{}\">{}</a></li>\n", here, href, highlight.escape(s.label(j)))!
+    }
+    out.write("</{}></nav>\n", tag)!
+    return out.items
+}
+
+/// Previous/next links between guide pages.
+pager :: fn(s: ^const Site, current: usize) -> string needs Alloc {
+    pos := 0
+    found := false
+    for k, j in enumerate(s.guide.items) {
+        if j is current {
+            pos = k
+            found = true
+        }
+    }
+    if not found { return "" }
+    out := list(u8)
+    out.extend("<nav class=\"pager\">")!
+    if pos > 0 { s.write_pager_link(&out, s.guide.items[pos - 1], current, "prev", "← ", "") }
+    if pos + 1 < s.guide.items.len { s.write_pager_link(&out, s.guide.items[pos + 1], current, "next", "", " →") }
+    out.extend("</nav>\n")!
+    return out.items
+}
+
+write_pager_link :: fn(s: ^const Site, out: ^List(u8), j, current: usize, class, before, after: string) needs Alloc {
+    href := links.relative(s.docs[current].target.out, s.docs[j].target.out)
+    out.write("<a class=\"{}\" href=\"{}\">{}{}{}</a>", class, href, before, highlight.escape(s.label(j)), after)!
+}
+
+/// A one-level table of contents; empty if there are fewer than `min` entries.
+flat_toc :: fn(headings: []const markdown.Heading, min: usize) -> string needs Alloc {
+    if headings.len < min { return "" }
+    out := list(u8)
+    out.extend("<nav class=\"toc\"><ul>\n")!
+    for h in headings { out.write("<li><a href=\"#{}\">{}</a></li>\n", h.id, highlight.escape(h.text))! }
+    out.extend("</ul></nav>\n")!
+    return out.items
+}
+
+/// A two-level table of contents: `##` sections with their `###` subsections nested.
+nested_toc :: fn(headings: []const markdown.Heading) -> string needs Alloc {
+    out := list(u8)
+    out.extend("<nav class=\"toc\"><ul>\n")!
+    open := false // a top-level <li> is open
+    sub := false // its nested <ul> is open
+    for h in headings {
+        if h.level is 2 {
+            if sub { out.extend("</ul>")! }
+            if open { out.extend("</li>\n")! }
+            out.write("<li><a href=\"#{}\">{}</a>", h.id, highlight.escape(h.text))!
+            open = true
+            sub = false
+        } else if h.level is 3 and open {
+            if not sub {
+                out.extend("\n<ul>\n")!
+                sub = true
+            }
+            out.write("<li><a href=\"#{}\">{}</a></li>\n", h.id, highlight.escape(h.text))!
+        }
+    }
+    if sub { out.extend("</ul>")! }
+    if open { out.extend("</li>\n")! }
+    out.extend("</ul></nav>\n")!
+    return out.items
+}
+
+with_arena :: fn(body: fn() needs Alloc) needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+test "layout substitution" {
+    with_arena(fn() {
+        meta := Meta(title: "A & B")
+        out := apply_layout("<t>{{title}}</t>{{root}}|{{body}}|{{x}}", meta, "../", "{{title}}")
+        expect_eq(out, "<t>A &amp; B</t>../|{{title}}|{{x}}")
+    })
+}
+
+test "fragments" {
+    with_arena(fn() {
+        f := parse_fragment("<!-- title: P · Gamma; section: playground; layout: wide; description: Run it -->\n<p>x</p>\n")
+        expect_eq(f.meta.title, "P · Gamma")
+        expect_eq(f.meta.section, "playground")
+        expect_eq(f.meta.layout, "wide")
+        expect_eq(f.meta.description, "Run it")
+        expect_eq(f.body, "<p>x</p>\n")
+        g := parse_fragment("<p>no front matter</p>")
+        expect_eq(g.meta.title, "Gamma")
+        expect_eq(g.meta.section, "home")
+        expect_eq(g.meta.layout, "page")
+        expect_eq(g.body, "<p>no front matter</p>")
+    })
+}
+
+test "fragment code is highlighted" {
+    with_arena(fn() {
+        out := highlight_fragment_code(
+            "<pre class=\"code gamma\"><code>x := &quot;a&lt;b&quot;</code></pre><pre class=\"code\"><code>y</code></pre>",
+        )
+        expect(str.contains(out, "<span class=\"s\">&quot;a&lt;b&quot;</span>"))
+        expect(out.ends_with("<pre class=\"code\"><code>y</code></pre>"))
+    })
+}
+
+test "nested toc shape" {
+    with_arena(fn() {
+        h :: fn(level: u8, id: string) -> markdown.Heading => markdown.Heading(level: level, id: id, text: id)
+        hs := [6]markdown.Heading(h(1, "t"), h(2, "a"), h(3, "a1"), h(3, "a2"), h(4, "x"), h(2, "b"))
+        toc := nested_toc(hs)
+        expect_eq(str.count(toc, "<ul>"), 2)
+        expect(str.contains(toc, "<a href=\"#a2\">a2</a></li>\n</ul></li>\n<li><a href=\"#b\">b</a></li>"))
+    })
+}

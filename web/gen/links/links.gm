@@ -1,0 +1,199 @@
+//! Mapping between source files and output pages, and relative link computation.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+str :: import "std/str"
+
+/// Where a source Markdown file ends up.
+pub Target :: struct {
+    /// Output path relative to the site root, e.g. `guide/02-basics.html`.
+    pub out: string
+    /// Navigation section: `guide`, `spec`, `std` or `docs`.
+    pub section: string
+}
+
+/// Where the repository's files live on GitHub.
+GITHUB :: "https://github.com/chroma04/gamma-lang"
+
+/// The output page for a repo-relative Markdown path, or `null` if it is not rendered.
+/// `README.md` is not rendered, but links to it are handled by `rewrite_link`.
+pub page_for :: fn(rel: string) -> ?Target needs Alloc {
+    stem := str.strip_suffix(rel, ".md") else return null
+    out: string = ""
+    section: string = ""
+    if rel is "gamma-spec.md" {
+        out = "spec"
+        section = "spec"
+    } else if rel is "CHANGELOG.md" {
+        out = "changelog"
+        section = "docs"
+    } else if rel is "SECURITY.md" {
+        out = "docs/security"
+        section = "docs"
+    } else if rel is "docs/std.md" {
+        out = "docs/std"
+        section = "docs"
+    } else if rel.starts_with("docs/guide/") {
+        out = stem["docs/".len..]
+        section = "guide"
+    } else if rel.starts_with("docs/std/") {
+        out = stem["docs/".len..]
+        section = "std"
+    } else if rel.starts_with("docs/") and not str.contains(rel["docs/".len..], "/") {
+        out = stem
+        section = "docs"
+    } else {
+        return null
+    }
+    return Target(out: str.format("{}.html", out)!, section: section)
+}
+
+/// Joins `link` onto the directory of `from` (both `/`-separated, repo-relative) and
+/// normalizes `.` and `..`. A leading `/` means the repo root. `null` if it escapes the root.
+resolve :: fn(from, link: string) -> ?string needs Alloc {
+    parts := list(string)
+    defer parts.deinit()
+    if not link.starts_with("/") {
+        for seg in str.split(from, "/") { parts.push(seg)! }
+        _ = parts.pop()
+    }
+    for seg in str.split(link, "/") {
+        if seg in ("", ".") { continue }
+        if seg is ".." {
+            _ = parts.pop() else return null
+        } else {
+            parts.push(seg)!
+        }
+    }
+    return str.join(parts.items, "/")!
+}
+
+/// The prefix that leads from a page at `out` back to the site root: `""`, `"../"`, ...
+pub root_prefix :: fn(out: string) -> string needs Alloc {
+    buf := list(u8)
+    for c in out {
+        if c is '/' { buf.extend("../")! }
+    }
+    return buf.items
+}
+
+/// The path of `to` relative to the page `from` (both relative to the site root).
+pub relative :: fn(from, to: string) -> string needs Alloc {
+    from_parts := list(string)
+    defer from_parts.deinit()
+    for seg in str.split(from, "/") { from_parts.push(seg)! }
+    from_dirs := from_parts.items[0..from_parts.items.len - 1]
+    to_parts := list(string)
+    defer to_parts.deinit()
+    for seg in str.split(to, "/") { to_parts.push(seg)! }
+    common: usize = 0
+    while common < from_dirs.len and common + 1 < to_parts.items.len and from_dirs[common] is to_parts.items[common] {
+        common += 1
+    }
+    buf := list(u8)
+    for _ in 0..from_dirs.len - common { buf.extend("../")! }
+    rest := str.join(to_parts.items[common..], "/")!
+    buf.extend(rest)!
+    return buf.items
+}
+
+/// True for links that leave the site or stay on the page and need no rewriting.
+is_external :: fn(dest: string) -> bool {
+    if dest.len is 0 or dest.starts_with("#") or dest.starts_with("//") { return true }
+    // A URL scheme: a `:` before any `/`, `?` or `#`.
+    for c in dest {
+        if c in ('/', '?', '#') { return false }
+        if c is ':' { return true }
+    }
+    return false
+}
+
+/// The result of `rewrite_link`: the new destination and, when the link names another
+/// rendered page or file in the repo, its resolved repo-relative path.
+pub Rewritten :: struct {
+    pub dest: string
+    pub target: ?string
+}
+
+/// Rewrites a link found in the Markdown file `src` (repo-relative) for the page `cur_out`.
+/// Directories are looked up below `root` on the file system.
+pub rewrite_link :: fn(dest, src, cur_out, root: string) -> Rewritten needs Alloc + Fs {
+    if is_external(dest) { return Rewritten(dest: dest, target: null) }
+    path := dest
+    frag := ""
+    if i := dest.index_of('#') {
+        path = dest[0..i]
+        frag = dest[i..]
+    }
+    resolved := resolve(src, path) else return Rewritten(dest: dest, target: null)
+    if resolved is "README.md" {
+        return Rewritten(dest: str.format("{}index.html{}", root_prefix(cur_out), frag)!, target: resolved)
+    }
+    if t := page_for(resolved) {
+        return Rewritten(dest: str.format("{}{}", relative(cur_out, t.out), frag)!, target: resolved)
+    }
+    kind := if path.ends_with("/") or resolved.len is 0 or is_dir(root, resolved) { "tree" } else { "blob" }
+    url := if resolved.len is 0 { GITHUB } else { str.format("{}/{}/{}", GITHUB, kind, resolved)! }
+    return Rewritten(dest: str.format("{}{}", url, frag)!, target: resolved)
+}
+
+/// Whether `rel`, a path relative to `root`, names a directory.
+is_dir :: fn(root, rel: string) -> bool needs Alloc + Fs {
+    path := if root.len is 0 { rel } else { str.format("{}/{}", root, rel)! }
+    info := Fs.stat(path) else return false
+    return info.kind is .Dir
+}
+
+with_arena :: fn(body: fn() needs Alloc + Fs) needs Alloc + Fs {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() { body() }
+}
+
+test "mapping" {
+    with_arena(fn() {
+        expect_eq(page_for("gamma-spec.md")?.out, "spec.html")
+        expect_eq(page_for("docs/guide/README.md")?.out, "guide/README.html")
+        expect_eq(page_for("docs/std/index.md")?.section, "std")
+        expect_eq(page_for("docs/std/hash/sha256.md")?.out, "std/hash/sha256.html")
+        expect_eq(page_for("docs/std.md")?.out, "docs/std.html")
+        expect_eq(page_for("docs/lint.md")?.out, "docs/lint.html")
+        expect_eq(page_for("CHANGELOG.md")?.out, "changelog.html")
+        expect(page_for("README.md") is null)
+        expect(page_for("lib/x.md") is null)
+    })
+}
+
+test "relative paths" {
+    with_arena(fn() {
+        expect_eq(relative("guide/a.html", "guide/b.html"), "b.html")
+        expect_eq(relative("guide/a.html", "spec.html"), "../spec.html")
+        expect_eq(relative("spec.html", "std/hash/x.html"), "std/hash/x.html")
+        expect_eq(relative("std/hash/x.html", "std/index.html"), "../index.html")
+        expect_eq(root_prefix("std/hash/x.html"), "../../")
+        expect_eq(root_prefix("spec.html"), "")
+    })
+}
+
+test "rewriting" {
+    with_arena(fn() {
+        ok(fs.make_dir_all("lib"))
+        ok(fs.make_dir_all("examples"))
+        g :: "https://github.com/chroma04/gamma-lang"
+        expect_eq(
+            rewrite_link("../../gamma-spec.md#x", "docs/guide/02-basics.md", "guide/02-basics.html", "").dest,
+            "../spec.html#x",
+        )
+        expect_eq(rewrite_link("03-b.md", "docs/guide/02-basics.md", "guide/02-basics.html", "").dest, "03-b.html")
+        expect_eq(rewrite_link("../README.md", "docs/lint.md", "docs/lint.html", "").dest, "../index.html")
+        expect_eq(rewrite_link("../lib", "docs/lint.md", "docs/lint.html", "").dest, str.format("{}/tree/lib", g)!)
+        expect_eq(
+            rewrite_link("../src/main.rs", "docs/lint.md", "docs/lint.html", "").dest,
+            str.format("{}/blob/src/main.rs", g)!,
+        )
+        expect_eq(rewrite_link("https://x.org/a", "docs/lint.md", "docs/lint.html", "").dest, "https://x.org/a")
+        expect_eq(rewrite_link("#top", "docs/lint.md", "docs/lint.html", "").dest, "#top")
+        expect_eq(rewrite_link("arena.md", "docs/std/index.md", "std/index.html", "").dest, "arena.html")
+        expect_eq(rewrite_link("../std.md", "docs/std/index.md", "std/index.html", "").dest, "../docs/std.html")
+    })
+}

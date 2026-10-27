@@ -4,6 +4,7 @@
 // and `src/cgen/csrc.rs` that gammac needs).
 
 fs :: import "std/fs"
+arena :: import "std/arena"
 str :: import "std/str"
 
 /// The C compiler and the flags a native build uses: the compiler as a command with its
@@ -16,8 +17,119 @@ pub Toolchain :: struct {
 }
 
 /// Splits `s` into words the way a POSIX shell does, without expansions: white space
-/// separates words, quotes and backslashes quote.
+/// separates words, quotes and backslashes quote. On Windows, where paths contain
+/// backslashes, a backslash is literal unless it comes before a double quote (the rules of
+/// `CommandLineToArgvW`).
 pub split_words :: fn(s: string) -> string!List(string) needs Alloc {
+    when target.os is .Windows {
+        return split_windows(s)
+    } else {
+        return split_posix(s)
+    }
+}
+
+/// `w` quoted so that `split_words` gives it back as one word.
+pub quote_word :: fn(w: string) -> string needs Alloc {
+    when target.os is .Windows {
+        return quote_windows(w)
+    } else {
+        return quote_posix(w)
+    }
+}
+
+/// `w` in double quotes, with `\` and `"` escaped.
+quote_posix :: fn(w: string) -> string needs Alloc {
+    out := list(u8)
+    out.push('"')!
+    for c in w {
+        if c is '\\' or c is '"' { out.push('\\')! }
+        out.push(c)!
+    }
+    out.push('"')!
+    return string(out.items)
+}
+
+/// `w` in double quotes; backslashes are doubled only before a quote (and before the
+/// closing one).
+quote_windows :: fn(w: string) -> string needs Alloc {
+    out := list(u8)
+    out.push('"')!
+    slashes: usize = 0
+    for c in w {
+        if c is '\\' {
+            slashes += 1
+        } else if c is '"' {
+            for _ in 0..slashes * 2 + 1 { out.push('\\')! }
+            out.push('"')!
+            slashes = 0
+        } else {
+            for _ in 0..slashes { out.push('\\')! }
+            out.push(c)!
+            slashes = 0
+        }
+    }
+    for _ in 0..slashes * 2 { out.push('\\')! }
+    out.push('"')!
+    return string(out.items)
+}
+
+/// Splits `s` by the rules of the Windows command line, and also takes `'...'` as a quote.
+split_windows :: fn(s: string) -> string!List(string) needs Alloc {
+    words := list(string)
+    word := list(u8)
+    in_word := false
+    in_quote := false
+    i: usize = 0
+    while i < s.len {
+        c := s[i]
+        i += 1
+        if c in (' ', '\t', '\n', '\r', 0x0b, 0x0c) and not in_quote {
+            if in_word {
+                words.push(word.items)!
+                word = list(u8)
+                in_word = false
+            }
+        } else if c is '\\' {
+            in_word = true
+            n: usize = 1
+            while i < s.len and s[i] is '\\' {
+                n += 1
+                i += 1
+            }
+            if i < s.len and s[i] is '"' {
+                // Pairs of backslashes before a quote are one backslash; an odd one out
+                // makes the quote literal.
+                for _ in 0..n / 2 { word.push('\\')! }
+                if n % 2 is 1 {
+                    word.push('"')!
+                    i += 1
+                }
+            } else {
+                for _ in 0..n { word.push('\\')! }
+            }
+        } else if c is '"' {
+            in_word = true
+            in_quote = not in_quote
+        } else if c is '\'' and not in_quote {
+            in_word = true
+            while true {
+                x := s.get(i) else return !"unterminated ' quote"
+                if x is '\'' { break }
+                word.push(x)!
+                i += 1
+            }
+            i += 1
+        } else {
+            in_word = true
+            word.push(c)!
+        }
+    }
+    if in_quote { return !"unterminated \" quote" }
+    if in_word { words.push(word.items)! }
+    return words
+}
+
+split_posix :: fn(s: string) -> string!List(string) needs Alloc {
     words := list(string)
     word := list(u8)
     in_word := false
@@ -62,9 +174,9 @@ pub split_words :: fn(s: string) -> string!List(string) needs Alloc {
 
 /// The toolchain `CC`, `CFLAGS` and `LDFLAGS` describe, with the manifest's flags before
 /// the environment's.
-pub toolchain_from_env :: fn(manifest_cflags, manifest_ldflags: []const string) -> string!Toolchain needs Alloc + Env {
+pub toolchain_from_env :: fn(manifest_cflags, manifest_ldflags: []const string) -> string!Toolchain needs Alloc + Env + Fs {
     cc := list(string)
-    cc.push("cc")!
+    cc.push(load.default_cc() else "cc")!
     if v := Env.var("CC") {
         if str.trim(v).len > 0 {
             words := split_words(v) else e => { return !str.format("cannot read CC: {}", e)! }
@@ -176,4 +288,49 @@ pub library_args :: fn(link: ^const Link, more: []const string) -> List(string) 
         }
     }
     return args
+}
+
+/// The words `split_windows` makes of `s`, joined with `|`.
+windows_words :: fn(s: string) -> string needs Alloc {
+    words := split_windows(s) else return "error"
+    return str.join(words.items, "|")!
+}
+
+test "words are split by the rules of the Windows command line" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        expect_eq(windows_words("C:\\msys64\\ucrt64\\bin\\gcc.exe -O2"), "C:\\msys64\\ucrt64\\bin\\gcc.exe|-O2")
+        expect_eq(windows_words("-IC:\\inc -IC:\\other\\"), "-IC:\\inc|-IC:\\other\\")
+        expect_eq(windows_words("\"C:\\Program Files\\LLVM\\bin\\clang.exe\" -v"), "C:\\Program Files\\LLVM\\bin\\clang.exe|-v")
+        expect_eq(windows_words("\\\\server\\share\\cc"), "\\\\server\\share\\cc")
+        expect_eq(windows_words("a\\\"b c\\\"d"), "a\"b|c\"d")
+        expect_eq(windows_words("\"C:\\dir with space\\\\\" next"), "C:\\dir with space\\|next")
+        expect_eq(windows_words("'/opt/my tools/cc' -DX=\"a b\""), "/opt/my tools/cc|-DX=a b")
+        expect_eq(windows_words("\"open"), "error")
+    }
+}
+
+test "a quoted Windows word is split back into itself" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        for raw in ("C:\\wasi sdk\\bin\\clang", "C:\\dir\\", "a\\\"b\\\\\"c", "plain") {
+            words := split_windows(str.format("{} -v", quote_windows(raw))!)!
+            expect_eq(words.items.len, 2)
+            expect_eq(words.items[0], raw)
+        }
+    }
+}
+
+test "a quoted POSIX word is split back into itself" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        for raw in ("/opt/my tools/clang", "/opt/\"odd\"/clang", "a\\b", "plain") {
+            words := split_posix(str.format("{} -v", quote_posix(raw))!)!
+            expect_eq(words.items.len, 2)
+            expect_eq(words.items[0], raw)
+        }
+    }
 }

@@ -1,0 +1,348 @@
+//! Character classes and small scanners shared by the block and inline parsers: escapes,
+//! entities, raw HTML tags and the start and end conditions of HTML blocks.
+
+text :: import "std/text"
+
+/// Whether `c` is an ASCII character that a backslash can escape.
+is_escapable :: fn(c: u8) -> bool => c in '!'..='/' or c in ':'..='@' or c in '['..='`' or c in '{'..='~'
+
+is_ascii_punct :: fn(c: u8) -> bool => is_escapable(c)
+
+is_ascii_alpha :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z'
+
+is_ascii_alnum :: fn(c: u8) -> bool => is_ascii_alpha(c) or c in '0'..='9'
+
+is_hex :: fn(c: u8) -> bool => c in '0'..='9' or c in 'a'..='f' or c in 'A'..='F'
+
+/// Whitespace for the purposes of inline parsing: space, tab, newline, form feed, CR.
+is_ws :: fn(c: u8) -> bool => c in (' ', '\t', '\n', '\r', 0x0B, 0x0C)
+
+/// Whether the code point is Unicode whitespace (separator spaces and the ASCII ones).
+is_unicode_ws :: fn(cp: u32) -> bool {
+    if cp < 0x80 { return is_ws(cp.trunc(u8)) }
+    return cp in (0xA0, 0x1680, 0x202F, 0x205F, 0x3000) or cp in 0x2000..=0x200A
+}
+
+/// Whether the code point is punctuation or a symbol, which is what the emphasis rules
+/// treat as punctuation. Outside ASCII this is the common blocks, not the whole of Unicode.
+is_unicode_punct :: fn(cp: u32) -> bool {
+    if cp < 0x80 { return is_ascii_punct(cp.trunc(u8)) }
+    if cp in 0xA1..=0xBF { return cp not in (0xAA, 0xB5, 0xBA) }
+    if cp is 0xD7 or cp is 0xF7 { return true }
+    if cp in 0x2010..=0x2027 or cp in 0x2030..=0x205E { return true }
+    if cp in 0x20A0..=0x20CF or cp in 0x2100..=0x214F { return true }
+    if cp in 0x2190..=0x2BFF { return true }
+    if cp in 0x3001..=0x3003 or cp in 0x3008..=0x3020 { return true }
+    return cp in 0xFE30..=0xFE6F or cp in 0xFF01..=0xFF0F
+}
+
+/// The character that starts at byte `i` of `s`.
+char_at :: fn(s: string, i: usize) -> u32 {
+    r := text.decode_rune(s[i..]) else return u32(s[i])
+    return r.rune
+}
+
+/// The character that ends just before byte `i` of `s`.
+char_before :: fn(s: string, i: usize) -> u32 {
+    start := i - 1
+    while start > 0 and (s[start] & 0xC0) is 0x80 { start -= 1 }
+    return char_at(s, start)
+}
+
+/// The named character references that are recognized; others are left as written.
+decode_named :: fn(name: string) -> ?string => match name {
+    "amp" => "&"
+    "lt" => "<"
+    "gt" => ">"
+    "quot" => "\""
+    "apos" => "'"
+    "nbsp" => "\u{a0}"
+    "copy" => "\u{a9}"
+    "reg" => "\u{ae}"
+    "sect" => "\u{a7}"
+    "para" => "\u{b6}"
+    "middot" => "\u{b7}"
+    "laquo" => "\u{ab}"
+    "raquo" => "\u{bb}"
+    "times" => "\u{d7}"
+    "divide" => "\u{f7}"
+    "deg" => "\u{b0}"
+    "plusmn" => "\u{b1}"
+    "micro" => "\u{b5}"
+    "hellip" => "\u{2026}"
+    "ndash" => "\u{2013}"
+    "mdash" => "\u{2014}"
+    "lsquo" => "\u{2018}"
+    "rsquo" => "\u{2019}"
+    "ldquo" => "\u{201c}"
+    "rdquo" => "\u{201d}"
+    "bull" => "\u{2022}"
+    "larr" => "\u{2190}"
+    "uarr" => "\u{2191}"
+    "rarr" => "\u{2192}"
+    "darr" => "\u{2193}"
+    "harr" => "\u{2194}"
+    "ne" => "\u{2260}"
+    "le" => "\u{2264}"
+    "ge" => "\u{2265}"
+    _ => null
+}
+
+/// The names of the Latin-1 characters U+00A0 to U+00FF, in order.
+LATIN1_NAMES :: [96]string(
+    "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf",
+    "laquo", "not", "shy", "reg", "macr", "deg", "plusmn", "sup2", "sup3", "acute", "micro", "para",
+    "middot", "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest", "Agrave",
+    "Aacute", "Acirc", "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute", "Ecirc",
+    "Euml", "Igrave", "Iacute", "Icirc", "Iuml", "ETH", "Ntilde", "Ograve", "Oacute", "Ocirc",
+    "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute", "THORN",
+    "szlig", "agrave", "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil", "egrave",
+    "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml", "eth", "ntilde", "ograve",
+    "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc", "uuml",
+    "yacute", "thorn", "yuml",
+)
+
+/// A decoded character reference and the number of bytes it takes.
+Entity :: struct {
+    text: string
+    len: usize
+}
+
+/// The character reference (`&amp;`, `&#38;`, `&#x26;`) that starts at `s[i]`, if it is one.
+match_entity :: fn(s: string, i: usize) -> ?Entity needs Alloc {
+    if i >= s.len or s[i] is not '&' { return null }
+    j := i + 1
+    if s.get(j) is '#' {
+        j += 1
+        hex := s.get(j) in ('x', 'X')
+        if hex { j += 1 }
+        digits_start := j
+        value: u32 = 0
+        while c := s.get(j) {
+            if hex and is_hex(c) {
+                value = value * 16 + hex_value(c)
+            } else if not hex and c in '0'..='9' {
+                value = value * 10 + u32(c - '0')
+            } else {
+                break
+            }
+            j += 1
+            if j - digits_start > 7 { return null }
+        }
+        count := j - digits_start
+        if count is 0 or (hex and count > 6) or (not hex and count > 7) or s.get(j) is not ';' { return null }
+        cp := if value is 0 or value > 0x10FFFF or value in 0xD800..=0xDFFF { 0xFFFD } else { value }
+        buf := list(u8)
+        text.append_rune(&buf, cp)!
+        return Entity(text: buf.items, len: j + 1 - i)
+    }
+    name_start := j
+    while c := s.get(j) {
+        if not is_ascii_alnum(c) { break }
+        j += 1
+    }
+    if j - name_start < 2 or j - name_start > 32 or s.get(j) is not ';' { return null }
+    name := s[name_start..j]
+    if decoded := decode_named(name) { return Entity(text: decoded, len: j + 1 - i) }
+    for k, latin1 in enumerate(LATIN1_NAMES) {
+        if latin1 is name {
+            buf := list(u8)
+            text.append_rune(&buf, 0xA0 + k.trunc(u32))!
+            return Entity(text: buf.items, len: j + 1 - i)
+        }
+    }
+    return null
+}
+
+hex_value :: fn(c: u8) -> u32 {
+    if c in '0'..='9' { return u32(c - '0') }
+    if c in 'a'..='f' { return u32(c - 'a') + 10 }
+    return u32(c - 'A') + 10
+}
+
+/// `s` with backslash escapes and character references replaced by what they mean.
+unescape_string :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    i: usize = 0
+    while i < s.len {
+        c := s[i]
+        if c is '\\' and i + 1 < s.len and is_escapable(s[i + 1]) {
+            out.push(s[i + 1])!
+            i += 2
+        } else if c is '&' {
+            if e := match_entity(s, i) {
+                out.extend(e.text)!
+                i += e.len
+            } else {
+                out.push(c)!
+                i += 1
+            }
+        } else {
+            out.push(c)!
+            i += 1
+        }
+    }
+    return out.items
+}
+
+// ----- raw HTML -----
+
+/// The end (exclusive) of an HTML tag name starting at `i`, or `i` if there is none.
+tag_name_end :: fn(s: string, i: usize) -> usize {
+    j := i
+    if j < s.len and is_ascii_alpha(s[j]) {
+        j += 1
+        while j < s.len and (is_ascii_alnum(s[j]) or s[j] is '-') { j += 1 }
+    }
+    return j
+}
+
+skip_ws :: fn(s: string, i: usize) -> usize {
+    j := i
+    while j < s.len and is_ws(s[j]) { j += 1 }
+    return j
+}
+
+/// The length of the raw HTML (an open or closing tag, a comment, a processing
+/// instruction, a declaration or a CDATA section) that starts at `s[i]`, or 0.
+html_tag_len :: fn(s: string, i: usize) -> usize {
+    if i >= s.len or s[i] is not '<' { return 0 }
+    rest := s[i..]
+    if rest.starts_with("<!--") {
+        end := find_from(rest, "-->", 4) else return 0
+        return end + 3
+    }
+    if rest.starts_with("<?") {
+        end := find_from(rest, "?>", 2) else return 0
+        return end + 2
+    }
+    if rest.starts_with("<![CDATA[") {
+        end := find_from(rest, "]]>", 9) else return 0
+        return end + 3
+    }
+    if rest.starts_with("<!") {
+        if rest.len > 2 and is_ascii_alpha(rest[2]) {
+            end := rest.index_of('>') else return 0
+            return end + 1
+        }
+        return 0
+    }
+    if rest.starts_with("</") {
+        j := tag_name_end(rest, 2)
+        if j is 2 { return 0 }
+        j = skip_ws(rest, j)
+        if j < rest.len and rest[j] is '>' { return j + 1 }
+        return 0
+    }
+    j := tag_name_end(rest, 1)
+    if j is 1 { return 0 }
+    while true {
+        after_ws := skip_ws(rest, j)
+        c := rest.get(after_ws) else return 0
+        if c is '>' { return after_ws + 1 }
+        if c is '/' {
+            if rest.get(after_ws + 1) is '>' { return after_ws + 2 }
+            return 0
+        }
+        // An attribute needs white space before it.
+        if after_ws is j { return 0 }
+        if not (is_ascii_alpha(c) or c in ('_', ':')) { return 0 }
+        k := after_ws + 1
+        while k < rest.len and (is_ascii_alnum(rest[k]) or rest[k] in ('_', '.', ':', '-')) { k += 1 }
+        j = k
+        // An optional value.
+        eq := skip_ws(rest, j)
+        if rest.get(eq) is '=' {
+            v := skip_ws(rest, eq + 1)
+            q := rest.get(v) else return 0
+            if q in ('"', '\'') {
+                close := find_from(rest, if q is '"' { "\"" } else { "'" }, v + 1) else return 0
+                j = close + 1
+            } else {
+                k = v
+                while k < rest.len and rest[k] not in (' ', '\t', '\n', '\r', '"', '\'', '=', '<', '>', '`') { k += 1 }
+                if k is v { return 0 }
+                j = k
+            }
+        }
+    }
+}
+
+/// The index of the first `needle` in `s` at or after `from`.
+find_from :: fn(s, needle: string, from: usize) -> ?usize {
+    if from > s.len { return null }
+    i := str.find(s[from..], needle) else return null
+    return from + i
+}
+
+str :: import "std/str"
+
+/// Block-level HTML tag names for HTML blocks of type 6.
+BLOCK_TAGS :: [62]string(
+    "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center", "col",
+    "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset", "figcaption", "figure",
+    "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr",
+    "html", "iframe", "legend", "li", "link", "main", "menu", "menuitem", "nav", "noframes", "ol",
+    "optgroup", "option", "p", "param", "section", "source", "summary", "table", "tbody", "td", "tfoot",
+    "th", "thead", "title", "tr", "track", "ul",
+)
+
+/// Whether the line `rest` (which starts with `<`) opens an HTML block of the given kind (1 to 7).
+html_block_start :: fn(rest: string, kind: u8) -> bool {
+    match kind {
+        1 => {
+            for name in ("script", "pre", "style", "textarea") {
+                if rest.len > name.len and starts_with_ignore_case(rest[1..], name) {
+                    after := rest.get(1 + name.len)
+                    if after is null or after in (' ', '\t', '>') { return true }
+                }
+            }
+            return false
+        }
+        2 => return rest.starts_with("<!--")
+        3 => return rest.starts_with("<?")
+        4 => return rest.starts_with("<!") and rest.len > 2 and is_ascii_alpha(rest[2])
+        5 => return rest.starts_with("<![CDATA[")
+        6 => {
+            start: usize = 1
+            if rest.get(1) is '/' { start = 2 }
+            end := tag_name_end(rest, start)
+            name := rest[start..end]
+            if name.len is 0 { return false }
+            found := false
+            for tag in BLOCK_TAGS {
+                if str.eq_ignore_case(tag, name) { found = true }
+            }
+            if not found { return false }
+            after := rest.get(end)
+            return after is null or after in (' ', '\t', '>') or rest[end..].starts_with("/>")
+        }
+        _ => {
+            n := html_tag_len(rest, 0)
+            if n is 0 { return false }
+            if rest.starts_with("<!") or rest.starts_with("<?") { return false }
+            return str.trim(rest[n..]).len is 0
+        }
+    }
+}
+
+starts_with_ignore_case :: fn(s, prefix: string) -> bool {
+    if s.len < prefix.len { return false }
+    return str.eq_ignore_case(s[0..prefix.len], prefix)
+}
+
+/// Whether the line contains the end condition of an HTML block of the given kind (1 to 5).
+html_block_end :: fn(line: string, kind: u8) -> bool {
+    match kind {
+        1 => {
+            for tag in ("</script>", "</pre>", "</style>", "</textarea>") {
+                if str.find_ignore_case(line, tag) is not null { return true }
+            }
+            return false
+        }
+        2 => return str.contains(line, "-->")
+        3 => return str.contains(line, "?>")
+        4 => return str.contains(line, ">")
+        _ => return str.contains(line, "]]>")
+    }
+}

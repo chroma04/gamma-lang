@@ -14,7 +14,7 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 
 ## Phases (gate in brackets)
 1. DONE s47: seed next to Rust. [CI bootstraps on ubuntu x86/arm + macOS, fixed point]
-2. Close Rust-only gaps: all conformance lanes against gammac, Windows release by
+2. IN PROGRESS s47 (same branch): Close Rust-only gaps: all conformance lanes against gammac, Windows release by
    cross-compiling (--target=x86_64-windows, MinGW), playground + fuzz ported, release
    pipeline/install from seed, docs. [release + site without cargo]
 3. Ship gammac as `gamma`; tag `rust-reference-final`; record final cross-check
@@ -40,3 +40,24 @@ gammac wasm32-wasi, cranelift dropped (user: out of scope).
 - Timings (4 cores): build.sh ~3 min (seed cc 46 s, two gammac builds ~1 min each with a
   cache in $out/cache; without a cache Debug builds are one TU → ~7 min). verify 11 s.
 - FreeBSD target C differs a lot from Linux (not investigated; not a seed host).
+
+## Phase 2 status (s47)
+- Conformance + examples: GAMMA_TEST_COMPILER=<gammac> in tests/conformance.rs and
+  examples.rs (run → --backend=interp first lane; test → C; no cranelift). All pass. CI
+  job conformance-gammac (ubuntu+macos, seed-built gammac).
+- Found+fixed: interp Net connect/accept/send/recv blocked all green threads → HostOp on
+  host threads (interp/threads.gm on_host_thread).
+- web/gen (Gamma site generator, path dep on compiler pkg; check-parity.sh vs Rust:
+  identical 79 files). web/play (gammac interp for wasm32-wasi; JS in-memory FS from
+  gamma-play-libs.json; 10.6 MB wasm vs 3.8 MB Rust; slower start, checks core each run).
+  pages.yml: build job = gammac only; rust-web job keeps Rust crates + parity.
+- fuzz/gammac: libFuzzer via -Dmain=gm_program_main + shim.c (SIGALRM fix); CI fuzz-gammac.
+- Release: tools/package-gammac.sh (layout bin/gammac + lib/gamma/{std,core,runtime};
+  version from compiler/gamma.toml, must equal Cargo.toml), tools/smoke-gammac.sh, release.yml
+  jobs gammac / gammac-windows (cross, MinGW on ubuntu-22.04) / gammac-windows-smoke; install
+  scripts GAMMA_ARCHIVE=gammac. load/exe.gm: executable() (/proc/self/exe, _NSGetExecutablePath,
+  GetModuleFileNameW), runtime next to std first. Windows quoting in pkg/link.gm.
+- Windows gammac runs under wine (check/fmt/interp); its C back end only tested in CI jobs
+  gammac-windows-build + gammac-windows (conformance+examples). Expect fixes there.
+- Pain: `when target.os` in a module that declares its own `target` → misleading "cannot
+  evaluate" (worker hit 2x). Release gammac is Debug mode (like bootstrap) — maybe Fast later.
