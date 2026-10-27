@@ -58,7 +58,7 @@ A `.gm` buffer that has not been saved is part of the module of its directory,
 and a buffer in a directory that does not exist yet is checked as a module of its
 own.
 
-Details are in the "Language server" section of [`docs/self-hosting.md`](self-hosting.md).
+Details are in the "Language server" section of [`docs/architecture.md`](architecture.md#language-server).
 
 ## Limitations
 

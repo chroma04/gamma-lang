@@ -100,7 +100,7 @@ gamma lsp · doc · repl                    <span class="c"># editor support, AP
 <h2 class="section-title" id="installing">Install</h2>
 <p class="section-lede">Prebuilt binaries for Linux, macOS and Windows are attached to each <a href="https://github.com/chroma04/gamma-lang/releases">release</a>. The installer puts <code>gamma</code> and its standard library in <code>~/.gamma</code>:</p>
 <pre class="code lang-sh"><code>curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh</code></pre>
-<p class="section-lede">On Windows, in PowerShell: <code>irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex</code>. To build from source you need Rust 1.95 or newer: <code>cargo build --release</code>. Native builds need a C compiler; the interpreter does not.</p>
+<p class="section-lede">On Windows, in PowerShell: <code>irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex</code>. To build from source you need only a C compiler: <code>bootstrap/build.sh</code>. Native builds need a C compiler; the interpreter does not.</p>
 
 <h2 class="section-title">Read on</h2>
 <div class="links">

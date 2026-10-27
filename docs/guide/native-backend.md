@@ -75,4 +75,4 @@ Debug mode reports the calls that led to a trap instead.
 The generated C is ordinary C: the same representation of values as the specification
 describes, and the runtime in `runtime/gm_rt.c` for allocation, traps, fibers and
 effects. `gamma build --emit-c` writes it instead of compiling it. See
-[the compiler's organization](../self-hosting.md) for the design.
+[the architecture of the C back end](../architecture.md#the-c-back-end) for the design.

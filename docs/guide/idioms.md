@@ -2,7 +2,7 @@
 
 [Contents](README.md)
 
-The tutorial chapters say what the language *has*. This page says how experienced Gamma code *uses* it: the patterns that keep programs short and clear, and the habits from other languages that do not fit. It grows as the code base does. Most examples come from, or are modeled on, `gamma`, the compiler written in Gamma, in [`compiler/`](../../compiler) (see [how it is organized](../self-hosting.md)), which is meant to be read as an example of the style described here.
+The tutorial chapters say what the language *has*. This page says how experienced Gamma code *uses* it: the patterns that keep programs short and clear, and the habits from other languages that do not fit. It grows as the code base does. Most examples come from, or are modeled on, `gamma`, the compiler written in Gamma, in [`compiler/`](../../compiler) (see [how it is organized](../architecture.md)), which is meant to be read as an example of the style described here.
 
 Every example on this page is a complete program checked by the test suite.
 

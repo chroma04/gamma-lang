@@ -49,22 +49,22 @@ early exit, coroutines, testing.
   Coming from another language? Read [Gamma for C programmers](docs/guide/for-c-programmers.md)
   or [Gamma for Rust programmers](docs/guide/for-rust-programmers.md).
 - [`docs/std.md`](docs/std.md) — the standard library.
-- [`docs/architecture.md`](docs/architecture.md) — how the retired Rust implementation is organized.
+- [`docs/architecture.md`](docs/architecture.md) — how the compiler, written in Gamma, is
+  organized: its stages, back ends and tools.
 - [`docs/contributing.md`](docs/contributing.md) — building, testing and contributing.
-- [`docs/self-hosting.md`](docs/self-hosting.md) — the compiler is written in Gamma: how
-  it was built, and how it builds itself.
+- [`docs/self-hosting.md`](docs/self-hosting.md) — how `gamma` builds itself from the C seed,
+  and the history of the compiler's bootstrap.
 - [`CHANGELOG.md`](CHANGELOG.md) and [`docs/versioning.md`](docs/versioning.md) — what
   changed in each release, and what stays stable between releases.
 
 ## Status
 
 The compiler, `gamma`, is written in Gamma (`compiler/`) and builds itself; the
-whole specification is implemented. A program runs on one of two back ends that must
+whole specification is implemented. The repository builds and tests with a C compiler
+alone (`bootstrap/build.sh`, `tools/test.sh`). A program runs on one of two back ends that must
 agree on every test: a C code generator (the default for `gamma build`, `gamma run`,
 `gamma test` and `gamma bench`) and an interpreter (`gamma run --backend=interp`, and
-`gamma repl`). The repository still holds the Rust implementation the compiler was
-first written against (`src/`), frozen and no longer built or tested; it is kept until
-it is deleted. Its last state is the tag `rust-reference-final`.
+`gamma repl`).
 
 | Component | Status |
 | --- | --- |
@@ -167,11 +167,14 @@ gamma parse --dump file.gm   # print the syntax tree
 tools/test.sh
 ```
 
-builds `target/bootstrap/gamma` (from the seed the first time) and runs the test suites
-with it: the conformance suite in `tests/conformance/`, the examples, the compiler's own
-tests and more. `tools/test.sh --test conformance` runs one suite. The suites are a cargo
-test harness, so Rust is needed to run them. See [`docs/contributing.md`](docs/contributing.md)
-for the test file format.
+builds `target/bootstrap/gamma` (from the seed the first time) and a test harness written in
+Gamma (`tests/harness/`), and runs the test suites with it: the conformance suite in
+`tests/conformance/`, the examples, the command line, the formatter, the language server,
+the package manager, the lanes of other platforms and the compiler's own checks of itself. A
+C compiler is all it needs. `tools/test.sh conformance/` runs one suite, and
+`tools/test.sh --list` names every test (`suite/test`). See
+[`docs/contributing.md`](docs/contributing.md) for the options, the environment variables and
+how to write a test.
 
 ## License
 
