@@ -23,7 +23,7 @@ cost with a Checked build, build both and time the executables rather than `gamm
 time includes compiling:
 
 ```sh
-for m in checked safe; do target/release/gamma build --mode=$m -o /tmp/b.$m bench/programs/safe_map_insert.gm; done
+for m in checked safe; do gamma build --mode=$m -o /tmp/b.$m bench/programs/safe_map_insert.gm; done
 time /tmp/b.checked; time /tmp/b.safe
 ```
 
@@ -34,9 +34,8 @@ a temporary first) and avoids taking the address of locals, which Fil-C moves to
 ## Timing: `gamma bench`
 
 ```sh
-cargo build --release
-target/release/gamma bench bench/              # compiled via C in Fast mode
-target/release/gamma bench --filter=perform bench/
+gamma bench bench/              # compiled via C in Fast mode
+gamma bench --filter=perform bench/
 ```
 
 Each line is the mean time of one pass of the body with the spread of 20 samples. Wall time
@@ -45,33 +44,25 @@ and never fails on it.
 
 ## Running the programs
 
+`gamma` here is the compiler built by `bootstrap/build.sh` (`target/bootstrap/gamma`) or an
+installed one.
+
 ```sh
-cargo build --release
-target/release/gamma run bench/programs/perform.gm                 # the interpreter
-target/release/gamma run --backend=c bench/programs/perform.gm     # through the C back end
+gamma run --backend=interp bench/programs/perform.gm   # the interpreter
+gamma run bench/programs/perform.gm                    # through the C back end
 ```
 
 Compare instruction counts rather than wall time, which varies with the load of the
-machine. With `valgrind` installed:
+machine. Build the program first, so that the count leaves out the compiler (or measure
+`gamma run --backend=interp` to count the interpreter). With `valgrind` installed:
 
 ```sh
-valgrind --tool=callgrind target/release/gamma run bench/programs/perform.gm 2>&1 | grep refs
+gamma build -o /tmp/perform bench/programs/perform.gm
+valgrind --tool=callgrind /tmp/perform 2>&1 | grep refs
 ```
 
 or with `perf`:
 
 ```sh
-perf stat -e instructions:u target/release/gamma run bench/programs/perform.gm
+perf stat -e instructions:u /tmp/perform
 ```
-
-The total includes compiling the program and the core library, which `empty.gm` measures
-(about 58 million instructions); the cost of an operation is
-`(program - empty) / iterations`. `callgrind_annotate` on the `callgrind.out.*` file
-shows where the instructions go; a release build with `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only`
-gives line-level detail.
-
-`gamma run --mode=fast` and `--mode=debug` select the build mode; the numbers above are
-for the default (Debug), which also records the allocator and call site of each block.
-`GAMMA_VM_DUMP=name` prints the bytecode of the functions called `name`, and a build with
-`--features vm-profile` counts the instructions run when `GAMMA_VM_PROFILE=1` (see
-`docs/contributing.md`).
