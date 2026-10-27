@@ -2,134 +2,39 @@
 Standing user rule: Gamma is evidence-driven; a pain point hit more than once while writing
 Gamma gets flagged here (and to the user) as a possible improvement. Note how often and where.
 
-STATUS s39 (decisions/044): the four below were addressed — dangling-address lint, §9.3
-note + diagnostic, pub(package) + needless-pub lint, and composite keys already worked.
-Still open: pointers into a growing List across push (lint can't see it). s40: certain
-dangling stores are now compile errors (decisions/045).
+s50 (user: "discard what is done or not an issue, design + implement the rest") triaged the
+whole list; decisions/054 records the designs. Only OPEN items stay below this header.
 
-- **Pointers to copies / to slots** (≥9x across s38–s40; s40 subagent: `&e` of a pattern
-  binding pushed into a list → bogus inference errors): `&loop_var`, `&pattern_binding`,
-  `&list.items[i]` across a push, and `x[i] = f(&x[i])^` where f keeps the pointer (s38g
-  finish_call). Escape analysis catches none. Idea: a lint/escape rule for storing the
-  address of a loop variable or binding; warn on `p = f(&p)` shapes. Handbook covers it.
-- **Optional parts in tuple payloads**: DONE s41, user-approved `?x` pattern (decisions/047).
-- **Cross-module helpers must be `pub`** (s38e, s38g: ~15 sema fns made pub just so
-  check/ can call `cx.s.f()`): no package-private visibility. Idea: package-level
-  visibility (`pub(package)`), since a package's modules are one unit.
-- **Small maps / composite keys** (s38d types interner, s38g fn instances, binds): HashMap
-  needs a hand-built byte-string key for struct/tuple keys, and tiny maps become List +
-  linear lookup helpers. Idea: hashing derived for plain structs/tuples (`@hash` exists
-  for core) so HashMap((u32, []Ty), u32) works; or a small assoc-list type in std.
-- **Function literals must be bound with `::`** (2x): `f := fn(..)` is an error; the
-  message is clear, so low priority.
-- No shadowing: user keeps the rule on principle (decisions/045); do not re-flag.
-- **Variant at the start of a line in a block-valued match arm** (s40, 6 sites at once in
-  tir/clone.gm: `{ … \n .Call(c, …) }` reads as `c(...).Call`): note explains it; use
-  `T.V(…)`. Low priority.
-- `[a, b]`: DONE s40, parse note `[_]i32(1, 2)` (decisions/045).
-- **One namespace across a module's files** (s41): the evaluator could not live in
-  check/ because `unsupported`, `block`, `stmt`, `coerce`, `load`, `builtin` already exist
-  there and there is no overloading → moved to its own module (fine design anyway). Low
-  priority; flagged to the user once.
-- **`str.format` gives `[]u8`, literals are `string`** (s42, 2x): mixing them in a list or
-  `in` needs `n: string = str.format(…)!`. Low priority; the message names both types.
-- **`a is not b and c` on bools** (s42, subagent): needs parentheses; easy to forget.
-- **No `---` for pointers / no definite assignment** (s42, W1 subagent): `x: ^Expr = ---`
-  is rejected, so a pointer set in both branches of an `if` needs a helper function or an
-  `if` expression. Idea: definite-assignment analysis for locals declared without a value.
-  Seen once; watch for repeats.
-- **Copying a struct that owns a List forks it silently** (s43, 4 sites by 3 subagents at
-  once): `tys := fg.g.ty.s.tys` then `tys.ptr(…)` interned into the COPY → later
-  `index out of bounds` in `kind`. Needed `tys := &…`. Idea: lint `mutated-copy` (a local
-  initialized by copying a place whose type holds a List/pointer-owning struct, then
-  passed as `^T` to a method). Flagged to the user (s43); user said implement → DONE s43:
-  lint `mutated-copy` (src/sema/lint_copy.rs; buffer = struct with mutable slice +
-  Allocator; exemptions: read whole, assigned whole, captured, original place assigned).
-- **`usize(u64)` rejected** (s43, ~10 sites in consts.gm): by design (§6.6, 32-bit
-  targets); `.trunc(usize)` everywhere for indices computed in u64. Watch.
-- **No way to set a child's argv[0]** (s45, gammac run): `Proc.spawn` uses argv[0] as both
-  the program and the name the child sees, so `gammac run` cannot show the source path as
-  the program name as `gamma run` does. Idea: `SpawnOptions.program: ?string` (the file
-  to run; argv[0] is then only the name), like execv(path, argv). Seen once.
-- **`x is .V(b)` does not bind** (s45, W-fmt subagent, ~6x): needs `if .V(b) := x`, so
-  `if prev is .Tok(p) and n > 0` becomes nested ifs. Idea: binding patterns in `and`
-  chains of conditions (`if .Tok(p) := prev and n > 0`?) — check spec §8.2 first; maybe
-  already allowed with `:=` in chains. Watch.
-- **`for x in (a, b)` over a homogeneous tuple** not accepted (s45 W-fmt, once): use an array.
-- **`assert` takes no message/format args; no `{:?}` escaped-debug spec** (s45 W-fmt, tests).
-- **No realpath/canonicalize in std/fs** (s45 W-doc): module names from symlinked paths
-  differ from gamma's. Library gap; candidate `fs.canonical(path)`.
-- **No Unicode-aware trim/split_whitespace in std/str** (s45 W-fmt and W-doc both
-  hand-wrote them: 2x) → candidate for std/text. **`is !e` cannot bind** (W-doc).
-  **load/paths.gm helpers not pub** (fixed by making them pub if reused).
-- **`?T` field in a variant pattern** (s45 W-lint, ~8x): `.Let(local, init)` with
-  `init: ?T` is not exhaustive / `if x := init` "always succeeds"; must write `?init`.
-  Same family as the s38 present-only-binding gotcha (7x). Strong candidate for a better
-  diagnostic (suggest `?init`) — the error is clear but the mistake keeps recurring.
-- **Containers created outside an arena storing arena strings** (s45 W-lint): segfault
-  (dangling keys). Lifetime problem, not syntax; Debug free checks did not catch it.
-- `make(bool, n)` (bool not Plain), `[N]T(.V)` fill not valid (W-lint, once each).
-- **`str.format` → `[]u8` vs literal `string` in if-branches** (4x+) — FIXED s45: §7.12
-  branch join takes the first branch type every other branch coerces to (sema
-  `join_type`, gammac check `join_type`); conformance run/branch_type_join. Mixing in a
-  list or `in` still needs an annotation.
-- s45 W-pkg: no env var list/set, chmod, readlink, utimes, getpid in std (ran processes);
-  postfix `?` on an optional traps instead of returning (expected Rust meaning; candidate:
-  warn on `?` of `?T` in a `?T` fn); `x is y` between `?string` and `string` accepted
-  (unclear; candidate error); `make(string, n)` rejected (not Plain) → List needed;
-  `Test.fail` needs `loc`. Watch for repeats.
-- **Proc has no try_wait / process-group kill** (s45 W-test): `--timeout` needs a watchdog
-  thread. Process-group kill RESOLVED s49 (`SpawnOptions.group`, decisions/053); still a
-  watchdog thread for timeouts (tests/harness/kit/command.gm Watch).
-- No sorted set / `keys_sorted` (W-debug); `[_]T(...)` count inference for constants (W-debug).
-- s45b: no flush for buffered stdout (W-lsp) — RESOLVED s45c (decisions/049): runtime +
-  interp flush before every blocking op, spec §12.9 "Buffered output"; lsp uses Out.
-- s45b: thread entry points must be exactly `needs Sys` (W-lsp, 2x); `Channel` cannot tell
-  empty from closed (W-lsp); no realpath in Fs (W-lsp, W-cross readlink); temporary array
-  slicing — RESOLVED s45c (decisions/049: array → []const T at every coercion site); `make_dir` has
-  no mode; constant initializers unchecked until used (tooling must force them).
-- s46 (interp): a module function named like a predeclared one hides it completely
-  (§4.6/§21.1): interp's `trap` method made the prelude `trap(msg)` unreachable in the
-  whole module (3x; used `@unreachable()`/`?`). Candidate: a way to name the universe
-  scope (e.g. `core.trap`) or let method-style declarations not hide free functions.
-  Logged, not changed. Also `with … on` body locals live in the enclosing C frame (not on
-  the fiber stack) — surprising when measuring stacks (implementation detail).
-- **`[]u8` results don't flow into `string`** (s47, sitegen worker 4x): `x: string = r else ""`
-  and `p := f()` where f returns `[]u8` need an annotation/conversion. Related to the
-  str.format pain point above (2x in s42). Now ≥6 total → FLAGGED to user (s47). Idea: let
-  `[]u8` coerce to `string` (or make str.format/read_all return string).
-- **User-written `Fs` handlers can't make `fs.File`/`fs.Dir`** (s47, playground worker 2x):
-  their `handle` fields are private, so a virtual file system must live outside Gamma (JS).
-  Idea: a pub constructor for handler authors (`fs.File.from_handle`). FLAGGED (s47).
-- **Nested results need typed temporaries** (s47, me, interp/sys.gm): returning `!e` or `!.V`
-  inside `Flow!(IoError!T)` targets the outer error type; existing code already writes
-  `failed: IoError!usize = !e; return failed` (≥3 sites). Watch.
-- s48: `[]u8`/`string` joins: `in` DONE (§7.7 joins element and members as §7.12 does);
-  still open: `str.format(..) else "none"` (expected `[]u8`, found `string`) and
-  `x: string = f() else ""` — the `else` fallback should join the same way, but the TIR
-  `.Else` needs a payload conversion in cgen/interp/eval. `?[]u8` does not coerce to
-  `?string` either (coercions under `?` don't exist). Next language change candidate.
-- s49 (harness): `SpawnOptions.env` could only REPLACE the environment and there is no way
-  to list it → could not set one var for a child. RESOLVED s49 (decisions/053): env entries
-  change the inherited environment, `clear_env`. `Env` is not available on other threads
-  (thread.defaults lacks it): harness snapshots kit.VARS into a TestEnv handler.
-- s49: `for x in ([_]string("a"), [_]string("a","b"))` rejected (tuple elements must have
-  one type; arrays of different lengths). Wanted: join by §7.12, and arrays of one element
-  type joining as `[]const T` (also for `if` branches). Workaround `[_][]const string(...)`.
-  1x (me). Watch.
-- s49: `needs` is a keyword, so `if needs := …` is a syntax error, and the recovery also
-  printed "gamma cannot check this kind of expression yet" (a second, internal-sounding
-  error after a parse error) — diagnostic bug, logged in bugs-open.
-- s49 harness workers (6 of them, ~10k lines of Gamma), repeated:
-  - `defer` cannot perform `Env` (cleanup helpers needed narrower effect sets) — 2 workers.
-  - Slice literal args: wanted `["a"]` for `[]const string`, must write `[_]string("a")` —
-    noisy call sites (pkg worker, me). Related to the tuple-of-arrays join above.
-  - `str.format(...)!` everywhere for paths/messages; positional-only placeholders (difftest
-    wanted `{0}`/named) — 3 workers. Path building verbose (`kit.join`).
-  - Keywords as names (`needs`, `handler`, `foreign`) — 3 workers (incl. me).
-  - Integer conversions `usize(i64)` → `.trunc` (2 workers; by design).
-  - No string ordering (`<` on strings) / sort for []string → insertion sorts written (native
-    worker); `items.sort()` works on []string in my code — check what they hit.
-  - No chmod/symlink/mtime/realpath in std/fs → shell out (pkg worker; known gap s45b).
-  - Local struct types not allowed in functions (native worker).
-  FLAGGED to user in s49 summary.
+## Settled — do not re-flag (reason)
+Done earlier: dangling-address lint + errors (044/045), pub(package) (044), composite keys
+(044), `?x` (047), `[a, b]` note (045), mutated-copy lint, if-branch join (s45), flush before
+blocking (049), temp array slicing (049), process-group kill + SpawnOptions env (053), `in`
+joins (s48). Checked s50 as already working: `if .V(b) := x and n > 0` (§8.2 chains),
+`if !e := r`, `a is not b and c`, unused constants are checked, `[_]T(…)` constants,
+thread entries with fewer effects (subsumption), `?T`-in-variant diagnostic suggests `?x`,
+`<` and `sort` on strings (§7.5), sorted map = std/collections/ordered_map.
+By design / not worth conceding:
+- No shadowing (user, 045). `usize(u64)`/`.trunc` (§6.6, 32-bit targets).
+- `f :: fn` only (functions are constants, second-class literals). One namespace per
+  module across files. Variant at the start of a line (`T.V(…)` reads fine; §2.8).
+- A name hiding a predeclared one hides it completely (§4.6); rename instead.
+- `defer` may perform only `fn` ops: a helper `needs Env` could `exit` (§8.8 rationale).
+- `!e` inside a nested result targets the outer error type: a type-directed choice would
+  make meaning depend on the error types; the typed temporary states it.
+- `make(bool|string, n)`: `make` is uninitialized storage; `make_fill` exists.
+- Postfix `?` traps (that is its meaning; `try` propagates). `?string is string` (§7.6).
+- `str.format(...)!` (allocation fails visibly, 037). `[_]string("a")` (one construction
+  syntax; note on `[...]`). `for` over a heterogeneous tuple; tuples are not sequences.
+- Arena lifetimes (no ownership system, C.8). `with … on` locals (implementation detail).
+- `assert` messages are runtime strings (like `trap`); format with `eprint` first.
+- getpid (unique names come from `Rand`), env var set (unsafe with threads; child env via
+  SpawnOptions), `Test.fail` loc (`expect(false, msg)`), `make_dir` mode (set_mode after).
+
+## Being implemented in s50 (see decisions/054)
+L1 `else` fallback joins like §7.12 · L2 const-adding coercions inside `?`/`!` · L3 arrays
+of one element type join as `[]const T` · L4 `needs`/`handler`/`foreign` contextual +
+parse-error follow-up bug · L5 numbered placeholders `{0}` · L6 `{:q}` quoted strings ·
+L7 local struct/union types · L8 lint for element pointers kept across a List growth ·
+S1 Unicode trim/fields in std/text · S2 Fs canonical/read_link/symlink/set_mode/
+set_modified · S3 Proc try_wait + SpawnOptions.program · S4 pub `handle` on Fs/Net/Proc
+handle types · S5 Env on threads (thread.defaults) · S6 Channel `drained`.

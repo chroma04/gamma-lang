@@ -90,10 +90,26 @@ else_expr :: fn(cx: ^FnCx, lhs: ^const ast.Expr, capture: ?ast.Ident, rhs: ^cons
         ty = lt
     } else if rewraps {
         ty = rt
+    } else if lifted := cx.else_join(lt, present, rt) {
+        // The fallback's type is the join (§7.12), reached by the left side only by
+        // gaining `const`: `str.format(…) else "none"` is a `string`.
+        l = cx.coerce(l, lifted)
+        ty = rt
     } else {
         r = cx.coerce(r, present)
     }
     return tir.mk(ty, .Else(tir.ElseExpr(lhs: l, capture: cap, rhs: r)), span)
+}
+
+/// When the fallback's type `rt` does not coerce to the present type `present` of the
+/// left side `lt`, but `present` coerces to `rt` in a way that also applies inside an
+/// optional or a result (§6.4): `lt` with `rt` in place of `present`.
+else_join :: fn(cx: ^FnCx, lt, present, rt: Ty) -> ?Ty needs Load {
+    tys := &cx.s.tys
+    if tys.has_infer(rt) or tys.has_infer(present) or tys.is_error(rt) or cx.coercion_steps(rt, present) is not null { return null }
+    if not adds_const(cx.s, present, rt) { return null }
+    if .Result(e, _) := tys.kind(lt) { return tys.result(e, rt) }
+    return tys.optional(rt)
 }
 
 /// Checks the fallback of an `else` whose left side has an error: its own errors are

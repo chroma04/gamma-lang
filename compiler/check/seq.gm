@@ -116,6 +116,27 @@ join_members :: fn(cx: ^FnCx, elem: ^Expr, members: []const ^Expr) -> Ty needs L
     return joined
 }
 
+/// The type at which a tuple whose elements have different types is iterated: their
+/// join (§7.12), when every element coerces to it; `null` when the elements have one
+/// type, are not inferred yet, or have no join.
+tuple_elem_join :: fn(cx: ^FnCx, elems: []const Ty) -> ?Ty needs Load {
+    tys := &cx.s.tys
+    first := cx.infer.resolve(cx.s, elems[0])
+    differ := false
+    for e in elems {
+        r := cx.infer.resolve(cx.s, e)
+        if tys.has_infer(r) or tys.is_error(r) { return null }
+        if r is not first { differ = true }
+    }
+    if not differ { return null }
+    joined := cx.infer.resolve(cx.s, cx.join_type(elems))
+    for e in elems {
+        r := cx.infer.resolve(cx.s, e)
+        if r is not joined and cx.coercion_steps(r, joined) is null and not (tys.is_positional_array(r) and tys.kind(joined) is .Slice(_)) { return null }
+    }
+    return joined
+}
+
 /// `{ x := elem; lets…; lo <= x and x <(=) hi }`, negated if `negated`.
 range_test :: fn(cx: ^FnCx, elem: ^Expr, lets: []const tir.Stmt, lo, hi: ^Expr, ty: Ty, inclusive: bool, negated: bool, span: source.Span) -> ^Expr needs Load {
     b := cx.s.tys.bool_ty()
@@ -719,8 +740,11 @@ for_each_value :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src0: ^Expr) -> ?^Expr ne
         .Tuple(elems, _) => {
             if elems.len is 0 { return null }
             e0 := elems[0]
+            // Elements of different types are iterated at their join (§7.12).
+            joined := cx.tuple_elem_join(elems)
+            if j := joined { e0 = j }
             for k in 1..elems.len {
-                if cx.infer.unify(tys, e0, elems[k]) is !_ {
+                if joined is null and cx.infer.unify(tys, e0, elems[k]) is !_ {
                     a := cx.infer.resolve(cx.s, e0)
                     b := cx.infer.resolve(cx.s, elems[k])
                     cx.error(f.iter.span, str.format("the elements of a tuple iterated by `for` must have one type, but found `{}` and `{}`", cx.show(a), cx.show(b))!)
@@ -729,7 +753,10 @@ for_each_value :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src0: ^Expr) -> ?^Expr ne
             }
             t := cx.temp(st, span)
             items := list(Expr)
-            for k in 0..elems.len { items.push(tir.mk(e0, .Field(tir.mk(st, .Local(t), span), k.trunc(u32)), span)^)! }
+            for k in 0..elems.len {
+                field := tir.mk(elems[k], .Field(tir.mk(st, .Local(t), span), k.trunc(u32)), span)
+                items.push(cx.coerce(field, e0)^)!
+            }
             arr := tir.mk(tys.array(u64(elems.len), e0), .Array(items.items), span)
             lp := cx.for_each_value(f, arr) else return null
             stmts := list(tir.Stmt)

@@ -1008,6 +1008,7 @@ Gamma has no implicit conversions between different numeric types in expressions
 | `T` | `E!T` | wrap success |
 | `never` | any | |
 | pointer forms | see §5.5 | const-adding, array-to-slice, to `rawptr` |
+| `?S`, `E!S` | `?T`, `E!T` | when `S` becomes `T` only by gaining `const` (§5.5), at any depth of `?` and `!`: `?[]u8` → `?string`, `E!^T` → `E!^const T`. The two have one representation, so nothing is converted |
 | `[N]T` | `[]const T` | a slice of the whole array; a temporary array is held as in §15.1 |
 | `^Outer` | `^S` | embedding (§5.10.3) |
 | tuple | tuple | name erasure (§5.9) |
@@ -1272,7 +1273,7 @@ Argument binding rules are in §11.3.
 
 ### 7.12 Conditional expressions
 
-`if` and `match` are expressions (§8.2, §8.6). Used as expressions, each branch's block yields its value: a block's value is the value of its final statement if that statement is an expression; otherwise `()`. All branches must have the same type after coercion (§6.4) to the expected type, if any. Without one, the type is that of the first branch that is not `never` and to which every other branch coerces, so `if c { str.format("{}", n)! } else { "none" }` is a `string` (`[]u8` coerces to `[]const u8`) and `if c { u8(1) } else { u32(2) }` a `u32`; if no branch type qualifies, it is the type of the first branch that is not `never`, and the other branches must coerce to it. An `if` without `else` has type `()`.
+`if` and `match` are expressions (§8.2, §8.6). Used as expressions, each branch's block yields its value: a block's value is the value of its final statement if that statement is an expression; otherwise `()`. All branches must have the same type after coercion (§6.4) to the expected type, if any. Without one, the type is that of the first branch that is not `never` and to which every other branch coerces, so `if c { str.format("{}", n)! } else { "none" }` is a `string` (`[]u8` coerces to `[]const u8`) and `if c { u8(1) } else { u32(2) }` a `u32`. If no branch type qualifies and the branches are arrays of one element type `T` (of different lengths), the type is `[]const T`, each array standing for a slice of it as at any coercion site (a temporary array is held as in §15.1): `if c { [_]i32(1) } else { [_]i32(1, 2) }`. Otherwise it is the type of the first branch that is not `never`, and the other branches must coerce to it. These are the **joins** of types that `in` (§7.7), `else` (§10.4) and `for` over a tuple (§8.4) use as well. An `if` without `else` has type `()`.
 
 ### 7.13 Function and handler literals
 
@@ -1339,9 +1340,11 @@ for_stmt = [ label ':' ] 'for' pattern { ',' pattern } 'in' expr block   // also
 
 ```
 for i in 0..n { … }                  // half-open; 0..=n is inclusive
-for x in xs { … }                    // xs: an array place, a slice or a tuple of one element type
+for x in xs { … }                    // xs: an array place, a slice or a tuple (below)
 for i, x in enumerate(xs) { … }      // tuple pattern without parentheses
 ```
+
+A tuple is iterated like the array of its elements, in order. Its elements must have one type, or a join (§7.12) to which every element coerces, and are converted to it: `for s in (name, "default")` with `name: []u8` iterates `string`s, and `for xs in ([_]i32(1), [_]i32(2, 3))` slices `[]const i32`.
 
 In a `for` head, a comma-separated list of patterns `p1, p2, …` is a tuple pattern `(p1, p2, …)`. (In `match` arms, by contrast, commas separate alternatives, §8.6.)
 
@@ -1529,8 +1532,9 @@ Wrapping is one level. For `x: ??i32`, `null` is the outer absent value, and the
 
 `x else d` evaluates `x`; if it is present (or success), the result is the unwrapped value; otherwise `d` is evaluated and is the result. `d` is not evaluated when `x` is present.
 
-- If `x: ?T`, then `d` must have type `T`, `?T`, `E!T`, or `never`. The result type is `T` if `d` is `T` or `never`, `?T` if `d` is `?T`, and `E!T` if `d` is `E!T`: this is how an absent value is given an error, as in `try (lookup(k) else !.Missing)`. When `d` is an error value `!e` whose error type comes from context, the context is the enclosing `try`'s function result type `F!U` (so `E` is `F`), or the expected type of the whole `else` expression. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
-- If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), `?T` (giving `?T`: the error is discarded, as in `parse(s) else null`), or `never`.
+- If `x: ?T`, then `d` must have type `T`, `?T`, `E!T`, or `never`, or a type `U` that joins with `T` as the branches of an `if` do (§7.12). The result type is `T` if `d` is `T` or `never`, `?T` if `d` is `?T`, and `E!T` if `d` is `E!T`: this is how an absent value is given an error, as in `try (lookup(k) else !.Missing)`. When `d` is an error value `!e` whose error type comes from context, the context is the enclosing `try`'s function result type `F!U` (so `E` is `F`), or the expected type of the whole `else` expression. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
+- If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), `?T` (giving `?T`: the error is discarded, as in `parse(s) else null`), `never`, or a type `U` that joins with `T`.
+- **Joins.** A fallback of type `U` that coerces to `T` is converted to `T`. Otherwise, when `T` coerces to `U` by a coercion that applies inside `?` and `!` (§6.4: one that only adds `const`), `x` is converted to `?U` (or `E!U`) and the result type is `U`: `str.format("{}", n) else "none"` is a `string`, and so is `x: string = lookup(k) else ""` with `lookup` giving a `?[]u8`.
 - `x else e => d` (results only) binds the error value to the immutable name `e` in `d`. The `=>` body extends as far as an expression can (to the end of the enclosing statement, argument or arm) — parenthesize to limit it.
 - `d` may be `return …`, `break`, `continue`, `trap(…)`, all of type `never`: `n = n *? 10 else return !.TooBig`.
 

@@ -53,7 +53,7 @@ use_optional :: fn(xs: []const i32) needs Out {
 }
 ```
 
-`x else d` evaluates `d` only when `x` is absent. `d` may be a `T`, another `?T` (which makes the whole thing optional, so `a else b else c` chains), or something of type `never` such as `return`, `break`, `continue` or `trap(...)`. `d` may also be a block, whose value is the fallback or which leaves the function:
+`x else d` evaluates `d` only when `x` is absent. `d` may be a `T`, another `?T` (which makes the whole thing optional, so `a else b else c` chains), or something of type `never` such as `return`, `break`, `continue` or `trap(...)`. When `d` has another type that `T` reaches by only adding `const`, the result has `d`'s type: with `name: ?[]u8`, `name else "anonymous"` is a `string`, as an `if` with those two branches would be. `d` may also be a block, whose value is the fallback or which leaves the function:
 
 ```gamma
 first_or_report :: fn(xs: []const i32) -> i32 needs Out {

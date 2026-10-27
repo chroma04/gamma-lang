@@ -101,6 +101,14 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Language
 
+- An `else` fallback joins with the left side's value as `if` branches do (§10.4):
+  `str.format("{}", n) else "none"` and `x: string = lookup(k) else ""` (with `lookup`
+  giving `?[]u8`) are `string`s; they used to be type errors.
+- A coercion that only adds `const` also applies inside optionals and results (§6.4):
+  `?[]u8` → `?string`, `E!^T` → `E!^const T`.
+- Arrays of one element type and different lengths join as a slice of it (§7.12): in the
+  branches of `if` and `match`, and in `for x in (a, b)`, whose elements may now be of any
+  types with a join (`for s in (bytes, "lit")`).
 - In `x in (a, b, c)` and `x in list`, the element and the members are compared at one
   type, joined as the branches of an `if` are (§7.7, §7.12): with `p: []u8`,
   `p in ("get", "put")` and `p in names` (`names: []string`) are accepted; they used to be

@@ -1150,8 +1150,9 @@ Captured :: struct {
 }
 
 /// The type of a value `if` or `match` without an expected type (§7.12): the first branch
-/// type other than `never` to which every other branch coerces, or failing that the first
-/// one (and the others are reported where they are coerced to it).
+/// type other than `never` to which every other branch coerces, or `[]const T` for arrays
+/// of one element type `T`, or failing that the first one (and the others are reported
+/// where they are coerced to it).
 pub join_type :: fn(cx: ^FnCx, branches: []const Ty) -> Ty needs Load {
     tys := &cx.s.tys
     live := list(Ty)
@@ -1169,7 +1170,23 @@ pub join_type :: fn(cx: ^FnCx, branches: []const Ty) -> Ty needs Load {
         }
         if joins { return t }
     }
+    // Arrays of one element type join as a slice of it (§7.12).
+    if elem := cx.array_elem_join(live.items) { return tys.slice(true, elem) }
     return live.items[0]
+}
+
+/// The element type of `types` if they are all positional arrays of it.
+array_elem_join :: fn(cx: ^FnCx, types: []const Ty) -> ?Ty needs Load {
+    tys := &cx.s.tys
+    elem: ?Ty = null
+    for t0 in types {
+        t := cx.infer.resolve(cx.s, t0)
+        .Array(_, e, _) := tys.kind(t) else return null
+        if tys.has_infer(t) or not tys.is_positional_array(t) { return null }
+        if p := elem and p is not e { return null }
+        elem = e
+    }
+    return elem
 }
 
 join_branch :: fn(cx: ^FnCx, b: ^Expr, ty: Ty) -> ^Expr needs Load {
