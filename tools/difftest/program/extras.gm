@@ -1,0 +1,571 @@
+// The optional language areas of generated programs: generic functions and types, strings,
+// user-defined effects with handlers (including suspending `ctl` operations that run on
+// fibers), and the cooperative scheduler of `std/fiber` with its channels. Each area is
+// switched on per program by the seed, so some programs stay small and focused.
+//
+// Lifetimes need care wherever strings are involved. A string built in a buffer points into
+// that buffer, which its scope frees, so such strings are never reassigned and never
+// returned from a function.
+
+rng :: import "../rng"
+str :: import "std/str"
+
+features :: fn(r: ^rng.Rng) -> Features {
+    generics := r.chance(55)
+    strings := r.chance(50)
+    effects := r.chance(55)
+    fibers := r.chance(15)
+    return Features(generics: generics, strings: strings, effects: effects, fibers: fibers)
+}
+
+STRINGS: [16]string : [_]string(
+    "",
+    "a",
+    "hello",
+    "Gamma",
+    "hello, world",
+    "0123456789",
+    "zzz",
+    "abc abc",
+    "42",
+    "-7",
+    "255",
+    "x1",
+    "café",
+    "tab\\there",
+    "q\\\"uote",
+    "日本",
+)
+
+NEEDLES: [10]string : [_]string("a", "e", "l", "o", "ab", "hello", "12", "-", "z", " ")
+CLOSURE_OPS: [4]string : [_]string("+%", "-%", "~", "*%")
+SPECS: [5]string : [_]string("{:>6}", "{:<5}", "{:^7}", "{:04}", "[{}]")
+SEPS: [5]string : [_]string("", "-", ",", " ", "/")
+
+/// The handlers installed around a block (see `open_with`).
+With :: struct {
+    ev: ?string
+    co: ?string
+    co_stack: string
+}
+
+/// `body` run under the handlers: a `with` expression.
+wrap :: fn(w: ^const With, body: string) -> string needs Alloc {
+    inner := body
+    if h := w.co { inner = format("with {} on {}[..] {{ {} }}", h, w.co_stack, body)! }
+    if h := w.ev { return format("with {} {{ {} }}", h, inner)! }
+    return inner
+}
+
+/// The effect set of a function: `Out`, `Alloc` where strings or fibers need it, and the
+/// program's own effects.
+effect_set :: fn(g: ^const Gen, ev: bool, co: bool) -> string needs Alloc {
+    s := list(u8)
+    s.extend("Out")!
+    if g.feat.strings or g.feat.fibers { s.extend(" + Alloc")! }
+    if ev { s.extend(" + Ev")! }
+    if co { s.extend(" + Co")! }
+    return s.items
+}
+
+/// Imports, generic definitions and effect declarations.
+extra_decls :: fn(g: ^const Gen) -> string needs Alloc {
+    s := list(u8)
+    if g.feat.strings { s.extend("str :: import \"std/str\"\n")! }
+    if g.feat.fibers { s.extend("fiber :: import \"std/fiber\"\nchan :: import \"std/fiber/channel\"\n")! }
+    if g.feat.generics {
+        s.extend("Pair :: struct(T: type) { a: T, b: T }\n")!
+        s.extend("g_pick :: fn(T: type, a: T, b: T, c: bool) -> T {\n    if c { return a }\n    return b\n}\n")!
+        s.extend("g_max :: fn(T: type, a: T, b: T) -> T where Ord(T) => if a > b { a } else { b }\n")!
+        s.extend("g_min :: fn(T: type, a: T, b: T) -> T where Ord(T) => if a < b { a } else { b }\n")!
+        s.extend("g_mix :: fn(T: type, a: T, b: T) -> T where Int(T) => (a ~ b) +% (a & b)\n")!
+        s.extend("g_fold :: fn(T: type, xs: []const T) -> T where Int(T) {\n    total: T = 0\n    for x in xs { total +%= x }\n    return total\n}\n")!
+        s.extend("g_twice :: fn(T: type, x: T, f: fn(T) -> T) -> T { return f(f(x)) }\n")!
+        s.extend("pair_sum :: fn(T: type, p: ^const Pair(T)) -> T where Int(T) => p.a +% p.b\n")!
+        s.extend("pair_max :: fn(T: type, p: ^const Pair(T)) -> T where Ord(T) => if p.a > p.b { p.a } else { p.b }\n")!
+        s.extend("pair_swap :: fn(T: type, p: ^Pair(T)) {\n    t := p.a\n    p.a = p.b\n    p.b = t\n}\n")!
+    }
+    if g.feat.effects {
+        s.write("Ev :: effect {{\n    ev_get: fn(x: {}) -> {}\n    ev_log: fn(x: {})\n    ev_fail: esc(x: {}) -> never\n}}\n", g.ev_t[0].it_name(), g.ev_t[1].it_name(), g.ev_t[0].it_name(), g.ev_t[2].it_name())!
+        s.write("Co :: effect {{\n    co_ask: ctl(q: {}) -> {}\n    co_tick: ctl()\n}}\n", g.co_t[0].it_name(), g.co_t[1].it_name())!
+    }
+    return s.items
+}
+
+// ----- expressions ----------------------------------------------------------------
+
+/// An integer expression from one of the optional areas, if one applies (`d` is the
+/// remaining depth for operands).
+extra_int :: fn(g: ^Gen, t: It, d: u32) -> ?string needs Alloc {
+    cats := list(u8)
+    if g.feat.generics { cats.push(0)! }
+    if g.feat.strings { cats.push(1)! }
+    if g.feat.effects and (g.ev or g.co) { cats.push(2)! }
+    if cats.items.len is 0 { return null }
+    return match g.rng.pick(cats.items) {
+        0 => g.generic_int(t, d)
+        1 => g.string_int(t, d)
+        _ => g.effect_int(t, d)
+    }
+}
+
+generic_int :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
+    n := t.it_name()
+    // Sometimes the type argument is written out instead of inferred.
+    explicit := if g.rng.chance(25) { format("T: {}, ", n)! } else { "" }
+    return match g.rng.below(7) {
+        0 => {
+            a := g.int_expr(t, d)
+            b := g.int_expr(t, d)
+            c := g.bool_expr(d)
+            format("g_pick({}{}, {}, {})", explicit, a, b, c)!
+        }
+        1 => {
+            f := if g.rng.chance(50) { "g_max" } else { "g_min" }
+            a := g.int_expr(t, d)
+            b := g.int_expr(t, d)
+            format("{}({}{}, {})", f, explicit, a, b)!
+        }
+        2 => {
+            a := g.int_expr(t, d)
+            b := g.int_expr(t, d)
+            format("g_mix({}{}, {})", explicit, a, b)!
+        }
+        3 => {
+            arrs := g.arr_vars(t)
+            if arrs.items.len is 0 { return g.int_expr(t, 0) }
+            v := g.vars.items[g.rng.pick(arrs.items)]
+            len: usize = 0
+            if .Arr(_, l) := v.ty { len = l }
+            lo := g.rng.below(len)
+            hi := lo + g.rng.below(len - lo + 1)
+            format("g_fold({}{}[{}..{}])", explicit, v.name, lo, hi)!
+        }
+        4 => {
+            // A closure that captures variables, called twice by the generic function.
+            x := g.int_expr(t, d)
+            e := g.int_expr(t, d.min(1))
+            op := g.rng.pick(CLOSURE_OPS)
+            v := g.fresh("cv")
+            format("g_twice({}{}, fn({}) => ({} {} {}))", explicit, x, v, v, op, e)!
+        }
+        _ => {
+            pairs := g.vars_of(.Gp(t))
+            if pairs.items.len is 0 { return g.int_expr(t, 0) }
+            v := g.pick_name(pairs)
+            f := if g.rng.chance(50) { "pair_sum" } else { "pair_max" }
+            format("{}(&{})", f, v)!
+        }
+    }
+}
+
+/// A `usize` expression converted to `t`.
+usize_to :: fn(g: ^Gen, e: string, t: It) -> string needs Alloc {
+    if g.rng.chance(50) { return format("({}).trunc({})", e, t.it_name())! }
+    return format("({}).sat({})", e, t.it_name())!
+}
+
+string_int :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
+    s := g.str_leaf()
+    return match g.rng.below(7) {
+        0 => g.usize_to(format("{}.len", s)!, t)
+        1 => {
+            fb := g.lit(U8)
+            m := if g.rng.chance(50) { "first" } else { "last" }
+            g.conv(U8, t, format("({}.{}() else {})", s, m, fb)!)
+        }
+        2 => {
+            i := g.int_expr(U8, d.min(1))
+            fb := g.lit(U8)
+            g.conv(U8, t, format("({}.get({}) else {})", s, i, fb)!)
+        }
+        3 => {
+            nd := g.needle()
+            k := g.rng.below(5)
+            g.usize_to(format("(str.find({}, {}) else {}usize)", s, nd, k)!, t)
+        }
+        4 => {
+            fb := g.int_expr(t, 0)
+            format("(str.parse_int({}, {}) else {})", t.it_name(), s, fb)!
+        }
+        5 => {
+            nd := g.needle()
+            g.usize_to(format("str.count({}, {})", s, nd)!, t)
+        }
+        _ => {
+            c := g.int_expr(U8, d.min(1))
+            g.usize_to(format("({}.index_of({}) else 0usize)", s, c)!, t)
+        }
+    }
+}
+
+effect_int :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
+    use_co := g.co and (not g.ev or g.rng.chance(40))
+    if use_co {
+        a := g.int_expr(g.co_t[0], d.min(2))
+        return g.conv(g.co_t[1], t, format("Co.co_ask({})", a)!)
+    }
+    x := g.int_expr(g.ev_t[0], d.min(2))
+    return g.conv(g.ev_t[1], t, format("Ev.ev_get({})", x)!)
+}
+
+needle :: fn(g: ^Gen) -> string needs Alloc => format("\"{}\"", g.rng.pick(NEEDLES))!
+
+str_lit :: fn(g: ^Gen) -> string needs Alloc => format("\"{}\"", g.rng.pick(STRINGS))!
+
+/// A variable or a literal: cheap to evaluate twice.
+str_leaf :: fn(g: ^Gen) -> string needs Alloc {
+    vars := g.vars_of(.Str)
+    if vars.items.len > 0 and g.rng.chance(60) { return g.pick_name(vars) }
+    return g.str_lit()
+}
+
+str_expr :: fn(g: ^Gen, d: u32) -> string needs Alloc {
+    if d is 0 or g.rng.chance(30) { return g.str_leaf() }
+    d1 := d - 1
+    return match g.rng.below(6) {
+        0, 1 => {
+            // A slice that is always in bounds.
+            v := g.str_leaf()
+            k := g.rng.below(8)
+            if g.rng.chance(50) {
+                format("({}[0..({}usize).min({}.len)])", v, k, v)!
+            } else {
+                format("({}[({}usize).min({}.len)..{}.len])", v, k, v, v)!
+            }
+        }
+        2 => {
+            c := g.bool_expr(d1)
+            a := g.str_expr(d1)
+            b := g.str_expr(d1)
+            format("(if {} {{ {} }} else {{ {} }})", c, a, b)!
+        }
+        3 => {
+            v := g.str_leaf()
+            nd := g.needle()
+            format("(str.strip_prefix({}, {}) else {})", v, nd, v)!
+        }
+        4 => {
+            v := g.str_leaf()
+            format("str.trim({})", v)!
+        }
+        _ => g.str_leaf()
+    }
+}
+
+str_bool :: fn(g: ^Gen, d: u32) -> string needs Alloc {
+    a := g.str_expr(d)
+    b := g.str_expr(d)
+    return match g.rng.below(8) {
+        0 => format("({} is {})", a, b)!
+        1 => format("({} is not {})", a, b)!
+        2..=4 => format("({} {} {})", a, g.rng.pick(ORDER), b)!
+        5 => format("({}).starts_with({})", a, b)!
+        6 => format("({}).ends_with({})", a, b)!
+        _ => {
+            nd := g.needle()
+            format("str.contains({}, {})", a, nd)!
+        }
+    }
+}
+
+gp_expr :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
+    ty := Ty.Gp(t)
+    vars := g.vars_of(ty)
+    r := g.rng.below(10)
+    if (d is 0 or r < 3) and vars.items.len > 0 { return g.pick_name(vars) }
+    d1 := d -| 1
+    if r is 3 {
+        if c := g.call(ty, d1) { return c }
+    }
+    a := g.int_expr(t, d1)
+    b := g.int_expr(t, d1)
+    return format("Pair({})(a: {}, b: {})", t.it_name(), a, b)!
+}
+
+// ----- statements -----------------------------------------------------------------
+
+/// A statement from one of the optional areas. Returns whether it wrote one.
+extra_stmt :: fn(g: ^Gen, out: ^List(u8), level: usize, nested_ok: bool) -> bool needs Alloc {
+    ind := indent(level)
+    opts := list(u8)
+    if g.feat.strings and nested_ok {
+        opts.push(0)!
+        opts.push(0)!
+    }
+    if g.feat.effects {
+        if g.ev {
+            opts.push(1)!
+            opts.push(2)!
+        }
+        if g.co { opts.push(3)! }
+        if nested_ok {
+            opts.push(4)!
+            opts.push(4)!
+            opts.push(4)!
+        }
+    }
+    if opts.items.len is 0 { return false }
+    match g.rng.pick(opts.items) {
+        0 => g.string_builder(out, level)
+        1 => {
+            e := g.int_expr(g.ev_t[0], 2)
+            out.write("{}Ev.ev_log({})\n", ind, e)!
+        }
+        2 => {
+            c := g.bool_expr(2)
+            e := g.int_expr(g.ev_t[2], 2)
+            out.write("{}if {} {{ Ev.ev_fail({}) }}\n", ind, c, e)!
+        }
+        3 => out.write("{}Co.co_tick()\n", ind)!
+        _ => g.with_stmt(out, level)
+    }
+    return true
+}
+
+/// Builds a string in a growable buffer, with `write` calls and templates, and binds it.
+string_builder :: fn(g: ^Gen, out: ^List(u8), level: usize) needs Alloc {
+    ind := indent(level)
+    sb := g.fresh("sb")
+    out.write("{}{} := list(u8)\n{}defer {}.deinit()\n", ind, sb, ind, sb)!
+    rounds := 1 + g.rng.below(3)
+    for _ in 0..rounds {
+        looped := g.rng.chance(35)
+        mark := g.vars.items.len
+        saved_mult := g.mult
+        ind2 := ind
+        if looped {
+            k := 1 + g.rng.below(3)
+            i := g.fresh("bi")
+            out.write("{}for {} in 0..{}u8 {{\n", ind, i, k)!
+            g.push_var(i, .Int(U8), false)
+            g.mult = g.mult *| u64(k)
+            ind2 = indent(level + 1)
+        }
+        g.cost += g.mult
+        tmpl := list(u8)
+        args := list(string)
+        parts := 1 + g.rng.below(3)
+        for _ in 0..parts {
+            ty := g.rand_ty()
+            spec := "{}"
+            if ty is .Int(_) or ty is .Str or ty is .Bool {
+                if g.rng.chance(40) { spec = g.rng.pick(SPECS) }
+            }
+            // `{:04}` pads numbers only.
+            if spec is "{:04}" and ty is not .Int(_) { spec = "{}" }
+            tmpl.extend(spec)!
+            tmpl.extend(g.rng.pick(SEPS))!
+            args.push(g.expr(ty, 2))!
+        }
+        out.write("{}{}.write(\"{}\", {}) else e => {{}}\n", ind2, sb, tmpl.items, join(args.items, ", "))!
+        if looped {
+            out.write("{}}}\n", ind)!
+            g.mult = saved_mult
+        }
+        g.vars.truncate(mark)
+    }
+    v := g.fresh("v")
+    out.write("{}{}: string = {}.items\n", ind, v, sb)!
+    g.push_var(v, .Str, false)
+}
+
+/// Declares the handler for `Ev`, which counts its calls in a captured variable.
+open_ev :: fn(g: ^Gen, out: ^List(u8), level: usize, rty: Ty) -> string needs Alloc {
+    ind := indent(level)
+    c := g.fresh("cn")
+    h := g.fresh("hd")
+    out.write("{}{}: u32 = 0\n", ind, c)!
+    g.push_var(c, .Int(U32), false)
+    a := g.ev_t[0]
+    b := g.ev_t[1]
+    f := g.ev_t[2]
+    x := g.fresh("q")
+    y := g.fresh("q")
+    z := g.fresh("q")
+    out.write("{}{} :: handler Ev {{\n", ind, h)!
+    g.push_var(x, .Int(a), false)
+    e := g.int_expr(b, 2)
+    g.vars.truncate(g.vars.items.len - 1)
+    out.write("{}    ev_get({}) => {{\n{}        {} += 1\n{}        {}\n{}    }}\n", ind, x, ind, c, ind, e, ind)!
+    out.write("{}    ev_log({}) => {{ print(\"log {{}} {{}}\\n\", {}, {}) }}\n", ind, y, y, c)!
+    g.push_var(z, .Int(f), false)
+    r := g.expr(rty, 2)
+    g.vars.truncate(g.vars.items.len - 1)
+    out.write("{}    ev_fail({}) => {{\n{}        print(\"fail {{}}\\n\", {})\n{}        break {}\n{}    }}\n{}}}\n", ind, z, ind, z, ind, r, ind, ind)!
+    return h
+}
+
+/// Declares a stack and the handler for `Co`: it answers questions, and sometimes
+/// cancels the suspended code and leaves the `with` instead of resuming it.
+open_co :: fn(g: ^Gen, out: ^List(u8), level: usize, rty: Ty) -> (hd: string, stack: string) needs Alloc {
+    ind := indent(level)
+    stk := g.fresh("stk")
+    n := g.fresh("nn")
+    h := g.fresh("hc")
+    out.write("{}{}: [131072]u8 = ---\n{}{}: u32 = 0\n", ind, stk, ind, n)!
+    g.push_var(n, .Int(U32), false)
+    // The clauses run on the driver's stack and cannot suspend.
+    saved_co := g.co
+    g.co = false
+    q := g.co_t[0]
+    r := g.co_t[1]
+    qv := g.fresh("q")
+    limit := 1 + g.rng.below(4)
+    out.write("{}{} :: handler Co {{\n", ind, h)!
+    g.push_var(qv, .Int(q), false)
+    res := g.int_expr(r, 2)
+    g.vars.truncate(g.vars.items.len - 1)
+    out.write("{}    co_ask({}, k) => {{\n{}        {} += 1\n", ind, qv, ind, n)!
+    if g.rng.chance(50) {
+        brk := g.expr(rty, 2)
+        out.write("{}        if {} > {} {{\n{}            cancel k\n{}            break {}\n{}        }}\n", ind, n, limit, ind, ind, brk, ind)!
+    }
+    out.write("{}        resume k({})\n{}    }}\n", ind, res, ind)!
+    out.write("{}    co_tick(k) => {{\n{}        {} += 1\n", ind, ind, n)!
+    if g.rng.chance(40) {
+        out.write("{}        print(\"tick {{}}\\n\", {})\n", ind, n)!
+    }
+    if g.rng.chance(25) {
+        brk := g.expr(rty, 2)
+        out.write("{}        if {} > {} {{\n{}            cancel k\n{}            break {}\n{}        }}\n", ind, n, limit + 3, ind, ind, brk, ind)!
+    }
+    out.write("{}        resume k()\n{}    }}\n{}}}\n", ind, ind, ind)!
+    g.co = saved_co
+    return (hd: h, stack: stk)
+}
+
+/// Declares the handlers for the wanted effects. `rty` is the type of the `with`
+/// expression, which handlers that exit produce a value of. The caller then generates
+/// the body with the effects enabled and passes it to `wrap`.
+open_with :: fn(g: ^Gen, out: ^List(u8), level: usize, ev: bool, co: bool, rty: Ty) -> With needs Alloc {
+    w := With(ev: null, co: null, co_stack: "")
+    if ev { w.ev = g.open_ev(out, level, rty) }
+    if co {
+        c := g.open_co(out, level, rty)
+        w.co = c.hd
+        w.co_stack = c.stack
+    }
+    return w
+}
+
+/// `r: T = with handlers { statements; value }`.
+with_stmt :: fn(g: ^Gen, out: ^List(u8), level: usize) needs Alloc {
+    ind := indent(level)
+    want_co := g.in_main and not g.co and g.rng.chance(50)
+    want_ev := not want_co or g.rng.chance(40)
+    rty := g.rand_ret_ty()
+    w := g.open_with(out, level, want_ev, want_co, rty)
+    saved_ev := g.ev
+    saved_co := g.co
+    saved_ret := g.ret
+    saved_loops := g.loops
+    g.ret = null
+    g.ev = g.ev or want_ev
+    g.co = g.co or want_co
+    g.loops = 0
+    mark := g.vars.items.len
+    g.block_depth += 1
+    body := list(u8)
+    count := 1 + g.rng.below(3)
+    for _ in 0..count { g.stmt(&body, level + 1) }
+    e := g.expr(rty, 2)
+    body.write("{}{}\n", indent(level + 1), e)!
+    g.block_depth -= 1
+    g.vars.truncate(mark)
+    g.ev = saved_ev
+    g.co = saved_co
+    g.ret = saved_ret
+    g.loops = saved_loops
+    name := g.fresh("r")
+    out.write("{}{}: {} = {}\n", ind, name, ty_name(rty), w.wrap(format("\n{}{}", body.items, ind)!))!
+    g.push_var(name, rty, true)
+}
+
+// ----- fibers ---------------------------------------------------------------------
+
+/// The task functions of the fiber blocks: a producer and a consumer talking through a
+/// channel, under the round-robin scheduler of `std/fiber`.
+fiber_decls :: fn(g: ^Gen) -> string needs Alloc {
+    if not g.feat.fibers { return "" }
+    it := g.fib_it
+    text := list(u8)
+    text.write("Task :: fiber.Sched(Out + Alloc)\nFSTACK :: 65536\nChan :: chan.Channel({})\nJob :: struct {{\n    id: u8\n    ch: ?^Chan\n    acc: {} = 0\n}}\n", it.it_name(), it.it_name())!
+    for pass in 0..2 {
+        producer := pass is 0
+        n := g.funcs.items.len
+        g.begin_function(null, n, false, false)
+        g.push_var("j.acc", .Int(it), false)
+        mult: u64 = 4
+        if producer {
+            k := 2 + g.rng.below(4)
+            text.write("producer :: fn(j: ^Job) needs Task + Out + Alloc {{\n    out := j.ch?\n    defer out.close()\n    for i in 0..{}u8 {{\n", k)!
+            mult = u64(k)
+        } else {
+            text.extend("consumer :: fn(j: ^Job) needs Task + Out + Alloc {\n    inp := j.ch?\n    while x := inp.recv() {\n")!
+        }
+        g.push_var(if producer { "i" } else { "x" }, .Int(if producer { U8 } else { it }), false)
+        g.mult = mult
+        g.loops = 1
+        e := g.int_expr(it, 3)
+        text.write("        j.acc = {}\n", e)!
+        if producer {
+            v := g.fresh("fv")
+            e2 := g.int_expr(it, 2)
+            text.write("        {}: {} = {}\n        print(\"p{{}} sends {{}}\\n\", j.id, {})\n        _ = out.send({})\n", v, it.it_name(), e2, v, v)!
+        } else {
+            text.extend("        print(\"c{} got {}\\n\", j.id, x)\n")!
+        }
+        if g.rng.chance(60) { text.extend("        fiber.Sched.yield_now()\n")! }
+        extra := g.rng.below(3)
+        for _ in 0..extra { g.stmt(&text, 2) }
+        text.extend("    }\n}\n")!
+    }
+    return text.items
+}
+
+/// Runs one or two producer/consumer pairs under a scheduler.
+fiber_blocks :: fn(g: ^Gen, out: ^List(u8)) needs Alloc {
+    if not g.feat.fibers { return }
+    it := g.fib_it.it_name()
+    rounds := 1 + g.rng.below(2)
+    for _ in 0..rounds {
+        pairs := 1 + g.rng.below(2)
+        sc := g.fresh("sched")
+        ms := g.fresh("ms")
+        out.write("    {}: [FSTACK]u8 = ---\n", ms)!
+        spawns := list(string)
+        report := list(string)
+        for p in 0..pairs {
+            c := g.fresh("ch")
+            a := g.fresh("ja")
+            b := g.fresh("jb")
+            s1 := g.fresh("st")
+            s2 := g.fresh("st")
+            cap := 1 + g.rng.below(3)
+            out.write("    {} := chan.channel({}, {}) else trap(\"alloc\")\n    defer {}.deinit()\n    {} := Job(id: {}, ch: &{})\n    {} := Job(id: {}, ch: &{})\n    {}: [FSTACK]u8 = ---\n    {}: [FSTACK]u8 = ---\n", c, it, cap, c, a, 2 * p + 1, c, b, 2 * p + 2, c, s1, s2)!
+            first := format("fiber.spawn(producer, &{}, {}[..])", a, s1)!
+            second := format("fiber.spawn(consumer, &{}, {}[..])", b, s2)!
+            if g.rng.chance(50) {
+                spawns.push(first)!
+                spawns.push(second)!
+            } else {
+                spawns.push(second)!
+                spawns.push(first)!
+            }
+            report.push(format("{}.acc", a)!)!
+            report.push(format("{}.acc", b)!)!
+        }
+        out.write("    {} := fiber.scheduler(Out + Alloc)\n    defer {}.deinit()\n", sc, sc)!
+        out.write("    with &{} on {}[..] {{\n", sc, ms)!
+        for sp in spawns.items {
+            out.write("        {}\n", sp)!
+            if g.rng.chance(30) { out.extend("        fiber.Sched.yield_now()\n")! }
+        }
+        e := g.int_expr(g.fib_it, 2)
+        out.write("        print(\"main {{}}\\n\", {})\n        fiber.Sched.join()\n    }}\n", e)!
+        fmts := list(string)
+        for _ in 0..report.items.len { fmts.push("{}")! }
+        out.write("    print(\"fibers {}\\n\", {})\n", join(fmts.items, " "), join(report.items, ", "))!
+    }
+}

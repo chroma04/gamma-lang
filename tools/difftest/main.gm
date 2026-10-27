@@ -1,0 +1,256 @@
+//! Differential tester for the Gamma compiler.
+//!
+//! Generates random, well-typed, terminating programs from seeds and runs each with the
+//! interpreter (`gamma run --backend=interp`) and with the C back end compiled by gcc and by clang
+//! (`gamma run --backend=c` with `CC` set). The three runs must agree on standard output,
+//! standard error and exit status. See `docs/contributing.md`.
+
+arena :: import "std/arena"
+fs :: import "std/fs"
+path :: import "std/path"
+process :: import "std/process"
+program :: import "./program"
+reduce :: import "./reduce"
+runner :: import "./runner"
+str :: import "std/str"
+thread :: import "std/thread"
+
+USAGE :: `usage: difftest [options]
+
+Runs random programs through the interpreter and the C back end (gcc, clang).
+
+  --start N          first seed (default 0)
+  --count N          number of seeds to run (default 100)
+  --jobs N, -j N     programs run in parallel (default: the number of CPUs)
+  --gamma PATH       the gamma executable (default: $GAMMA, else bootstrap/gamma next to
+                     this executable, else target/bootstrap/gamma)
+  --cc LIST          C compilers to compare, comma separated (default gcc,clang);
+                     compilers that are not installed are skipped
+  --mode MODE        build mode passed to gamma: debug (default), checked
+  --work DIR         where programs are written (default: the system temporary directory);
+                     programs of seeds that disagree are kept there
+  --timeout SECS     per run (default 60)
+  --print SEED       print the program of SEED and exit
+  --save SEED FILE   write the program of SEED to FILE and exit
+  --reduce FILE      shrink a program that the back ends disagree on; writes FILE.min.gm
+  --stop-first       stop at the first disagreement`
+
+Effects :: Alloc + Clock + Env + Err + Fs + Out + Proc + Sys
+
+/// Reports a problem with the command line and ends the program.
+usage_error :: fn(message: string) -> never needs Env + Err {
+    eprint("difftest: {}\n\n{}\n", message, USAGE)
+    Env.exit(2)
+}
+
+/// The number in `s`, which an option named `what` was given.
+number :: fn(s: string) -> u64 needs Env + Err {
+    return str.parse_int(u64, s) else {
+        eprint("difftest: not a number: {}\n", s)
+        Env.exit(2)
+    }
+}
+
+/// Whether the C compiler `cc` runs.
+installed :: fn(cc: string) -> bool needs Alloc + Proc {
+    s := process.status([_]string(cc, "--version"), process.SpawnOptions(stdin: .Null, stdout: .Null, stderr: .Null)) else return false
+    return process.success(s)
+}
+
+/// The gamma executable when `--gamma` is not given.
+default_gamma :: fn(args: []const string) -> string needs Alloc + Env + Fs {
+    if g := Env.var("GAMMA") { return g }
+    if args.len > 0 {
+        beside := path.join_alloc([_]string(path.dir_name(args[0]), "bootstrap", "gamma"))!
+        if fs.exists(beside) { return beside }
+    }
+    return "target/bootstrap/gamma"
+}
+
+/// The program of `seed`, in memory of the current allocator.
+generate :: fn(seed: u64) -> string needs Alloc => program.program(seed)
+
+main :: fn() needs Effects {
+    a := arena.new()
+    defer a.deinit()
+    code: u8 = 0
+    with a.allocator() { code = run() }
+    if code is not 0 {
+        a.deinit()
+        Env.exit(code)
+    }
+}
+
+run :: fn() -> u8 needs Effects {
+    args := Env.args()
+    start: u64 = 0
+    count: u64 = 100
+    jobs: u64 = u64(thread.cpu_count())
+    gamma := default_gamma(args)
+    ccs := list(string)
+    ccs.push("gcc")!
+    ccs.push("clang")!
+    mode := "debug"
+    work: string = path.join_alloc([_]string(fs.temp_dir(), "difftest"))!
+    timeout: u64 = 60
+    keep_going := true
+    i: usize = 1
+    while i < args.len {
+        opt := args[i]
+        step: usize = 2
+        if opt is "--stop-first" or opt is "-h" or opt is "--help" { step = 1 }
+        value := ""
+        known := opt in [_]string("--start", "--count", "--jobs", "-j", "--gamma", "--cc", "--mode", "--work", "--timeout", "--print", "--save", "--reduce")
+        if known {
+            value = args.get(i + 1) else usage_error(str.format("{} needs a value", opt)!)
+        }
+        match opt {
+            "--start" => { start = number(value) }
+            "--count" => { count = number(value) }
+            "--jobs", "-j" => {
+                jobs = number(value)
+                if jobs < 1 { jobs = 1 }
+            }
+            "--gamma" => { gamma = value }
+            "--cc" => {
+                ccs = list(string)
+                for part in str.split(value, ",") { ccs.push(part)! }
+            }
+            "--mode" => { mode = value }
+            "--work" => { work = value }
+            "--timeout" => { timeout = number(value) }
+            "--stop-first" => { keep_going = false }
+            "--print" => {
+                print("{}", generate(number(value)))
+                return 0
+            }
+            "--save" => {
+                seed := number(value)
+                file := args.get(i + 2) else usage_error("--save needs a seed and a file")
+                fs.write_all(file, generate(seed)) else e => {
+                    eprint("difftest: cannot write {}: {}\n", file, e)
+                    return 2
+                }
+                return 0
+            }
+            "--reduce" => {
+                ccs = installed_only(ccs, false)
+                cfg := runner.Config(gamma: gamma, ccs: ccs.items, mode: mode, work: work, timeout_s: if timeout < 20 { timeout } else { 20 })
+                reduce.reduce_file(&cfg, value)
+                return 0
+            }
+            "-h", "--help" => {
+                print("{}\n", USAGE)
+                return 0
+            }
+            _ => usage_error(str.format("unknown option `{}`", opt)!)
+        }
+        i += step
+    }
+    if not fs.exists(gamma) {
+        eprint("difftest: {} not found; build it with `bootstrap/build.sh` or pass --gamma\n", gamma)
+        return 2
+    }
+    ccs = installed_only(ccs, true)
+    cache := path.join_alloc([_]string(work, "cache"))!
+    _ = fs.make_dir_all(cache)
+    cfg := runner.Config(gamma: gamma, ccs: ccs.items, mode: mode, work: work, timeout_s: timeout)
+    shared := Shared(cfg: &cfg, next: start, end: start + count, keep_going: keep_going, print_lock: thread.mutex())
+    workers := list(thread.Thread)
+    for _ in 0..jobs {
+        w := thread.spawn(worker, &shared) else {
+            eprint("difftest: cannot start a thread\n")
+            return 2
+        }
+        workers.push(w)!
+    }
+    for w in workers.items { thread.join(w) }
+    configs := list(u8)
+    for cc in ccs.items { configs.write(", {}", cc)! }
+    print("difftest: {} programs ({} trapped, {} rejected by the compiler), {} disagreements; configurations: interp{}\n", shared.done, shared.trapped, shared.invalid, shared.mismatches, string(configs.items))
+    return if shared.mismatches > 0 or shared.invalid > 0 { 1 } else { 0 }
+}
+
+/// The compilers of `ccs` that run; a missing one is reported if `say` is set.
+installed_only :: fn(ccs: List(string), say: bool) -> List(string) needs Alloc + Err + Proc {
+    out := list(string)
+    for cc in ccs.items {
+        if installed(cc) {
+            out.push(cc)!
+        } else if say {
+            eprint("difftest: C compiler `{}` is not installed, skipping it\n", cc)
+        }
+    }
+    return out
+}
+
+/// What the threads share: the seeds still to run, how the runs went and the lock on the
+/// output.
+Shared :: struct {
+    cfg: ^const runner.Config
+    next: u64
+    end: u64
+    keep_going: bool
+    stop: u32 = 0
+    done: u64 = 0
+    trapped: u64 = 0
+    invalid: u64 = 0
+    mismatches: u64 = 0
+    print_lock: thread.Mutex
+}
+
+worker :: fn(s: ^Shared) needs Sys {
+    with heap_allocator(), system_io(), system_output() {
+        while true {
+            seed := @atomic_add(&s.next, 1, .SeqCst)
+            if seed >= s.end or @atomic_load(&s.stop, .SeqCst) is 1 { break }
+            check_seed(s, seed)
+            done := @atomic_add(&s.done, 1, .SeqCst) + 1
+            if done % 50 is 0 {
+                s.print_lock.lock()
+                eprint("difftest: {} programs, {} disagreements\n", done, @atomic_load(&s.mismatches, .SeqCst))
+                s.print_lock.unlock()
+            }
+        }
+    }
+}
+
+/// Runs the program of `seed` in every configuration and reports a problem.
+check_seed :: fn(s: ^Shared, seed: u64) needs Alloc + Clock + Err + Fs + Out + Proc + Sys {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        cfg := s.cfg
+        dir := path.join_alloc([_]string(cfg.work, str.format("seed-{}", seed)!))!
+        _ = fs.make_dir_all(dir)
+        file := path.join_alloc([_]string(dir, "main.gm"))!
+        fs.write_all(file, generate(seed)) else e => {
+            eprint("difftest: cannot write the program: {}\n", e)
+            return
+        }
+        results := runner.run_all(cfg, file)
+        base := &results.items[0].outcome
+        // A program the compiler rejects is a bug of the generator (or of the compiler).
+        if runner.rejected(base) {
+            _ = @atomic_add(&s.invalid, 1, .SeqCst)
+            report(s, str.format("seed {}: rejected by the compiler ({})\n{}\n", seed, file, base.stderr)!)
+            return
+        }
+        if base.code is 134 { _ = @atomic_add(&s.trapped, 1, .SeqCst) }
+        match runner.disagreement(results.items) {
+            null => { _ = fs.remove_all(dir) }
+            who => {
+                _ = @atomic_add(&s.mismatches, 1, .SeqCst)
+                report(s, str.format("seed {}: interp disagrees with {} ({})\n{}\n", seed, who, file, runner.describe(results.items))!)
+                if not s.keep_going { @atomic_store(&s.stop, 1, .SeqCst) }
+            }
+        }
+    }
+}
+
+/// Prints `text` without mixing it with another thread's.
+report :: fn(s: ^Shared, text: string) needs Out + Sys {
+    s.print_lock.lock()
+    Out.write(text)
+    s.print_lock.unlock()
+}

@@ -298,18 +298,18 @@ jobs:
       - name: Build gamma from the seed
         run: bootstrap/build.sh
       - name: Build difftest
-        run: cargo build --release --manifest-path tools/difftest/Cargo.toml --target-dir target
+        run: target/bootstrap/gamma build tools/difftest -o target/difftest
       - name: Compilers
         run: |
           gcc --version | head -n 1
           clang --version | head -n 1
       - name: Fixed seeds
-        run: target/release/difftest --start 0 --count 100 --cc gcc,clang
+        run: target/difftest --start 0 --count 100 --cc gcc,clang
       - name: Rotating seeds
         run: |
           start=$((1000 + (GITHUB_RUN_NUMBER % 500) * 200))
           echo "seeds $start..$((start + 200))"
-          target/release/difftest --start "$start" --count 200 --cc gcc,clang
+          target/difftest --start "$start" --count 200 --cc gcc,clang
 
   benchmarks:
     # Runs `gamma bench bench/` with the compiler of the pull request and with the base

@@ -1,0 +1,443 @@
+// Statements, functions and `main`.
+
+str :: import "std/str"
+
+ASSIGN_OPS: [9]string : [_]string("+%=", "-%=", "*%=", "+|=", "-|=", "*|=", "&=", "|=", "~=")
+TRAP_OPS: [3]string : [_]string("+=", "-=", "*=")
+
+push_var :: fn(g: ^Gen, name: string, ty: Ty, assignable: bool) needs Alloc {
+    g.vars.push(Var(name: name, ty: ty, assignable: assignable))!
+}
+
+expr_depth :: fn(g: ^Gen) -> u32 => 1 + g.rng.below(4).trunc(u32)
+
+block :: fn(g: ^Gen, out: ^List(u8), level: usize, count: usize) needs Alloc {
+    mark := g.vars.items.len
+    g.block_depth += 1
+    for _ in 0..count { g.stmt(out, level) }
+    g.block_depth -= 1
+    g.vars.truncate(mark)
+}
+
+stmt :: fn(g: ^Gen, out: ^List(u8), level: usize) needs Alloc {
+    ind := indent(level)
+    g.cost += g.mult
+    nested_ok := g.block_depth < 4 and g.cost < COST_LIMIT
+    loop_ok := nested_ok and g.loops < 2
+    if g.feat.feat_any() and g.rng.chance(12) {
+        if g.extra_stmt(out, level, nested_ok) { return }
+    }
+    match g.rng.below(100) {
+        0..=21 => {
+            ty := g.rand_ty()
+            d := g.expr_depth()
+            e := g.expr(ty, d)
+            name := g.fresh("v")
+            if g.rng.chance(85) or not g.mentions_var(e) {
+                out.write("{}{}: {} = {}\n", ind, name, ty_name(ty), e)!
+                // A string may point into a buffer that its scope frees, so it is never reassigned.
+                g.push_var(name, ty, ty is not .Str)
+            } else {
+                out.write("{}{}: {} : {}\n", ind, name, ty_name(ty), e)!
+                g.push_var(name, ty, false)
+            }
+        }
+        22..=41 => g.assign_stmt(out, level)
+        42..=61 => {
+            n := 1 + g.rng.below(3)
+            fmts := list(string)
+            args := list(string)
+            for _ in 0..n {
+                ty := g.rand_ty()
+                d := g.expr_depth()
+                args.push(g.expr(ty, d))!
+                fmts.push("{}")!
+            }
+            out.write("{}print(\"{}\\n\", {})\n", ind, join(fmts.items, " "), join(args.items, ", "))!
+        }
+        62..=70 if nested_ok => {
+            c := g.bool_expr(3)
+            out.write("{}if {} {{\n", ind, c)!
+            n := 1 + g.rng.below(3)
+            g.block(out, level + 1, n)
+            if g.rng.chance(50) {
+                out.write("{}}} else {{\n", ind)!
+                n2 := 1 + g.rng.below(3)
+                g.block(out, level + 1, n2)
+            }
+            out.write("{}}}\n", ind)!
+        }
+        71..=76 if loop_ok => {
+            k := 1 + g.rng.below(5)
+            counter := g.fresh("w")
+            out.write("{}{}: u8 = 0\n", ind, counter)!
+            out.write("{}while {} < {}u8 {{\n", ind, counter, k)!
+            out.write("{}    {} += 1\n", ind, counter)!
+            g.push_var(counter, .Int(U8), false)
+            g.loop_body(out, level + 1, u64(k))
+            g.vars.truncate(g.vars.items.len - 1)
+            out.write("{}}}\n", ind)!
+        }
+        77..=82 if loop_ok => {
+            k := 1 + g.rng.below(6)
+            t := g.pick_loop_int()
+            i := g.fresh("it")
+            range := if g.rng.chance(50) { format("0..{}{}", k, t.it_name())! } else { format("1..={}{}", k, t.it_name())! }
+            out.write("{}for {} in {} {{\n", ind, i, range)!
+            g.push_var(i, .Int(t), false)
+            g.loop_body(out, level + 1, u64(k))
+            g.vars.truncate(g.vars.items.len - 1)
+            out.write("{}}}\n", ind)!
+        }
+        83..=86 if loop_ok => {
+            arrs := list(usize)
+            for i in 0..g.vars.items.len {
+                if g.vars.items[i].ty is .Arr(_, _) { arrs.push(i)! }
+            }
+            if arrs.items.len is 0 { return }
+            v := g.vars.items[g.rng.pick(arrs.items)]
+            t := U8
+            n: usize = 0
+            if .Arr(et, len) := v.ty {
+                t = et
+                n = len
+            }
+            x := g.fresh("x")
+            out.write("{}for {} in {} {{\n", ind, x, v.name)!
+            g.push_var(x, .Int(t), false)
+            g.loop_body(out, level + 1, u64(n))
+            g.vars.truncate(g.vars.items.len - 1)
+            out.write("{}}}\n", ind)!
+        }
+        87..=90 if nested_ok => {
+            t := g.any_int()
+            o := g.opt_expr(t, 2)
+            b := g.fresh("b")
+            out.write("{}if {} := {} {{\n", ind, b, o)!
+            g.push_var(b, .Int(t), false)
+            n := 1 + g.rng.below(2)
+            g.block(out, level + 1, n)
+            g.vars.truncate(g.vars.items.len - 1)
+            if g.rng.chance(50) {
+                out.write("{}}} else {{\n", ind)!
+                n2 := 1 + g.rng.below(2)
+                g.block(out, level + 1, n2)
+            }
+            out.write("{}}}\n", ind)!
+        }
+        91..=94 if nested_ok => {
+            s := g.sh_expr(2)
+            c := g.fresh("c")
+            w := g.fresh("w")
+            h := g.fresh("h")
+            out.write("{}match {} {{\n", ind, s)!
+            out.write("{}    .Circle({}) => {{\n", ind, c)!
+            g.push_var(c, .Int(g.sh_circle), false)
+            n := 1 + g.rng.below(2)
+            g.block(out, level + 2, n)
+            g.vars.truncate(g.vars.items.len - 1)
+            out.write("{}    }}\n{}    .Rect({}, {}) => {{\n", ind, ind, w, h)!
+            g.push_var(w, .Int(g.sh_rect[0]), false)
+            g.push_var(h, .Int(g.sh_rect[1]), false)
+            n2 := 1 + g.rng.below(2)
+            g.block(out, level + 2, n2)
+            g.vars.truncate(g.vars.items.len - 2)
+            out.write("{}    }}\n{}    .Empty => {{\n", ind, ind)!
+            g.block(out, level + 2, 1)
+            out.write("{}    }}\n{}}}\n", ind, ind)!
+        }
+        95..=97 if nested_ok => {
+            t := g.any_int()
+            r := g.res_expr(t, 2)
+            b := g.fresh("e")
+            v := g.fresh("r")
+            out.write("{}match {} {{\n", ind, r)!
+            out.write("{}    !.Bad({}) => {{\n", ind, b)!
+            g.push_var(b, .Int(g.er_bad), false)
+            n := 1 + g.rng.below(2)
+            g.block(out, level + 2, n)
+            g.vars.truncate(g.vars.items.len - 1)
+            out.write("{}    }}\n{}    !.Worse => {{\n", ind, ind)!
+            g.block(out, level + 2, 1)
+            out.write("{}    }}\n{}    {} => {{\n", ind, ind, v)!
+            g.push_var(v, .Int(t), false)
+            n2 := 1 + g.rng.below(2)
+            g.block(out, level + 2, n2)
+            g.vars.truncate(g.vars.items.len - 1)
+            out.write("{}    }}\n{}}}\n", ind, ind)!
+        }
+        98 if nested_ok => {
+            // Deferred statements run when the enclosing block ends, also on a trap.
+            ty := g.rand_ty()
+            // A deferred statement cannot exit or suspend (§8.8).
+            saved_ev := g.ev
+            saved_co := g.co
+            g.ev = false
+            g.co = false
+            e := g.expr(ty, 2)
+            g.ev = saved_ev
+            g.co = saved_co
+            out.write("{}defer print(\"defer {{}}\\n\", {})\n", ind, e)!
+        }
+        99 if nested_ok => {
+            x := g.any_int()
+            y := g.any_int()
+            e := g.tup_expr(x, y, 3)
+            n1 := g.fresh("d")
+            n2 := g.fresh("d")
+            out.write("{}{}, {} := {}\n", ind, n1, n2, e)!
+            g.push_var(n1, .Int(x), true)
+            g.push_var(n2, .Int(y), true)
+        }
+        _ => g.early_exit(out, level)
+    }
+}
+
+/// The type of a `for` counter.
+pick_loop_int :: fn(g: ^Gen) -> It {
+    return match g.rng.below(4) {
+        0 => U8
+        1 => U32
+        2 => INTS[2]
+        _ => INTS[7]
+    }
+}
+
+/// An assignment to a variable that may be assigned.
+assign_stmt :: fn(g: ^Gen, out: ^List(u8), level: usize) needs Alloc {
+    ind := indent(level)
+    cands := g.assignable_vars()
+    if cands.items.len is 0 { return }
+    v := g.vars.items[g.rng.pick(cands.items)]
+    name := v.name
+    d := g.expr_depth()
+    match v.ty {
+        .Int(t) => {
+            e := g.int_expr(t, d)
+            if g.rng.chance(50) {
+                op := if g.rng.chance(g.trap_bias) { g.rng.pick(TRAP_OPS) } else { g.rng.pick(ASSIGN_OPS) }
+                out.write("{}{} {} {}\n", ind, name, op, e)!
+            } else {
+                out.write("{}{} = {}\n", ind, name, e)!
+            }
+        }
+        .Tup(a, b) if g.rng.chance(50) => {
+            k: usize = 1
+            t := b
+            if g.rng.chance(50) {
+                k = 0
+                t = a
+            }
+            e := g.int_expr(t, d)
+            out.write("{}{}.{} = {}\n", ind, name, k, e)!
+        }
+        .Pt if g.rng.chance(50) => {
+            k := g.rng.below(3)
+            e := g.int_expr(g.p_fields[k], d)
+            op := if g.rng.chance(min_of(g.trap_bias, 40)) { "+=" } else { "=" }
+            out.write("{}{}.{} {} {}\n", ind, name, FIELDS[k], op, e)!
+        }
+        .Gp(t) => {
+            match g.rng.below(3) {
+                0 => out.write("{}pair_swap(&{})\n", ind, name)!
+                1 => {
+                    e := g.int_expr(t, d)
+                    out.write("{}{}.a = {}\n", ind, name, e)!
+                }
+                _ => {
+                    e := g.expr(.Gp(t), d)
+                    out.write("{}{} = {}\n", ind, name, e)!
+                }
+            }
+        }
+        .Arr(t, n) => {
+            match g.rng.below(5) {
+                0 => out.write("{}{}[..].sort()\n", ind, name)!
+                1 => {
+                    i := g.rng.below(n)
+                    j := g.rng.below(n)
+                    out.write("{}{}.swap({}, {})\n", ind, name, i, j)!
+                }
+                2 => {
+                    e := g.int_expr(t, d)
+                    out.write("{}{}.fill({})\n", ind, name, e)!
+                }
+                _ => {
+                    e := g.int_expr(t, d)
+                    i := g.int_expr(U8, 1)
+                    out.write("{}{}[({} % {}u8)] = {}\n", ind, name, i, n, e)!
+                }
+            }
+        }
+        ty => {
+            e := g.expr(ty, d)
+            out.write("{}{} = {}\n", ind, name, e)!
+        }
+    }
+}
+
+/// An `if` that leaves the loop or the function (with a value fitting its return type),
+/// or a `try` that propagates absence or an error.
+early_exit :: fn(g: ^Gen, out: ^List(u8), level: usize) needs Alloc {
+    ind := indent(level)
+    c := g.bool_expr(3)
+    if g.loops > 0 and g.rng.chance(50) {
+        kw := if g.rng.chance(50) { "break" } else { "continue" }
+        out.write("{}if {} {{ {} }}\n", ind, c, kw)!
+        return
+    }
+    ret := g.ret else return
+    match ret {
+        .Opt(_) if g.rng.chance(60) => {
+            if g.rng.chance(50) {
+                out.write("{}if {} {{ return null }}\n", ind, c)!
+            } else {
+                u := g.any_int()
+                o := g.opt_expr(u, 2)
+                tgt := g.fresh("o")
+                out.write("{}{}: {} = try {}\n", ind, tgt, u.it_name(), o)!
+                g.push_var(tgt, .Int(u), true)
+            }
+        }
+        .Res(_) if g.rng.chance(80) => {
+            match g.rng.below(3) {
+                0 => out.write("{}if {} {{ return !.Worse }}\n", ind, c)!
+                1 => {
+                    e := g.int_expr(g.er_bad, 2)
+                    out.write("{}if {} {{ return !.Bad({}) }}\n", ind, c, e)!
+                }
+                _ => {
+                    u := g.any_int()
+                    r := g.res_expr(u, 2)
+                    tgt := g.fresh("o")
+                    out.write("{}{}: {} = try {}\n", ind, tgt, u.it_name(), r)!
+                    g.push_var(tgt, .Int(u), true)
+                }
+            }
+        }
+        ty => {
+            e := g.expr(ty, 3)
+            out.write("{}if {} {{ return {} }}\n", ind, c, e)!
+        }
+    }
+}
+
+loop_body :: fn(g: ^Gen, out: ^List(u8), level: usize, k: u64) needs Alloc {
+    saved := g.mult
+    g.mult = g.mult *| k
+    g.loops += 1
+    n := 1 + g.rng.below(4)
+    g.block(out, level, n)
+    g.loops -= 1
+    g.mult = saved
+}
+
+// ----- functions ------------------------------------------------------------------
+
+begin_function :: fn(g: ^Gen, ret: ?Ty, callable: usize, ev: bool, co: bool) {
+    g.ev = ev
+    g.co = co
+    g.vars.clear()
+    g.cost = 1
+    g.mult = 1
+    g.loops = 0
+    g.block_depth = 0
+    g.ret = ret
+    g.callable = callable
+}
+
+function :: fn(g: ^Gen, index: usize) -> string needs Alloc {
+    name := format("f{}", index)!
+    ret := g.rand_ret_ty()
+    recursive := ret is .Int(_) and g.rng.chance(25)
+    ev := g.feat.effects and g.rng.chance(30)
+    co := g.feat.effects and g.rng.chance(15)
+    g.begin_function(ret, index, ev, co)
+    params := list(Ty)
+    sig := list(string)
+    if recursive {
+        sig.push("d: u32")!
+        params.push(.Int(U32))!
+        g.push_var("d", .Int(U32), false)
+    }
+    np := g.rng.below(4)
+    for k in 0..np {
+        ty := g.rand_ty()
+        pname := format("p{}", k)!
+        sig.push(format("{}: {}", pname, ty_name(ty))!)!
+        g.push_var(pname, ty, false)
+        params.push(ty)!
+    }
+    eff := g.effect_set(ev, co)
+    text := list(u8)
+    text.write("{} :: fn({}) -> {} needs {} {{\n", name, join(sig.items, ", "), ty_name(ret), eff)!
+    if recursive {
+        e := g.expr(ret, 3)
+        text.write("    if d is 0 {{ return {} }}\n", e)!
+    }
+    n := 2 + g.rng.below(6)
+    for _ in 0..n { g.stmt(&text, 1) }
+    if .Int(t) := ret {
+        if recursive {
+            acc := list(string)
+            reps := 1 + g.rng.below(2)
+            for _ in 0..reps {
+                args := list(string)
+                args.push("d - 1")!
+                for pi in 1..params.items.len { args.push(g.expr(params.items[pi], 3))! }
+                r := g.fresh("rec")
+                text.write("    {}: {} = {}({})\n", r, t.it_name(), name, join(args.items, ", "))!
+                acc.push(r)!
+            }
+            combined := g.int_expr(t, 2)
+            for r in acc.items { combined = format("({} +% {})", combined, r)! }
+            text.write("    return {}\n", combined)!
+            return finish_function(g, &text, name, params, ret, recursive, ev, co)
+        }
+    }
+    e := g.expr(ret, 4)
+    text.write("    return {}\n", e)!
+    return finish_function(g, &text, name, params, ret, recursive, ev, co)
+}
+
+finish_function :: fn(g: ^Gen, text: ^List(u8), name: string, params: List(Ty), ret: Ty, recursive: bool, ev: bool, co: bool) -> string needs Alloc {
+    text.extend("}\n")!
+    cost := if recursive { g.cost *| 32 } else { g.cost }
+    g.funcs.push(Func(name: name, params: params.items, ret: ret, cost: cost, recursive: recursive, ev: ev, co: co))!
+    return text.items
+}
+
+main_fn :: fn(g: ^Gen) -> string needs Alloc {
+    n := g.funcs.items.len
+    g.begin_function(null, n, false, false)
+    g.in_main = true
+    eff := g.effect_set(false, false)
+    text := list(u8)
+    text.write("main :: fn() needs {} {{\n", eff)!
+    count := 3 + g.rng.below(6)
+    for _ in 0..count { g.stmt(&text, 1) }
+    g.fiber_blocks(&text)
+    // Print the result of every function at least once.
+    for i in 0..n {
+        f := g.funcs.items[i]
+        // A function that performs effects is called under handlers for them.
+        w := g.open_with(&text, 1, f.ev, f.co, f.ret)
+        g.ev = f.ev
+        g.co = f.co
+        args := list(string)
+        for k in 0..f.params.len {
+            if f.recursive and k is 0 {
+                m := g.rng.below(6)
+                args.push(format("({}u32)", m)!)!
+            } else {
+                args.push(g.expr(f.params[k], 2))!
+            }
+        }
+        g.ev = false
+        g.co = false
+        call_text := w.wrap(format("{}({})", f.name, join(args.items, ", "))!)
+        text.write("    print(\"{}: {{}}\\n\", {})\n", f.name, call_text)!
+    }
+    text.extend("}\n")!
+    return text.items
+}
