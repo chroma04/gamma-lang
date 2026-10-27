@@ -1,0 +1,179 @@
+// Diagnostics of the buffers, their related locations and quick fixes, and how checking
+// carries on past syntax errors.
+
+json :: import "std/json"
+kit :: import "../kit"
+str :: import "std/str"
+
+diagnostics_follow_the_buffer :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-diagnostics_follow_the_buffer")
+    bad := "main :: fn() {\n    x := \"é😀\" + undefined_name\n}\n"
+    path := try put(t, dir, "main.gm", "main :: fn() {}\n")
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    // The buffer differs from the file on disk: the buffer is what is checked.
+    try l.open(path, bad)
+    d := try l.diagnostics(path, 1)
+    try expect_some(t, d)
+    err := try find_containing(t, d, "message", "undefined_name", "the unknown name")
+    try expect_int(t, "severity", field(err, "severity"), 1)
+    try expect_string(t, "source", field(err, "source"), "gamma")
+    // `    x := "é😀" + ` is 17 characters before the name in UTF-16 units (the emoji counts two).
+    try expect_int(t, "line", dig(err, "range.start.line"), 1)
+    try expect_int(t, "start character", dig(err, "range.start.character"), 17)
+    try expect_int(t, "end character", dig(err, "range.end.character"), 17 + 14)
+    // Fixing the buffer clears the diagnostics.
+    try l.change(path, 2, "main :: fn() {\n    x := 1\n    _ = x\n}\n")
+    try expect_clean(t, try l.diagnostics(path, 2))
+    try l.shutdown()
+    return ()
+}
+
+diagnostics_carry_related_locations :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-diagnostics_carry_related_locations")
+    text := "f :: fn() {}\nf :: fn() {}\nmain :: fn() {}\n"
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    d := try l.diagnostics(path, 1)
+    dup := try find_containing(t, d, "message", "declared twice", "the duplicate")
+    try expect_int(t, "line", dig(dup, "range.start.line"), 1)
+    related := dig(dup, "relatedInformation.0")
+    try expect_string(t, "related uri", dig(related, "location.uri"), uri(path))
+    try expect_int(t, "related line", dig(related, "location.range.start.line"), 0)
+    try l.shutdown()
+    return ()
+}
+
+/// The parameters of a code action request on line 3 with the diagnostic `d` in its context,
+/// limited to the kinds in `only` (JSON text of an array) if that is not empty.
+code_action_params :: fn(path: string, d: json.Value, only: string) -> string needs Alloc {
+    only_member := if only.len > 0 { str.format(",\"only\":{}", only)! } else { "" }
+    return str.format(
+        "{{\"textDocument\":{{\"uri\":{}}},\"range\":{{\"start\":{{\"line\":3,\"character\":0}},\"end\":{{\"line\":3,\"character\":0}}}},\"context\":{{\"diagnostics\":[{}]{}}}}}",
+        jq(uri(path)),
+        show(d),
+        only_member,
+    )!
+}
+
+fixes_are_offered_as_quick_fixes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-fixes_are_offered_as_quick_fixes")
+    text := "f :: fn() -> i32 => 1\n\nmain :: fn() {\n    f()\n}\n"
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    init := try l.initialize()
+    try expect_string(t, "code action kind", dig(init, "capabilities.codeActionProvider.codeActionKinds.0"), "quickfix")
+    try l.open(path, text)
+    d := try l.diagnostics(path, 1)
+    unused := try find_containing(t, d, "message", "unused", "the unused value")
+    actions := try l.result("textDocument/codeAction", code_action_params(path, unused, ""))
+    try expect_len(t, "the code actions", actions, 1)
+    a := item(actions, 0)
+    try expect_string(t, "kind", field(a, "kind"), "quickfix")
+    try expect_bool(t, "isPreferred", field(a, "isPreferred"), true)
+    try t.expect_text("the diagnostic of the action", string_of(field(unused, "message")), string_of(dig(a, "diagnostics.0.message")))
+    // An insertion before `f()`: an empty range, not widened as diagnostics are.
+    edit := item(field(dig(a, "edit.changes"), uri(path)), 0)
+    try expect_string(t, "newText", field(edit, "newText"), "_ = ")
+    try expect_json(t, "start of the edit", dig(edit, "range.start"), "{\"line\": 3, \"character\": 4}")
+    try expect_json(t, "end of the edit", dig(edit, "range.end"), "{\"line\": 3, \"character\": 4}")
+    // A diagnostic with two fixes offers both, neither preferred.
+    try l.change(path, 2, "g :: fn() -> ?i32 => 1\n\nh :: fn() -> ?i32 {\n    x := try g() else 0\n    return x\n}\n")
+    d = try l.diagnostics(path, 2)
+    amb := try find_containing(t, d, "message", "ambiguous", "`try x else d`")
+    actions = try l.result("textDocument/codeAction", code_action_params(path, amb, ""))
+    try t.expect_text("the titles of the actions", "write `try (x else d)`,write `(try x) else d`", names_of(elements(actions), "title"))
+    for action in elements(actions) {
+        try expect_bool(t, "isPreferred", field(action, "isPreferred"), false)
+    }
+    // Only quick fixes are offered.
+    refactors := try l.result("textDocument/codeAction", code_action_params(path, amb, "[\"refactor\"]"))
+    try expect_json(t, "the refactorings", refactors, "[]")
+    try l.shutdown()
+    return ()
+}
+
+syntax_errors_are_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-syntax_errors_are_reported")
+    text := "main :: fn() {\n    x := (1 +\n}\n"
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    d := try l.diagnostics(path, 1)
+    try expect_some(t, d)
+    for x in d {
+        line := try as_int(t, dig(x, "range.start.line"))
+        try t.check(line <= 2, "a diagnostic is on line {}: {}", line, show(x))
+    }
+    try l.shutdown()
+    return ()
+}
+
+names_after_a_syntax_error_are_still_resolved :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-names_after_a_syntax_error")
+    // The first function lacks its closing brace; the second is a complete declaration
+    // in the first column.
+    text :: `helper :: fn(n: i32) -> i32 => n + 1
+
+broken :: fn() {
+    x := helper(1)
+    _ = x
+
+later :: fn() -> i32 {
+    y := helper(2)
+    return y
+}
+`
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    d := try l.diagnostics(path, 1)
+    try expect_message(t, d, "unclosed `{`")
+    // Definition and hover work in the function before and in the one after the error.
+    for line in (3, 7) {
+        def := try l.result("textDocument/definition", at(path, line, 11))
+        try expect_position(t, str.format("the definition from line {}", line)!, dig(def, "range.start"), 0, 0)
+    }
+    h := try l.result("textDocument/hover", at(path, 7, 4))
+    try expect_contains_text(t, "the hover", dig(h, "contents.value"), "y: i32")
+    try l.shutdown()
+    return ()
+}
+
+/// Fails the test unless the string `v` contains `needle`.
+expect_contains_text :: fn(t: ^kit.T, what: string, v: json.Value, needle: string) -> kit.Fail!() needs Alloc {
+    s := try as_text(t, v)
+    return t.expect_contains(what, s, needle)
+}
+
+an_unclosed_paren_does_not_hide_later_declarations :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-an_unclosed_paren")
+    text :: `helper :: fn(n: i32) -> i32 => n + 1
+
+broken :: fn() {
+    x := helper(1
+    _ = x
+}
+
+later :: fn() -> i32 => helper(2)
+`
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    try expect_some(t, try l.diagnostics(path, 1))
+    def := try l.result("textDocument/definition", at(path, 7, 28))
+    try expect_position(t, "the definition", dig(def, "range.start"), 0, 0)
+    try l.shutdown()
+    return ()
+}
