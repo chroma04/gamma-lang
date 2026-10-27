@@ -137,7 +137,7 @@ perform_native :: fn(m: ^Machine, span: source.Span, kind: NativeKind, op: u32, 
     match kind {
         .Out, .Err => {
             data := try m.read_string(span, args[0])
-            if kind is .Out { Out.write(data) } else { Err.write(data) }
+            m.host_write(if kind is .Out { 1 } else { 2 }, data)
             free(data)
         }
         .Env => match op {

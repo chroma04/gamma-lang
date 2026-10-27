@@ -24,7 +24,7 @@ pub run_interp :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -
     args := list(string)
     args.push(input)!
     args.extend(opts.program_args)!
-    match interp.run_entry(&p, entry, mode, args.items) {
+    match interp.run_entry(&p, entry, mode, args.items, null) {
         .Exit(code) => return code
         .Trap(t) => {
             eprint("trap: {}", interp.trap_report(&p, t))

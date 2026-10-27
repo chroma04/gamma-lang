@@ -38,8 +38,11 @@ Expr :: tir.Expr
 Sema :: sema.Sema
 Prog :: cgen.Prog
 
-/// The effects of running a program.
-pub Run :: Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys
+/// The effects of the system a program runs on.
+pub Host :: Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys
+
+/// The effects of evaluation: the host's, and switching between fibers (`fiber.gm`).
+Run :: Host + Coro
 
 /// The build mode (§1.4): checked operations trap except in `Fast` mode. The interpreter
 /// checks every memory access in every mode, so `Safe` runs exactly as `Checked`.
@@ -212,6 +215,45 @@ pub Machine :: struct {
     alloc_tags: hash_map.HashMap(u64, AllocTag)
     /// The state of the system services (`sys.gm`).
     sys: SysState
+    /// What the program writes to its standard output and error goes through it, if set.
+    filter: ?^Filter
+}
+
+/// Hides what a program writes to its standard output and error up to the first
+/// occurrence of a marker in each (the REPL replays statements this way).
+pub Filter :: struct {
+    marker: string
+    hiding: [2]bool
+    pending: [2]List(u8)
+}
+
+/// A filter hiding output up to `marker` on both streams if `hide`.
+pub filter :: fn(marker: string, hide: bool) -> Filter needs Alloc => Filter(marker: marker, hiding: [2]bool(hide, hide), pending: [2]List(u8)(list(u8), list(u8)))
+
+/// Writes `data` to the host's standard output (`fd` 1) or error (2), through the filter.
+host_write :: fn(m: ^Machine, fd: u32, data: []const u8) needs Alloc + Err + Out {
+    shown := data
+    if f := m.filter {
+        i := if fd is 2 { 1 } else { 0 }
+        if f.hiding[i] {
+            p := &f.pending[i]
+            p.extend(data)!
+            at := str.find(p.items, f.marker) else {
+                // Only the end can still be part of the marker.
+                if p.items.len > f.marker.len {
+                    keep := p.items.len - f.marker.len
+                    tail := p.items[keep..p.items.len]
+                    for k in 0..tail.len { p.items[k] = tail[k] }
+                    p.truncate(f.marker.len)
+                }
+                return ()
+            }
+            f.hiding[i] = false
+            shown = p.items[at + f.marker.len..p.items.len]
+        }
+    }
+    if shown.len is 0 { return () }
+    if fd is 2 { Err.write(shown) } else { Out.write(shown) }
 }
 
 AllocTag :: struct {
@@ -252,6 +294,7 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         fiber_stack: ~u64(0),
         alloc_tags: hash_map.hash_map(u64, AllocTag),
         sys: sys_state(),
+        filter: null,
     )
     m.scratch.chunks.push(make_fill(CHUNK, u8(0))!)!
     // Handle 0 is the empty context.
@@ -829,31 +872,32 @@ pub Outcome :: union {
     Trap: ^Trap
 }
 
-/// Runs `entry` (the program's `main` or the function wrapping it): installs the
+/// Runs `entry` (the program's `main` or the function wrapping it), with its output
+/// through `filter` if given: installs the
 /// default handlers of the ambient effects (`Out` to standard output, `Err` to standard
 /// error, `Env` with `args`) and returns the exit status (0, `main`'s `u8` result, or 1
 /// if it returns an error, which is first written to standard error as `error: …`).
-pub run_entry :: fn(p: ^Prog, entry: u32, mode: Mode, args: []const string) -> Outcome needs Run {
+pub run_entry :: fn(p: ^Prog, entry: u32, mode: Mode, args: []const string, filter: ?^Filter) -> Outcome needs Host {
     return with heap_allocator() {
         m := machine(p, mode, args)
-        marker: u8 = 0
-        here := (&marker).addr()
-        // The evaluation may use most of the 64 MiB the runtime gives the main thread.
-        m.stack_floor = if here > (60 << 20) { here - (60 << 20) } else { 0 }
-        cx: u32 = 0
-        a := p.ambient
-        if e := a.out { cx = m.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Out), 0, 0, null) }
-        if e := a.err { cx = m.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Err), 0, 0, null) }
-        if e := a.env { cx = m.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Env), 0, 0, null) }
-        ret_ty := m.func(entry).ret
-        ret := m.tmp(m.size(ret_ty))
-        outcome: Outcome = match m.call_function(source.DUMMY, entry, empty_slice([]u8), null, cx, null, false, ret) {
-            !.Exit(code) => .Exit(code)
-            !.Trap(t) => .Trap(t)
-            !_ => .Trap(new(Trap(message: "internal error: control flow escaped `main`", span: source.DUMMY, trace: list(TraceCall)))!)
-            _ => .Exit(m.exit_status(ret_ty, ret))
+        m.filter = filter
+        mp := &m
+        run :: fn() -> Outcome needs Run {
+            cx: u32 = 0
+            a := p.ambient
+            if e := a.out { cx = mp.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Out), 0, 0, null) }
+            if e := a.err { cx = mp.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Err), 0, 0, null) }
+            if e := a.env { cx = mp.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Env), 0, 0, null) }
+            ret_ty := mp.func(entry).ret
+            ret := mp.tmp(mp.size(ret_ty))
+            return match mp.call_function(source.DUMMY, entry, empty_slice([]u8), null, cx, null, false, ret) {
+                !.Exit(code) => .Exit(code)
+                !.Trap(t) => .Trap(t)
+                !_ => .Trap(new(Trap(message: "internal error: control flow escaped `main`", span: source.DUMMY, trace: list(TraceCall)))!)
+                _ => .Exit(mp.exit_status(ret_ty, ret))
+            }
         }
-        outcome
+        mp.run_coroutines(run)
     }
 }
 
