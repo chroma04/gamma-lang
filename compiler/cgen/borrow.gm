@@ -1,4 +1,4 @@
-// Parameters passed without a copy (Appendix D.5; mirrors `src/cgen/borrow.rs`).
+// Parameters passed without a copy (Appendix D.5).
 //
 // A large parameter (`CTypes.by_ref`) arrives as the address of the caller's value, and the
 // callee normally copies it into its frame, since a parameter is an object of its own

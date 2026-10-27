@@ -1,5 +1,5 @@
 // Checking expressions (§7): literals, names, operators, calls, construction and
-// control-flow expressions (mirrors `src/sema/expr.rs`, `call.rs` and `construct.rs`).
+// control-flow expressions.
 
 /// Checks an expression whose value is used. `expect` is a hint from the context (the
 /// caller still coerces to it where the context is a coercion site).
@@ -1722,8 +1722,8 @@ construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Sp
     return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
 }
 
-/// The default of field `i` of struct `id` of type `ty`, as the reference implementation
-/// gives it: the literal itself for a numeric, `bool` or `null` literal of the field's
+/// The default of field `i` of struct `id` of type `ty`, as it is
+/// used: the literal itself for a numeric, `bool` or `null` literal of the field's
 /// type, else the default's value in static memory.
 field_default :: fn(cx: ^FnCx, id: u32, i: usize, ty: Ty, span: source.Span) -> ?^Expr needs Load {
     defaults := cx.s.adts.items[usize(id)].defaults

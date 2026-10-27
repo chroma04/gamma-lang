@@ -1,5 +1,4 @@
-// Vector types `#simd [N]T` (§5.6.2) and math vectors `#vec [N]T` (§5.6.3): forming them
-// (mirrors `src/sema/vector.rs` and `mathvec.rs`).
+// Vector types `#simd [N]T` (§5.6.2) and math vectors `#vec [N]T` (§5.6.3): forming them.
 
 /// The largest vector, in bytes (§5.6.2).
 pub MAX_VECTOR_BYTES :: 64

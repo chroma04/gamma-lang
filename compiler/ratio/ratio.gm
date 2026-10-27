@@ -1,5 +1,5 @@
 //! Exact rational numbers, for the values of float constants (spec §6.2). The operations
-//! follow the conventions of Rust's `num-rational` `BigRational`: a value is always in
+//! are exact: a value is always in
 //! lowest terms with a positive denominator, so equal numbers have equal parts.
 //!
 //! Every function returns a new value and leaves its arguments alone. Memory comes from

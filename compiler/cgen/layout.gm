@@ -1,6 +1,5 @@
-// The layouts of types with their field offsets, as the back end needs them (mirrors
-// `src/layout.rs`). The checker's layouts (`sema/layout.gm`) give sizes and alignments
-// only.
+// The layouts of types with their field offsets, as the back end needs them.
+// The checker's layouts (`sema/layout.gm`) give sizes and alignments only.
 
 /// The target the generated code is for.
 pub Target :: loader.Target

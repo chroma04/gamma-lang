@@ -1,5 +1,5 @@
-// Calls, effects, `with`, `try`, conditions, patterns and `in` (the second half of
-// `src/cgen/expr.rs`).
+// Calls, effects, `with`, `try`, conditions, patterns and `in` (the second half
+// of the expressions of `expr.gm`).
 
 // ---------------------------------------------------------------------------------
 // Calls

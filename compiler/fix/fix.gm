@@ -1,4 +1,4 @@
-//! Applying the fixes that diagnostics carry (`gammac fix`, mirroring `src/fix.rs`).
+//! Applying the fixes that diagnostics carry (`gammac fix`).
 //!
 //! A diagnostic with exactly one fix is resolved by applying it; one with several leaves the
 //! choice to the programmer. Fixes are applied whole: a fix that has an edit in a file that

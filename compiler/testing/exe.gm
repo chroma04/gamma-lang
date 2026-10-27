@@ -1,5 +1,4 @@
-// Running the test executable on one test (mirrors `run_exe` and `native_stderr` in
-// `src/testing.rs` and `src/main.rs`).
+// Running the test executable on one test.
 
 /// The standard error of a failed native test as the interpreter reports it: a trap's
 /// message and location are in it, without the `trap: ` prefix.
@@ -16,7 +15,7 @@ timed_out :: fn(limit: ?f64) -> string needs Alloc {
     return str.format("timed out after {} s\n", limit_seconds(limit))!
 }
 
-/// A time limit as the reference implementation's `Duration` holds it: whole nanoseconds.
+/// A time limit rounded to whole nanoseconds.
 limit_seconds :: fn(limit: ?f64) -> f64 {
     s := limit else return 0.0
     ns := math.round(s * 1e9).sat(u64)

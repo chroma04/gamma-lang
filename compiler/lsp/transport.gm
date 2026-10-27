@@ -172,7 +172,7 @@ trim_end_newlines :: fn(s: string) -> string {
     return s[0..end]
 }
 
-/// A length as Rust's `usize::from_str` reads it: digits, with an optional leading `+`.
+/// A length: digits, with an optional leading `+`.
 parse_length :: fn(s: string) -> ?usize {
     t := if s.starts_with("+") { s[1..] } else { s }
     if t.len is 0 { return null }

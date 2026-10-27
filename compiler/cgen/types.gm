@@ -1,6 +1,5 @@
 // C representations of Gamma types, and the type descriptors that the runtime's
-// formatter reads (mirrors `src/cgen/types.rs`; debugger views and the Fil-C blob kinds
-// are not ported: `-g` and the Safe mode are left to the reference implementation).
+// formatter reads.
 //
 // Scalars (integers up to 128 bits, floats, `bool`, pointers) are native C types.
 // Structs, tuples, arrays, optionals, results and tagged unions are *typed structs*:
@@ -373,7 +372,7 @@ make_mirror :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
             if member_name(n) is not null { ty.add_member_name(n) }
         }
     }
-    // Numbered by how many mirrors were asked for, as the reference does.
+    // Numbered by how many mirrors were asked for.
     name := str.format("gm_cs{}", ty.mirrors.len())!
     attrs := list(string)
     if packed { attrs.push("packed")! }
@@ -451,7 +450,7 @@ pub mirror_text :: fn(ty: ^const CTypes) -> string => ty.mirror_defs.items
 /// Typedefs of the blob types used, then of the typed structs.
 pub blob_typedefs :: fn(ty: ^const CTypes) -> string needs Alloc {
     out := list(u8)
-    // In the order of their sizes, alignments and kinds, as the reference's sorted set.
+    // In the order of their sizes, alignments and kinds.
     sorted := list(BlobDef)
     sorted.extend(ty.blobs.items)!
     sorted.items.sort_by(blob_before)
@@ -694,7 +693,7 @@ BlobDef :: struct {
     text: string
 }
 
-/// The order of the reference's sorted set of blobs: by size, alignment, then kind (lanes
+/// The order of the blobs: by size, alignment, then kind (lanes
 /// compared word by word, numbers before pointers).
 blob_before :: fn(x, y: ^const BlobDef) -> bool {
     if x.size is not y.size { return x.size < y.size }

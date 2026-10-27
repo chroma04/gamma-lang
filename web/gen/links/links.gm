@@ -188,8 +188,8 @@ test "rewriting" {
         expect_eq(rewrite_link("../README.md", "docs/lint.md", "docs/lint.html", "").dest, "../index.html")
         expect_eq(rewrite_link("../lib", "docs/lint.md", "docs/lint.html", "").dest, str.format("{}/tree/lib", g)!)
         expect_eq(
-            rewrite_link("../src/main.rs", "docs/lint.md", "docs/lint.html", "").dest,
-            str.format("{}/blob/src/main.rs", g)!,
+            rewrite_link("../compiler/main.gm", "docs/lint.md", "docs/lint.html", "").dest,
+            str.format("{}/blob/compiler/main.gm", g)!,
         )
         expect_eq(rewrite_link("https://x.org/a", "docs/lint.md", "docs/lint.html", "").dest, "https://x.org/a")
         expect_eq(rewrite_link("#top", "docs/lint.md", "docs/lint.html", "").dest, "#top")

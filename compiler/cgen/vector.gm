@@ -1,4 +1,4 @@
-// Vectors `#simd [N]T` (§5.6.2) (mirrors `src/cgen/vector.rs`). A vector value is stored
+// Vectors `#simd [N]T` (§5.6.2). A vector value is stored
 // like the array of its lanes (a typed struct aligned to its size); its operators load
 // the operands into GCC/Clang vector types, so that an operation without a check is one
 // vector instruction where the target has one. Operations whose scalar form has a check

@@ -1,10 +1,10 @@
-// The texts of operating system errors, as the reference implementation prints them
-// (Rust's `io::Error`: the system's message and `(os error N)`).
+// The texts of operating system errors, as gammac prints them:
+// the system's message and `(os error N)`.
 
 io :: import "std/io"
 str :: import "std/str"
 
-/// The text of `e` as Rust's `io::Error` displays the same error on this system.
+/// The text of `e` on this system: its message and `(os error N)`.
 pub os_error_text :: fn(e: IoError) -> string needs Alloc {
     when target.os is .Windows {
         code: i32 = match e {

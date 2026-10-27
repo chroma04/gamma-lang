@@ -23,8 +23,8 @@
 //! read the package's `gamma.toml` (`pkg/`).
 //!
 //! Every command takes `--diag-format=human|short|json` (default `human`), the formats of
-//! `gamma`; `doc` has its own options and diagnostics (`doc/doc.gm`). See `USAGE` for what each command does and `docs/self-hosting.md` for how
-//! each matches the reference implementation. With several files, the output of each is
+//! `gamma`; `doc` has its own options and diagnostics (`doc/doc.gm`). See `USAGE` for what
+//! each command does and `docs/self-hosting.md` for how the compiler is built. With several files, the output of each is
 //! preceded by a line `==> FILE <==` on both streams. The exit status is 1 if a file has
 //! errors, 2 for a usage error or a file that cannot be read; `run` ends with the
 //! program's status, and `test` and `bench` with 1 if a test fails.

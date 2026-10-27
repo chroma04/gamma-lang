@@ -1,6 +1,5 @@
-// Compile-time values (§17): what evaluating a checked expression gives. The reference
-// implementation keeps a value as its bytes in the target's layout (`ConstValue` in
-// `src/tir.rs`); gammac keeps its structure, and pointers as places in that structure.
+// Compile-time values (§17): what evaluating a checked expression gives. A value keeps
+// its structure, and a pointer is a place in that structure.
 
 /// A value computed at compile time. Its type is the type of the expression that gave
 /// it, which says how to read it.

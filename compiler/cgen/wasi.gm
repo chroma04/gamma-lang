@@ -1,5 +1,4 @@
-//! Building for WASI (`wasm32-wasi`): the link options and the Asyncify step (mirrors
-//! `src/cgen/wasi.rs`).
+//! Building for WASI (`wasm32-wasi`): the link options and the Asyncify step.
 //!
 //! WebAssembly gives a program no way to switch stacks, so the runtime implements fiber
 //! switches with Binaryen's Asyncify transformation (see "context switching" in

@@ -1,6 +1,6 @@
 // Dependency resolution: from a root manifest and an optional lockfile to the revision of
 // every git package, the archive of every URL package, their checkouts and the lockfile that
-// records them (mirrors `src/pkg/resolve.rs`).
+// records them.
 //
 // The graph is walked from the root package. Each git package is identified by its
 // repository URL (and subdirectory); every requirement on it is collected, and one revision

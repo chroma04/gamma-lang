@@ -1,5 +1,4 @@
-// Long chains of operations, such as `a + b + c + …` or `x.abs().abs()…` (mirrors
-// `src/cgen/chain.rs`).
+// Long chains of operations, such as `a + b + c + …` or `x.abs().abs()…`.
 //
 // Each operation of a chain takes the value of the one before it as its first operand.
 // Emitted naively, every temporary of every link is declared in the same C block, and the

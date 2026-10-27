@@ -1,5 +1,4 @@
-//! `gammac repl`: an interactive read-eval-print loop on the interpreter. Mirrors
-//! `src/repl/mod.rs`.
+//! `gammac repl`: an interactive read-eval-print loop on the interpreter.
 //!
 //! There is no incremental compilation, so every input is checked and run as a complete
 //! program that is synthesized from the session so far:

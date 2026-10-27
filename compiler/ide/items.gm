@@ -1,5 +1,4 @@
-//! The walk over declarations: functions, type literals, handlers and the outline
-//! (mirrors `src/sema/ide/items.rs`).
+//! The walk over declarations: functions, type literals, handlers and the outline.
 
 ast :: import "../ast"
 load :: import "../load"

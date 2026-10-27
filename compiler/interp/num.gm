@@ -1,5 +1,5 @@
 // Numbers of the interpreter: floats in the target's byte order, rounded to their type, and
-// exact integers of up to 129 bits for the conversions (mirrors `src/interp/num.rs`).
+// exact integers of up to 129 bits for the conversions.
 
 bigint :: import "../bigint"
 ratio :: import "../ratio"
@@ -199,7 +199,7 @@ put_float :: fn(m: ^const Machine, t: Ty, x: f64, dst: []u8) {
 big_float :: fn(_m: ^const Machine, i: bigint.Int) -> f64 needs Alloc => ratio.from_int(i).to_f64()
 
 /// The float of `width` bits nearest the exact integer `x`, as an `f64`; `f16` goes through
-/// an `f64`, as in the reference.
+/// an `f64`.
 num_int_to_float :: fn(x: NumVal, width: u16) -> f64 {
     if width is 32 {
         v := f64(x.mag.to(f32))

@@ -1,5 +1,5 @@
 //! `gammac lint`: warnings about code that compiles but is probably not what was meant,
-//! or that has a simpler form (mirrors `src/lint/mod.rs`).
+//! or that has a simpler form.
 //!
 //! The rules come in two kinds. Those that need names resolved and types known (unused
 //! locals and declarations, variables that never change, comparisons with a known

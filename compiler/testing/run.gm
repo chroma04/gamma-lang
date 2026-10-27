@@ -1,6 +1,6 @@
 //! `gammac test` and `gammac bench`: running the `test` and `bench` declarations of a
 //! program (§3.8, §3.9), compiled into one native executable, in order or in parallel,
-//! with timing when asked for (mirrors `src/testing.rs`, for the C back end).
+//! with timing when asked for.
 
 arena :: import "std/arena"
 check :: import "../check"

@@ -335,8 +335,8 @@ write_int :: fn(b: []const u8, signed: bool, out: ^List(u8)) needs Alloc {
     }
 }
 
-/// `s` as Rust's `{:?}` writes a string: in quotes, with `"` and `\` escaped and the
-/// control characters written as escapes.
+/// `s` in double quotes, with `"` and `\` escaped, `\n`, `\r`, `\t` and `\0` as such, and
+/// other control characters as `\u{..}` with the code in hexadecimal.
 write_debug_string :: fn(s: []const u8, out: ^List(u8)) needs Alloc {
     out.push('"')!
     for c in s {

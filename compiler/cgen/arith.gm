@@ -1,5 +1,4 @@
-// Operators and builtins on scalars, with the checks of §7.4 and §18 (mirrors
-// `src/cgen/arith.rs`).
+// Operators and builtins on scalars, with the checks of §7.4 and §18.
 //
 // An integer of `bits` bits is held in a C integer of its storage size. Values are kept
 // normalized (zero- or sign-extended from `bits`), so comparisons and bitwise operations

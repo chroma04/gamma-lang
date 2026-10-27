@@ -1,6 +1,5 @@
 // Calls of generic functions (§16.2): binding type parameters from the arguments, the
-// fallbacks of literal arguments, constraints and instances (mirrors the `FnCx` part of
-// `src/sema/generics.rs`).
+// fallbacks of literal arguments, constraints and instances.
 
 Subst :: sema.Subst
 

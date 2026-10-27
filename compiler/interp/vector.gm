@@ -1,5 +1,5 @@
-// The builtins of vectors `#simd [N]T` (§5.6.2), lane by lane with the scalar rules (mirrors
-// `src/interp/vector.rs`). `VecLoad` and `VecStore` reach memory and are in `heap.gm`.
+// The builtins of vectors `#simd [N]T` (§5.6.2), lane by lane with the scalar rules.
+// `VecLoad` and `VecStore` reach memory and are in `heap.gm`.
 
 /// A vector builtin on the argument values `v`, the types of the first two being `t0` and
 /// `t1`, giving a value of type `res_ty` in `dst`.

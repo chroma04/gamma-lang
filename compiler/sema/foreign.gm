@@ -1,5 +1,5 @@
 // Interoperability (§19): `#global` variables, `foreign` blocks and the C-compatibility
-// of types (mirrors `src/sema/foreign.rs`).
+// of types.
 
 ascii :: import "std/ascii"
 text :: import "std/text"
@@ -136,8 +136,8 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
     return .Module(m)
 }
 
-/// `name`, valid UTF-8, with quotes, backslashes and control characters escaped as Rust's
-/// `str::escape_debug` does, for a name shown in a message.
+/// `name`, valid UTF-8, with quotes, backslashes and control characters escaped (`\n`, `\r`,
+/// `\t` and `\0` as such, other control characters as `\u{..}`), for a name shown in a message.
 escape_debug :: fn(name: string) -> string needs Alloc {
     out := list(u8)
     rest := name

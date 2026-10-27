@@ -1,5 +1,4 @@
-// Functions specialized for the handler that is their context (Appendix D.3; mirrors the
-// specialization parts of `src/cgen/mod.rs`, `func.rs` and `expr.rs`).
+// Functions specialized for the handler that is their context (Appendix D.3).
 //
 // A function that performs an effect finds the handler through its context `cx` and calls
 // the clause through the node's table. When it is called directly inside a `with` that

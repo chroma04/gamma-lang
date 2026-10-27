@@ -1,5 +1,4 @@
-// Implicit coercions (§6.4), made explicit as `Coerce` nodes (mirrors `coerce` and
-// `coercion_steps` in `src/sema/expr.rs`).
+// Implicit coercions (§6.4), made explicit as `Coerce` nodes.
 
 /// `e` converted to `target`, or `e` after reporting a mismatch.
 coerce :: fn(cx: ^FnCx, e: ^Expr, target0: Ty) -> ^Expr needs Load {

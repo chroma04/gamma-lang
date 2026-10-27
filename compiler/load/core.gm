@@ -1,6 +1,6 @@
 // The core library (§21): the prelude, whose public names are in every module's scope,
-// the `target` module, and the other core modules, loaded before the program in the order
-// the reference implementation loads them, so that the files are numbered alike.
+// the `target` module, and the other core modules, loaded before the program in a fixed
+// order, so that the files are numbered alike.
 
 /// A core module other than the prelude: its name, the names it adds to the prelude's
 /// scope, and whether the prelude binds the module itself under its name.

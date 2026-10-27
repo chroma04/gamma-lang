@@ -1,5 +1,4 @@
-// Long runs of statements moved into C functions of their own (mirrors
-// `src/cgen/outline.rs`).
+// Long runs of statements moved into C functions of their own.
 //
 // C compilers take time superlinear in the size of one function, so a Gamma function with
 // thousands of statements compiles slowly as one C function, even when every statement is

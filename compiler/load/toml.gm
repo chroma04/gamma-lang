@@ -66,8 +66,8 @@ Reader :: struct {
     bare: bool = false
 }
 
-/// Parses a whole document into its root table. The messages are those of the TOML library
-/// the reference implementation uses, as far as they matter to a `gamma.toml`.
+/// Parses a whole document into its root table. The messages follow the usual TOML
+/// wording, as far as it matters to a `gamma.toml`.
 pub(package) parse_toml :: fn(text: string) -> TomlError!^Table needs Alloc {
     r := Reader(text: text)
     root := new_table()

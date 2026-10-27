@@ -1,13 +1,12 @@
 //! Semantic analysis: name resolution and the checking of declarations.
 //!
-//! Analysis is demand-driven, as in the reference implementation. Each top-level
+//! Analysis is demand-driven. Each top-level
 //! declaration is resolved the first time something needs it (`resolve_decl`); a
 //! declaration requested while it is being resolved is a dependency cycle (§3.4).
 //!
 //! gammac checks declarations so far: what each top-level binding denotes (a type, an
 //! effect, a function signature, a constant, …), as `gamma decls` shows it. Where it meets
-//! a construct it cannot check yet it reports so (`unsupported`), and the result is not
-//! to be compared with the reference implementation's.
+//! a construct it cannot check yet it reports so (`unsupported`).
 
 ast :: import "../ast"
 bigint :: import "../bigint"

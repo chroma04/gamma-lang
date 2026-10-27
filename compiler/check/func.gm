@@ -1,11 +1,10 @@
 //! Checking function bodies: the per-function context, local scopes, statements, blocks
-//! and control flow (§4, §8), producing the typed representation (`tir`). Mirrors
-//! `src/sema/func.rs`; expressions are in `expr.gm`, coercions in `coerce.gm` and the
-//! final pass over a body in `finalize.gm`.
+//! and control flow (§4, §8), producing the typed representation (`tir`).
+//! Expressions are in `expr.gm`, coercions in `coerce.gm` and the final pass over a body in
+//! `finalize.gm`.
 //!
 //! gammac checks a growing subset of the language: a construct it cannot check yet is
-//! reported with `Sema.unsupported`, and the result is not compared with the reference
-//! implementation's.
+//! reported with `Sema.unsupported`, and the result is not used by later stages.
 
 ast :: import "../ast"
 load :: import "../load"
@@ -337,8 +336,8 @@ show :: fn(cx: ^const FnCx, t: Ty) -> string needs Alloc => cx.s.show(t)
 // Function bodies
 // ---------------------------------------------------------------------------------
 
-/// Checks the bodies of the functions declared so far, newest first, as the reference
-/// implementation does, except those of the core library.
+/// Checks the bodies of the functions declared so far, newest first, except those of
+/// the core library.
 check_bodies :: fn(s: ^Sema) needs Load {
     // The core library's stay pending, checked when something needs them (compile-time
     // evaluation, code generation).

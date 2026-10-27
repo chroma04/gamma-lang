@@ -1,8 +1,7 @@
 // Threads (§19.6) in the interpreter: `@thread_spawn`, `@thread_join`, `@thread_detach`,
-// `@thread_yield`, `@futex_wait` and `@futex_wake` (`src/interp/threads.rs`).
+// `@thread_yield`, `@futex_wait` and `@futex_wake`.
 //
-// The reference implementation runs each thread on an OS thread under a global lock. Here
-// a thread is a coroutine (`fiber.gm`) and the threads take turns on the host's one thread:
+// A thread is a coroutine (`fiber.gm`) and the threads take turns on the host's one thread:
 // the running one gives way every so many calls and loop iterations and when it blocks
 // (joining, waiting on a futex). Only one runs at a time either way, so atomics are
 // plain memory accesses. A trap in any thread stops the whole program with it, as in a
@@ -257,8 +256,7 @@ connected :: fn(r: IoError!net.Socket) -> HostResult {
 }
 
 /// Makes the call `op`, which may block (reading a pipe, waiting for a connection), on a
-/// host thread while the other threads go on, as they do in the reference implementation,
-/// which releases its lock around calls that may block.
+/// host thread while the other threads go on.
 on_host_thread :: fn(m: ^Machine, span: source.Span, op: HostOp) -> Flow!HostResult needs Run {
     j := new(HostCall(op: op, result: HostResult(count: 0), done: 0))!
     t := thread.spawn(host_main, j) else e => {

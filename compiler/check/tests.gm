@@ -1,6 +1,6 @@
 // Tests and benchmarks (§3.8, §3.9): a library is checked as for running its tests, and
 // each test or benchmark body is checked as a function performing the ambient effects
-// and `Test` (mirrors `src/sema/tests_decl.rs`).
+// and `Test`.
 
 /// Checks the tests and benchmarks of the root module `root` and of the other modules of
 /// its package, and records them in the program: the root module's first, then each other

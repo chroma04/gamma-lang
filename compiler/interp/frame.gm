@@ -2,7 +2,7 @@
 // and which locals need an address.
 
 /// The number of bytes a call of `def` is charged on a fiber stack, as in the C back end
-/// (`frame_cost` in `src/tir.rs`): a fixed overhead, the locals, every composite
+/// (`frame_cost` of `cgen/func.gm`): a fixed overhead, the locals, every composite
 /// temporary bigger than a register and the records of the handlers its `with`s install.
 frame_cost :: fn(m: ^Machine, def: ^const cgen.Func) -> u64 needs Alloc {
     c: u64 = 256
