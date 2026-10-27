@@ -176,7 +176,10 @@ run_both :: fn(t: ^kit.T, name, src: string) -> kit.Fail!(interp: Run, native: R
     native := interp
     for backend in ("interp", "c") {
         flag := str.format("--backend={}", backend)!
-        out := try t.run(t.gamma([_]string("run", flag, path)))
+        c := t.gamma([_]string("run", flag, path))
+        // Compiling these programs takes minutes, more than a program usually may.
+        c.timeout_s = 3 * t.cfg.timeout_s
+        out := try t.run(c)
         try t.check(not str.contains(out.err, "C compiler"), "the C compiler failed:\n{}", out.err[0..min(out.err.len, 800)])
         r := Run(code: out.code(), out: out.out)
         if backend is "interp" { interp = r } else { native = r }

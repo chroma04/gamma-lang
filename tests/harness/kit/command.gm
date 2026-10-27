@@ -19,6 +19,8 @@ pub Command :: struct {
     pub env: List(string)
     pub dir: ?string = null
     pub input: Input = .Null
+    /// Seconds the program may run, if not the time limit of the tests.
+    pub timeout_s: ?u64 = null
 }
 
 /// A command running `program`.
@@ -101,7 +103,8 @@ run_unless_missing :: fn(t: ^T, c: Command, missing_ok: bool) -> Fail!?Output ne
         if missing_ok { return null }
         return !t.fail("cannot run `{}`: {}", c.show(), e)
     }
-    w := try t.watchdog(child)
+    limit := c.timeout_s else t.cfg.timeout_s
+    w := try t.watchdog_for(child, limit)
     feed := Feed(child: child, bytes: empty_slice(u8))
     feeder: ?thread.Thread = null
     if .Bytes(b) := c.input {
@@ -128,7 +131,7 @@ run_unless_missing :: fn(t: ^T, c: Command, missing_ok: bool) -> Fail!?Output ne
     fired := w.disarm()
     status := Proc.wait(child)
     if fired {
-        return !t.fail("`{}` did not finish within {} s (GAMMA_TEST_TIMEOUT); output so far:\n{}\n{}", c.show(), t.cfg.timeout_s, string(out.items), string(err.items))
+        return !t.fail("`{}` did not finish within {} s (GAMMA_TEST_TIMEOUT); output so far:\n{}\n{}", c.show(), limit, string(out.items), string(err.items))
     }
     if e := read_failed { return !t.fail("cannot read the output of `{}`: {}", c.show(), e) }
     s := status else e => return !t.fail("cannot wait for `{}`: {}", c.show(), e)
@@ -153,8 +156,11 @@ pub Watchdog :: struct {
 
 /// Starts a watchdog for `child`. If it cannot be started, the child is killed and waited
 /// for, and the test fails.
-pub watchdog :: fn(t: ^T, child: process.Child) -> Fail!Watchdog needs Alloc + Proc + Sys {
-    w := new(Watch(child: child, limit: Duration(ns: t.cfg.timeout_s * 1_000_000_000), m: thread.mutex(), cv: thread.condvar()))!
+pub watchdog :: fn(t: ^T, child: process.Child) -> Fail!Watchdog needs Alloc + Proc + Sys => t.watchdog_for(child, t.cfg.timeout_s)
+
+/// Like `watchdog`, with a time limit of `secs` seconds.
+pub watchdog_for :: fn(t: ^T, child: process.Child, secs: u64) -> Fail!Watchdog needs Alloc + Proc + Sys {
+    w := new(Watch(child: child, limit: Duration(ns: secs * 1_000_000_000), m: thread.mutex(), cv: thread.condvar()))!
     th := thread.spawn(watch, w) else e => {
         _ = Proc.kill(child)
         _ = Proc.wait(child)
