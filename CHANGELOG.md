@@ -197,6 +197,10 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Standard library
 
+- `std/text` has `is_space`, `trim`, `trim_start`, `trim_end` and `fields` for Unicode
+  whitespace (the `White_Space` property); the `std/str` ones stay ASCII.
+- `thread.drained(&c)` tells a closed and drained `Channel` from an empty one, so a consumer
+  polling with `try_recv` knows when to stop.
 - **Breaking: `SpawnOptions.env` changes the environment instead of replacing it.** Its
   entries apply in order to the environment the child inherits: `NAME=value` sets a
   variable, a bare `NAME` removes it. `clear_env: true` starts from an empty environment
