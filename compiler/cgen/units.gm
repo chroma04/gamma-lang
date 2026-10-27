@@ -113,11 +113,18 @@ pub split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
 }
 
 /// `line` as an external declaration, if it is a `static` one (not `static inline`).
+/// An `#inline` hint is dropped: a function cannot be inlined into another unit, and an
+/// `inline` definition without `static` would define no symbol for the others to call.
 external :: fn(line: string) -> ?string needs Alloc {
     if line.starts_with("static inline ") { return null }
-    if rest := str.strip_prefix(line, "static ") { return rest }
-    rest := str.strip_prefix(line, "GM_NOINLINE static ") else return null
-    return str.format("GM_NOINLINE {}", rest)!
+    rest: string = ""
+    if r := str.strip_prefix(line, "static ") {
+        rest = r
+    } else {
+        r := str.strip_prefix(line, "GM_NOINLINE static ") else return null
+        rest = str.format("GM_NOINLINE {}", r)!
+    }
+    return str.replace_alloc(rest, "__attribute__((always_inline)) inline ", "")!
 }
 
 /// The declaration and the external definition of function definition `item`.
@@ -242,6 +249,15 @@ test "functions and data get external linkage" {
         expect(u0.ends_with("int main(void) { return gm_f0(1); }\n"))
         expect(not str.contains(units[1], "gm_checks") and not str.contains(units[1], "main"))
         expect(str.contains(units[1], "\n__attribute__((aligned(4))) void gm_f1(void) {\n"))
+    }
+}
+
+test "an inline hint does not cross units" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(external("static __attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f2(int a);") else "", "__attribute__((aligned(4))) int gm_f2(int a);")
+        expect_eq(external("static __attribute__((noinline)) void gm_f3(void);") else "", "__attribute__((noinline)) void gm_f3(void);")
     }
 }
 
