@@ -16,7 +16,7 @@ fn run_sum(name: &str, n: usize, term: &str) -> String {
         format!("main :: fn() needs Out {{\n    y := 1\n    x := {sum}\n    print(\"{{}} {{}}\\n\", x, y)\n}}\n"),
     )
     .unwrap();
-    let out = common::gamma().arg("run").arg(&src).output().unwrap();
+    let out = common::gamma().arg("run").arg("--backend=interp").arg(&src).output().unwrap();
     assert!(out.status.success(), "gamma run failed:\n{}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }

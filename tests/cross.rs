@@ -136,9 +136,9 @@ fn target_follows_the_compiler() {
     }
     let (dir, src) = setup("target");
     let src = src.to_str().unwrap();
-    let out = gamma(&["run", src], &[("CC", "clang --target=aarch64-linux-gnu")]);
+    let out = gamma(&["run", "--backend=interp", src], &[("CC", "clang --target=aarch64-linux-gnu")]);
     assert_eq!(text(&out.stdout), "aarch64\nlittle\n64 24 16\n", "{}", text(&out.stderr));
-    let out = gamma(&["run", src], &[("CC", "clang"), ("CFLAGS", "--target=x86_64-linux-gnu")]);
+    let out = gamma(&["run", "--backend=interp", src], &[("CC", "clang"), ("CFLAGS", "--target=x86_64-linux-gnu")]);
     assert_eq!(text(&out.stdout), "x86_64\nlittle\n64 24 16\n", "{}", text(&out.stderr));
     // A 4-byte-pointer target with `__int128` (wasm32 in clang). A compiler that defines no
     // operating system (WebAssembly without WASI) makes a freestanding program (§3.7.1),
@@ -151,7 +151,7 @@ fn target_follows_the_compiler() {
     .unwrap();
     let out = gamma(&["check", wasm.to_str().unwrap()], &[("CC", "clang --target=wasm32-unknown-unknown")]);
     assert!(out.status.success(), "{}", text(&out.stderr));
-    let out = gamma(&["run", src], &[("CC", "clang --target=s390x-linux-gnu")]);
+    let out = gamma(&["run", "--backend=interp", src], &[("CC", "clang --target=s390x-linux-gnu")]);
     assert_eq!(text(&out.stdout), "s390x\nbig\n64 24 16\n", "{}", text(&out.stderr));
 }
 
@@ -226,9 +226,9 @@ fn target_flag_checks_the_compiler() {
     assert!(err.contains("riscv64-nowhere-gnu-gcc") && err.contains("CC"), "{}", err);
     if runs("clang") {
         // clang takes the triple.
-        let out = gamma(&["run", "--target=s390x-linux-gnu", src], &[("CC", "clang")]);
+        let out = gamma(&["run", "--backend=interp", "--target=s390x-linux-gnu", src], &[("CC", "clang")]);
         assert_eq!(text(&out.stdout), "s390x\nbig\n64 24 16\n", "{}", text(&out.stderr));
-        let out = gamma(&["run", "--target=aarch64-linux-gnu", src], &[("CC", "clang")]);
+        let out = gamma(&["run", "--backend=interp", "--target=aarch64-linux-gnu", src], &[("CC", "clang")]);
         assert_eq!(text(&out.stdout), "aarch64\nlittle\n64 24 16\n", "{}", text(&out.stderr));
         // A compiler for another target than the triple is an error.
         let out = gamma(&["run", "--target=s390x-linux-gnu", src], &[("CC", "clang --target=aarch64-linux-gnu")]);

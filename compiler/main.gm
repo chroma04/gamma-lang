@@ -51,6 +51,7 @@ str :: import "std/str"
 syntax :: import "./syntax"
 testing :: import "./testing"
 thread :: import "std/thread"
+fiber :: import "std/fiber"
 
 VERSION :: "0.1.0"
 
@@ -139,7 +140,31 @@ environment:
 
 `
 
+/// The compiler's stack. Its passes recurse over the syntax tree, so a long operator chain
+/// or deeply nested code needs more than a thread's default; the memory is only reserved.
+COMPILER_STACK: usize : 1 << 30
+
+libc :: foreign "c" {
+    calloc :: fn(n, size: usize) -> ?[^]u8 needs not
+    free :: fn(p: [^]u8) needs not
+}
+
 main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys {
+    // Zeroed blocks of this size come from fresh pages: they cost memory only as they are used.
+    p := libc.calloc(1, COMPILER_STACK) else {
+        compiler_main()
+        return
+    }
+    defer libc.free(p)
+    sched := fiber.scheduler()
+    defer sched.deinit()
+    with &sched on p[0..COMPILER_STACK] {
+        compiler_main()
+        fiber.Sched.join()
+    }
+}
+
+compiler_main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys {
     args := Env.args()
     check_arguments_are_text(args)
     command := args.get(1) else ""
