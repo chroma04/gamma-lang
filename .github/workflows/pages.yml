@@ -42,6 +42,7 @@ jobs:
           GAMMA_RUNTIME: ${{ github.workspace }}/runtime
         run: |
           target/bootstrap/gammac test web/gen
+          mkdir -p target/web
           target/bootstrap/gammac build --mode=fast web/gen -o target/web/sitegen
       - name: Build the playground interpreter (wasm32-wasi)
         env:
