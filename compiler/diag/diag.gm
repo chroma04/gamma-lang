@@ -305,8 +305,7 @@ location :: fn(sm: ^const source.SourceMap, span: source.Span, out: ^List(u8)) n
     out.write("{}:{}:{}: ", f.path, lc.line, lc.col)!
 }
 
-// The fields of an object are in the order of their names, as the reference
-// implementation writes them.
+// The fields of an object are in the order of their names.
 render_json :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
     located := d.span is not source.DUMMY
     out.push('{')!

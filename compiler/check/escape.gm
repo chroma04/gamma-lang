@@ -1,4 +1,4 @@
-// Pointer checks over the whole program (mirrors `src/sema/escape.rs`): the dangling
+// Pointer checks over the whole program: the dangling
 // pointers rejected at compile time (§15.1), returning the address of, or a slice of, a
 // local or parameter of the returning function; and pointers into `#packed` fields that
 // would be misaligned (§5.10.4).

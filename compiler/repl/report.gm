@@ -1,5 +1,4 @@
-//! Output of the REPL: diagnostics relative to the input and trap reports. Mirrors
-//! `src/repl/report.rs`.
+//! Output of the REPL: diagnostics relative to the input and trap reports.
 
 arena :: import "std/arena"
 diag :: import "../diag"

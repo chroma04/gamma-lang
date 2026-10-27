@@ -1,7 +1,6 @@
 //! Compile-time evaluation (§17): runs checked expressions and the bodies of the
-//! functions they call. The reference implementation compiles them to bytecode and runs
-//! its VM on the target's memory layout (`src/interp`); gammac walks the tree, with values
-//! that keep their structure (`tir.Value`). It traps where the VM does, with the same
+//! functions they call. It walks the tree, with values that keep
+//! their structure (`tir.Value`). It traps as the program would at run time, with the same
 //! messages, and reports what it cannot evaluate yet as unsupported.
 //!
 //! The functions an evaluation reaches must have their bodies checked first, and the

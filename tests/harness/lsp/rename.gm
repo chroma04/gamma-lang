@@ -1,0 +1,299 @@
+// Rename and prepareRename: the files that change, local names, and the names and places
+// that are refused.
+
+json :: import "std/json"
+kit :: import "../kit"
+str :: import "std/str"
+
+/// One file a rename changed: its path below the package root and its new text.
+Renamed :: struct {
+    path: string
+    text: string
+}
+
+/// The files a workspace edit changes, by path, and their new text.
+Edited :: struct {
+    files: List(Renamed)
+}
+
+/// The text of the file `rel` in `e`; fails the test if the edit does not change it.
+file :: fn(e: ^const Edited, t: ^kit.T, rel: string) -> kit.Fail!string needs Alloc {
+    for f in e.files.items {
+        if f.path is rel { return f.text }
+    }
+    return !t.fail("the edit does not change {}; it changes {}", rel, e.names())
+}
+
+/// The paths of the changed files, in order, separated by commas.
+names :: fn(e: ^const Edited) -> string needs Alloc {
+    paths := list(string)
+    for f in e.files.items { paths.push(f.path)! }
+    return str.join(paths.items, ",")!
+}
+
+/// Fails the test unless the new text of `rel` contains `needle`.
+expect_in :: fn(e: ^const Edited, t: ^kit.T, rel, needle: string) -> kit.Fail!() needs Alloc {
+    return t.expect_contains(rel, try e.file(t, rel), needle)
+}
+
+/// Fails the test if the new text of any changed file contains `needle`.
+expect_nowhere :: fn(e: ^const Edited, t: ^kit.T, needle: string) -> kit.Fail!() needs Alloc {
+    for f in e.files.items {
+        try t.check(not str.contains(f.text, needle), "{} still contains {}:\n{}", f.path, kit.quote(needle), f.text)
+    }
+    return ()
+}
+
+/// A change to a file: bytes `lo` to `hi` become `text`.
+Span :: struct {
+    lo: usize
+    hi: usize
+    text: string
+}
+
+/// Applies a `WorkspaceEdit` (ASCII files only) to the files on disk, returning the new text
+/// of each changed file by its path relative to `root`, in the order of the paths.
+apply_edit :: fn(t: ^kit.T, edit: json.Value, root: string) -> kit.Fail!Edited needs kit.Run {
+    out := Edited(files: list(Renamed))
+    changes := field(edit, "changes")
+    members := match changes {
+        .Object(ms) => ms
+        _ => return !t.fail("the edit has no changes: {}", show(edit))
+    }
+    prefix := str.format("{}/", root)!
+    for m in members {
+        p := uri_path(m.key)
+        rel := str.strip_prefix(p, prefix) else return !t.fail("{} is not below {}", p, root)
+        old := try t.read(p)
+        starts := list(usize)
+        starts.push(0)!
+        for i, c in enumerate(old) {
+            if c is '\n' { starts.push(i + 1)! }
+        }
+        spans := list(Span)
+        for e in elements(m.value) {
+            lo := try offset(t, starts.items, dig(e, "range.start"))
+            hi := try offset(t, starts.items, dig(e, "range.end"))
+            spans.push(Span(lo: lo, hi: hi, text: string_of(field(e, "newText"))))!
+        }
+        spans.items.sort_by(fn(a, b: ^const Span) -> bool => a.lo < b.lo)
+        new := list(u8)
+        at_byte: usize = 0
+        for s in spans.items {
+            new.extend(old[at_byte..s.lo])!
+            new.extend(s.text)!
+            at_byte = s.hi
+        }
+        new.extend(old[at_byte..])!
+        out.files.push(Renamed(path: rel, text: new.items))!
+    }
+    out.files.items.sort_by(fn(a, b: ^const Renamed) -> bool => before(a.path, b.path))
+    return out
+}
+
+/// The byte offset of the position `pos` in a text whose lines start at `starts`.
+offset :: fn(t: ^kit.T, starts: []const usize, pos: json.Value) -> kit.Fail!usize needs Alloc {
+    line := (try as_int(t, field(pos, "line"))).trunc(usize)
+    character := (try as_int(t, field(pos, "character"))).trunc(usize)
+    start := starts.get(line) else return !t.fail("no line {}", line)
+    return start + character
+}
+
+/// The parameters of a rename request.
+rename_params :: fn(path: string, line, character: u64, new: string) -> string needs Alloc {
+    return at_with(path, line, character, str.format("\"newName\":{}", jq(new))!)
+}
+
+/// Renames and returns the edited files.
+renamed :: fn(l: ^Lsp, dir, path: string, line, character: u64, new: string) -> kit.Fail!Edited needs kit.Run {
+    edit := try l.result("textDocument/rename", rename_params(path, line, character, new))
+    return apply_edit(l.t, edit, dir)
+}
+
+/// The message of the error that a request fails with.
+error_message :: fn(l: ^Lsp, method, params: string) -> kit.Fail!string needs kit.Run {
+    r := try l.request(method, params)
+    msg := dig(r, "error.message")
+    if .String(s) := msg { return s }
+    return !l.t.fail("{} did not fail: {}", method, show(r))
+}
+
+/// The message of the error that a rename fails with.
+rename_error :: fn(l: ^Lsp, path: string, line, character: u64, new: string) -> kit.Fail!string needs kit.Run {
+    return error_message(l, "textDocument/rename", rename_params(path, line, character, new))
+}
+
+/// Fails the test unless renaming at the place to `new` fails with a message containing `needle`.
+expect_rename_error :: fn(l: ^Lsp, path: string, line, character: u64, new, needle: string) -> kit.Fail!() needs kit.Run {
+    msg := try rename_error(l, path, line, character, new)
+    return l.t.expect_contains(str.format("the error of renaming to {}", kit.quote(new))!, msg, needle)
+}
+
+rename_is_advertised :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    caps := try l.initialize()
+    try expect_bool(t, "prepareProvider", dig(caps, "capabilities.renameProvider.prepareProvider"), true)
+    try l.shutdown()
+    return ()
+}
+
+rename_a_function_in_every_module_that_uses_it :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-rename_a_function")
+    p := try package(t, dir)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open_file(p.main)
+    prep := try l.result("textDocument/prepareRename", at(p.main, 4, 16))
+    try expect_string(t, "the placeholder", field(prep, "placeholder"), "double")
+    try expect_json(t, "the range", field(prep, "range"), "{\"start\": {\"line\": 4, \"character\": 14}, \"end\": {\"line\": 4, \"character\": 20}}")
+    files := try renamed(&l, dir, p.main, 4, 16, "twice")
+    try t.expect_text("the changed files", "app/app.gm,main.gm,util/util.gm", files.names())
+    try files.expect_in(t, "main.gm", "d := util.twice(p.x)")
+    try files.expect_in(t, "app/app.gm", "return util.twice(q.y)")
+    try files.expect_in(t, "util/util.gm", "pub twice :: fn(n: i32)")
+    try files.expect_nowhere(t, "double")
+    try l.shutdown()
+    return ()
+}
+
+rename_types_fields_variants_and_constants :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-rename_types_fields")
+    p := try package(t, dir)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open_file(p.util)
+    // A type, from its declaration.
+    files := try renamed(&l, dir, p.util, 7, 6, "Pt")
+    try t.expect_text("the changed files", "app/app.gm,main.gm,util/util.gm", files.names())
+    try files.expect_in(t, "main.gm", "p := util.Pt(x: 1, y: 2)")
+    try files.expect_in(t, "util/util.gm", "pub Pt :: struct")
+    // A field, from a use in another module: its declaration, its labels and its reads.
+    try l.open_file(p.main)
+    files = try renamed(&l, dir, p.main, 4, 23, "px")
+    try files.expect_in(t, "main.gm", "util.Point(px: 1, y: 2)")
+    try files.expect_in(t, "main.gm", "double(p.px)")
+    try files.expect_in(t, "app/app.gm", "util.Point(px: 5, y: 6)")
+    try files.expect_in(t, "util/util.gm", "pub px: i32")
+    // A variant, from its declaration: constructions and patterns.
+    files = try renamed(&l, dir, p.util, 1, 5, "Disc")
+    try files.expect_in(t, "util/util.gm", "    Disc: i32")
+    try files.expect_in(t, "util/util.gm", ".Disc(r) => r * big")
+    try files.expect_in(t, "main.gm", "util.Shape.Disc(3)")
+    // A constant, from a use in another module.
+    files = try renamed(&l, dir, p.main, 5, 47, "MAX")
+    try files.expect_in(t, "main.gm", "util.MAX")
+    try files.expect_in(t, "util/util.gm", "pub MAX :: 10")
+    try files.expect_in(t, "util/util.gm", "big := MAX * scale")
+    try l.shutdown()
+    return ()
+}
+
+rename_locals_and_parameters :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-rename_locals_and_parameters")
+    p := try package(t, dir)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open_file(p.util)
+    try l.open_file(p.main)
+    // A parameter, from its use.
+    files := try renamed(&l, dir, p.util, 15, 25, "factor")
+    try t.expect_text("the changed files", "util/util.gm", files.names())
+    try files.expect_in(t, "util/util.gm", "fn(s: Shape, factor: i32)")
+    try files.expect_in(t, "util/util.gm", "LIMIT * factor")
+    try files.expect_in(t, "util/util.gm", "side * factor")
+    try files.expect_nowhere(t, "scale")
+    // A local, from its declaration, leaving the other module's `p` alone.
+    files = try renamed(&l, dir, p.main, 3, 4, "pt")
+    try t.expect_text("the changed files", "main.gm", files.names())
+    try files.expect_in(t, "main.gm", "pt := util.Point")
+    try files.expect_in(t, "main.gm", "double(pt.x)")
+    try files.expect_in(t, "main.gm", "d + a + pt.y")
+    // A pattern binding.
+    files = try renamed(&l, dir, p.util, 17, 17, "radius")
+    try files.expect_in(t, "util/util.gm", ".Circle(radius) => radius * big")
+    try l.shutdown()
+    return ()
+}
+
+rename_rejects_bad_names :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-rename_rejects_bad_names")
+    p := try package(t, dir)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open_file(p.main)
+    try expect_rename_error(&l, p.main, 4, 16, "1abc", "not an identifier")
+    try expect_rename_error(&l, p.main, 4, 16, "two words", "not an identifier")
+    try expect_rename_error(&l, p.main, 4, 16, "", "not an identifier")
+    try expect_rename_error(&l, p.main, 4, 16, "fn", "keyword")
+    try expect_rename_error(&l, p.main, 4, 16, "match", "keyword")
+    try expect_rename_error(&l, p.main, 4, 16, "i32", "builtin type")
+    try expect_rename_error(&l, p.main, 4, 16, "_", "`_`")
+    // Nothing is renamed where there is no name.
+    r := try l.request("textDocument/rename", rename_params(p.main, 1, 0, "x"))
+    try expect_not_null(t, "the error", field(r, "error"))
+    try l.shutdown()
+    return ()
+}
+
+rename_rejects_clashes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-rename_rejects_clashes")
+    p := try package(t, dir)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open_file(p.util)
+    try l.open_file(p.main)
+    try l.open_file(p.app)
+    // Two functions of a module.
+    try expect_rename_error(&l, p.util, 12, 5, "area", "already declared")
+    // Two fields; two variants.
+    try expect_rename_error(&l, p.util, 8, 9, "y", "already declared")
+    try expect_rename_error(&l, p.util, 1, 5, "Square", "already declared")
+    // Locals and parameters whose scopes overlap.
+    try expect_rename_error(&l, p.util, 15, 5, "scale", "already declared")
+    try expect_rename_error(&l, p.util, 14, 26, "big", "already declared")
+    try expect_rename_error(&l, p.main, 3, 4, "d", "already declared")
+    // A local that would hide a declaration of the module.
+    try expect_rename_error(&l, p.util, 15, 5, "LIMIT", "hide")
+    // A function whose new name is a local where it is used (in another module).
+    try expect_rename_error(&l, p.util, 12, 5, "q", "local name")
+    // Nothing was changed by the failures: a fine name still works.
+    files := try renamed(&l, dir, p.util, 12, 5, "twice")
+    try t.check(files.files.items.len is 3, "the rename changed {}", files.names())
+    try l.shutdown()
+    return ()
+}
+
+rename_refuses_names_outside_the_package :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-rename_refuses_names_outside")
+    // The core library.
+    core := try put(t, dir, "core/main.gm", CORE_PROGRAM)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(core, CORE_PROGRAM)
+    try expect_rename_error(&l, core, 1, 11, "mine", "core library")
+    msg := try error_message(&l, "textDocument/prepareRename", at(core, 1, 11))
+    try t.expect_contains("the error of prepareRename", msg, "core library")
+    // The standard library.
+    text := "str :: import \"std/str\"\n\nmain :: fn() {\n    n := str.trim(\" a \")\n    _ = n\n}\n"
+    user := try put(t, dir, "user/main.gm", text)
+    try l.open(user, text)
+    try expect_rename_error(&l, user, 3, 15, "cut", "standard library")
+    // A dependency on a path outside the package.
+    _ = try put(t, dir, "dep/gamma.toml", "name = \"dep\"\nversion = \"0.1.0\"\n")
+    _ = try put(t, dir, "dep/dep.gm", "pub triple :: fn(n: i32) -> i32 => n * 3\n")
+    _ = try put(t, dir, "app/gamma.toml", "name = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n")
+    main := try put(t, dir, "app/main.gm", "dep :: import \"dep\"\n\nmain :: fn() {\n    _ = dep.triple(2)\n}\n")
+    try l.open_file(main)
+    try expect_rename_error(&l, main, 3, 14, "thrice", "dependency")
+    msg = try error_message(&l, "textDocument/prepareRename", at(main, 3, 14))
+    try t.expect_contains("the error of prepareRename", msg, "dependency")
+    try l.shutdown()
+    return ()
+}

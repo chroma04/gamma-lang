@@ -1,0 +1,267 @@
+// Hover, definition, references in one module, document symbols, completion, signature help,
+// and formatting.
+
+json :: import "std/json"
+kit :: import "../kit"
+str :: import "std/str"
+
+hover_definition_references_and_symbols :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-hover_definition_references")
+    path := try put(t, dir, "main.gm", PROGRAM)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, PROGRAM)
+    try expect_clean(t, try l.diagnostics(path, 1))
+
+    // Hover on `total` (line 13, column 12 of `    print("{}\n", total)`).
+    h := try l.result("textDocument/hover", at(path, 13, 20))
+    value := try as_text(t, dig(h, "contents.value"))
+    try t.check(str.strip_prefix(value, "```gamma\ntotal: i32\n```") is not null, "{}", value)
+    try expect_json(t, "the range of the hover", dig(h, "range.start"), "{\"line\": 13, \"character\": 18}")
+
+    // Hover on `sum` in its call: signature, effects and the doc comment.
+    h = try l.result("textDocument/hover", at(path, 12, 14))
+    value = try as_text(t, dig(h, "contents.value"))
+    try t.expect_contains("the hover", value, "sum :: fn(p: Point) -> i32")
+    try t.expect_contains("the hover", value, "Adds the coordinates.")
+
+    // Hover on `main`'s effect signature.
+    h = try l.result("textDocument/hover", at(path, 10, 1))
+    try expect_contains_text(t, "the hover", dig(h, "contents.value"), "main :: fn() needs Out")
+
+    // Definition of the call of `sum`.
+    d := try l.result("textDocument/definition", at(path, 12, 14))
+    try expect_string(t, "the file", field(d, "uri"), uri(path))
+    try expect_json(t, "the start", dig(d, "range.start"), "{\"line\": 6, \"character\": 0}")
+    try expect_json(t, "the end", dig(d, "range.end"), "{\"line\": 6, \"character\": 3}")
+
+    // Definition of the field `x`.
+    d = try l.result("textDocument/definition", at(path, 7, 14))
+    try expect_json(t, "the start", dig(d, "range.start"), "{\"line\": 1, \"character\": 4}")
+
+    // References to `Point`: its declaration, the parameter and the construction.
+    refs := try l.result("textDocument/references", at_with(path, 0, 1, "\"context\":{\"includeDeclaration\":true}"))
+    try expect_len(t, "the references", refs, 3)
+
+    // The outline.
+    syms := try l.result("textDocument/documentSymbol", of_document(path))
+    try t.expect_text("the symbols", "Point,sum,main", names_of(elements(syms), "name"))
+    try expect_int(t, "the kind of Point", dig(syms, "0.kind"), 23)
+    try expect_string(t, "the first member of Point", dig(syms, "0.children.0.name"), "x")
+    try expect_int(t, "the kind of the member", dig(syms, "0.children.0.kind"), 8)
+    try expect_json(t, "the selection range", dig(syms, "1.selectionRange.start"), "{\"line\": 6, \"character\": 0}")
+    try l.shutdown()
+    return ()
+}
+
+definition_in_an_imported_module :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-definition_in_an_imported_module")
+    util := try put(t, dir, "util/util.gm", "/// Twice.\npub double :: fn(n: i32) -> i32 => n * 2\n")
+    text := "util :: import \"./util\"\n\nmain :: fn() {\n    x := util.double(2)\n    _ = x\n}\n"
+    main := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, text)
+    try expect_clean(t, try l.diagnostics(main, 1))
+    d := try l.result("textDocument/definition", at(main, 3, 16))
+    try expect_string(t, "the file", field(d, "uri"), uri(util))
+    try expect_json(t, "the start", dig(d, "range.start"), "{\"line\": 1, \"character\": 4}")
+    h := try l.result("textDocument/hover", at(main, 3, 16))
+    value := try as_text(t, dig(h, "contents.value"))
+    try t.expect_contains("the hover", value, "double :: fn(n: i32) -> i32")
+    try t.expect_contains("the hover", value, "Twice.")
+    try l.shutdown()
+    return ()
+}
+
+definition_in_the_standard_library :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-definition_in_the_standard_library")
+    text := "str :: import \"std/str\"\n\nmain :: fn() {\n    n := str.trim(\" a \")\n    _ = n\n}\n"
+    main := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, text)
+    d := try l.result("textDocument/definition", at(main, 3, 15))
+    try t.check(str.contains(string_of(field(d, "uri")), "/lib/std/str/"), "{}", show(d))
+    h := try l.result("textDocument/hover", at(main, 3, 15))
+    try t.check(str.contains(string_of(dig(h, "contents.value")), "trim :: fn("), "{}", show(h))
+    // A use of the import binding leads to the binding.
+    d = try l.result("textDocument/definition", at(main, 3, 10))
+    try expect_string(t, "the file", field(d, "uri"), uri(main))
+    try expect_json(t, "the start", dig(d, "range.start"), "{\"line\": 0, \"character\": 0}")
+    // The import itself leads to the module's first file.
+    d = try l.result("textDocument/definition", at(main, 0, 14))
+    try t.check(str.contains(string_of(field(d, "uri")), "/lib/std/str/"), "{}", show(d))
+    try l.shutdown()
+    return ()
+}
+
+/// The first completion item in `items` with the label `label`, or null.
+find_label :: fn(items: []json.Value, label: string) -> json.Value {
+    for i in items {
+        if text_is(field(i, "label"), label) { return i }
+    }
+    return json.Value.Null
+}
+
+completion_of_names_and_members :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-completion_of_names_and_members")
+    text :: `Point :: struct {
+    x: i32
+    y: i32
+}
+
+shift :: fn(p: Point) -> i32 => p.x
+
+main :: fn() {
+    pt := Point(x: 1, y: 2)
+    count := 3
+    _ = pt
+    _ = count
+}
+`
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    try expect_clean(t, try l.diagnostics(path, 1))
+
+    // Names: locals first, then the module's declarations.
+    r := try l.result("textDocument/completion", at(path, 11, 4))
+    items := try as_array(t, field(r, "items"))
+    pt := find_label(items, "pt")
+    try expect_not_null(t, "the local pt", pt)
+    try expect_string(t, "the detail of pt", field(pt, "detail"), "Point")
+    try expect_int(t, "the kind of pt", field(pt, "kind"), 6)
+    try expect_not_null(t, "the local count", find_label(items, "count"))
+    try expect_int(t, "the kind of Point", field(find_label(items, "Point"), "kind"), 22)
+    try expect_not_null(t, "the function shift", find_label(items, "shift"))
+    try expect_not_null(t, "print", find_label(items, "print"))
+    try expect_int(t, "the kind of match", field(find_label(items, "match"), "kind"), 14)
+
+    // Members after a dot: the buffer `pt.` does not check, so the server re-checks without it.
+    with_dot := str.replace_alloc(text, "    _ = pt\n", "    pt.\n")!
+    try l.change(path, 2, with_dot)
+    r = try l.result("textDocument/completion", at(path, 10, 7))
+    try t.expect_text("the labels", "x,y,shift", names_of(elements(field(r, "items")), "label"))
+    try expect_int(t, "the kind of x", dig(r, "items.0.kind"), 5)
+    try expect_string(t, "the detail of x", dig(r, "items.0.detail"), "i32")
+    try expect_int(t, "the kind of shift", dig(r, "items.2.kind"), 2)
+    try l.shutdown()
+    return ()
+}
+
+completion_of_module_members :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-completion_of_module_members")
+    _ = try put(t, dir, "util/util.gm", "pub double :: fn(n: i32) -> i32 => n * 2\npub LIMIT :: 10\nhidden :: fn() {}\n")
+    text := "util :: import \"./util\"\n\nmain :: fn() {\n    util.\n}\n"
+    main := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, text)
+    r := try l.result("textDocument/completion", at(main, 3, 9))
+    try t.expect_text("the labels", "double,LIMIT", names_of(elements(field(r, "items")), "label"))
+    try l.shutdown()
+    return ()
+}
+
+signature_help_marks_the_argument :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-signature_help")
+    text :: `Counter :: struct { n: i32 }
+
+/// Adds two numbers.
+add :: fn(a: i32, b: i32) -> i32 => a + b
+
+bump :: fn(c: ^Counter, by: i32 = 1) {
+    c.n += by
+}
+
+main :: fn() {
+    x := add(1, 2)
+    c := Counter(n: 0)
+    c.bump(by: 2)
+    _ = x
+}
+`
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    try expect_clean(t, try l.diagnostics(path, 1))
+    // Between the comma and the second argument of `add(1, 2)`.
+    r := try l.result("textDocument/signatureHelp", at(path, 10, 16))
+    try expect_int(t, "activeParameter", field(r, "activeParameter"), 1)
+    sig := dig(r, "signatures.0")
+    try expect_string(t, "the label", field(sig, "label"), "add(a: i32, b: i32) -> i32")
+    try expect_string(t, "the second parameter", dig(sig, "parameters.1.label"), "b: i32")
+    try expect_string(t, "the documentation", dig(sig, "documentation.value"), "Adds two numbers.")
+    // A method call: the receiver is not a parameter, and `by:` names the argument.
+    r = try l.result("textDocument/signatureHelp", at(path, 12, 15))
+    try expect_string(t, "the label", dig(r, "signatures.0.label"), "bump(by: i32 = 1)")
+    try expect_int(t, "activeParameter", field(r, "activeParameter"), 0)
+    // Outside any call.
+    r = try l.result("textDocument/signatureHelp", at(path, 13, 5))
+    try expect_null(t, "the signature help", r)
+    try l.shutdown()
+    return ()
+}
+
+formatting_returns_a_whole_document_edit :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-formatting")
+    messy := "main :: fn() {\n  x   :=   1\n    _ = x\n}\n"
+    path := try put(t, dir, "main.gm", messy)
+    // What `gamma fmt` makes of the text.
+    fmt := t.gamma([_]string("fmt", "-"))
+    fmt.stdin(messy)
+    expected := (try t.run_ok(fmt)).out
+    try t.check(expected.len > 0 and expected is not messy, "the messy text is formatted as {}", kit.quote(expected))
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, messy)
+    params := str.format(
+        "{{\"textDocument\":{{\"uri\":{}}},\"options\":{{\"tabSize\":4,\"insertSpaces\":true}}}}",
+        jq(uri(path)),
+    )!
+    edits := try l.result("textDocument/formatting", params)
+    edit := item(edits, 0)
+    try expect_json(t, "the start", dig(edit, "range.start"), "{\"line\": 0, \"character\": 0}")
+    try expect_json(t, "the end", dig(edit, "range.end"), "{\"line\": 4, \"character\": 0}")
+    try expect_string(t, "newText", field(edit, "newText"), expected)
+
+    // Already formatted: no edits. Unparsable: no edits.
+    plain := str.format("{{\"textDocument\":{{\"uri\":{}}},\"options\":{{}}}}", jq(uri(path)))!
+    try l.change(path, 2, expected)
+    edits = try l.result("textDocument/formatting", plain)
+    try expect_json(t, "the edits of formatted text", edits, "[]")
+    try l.change(path, 3, "main :: fn( {\n")
+    edits = try l.result("textDocument/formatting", plain)
+    try expect_null(t, "the edits of unparsable text", edits)
+    // Parse errors that the lexer accepts also leave the document alone.
+    try l.change(path, 4, "x ::= \n")
+    edits = try l.result("textDocument/formatting", plain)
+    try expect_null(t, "the edits of text with a parse error", edits)
+    try l.shutdown()
+    return ()
+}
+
+out_of_range_positions_clamp_instead_of_wrapping :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-out_of_range_positions")
+    path := try put(t, dir, "main.gm", PROGRAM)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, PROGRAM)
+    // 2^32 would wrap to a position that has a hover; clamped, it is past the end.
+    try expect_not_null(t, "the hover", try l.result("textDocument/hover", at(path, 13, 20)))
+    h := try l.result("textDocument/hover", at(path, 4294967296 + 13, 20))
+    try expect_null(t, "the hover far past the end", h)
+    try l.shutdown()
+    return ()
+}

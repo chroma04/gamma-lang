@@ -1,4 +1,4 @@
-// Checking patterns (§9) and lowering them to `tir.Pat` (mirrors `src/sema/pattern.rs`).
+// Checking patterns (§9) and lowering them to `tir.Pat`.
 
 /// Where a pattern appears, which decides how bare bindings treat optionals and results
 /// (§9.3).

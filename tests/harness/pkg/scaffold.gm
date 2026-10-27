@@ -1,0 +1,215 @@
+// Tests of the commands that make packages (`new`, `init`), the checks of manifests and
+// package names, path dependencies, and the usage of the package commands.
+
+kit :: import "../kit"
+fs :: import "std/fs"
+str :: import "std/str"
+
+Case :: struct {
+    text: string
+    line: u32
+    msg: string
+}
+
+manifest_errors_name_the_line :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try world(t, "manifest_errors")
+    try w.put("app/main.gm", "main :: fn() needs Out {}\n")
+    cases :: [_]Case(
+        Case(
+            text: "[package]\nname = \"app\"\n[dependencies]\nx = { path = \"a\", colour = \"red\" }\n",
+            line: 4,
+            msg: "unknown key `colour`",
+        ),
+        Case(text: "[dependencies]\nx = { path = \"a\", git = \"b\" }\n", line: 2, msg: "both `path` and `git`"),
+        Case(text: "[dependencies]\n\nx = \"1.0\"\n", line: 3, msg: "must be a table"),
+        Case(text: "[dependencies]\nx-y = { path = \"a\" }\n", line: 2, msg: "invalid dependency name"),
+        Case(text: "[package]\nname = \"9app\"\n", line: 2, msg: "invalid package name"),
+        Case(text: "[dependencies]\nx = { git = \"u\", tag = \"t\", rev = \"ab\" }\n", line: 2, msg: "use only one"),
+    )
+    for c in cases {
+        try w.put("app/gamma.toml", c.text)
+        out := try w.bad("app", [_]string("check", "."))
+        what := str.format("the error for {}", kit.quote(c.text))!
+        try t.expect_contains(what, out.err, str.format("gamma.toml:{}: ", c.line)!)
+        try t.expect_contains(what, out.err, c.msg)
+    }
+    return ()
+}
+
+path_dependencies_work_as_before :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try world(t, "paths")
+    try w.put("json/gamma.toml", "[package]\nname = \"json\"\n")
+    try w.put("json/lib.gm", lib_source(9))
+    try w.sum_app("json = { path = \"../json\", version = \"1\" }\n", [_]string("json"))
+    out := try w.ok("app", [_]string("run", "."))
+    try t.expect_text("the output", "9\n", out.out)
+    try t.expect_text("stderr", "", out.err)
+    _ = try w.ok("app", [_]string("fetch"))
+    try t.check(not w.has("app/gamma.lock"), "gamma.lock was written")
+    _ = try w.ok("app", [_]string("run", "--offline", "--locked", "."))
+    return ()
+}
+
+/// Loading a package without the package manager (as tools other than the build commands
+/// do) reports a git dependency as needing a fetch.
+a_git_dependency_needs_the_package_manager_when_used_as_a_library :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try world(t, "library_use")
+    try w.put(
+        "app/gamma.toml",
+        "[package]\nname = \"app\"\n[dependencies]\nhttp = { git = \"https://example.invalid/http\" }\n",
+    )
+    try w.put("app/main.gm", "main :: fn() needs Out {}\n")
+    out := try w.bad(".", [_]string("modules", w.at("app")))
+    try t.expect_contains("stderr", out.err, "dependency `http` is a git dependency; run `gamma fetch`")
+    try t.expect_contains("stderr", out.err, "gamma.toml:4:")
+    return ()
+}
+
+new_creates_a_working_package :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try outside(t, "new")
+    defer w.dispose()
+    out := try w.ok(".", [_]string("new", "my-app"))
+    try t.expect_contains("the output", out.out, "Created package `my_app` in my-app")
+    try t.expect_contains("the output", out.out, "gamma run my-app")
+    try t.expect_contains("the output", out.out, "gamma test my-app")
+    try t.expect_text(
+        "the manifest",
+        "[package]\nname = \"my_app\"\nversion = \"0.1.0\"\n\n[dependencies]\n",
+        w.get("my-app/gamma.toml"),
+    )
+    ignore := w.get("my-app/.gitignore")
+    try t.check(has_line(ignore, "/my_app"), "{}", kit.quote(ignore))
+    try t.check(has_line(ignore, "/main"), "{}", kit.quote(ignore))
+    have_git := kit.runs("git")
+    if have_git { try t.check(w.has("my-app/.git"), "no repository was made") }
+    try w.prints(".", [_]string("run", "my-app"), "hello from my_app\n")
+    out = try w.ok(".", [_]string("test", "my-app"))
+    try t.expect_contains("the output", out.out, "1 passed, 0 failed")
+    _ = try w.ok(".", [_]string("check", "my-app"))
+    _ = try w.ok(".", [_]string("fmt", "--check", "my-app"))
+    _ = try w.ok("my-app", [_]string("run", "."))
+    // The executable `build .` writes is ignored.
+    _ = try w.ok("my-app", [_]string("build", "."))
+    exe := if target.os is .Windows { "my-app/main.exe" } else { "my-app/main" }
+    try t.check(w.has(exe), "{} was not built", exe)
+    if have_git {
+        status := try w.git("my-app", [_]string("status", "--porcelain", "--ignored"))
+        try t.expect_contains("the status", status, "!! main")
+    }
+    // A name can be given, and an existing non-empty directory is refused.
+    out = try w.ok(".", [_]string("new", "other", "--name=thing", "--vcs=none"))
+    try t.expect_contains("the output", out.out, "package `thing`")
+    try t.check(not w.has("other/.git"), "a repository was made")
+    try w.fails_with(".", [_]string("new", "my-app"), "not empty")
+    try w.fails_with(".", [_]string("new", "x", "--name=1x"), "invalid package name")
+    try w.fails_with(".", [_]string("new"), "needs a directory")
+    // An empty existing directory is fine.
+    try w.mkdir("empty")
+    _ = try w.ok(".", [_]string("new", "empty"))
+    try w.prints(".", [_]string("run", "empty"), "hello from empty\n")
+    return ()
+}
+
+has_line :: fn(text, line: string) -> bool {
+    for l in str.lines(text) {
+        if l is line { return true }
+    }
+    return false
+}
+
+init_never_overwrites :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try outside(t, "init")
+    defer w.dispose()
+    try w.put("proj/main.gm", "main :: fn() needs Out {\n    print(\"mine\\n\")\n}\n")
+    try w.put("proj/.gitignore", "custom\n")
+    out := try w.ok("proj", [_]string("init", "--vcs=none"))
+    try t.expect_contains("the output", out.out, "Skipped main.gm (already exists)")
+    try t.expect_contains("the output", out.out, "Skipped .gitignore (already exists)")
+    try t.expect_contains("the output", out.out, "Created package `proj`")
+    try t.expect_text(".gitignore", "custom\n", w.get("proj/.gitignore"))
+    try t.expect_contains("main.gm", w.get("proj/main.gm"), "mine")
+    try t.expect_contains("the manifest", w.get("proj/gamma.toml"), "name = \"proj\"")
+    try w.prints(".", [_]string("run", "proj"), "mine\n")
+    // Running it again creates nothing.
+    manifest := w.get("proj/gamma.toml")
+    try w.put("proj/gamma.toml", str.format("{}# edited\n", manifest)!)
+    out = try w.ok("proj", [_]string("init"))
+    try t.expect_contains("the output", out.out, "Nothing to create")
+    try t.check(ends_with(w.get("proj/gamma.toml"), "# edited\n"), "the manifest was rewritten")
+    // `init` with a directory argument, and a missing directory.
+    try w.mkdir("fresh")
+    _ = try w.ok(".", [_]string("init", "fresh", "--name", "named"))
+    try t.expect_contains("the manifest", w.get("fresh/gamma.toml"), "name = \"named\"")
+    try w.fails_with(".", [_]string("init", "missing"), "not a directory")
+    return ()
+}
+
+init_does_not_claim_to_create_a_package_over_an_existing_manifest :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try outside(t, "init_invalid_manifest")
+    defer w.dispose()
+    try w.put("proj/gamma.toml", "[package\n")
+    out := try w.ok("proj", [_]string("init", "--vcs=none"))
+    try t.expect_contains("the output", out.out, "Skipped gamma.toml (already exists)")
+    try t.check(not str.contains(out.out, "Created package"), "{}", out.out)
+    try t.expect_contains("the output", out.out, "main.gm")
+    try t.expect_text("the manifest", "[package\n", w.get("proj/gamma.toml"))
+    return ()
+}
+
+names_that_cannot_be_imported_are_rejected :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try outside(t, "bad_names")
+    defer w.dispose()
+    for name in ("fn", "import", "true", "_", "i32", "u8", "bool", "string", "std", "core") {
+        out := try w.bad(".", [_]string("new", "--vcs=none", str.format("--name={}", name)!, "d"))
+        try t.expect_contains(str.format("the error for {}", name)!, out.err, "invalid package name")
+        // Nothing is created for a name that is refused.
+        try t.check(not w.has("d"), "a directory was made for {}", name)
+    }
+    // The directory name is used when it is one of them, unless `--name` says otherwise.
+    try w.fails_with(".", [_]string("new", "--vcs=none", "fn"), "--name")
+    try t.check(not w.has("fn"), "a directory was made for fn")
+    _ = try w.ok(".", [_]string("new", "--vcs=none", "std", "--name=mystd"))
+    try w.put("app/gamma.toml", "[package]\nname = \"app\"\n\n[dependencies]\n")
+    for name in ("true", "i32", "std", "core", "_") {
+        out := try w.bad("app", [_]string("add", name, "--path", "../mystd"))
+        try t.expect_contains(str.format("the error for {}", name)!, out.err, "invalid dependency name")
+    }
+    try w.put("bad/gamma.toml", "[package]\nname = \"std\"\n")
+    try w.put("bad/main.gm", "main :: fn() {}\n")
+    try w.fails_with("bad", [_]string("check", "."), "invalid package name")
+    return ()
+}
+
+a_directory_name_that_is_changed_is_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try outside(t, "name_note")
+    defer w.dispose()
+    out := try w.ok(".", [_]string("new", "--vcs=none", "ünï-cödé"))
+    try t.expect_contains("the output", out.out, "Created package `_n__c_d_`")
+    try t.expect_contains("the output", out.out, "is not a valid package name")
+    out = try w.ok(".", [_]string("new", "--vcs=none", "plain"))
+    try t.check(not str.contains(out.out, "Note"), "{}", out.out)
+    return ()
+}
+
+init_leaves_an_enclosing_repository_alone :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not kit.runs("git") { return !t.skip("git is not installed") }
+    w := try world(t, "init_in_repo")
+    try w.mkdir("outer")
+    try w.git_run("outer", [_]string("init", "-q"))
+    try w.mkdir("outer/inner")
+    _ = try w.ok("outer/inner", [_]string("init"))
+    try t.check(not w.has("outer/inner/.git"), "a repository was made inside the other")
+    try t.check(w.has("outer/inner/gamma.toml"), "no manifest was made")
+    return ()
+}
+
+usage_of_the_package_commands :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    w := try world(t, "usage")
+    out := try w.ok(".", [_]string("help", "packages"))
+    try t.expect_contains("the help", out.out, "gamma add <name>")
+    try t.expect_contains("the help", out.out, "--offline")
+    try w.fails_with(".", [_]string("update", "--bogus"), "unknown option `--bogus`")
+    try w.fails_with(".", [_]string("fetch", "--offline=true"), "`--offline` takes no value")
+    try t.check(fs.exists(t.cfg.compiler), "the compiler {} does not exist", t.cfg.compiler)
+    return ()
+}

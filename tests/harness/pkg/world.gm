@@ -1,0 +1,416 @@
+// What the package tests share: a directory of their own for each test (the "world"),
+// local repositories and archives made in it, and readers for the lock file.
+
+kit :: import "../kit"
+fs :: import "std/fs"
+process :: import "std/process"
+str :: import "std/str"
+
+/// The directory of a test, with the cache directory of the compiler below it.
+World :: struct {
+    t: ^kit.T
+    root: string
+    /// A directory made outside the test directory, to delete at the end.
+    owned: string = ""
+}
+
+/// A file of a repository or an archive: its path and contents.
+Item :: struct {
+    name: string
+    text: string
+}
+
+starts_with :: fn(s, prefix: string) -> bool => str.strip_prefix(s, prefix) is not null
+
+ends_with :: fn(s, suffix: string) -> bool => str.strip_suffix(s, suffix) is not null
+
+/// Deletes a tree whose directories may be read-only (fetched packages are).
+force_remove :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
+    if not fs.exists(p) { return () }
+    when target.os is not .Windows {
+        c := kit.command("chmod")
+        c.args([_]string("-R", "u+rwx", p))
+        _ = try t.run(c)
+    }
+    fs.remove_all(p) else e => {
+        if e is not .NotFound { return !t.fail("cannot remove {}: {}", p, e) }
+    }
+    return ()
+}
+
+/// Lets the file `p` be written (fetched files are read-only).
+make_writable :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
+    when target.os is .Windows {
+        c := kit.command("attrib")
+        c.args([_]string("-R", p))
+        _ = try t.run_ok(c)
+    } else {
+        c := kit.command("chmod")
+        c.args([_]string("u+w", p))
+        _ = try t.run_ok(c)
+    }
+    return ()
+}
+
+/// The absolute path of `p` with symbolic links resolved.
+canonical :: fn(t: ^kit.T, p: string) -> kit.Fail!string needs kit.Run {
+    when target.os is .Windows {
+        return p
+    } else {
+        c := kit.command("sh")
+        c.args([_]string("-c", "cd \"$1\" && pwd -P", "sh", p))
+        out := try t.run_ok(c)
+        return str.trim(out.out)
+    }
+}
+
+/// A fresh directory for the test `name`.
+world :: fn(t: ^kit.T, name: string) -> kit.Fail!World needs kit.Run {
+    dir := kit.join(kit.join(t.cfg.tmp, "pkg"), name)
+    try force_remove(t, dir)
+    fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
+    return World(t: t, root: try canonical(t, dir))
+}
+
+/// A fresh directory outside any git work tree (the test directory may be inside one),
+/// which `dispose` deletes.
+outside :: fn(t: ^kit.T, name: string) -> kit.Fail!World needs kit.Run {
+    base := fs.temp_dir()
+    prefix :: "gamma-pkg-"
+    buf := make(u8, base.len + prefix.len + fs.TEMP_EXTRA)!
+    owned := fs.make_temp_dir(base, prefix, buf) else e => return !t.fail("cannot make a directory in {}: {}", base, e)
+    dir := kit.join(owned, name)
+    fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
+    return World(t: t, root: try canonical(t, dir), owned: owned)
+}
+
+/// Deletes what `outside` made.
+dispose :: fn(w: ^const World) needs Alloc + Fs + Proc {
+    if w.owned.len is 0 { return }
+    when target.os is not .Windows {
+        _ = process.status([_]string("chmod", "-R", "u+rwx", w.owned), process.SpawnOptions(stdin: .Null, stdout: .Null, stderr: .Null))
+    }
+    _ = fs.remove_all(w.owned)
+}
+
+at :: fn(w: ^const World, rel: string) -> string needs Alloc => kit.join(w.root, rel)
+
+cache_dir :: fn(w: ^const World) -> string needs Alloc => w.at("cache")
+
+/// The `file:` URL of the local path `p`, as git takes it (`file:///D:/x` on Windows).
+file_url :: fn(p: string) -> string needs Alloc {
+    s := str.replace_alloc(p, "\\", "/")!
+    if s.len > 0 and s[0] is '/' { return str.format("file://{}", s)! }
+    return str.format("file:///{}", s)!
+}
+
+url_of :: fn(w: ^const World, rel: string) -> string needs Alloc => file_url(w.at(rel))
+
+put :: fn(w: ^const World, rel, text: string) -> kit.Fail!() needs kit.Run => w.t.write(w.at(rel), text)
+
+/// The text of the file `rel`, empty if there is none.
+get :: fn(w: ^const World, rel: string) -> string needs Alloc + Fs {
+    bytes := fs.read_all(w.at(rel)) else return ""
+    return bytes
+}
+
+has :: fn(w: ^const World, rel: string) -> bool needs Alloc + Fs => fs.exists(w.at(rel))
+
+/// Deletes the file or tree `rel` if it exists.
+rm :: fn(w: ^const World, rel: string) needs Alloc + Fs {
+    _ = fs.remove_all(w.at(rel))
+}
+
+/// Makes the directory `rel`.
+mkdir :: fn(w: ^const World, rel: string) -> kit.Fail!() needs Alloc + Fs {
+    p := w.at(rel)
+    fs.make_dir_all(p) else e => return !w.t.fail("cannot make {}: {}", p, e)
+    return ()
+}
+
+/// Makes the symbolic link `rel` pointing to `target`.
+symlink :: fn(w: ^const World, target, rel: string) -> kit.Fail!() needs kit.Run {
+    c := kit.command("ln")
+    c.args([_]string("-s", target, w.at(rel)))
+    _ = try w.t.run_ok(c)
+    return ()
+}
+
+/// Sets the modification time of `rel` (creating the file if there is none) to `days`
+/// days ago.
+age :: fn(w: ^const World, rel: string, days: u64) -> kit.Fail!() needs kit.Run {
+    return touch_ago(w.t, w.at(rel), days)
+}
+
+/// Like `age`, for the file that records the last use of the checkout `dir`.
+age_stamp :: fn(w: ^const World, dir: string, days: u64) -> kit.Fail!() needs kit.Run {
+    return touch_ago(w.t, str.format("{}.used", dir)!, days)
+}
+
+touch_ago :: fn(t: ^kit.T, p: string, days: u64) -> kit.Fail!() needs kit.Run {
+    secs := Clock.wall() / 1_000_000_000 - days.trunc(i64) * 86400
+    // A civil date from the days since 1970-01-01.
+    z := secs / 86400 + 719468
+    era := z / 146097
+    doe := z - era * 146097
+    yoe := (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    doy := doe - (365 * yoe + yoe / 4 - yoe / 100)
+    mp := (5 * doy + 2) / 153
+    day := doy - (153 * mp + 2) / 5 + 1
+    month := if mp < 10 { mp + 3 } else { mp - 9 }
+    year := yoe + era * 400 + (if month <= 2 { i64(1) } else { i64(0) })
+    rest := secs % 86400
+    stamp := str.format("{:04}{:02}{:02}{:02}{:02}.{:02}", year, month, day, rest / 3600, rest % 3600 / 60, rest % 60)!
+    c := kit.command("touch")
+    c.args([_]string("-t", stamp, p))
+    _ = try t.run_ok(c)
+    return ()
+}
+
+/// Runs git in `dir` (relative to the world) and returns its output.
+git :: fn(w: ^const World, dir: string, args: []const string) -> kit.Fail!string needs kit.Run {
+    c := kit.command("git")
+    c.args([_]string("-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"))
+    c.args(args)
+    c.dir = w.at(dir)
+    set_identity(&c)
+    out := try w.t.run(c)
+    if not out.success() {
+        return !w.t.fail("git {} failed: {}", str.join(args, " ")!, out.err)
+    }
+    return str.trim(out.out)
+}
+
+set_identity :: fn(c: ^kit.Command) needs Alloc {
+    c.set("GIT_AUTHOR_NAME", "t")
+    c.set("GIT_AUTHOR_EMAIL", "t@example.com")
+    c.set("GIT_COMMITTER_NAME", "t")
+    c.set("GIT_COMMITTER_EMAIL", "t@example.com")
+}
+
+/// Like `git`, for commands whose output does not matter.
+git_run :: fn(w: ^const World, dir: string, args: []const string) -> kit.Fail!() needs kit.Run {
+    _ = try w.git(dir, args)
+    return ()
+}
+
+/// Creates the repository `name` with `items`, one commit and, if given, a tag.
+new_repo :: fn(w: ^const World, name: string, items: []const Item, tag: ?string) -> kit.Fail!() needs kit.Run {
+    try w.mkdir(name)
+    try w.git_run(name, [_]string("init", "-q"))
+    for it in items { try w.put(str.format("{}/{}", name, it.name)!, it.text) }
+    return w.commit(name, "initial", tag)
+}
+
+/// Commits all changes in the repository `dir` and tags the commit.
+commit :: fn(w: ^const World, dir, msg: string, tag: ?string) -> kit.Fail!() needs kit.Run {
+    try w.git_run(dir, [_]string("add", "-A"))
+    try w.git_run(dir, [_]string("commit", "-q", "-m", msg))
+    if tag_name := tag { try w.git_run(dir, [_]string("tag", tag_name)) }
+    return ()
+}
+
+lib_manifest :: fn(name: string) -> string needs Alloc => str.format("[package]\nname = \"{}\"\nversion = \"1.0.0\"\n", name)!
+
+lib_source :: fn(n: i32) -> string needs Alloc => str.format("pub value :: fn() -> i32 => {}\n", n)!
+
+/// The files of a library package with an exported function returning `n`.
+lib_items :: fn(name: string, n: i32) -> [2]Item needs Alloc => [_]Item(
+    Item(name: "gamma.toml", text: lib_manifest(name)),
+    Item(name: "lib.gm", text: lib_source(n)),
+)
+
+/// A library package in a repository.
+new_lib :: fn(w: ^const World, name: string, n: i32, tag: ?string) -> kit.Fail!() needs kit.Run => w.new_repo(name, lib_items(name, n), tag)
+
+/// A new version of the library: changes the number, commits, tags.
+bump :: fn(w: ^const World, name: string, n: i32, tag: string) -> kit.Fail!() needs kit.Run {
+    try w.put(str.format("{}/lib.gm", name)!, lib_source(n))
+    return w.commit(name, "bump", tag)
+}
+
+/// The command `gamma args` run in `dir` of the world, with the cache directory of the
+/// world.
+command :: fn(w: ^const World, dir: string, args: []const string) -> kit.Command needs Alloc {
+    c := w.t.gamma(args)
+    c.dir = w.at(dir)
+    c.set("GAMMA_CACHE_DIR", w.cache_dir())
+    set_identity(&c)
+    return c
+}
+
+gamma :: fn(w: ^const World, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run => w.t.run(w.command(dir, args))
+
+/// Runs gamma and fails the test unless it succeeds.
+ok :: fn(w: ^const World, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run => w.t.run_ok(w.command(dir, args))
+
+/// Runs gamma and fails the test if it succeeds.
+bad :: fn(w: ^const World, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    out := try w.gamma(dir, args)
+    if out.success() {
+        return !w.t.fail("`gamma {}` succeeded\nstdout:\n{}\nstderr:\n{}", str.join(args, " ")!, out.out, out.err)
+    }
+    return out
+}
+
+/// Runs gamma, which must succeed, and checks what it printed.
+prints :: fn(w: ^const World, dir: string, args: []const string, expected: string) -> kit.Fail!() needs kit.Run {
+    out := try w.ok(dir, args)
+    return w.t.expect_text(str.format("the output of `gamma {}`", str.join(args, " ")!)!, expected, out.out)
+}
+
+/// Runs gamma, which must fail, and checks that its error message has `needle`.
+fails_with :: fn(w: ^const World, dir: string, args: []const string, needle: string) -> kit.Fail!() needs kit.Run {
+    out := try w.bad(dir, args)
+    return w.t.expect_contains("the error message", out.err, needle)
+}
+
+/// An application `app` whose manifest has `deps` and which prints `body`.
+app :: fn(w: ^const World, deps, imports, body: string) -> kit.Fail!() needs kit.Run {
+    try w.put("app/gamma.toml", str.format("[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n{}", deps)!)
+    return w.put("app/main.gm", str.format("{}\nmain :: fn() needs Out {{\n{}\n}}\n", imports, body)!)
+}
+
+/// An application that imports `names` and prints the sum of their `value()`s.
+sum_app :: fn(w: ^const World, deps: string, names: []const string) -> kit.Fail!() needs kit.Run {
+    imports := list(u8)
+    sum := list(u8)
+    for i, n in enumerate(names) {
+        imports.write("{} :: import \"{}\"\n", n, n)!
+        if i > 0 { sum.extend(" + ")! }
+        sum.write("{}.value()", n)!
+    }
+    return w.app(deps, imports.items, str.format("    print(\"{{}}\\n\", {})", sum.items)!)
+}
+
+// ---------------------------------------------------------------------------------
+// The lock file
+// ---------------------------------------------------------------------------------
+
+/// The value of `field` for the package `name` in the lock file text, without quotes.
+lock_field :: fn(lock, name, field_name: string) -> ?string needs Alloc {
+    in_pkg := false
+    name_line := str.format("name = \"{}\"", name)!
+    prefix := str.format("{} = ", field_name)!
+    for line in str.lines(lock) {
+        if line is "[[package]]" { in_pkg = false }
+        if line is name_line { in_pkg = true }
+        if in_pkg {
+            if v := str.strip_prefix(line, prefix) {
+                s := v
+                while s.len > 0 and s[0] is '"' { s = s[1..] }
+                while s.len > 0 and s[s.len - 1] is '"' { s = s[0..s.len - 1] }
+                return s
+            }
+        }
+    }
+    return null
+}
+
+/// Like `lock_field`, and fails the test if there is no such field.
+field :: fn(t: ^kit.T, lock, name, field_name: string) -> kit.Fail!string needs Alloc {
+    v := lock_field(lock, name, field_name) else return !t.fail("gamma.lock has no `{}` for the package {}:\n{}", field_name, name, lock)
+    return v
+}
+
+/// Fails the test unless the lock has `expected` as the value of `field` for `name`.
+expect_field :: fn(t: ^kit.T, lock, name, field_name, expected: string) -> kit.Fail!() needs Alloc {
+    got := lock_field(lock, name, field_name) else "(missing)"
+    return t.expect_text(str.format("the {} of {} in gamma.lock", field_name, name)!, expected, got)
+}
+
+/// The number of `[[package]]` entries of a lock file.
+packages_in :: fn(lock: string) -> usize needs Alloc => str.count(lock, "[[package]]")
+
+/// 64 zeros, a SHA-256 checksum that nothing has.
+zeros :: fn() -> string needs Alloc {
+    z := list(u8)
+    str.repeat(&z, "0", 64)!
+    return z.items
+}
+
+// ---------------------------------------------------------------------------------
+// The cache
+// ---------------------------------------------------------------------------------
+
+/// The checkouts in the cache's `git` store.
+checkouts :: fn(w: ^const World) -> []string needs Alloc + Fs {
+    v := list(string)
+    root := w.at("cache/git/checkouts")
+    for r in fs.entries(root) {
+        repo_dir := r else break
+        dir := kit.join(root, repo_dir.name)
+        for r2 in fs.entries(dir) {
+            c := r2 else break
+            if c.kind is .Dir { v.push(kit.join(dir, c.name))! }
+        }
+    }
+    v.items.sort()
+    return v.items
+}
+
+/// The unpacked archives in the cache's `url` store.
+archive_dirs :: fn(w: ^const World) -> []string needs Alloc + Fs {
+    v := list(string)
+    root := w.at("cache/git/url")
+    for r in fs.entries(root) {
+        repo_dir := r else break
+        if repo_dir.kind is not .Dir { continue }
+        dir := kit.join(root, repo_dir.name)
+        for r2 in fs.entries(dir) {
+            c := r2 else break
+            if c.kind is .Dir { v.push(kit.join(dir, c.name))! }
+        }
+    }
+    v.items.sort()
+    return v.items
+}
+
+/// The number of entries (of any kind) in the directories of `rel`.
+entries_below :: fn(w: ^const World, rel: string) -> usize needs Alloc + Fs {
+    n: usize = 0
+    root := w.at(rel)
+    for r in fs.entries(root) {
+        d := r else break
+        for r2 in fs.entries(kit.join(root, d.name)) {
+            _ = r2 else break
+            n += 1
+        }
+    }
+    return n
+}
+
+/// Whether the directory `rel` has any entry.
+has_entries :: fn(w: ^const World, rel: string) -> bool needs Alloc + Fs {
+    for r in fs.entries(w.at(rel)) {
+        _ = r else break
+        return true
+    }
+    return false
+}
+
+/// The file mode letters of `p` as `ls -l` shows them (`dr-xr-xr-x`).
+mode_of :: fn(t: ^kit.T, p: string) -> kit.Fail!string needs kit.Run {
+    c := kit.command("ls")
+    c.args([_]string("-ld", p))
+    out := try t.run_ok(c)
+    word := str.nth_field(out.out, " ", 0) else ""
+    return word
+}
+
+/// Fails the test unless nobody may write `p`.
+expect_read_only :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
+    mode := try mode_of(t, p)
+    for i in 1..mode.len {
+        if mode[i] is 'w' { return !t.fail("{} is writable: {}", p, mode) }
+    }
+    return ()
+}
+
+/// Whether the tests run as the superuser, who can write anywhere.
+is_root :: fn(t: ^kit.T) -> kit.Fail!bool needs kit.Run {
+    c := kit.command("id")
+    c.arg("-u")
+    out := try t.run_ok(c)
+    return str.trim(out.out) is "0"
+}

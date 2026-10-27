@@ -1,6 +1,5 @@
 //! The JSON values of the language server: building them, reading the fields of a request,
-//! and writing them with the members of every object in the order of their keys, as the
-//! reference implementation's JSON library does.
+//! and writing them with the members of every object in the order of their keys.
 
 json :: import "std/json"
 

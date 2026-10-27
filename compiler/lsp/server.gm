@@ -145,7 +145,7 @@ pub handle_incoming :: fn(srv: ^Server, msg: Incoming) -> Flow needs Fx {
     }
 }
 
-/// What the reference implementation's JSON library says about a syntax error at `offset`
+/// The message for a JSON syntax error at `offset`
 /// (or at the end of the text), by what the text before it was waiting for.
 syntax_error :: fn(bytes: []const u8, offset: usize, at_end: bool) -> string needs Alloc {
     // The states: `0` a value at the top, `e` the end; in an object `{` a key or `}`, `k`
@@ -242,8 +242,7 @@ after_value :: fn(st: u8) -> u8 => match st {
     _ => 'e'
 }
 
-/// The text of a JSON syntax error, worded as the reference implementation's JSON library
-/// words it.
+/// The text of a JSON syntax error.
 parse_error_text :: fn(bytes: []const u8, e: json.ParseError) -> string needs Alloc {
     offset: usize = 0
     what := "expected value"
@@ -452,7 +451,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
     return .Continue
 }
 
-test "syntax errors are worded as the reference does" {
+test "syntax errors are worded like those of the compiler" {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {

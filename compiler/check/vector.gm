@@ -1,5 +1,5 @@
 // Vector types `#simd [N]T` (§5.6.2): their construction, lane-wise operators,
-// conversions and builtin methods (mirrors `src/sema/vector.rs`).
+// conversions and builtin methods.
 
 /// The mask type for vectors of `len` lanes: `#simd [len]bool`.
 mask_ty :: fn(tys: ^types.Types, len: u64) -> Ty needs Alloc => tys.simd(len, tys.bool_ty())

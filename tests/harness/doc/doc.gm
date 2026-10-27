@@ -1,0 +1,382 @@
+//! Tests of the documentation generator (`gamma doc`).
+//!
+//! * Golden tests render the fixture module in `tests/doc/fixture/shapes`, which has one
+//!   of every kind of public declaration, and compare with the files in `tests/doc/golden`.
+//!   `BLESS=1` (or `GAMMA_BLESS=1`) rewrites the goldens after an intended change. The
+//!   module pages come from `gamma doc` run on the module; the index pages from `gamma doc
+//!   --all -o` run on the module, whose name gives the index its title.
+//! * The command-line tests run the `gamma` executable.
+//! * `std_reference_is_current` fails when the checked-in standard library reference in
+//!   `docs/std/` no longer matches `lib/std`.
+
+fs :: import "std/fs"
+kit :: import "../kit"
+str :: import "std/str"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "fixture_markdown", run: fixture_markdown))!
+    out.push(kit.Test(name: "fixture_html", run: fixture_html))!
+    out.push(kit.Test(name: "private_declarations_are_omitted", run: private_declarations_are_omitted))!
+    out.push(kit.Test(name: "html_is_escaped", run: html_is_escaped))!
+    out.push(kit.Test(name: "output_is_deterministic", run: output_is_deterministic))!
+    out.push(kit.Test(name: "missing_lists_undocumented_items", run: missing_lists_undocumented_items))!
+    out.push(kit.Test(name: "inline_markdown_and_headings_in_doc_comments", run: inline_markdown_and_headings))!
+    out.push(kit.Test(name: "a_signature_with_backticks_cannot_close_its_fence", run: signature_with_backticks))!
+    out.push(kit.Test(name: "index_links_are_percent_encoded", run: index_links_are_percent_encoded))!
+    out.push(kit.Test(name: "html_output_never_contains_active_content", run: html_output_never_contains_active_content))!
+    out.push(kit.Test(name: "cli_prints_one_module_to_stdout", run: cli_prints_one_module_to_stdout))!
+    out.push(kit.Test(name: "cli_writes_a_tree_with_an_index", run: cli_writes_a_tree_with_an_index))!
+    out.push(kit.Test(name: "cli_writes_a_single_file", run: cli_writes_a_single_file))!
+    out.push(kit.Test(name: "cli_missing_warns_on_stderr", run: cli_missing_warns_on_stderr))!
+    out.push(kit.Test(name: "cli_rejects_a_module_that_does_not_parse", run: cli_rejects_a_module_that_does_not_parse))!
+    out.push(kit.Test(name: "cli_usage_errors", run: cli_usage_errors))!
+    out.push(kit.Test(name: "std_reference_is_current", run: std_reference_is_current))!
+}
+
+FIXTURE :: "tests/doc/fixture/shapes"
+
+/// Runs `gamma doc` with `args`, in the repository's root, so that the paths in `args` are
+/// relative to it.
+doc :: fn(t: ^kit.T, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    c := t.gamma([_]string("doc"))
+    c.args(args)
+    c.dir = t.cfg.root
+    return try t.run(c)
+}
+
+/// Like `doc`, and fails the test unless the command succeeds.
+doc_ok :: fn(t: ^kit.T, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    out := try doc(t, args)
+    if not out.success() {
+        return !t.fail("`gamma doc {}` ended with {}:\n{}", str.join(args, " ")!, out.status, out.err)
+    }
+    return out
+}
+
+/// Fails the test unless `actual` is the golden file `name`; with `BLESS=1` or
+/// `GAMMA_BLESS` set it writes the file instead.
+check_golden :: fn(t: ^kit.T, name, actual: string) -> kit.Fail!() needs kit.Run {
+    path := t.repo(str.format("tests/doc/golden/{}", name)!)
+    if t.cfg.bless or Env.var("GAMMA_BLESS") is not null {
+        try t.write(path, actual)
+        return ()
+    }
+    expected := (try t.read_if_exists(path)) else {
+        return !t.fail("missing golden file {}; create it with BLESS=1", path)
+    }
+    if expected is not actual {
+        return !t.fail("{} differs from the generated output; if the change is intended, run the tests with BLESS=1\n{}", path, kit.diff(expected, actual))
+    }
+    return ()
+}
+
+fixture_markdown :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try doc_ok(t, [_]string(FIXTURE))
+    try check_golden(t, "shapes.md", out.out)
+    dir := try t.scratch(t.name)
+    _ = try doc_ok(t, [_]string("--all", "-o", dir, FIXTURE))
+    try check_golden(t, "index.md", try t.read(kit.join(dir, "index.md")))
+    return ()
+}
+
+fixture_html :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch(t.name)
+    _ = try doc_ok(t, [_]string("--all", "--format=html", "-o", dir, FIXTURE))
+    try check_golden(t, "shapes.html", try t.read(kit.join(dir, "shapes.html")))
+    try check_golden(t, "index.html", try t.read(kit.join(dir, "index.html")))
+    return ()
+}
+
+/// Whether `text` has a line that is exactly `line`.
+has_line :: fn(text, line: string) -> bool {
+    for l in str.lines(text) {
+        if l is line { return true }
+    }
+    return false
+}
+
+private_declarations_are_omitted :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try doc_ok(t, [_]string(FIXTURE))
+    for hidden in [_]string("sides_of", "Hidden", "handler Events for Hidden", "mem") {
+        heading := str.format("### `{}`", hidden)!
+        try t.check(not has_line(out.out, heading), "{} should not be documented", hidden)
+    }
+    try t.check(has_line(out.out, "### `handler Events for ^Counter`"), "the handler of a public type is not documented")
+    return ()
+}
+
+html_is_escaped :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try doc_ok(t, [_]string("--format=html", FIXTURE))
+    try t.expect_contains("the page", out.out, "a &lt; b &amp;&amp; c &gt; d")
+    try t.check(not str.contains(out.out, "a < b"), "an unescaped `<` in the page")
+    try t.check(not str.contains(out.out, "<script"), "a script in the page")
+    return ()
+}
+
+output_is_deterministic :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    for format in [_]string("--format=markdown", "--format=html") {
+        a := try doc_ok(t, [_]string(format, FIXTURE))
+        b := try doc_ok(t, [_]string(format, FIXTURE))
+        try t.check(a.out is b.out, "two runs with {} differ", format)
+    }
+    return ()
+}
+
+missing_lists_undocumented_items :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try doc_ok(t, [_]string("--missing", FIXTURE))
+    for name in [_]string("NO_DOC", "twice", "undocumented") {
+        try t.check(str.contains(out.err, str.format("`{}`", name)!), "no warning about {}:\n{}", name, out.err)
+    }
+    try t.check(not str.contains(out.err, "`area`"), "{}", out.err)
+    try t.check(not str.contains(out.err, "module"), "the fixture has module documentation: {}", out.err)
+    return ()
+}
+
+inline_markdown_and_headings :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch(t.name)
+    src := "//! Module text.\n//!\n//! # Overview\n//!\n//! More.\n\n/// Spans: `` a`b `` and ``` x``y ``` and `` ` `` and `lone ` tick, ***both*** and **s**.\n///\n/// # Details\n///\n///     # not a heading\npub f :: fn() {}\n"
+    try t.write(kit.join(dir, "m.gm"), src)
+    html := (try doc_ok(t, [_]string("--format=html", dir))).out
+    try t.expect_contains("the page", html, "<code>a`b</code>")
+    try t.expect_contains("the page", html, "<code>x``y</code>")
+    try t.expect_contains("the page", html, "<code>`</code>")
+    try t.check(str.contains(html, "<code>lone </code> tick") or str.contains(html, "`lone"), "a lone backtick:\n{}", html)
+    try t.expect_contains("the page", html, "<em><strong>both</strong></em>")
+    try t.expect_contains("the page", html, "<strong>s</strong>")
+    try t.check(str.contains(html, "<h4>Overview</h4>") and str.contains(html, "<h4>Details</h4>"), "headings:\n{}", html)
+    md := (try doc_ok(t, [_]string(dir))).out
+    try t.check(str.contains(md, "#### Overview") and str.contains(md, "#### Details"), "headings:\n{}", md)
+    try t.check(not has_line(md, "# Overview") and not has_line(md, "# Details"), "top-level headings:\n{}", md)
+    try t.expect_contains("the page", md, "    # not a heading")
+    return ()
+}
+
+signature_with_backticks :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch(t.name)
+    try t.write(kit.join(dir, "m.gm"), "/// After the fence.\npub X :: \"```\"\n")
+    md := (try doc_ok(t, [_]string(dir))).out
+    try t.expect_contains("the page", md, "````gamma\nX :: \"```\"\n````\n")
+    return ()
+}
+
+index_links_are_percent_encoded :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch(t.name)
+    try t.write(kit.join(dir, "src/my dir/a#b)/m.gm"), "//! Text.\npub f :: fn() {}\n")
+    md_out := kit.join(dir, "md")
+    _ = try doc_ok(t, [_]string("--all", "-o", md_out, kit.join(dir, "src")))
+    try t.expect_contains("the Markdown index", try t.read(kit.join(md_out, "index.md")), "(my%20dir/a%23b%29.md)")
+    html_out := kit.join(dir, "html")
+    _ = try doc_ok(t, [_]string("--all", "--format=html", "-o", html_out, kit.join(dir, "src")))
+    try t.expect_contains("the HTML index", try t.read(kit.join(html_out, "index.html")), "href=\"my%20dir/a%23b%29.html\"")
+    return ()
+}
+
+/// The values of the `href` and `src` attributes in `html`.
+urls :: fn(html: string, out: ^List(string)) {
+    for attr in [_]string("href=\"", "src=\"") {
+        rest := html
+        while i := str.find(rest, attr) {
+            rest = rest[i + attr.len..]
+            end := str.find(rest, "\"") else break
+            out.push(rest[0..end])!
+        }
+    }
+}
+
+HOSTILE :: [_]string(
+    "<script>alert(1)</script>",
+    "<img src=x onerror=alert(1)>",
+    "<iframe src=\"javascript:alert(1)\"></iframe>",
+    "[x](javascript:alert(1))",
+    "[x](JaVaScRiPt:alert(1))",
+    "[x]( javascript:alert(1))",
+    "[x](&#106;avascript:alert(1))",
+    "[x](jav&#x09;ascript:alert(1))",
+    "[x](vbscript:msgbox(1))",
+    "[x](data:text/html;base64,PHNjcmlwdD4=)",
+    "[x](file:///etc/passwd)",
+    "[<b>x</b>](http://a.test/\" onmouseover=\"alert(1))",
+    "[x](http://a.test/<script>)",
+    "**<u>bold</u>** `<script>` *<svg onload=alert(1)>*",
+    "> <script>alert(1)</script>",
+    "- <img src=x onerror=alert(1)>",
+    "| <script> | b |\n| --- | --- |\n| <img onerror=x> | [x](javascript:1) |",
+    "# <script>alert(1)</script>",
+    "    <script>alert(1)</script>",
+    "```\n</code></pre><script>alert(1)</script>\n```",
+)
+
+/// `text` as comment lines, each starting with `prefix`.
+comment_lines :: fn(prefix, text: string) -> string needs Alloc {
+    out := list(u8)
+    for line in str.lines(text) { out.write("{}{}\n", prefix, line)! }
+    return string(out.items)
+}
+
+/// The lowercase form of `s` (ASCII only).
+lower :: fn(s: string) -> string needs Alloc {
+    buf := make(u8, s.len)!
+    return str.to_lower(s, buf)
+}
+
+/// Checks one generated page: no tags that run code, no event handlers in tags, and only
+/// safe URLs.
+check_page :: fn(t: ^kit.T, n: usize, html: string) -> kit.Fail!() needs kit.Run {
+    low := lower(html)
+    for tag in [_]string("<script", "<img", "<iframe", "<svg", "<u>", "<b>") {
+        try t.check(not str.contains(low, tag), "case {}: {} in {}", n, tag, html)
+    }
+    // Attribute-like text may appear as escaped text, but never inside a tag.
+    first := true
+    for part in str.split(low, "<") {
+        if first {
+            first = false
+            continue
+        }
+        tag := part
+        if close := str.find(part, ">") { tag = part[0..close] }
+        try t.check(not str.contains(tag, " on"), "case {}: event handler in <{}> in {}", n, tag, html)
+    }
+    found := list(string)
+    urls(html, &found)
+    for url in found.items {
+        ok := true
+        for i in 0..url.len {
+            c := url[i]
+            if c in (':', '/', '#', '?') {
+                if c is ':' {
+                    scheme := lower(url[0..i])
+                    ok = scheme in ("http", "https", "mailto")
+                }
+                break
+            }
+        }
+        for c in url {
+            if c in ('<', '>', ' ') { ok = false }
+        }
+        try t.check(ok, "case {}: unsafe URL {} in {}", n, kit.quote(url), html)
+    }
+    return ()
+}
+
+html_output_never_contains_active_content :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    base := try t.scratch(t.name)
+    n: usize = 0
+    for text in HOSTILE {
+        src := str.format(
+            "{}\n{}pub f :: fn() {{}}\n\n/// Variants.\npub E :: union {{\n{}    A: i64\n}}\n",
+            comment_lines("//! ", text),
+            comment_lines("/// ", text),
+            comment_lines("    /// ", text),
+        )!
+        dir := kit.join(base, str.format("case{}", n)!)
+        out := kit.join(dir, "out")
+        try t.write(kit.join(dir, "src/m.gm"), src)
+        _ = try doc_ok(t, [_]string("--all", "--format=html", "-o", out, kit.join(dir, "src")))
+        // Every page: the module's and the index.
+        for r in fs.entries(out) {
+            e := r else err => return !t.fail("cannot list {}: {}", out, err)
+            if str.strip_suffix(e.name, ".html") is null { continue }
+            try check_page(t, n, try t.read(kit.join(out, e.name)))
+        }
+        n += 1
+    }
+    return ()
+}
+
+cli_prints_one_module_to_stdout :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try doc_ok(t, [_]string(FIXTURE))
+    try t.expect_text("the page", try t.read(t.repo("tests/doc/golden/shapes.md")), out.out)
+    return ()
+}
+
+cli_writes_a_tree_with_an_index :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch(t.name)
+    _ = try doc_ok(t, [_]string("--all", "--format=html", "-o", dir, "tests/doc/fixture"))
+    index := try t.read(kit.join(dir, "index.html"))
+    try t.check(str.contains(index, "href=\"shapes/shapes.html\"") or str.contains(index, "href=\"shapes.html\""), "{}", index)
+    found: usize = 0
+    for r in fs.entries(dir) {
+        _ = r else err => return !t.fail("cannot list {}: {}", dir, err)
+        found += 1
+    }
+    try t.check(found >= 2, "{} files written", found)
+    return ()
+}
+
+cli_writes_a_single_file :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch(t.name)
+    file := kit.join(dir, "shapes.md")
+    _ = try doc_ok(t, [_]string(FIXTURE, "-o", file))
+    try t.check(str.strip_prefix(try t.read(file), "# Module `shapes`") is not null, "the file does not start with the module's heading")
+    return ()
+}
+
+cli_missing_warns_on_stderr :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try doc_ok(t, [_]string(FIXTURE, "--missing"))
+    try t.expect_contains("stderr", out.err, "warning: public function `undocumented` has no doc comment")
+    return ()
+}
+
+cli_rejects_a_module_that_does_not_parse :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch(t.name)
+    try t.write(kit.join(dir, "broken.gm"), "pub f :: fn( {\n")
+    out := try doc(t, [_]string(dir))
+    try t.check(not out.success(), "a module that does not parse was documented")
+    try t.expect_contains("stderr", out.err, "broken.gm")
+    return ()
+}
+
+cli_usage_errors :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    bad_format := try doc(t, [_]string("--format=pdf", "x"))
+    try t.check(bad_format.code() is 2, "`--format=pdf` ended with {}", bad_format.status)
+    // `--all` without `-o` is refused.
+    no_output := try doc(t, [_]string("--all", "lib/std"))
+    try t.check(not no_output.success(), "--all without -o was accepted")
+    missing := try doc(t, [_]string("no/such/dir"))
+    try t.check(not missing.success(), "a directory that does not exist was documented")
+    return ()
+}
+
+/// The regular files below `dir`, as paths relative to it.
+files_below :: fn(t: ^kit.T, dir: string, out: ^List(string)) -> kit.Fail!() needs Alloc + Fs {
+    prefix := str.format("{}/", dir)!
+    for r in fs.walk(dir) {
+        e := r else err => return !t.fail("cannot list {}: {}", dir, err)
+        if e.kind is not .File { continue }
+        rel := str.strip_prefix(e.path, prefix) else return !t.fail("{} is not below {}", e.path, dir)
+        out.push(dupe(rel)!)!
+    }
+    out.items.sort()
+    return ()
+}
+
+std_reference_is_current :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    how :: "The standard library reference in docs/std/ is out of date. Regenerate it with\n\n    gamma doc lib/std --all -o docs/std\n\nand commit the result."
+    generated := try t.scratch(t.name)
+    _ = try doc_ok(t, [_]string("lib/std", "--all", "-o", generated))
+    dir := t.repo("docs/std")
+    expected := list(string)
+    try files_below(t, generated, &expected)
+    stale := list(u8)
+    for rel in expected.items {
+        want := try t.read(kit.join(generated, rel))
+        have := try t.read_if_exists(kit.join(dir, rel))
+        if text := have {
+            if text is not want { stale.write("changed: docs/std/{}\n", rel)! }
+        } else {
+            stale.write("missing: docs/std/{}\n", rel)!
+        }
+    }
+    present := list(string)
+    if fs.exists(dir) { try files_below(t, dir, &present) }
+    for p in present.items {
+        found := false
+        for rel in expected.items {
+            if rel is p { found = true }
+        }
+        if not found { stale.write("obsolete: docs/std/{}\n", p)! }
+    }
+    try t.check(stale.items.len is 0, "{}\n\n{}", how, string(stale.items))
+    return ()
+}

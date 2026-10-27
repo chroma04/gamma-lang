@@ -1,0 +1,287 @@
+//! Very long expressions compile and run: the compiler's passes recurse over the syntax
+//! tree, so a long operator chain is as deep as it is long.
+//!
+//! The first tests check and interpret chains of tens of thousands of links. The ones named
+//! `native_…` build chains well past the length at which the C back end emits a chain as an
+//! accumulator updated by one block per link (without that, the C compilers take minutes on
+//! chains of tens of thousands of links) and compare the native program with the interpreter.
+
+kit :: import "../kit"
+path_lib :: import "std/path"
+str :: import "std/str"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "long_constant_chain", run: long_constant_chain))!
+    out.push(kit.Test(name: "long_run_time_chain", run: long_run_time_chain))!
+    out.push(kit.Test(name: "long_field_chain", run: long_field_chain))!
+    out.push(kit.Test(name: "long_method_chain", run: long_method_chain))!
+    out.push(kit.Test(name: "long_builtin_method_chain", run: long_builtin_method_chain))!
+    out.push(kit.Test(name: "long_ill_typed_chains_are_errors", run: long_ill_typed_chains_are_errors))!
+    out.push(kit.Test(name: "postfix_chain_limit_is_an_error", run: postfix_chain_limit_is_an_error))!
+    out.push(kit.Test(name: "native_long_method_chain", run: native_long_method_chain))!
+    out.push(kit.Test(name: "native_long_sum", run: native_long_sum))!
+    out.push(kit.Test(name: "native_long_user_method_chain", run: native_long_user_method_chain))!
+    out.push(kit.Test(name: "native_chain_keeps_evaluation_order", run: native_chain_keeps_evaluation_order))!
+    out.push(kit.Test(name: "native_chain_short_circuits", run: native_chain_short_circuits))!
+    out.push(kit.Test(name: "native_chain_changes_type", run: native_chain_changes_type))!
+    out.push(kit.Test(name: "native_chain_traps_where_the_interpreter_does", run: native_chain_traps_where_the_interpreter_does))!
+    out.push(kit.Test(name: "native_long_function_is_marked_for_clang", run: native_long_function_is_marked_for_clang))!
+}
+
+/// `s` repeated `n` times.
+repeat :: fn(s: string, n: usize) -> string needs Alloc {
+    l := list(u8)
+    str.repeat(&l, s, n)!
+    return l.items
+}
+
+/// `term` `n` times, separated by `sep`.
+joined :: fn(term, sep: string, n: usize) -> string needs Alloc {
+    l := list(u8)
+    for i in 0..n {
+        if i > 0 { l.extend(sep)! }
+        l.extend(term)!
+    }
+    return l.items
+}
+
+/// The parts joined into one text.
+cat :: fn(parts: []const string) -> string needs Alloc => str.join(parts, "")!
+
+/// Writes `src` to `<name>.gm` in the test's directory.
+write_program :: fn(t: ^kit.T, name, src: string) -> kit.Fail!string needs kit.Run {
+    dir := try t.scratch(str.format("long_expressions-{}", name)!)
+    path := kit.join(dir, str.format("{}.gm", name)!)
+    try t.write(path, src)
+    return path
+}
+
+/// Runs a program whose `main` prints a sum of `n` terms `term` with the interpreter.
+run_sum :: fn(t: ^kit.T, name: string, n: usize, term: string) -> kit.Fail!string needs kit.Run {
+    src := cat([_]string("main :: fn() needs Out {\n    y := 1\n    x := ", joined(term, " + ", n), "\n    print(\"{} {}\\n\", x, y)\n}\n"))
+    path := try write_program(t, name, src)
+    out := try t.run_ok(t.gamma([_]string("run", "--backend=interp", path)))
+    return out.out
+}
+
+long_constant_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return t.expect_text("the output", "20000 1\n", try run_sum(t, "constant", 20000, "1"))
+}
+
+long_run_time_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return t.expect_text("the output", "20000 1\n", try run_sum(t, "run_time", 20000, "y"))
+}
+
+/// What `gamma <command>` ended with: the exit status (null if a signal ended it, as a stack
+/// overflow does) and the beginning of standard error.
+Result :: struct {
+    code: ?u32
+    err: string
+}
+
+/// Runs `gamma <command>` on a program.
+gamma :: fn(t: ^kit.T, command, name, src: string) -> kit.Fail!Result needs kit.Run {
+    path := try write_program(t, name, src)
+    out := try t.run(t.gamma([_]string(command, path)))
+    return Result(code: out.code(), err: out.err[0..min(out.err.len, 600)])
+}
+
+min :: fn(a, b: usize) -> usize => if a < b { a } else { b }
+
+/// An empty `main` and a function `g` whose body is `x := <operand><link>…` with `n` links.
+chain_program :: fn(prelude, params, operand, link: string, n: usize) -> string needs Alloc {
+    return cat([_]string("main :: fn() {}\n", prelude, "\ng :: fn(", params, ") {\n    x := ", operand, repeat(link, n), "\n}\n"))
+}
+
+/// Type-checking a long chain succeeds in time linear in its length.
+check_ok :: fn(t: ^kit.T, name, src: string) -> kit.Fail!() needs kit.Run {
+    r := try gamma(t, "check", name, src)
+    return t.check(r.code is 0, "gamma check failed:\n{}", r.err)
+}
+
+/// A chain that is too long or ill-typed is reported as an error, never a crash.
+check_error :: fn(t: ^kit.T, command, name, src, message: string) -> kit.Fail!() needs kit.Run {
+    r := try gamma(t, command, name, src)
+    try t.check(r.code is 1, "expected an error exit from `{}`, got {}:\n{}", command, r.code, r.err)
+    return t.check(str.contains(r.err, message), "missing `{}` in:\n{}", message, r.err)
+}
+
+NODE :: "N :: struct {\n    c: ^N\n    v: i32\n}\n"
+
+long_field_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return check_ok(t, "field_chain", chain_program(NODE, "a: N", "a", ".c", 20000))
+}
+
+long_method_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    prelude :: "N :: struct { v: i32 }\nf :: fn(n: N) -> N { return n }\n"
+    return check_ok(t, "method_chain", chain_program(prelude, "a: N", "a", ".f()", 20000))
+}
+
+long_builtin_method_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    return check_ok(t, "builtin_chain", chain_program("", "a: i32", "a", ".abs()", 20000))
+}
+
+/// A chain that fails at its first link, with the error that link gets.
+IllTyped :: struct {
+    name, link, message: string
+}
+
+/// A link repeated past the limit on postfix operations.
+Limit :: struct {
+    name, link: string
+}
+
+long_ill_typed_chains_are_errors :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // Each chain fails at its first link; the rest must not crash any pass.
+    cases :: [_]IllTyped(
+        IllTyped(name: "bad_index", link: "[0]", message: "cannot index"),
+        IllTyped(name: "bad_call", link: "(1)", message: "cannot call"),
+        IllTyped(name: "bad_deref", link: "^", message: "dereferences a pointer"),
+        IllTyped(name: "bad_unwrap", link: "?", message: "unwraps an optional"),
+    )
+    for c in cases {
+        try check_error(t, "check", c.name, chain_program("", "a: i32", "a", c.link, 50000), c.message)
+    }
+    return ()
+}
+
+postfix_chain_limit_is_an_error :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    cases :: [_]Limit(
+        Limit(name: "limit_call", link: "(1)"),
+        Limit(name: "limit_index", link: "[0]"),
+        Limit(name: "limit_field", link: ".c"),
+        Limit(name: "limit_deref", link: "^"),
+    )
+    for c in cases {
+        src := chain_program(NODE, "a: N", "a", c.link, 150_000)
+        try check_error(t, "check", c.name, src, "more than 100000 postfix operations in a row")
+        try check_error(t, "run", c.name, src, "more than 100000 postfix operations in a row")
+    }
+    return ()
+}
+
+// --- the C back end ---------------------------------------------------------------------------
+
+/// What a program did when run: its exit code and standard output.
+Run :: struct {
+    code: ?u32
+    out: string
+}
+
+/// Runs `src` with the interpreter and through the C back end; returns the exit code and
+/// standard output of each.
+run_both :: fn(t: ^kit.T, name, src: string) -> kit.Fail!(interp: Run, native: Run) needs kit.Run {
+    path := try write_program(t, name, src)
+    interp := Run(code: null, out: "")
+    native := interp
+    for backend in ("interp", "c") {
+        flag := str.format("--backend={}", backend)!
+        c := t.gamma([_]string("run", flag, path))
+        // Compiling these programs takes minutes, more than a program usually may.
+        c.timeout_s = 3 * t.cfg.timeout_s
+        out := try t.run(c)
+        try t.check(not str.contains(out.err, "C compiler"), "the C compiler failed:\n{}", out.err[0..min(out.err.len, 800)])
+        r := Run(code: out.code(), out: out.out)
+        if backend is "interp" { interp = r } else { native = r }
+    }
+    return (interp: interp, native: native)
+}
+
+same_output :: fn(t: ^kit.T, name, src, expected: string) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    r := try run_both(t, name, src)
+    try t.expect_text("interpreter output", expected, r.interp.out)
+    try t.check(r.native.code is r.interp.code, "native exit status {}, interpreter's {}", r.native.code, r.interp.code)
+    return t.expect_text("native output (compared with the interpreter's)", r.interp.out, r.native.out)
+}
+
+main_with :: fn(prelude, body: string) -> string needs Alloc {
+    return cat([_]string(prelude, "main :: fn() needs Out {\n    a := -5\n    y := 1\n", body, "    print(\"{}\\n\", x)\n}\n"))
+}
+
+native_long_method_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // The longest chain the parser accepts: 100,000 links (`.abs` and `()` count one each).
+    src := main_with("", cat([_]string("    x := a", repeat(".abs()", 50_000), "\n")))
+    return same_output(t, "native_abs", src, "5\n")
+}
+
+native_long_sum :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    sum := joined("y", " + ", 40_000)
+    return same_output(t, "native_sum", main_with("", cat([_]string("    x := ", sum, "\n"))), "40000\n")
+}
+
+native_long_user_method_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    prelude :: "N :: struct { v: i32 }\nf :: fn(n: N) -> N { return N(v: n.v + 1) }\n"
+    src := main_with(prelude, cat([_]string("    n := N(v: 1)\n    x := n", repeat(".f()", 5_000), ".v\n")))
+    return same_output(t, "native_user_chain", src, "5001\n")
+}
+
+/// The terms `f(1)`, `f(2)`, … `f(n)` joined by `sep`.
+calls :: fn(f: string, n: usize, sep: string) -> string needs Alloc {
+    l := list(u8)
+    for k in 1..=n {
+        if k > 1 { l.extend(sep)! }
+        l.write("{}({})", f, k)!
+    }
+    return l.items
+}
+
+/// `1 2 … n ` (each number followed by a space).
+counted :: fn(n: usize) -> string needs Alloc {
+    l := list(u8)
+    for k in 1..=n { l.write("{} ", k)! }
+    return l.items
+}
+
+native_chain_keeps_evaluation_order :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // Each term has a visible effect; the order of the output is the order of evaluation.
+    prelude :: "f :: fn(k: i64) -> i64 needs Out {\n    print(\"{} \", k)\n    return k\n}\n"
+    n: usize = 600
+    expected := str.format("{}{}\n", counted(n), n * (n + 1) / 2)!
+    body := cat([_]string("    x := ", calls("f", n, " + "), "\n"))
+    return same_output(t, "native_order", main_with(prelude, body), expected)
+}
+
+native_chain_short_circuits :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // The right operands of `and` are evaluated only while the chain so far is true.
+    and_prelude :: "t :: fn(k: i64) -> bool needs Out {\n    print(\"{} \", k)\n    return k < 400\n}\n"
+    chain := cat([_]string("    x := ", calls("t", 600, " and "), "\n"))
+    try same_output(t, "native_and", main_with(and_prelude, chain), cat([_]string(counted(400), "false\n")))
+    // `or` stops at the first true operand.
+    or_prelude :: "t :: fn(k: i64) -> bool needs Out {\n    print(\"{} \", k)\n    return k >= 300\n}\n"
+    chain = cat([_]string("    x := ", calls("t", 600, " or "), "\n"))
+    return same_output(t, "native_or", main_with(or_prelude, chain), cat([_]string(counted(300), "true\n")))
+}
+
+native_chain_changes_type :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // A comparison ends a sum: the chain's accumulator changes from a number to a bool.
+    sum := joined("y", " + ", 500)
+    return same_output(t, "native_type", main_with("", cat([_]string("    x := ", sum, " > 499\n"))), "true\n")
+}
+
+native_chain_traps_where_the_interpreter_does :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    // 300 terms of 1 overflow an `i8` at the 128th.
+    sum := joined("z", " + ", 300)
+    src := main_with("", cat([_]string("    z: i8 = 1\n    x := ", sum, "\n")))
+    r := try run_both(t, "native_trap", src)
+    try t.check(r.interp.code is r.native.code, "exit codes: native {}, interpreter {}", r.native.code, r.interp.code)
+    try t.check(r.interp.code is not 0, "the interpreter did not trap")
+    return t.expect_text("native output (compared with the interpreter's)", r.interp.out, r.native.out)
+}
+
+native_long_function_is_marked_for_clang :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // Clang from LLVM 19 on takes time that grows about with the cube of the length of a
+    // chain of checked operations, so a function this long is marked `GM_LONG_FN`, which
+    // compiles it without optimization there (see `runtime/gm_rt.h`).
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    src := main_with("", cat([_]string("    x := a", repeat(".abs()", 3_000), "\n")))
+    path := try write_program(t, "long_fn", src)
+    exe := kit.join(path_lib.dir_name(path), "long_fn")
+    c := t.gamma([_]string("build", path, "-o", exe))
+    // One C file, whatever the environment asks.
+    c.set("GAMMA_C_UNITS", "1")
+    _ = try t.run_ok(c)
+    gen := try t.read(str.format("{}.c", exe)!)
+    return t.check(str.contains(gen, "static GM_LONG_FN "), "the function of the chain is not marked")
+}

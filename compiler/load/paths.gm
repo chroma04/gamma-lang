@@ -1,4 +1,4 @@
-// File paths, with the semantics of the reference implementation's (Rust's `Path`): a
+// File paths, with these semantics: a
 // path is an optional root followed by names; `.` and empty names do not count, and
 // both `/` and, on Windows, `\` separate names. Paths are built with the platform's
 // separator.

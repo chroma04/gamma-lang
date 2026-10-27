@@ -1,0 +1,265 @@
+//! What a test of the harness works with: its `T` (the configuration, checks that record
+//! failures), commands that run the compiler under test and other programs with a time
+//! limit, and files in a scratch directory.
+//!
+//! A test is a function `fn(t: ^kit.T) -> kit.Fail!() needs kit.Run`. A check that fails
+//! records its message in `t` and returns `Fail`, so a test reads as a list of `try`s:
+//!
+//!     help :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+//!         out := try t.run(t.gamma([_]string("check", "--help")))
+//!         try t.check(out.success(), "`gamma check --help` failed:\n{}", out.err)
+//!         return ()
+//!     }
+//!
+//! Each test runs on a thread of its own with an arena that is freed when it ends, so tests
+//! allocate freely. `Env.var` sees the variables the harness started with (those named in
+//! `VARS`); a test changes the environment of the programs it runs, never its own.
+
+fs :: import "std/fs"
+load :: import "gammac/load"
+path :: import "std/path"
+str :: import "std/str"
+
+/// The effects a test may use.
+pub Run :: Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys
+
+/// What a failed check returns, after recording why in the test.
+pub Fail :: struct {}
+
+/// A test: its name within its suite, the function that runs it, and a parameter for
+/// tests that a suite generates (such as the path of a conformance test).
+pub Test :: struct {
+    pub name: string
+    pub run: ^fn(t: ^T) -> Fail!() needs Run
+    pub param: string = ""
+}
+
+/// What the harness knows when it starts, shared by every test (read-only).
+pub Config :: struct {
+    /// The repository's root directory (absolute).
+    pub root: string
+    /// The `gamma` executable under test (absolute): `GAMMA_TEST_COMPILER`.
+    pub compiler: string
+    /// Where tests keep their files (absolute): `GAMMA_TEST_TMPDIR`, by default
+    /// `target/test-tmp` under the root.
+    pub tmp: string
+    /// The cache directory of the compiler under test (`GAMMA_CACHE_DIR` for it).
+    pub cache: string
+    /// Seconds a program may run before it is killed (`GAMMA_TEST_TIMEOUT`, default 600).
+    pub timeout_s: u64 = 600
+    /// Golden files are rewritten from the output instead of compared (`BLESS=1`).
+    pub bless: bool = false
+    /// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
+    pub c: bool = false
+    /// Safe builds can be tested: Fil-C is found and `GAMMA_TEST_SAFE` is not 0.
+    pub safe: bool = false
+    /// The Safe lane runs: `GAMMA_TEST_SAFE=1`.
+    pub safe_lane: bool = false
+    /// The target that the C compiler of `CC` and `CFLAGS` compiles for (the host's by
+    /// default), which is what compiled tests run on.
+    pub target: load.Target
+    /// Its architecture as `//! arch:` names it: `x86_64`, `aarch64`, `riscv64`, `s390x`,
+    /// `wasm32` or `other`.
+    pub arch: string
+    /// Its kind of operating system: `unix`, `windows` or `wasi`.
+    pub os_kind: string
+    /// The harness's environment, as `Env.var` sees it in tests.
+    pub vars: []const Var
+}
+
+/// An environment variable the harness started with.
+pub Var :: struct {
+    pub name: string
+    pub value: string
+}
+
+/// The environment variables that tests and the programs they call read; tests see these
+/// through `Env.var`.
+pub VARS :: [_]string(
+    "BLESS", "CC", "CFLAGS", "LDFLAGS", "HOME", "PATH", "TMPDIR", "TZ", "TZDIR", "USERPROFILE",
+    "LOCALAPPDATA", "XDG_CACHE_HOME", "WASI_SDK_PATH", "WASM_OPT", "WASI_RUNNER", "GAMMA_RUNNER",
+    "GAMMA_C_UNITS", "GAMMA_STD", "GAMMA_RUNTIME", "GAMMA_CORE", "GAMMA_CACHE_DIR",
+    "GAMMA_TEST_C", "GAMMA_TEST_SAFE", "GAMMA_TEST_LANE", "GAMMA_TEST_DEBUG_INFO",
+    "GAMMA_TEST_TIMEOUT", "GAMMA_TEST_FILTER", "GAMMA_WASI_TEST", "GAMMA_BLESS",
+)
+
+/// The `Env` that tests run under: no arguments, the variables of `Config.vars`.
+pub TestEnv :: struct {
+    vars: []const Var
+}
+
+/// The `Env` handler for the tests of `cfg`.
+pub test_env :: fn(cfg: ^const Config) -> TestEnv => TestEnv(vars: cfg.vars)
+
+handler Env for TestEnv {
+    args(self) => empty_slice(string)
+    var(self, name) => {
+        for v in self.vars {
+            if v.name is name { return v.value }
+        }
+        return null
+    }
+    exit(self, code) => trap("a test called Env.exit")
+}
+
+/// The test being run.
+pub T :: struct {
+    pub cfg: ^const Config
+    /// The full name, `suite/name`.
+    pub name: string
+    pub param: string
+    /// What the test reported: the messages of failed checks, and `log` lines.
+    pub report: List(u8)
+    pub failed: bool = false
+    pub skipped: bool = false
+}
+
+/// A test about to run.
+pub new_test :: fn(cfg: ^const Config, name, param: string) -> T needs Alloc => T(cfg: cfg, name: name, param: param, report: list(u8))
+
+/// Records a failure with a message formatted like `print`'s and returns `Fail`, so that a
+/// test fails with `return !t.fail("…", …)`.
+pub fail :: fn(A: type, t: ^T, template :: string, args: ..A) -> Fail {
+    t.failed = true
+    if t.report.items.len > 0 and t.report.items.last() is not '\n' { t.report.push('\n')! }
+    t.report.write(template, ..args)!
+    if t.report.items.last() is not '\n' { t.report.push('\n')! }
+    return Fail()
+}
+
+/// Fails the test, with the message, unless `cond` holds.
+pub check :: fn(A: type, t: ^T, cond: bool, template :: string, args: ..A) -> Fail!() {
+    if not cond { return !t.fail(template, ..args) }
+    return ()
+}
+
+/// Fails the test unless the text `actual` is `expected`, showing where they differ.
+pub expect_text :: fn(t: ^T, what: string, expected, actual: string) -> Fail!() needs Alloc {
+    if expected is actual { return () }
+    return !t.fail("{} differs:\n{}", what, diff(expected, actual))
+}
+
+/// Fails the test unless `text` contains `needle`.
+pub expect_contains :: fn(t: ^T, what: string, text, needle: string) -> Fail!() needs Alloc {
+    if str.contains(text, needle) { return () }
+    return !t.fail("{} does not contain {}:\n{}", what, quote(needle), text)
+}
+
+/// Ends the test without failing it, saying why it did not run: `return !t.skip("…")`.
+pub skip :: fn(A: type, t: ^T, template :: string, args: ..A) -> Fail {
+    t.skipped = true
+    t.report.write(template, ..args)!
+    t.report.push('\n')!
+    return Fail()
+}
+
+/// Adds a line to the test's report, which is shown if the test fails.
+pub log :: fn(A: type, t: ^T, template :: string, args: ..A) {
+    t.report.write(template, ..args)!
+    t.report.push('\n')!
+}
+
+/// A line-by-line comparison of two texts: the lines of `expected` that `actual` lacks
+/// (`-`) and those it has instead (`+`), around the first difference.
+pub diff :: fn(expected, actual: string) -> string needs Alloc {
+    e := split_lines(expected)
+    a := split_lines(actual)
+    // The common beginning and end.
+    head: usize = 0
+    while head < e.len and head < a.len and e[head] is a[head] { head += 1 }
+    tail: usize = 0
+    while tail < e.len - head and tail < a.len - head and e[e.len - 1 - tail] is a[a.len - 1 - tail] { tail += 1 }
+    out := list(u8)
+    context :: 3
+    from := if head > context { head - context } else { 0 }
+    out.write("@@ line {} @@\n", from + 1)!
+    for i in from..head { out.write("  {}\n", e[i])! }
+    shown: usize = 0
+    for i in head..e.len - tail {
+        if shown < 200 { out.write("- {}\n", e[i])! }
+        shown += 1
+    }
+    for i in head..a.len - tail {
+        if shown < 200 { out.write("+ {}\n", a[i])! }
+        shown += 1
+    }
+    if shown > 200 { out.write("  … {} more lines differ\n", shown - 200)! }
+    for i in e.len - tail..min(e.len - tail + context, e.len) { out.write("  {}\n", e[i])! }
+    if expected.len > 0 and actual.len > 0 and expected.last() is not actual.last() {
+        out.write("  (one ends with a newline, the other does not)\n")!
+    }
+    return out.items
+}
+
+/// The lines of `s`, without their line breaks.
+pub split_lines :: fn(s: string) -> []string needs Alloc {
+    l := list(string)
+    for line in str.lines(s) { l.push(line)! }
+    return l.items
+}
+
+min :: fn(a, b: usize) -> usize => if a < b { a } else { b }
+
+// ---------------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------------
+
+/// `rel` below the repository's root.
+pub repo :: fn(t: ^const T, rel: string) -> string needs Alloc => join(t.cfg.root, rel)
+
+/// `a/b`.
+pub join :: fn(a, b: string) -> string needs Alloc => path.join_alloc([_]string(a, b))!
+
+/// An empty directory `name` below the test directory, made afresh.
+pub scratch :: fn(t: ^T, name: string) -> Fail!string needs Alloc + Fs {
+    dir := join(t.cfg.tmp, name)
+    fs.remove_all(dir) else e => {
+        if e is not .NotFound { return !t.fail("cannot remove {}: {}", dir, e) }
+    }
+    fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
+    return dir
+}
+
+/// Writes `text` to the file `p`, making its directory first.
+pub write :: fn(t: ^T, p: string, text: string) -> Fail!() needs Alloc + Fs {
+    dir := path.dir_name(p)
+    if dir.len > 0 {
+        fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
+    }
+    fs.write_all(p, text) else e => return !t.fail("cannot write {}: {}", p, e)
+    return ()
+}
+
+/// The contents of the file `p`.
+pub read :: fn(t: ^T, p: string) -> Fail!string needs Alloc + Fs {
+    return fs.read_all(p) else e => return !t.fail("cannot read {}: {}", p, e)
+}
+
+/// The contents of the file `p`, or null if it does not exist.
+pub read_if_exists :: fn(t: ^T, p: string) -> Fail!?string needs Alloc + Fs {
+    r: ?string = fs.read_all(p) else e => {
+        if e is .Io(.NotFound) { return null }
+        return !t.fail("cannot read {}: {}", p, e)
+    }
+    return r
+}
+
+/// `s` in double quotes, with line breaks, quotes, backslashes and other control bytes and
+/// non-ASCII bytes escaped, for messages about text that is not what it should be.
+pub quote :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    out.push('"')!
+    for c in s {
+        match c {
+            '\n' => out.extend("\\n")!
+            '\t' => out.extend("\\t")!
+            '\r' => out.extend("\\r")!
+            '"' => out.extend("\\\"")!
+            '\\' => out.extend("\\\\")!
+            0x20..=0x7e => out.push(c)!
+            _ => out.write("\\x{:02x}", c)!
+        }
+    }
+    out.push('"')!
+    return out.items
+}

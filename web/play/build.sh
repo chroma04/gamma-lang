@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the playground's interpreter from gammac, without cargo:
+# Builds the playground's interpreter from the compiler's sources:
 #
 #   web/play/build.sh [OUT_DIR]
 #
@@ -13,7 +13,7 @@
 # wasm-opt (WASM_OPT), because the interpreter switches fibers. See "Targets, modes and
 # caches" in docs/self-hosting.md. GAMMA_STD and GAMMA_RUNTIME default to this checkout's.
 #
-# MODE (default checked) is gammac's build mode for the interpreter itself; the programs
+# MODE (default checked) is the build mode of the interpreter itself; the programs
 # it runs are interpreted the same way in every mode.
 
 set -eu
@@ -32,7 +32,7 @@ mkdir -p "$out"
 "$gamma" run --backend=interp "$here/tools/bundle.gm" "$out/gamma-play-libs.json" \
     "/std=$GAMMA_STD" "/core=$(dirname "$GAMMA_STD")/core"
 
-# The interpreter. gammac writes the C next to the module; it is not needed afterwards.
+# The interpreter. gamma writes the C next to the module; it is not needed afterwards.
 "$gamma" build --mode="${MODE:-checked}" --target=wasm32-wasi "$here" -o "$out/gamma-play.wasm"
 rm -f "$out"/gamma-play.wasm.c "$out"/gamma-play.wasm.*.c "$out"/gamma-play.wasm.*.h
 

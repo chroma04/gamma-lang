@@ -1,5 +1,5 @@
 //! Facts about a checked program for editors: what a name refers to, what to show on
-//! hover, which names are in scope, and the outline of each file (mirrors `src/ide.rs`).
+//! hover, which names are in scope, and the outline of each file.
 //!
 //! The index is built by `build` (`build.gm`) and holds no references into the compiler:
 //! positions are spans (byte offsets) and everything else is plain text. Queries are

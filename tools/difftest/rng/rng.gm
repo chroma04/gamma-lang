@@ -1,0 +1,29 @@
+//! A small deterministic random number generator (SplitMix64), so that a seed always
+//! gives the same program on every platform.
+
+pub Rng :: struct { state: u64 }
+
+/// The generator of `seed`.
+pub new :: fn(seed: u64) -> Rng {
+    r := Rng(state: seed ~ 0x9E37_79B9_7F4A_7C15)
+    _ = r.next()
+    return r
+}
+
+/// The next 64 random bits.
+pub next :: fn(r: ^Rng) -> u64 {
+    r.state +%= 0x9E37_79B9_7F4A_7C15
+    z := r.state
+    z = (z ~ (z >> 30)) *% 0xBF58_476D_1CE4_E5B9
+    z = (z ~ (z >> 27)) *% 0x94D0_49BB_1331_11EB
+    return z ~ (z >> 31)
+}
+
+/// A number in `0..n` (`n > 0`).
+pub below :: fn(r: ^Rng, n: usize) -> usize => (r.next() % u64(n)).trunc(usize)
+
+/// True with probability `percent`/100.
+pub chance :: fn(r: ^Rng, percent: usize) -> bool => r.below(100) < percent
+
+/// One of `items` (not empty).
+pub pick :: fn(r: ^Rng, T: type, items: []const T) -> T => items[r.below(items.len)]

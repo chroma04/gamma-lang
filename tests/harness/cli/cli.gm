@@ -1,0 +1,75 @@
+//! Tests of the `gamma` command line itself: help for every command, and arguments.
+
+kit :: import "../kit"
+str :: import "std/str"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "every_command_takes_help", run: every_command_takes_help))!
+    out.push(kit.Test(name: "help_after_the_program_belongs_to_the_program", run: help_after_the_program))!
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "arguments_that_are_not_utf8_are_usage_errors", run: arguments_not_utf8))!
+        out.push(kit.Test(name: "program_arguments_pass_through_as_bytes", run: arguments_as_bytes))!
+    }
+}
+
+COMMANDS :: [_]string(
+    "lex", "parse", "check", "fix", "run", "test", "bench", "build", "repl", "fmt", "doc", "lsp", "new", "init",
+    "add", "remove", "fetch", "update", "cache", "lint",
+)
+
+every_command_takes_help :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    for cmd in COMMANDS {
+        for flag in ("--help", "-h") {
+            out := try t.run(t.gamma([_]string(cmd, flag)))
+            try t.check(out.success(), "`gamma {} {}` failed:\n{}", cmd, flag, out.err)
+            try t.check(str.contains(out.out, "usage: gamma"), "`gamma {} {}` printed {}", cmd, flag, kit.quote(out.out))
+        }
+    }
+    // The details of a command come with its help.
+    for args in ([_]string("doc", "--help"), [_]string("help", "doc")) {
+        out := try t.run(t.gamma(args))
+        try t.expect_contains("the help", out.out, "usage: gamma doc")
+    }
+    out := try t.run(t.gamma([_]string("add", "--help")))
+    try t.expect_contains("the help of add", out.out, "gamma add")
+    return ()
+}
+
+ARGS_PROGRAM :: "main :: fn() needs Out + Env {\n    for a in Env.args() { print(\"{}\\n\", a) }\n}\n"
+
+help_after_the_program :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("cli")
+    file := kit.join(dir, "args.gm")
+    try t.write(file, ARGS_PROGRAM)
+    out := try t.run_ok(t.gamma([_]string("run", file, "--help")))
+    try t.check(str.strip_suffix(out.out, "--help\n") is not null, "{}", kit.quote(out.out))
+    try t.check(not str.contains(out.out, "usage: gamma"), "{}", kit.quote(out.out))
+    return ()
+}
+
+arguments_not_utf8 :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try t.run(t.gamma([_]string("check", "\xff.gm")))
+    try t.check(out.code() is 2, "exit status {}", out.status)
+    try t.expect_contains("stderr", out.err, "not valid UTF-8")
+    return ()
+}
+
+/// What the program prints for its arguments: each on a line, as raw bytes.
+arguments_as_bytes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("cli-bytes")
+    file := kit.join(dir, "args.gm")
+    try t.write(file, ARGS_PROGRAM)
+    backends := list(string)
+    backends.push("--backend=interp")!
+    if t.cfg.c { backends.push("--backend=c")! }
+    for backend in backends.items {
+        out := try t.run(t.gamma([_]string("run", backend, file, "a\xff\xfeb", "plain")))
+        try t.check(out.success(), "{}: {}", backend, out.err)
+        try t.check(str.strip_suffix(out.out, "a\xff\xfeb\nplain\n") is not null, "{}: {}", backend, kit.quote(out.out))
+    }
+    // Options of gamma itself must still be text.
+    out := try t.run(t.gamma([_]string("run", "--mode=\xff", file)))
+    try t.check(out.code() is 2, "exit status {}", out.status)
+    try t.expect_contains("stderr", out.err, "not valid UTF-8")
+    return ()
+}

@@ -376,7 +376,7 @@ c_equality :: fn(lx: ^Lexer, b: u8) needs Alloc {
     lx.emit(kind, lo, lx.pos)
 }
 
-/// The ASCII whitespace of Rust's `u8::is_ascii_whitespace`: space, tab, line feed,
+/// The ASCII whitespace: space, tab, line feed,
 /// form feed and carriage return.
 is_ascii_space :: fn(c: u8) -> bool => c in (' ', '\t', '\n', 0x0C, '\r')
 

@@ -1,5 +1,4 @@
-// Sequences: membership `in` (§7.7) and `for` loops over ranges (§13.2) (mirrors
-// `src/sema/seq.rs` and `for_loop` in `src/sema/func.rs`).
+// Sequences: membership `in` (§7.7) and `for` loops over ranges (§13.2).
 
 /// `elem in container`, with `elem` already checked.
 in_expr :: fn(cx: ^FnCx, checked: ^Expr, container: ^const ast.Expr, negated: bool, span: source.Span) -> ^Expr needs Load {

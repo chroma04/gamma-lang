@@ -19,9 +19,14 @@ dir [/
 ]
 env [1|two words|unset
 ]
+env changes [2|unset|unset|/bin:/usr/bin
+]
+empty name: .Io(.InvalidInput)
 null stdin gives 0 bytes
 writing to a closed pipe: .BrokenPipe
 write failed: true
 killed: .Signaled(9)
 killed: .Signaled(9)
+group read ends: true
+killed group: .Signaled(9)
 big: .Exited(0) 300000 300000

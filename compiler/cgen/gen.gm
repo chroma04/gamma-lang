@@ -1,13 +1,11 @@
 //! The C back end: translates a checked program to C, which the system C compiler
-//! compiles together with the runtime (`runtime/gm_rt.c`). Mirrors `src/cgen/`.
+//! compiles together with the runtime (`runtime/gm_rt.c`).
 //!
-//! The generated code follows the reference implementation's: values have the same
-//! bytes, checks trap with the same messages, and formatting goes through the runtime's
-//! type descriptors. The optimizations are ported too: functions specialized for the
-//! handler that is their context (`spec.gm`), parameters read in place (`borrow.gm`),
-//! long runs of statements in helpers (`outline.gm`), shortcuts for long operator chains
-//! (`chain.gm`) and constant arguments in static storage (`constarg.gm`). Not ported: the
-//! Safe mode and freestanding targets.
+//! Values have the bytes of the target's layout, checks trap with the spec's messages, and
+//! formatting goes through the runtime's type descriptors. The optimizations are: functions
+//! specialized for the handler that is their context (`spec.gm`), parameters read in place
+//! (`borrow.gm`), long runs of statements in helpers (`outline.gm`), shortcuts for long
+//! operator chains (`chain.gm`) and constant arguments in static storage (`constarg.gm`).
 
 ast :: import "../ast"
 bigint :: import "../bigint"

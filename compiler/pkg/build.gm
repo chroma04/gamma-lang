@@ -1,5 +1,4 @@
-// Build settings from `gamma.toml`: the `[build]` table and the `[profile.*]` tables
-// (mirrors `src/pkg/build.rs`).
+// Build settings from `gamma.toml`: the `[build]` table and the `[profile.*]` tables.
 //
 // The root package's settings (`mode`, `debug-info`, `cflags`, `ldflags`) configure the
 // compiler and the C toolchain; `root_settings` reads them before the program is analyzed.

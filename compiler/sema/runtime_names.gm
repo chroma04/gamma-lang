@@ -1,37 +1,28 @@
 // The C identifiers of the generated programs' runtime that start with `gm_` (§23.5): a
 // foreign member or an export of such a name would clash with the runtime. They are the
-// identifiers of `runtime/gm_rt.h`, `runtime/gm_rt.c` and `runtime/gm_clif.c`; a name that
-// ends in a digit is reserved for generated code and not listed.
+// identifiers of `runtime/gm_rt.h` and `runtime/gm_rt.c`; a name that ends in a digit
+// is reserved for generated code and not listed.
 
 /// The runtime's `gm_` identifiers that do not end in a digit, sorted.
-RUNTIME_NAMES :: [325]string(
+RUNTIME_NAMES :: [281]string(
     "gm_alloc_check", "gm_alloc_tag", "gm_altstack_free", "gm_altstack_init", "gm_altstack_key",
     "gm_altstack_keyed", "gm_args", "gm_asyncify_start_rewind", "gm_asyncify_start_unwind",
     "gm_asyncify_stop_rewind", "gm_asyncify_stop_unwind", "gm_atag", "gm_atag_cap", "gm_atag_find",
     "gm_atag_grow", "gm_atag_slot", "gm_atag_used", "gm_atags", "gm_attr_kind", "gm_backtrace",
     "gm_bt", "gm_bt_top", "gm_buf", "gm_buf_extend", "gm_buf_free", "gm_buf_push", "gm_cancel",
-    "gm_cancel_cont", "gm_checks", "gm_clause_thunk", "gm_clif_bitop", "gm_clif_black_box",
-    "gm_clif_bt_top", "gm_clif_emit", "gm_clif_entry", "gm_clif_eq", "gm_clif_errno",
-    "gm_clif_f64_to_int", "gm_clif_fiber_cont", "gm_clif_fits", "gm_clif_float", "gm_clif_fmax",
-    "gm_clif_fmin", "gm_clif_format", "gm_clif_hash", "gm_clif_hash_int", "gm_clif_hash_uint",
-    "gm_clif_int", "gm_clif_lt", "gm_clif_memmove", "gm_clif_memset", "gm_clif_mix", "gm_clif_norm",
-    "gm_clif_poison", "gm_clif_pow", "gm_clif_prog", "gm_clif_program", "gm_clif_ptr",
-    "gm_clif_run", "gm_clif_running", "gm_clif_stack_limit", "gm_clif_strlen", "gm_clif_tag",
-    "gm_clif_trap_assert", "gm_clif_trap_index", "gm_clif_trap_pow", "gm_clif_trap_shift",
-    "gm_clif_trap_slice", "gm_clif_trap_unhandled", "gm_clif_trap_unwrap", "gm_clif_trap_vec",
-    "gm_clif_unw", "gm_clif_vload", "gm_clif_vstore", "gm_clif_write", "gm_clif_write_fmt",
-    "gm_clock_now", "gm_clock_sleep", "gm_clock_wall", "gm_closure", "gm_cmd_unsafe", "gm_cont",
-    "gm_cont_take", "gm_cover_counts", "gm_cover_dump", "gm_cover_init", "gm_cover_n",
-    "gm_cover_path", "gm_cpu_count", "gm_cstr", "gm_cstr_array", "gm_ctl_perform", "gm_ctx_init",
-    "gm_cur_fiber", "gm_cv_u_", "gm_debug", "gm_dir", "gm_dir_put", "gm_dirs", "gm_env_cmp",
-    "gm_env_var", "gm_err_errno", "gm_errdefer_runs", "gm_exact_digits", "gm_f16_from",
-    "gm_fault_sp", "gm_fd_above_std", "gm_fiber", "gm_fiber_cont", "gm_fiber_entry",
-    "gm_fiber_finish", "gm_fiber_new", "gm_fiber_pool", "gm_fiber_slab", "gm_fiber_slab_used",
-    "gm_field", "gm_filc_ctx", "gm_filc_entry", "gm_filc_running", "gm_filc_starting",
-    "gm_file_exists", "gm_find", "gm_find_outer", "gm_find_program", "gm_finish_main", "gm_flush",
-    "gm_fmt_ch", "gm_fmt_fields", "gm_fmt_float", "gm_fmt_hex_escape", "gm_fmt_int", "gm_fmt_seq",
-    "gm_fmt_str", "gm_format", "gm_format_spec", "gm_frame", "gm_frame_overflow", "gm_free_cstrs",
-    "gm_fs_close", "gm_fs_close_dir", "gm_fs_cwd", "gm_fs_lstat", "gm_fs_make_dir",
+    "gm_cancel_cont", "gm_checks", "gm_child_env", "gm_clause_thunk", "gm_clock_now",
+    "gm_clock_sleep", "gm_clock_wall", "gm_closure", "gm_cmd_unsafe", "gm_cont", "gm_cont_take",
+    "gm_cover_counts", "gm_cover_dump", "gm_cover_init", "gm_cover_n", "gm_cover_path",
+    "gm_cpu_count", "gm_cstr", "gm_cstr_array", "gm_ctl_perform", "gm_ctx_init", "gm_cur_fiber",
+    "gm_cv_u_", "gm_debug", "gm_dir", "gm_dir_put", "gm_dirs", "gm_env_cmp", "gm_env_var",
+    "gm_err_errno", "gm_errdefer_runs", "gm_exact_digits", "gm_f16_from", "gm_fault_sp",
+    "gm_fd_above_std", "gm_fiber", "gm_fiber_cont", "gm_fiber_entry", "gm_fiber_finish",
+    "gm_fiber_new", "gm_fiber_pool", "gm_fiber_slab", "gm_fiber_slab_used", "gm_field",
+    "gm_filc_ctx", "gm_filc_entry", "gm_filc_running", "gm_filc_starting", "gm_file_exists",
+    "gm_find", "gm_find_outer", "gm_find_program", "gm_finish_main", "gm_flush", "gm_fmt_ch",
+    "gm_fmt_fields", "gm_fmt_float", "gm_fmt_hex_escape", "gm_fmt_int", "gm_fmt_seq", "gm_fmt_str",
+    "gm_format", "gm_format_spec", "gm_frame", "gm_frame_overflow", "gm_free_cstr_list",
+    "gm_free_cstrs", "gm_fs_close", "gm_fs_close_dir", "gm_fs_cwd", "gm_fs_lstat", "gm_fs_make_dir",
     "gm_fs_next_entry", "gm_fs_open", "gm_fs_open_dir", "gm_fs_read", "gm_fs_remove",
     "gm_fs_remove_dir", "gm_fs_rename", "gm_fs_seek", "gm_fs_stat", "gm_fs_sync", "gm_fs_truncate",
     "gm_fs_write", "gm_futex_wait", "gm_futex_wake", "gm_hb_cap", "gm_hb_find", "gm_hb_index",
@@ -63,7 +54,7 @@ RUNTIME_NAMES :: [325]string(
     "gm_wasi_entry", "gm_wasi_fiber_entry", "gm_wasi_get_sp", "gm_wasi_main_ctx", "gm_wasi_next",
     "gm_wasi_rewinding", "gm_wasi_running", "gm_wasi_set_sp", "gm_wdir", "gm_wide",
     "gm_win_cmdline", "gm_win_err", "gm_with", "gm_with_clause", "gm_with_end", "gm_with_extension",
-    "gm_with_go", "gm_write_err", "gm_write_out", "gm_wsa_err", "gm_wsocket",
+    "gm_with_go", "gm_write_err", "gm_write_out", "gm_wsa_err", "gm_wsocket"
 )
 
 /// Whether `sym` is a name of the compiled program's runtime or of the kind generated code

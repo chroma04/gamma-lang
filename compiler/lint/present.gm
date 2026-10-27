@@ -3,8 +3,7 @@
 // value (§9.3), where no arm names the absent case at that position and a catch-all
 // arm takes it instead. `.Return(v) => …` followed by `_ => …` sends `.Return(null)` to
 // the catch-all, which is rarely what was meant. A catch-all arm with an empty body
-// (`_ => {}`) ignores the rest on purpose, and is not reported (mirrors
-// `src/sema/lint_present.rs`).
+// (`_ => {}`) ignores the rest on purpose, and is not reported.
 
 /// One step from a pattern's top to a position below it.
 Step :: union {

@@ -1,5 +1,5 @@
 //! Arbitrary-precision signed integers, for the values of integer constants (spec §6.2).
-//! The operations follow the conventions of Rust's `num-bigint`: `/` truncates toward
+//! The operations are those of mathematical integers: `/` truncates toward
 //! zero, `%` takes the sign of the dividend, `>>` rounds toward negative infinity, and the
 //! bitwise operations act as on two's complement numbers of unbounded width.
 //!

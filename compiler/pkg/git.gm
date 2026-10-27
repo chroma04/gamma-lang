@@ -1,5 +1,5 @@
 // Git access through the `git` command-line tool, the package store on disk and the content
-// hash of a checkout (mirrors `src/pkg/git.rs`).
+// hash of a checkout.
 //
 // Layout under the store directory (`<cache>/git`):
 //

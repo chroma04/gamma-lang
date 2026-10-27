@@ -82,12 +82,25 @@ main :: fn() needs Out + Proc + Alloc {
     print("dir [{}]\n", string(d.out.items))
     d.deinit()
     env := [_]string("GM_A=1", "GM_B=two words")
-    v := process.output(sh("echo \"$GM_A|$GM_B|${HOME:-unset}\""), process.SpawnOptions(env: env[..])) else e => {
+    v := process.output(sh("echo \"$GM_A|$GM_B|${HOME:-unset}\""), process.SpawnOptions(env: env[..], clear_env: true)) else e => {
         print("env failed: {}\n", e)
         return
     }
     print("env [{}]\n", string(v.out.items))
     v.deinit()
+    // Changes to our environment: set, replace and remove variables, the last change winning.
+    changes := [_]string("GM_A=1", "GM_A=2", "PATH=/bin:/usr/bin", "GM_GONE=x", "GM_GONE", "HOME")
+    u := process.output(sh("echo \"$GM_A|${GM_GONE-unset}|${HOME-unset}|$PATH\""), process.SpawnOptions(env: changes[..])) else e => {
+        print("env changes failed: {}\n", e)
+        return
+    }
+    print("env changes [{}]\n", string(u.out.items))
+    u.deinit()
+    bad := [_]string("=x")
+    _: process.Output = process.output(sh("true"), process.SpawnOptions(env: bad[..])) else e => {
+        print("empty name: {}\n", e)
+        process.Output(status: .Exited(0), out: list(u8), err: list(u8))
+    }
     null_in := process.output([_]string("cat"), process.SpawnOptions(stdin: .Null)) else e => {
         print("null stdin failed: {}\n", e)
         return
@@ -121,6 +134,16 @@ main :: fn() needs Out + Proc + Alloc {
     }
     Proc.kill(k) else e => print("kill failed: {}\n", e)
     print("killed: {}\n", Proc.wait(k) else e => process.ExitStatus.Exited(99))
+
+    // Killing a group ends what the child started too: the grandchild holds the pipe open,
+    // so reading ends only once it is gone.
+    g := Proc.spawn(sh("sleep 30 & sleep 30; wait"), process.SpawnOptions(stdout: .Pipe, group: true)) else e => {
+        print("spawn failed: {}\n", e)
+        return
+    }
+    Proc.kill(g) else e => print("kill failed: {}\n", e)
+    print("group read ends: {}\n", next(g, buf[..]) is null)
+    print("killed group: {}\n", Proc.wait(g) else e => process.ExitStatus.Exited(99))
 
     // Much output on both streams at once.
     big_out := process.output(sh("head -c 300000 /dev/zero >&2 & head -c 300000 /dev/zero; wait")) else e => {

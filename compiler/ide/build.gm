@@ -1,5 +1,4 @@
-//! Building the editor index for a checked module (mirrors `build` of
-//! `src/sema/ide/mod.rs`).
+//! Building the editor index for a checked module.
 //!
 //! The checker's tables and typed IR are read once, without changing them, and the
 //! module's syntax is walked to resolve the names the typed IR no longer carries.

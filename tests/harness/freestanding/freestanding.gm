@@ -1,0 +1,302 @@
+//! Freestanding programs (spec §3.7.1): a program for a target without an operating system builds
+//! to an object file, which needs nothing from a C library beyond `memcpy` and its relatives.
+//!
+//! The end-to-end test builds `tests/freestanding/firmware.gm` with `clang` for the bare-metal
+//! target of the host's architecture, checks the object's undefined symbols, links it with a C
+//! program that stands in for the hardware (`tests/freestanding/harness.c`) and runs the result.
+//! Tests that need `clang`, `nm` or a C compiler for the host are skipped when they are missing.
+
+kit :: import "../kit"
+process :: import "std/process"
+str :: import "std/str"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "firmware_runs_against_a_harness", run: firmware_runs_against_a_harness))!
+    out.push(kit.Test(name: "trap_calls_the_hook", run: trap_calls_the_hook))!
+    out.push(kit.Test(name: "trap_without_a_hook_executes_the_trap_instruction", run: trap_without_a_hook))!
+    out.push(kit.Test(name: "freestanding_rules_are_checked", run: freestanding_rules_are_checked))!
+    out.push(kit.Test(name: "freestanding_programs_are_built_not_run", run: freestanding_programs_are_built_not_run))!
+    out.push(kit.Test(name: "fibers_work_on_freestanding_targets", run: fibers_work_on_freestanding_targets))!
+}
+
+FIRMWARE :: "tests/freestanding/firmware.gm"
+HARNESS :: "tests/freestanding/harness.c"
+
+/// The bare-metal target triple for the host's architecture, if the test supports it.
+triple :: fn() -> ?string {
+    when target.os is .Linux {
+        when target.arch is .X86_64 {
+            return "x86_64-unknown-none-elf"
+        } else when target.arch is .Aarch64 {
+            return "aarch64-unknown-none-elf"
+        } else {
+            return null
+        }
+    } else {
+        return null
+    }
+}
+
+/// What a test works with: the target triple and a fresh directory.
+Setup :: struct {
+    triple: string
+    dir: string
+}
+
+/// The target triple and a directory, when the tools the tests need are there; otherwise the
+/// test is skipped.
+setup :: fn(t: ^kit.T, test: string) -> kit.Fail!Setup needs kit.Run {
+    tr := triple() else return !t.skip("needs x86-64 or AArch64 Linux")
+    if not kit.runs("clang") or not kit.runs("nm") or not kit.runs("cc") {
+        return !t.skip("needs clang, nm and cc")
+    }
+    dir := try t.scratch(str.format("freestanding-{}", test)!)
+    return Setup(triple: tr, dir: dir)
+}
+
+/// A command running `gamma` with `args`, from the root of the repository, with the C toolchain
+/// variables unset (a bare-metal `--target` picks `clang`).
+gamma :: fn(t: ^kit.T, args: []const string) -> kit.Command needs Alloc {
+    c := t.gamma(args)
+    c.dir = t.cfg.root
+    c.unset("CC")
+    c.unset("CFLAGS")
+    c.unset("LDFLAGS")
+    return c
+}
+
+/// The last white-space separated word of each line of `text`.
+last_words :: fn(text: string) -> []string needs Alloc {
+    l := list(string)
+    for line in str.lines(text) {
+        last: ?string = null
+        for w in str.fields(line) { last = w }
+        if w := last { l.push(w)! }
+    }
+    return l.items
+}
+
+/// The undefined symbols of the object file `obj`.
+undefined_symbols :: fn(t: ^kit.T, obj: string) -> kit.Fail![]string needs kit.Run {
+    c := kit.command("nm")
+    c.args([_]string("-u", obj))
+    out := try t.run_ok(c)
+    return last_words(out.out)
+}
+
+/// Fails the test unless `obj` is undefined only in the memory functions and the symbols
+/// `foreign`, which the program declares foreign.
+assert_needs_only :: fn(t: ^kit.T, obj: string, declared: []const string) -> kit.Fail!() needs kit.Run {
+    for sym in try undefined_symbols(t, obj) {
+        ok := sym in ("memcpy", "memmove", "memset", "memcmp") or sym in declared
+        try t.check(ok, "the object needs `{}`, which a freestanding program may not", sym)
+    }
+    return ()
+}
+
+/// The defined global symbols of the object file `obj`, in order.
+global_symbols :: fn(t: ^kit.T, obj: string) -> kit.Fail![]string needs kit.Run {
+    c := kit.command("nm")
+    c.args([_]string("-g", "--defined-only", obj))
+    out := try t.run_ok(c)
+    names := last_words(out.out)
+    for i in 1..names.len {
+        j := i
+        while j > 0 and names[j] < names[j - 1] {
+            tmp := names[j]
+            names[j] = names[j - 1]
+            names[j - 1] = tmp
+            j -= 1
+        }
+    }
+    return names
+}
+
+/// Links `obj` with the C file `harness` (the object is not position independent, as for
+/// firmware: the host program is linked to match) into `exe`.
+link :: fn(t: ^kit.T, exe, harness, obj: string) -> kit.Fail!() needs kit.Run {
+    c := kit.command("cc")
+    c.args([_]string("-no-pie", "-o", exe, harness, obj))
+    _ = try t.run_ok(c)
+    return ()
+}
+
+/// Builds the firmware in build mode `mode` and checks that the object needs nothing from a C
+/// library, then links it with the harness and returns the executable.
+build_firmware :: fn(t: ^kit.T, s: Setup, mode: string) -> kit.Fail!string needs kit.Run {
+    obj := kit.join(s.dir, str.format("firmware-{}.o", mode)!)
+    c := gamma(t, [_]string("build", str.format("--target={}", s.triple)!, str.format("--mode={}", mode)!, FIRMWARE, "-o", obj))
+    _ = try t.run_ok(c)
+    // Only the entry points are defined, and only memory functions and what the program declares
+    // foreign are undefined.
+    defined := try global_symbols(t, obj)
+    try t.check(defined.len is 2 and defined[0] is "gm_crash" and defined[1] is "gm_entry", "the object defines other symbols: {}", str.join(defined, " ")!)
+    try assert_needs_only(t, obj, [_]string("uart_putc", "harness_trap"))
+    exe := kit.join(s.dir, str.format("firmware-{}", mode)!)
+    try link(t, exe, t.repo(HARNESS), obj)
+    return exe
+}
+
+firmware_runs_against_a_harness :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    s := try setup(t, "firmware_runs_against_a_harness")
+    for mode in ("debug", "checked", "fast") {
+        exe := try build_firmware(t, s, mode)
+        out := try t.run(kit.command(exe))
+        try t.check(out.success(), "{}: exit {}", mode, out.status)
+        expected :: "hello from firmware with 3.14 and ff\nlist: [0, 3, 6, 9, 12]\nsquares sum: 30\nused: true\n"
+        try t.expect_text(mode, expected, out.out)
+    }
+    return ()
+}
+
+trap_calls_the_hook :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    s := try setup(t, "trap_calls_the_hook")
+    for mode in ("debug", "checked") {
+        exe := try build_firmware(t, s, mode)
+        c := kit.command(exe)
+        c.arg("crash")
+        out := try t.run(c)
+        // The hook ends the program with status 3 after the harness reports what it was given.
+        try t.check(out.code() is 3, "{}: {} {}", mode, out.status, out.out)
+        expected := str.format(
+            "in range: 3\nTRAP: index 9 out of bounds for length 4 (line 46, col 12, file name of {} bytes)\n",
+            FIRMWARE.len,
+        )!
+        try t.expect_text(mode, expected, out.out)
+    }
+    return ()
+}
+
+trap_without_a_hook :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    s := try setup(t, "trap_without_a_hook")
+    src := kit.join(s.dir, "nohook.gm")
+    try t.write(src, "#export(\"crash\")\ncrash :: fn(i: usize) -> u8 {\n    xs := [4]u8(1, 2, 3, 4)\n    return xs[i]\n}\n")
+    obj := kit.join(s.dir, "nohook.o")
+    _ = try t.run_ok(gamma(t, [_]string("build", str.format("--target={}", s.triple)!, src, "-o", obj)))
+    try assert_needs_only(t, obj, empty_slice(string))
+    harness := kit.join(s.dir, "nohook.c")
+    try t.write(harness, "extern unsigned char crash(unsigned long); int main(void) { return crash(7); }\n")
+    exe := kit.join(s.dir, "nohook")
+    try link(t, exe, harness, obj)
+    run := try t.run(kit.command(exe))
+    // `ud2` or `brk`: the process is killed by SIGILL or SIGTRAP.
+    try t.check(run.code() is null, "the program returned {}", run.status)
+    return ()
+}
+
+/// The result of checking a program: whether it passed, and the diagnostics.
+Checked :: struct {
+    ok: bool
+    err: string
+}
+
+/// Checks `source` for the freestanding target and returns the diagnostics (empty if it passes).
+check_freestanding :: fn(t: ^kit.T, s: Setup, name, source: string) -> kit.Fail!Checked needs kit.Run {
+    src := kit.join(s.dir, name)
+    try t.write(src, source)
+    out := try t.run(gamma(t, [_]string("check", str.format("--target={}", s.triple)!, src)))
+    return Checked(ok: out.success(), err: out.err)
+}
+
+freestanding_rules_are_checked :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    s := try setup(t, "freestanding_rules_are_checked")
+    hook :: "#trap_hook\nh :: fn(msg: string, loc: SourceLocation) -> never needs Sys { while true {} }\n"
+    export :: "#export(\"e\")\ne :: fn() needs Sys { }\n"
+
+    // A program that is all right, with the hook.
+    r := try check_freestanding(t, s, "ok.gm", str.format("{}{}", hook, export)!)
+    try t.check(r.ok, "{}", r.err)
+    // A hook with an empty effect set is also fine.
+    r = try check_freestanding(t, s, "pure_hook.gm", str.format("#trap_hook\nh :: fn(msg: string, loc: SourceLocation) -> never {{ while true {{}} }}\n{}", export)!)
+    try t.check(r.ok, "{}", r.err)
+
+    // No `main`.
+    r = try check_freestanding(t, s, "main.gm", "main :: fn() needs Out { print(\"x\") }\n")
+    try t.check(not r.ok, "a freestanding program without exports passed")
+    try t.expect_contains("the error", r.err, "does not declare `main`")
+
+    // The default handlers do not exist.
+    for name in ("heap_allocator", "system_io", "system_output") {
+        r = try check_freestanding(t, s, "default.gm", str.format("#export(\"e\")\ne :: fn() needs Sys {{ a := {}() }}\n", name)!)
+        try t.check(not r.ok, "`{}` passed", name)
+        try t.expect_contains("the error", r.err, str.format("`{}` does not exist on a freestanding target (§3.7.1)", name)!)
+    }
+
+    // A second hook.
+    r = try check_freestanding(
+        t,
+        s,
+        "two.gm",
+        str.format("{}#trap_hook\nh2 :: fn(msg: string, loc: SourceLocation) -> never needs Sys {{ while true {{}} }}\n{}", hook, export)!,
+    )
+    try t.check(not r.ok, "two hooks passed")
+    try t.expect_contains("the error", r.err, "at most one `#trap_hook`")
+
+    // Wrong signatures.
+    sigs :: [_]string(
+        "fn(msg: string) -> never",
+        "fn(msg: string, loc: SourceLocation)",
+        "fn(msg: string, loc: SourceLocation) -> never needs Out",
+        "fn(msg: u32, loc: SourceLocation) -> never",
+    )
+    for sig in sigs {
+        r = try check_freestanding(t, s, "sig.gm", str.format("#trap_hook\nh :: {} {{ while true {{}} }}\n{}", sig, export)!)
+        try t.check(not r.ok, "{} passed", sig)
+        try t.check(str.contains(r.err, "a `#trap_hook` function must have the type"), "{}: {}", sig, r.err)
+    }
+
+    // On something that is not a function.
+    r = try check_freestanding(t, s, "notfn.gm", str.format("#trap_hook\nX :: 5\n{}", export)!)
+    try t.check(not r.ok, "a hook that is not a function passed")
+    try t.expect_contains("the error", r.err, "`#trap_hook` applies only to a function")
+
+    // A hosted program cannot have a hook (this one checks for the host).
+    src := kit.join(s.dir, "hosted.gm")
+    try t.write(src, str.format("{}main :: fn() {{ }}\n", hook)!)
+    out := try t.run(gamma(t, [_]string("check", src)))
+    try t.check(not out.success(), "a hosted program with a hook passed")
+    try t.expect_contains("the error", out.err, "`#trap_hook` applies only on a freestanding target")
+    return ()
+}
+
+freestanding_programs_are_built_not_run :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    s := try setup(t, "freestanding_programs_are_built_not_run")
+    target_flag := str.format("--target={}", s.triple)!
+    for cmd in ("run", "test", "bench") {
+        out := try t.run(gamma(t, [_]string(cmd, target_flag, FIRMWARE)))
+        try t.check(not out.success(), "{} succeeded", cmd)
+        try t.check(str.contains(out.err, "freestanding target") and str.contains(out.err, "gamma build"), "{}: {}", cmd, out.err)
+    }
+    // Building a program with nothing exported has no entry points.
+    src := kit.join(s.dir, "empty.gm")
+    try t.write(src, "f :: fn() { }\n")
+    out := try t.run(gamma(t, [_]string("build", target_flag, src, "-o", kit.join(s.dir, "empty.o"))))
+    try t.check(not out.success(), "a build with nothing exported succeeded")
+    try t.expect_contains("the error", out.err, "exports no function")
+    return ()
+}
+
+fibers_work_on_freestanding_targets :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    s := try setup(t, "fibers_work_on_freestanding_targets")
+    src := kit.join(s.dir, "fibers.gm")
+    try t.write(src, try t.read(t.repo("tests/freestanding/fibers.gm")))
+    obj := kit.join(s.dir, "fibers.o")
+    _ = try t.run_ok(gamma(t, [_]string("build", str.format("--target={}", s.triple)!, src, "-o", obj)))
+    try assert_needs_only(t, obj, [_]string("put"))
+    harness := kit.join(s.dir, "fibers_main.c")
+    try t.write(harness, "#include <stdio.h>\nvoid put(int x) { printf(\"%d\\n\", x); }\nextern int run_fibers(void);\nint main(void) { printf(\"total %d\\n\", run_fibers()); return 0; }\n")
+    exe := kit.join(s.dir, "fibers")
+    try link(t, exe, harness, obj)
+    run := try t.run_ok(kit.command(exe))
+    try t.expect_text("the output", "1\n2\n3\ntotal 6\n", run.out)
+
+    // Without a context switch for the architecture, fibers are a compile error.
+    probe := [_]string("clang", "--target=riscv64-unknown-none-elf", "-E", "-x", "c", "-")
+    ran := process.output(probe[..], process.SpawnOptions(stdin: .Null)) else return ()
+    if process.success(ran.status) {
+        out := try t.run(gamma(t, [_]string("build", "--target=riscv64-unknown-none-elf", src, "-o", kit.join(s.dir, "rv.o"))))
+        try t.check(not out.success(), "fibers built for riscv64")
+        try t.expect_contains("the error", out.err, "fibers (`with … on`) need a context switch")
+    }
+    return ()
+}

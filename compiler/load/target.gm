@@ -1,4 +1,4 @@
-// The target a program is compiled for (mirrors `Target` of `src/layout.rs`): the machine
+// The target a program is compiled for: the machine
 // whose layouts, integer widths and `target` module the checker and the back end use. It
 // is the machine gammac runs on unless `--target` or the C compiler says otherwise;
 // gammac's own platform code (paths, operating system errors) keeps using its own

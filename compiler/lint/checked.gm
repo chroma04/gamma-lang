@@ -1,6 +1,6 @@
 // What `gammac lint` needs from the checker: the findings that depend on name resolution
 // and types (unused locals, parameters and declarations, locals that never change,
-// comparisons whose result is known) (mirrors `src/sema/lint.rs`). `lint.gm` turns them
+// comparisons whose result is known). `lint.gm` turns them
 // into diagnostics.
 
 /// One fact `gammac lint` reports, located in the program's own files.

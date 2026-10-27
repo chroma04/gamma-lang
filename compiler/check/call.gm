@@ -1,5 +1,4 @@
-// Calls (§11.3), conversions `T(x)` (§6.5) and the builtin functions (mirrors
-// `src/sema/call.rs`).
+// Calls (§11.3), conversions `T(x)` (§6.5) and the builtin functions.
 
 call :: fn(cx: ^FnCx, callee: ^const ast.Expr, args: []const ast.Arg, expect: ?Ty, span: source.Span) -> ^Expr needs Load {
     // `T(5)` with a type parameter `T`: the untyped constant is typed at `T`, as `x: T =

@@ -1,0 +1,75 @@
+// Definitions in the core library: into the source tree when there is one, and into a
+// read-only copy in the cache directory when there is not.
+
+kit :: import "../kit"
+path :: import "std/path"
+str :: import "std/str"
+
+definition_in_the_core_library_points_into_the_source_tree :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-definition_in_the_core_library")
+    list_src := try t.read(t.repo("lib/core/list.gm"))
+    main := try put(t, dir, "main.gm", CORE_PROGRAM)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, CORE_PROGRAM)
+    d := try l.result("textDocument/definition", at(main, 1, 11))
+    target := string_of(field(d, "uri"))
+    try t.check(str.strip_suffix(target, "/lib/core/list.gm") is not null, "{}", show(d))
+    try t.expect_text("the file of the definition", list_src, try t.read(uri_path(target)))
+    line := try as_int(t, dig(d, "range.start.line"))
+    try t.check(str.strip_prefix(nth_line(list_src, line.trunc(usize)), "pub list ::") is not null, "{}", show(d))
+    // Hover shows the documentation of the core declaration.
+    h := try l.result("textDocument/hover", at(main, 1, 11))
+    value := try as_text(t, dig(h, "contents.value"))
+    try t.expect_contains("the hover", value, "list :: fn(T: type) -> List(T)")
+    try t.expect_contains("the hover", value, "An empty list")
+    try l.shutdown()
+    return ()
+}
+
+definition_in_the_core_library_without_a_source_tree_uses_a_read_only_copy :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-core_without_a_source_tree")
+    list_src := try t.read(t.repo("lib/core/list.gm"))
+    main := try put(t, dir, "main.gm", CORE_PROGRAM)
+    // A standard library root without the core sources next to it (they are found through
+    // GAMMA_CORE), and a cache directory.
+    std := kit.join(dir, "nostd/std")
+    _ = try put(t, std, "placeholder.txt", "")
+    cache := kit.join(dir, "cache")
+    env := [_]string(
+        str.format("GAMMA_STD={}", std)!,
+        str.format("GAMMA_CORE={}", t.repo("lib/core"))!,
+        str.format("GAMMA_CACHE_DIR={}", cache)!,
+    )
+    l := try start_with(t, env)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, CORE_PROGRAM)
+    d := try l.result("textDocument/definition", at(main, 1, 11))
+    target := uri_path(try as_text(t, field(d, "uri")))
+    try t.check(str.strip_prefix(target, kit.join(cache, "core")) is not null, "{}", show(d))
+    try t.expect_text("the name of the copy", "list.gm", path.base_name(target))
+    try t.expect_text("the copy", list_src, try t.read(target))
+    try expect_read_only(t, target)
+    line := try as_int(t, dig(d, "range.start.line"))
+    try t.check(str.strip_prefix(nth_line(list_src, line.trunc(usize)), "pub list ::") is not null, "{}", show(d))
+    // A second request finds the file in place.
+    again := try l.result("textDocument/definition", at(main, 1, 11))
+    try t.check(same(again, d), "the second answer differs: {}", show(again))
+    try l.shutdown()
+    return ()
+}
+
+/// Fails the test unless the file `p` has no write permission bit set (on Windows, there is
+/// nothing to check).
+expect_read_only :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
+    when target.os is .Windows {
+        return ()
+    } else {
+        c := kit.command("find")
+        c.args([_]string(p, "(", "-perm", "-200", "-o", "-perm", "-020", "-o", "-perm", "-002", ")"))
+        out := try t.run_ok(c)
+        return t.check(out.out.len is 0, "{} is writable", p)
+    }
+}

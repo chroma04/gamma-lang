@@ -1,0 +1,144 @@
+// Documents the server is told about: closing them, buffers that are not saved, and
+// documents that are not files of a module on disk.
+
+fs :: import "std/fs"
+json :: import "std/json"
+kit :: import "../kit"
+
+closing_a_document_clears_its_diagnostics :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-closing_a_document")
+    text := "main :: fn() {\n    nope\n}\n"
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    try expect_some(t, try l.diagnostics(path, 1))
+    try l.close(path)
+    // The clearing notification has no version.
+    while true {
+        m := try l.next_message()
+        if publishes_unversioned(m, path) {
+            try expect_json(t, "the diagnostics", dig(m, "params.diagnostics"), "[]")
+            break
+        }
+    }
+    try l.shutdown()
+    return ()
+}
+
+closing_the_last_document_clears_diagnostics_of_its_siblings :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-closing_the_last_document")
+    text := "main :: fn() {\n    helper()\n}\n"
+    main := try put(t, dir, "main.gm", text)
+    util := try put(t, dir, "util.gm", "helper :: fn() {\n    x: i32 = \"s\"\n}\n")
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, text)
+    // The sibling is not open; its error is published all the same.
+    while true {
+        m := try l.next_message()
+        if publishes_for(m, util) {
+            try expect_some(t, try as_array(t, dig(m, "params.diagnostics")))
+            break
+        }
+    }
+    try l.close(main)
+    while true {
+        m := try l.next_message()
+        if publishes_for(m, util) {
+            try expect_json(t, "the diagnostics", dig(m, "params.diagnostics"), "[]")
+            break
+        }
+    }
+    try l.shutdown()
+    return ()
+}
+
+/// True if `m` publishes diagnostics for `path`, whatever the version.
+publishes_for :: fn(m: json.Value, path: string) -> bool needs Alloc {
+    return text_is(field(m, "method"), "textDocument/publishDiagnostics") and text_is(dig(m, "params.uri"), uri(path))
+}
+
+an_unsaved_import_target_is_seen_by_its_importer :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-an_unsaved_import_target")
+    util := try put(t, dir, "util/util.gm", "pub double :: fn(n: i32) -> i32 => n * 2\n")
+    text := "util :: import \"./util\"\n\nmain :: fn() {\n    x := util.double(2)\n    _ = x\n}\n"
+    main := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, text)
+    try expect_clean(t, try l.diagnostics(main, 1))
+    // The dependency's buffer (never saved) drops the function.
+    try l.open(util, "pub other :: fn() {}\n")
+    try expect_message(t, try l.diagnostics(main, 1), "no declaration `double`")
+    try l.shutdown()
+    return ()
+}
+
+requests_on_unopened_documents_return_null :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-requests_on_unopened_documents")
+    path := try put(t, dir, "main.gm", "main :: fn() {}\n")
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    h := try l.result("textDocument/hover", at(path, 0, 1))
+    try expect_null(t, "the hover", h)
+    try l.shutdown()
+    return ()
+}
+
+only_gamma_files_are_analyzed :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-only_gamma_files")
+    readme := try put(t, dir, "readme.md", "# not code\n")
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(readme, "# not code\n")
+    h := try l.result("textDocument/hover", at(readme, 0, 1))
+    try expect_null(t, "the hover", h)
+    try l.shutdown()
+    return ()
+}
+
+a_new_unsaved_file_belongs_to_its_directorys_module :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-a_new_unsaved_file")
+    text := "main :: fn() -> i32 => helper(1)\n"
+    main := try put(t, dir, "main.gm", text)
+    extra := kit.join(dir, "extra.gm")
+    try t.check(not fs.exists(extra), "{} exists", extra)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(main, text)
+    try expect_message(t, try l.diagnostics(main, 1), "unknown name `helper`")
+    // The new buffer is never saved.
+    try l.open(extra, "/// Adds one.\nhelper :: fn(n: i32) -> i32 => n + 1\n")
+    try expect_clean(t, try l.diagnostics(main, 1))
+    def := try l.result("textDocument/definition", at(main, 0, 26))
+    try expect_string(t, "the file of the definition", field(def, "uri"), uri(extra))
+    try expect_position(t, "the definition", dig(def, "range.start"), 1, 0)
+    h := try l.result("textDocument/hover", at(main, 0, 26))
+    try expect_contains_text(t, "the hover", dig(h, "contents.value"), "Adds one.")
+    // Closing it removes it from the module again.
+    try l.close(extra)
+    try expect_some(t, try l.diagnostics(main, 1))
+    try l.shutdown()
+    return ()
+}
+
+a_file_in_a_new_directory_is_analyzed :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-a_file_in_a_new_directory")
+    path := kit.join(dir, "fresh/mod.gm")
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, "twice :: fn(n: i32) -> i32 => n * 2\n\nuse_it :: fn() -> i32 => twice(2)\n")
+    try expect_clean(t, try l.diagnostics(path, 1))
+    def := try l.result("textDocument/definition", at(path, 2, 26))
+    try expect_string(t, "the file of the definition", field(def, "uri"), uri(path))
+    try l.shutdown()
+    return ()
+}

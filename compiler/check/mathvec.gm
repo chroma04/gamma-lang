@@ -1,5 +1,5 @@
 // Math vectors `#vec [N]T` (§5.6.3) and complex numbers `Complex(T)` (§5.3.1): their
-// operators (§7.4.7), methods and conversions (mirrors `src/sema/mathvec.rs`).
+// operators (§7.4.7), methods and conversions.
 //
 // A math vector's operator is checked as the scalar operator on each pair of elements and
 // becomes a block that evaluates the operands once and builds the result element by

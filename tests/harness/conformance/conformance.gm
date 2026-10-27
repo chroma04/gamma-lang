@@ -1,0 +1,555 @@
+//! The conformance tests: every `.gm` file under `tests/conformance/` goes through the
+//! compiler under test, and the result is checked against expectations written in the file
+//! itself:
+//!
+//! - `//! stage: lex|parse|check|run|test|lint` (at the top of the file) selects how far
+//!   the compiler goes; `test` runs the file's `test` declarations with `gamma test`, and
+//!   `lint` runs `gamma lint`. The default is `run`.
+//! - `//! lint: <options>` passes options to `gamma lint` (`--warn=prefer-immutable`).
+//! - `//! dump` compares the stage's dump output with a sibling golden file: `<name>.tokens`
+//!   for `lex`, `<name>.ast` for `parse`.
+//! - `//! stderr` also compares the standard error of a `run` or `test` test with the
+//!   sibling `<name>.stderr`, for tests of trap reports. Paths into the standard library are
+//!   written `<std>/…` there.
+//! - `//! mode: fast` (or `checked`, `debug`) builds a `run` or `test` test in that build mode
+//!   (default: debug). `//! mode: safe` tests run only through the C back end, and only where
+//!   Safe builds are available (below), since they test what Safe builds catch and the
+//!   interpreter does not.
+//! - `//! safe: skip <reason>` leaves a test out of the Safe lane (below), for tests whose
+//!   behavior differs in Safe builds by design, such as tests that overflow the stack or turn
+//!   integers into pointers.
+//! - `//! arch: x86_64` (or `aarch64`, …) runs the test only when compiling for that
+//!   architecture (the host's, or the one a cross compiler in `CC` targets), for tests of
+//!   features that exist on some targets only.
+//! - `//! endian: little` (or `big`) runs the test only when compiling for a target of that
+//!   byte order, for tests whose output shows the layout of values in memory.
+//! - `//! os: unix` (or `windows`, `wasi`) runs the test only when compiling for that kind of
+//!   operating system: `unix` is everything but Windows and WASI. It is for tests of what the
+//!   other kinds lack (POSIX-only C functions, the System V calling convention, child
+//!   processes); keep such tests few.
+//! - `//! ptr_bits: 64` (or `32`) runs the test only when compiling for a target with
+//!   pointers of that size, for tests whose output shows the size of pointers and `usize`.
+//! - `//! needs: f16` leaves the test out of the C back end lanes when the target's C
+//!   compiler has no `_Float16` (GCC on s390x); the interpreter still runs it. Likewise
+//!   `//! needs: threads` and `//! needs: sockets` when the target has no threads or sockets
+//!   (WASI, where they fail with `IoError.Unsupported`). Several requirements may be given,
+//!   separated by commas.
+//! - `//! native: reason` runs a `run` or `test` test only through the C back end, for tests
+//!   of what the interpreter cannot do (such as calls through function pointers re-typed to
+//!   another signature).
+//! - `//! filter: text` runs a `test` test with `gamma test --filter=text`.
+//! - `//! exit: N` sets the expected exit status of a `run` or `test` test (default 0). Their
+//!   expected standard output is the sibling `<name>.stdout` (empty if the file does not
+//!   exist). If a sibling `<name>.stdin` exists, it is the program's standard input;
+//!   otherwise the input is empty.
+//! - `//~ ERROR text` / `//~ WARNING text` at the end of a line expects a diagnostic of that
+//!   severity, reported on that line, whose message contains `text`. `//~? ERROR text`
+//!   (anywhere) expects one without a source location. One line may carry several
+//!   annotations (`//~ ERROR a //~ NOTE b`). Every reported error or warning must be expected
+//!   this way. The message of a lint warning starts with its rule in brackets:
+//!   `//~ WARNING [unused-variable] never used`. `//~ NOTE text` expects a note of some
+//!   diagnostic on that line: a secondary location (such as a call in a compile-time call
+//!   stack) or an explanation attached to a diagnostic reported there; notes that no
+//!   annotation names are allowed.
+//!
+//! A directory whose name ends in `.test` is one test of several modules. The program's root
+//! module is its `main/` subdirectory if there is one, and the directory itself otherwise.
+//! Directives may appear in any of its `.gm` files, `//~` annotations refer to the line of
+//! the file they are written in, and the expected output of `name.test` is the sibling
+//! `name.stdout`.
+//!
+//! The first lane of a `run` test is the interpreter (`gamma run --backend=interp`). Every
+//! `run` test that expects no errors also runs through the C back end (`--backend=c`), and
+//! must give the same output and exit status, unless the C back end cannot be tested (see
+//! `GAMMA_TEST_C` in `kit.Config`). `test` tests run through C, so they have one lane.
+//!
+//! Safe builds need Fil-C (found as for `gamma build --mode=safe`). Where it is found, the
+//! `mode: safe` tests run. `GAMMA_TEST_SAFE=1` requires it and adds the Safe lane: every
+//! `run` and `test` test in the default or Checked mode (except those marked `safe: skip`)
+//! also runs through the C back end in a Safe build, and must give the same output and exit
+//! status. Standard error is not compared there, since Fil-C reports memory errors in its
+//! own words. `GAMMA_TEST_SAFE=0` turns Safe tests off.
+//!
+//! Each file or `.test` directory is one test of the harness, named by its path below
+//! `tests/conformance/` (`conformance/run/std_process.gm`). Set `BLESS=1` to rewrite golden
+//! files from the current output instead of comparing, and `GAMMA_TEST_DEBUG_INFO=1` to build
+//! the C back end's programs with `-g`.
+
+fs :: import "std/fs"
+kit :: import "../kit"
+driver :: import "gammac/driver"
+path :: import "std/path"
+str :: import "std/str"
+
+DIR :: "tests/conformance"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
+    found := list(string)
+    collect(kit.join(cfg.root, DIR), &found)
+    found.items.sort()
+    for p in found.items {
+        rel := path.relative_to(p, cfg.root) else p
+        name := path.relative_to(p, kit.join(cfg.root, DIR)) else p
+        out.push(kit.Test(name: name, run: run_one, param: rel))!
+    }
+}
+
+/// The tests below `dir`: `.gm` files and `.test` directories.
+collect :: fn(dir: string, out: ^List(string)) needs Alloc + Fs {
+    for r in fs.entries(dir) {
+        e := r else return
+        p := kit.join(dir, e.name)
+        if e.kind is .Dir {
+            if path.extension(e.name) is "test" { out.push(p)! } else { collect(p, out) }
+        } else if path.extension(e.name) is "gm" {
+            out.push(p)!
+        }
+    }
+}
+
+/// The `.gm` files below `dir`, sorted.
+gm_files :: fn(dir: string, out: ^List(string)) needs Alloc + Fs {
+    for r in fs.walk(dir) {
+        e := r else continue
+        if e.kind is .File and path.extension(e.path) is "gm" { out.push(dupe(e.path)!)! }
+    }
+    out.items.sort()
+}
+
+/// `p` with its extension (if any) replaced by `ext` (without the dot).
+with_ext :: fn(p, ext: string) -> string needs Alloc {
+    e := path.extension(p)
+    stem := if e.len > 0 { p[0..p.len - e.len - 1] } else { p }
+    return str.format("{}.{}", stem, ext)!
+}
+
+Stage :: union { Lex, Parse, Check, Run, Test, Lint }
+
+stage_command :: fn(s: Stage) -> string => match s {
+    .Lex => "lex"
+    .Parse => "parse"
+    .Check => "check"
+    .Run => "run"
+    .Test => "test"
+    .Lint => "lint"
+}
+
+/// A diagnostic a test expects: in `file` on `line` (0: one without a location).
+Expected :: struct {
+    file: string
+    line: u32
+    severity: string
+    message: string
+}
+
+/// What the directives and annotations of a test ask for.
+Expectations :: struct {
+    stage: Stage = .Run
+    dump: bool = false
+    /// Compare standard error with `<name>.stderr`.
+    stderr: bool = false
+    /// The build mode of `run` and `test`, if not the default.
+    mode: ?string = null
+    /// The `--filter` of a `test` test.
+    filter: ?string = null
+    exit: u32 = 0
+    arch: ?string = null
+    endian: ?string = null
+    os: ?string = null
+    ptr_bits: ?u32 = null
+    safe_skip: bool = false
+    needs_f16: bool = false
+    needs_threads: bool = false
+    needs_sockets: bool = false
+    native: bool = false
+    lint_args: List(string)
+    diags: List(Expected)
+}
+
+is_run_or_test :: fn(s: Stage) -> bool => s in (.Run, .Test)
+
+/// The expectations of the test's files.
+parse_expectations :: fn(t: ^kit.T, files: []const string) -> kit.Fail!Expectations needs Alloc + Fs {
+    e := Expectations(lint_args: list(string), diags: list(Expected))
+    for f in files {
+        src := try t.read(f)
+        try parse_file(t, f, src, &e)
+    }
+    return e
+}
+
+parse_file :: fn(t: ^kit.T, file, src: string, e: ^Expectations) -> kit.Fail!() needs Alloc {
+    line_no: u32 = 0
+    for line in str.lines(src) {
+        line_no += 1
+        trimmed := str.trim_start(line)
+        if d := str.strip_prefix(trimmed, "//!") {
+            try parse_directive(t, file, line_no, str.trim(d), e)
+        }
+        first := true
+        for ann in str.split(line, "//~") {
+            if first {
+                first = false
+                continue
+            }
+            unlocated := ann.len > 0 and ann[0] is '?'
+            rest := str.trim(if unlocated { ann[1..] } else { ann })
+            sev, msg := rest, ""
+            if sp := str.split_once(rest, " ") { sev, msg = sp.before, sp.after }
+            severity := match sev {
+                "ERROR" => "error"
+                "WARNING" => "warning"
+                "NOTE" => "note"
+                _ => return !t.fail("{}:{}: unknown annotation `{}`", file, line_no, sev)
+            }
+            e.diags.push(Expected(file: file, line: if unlocated { 0 } else { line_no }, severity: severity, message: str.trim(msg)))!
+        }
+    }
+    return ()
+}
+
+parse_directive :: fn(t: ^kit.T, file: string, line: u32, d: string, e: ^Expectations) -> kit.Fail!() needs Alloc {
+    if v := str.strip_prefix(d, "stage:") {
+        e.stage = match str.trim(v) {
+            "lex" => .Lex
+            "parse" => .Parse
+            "check" => .Check
+            "run" => .Run
+            "test" => .Test
+            "lint" => .Lint
+            _ => return !t.fail("{}: unknown stage `{}`", file, str.trim(v))
+        }
+    } else if v := str.strip_prefix(d, "lint:") {
+        for w in str.fields(v) { e.lint_args.push(w)! }
+    } else if d is "dump" {
+        e.dump = true
+    } else if d is "stderr" {
+        e.stderr = true
+    } else if v := str.strip_prefix(d, "mode:") {
+        e.mode = str.trim(v)
+    } else if v := str.strip_prefix(d, "filter:") {
+        e.filter = str.trim(v)
+    } else if v := str.strip_prefix(d, "os:") {
+        os := str.trim(v)
+        if os not in ("unix", "windows", "wasi") { return !t.fail("{}:{}: unknown os `{}`", file, line, os) }
+        e.os = os
+    } else if v := str.strip_prefix(d, "endian:") {
+        e.endian = str.trim(v)
+    } else if v := str.strip_prefix(d, "arch:") {
+        e.arch = str.trim(v)
+    } else if v := str.strip_prefix(d, "needs:") {
+        for need in str.split(v, ",") {
+            match str.trim(need) {
+                "f16" => { e.needs_f16 = true }
+                "threads" => { e.needs_threads = true }
+                "sockets" => { e.needs_sockets = true }
+                _ => return !t.fail("{}:{}: unknown requirement `{}`", file, line, str.trim(need))
+            }
+        }
+    } else if v := str.strip_prefix(d, "ptr_bits:") {
+        e.ptr_bits = match str.trim(v) {
+            "32" => 32
+            "64" => 64
+            _ => return !t.fail("{}:{}: unknown pointer size `{}`", file, line, str.trim(v))
+        }
+    } else if v := str.strip_prefix(d, "safe:") {
+        if str.strip_prefix(str.trim(v), "skip ") is null {
+            return !t.fail("{}:{}: expected `safe: skip <reason>`", file, line)
+        }
+        e.safe_skip = true
+    } else if str.strip_prefix(d, "native:") is not null {
+        e.native = true
+    } else if v := str.strip_prefix(d, "exit:") {
+        e.exit = str.parse_int(u32, str.trim(v)) else return !t.fail("{}: bad exit code", file)
+    } else {
+        return !t.fail("{}:{}: unknown directive `{}`", file, line, d)
+    }
+    return ()
+}
+
+/// A diagnostic in the compiler's `--diag-format=short` output.
+Reported :: struct {
+    /// The file, or null for a diagnostic without a location.
+    file: ?string
+    line: u32
+    severity: string
+    message: string
+}
+
+/// Parses `path:line:col: severity: message` and `severity: message` lines; `files` are
+/// the test's files, to recognize the path prefix.
+parse_reported :: fn(stderr: string, files: []const string) -> List(Reported) needs Alloc {
+    out := list(Reported)
+    for line in str.lines(stderr) {
+        located: ?(file: string, rest: string) = null
+        for f in files {
+            // Diagnostics name files with `/` on every system.
+            prefix := str.format("{}:", forward_slashes(f))!
+            if rest := str.strip_prefix(line, prefix) {
+                located = (file: f, rest: rest)
+                break
+            }
+        }
+        at := located else {
+            // Diagnostics without a location still count.
+            for sev in ("error", "warning") {
+                if msg := str.strip_prefix(line, str.format("{}: ", sev)!) {
+                    out.push(Reported(file: null, line: 0, severity: sev, message: msg))!
+                }
+            }
+            continue
+        }
+        // `line:col: severity: message`; the message may contain colons.
+        line_no: u32 = 0
+        tail := ""
+        if a := str.split_once(at.rest, ":") {
+            line_no = str.parse_int(u32, a.before) else 0
+            if b := str.split_once(a.after, ":") { tail = str.trim_start(b.after) }
+        }
+        sev, msg := tail, ""
+        if sp := str.split_once(tail, ": ") { sev, msg = sp.before, sp.after }
+        // A lint's rule follows the severity: `warning[unused-variable]: …`.
+        message: string = msg
+        if sp := str.split_once(sev, "[") {
+            sev = sp.before
+            rule := str.strip_suffix(sp.after, "]") else sp.after
+            message = str.format("[{}] {}", rule, msg)!
+        }
+        if sev in ("error", "warning", "note") {
+            out.push(Reported(file: at.file, line: line_no, severity: sev, message: message))!
+        }
+    }
+    return out
+}
+
+forward_slashes :: fn(s: string) -> string needs Alloc => str.replace_alloc(s, "\\", "/")!
+
+/// Standard error with the standard library's directory, which differs between checkouts,
+/// written as `<std>` and the rest of such a path with `/` separators, and without the
+/// report a WebAssembly runtime adds to a trap.
+normalize_stderr :: fn(t: ^const kit.T, stderr: string) -> string needs Alloc {
+    text := driver.strip_wasm_trap_report(stderr)
+    native := t.repo("lib/std")
+    forward := forward_slashes(native)
+    back := str.replace_alloc(native, "/", "\\")!
+    out := list(u8)
+    for line in lines_with_breaks(text) {
+        found: ?(at: usize, len: usize) = null
+        for d in [_]string(native, forward, back) {
+            if i := str.find(line, d) {
+                found = (at: i, len: d.len)
+                break
+            }
+        }
+        f := found else {
+            out.extend(line)!
+            continue
+        }
+        rest := line[f.at + f.len..]
+        end := str.find(rest, ":") else rest.len
+        out.extend(line[0..f.at])!
+        out.extend("<std>")!
+        out.extend(forward_slashes(rest[0..end]))!
+        out.extend(rest[end..])!
+    }
+    return out.items
+}
+
+/// The lines of `s`, each with its line break.
+lines_with_breaks :: fn(s: string) needs Yield(string) {
+    start: usize = 0
+    for i, c in enumerate(s) {
+        if c is '\n' {
+            yield(s[start..i + 1])
+            start = i + 1
+        }
+    }
+    if start < s.len { yield(s[start..]) }
+}
+
+/// Gives the command the file `input` as standard input, if it exists.
+set_stdin :: fn(t: ^kit.T, c: ^kit.Command, input: string) -> kit.Fail!() needs Alloc + Fs {
+    if bytes := try t.read_if_exists(input) { c.stdin(bytes) }
+    return ()
+}
+
+/// A directory for the temporary files of WebAssembly modules, relative to the repository's
+/// root, where the tests run: a module sees only the current directory.
+wasi_tmp_dir :: fn(t: ^const kit.T) -> string needs Alloc + Fs {
+    dir := kit.join(t.cfg.tmp, "wasi-tmp")
+    _ = fs.make_dir_all(dir)
+    return forward_slashes(path.relative_to(dir, t.cfg.root) else dir)
+}
+
+/// Runs a `run` or `test` test (`command`) through the C back end in build mode `mode`
+/// and compares it with the expectations.
+run_c :: fn(t: ^kit.T, command, target, golden: string, exp: ^const Expectations, mode: ?string, stderr_golden: ?string) -> kit.Fail!() needs kit.Run {
+    lane := if mode is "safe" { "[C back end, Safe build]" } else { "[C back end]" }
+    c := t.gamma([_]string(command, "--backend=c", "--diag-format=short"))
+    if Env.var("GAMMA_TEST_DEBUG_INFO") is "1" { c.arg("-g") }
+    if m := mode { c.arg(str.format("--mode={}", m)!) }
+    if f := exp.filter {
+        if command is "test" { c.arg(str.format("--filter={}", f)!) }
+    }
+    c.arg(target)
+    if t.cfg.os_kind is "wasi" { c.set("TMPDIR", wasi_tmp_dir(t)) }
+    try set_stdin(t, &c, with_ext(golden, "stdin"))
+    out := try t.run(c)
+    expected := (try t.read_if_exists(golden)) else ""
+    problems := list(u8)
+    code := out.code()
+    if code is not exp.exit {
+        problems.write("{} exit status {} (expected {})\nstderr:\n{}\n", lane, out.status, exp.exit, out.err)!
+    }
+    if expected is not out.out {
+        problems.write("{} output differs from {}:\n{}", lane, golden, kit.diff(expected, out.out))!
+    }
+    if g := stderr_golden {
+        want := (try t.read_if_exists(g)) else ""
+        got := normalize_stderr(t, out.err)
+        if want is not got {
+            problems.write("{} standard error differs from {}:\n{}", lane, g, kit.diff(want, got))!
+        }
+    }
+    if problems.items.len > 0 { return !t.fail("{}", problems.items) }
+    return ()
+}
+
+/// Runs the conformance test at `t.param` (a file, or a `.test` directory).
+run_one :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := t.param
+    files := list(string)
+    target := p
+    if (Fs.stat(p) else e => return !t.fail("cannot stat {}: {}", p, e)).kind is .Dir {
+        gm_files(p, &files)
+        main := kit.join(p, "main")
+        if fs.exists(main) { target = main }
+    } else {
+        files.push(p)!
+    }
+    exp := try parse_expectations(t, files.items)
+    cfg := t.cfg
+    if e := exp.endian {
+        if e is not (if cfg.target.little_endian { "little" } else { "big" }) { return !t.skip("for {}-endian targets", e) }
+    }
+    if os := exp.os {
+        if os is not cfg.os_kind { return !t.skip("for {} only", os) }
+    }
+    if bits := exp.ptr_bits {
+        if u64(bits) is not cfg.target.ptr_bytes * 8 { return !t.skip("for {}-bit targets", bits) }
+    }
+    if arch := exp.arch {
+        if arch is not cfg.arch { return !t.skip("for {} only", arch) }
+    }
+    if exp.mode is "safe" { return run_safe_only(t, target, &exp) }
+    command := stage_command(exp.stage)
+    c := t.gamma([_]string(command, "--diag-format=short"))
+    if exp.stage is .Lint { c.args(exp.lint_args.items) }
+    if exp.dump { c.arg("--dump") }
+    if is_run_or_test(exp.stage) {
+        if m := exp.mode { c.arg(str.format("--mode={}", m)!) }
+    }
+    if exp.stage is .Test {
+        if f := exp.filter { c.arg(str.format("--filter={}", f)!) }
+    }
+    if exp.native and is_run_or_test(exp.stage) {
+        if not cfg.c { return !t.skip("needs the C back end") }
+        c.arg("--backend=c")
+    } else if exp.stage is .Run {
+        // `run` goes through C by default: the first lane is the interpreter.
+        c.arg("--backend=interp")
+    }
+    c.arg(target)
+    try set_stdin(t, &c, with_ext(p, "stdin"))
+    out := try t.run(c)
+    problems := list(u8)
+
+    // Diagnostics. With `//! stderr`, the golden file accounts for all of standard error.
+    reported := if exp.stderr { list(Reported) } else { parse_reported(out.err, files.items) }
+    missing := list(u8)
+    for d in exp.diags.items {
+        found: ?usize = null
+        for i, r in enumerate(reported.items) {
+            here := if d.line is 0 { r.file is null } else { r.file is d.file and r.line is d.line }
+            if here and r.severity is d.severity and str.contains(r.message, d.message) {
+                found = i
+                break
+            }
+        }
+        if i := found { _ = reported.remove(i) } else {
+            missing.write("  {}:{}: expected {} containing {}\n", d.file, d.line, d.severity, kit.quote(d.message))!
+        }
+    }
+    if missing.items.len > 0 { problems.write("missing diagnostics:\n{}", missing.items)! }
+    // Notes (secondary locations) need not be expected.
+    unexpected := list(u8)
+    for r in reported.items {
+        if r.severity is "note" { continue }
+        unexpected.write("  {}{}{}: {}: {}\n", r.file else "", if r.file is null { "" } else { ":" }, r.line, r.severity, r.message)!
+    }
+    if unexpected.items.len > 0 { problems.write("unexpected diagnostics:\n{}", unexpected.items)! }
+
+    // Exit status.
+    expects_errors := false
+    for d in exp.diags.items {
+        if d.severity is "error" { expects_errors = true }
+    }
+    want_code := if is_run_or_test(exp.stage) and not expects_errors { exp.exit } else if expects_errors { 1 } else { 0 }
+    if out.code() is not want_code {
+        problems.write("exit status {} (expected {})\nstderr:\n{}\n", out.status, want_code, out.err)!
+    }
+
+    // Golden output.
+    golden: ?string = null
+    if exp.dump and exp.stage is .Lex { golden = with_ext(p, "tokens") }
+    if exp.dump and exp.stage is .Parse { golden = with_ext(p, "ast") }
+    if is_run_or_test(exp.stage) and not expects_errors { golden = with_ext(p, "stdout") }
+    if g := golden {
+        if cfg.bless {
+            if out.out.len > 0 or fs.exists(g) { try t.write(g, out.out) }
+        } else {
+            expected := (try t.read_if_exists(g)) else ""
+            if expected is not out.out {
+                problems.write("output differs from {}:\n{}", g, kit.diff(expected, out.out))!
+            }
+        }
+    }
+
+    // Golden standard error.
+    stderr_golden: ?string = null
+    if exp.stderr and is_run_or_test(exp.stage) and not expects_errors { stderr_golden = with_ext(p, "stderr") }
+    if g := stderr_golden {
+        got := normalize_stderr(t, out.err)
+        if cfg.bless {
+            try t.write(g, got)
+        } else {
+            want := (try t.read_if_exists(g)) else ""
+            if want is not got {
+                problems.write("standard error differs from {}:\n{}", g, kit.diff(want, got))!
+            }
+        }
+    }
+    if problems.items.len > 0 { return !t.fail("{}", problems.items) }
+
+    compiled := is_run_or_test(exp.stage) and not expects_errors and not cfg.bless
+        and not (exp.needs_f16 and not cfg.target.f16)
+        and not ((exp.needs_threads or exp.needs_sockets) and cfg.os_kind is "wasi")
+    stdout_golden := with_ext(p, "stdout")
+    // `test` uses the C back end already.
+    if compiled and not exp.native and exp.stage is .Run and cfg.c {
+        try run_c(t, command, target, stdout_golden, &exp, exp.mode, stderr_golden)
+    }
+    if compiled and not exp.safe_skip and (exp.mode is null or exp.mode is "checked") and cfg.safe_lane {
+        try run_c(t, command, target, stdout_golden, &exp, "safe", null)
+    }
+    return ()
+}
+
+/// Runs a `mode: safe` test, which only a Safe build through the C back end runs.
+run_safe_only :: fn(t: ^kit.T, target: string, exp: ^const Expectations) -> kit.Fail!() needs kit.Run {
+    if not is_run_or_test(exp.stage) or exp.diags.items.len > 0 {
+        return !t.fail("{}: `mode: safe` applies only to `run` and `test` tests without diagnostics", t.param)
+    }
+    if not t.cfg.safe { return !t.skip("needs Safe builds") }
+    return run_c(t, stage_command(exp.stage), target, with_ext(t.param, "stdout"), exp, "safe", null)
+}

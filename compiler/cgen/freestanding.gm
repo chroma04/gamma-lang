@@ -1,6 +1,6 @@
 // Programs for a freestanding target (§3.7.1), which has no operating system and so no
 // `main`: the entry points are the exported functions, and a trap calls the program's
-// `#trap_hook` (mirrors the freestanding parts of `src/cgen/mod.rs`).
+// `#trap_hook`.
 
 /// `gm_start`, which every export of a freestanding program calls first: the program has no
 /// `main` to prepare its constants and the build mode before the first call.

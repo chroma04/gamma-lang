@@ -1,4 +1,4 @@
-// The checked program as `gamma tir` prints it (mirrors `src/sema/tir_dump.rs`).
+// The checked program as `gamma tir` prints it.
 
 syntax :: import "../syntax"
 
@@ -429,7 +429,7 @@ coercion_text :: fn(c: tir.Coercion) -> string needs Alloc => match c {
     .Unresolved => "Unresolved"
 }
 
-/// A placeholder's spec as the reference implementation's `Debug` writes it.
+/// A placeholder's spec as `gamma tir` writes it.
 spec_text :: fn(spec: ^const tir.FmtSpec, out: ^List(u8)) needs Alloc {
     align := match spec.align {
         .Auto => "Auto"

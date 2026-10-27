@@ -1,0 +1,291 @@
+// Tests of archive dependencies (`url = "…"`): downloading, the lock, checksums, unpacking
+// and what an archive may not contain. The archives are made here, as gzip-compressed tar
+// files, and served from `file:` URLs, so the tests need `curl` but not the network.
+
+kit :: import "../kit"
+crc32 :: import "std/hash/crc32"
+hex :: import "std/encoding/hex"
+fs :: import "std/fs"
+sha256 :: import "std/hash/sha256"
+str :: import "std/str"
+
+// ---------------------------------------------------------------------------------
+// Making archives
+// ---------------------------------------------------------------------------------
+
+/// Writes `value` as `width - 1` octal digits and a NUL at `at` of the tar header `block`.
+put_octal :: fn(block: []u8, at, width: usize, value: u64) {
+    block[at + width - 1] = 0
+    v := value
+    j := width - 1
+    while j > 0 {
+        j -= 1
+        block[at + j] = '0' + (v % 8).trunc(u8)
+        v /= 8
+    }
+}
+
+/// Appends a tar entry: a file with `data`, or, if `link` is given, a symbolic link to it.
+tar_entry :: fn(out: ^List(u8), name, data: string, link: ?string) needs Alloc {
+    block := make(u8, 512)!
+    block.fill(0)
+    for i, c in enumerate(name) { block[i] = c }
+    is_link := link is not null
+    put_octal(block, 100, 8, if is_link { 511 } else { 420 })
+    put_octal(block, 108, 8, 0)
+    put_octal(block, 116, 8, 0)
+    size: usize = if is_link { 0 } else { data.len }
+    put_octal(block, 124, 12, u64(size))
+    put_octal(block, 136, 12, 0)
+    for i in 148..156 { block[i] = ' ' }
+    block[156] = if is_link { '2' } else { '0' }
+    if target_path := link {
+        for i, c in enumerate(target_path) { block[157 + i] = c }
+    }
+    magic :: "ustar"
+    for i, c in enumerate(magic) { block[257 + i] = c }
+    block[263] = '0'
+    block[264] = '0'
+    sum: u64 = 0
+    for b in block { sum += u64(b) }
+    put_octal(block, 148, 7, sum)
+    block[155] = ' '
+    out.extend(block)!
+    if not is_link {
+        out.extend(data)!
+        pad := (512 - data.len % 512) % 512
+        for _ in 0..pad { out.push(0)! }
+    }
+}
+
+/// Appends a little-endian number of `bytes` bytes.
+push_le :: fn(out: ^List(u8), v: u32, bytes: usize) needs Alloc {
+    for i in 0..bytes { out.push(((v >> (8 * i.trunc(u32))) & 0xff).trunc(u8))! }
+}
+
+/// `data` as a gzip file, in blocks that are stored rather than compressed.
+gzip_stored :: fn(data: []const u8) -> []u8 needs Alloc {
+    out := list(u8)
+    out.extend([_]u8(0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff))!
+    rest := data
+    while true {
+        n := if rest.len > 65535 { 65535 } else { rest.len }
+        last := n is rest.len
+        out.push(if last { 1 } else { 0 })!
+        push_le(&out, n.trunc(u32), 2)
+        push_le(&out, (~n).trunc(u32) & 0xffff, 2)
+        out.extend(rest[0..n])!
+        rest = rest[n..]
+        if last { break }
+    }
+    push_le(&out, crc32.checksum(data), 4)
+    push_le(&out, data.len.trunc(u32), 4)
+    return out.items
+}
+
+/// Writes the gzip-compressed tar file `rel` of the world with `files` and symbolic `links`
+/// (path and target).
+make_tgz :: fn(w: ^const World, rel: string, files, links: []const Item) -> kit.Fail!() needs kit.Run {
+    tar := list(u8)
+    for f in files { tar_entry(&tar, f.name, f.text, null) }
+    for l in links { tar_entry(&tar, l.name, "", l.text) }
+    for _ in 0..1024 { tar.push(0)! }
+    p := w.at(rel)
+    try w.t.write(p, string(gzip_stored(tar.items)))
+    return ()
+}
+
+/// The SHA-256 of the file `rel` of the world, in lower-case hexadecimal.
+sha256_of :: fn(w: ^const World, rel: string) -> kit.Fail!string needs Alloc + Fs {
+    p := w.at(rel)
+    bytes := fs.read_all(p) else e => return !w.t.fail("cannot read {}: {}", p, e)
+    digest := sha256.sum(bytes)
+    buf := make(u8, 64)!
+    return hex.encode(digest[..], buf, false)
+}
+
+/// The archive `file` with a package `util` whose library returns `n`.
+util_archive :: fn(w: ^const World, file: string, n: i32) -> kit.Fail!() needs kit.Run {
+    return make_tgz(
+        w,
+        file,
+        [_]Item(
+            Item(name: "util-1.0.0/gamma.toml", text: lib_manifest("util")),
+            Item(name: "util-1.0.0/lib.gm", text: lib_source(n)),
+        ),
+        empty_slice(Item),
+    )
+}
+
+SKIP_CURL :: "curl is not installed"
+
+// ---------------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------------
+
+archive_dependencies_are_downloaded_locked_and_verified :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not kit.runs("curl") { return !t.skip(SKIP_CURL) }
+    w := try world(t, "archives")
+    try util_archive(&w, "dist/util-1.0.0.tar.gz", 5)
+    url := w.url_of("dist/util-1.0.0.tar.gz")
+    hash := try sha256_of(&w, "dist/util-1.0.0.tar.gz")
+    try w.sum_app(str.format("util = {{ url = \"{}\" }}\n", url)!, [_]string("util"))
+
+    out := try w.ok("app", [_]string("run", "."))
+    try t.expect_text("the output", "5\n", out.out)
+    try t.expect_contains("stderr", out.err, "Fetching util")
+    try t.expect_contains("stderr", out.err, "Locking util archive")
+    lock := w.get("app/gamma.lock")
+    try expect_field(t, lock, "util", "source", str.format("url+{}", url)!)
+    try expect_field(t, lock, "util", "archive", str.format("sha256:{}", hash)!)
+    checksum := try field(t, lock, "util", "checksum")
+    try t.check(starts_with(checksum, "sha256:"), "checksum {}", checksum)
+    try t.check(lock_field(lock, "util", "rev") is null, "an archive has a revision in gamma.lock")
+    // Nothing is downloaded again, and the lock can be enforced.
+    out = try w.ok("app", [_]string("run", "."))
+    try t.check(not str.contains(out.err, "Fetching"), "{}", out.err)
+    _ = try w.ok("app", [_]string("run", "--offline", "--locked", "."))
+    _ = try w.ok("app", [_]string("build", ".", "-o", "app.out"))
+    try t.expect_text("gamma.lock", lock, w.get("app/gamma.lock"))
+    // The unpacked archive is in the store, read-only, without the top-level directory.
+    dirs := w.archive_dirs()
+    try t.check(dirs.len is 1, "{} unpacked archives", dirs.len)
+    lib := kit.join(dirs[0], "lib.gm")
+    try t.check(fs.exists(lib) and fs.exists(kit.join(dirs[0], "gamma.toml")), "the unpacked archive has no package")
+    when target.os is not .Windows {
+        try expect_read_only(t, dirs[0])
+    }
+    // A modified unpacked archive is noticed against the lock.
+    original := try t.read(lib)
+    try make_writable(t, lib)
+    try t.write(lib, lib_source(7))
+    out = try w.bad("app", [_]string("run", "."))
+    try t.expect_contains("stderr", out.err, "checksum mismatch")
+    try t.expect_contains("stderr", out.err, "was modified")
+    try t.write(lib, original)
+    try w.prints("app", [_]string("run", "."), "5\n")
+
+    // `update` downloads again only if the URL changed: a different file at the same URL is ignored.
+    try util_archive(&w, "dist/util-1.0.0.tar.gz", 6)
+    out = try w.ok("app", [_]string("update"))
+    try t.check(not str.contains(out.err, "Fetching"), "{}", out.err)
+    try t.expect_text("gamma.lock", lock, w.get("app/gamma.lock"))
+    try w.prints("app", [_]string("run", "."), "5\n")
+    // With the cache gone, the locked hash catches the changed file...
+    try force_remove(t, w.cache_dir())
+    out = try w.bad("app", [_]string("run", "."))
+    try t.expect_contains("stderr", out.err, "SHA-256")
+    try t.expect_contains("stderr", out.err, "gamma.lock says")
+    try w.fails_with("app", [_]string("run", "--offline", "."), "--offline")
+    // ...and the original file is accepted again.
+    try util_archive(&w, "dist/util-1.0.0.tar.gz", 5)
+    try w.prints("app", [_]string("run", "."), "5\n")
+    try t.expect_text("gamma.lock", lock, w.get("app/gamma.lock"))
+
+    // A new URL is a new package version.
+    try util_archive(&w, "dist/util-1.1.0.tar.gz", 6)
+    url2 := w.url_of("dist/util-1.1.0.tar.gz")
+    hash2 := try sha256_of(&w, "dist/util-1.1.0.tar.gz")
+    try w.sum_app(str.format("util = {{ url = \"{}\" }}\n", url2)!, [_]string("util"))
+    out = try w.ok("app", [_]string("run", "."))
+    try t.expect_text("the output", "6\n", out.out)
+    try t.expect_contains("stderr", out.err, "Fetching util")
+    try expect_field(t, w.get("app/gamma.lock"), "util", "archive", str.format("sha256:{}", hash2)!)
+
+    // A `sha256` in the manifest must match the file.
+    try w.sum_app(str.format("util = {{ url = \"{}\", sha256 = \"{}\" }}\n", url2, zeros())!, [_]string("util"))
+    out = try w.bad("app", [_]string("run", "."))
+    try t.expect_contains("stderr", out.err, "SHA-256")
+    try t.expect_contains("stderr", out.err, "gamma.toml says")
+    upper := make(u8, hash2.len)!
+    try w.sum_app(str.format("util = {{ url = \"{}\", sha256 = \"{}\" }}\n", url2, str.to_upper(hash2, upper))!, [_]string("util"))
+    try w.prints("app", [_]string("run", "."), "6\n")
+    // A hash in the manifest also stops a first download of another file.
+    w.rm("app/gamma.lock")
+    try force_remove(t, w.cache_dir())
+    try w.sum_app(str.format("util = {{ url = \"{}\", sha256 = \"{}\" }}\n", url, hash2)!, [_]string("util"))
+    try w.fails_with("app", [_]string("run", "."), "gamma.toml says")
+    return ()
+}
+
+Bad :: struct {
+    dep: string
+    msg: string
+}
+
+archive_subdirectories_add_and_bad_archives :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not kit.runs("curl") { return !t.skip(SKIP_CURL) }
+    w := try world(t, "archives2")
+    try make_tgz(
+        &w,
+        "dist/mono.tgz",
+        [_]Item(
+            Item(name: "mono-2/README", text: "a monorepo"),
+            Item(name: "mono-2/pkgs/inner/gamma.toml", text: lib_manifest("inner")),
+            Item(name: "mono-2/pkgs/inner/lib.gm", text: lib_source(8)),
+        ),
+        empty_slice(Item),
+    )
+    url := w.url_of("dist/mono.tgz")
+    hash := try sha256_of(&w, "dist/mono.tgz")
+    try w.sum_app(str.format("inner = {{ url = \"{}\", subdir = \"pkgs/inner\" }}\n", url)!, [_]string("inner"))
+    try w.prints("app", [_]string("run", "."), "8\n")
+    try expect_field(t, w.get("app/gamma.lock"), "inner", "subdir", "pkgs/inner")
+    // A subdirectory that is not there.
+    try w.sum_app(str.format("inner = {{ url = \"{}\", subdir = \"pkgs/nope\" }}\n", url)!, [_]string("inner"))
+    try w.fails_with("app", [_]string("run", "."), "has no directory `pkgs/nope`")
+
+    // `gamma add --url`.
+    try w.put("app2/gamma.toml", "# my app\n[package]\nname = \"app2\"\n")
+    try w.put("app2/main.gm", "inner :: import \"inner\"\nmain :: fn() needs Out {\n    print(\"{}\\n\", inner.value())\n}\n")
+    _ = try w.ok("app2", [_]string("add", "inner", "--url", url, "--sha256", hash, "--subdir", "pkgs/inner"))
+    manifest := w.get("app2/gamma.toml")
+    try t.check(starts_with(manifest, "# my app\n"), "{}", manifest)
+    try t.expect_contains(
+        "the manifest",
+        manifest,
+        str.format("inner = {{ url = \"{}\", sha256 = \"{}\", subdir = \"pkgs/inner\" }}", url, hash)!,
+    )
+    try w.prints("app2", [_]string("run", "."), "8\n")
+    try t.expect_contains("gamma.lock", w.get("app2/gamma.lock"), "archive = ")
+    // A failing add leaves the manifest as it was.
+    before := w.get("app2/gamma.toml")
+    try w.fails_with("app2", [_]string("add", "other", "--url", w.url_of("dist/missing.tgz")), "cannot download")
+    try t.expect_text("the manifest", before, w.get("app2/gamma.toml"))
+    _ = try w.bad("app2", [_]string("add", "x", "--url", url, "--git", url))
+    _ = try w.bad("app2", [_]string("add", "x", "--path", "../y", "--sha256", hash))
+    _ = try w.ok("app2", [_]string("remove", "inner"))
+    try t.check(not w.has("app2/gamma.lock"), "gamma.lock is still there")
+
+    // Archives that are not acceptable.
+    try w.put("dist/plain.tgz", "this is not an archive")
+    try w.sum_app(str.format("bad = {{ url = \"{}\" }}\n", w.url_of("dist/plain.tgz"))!, [_]string("bad"))
+    try w.fails_with("app", [_]string("fetch"), "gzip")
+    try make_tgz(
+        &w,
+        "dist/dots.tgz",
+        [_]Item(Item(name: "pkg/gamma.toml", text: lib_manifest("bad"))),
+        [_]Item(Item(name: "pkg/leak", text: "../../../etc/passwd")),
+    )
+    try w.sum_app(str.format("bad = {{ url = \"{}\" }}\n", w.url_of("dist/dots.tgz"))!, [_]string("bad"))
+    try w.fails_with("app", [_]string("fetch"), "points outside the package")
+    for d in w.archive_dirs() {
+        try t.check(not fs.exists(kit.join(d, "leak")), "{} was unpacked", kit.join(d, "leak"))
+    }
+    // Manifest errors.
+    cases :: [_]Bad(
+        Bad(dep: "x = { url = \"u\", sha256 = \"abc\" }", msg: "64 hexadecimal digits"),
+        Bad(dep: "x = { url = \"u\", git = \"g\" }", msg: "both `git` and `url`"),
+        Bad(dep: "x = { path = \"p\", sha256 = \"abc\" }", msg: "needs `url`"),
+        Bad(dep: "x = { url = \"u\", tag = \"t\" }", msg: "needs `git`"),
+        Bad(dep: "x = { url = \"\" }", msg: "is empty"),
+    )
+    for c in cases {
+        try w.put("app/gamma.toml", str.format("[package]\nname = \"app\"\n[dependencies]\n{}\n", c.dep)!)
+        out := try w.bad("app", [_]string("check", "."))
+        what := str.format("the error for {}", c.dep)!
+        try t.expect_contains(what, out.err, "gamma.toml:4: ")
+        try t.expect_contains(what, out.err, c.msg)
+    }
+    return ()
+}

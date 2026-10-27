@@ -1,0 +1,164 @@
+//! The conformance `run` tests built by the compiler under test in a lane other than the
+//! host's own: `GAMMA_TEST_LANE` names it, `safe` (Safe builds with Fil-C), `s390x`
+//! (big-endian) or `aarch64` (cross-compiled for Linux and run under qemu-user), or `wasi`
+//! (WebAssembly, run under Wasmtime). Each program must give the expected output and exit
+//! status. CI runs this where the lane's tools are installed; without `GAMMA_TEST_LANE` the
+//! suite has no tests.
+
+fs :: import "std/fs"
+kit :: import "../kit"
+path :: import "std/path"
+str :: import "std/str"
+
+DIR :: "tests/conformance/run"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Env + Fs {
+    name := Env.var("GAMMA_TEST_LANE") else return
+    if name.len is 0 { return }
+    found := list(string)
+    for r in fs.entries(kit.join(cfg.root, DIR)) {
+        e := r else break
+        if path.extension(e.name) in ("gm", "test") { found.push(dupe(e.name)!)! }
+    }
+    found.items.sort()
+    for f in found.items {
+        out.push(kit.Test(name: str.format("{}/{}", name, f)!, run: run_in_lane, param: f))!
+    }
+    // A check that the lane exists and finds the tests.
+    out.push(kit.Test(name: str.format("{}/(lane)", name)!, run: lane_finds_tests, param: str.format("{}", found.items.len)!))!
+}
+
+/// A way of building the run tests other than for the host in their own mode.
+Lane :: struct {
+    name: string
+    /// The options `gamma run` gets, before the mode.
+    args: []const string
+    /// Changes to the environment of `gamma run`.
+    env: []const string
+    /// The values of the `arch:`, `endian:`, `os:` and `ptr_bits:` directives it runs.
+    arch: string
+    endian: string
+    os: string
+    ptr_bits: string
+    /// The `needs:` requirements it lacks.
+    lacks: []const string
+}
+
+/// The lane `GAMMA_TEST_LANE` names, or null if it names none.
+lane :: fn(t: ^kit.T, host_arch: string) -> ?Lane needs Alloc + Env + Fs {
+    name := Env.var("GAMMA_TEST_LANE") else return null
+    return match name {
+        "safe" => Lane(name: name, args: empty_slice(string), env: empty_slice(string), arch: host_arch, endian: "little", os: "unix", ptr_bits: "64", lacks: empty_slice(string))
+        "s390x" => Lane(
+            name: name,
+            args: dupe([_]string("--target=s390x-linux-gnu"))!,
+            env: dupe([_]string("CC=s390x-linux-gnu-gcc", "CFLAGS=-static", "GAMMA_RUNNER=qemu-s390x -L /usr/s390x-linux-gnu"))!,
+            arch: "s390x", endian: "big", os: "unix", ptr_bits: "64",
+            lacks: dupe([_]string("f16"))!,
+        )
+        "aarch64" => Lane(
+            name: name,
+            args: dupe([_]string("--target=aarch64-linux-gnu"))!,
+            env: dupe([_]string("CC=aarch64-linux-gnu-gcc", "CFLAGS=-static", "GAMMA_RUNNER=qemu-aarch64 -L /usr/aarch64-linux-gnu"))!,
+            arch: "aarch64", endian: "little", os: "unix", ptr_bits: "64",
+            lacks: empty_slice(string),
+        )
+        // A WebAssembly module sees only the current directory (the repository's root): its
+        // temporary files go below it.
+        "wasi" => Lane(
+            name: name,
+            args: dupe([_]string("--target=wasm32-wasi"))!,
+            env: dupe([_]string(str.format("TMPDIR={}", wasi_tmp(t))!))!,
+            arch: "wasm32", endian: "little", os: "wasi", ptr_bits: "32",
+            lacks: dupe([_]string("f16", "threads", "sockets"))!,
+        )
+        _ => null
+    }
+}
+
+wasi_tmp :: fn(t: ^kit.T) -> string needs Alloc + Fs {
+    dir := kit.join(t.cfg.tmp, "lanes-wasi-tmp")
+    _ = fs.make_dir_all(dir)
+    return path.relative_to(dir, t.cfg.root) else dir
+}
+
+lane_finds_tests :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    name := Env.var("GAMMA_TEST_LANE") else ""
+    _ = lane(t, t.cfg.arch) else return !t.fail("unknown GAMMA_TEST_LANE `{}` (safe, s390x, aarch64 or wasi)", name)
+    n := str.parse_int(usize, t.param) else 0
+    try t.check(n > 300, "only {} run tests found", n)
+    return ()
+}
+
+/// The value of the directive `//! key …` in `text`, if there is one.
+directive :: fn(text, key: string) -> ?string {
+    for line in str.lines(text) {
+        if rest := str.strip_prefix(line, "//! ") {
+            if v := str.strip_prefix(rest, key) { return str.trim(v) }
+        }
+    }
+    return null
+}
+
+/// Builds and runs the test `t.param` (a name in `tests/conformance/run`) with `gamma run`
+/// as the lane says, if it applies to the lane.
+run_in_lane :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    ln := lane(t, t.cfg.arch) else return !t.fail("unknown GAMMA_TEST_LANE")
+    p := kit.join(DIR, t.param)
+    is_dir := path.extension(t.param) is "test"
+    text := list(u8)
+    if is_dir {
+        files := list(string)
+        for r in fs.walk(p) {
+            e := r else continue
+            if e.kind is .File and path.extension(e.path) is "gm" { files.push(dupe(e.path)!)! }
+        }
+        files.items.sort()
+        for f in files.items { text.extend(try t.read(f))! }
+    } else {
+        text.extend(try t.read(p))!
+    }
+    src: string = text.items
+    if str.contains(src, "//~") { return !t.skip("expects diagnostics") }
+    if stage := directive(src, "stage:") {
+        if stage is not "run" { return !t.skip("not a run test") }
+    }
+    for kv in [_](key: string, want: string)((key: "arch:", want: ln.arch), (key: "endian:", want: ln.endian), (key: "os:", want: ln.os), (key: "ptr_bits:", want: ln.ptr_bits)) {
+        if d := directive(src, kv.key) {
+            if d is not kv.want { return !t.skip("for {} {}", kv.key, d) }
+        }
+    }
+    if req := directive(src, "needs:") {
+        for n in str.split(req, ",") {
+            if str.trim(n) in ln.lacks { return !t.skip("needs {}", str.trim(n)) }
+        }
+    }
+    mode := directive(src, "mode:") else "debug"
+    if ln.name is "safe" {
+        // Every test of the default and Checked modes also runs in a Safe build.
+        if mode is "fast" { return !t.skip("Fast mode") }
+        if s := directive(src, "safe:") {
+            if str.strip_prefix(s, "skip") is not null { return !t.skip("safe: {}", s) }
+        }
+        mode = "safe"
+    } else if mode is "safe" {
+        return !t.skip("Safe mode")
+    }
+    root := p
+    if is_dir and fs.exists(kit.join(p, "main")) { root = kit.join(p, "main") }
+    base := p[0..p.len - path.extension(p).len - 1]
+    c := t.gamma([_]string("run"))
+    c.args(ln.args)
+    for e in ln.env { c.env.push(e)! }
+    c.arg(str.format("--mode={}", mode)!)
+    c.arg(root)
+    if input := try t.read_if_exists(str.format("{}.stdin", base)!) { c.stdin(input) }
+    out := try t.run(c)
+    exit := str.parse_int(u32, directive(src, "exit:") else "0") else 0
+    if out.code() is not exit {
+        return !t.fail("exit status {}, expected {}:\n{}", out.status, exit, out.err)
+    }
+    expected := (try t.read_if_exists(str.format("{}.stdout", base)!)) else ""
+    try t.expect_text("the output", expected, out.out)
+    return ()
+}

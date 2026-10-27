@@ -1,5 +1,5 @@
 // The lockfile, `gamma.lock`: the exact revision and content hash of every git package and
-// the content hash of every archive package in a dependency graph (mirrors `src/pkg/lock.rs`).
+// the content hash of every archive package in a dependency graph.
 
 arena :: import "std/arena"
 fs :: import "std/fs"
@@ -198,7 +198,7 @@ package_less :: fn(a, b: ^const LockedPackage) -> bool {
     return option_less(a.subdir, b.subdir)
 }
 
-/// Orders optional strings the way Rust orders `Option<String>`: `None` before every `Some`.
+/// Orders optional strings with an absent one (`null`) before every present one.
 pub option_less :: fn(a, b: ?string) -> bool {
     x := a else return b is not null
     y := b else return false

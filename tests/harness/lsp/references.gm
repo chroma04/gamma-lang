@@ -1,0 +1,175 @@
+// References across the modules of a package and its path dependencies.
+
+json :: import "std/json"
+kit :: import "../kit"
+str :: import "std/str"
+
+UTIL :: `pub Shape :: union {
+    Circle: i32
+    Square: i32
+}
+
+pub LIMIT :: 10
+
+pub Point :: struct {
+    pub x: i32
+    pub y: i32
+}
+
+pub double :: fn(n: i32) -> i32 => n * 2
+
+pub area :: fn(s: Shape, scale: i32) -> i32 {
+    big := LIMIT * scale
+    return match s {
+        .Circle(r) => r * big
+        .Square(side) => side * scale
+    }
+}
+`
+
+MAIN :: `util :: import "./util"
+
+main :: fn() {
+    p := util.Point(x: 1, y: 2)
+    d := util.double(p.x)
+    a := util.area(util.Shape.Circle(3), util.LIMIT)
+    _ = d + a + p.y
+}
+`
+
+APP :: `util :: import "../util"
+
+other :: fn() -> i32 {
+    q := util.Point(x: 5, y: 6)
+    return util.double(q.y)
+}
+`
+
+LONE :: "double :: fn(n: i32) -> i32 => n + n\n\ncall :: fn() -> i32 => double(1)\n"
+
+/// A package with a library module `util`, its importer `main.gm`, a second importer in
+/// `app`, and a module `lone` that does not import `util`.
+Package :: struct {
+    dir: string
+    util: string
+    main: string
+    app: string
+    lone: string
+}
+
+/// Writes the files of the package in the directory `dir`.
+package :: fn(t: ^kit.T, dir: string) -> kit.Fail!Package needs kit.Run {
+    _ = try put(t, dir, "gamma.toml", "name = \"pkg\"\nversion = \"0.1.0\"\n")
+    return Package(
+        dir: dir,
+        util: try put(t, dir, "util/util.gm", UTIL),
+        main: try put(t, dir, "main.gm", MAIN),
+        app: try put(t, dir, "app/app.gm", APP),
+        lone: try put(t, dir, "lone/lone.gm", LONE),
+    )
+}
+
+/// A location: a file below the package root, a line and a character.
+Loc :: struct {
+    file: string
+    line: i64
+    character: i64
+}
+
+/// True if `a` is before `b` in the order of bytes.
+before :: fn(a, b: string) -> bool {
+    n := if a.len < b.len { a.len } else { b.len }
+    for i in 0..n {
+        if a[i] is not b[i] { return a[i] < b[i] }
+    }
+    return a.len < b.len
+}
+
+/// Fails the test unless `locs`, a list of locations in files below `root`, is `expected`
+/// (as `file:line:character`) when sorted by file, line and character.
+expect_locations :: fn(t: ^kit.T, what: string, locs: json.Value, root: string, expected: []const string) -> kit.Fail!() needs Alloc {
+    items := try as_array(t, locs)
+    prefix := str.format("{}/", uri(root))!
+    found := list(Loc)
+    for x in items {
+        u := string_of(field(x, "uri"))
+        file := str.strip_prefix(u, prefix) else return !t.fail("{} is not below {}: {}", u, prefix, show(locs))
+        line := try as_int(t, dig(x, "range.start.line"))
+        character := try as_int(t, dig(x, "range.start.character"))
+        found.push(Loc(file: file, line: line, character: character))!
+    }
+    found.items.sort_by(fn(a, b: ^const Loc) -> bool {
+        if a.file is not b.file { return before(a.file, b.file) }
+        if a.line is not b.line { return a.line < b.line }
+        return a.character < b.character
+    })
+    got := list(string)
+    for loc in found.items { got.push(str.format("{}:{}:{}", loc.file, loc.line, loc.character)!)! }
+    return t.expect_text(what, str.join(expected, "\n")!, str.join(got.items, "\n")!)
+}
+
+/// The parameters of a references request.
+refs_params :: fn(path: string, line, character: u64, declaration: bool) -> string needs Alloc {
+    return at_with(path, line, character, str.format("\"context\":{{\"includeDeclaration\":{}}}", declaration)!)
+}
+
+references_cross_module_boundaries :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-references_cross_module_boundaries")
+    p := try package(t, dir)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open_file(p.main)
+    // From a use: the declaration, the uses in this module and in the other importer.
+    // `lone` declares its own `double` and is not listed.
+    refs := try l.result("textDocument/references", refs_params(p.main, 4, 15, true))
+    try expect_locations(t, "references to double", refs, dir, [_]string("app/app.gm:4:16", "main.gm:4:14", "util/util.gm:12:4"))
+    refs = try l.result("textDocument/references", refs_params(p.main, 4, 15, false))
+    try expect_locations(t, "references to double without the declaration", refs, dir, [_]string("app/app.gm:4:16", "main.gm:4:14"))
+
+    // From the declaration, in a module that does not use it itself.
+    try l.open_file(p.util)
+    refs = try l.result("textDocument/references", refs_params(p.util, 12, 5, false))
+    try expect_locations(t, "references from the declaration", refs, dir, [_]string("app/app.gm:4:16", "main.gm:4:14"))
+
+    // The type `Point` and its field `x`.
+    refs = try l.result("textDocument/references", refs_params(p.util, 7, 5, true))
+    try expect_locations(t, "references to Point", refs, dir, [_]string("app/app.gm:3:14", "main.gm:3:14", "util/util.gm:7:4"))
+    refs = try l.result("textDocument/references", refs_params(p.util, 8, 9, true))
+    try expect_len(t, "the references to x", refs, 4)
+
+    // An unsaved edit of the other importer is seen, and so is its removal.
+    try l.open(p.app, "util :: import \"../util\"\n\nother :: fn() -> i32 => 1\n")
+    refs = try l.result("textDocument/references", refs_params(p.main, 4, 15, true))
+    try expect_locations(t, "references without the use in app", refs, dir, [_]string("main.gm:4:14", "util/util.gm:12:4"))
+    try l.change(p.app, 2, "util :: import \"../util\"\n\nother :: fn() -> i32 => util.double(2)\n")
+    refs = try l.result("textDocument/references", refs_params(p.main, 4, 15, false))
+    try expect_locations(t, "references with the new use in app", refs, dir, [_]string("app/app.gm:2:29", "main.gm:4:14"))
+    // The module that is not an importer is untouched.
+    try l.open_file(p.lone)
+    refs = try l.result("textDocument/references", refs_params(p.lone, 2, 24, true))
+    try expect_locations(t, "references in lone", refs, dir, [_]string("lone/lone.gm:0:0", "lone/lone.gm:2:23"))
+    try l.shutdown()
+    return ()
+}
+
+references_include_path_dependencies :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-references_include_path_dependencies")
+    _ = try put(t, dir, "dep/gamma.toml", "name = \"dep\"\nversion = \"0.1.0\"\n")
+    dep := try put(t, dir, "dep/dep.gm", "pub triple :: fn(n: i32) -> i32 => n * 3\n")
+    _ = try put(t, dir, "app/gamma.toml", "name = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n")
+    main := try put(t, dir, "app/main.gm", "dep :: import \"dep\"\n\nmain :: fn() {\n    _ = dep.triple(2)\n}\n")
+    _ = try put(t, dir, "app/sub/sub.gm", "dep :: import \"dep\"\n\nsub :: fn() -> i32 => dep.triple(3)\n")
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open_file(main)
+    refs := try l.result("textDocument/references", refs_params(main, 3, 13, true))
+    try expect_locations(t, "references to triple", refs, dir, [_]string("app/main.gm:3:12", "app/sub/sub.gm:2:26", "dep/dep.gm:0:4"))
+    // A dependency does not know the packages that use it: from there, only its own modules.
+    try l.open_file(dep)
+    refs = try l.result("textDocument/references", refs_params(dep, 0, 5, false))
+    try expect_locations(t, "references from the dependency", refs, dir, empty_slice(string))
+    try l.shutdown()
+    return ()
+}

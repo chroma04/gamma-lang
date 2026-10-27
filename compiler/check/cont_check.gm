@@ -1,6 +1,6 @@
 // The static check of continuations (§14.2): when a `ctl` clause uses its continuation
 // `k` only as the operand of `resume` and `cancel`, every path through the clause must
-// consume it exactly once (mirrors `src/sema/cont_check.rs`).
+// consume it exactly once.
 //
 // The analysis walks the clause body in evaluation order with a small state: whether
 // `k` may still be unconsumed and whether it may already be consumed on the paths

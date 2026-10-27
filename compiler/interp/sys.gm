@@ -1,7 +1,6 @@
-// The system services of the interpreted program (§12.9; mirrors `src/interp/sys.rs` and
-// `src/interp/proc.rs`): standard input and output, clocks, random bytes, files and
-// directories, TCP sockets and child processes, behind the `Builtin.Sys` intrinsics that the
-// core library's default handlers call. gammac reaches the host's services through the
+// The system services of the interpreted program (§12.9): standard input and output,
+// clocks, random bytes, files and directories, TCP sockets and child processes, behind the
+// `Builtin.Sys` intrinsics that the core library's default handlers call. gammac reaches the host's services through the
 // ambient effects (`Fs`, `Proc`, `Clock`, `Rand`, `Out`, `Err`) and, for `In` and `Net`,
 // through the default handlers `thread.defaults` installs, and maps their results back to
 // the raw conventions of the intrinsics: a count or handle, or a negative error code.
@@ -458,7 +457,9 @@ sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals
             stdout: sys_stdio((flags >> 2) & 3),
             stderr: sys_stdio((flags >> 4) & 3),
             dir: if dir.len > 0 { dir } else { null },
-            env: if sys_has(flags, 64) { env.items } else { null },
+            env: env.items,
+            clear_env: sys_has(flags, 64),
+            group: sys_has(flags, 128),
         )
         c := Proc.spawn(argv.items, opts) else err => return sys_code(err)
         handle := sys_next_handle(&m.sys)

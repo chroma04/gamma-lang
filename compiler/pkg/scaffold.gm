@@ -1,4 +1,4 @@
-// `gamma new` and `gamma init`: the files of a fresh package (mirrors `src/pkg/scaffold.rs`).
+// `gamma new` and `gamma init`: the files of a fresh package.
 
 fs :: import "std/fs"
 load :: import "../load"

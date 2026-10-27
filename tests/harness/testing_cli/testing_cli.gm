@@ -1,0 +1,393 @@
+//! Tests of `gamma test` and `gamma bench`: which tests run (`--all`, `--filter`), what is
+//! printed (`--show-output`, `--time`), `--jobs`, `--timeout`, `--coverage`, and benchmarks.
+
+kit :: import "../kit"
+str :: import "std/str"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "only_imported_modules_run_without_all", run: only_imported_modules_run_without_all))!
+    out.push(kit.Test(name: "all_runs_the_tests_of_every_module_of_the_package", run: all_runs_every_module))!
+    out.push(kit.Test(name: "show_output_prints_what_passing_tests_wrote", run: show_output))!
+    out.push(kit.Test(name: "time_is_opt_in", run: time_is_opt_in))!
+    out.push(kit.Test(name: "parallel_runs_print_in_order", run: parallel_runs_print_in_order))!
+    out.push(kit.Test(name: "coverage_counts_the_lines_the_tests_run", run: coverage_counts_lines))!
+    out.push(kit.Test(name: "a_tracefile_that_cannot_be_written_fails_the_run", run: unwritable_tracefile))!
+    out.push(kit.Test(name: "coverage_on_the_c_back_end_counts_the_lines_the_tests_run", run: coverage_on_the_c_back_end))!
+    out.push(kit.Test(name: "duplicate_names_are_per_kind", run: duplicate_names_are_per_kind))!
+    out.push(kit.Test(name: "benchmarks_report_the_time_per_run", run: benchmarks_report_the_time_per_run))!
+    out.push(kit.Test(name: "benchmarks_run_natively_by_default", run: benchmarks_run_natively))!
+    out.push(kit.Test(name: "a_failing_benchmark_fails_the_command", run: a_failing_benchmark_fails))!
+    out.push(kit.Test(name: "gamma_test_checks_benchmarks_without_running_them", run: tests_check_benchmarks))!
+    out.push(kit.Test(name: "invalid_option_values_are_named", run: invalid_option_values_are_named))!
+    out.push(kit.Test(name: "lsp_rejects_unknown_options", run: lsp_rejects_unknown_options))!
+    out.push(kit.Test(name: "a_test_that_runs_too_long_fails_natively", run: a_test_that_runs_too_long_fails))!
+    out.push(kit.Test(name: "the_timeout_must_be_a_positive_number", run: the_timeout_must_be_positive))!
+}
+
+/// A file of a package: its path below the package's root, and its text.
+File :: struct {
+    path: string
+    text: string
+}
+
+/// A package below the test directory: its root, an absolute path.
+Package :: struct {
+    root: string
+}
+
+/// Makes the package `name`, with the manifest and `files`, in a fresh directory.
+package :: fn(t: ^kit.T, name: string, files: []const File) -> kit.Fail!Package needs kit.Run {
+    root := try t.scratch(kit.join("testing_cli", name))
+    try t.write(kit.join(root, "gamma.toml"), str.format("[package]\nname = \"{}\"\nversion = \"0.1.0\"\n", name)!)
+    for f in files { try t.write(kit.join(root, f.path), f.text) }
+    return Package(root: root)
+}
+
+/// Runs `gamma args… <root>` with a cache directory inside the package.
+gamma :: fn(t: ^kit.T, p: Package, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
+    c := t.gamma(args)
+    c.arg(p.root)
+    c.set("GAMMA_CACHE_DIR", kit.join(p.root, "cache"))
+    return t.run(c)
+}
+
+/// Runs `gamma args…` and expects the usage error status 2; returns what it printed to stderr.
+usage_error :: fn(t: ^kit.T, args: []const string) -> kit.Fail!string needs kit.Run {
+    out := try t.run(t.gamma(args))
+    try t.check(out.code() is 2, "`gamma {}` ended with {}, not 2:\n{}", str.join(args, " ")!, out.status, out.err)
+    return out.err
+}
+
+/// The number of the first line of `text` that contains `needle`, counting from 1.
+line_of :: fn(t: ^kit.T, text, needle: string) -> kit.Fail!usize needs Alloc {
+    n: usize = 0
+    for line in str.lines(text) {
+        n += 1
+        if str.contains(line, needle) { return n }
+    }
+    return !t.fail("no line of the test program contains {}", kit.quote(needle))
+}
+
+/// Fails the test unless the tracefile `info` has the line `DA:<line>,<count>`.
+expect_hits :: fn(t: ^kit.T, info: string, line: usize, count: u32) -> kit.Fail!() needs kit.Run {
+    return t.expect_contains("the tracefile", info, str.format("DA:{},{}\n", line, count)!)
+}
+
+MAIN :: `
+sum :: fn(n: u64) -> u64 {
+    s: u64 = 0
+    i: u64 = 0
+    while i < n {
+        s += i
+        i += 1
+    }
+    return s
+}
+
+never_called :: fn() -> i32 {
+    return 3
+}
+
+main :: fn() needs Out {
+    print("{}\n", sum(10))
+}
+
+test "sum" {
+    print("hello from the test\n")
+    expect_eq(sum(10), 45)
+}
+
+bench "sum of a thousand" {
+    _ = @black_box(sum(@black_box(1000)))
+}
+`
+
+UTIL :: `
+double :: fn(x: i32) -> i32 => x * 2
+
+test "double" {
+    expect_eq(double(4), 8)
+}
+
+bench "double" {
+    _ = @black_box(double(@black_box(21)))
+}
+`
+
+/// The files of the package most tests use: a main module that imports nothing, a module
+/// `util` that nothing imports, and a file in `target` that is not Gamma.
+package_files :: fn() -> [3]File => [_]File(
+    File(path: "main.gm", text: MAIN),
+    File(path: "util/util.gm", text: UTIL),
+    File(path: "target/ignored.gm", text: "this is not Gamma"),
+)
+
+only_imported_modules_run_without_all :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "imported", package_files())
+    out := try gamma(t, p, [_]string("test"))
+    try t.check(out.success(), "{}{}", out.out, out.err)
+    try t.expect_text("stdout", "test \"sum\" ... ok\n1 passed, 0 failed\n", out.out)
+    return ()
+}
+
+all_runs_every_module :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "all", package_files())
+    out := try gamma(t, p, [_]string("test", "--all"))
+    try t.check(out.success(), "{}{}", out.out, out.err)
+    try t.expect_text("stdout", "test \"sum\" ... ok\ntest \"double\" in util ... ok\n2 passed, 0 failed\n", out.out)
+    return ()
+}
+
+show_output :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "show_output", package_files())
+    out := try gamma(t, p, [_]string("test", "--show-output"))
+    try t.expect_text("stdout", "test \"sum\" ... ok\n    hello from the test\n1 passed, 0 failed\n", out.out)
+    return ()
+}
+
+time_is_opt_in :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "time", package_files())
+    out := try gamma(t, p, [_]string("test", "--time"))
+    try t.check(out.success(), "{}{}", out.out, out.err)
+    lines := kit.split_lines(out.out)
+    try t.check(lines.len > 0, "no output")
+    first := lines[0]
+    try t.check(str.strip_prefix(first, "test \"sum\" ... ok (") is not null, "{}", first)
+    last := lines[lines.len - 1]
+    try t.check(str.strip_prefix(last, "1 passed, 0 failed (finished in ") is not null, "{}", last)
+    return ()
+}
+
+parallel_runs_print_in_order :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    main := list(u8)
+    main.extend("main :: fn() {}\n")!
+    for i in 0..12 {
+        main.write("test \"t{:02}\" {{\n    expect_eq({}, {})\n}}\n", i, i, if i is 7 { 8 } else { i })!
+    }
+    p := try package(t, "jobs", [_]File(File(path: "main.gm", text: main.items)))
+    sequential := try gamma(t, p, [_]string("test"))
+    parallel := try gamma(t, p, [_]string("test", "--jobs=4"))
+    try t.check(not sequential.success(), "the failing test passed:\n{}", sequential.out)
+    try t.check(not parallel.success(), "the failing test passed:\n{}", parallel.out)
+    try t.expect_text("the output of the parallel run", sequential.out, parallel.out)
+    try t.check(str.strip_prefix(parallel.out, "test \"t00\" ... ok\ntest \"t01\" ... ok\n") is not null, "{}", parallel.out)
+    try t.check(str.strip_suffix(parallel.out, "11 passed, 1 failed\n") is not null, "{}", parallel.out)
+    return ()
+}
+
+coverage_counts_lines :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "coverage", package_files())
+    lcov := kit.join(p.root, "lcov.info")
+    out := try gamma(t, p, [_]string("test", "--all", str.format("--coverage={}", lcov)!))
+    try t.check(out.success(), "{}{}", out.out, out.err)
+    // `never_called`, and `main`, which no test calls, are the lines left out.
+    try t.expect_contains("stdout", out.out, "main.gm")
+    try t.expect_contains("stdout", out.out, "util/util.gm")
+    try t.expect_contains("stdout", out.out, "total")
+    info := try t.read(lcov)
+    try t.check(str.contains(info, "SF:") and str.contains(info, "end_of_record"), "{}", info)
+    try expect_hits(t, info, try line_of(t, MAIN, "return 3"), 0)
+    try expect_hits(t, info, try line_of(t, MAIN, "s: u64 = 0"), 1)
+    // Without a test run, nothing in the standard library counts.
+    try t.check(not str.contains(info, "prelude"), "{}", info)
+    return ()
+}
+
+unwritable_tracefile :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "coverage_unwritable", package_files())
+    flag := str.format("--coverage={}", kit.join(kit.join(p.root, "missing-dir"), "lcov.info"))!
+    out := try gamma(t, p, [_]string("test", "--all", flag))
+    try t.check(not out.success(), "{}", out.out)
+    try t.expect_contains("stderr", out.err, "cannot write")
+    return ()
+}
+
+COVERAGE_C :: `count :: fn(n: u64) -> u64 {
+    s: u64 = 0
+    for i in 0..n {
+        s += i
+    }
+    return s
+}
+
+never_called :: fn() -> u64 {
+    return 3
+}
+
+// The bodies of function literals and of loops over iterators are counted too.
+letters :: fn() -> u64 {
+    s: u64 = 0
+    for b in bytes("abc") {
+        s += u64(b)
+    }
+    add_one := fn(x: u64) -> u64 {
+        return x + 1
+    }
+    return add_one(s)
+}
+
+main :: fn() {}
+
+test "small" {
+    expect_eq(count(3), 3)
+}
+
+test "large" {
+    expect_eq(count(5), 10)
+}
+
+test "traps" {
+    x := count(2)
+    assert(x is 0, "x is {}")
+}
+
+test "literals" {
+    in_test := fn(x: u64) -> u64 {
+        return x * 2
+    }
+    expect_eq(in_test(letters()), 590)
+}
+`
+
+coverage_on_the_c_back_end :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    // Several tests add up, and a test that traps still counts the lines it ran.
+    main := COVERAGE_C
+    p := try package(t, "coverage_c", [_]File(File(path: "main.gm", text: main)))
+    lcov_path := kit.join(p.root, "lcov.info")
+    out := try gamma(t, p, [_]string("test", "--backend=c", "-j", "2", str.format("--coverage={}", lcov_path)!))
+    try t.check(not out.success(), "{}", out.out)
+    try t.expect_contains("stdout", out.out, "3 passed, 1 failed\n")
+    info := try t.read(lcov_path)
+    try expect_hits(t, info, try line_of(t, main, "s: u64 = 0"), 3)
+    try expect_hits(t, info, try line_of(t, main, "return 3"), 0)
+    try expect_hits(t, info, try line_of(t, main, "s += u64(b)"), 3)
+    try expect_hits(t, info, try line_of(t, main, "return x + 1"), 1)
+    unreached := str.format("DA:{},", try line_of(t, main, "return x * 2"))!
+    try t.check(not str.contains(info, unreached), "{} is in the tracefile:\n{}", unreached, info)
+    // Tests run only through C.
+    interp := try gamma(t, p, [_]string("test", "--backend=interp", "--coverage"))
+    try t.check(not interp.success(), "{}", interp.out)
+    try t.expect_contains("stderr", interp.err, "`--backend=interp` is supported by `run` only")
+    return ()
+}
+
+duplicate_names_are_per_kind :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    main := "main :: fn() {}\ntest \"a\" {}\nbench \"a\" {}\nbench \"a\" {}\n"
+    p := try package(t, "duplicate", [_]File(File(path: "main.gm", text: main)))
+    out := try gamma(t, p, [_]string("test"))
+    try t.check(not out.success(), "{}", out.out)
+    try t.expect_contains("stderr", out.err, "the benchmark \"a\" is declared twice")
+    try t.check(not str.contains(out.err, "the test \"a\""), "{}", out.err)
+    return ()
+}
+
+benchmarks_report_the_time_per_run :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    p := try package(t, "bench", package_files())
+    out := try gamma(t, p, [_]string("bench", "--all"))
+    try t.check(out.success(), "{}{}", out.out, out.err)
+    lines := kit.split_lines(out.out)
+    try t.check(lines.len is 3, "{}", out.out)
+    try t.check(str.strip_prefix(lines[0], "bench \"sum of a thousand\" ... ") is not null, "{}", lines[0])
+    try t.check(str.contains(lines[0], "/run (± ") and str.contains(lines[0], "20 samples of "), "{}", lines[0])
+    try t.check(str.strip_prefix(lines[1], "bench \"double\" in util ... ") is not null, "{}", lines[1])
+    try t.expect_text("the last line", "2 run, 0 failed", lines[2])
+    filtered := try gamma(t, p, [_]string("bench", "--all", "--filter=double"))
+    try t.check(str.strip_suffix(filtered.out, "1 run, 0 failed, 1 filtered out\n") is not null, "{}", filtered.out)
+    return ()
+}
+
+benchmarks_run_natively :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    p := try package(t, "bench_native", package_files())
+    out := try gamma(t, p, [_]string("bench"))
+    try t.check(out.success(), "{}{}", out.out, out.err)
+    try t.check(str.strip_prefix(out.out, "bench \"sum of a thousand\" ... ") is not null, "{}", out.out)
+    try t.check(str.strip_suffix(out.out, "1 run, 0 failed\n") is not null, "{}", out.out)
+    return ()
+}
+
+a_failing_benchmark_fails :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    main := "main :: fn() {}\nbench \"broken\" {\n    expect(false)\n}\n"
+    p := try package(t, "bench_fails", [_]File(File(path: "main.gm", text: main)))
+    out := try gamma(t, p, [_]string("bench"))
+    try t.check(not out.success(), "{}", out.out)
+    try t.expect_contains("stdout", out.out, "bench \"broken\" ... FAILED")
+    try t.check(str.strip_suffix(out.out, "0 run, 1 failed\n") is not null, "{}", out.out)
+    return ()
+}
+
+tests_check_benchmarks :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    main := "main :: fn() {}\nbench \"typo\" {\n    no_such_function()\n}\n"
+    p := try package(t, "bench_checked", [_]File(File(path: "main.gm", text: main)))
+    out := try gamma(t, p, [_]string("test"))
+    try t.check(not out.success(), "{}", out.out)
+    try t.expect_contains("stderr", out.err, "no_such_function")
+    return ()
+}
+
+invalid_option_values_are_named :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    err := try usage_error(t, [_]string("run", "--mode=bogus", "x.gm"))
+    try t.expect_contains("stderr", err, "invalid value `bogus` for --mode (expected debug, checked, safe or fast)")
+    err = try usage_error(t, [_]string("run", "--backend=bogus", "x.gm"))
+    try t.expect_contains("stderr", err, "invalid value `bogus` for --backend")
+    err = try usage_error(t, [_]string("check", "--diag-format=bogus", "x.gm"))
+    try t.expect_contains("stderr", err, "invalid value `bogus` for --diag-format")
+    return ()
+}
+
+lsp_rejects_unknown_options :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    err := try usage_error(t, [_]string("lsp", "--bogus"))
+    try t.expect_contains("stderr", err, "unknown option `--bogus`")
+    return ()
+}
+
+HANGS :: `
+main :: fn() {}
+
+test "quick" {
+    expect_eq(1 + 1, 2)
+}
+
+test "never ends" {
+    n: u64 = 0
+    while @black_box(true) {
+        n += 1
+    }
+}
+`
+
+/// Fails the test unless `out` is the result of a run in which `quick` passed and
+/// `never ends` timed out, and which took less than a minute (`elapsed_ms`).
+check_timeout :: fn(t: ^kit.T, out: kit.Output, elapsed_ms: u64) -> kit.Fail!() needs kit.Run {
+    try t.check(not out.success(), "{}", out.out)
+    try t.expect_contains("stdout", out.out, "test \"quick\" ... ok")
+    try t.expect_contains("stdout", out.out, "test \"never ends\" ... FAILED")
+    try t.expect_contains("stdout", out.out, "timed out after 1 s")
+    try t.check(str.strip_suffix(out.out, "1 passed, 1 failed\n") is not null, "{}", out.out)
+    try t.check(elapsed_ms < 60_000, "the run took {} ms", elapsed_ms)
+    return ()
+}
+
+a_test_that_runs_too_long_fails :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    p := try package(t, "timeout_native", [_]File(File(path: "main.gm", text: HANGS)))
+    started := Clock.now()
+    out := try gamma(t, p, [_]string("test", "--backend=c", "--timeout=1"))
+    try check_timeout(t, out, Clock.now().since(started).to_ms())
+    // Parallel workers have a limit each.
+    started = Clock.now()
+    out = try gamma(t, p, [_]string("test", "--backend=c", "--timeout=1", "--jobs=2"))
+    try check_timeout(t, out, Clock.now().since(started).to_ms())
+    return ()
+}
+
+the_timeout_must_be_positive :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    for bad in ("--timeout=0", "--timeout=soon", "--timeout=-1") {
+        err := try usage_error(t, [_]string("test", bad, "x.gm"))
+        try t.expect_contains("stderr", err, "`--timeout` needs a positive number of seconds")
+    }
+    return ()
+}

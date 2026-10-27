@@ -1,0 +1,58 @@
+//! Tests of the harness's own kit: input and output of commands, the time limit, and the
+//! messages of failed checks.
+
+kit :: import "../kit"
+str :: import "std/str"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "input_and_output_are_streamed", run: input_and_output))!
+        out.push(kit.Test(name: "the_time_limit_kills_what_the_program_started", run: time_limit))!
+    }
+    out.push(kit.Test(name: "diff_shows_the_changed_lines", run: diff_lines))!
+}
+
+input_and_output :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    // More than a pipe holds, in and out at once.
+    big := list(u8)
+    for i in 0..100_000 { big.write("line {}\n", i)! }
+    c := kit.command("sh")
+    c.args([_]string("-c", "cat; echo done >&2"))
+    c.stdin(big.items)
+    c.set("GM_HARNESS_A", "1")
+    out := try t.run_ok(c)
+    try t.check(out.out.len is big.items.len and out.out is big.items, "cat gave back {} of {} bytes", out.out.len, big.items.len)
+    try t.expect_text("stderr", "done\n", out.err)
+    // The environment is ours with the changes.
+    e := kit.command("sh")
+    e.args([_]string("-c", "echo \"$GM_HARNESS_A|${PATH:+path}|${HOME-unset}\""))
+    e.set("GM_HARNESS_A", "2")
+    e.unset("HOME")
+    got := try t.run_ok(e)
+    try t.expect_text("the environment", "2|path|unset\n", got.out)
+    return ()
+}
+
+time_limit :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    cfg := t.cfg^
+    cfg.timeout_s = 1
+    inner := kit.new_test(&cfg, "inner", "")
+    c := kit.command("sh")
+    // The grandchild keeps the output open: only killing the group ends the read.
+    c.args([_]string("-c", "echo started; sleep 60 & sleep 60; wait"))
+    start := Clock.now()
+    _ = inner.run(c)
+    took := Clock.now().since(start).to_ms()
+    try t.check(inner.failed, "a program over the time limit did not fail the test")
+    try t.expect_contains("the report", string(inner.report.items), "did not finish within 1 s")
+    try t.expect_contains("the report", string(inner.report.items), "started")
+    try t.check(took < 20_000, "killing took {} ms", took)
+    return ()
+}
+
+diff_lines :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    d := kit.diff("a\nb\nc\nd\n", "a\nb\nx\nd\n")
+    try t.expect_text("the diff", "@@ line 1 @@\n  a\n  b\n- c\n+ x\n  d\n", d)
+    try t.expect_text("a quoted string", "\"a\\n\\\"\\xff\"", kit.quote("a\n\"\xff"))
+    return ()
+}

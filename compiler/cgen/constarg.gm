@@ -1,5 +1,4 @@
-// Large arguments that are compile-time constants (Appendix D.5; mirrors
-// `src/cgen/constarg.rs`).
+// Large arguments that are compile-time constants (Appendix D.5).
 //
 // A large argument (`CTypes.by_ref`) crosses a call as an address. When it is built from
 // literals only, such as the `SourceLocation` that `@caller_location()` fills in, the

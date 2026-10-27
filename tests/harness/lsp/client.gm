@@ -1,0 +1,512 @@
+// A language client for the tests: it starts `gamma lsp`, speaks framed JSON-RPC to it over
+// pipes, and reads its answers as `std/json` values. Requests wait for their response,
+// keeping the messages that arrive meanwhile; a server that stops answering is killed when
+// the time limit of the tests is up.
+
+json :: import "std/json"
+kit :: import "../kit"
+process :: import "std/process"
+str :: import "std/str"
+
+/// A running server and what is known of its output.
+Lsp :: struct {
+    t: ^kit.T
+    child: process.Child
+    /// The bytes read from the server's standard output; those before `consumed` are
+    /// messages that were taken.
+    inbuf: List(u8)
+    consumed: usize = 0
+    /// What the server wrote to its standard error.
+    err: List(u8)
+    /// Messages that arrived while waiting for something else.
+    queued: List(json.Value)
+    next_id: i64 = 1
+    /// Both output streams of the server have ended.
+    ended: bool = false
+    /// The server was waited for.
+    stopped: bool = false
+    err_logged: bool = false
+    watch: kit.Watchdog
+}
+
+/// Starts the server with extra environment settings (`NAME=value`).
+start_with :: fn(t: ^kit.T, env: []const string) -> kit.Fail!Lsp needs kit.Run {
+    c := t.gamma([_]string("lsp"))
+    for e in env { c.env.push(e)! }
+    opts := process.SpawnOptions(stdin: .Pipe, stdout: .Pipe, stderr: .Pipe, env: c.env.items, group: true)
+    child := Proc.spawn(c.argv.items, opts) else e => return !t.fail("cannot run `{}`: {}", c.show(), e)
+    w := try t.watchdog(child)
+    return Lsp(t: t, child: child, inbuf: list(u8), err: list(u8), queued: list(json.Value), watch: w)
+}
+
+/// Starts the server.
+start :: fn(t: ^kit.T) -> kit.Fail!Lsp needs kit.Run => start_with(t, empty_slice(string))
+
+// ---------------------------------------------------------------------------------
+// Ending the server
+// ---------------------------------------------------------------------------------
+
+/// Stops the watchdog and waits for the server, which must have ended or been killed.
+reap :: fn(l: ^Lsp) -> kit.Fail!process.ExitStatus needs Alloc + Proc + Sys {
+    l.stopped = true
+    fired := l.watch.disarm()
+    status := Proc.wait(l.child) else e => return !l.t.fail("cannot wait for the server: {}", e)
+    if fired {
+        return !l.t.fail("the server did not finish within {} s (GAMMA_TEST_TIMEOUT)", l.t.cfg.timeout_s)
+    }
+    return status
+}
+
+/// Reads the server's output to its end and waits for it to exit. Closing its input first
+/// is up to the test.
+finish :: fn(l: ^Lsp) -> kit.Fail!process.ExitStatus needs kit.Run {
+    while true {
+        more := try l.fill()
+        if not more { break }
+    }
+    return l.reap()
+}
+
+/// Ends the server if the test has not (kill, wait) and shows what it wrote to its standard
+/// error if the test failed. Call it with `defer` right after starting.
+stop :: fn(l: ^Lsp) needs Alloc + Proc + Sys {
+    if not l.stopped {
+        _ = Proc.kill(l.child)
+        _ = l.reap()
+    }
+    if l.t.failed and not l.err_logged and l.err.items.len > 0 {
+        l.err_logged = true
+        l.t.log("the server's standard error:\n{}", string(l.err.items))
+    }
+}
+
+/// Closes the server's input.
+close_input :: fn(l: ^Lsp) needs Proc { Proc.close_in(l.child) }
+
+/// Ends the session: shutdown, exit, and the server's exit code, which must be 0.
+shutdown :: fn(l: ^Lsp) -> kit.Fail!() needs kit.Run {
+    r := try l.result("shutdown", "null")
+    try expect_null(l.t, "the result of shutdown", r)
+    try l.notify("exit", "null")
+    status := try l.finish()
+    try l.t.check(status is .Exited(0), "the server ended with {}", status)
+    return ()
+}
+
+// ---------------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------------
+
+/// Writes bytes to the server's input.
+write_all :: fn(l: ^Lsp, bytes: []const u8) -> kit.Fail!() needs kit.Run {
+    rest := bytes
+    while rest.len > 0 {
+        n := Proc.write(l.child, rest) else e => return !l.t.fail("cannot write to the server: {}", e)
+        rest = rest[n..]
+    }
+    return ()
+}
+
+/// Sends a message with the given body, framed.
+send_raw :: fn(l: ^Lsp, body: string) -> kit.Fail!() needs kit.Run {
+    msg := str.format("Content-Length: {}\r\n\r\n{}", body.len, body)!
+    return l.write_all(msg)
+}
+
+/// Sends a notification; `params` is JSON text.
+notify :: fn(l: ^Lsp, method, params: string) -> kit.Fail!() needs kit.Run {
+    return l.send_raw(str.format("{{\"jsonrpc\":\"2.0\",\"method\":{},\"params\":{}}}", jq(method), params)!)
+}
+
+/// Reads more output of the server into the buffers: false once all of it has ended.
+fill :: fn(l: ^Lsp) -> kit.Fail!bool needs kit.Run {
+    if l.ended { return false }
+    buf: [16384]u8 = ---
+    chunk := Proc.read(l.child, buf[..]) else e => return !l.t.fail("cannot read from the server: {}", e)
+    got := chunk else {
+        l.ended = true
+        return false
+    }
+    dst := if got.from is .Stdout { &l.inbuf } else { &l.err }
+    dst.extend(buf[0..got.len])!
+    return true
+}
+
+/// The value of the `Content-Length` header in `header`.
+content_length :: fn(l: ^Lsp, header: string) -> kit.Fail!usize needs kit.Run {
+    for line in str.lines(header) {
+        if v := str.strip_prefix(line, "Content-Length: ") {
+            return str.parse_int(usize, str.trim(v)) else return !l.t.fail("bad Content-Length: {}", kit.quote(header))
+        }
+    }
+    return !l.t.fail("no Content-Length header in {}", kit.quote(header))
+}
+
+/// The next message of the server, straight from its output, or null if the output has
+/// ended.
+read_message :: fn(l: ^Lsp) -> kit.Fail!?json.Value needs kit.Run {
+    while true {
+        rest := string(l.inbuf.items[l.consumed..])
+        if header_end := str.find(rest, "\r\n\r\n") {
+            len := try l.content_length(rest[0..header_end])
+            start := header_end + 4
+            if rest.len >= start + len {
+                body := rest[start..start + len]
+                l.consumed += start + len
+                doc := json.parse(body) else e => return !l.t.fail("the server sent invalid JSON ({}): {}", e, kit.quote(body))
+                return doc.root
+            }
+        }
+        more := try l.fill()
+        if not more { return null }
+    }
+}
+
+/// Like `read_message`, and fails the test if the server's output has ended.
+next_message :: fn(l: ^Lsp) -> kit.Fail!json.Value needs kit.Run {
+    m := try l.read_message()
+    return m else return !l.t.fail("the server's output ended while a message was expected")
+}
+
+/// True if `m` is the response to the request `id`.
+is_response :: fn(m: json.Value, id: i64) -> bool => field(m, "method") is .Null and num(field(m, "id")) is id
+
+/// Sends a request and returns its response (with `result` or `error`); messages that arrive
+/// meanwhile are kept in `queued`.
+request :: fn(l: ^Lsp, method, params: string) -> kit.Fail!json.Value needs kit.Run {
+    id := l.next_id
+    l.next_id += 1
+    try l.send_raw(str.format("{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":{},\"params\":{}}}", id, jq(method), params)!)
+    while true {
+        m := try l.next_message()
+        if is_response(m, id) { return m }
+        l.queued.push(m)!
+    }
+}
+
+/// Sends a request that must succeed and returns its result.
+result :: fn(l: ^Lsp, method, params: string) -> kit.Fail!json.Value needs kit.Run {
+    r := try l.request(method, params)
+    if field(r, "error") is not .Null { return !l.t.fail("{} failed: {}", method, show(r)) }
+    return field(r, "result")
+}
+
+/// Sends the `initialize` request and the `initialized` notification; returns the result.
+initialize :: fn(l: ^Lsp) -> kit.Fail!json.Value needs kit.Run {
+    r := try l.result("initialize", "{\"processId\":null,\"rootUri\":null,\"capabilities\":{}}")
+    try l.notify("initialized", "{}")
+    return r
+}
+
+/// Like `initialize`, for a client that supports dynamic registration of file watchers.
+initialize_watching :: fn(l: ^Lsp) -> kit.Fail!() needs kit.Run {
+    caps := "{\"workspace\":{\"didChangeWatchedFiles\":{\"dynamicRegistration\":true}}}"
+    _ = try l.result("initialize", str.format("{{\"processId\":null,\"rootUri\":null,\"capabilities\":{}}}", caps)!)
+    return l.notify("initialized", "{}")
+}
+
+/// Opens the document `path` with `text` as its buffer.
+open :: fn(l: ^Lsp, path, text: string) -> kit.Fail!() needs kit.Run {
+    params := str.format(
+        "{{\"textDocument\":{{\"uri\":{},\"languageId\":\"gamma\",\"version\":1,\"text\":{}}}}}",
+        jq(uri(path)),
+        jq(text),
+    )!
+    return l.notify("textDocument/didOpen", params)
+}
+
+/// Opens the document `path` with the contents of the file as its buffer.
+open_file :: fn(l: ^Lsp, path: string) -> kit.Fail!() needs kit.Run {
+    text := try l.t.read(path)
+    return l.open(path, text)
+}
+
+/// Replaces the buffer of `path` with `text`, as `version`.
+change :: fn(l: ^Lsp, path: string, version: i64, text: string) -> kit.Fail!() needs kit.Run {
+    params := str.format(
+        "{{\"textDocument\":{{\"uri\":{},\"version\":{}}},\"contentChanges\":[{{\"text\":{}}}]}}",
+        jq(uri(path)),
+        version,
+        jq(text),
+    )!
+    return l.notify("textDocument/didChange", params)
+}
+
+/// Closes the document `path`.
+close :: fn(l: ^Lsp, path: string) -> kit.Fail!() needs kit.Run {
+    return l.notify("textDocument/didClose", str.format("{{\"textDocument\":{{\"uri\":{}}}}}", jq(uri(path)))!)
+}
+
+/// True if `m` publishes diagnostics for `path` at `version`.
+publishes :: fn(m: json.Value, path: string, version: i64) -> bool needs Alloc {
+    return text_is(field(m, "method"), "textDocument/publishDiagnostics") and
+        text_is(dig(m, "params.uri"), uri(path)) and
+        num(dig(m, "params.version")) is version
+}
+
+/// The next diagnostics published for `path` at `version`.
+diagnostics :: fn(l: ^Lsp, path: string, version: i64) -> kit.Fail![]json.Value needs kit.Run {
+    for i in 0..l.queued.items.len {
+        if publishes(l.queued.items[i], path, version) {
+            m := l.queued.remove(i)
+            return try as_array(l.t, dig(m, "params.diagnostics"))
+        }
+    }
+    while true {
+        m := try l.next_message()
+        if publishes(m, path, version) { return try as_array(l.t, dig(m, "params.diagnostics")) }
+        l.queued.push(m)!
+    }
+}
+
+/// True if `m` publishes diagnostics for `path` without a version (those that clear a
+/// closed document's).
+publishes_unversioned :: fn(m: json.Value, path: string) -> bool needs Alloc {
+    return text_is(field(m, "method"), "textDocument/publishDiagnostics") and
+        text_is(dig(m, "params.uri"), uri(path)) and
+        field(field(m, "params"), "version") is .Null
+}
+
+/// The next request that the server makes to the client.
+server_request :: fn(l: ^Lsp) -> kit.Fail!json.Value needs kit.Run {
+    for i in 0..l.queued.items.len {
+        m := l.queued.items[i]
+        if field(m, "id") is not .Null and field(m, "method") is not .Null { return l.queued.remove(i) }
+    }
+    while true {
+        m := try l.next_message()
+        if field(m, "id") is not .Null and field(m, "method") is not .Null { return m }
+        l.queued.push(m)!
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Paths and positions
+// ---------------------------------------------------------------------------------
+
+/// The `file:` URI of `p`, an absolute path.
+uri :: fn(p: string) -> string needs Alloc {
+    when target.os is .Windows {
+        return str.format("file:///{}", str.replace_alloc(p, "\\", "/")!)!
+    } else {
+        return str.format("file://{}", p)!
+    }
+}
+
+/// The path of a `file:` URI, as `uri` writes them.
+uri_path :: fn(u: string) -> string {
+    rest := str.strip_prefix(u, "file://") else return u
+    when target.os is .Windows {
+        i: usize = 0
+        while i < rest.len and rest[i] is '/' { i += 1 }
+        return rest[i..]
+    } else {
+        return rest
+    }
+}
+
+/// The parameters of a request at a position: `{textDocument, position}`.
+at :: fn(path: string, line, character: u64) -> string needs Alloc => at_with(path, line, character, "")
+
+/// Like `at`, with `extra` (JSON members, such as `"newName":"x"`) added to the parameters.
+at_with :: fn(path: string, line, character: u64, extra: string) -> string needs Alloc {
+    sep := if extra.len > 0 { "," } else { "" }
+    return str.format(
+        "{{\"textDocument\":{{\"uri\":{}}},\"position\":{{\"line\":{},\"character\":{}}}{}{}}}",
+        jq(uri(path)),
+        line,
+        character,
+        sep,
+        extra,
+    )!
+}
+
+/// The parameters of a request about a whole document.
+of_document :: fn(path: string) -> string needs Alloc {
+    return str.format("{{\"textDocument\":{{\"uri\":{}}}}}", jq(uri(path)))!
+}
+
+/// `s` as a JSON string.
+jq :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    w := json.writer(&out)
+    w.write_string(s)!
+    return out.items
+}
+
+// ---------------------------------------------------------------------------------
+// Looking into JSON values
+// ---------------------------------------------------------------------------------
+
+/// The member `key` of the object `v`, or null if `v` has none.
+field :: fn(v: json.Value, key: string) -> json.Value => v.get(key) else json.Value.Null
+
+/// The element `i` of the array `v`, or null.
+item :: fn(v: json.Value, i: usize) -> json.Value => v.at(i) else json.Value.Null
+
+/// The value at `path` in `v`: member names and array indexes separated by dots
+/// (`range.start.line`, `items.0.label`), null if there is none.
+dig :: fn(v: json.Value, path: string) -> json.Value {
+    cur := v
+    for key in str.split(path, ".") {
+        if n := str.parse_int(usize, key) {
+            cur = item(cur, n)
+        } else {
+            cur = field(cur, key)
+        }
+    }
+    return cur
+}
+
+/// The integer `v` is, if it is one.
+num :: fn(v: json.Value) -> ?i64 {
+    if .Number(n) := v { return json.to_i64(n) }
+    return null
+}
+
+/// True if `v` is the string `s`.
+text_is :: fn(v: json.Value, s: string) -> bool {
+    if .String(x) := v { return x is s }
+    return false
+}
+
+/// The string `v` is, or "" if it is not one.
+string_of :: fn(v: json.Value) -> string {
+    if .String(x) := v { return x }
+    return ""
+}
+
+/// The elements of the array `v`, or none.
+elements :: fn(v: json.Value) -> []json.Value {
+    if .Array(xs) := v { return xs }
+    return empty_slice(json.Value)
+}
+
+/// The elements of the array `v`; fails the test if it is not one.
+as_array :: fn(t: ^kit.T, v: json.Value) -> kit.Fail![]json.Value needs Alloc {
+    if .Array(xs) := v { return xs }
+    return !t.fail("not an array: {}", show(v))
+}
+
+/// The string `v`; fails the test if it is not one.
+as_text :: fn(t: ^kit.T, v: json.Value) -> kit.Fail!string needs Alloc {
+    if .String(x) := v { return x }
+    return !t.fail("not a string: {}", show(v))
+}
+
+/// The integer `v`; fails the test if it is not one.
+as_int :: fn(t: ^kit.T, v: json.Value) -> kit.Fail!i64 needs Alloc {
+    return num(v) else return !t.fail("not an integer: {}", show(v))
+}
+
+/// The first element of the array `xs` whose member `key` is a string containing `needle`;
+/// fails the test with `what` if there is none.
+find_containing :: fn(t: ^kit.T, xs: []json.Value, key, needle, what: string) -> kit.Fail!json.Value needs Alloc {
+    for x in xs {
+        if str.contains(string_of(field(x, key)), needle) { return x }
+    }
+    return !t.fail("expected {} (a `{}` containing {}) in {}", what, key, kit.quote(needle), show(json.Value.Array(xs)))
+}
+
+/// True if some element of `xs` has a member `key` that is a string containing `needle`.
+any_containing :: fn(xs: []json.Value, key, needle: string) -> bool {
+    for x in xs {
+        if str.contains(string_of(field(x, key)), needle) { return true }
+    }
+    return false
+}
+
+/// The JSON text of `v`.
+show :: fn(v: json.Value) -> string needs Alloc {
+    out := list(u8)
+    json.write(&out, v) else return "<unwritable>"
+    return out.items
+}
+
+/// True if `a` and `b` are the same JSON value (the order of an object's members does not
+/// matter).
+same :: fn(a, b: json.Value) -> bool {
+    match a {
+        .Null => return b is .Null
+        .Bool(x) => {
+            if .Bool(y) := b { return x is y }
+            return false
+        }
+        .Number(x) => {
+            if .Number(y) := b {
+                if i := json.to_i64(x) {
+                    if j := json.to_i64(y) { return i is j }
+                }
+                return x.text is y.text
+            }
+            return false
+        }
+        .String(x) => return text_is(b, x)
+        .Array(xs) => {
+            if .Array(ys) := b {
+                if xs.len is not ys.len { return false }
+                for i in 0..xs.len {
+                    if not same(xs[i], ys[i]) { return false }
+                }
+                return true
+            }
+            return false
+        }
+        .Object(xs) => {
+            if .Object(ys) := b {
+                if xs.len is not ys.len { return false }
+                for m in xs {
+                    other := b.get(m.key) else return false
+                    if not same(m.value, other) { return false }
+                }
+                return true
+            }
+            return false
+        }
+    }
+}
+
+/// Fails the test unless `actual` is the JSON value written in `expected`.
+expect_json :: fn(t: ^kit.T, what: string, actual: json.Value, expected: string) -> kit.Fail!() needs Alloc {
+    doc := json.parse(expected) else e => return !t.fail("the expected JSON of {} is invalid ({}): {}", what, e, expected)
+    if same(actual, doc.root) { return () }
+    return !t.fail("{} is not as expected\nexpected: {}\nactual:   {}", what, expected, show(actual))
+}
+
+/// Fails the test unless `actual` is null.
+expect_null :: fn(t: ^kit.T, what: string, actual: json.Value) -> kit.Fail!() needs Alloc {
+    return t.check(actual is .Null, "{} should be null, but is {}", what, show(actual))
+}
+
+/// Fails the test unless `actual` is not null.
+expect_not_null :: fn(t: ^kit.T, what: string, actual: json.Value) -> kit.Fail!() needs Alloc {
+    return t.check(actual is not .Null, "{} should not be null", what)
+}
+
+/// Fails the test unless `actual` is the string `expected`.
+expect_string :: fn(t: ^kit.T, what: string, actual: json.Value, expected: string) -> kit.Fail!() needs Alloc {
+    return t.check(text_is(actual, expected), "{} should be {}, but is {}", what, kit.quote(expected), show(actual))
+}
+
+/// Fails the test unless `actual` is the integer `expected`.
+expect_int :: fn(t: ^kit.T, what: string, actual: json.Value, expected: i64) -> kit.Fail!() needs Alloc {
+    return t.check(num(actual) is expected, "{} should be {}, but is {}", what, expected, show(actual))
+}
+
+/// Fails the test unless `actual` is the boolean `expected`.
+expect_bool :: fn(t: ^kit.T, what: string, actual: json.Value, expected: bool) -> kit.Fail!() needs Alloc {
+    ok := if .Bool(b) := actual { b is expected } else { false }
+    return t.check(ok, "{} should be {}, but is {}", what, expected, show(actual))
+}
+
+/// Fails the test unless `actual` is the position `{line, character}`.
+expect_position :: fn(t: ^kit.T, what: string, actual: json.Value, line, character: i64) -> kit.Fail!() needs Alloc {
+    ok := num(field(actual, "line")) is line and num(field(actual, "character")) is character
+    return t.check(ok, "{} should be line {}, character {}, but is {}", what, line, character, show(actual))
+}
+
+/// Fails the test unless the array `xs` has `n` elements.
+expect_len :: fn(t: ^kit.T, what: string, xs: json.Value, n: usize) -> kit.Fail!() needs Alloc {
+    items := try as_array(t, xs)
+    return t.check(items.len is n, "{} should have {} elements, but is {}", what, n, show(xs))
+}

@@ -1,4 +1,4 @@
-// The state of generating one C function (`FnGen` in `src/cgen/func.rs`).
+// The state of generating one C function.
 
 /// Who can observe the destination of `expr_into` while the value is evaluated.
 pub Observed :: union {
@@ -28,8 +28,8 @@ pub Defer :: struct {
     pub body: ^Expr
 }
 
-/// A scope of the function being generated (`Scope` in `src/cgen/func.rs`, whose
-/// variants are told apart by `kind` here).
+/// A scope of the function being generated (its variants are told
+/// apart by `kind`).
 pub Scope :: struct {
     pub kind: ScopeKind
     pub id: u32

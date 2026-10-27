@@ -1,0 +1,176 @@
+// The types of generated programs, and the state of the generator.
+
+rng :: import "../rng"
+str :: import "std/str"
+
+/// An integer type.
+It :: struct {
+    bits: u32
+    signed: bool
+}
+
+INTS: [8]It : [_]It(
+    It(bits: 8, signed: true),
+    It(bits: 16, signed: true),
+    It(bits: 32, signed: true),
+    It(bits: 64, signed: true),
+    It(bits: 8, signed: false),
+    It(bits: 16, signed: false),
+    It(bits: 32, signed: false),
+    It(bits: 64, signed: false),
+)
+
+/// 128-bit integers, which are picked less often.
+WIDE: [2]It : [_]It(It(bits: 128, signed: true), It(bits: 128, signed: false))
+
+U8: It : It(bits: 8, signed: false)
+U32: It : It(bits: 32, signed: false)
+
+/// The name of the type in Gamma source.
+it_name :: fn(t: It) -> string {
+    if t.signed {
+        return match t.bits {
+            8 => "i8"
+            16 => "i16"
+            32 => "i32"
+            64 => "i64"
+            _ => "i128"
+        }
+    }
+    return match t.bits {
+        8 => "u8"
+        16 => "u16"
+        32 => "u32"
+        64 => "u64"
+        _ => "u128"
+    }
+}
+
+/// The largest magnitude of a non-negative value.
+max_mag :: fn(t: It) -> u128 {
+    if t.signed { return (u128(1) << (t.bits - 1)) - 1 }
+    if t.bits is 128 { return @max_value(u128) }
+    return (u128(1) << t.bits) - 1
+}
+
+/// Whether `T(x)` is a lossless conversion from `src`.
+widens_from :: fn(t: It, src: It) -> bool =>
+    (t.signed is src.signed and src.bits <= t.bits) or (not src.signed and t.signed and src.bits < t.bits)
+
+/// The type of a generated expression.
+Ty :: union {
+    Int: It
+    Bool
+    /// The struct `P`.
+    Pt
+    Arr: (it: It, n: usize)
+    Opt: It
+    /// `Er!T`.
+    Res: It
+    /// The union `Sh`.
+    Sh
+    /// A tuple of two integers.
+    Tup: (a: It, b: It)
+    /// `f32` or `f64`, by width.
+    Flt: u32
+    Str
+    /// The generic struct `Pair(T)`.
+    Gp: It
+}
+
+ty_name :: fn(t: Ty) -> string needs Alloc => match t {
+    .Int(i) => it_name(i)
+    .Bool => "bool"
+    .Pt => "P"
+    .Arr(i, n) => str.format("[{}]{}", n, it_name(i))!
+    .Opt(i) => str.format("?{}", it_name(i))!
+    .Res(i) => str.format("Er!{}", it_name(i))!
+    .Sh => "Sh"
+    .Tup(a, b) => str.format("({}, {})", it_name(a), it_name(b))!
+    .Flt(b) => str.format("f{}", b)!
+    .Str => "string"
+    .Gp(i) => str.format("Pair({})", it_name(i))!
+}
+
+/// A variable in scope.
+Var :: struct {
+    name: string
+    ty: Ty
+    /// Whether generated code may assign to it (loop counters and bindings may not).
+    assignable: bool
+}
+
+/// A generated function.
+Func :: struct {
+    name: string
+    params: []const Ty
+    ret: Ty
+    /// Estimated work of one call.
+    cost: u64
+    /// The first parameter is a recursion depth.
+    recursive: bool
+    /// Performs (so needs) the effect `Ev` / `Co`.
+    ev: bool
+    co: bool
+}
+
+COST_LIMIT: u64 : 6000
+
+/// The optional language areas a program uses.
+Features :: struct {
+    generics: bool
+    strings: bool
+    effects: bool
+    fibers: bool
+}
+
+/// Whether any area that adds expressions and statements to ordinary code is on.
+feat_any :: fn(f: Features) -> bool => f.generics or f.strings or f.effects
+
+/// The generator: the random source, what the program declares and the state of the
+/// function being generated.
+Gen :: struct {
+    rng: rng.Rng
+    funcs: List(Func)
+    /// Percentage of arithmetic operations that are the plain, trapping kind.
+    trap_bias: usize
+    p_fields: [3]It
+    sh_circle: It
+    sh_rect: [2]It
+    er_bad: It
+    vars: List(Var)
+    counter: usize = 0
+    cost: u64 = 0
+    mult: u64 = 1
+    loops: usize = 0
+    block_depth: usize = 0
+    /// The return type of the function, or null in `main`.
+    ret: ?Ty = null
+    /// Functions `0..callable` may be called.
+    callable: usize = 0
+    feat: Features
+    /// Operand types of the effects `Ev` and `Co`.
+    ev_t: [3]It
+    co_t: [2]It
+    /// Whether the code being generated may perform `Ev` / `Co` operations.
+    ev: bool = false
+    co: bool = false
+    in_main: bool = false
+    /// Element type of the channels of the fiber blocks.
+    fib_it: It
+}
+
+SPACES :: "                                                                                                                                                                                                                                                                "
+
+/// `n` levels of indentation.
+indent :: fn(n: usize) -> string => SPACES[0..4 * n]
+
+/// Joins `parts` with `sep`.
+join :: fn(parts: []const string, sep: string) -> string needs Alloc => str.join(parts, sep)!
+
+format :: str.format
+
+/// The smaller of `a` and `b`.
+min_of :: fn(a, b: usize) -> usize => if a < b { a } else { b }
+
+FIELDS: [3]string : [_]string("a", "b", "c")

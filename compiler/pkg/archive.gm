@@ -1,7 +1,6 @@
 // Source archives as dependencies: download with the `curl` command-line tool (which
 // honours proxy settings and the system's certificate authorities, as `git` does for git
-// dependencies) and unpack `.tar.gz` / `.tgz` files into the package store with `tar`
-// (mirrors `src/pkg/archive.rs`).
+// dependencies) and unpack `.tar.gz` / `.tgz` files into the package store with `tar`.
 
 /// The largest archive file downloaded, and the most entries one may unpack to: a package
 /// is source code, and a compressed archive must not fill the disk.

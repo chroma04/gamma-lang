@@ -1,5 +1,4 @@
-// Optionals and results as values (§10): `x else d`, `try x`, `!e`, `x?` and `x!`
-// (mirrors the corresponding functions of `src/sema/expr.rs`).
+// Optionals and results as values (§10): `x else d`, `try x`, `!e`, `x?` and `x!`.
 
 /// `x?`: the value of a present optional.
 opt_unwrap :: fn(cx: ^FnCx, inner: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {

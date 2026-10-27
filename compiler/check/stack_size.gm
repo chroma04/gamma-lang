@@ -1,5 +1,4 @@
-// `@stack_size(f)` (§14.8): a compile-time bound on the stack a call of `f` needs (mirrors
-// `src/sema/stack_size.rs`).
+// `@stack_size(f)` (§14.8): a compile-time bound on the stack a call of `f` needs.
 //
 // The bound is the costliest chain of frames from `f` down, each frame costed by
 // `frame_cost`, plus what the run time needs on a fiber stack. The analysis follows the

@@ -1,6 +1,5 @@
 //! A walk over the syntax tree of the analyzed module that resolves names the way the
-//! checker does, recording a reference for each use and the visible locals at each point
-//! (mirrors `src/sema/ide/walk.rs`).
+//! checker does, recording a reference for each use and the visible locals at each point.
 //!
 //! The checker's own tables answer the questions that need types (which function a call
 //! resolves to, the type of a receiver); this walk answers the rest from the declarations

@@ -1,6 +1,6 @@
 // The operations of compile-time evaluation: integer and float arithmetic, coercions,
-// conversions, builtins and comparisons, trapping as the reference implementation's VM
-// does (`src/interp/fast.rs`, `src/interp/num.rs`, `src/interp/vm/exec.rs`).
+// conversions, builtins and comparisons, trapping as the program would at run
+// time.
 
 /// The signedness and width of integer type `t` (a `bool` is one unsigned bit).
 int_info :: fn(m: ^const Machine, t: Ty) -> (signed: bool, bits: u32) => match m.s.tys.kind(t) {

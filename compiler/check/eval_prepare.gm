@@ -1,5 +1,4 @@
-// Making sure that what a compile-time evaluation runs is checked (mirrors
-// `prepare_for_eval` and `ensure_body` in `src/sema/consteval.rs`): the bodies of the
+// Making sure that what a compile-time evaluation runs is checked: the bodies of the
 // functions it can reach are checked now if they are still pending, and the instances
 // of generic functions it calls are produced.
 

@@ -1,5 +1,5 @@
 // Function literals and nested functions (§11.6, §11.8), checked as nested frames of the
-// enclosing function (mirrors `src/sema/fnlit.rs`).
+// enclosing function.
 
 /// A function literal `fn(…) … => e` or `fn(…) { … }`, or the function of a binding
 /// `name :: fn …` when `name` is given.

@@ -1,6 +1,6 @@
 // Iterators (§13): `for` over a call of an iterator, whose body becomes the clause of a
 // handler for the iterator's `Yield(T)`, and the operations of generic effects such as
-// `yield(x)` (mirrors `for_iterator` and `perform_op` in `src/sema/effects.rs`).
+// `yield(x)`.
 
 /// `for p in f(args) { B }` where `f` is an iterator (§13.2).
 for_iterator :: fn(cx: ^FnCx, f: ^const ast.ForExpr) -> ^Expr needs Load {

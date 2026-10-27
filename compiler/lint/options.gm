@@ -1,4 +1,4 @@
-// The options of `gammac lint` (mirrors `LintOptions` in `src/linting.rs`).
+// The options of `gammac lint`.
 
 /// A level given on the command line for a rule, or for `all`.
 pub Setting :: struct {

@@ -1,6 +1,4 @@
-// Format-preserving edits of `gamma.toml` for `gamma add` and `gamma remove` (mirrors
-// `src/pkg/edit.rs`, which edits a TOML document tree; this works on the lines of the text,
-// which keeps the same comments and layout for the manifests the commands handle).
+// Format-preserving edits of `gamma.toml` for `gamma add` and `gamma remove`.
 
 arena :: import "std/arena"
 load :: import "../load"

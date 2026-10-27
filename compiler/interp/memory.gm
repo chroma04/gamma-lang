@@ -1,4 +1,4 @@
-// The interpreter's flat virtual address space (mirrors `src/interp/memory.rs`).
+// The interpreter's flat virtual address space.
 //
 // Every allocation receives a fresh, never reused address range from a bump counter, so
 // the allocations are sorted by base address by construction and an address is found

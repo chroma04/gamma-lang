@@ -1,0 +1,72 @@
+//! Tests of the package manager: git and archive dependencies, the lockfile, `gamma fetch`,
+//! `update`, `add`, `remove`, `new`, `init` and `cache`. The repositories and archives are
+//! local (`file:` URLs), made in a temporary directory, so the tests need `git` (and
+//! `curl` for archives) but not the network. Each test has a directory and a cache
+//! directory of its own, below the harness's test directory (see `tests/harness/kit`);
+//! the tests of `new` and `init` work in a directory outside any git work tree.
+//!
+//! The module is split into files that share one namespace: `world.gm` (the directory of
+//! a test, repositories, the lock file), `git_deps.gm`, `archives.gm`, `scaffold.gm` and
+//! `cache.gm` (the tests).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "add_fetch_and_run_a_git_dependency", run: add_fetch_and_run_a_git_dependency))!
+    out.push(kit.Test(name: "packages_are_found_from_a_subdirectory_and_by_file", run: packages_are_found_from_a_subdirectory_and_by_file))!
+    out.push(kit.Test(name: "version_requirements_and_update", run: version_requirements_and_update))!
+    out.push(kit.Test(name: "tags_branches_revs_and_the_default_branch", run: tags_branches_revs_and_the_default_branch))!
+    out.push(kit.Test(name: "the_lockfile_is_checked_with_locked", run: the_lockfile_is_checked_with_locked))!
+    out.push(kit.Test(name: "offline_uses_only_what_is_locked_and_fetched", run: offline_uses_only_what_is_locked_and_fetched))!
+    out.push(kit.Test(name: "transitive_dependencies_are_locked_in_the_root", run: transitive_dependencies_are_locked_in_the_root))!
+    out.push(kit.Test(name: "two_requirements_on_one_repository_share_a_revision", run: two_requirements_on_one_repository_share_a_revision))!
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "different_refs_of_one_repository_conflict", run: different_refs_of_one_repository_conflict))!
+    }
+    out.push(kit.Test(name: "dependency_cycles_are_errors", run: dependency_cycles_are_errors))!
+    out.push(kit.Test(name: "a_git_package_cannot_reach_outside_its_checkout", run: a_git_package_cannot_reach_outside_its_checkout))!
+    out.push(kit.Test(name: "a_package_in_a_subdirectory", run: a_package_in_a_subdirectory))!
+    out.push(kit.Test(name: "a_changed_checkout_fails_its_checksum", run: a_changed_checkout_fails_its_checksum))!
+    out.push(kit.Test(name: "remove_drops_the_dependency_and_its_lock_entry", run: remove_drops_the_dependency_and_its_lock_entry))!
+    out.push(kit.Test(
+        name: "add_chooses_a_version_or_the_default_branch_and_accepts_paths",
+        run: add_chooses_a_version_or_the_default_branch_and_accepts_paths,
+    ))!
+    out.push(kit.Test(name: "manifest_errors_name_the_line", run: manifest_errors_name_the_line))!
+    out.push(kit.Test(name: "path_dependencies_work_as_before", run: path_dependencies_work_as_before))!
+    out.push(kit.Test(
+        name: "a_git_dependency_needs_the_package_manager_when_used_as_a_library",
+        run: a_git_dependency_needs_the_package_manager_when_used_as_a_library,
+    ))!
+    out.push(kit.Test(name: "new_creates_a_working_package", run: new_creates_a_working_package))!
+    out.push(kit.Test(name: "init_never_overwrites", run: init_never_overwrites))!
+    out.push(kit.Test(
+        name: "init_does_not_claim_to_create_a_package_over_an_existing_manifest",
+        run: init_does_not_claim_to_create_a_package_over_an_existing_manifest,
+    ))!
+    out.push(kit.Test(name: "names_that_cannot_be_imported_are_rejected", run: names_that_cannot_be_imported_are_rejected))!
+    out.push(kit.Test(name: "a_directory_name_that_is_changed_is_reported", run: a_directory_name_that_is_changed_is_reported))!
+    out.push(kit.Test(name: "init_leaves_an_enclosing_repository_alone", run: init_leaves_an_enclosing_repository_alone))!
+    out.push(kit.Test(name: "usage_of_the_package_commands", run: usage_of_the_package_commands))!
+    out.push(kit.Test(name: "the_language_server_sees_fetched_git_dependencies", run: the_language_server_sees_fetched_git_dependencies))!
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "checkouts_are_read_only_and_removable", run: checkouts_are_read_only_and_removable))!
+    }
+    out.push(kit.Test(name: "cache_dir_and_clean", run: cache_dir_and_clean))!
+    when target.os is not .Windows {
+        out.push(kit.Test(name: "symbolic_links_are_checksummed_and_must_stay_inside", run: symbolic_links_are_checksummed_and_must_stay_inside))!
+    }
+    out.push(kit.Test(
+        name: "archive_dependencies_are_downloaded_locked_and_verified",
+        run: archive_dependencies_are_downloaded_locked_and_verified,
+    ))!
+    out.push(kit.Test(name: "archive_subdirectories_add_and_bad_archives", run: archive_subdirectories_add_and_bad_archives))!
+    out.push(kit.Test(name: "a_hand_edited_lock_is_noticed", run: a_hand_edited_lock_is_noticed))!
+    out.push(kit.Test(name: "a_git_url_cannot_be_an_option", run: a_git_url_cannot_be_an_option))!
+    out.push(kit.Test(name: "an_empty_lock_is_a_missing_lock", run: an_empty_lock_is_a_missing_lock))!
+    out.push(kit.Test(
+        name: "path_dependencies_are_found_when_the_input_is_a_file",
+        run: path_dependencies_are_found_when_the_input_is_a_file,
+    ))!
+    out.push(kit.Test(name: "the_tests_of_a_dependency_run_with_package", run: the_tests_of_a_dependency_run_with_package))!
+}

@@ -1,0 +1,129 @@
+//! End-to-end tests of `gamma lsp`: the real executable, driven over its standard input and
+//! output with framed JSON-RPC messages.
+//!
+//! The tests are interactive: a test sends a request, reads the response (keeping the
+//! notifications that arrive before it), and decides what to send next, with the client in
+//! `client.gm`. Responses are read as `std/json` values. The scratch directories of the tests
+//! are absolute and free of symbolic links, as the server compares canonical paths.
+//!
+//! The tests are in several files of this module: the lifecycle of a session
+//! (`lifecycle.gm`), diagnostics and quick fixes (`diagnostics.gm`), documents that are not
+//! saved (`buffers.gm`), hover, definition, completion and formatting (`navigation.gm`),
+//! the core library (`core.gm`), references (`references.gm`), rename (`rename.gm`) and
+//! watched files (`watching.gm`).
+
+kit :: import "../kit"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
+    out.push(kit.Test(name: "lifecycle_and_capabilities", run: lifecycle_and_capabilities))!
+    out.push(kit.Test(name: "utf8_is_negotiated_when_offered", run: utf8_is_negotiated_when_offered))!
+    out.push(kit.Test(name: "exit_without_shutdown_is_a_failure", run: exit_without_shutdown_is_a_failure))!
+    out.push(kit.Test(name: "end_of_input_ends_the_server", run: end_of_input_ends_the_server))!
+    out.push(kit.Test(
+        name: "unknown_requests_are_answered_and_unknown_notifications_ignored",
+        run: unknown_requests_are_answered_and_unknown_notifications_ignored,
+    ))!
+    out.push(kit.Test(name: "invalid_json_gets_a_parse_error", run: invalid_json_gets_a_parse_error))!
+    out.push(kit.Test(
+        name: "requests_before_initialize_are_refused",
+        run: requests_before_initialize_are_refused,
+    ))!
+    out.push(kit.Test(
+        name: "a_huge_content_length_does_not_crash_the_server",
+        run: a_huge_content_length_does_not_crash_the_server,
+    ))!
+    out.push(kit.Test(name: "diagnostics_follow_the_buffer", run: diagnostics_follow_the_buffer))!
+    out.push(kit.Test(
+        name: "diagnostics_carry_related_locations",
+        run: diagnostics_carry_related_locations,
+    ))!
+    out.push(kit.Test(name: "fixes_are_offered_as_quick_fixes", run: fixes_are_offered_as_quick_fixes))!
+    out.push(kit.Test(name: "syntax_errors_are_reported", run: syntax_errors_are_reported))!
+    out.push(kit.Test(
+        name: "names_after_a_syntax_error_are_still_resolved",
+        run: names_after_a_syntax_error_are_still_resolved,
+    ))!
+    out.push(kit.Test(
+        name: "an_unclosed_paren_does_not_hide_later_declarations",
+        run: an_unclosed_paren_does_not_hide_later_declarations,
+    ))!
+    out.push(kit.Test(
+        name: "closing_a_document_clears_its_diagnostics",
+        run: closing_a_document_clears_its_diagnostics,
+    ))!
+    out.push(kit.Test(
+        name: "closing_the_last_document_clears_diagnostics_of_its_siblings",
+        run: closing_the_last_document_clears_diagnostics_of_its_siblings,
+    ))!
+    out.push(kit.Test(
+        name: "an_unsaved_import_target_is_seen_by_its_importer",
+        run: an_unsaved_import_target_is_seen_by_its_importer,
+    ))!
+    out.push(kit.Test(
+        name: "requests_on_unopened_documents_return_null",
+        run: requests_on_unopened_documents_return_null,
+    ))!
+    out.push(kit.Test(name: "only_gamma_files_are_analyzed", run: only_gamma_files_are_analyzed))!
+    out.push(kit.Test(
+        name: "a_new_unsaved_file_belongs_to_its_directorys_module",
+        run: a_new_unsaved_file_belongs_to_its_directorys_module,
+    ))!
+    out.push(kit.Test(
+        name: "a_file_in_a_new_directory_is_analyzed",
+        run: a_file_in_a_new_directory_is_analyzed,
+    ))!
+    out.push(kit.Test(
+        name: "hover_definition_references_and_symbols",
+        run: hover_definition_references_and_symbols,
+    ))!
+    out.push(kit.Test(name: "definition_in_an_imported_module", run: definition_in_an_imported_module))!
+    out.push(kit.Test(name: "definition_in_the_standard_library", run: definition_in_the_standard_library))!
+    out.push(kit.Test(name: "completion_of_names_and_members", run: completion_of_names_and_members))!
+    out.push(kit.Test(name: "completion_of_module_members", run: completion_of_module_members))!
+    out.push(kit.Test(name: "signature_help_marks_the_argument", run: signature_help_marks_the_argument))!
+    out.push(kit.Test(
+        name: "formatting_returns_a_whole_document_edit",
+        run: formatting_returns_a_whole_document_edit,
+    ))!
+    out.push(kit.Test(
+        name: "out_of_range_positions_clamp_instead_of_wrapping",
+        run: out_of_range_positions_clamp_instead_of_wrapping,
+    ))!
+    out.push(kit.Test(
+        name: "definition_in_the_core_library_points_into_the_source_tree",
+        run: definition_in_the_core_library_points_into_the_source_tree,
+    ))!
+    out.push(kit.Test(
+        name: "definition_in_the_core_library_without_a_source_tree_uses_a_read_only_copy",
+        run: definition_in_the_core_library_without_a_source_tree_uses_a_read_only_copy,
+    ))!
+    out.push(kit.Test(name: "references_cross_module_boundaries", run: references_cross_module_boundaries))!
+    out.push(kit.Test(
+        name: "references_include_path_dependencies",
+        run: references_include_path_dependencies,
+    ))!
+    out.push(kit.Test(name: "rename_is_advertised", run: rename_is_advertised))!
+    out.push(kit.Test(
+        name: "rename_a_function_in_every_module_that_uses_it",
+        run: rename_a_function_in_every_module_that_uses_it,
+    ))!
+    out.push(kit.Test(
+        name: "rename_types_fields_variants_and_constants",
+        run: rename_types_fields_variants_and_constants,
+    ))!
+    out.push(kit.Test(name: "rename_locals_and_parameters", run: rename_locals_and_parameters))!
+    out.push(kit.Test(name: "rename_rejects_bad_names", run: rename_rejects_bad_names))!
+    out.push(kit.Test(name: "rename_rejects_clashes", run: rename_rejects_clashes))!
+    out.push(kit.Test(
+        name: "rename_refuses_names_outside_the_package",
+        run: rename_refuses_names_outside_the_package,
+    ))!
+    out.push(kit.Test(
+        name: "file_watchers_are_registered_and_changes_on_disk_refresh_importers",
+        run: file_watchers_are_registered_and_changes_on_disk_refresh_importers,
+    ))!
+    out.push(kit.Test(
+        name: "no_watchers_are_registered_without_client_support",
+        run: no_watchers_are_registered_without_client_support,
+    ))!
+}

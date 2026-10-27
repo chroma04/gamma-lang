@@ -1,6 +1,6 @@
 // The rules that need only the syntax tree, and the facts about the tree that the other
 // rules need: what kind of binding declares each name, the names written in `when`
-// branches, and the `#allow` attributes (mirrors `src/lint/syntax.rs`).
+// branches, and the `#allow` attributes.
 
 /// What the walk of one file found.
 pub FileFacts :: struct {

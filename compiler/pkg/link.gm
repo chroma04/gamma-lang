@@ -1,7 +1,6 @@
 // What a native build links besides the generated program: the C compiler's command and
 // flags (`CC`, `CFLAGS`, `LDFLAGS` and the manifest's `cflags` and `ldflags`), the packages'
-// C sources compiled to objects, and their libraries (mirrors the parts of `src/toolchain.rs`
-// and `src/cgen/csrc.rs` that gammac needs).
+// C sources compiled to objects, and their libraries.
 
 fs :: import "std/fs"
 arena :: import "std/arena"

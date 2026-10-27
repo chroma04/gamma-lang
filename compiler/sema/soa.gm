@@ -1,4 +1,4 @@
-// Structure-of-arrays types `#soa [N]S` and `#soa []S` (§5.6.4) (mirrors `src/sema/soa.rs`).
+// Structure-of-arrays types `#soa [N]S` and `#soa []S` (§5.6.4).
 //
 // Each `#soa` type is a struct made by the compiler: for an array, one field `[N]F` for
 // each field `f: F` of `S`; for a slice, one many-pointer `[^]F` for each field and then

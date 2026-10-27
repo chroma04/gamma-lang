@@ -3076,7 +3076,9 @@ Stream :: union { Stdout, Stderr }
 SpawnOptions :: struct {
     pub stdin, stdout, stderr: Stdio = .Inherit
     pub dir: ?string = null                     // the child's working directory; null: ours
-    pub env: ?[]const string = null             // "NAME=value" entries replacing the environment; null: ours
+    pub env: []const string = empty_slice(string)   // changes to the environment, in order: "NAME=value" sets, "NAME" removes
+    pub clear_env: bool = false                 // the changes apply to an empty environment instead of ours
+    pub group: bool = false                     // the child leads a process group of its own (a job object on Windows)
 }
 Chunk :: struct { pub from: Stream; pub len: usize }
 ExitStatus :: union { Exited: u32, Signaled: i32 }   // its exit code, or the signal that ended it
@@ -3089,6 +3091,8 @@ Proc :: effect {
     kill: fn(c: Child) -> IoError!()                             // ends it at once; it must still be waited for
 }
 ```
+
+`Proc.kill` ends a child started with `group` together with every process it started that is still in its group, such as a program that a build tool runs; otherwise it ends the child alone.
 
 `Proc.read` waits on the child's piped output streams together, so a child that fills one while the parent reads the other cannot deadlock them. A program that never imports `std/process` and never performs `Proc` pays nothing for it.
 

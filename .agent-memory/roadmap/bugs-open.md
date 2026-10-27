@@ -45,3 +45,6 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
 
 ## Dogfood papercuts (s18 examples; unscheduled)
 - Struct-typed errors get no `!.Variant` shorthand / lifting (by design; friction).
+- s49: after a syntax error inside an `if` condition (`if needs := f() {`), `gamma check`
+  also reports "gamma cannot check this kind of expression yet" for the `if` (checker meets
+  the parser's error node). Should stay silent after a parse error.

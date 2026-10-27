@@ -34,4 +34,7 @@ The seed needs refreshing only when the compiler's sources stop building with it
 is, when they start using something the seed's compiler does not have.
 `tools/refresh-seed.sh [GAMMA]` regenerates it from the committed sources (see
 `docs/contributing.md`). The chain of seeds goes back to the last compiler built by the
-Rust implementation; see "Retiring the reference" in `docs/self-hosting.md`.
+Rust reference implementation, whose final state is the git tag `rust-reference-final`; see
+"Retiring the reference" in `docs/self-hosting.md`, which also describes the fixed point the
+build reaches. The tests of the build from the seed are the `selfhost` suite
+(`tools/test.sh selfhost/`) and `bootstrap/verify.sh`.

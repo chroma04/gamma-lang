@@ -1,5 +1,4 @@
-//! Describing declarations for editors: hover text, outline kinds and completion items
-//! (mirrors `src/sema/ide/info.rs`).
+//! Describing declarations for editors: hover text, outline kinds and completion items.
 
 ast :: import "../ast"
 sema :: import "../sema"
@@ -34,8 +33,7 @@ pub is_core_file :: fn(s: ^const sema.Sema, span: Span) -> bool {
     return s.l.sm.file(span.file).path.starts_with("<")
 }
 
-/// The lines of `text` as Rust's `str::lines` splits them: at line feeds, dropping a
-/// carriage return before one.
+/// The lines of `text`, split at line feeds, dropping a carriage return before one.
 lines_of :: fn(text: string) -> List(string) needs Alloc {
     out := list(string)
     start: usize = 0

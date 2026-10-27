@@ -1,5 +1,4 @@
-// Statement coverage for `gammac test --coverage` (mirrors `src/coverage.rs` and the
-// coverage report of `src/testing.rs`).
+// Statement coverage for `gammac test --coverage`.
 //
 // `instrument` rewrites the checked program: in front of every statement of the functions
 // of the package under test (and in front of the value of each block) it inserts a
@@ -180,8 +179,7 @@ Hit :: struct {
     hits: u32
 }
 
-/// Whether path `a` sorts before path `b`, name by name (as the reference's `BTreeMap` of
-/// paths orders them).
+/// Whether path `a` sorts before path `b`, name by name.
 path_less :: fn(a, b: string) -> bool needs Alloc {
     x := list(string)
     for c in str.split(a, "/") { x.push(c)! }

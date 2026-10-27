@@ -1,4 +1,4 @@
-// The checked program as the back end sees it (the parts of `Program` in `src/tir.rs`
+// The checked program as the back end sees it (the parts of `tir.Program`
 // that it reads): every function with its signature and body, the ambient effects and
 // the operations that suspend.
 
@@ -19,7 +19,7 @@ pub Hints :: struct {
     pub cold: bool = false
 }
 
-/// A function: its signature and checked body (`FnDef` in `src/tir.rs`).
+/// A function: its signature and checked body (`tir.FnDef`).
 pub Func :: struct {
     pub name: string
     pub span: source.Span

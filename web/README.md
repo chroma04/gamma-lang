@@ -14,7 +14,6 @@ playground that runs Gamma programs in the browser. It is built by
 | `gen/` | The generator, written in Gamma: Markdown → HTML, highlighting with Gamma's own lexer, sidebars, link rewriting and a link check |
 | `play/` | The playground's interpreter built from `compiler/`, as a WASI command for the browser (`gamma-play.wasm`), and the script that builds it |
 | `check.mjs` | Runs every menu example in the WebAssembly interpreter with Node |
-| `sitegen/`, `playground/` | The generator and the playground interpreter of the retired Rust implementation: no longer built or tested, kept until that code is deleted |
 
 ## Building it locally
 

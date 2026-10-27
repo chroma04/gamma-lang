@@ -1,5 +1,5 @@
 // Exhaustiveness and reachability of `match` arms (§8.6), by the usefulness algorithm
-// over deconstructed patterns (mirrors `src/sema/exhaust.rs`). Integer patterns are
+// over deconstructed patterns. Integer patterns are
 // handled by splitting the type's range at the boundaries of the ranges in a column.
 
 Int :: bigint.Int
@@ -482,8 +482,8 @@ show_witness :: fn(s: ^Sema, d: ^const DPat) -> string needs Alloc {
     }
 }
 
-/// A string literal as the reference implementation shows it in messages (Rust's
-/// `Debug` for strings).
+/// A string literal as messages show it: in double quotes, with `"` and `\` escaped, `\n`,
+/// `\r`, `\t` and `\0` as such, and other control characters as `\u{..}`.
 debug_string :: fn(b: []const u8) -> string needs Alloc {
     out := list(u8)
     out.push('"')!
