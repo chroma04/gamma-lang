@@ -1095,6 +1095,7 @@ spec_literal :: fn(s: tir.FmtSpec) -> string needs Alloc {
         .Oct => 3
         .Bin => 4
         .Exp => 5
+        .Quote => 6
     }
     precision: i64 = -1
     if p := s.precision { precision = i64(p) }

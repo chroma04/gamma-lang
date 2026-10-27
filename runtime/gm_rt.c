@@ -1633,7 +1633,7 @@ GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const 
         }
     } else {
         number = false;
-        gm_format(&body, t, v, true);
+        gm_format(&body, t, v, s->kind != 6);
         gm_spec_pad(out, "", 0, body.data, body.len, s, false);
         gm_buf_free(&body);
         return;

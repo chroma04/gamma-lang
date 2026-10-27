@@ -6,6 +6,9 @@
 Template :: struct {
     pieces: []const []const u8
     specs: []const tir.FmtSpec
+    /// The value each placeholder writes, when the placeholders are numbered (`{1}`);
+    /// empty when none is.
+    indices: []const usize
 }
 
 /// What is wrong with a template, and the byte offset of a lone `}` that should be
@@ -31,6 +34,8 @@ parse_template :: fn(t: []const u8) -> Parsed needs Alloc {
     pieces := list([]const u8)
     specs := list(tir.FmtSpec)
     cur := list(u8)
+    indices := list(usize)
+    plain: usize = 0
     i: usize = 0
     while i < t.len {
         c := t[i]
@@ -38,33 +43,59 @@ parse_template :: fn(t: []const u8) -> Parsed needs Alloc {
         if (c is '{' and next is '{') or (c is '}' and next is '}') {
             cur.push(c)!
             i += 2
-        } else if c is '{' and next is '}' {
-            pieces.push(cur.items)!
-            cur = list(u8)
-            specs.push(tir.default_spec())!
-            i += 2
-        } else if c is '{' and next is ':' {
-            close: ?usize = null
-            j := i + 2
-            while j < t.len {
-                if t[j] is '}' {
-                    close = j
-                    break
-                }
-                j += 1
-            }
-            end := close else return .Bad(TemplateError(message: "a `{:` placeholder has no closing `}`", stray: null))
-            r := parse_spec(t[i + 2..end])
-            spec := match r {
-                .Ok(sp) => sp
-                .Bad(m) => return .Bad(TemplateError(message: m, stray: null))
-            }
-            pieces.push(cur.items)!
-            cur = list(u8)
-            specs.push(spec)!
-            i = end + 1
         } else if c is '{' {
-            return .Bad(TemplateError(message: "use `{}` or `{:spec}` for an argument and `{{` for a literal brace", stray: null))
+            // `{`, an optional value number, then `}` or `:spec}`.
+            j := i + 1
+            idx: ?usize = null
+            if j < t.len and t[j] in '0'..='9' {
+                start := j
+                n: usize = 0
+                while j < t.len and t[j] in '0'..='9' {
+                    n = n * 10 + usize(t[j] - '0')
+                    if n > 65536 { n = 65537 }
+                    j += 1
+                }
+                if t[start] is '0' and j - start > 1 {
+                    return .Bad(TemplateError(message: "a placeholder's value number has no leading zeros", stray: null))
+                }
+                if n > 65536 {
+                    return .Bad(TemplateError(message: "a placeholder's value number is at most 65536", stray: null))
+                }
+                idx = n
+            }
+            if j < t.len and t[j] is '}' {
+                pieces.push(cur.items)!
+                cur = list(u8)
+                specs.push(tir.default_spec())!
+                i = j + 1
+            } else if j < t.len and t[j] is ':' {
+                close: ?usize = null
+                k := j + 1
+                while k < t.len {
+                    if t[k] is '}' {
+                        close = k
+                        break
+                    }
+                    k += 1
+                }
+                end := close else return .Bad(TemplateError(message: "a `{:` placeholder has no closing `}`", stray: null))
+                r := parse_spec(t[j + 1..end])
+                spec := match r {
+                    .Ok(sp) => sp
+                    .Bad(m) => return .Bad(TemplateError(message: m, stray: null))
+                }
+                pieces.push(cur.items)!
+                cur = list(u8)
+                specs.push(spec)!
+                i = end + 1
+            } else {
+                return .Bad(TemplateError(message: "use `{}` or `{:spec}` for an argument, `{0}` or `{0:spec}` for the value with that number, and `{{` for a literal brace", stray: null))
+            }
+            if v := idx {
+                indices.push(v)!
+            } else {
+                plain += 1
+            }
         } else if c is '}' {
             return .Bad(TemplateError(message: "use `}}` for a literal `}`", stray: i))
         } else {
@@ -73,7 +104,10 @@ parse_template :: fn(t: []const u8) -> Parsed needs Alloc {
         }
     }
     pieces.push(cur.items)!
-    return .Ok(Template(pieces: pieces.items, specs: specs.items))
+    if plain > 0 and indices.items.len > 0 {
+        return .Bad(TemplateError(message: "a template numbers all its placeholders or none: `{}` and `{0}` cannot be mixed", stray: null))
+    }
+    return .Ok(Template(pieces: pieces.items, specs: specs.items, indices: indices.items))
 }
 
 align_of :: fn(c: u8) -> ?tir.FmtAlign => match c {
@@ -155,6 +189,7 @@ parse_spec :: fn(s: []const u8) -> SpecResult needs Alloc {
             'o' => .Oct
             'b' => .Bin
             'e' => .Exp
+            'q' => .Quote
             _ => return .Bad(str.format("unknown format spec `{{:{}}}`", s)!)
         }
         i += 1
@@ -168,20 +203,24 @@ parse_spec :: fn(s: []const u8) -> SpecResult needs Alloc {
     based := spec.kind is .Hex or spec.kind is .HexUpper or spec.kind is .Oct or spec.kind is .Bin
     if spec.alt and not based { return .Bad("`#` (the base prefix) goes with `x`, `X`, `o` or `b`") }
     if spec.precision is not null and spec.kind is not .Display and spec.kind is not .Exp {
-        return .Bad("a precision goes with floats, not with an integer base")
+        return .Bad("a precision goes with floats, not with an integer base or `q`")
     }
     return .Ok(spec)
 }
 
 /// Why a placeholder's spec does not suit an argument of type `t` (§21.6.1): a base needs
-/// an integer, a precision or `e` a float, and `+` or `0` a number.
+/// an integer, a precision or `e` a float, `q` a string, and `+` or `0` a number.
 check_spec :: fn(s: ^Sema, spec: ^const tir.FmtSpec, t: Ty) -> ?string needs Alloc {
     tys := &s.tys
     int := tys.is_integer(t)
     float := tys.kind(t) is .Float(_)
     based := spec.kind is .Hex or spec.kind is .HexUpper or spec.kind is .Oct or spec.kind is .Bin
+    bytes := false
+    if .Slice(_, elem) := tys.kind(t) { bytes = tys.kind(elem) is .Int(false, 8) }
     want: ?string = null
-    if based and not int {
+    if spec.kind is .Quote and not bytes {
+        want = "a `string` or byte slice, for `q`"
+    } else if based and not int {
         want = "an integer, for a base"
     } else if spec.kind is .Exp and not float {
         want = "a float, for `e`"
@@ -283,6 +322,29 @@ TemplateArgs :: struct {
     stmts: []tir.Stmt
 }
 
+/// What is wrong with giving `m` values to a template whose placeholders are numbered
+/// (`{1}`): a number past the last value, or a value no placeholder writes.
+numbered_error :: fn(t: Template, m: usize) -> ?string needs Alloc {
+    given := if m is 0 {
+        "no values are given"
+    } else if m is 1 {
+        "1 value is given"
+    } else {
+        str.format("{} values are given", m)!
+    }
+    for ix in t.indices {
+        if ix >= m { return str.format("the template writes value {}, but {}", ix, given)! }
+    }
+    for k in 0..m {
+        used := false
+        for ix in t.indices {
+            if ix is k { used = true }
+        }
+        if not used { return str.format("value {} is not written by any placeholder of the template", k)! }
+    }
+    return null
+}
+
 placeholders_text :: fn(n: usize) -> string needs Alloc => if n is 1 { "1 placeholder" } else { str.format("{} placeholders", n)! }
 
 /// The pieces of the template `bytes` (§21.6.1) and the argument values for its
@@ -306,6 +368,7 @@ template_args :: fn(cx: ^FnCx, bytes: []const u8, template_span: source.Span, re
         }
     }
     n := parsed.specs.len
+    numbered := parsed.indices.len > 0
     stmts := list(tir.Stmt)
     values := list(Expr)
     if rest.len is 1 and .Spread(a) := rest[0].kind {
@@ -314,14 +377,22 @@ template_args :: fn(cx: ^FnCx, bytes: []const u8, template_span: source.Span, re
         written := cx.infer.resolve(cx.s, v0.ty)
         v := cx.elements_tuple(v0, a.span) else return null
         t := cx.infer.resolve(cx.s, v.ty)
-        if .Tuple(elems, _) := tys.kind(t) and elems.len is n {
+        if .Tuple(elems, _) := tys.kind(t) and (if numbered { numbered_error(parsed, elems.len) is null } else { elems.len is n }) {
             tmp := cx.temp(t, a.span)
             stmts.push(.Let(tmp, v))!
             for i in 0..n {
+                at := if numbered { parsed.indices[i] } else { i }
                 base := tir.mk(t, .Local(tmp), a.span)
-                values.push(tir.mk(elems[i], .Field(base, i.trunc(u32)), a.span)^)!
+                values.push(tir.mk(elems[at], .Field(base, at.trunc(u32)), a.span)^)!
             }
         } else if tys.is_error(t) {
+            return null
+        } else if numbered {
+            if .Tuple(elems, _) := tys.kind(t) {
+                cx.error(a.span, numbered_error(parsed, elems.len) else "")
+            } else {
+                cx.error(a.span, str.format("the template numbers its values, so this spread must be a tuple of them, not `{}`", cx.show(written))!)
+            }
             return null
         } else {
             cx.error(a.span, str.format("the template has {}, so this spread must have {} values, not `{}`", placeholders_text(n), n, cx.show(written))!)
@@ -336,12 +407,27 @@ template_args :: fn(cx: ^FnCx, bytes: []const u8, template_span: source.Span, re
             }
             vals.push(e)!
         }
-        if vals.items.len is not n {
+        if numbered {
+            if msg := numbered_error(parsed, vals.items.len) {
+                cx.error(span, msg)
+                return null
+            }
+            // A value may be written several times or out of order: each is evaluated
+            // once, in order, into a temporary that the placeholders read.
+            reads := list(Expr)
+            for k in 0..vals.items.len {
+                v := cx.expr(&vals.items[k], null)
+                reads.push(cx.bind_temp(v, &stmts)^)!
+            }
+            for ix in parsed.indices { values.push(reads.items[ix])! }
+        } else if vals.items.len is not n {
             given := if vals.items.len is 1 { "1 value is" } else { str.format("{} values are", vals.items.len)! }
             cx.error(span, str.format("the template has {}, but {} given", placeholders_text(n), given)!)
             return null
         }
-        for k in 0..vals.items.len { values.push(cx.expr(&vals.items[k], null)^)! }
+        if not numbered {
+            for k in 0..vals.items.len { values.push(cx.expr(&vals.items[k], null)^)! }
+        }
     }
     for k in 0..n {
         spec := &parsed.specs[k]
@@ -419,13 +505,20 @@ resolve_write :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
         s.error(span, str.format("the template has {}, but a `{}` is given (in an instantiation used here)", placeholders_text(n), s.show(a.ty))!)
         return
     }
-    if es.len is not n {
+    numbered := parsed.indices.len > 0
+    if numbered {
+        if msg := numbered_error(parsed, es.len) {
+            s.error(span, str.format("{} (in an instantiation used here)", msg)!)
+            return
+        }
+    } else if es.len is not n {
         given := if es.len is 1 { "1 value is" } else { str.format("{} values are", es.len)! }
         s.error(span, str.format("the template has {}, but {} given (in an instantiation used here)", placeholders_text(n), given)!)
         return
     }
     for k in 0..n {
-        if msg := check_spec(s, &parsed.specs[k], es[k]) {
+        at := if numbered { parsed.indices[k] } else { k }
+        if msg := check_spec(s, &parsed.specs[k], es[at]) {
             s.error(span, str.format("{} (in an instantiation used here)", msg)!)
         }
     }
@@ -437,8 +530,9 @@ resolve_write :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     stmts.push(.Let(w.tmp, a))!
     fields := list(Expr)
     for i in 0..n {
+        at := if numbered { parsed.indices[i] } else { i }
         base := tir.mk(a.ty, .Local(w.tmp), e.span)
-        fields.push(tir.mk(es[i], .Field(base, i.trunc(u32)), e.span)^)!
+        fields.push(tir.mk(es[at], .Field(base, at.trunc(u32)), e.span)^)!
     }
     write := tir.mk(s.tys.unit(), .Write(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: fields.items)), e.span)
     stmts.push(.Expr(write))!
@@ -463,4 +557,11 @@ test "source offsets" {
     expect(source_offset_of("\"a } b\"", 2) is 3)
     expect(source_offset_of("\"a\\n}\"", 2) is 4)
     expect(source_offset_of("`a }`", 2) is null)
+}
+
+test "quoted spec" {
+    match parse_spec("<8q") {
+        .Ok(sp) => expect(sp.kind is .Quote and sp.width is 8)
+        .Bad(m) => expect(m is "")
+    }
 }

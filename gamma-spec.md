@@ -2935,7 +2935,14 @@ eprint :: fn(A: type, template :: string, args: ..A) needs Err
 
 `sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: ..A)` can forward to `print` or `@write`. After the template come the **values**, one for each placeholder, as the rest arguments of a rest parameter do (§11.2): written out, or as a single spread of a tuple or array holding them (`@write(sink, template, ..args)`). `@write` calls `sink` zero or more times with consecutive, non-empty pieces of output, allocating nothing; how the output is divided into pieces is unspecified. Effects performed by `sink` are the effects of the `@write` expression.
 
-**Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. There must be exactly as many values as placeholders: `print("{} and {}", a, b)`. A tuple given as one value is written as one tuple: `print("{}", (a, b))` writes `(a, b)`. Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
+**Template.**
+
+```
+placeholder = '{' [index] [':' spec] '}'
+index       = '0' | digit19 {digit}          (a decimal number, at most 65536, without sign or leading zeros)
+```
+
+`{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. Without indices, there must be exactly as many values as placeholders, and the *n*th placeholder writes the *n*th value: `print("{} and {}", a, b)`. A placeholder with an **index** writes the value at that zero-based position, so a value can be written several times or out of order: `print("{1}: {0} ({0:x})", n, name)`. A template numbers all its placeholders or none (mixing `{}` and `{0}` is a compile error), every index must be less than the number of values, and every value must be written by at least one placeholder (an unused value is an error, as a missing one is). Whatever the numbering, the values are evaluated exactly once, left to right, before anything is written, and each is then written as often as the template says. A tuple given as one value is written as one tuple: `print("{}", (a, b))` writes `(a, b)`. Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
 
 **Display rules.** Each argument is written according to its type:
 
@@ -2962,7 +2969,7 @@ The rules are fixed and not extensible: there is no way for a type to customize 
 ```
 spec  = [[fill] align] ['+'] ['#'] ['0'] [width] ['.' precision] [kind]
 align = '<' | '>' | '^'          (left, right, centered: an odd leftover fill unit goes on the right)
-kind  = 'x' | 'X' | 'o' | 'b' | 'e'
+kind  = 'x' | 'X' | 'o' | 'b' | 'e' | 'q'
 ```
 
 `fill` is one printable ASCII character other than a brace (default a space); `width` and `precision` are decimal numbers up to 65536. `{:}` is `{}`.
@@ -2975,6 +2982,7 @@ kind  = 'x' | 'X' | 'o' | 'b' | 'e'
 | `x`, `X`, `o`, `b` | integers | base 16 (lowercase or uppercase digits), 8 or 2: a `-` and the magnitude, never two's complement |
 | `#` | with `x`, `X`, `o`, `b` | writes the prefix `0x`, `0o` or `0b` after the sign |
 | `.precision` | floats | exactly `precision` digits after the point, correctly rounded from the exact value (ties to even): `{:.2}` of `0.125` is `0.12` |
+| `q` | `string`, `[]u8`, `[]const u8` | writes the bytes quoted with escapes, as such a value is written inside an aggregate (`"a\tb\n"`, `"\x01"`); `width` and `align` apply to the quoted text; no other part but those applies |
 | `e` | floats | scientific notation, `d.ddde<exponent>`: the shortest digits that read back as the value, or `precision` digits after the point when given (`{:.2e}` of `1234.5` is `1.23e3`) |
 
 A spec that does not apply to its argument's type is a compile error at the placeholder; for an argument whose type is a type parameter, and for a template given as a compile-time parameter, it is reported at the instantiating call (§16.1). An untyped integer literal formatted with a precision or `e` has type `f64`.
