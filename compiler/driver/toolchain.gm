@@ -1,5 +1,4 @@
-//! The C compiler a native build invokes, and the target it compiles for (a port of
-//! `src/toolchain.rs`).
+//! The C compiler a native build invokes, and the target it compiles for.
 //!
 //! The compiler comes from the environment, as for `make`: `CC` is the compiler command,
 //! which may carry arguments (`zig cc -target aarch64-linux-gnu`, `clang

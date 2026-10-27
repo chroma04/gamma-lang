@@ -8,8 +8,7 @@ hash_map :: import "std/collections/hash_map"
 /// The function the runtime calls for `main`: `main` itself, or `<entry>`, which wraps
 /// it in the core library's default handlers for the ambient effects it performs that
 /// the runtime does not serve directly: `Alloc` (the system heap) and `In`, `Clock`,
-/// `Rand`, `Fs`, `Net` and `Proc` (§3.7, §12.9). Mirrors `entry_point` in
-/// `src/sema/mod.rs`.
+/// `Rand`, `Fs`, `Net` and `Proc` (§3.7, §12.9).
 pub entry_point :: fn(s: ^Sema, main: u32) -> u32 needs Load {
     sig := s.fns.items[usize(main)]
     performs :: fn(name: string) -> bool {

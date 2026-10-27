@@ -1,5 +1,4 @@
-// Checking a whole program: its entry point and every function body (mirrors the end
-// of `check_all` in `src/sema/mod.rs`).
+// Checking a whole program: its entry point and every function body.
 
 /// Checks the bodies of the functions of the program whose root module is `root`, after
 /// its declarations are resolved. With `tests`, its tests are checked as for running

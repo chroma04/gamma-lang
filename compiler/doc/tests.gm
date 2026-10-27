@@ -1,5 +1,5 @@
 // Tests of the documentation generator. They cover the renderers and the reading of a
-// module from text; `tests/selfhost.rs` compares the whole command with `gamma doc`.
+// module from text; the doc suite (`tests/harness/doc/`) covers the whole command.
 
 arena :: import "std/arena"
 load :: import "../load"

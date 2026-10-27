@@ -1,6 +1,6 @@
 // Handler declarations `handler E for T needs A { … }` (§12.6): declared before the
 // function bodies are checked, so that `with` finds them, and their clauses checked
-// after (mirrors `src/sema/handler_decl.rs`). Declarations for generic types are
+// after. Declarations for generic types are
 // reported as unsupported.
 
 /// Declares the handler declarations of the program and of the libraries it uses.

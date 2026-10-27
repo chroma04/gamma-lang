@@ -1,7 +1,6 @@
 // Constants and defaults evaluated at compile time (§17.2): typed top-level constants,
 // default values of fields and parameters, array lengths and compile-time arguments
-// given by typed expressions, and `@static_assert` (mirrors `src/sema/consteval.rs` and
-// `Sema::check_const_expr` in `src/sema/func.rs`).
+// given by typed expressions, and `@static_assert`.
 
 eval :: import "../eval"
 

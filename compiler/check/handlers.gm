@@ -1,5 +1,5 @@
 // `with` and handler literals (§12.5, §12.7): each clause is checked as a nested
-// function of the enclosing one (mirrors `src/sema/effects.rs`), and `resume` and
+// function of the enclosing one, and `resume` and
 // `cancel` in `ctl` clauses (§14).
 
 /// `[label:] with h1, h2, … { body }` (§12.7). With `value`, the `with`'s value is used,

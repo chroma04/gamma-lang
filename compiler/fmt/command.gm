@@ -155,7 +155,7 @@ extension :: fn(name: string) -> string {
     return ""
 }
 
-/// `dir` and `name` as a path, joined as the reference's paths join: with `\` on
+/// `dir` and `name` as a path, joined with `/`, or with `\` on
 /// Windows, where `/` also ends a directory name.
 join :: fn(dir, name: string) -> string needs Alloc {
     when target.os is .Windows {

@@ -1,5 +1,4 @@
-// Operators, comparisons, structural equality and membership, on values as bytes (mirrors
-// `src/interp/ops.rs` and `src/interp/fast.rs`).
+// Operators, comparisons, structural equality and membership, on values as bytes.
 
 ast :: import "../ast"
 

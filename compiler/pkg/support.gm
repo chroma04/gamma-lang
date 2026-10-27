@@ -1,5 +1,5 @@
 //! The package manager: manifests, git and archive dependencies, the lockfile, build
-//! settings and project scaffolding (a port of `src/pkg/`). See `docs/guide/15-packages.md`
+//! settings and project scaffolding. See `docs/guide/15-packages.md`
 //! for the user's view.
 //!
 //! The compiler asks `prepare` for a `Resolution` before it analyzes a program: the
@@ -13,7 +13,7 @@ process :: import "std/process"
 sha256 :: import "std/hash/sha256"
 str :: import "std/str"
 
-/// An IO error as the operating system words it (Rust's wording, for the same messages).
+/// An IO error as the operating system words it, with its `(os error N)` code.
 pub io_message :: fn(e: IoError) -> string needs Alloc => match e {
     .NotFound => "No such file or directory (os error 2)"
     .PermissionDenied => "Permission denied (os error 13)"

@@ -1,5 +1,5 @@
 //! Facts read off the typed IR after checking: the type of every expression, the function
-//! each call resolves to, and what each local is (mirrors `src/sema/ide/facts.rs`).
+//! each call resolves to, and what each local is.
 
 hash_map :: import "std/collections/hash_map"
 sema :: import "../sema"

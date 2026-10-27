@@ -1,5 +1,4 @@
-//! The target of a compilation and the C toolchain that builds for it (mirrors `new_session`
-//! and the helpers around it in `src/main.rs`).
+//! The target of a compilation and the C toolchain that builds for it.
 
 load :: import "../load"
 pkg :: import "../pkg"

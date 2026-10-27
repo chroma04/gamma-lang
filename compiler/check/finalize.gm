@@ -1,6 +1,6 @@
 // The end of literal inference (§6.1): decide pending coercions, apply fallbacks, check
 // obligations, then rewrite the body with final types and literal values checked against
-// them (mirrors `src/sema/finalize.rs`).
+// them.
 
 finalize :: fn(cx: ^FnCx, body: ^Expr) needs Load {
     tys := &cx.s.tys

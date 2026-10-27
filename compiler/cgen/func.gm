@@ -1,5 +1,5 @@
 // Functions: frames, blocks, statements, scopes, and the cleanup code that runs on
-// non-local exits (mirrors `src/cgen/func.rs`).
+// non-local exits.
 //
 // Every Gamma function becomes `static RET gm_fN(void *env, gm_node *cx, gm_node *inst,
 // params…)`. The locals that function literals and handler clauses reach through `env`

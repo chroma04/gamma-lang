@@ -1,5 +1,5 @@
 //! Classifying what was typed: top-level declarations, statements, or an unfinished
-//! input that needs more lines. Mirrors `src/repl/input.rs`.
+//! input that needs more lines.
 
 arena :: import "std/arena"
 ast :: import "../ast"

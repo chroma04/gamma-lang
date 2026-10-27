@@ -1,4 +1,4 @@
-// Expressions, places and coercions (the first half of `src/cgen/expr.rs`).
+// Expressions, places and coercions.
 //
 // `expr` emits the statements an expression needs and returns a C expression for its
 // value (usually a temporary). Operands are evaluated into temporaries in order, so

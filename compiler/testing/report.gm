@@ -1,5 +1,5 @@
 // The report of `gammac test` and `gammac bench`: what each test or benchmark did, and
-// the counts (mirrors `Report` and its helpers in `src/testing.rs`).
+// the counts.
 
 /// The first words of the line a benchmark prints for `gammac bench`.
 BENCH_MARKER :: "gamma-bench: "
@@ -93,7 +93,7 @@ fmt_per_run :: fn(ns: f64) -> string needs Alloc {
     return str.format("{:.3} s/run", ns / 1e9)!
 }
 
-/// A number as `f64::from_str` of the reference implementation reads it: the syntax of
+/// A number as a test report reads it: the syntax of
 /// `str.parse_float`, but without the `_` separators.
 parse_number :: fn(text: string) -> ?f64 {
     if str.contains(text, "_") { return null }

@@ -1,4 +1,4 @@
-// The package manifest, `gamma.toml` (mirrors `src/pkg/manifest.rs`).
+// The package manifest, `gamma.toml`.
 //
 // One parser serves the loader (to find import roots) and the package manager (to resolve
 // git and archive dependencies, and to read the build settings). Errors carry the line
@@ -173,7 +173,8 @@ pub name_problem :: fn(s: string, what: string) -> ?string needs Alloc {
     return null
 }
 
-/// `c` as Rust's `{:?}` shows a character.
+/// `c` in single quotes, with `\n`, `\t`, `\r`, `\'` and `\\` escaped and other control
+/// characters as `\u{..}`.
 debug_char :: fn(c: u8) -> string needs Alloc => match c {
     '\n' => "'\\n'"
     '\t' => "'\\t'"

@@ -258,7 +258,7 @@ windows_libs :: fn(target: load.Target) -> []const string needs Alloc {
     return libs.items
 }
 
-/// Compiles the translated program with `tc` (mirrors `cgen::compile`).
+/// Compiles the translated program with `tc`.
 ///
 /// Checked and Fast builds compile the runtime and the generated code as one translation
 /// unit at `-O2`, so the optimizer sees the whole program. Debug builds favor turnaround:

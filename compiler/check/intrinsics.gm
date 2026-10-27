@@ -1,9 +1,8 @@
 // Intrinsic calls `@name(args)` (§20.3): the layout and limit queries, the bit
 // operations, atomics and volatile accesses, `@write`, `@asm`, the system and heap
-// primitives of the core library and the small ones (mirrors `intrinsic` in
-// `src/sema/expr.rs`). `@static_assert`, `@compile_error`, `@caller_location`,
-// `@stack_size`, `@fiber` and those that need the compile-time evaluator are reported
-// as unsupported.
+// primitives of the core library and the small ones. `@static_assert`, `@compile_error`,
+// `@caller_location`, `@stack_size`, `@fiber` and those that need the compile-time
+// evaluator are reported as unsupported.
 
 intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr needs Load {
     args := i.args else empty_slice(ast.Arg)

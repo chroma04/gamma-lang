@@ -1,8 +1,7 @@
 // Dangling addresses (§15.1): the address of a local, or a slice of a local array, kept
-// where it certainly outlives the local, which is a compile error (mirrors
-// `src/sema/lint_escape.rs`). The cases where it only may are the reference
-// implementation's `dangling-address` lint, which gammac does not run; they are followed
-// all the same, so that each address is judged once, as there.
+// where it certainly outlives the local, which is a compile error. The cases where it only
+// may are the `dangling-address` lint; they are followed all the same, so that each
+// address is judged once, as there.
 
 /// How long a place lives, as the depth of the scope that holds it; storage reached
 /// through a pointer, a slice or a global outlives every scope of the function.

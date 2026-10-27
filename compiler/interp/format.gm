@@ -1,5 +1,4 @@
-// Formatting values for `print`, `@write`, error exits and `unwrap` traps (spec §21.6.1);
-// mirrors `src/interp/display.rs`.
+// Formatting values for `print`, `@write`, error exits and `unwrap` traps (spec §21.6.1).
 
 fmtlib :: import "std/fmt"
 

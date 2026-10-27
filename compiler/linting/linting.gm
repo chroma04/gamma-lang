@@ -1,5 +1,4 @@
-//! `gammac lint`: the command line of the `lint` module, with `--fix` (mirrors
-//! `src/linting.rs`).
+//! `gammac lint`: the command line of the `lint` module, with `--fix`.
 
 /// The text of `RULES`'s listing: one line per rule, its name, default level and summary.
 pub list_rules :: fn() needs Alloc + Out {

@@ -1,5 +1,4 @@
-// Splitting the generated C into several translation units, compiled in parallel, as
-// `src/cgen/units.rs` does.
+// Splitting the generated C into several translation units, compiled in parallel.
 //
 // A Debug build compiles the runtime on its own and favors turnaround over whole-program
 // optimization, and the C compiler's time is almost all spent on the function bodies. Such

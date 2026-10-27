@@ -1,5 +1,5 @@
 // Conversions, coercions of plain data and the builtin methods and intrinsics that work on
-// values (mirrors `src/interp/builtins.rs`).
+// values.
 
 ast :: import "../ast"
 

@@ -1,6 +1,6 @@
-// Semantic versions and version requirements, as the `semver` crate reads, orders and
-// matches them (Cargo's rules): `1.2.3-beta.1+build`, and `^1.2`, `~1.2.3`, `>=1, <2`, `*`.
-// Error messages are the crate's.
+// Semantic versions and version requirements, read, ordered and matched by the
+// same rules as Cargo's: `1.2.3-beta.1+build`, and `^1.2`, `~1.2.3`, `>=1, <2`, `*`.
+// Error messages follow Cargo's wording.
 
 /// A version: `major.minor.patch`, with an optional pre-release and build metadata.
 arena :: import "std/arena"
@@ -48,7 +48,7 @@ SemStep :: struct {
     rest: string
 }
 
-/// A character as Rust's `{:?}` writes it.
+/// A character in single quotes, with `\0`, `\'`, `\\`, `\n`, `\t` and `\r` escaped.
 quoted_char :: fn(text: string) -> string needs Alloc {
     c := first_char(text)
     return match c {
@@ -304,7 +304,7 @@ pub version_string :: fn(v: Version) -> string needs Alloc {
     return out.items
 }
 
-/// `req` as the crate prints it: `^1.2, <3` (`*` if empty).
+/// `req` as Cargo prints it: `^1.2, <3` (`*` if empty).
 pub req_string :: fn(req: ^const VersionReq) -> string needs Alloc {
     if req.comparators.items.len is 0 { return "*" }
     out := list(u8)
@@ -399,7 +399,7 @@ cmp_pre_parts :: fn(a, b: string) -> i32 {
     }
 }
 
-/// Compares build metadata the way the crate does.
+/// Compares build metadata by the semver rules.
 cmp_build :: fn(a, b: string) -> i32 {
     ia: usize = 0
     ib: usize = 0

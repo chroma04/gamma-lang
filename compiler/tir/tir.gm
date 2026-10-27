@@ -1,5 +1,5 @@
 //! The typed intermediate representation (TIR) that checking produces from function
-//! bodies (mirrors `src/tir.rs`).
+//! bodies.
 //!
 //! Every expression has its final type once a body is checked; names are resolved to
 //! locals, functions and constants; implicit coercions (§6.4) are explicit `Coerce`

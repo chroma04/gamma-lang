@@ -1,8 +1,6 @@
 // Format templates (§21.6, §21.6.1): splitting a template into its pieces and
 // placeholder specs, checking the values against the specs, and the templates that a
-// generic function receives as a compile-time `string` parameter (mirrors
-// `build_write`, `template_args`, `parse_template` and `check_spec` in
-// `src/sema/call.rs` and `resolve_write` in `src/sema/generics.rs`).
+// generic function receives as a compile-time `string` parameter.
 
 /// A parsed template: `pieces.len == specs.len + 1`.
 Template :: struct {

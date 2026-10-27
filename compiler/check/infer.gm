@@ -1,6 +1,5 @@
 // Literal inference (§6.1): type variables for untyped literals, unified with each other
-// and with concrete types, with fallbacks for the unconstrained (mirrors
-// `src/sema/infer.rs`).
+// and with concrete types, with fallbacks for the unconstrained.
 
 pub VarKind :: union {
     /// Created for an integer or character literal: any integer or float type.

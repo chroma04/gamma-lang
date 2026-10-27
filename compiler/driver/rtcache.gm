@@ -1,4 +1,4 @@
-//! The cache of compiled runtimes and of built programs (mirrors `src/cgen/rtcache.rs`).
+//! The cache of compiled runtimes and of built programs.
 //!
 //! Compiling the runtime is most of the work of compiling a small program, so Debug builds
 //! (and Safe ones) link with a runtime object compiled once. Objects are kept in the cache

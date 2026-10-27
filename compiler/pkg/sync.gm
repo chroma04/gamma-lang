@@ -1,5 +1,5 @@
 // Bringing a package's git and archive dependencies up to date (the entry points of
-// `src/pkg/mod.rs`).
+// the package manager).
 
 fs :: import "std/fs"
 load :: import "../load"

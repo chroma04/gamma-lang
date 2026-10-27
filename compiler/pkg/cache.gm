@@ -1,4 +1,4 @@
-// Garbage collection of the cache directory (`gamma cache clean`; mirrors `src/pkg/cache.rs`).
+// Garbage collection of the cache directory (`gamma cache clean`).
 //
 // The cache holds:
 //

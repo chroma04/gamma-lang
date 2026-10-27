@@ -3,7 +3,7 @@
 //! to; collecting each module's top-level names (§3.4), including those in the taken
 //! branches of top-level `when`s (§3.6); and rejecting import cycles.
 //!
-//! The order is the reference implementation's: module by module in the order they are
+//! The order is fixed: module by module in the order they are
 //! loaded, and each module's imports in the order of their declarations (which is the
 //! order of the files, then of the declarations, with the branches of `when`s after the
 //! rest). It decides the order of the source files, and with it the order of the

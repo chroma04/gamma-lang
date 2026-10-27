@@ -1,7 +1,6 @@
 // Compile-time values in static storage. The checker keeps a value's structure, with
 // pointers as places in cells (`tir/value.gm`); the generated program gets the value's
-// bytes in the target layout, initialized at startup with pointers patched in, as the
-// reference implementation does with its `ConstValue`s.
+// bytes in the target layout, initialized at startup with pointers patched in.
 
 /// A cell whose value the program has in static storage `gm_cN` (N its index), with the
 /// type of that value.

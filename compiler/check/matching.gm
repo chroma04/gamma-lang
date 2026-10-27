@@ -1,5 +1,5 @@
 // `match` (§8.6), binding conditions (§8.2) and pattern tests in `is` (§7.6) and `in`
-// (§7.7) (mirrors `src/sema/matching.rs`).
+// (§7.7).
 
 /// A `match` whose exhaustiveness waits for the final types of its scrutinee's literals.
 DeferredMatch :: struct {
@@ -110,7 +110,7 @@ check_deferred_match :: fn(cx: ^FnCx, e: ^Expr) needs Alloc {
     }
     i := found else return
     d := cx.deferred_matches.items[i]
-    // `swap_remove`, as the reference implementation does.
+    // `swap_remove`.
     last := cx.deferred_matches.items.len - 1
     cx.deferred_matches.items[i] = cx.deferred_matches.items[last]
     _ = cx.deferred_matches.pop()

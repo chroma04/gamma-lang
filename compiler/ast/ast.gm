@@ -294,8 +294,8 @@ pub ExprKind :: union {
     Error
 }
 
-// The payloads of several fields are structs, named as the variants with fields of
-// `src/syntax/ast.rs`.
+// The payloads of several fields are structs, named as the variants with fields they
+// belong to.
 
 pub ElseExpr :: struct {
     pub lhs: ^Expr

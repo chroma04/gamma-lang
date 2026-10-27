@@ -1,6 +1,5 @@
 // Method calls (§7.10): struct fields holding function pointers, builtin methods (§6.6,
-// §21.3), functions of the receiver type's module and the operations of its effects
-// (mirrors `src/sema/methods.rs`).
+// §21.3), functions of the receiver type's module and the operations of its effects.
 
 /// `base.name(args)`.
 method_call :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {

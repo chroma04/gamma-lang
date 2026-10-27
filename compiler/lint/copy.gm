@@ -1,7 +1,7 @@
 // The `mutated-copy` lint: a local initialized with a copy of a value that keeps its
 // elements in a buffer it can resize, such as a `List` or a `HashMap` (a struct holding a
 // mutable slice and the `Allocator` that resizes it), which the function then changes as
-// if it were the original (mirrors `src/sema/lint_copy.rs`):
+// if it were the original:
 //
 //     tys := cx.s.tys          // a copy of the table
 //     t := tys.intern(k)       // adds to the copy; `cx.s.tys` never sees it

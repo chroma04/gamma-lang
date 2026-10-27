@@ -1,5 +1,5 @@
 // Constructors and predicates for vector types `#simd [N]T` (§5.6.2) and math vectors
-// `#vec [N]T` (§5.6.3) (mirrors `src/types.rs`).
+// `#vec [N]T` (§5.6.3).
 
 /// `#simd [N]T`: a vector of `len` lanes.
 pub simd :: fn(t: ^Types, len: u64, elem: Ty) -> Ty needs Alloc => t.intern(.Array(len, elem, .Simd))

@@ -1,5 +1,4 @@
-//! The interpreter: runs a checked program by walking its typed IR (mirrors `src/interp`,
-//! whose interpreter compiles the IR to bytecode first; gammac walks the tree).
+//! The interpreter: runs a checked program by walking its typed IR.
 //!
 //! - **Memory** (`memory.gm`): a flat virtual address space where every allocation gets
 //!   a fresh, never reused address, so out-of-bounds, use-after-free, null, misaligned
@@ -19,7 +18,7 @@
 //! - **Effects**: the handler context is a persistent list of installed handlers, by
 //!   handle, captured by closures and handler literals (§11.6, §12.7).
 //!
-//! It traps where the reference implementation does, with the same messages, and reports
+//! It traps where the compiled program would, with the same messages, and reports
 //! what it cannot run yet as an internal error.
 
 bigint :: import "../bigint"

@@ -1,5 +1,5 @@
 // `#soa` arrays and slices in function bodies (§5.6.4): indexing, fields, slicing,
-// iteration, construction, `make`, `free` and `copy_from` (mirrors `src/sema/soa.rs`).
+// iteration, construction, `make`, `free` and `copy_from`.
 //
 // The builders of `sema/soa.gm` produce the lowered form for operands that may be used
 // repeatedly; the functions here check the source forms, bind their operands to

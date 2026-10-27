@@ -1,4 +1,4 @@
-// Fibers and continuations (§14), mirroring `src/interp/fiber.rs`.
+// Fibers and continuations (§14).
 //
 // The interpreter is recursive, so a fiber suspended in the middle of its code needs a
 // stack of its own: every fiber runs as a coroutine of the host, a fiber of gammac

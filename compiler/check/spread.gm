@@ -1,6 +1,4 @@
-// Rest parameters (§11.2) and spread arguments (§11.4) (mirrors `pack_rest_args` in
-// `src/sema/call.rs` and the spreads of `src/sema/construct.rs` and
-// `src/sema/generics.rs`).
+// Rest parameters (§11.2) and spread arguments (§11.4).
 
 /// The outcome of packing rest arguments: the arguments with the rest ones replaced by
 /// one tuple argument, or an error.

@@ -1,6 +1,6 @@
 // The package commands: `fetch`, `update`, `add`, `remove`, `new`, `init` and `cache`. They
 // take their own arguments, so `main` hands them over before it parses the options of the
-// compiler commands (mirrors `src/pkg/cli.rs`).
+// compiler commands.
 
 fs :: import "std/fs"
 load :: import "../load"

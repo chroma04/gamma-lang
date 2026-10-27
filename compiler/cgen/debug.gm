@@ -1,5 +1,4 @@
-// Source-level debugging of compiled programs (`gammac build -g`; mirrors
-// `src/cgen/debug.rs`).
+// Source-level debugging of compiled programs (`gammac build -g`).
 //
 // With debug information on, the generated C maps back to the Gamma source:
 //
