@@ -127,8 +127,8 @@ Three things differ at once. A name is introduced by `::` (immutable) or `:=` (m
 The tool is one binary, `gamma`:
 
 ```text
-gamma run hello.gm                  type-check and interpret (starts at once)
-gamma run --backend=c hello.gm      compile through C and run (fast code, slower to start)
+gamma run hello.gm                  compile through C and run (fast code)
+gamma run --backend=interp hello.gm   interpret (starts at once, no C compiler needed)
 gamma build hello.gm                write a native executable `hello`, next to the generated hello.c
 gamma check hello.gm                type-check only
 gamma test hello.gm                 run the `test` declarations
@@ -1108,7 +1108,7 @@ $ gamma test --mode=safe prog.gm
 
 How does this compare with the C tools you use now?
 
-- **Sanitizers.** The generated C is ordinary C, so `CFLAGS="-fsanitize=address,undefined" gamma run --backend=c prog.gm` works (AddressSanitizer reports a heap use-after-free in a Gamma program the same way it does in C). Gamma's own arithmetic and bounds checks replace much of what UBSan is for, and Safe mode replaces much of what ASan is for, at a speed cost (typically 2 to 5 times slower than Checked).
+- **Sanitizers.** The generated C is ordinary C, so `CFLAGS="-fsanitize=address,undefined" gamma run prog.gm` works (AddressSanitizer reports a heap use-after-free in a Gamma program the same way it does in C). Gamma's own arithmetic and bounds checks replace much of what UBSan is for, and Safe mode replaces much of what ASan is for, at a speed cost (typically 2 to 5 times slower than Checked).
 - **`-fwrapv`, `-ftrapv`.** These are the `+%` and `+` operators, chosen per operation.
 - **`NDEBUG`.** `assert(cond, msg)` is a checked operation that Fast removes, arguments and all, so never put work you need inside it. `expect` is for tests and is never removed.
 - **Debuggers and profilers.** `gamma build -g` maps machine code to `.gm` lines and ships gdb and lldb pretty-printers.

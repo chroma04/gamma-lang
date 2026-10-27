@@ -126,9 +126,9 @@ Document the library in those comments, not in this directory, and regenerate af
 changing them:
 
 ```
-cargo run -- doc lib/std --all -o docs/std
+gamma doc lib/std --all -o docs/std
 ```
 
-`cargo test --test doc` fails while the checked-in files are out of date. The same
+`tools/test.sh --test doc` fails while the checked-in files are out of date. The same
 command documents your own packages: `gamma doc <package root> -o <dir>`
 (`--format=html` for a browsable site).

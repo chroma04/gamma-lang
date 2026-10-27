@@ -2,7 +2,7 @@
 
 [Contents](README.md)
 
-The tutorial chapters say what the language *has*. This page says how experienced Gamma code *uses* it: the patterns that keep programs short and clear, and the habits from other languages that do not fit. It grows as the code base does. Most examples come from, or are modeled on, `gammac`, the compiler written in Gamma in [`compiler/`](../../compiler) (see [the self-hosting notes](../self-hosting.md)), which is meant to be read as an example of the style described here.
+The tutorial chapters say what the language *has*. This page says how experienced Gamma code *uses* it: the patterns that keep programs short and clear, and the habits from other languages that do not fit. It grows as the code base does. Most examples come from, or are modeled on, `gamma`, the compiler written in Gamma, in [`compiler/`](../../compiler) (see [how it is organized](../self-hosting.md)), which is meant to be read as an example of the style described here.
 
 Every example on this page is a complete program checked by the test suite.
 
@@ -10,7 +10,7 @@ Every example on this page is a complete program checked by the test suite.
 
 - **Format with `gamma fmt`.** Do not hand-align; let the formatter decide.
 - **Names.** Functions, variables and modules are `snake_case`, types and variants are `PascalCase`, constants are `SCREAMING_CASE` (`MAX_EXPONENT: i64 : 100_000`).
-- **A module is a directory.** Put one concern in each, and split a large module into several files in the same directory: they share one namespace, so no file needs to import another. `gammac`'s `syntax/` module holds `token.gm`, `lexer.gm`, `literal.gm` and `dump.gm`.
+- **A module is a directory.** Put one concern in each, and split a large module into several files in the same directory: they share one namespace, so no file needs to import another. the compiler's `syntax/` module holds `token.gm`, `lexer.gm`, `literal.gm` and `dump.gm`.
 - **Imports go at the top of the file that uses them.** Each file of a module may repeat an import with the same name and path.
 - **Document what is `pub`** with `///` comments, and the module with `//!` lines at the top of one of its files. Say what a function *gives* and what it *expects*, not how it works.
 
@@ -85,7 +85,7 @@ Slices have `get(i)`, `first()` and `last()`, which return optionals, so `items.
 
 A function that can fail for reasons outside the program's control returns `E!T`, where `E` is a union with one variant per cause. Callers propagate with `try` or handle with `else e => …` or `match`. Errors carried by `try` lift into a caller's error union automatically when it has exactly one variant of that type.
 
-When failure is a bug or cannot be handled sensibly, unwrap with `x!` (a result) or `x?` (an optional): it traps with the error in the message. A compiler, for example, treats running out of memory as fatal, so `gammac` writes `l.push(x)!` instead of threading `AllocError` through every function. Decide this per program and say so in its documentation; a library should usually return the error instead.
+When failure is a bug or cannot be handled sensibly, unwrap with `x!` (a result) or `x?` (an optional): it traps with the error in the message. A compiler, for example, treats running out of memory as fatal, so the compiler writes `l.push(x)!` instead of threading `AllocError` through every function. Decide this per program and say so in its documentation; a library should usually return the error instead.
 
 ```gamma
 ParseError :: union { Empty, BadDigit: usize }
@@ -117,7 +117,7 @@ empty
 bad digit at 1
 ```
 
-A problem in the *input* of a tool (a syntax error, a bad option) is usually neither: report it and carry on, as `gammac` does with its `diag.Diagnostics`, so the user sees every problem at once.
+A problem in the *input* of a tool (a syntax error, a bad option) is usually neither: report it and carry on, as the compiler does with its `diag.Diagnostics`, so the user sees every problem at once.
 
 ## Matching
 

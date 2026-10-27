@@ -1,94 +1,78 @@
-# The Cranelift back end
+# Back ends: C and the interpreter
 
-The `gamma` tool has three ways to run a program: the interpreter (the default for
-`gamma run` and `gamma test`), the C back end, which translates the program to C and
-compiles it with the system C compiler (the default for `gamma build` and `gamma bench`),
-and the **Cranelift back end**, which generates machine code directly with
-[Cranelift](https://cranelift.dev). Choose it with `--backend=cranelift` on `run`, `build`,
-`test` and `bench`:
+The `gamma` tool has two ways to run a program: the **C back end**, which translates the
+program to C and compiles it with the system C compiler, and the **interpreter**, which
+walks the checked program and needs no C compiler. `gamma build`, `gamma test` and
+`gamma bench` always use C; `gamma run` uses C by default and the interpreter with
+`--backend=interp`; `gamma repl` uses the interpreter.
 
 ```sh
-gamma run --backend=cranelift main.gm
-gamma build --backend=cranelift main.gm -o main
-gamma test --backend=cranelift src/
+gamma run main.gm                      # compile through C and run
+gamma run --backend=interp main.gm     # interpret
+gamma build main.gm -o main            # a native executable
+gamma test src/                        # tests are compiled through C
 ```
 
-All three give the same results: the same output, the same trap messages and locations,
-the same exit status. A program that behaves differently on one of them is a bug in the
-compiler. The whole conformance suite runs through each back end.
+Both give the same results: the same output, the same trap messages and locations, the
+same exit status. A program that behaves differently on one of them is a bug in the
+compiler. The whole conformance suite runs each `run` test through both.
 
-## When to use it
+## When to use which
 
-Cranelift is a code generator built for compile speed. Compared with the C back end:
+- **The C back end** is the one for programs. Builds take as long as the C compiler takes
+  (Checked and Fast builds are optimized fully, Debug builds favor turnaround, and large
+  ones are compiled in parallel), and the code is as fast as C. Use it for tests,
+  benchmarks, release builds, debugging with `-g`, and Safe builds. Later runs of the same
+  program reuse the executable kept in the cache directory.
+- **The interpreter** starts at once and needs no C compiler, which suits a quick check of
+  a small program and machines without a toolchain. It is much slower than compiled code
+  (compute-heavy programs run tens to hundreds of times slower), and it cannot run a
+  program that calls foreign C code or uses inline assembly: those run only through C
+  (`gamma run` without `--backend=interp` does that; with it, the program is refused).
 
-- **Builds are much faster**, typically 4 to 10 times. Most of what remains is the
-  link. The difference is largest for Checked and Fast builds, which the C back end
-  optimizes fully.
-- **Programs run slower**, typically 1.5 to 3 times, and more for code dominated by
-  calls of small functions, because Cranelift does not inline. Numeric loops come close
-  to the C back end.
+The build modes (`--mode=debug|checked|fast`) work on both: Debug and Checked builds keep
+every check, and Fast builds remove them (§21). Safe builds (`--mode=safe`) need Fil-C,
+which compiles C, so they use the C back end only.
 
-So it suits the edit-compile-run loop of a program too slow to interpret, test suites that
-call C, and generated or very large programs. Use the C back end for release builds,
-benchmarks and debugging.
+## Where the C back end runs
 
-The build modes (`--mode=debug|checked|fast`) work as on the C back end: Debug and Checked
-builds keep every check, and Fast builds remove them (§21). Safe builds (`--mode=safe`)
-need Fil-C, which compiles C, so they use the C back end only.
-
-## Where it runs
-
-The back end generates code for 64-bit Linux and macOS, on x86-64 and AArch64 (Apple
-silicon included). It still needs the C toolchain, for two things: it compiles the C
-runtime that every Gamma program links (once, then cached in the cache directory), and the
-C compiler links the executable. `CC`, `CFLAGS`, `LDFLAGS`, `--target` and `GAMMA_RUNNER`
-work as for the C back end ([chapter 1](01-getting-started.md)), so a cross compiler for a
-supported target and an emulator run programs for another architecture:
+Linux and macOS on x86-64 and AArch64, and x86-64 Windows with MinGW-w64, as well as
+cross targets (`--target`), freestanding programs and WebAssembly (`wasm32-wasi`). A C
+compiler is needed on the machine that builds: it compiles the C runtime that every Gamma
+program links (once, then cached in the cache directory) and the generated code. `CC`,
+`CFLAGS`, `LDFLAGS`, `--target` and `GAMMA_RUNNER` are described in
+[chapter 1](01-getting-started.md), so a cross compiler for a supported target and an
+emulator run programs for another architecture:
 
 ```sh
 CC=aarch64-linux-gnu-gcc CFLAGS=-static GAMMA_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
-    gamma run --backend=cranelift main.gm
+    gamma run main.gm
 ```
-
-Windows, 32-bit targets, big-endian targets and freestanding programs need the C back
-end.
 
 ## C interoperability
 
-Everything in [chapter 14](14-interop.md) works:
+Everything in [chapter 14](14-interop.md) works through C:
 
 - Foreign calls follow the platform's C calling convention, including structs, tuples,
-  arrays and `#c_union`s passed and returned by value (the System V rules on x86-64, the
-  AArch64 procedure call standard and Apple's variant of it), `#win64` functions, and
-  variadic functions with any mix of integer, pointer and floating-point arguments.
+  arrays and `#c_union`s passed and returned by value, `#win64` functions, and variadic
+  functions with any mix of integer, pointer and floating-point arguments.
 - `#export` functions can be called from C with the same convention, structs by value
   included.
-- The C sources and libraries of a package's `[build]` settings are compiled and linked as
-  with the C back end ([chapter 15](15-packages.md#build-settings)).
-- `@asm` works: each use is compiled by the C compiler into a small function of its own,
-  which the generated code calls with the operands' addresses. The template, constraints
-  and clobbers mean what they mean to GCC and Clang. Because the statement is not inlined
-  into the surrounding function, a template must work only through its operands and
-  clobbers: it cannot rely on the values other registers or the stack pointer had in
-  the calling function.
+- The C sources and libraries of a package's `[build]` settings are compiled and linked
+  ([chapter 15](15-packages.md#build-settings)).
+- `@asm` is passed to the C compiler, and its template, constraints and clobbers mean what
+  they mean to GCC and Clang.
 
-## What it does not do yet
+## Debugging
 
-- **Debug information.** `-g` needs the C back end; with `--backend=cranelift` it is
-  an error that says so.
-- **A C function calling a Gamma function pointer with a struct by value.** A Gamma
-  function passed to C as a callback works when its parameters and result are scalars or
-  pointers (`qsort` comparators, for example). One whose parameters or result are structs
-  passed by value is rejected with an error at the call that passes it to C.
-- **`f16` across the C boundary**, and structs that contain one.
-- **Coverage.** `gamma test --coverage` runs in the interpreter or the C back end.
-
-A construct the back end cannot compile is reported as an error that begins "not supported
-by the Cranelift back end yet" and points at the source; the C back end compiles the same
-program.
+`gamma build -g` (and `gamma run -g`) adds debug information that maps the executable to
+the Gamma source, so a debugger such as gdb or lldb stops at `.gm` lines and shows Gamma
+locals ([chapter 1](01-getting-started.md)). The interpreter has no debug information; its
+Debug mode reports the calls that led to a trap instead.
 
 ## How it works
 
-The [compiler architecture](../architecture.md#the-cranelift-back-end) describes the
-design: how values are represented, the calling conventions, effects and fibers, and how
-the generated code shares the C back end's runtime.
+The generated C is ordinary C: the same representation of values as the specification
+describes, and the runtime in `runtime/gm_rt.c` for allocation, traps, fibers and
+effects. `gamma build --emit-c` writes it instead of compiling it. See
+[the compiler's organization](../self-hosting.md) for the design.
