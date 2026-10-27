@@ -2,8 +2,9 @@
 // `src/sema/seq.rs` and `for_loop` in `src/sema/func.rs`).
 
 /// `elem in container`, with `elem` already checked.
-in_expr :: fn(cx: ^FnCx, elem: ^Expr, container: ^const ast.Expr, negated: bool, span: source.Span) -> ^Expr needs Load {
+in_expr :: fn(cx: ^FnCx, checked: ^Expr, container: ^const ast.Expr, negated: bool, span: source.Span) -> ^Expr needs Load {
     tys := &cx.s.tys
+    elem := checked
     // Ranges: `lo <= x and x < hi` with `x` evaluated once.
     if .Binary(op, lhs, rhs) := container.kind and op in (ast.BinOp.Range, ast.BinOp.RangeIncl) {
         lo := cx.expr(lhs, elem.ty)
@@ -20,10 +21,12 @@ in_expr :: fn(cx: ^FnCx, elem: ^Expr, container: ^const ast.Expr, negated: bool,
         }
     }
     c := if .Tuple(elems) := container.kind {
-        // An inline tuple: every element has the element's type. As with `is`, a member
-        // converts to an optional or result element: `c in ('a', 'b')` with `c: ?u8`.
-        vals := list(Expr)
-        etys := list(Ty)
+        // An inline tuple: the element and the members are joined as the branches of an
+        // `if` are (§7.12), so `p in ("a", "b")` with `p: []u8` compares `string`s. As with
+        // `is`, a member converts to an optional or result element: `c in ('a', 'b')` with
+        // `c: ?u8`.
+        vals := list(^Expr)
+        defer vals.deinit()
         et := cx.infer.resolve(cx.s, elem.ty)
         wraps := tys.kind(et) in (.Optional(_), .Result(_)) and not tys.has_infer(et)
         for i in 0..elems.len {
@@ -31,13 +34,23 @@ in_expr :: fn(cx: ^FnCx, elem: ^Expr, container: ^const ast.Expr, negated: bool,
             vt := cx.infer.resolve(cx.s, v.ty)
             if wraps and vt is not et and (tys.kind(vt) is .Infer(_) or cx.coercion_steps(vt, et) is not null) {
                 v = cx.coerce(v, et)
-            } else {
-                _ = cx.unify_operands(elem.ty, v.ty, v.span, "the element and the tuple members of `in`")
             }
-            vals.push(v^)!
-            etys.push(v.ty)!
+            vals.push(v)!
         }
-        tir.mk(tys.tuple(etys.items), .Aggregate(vals.items), container.span)
+        joined := cx.join_members(elem, vals.items)
+        if joined is not elem.ty { elem = cx.coerce(elem, joined) }
+        members := list(Expr)
+        etys := list(Ty)
+        jr := cx.infer.resolve(cx.s, joined)
+        for v in vals.items {
+            m := v
+            mt := cx.infer.resolve(cx.s, m.ty)
+            if mt is not jr and not tys.has_infer(mt) and cx.coercion_steps(mt, jr) is not null { m = cx.coerce(m, jr) }
+            _ = cx.unify_operands(elem.ty, m.ty, m.span, "the element and the tuple members of `in`")
+            members.push(m^)!
+            etys.push(m.ty)!
+        }
+        tir.mk(tys.tuple(etys.items), .Aggregate(members.items), container.span)
     } else {
         cx.expr(container, null)
     }
@@ -64,6 +77,13 @@ in_expr :: fn(cx: ^FnCx, elem: ^Expr, container: ^const ast.Expr, negated: bool,
             return error_expr(cx.s, span)
         }
     }
+    // The element converts to the members' type: `p in names` with `p: []u8` and
+    // `names: []string` (§7.7).
+    rt := cx.infer.resolve(cx.s, elem.ty)
+    ri := cx.infer.resolve(cx.s, item)
+    if rt is not ri and not tys.has_infer(rt) and not tys.has_infer(ri) and cx.coercion_steps(rt, ri) is not null {
+        elem = cx.coerce(elem, ri)
+    }
     _ = cx.unify_operands(elem.ty, item, span, "the element and the members of `in`")
     // The members are compared with `is` (§7.7).
     et := cx.infer.resolve(cx.s, item)
@@ -71,6 +91,30 @@ in_expr :: fn(cx: ^FnCx, elem: ^Expr, container: ^const ast.Expr, negated: bool,
         cx.error(span, str.format("`in` compares with `is`, which is not defined for `{}` (§7.6)", cx.show(et))!)
     }
     return tir.mk(tys.bool_ty(), .In(elem, c, negated), span)
+}
+
+/// The type that the element of `in` and the members of an inline tuple are compared at:
+/// the first of their types to which all the others coerce (§7.7, §7.12), or the
+/// element's type when there is none or a type is not inferred yet.
+join_members :: fn(cx: ^FnCx, elem: ^Expr, members: []const ^Expr) -> Ty needs Load {
+    tys := &cx.s.tys
+    all := list(Ty)
+    defer all.deinit()
+    all.push(elem.ty)!
+    for m in members {
+        t := cx.infer.resolve(cx.s, m.ty)
+        if tys.has_infer(t) or tys.is_error(t) { return elem.ty }
+        all.push(t)!
+    }
+    if tys.has_infer(cx.infer.resolve(cx.s, elem.ty)) { return elem.ty }
+    joined := cx.join_type(all.items)
+    // Only a type that every member and the element reach by coercion.
+    jr := cx.infer.resolve(cx.s, joined)
+    for t in all.items {
+        r := cx.infer.resolve(cx.s, t)
+        if r is not jr and cx.coercion_steps(r, jr) is null { return elem.ty }
+    }
+    return joined
 }
 
 /// `{ x := elem; lets…; lo <= x and x <(=) hi }`, negated if `negated`.
