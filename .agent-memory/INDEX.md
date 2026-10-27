@@ -1,9 +1,16 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-26) — PRs #1–#88 merged, v0.1.0 tagged
-- s45d (same branch, PR after #89): `test --coverage` on the C back end in both compilers
-  + reference fix (literals/for bodies counted), decisions/050. Next for gammac CLI: only
-  repl/interp left (needs a gammac interpreter; user: future, keep in mind).
+## State (2026-10-27) — PRs #1–#90 merged, v0.1.0 tagged
+- s46 (branch claude/gammac-interpreter, PR #91; user: "work on an interpreter for gammac
+  so we can achieve parity in things like repl"): compiler/interp/ tree-walking
+  interpreter (decisions/051), `gammac run --backend=interp` 476/476 run tests
+  (INTERP_FLOOR), `gammac repl` (compiler/repl/, matches tests/repl.rs sessions). Sonnet
+  worktree agents did ops/num/builtins/vector, format, sys, repl; brief in $SP/brief-interp.md,
+  test harness $SP/tools/itest.py (gone with the scratchpad: rewrite from selfhost test).
+  Next: interp speed (~100x slower than VM in Debug gammac: TyKind copies, zero-fill,
+  layout lookups), `test/bench --backend=interp`, more blocking ops on host threads
+  (only FsRead now; Read/Net/Proc block all green threads).
+- s45d (PR #90): `test --coverage` on the C back end in both compilers, decisions/050.
 - s45c (PR #89 merged): arrays coerce to `[]const T` everywhere, temp arrays sliceable,
   stdout flushed before blocking ops (decisions/049).
 - s45 (branch claude/project-thread-dhnfw3, user: "expand gammac to cover the rest of gamma"):
@@ -12,18 +19,11 @@
   subagents (all byte-identical tests in tests/selfhost.rs). §7.12 branch join refined
   (pain point). PR #87 merged. s45b (PR #88): --target/wasm/freestanding/Safe, caches,
   C optimizations, lsp, package gaps — everything but repl/coverage/interp/cranelift.
-- s43–s44: gammac COMPILES ITSELF (C back end compiler/cgen/, decisions/048; fixed point
-  in tests/selfhost.rs); Debug builds split into parallel C units (roadmap/self-hosting.md).
-- s41–s42: gammac evaluator (046), `?x` pattern (047), checker DONE (800/800 tir+decls,
-  floors 800; PRs #81–#84). See roadmap/self-hosting.md.
-- s38–s39 (PRs #72–#79): gammac in compiler/ (decisions/043, roadmap/self-hosting.md);
-  docs/guide/idioms.md = idioms handbook (doc_examples-checked; ADD learned patterns). 044.
-- s40: gammac long tail (roadmap/self-hosting.md); §15.1 dangling stores are errors,
-  no-shadowing stays (045). Survey script $SP/tools/survey.sh (needs GAMMA_STD=lib/std).
-- s35–s37: complex `Complex(T)` + `#vec [N]T` (039), `#soa` (040, generic 042: SoaList),
-  stdlib batch 1 (041; built by sonnet subagents in worktrees). tree-sitter CLI: `npm ci`
-  in editors/tree-sitter-gamma (node 22 in /opt/node22).
-- s34: HashMap → std/collections/hash_map (038); s33: spec ch. 23 errors policy, spread (037).
+- s38–s44: gammac in compiler/ (043): checker DONE (800/800, 046 evaluator, 047), C back
+  end + fixed point (048), parallel C units; roadmap/self-hosting.md. docs/guide/idioms.md =
+  idioms handbook (doc_examples-checked; ADD learned patterns). 044, 045.
+- s33–s37: errors policy + spread (037), HashMap module (038), complex/#vec (039), #soa
+  (040/042), stdlib batch 1 (041). tree-sitter CLI: `npm ci` in editors/tree-sitter-gamma.
 - s32 (PR #63, branch claude/kind-allen-vuxksg): whole-codebase review; findings + status
   in roadmap/review-2026-10-20.md (P0/P1, most P2/P3 fixed; rest listed there). Fuzz
   targets in fuzz/ (manifest, archive; seeds via fuzz/seed.sh). New infra:
@@ -67,7 +67,7 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–050, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage. `ls decisions/` for the rest.
+                  035 Cranelift, 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

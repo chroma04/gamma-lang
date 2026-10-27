@@ -21,7 +21,9 @@ checked against the reference byte for byte (stdout, stderr, status) in tests/se
 | C optimizations (spec, borrow, outline, chain, constarg) | cgen/ | DONE s45b (W-opt): same C functions modulo numbering; gammac emits only used consts |
 | lsp | lsp/ (2.5k) | DONE s45b (W-lsp): compiler/lsp + compiler/ide; Loader overlays/keep_going; stdout via /dev/stdout |
 | --coverage | coverage.rs, testing.rs | DONE s45d (C back end in both, decisions/050) |
-| repl, --backend=interp | interp/ | needs a gammac interpreter: future, keep in mind (user) |
+| run --backend=interp | interp/ | DONE s46 (decisions/051): 476/476 run tests; FFI/asm programs run natively |
+| repl | repl/ | DONE s46 (W-repl): tests/repl.rs sessions match (selfhost repl_matches_the_reference) |
+| test/bench --backend=interp | testing.rs | NOT YET (usage error); next candidate |
 | --backend=cranelift | clif/ | OUT of scope for gammac (user: Rust-specific; native codegen far future) |
 
 ## Notes
