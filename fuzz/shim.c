@@ -1,6 +1,6 @@
-/* The C side of the gammac fuzz targets.
+/* The C side of the fuzz targets.
  *
- * The C that gammac generates for a program defines `main`. The build renames it to
+ * The C that gamma generates for a program defines `main`. The build renames it to
  * `gm_program_main` (-Dmain=gm_program_main) so that this file can own the real `main`: it
  * starts the Gamma program, whose `main` sets the program up (the runtime, the ambient
  * handlers, a large stack) and calls `gm_fuzz_run`, which runs libFuzzer's driver on the

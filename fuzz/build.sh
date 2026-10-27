@@ -1,17 +1,17 @@
 #!/bin/sh
-# Builds libFuzzer executables for the fuzz targets of gammac: fuzz/gammac/build/TARGET.
+# Builds libFuzzer executables for the fuzz targets of gamma: fuzz/build/TARGET.
 #
-#     fuzz/gammac/build.sh [TARGET...]      # default: every target
+#     fuzz/build.sh [TARGET...]      # default: every target
 #
 # The targets are the root modules of this directory (parse, fmt, check, manifest,
-# archive). Each is compiled to C by `gammac build --emit-c`, then by clang with coverage
+# archive). Each is compiled to C by `gamma build --emit-c`, then by clang with coverage
 # instrumentation and linked with libFuzzer's driver. Needs clang with libFuzzer (on
 # Debian and Ubuntu: `apt install clang libclang-rt-dev`).
 #
 # Environment:
 #   GAMMA    the gamma to use (default: `gamma` on PATH)
 #   CLANG    the C compiler (default: clang)
-#   MODE     the gammac build mode (default: checked, which keeps the safety checks)
+#   MODE     the build mode (default: checked, which keeps the safety checks)
 #   SAN      sanitizers for the generated C, as in `-fsanitize=` (default: address; the
 #            check target defaults to none because it is slow); `SAN=none` for none
 #   OPT      the optimization flag (default: -O1)
@@ -19,12 +19,12 @@
 # The targets are built in parallel.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+root=$(cd "$here/.." && pwd)
 : "${GAMMA:=gamma}"
 : "${CLANG:=clang}"
 : "${MODE:=checked}"
 : "${OPT:=-O1}"
-# gammac reads the standard library and the runtime of this source tree unless told otherwise.
+# gamma reads the standard library and the runtime of this source tree unless told otherwise.
 : "${GAMMA_STD:=$root/lib/std}"
 : "${GAMMA_RUNTIME:=$root/runtime}"
 export GAMMA_STD GAMMA_RUNTIME

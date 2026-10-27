@@ -16,6 +16,7 @@
 //! `VARS`); a test changes the environment of the programs it runs, never its own.
 
 fs :: import "std/fs"
+load :: import "gammac/load"
 path :: import "std/path"
 str :: import "std/str"
 
@@ -50,6 +51,18 @@ pub Config :: struct {
     pub bless: bool = false
     /// Whether the C back end can be tested: a C compiler runs and `GAMMA_TEST_C` is not 0.
     pub c: bool = false
+    /// Safe builds can be tested: Fil-C is found and `GAMMA_TEST_SAFE` is not 0.
+    pub safe: bool = false
+    /// The Safe lane runs: `GAMMA_TEST_SAFE=1`.
+    pub safe_lane: bool = false
+    /// The target that the C compiler of `CC` and `CFLAGS` compiles for (the host's by
+    /// default), which is what compiled tests run on.
+    pub target: load.Target
+    /// Its architecture as `//! arch:` names it: `x86_64`, `aarch64`, `riscv64`, `s390x`,
+    /// `wasm32` or `other`.
+    pub arch: string
+    /// Its kind of operating system: `unix`, `windows` or `wasi`.
+    pub os_kind: string
     /// The harness's environment, as `Env.var` sees it in tests.
     pub vars: []const Var
 }
@@ -110,7 +123,7 @@ pub fail :: fn(A: type, t: ^T, template :: string, args: ..A) -> Fail {
     t.failed = true
     if t.report.items.len > 0 and t.report.items.last() is not '\n' { t.report.push('\n')! }
     t.report.write(template, ..args)!
-    t.report.push('\n')!
+    if t.report.items.last() is not '\n' { t.report.push('\n')! }
     return Fail()
 }
 

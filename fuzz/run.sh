@@ -2,16 +2,16 @@
 # Runs one fuzz target built by build.sh, with the options of its kind; further arguments
 # go to libFuzzer.
 #
-#     fuzz/gammac/run.sh TARGET [LIBFUZZER_OPTION...]
-#     fuzz/gammac/run.sh parse -max_total_time=600 -jobs=4 -workers=4
+#     fuzz/run.sh TARGET [LIBFUZZER_OPTION...]
+#     fuzz/run.sh parse -max_total_time=600 -jobs=4 -workers=4
 #
-# New inputs go to fuzz/gammac/corpus/TARGET; fuzz/corpus/TARGET (from seed.sh) is read as
-# well. A crashing input is saved as fuzz/gammac/artifacts/TARGET/crash-* (a trap shows
+# New inputs go to fuzz/found/TARGET; fuzz/corpus/TARGET (from seed.sh) is read as
+# well. A crashing input is saved as fuzz/artifacts/TARGET/crash-* (a trap shows
 # as "fuzz target exited" with status 134 on the trap's own message). Reproduce with
-# `fuzz/gammac/run.sh TARGET FILE`.
+# `fuzz/run.sh TARGET FILE`.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+root=$(cd "$here/.." && pwd)
 if [ "$#" -lt 1 ]; then
     echo "usage: run.sh TARGET [LIBFUZZER_OPTION...]" >&2
     exit 2
@@ -46,7 +46,7 @@ for arg in "$@"; do
     fi
 done
 
-mkdir -p "$here/corpus/$target" "$here/artifacts/$target"
+mkdir -p "$here/found/$target" "$here/artifacts/$target"
 # shellcheck disable=SC2086
 exec "$exe" $options -artifact_prefix="$here/artifacts/$target/" "$@" \
-    "$here/corpus/$target" "$root/fuzz/corpus/$target"
+    "$here/found/$target" "$here/corpus/$target"

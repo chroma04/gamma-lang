@@ -6,8 +6,6 @@ on:
   pull_request:
 
 env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
   # Every job has a C compiler: its absence must fail the C lanes, not skip them.
   GAMMA_TEST_C: "1"
 
@@ -17,8 +15,8 @@ permissions:
 
 jobs:
   test:
-    # The test suites in tests/ run with `gamma` built from the seed: the compiler in
-    # compiler/. The Rust crate around them is only formatted and linted.
+    # The test suites (tests/harness) run with `gamma` built from the seed: the compiler in
+    # compiler/.
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
@@ -28,18 +26,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --all-targets
       - name: Build gamma from the seed
         run: bootstrap/build.sh
       - name: Test
-        run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma" cargo test --test '*' --no-fail-fast
+        run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma" tools/test.sh
       - name: Install script
         run: |
           case "$(uname -s)-$(uname -m)" in
@@ -57,7 +47,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         env:
           GAMMA_C_UNITS: "3"
-        run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma" cargo test --test conformance --test examples
+        run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma" tools/test.sh conformance/ examples/
 
   bootstrap:
     # gamma built from the checked-in C seed with nothing but a C compiler, on each kind of
@@ -98,26 +88,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: bootstrap/verify.sh
 
-  fuzz:
-    # The fuzz targets live outside the workspace (they need nightly to run): make sure
-    # they still compile against the crate's API.
-    name: Fuzz targets compile
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: fuzz
-      - name: Check
-        env:
-          RUSTC_BOOTSTRAP: "1"
-        run: cargo check --manifest-path fuzz/Cargo.toml
-
   windows-build:
-    # gamma for Windows, cross-compiled on Linux with MinGW-w64 by the gamma built from the
-    # seed.
+    # gamma and the test harness for Windows, cross-compiled on Linux with MinGW-w64 by the
+    # gamma built from the seed.
     name: Cross-build gamma for Windows
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -131,23 +104,25 @@ jobs:
         env:
           GAMMA_STD: ${{ github.workspace }}/lib/std
           GAMMA_RUNTIME: ${{ github.workspace }}/runtime
-        run: target/bootstrap/gamma build compiler --target=x86_64-w64-mingw32 -o gamma.exe
+        run: |
+          target/bootstrap/gamma build compiler --target=x86_64-w64-mingw32 -o gamma.exe
+          target/bootstrap/gamma build tests/harness --target=x86_64-w64-mingw32 -o harness.exe
       - uses: actions/upload-artifact@v7
         with:
           name: gamma-exe
-          path: gamma.exe
+          path: |
+            gamma.exe
+            harness.exe
 
   windows:
-    # The test suites with the cross-built gamma, on Windows, with MinGW-w64 gcc for its C
-    # back end.
+    # The conformance tests and examples with the cross-built gamma and harness, on Windows,
+    # with MinGW-w64 gcc for its C back end.
     name: Test (Windows, MinGW-w64 gcc)
     needs: windows-build
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Install MinGW-w64 gcc
         id: msys
         uses: msys2/setup-msys2@v2
@@ -163,11 +138,13 @@ jobs:
         with:
           name: gamma-exe
           path: gamma
-      # No `CC` here: cc-rs would pass it to the MSVC build of libffi. Gamma itself takes
-      # the first of cc, gcc and clang on PATH, which is MSYS2's (added first above).
+      # Gamma takes the first of cc, gcc and clang on PATH, which is MSYS2's (added first
+      # above).
       - name: Test
         shell: bash
-        run: GAMMA_TEST_COMPILER="$(cygpath -w "$PWD/gamma/gamma.exe")" cargo test --test conformance --test examples --no-fail-fast
+        run: |
+          GAMMA_TEST_COMPILER="$(cygpath -w "$PWD/gamma/gamma.exe")" \
+            GAMMA_TEST_HARNESS="$PWD/gamma/harness.exe" tools/test.sh conformance/ examples/
 
   fuzz-gammac:
     # The compiler's fuzz targets (libFuzzer) build, and each runs for a while on the seed
@@ -188,34 +165,7 @@ jobs:
           GAMMA: ${{ github.workspace }}/target/bootstrap/gamma
           GAMMA_STD: ${{ github.workspace }}/lib/std
           GAMMA_RUNTIME: ${{ github.workspace }}/runtime
-        run: fuzz/gammac/smoke.sh 30
-
-  audit:
-    # The compiler unpacks archives and runs downloaded code (`gamma fetch`): a dependency
-    # with a published advisory fails the build.
-    name: Dependency advisories
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-      - name: Audit
-        run: cargo audit
-
-  msrv:
-    # The oldest Rust that Cargo.toml's `rust-version` promises still builds the crate.
-    name: Minimum Rust version
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95
-      - uses: Swatinem/rust-cache@v2
-      - name: Check
-        run: cargo check --all-targets
+        run: fuzz/smoke.sh 30
 
   safe:
     # Safe builds compile the generated C with Fil-C, a memory-safe C implementation.
@@ -228,8 +178,6 @@ jobs:
       FILC_SHA256: 3a0ba45283ff29668335d288530f35fe69c28ab8d663b4deb8801474825f117a
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Cache the Fil-C download
         id: filc-cache
         uses: actions/cache@v6
@@ -255,8 +203,8 @@ jobs:
       - name: Test Safe builds
         run: |
           export GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma"
-          GAMMA_TEST_SAFE=1 cargo test --test conformance --test native_build
-          GAMMA_TEST_LANE=safe cargo test --test lanes
+          GAMMA_TEST_SAFE=1 tools/test.sh conformance/ native_build/
+          GAMMA_TEST_LANE=safe tools/test.sh lanes/
 
   s390x:
     # s390x is 64-bit big-endian: the run tests, cross-compiled, run under qemu-user, as do
@@ -266,8 +214,6 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Install the cross toolchain and the emulator
         run: |
           sudo apt-get update
@@ -279,9 +225,9 @@ jobs:
           GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
           GAMMA_TEST_LANE: s390x
         run: |
-          cargo test --test lanes
+          tools/test.sh lanes/
           CC=s390x-linux-gnu-gcc CFLAGS=-static GAMMA_RUNNER="qemu-s390x -L /usr/s390x-linux-gnu" \
-            CC_x86_64_unknown_linux_gnu=gcc CFLAGS_x86_64_unknown_linux_gnu="" cargo test --test runtime
+            tools/test.sh runtime/
 
   aarch64:
     # AArch64 Linux, under an emulator. The macOS runners cover Apple's variant of the
@@ -291,8 +237,6 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Install the cross toolchain and the emulator
         run: |
           sudo apt-get update
@@ -303,7 +247,7 @@ jobs:
         env:
           GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
           GAMMA_TEST_LANE: aarch64
-        run: cargo test --test lanes
+        run: tools/test.sh lanes/
 
   wasi:
     # WebAssembly for WASI: the run tests, compiled with clang for wasm32-wasi and transformed
@@ -313,8 +257,6 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Install clang's WebAssembly support, the WASI C library, Binaryen and Wasmtime
         run: |
           sudo apt-get update
@@ -336,8 +278,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/bin" && ln -sf "$(command -v clang-18)" "$RUNNER_TEMP/bin/clang"
           export PATH="$RUNNER_TEMP/bin:$PATH"
-          GAMMA_TEST_LANE=wasi cargo test --test lanes
-          cargo test --test wasi
+          GAMMA_TEST_LANE=wasi tools/test.sh lanes/
+          tools/test.sh wasi/
 
   difftest:
     # Differential testing (tools/difftest): random well-typed programs must behave the same
@@ -353,8 +295,6 @@ jobs:
       GAMMA_RUNTIME: ${{ github.workspace }}/runtime
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Build gamma from the seed
         run: bootstrap/build.sh
       - name: Build difftest

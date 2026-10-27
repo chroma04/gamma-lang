@@ -20,6 +20,7 @@ path :: import "std/path"
 str :: import "std/str"
 thread :: import "std/thread"
 driver :: import "gammac/driver"
+load :: import "gammac/load"
 
 build_profiles :: import "./build_profiles"
 cli :: import "./cli"
@@ -105,8 +106,9 @@ Job :: struct {
     test: kit.Test
     /// `suite/name`.
     full: string
-    /// Milliseconds it took in the previous run (0 if unknown), then in this one.
-    before_ms: u64 = 0
+    /// Milliseconds it took in the previous run (the most if unknown, so that new tests
+    /// start first), then in this one.
+    before_ms: u64 = 0xffff_ffff_ffff_ffff
     ms: u64 = 0
     outcome: Outcome = .Pass
 }
@@ -232,13 +234,59 @@ config :: fn() -> string!kit.Config needs Alloc + Env + Err + Fs + Proc {
     for name in kit.VARS {
         if v := Env.var(name) { vars.push(kit.Var(name: name, value: v))! }
     }
-    cfg := kit.Config(root: root, compiler: compiler, tmp: tmp, cache: kit.join(tmp, "gamma-cache"), vars: vars.items)
+    tg := target_of(driver.from_env())
+    cfg := kit.Config(
+        root: root, compiler: compiler, tmp: tmp, cache: kit.join(tmp, "gamma-cache"), vars: vars.items,
+        target: tg, arch: arch_name(tg.arch), os_kind: os_kind(tg.os),
+    )
     if t := Env.var("GAMMA_TEST_TIMEOUT") {
         cfg.timeout_s = str.parse_int(u64, t) else return !str.format("GAMMA_TEST_TIMEOUT is not a number: `{}`", t)!
     }
     cfg.bless = Env.var("BLESS") is "1"
     cfg.c = try c_backend_available()
+    cfg.safe = try safe_available(cfg.c)
+    cfg.safe_lane = cfg.safe and Env.var("GAMMA_TEST_SAFE") is "1"
     return cfg
+}
+
+/// The target of the toolchain, or the host if it cannot tell.
+target_of :: fn(tc: string!driver.Toolchain) -> load.Target needs Alloc + Proc {
+    t := tc else return load.host_target()
+    return driver.target(&t) else load.host_target()
+}
+
+/// The name of an architecture of `load.Target` in `//! arch:` directives.
+arch_name :: fn(arch: string) -> string => match arch {
+    "X86_64" => "x86_64"
+    "Aarch64" => "aarch64"
+    "Riscv64" => "riscv64"
+    "S390x" => "s390x"
+    "Wasm32" => "wasm32"
+    _ => "other"
+}
+
+/// The kind of an operating system of `load.Target` in `//! os:` directives.
+os_kind :: fn(os: string) -> string => match os {
+    "Windows" => "windows"
+    "Wasi" => "wasi"
+    _ => "unix"
+}
+
+/// Whether Safe builds can be tested: the C back end can, Fil-C is found and
+/// `GAMMA_TEST_SAFE` is not 0. With `GAMMA_TEST_SAFE=1` its absence is an error.
+safe_available :: fn(c: bool) -> string!bool needs Alloc + Env + Fs + Proc {
+    setting := Env.var("GAMMA_TEST_SAFE") else ""
+    if setting is "0" or not c { return false }
+    why := filc_missing() else return true
+    if setting is "1" { return !str.format("GAMMA_TEST_SAFE=1, but no Fil-C compiler was found: {}", why)! }
+    return false
+}
+
+/// Why Safe builds cannot be made, or null if they can.
+filc_missing :: fn() -> ?string needs Alloc + Env + Fs + Proc {
+    tc := driver.for_safe_build() else e => return e
+    tg := driver.target(&tc) else e => return e
+    return if tg.filc { null } else { "the C compiler is not Fil-C" }
 }
 
 /// `p`, made absolute against `root` if it is relative.

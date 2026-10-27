@@ -1,21 +1,28 @@
 #!/bin/sh
-# Fills fuzz/corpus/{parse,fmt,check} with the Gamma sources of the repository: the parse
-# and fmt targets get the standard library too, the check target (which loads the standard
-# library itself) only the programs of the examples and the conformance tests.
+# Fills fuzz/corpus/TARGET for every target: the repository's Gamma sources and manifests
+# (seed-sources.sh), and a few package archives for the archive target (a valid one and the kinds of
+# archive the unpacker must refuse).
 set -eu
-cd "$(dirname "$0")/.."
-for target in parse fmt check; do
-    mkdir -p "fuzz/corpus/$target"
-    case "$target" in
-        check) roots="examples tests/conformance" ;;
-        *) roots="lib examples tests/conformance" ;;
-    esac
-    find $roots -name '*.gm' | while read -r f; do
-        cp "$f" "fuzz/corpus/$target/$(echo "$f" | tr '/' '_')"
-    done
-done
-# The manifest target gets every manifest and lockfile of the repository's tests and examples.
-mkdir -p fuzz/corpus/manifest
-find tests examples -name 'gamma.toml' -o -name 'gamma.lock' | while read -r f; do
-    cp "$f" "fuzz/corpus/manifest/$(echo "$f" | tr '/' '_')"
-done
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/.." && pwd)
+"$here/seed-sources.sh"
+
+dir="$root/fuzz/corpus/archive"
+mkdir -p "$dir"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/pkg/src"
+printf 'name = "x"\n' > "$work/pkg/gamma.toml"
+printf 'main :: fn() {}\n' > "$work/pkg/src/main.gm"
+(cd "$work" && tar -czf "$dir/plain.tar.gz" pkg)
+(cd "$work/pkg" && tar -czf "$dir/flat.tar.gz" gamma.toml src)
+ln -s ../../outside "$work/pkg/src/link"
+(cd "$work" && tar -czf "$dir/symlink.tar.gz" pkg)
+rm "$work/pkg/src/link"
+ln "$work/pkg/gamma.toml" "$work/pkg/src/hard"
+(cd "$work" && tar -czf "$dir/hardlink.tar.gz" pkg)
+rm "$work/pkg/src/hard"
+(cd "$work/pkg" && tar -czf "$dir/parent.tar.gz" --transform 's,^,../,' gamma.toml)
+(cd "$work/pkg" && tar -czPf "$dir/absolute.tar.gz" --transform 's,^,/tmp/gamma-fuzz-absolute/,' gamma.toml)
+mkfifo "$work/pkg/pipe"
+(cd "$work" && tar -czf "$dir/fifo.tar.gz" pkg)

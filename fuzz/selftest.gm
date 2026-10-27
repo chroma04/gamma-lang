@@ -1,8 +1,8 @@
 //! A target that fails on purpose, to check that the fuzzer records each kind of failure.
-//! It is not built by default (`fuzz/gammac/build.sh selftest`). Run it on a file that
+//! It is not built by default (`fuzz/build.sh selftest`). Run it on a file that
 //! holds `BOOM` (a trap), `STKO` (a stack overflow) or `HNG!` (an endless loop):
 //!
-//!     fuzz/gammac/run.sh selftest -timeout=3 FILE
+//!     fuzz/run.sh selftest -timeout=3 FILE
 //!
 //! Each must end with an error of libFuzzer's, and fuzzing without a file must find them.
 

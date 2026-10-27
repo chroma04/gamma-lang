@@ -2,11 +2,11 @@
 # Builds every fuzz target (or the ones named) and runs each for N seconds on the seed
 # corpus; fails if any run finds a crash, a hang or a blowup.
 #
-#     fuzz/gammac/smoke.sh [SECONDS] [TARGET...]      # default: 30 seconds, every target
+#     fuzz/smoke.sh [SECONDS] [TARGET...]      # default: 30 seconds, every target
 #
 # Environment: NO_BUILD=1 reuses the executables of an earlier build; the variables of
 # build.sh (GAMMA, CLANG, SAN, ...) and run.sh apply. Crashing inputs are left in
-# fuzz/gammac/artifacts/TARGET/.
+# fuzz/artifacts/TARGET/.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 seconds=${1:-30}
@@ -22,7 +22,7 @@ failed=""
 for target in "$@"; do
     echo "== fuzzing $target for ${seconds}s"
     # A fresh corpus directory per run keeps the result independent of earlier runs.
-    rm -rf "$here/corpus/$target" "$here/artifacts/$target"
+    rm -rf "$here/found/$target" "$here/artifacts/$target"
     if ! "$here/run.sh" "$target" -max_total_time="$seconds" -print_final_stats=1; then
         echo "== $target: FAILED"
         failed="$failed $target"
