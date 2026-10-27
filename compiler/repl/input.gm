@@ -1,0 +1,372 @@
+//! Classifying what was typed: top-level declarations, statements, or an unfinished
+//! input that needs more lines. Mirrors `src/repl/input.rs`.
+
+arena :: import "std/arena"
+ast :: import "../ast"
+diag :: import "../diag"
+parse :: import "../parse"
+source :: import "../source"
+str :: import "std/str"
+syntax :: import "../syntax"
+
+/// One top-level declaration of an input.
+Item :: struct {
+    /// The names it declares (none for handlers, tests and static assertions).
+    names: []string
+    /// Its source text.
+    text: string
+    /// A plain `name :: value` binding whose value is not a function, type or import: it
+    /// may equally be meant as a local variable.
+    plain_const: bool
+}
+
+/// A name bound by a statement, with the byte range of the name in the input.
+Bound :: struct {
+    name: string
+    lo: u32
+    hi: u32
+}
+
+/// An input read as the statements of a function body.
+StmtInfo :: struct {
+    /// The names bound by top-level `:=` and `::` statements.
+    bindings: []Bound
+    /// The input is exactly one expression statement.
+    single_expr: bool
+}
+
+Classified :: struct {
+    items: ?[]Item
+    stmts: ?StmtInfo
+    /// Neither reading parsed, and the input stops where more text is expected.
+    incomplete: bool
+}
+
+STMT_PREFIX :: "__repl_input :: fn() {\n"
+STMT_SUFFIX :: "\n}\n"
+
+/// The tokens of a text and what lexing it reported.
+Scan :: struct {
+    tokens: []syntax.Token
+    unfinished: bool
+    stray: bool
+    errors: bool
+}
+
+/// Lexes `text` (allocating in the current allocator).
+scan :: fn(text: string) -> Scan needs Alloc {
+    sm := source.source_map()
+    id := sm.add("<repl>", text)
+    diags := diag.diagnostics()
+    out := syntax.lex(id, text, &diags)
+    s := Scan(tokens: out.tokens.items, unfinished: false, stray: false, errors: diags.has_errors())
+    for d in diags.list.items {
+        if str.contains(d.message, "unterminated block comment") { s.unfinished = true }
+        if str.contains(d.message, "unmatched closing") { s.stray = true }
+    }
+    return s
+}
+
+/// How deeply the brackets of the tokens are nested at their end.
+depth :: fn(tokens: []const syntax.Token) -> i64 {
+    d: i64 = 0
+    for t in tokens {
+        if .Punct(p) := t.kind {
+            match p {
+                .LParen, .LBracket, .LBrace => { d += 1 }
+                .RParen, .RBracket, .RBrace => { d -= 1 }
+                _ => {}
+            }
+        }
+    }
+    return d
+}
+
+/// Whether brackets are still open at the end of `text`.
+open_brackets :: fn(text: string) -> bool needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    return with a.allocator() {
+        s := scan(text)
+        s.unfinished or depth(s.tokens) > 0
+    }
+}
+
+/// Whether `text` is empty apart from whitespace and comments. Input with a lexical error
+/// (a stray closing bracket, an unfinished comment) is not blank: the error is for the
+/// user to see.
+is_blank :: fn(text: string) -> bool needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    return with a.allocator() {
+        s := scan(text)
+        blank := not s.errors
+        for t in s.tokens {
+            if t.kind is not .Newline and t.kind is not .Eof { blank = false }
+        }
+        blank
+    }
+}
+
+/// A parse of some text: the tree if there were no errors, and the byte offset of the
+/// first error otherwise.
+Parsed :: struct {
+    file: ?ast.File
+    first_err: ?u32
+}
+
+/// Parses `src` as top-level items; the diagnostics go to `sm` and `diags`.
+parse_source :: fn(src: string, sm: ^source.SourceMap, diags: ^diag.Diagnostics) -> Parsed needs Alloc {
+    id := sm.add("<repl>", src)
+    lexed := syntax.lex(id, src, diags)
+    next_id: ast.NodeId = 0
+    tree := parse.parse_file(id, &lexed, &next_id, diags)
+    first: ?u32 = null
+    for d in diags.list.items {
+        if first is null or d.span.lo < (first else 0) { first = d.span.lo }
+    }
+    if diags.has_errors() { return Parsed(file: null, first_err: first) }
+    return Parsed(file: tree, first_err: null)
+}
+
+parse_items :: fn(text: string) -> Parsed needs Alloc {
+    sm := source.source_map()
+    diags := diag.diagnostics()
+    return parse_source(text, &sm, &diags)
+}
+
+parse_stmts :: fn(text: string) -> Parsed needs Alloc {
+    sm := source.source_map()
+    diags := diag.diagnostics()
+    src := list(u8)
+    src.write("{}{}{}", STMT_PREFIX, text, STMT_SUFFIX)!
+    return parse_source(src.items, &sm, &diags)
+}
+
+is_definition :: fn(kind: ast.ExprKind) -> bool => match kind {
+    .Fn(_), .Struct(_), .Union(_), .Effect(_), .Import(_) => true
+    _ => false
+}
+
+has_attr :: fn(attrs: []const ast.Attribute, name: string) -> bool {
+    for a in attrs {
+        if a.name.name is name { return true }
+    }
+    return false
+}
+
+/// Reads `text` as declarations, as statements, or finds it unfinished.
+classify :: fn(text: string) -> Classified needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    c := with a.allocator() { classify_in(text) }
+    return own(c)
+}
+
+classify_in :: fn(text: string) -> Classified needs Alloc {
+    s := scan(text)
+    none := Classified(items: null, stmts: null, incomplete: false)
+    if s.unfinished or depth(s.tokens) > 0 { return Classified(items: null, stmts: null, incomplete: true) }
+    // A stray closing bracket can never be completed by more lines: let the syntax error
+    // show at once.
+    if s.stray { return none }
+    c := none
+    items_parse := parse_items(text)
+    if tree := items_parse.file {
+        if tree.items.len > 0 {
+            items := list(Item)
+            all_decls := true
+            for it in tree.items {
+                names := list(string)
+                plain_const := false
+                if .Binding(b) := it.kind {
+                    for n in b.names { names.push(n.name)! }
+                    plain_const = b.kind is .Const and b.ty is null and not is_definition(b.init.kind) and not has_attr(it.attrs, "global")
+                    // `x := e` parses as a top-level item but is a local variable here.
+                    if b.kind is .Var and not has_attr(it.attrs, "global") { all_decls = false }
+                }
+                items.push(Item(names: names.items, text: text[usize(it.span.lo)..usize(it.span.hi)], plain_const: plain_const))!
+            }
+            if all_decls { c.items = items.items }
+        }
+    }
+    stmts_parse := parse_stmts(text)
+    if tree := stmts_parse.file {
+        if tree.items.len is 1 {
+            if .Binding(b) := tree.items[0].kind {
+                if .Fn(f) := b.init.kind {
+                    if .Block(block) := f.body {
+                        off := STMT_PREFIX.len.trunc(u32)
+                        bindings := list(Bound)
+                        for st in block.stmts {
+                            if .Binding(bd) := st.kind {
+                                for n in bd.binding.names {
+                                    bindings.push(Bound(name: n.name, lo: n.span.lo - off, hi: n.span.hi - off))!
+                                }
+                            }
+                        }
+                        single := block.stmts.len is 1 and block.stmts[0].kind is .Expr(_)
+                        if block.stmts.len > 0 { c.stmts = StmtInfo(bindings: bindings.items, single_expr: single) }
+                    }
+                }
+            }
+        }
+    }
+    if c.items is null and c.stmts is null {
+        end := str.trim_end(text).len.trunc(u32)
+        stmts_at_end := (stmts_parse.first_err else 0) >= STMT_PREFIX.len.trunc(u32) + end and stmts_parse.first_err is not null
+        items_at_end := (items_parse.first_err else 0) >= end and items_parse.first_err is not null
+        c.incomplete = stmts_at_end or items_at_end
+    }
+    return c
+}
+
+/// A copy of `c` in the current allocator.
+own :: fn(c: Classified) -> Classified needs Alloc {
+    out := Classified(items: null, stmts: null, incomplete: c.incomplete)
+    if items := c.items {
+        copy := list(Item)
+        for it in items {
+            names := list(string)
+            for n in it.names { names.push(dupe(n)!)! }
+            copy.push(Item(names: names.items, text: dupe(it.text)!, plain_const: it.plain_const))!
+        }
+        out.items = copy.items
+    }
+    if s := c.stmts {
+        copy := list(Bound)
+        for b in s.bindings { copy.push(Bound(name: dupe(b.name)!, lo: b.lo, hi: b.hi))! }
+        out.stmts = StmtInfo(bindings: copy.items, single_expr: s.single_expr)
+    }
+    return out
+}
+
+/// Whether the expression `text` may change variables: it takes an address (`&x`) or
+/// calls a method (`x.next()`).
+may_mutate :: fn(text: string) -> bool needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    return with a.allocator() {
+        tokens := scan(text).tokens
+        found := false
+        for i, t in enumerate(tokens) {
+            if .Punct(p) := t.kind {
+                if p is .Amp {
+                    if i is 0 { found = true } else {
+                        match tokens[i - 1].kind {
+                            .Ident(_), .Int(_) => {}
+                            _ => { found = true }
+                        }
+                    }
+                }
+                if p is .Dot and i + 2 < tokens.len and tokens[i + 1].kind is .Ident(_) and tokens[i + 2].kind is .Punct(.LParen) { found = true }
+            }
+        }
+        found
+    }
+}
+
+/// A variable name and the name it has in the synthesized `main`.
+Var :: struct {
+    name: string
+    internal: string
+}
+
+/// The name `name` has in `vars`, if it is there.
+lookup_var :: fn(vars: []const Var, name: string) -> ?string {
+    for v in vars {
+        if v.name is name { return v.internal }
+    }
+    return null
+}
+
+/// A name binding to rewrite: the byte range of the binding name and its new name.
+Def :: struct {
+    lo: u32
+    hi: u32
+    name: string
+}
+
+Edit :: struct {
+    lo: usize
+    hi: usize
+    text: string
+}
+
+/// Rewrites identifiers in `text`: the binding names at the byte ranges in `defs` become
+/// their new names, and every other identifier found in `uses` becomes its entry there
+/// (except member names after `.` and field names before `:`).
+rename :: fn(text: string, defs: []const Def, uses: []const Var) -> string needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    result := with a.allocator() { rename_in(text, defs, uses) }
+    return dupe(result)!
+}
+
+rename_in :: fn(text: string, defs: []const Def, uses: []const Var) -> string needs Alloc {
+    tokens := scan(text).tokens
+    edits := list(Edit)
+    for d in defs { edits.push(Edit(lo: usize(d.lo), hi: usize(d.hi), text: d.name))! }
+    for i, t in enumerate(tokens) {
+        .Ident(name) := t.kind else continue
+        new := lookup_var(uses, name) else continue
+        lo := usize(t.span.lo)
+        hi := usize(t.span.hi)
+        taken := false
+        for e in edits.items {
+            if e.lo is lo { taken = true }
+        }
+        if taken { continue }
+        if i > 0 and tokens[i - 1].kind is .Punct(.Dot) { continue }
+        if i + 1 < tokens.len and tokens[i + 1].kind is .Punct(.Colon) { continue }
+        edits.push(Edit(lo: lo, hi: hi, text: new))!
+    }
+    // Apply from the end, so that earlier offsets stay valid.
+    edits.items.sort_by(fn(x, y: ^const Edit) -> bool => x.lo > y.lo)
+    out := list(u8)
+    out.extend(text)!
+    for e in edits.items {
+        tail := dupe(out.items[e.hi..])!
+        out.truncate(e.lo)
+        out.extend(e.text)!
+        out.extend(tail)!
+    }
+    return out.items
+}
+
+/// The text to show for syntax errors in `text`: the diagnostics of whichever reading got
+/// further.
+syntax_errors :: fn(text: string, format: diag.Format) -> string needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    result := with a.allocator() { syntax_errors_in(text, format) }
+    return dupe(result)!
+}
+
+syntax_errors_in :: fn(text: string, format: diag.Format) -> string needs Alloc {
+    stray := scan(text).stray
+    items_err := parse_items(text).first_err
+    stmts_err := parse_stmts(text).first_err
+    pre := STMT_PREFIX.len.trunc(u32)
+    if not stray and items_err is not null {
+        if p := stmts_err {
+            if p >= pre + str.trim_end(text).len.trunc(u32) { return "error: the input ends where more is expected\n" }
+        }
+    }
+    use_stmts := false
+    if not stray {
+        if i := items_err {
+            if s := stmts_err { use_stmts = (s -| pre) > i }
+        }
+    }
+    sm := source.source_map()
+    diags := diag.diagnostics()
+    if use_stmts {
+        src := list(u8)
+        src.write("{}{}{}", STMT_PREFIX, text, STMT_SUFFIX)!
+        _ = parse_source(src.items, &sm, &diags)
+        return render_region(&sm, &diags, 0, pre, text, format)
+    }
+    _ = parse_source(text, &sm, &diags)
+    return render_region(&sm, &diags, 0, 0, text, format)
+}

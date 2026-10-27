@@ -1,0 +1,298 @@
+// Blocks, statements, `defer` and `errdefer`, conditions, patterns and loops.
+
+/// A `defer` or `errdefer` statement whose block is running.
+Deferred :: struct {
+    is_err: bool
+    body: ^Expr
+}
+
+block :: fn(m: ^Machine, a: Act, b: ^tir.Block, dst: []u8) -> Flow!() needs Run {
+    defers := list(Deferred)
+    failed: ?Flow = null
+    for i in 0..b.stmts.len {
+        st := b.stmts[i]
+        if .Defer(is_err, body) := st {
+            defers.push(Deferred(is_err: is_err, body: body))!
+            continue
+        }
+        m.exec_stmt(a, st) else f => {
+            failed = f
+            break
+        }
+    }
+    if failed is null {
+        if t := b.tail {
+            m.eval(a, t, dst) else f => { failed = f }
+        }
+    }
+    if defers.items.len is 0 {
+        if f := failed { return !f }
+        return ()
+    }
+    r := m.run_defers(a, defers.items, failed)
+    defers.deinit()
+    return r
+}
+
+/// Whether `target` is the frame of the function that lexically contains the code
+/// running in `fr`.
+lexically_same :: fn(fr: ^Frame, target: u64) -> bool {
+    cur := fr
+    while true {
+        if cur.id is target { return true }
+        if not cur.is_clause_lit { return false }
+        cur = cur.env else return false
+    }
+}
+
+/// Whether `errdefer` statements run when `flow` leaves a block of frame `fr` (§8.8).
+errdefers_run :: fn(fr: ^Frame, flow: Flow) -> bool => match flow {
+    .Trap(_), .Resume(_) => false
+    .Return(frame, is_err) => if lexically_same(fr, frame) { is_err } else { true }
+    .Break(frame, _), .Continue(frame, _) => not lexically_same(fr, frame)
+    .Exit(_), .Cancel => true
+}
+
+/// Runs the deferred statements of a block, innermost first, as it ends with `failed`
+/// (or normally).
+run_defers :: fn(m: ^Machine, a: Act, defers: []const Deferred, failed: ?Flow) -> Flow!() needs Run {
+    run_err := false
+    if f := failed {
+        if f is .Trap(_) { return !f }
+        run_err = errdefers_run(a.fr, f)
+    }
+    i := defers.len
+    while i > 0 {
+        i -= 1
+        d := defers[i]
+        if d.is_err and not run_err { continue }
+        tm := m.temps.items.len
+        mk := m.mark()
+        r := m.eval_discard(a, d.body)
+        m.kill_temps(tm)
+        m.release(mk)
+        r else f => {
+            if f is .Trap(_) { return !f }
+            return !m.trap(d.body.span, "internal error: control flow escaped a deferred statement")
+        }
+    }
+    if f := failed { return !f }
+}
+
+exec_stmt :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
+    tm := m.temps.items.len
+    mk := m.mark()
+    r := m.exec_stmt_inner(a, st)
+    m.kill_temps(tm)
+    m.release(mk)
+    return r
+}
+
+exec_stmt_inner :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
+    match st {
+        .Expr(e) => return m.eval_discard(a, e)
+        _ => return m.exec_other(a, st)
+    }
+}
+
+/// The statements other than expressions.
+#noinline
+exec_other :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
+    match st {
+        .Expr(e) => try m.eval_discard(a, e)
+        .Let(l, ?init) => {
+            fr := a.fr
+            n := fr.info.sizes[us(l)]
+            if e := init {
+                i := us(l)
+                // A local kept in the frame is computed in place.
+                if fr.mem[i] is 0 and not fr.info.addressed[i] {
+                    off := us(fr.info.offsets[i])
+                    try m.eval(a, e, fr.store[off..off + us(n)])
+                    return ()
+                }
+                b := m.tmp(n)
+                try m.eval(a, e, b)
+                try m.set_local(e.span, fr, l, b)
+            } else if fr.info.addressed[us(l)] {
+                _ = try m.local_addr(source.DUMMY, fr, l)
+            }
+        }
+        .LetTuple(locals, init) => {
+            b := m.tmp(m.size(init.ty))
+            try m.eval(a, init, b)
+            for i, l in enumerate(locals) {
+                if x := l {
+                    fb := m.tmp(a.fr.info.sizes[us(x)])
+                    m.read_field(init.ty, b, i.trunc(u32), fb)
+                    try m.set_local(init.span, a.fr, x, fb)
+                }
+            }
+        }
+        .Assign(place_, value) => {
+            if .Local(l) := place_.kind {
+                b := m.tmp(m.size(place_.ty))
+                try m.eval(a, value, b)
+                try m.set_local(place_.span, a.fr, l, b)
+                return ()
+            }
+            p := try m.place(a, place_, false)
+            b := m.tmp(m.size(place_.ty))
+            try m.eval(a, value, b)
+            try m.write_place(place_.span, p, place_.ty, b)
+        }
+        .AssignTuple(places, value) => {
+            ps := list(?Place)
+            for x in places {
+                if pe := x { ps.push(try m.place(a, pe, false))! } else { ps.push(null)! }
+            }
+            b := m.tmp(m.size(value.ty))
+            try m.eval(a, value, b)
+            for i, x in enumerate(places) {
+                pe := x else continue
+                p := ps.items[i] else continue
+                fb := m.tmp(m.size(pe.ty))
+                m.read_field(value.ty, b, i.trunc(u32), fb)
+                try m.write_place(pe.span, p, pe.ty, fb)
+            }
+            ps.deinit()
+        }
+        .Defer(_) => {}
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Conditions and patterns
+// ---------------------------------------------------------------------------------
+
+conds :: fn(m: ^Machine, a: Act, parts: []tir.CondPart) -> Flow!bool needs Run {
+    for c in parts {
+        match c {
+            .Bool(e) => if not try m.cond(a, e) { return false }
+            .Match(pat, value) => {
+                b := m.tmp(m.size(value.ty))
+                try m.eval(a, value, b)
+                if not try m.match_pat(a, pat, b) { return false }
+            }
+        }
+    }
+    return true
+}
+
+match_pat :: fn(m: ^Machine, a: Act, pat: ^tir.Pat, b: []u8) -> Flow!bool needs Run {
+    span := pat.span
+    match pat.kind {
+        .Wild => return true
+        .Bind(l) => {
+            try m.set_local(span, a.fr, l, b)
+            return true
+        }
+        .Const(e) => {
+            c := m.tmp(m.size(e.ty))
+            try m.eval(a, e, c)
+            if e.ty is not pat.ty and .Optional(inner) := m.kind(pat.ty) and inner is e.ty {
+                if not m.opt_present(pat.ty, b) { return false }
+                return m.equal(span, e.ty, m.opt_payload(pat.ty, b), c)
+            }
+            return m.equal(span, pat.ty, b, c)
+        }
+        .Range(r) => {
+            v := m.get_int(pat.ty, b)
+            signed := (m.int_info(pat.ty) else (signed: false, bits: 0)).signed
+            lo := tag_bits(r.lo)
+            hi := tag_bits(r.hi)
+            if signed {
+                x := v.bits(i128)
+                ok_hi := if r.inclusive { x <= hi.bits(i128) } else { x < hi.bits(i128) }
+                return x >= lo.bits(i128) and ok_hi
+            }
+            ok_hi := if r.inclusive { v <= hi } else { v < hi }
+            return v >= lo and ok_hi
+        }
+        .Null => return not m.opt_present(pat.ty, b)
+        .Some(p) => {
+            if not m.opt_present(pat.ty, b) { return false }
+            return m.match_pat(a, p, m.opt_payload(pat.ty, b))
+        }
+        .Ok(p) => {
+            if m.res_is_err(pat.ty, b) { return false }
+            return m.match_pat(a, p, m.res_payload(pat.ty, b))
+        }
+        .Err(p) => {
+            if not m.res_is_err(pat.ty, b) { return false }
+            return m.match_pat(a, p, m.res_payload(pat.ty, b))
+        }
+        .Variant(variant, ?payload) => {
+            idx := m.variant_index(pat.ty, b) else return !m.trap(span, "internal error: a union value with an invalid tag")
+            if idx is not variant { return false }
+            p := payload else return true
+            u := m.union_def(pat.ty) else return true
+            pt := u.variants[us(idx)].payload else p.ty
+            off := us(m.payload_offset(pat.ty))
+            return m.match_pat(a, p, b[off..off + us(m.size(pt))])
+        }
+        .Or(alts) => {
+            for p in alts {
+                if try m.match_pat(a, p, b) { return true }
+            }
+            return false
+        }
+        .Fields(fields) => {
+            for f in fields {
+                fb := m.tmp(m.size(f.pat.ty))
+                m.read_field(pat.ty, b, f.index, fb)
+                if not try m.match_pat(a, f.pat, fb) { return false }
+            }
+            return true
+        }
+    }
+}
+
+match_ :: fn(m: ^Machine, a: Act, scrutinee: ^Expr, arms: []tir.Arm, e: ^Expr, dst: []u8) -> Flow!() needs Run {
+    b := m.tmp(m.size(scrutinee.ty))
+    try m.eval(a, scrutinee, b)
+    for arm in arms {
+        if not try m.match_pat(a, arm.pat, b) { continue }
+        if g := arm.guard {
+            if not try m.cond(a, g) { continue }
+        }
+        return m.eval(a, arm.body, dst)
+    }
+    return !m.trap(e.span, "no match arm matched the scrutinee")
+}
+
+// ---------------------------------------------------------------------------------
+// Loops
+// ---------------------------------------------------------------------------------
+
+loop_ :: fn(m: ^Machine, a: Act, x: tir.LoopExpr, dst: []u8) -> Flow!() needs Run {
+    fr := a.fr
+    fr.labels.push(LabelDst(label: x.label, dst: dst))!
+    depth := fr.labels.items.len
+    r := m.loop_body(a, x)
+    fr.labels.truncate(depth - 1)
+    r else f => {
+        if .Break(frame, label) := f and frame is fr.id and label is x.label { return () }
+        return !f
+    }
+}
+
+loop_body :: fn(m: ^Machine, a: Act, x: tir.LoopExpr) -> Flow!() needs Run {
+    fr := a.fr
+    while true {
+        tm := m.temps.items.len
+        mk := m.mark()
+        try m.tick(source.DUMMY)
+        if not try m.conds(a, x.cond) {
+            m.kill_temps(tm)
+            m.release(mk)
+            return ()
+        }
+        m.block(a, x.body, empty_slice(u8)) else f => {
+            if .Continue(frame, label) := f and frame is fr.id and label is x.label {} else { return !f }
+        }
+        if st := x.step { try m.eval_discard(a, st) }
+        m.kill_temps(tm)
+        m.release(mk)
+    }
+}

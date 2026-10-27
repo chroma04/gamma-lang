@@ -1,0 +1,104 @@
+//! Checking the program synthesized for one input and running it, each in its own
+//! arena so that memory does not grow over a session.
+
+arena :: import "std/arena"
+ast :: import "../ast"
+cgen :: import "../cgen"
+check :: import "../check"
+diag :: import "../diag"
+driver :: import "../driver"
+interp :: import "../interp"
+load :: import "../load"
+sema :: import "../sema"
+source :: import "../source"
+
+/// A synthesized program, checked. Everything it points to lives in `arena`.
+Compiled :: struct {
+    arena: ^arena.Arena
+    sm: ^source.SourceMap
+    diags: ^diag.Diagnostics
+    /// The program, if checking found no errors.
+    prog: ?^cgen.Prog
+    /// The function to run (`main` with the ambient handlers installed).
+    entry: u32
+    /// The file of the synthesized module, and where the last input starts in it.
+    file: source.FileId
+    lo: u32
+    input: string
+}
+
+/// The name the synthesized module is given: it is a file that exists only in memory.
+MODULE_FILE :: "gamma_repl.gm"
+
+/// Checks the module `src` (the session so far plus the new input, which starts at byte
+/// `lo` and is the text `input`) and prepares it for running.
+check_source :: fn(src: string, mode: driver.Mode, lo: u32, input: string) -> Compiled needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    ar := new(arena.new())!
+    with ar.allocator() {
+        sm := new(source.source_map())!
+        diags := new(diag.diagnostics())!
+        next_id := new(ast.NodeId(0))!
+        c := Compiled(arena: ar, sm: sm, diags: diags, prog: null, entry: 0, file: 0, lo: lo, input: input)
+        std := driver.std_root()
+        l := new(load.loader(sm, diags, next_id, std, false))!
+        root := load.join(load.working_dir(), MODULE_FILE)
+        l.overlays.push(load.Overlay(path: l.canonical_path(root), text: dupe(src)!))!
+        if l.load_core(driver.core_root(std), driver.mode_name(mode)) {
+            s := new(sema.sema(l))!
+            check.install(s)
+            s.resolve_ambient()
+            if m := l.load_root(root) {
+                s.resolve_declarations()
+                check.check_program(s, m, false)
+                if not diags.has_errors() { c.prog = prepare(s, m, &c) }
+            }
+        }
+        for i, f in enumerate(sm.files.items) {
+            if f.path is root { c.file = i.trunc(u32) }
+        }
+        return c
+    }
+}
+
+/// The program of the checked module `m`, with the functions it can reach checked; `null`
+/// if that reports errors.
+prepare :: fn(s: ^sema.Sema, m: usize, c: ^Compiled) -> ?^cgen.Prog needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+    d := s.l.lookup(m, "main") else return null
+    .Fn(main) := s.resolve_decl(d) else return null
+    entry := check.entry_point(s, main)
+    roots := [1]u32(entry)
+    if not check.prepare_codegen(s, roots[..]) { return null }
+    c.entry = entry
+    return new(cgen.prog(s))!
+}
+
+/// The diagnostics of `c` as `render_region` shows them.
+shown :: fn(c: ^const Compiled, format: diag.Format) -> string needs Alloc => render_region(c.sm, c.diags, c.file, c.lo, c.input, format)
+
+/// Frees what the checked program holds.
+release :: fn(c: ^Compiled) needs Alloc {
+    ar := c.arena
+    ar.deinit()
+    destroy(ar)
+}
+
+/// Runs a checked program; true unless it trapped or exited with an error. With
+/// `replayed`, what the replayed part writes is hidden.
+run :: fn(c: ^const Compiled, mode: driver.Mode, replayed: bool) -> bool needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    p := c.prog else return false
+    imode: interp.Mode = match mode {
+        .Debug => .Debug
+        .Checked => .Checked
+        .Safe => .Safe
+        .Fast => .Fast
+    }
+    flt := interp.filter(SENTINEL, replayed)
+    args := [1]string("repl")
+    match interp.run_entry(p, c.entry, imode, args[..], &flt) {
+        .Exit(code) => return code is 0
+        .Trap(t) => {
+            Err.write(trap_report(c, t))
+            return false
+        }
+    }
+}

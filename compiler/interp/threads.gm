@@ -1,0 +1,245 @@
+// Threads (§19.6) in the interpreter: `@thread_spawn`, `@thread_join`, `@thread_detach`,
+// `@thread_yield`, `@futex_wait` and `@futex_wake` (`src/interp/threads.rs`).
+//
+// The reference implementation runs each thread on an OS thread under a global lock. Here
+// a thread is a coroutine (`fiber.gm`) and the threads take turns on the host's one thread:
+// the running one gives way every so many calls and loop iterations and when it blocks
+// (joining, waiting on a futex). Only one runs at a time either way, so atomics are
+// plain memory accesses. A trap in any thread stops the whole program with it, as in a
+// compiled program; the main thread reports it when it next runs.
+
+fs :: import "std/fs"
+thread :: import "std/thread"
+
+/// How many calls or loop iterations a thread runs before letting another one in.
+SLICE: u32 : 2000
+
+ThreadState :: union {
+    Ready
+    /// Waiting for thread `h` to end.
+    Join: u32
+    /// Waiting in `@futex_wait` until the wake-up count is no longer `seen` or until the
+    /// deadline (in nanoseconds of `Clock.now`), if any.
+    Futex: (seen: u64, deadline: ?u64)
+    /// Sleeping until the deadline.
+    Sleep: u64
+    /// Waiting for a host thread doing a blocking call: until the word is not 0.
+    Host: ^u32
+    Done
+}
+
+ThreadRec :: struct {
+    /// The coroutine the thread is running, which it continues in when it runs again.
+    coro: u32
+    state: ThreadState
+    joined: bool
+}
+
+/// The threads of a program; thread 0 is the main thread.
+pub Threads :: struct {
+    list: List(ThreadRec)
+    cur: u32
+    since_yield: u32
+    /// Incremented by each `@futex_wake`: every waiter wakes and checks its word again.
+    futex_seq: u64
+    /// The first trap of any thread other than the main one.
+    fatal: ?^Trap
+}
+
+threads :: fn() -> Threads needs Alloc {
+    l := list(ThreadRec)
+    l.push(ThreadRec(coro: 0, state: .Ready, joined: false))!
+    return Threads(list: l, cur: 0, since_yield: 0, futex_seq: 0, fatal: null)
+}
+
+/// Called at each call and loop iteration: now and then, lets another thread run.
+tick :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Run {
+    th := &m.threads
+    if th.list.items.len is 1 { return () }
+    th.since_yield += 1
+    if th.since_yield < SLICE { return () }
+    th.since_yield = 0
+    try m.switch_thread(span)
+}
+
+/// Whether thread `t` can run now.
+runnable :: fn(m: ^Machine, t: ^const ThreadRec, now: ?u64) -> bool => match t.state {
+    .Ready => true
+    .Join(h) => m.threads.list.items[usize(h)].state is .Done
+    .Sleep(deadline) => now is not null and (now else 0) >= deadline
+    .Host(done) => @atomic_load(done, .Acquire) is not 0
+    .Futex(seen, ?deadline) => seen is not m.threads.futex_seq or (deadline is not null and now is not null and (now else 0) >= (deadline else 0))
+    .Done => false
+}
+
+/// Lets the other threads run, then continues the running one once it can run (it may
+/// be blocked); fails if one of them trapped.
+switch_thread :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Run {
+    th := &m.threads
+    me := th.cur
+    th.list.items[usize(me)].coro = m.fib.cur
+    n := th.list.items.len
+    while true {
+        now: ?u64 = null
+        // Look at the clock only when some thread waits with a deadline.
+        for t in th.list.items {
+            if .Futex(_, ?d) := t.state and d is not null { now = Clock.now().ns }
+            if t.state is .Sleep(_) { now = Clock.now().ns }
+        }
+        for k in 1..n + 1 {
+            i := (usize(me) + k) % n
+            t := &th.list.items[i]
+            if not m.runnable(t, now) { continue }
+            t.state = .Ready
+            if i is usize(me) { return m.check_fatal() }
+            th.cur = i.trunc(u32)
+            _ = m.handoff(t.coro, .None)
+            m.threads.cur = me
+            if m.threads.list.items[usize(me)].state is .Ready { return m.check_fatal() }
+            // Woken to find this thread still blocked: look again.
+            break
+        }
+        if m.runnable(&th.list.items[usize(me)], now) { continue }
+        // Nobody can run: sleep until the earliest deadline, if there is one.
+        earliest: ?u64 = null
+        for t in th.list.items {
+            if .Futex(_, ?d) := t.state and d is not null {
+                if e := earliest and e <= (d else 0) {} else { earliest = d }
+            }
+            if .Sleep(d) := t.state {
+                if e := earliest and e <= d {} else { earliest = d }
+            }
+        }
+        // A blocking call on a host thread ends by itself: look again shortly.
+        for t in th.list.items {
+            if t.state is .Host(_) and earliest is null { earliest = (now else Clock.now().ns) +| 1_000_000 }
+        }
+        e := earliest else return !m.trap(span, "deadlock: every thread is blocked")
+        if t := now and e > t { Clock.sleep(Duration(ns: e - t)) }
+    }
+}
+
+check_fatal :: fn(m: ^const Machine) -> Flow!() {
+    if t := m.threads.fatal { return !.Trap(t) }
+}
+
+/// The system services of threads and futexes; `vals` are the evaluated arguments.
+thread_op :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, vals: [][]u8, res: []u8) -> Flow!() needs Run {
+    match op {
+        .ThreadSpawn => {
+            addr := m.ptr_of(vals[0])
+            f := m.fn_from_addr(addr) else return !m.trap(span, str.format("a thread started from an invalid function pointer {:#x}", addr)!)
+            arg := make(u8, vals[1].len.max(1))!
+            arg[0..vals[1].len].copy_from(vals[1])
+            id := m.threads.list.items.len.trunc(u32)
+            c := m.new_coro(.Thread(f, arg[0..vals[1].len], span), id)
+            m.threads.list.push(ThreadRec(coro: c, state: .Ready, joined: false))!
+            m.put_uint(res, u128(id))
+        }
+        .ThreadJoin => {
+            h := m.get_int(m.s.tys.int(true, 64), vals[0]).bits(i128)
+            // An unknown thread is `IoError.Other(ESRCH)`.
+            if h <= 0 or h >= i128(m.threads.list.items.len) or m.threads.list.items[usize(h.trunc(u32))].joined {
+                m.put_uint(res, 0 -% u128(1003))
+                return ()
+            }
+            t := h.trunc(u32)
+            m.threads.list.items[usize(t)].joined = true
+            if m.threads.list.items[usize(t)].state is not .Done {
+                m.threads.list.items[usize(m.threads.cur)].state = .Join(t)
+                try m.switch_thread(span)
+            }
+            try m.check_fatal()
+            m.put_uint(res, 0)
+        }
+        .ThreadDetach => {
+            h := m.get_int(m.s.tys.int(true, 64), vals[0]).bits(i128)
+            if h <= 0 or h >= i128(m.threads.list.items.len) or m.threads.list.items[usize(h.trunc(u32))].joined {
+                m.put_uint(res, 0 -% u128(1003))
+                return ()
+            }
+            m.threads.list.items[usize(h.trunc(u32))].joined = true
+            m.put_uint(res, 0)
+        }
+        .ThreadYield => try m.switch_thread(span)
+        .FutexWait => {
+            try m.check_fatal()
+            addr := m.ptr_of(vals[0])
+            word: [4]u8 = [4]u8(0, 0, 0, 0)
+            try m.load_at(span, addr, 4, word[..])
+            expected := m.get_uint(vals[1]) & 0xFFFF_FFFF
+            if m.get_uint(word[..]) is expected {
+                timeout := m.get_int(m.s.tys.int(true, 64), vals[2]).bits(i128)
+                deadline: ?u64 = null
+                if timeout >= 0 { deadline = Clock.now().ns +| timeout.trunc(u64) }
+                m.threads.list.items[usize(m.threads.cur)].state = .Futex(m.threads.futex_seq, deadline)
+                try m.switch_thread(span)
+            }
+            m.put_uint(res, 0)
+        }
+        .FutexWake => {
+            // Every waiter wakes (a wake-up may be spurious) and checks its word again.
+            m.threads.futex_seq += 1
+            m.put_uint(res, 0)
+        }
+        _ => return !m.trap(span, "internal error: not a thread operation")
+    }
+}
+
+/// Runs thread `id`, a new coroutine, until its function returns, then lets the others run.
+thread_main :: fn(m: ^Machine, f: u32, arg: []u8, span: source.Span) needs Run {
+    args := [1][]u8(arg)
+    def := m.func(f)
+    ret := m.tmp(m.size(def.ret))
+    m.call_function(span, f, args[..], null, 0, null, false, ret) else fl => {
+        if m.threads.fatal is null {
+            t: ^Trap = if .Trap(x) := fl { x } else { new(Trap(message: "internal error: control flow left a thread", span: span, trace: list(TraceCall)))! }
+            m.threads.fatal = t
+        }
+    }
+    if arg.len > 0 { free(arg) }
+}
+
+/// `Clock.sleep` of the running thread: the other threads run meanwhile.
+sleep :: fn(m: ^Machine, span: source.Span, ns: u64) -> Flow!() needs Run {
+    if m.threads.list.items.len is 1 {
+        Clock.sleep(Duration(ns: ns))
+        return ()
+    }
+    m.threads.list.items[usize(m.threads.cur)].state = .Sleep(Clock.now().ns +| ns)
+    try m.switch_thread(span)
+}
+
+/// A read of a file on a host thread of its own.
+HostRead :: struct {
+    file: fs.File
+    buf: []u8
+    result: IoError!usize
+    done: u32
+}
+
+host_read_main :: fn(j: ^HostRead) needs Sys {
+    thread.defaults(fn() { j.result = Fs.read(j.file, j.buf) })
+    @atomic_store(&j.done, 1, .Release)
+}
+
+/// `Fs.read(f, buf)` when the program has several threads: the read, which may block (a
+/// pipe), runs on a host thread while the other threads go on, as they do in the
+/// reference implementation, which releases its lock around calls that may block.
+read_on_host_thread :: fn(m: ^Machine, span: source.Span, f: fs.File, buf: []u8) -> Flow!(IoError!usize) needs Run {
+    j := new(HostRead(file: f, buf: buf, result: 0, done: 0))!
+    t := thread.spawn(host_read_main, j) else e => {
+        free(slice_of_read(j))
+        failed: IoError!usize = !e
+        return failed
+    }
+    m.threads.list.items[usize(m.threads.cur)].state = .Host(&j.done)
+    r := m.switch_thread(span)
+    thread.join(t)
+    result := j.result
+    free(slice_of_read(j))
+    try r
+    return result
+}
+
+slice_of_read :: fn(j: ^HostRead) -> []HostRead => j.cast([^]HostRead)[0..1]

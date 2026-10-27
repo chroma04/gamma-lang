@@ -1,0 +1,82 @@
+// `gammac run --backend=interp`: runs the program in the interpreter (`interp/`).
+
+hash_map :: import "std/collections/hash_map"
+interp :: import "../interp"
+tir :: import "../tir"
+
+/// Runs the program rooted at module `root` (from the file or directory `input`) in the
+/// interpreter; returns its exit status (134 after a trap, as for an aborted process).
+pub run_interp :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    d := s.l.lookup(root, "main") else {
+        eprint("gammac: the program has no `main` function\n")
+        return 1
+    }
+    .Fn(main) := s.resolve_decl(d) else return 1
+    entry := check.entry_point(s, main)
+    roots := [1]u32(entry)
+    if not check.prepare_codegen(s, roots[..]) { return 1 }
+    p := cgen.prog(s)
+    // The interpreter cannot call foreign code or run assembly: such programs run
+    // natively, as the reference implementation runs those it cannot describe to libffi.
+    if needs_native(&p, entry) { return run(s, root, opts) }
+    mode: interp.Mode = match opts.mode {
+        .Debug => .Debug
+        .Checked => .Checked
+        .Safe => .Safe
+        .Fast => .Fast
+    }
+    // The program sees the source path as its name.
+    args := list(string)
+    args.push(input)!
+    args.extend(opts.program_args)!
+    match interp.run_entry(&p, entry, mode, args.items, null) {
+        .Exit(code) => return code
+        .Trap(t) => {
+            eprint("trap: {}", interp.trap_report(&p, t))
+            // The status of a process terminated by `abort` (SIGABRT).
+            return 134
+        }
+    }
+}
+
+/// Whether the program from `entry` reaches a foreign function or variable, or `@asm`.
+needs_native :: fn(p: ^cgen.Prog, entry: u32) -> bool needs Alloc {
+    seen := hash_map.hash_map(u32, bool)
+    sc := NativeScan(p: p, work: list(u32), found: false)
+    sc.work.push(entry)!
+    while f := sc.work.pop() {
+        if sc.found { return true }
+        if seen.get(f) is not null { continue }
+        seen.put(f, true)!
+        def := p.func(f)
+        if def.kind is .Foreign(_) { return true }
+        if b := def.body { scan_native(&sc, b) }
+    }
+    return sc.found
+}
+
+/// The functions left to look at, and whether something needs a native run.
+NativeScan :: struct {
+    p: ^cgen.Prog
+    work: List(u32)
+    found: bool
+}
+
+scan_native :: fn(sc: ^NativeScan, e: ^tir.Expr) needs Alloc {
+    p := sc.p
+    match e.kind {
+        .Call(.Fn(f), _), .FnRef(f), .Closure(f) => sc.work.push(f)!
+        .Builtin(.Asm(_), _) => { sc.found = true }
+        .Global(_, decl) => if i := p.global_index(decl) and p.s.globals.items[i].link_name is not null { sc.found = true }
+        .HandlerRef(h) => for c in p.handler_lit(h).clauses { sc.work.push(c)! }
+        .With(w) => for hv in w.handlers {
+            if .Decl(decls, _) := hv {
+                for d in decls {
+                    for c in p.handler_decl(d).clauses { sc.work.push(c)! }
+                }
+            }
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^tir.Expr) { scan_native(sc, x) })
+}

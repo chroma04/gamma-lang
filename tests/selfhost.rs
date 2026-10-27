@@ -484,6 +484,10 @@ struct RunTest {
     stdin: Vec<u8>,
     stdout: Vec<u8>,
     exit: i32,
+    /// The expected standard error, for tests of trap reports (`//! stderr`).
+    stderr: Option<Vec<u8>>,
+    /// Whether the test runs only through the C back end (`//! native:`).
+    native: bool,
 }
 
 /// The `run` tests that expect no compile errors and apply to this host.
@@ -622,6 +626,8 @@ fn lane_tests(lane: Option<&Lane>) -> Vec<RunTest> {
             stdin: read("stdin"),
             stdout: read("stdout"),
             exit: directive("exit:").map_or(0, |e| e.parse().unwrap()),
+            stderr: text.lines().any(|l| l.trim() == "//! stderr").then(|| read("stderr")),
+            native: directive("native:").is_some(),
         });
     }
     tests
@@ -729,6 +735,149 @@ fn programs_compiled_by_gammac_in_a_lane_behave_as_expected() {
         lane.name,
         failures.len(),
         tests.len(),
+        failures.join("\n\n")
+    );
+}
+
+/// How many run tests `gammac run --backend=interp` may skip because it cannot run them
+/// yet (it reports them as not supported); any other difference fails. A ceiling rather
+/// than a floor on the passes, since which run tests apply depends on the host (`os:`,
+/// `arch:`). Lower this as the interpreter grows.
+#[cfg(unix)]
+const INTERP_UNSUPPORTED_MAX: usize = 0;
+
+/// Runs `t` with `gammac run --backend=interp`; returns why it failed, if it did, and
+/// whether that is because the interpreter does not support something yet.
+#[cfg(unix)]
+fn interpret(gammac: &Path, t: &RunTest, dir: &Path) -> Option<(String, bool)> {
+    let stdin = dir.join(format!("{}.stdin", t.name.replace('/', "_")));
+    std::fs::write(&stdin, &t.stdin).unwrap();
+    let mut cmd = Command::new(gammac);
+    // The path as the reference reports it: relative to the repository's root.
+    let file = t.root.strip_prefix(root()).unwrap_or(&t.root);
+    cmd.current_dir(root()).args(["run", "--backend=interp"]).arg(format!("--mode={}", t.mode)).arg(file);
+    cmd.stdin(std::fs::File::open(&stdin).unwrap());
+    gammac_env(&mut cmd);
+    let ran = common::output(&mut cmd).unwrap();
+    let _ = std::fs::remove_file(&stdin);
+    let err = String::from_utf8_lossy(&ran.stderr).into_owned();
+    let unsupported = err.contains("not supported by gammac's interpreter yet");
+    if ran.status.code() != Some(t.exit) {
+        return Some((format!("exit status {:?}, expected {}:\n{}", ran.status.code(), t.exit, err), unsupported));
+    }
+    if ran.stdout != t.stdout {
+        let (e, a) = (String::from_utf8_lossy(&t.stdout), String::from_utf8_lossy(&ran.stdout));
+        let (_, line, e, a) = first_difference(&e, &a).unwrap_or_default();
+        return Some((format!("output differs at line {}:\nexpected: {}\n  actual: {}", line, e, a), unsupported));
+    }
+    if let Some(expected) = &t.stderr {
+        let std = gamma::sema::std_root().display().to_string();
+        let got = err.replace(&format!("{}/", std), "<std>/");
+        if got.as_bytes() != expected.as_slice() {
+            return Some((
+                format!("standard error differs:\nexpected: {}\n  actual: {}", String::from_utf8_lossy(expected), got),
+                unsupported,
+            ));
+        }
+    }
+    None
+}
+
+#[test]
+#[cfg(unix)]
+#[allow(clippy::absurd_extreme_comparisons)] // while `INTERP_UNSUPPORTED_MAX` is 0
+fn programs_interpreted_by_gammac_behave_as_expected() {
+    let Gammac::Native(gammac) = gammac() else { return };
+    let tests: Vec<RunTest> = run_tests().into_iter().filter(|t| !t.native).collect();
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-interp");
+    std::fs::create_dir_all(&dir).unwrap();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(vec![]);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(t) = tests.get(i) else { break };
+                    let r = interpret(gammac, t, &dir);
+                    results.lock().unwrap().push((t.name.clone(), r));
+                }
+            });
+        }
+    });
+    let results = results.into_inner().unwrap();
+    let passed = results.iter().filter(|r| r.1.is_none()).count();
+    let mut failures: Vec<String> =
+        results.iter().filter_map(|(n, r)| r.as_ref().filter(|r| !r.1).map(|r| format!("{}: {}", n, r.0))).collect();
+    failures.sort();
+    assert!(failures.is_empty(), "{} of {} programs failed:\n{}", failures.len(), tests.len(), failures.join("\n\n"));
+    let unsupported = tests.len() - passed;
+    assert!(
+        unsupported <= INTERP_UNSUPPORTED_MAX,
+        "{} of {} programs are not supported (at most {})",
+        unsupported,
+        tests.len(),
+        INTERP_UNSUPPORTED_MAX
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn repl_matches_the_reference() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let Gammac::Native(gammac) = gammac() else { return };
+    // The sessions of `tests/repl.rs`, and output to compare with the reference's.
+    let sessions = [
+        "1 + 2\n\"hello\"\n(1, true)\n2.5 * 2.0\n",
+        "print(\"hi\\n\")\n",
+        "x := 10\nx * 2\ny :: x + 1\ny\nx = 7\nx + y\n",
+        "x := 5\ny := x + 1\nx := \"text\"\nx\ny\nx := x\nx\n",
+        "greet :: fn() needs Out { print(\"hello\\n\") }\nn := 1\ngreet()\nn := n + 1\nn\ngreet()\n",
+        "total := 0\nfor i in 0..5 {\n    total += i\n}\ntotal\nl := list(i32)\ntry l.push(3)\ntry l.push(4)\nl.items\n",
+        "sq :: fn(n: i32) -> i32 => n * n\nsq(7)\nsq :: fn(n: i32) -> i32 => n * n + 1\nsq(7)\nuse_sq :: fn() -> i32 => sq(2)\nuse_sq()\n",
+        "Point :: struct {\n    x: i32,\n    y: i32,\n}\np := Point(x: 1, y: 2)\np\np.x + p.y\nN :: 3\narr := [N]i32(1, 2, 3)\narr[N - 1]\n",
+        "total :: fn(n: i32) -> i32 {\n    s := 0\n    for i in 0..n {\n        s += i\n    }\n    return s\n}\ntotal(5)\n(1 +\n 2)\n",
+        "x := 5\n:type x\n:type 1 + 2\n:type \"s\"\n:type (x, true)\n:type [2]u8(1, 2)\n",
+        "noisy :: fn() -> i32 needs Out { print(\"ran\\n\"); return 1 }\n:type noisy()\n",
+        "x := 1\ny := undefined_name\nx + \"a\"\nx\nbad :: fn() -> i32 => \"s\"\nx + 1\n",
+        "f :: fn() -> i32 => 1\nf :: fn() -> i32 => \"s\"\nf()\n",
+        "x := 3\ny := 10 / (x - 3)\nx\ntrap(\"boom\")\nx + 1\n",
+        "math :: import \"std/math\"\nmath.sqrt(16.0)\nmath.floor(2.7)\n",
+        "get :: fn() -> i32 needs Out {\n    print(\"once\\n\")\n    return 7\n}\nv := get()\nv + 1\nv + 2\n",
+        "x := 4\nsq :: fn(n: i32) -> i32 => n * n\n:list\n:reset\n:list\nx\n",
+        ":help\n:quit\n1 + 1\n",
+        "1 + 1\nf :: fn() {\n",
+        "main :: fn() {}\n",
+        "}\n3\n4\n",
+        "/* a\n*/\n5\n",
+    ];
+    let run = |mut cmd: Command, input: &str| {
+        cmd.current_dir(root()).arg("repl").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        gammac_env(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let mut failures = vec![];
+    for input in sessions {
+        let expected = run(gamma(), input);
+        let actual = run(Command::new(gammac), input);
+        if expected != actual {
+            failures.push(format!("input {:?}:\nexpected {:?}\n  actual {:?}", input, expected, actual));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} sessions differ:\n{}",
+        failures.len(),
+        sessions.len(),
         failures.join("\n\n")
     );
 }

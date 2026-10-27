@@ -1,0 +1,622 @@
+// Fibers and continuations (§14), mirroring `src/interp/fiber.rs`.
+//
+// The interpreter is recursive, so a fiber suspended in the middle of its code needs a
+// stack of its own: every fiber runs as a coroutine of the host, a fiber of gammac
+// itself. The coroutines hand control to each other explicitly (`handoff`), so exactly
+// one of them runs at any time; a scheduler, the handler of `Coro` installed when the run
+// starts, switches between them. What belongs to a coroutine rather than to the program
+// (scratch memory, temporaries, call depth, the fiber stack left) is saved before each
+// handoff and restored after it.
+//
+// A `with … on` runs its body on a new fiber and then acts as its *driver*: it waits for
+// messages from the fibers. A fiber that performs a `ctl` operation sends `Perform` and
+// waits; the driver runs the clause, which ends with `resume` (a `Flow.Resume` naming the
+// fiber to switch to), `cancel` and an exit, or an exit. A fiber whose base frame returns
+// or exits sends `Done`.
+
+/// Switching between the host's coroutines.
+Coro :: effect {
+    /// Suspends the running coroutine and runs coroutine `to`; returns when another
+    /// coroutine transfers back to this one. The message is in `Fibers.mail`.
+    transfer: ctl(to: u32)
+}
+
+/// The coroutine scheduler, by the machine it serves.
+Sched :: struct {
+    m: ^Machine
+}
+
+handler Coro for ^Sched needs Host {
+    transfer(self, to, k) => {
+        f := &self.m.fib
+        cur := &f.coros.items[usize(f.cur)]
+        // A finished coroutine is never resumed: its continuation ends here, and its stack
+        // is free again.
+        if cur.finished {
+            cancel k
+            f.free_stacks.push(cur.host_stack)!
+            cur.host_stack = empty_slice(u8)
+        } else {
+            cur.k = k
+        }
+        f.cur = to
+        if to is EXIT_ALL {
+            // The run is over: every coroutine still suspended ends here, and the root
+            // resumes to finish it.
+            for i in 1..f.coros.items.len {
+                if x := f.coros.items[i].k {
+                    f.coros.items[i].k = null
+                    cancel x
+                }
+            }
+            f.cur = 0
+            r := f.coros.items[0].k else @unreachable()
+            f.coros.items[0].k = null
+            resume r()
+        }
+        target := &f.coros.items[usize(to)]
+        if not target.started {
+            target.started = true
+            resume @fiber(coro_entry, target.arg, target.host_stack)()
+        }
+        r := target.k else @unreachable()
+        target.k = null
+        resume r()
+    }
+}
+
+/// `Coro.transfer`'s target that ends every coroutine but the root.
+EXIT_ALL: u32 : 0xFFFF_FFFF
+
+/// The size of the host stack of the root coroutine, which runs the program's own thread.
+ROOT_STACK: usize : 1 << 30
+
+/// Host stacks come from `calloc`, whose large blocks the C library maps from fresh zero
+/// pages: they cost memory only as they are used (the heap allocator fills its blocks).
+libc :: foreign "c" {
+    calloc :: fn(n, size: usize) -> ?[^]u8 needs not
+    free :: fn(p: [^]u8) needs not
+}
+
+/// A new host stack of `n` bytes, if the host has the memory.
+host_stack :: fn(n: usize) -> ?[]u8 {
+    p := libc.calloc(1, n) else return null
+    return p[0..n]
+}
+
+/// How much of a host stack the evaluation may use: the rest is kept for the host.
+STACK_MARGIN: usize : 1 << 20
+
+/// A message between coroutines.
+Msg :: union {
+    None
+    /// To a fiber: continue, with this value as the result of its `ctl` operation.
+    Resume: []u8
+    /// To a fiber: unwind to the base, running the deferred statements (§14.5).
+    Cancel
+    /// To a fiber: stop without running any more of the program (it is trapping).
+    Abort
+    /// To a driver: fiber `fiber` performed operation `op` of the handler at context `node`.
+    Perform: (fiber: u32, node: u32, op: u32, args: []const []u8, span: source.Span)
+    /// To a driver: fiber `fiber` ended, normally or with a flow.
+    Done: (fiber: u32, flow: ?Flow)
+}
+
+/// A `with … on`, by the id of its frame and its label.
+WithKey :: struct {
+    frame: u64
+    label: u32
+}
+
+WithRec :: struct {
+    key: WithKey
+    /// The coroutine running the `with` statement.
+    driver: u32
+    /// Fibers suspended on its operations, i.e. its unconsumed continuations, oldest first.
+    suspended: List(u32)
+    /// The context of the body, for fibers made by `@fiber`.
+    body_cx: u32
+    /// The fibers it created.
+    owned: List(u32)
+    /// Where the `with` is: the call site that backtraces give the fibers made by `@fiber`
+    /// for it, as the C runtime does.
+    span: source.Span
+}
+
+/// What a fiber starts with.
+Start :: union {
+    /// The body of a `with … on`, run in the frame of the function containing it; its value
+    /// goes to `dst`.
+    Body: (fr: ^Frame, cx: u32, body: ^Expr, dst: []u8)
+    /// `f(arg)` for `@fiber`.
+    Call: (f: []u8, fty: Ty, arg: []u8, cx: u32, span: source.Span)
+    /// A new thread calling function `f` with `arg` (`threads.gm`).
+    Thread: (f: u32, arg: []u8, span: source.Span)
+}
+
+FState :: union {
+    Running
+    /// Suspended on an operation of the `with` with this key.
+    Suspended: WithKey
+    Done
+}
+
+/// What belongs to a running coroutine, saved while it does not run.
+Saved :: struct {
+    scratch: Scratch
+    temps: List(u64)
+    argv: List([]u8)
+    depth: u32
+    fiber_stack: u64
+    stack_floor: usize
+}
+
+CoroRec :: struct {
+    /// The continuation of the host fiber while it is suspended.
+    k: ?cont(())
+    started: bool
+    finished: bool
+    /// The argument of its host fiber's entry function.
+    arg: rawptr
+    host_stack: []u8
+    saved: ?Saved
+    // As an interpreted fiber:
+    owner: WithKey
+    /// Incremented at each suspension, so that a continuation names one suspension.
+    epoch: u64
+    state: FState
+    start: ?Start
+    /// The size of its stack, less the part reserved for reporting an overflow.
+    stack: u64
+    /// The thread it belongs to.
+    thread: u32
+}
+
+CoroArg :: struct {
+    m: ^Machine
+    id: u32
+}
+
+pub Fibers :: struct {
+    /// The coroutine running now (0: the root).
+    cur: u32
+    coros: List(CoroRec)
+    withs: List(WithRec)
+    /// The message being handed over.
+    mail: Msg
+    /// The value of the `resume` being performed.
+    resume_value: []u8
+    free_stacks: List([]u8)
+}
+
+fibers :: fn() -> Fibers needs Alloc => Fibers(cur: 0, coros: list(CoroRec), withs: list(WithRec), mail: .None, resume_value: empty_slice(u8), free_stacks: list([]u8))
+
+/// Ends the coroutine `id` of a thread whose function returned, and lets the other threads
+/// run.
+end_thread :: fn(m: ^Machine, id: u32) needs Run {
+    m.kill_temps(0)
+    for c in m.scratch.chunks.items { free(c) }
+    m.scratch.chunks.deinit()
+    m.temps.deinit()
+    m.argv.deinit()
+    rec := &m.fib.coros.items[usize(id)]
+    rec.finished = true
+    t := rec.thread
+    m.threads.list.items[usize(t)].state = .Done
+    // A trap in a thread stops the program: the main thread reports it.
+    if m.threads.fatal is not null { m.threads.list.items[0].state = .Ready }
+    m.switch_thread(source.DUMMY) else {}
+}
+
+/// The size of a fiber's stack that `@min_stack` gives (§14.1).
+MIN_STACK: u64 : 16384
+/// The part of a fiber stack kept for reporting its overflow.
+STACK_RESERVE: u64 : 8192
+
+/// Runs `body` as the root coroutine, under the scheduler; returns what it returns.
+run_coroutines :: fn(m: ^Machine, body: fn() -> Outcome needs Run) -> Outcome needs Host {
+    m.fib.coros.push(CoroRec(k: null, started: true, finished: false, arg: m.cast(rawptr), host_stack: empty_slice(u8), saved: null, owner: WithKey(frame: 0, label: 0), epoch: 0, state: .Running, start: null, stack: 0, thread: 0))!
+    sched := Sched(m: m)
+    stack := host_stack(ROOT_STACK)?
+    defer libc.free(stack.ptr)
+    return with &sched on stack {
+        // The body's own locals are the enclosing function's: the stack is measured in a
+        // function it calls.
+        m.set_stack_floor(stack.len)
+        outcome := body()
+        Coro.transfer(EXIT_ALL)
+        outcome
+    }
+}
+
+/// Sets the lowest host stack address the evaluation may use, for a host stack of `size`
+/// bytes that the caller runs on.
+set_stack_floor :: fn(m: ^Machine, size: usize) {
+    marker: u8 = 0
+    here := (&marker).addr()
+    m.stack_floor = here - (size - STACK_MARGIN.min(size / 2))
+}
+
+/// The entry of a coroutine's host fiber.
+coro_entry :: fn(p: rawptr) -> never needs Coro + Host {
+    arg := p.cast(^CoroArg)
+    arg.m.coro_main(arg.id)
+    @unreachable()
+}
+
+/// Runs fiber `id` from its first message to its end, then reports to its driver.
+coro_main :: fn(m: ^Machine, id: u32) needs Run {
+    rec := &m.fib.coros.items[us(id)]
+    m.set_stack_floor(rec.host_stack.len)
+    m.scratch = Scratch(chunks: list([]u8), cur: 0, top: 0)
+    m.scratch.chunks.push(make_fill(FIBER_CHUNK, u8(0))!)!
+    m.temps = list(u64)
+    m.argv = list([]u8)
+    m.depth = 0
+    m.fiber_stack = rec.stack
+    first := m.fib.mail
+    m.fib.mail = .None
+    if start := rec.start and start is .Thread(_) { first = .Resume(empty_slice(u8)) }
+    flow: ?Flow = null
+    match first {
+        .Resume(v) => {
+            if v.len > 0 { free(v) }
+            start := rec.start else return ()
+            rec.start = null
+            r := match start {
+                .Body(fr, cx, body, dst) => m.eval(Act(fr: fr, cx: cx), body, dst)
+                .Call(x) => {
+                    args := [1][]u8(x.arg)
+                    m.call_value(x.cx, x.span, x.f, x.fty, args[..], empty_slice(u8))
+                }
+                .Thread(x) => {
+                    m.thread_main(x.f, x.arg, x.span)
+                    m.end_thread(id)
+                    return ()
+                }
+            }
+            r else f => { flow = f }
+        }
+        .Cancel => { flow = .Cancel }
+        _ => { flow = aborted() }
+    }
+    m.kill_temps(0)
+    for c in m.scratch.chunks.items { free(c) }
+    m.scratch.chunks.deinit()
+    m.temps.deinit()
+    m.argv.deinit()
+    rec = &m.fib.coros.items[us(id)]
+    rec.finished = true
+    driver := m.with_rec(rec.owner) else return ()
+    m.fib.mail = .Done(id, flow)
+    Coro.transfer(driver.driver)
+}
+
+FIBER_CHUNK: usize : 64 << 10
+
+aborted :: fn() -> Flow needs Alloc => .Trap(new(Trap(message: "internal error: fiber aborted", span: source.DUMMY, trace: list(TraceCall)))!)
+
+/// Passes control to coroutine `to` with `msg` and waits until a message comes back.
+handoff :: fn(m: ^Machine, to: u32, msg: Msg) -> Msg needs Run {
+    me := m.fib.cur
+    m.fib.coros.items[usize(me)].saved = Saved(scratch: m.scratch, temps: m.temps, argv: m.argv, depth: m.depth, fiber_stack: m.fiber_stack, stack_floor: m.stack_floor)
+    m.fib.mail = msg
+    Coro.transfer(to)
+    s := m.fib.coros.items[usize(me)].saved else return .None
+    m.fib.coros.items[usize(me)].saved = null
+    m.scratch = s.scratch
+    m.temps = s.temps
+    m.argv = s.argv
+    m.depth = s.depth
+    m.fiber_stack = s.fiber_stack
+    m.stack_floor = s.stack_floor
+    r := m.fib.mail
+    m.fib.mail = .None
+    return r
+}
+
+with_rec :: fn(m: ^Machine, key: WithKey) -> ?^WithRec {
+    for i in 0..m.fib.withs.items.len {
+        w := &m.fib.withs.items[i]
+        if w.key.frame is key.frame and w.key.label is key.label { return w }
+    }
+    return null
+}
+
+same_key :: fn(a, b: WithKey) -> bool => a.frame is b.frame and a.label is b.label
+
+/// The bytes of a continuation: its fiber and its suspension number.
+put_cont :: fn(m: ^const Machine, dst: []u8, fiber: u32, epoch: u64) {
+    m.put_word(dst, 0, u64(fiber))
+    m.put_word(dst, 1, epoch)
+}
+
+/// A new fiber of the `with` `owner`, starting with `start` on `stack` (its bytes).
+new_fiber :: fn(m: ^Machine, owner: WithKey, start: Start, state: FState, stack: []const u8) -> u32 needs Alloc {
+    size := m.slice_parts(stack).len
+    budget := if size > STACK_RESERVE { size - STACK_RESERVE } else { 0 }
+    // The host stack of a fiber: room for the interpreter's own frames, which are larger
+    // than the program's.
+    id := m.add_coro(start, (us(size.min(8 << 20)) * 32).max(4 << 20), m.threads.cur)
+    rec := &m.fib.coros.items[usize(id)]
+    rec.owner = owner
+    rec.state = state
+    rec.stack = budget
+    if w := m.with_rec(owner) { w.owned.push(id)! }
+    return id
+}
+
+/// A new coroutine for thread `thread`, starting with `start`.
+new_coro :: fn(m: ^Machine, start: Start, thread: u32) -> u32 needs Alloc => m.add_coro(start, 8 << 20, thread)
+
+/// A new coroutine starting with `start` on a host stack of at least `want` bytes.
+add_coro :: fn(m: ^Machine, start: Start, want: usize, thread: u32) -> u32 needs Alloc {
+    host := empty_slice(u8)
+    for i in 0..m.fib.free_stacks.items.len {
+        if m.fib.free_stacks.items[i].len >= want {
+            host = m.fib.free_stacks.swap_remove(i)
+            break
+        }
+    }
+    if host.len is 0 { host = host_stack(want)? }
+    id := m.fib.coros.items.len.trunc(u32)
+    arg := new(CoroArg(m: m, id: id))!
+    m.fib.coros.push(CoroRec(k: null, started: false, finished: false, arg: arg.cast(rawptr), host_stack: host, saved: null, owner: WithKey(frame: 0, label: 0), epoch: 1, state: .Running, start: start, stack: ~u64(0), thread: thread))!
+    return id
+}
+
+check_stack :: fn(m: ^Machine, span: source.Span, stack: []const u8) -> Flow!() needs Alloc {
+    len := m.slice_parts(stack).len
+    if not m.fast() and len < MIN_STACK { return !m.trap(span, str.format("a fiber stack needs at least {} bytes (`@min_stack`), but this one has {}", MIN_STACK, len)!) }
+}
+
+/// `with h on stack { body }` (§14.1) in frame `a.fr`, after the handlers are installed in
+/// `a.cx`.
+with_on :: fn(m: ^Machine, a: Act, w: tir.WithExpr, stack: []u8, e: ^Expr, dst: []u8) -> Flow!() needs Run {
+    try m.check_stack(e.span, stack)
+    key := WithKey(frame: a.fr.id, label: w.label)
+    if m.with_rec(key) is not null { return !m.trap(e.span, "internal error: a `with … on` is active twice") }
+    m.fib.withs.push(WithRec(key: key, driver: m.fib.cur, suspended: list(u32), body_cx: a.cx, owned: list(u32), span: e.span))!
+    first := m.new_fiber(key, .Body(a.fr, a.cx, w.body, dst), .Running, stack)
+    r := m.drive(e.span, key, first)
+    // Whatever way the driver ended, no fiber may outlive the records it uses.
+    m.abort_all(e.span, key)
+    for i in 0..m.fib.withs.items.len {
+        if same_key(m.fib.withs.items[i].key, key) {
+            x := m.fib.withs.swap_remove(i)
+            x.suspended.deinit()
+            x.owned.deinit()
+            break
+        }
+    }
+    return r
+}
+
+/// The driver loop of a `with … on` whose body runs on fiber `first`.
+drive :: fn(m: ^Machine, span: source.Span, key: WithKey, first: u32) -> Flow!() needs Run {
+    msg := try m.switch_to(span, key, first, .Resume(empty_slice(u8)))
+    while true {
+        match msg {
+            .Perform(x) => {
+                epoch := m.fib.coros.items[usize(x.fiber)].epoch
+                mk := m.mark()
+                k := m.tmp(2 * m.ptr_bytes)
+                m.put_cont(k, x.fiber, epoch)
+                args := list([]u8)
+                args.extend(x.args)!
+                args.push(k)!
+                r := m.call_clause(span, x.node, x.op, args.items, empty_slice(u8))
+                args.deinit()
+                m.release(mk)
+                r else f => {
+                    if .Resume(fiber) := f {
+                        v := m.fib.resume_value
+                        m.fib.resume_value = empty_slice(u8)
+                        msg = try m.switch_to(span, key, fiber, .Resume(v))
+                        continue
+                    }
+                    // An exit whose target lies outside the `with` crosses it (§14.4).
+                    return m.complete(span, key, f, exits_past(f, key))
+                }
+                return m.complete(span, key, m.trap(x.span, "internal error: a `ctl` clause finished normally"), false)
+            }
+            .Done(x) => {
+                m.fib.coros.items[usize(x.fiber)].state = .Done
+                if f := x.flow { return m.complete(span, key, f, true) }
+                if x.fiber is not first { return m.complete(span, key, m.trap(span, "a fiber's function returned"), true) }
+                return m.complete_ok(span, key)
+            }
+            _ => return !m.trap(span, "internal error: a fiber disappeared")
+        }
+    }
+}
+
+/// Finishes a `with … on` whose body completed (§14.4).
+complete_ok :: fn(m: ^Machine, span: source.Span, key: WithKey) -> Flow!() needs Run {
+    n := (m.with_rec(key) else return ()).suspended.items.len
+    if n > 0 {
+        m.abort_all(span, key)
+        s := if n is 1 { "" } else { "s" }
+        return !m.trap(span, str.format("with completed while {} fiber{} {} suspended", n, s, if n is 1 { "is" } else { "are" })!)
+    }
+}
+
+/// Finishes a `with … on` with the flow `f` (§14.4). `crossing`: a fiber finished, or a
+/// clause exits to a target outside the `with`.
+complete :: fn(m: ^Machine, span: source.Span, key: WithKey, f: Flow, crossing: bool) -> Flow!() needs Run {
+    if f in (.Trap(_), .Exit(_)) {
+        m.abort_all(span, key)
+        return !f
+    }
+    if crossing {
+        // An exit crossing the `with`: every other suspended fiber is cancelled, newest first.
+        while true {
+            w := m.with_rec(key) else break
+            id := w.suspended.pop() else break
+            m.cancel_fiber(span, key, id) else g => {
+                m.abort_all(span, key)
+                return !g
+            }
+        }
+        return !f
+    }
+    try m.complete_ok(span, key)
+    return !f
+}
+
+/// Stops every fiber of `key` that is suspended, without running their defers.
+abort_all :: fn(m: ^Machine, span: source.Span, key: WithKey) needs Run {
+    while true {
+        w := m.with_rec(key) else return ()
+        id := w.suspended.pop() else break
+        _ = m.switch_to(span, key, id, .Abort)
+    }
+    // A fiber off the list (its continuation was consumed, or it was running when the
+    // driver failed) may still be waiting for a message.
+    w := m.with_rec(key) else return ()
+    rest := list(u32)
+    for id in w.owned.items {
+        r := &m.fib.coros.items[us(id)]
+        if r.started and not r.finished { rest.push(id)! }
+    }
+    for id in rest.items { _ = m.switch_to(span, key, id, .Abort) }
+    rest.deinit()
+}
+
+/// Cancels the suspended fiber `id` (already taken off its `with`'s list) and waits until
+/// it has unwound.
+cancel_fiber :: fn(m: ^Machine, span: source.Span, key: WithKey, id: u32) -> Flow!() needs Run {
+    match try m.switch_to(span, key, id, .Cancel) {
+        .None => {}
+        .Done(x) => {
+            m.fib.coros.items[usize(x.fiber)].state = .Done
+            f := x.flow else return !m.trap(span, "internal error: a discarded fiber finished normally")
+            if f is .Cancel { return () }
+            return !f
+        }
+        .Perform(x) => return !m.trap(x.span, "a `ctl` operation was performed while a fiber was being discarded")
+        _ => {}
+    }
+}
+
+/// Passes control to fiber `fiber` with `msg` and waits for the next message to its
+/// driver. Returns `.None` if the fiber had not started and is not resumed.
+switch_to :: fn(m: ^Machine, span: source.Span, key: WithKey, fiber: u32, msg: Msg) -> Flow!Msg needs Run {
+    if m.with_rec(key) is null { return !m.trap(span, "internal error: no driver for this fiber") }
+    rec := &m.fib.coros.items[usize(fiber)]
+    resuming := msg is .Resume(_)
+    rec.state = if resuming { .Running } else { .Done }
+    if not rec.started and not resuming {
+        rec.start = null
+        rec.finished = true
+        return .None
+    }
+    return m.handoff(fiber, msg)
+}
+
+/// Performs `ctl` operation `op` of the handler at context `n` from the running fiber:
+/// suspends it until it is resumed.
+ctl_perform :: fn(m: ^Machine, span: source.Span, n: u32, op: u32, args: []const []u8, dst: []u8) -> Flow!() needs Run {
+    node := m.ctxs.items[usize(n)]
+    key := WithKey(frame: node.with_frame, label: node.with_label)
+    w := m.with_rec(key) else return !m.trap(span, "internal error: a `ctl` operation of a `with` without `on`")
+    id := m.fib.cur
+    if id is 0 { return !m.trap(span, "internal error: a `ctl` operation performed outside a fiber") }
+    rec := &m.fib.coros.items[us(id)]
+    rec.epoch += 1
+    rec.state = .Suspended(key)
+    w.suspended.push(id)!
+    match m.handoff(w.driver, .Perform(id, n, op, args, span)) {
+        .Resume(v) => {
+            dst.copy_from(v[0..dst.len])
+            if v.len > 0 { free(v) }
+        }
+        .Cancel => return !.Cancel
+        _ => return !aborted()
+    }
+}
+
+/// Consumes continuation `k` in a clause running in frame `fr` (§14.2): checks it and
+/// returns its fiber and the `with` that drives it.
+consume :: fn(m: ^Machine, span: source.Span, fr: ^Frame, k: []const u8) -> Flow!(fiber: u32, key: WithKey) needs Alloc {
+    id := m.word(k, 0)
+    epoch := m.word(k, 1)
+    inst := fr.installing else return !m.trap(span, "internal error: a continuation consumed outside a clause")
+    clause_with := WithKey(frame: inst.frame.id, label: inst.label)
+    if id is 0 or id >= u64(m.fib.coros.items.len) { return !m.trap(span, "this continuation is no longer valid: its `with` has completed (§14.2)") }
+    rec := &m.fib.coros.items[us(id)]
+    if rec.finished and rec.state is .Done { return !m.trap(span, "this continuation is no longer valid: its `with` has completed (§14.2)") }
+    .Suspended(w) := rec.state else return !m.trap(span, "this continuation was already consumed (§14.2)")
+    if rec.epoch is not epoch { return !m.trap(span, "this continuation was already consumed (§14.2)") }
+    if not same_key(w, clause_with) { return !m.trap(span, "a continuation can be consumed only by a clause of the `with` that produced it (§14.2)") }
+    if wr := m.with_rec(w) {
+        for i in 0..wr.suspended.items.len {
+            if wr.suspended.items[i] is id.trunc(u32) {
+                _ = wr.suspended.remove(i)
+                break
+            }
+        }
+    }
+    rec.state = .Running
+    return (fiber: id.trunc(u32), key: w)
+}
+
+/// `resume k(v)` (§14.3).
+resume_ :: fn(m: ^Machine, a: Act, k, v: ^Expr, e: ^Expr) -> Flow!() needs Run {
+    mk := m.mark()
+    kb := m.tmp(m.size(k.ty))
+    try m.eval(a, k, kb)
+    vb := m.tmp(m.size(v.ty))
+    try m.eval(a, v, vb)
+    c := try m.consume(e.span, a.fr, kb)
+    saved := empty_slice(u8)
+    if vb.len > 0 {
+        saved = make(u8, vb.len)!
+        saved.copy_from(vb)
+    }
+    m.fib.resume_value = saved
+    m.release(mk)
+    return !.Resume(c.fiber)
+}
+
+/// `cancel k` (§14.5).
+cancel_ :: fn(m: ^Machine, a: Act, k: ^Expr, e: ^Expr) -> Flow!() needs Run {
+    mk := m.mark()
+    kb := m.tmp(m.size(k.ty))
+    try m.eval(a, k, kb)
+    c := try m.consume(e.span, a.fr, kb)
+    m.release(mk)
+    try m.cancel_fiber(e.span, c.key, c.fiber)
+}
+
+/// `@fiber(f, arg, stack)` (§14.6) in a clause.
+fiber_builtin :: fn(m: ^Machine, a: Act, args: []Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
+    mk := m.mark()
+    fb := m.tmp(m.size(args[0].ty))
+    try m.eval(a, &args[0], fb)
+    ab := m.tmp(m.size(args[1].ty))
+    try m.eval(a, &args[1], ab)
+    sb := m.tmp(m.size(args[2].ty))
+    try m.eval(a, &args[2], sb)
+    try m.check_stack(e.span, sb)
+    inst := a.fr.installing else return !m.trap(e.span, "internal error: `@fiber` outside a clause")
+    key := WithKey(frame: inst.frame.id, label: inst.label)
+    w := m.with_rec(key) else return !m.trap(e.span, "internal error: `@fiber` in a clause of a `with` without `on`")
+    f := make(u8, fb.len)!
+    f.copy_from(fb)
+    arg := make(u8, ab.len.max(1))!
+    arg[0..ab.len].copy_from(ab)
+    start := Start.Call(f, args[0].ty, arg[0..ab.len], w.body_cx, w.span)
+    id := m.new_fiber(key, start, .Suspended(key), sb)
+    (m.with_rec(key) else return ()).suspended.push(id)!
+    m.put_cont(dst, id, 1)
+    m.release(mk)
+}
+
+/// True if `f` is an exit whose target lies outside the `with … on` `key`: anything but a
+/// `break` to the `with` itself.
+exits_past :: fn(f: Flow, key: WithKey) -> bool => match f {
+    .Break(frame, label) => frame is not key.frame or label is not key.label
+    .Continue(_), .Return(_), .Cancel => true
+    _ => false
+}

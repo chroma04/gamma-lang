@@ -1,0 +1,89 @@
+//! Output of the REPL: diagnostics relative to the input and trap reports. Mirrors
+//! `src/repl/report.rs`.
+
+arena :: import "std/arena"
+diag :: import "../diag"
+interp :: import "../interp"
+source :: import "../source"
+
+/// Printed by the synthesized program after it has replayed earlier statements;
+/// everything before it is hidden.
+SENTINEL :: "@@gamma-repl-replay-done@@"
+
+/// The diagnostics of `c`, rendered. Those inside the input (the part of the source that
+/// starts at byte `lo` and is `input` long) are shown with positions relative to the
+/// input; errors elsewhere in the source are shown against the whole text; other
+/// warnings are left out.
+render_region :: fn(sm: ^const source.SourceMap, diags: ^const diag.Diagnostics, file: source.FileId, lo: u32, input: string, format: diag.Format) -> string needs Alloc {
+    a := arena.new()
+    defer a.deinit()
+    text := with a.allocator() { region_text(sm, diags, file, lo, input, format) }
+    return dupe(text)!
+}
+
+region_text :: fn(sm: ^const source.SourceMap, diags: ^const diag.Diagnostics, file: source.FileId, lo: u32, input: string, format: diag.Format) -> string needs Alloc {
+    hi := lo + input.len.trunc(u32)
+    view := source.source_map()
+    _ = view.add("<repl>", input)
+    _ = view.add("<session>", sm.file(file).text)
+    // Stable order by position.
+    order := list(usize)
+    for i in 0..diags.list.items.len {
+        k := (diags.list.items[i].span.file, diags.list.items[i].span.lo)
+        at := order.items.len
+        while at > 0 {
+            p := diags.list.items[order.items[at - 1]].span
+            if (p.file, p.lo) <= k { break }
+            at -= 1
+        }
+        order.insert(at, i)!
+    }
+    out := list(u8)
+    for i in order.items {
+        d := &diags.list.items[i]
+        if d.span is source.DUMMY or d.span.file is not file {
+            if d.severity is .Error { diag.render(sm, d, format, &out) }
+            continue
+        }
+        inside := (d.span.lo >= lo or d.span.hi > lo) and d.span.lo <= hi
+        if not inside and d.severity is not .Error { continue }
+        nd := d^
+        nd.span = remap(d.span, file, lo, hi, input.len, inside) else source.DUMMY
+        labels := list(diag.Label)
+        for l in d.labels.items {
+            if s := remap(l.span, file, lo, hi, input.len, inside) { labels.push(diag.Label(span: s, message: l.message))! }
+        }
+        nd.labels = labels
+        diag.render(&view, &nd, format, &out)
+    }
+    return out.items
+}
+
+/// `s` as a span of the view source map (the input is file 0, the whole text file 1).
+remap :: fn(s: source.Span, file: source.FileId, lo, hi: u32, input_len: usize, inside: bool) -> ?source.Span {
+    if s is source.DUMMY or s.file is not file { return null }
+    if inside {
+        a := s.lo.max(lo)
+        b := s.hi.min(hi + 1).max(a)
+        return source.Span(file: 0, lo: a - lo, hi: (b - lo).min(input_len.trunc(u32)))
+    }
+    return source.Span(file: 1, lo: s.lo, hi: s.hi)
+}
+
+/// The report for a trap that happened at `t.span` while running the program of `c`.
+trap_report :: fn(c: ^const Compiled, t: ^const interp.Trap) -> string needs Alloc {
+    out := list(u8)
+    out.write("trap: {}\n", t.message)!
+    span := t.span
+    if span is source.DUMMY { return out.items }
+    f := c.sm.file(span.file)
+    at := f.line_col(span.lo)
+    if span.file is c.file and span.lo >= c.lo and span.lo <= c.lo + c.input.len.trunc(u32) {
+        start := c.sm.file(c.file).line_col(c.lo)
+        col := if at.line is start.line { at.col + 1 - start.col } else { at.col }
+        out.write("  at <repl>:{}:{}\n", at.line - start.line + 1, col)!
+    } else if span.file is not c.file {
+        out.write("  at {}:{}:{}\n", f.path, at.line, at.col)!
+    }
+    return out.items
+}

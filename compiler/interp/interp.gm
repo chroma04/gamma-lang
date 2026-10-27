@@ -1,0 +1,1037 @@
+//! The interpreter: runs a checked program by walking its typed IR (mirrors `src/interp`,
+//! whose interpreter compiles the IR to bytecode first; gammac walks the tree).
+//!
+//! - **Memory** (`memory.gm`): a flat virtual address space where every allocation gets
+//!   a fresh, never reused address, so out-of-bounds, use-after-free, null, misaligned
+//!   and read-only accesses are found exactly (§18.4). Values are bytes in the target's
+//!   layout; pointers are addresses.
+//! - **Values**: every expression is evaluated into a destination, a byte buffer of the
+//!   size of its type. Temporary buffers come from a stack of scratch memory that each
+//!   statement and call releases (`Scratch`). A local whose address is never taken lives
+//!   in its frame's storage, in that scratch memory; the others get an allocation of
+//!   their own. Second-class values are bytes too: a function value is its code address,
+//!   the handle of the frame it captures and the handle of its handler context; a
+//!   handler value is a frame handle and a context handle.
+//! - **Control flow**: what leaves an expression other than with its value is a `Flow`
+//!   error. A `break` writes its value into the destination of the loop or `with` it
+//!   leaves, and a `return` into its function's, before the flow unwinds to them; blocks
+//!   run their `defer` and `errdefer` statements on the way.
+//! - **Effects**: the handler context is a persistent list of installed handlers, by
+//!   handle, captured by closures and handler literals (§11.6, §12.7).
+//!
+//! It traps where the reference implementation does, with the same messages, and reports
+//! what it cannot run yet as an internal error.
+
+bigint :: import "../bigint"
+cgen :: import "../cgen"
+hash_map :: import "std/collections/hash_map"
+load :: import "../load"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+tir :: import "../tir"
+types :: import "../types"
+
+Ty :: types.Ty
+TyKind :: types.TyKind
+Expr :: tir.Expr
+Sema :: sema.Sema
+Prog :: cgen.Prog
+
+/// The effects of the system a program runs on.
+pub Host :: Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys
+
+/// The effects of evaluation: the host's, and switching between fibers (`fiber.gm`).
+Run :: Host + Coro
+
+/// The build mode (§1.4): checked operations trap except in `Fast` mode. The interpreter
+/// checks every memory access in every mode, so `Safe` runs exactly as `Checked`.
+pub Mode :: union { Debug, Checked, Safe, Fast }
+
+/// A trap: its message, where it happened and, in Debug builds, the calls it left,
+/// innermost first (each called function and the location of its call).
+pub Trap :: struct {
+    pub message: string
+    pub span: source.Span
+    pub trace: List(TraceCall)
+}
+
+pub TraceCall :: struct {
+    pub fn_id: u32
+    pub span: source.Span
+}
+
+/// How evaluation leaves an expression other than with its value. Frames are named by
+/// their ids.
+Flow :: union {
+    /// A `break` to a loop or `with`; its value is already in the target's destination.
+    Break: (frame: u64, label: u32)
+    Continue: (frame: u64, label: u32)
+    /// A `return`; its value is already in the function's destination.
+    Return: (frame: u64, is_err: bool)
+    /// `Env.exit`: unwinds every frame.
+    Exit: u8
+    Trap: ^Trap
+    /// `resume k(v)` ends a `ctl` clause; the driver switches to the fiber.
+    Resume: u32
+    /// Unwinds a discarded fiber to its base (§14.5).
+    Cancel
+}
+
+/// The activation code runs in: its frame and its handler context.
+Act :: struct {
+    fr: ^Frame
+    cx: u32
+}
+
+/// Where a `break` to a label leaves its value.
+LabelDst :: struct {
+    label: u32
+    dst: []u8
+}
+
+/// One activation of a function body, or the root of the evaluation of a constant.
+Frame :: struct {
+    id: u64
+    /// Its index in `Machine.frames`, which function values refer to it by.
+    handle: u32
+    fn_id: u32
+    info: ^FnInfo
+    ret_ty: Ty
+    /// Where its result goes.
+    ret: []u8
+    /// The frame of the enclosing function, for upvars.
+    env: ?^Frame
+    /// The locals kept in scratch memory, at `FnInfo.offsets`.
+    store: []u8
+    /// The address of the allocation of each local that has one (0: none yet).
+    mem: []u64
+    /// The storage of `mem`, kept when the frame is reused.
+    mem_buf: []u64
+    /// Allocations that die with the frame.
+    allocs: List(u64)
+    /// The loops and `with`s running in it, innermost last.
+    labels: List(LabelDst)
+    /// For a handler clause: the frame and label of the `with` that installed it.
+    installing: ?(frame: ^Frame, label: u32)
+    /// True for the clauses of handler literals, which lexically belong to `env`'s
+    /// function.
+    is_clause_lit: bool
+}
+
+/// What the interpreter needs to know about a function's locals.
+FnInfo :: struct {
+    offsets: []u64
+    sizes: []u64
+    aligns: []u64
+    /// Whether each local needs an address (an allocation of its own).
+    addressed: []bool
+    store_size: u64
+    /// The stack bytes a call is charged on a fiber stack (`cgen.frame_cost`).
+    cost: u64
+}
+
+/// A handler in a context.
+CtxNode :: struct {
+    parent: u32
+    effect_: types.EffectRef
+    installed: Installed
+    /// The `with` that installed it: its frame's id and label (0 for the defaults).
+    with_frame: u64
+    with_label: u32
+    /// The frame of that `with`, for `break`s from its clauses.
+    with_fr: ?^Frame
+}
+
+Installed :: union {
+    /// A handler literal: its clauses run in the frame and context where it was written.
+    Lit: (id: u32, env: ?^Frame, cx: u32)
+    /// Handler declarations with the value they were installed for and the context
+    /// outside the `with`.
+    Decl: (decls: []const u32, value: []u8, outer: u32)
+    Native: NativeKind
+}
+
+NativeKind :: union { Out, Err, Env }
+
+/// Scratch memory, used as a stack: chunks that are never moved, so that buffers stay
+/// valid while they are in use.
+Scratch :: struct {
+    chunks: List([]u8)
+    cur: usize
+    top: usize
+}
+
+Mark :: struct {
+    cur: usize
+    top: usize
+}
+
+CHUNK: usize : 1 << 20
+
+/// Where code addresses (function pointers) start; each function has 16 bytes.
+CODE_BASE: u64 : 0x1000
+
+/// How deeply calls may nest.
+MAX_DEPTH: u32 : 200_000
+
+/// The function of a root frame.
+NO_FN: u32 : 0xFFFF_FFFF
+
+pub Machine :: struct {
+    p: ^Prog
+    s: ^Sema
+    lay: cgen.Layouts
+    mode: Mode
+    little: bool
+    ptr_bytes: u64
+    mem: Memory
+    scratch: Scratch
+    /// Temporaries whose address was taken; each statement kills the ones it made.
+    temps: List(u64)
+    frames: List(?^Frame)
+    /// The sizes of types by id (`~0`: not known yet).
+    sizes: List(u64)
+    /// Finished frames, kept to be reused.
+    frame_pool: List(^Frame)
+    /// The argument values of the calls being made.
+    argv: List([]u8)
+    free_frames: List(u32)
+    /// The handler contexts, by handle (0: the empty context).
+    ctxs: List(CtxNode)
+    free_ctxs: List(u32)
+    infos: List(?^FnInfo)
+    next_frame: u64
+    depth: u32
+    /// The lowest address of the host stack the evaluation may use.
+    stack_floor: usize
+    /// The allocations of string literals, by the address of their bytes.
+    strings: hash_map.HashMap(usize, u64)
+    cstrings: hash_map.HashMap(usize, u64)
+    /// The allocations of constants, by the address of their cell.
+    cells: hash_map.HashMap(usize, (addr: u64, ty: Ty))
+    /// The allocations of `#global`s, by index (0: not yet made).
+    globals: List(u64)
+    /// The instances of `#thread_local` variables, by index and thread.
+    thread_globals: hash_map.HashMap((usize, u32), u64)
+    args: []const string
+    /// The slice `Env.args` returns, made on the first call.
+    env_args: ?[]u8
+    /// The fiber state (`fiber.gm`).
+    fib: Fibers
+    /// The bytes left on the running fiber's stack (`~0` off fibers).
+    fiber_stack: u64
+    /// Debug builds: the allocator `(owner, vt)` and site of each block from `new`/`make`.
+    alloc_tags: hash_map.HashMap(u64, AllocTag)
+    /// The state of the system services (`sys.gm`).
+    sys: SysState
+    /// The program's threads (`threads.gm`).
+    threads: Threads
+    /// What the program writes to its standard output and error goes through it, if set.
+    filter: ?^Filter
+}
+
+/// Hides what a program writes to its standard output and error up to the first
+/// occurrence of a marker in each (the REPL replays statements this way).
+pub Filter :: struct {
+    marker: string
+    hiding: [2]bool
+    pending: [2]List(u8)
+}
+
+/// A filter hiding output up to `marker` on both streams if `hide`.
+pub filter :: fn(marker: string, hide: bool) -> Filter needs Alloc => Filter(marker: marker, hiding: [2]bool(hide, hide), pending: [2]List(u8)(list(u8), list(u8)))
+
+/// Writes `data` to the host's standard output (`fd` 1) or error (2), through the filter.
+host_write :: fn(m: ^Machine, fd: u32, data: []const u8) needs Alloc + Err + Out {
+    shown := data
+    if f := m.filter {
+        i := if fd is 2 { 1 } else { 0 }
+        if f.hiding[i] {
+            p := &f.pending[i]
+            p.extend(data)!
+            at := str.find(p.items, f.marker) else {
+                // Only the end can still be part of the marker.
+                if p.items.len > f.marker.len {
+                    keep := p.items.len - f.marker.len
+                    tail := p.items[keep..p.items.len]
+                    for k in 0..tail.len { p.items[k] = tail[k] }
+                    p.truncate(f.marker.len)
+                }
+                return ()
+            }
+            f.hiding[i] = false
+            shown = p.items[at + f.marker.len..p.items.len]
+        }
+    }
+    if shown.len is 0 { return () }
+    if fd is 2 { Err.write(shown) } else { Out.write(shown) }
+}
+
+AllocTag :: struct {
+    owner: u64
+    vt: u64
+    site: string
+}
+
+machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc {
+    s := p.s
+    code_end := CODE_BASE + 16 * (u64(s.fns.items.len) + 1)
+    data_base := (code_end + 0x10000 + 0xFFFF) / 0x10000 * 0x10000
+    m := Machine(
+        p: p,
+        s: s,
+        lay: cgen.layouts(s, p.target),
+        mode: mode,
+        little: p.target.little_endian,
+        ptr_bytes: p.target.ptr_bytes,
+        mem: memory(data_base, p.target.ptr_bytes),
+        scratch: Scratch(chunks: list([]u8), cur: 0, top: 0),
+        temps: list(u64),
+        frames: list(?^Frame),
+        frame_pool: list(^Frame),
+        sizes: list(u64),
+        argv: list([]u8),
+        free_frames: list(u32),
+        ctxs: list(CtxNode),
+        free_ctxs: list(u32),
+        infos: list(?^FnInfo),
+        next_frame: 1,
+        depth: 0,
+        stack_floor: 0,
+        strings: hash_map.hash_map(usize, u64),
+        cstrings: hash_map.hash_map(usize, u64),
+        cells: hash_map.hash_map(usize, (addr: u64, ty: Ty)),
+        globals: list(u64),
+        thread_globals: hash_map.hash_map((usize, u32), u64),
+        args: args,
+        env_args: null,
+        fib: fibers(),
+        fiber_stack: ~u64(0),
+        alloc_tags: hash_map.hash_map(u64, AllocTag),
+        sys: sys_state(),
+        filter: null,
+        threads: threads(),
+    )
+    m.scratch.chunks.push(make_fill(CHUNK, u8(0))!)!
+    // Handle 0 is the empty context.
+    m.ctxs.push(CtxNode(parent: 0, effect_: types.EffectRef(eff: 0, args: empty_slice(types.GenericArg)), installed: .Native(.Out), with_frame: 0, with_label: 0, with_fr: null))!
+    for _ in s.globals.items { m.globals.push(0)! }
+    return m
+}
+
+fast :: fn(m: ^const Machine) -> bool => m.mode is .Fast
+
+// ---------------------------------------------------------------------------------
+// Scratch memory
+// ---------------------------------------------------------------------------------
+
+mark :: fn(m: ^const Machine) -> Mark => Mark(cur: m.scratch.cur, top: m.scratch.top)
+
+release :: fn(m: ^Machine, mk: Mark) {
+    m.scratch.cur = mk.cur
+    m.scratch.top = mk.top
+}
+
+/// A zero-filled buffer of `n` bytes, valid until the scratch memory is released to a
+/// mark taken before.
+tmp :: fn(m: ^Machine, n: u64) -> []u8 needs Alloc {
+    if n is 0 { return empty_slice(u8) }
+    sc := &m.scratch
+    size := us(n)
+    // Buffers are 8-byte aligned.
+    top := (sc.top + 7) & ~us(7)
+    while true {
+        chunk := sc.chunks.items[sc.cur]
+        if top + size <= chunk.len {
+            b := chunk[top..top + size]
+            sc.top = top + size
+            b.fill(0)
+            return b
+        }
+        sc.cur += 1
+        top = 0
+        if sc.cur is sc.chunks.items.len {
+            sc.chunks.push(make_fill(size.max(CHUNK), u8(0))!)!
+        } else if sc.chunks.items[sc.cur].len < size {
+            // A chunk too small for this buffer is replaced.
+            free(sc.chunks.items[sc.cur])
+            sc.chunks.items[sc.cur] = make_fill(size.max(CHUNK), u8(0))!
+        }
+    }
+}
+
+/// A copy of `b` in scratch memory.
+tmp_copy :: fn(m: ^Machine, b: []const u8) -> []u8 needs Alloc {
+    t := m.tmp(u64(b.len))
+    t.copy_from(b)
+    return t
+}
+
+// ---------------------------------------------------------------------------------
+// Traps
+// ---------------------------------------------------------------------------------
+
+trap :: fn(m: ^const Machine, span: source.Span, message: string) -> Flow needs Alloc => .Trap(new(Trap(message: message, span: span, trace: list(TraceCall)))!)
+
+/// A construct the interpreter cannot run yet.
+unsupported :: fn(m: ^const Machine, span: source.Span, what: string) -> Flow needs Alloc => m.trap(span, str.format("internal error: not supported by gammac's interpreter yet: {}", what)!)
+
+mem_trap :: fn(m: ^const Machine, span: source.Span, e: MemError) -> Flow needs Alloc => m.trap(span, mem_message(e))
+
+// ---------------------------------------------------------------------------------
+// Types and bytes
+// ---------------------------------------------------------------------------------
+
+kind :: fn(m: ^const Machine, t: Ty) -> TyKind => m.s.tys.kind(t)
+
+/// The size of `t`, cached by type (most operations ask for it).
+size :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc {
+    i := usize(t.id)
+    if i < m.sizes.items.len and m.sizes.items[i] is not ~u64(0) { return m.sizes.items[i] }
+    while m.sizes.items.len <= i { m.sizes.push(~u64(0))! }
+    n := m.lay.size_of(t)
+    m.sizes.items[i] = n
+    return n
+}
+
+align :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc => m.lay.align_of(t)
+
+offsets :: fn(m: ^Machine, t: Ty) -> []const u64 needs Alloc => m.lay.layout_of(t).offsets
+
+/// The signedness and width of the integer type `t`.
+int_info :: fn(m: ^const Machine, t: Ty) -> ?(signed: bool, bits: u32) => match m.s.tys.kind(t) {
+    .Int(signed, bits) => (signed: signed, bits: u32(bits))
+    .Usize => (signed: false, bits: (m.ptr_bytes * 8).trunc(u32))
+    .Isize => (signed: true, bits: (m.ptr_bytes * 8).trunc(u32))
+    _ => null
+}
+
+/// The integer in the bytes `b` (at most 16), in the target's byte order, zero-extended.
+get_uint :: fn(m: ^const Machine, b: []const u8) -> u128 {
+    v: u128 = 0
+    n := b.len.min(16)
+    if m.little {
+        i := n
+        while i > 0 {
+            i -= 1
+            v = (v << 8) | u128(b[i])
+        }
+    } else {
+        for i in 0..n { v = (v << 8) | u128(b[i]) }
+    }
+    return v
+}
+
+/// Writes the low bytes of `v` to `b`, in the target's byte order.
+put_uint :: fn(m: ^const Machine, b: []u8, v: u128) {
+    n := b.len.min(16)
+    x := v
+    if m.little {
+        for i in 0..n {
+            b[i] = x.trunc(u8)
+            x >>= 8
+        }
+    } else {
+        i := n
+        while i > 0 {
+            i -= 1
+            b[i] = x.trunc(u8)
+            x >>= 8
+        }
+    }
+}
+
+get_u64 :: fn(m: ^const Machine, b: []const u8) -> u64 => m.get_uint(b).trunc(u64)
+
+put_u64 :: fn(m: ^const Machine, b: []u8, v: u64) => m.put_uint(b, u128(v))
+
+/// The value of the integer of type `t` in `b`, sign-extended to 128 bits if it is signed.
+get_int :: fn(m: ^const Machine, t: Ty, b: []const u8) -> u128 {
+    v := m.get_uint(b)
+    info := m.int_info(t) else return v
+    if info.signed and info.bits < 128 and (v >> u128(info.bits - 1)) & 1 is 1 { return v | ~((u128(1) << u128(info.bits)) - 1) }
+    if info.bits < 128 { return v & ((u128(1) << u128(info.bits)) - 1) }
+    return v
+}
+
+ptr_of :: fn(m: ^const Machine, b: []const u8) -> u64 => m.get_u64(b[0..us(m.ptr_bytes)])
+
+put_ptr :: fn(m: ^const Machine, b: []u8, addr: u64) => m.put_u64(b[0..us(m.ptr_bytes)], addr)
+
+/// The pointer and length of the slice in `b`.
+slice_parts :: fn(m: ^const Machine, b: []const u8) -> (ptr: u64, len: u64) {
+    p := us(m.ptr_bytes)
+    return (ptr: m.get_u64(b[0..p]), len: m.get_u64(b[p..2 * p]))
+}
+
+put_slice :: fn(m: ^const Machine, b: []u8, ptr: u64, len: u64) {
+    p := us(m.ptr_bytes)
+    m.put_u64(b[0..p], ptr)
+    m.put_u64(b[p..2 * p], len)
+}
+
+/// The `i`th pointer-sized word of `b`.
+word :: fn(m: ^const Machine, b: []const u8, i: usize) -> u64 {
+    p := us(m.ptr_bytes)
+    return m.get_u64(b[i * p..(i + 1) * p])
+}
+
+put_word :: fn(m: ^const Machine, b: []u8, i: usize, v: u64) {
+    p := us(m.ptr_bytes)
+    m.put_u64(b[i * p..(i + 1) * p], v)
+}
+
+truthy :: fn(b: []const u8) -> bool => b.len > 0 and b[0] is not 0
+
+// Optionals, results and unions --------------------------------------------------------
+
+opt_inner :: fn(m: ^const Machine, t: Ty) -> Ty {
+    .Optional(inner) := m.kind(t) else return t
+    return inner
+}
+
+opt_present :: fn(m: ^Machine, t: Ty, b: []const u8) -> bool needs Alloc {
+    inner := m.opt_inner(t)
+    if cgen.nullable_pointer(m.s, inner) { return m.ptr_of(b) is not 0 }
+    return b[us(m.offsets(t)[1])] is not 0
+}
+
+/// The payload of the optional `b` (of type `t`), a view of `b`.
+opt_payload :: fn(m: ^Machine, t: Ty, b: []u8) -> []u8 needs Alloc {
+    inner := m.opt_inner(t)
+    n := us(m.size(inner))
+    if cgen.nullable_pointer(m.s, inner) { return b[0..n] }
+    off := us(m.offsets(t)[0])
+    return b[off..off + n]
+}
+
+/// Writes the present optional of type `t` holding `payload` to `dst`.
+make_some :: fn(m: ^Machine, t: Ty, dst: []u8, payload: []const u8) needs Alloc {
+    inner := m.opt_inner(t)
+    dst.fill(0)
+    if cgen.nullable_pointer(m.s, inner) {
+        n := payload.len.min(dst.len)
+        dst[0..n].copy_from(payload[0..n])
+        return ()
+    }
+    offs := m.offsets(t)
+    off := us(offs[0])
+    n := payload.len.min(dst.len - off)
+    dst[off..off + n].copy_from(payload[0..n])
+    dst[us(offs[1])] = 1
+}
+
+res_types :: fn(m: ^const Machine, t: Ty) -> (err: Ty, ok: Ty) {
+    .Result(err, ok) := m.kind(t) else return (err: t, ok: t)
+    return (err: err, ok: ok)
+}
+
+res_is_err :: fn(m: ^Machine, t: Ty, b: []const u8) -> bool needs Alloc => b[us(m.offsets(t)[0])] is not 0
+
+/// The payload of the result `b` (of type `t`): its value or its error, a view of `b`.
+res_payload :: fn(m: ^Machine, t: Ty, b: []u8) -> []u8 needs Alloc {
+    rt := m.res_types(t)
+    n := us(m.size(if m.res_is_err(t, b) { rt.err } else { rt.ok }))
+    off := us(m.offsets(t)[1])
+    return b[off..off + n]
+}
+
+make_res :: fn(m: ^Machine, t: Ty, dst: []u8, is_err: bool, payload: []const u8) needs Alloc {
+    offs := m.offsets(t)
+    dst.fill(0)
+    dst[us(offs[0])] = if is_err { 1 } else { 0 }
+    off := us(offs[1])
+    n := payload.len.min(dst.len - off)
+    dst[off..off + n].copy_from(payload[0..n])
+}
+
+/// The tag type and variants of the union `t`.
+union_def :: fn(m: ^const Machine, t: Ty) -> ?(tag: Ty, variants: []sema.VariantDef) {
+    .Adt(id, _) := m.kind(t) else return null
+    .Union(tag, variants) := m.s.adts.items[us(id)].kind else return null
+    return (tag: tag, variants: variants)
+}
+
+adt_of :: fn(m: ^const Machine, t: Ty) -> ?^const sema.AdtInfo {
+    .Adt(id, _) := m.kind(t) else return null
+    return &m.s.adts.items[us(id)]
+}
+
+/// The underlying integer type of the `#bits` struct `t`.
+bits_struct_ty :: fn(m: ^const Machine, t: Ty) -> ?Ty {
+    a := m.adt_of(t) else return null
+    .Struct(def) := a.kind else return null
+    return def.bits
+}
+
+is_packed :: fn(m: ^const Machine, t: Ty) -> bool {
+    a := m.adt_of(t) else return false
+    .Struct(def) := a.kind else return false
+    return def.packed
+}
+
+/// The index of the variant of the union value `b` of type `t`.
+variant_index :: fn(m: ^Machine, t: Ty, b: []const u8) -> ?u32 needs Alloc {
+    u := m.union_def(t) else return null
+    n := us(m.size(u.tag))
+    tag := m.get_int(u.tag, b[0..n])
+    for i, v in enumerate(u.variants) {
+        if tag_bits(v.tag) is tag { return i.trunc(u32) }
+    }
+    return null
+}
+
+/// The two's-complement bits of `i`, modulo 2^128.
+tag_bits :: fn(i: bigint.Int) -> u128 {
+    l := i.mag.items
+    v: u128 = 0
+    k := l.len.min(4)
+    while k > 0 {
+        k -= 1
+        v = (v <<% 32) | u128(l[k])
+    }
+    return if i.negative { 0 -% v } else { v }
+}
+
+payload_offset :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc {
+    offs := m.offsets(t)
+    return if offs.len > 1 { offs[1] } else { 0 }
+}
+
+/// Writes the value of variant `variant` of union `t` with `payload` to `dst`.
+make_variant :: fn(m: ^Machine, t: Ty, dst: []u8, variant: u32, payload: []const u8) needs Alloc {
+    dst.fill(0)
+    u := m.union_def(t) else return ()
+    n := us(m.size(u.tag))
+    m.put_uint(dst[0..n], tag_bits(u.variants[us(variant)].tag))
+    if payload.len > 0 {
+        off := us(m.payload_offset(t))
+        k := payload.len.min(dst.len - off)
+        dst[off..off + k].copy_from(payload[0..k])
+    }
+}
+
+/// The type and byte offset of field `i` of a struct, tuple or `#c_union` (not `#bits`).
+field_layout :: fn(m: ^Machine, t: Ty, i: u32) -> (ty: Ty, off: u64) needs Alloc {
+    match m.kind(t) {
+        .Tuple(elems, _) => return (ty: elems[us(i)], off: m.offsets(t)[us(i)])
+        .Adt(id, _) => match m.s.adts.items[us(id)].kind {
+            .Struct(def) => return (ty: def.fields[us(i)].ty, off: m.offsets(t)[us(i)])
+            .CUnion(fields) => return (ty: fields[us(i)].ty, off: 0)
+            .Union(_, variants) => return (ty: variants[us(i)].payload else t, off: m.payload_offset(t))
+        }
+        _ => return (ty: t, off: 0)
+    }
+}
+
+/// The width in bits of a `#bits` field of type `t`.
+bit_width :: fn(m: ^Machine, t: Ty) -> u32 needs Alloc {
+    match m.kind(t) {
+        .Bool => return 1
+        .Int(_, bits) => return u32(bits)
+        _ => {}
+    }
+    if u := m.union_def(t) { return m.bit_width(u.tag) }
+    if u := m.bits_struct_ty(t) { return m.bit_width(u) }
+    return (8 * m.size(t)).trunc(u32)
+}
+
+/// The bit offset and type of field `i` of the `#bits` struct `t`.
+bits_field :: fn(m: ^Machine, t: Ty, i: u32) -> (off: u32, ty: Ty) needs Alloc {
+    a := m.adt_of(t) else return (off: 0, ty: t)
+    .Struct(def) := a.kind else return (off: 0, ty: t)
+    off: u32 = 0
+    for k in 0..us(i) { off += m.bit_width(def.fields[k].ty) }
+    return (off: off, ty: def.fields[us(i)].ty)
+}
+
+/// The raw bits of a value `b` of the `#bits` field type `t`, zero-extended.
+bits_raw :: fn(m: ^Machine, t: Ty, b: []const u8) -> u128 needs Alloc {
+    w := m.bit_width(t)
+    v := m.get_uint(b)
+    return if w >= 128 { v } else { v & ((u128(1) << u128(w)) - 1) }
+}
+
+/// Writes the value of the `#bits` field type `t` whose raw bits are `raw` to `dst`.
+bits_from_raw :: fn(m: ^Machine, t: Ty, raw: u128, dst: []u8) needs Alloc {
+    if m.kind(t) is .Bool {
+        dst[0] = if raw is 0 { 0 } else { 1 }
+        return ()
+    }
+    w := m.bit_width(t)
+    v := raw
+    under := t
+    if u := m.union_def(t) { under = u.tag } else if u := m.bits_struct_ty(t) { under = u }
+    if info := m.int_info(under) and info.signed and w < 128 and (v >> u128(w - 1)) & 1 is 1 { v |= ~((u128(1) << u128(w)) - 1) }
+    m.put_uint(dst, v)
+}
+
+/// A view of field `i` of the value `b` of type `t` (not `#bits`).
+field_bytes :: fn(m: ^Machine, t: Ty, b: []u8, i: u32) -> []u8 needs Alloc {
+    fl := m.field_layout(t, i)
+    off := us(fl.off)
+    return b[off..off + us(m.size(fl.ty))]
+}
+
+/// Field `i` of the value `b` of type `t`, written to `dst`: a `#bits` field is
+/// extracted from its integer.
+read_field :: fn(m: ^Machine, t: Ty, b: []u8, i: u32, dst: []u8) needs Alloc {
+    if u := m.bits_struct_ty(t) {
+        bf := m.bits_field(t, i)
+        whole := m.get_uint(b[0..us(m.size(u))]) >> u128(bf.off)
+        w := m.bit_width(bf.ty)
+        raw := if w >= 128 { whole } else { whole & ((u128(1) << u128(w)) - 1) }
+        m.bits_from_raw(bf.ty, raw, dst)
+        return ()
+    }
+    dst.copy_from(m.field_bytes(t, b, i))
+}
+
+// ---------------------------------------------------------------------------------
+// Memory access
+// ---------------------------------------------------------------------------------
+
+/// Reads `dst.len` bytes at `addr` aligned to `align` into `dst`.
+load_at :: fn(m: ^Machine, span: source.Span, addr: u64, align: u64, dst: []u8) -> Flow!() needs Alloc {
+    if dst.len is 0 { return () }
+    b := m.mem.read(addr, u64(dst.len), align) else e => return !m.mem_trap(span, e)
+    dst.copy_from(b)
+}
+
+store_at :: fn(m: ^Machine, span: source.Span, addr: u64, align: u64, data: []const u8) -> Flow!() needs Alloc {
+    if data.len is 0 { return () }
+    m.mem.write(addr, data, align) else e => return !m.mem_trap(span, e)
+}
+
+alloc_mem :: fn(m: ^Machine, span: source.Span, size: u64, align: u64, kind: AllocKind, mutable: bool) -> Flow!u64 needs Alloc {
+    return m.mem.alloc(size, align, kind, mutable) else e => return !m.mem_trap(span, e)
+}
+
+/// A new temporary holding `data`, which dies at the end of the statement.
+alloc_temp :: fn(m: ^Machine, span: source.Span, data: []const u8, align: u64) -> Flow!u64 needs Alloc {
+    addr := try m.alloc_mem(span, u64(data.len), align, .Temp, true)
+    _ = m.mem.init(addr, data)
+    m.temps.push(addr)!
+    return addr
+}
+
+kill_temps :: fn(m: ^Machine, mk: usize) needs Alloc {
+    while m.temps.items.len > mk {
+        a := m.temps.pop() else break
+        _ = m.mem.kill(a)
+    }
+}
+
+/// The address of static (read-only) bytes, made once per `bytes` (a string literal),
+/// followed by a 0 byte if `nul`.
+string_literal :: fn(m: ^Machine, span: source.Span, bytes: []const u8, nul: bool) -> Flow!u64 needs Alloc {
+    key := bytes.ptr.addr()
+    cache := if nul { &m.cstrings } else { &m.strings }
+    if a := cache.get(key) { return a }
+    n := u64(bytes.len) + (if nul { 1 } else { 0 })
+    addr := try m.alloc_mem(span, n, 1, .Static, false)
+    _ = m.mem.init(addr, bytes)
+    cache.put(key, addr)!
+    return addr
+}
+
+// ---------------------------------------------------------------------------------
+// Functions and frames
+// ---------------------------------------------------------------------------------
+
+func :: fn(m: ^Machine, f: u32) -> ^const cgen.Func needs Alloc => m.p.func(f)
+
+fn_addr :: fn(m: ^const Machine, f: u32) -> u64 => CODE_BASE + 16 * u64(f)
+
+fn_from_addr :: fn(m: ^const Machine, addr: u64) -> ?u32 {
+    if addr < CODE_BASE or (addr - CODE_BASE) % 16 is not 0 { return null }
+    id := (addr - CODE_BASE) / 16
+    if id >= u64(m.s.fns.items.len) { return null }
+    return id.trunc(u32)
+}
+
+/// What the interpreter needs to know about function `f`.
+fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
+    i := us(f)
+    while m.infos.items.len <= i { m.infos.push(null)! }
+    if x := m.infos.items[i] { return x }
+    def := m.func(f)
+    made := m.make_info(def.locals, def.body)
+    made.cost = m.frame_cost(def)
+    m.infos.items[i] = made
+    return made
+}
+
+make_info :: fn(m: ^Machine, locals: []const tir.LocalDecl, body: ?^Expr) -> ^FnInfo needs Alloc {
+    offs := list(u64)
+    sizes := list(u64)
+    aligns := list(u64)
+    addressed := list(bool)
+    top: u64 = 0
+    for l in locals {
+        n := m.size(l.ty)
+        a := m.align(l.ty).max(1).min(8)
+        top = (top + a - 1) / a * a
+        offs.push(top)!
+        sizes.push(n)!
+        aligns.push(m.align(l.ty).max(1))!
+        addressed.push(false)!
+        top += n
+    }
+    if b := body { mark_addressed(m, b, addressed.items) }
+    return new(FnInfo(offsets: offs.items, sizes: sizes.items, aligns: aligns.items, addressed: addressed.items, store_size: top, cost: 0))!
+}
+
+/// The frame with handle `h`.
+frame_of :: fn(m: ^const Machine, h: u64) -> ?^Frame {
+    if h is 0 or h > u64(m.frames.items.len) { return null }
+    return m.frames.items[us(h - 1)]
+}
+
+/// A new frame for a call of `fn_id` (with `info`) whose result goes to `ret`.
+new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret_ty: Ty, ret: []u8, env: ?^Frame) -> ^Frame needs Alloc {
+    n := info.addressed.len
+    // Finished frames are reused, with their buffers: a call allocates nothing then.
+    fr := m.frame_pool.pop() else new(Frame(id: 0, handle: 0, fn_id: 0, info: info, ret_ty: ret_ty, ret: ret, env: null, store: empty_slice(u8), mem: empty_slice(u64), mem_buf: empty_slice(u64), allocs: list(u64), labels: list(LabelDst), installing: null, is_clause_lit: false))!
+    if fr.mem_buf.len < n {
+        if fr.mem_buf.len > 0 { free(fr.mem_buf) }
+        fr.mem_buf = make_fill(n.max(8), u64(0))!
+    }
+    fr.mem = fr.mem_buf[0..n]
+    fr.mem.fill(0)
+    fr.id = m.next_frame
+    fr.fn_id = fn_id
+    fr.info = info
+    fr.ret_ty = ret_ty
+    fr.ret = ret
+    fr.env = env
+    fr.store = m.tmp(info.store_size)
+    fr.installing = null
+    fr.is_clause_lit = false
+    m.next_frame += 1
+    if h := m.free_frames.pop() {
+        m.frames.items[us(h)] = fr
+        fr.handle = h + 1
+    } else {
+        m.frames.push(fr)!
+        fr.handle = m.frames.items.len.trunc(u32)
+    }
+    return fr
+}
+
+/// Ends frame `fr`: its allocations die and its handle is free again.
+end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
+    for a in fr.allocs.items { _ = m.mem.kill(a) }
+    fr.allocs.clear()
+    fr.labels.clear()
+    m.frames.items[us(fr.handle - 1)] = null
+    m.free_frames.push(fr.handle - 1)!
+    if m.frame_pool.items.len < 256 {
+        m.frame_pool.push(fr)!
+        return ()
+    }
+    fr.allocs.deinit()
+    fr.labels.deinit()
+    if fr.mem_buf.len > 0 { free(fr.mem_buf) }
+    free(slice_of(fr))
+}
+
+slice_of :: fn(fr: ^Frame) -> []Frame => fr.cast([^]Frame)[0..1]
+
+/// The frame `levels` capture links up from `fr`.
+frame_up :: fn(fr: ^Frame, levels: u32) -> ?^Frame {
+    cur := fr
+    for _ in 0..levels { cur = cur.env else return null }
+    return cur
+}
+
+/// The address of local `l` of frame `fr`, which needs one: made on first use.
+local_addr :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32) -> Flow!u64 needs Alloc {
+    i := us(l)
+    if fr.mem[i] is not 0 { return fr.mem[i] }
+    addr := try m.alloc_mem(span, fr.info.sizes[i], fr.info.aligns[i], .Stack, true)
+    // What the local held so far moves along.
+    off := us(fr.info.offsets[i])
+    _ = m.mem.init(addr, fr.store[off..off + us(fr.info.sizes[i])])
+    fr.mem[i] = addr
+    fr.allocs.push(addr)!
+    return addr
+}
+
+// ---------------------------------------------------------------------------------
+// Handler contexts
+// ---------------------------------------------------------------------------------
+
+push_ctx :: fn(m: ^Machine, parent: u32, effect_: types.EffectRef, installed: Installed, with_frame: u64, with_label: u32, with_fr: ?^Frame) -> u32 needs Alloc {
+    node := CtxNode(parent: parent, effect_: effect_, installed: installed, with_frame: with_frame, with_label: with_label, with_fr: with_fr)
+    if h := m.free_ctxs.pop() {
+        m.ctxs.items[us(h)] = node
+        return h
+    }
+    m.ctxs.push(node)!
+    return (m.ctxs.items.len - 1).trunc(u32)
+}
+
+/// Frees the contexts `from` and its parents up to (not including) `until`.
+pop_ctx :: fn(m: ^Machine, from: u32, until: u32) needs Alloc {
+    c := from
+    while c is not until and c is not 0 {
+        next := m.ctxs.items[us(c)].parent
+        m.free_ctxs.push(c)!
+        c = next
+    }
+}
+
+/// The innermost handler of `effect_` in context `cx` (0: none).
+find_ctx :: fn(m: ^const Machine, cx: u32, effect_: ^const types.EffectRef) -> u32 {
+    c := cx
+    while c is not 0 {
+        n := &m.ctxs.items[us(c)]
+        if n.effect_.eff is effect_.eff and types.cmp_ref(&n.effect_, effect_) is 0 { return c }
+        c = n.parent
+    }
+    return 0
+}
+
+// ---------------------------------------------------------------------------------
+// Running a program
+// ---------------------------------------------------------------------------------
+
+/// How a run ended.
+pub Outcome :: union {
+    Exit: u8
+    Trap: ^Trap
+}
+
+/// Runs `entry` (the program's `main` or the function wrapping it), with its output
+/// through `filter` if given: installs the
+/// default handlers of the ambient effects (`Out` to standard output, `Err` to standard
+/// error, `Env` with `args`) and returns the exit status (0, `main`'s `u8` result, or 1
+/// if it returns an error, which is first written to standard error as `error: …`).
+pub run_entry :: fn(p: ^Prog, entry: u32, mode: Mode, args: []const string, filter: ?^Filter) -> Outcome needs Host {
+    return with heap_allocator() {
+        m := machine(p, mode, args)
+        m.filter = filter
+        mp := &m
+        run :: fn() -> Outcome needs Run {
+            cx: u32 = 0
+            a := p.ambient
+            if e := a.out { cx = mp.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Out), 0, 0, null) }
+            if e := a.err { cx = mp.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Err), 0, 0, null) }
+            if e := a.env { cx = mp.push_ctx(cx, types.EffectRef(eff: e, args: empty_slice(types.GenericArg)), .Native(.Env), 0, 0, null) }
+            ret_ty := mp.func(entry).ret
+            ret := mp.tmp(mp.size(ret_ty))
+            return match mp.call_function(source.DUMMY, entry, empty_slice([]u8), null, cx, null, false, ret) {
+                !.Exit(code) => .Exit(code)
+                !.Trap(t) => .Trap(t)
+                !_ => .Trap(new(Trap(message: "internal error: control flow escaped `main`", span: source.DUMMY, trace: list(TraceCall)))!)
+                _ => .Exit(mp.exit_status(ret_ty, ret))
+            }
+        }
+        outcome := mp.run_coroutines(run)
+        mp.deinit()
+        outcome
+    }
+}
+
+/// Frees what the machine holds (the trap of an outcome is kept).
+deinit :: fn(m: ^Machine) needs Alloc {
+    for a in m.mem.allocs.items {
+        if a.data.len > 0 { free(a.data) }
+    }
+    m.mem.allocs.deinit()
+    free(m.mem.cache)
+    for c in m.scratch.chunks.items { free(c) }
+    m.scratch.chunks.deinit()
+    m.infos.deinit()
+    m.temps.deinit()
+    for fr in m.frame_pool.items {
+        fr.allocs.deinit()
+        fr.labels.deinit()
+        if fr.mem_buf.len > 0 { free(fr.mem_buf) }
+        free(slice_of(fr))
+    }
+    m.frame_pool.deinit()
+    m.argv.deinit()
+    m.sizes.deinit()
+    m.frames.deinit()
+    m.free_frames.deinit()
+    m.ctxs.deinit()
+    m.free_ctxs.deinit()
+    m.globals.deinit()
+    m.thread_globals.deinit()
+    m.strings.deinit()
+    m.cstrings.deinit()
+    m.cells.deinit()
+    m.alloc_tags.deinit()
+    for s in m.fib.free_stacks.items { libc.free(s.ptr) }
+    m.fib.free_stacks.deinit()
+    m.fib.coros.deinit()
+    m.fib.withs.deinit()
+}
+
+/// The exit status of a program whose entry returned `b` of type `t`.
+exit_status :: fn(m: ^Machine, t: Ty, b: []u8) -> u8 needs Alloc + Err {
+    int_status :: fn(ty: Ty, v: []const u8) -> u8 {
+        if m.int_info(ty) is null { return 0 }
+        return m.get_uint(v).trunc(u8)
+    }
+    .Result(err, ok) := m.kind(t) else return int_status(t, b)
+    payload := m.res_payload(t, b)
+    if not m.res_is_err(t, b) { return int_status(ok, payload) }
+    out := list(u8)
+    out.extend("error: ")!
+    // A union's value is named with its type: `E.NotFound` (§3.7).
+    if m.union_def(err) is not null { out.extend(m.s.tys.show(err))! }
+    m.format_value(&out, err, payload, true) else { out.extend("<unprintable error>")! }
+    out.push('\n')!
+    Err.write(out.items)
+    return 1
+}
+
+/// A trap's message and where it happened: its location and, in Debug builds, the
+/// calls leading to it (the report the C runtime prints), after `trap: `.
+pub trap_report :: fn(p: ^Prog, t: ^const Trap) -> string needs Alloc {
+    out := list(u8)
+    out.write("{}\n", t.message)!
+    name :: fn(i: usize) -> ?string {
+        c := t.trace.items.get(i) else return null
+        return p.backtrace_name(c.fn_id)
+    }
+    if at := location(p, t.span) {
+        out.write("  at {}", at)!
+        if n := name(0) { out.write(" in {}", n)! }
+        out.push('\n')!
+    }
+    // Each call site lies in the function that the next (outer) entry called.
+    callers := list(string)
+    for i in 0..t.trace.items.len {
+        at := location(p, t.trace.items[i].span) else continue
+        n := name(i + 1) else continue
+        callers.push(str.format("  called from {} in {}\n", at, n)!)!
+    }
+    // Past 20 callers, only the first and last 10, with a line that does not count the
+    // calls in between (a stack overflow reaches different depths on different back ends).
+    max: usize = 20
+    n := callers.items.len
+    for i, line in enumerate(callers.items) {
+        if n <= max or i < max / 2 or i >= n - max / 2 {
+            out.extend(line)!
+        } else if i is max / 2 {
+            out.extend("  ... more calls\n")!
+        }
+    }
+    return out.items
+}
+
+/// `file:line:col` of `span`, if it has a location.
+location :: fn(p: ^Prog, span: source.Span) -> ?string needs Alloc {
+    if span is source.DUMMY { return null }
+    f := p.s.l.sm.file(span.file)
+    lc := f.line_col(span.lo)
+    return str.format("{}:{}:{}", f.path, lc.line, lc.col)!
+}
+
+/// `x` as a `usize` (sizes and offsets of the interpreter's own buffers fit).
+us :: fn(x: u64) -> usize => x.trunc(usize)

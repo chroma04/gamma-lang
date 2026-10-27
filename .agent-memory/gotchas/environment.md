@@ -82,3 +82,10 @@
 - s38f: a full `cargo test` once died in tests/selfhost.rs with exit 101 and no panic
   message (killed; likely memory with the in-process reference on 1 GiB-stack threads plus
   gammac processes); the rerun passed. If it recurs, run `--test selfhost` alone to check.
+- s46: gammac's C back end keeps ALL locals and big temporaries of a function in one frame
+  struct (GM_STACK_CHECK cost in the C shows it): a big `match` function costs its whole
+  arm set per call. Split hot recursive functions into a thin dispatcher + `#noinline`
+  helpers (interp eval/eval_slow). Debug builds memset heap blocks (0xAA): take huge
+  lazily-committed buffers from libc calloc (interp fiber.gm host_stack).
+- s46: a selfhost run with sources changed mid-run makes the fixed-point test fail
+  spuriously (stage 1 and 2 built from different trees). Don't edit during `cargo test`.

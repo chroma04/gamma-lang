@@ -1,0 +1,473 @@
+// Formatting values for `print`, `@write`, error exits and `unwrap` traps (spec §21.6.1);
+// mirrors `src/interp/display.rs`.
+
+fmtlib :: import "std/fmt"
+
+/// Appends the display form of the value `b` of type `t` to `out`. `top` is true for the
+/// argument itself, where a string is written raw instead of quoted. The error is the
+/// message of a trap.
+format_value :: fn(m: ^Machine, out: ^List(u8), t: Ty, b: []u8, top: bool) -> string!() needs Alloc {
+    match m.kind(t) {
+        .Int(_, _), .Usize, .Isize => fmt_int(m, out, t, b)
+        .Float(bits) => fmt_float(out, fmt_float_bits(m, bits, b), bits)
+        .Bool => out.extend(if b[0] is not 0 { "true" } else { "false" })!
+        .Ptr(_, _), .ManyPtr(_, _), .Rawptr, .FnPtr(_) => out.write("{:#x}", m.ptr_of(b))!
+        .Slice(_, elem) => {
+            sp := m.slice_parts(b)
+            esz := m.size(elem)
+            total := sp.len *? esz else return !"slice too large"
+            data: []u8 = empty_slice(u8)
+            if total > 0 { data = m.mem.read(sp.ptr, total, 1) else e => return !mem_message(e) }
+            if m.kind(elem) is .Int(false, 8) {
+                if top { out.extend(data)! } else { fmt_quote(out, data) }
+            } else {
+                try fmt_seq(m, out, elem, us(esz), data, us(sp.len))
+            }
+        }
+        .Array(len, elem, _) => try fmt_seq(m, out, elem, us(m.size(elem)), b, us(len))
+        .Tuple(elems, names) => {
+            out.push('(')!
+            for i, et in enumerate(elems) {
+                if i > 0 { out.extend(", ")! }
+                if names.len > 0 {
+                    out.extend(names[i])!
+                    out.extend(": ")!
+                }
+                try format_value(m, out, et, m.field_bytes(t, b, i.trunc(u32)), false)
+            }
+            if elems.len is 1 and names.len is 0 { out.push(',')! }
+            out.push(')')!
+        }
+        .Optional(inner) => {
+            if m.opt_present(t, b) {
+                try format_value(m, out, inner, m.opt_payload(t, b), false)
+            } else {
+                out.extend("null")!
+            }
+        }
+        .Result(err, ok) => {
+            payload := m.res_payload(t, b)
+            if m.res_is_err(t, b) {
+                out.push('!')!
+                try format_value(m, out, err, payload, false)
+            } else {
+                try format_value(m, out, ok, payload, false)
+            }
+        }
+        .Adt(_, _) => try fmt_adt(m, out, t, b)
+        _ => out.write("<{}>", m.s.show(t))!
+    }
+}
+
+/// Appends a struct as `Name(field: v, ...)` or a union as `.Variant(payload)`.
+fmt_adt :: fn(m: ^Machine, out: ^List(u8), t: Ty, b: []u8) -> string!() needs Alloc {
+    a := m.adt_of(t) else return !str.format("unknown type {}", m.s.show(t))!
+    match a.kind {
+        .Struct(def) => {
+            out.extend(a.name)!
+            out.push('(')!
+            first := true
+            for i, f in enumerate(def.fields) {
+                if f.name is "_" { continue }
+                if not first { out.extend(", ")! }
+                first = false
+                out.extend(f.name)!
+                out.extend(": ")!
+                mk := m.mark()
+                fb: []u8 = empty_slice(u8)
+                if m.bits_struct_ty(t) is not null {
+                    fb = m.tmp(m.size(f.ty))
+                    m.read_field(t, b, i.trunc(u32), fb)
+                } else {
+                    fb = m.field_bytes(t, b, i.trunc(u32))
+                }
+                r := format_value(m, out, f.ty, fb, false)
+                m.release(mk)
+                try r
+            }
+            out.push(')')!
+        }
+        .Union(tag, variants) => {
+            v := m.variant_index(t, b) else {
+                raw := m.get_int(tag, b[0..us(m.size(tag))])
+                return !str.format("invalid tag value S({}) for union {}", raw.bits(i128), m.s.show(t))!
+            }
+            out.push('.')!
+            out.extend(variants[us(v)].name)!
+            if pt := variants[us(v)].payload {
+                off := us(m.payload_offset(t))
+                pb := b[off..off + us(m.size(pt))]
+                out.push('(')!
+                if .Tuple(elems, names) := m.kind(pt) {
+                    for i, et in enumerate(elems) {
+                        if i > 0 { out.extend(", ")! }
+                        if names.len > 0 {
+                            out.extend(names[i])!
+                            out.extend(": ")!
+                        }
+                        try format_value(m, out, et, m.field_bytes(pt, pb, i.trunc(u32)), false)
+                    }
+                } else {
+                    try format_value(m, out, pt, pb, false)
+                }
+                out.push(')')!
+            }
+        }
+        .CUnion(_) => out.write("<{}>", a.name)!
+    }
+}
+
+/// Appends the `n` elements of type `elem` (`esz` bytes each) in `data` as `[a, b, c]`.
+fmt_seq :: fn(m: ^Machine, out: ^List(u8), elem: Ty, esz: usize, data: []u8, n: usize) -> string!() needs Alloc {
+    out.push('[')!
+    for i in 0..n {
+        if i > 0 { out.extend(", ")! }
+        try format_value(m, out, elem, data[i * esz..(i + 1) * esz], false)
+    }
+    out.push(']')!
+}
+
+/// Appends `bytes` in quotes, with escapes; valid UTF-8 sequences are kept.
+fmt_quote :: fn(out: ^List(u8), bytes: []const u8) needs Alloc {
+    out.push('"')!
+    i: usize = 0
+    while i < bytes.len {
+        c := bytes[i]
+        i += 1
+        if c is '"' {
+            out.extend("\\\"")!
+        } else if c is '\\' {
+            out.extend("\\\\")!
+        } else if c is '\n' {
+            out.extend("\\n")!
+        } else if c is '\r' {
+            out.extend("\\r")!
+        } else if c is '\t' {
+            out.extend("\\t")!
+        } else if c is 0 {
+            out.extend("\\0")!
+        } else if c >= 0x20 and c <= 0x7e {
+            out.push(c)!
+        } else {
+            n: usize = if c >= 0xc2 and c <= 0xdf { 2 } else if c >= 0xe0 and c <= 0xef { 3 } else if c >= 0xf0 and c <= 0xf4 { 4 } else { 0 }
+            if n > 0 and i - 1 + n <= bytes.len and fmt_valid_utf8(bytes[i - 1..i - 1 + n]) {
+                out.extend(bytes[i - 1..i - 1 + n])!
+                i += n - 1
+            } else {
+                out.write("\\x{:02x}", c)!
+            }
+        }
+    }
+    out.push('"')!
+}
+
+/// True if `s` (two to four bytes, with a lead byte in `c2..=f4`) is one well-formed
+/// UTF-8 encoding of a scalar value.
+fmt_valid_utf8 :: fn(s: []const u8) -> bool {
+    for k in 1..s.len {
+        if s[k] & 0xc0 is not 0x80 { return false }
+    }
+    c := s[0]
+    if s.len is 3 {
+        if c is 0xe0 { return s[1] >= 0xa0 }
+        if c is 0xed { return s[1] < 0xa0 }
+    }
+    if s.len is 4 {
+        if c is 0xf0 { return s[1] >= 0x90 }
+        if c is 0xf4 { return s[1] < 0x90 }
+    }
+    return true
+}
+
+/// Appends the decimal form of the integer `b` of type `t`.
+fmt_int :: fn(m: ^Machine, out: ^List(u8), t: Ty, b: []u8) needs Alloc {
+    v := m.get_int(t, b)
+    info := m.int_info(t) else return ()
+    if info.signed {
+        out.write("{}", v.bits(i128))!
+    } else {
+        out.write("{}", v)!
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Floats
+// ---------------------------------------------------------------------------------
+
+/// 2^k as an `f64`, for k in the normal range.
+fmt_pow2 :: fn(k: i32) -> f64 => ((k + 1023).trunc(u64) << 52).bits(f64)
+
+/// The value of the float of `bits` width in `b`, widened exactly to `f64`.
+fmt_float_bits :: fn(m: ^const Machine, bits: u16, b: []const u8) -> f64 {
+    raw := m.get_uint(b)
+    if bits is 64 { return raw.trunc(u64).bits(f64) }
+    if bits is 32 { return raw.trunc(u32).bits(f32).to(f64) }
+    h := raw.trunc(u16)
+    neg := h & 0x8000 is not 0
+    e := i32((h >> 10) & 0x1f)
+    man := h & 0x3ff
+    if e is 0x1f {
+        // An infinity, or a NaN as the hardware widens it: sign and payload kept, quiet.
+        return (((u64(h) & 0x8000) << 48) | 0x7ff0_0000_0000_0000 | (if man is 0 { u64(0) } else { 0x0008_0000_0000_0000 | (u64(man) << 42) })).bits(f64)
+    }
+    mag: f64 = if e is 0 { f64(man) * fmt_pow2(-24) } else { f64(1024 + man) * fmt_pow2(e - 25) }
+    return if neg { (mag.bits(u64) | 0x8000_0000_0000_0000).bits(f64) } else { mag }
+}
+
+/// Splits the text of a float in scientific form (`d`, `d.ddd`, then `e` and an optionally
+/// signed exponent) into its digits, written to `dig`, and the exponent. Gives the number
+/// of digits.
+fmt_split_exp :: fn(text: string, dig: []u8) -> (n: usize, exp: i32) {
+    n: usize = 0
+    i: usize = 0
+    while i < text.len and text[i] is not 'e' {
+        if text[i] is not '.' {
+            dig[n] = text[i]
+            n += 1
+        }
+        i += 1
+    }
+    i += 1
+    neg := i < text.len and text[i] is '-'
+    if i < text.len and (text[i] is '-' or text[i] is '+') { i += 1 }
+    e: i32 = 0
+    while i < text.len {
+        e = e * 10 + i32(text[i] - '0')
+        i += 1
+    }
+    return (n: n, exp: if neg { 0 - e } else { e })
+}
+
+/// The shortest decimal digits that read back as `x` (finite, positive) in a float of
+/// `bits` width, written to `dig` (at least 24 bytes); gives their number and the
+/// decimal exponent of the first.
+fmt_shortest :: fn(x: f64, bits: u16, dig: []u8) -> (n: usize, exp: i32) needs Alloc {
+    if bits is 16 { return fmt_shortest16(x, dig) }
+    text := if bits is 32 { str.format("{:e}", x.to(f32))! } else { str.format("{:e}", x)! }
+    r := fmt_split_exp(text, dig)
+    free(text)
+    return r
+}
+
+/// `fmt_shortest` for binary16: the fewest digits whose correctly rounded decimal lies in
+/// the rounding interval of `x`.
+fmt_shortest16 :: fn(x: f64, dig: []u8) -> (n: usize, exp: i32) needs Alloc {
+    h := x.bits(u64)
+    // x = c * 2^q exactly, in binary16's terms.
+    be := ((h >> 52) & 0x7ff).trunc(i32) - 1023 // the exponent of x
+    low := be < -14
+    q: i32 = if low { -24 } else { be - 10 }
+    c := x / fmt_pow2(q)
+    cu := c.trunc(u32)
+    ulp := fmt_pow2(q)
+    hi := x + ulp / 2.0
+    lo := if cu is 1024 and q > -24 { x - ulp / 4.0 } else { x - ulp / 2.0 }
+    incl := cu & 1 is 0
+    buf := [32]u8(fill: 0)
+    for digits in 1..=17 {
+        text := fmtlib.sci(x, (digits - 1).trunc(u32), buf[..])
+        sp := fmt_split_exp(text, dig)
+        d: i64 = 0
+        for k in 0..sp.n { d = d * 10 + i64(dig[k] - '0') }
+        e10 := sp.exp - (digits - 1).trunc(i32)
+        // The correctly rounded candidate, then its neighbours: a tie in the rounding can
+        // fall outside the interval while a neighbour is inside.
+        for delta in [3]i64(0, -1, 1) {
+            cand := d + delta
+            if cand <= 0 { continue }
+            s := str.format("{}e{}", cand, e10)!
+            v := str.parse_float(f64, s) else e => x
+            free(s)
+            ok := if incl { v >= lo and v <= hi } else { v > lo and v < hi }
+            if ok {
+                nb := fmtlib.dec(cand, buf[..])
+                for k in 0..nb.len { dig[k] = nb[k] }
+                return (n: nb.len, exp: e10 + nb.len.trunc(i32) - 1)
+            }
+        }
+    }
+    return (n: 0, exp: 0)
+}
+
+/// Appends the float `x` of `bits` width as `@write` shows it (§21.6.1): the shortest
+/// digits that read back, positional between 1e-6 and 1e21, else scientific.
+fmt_float :: fn(out: ^List(u8), x: f64, bits: u16) needs Alloc {
+    if x.is_nan() {
+        out.extend("nan")!
+        return ()
+    }
+    if x.is_inf() {
+        out.extend(if x < 0.0 { "-inf" } else { "inf" })!
+        return ()
+    }
+    if x is 0.0 {
+        out.extend(if x.sign_bit() { "-0" } else { "0" })!
+        return ()
+    }
+    if x < 0.0 { out.push('-')! }
+    dig := [40]u8(fill: 0)
+    sh := fmt_shortest(x.abs(), bits, dig[..])
+    n := sh.n
+    exp := sh.exp
+    if exp >= -6 and exp <= 20 {
+        if exp >= 0 {
+            int_len := exp.trunc(usize) + 1
+            if n <= int_len {
+                out.extend(dig[0..n])!
+                for _ in 0..int_len - n { out.push('0')! }
+            } else {
+                out.extend(dig[0..int_len])!
+                out.push('.')!
+                out.extend(dig[int_len..n])!
+            }
+        } else {
+            out.extend("0.")!
+            for _ in 0..(0 - exp - 1).trunc(usize) { out.push('0')! }
+            out.extend(dig[0..n])!
+        }
+    } else {
+        out.push(dig[0])!
+        if n > 1 {
+            out.push('.')!
+            out.extend(dig[1..n])!
+        }
+        out.write("e{}", exp)!
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Format specs
+// ---------------------------------------------------------------------------------
+
+/// Appends `b`, a value of type `t`, as a placeholder with a format spec (§21.6.1): the
+/// number in the requested form, then the padding.
+format_spec :: fn(m: ^Machine, out: ^List(u8), t: Ty, b: []u8, spec: ^const tir.FmtSpec) -> string!() needs Alloc {
+    body := list(u8)
+    defer body.deinit()
+    neg := false
+    finite := true
+    number := true
+    match m.kind(t) {
+        .Int(_, _), .Usize, .Isize => {
+            v := m.get_int(t, b)
+            info := m.int_info(t) else return ()
+            neg = info.signed and v.bits(i128) < 0
+            mag := if neg { 0 -% v } else { v }
+            buf := [fmtlib.INT_BUF]u8(fill: 0)
+            s := match spec.kind {
+                .Hex => fmtlib.radix_with(mag, 16, false, false, buf[..])
+                .HexUpper => fmtlib.radix_with(mag, 16, true, false, buf[..])
+                .Oct => fmtlib.radix_with(mag, 8, false, false, buf[..])
+                .Bin => fmtlib.radix_with(mag, 2, false, false, buf[..])
+                _ => fmtlib.radix_with(mag, 10, false, false, buf[..])
+            }
+            body.extend(s)!
+        }
+        .Float(bits) => {
+            x := fmt_float_bits(m, bits, b)
+            finite = x.is_finite()
+            neg = x.sign_bit() and not x.is_nan()
+            a := x.abs()
+            if x.is_nan() {
+                body.extend("nan")!
+            } else if not finite {
+                body.extend("inf")!
+            } else {
+                fmt_float_spec(&body, a, bits, spec)
+            }
+        }
+        _ => {
+            number = false
+            try format_value(m, &body, t, b, true)
+            fmt_pad(out, "", body.items, spec.width, spec.fill, spec.align, spec.zero, false)
+            return ()
+        }
+    }
+    head := list(u8)
+    defer head.deinit()
+    if neg {
+        head.push('-')!
+    } else if spec.plus and not (body.items is "nan") {
+        head.push('+')!
+    }
+    if spec.alt {
+        head.extend(match spec.kind {
+            .Hex, .HexUpper => "0x"
+            .Oct => "0o"
+            _ => "0b"
+        })!
+    }
+    if spec.zero and not finite {
+        fmt_pad(out, head.items, body.items, spec.width, spec.fill, .Right, false, number)
+    } else {
+        fmt_pad(out, head.items, body.items, spec.width, spec.fill, spec.align, spec.zero, number)
+    }
+}
+
+/// Appends the magnitude `a` (finite) of a float of `bits` width in the form of the
+/// spec: fixed with a precision, exponent form, or the display form.
+fmt_float_spec :: fn(body: ^List(u8), a: f64, bits: u16, spec: ^const tir.FmtSpec) needs Alloc {
+    if spec.kind is .Exp {
+        if p := spec.precision {
+            buf := make_fill(fmtlib.sci_buf_len(p), u8(0))!
+            text := fmtlib.sci(a, p, buf)
+            e := 0
+            while text[e] is not 'e' { e += 1 }
+            ex := fmt_split_exp(text[e..], buf[0..0]).exp
+            body.extend(text[0..e])!
+            body.write("e{}", ex)!
+            free(buf)
+        } else if a is 0.0 {
+            body.extend("0e0")!
+        } else {
+            dig := [40]u8(fill: 0)
+            sh := fmt_shortest(a, bits, dig[..])
+            body.push(dig[0])!
+            if sh.n > 1 {
+                body.push('.')!
+                body.extend(dig[1..sh.n])!
+            }
+            body.write("e{}", sh.exp)!
+        }
+        return ()
+    }
+    if p := spec.precision {
+        buf := make_fill(fmtlib.fixed_buf_len(p), u8(0))!
+        body.extend(fmtlib.fixed(a, p, buf))!
+        free(buf)
+        return ()
+    }
+    fmt_float(body, a, bits)
+}
+
+/// Appends `head` (a sign and base prefix) and `body` padded to `width`, which counts
+/// Unicode scalar values (bytes that do not continue a UTF-8 sequence).
+fmt_pad :: fn(out: ^List(u8), head: []const u8, body: []const u8, width: u32, fill: u8, align: tir.FmtAlign, zero: bool, number: bool) needs Alloc {
+    len: usize = 0
+    for c in head { if c & 0xc0 is not 0x80 { len += 1 } }
+    for c in body { if c & 0xc0 is not 0x80 { len += 1 } }
+    gap := if usize(width) > len { usize(width) - len } else { 0 }
+    if zero {
+        out.extend(head)!
+        for _ in 0..gap { out.push('0')! }
+        out.extend(body)!
+        return ()
+    }
+    before: usize = 0
+    after: usize = 0
+    match align {
+        .Left => { after = gap }
+        .Right => { before = gap }
+        .Center => {
+            before = gap / 2
+            after = gap - gap / 2
+        }
+        .Auto => {
+            if number { before = gap } else { after = gap }
+        }
+    }
+    for _ in 0..before { out.push(fill)! }
+    out.extend(head)!
+    out.extend(body)!
+    for _ in 0..after { out.push(fill)! }
+}

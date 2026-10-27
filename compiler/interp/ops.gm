@@ -1,0 +1,610 @@
+// Operators, comparisons, structural equality and membership, on values as bytes (mirrors
+// `src/interp/ops.rs` and `src/interp/fast.rs`).
+
+ast :: import "../ast"
+
+// ---------------------------------------------------------------------------------
+// Operators
+// ---------------------------------------------------------------------------------
+
+op_sym :: fn(op: tir.BinOp) -> string => match op {
+    .Add(_) => "+"
+    .Sub(_) => "-"
+    .Mul(_) => "*"
+    .Shl(_) => "<<"
+    .Div => "/"
+    .Rem => "%"
+    .Shr => ">>"
+    .BitAnd => "&"
+    .BitOr => "|"
+    .BitXor => "~"
+    .Lt => "<"
+    .Le => "<="
+    .Gt => ">"
+    .Ge => ">="
+}
+
+is_cmp :: fn(op: tir.BinOp) -> bool => match op {
+    .Lt, .Le, .Gt, .Ge => true
+    _ => false
+}
+
+/// The smallest value of the signed integer type of `bits` bits.
+int_lo :: fn(bits: u32) -> i128 {
+    if bits >= 128 { return (u128(1) << 127).bits(i128) }
+    return -(i128(1) << (bits - 1))
+}
+
+/// The largest value of the signed integer type of `bits` bits.
+int_hi :: fn(bits: u32) -> i128 {
+    if bits >= 128 { return (~u128(0) >> 1).bits(i128) }
+    return (i128(1) << (bits - 1)) - 1
+}
+
+/// The two's-complement bits of the smallest or largest value of an integer type.
+sat_bits :: fn(signed: bool, bits: u32, below: bool) -> u128 {
+    if signed { return (if below { int_lo(bits) } else { int_hi(bits) }).bits(u128) }
+    return if below { 0 } else { num_mask(bits) }
+}
+
+/// An exact result of `+ - * <<` on integers: its low bits, whether it is out of range and,
+/// if so, on which side.
+Arith :: struct {
+    low: u128
+    over: bool
+    below: bool
+}
+
+/// `a + c`, `a - c` or `a * c` for integers of `bits` bits whose values are `a` and `c`
+/// (sign-extended to 128 bits if `signed`).
+int_arith :: fn(op: tir.BinOp, signed: bool, bits: u32, a, c: u128) -> Arith {
+    if not signed {
+        mask := num_mask(bits)
+        match op {
+            .Add(_) => {
+                r := a +% c
+                over := if bits >= 128 { r < a } else { r > mask }
+                return Arith(low: r & mask, over: over, below: false)
+            }
+            .Sub(_) => return Arith(low: (a -% c) & mask, over: a < c, below: true)
+            _ => {
+                if bits <= 64 {
+                    p := a * c
+                    return Arith(low: p & mask, over: p > mask, below: false)
+                }
+                p := a *% c
+                over := a is not 0 and (p / a is not c or p > mask)
+                return Arith(low: p & mask, over: over, below: false)
+            }
+        }
+    }
+    x := a.bits(i128)
+    z := c.bits(i128)
+    lo := int_lo(bits)
+    hi := int_hi(bits)
+    match op {
+        .Add(_) => {
+            r := x +% z
+            over := if bits >= 128 { ((x ~ r) & (z ~ r)) < 0 } else { r < lo or r > hi }
+            return Arith(low: num_ext(true, bits, r.bits(u128)), over: over, below: z < 0)
+        }
+        .Sub(_) => {
+            r := x -% z
+            over := if bits >= 128 { ((x ~ z) & (x ~ r)) < 0 } else { r < lo or r > hi }
+            return Arith(low: num_ext(true, bits, r.bits(u128)), over: over, below: z > 0)
+        }
+        _ => {
+            if bits <= 63 {
+                p := x * z
+                return Arith(low: num_ext(true, bits, p.bits(u128)), over: p < lo or p > hi, below: p < 0)
+            }
+            if x is 0 or z is 0 { return Arith(low: 0, over: false, below: false) }
+            if x is -1 or z is -1 {
+                o := if x is -1 { z } else { x }
+                if o is int_lo(128) { return Arith(low: o.bits(u128), over: true, below: false) }
+                p := -o
+                return Arith(low: num_ext(true, bits, p.bits(u128)), over: p < lo or p > hi, below: p < 0)
+            }
+            p := x *% z
+            over := p / x is not z or p < lo or p > hi
+            return Arith(low: num_ext(true, bits, p.bits(u128)), over: over, below: (x < 0) is not (z < 0))
+        }
+    }
+}
+
+/// `a << n` for an integer of `bits` bits whose value is `a`, and `n` below `bits`.
+int_shl :: fn(signed: bool, bits: u32, a: u128, n: u32) -> Arith {
+    k := u128(n)
+    if not signed {
+        low := (a <<% k) & num_mask(bits)
+        return Arith(low: low, over: (low >> k) is not a, below: false)
+    }
+    v := a.bits(i128)
+    w := v <<% k
+    wrapped := if bits >= 128 { w } else { (w <<% (128 - bits)) >> (128 - bits) }
+    return Arith(low: wrapped.bits(u128), over: (wrapped >> k) is not v, below: v < 0)
+}
+
+/// The result `r` of `+ - * <<` on integers of type `t`, as the flavor `fl` says.
+finish_int :: fn(m: ^Machine, span: source.Span, fl: ast.Flavor, r: Arith, t: Ty, info: (signed: bool, bits: u32), sym: string, res_ty: Ty, dst: []u8) -> Flow!() needs Alloc {
+    low := num_ext(info.signed, info.bits, r.low)
+    match fl {
+        .Opt => {
+            if r.over {
+                dst.fill(0)
+                return ()
+            }
+            pb: [16]u8 = ---
+            n := us(m.size(t))
+            wr_uint(m, pb[0..n], low)
+            m.make_some(res_ty, dst, pb[0..n])
+        }
+        _ => {
+            if not r.over {
+                wr_uint(m, dst, low)
+                return ()
+            }
+            match fl {
+                .Wrap => wr_uint(m, dst, low)
+                .Sat => wr_uint(m, dst, sat_bits(info.signed, info.bits, r.below))
+                _ => {
+                    if not m.fast() { return !m.trap(span, str.format("integer overflow in `{}`", sym)!) }
+                    wr_uint(m, dst, low)
+                }
+            }
+        }
+    }
+}
+
+/// The shift amount `y` of type `rt` for an integer of `bits` bits: it traps if the amount
+/// is not below `bits`, and in Fast mode reduces it.
+shift_amount :: fn(m: ^Machine, span: source.Span, lt, rt: Ty, y: []const u8, bits: u32) -> Flow!u32 needs Alloc {
+    rinfo := m.int_info(rt) else return !m.trap(span, "internal error: a shift by a value that is not an integer")
+    v := m.get_int(rt, y)
+    neg := rinfo.signed and (v >> 127) is 1
+    if not neg and v < u128(bits) { return v.trunc(u32) }
+    if m.fast() {
+        if neg { return 0 }
+        mag := v.min(u128(~u64(0))).trunc(u64)
+        return (mag % u64(bits)).trunc(u32)
+    }
+    text := if neg { str.format("-{}", 0 -% v)! } else { str.format("{}", v)! }
+    return !m.trap(span, str.format("shift amount {} too large for {}", text, m.s.show(lt))!)
+}
+
+/// The binary operator `op` on integers of type `lt` (and shifts by `rt`), into `dst`.
+int_binop :: fn(m: ^Machine, span: source.Span, op: tir.BinOp, lt, rt, res_ty: Ty, x, y: []const u8, dst: []u8) -> Flow!() needs Alloc {
+    info := m.int_info(lt) else return !m.trap(span, "internal error: an integer operator on a value that is not an integer")
+    a := rd_int(m, info, x)
+    match op {
+        .Add(fl), .Sub(fl), .Mul(fl) => {
+            c := rd_int(m, info, y)
+            return m.finish_int(span, fl, int_arith(op, info.signed, info.bits, a, c), lt, info, op_sym(op), res_ty, dst)
+        }
+        .Shl(fl) => {
+            n := try m.shift_amount(span, lt, rt, y, info.bits)
+            return m.finish_int(span, fl, int_shl(info.signed, info.bits, a, n), lt, info, "<<", res_ty, dst)
+        }
+        .Shr => {
+            n := try m.shift_amount(span, lt, rt, y, info.bits)
+            if info.signed {
+                wr_uint(m, dst, (a.bits(i128) >> n).bits(u128))
+            } else {
+                wr_uint(m, dst, a >> u128(n))
+            }
+        }
+        .Div, .Rem => {
+            c := rd_int(m, info, y)
+            if c is 0 { return !m.trap(span, "division by zero") }
+            is_div := op is .Div
+            if not info.signed {
+                wr_uint(m, dst, if is_div { a / c } else { a % c })
+                return ()
+            }
+            p := a.bits(i128)
+            q := c.bits(i128)
+            if q is -1 {
+                if p is int_lo(info.bits) { return !m.trap(span, str.format("integer overflow in `{}`", op_sym(op))!) }
+                wr_uint(m, dst, if is_div { (-p).bits(u128) } else { 0 })
+                return ()
+            }
+            wr_uint(m, dst, (if is_div { p / q } else { p % q }).bits(u128))
+        }
+        .BitAnd => wr_uint(m, dst, a & rd_int(m, info, y))
+        .BitOr => wr_uint(m, dst, a | rd_int(m, info, y))
+        .BitXor => wr_uint(m, dst, a ~ rd_int(m, info, y))
+        _ => return !m.trap(span, "internal error: a comparison reached the integer operators")
+    }
+}
+
+/// The binary operator `op` on the operand bytes `x` of type `lt` and `y` of type `rt`,
+/// giving `dst` of type `res_ty` (`?T` for the optional flavor).
+binop :: fn(m: ^Machine, span: source.Span, op: tir.BinOp, lt, rt, res_ty: Ty, x, y: []u8, dst: []u8) -> Flow!() needs Run {
+    if is_cmp(op) {
+        v := try m.cmp_op(span, op, lt, x, y)
+        dst[0] = if v { 1 } else { 0 }
+        return ()
+    }
+    match m.kind(lt) {
+        .Int(_, _), .Usize, .Isize => return m.int_binop(span, op, lt, rt, res_ty, x, y, dst)
+        .Float(_) => {
+            p := m.get_float(lt, x)
+            q := m.get_float(lt, y)
+            r := match op {
+                .Add(_) => p + q
+                .Sub(_) => p - q
+                .Mul(_) => p * q
+                .Div => p / q
+                _ => return !m.trap(span, str.format("operator `{}` is not defined on floats", op_sym(op))!)
+            }
+            m.put_float(lt, r, dst)
+        }
+        .Array(n, elem, _) => {
+            esz := us(m.size(elem))
+            // A vector shifts every lane by one scalar amount (§5.6.2).
+            scalar_r := m.kind(rt) is not .Array(_, _, _)
+            ety := if scalar_r { rt } else { elem }
+            is_mask := m.kind(elem) is .Bool
+            for i in 0..us(n) {
+                xs := x[i * esz..(i + 1) * esz]
+                ys := if scalar_r { y } else { y[i * esz..(i + 1) * esz] }
+                ds := dst[i * esz..(i + 1) * esz]
+                if is_mask {
+                    // The bitwise operators on the lanes of a mask.
+                    ds[0] = match op {
+                        .BitAnd => xs[0] & ys[0]
+                        .BitOr => xs[0] | ys[0]
+                        _ => xs[0] ~ ys[0]
+                    }
+                } else {
+                    try m.binop(span, op, elem, ety, elem, xs, ys, ds)
+                }
+            }
+        }
+        .Adt(_, _) => {
+            u := m.bits_struct_ty(lt) else return !m.trap(span, str.format("operator `{}` is not defined on {}", op_sym(op), m.s.show(lt))!)
+            return m.int_binop(span, op, u, u, u, x, y, dst)
+        }
+        _ => return !m.trap(span, str.format("operator `{}` is not defined on {}", op_sym(op), m.s.show(lt))!)
+    }
+}
+
+/// Evaluates the operands of `l op r` and applies the operator.
+binary :: fn(m: ^Machine, a: Act, op: tir.BinOp, l, r: ^Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
+    ln := us(m.size(l.ty))
+    rn := us(m.size(r.ty))
+    if ln <= 16 and rn <= 16 {
+        // Small operands live on the stack.
+        xb: [16]u8 = ---
+        yb: [16]u8 = ---
+        try m.eval(a, l, xb[0..ln])
+        try m.eval(a, r, yb[0..rn])
+        return m.binop(e.span, op, l.ty, r.ty, e.ty, xb[0..ln], yb[0..rn], dst)
+    }
+    mk := m.mark()
+    x := m.tmp(m.size(l.ty))
+    try m.eval(a, l, x)
+    y := m.tmp(m.size(r.ty))
+    try m.eval(a, r, y)
+    try m.binop(e.span, op, l.ty, r.ty, e.ty, x, y, dst)
+    m.release(mk)
+}
+
+/// The unary operator `op` on the bytes `b` of type `t`.
+unop :: fn(m: ^Machine, span: source.Span, op: tir.UnOp, t: Ty, b: []const u8, dst: []u8) -> Flow!() needs Alloc {
+    match op {
+        .Not => { dst[0] = if b[0] is 0 { 1 } else { 0 } }
+        .Neg => {
+            if .Float(_) := m.kind(t) {
+                m.put_float(t, -m.get_float(t, b), dst)
+                return ()
+            }
+            if .Array(n, elem, _) := m.kind(t) {
+                esz := us(m.size(elem))
+                for i in 0..us(n) { try m.unop(span, op, elem, b[i * esz..(i + 1) * esz], dst[i * esz..(i + 1) * esz]) }
+                return ()
+            }
+            info := m.int_info(t) else return !m.trap(span, str.format("cannot negate {}", m.s.show(t))!)
+            v := m.get_int(t, b)
+            if info.signed {
+                x := v.bits(i128)
+                if x is int_lo(info.bits) {
+                    if not m.fast() { return !m.trap(span, "integer overflow in `-`") }
+                    m.put_uint(dst, v)
+                    return ()
+                }
+                m.put_uint(dst, (-x).bits(u128))
+            } else if v is 0 {
+                dst.fill(0)
+            } else {
+                if not m.fast() { return !m.trap(span, "integer overflow in `-`") }
+                m.put_uint(dst, num_ext(false, info.bits, 0 -% v))
+            }
+        }
+        .BitNot => {
+            if .Array(n, elem, _) := m.kind(t) {
+                esz := us(m.size(elem))
+                is_mask := m.kind(elem) is .Bool
+                for i in 0..us(n) {
+                    lane := b[i * esz..(i + 1) * esz]
+                    ds := dst[i * esz..(i + 1) * esz]
+                    if is_mask {
+                        ds[0] = if lane[0] is 0 { 1 } else { 0 }
+                    } else {
+                        try m.unop(span, op, elem, lane, ds)
+                    }
+                }
+                return ()
+            }
+            u := m.bits_struct_ty(t) else t
+            info := m.int_info(u) else return !m.trap(span, str.format("cannot complement {}", m.s.show(u))!)
+            m.put_uint(dst, num_ext(info.signed, info.bits, ~m.get_int(u, b)))
+        }
+    }
+}
+
+/// Evaluates the operand of a unary operator and applies it.
+unary :: fn(m: ^Machine, a: Act, op: tir.UnOp, x: ^Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
+    n := us(m.size(x.ty))
+    if n <= 16 {
+        xb: [16]u8 = ---
+        try m.eval(a, x, xb[0..n])
+        return m.unop(e.span, op, x.ty, xb[0..n], dst)
+    }
+    mk := m.mark()
+    v := m.tmp(m.size(x.ty))
+    try m.eval(a, x, v)
+    try m.unop(e.span, op, x.ty, v, dst)
+    m.release(mk)
+}
+
+// ---------------------------------------------------------------------------------
+// Comparison
+// ---------------------------------------------------------------------------------
+
+/// `x op y` for a comparison operator on values of type `t`.
+cmp_op :: fn(m: ^Machine, span: source.Span, op: tir.BinOp, t: Ty, x, y: []u8) -> Flow!bool needs Run {
+    if info := m.int_info(t) {
+        a := rd_int(m, info, x)
+        c := rd_int(m, info, y)
+        if info.signed {
+            p := a.bits(i128)
+            q := c.bits(i128)
+            return match op {
+                .Lt => p < q
+                .Le => p <= q
+                .Gt => p > q
+                _ => p >= q
+            }
+        }
+        return match op {
+            .Lt => a < c
+            .Le => a <= c
+            .Gt => a > c
+            _ => a >= c
+        }
+    }
+    match op {
+        .Lt => return m.less(span, t, x, y)
+        .Gt => return m.less(span, t, y, x)
+        .Le => {
+            if try m.less(span, t, x, y) { return true }
+            return m.equal(span, t, x, y)
+        }
+        _ => {
+            if try m.less(span, t, y, x) { return true }
+            return m.equal(span, t, y, x)
+        }
+    }
+}
+
+/// The elements of the array or slice `b` of type `t`.
+Seq :: struct {
+    elem: Ty
+    esz: usize
+    n: u64
+    data: []u8
+}
+
+seq_of :: fn(m: ^Machine, span: source.Span, t: Ty, b: []u8) -> Flow!Seq needs Alloc {
+    match m.kind(t) {
+        .Array(n, elem, _) => return Seq(elem: elem, esz: us(m.size(elem)), n: n, data: b)
+        .Slice(_, elem) => {
+            esz := m.size(elem)
+            sp := m.slice_parts(b)
+            total := sp.len *% esz
+            if esz is not 0 and total / esz is not sp.len { return !m.trap(span, "slice too large") }
+            if total is 0 { return Seq(elem: elem, esz: us(esz), n: sp.len, data: empty_slice(u8)) }
+            data := m.mem.read(sp.ptr, total, 1) else e => return !m.mem_trap(span, e)
+            return Seq(elem: elem, esz: us(esz), n: sp.len, data: data)
+        }
+        _ => return !m.trap(span, str.format("{} is not an array or slice", m.s.show(t))!)
+    }
+}
+
+/// Whether `x` is below `y`, for values of type `t` (§7.7).
+less :: fn(m: ^Machine, span: source.Span, t: Ty, x, y: []u8) -> Flow!bool needs Run {
+    match m.kind(t) {
+        .Int(_, _), .Usize, .Isize => {
+            info := m.int_info(t) else return false
+            a := rd_int(m, info, x)
+            c := rd_int(m, info, y)
+            return if info.signed { a.bits(i128) < c.bits(i128) } else { a < c }
+        }
+        .Float(_) => return m.get_float(t, x) < m.get_float(t, y)
+        .Bool => return x[0] < y[0]
+        .Ptr(_, _), .ManyPtr(_, _), .Rawptr, .FnPtr(_) => return m.ptr_of(x) < m.ptr_of(y)
+        .Tuple(elems, _) => {
+            for i in 0..elems.len {
+                fa := m.field_bytes(t, x, i.trunc(u32))
+                fb := m.field_bytes(t, y, i.trunc(u32))
+                if not try m.equal(span, elems[i], fa, fb) { return m.less(span, elems[i], fa, fb) }
+            }
+            return false
+        }
+        .Array(_, _, _), .Slice(_, _) => {
+            sa := try m.seq_of(span, t, x)
+            sb := try m.seq_of(span, t, y)
+            k := sa.n.min(sb.n)
+            for i in 0..us(k) {
+                xs := sa.data[i * sa.esz..(i + 1) * sa.esz]
+                ys := sb.data[i * sa.esz..(i + 1) * sa.esz]
+                if not try m.equal(span, sa.elem, xs, ys) { return m.less(span, sa.elem, xs, ys) }
+            }
+            return sa.n < sb.n
+        }
+        .Adt(_, _) => {
+            if u := m.union_def(t) {
+                info := m.int_info(u.tag) else return false
+                n := us(m.size(u.tag))
+                a := m.get_int(u.tag, x[0..n])
+                c := m.get_int(u.tag, y[0..n])
+                return if info.signed { a.bits(i128) < c.bits(i128) } else { a < c }
+            }
+            if u := m.bits_struct_ty(t) { return m.less(span, u, x, y) }
+            return !m.trap(span, str.format("{} cannot be ordered", m.s.show(t))!)
+        }
+        _ => return !m.trap(span, str.format("{} cannot be ordered", m.s.show(t))!)
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Equality
+// ---------------------------------------------------------------------------------
+
+/// Whether `x` and `y`, values of type `t`, are equal (`is`, §7.7): structurally, with
+/// slices by contents, floats as IEEE and unions by variant and payload.
+equal :: fn(m: ^Machine, span: source.Span, t: Ty, x, y: []u8) -> Flow!bool needs Run {
+    match m.kind(t) {
+        .Int(_, _), .Usize, .Isize => {
+            info := m.int_info(t) else return false
+            return rd_int(m, info, x) is rd_int(m, info, y)
+        }
+        .Float(_) => return m.get_float(t, x) is m.get_float(t, y)
+        .Bool => return (x[0] is not 0) is (y[0] is not 0)
+        .Ptr(_, _), .ManyPtr(_, _), .Rawptr, .FnPtr(_) => return m.ptr_of(x) is m.ptr_of(y)
+        .Never => return true
+        .Tuple(elems, _) => {
+            for i in 0..elems.len {
+                if not try m.equal(span, elems[i], m.field_bytes(t, x, i.trunc(u32)), m.field_bytes(t, y, i.trunc(u32))) { return false }
+            }
+            return true
+        }
+        .Array(n, elem, _) => {
+            esz := us(m.size(elem))
+            for i in 0..us(n) {
+                if not try m.equal(span, elem, x[i * esz..(i + 1) * esz], y[i * esz..(i + 1) * esz]) { return false }
+            }
+            return true
+        }
+        .Slice(_, elem) => {
+            pa := m.slice_parts(x)
+            pb := m.slice_parts(y)
+            if pa.len is not pb.len { return false }
+            is_float := m.kind(elem) is .Float(_)
+            // The same elements (a NaN element still differs from itself).
+            if (pa.ptr is pb.ptr or pa.len is 0) and (pa.len is 0 or not is_float) { return true }
+            sa := try m.seq_of(span, t, x)
+            sb := try m.seq_of(span, t, y)
+            if sa.esz is 1 and m.kind(elem) is .Int(_, _) { return sa.data.len is sb.data.len and bytes_equal(sa.data, sb.data) }
+            for i in 0..us(pa.len) {
+                if not try m.equal(span, elem, sa.data[i * sa.esz..(i + 1) * sa.esz], sb.data[i * sa.esz..(i + 1) * sa.esz]) { return false }
+            }
+            return true
+        }
+        .Optional(inner) => {
+            if cgen.nullable_pointer(m.s, inner) { return m.ptr_of(x) is m.ptr_of(y) }
+            pa := m.opt_present(t, x)
+            pb := m.opt_present(t, y)
+            if not pa and not pb { return true }
+            if pa and pb { return m.equal(span, inner, m.opt_payload(t, x), m.opt_payload(t, y)) }
+            return false
+        }
+        .Result(err, ok) => {
+            ea := m.res_is_err(t, x)
+            if ea is not m.res_is_err(t, y) { return false }
+            return m.equal(span, if ea { err } else { ok }, m.res_payload(t, x), m.res_payload(t, y))
+        }
+        .Adt(_, _) => {
+            if u := m.bits_struct_ty(t) { return m.equal(span, u, x, y) }
+            if u := m.union_def(t) {
+                va := m.variant_index(t, x) else return !m.invalid_tag(span, t, x)
+                vb := m.variant_index(t, y) else return !m.invalid_tag(span, t, y)
+                if va is not vb { return false }
+                pt := u.variants[us(va)].payload else return true
+                off := us(m.payload_offset(t))
+                n := us(m.size(pt))
+                return m.equal(span, pt, x[off..off + n], y[off..off + n])
+            }
+            a := m.adt_of(t) else return !m.trap(span, str.format("unknown type {}", m.s.show(t))!)
+            .Struct(def) := a.kind else return !m.trap(span, str.format("{} cannot be compared with `is`", m.s.show(t))!)
+            for i in 0..def.fields.len {
+                fl := m.field_layout(t, i.trunc(u32))
+                off := us(fl.off)
+                n := us(m.size(fl.ty))
+                if not try m.equal(span, fl.ty, x[off..off + n], y[off..off + n]) { return false }
+            }
+            return true
+        }
+        _ => return !m.trap(span, str.format("{} cannot be compared with `is`", m.s.show(t))!)
+    }
+}
+
+/// The trap for the union value `b` of type `t` whose tag is no variant's.
+invalid_tag :: fn(m: ^Machine, span: source.Span, t: Ty, b: []const u8) -> Flow needs Alloc {
+    u := m.union_def(t) else return m.trap(span, "not a union")
+    tag := m.get_int(u.tag, b[0..us(m.size(u.tag))])
+    info := m.int_info(u.tag) else (signed: false, bits: 8)
+    text := if info.signed { str.format("{}", tag.bits(i128))! } else { str.format("{}", tag)! }
+    return m.trap(span, str.format("invalid tag value S({}) for union {}", text, m.s.show(t))!)
+}
+
+/// Whether the byte strings are equal.
+bytes_equal :: fn(a, b: []const u8) -> bool {
+    if a.len is not b.len { return false }
+    for i in 0..a.len {
+        if a[i] is not b[i] { return false }
+    }
+    return true
+}
+
+// ---------------------------------------------------------------------------------
+// Membership
+// ---------------------------------------------------------------------------------
+
+/// Whether the value `x` of type `elem_ty` is in the container `c` of type `cty` (`in`,
+/// §7.7): an element of an array, slice or tuple, or in a `Range` or `RangeIncl`.
+contains :: fn(m: ^Machine, span: source.Span, _elem_ty: Ty, x: []u8, cty: Ty, c: []u8) -> Flow!bool needs Run {
+    match m.kind(cty) {
+        .Array(_, _, _), .Slice(_, _) => {
+            s := try m.seq_of(span, cty, c)
+            if s.esz is 0 { return false }
+            for i in 0..s.data.len / s.esz {
+                if try m.equal(span, s.elem, s.data[i * s.esz..(i + 1) * s.esz], x) { return true }
+            }
+            return false
+        }
+        .Tuple(elems, _) => {
+            for i in 0..elems.len {
+                if try m.equal(span, elems[i], m.field_bytes(cty, c, i.trunc(u32)), x) { return true }
+            }
+            return false
+        }
+        .Adt(_, _) => {
+            a := m.adt_of(cty) else return !m.trap(span, "unknown container type")
+            incl := match a.name {
+                "Range" => false
+                "RangeIncl" => true
+                other => return !m.trap(span, str.format("`in` is not defined for {}", other)!)
+            }
+            lf := m.field_layout(cty, 0)
+            hf := m.field_layout(cty, 1)
+            lo := c[us(lf.off)..us(lf.off) + us(m.size(lf.ty))]
+            hi := c[us(hf.off)..us(hf.off) + us(m.size(hf.ty))]
+            ge_lo := not try m.less(span, lf.ty, x, lo)
+            below := if incl { not try m.less(span, lf.ty, hi, x) } else { try m.less(span, lf.ty, x, hi) }
+            return ge_lo and below
+        }
+        _ => return !m.trap(span, str.format("`in` is not defined for {}", m.s.show(cty))!)
+    }
+}

@@ -1,0 +1,191 @@
+// Constants and `#global` variables: their compile-time values (structured, see
+// `tir/value.gm`) laid out in the interpreter's memory, with pointers into other cells
+// resolved to the addresses of those cells' allocations.
+
+/// The address of the constant declared at `span` with type `t`, used at `at`.
+const_addr :: fn(m: ^Machine, span: source.Span, t: Ty, at: source.Span) -> Flow!u64 needs Run {
+    id := m.s.const_id(span, t) else return !m.unsupported(at, "a constant that was not evaluated")
+    cell := m.s.consts.items[us(id)].cell else return !m.unsupported(at, "a constant without a compile-time value")
+    return m.cell_addr(at, cell, t, false)
+}
+
+/// The address of the allocation holding `cell`, whose value has type `t`: made on first
+/// use, read-only unless it is a variable.
+cell_addr :: fn(m: ^Machine, span: source.Span, cell: ^tir.Cell, t: Ty, mutable: bool) -> Flow!u64 needs Run {
+    key := cell.addr()
+    if a := m.cells.get(key) { return a.addr }
+    n := m.size(t)
+    addr := try m.alloc_mem(span, n, m.align(t), if mutable { AllocKind.Global } else { AllocKind.Const }, mutable)
+    // Registered first: the value may point into itself.
+    m.cells.put(key, (addr: addr, ty: t))!
+    b := make_fill(us(n), u8(0))!
+    defer free(b)
+    try m.value_bytes(span, cell.v, t, b, 0)
+    _ = m.mem.init(addr, b)
+    return addr
+}
+
+/// The address of the `#global` variable declared by `decl`.
+global_addr :: fn(m: ^Machine, span: source.Span, decl: usize) -> Flow!u64 needs Run {
+    i := m.p.global_index(decl) else return !m.trap(span, "internal error: an unknown global variable")
+    gl := m.s.globals.items[i]
+    // A `#thread_local` variable has an instance per thread (§19.3).
+    key := (i, if gl.thread_local { m.threads.cur } else { 0 })
+    if gl.thread_local {
+        if a := m.thread_globals.get(key) { return a }
+    } else if m.globals.items[i] is not 0 {
+        return m.globals.items[i]
+    }
+    if gl.link_name is not null { return !m.unsupported(span, str.format("the foreign variable `{}`", gl.name)!) }
+    al := m.align(gl.ty).max(gl.align else 1)
+    addr: u64 = 0
+    if cell := gl.value and not gl.thread_local {
+        addr = try m.cell_addr(span, cell, gl.ty, true)
+    } else if cell := gl.value {
+        // Each thread's instance starts from the initial value.
+        addr = try m.alloc_mem(span, m.size(gl.ty), al, .Global, true)
+        b := make_fill(us(m.size(gl.ty)), u8(0))!
+        defer free(b)
+        try m.value_bytes(span, cell.v, gl.ty, b, 0)
+        _ = m.mem.init(addr, b)
+    } else {
+        addr = try m.alloc_mem(span, m.size(gl.ty), al, .Global, true)
+    }
+    if gl.thread_local { m.thread_globals.put(key, addr)! } else { m.globals.items[i] = addr }
+    return addr
+}
+
+/// Writes the bytes of `v`, of type `t`, at `off` in `out`.
+value_bytes :: fn(m: ^Machine, span: source.Span, v: tir.Value, t: Ty, out: []u8, off: u64) -> Flow!() needs Run {
+    o := us(off)
+    match v {
+        .Int(bits) => m.put_uint(out[o..o + us(m.size(t))], bits)
+        .Float(x) => m.put_float(t, x, out[o..o + us(m.size(t))])
+        .Bool(b) => { out[o] = if b { 1 } else { 0 } }
+        .Null => {}
+        .Some(x) => {
+            inner := m.opt_inner(t)
+            try m.value_bytes(span, x^, inner, out, off)
+            if not cgen.nullable_pointer(m.s, inner) { out[us(off + m.offsets(t)[1])] = 1 }
+        }
+        .Ok(x) => try m.value_bytes(span, x^, m.res_types(t).ok, out, off + m.offsets(t)[1])
+        .Err(x) => {
+            offs := m.offsets(t)
+            out[us(off + offs[0])] = 1
+            try m.value_bytes(span, x^, m.res_types(t).err, out, off + offs[1])
+        }
+        .Variant(index, ?payload) => {
+            u := m.union_def(t) else return !m.unsupported(span, "this compile-time union value")
+            vd := u.variants[us(index)]
+            n := us(m.size(u.tag))
+            m.put_uint(out[o..o + n], tag_bits(vd.tag))
+            if x := payload {
+                pt := vd.payload else return ()
+                try m.value_bytes(span, x^, pt, out, off + m.payload_offset(t))
+            }
+        }
+        .Agg(a) => match m.kind(t) {
+            .Array(_, elem, _) => {
+                esz := m.size(elem)
+                for k, x in enumerate(a.elems) { try m.value_bytes(span, x, elem, out, off + u64(k) * esz) }
+            }
+            .Tuple(elems, _) => {
+                offs := m.offsets(t)
+                for k, x in enumerate(a.elems) { try m.value_bytes(span, x, elems[k], out, off + offs[k]) }
+            }
+            .Adt(id, _) => match m.s.adts.items[us(id)].kind {
+                .Struct(sd) => {
+                    if u := sd.bits {
+                        raw := try m.const_bits(span, v, t)
+                        m.put_uint(out[o..o + us(m.size(u))], raw)
+                        return ()
+                    }
+                    offs := m.offsets(t)
+                    for k, x in enumerate(a.elems) { try m.value_bytes(span, x, sd.fields[k].ty, out, off + offs[k]) }
+                }
+                _ => return !m.unsupported(span, "this compile-time value")
+            }
+            _ => return !m.unsupported(span, "this compile-time value")
+        }
+        .Ptr(pl) => {
+            pointee: Ty = match m.kind(t) {
+                .Ptr(_, p), .ManyPtr(_, p) => p
+                .Optional(inner) => match m.kind(inner) {
+                    .Ptr(_, p), .ManyPtr(_, p) => p
+                    _ => return !m.unsupported(span, "a compile-time pointer of this type")
+                }
+                _ => return !m.unsupported(span, "a compile-time pointer of this type")
+            }
+            m.put_ptr(out[o..], try m.place_addr(span, pl, pointee))
+        }
+        .Slice(start, len) => {
+            .Slice(_, elem) := m.kind(t) else return !m.unsupported(span, "this compile-time slice")
+            p := us(m.ptr_bytes)
+            addr: u64 = 0
+            if len > 0 or start.path.len > 0 { addr = try m.place_addr(span, start, elem) }
+            m.put_slice(out[o..o + 2 * p], addr, len)
+        }
+        .Fn(f) => m.put_ptr(out[o..], m.fn_addr(f))
+        .Closure(_), .Handler(_) => return !m.unsupported(span, "a compile-time function literal")
+    }
+}
+
+/// The address of `pl`, a place in a compile-time value whose pointee type is `pointee`.
+place_addr :: fn(m: ^Machine, span: source.Span, pl: tir.Place, pointee: Ty) -> Flow!u64 needs Run {
+    // The type of the cell's whole value: for a literal's cell, what the pointer says it
+    // holds.
+    root := pointee
+    if known := m.cells.get(pl.cell.addr()) {
+        root = known.ty
+    } else if pl.path.len is 1 and .Agg(a) := pl.cell.v {
+        root = m.s.tys.array(u64(a.elems.len), pointee)
+    } else if pl.path.len > 0 {
+        return !m.unsupported(span, "a compile-time pointer into this value")
+    }
+    base := try m.cell_addr(span, pl.cell, root, not pl.cell.is_static)
+    addend: u64 = 0
+    cur := root
+    for i in pl.path {
+        match m.kind(cur) {
+            .Array(len, elem, _) => {
+                addend += i * m.size(elem)
+                if i < len { cur = elem }
+            }
+            .Tuple(elems, _) => {
+                addend += m.offsets(cur)[us(i)]
+                cur = elems[us(i)]
+            }
+            .Adt(id, _) => {
+                .Struct(sd) := m.s.adts.items[us(id)].kind else return !m.unsupported(span, "a compile-time pointer into this value")
+                addend += m.offsets(cur)[us(i)]
+                cur = sd.fields[us(i)].ty
+            }
+            _ => return !m.unsupported(span, "a compile-time pointer into this value")
+        }
+    }
+    return base + addend
+}
+
+/// The bits of `v`, a value of a `#bits` field type `t`, from the least significant bit.
+const_bits :: fn(m: ^Machine, span: source.Span, v: tir.Value, t: Ty) -> Flow!u128 needs Run {
+    match v {
+        .Bool(b) => return if b { 1 } else { 0 }
+        .Int(bits) => {
+            w := m.bit_width(t)
+            return if w >= 128 { bits } else { bits & ((u128(1) << u128(w)) - 1) }
+        }
+        .Variant(index, _) => {
+            u := m.union_def(t) else return !m.unsupported(span, "this `#bits` field value")
+            return m.const_bits(span, .Int(tag_bits(u.variants[us(index)].tag)), u.tag)
+        }
+        .Agg(a) => {
+            raw: u128 = 0
+            for k, x in enumerate(a.elems) {
+                bf := m.bits_field(t, k.trunc(u32))
+                raw |= (try m.const_bits(span, x, bf.ty)) << u128(bf.off)
+            }
+            return raw
+        }
+        _ => return !m.unsupported(span, "this `#bits` field value")
+    }
+}

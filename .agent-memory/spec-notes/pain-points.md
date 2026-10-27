@@ -87,3 +87,9 @@ dangling stores are now compile errors (decisions/045).
   empty from closed (W-lsp); no realpath in Fs (W-lsp, W-cross readlink); temporary array
   slicing — RESOLVED s45c (decisions/049: array → []const T at every coercion site); `make_dir` has
   no mode; constant initializers unchecked until used (tooling must force them).
+- s46 (interp): a module function named like a predeclared one hides it completely
+  (§4.6/§21.1): interp's `trap` method made the prelude `trap(msg)` unreachable in the
+  whole module (3x; used `@unreachable()`/`?`). Candidate: a way to name the universe
+  scope (e.g. `core.trap`) or let method-style declarations not hide free functions.
+  Logged, not changed. Also `with … on` body locals live in the enclosing C frame (not on
+  the fiber stack) — surprising when measuring stacks (implementation detail).

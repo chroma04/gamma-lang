@@ -27,6 +27,8 @@ this checkable:
 | bodies | the typed program of `gamma tir`, and its diagnostics |
 | checking | the diagnostics of `gamma check`, in the human format |
 | back end | the output and exit status of the compiled programs |
+| interpreter | the output, trap reports and exit status of the programs `gammac run --backend=interp` runs |
+| REPL | the standard output, standard error and exit status of `gamma repl` for a session of inputs |
 | test runner | the output and exit status of `gamma test --backend=c` and `gamma bench`, timings masked |
 | targets and caches | `check`, `build`, `run`, `test` and `bench` for other targets, freestanding and `--mode=safe`: the output, exit status and files of both, and the objects they cache |
 | formatter | the output, messages and exit status of `gamma fmt` |
@@ -194,6 +196,55 @@ the `core` directory next to the standard library's. A root module without `main
 checked as a library, as `gamma tir` does: the way `gamma test` would check it, with
 its tests and benchmarks and those of the modules of its package that it imports.
 
+### The interpreter
+
+`gammac run --backend=interp [--mode=…] ROOT [ARG…]` runs the program in `gammac`'s
+interpreter (`compiler/interp/`) instead of compiling it. It prints, traps and exits as
+`gamma run --backend=interp` does: the same trap messages and reports (in Debug builds
+with the calls that led to the trap) and the same exit status (134 after a trap). Unlike
+the reference's, which compiles each function to bytecode, it walks the typed program:
+
+- **Values** are bytes in the target's layout, and each expression is evaluated into a
+  destination buffer of the size of its type. Buffers for intermediate values come from
+  scratch memory used as a stack, which each statement and call releases, so evaluating
+  allocates nothing. A local whose address is never taken lives in its frame's part of
+  that memory; the others get an allocation of their own.
+- **Memory** is the reference's model (`memory.gm`): a flat address space in which every
+  allocation gets fresh addresses and freed ones are remembered, so out-of-bounds,
+  use-after-free, null, misaligned and read-only accesses trap with the reference's
+  messages. Addresses themselves differ from the reference's.
+- **Control flow** leaves expressions as a `Flow` error; a `break` or `return` first writes
+  its value where the loop, `with` or call it leaves puts its result.
+- **Second-class values** are bytes too: a function value holds its code address and
+  handles to the frame and handler context it captures.
+- **Fibers and threads** (`fiber.gm`, `threads.gm`) run as fibers of `gammac` itself,
+  under a scheduler that is a handler of a `ctl` effect: a fiber of the program, or a
+  thread, hands control to another (its driver, the fiber it resumes, the next thread)
+  as the reference's threads do. Threads take turns, every 2000 calls and loop iterations
+  and whenever one blocks; a blocking file read runs on a host thread meanwhile. The
+  program runs on a large host stack, which `calloc` provides so that it costs only what
+  is used.
+- **Foreign code**: a program that calls foreign functions, reads foreign variables or
+  uses `@asm` is compiled and run through the C back end, as the reference runs natively
+  the programs it cannot describe to libffi.
+
+What the interpreter cannot run yet traps with "internal error: not supported by
+gammac's interpreter yet". `tests/selfhost.rs` runs every conformance `run` test (but the
+`native:` ones) through `gammac run --backend=interp` and compares stdout, the exit status
+and, for the tests that check it, stderr with the expectations; those that hit something
+unsupported are skipped, but at most `INTERP_UNSUPPORTED_MAX` of them (none now). The
+interpreter is slower than the reference's VM, by about a hundred times on the slowest
+tests when `gammac` is a Debug build.
+
+### The REPL
+
+`gammac repl [--quiet] [--mode=…] [--diag-format=…] [FILE]` (`compiler/repl/`, a port of
+`src/repl/`) is the interactive loop of `gamma repl` on this interpreter. As there, every
+input is checked as part of a program synthesized from the session (declarations kept as
+text, statements replayed with their output hidden up to a marker), each in an arena of
+its own that is released afterwards. `tests/selfhost.rs` feeds both REPLs the sessions of
+`tests/repl.rs` and compares their output.
+
 ### The test runner
 
 `gammac test [options] ROOT` and `gammac bench [options] ROOT` (`compiler/testing/`, a port
@@ -207,7 +258,7 @@ and `gamma bench` print, with the same options: `--filter=`, `--all`, `--show-ou
 is given. `--package=NAME` tests a dependency of the input's package (or one of its
 dependencies) instead, and `--target=TRIPLE` builds the tests for another target (see
 "Targets, modes and caches"). `--backend=interp|cranelift` are usage errors: `gammac`
-has no interpreter and no Cranelift back end. Coverage (`compiler/testing/coverage.gm`)
+runs tests through its C back end only, and has no Cranelift back end. Coverage (`compiler/testing/coverage.gm`)
 instruments the bodies after every function the executable needs has one, so the
 instances of generic functions are counted too, and the executable writes its counters to
 the file named by its second argument; since `gammac` does not resolve symbolic links,
