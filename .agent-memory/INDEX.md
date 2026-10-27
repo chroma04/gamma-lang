@@ -9,24 +9,9 @@
   long expressions, interp speed.
 - s47 (PRs #92, #93): retiring Rust approved (decisions/052); phase 1 (C seed bootstrap/,
   tools/refresh-seed.sh) and phase 2 (lanes/release/site/fuzz without cargo) done.
-- s46 (branch claude/gammac-interpreter, PR #91; user: "work on an interpreter for gammac
-  so we can achieve parity in things like repl"): compiler/interp/ tree-walking
-  interpreter (decisions/051), `gammac run --backend=interp` 476/476 run tests
-  (INTERP_FLOOR), `gammac repl` (compiler/repl/, matches tests/repl.rs sessions). Sonnet
-  worktree agents did ops/num/builtins/vector, format, sys, repl; brief in $SP/brief-interp.md,
-  test harness $SP/tools/itest.py (gone with the scratchpad: rewrite from selfhost test).
-  Next: interp speed (~100x slower than VM in Debug gammac: TyKind copies, zero-fill,
-  layout lookups), `test/bench --backend=interp`, more blocking ops on host threads
-  (only FsRead now; Read/Net/Proc block all green threads).
-- s45d (PR #90): `test --coverage` on the C back end in both compilers, decisions/050.
-- s45c (PR #89 merged): arrays coerce to `[]const T` everywhere, temp arrays sliceable,
-  stdout flushed before blocking ops (decisions/049).
-- s45 (branch claude/project-thread-dhnfw3, user: "expand gammac to cover the rest of gamma"):
-  roadmap/gammac-cli.md = inventory + status. Driver (check/run/help/version/human diags)
-  done; fmt, doc, lint+fix, -g, test/bench, packages+gamma.toml ported by sonnet worktree
-  subagents (all byte-identical tests in tests/selfhost.rs). §7.12 branch join refined
-  (pain point). PR #87 merged. s45b (PR #88): --target/wasm/freestanding/Safe, caches,
-  C optimizations, lsp, package gaps — everything but repl/coverage/interp/cranelift.
+- s46 (PR #91): compiler/interp/ tree-walking interpreter + repl (decisions/051); slow
+  (~100x the old VM in Debug). s45–s45d (PRs #87–#90): every gamma command ported to
+  gammac (roadmap/gammac-cli.md), §7.12 branch join, coverage (050), temp arrays (049).
 - s38–s44: gammac in compiler/ (043): checker DONE (800/800, 046 evaluator, 047), C back
   end + fixed point (048), parallel C units; roadmap/self-hosting.md. docs/guide/idioms.md =
   idioms handbook (doc_examples-checked; ADD learned patterns). 044, 045.
