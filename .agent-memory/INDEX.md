@@ -1,6 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-28) — PRs #1–#101 merged, v0.1.0 + rust-reference-final tagged
+## State (2026-10-28) — PRs #1–#102 merged, v0.1.0 + rust-reference-final tagged
+- s51 (branch claude/zealous-goodall-3g4xqc): PERFORMANCE (decisions/055): long chains
+  linear (complex_free, value_path), hashed module scopes, layout cache generations,
+  compiler built Checked via compiler/gamma.toml, big optimized builds split into units,
+  @copy_elems block copies in core lists; seed refreshed (Checked C). Suite 28.5 → 5.8 min.
+  Profiling recipe in 055. Next perf: the interpreter (see 055 "Not done").
 - s50 (branch claude/eager-curie-ocf0wz): PAIN-POINT SWEEP (decisions/054): whole list
   triaged (pain-points.md "Settled"), 16 items implemented (language: else/array joins,
   const lifting into ?/!, contextual needs/handler/foreign, `{0}`/`{:q}`, local types; lint
@@ -11,8 +16,7 @@
   tests, `tools/test.sh [-j N] [-v] [--list] [--filter T] [PREFIX...]`), difftest in Gamma,
   fuzz/ flattened. Std: SpawnOptions env changes inherited env, clear_env, group (§21.7).
 - s48 (#94/#96): phase 3 — gamma = compiler/, CI/release/site from the seed. First language
-  change without Rust: §7.7 `in` joins (§7.12). Open: `else` join (pain-points), slow long
-  expressions (long_expressions suite ~13 min), interp speed.
+  change without Rust: §7.7 `in` joins (§7.12).
 - s47 (#92, #93): retiring Rust (052) phases 1–2: C seed bootstrap/, tools/refresh-seed.sh.
 - s46 (#91): compiler/interp tree-walking interpreter + repl (051); slow.
 - s38–s45d: gammac written in compiler/ (043–050); roadmap/self-hosting.md, gammac-cli.md.
@@ -51,7 +55,7 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–052, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep. `ls decisions/` for the rest.
+                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51). `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

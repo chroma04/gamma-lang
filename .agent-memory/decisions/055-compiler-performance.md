@@ -35,14 +35,38 @@ Result: chains 20000–40000 terms check in < 1 s; long_expressions + long_funct
 - selfhost fixed_point no longer forces GAMMA_C_UNITS=1 (would be one 5-min -O2 TU):
   compares `--emit-c` of stage 1 and stage 2. unit_tests_pass runs `test --mode=debug`
   (leak checks). Debug build of the compiler (`--mode=debug`) gives trap call chains.
-- Seed NOT refreshed (still Debug C; verify.sh uses SOURCE trees, independent).
+- Seed refreshed (needed for @copy_elems below): now Checked-mode C, 8 units ~57 MB.
+  bootstrap/build.sh 3:15 → 2:58 and yields a Checked compiler; verify.sh passes.
+
+## @copy_elems (core-only intrinsic, tir.Builtin.CopyElems)
+- Profile of `--emit-c compiler` (Checked): core `List.regrow` 25% + `List.extend` 8% of
+  instructions — element-at-a-time copies with checks. `@copy_elems(dst: []T, src: []const T)`
+  (in_prelude only; check/intrinsics.gm copy_intrinsic; lengths equal by the caller):
+  cgen memmove (arith.gm), interp one read+write via a tmp (heap.gm), eval element-wise
+  load/store reading all first (eval/ops.gm). Used by core list regrow/extend/insert/
+  remove/into_slice, slice copy_from, prelude dupe. emit 4.65 → 4.28 s; also speeds every
+  compiled Gamma program's lists. Test: conformance run/copy_from_at_compile_time.gm.
+- Adding it needed the documented two-stage build (old core → stage A; full change with A)
+  and a seed refresh in the same PR.
+- First try (copy_from only) showed no gain: profile before choosing the call site.
 
 ## Side fixes
 - `gamma build -g compiler` trapped: views.gm `is_aggregate` treated `?^T` (nullable pointer,
   repr .Ptr, no offsets) as aggregate; debug.gm `guard` emitted `#undef defined`.
 
 ## Profiling recipe
-`gamma build -g compiler -o $SP/gammag` (-O0, C kept as gammag*.c); map gm_fN → Gamma names
-from the C (`gm_bt B = { gm_bt_top, "name"`); `valgrind --tool=callgrind`; callgrind_annotate
-(--tree=caller for memset callers). Scripts were in the s51 scratchpad (fmap.py/ann.py):
-regex `^(?:static )?[^ ].*?\b(gm_f\d+)\(` on lines ending `{`, then the next B line.
+`gamma build -g compiler -o $SP/gcg` (now Checked: -O2 -g, ~1m45; C kept as gcg*.c) →
+`valgrind --tool=callgrind --callgrind-out-file=F $SP/gcg <cmd>`; `callgrind_annotate F`.
+Names are gm_fN: map each def line (regex `^(?:static )?[^ #].*?\b(gm_f\d+)\(` ending `{`)
+to its first `#line L "file"` and read `name ::` at file:L (core funcs have <core> paths:
+read lib/core). `--tree=caller` is very slow on big profiles. Debug -g builds (-O0) have
+`gm_bt B = {.., "name"` but distort costs (poison memsets).
+
+## Not done / next candidates
+- Interpreter: ~500 instructions per TIR node (byte-wise u128 int ops, type lookups per
+  node: kind/size/int_info, tmp fill(0), Flow results). 1.8x from Checked only. A real speedup
+  needs pre-resolved per-node info or compiling TIR to a closure/register form. Conformance
+  `run` tests (interp lane) are now most of the suite's CPU (std_text_utf8 ~65 s alone).
+- Debug-mode generated C is ~62 MB for the compiler (B.file/line per call, poison, unwind
+  checks); smaller Debug C = faster Debug builds of big programs.
+- `1j + y + y + …` chains are still quadratic (complex root, non-constant).

@@ -1,76 +1,16 @@
-# Code map (current, 2026-10-15). Contributor-facing description: docs/architecture.md.
-src/main.rs        CLI: lex|parse|check|run|build|test|bench|fmt|doc|new|init|fetch|update|add|
-                   remove|cache|repl|lsp|help|version. Exit 0 ok, 1 compile errors, 2 usage.
-                   new_session() picks toolchain/target/mode; test_native for C tests.
-src/lib.rs         module list
-src/source.rs      SourceMap, FileId, Span{file,lo,hi}; source::canonicalize (never
-                   Path::canonicalize: Windows \\?\ paths)
-src/diag.rs        Diagnostic{severity,message,span,labels,notes,fixes}, render(Human|Short|Json), to_json;
-src/fix.rs         gamma fix: plan(diags, editable) → non-overlapping edits per file; apply;
-                   LONG_LINE/WINDOW show long source lines as a window
-src/lint/          gamma lint: mod.rs RULES/Level/Config/run (findings → diags, #allow spans,
-                   levels, fixes); syntax.rs AST-walk rules + fix sites. sema/lint.rs: TIR rules
-                   (Sema::decl_uses/local_uses from name resolution). src/linting.rs (binary):
-                   CLI + --fix loop with undo/careful mode. decisions/033
-src/symbol.rs      Symbol interner (global Mutex, leaked strs)
-src/driver.rs      Session{sources,diags,ids,mode,debug_info,target,packages,overlays}; load/lex/parse
-src/syntax/        token.rs; lexer/{mod,literal,tests}.rs (newline rules §2.8); ast.rs (types
-                   are Exprs, NodeId per node); parser/{mod,expr,items,lits,pattern,stmt,types}.rs
-                   (MAX_POSTFIX_CHAIN in mod.rs); ast_dump.rs (S-expr goldens)
-src/types.rs       hash-consed Ty/TyKind (lock-free KINDS table), AdtId/EffectId/ParamId;
-                   mark/release_since for the LSP
-src/toolchain.rs   Toolchain (CC/CFLAGS/LDFLAGS, --target, Safe/filcc), target probe (decisions/015)
-src/layout.rs      Target, Layouts (size/align/offsets)
-src/float.rs       exact rational → f16/f32/f64 bits
-src/tir.rs         typed IR + traversals; frame_cost/STACK_RESERVE shared by interp + stack_size
-src/sema/          checking (architecture/sema-notes.md). One file per area, each with a //!
-                   header: decls, modules, imports, ty_expr (names_type), func (FnCx), expr,
-                   call, methods, construct, pattern/matching/exhaust, seq, effects,
-                   handler_decl, fnlit, generics, infer/finalize/untyped, consteval,
-                   stack_size, cont_check (§14.2), escape, foreign, tests_decl, adt, builtins;
-                   ide/ builds the editor index after checking (decisions/023)
-                   soa.rs: #soa structs; generic `#soa []T` stand-ins + SoaDeferred expanded
-                   by generics.rs mono_expr via Sema::soa_expand (decisions/042)
-src/interp/        interpreter: vm/ (bytecode: mod, compile, compile_flow, exec, heap) is the
-                   only engine (tree-walker removed s29, decisions/020); calls/ops/builtins/
-                   fast(small ints)/sys/proc hold the value-level helpers; memory.rs byte memory +
-                   provenance; fiber.rs (thread per fiber); threads.rs (GIL); ffi.rs (libffi,
-                   decisions/009); sys.rs (SysOps); coverage.rs; consts.rs (constants →
-                   ConstValue; eval_const in mod.rs); vm/heap.rs fast new/destroy
-src/cgen/          C back end (decisions/008): mod, func, expr, arith, wide, elementwise,
-                   types (typed C structs, blobs), helpers, fiber (with-on outlining, ctl
-                   thunks), borrow (pure-fn params read in place, 016), constarg (static
-                   gm_kN args), rtcache (cached runtime object + cached programs, 014),
-                   units (Debug split into parallel C units: Generated.parts, s25),
-                   outline (long statement runs → gm_cN_K helpers sharing F, decisions/031),
-                   wasi (WASI link flags + wasm-opt --asyncify step, import parser, decisions/034),
-                   debug + views + gdb_printers.py + lldb_formatters.py (`-g`, 013; build writes gamma_lldb.py), csrc (C sources from gamma.toml)
-src/clif/          Cranelift back end (decisions/035): mod (Gen, reps, sigs, exports, link), func
-                   (frames, ladder, thunks), expr, ops (operators, builtins, @asm), cabi (C ABI
-                   classes), data; runtime/gm_clif.c glue linked with gm_rt.c.
-src/pkg/           package manager: manifest, lock, git, archive, resolve, edit (add/remove),
-                   build ([build]/[profile.*]), cache (clean), scaffold (new/init), cli
-src/lsp/           `gamma lsp`: transport, position, workspace, analysis, features, refs,
-                   corelib, server; src/ide.rs = index model
-src/doc/           `gamma doc`: collect, markdown, html, md_html
-src/repl/          `gamma repl`: mod, input (classify), report
-src/fmt.rs         `gamma fmt`;  src/testing.rs `gamma test`/`bench`;  src/coverage.rs
-                   `--coverage`;  src/ice.rs internal-compiler-error reports
-compiler/          gammac, the self-hosted compiler in Gamma (decisions/043): source/, diag/,
-                   bignum/, bigint/, ratio/, syntax/, ast/, parse/, load/ (modules, toml),
-                   types/, sema/ (decls; foreign.gm), tir/ (tir.gm, clone.gm deep copy),
-                   check/ (bodies: expr/call/func/seq/pattern/…, generic.gm calls,
-                   program.gm mono rewrite, handlers/cont_check/iterators, spread.gm,
-                   template.gm formatting, intrinsics.gm, dump.gm, codegen.gm entry+prepare), cgen/ (C back end, decisions/048), main.gm (lex/parse/modules/decls/tir/build); tests/selfhost.rs
-runtime/           gm_rt.h/.c: runtime prefixed to generated C (formatting, heap, handlers
-                   gm_node/gm_unw, fibers asm/ucontext, threads, Win32 + POSIX sys); rt_test.c
-lib/core/          prelude.gm, list.gm, map.gm, slice.gm (embedded via include_str!)
-lib/std/           std modules (GAMMA_STD, <prefix>/lib/gamma/std, or lib/std)
-editors/           vscode extension + TextMate grammar; tree-sitter-gamma (CI job "editors")
-web/               website (decisions/036): sitegen/ (Markdown → pages), playground/ (wasm32-wasip1
-                   interpreter), static/, pages/, examples/list.txt, check.mjs; .github/workflows/pages.yml
-tools/             package-release.sh, install.sh/.ps1, gen_float_table.py, gen_text_tables.py
-tests/             conformance.rs (format in its header) + conformance/{lex,parse,check,run,
-                   test,safe}; per-tool suites (pkg, lsp, repl, doc, fmt, cross, native_build, …)
-docs/              architecture.md, contributing.md, versioning.md, lsp.md, editors.md,
-                   guide/ (16 chapters), std.md + std/ (generated by `gamma doc`)
+# Code map (2026-10-28). The full, maintained map is docs/architecture.md (tested: it must
+# name every compiler/ module). This file holds only agent-facing pointers.
+
+- compiler/ = `gamma` (Gamma, package gammac, built Checked via compiler/gamma.toml).
+  main.gm dispatch; syntax/ parse/ ast/ load/ (modules, core.gm loads lib/core from disk,
+  Module.index hash of scope) sema/ (decls, layout cache with generations) check/ (bodies →
+  TIR; FnCx in func.gm; expr.gm `expr` wrapper → `expr_kind`) tir/ eval/ (comptime,
+  structured values) interp/ (tree-walker over bytes) cgen/ (C; units.gm splits) driver/
+  (native.gm compile_c: unit policy, runtime object cache) pkg/ testing/ fmt/ doc/ lint/
+  linting/ fix/ repl/ ide/ lsp/.
+- lib/core (prelude, list, map, slice, complex) may use core-only intrinsics (@heap_*,
+  @alloc_tag/@alloc_check, @copy_elems). A new one used by lib/core needs the two-stage
+  build + seed refresh (docs/contributing.md "seed").
+- bootstrap/ seed (Checked C, 8 units) + build.sh/verify.sh; tools/test.sh → tests/harness.
+- runtime/gm_rt.{h,c}: C runtime; Debug extras (poison, 0xAA, backtraces) are spec §18.3.
+- The Rust implementation is gone (tag rust-reference-final); older decisions mention src/.
