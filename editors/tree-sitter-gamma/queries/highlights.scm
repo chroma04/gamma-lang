@@ -164,8 +164,11 @@
   "cancel"
   "with"
   "on"
-  "needs"
 ] @keyword
+
+; `needs`, `handler` and `foreign` are keywords only in these positions; elsewhere they
+; are identifiers.
+(effect_set "needs" @keyword)
 
 [
   "defer"
@@ -179,12 +182,14 @@
   "struct"
   "union"
   "effect"
-  "handler"
-  "foreign"
   "where"
   "test"
   "bench"
 ] @keyword.type
+
+(handler_expression "handler" @keyword.type)
+(handler_declaration "handler" @keyword.type)
+(foreign_block "foreign" @keyword.type)
 
 "import" @keyword.import
 

@@ -445,7 +445,7 @@ GM_API int64_t gm_fs_close(int64_t f);
 GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n);
 GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n);
 GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence);
-GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, kind (0 file, 1 directory, 2 symlink, 3 other), mtime */
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, kind (0 file, 1 directory, 2 symlink, 3 other), mtime, permission bits */
 GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n);   /* as stat; no final symlink followed */
 GM_API int64_t gm_fs_remove(const void *path, size_t len);
 GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len);
@@ -457,6 +457,12 @@ GM_API int64_t gm_fs_close_dir(int64_t d);
 GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size);
 GM_API int64_t gm_fs_sync(int64_t f);
 GM_API int64_t gm_fs_cwd(void *p, size_t n);          /* length; EINVAL if it does not fit */
+GM_API int64_t gm_fs_canonical(const void *path, size_t len, void *p, size_t n);   /* length; EINVAL if it does not fit */
+GM_API int64_t gm_fs_read_link(const void *path, size_t len, void *p, size_t n);   /* length; EINVAL if it does not fit */
+GM_API int64_t gm_fs_symlink(const void *target, size_t tlen, const void *path, size_t len);
+GM_API int64_t gm_fs_set_mode(const void *path, size_t len, uint32_t mode);
+GM_API int64_t gm_fs_set_modified(const void *path, size_t len, int64_t ns);   /* Unix nanoseconds */
+GM_API void gm_env_exit(uint8_t code);                /* ends the process after flushing output */
 /* TCP sockets; handles are file descriptors (SOCKET values on Windows). Host names are resolved with getaddrinfo;
  * a failed lookup is Other(0), as in the interpreter. */
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
@@ -470,7 +476,7 @@ GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how);   /* 0 read, 1 write, 2
 GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns);   /* 0: none */
 GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINVAL if it does not fit */
 
-/* Child processes. gm_proc_spawn takes the argument vector, changes to the environment
+/* Child processes. gm_proc_launch takes the argument vector, changes to the environment
  * ("NAME=value" sets a variable, "NAME" removes it; applied to ours, or to an empty environment
  * when flags has GM_PROC_CLEAR_ENV) and the working directory (empty: ours); the flags hold two
  * bits per standard stream (stdin from bit 0, stdout from bit 2, stderr from bit 4: 0 inherit,
@@ -478,14 +484,19 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINV
  * own (POSIX; a job object on Windows), which gm_proc_kill then ends as a whole. It returns a
  * handle. gm_proc_read_out waits until a piped output
  * stream has data and reads from it: the length plus 2^32 for stderr, or 0 once both streams
- * have ended. gm_proc_wait returns the exit code, or the signal number plus 2^32. */
-enum { GM_PROC_CLEAR_ENV = 64, GM_PROC_GROUP = 128 };
-GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
-                             size_t dir_len, uint32_t flags);
+ * have ended. gm_proc_wait returns the exit code, or the signal number plus 2^32. With
+ * GM_PROC_PROGRAM the file to run is `program` (searched for in PATH if it has no separator)
+ * instead of argv[0], which is then only the name the child sees. gm_proc_try_wait is
+ * gm_proc_wait that does not block: 2^33 while the child runs; once it returns a status the
+ * child is released as by gm_proc_wait. */
+enum { GM_PROC_CLEAR_ENV = 64, GM_PROC_GROUP = 128, GM_PROC_PROGRAM = 256 };
+GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                              size_t dir_len, const void *program, size_t program_len, uint32_t flags);
 GM_API int64_t gm_proc_write_in(int64_t h, const void *p, size_t n);
 GM_API int64_t gm_proc_close_in(int64_t h);
 GM_API int64_t gm_proc_read_out(int64_t h, void *p, size_t n);
 GM_API int64_t gm_proc_wait(int64_t h);
+GM_API int64_t gm_proc_try_wait(int64_t h);
 GM_API int64_t gm_proc_kill(int64_t h);
 
 /* ---- threads (§19.6) ----------------------------------------------------------------

@@ -157,9 +157,11 @@ base_coercion :: fn(s: ^Sema, src, target: Ty) -> ?tir.Coercion needs Alloc {
             }
             return if same and na is not nb and (na.len is 0 or nb.len is 0) { tir.Coercion.TupleRename } else { null }
         }
-        .Optional(a) => if .Optional(b) := tys.kind(target) and s.is_nullable_pointer(a) {
-            return if pointer_coercion(s, a, b) { tir.Coercion.InOptional } else { null }
+        .Optional(a) => if .Optional(b) := tys.kind(target) {
+            if s.is_nullable_pointer(a) { return if pointer_coercion(s, a, b) { tir.Coercion.InOptional } else { null } }
+            if adds_const(s, a, b) { return .PtrToPtr }
         }
+        .Result(e1, a) => if .Result(e2, b) := tys.kind(target) and e1 is e2 and adds_const(s, a, b) { return .PtrToPtr }
         .FnPtr(a) => if .FnPtr(b) := tys.kind(target) {
             same := a.params.len is b.params.len and a.ret is b.ret and a.variadic is b.variadic and a.win64 is b.win64
             if same {
@@ -182,6 +184,22 @@ base_coercion :: fn(s: ^Sema, src, target: Ty) -> ?tir.Coercion needs Alloc {
         return .PtrToPtr
     }
     return null
+}
+
+/// Whether `src` becomes `target` only by gaining `const` (§5.5), possibly inside
+/// optionals and results: the two have one representation, so the coercion also applies
+/// inside a `?` or `!` (§6.4), as `?[]u8` → `?string`.
+adds_const :: fn(s: ^Sema, src, target: Ty) -> bool {
+    tys := &s.tys
+    match tys.kind(src) {
+        .Ptr(sc, p) => if .Ptr(tc, q) := tys.kind(target) { return p is q and tc and not sc }
+        .ManyPtr(sc, p) => if .ManyPtr(tc, q) := tys.kind(target) { return p is q and tc and not sc }
+        .Slice(sc, p) => if .Slice(tc, q) := tys.kind(target) { return p is q and tc and not sc }
+        .Optional(a) => if .Optional(b) := tys.kind(target) { return adds_const(s, a, b) }
+        .Result(e1, a) => if .Result(e2, b) := tys.kind(target) { return e1 is e2 and adds_const(s, a, b) }
+        _ => {}
+    }
+    return false
 }
 
 /// The pointer coercions of §5.5 (a sequence of them counts as one).

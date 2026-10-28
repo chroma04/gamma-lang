@@ -116,6 +116,24 @@ syntax_errors_are_reported :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     return ()
 }
 
+syntax_errors_in_conditions_are_not_checked_again :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-syntax_errors_in_conditions")
+    text := "main :: fn() {\n    if x := ) {\n        return\n    }\n}\n"
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    d := try l.diagnostics(path, 1)
+    try expect_some(t, d)
+    for x in d {
+        message := string_of(field(x, "message"))
+        try t.check(not str.contains(message, "cannot check"), "the checker reports a syntax error again: {}", show(x))
+    }
+    try l.shutdown()
+    return ()
+}
+
 names_after_a_syntax_error_are_still_resolved :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     dir := try t.scratch("lsp-names_after_a_syntax_error")
     // The first function lacks its closing brace; the second is a complete declaration

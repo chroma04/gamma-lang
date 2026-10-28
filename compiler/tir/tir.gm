@@ -498,7 +498,7 @@ pub FmtSpec :: struct {
 
 pub FmtAlign :: union { Auto, Left, Right, Center }
 
-pub FmtKind :: union { Display, Hex, HexUpper, Oct, Bin, Exp }
+pub FmtKind :: union { Display, Hex, HexUpper, Oct, Bin, Exp, Quote }
 
 pub default_spec :: fn() -> FmtSpec => FmtSpec(fill: ' ', align: .Auto, plus: false, alt: false, zero: false, width: 0, precision: null, kind: .Display)
 
@@ -694,6 +694,11 @@ pub SysOp :: union {
     FsTruncate
     FsSync
     FsCwd
+    FsCanonical
+    FsReadLink
+    FsSymlink
+    FsSetMode
+    FsSetModified
     NetConnect
     NetListen
     NetLocalPort
@@ -704,12 +709,16 @@ pub SysOp :: union {
     NetShutdown
     NetSetTimeouts
     NetPeer
-    ProcSpawn
+    ProcLaunch
     ProcWriteIn
     ProcCloseIn
     ProcReadOut
     ProcWait
     ProcKill
+    ProcTryWait
+    EnvArgs
+    EnvVar
+    EnvExit
     ThreadSpawn
     ThreadJoin
     ThreadDetach

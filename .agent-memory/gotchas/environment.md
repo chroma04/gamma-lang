@@ -98,3 +98,10 @@
   (Debug keeps all locals in a frame struct; eval_slow ~5 KB) is the real perf follow-up.
 - Windows repro locally: apt-get install gcc-mingw-w64-x86-64 wine64; `gammac build compiler
   --target=x86_64-w64-mingw32 -o x.exe`; `WINEDEBUG=-all wine x.exe run --backend=interp f.gm`.
+- s50: 15 GB RAM, no swap, 4 cores. One compiler build = gamma ~2.3 GB + up to 8 cc1 at
+  ~800 MB: 3+ parallel builds get OOM-killed (exit 137, often silent). Give workers a shared
+  `flock <scratchpad>/build.lock` for builds/test.sh, or run ≤2 workers. Re-running a test
+  without rebuilding: set GAMMA_TEST_COMPILER=target/bootstrap/gamma and
+  GAMMA_TEST_HARNESS=target/bootstrap/harness (no lock needed, instant).
+- s50: Sonnet workers all hit the 5-hour account limit after ~45 min of 6-way parallel
+  work; resume each with SendMessage after the reset.

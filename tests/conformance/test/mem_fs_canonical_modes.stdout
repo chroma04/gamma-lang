@@ -1,0 +1,4 @@
+test "canonical gives the path in normal form" ... ok
+test "set_mode and set_modified change what stat reports" ... ok
+test "there are no symbolic links" ... ok
+3 passed, 0 failed

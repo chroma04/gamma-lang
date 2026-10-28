@@ -1,0 +1,46 @@
+// `else` fallbacks join with the present type as `if` branches do (§10.4, §7.12), a
+// coercion that only adds `const` applies inside `?` and `!` (§6.4), and arrays of one
+// element type join as a slice of it (§7.12, §8.4).
+str :: import "std/str"
+
+Missing :: union { Missing }
+
+lookup :: fn(buf: []u8, found: bool) -> ?[]u8 => if found { buf } else { null }
+
+read :: fn(buf: []u8, ok: bool) -> Missing![]u8 {
+    if not ok { return !.Missing }
+    return buf
+}
+
+label :: fn(n: i32) -> string needs Alloc {
+    return str.format("#{}", n) else "?"
+}
+
+main :: fn() needs Alloc + Out {
+    buf := [_]u8('a', 'b')
+    // `?[]u8` → `?string`, `E![]u8` → `E!string`.
+    name: ?string = lookup(buf[..], true)
+    gone: ?string = lookup(buf[..], false)
+    text: Missing!string = read(buf[..], false)
+    print("{} {} {}\n", name, gone, text)
+    // The fallback is a `string`, so the whole `else` is.
+    a := lookup(buf[..], false) else "none"
+    b := read(buf[..], true) else "failed"
+    c: string = read(buf[..], false) else "failed"
+    print("{} {} {} {}\n", a, b, c, label(7))
+    // A pointer fallback: `?^i32 else ^const i32` is a `^const i32`.
+    v := 5
+    p: ?^i32 = null
+    q := p else &v
+    print("{}\n", q^)
+    // Arrays of one element type, of different lengths.
+    one := if v > 3 { [_]i32(1) } else { [_]i32(1, 2) }
+    many := match v {
+        5 => [_]i32(5, 5, 5)
+        _ => [_]i32()
+    }
+    print("{} {}\n", one, many)
+    for xs in ([_]string("a"), [_]string("b", "c")) { print("{} ", xs.len) }
+    for s in (buf[..], "lit") { print("{} ", s) }
+    print("\n")
+}

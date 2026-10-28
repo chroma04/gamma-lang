@@ -1,0 +1,59 @@
+//! os: unix
+// `Proc.try_wait` (null while the child runs, a status once, releasing the child) and
+// `SpawnOptions.program` (the file to run, apart from the name the child sees).
+process :: import "std/process"
+time :: import "std/time"
+
+/// Polls `try_wait` until the child has ended.
+poll :: fn(c: process.Child) -> IoError!process.ExitStatus needs Proc + Clock {
+    while true {
+        if st := try Proc.try_wait(c) { return st }
+        Clock.sleep(time.ms(5))
+    }
+}
+
+main :: fn() needs Out + Proc + Clock + Alloc {
+    // A quick child: its status arrives, once.
+    quick := Proc.spawn([_]string("sh", "-c", "exit 3"), process.SpawnOptions()) else e => {
+        print("spawn failed: {}\n", e)
+        return
+    }
+    st := poll(quick) else e => {
+        print("poll failed: {}\n", e)
+        return
+    }
+    print("quick: {}\n", st)
+    print("waited twice: {}\n", Proc.try_wait(quick) is !.InvalidInput or Proc.try_wait(quick) is !.Other(9))
+
+    // A sleeping child is still running; kill it, then wait.
+    slow := Proc.spawn([_]string("sleep", "30"), process.SpawnOptions()) else e => {
+        print("spawn failed: {}\n", e)
+        return
+    }
+    first := Proc.try_wait(slow) else e => {
+        print("try_wait failed: {}\n", e)
+        return
+    }
+    print("running: {}\n", first is null)
+    _ = Proc.kill(slow)
+    killed := Proc.wait(slow) else e => {
+        print("wait failed: {}\n", e)
+        return
+    }
+    print("killed: {}\n", killed is .Signaled(_))
+
+    // The program is run; argv[0] is only the name the child sees.
+    o := process.output([_]string("custom", "-c", "echo $0"), process.SpawnOptions(program: "sh")) else e => {
+        print("output failed: {}\n", e)
+        return
+    }
+    print("name: {}", string(o.out.items))
+    o.deinit()
+    o2 := process.output([_]string("irrelevant", "-c", "echo hi"), process.SpawnOptions(program: "/bin/sh")) else e => {
+        print("output failed: {}\n", e)
+        return
+    }
+    print("path: {}", string(o2.out.items))
+    o2.deinit()
+    print("no such program: {}\n", Proc.spawn([_]string("sh"), process.SpawnOptions(program: "no-such-program-for-gamma-tests")) is !.NotFound)
+}

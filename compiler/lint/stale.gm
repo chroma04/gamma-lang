@@ -1,0 +1,319 @@
+// The `stale-element-pointer` lint: a pointer or slice into the items of a list, kept in a
+// local across a call that may grow the list and so move its items:
+//
+//     e := &l.items[i]
+//     l.push(x)!               // may move the items to a larger block
+//     e.count += 1             // writes to freed memory
+//
+// The function body is followed in order (a loop body twice, so that a use early in the
+// next iteration counts). A local is bound to the items of a list place by `&l.items[i]`
+// (also through fields of the element), `l.items[a..b]` or `l.items`; a call that gets a
+// pointer to the same place for a `^List` parameter may grow it, unless it is a core list
+// function that does not (`pop`, `clear`, `truncate`, `remove`, ...). The first use of
+// the local after the call is reported. Places are compared by their path of locals and
+// fields, through pointers; indexed places and other aliases are not followed.
+
+/// A local holding a pointer into the items of the list at `key`, and the call that may
+/// have moved them, if one has been made.
+Live :: struct {
+    local: u32
+    key: string
+    /// Where the list is written in the source.
+    place: source.Span
+    grown: ?source.Span
+}
+
+StaleScan :: struct {
+    s: ^sema.Sema
+    def: ^const tir.FnDef
+    /// The core library's `List`.
+    list_adt: u32
+    live: List(Live)
+    /// The uses reported.
+    reported: List(source.Span)
+    out: ^List(Finding)
+}
+
+/// Reports the locals of function `f` that point into a list's items and are used after a
+/// call that may have moved them.
+stale_element_pointers :: fn(s: ^sema.Sema, f: usize, out: ^List(Finding)) needs Alloc + Fs {
+    def := &s.defs.items[f]
+    body := def.body else return
+    id := s.prelude_template("List") else return
+    sc := StaleScan(s: s, def: def, list_adt: id, live: list(Live), reported: list(source.Span), out: out)
+    sc.scan(body)
+}
+
+clone_live :: fn(a: List(Live)) -> List(Live) needs Alloc {
+    r := list(Live)
+    for x in a.items { r.push(x)! }
+    return r
+}
+
+/// The states `a` and `b` together: what is live in either, grown if grown in either.
+union_live :: fn(a: List(Live), b: List(Live)) -> List(Live) needs Alloc {
+    r := clone_live(a)
+    for x in b.items {
+        found := false
+        for i in 0..r.items.len {
+            if r.items[i].local is x.local and r.items[i].key is x.key {
+                found = true
+                if r.items[i].grown is null { r.items[i].grown = x.grown }
+            }
+        }
+        if not found { r.push(x)! }
+    }
+    return r
+}
+
+strip_coerce :: fn(e: ^Expr) -> ^Expr {
+    cur := e
+    while .Coerce(_, inner) := cur.kind { cur = inner }
+    return cur
+}
+
+/// The path of locals, globals and fields that place `e` names, with pointers followed
+/// (`l` and `l^` are the same), or `null` for a place not tracked.
+place_key :: fn(e: ^Expr) -> ?string needs Alloc {
+    x := strip_coerce(e)
+    match x.kind {
+        .Local(l) => return str.format("{}", l)!
+        .Global(name, _) => return str.format("global {}", name)!
+        .Deref(inner) => return place_key(inner)
+        .Field(base, i) => {
+            k := place_key(base) else return null
+            return str.format("{}.{}", k, i)!
+        }
+        _ => return null
+    }
+}
+
+is_list :: fn(sc: ^StaleScan, t: types.Ty) -> bool {
+    if .Adt(id, _) := sc.s.tys.kind(t) { return sc.s.tys.template(id) is sc.list_adt }
+    return false
+}
+
+/// The list place whose `items` expression `e` is.
+items_of :: fn(sc: ^StaleScan, e: ^Expr) -> ?^Expr {
+    x := strip_coerce(e)
+    if .Field(base, i) := x.kind {
+        if i is 0 and is_list(sc, base.ty) { return base }
+    }
+    return null
+}
+
+/// The list place whose items hold the element place `p`.
+element_of :: fn(sc: ^StaleScan, p: ^Expr) -> ?^Expr {
+    match p.kind {
+        .Index(base, _, _) => {
+            if l := items_of(sc, base) { return l }
+            if sc.s.tys.kind(base.ty) is .Array(_, _, _) { return element_of(sc, base) }
+        }
+        .Field(base, _) => return element_of(sc, base)
+        _ => {}
+    }
+    return null
+}
+
+/// The list place that value `e` points into the items of: `&l.items[i]`, `&l.items[i].f`,
+/// `l.items[a..b]` or `l.items`.
+source_of :: fn(sc: ^StaleScan, e: ^Expr) -> ?^Expr {
+    x := strip_coerce(e)
+    match x.kind {
+        .AddrOf(p) => return element_of(sc, p)
+        .Slice(sl) => return items_of(sc, sl.base)
+        .Field(_, _) => return items_of(sc, x)
+        _ => return null
+    }
+}
+
+/// Core list functions that may move the items of their list.
+grows :: fn(name: string) -> bool => name in ("push", "extend", "insert", "reserve", "collect", "write", "deinit", "into_slice")
+
+/// Binds local `l` to the list place that value `init` points into the items of, if any.
+bind :: fn(sc: ^StaleScan, l: u32, init: ^Expr) needs Alloc {
+    sc.forget(l)
+    place := source_of(sc, init) else return
+    k := place_key(place) else return
+    if place.span is source.DUMMY { return }
+    sc.live.push(Live(local: l, key: k, place: place.span, grown: null))!
+}
+
+forget :: fn(sc: ^StaleScan, l: u32) needs Alloc {
+    kept := list(Live)
+    for x in sc.live.items {
+        if x.local is not l { kept.push(x)! }
+    }
+    sc.live = kept
+}
+
+/// A use of local `l`.
+touch :: fn(sc: ^StaleScan, l: u32, at: source.Span) needs Alloc {
+    for x in sc.live.items {
+        if x.local is l {
+            g := x.grown else continue
+            if at is source.DUMMY { continue }
+            seen := false
+            for r in sc.reported.items {
+                if r is at { seen = true }
+            }
+            if not seen {
+                sc.reported.push(at)!
+                sc.out.push(Finding.StaleElementPointer(at, sc.def.locals[usize(l)].name, x.place, g))!
+            }
+            sc.forget(l)
+            return
+        }
+    }
+}
+
+/// A call to function `g` with `args`: the lists it may grow are marked.
+grow_by_call :: fn(sc: ^StaleScan, g: u32, args: []Expr, at: source.Span) needs Alloc {
+    sig := &sc.s.fns.items[usize(g)]
+    core := sc.s.l.modules.items[sig.module].is_prelude
+    for i in 0..args.len {
+        if i >= sig.params.len { break }
+        if .Ptr(is_const, pointee) := sc.s.tys.kind(sig.params[i].ty) {
+            if is_const or not is_list(sc, pointee) { continue }
+            if core and not (i is 0 and grows(sig.name)) { continue }
+            a := strip_coerce(&args[i])
+            k := ""
+            if .AddrOf(p) := a.kind {
+                k = place_key(p) else continue
+            } else {
+                k = place_key(a) else continue
+            }
+            for j in 0..sc.live.items.len {
+                if sc.live.items[j].key is k and sc.live.items[j].grown is null { sc.live.items[j].grown = at }
+            }
+        }
+    }
+}
+
+/// Scans `e` from state `from`; returns the state after it, or `null` if it does not
+/// complete (it ends in a `return`, `break`, ...), in which case nothing follows it.
+branch :: fn(sc: ^StaleScan, from: List(Live), e: ^Expr) -> ?List(Live) needs Alloc {
+    sc.live = clone_live(from)
+    sc.scan(e)
+    if sc.s.tys.kind(e.ty) is .Never { return null }
+    return sc.live
+}
+
+/// Adds `r`, the state after one branch, to `merged`.
+join :: fn(merged: ?List(Live), r: List(Live)) -> ?List(Live) needs Alloc {
+    if m := merged { return union_live(m, r) }
+    return r
+}
+
+scan_conds :: fn(sc: ^StaleScan, cond: []tir.CondPart) needs Alloc {
+    for c in cond {
+        match c {
+            .Bool(x) => sc.scan(x)
+            .Match(_, v) => sc.scan(v)
+        }
+    }
+}
+
+scan_block :: fn(sc: ^StaleScan, b: ^const tir.Block) needs Alloc {
+    for st in b.stmts {
+        match st {
+            .Let(local, ?init) => if x := init {
+                sc.scan(x)
+                sc.bind(local, x)
+            }
+            .LetTuple(locals, x) => {
+                sc.scan(x)
+                for l in locals {
+                    if id := l { sc.forget(id) }
+                }
+            }
+            .Assign(place, value) => {
+                sc.scan(value)
+                if .Local(l) := place.kind {
+                    sc.bind(l, value)
+                } else {
+                    sc.scan(place)
+                }
+            }
+            .AssignTuple(places, value) => {
+                sc.scan(value)
+                for p in places {
+                    if x := p {
+                        if .Local(l) := x.kind { sc.forget(l) } else { sc.scan(x) }
+                    }
+                }
+            }
+            .Expr(x) => sc.scan(x)
+            .Defer(_, x) => sc.scan(x)
+        }
+    }
+    if t := b.tail { sc.scan(t) }
+}
+
+scan :: fn(sc: ^StaleScan, e: ^Expr) needs Alloc {
+    match e.kind {
+        .Local(l) => return sc.touch(l, e.span)
+        .Block(b) => return sc.scan_block(b)
+        .If(x) => {
+            sc.scan_conds(x.cond)
+            base := clone_live(sc.live)
+            merged: ?List(Live) = null
+            if r := sc.branch(base, x.then) { merged = join(merged, r) }
+            if el := x.else_ {
+                if r := sc.branch(base, el) { merged = join(merged, r) }
+            } else {
+                merged = join(merged, base)
+            }
+            sc.live = if m := merged { m } else { base }
+            return
+        }
+        .Match(scrutinee, arms) => {
+            sc.scan(scrutinee)
+            base := clone_live(sc.live)
+            merged: ?List(Live) = null
+            for a in arms {
+                sc.live = clone_live(base)
+                if g := a.guard { sc.scan(g) }
+                if r := sc.branch(sc.live, a.body) { merged = join(merged, r) }
+            }
+            sc.live = if m := merged { m } else { base }
+            return
+        }
+        .Else(x) => {
+            sc.scan(x.lhs)
+            base := clone_live(sc.live)
+            if r := sc.branch(base, x.rhs) { sc.live = union_live(base, r) } else { sc.live = base }
+            return
+        }
+        .Logic(_, lhs, rhs) => {
+            sc.scan(lhs)
+            base := clone_live(sc.live)
+            sc.scan(rhs)
+            sc.live = union_live(base, sc.live)
+            return
+        }
+        .Loop(x) => {
+            entry := clone_live(sc.live)
+            for pass in 0..2 {
+                sc.scan_conds(x.cond)
+                sc.scan_block(x.body)
+                if st := x.step { sc.scan(st) }
+                if pass is 0 { sc.live = union_live(sc.live, entry) }
+            }
+            sc.live = union_live(sc.live, entry)
+            return
+        }
+        .Closure(_), .FnRef(_), .HandlerRef(_) => return
+        _ => {}
+    }
+    tir.for_each_child(e, fn(c: ^Expr) { sc.scan(c) })
+    if .Call(callee, args) := e.kind {
+        if .Fn(g) := callee { sc.grow_by_call(g, args, e.span) }
+    }
+}
+
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+tir :: import "../tir"
+types :: import "../types"

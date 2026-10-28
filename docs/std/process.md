@@ -11,8 +11,11 @@ Running other programs over the `Proc` effect (§21.7).
 
 `Proc.spawn` starts a program without a shell: the first element of `argv` is the program
 (a name without a path separator is searched for in `PATH`), the others are its arguments.
-A piped stream is used through `write`, `close_in` and `read`, and every started
-child must be ended with `wait`. Tests cannot start processes: `spawn` fails with
+With `SpawnOptions.program` set, that file is run instead and `argv[0]` is only the name the
+child sees (like `execv(path, argv)`); a `program` without a separator is searched for in
+`PATH` too. A piped stream is used through `write`, `close_in` and `read`, and every started
+child must be ended with `wait`, or with a `try_wait` that returned its status (`null` while
+the child still runs). Tests cannot start processes: `spawn` fails with
 `PermissionDenied`.
 
 ## Structs

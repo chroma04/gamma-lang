@@ -48,3 +48,11 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
 - s49: after a syntax error inside an `if` condition (`if needs := f() {`), `gamma check`
   also reports "gamma cannot check this kind of expression yet" for the `if` (checker meets
   the parser's error node). Should stay silent after a parse error.
+- s50: a local alias named like a visible type (`Point :: i32` with a top-level `Point`)
+  is accepted, though §4.6 forbids it; fixing it may break existing code (check repo first).
+- s50: `gamma lint` has no unused check for local struct/union types.
+- s50: difftest seed 91451 (CI rotating seeds, PR #102): gcc 15.2 (Debug) prints
+  `null 229 !.Worse` where interp/clang/gcc 13/14 give `null 0` for
+  `((p1 -? 1u32 else p1) & e122.sat(u32)).checked(u8)` inside `match … { !.Bad(e122) => …}`
+  with p1 = 0. Program C identical on main → pre-existing; gcc-15 not installable here.
+  Either a gcc 15 bug or latent UB (UBSan on gcc 14 clean). Reproduce with gcc 15.

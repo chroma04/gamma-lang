@@ -1,0 +1,16 @@
+read_link: real
+not a link: true
+missing: true
+small buffer: true
+lstat kind: true
+same: true true
+absolute: true
+ends with: true
+missing canonical: true
+small canonical: true
+mode: 640
+mode through link: 640
+mode after link: 600
+set_mode missing: true
+modified: 1600000000
+set_modified missing: true

@@ -1,0 +1,34 @@
+//! stage: check
+// Numbered placeholders and `{:q}` are checked at the template and at the placeholder (§21.6.1).
+
+log :: fn(A: type, template :: string, args: ..A) needs Out { print(template, ..args) }
+quoted :: fn(T: type, x: T) needs Out { print("{:q}\n", x) }
+
+main :: fn() needs Out {
+    print("{} {0}\n", 1)                //~ ERROR invalid template: a template numbers all its placeholders or none
+    print("{0} {}\n", 1)                //~ ERROR invalid template: a template numbers all its placeholders or none
+    print("{1}\n", 1)                   //~ ERROR the template writes value 1, but 1 value is given
+    print("{0}\n")                      //~ ERROR the template writes value 0, but no values are given
+    print("{0}\n", 1, 2)                //~ ERROR value 1 is not written by any placeholder
+    print("{1}\n", 1, 2)                //~ ERROR value 0 is not written by any placeholder
+    print("{01}\n", 1)                  //~ ERROR no leading zeros
+    print("{+1}\n", 1)                  //~ ERROR invalid template
+    print("{0x}\n", 1)                  //~ ERROR invalid template
+    print("{0:x}\n", 1.5)               //~ ERROR needs an integer, for a base, not `f64`
+    print("{0} {0:.2}\n", "s")          //~ ERROR needs a float, for a precision
+    print("{1} {0}\n", ..(1, 2, 3))     //~ ERROR value 2 is not written by any placeholder
+    print("{3}\n", ..(1, 2))            //~ ERROR the template writes value 3, but 2 values are given
+    log("{1}\n", 5)                     //~ ERROR the template writes value 1, but 1 value is given (in an instantiation used here)
+    log("{0} {}\n", 5)                  //~ ERROR a template numbers all its placeholders or none
+    log("{0:x}\n", 2.5)                 //~ ERROR needs an integer, for a base, not `f64` (in an instantiation used here)
+    print("{:q}\n", 1)                  //~ ERROR needs a `string` or byte slice, for `q`, not `i32`
+    print("{:q}\n", [2]u8(1, 2))        //~ ERROR needs a `string` or byte slice, for `q`
+    print("{:q}\n", (1, "a"))           //~ ERROR needs a `string` or byte slice, for `q`
+    print("{:.2q}\n", "s")              //~ ERROR a precision goes with floats
+    print("{:+q}\n", "s")               //~ ERROR needs a number, for `+` or `0`
+    print("{:#q}\n", "s")               //~ ERROR `#` (the base prefix) goes with
+    quoted(5)                           //~ ERROR needs a `string` or byte slice, for `q`, not `i32` (in an instantiation used here)
+    log("{:q}\n", 1.5)                  //~ ERROR needs a `string` or byte slice, for `q`, not `f64` (in an instantiation used here)
+    log("{0:q}\n", "fine")
+    quoted("fine")
+}

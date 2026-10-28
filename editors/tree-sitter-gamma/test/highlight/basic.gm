@@ -66,3 +66,7 @@ test "adds" {
 // <- keyword.type
 //   ^ string
 }
+
+count :: fn(needs: u32) -> u32 needs Out => 1
+//          ^ variable.parameter
+//                             ^ keyword

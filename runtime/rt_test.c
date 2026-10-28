@@ -662,17 +662,39 @@ static void test_stale_handles(void) {
 #ifndef _WIN32
     gm_rt_str argv[1] = {{(const uint8_t *)"true", 4}};
     uint32_t null_streams = 1 | (1 << 2) | (1 << 4);
-    int64_t p1 = gm_proc_spawn(argv, 1, NULL, 0, "", 0, null_streams);
+    int64_t p1 = gm_proc_launch(argv, 1, NULL, 0, "", 0, NULL, 0, null_streams);
     CHECK(p1 > 0);
     CHECK(gm_proc_wait(p1) == 0);
     CHECK(gm_proc_wait(p1) == ebadf);
-    int64_t p2 = gm_proc_spawn(argv, 1, NULL, 0, "", 0, null_streams);
+    int64_t p2 = gm_proc_launch(argv, 1, NULL, 0, "", 0, NULL, 0, null_streams);
     CHECK(p2 > 0 && p2 != p1);
     CHECK(gm_proc_wait(p1) == ebadf);
     CHECK(gm_proc_kill(p1) == ebadf);
     CHECK(gm_proc_close_in(p1) == ebadf);
     CHECK(gm_proc_wait(p2) == 0);
     CHECK(gm_proc_wait(p2) == ebadf);
+    CHECK(gm_proc_try_wait(p2) == ebadf);
+
+    /* try_wait: 2^33 while the child runs, then its status, once. */
+    gm_rt_str sleeper[2] = {{(const uint8_t *)"sleep", 5}, {(const uint8_t *)"5", 1}};
+    int64_t p3 = gm_proc_launch(sleeper, 2, NULL, 0, "", 0, NULL, 0, null_streams);
+    CHECK(p3 > 0);
+    CHECK(gm_proc_try_wait(p3) == ((int64_t)1 << 33));
+    CHECK(gm_proc_kill(p3) == 0);
+    int64_t st = gm_proc_try_wait(p3);
+    while (st == ((int64_t)1 << 33)) st = gm_proc_try_wait(p3);
+    CHECK(st == 9 + ((int64_t)1 << 32));
+    CHECK(gm_proc_try_wait(p3) == ebadf);
+
+    /* program: the file to run, apart from the name the child sees. */
+    gm_rt_str named[1] = {{(const uint8_t *)"no-such-name", 12}};
+    int64_t p4 = gm_proc_launch(named, 1, NULL, 0, "", 0, "true", 4, null_streams | GM_PROC_PROGRAM);
+    CHECK(p4 > 0 && gm_proc_wait(p4) == 0);
+
+    char link_buf[16];
+    CHECK(gm_fs_canonical("/", 1, link_buf, sizeof link_buf) == 1 && link_buf[0] == '/');
+    CHECK(gm_fs_canonical("/no/such/path", 13, link_buf, sizeof link_buf) < 0);
+    CHECK(gm_fs_read_link("/", 1, link_buf, sizeof link_buf) < 0);
 #endif
 }
 

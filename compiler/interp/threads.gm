@@ -44,12 +44,15 @@ pub Threads :: struct {
     futex_seq: u64
     /// The first trap of any thread other than the main one.
     fatal: ?^Trap
+    /// The exit code a thread asked for with `Env.exit` (`@env_exit`), once its body has
+    /// unwound; the main thread ends the program with it when it next runs.
+    exit: ?u8
 }
 
 threads :: fn() -> Threads needs Alloc {
     l := list(ThreadRec)
     l.push(ThreadRec(coro: 0, state: .Ready, joined: false))!
-    return Threads(list: l, cur: 0, since_yield: 0, futex_seq: 0, fatal: null)
+    return Threads(list: l, cur: 0, since_yield: 0, futex_seq: 0, fatal: null, exit: null)
 }
 
 /// Called at each call and loop iteration: now and then, lets another thread run.
@@ -123,6 +126,16 @@ switch_thread :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Run {
 
 check_fatal :: fn(m: ^const Machine) -> Flow!() {
     if t := m.threads.fatal { return !.Trap(t) }
+    if c := m.threads.exit { return !.Exit(c) }
+}
+
+/// `@env_exit`: ends the program with `code`. On the main thread that is an exit in
+/// progress; another thread records it for the main thread, which ends the program when it
+/// next runs, and unwinds its own frames.
+env_exit :: fn(m: ^Machine, span: source.Span, code: u8) -> Flow!() {
+    if m.threads.cur is 0 { return !.Exit(code) }
+    if m.threads.exit is null { m.threads.exit = code }
+    return !.Exit(code)
 }
 
 /// The system services of threads and futexes; `vals` are the evaluated arguments.
@@ -194,7 +207,9 @@ thread_main :: fn(m: ^Machine, f: u32, arg: []u8, span: source.Span) needs Run {
     def := m.func(f)
     ret := m.tmp(m.size(def.ret))
     m.call_function(span, f, args[..], null, 0, null, false, ret) else fl => {
-        if m.threads.fatal is null {
+        if .Exit(c) := fl {
+            if m.threads.exit is null { m.threads.exit = c }
+        } else if m.threads.fatal is null {
             t: ^Trap = if .Trap(x) := fl { x } else { new(Trap(message: "internal error: control flow left a thread", span: span, trace: list(TraceCall)))! }
             m.threads.fatal = t
         }

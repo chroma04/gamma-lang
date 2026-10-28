@@ -101,6 +101,25 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Language
 
+- `needs`, `handler` and `foreign` are contextual keywords (§2.4): ordinary names except
+  after a signature (`needs`), before an effect (`handler Eff {`, a top-level handler
+  declaration) and before a library name (`foreign "c" {`). A newline after `needs` now
+  ends the line like after any name, so put the effect set on the same line.
+- An `else` fallback joins with the left side's value as `if` branches do (§10.4):
+  `str.format("{}", n) else "none"` and `x: string = lookup(k) else ""` (with `lookup`
+  giving `?[]u8`) are `string`s; they used to be type errors.
+- A coercion that only adds `const` also applies inside optionals and results (§6.4):
+  `?[]u8` → `?string`, `E!^T` → `E!^const T`.
+- Arrays of one element type and different lengths join as a slice of it (§7.12): in the
+  branches of `if` and `match`, and in `for x in (a, b)`, whose elements may now be of any
+  types with a join (`for s in (bytes, "lit")`).
+- Format templates may number their placeholders (§21.6.1): `print("{1}: {0} ({0:x})", n,
+  name)` writes a value several times or out of order; each value is still evaluated once.
+- The format spec kind `q` writes a `string` or byte slice quoted with escapes, as inside
+  an aggregate: `print("{:q}", "a\tb")` writes `"a\tb"`.
+- `struct` and `union` types may be declared inside a function body (§3.5): they are
+  visible to the rest of the block, are not generic, have no methods, and may not depend on
+  the function's type or value parameters.
 - In `x in (a, b, c)` and `x in list`, the element and the members are compared at one
   type, joined as the branches of an `if` are (§7.7, §7.12): with `p: []u8`,
   `p in ("get", "put")` and `p in names` (`names: []string`) are accepted; they used to be
@@ -189,6 +208,21 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Standard library
 
+- `Fs` has `canonical` (symlinks, `.` and `..` resolved; `fs.canonical_alloc`),
+  `read_link`, `symlink`, `set_mode` and `set_modified`, and `FileInfo` has `mode`. On
+  WASI they fail with `Unsupported`; the in-memory test file system stores modes and times
+  but has no symlinks.
+- `Proc.try_wait(child)` reports a status without blocking (`null` while the child runs),
+  and `SpawnOptions.program` names the file to run when `argv[0]` should be only the name
+  the child sees.
+- The handle types `File`, `Dir`, `Socket`, `Listener` and `Child` have a public `handle`,
+  so handlers written in Gamma (a virtual file system) can issue and read them.
+- `thread.defaults` gives a thread `Env` as well: `args`, `var`, and `exit`, which ends the
+  process once the thread's body has unwound.
+- `std/text` has `is_space`, `trim`, `trim_start`, `trim_end` and `fields` for Unicode
+  whitespace (the `White_Space` property); the `std/str` ones stay ASCII.
+- `thread.drained(&c)` tells a closed and drained `Channel` from an empty one, so a consumer
+  polling with `try_recv` knows when to stop.
 - **Breaking: `SpawnOptions.env` changes the environment instead of replacing it.** Its
   entries apply in order to the environment the child inherits: `NAME=value` sets a
   variable, a bare `NAME` removes it. `clear_env: true` starts from an empty environment
@@ -227,6 +261,11 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Diagnostics
 
+- The language server no longer adds "gamma cannot check this kind of expression yet" to a
+  syntax error in a condition.
+- New lint `stale-element-pointer`: a pointer or slice into a list's items used after a
+  call on that list that may move them (`push`, `extend`, `reserve`, …, or a function given
+  the list by pointer).
 - `gamma lint` has a new rule, `mutated-copy`: a local holding a copy of a `List`, a
   `HashMap` or another value with a resizable buffer (`tys := cx.tys`) that is then
   changed as if it were the original (`tys.intern(k)`), which loses the change; a pointer

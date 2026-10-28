@@ -52,7 +52,7 @@ digits_in :: fn(n: u32) -> u32 {
 
 ### Reserved words
 
-These 34 words are keywords everywhere and cannot name anything: `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`. Note `esc`, `ctl`, `resume` and `cancel` among them, which come from effects (chapter 7). A few more words are keywords only in one place (`const`, `on`, `where`, `test`, `bench`), and `type` and `cont` are reserved type names (§B.3).
+These 32 words are keywords everywhere and cannot name anything: `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`. Note `esc`, `ctl`, `resume` and `cancel` among them, which come from effects (chapter 7). A few more words are keywords only in one place (`const`, `on`, `where`, `test`, `bench`, and `needs`, `handler` and `foreign`, which are keywords only where a signature's effects, a handler or a foreign block begins, so `needs := deps(x)` is an ordinary variable), and `type` and `cont` are reserved type names (§B.3).
 
 ### No shadowing
 

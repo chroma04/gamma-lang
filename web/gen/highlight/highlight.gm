@@ -118,7 +118,7 @@ class :: fn(src: string, tokens: []const syntax.Token, i: usize) -> ?string {
     tok := tokens[i]
     return match tok.kind {
         .Keyword(_) => "k"
-        .Ident(name) => if name in ("const", "on", "where", "test") {
+        .Ident(name) => if name in ("const", "on", "where", "test") or is_contextual_keyword(tokens, i, name) {
             "k"
         } else if name[0] in 'A'..='Z' {
             "t"
@@ -132,6 +132,19 @@ class :: fn(src: string, tokens: []const syntax.Token, i: usize) -> ?string {
         .Float(_) => "n"
         .Intrinsic(_), .Attribute(_) => "a"
         _ => null
+    }
+}
+
+/// True for `needs`, `handler` or `foreign` where it is a keyword (§2.4): `needs` before
+/// an effect (or `not`), `handler` before an effect, `foreign` before a library name.
+is_contextual_keyword :: fn(tokens: []const syntax.Token, i: usize, name: string) -> bool {
+    next := tokens.get(i + 1) else return false
+    if i > 0 and tokens[i - 1].kind is .Punct(.Dot) { return false }
+    return match name {
+        "needs" => next.kind is .Ident(_) or next.kind is .Keyword(.Not)
+        "handler" => next.kind is .Ident(_) or (next.kind is .Punct(.LParen) and (i is 0 or tokens[i - 1].kind is .Newline))
+        "foreign" => next.kind is .Str(_)
+        _ => false
     }
 }
 
@@ -224,6 +237,9 @@ test "classes" {
         expect(str.contains(h, "<span class=\"f\">main</span>"))
         expect(str.contains(h, "<span class=\"k\">fn</span>"))
         expect(str.contains(h, "<span class=\"k\">needs</span>"))
+        n := highlight("f(needs: u8) -> u8 needs Alloc => needs\n")
+        expect(not str.contains(n, "<span class=\"k\">needs</span>: u8"))
+        expect(str.contains(n, "<span class=\"k\">needs</span> <span class=\"t\">Alloc</span>"))
         expect(str.contains(h, "<span class=\"t\">Out</span>"))
         expect(str.contains(h, "<span class=\"f\">foo</span>"))
         expect(str.contains(h, "<span class=\"c\">// hi</span>"))

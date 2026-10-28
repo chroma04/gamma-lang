@@ -186,10 +186,9 @@ Identifiers are ASCII. They are case-sensitive. The identifier consisting of a s
 
 ```
 and      break    cancel   continue ctl      defer    effect   else
-errdefer esc      false    fn       for      foreign  handler  if
-import   in       is       match    needs    not      null     or
-pub      resume   return   struct   true     try      union    using
-when     while    with
+errdefer esc      false    fn       for      if       import   in
+is       match    not      null     or       pub      resume   return
+struct   true     try      union    using    when     while    with
 ```
 
 **Contextual keywords** are ordinary identifiers except in the syntactic position given:
@@ -199,6 +198,9 @@ when     while    with
 | `const` | immediately after `^`, `[^]` or `[]` in a type (§5.5) |
 | `on` | after the handler list of a `with` (§12.7) |
 | `where` | after a function signature or a type's parameter list (§16.3) |
+| `needs` | right after the parameter list or result type of a function signature (declarations, literals, `fn` and `^fn` types, foreign members, §11.1), and after the type of a handler declaration (§12.4) |
+| `handler` | at the start of a handler literal, when an effect reference follows (`handler Log { … }`, `handler m.Log { … }`, §12.4), and at the start of a top-level declaration followed by an effect reference or `(` (`handler Log for T`, `handler(params) Log for T`); at top level `handler ::` and `handler :` declare a binding named `handler`, and elsewhere `handler` followed by anything but an identifier is an ordinary name (`handler(x)`, `handler.f`) |
+| `foreign` | when a string literal follows (`foreign "c" { … }`, §19.2) |
 | `test`, `bench` | at the start of a top-level declaration, before a string literal (§3.8, §3.9) |
 
 `type` and `cont` are not keywords; they are predeclared, reserved type names (§21.1).
@@ -316,7 +318,7 @@ Newlines are significant inside braces `{ }` and at the top level, where they te
 
 A newline token is **suppressed** (treated as whitespace) when any of the following holds:
 
-1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `needs`, `.`, or an opening bracket of any kind.
+1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `.`, or an opening bracket of any kind.
 2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm, and except when that line contains a `:=` token outside brackets (strings and comments do not count, and the line is taken to end where a raw string or block comment carries on to the next one), which makes it a pattern binding (`.Num(n) := v else return`, §4.5).
 3. Its innermost enclosing bracket is `( )` or `[ ]`. Only the innermost bracket matters: newlines inside a `{ }` block are significant even when that block is itself inside parentheses (a function literal passed as an argument, for example).
 
@@ -396,7 +398,7 @@ Top-level declarations are mutually visible regardless of order. Their dependenc
 
 ### 3.5 Type aliases
 
-A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Seq :: List`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Seq(T)` then instantiates `List`, and a `pub` alias re-exports the declaration. An instantiation of a generic effect may be named the same way: `Bytes :: Yield(u8)` makes `Bytes` stand for `Yield(u8)` in effect sets, handler literals and `Bytes.yield(b)`. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. Nominal types (`struct`, `union` and `effect` literals) are declared only at top level.
+A top-level binding whose initializer is a type expression that is not a `struct`, `union` or `effect` literal is an **alias**: `Bytes :: []u8` makes `Bytes` and `[]u8` the same type. `struct`, `union` and `effect` literals create a new nominal type each time they are written; binding one to a name gives that type its name. A binding whose initializer is just the name of another declaration — `name` or `m.name` — that is a type (including a generic type), a function (including a generic one), an effect, an effect operation or a module is another name for that declaration: `Seq :: List`, `area :: shapes.area`, `Shape :: shapes.Shape`; `Seq(T)` then instantiates `List`, and a `pub` alias re-exports the declaration. An instantiation of a generic effect may be named the same way: `Bytes :: Yield(u8)` makes `Bytes` stand for `Yield(u8)` in effect sets, handler literals and `Bytes.yield(b)`. An alias may also be declared inside a function body (`Elem :: @type_of(xs[0])`, `Row :: [N]T`); it is visible to the rest of its block, like a local. A `struct` or `union` literal may be bound inside a function body too (`Row :: struct { id: u32, name: string }`, with the attributes it takes at top level, in function, test and handler clause bodies). It declares a **local type**, equivalent to a private top-level type of the module, visible to the rest of its block; like a nested function (§11.8) it captures nothing. Its field types, default values and payload types may refer only to top-level and predeclared names and to local types, aliases and compile-time constants in scope, and may not depend on a type or value parameter of the enclosing function, or on a run-time local: a local type in a generic function is the same type in every instance, and a reference to a parameter is a compile error. A local type may refer to itself through a pointer (`next: ?^Node`), but not to a local type declared later. A local type cannot be generic (`struct(T: type)`) and cannot be `pub`; its name follows the rule for local names (§4.6). Two functions may declare local types of the same name; they are different types. Since method candidates come from the top-level functions of the declaring module (§7.10) and no top-level function can mention a local type, local types have no methods; nested functions and function literals of the same block may take them as parameters. `effect` literals are declared only at top level.
 
 ### 3.6 Conditional compilation: `when`
 
@@ -548,7 +550,7 @@ The statement means `if P := e { rest of the block } else { d }`. A pattern bind
 Scopes nest: the universe scope (predeclared names, §21.1) contains each module's top-level scope, which contains function bodies, which contain blocks.
 
 - A local binding is in scope from the end of its declaration to the end of the enclosing block. A binding's own initializer cannot refer to it.
-- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse the names of top-level declarations other than types, imported module names and predeclared names other than types; the local hides them for its scope. A local may **not** have the name of a type visible where it is declared: a predeclared type of §21.1 (`u8`, `string`, and every sized integer name such as `u1` or `i24`), a type or generic type declared or aliased at top level, a type parameter, or a local type alias. (A local `u2 := …` would otherwise make `x: u2` mean something else in its scope.) A name that hides a predeclared one hides it completely. The operations of the predeclared effects other than `yield` are not in the universe at all (§21.1), so a program may name its own declarations `now`, `read` or `exit` freely.
+- A local binding may not have the same name as another local binding or parameter of the same function that is in scope (**no shadowing** within a function). Locals *may* reuse the names of top-level declarations other than types, imported module names and predeclared names other than types; the local hides them for its scope. A local may **not** have the name of a type visible where it is declared: a predeclared type of §21.1 (`u8`, `string`, and every sized integer name such as `u1` or `i24`), a type or generic type declared or aliased at top level, a type parameter, or a local type alias or local type (§3.5). (A local `u2 := …` would otherwise make `x: u2` mean something else in its scope.) A name that hides a predeclared one hides it completely. The operations of the predeclared effects other than `yield` are not in the universe at all (§21.1), so a program may name its own declarations `now`, `read` or `exit` freely.
 - Function literals and handler literals are part of their enclosing function for this rule.
 - Top-level names in one module must be distinct, across all files of the module.
 - `_` never introduces a binding and may be used any number of times.
@@ -1008,6 +1010,7 @@ Gamma has no implicit conversions between different numeric types in expressions
 | `T` | `E!T` | wrap success |
 | `never` | any | |
 | pointer forms | see §5.5 | const-adding, array-to-slice, to `rawptr` |
+| `?S`, `E!S` | `?T`, `E!T` | when `S` becomes `T` only by gaining `const` (§5.5), at any depth of `?` and `!`: `?[]u8` → `?string`, `E!^T` → `E!^const T`. The two have one representation, so nothing is converted |
 | `[N]T` | `[]const T` | a slice of the whole array; a temporary array is held as in §15.1 |
 | `^Outer` | `^S` | embedding (§5.10.3) |
 | tuple | tuple | name erasure (§5.9) |
@@ -1255,7 +1258,7 @@ A type has at most one method candidate of each name, and a struct type may not 
 
 **Receiver rules.** The receiver fills the function's first run-time parameter; compile-time parameters before it are inferred or, if not inferable, bound by the other arguments as in any call (§11.3, §16.2). If that parameter has type `^T` or `^const T` and `e` is a place of type `T`, `&e` is passed (a mutable place is required for `^T`). If the parameter has type `T` and `e` has type `^T` or `^const T`, `e^` is passed. If `e` is not a place and the parameter is `^const T`, a temporary holding `e`'s value is created for the duration of the call and its address passed. If the parameter is `^T` (mutable), `e` must be a mutable place: calling a mutating method on a temporary is a compile error, since the mutation would be lost. No other adjustment is made.
 
-Methods cannot be added to types declared in other modules; write a free function instead.
+Methods cannot be added to types declared in other modules; write a free function instead. A local type (§3.5) has no methods either: no top-level function can mention it.
 
 ### 7.11 Calls and construction
 
@@ -1272,7 +1275,7 @@ Argument binding rules are in §11.3.
 
 ### 7.12 Conditional expressions
 
-`if` and `match` are expressions (§8.2, §8.6). Used as expressions, each branch's block yields its value: a block's value is the value of its final statement if that statement is an expression; otherwise `()`. All branches must have the same type after coercion (§6.4) to the expected type, if any. Without one, the type is that of the first branch that is not `never` and to which every other branch coerces, so `if c { str.format("{}", n)! } else { "none" }` is a `string` (`[]u8` coerces to `[]const u8`) and `if c { u8(1) } else { u32(2) }` a `u32`; if no branch type qualifies, it is the type of the first branch that is not `never`, and the other branches must coerce to it. An `if` without `else` has type `()`.
+`if` and `match` are expressions (§8.2, §8.6). Used as expressions, each branch's block yields its value: a block's value is the value of its final statement if that statement is an expression; otherwise `()`. All branches must have the same type after coercion (§6.4) to the expected type, if any. Without one, the type is that of the first branch that is not `never` and to which every other branch coerces, so `if c { str.format("{}", n)! } else { "none" }` is a `string` (`[]u8` coerces to `[]const u8`) and `if c { u8(1) } else { u32(2) }` a `u32`. If no branch type qualifies and the branches are arrays of one element type `T` (of different lengths), the type is `[]const T`, each array standing for a slice of it as at any coercion site (a temporary array is held as in §15.1): `if c { [_]i32(1) } else { [_]i32(1, 2) }`. Otherwise it is the type of the first branch that is not `never`, and the other branches must coerce to it. These are the **joins** of types that `in` (§7.7), `else` (§10.4) and `for` over a tuple (§8.4) use as well. An `if` without `else` has type `()`.
 
 ### 7.13 Function and handler literals
 
@@ -1339,9 +1342,11 @@ for_stmt = [ label ':' ] 'for' pattern { ',' pattern } 'in' expr block   // also
 
 ```
 for i in 0..n { … }                  // half-open; 0..=n is inclusive
-for x in xs { … }                    // xs: an array place, a slice or a tuple of one element type
+for x in xs { … }                    // xs: an array place, a slice or a tuple (below)
 for i, x in enumerate(xs) { … }      // tuple pattern without parentheses
 ```
+
+A tuple is iterated like the array of its elements, in order. Its elements must have one type, or a join (§7.12) to which every element coerces, and are converted to it: `for s in (name, "default")` with `name: []u8` iterates `string`s, and `for xs in ([_]i32(1), [_]i32(2, 3))` slices `[]const i32`.
 
 In a `for` head, a comma-separated list of patterns `p1, p2, …` is a tuple pattern `(p1, p2, …)`. (In `match` arms, by contrast, commas separate alternatives, §8.6.)
 
@@ -1529,8 +1534,9 @@ Wrapping is one level. For `x: ??i32`, `null` is the outer absent value, and the
 
 `x else d` evaluates `x`; if it is present (or success), the result is the unwrapped value; otherwise `d` is evaluated and is the result. `d` is not evaluated when `x` is present.
 
-- If `x: ?T`, then `d` must have type `T`, `?T`, `E!T`, or `never`. The result type is `T` if `d` is `T` or `never`, `?T` if `d` is `?T`, and `E!T` if `d` is `E!T`: this is how an absent value is given an error, as in `try (lookup(k) else !.Missing)`. When `d` is an error value `!e` whose error type comes from context, the context is the enclosing `try`'s function result type `F!U` (so `E` is `F`), or the expected type of the whole `else` expression. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
-- If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), `?T` (giving `?T`: the error is discarded, as in `parse(s) else null`), or `never`.
+- If `x: ?T`, then `d` must have type `T`, `?T`, `E!T`, or `never`, or a type `U` that joins with `T` as the branches of an `if` do (§7.12). The result type is `T` if `d` is `T` or `never`, `?T` if `d` is `?T`, and `E!T` if `d` is `E!T`: this is how an absent value is given an error, as in `try (lookup(k) else !.Missing)`. When `d` is an error value `!e` whose error type comes from context, the context is the enclosing `try`'s function result type `F!U` (so `E` is `F`), or the expected type of the whole `else` expression. Since `else` is right-associative, `a else b else c` means `a else (b else c)`.
+- If `x: E!T`, `d` must have type `T`, `E2!T` (giving a result `E2!T`), `?T` (giving `?T`: the error is discarded, as in `parse(s) else null`), `never`, or a type `U` that joins with `T`.
+- **Joins.** A fallback of type `U` that coerces to `T` is converted to `T`. Otherwise, when `T` coerces to `U` by a coercion that applies inside `?` and `!` (§6.4: one that only adds `const`), `x` is converted to `?U` (or `E!U`) and the result type is `U`: `str.format("{}", n) else "none"` is a `string`, and so is `x: string = lookup(k) else ""` with `lookup` giving a `?[]u8`.
 - `x else e => d` (results only) binds the error value to the immutable name `e` in `d`. The `=>` body extends as far as an expression can (to the end of the enclosing statement, argument or arm) — parenthesize to limit it.
 - `d` may be `return …`, `break`, `continue`, `trap(…)`, all of type `never`: `n = n *? 10 else return !.TooBig`.
 
@@ -1706,6 +1712,8 @@ Function pointers may be stored anywhere, compared with `is`, and passed to C wh
 A `name :: fn(…) { … }` binding inside a function body whose literal captures nothing declares a **nested function**: its body refers only to top-level names, to compile-time constant locals (untyped constants and `::` locals evaluated at compile time), to its own parameters and locals, and to itself by name. It is equivalent to a private top-level function and is first-class. If the literal refers to any other local of the enclosing function, the binding is instead an immutable local holding a second-class function value (§11.6), which cannot refer to itself.
 
 A nested function may be generic (§16.1); it is then always a nested function, and its body refers only to top-level names, to its own parameters and locals, and to itself. A function literal used as a value cannot be generic, since a function value has a single type.
+
+A `struct` or `union` declared in the body (§3.5) is likewise equivalent to a private top-level type; nested functions and function literals after it may use it in their signatures and bodies.
 
 ### 11.9 Recursion
 
@@ -1903,6 +1911,8 @@ The following effects are predeclared. `main` and tests may perform any of them;
 | `Sys` | none (§12.10) | — | not replaceable |
 
 **Buffered output.** The default `Out` handler may buffer what it is given, but the bytes are handed to the system before the program waits on anything outside its thread: before reading standard input, a file, a socket or a child's output, connecting or accepting, waiting for a child or a thread, sleeping, waiting on a futex (and so on a lock, condition variable or channel), starting a child, trapping, and exiting. A program that answers requests over its standard streams therefore needs no flush: its answer is out by the time it waits for the next request. The default `Err` handler does not buffer. `Out` has no `flush` operation, since no handler other than the default one would need it.
+
+The in-memory file system of the `Fs` test handler has no symbolic links (`symlink` and `read_link` fail with `Unsupported`); `canonical` gives the absolute path of an existing entry (every path is relative to the root `/`), and `set_mode` and `set_modified` change what `stat` reports as `mode` and `modified` (new files have mode `0o644` and directories `0o755`).
 
 Any of these may also be handled by user handlers; only `Sys` cannot. `Test` (§3.8) is predeclared too but is not ambient: only test and benchmark bodies are given a handler for it.
 
@@ -2693,7 +2703,7 @@ All of these perform `Sys`.
 
 Gamma adopts the C11 memory model.
 
-- **Threads** are created by the library (`std/thread`), which requires `Sys`. A thread starts by calling a function pointer `^fn(arg: rawptr) needs Sys` (or with an empty set); it begins with no handlers installed and installs its own. Second-class values, handlers and continuations cannot cross threads, because only function pointers and data can be passed.
+- **Threads** are created by the library (`std/thread`), which requires `Sys`. A thread starts by calling a function pointer `^fn(arg: rawptr) needs Sys` (or with an empty set); it begins with no handlers installed and installs its own (`thread.defaults` installs those of the ambient effects, including `Env`, whose `exit` ends the process once the thread body has unwound). Second-class values, handlers and continuations cannot cross threads, because only function pointers and data can be passed.
 - A **data race** — two accesses to the same memory location from different threads, at least one a write, at least one non-atomic, not ordered by happens-before — is undefined behavior.
 - **Atomics** are intrinsics on integer, `bool` and pointer places, with an explicit memory order — a value of the core type `MemoryOrder`: `.Relaxed`, `.Acquire`, `.Release`, `.AcqRel` or `.SeqCst` — as in C11:
 
@@ -2935,7 +2945,14 @@ eprint :: fn(A: type, template :: string, args: ..A) needs Err
 
 `sink` is a second-class function `fn(bytes: []const u8)`; `template` is a compile-time `string`: a literal, a constant, or a `string` compile-time parameter of the enclosing generic function, so that functions like `log(template :: string, args: ..A)` can forward to `print` or `@write`. After the template come the **values**, one for each placeholder, as the rest arguments of a rest parameter do (§11.2): written out, or as a single spread of a tuple or array holding them (`@write(sink, template, ..args)`). `@write` calls `sink` zero or more times with consecutive, non-empty pieces of output, allocating nothing; how the output is divided into pieces is unspecified. Effects performed by `sink` are the effects of the `@write` expression.
 
-**Template.** `{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. There must be exactly as many values as placeholders: `print("{} and {}", a, b)`. A tuple given as one value is written as one tuple: `print("{}", (a, b))` writes `(a, b)`. Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
+**Template.**
+
+```
+placeholder = '{' [index] [':' spec] '}'
+index       = '0' | digit19 {digit}          (a decimal number, at most 65536, without sign or leading zeros)
+```
+
+`{}` and `{:spec}` are placeholders; `{{` and `}}` write `{` and `}`; any other use of braces is a compile error. Without indices, there must be exactly as many values as placeholders, and the *n*th placeholder writes the *n*th value: `print("{} and {}", a, b)`. A placeholder with an **index** writes the value at that zero-based position, so a value can be written several times or out of order: `print("{1}: {0} ({0:x})", n, name)`. A template numbers all its placeholders or none (mixing `{}` and `{0}` is a compile error), every index must be less than the number of values, and every value must be written by at least one placeholder (an unused value is an error, as a missing one is). Whatever the numbering, the values are evaluated exactly once, left to right, before anything is written, and each is then written as often as the template says. A tuple given as one value is written as one tuple: `print("{}", (a, b))` writes `(a, b)`. Since the template is a compile-time parameter, a mismatch is reported at the instantiating call (§16.1).
 
 **Display rules.** Each argument is written according to its type:
 
@@ -2962,7 +2979,7 @@ The rules are fixed and not extensible: there is no way for a type to customize 
 ```
 spec  = [[fill] align] ['+'] ['#'] ['0'] [width] ['.' precision] [kind]
 align = '<' | '>' | '^'          (left, right, centered: an odd leftover fill unit goes on the right)
-kind  = 'x' | 'X' | 'o' | 'b' | 'e'
+kind  = 'x' | 'X' | 'o' | 'b' | 'e' | 'q'
 ```
 
 `fill` is one printable ASCII character other than a brace (default a space); `width` and `precision` are decimal numbers up to 65536. `{:}` is `{}`.
@@ -2975,6 +2992,7 @@ kind  = 'x' | 'X' | 'o' | 'b' | 'e'
 | `x`, `X`, `o`, `b` | integers | base 16 (lowercase or uppercase digits), 8 or 2: a `-` and the magnitude, never two's complement |
 | `#` | with `x`, `X`, `o`, `b` | writes the prefix `0x`, `0o` or `0b` after the sign |
 | `.precision` | floats | exactly `precision` digits after the point, correctly rounded from the exact value (ties to even): `{:.2}` of `0.125` is `0.12` |
+| `q` | `string`, `[]u8`, `[]const u8` | writes the bytes quoted with escapes, as such a value is written inside an aggregate (`"a\tb\n"`, `"\x01"`); `width` and `align` apply to the quoted text; no other part but those applies |
 | `e` | floats | scientific notation, `d.ddde<exponent>`: the shortest digits that read back as the value, or `precision` digits after the point when given (`{:.2e}` of `1234.5` is `1.23e3`) |
 
 A spec that does not apply to its argument's type is a compile error at the placeholder; for an argument whose type is a type parameter, and for a template given as a compile-time parameter, it is reported at the instantiating call (§16.1). An untyped integer literal formatted with a precision or `e` has type `f64`.
@@ -3022,10 +3040,10 @@ Env   :: effect {
 `Clock.wall` gives Unix time in nanoseconds. `Fs`, `Net` and `Proc` are declared by the core library with operations for files, directories, sockets and child processes whose exact set is outside the scope of this specification; the language requires only that they exist, report failures as `IoError`, and have the default and test handlers of §12.9. The reference core library's `Fs` is:
 
 ```
-File, Dir :: struct { … }                       // handles
+File, Dir :: struct { pub handle: i64 }          // handles: a number whose meaning is the issuing handler's
 OpenOptions :: struct { pub read: bool = true; pub write, append, create, truncate, exclusive: bool = false }
 FileKind :: union { File, Dir, Symlink, Other }
-FileInfo :: struct { pub size: u64; pub kind: FileKind; pub modified: i64 }   // Unix nanoseconds
+FileInfo :: struct { pub size: u64; pub kind: FileKind; pub modified: i64; pub mode: u32 }   // Unix nanoseconds; POSIX permission bits
 DirEntry :: struct { pub len: usize; pub kind: FileKind }                    // a name's length, and what it is
 SeekFrom :: union { Start, Current, End }
 Fs :: effect {
@@ -3044,13 +3062,18 @@ Fs :: effect {
     truncate: fn(f: File, size: u64) -> IoError!()
     sync: fn(f: File) -> IoError!()                             // flushes the file to the device
     cwd: fn(buf: []u8) -> IoError!usize                         // the working directory into buf; InvalidInput if too small
+    canonical: fn(path: string, buf: []u8) -> IoError!usize     // the absolute path, symlinks, `.` and `..` resolved, into buf; InvalidInput if too small
+    read_link: fn(path: string, buf: []u8) -> IoError!usize     // a symlink's target into buf; InvalidInput if too small or not a link
+    symlink: fn(target, path: string) -> IoError!()             // creates `path`, a symlink to `target`
+    set_mode: fn(path: string, mode: u32) -> IoError!()         // the permission bits (chmod)
+    set_modified: fn(path: string, ns: i64) -> IoError!()       // the modification time, in Unix nanoseconds
 }
 ```
 
 and its `Net` (TCP) is:
 
 ```
-Socket, Listener :: struct { … }               // handles
+Socket, Listener :: struct { pub handle: i64 }  // handles
 Shutdown :: union { Read, Write, Both }
 Net :: effect {
     connect: fn(host: string, port: u16) -> IoError!Socket
@@ -3070,7 +3093,7 @@ Net :: effect {
 and its `Proc` (child processes) is:
 
 ```
-Child :: struct { … }                           // a started child process
+Child :: struct { pub handle: i64 }              // a started child process
 Stdio :: union { Inherit, Null, Pipe }          // what a child's standard stream is connected to
 Stream :: union { Stdout, Stderr }
 SpawnOptions :: struct {
@@ -3079,24 +3102,32 @@ SpawnOptions :: struct {
     pub env: []const string = empty_slice(string)   // changes to the environment, in order: "NAME=value" sets, "NAME" removes
     pub clear_env: bool = false                 // the changes apply to an empty environment instead of ours
     pub group: bool = false                     // the child leads a process group of its own (a job object on Windows)
+    pub program: ?string = null                 // the file to run; null: argv[0]. Then argv[0] is only the name the child sees
 }
 Chunk :: struct { pub from: Stream; pub len: usize }
 ExitStatus :: union { Exited: u32, Signaled: i32 }   // its exit code, or the signal that ended it
 Proc :: effect {
-    spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // argv[0] without a separator is looked up in PATH
+    spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // the program (`program`, else argv[0]) without a separator is looked up in PATH
     write: fn(c: Child, bytes: []const u8) -> IoError!usize     // to a piped stdin; may write fewer bytes
     close_in: fn(c: Child)                                       // the child sees the end of its input
     read: fn(c: Child, buf: []u8) -> IoError!?Chunk              // from whichever piped output has data; null once all have ended
     wait: fn(c: Child) -> IoError!ExitStatus                     // closes our ends of its pipes, waits, releases the child
+    try_wait: fn(c: Child) -> IoError!?ExitStatus                // null while the child runs; a status releases it as `wait` does
     kill: fn(c: Child) -> IoError!()                             // ends it at once; it must still be waited for
 }
 ```
+
+A `File`, `Dir`, `Socket`, `Listener` or `Child` is a number: its meaning belongs to the handler that issued it, so a handler written in Gamma (a virtual file system, a fake network) creates handles with `File(handle: 7)` and reads them back with `f.handle`. The system handlers' handles are operating-system descriptors or table indexes, so building one by hand and passing it to the system handler is like passing an arbitrary integer to C.
+
+`FileInfo.mode` holds the POSIX permission bits (`0o755`); on Windows it is `0o444` for a file with the read-only attribute and `0o666` otherwise. `canonical` fails like `stat` for a path that does not exist. `read_link` gives the target as stored, so it may be relative; on Windows it reads symbolic links and junctions, and `symlink` makes a link to a directory when `target` (relative to the link) is one, with separators turned into backslashes. `set_mode` on Windows looks only at the owner-write bit (`0o200`), which clears or sets the read-only attribute. `set_modified` follows a final symlink, like `stat`, and leaves the access time alone. On WASI `canonical`, `read_link`, `symlink` and `set_mode` and `set_modified` fail with `Unsupported`.
+
+`Proc.try_wait` returns `null` while the child runs and its status once it has ended, releasing it as `wait` does (a child that returned a status cannot be waited for again). With `program` set, `spawn` runs that file (searched for in `PATH` when it has no separator) and `argv[0]` is only the name the child sees, as the first argument of `execv(path, argv)`.
 
 `Proc.kill` ends a child started with `group` together with every process it started that is still in its group, such as a program that a build tool runs; otherwise it ends the child alone.
 
 `Proc.read` waits on the child's piped output streams together, so a child that fills one while the parent reads the other cannot deadlock them. A program that never imports `std/process` and never performs `Proc` pays nothing for it.
 
-Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are called as methods (`f.read(buf)`, `sock.close()`, `child.write(bytes)`), by §7.10 rule 3. Where one effect has an operation of the same job for two handle types, the second carries the type in its name (`close_dir`, `close_listener`), since operation names within an effect are distinct (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are called as methods (`f.read(buf)`, `sock.close()`, `child.write(bytes)`), by §7.10 rule 3. Where one effect has an operation of the same job for two handle types, the second carries the type in its name (`close_dir`, `close_listener`), since operation names within an effect are distinct (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code. A thread started with `std/thread` gets `Env` from `thread.defaults` too: `args` and `var` answer as in `main`, and `exit` ends the thread body (running its `defer`s) and then the whole process with the code, without unwinding the frames of other threads.
 
 ---
 
@@ -3220,7 +3251,7 @@ One bound is a rule rather than a limit, since the target's address space decide
 
 ## Appendix A. Grammar
 
-This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. `ATTR` is an attribute name and `INTRINSIC` an intrinsic name (§2.7); each is one token, `#` or `@` and the identifier together, so `'#global'` is the attribute name `global`. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
+This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. The quoted words `'needs'`, `'handler'`, `'foreign'`, `'where'`, `'on'`, `'const'`, `'test'` and `'bench'` are contextual keywords (§2.4): identifiers except where the grammar uses them. `ATTR` is an attribute name and `INTRINSIC` an intrinsic name (§2.7); each is one token, `#` or `@` and the identifier together, so `'#global'` is the attribute name `global`. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
 
 ### A.1 Files and declarations
 
@@ -3460,9 +3491,9 @@ Assignment (`=` and compound forms) is a statement.
 
 ### B.3 Keywords
 
-**Reserved (35):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `needs` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
+**Reserved (32):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
 
-**Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
+**Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `needs` (after a signature's parameters or result type), `handler` (before an effect reference), `foreign` (before a string literal), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
 
 ### B.4 Build modes
 

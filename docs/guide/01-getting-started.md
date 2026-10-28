@@ -44,6 +44,8 @@ print("{:#06x} {:+} {:b}\n", 255, 5, 5)                  // 0x00ff +5 101
 
 A spec that does not fit the argument (`{:x}` on a float) is a compile error.
 
+`{:q}` writes a string quoted, with escapes, as it is written inside a struct or array: `print("{:q}", "a\tb\n")` writes `"a\tb\n"`, which shows whitespace and control bytes that would otherwise be invisible. A placeholder may also name its value by position, counting from zero, to write a value more than once or in another order: `print("{1} {0} {1}", a, b)`. A template numbers all its placeholders or none, and every value must be written by at least one of them. The values are evaluated once, in order, however often they are written.
+
 ### Returning a status
 
 `main` has three permitted shapes (§3.7 of the [specification][s3]). The effect set may be anything drawn from the ambient effects (`Alloc`, `Out`, `Err`, `In`, `Clock`, `Rand`, `Fs`, `Net`, `Proc`, `Env`, `Sys`):

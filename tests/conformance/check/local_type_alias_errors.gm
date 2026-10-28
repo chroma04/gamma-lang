@@ -1,7 +1,7 @@
 //! stage: check
-// Only aliases may be declared in a function body, and they are scoped like locals (§3.5).
+// Local aliases and types are scoped like locals (§3.5).
 main :: fn() {
-    P :: struct { x: i32 }            //~ ERROR types are declared at top level
+    P :: struct { x: i32 }
     _ = P(x: 1)
     {
         T :: u8

@@ -1,0 +1,11 @@
+//! stage: lint
+// A type declared in a function body is named like a top-level type.
+main :: fn() needs Out {
+    row_t :: struct { //~ WARNING [naming]
+        myField: u32 //~ WARNING [naming]
+    }
+    Good :: struct { id: u32 }
+    r := row_t(myField: 1)
+    g := Good(id: 2)
+    print("{} {}\n", r.myField, g.id)
+}

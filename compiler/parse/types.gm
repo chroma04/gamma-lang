@@ -334,7 +334,8 @@ parse_param_group :: fn(p: ^Parser) -> Abort!ast.Param needs Alloc {
 /// An optional effect clause `needs E1 + E2 + …` (§11.1); `needs not`, the empty set,
 /// only where `is_foreign` allows it, as an empty list.
 parse_needs_opt :: fn(p: ^Parser, is_foreign: bool) -> Abort!?[]ast.Expr needs Alloc {
-    if not p.eat_kw(.Needs) { return null }
+    if not p.at_word("needs") { return null }
+    _ = p.bump()
     if p.at_kw(.Not) {
         at := p.span()
         _ = p.bump()

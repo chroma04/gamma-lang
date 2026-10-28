@@ -5,7 +5,7 @@
 Threads and the synchronization built on futexes (§19.6).
 
 A thread runs a plain function `^fn(arg: ^T) needs Sys` and starts with no handlers
-installed; `defaults` installs the usual ones:
+installed; `defaults` installs the usual ones (`Env` included):
 
     work :: fn(arg: ^State) needs Sys {
         thread.defaults(fn() needs Out + Alloc { print("hello from a thread\n") })
@@ -141,12 +141,17 @@ The number of processors available to the program (at least 1).
 ### `defaults`
 
 ```gamma
-defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net + Proc) needs Sys
+defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net + Proc + Env) needs Sys
 ```
 
 Runs `body` under the default handlers of the ambient effects: the system heap,
-standard output and error, and the real input, clocks, randomness, files and network.
-`body` may need any subset of these effects: `fn() needs Out { … }` is accepted too.
+standard output and error, and the real input, clocks, randomness, files, network, child
+processes and environment. `body` may need any subset of these effects: `fn() needs Out { … }`
+is accepted too.
+
+`Env.args` and `Env.var` answer as in `main`. `Env.exit(code)` ends `body` (running its
+`defer`s) and then the whole process with `code`; the frames of other threads, `main`'s
+included, are not unwound.
 
 ### `mutex`
 
@@ -261,7 +266,18 @@ Sends `x` if there is room right now; returns whether it did.
 try_recv :: fn(T: type, c: ^Channel(T)) -> ?T needs Sys
 ```
 
-Receives a value if one is waiting right now.
+Receives a value if one is waiting right now. `null` means the channel is empty, or
+closed and drained; a polling consumer that gets `null` and then finds `drained` true
+knows the stream has ended.
+
+### `drained`
+
+```gamma
+drained :: fn(T: type, c: ^Channel(T)) -> bool needs Sys
+```
+
+Whether the channel is closed and holds no values. Once true it stays true, since no
+send succeeds after `close`.
 
 ### `close`
 

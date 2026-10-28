@@ -1,7 +1,7 @@
 //! Threads and the synchronization built on futexes (§19.6).
 //!
 //! A thread runs a plain function `^fn(arg: ^T) needs Sys` and starts with no handlers
-//! installed; `defaults` installs the usual ones:
+//! installed; `defaults` installs the usual ones (`Env` included):
 //!
 //!     work :: fn(arg: ^State) needs Sys {
 //!         thread.defaults(fn() needs Out + Alloc { print("hello from a thread\n") })
@@ -54,10 +54,24 @@ pub yield_now :: fn() needs Sys => @thread_yield()
 pub cpu_count :: fn() -> u32 needs Sys => @cpu_count()
 
 /// Runs `body` under the default handlers of the ambient effects: the system heap,
-/// standard output and error, and the real input, clocks, randomness, files and network.
-/// `body` may need any subset of these effects: `fn() needs Out { … }` is accepted too.
-pub defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net + Proc) needs Sys {
-    with heap_allocator(), system_io(), system_output() { body() }
+/// standard output and error, and the real input, clocks, randomness, files, network, child
+/// processes and environment. `body` may need any subset of these effects: `fn() needs Out { … }`
+/// is accepted too.
+///
+/// `Env.args` and `Env.var` answer as in `main`. `Env.exit(code)` ends `body` (running its
+/// `defer`s) and then the whole process with `code`; the frames of other threads, `main`'s
+/// included, are not unwound.
+pub defaults :: fn(body: fn() needs Out + Err + Alloc + In + Clock + Rand + Fs + Net + Proc + Env) needs Sys {
+    environment :: handler Env {
+        args() => @env_args()
+        var(name) => @env_var(name)
+        exit(code) => break code
+    }
+    exit_code: ?u8 = with heap_allocator(), system_io(), system_output(), environment {
+        body()
+        null
+    }
+    if code := exit_code { @env_exit(code) }
 }
 
 // ---------------------------------------------------------------------------------
@@ -233,11 +247,22 @@ pub try_send :: fn(T: type, c: ^Channel(T), x: T) -> bool needs Sys {
     return ok
 }
 
-/// Receives a value if one is waiting right now.
+/// Receives a value if one is waiting right now. `null` means the channel is empty, or
+/// closed and drained; a polling consumer that gets `null` and then finds `drained` true
+/// knows the stream has ended.
 pub try_recv :: fn(T: type, c: ^Channel(T)) -> ?T needs Sys {
     lock(&c.m)
     r: ?T = null
     if c.count > 0 { r = pop(c) }
+    unlock(&c.m)
+    return r
+}
+
+/// Whether the channel is closed and holds no values. Once true it stays true, since no
+/// send succeeds after `close`.
+pub drained :: fn(T: type, c: ^Channel(T)) -> bool needs Sys {
+    lock(&c.m)
+    r := c.closed and c.count is 0
     unlock(&c.m)
     return r
 }

@@ -1,6 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-27) — PRs #1–#96 merged, v0.1.0 + rust-reference-final tagged
+## State (2026-10-28) — PRs #1–#101 merged, v0.1.0 + rust-reference-final tagged
+- s50 (branch claude/eager-curie-ocf0wz): PAIN-POINT SWEEP (decisions/054): whole list
+  triaged (pain-points.md "Settled"), 16 items implemented (language: else/array joins,
+  const lifting into ?/!, contextual needs/handler/foreign, `{0}`/`{:q}`, local types; lint
+  stale-element-pointer; std: text trim, Channel drained, Fs/Proc ops, pub handles, Env on
+  threads). Seed refreshed (prelude uses new intrinsics).
 - s49 (branch claude/serene-cerf-gnjh9y): PHASE 4 of retiring Rust DONE (decisions/052,
   053): no Rust left (except editors/zed). Tests = `tests/harness/` (Gamma program, ~1315
   tests, `tools/test.sh [-j N] [-v] [--list] [--filter T] [PREFIX...]`), difftest in Gamma,
@@ -32,7 +37,7 @@
 1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
 1b. Rust is gone (052/053). Follow-ups: kit helpers (gamma_in, sorted dir listing, jsonl),
-   pain points from s49 workers (pain-points.md), Windows CI of the harness (untested).
+   harness Watch thread → Proc.try_wait, pain-points.md "Open", Windows CI of the harness.
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
 3. VM follow-ups in decisions/020; bugs-open.md.
@@ -46,7 +51,7 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–052, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group. `ls decisions/` for the rest.
+                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep. `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

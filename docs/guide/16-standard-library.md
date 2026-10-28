@@ -362,7 +362,7 @@ For Windows APIs, JavaScript and JSON `\u` escapes, `std/text` also speaks UTF-1
 
 ## Files, paths and standard input
 
-File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations are the operations of the `Fs` effect itself, reached through it (`Fs.open(path, opts)`, `Fs.stat(path)`, `Fs.lstat(path)`, ...), and the files they return are `fs.File` values with the methods `f.read(buf)`, `f.write(bytes)` and `f.seek(offset, from)`. The file types (`File`, `Dir`, `OpenOptions`, `FileInfo`, ...) come from `std/fs`:
+File access goes through the `Fs` effect, so a test can swap in an in-memory file system. The helpers in `std/fs` cover whole files and directory walks; the raw operations are the operations of the `Fs` effect itself, reached through it (`Fs.open(path, opts)`, `Fs.stat(path)`, `Fs.lstat(path)`, `Fs.canonical(path, buf)`, `Fs.read_link(path, buf)`, `Fs.symlink(target, path)`, `Fs.set_mode(path, mode)`, `Fs.set_modified(path, ns)`, ...), and the files they return are `fs.File` values with the methods `f.read(buf)`, `f.write(bytes)` and `f.seek(offset, from)`. The file types (`File`, `Dir`, `OpenOptions`, `FileInfo`, ...) come from `std/fs`:
 
 ```gamma
 fs :: import "std/fs"
@@ -470,7 +470,7 @@ main :: fn() -> process.RunError!() needs Out + Proc + Alloc {
 }
 ```
 
-For more control use the operations themselves: `Proc.spawn` gives a `Child`; with `stdin: .Pipe` the child's input is fed with `Proc.write` (`child.write(bytes)`) and ended with `Proc.close_in`; `Proc.read` (`child.read(buf)`) waits until one of the piped output streams has data and tells which one it came from (so two streams cannot block each other); `wait` gives the `ExitStatus` (`Exited(code)`, or on POSIX systems `Signaled(signal)`) and must be called for every child; `kill` ends it forcibly. A program that reads all its input before writing can deadlock with a caller that writes everything before reading; interleave `write` and `read`, or close the input first. In tests, `Proc.spawn` is refused with `PermissionDenied`.
+For more control use the operations themselves: `Proc.spawn` gives a `Child`; with `stdin: .Pipe` the child's input is fed with `Proc.write` (`child.write(bytes)`) and ended with `Proc.close_in`; `Proc.read` (`child.read(buf)`) waits until one of the piped output streams has data and tells which one it came from (so two streams cannot block each other); `wait` gives the `ExitStatus` (`Exited(code)`, or on POSIX systems `Signaled(signal)`) and must be called for every child; `try_wait` is `wait` that does not block: it gives `null` while the child runs and the status once it has ended (which also releases the child); `kill` ends it forcibly. `SpawnOptions.program` names the file to run when `argv[0]` should only be the name the child sees. A program that reads all its input before writing can deadlock with a caller that writes everything before reading; interleave `write` and `read`, or close the input first. In tests, `Proc.spawn` is refused with `PermissionDenied`.
 
 ## Time and randomness
 

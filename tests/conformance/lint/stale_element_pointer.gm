@@ -1,0 +1,143 @@
+//! stage: lint
+// A pointer or slice into a list's items, used after a call that may have grown the list
+// and so moved the items.
+
+Node :: struct {
+    count: u32
+    next: u32
+}
+
+Graph :: struct {
+    nodes: List(Node)
+}
+
+fresh :: fn() -> Node => Node(count: 0, next: 0)
+
+grow :: fn(l: ^List(Node)) needs Alloc { l.push(fresh())! }
+
+after_push :: fn(l: ^List(Node)) needs Alloc {
+    e := &l.items[0]
+    l.push(fresh())!
+    e.count = 1 //~ WARNING [stale-element-pointer] `e` points into the items of `l`, which may have moved
+}
+
+last_element :: fn(g: ^Graph) -> u32 needs Alloc {
+    e := &g.nodes.items[g.nodes.items.len - 1]
+    g.nodes.push(fresh())!
+    return e.count //~ WARNING [stale-element-pointer] `e` points into the items of `g.nodes`
+}
+
+field_of_element :: fn(l: ^List(Node)) needs Alloc {
+    c := &l.items[1].count
+    l.insert(0, fresh())!
+    c^ += 1 //~ WARNING [stale-element-pointer] `c` points into the items of `l`
+}
+
+slice_kept :: fn(l: ^List(u32), more: []const u32) -> u32 needs Alloc {
+    s := l.items[1..3]
+    l.extend(more)!
+    return s[0] //~ WARNING [stale-element-pointer] `s` points into the items of `l`
+}
+
+whole_items :: fn(l: ^List(u32)) -> usize needs Alloc {
+    s := l.items
+    l.reserve(100)!
+    return s.len //~ WARNING [stale-element-pointer] `s` points into the items of `l`
+}
+
+through_helper :: fn(l: ^List(Node)) needs Alloc {
+    e := &l.items[0]
+    grow(l)
+    e.next = 2 //~ WARNING [stale-element-pointer] `e` points into the items of `l`
+}
+
+local_list :: fn() -> u32 needs Alloc {
+    l := list(Node)
+    l.push(fresh())!
+    e := &l.items[0]
+    grow(&l)
+    n := e.count //~ WARNING [stale-element-pointer] `e` points into the items of `l`
+    l.deinit()
+    return n
+}
+
+nested_block :: fn(l: ^List(Node), again: bool) needs Alloc {
+    e := &l.items[0]
+    if again {
+        l.push(fresh())!
+    }
+    e.count = 3 //~ WARNING [stale-element-pointer] `e` points into the items of `l`
+}
+
+next_iteration :: fn(l: ^List(Node)) needs Alloc {
+    e := &l.items[0]
+    for _ in 0..3 {
+        e.count += 1 //~ WARNING [stale-element-pointer] `e` points into the items of `l`
+        l.push(fresh())!
+    }
+}
+
+// Indexing again after growing, a pointer that is not used after the call, another list,
+// calls that do not move the items, and a pointer that is assigned again are fine.
+fine :: fn(l: ^List(Node), other: ^List(Node)) -> u32 needs Alloc {
+    e := &l.items[0]
+    e.count = 1
+    l.push(fresh())!
+    e = &l.items[0]
+    e.count += 1
+
+    f := &l.items[1]
+    other.push(fresh())!
+    f.count = 2
+
+    g := &l.items[0]
+    g.count = 5
+    l.push(fresh())!
+
+    h := &l.items[0]
+    _ = l.pop()
+    l.truncate(1)
+    l.clear()
+    h.count = 6
+
+    k := &l.items[0]
+    l.push(fresh())!
+    k = &other.items[0]
+    return k.count
+}
+
+// A branch that ends the function does not carry its call past the branch.
+early :: fn(l: ^List(Node), stop: bool) -> u32 needs Alloc {
+    e := &l.items[0]
+    if stop {
+        l.push(fresh())!
+        return 0
+    }
+    return e.count
+}
+
+main :: fn() needs Alloc {
+    l := list(Node)
+    o := list(Node)
+    l.push(fresh())!
+    l.push(fresh())!
+    l.push(fresh())!
+    o.push(fresh())!
+    after_push(&l)
+    _ = fine(&l, &o)
+    _ = early(&l, false)
+    g := Graph(nodes: list(Node))
+    g.nodes.push(fresh())!
+    _ = last_element(&g)
+    u := list(u32)
+    u.push(1)!
+    u.push(2)!
+    u.push(3)!
+    field_of_element(&l)
+    _ = slice_kept(&u, [_]u32(1))
+    _ = whole_items(&u)
+    through_helper(&l)
+    _ = local_list()
+    nested_block(&l, true)
+    next_iteration(&l)
+}

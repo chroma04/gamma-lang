@@ -1,0 +1,14 @@
+//! stage: check
+// Only coercions that keep the representation apply inside `?` and `!` (§6.4), and an
+// `else` fallback of another type must join with the present type (§10.4).
+main :: fn() {
+    small: ?u8 = 1
+    wide: ?u32 = small //~ ERROR expected `?u32`, found `?u8`
+    w := small else u32(3) //~ ERROR expected `u8`, found `u32`
+    s: ?[]const u8 = null
+    m: ?[]u8 = s //~ ERROR expected `?[]u8`, found `?string`
+    for x in ([_]u8(1), [_]u16(2)) {} //~ ERROR must have one type
+    _ = wide
+    _ = w
+    _ = m
+}

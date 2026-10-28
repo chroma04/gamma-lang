@@ -14,7 +14,7 @@ parse_item :: fn(p: ^Parser) -> Abort!ast.Item needs Alloc {
             p.deny_pub(is_pub, pub_span, "a `when` block")
             ast.ItemKind.When(try p.parse_when_items())
         }
-        .Keyword(.Handler) => .Handler(new(try p.parse_handler_decl())!)
+        .Ident("handler") if p.nth(1) is .Ident(_) or p.nth_is(1, .LParen) => .Handler(new(try p.parse_handler_decl())!)
         .Ident(name) if name in ("test", "bench") and p.nth(1) is .Str(_) => {
             bench := name is "bench"
             p.deny_pub(is_pub, pub_span, if bench { "a benchmark" } else { "a test" })

@@ -36,6 +36,9 @@ pub Finding :: union {
     /// its elements in a buffer it resizes, and is changed at `span` as if it were the
     /// original.
     MutatedCopy: (span: source.Span, name: string, local: source.Span, origin: source.Span)
+    /// Local `name`, bound to a pointer or slice into the items of the list written at
+    /// `list`, is used at `span` after the call at `growth` that may have moved them.
+    StaleElementPointer: (span: source.Span, name: string, list: source.Span, growth: source.Span)
 }
 
 /// How a local is changed (its uses by name are in `Sema.local_uses`).
@@ -144,6 +147,7 @@ run_checks :: fn(c: ^Checked, scoped: []const bool) needs Alloc + Fs {
             if not d.certain { c.out.push(Finding.DanglingAddress(d.span, d.name, d.local, d.why))! }
         }
         mutated_copies(s, i, &c.out)
+        stale_element_pointers(s, i, &c.out)
         own_params := def.kind is .Named and not c.as_value.items[i] and s.fns.items[i].name is not "main"
         for j, l in enumerate(def.locals) {
             lid := j.trunc(u32)

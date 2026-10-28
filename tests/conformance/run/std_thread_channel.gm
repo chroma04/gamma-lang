@@ -35,7 +35,7 @@ main :: fn() -> Fail!() needs Out + Sys + Alloc {
     ch := try thread.channel(u32, 2)
 
     // Empty, full and closed, without blocking.
-    print("try_recv empty: {}\n", ch.try_recv())
+    print("try_recv empty: {} drained {}\n", ch.try_recv(), ch.drained())
     print("try_send: {} {} {}\n", ch.try_send(1), ch.try_send(2), ch.try_send(3))
     print("try_recv: {} {}\n", ch.try_recv(), ch.try_recv())
     print("try_recv empty again: {}\n", ch.try_recv())
@@ -62,7 +62,9 @@ main :: fn() -> Fail!() needs Out + Sys + Alloc {
     _ = ch2.send(5)
     _ = ch2.send(6)
     ch2.close()
+    print("closed, values left: drained {}\n", ch2.drained())
     print("after close: {} {} {}\n", ch2.recv(), ch2.recv(), ch2.recv())
+    print("closed, empty: try_recv {} drained {}\n", ch2.try_recv(), ch2.drained())
 
     // A condition variable wait that is signaled before the timeout.
     s := Signal(m: thread.mutex(), cv: thread.condvar(), ready: false)

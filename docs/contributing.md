@@ -348,7 +348,13 @@ Refresh the seed when the compiler's sources stop building with it: commit the c
 itself, and writes the C that compiler generates for itself. Because a refreshed seed has
 to be built by the previous one, a change that has the compiler's own sources use a new
 language feature comes in two steps: first teach the compiler the feature and refresh the
-seed, then use the feature in `compiler/`. Changes that do not need a refresh leave the
+seed, then use the feature in `compiler/`. The core library counts as the compiler's own source
+here: a new intrinsic that `lib/core/prelude.gm` calls (for a new operation of `Fs` or
+`Proc`, say) cannot be built by a compiler that lacks it. Build such a change in two
+stages locally: first a compiler from a tree that has the intrinsic in `compiler/` and
+`runtime/` but leaves the prelude as it was, then, with that compiler, the full change;
+refresh the seed with the second compiler (`tools/refresh-seed.sh path/to/it`) in the same
+change. Changes that do not need a refresh leave the
 seed alone, which keeps the repository from growing with every change. Each seed is
 exactly what the previous seed's compiler generates, which ties the chain to the last
 compiler built by the Rust reference implementation (see

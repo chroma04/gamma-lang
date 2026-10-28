@@ -377,7 +377,7 @@ format_spec :: fn(m: ^Machine, out: ^List(u8), t: Ty, b: []u8, spec: ^const tir.
         }
         _ => {
             number = false
-            try format_value(m, &body, t, b, true)
+            try format_value(m, &body, t, b, spec.kind is not .Quote)
             fmt_pad(out, "", body.items, spec.width, spec.fill, spec.align, spec.zero, false)
             return ()
         }

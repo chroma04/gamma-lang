@@ -1,0 +1,6 @@
+handle: 7
+read: virtual file
+dir handle: 9
+other handle: true
+opened: 1
+child: 3 9

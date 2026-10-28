@@ -60,10 +60,10 @@ pub Rand :: effect {
 }
 
 /// An open file (§21.7).
-pub File :: struct { handle: i64 }
+pub File :: struct { pub handle: i64 }
 
 /// An open directory, for listing its entries.
-pub Dir :: struct { handle: i64 }
+pub Dir :: struct { pub handle: i64 }
 
 /// How `open` opens a file. The default opens an existing file for reading.
 pub OpenOptions :: struct {
@@ -83,6 +83,7 @@ pub FileInfo :: struct {
     pub size: u64
     pub kind: FileKind
     pub modified: i64               // Unix time in nanoseconds
+    pub mode: u32                   // the POSIX permission bits; on Windows 0o444 (read-only) or 0o666
 }
 
 /// What `next_entry` reports about a directory entry: the length of its name, which it
@@ -115,16 +116,21 @@ pub Fs :: effect {
     truncate: fn(f: File, size: u64) -> IoError!()
     sync: fn(f: File) -> IoError!()                             // flushes the file to the device
     cwd: fn(buf: []u8) -> IoError!usize                         // the working directory into buf
+    canonical: fn(path: string, buf: []u8) -> IoError!usize    // the absolute path with symlinks, `.` and `..` resolved, into buf
+    read_link: fn(path: string, buf: []u8) -> IoError!usize    // a symlink's target into buf
+    symlink: fn(target, path: string) -> IoError!()            // creates `path`, a symlink to `target`
+    set_mode: fn(path: string, mode: u32) -> IoError!()        // the permission bits (on Windows only the owner-write bit counts)
+    set_modified: fn(path: string, ns: i64) -> IoError!()      // the modification time, in Unix nanoseconds
 }
 
 /// Which direction of a connection `shutdown` closes.
 pub Shutdown :: union { Read, Write, Both }
 
 /// A TCP connection (§21.7).
-pub Socket :: struct { handle: i64 }
+pub Socket :: struct { pub handle: i64 }
 
 /// A TCP socket listening for connections.
-pub Listener :: struct { handle: i64 }
+pub Listener :: struct { pub handle: i64 }
 
 /// The network (§12.9, §21.7): TCP connections. Hosts are names or address literals
 /// (`"localhost"`, `"127.0.0.1"`, `"::1"`).
@@ -143,7 +149,7 @@ pub Net :: effect {
 }
 
 /// A child process that was started with `Proc.spawn` (§21.7).
-pub Child :: struct { handle: i64 }
+pub Child :: struct { pub handle: i64 }
 
 /// What a child's standard stream is connected to: ours (`Inherit`), the null device
 /// (`Null`), or a pipe to this process (`Pipe`).
@@ -160,6 +166,7 @@ pub SpawnOptions :: struct {
     pub env: []const string = empty_slice(string)   // changes to the environment: `NAME=value` sets, `NAME` removes
     pub clear_env: bool = false             // start from an empty environment instead of ours
     pub group: bool = false                 // a process group of its own, which `kill` ends as a whole
+    pub program: ?string = null             // the file to run; null: `argv[0]`, which is then also the name the child sees
 }
 
 /// What `Proc.read` reports: which stream the bytes it stored in the buffer came from, and
@@ -169,14 +176,15 @@ pub Chunk :: struct { pub from: Stream; pub len: usize }
 /// How a child ended: its exit code, or (on POSIX systems) the signal that ended it.
 pub ExitStatus :: union { Exited: u32, Signaled: i32 }
 
-/// Child processes (§12.9, §21.7). A program name without a path separator is searched
-/// for in the directories of our `PATH`.
+/// Child processes (§12.9, §21.7). The program (`SpawnOptions.program`, else `argv[0]`) is
+/// searched for in the directories of our `PATH` if its name has no path separator.
 pub Proc :: effect {
     spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // empty argv: InvalidInput; no such program: NotFound
     write: fn(c: Child, bytes: []const u8) -> IoError!usize   // to the piped stdin; may write fewer bytes
     close_in: fn(c: Child)                                        // the child sees the end of its input
     read: fn(c: Child, buf: []u8) -> IoError!?Chunk           // waits for data on a piped output stream; null once all have ended
     wait: fn(c: Child) -> IoError!ExitStatus                      // closes our ends of the pipes and waits; releases the child
+    try_wait: fn(c: Child) -> IoError!?ExitStatus                 // null while the child runs; a status releases it as `wait` does
     kill: fn(c: Child) -> IoError!()                              // forcibly ends the child, which must still be waited for
 }
 
@@ -294,14 +302,14 @@ handler Fs for SystemIo {
         return n.trunc(u64)
     }
     stat(self, path) => {
-        out: [3]i64 = ---
+        out: [4]i64 = ---
         _ = try io_result(@fs_stat(path, out[..]))
-        return FileInfo(size: out[0].trunc(u64), kind: kind_from(out[1]), modified: out[2])
+        return FileInfo(size: out[0].trunc(u64), kind: kind_from(out[1]), modified: out[2], mode: out[3].trunc(u32))
     }
     lstat(self, path) => {
-        out: [3]i64 = ---
+        out: [4]i64 = ---
         _ = try io_result(@fs_lstat(path, out[..]))
-        return FileInfo(size: out[0].trunc(u64), kind: kind_from(out[1]), modified: out[2])
+        return FileInfo(size: out[0].trunc(u64), kind: kind_from(out[1]), modified: out[2], mode: out[3].trunc(u32))
     }
     remove(self, path) => io_unit(@fs_remove(path))
     rename(self, from, to) => io_unit(@fs_rename(from, to))
@@ -322,6 +330,11 @@ handler Fs for SystemIo {
     truncate(self, f, size) => io_unit(@fs_truncate(f.handle, size))
     sync(self, f) => io_unit(@fs_sync(f.handle))
     cwd(self, buf) => io_result(@fs_cwd(buf))
+    canonical(self, path, buf) => io_result(@fs_canonical(path, buf))
+    read_link(self, path, buf) => io_result(@fs_read_link(path, buf))
+    symlink(self, target, path) => io_unit(@fs_symlink(target, path))
+    set_mode(self, path, mode) => io_unit(@fs_set_mode(path, mode))
+    set_modified(self, path, ns) => io_unit(@fs_set_modified(path, ns))
 }
 
 handler Net for SystemIo {
@@ -352,11 +365,12 @@ handler Net for SystemIo {
 
 /// The flags of `@proc_spawn` for the options: two bits per standard stream (stdin from bit 0,
 /// stdout from bit 2, stderr from bit 4: 0 inherit, 1 null, 2 pipe), 64 if the environment
-/// starts empty and 128 for a process group.
+/// starts empty, 128 for a process group and 256 if `program` names the file to run.
 stdio_flags :: fn(o: SpawnOptions) -> u32 {
     flags := o.stdin.tag().trunc(u32) | (o.stdout.tag().trunc(u32) << 2) | (o.stderr.tag().trunc(u32) << 4)
     if o.clear_env { flags |= 64 }
     if o.group { flags |= 128 }
+    if o.program is not null { flags |= 256 }
     return flags
 }
 
@@ -364,7 +378,8 @@ handler Proc for SystemIo {
     spawn(self, argv, o) => {
         if argv.len is 0 { return !.InvalidInput }
         dir := o.dir else ""
-        h := try io_handle(@proc_spawn(argv, o.env, dir, stdio_flags(o)))
+        program := o.program else ""
+        h := try io_handle(@proc_launch(argv, o.env, dir, program, stdio_flags(o)))
         return Child(handle: h)
     }
     write(self, c, bytes) => io_result(@proc_write_in(c.handle, bytes))
@@ -377,6 +392,12 @@ handler Proc for SystemIo {
     }
     wait(self, c) => {
         n := try io_result(@proc_wait(c.handle))
+        status: ExitStatus = if (n >> 32) is 0 { .Exited((n & 0xffff_ffff).trunc(u32)) } else { .Signaled((n & 0xffff_ffff).trunc(i32)) }
+        return status
+    }
+    try_wait(self, c) => {
+        n := try io_result(@proc_try_wait(c.handle))
+        if (n >> 33) is not 0 { return null }
         status: ExitStatus = if (n >> 32) is 0 { .Exited((n & 0xffff_ffff).trunc(u32)) } else { .Signaled((n & 0xffff_ffff).trunc(i32)) }
         return status
     }
@@ -880,6 +901,10 @@ handler Rand for ^TestIo {
 // last handle to it is closed, as on POSIX. All storage comes from the system heap, not
 // from the test's tracking allocator, so it does not count as a leak.
 //
+// There are no symbolic links: `symlink` and `read_link` fail with `Unsupported`. `canonical` gives
+// the path of an existing entry from the root; `set_mode` and `set_modified` change what `stat`
+// reports (new files have mode 0o644, directories 0o755).
+//
 // Paths are split at `/`; empty components and `.` are ignored (so a leading `/` is
 // accepted and means the root, and `a//b/./c` is `a/b/c`) and `..` is rejected with
 // `InvalidInput`. Errors other than the portable `IoError` variants are the Linux errno
@@ -896,6 +921,7 @@ MemNode :: struct {
     parent: usize           // the root is its own parent
     opens: usize            // open handles
     modified: i64
+    mode: u32               // the permission bits
     name: List(u8)
     data: List(u8)          // the contents of a file
 }
@@ -948,7 +974,7 @@ new_node :: fn(m: ^MemFs, is_dir: bool, parent: usize, name: string, now: i64) -
     a := m.alloc
     node := with a {
         MemNode(used: true, linked: true, is_dir: is_dir, parent: parent, opens: 0, modified: now,
-                name: list(u8), data: list(u8))
+                mode: if is_dir { 0o755 } else { 0o644 }, name: list(u8), data: list(u8))
     }
     if not fill_name(&node.name, name) { return !.NoSpace }
     i: usize = 0
@@ -1184,7 +1210,48 @@ mem_seek :: fn(m: ^MemFs, f: File, offset: i64, from: SeekFrom) -> IoError!u64 {
 mem_stat :: fn(m: ^MemFs, path: string) -> IoError!FileInfo {
     n := &m.nodes.items[try resolve(m, path)]
     kind: FileKind = if n.is_dir { .Dir } else { .File }
-    return FileInfo(size: n.data.items.len.trunc(u64), kind: kind, modified: n.modified)
+    return FileInfo(size: n.data.items.len.trunc(u64), kind: kind, modified: n.modified, mode: n.mode)
+}
+
+/// `canonical`: the absolute path of the node, from the root `/`. There are no links to
+/// resolve and `..` is not accepted in paths, so it is the path in normal form.
+mem_canonical :: fn(m: ^MemFs, path: string, buf: []u8) -> IoError!usize {
+    id := try resolve(m, path)
+    len: usize = 0
+    a := id
+    while a is not 0 {
+        len += 1 + m.nodes.items[a].name.items.len
+        a = m.nodes.items[a].parent
+    }
+    if len is 0 {
+        if buf.len is 0 { return !.InvalidInput }
+        buf[0] = '/'
+        return 1
+    }
+    if len > buf.len { return !.InvalidInput }
+    end := len
+    a = id
+    while a is not 0 {
+        name := m.nodes.items[a].name.items
+        end -= name.len
+        buf[end..end + name.len].copy_from(name)
+        end -= 1
+        buf[end] = '/'
+        a = m.nodes.items[a].parent
+    }
+    return len
+}
+
+mem_set_mode :: fn(m: ^MemFs, path: string, mode: u32) -> IoError!() {
+    id := try resolve(m, path)
+    m.nodes.items[id].mode = mode & 0o7777
+    return ()
+}
+
+mem_set_modified :: fn(m: ^MemFs, path: string, ns: i64) -> IoError!() {
+    id := try resolve(m, path)
+    m.nodes.items[id].modified = ns
+    return ()
 }
 
 mem_truncate :: fn(m: ^MemFs, f: File, size: u64, now: i64) -> IoError!() {
@@ -1338,6 +1405,11 @@ handler Fs for ^TestIo {
     truncate(self, f, size) => mem_truncate(&self.fs, f, size, test_wall(self))
     sync(self, f) => mem_sync(&self.fs, f)
     cwd(self, buf) => mem_cwd(buf)
+    canonical(self, path, buf) => mem_canonical(&self.fs, path, buf)
+    read_link(self, path, buf) => !.Unsupported
+    symlink(self, target, path) => !.Unsupported
+    set_mode(self, path, mode) => mem_set_mode(&self.fs, path, mode)
+    set_modified(self, path, ns) => mem_set_modified(&self.fs, path, ns)
 }
 
 // The test handler of `Net` (§12.9): a loopback fake. Every test starts with an empty
@@ -1605,6 +1677,7 @@ handler Proc for ^TestIo {
     close_in(self, c) => {}
     read(self, c, buf) => !.InvalidInput
     wait(self, c) => !.InvalidInput
+    try_wait(self, c) => !.InvalidInput
     kill(self, c) => !.InvalidInput
 }
 

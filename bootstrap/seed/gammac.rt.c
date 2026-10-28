@@ -446,7 +446,7 @@ GM_API int64_t gm_fs_close(int64_t f);
 GM_API int64_t gm_fs_read(int64_t f, void *p, size_t n);
 GM_API int64_t gm_fs_write(int64_t f, const void *p, size_t n);
 GM_API int64_t gm_fs_seek(int64_t f, int64_t offset, uint32_t whence);
-GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, kind (0 file, 1 directory, 2 symlink, 3 other), mtime */
+GM_API int64_t gm_fs_stat(const void *path, size_t len, void *out, size_t n);   /* size, kind (0 file, 1 directory, 2 symlink, 3 other), mtime, permission bits */
 GM_API int64_t gm_fs_lstat(const void *path, size_t len, void *out, size_t n);   /* as stat; no final symlink followed */
 GM_API int64_t gm_fs_remove(const void *path, size_t len);
 GM_API int64_t gm_fs_rename(const void *from, size_t from_len, const void *to, size_t to_len);
@@ -458,6 +458,12 @@ GM_API int64_t gm_fs_close_dir(int64_t d);
 GM_API int64_t gm_fs_truncate(int64_t f, uint64_t size);
 GM_API int64_t gm_fs_sync(int64_t f);
 GM_API int64_t gm_fs_cwd(void *p, size_t n);          /* length; EINVAL if it does not fit */
+GM_API int64_t gm_fs_canonical(const void *path, size_t len, void *p, size_t n);   /* length; EINVAL if it does not fit */
+GM_API int64_t gm_fs_read_link(const void *path, size_t len, void *p, size_t n);   /* length; EINVAL if it does not fit */
+GM_API int64_t gm_fs_symlink(const void *target, size_t tlen, const void *path, size_t len);
+GM_API int64_t gm_fs_set_mode(const void *path, size_t len, uint32_t mode);
+GM_API int64_t gm_fs_set_modified(const void *path, size_t len, int64_t ns);   /* Unix nanoseconds */
+GM_API void gm_env_exit(uint8_t code);                /* ends the process after flushing output */
 /* TCP sockets; handles are file descriptors (SOCKET values on Windows). Host names are resolved with getaddrinfo;
  * a failed lookup is Other(0), as in the interpreter. */
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port);
@@ -471,19 +477,27 @@ GM_API int64_t gm_net_shutdown(int64_t h, uint32_t how);   /* 0 read, 1 write, 2
 GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns);   /* 0: none */
 GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n);   /* "host:port"; EINVAL if it does not fit */
 
-/* Child processes. gm_proc_spawn takes the argument vector, the environment (used when flags has
- * GM_PROC_ENV; "NAME=value" entries) and the working directory (empty: ours); the flags hold two
+/* Child processes. gm_proc_launch takes the argument vector, changes to the environment
+ * ("NAME=value" sets a variable, "NAME" removes it; applied to ours, or to an empty environment
+ * when flags has GM_PROC_CLEAR_ENV) and the working directory (empty: ours); the flags hold two
  * bits per standard stream (stdin from bit 0, stdout from bit 2, stderr from bit 4: 0 inherit,
- * 1 the null device, 2 a pipe). It returns a handle. gm_proc_read_out waits until a piped output
+ * 1 the null device, 2 a pipe), and GM_PROC_GROUP to start the child in a process group of its
+ * own (POSIX; a job object on Windows), which gm_proc_kill then ends as a whole. It returns a
+ * handle. gm_proc_read_out waits until a piped output
  * stream has data and reads from it: the length plus 2^32 for stderr, or 0 once both streams
- * have ended. gm_proc_wait returns the exit code, or the signal number plus 2^32. */
-enum { GM_PROC_ENV = 64 };
-GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
-                             size_t dir_len, uint32_t flags);
+ * have ended. gm_proc_wait returns the exit code, or the signal number plus 2^32. With
+ * GM_PROC_PROGRAM the file to run is `program` (searched for in PATH if it has no separator)
+ * instead of argv[0], which is then only the name the child sees. gm_proc_try_wait is
+ * gm_proc_wait that does not block: 2^33 while the child runs; once it returns a status the
+ * child is released as by gm_proc_wait. */
+enum { GM_PROC_CLEAR_ENV = 64, GM_PROC_GROUP = 128, GM_PROC_PROGRAM = 256 };
+GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                              size_t dir_len, const void *program, size_t program_len, uint32_t flags);
 GM_API int64_t gm_proc_write_in(int64_t h, const void *p, size_t n);
 GM_API int64_t gm_proc_close_in(int64_t h);
 GM_API int64_t gm_proc_read_out(int64_t h, void *p, size_t n);
 GM_API int64_t gm_proc_wait(int64_t h);
+GM_API int64_t gm_proc_try_wait(int64_t h);
 GM_API int64_t gm_proc_kill(int64_t h);
 
 /* ---- threads (§19.6) ----------------------------------------------------------------
@@ -2330,7 +2344,7 @@ GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *vp, const 
         }
     } else {
         number = false;
-        gm_format(&body, t, v, true);
+        gm_format(&body, t, v, s->kind != 6);
         gm_spec_pad(out, "", 0, body.data, body.len, s, false);
         gm_buf_free(&body);
         return;
@@ -2570,6 +2584,14 @@ GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, s
 #endif
 }
 
+/* Ends the process with `code` after flushing buffered output (`Env.exit` on a thread, once its
+ * body has unwound). */
+GM_API void gm_env_exit(uint8_t code) {
+    gm_flush();
+    fflush(stderr);
+    exit(code);
+}
+
 /* ---- system services ---------------------------------------------------------------- */
 
 GM_API int64_t gm_io_error(int err) {
@@ -2772,8 +2794,8 @@ static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, b
 #else
     int64_t mtime = (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
 #endif
-    int64_t v[3] = {(int64_t)st.st_size, gm_mode_kind(st.st_mode), mtime};
-    memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
+    int64_t v[4] = {(int64_t)st.st_size, gm_mode_kind(st.st_mode), mtime, (int64_t)(st.st_mode & 07777)};
+    memcpy(out, v, sizeof(int64_t) * (n < 4 ? n : 4));
     return 0;
 }
 
@@ -2928,6 +2950,100 @@ GM_API int64_t gm_fs_cwd(void *p, size_t n) {
 }
 
 #ifdef GM_WASI
+GM_API int64_t gm_fs_canonical(const void *path, size_t len, void *p, size_t n) {
+    (void)path; (void)len; (void)p; (void)n;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_fs_read_link(const void *path, size_t len, void *p, size_t n) {
+    (void)path; (void)len; (void)p; (void)n;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_fs_symlink(const void *target, size_t tlen, const void *path, size_t len) {
+    (void)target; (void)tlen; (void)path; (void)len;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_fs_set_mode(const void *path, size_t len, uint32_t mode) {
+    (void)path; (void)len; (void)mode;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_fs_set_modified(const void *path, size_t len, int64_t ns) {
+    (void)path; (void)len; (void)ns;
+    return gm_io_error(ENOTSUP);
+}
+#else
+GM_API int64_t gm_fs_canonical(const void *path, size_t len, void *p, size_t n) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    char *r = len == 0 ? NULL : realpath(s, NULL);
+    int err = len == 0 ? ENOENT : errno;
+    free(s);
+    if (r == NULL) return gm_io_error(err);
+    size_t rl = strlen(r);
+    int64_t res = (int64_t)rl;
+    if (rl > n) res = gm_io_error(EINVAL);
+    else if (rl > 0) memcpy(p, r, rl);
+    free(r);
+    return res;
+}
+
+GM_API int64_t gm_fs_read_link(const void *path, size_t len, void *p, size_t n) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    char *tmp = (char *)malloc(n + 1);
+    if (tmp == NULL) gm_trap("out of memory", NULL, 0, 0);
+    ssize_t r = readlink(s, tmp, n + 1);
+    int err = errno;
+    free(s);
+    int64_t res;
+    if (r < 0) res = gm_io_error(err);
+    else if ((size_t)r > n) res = gm_io_error(EINVAL);
+    else {
+        if (r > 0) memcpy(p, tmp, (size_t)r);
+        res = (int64_t)r;
+    }
+    free(tmp);
+    return res;
+}
+
+GM_API int64_t gm_fs_symlink(const void *target, size_t tlen, const void *path, size_t len) {
+    char *t = gm_path(target, tlen), *s = gm_path(path, len);
+    int r = t && s ? symlink(t, s) : -1;
+    int err = t && s ? errno : EINVAL;
+    free(t);
+    free(s);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+
+GM_API int64_t gm_fs_set_mode(const void *path, size_t len, uint32_t mode) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    int r = chmod(s, (mode_t)(mode & 07777));
+    int err = errno;
+    free(s);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+
+GM_API int64_t gm_fs_set_modified(const void *path, size_t len, int64_t ns) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    int64_t sec = ns / 1000000000, nsec = ns % 1000000000;
+    if (nsec < 0) {
+        nsec += 1000000000;
+        sec -= 1;
+    }
+    struct timespec t[2];
+    t[0].tv_sec = 0;
+    t[0].tv_nsec = UTIME_OMIT;   /* the access time stays */
+    t[1].tv_sec = (time_t)sec;
+    t[1].tv_nsec = (long)nsec;
+    int r = utimensat(AT_FDCWD, s, t, 0);
+    int err = errno;
+    free(s);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+#endif
+
+#ifdef GM_WASI
 /* WASI offers no sockets to open and no processes to start: every operation of the Net and
  * Proc effects fails with IoError.Unsupported. */
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
@@ -2949,9 +3065,10 @@ GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns
     return gm_io_error(ENOTSUP);
 }
 GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) { (void)h; (void)p; (void)n; return gm_io_error(ENOTSUP); }
-GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
-                             size_t dir_len, uint32_t flags) {
-    (void)argv; (void)argc; (void)env; (void)envc; (void)dir; (void)dir_len; (void)flags;
+GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                              size_t dir_len, const void *program, size_t program_len, uint32_t flags) {
+    (void)argv; (void)argc; (void)env; (void)envc; (void)dir; (void)dir_len; (void)program; (void)program_len;
+    (void)flags;
     return gm_io_error(ENOTSUP);
 }
 GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
@@ -2961,6 +3078,7 @@ GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
 GM_API int64_t gm_proc_close_in(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
 GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) { (void)h; (void)buf; (void)n; return gm_io_error(ENOTSUP); }
 GM_API int64_t gm_proc_wait(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_try_wait(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
 GM_API int64_t gm_proc_kill(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
 #else
 /* Resolves host:port for a stream socket (passive: for listening). */
@@ -3167,6 +3285,7 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
 
 typedef struct {
     pid_t pid;
+    int group;                   /* the child leads a process group of its own, which kill ends */
     int in_fd, out_fd, err_fd;   /* our ends of the pipes; -1 when there is none or it is closed */
     int reaped;                  /* the process has been waited for (guarded by gm_rt_lock) */
     int waiting;                 /* a wait is in progress (guarded by gm_rt_lock) */
@@ -3253,16 +3372,11 @@ static void gm_free_cstrs(char **v, size_t n) {
     free(v);
 }
 
-/* Copies n strings into a NULL-terminated array; NULL if one contains a NUL (or, for
- * `env`, has no `=`). */
-static char **gm_cstr_array(const gm_rt_str *v, size_t n, int is_env) {
+/* Copies n strings into a NULL-terminated array; NULL if one contains a NUL. */
+static char **gm_cstr_array(const gm_rt_str *v, size_t n) {
     char **out = (char **)calloc(n + 1, sizeof(char *));
     if (out == NULL) gm_trap("out of memory", NULL, 0, 0);
     for (size_t i = 0; i < n; i++) {
-        if (is_env && (v[i].len == 0 || memchr(v[i].ptr, '=', v[i].len) == NULL)) {
-            gm_free_cstrs(out, i);
-            return NULL;
-        }
         out[i] = gm_cstr(v[i].ptr, v[i].len);
         if (out[i] == NULL) {
             gm_free_cstrs(out, i);
@@ -3274,22 +3388,71 @@ static char **gm_cstr_array(const gm_rt_str *v, size_t n, int is_env) {
 
 extern char **environ;
 
-GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
-                             size_t dir_len, uint32_t flags) {
+/* Frees a NULL-terminated array of strings. */
+static void gm_free_cstr_list(char **v) {
+    if (v == NULL) return;
+    for (size_t i = 0; v[i] != NULL; i++) free(v[i]);
+    free(v);
+}
+
+/* The environment of a child: ours, or an empty one if `clear`, with the n entries applied in
+ * order: "NAME=value" sets NAME, a bare "NAME" removes it. NULL if an entry is empty, has an
+ * empty name or contains a NUL. */
+static char **gm_child_env(const gm_rt_str *v, size_t n, int clear) {
+    size_t base = 0;
+    if (!clear)
+        while (environ[base] != NULL) base++;
+    char **out = (char **)calloc(base + n + 1, sizeof(char *));
+    if (out == NULL) gm_trap("out of memory", NULL, 0, 0);
+    size_t k = 0;
+    for (size_t i = 0; i < base; i++) {
+        out[k] = strdup(environ[i]);
+        if (out[k] == NULL) gm_trap("out of memory", NULL, 0, 0);
+        k++;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char *e = v[i].len == 0 ? NULL : gm_cstr(v[i].ptr, v[i].len);
+        char *eq = e == NULL ? NULL : strchr(e, '=');
+        size_t name = e == NULL ? 0 : eq != NULL ? (size_t)(eq - e) : strlen(e);
+        if (name == 0) {
+            free(e);
+            gm_free_cstr_list(out);
+            return NULL;
+        }
+        size_t j = 0;
+        for (size_t m = 0; m < k; m++) {
+            if (strncmp(out[m], e, name) == 0 && out[m][name] == '=') free(out[m]);
+            else out[j++] = out[m];
+        }
+        k = j;
+        if (eq != NULL) out[k++] = e;
+        else free(e);
+        out[k] = NULL;
+    }
+    out[k] = NULL;
+    return out;
+}
+
+GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                              size_t dir_len, const void *program, size_t program_len, uint32_t flags) {
     if (argc == 0) return gm_io_error(EINVAL);
-    char **av = gm_cstr_array((const gm_rt_str *)argv, argc, 0);
-    char **ev = (flags & 64) ? gm_cstr_array((const gm_rt_str *)env, envc, 1) : NULL;
+    char **av = gm_cstr_array((const gm_rt_str *)argv, argc);
+    int own_env = (flags & GM_PROC_CLEAR_ENV) || envc > 0;
+    char **ev = own_env ? gm_child_env((const gm_rt_str *)env, envc, flags & GM_PROC_CLEAR_ENV) : NULL;
     char *cwd = gm_cstr(dir, dir_len);
     int err = 0;
     char *prog = NULL;
-    if (av == NULL || ((flags & 64) && ev == NULL) || cwd == NULL) {
+    if (av == NULL || (own_env && ev == NULL) || cwd == NULL) {
         err = EINVAL;
     } else {
-        prog = gm_find_program(av[0], &err);
+        char *name = (flags & GM_PROC_PROGRAM) ? gm_cstr(program, program_len) : NULL;
+        if ((flags & GM_PROC_PROGRAM) && name == NULL) err = EINVAL;
+        else prog = gm_find_program(name != NULL ? name : av[0], &err);
+        free(name);
     }
     if (prog == NULL) {
         gm_free_cstrs(av, argc);
-        gm_free_cstrs(ev, envc);
+        gm_free_cstr_list(ev);
         free(cwd);
         return gm_io_error(err);
     }
@@ -3337,6 +3500,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
         pid = fork();
         if (pid == 0) {
             /* The child: only async-signal-safe calls. */
+            if ((flags & GM_PROC_GROUP) && setpgid(0, 0) != 0) goto child_fail;
             for (int i = 0; i < 3; i++)
                 if (child_fd[i] >= 0 && dup2(child_fd[i], i) < 0) goto child_fail;
             signal(SIGPIPE, SIG_DFL);
@@ -3344,7 +3508,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
             sigemptyset(&none);
             pthread_sigmask(SIG_SETMASK, &none, NULL);
             if (cwd[0] != 0 && chdir(cwd) != 0) goto child_fail;
-            execve(prog, av, (flags & 64) ? ev : environ);
+            execve(prog, av, own_env ? ev : environ);
         child_fail:;
             int e = errno;
             ssize_t w = write(errp[1], &e, sizeof e);
@@ -3352,6 +3516,9 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
             _exit(127);
         }
         pthread_sigmask(SIG_SETMASK, &old, NULL);
+        /* The child makes its group before it execs, and we wait below for the exec, so the
+         * group exists when spawn returns. Calling setpgid here as well would race with the
+         * child's call, which some systems then fail with EPERM. */
         if (pid < 0) err = errno;
     }
     if (errp[1] >= 0) close(errp[1]);
@@ -3371,7 +3538,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
         if (child_fd[i] >= 0 && child_fd[i] != null_fd) close(child_fd[i]);
     if (null_fd >= 0) close(null_fd);
     gm_free_cstrs(av, argc);
-    gm_free_cstrs(ev, envc);
+    gm_free_cstr_list(ev);
     free(cwd);
     free(prog);
     if (err != 0) {
@@ -3382,6 +3549,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     gm_proc *p = (gm_proc *)calloc(1, sizeof(gm_proc));
     if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
     p->pid = pid;
+    p->group = (flags & GM_PROC_GROUP) != 0;
     p->in_fd = mine[0];
     p->out_fd = mine[1];
     p->err_fd = mine[2];
@@ -3504,7 +3672,8 @@ static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
     }
 }
 
-GM_API int64_t gm_proc_wait(int64_t h) {
+/* gm_proc_wait; with nohang, 2^33 if the child still runs (it is then not released). */
+static int64_t gm_proc_wait_for(int64_t h, int nohang) {
     gm_flush();
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
@@ -3515,6 +3684,27 @@ GM_API int64_t gm_proc_wait(int64_t h) {
     if (busy) {
         gm_proc_put(p);
         return gm_io_error(EBADF);
+    }
+    if (nohang) {
+        siginfo_t ps;
+        ps.si_pid = 0;
+        while (waitid(P_PID, (id_t)p->pid, &ps, WEXITED | WNOHANG | WNOWAIT) != 0) {
+            if (errno != EINTR) {
+                int e = errno;
+                gm_rt_acquire();
+                p->waiting = 0;
+                gm_rt_release();
+                gm_proc_put(p);
+                return gm_io_error(e);
+            }
+        }
+        if (ps.si_pid == 0) {
+            gm_rt_acquire();
+            p->waiting = 0;
+            gm_rt_release();
+            gm_proc_put(p);
+            return (int64_t)1 << 33;
+        }
     }
     if (p->in_fd >= 0) close(p->in_fd);
     if (p->out_fd >= 0) close(p->out_fd);
@@ -3544,10 +3734,13 @@ GM_API int64_t gm_proc_wait(int64_t h) {
     return (int64_t)WEXITSTATUS(st);
 }
 
+GM_API int64_t gm_proc_wait(int64_t h) { return gm_proc_wait_for(h, 0); }
+GM_API int64_t gm_proc_try_wait(int64_t h) { return gm_proc_wait_for(h, 1); }
+
 GM_API int64_t gm_proc_kill(int64_t h) {
     gm_rt_acquire();
     gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
-    int64_t r = p == NULL || p->reaped ? gm_io_error(EBADF) : (kill(p->pid, SIGKILL) != 0 ? gm_io_error(errno) : 0);
+    int64_t r = p == NULL || p->reaped ? gm_io_error(EBADF) : (kill(p->group ? -p->pid : p->pid, SIGKILL) != 0 ? gm_io_error(errno) : 0);
     gm_rt_release();
     return r;
 }
@@ -3775,8 +3968,9 @@ static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, b
     uint64_t t = ((uint64_t)bi.ftLastWriteTime.dwHighDateTime << 32) | bi.ftLastWriteTime.dwLowDateTime;
     int64_t mtime = ((int64_t)t - 116444736000000000LL) * 100;
     int64_t size = (int64_t)(((uint64_t)bi.nFileSizeHigh << 32) | bi.nFileSizeLow);
-    int64_t v[3] = {size, gm_attr_kind(bi.dwFileAttributes, tag), mtime};
-    memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
+    int64_t v[4] = {size, gm_attr_kind(bi.dwFileAttributes, tag), mtime,
+                    (bi.dwFileAttributes & FILE_ATTRIBUTE_READONLY) ? 0444 : 0666};
+    memcpy(out, v, sizeof(int64_t) * (n < 4 ? n : 4));
     return 0;
 }
 
@@ -3957,6 +4151,173 @@ GM_API int64_t gm_fs_cwd(void *p, size_t n) {
     memcpy(p, u, len);
     free(u);
     return (int64_t)len;
+}
+
+/* The path of an open handle, as UTF-8 without the `\\?\` prefix that GetFinalPathNameByHandleW
+ * adds (`\\?\UNC\server\share` becomes `\\server\share`). */
+GM_API int64_t gm_fs_canonical(const void *path, size_t len, void *p, size_t n) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    HANDLE h = CreateFileW(w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return gm_win_err(err);
+    wchar_t tmp[32768];
+    DWORD wl = GetFinalPathNameByHandleW(h, tmp, 32768, VOLUME_NAME_DOS);
+    err = GetLastError();
+    CloseHandle(h);
+    if (wl == 0 || wl >= 32768) return gm_win_err(err);
+    wchar_t *start = tmp;
+    if (wl >= 8 && wcsncmp(tmp, L"\\\\?\\UNC\\", 8) == 0) {
+        start = tmp + 6;
+        start[0] = L'\\';
+        wl -= 6;
+    } else if (wl >= 4 && wcsncmp(tmp, L"\\\\?\\", 4) == 0) {
+        start = tmp + 4;
+        wl -= 4;
+    }
+    size_t ulen;
+    char *u = gm_utf8(start, (int)wl, &ulen);
+    if (ulen > n) {
+        free(u);
+        return gm_io_error(EINVAL);
+    }
+    memcpy(p, u, ulen);
+    free(u);
+    return (int64_t)ulen;
+}
+
+#ifndef FSCTL_GET_REPARSE_POINT
+#define FSCTL_GET_REPARSE_POINT 0x000900A8
+#endif
+#ifndef ERROR_NOT_A_REPARSE_POINT
+#define ERROR_NOT_A_REPARSE_POINT 4390L
+#endif
+
+/* The reparse data of a symbolic link or junction (the layout of REPARSE_DATA_BUFFER, which
+ * the MinGW headers do not all declare). */
+typedef struct {
+    ULONG tag;
+    USHORT data_len, reserved;
+    USHORT subst_off, subst_len, print_off, print_len;
+    union {
+        struct { ULONG flags; WCHAR names[1]; } symlink;
+        struct { WCHAR names[1]; } junction;
+    } u;
+} gm_reparse;
+
+/* The target of a symbolic link or junction: its print name, or else its substitute name
+ * without the `\??\` prefix. EINVAL if the path is not a link. */
+GM_API int64_t gm_fs_read_link(const void *path, size_t len, void *p, size_t n) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    HANDLE h = CreateFileW(w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return gm_win_err(err);
+    union { gm_reparse r; uint8_t raw[16 * 1024]; } buf;
+    DWORD got = 0;
+    BOOL ok = DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0, buf.raw, sizeof buf.raw, &got, NULL);
+    err = GetLastError();
+    CloseHandle(h);
+    if (!ok) return err == ERROR_NOT_A_REPARSE_POINT ? gm_io_error(EINVAL) : gm_win_err(err);
+    const WCHAR *names;
+    if (buf.r.tag == IO_REPARSE_TAG_SYMLINK) names = buf.r.u.symlink.names;
+    else if (buf.r.tag == IO_REPARSE_TAG_MOUNT_POINT) names = buf.r.u.junction.names;
+    else return gm_io_error(EINVAL);
+    const WCHAR *t = names + buf.r.print_off / sizeof(WCHAR);
+    size_t tl = buf.r.print_len / sizeof(WCHAR);
+    if (tl == 0) {
+        t = names + buf.r.subst_off / sizeof(WCHAR);
+        tl = buf.r.subst_len / sizeof(WCHAR);
+        if (tl >= 4 && wcsncmp(t, L"\\??\\", 4) == 0) {
+            t += 4;
+            tl -= 4;
+        }
+    }
+    size_t ulen = 0;
+    char *u = gm_utf8(t, (int)tl, &ulen);
+    if (ulen > n) {
+        free(u);
+        return gm_io_error(EINVAL);
+    }
+    memcpy(p, u, ulen);
+    free(u);
+    return (int64_t)ulen;
+}
+
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+#endif
+
+/* A link to a directory is made as one when the target (relative to the link's directory)
+ * is a directory. Separators in the target become backslashes, which Windows requires. */
+GM_API int64_t gm_fs_symlink(const void *target, size_t tlen, const void *path, size_t len) {
+    wchar_t *t = gm_wide(target, tlen), *w = gm_wide(path, len);
+    if (t == NULL || w == NULL) {
+        free(t);
+        free(w);
+        return gm_io_error(EINVAL);
+    }
+    for (wchar_t *c = t; *c != 0; c++)
+        if (*c == L'/') *c = L'\\';
+    DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+    bool absolute = wcslen(t) >= 2 && (t[1] == L':' || t[0] == L'\\');
+    wchar_t *full = t;
+    if (!absolute) {
+        size_t wl = wcslen(w), cut = wl;
+        while (cut > 0 && w[cut - 1] != L'\\' && w[cut - 1] != L'/') cut--;
+        full = (wchar_t *)malloc((cut + wcslen(t) + 1) * sizeof(wchar_t));
+        if (full == NULL) gm_trap("out of memory", NULL, 0, 0);
+        memcpy(full, w, cut * sizeof(wchar_t));
+        wcscpy(full + cut, t);
+    }
+    DWORD a = GetFileAttributesW(full);
+    if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+    if (full != t) free(full);
+    BOOL ok = CreateSymbolicLinkW(w, t, flags);
+    DWORD err = GetLastError();
+    free(t);
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+/* Windows keeps no permission bits: only the owner-write bit counts, as the read-only attribute. */
+GM_API int64_t gm_fs_set_mode(const void *path, size_t len, uint32_t mode) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    DWORD a = GetFileAttributesW(w);
+    BOOL ok = FALSE;
+    DWORD err = GetLastError();
+    if (a != INVALID_FILE_ATTRIBUTES) {
+        DWORD b = (mode & 0200) ? (a & ~(DWORD)FILE_ATTRIBUTE_READONLY) : (a | FILE_ATTRIBUTE_READONLY);
+        if (b == 0) b = FILE_ATTRIBUTE_NORMAL;
+        ok = b == a || SetFileAttributesW(w, b);
+        err = GetLastError();
+    }
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+GM_API int64_t gm_fs_set_modified(const void *path, size_t len, int64_t ns) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    HANDLE h = CreateFileW(w, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return gm_win_err(err);
+    int64_t t = ns / 100 + 116444736000000000LL;   /* 100 ns since 1601 */
+    if (ns % 100 < 0) t -= 1;
+    FILETIME ft;
+    ft.dwLowDateTime = (DWORD)((uint64_t)t & 0xffffffffu);
+    ft.dwHighDateTime = (DWORD)((uint64_t)t >> 32);
+    BOOL ok = SetFileTime(h, NULL, NULL, &ft);
+    err = GetLastError();
+    CloseHandle(h);
+    return ok ? 0 : gm_win_err(err);
 }
 
 /* Winsock must be started once per process before any socket call. */
@@ -4142,6 +4503,7 @@ GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) {
 
 typedef struct {
     HANDLE process;
+    HANDLE job;                  /* the job object of a group, which kill ends; NULL if none */
     HANDLE in_h, out_h, err_h;   /* our ends of the pipes; NULL when there is none or it is closed */
     int reaped;                  /* guarded by gm_rt_lock */
     int waiting;                 /* a wait is in progress (guarded by gm_rt_lock) */
@@ -4251,8 +4613,8 @@ static int gm_make_pipe(HANDLE *child_end, HANDLE *our_end, int child_reads) {
     return 0;
 }
 
-GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
-                             size_t dir_len, uint32_t flags) {
+GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                              size_t dir_len, const void *program, size_t program_len, uint32_t flags) {
     if (argc == 0) return gm_io_error(EINVAL);
     const gm_rt_str *av = (const gm_rt_str *)argv, *ev = (const gm_rt_str *)env;
     size_t clen;
@@ -4263,21 +4625,49 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     wchar_t **entries = NULL;
     wchar_t *block = NULL;
     int bad = cmd == NULL || (dir_len && cwd == NULL);
-    if ((flags & 64) && !bad) {
-        entries = (wchar_t **)calloc(envc + 1, sizeof(wchar_t *));
+    size_t nentries = 0;
+    if (((flags & GM_PROC_CLEAR_ENV) || envc > 0) && !bad) {
+        /* Ours (unless cleared), then each change: "NAME=value" sets, "NAME" removes. Names
+         * compare without case; a name may start with '=' (the drive entries). */
+        size_t base = 0;
+        wchar_t *mine_env = (flags & GM_PROC_CLEAR_ENV) ? NULL : GetEnvironmentStringsW();
+        for (wchar_t *e = mine_env; e != NULL && *e != 0; e += wcslen(e) + 1) base++;
+        entries = (wchar_t **)calloc(base + envc + 1, sizeof(wchar_t *));
         if (entries == NULL) gm_trap("out of memory", NULL, 0, 0);
-        size_t total = 1;
+        for (wchar_t *e = mine_env; e != NULL && *e != 0; e += wcslen(e) + 1) {
+            entries[nentries] = _wcsdup(e);
+            if (entries[nentries] == NULL) gm_trap("out of memory", NULL, 0, 0);
+            nentries++;
+        }
+        if (mine_env != NULL) FreeEnvironmentStringsW(mine_env);
         for (size_t i = 0; i < envc && !bad; i++) {
-            entries[i] = gm_wide(ev[i].ptr, ev[i].len);
-            if (entries[i] == NULL || ev[i].len == 0 || memchr(ev[i].ptr, '=', ev[i].len) == NULL) bad = 1;
-            else total += wcslen(entries[i]) + 1;
+            wchar_t *e = ev[i].len == 0 ? NULL : gm_wide(ev[i].ptr, ev[i].len);
+            wchar_t *eq = e == NULL ? NULL : wcschr(e, L'=');
+            size_t name = e == NULL ? 0 : eq != NULL ? (size_t)(eq - e) : wcslen(e);
+            if (name == 0) {
+                free(e);
+                bad = 1;
+                break;
+            }
+            size_t j = 0;
+            for (size_t m = 0; m < nentries; m++) {
+                wchar_t *q = wcschr(entries[m][0] ? entries[m] + 1 : entries[m], L'=');
+                size_t len = q != NULL ? (size_t)(q - entries[m]) : wcslen(entries[m]);
+                if (len == name && _wcsnicmp(entries[m], e, name) == 0) free(entries[m]);
+                else entries[j++] = entries[m];
+            }
+            nentries = j;
+            if (eq != NULL) entries[nentries++] = e;
+            else free(e);
         }
         if (!bad) {
-            qsort(entries, envc, sizeof(wchar_t *), gm_env_cmp);
+            size_t total = 1;
+            for (size_t i = 0; i < nentries; i++) total += wcslen(entries[i]) + 1;
+            qsort(entries, nentries, sizeof(wchar_t *), gm_env_cmp);
             block = (wchar_t *)calloc(total + 1, sizeof(wchar_t));
             if (block == NULL) gm_trap("out of memory", NULL, 0, 0);
             wchar_t *q = block;
-            for (size_t i = 0; i < envc; i++) {
+            for (size_t i = 0; i < nentries; i++) {
                 size_t l = wcslen(entries[i]) + 1;
                 memcpy(q, entries[i], l * sizeof(wchar_t));
                 q += l;
@@ -4287,7 +4677,8 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     int64_t result = 0;
     wchar_t *prog = NULL;
     if (!bad) {
-        wchar_t *name = gm_wide(av[0].ptr, av[0].len);
+        const gm_rt_str *pn = (flags & GM_PROC_PROGRAM) ? NULL : &av[0];
+        wchar_t *name = pn ? gm_wide(pn->ptr, pn->len) : gm_wide(program, program_len);
         prog = name ? gm_find_program(name) : NULL;
         free(name);
         if (prog == NULL) {
@@ -4301,6 +4692,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     HANDLE null_h = INVALID_HANDLE_VALUE;
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof pi);
+    HANDLE job = NULL;
     if (bad) {
         result = gm_io_error(EINVAL);
     } else if (result == 0) {
@@ -4333,8 +4725,24 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
             si.hStdInput = child_h[0];
             si.hStdOutput = child_h[1];
             si.hStdError = child_h[2];
-            if (!CreateProcessW(prog, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, block, cwd, &si, &pi))
+            /* A group is a job object; the child starts suspended until it belongs to it. */
+            DWORD how = CREATE_UNICODE_ENVIRONMENT | ((flags & GM_PROC_GROUP) ? CREATE_SUSPENDED : 0);
+            if (!CreateProcessW(prog, cmd, NULL, NULL, TRUE, how, block, cwd, &si, &pi)) {
                 result = gm_win_err(GetLastError());
+            } else if (flags & GM_PROC_GROUP) {
+                job = CreateJobObjectW(NULL, NULL);
+                if (job == NULL || !AssignProcessToJobObject(job, pi.hProcess)) {
+                    result = gm_win_err(GetLastError());
+                    TerminateProcess(pi.hProcess, 1);
+                    WaitForSingleObject(pi.hProcess, INFINITE);
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                    if (job != NULL) CloseHandle(job);
+                    job = NULL;
+                } else {
+                    ResumeThread(pi.hThread);
+                }
+            }
         }
         for (int i = 0; i < 3; i++)
             if (mine[i] != NULL && child_h[i] != NULL && child_h[i] != null_h) CloseHandle(child_h[i]);
@@ -4342,7 +4750,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
         gm_rt_release();
     }
     if (entries != NULL) {
-        for (size_t i = 0; i < envc; i++) free(entries[i]);
+        for (size_t i = 0; i < nentries; i++) free(entries[i]);
         free(entries);
     }
     free(block);
@@ -4358,6 +4766,7 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     gm_proc *p = (gm_proc *)calloc(1, sizeof(gm_proc));
     if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
     p->process = pi.hProcess;
+    p->job = job;
     p->in_h = mine[0];
     p->out_h = mine[1];
     p->err_h = mine[2];
@@ -4382,6 +4791,7 @@ static void gm_proc_put(gm_proc *p) {
     gm_rt_release();
     if (!last) return;
     CloseHandle(p->process);
+    if (p->job != NULL) CloseHandle(p->job);
     free(p);
 }
 
@@ -4459,7 +4869,8 @@ static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
     }
 }
 
-GM_API int64_t gm_proc_wait(int64_t h) {
+/* gm_proc_wait; with nohang, 2^33 if the child still runs (it is then not released). */
+static int64_t gm_proc_wait_for(int64_t h, int nohang) {
     gm_flush();
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
@@ -4470,6 +4881,13 @@ GM_API int64_t gm_proc_wait(int64_t h) {
     if (busy) {
         gm_proc_put(p);
         return gm_io_error(EBADF);
+    }
+    if (nohang && WaitForSingleObject(p->process, 0) == WAIT_TIMEOUT) {
+        gm_rt_acquire();
+        p->waiting = 0;
+        gm_rt_release();
+        gm_proc_put(p);
+        return (int64_t)1 << 33;
     }
     if (p->in_h != NULL) CloseHandle(p->in_h);
     if (p->out_h != NULL) CloseHandle(p->out_h);
@@ -4494,13 +4912,16 @@ GM_API int64_t gm_proc_wait(int64_t h) {
     return (int64_t)code;
 }
 
+GM_API int64_t gm_proc_wait(int64_t h) { return gm_proc_wait_for(h, 0); }
+GM_API int64_t gm_proc_try_wait(int64_t h) { return gm_proc_wait_for(h, 1); }
+
 GM_API int64_t gm_proc_kill(int64_t h) {
     gm_rt_acquire();
     gm_proc *p = (gm_proc *)gm_table_get(&gm_procs, h);
     int64_t r = 0;
     if (p == NULL || p->reaped) {
         r = gm_io_error(EBADF);
-    } else if (!TerminateProcess(p->process, 1)) {
+    } else if (p->job != NULL ? !TerminateJobObject(p->job, 1) : !TerminateProcess(p->process, 1)) {
         /* Access is denied once the process has ended; killing it then is not an error. */
         DWORD e = GetLastError();
         if (WaitForSingleObject(p->process, 0) != WAIT_OBJECT_0) r = gm_win_err(e);
