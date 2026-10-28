@@ -4,11 +4,13 @@
 // thousands of statements compiles slowly as one C function, even when every statement is
 // simple. In a function whose body is long (see `long_body`), the statements of a long
 // block are dealt out in runs to helper functions `gm_cN_K`, each called where its run
-// was.
+// was (`runs_of`).
 //
 // A helper shares the frame: it gets its address, and inside it `F` is a macro for
 // `(*gm_Fp)`, so a statement's code is the same as it would be inline. The function's
-// locals then all live in the frame (`frame_locals`). The few C variables that statements
+// locals then all live in the frame (`frame_locals`), if some run moves (`outlines`): a
+// long function whose blocks are all short, such as one big `match`, keeps them in C
+// variables. The few C variables that statements
 // read besides (`env`, `cx`, `inst`, `gm_out`, the backtrace record `B`, the node of an
 // enclosing `with` and the parameters read in place) are passed along.
 //
@@ -42,7 +44,8 @@ pub Run :: struct {
     exits: List(RunExit)
 }
 
-/// True if `def`'s body is long enough to split into helpers (see the file's comment).
+/// True if `def`'s body is long enough that its long blocks are split into helpers (see the
+/// file's comment).
 long_body :: fn(def: ^const Func) -> bool {
     b := def.body else return false
     return weight(b, LONG_BODY + 1) > LONG_BODY
@@ -112,36 +115,78 @@ stmt_list :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
         return ()
     }
     weights := list(u32)
-    total_all: u64 = 0
-    for i in 0..stmts.len {
-        w := stmt_weight(&stmts[i], RUN_WEIGHT + 1)
-        weights.push(w)!
-        total_all += u64(w)
+    for i in 0..stmts.len { weights.push(stmt_weight(&stmts[i], RUN_WEIGHT + 1))! }
+    runs := runs_of(weights.items)
+    for r in runs.items {
+        if r.outline {
+            try fg.outline_run(stmts[r.start..r.end])
+        } else {
+            for j in r.start..r.end { try fg.stmt_block(&stmts[j]) }
+        }
     }
-    if total_all <= u64(RUN_WEIGHT) {
-        for i in 0..stmts.len { try fg.stmt_block(&stmts[i]) }
-        return ()
+}
+
+/// How `stmt_list` deals out statements of these weights: consecutive ranges, each moved to
+/// a helper (`outline`) or left inline.
+runs_of :: fn(weights: []const u32) -> List((start: usize, end: usize, outline: bool)) needs Alloc {
+    out := list((start: usize, end: usize, outline: bool))
+    total_all: u64 = 0
+    for w in weights { total_all += u64(w) }
+    if weights.len < 2 or total_all <= u64(RUN_WEIGHT) {
+        out.push((start: 0, end: weights.len, outline: false))!
+        return out
     }
     i: usize = 0
-    while i < stmts.len {
+    while i < weights.len {
         // A statement too big for a run stays here: its own blocks are split.
-        if weights.items[i] > RUN_WEIGHT {
-            try fg.stmt_block(&stmts[i])
+        if weights[i] > RUN_WEIGHT {
+            out.push((start: i, end: i + 1, outline: false))!
             i += 1
             continue
         }
         start := i
         total: u32 = 0
-        while i < stmts.len and weights.items[i] <= RUN_WEIGHT and total + weights.items[i] <= RUN_WEIGHT {
-            total += weights.items[i]
+        while i < weights.len and weights[i] <= RUN_WEIGHT and total + weights[i] <= RUN_WEIGHT {
+            total += weights[i]
             i += 1
         }
-        if total < MIN_RUN {
-            for j in start..i { try fg.stmt_block(&stmts[j]) }
-        } else {
-            try fg.outline_run(stmts[start..i])
-        }
+        out.push((start: start, end: i, outline: total >= MIN_RUN))!
     }
+    return out
+}
+
+/// Whether generating `def`'s body moves some run of statements into a helper, so that its
+/// locals must live in the frame: it is long, and some block of it has a run to move.
+outlines :: fn(def: ^const Func) -> bool needs Alloc {
+    if not long_body(def) { return false }
+    b := def.body else return false
+    found := false
+    any_outlined(b, &found)
+    return found
+}
+
+/// Sets `found` if a block in `e` has a run of statements to move into a helper.
+any_outlined :: fn(e: ^Expr, found: ^bool) needs Alloc {
+    if found^ { return () }
+    match e.kind {
+        .Block(blk) => if block_outlines(blk) { found^ = true }
+        .Loop(x) => if block_outlines(x.body) { found^ = true }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(c: ^Expr) { any_outlined(c, found) })
+}
+
+/// Whether `stmt_list` moves some run of the statements of `blk` into a helper.
+block_outlines :: fn(blk: ^tir.Block) -> bool needs Alloc {
+    weights := list(u32)
+    defer weights.deinit()
+    for i in 0..blk.stmts.len { weights.push(stmt_weight(&blk.stmts[i], RUN_WEIGHT + 1))! }
+    runs := runs_of(weights.items)
+    defer runs.deinit()
+    for r in runs.items {
+        if r.outline { return true }
+    }
+    return false
 }
 
 /// Emits the statements `stmts` as the body of a helper.

@@ -25,6 +25,11 @@ caller :: fn(xs: []i32) needs Net {
     fact :: fn(n: u64) -> u64 => if n is 0 { 1 } else { n * fact(n - 1) }
     _ = fact(5)
     bad :: fn(n: i32) -> i32 => if n is 0 { total } else { bad(n - 1) }   //~ ERROR cannot call itself
+    // Nor through a function literal written in it.
+    also_bad :: fn(n: i32) -> () {   //~ ERROR cannot call itself
+        total += n
+        apply(xs, fn(x) { also_bad(x); return x })
+    }
     g := fn(x: i32) -> i32 => x + total    //~ ERROR only be bound with `::`
     p: ^fn(x: i32) -> i32 = fn(x) => x + total   //~ ERROR cannot be a function pointer
     q: ^fn(x: i32) -> i32 = fn(x) => x * 3
