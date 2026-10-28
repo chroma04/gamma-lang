@@ -30,11 +30,16 @@ By design / not worth conceding:
 - getpid (unique names come from `Rand`), env var set (unsafe with threads; child env via
   SpawnOptions), `Test.fail` loc (`expect(false, msg)`), `make_dir` mode (set_mode after).
 
-## Being implemented in s50 (see decisions/054)
-L1 `else` fallback joins like §7.12 · L2 const-adding coercions inside `?`/`!` · L3 arrays
-of one element type join as `[]const T` · L4 `needs`/`handler`/`foreign` contextual +
-parse-error follow-up bug · L5 numbered placeholders `{0}` · L6 `{:q}` quoted strings ·
-L7 local struct/union types · L8 lint for element pointers kept across a List growth ·
-S1 Unicode trim/fields in std/text · S2 Fs canonical/read_link/symlink/set_mode/
-set_modified · S3 Proc try_wait + SpawnOptions.program · S4 pub `handle` on Fs/Net/Proc
-handle types · S5 Env on threads (thread.defaults) · S6 Channel `drained`.
+## Implemented in s50 (decisions/054)
+`else` join, const-adding coercions in `?`/`!`, array joins (if/match/for-tuple), contextual
+`needs`/`handler`/`foreign`, `{0}` + `{:q}`, local struct/union, lint stale-element-pointer,
+std/text Unicode trim/fields, Channel drained, Fs canonical/read_link/symlink/set_mode/
+set_modified, Proc try_wait + SpawnOptions.program, pub handles, Env on threads.
+
+## Open
+- stale-element-pointer misses growth through a method of the struct holding the list
+  (the common compiler shape, e.g. `p.alloc_expr()` while holding `&p.exprs.items[i]`).
+- Adding an intrinsic that the prelude uses needs a 2-stage build + seed refresh (s50 sys
+  worker); procedure now in docs/contributing.md. Watch.
+- Sandbox: worktree subagents' shells refuse compound commands (heredocs, `export … &&`,
+  `flock` chains) → they write wrapper scripts in the scratchpad (3 workers, s50).
