@@ -1,5 +1,10 @@
-//! The interpreter: runs a checked program by walking its typed IR.
+//! The interpreter: runs a checked program.
 //!
+//! - **Code**: a function's body is lowered on its first call (`code.gm`) into nodes with
+//!   sizes, offsets and word operations resolved, and compiled for a register machine
+//!   (`vm.gm`) that runs its statement structure, word arithmetic, simple places and calls
+//!   in one loop; the rest is evaluated by walking the nodes (`run.gm`, `stmt.gm`,
+//!   `calls.gm`).
 //! - **Memory** (`memory.gm`): a flat virtual address space where every allocation gets
 //!   a fresh, never reused address, so out-of-bounds, use-after-free, null, misaligned
 //!   and read-only accesses are found exactly (§18.4). Values are bytes in the target's

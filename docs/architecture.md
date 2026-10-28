@@ -411,13 +411,30 @@ them into static storage and the interpreter lays them out in its memory.
 `gamma run --backend=interp` and `gamma repl` run the program in the interpreter
 (`compiler/interp/`) instead of compiling it, and so need no C compiler. It implements the
 language exactly as the target would: target integer sizes, layouts and float semantics, with
-every checked operation checked. It walks the typed program:
+every checked operation checked.
 
-- **Values** are bytes in the target's layout, and each expression is evaluated into a
-  destination buffer of the size of its type. Buffers for intermediate values come from
-  scratch memory used as a stack, which each statement and call releases, so evaluating
-  allocates nothing. A local whose address is never taken lives in its frame's part of that
-  memory; the others get an allocation of their own.
+- **Code.** A function's body is lowered when the function is first called (`code.gm`):
+  the typed IR becomes nodes that carry what running them needs, so that nothing is looked
+  up by type at run time: the size of every value, the frame offsets of locals, the offsets
+  of fields, the sizes of elements, the tags of variants, and operations specialized for the
+  values that fit in a machine word (integers of 8 to 64 bits, `f32` and `f64`, booleans,
+  pointers), which are computed as 64-bit words rather than as bytes.
+- **The register machine** (`vm.gm`) runs the body. Its statement structure (blocks with
+  their `defer`s, `if`, loops, `match`, `return`, `break`, `continue`), its arithmetic and
+  comparisons on words, the places it can address (locals and their fields, dereferences,
+  indexing of slices, arrays and pointers) and its calls of named functions are compiled into
+  a flat list of instructions on word registers, which one loop executes. Every other
+  construct is handed, as a whole subtree, to the tree evaluator (`run.gm`, `stmt.gm`,
+  `calls.gm`), which covers the whole language over the same nodes: the machine only takes
+  the common paths. The registers, and slots for values that are not words (`match`
+  scrutinees, arguments and results of calls), live in the frame's storage after its locals.
+  A `break` or `continue` that a subtree raises to a loop of the machine jumps to it; other
+  flows leave the body as they would leave the tree's.
+- **Values** are bytes in the target's layout, and the tree evaluates each expression into a
+  destination buffer of the size of its type (or a word into a `u64`). Buffers for
+  intermediate values come from scratch memory used as a stack, which each statement and
+  call releases, so evaluating allocates nothing. A local whose address is never taken lives
+  in its frame's part of that memory; the others get an allocation of their own.
 - **Memory** (`memory.gm`) is a flat address space in which every allocation gets fresh
   addresses and freed ones are remembered, so out-of-bounds, use-after-free, null, misaligned
   and read-only accesses trap with a message that says which.
@@ -438,9 +455,11 @@ every checked operation checked. It walks the typed program:
   `@asm` runs only through the C back end (`gamma run` switches to it by itself), and
   `native:` conformance tests mark such tests.
 
-The interpreter is slower than compiled code by a factor that depends on the program (a
-hundred times on the slowest tests when the compiler is a Debug build). It traps where the
-C back end does, with the same messages.
+The interpreter is slower than compiled code by a factor that depends on the program, and
+traps where the C back end does, with the same messages. Being a Gamma program itself, it
+gains from what makes generated C faster: a `match` on a union switches on its tag, tests
+patterns where the value is rather than on a copy, and `#inline` helpers are inlined into
+every translation unit of a split build.
 
 ## The C back end
 
@@ -511,6 +530,15 @@ checked operations takes minutes, 50,000 hours. A generated function of more tha
 2,000 temporaries, several times more than the largest functions of ordinary programs,
 is therefore marked `GM_LONG_FN`, which compiles it without optimization (`optnone`)
 on those versions of Clang and means nothing elsewhere.
+
+A `match` tests its arms' patterns in order, each jumping to the next arm when it fails
+(`calls.gm`). The value tested is a temporary copy of the scrutinee, except when the
+scrutinee is a large value (a union, say) that is a place and no arm has a guard: nothing
+can then write the place between the tests, which only read it, and the patterns are
+tested where it is (a condition `if p := place` always is). A `match` of three or more arms
+on a union first switches on its tag to the first arm that can match each variant, so that
+dispatch costs one jump rather than a test per arm; the arms' own tests still run, so an
+arm whose nested pattern or guard fails falls through to the next as before.
 
 A function that is long because it has many statements, rather than one long chain, is
 split instead (`outline.gm`). When a body has more than 1,500 expression nodes, every
@@ -585,7 +613,12 @@ How the runtime is linked depends on the build mode:
   `GAMMA_C_UNITS=<n>` forces a split into `n` units (tests use it on small
   programs), which then fails. On four cores a Debug build of the compiler
   itself takes about a minute this way. In an optimized build a
-  small generated function is declared `inline`; split, it loses the hint.
+  small generated function is declared `inline`; split, it loses the hint. An
+  `#inline` function keeps it: its definition goes to the shared header as a C99
+  inline definition, and unit 0 declares it `extern`, which makes unit 0's copy the
+  one external definition, so every unit can inline it and its address is the same
+  in all of them. (Sharing the thousands of small functions this way would make every
+  unit compile them all.)
 - Safe builds are compiled at `-O2` like Checked builds but link the cached
   runtime object as Debug builds do (compiled with Fil-C, at `-O2`). Fil-C
   compiles slowly, and the runtime code a program reaches was half the time of

@@ -1,6 +1,9 @@
 # 051 gammac interpreter (s46, branch claude/gammac-interpreter; user: "work on an
 # interpreter for gammac so we can achieve parity in things like repl")
 
+- SUPERSEDED IN PART by 056 (s52): bodies are now lowered (code.gm) and run on a register
+  machine (vm.gm) with the tree evaluator (run.gm) over lowered nodes as fallback. The
+  memory model, values-as-bytes, frames, flows, fibers and threads below still hold.
 - compiler/interp/: TREE-WALKER over gammac TIR (not a port of the Rust bytecode VM;
   old Rust tree-walker at `git show 7e437d5^:src/interp/{eval,stmt,calls}.rs` was the
   structural reference). Values = BYTES in target layout (unlike compiler/eval's
