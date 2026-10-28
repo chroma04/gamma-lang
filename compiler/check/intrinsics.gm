@@ -483,12 +483,13 @@ tys3 :: fn(a, b, c: Ty) -> []Ty needs Alloc {
     return l.items
 }
 
-tys4 :: fn(a, b, c, d: Ty) -> []Ty needs Alloc {
+tys5 :: fn(a, b, c, d, e: Ty) -> []Ty needs Alloc {
     l := list(Ty)
     l.push(a)!
     l.push(b)!
     l.push(c)!
     l.push(d)!
+    l.push(e)!
     return l.items
 }
 
@@ -498,6 +499,7 @@ sys_sig :: fn(tys: ^types.Types, name: string) -> ?SysSig needs Alloc {
     u64_ty := tys.int(false, 64)
     u32_ty := tys.int(false, 32)
     u16_ty := tys.int(false, 16)
+    u8_ty := tys.int(false, 8)
     buf := tys.intern(.Slice(false, tys.int(false, 8)))
     string_ty := tys.string_ty()
     raw := tys.intern(.Rawptr)
@@ -527,6 +529,11 @@ sys_sig :: fn(tys: ^types.Types, name: string) -> ?SysSig needs Alloc {
         "fs_truncate" => SysSig(op: .FsTruncate, params: tys2(i64_ty, u64_ty), ret: i64_ty)
         "fs_sync" => SysSig(op: .FsSync, params: tys1(i64_ty), ret: i64_ty)
         "fs_cwd" => SysSig(op: .FsCwd, params: tys1(buf), ret: i64_ty)
+        "fs_canonical" => SysSig(op: .FsCanonical, params: tys2(string_ty, buf), ret: i64_ty)
+        "fs_read_link" => SysSig(op: .FsReadLink, params: tys2(string_ty, buf), ret: i64_ty)
+        "fs_symlink" => SysSig(op: .FsSymlink, params: tys2(string_ty, string_ty), ret: i64_ty)
+        "fs_set_mode" => SysSig(op: .FsSetMode, params: tys2(string_ty, u32_ty), ret: i64_ty)
+        "fs_set_modified" => SysSig(op: .FsSetModified, params: tys2(string_ty, i64_ty), ret: i64_ty)
         "net_connect" => SysSig(op: .NetConnect, params: tys2(string_ty, u16_ty), ret: i64_ty)
         "net_listen" => SysSig(op: .NetListen, params: tys2(string_ty, u16_ty), ret: i64_ty)
         "net_local_port" => SysSig(op: .NetLocalPort, params: tys1(i64_ty), ret: i64_ty)
@@ -537,15 +544,19 @@ sys_sig :: fn(tys: ^types.Types, name: string) -> ?SysSig needs Alloc {
         "net_shutdown" => SysSig(op: .NetShutdown, params: tys2(i64_ty, u32_ty), ret: i64_ty)
         "net_set_timeouts" => SysSig(op: .NetSetTimeouts, params: tys3(i64_ty, u64_ty, u64_ty), ret: i64_ty)
         "net_peer" => SysSig(op: .NetPeer, params: tys2(i64_ty, buf), ret: i64_ty)
-        "proc_spawn" => {
+        "proc_launch" => {
             strs := tys.intern(.Slice(true, string_ty))
-            SysSig(op: .ProcSpawn, params: tys4(strs, strs, string_ty, u32_ty), ret: i64_ty)
+            SysSig(op: .ProcLaunch, params: tys5(strs, strs, string_ty, string_ty, u32_ty), ret: i64_ty)
         }
         "proc_write_in" => SysSig(op: .ProcWriteIn, params: tys2(i64_ty, string_ty), ret: i64_ty)
         "proc_close_in" => SysSig(op: .ProcCloseIn, params: tys1(i64_ty), ret: i64_ty)
         "proc_read_out" => SysSig(op: .ProcReadOut, params: tys2(i64_ty, buf), ret: i64_ty)
         "proc_wait" => SysSig(op: .ProcWait, params: tys1(i64_ty), ret: i64_ty)
         "proc_kill" => SysSig(op: .ProcKill, params: tys1(i64_ty), ret: i64_ty)
+        "proc_try_wait" => SysSig(op: .ProcTryWait, params: tys1(i64_ty), ret: i64_ty)
+        "env_args" => SysSig(op: .EnvArgs, params: none, ret: tys.intern(.Slice(true, string_ty)))
+        "env_var" => SysSig(op: .EnvVar, params: tys1(string_ty), ret: tys.optional(string_ty))
+        "env_exit" => SysSig(op: .EnvExit, params: tys1(u8_ty), ret: unit)
         "thread_spawn" => SysSig(op: .ThreadSpawn, params: tys2(raw, raw), ret: i64_ty)
         "thread_join" => SysSig(op: .ThreadJoin, params: tys1(i64_ty), ret: i64_ty)
         "thread_detach" => SysSig(op: .ThreadDetach, params: tys1(i64_ty), ret: i64_ty)

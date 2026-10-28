@@ -1912,6 +1912,8 @@ The following effects are predeclared. `main` and tests may perform any of them;
 
 **Buffered output.** The default `Out` handler may buffer what it is given, but the bytes are handed to the system before the program waits on anything outside its thread: before reading standard input, a file, a socket or a child's output, connecting or accepting, waiting for a child or a thread, sleeping, waiting on a futex (and so on a lock, condition variable or channel), starting a child, trapping, and exiting. A program that answers requests over its standard streams therefore needs no flush: its answer is out by the time it waits for the next request. The default `Err` handler does not buffer. `Out` has no `flush` operation, since no handler other than the default one would need it.
 
+The in-memory file system of the `Fs` test handler has no symbolic links (`symlink` and `read_link` fail with `Unsupported`); `canonical` gives the absolute path of an existing entry (every path is relative to the root `/`), and `set_mode` and `set_modified` change what `stat` reports as `mode` and `modified` (new files have mode `0o644` and directories `0o755`).
+
 Any of these may also be handled by user handlers; only `Sys` cannot. `Test` (§3.8) is predeclared too but is not ambient: only test and benchmark bodies are given a handler for it.
 
 ### 12.10 `Sys`
@@ -2701,7 +2703,7 @@ All of these perform `Sys`.
 
 Gamma adopts the C11 memory model.
 
-- **Threads** are created by the library (`std/thread`), which requires `Sys`. A thread starts by calling a function pointer `^fn(arg: rawptr) needs Sys` (or with an empty set); it begins with no handlers installed and installs its own. Second-class values, handlers and continuations cannot cross threads, because only function pointers and data can be passed.
+- **Threads** are created by the library (`std/thread`), which requires `Sys`. A thread starts by calling a function pointer `^fn(arg: rawptr) needs Sys` (or with an empty set); it begins with no handlers installed and installs its own (`thread.defaults` installs those of the ambient effects, including `Env`, whose `exit` ends the process once the thread body has unwound). Second-class values, handlers and continuations cannot cross threads, because only function pointers and data can be passed.
 - A **data race** — two accesses to the same memory location from different threads, at least one a write, at least one non-atomic, not ordered by happens-before — is undefined behavior.
 - **Atomics** are intrinsics on integer, `bool` and pointer places, with an explicit memory order — a value of the core type `MemoryOrder`: `.Relaxed`, `.Acquire`, `.Release`, `.AcqRel` or `.SeqCst` — as in C11:
 
@@ -3038,10 +3040,10 @@ Env   :: effect {
 `Clock.wall` gives Unix time in nanoseconds. `Fs`, `Net` and `Proc` are declared by the core library with operations for files, directories, sockets and child processes whose exact set is outside the scope of this specification; the language requires only that they exist, report failures as `IoError`, and have the default and test handlers of §12.9. The reference core library's `Fs` is:
 
 ```
-File, Dir :: struct { … }                       // handles
+File, Dir :: struct { pub handle: i64 }          // handles: a number whose meaning is the issuing handler's
 OpenOptions :: struct { pub read: bool = true; pub write, append, create, truncate, exclusive: bool = false }
 FileKind :: union { File, Dir, Symlink, Other }
-FileInfo :: struct { pub size: u64; pub kind: FileKind; pub modified: i64 }   // Unix nanoseconds
+FileInfo :: struct { pub size: u64; pub kind: FileKind; pub modified: i64; pub mode: u32 }   // Unix nanoseconds; POSIX permission bits
 DirEntry :: struct { pub len: usize; pub kind: FileKind }                    // a name's length, and what it is
 SeekFrom :: union { Start, Current, End }
 Fs :: effect {
@@ -3060,13 +3062,18 @@ Fs :: effect {
     truncate: fn(f: File, size: u64) -> IoError!()
     sync: fn(f: File) -> IoError!()                             // flushes the file to the device
     cwd: fn(buf: []u8) -> IoError!usize                         // the working directory into buf; InvalidInput if too small
+    canonical: fn(path: string, buf: []u8) -> IoError!usize     // the absolute path, symlinks, `.` and `..` resolved, into buf; InvalidInput if too small
+    read_link: fn(path: string, buf: []u8) -> IoError!usize     // a symlink's target into buf; InvalidInput if too small or not a link
+    symlink: fn(target, path: string) -> IoError!()             // creates `path`, a symlink to `target`
+    set_mode: fn(path: string, mode: u32) -> IoError!()         // the permission bits (chmod)
+    set_modified: fn(path: string, ns: i64) -> IoError!()       // the modification time, in Unix nanoseconds
 }
 ```
 
 and its `Net` (TCP) is:
 
 ```
-Socket, Listener :: struct { … }               // handles
+Socket, Listener :: struct { pub handle: i64 }  // handles
 Shutdown :: union { Read, Write, Both }
 Net :: effect {
     connect: fn(host: string, port: u16) -> IoError!Socket
@@ -3086,7 +3093,7 @@ Net :: effect {
 and its `Proc` (child processes) is:
 
 ```
-Child :: struct { … }                           // a started child process
+Child :: struct { pub handle: i64 }              // a started child process
 Stdio :: union { Inherit, Null, Pipe }          // what a child's standard stream is connected to
 Stream :: union { Stdout, Stderr }
 SpawnOptions :: struct {
@@ -3095,24 +3102,32 @@ SpawnOptions :: struct {
     pub env: []const string = empty_slice(string)   // changes to the environment, in order: "NAME=value" sets, "NAME" removes
     pub clear_env: bool = false                 // the changes apply to an empty environment instead of ours
     pub group: bool = false                     // the child leads a process group of its own (a job object on Windows)
+    pub program: ?string = null                 // the file to run; null: argv[0]. Then argv[0] is only the name the child sees
 }
 Chunk :: struct { pub from: Stream; pub len: usize }
 ExitStatus :: union { Exited: u32, Signaled: i32 }   // its exit code, or the signal that ended it
 Proc :: effect {
-    spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // argv[0] without a separator is looked up in PATH
+    spawn: fn(argv: []const string, opts: SpawnOptions) -> IoError!Child   // the program (`program`, else argv[0]) without a separator is looked up in PATH
     write: fn(c: Child, bytes: []const u8) -> IoError!usize     // to a piped stdin; may write fewer bytes
     close_in: fn(c: Child)                                       // the child sees the end of its input
     read: fn(c: Child, buf: []u8) -> IoError!?Chunk              // from whichever piped output has data; null once all have ended
     wait: fn(c: Child) -> IoError!ExitStatus                     // closes our ends of its pipes, waits, releases the child
+    try_wait: fn(c: Child) -> IoError!?ExitStatus                // null while the child runs; a status releases it as `wait` does
     kill: fn(c: Child) -> IoError!()                             // ends it at once; it must still be waited for
 }
 ```
+
+A `File`, `Dir`, `Socket`, `Listener` or `Child` is a number: its meaning belongs to the handler that issued it, so a handler written in Gamma (a virtual file system, a fake network) creates handles with `File(handle: 7)` and reads them back with `f.handle`. The system handlers' handles are operating-system descriptors or table indexes, so building one by hand and passing it to the system handler is like passing an arbitrary integer to C.
+
+`FileInfo.mode` holds the POSIX permission bits (`0o755`); on Windows it is `0o444` for a file with the read-only attribute and `0o666` otherwise. `canonical` fails like `stat` for a path that does not exist. `read_link` gives the target as stored, so it may be relative; on Windows it reads symbolic links and junctions, and `symlink` makes a link to a directory when `target` (relative to the link) is one, with separators turned into backslashes. `set_mode` on Windows looks only at the owner-write bit (`0o200`), which clears or sets the read-only attribute. `set_modified` follows a final symlink, like `stat`, and leaves the access time alone. On WASI `canonical`, `read_link`, `symlink` and `set_mode` and `set_modified` fail with `Unsupported`.
+
+`Proc.try_wait` returns `null` while the child runs and its status once it has ended, releasing it as `wait` does (a child that returned a status cannot be waited for again). With `program` set, `spawn` runs that file (searched for in `PATH` when it has no separator) and `argv[0]` is only the name the child sees, as the first argument of `execv(path, argv)`.
 
 `Proc.kill` ends a child started with `group` together with every process it started that is still in its group, such as a program that a build tool runs; otherwise it ends the child alone.
 
 `Proc.read` waits on the child's piped output streams together, so a child that fills one while the parent reads the other cannot deadlock them. A program that never imports `std/process` and never performs `Proc` pays nothing for it.
 
-Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are called as methods (`f.read(buf)`, `sock.close()`, `child.write(bytes)`), by §7.10 rule 3. Where one effect has an operation of the same job for two handle types, the second carries the type in its name (`close_dir`, `close_listener`), since operation names within an effect are distinct (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code.
+Operations whose first parameter is a `File`, `Dir`, `Socket`, `Listener` or `Child` are called as methods (`f.read(buf)`, `sock.close()`, `child.write(bytes)`), by §7.10 rule 3. Where one effect has an operation of the same job for two handle types, the second carries the type in its name (`close_dir`, `close_listener`), since operation names within an effect are distinct (§12.1). `Env.exit`'s default handler unwinds to `main` (running `defer`s) and exits with the code. A thread started with `std/thread` gets `Env` from `thread.defaults` too: `args` and `var` answer as in `main`, and `exit` ends the thread body (running its `defer`s) and then the whole process with the code, without unwinding the frames of other threads.
 
 ---
 

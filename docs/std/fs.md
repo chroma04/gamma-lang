@@ -125,6 +125,16 @@ read_all :: fn(path: string) -> ReadError![]u8 needs Fs + Alloc
 The contents of the file at `path`, in memory from the current allocator; release it
 with `free(data)`.
 
+### `canonical_alloc`
+
+```gamma
+canonical_alloc :: fn(path: string) -> ReadError![]u8 needs Fs + Alloc
+```
+
+The absolute path of `path` with symbolic links, `.` and `..` resolved, in memory from the
+current allocator; release it with `free(path)`. `Fs.canonical` is the form that writes into
+a buffer you supply. The path must exist.
+
 ### `write_all_to`
 
 ```gamma

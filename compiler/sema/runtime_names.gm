@@ -4,7 +4,7 @@
 // is reserved for generated code and not listed.
 
 /// The runtime's `gm_` identifiers that do not end in a digit, sorted.
-RUNTIME_NAMES :: [281]string(
+RUNTIME_NAMES :: [290]string(
     "gm_alloc_check", "gm_alloc_tag", "gm_altstack_free", "gm_altstack_init", "gm_altstack_key",
     "gm_altstack_keyed", "gm_args", "gm_asyncify_start_rewind", "gm_asyncify_start_unwind",
     "gm_asyncify_stop_rewind", "gm_asyncify_stop_unwind", "gm_atag", "gm_atag_cap", "gm_atag_find",
@@ -14,7 +14,7 @@ RUNTIME_NAMES :: [281]string(
     "gm_clock_sleep", "gm_clock_wall", "gm_closure", "gm_cmd_unsafe", "gm_cont", "gm_cont_take",
     "gm_cover_counts", "gm_cover_dump", "gm_cover_init", "gm_cover_n", "gm_cover_path",
     "gm_cpu_count", "gm_cstr", "gm_cstr_array", "gm_ctl_perform", "gm_ctx_init", "gm_cur_fiber",
-    "gm_cv_u_", "gm_debug", "gm_dir", "gm_dir_put", "gm_dirs", "gm_env_cmp", "gm_env_var",
+    "gm_cv_u_", "gm_debug", "gm_dir", "gm_dir_put", "gm_dirs", "gm_env_cmp", "gm_env_exit", "gm_env_var",
     "gm_err_errno", "gm_errdefer_runs", "gm_exact_digits", "gm_f16_from", "gm_fault_sp",
     "gm_fd_above_std", "gm_fiber", "gm_fiber_cont", "gm_fiber_entry", "gm_fiber_finish",
     "gm_fiber_new", "gm_fiber_pool", "gm_fiber_slab", "gm_fiber_slab_used", "gm_field",
@@ -22,9 +22,9 @@ RUNTIME_NAMES :: [281]string(
     "gm_find", "gm_find_outer", "gm_find_program", "gm_finish_main", "gm_flush", "gm_fmt_ch",
     "gm_fmt_fields", "gm_fmt_float", "gm_fmt_hex_escape", "gm_fmt_int", "gm_fmt_seq", "gm_fmt_str",
     "gm_format", "gm_format_spec", "gm_frame", "gm_frame_overflow", "gm_free_cstr_list",
-    "gm_free_cstrs", "gm_fs_close", "gm_fs_close_dir", "gm_fs_cwd", "gm_fs_lstat", "gm_fs_make_dir",
-    "gm_fs_next_entry", "gm_fs_open", "gm_fs_open_dir", "gm_fs_read", "gm_fs_remove",
-    "gm_fs_remove_dir", "gm_fs_rename", "gm_fs_seek", "gm_fs_stat", "gm_fs_sync", "gm_fs_truncate",
+    "gm_free_cstrs", "gm_fs_canonical", "gm_fs_close", "gm_fs_close_dir", "gm_fs_cwd", "gm_fs_lstat", "gm_fs_make_dir",
+    "gm_fs_next_entry", "gm_fs_open", "gm_fs_open_dir", "gm_fs_read", "gm_fs_read_link", "gm_fs_remove",
+    "gm_fs_remove_dir", "gm_fs_rename", "gm_fs_seek", "gm_fs_set_mode", "gm_fs_set_modified", "gm_fs_stat", "gm_fs_symlink", "gm_fs_sync", "gm_fs_truncate",
     "gm_fs_write", "gm_futex_wait", "gm_futex_wake", "gm_hb_cap", "gm_hb_find", "gm_hb_index",
     "gm_hb_record", "gm_hb_slot", "gm_hb_tab", "gm_hb_used", "gm_hblock", "gm_heap_alloc",
     "gm_heap_free", "gm_heap_release", "gm_hval", "gm_ibp", "gm_io_error", "gm_is_batch",
@@ -35,9 +35,9 @@ RUNTIME_NAMES :: [281]string(
     "gm_net_set_timeouts", "gm_net_shutdown", "gm_next_entry", "gm_node", "gm_note_failure",
     "gm_ord", "gm_out_errno", "gm_overflow_handler", "gm_overflow_install", "gm_overflowing",
     "gm_path", "gm_path_call", "gm_pdir", "gm_pipe_cloexec", "gm_pipe_err", "gm_pipe_ready",
-    "gm_poison", "gm_proc", "gm_proc_close_in", "gm_proc_get", "gm_proc_kill", "gm_proc_put",
-    "gm_proc_read", "gm_proc_read_out", "gm_proc_spawn", "gm_proc_wait", "gm_proc_write",
-    "gm_proc_write_in", "gm_procs", "gm_quote_bytes", "gm_rand_fill", "gm_resolve", "gm_resume",
+    "gm_poison", "gm_proc", "gm_proc_close_in", "gm_proc_get", "gm_proc_kill", "gm_proc_launch", "gm_proc_put",
+    "gm_proc_read", "gm_proc_read_out", "gm_proc_try_wait", "gm_proc_wait", "gm_proc_wait_for", "gm_proc_write",
+    "gm_proc_write_in", "gm_procs", "gm_quote_bytes", "gm_rand_fill", "gm_reparse", "gm_resolve", "gm_resume",
     "gm_rop", "gm_round_digits", "gm_rt_acquire", "gm_rt_argc", "gm_rt_args", "gm_rt_fiber_tramp",
     "gm_rt_lock", "gm_rt_release", "gm_rt_str", "gm_rt_switch", "gm_run_main", "gm_run_main_fibers",
     "gm_scratch", "gm_scratch_grow", "gm_scratch_live", "gm_scratch_release", "gm_scratch_top",

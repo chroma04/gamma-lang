@@ -1,0 +1,71 @@
+// A handler written in Gamma issues its own handles: `File`, `Dir`, `Socket`, `Listener` and
+// `Child` are numbers whose meaning belongs to the handler (§21.7).
+fs :: import "std/fs"
+net :: import "std/net"
+process :: import "std/process"
+
+Virtual :: struct {
+    opened: u32
+}
+
+CONTENT :: "virtual file"
+
+handler Fs for ^Virtual {
+    open(self, path, o) => {
+        self.opened += 1
+        return fs.File(handle: 7)
+    }
+    close(self, f) => {}
+    read(self, f, buf) => {
+        if f.handle is not 7 { return !.InvalidInput }
+        n := buf.len.min(CONTENT.len)
+        buf[0..n].copy_from(CONTENT[0..n])
+        return n
+    }
+    write(self, f, bytes) => !.Unsupported
+    seek(self, f, offset, from) => !.Unsupported
+    stat(self, path) => !.NotFound
+    remove(self, path) => !.Unsupported
+    rename(self, from, to) => !.Unsupported
+    make_dir(self, path) => !.Unsupported
+    remove_dir(self, path) => !.Unsupported
+    open_dir(self, path) => fs.Dir(handle: 9)
+    next_entry(self, d, buf) => null
+    close_dir(self, d) => {}
+    lstat(self, path) => !.NotFound
+    truncate(self, f, size) => !.Unsupported
+    sync(self, f) => !.Unsupported
+    cwd(self, buf) => !.Unsupported
+    canonical(self, path, buf) => !.Unsupported
+    read_link(self, path, buf) => !.Unsupported
+    symlink(self, target, path) => !.Unsupported
+    set_mode(self, path, mode) => !.Unsupported
+    set_modified(self, path, ns) => !.Unsupported
+}
+
+main :: fn() needs Out + Alloc {
+    v := Virtual(opened: 0)
+    with &v {
+        f := Fs.open("anything", fs.OpenOptions()) else e => {
+            print("open failed: {}\n", e)
+            return
+        }
+        print("handle: {}\n", f.handle)
+        buf: [32]u8 = ---
+        n := f.read(buf[..]) else e => 0
+        print("read: {}\n", string(buf[0..n]))
+        Fs.close(f)
+        d := Fs.open_dir("dir") else e => fs.Dir(handle: 0)
+        print("dir handle: {}\n", d.handle)
+        wrong := Fs.read(fs.File(handle: 8), buf[..])
+        print("other handle: {}\n", wrong is !.InvalidInput)
+    }
+    print("opened: {}\n", v.opened)
+    c := process.Child(handle: 3)
+    s := net_handles()
+    print("child: {} {}\n", c.handle, s)
+}
+
+net_handles :: fn() -> i64 {
+    return net.Socket(handle: 4).handle + net.Listener(handle: 5).handle
+}

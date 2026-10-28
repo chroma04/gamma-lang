@@ -219,7 +219,7 @@ end_thread :: fn(m: ^Machine, id: u32) needs Run {
     t := rec.thread
     m.threads.list.items[usize(t)].state = .Done
     // A trap in a thread stops the program: the main thread reports it.
-    if m.threads.fatal is not null { m.threads.list.items[0].state = .Ready }
+    if m.threads.fatal is not null or m.threads.exit is not null { m.threads.list.items[0].state = .Ready }
     m.switch_thread(source.DUMMY) else {}
 }
 

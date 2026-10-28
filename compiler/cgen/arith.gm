@@ -87,6 +87,11 @@ arith_sys_name :: fn(op: tir.SysOp) -> string => match op {
     .FsTruncate => "fs_truncate"
     .FsSync => "fs_sync"
     .FsCwd => "fs_cwd"
+    .FsCanonical => "fs_canonical"
+    .FsReadLink => "fs_read_link"
+    .FsSymlink => "fs_symlink"
+    .FsSetMode => "fs_set_mode"
+    .FsSetModified => "fs_set_modified"
     .NetConnect => "net_connect"
     .NetListen => "net_listen"
     .NetLocalPort => "net_local_port"
@@ -97,12 +102,16 @@ arith_sys_name :: fn(op: tir.SysOp) -> string => match op {
     .NetShutdown => "net_shutdown"
     .NetSetTimeouts => "net_set_timeouts"
     .NetPeer => "net_peer"
-    .ProcSpawn => "proc_spawn"
+    .ProcLaunch => "proc_launch"
     .ProcWriteIn => "proc_write_in"
     .ProcCloseIn => "proc_close_in"
     .ProcReadOut => "proc_read_out"
     .ProcWait => "proc_wait"
     .ProcKill => "proc_kill"
+    .ProcTryWait => "proc_try_wait"
+    .EnvArgs => "env_args"
+    .EnvVar => "env_var"
+    .EnvExit => "env_exit"
     .ThreadSpawn => "thread_spawn"
     .ThreadJoin => "thread_join"
     .ThreadDetach => "thread_detach"
@@ -369,6 +378,23 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
         // `@name(args)` calls the runtime's `gm_name`, with slices passed as a pointer and
         // a length.
         .Sys(sop) => {
+            // The arguments and variables come from the runtime as slices and strings.
+            if sop is .EnvArgs {
+                k := fg.fresh()
+                fg.line(str.format("size_t argn{}; const void *argp{} = gm_args(&argn{});", k, k, k)!)
+                return fg.make_slice(t, str.format("argp{}", k)!, str.format("argn{}", k)!)
+            }
+            if sop is .EnvVar {
+                k := fg.fresh()
+                v := try fg.expr(&args[0])
+                addr := fg.addr_of(args[0].ty, v)
+                fg.line(str.format("const uint8_t *ev{}; size_t evn{};", k, k)!)
+                fg.line(str.format("bool evok{} = gm_env_var((const uint8_t *){}, {}, &ev{}, &evn{});", k, fg.slice_ptr(addr), fg.slice_len(addr), k, k)!)
+                s := fg.make_slice(fg.g.ty.string_ty(), str.format("ev{}", k)!, str.format("evn{}", k)!)
+                some := fg.make_some(t, s)
+                none := fg.make_none(t)
+                return fg.tmp(t, str.format("evok{} ? {} : {}", k, some, none)!)
+            }
             cargs := list(string)
             for i in 0..args.len {
                 a := &args[i]

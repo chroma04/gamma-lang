@@ -192,9 +192,12 @@ sys_run :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals:
             return ()
         }
         .CpuCount => { n = i64(thread.cpu_count()) }
-        .FsOpen, .FsClose, .FsRead, .FsWrite, .FsSeek, .FsStat, .FsRemove, .FsRename, .FsMakeDir, .FsRemoveDir, .FsOpenDir, .FsNextEntry, .FsCloseDir, .FsLstat, .FsTruncate, .FsSync, .FsCwd => { n = try m.sys_fs(span, op, args, vals) }
+        .FsOpen, .FsClose, .FsRead, .FsWrite, .FsSeek, .FsStat, .FsRemove, .FsRename, .FsMakeDir, .FsRemoveDir, .FsOpenDir, .FsNextEntry, .FsCloseDir, .FsLstat, .FsTruncate, .FsSync, .FsCwd, .FsCanonical, .FsReadLink, .FsSymlink, .FsSetMode, .FsSetModified => { n = try m.sys_fs(span, op, args, vals) }
         .NetConnect, .NetListen, .NetLocalPort, .NetAccept, .NetSend, .NetRecv, .NetClose, .NetShutdown, .NetSetTimeouts, .NetPeer => { n = try m.sys_net(span, op, args, vals) }
-        .ProcSpawn, .ProcWriteIn, .ProcCloseIn, .ProcReadOut, .ProcWait, .ProcKill => { n = try m.sys_proc(span, op, args, vals) }
+        .ProcLaunch, .ProcWriteIn, .ProcCloseIn, .ProcReadOut, .ProcWait, .ProcTryWait, .ProcKill => { n = try m.sys_proc(span, op, args, vals) }
+        .EnvArgs => { return m.perform_native(span, .Env, 0, empty_slice([]u8), dst) }
+        .EnvVar => { return m.perform_native(span, .Env, 1, vals, dst) }
+        .EnvExit => { return m.env_exit(span, m.get_uint(vals[0]).trunc(u8)) }
         _ => return !m.trap(span, "internal error: a thread operation reached the system services")
     }
     m.sys_ret(dst, n)
@@ -212,7 +215,7 @@ sys_read :: fn(m: ^Machine, span: source.Span, vals: []const []u8) -> Flow!i64 n
 /// The file-system services.
 sys_fs :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: []const []u8) -> Flow!i64 needs Run {
     h: i64 = -1
-    if args.len > 0 and op not in (tir.SysOp.FsOpen, .FsStat, .FsLstat, .FsRemove, .FsRename, .FsMakeDir, .FsRemoveDir, .FsOpenDir, .FsCwd) {
+    if args.len > 0 and op not in (tir.SysOp.FsOpen, .FsStat, .FsLstat, .FsRemove, .FsRename, .FsMakeDir, .FsRemoveDir, .FsOpenDir, .FsCwd, .FsCanonical, .FsReadLink, .FsSymlink, .FsSetMode, .FsSetModified) {
         h = sys_int(m, args[0].ty, vals[0])
     }
     match op {
@@ -266,9 +269,9 @@ sys_fs :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: 
             path := try m.sys_src(span, vals[0])
             info := (if op is .FsStat { Fs.stat(path) } else { Fs.lstat(path) }) else err => return sys_code(err)
             sp := m.slice_parts(vals[1])
-            count := sp.len.min(3)
+            count := sp.len.min(4)
             view := m.mem.write_view(sp.ptr, count * 8, 8) else err => return !m.mem_trap(span, err)
-            fields := [3]i64(info.size.bits(i64), sys_kind(info.kind), info.modified)
+            fields := [4]i64(info.size.bits(i64), sys_kind(info.kind), info.modified, i64(info.mode))
             for i in 0..us(count) { m.put_uint(view[i * 8..(i + 1) * 8], u128(fields[i].bits(u64))) }
             return 0
         }
@@ -311,6 +314,29 @@ sys_fs :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: 
         .FsCwd => {
             buf := try m.sys_dest(span, vals[0])
             return sys_count(Fs.cwd(buf))
+        }
+        .FsCanonical => {
+            path := try m.sys_src(span, vals[0])
+            buf := try m.sys_dest(span, vals[1])
+            return sys_count(Fs.canonical(path, buf))
+        }
+        .FsReadLink => {
+            path := try m.sys_src(span, vals[0])
+            buf := try m.sys_dest(span, vals[1])
+            return sys_count(Fs.read_link(path, buf))
+        }
+        .FsSymlink => {
+            target := try m.sys_src(span, vals[0])
+            path := try m.sys_src(span, vals[1])
+            return sys_unit(Fs.symlink(target, path))
+        }
+        .FsSetMode => {
+            path := try m.sys_src(span, vals[0])
+            return sys_unit(Fs.set_mode(path, m.get_uint(vals[1]).trunc(u32)))
+        }
+        .FsSetModified => {
+            path := try m.sys_src(span, vals[0])
+            return sys_unit(Fs.set_modified(path, sys_int(m, args[1].ty, vals[1])))
         }
         _ => return !m.trap(span, "internal error: not a file-system service")
     }
@@ -444,11 +470,12 @@ socket_on_host_thread :: fn(m: ^Machine, span: source.Span, op: HostOp) -> Flow!
 
 /// The child-process services.
 sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals: []const []u8) -> Flow!i64 needs Run {
-    if op is .ProcSpawn {
+    if op is .ProcLaunch {
         argv := try m.sys_strings(span, vals[0])
         env := try m.sys_strings(span, vals[1])
         dir := try m.sys_src(span, vals[2])
-        flags := m.get_uint(vals[3]).trunc(u32)
+        program := try m.sys_src(span, vals[3])
+        flags := m.get_uint(vals[4]).trunc(u32)
         defer argv.deinit()
         defer env.deinit()
         if argv.items.len is 0 { return SYS_INVALID }
@@ -460,6 +487,7 @@ sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals
             env: env.items,
             clear_env: sys_has(flags, 64),
             group: sys_has(flags, 128),
+            program: if sys_has(flags, 256) { program } else { null },
         )
         c := Proc.spawn(argv.items, opts) else err => return sys_code(err)
         handle := sys_next_handle(&m.sys)
@@ -490,6 +518,17 @@ sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []Expr, vals
             r := Proc.wait(c)
             _ = m.sys.procs.remove(h)
             status := r else err => return sys_code(err)
+            return match status {
+                .Exited(code) => i64(code)
+                .Signaled(sig) => i64(sig) + (i64(1) << 32)
+            }
+        }
+        .ProcTryWait => {
+            c := m.sys.procs.get(h) else return SYS_BADF
+            r := Proc.try_wait(c)
+            got := r else err => return sys_code(err)
+            status := got else return i64(1) << 33
+            _ = m.sys.procs.remove(h)
             return match status {
                 .Exited(code) => i64(code)
                 .Signaled(sig) => i64(sig) + (i64(1) << 32)

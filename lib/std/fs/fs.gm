@@ -66,6 +66,33 @@ pub read_all :: fn(path: string) -> ReadError![]u8 needs Fs + Alloc {
     return exact
 }
 
+/// The absolute path of `path` with symbolic links, `.` and `..` resolved, in memory from the
+/// current allocator; release it with `free(path)`. `Fs.canonical` is the form that writes into
+/// a buffer you supply. The path must exist.
+pub canonical_alloc :: fn(path: string) -> ReadError![]u8 needs Fs + Alloc {
+    cap: usize = 256
+    while true {
+        buf := try make(u8, cap)
+        n := Fs.canonical(path, buf) else e => {
+            free(buf)
+            // `InvalidInput` also says that the buffer is too small: retry with a larger one.
+            if e is .InvalidInput and cap < 1 << 20 {
+                cap *= 4
+                continue
+            }
+            return !.Io(e)
+        }
+        if n is cap { return buf }
+        exact := make(u8, n) else e => {
+            free(buf)
+            return !.Alloc(e)
+        }
+        exact.copy_from(buf[0..n])
+        free(buf)
+        return exact
+    }
+}
+
 /// Writes all of `bytes` to `f`, retrying short writes. A write that makes no progress
 /// (returns 0) fails with `.Other(0)`.
 pub write_all_to :: fn(f: File, bytes: []const u8) -> IoError!() needs Fs {
