@@ -2357,7 +2357,14 @@ vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: 
         off := us(info.offsets[p])
         i += 1
         match args[i - 1] {
-            .Reg(r) => m.wr_word(store[off..off + us(info.sizes[p])], regs[usize(r)])
+            .Reg(r) => {
+                // A word parameter kept in the frame's storage is a register there.
+                if m.word_locals and not info.addressed[p] and info.sizes[p] > 0 {
+                    store.ptr.cast([^]u64)[off / 8] = regs[usize(r)]
+                } else {
+                    m.wr_word(store[off..off + us(info.sizes[p])], regs[usize(r)])
+                }
+            }
             .Slot(at, size) => {
                 o := usize(at)
                 k := usize(size)
@@ -2366,8 +2373,15 @@ vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: 
         }
     }
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
+    // A result going to a temporary register is written to it (the registers are words of
+    // the frame's storage, the temporaries after its locals).
+    direct := false
+    if .Reg(r) := dst and m.word_locals and u64(r) * 8 >= fr.info.store_size {
+        regs[usize(r)] = 0
+        direct = true
+    }
     d := match dst {
-        .Reg(_) => b[0..us(n.size)]
+        .Reg(r) => if direct { fr.store[usize(r) * 8..usize(r) * 8 + us(n.size)] } else { b[0..us(n.size)] }
         .None => if n.size <= 8 { b[0..us(n.size)] } else { m.tmp(n.size) }
         .Slot(at) => fr.store[usize(at)..us(u64(at) + n.size)]
         .Ret => ret
@@ -2375,7 +2389,7 @@ vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: 
     res := m.enter(n.span, f, info, body, store, env, cx, installing, is_clause_lit, d)
     m.release(mk)
     try res
-    if .Reg(r) := dst { regs[usize(r)] = m.rd_word(d) }
+    if .Reg(r) := dst and not direct { regs[usize(r)] = m.rd_word(d) }
 }
 
 /// The word at offset `rel` of local `l` of the frame `levels` capture links up from `fr`.

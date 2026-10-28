@@ -855,8 +855,8 @@ new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret: []u8, env: ?^Frame,
         if fr.mem_buf.len > 0 { free(fr.mem_buf) }
         fr.mem_buf = make_fill(n.max(8), u64(0))!
     }
+    // A frame's addresses of locals are all 0 when it ends (`end_frame`).
     fr.mem = fr.mem_buf[0..n]
-    fr.mem.fill(0)
     fr.id = m.next_frame
     fr.fn_id = fn_id
     fr.info = info
@@ -887,10 +887,13 @@ frame_handle :: fn(m: ^Machine, fr: ^Frame) -> u32 needs Alloc {
 
 /// Ends frame `fr`: its allocations die and its handle is free again.
 end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
-    for a in fr.allocs.items { _ = m.mem.kill(a) }
-    fr.allocs.clear()
-    fr.labels.clear()
-    fr.defers.clear()
+    if fr.allocs.items.len > 0 {
+        for a in fr.allocs.items { _ = m.mem.kill(a) }
+        fr.allocs.clear()
+        fr.mem.fill(0)
+    }
+    if fr.labels.items.len > 0 { fr.labels.clear() }
+    if fr.defers.items.len > 0 { fr.defers.clear() }
     if fr.handle is not 0 {
         m.frames.items[us(fr.handle - 1)] = null
         m.free_frames.push(fr.handle - 1)!
