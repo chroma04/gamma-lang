@@ -243,6 +243,9 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Diagnostics
 
+- New lint `stale-element-pointer`: a pointer or slice into a list's items used after a
+  call on that list that may move them (`push`, `extend`, `reserve`, …, or a function given
+  the list by pointer).
 - `gamma lint` has a new rule, `mutated-copy`: a local holding a copy of a `List`, a
   `HashMap` or another value with a resizable buffer (`tys := cx.tys`) that is then
   changed as if it were the original (`tys.intern(k)`), which loses the change; a pointer
