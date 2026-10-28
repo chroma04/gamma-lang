@@ -19,7 +19,7 @@ main :: fn() needs Out {
     print("{1} {0}\n", ..(1, 2, 3))     //~ ERROR value 2 is not written by any placeholder
     print("{3}\n", ..(1, 2))            //~ ERROR the template writes value 3, but 2 values are given
     log("{1}\n", 5)                     //~ ERROR the template writes value 1, but 1 value is given (in an instantiation used here)
-    log("{0} {}\n", 5)                  //~ ERROR a template numbers all its placeholders or none (in an instantiation used here)
+    log("{0} {}\n", 5)                  //~ ERROR a template numbers all its placeholders or none
     log("{0:x}\n", 2.5)                 //~ ERROR needs an integer, for a base, not `f64` (in an instantiation used here)
     print("{:q}\n", 1)                  //~ ERROR needs a `string` or byte slice, for `q`, not `i32`
     print("{:q}\n", [2]u8(1, 2))        //~ ERROR needs a `string` or byte slice, for `q`
