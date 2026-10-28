@@ -130,9 +130,14 @@ stmt_list :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
 /// a helper (`outline`) or left inline.
 runs_of :: fn(weights: []const u32) -> List((start: usize, end: usize, outline: bool)) needs Alloc {
     out := list((start: usize, end: usize, outline: bool))
-    total_all: u64 = 0
-    for w in weights { total_all += u64(w) }
-    if weights.len < 2 or total_all <= u64(RUN_WEIGHT) {
+    // Only the statements small enough for a run can move. If they come to less than one
+    // run (a few statements beside a big one, such as a loop), moving them makes the C
+    // function hardly smaller, but its locals would have to live in the frame.
+    small: u64 = 0
+    for w in weights {
+        if w <= RUN_WEIGHT { small += u64(w) }
+    }
+    if weights.len < 2 or small <= u64(RUN_WEIGHT) {
         out.push((start: 0, end: weights.len, outline: false))!
         return out
     }

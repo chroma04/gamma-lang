@@ -60,12 +60,23 @@ Versions and what each kind of change means are described in
   twice as fast). Then `with` (except `with … on`) became instructions too: entering one
   costs about a sixth of what it did, and the code in its body runs as instructions rather
   than in the tree (a loop of handled performs inside a `with` runs over twice as fast).
+  A call between functions the register machine runs takes about half the work it did
+  (about 630 instructions of the interpreter instead of 1,180), and the machine's loop
+  keeps its state in registers again (see below): a loop of calls and performs runs
+  about 20 to 30% faster, `std_parse_float_table` about 12%.
 - **No function of the compiler is too long for Clang to optimize:** the C back end's
   `expr_node` and `builtin`, which Clang 19 and later (Apple clang 17 and later) compiled
   without optimization because of their size, are split into smaller functions.
 - **Long functions whose blocks are short keep their locals in C variables** in the
   generated C. Only a function some of whose statements are moved into helper functions
-  needs them in its frame struct, which the C compiler cannot keep in registers.
+  needs them in its frame struct, which the C compiler cannot keep in registers. A block's
+  statements are moved only when the small ones among them add up to a helper's worth: a
+  few statements beside one long loop stay, and so does the speed of the loop.
+- **Filling, copying and popping are inlined everywhere:** `fill` and `copy_from` on
+  slices and `pop` on lists are `#inline`, and `fill` is a loop without bounds checks
+  that the C compiler turns into `memset` in Debug and Checked builds too. `push` checks
+  for room without a call. (`push` is not `#inline`: inlining it at every call site made
+  the compiler's own build about 11% slower for about 0.6% more speed.)
 - **A `match` on a union switches on its tag** in the generated C, instead of testing the
   arms one after another, and tests the patterns of a large value that is a place where it
   is, without copying it first (unless an arm has a guard).

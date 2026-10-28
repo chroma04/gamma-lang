@@ -1,12 +1,14 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-28) — PRs #1–#105 merged, v0.1.0 + rust-reference-final tagged
-- s54 (branch claude/interp-perf-3): VM round 3 (decisions/056 "Round 3"): Perform +
-  patterns + slot building in VM, word locals/fields/constants AS REGISTERS (frame store =
-  register file), mark elision, fused slice ld/st, lean loops/calls; vm_run kept under
-  GM_LONG_FN (vm_slow). utf8 4.3 → 2.1 s, parse_float 0.73 → 0.38, structs bench 2.6x.
-- s52/s53 (#104, #105): interpreter lowered Nodes + register machine, then VM round 2;
-  cgen match switch, #inline shared, frame locals unless outlined (decisions/056).
+## State (2026-10-28) — PRs #1–#106 merged, v0.1.0 + rust-reference-final tagged
+- s55 (branch claude/perf-round-4): PERF ROUND 4 (decisions/057): `with` in the VM
+  (CxSave/WithLit/WithDecl/CxRestore, Deferred.cx), fused vm_call fast path (call ~1180 →
+  ~627 instrs), cgen outline rule fix (vm_run locals back in C vars), core #inline
+  fill/copy_from/pop (push measured: +11% build, not taken), cgen expr_node/builtin split
+  (no GM_LONG_FN left).
+- s52–s54 (#104–#106): interpreter lowered Nodes + register machine, rounds 1–3
+  (decisions/056): word locals as registers, Perform/patterns/slots in VM; cgen match
+  switch, #inline shared across units. Keep vm_run < 2000 names (vm_slow for cold instrs).
 - s51 (branch claude/zealous-goodall-3g4xqc): PERFORMANCE (decisions/055): long chains
   linear (complex_free, value_path), hashed module scopes, layout cache generations,
   compiler built Checked via compiler/gamma.toml, big optimized builds split into units,
@@ -50,7 +52,8 @@
    harness Watch thread → Proc.try_wait, pain-points.md "Open", Windows CI of the harness.
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
-3. VM follow-ups in decisions/020; bugs-open.md.
+3. VM follow-ups: decisions/057 "Not done" (calls below ~600 need frames without Frame
+   objects; `with … on`, value loops still tree); bugs-open.md.
 4. Keep docs current with every change: CHANGELOG Unreleased, docs/std regen
    (`gamma doc lib/std --all -o docs/std`), lib/ `gamma fmt`-formatted (tests/fmt.rs).
 
@@ -59,9 +62,9 @@
                   self-hosting.md (gammac stages), gammac-cli.md (porting the gamma commands),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
 - architecture/   overview.md (code map — update!), sema-notes.md
-- decisions/      001–056, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
+- decisions/      001–057, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51), 056 interpreter VM (s52). `ls decisions/` for the rest.
+                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51), 056 interpreter VM (s52), 057 perf round 4 (s55). `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

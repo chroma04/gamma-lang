@@ -451,6 +451,12 @@ every checked operation checked.
 
   A `break` or `continue` that a subtree raises to a loop of the machine jumps to it;
   other flows leave the body as they would leave the tree's.
+  - *Calls.* A call of a function whose body the machine runs, with its parameters in
+    the frame's storage, takes a short path: the arguments go from registers and slots
+    straight to the callee's storage (taken from scratch memory), its frame comes from a
+    pool of finished frames, and the result goes straight to the caller's register or
+    slot. Other calls (through fibers, threads, parameters with addresses) go the general
+    way.
   - *Handler contexts.* The machine keeps the current handler context: a `with` records
     it, installs its handlers on top, and goes back to it when left, by its end, by a
     `break` out of it (from its body or from a clause), by a jump out of a loop around it,

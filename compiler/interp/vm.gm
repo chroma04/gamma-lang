@@ -1878,11 +1878,15 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
     regs := fr.store.ptr.cast([^]u64)
     ins := code.ins.ptr
     pc: usize = 0
-    // The registers of the constants.
+    // The registers of the constants (usually a few: copied a word at a time).
     if code.consts.len > 0 {
-        cb := us(code.regs_off)
-        ck := code.consts.len * 8
-        fr.store[cb..cb + ck].copy_from(code.consts.ptr.cast([^]u8)[0..ck])
+        cr := us(code.regs_off / 8)
+        cs := code.consts.ptr
+        k: usize = 0
+        while k < code.consts.len {
+            regs[cr + k] = cs[k]
+            k += 1
+        }
     }
     while true {
         match ins[pc] {
@@ -2107,16 +2111,16 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             .NoArm(n) => return !m.trap(n.span, "no match arm matched the scrutinee")
             .RetW(r) => {
                 m.wr_word(dst, regs[usize(r)])
-                return m.vm_return(act, a.cx, dst)
+                break
             }
             .RetEval(n) => {
                 m.ev(act, n, dst) else f => {
                     pc = try m.vm_flow(&act, a.cx, code, regs, f)
                     continue
                 }
-                return m.vm_return(act, a.cx, dst)
+                break
             }
-            .Ret => return m.vm_return(act, a.cx, dst)
+            .Ret => break
             .Mark(r) => {
                 k := usize(r)
                 regs[k] = u64(m.scratch.cur)
@@ -2155,7 +2159,7 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             .RetSlot(at, size) => {
                 o := usize(at)
                 dst.copy_from(fr.store[o..o + usize(size)])
-                return m.vm_return(act, a.cx, dst)
+                break
             }
             .CxSave(r) => { regs[usize(r)] = u64(act.cx) }
             .CxRestore(r) => m.vm_cx_restore(&act, regs, r)
@@ -2177,6 +2181,9 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
         }
         pc += 1
     }
+    // The body returns, its result in `dst`.
+    if fr.defers.items.len is 0 and act.cx is a.cx { return () }
+    return m.vm_return(act, a.cx, dst)
 }
 
 /// Runs the instruction at `pc` of `code` if it is one that `vm_run` leaves to it (those of
@@ -2436,8 +2443,90 @@ vm_unwind :: fn(m: ^Machine, a: Act, height: usize, run_err: bool) -> Flow!() ne
 }
 
 /// A call of `f` with the arguments `args`; its result goes to `dst` (`ret` is the
-/// function's own result).
-vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run => m.vm_invoke(a, f, null, a.cx, null, false, null, args, dst, n, regs, ret)
+/// function's own result). The common call, of a body the machine runs whose parameters
+/// all stay in its frame's storage, outside fibers and other threads, is made here, doing
+/// what `vm_invoke` and `enter` do for it; any other goes through them.
+vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+    info := m.fn_info(f)
+    marker: u8 = 0
+    code := info.vm else return m.vm_invoke(a, f, null, a.cx, null, false, null, args, dst, n, regs, ret)
+    if info.addressed_params or args.len is not info.params.len or info.cost > MAX_FRAME or m.depth >= MAX_DEPTH or (&marker).addr() < m.stack_floor or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 {
+        return m.vm_invoke(a, f, null, a.cx, null, false, null, args, dst, n, regs, ret)
+    }
+    fr := a.fr
+    mk := m.mark()
+    store := m.tmp(info.frame_size)
+    m.vm_put_args(info, 0, args, regs, fr, store)
+    b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
+    direct := m.vm_direct(fr, dst, regs)
+    d := m.vm_dest(fr, dst, direct, n, ret, b[..])
+    tm := m.temps.items.len
+    callee := m.new_frame(f, info, d, null, store)
+    m.depth += 1
+    r := m.vm_run(Act(fr: callee, cx: a.cx), code, d)
+    m.depth -= 1
+    if m.temps.items.len > tm { m.kill_temps(tm) }
+    id := callee.id
+    m.end_frame(callee)
+    m.release(mk)
+    r else fl => {
+        if .Return(frame, _) := fl and frame is id {} else {
+            if .Trap(t) := fl and m.mode is .Debug { t.trace.push(TraceCall(fn_id: f, span: n.span))! }
+            return !fl
+        }
+    }
+    if .Reg(rr) := dst and not direct { regs[usize(rr)] = m.rd_word(d) }
+}
+
+/// Writes the arguments `args` of a call (in registers and slots of `fr`) to the storage
+/// `store` of the callee `info` describes, as its parameters from the `first` on.
+#inline
+vm_put_args :: fn(m: ^Machine, info: ^FnInfo, first: usize, args: []Arg, regs: [^]u64, fr: ^Frame, store: []u8) {
+    // Not `enumerate`: an iterator costs a call per element.
+    i: usize = 0
+    while i < args.len {
+        p := usize(info.params[first + i])
+        off := us(info.offsets[p])
+        match args[i] {
+            .Reg(r) => {
+                // A word parameter kept in the frame's storage is a register there.
+                if m.word_locals and not info.addressed[p] and info.sizes[p] > 0 {
+                    store.ptr.cast([^]u64)[off / 8] = regs[usize(r)]
+                } else {
+                    m.wr_word(store[off..off + us(info.sizes[p])], regs[usize(r)])
+                }
+            }
+            .Slot(at, size) => {
+                o := usize(at)
+                k := usize(size)
+                store[off..off + k].copy_from(fr.store[o..o + k])
+            }
+        }
+        i += 1
+    }
+}
+
+/// Whether a call's result going to `dst` is written straight to its register: a
+/// temporary register, which is a word of the frame's storage after its locals (it is
+/// zeroed first).
+#inline
+vm_direct :: fn(m: ^const Machine, fr: ^Frame, dst: Dest, regs: [^]u64) -> bool {
+    if .Reg(r) := dst and m.word_locals and u64(r) * 8 >= fr.info.store_size {
+        regs[usize(r)] = 0
+        return true
+    }
+    return false
+}
+
+/// Where the callee of a call (of node `n`) writes a result going to `dst`: its register
+/// if `direct`, else `b` for a word, a slot, the function's result `ret`, or scratch memory.
+#inline
+vm_dest :: fn(m: ^Machine, fr: ^Frame, dst: Dest, direct: bool, n: ^Node, ret: []u8, b: []u8) -> []u8 needs Alloc => match dst {
+    .Reg(r) => if direct { fr.store[usize(r) * 8..usize(r) * 8 + us(n.size)] } else { b[0..us(n.size)] }
+    .None => if n.size <= 8 { b[0..us(n.size)] } else { m.tmp(n.size) }
+    .Slot(at) => fr.store[usize(at)..us(u64(at) + n.size)]
+    .Ret => ret
+}
 
 /// A call of the function value in the slot at `at`, of type `callee.ty` (a second-class
 /// function or a function pointer), as `call_value` makes it.
@@ -2535,42 +2624,10 @@ vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: 
         off := us(info.offsets[us(info.params[0])])
         store[off..off + v.len].copy_from(v)
     }
-    // Not `enumerate`: an iterator costs a call per element.
-    i: usize = 0
-    while i < args.len {
-        p := usize(info.params[first + i])
-        off := us(info.offsets[p])
-        i += 1
-        match args[i - 1] {
-            .Reg(r) => {
-                // A word parameter kept in the frame's storage is a register there.
-                if m.word_locals and not info.addressed[p] and info.sizes[p] > 0 {
-                    store.ptr.cast([^]u64)[off / 8] = regs[usize(r)]
-                } else {
-                    m.wr_word(store[off..off + us(info.sizes[p])], regs[usize(r)])
-                }
-            }
-            .Slot(at, size) => {
-                o := usize(at)
-                k := usize(size)
-                store[off..off + k].copy_from(fr.store[o..o + k])
-            }
-        }
-    }
+    m.vm_put_args(info, first, args, regs, fr, store)
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
-    // A result going to a temporary register is written to it (the registers are words of
-    // the frame's storage, the temporaries after its locals).
-    direct := false
-    if .Reg(r) := dst and m.word_locals and u64(r) * 8 >= fr.info.store_size {
-        regs[usize(r)] = 0
-        direct = true
-    }
-    d := match dst {
-        .Reg(r) => if direct { fr.store[usize(r) * 8..usize(r) * 8 + us(n.size)] } else { b[0..us(n.size)] }
-        .None => if n.size <= 8 { b[0..us(n.size)] } else { m.tmp(n.size) }
-        .Slot(at) => fr.store[usize(at)..us(u64(at) + n.size)]
-        .Ret => ret
-    }
+    direct := m.vm_direct(fr, dst, regs)
+    d := m.vm_dest(fr, dst, direct, n, ret, b[..])
     res := m.enter(n.span, f, info, body, store, env, cx, installing, is_clause_lit, d)
     m.release(mk)
     try res
