@@ -2,9 +2,10 @@
 //
 // A Debug build compiles the runtime on its own and favors turnaround over whole-program
 // optimization, and the C compiler's time is almost all spent on the function bodies. Such
-// a build splits the program: every unit includes a shared header (types, frames,
-// declarations of every function and every piece of static data), unit 0 also defines the
-// data and holds the entry code, and the function bodies are dealt out among the units.
+// a build, and an optimized build of a very large program, splits the program: every unit
+// includes a shared header (types, frames, declarations of every function and every piece
+// of static data), unit 0 also defines the data and holds the entry code, and the function
+// bodies are dealt out among the units.
 //
 // The generated code is written with internal linkage (`static`), as one unit needs. A
 // split gives the functions and data external linkage instead: their names all start
@@ -37,6 +38,19 @@ MAX_UNITS :: 8
 
 /// How much function text (in bytes) makes a unit worth its own compiler process.
 UNIT_BYTES :: 96 * 1024
+
+/// How much function text makes an optimized build worth splitting into units of about
+/// this size. Below it the build is one unit, so the C compiler can inline across the
+/// whole program; far above it one unit takes minutes, and the units lose little speed.
+OPTIMIZED_UNIT_BYTES :: 4 * 1024 * 1024
+
+/// The number of units to compile `parts` as in an optimized build: `forced` if given,
+/// else one per `OPTIMIZED_UNIT_BYTES` of function text, at most one per processor and
+/// `MAX_UNITS`.
+pub optimized_unit_count :: fn(parts: ^const Parts, cpus: usize, forced: ?usize) -> usize {
+    if n := forced { return n.clamp(1, MAX_UNITS) }
+    return (parts.funcs.len / OPTIMIZED_UNIT_BYTES).clamp(1, cpus.clamp(1, MAX_UNITS))
+}
 
 /// The number of units to compile `parts` as on `cpus` processors: `forced` (from
 /// `GAMMA_C_UNITS`, which tests use to split small programs) if given, else one per
@@ -111,10 +125,12 @@ pub split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
     return Split(shared: shared, units: out.items)
 }
 
-/// `line` as an external declaration, if it is a `static` one (not `static inline`).
+/// `line` as an external declaration, if it is a `static` one (not `static inline`, except
+/// for a generated function that an optimized build marks `inline` because it is small).
 /// An `#inline` hint is dropped: a function cannot be inlined into another unit, and an
 /// `inline` definition without `static` would define no symbol for the others to call.
 external :: fn(line: string) -> ?string needs Alloc {
+    if r := str.strip_prefix(line, "static inline __attribute__((aligned(4))) ") { return str.format("__attribute__((aligned(4))) {}", r)! }
     if line.starts_with("static inline ") { return null }
     rest: string = ""
     if r := str.strip_prefix(line, "static ") {
@@ -257,6 +273,24 @@ test "an inline hint does not cross units" {
     with a.allocator() {
         expect_eq(external("static __attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f2(int a);") else "", "__attribute__((aligned(4))) int gm_f2(int a);")
         expect_eq(external("static __attribute__((noinline)) void gm_f3(void);") else "", "__attribute__((noinline)) void gm_f3(void);")
+        // A small function of an optimized build.
+        expect_eq(external("static inline __attribute__((aligned(4))) int gm_f4(int a) {") else "", "__attribute__((aligned(4))) int gm_f4(int a) {")
+        expect(external("static inline int gm_ga0(void) { return 0; }") is null)
+    }
+}
+
+test "optimized builds are split only when very large" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := Parts()
+        expect_eq(optimized_unit_count(&p, 4, null), 1)
+        expect_eq(optimized_unit_count(&p, 4, 3), 3)
+        big := list(u8)
+        str.repeat(&big, "x", OPTIMIZED_UNIT_BYTES * 2 + 1)!
+        p.funcs = big.items
+        expect_eq(optimized_unit_count(&p, 4, null), 2)
+        expect_eq(optimized_unit_count(&p, 1, null), 1)
     }
 }
 

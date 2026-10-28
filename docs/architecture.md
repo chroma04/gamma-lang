@@ -474,7 +474,7 @@ operating system, the architecture, whether it is a Fil-C target and whether `f1
 | `helpers.gm` | per-type equality, ordering and hashing |
 | `fiber.gm` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
 | `borrow.gm`, `constarg.gm` | parameters read in place; static storage for constant arguments |
-| `units.gm` | splitting a Debug build into translation units compiled in parallel |
+| `units.gm` | splitting a Debug build, or a very large optimized one, into translation units compiled in parallel |
 | `freestanding.gm`, `wasi.gm` | freestanding targets; WebAssembly for WASI |
 | `debug.gm`, `views.gm` (and `runtime/gdb_printers.py`, `runtime/lldb_formatters.py`) | debug information for `-g` |
 
@@ -540,7 +540,12 @@ How the runtime is linked depends on the build mode:
 
 - Checked and Fast builds are one translation unit, the runtime followed by the
   generated code, compiled at `-O2`. Everything in the runtime is `static`, so
-  the optimizer sees the whole program and drops what it does not use.
+  the optimizer sees the whole program and drops what it does not use. A very
+  large program (more than 4 MiB of generated function text, such as the
+  compiler itself) is split into units like a large Debug build (below) and
+  linked with the cached runtime: as one unit, gcc takes over five minutes on
+  the compiler's C, and the split build, at about a minute on four cores, runs
+  as fast.
 - Debug builds favor turnaround. Compiling the runtime is most of the work of
   compiling a small program, so it is compiled once on its own (with
   `GM_RT_SEPARATE` defined, which gives the declarations marked `GM_API` external
@@ -578,8 +583,9 @@ How the runtime is linked depends on the build mode:
   the build instead of being called with C's implicit `int` signature. Code of
   a shape the splitter does not recognize is compiled as one unit, unless
   `GAMMA_C_UNITS=<n>` forces a split into `n` units (tests use it on small
-  programs), which then fails. On four cores this brings building the
-  compiler itself from about 110 to about 40 seconds.
+  programs), which then fails. On four cores a Debug build of the compiler
+  itself takes about a minute this way. In an optimized build a
+  small generated function is declared `inline`; split, it loses the hint.
 - Safe builds are compiled at `-O2` like Checked builds but link the cached
   runtime object as Debug builds do (compiled with Fil-C, at `-O2`). Fil-C
   compiles slowly, and the runtime code a program reaches was half the time of

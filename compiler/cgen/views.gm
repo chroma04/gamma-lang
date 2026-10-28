@@ -133,7 +133,9 @@ view :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
 /// Whether the view of `t` is a struct (or union) of its own.
 is_aggregate :: fn(ty: ^CTypes, t: Ty) -> bool needs Alloc {
     match ty.kind(t) {
-        .Tuple(_, _), .Slice(_, _), .Optional(_), .Result(_, _) => return true
+        .Tuple(_, _), .Slice(_, _), .Result(_, _) => return true
+        // An optional pointer is a pointer that may be null.
+        .Optional(_) => return ty.repr(t) is not .Ptr
         .Adt(_, _) => {
             match ty.adt_of(t).kind {
                 .Struct(def) => return def.bits is null

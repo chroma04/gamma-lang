@@ -34,7 +34,8 @@ usage_errors :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 }
 
 unit_tests_pass :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    _ = try t.run_ok(t.gamma([_]string("test", "compiler")))
+    // In Debug mode, which checks the tests for leaks (the package builds in Checked mode).
+    _ = try t.run_ok(t.gamma([_]string("test", "--mode=debug", "compiler")))
     return ()
 }
 
@@ -88,23 +89,12 @@ fixed_point :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     // Stage 1 (the compiler under test) builds stage 2.
     stage2 := kit.join(dir, "gamma2")
     c := t.gamma([_]string("build", "-o", stage2, "compiler"))
-    // One C unit, so that `gamma2.c` holds the whole program.
-    c.set("GAMMA_C_UNITS", "1")
+    c.unset("GAMMA_C_UNITS")
     built := try t.run(c)
     try t.check(built.success(), "{} failed to compile itself:\n{}", t.cfg.compiler, built.err)
-    c1: string = try t.read(str.format("{}.c", stage2)!)
-    // Stage 2 generates the same C for itself.
-    c2 := try self_c(t, stage2, kit.join(dir, "gamma3"))
-    // A Debug build links the cached runtime, so its C file starts with the runtime's header
-    // only; `--emit-c` writes the runtime too. Compare the program's own C.
-    rt_h := try t.read(t.repo("runtime/gm_rt.h"))
-    rt_c := try t.read(t.repo("runtime/gm_rt.c"))
-    separate := str.format("#define GM_RT_SEPARATE 1\n{}\n", rt_h)!
-    if rest := str.strip_prefix(c1, separate) {
-        c1 = rest
-        whole := str.format("{}\n{}\n", rt_h, rt_c)!
-        c2 = str.strip_prefix(c2, whole) else return !t.fail("--emit-c does not start with the runtime")
-    }
+    // Stage 2 generates the same C for the compiler as stage 1.
+    c1 := try self_c(t, t.cfg.compiler, kit.join(dir, "stage1"))
+    c2 := try self_c(t, stage2, kit.join(dir, "stage2"))
     if d := first_difference(c1, c2) {
         return !t.fail("the C that stage 2 generates differs from stage 1's at line {}:\nstage 1: {}\nstage 2: {}", d.line, d.expected, d.actual)
     }

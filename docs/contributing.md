@@ -232,10 +232,10 @@ test runs through C (`gamma test` always does). The C lane needs a C compiler (`
 without one it is skipped, unless `GAMMA_TEST_C=1` is set (as in CI), which makes that a
 failure. The C runtime has its own tests (`tools/test.sh runtime/`, in `runtime/rt_test.c`).
 
-Large Debug builds are split into several C files compiled in parallel (see
+Large builds are split into several C files compiled in parallel (see
 [`architecture.md`](architecture.md#the-c-back-end)). Test programs are too small to be split,
 so CI runs the conformance tests and the examples with `GAMMA_C_UNITS=3` as well, which splits
-every Debug build into three units (and fails a build that cannot be split):
+every build except Safe ones into three units (and fails a build that cannot be split):
 
 ```sh
 GAMMA_C_UNITS=3 tools/test.sh conformance/ examples/

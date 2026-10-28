@@ -38,7 +38,7 @@ pub load_core :: fn(l: ^Loader, dir: string, mode: string) -> bool needs Alloc +
                 l.diags.report(source.DUMMY, str.format("core module `{}` does not declare `{}`", c.name, e)!)
                 continue
             }
-            l.modules.items[prelude].scope.push(Named(name: e, decl: d))!
+            l.add_named(prelude, e, d)
         }
     }
     return true
@@ -92,5 +92,5 @@ bind_module :: fn(l: ^Loader, prelude: usize, name: string, m: usize) needs Allo
     )
     ident := ast.Ident(name: name, span: source.DUMMY)
     l.decls.push(Decl(name: ident, module: prelude, item: item, state: .Module(m)))!
-    l.modules.items[prelude].scope.push(Named(name: name, decl: l.decls.items.len - 1))!
+    l.add_named(prelude, name, l.decls.items.len - 1)
 }

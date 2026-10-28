@@ -12,6 +12,7 @@
 ast :: import "../ast"
 diag :: import "../diag"
 fs :: import "std/fs"
+hash_map :: import "std/collections/hash_map"
 parse :: import "../parse"
 source :: import "../source"
 str :: import "std/str"
@@ -21,6 +22,8 @@ pub Module :: struct {
     pub name: string
     /// The top-level declarations by name, in the order they were declared.
     pub scope: List(Named)
+    /// The first declaration of each name of `scope` (see `add_named`).
+    index: hash_map.HashMap(string, usize)
     /// True for the core library's modules, whose public names are in the universe scope.
     pub is_prelude: bool
     /// True for the standard library's modules (under the std root).
@@ -423,6 +426,7 @@ pub(package) add_module :: fn(l: ^Loader, name: string, files: []const ast.File)
     l.modules.push(Module(
         name: name,
         scope: list(Named),
+        index: hash_map.hash_map(string, usize),
         is_prelude: false,
         is_std: false,
         dir: "",
@@ -495,16 +499,19 @@ collect_item :: fn(l: ^Loader, module: usize, item: ast.Item) needs Alloc {
         return
     }
     l.decls.push(Decl(name: name, module: module, item: item, state: .Unresolved))!
-    l.modules.items[module].scope.push(Named(name: name.name, decl: l.decls.items.len - 1))!
+    l.add_named(module, name.name, l.decls.items.len - 1)
 }
 
-/// The declaration of `name` in module `module`'s scope.
-pub lookup :: fn(l: ^const Loader, module: usize, name: string) -> ?usize {
-    for n in l.modules.items[module].scope.items {
-        if n.name is name { return n.decl }
-    }
-    return null
+/// Adds declaration `decl` to module `module`'s scope under `name`.
+add_named :: fn(l: ^Loader, module: usize, name: string, decl: usize) needs Alloc {
+    m := &l.modules.items[module]
+    m.scope.push(Named(name: name, decl: decl))!
+    if not m.index.contains(name) { m.index.put(name, decl)! }
 }
+
+/// The declaration of `name` in module `module`'s scope: the first one, if several have
+/// the name.
+pub lookup :: fn(l: ^const Loader, module: usize, name: string) -> ?usize => l.modules.items[module].index.get(name)
 
 /// Whether `item` is an import identical to declaration `prev`: the same path, the same
 /// visibility, and no attributes or type annotation.
@@ -772,6 +779,6 @@ show :: fn(l: ^const Loader, p: string) -> string needs Alloc {
 pub(package) add_member :: fn(l: ^Loader, module: usize, name: ast.Ident, item: ast.Item) -> usize needs Alloc {
     l.decls.push(Decl(name: name, module: module, item: item, state: .Unresolved))!
     id := l.decls.items.len - 1
-    l.modules.items[module].scope.push(Named(name: name.name, decl: id))!
+    l.add_named(module, name.name, id)
     return id
 }

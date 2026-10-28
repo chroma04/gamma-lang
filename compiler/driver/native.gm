@@ -261,7 +261,9 @@ windows_libs :: fn(target: load.Target) -> []const string needs Alloc {
 /// Compiles the translated program with `tc`.
 ///
 /// Checked and Fast builds compile the runtime and the generated code as one translation
-/// unit at `-O2`, so the optimizer sees the whole program. Debug builds favor turnaround:
+/// unit at `-O2`, so the optimizer sees the whole program; a program so large that one
+/// unit would take the C compiler minutes (the compiler itself) is split into units
+/// compiled in parallel, linked with the cached runtime. Debug builds favor turnaround:
 /// they are compiled at `-O1` (`-O0` with debug information, so every variable and line is
 /// there in the debugger) and linked with a runtime object compiled once and cached; without
 /// a usable cache they fall back to one translation unit. Safe builds (Fil-C, which compiles
@@ -275,7 +277,18 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     if generated.freestanding { return compile_object(b, tc, exe, opts) }
     opt := opt_level(&opts)
     debug := opts.mode is .Debug
-    separate := debug or opts.target.filc
+    forced: ?usize = null
+    if v := Env.var("GAMMA_C_UNITS") { forced = str.parse_int(usize, v) else null }
+    cpus := usize(thread.cpu_count())
+    // Safe builds are optimized, and keep every function in reach of inlining. Other
+    // optimized builds are one unit too unless the program is very large.
+    n: usize = 1
+    if debug {
+        n = cgen.unit_count(&generated.parts, cpus, forced)
+    } else if not opts.target.filc {
+        n = cgen.optimized_unit_count(&generated.parts, cpus, forced)
+    }
+    separate := debug or opts.target.filc or n > 1
     runtime: ?string = null
     if separate {
         flags := rt_flags(&opts)
@@ -284,10 +297,6 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     sources := list(string)
     if runtime is not null {
         prelude := str.format("#define GM_RT_SEPARATE 1\n{}\n", b.rt_h)!
-        // Safe builds are optimized, and keep every function in reach of inlining.
-        forced: ?usize = null
-        if v := Env.var("GAMMA_C_UNITS") { forced = str.parse_int(usize, v) else null }
-        n := if debug { cgen.unit_count(&generated.parts, usize(thread.cpu_count()), forced) } else { 1 }
         split_units: ?[]string = if n > 1 { cgen.split(&generated.parts, n) } else { null }
         if units := split_units {
             for u in units { sources.push(str.format("{}{}", prelude, u)!)! }

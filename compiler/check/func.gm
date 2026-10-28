@@ -248,6 +248,11 @@ pub FnCx :: struct {
     const_init: bool
     /// The function literals made for iterator arguments, by place.
     iterator_args: List(source.Span)
+    /// Set while checking the operands of an operator that mentions no complex constant
+    /// (see `expr`).
+    complex_free: bool
+    /// The last path found not to start with a module name (see `module_of`).
+    value_path: ?^const ast.Expr
 }
 
 /// A handler literal bound with `::` whose clauses are checked later, in the scope where
@@ -317,6 +322,8 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         block_temps: list(u32),
         const_init: false,
         iterator_args: list(source.Span),
+        complex_free: false,
+        value_path: null,
     )
 }
 
