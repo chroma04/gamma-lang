@@ -56,8 +56,18 @@ time first), split the two GM_LONG_FN compiler functions. Numbers: callgrind Ir 
 - Function-level self-cost diff of two programs (callgrind_annotate --inclusive=no
   --auto=no, names from a -g build's #line → `name ::`) isolates per-feature costs.
 
+## Tried and reverted: calls inside one vm_run loop
+- VmState (act, base, code, dst, call, pending) + VmCall record (caller fields, pc, dest,
+  mark) after the callee's store in scratch; vm_push/vm_pop; `Leave` as every body's last
+  instruction for flows to an in-loop caller. Correct (after reading args BEFORE zeroing
+  the direct result register — vm_direct clobbers arg 0, which shares the register), but
+  call ~731 instrs vs ~627 recursive, and the call-free dispatch loop +2.7% (`vs` fields
+  in memory, nested loop). The bookkeeping in Checked Gamma C (frame fields, scratch,
+  record writes: ~5-15 instrs per Gamma statement) costs as much as the C prologue and
+  Flow!() copies it saves. Not worth it unless the per-call bookkeeping itself shrinks.
+
 ## Not done / next
 - Call ~627: left are prologues + GM_STACK_CHECK of vm_call/vm_run (16 KB frame), Flow!()
-  result copies, frame field setup. Lower needs frames without Frame objects or a VM
-  calling convention that avoids re-entering vm_run (callee frames on a VM stack).
+  result copies, frame field setup (new_frame ~15 stores), scratch tmp + zeroing. A
+  cheaper call needs less per-call state (e.g. no Frame object for leaf VM bodies).
 - `with … on` and value loops still tree.

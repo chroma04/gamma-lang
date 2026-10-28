@@ -2456,6 +2456,7 @@ vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, reg
     fr := a.fr
     mk := m.mark()
     store := m.tmp(info.frame_size)
+    // The arguments are read before the result's register is cleared: it may hold one.
     m.vm_put_args(info, 0, args, regs, fr, store)
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
     direct := m.vm_direct(fr, dst, regs)
@@ -2508,7 +2509,7 @@ vm_put_args :: fn(m: ^Machine, info: ^FnInfo, first: usize, args: []Arg, regs: [
 
 /// Whether a call's result going to `dst` is written straight to its register: a
 /// temporary register, which is a word of the frame's storage after its locals (it is
-/// zeroed first).
+/// zeroed first, so the call's arguments must have been read: the first may be in it).
 #inline
 vm_direct :: fn(m: ^const Machine, fr: ^Frame, dst: Dest, regs: [^]u64) -> bool {
     if .Reg(r) := dst and m.word_locals and u64(r) * 8 >= fr.info.store_size {
@@ -2624,6 +2625,7 @@ vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: 
         off := us(info.offsets[us(info.params[0])])
         store[off..off + v.len].copy_from(v)
     }
+    // The arguments are read before the result's register is cleared: it may hold one.
     m.vm_put_args(info, first, args, regs, fr, store)
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
     direct := m.vm_direct(fr, dst, regs)
