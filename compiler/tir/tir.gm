@@ -694,6 +694,11 @@ pub SysOp :: union {
     FsTruncate
     FsSync
     FsCwd
+    FsCanonical
+    FsReadLink
+    FsSymlink
+    FsSetMode
+    FsSetModified
     NetConnect
     NetListen
     NetLocalPort
@@ -704,12 +709,16 @@ pub SysOp :: union {
     NetShutdown
     NetSetTimeouts
     NetPeer
-    ProcSpawn
+    ProcLaunch
     ProcWriteIn
     ProcCloseIn
     ProcReadOut
     ProcWait
     ProcKill
+    ProcTryWait
+    EnvArgs
+    EnvVar
+    EnvExit
     ThreadSpawn
     ThreadJoin
     ThreadDetach

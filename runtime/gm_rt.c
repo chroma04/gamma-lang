@@ -1873,6 +1873,14 @@ GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, s
 #endif
 }
 
+/* Ends the process with `code` after flushing buffered output (`Env.exit` on a thread, once its
+ * body has unwound). */
+GM_API void gm_env_exit(uint8_t code) {
+    gm_flush();
+    fflush(stderr);
+    exit(code);
+}
+
 /* ---- system services ---------------------------------------------------------------- */
 
 GM_API int64_t gm_io_error(int err) {
@@ -2075,8 +2083,8 @@ static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, b
 #else
     int64_t mtime = (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
 #endif
-    int64_t v[3] = {(int64_t)st.st_size, gm_mode_kind(st.st_mode), mtime};
-    memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
+    int64_t v[4] = {(int64_t)st.st_size, gm_mode_kind(st.st_mode), mtime, (int64_t)(st.st_mode & 07777)};
+    memcpy(out, v, sizeof(int64_t) * (n < 4 ? n : 4));
     return 0;
 }
 
@@ -2231,6 +2239,100 @@ GM_API int64_t gm_fs_cwd(void *p, size_t n) {
 }
 
 #ifdef GM_WASI
+GM_API int64_t gm_fs_canonical(const void *path, size_t len, void *p, size_t n) {
+    (void)path; (void)len; (void)p; (void)n;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_fs_read_link(const void *path, size_t len, void *p, size_t n) {
+    (void)path; (void)len; (void)p; (void)n;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_fs_symlink(const void *target, size_t tlen, const void *path, size_t len) {
+    (void)target; (void)tlen; (void)path; (void)len;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_fs_set_mode(const void *path, size_t len, uint32_t mode) {
+    (void)path; (void)len; (void)mode;
+    return gm_io_error(ENOTSUP);
+}
+GM_API int64_t gm_fs_set_modified(const void *path, size_t len, int64_t ns) {
+    (void)path; (void)len; (void)ns;
+    return gm_io_error(ENOTSUP);
+}
+#else
+GM_API int64_t gm_fs_canonical(const void *path, size_t len, void *p, size_t n) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    char *r = len == 0 ? NULL : realpath(s, NULL);
+    int err = len == 0 ? ENOENT : errno;
+    free(s);
+    if (r == NULL) return gm_io_error(err);
+    size_t rl = strlen(r);
+    int64_t res = (int64_t)rl;
+    if (rl > n) res = gm_io_error(EINVAL);
+    else if (rl > 0) memcpy(p, r, rl);
+    free(r);
+    return res;
+}
+
+GM_API int64_t gm_fs_read_link(const void *path, size_t len, void *p, size_t n) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    char *tmp = (char *)malloc(n + 1);
+    if (tmp == NULL) gm_trap("out of memory", NULL, 0, 0);
+    ssize_t r = readlink(s, tmp, n + 1);
+    int err = errno;
+    free(s);
+    int64_t res;
+    if (r < 0) res = gm_io_error(err);
+    else if ((size_t)r > n) res = gm_io_error(EINVAL);
+    else {
+        if (r > 0) memcpy(p, tmp, (size_t)r);
+        res = (int64_t)r;
+    }
+    free(tmp);
+    return res;
+}
+
+GM_API int64_t gm_fs_symlink(const void *target, size_t tlen, const void *path, size_t len) {
+    char *t = gm_path(target, tlen), *s = gm_path(path, len);
+    int r = t && s ? symlink(t, s) : -1;
+    int err = t && s ? errno : EINVAL;
+    free(t);
+    free(s);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+
+GM_API int64_t gm_fs_set_mode(const void *path, size_t len, uint32_t mode) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    int r = chmod(s, (mode_t)(mode & 07777));
+    int err = errno;
+    free(s);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+
+GM_API int64_t gm_fs_set_modified(const void *path, size_t len, int64_t ns) {
+    char *s = gm_path(path, len);
+    if (s == NULL) return gm_io_error(EINVAL);
+    int64_t sec = ns / 1000000000, nsec = ns % 1000000000;
+    if (nsec < 0) {
+        nsec += 1000000000;
+        sec -= 1;
+    }
+    struct timespec t[2];
+    t[0].tv_sec = 0;
+    t[0].tv_nsec = UTIME_OMIT;   /* the access time stays */
+    t[1].tv_sec = (time_t)sec;
+    t[1].tv_nsec = (long)nsec;
+    int r = utimensat(AT_FDCWD, s, t, 0);
+    int err = errno;
+    free(s);
+    return r != 0 ? gm_io_error(err) : 0;
+}
+#endif
+
+#ifdef GM_WASI
 /* WASI offers no sockets to open and no processes to start: every operation of the Net and
  * Proc effects fails with IoError.Unsupported. */
 GM_API int64_t gm_net_connect(const void *host, size_t len, uint16_t port) {
@@ -2252,9 +2354,10 @@ GM_API int64_t gm_net_set_timeouts(int64_t h, uint64_t recv_ns, uint64_t send_ns
     return gm_io_error(ENOTSUP);
 }
 GM_API int64_t gm_net_peer(int64_t h, void *p, size_t n) { (void)h; (void)p; (void)n; return gm_io_error(ENOTSUP); }
-GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
-                             size_t dir_len, uint32_t flags) {
-    (void)argv; (void)argc; (void)env; (void)envc; (void)dir; (void)dir_len; (void)flags;
+GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                              size_t dir_len, const void *program, size_t program_len, uint32_t flags) {
+    (void)argv; (void)argc; (void)env; (void)envc; (void)dir; (void)dir_len; (void)program; (void)program_len;
+    (void)flags;
     return gm_io_error(ENOTSUP);
 }
 GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
@@ -2264,6 +2367,7 @@ GM_API int64_t gm_proc_write_in(int64_t h, const void *data, size_t n) {
 GM_API int64_t gm_proc_close_in(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
 GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) { (void)h; (void)buf; (void)n; return gm_io_error(ENOTSUP); }
 GM_API int64_t gm_proc_wait(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_try_wait(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
 GM_API int64_t gm_proc_kill(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
 #else
 /* Resolves host:port for a stream socket (passive: for listening). */
@@ -2618,8 +2722,8 @@ static char **gm_child_env(const gm_rt_str *v, size_t n, int clear) {
     return out;
 }
 
-GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
-                             size_t dir_len, uint32_t flags) {
+GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                              size_t dir_len, const void *program, size_t program_len, uint32_t flags) {
     if (argc == 0) return gm_io_error(EINVAL);
     char **av = gm_cstr_array((const gm_rt_str *)argv, argc);
     int own_env = (flags & GM_PROC_CLEAR_ENV) || envc > 0;
@@ -2630,7 +2734,10 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     if (av == NULL || (own_env && ev == NULL) || cwd == NULL) {
         err = EINVAL;
     } else {
-        prog = gm_find_program(av[0], &err);
+        char *name = (flags & GM_PROC_PROGRAM) ? gm_cstr(program, program_len) : NULL;
+        if ((flags & GM_PROC_PROGRAM) && name == NULL) err = EINVAL;
+        else prog = gm_find_program(name != NULL ? name : av[0], &err);
+        free(name);
     }
     if (prog == NULL) {
         gm_free_cstrs(av, argc);
@@ -2854,7 +2961,8 @@ static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
     }
 }
 
-GM_API int64_t gm_proc_wait(int64_t h) {
+/* gm_proc_wait; with nohang, 2^33 if the child still runs (it is then not released). */
+static int64_t gm_proc_wait_for(int64_t h, int nohang) {
     gm_flush();
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
@@ -2865,6 +2973,27 @@ GM_API int64_t gm_proc_wait(int64_t h) {
     if (busy) {
         gm_proc_put(p);
         return gm_io_error(EBADF);
+    }
+    if (nohang) {
+        siginfo_t ps;
+        ps.si_pid = 0;
+        while (waitid(P_PID, (id_t)p->pid, &ps, WEXITED | WNOHANG | WNOWAIT) != 0) {
+            if (errno != EINTR) {
+                int e = errno;
+                gm_rt_acquire();
+                p->waiting = 0;
+                gm_rt_release();
+                gm_proc_put(p);
+                return gm_io_error(e);
+            }
+        }
+        if (ps.si_pid == 0) {
+            gm_rt_acquire();
+            p->waiting = 0;
+            gm_rt_release();
+            gm_proc_put(p);
+            return (int64_t)1 << 33;
+        }
     }
     if (p->in_fd >= 0) close(p->in_fd);
     if (p->out_fd >= 0) close(p->out_fd);
@@ -2893,6 +3022,9 @@ GM_API int64_t gm_proc_wait(int64_t h) {
     if (WIFSIGNALED(st)) return (int64_t)WTERMSIG(st) + ((int64_t)1 << 32);
     return (int64_t)WEXITSTATUS(st);
 }
+
+GM_API int64_t gm_proc_wait(int64_t h) { return gm_proc_wait_for(h, 0); }
+GM_API int64_t gm_proc_try_wait(int64_t h) { return gm_proc_wait_for(h, 1); }
 
 GM_API int64_t gm_proc_kill(int64_t h) {
     gm_rt_acquire();
@@ -3125,8 +3257,9 @@ static int64_t gm_stat_path(const void *path, size_t len, void *out, size_t n, b
     uint64_t t = ((uint64_t)bi.ftLastWriteTime.dwHighDateTime << 32) | bi.ftLastWriteTime.dwLowDateTime;
     int64_t mtime = ((int64_t)t - 116444736000000000LL) * 100;
     int64_t size = (int64_t)(((uint64_t)bi.nFileSizeHigh << 32) | bi.nFileSizeLow);
-    int64_t v[3] = {size, gm_attr_kind(bi.dwFileAttributes, tag), mtime};
-    memcpy(out, v, sizeof(int64_t) * (n < 3 ? n : 3));
+    int64_t v[4] = {size, gm_attr_kind(bi.dwFileAttributes, tag), mtime,
+                    (bi.dwFileAttributes & FILE_ATTRIBUTE_READONLY) ? 0444 : 0666};
+    memcpy(out, v, sizeof(int64_t) * (n < 4 ? n : 4));
     return 0;
 }
 
@@ -3307,6 +3440,173 @@ GM_API int64_t gm_fs_cwd(void *p, size_t n) {
     memcpy(p, u, len);
     free(u);
     return (int64_t)len;
+}
+
+/* The path of an open handle, as UTF-8 without the `\\?\` prefix that GetFinalPathNameByHandleW
+ * adds (`\\?\UNC\server\share` becomes `\\server\share`). */
+GM_API int64_t gm_fs_canonical(const void *path, size_t len, void *p, size_t n) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    HANDLE h = CreateFileW(w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return gm_win_err(err);
+    wchar_t tmp[32768];
+    DWORD wl = GetFinalPathNameByHandleW(h, tmp, 32768, VOLUME_NAME_DOS);
+    err = GetLastError();
+    CloseHandle(h);
+    if (wl == 0 || wl >= 32768) return gm_win_err(err);
+    wchar_t *start = tmp;
+    if (wl >= 8 && wcsncmp(tmp, L"\\\\?\\UNC\\", 8) == 0) {
+        start = tmp + 6;
+        start[0] = L'\\';
+        wl -= 6;
+    } else if (wl >= 4 && wcsncmp(tmp, L"\\\\?\\", 4) == 0) {
+        start = tmp + 4;
+        wl -= 4;
+    }
+    size_t ulen;
+    char *u = gm_utf8(start, (int)wl, &ulen);
+    if (ulen > n) {
+        free(u);
+        return gm_io_error(EINVAL);
+    }
+    memcpy(p, u, ulen);
+    free(u);
+    return (int64_t)ulen;
+}
+
+#ifndef FSCTL_GET_REPARSE_POINT
+#define FSCTL_GET_REPARSE_POINT 0x000900A8
+#endif
+#ifndef ERROR_NOT_A_REPARSE_POINT
+#define ERROR_NOT_A_REPARSE_POINT 4390L
+#endif
+
+/* The reparse data of a symbolic link or junction (the layout of REPARSE_DATA_BUFFER, which
+ * the MinGW headers do not all declare). */
+typedef struct {
+    ULONG tag;
+    USHORT data_len, reserved;
+    USHORT subst_off, subst_len, print_off, print_len;
+    union {
+        struct { ULONG flags; WCHAR names[1]; } symlink;
+        struct { WCHAR names[1]; } junction;
+    } u;
+} gm_reparse;
+
+/* The target of a symbolic link or junction: its print name, or else its substitute name
+ * without the `\??\` prefix. EINVAL if the path is not a link. */
+GM_API int64_t gm_fs_read_link(const void *path, size_t len, void *p, size_t n) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    HANDLE h = CreateFileW(w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return gm_win_err(err);
+    union { gm_reparse r; uint8_t raw[16 * 1024]; } buf;
+    DWORD got = 0;
+    BOOL ok = DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0, buf.raw, sizeof buf.raw, &got, NULL);
+    err = GetLastError();
+    CloseHandle(h);
+    if (!ok) return err == ERROR_NOT_A_REPARSE_POINT ? gm_io_error(EINVAL) : gm_win_err(err);
+    const WCHAR *names;
+    if (buf.r.tag == IO_REPARSE_TAG_SYMLINK) names = buf.r.u.symlink.names;
+    else if (buf.r.tag == IO_REPARSE_TAG_MOUNT_POINT) names = buf.r.u.junction.names;
+    else return gm_io_error(EINVAL);
+    const WCHAR *t = names + buf.r.print_off / sizeof(WCHAR);
+    size_t tl = buf.r.print_len / sizeof(WCHAR);
+    if (tl == 0) {
+        t = names + buf.r.subst_off / sizeof(WCHAR);
+        tl = buf.r.subst_len / sizeof(WCHAR);
+        if (tl >= 4 && wcsncmp(t, L"\\??\\", 4) == 0) {
+            t += 4;
+            tl -= 4;
+        }
+    }
+    size_t ulen = 0;
+    char *u = gm_utf8(t, (int)tl, &ulen);
+    if (ulen > n) {
+        free(u);
+        return gm_io_error(EINVAL);
+    }
+    memcpy(p, u, ulen);
+    free(u);
+    return (int64_t)ulen;
+}
+
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+#endif
+
+/* A link to a directory is made as one when the target (relative to the link's directory)
+ * is a directory. Separators in the target become backslashes, which Windows requires. */
+GM_API int64_t gm_fs_symlink(const void *target, size_t tlen, const void *path, size_t len) {
+    wchar_t *t = gm_wide(target, tlen), *w = gm_wide(path, len);
+    if (t == NULL || w == NULL) {
+        free(t);
+        free(w);
+        return gm_io_error(EINVAL);
+    }
+    for (wchar_t *c = t; *c != 0; c++)
+        if (*c == L'/') *c = L'\\';
+    DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+    bool absolute = wcslen(t) >= 2 && (t[1] == L':' || t[0] == L'\\');
+    wchar_t *full = t;
+    if (!absolute) {
+        size_t wl = wcslen(w), cut = wl;
+        while (cut > 0 && w[cut - 1] != L'\\' && w[cut - 1] != L'/') cut--;
+        full = (wchar_t *)malloc((cut + wcslen(t) + 1) * sizeof(wchar_t));
+        if (full == NULL) gm_trap("out of memory", NULL, 0, 0);
+        memcpy(full, w, cut * sizeof(wchar_t));
+        wcscpy(full + cut, t);
+    }
+    DWORD a = GetFileAttributesW(full);
+    if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+    if (full != t) free(full);
+    BOOL ok = CreateSymbolicLinkW(w, t, flags);
+    DWORD err = GetLastError();
+    free(t);
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+/* Windows keeps no permission bits: only the owner-write bit counts, as the read-only attribute. */
+GM_API int64_t gm_fs_set_mode(const void *path, size_t len, uint32_t mode) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    DWORD a = GetFileAttributesW(w);
+    BOOL ok = FALSE;
+    DWORD err = GetLastError();
+    if (a != INVALID_FILE_ATTRIBUTES) {
+        DWORD b = (mode & 0200) ? (a & ~(DWORD)FILE_ATTRIBUTE_READONLY) : (a | FILE_ATTRIBUTE_READONLY);
+        if (b == 0) b = FILE_ATTRIBUTE_NORMAL;
+        ok = b == a || SetFileAttributesW(w, b);
+        err = GetLastError();
+    }
+    free(w);
+    return ok ? 0 : gm_win_err(err);
+}
+
+GM_API int64_t gm_fs_set_modified(const void *path, size_t len, int64_t ns) {
+    wchar_t *w = gm_wide(path, len);
+    if (w == NULL) return gm_io_error(EINVAL);
+    HANDLE h = CreateFileW(w, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return gm_win_err(err);
+    int64_t t = ns / 100 + 116444736000000000LL;   /* 100 ns since 1601 */
+    if (ns % 100 < 0) t -= 1;
+    FILETIME ft;
+    ft.dwLowDateTime = (DWORD)((uint64_t)t & 0xffffffffu);
+    ft.dwHighDateTime = (DWORD)((uint64_t)t >> 32);
+    BOOL ok = SetFileTime(h, NULL, NULL, &ft);
+    err = GetLastError();
+    CloseHandle(h);
+    return ok ? 0 : gm_win_err(err);
 }
 
 /* Winsock must be started once per process before any socket call. */
@@ -3602,8 +3902,8 @@ static int gm_make_pipe(HANDLE *child_end, HANDLE *our_end, int child_reads) {
     return 0;
 }
 
-GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
-                             size_t dir_len, uint32_t flags) {
+GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
+                              size_t dir_len, const void *program, size_t program_len, uint32_t flags) {
     if (argc == 0) return gm_io_error(EINVAL);
     const gm_rt_str *av = (const gm_rt_str *)argv, *ev = (const gm_rt_str *)env;
     size_t clen;
@@ -3666,7 +3966,8 @@ GM_API int64_t gm_proc_spawn(const void *argv, size_t argc, const void *env, siz
     int64_t result = 0;
     wchar_t *prog = NULL;
     if (!bad) {
-        wchar_t *name = gm_wide(av[0].ptr, av[0].len);
+        const gm_rt_str *pn = (flags & GM_PROC_PROGRAM) ? NULL : &av[0];
+        wchar_t *name = pn ? gm_wide(pn->ptr, pn->len) : gm_wide(program, program_len);
         prog = name ? gm_find_program(name) : NULL;
         free(name);
         if (prog == NULL) {
@@ -3857,7 +4158,8 @@ static int64_t gm_proc_read(gm_proc *p, void *buf, size_t n) {
     }
 }
 
-GM_API int64_t gm_proc_wait(int64_t h) {
+/* gm_proc_wait; with nohang, 2^33 if the child still runs (it is then not released). */
+static int64_t gm_proc_wait_for(int64_t h, int nohang) {
     gm_flush();
     gm_proc *p = gm_proc_get(h);
     if (p == NULL) return gm_io_error(EBADF);
@@ -3868,6 +4170,13 @@ GM_API int64_t gm_proc_wait(int64_t h) {
     if (busy) {
         gm_proc_put(p);
         return gm_io_error(EBADF);
+    }
+    if (nohang && WaitForSingleObject(p->process, 0) == WAIT_TIMEOUT) {
+        gm_rt_acquire();
+        p->waiting = 0;
+        gm_rt_release();
+        gm_proc_put(p);
+        return (int64_t)1 << 33;
     }
     if (p->in_h != NULL) CloseHandle(p->in_h);
     if (p->out_h != NULL) CloseHandle(p->out_h);
@@ -3891,6 +4200,9 @@ GM_API int64_t gm_proc_wait(int64_t h) {
     gm_proc_put(p);
     return (int64_t)code;
 }
+
+GM_API int64_t gm_proc_wait(int64_t h) { return gm_proc_wait_for(h, 0); }
+GM_API int64_t gm_proc_try_wait(int64_t h) { return gm_proc_wait_for(h, 1); }
 
 GM_API int64_t gm_proc_kill(int64_t h) {
     gm_rt_acquire();

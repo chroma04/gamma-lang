@@ -1,0 +1,38 @@
+//! stage: test
+// The in-memory file system's `canonical`, `set_mode`, `set_modified` and `mode`, and its
+// lack of symbolic links.
+fs :: import "std/fs"
+
+test "canonical gives the path in normal form" {
+    ok(fs.make_dir_all("a/b"))
+    ok(fs.write_all("a/b/f.txt", "x"))
+    p := ok(fs.canonical_alloc("a//b/./f.txt"))
+    defer free(p)
+    expect_eq(string(p), "/a/b/f.txt")
+    root := ok(fs.canonical_alloc("/"))
+    defer free(root)
+    expect_eq(string(root), "/")
+    expect(fs.canonical_alloc("a/none") is !.Io(.NotFound), "a missing path")
+    small: [2]u8 = ---
+    expect(Fs.canonical("a/b/f.txt", small[..]) is !.InvalidInput, "a small buffer")
+}
+
+test "set_mode and set_modified change what stat reports" {
+    ok(fs.write_all("f", "x"))
+    ok(fs.make_dir_all("d"))
+    expect_eq((ok(Fs.stat("f"))).mode, 0o644)
+    expect_eq((ok(Fs.stat("d"))).mode, 0o755)
+    ok(Fs.set_mode("f", 0o600))
+    expect_eq((ok(Fs.stat("f"))).mode, 0o600)
+    ok(Fs.set_modified("f", 123_456_789))
+    expect_eq((ok(Fs.stat("f"))).modified, 123_456_789)
+    expect(Fs.set_mode("none", 0o600) is !.NotFound, "set_mode of a missing file")
+    expect(Fs.set_modified("none", 1) is !.NotFound, "set_modified of a missing file")
+}
+
+test "there are no symbolic links" {
+    ok(fs.write_all("f", "x"))
+    expect(Fs.symlink("f", "l") is !.Unsupported, "symlink")
+    buf: [8]u8 = ---
+    expect(Fs.read_link("f", buf[..]) is !.Unsupported, "read_link")
+}

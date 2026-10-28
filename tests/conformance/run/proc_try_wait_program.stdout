@@ -1,0 +1,7 @@
+quick: .Exited(3)
+waited twice: true
+running: true
+killed: true
+name: custom
+path: hi
+no such program: true

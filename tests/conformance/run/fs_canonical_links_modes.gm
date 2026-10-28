@@ -1,0 +1,69 @@
+//! os: unix
+// `Fs.canonical`, `read_link`, `symlink`, `set_mode` and `set_modified` on the real file
+// system, and `FileInfo.mode`.
+fs :: import "std/fs"
+str :: import "std/str"
+
+main :: fn() needs Out + Fs + Rand + Env + Alloc {
+    buf: [256]u8 = ---
+    root := fs.make_temp_dir(fs.temp_dir(), "gamma-links-", buf[..]) else e => {
+        print("no temp dir: {}\n", e)
+        return
+    }
+    defer {
+        _ = fs.remove_all(root)
+    }
+    run(root) else e => print("failed: {}\n", e)
+}
+
+run :: fn(root: string) -> fs.ReadError!() needs Out + Fs + Alloc {
+    dir := str.format("{}/real", root)!
+    file := str.format("{}/real/data.txt", root)!
+    link := str.format("{}/link", root)!
+    to_file := str.format("{}/to_file", root)!
+    dotted := str.format("{}/real/../link/./data.txt", root)!
+    none := str.format("{}/none", root)!
+    try Fs.make_dir(dir)
+    try fs.write_all(file, "hello")
+    try Fs.symlink("real", link)
+    try Fs.symlink("real/data.txt", to_file)
+
+    // read_link gives the target as stored; a plain file is not a link.
+    t: [64]u8 = ---
+    n := try Fs.read_link(link, t[..])
+    print("read_link: {}\n", string(t[0..n]))
+    print("not a link: {}\n", Fs.read_link(file, t[..]) is !.InvalidInput)
+    print("missing: {}\n", Fs.read_link(none, t[..]) is !.NotFound)
+    small: [2]u8 = ---
+    print("small buffer: {}\n", Fs.read_link(link, small[..]) is !.InvalidInput)
+    print("lstat kind: {}\n", (try Fs.lstat(link)).kind is .Symlink)
+
+    // canonical resolves links, `.` and `..`; the result is the same through any spelling.
+    a := try fs.canonical_alloc(file)
+    defer free(a)
+    b := try fs.canonical_alloc(dotted)
+    defer free(b)
+    c := try fs.canonical_alloc(to_file)
+    defer free(c)
+    print("same: {} {}\n", string(a) is string(b), string(a) is string(c))
+    print("absolute: {}\n", a.len > 0 and a[0] is '/')
+    print("ends with: {}\n", string(a).ends_with("/real/data.txt"))
+    print("missing canonical: {}\n", fs.canonical_alloc(none) is !.Io(.NotFound))
+    tiny: [3]u8 = ---
+    print("small canonical: {}\n", Fs.canonical(file, tiny[..]) is !.InvalidInput)
+
+    // set_mode shows in stat; it follows links.
+    try Fs.set_mode(file, 0o640)
+    print("mode: {:o}\n", (try Fs.stat(file)).mode)
+    print("mode through link: {:o}\n", (try Fs.stat(to_file)).mode)
+    try Fs.set_mode(to_file, 0o600)
+    print("mode after link: {:o}\n", (try Fs.stat(file)).mode)
+    print("set_mode missing: {}\n", Fs.set_mode(none, 0o600) is !.NotFound)
+
+    // set_modified shows in stat, in nanoseconds.
+    stamp: i64 = 1_600_000_000_123_456_789
+    try Fs.set_modified(file, stamp)
+    got := (try Fs.stat(file)).modified
+    print("modified: {}\n", got / 1_000_000_000)
+    print("set_modified missing: {}\n", Fs.set_modified(none, 0) is !.NotFound)
+}

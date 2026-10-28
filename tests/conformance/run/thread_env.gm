@@ -1,0 +1,25 @@
+//! needs: threads
+//! exit: 3
+// `thread.defaults` gives a thread `Env`: the arguments and variables are those of `main`, and
+// `Env.exit` ends the thread body (running its defers) and then the whole process.
+thread :: import "std/thread"
+
+body :: fn(unused: ^u32) needs Sys {
+    thread.defaults(fn() needs Out + Env {
+        defer print("deferred in the thread\n")
+        print("arguments: {}\n", Env.args().len)
+        print("PATH is set: {}\n", Env.var("PATH") is not null)
+        print("unset: {}\n", Env.var("GAMMA_TEST_SURELY_UNSET_VARIABLE") is null)
+        Env.exit(3)
+    })
+}
+
+main :: fn() needs Out + Sys {
+    n: u32 = 0
+    t := thread.spawn(body, &n) else e => {
+        print("cannot start a thread: {}\n", e)
+        return
+    }
+    t.join()
+    print("not reached: main is stopped\n")
+}
