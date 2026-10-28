@@ -5,7 +5,7 @@ log :: fn(A: type, template :: string, args: ..A) needs Out { print(template, ..
 hexes :: fn(T: type, x: T) needs Out { print("{:x}\n", x) }
 
 main :: fn() needs Out {
-    print("{:q}\n", 1)                //~ ERROR unknown format spec `{:q}`
+    print("{:z}\n", 1)                //~ ERROR unknown format spec `{:z}`
     print("{:5x5}\n", 1)              //~ ERROR invalid format spec
     print("{:<05}\n", 1)              //~ ERROR either `0` padding or an alignment
     print("{:#}\n", 1)                //~ ERROR `#` (the base prefix) goes with
