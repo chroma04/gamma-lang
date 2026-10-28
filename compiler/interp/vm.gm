@@ -1,17 +1,21 @@
 // The register machine that runs function bodies.
 //
-// A body's statement structure (blocks without deferred statements, `if`, loops of unit
-// type, `match`, `return`, `break` and `continue`), its expressions on words (integers,
-// floats, booleans and pointers of at most 8 bytes: locals, constants, operators) and its
-// calls whose arguments are words are compiled into a flat list of instructions on word
-// registers, which `vm_run` executes in one loop. Everything else is left to the tree
-// evaluator (`run.gm`), which an instruction invokes on a whole subtree: the machine
-// covers the common paths and the tree all the language, so they always agree.
+// A body's statement structure (blocks, `if`, loops of unit type, `match` and its
+// patterns, `return`, `break` and `continue`), its expressions on words (integers, floats,
+// booleans and pointers of at most 8 bytes), its calls and operations, and the building
+// of other values (structs, tuples, optionals, results, variants, slices) are compiled
+// into a flat list of instructions on word registers, which `vm_run` executes in one
+// loop. Everything else is left to the tree evaluator (`run.gm`), which an instruction
+// invokes on a whole subtree: the machine covers the common paths and the tree all the
+// language, so they always agree.
 //
-// The registers, and the byte slots that hold the values of `match` scrutinees and of
-// pattern conditions, live in the frame's storage after its locals. Registers are
-// allocated as a stack while compiling: each expression leaves its value in the first
-// free register, so a function needs as many as its expressions nest.
+// The frame's storage, seen as words, is the register file. A local that is a word and
+// whose address is never taken has 8 bytes of its own there and is a register, as is
+// every 8-byte word of a local at an offset that is a multiple of 8, when the host and
+// the target store words alike (little-endian). After the locals come the byte slots
+// (values that are not words: scrutinees, arguments and results of calls), then the
+// registers of the constants the body uses, then the temporaries, allocated as a stack
+// while compiling: each expression leaves its value in the first free one.
 //
 // A `break` or `continue` that a subtree raises (as a `Flow`) to a loop of the machine
 // jumps to it; every other flow leaves the body, as the tree's would. The `defer` and
@@ -1372,7 +1376,7 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
     match st {
         .Expr(e) => c.vc_expr(e, .Discard)
         .SetLocal(l, value) => c.vc_set_local(l, value)
-        .Let(l, off, size, ?init) => {
+        .Let(l, _, size, ?init) => {
             if x := init and size <= 8 and is_word(x) and size is x.size {
                 c.vc_set_word_local(l, x)
             } else if x := init and size is x.size and c.vc_builds(x) {
