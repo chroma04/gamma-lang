@@ -162,8 +162,11 @@
   "cancel"
   "with"
   "on"
-  "needs"
 ] @keyword
+
+; `needs`, `handler` and `foreign` are keywords only in these positions; elsewhere they
+; are identifiers.
+(effect_set "needs" @keyword)
 
 [
   "defer"
@@ -177,8 +180,6 @@
   "struct"
   "union"
   "effect"
-  "handler"
-  "foreign"
   "where"
   "test"
   "bench"

@@ -1861,6 +1861,11 @@
     }
   },
   {
+    "type": "identifier",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "if_expression",
     "named": true,
     "fields": {
@@ -3676,10 +3681,6 @@
   {
     "type": "handler",
     "named": false
-  },
-  {
-    "type": "identifier",
-    "named": true
   },
   {
     "type": "if",

@@ -83,8 +83,8 @@ The list is (URL REVISION SOURCE-DIR).")
 
 (defconst gamma-ts-mode--keywords
   '("if" "else" "match" "when" "while" "for" "in" "return" "break" "continue"
-    "resume" "cancel" "with" "on" "needs" "defer" "errdefer" "try" "fn"
-    "struct" "union" "effect" "handler" "foreign" "where" "test" "bench"
+    "resume" "cancel" "with" "on" "defer" "errdefer" "try" "fn"
+    "struct" "union" "effect" "where" "test" "bench"
     "import" "pub" "package" "using" "const" "ctl" "esc" "and" "or" "not" "is")
   "Keywords of Gamma.")
 
@@ -172,7 +172,12 @@ The list is (URL REVISION SOURCE-DIR).")
 
    :language 'gamma
    :feature 'keyword
-   `([,@gamma-ts-mode--keywords] @font-lock-keyword-face)
+   `([,@gamma-ts-mode--keywords] @font-lock-keyword-face
+     ;; Contextual keywords (names elsewhere).
+     (effect_set "needs" @font-lock-keyword-face)
+     (handler_expression "handler" @font-lock-keyword-face)
+     (handler_declaration "handler" @font-lock-keyword-face)
+     (foreign_block "foreign" @font-lock-keyword-face))
 
    :language 'gamma
    :feature 'builtin

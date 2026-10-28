@@ -68,7 +68,7 @@ function commaSep(rule) {
 module.exports = grammar({
   name: 'gamma',
 
-  word: $ => $.identifier,
+  word: $ => $._word,
 
   externals: $ => [
     $._newline,
@@ -100,6 +100,9 @@ module.exports = grammar({
     [$.label, $.named_argument],
     [$.result_unwrap_expression, $.error_union_expression],
     [$.if_expression],
+    [$.foreign_block, $.identifier],
+    [$.handler_expression, $.identifier],
+    [$.handler_declaration, $.identifier],
   ],
 
   rules: {
@@ -749,7 +752,10 @@ module.exports = grammar({
     // Lexical
     // ------------------------------------------------------------------
 
-    identifier: _ => /[A-Za-z_][A-Za-z0-9_]*/,
+    // `needs`, `handler` and `foreign` are keywords only in their positions (§2.4) and
+    // names everywhere else.
+    identifier: $ => choice($._word, 'needs', 'handler', 'foreign'),
+    _word: _ => /[A-Za-z_][A-Za-z0-9_]*/,
 
     // `///` starts a doc comment unless a fourth `/` follows. When both match the same
     // text, the earlier rule wins.

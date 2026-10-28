@@ -1,7 +1,7 @@
 {
   "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/grammar.schema.json",
   "name": "gamma",
-  "word": "identifier",
+  "word": "_word",
   "rules": {
     "source_file": {
       "type": "SEQ",
@@ -5567,6 +5567,27 @@
       ]
     },
     "identifier": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_word"
+        },
+        {
+          "type": "STRING",
+          "value": "needs"
+        },
+        {
+          "type": "STRING",
+          "value": "handler"
+        },
+        {
+          "type": "STRING",
+          "value": "foreign"
+        }
+      ]
+    },
+    "_word": {
       "type": "PATTERN",
       "value": "[A-Za-z_][A-Za-z0-9_]*"
     },
@@ -6024,6 +6045,18 @@
     ],
     [
       "if_expression"
+    ],
+    [
+      "foreign_block",
+      "identifier"
+    ],
+    [
+      "handler_expression",
+      "identifier"
+    ],
+    [
+      "handler_declaration",
+      "identifier"
     ]
   ],
   "precedences": [],
