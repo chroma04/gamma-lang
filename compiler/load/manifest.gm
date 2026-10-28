@@ -327,10 +327,10 @@ pub parse_manifest :: fn(text: string) -> ManifestError!Manifest needs Alloc {
 }
 
 /// The names of the rules of `gamma lint`.
-LINT_RULES :: [22]string(
+LINT_RULES :: [23]string(
     "unused-variable", "unused-parameter", "unused-import", "unused-declaration", "needless-pub",
     "unused-label", "prefer-immutable", "bool-comparison", "self-comparison", "self-assignment",
-    "dangling-address", "present-only-binding", "mutated-copy", "constant-condition",
+    "dangling-address", "present-only-binding", "mutated-copy", "stale-element-pointer", "constant-condition",
     "useless-defer", "needless-bool", "double-negation", "collapsible-else-if", "empty-branch",
     "identical-branches", "unnecessary-parens", "naming",
 )

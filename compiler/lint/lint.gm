@@ -43,7 +43,7 @@ pub Rule :: struct {
 rule_def :: fn(name, summary: string) -> Rule => Rule(name: name, default: .Warn, summary: summary)
 
 /// The number of rules.
-RULE_COUNT :: 22
+RULE_COUNT :: 23
 
 /// Every rule, grouped by kind.
 pub RULES :: [RULE_COUNT]Rule(
@@ -60,6 +60,7 @@ pub RULES :: [RULE_COUNT]Rule(
     rule_def("dangling-address", "the address of a local, such as a loop variable or a pattern binding, kept where it outlives the local"),
     rule_def("present-only-binding", "a name in a `match` pattern that matches only a present optional, leaving `null` to a catch-all arm"),
     rule_def("mutated-copy", "a local holding a copy of a list, map or other value with a resizable buffer, changed as if it were the original"),
+    rule_def("stale-element-pointer", "a pointer into a list's items, used after a call that may have moved them"),
     rule_def("constant-condition", "an `if` or `while` whose condition is the literal `true` or `false`"),
     rule_def("useless-defer", "a `defer` or `errdefer` that is the last statement of its block"),
     rule_def("needless-bool", "`if c { true } else { false }` and the like, which are `c` or `not c`"),
@@ -340,6 +341,13 @@ finding_diag :: fn(sm: ^const source.SourceMap, f: ^const Finding, sites: ^hash_
             d := lint_diag(span, "mutated-copy", str.format("this changes `{}`, a copy of `{}`, which does not see the change", name, src)!)
             d.add_label(local, str.format("`{}` is a copy", name)!)
             d.add_note(str.format("the copy shares its elements with the original but not its length, so what is added through it is lost; to change the original, take its address: `{} := &{}`", name, src)!)
+            return d
+        }
+        .StaleElementPointer(span, name, list, growth) => {
+            src := text_of(sm, list)
+            d := lint_diag(span, "stale-element-pointer", str.format("`{}` points into the items of `{}`, which may have moved", name, src)!)
+            d.add_label(growth, str.format("this call may move the items `{}` points into", name)!)
+            d.add_note("a list that grows moves its items to a new block, so a pointer or slice into the old ones dangles; index the list again after growing it, or keep the index instead of a pointer")
             return d
         }
         .BoolComparison(span, operand, same) => {
