@@ -30,8 +30,8 @@ regrow :: fn(T: type, l: ^List(T), extra: usize, tail: []const T) -> AllocError!
     if @size_of(T) > 0 and new_cap > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
     raw := l.alloc.vt.alloc(l.alloc.data, @size_of(T) * new_cap, @align_of(T)) else return !.OutOfMemory
     p := raw.cast([^]T)
-    for i in 0..n { p[i] = l.items[i] }
-    for i in 0..tail.len { p[n + i] = tail[i] }
+    @copy_elems(p[0..n], l.items)
+    @copy_elems(p[n..n + tail.len], tail)
     if l.cap > 0 {
         l.alloc.vt.free(l.alloc.data, l.items.ptr.cast([^]u8), @size_of(T) * l.cap, @align_of(T))
     }
@@ -57,7 +57,7 @@ pub extend :: fn(T: type, l: ^List(T), xs: []const T) -> AllocError!() {
         // `xs` may be part of the list's own storage: it is copied before that is released.
         try regrow(l, xs.len, xs)
     } else {
-        for i in 0..xs.len { l.items.ptr[n + i] = xs[i] }
+        @copy_elems(l.items.ptr[n..n + xs.len], xs)
     }
     l.items = l.items.ptr[0..n + xs.len]
     return ()
@@ -70,11 +70,7 @@ pub insert :: fn(T: type, l: ^List(T), i: usize, x: T) -> AllocError!() {
     try reserve(l, 1)
     n := l.items.len
     grown := l.items.ptr[0..n + 1]
-    j := n
-    while j > i {
-        grown[j] = grown[j - 1]
-        j -= 1
-    }
+    @copy_elems(grown[i + 1..n + 1], grown[i..n])
     grown[i] = x
     l.items = grown
     return ()
@@ -85,7 +81,7 @@ pub insert :: fn(T: type, l: ^List(T), i: usize, x: T) -> AllocError!() {
 pub remove :: fn(T: type, l: ^List(T), i: usize) -> T {
     n := l.items.len
     x := l.items[i]
-    for j in i + 1..n { l.items[j - 1] = l.items[j] }
+    @copy_elems(l.items[i..n - 1], l.items[i + 1..n])
     l.items = l.items[0..n - 1]
     return x
 }
@@ -143,7 +139,7 @@ pub into_slice :: fn(T: type, l: ^List(T)) -> AllocError![]T {
         if not l.alloc.vt.resize(l.alloc.data, old, size * l.cap, size * n, @align_of(T)) {
             raw := l.alloc.vt.alloc(l.alloc.data, size * n, @align_of(T)) else return !.OutOfMemory
             p := raw.cast([^]T)
-            for i in 0..n { p[i] = l.items[i] }
+            @copy_elems(p[0..n], l.items)
             l.alloc.vt.free(l.alloc.data, old, size * l.cap, @align_of(T))
             l.items = p[0..n]
         }

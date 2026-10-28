@@ -10,6 +10,7 @@ intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr nee
     in_prelude := cx.s.l.modules.items[cx.module].is_prelude
     // Compiler-internal heap primitives behind the core library's heap allocator.
     if in_prelude and n in ("alloc_tag", "alloc_check", "heap_alloc", "heap_free") { return cx.heap_intrinsic(n, args, span) }
+    if in_prelude and n is "copy_elems" { return cx.copy_intrinsic(args, span) }
     if in_prelude or cx.s.l.modules.items[cx.module].is_std {
         if sig := sys_sig(&cx.s.tys, n) { return cx.sys_intrinsic(n, sig, args, span) }
     }
@@ -661,6 +662,26 @@ heap_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: sourc
     }
     vals := cx.coerced_args(params, args) else return error_expr(cx.s, span)
     return tir.mk(ty, .Builtin(op, vals), span)
+}
+
+/// `@copy_elems(dst, src)`: the element copy behind the core library's lists and
+/// `copy_from`, which the back ends make one block copy. The lengths must be equal (the
+/// callers make sure of it).
+copy_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    if args.len is 2 and .Positional(d) := args[0].kind and .Positional(s) := args[1].kind {
+        dv := cx.expr(&d, null)
+        if .Slice(false, elem) := tys.kind(cx.infer.resolve(cx.s, dv.ty)) {
+            st := tys.slice(true, elem)
+            sv := cx.coerce(cx.expr(&s, st), st)
+            vals := list(Expr)
+            vals.push(dv^)!
+            vals.push(sv^)!
+            return tir.mk(tys.unit(), .Builtin(.CopyElems, vals.items), span)
+        }
+    }
+    cx.error(span, "`@copy_elems` takes a slice and a slice of the same element type: `@copy_elems(dst, src)`")
+    return error_expr(cx.s, span)
 }
 
 /// `@offset_of(S, field)`.

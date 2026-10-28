@@ -201,7 +201,7 @@ pure_expr :: fn(g: ^Gen, e: ^Expr) -> bool needs sema.Load {
         }
         .With(_), .Closure(_), .HandlerRef(_), .Resume(_), .Cancel(_), .Write(_), .WriteDeferred(_), .SoaDeferred(_), .Global(_), .Upvar(_) => { ok = false }
         .Builtin(op, _) => match op {
-            .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileStore, .Sys(_), .Fiber, .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .Asm(_, _) => { ok = false }
+            .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileStore, .Sys(_), .Fiber, .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .CopyElems, .Asm(_, _) => { ok = false }
             _ => {}
         }
         _ => {}

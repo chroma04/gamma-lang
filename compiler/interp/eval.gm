@@ -749,7 +749,7 @@ eval_builtin :: fn(m: ^Machine, a: Act, op: tir.Builtin, args: []Expr, e: ^Expr,
         .Fiber => return m.fiber_builtin(a, args, e, dst)
         .Sys(sop) => return m.sys_call(a, sop, args, e, dst)
         .Get, .GetPtr, .First, .Last => return m.get_builtin(a, op, args, e, dst)
-        .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore, .Fence, .CstrLen, .VecLoad, .VecStore => {
+        .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .CopyElems, .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore, .Fence, .CstrLen, .VecLoad, .VecStore => {
             mk := m.mark()
             vals := list([]u8)
             for i in 0..args.len {

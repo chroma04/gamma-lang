@@ -41,6 +41,25 @@ Versions and what each kind of change means are described in
   `bin/gamma` and `lib/gamma/{std,core,runtime}`. `tools/install.sh` and
   `tools/install.ps1` install it; `GAMMA_ARCHIVE` is gone.
 
+### Speed
+
+- **The compiler builds itself in Checked mode** (`compiler/gamma.toml`), optimized with
+  every check on: `gamma check` and `gamma build` of a large program take about 40% of the
+  time they took, and programs run in the interpreter almost twice as fast.
+- **Long expressions are checked in linear time.** A sum or a chain of field accesses of
+  tens of thousands of terms took minutes to check (a 40,000-term sum took over twenty);
+  it takes about a second.
+- Names in a module's scope are found through a hash table, and the sizes of types are no
+  longer recomputed after each declaration.
+- **Checked and Fast builds of very large programs are split into C files compiled in
+  parallel,** as Debug builds are; small programs are still one file, so the C compiler
+  optimizes across the whole program. An optimized build of the compiler takes about a
+  minute instead of over five, and runs as fast.
+- A `List` grows, extends, inserts and removes, and `copy_from` and `dupe` copy, a block
+  at a time instead of an element at a time.
+- `gamma build -g` works on programs with a pointer to an optional pointer, or a field
+  named `defined`.
+
 ### Self-hosting
 
 In this section, `gammac` is the compiler in `compiler/` under the name it had while the

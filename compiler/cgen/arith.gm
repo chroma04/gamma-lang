@@ -454,6 +454,14 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
             fg.line(str.format("gm_heap_free({}, {}, {}, {});", p, s, a, loc)!)
             return fg.unit()
         }
+        .CopyElems => {
+            .Slice(_, elem) := tys.kind(args[0].ty) else return fg.unit()
+            d := fg.addr_of(args[0].ty, try fg.expr(&args[0]))
+            s := fg.addr_of(args[1].ty, try fg.expr(&args[1]))
+            n := fg.slice_len(d)
+            fg.line(str.format("if ({} != 0) memmove({}, {}, {} * {});", n, fg.slice_ptr(d), fg.slice_ptr(s), n, fg.g.ty.size(elem))!)
+            return fg.unit()
+        }
         _ => {}
     }
     vals := list(string)
