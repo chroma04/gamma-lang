@@ -178,9 +178,9 @@ PatKind :: union {
     Some: ^Pat
     Ok: ^Pat
     Err: ^Pat
-    /// A union variant: the type and size of the tag and its value (as `get_int` reads it),
-    /// and the payload's offset, size and pattern.
-    Variant: (variant: u32, tag_ty: Ty, tag_size: u64, tag: u128, off: u64, size: u64, payload: ?^Pat)
+    /// A union variant: the type and size of the tag and its value (as `get_int` reads it,
+    /// and as a word), and the payload's offset, size and pattern.
+    Variant: (variant: u32, tag_ty: Ty, tag_size: u64, tag: u128, tag_w: u64, off: u64, size: u64, payload: ?^Pat)
     Fields: [](index: u32, pat: ^Pat)
     Or: []^Pat
 }
@@ -525,7 +525,10 @@ low_pat :: fn(lw: ^Lower, p: ^tir.Pat) -> ^Pat needs Alloc {
                 tag = tag_bits(d.variants[us(variant)].tag)
                 if pt := d.variants[us(variant)].payload { size = m.size(pt) }
             }
-            PatKind.Variant(variant, tag_ty, m.size(tag_ty), tag, m.payload_offset(p.ty), size, if x := payload { lw.low_pat(x) } else { null })
+            ts := m.size(tag_ty)
+            // The tag's bytes as a word, for tags of at most 8 bytes.
+            tag_w := tag.trunc(u64) & mask64((8 * ts).min(64).trunc(u32))
+            PatKind.Variant(variant, tag_ty, ts, tag, tag_w, m.payload_offset(p.ty), size, if x := payload { lw.low_pat(x) } else { null })
         }
         .Fields(fields) => {
             out := list((index: u32, pat: ^Pat))

@@ -240,7 +240,12 @@ match_pat :: fn(m: ^Machine, a: Act, pat: ^Pat, b: []u8) -> Flow!bool needs Run 
             return m.match_pat(a, p, m.res_payload(pat.ty, b))
         }
         .Variant(x) => {
-            if m.get_int(x.tag_ty, b[0..us(x.tag_size)]) is not x.tag { return false }
+            tb := b[0..us(x.tag_size)]
+            if x.tag_size <= 8 {
+                if m.rd_word(tb) is not x.tag_w { return false }
+            } else if m.get_int(x.tag_ty, tb) is not x.tag {
+                return false
+            }
             p := x.payload else return true
             o := us(x.off)
             return m.match_pat(a, p, b[o..o + us(x.size)])

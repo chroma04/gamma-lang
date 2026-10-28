@@ -188,9 +188,6 @@ CODE_BASE: u64 : 0x1000
 /// How deeply calls may nest.
 MAX_DEPTH: u32 : 200_000
 
-/// The function of a root frame.
-NO_FN: u32 : 0xFFFF_FFFF
-
 pub Machine :: struct {
     p: ^Prog
     s: ^Sema
@@ -376,13 +373,6 @@ tmp :: fn(m: ^Machine, n: u64) -> []u8 needs Alloc {
     }
 }
 
-/// A copy of `b` in scratch memory.
-tmp_copy :: fn(m: ^Machine, b: []const u8) -> []u8 needs Alloc {
-    t := m.tmp(u64(b.len))
-    t.copy_from(b)
-    return t
-}
-
 // ---------------------------------------------------------------------------------
 // Traps
 // ---------------------------------------------------------------------------------
@@ -457,9 +447,15 @@ put_uint :: fn(m: ^const Machine, b: []u8, v: u128) {
     }
 }
 
-get_u64 :: fn(m: ^const Machine, b: []const u8) -> u64 => m.get_uint(b).trunc(u64)
+get_u64 :: fn(m: ^const Machine, b: []const u8) -> u64 => if b.len <= 8 { m.rd_word(b) } else { m.get_uint(b).trunc(u64) }
 
-put_u64 :: fn(m: ^const Machine, b: []u8, v: u64) => m.put_uint(b, u128(v))
+put_u64 :: fn(m: ^const Machine, b: []u8, v: u64) {
+    if b.len <= 8 {
+        m.wr_word(b, v)
+    } else {
+        m.put_uint(b, u128(v))
+    }
+}
 
 /// The value of the integer of type `t` in `b`, sign-extended to 128 bits if it is signed.
 get_int :: fn(m: ^const Machine, t: Ty, b: []const u8) -> u128 {
@@ -496,8 +492,6 @@ put_word :: fn(m: ^const Machine, b: []u8, i: usize, v: u64) {
     p := us(m.ptr_bytes)
     m.put_u64(b[i * p..(i + 1) * p], v)
 }
-
-truthy :: fn(b: []const u8) -> bool => b.len > 0 and b[0] is not 0
 
 // Optionals, results and unions --------------------------------------------------------
 

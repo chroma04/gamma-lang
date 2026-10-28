@@ -82,9 +82,10 @@ Ins :: union {
     /// Jumps if the register is zero, or (`Jnz`) not.
     Jz: (r: u32, to: u32)
     Jnz: (r: u32, to: u32)
-    /// A call of function `f` with the words in registers `args..args + n` as its
-    /// arguments; a word result goes to register `r` if `ret`.
-    Call: (f: u32, args: u32, n: u32, r: u32, ret: bool, node: ^Node)
+    /// A call of function `f` with arguments in registers and slots.
+    Call: (f: u32, args: []Arg, dst: Dest, node: ^Node)
+    /// Copies a slot's bytes to a local of this frame.
+    SetLocalSlot: (local: u32, at: u32, size: u32, n: ^Node)
     /// The tree evaluator: a word into a register, a value into a slot, or for effects.
     EvalW: (r: u32, n: ^Node)
     EvalSlot: (off: u32, n: ^Node)
@@ -120,6 +121,20 @@ Ins :: union {
     PopLabels: u32
     /// Lets other threads run.
     Tick
+}
+
+/// An argument of a call: a word in a register, or the bytes in a slot.
+Arg :: union {
+    Reg: u32
+    Slot: (at: u32, size: u32)
+}
+
+/// Where the result of a call goes: nowhere, a register, a slot, or the function's result.
+Dest :: union {
+    None
+    Reg: u32
+    Slot: u32
+    Ret
 }
 
 // ---------------------------------------------------------------------------------
@@ -162,7 +177,8 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
     c.vc_emit(.Ret)
     slots_off := (info.store_size + 7) / 8 * 8
     regs_off := slots_off + (c.slot_max + 7) / 8 * 8
-    nregs := u64(c.max)
+    // At least one register, so that the register file has an address.
+    nregs := u64(c.max.max(1))
     c.open.deinit()
     c.exits.deinit()
     c.conts.deinit()
@@ -181,7 +197,7 @@ vc_here :: fn(c: ^const Vc) -> u32 => c.ins.items.len.trunc(u32)
 
 /// Sets the target of the jump at `at` to `to`.
 vc_patch :: fn(c: ^Vc, at: u32, to: u32) {
-    i := &c.ins.items[us(u64(at))]
+    i := &c.ins.items[usize(at)]
     match i^ {
         .Jmp(_) => { i^ = .Jmp(to) }
         .Jz(r, _) => { i^ = .Jz(r, to) }
@@ -246,7 +262,7 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
         .Break(target, ?value) => if value is null {
             if .Label(levels, label) := target and levels is 0 {
                 if li := c.vc_find_loop(label) {
-                    lp := c.loops.items[us(u64(li))]
+                    lp := c.loops.items[usize(li)]
                     if c.dblocks > lp.dblocks { c.vc_emit(.Unwind(lp.defers)) }
                     c.vc_emit(.PopLabels(lp.depth))
                     at := c.vc_jump(.Jmp(0))
@@ -259,7 +275,7 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
         .Continue(target) => {
             if .Label(levels, label) := target and levels is 0 {
                 if li := c.vc_find_loop(label) {
-                    lp := c.loops.items[us(u64(li))]
+                    lp := c.loops.items[usize(li)]
                     if c.dblocks > lp.dblocks { c.vc_emit(.Unwind(lp.defers)) }
                     c.vc_emit(.PopLabels(lp.depth + 1))
                     at := c.vc_jump(.Jmp(0))
@@ -268,6 +284,11 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
                     return ()
                 }
             }
+        }
+        .Call(f, args) => if want is not .Reg {
+            c.vc_call(f, args, if want is .Ret { Dest.Ret } else { Dest.None }, n)
+            if want is .Ret { c.vc_emit(.Ret) }
+            return ()
         }
         _ => {}
     }
@@ -364,19 +385,7 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
             c.top = save
             c.vc_emit(.FloatOp(x.op, x.wide, c.vc_alloc(), save, save + 1))
         }
-        .Call(f, args) => {
-            words := true
-            for x in args {
-                if not is_word(x) { words = false }
-            }
-            if not words {
-                c.vc_emit(.EvalW(c.vc_alloc(), n))
-                return ()
-            }
-            for x in args { c.vc_word(x) }
-            c.top = save
-            c.vc_emit(.Call(f, save, args.len.trunc(u32), c.vc_alloc(), true, n))
-        }
+        .Call(f, args) => c.vc_call(f, args, .Reg(save), n)
         .Block(b) => c.vc_block(b, .Reg)
         .If(x) => c.vc_if_(x.cond, x.then, x.else_, .Reg)
         .Match(scrutinee, arms) => c.vc_match_(n, scrutinee, arms, .Reg)
@@ -478,7 +487,7 @@ vc_place :: fn(c: ^Vc, n: ^Node) -> PlaceC needs Alloc {
 vc_load :: fn(c: ^Vc, r: u32, pl: PlaceC, extra: u64, size: u64, align: u32, n: ^Node) needs Alloc {
     match pl {
         .Local(l, rel, packed) => {
-            i := us(u64(l))
+            i := usize(l)
             c.vc_emit(.LocalAt(r, l, (c.info.offsets[i] + rel + extra).trunc(u32), (rel + extra).trunc(u32), size.trunc(u32), if packed { 1 } else { align }, n))
         }
         .Mem(base, off, packed) => c.vc_emit(.Load(r, base, (off + extra).trunc(u32), size.trunc(u32), if packed { 1 } else { align }, n))
@@ -543,6 +552,35 @@ vc_uses_scratch :: fn(c: ^const Vc, st: St) -> bool => match st {
     _ => true
 }
 
+/// A call of `f` with `args`, its result going to `dst` (with `Reg`, the first free
+/// register, which stays allocated).
+vc_call :: fn(c: ^Vc, f: u32, args: []^Node, dst: Dest, n: ^Node) needs Alloc {
+    save := c.top
+    out := list(Arg)
+    for x in args {
+        if is_word(x) {
+            r := c.top
+            c.vc_word(x)
+            out.push(.Reg(r))!
+        } else {
+            at := c.vc_slot_at(c.vc_alloc_slot(x.size))
+            c.vc_to_slot(x, at)
+            out.push(.Slot(at, x.size.trunc(u32)))!
+        }
+    }
+    c.vc_emit(.Call(f, out.items, dst, n))
+    c.vc_set_top(if dst is .Reg(_) { save + 1 } else { save })
+}
+
+/// Evaluates `n` into the slot at `at`.
+vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
+    if .Call(f, args) := n.op {
+        c.vc_call(f, args, .Slot(at), n)
+        return ()
+    }
+    c.vc_emit(.EvalSlot(at, n))
+}
+
 /// Whether `n` compiles to instructions that use no scratch memory.
 vc_word_only :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
     .Word(_), .Local(_) => true
@@ -556,7 +594,7 @@ vc_word_only :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
     .IntConv(_, _, _, x) => c.vc_word_only(x)
     .Call(_, args) => {
         for x in args {
-            if not (is_word(x) and c.vc_word_only(x)) { return false }
+            if not c.vc_word_only(x) { return false }
         }
         true
     }
@@ -596,6 +634,8 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
             if x := init and size <= 8 and is_word(x) and size is x.size {
                 c.vc_word(x)
                 c.vc_emit(.SetLocal(l, off.trunc(u32), size.trunc(u32), c.top - 1, x))
+            } else if x := init and x.op is .Call(_) and size is x.size {
+                c.vc_call_to_local(l, x)
             } else {
                 c.vc_emit(.Stmt(st))
             }
@@ -608,7 +648,7 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
                 c.vc_word(value)
                 size := place.size.trunc(u32)
                 match pl {
-                    .Local(l, rel, packed) => c.vc_emit(.SetLocalAt(l, (c.info.offsets[us(u64(l))] + rel).trunc(u32), rel.trunc(u32), size, if packed { 1 } else { c.vc_align(place) }, v, place))
+                    .Local(l, rel, packed) => c.vc_emit(.SetLocalAt(l, (c.info.offsets[usize(l)] + rel).trunc(u32), rel.trunc(u32), size, if packed { 1 } else { c.vc_align(place) }, v, place))
                     .Mem(base, off, packed) => c.vc_emit(.Store(base, off.trunc(u32), size, if packed { 1 } else { c.vc_align(place) }, v, place))
                 }
             } else if is_word(value) {
@@ -625,14 +665,26 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
 }
 
 vc_set_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
-    i := us(u64(l))
+    i := usize(l)
     size := c.info.sizes[i]
     if size <= 8 and value.size is size {
         c.vc_word(value)
         c.vc_emit(.SetLocal(l, c.info.offsets[i].trunc(u32), size.trunc(u32), c.top - 1, value))
         return ()
     }
+    if value.op is .Call(_) and value.size is size {
+        c.vc_call_to_local(l, value)
+        return ()
+    }
     c.vc_emit(.Stmt(.SetLocal(l, value)))
+}
+
+/// `l = f(…)` for a local that is not a word: the result goes through a slot.
+vc_call_to_local :: fn(c: ^Vc, l: u32, call: ^Node) needs Alloc {
+    .Call(f, args) := call.op else return ()
+    at := c.vc_slot_at(c.vc_alloc_slot(call.size))
+    c.vc_call(f, args, .Slot(at), call)
+    c.vc_emit(.SetLocalSlot(l, at, call.size.trunc(u32), call))
 }
 
 /// Compiles the conditions `parts`; returns the jumps to patch to where they fail.
@@ -714,7 +766,7 @@ vc_find_loop :: fn(c: ^const Vc, label: u32) -> ?u32 {
     while i > 0 {
         i -= 1
         li := c.open.items[i]
-        if c.loops.items[us(u64(li))].label is label { return li }
+        if c.loops.items[usize(li)].label is label { return li }
     }
     return null
 }
@@ -763,8 +815,8 @@ vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs
         if x.loop is li { c.vc_patch(x.ins, cont_at) }
     }
     _ = c.open.pop()
-    c.loops.items[us(u64(li))].brk = brk
-    c.loops.items[us(u64(li))].cont = cont_at
+    c.loops.items[usize(li)].brk = brk
+    c.loops.items[usize(li)].cont = cont_at
     c.top = save
     c.slot_top = slots
 }
@@ -777,34 +829,35 @@ vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs
 /// and registers.
 vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
     fr := a.fr
-    regs := empty_slice(u64)
-    if code.nregs > 0 { regs = fr.store[us(code.regs_off)..us(code.size)].ptr.cast([^]u64)[0..us(code.nregs)] }
-    ins := code.ins
+    // Register indices and jump targets are valid by construction: the registers and the
+    // instructions are reached through many-pointers, without bounds checks.
+    regs := fr.store[us(code.regs_off)..us(code.size)].ptr.cast([^]u64)
+    ins := code.ins.ptr
     pc: usize = 0
     while true {
         match ins[pc] {
-            .Const(r, v) => { regs[us(u64(r))] = v }
+            .Const(r, v) => { regs[usize(r)] = v }
             .Local(x) => {
-                i := us(u64(x.local))
+                i := usize(x.local)
                 if fr.mem[i] is not 0 {
-                    regs[us(u64(x.r))] = m.load_word(source.DUMMY, fr.mem[i], fr.info.aligns[i], u64(x.size)) else f => {
+                    regs[usize(x.r)] = m.load_word(source.DUMMY, fr.mem[i], fr.info.aligns[i], u64(x.size)) else f => {
                         pc = try m.vm_flow(a, code, regs, f)
                         continue
                     }
                 } else {
-                    o := us(u64(x.off))
-                    regs[us(u64(x.r))] = m.rd_word(fr.store[o..o + us(u64(x.size))])
+                    o := usize(x.off)
+                    regs[usize(x.r)] = m.rd_word(fr.store[o..o + usize(x.size)])
                 }
             }
             .SetLocal(x) => {
-                i := us(u64(x.local))
-                v := regs[us(u64(x.r))]
+                i := usize(x.local)
+                v := regs[usize(x.r)]
                 if fr.mem[i] is 0 and not fr.info.addressed[i] {
-                    o := us(u64(x.off))
-                    m.wr_word(fr.store[o..o + us(u64(x.size))], v)
+                    o := usize(x.off)
+                    m.wr_word(fr.store[o..o + usize(x.size)], v)
                 } else {
                     b: [8]u8 = ---
-                    d := b[0..us(u64(x.size))]
+                    d := b[0..usize(x.size)]
                     m.wr_word(d, v)
                     m.set_local(x.n.span, fr, x.local, d) else f => {
                         pc = try m.vm_flow(a, code, regs, f)
@@ -813,29 +866,29 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                 }
             }
             .IntOp(x) => {
-                regs[us(u64(x.r))] = m.int_word(x.op, x.t, x.shift, regs[us(u64(x.a))], regs[us(u64(x.b))], x.n) else f => {
+                regs[usize(x.r)] = m.int_word(x.op, x.t, x.shift, regs[usize(x.a)], regs[usize(x.b)], x.n) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
                     continue
                 }
             }
             .LocalAt(x) => {
-                i := us(u64(x.local))
+                i := usize(x.local)
                 if fr.mem[i] is 0 and not fr.info.addressed[i] {
-                    o := us(u64(x.at))
-                    regs[us(u64(x.r))] = m.rd_word(fr.store[o..o + us(u64(x.size))])
+                    o := usize(x.at)
+                    regs[usize(x.r)] = m.rd_word(fr.store[o..o + usize(x.size)])
                 } else {
-                    regs[us(u64(x.r))] = m.vm_local_at(fr, x.local, x.rel, x.size, x.align, x.n) else f => {
+                    regs[usize(x.r)] = m.vm_local_at(fr, x.local, x.rel, x.size, x.align, x.n) else f => {
                         pc = try m.vm_flow(a, code, regs, f)
                         continue
                     }
                 }
             }
             .SetLocalAt(x) => {
-                i := us(u64(x.local))
-                v := regs[us(u64(x.v))]
+                i := usize(x.local)
+                v := regs[usize(x.v)]
                 if fr.mem[i] is 0 and not fr.info.addressed[i] {
-                    o := us(u64(x.at))
-                    m.wr_word(fr.store[o..o + us(u64(x.size))], v)
+                    o := usize(x.at)
+                    m.wr_word(fr.store[o..o + usize(x.size)], v)
                 } else {
                     m.vm_set_local_at(fr, x.local, x.rel, x.size, x.align, v, x.n) else f => {
                         pc = try m.vm_flow(a, code, regs, f)
@@ -844,83 +897,90 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                 }
             }
             .Load(x) => {
-                addr := regs[us(u64(x.base))] +% u64(x.off)
+                addr := regs[usize(x.base)] +% u64(x.off)
                 b := m.mem.read(addr, u64(x.size), u64(x.align)) else e => {
                     pc = try m.vm_flow(a, code, regs, m.mem_trap(x.n.span, e))
                     continue
                 }
-                regs[us(u64(x.r))] = m.rd_word(b)
+                regs[usize(x.r)] = m.rd_word(b)
             }
             .Store(x) => {
-                addr := regs[us(u64(x.base))] +% u64(x.off)
+                addr := regs[usize(x.base)] +% u64(x.off)
                 b := m.mem.write_view(addr, u64(x.size), u64(x.align)) else e => {
                     pc = try m.vm_flow(a, code, regs, m.mem_trap(x.n.span, e))
                     continue
                 }
-                m.wr_word(b, regs[us(u64(x.v))])
+                m.wr_word(b, regs[usize(x.v)])
             }
             .SliceIdx(x) => {
-                i := regs[us(u64(x.i))]
-                len := regs[us(u64(x.len))]
+                i := regs[usize(x.i)]
+                len := regs[usize(x.len)]
                 if i >= len {
                     pc = try m.vm_flow(a, code, regs, m.trap(x.n.span, str.format("index {} out of bounds for length {}", i, len)!))
                     continue
                 }
-                k := us(u64(x.p))
+                k := usize(x.p)
                 regs[k] = regs[k] +% i * x.esz
             }
             .ArrIdx(x) => {
-                i := regs[us(u64(x.i))]
+                i := regs[usize(x.i)]
                 if i >= x.len {
                     pc = try m.vm_flow(a, code, regs, m.trap(x.n.span, str.format("index {} out of bounds for length {}", i, x.len)!))
                     continue
                 }
-                k := us(u64(x.p))
+                k := usize(x.p)
                 regs[k] = regs[k] +% i * x.esz
             }
             .PtrIdx(x) => {
-                k := us(u64(x.p))
-                regs[k] = regs[k] +% regs[us(u64(x.i))] *% x.esz
+                k := usize(x.p)
+                regs[k] = regs[k] +% regs[usize(x.i)] *% x.esz
             }
-            .AddK(r, k) => { regs[us(u64(r))] +%= k }
-            .Cmp(x) => { regs[us(u64(x.r))] = if word_less(x.op, x.how, regs[us(u64(x.a))], regs[us(u64(x.b))]) { 1 } else { 0 } }
-            .EqW(x) => { regs[us(u64(x.r))] = if word_eq(x.how, regs[us(u64(x.a))], regs[us(u64(x.b))]) is not x.negated { 1 } else { 0 } }
-            .Not(r, x) => { regs[us(u64(r))] = if regs[us(u64(x))] is 0 { 1 } else { 0 } }
-            .Bool(r) => { regs[us(u64(r))] = if regs[us(u64(r))] is 0 { 0 } else { 1 } }
+            .AddK(r, k) => { regs[usize(r)] +%= k }
+            .Cmp(x) => { regs[usize(x.r)] = if word_less(x.op, x.how, regs[usize(x.a)], regs[usize(x.b)]) { 1 } else { 0 } }
+            .EqW(x) => { regs[usize(x.r)] = if word_eq(x.how, regs[usize(x.a)], regs[usize(x.b)]) is not x.negated { 1 } else { 0 } }
+            .Not(r, x) => { regs[usize(r)] = if regs[usize(x)] is 0 { 1 } else { 0 } }
+            .Bool(r) => { regs[usize(r)] = if regs[usize(r)] is 0 { 0 } else { 1 } }
             .IntUn(x) => {
-                regs[us(u64(x.r))] = m.int_un(x.op, x.t, regs[us(u64(x.a))], x.n) else f => {
+                regs[usize(x.r)] = m.int_un(x.op, x.t, regs[usize(x.a)], x.n) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
                     continue
                 }
             }
-            .IntConv(x) => { regs[us(u64(x.r))] = int_conv(x.op, x.from, x.to, regs[us(u64(x.a))]) }
-            .FloatOp(x) => { regs[us(u64(x.r))] = float_op(x.op, x.wide, regs[us(u64(x.a))], regs[us(u64(x.b))]) }
+            .IntConv(x) => { regs[usize(x.r)] = int_conv(x.op, x.from, x.to, regs[usize(x.a)]) }
+            .FloatOp(x) => { regs[usize(x.r)] = float_op(x.op, x.wide, regs[usize(x.a)], regs[usize(x.b)]) }
             .Jmp(to) => {
-                pc = us(u64(to))
+                pc = usize(to)
                 continue
             }
-            .Jz(r, to) => if regs[us(u64(r))] is 0 {
-                pc = us(u64(to))
+            .Jz(r, to) => if regs[usize(r)] is 0 {
+                pc = usize(to)
                 continue
             }
-            .Jnz(r, to) => if regs[us(u64(r))] is not 0 {
-                pc = us(u64(to))
+            .Jnz(r, to) => if regs[usize(r)] is not 0 {
+                pc = usize(to)
                 continue
             }
             .Call(x) => {
-                m.vm_call(a, x.f, regs[us(u64(x.args))..us(u64(x.args + x.n))], x.node, if x.ret { us(u64(x.r)) } else { ~usize(0) }, regs) else f => {
+                m.vm_call(a, x.f, x.args, x.dst, x.node, regs, dst) else f => {
+                    pc = try m.vm_flow(a, code, regs, f)
+                    continue
+                }
+            }
+            .SetLocalSlot(x) => {
+                o := usize(x.at)
+                m.set_local(x.n.span, fr, x.local, fr.store[o..o + usize(x.size)]) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
                     continue
                 }
             }
             .EvalW(r, n) => {
-                regs[us(u64(r))] = m.ew(a, n) else f => {
+                regs[usize(r)] = m.ew(a, n) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
                     continue
                 }
             }
             .EvalSlot(off, n) => {
-                o := us(u64(off))
+                o := usize(off)
                 m.ev(a, n, fr.store[o..o + us(n.size)]) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
                     continue
@@ -938,11 +998,11 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                     continue
                 }
             }
-            .Mov(r, x) => { regs[us(u64(r))] = regs[us(u64(x))] }
-            .DeferHeight(r) => { regs[us(u64(r))] = u64(fr.defers.items.len) }
+            .Mov(r, x) => { regs[usize(r)] = regs[usize(x)] }
+            .DeferHeight(r) => { regs[usize(r)] = u64(fr.defers.items.len) }
             .Defer(is_err, body) => fr.defers.push(Deferred(is_err: is_err, body: body))!
             .Unwind(r) => {
-                m.vm_unwind(a, us(regs[us(u64(r))]), false) else f => {
+                m.vm_unwind(a, us(regs[usize(r)]), false) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
                     continue
                 }
@@ -954,19 +1014,19 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                 }
             }
             .Pat(x) => {
-                o := us(u64(x.off))
-                ok := m.match_pat(a, x.pat, fr.store[o..o + us(u64(x.size))]) else f => {
+                o := usize(x.off)
+                ok := m.match_pat(a, x.pat, fr.store[o..o + usize(x.size)]) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
                     continue
                 }
                 if not ok {
-                    pc = us(u64(x.fail))
+                    pc = usize(x.fail)
                     continue
                 }
             }
             .NoArm(n) => return !m.trap(n.span, "no match arm matched the scrutinee")
             .RetW(r) => {
-                m.wr_word(dst, regs[us(u64(r))])
+                m.wr_word(dst, regs[usize(r)])
                 return m.vm_return(a, dst)
             }
             .RetEval(n) => {
@@ -978,14 +1038,14 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             }
             .Ret => return m.vm_return(a, dst)
             .Mark(r) => {
-                k := us(u64(r))
+                k := usize(r)
                 regs[k] = u64(m.scratch.cur)
                 regs[k + 1] = u64(m.scratch.top)
                 regs[k + 2] = u64(m.temps.items.len)
             }
             .Release(r) => m.vm_release(regs, r)
             .PushLabel(label) => fr.labels.push(LabelDst(label: label, dst: empty_slice(u8)))!
-            .PopLabels(depth) => fr.labels.truncate(us(u64(depth)))
+            .PopLabels(depth) => fr.labels.truncate(usize(depth))
             .Tick => if m.threads.list.items.len > 1 {
                 m.tick(source.DUMMY) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
@@ -998,8 +1058,8 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
 }
 
 /// Releases scratch memory and temporaries to the mark in registers `r..r + 3`.
-vm_release :: fn(m: ^Machine, regs: []u64, r: u32) needs Alloc {
-    k := us(u64(r))
+vm_release :: fn(m: ^Machine, regs: [^]u64, r: u32) needs Alloc {
+    k := usize(r)
     m.scratch.cur = us(regs[k])
     m.scratch.top = us(regs[k + 1])
     tm := us(regs[k + 2])
@@ -1009,16 +1069,16 @@ vm_release :: fn(m: ^Machine, regs: []u64, r: u32) needs Alloc {
 /// Where a flow raised while running `code` continues: a `break` or `continue` to one of
 /// its loops jumps there (the exit releases to the iteration's mark and leaves the loop);
 /// any other flow leaves the body, running the deferred statements.
-vm_flow :: fn(m: ^Machine, a: Act, code: ^Code, regs: []u64, f: Flow) -> Flow!usize needs Run {
+vm_flow :: fn(m: ^Machine, a: Act, code: ^Code, regs: [^]u64, f: Flow) -> Flow!usize needs Run {
     fr := a.fr
     match f {
         .Break(frame, label), .Continue(frame, label) => {
             if frame is fr.id {
                 for lp in code.loops {
                     if lp.label is label {
-                        try m.vm_unwind(a, us(regs[us(u64(lp.defers))]), false)
-                        fr.labels.truncate(us(u64(lp.depth + 1)))
-                        return us(u64(if f is .Break(_) { lp.brk } else { lp.cont }))
+                        try m.vm_unwind(a, us(regs[usize(lp.defers)]), false)
+                        fr.labels.truncate(usize(lp.depth + 1))
+                        return usize(if f is .Break(_) { lp.brk } else { lp.cont })
                     }
                 }
             }
@@ -1058,26 +1118,39 @@ vm_unwind :: fn(m: ^Machine, a: Act, height: usize, run_err: bool) -> Flow!() ne
     }
 }
 
-/// A call of `f` with the word arguments `args`; a word result goes to register `r` unless
-/// it is `~0`.
-vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []u64, n: ^Node, r: usize, regs: []u64) -> Flow!() needs Run {
+/// A call of `f` with the arguments `args`; its result goes to `dst` (`ret` is the
+/// function's own result).
+vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     info := m.fn_info(f)
     body := info.body else return m.call_missing(n.span, f)
     if args.len is not info.params.len { return !m.trap(n.span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len, info.params.len)!) }
     if info.cost > MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
+    fr := a.fr
     mk := m.mark()
     store := m.tmp(info.frame_size)
-    for i in 0..args.len {
-        p := us(u64(info.params[i]))
+    for i, x in enumerate(args) {
+        p := usize(info.params[i])
         off := us(info.offsets[p])
-        m.wr_word(store[off..off + us(info.sizes[p])], args[i])
+        match x {
+            .Reg(r) => m.wr_word(store[off..off + us(info.sizes[p])], regs[usize(r)])
+            .Slot(at, size) => {
+                o := usize(at)
+                k := usize(size)
+                store[off..off + k].copy_from(fr.store[o..o + k])
+            }
+        }
     }
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
-    d := b[0..us(n.size)]
+    d := match dst {
+        .Reg(_) => b[0..us(n.size)]
+        .None => if n.size <= 8 { b[0..us(n.size)] } else { m.tmp(n.size) }
+        .Slot(at) => fr.store[usize(at)..us(u64(at) + n.size)]
+        .Ret => ret
+    }
     res := m.enter(n.span, f, info, body, store, null, a.cx, null, false, d)
     m.release(mk)
     try res
-    if r is not ~usize(0) { regs[r] = m.rd_word(d) }
+    if .Reg(r) := dst { regs[usize(r)] = m.rd_word(d) }
 }
 
 /// The word at offset `rel` of local `l` of `fr`, which is or must be in memory.
