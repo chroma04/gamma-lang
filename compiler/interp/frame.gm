@@ -87,6 +87,59 @@ mark_addressed :: fn(m: ^Machine, e: ^Expr, addressed: []bool) {
     tir.for_each_child(e, fn(x: ^Expr) { mark_addressed(m, x, addressed) })
 }
 
+/// The first function nested in `f` (plus one; 0 for none), the functions created since
+/// last time being added to the lists.
+nested_head :: fn(m: ^Machine, f: u32) -> u32 needs Alloc {
+    n := m.s.fns.items.len
+    while m.next_nested.items.len < n {
+        i := m.next_nested.items.len
+        m.next_nested.push(0)!
+        while m.first_nested.items.len < n { m.first_nested.push(0)! }
+        if p := m.s.def_of(i.trunc(u32)).parent {
+            m.next_nested.items[i] = m.first_nested.items[us(p)]
+            m.first_nested.items[us(p)] = i.trunc(u32) + 1
+        }
+    }
+    return m.first_nested.items[us(f)]
+}
+
+/// Marks in `addressed` the locals of a function whose address the functions nested in
+/// `g` (itself `depth` levels inside it) take as captured variables: those locals move to
+/// memory when it is taken, as the ones its own body takes the address of.
+mark_captured_addressed :: fn(m: ^Machine, g: u32, depth: u32, addressed: []bool) needs Alloc {
+    c := m.nested_head(g)
+    while c is not 0 {
+        id := c - 1
+        if b := m.s.def_of(id).body { mark_upvar_addressed(m, b, depth + 1, addressed) }
+        mark_captured_addressed(m, id, depth + 1, addressed)
+        c = m.next_nested.items[us(id)]
+    }
+}
+
+/// Marks in `addressed` the locals of the function `depth` levels out whose address `e`
+/// takes.
+mark_upvar_addressed :: fn(m: ^Machine, e: ^Expr, depth: u32, addressed: []bool) needs Alloc {
+    target: ?^Expr = match e.kind {
+        .AddrOf(x) => x
+        .Slice(sl) => if m.kind(sl.base.ty) is .Array(_, _, _) { sl.base } else { null }
+        .Builtin(op, args) => if op in (tir.Builtin.GetPtr, tir.Builtin.VecStore) and args.len > 0 and m.kind(args[0].ty) is .Array(_, _, _) { &args[0] } else { null }
+        _ => null
+    }
+    if x := target and u := root_upvar(m, x) and u.levels is depth { addressed[us(u.local)] = true }
+    tir.for_each_child(e, fn(x: ^Expr) { mark_upvar_addressed(m, x, depth, addressed) })
+}
+
+/// The captured variable that place `e` is part of, if it is not reached through a pointer.
+root_upvar :: fn(m: ^const Machine, e: ^Expr) -> ?(levels: u32, local: u32) {
+    match e.kind {
+        .Upvar(levels, l) => return (levels: levels, local: l)
+        .Field(base, _) => return root_upvar(m, base)
+        .Index(base, _, _) => if m.kind(base.ty) is .Array(_, _, _) { return root_upvar(m, base) }
+        _ => {}
+    }
+    return null
+}
+
 /// The local of this function that place `e` is part of, if it is not reached through a
 /// pointer.
 root_local :: fn(m: ^const Machine, e: ^Expr) -> ?u32 {

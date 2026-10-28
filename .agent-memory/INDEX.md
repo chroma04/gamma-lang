@@ -1,13 +1,12 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-28) — PRs #1–#104 merged, v0.1.0 + rust-reference-final tagged
-- s53 (branch claude/interp-perf-2): VM round 2 (decisions/056 "Round 2"): CallValue,
-  upvars, Arith64/32, JCmp/JEq, array locals, bit/shift ops, else + slot values; cgen keeps
-  locals of long-but-unoutlined fns in C vars; checker: capturing nested fn self-call via
-  literal rejected. utf8 6.0 → 4.3 s, parse_float 1.9 → 0.73.
-- s52 (#104, branch claude/interp-vm): INTERPRETER PERFORMANCE (decisions/056): bodies lowered to
-  Nodes (code.gm) + register machine (vm.gm) with tree fallback (run.gm); cgen: match in
-  place, switch on union tags, #inline shared across units. Interp 3–7x faster.
+## State (2026-10-28) — PRs #1–#105 merged, v0.1.0 + rust-reference-final tagged
+- s54 (branch claude/interp-perf-3): VM round 3 (decisions/056 "Round 3"): Perform +
+  patterns + slot building in VM, word locals/fields/constants AS REGISTERS (frame store =
+  register file), mark elision, fused slice ld/st, lean loops/calls; vm_run kept under
+  GM_LONG_FN (vm_slow). utf8 4.3 → 2.1 s, parse_float 0.73 → 0.38, structs bench 2.6x.
+- s52/s53 (#104, #105): interpreter lowered Nodes + register machine, then VM round 2;
+  cgen match switch, #inline shared, frame locals unless outlined (decisions/056).
 - s51 (branch claude/zealous-goodall-3g4xqc): PERFORMANCE (decisions/055): long chains
   linear (complex_free, value_path), hashed module scopes, layout cache generations,
   compiler built Checked via compiler/gamma.toml, big optimized builds split into units,

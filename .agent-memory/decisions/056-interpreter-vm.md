@@ -67,8 +67,50 @@ bench/programs + scratch benches 3–7x (call 0.22 → 0.058, sieve 0.70 → 0.1
 - Frame handles are lazy (`frame_handle`); `tmp` chunks size.max(CHUNK)+8.
 - Results: utf8 6.0 → 4.3 s, parse_float_table 1.9 → 0.73, regex 0.75 → 0.64.
 
+## Round 3 (s54, branch claude/interp-perf-3)
+- Ins.Perform (vm_perform: Lit/Decl clause → vm_invoke with installing/is_clause_lit/self_;
+  others via argv + m.perform). VM patterns (vc_pat/vc_pat_ok: Wild/Bind/Const int-bool/
+  Null/Some/Ok/Err/Variant tag<=8/Fields of plain struct/tuple; JTag instr). vc_to_slot
+  takes any word via vc_word+WSlot.
+- WORD LOCALS AS REGISTERS: make_info gives non-addressed locals of 1..8 B an 8-aligned
+  8-byte slot; regs pointer = fr.store base; register r = word r of the store; locals'
+  reg = offset/8 (vc_local_reg, only if m.word_locals = target little && host little).
+  Temps start at rbase (after slots); vm_compile runs twice when slots exist (rbase
+  depends on slot_max). vc_operand(n, late): local's reg used directly only if later
+  operands are vc_reads_only (eval order!). vc_word_to + vc_retarget (rewrite last
+  instr's dest; refused if c.joined >= len, i.e. a jump lands after it).
+  Invariant relied on: register values are canonical (only low size*8 bits set).
+- Hot-path: no `enumerate` (iterator = handler call per element in C!), node by pointer,
+  SetLocalSlot fast path, same_ref before cmp_ref in find_ctx, #inline vm_release.
+- Results (g20 → g23): iterate 0.34 → 0.18, perform 0.27 → 0.15, utf8 4.34 → 3.47,
+  parse_float 0.73 → 0.54, regex 0.62 → 0.55.
+- Profiling recipe: scratchpad names.sh/names2.py (map gm_fN via `-g --emit-c`, numbering
+  same as non-g build), cgdiff.py (per-iteration diff of two N), cases.py (cost per Ins
+  variant from a -O2 -g build: GAMMA_C_UNITS=6 --emit-c, cc each unit with -g).
+- FOUND: vm_run (and 2 others) > LONG_FN_NAMES (2000) → optnone on clang>=19/Apple 17.
+  FIXED for vm_run: cold instrs in #noinline vm_slow (`_ =>` arm), fast paths as #inline
+  helpers (arith64/32, shl/shr_fast, st_rd/st_wr, conv_word). KEEP vm_run < 2000 names
+  (scratchpad vmnames.py on `--emit-c`; was ~1840 at bb32ec8). Tick must stay in vm_run
+  (moving it cost 10%). cgen expr_node + check builtin@arith.gm still LONG_FN (compiler
+  speed on macOS; not fixed).
+- More (s54): capture-address analysis (frame.gm mark_captured_addressed via
+  nested_head index of def parents) — needed because word-local registers assume
+  mem!=0 ⇒ addressed; LocalAt/SetLocalAt(D) now check nothing (addressed locals via
+  LocalAddr + Load/Store); slot building (Want.Slot, vc_builds, ConstSlot/ZeroSlot/
+  SliceMake/RetSlot); mark elision (leaks counters; Nop + vc_compact remaps targets);
+  constant registers (2-pass, Code.consts bytes copied at entry); 8-byte fields of
+  locals as registers (vc_place_reg/vc_slice_regs); SliceLd/SliceSt fused; loops: no
+  PushLabel/PopLabels (tree Break of size-0 value skips label_dst), DeferHeight only
+  with defers, Loop(head) back-edge does the tick.
+- Throwaway instruction histogram: scratchpad instr.sh builds gcount (counts by kind).
+- utf8 4.34 → 2.14 s; parse_float 0.73 → 0.38.
+
 ## Not done / next candidates
-- Slices copied through temps with &t loads in Gamma's C.
-- VM: Perform still tree (EvalW) — the utf8 hot path is `for r in runes(e)` (perform +
-  With); value loops; With; LetTuple/Assign of non-words via Stmt.
-- Mark/Release per statement; call path (enter/new_frame/end_frame ~575 instrs/call).
+- `with` still tree (per `with` ~2000 instrs: Discard → ev → with_ → call_node). Needs a
+  mutable cx in vm_run + ctx popping on every exit (normal, break/continue Jmp, flows).
+- Value loops still tree: deliberately skipped (4 valued `break`s in lib/examples).
+- Call path ~1100 instrs/call (vm_invoke, enter, new/end_frame, tmp); further gains need
+  frames without Frame objects.
+- Prelude generics (copy_from, fill, push, pop) are not inlined across split C units
+  (~500 instrs/code point in utf8): candidate `#inline` hints in lib/core (measure build
+  time). Two other compiler functions are GM_LONG_FN (cgen expr_node, builtin).

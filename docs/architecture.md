@@ -420,21 +420,37 @@ every checked operation checked.
   values that fit in a machine word (integers of 8 to 64 bits, `f32` and `f64`, booleans,
   pointers), which are computed as 64-bit words rather than as bytes.
 - **The register machine** (`vm.gm`) runs the body. Its statement structure (blocks with
-  their `defer`s, `if`, loops, `match`, `return`, `break`, `continue`), its arithmetic and
-  comparisons on words, the places it can address (locals, upvars and their fields,
-  dereferences, indexing of slices, arrays and pointers), its calls of named functions and
-  of function values, and `else` on optionals and results are compiled into a flat list of
-  instructions on word registers, which one loop executes. Common shapes have instructions
-  of their own: a comparison that decides a branch is one compare-and-jump, arithmetic on
-  64- and 32-bit integers skips the general word operation, and an index into an array
-  local scales and bounds-checks in one step. Every other
-  construct is handed, as a whole subtree, to the tree evaluator (`run.gm`, `stmt.gm`,
-  `calls.gm`), which covers the whole language over the same nodes: the machine only takes
-  the common paths. The registers, and slots for values that are not words (`match`
-  scrutinees, arguments and results of calls, values of `else`), live in the frame's
-  storage after its locals; a call's result is written straight into its slot or local.
-  A `break` or `continue` that a subtree raises to a loop of the machine jumps to it; other
-  flows leave the body as they would leave the tree's.
+  their `defer`s, `if`, loops, `match` and its patterns, `return`, `break`, `continue`),
+  its arithmetic and comparisons on words, the places it can address (locals, upvars and
+  their fields, dereferences, indexing of slices, arrays and pointers), its calls of
+  functions and function values, the operations it performs, `else` on optionals and
+  results, and the building of structs, tuples, optionals, results, variants and slices
+  are compiled into a flat list of instructions on word registers, which one loop
+  executes. Every other construct is handed, as a whole subtree, to the tree evaluator
+  (`run.gm`, `stmt.gm`, `calls.gm`), which covers the whole language over the same
+  nodes: the machine only takes the common paths.
+  - *Registers.* The frame's storage, seen as 64-bit words, is the register file. A local
+    that is a word (at most 8 bytes) and whose address is never taken, in the function or
+    by a function nested in it, gets 8 bytes of its own and is a register; so is every
+    8-byte part of a local at a multiple of 8 (the pointer and length of a slice local),
+    when host and target are both little-endian. Operations read and write those
+    registers directly, so a local costs nothing to read, and an operand is read late
+    only when the operands after it cannot change it. After the locals come byte slots
+    for values that are not words, the registers of the constants the body uses (filled
+    when it starts), and the temporaries. A local whose address is taken is reached
+    through it, as memory is.
+  - *Common shapes* have instructions of their own: compare-and-branch, arithmetic and
+    shifts on 64- and 32-bit integers without the general operators, an element of a
+    slice read or written in one step, a loop's back edge that also lets other threads
+    run.
+  - *Scratch memory* that the tree's buffers come from is marked and released only
+    around statements and loops that contain the tree's instructions.
+  - *Size.* The loop's C must stay below the size at which the C back end has Clang
+    compile a function without optimization (`GM_LONG_FN`): the rarely hot instructions
+    run in a function of their own (`vm_slow`) and fast paths are `#inline` functions.
+
+  A `break` or `continue` that a subtree raises to a loop of the machine jumps to it;
+  other flows leave the body as they would leave the tree's.
 - **Values** are bytes in the target's layout, and the tree evaluates each expression into a
   destination buffer of the size of its type (or a word into a `u64`). Buffers for
   intermediate values come from scratch memory used as a stack, which each statement and

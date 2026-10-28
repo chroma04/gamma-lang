@@ -53,6 +53,11 @@ Versions and what each kind of change means are described in
   Calls through function values, captured variables, `else`, compare-and-branch and
   arithmetic on 32- and 64-bit integers then got instructions of their own, for up to
   another 2.5x (the slowest test now takes 4.3 s).
+  Then operations performed through handlers, patterns, building structs, optionals,
+  results, variants and slices, and slice elements also became instructions; locals and
+  constants live in registers; and scratch memory is marked only where it can be used:
+  another 1.5 to 2x (the slowest test now takes 2.1 s, `for` over an iterator runs about
+  twice as fast).
 - **Long functions whose blocks are short keep their locals in C variables** in the
   generated C. Only a function some of whose statements are moved into helper functions
   needs them in its frame struct, which the C compiler cannot keep in registers.

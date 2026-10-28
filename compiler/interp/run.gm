@@ -338,8 +338,14 @@ ev_slow :: fn(m: ^Machine, a: Act, n: ^Node, dst: []u8) -> Flow!() needs Run {
         .Break(target, ?value) => {
             t := try m.resolve_target(a, target, n.span)
             if v := value {
-                d := t.frame.label_dst(t.label) else return !m.trap(n.span, "internal error: break to a label that is not running")
-                try m.ev(a, v, d)
+                // A loop of unit type has no destination (the register machine's loops do
+                // not record one).
+                if v.size is 0 {
+                    try m.ev_discard(a, v)
+                } else {
+                    d := t.frame.label_dst(t.label) else return !m.trap(n.span, "internal error: break to a label that is not running")
+                    try m.ev(a, v, d)
+                }
             }
             return !.Break(t.frame.id, t.label)
         }
