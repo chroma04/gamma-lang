@@ -120,6 +120,15 @@ Ins :: union {
     /// Jumps if the word of `size` bytes in the slot at `at` is zero (or, with `nonzero`,
     /// is not): the test of an optional's or a result's flag.
     JSlot: (at: u32, size: u32, nonzero: bool, to: u32)
+    /// Copies constant bytes to the slot at `at`, or zeroes `size` bytes there.
+    ConstSlot: (at: u32, b: []const u8)
+    ZeroSlot: (at: u32, size: u32)
+    /// Writes the slice from `lo` to `hi` (registers) of the elements of `esz` bytes at the
+    /// address in `p` to the slot at `at`; traps if the bounds are out of order or (if
+    /// `has_len`) past the length in `len`.
+    SliceMake: (at: u32, p: u32, len: u32, lo: u32, hi: u32, has_len: bool, inclusive: bool, esz: u64, n: ^Node)
+    /// The address of a local of this frame, which is given memory of its own.
+    LocalAddr: (r: u32, local: u32, n: ^Node)
     /// Jumps unless the word of `size` bytes in the slot at `at` is `v`: the test of a
     /// variant's tag.
     JTag: (at: u32, size: u32, v: u64, to: u32)
@@ -148,6 +157,8 @@ Ins :: union {
     /// result, or nothing.
     RetW: u32
     RetEval: ^Node
+    /// The function returns the `size` bytes in the slot at `at`.
+    RetSlot: (at: u32, size: u32)
     Ret
     /// Takes the scratch mark into registers `r..r + 3`, or releases scratch memory and
     /// temporaries to it.
@@ -185,6 +196,15 @@ Want :: union {
     Discard
     /// Returns it from the function.
     Ret
+    /// Writes it to the slot at this offset of the frame's storage.
+    Slot: u32
+}
+
+/// Where a call's result goes for `want` (not `Reg`).
+want_dest :: fn(want: Want) -> Dest => match want {
+    .Ret => .Ret
+    .Slot(at) => .Slot(at)
+    _ => .None
 }
 
 Vc :: struct {
@@ -450,17 +470,17 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
             }
         }
         .Call(f, args) => if want is not .Reg {
-            c.vc_call(f, args, if want is .Ret { Dest.Ret } else { Dest.None }, n)
+            c.vc_call(f, args, want_dest(want), n)
             if want is .Ret { c.vc_emit(.Ret) }
             return ()
         }
         .CallValue(callee, args) => if want is not .Reg {
-            c.vc_call_value(callee, args, if want is .Ret { Dest.Ret } else { Dest.None }, n)
+            c.vc_call_value(callee, args, want_dest(want), n)
             if want is .Ret { c.vc_emit(.Ret) }
             return ()
         }
         .Perform(x) => if want is not .Reg {
-            c.vc_perform(x.args, if want is .Ret { Dest.Ret } else { Dest.None }, n)
+            c.vc_perform(x.args, want_dest(want), n)
             if want is .Ret { c.vc_emit(.Ret) }
             return ()
         }
@@ -497,10 +517,17 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
                 save := c.top
                 c.vc_emit(.RetW(c.vc_operand(n, true)))
                 c.top = save
+            } else if c.vc_builds(n) {
+                slots := c.slot_top
+                at := c.vc_slot_at(c.vc_alloc_slot(n.size))
+                c.vc_to_slot(n, at)
+                c.vc_emit(.RetSlot(at, n.size.trunc(u32)))
+                c.slot_top = slots
             } else {
                 c.vc_emit(.RetEval(n))
             }
         }
+        .Slot(at) => c.vc_to_slot(n, at)
     }
 }
 
@@ -752,7 +779,7 @@ vc_block :: fn(c: ^Vc, b: ^Blk, want: Want) needs Alloc {
     }
     match want {
         .Reg => c.vc_emit(.Const(c.vc_alloc(), 0))
-        .Discard => {}
+        .Discard, .Slot(_) => {}
         .Ret => c.vc_emit(.Ret)
     }
 }
@@ -771,8 +798,8 @@ vc_defer_block :: fn(c: ^Vc, b: ^Blk, want: Want) needs Alloc {
         .Ret => {
             if t := b.tail { c.vc_expr(t, .Ret) } else { c.vc_emit(.Ret) }
         }
-        .Discard => {
-            if t := b.tail { c.vc_expr(t, .Discard) }
+        .Discard, .Slot(_) => {
+            if t := b.tail { c.vc_expr(t, want) }
             c.vc_emit(.Unwind(h))
         }
         .Reg => {
@@ -863,9 +890,71 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             c.vc_else(n, lhs, capture, rhs, at)
             return ()
         }
-        .Block(b) => if not b.defers {
-            for st in b.stmts { c.vc_stmt(st) }
-            if t := b.tail { c.vc_to_slot(t, at) }
+        .Block(b) => {
+            c.vc_block(b, .Slot(at))
+            return ()
+        }
+        .If(x) => {
+            c.vc_if_(x.cond, x.then, x.else_, .Slot(at))
+            return ()
+        }
+        .Match(scrutinee, arms) => {
+            c.vc_match_(n, scrutinee, arms, .Slot(at))
+            return ()
+        }
+        .Bytes(b) => {
+            c.vc_emit(.ConstSlot(at, b))
+            return ()
+        }
+        .Aggregate(items, offs) => {
+            total: u64 = 0
+            for x in items { total += x.size }
+            if total < n.size { c.vc_emit(.ZeroSlot(at, n.size.trunc(u32))) }
+            for i in 0..items.len { c.vc_to_slot(items[i], at + offs[i].trunc(u32)) }
+            return ()
+        }
+        .Coerce(kind, x) => if c.vc_coerce_builds(kind, n) {
+            m := c.m
+            match kind {
+                .WrapOptional => {
+                    inner := m.opt_inner(n.ty)
+                    if cgen.nullable_pointer(m.s, inner) {
+                        c.vc_to_slot(x, at)
+                    } else {
+                        offs := m.offsets(n.ty)
+                        c.vc_emit(.ZeroSlot(at, n.size.trunc(u32)))
+                        c.vc_to_slot(x, at + offs[0].trunc(u32))
+                        c.vc_put_byte(at + offs[1].trunc(u32), 1)
+                    }
+                }
+                .WrapOk => {
+                    c.vc_emit(.ZeroSlot(at, n.size.trunc(u32)))
+                    c.vc_to_slot(x, at + m.offsets(n.ty)[1].trunc(u32))
+                }
+                _ => c.vc_to_slot(x, at)
+            }
+            return ()
+        }
+        .MakeErr(x) => if c.m.kind(n.ty) is .Result(_, _) {
+            offs := c.m.offsets(n.ty)
+            c.vc_emit(.ZeroSlot(at, n.size.trunc(u32)))
+            c.vc_to_slot(x, at + offs[1].trunc(u32))
+            c.vc_put_byte(at + offs[0].trunc(u32), 1)
+            return ()
+        }
+        .Variant(variant, ?payload) => if c.vc_variant_builds(n.ty) {
+            m := c.m
+            u := m.union_def(n.ty) else return ()
+            c.vc_emit(.ZeroSlot(at, n.size.trunc(u32)))
+            r := c.vc_alloc()
+            c.vc_emit(.Const(r, tag_bits(u.variants[us(variant)].tag).trunc(u64)))
+            c.vc_emit(.WSlot(at, m.size(u.tag).trunc(u32), r))
+            c.top = save
+            if p := payload { c.vc_to_slot(p, at + m.payload_offset(n.ty).trunc(u32)) }
+            return ()
+        }
+        .Slice(x) => if c.vc_slice_builds(x) {
+            c.vc_slice(x, n, at)
             return ()
         }
         _ => {}
@@ -880,6 +969,120 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
         return ()
     }
     c.vc_emit(.EvalSlot(at, n))
+}
+
+/// Whether `vc_to_slot` builds the value of `n` itself rather than having the tree
+/// evaluate it (its parts may still be the tree's).
+vc_builds :: fn(c: ^Vc, n: ^const Node) -> bool needs Alloc => match n.op {
+    .Call(_), .CallValue(_), .Perform(_), .Bytes(_), .Aggregate(_), .Block(_), .If(_), .Match(_) => true
+    .Else(lhs, _, _) => c.vc_else_shape(n, lhs) is not null
+    .Coerce(kind, _) => c.vc_coerce_builds(kind, n)
+    .MakeErr(_) => c.m.kind(n.ty) is .Result(_, _)
+    .Variant(_) => c.vc_variant_builds(n.ty)
+    .Slice(x) => c.vc_slice_builds(x)
+    _ => false
+}
+
+/// Whether the machine builds a coercion of kind `kind` to `n`'s type.
+vc_coerce_builds :: fn(c: ^Vc, kind: tir.Coercion, n: ^const Node) -> bool needs Alloc => match kind {
+    .WrapOptional => c.m.kind(n.ty) is .Optional(_)
+    .WrapOk => c.m.kind(n.ty) is .Result(_, _)
+    .PtrToPtr, .TupleRename, .FnPtrWiden => true
+    _ => false
+}
+
+/// Whether the machine builds a variant of the union `t`: one whose tag is a word.
+vc_variant_builds :: fn(c: ^Vc, t: Ty) -> bool needs Alloc {
+    u := c.m.union_def(t) else return false
+    return c.m.size(u.tag) <= 8
+}
+
+/// Writes the byte `v` to the slot at `at`.
+vc_put_byte :: fn(c: ^Vc, at: u32, v: u64) needs Alloc {
+    save := c.top
+    r := c.vc_alloc()
+    c.vc_emit(.Const(r, v))
+    c.vc_emit(.WSlot(at, 1, r))
+    c.top = save
+}
+
+/// Whether the machine makes the slice `x` (its bounds are words, and an array is in
+/// memory or a local of this frame).
+vc_slice_builds :: fn(c: ^Vc, x: (base: ^Node, lo: ?^Node, hi: ?^Node, inclusive: bool, seq: SeqKind, esz: u64, len: u64)) -> bool {
+    if l := x.lo and not is_word(l) { return false }
+    if h := x.hi and not is_word(h) { return false }
+    return match x.seq {
+        .Slice, .ManyPtr, .PtrArray => true
+        .Array => match c.vc_placeable(x.base) {
+            .Mem => true
+            .Local => root_levels(x.base) is 0 and not c.vc_has_index(x.base)
+            .No => false
+        }
+    }
+}
+
+/// Whether the place `n` indexes an array.
+vc_has_index :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
+    .Index(_) => true
+    .Field(x) => c.vc_has_index(x.base)
+    _ => false
+}
+
+/// Makes the slice `x` (`vc_slice_builds`), the value of `n`, in the slot at `at`: the
+/// base, then the bounds, as the tree evaluates them.
+vc_slice :: fn(c: ^Vc, x: (base: ^Node, lo: ?^Node, hi: ?^Node, inclusive: bool, seq: SeqKind, esz: u64, len: u64), n: ^Node, at: u32) needs Alloc {
+    save := c.top
+    pb := c.m.ptr_bytes
+    rp := c.vc_alloc()
+    rl := c.vc_alloc()
+    has_len := true
+    match x.seq {
+        .Slice => {
+            if c.vc_placeable(x.base) is .No {
+                sa := c.vc_slot_at(c.vc_alloc_slot(x.base.size))
+                c.vc_to_slot(x.base, sa)
+                c.vc_emit(.SlotW(rp, sa, pb.trunc(u32)))
+                c.vc_emit(.SlotW(rl, sa + pb.trunc(u32), pb.trunc(u32)))
+            } else {
+                pl := c.vc_place(x.base)
+                c.vc_load(rp, pl, 0, pb, pb.trunc(u32), x.base)
+                c.vc_load(rl, pl, pb, pb, pb.trunc(u32), x.base)
+            }
+        }
+        .ManyPtr, .PtrArray => {
+            v := c.vc_operand(x.base, false)
+            c.vc_emit(.Mov(rp, v))
+            c.vc_set_top(save + 2)
+            has_len = x.seq is .PtrArray
+            c.vc_emit(.Const(rl, if has_len { x.len } else { 0 }))
+        }
+        .Array => {
+            match c.vc_place(x.base) {
+                .Mem(r, off, _) => {
+                    c.vc_emit(.Mov(rp, r))
+                    if off is not 0 { c.vc_emit(.AddK(rp, off)) }
+                }
+                .Local(_, l, rel, _, _) => {
+                    c.vc_emit(.LocalAddr(rp, l, n))
+                    if rel is not 0 { c.vc_emit(.AddK(rp, rel)) }
+                }
+            }
+            c.vc_set_top(save + 2)
+            c.vc_emit(.Const(rl, x.len))
+        }
+    }
+    late := if h := x.hi { c.vc_reads_only(h) } else { true }
+    lo := rl
+    if l := x.lo {
+        lo = c.vc_operand(l, late)
+    } else {
+        lo = c.vc_alloc()
+        c.vc_emit(.Const(lo, 0))
+    }
+    hi := rl
+    if h := x.hi { hi = c.vc_operand(h, true) }
+    c.vc_emit(.SliceMake(at, rp, rl, lo, hi, has_len, x.inclusive, x.esz, n))
+    c.vc_set_top(save)
 }
 
 /// Where an `else` the machine runs finds its left side's flag and payload: the flag's
@@ -988,7 +1191,7 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
                     c.vc_word(x)
                     c.vc_emit(.SetLocal(l, off.trunc(u32), size.trunc(u32), c.top - 1, x))
                 }
-            } else if x := init and size is x.size and slot_worthy(x) {
+            } else if x := init and size is x.size and c.vc_builds(x) {
                 c.vc_call_to_local(l, x)
             } else {
                 c.vc_emit(.Stmt(st))
@@ -1038,21 +1241,14 @@ vc_set_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
         c.vc_emit(.SetLocal(l, c.info.offsets[i].trunc(u32), size.trunc(u32), c.top - 1, value))
         return ()
     }
-    if value.size is size and slot_worthy(value) {
+    if value.size is size and c.vc_builds(value) {
         c.vc_call_to_local(l, value)
         return ()
     }
     c.vc_emit(.Stmt(.SetLocal(l, value)))
 }
 
-/// Whether the machine computes `n`, which is not a word, into a slot better than the tree
-/// would compute it into a local: a call or an `else`.
-slot_worthy :: fn(n: ^const Node) -> bool => match n.op {
-    .Call(_), .CallValue(_), .Perform(_), .Else(_) => true
-    _ => false
-}
-
-/// `l = value` for a local that is not a word (`slot_worthy`): the value goes through a slot.
+/// `l = value` for a local that is not a word (`vc_builds`): the value goes through a slot.
 vc_call_to_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
     at := c.vc_slot_at(c.vc_alloc_slot(value.size))
     c.vc_to_slot(value, at)
@@ -1191,7 +1387,7 @@ vc_if_ :: fn(c: ^Vc, cond: []Cond, then: ^Node, else_: ?^Node, want: Want) needs
     } else {
         match want {
             .Reg => c.vc_emit(.Const(c.vc_alloc(), 0))
-            .Discard => {}
+            .Discard, .Slot(_) => {}
             .Ret => c.vc_emit(.Ret)
         }
     }
@@ -1570,6 +1766,38 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             .DeferHeight(r) => { regs[usize(r)] = u64(fr.defers.items.len) }
             .PushLabel(label) => fr.labels.push(LabelDst(label: label, dst: empty_slice(u8)))!
             .PopLabels(depth) => fr.labels.truncate(usize(depth))
+            .ConstSlot(at, b) => {
+                o := usize(at)
+                fr.store[o..o + b.len].copy_from(b)
+            }
+            .ZeroSlot(at, size) => {
+                o := usize(at)
+                fr.store[o..o + usize(size)].fill(0)
+            }
+            .SliceMake(x) => {
+                lo := regs[usize(x.lo)]
+                hi := regs[usize(x.hi)]
+                if x.inclusive { hi = hi +| 1 }
+                if lo > hi or (x.has_len and hi > regs[usize(x.len)]) {
+                    pc = try m.vm_flow(a, code, regs, m.slice_trap(x.n, lo, hi, if x.has_len { regs[usize(x.len)] } else { null }))
+                    continue
+                }
+                o := usize(x.at)
+                pb := us(m.ptr_bytes)
+                st_wr(m, fr, o, pb.trunc(u32), regs[usize(x.p)] +% lo * x.esz)
+                st_wr(m, fr, o + pb, pb.trunc(u32), hi - lo)
+            }
+            .LocalAddr(r, local, n) => {
+                regs[usize(r)] = m.local_addr(n.span, fr, local) else f => {
+                    pc = try m.vm_flow(a, code, regs, f)
+                    continue
+                }
+            }
+            .RetSlot(at, size) => {
+                o := usize(at)
+                dst.copy_from(fr.store[o..o + usize(size)])
+                return m.vm_return(a, dst)
+            }
             .Tick => if m.threads.list.items.len > 1 {
                 m.tick(source.DUMMY) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
@@ -1701,6 +1929,13 @@ arith32 :: fn(op: u8, signed: bool, wrap: bool, bits: u32, p, q: u64) -> ?u64 {
 shr_fast :: fn(t: IntW, shift: IntW, p, q: u64) -> ?u64 {
     if q >= u64(t.bits) or (shift.signed and sext(q, shift.bits) < 0) { return null }
     return if t.signed { (sext(p, t.bits) >> q.trunc(u32)).bits(u64) & mask64(t.bits) } else { p >> q.trunc(u32) }
+}
+
+/// The trap of a slice from `lo` to `hi` of something of length `len`, out of bounds.
+#noinline
+slice_trap :: fn(m: ^Machine, n: ^Node, lo: u64, hi: u64, len: ?u64) -> Flow needs Alloc {
+    text := if l := len { str.format("{}", l)! } else { "?" }
+    return m.trap(n.span, str.format("slice bounds {}..{} invalid for length {}", lo, hi, text)!)
 }
 
 /// The trap of an index `i` out of bounds for `len`.

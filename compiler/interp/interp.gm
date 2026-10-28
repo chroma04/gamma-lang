@@ -202,6 +202,10 @@ pub Machine :: struct {
     /// Whether the register machine keeps word locals in its registers: when the host
     /// reads a `u64` in the target's byte order, little-endian (`make_info`).
     word_locals: bool
+    /// The functions nested in each function, as lists: the first (plus one; 0 for none)
+    /// by function, and the next by function (`nested_head`).
+    first_nested: List(u32)
+    next_nested: List(u32)
     ptr_bytes: u64
     mem: Memory
     scratch: Scratch
@@ -303,6 +307,8 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         mode: mode,
         little: p.target.little_endian,
         word_locals: p.target.little_endian and host_little(),
+        first_nested: list(u32),
+        next_nested: list(u32),
         ptr_bytes: p.target.ptr_bytes,
         mem: memory(data_base, p.target.ptr_bytes),
         scratch: Scratch(chunks: list([]u8), cur: 0, top: 0),
@@ -787,7 +793,7 @@ fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
     while m.infos.items.len <= i { m.infos.push(null)! }
     if x := m.infos.items[i] { return x }
     def := m.func(f)
-    made := m.make_info(def.locals, def.body)
+    made := m.make_info(f, def.locals, def.body)
     made.cost = m.frame_cost(def)
     made.params = def.params
     for p in def.params {
@@ -810,13 +816,14 @@ fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
 /// The layout of a frame with `locals`: each at an offset aligned for it, except that a
 /// word (at most 8 bytes) whose address is never taken gets 8 aligned bytes of its own,
 /// which the register machine uses as a register (`word_locals`).
-make_info :: fn(m: ^Machine, locals: []const tir.LocalDecl, body: ?^Expr) -> ^FnInfo needs Alloc {
+make_info :: fn(m: ^Machine, f: u32, locals: []const tir.LocalDecl, body: ?^Expr) -> ^FnInfo needs Alloc {
     offs := list(u64)
     sizes := list(u64)
     aligns := list(u64)
     addressed := list(bool)
     for _ in locals { addressed.push(false)! }
     if b := body { mark_addressed(m, b, addressed.items) }
+    mark_captured_addressed(m, f, 0, addressed.items)
     top: u64 = 0
     for i, l in enumerate(locals) {
         n := m.size(l.ty)

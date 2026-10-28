@@ -1,0 +1,33 @@
+// A nested function may take the address of a variable it captures; the enclosing function
+// then sees what is written through that address (§11.6).
+set :: fn(p: ^i64, v: i64) { p^ = v }
+
+Point :: struct { x: i32, y: i32 }
+
+main :: fn() needs Out {
+    n: i64 = 1
+    flag := false
+    arr := [3]i64(1, 2, 3)
+    pt := Point(x: 1, y: 2)
+    change :: fn() {
+        set(&n, 5)
+        b := &flag
+        b^ = true
+        s := arr[..]
+        s[1] = 20
+        q := &pt.y
+        q^ = 7
+    }
+    change()
+    m := n + 1
+    print("{} {} {} {} {}\n", n, m, flag, arr[1] + 1, pt.y * 2)
+    // Only the nested function takes the address of `k`.
+    k: i64 = 2
+    bump :: fn() { set(&k, k * 10) }
+    total: i64 = 0
+    for i in 0..3 {
+        bump()
+        total += k + i
+    }
+    print("{} {}\n", k, total)
+}
