@@ -199,6 +199,9 @@ pub Machine :: struct {
     lay: cgen.Layouts
     mode: Mode
     little: bool
+    /// Whether the register machine keeps word locals in its registers: when the host
+    /// reads a `u64` in the target's byte order, little-endian (`make_info`).
+    word_locals: bool
     ptr_bytes: u64
     mem: Memory
     scratch: Scratch
@@ -299,6 +302,7 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         lay: cgen.layouts(s, p.target),
         mode: mode,
         little: p.target.little_endian,
+        word_locals: p.target.little_endian and host_little(),
         ptr_bytes: p.target.ptr_bytes,
         mem: memory(data_base, p.target.ptr_bytes),
         scratch: Scratch(chunks: list([]u8), cur: 0, top: 0),
@@ -336,6 +340,12 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
 }
 
 fast :: fn(m: ^const Machine) -> bool => m.mode is .Fast
+
+/// Whether the host stores the low byte of a word first.
+host_little :: fn() -> bool {
+    x: u64 = 1
+    return (&x).cast([^]u8)[0] is 1
+}
 
 // ---------------------------------------------------------------------------------
 // Scratch memory
@@ -797,23 +807,28 @@ fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
     return made
 }
 
+/// The layout of a frame with `locals`: each at an offset aligned for it, except that a
+/// word (at most 8 bytes) whose address is never taken gets 8 aligned bytes of its own,
+/// which the register machine uses as a register (`word_locals`).
 make_info :: fn(m: ^Machine, locals: []const tir.LocalDecl, body: ?^Expr) -> ^FnInfo needs Alloc {
     offs := list(u64)
     sizes := list(u64)
     aligns := list(u64)
     addressed := list(bool)
+    for _ in locals { addressed.push(false)! }
+    if b := body { mark_addressed(m, b, addressed.items) }
     top: u64 = 0
-    for l in locals {
+    for i, l in enumerate(locals) {
         n := m.size(l.ty)
         a := m.align(l.ty).max(1).min(8)
+        word := n > 0 and n <= 8 and not addressed.items[i]
+        if word { a = 8 }
         top = (top + a - 1) / a * a
         offs.push(top)!
         sizes.push(n)!
         aligns.push(m.align(l.ty).max(1))!
-        addressed.push(false)!
-        top += n
+        top += if word { 8 } else { n }
     }
-    if b := body { mark_addressed(m, b, addressed.items) }
     return new(FnInfo(offsets: offs.items, sizes: sizes.items, aligns: aligns.items, addressed: addressed.items, store_size: top, cost: 0))!
 }
 
@@ -930,12 +945,20 @@ pop_ctx :: fn(m: ^Machine, from: u32, until: u32) needs Alloc {
     }
 }
 
+/// Whether `a` and `b` are the same effect with the same arguments: most often, the same
+/// arguments.
+same_ref :: fn(a, b: ^const types.EffectRef) -> bool {
+    if a.eff is not b.eff { return false }
+    if a.args.len is b.args.len and (a.args.len is 0 or a.args.ptr.addr() is b.args.ptr.addr()) { return true }
+    return types.cmp_ref(a, b) is 0
+}
+
 /// The innermost handler of `effect_` in context `cx` (0: none).
 find_ctx :: fn(m: ^const Machine, cx: u32, effect_: ^const types.EffectRef) -> u32 {
     c := cx
     while c is not 0 {
         n := &m.ctxs.items[us(c)]
-        if n.effect_.eff is effect_.eff and types.cmp_ref(&n.effect_, effect_) is 0 { return c }
+        if same_ref(&n.effect_, effect_) { return c }
         c = n.parent
     }
     return 0

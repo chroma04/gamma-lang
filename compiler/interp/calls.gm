@@ -10,8 +10,12 @@ call_node :: fn(m: ^Machine, a: Act, f: u32, args: []^Node, n: ^Node, dst: []u8)
     if info.cost > MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
     mk := m.mark()
     store := m.tmp(info.frame_size)
-    for i, x in enumerate(args) {
+    // Not `enumerate`: an iterator costs a call per element.
+    i: usize = 0
+    while i < args.len {
+        x := args[i]
         off := us(info.offsets[us(info.params[i])])
+        i += 1
         m.ev(a, x, store[off..off + us(x.size)]) else fl => {
             m.release(mk)
             return !fl
@@ -101,9 +105,12 @@ call_function :: fn(m: ^Machine, span: source.Span, f: u32, args: []const []u8, 
     if info.cost > MAX_FRAME { return !m.trap(span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
     mk := m.mark()
     store := m.tmp(info.frame_size)
-    for i, x in enumerate(args) {
+    i: usize = 0
+    while i < args.len {
+        x := args[i]
         off := us(info.offsets[us(info.params[i])])
         store[off..off + x.len].copy_from(x)
+        i += 1
     }
     r := m.enter(span, f, info, body, store, env, cx, installing, is_clause_lit, dst)
     m.release(mk)
