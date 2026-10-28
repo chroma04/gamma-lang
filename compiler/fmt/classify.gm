@@ -36,7 +36,6 @@ tight_paren_keyword :: fn(k: Keyword) -> bool => k in (
     Keyword.Struct,
     Keyword.Union,
     Keyword.Effect,
-    Keyword.Handler,
     Keyword.Ctl,
     Keyword.Esc,
     Keyword.Import,

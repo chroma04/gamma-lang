@@ -11,8 +11,8 @@
 5:14 keyword false
 5:20 keyword fn
 5:23 keyword for
-5:27 keyword foreign
-5:35 keyword handler
+5:27 ident foreign
+5:35 ident handler
 5:43 keyword if
 5:45 newline
 6:1 keyword import

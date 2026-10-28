@@ -7,7 +7,7 @@ str :: import "std/str"
 /// Reserved keywords (§2.4).
 pub Keyword :: union {
     And, Break, Cancel, Continue, Ctl, Defer, Effect, Else, Errdefer, Esc, False, Fn, For,
-    Foreign, Handler, If, Import, In, Is, Match, Needs, Not, Null, Or, Pub, Resume, Return,
+    If, Import, In, Is, Match, Not, Null, Or, Pub, Resume, Return,
     Struct, True, Try, Union, Using, When, While, With
 }
 
@@ -26,14 +26,11 @@ keyword_from :: fn(s: string) -> ?Keyword => match s {
     "false" => .False
     "fn" => .Fn
     "for" => .For
-    "foreign" => .Foreign
-    "handler" => .Handler
     "if" => .If
     "import" => .Import
     "in" => .In
     "is" => .Is
     "match" => .Match
-    "needs" => .Needs
     "not" => .Not
     "null" => .Null
     "or" => .Or
@@ -65,14 +62,11 @@ pub keyword_text :: fn(k: Keyword) -> string => match k {
     .False => "false"
     .Fn => "fn"
     .For => "for"
-    .Foreign => "foreign"
-    .Handler => "handler"
     .If => "if"
     .Import => "import"
     .In => "in"
     .Is => "is"
     .Match => "match"
-    .Needs => "needs"
     .Not => "not"
     .Null => "null"
     .Or => "or"
@@ -90,9 +84,9 @@ pub keyword_text :: fn(k: Keyword) -> string => match k {
 }
 
 /// The spellings of the keywords, in alphabetical order.
-pub KEYWORD_TEXTS :: [35]string(
+pub KEYWORD_TEXTS :: [32]string(
     "and", "break", "cancel", "continue", "ctl", "defer", "effect", "else", "errdefer", "esc", "false", "fn",
-    "for", "foreign", "handler", "if", "import", "in", "is", "match", "needs", "not", "null", "or", "pub",
+    "for", "if", "import", "in", "is", "match", "not", "null", "or", "pub",
     "resume", "return", "struct", "true", "try", "union", "using", "when", "while", "with",
 )
 
@@ -232,7 +226,7 @@ pub StrLit :: struct {
 
 pub TokenKind :: union {
     /// An identifier (never a reserved keyword). Contextual keywords (`const`, `on`,
-    /// `where`, `test`) are identifiers; `_` is `Underscore`. The text is a slice of the
+    /// `where`, `test`, `needs`, `handler`, `foreign`) are identifiers; `_` is `Underscore`. The text is a slice of the
     /// source.
     Ident: string
     /// The discard identifier `_`.

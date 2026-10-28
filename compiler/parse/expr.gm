@@ -6,8 +6,8 @@ can_begin_expr :: fn(k: syntax.TokenKind) -> bool => match k {
     .Ident(_), .Underscore, .Int(_), .Float(_), .Str(_), .Intrinsic(_), .Attribute(_) => true
     .Keyword(kw) => kw in (
         syntax.Keyword.True, syntax.Keyword.False, syntax.Keyword.Null, syntax.Keyword.Fn,
-        syntax.Keyword.Struct, syntax.Keyword.Union, syntax.Keyword.Effect, syntax.Keyword.Handler,
-        syntax.Keyword.Import, syntax.Keyword.Foreign, syntax.Keyword.If, syntax.Keyword.Match,
+        syntax.Keyword.Struct, syntax.Keyword.Union, syntax.Keyword.Effect,
+        syntax.Keyword.Import, syntax.Keyword.If, syntax.Keyword.Match,
         syntax.Keyword.With, syntax.Keyword.For, syntax.Keyword.Return, syntax.Keyword.Break,
         syntax.Keyword.Continue, syntax.Keyword.Resume, syntax.Keyword.Try, syntax.Keyword.Not,
     )
@@ -598,6 +598,9 @@ parse_primary :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
         }
         .Ident(name) => {
             if name is "cont" and p.nth_is(1, .LParen) { return p.parse_cont_type() }
+            // Contextual keywords: `handler Effect …` and `foreign "lib" …` (§2.4).
+            if name is "handler" and p.nth(1) is .Ident(_) { return p.parse_handler_lit() }
+            if name is "foreign" and p.nth(1) is .Str(_) { return p.parse_foreign() }
             _ = p.bump()
             return p.mk_expr(.Ident(ast.Ident(name: name, span: at)), at)
         }
@@ -612,9 +615,7 @@ parse_primary :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
         .Keyword(.Struct) => return p.parse_struct_lit()
         .Keyword(.Union) => return p.parse_union_lit()
         .Keyword(.Effect) => return p.parse_effect_lit()
-        .Keyword(.Handler) => return p.parse_handler_lit()
         .Keyword(.Import) => return p.parse_import()
-        .Keyword(.Foreign) => return p.parse_foreign()
         .Keyword(.If) => {
             try p.deny_in_head("an `if` expression")
             return p.parse_if()

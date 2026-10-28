@@ -40,6 +40,10 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "fixes_are_offered_as_quick_fixes", run: fixes_are_offered_as_quick_fixes))!
     out.push(kit.Test(name: "syntax_errors_are_reported", run: syntax_errors_are_reported))!
     out.push(kit.Test(
+        name: "syntax_errors_in_conditions_are_not_checked_again",
+        run: syntax_errors_in_conditions_are_not_checked_again,
+    ))!
+    out.push(kit.Test(
         name: "names_after_a_syntax_error_are_still_resolved",
         run: names_after_a_syntax_error_are_still_resolved,
     ))!

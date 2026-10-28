@@ -181,7 +181,7 @@
         },
         {
           "comment": "name :: handler / import / foreign",
-          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(::)\\s*(?=(?:handler|import|foreign)\\b)",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(::)\\s*(?=(?:handler\\s+[A-Za-z_]|import\\b|foreign\\s*\"))",
           "captures": {
             "1": { "name": "entity.name.namespace.gamma" },
             "2": { "name": "keyword.operator.declaration.gamma" }
@@ -228,7 +228,7 @@
     },
     "effect-set": {
       "name": "meta.effect-set.gamma",
-      "begin": "\\b(needs)\\b",
+      "begin": "(?<![.\\w])(needs)\\b(?=\\s+[A-Za-z_])(?!\\s+(?:and|or|is|in|else)\\b)",
       "end": "(?=[{,)=;]|$|\\bwhere\\b)",
       "beginCaptures": {
         "1": { "name": "keyword.other.needs.gamma" }
@@ -280,7 +280,7 @@
         },
         {
           "name": "storage.type.gamma",
-          "match": "\\b(?:struct|union|effect|handler|foreign)\\b"
+          "match": "\\b(?:struct|union|effect)\\b|(?<![.\\w])handler(?=\\s+[A-Za-z_])|(?<![.\\w])foreign(?=\\s*\")"
         },
         {
           "name": "storage.modifier.operation.gamma",
