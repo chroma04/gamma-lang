@@ -356,10 +356,13 @@ tmp :: fn(m: ^Machine, n: u64) -> []u8 needs Alloc {
     if n is 0 { return empty_slice(u8) }
     sc := &m.scratch
     size := us(n)
-    // Buffers are 8-byte aligned.
-    top := (sc.top + 7) & ~us(7)
+    top := sc.top
     while true {
         chunk := sc.chunks.items[sc.cur]
+        // Buffers are 8-byte aligned in memory (a chunk itself may be aligned to 4 only,
+        // on 32-bit hosts): the register machine reads its registers as `u64`s.
+        base := chunk.ptr.addr()
+        top = ((base + top + 7) & ~us(7)) - base
         if top + size <= chunk.len {
             b := chunk[top..top + size]
             sc.top = top + size
@@ -369,11 +372,11 @@ tmp :: fn(m: ^Machine, n: u64) -> []u8 needs Alloc {
         sc.cur += 1
         top = 0
         if sc.cur is sc.chunks.items.len {
-            sc.chunks.push(make_fill(size.max(CHUNK), u8(0))!)!
+            sc.chunks.push(make_fill(size.max(CHUNK) + 8, u8(0))!)!
         } else if sc.chunks.items[sc.cur].len < size {
             // A chunk too small for this buffer is replaced.
             free(sc.chunks.items[sc.cur])
-            sc.chunks.items[sc.cur] = make_fill(size.max(CHUNK), u8(0))!
+            sc.chunks.items[sc.cur] = make_fill(size.max(CHUNK) + 8, u8(0))!
         }
     }
 }

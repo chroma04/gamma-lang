@@ -45,6 +45,10 @@ bench/programs + scratch benches 3–7x (call 0.22 → 0.058, sieve 0.70 → 0.1
 - `make(T, n)` needs Plain(T); pointer element slices via list().items.
 - Gamma has no overloading: VM compiler methods are `vc_*` (names collided with run.gm).
 - `cont` is a reserved type name (can't be a local).
+- wasm32 host (web playground CI, pages.yml): heap u8 chunks are only 4-aligned → `tmp`
+  aligns by absolute address (registers are read as u64 via cast). Reproduce locally:
+  apt wasi-libc libclang-rt-18-dev-wasm32 binaryen; CC="clang-18 --target=wasm32-wasi"
+  web/play/build.sh; node web/check.mjs <wasm> <libs.json> [--one run file.gm].
 - Editing sources while the harness runs breaks selfhost fixed-point/unit tests (transient).
 
 ## Not done / next candidates
