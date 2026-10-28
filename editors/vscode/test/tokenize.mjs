@@ -171,6 +171,14 @@ if (!variants.some((t) => t.scopes.includes("constant.other.enum-member.gamma"))
 }
 
 // Negative checks.
+// `needs`, `handler` and `foreign` are plain names outside their positions (spec 2.4).
+const nameFn = sample.split("\n").findIndex((l) => l.startsWith("names :: fn")) + 1;
+for (const t of tokens.filter((t) => t.line >= nameFn && ["needs", "handler", "foreign"].includes(t.text))) {
+  if (t.scopes.some((s) => s.startsWith("keyword") || s.startsWith("storage"))) {
+    fail(`token ${JSON.stringify(t.text)} (line ${t.line}) is a name here but scoped [${t.scopes.join(", ")}]`);
+  }
+}
+
 const forbidden = [
   ["x", "comment"],
   ["1_000u32", "string"],

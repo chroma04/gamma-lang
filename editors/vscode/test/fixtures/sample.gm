@@ -56,3 +56,8 @@ test "adds" {
 bench "adds" {
     _ = @black_box(add(1, 2))
 }
+
+names :: fn(handler: i32, foreign: i32) -> i32 {
+    needs := handler + foreign
+    return needs
+}

@@ -186,10 +186,9 @@ Identifiers are ASCII. They are case-sensitive. The identifier consisting of a s
 
 ```
 and      break    cancel   continue ctl      defer    effect   else
-errdefer esc      false    fn       for      foreign  handler  if
-import   in       is       match    needs    not      null     or
-pub      resume   return   struct   true     try      union    using
-when     while    with
+errdefer esc      false    fn       for      if       import   in
+is       match    not      null     or       pub      resume   return
+struct   true     try      union    using    when     while    with
 ```
 
 **Contextual keywords** are ordinary identifiers except in the syntactic position given:
@@ -199,6 +198,9 @@ when     while    with
 | `const` | immediately after `^`, `[^]` or `[]` in a type (§5.5) |
 | `on` | after the handler list of a `with` (§12.7) |
 | `where` | after a function signature or a type's parameter list (§16.3) |
+| `needs` | right after the parameter list or result type of a function signature (declarations, literals, `fn` and `^fn` types, foreign members, §11.1), and after the type of a handler declaration (§12.4) |
+| `handler` | at the start of a handler literal, when an effect reference follows (`handler Log { … }`, `handler m.Log { … }`, §12.4), and at the start of a top-level declaration followed by an effect reference or `(` (`handler Log for T`, `handler(params) Log for T`); at top level `handler ::` and `handler :` declare a binding named `handler`, and elsewhere `handler` followed by anything but an identifier is an ordinary name (`handler(x)`, `handler.f`) |
+| `foreign` | when a string literal follows (`foreign "c" { … }`, §19.2) |
 | `test`, `bench` | at the start of a top-level declaration, before a string literal (§3.8, §3.9) |
 
 `type` and `cont` are not keywords; they are predeclared, reserved type names (§21.1).
@@ -316,7 +318,7 @@ Newlines are significant inside braces `{ }` and at the top level, where they te
 
 A newline token is **suppressed** (treated as whitespace) when any of the following holds:
 
-1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `needs`, `.`, or an opening bracket of any kind.
+1. The last token before it is a binary operator (any operator in §B.1 levels 3–11 that is binary, including `and`, `or`, `else`, `is`, `in`, `not in`, `is not`), an assignment operator, `,`, `::`, `:=`, `:`, `=>`, `->`, `.`, or an opening bracket of any kind.
 2. The first token after it (skipping blank lines and comments) is `else`, `and`, `or`, or `.` followed by an identifier — **except** directly inside a `match` body (§8.6), where every line begins an arm and a newline always ends the preceding arm, and except when that line contains a `:=` token outside brackets (strings and comments do not count, and the line is taken to end where a raw string or block comment carries on to the next one), which makes it a pattern binding (`.Num(n) := v else return`, §4.5).
 3. Its innermost enclosing bracket is `( )` or `[ ]`. Only the innermost bracket matters: newlines inside a `{ }` block are significant even when that block is itself inside parentheses (a function literal passed as an argument, for example).
 
@@ -3220,7 +3222,7 @@ One bound is a rule rather than a limit, since the target's address space decide
 
 ## Appendix A. Grammar
 
-This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. `ATTR` is an attribute name and `INTRINSIC` an intrinsic name (§2.7); each is one token, `#` or `@` and the identifier together, so `'#global'` is the attribute name `global`. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
+This grammar is normative. Notation is that of §1.2. Terminals in `'quotes'`. `NL` is a significant newline or `;` (§2.8). Lexical productions are in §2. The quoted words `'needs'`, `'handler'`, `'foreign'`, `'where'`, `'on'`, `'const'`, `'test'` and `'bench'` are contextual keywords (§2.4): identifiers except where the grammar uses them. `ATTR` is an attribute name and `INTRINSIC` an intrinsic name (§2.7); each is one token, `#` or `@` and the identifier together, so `'#global'` is the attribute name `global`. Where the grammar is ambiguous, the disambiguation rules listed in §A.7 apply. In every brace-delimited list (blocks, struct fields, union variants, effect operations, handler clauses, match arms, foreign members, top-level `when` bodies), the `NL` after the last element may be omitted, so short bodies fit on one line: `handler Log { log(l, m) => {} }`.
 
 ### A.1 Files and declarations
 
@@ -3460,9 +3462,9 @@ Assignment (`=` and compound forms) is a statement.
 
 ### B.3 Keywords
 
-**Reserved (35):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `foreign` `handler` `if` `import` `in` `is` `match` `needs` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
+**Reserved (32):** `and` `break` `cancel` `continue` `ctl` `defer` `effect` `else` `errdefer` `esc` `false` `fn` `for` `if` `import` `in` `is` `match` `not` `null` `or` `pub` `resume` `return` `struct` `true` `try` `union` `using` `when` `while` `with`.
 
-**Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
+**Contextual:** `const` (after `^`, `[]`, `[^]`), `on` (in `with`), `where` (after a signature or type parameters), `needs` (after a signature's parameters or result type), `handler` (before an effect reference), `foreign` (before a string literal), `test` and `bench` (top-level). `type` and `cont` are predeclared, reserved type names.
 
 ### B.4 Build modes
 

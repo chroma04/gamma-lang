@@ -111,6 +111,8 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
             cx.error(span, "expected a value, found a type")
             return error_expr(cx.s, span)
         }
+        // After a syntax error the parser leaves a placeholder; it has been reported already.
+        .Error => return error_expr(cx.s, span)
         .Intrinsic(i) => return cx.intrinsic(i, span)
         .Fn(lit) => return cx.fn_literal(lit, expect, null, span)
         .Handler(lit) => return cx.handler_literal(lit, null, span)

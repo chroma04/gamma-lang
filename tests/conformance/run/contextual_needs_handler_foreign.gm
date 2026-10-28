@@ -1,0 +1,43 @@
+// `needs`, `handler` and `foreign` are contextual keywords (§2.4): ordinary names except in their syntactic positions, where they keep their meaning in the same file.
+Tick :: effect { tick: fn(n: u32) }
+
+Pt :: struct {
+    needs: u32
+    handler: u32
+    foreign: u32
+}
+
+handler :: fn(needs: u32, foreign: u32) -> u32 => needs + foreign
+
+ticks :: fn(handler: u32) needs Tick {
+    for i in 0..handler { Tick.tick(i) }
+}
+
+apply :: fn(f: fn(u32) needs Tick, foreign: u32) needs Tick => f(foreign)
+
+foreign :: 7
+
+handler Tick for ^u32 {
+    tick(self, n) => {
+        self^ += n
+    }
+}
+
+main :: fn() needs Out {
+    needs := 3
+    p := Pt(needs: needs, handler: 5, foreign: foreign)
+    h := handler(p.needs, p.foreign)
+    print("{} {}\n", h, p.handler)
+    total: u32 = 0
+    with (handler Tick {
+        tick(n) => {
+            total += n
+        }
+    }) {
+        apply(ticks, p.handler)
+    }
+    print("{}\n", total)
+    handler := 1
+    needs = handler + needs
+    print("{}\n", needs)
+}

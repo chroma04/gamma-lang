@@ -628,8 +628,11 @@ declaration_starts_at :: fn(lx: ^const Lexer, lo: usize, kind: TokenKind) -> boo
     after := lx.src[i..]
     return match kind {
         .Attribute(_) => true
-        .Keyword(k) => k in (Keyword.Pub, Keyword.Handler)
-        .Ident(_) => after.starts_with("::") or (word in ("test", "bench") and after.starts_with("\""))
+        .Keyword(k) => k is Keyword.Pub
+        .Ident(_) => {
+            after.starts_with("::") or (word in ("test", "bench") and after.starts_with("\""))
+                or (word is "handler" and after.len > 0 and (after[0] is '(' or is_ident_start(after[0])))
+        }
         _ => false
     }
 }
@@ -717,7 +720,7 @@ flush_newline :: fn(lx: ^Lexer, next: TokenKind, next_hi: usize) {
 
 /// Rule 1 of §2.8: a newline after this token is not significant.
 suppresses_newline_after :: fn(kind: TokenKind) -> bool => match kind {
-    .Keyword(k) => k in (Keyword.Is, Keyword.In, Keyword.And, Keyword.Or, Keyword.Else, Keyword.Needs)
+    .Keyword(k) => k in (Keyword.Is, Keyword.In, Keyword.And, Keyword.Or, Keyword.Else)
     // Every operator except the postfix and sigil ones, `...`, `---` and closing brackets.
     .Punct(p) => p not in (
         Punct.Question, Punct.Bang, Punct.Caret, Punct.At, Punct.Hash, Punct.Ellipsis,

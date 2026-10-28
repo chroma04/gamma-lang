@@ -1,0 +1,33 @@
+//! stage: parse
+//! dump
+// 2.4: `needs`, `handler` and `foreign` are names except in their syntactic positions.
+
+Eff :: effect { op: fn(x: i32) }
+
+foreign :: 1
+needs, handler: i32 = 2, 3
+
+handler(needs: i32, foreign: i32) Eff for ^i32 needs Alloc {
+    op(self, x) => {
+        self^ += x
+    }
+}
+
+handler Eff for u8 {
+    op(self, x) => {}
+}
+
+f :: fn(handler: i32, needs: i32) -> i32 needs Alloc => handler + needs
+
+g :: fn(cb: fn(i32) needs Eff) -> i32 needs Eff {
+    needs := handler(1, 2)
+    foreign := needs.handler
+    with (handler Eff { op(x) => {} }) {
+        cb(foreign)
+    }
+    c := foreign "c" {
+        abs :: fn(x: i32) -> i32 needs not
+    }
+    if needs := f(1, 2) { return }
+    return handler[0]
+}

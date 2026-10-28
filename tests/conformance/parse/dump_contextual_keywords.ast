@@ -1,0 +1,70 @@
+(file
+  (item
+    (binding const Eff
+      (effect
+        (op op fn (params (param (names x) (ty (ident i32))))))))
+  (item
+    (binding const foreign (int 1)))
+  (item
+    (binding var (names needs handler) (ty (ident i32)) (tuple (int 2) (int 3))))
+  (item
+    (handler-decl
+      (params (param (names needs) (ty (ident i32)))
+        (param (names foreign) (ty (ident i32))))
+      (ident Eff)
+      (for (ptr-type (ident i32)))
+      (effects (ident Alloc))
+      (clause op
+        (params self x)
+        (block
+          (assign += (places (deref (ident self))) (ident x))))))
+  (item
+    (handler-decl
+      (ident Eff)
+      (for (ident u8))
+      (clause op
+        (params self x)
+        (block))))
+  (item
+    (binding const f
+      (fn
+        (params (param (names handler) (ty (ident i32)))
+          (param (names needs) (ty (ident i32))))
+        (ret (ident i32))
+        (effects (ident Alloc))
+        (=> (binary + (ident handler) (ident needs))))))
+  (item
+    (binding const g
+      (fn
+        (params
+          (param (names cb)
+            (ty (fn-type (params (param (names) (ty (ident i32)))) (effects (ident Eff))))))
+        (ret (ident i32))
+        (effects (ident Eff))
+        (block
+          (binding var needs (call (ident handler) (int 1) (int 2)))
+          (binding var foreign (field (ident needs) handler))
+          (expr
+            (with
+              (handlers
+                (paren
+                  (handler
+                    (ident Eff)
+                    (clause op
+                      (params x)
+                      (block)))))
+              (block
+                (expr (call (ident cb) (ident foreign))))))
+          (binding var c
+            (foreign
+              (str "c")
+              (foreign-fn abs
+                (fn-type (params (param (names x) (ty (ident i32)))) (ret (ident i32))
+                  (effects)))))
+          (expr
+            (if
+              (branch
+                (cond (bind (bind needs) (call (ident f) (int 1) (int 2))))
+                (block
+                  (expr (return))))))
+          (expr (return (index (ident handler) (int 0)))))))))
