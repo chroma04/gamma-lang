@@ -57,6 +57,9 @@ Ins :: union {
     /// the local is kept there.
     LocalAt: (r: u32, local: u32, at: u32, rel: u32, size: u32, align: u32, n: ^Node)
     SetLocalAt: (local: u32, at: u32, rel: u32, size: u32, align: u32, v: u32, n: ^Node)
+    /// The same for a local of the frame `levels` capture links up (an upvar).
+    UpvarAt: (r: u32, levels: u32, local: u32, rel: u32, size: u32, align: u32, n: ^Node)
+    SetUpvarAt: (levels: u32, local: u32, rel: u32, size: u32, align: u32, v: u32, n: ^Node)
     /// A word at the address in register `base` plus `off`.
     Load: (r: u32, base: u32, off: u32, size: u32, align: u32, n: ^Node)
     Store: (base: u32, off: u32, size: u32, align: u32, v: u32, n: ^Node)
@@ -70,6 +73,13 @@ Ins :: union {
     /// Adds a constant to a register (an address).
     AddK: (r: u32, k: u64)
     IntOp: (op: tir.BinOp, t: IntW, shift: IntW, r: u32, a: u32, b: u32, n: ^Node)
+    /// `+`, `-` or `*` (`op` 0, 1, 2) on integers of 64 bits, or (`Arith32`) of at most 32,
+    /// checked or (`wrap`) wrapping: the common operators without `int_word`'s generality.
+    Arith64: (op: u8, signed: bool, wrap: bool, r: u32, a: u32, b: u32, n: ^Node)
+    Arith32: (op: u8, signed: bool, wrap: bool, bits: u32, r: u32, a: u32, b: u32, n: ^Node)
+    /// Jumps to `to` unless the comparison (or `is`) of two registers holds.
+    JCmp: (op: tir.BinOp, how: WordCmp, a: u32, b: u32, to: u32)
+    JEq: (how: WordCmp, negated: bool, a: u32, b: u32, to: u32)
     Cmp: (op: tir.BinOp, how: WordCmp, r: u32, a: u32, b: u32)
     EqW: (how: WordCmp, negated: bool, r: u32, a: u32, b: u32)
     Not: (r: u32, a: u32)
@@ -84,6 +94,8 @@ Ins :: union {
     Jnz: (r: u32, to: u32)
     /// A call of function `f` with arguments in registers and slots.
     Call: (f: u32, args: []Arg, dst: Dest, node: ^Node)
+    /// A call of the function value in the slot at `at` (the value of `callee`).
+    CallValue: (at: u32, callee: ^Node, args: []Arg, dst: Dest, node: ^Node)
     /// Copies a slot's bytes to a local of this frame.
     SetLocalSlot: (local: u32, at: u32, size: u32, n: ^Node)
     /// The tree evaluator: a word into a register, a value into a slot, or for effects.
@@ -203,6 +215,8 @@ vc_patch :: fn(c: ^Vc, at: u32, to: u32) {
         .Jz(r, _) => { i^ = .Jz(r, to) }
         .Jnz(r, _) => { i^ = .Jnz(r, to) }
         .Pat(x) => { i^ = .Pat(x.pat, x.off, x.size, to) }
+        .JCmp(x) => { i^ = .JCmp(x.op, x.how, x.a, x.b, to) }
+        .JEq(x) => { i^ = .JEq(x.how, x.negated, x.a, x.b, to) }
         _ => {}
     }
 }
@@ -229,6 +243,25 @@ vc_alloc_slot :: fn(c: ^Vc, size: u64) -> u64 {
 
 /// A slot's offset in the frame's storage (known once the locals' size is).
 vc_slot_at :: fn(c: ^const Vc, off: u64) -> u32 => ((c.info.store_size + 7) / 8 * 8 + off).trunc(u32)
+
+/// The operator and flavor of `+`, `-` or `*`, checked or wrapping, for `Arith64` and
+/// `Arith32`.
+arith_kind :: fn(op: tir.BinOp) -> ?(op: u8, wrap: bool) => match op {
+    .Add(fl) => if fl in (ast.Flavor.Checked, .Wrap) { (op: 0, wrap: fl is .Wrap) } else { null }
+    .Sub(fl) => if fl in (ast.Flavor.Checked, .Wrap) { (op: 1, wrap: fl is .Wrap) } else { null }
+    .Mul(fl) => if fl in (ast.Flavor.Checked, .Wrap) { (op: 2, wrap: fl is .Wrap) } else { null }
+    _ => null
+}
+
+/// The operator `Arith64` or `Arith32` stands for.
+arith_op :: fn(op: u8, wrap: bool) -> tir.BinOp {
+    fl: ast.Flavor = if wrap { .Wrap } else { .Checked }
+    return match op {
+        0 => .Add(fl)
+        1 => .Sub(fl)
+        _ => .Mul(fl)
+    }
+}
 
 /// Whether `n` is a value the machine computes in a register.
 is_word :: fn(n: ^const Node) -> bool => n.size <= 8
@@ -290,6 +323,11 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
             if want is .Ret { c.vc_emit(.Ret) }
             return ()
         }
+        .CallValue(callee, args) => if want is not .Reg {
+            c.vc_call_value(callee, args, if want is .Ret { Dest.Ret } else { Dest.None }, n)
+            if want is .Ret { c.vc_emit(.Ret) }
+            return ()
+        }
         _ => {}
     }
     match want {
@@ -345,7 +383,16 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
             c.vc_word(x.l)
             c.vc_word(x.r)
             c.top = save
-            c.vc_emit(.IntOp(x.op, x.t, x.shift, c.vc_alloc(), save, save + 1, n))
+            r := c.vc_alloc()
+            if k := arith_kind(x.op) {
+                if x.t.bits is 64 {
+                    c.vc_emit(.Arith64(k.op, x.t.signed, k.wrap, r, save, save + 1, n))
+                } else {
+                    c.vc_emit(.Arith32(k.op, x.t.signed, k.wrap, x.t.bits, r, save, save + 1, n))
+                }
+            } else {
+                c.vc_emit(.IntOp(x.op, x.t, x.shift, r, save, save + 1, n))
+            }
         }
         .Cmp(x) => {
             c.vc_word(x.l)
@@ -386,10 +433,11 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
             c.vc_emit(.FloatOp(x.op, x.wide, c.vc_alloc(), save, save + 1))
         }
         .Call(f, args) => c.vc_call(f, args, .Reg(save), n)
+        .CallValue(callee, args) => c.vc_call_value(callee, args, .Reg(save), n)
         .Block(b) => c.vc_block(b, .Reg)
         .If(x) => c.vc_if_(x.cond, x.then, x.else_, .Reg)
         .Match(scrutinee, arms) => c.vc_match_(n, scrutinee, arms, .Reg)
-        .Field(_), .Index(_), .Deref(_) => {
+        .Upvar(_), .Field(_), .Index(_), .Deref(_) => {
             if c.vc_placeable(n) is .No {
                 c.vc_emit(.EvalW(c.vc_alloc(), n))
             } else {
@@ -415,7 +463,7 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
 Placeable :: union { No, Local, Mem }
 
 vc_placeable :: fn(c: ^const Vc, n: ^const Node) -> Placeable => match n.op {
-    .Local(_) => .Local
+    .Local(_), .Upvar(_) => .Local
     .Field(x) => c.vc_placeable(x.base)
     .Deref(_) => .Mem
     .Index(x) => if not is_word(x.index) { .No } else { match x.seq {
@@ -426,19 +474,21 @@ vc_placeable :: fn(c: ^const Vc, n: ^const Node) -> Placeable => match n.op {
     _ => .No
 }
 
-/// A place the machine computes: bytes at an offset of a local, or an address in a register
-/// plus an offset (`packed`: possibly unaligned).
+/// A place the machine computes: bytes at an offset of a local (of the frame `levels`
+/// capture links up), or an address in a register plus an offset (`packed`: possibly
+/// unaligned).
 PlaceC :: union {
-    Local: (local: u32, rel: u64, packed: bool)
+    Local: (levels: u32, local: u32, rel: u64, packed: bool)
     Mem: (r: u32, off: u64, packed: bool)
 }
 
 /// Compiles the place `n` (`vc_placeable`); registers it needs are allocated.
 vc_place :: fn(c: ^Vc, n: ^Node) -> PlaceC needs Alloc {
     match n.op {
-        .Local(l, _) => return .Local(l, 0, false)
+        .Local(l, _) => return .Local(0, l, 0, false)
+        .Upvar(levels, l) => return .Local(levels, l, 0, false)
         .Field(x) => match c.vc_place(x.base) {
-            .Local(l, rel, packed) => return .Local(l, rel + x.off, packed or x.packed)
+            .Local(levels, l, rel, packed) => return .Local(levels, l, rel + x.off, packed or x.packed)
             .Mem(r, off, packed) => return .Mem(r, off + x.off, packed or x.packed)
         }
         .Deref(ptr, _) => {
@@ -486,9 +536,13 @@ vc_place :: fn(c: ^Vc, n: ^Node) -> PlaceC needs Alloc {
 /// register `r` (for node `n`).
 vc_load :: fn(c: ^Vc, r: u32, pl: PlaceC, extra: u64, size: u64, align: u32, n: ^Node) needs Alloc {
     match pl {
-        .Local(l, rel, packed) => {
-            i := usize(l)
-            c.vc_emit(.LocalAt(r, l, (c.info.offsets[i] + rel + extra).trunc(u32), (rel + extra).trunc(u32), size.trunc(u32), if packed { 1 } else { align }, n))
+        .Local(levels, l, rel, packed) => {
+            al := if packed { 1 } else { align }
+            if levels > 0 {
+                c.vc_emit(.UpvarAt(r, levels, l, (rel + extra).trunc(u32), size.trunc(u32), al, n))
+                return ()
+            }
+            c.vc_emit(.LocalAt(r, l, (c.info.offsets[usize(l)] + rel + extra).trunc(u32), (rel + extra).trunc(u32), size.trunc(u32), al, n))
         }
         .Mem(base, off, packed) => c.vc_emit(.Load(r, base, (off + extra).trunc(u32), size.trunc(u32), if packed { 1 } else { align }, n))
     }
@@ -556,6 +610,24 @@ vc_uses_scratch :: fn(c: ^const Vc, st: St) -> bool => match st {
 /// register, which stays allocated).
 vc_call :: fn(c: ^Vc, f: u32, args: []^Node, dst: Dest, n: ^Node) needs Alloc {
     save := c.top
+    out := c.vc_args(args)
+    c.vc_emit(.Call(f, out, dst, n))
+    c.vc_set_top(if dst is .Reg(_) { save + 1 } else { save })
+}
+
+/// A call of the function value `callee`, evaluated first, then the arguments.
+vc_call_value :: fn(c: ^Vc, callee: ^Node, args: []^Node, dst: Dest, n: ^Node) needs Alloc {
+    save := c.top
+    at := c.vc_slot_at(c.vc_alloc_slot(callee.size))
+    c.vc_to_slot(callee, at)
+    out := c.vc_args(args)
+    c.vc_emit(.CallValue(at, callee, out, dst, n))
+    c.vc_set_top(if dst is .Reg(_) { save + 1 } else { save })
+}
+
+/// Evaluates the arguments of a call in order: words into registers, which stay
+/// allocated, and other values into slots.
+vc_args :: fn(c: ^Vc, args: []^Node) -> []Arg needs Alloc {
     out := list(Arg)
     for x in args {
         if is_word(x) {
@@ -568,8 +640,7 @@ vc_call :: fn(c: ^Vc, f: u32, args: []^Node, dst: Dest, n: ^Node) needs Alloc {
             out.push(.Slot(at, x.size.trunc(u32)))!
         }
     }
-    c.vc_emit(.Call(f, out.items, dst, n))
-    c.vc_set_top(if dst is .Reg(_) { save + 1 } else { save })
+    return out.items
 }
 
 /// Evaluates `n` into the slot at `at`.
@@ -583,7 +654,7 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
 
 /// Whether `n` compiles to instructions that use no scratch memory.
 vc_word_only :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
-    .Word(_), .Local(_) => true
+    .Word(_), .Local(_), .Upvar(_) => true
     .IntOp(x) => c.vc_word_only(x.l) and c.vc_word_only(x.r)
     .Cmp(x) => c.vc_word_only(x.l) and c.vc_word_only(x.r)
     .EqW(x) => c.vc_word_only(x.l) and c.vc_word_only(x.r)
@@ -606,7 +677,7 @@ vc_word_only :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
 
 /// Whether computing the place `n` (`vc_placeable`) uses no scratch memory.
 vc_place_word_only :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
-    .Local(_) => true
+    .Local(_), .Upvar(_) => true
     .Field(x) => c.vc_place_word_only(x.base)
     .Deref(ptr, _) => c.vc_word_only(ptr)
     .Index(x) => match x.seq {
@@ -648,7 +719,14 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
                 c.vc_word(value)
                 size := place.size.trunc(u32)
                 match pl {
-                    .Local(l, rel, packed) => c.vc_emit(.SetLocalAt(l, (c.info.offsets[usize(l)] + rel).trunc(u32), rel.trunc(u32), size, if packed { 1 } else { c.vc_align(place) }, v, place))
+                    .Local(levels, l, rel, packed) => {
+                        al := if packed { 1 } else { c.vc_align(place) }
+                        if levels > 0 {
+                            c.vc_emit(.SetUpvarAt(levels, l, rel.trunc(u32), size, al, v, place))
+                        } else {
+                            c.vc_emit(.SetLocalAt(l, (c.info.offsets[usize(l)] + rel).trunc(u32), rel.trunc(u32), size, al, v, place))
+                        }
+                    }
                     .Mem(base, off, packed) => c.vc_emit(.Store(base, off.trunc(u32), size, if packed { 1 } else { c.vc_align(place) }, v, place))
                 }
             } else if is_word(value) {
@@ -694,8 +772,22 @@ vc_conds :: fn(c: ^Vc, parts: []Cond) -> List(u32) needs Alloc {
         save := c.top
         match p {
             .Bool(e) => {
-                c.vc_word(e)
-                fails.push(c.vc_jump(.Jz(save, 0)))!
+                match e.op {
+                    .Cmp(x) => {
+                        c.vc_word(x.l)
+                        c.vc_word(x.r)
+                        fails.push(c.vc_jump(.JCmp(x.op, x.how, save, save + 1, 0)))!
+                    }
+                    .EqW(x) => {
+                        c.vc_word(x.l)
+                        c.vc_word(x.r)
+                        fails.push(c.vc_jump(.JEq(x.how, x.negated, save, save + 1, 0)))!
+                    }
+                    _ => {
+                        c.vc_word(e)
+                        fails.push(c.vc_jump(.Jz(save, 0)))!
+                    }
+                }
             }
             .Match(pat, value) => {
                 off := c.vc_alloc_slot(value.size)
@@ -837,16 +929,16 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
     while true {
         match ins[pc] {
             .Const(r, v) => { regs[usize(r)] = v }
-            .Local(x) => {
-                i := usize(x.local)
+            .Local(r, local, off, size) => {
+                i := usize(local)
                 if fr.mem[i] is not 0 {
-                    regs[usize(x.r)] = m.load_word(source.DUMMY, fr.mem[i], fr.info.aligns[i], u64(x.size)) else f => {
+                    regs[usize(r)] = m.load_word(source.DUMMY, fr.mem[i], fr.info.aligns[i], u64(size)) else f => {
                         pc = try m.vm_flow(a, code, regs, f)
                         continue
                     }
                 } else {
-                    o := usize(x.off)
-                    regs[usize(x.r)] = m.rd_word(fr.store[o..o + usize(x.size)])
+                    o := usize(off)
+                    regs[usize(r)] = m.rd_word(fr.store[o..o + usize(size)])
                 }
             }
             .SetLocal(x) => {
@@ -864,6 +956,65 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                         continue
                     }
                 }
+            }
+            .Arith64(op, signed, wrap, r, ra, rb, n) => {
+                p := regs[usize(ra)]
+                q := regs[usize(rb)]
+                if wrap {
+                    regs[usize(r)] = if op is 0 { p +% q } else if op is 1 { p -% q } else { p *% q }
+                } else {
+                    res: ?u64 = null
+                    if signed {
+                        x := p.bits(i64)
+                        y := q.bits(i64)
+                        v := if op is 0 { x +? y } else if op is 1 { x -? y } else { x *? y }
+                        if w := v { res = w.bits(u64) }
+                    } else {
+                        res = if op is 0 { p +? q } else if op is 1 { p -? q } else { p *? q }
+                    }
+                    if v := res {
+                        regs[usize(r)] = v
+                    } else {
+                        regs[usize(r)] = m.int_word(arith_op(op, false), IntW(signed: signed, bits: 64), IntW(signed: signed, bits: 64), p, q, n) else f => {
+                            pc = try m.vm_flow(a, code, regs, f)
+                            continue
+                        }
+                    }
+                }
+            }
+            .Arith32(op, signed, wrap, bits, r, ra, rb, n) => {
+                p := regs[usize(ra)]
+                q := regs[usize(rb)]
+                mask := mask64(bits)
+                s: u64 = 0
+                over := false
+                if signed {
+                    x := sext(p, bits)
+                    y := sext(q, bits)
+                    v := if op is 0 { x + y } else if op is 1 { x - y } else { x * y }
+                    over = v < lo64(bits) or v > hi64(bits)
+                    s = v.bits(u64) & mask
+                } else {
+                    v := if op is 0 { p + q } else if op is 1 { p -% q } else { p * q }
+                    over = if op is 1 { p < q } else { v > mask }
+                    s = v & mask
+                }
+                if over and not wrap {
+                    regs[usize(r)] = m.int_word(arith_op(op, false), IntW(signed: signed, bits: bits), IntW(signed: signed, bits: bits), p, q, n) else f => {
+                        pc = try m.vm_flow(a, code, regs, f)
+                        continue
+                    }
+                } else {
+                    regs[usize(r)] = s
+                }
+            }
+            .JCmp(op, how, ra, rb, to) => if not word_less(op, how, regs[usize(ra)], regs[usize(rb)]) {
+                pc = usize(to)
+                continue
+            }
+            .JEq(how, negated, ra, rb, to) => if word_eq(how, regs[usize(ra)], regs[usize(rb)]) is negated {
+                pc = usize(to)
+                continue
             }
             .IntOp(x) => {
                 regs[usize(x.r)] = m.int_word(x.op, x.t, x.shift, regs[usize(x.a)], regs[usize(x.b)], x.n) else f => {
@@ -896,13 +1047,13 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                     }
                 }
             }
-            .Load(x) => {
-                addr := regs[usize(x.base)] +% u64(x.off)
-                b := m.mem.read(addr, u64(x.size), u64(x.align)) else e => {
-                    pc = try m.vm_flow(a, code, regs, m.mem_trap(x.n.span, e))
+            .Load(r, base, off, size, align, n) => {
+                addr := regs[usize(base)] +% u64(off)
+                b := m.mem.read(addr, u64(size), u64(align)) else e => {
+                    pc = try m.vm_flow(a, code, regs, m.mem_trap(n.span, e))
                     continue
                 }
-                regs[usize(x.r)] = m.rd_word(b)
+                regs[usize(r)] = m.rd_word(b)
             }
             .Store(x) => {
                 addr := regs[usize(x.base)] +% u64(x.off)
@@ -936,7 +1087,7 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                 regs[k] = regs[k] +% regs[usize(x.i)] *% x.esz
             }
             .AddK(r, k) => { regs[usize(r)] +%= k }
-            .Cmp(x) => { regs[usize(x.r)] = if word_less(x.op, x.how, regs[usize(x.a)], regs[usize(x.b)]) { 1 } else { 0 } }
+            .Cmp(op, how, r, ra, rb) => { regs[usize(r)] = if word_less(op, how, regs[usize(ra)], regs[usize(rb)]) { 1 } else { 0 } }
             .EqW(x) => { regs[usize(x.r)] = if word_eq(x.how, regs[usize(x.a)], regs[usize(x.b)]) is not x.negated { 1 } else { 0 } }
             .Not(r, x) => { regs[usize(r)] = if regs[usize(x)] is 0 { 1 } else { 0 } }
             .Bool(r) => { regs[usize(r)] = if regs[usize(r)] is 0 { 0 } else { 1 } }
@@ -962,6 +1113,24 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             }
             .Call(x) => {
                 m.vm_call(a, x.f, x.args, x.dst, x.node, regs, dst) else f => {
+                    pc = try m.vm_flow(a, code, regs, f)
+                    continue
+                }
+            }
+            .CallValue(x) => {
+                m.vm_call_value(a, x.at, x.callee, x.args, x.dst, x.node, regs, dst) else f => {
+                    pc = try m.vm_flow(a, code, regs, f)
+                    continue
+                }
+            }
+            .UpvarAt(x) => {
+                regs[usize(x.r)] = m.vm_upvar_at(fr, x.levels, x.local, x.rel, x.size, x.align, x.n) else f => {
+                    pc = try m.vm_flow(a, code, regs, f)
+                    continue
+                }
+            }
+            .SetUpvarAt(x) => {
+                m.vm_set_upvar_at(fr, x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
                     continue
                 }
@@ -1120,7 +1289,38 @@ vm_unwind :: fn(m: ^Machine, a: Act, height: usize, run_err: bool) -> Flow!() ne
 
 /// A call of `f` with the arguments `args`; its result goes to `dst` (`ret` is the
 /// function's own result).
-vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run => m.vm_invoke(a, f, null, a.cx, args, dst, n, regs, ret)
+
+/// A call of the function value in the slot at `at`, of type `callee.ty` (a second-class
+/// function or a function pointer), as `call_value` makes it.
+vm_call_value :: fn(m: ^Machine, a: Act, at: u32, callee: ^Node, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+    o := usize(at)
+    cv := a.fr.store[o..o + us(callee.size)]
+    if .Fn(sig) := m.kind(callee.ty) {
+        f := m.fn_from_addr(m.word(cv, 0)) else return !m.trap(n.span, "internal error: a function value without code")
+        env := m.frame_of(m.word(cv, 1))
+        ctx := m.word(cv, 2).trunc(u32)
+        // Effects listed in the function type are handled where it is called (§11.6).
+        base := ctx
+        for eff in sig.effects.effects {
+            k := m.find_ctx(a.cx, &eff)
+            if k is 0 { continue }
+            node := m.ctxs.items[us(k)]
+            ctx = m.push_ctx(ctx, node.effect_, node.installed, node.with_frame, node.with_label, node.with_fr)
+        }
+        r := m.vm_invoke(a, f, env, ctx, args, dst, n, regs, ret)
+        m.pop_ctx(ctx, base)
+        return r
+    }
+    addr := m.ptr_of(cv)
+    if addr is 0 { return !m.trap(n.span, "call through a null function pointer") }
+    f := m.fn_from_addr(addr) else return !m.trap(n.span, str.format("call through an invalid function pointer {:#x}", addr)!)
+    return m.vm_invoke(a, f, null, a.cx, args, dst, n, regs, ret)
+}
+
+/// Calls `f` (capturing `env`, in context `cx`) with the arguments `args`; its result goes to
+/// `dst` (`ret` is the function's own result).
+vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     info := m.fn_info(f)
     body := info.body else return m.call_missing(n.span, f)
     if args.len is not info.params.len { return !m.trap(n.span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len, info.params.len)!) }
@@ -1147,10 +1347,32 @@ vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, reg
         .Slot(at) => fr.store[usize(at)..us(u64(at) + n.size)]
         .Ret => ret
     }
-    res := m.enter(n.span, f, info, body, store, null, a.cx, null, false, d)
+    res := m.enter(n.span, f, info, body, store, env, cx, null, false, d)
     m.release(mk)
     try res
     if .Reg(r) := dst { regs[usize(r)] = m.rd_word(d) }
+}
+
+/// The word at offset `rel` of local `l` of the frame `levels` capture links up from `fr`.
+vm_upvar_at :: fn(m: ^Machine, fr: ^Frame, levels: u32, l: u32, rel: u32, size: u32, align: u32, n: ^Node) -> Flow!u64 needs Alloc {
+    up := frame_up(fr, levels) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+    i := usize(l)
+    if up.mem[i] is 0 and not up.info.addressed[i] {
+        o := us(up.info.offsets[i]) + usize(rel)
+        return m.rd_word(up.store[o..o + usize(size)])
+    }
+    return m.vm_local_at(up, l, rel, size, align, n)
+}
+
+vm_set_upvar_at :: fn(m: ^Machine, fr: ^Frame, levels: u32, l: u32, rel: u32, size: u32, align: u32, v: u64, n: ^Node) -> Flow!() needs Alloc {
+    up := frame_up(fr, levels) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+    i := usize(l)
+    if up.mem[i] is 0 and not up.info.addressed[i] {
+        o := us(up.info.offsets[i]) + usize(rel)
+        m.wr_word(up.store[o..o + usize(size)], v)
+        return ()
+    }
+    return m.vm_set_local_at(up, l, rel, size, align, v, n)
 }
 
 /// The word at offset `rel` of local `l` of `fr`, which is or must be in memory.

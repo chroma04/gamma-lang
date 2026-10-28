@@ -679,7 +679,11 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #define GM_NO_FRAME_PROBES 1
 #endif
 /* `n` bounds the bytes of the function's other locals, which may lie below its frame `p`. */
+#if defined(GM_FREESTANDING) || defined(GM_WASI)
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
+#else
+#define GM_STACK_CHECK(p, n) do { if ((uintptr_t)__builtin_frame_address(0) < gm_stack_limit + (uintptr_t)(n) + sizeof(*(p))) gm_stack_overflow(); } while (0)
+#endif
 #endif
 GM_API_VAR GM_TLS gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
 GM_API_VAR GM_TLS uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
