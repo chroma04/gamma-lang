@@ -72,6 +72,10 @@ Ins :: union {
     /// range (else the general operator decides).
     Bit: (op: u8, r: u32, a: u32, b: u32)
     Shr: (t: IntW, shift: IntW, r: u32, a: u32, b: u32, n: ^Node)
+    /// `<<`, checked or (`wrap`) wrapping, on integers whose shift amount is in range and
+    /// whose bits shifted out are all copies of the sign (else the general operator
+    /// decides).
+    Shl: (t: IntW, shift: IntW, wrap: bool, r: u32, a: u32, b: u32, n: ^Node)
     SetUpvarAt: (levels: u32, local: u32, rel: u32, size: u32, align: u32, v: u32, n: ^Node)
     /// A word at the address in register `base` plus `off`.
     Load: (r: u32, base: u32, off: u32, size: u32, align: u32, n: ^Node)
@@ -367,6 +371,7 @@ vc_retarget :: fn(c: ^Vc, t: u32, d: u32) -> bool {
         .IntOp(x) => if x.r is t { Ins.IntOp(x.op, x.t, x.shift, d, x.a, x.b, x.n) } else { null }
         .Bit(op, r, a, b) => if r is t { Ins.Bit(op, d, a, b) } else { null }
         .Shr(x) => if x.r is t { Ins.Shr(x.t, x.shift, d, x.a, x.b, x.n) } else { null }
+        .Shl(x) => if x.r is t { Ins.Shl(x.t, x.shift, x.wrap, d, x.a, x.b, x.n) } else { null }
         .Cmp(op, how, r, a, b) => if r is t { Ins.Cmp(op, how, d, a, b) } else { null }
         .EqW(x) => if x.r is t { Ins.EqW(x.how, x.negated, d, x.a, x.b) } else { null }
         .Not(r, a) => if r is t { Ins.Not(d, a) } else { null }
@@ -570,6 +575,11 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
                     .BitOr => c.vc_emit(.Bit(1, r, a, b))
                     .BitXor => c.vc_emit(.Bit(2, r, a, b))
                     .Shr => c.vc_emit(.Shr(x.t, x.shift, r, a, b, n))
+                    .Shl(fl) => if fl in (ast.Flavor.Checked, .Wrap) {
+                        c.vc_emit(.Shl(x.t, x.shift, fl is .Wrap, r, a, b, n))
+                    } else {
+                        c.vc_emit(.IntOp(x.op, x.t, x.shift, r, a, b, n))
+                    }
                     _ => c.vc_emit(.IntOp(x.op, x.t, x.shift, r, a, b, n))
                 }
             }
@@ -1584,6 +1594,18 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                     }
                 }
             }
+            .Shl(t, shift, wrap, r, ra, rb, n) => {
+                p := regs[usize(ra)]
+                q := regs[usize(rb)]
+                if v := shl_fast(t, shift, wrap, p, q) {
+                    regs[usize(r)] = v
+                } else {
+                    regs[usize(r)] = m.int_word(.Shl(if wrap { ast.Flavor.Wrap } else { .Checked }), t, shift, p, q, n) else f => {
+                        pc = try m.vm_flow(a, code, regs, f)
+                        continue
+                    }
+                }
+            }
             .JCmp(op, how, ra, rb, to) => if not word_less(op, how, regs[usize(ra)], regs[usize(rb)]) {
                 pc = usize(to)
                 continue
@@ -1644,7 +1666,7 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             .EqW(x) => { regs[usize(x.r)] = if word_eq(x.how, regs[usize(x.a)], regs[usize(x.b)]) is not x.negated { 1 } else { 0 } }
             .Not(r, x) => { regs[usize(r)] = if regs[usize(x)] is 0 { 1 } else { 0 } }
             .Bool(r) => { regs[usize(r)] = if regs[usize(r)] is 0 { 0 } else { 1 } }
-            .IntConv(x) => { regs[usize(x.r)] = int_conv(x.op, x.from, x.to, regs[usize(x.a)]) }
+            .IntConv(x) => { regs[usize(x.r)] = conv_word(x.op, x.from, x.to, regs[usize(x.a)]) }
             .FloatOp(x) => { regs[usize(x.r)] = float_op(x.op, x.wide, regs[usize(x.a)], regs[usize(x.b)]) }
             .Jmp(to) => {
                 pc = usize(to)
@@ -1903,6 +1925,30 @@ shr_fast :: fn(t: IntW, shift: IntW, p, q: u64) -> ?u64 {
     return if t.signed { (sext(p, t.bits) >> q.trunc(u32)).bits(u64) & mask64(t.bits) } else { p >> q.trunc(u32) }
 }
 
+/// `<<` of integer words, checked (`null` if it overflows) or wrapping; `null` if the shift
+/// amount is out of range.
+#inline
+shl_fast :: fn(t: IntW, shift: IntW, wrap: bool, p, q: u64) -> ?u64 {
+    if q >= u64(t.bits) or (shift.signed and sext(q, shift.bits) < 0) { return null }
+    mask := mask64(t.bits)
+    low := (p <<% q) & mask
+    if not t.signed {
+        if not wrap and (low >> q) is not p { return null }
+        return low
+    }
+    w := sext(low, t.bits)
+    if not wrap and (w >> q.trunc(u32)) is not sext(p, t.bits) { return null }
+    return low
+}
+
+/// An integer word converted to another integer type (`int_conv`), its common cases inline.
+#inline
+conv_word :: fn(op: tir.Builtin, from: IntW, to: IntW, v: u64) -> u64 {
+    if op is .Sat { return int_conv(op, from, to, v) }
+    x := if from.signed { sext(v, from.bits).bits(u64) } else { v }
+    return x & mask64(to.bits)
+}
+
 /// The trap of a slice from `lo` to `hi` of something of length `len`, out of bounds.
 #noinline
 slice_trap :: fn(m: ^Machine, n: ^Node, lo: u64, hi: u64, len: ?u64) -> Flow needs Alloc {
@@ -2147,3 +2193,4 @@ assign_word :: fn(m: ^Machine, a: Act, place: ^Node, value: ^Node) -> Flow!() ne
     m.wr_word(d, v)
     return m.write_place(place.span, p, place.ty, d)
 }
+
