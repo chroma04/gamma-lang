@@ -48,3 +48,6 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
 - s49: after a syntax error inside an `if` condition (`if needs := f() {`), `gamma check`
   also reports "gamma cannot check this kind of expression yet" for the `if` (checker meets
   the parser's error node). Should stay silent after a parse error.
+- s50: a local alias named like a visible type (`Point :: i32` with a top-level `Point`)
+  is accepted, though §4.6 forbids it; fixing it may break existing code (check repo first).
+- s50: `gamma lint` has no unused check for local struct/union types.

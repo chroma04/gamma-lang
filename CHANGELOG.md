@@ -113,6 +113,9 @@ Rust implementation was still the one users ran; it is now `gamma`.
   name)` writes a value several times or out of order; each value is still evaluated once.
 - The format spec kind `q` writes a `string` or byte slice quoted with escapes, as inside
   an aggregate: `print("{:q}", "a\tb")` writes `"a\tb"`.
+- `struct` and `union` types may be declared inside a function body (§3.5): they are
+  visible to the rest of the block, are not generic, have no methods, and may not depend on
+  the function's type or value parameters.
 - In `x in (a, b, c)` and `x in list`, the element and the members are compared at one
   type, joined as the branches of an `if` are (§7.7, §7.12): with `p: []u8`,
   `p in ("get", "put")` and `p in names` (`names: []string`) are accepted; they used to be
