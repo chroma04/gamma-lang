@@ -34,7 +34,7 @@ chain_child :: fn(fg: ^FnGen, e: ^Expr) -> ?^Expr needs sema.Load {
         .Builtin(op, args) => {
             // These evaluate their operands specially, or not first.
             match op {
-                .Assert, .Fiber, .Asm(_, _), .Sys(_), .Unreachable, .Get, .GetPtr, .First, .Last, .HeapAlloc, .AllocTag, .AllocCheck, .HeapFree => return null
+                .Assert, .Fiber, .Asm(_, _), .Sys(_), .Unreachable, .Get, .GetPtr, .First, .Last, .HeapAlloc, .AllocTag, .AllocCheck, .HeapFree, .CopyElems => return null
                 _ => {}
             }
             if args.len is 0 { return null }

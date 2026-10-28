@@ -428,7 +428,10 @@ pub Sema :: struct {
     adt_new_instances: List(Instance)
     adt_inst_overflowed: bool
     method_candidates: List(MethodCandidate)
-    layout_cache: List(?Layout)
+    /// The layouts computed in the current query (`layout`), by type: an entry counts only
+    /// if it was made in generation `layout_gen`.
+    layout_cache: List(CachedLayout)
+    layout_gen: u32
     /// The ambient effects (§12.9), once resolved.
     pub yield_effect: ?u32
     /// The typed constants and evaluated defaults (§17.2), by where they are declared and
@@ -542,7 +545,8 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         adt_new_instances: list(Instance),
         adt_inst_overflowed: false,
         method_candidates: list(MethodCandidate),
-        layout_cache: list(?Layout),
+        layout_cache: list(CachedLayout),
+        layout_gen: 1,
         yield_effect: null,
         consts: list(tir.ConstDef),
         const_ids: hash_map.hash_map((source.Span, Ty), u32),

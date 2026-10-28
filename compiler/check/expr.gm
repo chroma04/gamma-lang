@@ -4,17 +4,40 @@
 /// Checks an expression whose value is used. `expect` is a hint from the context (the
 /// caller still coerces to it where the context is a coercion site).
 expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
-    span := e.span
-    tys := &cx.s.tys
-    // `3 + 4j`: an untyped complex constant expression is evaluated exactly (§6.2).
-    if (e.kind is .Binary(_) or e.kind is .Unary(.Neg, _)) and cx.mentions_complex_constant(e) {
-        if r := cx.try_untyped(e) {
-            match r {
-                .Ok(v) => return cx.untyped_literal(&v, span)
-                .Failed => return error_expr(cx.s, span)
+    // `3 + 4j`: an untyped complex constant expression is evaluated exactly (§6.2). The
+    // operands of an operator that mentions no complex constant mention none either, so the
+    // question is asked once per tree of operators, not once per operator.
+    if e.kind is .Binary(_) or e.kind is .Unary(_) {
+        if cx.complex_free { return cx.expr_kind(e, expect) }
+        if not cx.mentions_complex_constant(e) {
+            cx.complex_free = true
+            r := cx.expr_kind(e, expect)
+            cx.complex_free = false
+            return r
+        }
+        if e.kind is .Binary(_) or e.kind is .Unary(.Neg, _) {
+            if r := cx.try_untyped(e) {
+                match r {
+                    .Ok(v) => return cx.untyped_literal(&v, e.span)
+                    .Failed => return error_expr(cx.s, e.span)
+                }
             }
         }
+        return cx.expr_kind(e, expect)
     }
+    if cx.complex_free and e.kind is not .Paren(_) {
+        cx.complex_free = false
+        r := cx.expr_kind(e, expect)
+        cx.complex_free = true
+        return r
+    }
+    return cx.expr_kind(e, expect)
+}
+
+/// Checks `e` by its kind (see `expr`).
+expr_kind :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
+    span := e.span
+    tys := &cx.s.tys
     match e.kind {
         .Int(lit) => {
             ty := if suffix := lit.suffix { cx.s.suffix_type(suffix) } else { cx.infer.new_var(tys, .Int) }
@@ -883,12 +906,30 @@ equalize :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, span: source.Span) -> (l: ^Expr, r
 
 /// The module a module-binding expression (`m` in `m.x`) names, unless a local shadows it.
 module_of :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?usize needs Load {
+    // Only a path that starts with a module name can denote a module. A chain of field
+    // accesses asks this of each of its prefixes, longest first: once one is known not to
+    // start with a module name, its base is answered without walking the chain again.
+    if p := cx.value_path {
+        if p is e { return null }
+        if .Field(pb, _) := p.kind and pb is e {
+            cx.value_path = e
+            return null
+        }
+    }
+    root := e
+    while .Field(base, _) := root.kind { root = base }
+    if .Ident(rid) := root.kind and cx.lookup_local(rid.name) is null { return cx.module_path(e) }
+    cx.value_path = e
+    return null
+}
+
+/// `module_of` for a path whose first name is not a local.
+module_path :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?usize needs Load {
     if .Field(base, name) := e.kind {
-        m := cx.module_of(base) else return null
+        m := cx.module_path(base) else return null
         return cx.s.public_module_member(m, name.name, cx.module)
     }
     .Ident(id) := e.kind else return null
-    if cx.lookup_local(id.name) is not null { return null }
     d := cx.s.lookup_module_name(cx.module, id.name) else return null
     .Module(m) := cx.s.resolve_decl(d) else return null
     return m

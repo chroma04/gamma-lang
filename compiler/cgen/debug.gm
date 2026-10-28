@@ -153,13 +153,18 @@ unique_with :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool),
     return out.items
 }
 
-/// `decls`, with every macro named in `names` (sorted) suspended around it.
+/// `decls`, with every macro named in `names` (sorted) suspended around it. `defined` is
+/// an operator of the preprocessor, never a macro.
 pub guard :: fn(names: []const string, decls: string) -> string needs Alloc {
     if names.len is 0 or decls.len is 0 { return decls }
     out := list(u8)
-    for n in names { out.write("#pragma push_macro(\"{}\")\n#undef {}\n", n, n)! }
+    for n in names {
+        if n is not "defined" { out.write("#pragma push_macro(\"{}\")\n#undef {}\n", n, n)! }
+    }
     out.extend(decls)!
-    for n in names { out.write("#pragma pop_macro(\"{}\")\n", n)! }
+    for n in names {
+        if n is not "defined" { out.write("#pragma pop_macro(\"{}\")\n", n)! }
+    }
     return out.items
 }
 

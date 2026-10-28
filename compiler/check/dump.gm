@@ -649,6 +649,7 @@ builtin_text :: fn(op: tir.Builtin) -> string needs Alloc => match op {
     .Fiber => "Fiber"
     .HeapAlloc => "HeapAlloc"
     .HeapFree => "HeapFree"
+    .CopyElems => "CopyElems"
     .AllocTag => "AllocTag"
     .AllocCheck => "AllocCheck"
     .Asm(outputs, inputs) => str.format("Asm {{ outputs: {}, inputs: {} }}", outputs, inputs)!

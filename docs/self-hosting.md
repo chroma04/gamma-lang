@@ -39,14 +39,20 @@ stage 1 does.
 
 ```sh
 GAMMA_STD=lib/std ./gamma1 build compiler -o gamma2
-GAMMA_STD=lib/std ./gamma2 build compiler --emit-c -o gamma3
-cmp gamma2.c gamma3.c                    # identical
+GAMMA_STD=lib/std ./gamma1 build compiler --emit-c -o stage1
+GAMMA_STD=lib/std ./gamma2 build compiler --emit-c -o stage2
+cmp stage1.c stage2.c                    # identical
 ```
 
+The compiler's manifest (`compiler/gamma.toml`) builds it in the Checked mode: optimized,
+with its overflow and bounds checks on. It runs about two and a half times as fast as a Debug
+build of it. A Debug build (`gamma build --mode=debug compiler`) reports the calls that led
+to a trap, which helps when the compiler itself fails.
+
 The `selfhost` suite of the test harness checks the fixed point, that the compiler's unit
-tests pass and its sources are formatted, that the split C form of the seed builds, and that
-a packaged release runs from its installed layout. It builds the compiler through the C back
-end in the Debug mode, so that its overflow and bounds checks are on.
+tests pass (in the Debug mode, which checks them for leaks) and its sources are formatted,
+that the split C form of the seed builds, and that a packaged release runs from its
+installed layout.
 
 ### One seed for every host
 

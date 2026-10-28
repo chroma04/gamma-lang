@@ -1,7 +1,7 @@
 // The builtins that reach memory: the heap primitives behind the core library's
-// allocator, the allocation tags of Debug builds, atomics, volatile accesses, C string
-// lengths and vector loads and stores. Atomics are plain accesses: one thread runs at a
-// time (§19.6).
+// allocator, the allocation tags of Debug builds, the block copy of lists and
+// `copy_from`, atomics, volatile accesses, C string lengths and vector loads and stores.
+// Atomics are plain accesses: one thread runs at a time (§19.6).
 
 /// The largest alignment a heap allocation can get.
 MAX_HEAP_ALIGN: u64 : 1 << 32
@@ -104,6 +104,18 @@ memory_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, args: []Ex
             }
         }
         .Fence => {}
+        .CopyElems => {
+            .Slice(_, elem) := m.kind(args[0].ty) else return !m.trap(span, "internal error: a copy between non-slices")
+            d := m.slice_parts(v[0])
+            s := m.slice_parts(v[1])
+            n := d.len * m.size(elem)
+            if n is 0 { return () }
+            // Through a temporary: the slices may overlap.
+            src := m.mem.read(s.ptr, n, 1) else e => return !m.mem_trap(span, e)
+            tmp := m.tmp(n)
+            tmp.copy_from(src)
+            m.mem.write(d.ptr, tmp, 1) else e => return !m.mem_trap(span, e)
+        }
         .CstrLen => {
             p := m.ptr_of(v[0])
             n: u64 = 0

@@ -463,6 +463,9 @@ pub Builtin :: union {
     HeapFree
     AllocTag
     AllocCheck
+    /// `@copy_elems(dst, src)` in the core library: copies the elements of the slice `src`
+    /// into the slice `dst` of the same length; they may overlap.
+    CopyElems
     /// `@asm(template, outputs, inputs, clobbers)` (§19.5).
     Asm: (outputs: u32, inputs: u32)
     /// `@static_assert` on a condition that depends on the parameters of the generic body

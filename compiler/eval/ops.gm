@@ -575,6 +575,15 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
             return .Some(new(copy(v))!)
         }
         .BlackBox => return x
+        .CopyElems => {
+            .Slice(d) := x else return !m.unsupported(span, "this copy")
+            .Slice(s) := vals[1] else return !m.unsupported(span, "this copy")
+            // The elements are read first: the slices may overlap.
+            elems := list(Value)
+            for k in 0..s.len { elems.push(copy(m.load(offset(s.start, k), span)))! }
+            for k, v in enumerate(elems.items) { try m.store(offset(d.start, u64(k)), v, span) }
+            return unit_value()
+        }
         // A pointer cast keeps the address: the place is the same (§6.7).
         .Cast => return x
         // The evaluator's places have no addresses; one is made up from where the cell is

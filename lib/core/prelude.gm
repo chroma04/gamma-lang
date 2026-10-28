@@ -681,7 +681,7 @@ pub dupe :: fn(T: type, s: []const T, site: SourceLocation = @caller_location())
     raw := a.vt.alloc(a.data, @size_of(T) * s.len, @align_of(T)) else return !.OutOfMemory
     tag(raw, a, site)
     d := raw.cast([^]T)[0..s.len]
-    for i in 0..s.len { d[i] = s[i] }
+    @copy_elems(d, s)
     return d
 }
 

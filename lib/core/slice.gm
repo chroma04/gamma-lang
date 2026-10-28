@@ -17,15 +17,7 @@ pub fill :: fn(T: type, s: []T, x: T) {
 /// Copies `src` into `s`, which must have the same length (checked); they may overlap.
 pub copy_from :: fn(T: type, s: []T, src: []const T) {
     assert(s.len is src.len, "copy_from needs slices of equal length")
-    if s.ptr.addr() <= src.ptr.addr() {
-        for i in 0..s.len { s[i] = src[i] }
-    } else {
-        i := s.len
-        while i > 0 {
-            i -= 1
-            s[i] = src[i]
-        }
-    }
+    @copy_elems(s, src)
 }
 
 /// Sorts `s` in ascending order (not stable).

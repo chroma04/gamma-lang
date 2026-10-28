@@ -1192,7 +1192,7 @@ may_write :: fn(e: ^Expr) -> bool {
     match e.kind {
         .Call(_), .Block(_), .Loop(_), .With(_), .Closure(_), .Resume(_), .Cancel(_), .Write(_), .WriteDeferred(_), .SoaDeferred(_) => { writes = true }
         .Builtin(op, _) => match op {
-            .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileStore, .Sys(_), .Fiber, .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .Asm(_, _) => { writes = true }
+            .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileStore, .Sys(_), .Fiber, .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .CopyElems, .Asm(_, _) => { writes = true }
             _ => {}
         }
         _ => {}

@@ -43,12 +43,20 @@ pub(package) is_nullable_pointer :: fn(s: ^Sema, t: Ty) -> bool => s.tys.kind(t)
 /// trees can be exponentially large.
 pub layout :: fn(s: ^Sema, t: Ty) -> Layout needs Alloc {
     i := usize(t.id)
-    while s.layout_cache.items.len <= i { s.layout_cache.push(null)! }
-    if l := s.layout_cache.items[i] { return l }
+    if i < s.layout_cache.items.len {
+        c := s.layout_cache.items[i]
+        if c.gen is s.layout_gen { return c.layout }
+    }
     l := s.compute_layout(t)
-    while s.layout_cache.items.len <= i { s.layout_cache.push(null)! }
-    s.layout_cache.items[i] = l
+    while s.layout_cache.items.len <= i { s.layout_cache.push(CachedLayout(gen: 0, layout: Layout(size: 0, align: 1)))! }
+    s.layout_cache.items[i] = CachedLayout(gen: s.layout_gen, layout: l)
     return l
+}
+
+/// An entry of `Sema.layout_cache`.
+CachedLayout :: struct {
+    gen: u32
+    layout: Layout
 }
 
 compute_layout :: fn(s: ^Sema, t: Ty) -> Layout needs Alloc {
@@ -131,7 +139,7 @@ pub type_size_ok :: fn(s: ^Sema, ty: Ty, span: source.Span) -> bool needs Alloc 
     aggregate := s.tys.kind(ty) in (.Array(_), .Tuple(_), .Optional(_), .Result(_), .Adt(_))
     max := load.max_object_size(&s.l.target)
     // Definitions change while types are declared: layouts are remembered for one query.
-    s.layout_cache.clear()
+    s.layout_gen += 1
     if not aggregate or s.tys.has_param(ty) or s.layout(ty).size <= max { return true }
     s.error(span, str.format("the type `{}` is too large: an object is at most {} bytes", s.show(ty), max)!)
     return false
