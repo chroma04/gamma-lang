@@ -1,0 +1,51 @@
+// `x else d` where `d` leaves: a `break` out of a loop, a `return` from the function
+// enclosing an iterator's loop body, and an error bound with `else e =>`.
+E :: union { Bad: i32 }
+
+get :: fn(i: i32) -> ?i32 => if i < 5 { i * 10 } else { null }
+
+check :: fn(i: i32) -> E!i32 {
+    if i > 2 { return !.Bad(i) }
+    return i
+}
+
+gen :: fn(n: i32) needs Yield(string) {
+    for i in 0..n { yield(if i < 2 { "ab" } else { "a" }) }
+}
+
+len2 :: fn(s: string) -> ?usize => if s.len > 1 { s.len } else { null }
+
+first_short :: fn() -> ?usize {
+    total: usize = 0
+    for s in gen(4) {
+        total += len2(s) else {
+            return null
+        }
+    }
+    return total
+}
+
+all_long :: fn() -> ?usize {
+    total: usize = 0
+    for s in gen(2) { total += len2(s) else return null }
+    return total
+}
+
+main :: fn() needs Out {
+    i := 0
+    total := 0
+    while true {
+        v := get(i) else break
+        total += v
+        i += 1
+    }
+    print("{} {}\n", i, total)
+    for k in 0..5 {
+        r := check(k) else e => {
+            print("error {}\n", e)
+            -1
+        }
+        print("{}\n", r)
+    }
+    print("{} {}\n", first_short(), all_long())
+}

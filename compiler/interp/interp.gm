@@ -844,6 +844,15 @@ new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret: []u8, env: ?^Frame,
     fr.installing = null
     fr.is_clause_lit = false
     m.next_frame += 1
+    // A handle is given when a function value or handler value first captures the frame.
+    fr.handle = 0
+    return fr
+}
+
+/// The handle of frame `fr` (by which function and handler values refer to it), given now if
+/// it has none yet.
+frame_handle :: fn(m: ^Machine, fr: ^Frame) -> u32 needs Alloc {
+    if fr.handle is not 0 { return fr.handle }
     if h := m.free_frames.pop() {
         m.frames.items[us(h)] = fr
         fr.handle = h + 1
@@ -851,7 +860,7 @@ new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret: []u8, env: ?^Frame,
         m.frames.push(fr)!
         fr.handle = m.frames.items.len.trunc(u32)
     }
-    return fr
+    return fr.handle
 }
 
 /// Ends frame `fr`: its allocations die and its handle is free again.
@@ -860,8 +869,10 @@ end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
     fr.allocs.clear()
     fr.labels.clear()
     fr.defers.clear()
-    m.frames.items[us(fr.handle - 1)] = null
-    m.free_frames.push(fr.handle - 1)!
+    if fr.handle is not 0 {
+        m.frames.items[us(fr.handle - 1)] = null
+        m.free_frames.push(fr.handle - 1)!
+    }
     if m.frame_pool.items.len < 256 {
         m.frame_pool.push(fr)!
         return ()

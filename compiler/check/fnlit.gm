@@ -68,6 +68,9 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
     cx.open_ret = infer_block
     open := name is not null and (infer_ret or infer_block)
     if open { cx.open_fns.push(fn_id)! }
+    // The functions written inside this one are checked first: the self-reference check
+    // looks into them too.
+    nested_start := cx.nested.items.len
     param_ids := list(u32)
     for p in params {
         id := cx.new_local(p.name, p.ty, false, p.span)
@@ -129,7 +132,7 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
             cx.error(span, "a function literal that uses local variables cannot be a function pointer (§11.7)")
             return error_expr(cx.s, span)
         }
-        if n := name { cx.check_no_self_reference(fn_id, n.name, span) }
+        if n := name { cx.check_no_self_reference(fn_id, nested_start, n.name, span) }
         return tir.mk(tys.intern(.Fn(fty)), .Closure(fn_id), span)
     }
     expects_fn := false
@@ -284,11 +287,11 @@ recursive_without_ret :: fn(cx: ^FnCx, name: string, span: source.Span) needs Al
     cx.error(span, str.format("`{}` refers to itself, so it needs a declared return type: write `-> R` (§11.1)", name)!)
 }
 
-/// A capturing function cannot refer to itself (§11.8).
-check_no_self_reference :: fn(cx: ^FnCx, fn_id: u32, name: string, span: source.Span) needs Alloc {
+/// A capturing function cannot refer to itself (§11.8), in its body or in the function
+/// literals written in it (the entries of `cx.nested` from `start` on).
+check_no_self_reference :: fn(cx: ^FnCx, fn_id: u32, start: usize, name: string, span: source.Span) needs Alloc {
     refers := false
-    for n in cx.nested.items {
-        if n.fn_id is not fn_id { continue }
+    for n in cx.nested.items[start..cx.nested.items.len] {
         visit(n.body, fn(e: ^Expr) {
             match e.kind {
                 .FnRef(f) => if f is fn_id { refers = true }

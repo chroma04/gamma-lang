@@ -50,6 +50,12 @@ Versions and what each kind of change means are described in
   language is evaluated by walking the lowered body. The slowest conformance test went
   from 43 s to 6 s, and the suites that run programs in the interpreter (conformance
   `run` tests, examples, the REPL, documentation examples) take about a third of the time.
+  Calls through function values, captured variables, `else`, compare-and-branch and
+  arithmetic on 32- and 64-bit integers then got instructions of their own, for up to
+  another 2.5x (the slowest test now takes 4.3 s).
+- **Long functions whose blocks are short keep their locals in C variables** in the
+  generated C. Only a function some of whose statements are moved into helper functions
+  needs them in its frame struct, which the C compiler cannot keep in registers.
 - **A `match` on a union switches on its tag** in the generated C, instead of testing the
   arms one after another, and tests the patterns of a large value that is a place where it
   is, without copying it first (unless an arm has a guard).
@@ -356,6 +362,9 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Fixed
 
+- A nested function that captures variables and calls itself through a function literal
+  written in it is rejected, like a direct call (§11.8); it compiled to code that read the
+  captured variables from the wrong frame.
 - `gamma test --coverage` counts the lines in function literals and in the bodies of `for`
   loops over iterators, which it left out; functions written inside a test are still left
   out.

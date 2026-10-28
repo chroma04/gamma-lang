@@ -1126,7 +1126,7 @@ stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
 frame_locals :: fn(g: ^Gen, f: u32) -> []bool needs Alloc {
     def := g.prog.func(f)
     out := list(bool)
-    all := g.opts.debug or g.opts.debug_info or long_body(def)
+    all := g.opts.debug or g.opts.debug_info or outlines(def)
     if b := def.body { all = all or has_fiber_with(b) }
     if all {
         for _ in def.locals { out.push(true)! }

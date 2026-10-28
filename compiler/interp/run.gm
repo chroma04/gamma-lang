@@ -233,11 +233,11 @@ ev_slow :: fn(m: ^Machine, a: Act, n: ^Node, dst: []u8) -> Flow!() needs Run {
         }
         .Closure(f) => {
             m.put_word(dst, 0, m.fn_addr(f))
-            m.put_word(dst, 1, u64(a.fr.handle))
+            m.put_word(dst, 1, u64(m.frame_handle(a.fr)))
             m.put_word(dst, 2, u64(a.cx))
         }
         .HandlerRef(_) => {
-            m.put_word(dst, 0, u64(a.fr.handle))
+            m.put_word(dst, 0, u64(m.frame_handle(a.fr)))
             m.put_word(dst, 1, u64(a.cx))
         }
         .Unary(op, x) => try m.unary(a, op, x, n, dst)
