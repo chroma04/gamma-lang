@@ -43,3 +43,7 @@ set_modified, Proc try_wait + SpawnOptions.program, pub handles, Env on threads.
   worker); procedure now in docs/contributing.md. Watch.
 - Sandbox: worktree subagents' shells refuse compound commands (heredocs, `export … &&`,
   `flock` chains) → they write wrapper scripts in the scratchpad (3 workers, s50).
+- A function name used as a format argument compiles and prints the function's address
+  (`str.format("…{}", loc)` where a local `loc` was meant but missing: the method `loc` of
+  the same module was found). Hit once (s55, moving cgen arms into helpers; the C compiler
+  caught it). Candidate: formatting a function value is an error or a lint.

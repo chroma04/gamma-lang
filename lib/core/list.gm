@@ -42,8 +42,8 @@ regrow :: fn(T: type, l: ^List(T), extra: usize, tail: []const T) -> AllocError!
 
 /// Appends `x`.
 pub push :: fn(T: type, l: ^List(T), x: T) -> AllocError!() {
-    try reserve(l, 1)
     n := l.items.len
+    if l.cap is n { try regrow(l, 1, empty_slice(T)) }
     grown := l.items.ptr[0..n + 1]
     grown[n] = x
     l.items = grown
@@ -102,6 +102,7 @@ pub truncate :: fn(T: type, l: ^List(T), n: usize) {
 }
 
 /// Removes and returns the last element.
+#inline
 pub pop :: fn(T: type, l: ^List(T)) -> ?T {
     n := l.items.len
     if n is 0 { return null }

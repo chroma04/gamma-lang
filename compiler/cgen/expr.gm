@@ -237,16 +237,7 @@ pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
             return fg.load(t, name)
         }
         // A field of a `#bits` struct is a range of bits of its integer (§5.10.5).
-        .Field(base, index) if fg.g.ty.bits_layout(base.ty) is not null => {
-            bl := fg.g.ty.bits_layout(base.ty)?
-            f := bl.fields[usize(index)]
-            v := try fg.expr(base)
-            a := fg.addr_of(base.ty, v)
-            uc := fg.g.ty.cty(bl.int_ty)
-            raw := str.format("((((unsigned __int128)GM_LD({}, {})) >> {}) & {})", uc, a, f.off, mask(f.width))!
-            raw2 := fg.tmp(fg.g.ty.int_ty(false, 128), raw)
-            return fg.bits_value(f.ty, raw2)
-        }
+        .Field(base, index) if fg.g.ty.bits_layout(base.ty) is not null => return fg.bits_field(base, index)
         // A local read as its own type is its C lvalue: no load through its address.
         .Local(l) if not fg.is_borrowed(l) and fg.def.locals[usize(l)].ty is t => {
             lv := fg.local_lv(l)
@@ -302,79 +293,20 @@ pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
         .Binary(op, lhs, rhs) if fg.g.ty.is_vector(lhs.ty) => return fg.vector_binary(e, op, lhs, rhs)
         .Unary(op, operand) => return fg.unary(e, op, operand)
         .Binary(op, lhs, rhs) => return fg.binary(e, op, lhs, rhs)
-        .Logic(is_and, lhs, rhs) => {
-            r := fg.tmp(fg.g.ty.bool_ty(), "0")
-            l := try fg.expr(lhs)
-            if is_and {
-                fg.line(str.format("if ({}) {{", l)!)
-            } else {
-                fg.line(str.format("if (!{}) {{", l)!)
-            }
-            fg.indent += 1
-            v := try fg.expr(rhs)
-            fg.line(str.format("{} = {};", r, v)!)
-            fg.indent -= 1
-            fg.line(str.format("}} else {} = {};", r, if is_and { 0 } else { 1 })!)
-            return r
-        }
+        .Logic(is_and, lhs, rhs) => return fg.logic(is_and, lhs, rhs)
         .Coerce(kind, x) => return fg.coerce(e, kind, x)
         .Builtin(op, args) => return fg.builtin(e, op, args)
         .Call(callee, args) => return fg.call(e, callee, args)
-        .Aggregate(elems) if fg.g.ty.bits_layout(t) is not null => {
-            bl := fg.g.ty.bits_layout(t)?
-            vals := list(string)
-            for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
-            acc := fg.tmp(fg.g.ty.int_ty(false, 128), "0")
-            for i in 0..elems.len {
-                f := bl.fields[i]
-                raw := fg.bits_raw(elems[i].ty, vals.items[i])
-                fg.line(str.format("{} |= (({}) & {}) << {};", acc, raw, mask(f.width), f.off)!)
-            }
-            b := fg.blob(t)
-            uc := fg.g.ty.cty(bl.int_ty)
-            fg.line(str.format("GM_ST({}, (uint8_t *)&{}, ({}){});", uc, b, uc, acc)!)
-            return b
-        }
+        .Aggregate(elems) if fg.g.ty.bits_layout(t) is not null => return fg.bits_aggregate(e, elems)
         .Aggregate(_), .Array(_) if fg.g.ty.by_ref(t) => {
             // Built in place in a temporary, with nested aggregates built in theirs.
             b := fg.tmp_uninit(t)
             try fg.expr_into(e, b, .Fresh)
             return b
         }
-        .Aggregate(elems) => {
-            vals := list(string)
-            for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
-            offs := fg.g.ty.offsets(t)
-            parts := list(BlobPart)
-            for i in 0..elems.len { parts.push(BlobPart(off: offs[i], len: fg.g.ty.size(elems[i].ty)))! }
-            b := fg.blob_over(t, parts.items)
-            for i in 0..elems.len { fg.store(elems[i].ty, str.format("((uint8_t *)&{} + {})", b, offs[i])!, vals.items[i]) }
-            return b
-        }
-        .Array(elems) => {
-            vals := list(string)
-            for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
-            parts := list(BlobPart)
-            for i in 0..elems.len {
-                esz := fg.g.ty.size(elems[i].ty)
-                parts.push(BlobPart(off: u64(i.trunc(u32)) * esz, len: esz))!
-            }
-            b := fg.blob_over(t, parts.items)
-            for i in 0..elems.len {
-                esz := fg.g.ty.size(elems[i].ty)
-                fg.store(elems[i].ty, str.format("((uint8_t *)&{} + {})", b, u64(i.trunc(u32)) * esz)!, vals.items[i])
-            }
-            return b
-        }
-        .ArrayFill(x) => {
-            v := try fg.expr(x)
-            .Array(len, elem, _) := fg.g.ty.kind(t) else return !unsupported(e.span, "this array fill")
-            b := fg.tmp_uninit(t)
-            esz := fg.g.ty.size(elem)
-            c := fg.g.ty.cty(elem)
-            fg.line(str.format("for (uint64_t i = 0; i < {}; i++) GM_ST({}, (uint8_t *)&{} + i * {}, {});", len, c, b, esz, v)!)
-            return b
-        }
+        .Aggregate(elems) => return fg.aggregate(e, elems)
+        .Array(elems) => return fg.array(e, elems)
+        .ArrayFill(x) => return fg.array_fill(e, x)
         .Variant(vx) => {
             p: ?string = null
             if px := vx.payload { p = try fg.expr(px) }
@@ -384,27 +316,7 @@ pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
             v := try fg.expr(x)
             return fg.make_res(t, true, x.ty, v)
         }
-        .Unwrap(x, is_result) => {
-            v := try fg.expr(x)
-            a := fg.addr_of(x.ty, v)
-            at := fg.loc(e)
-            if is_result {
-                bad := fg.res_is_err(x.ty, a)
-                .Result(err, _) := fg.g.ty.kind(x.ty) else @unreachable()
-                off := fg.g.ty.offsets(x.ty)[1]
-                d := fg.g.ty.desc(err)
-                if fg.g.opts.checks {
-                    fg.line(str.format("if ({}) {{", bad)!)
-                    fg.line(str.format("    gm_buf b = {{0}}; gm_buf_push(&b, \"unwrap of error value \", 22); gm_format(&b, {}, {} + {}, false); gm_trap_bytes(b.data, b.len, {});", d, a, off, at)!)
-                    fg.line("}")
-                }
-                return fg.load(t, str.format("({} + {})", a, off)!)
-            } else {
-                present := fg.opt_present(x.ty, a)
-                if fg.g.opts.checks { fg.line(str.format("if (!{}) gm_trap(\"unwrap of null\", {});", present, at)!) }
-                return fg.load(t, a)
-            }
-        }
+        .Unwrap(x, is_result) => return fg.unwrap(e, x, is_result)
         .Eq(lhs, rhs, negated) => {
             l := try fg.expr(lhs)
             r := try fg.expr(rhs)
@@ -413,291 +325,435 @@ pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
         }
         .In(elem, container, negated) => return fg.in_expr(elem, container, negated)
         .Block(b) => return fg.block(b)
-        .If(x) => {
-            res: ?string = null
-            if not fg.g.ty.is_never(t) and not fg.g.ty.is_unit(t) { res = fg.tmp_uninit(t) }
-            n := fg.fresh()
-            els := str.format("ie{}", n)!
-            end := str.format("ix{}", n)!
-            try fg.conds(x.cond, els)
-            v := try fg.expr(x.then)
-            if r := res {
-                if not fg.g.ty.is_never(x.then.ty) { fg.line(str.format("{} = {};", r, v)!) }
-            }
-            fg.line(str.format("goto {};", end)!)
-            fg.label(els)
-            if xe := x.else_ {
-                ev := try fg.expr(xe)
-                if r := res {
-                    if not fg.g.ty.is_never(xe.ty) { fg.line(str.format("{} = {};", r, ev)!) }
-                }
-            }
-            fg.label(end)
-            if r := res { return r }
-            return fg.zero(t)
-        }
+        .If(x) => return fg.if_expr(e, &x)
         .Match(scrutinee, arms) => return fg.match_expr(e, scrutinee, arms)
-        .Else(el) => {
-            lhs := el.lhs
-            l := try fg.expr(lhs)
-            a := fg.addr_of(lhs.ty, l)
-            res: ?string = null
-            if not fg.g.ty.is_never(t) { res = fg.tmp_uninit(t) }
-            present := ""
-            payload_ty := t
-            payload_off: u64 = 0
-            match fg.g.ty.kind(lhs.ty) {
-                .Optional(p) => {
-                    present = fg.opt_present(lhs.ty, a)
-                    payload_ty = p
-                }
-                .Result(_, ok) => {
-                    bad := fg.res_is_err(lhs.ty, a)
-                    present = str.format("!{}", bad)!
-                    payload_ty = ok
-                    payload_off = fg.g.ty.offsets(lhs.ty)[1]
-                }
-                _ => return !unsupported(e.span, "`else` on this type")
-            }
-            fg.line(str.format("if ({}) {{", present)!)
-            fg.indent += 1
-            if r := res {
-                v := ""
-                if t is payload_ty {
-                    v = fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
-                } else if t is lhs.ty {
-                    v = l
-                } else if fg.g.ty.kind(t) is .Optional(_) {
-                    p := fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
-                    v = fg.make_some(t, p)
-                } else {
-                    p := fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
-                    v = fg.make_res(t, false, payload_ty, p)
-                }
-                fg.line(str.format("{} = {};", r, v)!)
-            }
-            fg.indent -= 1
-            fg.line("} else {")
-            fg.indent += 1
-            if c := el.capture {
-                if .Result(err, _) := fg.g.ty.kind(lhs.ty) {
-                    off := fg.g.ty.offsets(lhs.ty)[1]
-                    ev := fg.load(err, str.format("({} + {})", a, off)!)
-                    lv := fg.local_lv(c)
-                    fg.line(str.format("{} = {};", lv, ev)!)
-                }
-            }
-            rv := try fg.expr(el.rhs)
-            if r := res {
-                if not fg.g.ty.is_never(el.rhs.ty) { fg.line(str.format("{} = {};", r, rv)!) }
-            }
-            fg.indent -= 1
-            fg.line("}")
-            if r := res { return r }
-            return fg.zero(t)
-        }
+        .Else(el) => return fg.else_expr(e, &el)
         .Try(x) => return fg.try_expr(e, x.expr, x.lift, x.levels)
-        .Loop(x) => {
-            n := fg.fresh()
-            brk := str.format("lb{}", n)!
-            cnt := str.format("lc{}", n)!
-            fg.line("for (;;) {")
-            fg.indent += 1
-            try fg.conds(x.cond, brk)
-            scope := fg.loop_scope(x.label, brk, cnt)
-            fg.scopes.push(scope)!
-            r := fg.block(x.body)
-            popped := fg.scopes.pop()?
-            _ = try r
-            fg.label(cnt)
-            if s := x.step { _ = try fg.expr(s) }
-            fg.indent -= 1
-            fg.line("}")
-            // The loop is left only by jumping to `brk`.
-            fg.end_scope(popped, false)
-            fg.label(brk)
-            return fg.unit()
-        }
-        .Break(x) => {
-            val: ?ValTy = null
-            if bx := x.value { val = ValTy(v: try fg.expr(bx), ty: bx.ty) }
-            match x.target {
-                .Label(levels, lbl) => {
-                    if bv := val {
-                        if fg.is_with_label(levels, lbl) {
-                            slot := fg.frame_field(levels, str.format("w{}", lbl)!)
-                            if not fg.g.ty.is_never(bv.ty) { fg.line(str.format("{} = {};", slot, bv.v)!) }
-                        }
-                    }
-                    fr, _ := fg.frame_up(levels)
-                    fg.start_exit("GM_BREAK", fr, str.format("{}", lbl)!, "0")
-                }
-                .InstallingWith => {
-                    if bv := val {
-                        if not fg.g.ty.is_unit(bv.ty) and not fg.g.ty.is_never(bv.ty) { fg.store(bv.ty, "inst->result", bv.v) }
-                    }
-                    fg.start_exit("GM_BREAK", "inst->with_frame", "inst->with_label", "0")
-                }
-            }
-            return fg.zero(t)
-        }
-        .Continue(target) => {
-            match target {
-                .Label(levels, lbl) => {
-                    fr, _ := fg.frame_up(levels)
-                    fg.start_exit("GM_CONTINUE", fr, str.format("{}", lbl)!, "0")
-                }
-                // In a clause, `continue` ends the clause (the next iteration of a `for`).
-                .InstallingWith => {
-                    u := fg.unit()
-                    fg.line(str.format("F.ret = {};", u)!)
-                    fg.start_exit("GM_RETURN", "(&F.h)", "0", "0")
-                }
-            }
-            return fg.zero(t)
-        }
-        .Return(levels, value) if fg.builds_in_place(value) => {
-            // A large value is built in the result slot, or straight in the caller's
-            // destination when no deferred statement can run after it.
-            ct := fg.g.ty.cty(value.ty)
-            if levels is 0 and not fg.outlined and fg.no_defers() and fg.g.ty.by_ref(fg.def.ret) {
-                try fg.expr_into(value, str.format("(*({} *)gm_out)", ct)!, .Out)
-                fg.jump("gm_fdone", null)
-                return fg.zero(t)
-            }
-            slot := fg.frame_field(levels, "ret")
-            try fg.expr_into(value, slot, .Fresh)
-            ret := fg.target_ret(levels)
-            is_err := "0"
-            if fg.g.ty.kind(ret) is .Result(_) {
-                a := str.format("((uint8_t *)&{})", slot)!
-                is_err = fg.res_is_err(ret, a)
-            }
-            flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
-            fr, _ := fg.frame_up(levels)
-            fg.start_exit("GM_RETURN", fr, "0", flag)
-            return fg.zero(t)
-        }
-        // A large place is copied straight to the caller's destination.
-        .Return(levels, value) if levels is 0 and fg.g.ty.by_ref(value.ty) and fg.g.ty.by_ref(fg.def.ret) and not fg.outlined and fg.no_defers() and (value.kind is .Local(_) or value.kind is .Upvar(_) or value.kind is .Deref(_)) => {
-            addr := try fg.place_addr(value)
-            fg.line(str.format("memmove(gm_out, {}, {});", addr, fg.g.ty.size(value.ty))!)
-            fg.jump("gm_fdone", null)
-            return fg.zero(t)
-        }
-        .Return(levels, value) => {
-            ret := fg.target_ret(levels)
-            // A large value read from a place is copied into the slot directly.
-            v := ""
-            if fg.g.ty.by_ref(value.ty) and not (fg.g.ty.kind(ret) is .Result(_)) and (value.kind is .Local(_) or value.kind is .Upvar(_) or value.kind is .Deref(_)) {
-                addr := try fg.place_addr(value)
-                v = str.format("(*({} *){})", fg.g.ty.cty(value.ty), addr)!
-            } else {
-                v = try fg.expr(value)
-            }
-            is_err := "0"
-            if fg.g.ty.kind(ret) is .Result(_) and not fg.g.ty.is_never(value.ty) {
-                a := fg.addr_of(value.ty, v)
-                is_err = fg.res_is_err(ret, a)
-            }
-            flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
-            if not fg.g.ty.is_never(value.ty) {
-                slot := fg.frame_field(levels, "ret")
-                fg.line(str.format("{} = {};", slot, v)!)
-            }
-            fr, _ := fg.frame_up(levels)
-            fg.start_exit("GM_RETURN", fr, "0", flag)
-            return fg.zero(t)
-        }
+        .Loop(x) => return fg.loop(&x)
+        .Break(x) => return fg.break_expr(e, &x)
+        .Continue(target) => return fg.continue_expr(e, target)
+        .Return(levels, value) => return fg.return_expr(e, levels, value)
         .With(w) => return fg.with_expr(e, w.label, w.handlers, w.on, w.body)
         .Resume(k, value) => return fg.resume_(e, k, value)
         .Cancel(k) => return fg.cancel_(e, k)
-        .Trap(message) => {
-            m := try fg.expr(message)
-            a := fg.addr_of(message.ty, m)
-            p := fg.slice_ptr(a)
-            l := fg.slice_len(a)
-            at := fg.loc(e)
-            fg.line(str.format("gm_trap_bytes({}, {}, {});", p, l, at)!)
-            return fg.zero(t)
-        }
+        .Trap(message) => return fg.trap(e, message)
         .WriteDeferred(_) => return !unsupported(e.span, "a template in a generic function that was not instantiated")
         .SoaDeferred(_) => return !unsupported(e.span, "a `#soa` operation in a generic function that was not instantiated")
-        .Write(w) => {
-            sink_v: ?ValTy = null
-            if .Fn(sx) := w.sink { sink_v = ValTy(v: try fg.expr(sx), ty: sx.ty) }
-            vals := list(string)
-            for i in 0..w.args.len {
-                v := try fg.expr(&w.args[i])
-                vals.push(fg.addr_of(w.args[i].ty, v))!
-            }
-            str_ty := fg.g.ty.string_ty()
-            unit_ty := fg.g.ty.unit_ty()
-            // A write to the ambient output or error is one call per piece.
-            stub: ?string = null
-            match w.sink {
-                .Perform(effect_, op) => {
-                    id := fg.g.effect_id(&effect_)
-                    tys := [1]Ty(str_ty)
-                    stub = fg.out_stub(&effect_, id, op, tys[..], unit_ty)
-                }
-                .Fn(_) => {}
-            }
-            if core := stub {
-                ps := fg.piece_stub(core, 's', str_ty)
-                pf := fg.piece_stub(core, 'f', str_ty)
-                at := fg.loc(e)
-                for i in 0..w.pieces.len {
-                    if w.pieces[i].len > 0 {
-                        s := fg.g.static_bytes(w.pieces[i])
-                        fg.unwind_call(str.format("{}({}, {}, {}, {})", ps, fg.cx, s, w.pieces[i].len, at)!)
-                    }
-                    if i < w.args.len {
-                        d := fg.g.ty.desc(w.args[i].ty)
-                        custom: ?tir.FmtSpec = null
-                        if sp := w.specs.get(i) {
-                            if not tir.is_default_spec(&sp) { custom = sp }
-                        }
-                        if sp := custom {
-                            b := str.format("b{}", fg.fresh())!
-                            c := spec_literal(sp)
-                            fg.line(str.format("gm_buf {} = {{0}};", b)!)
-                            fg.line(str.format("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)!)
-                            try fg.emit_buf(w.sink, sink_v, b, e)
-                        } else {
-                            fg.unwind_call(str.format("{}({}, {}, {}, {})", pf, fg.cx, d, vals.items[i], at)!)
-                        }
-                    }
-                }
-                return fg.unit()
-            }
-            for i in 0..w.pieces.len {
-                if w.pieces[i].len > 0 {
-                    s := fg.g.static_bytes(w.pieces[i])
-                    sl := fg.make_slice(str_ty, s, str.format("{}", w.pieces[i].len)!)
-                    try fg.emit_to(w.sink, sink_v, sl, e)
-                }
-                if i < w.args.len {
-                    d := fg.g.ty.desc(w.args[i].ty)
-                    b := str.format("b{}", fg.fresh())!
-                    fg.line(str.format("gm_buf {} = {{0}};", b)!)
-                    custom: ?tir.FmtSpec = null
-                    if sp := w.specs.get(i) {
-                        if not tir.is_default_spec(&sp) { custom = sp }
-                    }
-                    if sp := custom {
-                        c := spec_literal(sp)
-                        fg.line(str.format("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)!)
-                    } else {
-                        fg.line(str.format("gm_format(&{}, {}, {}, true);", b, d, vals.items[i])!)
-                    }
-                    try fg.emit_buf(w.sink, sink_v, b, e)
-                }
-            }
-            return fg.unit()
-        }
+        .Write(w) => return fg.write(e, &w)
         .SizeOf(_), .TypeIs(_), .IntLimit(_), .TypeName(_), .UntypedFloat(_), .UntypedComplex(_), .ValueParam(_) => return !unsupported(e.span, "an expression left over from generic checking")
     }
+}
+
+/// A `return` of `value` from the function `levels` up.
+return_expr :: fn(fg: ^FnGen, e: ^Expr, levels: u32, value: ^Expr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    if fg.builds_in_place(value) {
+        // A large value is built in the result slot, or straight in the caller's
+        // destination when no deferred statement can run after it.
+        ct := fg.g.ty.cty(value.ty)
+        if levels is 0 and not fg.outlined and fg.no_defers() and fg.g.ty.by_ref(fg.def.ret) {
+            try fg.expr_into(value, str.format("(*({} *)gm_out)", ct)!, .Out)
+            fg.jump("gm_fdone", null)
+            return fg.zero(t)
+        }
+        slot := fg.frame_field(levels, "ret")
+        try fg.expr_into(value, slot, .Fresh)
+        ret := fg.target_ret(levels)
+        is_err := "0"
+        if fg.g.ty.kind(ret) is .Result(_) {
+            a := str.format("((uint8_t *)&{})", slot)!
+            is_err = fg.res_is_err(ret, a)
+        }
+        flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
+        fr, _ := fg.frame_up(levels)
+        fg.start_exit("GM_RETURN", fr, "0", flag)
+        return fg.zero(t)
+    }
+    // A large place is copied straight to the caller's destination.
+    if levels is 0 and fg.g.ty.by_ref(value.ty) and fg.g.ty.by_ref(fg.def.ret) and not fg.outlined and fg.no_defers() and (value.kind is .Local(_) or value.kind is .Upvar(_) or value.kind is .Deref(_)) {
+        addr := try fg.place_addr(value)
+        fg.line(str.format("memmove(gm_out, {}, {});", addr, fg.g.ty.size(value.ty))!)
+        fg.jump("gm_fdone", null)
+        return fg.zero(t)
+    }
+    ret := fg.target_ret(levels)
+    // A large value read from a place is copied into the slot directly.
+    v := ""
+    if fg.g.ty.by_ref(value.ty) and not (fg.g.ty.kind(ret) is .Result(_)) and (value.kind is .Local(_) or value.kind is .Upvar(_) or value.kind is .Deref(_)) {
+        addr := try fg.place_addr(value)
+        v = str.format("(*({} *){})", fg.g.ty.cty(value.ty), addr)!
+    } else {
+        v = try fg.expr(value)
+    }
+    is_err := "0"
+    if fg.g.ty.kind(ret) is .Result(_) and not fg.g.ty.is_never(value.ty) {
+        a := fg.addr_of(value.ty, v)
+        is_err = fg.res_is_err(ret, a)
+    }
+    flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
+    if not fg.g.ty.is_never(value.ty) {
+        slot := fg.frame_field(levels, "ret")
+        fg.line(str.format("{} = {};", slot, v)!)
+    }
+    fr, _ := fg.frame_up(levels)
+    fg.start_exit("GM_RETURN", fr, "0", flag)
+    return fg.zero(t)
+}
+
+/// A field of a `#bits` struct: a range of bits of its integer (§5.10.5).
+bits_field :: fn(fg: ^FnGen, base: ^Expr, index: u32) -> Unsup!string needs sema.Load {
+    bl := fg.g.ty.bits_layout(base.ty)?
+    f := bl.fields[usize(index)]
+    v := try fg.expr(base)
+    a := fg.addr_of(base.ty, v)
+    uc := fg.g.ty.cty(bl.int_ty)
+    raw := str.format("((((unsigned __int128)GM_LD({}, {})) >> {}) & {})", uc, a, f.off, mask(f.width))!
+    raw2 := fg.tmp(fg.g.ty.int_ty(false, 128), raw)
+    return fg.bits_value(f.ty, raw2)
+}
+
+/// `lhs and rhs` (or `lhs or rhs`), which evaluates `rhs` only if needed.
+logic :: fn(fg: ^FnGen, is_and: bool, lhs: ^Expr, rhs: ^Expr) -> Unsup!string needs sema.Load {
+    r := fg.tmp(fg.g.ty.bool_ty(), "0")
+    l := try fg.expr(lhs)
+    if is_and {
+        fg.line(str.format("if ({}) {{", l)!)
+    } else {
+        fg.line(str.format("if (!{}) {{", l)!)
+    }
+    fg.indent += 1
+    v := try fg.expr(rhs)
+    fg.line(str.format("{} = {};", r, v)!)
+    fg.indent -= 1
+    fg.line(str.format("}} else {} = {};", r, if is_and { 0 } else { 1 })!)
+    return r
+}
+
+/// A `#bits` struct value: its fields packed into its integer.
+bits_aggregate :: fn(fg: ^FnGen, e: ^Expr, elems: []Expr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    bl := fg.g.ty.bits_layout(t)?
+    vals := list(string)
+    for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
+    acc := fg.tmp(fg.g.ty.int_ty(false, 128), "0")
+    for i in 0..elems.len {
+        f := bl.fields[i]
+        raw := fg.bits_raw(elems[i].ty, vals.items[i])
+        fg.line(str.format("{} |= (({}) & {}) << {};", acc, raw, mask(f.width), f.off)!)
+    }
+    b := fg.blob(t)
+    uc := fg.g.ty.cty(bl.int_ty)
+    fg.line(str.format("GM_ST({}, (uint8_t *)&{}, ({}){});", uc, b, uc, acc)!)
+    return b
+}
+
+/// A small tuple or struct value.
+aggregate :: fn(fg: ^FnGen, e: ^Expr, elems: []Expr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    vals := list(string)
+    for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
+    offs := fg.g.ty.offsets(t)
+    parts := list(BlobPart)
+    for i in 0..elems.len { parts.push(BlobPart(off: offs[i], len: fg.g.ty.size(elems[i].ty)))! }
+    b := fg.blob_over(t, parts.items)
+    for i in 0..elems.len { fg.store(elems[i].ty, str.format("((uint8_t *)&{} + {})", b, offs[i])!, vals.items[i]) }
+    return b
+}
+
+/// A small array value.
+array :: fn(fg: ^FnGen, e: ^Expr, elems: []Expr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    vals := list(string)
+    for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
+    parts := list(BlobPart)
+    for i in 0..elems.len {
+        esz := fg.g.ty.size(elems[i].ty)
+        parts.push(BlobPart(off: u64(i.trunc(u32)) * esz, len: esz))!
+    }
+    b := fg.blob_over(t, parts.items)
+    for i in 0..elems.len {
+        esz := fg.g.ty.size(elems[i].ty)
+        fg.store(elems[i].ty, str.format("((uint8_t *)&{} + {})", b, u64(i.trunc(u32)) * esz)!, vals.items[i])
+    }
+    return b
+}
+
+/// An array with every element `x`.
+array_fill :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    v := try fg.expr(x)
+    .Array(len, elem, _) := fg.g.ty.kind(t) else return !unsupported(e.span, "this array fill")
+    b := fg.tmp_uninit(t)
+    esz := fg.g.ty.size(elem)
+    c := fg.g.ty.cty(elem)
+    fg.line(str.format("for (uint64_t i = 0; i < {}; i++) GM_ST({}, (uint8_t *)&{} + i * {}, {});", len, c, b, esz, v)!)
+    return b
+}
+
+/// The payload of optional or result `x`, which traps on null or an error.
+unwrap :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, is_result: bool) -> Unsup!string needs sema.Load {
+    t := e.ty
+    v := try fg.expr(x)
+    a := fg.addr_of(x.ty, v)
+    at := fg.loc(e)
+    if is_result {
+        bad := fg.res_is_err(x.ty, a)
+        .Result(err, _) := fg.g.ty.kind(x.ty) else @unreachable()
+        off := fg.g.ty.offsets(x.ty)[1]
+        d := fg.g.ty.desc(err)
+        if fg.g.opts.checks {
+            fg.line(str.format("if ({}) {{", bad)!)
+            fg.line(str.format("    gm_buf b = {{0}}; gm_buf_push(&b, \"unwrap of error value \", 22); gm_format(&b, {}, {} + {}, false); gm_trap_bytes(b.data, b.len, {});", d, a, off, at)!)
+            fg.line("}")
+        }
+        return fg.load(t, str.format("({} + {})", a, off)!)
+    } else {
+        present := fg.opt_present(x.ty, a)
+        if fg.g.opts.checks { fg.line(str.format("if (!{}) gm_trap(\"unwrap of null\", {});", present, at)!) }
+        return fg.load(t, a)
+    }
+}
+
+/// An `if`.
+if_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^const tir.IfExpr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    res: ?string = null
+    if not fg.g.ty.is_never(t) and not fg.g.ty.is_unit(t) { res = fg.tmp_uninit(t) }
+    n := fg.fresh()
+    els := str.format("ie{}", n)!
+    end := str.format("ix{}", n)!
+    try fg.conds(x.cond, els)
+    v := try fg.expr(x.then)
+    if r := res {
+        if not fg.g.ty.is_never(x.then.ty) { fg.line(str.format("{} = {};", r, v)!) }
+    }
+    fg.line(str.format("goto {};", end)!)
+    fg.label(els)
+    if xe := x.else_ {
+        ev := try fg.expr(xe)
+        if r := res {
+            if not fg.g.ty.is_never(xe.ty) { fg.line(str.format("{} = {};", r, ev)!) }
+        }
+    }
+    fg.label(end)
+    if r := res { return r }
+    return fg.zero(t)
+}
+
+/// `x else d` and `x else e => d` (§10.4).
+else_expr :: fn(fg: ^FnGen, e: ^Expr, el: ^const tir.ElseExpr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    lhs := el.lhs
+    l := try fg.expr(lhs)
+    a := fg.addr_of(lhs.ty, l)
+    res: ?string = null
+    if not fg.g.ty.is_never(t) { res = fg.tmp_uninit(t) }
+    present := ""
+    payload_ty := t
+    payload_off: u64 = 0
+    match fg.g.ty.kind(lhs.ty) {
+        .Optional(p) => {
+            present = fg.opt_present(lhs.ty, a)
+            payload_ty = p
+        }
+        .Result(_, ok) => {
+            bad := fg.res_is_err(lhs.ty, a)
+            present = str.format("!{}", bad)!
+            payload_ty = ok
+            payload_off = fg.g.ty.offsets(lhs.ty)[1]
+        }
+        _ => return !unsupported(e.span, "`else` on this type")
+    }
+    fg.line(str.format("if ({}) {{", present)!)
+    fg.indent += 1
+    if r := res {
+        v := ""
+        if t is payload_ty {
+            v = fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
+        } else if t is lhs.ty {
+            v = l
+        } else if fg.g.ty.kind(t) is .Optional(_) {
+            p := fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
+            v = fg.make_some(t, p)
+        } else {
+            p := fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
+            v = fg.make_res(t, false, payload_ty, p)
+        }
+        fg.line(str.format("{} = {};", r, v)!)
+    }
+    fg.indent -= 1
+    fg.line("} else {")
+    fg.indent += 1
+    if c := el.capture {
+        if .Result(err, _) := fg.g.ty.kind(lhs.ty) {
+            off := fg.g.ty.offsets(lhs.ty)[1]
+            ev := fg.load(err, str.format("({} + {})", a, off)!)
+            lv := fg.local_lv(c)
+            fg.line(str.format("{} = {};", lv, ev)!)
+        }
+    }
+    rv := try fg.expr(el.rhs)
+    if r := res {
+        if not fg.g.ty.is_never(el.rhs.ty) { fg.line(str.format("{} = {};", r, rv)!) }
+    }
+    fg.indent -= 1
+    fg.line("}")
+    if r := res { return r }
+    return fg.zero(t)
+}
+
+/// A loop.
+loop :: fn(fg: ^FnGen, x: ^const tir.LoopExpr) -> Unsup!string needs sema.Load {
+    n := fg.fresh()
+    brk := str.format("lb{}", n)!
+    cnt := str.format("lc{}", n)!
+    fg.line("for (;;) {")
+    fg.indent += 1
+    try fg.conds(x.cond, brk)
+    scope := fg.loop_scope(x.label, brk, cnt)
+    fg.scopes.push(scope)!
+    r := fg.block(x.body)
+    popped := fg.scopes.pop()?
+    _ = try r
+    fg.label(cnt)
+    if s := x.step { _ = try fg.expr(s) }
+    fg.indent -= 1
+    fg.line("}")
+    // The loop is left only by jumping to `brk`.
+    fg.end_scope(popped, false)
+    fg.label(brk)
+    return fg.unit()
+}
+
+/// A `break`.
+break_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^const tir.BreakExpr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    val: ?ValTy = null
+    if bx := x.value { val = ValTy(v: try fg.expr(bx), ty: bx.ty) }
+    match x.target {
+        .Label(levels, lbl) => {
+            if bv := val {
+                if fg.is_with_label(levels, lbl) {
+                    slot := fg.frame_field(levels, str.format("w{}", lbl)!)
+                    if not fg.g.ty.is_never(bv.ty) { fg.line(str.format("{} = {};", slot, bv.v)!) }
+                }
+            }
+            fr, _ := fg.frame_up(levels)
+            fg.start_exit("GM_BREAK", fr, str.format("{}", lbl)!, "0")
+        }
+        .InstallingWith => {
+            if bv := val {
+                if not fg.g.ty.is_unit(bv.ty) and not fg.g.ty.is_never(bv.ty) { fg.store(bv.ty, "inst->result", bv.v) }
+            }
+            fg.start_exit("GM_BREAK", "inst->with_frame", "inst->with_label", "0")
+        }
+    }
+    return fg.zero(t)
+}
+
+/// A `continue`.
+continue_expr :: fn(fg: ^FnGen, e: ^Expr, target: tir.Target) -> Unsup!string needs sema.Load {
+    t := e.ty
+    match target {
+        .Label(levels, lbl) => {
+            fr, _ := fg.frame_up(levels)
+            fg.start_exit("GM_CONTINUE", fr, str.format("{}", lbl)!, "0")
+        }
+        // In a clause, `continue` ends the clause (the next iteration of a `for`).
+        .InstallingWith => {
+            u := fg.unit()
+            fg.line(str.format("F.ret = {};", u)!)
+            fg.start_exit("GM_RETURN", "(&F.h)", "0", "0")
+        }
+    }
+    return fg.zero(t)
+}
+
+/// A trap with `message`.
+trap :: fn(fg: ^FnGen, e: ^Expr, message: ^Expr) -> Unsup!string needs sema.Load {
+    t := e.ty
+    m := try fg.expr(message)
+    a := fg.addr_of(message.ty, m)
+    p := fg.slice_ptr(a)
+    l := fg.slice_len(a)
+    at := fg.loc(e)
+    fg.line(str.format("gm_trap_bytes({}, {}, {});", p, l, at)!)
+    return fg.zero(t)
+}
+
+/// Formatted output (a template) to its sink.
+write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs sema.Load {
+    sink_v: ?ValTy = null
+    if .Fn(sx) := w.sink { sink_v = ValTy(v: try fg.expr(sx), ty: sx.ty) }
+    vals := list(string)
+    for i in 0..w.args.len {
+        v := try fg.expr(&w.args[i])
+        vals.push(fg.addr_of(w.args[i].ty, v))!
+    }
+    str_ty := fg.g.ty.string_ty()
+    unit_ty := fg.g.ty.unit_ty()
+    // A write to the ambient output or error is one call per piece.
+    stub: ?string = null
+    match w.sink {
+        .Perform(effect_, op) => {
+            id := fg.g.effect_id(&effect_)
+            tys := [1]Ty(str_ty)
+            stub = fg.out_stub(&effect_, id, op, tys[..], unit_ty)
+        }
+        .Fn(_) => {}
+    }
+    if core := stub {
+        ps := fg.piece_stub(core, 's', str_ty)
+        pf := fg.piece_stub(core, 'f', str_ty)
+        at := fg.loc(e)
+        for i in 0..w.pieces.len {
+            if w.pieces[i].len > 0 {
+                s := fg.g.static_bytes(w.pieces[i])
+                fg.unwind_call(str.format("{}({}, {}, {}, {})", ps, fg.cx, s, w.pieces[i].len, at)!)
+            }
+            if i < w.args.len {
+                d := fg.g.ty.desc(w.args[i].ty)
+                custom: ?tir.FmtSpec = null
+                if sp := w.specs.get(i) {
+                    if not tir.is_default_spec(&sp) { custom = sp }
+                }
+                if sp := custom {
+                    b := str.format("b{}", fg.fresh())!
+                    c := spec_literal(sp)
+                    fg.line(str.format("gm_buf {} = {{0}};", b)!)
+                    fg.line(str.format("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)!)
+                    try fg.emit_buf(w.sink, sink_v, b, e)
+                } else {
+                    fg.unwind_call(str.format("{}({}, {}, {}, {})", pf, fg.cx, d, vals.items[i], at)!)
+                }
+            }
+        }
+        return fg.unit()
+    }
+    for i in 0..w.pieces.len {
+        if w.pieces[i].len > 0 {
+            s := fg.g.static_bytes(w.pieces[i])
+            sl := fg.make_slice(str_ty, s, str.format("{}", w.pieces[i].len)!)
+            try fg.emit_to(w.sink, sink_v, sl, e)
+        }
+        if i < w.args.len {
+            d := fg.g.ty.desc(w.args[i].ty)
+            b := str.format("b{}", fg.fresh())!
+            fg.line(str.format("gm_buf {} = {{0}};", b)!)
+            custom: ?tir.FmtSpec = null
+            if sp := w.specs.get(i) {
+                if not tir.is_default_spec(&sp) { custom = sp }
+            }
+            if sp := custom {
+                c := spec_literal(sp)
+                fg.line(str.format("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)!)
+            } else {
+                fg.line(str.format("gm_format(&{}, {}, {}, true);", b, d, vals.items[i])!)
+            }
+            try fg.emit_buf(w.sink, sink_v, b, e)
+        }
+    }
+    return fg.unit()
 }
 
 /// Sends the formatted argument in `gm_buf` variable `b` to an `@write` sink unless it

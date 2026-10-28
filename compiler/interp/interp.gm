@@ -113,7 +113,7 @@ Frame :: struct {
     mem_buf: []u64
     /// Allocations that die with the frame.
     allocs: List(u64)
-    /// The loops and `with`s running in it, innermost last.
+    /// The loops and `with`s that the tree evaluator runs in it, innermost last.
     labels: List(LabelDst)
     /// The deferred statements of the blocks the register machine runs, innermost last.
     defers: List(Deferred)
@@ -122,6 +122,8 @@ Frame :: struct {
     /// True for the clauses of handler literals, which lexically belong to `env`'s
     /// function.
     is_clause_lit: bool
+    /// The next finished frame kept for reuse (`Machine.frame_pool`).
+    next_free: ?^Frame
 }
 
 /// What the interpreter needs to know about a function: its lowered body, parameters and
@@ -214,8 +216,9 @@ pub Machine :: struct {
     frames: List(?^Frame)
     /// The sizes of types by id (`~0`: not known yet).
     sizes: List(u64)
-    /// Finished frames, kept to be reused.
-    frame_pool: List(^Frame)
+    /// Finished frames, kept to be reused (a list through `Frame.next_free`), and how many.
+    frame_pool: ?^Frame
+    pooled: u32
     /// The argument values of the calls being made.
     argv: List([]u8)
     free_frames: List(u32)
@@ -314,7 +317,8 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         scratch: Scratch(chunks: list([]u8), cur: 0, top: 0),
         temps: list(u64),
         frames: list(?^Frame),
-        frame_pool: list(^Frame),
+        frame_pool: null,
+        pooled: 0,
         sizes: list(u64),
         argv: list([]u8),
         free_frames: list(u32),
@@ -368,7 +372,25 @@ release :: fn(m: ^Machine, mk: Mark) {
 
 /// A zero-filled buffer of `n` bytes, valid until the scratch memory is released to a
 /// mark taken before.
+#inline
 tmp :: fn(m: ^Machine, n: u64) -> []u8 needs Alloc {
+    sc := &m.scratch
+    chunk := sc.chunks.items[sc.cur]
+    // Buffers are 8-byte aligned in memory (a chunk itself may be aligned to 4 only, on
+    // 32-bit hosts): the register machine reads its registers as `u64`s.
+    base := chunk.ptr.addr()
+    top := ((base + sc.top + 7) & ~us(7)) - base
+    size := us(n)
+    if n is 0 or top + size > chunk.len { return m.tmp_next(n) }
+    b := chunk[top..top + size]
+    sc.top = top + size
+    b.fill(0)
+    return b
+}
+
+/// `tmp` for an empty buffer, or one that does not fit in the current chunk.
+#noinline
+tmp_next :: fn(m: ^Machine, n: u64) -> []u8 needs Alloc {
     if n is 0 { return empty_slice(u8) }
     sc := &m.scratch
     size := us(n)
@@ -785,11 +807,19 @@ fn_from_addr :: fn(m: ^const Machine, addr: u64) -> ?u32 {
 }
 
 /// What the interpreter needs to know about function `f`.
+#inline
 fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
     i := us(f)
     if i < m.infos.items.len {
         if x := m.infos.items[i] { return x }
     }
+    return m.make_fn_info(f)
+}
+
+/// The `FnInfo` of `f`, made on its first call: its body is lowered and compiled then.
+#noinline
+make_fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
+    i := us(f)
     while m.infos.items.len <= i { m.infos.push(null)! }
     if x := m.infos.items[i] { return x }
     def := m.func(f)
@@ -847,14 +877,14 @@ frame_of :: fn(m: ^const Machine, h: u64) -> ?^Frame {
 
 /// A new frame for a call of `fn_id` (with `info`) whose result goes to `ret`, with its
 /// locals in `store`.
+#inline
 new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret: []u8, env: ?^Frame, store: []u8) -> ^Frame needs Alloc {
     n := info.addressed.len
     // Finished frames are reused, with their buffers: a call allocates nothing then.
-    fr := m.frame_pool.pop() else new(Frame(id: 0, handle: 0, fn_id: 0, info: info, ret: ret, env: null, store: empty_slice(u8), mem: empty_slice(u64), mem_buf: empty_slice(u64), allocs: list(u64), labels: list(LabelDst), defers: list(Deferred), installing: null, is_clause_lit: false))!
-    if fr.mem_buf.len < n {
-        if fr.mem_buf.len > 0 { free(fr.mem_buf) }
-        fr.mem_buf = make_fill(n.max(8), u64(0))!
-    }
+    fr := m.frame_pool else m.alloc_frame(info, ret)
+    m.frame_pool = fr.next_free
+    m.pooled -= 1
+    if fr.mem_buf.len < n { m.grow_mem_buf(fr, n) }
     // A frame's addresses of locals are all 0 when it ends (`end_frame`).
     fr.mem = fr.mem_buf[0..n]
     fr.id = m.next_frame
@@ -869,6 +899,24 @@ new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret: []u8, env: ?^Frame,
     // A handle is given when a function value or handler value first captures the frame.
     fr.handle = 0
     return fr
+}
+
+/// A frame for `new_frame` when none is kept for reuse: it goes to the pool, which
+/// `new_frame` takes it from.
+#noinline
+alloc_frame :: fn(m: ^Machine, info: ^FnInfo, ret: []u8) -> ^Frame needs Alloc {
+    fr := new(Frame(id: 0, handle: 0, fn_id: 0, info: info, ret: ret, env: null, store: empty_slice(u8), mem: empty_slice(u64), mem_buf: empty_slice(u64), allocs: list(u64), labels: list(LabelDst), defers: list(Deferred), installing: null, is_clause_lit: false, next_free: null))!
+    fr.next_free = m.frame_pool
+    m.frame_pool = fr
+    m.pooled += 1
+    return fr
+}
+
+/// Gives `fr` room for the addresses of `n` locals.
+#noinline
+grow_mem_buf :: fn(m: ^Machine, fr: ^Frame, n: usize) needs Alloc {
+    if fr.mem_buf.len > 0 { free(fr.mem_buf) }
+    fr.mem_buf = make_fill(n.max(8), u64(0))!
 }
 
 /// The handle of frame `fr` (by which function and handler values refer to it), given now if
@@ -886,7 +934,20 @@ frame_handle :: fn(m: ^Machine, fr: ^Frame) -> u32 needs Alloc {
 }
 
 /// Ends frame `fr`: its allocations die and its handle is free again.
+#inline
 end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
+    if fr.allocs.items.len > 0 or fr.labels.items.len > 0 or fr.defers.items.len > 0 or fr.handle is not 0 or m.pooled >= 256 {
+        m.end_frame_slow(fr)
+        return ()
+    }
+    fr.next_free = m.frame_pool
+    m.frame_pool = fr
+    m.pooled += 1
+}
+
+/// `end_frame` for a frame with something to undo, or when the pool is full.
+#noinline
+end_frame_slow :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
     if fr.allocs.items.len > 0 {
         for a in fr.allocs.items { _ = m.mem.kill(a) }
         fr.allocs.clear()
@@ -898,8 +959,10 @@ end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
         m.frames.items[us(fr.handle - 1)] = null
         m.free_frames.push(fr.handle - 1)!
     }
-    if m.frame_pool.items.len < 256 {
-        m.frame_pool.push(fr)!
+    if m.pooled < 256 {
+        fr.next_free = m.frame_pool
+        m.frame_pool = fr
+        m.pooled += 1
         return ()
     }
     fr.allocs.deinit()
@@ -919,9 +982,17 @@ frame_up :: fn(fr: ^Frame, levels: u32) -> ?^Frame {
 }
 
 /// The address of local `l` of frame `fr`, which needs one: made on first use.
+#inline
 local_addr :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32) -> Flow!u64 needs Alloc {
     i := us(l)
     if fr.mem[i] is not 0 { return fr.mem[i] }
+    return m.local_alloc(span, fr, l)
+}
+
+/// Gives local `l` of frame `fr` memory of its own; returns its address.
+#noinline
+local_alloc :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32) -> Flow!u64 needs Alloc {
+    i := us(l)
     addr := try m.alloc_mem(span, fr.info.sizes[i], fr.info.aligns[i], .Stack, true)
     // What the local held so far moves along.
     off := us(fr.info.offsets[i])
@@ -1026,14 +1097,14 @@ deinit :: fn(m: ^Machine) needs Alloc {
     m.scratch.chunks.deinit()
     m.infos.deinit()
     m.temps.deinit()
-    for fr in m.frame_pool.items {
+    while fr := m.frame_pool {
+        m.frame_pool = fr.next_free
         fr.allocs.deinit()
         fr.labels.deinit()
         fr.defers.deinit()
         if fr.mem_buf.len > 0 { free(fr.mem_buf) }
         free(slice_of(fr))
     }
-    m.frame_pool.deinit()
     m.argv.deinit()
     m.sizes.deinit()
     m.frames.deinit()

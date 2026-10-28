@@ -844,11 +844,20 @@ bits_whole :: fn(m: ^Machine, span: source.Span, host: []u8, addr: u64, whole: T
     return m.get_uint(b[0..n])
 }
 
+/// Where a `break` with a value to `label` in `fr` leaves it: the destination of a loop or
+/// `with` that the tree runs, or the slot of a `with` that the register machine runs.
 label_dst :: fn(fr: ^Frame, label: u32) -> ?[]u8 {
     i := fr.labels.items.len
     while i > 0 {
         i -= 1
         if fr.labels.items[i].label is label { return fr.labels.items[i].dst }
+    }
+    code := fr.info.vm else return null
+    for lp in code.loops {
+        if lp.is_with and lp.label is label {
+            o := usize(lp.at)
+            return fr.store[o..o + usize(lp.size)]
+        }
     }
     return null
 }

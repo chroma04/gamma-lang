@@ -10,11 +10,16 @@ pub swap :: fn(T: type, s: []T, i, j: usize) {
 }
 
 /// Sets every element to `x`.
+#inline
 pub fill :: fn(T: type, s: []T, x: T) {
-    for i in 0..s.len { s[i] = x }
+    // Through the pointer: the indices are in bounds, and a loop without checks is one the
+    // C compiler can turn into `memset`.
+    p := s.ptr
+    for i in 0..s.len { p[i] = x }
 }
 
 /// Copies `src` into `s`, which must have the same length (checked); they may overlap.
+#inline
 pub copy_from :: fn(T: type, s: []T, src: []const T) {
     assert(s.len is src.len, "copy_from needs slices of equal length")
     @copy_elems(s, src)
