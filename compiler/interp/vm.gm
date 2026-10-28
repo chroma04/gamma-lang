@@ -88,6 +88,11 @@ Ins :: union {
     /// `ArrIdx`, of an array of `len` elements at the address in `p`.
     SliceIdx: (p: u32, len: u32, i: u32, esz: u64, n: ^Node)
     ArrIdx: (p: u32, i: u32, len: u64, esz: u64, n: ^Node)
+    /// Element `i` (a register) of the slice whose pointer and length are in registers `p`
+    /// and `len`, of `size` bytes aligned to `align`: read into `r`, or (`SliceSt`) written
+    /// from `v`; traps if `i` is out of bounds.
+    SliceLd: (r: u32, p: u32, len: u32, i: u32, esz: u64, size: u32, align: u32, n: ^Node)
+    SliceSt: (p: u32, len: u32, i: u32, esz: u64, size: u32, align: u32, v: u32, n: ^Node)
     /// The address of element `i` of the many-pointer in `p`, into `p`.
     PtrIdx: (p: u32, i: u32, esz: u64)
     /// Adds a constant to a register (an address).
@@ -405,13 +410,77 @@ vc_local_reg :: fn(c: ^const Vc, l: u32) -> ?u32 {
     return (c.info.offsets[i] / 8).trunc(u32)
 }
 
+/// The register that is the place `n`: a word local (`vc_local_reg`), or a field of 8 bytes
+/// at an offset of the frame's storage that is a multiple of 8 in a local kept there.
+vc_place_reg :: fn(c: ^const Vc, n: ^const Node) -> ?u32 {
+    match n.op {
+        .Local(l, _) => if n.size is c.info.sizes[usize(l)] { return c.vc_local_reg(l) }
+        .Field(_) => if c.m.word_locals and n.size is 8 {
+            root := c.vc_field_root(n) else return null
+            if c.info.addressed[usize(root.local)] { return null }
+            off := c.info.offsets[usize(root.local)] + root.rel
+            if off % 8 is 0 { return (off / 8).trunc(u32) }
+        }
+        .SliceLen(x) => if r := c.vc_slice_regs(x) { return r.len }
+        .SlicePtr(x) => if r := c.vc_slice_regs(x) { return r.p }
+        _ => {}
+    }
+    return null
+}
+
+/// The registers that are the pointer and the length of the slice `n`, a local or a field of
+/// one kept in the frame's storage, if they are (`vc_place_reg`).
+vc_slice_regs :: fn(c: ^const Vc, n: ^const Node) -> ?(p: u32, len: u32) {
+    if not c.m.word_locals or c.m.ptr_bytes is not 8 { return null }
+    root := c.vc_field_root(n) else return null
+    if c.info.addressed[usize(root.local)] { return null }
+    off := c.info.offsets[usize(root.local)] + root.rel
+    if off % 8 is not 0 { return null }
+    return (p: (off / 8).trunc(u32), len: (off / 8 + 1).trunc(u32))
+}
+
+/// The pointer and length of the slice `base` (a place) in registers, for an access that
+/// reads them after computing what the operands `later` say (`vc_operand`).
+vc_slice_ops :: fn(c: ^Vc, base: ^Node, late: bool) -> (p: u32, len: u32) needs Alloc {
+    if late {
+        if r := c.vc_slice_regs(base) { return r }
+    }
+    pl := c.vc_place(base)
+    p := c.vc_alloc()
+    l := c.vc_alloc()
+    pb := c.m.ptr_bytes
+    c.vc_load(p, pl, 0, pb, pb.trunc(u32), base)
+    c.vc_load(l, pl, pb, pb, pb.trunc(u32), base)
+    return (p: p, len: l)
+}
+
+/// Reads element `index` of the slice `base` into the first free register (`n` is the
+/// access).
+vc_slice_get :: fn(c: ^Vc, n: ^Node, base: ^Node, index: ^Node, esz: u64) needs Alloc {
+    save := c.top
+    sl := c.vc_slice_ops(base, c.vc_reads_only(index))
+    i := c.vc_operand(index, true)
+    c.top = save
+    c.vc_emit(.SliceLd(c.vc_alloc(), sl.p, sl.len, i, esz, n.size.trunc(u32), c.vc_align(n), n))
+}
+
+/// Whether computing `n` can neither trap nor change anything: a constant or a register.
+vc_plain :: fn(c: ^const Vc, n: ^const Node) -> bool => n.op is .Word(_) or c.vc_place_reg(n) is not null
+
+/// The local of this frame that the fields `n` are part of, and their offset in it.
+vc_field_root :: fn(c: ^const Vc, n: ^const Node) -> ?(local: u32, rel: u64) => match n.op {
+    .Local(l, _) => (local: l, rel: 0)
+    .Field(x) => if r := c.vc_field_root(x.base) { (local: r.local, rel: r.rel + x.off) } else { null }
+    _ => null
+}
+
 /// The register holding the value of the word expression `n`: the register of a local or a
 /// constant, or else the first free one, where `n` is computed. A local's register is read when the
 /// instruction using it runs, so only an operand that no later operand can change may be
 /// one (`late`: the operands computed after it only read).
 vc_operand :: fn(c: ^Vc, n: ^Node, late: bool) -> u32 needs Alloc {
-    if late and .Local(l, _) := n.op and n.size is c.info.sizes[usize(l)] {
-        if r := c.vc_local_reg(l) { return r }
+    if late {
+        if r := c.vc_place_reg(n) { return r }
     }
     if .Word(v) := n.op {
         if r := c.const_at.get(v) { return r }
@@ -462,6 +531,7 @@ vc_retarget :: fn(c: ^Vc, t: u32, d: u32) -> bool {
         .FloatOp(x) => if x.r is t { Ins.FloatOp(x.op, x.wide, d, x.a, x.b) } else { null }
         .LocalAt(r, at, size) => if r is t { Ins.LocalAt(d, at, size) } else { null }
         .Load(x) => if x.r is t { Ins.Load(d, x.base, x.off, x.size, x.align, x.n) } else { null }
+        .SliceLd(x) => if x.r is t { Ins.SliceLd(d, x.p, x.len, x.i, x.esz, x.size, x.align, x.n) } else { null }
         .SlotW(r, at, size) => if r is t { Ins.SlotW(d, at, size) } else { null }
         .EvalW(r, e) => if r is t { Ins.EvalW(d, e) } else { null }
         .Call(x) => if .Reg(r) := x.dst and r is t { Ins.Call(x.f, x.args, .Reg(d), x.node) } else { null }
@@ -725,7 +795,15 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
         .If(x) => c.vc_if_(x.cond, x.then, x.else_, .Reg)
         .Match(scrutinee, arms) => c.vc_match_(n, scrutinee, arms, .Reg)
         .Return(_), .Break(_), .Continue(_) => c.vc_expr(n, .Reg)
-        .Upvar(_), .Field(_), .Index(_), .Deref(_) => {
+        .Index(x) => if x.seq is .Slice and c.vc_placeable(n) is not .No {
+            c.vc_slice_get(n, x.base, x.index, x.esz)
+        } else if c.vc_placeable(n) is .No {
+            c.vc_emit(.EvalW(c.vc_alloc(), n))
+        } else {
+            pl := c.vc_place(n)
+            c.vc_load(save, pl, 0, n.size, c.vc_align(n), n)
+        }
+        .Upvar(_), .Field(_), .Deref(_) => {
             if c.vc_placeable(n) is .No {
                 c.vc_emit(.EvalW(c.vc_alloc(), n))
             } else {
@@ -1304,7 +1382,16 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
         }
         .Defer(is_err, body) => c.vc_emit(.Defer(is_err, body))
         .Assign(place, value) => {
-            if is_word(value) and value.size is place.size and c.vc_placeable(place) is not .No {
+            if is_word(value) and value.size is place.size and c.vc_place_reg(place) is not null {
+                c.vc_word_to(value, c.vc_place_reg(place) else 0)
+            } else if .Index(x) := place.op and x.seq is .Slice and is_word(value) and value.size is place.size and c.vc_plain(value) and c.vc_placeable(place) is not .No {
+                // A value that can neither trap nor change anything is computed after the
+                // bounds are checked, which the tree does first.
+                sl := c.vc_slice_ops(x.base, c.vc_reads_only(x.index))
+                i := c.vc_operand(x.index, true)
+                v := c.vc_operand(value, true)
+                c.vc_emit(.SliceSt(sl.p, sl.len, i, x.esz, place.size.trunc(u32), c.vc_align(place), v, place))
+            } else if is_word(value) and value.size is place.size and c.vc_placeable(place) is not .No {
                 pl := c.vc_place(place)
                 v := c.vc_operand(value, true)
                 size := place.size.trunc(u32)
@@ -1760,6 +1847,32 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                 }
                 k := usize(x.p)
                 regs[k] = regs[k] +% i * x.esz
+            }
+            .SliceLd(x) => {
+                i := regs[usize(x.i)]
+                len := regs[usize(x.len)]
+                if i >= len {
+                    pc = try m.vm_flow(a, code, regs, m.bounds_trap(x.n, i, len))
+                    continue
+                }
+                b := m.mem.read(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => {
+                    pc = try m.vm_flow(a, code, regs, m.mem_trap(x.n.span, e))
+                    continue
+                }
+                regs[usize(x.r)] = m.rd_word(b)
+            }
+            .SliceSt(x) => {
+                i := regs[usize(x.i)]
+                len := regs[usize(x.len)]
+                if i >= len {
+                    pc = try m.vm_flow(a, code, regs, m.bounds_trap(x.n, i, len))
+                    continue
+                }
+                b := m.mem.write_view(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => {
+                    pc = try m.vm_flow(a, code, regs, m.mem_trap(x.n.span, e))
+                    continue
+                }
+                m.wr_word(b, regs[usize(x.v)])
             }
             .ArrIdx(x) => {
                 i := regs[usize(x.i)]
