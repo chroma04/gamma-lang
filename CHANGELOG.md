@@ -101,6 +101,10 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Language
 
+- `needs`, `handler` and `foreign` are contextual keywords (§2.4): ordinary names except
+  after a signature (`needs`), before an effect (`handler Eff {`, a top-level handler
+  declaration) and before a library name (`foreign "c" {`). A newline after `needs` now
+  ends the line like after any name, so put the effect set on the same line.
 - An `else` fallback joins with the left side's value as `if` branches do (§10.4):
   `str.format("{}", n) else "none"` and `x: string = lookup(k) else ""` (with `lookup`
   giving `?[]u8`) are `string`s; they used to be type errors.
@@ -246,6 +250,8 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Diagnostics
 
+- The language server no longer adds "gamma cannot check this kind of expression yet" to a
+  syntax error in a condition.
 - New lint `stale-element-pointer`: a pointer or slice into a list's items used after a
   call on that list that may move them (`push`, `extend`, `reserve`, …, or a function given
   the list by pointer).
