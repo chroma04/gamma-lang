@@ -987,6 +987,9 @@ binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
     name := b.names[0]
     if b.kind is .Const and b.ty is null {
         if .Fn(lit) := b.init.kind { return cx.nested_fn_binding(name, lit, b.span) }
+        if nominal_lit(b.init) {
+            return cx.local_adt_binding(name, b)
+        }
         if t := cx.local_type_init(b.init) {
             cx.declare(name.name, .Type(t), name.span)
             cx.s.push_type_alias(name.name, t)
@@ -1144,6 +1147,31 @@ assign_tuple :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value:
 /// Plain data (§5.19).
 is_plain_data :: fn(cx: ^FnCx, t: Ty) -> bool needs Alloc => cx.s.tys.is_error(t) or cx.s.is_plain(t)
 
+/// Whether `e` is a `struct` or `union` literal, possibly preceded by attributes.
+nominal_lit :: fn(e: ^const ast.Expr) -> bool {
+    match e.kind {
+        .Struct(_), .Union(_) => return true
+        .Attributed(_, inner) => return inner.kind in (.Struct(_), .Union(_))
+        _ => return false
+    }
+}
+
+/// `Name :: struct { … }` or `union { … }` inside a body: a local type (§3.5).
+local_adt_binding :: fn(cx: ^FnCx, name: ast.Ident, b: ^const ast.Binding) -> tir.Stmt needs Load {
+    n := name.name
+    if cx.lookup_local(n) is not null {
+        cx.error(name.span, str.format("`{}` is already declared in this function; locals may not be shadowed", n)!)
+    } else if cx.s.names_type(cx.module, n) {
+        cx.error(name.span, str.format("`{}` names a type; a local type may not have the name of a type (§4.6)", n)!)
+    } else if load.is_reserved_type_name(n) {
+        cx.error(name.span, str.format("`{}` is a reserved type name and cannot be redeclared", n)!)
+    }
+    // The type itself puts its name in scope, for its own fields.
+    t := cx.s.declare_local_adt(cx.module, n, b.init)
+    cx.scopes.items[cx.scopes.items.len - 1].push(Binding(name: n, value: .Type(t)))!
+    return .Expr(unit(cx.s, b.span))
+}
+
 /// The type that the initializer `e` of a local `::` binding denotes, if it is a type
 /// expression: the binding is then a local alias (§3.5).
 local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
@@ -1166,8 +1194,8 @@ local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
             if inner.kind is .SliceType(_) or (inner.kind is .ArrayType(_) and not cx.is_construction(inner)) { return cx.resolve_ty(e) }
             return null
         }
-        .Struct(_), .Union(_), .Effect(_) => {
-            cx.error(e.span, "types are declared at top level; inside a function only aliases are allowed (§3.5)")
+        .Effect(_) => {
+            cx.error(e.span, "an effect is declared at top level; inside a function only aliases, structs and unions can be declared (§3.5)")
             return cx.s.tys.error()
         }
         .Paren(inner) => return cx.local_type_init(inner)

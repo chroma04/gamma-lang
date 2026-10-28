@@ -199,8 +199,13 @@ check_name :: fn(w: ^Walk, name: ast.Ident, case: Case, what: string) needs Allo
 binding_stmt :: fn(w: ^Walk, b: ^const ast.Binding) needs Alloc {
     if b.names.len is 1 {
         name := b.names[0]
+        inner := b.init
+        if .Attributed(_, i) := inner.kind { inner = i }
         if b.init.kind is .Fn(_) {
             w.check_name(name, .Snake, "function")
+        } else if inner.kind in (.Struct(_), .Union(_)) {
+            // A local type is named and laid out like a top-level one.
+            w.top_level_name(name, b)
         } else {
             // A local `::` binding may be a constant or a type alias.
             case: Case = if b.kind is .Const { .Any } else { .Snake }

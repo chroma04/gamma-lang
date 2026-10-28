@@ -1,0 +1,10 @@
+Row(id: 1, name: "a") Row
+Row(a: 1, b: 2, c: 3) 3
+.circle(2) -> 12
+.square(3) -> 9
+.none -> 0
+total 6
+Pair(c: Count(n: 7), tag: 1) u8
+Pair(c: Count(n: 7), tag: 1) string
+Buf(data: [1, 2, 3], cap: 4)
+true 5

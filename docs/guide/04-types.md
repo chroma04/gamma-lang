@@ -532,7 +532,21 @@ alias_demo :: fn(xs: []const i32) {
 }
 ```
 
-Only `struct`, `union` and `effect` literals create new types, and they are declared at top level. Aliases may also appear inside a function, where they are visible for the rest of the block.
+Only `struct`, `union` and `effect` literals create new types. Effects are declared at top level. Aliases, structs and unions may also appear inside a function, where they are visible for the rest of the block:
+
+```gamma
+summarize :: fn(xs: []const i32) needs Out {
+    Stats :: struct { min: i32, max: i32 }
+    s := Stats(min: xs[0], max: xs[0])
+    for x in xs {
+        if x < s.min { s.min = x }
+        if x > s.max { s.max = x }
+    }
+    print("{}\n", s)
+}
+```
+
+A local type is private to its function and cannot be generic or have methods. It may not mention the function's type or value parameters, since it must be the same type in every instance.
 
 ## Summary
 

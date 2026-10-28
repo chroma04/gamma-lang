@@ -1,0 +1,88 @@
+// `struct` and `union` types declared inside function bodies (§3.5).
+first :: fn() needs Out {
+    Row :: struct { id: u32, name: string }
+    r := Row(id: 1, name: "a")
+    print("{} {}\n", r, @type_name(Row))
+}
+
+second :: fn() needs Out {
+    // The same name in another function is another type.
+    Row :: struct { a: i8, b: i8, c: i8 }
+    r := Row(a: 1, b: 2, c: 3)
+    print("{} {}\n", r, @size_of(Row))
+}
+
+shapes :: fn() needs Out {
+    Shape :: union {
+        circle: f64
+        square: f64
+        none
+    }
+    area :: fn(s: Shape) -> f64 {
+        return match s {
+            .circle(r) => 3 * r * r
+            .square(w) => w * w
+            .none => 0
+        }
+    }
+    xs := [3]Shape(.circle(2), .square(3), .none)
+    for s in xs { print("{} -> {}\n", s, area(s)) }
+}
+
+linked :: fn() needs Out {
+    Node :: struct {
+        value: i32
+        next: ?^Node = null
+    }
+    c := Node(value: 3)
+    b := Node(value: 2, next: &c)
+    a := Node(value: 1, next: &b)
+    total: i32 = 0
+    p: ?^Node = &a
+    while n := p {
+        total += n.value
+        p = n.next
+    }
+    print("total {}\n", total)
+}
+
+generic_fn :: fn(T: type, x: T) needs Out {
+    // Does not depend on `T`: the same type in every instance.
+    Count :: struct { n: u32 = 7 }
+    Pair :: struct { c: Count, tag: u8 }
+    p := Pair(c: Count(), tag: 1)
+    print("{} {}\n", p, @type_name(T))
+}
+
+LIMIT :: 4
+
+consts :: fn() needs Out {
+    N :: 3
+    Elem :: u16
+    Buf :: struct { data: [N]Elem, cap: usize = LIMIT }
+    b := Buf(data: [N]Elem(1, 2, 3))
+    print("{}\n", b)
+}
+
+flags :: fn() needs Out {
+    Flags :: #bits(u8) struct { a: bool, b: bool, rest: u6 }
+    f := Flags(a: true, b: false, rest: 5)
+    print("{} {}\n", f.a, f.rest)
+}
+
+main :: fn() needs Out {
+    first()
+    second()
+    shapes()
+    linked()
+    generic_fn(u8(1))
+    generic_fn("x")
+    consts()
+    flags()
+}
+
+test "a local type in a test body" {
+    Item :: struct { k: u8, v: u8 }
+    xs := [2]Item(Item(k: 1, v: 2), Item(k: 3, v: 4))
+    expect(xs[1].v is 4)
+}

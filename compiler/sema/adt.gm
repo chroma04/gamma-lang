@@ -25,7 +25,59 @@ pub(package) new_param :: fn(s: ^Sema, name: string, kind: ParamKind) -> u32 nee
 
 /// Declares the nominal type written by a `struct` or `union` literal (possibly preceded
 /// by attributes). `decl` is the binding that names it, if any.
-declare_adt :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^const ast.Expr) -> Ty needs Load {
+declare_adt :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^const ast.Expr) -> Ty needs Load => s.declare_adt_in(module, decl, name, lit, false)
+
+/// Declares the type written by the `struct` or `union` literal `lit`, bound to `name`
+/// inside a function body (§3.5): equivalent to a private top-level type, in scope for the
+/// rest of the block. It may mention itself, but not a type or value parameter of the
+/// enclosing function, so it is the same type in every instance.
+pub declare_local_adt :: fn(s: ^Sema, module: usize, name: string, lit: ^const ast.Expr) -> Ty needs Load {
+    inner := lit
+    if .Attributed(_, i) := lit.kind { inner = i }
+    generic := match inner.kind {
+        .Struct(st) => st.params is not null
+        .Union(u) => u.params is not null
+        _ => false
+    }
+    if generic {
+        s.error(lit.span, "a type declared inside a function cannot be generic; declare it at top level (§3.5)")
+        s.push_type_alias(name, s.tys.error())
+        return s.tys.error()
+    }
+    ty := s.declare_adt_in(module, null, name, lit, true)
+    if .Adt(id, _) := s.tys.kind(ty) and s.adt_mentions_param(id) {
+        s.error(lit.span, str.format("`{}` is declared inside a function and cannot refer to a type or value parameter of that function; it would be a different type in every instance (§3.5)", name)!)
+        s.empty_adt(id)
+        return s.tys.error()
+    }
+    return ty
+}
+
+/// Whether a field or payload type of `id` mentions a type or value parameter.
+adt_mentions_param :: fn(s: ^const Sema, id: u32) -> bool {
+    match s.adts.items[usize(id)].kind {
+        .Struct(def) => {
+            for f in def.fields {
+                if s.tys.has_param(f.ty) { return true }
+            }
+        }
+        .CUnion(fields) => {
+            for f in fields {
+                if s.tys.has_param(f.ty) { return true }
+            }
+        }
+        .Union(_, variants) => {
+            for v in variants {
+                if p := v.payload {
+                    if s.tys.has_param(p) { return true }
+                }
+            }
+        }
+    }
+    return false
+}
+
+declare_adt_in :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^const ast.Expr, local: bool) -> Ty needs Load {
     attrs := empty_slice(ast.Attribute)
     inner := lit
     if .Attributed(a, i) := lit.kind {
@@ -47,6 +99,8 @@ declare_adt :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^con
         decl: decl,
     ))!
     ty := s.tys.adt(id, empty_slice(GenericArg))
+    // A local type is usable by its own fields and by the rest of the block.
+    if local { s.push_type_alias(name, ty) }
     // Type parameters of a generic struct or union (§16.4).
     params: ?[]ast.Param = match inner.kind {
         .Struct(st) => st.params
