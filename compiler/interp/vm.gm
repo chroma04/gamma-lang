@@ -175,6 +175,9 @@ Ins :: union {
     PopLabels: u32
     /// Lets other threads run.
     Tick
+    /// Nothing: what compiling leaves of a mark that is not needed, removed at its end
+    /// (`vc_compact`).
+    Nop
 }
 
 /// An argument of a call: a word in a register, or the bytes in a slot.
@@ -237,6 +240,11 @@ Vc :: struct {
     /// The furthest instruction a jump goes to: an instruction emitted before it may not be
     /// changed to leave its value elsewhere (`vc_retarget`).
     joined: u32
+    /// How many instructions that may leave scratch memory or temporaries behind (those of
+    /// the tree evaluator) were emitted: in all, and since the innermost statement that
+    /// releases what they leave began.
+    leaks_all: u32
+    leaks: u32
 }
 
 /// Compiles the lowered body `body` of the function `info` describes.
@@ -247,7 +255,7 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
     slots: u64 = 0
     while true {
         rbase := ((sbase + slots) / 8).trunc(u32)
-        c := Vc(m: m, info: info, ins: list(Ins), loops: list(VmLoop), open: list(u32), dblocks: 0, exits: list((ins: u32, loop: u32)), conts: list((ins: u32, loop: u32)), top: rbase, max: rbase, rbase: rbase, sbase: sbase, slot_top: 0, slot_max: 0, joined: 0)
+        c := Vc(m: m, info: info, ins: list(Ins), loops: list(VmLoop), open: list(u32), dblocks: 0, exits: list((ins: u32, loop: u32)), conts: list((ins: u32, loop: u32)), top: rbase, max: rbase, rbase: rbase, sbase: sbase, slot_top: 0, slot_max: 0, joined: 0, leaks_all: 0, leaks: 0)
         c.vc_expr(body, .Ret)
         // A body whose value falls off its end (`()`, or a `never` that the tree raised).
         c.vc_emit(.Ret)
@@ -260,6 +268,7 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
             c.loops.deinit()
             continue
         }
+        c.vc_compact()
         regs_off := u64(rbase) * 8
         // At least one register past the locals.
         nregs := u64((c.max - rbase).max(1))
@@ -267,7 +276,57 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
     }
 }
 
-vc_emit :: fn(c: ^Vc, i: Ins) needs Alloc { c.ins.push(i)! }
+vc_emit :: fn(c: ^Vc, i: Ins) needs Alloc {
+    match i {
+        .EvalW(_), .EvalSlot(_), .Discard(_), .AssignW(_), .Pat(_) => {
+            c.leaks_all += 1
+            c.leaks += 1
+        }
+        _ => {}
+    }
+    c.ins.push(i)!
+}
+
+/// Removes the `Nop`s, moving the jumps' targets.
+vc_compact :: fn(c: ^Vc) needs Alloc {
+    n := c.ins.items.len
+    at := list(u32)
+    k: u32 = 0
+    for i in 0..n {
+        at.push(k)!
+        if not (c.ins.items[i] is .Nop) { k += 1 }
+    }
+    at.push(k)!
+    if usize(k) is n {
+        at.deinit()
+        return ()
+    }
+    out := list(Ins)
+    for i in 0..n {
+        x := c.ins.items[i]
+        if x is .Nop { continue }
+        t := at.items
+        out.push(match x {
+            .Jmp(to) => Ins.Jmp(t[usize(to)])
+            .Jz(r, to) => Ins.Jz(r, t[usize(to)])
+            .Jnz(r, to) => Ins.Jnz(r, t[usize(to)])
+            .Pat(y) => Ins.Pat(y.pat, y.off, y.size, t[usize(y.fail)])
+            .JCmp(y) => Ins.JCmp(y.op, y.how, y.a, y.b, t[usize(y.to)])
+            .JEq(y) => Ins.JEq(y.how, y.negated, y.a, y.b, t[usize(y.to)])
+            .JSlot(y) => Ins.JSlot(y.at, y.size, y.nonzero, t[usize(y.to)])
+            .JTag(y) => Ins.JTag(y.at, y.size, y.v, t[usize(y.to)])
+            _ => x
+        })!
+    }
+    for i in 0..c.loops.items.len {
+        lp := &c.loops.items[i]
+        lp.brk = at.items[usize(lp.brk)]
+        lp.cont = at.items[usize(lp.cont)]
+    }
+    c.ins.deinit()
+    c.ins = out
+    at.deinit()
+}
 
 /// Emits a jump (or another instruction with a target to patch); returns its index.
 vc_jump :: fn(c: ^Vc, i: Ins) -> u32 needs Alloc {
@@ -1194,13 +1253,15 @@ vc_place_word_only :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
 vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
     save := c.top
     slots := c.slot_top
+    leaks := c.leaks
     mark := c.vc_uses_scratch(st)
     m_reg: u32 = 0
+    m_at: u32 = 0
     if mark {
         m_reg = c.vc_alloc()
         _ = c.vc_alloc()
         _ = c.vc_alloc()
-        c.vc_emit(.Mark(m_reg))
+        m_at = c.vc_jump(.Mark(m_reg))
     }
     match st {
         .Expr(e) => c.vc_expr(e, .Discard)
@@ -1240,7 +1301,16 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
         }
         _ => c.vc_emit(.Stmt(st))
     }
-    if mark { c.vc_emit(.Release(m_reg)) }
+    // A statement whose own instructions leave nothing behind needs no mark: what the
+    // statements in it leave, they release.
+    if mark {
+        if c.leaks is leaks {
+            c.ins.items[usize(m_at)] = .Nop
+        } else {
+            c.vc_emit(.Release(m_reg))
+        }
+    }
+    c.leaks = leaks
     c.top = save
     c.slot_top = slots
 }
@@ -1489,6 +1559,8 @@ vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs
     c.open.push(li)!
     c.vc_emit(.DeferHeight(h))
     c.vc_emit(.PushLabel(label))
+    leaks_all := c.leaks_all
+    leaks := c.leaks
     head := c.vc_here()
     c.vc_emit(.Mark(mark))
     c.vc_emit(.Tick)
@@ -1498,11 +1570,20 @@ vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs
     cont_at := c.vc_here()
     if st := step { c.vc_expr(st, .Discard) }
     c.top = mark + 4
-    c.vc_emit(.Release(mark))
+    rel := c.vc_jump(.Release(mark))
     c.vc_emit(.Jmp(head))
     brk := c.vc_here()
     c.vc_emit(.Release(mark))
     c.vc_emit(.PopLabels(depth))
+    // An iteration releases what it leaves unless nothing in the loop can leave anything
+    // (a `break` or `continue` that the tree raises skips the release of the statement it
+    // leaves, which the loop's then does).
+    if c.leaks_all is leaks_all {
+        c.ins.items[usize(head)] = .Nop
+        c.ins.items[usize(rel)] = .Nop
+        c.ins.items[usize(brk)] = .Nop
+    }
+    c.leaks = leaks
     for f in fails.items { c.vc_patch(f, brk) }
     fails.deinit()
     // The `break`s compiled in the body jump past the release, which they already did not
@@ -2193,4 +2274,3 @@ assign_word :: fn(m: ^Machine, a: Act, place: ^Node, value: ^Node) -> Flow!() ne
     m.wr_word(d, v)
     return m.write_place(place.span, p, place.ty, d)
 }
-
