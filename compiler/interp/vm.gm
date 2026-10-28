@@ -109,6 +109,14 @@ Ins :: union {
     CallValue: (at: u32, callee: ^Node, args: []Arg, dst: Dest, node: ^Node)
     /// Copies a slot's bytes to a local of this frame.
     SetLocalSlot: (local: u32, at: u32, size: u32, n: ^Node)
+    /// Copies `size` bytes between slots, reads a word of a slot into a register, or writes
+    /// one to a slot.
+    CopySlot: (dst: u32, src: u32, size: u32)
+    SlotW: (r: u32, at: u32, size: u32)
+    WSlot: (at: u32, size: u32, r: u32)
+    /// Jumps if the word of `size` bytes in the slot at `at` is zero (or, with `nonzero`,
+    /// is not): the test of an optional's or a result's flag.
+    JSlot: (at: u32, size: u32, nonzero: bool, to: u32)
     /// The tree evaluator: a word into a register, a value into a slot, or for effects.
     EvalW: (r: u32, n: ^Node)
     EvalSlot: (off: u32, n: ^Node)
@@ -228,6 +236,7 @@ vc_patch :: fn(c: ^Vc, at: u32, to: u32) {
         .Pat(x) => { i^ = .Pat(x.pat, x.off, x.size, to) }
         .JCmp(x) => { i^ = .JCmp(x.op, x.how, x.a, x.b, to) }
         .JEq(x) => { i^ = .JEq(x.how, x.negated, x.a, x.b, to) }
+        .JSlot(x) => { i^ = .JSlot(x.at, x.size, x.nonzero, to) }
         _ => {}
     }
 }
@@ -343,7 +352,9 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
     }
     match want {
         .Reg => {
-            if is_word(n) {
+            // A jump the machine does not compile (to another frame or a value-carrying
+            // loop) goes to the tree like any construct with no value.
+            if is_word(n) and not (n.op is .Return(_) or n.op is .Break(_) or n.op is .Continue(_)) {
                 c.vc_word(n)
             } else {
                 // Not a word: only a `never` or `()` value of a construct the machine does
@@ -451,9 +462,17 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
         }
         .Call(f, args) => c.vc_call(f, args, .Reg(save), n)
         .CallValue(callee, args) => c.vc_call_value(callee, args, .Reg(save), n)
+        .Else(lhs, ?capture, rhs) => {
+            if c.vc_else_shape(n, lhs) is null {
+                c.vc_emit(.EvalW(c.vc_alloc(), n))
+            } else {
+                c.vc_else(n, lhs, capture, rhs, null)
+            }
+        }
         .Block(b) => c.vc_block(b, .Reg)
         .If(x) => c.vc_if_(x.cond, x.then, x.else_, .Reg)
         .Match(scrutinee, arms) => c.vc_match_(n, scrutinee, arms, .Reg)
+        .Return(_), .Break(_), .Continue(_) => c.vc_expr(n, .Reg)
         .Upvar(_), .Field(_), .Index(_), .Deref(_) => {
             if c.vc_placeable(n) is .No {
                 c.vc_emit(.EvalW(c.vc_alloc(), n))
@@ -693,11 +712,84 @@ vc_args :: fn(c: ^Vc, args: []^Node) -> []Arg needs Alloc {
 
 /// Evaluates `n` into the slot at `at`.
 vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
-    if .Call(f, args) := n.op {
-        c.vc_call(f, args, .Slot(at), n)
+    save := c.top
+    match n.op {
+        .Call(f, args) => {
+            c.vc_call(f, args, .Slot(at), n)
+            return ()
+        }
+        .CallValue(callee, args) => {
+            c.vc_call_value(callee, args, .Slot(at), n)
+            return ()
+        }
+        .Else(lhs, ?capture, rhs) => if c.vc_else_shape(n, lhs) is not null {
+            c.vc_else(n, lhs, capture, rhs, at)
+            return ()
+        }
+        .Block(b) => if not b.defers {
+            for st in b.stmts { c.vc_stmt(st) }
+            if t := b.tail { c.vc_to_slot(t, at) }
+            return ()
+        }
+        _ => {}
+    }
+    if n.size is 0 {
+        c.vc_expr(n, .Discard)
+        return ()
+    }
+    if is_word(n) and c.vc_compiles(n) {
+        c.vc_word(n)
+        c.vc_emit(.WSlot(at, n.size.trunc(u32), save))
+        c.vc_set_top(save)
         return ()
     }
     c.vc_emit(.EvalSlot(at, n))
+}
+
+/// Where an `else` the machine runs finds its left side's flag and payload: the flag's
+/// offset and size and whether nonzero means absent (an error), and the payload's offset.
+/// Only an `else` whose value is the payload (`x else d`).
+vc_else_shape :: fn(c: ^Vc, n: ^const Node, lhs: ^const Node) -> ?(flag: u64, size: u64, nonzero: bool, payload: u64) needs Alloc {
+    m := c.m
+    match m.kind(lhs.ty) {
+        .Optional(inner) => {
+            if n.ty is not inner { return null }
+            if cgen.nullable_pointer(m.s, inner) { return (flag: 0, size: m.ptr_bytes, nonzero: false, payload: 0) }
+            offs := m.offsets(lhs.ty)
+            return (flag: offs[1], size: 1, nonzero: false, payload: offs[0])
+        }
+        .Result(_, ok) => {
+            if n.ty is not ok { return null }
+            offs := m.offsets(lhs.ty)
+            return (flag: offs[0], size: 1, nonzero: true, payload: offs[1])
+        }
+        _ => return null
+    }
+}
+
+/// `lhs else rhs` (`vc_else_shape`), its value into the slot at `at`, or (`null`) into the
+/// first free register.
+vc_else :: fn(c: ^Vc, n: ^Node, lhs: ^Node, capture: ?u32, rhs: ^Node, at: ?u32) needs Alloc {
+    shape := c.vc_else_shape(n, lhs) else return ()
+    save := c.top
+    la := c.vc_slot_at(c.vc_alloc_slot(lhs.size))
+    c.vc_to_slot(lhs, la)
+    fail := c.vc_jump(.JSlot(la + shape.flag.trunc(u32), shape.size.trunc(u32), shape.nonzero, 0))
+    pa := la + shape.payload.trunc(u32)
+    if d := at {
+        c.vc_emit(.CopySlot(d, pa, n.size.trunc(u32)))
+    } else {
+        c.vc_emit(.SlotW(c.vc_alloc(), pa, n.size.trunc(u32)))
+    }
+    end := c.vc_jump(.Jmp(0))
+    c.vc_patch(fail, c.vc_here())
+    c.top = save
+    if l := capture {
+        if .Result(err, _) := c.m.kind(lhs.ty) { c.vc_emit(.SetLocalSlot(l, pa, c.m.size(err).trunc(u32), n)) }
+    }
+    if d := at { c.vc_to_slot(rhs, d) } else { c.vc_word(rhs) }
+    c.vc_patch(end, c.vc_here())
+    c.vc_set_top(if at is null { save + 1 } else { save })
 }
 
 /// Whether `n` compiles to instructions that use no scratch memory.
@@ -753,7 +845,7 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
             if x := init and size <= 8 and is_word(x) and size is x.size {
                 c.vc_word(x)
                 c.vc_emit(.SetLocal(l, off.trunc(u32), size.trunc(u32), c.top - 1, x))
-            } else if x := init and x.op is .Call(_) and size is x.size {
+            } else if x := init and size is x.size and slot_worthy(x) {
                 c.vc_call_to_local(l, x)
             } else {
                 c.vc_emit(.Stmt(st))
@@ -800,19 +892,25 @@ vc_set_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
         c.vc_emit(.SetLocal(l, c.info.offsets[i].trunc(u32), size.trunc(u32), c.top - 1, value))
         return ()
     }
-    if value.op is .Call(_) and value.size is size {
+    if value.size is size and slot_worthy(value) {
         c.vc_call_to_local(l, value)
         return ()
     }
     c.vc_emit(.Stmt(.SetLocal(l, value)))
 }
 
-/// `l = f(…)` for a local that is not a word: the result goes through a slot.
-vc_call_to_local :: fn(c: ^Vc, l: u32, call: ^Node) needs Alloc {
-    .Call(f, args) := call.op else return ()
-    at := c.vc_slot_at(c.vc_alloc_slot(call.size))
-    c.vc_call(f, args, .Slot(at), call)
-    c.vc_emit(.SetLocalSlot(l, at, call.size.trunc(u32), call))
+/// Whether the machine computes `n`, which is not a word, into a slot better than the tree
+/// would compute it into a local: a call or an `else`.
+slot_worthy :: fn(n: ^const Node) -> bool => match n.op {
+    .Call(_), .CallValue(_), .Else(_) => true
+    _ => false
+}
+
+/// `l = value` for a local that is not a word (`slot_worthy`): the value goes through a slot.
+vc_call_to_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
+    at := c.vc_slot_at(c.vc_alloc_slot(value.size))
+    c.vc_to_slot(value, at)
+    c.vc_emit(.SetLocalSlot(l, at, value.size.trunc(u32), value))
 }
 
 /// Compiles the conditions `parts`; returns the jumps to patch to where they fail.
@@ -1234,6 +1332,27 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             .SetUpvarAt(x) => {
                 m.vm_set_upvar_at(fr, x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n) else f => {
                     pc = try m.vm_flow(a, code, regs, f)
+                    continue
+                }
+            }
+            .CopySlot(d, src, size) => {
+                o := usize(d)
+                q := usize(src)
+                k := usize(size)
+                fr.store[o..o + k].copy_from(fr.store[q..q + k])
+            }
+            .SlotW(r, at, size) => {
+                o := usize(at)
+                regs[usize(r)] = m.rd_word(fr.store[o..o + usize(size)])
+            }
+            .WSlot(at, size, r) => {
+                o := usize(at)
+                m.wr_word(fr.store[o..o + usize(size)], regs[usize(r)])
+            }
+            .JSlot(at, size, nonzero, to) => {
+                o := usize(at)
+                if (m.rd_word(fr.store[o..o + usize(size)]) is not 0) is nonzero {
+                    pc = usize(to)
                     continue
                 }
             }

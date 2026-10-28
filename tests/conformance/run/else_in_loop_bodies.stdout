@@ -1,0 +1,9 @@
+5 100
+0
+1
+2
+error .Bad(3)
+-1
+error .Bad(4)
+-1
+null 4
