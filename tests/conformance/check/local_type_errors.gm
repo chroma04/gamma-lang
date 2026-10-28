@@ -1,0 +1,54 @@
+//! stage: check
+// What a type declared inside a function body may not do (§3.5, §4.6).
+Point :: struct { x, y: i32 }
+
+generic :: fn(T: type, N: usize, x: T) {
+    A :: struct { v: T }              //~ ERROR cannot refer to a type or value parameter
+    B :: struct { v: [N]u8 }          //~ ERROR `N` is a variable
+    C :: union { a: ?T, b }           //~ ERROR cannot refer to a type or value parameter
+    Ok :: struct { v: u8 }
+    _ = Ok(v: 1)
+}
+
+runtime :: fn() {
+    n := 3
+    D :: struct { v: [n]u8 }          //~ ERROR `n` is a variable
+}
+
+generic_local :: fn() {
+    G :: struct(T: type) { v: T }     //~ ERROR cannot be generic
+}
+
+effects :: fn() {
+    E :: effect { op: ctl(n: u32) }   //~ ERROR an effect is declared at top level
+}
+
+clashes :: fn() {
+    Point :: struct { z: i32 }        //~ ERROR `Point` names a type
+    u8 :: struct { z: i32 }           //~ ERROR `u8` names a type
+    K :: struct { z: i32 }
+    K :: struct { z: i32 }            //~ ERROR `K` is already declared
+}
+
+early :: fn() {
+    a := Later(z: 1)                  //~ ERROR unknown name `Later`
+    Later :: struct { z: i32 }
+    _ = a
+}
+
+scoped :: fn() {
+    {
+        Inner :: struct { z: i32 }
+        _ = Inner(z: 1)
+    }
+    x: Inner = ---                    //~ ERROR unknown type `Inner`
+    _ = x
+}
+
+methods :: fn() {
+    L :: struct { z: i32 }
+    l := L(z: 1)
+    _ = l.get()                       //~ ERROR has no method `get`
+}
+
+main :: fn() {}

@@ -1,0 +1,6 @@
+//! stage: check
+// A local type is private to its block.
+main :: fn() {
+    pub P :: struct { x: i32 }        //~ ERROR found keyword `pub`
+    _ = P(x: 1)
+}
