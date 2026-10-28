@@ -34,9 +34,8 @@ Code :: struct {
     regs_off: u64
     nregs: u64
     size: u64
-    /// The constants the registers from `regs_off` on hold, set when the body starts: the
-    /// bytes of their words on the host.
-    consts: []u8
+    /// The constants the registers from `regs_off` on hold, set when the body starts.
+    consts: []u64
     /// The loops: their labels and where their `break`s and `continue`s go.
     loops: []VmLoop
 }
@@ -298,10 +297,7 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
         regs_off := u64(rbase) * 8
         // At least one register past the locals.
         nregs := u64((c.max - rbase).max(1))
-        words := make_fill(consts.items.len * 8, u8(0))!
-        if consts.items.len > 0 { words.ptr.cast([^]u64)[0..consts.items.len].copy_from(consts.items) }
-        consts.deinit()
-        return new(Code(ins: c.ins.items, slots_off: sbase, regs_off: regs_off, nregs: nregs, size: regs_off + 8 * nregs, loops: c.loops.items, consts: words))!
+        return new(Code(ins: c.ins.items, slots_off: sbase, regs_off: regs_off, nregs: nregs, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
     }
 }
 
@@ -1742,7 +1738,8 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
     // The registers of the constants.
     if code.consts.len > 0 {
         cb := us(code.regs_off)
-        fr.store[cb..cb + code.consts.len].copy_from(code.consts)
+        ck := code.consts.len * 8
+        fr.store[cb..cb + ck].copy_from(code.consts.ptr.cast([^]u8)[0..ck])
     }
     while true {
         match ins[pc] {
