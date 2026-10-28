@@ -1,7 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-28) — PRs #1–#103 merged, v0.1.0 + rust-reference-final tagged
-- s52 (branch claude/interp-vm): INTERPRETER PERFORMANCE (decisions/056): bodies lowered to
+## State (2026-10-28) — PRs #1–#104 merged, v0.1.0 + rust-reference-final tagged
+- s53 (branch claude/interp-perf-2): VM round 2 (decisions/056 "Round 2"): CallValue,
+  upvars, Arith64/32, JCmp/JEq, array locals, bit/shift ops, else + slot values; cgen keeps
+  locals of long-but-unoutlined fns in C vars; checker: capturing nested fn self-call via
+  literal rejected. utf8 6.0 → 4.3 s, parse_float 1.9 → 0.73.
+- s52 (#104, branch claude/interp-vm): INTERPRETER PERFORMANCE (decisions/056): bodies lowered to
   Nodes (code.gm) + register machine (vm.gm) with tree fallback (run.gm); cgen: match in
   place, switch on union tags, #inline shared across units. Interp 3–7x faster.
 - s51 (branch claude/zealous-goodall-3g4xqc): PERFORMANCE (decisions/055): long chains

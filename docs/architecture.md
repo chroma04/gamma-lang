@@ -421,13 +421,18 @@ every checked operation checked.
   pointers), which are computed as 64-bit words rather than as bytes.
 - **The register machine** (`vm.gm`) runs the body. Its statement structure (blocks with
   their `defer`s, `if`, loops, `match`, `return`, `break`, `continue`), its arithmetic and
-  comparisons on words, the places it can address (locals and their fields, dereferences,
-  indexing of slices, arrays and pointers) and its calls of named functions are compiled into
-  a flat list of instructions on word registers, which one loop executes. Every other
+  comparisons on words, the places it can address (locals, upvars and their fields,
+  dereferences, indexing of slices, arrays and pointers), its calls of named functions and
+  of function values, and `else` on optionals and results are compiled into a flat list of
+  instructions on word registers, which one loop executes. Common shapes have instructions
+  of their own: a comparison that decides a branch is one compare-and-jump, arithmetic on
+  64- and 32-bit integers skips the general word operation, and an index into an array
+  local scales and bounds-checks in one step. Every other
   construct is handed, as a whole subtree, to the tree evaluator (`run.gm`, `stmt.gm`,
   `calls.gm`), which covers the whole language over the same nodes: the machine only takes
   the common paths. The registers, and slots for values that are not words (`match`
-  scrutinees, arguments and results of calls), live in the frame's storage after its locals.
+  scrutinees, arguments and results of calls, values of `else`), live in the frame's
+  storage after its locals; a call's result is written straight into its slot or local.
   A `break` or `continue` that a subtree raises to a loop of the machine jumps to it; other
   flows leave the body as they would leave the tree's.
 - **Values** are bytes in the target's layout, and the tree evaluates each expression into a
@@ -693,7 +698,10 @@ garbage-collected heap, so a smaller one costs less. Every local stays in the
 frame in a function that contains a `with … on`, whose body is moved into a
 function of its own and reaches the locals through a pointer to the frame, and
 in Debug builds and with `-g`, so that the dead frame filled with `0xDD`
-(§18.3) covers every local and debuggers show them all as its fields.
+(§18.3) covers every local and debuggers show them all as its fields, and in a
+function some of whose statements are moved into helpers (below), which share its frame.
+A long function whose blocks are all short, such as one large `match`, has no such
+helper and keeps its locals in C variables.
 
 **Size of the generated C.** The C compiler's time grows faster than the size of a
 function, so code that every site would repeat is shared. A write to the ambient

@@ -51,9 +51,24 @@ bench/programs + scratch benches 3–7x (call 0.22 → 0.058, sieve 0.70 → 0.1
   web/play/build.sh; node web/check.mjs <wasm> <libs.json> [--one run file.gm].
 - Editing sources while the harness runs breaks selfhost fixed-point/unit tests (transient).
 
+## Round 2 (s53, branch claude/interp-perf-2)
+- cgen func.gm: frame-locals rule is now `debug or debug_info or outlines(def)` (was
+  long_body); outline.gm `runs_of`/`outlines`/`block_outlines` share the run split with
+  stmt_list. The vm loop (long match, short blocks) now keeps locals in C vars.
+- Checker bug found: capturing nested fn calling itself through a literal written in it
+  (fnlit.gm `check_no_self_reference` now scans cx.nested from `nested_start`).
+- VM instrs: CallValue, UpvarAt/SetUpvarAt (`root_levels`), Arith64/Arith32 (wrap/signed
+  flags; `arith_kind`), JCmp/JEq fused branches, LocalAtD/SetLocalAtD + ScaleIdx (array
+  locals indexed), Bit/Shr, AddR, CopySlot/SlotW/WSlot/JSlot, SetLocalSlot.
+- `else`: vc_else_shape (Optional nullable-ptr flag or Result is_err at offs[0], payload
+  offs[1]; only when n.ty is the payload type), vc_else; slot_worthy (Call/CallValue/Else)
+  values go via slots into locals. vc_expr .Reg on a word that is Return/Break/Continue
+  must not call vc_word (infinite recursion).
+- Frame handles are lazy (`frame_handle`); `tmp` chunks size.max(CHUNK)+8.
+- Results: utf8 6.0 → 4.3 s, parse_float_table 1.9 → 0.73, regex 0.75 → 0.64.
+
 ## Not done / next candidates
-- Per-op cost is dominated by Gamma's C (frame struct F in memory: GM_STACK_CHECK(&F)
-  takes its address; slices copied through temps with &t loads). A cgen change keeping
-  locals in C variables would speed everything (big, risky).
-- VM: Perform/CallValue still tree (EvalW); value loops; With; non-word Let via Stmt.
-- Superinstructions (compare-and-branch, ops on locals) not done.
+- Slices copied through temps with &t loads in Gamma's C.
+- VM: Perform still tree (EvalW) — the utf8 hot path is `for r in runes(e)` (perform +
+  With); value loops; With; LetTuple/Assign of non-words via Stmt.
+- Mark/Release per statement; call path (enter/new_frame/end_frame ~575 instrs/call).
