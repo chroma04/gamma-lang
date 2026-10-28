@@ -269,22 +269,22 @@ binop :: fn(m: ^Machine, span: source.Span, op: tir.BinOp, lt, rt, res_ty: Ty, x
 }
 
 /// Evaluates the operands of `l op r` and applies the operator.
-binary :: fn(m: ^Machine, a: Act, op: tir.BinOp, l, r: ^Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
-    ln := us(m.size(l.ty))
-    rn := us(m.size(r.ty))
+binary :: fn(m: ^Machine, a: Act, op: tir.BinOp, l, r: ^Node, e: ^Node, dst: []u8) -> Flow!() needs Run {
+    ln := us(l.size)
+    rn := us(r.size)
     if ln <= 16 and rn <= 16 {
         // Small operands live on the stack.
         xb: [16]u8 = ---
         yb: [16]u8 = ---
-        try m.eval(a, l, xb[0..ln])
-        try m.eval(a, r, yb[0..rn])
+        try m.ev(a, l, xb[0..ln])
+        try m.ev(a, r, yb[0..rn])
         return m.binop(e.span, op, l.ty, r.ty, e.ty, xb[0..ln], yb[0..rn], dst)
     }
     mk := m.mark()
-    x := m.tmp(m.size(l.ty))
-    try m.eval(a, l, x)
-    y := m.tmp(m.size(r.ty))
-    try m.eval(a, r, y)
+    x := m.tmp(l.size)
+    try m.ev(a, l, x)
+    y := m.tmp(r.size)
+    try m.ev(a, r, y)
     try m.binop(e.span, op, l.ty, r.ty, e.ty, x, y, dst)
     m.release(mk)
 }
@@ -343,16 +343,16 @@ unop :: fn(m: ^Machine, span: source.Span, op: tir.UnOp, t: Ty, b: []const u8, d
 }
 
 /// Evaluates the operand of a unary operator and applies it.
-unary :: fn(m: ^Machine, a: Act, op: tir.UnOp, x: ^Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
-    n := us(m.size(x.ty))
+unary :: fn(m: ^Machine, a: Act, op: tir.UnOp, x: ^Node, e: ^Node, dst: []u8) -> Flow!() needs Run {
+    n := us(x.size)
     if n <= 16 {
         xb: [16]u8 = ---
-        try m.eval(a, x, xb[0..n])
+        try m.ev(a, x, xb[0..n])
         return m.unop(e.span, op, x.ty, xb[0..n], dst)
     }
     mk := m.mark()
-    v := m.tmp(m.size(x.ty))
-    try m.eval(a, x, v)
+    v := m.tmp(x.size)
+    try m.ev(a, x, v)
     try m.unop(e.span, op, x.ty, v, dst)
     m.release(mk)
 }

@@ -1,0 +1,1186 @@
+// Evaluating lowered code (`code.gm`): into destinations (`ev`), as words (`ew`), and as
+// places.
+
+/// A location: bytes of a frame's storage or of a temporary, memory, memory that may be
+/// unaligned (a field of a packed struct), or a field of a `#bits` struct, which lives in
+/// one of the first two.
+Place :: union {
+    Host: []u8
+    Mem: u64
+    Packed: u64
+    Bits: (host: []u8, addr: u64, whole: Ty, off: u32, fty: Ty)
+}
+
+/// Evaluates `n` into `dst`, which has its size. The kinds every call and most expressions
+/// go through are dispatched here and the others in `ev_slow`, so that this function's
+/// frame, which each level of nesting of expressions and calls pays for, stays small.
+ev :: fn(m: ^Machine, a: Act, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    match n.op {
+        .Local(l, off) => {
+            fr := a.fr
+            i := us(l)
+            if fr.mem[i] is not 0 { return m.load_at(n.span, fr.mem[i], fr.info.aligns[i], dst) }
+            o := us(off)
+            dst.copy_from(fr.store[o..o + dst.len])
+        }
+        .Call(f, args) => return m.call_node(a, f, args, n, dst)
+        .Block(b) => return m.block(a, b, dst)
+        .If(x) => {
+            if try m.conds(a, x.cond) { return m.ev(a, x.then, dst) }
+            if el := x.else_ { return m.ev(a, el, dst) }
+        }
+        .Return(levels, value) => return m.ev_return(a, levels, value, n)
+        .Word(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .FloatOp(_) => m.wr_word(dst, try m.ew(a, n))
+        .Field(_), .Index(_), .Deref(_) => {
+            if n.place {
+                p := try m.place(a, n, false)
+                return m.read_place(n.span, p, n.ty, dst)
+            }
+            return m.ev_slow(a, n, dst)
+        }
+        _ => return m.ev_slow(a, n, dst)
+    }
+}
+
+/// Evaluates `n`, whose value has at most 8 bytes, to its word: the integer its bytes hold
+/// in the target's byte order.
+ew :: fn(m: ^Machine, a: Act, n: ^Node) -> Flow!u64 needs Run {
+    match n.op {
+        .Word(v) => return v
+        .Local(l, off) => {
+            fr := a.fr
+            i := us(l)
+            if fr.mem[i] is not 0 { return m.load_word(n.span, fr.mem[i], fr.info.aligns[i], n.size) }
+            o := us(off)
+            return m.rd_word(fr.store[o..o + us(n.size)])
+        }
+        .IntOp(x) => return m.int_op(a, x.op, x.t, x.shift, x.l, x.r, n)
+        .Cmp(x) => {
+            p := try m.ew(a, x.l)
+            q := try m.ew(a, x.r)
+            return if word_less(x.op, x.how, p, q) { 1 } else { 0 }
+        }
+        .EqW(x) => {
+            p := try m.ew(a, x.l)
+            q := try m.ew(a, x.r)
+            return if word_eq(x.how, p, q) is not x.negated { 1 } else { 0 }
+        }
+        .Not(x) => return if (try m.ew(a, x)) is 0 { 1 } else { 0 }
+        .Logic(is_and, l, r) => {
+            v := (try m.ew(a, l)) is not 0
+            if v is not is_and { return if v { 1 } else { 0 } }
+            return if (try m.ew(a, r)) is not 0 { 1 } else { 0 }
+        }
+        .IntUn(op, t, x) => {
+            v := try m.ew(a, x)
+            return m.int_un(op, t, v, n)
+        }
+        .IntConv(op, from, to, x) => {
+            v := try m.ew(a, x)
+            return int_conv(op, from, to, v)
+        }
+        .FloatOp(x) => {
+            p := try m.ew(a, x.l)
+            q := try m.ew(a, x.r)
+            return float_op(x.op, x.wide, p, q)
+        }
+        .Call(f, args) => {
+            b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
+            d := b[0..us(n.size)]
+            try m.call_node(a, f, args, n, d)
+            return m.rd_word(d)
+        }
+        .If(x) => {
+            if try m.conds(a, x.cond) { return m.ew(a, x.then) }
+            if el := x.else_ { return m.ew(a, el) }
+            return 0
+        }
+        .Block(b) => {
+            if b.defers { return m.ew_slow(a, n) }
+            for st in b.stmts { try m.exec_stmt(a, st) }
+            if t := b.tail { return m.ew(a, t) }
+            return 0
+        }
+        .Field(_), .Index(_), .Deref(_) => {
+            if not n.place { return m.ew_slow(a, n) }
+            match try m.place(a, n, false) {
+                .Host(h) => return m.rd_word(h[0..us(n.size)])
+                .Mem(addr) => return m.load_word(n.span, addr, m.align(n.ty), n.size)
+                .Packed(addr) => return m.load_word(n.span, addr, 1, n.size)
+                .Bits(_) => return m.ew_slow(a, n)
+            }
+        }
+        _ => return m.ew_slow(a, n)
+    }
+}
+
+/// `ew` of the kinds `ev` evaluates.
+#noinline
+ew_slow :: fn(m: ^Machine, a: Act, n: ^Node) -> Flow!u64 needs Run {
+    b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
+    d := b[0..us(n.size)]
+    try m.ev(a, n, d)
+    return m.rd_word(d)
+}
+
+ev_return :: fn(m: ^Machine, a: Act, levels: u32, value: ^Node, n: ^Node) -> Flow!() needs Run {
+    target := frame_up(a.fr, levels) else return !m.trap(n.span, "internal error: return from a missing frame")
+    try m.ev(a, value, target.ret)
+    is_err := if o := target.info.err_flag { target.ret[us(o)] is not 0 } else { false }
+    return !.Return(target.id, is_err)
+}
+
+/// `ev` of the other kinds of expressions.
+#noinline
+ev_slow :: fn(m: ^Machine, a: Act, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    match n.op {
+        .Word(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .FloatOp(_) => m.wr_word(dst, try m.ew(a, n))
+        .Bytes(b) => dst.copy_from(b)
+        .Str(bytes) => {
+            addr := try m.string_literal(n.span, bytes, false)
+            m.put_slice(dst, addr, u64(bytes.len))
+        }
+        .CStr(bytes) => {
+            addr := try m.string_literal(n.span, bytes, true)
+            m.put_ptr(dst, addr)
+        }
+        .Uninit => dst.fill(if m.mode is .Debug { 0xAA } else { 0 })
+        .Local(l, _) => try m.read_local(n.span, a.fr, l, dst)
+        .Upvar(levels, l) => {
+            fr := frame_up(a.fr, levels) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+            try m.read_local(n.span, fr, l, dst)
+        }
+        .Const(_), .Global(_), .Deref(_) => {
+            p := try m.place(a, n, false)
+            try m.read_place(n.span, p, n.ty, dst)
+        }
+        .Field(x) => {
+            if n.place {
+                p := try m.place(a, n, false)
+                try m.read_place(n.span, p, n.ty, dst)
+                return ()
+            }
+            mk := m.mark()
+            b := m.tmp(x.base.size)
+            try m.ev(a, x.base, b)
+            o := us(x.off)
+            dst.copy_from(b[o..o + dst.len])
+            m.release(mk)
+        }
+        .BitsField(x) => {
+            if n.place {
+                p := try m.place(a, n, false)
+                try m.read_place(n.span, p, n.ty, dst)
+                return ()
+            }
+            mk := m.mark()
+            b := m.tmp(x.base.size)
+            try m.ev(a, x.base, b)
+            m.read_field(x.base.ty, b, x.index, dst)
+            m.release(mk)
+        }
+        .Index(x) => {
+            if x.seq is .Array and not x.base.place {
+                mk := m.mark()
+                b := m.tmp(x.base.size)
+                try m.ev(a, x.base, b)
+                i := try m.ev_index(a, x.index)
+                if i >= x.len { return !m.trap(n.span, str.format("index {} out of bounds for length {}", i, x.len)!) }
+                off := us(i) * dst.len
+                dst.copy_from(b[off..off + dst.len])
+                m.release(mk)
+                return ()
+            }
+            p := try m.place(a, n, false)
+            try m.read_place(n.span, p, n.ty, dst)
+        }
+        .Slice(x) => try m.ev_slice(a, n, x.base, x.lo, x.hi, x.inclusive, x.seq, x.esz, x.len, dst)
+        .SliceLen(x) => {
+            mk := m.mark()
+            b := m.tmp(x.size)
+            try m.ev(a, x, b)
+            m.put_u64(dst, m.slice_parts(b).len)
+            m.release(mk)
+        }
+        .SlicePtr(x) => {
+            mk := m.mark()
+            b := m.tmp(x.size)
+            try m.ev(a, x, b)
+            m.put_ptr(dst, m.slice_parts(b).ptr)
+            m.release(mk)
+        }
+        .AddrOf(x) => {
+            match try m.place(a, x, true) {
+                .Mem(addr), .Packed(addr) => m.put_ptr(dst, addr)
+                .Host(_) => return !m.trap(n.span, "internal error: the address of a value without one")
+                .Bits(_) => return !m.trap(n.span, "cannot take the address of a #bits field")
+            }
+        }
+        .AddrOfTemp(x, align) => {
+            mk := m.mark()
+            b := m.tmp(x.size)
+            try m.ev(a, x, b)
+            addr := try m.alloc_temp(n.span, b, align)
+            m.release(mk)
+            m.put_ptr(dst, addr)
+        }
+        .FnRef(f, second) => {
+            m.put_word(dst, 0, m.fn_addr(f))
+            if second {
+                m.put_word(dst, 1, 0)
+                m.put_word(dst, 2, u64(a.cx))
+            }
+        }
+        .Closure(f) => {
+            m.put_word(dst, 0, m.fn_addr(f))
+            m.put_word(dst, 1, u64(a.fr.handle))
+            m.put_word(dst, 2, u64(a.cx))
+        }
+        .HandlerRef(_) => {
+            m.put_word(dst, 0, u64(a.fr.handle))
+            m.put_word(dst, 1, u64(a.cx))
+        }
+        .Unary(op, x) => try m.unary(a, op, x, n, dst)
+        .Binary(op, l, r) => try m.binary(a, op, l, r, n, dst)
+        .Coerce(kind, x) => try m.coerce(a, kind, x, n, dst)
+        .Builtin(op, args) => try m.ev_builtin(a, op, args, n, dst)
+        .Call(f, args) => try m.call_node(a, f, args, n, dst)
+        .Perform(x) => try m.ev_perform(a, x.effect_, x.op, x.args, n, dst)
+        .CallValue(callee, args) => try m.ev_call_value(a, callee, args, n, dst)
+        .Aggregate(items, offs) => {
+            for i in 0..items.len {
+                o := us(offs[i])
+                try m.ev(a, items[i], dst[o..o + us(items[i].size)])
+            }
+        }
+        .CUnionValue(?x) => if v := x { try m.ev(a, v, dst[0..us(v.size)]) }
+        .BitsValue(items) => {
+            u := m.bits_struct_ty(n.ty) else return !m.trap(n.span, "internal error: a #bits value of a type that is not #bits")
+            mk := m.mark()
+            acc: u128 = 0
+            for i in 0..items.len {
+                b := m.tmp(items[i].size)
+                try m.ev(a, items[i], b)
+                bf := m.bits_field(n.ty, i.trunc(u32))
+                acc |= m.bits_raw(bf.ty, b) << u128(bf.off)
+            }
+            m.put_uint(dst[0..us(m.size(u))], acc)
+            m.release(mk)
+        }
+        .Array(items) => {
+            k := if items.len > 0 { us(items[0].size) } else { 0 }
+            for i in 0..items.len { try m.ev(a, items[i], dst[i * k..(i + 1) * k]) }
+        }
+        .ArrayFill(x) => {
+            k := us(x.size)
+            if k is 0 {
+                try m.ev(a, x, dst)
+                return ()
+            }
+            try m.ev(a, x, dst[0..k])
+            j := k
+            while j < dst.len {
+                dst[j..j + k].copy_from(dst[0..k])
+                j += k
+            }
+        }
+        .Variant(variant, ?payload) => {
+            if p := payload {
+                mk := m.mark()
+                b := m.tmp(p.size)
+                try m.ev(a, p, b)
+                m.make_variant(n.ty, dst, variant, b)
+                m.release(mk)
+            } else {
+                m.make_variant(n.ty, dst, variant, empty_slice(u8))
+            }
+        }
+        .MakeErr(x) => {
+            mk := m.mark()
+            b := m.tmp(x.size)
+            try m.ev(a, x, b)
+            m.make_res(n.ty, dst, true, b)
+            m.release(mk)
+        }
+        .Unwrap(x, is_result) => try m.unwrap(a, x, is_result, n, dst)
+        .Else(x) => try m.else_(a, x.lhs, x.capture, x.rhs, n, dst)
+        .Try(x) => try m.try_(a, x.x, x.lift, x.levels, n, dst)
+        .Eq(l, r, negated) => {
+            mk := m.mark()
+            x := m.tmp(l.size)
+            try m.ev(a, l, x)
+            y := m.tmp(r.size)
+            try m.ev(a, r, y)
+            v := try m.equal(n.span, l.ty, x, y)
+            dst[0] = if v is not negated { 1 } else { 0 }
+            m.release(mk)
+        }
+        .In(elem, container, negated) => {
+            mk := m.mark()
+            x := m.tmp(elem.size)
+            try m.ev(a, elem, x)
+            c := m.tmp(container.size)
+            try m.ev(a, container, c)
+            v := try m.contains(n.span, elem.ty, x, container.ty, c)
+            dst[0] = if v is not negated { 1 } else { 0 }
+            m.release(mk)
+        }
+        .Match(scrutinee, arms) => try m.match_(a, scrutinee, arms, n, dst)
+        .Block(b) => try m.block(a, b, dst)
+        .If(x) => {
+            if try m.conds(a, x.cond) {
+                try m.ev(a, x.then, dst)
+            } else if el := x.else_ {
+                try m.ev(a, el, dst)
+            }
+        }
+        .Loop(x) => try m.loop_(a, x.label, x.cond, x.body, x.step, dst)
+        .Break(target, ?value) => {
+            t := try m.resolve_target(a, target, n.span)
+            if v := value {
+                d := t.frame.label_dst(t.label) else return !m.trap(n.span, "internal error: break to a label that is not running")
+                try m.ev(a, v, d)
+            }
+            return !.Break(t.frame.id, t.label)
+        }
+        .Continue(target) => {
+            if target is .InstallingWith {
+                // A clause's `continue` resumes the code that performed the operation: the
+                // clause returns `()`.
+                return !.Return(a.fr.id, false)
+            }
+            t := try m.resolve_target(a, target, n.span)
+            return !.Continue(t.frame.id, t.label)
+        }
+        .Return(levels, value) => try m.ev_return(a, levels, value, n)
+        .Trap(msg) => {
+            mk := m.mark()
+            b := m.tmp(msg.size)
+            try m.ev(a, msg, b)
+            s := try m.read_string(n.span, b)
+            m.release(mk)
+            return !m.trap(n.span, s)
+        }
+        .Resume(k, v) => try m.resume_(a, k, v, n)
+        .Cancel(k) => try m.cancel_(a, k, n)
+        .Write(x) => try m.write_(a, x.sink, x.pieces, x.specs, x.args, n)
+        .With(w) => try m.with_(a, w, n, dst)
+        .Leftover => return !m.trap(n.span, "internal error: an expression left over from generic checking")
+    }
+}
+
+/// Evaluates the condition `n`.
+cond :: fn(m: ^Machine, a: Act, n: ^Node) -> Flow!bool needs Run => (try m.ew(a, n)) is not 0
+
+/// Evaluates the index `n` (an unsigned integer).
+ev_index :: fn(m: ^Machine, a: Act, n: ^Node) -> Flow!u64 needs Run {
+    if n.size <= 8 { return m.ew(a, n) }
+    b: [16]u8 = ---
+    k := us(n.size)
+    b[0..k].fill(0)
+    try m.ev(a, n, b[0..k])
+    v := m.get_uint(b[0..k])
+    return if v > u128(~u64(0)) { ~u64(0) } else { v.trunc(u64) }
+}
+
+/// Evaluates `n` for its effects, discarding its value.
+ev_discard :: fn(m: ^Machine, a: Act, n: ^Node) -> Flow!() needs Run {
+    if n.size <= 8 {
+        _ = try m.ew(a, n)
+        return ()
+    }
+    mk := m.mark()
+    b := m.tmp(n.size)
+    try m.ev(a, n, b)
+    m.release(mk)
+}
+
+/// Whether `e` denotes a place that reading needs no copy of.
+is_place_expr :: fn(m: ^const Machine, e: ^const Expr) -> bool => match e.kind {
+    .Local(_), .Upvar(_), .Global(_), .Deref(_), .Const(_) => true
+    .Field(base, _) => is_place_expr(m, base)
+    .Index(base, _, _) => if m.kind(base.ty) is .Array(_, _, _) { is_place_expr(m, base) } else { true }
+    _ => false
+}
+
+// ---------------------------------------------------------------------------------
+// Words
+// ---------------------------------------------------------------------------------
+
+/// The word of the bytes `b` (at most 8): the integer they hold in the target's byte order.
+#inline
+rd_word :: fn(m: ^const Machine, b: []const u8) -> u64 {
+    if m.little {
+        if b.len is 8 { return u64(b[0]) | (u64(b[1]) << 8) | (u64(b[2]) << 16) | (u64(b[3]) << 24) | (u64(b[4]) << 32) | (u64(b[5]) << 40) | (u64(b[6]) << 48) | (u64(b[7]) << 56) }
+        if b.len is 4 { return u64(b[0]) | (u64(b[1]) << 8) | (u64(b[2]) << 16) | (u64(b[3]) << 24) }
+        if b.len is 1 { return u64(b[0]) }
+        if b.len is 2 { return u64(b[0]) | (u64(b[1]) << 8) }
+    }
+    return m.get_uint(b).trunc(u64)
+}
+
+/// Writes the word `v` to `b` (at most 8 bytes).
+#inline
+wr_word :: fn(m: ^const Machine, b: []u8, v: u64) {
+    if m.little {
+        if b.len is 8 {
+            b[0] = v.trunc(u8)
+            b[1] = (v >> 8).trunc(u8)
+            b[2] = (v >> 16).trunc(u8)
+            b[3] = (v >> 24).trunc(u8)
+            b[4] = (v >> 32).trunc(u8)
+            b[5] = (v >> 40).trunc(u8)
+            b[6] = (v >> 48).trunc(u8)
+            b[7] = (v >> 56).trunc(u8)
+            return ()
+        }
+        if b.len is 1 {
+            b[0] = v.trunc(u8)
+            return ()
+        }
+        if b.len is 4 {
+            b[0] = v.trunc(u8)
+            b[1] = (v >> 8).trunc(u8)
+            b[2] = (v >> 16).trunc(u8)
+            b[3] = (v >> 24).trunc(u8)
+            return ()
+        }
+    }
+    m.put_uint(b, u128(v))
+}
+
+/// The word of the `size` bytes at `addr`, aligned to `align`.
+load_word :: fn(m: ^Machine, span: source.Span, addr: u64, align: u64, size: u64) -> Flow!u64 needs Alloc {
+    if size is 0 { return 0 }
+    b := m.mem.read(addr, size, align) else e => return !m.mem_trap(span, e)
+    return m.rd_word(b)
+}
+
+/// The low `bits` bits set.
+#inline
+mask64 :: fn(bits: u32) -> u64 => if bits >= 64 { ~u64(0) } else { (u64(1) << u64(bits)) - 1 }
+
+/// The value of the word `v` of a signed integer of `bits` bits.
+#inline
+sext :: fn(v: u64, bits: u32) -> i64 => match bits {
+    8 => i64(v.trunc(u8).bits(i8))
+    16 => i64(v.trunc(u16).bits(i16))
+    32 => i64(v.trunc(u32).bits(i32))
+    _ => v.bits(i64)
+}
+
+/// The smallest and largest values of a signed integer of `bits` bits.
+#inline
+lo64 :: fn(bits: u32) -> i64 => if bits >= 64 { @min_value(i64) } else { -(i64(1) << (bits - 1)) }
+
+#inline
+hi64 :: fn(bits: u32) -> i64 => if bits >= 64 { @max_value(i64) } else { (i64(1) << (bits - 1)) - 1 }
+
+/// `p < q` and the other comparisons of words.
+#inline
+word_less :: fn(op: tir.BinOp, how: WordCmp, p, q: u64) -> bool {
+    match how {
+        .Signed(bits) => {
+            x := sext(p, bits)
+            y := sext(q, bits)
+            return match op {
+                .Lt => x < y
+                .Le => x <= y
+                .Gt => x > y
+                _ => x >= y
+            }
+        }
+        .F64 => {
+            x := p.bits(f64)
+            y := q.bits(f64)
+            return match op {
+                .Lt => x < y
+                .Le => x <= y
+                .Gt => x > y
+                _ => x >= y
+            }
+        }
+        .F32 => {
+            x := p.trunc(u32).bits(f32)
+            y := q.trunc(u32).bits(f32)
+            return match op {
+                .Lt => x < y
+                .Le => x <= y
+                .Gt => x > y
+                _ => x >= y
+            }
+        }
+        _ => return match op {
+            .Lt => p < q
+            .Le => p <= q
+            .Gt => p > q
+            _ => p >= q
+        }
+    }
+}
+
+/// `p is q` for words.
+#inline
+word_eq :: fn(how: WordCmp, p, q: u64) -> bool => match how {
+    .F64 => p.bits(f64) is q.bits(f64)
+    .F32 => p.trunc(u32).bits(f32) is q.trunc(u32).bits(f32)
+    .Bool => (p is not 0) is (q is not 0)
+    _ => p is q
+}
+
+/// `+ - * /` on the words of two `f64`s or (not `wide`) `f32`s, computed in `f64` and rounded.
+float_op :: fn(op: tir.BinOp, wide: bool, p, q: u64) -> u64 {
+    x := if wide { p.bits(f64) } else { f64(p.trunc(u32).bits(f32)) }
+    y := if wide { q.bits(f64) } else { f64(q.trunc(u32).bits(f32)) }
+    r := match op {
+        .Add(_) => x + y
+        .Sub(_) => x - y
+        .Mul(_) => x * y
+        _ => x / y
+    }
+    return if wide { r.bits(u64) } else { u64(r.to(f32).bits(u32)) }
+}
+
+/// An integer word converted to another integer type.
+int_conv :: fn(op: tir.Builtin, from: IntW, to: IntW, v: u64) -> u64 {
+    if op is .Sat {
+        x := if from.signed { i128(sext(v, from.bits)).bits(u128) } else { u128(v) }
+        return num_ext(to.signed, to.bits, num_bits(num_sat(num_val(from.signed, x), to.signed, to.bits))).trunc(u64) & mask64(to.bits)
+    }
+    x := if from.signed { sext(v, from.bits).bits(u64) } else { v }
+    return x & mask64(to.bits)
+}
+
+/// `-` and `~` of the word `v` of an integer of type `t`.
+int_un :: fn(m: ^Machine, op: tir.UnOp, t: IntW, v: u64, n: ^Node) -> Flow!u64 needs Alloc {
+    mask := mask64(t.bits)
+    if op is .BitNot { return ~v & mask }
+    if t.signed {
+        x := sext(v, t.bits)
+        if x is lo64(t.bits) {
+            if not m.fast() { return !m.trap(n.span, "integer overflow in `-`") }
+            return v
+        }
+        return (0 -% x).bits(u64) & mask
+    }
+    if v is 0 { return 0 }
+    if not m.fast() { return !m.trap(n.span, "integer overflow in `-`") }
+    return (0 -% v) & mask
+}
+
+/// A binary operator on word integers of type `t`, the right operand of a shift having type
+/// `shift`.
+int_op :: fn(m: ^Machine, a: Act, op: tir.BinOp, t: IntW, shift: IntW, l, r: ^Node, n: ^Node) -> Flow!u64 needs Run {
+    p := try m.ew(a, l)
+    q := try m.ew(a, r)
+    return m.int_word(op, t, shift, p, q, n)
+}
+
+/// A binary operator on the words `p` and `q` of integers of type `t` (`q` of type `shift`
+/// for a shift), for the `IntOp` node `n`.
+int_word :: fn(m: ^Machine, op: tir.BinOp, t: IntW, shift: IntW, p, q: u64, n: ^Node) -> Flow!u64 needs Alloc {
+    mask := mask64(t.bits)
+    bits := t.bits
+    match op {
+        .Add(fl) => {
+            if t.signed {
+                x := sext(p, bits)
+                y := sext(q, bits)
+                s := x +% y
+                over := if bits >= 64 { ((x ~ s) & (y ~ s)) < 0 } else { s < lo64(bits) or s > hi64(bits) }
+                return m.int_done(n, fl, t, s.bits(u64), over, y < 0, "+")
+            }
+            s := p +% q
+            over := if bits >= 64 { s < p } else { s > mask }
+            return m.int_done(n, fl, t, s, over, false, "+")
+        }
+        .Sub(fl) => {
+            if t.signed {
+                x := sext(p, bits)
+                y := sext(q, bits)
+                s := x -% y
+                over := if bits >= 64 { ((x ~ y) & (x ~ s)) < 0 } else { s < lo64(bits) or s > hi64(bits) }
+                return m.int_done(n, fl, t, s.bits(u64), over, y > 0, "-")
+            }
+            return m.int_done(n, fl, t, p -% q, p < q, true, "-")
+        }
+        .Mul(fl) => {
+            if t.signed {
+                x := sext(p, bits)
+                y := sext(q, bits)
+                if bits <= 32 {
+                    s := x * y
+                    return m.int_done(n, fl, t, s.bits(u64), s < lo64(bits) or s > hi64(bits), s < 0, "*")
+                }
+                s := i128(x) * i128(y)
+                return m.int_done(n, fl, t, s.trunc(i64).bits(u64), s < i128(lo64(bits)) or s > i128(hi64(bits)), s < 0, "*")
+            }
+            if bits <= 32 {
+                s := p * q
+                return m.int_done(n, fl, t, s, s > mask, false, "*")
+            }
+            s := u128(p) * u128(q)
+            return m.int_done(n, fl, t, s.trunc(u64), s > u128(mask), false, "*")
+        }
+        .Shl(fl) => {
+            k := try m.shift_word(n, shift, q, bits)
+            if not t.signed {
+                low := (p <<% u64(k)) & mask
+                return m.int_done(n, fl, t, low, (low >> u64(k)) is not p, false, "<<")
+            }
+            v := sext(p, bits)
+            w := sext((v.bits(u64) <<% u64(k)) & mask, bits)
+            return m.int_done(n, fl, t, w.bits(u64), (w >> k) is not v, v < 0, "<<")
+        }
+        .Shr => {
+            k := try m.shift_word(n, shift, q, bits)
+            if t.signed { return (sext(p, bits) >> k).bits(u64) & mask }
+            return p >> u64(k)
+        }
+        .Div, .Rem => {
+            if q is 0 { return !m.trap(n.span, "division by zero") }
+            is_div := op is .Div
+            if not t.signed { return if is_div { p / q } else { p % q } }
+            x := sext(p, bits)
+            y := sext(q, bits)
+            if y is -1 {
+                if x is lo64(bits) { return !m.trap(n.span, str.format("integer overflow in `{}`", op_sym(op))!) }
+                return if is_div { (0 -% x).bits(u64) & mask } else { 0 }
+            }
+            return (if is_div { x / y } else { x % y }).bits(u64) & mask
+        }
+        .BitAnd => return p & q
+        .BitOr => return p | q
+        .BitXor => return p ~ q
+        _ => return !m.trap(n.span, "internal error: a comparison reached the integer operators")
+    }
+}
+
+/// The result of `+ - * <<` whose wrapped bits are `low`, as the flavor `fl` says.
+int_done :: fn(m: ^Machine, n: ^Node, fl: ast.Flavor, t: IntW, low: u64, over: bool, below: bool, sym: string) -> Flow!u64 needs Alloc {
+    mask := mask64(t.bits)
+    if not over { return low & mask }
+    match fl {
+        .Sat => return sat_bits(t.signed, t.bits, below).trunc(u64) & mask
+        .Checked => if not m.fast() { return !m.trap(n.span, str.format("integer overflow in `{}`", sym)!) }
+        _ => {}
+    }
+    return low & mask
+}
+
+/// The shift amount `q` (a word of type `rt`) for an integer of `bits` bits: it traps if it is
+/// not below `bits`, and in Fast mode reduces it.
+shift_word :: fn(m: ^Machine, n: ^Node, rw: IntW, q: u64, bits: u32) -> Flow!u32 needs Alloc {
+    neg := rw.signed and sext(q, rw.bits) < 0
+    if not neg and q < u64(bits) { return q.trunc(u32) }
+    if m.fast() {
+        if neg { return 0 }
+        return (q % u64(bits)).trunc(u32)
+    }
+    text := if neg { str.format("-{}", 0 -% sext(q, rw.bits))! } else { str.format("{}", q)! }
+    lt := n.ty
+    if .IntOp(x) := n.op { lt = x.l.ty }
+    return !m.trap(n.span, str.format("shift amount {} too large for {}", text, m.s.show(lt))!)
+}
+
+// ---------------------------------------------------------------------------------
+// Locals and places
+// ---------------------------------------------------------------------------------
+
+read_local :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32, dst: []u8) -> Flow!() needs Alloc {
+    i := us(l)
+    if fr.mem[i] is not 0 { return m.load_at(span, fr.mem[i], fr.info.aligns[i], dst) }
+    off := us(fr.info.offsets[i])
+    dst.copy_from(fr.store[off..off + dst.len])
+}
+
+set_local :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32, data: []const u8) -> Flow!() needs Alloc {
+    i := us(l)
+    if fr.mem[i] is 0 and fr.info.addressed[i] { _ = try m.local_addr(span, fr, l) }
+    if fr.mem[i] is not 0 { return m.store_at(span, fr.mem[i], fr.info.aligns[i], data) }
+    off := us(fr.info.offsets[i])
+    fr.store[off..off + data.len].copy_from(data)
+}
+
+/// The place of local `l` of `fr`; in memory if `need_addr` or its address is taken.
+local_place :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32, need_addr: bool) -> Flow!Place needs Alloc {
+    i := us(l)
+    if fr.mem[i] is not 0 { return .Mem(fr.mem[i]) }
+    if need_addr or fr.info.addressed[i] { return .Mem(try m.local_addr(span, fr, l)) }
+    off := us(fr.info.offsets[i])
+    return .Host(fr.store[off..off + us(fr.info.sizes[i])])
+}
+
+/// Evaluates a place expression to its location; anything else is evaluated into a
+/// temporary (in memory if `need_addr`).
+place :: fn(m: ^Machine, a: Act, n: ^Node, need_addr: bool) -> Flow!Place needs Run {
+    match n.op {
+        .Local(l, _) => return m.local_place(n.span, a.fr, l, need_addr)
+        .Upvar(levels, l) => {
+            fr := frame_up(a.fr, levels) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+            return m.local_place(n.span, fr, l, need_addr)
+        }
+        .Global(decl) => return .Mem(try m.global_addr(n.span, decl))
+        .Const(span) => return .Mem(try m.const_addr(span, n.ty, n.span))
+        .Deref(x, _) => return .Mem(try m.ew(a, x))
+        .BitsField(x) => {
+            match try m.place(a, x.base, false) {
+                .Host(h) => return .Bits(h, 0, x.base.ty, x.bit_off, x.fty)
+                .Mem(addr), .Packed(addr) => return .Bits(empty_slice(u8), addr, x.base.ty, x.bit_off, x.fty)
+                .Bits(y) => return .Bits(y.host, y.addr, y.whole, y.off + x.bit_off, x.fty)
+            }
+        }
+        .Field(x) => {
+            match try m.place(a, x.base, need_addr) {
+                .Host(h) => {
+                    off := us(x.off)
+                    return .Host(h[off..off + us(n.size)])
+                }
+                .Mem(addr) => return if x.packed { .Packed(addr + x.off) } else { .Mem(addr + x.off) }
+                .Packed(addr) => return .Packed(addr + x.off)
+                .Bits(_) => return !m.trap(n.span, "internal error: a field of a #bits field")
+            }
+        }
+        .Index(x) => {
+            esz := x.esz
+            match x.seq {
+                .Array => {
+                    p := try m.place(a, x.base, need_addr)
+                    i := try m.ev_index(a, x.index)
+                    if i >= x.len { return !m.trap(n.span, str.format("index {} out of bounds for length {}", i, x.len)!) }
+                    match p {
+                        .Host(h) => {
+                            off := us(i * esz)
+                            return .Host(h[off..off + us(esz)])
+                        }
+                        .Mem(addr) => return .Mem(addr + i * esz)
+                        .Packed(addr) => return .Packed(addr + i * esz)
+                        .Bits(_) => return !m.trap(n.span, "internal error: an index of a #bits field")
+                    }
+                }
+                .Slice => {
+                    b: [16]u8 = ---
+                    sb := b[0..us(2 * m.ptr_bytes)]
+                    try m.ev(a, x.base, sb)
+                    sp := m.slice_parts(sb)
+                    i := try m.ev_index(a, x.index)
+                    if i >= sp.len { return !m.trap(n.span, str.format("index {} out of bounds for length {}", i, sp.len)!) }
+                    return .Mem(sp.ptr +% i * esz)
+                }
+                .ManyPtr => {
+                    p := try m.ew(a, x.base)
+                    i := try m.ev_index(a, x.index)
+                    return .Mem(p +% i *% esz)
+                }
+                .PtrArray => {
+                    p := try m.ew(a, x.base)
+                    i := try m.ev_index(a, x.index)
+                    if i >= x.len { return !m.trap(n.span, str.format("index {} out of bounds for length {}", i, x.len)!) }
+                    return .Mem(p +% i * esz)
+                }
+            }
+        }
+        _ => {
+            b := m.tmp(n.size)
+            try m.ev(a, n, b)
+            if not need_addr { return .Host(b) }
+            return .Mem(try m.alloc_temp(n.span, b, m.align(n.ty)))
+        }
+    }
+}
+
+read_place :: fn(m: ^Machine, span: source.Span, p: Place, t: Ty, dst: []u8) -> Flow!() needs Alloc {
+    match p {
+        .Host(h) => dst.copy_from(h[0..dst.len])
+        .Mem(addr) => try m.load_at(span, addr, m.align(t), dst)
+        .Packed(addr) => try m.load_at(span, addr, 1, dst)
+        .Bits(x) => {
+            whole := try m.bits_whole(span, x.host, x.addr, x.whole)
+            raw := whole >> u128(x.off)
+            w := m.bit_width(x.fty)
+            if w < 128 { raw &= (u128(1) << u128(w)) - 1 }
+            m.bits_from_raw(x.fty, raw, dst)
+        }
+    }
+}
+
+write_place :: fn(m: ^Machine, span: source.Span, p: Place, t: Ty, data: []const u8) -> Flow!() needs Alloc {
+    match p {
+        .Host(h) => h[0..data.len].copy_from(data)
+        .Mem(addr) => try m.store_at(span, addr, m.align(t), data)
+        .Packed(addr) => try m.store_at(span, addr, 1, data)
+        .Bits(x) => {
+            whole := try m.bits_whole(span, x.host, x.addr, x.whole)
+            w := m.bit_width(x.fty)
+            mask := (if w >= 128 { ~u128(0) } else { (u128(1) << u128(w)) - 1 }) << u128(x.off)
+            raw := m.bits_raw(x.fty, data)
+            v := (whole & ~mask) | ((raw << u128(x.off)) & mask)
+            u := m.bits_struct_ty(x.whole) else x.whole
+            n := us(m.size(u))
+            if x.host.len > 0 {
+                m.put_uint(x.host[0..n], v)
+            } else {
+                b: [16]u8 = ---
+                m.put_uint(b[0..n], v)
+                try m.store_at(span, x.addr, m.align(u), b[0..n])
+            }
+        }
+    }
+}
+
+/// The bits of the `#bits` struct of type `whole` at `host` or `addr`.
+bits_whole :: fn(m: ^Machine, span: source.Span, host: []u8, addr: u64, whole: Ty) -> Flow!u128 needs Alloc {
+    u := m.bits_struct_ty(whole) else whole
+    n := us(m.size(u))
+    if host.len > 0 { return m.get_uint(host[0..n]) }
+    b: [16]u8 = ---
+    try m.load_at(span, addr, m.align(u), b[0..n])
+    return m.get_uint(b[0..n])
+}
+
+label_dst :: fn(fr: ^Frame, label: u32) -> ?[]u8 {
+    i := fr.labels.items.len
+    while i > 0 {
+        i -= 1
+        if fr.labels.items[i].label is label { return fr.labels.items[i].dst }
+    }
+    return null
+}
+
+/// The frame and label a `break` or `continue` to `t` goes to.
+resolve_target :: fn(m: ^Machine, a: Act, t: tir.Target, span: source.Span) -> Flow!(frame: ^Frame, label: u32) needs Alloc {
+    match t {
+        .Label(levels, label) => {
+            fr := frame_up(a.fr, levels) else return !m.trap(span, "internal error: a jump target in a missing frame")
+            return (frame: fr, label: label)
+        }
+        .InstallingWith => {
+            x := a.fr.installing else return !m.trap(span, "internal error: no installing `with` for this break")
+            return (frame: x.frame, label: x.label)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Slices
+// ---------------------------------------------------------------------------------
+
+ev_slice :: fn(m: ^Machine, a: Act, n: ^Node, base: ^Node, lo_n: ?^Node, hi_n: ?^Node, inclusive: bool, seq: SeqKind, esz: u64, n_len: u64, dst: []u8) -> Flow!() needs Run {
+    ptr: u64 = 0
+    len: ?u64 = null
+    mk := m.mark()
+    match seq {
+        .Array => {
+            match try m.place(a, base, true) {
+                .Mem(addr), .Packed(addr) => { ptr = addr }
+                _ => return !m.trap(n.span, "internal error: a slice of a #bits field")
+            }
+            len = n_len
+        }
+        .Slice => {
+            b := m.tmp(base.size)
+            try m.ev(a, base, b)
+            sp := m.slice_parts(b)
+            ptr = sp.ptr
+            len = sp.len
+        }
+        .ManyPtr => { ptr = try m.ew(a, base) }
+        .PtrArray => {
+            ptr = try m.ew(a, base)
+            len = n_len
+        }
+    }
+    lo: u64 = 0
+    if x := lo_n { lo = try m.ev_index(a, x) }
+    hi := len else 0
+    if x := hi_n { hi = try m.ev_index(a, x) }
+    if inclusive { hi = hi +| 1 }
+    m.release(mk)
+    if lo > hi or (len is not null and hi > (len else 0)) {
+        text := if l := len { str.format("{}", l)! } else { "?" }
+        return !m.trap(n.span, str.format("slice bounds {}..{} invalid for length {}", lo, hi, text)!)
+    }
+    m.put_slice(dst, ptr +% lo * esz, hi - lo)
+}
+
+// ---------------------------------------------------------------------------------
+// Optionals and results
+// ---------------------------------------------------------------------------------
+
+unwrap :: fn(m: ^Machine, a: Act, x: ^Node, is_result: bool, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    mk := m.mark()
+    b := m.tmp(x.size)
+    try m.ev(a, x, b)
+    if is_result {
+        if m.res_is_err(x.ty, b) {
+            if m.fast() {
+                dst.fill(0)
+                return ()
+            }
+            out := list(u8)
+            m.format_value(&out, m.res_types(x.ty).err, m.res_payload(x.ty, b), false) else {}
+            return !m.trap(n.span, str.format("unwrap of error value {}", out.items)!)
+        }
+        dst.copy_from(m.res_payload(x.ty, b))
+    } else {
+        if not m.opt_present(x.ty, b) {
+            if m.fast() {
+                dst.fill(0)
+                return ()
+            }
+            return !m.trap(n.span, "unwrap of null")
+        }
+        dst.copy_from(m.opt_payload(x.ty, b))
+    }
+    m.release(mk)
+}
+
+else_ :: fn(m: ^Machine, a: Act, lhs: ^Node, capture: ?u32, rhs: ^Node, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    mk := m.mark()
+    b := m.tmp(lhs.size)
+    try m.ev(a, lhs, b)
+    present := false
+    payload_ty := lhs.ty
+    payload := empty_slice(u8)
+    match m.kind(lhs.ty) {
+        .Optional(inner) => {
+            present = m.opt_present(lhs.ty, b)
+            payload_ty = inner
+            if present { payload = m.opt_payload(lhs.ty, b) }
+        }
+        .Result(_, ok) => {
+            is_err := m.res_is_err(lhs.ty, b)
+            payload = m.res_payload(lhs.ty, b)
+            if is_err and capture is not null { try m.set_local(n.span, a.fr, capture else 0, payload) }
+            present = not is_err
+            payload_ty = ok
+        }
+        _ => return !m.trap(n.span, "internal error: `else` on a value that is neither an optional nor a result")
+    }
+    if not present {
+        m.release(mk)
+        return m.ev(a, rhs, dst)
+    }
+    if n.ty is payload_ty {
+        dst.copy_from(payload)
+    } else if n.ty is lhs.ty {
+        dst.copy_from(b)
+    } else if m.kind(n.ty) is .Optional(_) {
+        // A success value as a present optional: `r else null`.
+        m.make_some(n.ty, dst, payload)
+    } else {
+        // A success value lifted into a result with another error type.
+        m.make_res(n.ty, dst, false, payload)
+    }
+    m.release(mk)
+}
+
+try_ :: fn(m: ^Machine, a: Act, inner: ^Node, lift: ?u32, levels: u32, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    mk := m.mark()
+    b := m.tmp(inner.size)
+    try m.ev(a, inner, b)
+    target := frame_up(a.fr, levels) else return !m.trap(n.span, "internal error: `try` without an enclosing function")
+    match m.kind(inner.ty) {
+        .Optional(_) => {
+            if m.opt_present(inner.ty, b) {
+                dst.copy_from(m.opt_payload(inner.ty, b))
+                m.release(mk)
+                return ()
+            }
+            target.ret.fill(0)
+            return !.Return(target.id, false)
+        }
+        .Result(_, _) => {
+            if not m.res_is_err(inner.ty, b) {
+                dst.copy_from(m.res_payload(inner.ty, b))
+                m.release(mk)
+                return ()
+            }
+            ev := m.res_payload(inner.ty, b)
+            ret_ty := m.func(target.fn_id).ret
+            rerr := m.res_types(ret_ty).err
+            if v := lift {
+                lifted := m.tmp(m.size(rerr))
+                m.make_variant(rerr, lifted, v, ev)
+                m.make_res(ret_ty, target.ret, true, lifted)
+            } else {
+                m.make_res(ret_ty, target.ret, true, ev)
+            }
+            return !.Return(target.id, true)
+        }
+        _ => return !m.trap(n.span, "internal error: `try` on a value that is neither an optional nor a result")
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Coercions
+// ---------------------------------------------------------------------------------
+
+coerce :: fn(m: ^Machine, a: Act, kind: tir.Coercion, x: ^Node, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    match kind {
+        .FromNever => {
+            try m.ev_discard(a, x)
+            return !m.trap(n.span, "internal error: a `never` expression produced a value")
+        }
+        .FnToPtr => {
+            mk := m.mark()
+            b := m.tmp(x.size)
+            try m.ev(a, x, b)
+            to_fn := m.kind(n.ty) is .Fn(_)
+            from_fn := m.kind(x.ty) is .Fn(_)
+            if to_fn and not from_fn {
+                addr := m.ptr_of(b)
+                if m.fn_from_addr(addr) is null { return !m.trap(n.span, "call through an invalid function pointer") }
+                m.put_word(dst, 0, addr)
+                m.put_word(dst, 1, 0)
+                m.put_word(dst, 2, u64(a.cx))
+            } else if not to_fn and from_fn {
+                m.put_ptr(dst, m.word(b, 0))
+            } else {
+                dst.copy_from(b)
+            }
+            m.release(mk)
+        }
+        .PtrToPtr, .TupleRename, .FnPtrWiden => try m.ev(a, x, dst)
+        _ => {
+            mk := m.mark()
+            b := m.tmp(x.size)
+            try m.ev(a, x, b)
+            try m.coerce_bytes(n.span, kind, x.ty, n.ty, b, dst)
+            m.release(mk)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Builtins
+// ---------------------------------------------------------------------------------
+
+/// Evaluates the arguments `args` into scratch memory (released by the caller).
+ev_args :: fn(m: ^Machine, a: Act, args: []^Node, vals: ^List([]u8)) -> Flow!() needs Run {
+    for x in args {
+        b := m.tmp(x.size)
+        try m.ev(a, x, b)
+        vals.push(b)!
+    }
+}
+
+ev_builtin :: fn(m: ^Machine, a: Act, op: tir.Builtin, args: []^Node, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    match op {
+        .Assert => {
+            if m.fast() { return () }
+            if try m.cond(a, args[0]) { return () }
+            msg := "assertion failed"
+            if args.len > 1 {
+                mk := m.mark()
+                b := m.tmp(args[1].size)
+                try m.ev(a, args[1], b)
+                msg = try m.read_string(n.span, b)
+                m.release(mk)
+            }
+            if msg is not "assertion failed" { msg = str.format("assertion failed: {}", msg)! }
+            return !m.trap(n.span, msg)
+        }
+        .Cover(_) => return ()
+        .Unreachable => return !m.trap(n.span, "reached `@unreachable()`")
+        .Fiber => return m.fiber_builtin(a, args, n, dst)
+        .Sys(sop) => return m.sys_call(a, sop, args, n, dst)
+        .Get, .GetPtr, .First, .Last => return m.get_builtin(a, op, args, n, dst)
+        .Asm(_) => return !m.unsupported(n.span, "`@asm`")
+        .StaticAssert(_) => return ()
+        _ => {}
+    }
+    mk := m.mark()
+    vals := list([]u8)
+    defer vals.deinit()
+    try m.ev_args(a, args, &vals)
+    match op {
+        .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .CopyElems, .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore, .Fence, .CstrLen, .VecLoad, .VecStore => try m.memory_builtin(n.span, op, args, vals.items, n.ty, dst)
+        _ => {
+            t0 := if args.len > 0 { args[0].ty } else { n.ty }
+            t1 := if args.len > 1 { args[1].ty } else { t0 }
+            try m.apply_builtin(n.span, op, n.ty, t0, t1, vals.items, dst)
+        }
+    }
+    m.release(mk)
+}
+
+/// `get`, `get_ptr`, `first` and `last` of arrays and slices.
+get_builtin :: fn(m: ^Machine, a: Act, op: tir.Builtin, args: []^Node, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    .Optional(inner) := m.kind(n.ty) else return !m.trap(n.span, "internal error: get with a result that is not optional")
+    elem := inner
+    if op is .GetPtr and .Ptr(_, pointee) := m.kind(inner) { elem = pointee }
+    esz := m.size(elem)
+    base := args[0]
+    mk := m.mark()
+    ptr: u64 = 0
+    len: u64 = 0
+    owned := empty_slice(u8)
+    host := false
+    match m.kind(base.ty) {
+        .Slice(_) => {
+            b := m.tmp(base.size)
+            try m.ev(a, base, b)
+            sp := m.slice_parts(b)
+            ptr = sp.ptr
+            len = sp.len
+        }
+        .Array(k, _, _) => {
+            len = k
+            if op is .GetPtr or base.place {
+                match try m.place(a, base, op is .GetPtr) {
+                    .Mem(addr), .Packed(addr) => { ptr = addr }
+                    .Host(h) => {
+                        owned = h
+                        host = true
+                    }
+                    .Bits(_) => return !m.trap(n.span, "internal error: get on a #bits field")
+                }
+            } else {
+                owned = m.tmp(base.size)
+                try m.ev(a, base, owned)
+                host = true
+            }
+        }
+        .Ptr(_, pointee) => {
+            .Array(k, _, _) := m.kind(pointee) else return !m.trap(n.span, "internal error: get on a pointer")
+            ptr = try m.ew(a, base)
+            len = k
+        }
+        _ => return !m.trap(n.span, "internal error: get on a value without elements")
+    }
+    i: u64 = 0
+    match op {
+        .First => {}
+        .Last => { i = len -% 1 }
+        _ => { i = try m.ev_index(a, args[1]) }
+    }
+    if i >= len {
+        dst.fill(0)
+        m.release(mk)
+        return ()
+    }
+    if op is .GetPtr {
+        pb: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
+        m.put_ptr(pb[..], ptr +% i * esz)
+        m.make_some(n.ty, dst, pb[0..us(m.ptr_bytes)])
+    } else if host {
+        off := us(i * esz)
+        m.make_some(n.ty, dst, owned[off..off + us(esz)])
+    } else {
+        v := m.tmp(esz)
+        try m.load_at(n.span, ptr +% i * esz, m.align(elem), v)
+        m.make_some(n.ty, dst, v)
+    }
+    m.release(mk)
+}
+
+/// The bytes of the string (a `[]const u8` slice) `b`.
+read_string :: fn(m: ^Machine, span: source.Span, b: []const u8) -> Flow!string needs Alloc {
+    sp := m.slice_parts(b)
+    if sp.len is 0 { return "" }
+    data := m.mem.read(sp.ptr, sp.len, 1) else e => return !m.mem_trap(span, e)
+    out := make(u8, data.len)!
+    out.copy_from(data)
+    return out
+}

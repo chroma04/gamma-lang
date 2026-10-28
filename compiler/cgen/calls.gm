@@ -666,8 +666,7 @@ pub conds :: fn(fg: ^FnGen, cond: []tir.CondPart, fail: string) -> Unsup!() need
                 fg.line(str.format("if (!{}) goto {};", v, fail)!)
             }
             .Match(p, value) => {
-                v := try fg.expr(value)
-                a := fg.addr_of(value.ty, v)
+                a := try fg.scrutinee_addr(value, true)
                 try fg.pat(p, a, fail)
             }
         }
@@ -675,8 +674,11 @@ pub conds :: fn(fg: ^FnGen, cond: []tir.CondPart, fail: string) -> Unsup!() need
 }
 
 pub match_expr :: fn(fg: ^FnGen, e: ^Expr, scrutinee: ^Expr, arms: []tir.Arm) -> Unsup!string needs sema.Load {
-    v := try fg.expr(scrutinee)
-    a := fg.addr_of(scrutinee.ty, v)
+    guarded := false
+    for arm in arms {
+        if arm.guard is not null { guarded = true }
+    }
+    a := try fg.scrutinee_addr(scrutinee, not guarded)
     res: ?string = null
     if not fg.g.ty.is_never(e.ty) and not fg.g.ty.is_unit(e.ty) { res = fg.tmp_uninit(e.ty) }
     end := str.format("me{}", fg.fresh())!
@@ -699,6 +701,16 @@ pub match_expr :: fn(fg: ^FnGen, e: ^Expr, scrutinee: ^Expr, arms: []tir.Arm) ->
     fg.label(end)
     if r := res { return r }
     return fg.zero(e.ty)
+}
+
+/// The address of the value the patterns of a `match` or condition test. A large value
+/// (a union, say) that is a place is tested where it is, without a copy, when `in_place`
+/// says no code runs between the tests (guards could write the place): the tests only read
+/// it, and bindings copy what they bind.
+scrutinee_addr :: fn(fg: ^FnGen, value: ^Expr, in_place: bool) -> Unsup!string needs sema.Load {
+    if in_place and fg.g.ty.repr(value.ty) is .Blob and fg.reads_place(value) { return fg.place_addr(value) }
+    v := try fg.expr(value)
+    return fg.addr_of(value.ty, v)
 }
 
 /// Tests the value at `addr` against `p`, binding its locals; jumps to `fail` on mismatch.

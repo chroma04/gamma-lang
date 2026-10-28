@@ -142,7 +142,7 @@ WithRec :: struct {
 Start :: union {
     /// The body of a `with … on`, run in the frame of the function containing it; its value
     /// goes to `dst`.
-    Body: (fr: ^Frame, cx: u32, body: ^Expr, dst: []u8)
+    Body: (fr: ^Frame, cx: u32, body: ^Node, dst: []u8)
     /// `f(arg)` for `@fiber`.
     Call: (f: []u8, fty: Ty, arg: []u8, cx: u32, span: source.Span)
     /// A new thread calling function `f` with `arg` (`threads.gm`).
@@ -279,7 +279,7 @@ coro_main :: fn(m: ^Machine, id: u32) needs Run {
             start := rec.start else return ()
             rec.start = null
             r := match start {
-                .Body(fr, cx, body, dst) => m.eval(Act(fr: fr, cx: cx), body, dst)
+                .Body(fr, cx, body, dst) => m.ev(Act(fr: fr, cx: cx), body, dst)
                 .Call(x) => {
                     args := [1][]u8(x.arg)
                     m.call_value(x.cx, x.span, x.f, x.fty, args[..], empty_slice(u8))
@@ -387,7 +387,7 @@ check_stack :: fn(m: ^Machine, span: source.Span, stack: []const u8) -> Flow!() 
 
 /// `with h on stack { body }` (§14.1) in frame `a.fr`, after the handlers are installed in
 /// `a.cx`.
-with_on :: fn(m: ^Machine, a: Act, w: tir.WithExpr, stack: []u8, e: ^Expr, dst: []u8) -> Flow!() needs Run {
+with_on :: fn(m: ^Machine, a: Act, w: With, stack: []u8, e: ^Node, dst: []u8) -> Flow!() needs Run {
     try m.check_stack(e.span, stack)
     key := WithKey(frame: a.fr.id, label: w.label)
     if m.with_rec(key) is not null { return !m.trap(e.span, "internal error: a `with … on` is active twice") }
@@ -577,12 +577,12 @@ consume :: fn(m: ^Machine, span: source.Span, fr: ^Frame, k: []const u8) -> Flow
 }
 
 /// `resume k(v)` (§14.3).
-resume_ :: fn(m: ^Machine, a: Act, k, v: ^Expr, e: ^Expr) -> Flow!() needs Run {
+resume_ :: fn(m: ^Machine, a: Act, k, v: ^Node, e: ^Node) -> Flow!() needs Run {
     mk := m.mark()
-    kb := m.tmp(m.size(k.ty))
-    try m.eval(a, k, kb)
-    vb := m.tmp(m.size(v.ty))
-    try m.eval(a, v, vb)
+    kb := m.tmp(k.size)
+    try m.ev(a, k, kb)
+    vb := m.tmp(v.size)
+    try m.ev(a, v, vb)
     c := try m.consume(e.span, a.fr, kb)
     saved := empty_slice(u8)
     if vb.len > 0 {
@@ -595,24 +595,24 @@ resume_ :: fn(m: ^Machine, a: Act, k, v: ^Expr, e: ^Expr) -> Flow!() needs Run {
 }
 
 /// `cancel k` (§14.5).
-cancel_ :: fn(m: ^Machine, a: Act, k: ^Expr, e: ^Expr) -> Flow!() needs Run {
+cancel_ :: fn(m: ^Machine, a: Act, k: ^Node, e: ^Node) -> Flow!() needs Run {
     mk := m.mark()
-    kb := m.tmp(m.size(k.ty))
-    try m.eval(a, k, kb)
+    kb := m.tmp(k.size)
+    try m.ev(a, k, kb)
     c := try m.consume(e.span, a.fr, kb)
     m.release(mk)
     try m.cancel_fiber(e.span, c.key, c.fiber)
 }
 
 /// `@fiber(f, arg, stack)` (§14.6) in a clause.
-fiber_builtin :: fn(m: ^Machine, a: Act, args: []Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
+fiber_builtin :: fn(m: ^Machine, a: Act, args: []^Node, e: ^Node, dst: []u8) -> Flow!() needs Run {
     mk := m.mark()
-    fb := m.tmp(m.size(args[0].ty))
-    try m.eval(a, &args[0], fb)
-    ab := m.tmp(m.size(args[1].ty))
-    try m.eval(a, &args[1], ab)
-    sb := m.tmp(m.size(args[2].ty))
-    try m.eval(a, &args[2], sb)
+    fb := m.tmp(args[0].size)
+    try m.ev(a, args[0], fb)
+    ab := m.tmp(args[1].size)
+    try m.ev(a, args[1], ab)
+    sb := m.tmp(args[2].size)
+    try m.ev(a, args[2], sb)
     try m.check_stack(e.span, sb)
     inst := a.fr.installing else return !m.trap(e.span, "internal error: `@fiber` outside a clause")
     key := WithKey(frame: inst.frame.id, label: inst.label)
