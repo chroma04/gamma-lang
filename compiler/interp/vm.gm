@@ -30,6 +30,9 @@ Code :: struct {
     regs_off: u64
     nregs: u64
     size: u64
+    /// The constants the registers from `regs_off` on hold, set when the body starts: the
+    /// bytes of their words on the host.
+    consts: []u8
     /// The loops: their labels and where their `break`s and `continue`s go.
     loops: []VmLoop
 }
@@ -245,34 +248,50 @@ Vc :: struct {
     /// releases what they leave began.
     leaks_all: u32
     leaks: u32
+    /// The registers holding constants (the first ones after `rbase`), by value, and the
+    /// constants without one used so far, which the next pass gives one (`vm_compile`).
+    const_at: hash_map.HashMap(u64, u32)
+    found: List(u64)
 }
 
 /// Compiles the lowered body `body` of the function `info` describes.
 vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
     sbase := (info.store_size + 7) / 8 * 8
-    // The registers follow the slots, whose size compiling tells: a body with slots is
-    // compiled again once it is known.
+    // The registers follow the slots and start with the constants the body uses as
+    // operands, which compiling tells: a body with slots or constants is compiled again
+    // once they are known.
     slots: u64 = 0
+    consts := list(u64)
     while true {
         rbase := ((sbase + slots) / 8).trunc(u32)
-        c := Vc(m: m, info: info, ins: list(Ins), loops: list(VmLoop), open: list(u32), dblocks: 0, exits: list((ins: u32, loop: u32)), conts: list((ins: u32, loop: u32)), top: rbase, max: rbase, rbase: rbase, sbase: sbase, slot_top: 0, slot_max: 0, joined: 0, leaks_all: 0, leaks: 0)
+        const_at := hash_map.hash_map(u64, u32)
+        for i, v in enumerate(consts.items) { const_at.put(v, rbase + i.trunc(u32))! }
+        first := rbase + consts.items.len.trunc(u32)
+        c := Vc(m: m, info: info, ins: list(Ins), loops: list(VmLoop), open: list(u32), dblocks: 0, exits: list((ins: u32, loop: u32)), conts: list((ins: u32, loop: u32)), top: first, max: first, rbase: rbase, sbase: sbase, slot_top: 0, slot_max: 0, joined: 0, leaks_all: 0, leaks: 0, const_at: const_at, found: list(u64))
         c.vc_expr(body, .Ret)
         // A body whose value falls off its end (`()`, or a `never` that the tree raised).
         c.vc_emit(.Ret)
         c.open.deinit()
         c.exits.deinit()
         c.conts.deinit()
-        if c.slot_max > slots {
-            slots = (c.slot_max + 7) / 8 * 8
+        c.const_at.deinit()
+        if c.slot_max > slots or c.found.items.len > 0 {
+            slots = slots.max((c.slot_max + 7) / 8 * 8)
+            consts.extend(c.found.items)!
+            c.found.deinit()
             c.ins.deinit()
             c.loops.deinit()
             continue
         }
+        c.found.deinit()
         c.vc_compact()
         regs_off := u64(rbase) * 8
         // At least one register past the locals.
         nregs := u64((c.max - rbase).max(1))
-        return new(Code(ins: c.ins.items, slots_off: sbase, regs_off: regs_off, nregs: nregs, size: regs_off + 8 * nregs, loops: c.loops.items))!
+        words := make_fill(consts.items.len * 8, u8(0))!
+        if consts.items.len > 0 { words.ptr.cast([^]u64)[0..consts.items.len].copy_from(consts.items) }
+        consts.deinit()
+        return new(Code(ins: c.ins.items, slots_off: sbase, regs_off: regs_off, nregs: nregs, size: regs_off + 8 * nregs, loops: c.loops.items, consts: words))!
     }
 }
 
@@ -386,13 +405,17 @@ vc_local_reg :: fn(c: ^const Vc, l: u32) -> ?u32 {
     return (c.info.offsets[i] / 8).trunc(u32)
 }
 
-/// The register holding the value of the word expression `n`: the register of a local, or
-/// else the first free one, where `n` is computed. A local's register is read when the
+/// The register holding the value of the word expression `n`: the register of a local or a
+/// constant, or else the first free one, where `n` is computed. A local's register is read when the
 /// instruction using it runs, so only an operand that no later operand can change may be
 /// one (`late`: the operands computed after it only read).
 vc_operand :: fn(c: ^Vc, n: ^Node, late: bool) -> u32 needs Alloc {
     if late and .Local(l, _) := n.op and n.size is c.info.sizes[usize(l)] {
         if r := c.vc_local_reg(l) { return r }
+    }
+    if .Word(v) := n.op {
+        if r := c.const_at.get(v) { return r }
+        if v not in c.found.items { c.found.push(v)! }
     }
     r := c.top
     c.vc_word(n)
@@ -453,6 +476,10 @@ vc_retarget :: fn(c: ^Vc, t: u32, d: u32) -> bool {
 
 /// Leaves the value of the word expression `value` in register `d` (a local's).
 vc_word_to :: fn(c: ^Vc, value: ^Node, d: u32) needs Alloc {
+    if .Word(v) := value.op {
+        c.vc_emit(.Const(d, v))
+        return ()
+    }
     save := c.top
     v := c.vc_operand(value, true)
     // Only a value computed here into a fresh register was computed by the last
@@ -1620,6 +1647,11 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
     regs := fr.store.ptr.cast([^]u64)
     ins := code.ins.ptr
     pc: usize = 0
+    // The registers of the constants.
+    if code.consts.len > 0 {
+        cb := us(code.regs_off)
+        fr.store[cb..cb + code.consts.len].copy_from(code.consts)
+    }
     while true {
         match ins[pc] {
             .Const(r, v) => { regs[usize(r)] = v }
