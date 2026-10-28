@@ -423,9 +423,9 @@ every checked operation checked.
   their `defer`s, `if`, loops, `match` and its patterns, `return`, `break`, `continue`),
   its arithmetic and comparisons on words, the places it can address (locals, upvars and
   their fields, dereferences, indexing of slices, arrays and pointers), its calls of
-  functions and function values, the operations it performs, `else` on optionals and
-  results, and the building of structs, tuples, optionals, results, variants and slices
-  are compiled into a flat list of instructions on word registers, which one loop
+  functions and function values, the operations it performs, `with` (except `with … on`),
+  `else` on optionals and results, and the building of structs, tuples, optionals,
+  results, variants and slices are compiled into a flat list of instructions on word registers, which one loop
   executes. Every other construct is handed, as a whole subtree, to the tree evaluator
   (`run.gm`, `stmt.gm`, `calls.gm`), which covers the whole language over the same
   nodes: the machine only takes the common paths.
@@ -451,6 +451,12 @@ every checked operation checked.
 
   A `break` or `continue` that a subtree raises to a loop of the machine jumps to it;
   other flows leave the body as they would leave the tree's.
+  - *Handler contexts.* The machine keeps the current handler context: a `with` records
+    it, installs its handlers on top, and goes back to it when left, by its end, by a
+    `break` out of it (from its body or from a clause), by a jump out of a loop around it,
+    or by a flow that leaves the body. A deferred statement records the context it was
+    pushed in and runs there. A `break` with a value from a clause finds the `with`'s
+    result slot through the compiled body.
 - **Values** are bytes in the target's layout, and the tree evaluates each expression into a
   destination buffer of the size of its type (or a word into a `u64`). Buffers for
   intermediate values come from scratch memory used as a stack, which each statement and

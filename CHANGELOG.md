@@ -57,7 +57,12 @@ Versions and what each kind of change means are described in
   results, variants and slices, and slice elements also became instructions; locals and
   constants live in registers; and scratch memory is marked only where it can be used:
   another 1.5 to 2x (the slowest test now takes 2.1 s, `for` over an iterator runs about
-  twice as fast).
+  twice as fast). Then `with` (except `with … on`) became instructions too: entering one
+  costs about a sixth of what it did, and the code in its body runs as instructions rather
+  than in the tree (a loop of handled performs inside a `with` runs over twice as fast).
+- **No function of the compiler is too long for Clang to optimize:** the C back end's
+  `expr_node` and `builtin`, which Clang 19 and later (Apple clang 17 and later) compiled
+  without optimization because of their size, are split into smaller functions.
 - **Long functions whose blocks are short keep their locals in C variables** in the
   generated C. Only a function some of whose statements are moved into helper functions
   needs them in its frame struct, which the C compiler cannot keep in registers.

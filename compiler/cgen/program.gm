@@ -135,10 +135,10 @@ pub is_ctl :: fn(p: ^const Prog, eff: u32, op: u32) -> bool {
 }
 
 /// The handler literal `h` (§12.5).
-pub handler_lit :: fn(p: ^const Prog, h: u32) -> tir.HandlerLit => p.s.handlers.items[usize(h)]
+pub handler_lit :: fn(p: ^const Prog, h: u32) -> ^const tir.HandlerLit => &p.s.handlers.items[usize(h)]
 
 /// The handler declaration `d` (§12.6).
-pub handler_decl :: fn(p: ^const Prog, d: u32) -> sema.HandlerDeclInfo => p.s.handler_decls.items[usize(d)]
+pub handler_decl :: fn(p: ^const Prog, d: u32) -> ^const sema.HandlerDeclInfo => &p.s.handler_decls.items[usize(d)]
 
 /// The definition of the struct or union `id`.
 pub adt :: fn(p: ^const Prog, id: u32) -> ^const sema.AdtInfo => &p.s.adts.items[usize(id)]

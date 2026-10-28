@@ -113,7 +113,7 @@ Frame :: struct {
     mem_buf: []u64
     /// Allocations that die with the frame.
     allocs: List(u64)
-    /// The loops and `with`s running in it, innermost last.
+    /// The loops and `with`s that the tree evaluator runs in it, innermost last.
     labels: List(LabelDst)
     /// The deferred statements of the blocks the register machine runs, innermost last.
     defers: List(Deferred)
@@ -919,9 +919,17 @@ frame_up :: fn(fr: ^Frame, levels: u32) -> ?^Frame {
 }
 
 /// The address of local `l` of frame `fr`, which needs one: made on first use.
+#inline
 local_addr :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32) -> Flow!u64 needs Alloc {
     i := us(l)
     if fr.mem[i] is not 0 { return fr.mem[i] }
+    return m.local_alloc(span, fr, l)
+}
+
+/// Gives local `l` of frame `fr` memory of its own; returns its address.
+#noinline
+local_alloc :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32) -> Flow!u64 needs Alloc {
+    i := us(l)
     addr := try m.alloc_mem(span, fr.info.sizes[i], fr.info.aligns[i], .Stack, true)
     // What the local held so far moves along.
     off := us(fr.info.offsets[i])

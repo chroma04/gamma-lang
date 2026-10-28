@@ -4,6 +4,8 @@
 Deferred :: struct {
     is_err: bool
     body: ^Node
+    /// The handler context where the statement ran, which its body runs in.
+    cx: u32
 }
 
 block :: fn(m: ^Machine, a: Act, b: ^Blk, dst: []u8) -> Flow!() needs Run {
@@ -22,7 +24,7 @@ block_defers :: fn(m: ^Machine, a: Act, b: ^Blk, dst: []u8) -> Flow!() needs Run
     failed: ?Flow = null
     for st in b.stmts {
         if .Defer(is_err, body) := st {
-            defers.push(Deferred(is_err: is_err, body: body))!
+            defers.push(Deferred(is_err: is_err, body: body, cx: a.cx))!
             continue
         }
         m.exec_stmt(a, st) else f => {

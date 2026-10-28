@@ -1,0 +1,129 @@
+// `with` left in every way (§12.4): its value (a word, a struct, discarded, returned), a
+// `break` with a value from a clause and from the body, `break` and `continue` of loops
+// around it, and `return`. Leaving a `with` uninstalls its handlers, and each deferred
+// statement runs in the handlers of the place where it was written.
+Count :: effect {
+    bump: fn(n: i64) -> i64
+}
+
+Stop :: effect {
+    stop: esc(code: i64) -> never
+}
+
+Name :: effect {
+    name: fn() -> string
+}
+
+Acc :: struct { total: i64 }
+
+handler Count for ^Acc {
+    bump(self, n) => {
+        self.total += n
+        self.total
+    }
+}
+
+Pair :: struct {
+    a: i64
+    b: i64
+}
+
+values :: fn() needs Out {
+    acc := Acc(total: 0)
+    s: i64 = 0
+    for i in 0..5 {
+        s = with &acc { Count.bump(i) }
+    }
+    p := with &acc { Pair(a: Count.bump(1), b: Count.bump(2)) }
+    with &acc { _ = Count.bump(100) }
+    print("values: {} {} {} {}\n", s, p.a, p.b, acc.total)
+}
+
+returned :: fn(acc: ^Acc, n: i64) -> i64 => with acc { Count.bump(n) }
+
+clause_break :: fn() -> i64 {
+    total: i64 = 0
+    for i in 0..6 {
+        v := with (handler Stop { stop(code) => break code * 10 }) {
+            if i % 2 is 0 { Stop.stop(i) }
+            i
+        }
+        total += v
+    }
+    return total
+}
+
+clause_break_pair :: fn(n: i64) -> Pair {
+    return with (handler Stop { stop(code) => break Pair(a: code, b: -code) }) {
+        if n > 0 { Stop.stop(n) }
+        Pair(a: 0, b: 0)
+    }
+}
+
+loops :: fn() needs Out {
+    outer :: handler Name { name() => "outer" }
+    inner :: handler Name { name() => "inner" }
+    with outer {
+        for i in 0..4 {
+            with inner {
+                if i is 1 { continue }
+                if i is 3 { break }
+                print("{} {}\n", i, Name.name())
+            }
+            print("after {} {}\n", i, Name.name())
+        }
+        print("done {}\n", Name.name())
+    }
+}
+
+returns :: fn(n: i64) -> i64 needs Out {
+    outer :: handler Name { name() => "outer" }
+    inner :: handler Name { name() => "inner" }
+    with outer {
+        defer print("outer defer sees {}\n", Name.name())
+        with inner {
+            defer print("inner defer sees {}\n", Name.name())
+            if n > 0 { return n }
+        }
+        print("fell through with {}\n", Name.name())
+    }
+    return 0
+}
+
+labeled :: fn(xs: []const i64) -> i64 {
+    acc := Acc(total: 0)
+    r := found: with &acc {
+        for x in xs {
+            if Count.bump(x) > 10 { break found x }
+        }
+        -1
+    }
+    return r
+}
+
+several :: fn() needs Out {
+    acc := Acc(total: 7)
+    with &acc {
+        // A handler literal's clauses run in the handlers of the place where it is written.
+        with (handler Name { name() => if Count.bump(1) > 8 { "many" } else { "few" } }), &acc {
+            print("{} {}\n", Name.name(), Name.name())
+        }
+    }
+    print("total {}\n", acc.total)
+}
+
+main :: fn() needs Out {
+    values()
+    acc := Acc(total: 1)
+    print("returned: {} {}\n", returned(&acc, 2), returned(&acc, 3))
+    print("clause_break: {}\n", clause_break())
+    p := clause_break_pair(4)
+    q := clause_break_pair(0)
+    print("clause_break_pair: {} {} {} {}\n", p.a, p.b, q.a, q.b)
+    loops()
+    print("returns: {}\n", returns(5))
+    print("returns: {}\n", returns(0))
+    xs := [5]i64(2, 3, 4, 5, 6)
+    print("labeled: {} {}\n", labeled(xs[..]), labeled(xs[0..2]))
+    several()
+}

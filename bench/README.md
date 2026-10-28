@@ -10,6 +10,7 @@ Each prints one number (a checksum), so a run is also a sanity check.
 | `programs/empty.gm` | Prints a constant: the cost of starting up, to subtract from the others. |
 | `programs/call.gm` | 200,000 calls of a small function: the baseline for `perform.gm`. |
 | `programs/perform.gm` | 200,000 performs of an operation handled by a `with` handler. |
+| `programs/with.gm` | 200,000 entries into a `with` that installs a handler for one perform: the cost of installing handlers, beside `perform.gm`. |
 | `programs/iterate.gm` | A `for` over 200,000 elements of an iterator: a `yield` performed per element, its clause updating a captured variable. |
 | `programs/new_destroy.gm` | 20,000 `new` + `destroy` of a two-field struct through the ambient `Alloc`. |
 | `programs/list_push.gm` | 100,000 `push` onto a `List`, then a sum over `each(l.items)`. |

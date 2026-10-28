@@ -1,0 +1,19 @@
+values: 10 11 13 113
+returned: 3 6
+clause_break: 69
+clause_break_pair: 4 -4 0 0
+0 inner
+after 0 outer
+2 inner
+after 2 outer
+done outer
+inner defer sees inner
+outer defer sees outer
+returns: 5
+inner defer sees inner
+fell through with outer
+outer defer sees outer
+returns: 0
+labeled: 5 -1
+few many
+total 9

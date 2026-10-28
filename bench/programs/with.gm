@@ -1,0 +1,23 @@
+// 200000 entries into a `with` that installs a handler for one perform: the baseline for
+// handler installation, to compare with perform.gm.
+Counter :: effect {
+    bump: fn(n: i64) -> i64
+}
+
+Acc :: struct { total: i64 }
+
+handler Counter for ^Acc {
+    bump(self, n) => {
+        self.total += 1
+        n + self.total
+    }
+}
+
+main :: fn() needs Out {
+    acc := Acc(total: 0)
+    s: i64 = 0
+    for i in 0..200000 {
+        s = with &acc { Counter.bump(i) }
+    }
+    print("{} {}\n", s, acc.total)
+}
