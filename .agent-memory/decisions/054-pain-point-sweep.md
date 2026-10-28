@@ -16,7 +16,7 @@ the rest. Triage result lives in spec-notes/pain-points.md ("Settled"). Designs:
 - L4 contextual `needs`/`handler`/`foreign` (§2.4): lexer emits identifiers; parser decides
   by position (`needs` where parse_needs_opt runs; `handler` + ident / top-level `handler(`;
   `foreign` + string). COST: a newline after `needs` is no longer suppressed (§2.8 rule 1)
-  since the lexer can't know. Tree-sitter grammar not updated (no CLI here). Checker's
+  since the lexer can't know. Tree-sitter: identifier = choice(word, the 3 words) + GLR conflicts; queries scope them. Checker's
   `.Error` node fix only visible in LSP (keep_going); test in harness lsp/diagnostics.
 - L5 `{0}` placeholders: all-or-none, every value used, values bound once to temps in
   check/template.gm (no back-end change). L6 `{:q}` = FmtKind.Quote (rt kind 6, interp).
