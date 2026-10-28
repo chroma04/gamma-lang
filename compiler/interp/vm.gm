@@ -54,15 +54,16 @@ Ins :: union {
     /// A word local of this frame.
     Local: (r: u32, local: u32, off: u32, size: u32)
     SetLocal: (local: u32, off: u32, size: u32, r: u32, n: ^Node)
-    /// A word at offset `rel` of a local (a field), at `at` in the frame's storage while
-    /// the local is kept there.
-    LocalAt: (r: u32, local: u32, at: u32, rel: u32, size: u32, align: u32, n: ^Node)
-    SetLocalAt: (local: u32, at: u32, rel: u32, size: u32, align: u32, v: u32, n: ^Node)
+    /// The word at `at` in the frame's storage: (part of) a local kept there, which is one
+    /// whose address is never taken (the others have memory of their own once it is, and
+    /// are reached through `LocalAddr`).
+    LocalAt: (r: u32, at: u32, size: u32)
+    SetLocalAt: (at: u32, size: u32, v: u32)
     /// The same for a local of the frame `levels` capture links up (an upvar).
     UpvarAt: (r: u32, levels: u32, local: u32, rel: u32, size: u32, align: u32, n: ^Node)
     /// `LocalAt` and `SetLocalAt` at a further offset in register `d` (an array element).
-    LocalAtD: (r: u32, local: u32, at: u32, rel: u32, d: u32, size: u32, align: u32, n: ^Node)
-    SetLocalAtD: (local: u32, at: u32, rel: u32, d: u32, size: u32, align: u32, v: u32, n: ^Node)
+    LocalAtD: (r: u32, at: u32, d: u32, size: u32)
+    SetLocalAtD: (at: u32, d: u32, size: u32, v: u32)
     /// Checks the index in a register against an array's length and scales it to a byte
     /// offset; `AddR` adds a register to another.
     ScaleIdx: (i: u32, len: u64, esz: u64, n: ^Node)
@@ -110,7 +111,8 @@ Ins :: union {
     CallValue: (at: u32, callee: ^Node, args: []Arg, dst: Dest, node: ^Node)
     /// Performs the operation of `node` (a `Perform`) with arguments in registers and slots.
     Perform: (args: []Arg, dst: Dest, node: ^Node)
-    /// Copies a slot's bytes to a local of this frame.
+    /// Copies a slot's bytes to a local of this frame that has memory of its own (to one
+    /// kept in the frame's storage, `CopySlot` copies them).
     SetLocalSlot: (local: u32, at: u32, size: u32, span: source.Span)
     /// Copies `size` bytes between slots, reads a word of a slot into a register, or writes
     /// one to a slot.
@@ -371,7 +373,7 @@ vc_retarget :: fn(c: ^Vc, t: u32, d: u32) -> bool {
         .IntUn(x) => if x.r is t { Ins.IntUn(x.op, x.t, d, x.a, x.n) } else { null }
         .IntConv(x) => if x.r is t { Ins.IntConv(x.op, x.from, x.to, d, x.a) } else { null }
         .FloatOp(x) => if x.r is t { Ins.FloatOp(x.op, x.wide, d, x.a, x.b) } else { null }
-        .LocalAt(x) => if x.r is t { Ins.LocalAt(d, x.local, x.at, x.rel, x.size, x.align, x.n) } else { null }
+        .LocalAt(r, at, size) => if r is t { Ins.LocalAt(d, at, size) } else { null }
         .Load(x) => if x.r is t { Ins.Load(d, x.base, x.off, x.size, x.align, x.n) } else { null }
         .SlotW(r, at, size) => if r is t { Ins.SlotW(d, at, size) } else { null }
         .EvalW(r, e) => if r is t { Ins.EvalW(d, e) } else { null }
@@ -545,6 +547,8 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
         .Local(l, off) => {
             if r := c.vc_local_reg(l) and n.size is c.info.sizes[usize(l)] {
                 c.vc_emit(.Mov(c.vc_alloc(), r))
+            } else if not c.info.addressed[usize(l)] {
+                c.vc_emit(.LocalAt(c.vc_alloc(), off.trunc(u32), n.size.trunc(u32)))
             } else {
                 c.vc_emit(.Local(c.vc_alloc(), l, off.trunc(u32), n.size.trunc(u32)))
             }
@@ -687,7 +691,15 @@ PlaceC :: union {
 /// Compiles the place `n` (`vc_placeable`); registers it needs are allocated.
 vc_place :: fn(c: ^Vc, n: ^Node) -> PlaceC needs Alloc {
     match n.op {
-        .Local(l, _) => return .Local(0, l, 0, false, null)
+        .Local(l, _) => {
+            // A local whose address is taken is reached through it.
+            if c.info.addressed[usize(l)] {
+                r := c.vc_alloc()
+                c.vc_emit(.LocalAddr(r, l, n))
+                return .Mem(r, 0, false)
+            }
+            return .Local(0, l, 0, false, null)
+        }
         .Upvar(levels, l) => return .Local(levels, l, 0, false, null)
         .Field(x) => match c.vc_place(x.base) {
             .Local(levels, l, rel, packed, ?d) => return .Local(levels, l, rel + x.off, packed or x.packed, d)
@@ -749,16 +761,16 @@ vc_place :: fn(c: ^Vc, n: ^Node) -> PlaceC needs Alloc {
 vc_load :: fn(c: ^Vc, r: u32, pl: PlaceC, extra: u64, size: u64, align: u32, n: ^Node) needs Alloc {
     match pl {
         .Local(levels, l, rel, packed, ?d) => {
-            al := if packed { 1 } else { align }
-            if dr := d {
-                c.vc_emit(.LocalAtD(r, l, (c.info.offsets[usize(l)] + rel + extra).trunc(u32), (rel + extra).trunc(u32), dr, size.trunc(u32), al, n))
-                return ()
-            }
             if levels > 0 {
-                c.vc_emit(.UpvarAt(r, levels, l, (rel + extra).trunc(u32), size.trunc(u32), al, n))
+                c.vc_emit(.UpvarAt(r, levels, l, (rel + extra).trunc(u32), size.trunc(u32), if packed { 1 } else { align }, n))
                 return ()
             }
-            c.vc_emit(.LocalAt(r, l, (c.info.offsets[usize(l)] + rel + extra).trunc(u32), (rel + extra).trunc(u32), size.trunc(u32), al, n))
+            at := (c.info.offsets[usize(l)] + rel + extra).trunc(u32)
+            if dr := d {
+                c.vc_emit(.LocalAtD(r, at, dr, size.trunc(u32)))
+                return ()
+            }
+            c.vc_emit(.LocalAt(r, at, size.trunc(u32)))
         }
         .Mem(base, off, packed) => c.vc_emit(.Load(r, base, (off + extra).trunc(u32), size.trunc(u32), if packed { 1 } else { align }, n))
     }
@@ -1124,7 +1136,7 @@ vc_else :: fn(c: ^Vc, n: ^Node, lhs: ^Node, capture: ?u32, rhs: ^Node, at: ?u32)
     c.vc_patch(fail, c.vc_here())
     c.top = save
     if l := capture {
-        if .Result(err, _) := c.m.kind(lhs.ty) { c.vc_emit(.SetLocalSlot(l, pa, c.m.size(err).trunc(u32), n.span)) }
+        if .Result(err, _) := c.m.kind(lhs.ty) { c.vc_set_local_slot(l, pa, c.m.size(err).trunc(u32), n.span) }
     }
     if d := at { c.vc_to_slot(rhs, d) } else { c.vc_word(rhs) }
     c.vc_patch(end, c.vc_here())
@@ -1185,12 +1197,7 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
         .SetLocal(l, value) => c.vc_set_local(l, value)
         .Let(l, off, size, ?init) => {
             if x := init and size <= 8 and is_word(x) and size is x.size {
-                if r := c.vc_local_reg(l) {
-                    c.vc_word_to(x, r)
-                } else {
-                    c.vc_word(x)
-                    c.vc_emit(.SetLocal(l, off.trunc(u32), size.trunc(u32), c.top - 1, x))
-                }
+                c.vc_set_word_local(l, x)
             } else if x := init and size is x.size and c.vc_builds(x) {
                 c.vc_call_to_local(l, x)
             } else {
@@ -1205,13 +1212,12 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
                 size := place.size.trunc(u32)
                 match pl {
                     .Local(levels, l, rel, packed, ?d) => {
-                        al := if packed { 1 } else { c.vc_align(place) }
-                        if dr := d {
-                            c.vc_emit(.SetLocalAtD(l, (c.info.offsets[usize(l)] + rel).trunc(u32), rel.trunc(u32), dr, size, al, v, place))
-                        } else if levels > 0 {
-                            c.vc_emit(.SetUpvarAt(levels, l, rel.trunc(u32), size, al, v, place))
+                        if levels > 0 {
+                            c.vc_emit(.SetUpvarAt(levels, l, rel.trunc(u32), size, if packed { 1 } else { c.vc_align(place) }, v, place))
+                        } else if dr := d {
+                            c.vc_emit(.SetLocalAtD((c.info.offsets[usize(l)] + rel).trunc(u32), dr, size, v))
                         } else {
-                            c.vc_emit(.SetLocalAt(l, (c.info.offsets[usize(l)] + rel).trunc(u32), rel.trunc(u32), size, al, v, place))
+                            c.vc_emit(.SetLocalAt((c.info.offsets[usize(l)] + rel).trunc(u32), size, v))
                         }
                     }
                     .Mem(base, off, packed) => c.vc_emit(.Store(base, off.trunc(u32), size, if packed { 1 } else { c.vc_align(place) }, v, place))
@@ -1233,12 +1239,7 @@ vc_set_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
     i := usize(l)
     size := c.info.sizes[i]
     if size <= 8 and value.size is size {
-        if r := c.vc_local_reg(l) {
-            c.vc_word_to(value, r)
-            return ()
-        }
-        c.vc_word(value)
-        c.vc_emit(.SetLocal(l, c.info.offsets[i].trunc(u32), size.trunc(u32), c.top - 1, value))
+        c.vc_set_word_local(l, value)
         return ()
     }
     if value.size is size and c.vc_builds(value) {
@@ -1248,11 +1249,39 @@ vc_set_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
     c.vc_emit(.Stmt(.SetLocal(l, value)))
 }
 
+/// `l = value` for a local that is a word, of the size of `value`.
+vc_set_word_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
+    if r := c.vc_local_reg(l) {
+        c.vc_word_to(value, r)
+        return ()
+    }
+    i := usize(l)
+    save := c.top
+    v := c.vc_operand(value, true)
+    size := c.info.sizes[i].trunc(u32)
+    if c.info.addressed[i] {
+        c.vc_emit(.SetLocal(l, c.info.offsets[i].trunc(u32), size, v, value))
+    } else {
+        c.vc_emit(.SetLocalAt(c.info.offsets[i].trunc(u32), size, v))
+    }
+    c.top = save
+}
+
+/// Copies the `size` bytes in the slot at `at` to local `l` (a binding, at `span`).
+vc_set_local_slot :: fn(c: ^Vc, l: u32, at: u32, size: u32, span: source.Span) needs Alloc {
+    i := usize(l)
+    if c.info.addressed[i] {
+        c.vc_emit(.SetLocalSlot(l, at, size, span))
+    } else {
+        c.vc_emit(.CopySlot(c.info.offsets[i].trunc(u32), at, size))
+    }
+}
+
 /// `l = value` for a local that is not a word (`vc_builds`): the value goes through a slot.
 vc_call_to_local :: fn(c: ^Vc, l: u32, value: ^Node) needs Alloc {
     at := c.vc_slot_at(c.vc_alloc_slot(value.size))
     c.vc_to_slot(value, at)
-    c.vc_emit(.SetLocalSlot(l, at, value.size.trunc(u32), value.span))
+    c.vc_set_local_slot(l, at, value.size.trunc(u32), value.span)
 }
 
 /// Compiles the conditions `parts`; returns the jumps to patch to where they fail.
@@ -1298,7 +1327,7 @@ vc_pat :: fn(c: ^Vc, pat: ^Pat, at: u32, size: u64, fails: ^List(u32)) needs All
     m := c.m
     match pat.kind {
         .Wild => {}
-        .Bind(l) => c.vc_emit(.SetLocalSlot(l, at, size.trunc(u32), pat.span))
+        .Bind(l) => c.vc_set_local_slot(l, at, size.trunc(u32), pat.span)
         .Const(e) => {
             save := c.top
             c.vc_word(e)
@@ -1527,32 +1556,8 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                     }
                 }
             }
-            .LocalAtD(r, local, at, rel, d, size, align, n) => {
-                i := usize(local)
-                k := regs[usize(d)]
-                if in_store(fr, i) {
-                    o := usize(at) + us(k)
-                    regs[usize(r)] = st_rd(m, fr, o, size)
-                } else {
-                    regs[usize(r)] = m.vm_local_at(fr, local, u64(rel) + k, size, align, n) else f => {
-                        pc = try m.vm_flow(a, code, regs, f)
-                        continue
-                    }
-                }
-            }
-            .SetLocalAtD(local, at, rel, d, size, align, v, n) => {
-                i := usize(local)
-                k := regs[usize(d)]
-                if in_store(fr, i) {
-                    o := usize(at) + us(k)
-                    st_wr(m, fr, o, size, regs[usize(v)])
-                } else {
-                    m.vm_set_local_at(fr, local, u64(rel) + k, size, align, regs[usize(v)], n) else f => {
-                        pc = try m.vm_flow(a, code, regs, f)
-                        continue
-                    }
-                }
-            }
+            .LocalAtD(r, at, d, size) => { regs[usize(r)] = st_rd(m, fr, usize(at) + us(regs[usize(d)]), size) }
+            .SetLocalAtD(at, d, size, v) => st_wr(m, fr, usize(at) + us(regs[usize(d)]), size, regs[usize(v)])
             .ScaleIdx(ri, len, esz, n) => {
                 i := regs[usize(ri)]
                 if i >= len {
@@ -1593,31 +1598,8 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                     continue
                 }
             }
-            .LocalAt(x) => {
-                i := usize(x.local)
-                if in_store(fr, i) {
-                    o := usize(x.at)
-                    regs[usize(x.r)] = st_rd(m, fr, o, x.size)
-                } else {
-                    regs[usize(x.r)] = m.vm_local_at(fr, x.local, u64(x.rel), x.size, x.align, x.n) else f => {
-                        pc = try m.vm_flow(a, code, regs, f)
-                        continue
-                    }
-                }
-            }
-            .SetLocalAt(x) => {
-                i := usize(x.local)
-                v := regs[usize(x.v)]
-                if in_store(fr, i) {
-                    o := usize(x.at)
-                    st_wr(m, fr, o, x.size, v)
-                } else {
-                    m.vm_set_local_at(fr, x.local, u64(x.rel), x.size, x.align, v, x.n) else f => {
-                        pc = try m.vm_flow(a, code, regs, f)
-                        continue
-                    }
-                }
-            }
+            .LocalAt(r, at, size) => { regs[usize(r)] = st_rd(m, fr, usize(at), size) }
+            .SetLocalAt(at, size, v) => st_wr(m, fr, usize(at), size, regs[usize(v)])
             .Load(r, base, off, size, align, n) => {
                 addr := regs[usize(base)] +% u64(off)
                 b := m.mem.read(addr, u64(size), u64(align)) else e => {
@@ -1726,20 +1708,6 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                 if st_rd(m, fr, o, size) is not v {
                     pc = usize(to)
                     continue
-                }
-            }
-            .SetLocalSlot(x) => {
-                o := usize(x.at)
-                i := usize(x.local)
-                if in_store(fr, i) {
-                    d := us(fr.info.offsets[i])
-                    k := usize(x.size)
-                    fr.store[d..d + k].copy_from(fr.store[o..o + k])
-                } else {
-                    m.set_local(x.span, fr, x.local, fr.store[o..o + usize(x.size)]) else f => {
-                        pc = try m.vm_flow(a, code, regs, f)
-                        continue
-                    }
                 }
             }
             .Mov(r, x) => { regs[usize(r)] = regs[usize(x)] }
@@ -1875,6 +1843,10 @@ vm_slow :: fn(m: ^Machine, a: Act, code: ^Code, regs: [^]u64, pc: usize, dst: []
             if not ok {
                 return usize(x.fail)
             }
+        }
+        .SetLocalSlot(x) => {
+            o := usize(x.at)
+            m.set_local(x.span, fr, x.local, fr.store[o..o + usize(x.size)]) else f => return m.vm_flow(a, code, regs, f)
         }
         _ => {}
     }
