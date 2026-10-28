@@ -43,6 +43,18 @@ Versions and what each kind of change means are described in
 
 ### Speed
 
+- **The interpreter runs three to seven times as fast** (`gamma run --backend=interp`,
+  `gamma repl`): a function's body is lowered once, on its first call, with sizes, offsets
+  and operations resolved, and its statements, arithmetic on words, simple places and
+  calls are compiled to instructions on registers that run in one loop; the rest of the
+  language is evaluated by walking the lowered body. The slowest conformance test went
+  from 43 s to 6 s, and the suites that run programs in the interpreter (conformance
+  `run` tests, examples, the REPL, documentation examples) take about a third of the time.
+- **A `match` on a union switches on its tag** in the generated C, instead of testing the
+  arms one after another, and tests the patterns of a large value that is a place where it
+  is, without copying it first (unless an arm has a guard).
+- **`#inline` functions are inlined in every translation unit of a split build:** their
+  definitions are shared by all units, with the external one in unit 0.
 - **The compiler builds itself in Checked mode** (`compiler/gamma.toml`), optimized with
   every check on: `gamma check` and `gamma build` of a large program take about 40% of the
   time they took, and programs run in the interpreter almost twice as fast.

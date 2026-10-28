@@ -101,6 +101,7 @@ pub alloc :: fn(m: ^Memory, size: u64, align: u64, kind: AllocKind, mutable: boo
     return base
 }
 
+#inline
 holds :: fn(a: ^const Allocation, addr: u64) -> bool => addr >= a.base and addr - a.base < a.size.max(1)
 
 /// The index of the allocation containing `addr` (or ending at it).
@@ -139,6 +140,7 @@ check :: fn(m: ^Memory, addr: u64, len: u64) -> MemError!usize {
     return i
 }
 
+#inline
 aligned :: fn(addr: u64, align: u64) -> bool {
     if align <= 1 { return true }
     if align & (align - 1) is 0 { return addr & (align - 1) is 0 }
@@ -150,6 +152,14 @@ aligned :: fn(addr: u64, align: u64) -> bool {
 pub read :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
     if len is 0 and align <= 1 { return empty_slice(u8) }
     if not aligned(addr, align) { return !.Misaligned(addr, align) }
+    // Most accesses are to the allocation used last.
+    if m.last < m.allocs.items.len {
+        a := &m.allocs.items[m.last]
+        if a.live and addr >= a.base and len <= a.size and addr - a.base <= a.size - len {
+            off := us(addr - a.base)
+            return a.data[off..off + us(len)]
+        }
+    }
     i := try m.check(addr, len)
     a := &m.allocs.items[i]
     off := us(addr - a.base)
@@ -160,6 +170,13 @@ pub read :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
 pub write_view :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
     if len is 0 and align <= 1 { return empty_slice(u8) }
     if not aligned(addr, align) { return !.Misaligned(addr, align) }
+    if m.last < m.allocs.items.len {
+        a := &m.allocs.items[m.last]
+        if a.live and a.mutable and addr >= a.base and len <= a.size and addr - a.base <= a.size - len {
+            off := us(addr - a.base)
+            return a.data[off..off + us(len)]
+        }
+    }
     i := try m.check(addr, len)
     a := &m.allocs.items[i]
     if not a.mutable { return !.ReadOnly(addr) }

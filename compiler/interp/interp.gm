@@ -1,5 +1,10 @@
-//! The interpreter: runs a checked program by walking its typed IR.
+//! The interpreter: runs a checked program.
 //!
+//! - **Code**: a function's body is lowered on its first call (`code.gm`) into nodes with
+//!   sizes, offsets and word operations resolved, and compiled for a register machine
+//!   (`vm.gm`) that runs its statement structure, word arithmetic, simple places and calls
+//!   in one loop; the rest is evaluated by walking the nodes (`run.gm`, `stmt.gm`,
+//!   `calls.gm`).
 //! - **Memory** (`memory.gm`): a flat virtual address space where every allocation gets
 //!   a fresh, never reused address, so out-of-bounds, use-after-free, null, misaligned
 //!   and read-only accesses are found exactly (§18.4). Values are bytes in the target's
@@ -96,7 +101,6 @@ Frame :: struct {
     handle: u32
     fn_id: u32
     info: ^FnInfo
-    ret_ty: Ty
     /// Where its result goes.
     ret: []u8
     /// The frame of the enclosing function, for upvars.
@@ -111,6 +115,8 @@ Frame :: struct {
     allocs: List(u64)
     /// The loops and `with`s running in it, innermost last.
     labels: List(LabelDst)
+    /// The deferred statements of the blocks the register machine runs, innermost last.
+    defers: List(Deferred)
     /// For a handler clause: the frame and label of the `with` that installed it.
     installing: ?(frame: ^Frame, label: u32)
     /// True for the clauses of handler literals, which lexically belong to `env`'s
@@ -118,8 +124,21 @@ Frame :: struct {
     is_clause_lit: bool
 }
 
-/// What the interpreter needs to know about a function's locals.
+/// What the interpreter needs to know about a function: its lowered body, parameters and
+/// locals.
 FnInfo :: struct {
+    /// The body (`null` for a function without one, such as a foreign function).
+    body: ?^Node = null
+    /// The locals that are its parameters.
+    params: []const u32 = empty_slice(u32)
+    /// Whether some parameter needs an address.
+    addressed_params: bool = false
+    /// For a function returning a result: the offset of the byte telling an error.
+    err_flag: ?u64 = null
+    /// The body compiled for the register machine (`vm.gm`).
+    vm: ?^Code = null
+    /// The size of the frame's storage: the locals, then the machine's slots and registers.
+    frame_size: u64 = 0
     offsets: []u64
     sizes: []u64
     aligns: []u64
@@ -173,9 +192,6 @@ CODE_BASE: u64 : 0x1000
 
 /// How deeply calls may nest.
 MAX_DEPTH: u32 : 200_000
-
-/// The function of a root frame.
-NO_FN: u32 : 0xFFFF_FFFF
 
 pub Machine :: struct {
     p: ^Prog
@@ -325,8 +341,10 @@ fast :: fn(m: ^const Machine) -> bool => m.mode is .Fast
 // Scratch memory
 // ---------------------------------------------------------------------------------
 
+#inline
 mark :: fn(m: ^const Machine) -> Mark => Mark(cur: m.scratch.cur, top: m.scratch.top)
 
+#inline
 release :: fn(m: ^Machine, mk: Mark) {
     m.scratch.cur = mk.cur
     m.scratch.top = mk.top
@@ -338,10 +356,13 @@ tmp :: fn(m: ^Machine, n: u64) -> []u8 needs Alloc {
     if n is 0 { return empty_slice(u8) }
     sc := &m.scratch
     size := us(n)
-    // Buffers are 8-byte aligned.
-    top := (sc.top + 7) & ~us(7)
+    top := sc.top
     while true {
         chunk := sc.chunks.items[sc.cur]
+        // Buffers are 8-byte aligned in memory (a chunk itself may be aligned to 4 only,
+        // on 32-bit hosts): the register machine reads its registers as `u64`s.
+        base := chunk.ptr.addr()
+        top = ((base + top + 7) & ~us(7)) - base
         if top + size <= chunk.len {
             b := chunk[top..top + size]
             sc.top = top + size
@@ -351,20 +372,13 @@ tmp :: fn(m: ^Machine, n: u64) -> []u8 needs Alloc {
         sc.cur += 1
         top = 0
         if sc.cur is sc.chunks.items.len {
-            sc.chunks.push(make_fill(size.max(CHUNK), u8(0))!)!
+            sc.chunks.push(make_fill(size.max(CHUNK) + 8, u8(0))!)!
         } else if sc.chunks.items[sc.cur].len < size {
             // A chunk too small for this buffer is replaced.
             free(sc.chunks.items[sc.cur])
-            sc.chunks.items[sc.cur] = make_fill(size.max(CHUNK), u8(0))!
+            sc.chunks.items[sc.cur] = make_fill(size.max(CHUNK) + 8, u8(0))!
         }
     }
-}
-
-/// A copy of `b` in scratch memory.
-tmp_copy :: fn(m: ^Machine, b: []const u8) -> []u8 needs Alloc {
-    t := m.tmp(u64(b.len))
-    t.copy_from(b)
-    return t
 }
 
 // ---------------------------------------------------------------------------------
@@ -441,9 +455,15 @@ put_uint :: fn(m: ^const Machine, b: []u8, v: u128) {
     }
 }
 
-get_u64 :: fn(m: ^const Machine, b: []const u8) -> u64 => m.get_uint(b).trunc(u64)
+get_u64 :: fn(m: ^const Machine, b: []const u8) -> u64 => if b.len <= 8 { m.rd_word(b) } else { m.get_uint(b).trunc(u64) }
 
-put_u64 :: fn(m: ^const Machine, b: []u8, v: u64) => m.put_uint(b, u128(v))
+put_u64 :: fn(m: ^const Machine, b: []u8, v: u64) {
+    if b.len <= 8 {
+        m.wr_word(b, v)
+    } else {
+        m.put_uint(b, u128(v))
+    }
+}
 
 /// The value of the integer of type `t` in `b`, sign-extended to 128 bits if it is signed.
 get_int :: fn(m: ^const Machine, t: Ty, b: []const u8) -> u128 {
@@ -480,8 +500,6 @@ put_word :: fn(m: ^const Machine, b: []u8, i: usize, v: u64) {
     p := us(m.ptr_bytes)
     m.put_u64(b[i * p..(i + 1) * p], v)
 }
-
-truthy :: fn(b: []const u8) -> bool => b.len > 0 and b[0] is not 0
 
 // Optionals, results and unions --------------------------------------------------------
 
@@ -753,12 +771,29 @@ fn_from_addr :: fn(m: ^const Machine, addr: u64) -> ?u32 {
 /// What the interpreter needs to know about function `f`.
 fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
     i := us(f)
+    if i < m.infos.items.len {
+        if x := m.infos.items[i] { return x }
+    }
     while m.infos.items.len <= i { m.infos.push(null)! }
     if x := m.infos.items[i] { return x }
     def := m.func(f)
     made := m.make_info(def.locals, def.body)
     made.cost = m.frame_cost(def)
+    made.params = def.params
+    for p in def.params {
+        if made.addressed[us(p)] { made.addressed_params = true }
+    }
+    if m.kind(def.ret) is .Result(_, _) { made.err_flag = m.offsets(def.ret)[0] }
+    // Registered before its body is lowered.
     m.infos.items[i] = made
+    made.frame_size = made.store_size
+    if b := def.body {
+        body := lower_body(m, made, b)
+        made.body = body
+        c := vm_compile(m, made, body)
+        made.vm = c
+        made.frame_size = c.size
+    }
     return made
 }
 
@@ -788,11 +823,12 @@ frame_of :: fn(m: ^const Machine, h: u64) -> ?^Frame {
     return m.frames.items[us(h - 1)]
 }
 
-/// A new frame for a call of `fn_id` (with `info`) whose result goes to `ret`.
-new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret_ty: Ty, ret: []u8, env: ?^Frame) -> ^Frame needs Alloc {
+/// A new frame for a call of `fn_id` (with `info`) whose result goes to `ret`, with its
+/// locals in `store`.
+new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret: []u8, env: ?^Frame, store: []u8) -> ^Frame needs Alloc {
     n := info.addressed.len
     // Finished frames are reused, with their buffers: a call allocates nothing then.
-    fr := m.frame_pool.pop() else new(Frame(id: 0, handle: 0, fn_id: 0, info: info, ret_ty: ret_ty, ret: ret, env: null, store: empty_slice(u8), mem: empty_slice(u64), mem_buf: empty_slice(u64), allocs: list(u64), labels: list(LabelDst), installing: null, is_clause_lit: false))!
+    fr := m.frame_pool.pop() else new(Frame(id: 0, handle: 0, fn_id: 0, info: info, ret: ret, env: null, store: empty_slice(u8), mem: empty_slice(u64), mem_buf: empty_slice(u64), allocs: list(u64), labels: list(LabelDst), defers: list(Deferred), installing: null, is_clause_lit: false))!
     if fr.mem_buf.len < n {
         if fr.mem_buf.len > 0 { free(fr.mem_buf) }
         fr.mem_buf = make_fill(n.max(8), u64(0))!
@@ -802,10 +838,9 @@ new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret_ty: Ty, ret: []u8, e
     fr.id = m.next_frame
     fr.fn_id = fn_id
     fr.info = info
-    fr.ret_ty = ret_ty
     fr.ret = ret
     fr.env = env
-    fr.store = m.tmp(info.store_size)
+    fr.store = store
     fr.installing = null
     fr.is_clause_lit = false
     m.next_frame += 1
@@ -824,6 +859,7 @@ end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
     for a in fr.allocs.items { _ = m.mem.kill(a) }
     fr.allocs.clear()
     fr.labels.clear()
+    fr.defers.clear()
     m.frames.items[us(fr.handle - 1)] = null
     m.free_frames.push(fr.handle - 1)!
     if m.frame_pool.items.len < 256 {
@@ -832,6 +868,7 @@ end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
     }
     fr.allocs.deinit()
     fr.labels.deinit()
+    fr.defers.deinit()
     if fr.mem_buf.len > 0 { free(fr.mem_buf) }
     free(slice_of(fr))
 }
@@ -948,6 +985,7 @@ deinit :: fn(m: ^Machine) needs Alloc {
     for fr in m.frame_pool.items {
         fr.allocs.deinit()
         fr.labels.deinit()
+        fr.defers.deinit()
         if fr.mem_buf.len > 0 { free(fr.mem_buf) }
         free(slice_of(fr))
     }
@@ -1033,4 +1071,5 @@ location :: fn(p: ^Prog, span: source.Span) -> ?string needs Alloc {
 }
 
 /// `x` as a `usize` (sizes and offsets of the interpreter's own buffers fit).
+#inline
 us :: fn(x: u64) -> usize => x.trunc(usize)

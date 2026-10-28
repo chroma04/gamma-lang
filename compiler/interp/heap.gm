@@ -6,7 +6,7 @@
 /// The largest alignment a heap allocation can get.
 MAX_HEAP_ALIGN: u64 : 1 << 32
 
-memory_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, args: []Expr, v: [][]u8, res_ty: Ty, dst: []u8) -> Flow!() needs Run {
+memory_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, args: []^Node, v: [][]u8, res_ty: Ty, dst: []u8) -> Flow!() needs Run {
     match op {
         .HeapAlloc => {
             size := m.get_u64(v[0])

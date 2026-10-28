@@ -3,14 +3,24 @@
 /// A `defer` or `errdefer` statement whose block is running.
 Deferred :: struct {
     is_err: bool
-    body: ^Expr
+    body: ^Node
 }
 
-block :: fn(m: ^Machine, a: Act, b: ^tir.Block, dst: []u8) -> Flow!() needs Run {
+block :: fn(m: ^Machine, a: Act, b: ^Blk, dst: []u8) -> Flow!() needs Run {
+    if not b.defers {
+        for st in b.stmts { try m.exec_stmt(a, st) }
+        if t := b.tail { return m.ev(a, t, dst) }
+        return ()
+    }
+    return m.block_defers(a, b, dst)
+}
+
+/// A block with deferred statements.
+#noinline
+block_defers :: fn(m: ^Machine, a: Act, b: ^Blk, dst: []u8) -> Flow!() needs Run {
     defers := list(Deferred)
     failed: ?Flow = null
-    for i in 0..b.stmts.len {
-        st := b.stmts[i]
+    for st in b.stmts {
         if .Defer(is_err, body) := st {
             defers.push(Deferred(is_err: is_err, body: body))!
             continue
@@ -22,7 +32,7 @@ block :: fn(m: ^Machine, a: Act, b: ^tir.Block, dst: []u8) -> Flow!() needs Run 
     }
     if failed is null {
         if t := b.tail {
-            m.eval(a, t, dst) else f => { failed = f }
+            m.ev(a, t, dst) else f => { failed = f }
         }
     }
     if defers.items.len is 0 {
@@ -68,7 +78,7 @@ run_defers :: fn(m: ^Machine, a: Act, defers: []const Deferred, failed: ?Flow) -
         if d.is_err and not run_err { continue }
         tm := m.temps.items.len
         mk := m.mark()
-        r := m.eval_discard(a, d.body)
+        r := m.ev_discard(a, d.body)
         m.kill_temps(tm)
         m.release(mk)
         r else f => {
@@ -79,48 +89,61 @@ run_defers :: fn(m: ^Machine, a: Act, defers: []const Deferred, failed: ?Flow) -
     if f := failed { return !f }
 }
 
-exec_stmt :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
+/// Runs a statement; the temporaries and scratch memory it made die with it.
+exec_stmt :: fn(m: ^Machine, a: Act, st: St) -> Flow!() needs Run {
     tm := m.temps.items.len
     mk := m.mark()
-    r := m.exec_stmt_inner(a, st)
-    m.kill_temps(tm)
+    r := match st {
+        .Expr(e) => m.ev_discard(a, e)
+        .SetLocal(l, value) => m.set_local_node(a, l, value)
+        _ => m.exec_other(a, st)
+    }
+    if m.temps.items.len > tm { m.kill_temps(tm) }
     m.release(mk)
     return r
 }
 
-exec_stmt_inner :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
-    match st {
-        .Expr(e) => return m.eval_discard(a, e)
-        _ => return m.exec_other(a, st)
+/// `local = value` for a local of this frame.
+set_local_node :: fn(m: ^Machine, a: Act, l: u32, value: ^Node) -> Flow!() needs Run {
+    fr := a.fr
+    i := us(l)
+    if value.size <= 8 and fr.mem[i] is 0 and not fr.info.addressed[i] {
+        v := try m.ew(a, value)
+        off := us(fr.info.offsets[i])
+        m.wr_word(fr.store[off..off + us(value.size)], v)
+        return ()
     }
+    b := m.tmp(value.size)
+    try m.ev(a, value, b)
+    return m.set_local(value.span, fr, l, b)
 }
 
-/// The statements other than expressions.
+/// The statements other than expressions and assignments to locals.
 #noinline
-exec_other :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
+exec_other :: fn(m: ^Machine, a: Act, st: St) -> Flow!() needs Run {
     match st {
-        .Expr(e) => try m.eval_discard(a, e)
-        .Let(l, ?init) => {
+        .Expr(e) => try m.ev_discard(a, e)
+        .SetLocal(l, value) => try m.set_local_node(a, l, value)
+        .Let(l, off, size, ?init) => {
             fr := a.fr
-            n := fr.info.sizes[us(l)]
+            i := us(l)
             if e := init {
-                i := us(l)
                 // A local kept in the frame is computed in place.
                 if fr.mem[i] is 0 and not fr.info.addressed[i] {
-                    off := us(fr.info.offsets[i])
-                    try m.eval(a, e, fr.store[off..off + us(n)])
+                    o := us(off)
+                    try m.ev(a, e, fr.store[o..o + us(size)])
                     return ()
                 }
-                b := m.tmp(n)
-                try m.eval(a, e, b)
+                b := m.tmp(size)
+                try m.ev(a, e, b)
                 try m.set_local(e.span, fr, l, b)
-            } else if fr.info.addressed[us(l)] {
+            } else if fr.info.addressed[i] {
                 _ = try m.local_addr(source.DUMMY, fr, l)
             }
         }
         .LetTuple(locals, init) => {
-            b := m.tmp(m.size(init.ty))
-            try m.eval(a, init, b)
+            b := m.tmp(init.size)
+            try m.ev(a, init, b)
             for i, l in enumerate(locals) {
                 if x := l {
                     fb := m.tmp(a.fr.info.sizes[us(x)])
@@ -130,15 +153,9 @@ exec_other :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
             }
         }
         .Assign(place_, value) => {
-            if .Local(l) := place_.kind {
-                b := m.tmp(m.size(place_.ty))
-                try m.eval(a, value, b)
-                try m.set_local(place_.span, a.fr, l, b)
-                return ()
-            }
             p := try m.place(a, place_, false)
-            b := m.tmp(m.size(place_.ty))
-            try m.eval(a, value, b)
+            b := m.tmp(value.size)
+            try m.ev(a, value, b)
             try m.write_place(place_.span, p, place_.ty, b)
         }
         .AssignTuple(places, value) => {
@@ -146,12 +163,12 @@ exec_other :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
             for x in places {
                 if pe := x { ps.push(try m.place(a, pe, false))! } else { ps.push(null)! }
             }
-            b := m.tmp(m.size(value.ty))
-            try m.eval(a, value, b)
+            b := m.tmp(value.size)
+            try m.ev(a, value, b)
             for i, x in enumerate(places) {
                 pe := x else continue
                 p := ps.items[i] else continue
-                fb := m.tmp(m.size(pe.ty))
+                fb := m.tmp(pe.size)
                 m.read_field(value.ty, b, i.trunc(u32), fb)
                 try m.write_place(pe.span, p, pe.ty, fb)
             }
@@ -165,13 +182,13 @@ exec_other :: fn(m: ^Machine, a: Act, st: tir.Stmt) -> Flow!() needs Run {
 // Conditions and patterns
 // ---------------------------------------------------------------------------------
 
-conds :: fn(m: ^Machine, a: Act, parts: []tir.CondPart) -> Flow!bool needs Run {
+conds :: fn(m: ^Machine, a: Act, parts: []Cond) -> Flow!bool needs Run {
     for c in parts {
         match c {
-            .Bool(e) => if not try m.cond(a, e) { return false }
+            .Bool(e) => if (try m.ew(a, e)) is 0 { return false }
             .Match(pat, value) => {
-                b := m.tmp(m.size(value.ty))
-                try m.eval(a, value, b)
+                b := m.tmp(value.size)
+                try m.ev(a, value, b)
                 if not try m.match_pat(a, pat, b) { return false }
             }
         }
@@ -179,7 +196,7 @@ conds :: fn(m: ^Machine, a: Act, parts: []tir.CondPart) -> Flow!bool needs Run {
     return true
 }
 
-match_pat :: fn(m: ^Machine, a: Act, pat: ^tir.Pat, b: []u8) -> Flow!bool needs Run {
+match_pat :: fn(m: ^Machine, a: Act, pat: ^Pat, b: []u8) -> Flow!bool needs Run {
     span := pat.span
     match pat.kind {
         .Wild => return true
@@ -188,8 +205,8 @@ match_pat :: fn(m: ^Machine, a: Act, pat: ^tir.Pat, b: []u8) -> Flow!bool needs 
             return true
         }
         .Const(e) => {
-            c := m.tmp(m.size(e.ty))
-            try m.eval(a, e, c)
+            c := m.tmp(e.size)
+            try m.ev(a, e, c)
             if e.ty is not pat.ty and .Optional(inner) := m.kind(pat.ty) and inner is e.ty {
                 if not m.opt_present(pat.ty, b) { return false }
                 return m.equal(span, e.ty, m.opt_payload(pat.ty, b), c)
@@ -222,14 +239,16 @@ match_pat :: fn(m: ^Machine, a: Act, pat: ^tir.Pat, b: []u8) -> Flow!bool needs 
             if not m.res_is_err(pat.ty, b) { return false }
             return m.match_pat(a, p, m.res_payload(pat.ty, b))
         }
-        .Variant(variant, ?payload) => {
-            idx := m.variant_index(pat.ty, b) else return !m.trap(span, "internal error: a union value with an invalid tag")
-            if idx is not variant { return false }
-            p := payload else return true
-            u := m.union_def(pat.ty) else return true
-            pt := u.variants[us(idx)].payload else p.ty
-            off := us(m.payload_offset(pat.ty))
-            return m.match_pat(a, p, b[off..off + us(m.size(pt))])
+        .Variant(x) => {
+            tb := b[0..us(x.tag_size)]
+            if x.tag_size <= 8 {
+                if m.rd_word(tb) is not x.tag_w { return false }
+            } else if m.get_int(x.tag_ty, tb) is not x.tag {
+                return false
+            }
+            p := x.payload else return true
+            o := us(x.off)
+            return m.match_pat(a, p, b[o..o + us(x.size)])
         }
         .Or(alts) => {
             for p in alts {
@@ -248,51 +267,51 @@ match_pat :: fn(m: ^Machine, a: Act, pat: ^tir.Pat, b: []u8) -> Flow!bool needs 
     }
 }
 
-match_ :: fn(m: ^Machine, a: Act, scrutinee: ^Expr, arms: []tir.Arm, e: ^Expr, dst: []u8) -> Flow!() needs Run {
-    b := m.tmp(m.size(scrutinee.ty))
-    try m.eval(a, scrutinee, b)
+match_ :: fn(m: ^Machine, a: Act, scrutinee: ^Node, arms: []Arm, n: ^Node, dst: []u8) -> Flow!() needs Run {
+    b := m.tmp(scrutinee.size)
+    try m.ev(a, scrutinee, b)
     for arm in arms {
         if not try m.match_pat(a, arm.pat, b) { continue }
         if g := arm.guard {
             if not try m.cond(a, g) { continue }
         }
-        return m.eval(a, arm.body, dst)
+        return m.ev(a, arm.body, dst)
     }
-    return !m.trap(e.span, "no match arm matched the scrutinee")
+    return !m.trap(n.span, "no match arm matched the scrutinee")
 }
 
 // ---------------------------------------------------------------------------------
 // Loops
 // ---------------------------------------------------------------------------------
 
-loop_ :: fn(m: ^Machine, a: Act, x: tir.LoopExpr, dst: []u8) -> Flow!() needs Run {
+loop_ :: fn(m: ^Machine, a: Act, label: u32, cond: []Cond, body: ^Blk, step: ?^Node, dst: []u8) -> Flow!() needs Run {
     fr := a.fr
-    fr.labels.push(LabelDst(label: x.label, dst: dst))!
+    fr.labels.push(LabelDst(label: label, dst: dst))!
     depth := fr.labels.items.len
-    r := m.loop_body(a, x)
+    r := m.loop_body(a, label, cond, body, step)
     fr.labels.truncate(depth - 1)
     r else f => {
-        if .Break(frame, label) := f and frame is fr.id and label is x.label { return () }
+        if .Break(frame, l) := f and frame is fr.id and l is label { return () }
         return !f
     }
 }
 
-loop_body :: fn(m: ^Machine, a: Act, x: tir.LoopExpr) -> Flow!() needs Run {
+loop_body :: fn(m: ^Machine, a: Act, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) -> Flow!() needs Run {
     fr := a.fr
     while true {
         tm := m.temps.items.len
         mk := m.mark()
-        try m.tick(source.DUMMY)
-        if not try m.conds(a, x.cond) {
+        if m.threads.list.items.len > 1 { try m.tick(source.DUMMY) }
+        if not try m.conds(a, cond) {
             m.kill_temps(tm)
             m.release(mk)
             return ()
         }
-        m.block(a, x.body, empty_slice(u8)) else f => {
-            if .Continue(frame, label) := f and frame is fr.id and label is x.label {} else { return !f }
+        m.block(a, body, empty_slice(u8)) else f => {
+            if .Continue(frame, l) := f and frame is fr.id and l is label {} else { return !f }
         }
-        if st := x.step { try m.eval_discard(a, st) }
-        m.kill_temps(tm)
+        if st := step { try m.ev_discard(a, st) }
+        if m.temps.items.len > tm { m.kill_temps(tm) }
         m.release(mk)
     }
 }

@@ -178,23 +178,6 @@ ptr_align :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc {
     }
 }
 
-/// Evaluates the arguments of the builtin `op` and applies it (not the ones `eval_builtin`
-/// handles itself).
-builtin :: fn(m: ^Machine, a: Act, op: tir.Builtin, args: []Expr, e: ^Expr, dst: []u8) -> Flow!() needs Run {
-    mk := m.mark()
-    vals := list([]u8)
-    defer vals.deinit()
-    for i in 0..args.len {
-        b := m.tmp(m.size(args[i].ty))
-        try m.eval(a, &args[i], b)
-        vals.push(b)!
-    }
-    t0 := if args.len > 0 { args[0].ty } else { e.ty }
-    t1 := if args.len > 1 { args[1].ty } else { t0 }
-    try m.apply_builtin(e.span, op, e.ty, t0, t1, vals.items, dst)
-    m.release(mk)
-}
-
 /// The decimal text of the integer of type `t` in `b`.
 int_text :: fn(m: ^Machine, t: Ty, b: []const u8) -> string needs Alloc {
     v := m.get_int(t, b)

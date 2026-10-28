@@ -11,9 +11,12 @@
 // split gives the functions and data external linkage instead: their names all start
 // with `gm_`, as do the runtime's, so they cannot clash with the C library or the
 // program's own C code. Small `static` helpers of the shared header stay `static`, one
-// copy per unit.
+// copy per unit. The `#inline` functions go to the shared text as C99 inline definitions,
+// so that every unit can inline them, and unit 0 declares them `extern`, which makes its
+// copy the one external definition: a function's address is the same in every unit.
 
 arena :: import "std/arena"
+hash_map :: import "std/collections/hash_map"
 str :: import "std/str"
 
 /// The generated code by role, as `generate` produces it in one unit.
@@ -77,9 +80,30 @@ pub Split :: struct {
 
 /// As `split`, with the text the units share kept apart.
 pub split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
+    all := items_of(parts.funcs) else return null
+    // The inline functions, by name: their definitions are shared.
+    inline_names := hash_map.hash_map(string, ())
+    defer inline_names.deinit()
+    inline_defs := list(u8)
+    for item in all {
+        if d := inline_definition(item) {
+            inline_defs.extend(d.def)!
+            inline_names.put(d.name, ())!
+        }
+    }
     decls := list(u8)
     defs := list(u8)
+    // Unit 0's `extern` declarations of the inline functions.
+    externs := list(u8)
     for line in str.lines(parts.protos) {
+        if name := c_fn_name(line) and inline_names.get(name) is not null {
+            d := str.strip_prefix(line, "static ") else line
+            if not str.contains(d, "inline ") { d = str.format("inline {}", d)! }
+            decls.extend(d)!
+            decls.push('\n')!
+            externs.write("extern {}\n", external(line) else line)!
+            continue
+        }
         decls.extend(external(line) else line)!
         decls.push('\n')!
     }
@@ -96,19 +120,20 @@ pub split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
         defs.push('\n')!
     }
     items := list(string)
-    for item in items_of(parts.funcs) else return null {
+    for item in all {
+        if inline_definition(item) is not null { continue }
         f := function(item) else return null
         decls.extend(f.decl)!
         decls.push('\n')!
         items.push(f.def)!
     }
-    shared := str.format("{}{}", parts.head, decls.items)!
+    shared := str.format("{}{}{}", parts.head, decls.items, inline_defs.items)!
     total: usize = 0
     for item in items.items { total += item.len }
     share := ((total + n.max(1) - 1) / n.max(1)).max(1)
     units := list(List(u8))
     first := list(u8)
-    first.write("{}{}", parts.once, defs.items)!
+    first.write("{}{}{}", parts.once, defs.items, externs.items)!
     units.push(first)!
     size: usize = 0
     for item in items.items {
@@ -123,6 +148,46 @@ pub split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
     out := list(string)
     for u in units.items { out.push(u.items)! }
     return Split(shared: shared, units: out.items)
+}
+
+/// The name of the function a declaration or definition line declares: the first `gm_`
+/// identifier followed by its parameters.
+c_fn_name :: fn(line: string) -> ?string {
+    i: usize = 0
+    while i + 3 <= line.len {
+        if line[i..i + 3] is "gm_" and (i is 0 or not ident_char(line[i - 1])) {
+            j := i
+            while j < line.len and ident_char(line[j]) { j += 1 }
+            if j < line.len and line[j] is '(' { return line[i..j] }
+            i = j
+        } else {
+            i += 1
+        }
+    }
+    return null
+}
+
+ident_char :: fn(c: u8) -> bool => (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c is '_'
+
+/// Whether the first line of a function definition is of an `#inline` function. (The small
+/// functions an optimized build marks `inline` are external: sharing their thousands of
+/// definitions would multiply the work of every unit.)
+is_inline :: fn(line: string) -> bool => line.starts_with("static ") and str.contains(line, "__attribute__((always_inline)) inline ")
+
+/// Function definition `item` as an inline definition (without `static`) and its name, if
+/// it is of an inline function.
+inline_definition :: fn(item: string) -> ?(def: string, name: string) needs Alloc {
+    start: usize = 0
+    while start < item.len and item[start] is '#' {
+        end := str.find(item[start..item.len], "\n") else break
+        start += end + 1
+    }
+    text := item[start..item.len]
+    first_end := str.find(text, "\n") else text.len
+    first := text[0..first_end]
+    if not is_inline(first) { return null }
+    name := c_fn_name(first) else return null
+    return (def: str.format("{}{}", item[0..start], text["static ".len..text.len])!, name: name)
 }
 
 /// `line` as an external declaration, if it is a `static` one (not `static inline`, except
@@ -267,7 +332,30 @@ test "functions and data get external linkage" {
     }
 }
 
-test "an inline hint does not cross units" {
+test "inline functions are inline definitions in every unit, external in unit 0" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := test_parts()
+        p.protos = str.format("{}static __attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f5(int a);\nstatic __attribute__((aligned(4))) int gm_f6(void);\n", p.protos)!
+        p.funcs = str.format("{}#line 9 \"a.gm\"\nstatic __attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f5(int a) {{\n    return a;\n}}\nstatic inline __attribute__((aligned(4))) int gm_f6(void) {{ return 6; }}\n", p.funcs)!
+        // A small function of an optimized build stays external.
+        units := split(&p, 2) else {
+            expect(false)
+            return
+        }
+        for u in units {
+            expect(str.contains(u, "\n__attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f5(int a);\n"))
+            expect(str.contains(u, "#line 9 \"a.gm\"\n__attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f5(int a) {\n    return a;\n}\n"))
+            expect(str.contains(u, "\n__attribute__((aligned(4))) int gm_f6(void);\n"))
+        }
+        expect(str.contains(units[0], "extern __attribute__((aligned(4))) int gm_f5(int a);\n"))
+        expect(str.contains(units[0], "\n__attribute__((aligned(4))) int gm_f6(void) { return 6; }\n") or str.contains(units[1], "\n__attribute__((aligned(4))) int gm_f6(void) { return 6; }\n"))
+        expect(not str.contains(units[1], "extern __attribute__((aligned(4))) int gm_f5"))
+    }
+}
+
+test "an inline hint is dropped from external declarations" {
     a := arena.new()
     defer a.deinit()
     with a.allocator() {

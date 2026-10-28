@@ -5,7 +5,7 @@
   main.gm dispatch; syntax/ parse/ ast/ load/ (modules, core.gm loads lib/core from disk,
   Module.index hash of scope) sema/ (decls, layout cache with generations) check/ (bodies →
   TIR; FnCx in func.gm; expr.gm `expr` wrapper → `expr_kind`) tir/ eval/ (comptime,
-  structured values) interp/ (tree-walker over bytes) cgen/ (C; units.gm splits) driver/
+  structured values) interp/ (code.gm lowering + vm.gm register machine, run.gm tree fallback; decisions/056) cgen/ (C; units.gm splits) driver/
   (native.gm compile_c: unit policy, runtime object cache) pkg/ testing/ fmt/ doc/ lint/
   linting/ fix/ repl/ ide/ lsp/.
 - lib/core (prelude, list, map, slice, complex) may use core-only intrinsics (@heap_*,

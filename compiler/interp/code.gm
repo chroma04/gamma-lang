@@ -1,0 +1,545 @@
+// The interpreter's code: the typed IR of a function body lowered once, on the function's
+// first call, into nodes that carry what evaluation would otherwise look up at every step:
+// the size of each value, the frame offsets of locals, the offsets of fields and the sizes
+// of elements, and specialized operations for the values that fit in a machine word
+// (integers of 8 to 64 bits, `f32` and `f64`, booleans and pointers), which `ew` computes
+// as `u64`s without going through memory (`run.gm`).
+
+/// A lowered expression: its operation, type, size in bytes and location.
+Node :: struct {
+    op: Op
+    ty: Ty
+    size: u64
+    span: source.Span
+    /// Whether reading it as a place needs no copy (`is_place_expr`).
+    place: bool
+}
+
+/// Where an index or slice finds its elements.
+SeqKind :: union {
+    /// An array value or place.
+    Array
+    Slice
+    ManyPtr
+    /// A pointer to an array.
+    PtrArray
+}
+
+/// How a word comparison compares: as unsigned or signed integers of `bits` bits (pointers
+/// and booleans are unsigned), or as floats.
+WordCmp :: union {
+    Unsigned
+    Signed: u32
+    F32
+    F64
+    /// Booleans: any nonzero byte is true.
+    Bool
+}
+
+/// An integer type of 8, 16, 32 or 64 bits whose values are held in words.
+IntW :: struct {
+    signed: bool
+    bits: u32
+}
+
+Op :: union {
+    // Constants.
+    /// A constant of at most 8 bytes, as a word.
+    Word: u64
+    /// A larger constant, as bytes.
+    Bytes: []u8
+    Str: []const u8
+    CStr: []const u8
+    /// A constant in static memory, by its declaration.
+    Const: source.Span
+    /// `---`: unspecified bytes.
+    Uninit
+
+    // Places.
+    /// A local of this frame and its offset in the frame's storage.
+    Local: (local: u32, off: u64)
+    Upvar: (levels: u32, local: u32)
+    Global: usize
+    Deref: (ptr: ^Node, align: u64)
+    /// A field of a struct, tuple, union payload or `#c_union` at `off` (`packed`: of a packed
+    /// struct, so possibly unaligned).
+    Field: (base: ^Node, index: u32, off: u64, packed: bool)
+    /// A field of a `#bits` struct: its bit offset and type.
+    BitsField: (base: ^Node, index: u32, bit_off: u32, fty: Ty)
+    Index: (base: ^Node, index: ^Node, seq: SeqKind, esz: u64, len: u64)
+    Slice: (base: ^Node, lo: ?^Node, hi: ?^Node, inclusive: bool, seq: SeqKind, esz: u64, len: u64)
+    SliceLen: ^Node
+    SlicePtr: ^Node
+
+    // Values.
+    AddrOf: ^Node
+    AddrOfTemp: (x: ^Node, align: u64)
+    /// A named function as a value: a function pointer, or (`second`) a second-class one.
+    FnRef: (f: u32, second: bool)
+    Closure: u32
+    HandlerRef: u32
+    /// `+ - * << >> / % & | ~` on word integers (not the optional flavor).
+    IntOp: (op: tir.BinOp, t: IntW, shift: IntW, l: ^Node, r: ^Node)
+    /// `+ - * /` on `f32` or `f64`.
+    FloatOp: (op: tir.BinOp, wide: bool, l: ^Node, r: ^Node)
+    /// `< <= > >=` on words.
+    Cmp: (op: tir.BinOp, how: WordCmp, l: ^Node, r: ^Node)
+    /// `is` and `is not` on words.
+    EqW: (how: WordCmp, l: ^Node, r: ^Node, negated: bool)
+    /// `not` of a boolean.
+    Not: ^Node
+    /// `-` and `~` of a word integer.
+    IntUn: (op: tir.UnOp, t: IntW, x: ^Node)
+    /// A word integer converted to another (`Convert`, `Trunc`, `Sat` or a widening).
+    IntConv: (op: tir.Builtin, from: IntW, to: IntW, x: ^Node)
+    Unary: (op: tir.UnOp, x: ^Node)
+    Binary: (op: tir.BinOp, l: ^Node, r: ^Node)
+    Logic: (is_and: bool, l: ^Node, r: ^Node)
+    Coerce: (kind: tir.Coercion, x: ^Node)
+    Builtin: (op: tir.Builtin, args: []^Node)
+    Call: (f: u32, args: []^Node)
+    Perform: (effect_: types.EffectRef, op: u32, args: []^Node)
+    CallValue: (callee: ^Node, args: []^Node)
+    /// A struct or tuple: each item at its offset.
+    Aggregate: (items: []^Node, offs: []u64)
+    /// A `#c_union` value from its first field.
+    CUnionValue: ?^Node
+    /// A `#bits` struct value.
+    BitsValue: []^Node
+    Array: []^Node
+    ArrayFill: ^Node
+    Variant: (variant: u32, payload: ?^Node)
+    MakeErr: ^Node
+    Unwrap: (x: ^Node, is_result: bool)
+    Else: (lhs: ^Node, capture: ?u32, rhs: ^Node)
+    Try: (x: ^Node, lift: ?u32, levels: u32)
+    Eq: (l: ^Node, r: ^Node, negated: bool)
+    In: (elem: ^Node, container: ^Node, negated: bool)
+    Match: (scrutinee: ^Node, arms: []Arm)
+
+    // Control flow.
+    Block: ^Blk
+    If: (cond: []Cond, then: ^Node, else_: ?^Node)
+    Loop: (label: u32, cond: []Cond, body: ^Blk, step: ?^Node)
+    Break: (target: tir.Target, value: ?^Node)
+    Continue: tir.Target
+    Return: (levels: u32, value: ^Node)
+    Trap: ^Node
+    Resume: (k: ^Node, v: ^Node)
+    Cancel: ^Node
+    Write: (sink: Sink, pieces: []const []const u8, specs: []const tir.FmtSpec, args: []^Node)
+    With: With
+    /// What checking leaves only in generic bodies.
+    Leftover
+}
+
+pub Blk :: struct {
+    stmts: []St
+    tail: ?^Node
+    /// Whether some statement is a `defer` or `errdefer`.
+    defers: bool
+}
+
+St :: union {
+    /// `local := init`: its index, offset and size in the frame.
+    Let: (local: u32, off: u64, size: u64, init: ?^Node)
+    LetTuple: (locals: []?u32, init: ^Node)
+    /// An assignment to a local of this frame.
+    SetLocal: (local: u32, value: ^Node)
+    Assign: (place: ^Node, value: ^Node)
+    AssignTuple: (places: []?^Node, value: ^Node)
+    Expr: ^Node
+    Defer: (is_err: bool, body: ^Node)
+}
+
+Cond :: union {
+    Bool: ^Node
+    Match: (pat: ^Pat, value: ^Node)
+}
+
+Arm :: struct {
+    pat: ^Pat
+    guard: ?^Node
+    body: ^Node
+}
+
+Pat :: struct {
+    ty: Ty
+    kind: PatKind
+    span: source.Span
+}
+
+PatKind :: union {
+    Wild
+    Bind: u32
+    Const: ^Node
+    Range: (lo: bigint.Int, hi: bigint.Int, inclusive: bool)
+    Null
+    Some: ^Pat
+    Ok: ^Pat
+    Err: ^Pat
+    /// A union variant: the type and size of the tag and its value (as `get_int` reads it,
+    /// and as a word), and the payload's offset, size and pattern.
+    Variant: (variant: u32, tag_ty: Ty, tag_size: u64, tag: u128, tag_w: u64, off: u64, size: u64, payload: ?^Pat)
+    Fields: [](index: u32, pat: ^Pat)
+    Or: []^Pat
+}
+
+Sink :: union {
+    Perform: (effect_: types.EffectRef, op: u32)
+    Fn: ^Node
+}
+
+With :: struct {
+    label: u32
+    handlers: []Handler
+    on: ?^Node
+    body: ^Node
+}
+
+Handler :: union {
+    Literal: ^Node
+    Decl: (decls: []u32, value: ^Node)
+}
+
+// ---------------------------------------------------------------------------------
+// Lowering
+// ---------------------------------------------------------------------------------
+
+/// Lowers expressions of the function whose locals `info` describes.
+Lower :: struct {
+    m: ^Machine
+    info: ^FnInfo
+}
+
+/// The word integer type `t`, if it is one.
+int_w :: fn(m: ^Machine, t: Ty) -> ?IntW needs Alloc {
+    info := m.int_info(t) else return null
+    if info.bits not in (8, 16, 32, 64) or u64(info.bits) is not 8 * m.size(t) { return null }
+    return IntW(signed: info.signed, bits: info.bits)
+}
+
+/// How words of type `t` compare, if they do.
+word_cmp :: fn(m: ^Machine, t: Ty) -> ?WordCmp needs Alloc {
+    if w := int_w(m, t) { return if w.signed { .Signed(w.bits) } else { .Unsigned } }
+    match m.kind(t) {
+        .Float(w) => return if w is 32 { .F32 } else if w is 64 { .F64 } else { null }
+        .Bool => return .Bool
+        .Ptr(_, _), .ManyPtr(_, _), .Rawptr, .FnPtr(_) => return .Unsigned
+        _ => return null
+    }
+}
+
+/// The lowered body of a function with locals `info`.
+lower_body :: fn(m: ^Machine, info: ^FnInfo, e: ^Expr) -> ^Node needs Alloc {
+    lw := Lower(m: m, info: info)
+    return lw.expr(e)
+}
+
+mk_node :: fn(lw: ^Lower, e: ^const Expr, op: Op) -> ^Node needs Alloc => new(Node(op: op, ty: e.ty, size: lw.m.size(e.ty), span: e.span, place: is_place_expr(lw.m, e)))!
+
+exprs :: fn(lw: ^Lower, xs: []Expr) -> []^Node needs Alloc {
+    out := list(^Node)
+    for i in 0..xs.len { out.push(lw.expr(&xs[i]))! }
+    return out.items
+}
+
+opt_expr :: fn(lw: ^Lower, x: ?^Expr) -> ?^Node needs Alloc {
+    e := x else return null
+    return lw.expr(e)
+}
+
+/// The sequence kind and element size of an indexed or sliced `t`, and the length of an
+/// array.
+seq_kind :: fn(m: ^Machine, t: Ty) -> ?(seq: SeqKind, len: u64) needs Alloc {
+    match m.kind(t) {
+        .Array(len, _, _) => return (seq: .Array, len: len)
+        .Slice(_, _) => return (seq: .Slice, len: 0)
+        .ManyPtr(_, _) => return (seq: .ManyPtr, len: 0)
+        .Ptr(_, pointee) => {
+            .Array(len, _, _) := m.kind(pointee) else return null
+            return (seq: .PtrArray, len: len)
+        }
+        _ => return null
+    }
+}
+
+expr :: fn(lw: ^Lower, e: ^Expr) -> ^Node needs Alloc {
+    m := lw.m
+    op: Op = match e.kind {
+        .Int(i) => {
+            n := m.size(e.ty)
+            b := make_fill(us(n.max(1)), u8(0))!
+            if m.kind(e.ty) is .Float(_) {
+                m.put_float(e.ty, m.big_float(i), b[0..us(n)])
+            } else {
+                m.put_uint(b[0..us(n)], tag_bits(i))
+            }
+            const_op(m, b[0..us(n)])
+        }
+        .Float(x) => {
+            n := m.size(e.ty)
+            b := make_fill(us(n.max(1)), u8(0))!
+            m.put_float(e.ty, x, b[0..us(n)])
+            const_op(m, b[0..us(n)])
+        }
+        .Bool(b) => .Word(if b { 1 } else { 0 })
+        .Str(bytes) => .Str(bytes)
+        .CStr(bytes) => .CStr(bytes)
+        .Null => const_op(m, make_fill(us(m.size(e.ty)), u8(0))!)
+        .Uninit => .Uninit
+        .Local(l) => .Local(l, lw.info.offsets[us(l)])
+        .Upvar(levels, l) => .Upvar(levels, l)
+        .Global(_, decl) => .Global(decl)
+        .Const(_, span) => .Const(span)
+        .Deref(x) => .Deref(lw.expr(x), m.align(e.ty))
+        .Field(base, index) => {
+            b := lw.expr(base)
+            if m.bits_struct_ty(base.ty) is not null {
+                bf := m.bits_field(base.ty, index)
+                Op.BitsField(b, index, bf.off, bf.ty)
+            } else {
+                Op.Field(b, index, m.field_layout(base.ty, index).off, m.is_packed(base.ty))
+            }
+        }
+        .Index(base, index, _) => {
+            sk := seq_kind(m, base.ty) else (seq: SeqKind.Slice, len: 0)
+            Op.Index(lw.expr(base), lw.expr(index), sk.seq, m.size(e.ty), sk.len)
+        }
+        .Slice(sl) => {
+            sk := seq_kind(m, sl.base.ty) else (seq: SeqKind.Slice, len: 0)
+            esz: u64 = 0
+            if .Slice(_, elem) := m.kind(e.ty) { esz = m.size(elem) }
+            Op.Slice(lw.expr(sl.base), lw.opt_expr(sl.lo), lw.opt_expr(sl.hi), sl.inclusive, sk.seq, esz, sk.len)
+        }
+        .SliceLen(x) => .SliceLen(lw.expr(x))
+        .SlicePtr(x) => .SlicePtr(lw.expr(x))
+        .AddrOf(x) => .AddrOf(lw.expr(x))
+        .AddrOfTemp(x) => .AddrOfTemp(lw.expr(x), m.align(x.ty))
+        .FnRef(f) => .FnRef(f, m.kind(e.ty) is .Fn(_))
+        .Closure(f) => .Closure(f)
+        .HandlerRef(h) => .HandlerRef(h)
+        .Unary(op, x) => lw.low_unary(op, x, e)
+        .Binary(op, l, r) => lw.low_binary(op, l, r, e)
+        .Logic(is_and, l, r) => .Logic(is_and, lw.expr(l), lw.expr(r))
+        .Coerce(kind, x) => lw.low_coerce(kind, x, e)
+        .Builtin(op, args) => lw.low_builtin(op, args, e)
+        .Call(callee, args) => match callee {
+            .Fn(f) => .Call(f, lw.exprs(args))
+            .Perform(effect_, op) => .Perform(effect_, op, lw.exprs(args))
+            .Indirect(c) => {
+                cn := lw.expr(c)
+                Op.CallValue(cn, lw.exprs(args))
+            }
+        }
+        .Aggregate(items) => {
+            if m.bits_struct_ty(e.ty) is not null {
+                Op.BitsValue(lw.exprs(items))
+            } else if ad := m.adt_of(e.ty) and ad.kind is .CUnion(_) {
+                Op.CUnionValue(if items.len > 0 { lw.expr(&items[0]) } else { null })
+            } else {
+                offs := make(u64, items.len)!
+                for i in 0..items.len { offs[i] = m.field_layout(e.ty, i.trunc(u32)).off }
+                Op.Aggregate(lw.exprs(items), offs)
+            }
+        }
+        .Array(items) => .Array(lw.exprs(items))
+        .ArrayFill(x) => .ArrayFill(lw.expr(x))
+        .Variant(v) => .Variant(v.variant, lw.opt_expr(v.payload))
+        .MakeErr(x) => .MakeErr(lw.expr(x))
+        .Unwrap(x, is_result) => .Unwrap(lw.expr(x), is_result)
+        .Else(x) => .Else(lw.expr(x.lhs), x.capture, lw.expr(x.rhs))
+        .Try(x) => .Try(lw.expr(x.expr), x.lift, x.levels)
+        .Eq(l, r, negated) => {
+            ln := lw.expr(l)
+            rn := lw.expr(r)
+            if how := eq_word(m, l.ty) and m.size(l.ty) <= 8 { .EqW(how, ln, rn, negated) } else { .Eq(ln, rn, negated) }
+        }
+        .In(elem, container, negated) => .In(lw.expr(elem), lw.expr(container), negated)
+        .Match(scrutinee, arms) => {
+            s := lw.expr(scrutinee)
+            out := list(Arm)
+            for arm in arms { out.push(Arm(pat: lw.low_pat(arm.pat), guard: lw.opt_expr(arm.guard), body: lw.expr(arm.body)))! }
+            Op.Match(s, out.items)
+        }
+        .Block(b) => .Block(lw.low_block(b))
+        .If(x) => .If(lw.low_conds(x.cond), lw.expr(x.then), lw.opt_expr(x.else_))
+        .Loop(x) => .Loop(x.label, lw.low_conds(x.cond), lw.low_block(x.body), lw.opt_expr(x.step))
+        .Break(x) => .Break(x.target, lw.opt_expr(x.value))
+        .Continue(t) => .Continue(t)
+        .Return(levels, value) => .Return(levels, lw.expr(value))
+        .Trap(x) => .Trap(lw.expr(x))
+        .Resume(k, v) => .Resume(lw.expr(k), lw.expr(v))
+        .Cancel(k) => .Cancel(lw.expr(k))
+        .Write(w) => {
+            sink: Sink = match w.sink {
+                .Perform(effect_, op) => .Perform(effect_, op)
+                .Fn(x) => .Fn(lw.expr(x))
+            }
+            Op.Write(sink, w.pieces, w.specs, lw.exprs(w.args))
+        }
+        .With(w) => {
+            hs := list(Handler)
+            for h in w.handlers {
+                hv: Handler = match h {
+                    .Literal(x) => .Literal(lw.expr(x))
+                    .Decl(decls, value) => .Decl(decls, lw.expr(value))
+                }
+                hs.push(hv)!
+            }
+            Op.With(With(label: w.label, handlers: hs.items, on: lw.opt_expr(w.on), body: lw.expr(w.body)))
+        }
+        .SizeOf(_), .IntLimit(_), .TypeName(_), .TypeIs(_), .UntypedFloat(_), .UntypedComplex(_), .ValueParam(_), .WriteDeferred(_), .SoaDeferred(_) => .Leftover
+    }
+    return lw.mk_node(e, op)
+}
+
+/// A constant's operation: a word if it fits in one.
+const_op :: fn(m: ^Machine, b: []u8) -> Op {
+    if b.len <= 8 { return .Word(m.get_u64(b)) }
+    return .Bytes(b)
+}
+
+/// How `is` compares words of type `t`, if it can.
+eq_word :: fn(m: ^Machine, t: Ty) -> ?WordCmp needs Alloc {
+    if .Optional(inner) := m.kind(t) and cgen.nullable_pointer(m.s, inner) { return .Unsigned }
+    return word_cmp(m, t)
+}
+
+low_unary :: fn(lw: ^Lower, op: tir.UnOp, x: ^Expr, e: ^Expr) -> Op needs Alloc {
+    m := lw.m
+    xn := lw.expr(x)
+    if op is .Not { return .Not(xn) }
+    if t := int_w(m, x.ty) { return .IntUn(op, t, xn) }
+    return .Unary(op, xn)
+}
+
+low_binary :: fn(lw: ^Lower, op: tir.BinOp, l, r: ^Expr, e: ^Expr) -> Op needs Alloc {
+    m := lw.m
+    ln := lw.expr(l)
+    rn := lw.expr(r)
+    if is_cmp(op) {
+        if how := word_cmp(m, l.ty) and how is not .Bool { return .Cmp(op, how, ln, rn) }
+        return .Binary(op, ln, rn)
+    }
+    if t := int_w(m, l.ty) {
+        opt := match op {
+            .Add(fl), .Sub(fl), .Mul(fl), .Shl(fl) => fl is .Opt
+            _ => false
+        }
+        if not opt {
+            shift := t
+            if is_shift(op) { shift = int_w(m, r.ty) else return .Binary(op, ln, rn) }
+            return .IntOp(op, t, shift, ln, rn)
+        }
+    }
+    if .Float(w) := m.kind(l.ty) and w in (32, 64) and is_float_op(op) { return .FloatOp(op, w is 64, ln, rn) }
+    return .Binary(op, ln, rn)
+}
+
+is_shift :: fn(op: tir.BinOp) -> bool => match op {
+    .Shl(_), .Shr => true
+    _ => false
+}
+
+is_float_op :: fn(op: tir.BinOp) -> bool => match op {
+    .Add(_), .Sub(_), .Mul(_), .Div => true
+    _ => false
+}
+
+low_coerce :: fn(lw: ^Lower, kind: tir.Coercion, x: ^Expr, e: ^Expr) -> Op needs Alloc {
+    m := lw.m
+    xn := lw.expr(x)
+    if kind is .IntWiden {
+        if from := int_w(m, x.ty) and to := int_w(m, e.ty) { return .IntConv(.Convert, from, to, xn) }
+    }
+    return .Coerce(kind, xn)
+}
+
+low_builtin :: fn(lw: ^Lower, op: tir.Builtin, args: []Expr, e: ^Expr) -> Op needs Alloc {
+    m := lw.m
+    ns := lw.exprs(args)
+    if op in (tir.Builtin.Convert, .Trunc, .Sat) and args.len is 1 {
+        if from := int_w(m, args[0].ty) and to := int_w(m, e.ty) { return .IntConv(op, from, to, ns[0]) }
+    }
+    return .Builtin(op, ns)
+}
+
+low_block :: fn(lw: ^Lower, b: ^tir.Block) -> ^Blk needs Alloc {
+    m := lw.m
+    stmts := list(St)
+    defers := false
+    for st in b.stmts {
+        x: St = match st {
+            .Let(l, ?init) => .Let(l, lw.info.offsets[us(l)], lw.info.sizes[us(l)], lw.opt_expr(init))
+            .LetTuple(locals, init) => .LetTuple(locals, lw.expr(init))
+            .Assign(place_, value) => {
+                if .Local(l) := place_.kind { St.SetLocal(l, lw.expr(value)) } else { St.Assign(lw.expr(place_), lw.expr(value)) }
+            }
+            .AssignTuple(places, value) => {
+                ps := list(?^Node)
+                for p in places { ps.push(lw.opt_expr(p))! }
+                St.AssignTuple(ps.items, lw.expr(value))
+            }
+            .Expr(x) => .Expr(lw.expr(x))
+            .Defer(is_err, body) => {
+                defers = true
+                St.Defer(is_err, lw.expr(body))
+            }
+        }
+        stmts.push(x)!
+    }
+    return new(Blk(stmts: stmts.items, tail: lw.opt_expr(b.tail), defers: defers))!
+}
+
+low_conds :: fn(lw: ^Lower, parts: []tir.CondPart) -> []Cond needs Alloc {
+    out := list(Cond)
+    for c in parts {
+        x: Cond = match c {
+            .Bool(e) => .Bool(lw.expr(e))
+            .Match(pat, value) => .Match(lw.low_pat(pat), lw.expr(value))
+        }
+        out.push(x)!
+    }
+    return out.items
+}
+
+low_pat :: fn(lw: ^Lower, p: ^tir.Pat) -> ^Pat needs Alloc {
+    m := lw.m
+    kind: PatKind = match p.kind {
+        .Wild => .Wild
+        .Bind(l) => .Bind(l)
+        .Const(x) => .Const(lw.expr(x))
+        .Range(r) => .Range(r.lo, r.hi, r.inclusive)
+        .Null => .Null
+        .Some(x) => .Some(lw.low_pat(x))
+        .Ok(x) => .Ok(lw.low_pat(x))
+        .Err(x) => .Err(lw.low_pat(x))
+        .Variant(variant, ?payload) => {
+            u := m.union_def(p.ty)
+            tag_ty := p.ty
+            tag: u128 = 0
+            size: u64 = 0
+            if d := u {
+                tag_ty = d.tag
+                tag = tag_bits(d.variants[us(variant)].tag)
+                if pt := d.variants[us(variant)].payload { size = m.size(pt) }
+            }
+            ts := m.size(tag_ty)
+            // The tag's bytes as a word, for tags of at most 8 bytes.
+            tag_w := tag.trunc(u64) & mask64((8 * ts).min(64).trunc(u32))
+            PatKind.Variant(variant, tag_ty, ts, tag, tag_w, m.payload_offset(p.ty), size, if x := payload { lw.low_pat(x) } else { null })
+        }
+        .Fields(fields) => {
+            out := list((index: u32, pat: ^Pat))
+            for f in fields { out.push((index: f.index, pat: lw.low_pat(f.pat)))! }
+            PatKind.Fields(out.items)
+        }
+        .Or(alts) => {
+            out := list(^Pat)
+            for a in alts { out.push(lw.low_pat(a))! }
+            PatKind.Or(out.items)
+        }
+    }
+    return new(Pat(ty: p.ty, kind: kind, span: p.span))!
+}
