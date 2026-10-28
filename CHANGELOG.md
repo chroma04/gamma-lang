@@ -208,6 +208,17 @@ Rust implementation was still the one users ran; it is now `gamma`.
 
 ### Standard library
 
+- `Fs` has `canonical` (symlinks, `.` and `..` resolved; `fs.canonical_alloc`),
+  `read_link`, `symlink`, `set_mode` and `set_modified`, and `FileInfo` has `mode`. On
+  WASI they fail with `Unsupported`; the in-memory test file system stores modes and times
+  but has no symlinks.
+- `Proc.try_wait(child)` reports a status without blocking (`null` while the child runs),
+  and `SpawnOptions.program` names the file to run when `argv[0]` should be only the name
+  the child sees.
+- The handle types `File`, `Dir`, `Socket`, `Listener` and `Child` have a public `handle`,
+  so handlers written in Gamma (a virtual file system) can issue and read them.
+- `thread.defaults` gives a thread `Env` as well: `args`, `var`, and `exit`, which ends the
+  process once the thread's body has unwound.
 - `std/text` has `is_space`, `trim`, `trim_start`, `trim_end` and `fields` for Unicode
   whitespace (the `White_Space` property); the `std/str` ones stay ASCII.
 - `thread.drained(&c)` tells a closed and drained `Channel` from an empty one, so a consumer
