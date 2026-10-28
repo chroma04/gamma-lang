@@ -44,13 +44,15 @@ VmLoop :: struct {
     cont: u32
     /// The registers holding the mark taken at the start of each iteration.
     mark: u32
-    /// How many loops enclose it (the length of `Frame.labels` inside it).
-    depth: u32
-    /// The register holding the height of the frame's deferred statements at its entry.
+    /// The register holding the height of the frame's deferred statements at its entry
+    /// (`NO_DEFERS` if it has no deferred statements).
     defers: u32
     /// How many blocks with deferred statements enclose it.
     dblocks: u32
 }
+
+/// The `VmLoop.defers` of a loop without deferred statements.
+NO_DEFERS: u32 : 0xFFFF_FFFF
 
 Ins :: union {
     Const: (r: u32, v: u64)
@@ -178,11 +180,8 @@ Ins :: union {
     /// temporaries to it.
     Mark: u32
     Release: u32
-    /// Enters a loop (its `break` destination) and leaves loops down to `depth`.
-    PushLabel: u32
-    PopLabels: u32
-    /// Lets other threads run.
-    Tick
+    /// Jumps back to the start of a loop, letting other threads run first.
+    Loop: u32
     /// Nothing: what compiling leaves of a mark that is not needed, removed at its end
     /// (`vc_compact`).
     Nop
@@ -253,6 +252,8 @@ Vc :: struct {
     /// releases what they leave began.
     leaks_all: u32
     leaks: u32
+    /// How many `defer` and `errdefer` statements were compiled.
+    ndefers: u32
     /// The registers holding constants (the first ones after `rbase`), by value, and the
     /// constants without one used so far, which the next pass gives one (`vm_compile`).
     const_at: hash_map.HashMap(u64, u32)
@@ -272,7 +273,7 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
         const_at := hash_map.hash_map(u64, u32)
         for i, v in enumerate(consts.items) { const_at.put(v, rbase + i.trunc(u32))! }
         first := rbase + consts.items.len.trunc(u32)
-        c := Vc(m: m, info: info, ins: list(Ins), loops: list(VmLoop), open: list(u32), dblocks: 0, exits: list((ins: u32, loop: u32)), conts: list((ins: u32, loop: u32)), top: first, max: first, rbase: rbase, sbase: sbase, slot_top: 0, slot_max: 0, joined: 0, leaks_all: 0, leaks: 0, const_at: const_at, found: list(u64))
+        c := Vc(m: m, info: info, ins: list(Ins), loops: list(VmLoop), open: list(u32), dblocks: 0, exits: list((ins: u32, loop: u32)), conts: list((ins: u32, loop: u32)), top: first, max: first, rbase: rbase, sbase: sbase, slot_top: 0, slot_max: 0, joined: 0, leaks_all: 0, leaks: 0, ndefers: 0, const_at: const_at, found: list(u64))
         c.vc_expr(body, .Ret)
         // A body whose value falls off its end (`()`, or a `never` that the tree raised).
         c.vc_emit(.Ret)
@@ -306,6 +307,7 @@ vc_emit :: fn(c: ^Vc, i: Ins) needs Alloc {
             c.leaks_all += 1
             c.leaks += 1
         }
+        .Defer(_) => { c.ndefers += 1 }
         _ => {}
     }
     c.ins.push(i)!
@@ -332,6 +334,7 @@ vc_compact :: fn(c: ^Vc) needs Alloc {
         t := at.items
         out.push(match x {
             .Jmp(to) => Ins.Jmp(t[usize(to)])
+            .Loop(to) => Ins.Loop(t[usize(to)])
             .Jz(r, to) => Ins.Jz(r, t[usize(to)])
             .Jnz(r, to) => Ins.Jnz(r, t[usize(to)])
             .Pat(y) => Ins.Pat(y.pat, y.off, y.size, t[usize(y.fail)])
@@ -611,7 +614,6 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
                 if li := c.vc_find_loop(label) {
                     lp := c.loops.items[usize(li)]
                     if c.dblocks > lp.dblocks { c.vc_emit(.Unwind(lp.defers)) }
-                    c.vc_emit(.PopLabels(lp.depth))
                     at := c.vc_jump(.Jmp(0))
                     c.exits.push((ins: at, loop: li))!
                     if want is .Reg { _ = c.vc_alloc() }
@@ -624,7 +626,6 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
                 if li := c.vc_find_loop(label) {
                     lp := c.loops.items[usize(li)]
                     if c.dblocks > lp.dblocks { c.vc_emit(.Unwind(lp.defers)) }
-                    c.vc_emit(.PopLabels(lp.depth + 1))
                     at := c.vc_jump(.Jmp(0))
                     c.conts.push((ins: at, loop: li))!
                     if want is .Reg { _ = c.vc_alloc() }
@@ -1658,26 +1659,26 @@ vc_find_loop :: fn(c: ^const Vc, label: u32) -> ?u32 {
 
 /// A loop of unit type:
 ///
-///     PushLabel; head: Mark; Tick; conditions (to exit); body; cont: step; Release; Jmp head
-///     exit: Release; done: PopLabels
+///     DeferHeight; head: Mark; conditions (to exit); body; cont: step; Release; Loop head
+///     exit: Release
+///
+/// with the mark and its releases only if something in the loop may leave scratch memory
+/// behind, and the height only if it has deferred statements.
 vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs Alloc {
     save := c.top
     slots := c.slot_top
-    depth := c.open.items.len.trunc(u32)
     mark := c.vc_alloc()
     _ = c.vc_alloc()
     _ = c.vc_alloc()
     h := c.vc_alloc()
     li := c.loops.items.len.trunc(u32)
-    c.loops.push(VmLoop(label: label, brk: 0, cont: 0, mark: mark, depth: depth, defers: h, dblocks: c.dblocks))!
+    c.loops.push(VmLoop(label: label, brk: 0, cont: 0, mark: mark, defers: h, dblocks: c.dblocks))!
     c.open.push(li)!
-    c.vc_emit(.DeferHeight(h))
-    c.vc_emit(.PushLabel(label))
+    dh := c.vc_jump(.DeferHeight(h))
+    ndefers := c.ndefers
     leaks_all := c.leaks_all
     leaks := c.leaks
-    head := c.vc_here()
-    c.vc_emit(.Mark(mark))
-    c.vc_emit(.Tick)
+    head := c.vc_jump(.Mark(mark))
     fails := c.vc_conds(cond)
     c.vc_block(body, .Discard)
     c.top = mark + 4
@@ -1685,23 +1686,10 @@ vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs
     if st := step { c.vc_expr(st, .Discard) }
     c.top = mark + 4
     rel := c.vc_jump(.Release(mark))
-    c.vc_emit(.Jmp(head))
-    brk := c.vc_here()
-    c.vc_emit(.Release(mark))
-    c.vc_emit(.PopLabels(depth))
-    // An iteration releases what it leaves unless nothing in the loop can leave anything
-    // (a `break` or `continue` that the tree raises skips the release of the statement it
-    // leaves, which the loop's then does).
-    if c.leaks_all is leaks_all {
-        c.ins.items[usize(head)] = .Nop
-        c.ins.items[usize(rel)] = .Nop
-        c.ins.items[usize(brk)] = .Nop
-    }
-    c.leaks = leaks
+    c.vc_emit(.Loop(head))
+    brk := c.vc_jump(.Release(mark))
     for f in fails.items { c.vc_patch(f, brk) }
     fails.deinit()
-    // The `break`s compiled in the body jump past the release, which they already did not
-    // need: they leave from within an iteration, whose mark the release restores.
     for i in 0..c.exits.items.len {
         x := c.exits.items[i]
         if x.loop is li { c.vc_patch(x.ins, brk) }
@@ -1710,6 +1698,19 @@ vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs
         x := c.conts.items[i]
         if x.loop is li { c.vc_patch(x.ins, cont_at) }
     }
+    // An iteration releases what it leaves unless nothing in the loop can leave anything
+    // (a `break` or `continue` that the tree raises skips the release of the statement it
+    // leaves, which the loop's then does).
+    if c.leaks_all is leaks_all {
+        c.ins.items[usize(head)] = .Nop
+        c.ins.items[usize(rel)] = .Nop
+        c.ins.items[usize(brk)] = .Nop
+    }
+    if c.ndefers is ndefers {
+        c.ins.items[usize(dh)] = .Nop
+        c.loops.items[usize(li)].defers = NO_DEFERS
+    }
+    c.leaks = leaks
     _ = c.open.pop()
     c.loops.items[usize(li)].brk = brk
     c.loops.items[usize(li)].cont = cont_at
@@ -1980,8 +1981,6 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             }
             .Release(r) => m.vm_release(regs, r)
             .DeferHeight(r) => { regs[usize(r)] = u64(fr.defers.items.len) }
-            .PushLabel(label) => fr.labels.push(LabelDst(label: label, dst: empty_slice(u8)))!
-            .PopLabels(depth) => fr.labels.truncate(usize(depth))
             .ConstSlot(at, b) => {
                 o := usize(at)
                 fr.store[o..o + b.len].copy_from(b)
@@ -2014,11 +2013,15 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
                 dst.copy_from(fr.store[o..o + usize(size)])
                 return m.vm_return(a, dst)
             }
-            .Tick => if m.threads.list.items.len > 1 {
-                m.tick(source.DUMMY) else f => {
-                    pc = try m.vm_flow(a, code, regs, f)
-                    continue
+            .Loop(to) => {
+                if m.threads.list.items.len > 1 {
+                    m.tick(source.DUMMY) else f => {
+                        pc = try m.vm_flow(a, code, regs, f)
+                        continue
+                    }
                 }
+                pc = usize(to)
+                continue
             }
             _ => {
                 pc = try m.vm_slow(a, code, regs, pc, dst)
@@ -2206,8 +2209,7 @@ vm_flow :: fn(m: ^Machine, a: Act, code: ^Code, regs: [^]u64, f: Flow) -> Flow!u
             if frame is fr.id {
                 for lp in code.loops {
                     if lp.label is label {
-                        try m.vm_unwind(a, us(regs[usize(lp.defers)]), false)
-                        fr.labels.truncate(usize(lp.depth + 1))
+                        if lp.defers is not NO_DEFERS { try m.vm_unwind(a, us(regs[usize(lp.defers)]), false) }
                         return usize(if f is .Break(_) { lp.brk } else { lp.cont })
                     }
                 }
