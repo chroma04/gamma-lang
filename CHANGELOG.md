@@ -77,7 +77,8 @@ Versions and what each kind of change means are described in
   the whole program, one per piece of the template, instead of repeating the call of the
   sink and the formatting of each value inline. Each template has an instance of these
   functions, so this was about a tenth of the compiler's own C, which now compiles about 6%
-  faster.
+  faster. `str.format` writes through `@write` itself rather than through `List.write`,
+  which saves a function per template (another 5% of the compiler's C).
 - **The interpreter rotates and counts bits as instructions:** `@rotl`, `@rotr`, `@clz`,
   `@ctz`, `@popcount`, `@bswap` and `@bitreverse` on integers of 8 to 64 bits no longer go
   through the general evaluator. SHA-256 runs about five times as fast (the `std/hash`
