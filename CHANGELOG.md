@@ -43,6 +43,12 @@ Versions and what each kind of change means are described in
 
 ### Speed
 
+- **The playground runs programs about fifteen times as fast**: a small program takes
+  30 to 60 ms instead of about 600 ms (Node; after the first run, which also compiles
+  the module). The interpreter gave the program's thread a 1 GiB stack, which costs
+  nothing on a native host but which the WebAssembly C library cleared byte by byte on
+  every run. On WebAssembly the stack is now 8 MiB: the browser's own stack ends a deep
+  recursion first, and if it does not, the interpreter traps with `stack overflow`.
 - **The interpreter runs three to seven times as fast** (`gamma run --backend=interp`,
   `gamma repl`): a function's body is lowered once, on its first call, with sizes, offsets
   and operations resolved, and its statements, arithmetic on words, simple places and

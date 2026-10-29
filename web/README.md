@@ -56,9 +56,11 @@ directory.
 
 The interpreter runs fibers (`with … on`, generators, the scheduler of `std/fiber`) and
 threads, which the compiler's own interpreter provides itself; the module switches its
-fibers with Binaryen's Asyncify, which `gamma build` applies. What a program can notice: it is slow to start (the
-compiler checks the core library on every run, and the module is about 10 MB, 3 MB
-compressed), a trap's location line names the function (`at /play/main.gm:4:19 in main`),
+fibers with Binaryen's Asyncify, which `gamma build` applies. What a program can notice: the
+first run after the page loads is slower than the next ones (the module is about 8 MB, 3 MB
+compressed, and the browser compiles its functions as they are first called; the compiler
+also checks the core library on every run), a trap's location line names the function
+(`at /play/main.gm:4:19 in main`),
 and a runaway recursion ends when the browser's stack does (status 134 with a message
 from the worker) instead of at the interpreter's own limit.
 
