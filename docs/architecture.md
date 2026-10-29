@@ -611,7 +611,9 @@ How the runtime is linked depends on the build mode:
   compiling a small program, so it is compiled once on its own (with
   `GM_RT_SEPARATE` defined, which gives the declarations marked `GM_API` external
   linkage), cached, and linked with each program; the generated code includes
-  only `gm_rt.h` and is compiled at `-O1` (`-O0` with `-g`). Compared with `-O2`
+  only `gm_rt.h`, with `GM_RT_PROGRAM` defined so that it skips the operating
+  system's headers (parsing them took about a third of the C compiler's time on a
+  small program), and is compiled at `-O1` (`-O0` with `-g`). Compared with `-O2`
   this halves the C compiler's time, while the programs run about as fast; `-O0`
   would compile faster again but run several times slower. The cache
   (`driver/rtcache.gm`) is the directory `$GAMMA_CACHE_DIR` (an empty value

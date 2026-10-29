@@ -502,9 +502,7 @@ unwrap :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, is_result: bool) -> Unsup!string ne
         off := fg.g.ty.offsets(x.ty)[1]
         d := fg.g.ty.desc(err)
         if fg.g.opts.checks {
-            fg.line(str.format("if ({}) {{", bad)!)
-            fg.line(str.format("    gm_buf b = {{0}}; gm_buf_push(&b, \"unwrap of error value \", 22); gm_format(&b, {}, {} + {}, false); gm_trap_bytes(b.data, b.len, {});", d, a, off, at)!)
-            fg.line("}")
+            fg.line(str.format("if ({}) gm_trap_unwrap({}, {} + {}, {});", bad, d, a, off, at)!)
         }
         return fg.load(t, str.format("({} + {})", a, off)!)
     } else {
@@ -908,7 +906,7 @@ pub place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
 /// The bounds check of an index `i` against length `len`.
 index_check :: fn(fg: ^FnGen, checked: bool, i: string, len: string, at: string) needs sema.Load {
     if checked {
-        fg.line(str.format("if ({} >= (uintptr_t)({})) {{ char m[96]; snprintf(m, sizeof m, \"index %llu out of bounds for length %llu\", (unsigned long long){}, (unsigned long long)({})); gm_trap(m, {}); }}", i, len, i, len, at)!)
+        fg.line(str.format("if ({} >= (uintptr_t)({})) gm_trap_index({}, {}, {});", i, len, i, len, at)!)
     }
 }
 
@@ -985,7 +983,7 @@ slice_expr :: fn(fg: ^FnGen, e: ^Expr, base: ^Expr, lo: ?^Expr, hi: ?^Expr, incl
     }
     if l := len {
         at := fg.loc(e)
-        fg.line(str.format("if ({} > {} || {} > (uintptr_t){}) {{ char m[128]; snprintf(m, sizeof m, \"slice bounds %llu..%llu invalid for length %llu\", (unsigned long long){}, (unsigned long long){}, (unsigned long long){}); gm_trap(m, {}); }}", lo_v, hi_v, hi_v, l, lo_v, hi_v, l, at)!)
+        fg.line(str.format("if ({} > {} || {} > (uintptr_t){}) gm_trap_slice({}, {}, {}, {});", lo_v, hi_v, hi_v, l, lo_v, hi_v, l, at)!)
     }
     return fg.make_slice(e.ty, str.format("((uint8_t *){} + {} * {})", ptr, lo_v, esz)!, str.format("{} - {}", hi_v, lo_v)!)
 }

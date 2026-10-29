@@ -6,7 +6,8 @@
  * the whole program). With GM_RT_SEPARATE defined, this header and gm_rt.c are
  * compiled on their own into an object that is reused across programs, and the
  * generated code includes only this header: the declarations marked GM_API and
- * GM_API_VAR then have external linkage.
+ * GM_API_VAR then have external linkage. The generated code also defines GM_RT_PROGRAM,
+ * which leaves out the system headers that only gm_rt.c needs.
  * GNU C11 is required (statement expressions, zero-size arrays, __int128,
  * __builtin_*_overflow).
  */
@@ -66,6 +67,18 @@ static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
 #endif
 #endif
 
+#if defined(GM_RT_PROGRAM) && defined(GM_RT_SEPARATE) && !defined(_WIN32)
+/* The generated code of a program that is linked with the separately compiled runtime
+ * needs only the declarations below, which use nothing from the operating system's headers;
+ * parsing those would take the C compiler about as long as a small program. (Windows
+ * builds include them all.) */
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdarg.h>
+#include <string.h>
+#include <errno.h>
+#else
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -113,7 +126,16 @@ static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
 #if defined(__linux__) && !defined(__FILC__)
 #include <sys/syscall.h>
 #endif
+/* glibc's posix_spawn starts a child without copying the parent's address space (clone with
+ * CLONE_VM | CLONE_VFORK), reports a failed exec, and can change the child's directory
+ * (2.29): Proc.spawn uses it instead of fork, which costs time in proportion to the
+ * parent's memory. */
+#if defined(__GLIBC__) && !defined(__FILC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 29))
+#define GM_POSIX_SPAWN 1
+#include <spawn.h>
 #endif
+#endif
+#endif /* GM_RT_PROGRAM */
 #endif /* GM_FREESTANDING */
 
 /* GM_API: the linkage of the runtime's functions (and of its variables' definitions);
@@ -323,6 +345,15 @@ GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, 
 GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
 /* The trap of a pointer cast to a type of alignment `align` that `addr` lacks. */
 GM_API _Noreturn void gm_trap_misaligned(uintptr_t addr, unsigned align, const char *file, uint32_t line, uint32_t col);
+/* The traps of failed checks, which format their messages here rather than in the
+ * generated code: index `i` out of bounds for length `len`; slice bounds lo..hi invalid for
+ * length `len`; a shift amount `n` too large for the integer type named `ty`; a vector load
+ * or store (`what`) of `lanes` lanes with a slice of `len` elements. */
+GM_API _Noreturn void gm_trap_index(uint64_t i, uint64_t len, const char *file, uint32_t line, uint32_t col);
+GM_API _Noreturn void gm_trap_slice(uint64_t lo, uint64_t hi, uint64_t len, const char *file, uint32_t line, uint32_t col);
+GM_API _Noreturn void gm_trap_shift(uint64_t n, const char *ty, const char *file, uint32_t line, uint32_t col);
+GM_API _Noreturn void gm_trap_lanes(const char *what, uint32_t lanes, uint64_t len, const char *file, uint32_t line,
+                                    uint32_t col);
 
 /* ---- growable byte buffer --------------------------------------------------- */
 
@@ -397,6 +428,8 @@ struct gm_type {
 /* Appends the display form of the value of type t at address v (§21.6.1). `top` is true for
  * the argument itself: a []u8 / []const u8 slice is then written raw, otherwise quoted. */
 GM_API void gm_format(gm_buf *out, const gm_type *t, const void *v, bool top);
+/* Traps: "unwrap of error value <v>", the error `v` of type `t`. */
+GM_API _Noreturn void gm_trap_unwrap(const gm_type *t, const void *v, const char *file, uint32_t line, uint32_t col);
 
 /* A placeholder's format spec (§21.6.1). align: 0 auto, 1 left, 2 right, 3 center; kind:
  * 0 display, 1 x, 2 X, 3 o, 4 b, 5 e; precision -1 when absent. */
@@ -423,6 +456,9 @@ GM_API_VAR uint32_t *gm_cover_counts;
 /* Process arguments as a Gamma `[]const string`: returns a pointer to `argc` slices
  * ({ptr, len} pairs, each 2 * sizeof(void*) bytes). Set by gm_set_args at startup. */
 GM_API void gm_set_args(int argc, char **argv);
+/* The index of the test that a test binary is to run: its first argument. Without one,
+ * prints its usage and returns -1. */
+GM_API long gm_test_index(int argc, char **argv);
 GM_API const void *gm_args(size_t *count);
 /* Looks up an environment variable; returns false if unset. */
 GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len);

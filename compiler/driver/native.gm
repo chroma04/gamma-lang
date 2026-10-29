@@ -209,7 +209,7 @@ emitted_units :: fn(b: ^const Built, debug_info: bool) -> ?cgen.Split needs Allo
 /// make the program.
 write_units :: fn(b: ^const Built, split: cgen.Split, exe: string) -> bool needs Alloc + Err + Fs {
     header := str.format("{}.h", exe)!
-    if not write_generated_c(header, str.format("#define GM_RT_SEPARATE 1\n{}\n{}", b.rt_h, split.shared)!) { return false }
+    if not write_generated_c(header, str.format("{}{}\n{}", PROGRAM_PRELUDE, b.rt_h, split.shared)!) { return false }
     names := load.split(header).names.items
     include := str.format("#include \"{}\"\n", names[names.len - 1])!
     rt := str.format("#define GM_RT_SEPARATE 1\n{}\n{}", b.rt_h, b.rt_c)!
@@ -219,6 +219,11 @@ write_units :: fn(b: ^const Built, split: cgen.Split, exe: string) -> bool needs
     }
     return true
 }
+
+/// What precedes the runtime's header in the generated code of a program linked with the
+/// separately compiled runtime: the header then declares the runtime's functions as
+/// external, and includes only the few system headers that the generated code needs.
+PROGRAM_PRELUDE :: "#define GM_RT_SEPARATE 1\n#define GM_RT_PROGRAM 1\n"
 
 /// The flags every build uses: `-std=gnu11`, no warnings, wrapping signed arithmetic and no
 /// type-based alias analysis (Gamma memory is untyped bytes), no floating-point contraction.
@@ -296,7 +301,7 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     }
     sources := list(string)
     if runtime is not null {
-        prelude := str.format("#define GM_RT_SEPARATE 1\n{}\n", b.rt_h)!
+        prelude := str.format("{}{}\n", PROGRAM_PRELUDE, b.rt_h)!
         split_units: ?[]string = if n > 1 { cgen.split(&generated.parts, n) } else { null }
         if units := split_units {
             for u in units { sources.push(str.format("{}{}", prelude, u)!)! }

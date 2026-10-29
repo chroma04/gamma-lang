@@ -347,6 +347,33 @@ GM_API _Noreturn void gm_trap_misaligned(uintptr_t addr, unsigned align, const c
     gm_trap(m, file, line, col);
 }
 
+GM_API _Noreturn void gm_trap_index(uint64_t i, uint64_t len, const char *file, uint32_t line, uint32_t col) {
+    char m[96];
+    snprintf(m, sizeof m, "index %llu out of bounds for length %llu", (unsigned long long)i, (unsigned long long)len);
+    gm_trap(m, file, line, col);
+}
+
+GM_API _Noreturn void gm_trap_slice(uint64_t lo, uint64_t hi, uint64_t len, const char *file, uint32_t line, uint32_t col) {
+    char m[128];
+    snprintf(m, sizeof m, "slice bounds %llu..%llu invalid for length %llu", (unsigned long long)lo,
+             (unsigned long long)hi, (unsigned long long)len);
+    gm_trap(m, file, line, col);
+}
+
+GM_API _Noreturn void gm_trap_shift(uint64_t n, const char *ty, const char *file, uint32_t line, uint32_t col) {
+    char m[128];
+    snprintf(m, sizeof m, "shift amount %llu too large for %s", (unsigned long long)n, ty);
+    gm_trap(m, file, line, col);
+}
+
+GM_API _Noreturn void gm_trap_lanes(const char *what, uint32_t lanes, uint64_t len, const char *file, uint32_t line,
+                                    uint32_t col) {
+    char m[96];
+    snprintf(m, sizeof m, "vector %s of %u lanes with a slice of %llu elements", what, (unsigned)lanes,
+             (unsigned long long)len);
+    gm_trap(m, file, line, col);
+}
+
 /* ---- growable byte buffer --------------------------------------------------- */
 
 GM_API void gm_buf_push(gm_buf *b, const void *data, size_t len) {
@@ -1463,6 +1490,13 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
     }
 }
 
+GM_API _Noreturn void gm_trap_unwrap(const gm_type *t, const void *v, const char *file, uint32_t line, uint32_t col) {
+    gm_buf b = {0};
+    gm_buf_push(&b, "unwrap of error value ", 22);
+    gm_format(&b, t, v, false);
+    gm_trap_bytes(b.data, b.len, file, line, col);
+}
+
 /* ---- format specs (spec §21.6.1) ----------------------------------------------- */
 
 /* Writes head and body padded to the spec's width, counted in Unicode scalar values. */
@@ -1798,6 +1832,14 @@ static char *gm_utf8_arg(const wchar_t *w, size_t *len) {
 #endif
 static gm_rt_str *gm_rt_args;
 static size_t gm_rt_argc;
+
+GM_API long gm_test_index(int argc, char **argv) {
+    if (argc < 2) {
+        fputs("usage: test-binary INDEX\n", stderr);
+        return -1;
+    }
+    return strtol(argv[1], NULL, 10);
+}
 
 GM_API void gm_set_args(int argc, char **argv) {
     if (gm_rt_args != NULL || argc <= 0) return;
@@ -2722,6 +2764,42 @@ static char **gm_child_env(const gm_rt_str *v, size_t n, int clear) {
     return out;
 }
 
+#ifdef GM_POSIX_SPAWN
+/* Starts `prog` as the fork path of gm_proc_launch does: the streams of child_fd (where >= 0)
+ * as its standard streams, SIGPIPE at its default action, no signal blocked, the directory
+ * cwd unless empty, and its own process group if asked. Returns 0 or the errno of the
+ * failure, a failed exec or chdir included. */
+static int gm_posix_spawn(pid_t *pid, const char *prog, char **av, char **ev, const int *child_fd, const char *cwd,
+                          uint32_t flags) {
+    posix_spawn_file_actions_t fa;
+    posix_spawnattr_t at;
+    int err = posix_spawn_file_actions_init(&fa);
+    if (err != 0) return err;
+    err = posix_spawnattr_init(&at);
+    if (err != 0) {
+        posix_spawn_file_actions_destroy(&fa);
+        return err;
+    }
+    for (int i = 0; i < 3 && err == 0; i++)
+        if (child_fd[i] >= 0) err = posix_spawn_file_actions_adddup2(&fa, child_fd[i], i);
+    if (err == 0 && cwd[0] != 0) err = posix_spawn_file_actions_addchdir_np(&fa, cwd);
+    sigset_t none, pipe;
+    sigemptyset(&none);
+    sigemptyset(&pipe);
+    sigaddset(&pipe, SIGPIPE);
+    short how = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+    if (flags & GM_PROC_GROUP) how |= POSIX_SPAWN_SETPGROUP;
+    if (err == 0) err = posix_spawnattr_setflags(&at, how);
+    if (err == 0) err = posix_spawnattr_setsigmask(&at, &none);
+    if (err == 0) err = posix_spawnattr_setsigdefault(&at, &pipe);
+    if (err == 0 && (flags & GM_PROC_GROUP)) err = posix_spawnattr_setpgroup(&at, 0);
+    if (err == 0) err = posix_spawn(pid, prog, &fa, &at, av, ev);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    return err;
+}
+#endif
+
 GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
                               size_t dir_len, const void *program, size_t program_len, uint32_t flags) {
     if (argc == 0) return gm_io_error(EINVAL);
@@ -2750,7 +2828,7 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
     fflush(stderr);
 
     /* Per stream: the child's end, and ours. */
-    int child_fd[3] = {-1, -1, -1}, mine[3] = {-1, -1, -1}, errp[2] = {-1, -1};
+    int child_fd[3] = {-1, -1, -1}, mine[3] = {-1, -1, -1};
     int null_fd = -1;
     for (int i = 0; i < 3 && err == 0; i++) {
         int mode = (int)((flags >> (2 * i)) & 3);
@@ -2780,8 +2858,12 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
 #endif
         }
     }
-    if (err == 0 && gm_pipe_cloexec(errp) != 0) err = errno;
     pid_t pid = -1;
+#ifdef GM_POSIX_SPAWN
+    if (err == 0) err = gm_posix_spawn(&pid, prog, av, own_env ? ev : environ, child_fd, cwd, flags);
+#else
+    int errp[2] = {-1, -1};
+    if (err == 0 && gm_pipe_cloexec(errp) != 0) err = errno;
     if (err == 0) {
         sigset_t all, old;
         sigfillset(&all);
@@ -2823,6 +2905,7 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
         }
     }
     if (errp[0] >= 0) close(errp[0]);
+#endif
     for (int i = 0; i < 3; i++)
         if (child_fd[i] >= 0 && child_fd[i] != null_fd) close(child_fd[i]);
     if (null_fd >= 0) close(null_fd);
