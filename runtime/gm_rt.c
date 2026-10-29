@@ -2794,6 +2794,11 @@ static int gm_posix_spawn(pid_t *pid, const char *prog, char **av, char **ev, co
     if (err == 0) err = posix_spawnattr_setsigdefault(&at, &pipe);
     if (err == 0 && (flags & GM_PROC_GROUP)) err = posix_spawnattr_setpgroup(&at, 0);
     if (err == 0) err = posix_spawn(pid, prog, &fa, &at, av, ev);
+    /* posix_spawn returns once the child has execed, its group made, where the clone it
+     * makes (CLONE_VFORK) suspends the parent until then; qemu-user does not, so the
+     * parent makes the group too. Whichever call comes second fails harmlessly: the group
+     * is already there, or the child has execed with it. */
+    if (err == 0 && (flags & GM_PROC_GROUP)) (void)setpgid(*pid, *pid);
     posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     return err;
