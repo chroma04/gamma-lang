@@ -9,9 +9,126 @@
 // next iteration counts). A local is bound to the items of a list place by `&l.items[i]`
 // (also through fields of the element), `l.items[a..b]` or `l.items`; a call that gets a
 // pointer to the same place for a `^List` parameter may grow it, unless it is a core list
-// function that does not (`pop`, `clear`, `truncate`, `remove`, ...). The first use of
-// the local after the call is reported. Places are compared by their path of locals and
+// function that does not (`pop`, `clear`, `truncate`, `remove`, ...). So may a call that
+// gets a pointer to a struct holding the list, if the function grows that list itself or
+// through the functions it calls (`p.alloc_expr()` pushing to `p.exprs`): before the
+// scans, `growth_summaries` finds those lists for every function. The first use of the
+// local after the call is reported. Places are compared by their path of locals and
 // fields, through pointers; indexed places and other aliases are not followed.
+
+/// A list that a function may grow: the one at `path` (fields, written as in `place_key`)
+/// in what its parameter `param` points to; an empty `path` is the parameter's own list.
+Growth :: struct {
+    param: usize
+    path: string
+}
+
+/// A call in function `caller` that gives argument `arg` of function `callee` a pointer to
+/// the place at `path` in what parameter `param` of the caller points to.
+CallEdge :: struct {
+    caller: usize
+    param: usize
+    path: string
+    callee: usize
+    arg: usize
+}
+
+/// The most fields a summarized path goes through (recursion through a pointer field
+/// would otherwise lengthen it forever).
+MAX_GROWTH_DEPTH :: 4
+
+/// For each function (by index; an instance of a generic function under its template),
+/// the lists it may grow through its pointer parameters, itself or through the functions
+/// it calls.
+growth_summaries :: fn(s: ^sema.Sema) -> List(List(Growth)) needs Alloc + Fs {
+    sums := list(List(Growth))
+    for _ in 0..s.fns.items.len { sums.push(list(Growth))! }
+    id := s.prelude_template("List") else return sums
+    edges := list(CallEdge)
+    for i in 0..s.defs.items.len {
+        if s.fns.items[i].instance is not null { continue }
+        body := s.defs.items[i].body else continue
+        collect_calls(s, id, i, body, &sums, &edges)
+    }
+    changed := true
+    while changed {
+        changed = false
+        for e in edges.items {
+            n := sums.items[e.callee].items.len
+            for k in 0..n {
+                x := sums.items[e.callee].items[k]
+                if x.param is not e.arg { continue }
+                p := str.format("{}{}", e.path, x.path)!
+                if add_growth(&sums.items[e.caller], e.param, p) { changed = true }
+            }
+        }
+    }
+    return sums
+}
+
+/// Adds the growth of the list at `path` in parameter `param` to `sum`, unless it is there
+/// or too deep; returns whether it was added.
+add_growth :: fn(sum: ^List(Growth), param: usize, path: string) -> bool needs Alloc {
+    if str.count(path, ".") > MAX_GROWTH_DEPTH { return false }
+    for x in sum.items {
+        if x.param is param and x.path is path { return false }
+    }
+    sum.push(Growth(param: param, path: path))!
+    return true
+}
+
+/// Records the calls in `e`, an expression of function `f`, that are given pointers into
+/// what the parameters of `f` point to: a call that grows such a list adds to `f`'s
+/// summary, and one to a function of the program becomes an edge.
+collect_calls :: fn(s: ^sema.Sema, list_adt: u32, f: usize, e: ^Expr, sums: ^List(List(Growth)), edges: ^List(CallEdge)) needs Alloc {
+    if e.kind is .Closure(_) or e.kind is .FnRef(_) or e.kind is .HandlerRef(_) { return }
+    tir.for_each_child(e, fn(c: ^Expr) { collect_calls(s, list_adt, f, c, sums, edges) })
+    .Call(callee, args) := e.kind else return
+    .Fn(g) := callee else return
+    sig := &s.fns.items[usize(g)]
+    core := s.l.modules.items[sig.module].is_prelude
+    target := usize(generic_of(s, g))
+    for i in 0..args.len {
+        if i >= sig.params.len { break }
+        .Ptr(is_const, pointee) := s.tys.kind(sig.params[i].ty) else continue
+        if is_const { continue }
+        k := arg_key(&args[i]) else continue
+        (param, path) := param_path(s, f, k) else continue
+        if grows_directly(s, list_adt, sig, core, i, pointee) { _ = add_growth(&sums.items[f], param, path) }
+        if not core { edges.push(CallEdge(caller: f, param: param, path: path, callee: target, arg: i))! }
+    }
+}
+
+/// Whether a call of `sig` may grow the list that argument `i`, a `^pointee`, points to:
+/// any function of the program given a `^List` may, and of the core list functions those
+/// that `grows` names.
+grows_directly :: fn(s: ^sema.Sema, list_adt: u32, sig: ^const sema.FnSig, core: bool, i: usize, pointee: types.Ty) -> bool {
+    if not list_type(s, list_adt, pointee) { return false }
+    return not core or (i is 0 and grows(sig.name))
+}
+
+/// The place that argument `a` (for a pointer parameter) points to, as a key.
+arg_key :: fn(a: ^Expr) -> ?string needs Alloc {
+    x := strip_coerce(a)
+    if .AddrOf(p) := x.kind { return place_key(p) }
+    return place_key(x)
+}
+
+/// The parameter of function `f` that place key `k` is rooted at, if it is a mutable
+/// pointer, and the rest of the key after it.
+param_path :: fn(s: ^sema.Sema, f: usize, k: string) -> ?(usize, string) needs Alloc {
+    def := &s.defs.items[f]
+    sig := &s.fns.items[f]
+    for j, l in enumerate(def.params) {
+        if j >= sig.params.len { break }
+        .Ptr(is_const, _) := s.tys.kind(sig.params[j].ty) else continue
+        if is_const { continue }
+        root := str.format("{}", l)!
+        if k is root { return (j, "") }
+        if k.starts_with(root) and k[root.len..].starts_with(".") { return (j, k[root.len..]) }
+    }
+    return null
+}
 
 /// A local holding a pointer into the items of the list at `key`, and the call that may
 /// have moved them, if one has been made.
@@ -28,6 +145,8 @@ StaleScan :: struct {
     def: ^const tir.FnDef
     /// The core library's `List`.
     list_adt: u32
+    /// The lists each function may grow (`growth_summaries`).
+    growth: []const List(Growth)
     live: List(Live)
     /// The uses reported.
     reported: List(source.Span)
@@ -36,11 +155,11 @@ StaleScan :: struct {
 
 /// Reports the locals of function `f` that point into a list's items and are used after a
 /// call that may have moved them.
-stale_element_pointers :: fn(s: ^sema.Sema, f: usize, out: ^List(Finding)) needs Alloc + Fs {
+stale_element_pointers :: fn(s: ^sema.Sema, f: usize, growth: []const List(Growth), out: ^List(Finding)) needs Alloc + Fs {
+    id := s.prelude_template("List") else return
     def := &s.defs.items[f]
     body := def.body else return
-    id := s.prelude_template("List") else return
-    sc := StaleScan(s: s, def: def, list_adt: id, live: list(Live), reported: list(source.Span), out: out)
+    sc := StaleScan(s: s, def: def, list_adt: id, growth: growth, live: list(Live), reported: list(source.Span), out: out)
     sc.scan(body)
 }
 
@@ -88,8 +207,11 @@ place_key :: fn(e: ^Expr) -> ?string needs Alloc {
     }
 }
 
-is_list :: fn(sc: ^StaleScan, t: types.Ty) -> bool {
-    if .Adt(id, _) := sc.s.tys.kind(t) { return sc.s.tys.template(id) is sc.list_adt }
+is_list :: fn(sc: ^StaleScan, t: types.Ty) -> bool => list_type(sc.s, sc.list_adt, t)
+
+/// Whether `t` is an instance of the core library's `List` (`list_adt`).
+list_type :: fn(s: ^sema.Sema, list_adt: u32, t: types.Ty) -> bool {
+    if .Adt(id, _) := s.tys.kind(t) { return s.tys.template(id) is list_adt }
     return false
 }
 
@@ -171,22 +293,24 @@ touch :: fn(sc: ^StaleScan, l: u32, at: source.Span) needs Alloc {
 grow_by_call :: fn(sc: ^StaleScan, g: u32, args: []Expr, at: source.Span) needs Alloc {
     sig := &sc.s.fns.items[usize(g)]
     core := sc.s.l.modules.items[sig.module].is_prelude
+    target := usize(generic_of(sc.s, g))
     for i in 0..args.len {
         if i >= sig.params.len { break }
-        if .Ptr(is_const, pointee) := sc.s.tys.kind(sig.params[i].ty) {
-            if is_const or not is_list(sc, pointee) { continue }
-            if core and not (i is 0 and grows(sig.name)) { continue }
-            a := strip_coerce(&args[i])
-            k := ""
-            if .AddrOf(p) := a.kind {
-                k = place_key(p) else continue
-            } else {
-                k = place_key(a) else continue
-            }
-            for j in 0..sc.live.items.len {
-                if sc.live.items[j].key is k and sc.live.items[j].grown is null { sc.live.items[j].grown = at }
-            }
+        .Ptr(is_const, pointee) := sc.s.tys.kind(sig.params[i].ty) else continue
+        if is_const { continue }
+        k := arg_key(&args[i]) else continue
+        if grows_directly(sc.s, sc.list_adt, sig, core, i, pointee) { sc.mark_grown(k, at) }
+        if core or target >= sc.growth.len { continue }
+        for x in sc.growth[target].items {
+            if x.param is i { sc.mark_grown(str.format("{}{}", k, x.path)!, at) }
         }
+    }
+}
+
+/// Marks the list at place key `k` as grown by the call at `at`.
+mark_grown :: fn(sc: ^StaleScan, k: string, at: source.Span) {
+    for j in 0..sc.live.items.len {
+        if sc.live.items[j].key is k and sc.live.items[j].grown is null { sc.live.items[j].grown = at }
     }
 }
 

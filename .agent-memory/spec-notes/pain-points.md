@@ -30,6 +30,8 @@ By design / not worth conceding:
 - getpid (unique names come from `Rand`), env var set (unsafe with threads; child env via
   SpawnOptions), `Test.fail` loc (`expect(false, msg)`), `make_dir` mode (set_mode after).
 
+Done s58: stale-element-pointer follows growth through struct-pointer calls (decisions/060).
+
 ## Implemented in s50 (decisions/054)
 `else` join, const-adding coercions in `?`/`!`, array joins (if/match/for-tuple), contextual
 `needs`/`handler`/`foreign`, `{0}` + `{:q}`, local struct/union, lint stale-element-pointer,
@@ -37,12 +39,8 @@ std/text Unicode trim/fields, Channel drained, Fs canonical/read_link/symlink/se
 set_modified, Proc try_wait + SpawnOptions.program, pub handles, Env on threads.
 
 ## Open
-- stale-element-pointer misses growth through a method of the struct holding the list
-  (the common compiler shape, e.g. `p.alloc_expr()` while holding `&p.exprs.items[i]`).
 - Adding an intrinsic that the prelude uses needs a 2-stage build + seed refresh (s50 sys
   worker); procedure now in docs/contributing.md. Watch.
-- Sandbox: worktree subagents' shells refuse compound commands (heredocs, `export … &&`,
-  `flock` chains) → they write wrapper scripts in the scratchpad (3 workers, s50).
 - A function name used as a format argument compiles and prints the function's address
   (`str.format("…{}", loc)` where a local `loc` was meant but missing: the method `loc` of
   the same module was found). Hit once (s55, moving cgen arms into helpers; the C compiler

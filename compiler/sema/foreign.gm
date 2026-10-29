@@ -238,13 +238,15 @@ callconv_attr :: fn(s: ^Sema, a: ^const ast.Attribute) -> ?bool needs Alloc {
 /// plain calling convention: a non-generic function whose effects are at most `{Sys}`.
 apply_callconv :: fn(s: ^Sema, f: u32, win64: bool, span: source.Span) needs Load {
     if not win64 { return }
-    sig := &s.fns.items[usize(f)]
-    if sig.generics.len > 0 {
+    // Resolving `Sys` may add functions, which moves `s.fns`: no pointer into it is kept
+    // across `within_sys`.
+    effects := s.fns.items[usize(f)].effects
+    if s.fns.items[usize(f)].generics.len > 0 {
         s.error(span, "a generic function cannot have a calling convention other than C")
-    } else if not s.within_sys(&sig.effects) {
+    } else if not s.within_sys(&effects) {
         s.error(span, "a function with a calling convention other than C must have effects at most `{Sys}`: it cannot take hidden parameters (§19.2)")
     } else {
-        sig.win64 = true
+        s.fns.items[usize(f)].win64 = true
     }
 }
 

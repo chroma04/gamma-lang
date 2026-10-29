@@ -138,16 +138,17 @@ run_checks :: fn(c: ^Checked, scoped: []const bool) needs Alloc + Fs {
     }
     for f in s.export_fns.items { c.as_value.items[usize(f)] = true }
     // Locals and parameters.
+    growth := growth_summaries(s)
     for i in 0..s.defs.items.len {
         f := i.trunc(u32)
-        def := &s.defs.items[i]
-        if s.fns.items[i].instance is not null or def.body is null or not file_ok(s.fns.items[i].span) { continue }
+        if s.fns.items[i].instance is not null or s.defs.items[i].body is null or not file_ok(s.fns.items[i].span) { continue }
         dangling := check.possible_dangling_addresses(s, i)
         for d in dangling.items {
             if not d.certain { c.out.push(Finding.DanglingAddress(d.span, d.name, d.local, d.why))! }
         }
         mutated_copies(s, i, &c.out)
-        stale_element_pointers(s, i, &c.out)
+        stale_element_pointers(s, i, growth.items, &c.out)
+        def := &s.defs.items[i]
         own_params := def.kind is .Named and not c.as_value.items[i] and s.fns.items[i].name is not "main"
         for j, l in enumerate(def.locals) {
             lid := j.trunc(u32)
