@@ -129,6 +129,8 @@ Ins :: union {
     Bool: u32
     IntUn: (op: tir.UnOp, t: IntW, r: u32, a: u32, n: ^Node)
     IntConv: (op: tir.Builtin, from: IntW, to: IntW, r: u32, a: u32)
+    /// `bit_word` of registers `a` and `b` (`b` unused but by a rotation).
+    IntBit: (op: tir.Builtin, t: IntW, r: u32, a: u32, b: u32)
     FloatOp: (op: tir.BinOp, wide: bool, r: u32, a: u32, b: u32)
     Jmp: u32
     /// Jumps if the register is zero, or (`Jnz`) not.
@@ -530,6 +532,8 @@ vc_reads_only :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
     .Logic(_, l, r) => c.vc_reads_only(l) and c.vc_reads_only(r)
     .IntUn(_, _, x) => c.vc_reads_only(x)
     .IntConv(_, _, _, x) => c.vc_reads_only(x)
+    .IntRot(x) => c.vc_reads_only(x.x) and c.vc_reads_only(x.k)
+    .IntBits(_, _, x) => c.vc_reads_only(x)
     .Field(_), .Deref(_), .Index(_), .SliceLen(_), .SlicePtr(_) => c.vc_word_only(n)
     _ => false
 }
@@ -555,6 +559,7 @@ vc_retarget :: fn(c: ^Vc, t: u32, d: u32) -> bool {
         .Not(r, a) => if r is t { Ins.Not(d, a) } else { null }
         .IntUn(x) => if x.r is t { Ins.IntUn(x.op, x.t, d, x.a, x.n) } else { null }
         .IntConv(x) => if x.r is t { Ins.IntConv(x.op, x.from, x.to, d, x.a) } else { null }
+        .IntBit(x) => if x.r is t { Ins.IntBit(x.op, x.t, d, x.a, x.b) } else { null }
         .FloatOp(x) => if x.r is t { Ins.FloatOp(x.op, x.wide, d, x.a, x.b) } else { null }
         .LocalAt(r, at, size) => if r is t { Ins.LocalAt(d, at, size) } else { null }
         .Load(x) => if x.r is t { Ins.Load(d, x.base, x.off, x.size, x.align, x.n) } else { null }
@@ -723,7 +728,7 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
 
 /// Whether the machine runs `n` itself (else `word` hands it to the tree).
 vc_compiles :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
-    .Word(_), .Local(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .FloatOp(_), .Call(_), .Perform(_) => true
+    .Word(_), .Local(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .IntRot(_), .IntBits(_), .FloatOp(_), .Call(_), .Perform(_) => true
     _ => false
 }
 
@@ -801,6 +806,17 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
             a := c.vc_operand(x, true)
             c.top = save
             c.vc_emit(.IntConv(op, from, to, c.vc_alloc(), a))
+        }
+        .IntRot(x) => {
+            a := c.vc_operand(x.x, c.vc_reads_only(x.k))
+            b := c.vc_operand(x.k, true)
+            c.top = save
+            c.vc_emit(.IntBit(x.op, x.t, c.vc_alloc(), a, b))
+        }
+        .IntBits(op, t, x) => {
+            a := c.vc_operand(x, true)
+            c.top = save
+            c.vc_emit(.IntBit(op, t, c.vc_alloc(), a, a))
         }
         .FloatOp(x) => {
             a := c.vc_operand(x.l, c.vc_reads_only(x.r))
@@ -1380,6 +1396,8 @@ vc_word_only :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
     .Logic(_, l, r) => c.vc_word_only(l) and c.vc_word_only(r)
     .IntUn(_, _, x) => c.vc_word_only(x)
     .IntConv(_, _, _, x) => c.vc_word_only(x)
+    .IntRot(x) => c.vc_word_only(x.x) and c.vc_word_only(x.k)
+    .IntBits(_, _, x) => c.vc_word_only(x)
     .Call(_, args) => c.vc_all_word_only(args)
     .Perform(x) => c.vc_all_word_only(x.args)
     .Field(_), .Deref(_) => c.vc_placeable(n) is not .No and c.vc_place_word_only(n)
@@ -2042,6 +2060,7 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             .Not(r, x) => { regs[usize(r)] = if regs[usize(x)] is 0 { 1 } else { 0 } }
             .Bool(r) => { regs[usize(r)] = if regs[usize(r)] is 0 { 0 } else { 1 } }
             .IntConv(x) => { regs[usize(x.r)] = conv_word(x.op, x.from, x.to, regs[usize(x.a)]) }
+            .IntBit(x) => { regs[usize(x.r)] = bit_word(x.op, x.t, regs[usize(x.a)], regs[usize(x.b)]) }
             .FloatOp(x) => { regs[usize(x.r)] = float_op(x.op, x.wide, regs[usize(x.a)], regs[usize(x.b)]) }
             .Jmp(to) => {
                 pc = usize(to)

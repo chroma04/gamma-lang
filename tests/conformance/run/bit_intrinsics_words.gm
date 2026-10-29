@@ -1,0 +1,42 @@
+// Bit intrinsics on integers of 8, 16, 32 and 64 bits, signed and unsigned: rotations by
+// amounts below, at and beyond the width, and counts, byte swaps and bit reversals of zero,
+// of all ones and of mixed bits, computed in loops and in straight-line code alike.
+main :: fn() needs Out {
+    amounts := [_]u32(0, 1, 7, 8, 9, 15, 16, 31, 32, 33, 63, 64, 65, 200)
+    a8: u8 = 0x81
+    a16: u16 = 0x8001
+    a32: u32 = 0x8000_0001
+    a64: u64 = 0x8000_0000_0000_0001
+    for k in amounts {
+        print("{} {} {} {} {}\n", k, @rotl(a8, k), @rotr(a16, k), @rotl(a32, k), @rotr(a64, k))
+    }
+    s8: i8 = -127
+    s16: i16 = -32767
+    s32: i32 = -2147483647
+    s64: i64 = -9223372036854775807
+    for k in [_]u32(0, 1, 3, 8, 70) {
+        print("{} {} {} {} {}\n", k, @rotl(s8, k), @rotr(s16, k), @rotl(s32, k), @rotr(s64, k))
+    }
+    values := [_]u64(0, 1, 0x80, 0xFF00, 0x1234_5678, 0xF0F0_0000_0000_000F, ~u64(0))
+    for v in values {
+        b := v.trunc(u8)
+        h := v.trunc(u16)
+        w := v.trunc(u32)
+        print("{} {} {} {}\n", @clz(b), @clz(h), @clz(w), @clz(v))
+        print("{} {} {} {}\n", @ctz(b), @ctz(h), @ctz(w), @ctz(v))
+        print("{} {} {} {}\n", @popcount(b), @popcount(h), @popcount(w), @popcount(v))
+        print("{} {} {} {}\n", @bswap(b), @bswap(h), @bswap(w), @bswap(v))
+        print("{} {} {} {}\n", @bitreverse(b), @bitreverse(h), @bitreverse(w), @bitreverse(v))
+    }
+    n: i16 = -2
+    print("{} {} {} {} {}\n", @clz(n), @ctz(n), @popcount(n), @bswap(n), @bitreverse(n))
+    m: i64 = 0x0102_0304_0506_0708
+    print("{} {} {}\n", @bswap(m), @bitreverse(m), @rotl(m, 12))
+    // A rotation in a loop of word arithmetic, as hash functions do.
+    h: u32 = 0x811C_9DC5
+    for i in 0..1000 {
+        h = @rotl(h ~ u32(i), 5) *% 0x0100_0193
+        h = @rotr(h, i.trunc(u32))
+    }
+    print("{}\n", h)
+}

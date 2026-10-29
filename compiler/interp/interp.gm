@@ -463,6 +463,9 @@ get_uint :: fn(m: ^const Machine, b: []const u8) -> u128 {
     v: u128 = 0
     n := b.len.min(16)
     if m.little {
+        // Integers of 64 and 128 bits a word at a time.
+        if n is 16 { return u128(le64(b[0..8])) | (u128(le64(b[8..16])) << 64) }
+        if n is 8 { return u128(le64(b)) }
         i := n
         while i > 0 {
             i -= 1
@@ -479,6 +482,15 @@ put_uint :: fn(m: ^const Machine, b: []u8, v: u128) {
     n := b.len.min(16)
     x := v
     if m.little {
+        if n is 16 {
+            put_le64(b[0..8], v.trunc(u64))
+            put_le64(b[8..16], (v >> 64).trunc(u64))
+            return ()
+        }
+        if n is 8 {
+            put_le64(b, v.trunc(u64))
+            return ()
+        }
         for i in 0..n {
             b[i] = x.trunc(u8)
             x >>= 8
@@ -491,6 +503,16 @@ put_uint :: fn(m: ^const Machine, b: []u8, v: u128) {
             x >>= 8
         }
     }
+}
+
+/// The little-endian integer in the 8 bytes `b`.
+#inline
+le64 :: fn(b: []const u8) -> u64 => u64(b[0]) | (u64(b[1]) << 8) | (u64(b[2]) << 16) | (u64(b[3]) << 24) | (u64(b[4]) << 32) | (u64(b[5]) << 40) | (u64(b[6]) << 48) | (u64(b[7]) << 56)
+
+/// Writes `v` to the 8 bytes `b`, little-endian.
+#inline
+put_le64 :: fn(b: []u8, v: u64) {
+    for i in 0..8 { b[i] = (v >> u64(8 * i)).trunc(u8) }
 }
 
 get_u64 :: fn(m: ^const Machine, b: []const u8) -> u64 => if b.len <= 8 { m.rd_word(b) } else { m.get_uint(b).trunc(u64) }

@@ -46,8 +46,10 @@ blob :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
 }
 
 /// A blob temporary of type `t` whose bytes outside `parts` (offset and size of each
-/// piece the caller is about to store) are zero. Only the gaps are cleared, with a few
-/// stores, rather than the whole value with `memset`.
+/// piece the caller is about to store) are zero. A small value with several gaps is
+/// cleared whole with `memset`, which the C compiler expands into a few stores (and trims
+/// where the parts overwrite it): one statement instead of a store per gap. Otherwise, and
+/// always under Fil-C, where `memset` is a call into its runtime, only the gaps are cleared.
 blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema.Load {
     size := fg.g.ty.size(t).trunc(usize)
     covered := list(bool)
@@ -65,7 +67,7 @@ blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema
         if not c { gaps += 1 }
     }
     if gaps > 32 { return fg.blob(t) }
-    n := fg.tmp_uninit(t)
+    stores := list((at: usize, len: usize))
     i: usize = 0
     while i < size {
         if covered.items[i] {
@@ -87,11 +89,17 @@ blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema
                 }
             }
         }
-        fg.line(str.format("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", k * 8, n, i)!)
+        stores.push((at: i, len: k))!
         i += k
     }
+    if stores.items.len > 1 and size <= MAX_MEMSET_CLEAR and not fg.g.ty.lay.target.filc { return fg.blob(t) }
+    n := fg.tmp_uninit(t)
+    for st in stores.items { fg.line(str.format("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", st.len * 8, n, st.at)!) }
     return n
 }
+
+/// The size up to which `blob_over` clears a value with several gaps whole.
+MAX_MEMSET_CLEAR :: 64
 
 store :: fn(fg: ^FnGen, t: Ty, addr: string, v: string) needs sema.Load {
     c := fg.g.ty.cty(t)

@@ -72,6 +72,14 @@ Versions and what each kind of change means are described in
   bounds, a shift too large, a short vector slice and an unwrapped error each call a
   runtime function instead of formatting the message inline. The compiler's own
   executable is about 6% smaller and builds about 3% faster.
+- **The interpreter rotates and counts bits as instructions:** `@rotl`, `@rotr`, `@clz`,
+  `@ctz`, `@popcount`, `@bswap` and `@bitreverse` on integers of 8 to 64 bits no longer go
+  through the general evaluator. SHA-256 runs about five times as fast (the `std/hash`
+  conformance test went from 3.6 s to 0.8 s), and 64- and 128-bit integers outside the
+  register machine are read and written a word at a time.
+- A small value built with zeroed padding (an optional, a result or a variant with gaps
+  around its payload) is cleared with one `memset` in the generated C instead of a store
+  per gap, except under Fil-C, where `memset` is a call.
 - **Child processes start without copying the parent** on Linux (glibc 2.29 and later):
   `Proc.spawn`, and with it `gamma`'s calls of the C compiler, uses `posix_spawn` rather
   than `fork`, whose cost grows with the parent's memory. A test that runs `gamma` about

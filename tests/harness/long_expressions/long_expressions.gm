@@ -166,13 +166,14 @@ postfix_chain_limit_is_an_error :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 Run :: struct {
     code: ?u32
     out: string
+    err: string
 }
 
 /// Runs `src` with the interpreter and through the C back end; returns the exit code and
 /// standard output of each.
 run_both :: fn(t: ^kit.T, name, src: string) -> kit.Fail!(interp: Run, native: Run) needs kit.Run {
     path := try write_program(t, name, src)
-    interp := Run(code: null, out: "")
+    interp := Run(code: null, out: "", err: "")
     native := interp
     for backend in ("interp", "c") {
         flag := str.format("--backend={}", backend)!
@@ -181,7 +182,7 @@ run_both :: fn(t: ^kit.T, name, src: string) -> kit.Fail!(interp: Run, native: R
         c.timeout_s = 3 * t.cfg.timeout_s
         out := try t.run(c)
         try t.check(not str.contains(out.err, "C compiler"), "the C compiler failed:\n{}", out.err[0..min(out.err.len, 800)])
-        r := Run(code: out.code(), out: out.out)
+        r := Run(code: out.code(), out: out.out, err: out.err)
         if backend is "interp" { interp = r } else { native = r }
     }
     return (interp: interp, native: native)
@@ -190,7 +191,10 @@ run_both :: fn(t: ^kit.T, name, src: string) -> kit.Fail!(interp: Run, native: R
 same_output :: fn(t: ^kit.T, name, src, expected: string) -> kit.Fail!() needs kit.Run {
     if not t.cfg.c { return !t.skip("no C compiler") }
     r := try run_both(t, name, src)
-    try t.expect_text("interpreter output", expected, r.interp.out)
+    if r.interp.out is not expected {
+        err := r.interp.err[0..min(r.interp.err.len, 800)]
+        try t.check(false, "the interpreter printed {} (exit status {}, stderr:\n{})", kit.quote(r.interp.out), r.interp.code, err)
+    }
     try t.check(r.native.code is r.interp.code, "native exit status {}, interpreter's {}", r.native.code, r.interp.code)
     return t.expect_text("native output (compared with the interpreter's)", r.interp.out, r.native.out)
 }
