@@ -186,6 +186,7 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
     // A freestanding program has no `main`: its exports start it (§3.7.1).
     freestanding := p.target.os is "Freestanding"
     if freestanding { exports = str.format("{}{}{}", g.gen_start(), exports, try g.gen_trap_hook())! }
+    if p.target.os is "Wasi" and p.s.exports.items.len > 0 { exports = str.format("{}{}", g.gen_start(), exports)! }
     main: string = if freestanding { "" } else { try g.gen_main(entries, select) }
     checks := str.format("GM_API int gm_checks = {};\n", if opts.checks { 1 } else { 0 })!
     head := list(u8)
@@ -232,8 +233,12 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         return !Unsup(message: str.format("fibers (`with … on`) need a context switch, which the runtime has only for x86-64, AArch64 and s390x; this freestanding target ({}) has none", p.target.arch)!, span: source.DUMMY)
     }
     // A program that switches fibers runs its entry under the runtime's fiber support.
-    run_main := if code_has("gm_with_go(") { "gm_run_main_fibers" } else { "gm_run_main" }
+    fibers := code_has("gm_with_go(")
+    run_main := if fibers { "gm_run_main_fibers" } else { "gm_run_main" }
     main_text: string = if main.len is 0 { "" } else { str.format("#define GM_RUN_MAIN {}\n{}", run_main, main)! }
+    if p.target.os is "Wasi" and exports.len > 0 {
+        exports = str.format("#define GM_RUN_EXPORT {}\n{}", if fibers { "gm_run_export_fibers" } else { "gm_run_export" }, exports)!
+    }
     out.extend(exports)!
     out.extend(main_text)!
     reset := ""
@@ -455,6 +460,10 @@ pub decl_table :: fn(g: ^Gen, d: u32) -> Unsup!string needs Alloc {
 /// Exported functions (§19.4): external C-ABI wrappers under their symbols.
 gen_exports :: fn(g: ^Gen) -> Unsup!string needs sema.Load {
     out := list(u8)
+    // On WASI an export runs through the runtime (`GM_RUN_EXPORT`, defined with the
+    // program's entry), which starts the fiber driver under it when the program switches
+    // fibers: the export gets its arguments and leaves its result in static variables.
+    wasi := g.prog.target.os is "Wasi"
     for k, sym in enumerate(g.prog.s.exports.items) {
         f := g.prog.s.export_fns.items[k]
         def := g.prog.func(f)
@@ -463,24 +472,45 @@ gen_exports :: fn(g: ^Gen) -> Unsup!string needs sema.Load {
         cname := str.format("gm_xe{}", k)!
         params := list(string)
         args := list(string)
+        stores := list(u8)
         for i, p in enumerate(def.params) {
             t := def.locals[usize(p)].ty
-            params.push(str.format("{} a{}", try g.c_abi_type(t, def.span), i)!)!
+            pty := try g.c_abi_type(t, def.span)
+            params.push(str.format("{} a{}", pty, i)!)!
+            a := str.format("a{}", i)!
+            if wasi {
+                a = str.format("gm_xa{}_{}", k, i)!
+                out.write("static {} {};\n", pty, a)!
+                stores.write("{} = a{}; ", a, i)!
+            }
             // The function takes mirrors itself (it has the plain convention).
-            args.push(if g.ty.mirror(t) is not null { str.format("a{}", i)! } else { str.format("({})a{}", g.ty.cty(t), i)! })!
+            args.push(if g.ty.mirror(t) is not null { a } else { str.format("({}){}", g.ty.cty(t), a)! })!
         }
         call := str.format("{}({})", g.addr_name(f), str.join(args.items, ", ")!)!
         param_text: string = if params.items.len is 0 { "void" } else { str.join(params.items, ", ")! }
-        // A freestanding program has no `main`: each export starts it first.
-        start := if g.prog.target.os is "Freestanding" { "gm_start(); " } else { "" }
+        // A freestanding program has no `main`, and a WASI module's host may call an
+        // export without running `main`: each export starts the program first.
+        start := if g.prog.target.os in ("Freestanding", "Wasi") { "gm_start(); " } else { "" }
         ret := "void"
-        body := str.format("{}{};", start, call)!
+        value := ""
         if not g.ty.is_unit(def.ret) {
             ret = try g.c_abi_type(def.ret, def.span)
-            value: string = if g.ty.mirror(def.ret) is not null { call } else { str.format("({}){}", ret, call)! }
-            body = str.format("{}return {};", start, value)!
+            value = if g.ty.mirror(def.ret) is not null { call } else { str.format("({}){}", ret, call)! }
+        }
+        body: string = if value.len is 0 { str.format("{}{};", start, call)! } else { str.format("{}return {};", start, value)! }
+        if wasi {
+            result := str.format("gm_xr{}", k)!
+            if value.len is 0 {
+                out.write("static int gm_xt{}(gm_node *cx) {{ (void)cx; {}; return 0; }}\n", k, call)!
+                body = str.format("{}{}GM_RUN_EXPORT(gm_xt{});", start, stores.items, k)!
+            } else {
+                out.write("static {} {};\nstatic int gm_xt{}(gm_node *cx) {{ (void)cx; {} = {}; return 0; }}\n", ret, result, k, result, value)!
+                body = str.format("{}{}GM_RUN_EXPORT(gm_xt{}); return {};", start, stores.items, k, result)!
+            }
         }
         cc := conv_attr(def.win64)
+        // A WebAssembly module's host reaches it only through the module's exports.
+        if wasi { cc = str.format("__attribute__((export_name(\"{}\"))) {}", sym, cc)! }
         out.write("{}{} {}({}) __asm__(GM_SYM(\"{}\"));\n", cc, ret, cname, param_text, sym)!
         out.write("{}{} {}({}) {{ {} }}\n", cc, ret, cname, param_text, body)!
     }
@@ -507,8 +537,14 @@ gen_main :: fn(g: ^Gen, entries: []const u32, select: bool) -> Unsup!string need
         s.extend("    gm_set_args(argc, argv);\n")!
     }
     s.extend("    gm_thread_stack();\n")!
-    s.write("    gm_debug = {};\n", if g.opts.debug { 1 } else { 0 })!
-    s.extend("    gm_init_consts();\n    gm_node *cx = NULL;\n")!
+    // A WASI module's exports start the program too (see `gen_exports`): it starts once.
+    if g.prog.target.os is "Wasi" and g.prog.s.exports.items.len > 0 {
+        s.extend("    gm_start();\n")!
+    } else {
+        s.write("    gm_debug = {};\n", if g.opts.debug { 1 } else { 0 })!
+        s.extend("    gm_init_consts();\n")!
+    }
+    s.extend("    gm_node *cx = NULL;\n")!
     // A program instrumented for coverage keeps a counter per line (`testing.instrument`);
     // the file to write the counters to is the second argument.
     if select and g.prog.s.cover_counters > 0 {

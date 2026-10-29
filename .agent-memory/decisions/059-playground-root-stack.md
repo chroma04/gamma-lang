@@ -16,12 +16,31 @@ redesign?". Answer: no — one bug made ~90% of the time.
 - After: hello 45 ms, most examples 30–65 ms, life ~100, mandelbrot ~145; first run after
   load ~260 ms (V8 lazily compiles the 7.8 MB module).
 
+## Round 2 (user: "do snapshot + first run; fast mode only if measured")
+- Core snapshot: web/play/main.gm `play init` → prepare() into `#global prepared`
+  (heap; Prepared holds ^sm/^diags/^Loader/^Sema); init must RETURN from main, not
+  Env.exit (leaves gm_unw.kind set in memory → later export returns garbage status).
+  Worker: init instance vs fresh instance, diff 64 KiB pages → snapshot chunks; each run =
+  fresh Instance + memory.grow + copy chunks + call export `gamma_play_run` (not _start:
+  wasi-libc crt1 `_start.started` traps on a 2nd start). Export ends with libc exit(status)
+  (flushes stdio; JS gets Exit(code)). PlayEnv handler: no args/vars.
+- Compiler: `#export` on Wasi = `export_name` + `gm_start()` (shared with main via
+  static started) + trampoline gm_xt<k> through GM_RUN_EXPORT (gm_run_export[_fibers];
+  fibers variant drives gm_wasi_drive unless gm_wasi_running; drive now resets
+  gm_wasi_running=NULL on return). Without the driver an export that switches fibers
+  unwound straight out to JS. wasm-ld wraps command exports with ctors/dtors (seen).
+  Harness test wasi/exports_without_main (wasmtime --invoke; CI only — wasmtime download
+  was refused locally; verified with play-worker's WASI shim in node instead).
+- Warm-up: after "ready", worker runs WARM_UP program quietly: first run ~halved
+  (hello 101→77, effects 144→67, mandelbrot 552→336 ms).
+- MODE=fast measured (medians, 3 alternating rounds): runs 0.87–1.53x (noise), load
+  0.82x (module 6.8 vs 7.8 MB). Not adopted.
+- Result (Node, warm): hello ~11 ms, most examples 10–30, comptime ~30–55, allocators
+  ~60, life ~90, mandelbrot ~200. Rust era: ~30 ms.
+
 ## Remaining levers (not done)
-- load_core: ~20 ms of every run (native also ~20 ms: parse+collect of lib/core). A
-  snapshot of the loaded/checked core (e.g. Wizer-style pre-initialized memory, or a
-  reactor module that keeps the instance and restores a memory copy) would remove it.
-- First run: V8 lazy compile; streaming compile + code caching helps on revisits only.
-- MODE=fast for web/play/build.sh (not measured).
+- First run still ~70 ms (V8 tier-up). Browser code caching helps on revisits.
+- mandelbrot/life dominated by interpretation itself (VM work, decisions/056–058).
 - Reproduce: build with `CC="clang-18 --target=wasm32-wasi" web/play/build.sh DIR`
   (apt: wasi-libc libclang-rt-18-dev-wasm32 binaryen), drive play-worker.js in a node:vm
   sandbox like check.mjs but in one process, N runs per example, read `ms` of the exit msg.

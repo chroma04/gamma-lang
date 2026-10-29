@@ -1,9 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-10-29) — PRs #1–#108 merged, v0.1.0 + rust-reference-final tagged
-- s57 (branch claude/compassionate-tesla-mepur2): PLAYGROUND SPEED (decisions/059): interp
-  root stack calloc(1 GiB) was memset by wasi-libc every run (~535 ms); 8 MiB on Wasm32.
-  Examples ~600 → 30–150 ms in Node. Next lever: snapshot of the loaded core (~20 ms/run).
+- s57 (branch claude/compassionate-tesla-mepur2, PR #109): PLAYGROUND SPEED (decisions/059):
+  interp root stack 1 GiB calloc → 8 MiB on Wasm32; core-loaded memory snapshot (play init
+  + export gamma_play_run); warm-up run. `#export` on WASI = module export + gm_start +
+  fiber driver. ~600 → ~11 ms hello. MODE=fast measured, not adopted.
 - s56 (branch claude/perf-round-5): PERF ROUND 5 (decisions/058): posix_spawn (glibc),
   GM_RT_PROGRAM (generated code skips system headers: Debug builds ~20% faster), trap
   messages in runtime (gm_trap_index…), @write-to-function via shared stubs, str.format

@@ -4,7 +4,7 @@
 // is reserved for generated code and not listed.
 
 /// The runtime's `gm_` identifiers that do not end in a digit, sorted.
-RUNTIME_NAMES :: [297]string(
+RUNTIME_NAMES :: [299]string(
     "gm_alloc_check", "gm_alloc_tag", "gm_altstack_free", "gm_altstack_init", "gm_altstack_key",
     "gm_altstack_keyed", "gm_args", "gm_asyncify_start_rewind", "gm_asyncify_start_unwind",
     "gm_asyncify_stop_rewind", "gm_asyncify_stop_unwind", "gm_atag", "gm_atag_cap", "gm_atag_find",
@@ -42,7 +42,8 @@ RUNTIME_NAMES :: [297]string(
     "gm_proc_write", "gm_proc_write_in", "gm_procs", "gm_quote_bytes", "gm_rand_fill", "gm_reparse",
     "gm_resolve", "gm_resume", "gm_rop", "gm_round_digits", "gm_rt_acquire", "gm_rt_argc",
     "gm_rt_args", "gm_rt_fiber_tramp", "gm_rt_lock", "gm_rt_release", "gm_rt_str", "gm_rt_switch",
-    "gm_run_main", "gm_run_main_fibers", "gm_scratch", "gm_scratch_grow", "gm_scratch_live",
+    "gm_run_export", "gm_run_export_fibers", "gm_run_main", "gm_run_main_fibers", "gm_scratch",
+    "gm_scratch_grow", "gm_scratch_live",
     "gm_scratch_release", "gm_scratch_top", "gm_segv", "gm_set_args", "gm_set_cur_fiber",
     "gm_set_timeout", "gm_shortest", "gm_sink", "gm_sink_float", "gm_sink_put", "gm_sink_unsigned",
     "gm_site_str", "gm_snprintf", "gm_socket", "gm_spec", "gm_spec_exp", "gm_spec_pad",

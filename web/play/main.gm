@@ -3,6 +3,7 @@
 //!
 //!     play run    checks it and runs it in the interpreter, as `gammac run --backend=interp` does
 //!     play fmt    prints it formatted, as `gammac fmt -` does
+//!     play init   loads the core library and exits
 //!
 //! The exit status is the program's; 1 for a program with errors; 134 after a trap.
 //! Diagnostics go to standard error in the human format.
@@ -11,8 +12,13 @@
 //! the host grants the module (the page's script serves them from memory); the program
 //! itself is an in-memory buffer that stands in for the file `/play/main.gm`, so the
 //! host needs no such file.
+//!
+//! Every run starts by loading and checking the core library, which is the same each
+//! time. `play init` does only that and keeps the result in `prepared`: a host that saves
+//! the module's memory after it and starts each later run in a copy of that memory skips
+//! the work (`run` finds `prepared` set). Nothing else may differ between the two, so
+//! `prepare` depends on nothing but the files.
 
-arena :: import "std/arena"
 ast :: import "gammac/ast"
 check :: import "gammac/check"
 diag :: import "gammac/diag"
@@ -29,50 +35,105 @@ PROGRAM :: "/play/main.gm"
 STD :: "/std"
 CORE :: "/core"
 
+/// The core library, loaded and checked, with everything that refers to it.
+Prepared :: struct {
+    sm: ^source.SourceMap
+    diags: ^diag.Diagnostics
+    l: ^load.Loader
+    s: ^sema.Sema
+    opts: driver.Options
+    /// Whether the core library could be read.
+    ok: bool
+}
+
+/// The state that `play init` leaves behind for later runs in a copy of its memory.
+#global prepared: ?^Prepared = null
+
 main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys {
     args := Env.args()
     mode := args.get(1) else "run"
     if mode is "fmt" { Env.exit(fmt.command([1]string("-")[..])) }
-    a := arena.new()
-    defer a.deinit()
-    with a.allocator() {
-        text := io.read_all() else {
-            eprint("gamma: cannot read the program\n")
-            Env.exit(2)
-        }
-        if not text.utf8_valid() {
-            eprint("gamma: the program is not valid UTF-8\n")
-            Env.exit(2)
-        }
-        Env.exit(run(string(text)))
+    if mode is "init" {
+        // Returning, not `Env.exit`, which leaves an exit under way in the memory.
+        prepared = prepare()
+        return
     }
+    Env.exit(run_input(prepared else prepare()))
+}
+
+/// `play run` in a copy of the memory that `play init` left: the C library's start-up
+/// code runs only once in a module's memory, so the host calls this instead of starting
+/// the module again. It exits the module with the run's status, which also flushes the
+/// standard output.
+#export("gamma_play_run")
+run_prepared :: fn() needs Sys {
+    status := with heap_allocator(), system_io(), system_output(), PlayEnv() {
+        run_input(prepared else prepare())
+    }
+    libc.exit(i32(status))
+}
+
+/// The environment of `run_prepared`, which has no ambient handlers: no arguments and no
+/// variables, and `exit` exits the module.
+PlayEnv :: struct {}
+
+handler Env for PlayEnv needs Sys {
+    args(self) => empty_slice(string)
+    var(self, name) => null
+    exit(self, code) => libc.exit(i32(code))
+}
+
+libc :: foreign "c" {
+    exit :: fn(code: i32) -> never
+}
+
+/// Checks and runs the program on standard input. Returns the exit status. Its memory is
+/// not freed: the module exits after one run.
+run_input :: fn(p: ^Prepared) -> u8 needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys {
+    text := io.read_all() else {
+        eprint("gamma: cannot read the program\n")
+        return 2
+    }
+    if not text.utf8_valid() {
+        eprint("gamma: the program is not valid UTF-8\n")
+        return 2
+    }
+    return run(p, string(text))
+}
+
+/// Loads and checks the core library.
+prepare :: fn() -> ^Prepared needs Alloc + Fs {
+    opts := driver.Options(command: .Run, interp: true, native_fallback: false, target: load.host_target(), lint: lint.options())
+    sm := new(source.source_map())!
+    diags := new(diag.diagnostics())!
+    next_id := new(ast.NodeId(0))!
+    l := new(load.loader(sm, diags, next_id, STD, false))!
+    l.target = opts.target
+    ok := l.load_core(CORE, driver.mode_name(opts.mode))
+    s := new(sema.sema(l))!
+    if ok {
+        check.install(s)
+        s.resolve_ambient()
+    }
+    return new(Prepared(sm: sm, diags: diags, l: l, s: s, opts: opts, ok: ok))!
 }
 
 /// Checks the program `text` and runs it. Returns the exit status.
-run :: fn(text: string) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
-    sm := source.source_map()
-    diags := diag.diagnostics()
-    next_id: ast.NodeId = 0
-    opts := driver.Options(command: .Run, interp: true, native_fallback: false, target: load.host_target(), lint: lint.options())
-    l := load.loader(&sm, &diags, &next_id, STD, false)
-    l.target = opts.target
-    l.overlays.push(load.Overlay(path: PROGRAM, text: text))!
+run :: fn(p: ^Prepared, text: string) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    p.l.overlays.push(load.Overlay(path: PROGRAM, text: text))!
     status: u8 = 0
-    if l.load_core(CORE, driver.mode_name(opts.mode)) {
-        s := sema.sema(&l)
-        check.install(&s)
-        s.resolve_ambient()
-        if m := l.load_root(PROGRAM) {
-            s.resolve_declarations()
-            check.check_program(&s, m, false)
-            errors := diags.has_errors()
-            render(&sm, &diags)
+    if p.ok {
+        if m := p.l.load_root(PROGRAM) {
+            p.s.resolve_declarations()
+            check.check_program(p.s, m, false)
+            errors := p.diags.has_errors()
+            render(p.sm, p.diags)
             if errors { return 1 }
-            status = driver.run_interp(&s, m, PROGRAM, opts)
+            status = driver.run_interp(p.s, m, PROGRAM, p.opts)
         }
     }
-    if diags.has_errors() and status is 0 { status = 1 }
-    render(&sm, &diags)
+    if p.diags.has_errors() and status is 0 { status = 1 }
+    render(p.sm, p.diags)
     return status
 }
 

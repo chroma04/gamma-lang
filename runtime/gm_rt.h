@@ -613,6 +613,10 @@ GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx);
 /* The same for a program that switches fibers: on WASI, that takes the fiber driver at the
  * bottom of the stack (which brings in the code of the switch, see gm_rt.c). */
 GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx);
+/* On WASI, run an exported function (called by `f`, which ignores its argument): the
+ * _fibers variant under the fiber driver, unless one is already running below. */
+GM_API void gm_run_export(int (*f)(gm_node *));
+GM_API void gm_run_export_fibers(int (*f)(gm_node *));
 
 /* The innermost handler of effect `eff` in context `cx`, or NULL. The innermost node, most
  * often the one, is looked at inline: a call is dear, under Fil-C especially. */

@@ -41,13 +41,24 @@ Versions and what each kind of change means are described in
   `bin/gamma` and `lib/gamma/{std,core,runtime}`. `tools/install.sh` and
   `tools/install.ps1` install it; `GAMMA_ARCHIVE` is gone.
 
+### WebAssembly
+
+- **`#export` on `wasm32-wasi` exports the function from the module** (spec §19.4), so
+  that the host can call it, before `main` has run, after it or instead of it. Before,
+  the linker left it out. The first call, of an export or of `main`, prepares the
+  program's constants, and an export of a program that uses fibers runs under the same
+  fiber support as `main`.
+
 ### Speed
 
-- **The playground runs programs about fifteen times as fast**: a small program takes
-  30 to 60 ms instead of about 600 ms (Node; after the first run, which also compiles
-  the module). The interpreter gave the program's thread a 1 GiB stack, which costs
-  nothing on a native host but which the WebAssembly C library cleared byte by byte on
-  every run. On WebAssembly the stack is now 8 MiB: the browser's own stack ends a deep
+- **The playground runs programs about fifty times as fast**: a small program takes
+  10 to 30 ms instead of about 600 ms (Node; the first run takes about 70 ms). The page
+  loads and checks the core library once, when it opens, and starts every run from a
+  copy of the module's memory at that point; it then runs a small program out of sight,
+  so that the browser has compiled most of the interpreter before the first real run.
+  Most of the gain came from the interpreter's stack: it gave the program's thread a
+  1 GiB stack, which costs nothing on a native host but which the WebAssembly C library
+  cleared byte by byte on every run. On WebAssembly the stack is now 8 MiB: the browser's own stack ends a deep
   recursion first, and if it does not, the interpreter traps with `stack overflow`.
 - **The interpreter runs three to seven times as fast** (`gamma run --backend=interp`,
   `gamma repl`): a function's body is lowered once, on its first call, with sizes, offsets

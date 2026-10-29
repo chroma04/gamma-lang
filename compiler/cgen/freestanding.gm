@@ -3,7 +3,8 @@
 // `#trap_hook`.
 
 /// `gm_start`, which every export of a freestanding program calls first: the program has no
-/// `main` to prepare its constants and the build mode before the first call.
+/// `main` to prepare its constants and the build mode before the first call. A WASI module
+/// with exports has one as well, which its `main` calls too.
 gen_start :: fn(g: ^const Gen) -> string needs Alloc {
     return str.format("static void gm_start(void) {{\n    static int started;\n    if (started) return;\n    started = 1;\n    gm_debug = {};\n    gm_init_consts();\n}}\n", if g.opts.debug { 1 } else { 0 })!
 }

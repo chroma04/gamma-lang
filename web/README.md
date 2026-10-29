@@ -54,15 +54,26 @@ that it presents to the module as a read-only preopened directory `/`, with `/st
 in-memory buffer that stands in for `/play/main.gm`, so the module needs no writable
 directory.
 
+Every run starts by loading and checking the core library, which is the same work each
+time, so the worker does it once. When the page loads, it runs the module in a third
+mode, `init`, which does only that and keeps the result in the module's memory (a
+`#global`), and saves the memory pages that `init` changed. Each run then gets a fresh
+instance with those pages copied in, and calls the module's export `gamma_play_run`
+instead of starting it (the C library's start-up code refuses to run twice in one
+memory): the run finds the core library ready. A small program then takes about 10 ms
+instead of 40. After that, the worker runs a small program with its output discarded, so
+that the browser has compiled most of the module's functions before the first real run.
+A module without the export (or whose `init` fails) is started for every run as before.
+
 The interpreter runs fibers (`with … on`, generators, the scheduler of `std/fiber`) and
 threads, which the compiler's own interpreter provides itself; the module switches its
 fibers with Binaryen's Asyncify, which `gamma build` applies. What a program can notice: the
 first run after the page loads is slower than the next ones (the module is about 8 MB, 3 MB
-compressed, and the browser compiles its functions as they are first called; the compiler
-also checks the core library on every run), a trap's location line names the function
-(`at /play/main.gm:4:19 in main`),
-and a runaway recursion ends when the browser's stack does (status 134 with a message
-from the worker) instead of at the interpreter's own limit.
+compressed, and the browser compiles its functions as they are first called), it sees no
+command-line arguments or environment variables, a trap's location line names the
+function (`at /play/main.gm:4:19 in main`), and a runaway recursion ends when the
+browser's stack does (status 134 with a message from the worker) instead of at the
+interpreter's own limit.
 
 In the browser, `static/play-worker.js` runs the module in a Web Worker with a small WASI
 implementation: arguments, environment, standard streams, clocks, randomness, sleeping and
