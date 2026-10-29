@@ -47,3 +47,11 @@ set_modified, Proc try_wait + SpawnOptions.program, pub handles, Env on threads.
   (`str.format("…{}", loc)` where a local `loc` was meant but missing: the method `loc` of
   the same module was found). Hit once (s55, moving cgen arms into helpers; the C compiler
   caught it). Candidate: formatting a function value is an error or a lint.
+- Code size of format templates (s56, measured): `template :: string` is a comptime
+  parameter, so every function taking one has an instance per template, and every
+  forwarding wrapper (str.format → List.write, kit.check → str.format) multiplies them.
+  In the compiler: ~1,540 str.format templates; their instances were ~20% of the generated
+  C before s56 (reduced by shared @write helpers and str.format writing itself). Possible
+  language change: a checked template VALUE (type checked at the call site against the
+  args, passed at run time as pieces + specs), so wrappers instantiate per arg types only.
+  Not urgent; flagged to the user.

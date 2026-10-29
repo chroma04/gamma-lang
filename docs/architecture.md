@@ -743,7 +743,17 @@ prints in one `main` took a minute to compile before; the stubs and the register
 `@black_box` cut the compile time of a 9,400-line `main` of such statements
 from over 60 s to about 20 s, and the generated C from about 30 lines per statement to
 about 14. What remains grows faster than linearly with the size of one function
-(splitting the same statements over eight functions halves it again).
+(splitting the same statements over eight functions halves it again). An `@write` to a
+function (`List.write`, `str.format`) works the same way: it computes the sink closure's
+handler context once, then calls, per piece, one of two functions shared by the program,
+one that calls the sink with a pointer and a length and one that formats a value and
+passes it on. Such functions have an instance per template (the template is a
+compile-time parameter), so in the compiler they were about a tenth of its C before.
+For the same reason a generic function whose work depends on its type parameter only
+through the size of the type is a thin wrapper around one function on bytes (`List`'s
+growth, `regrow_raw` in `lib/core/list.gm`), and failed checks (an index or slice out of
+bounds, a shift too large, an unwrapped error) call runtime functions that format their
+message (`gm_trap_index` and the like) instead of formatting it inline.
 
 **Effects.** The handler context `cx` is a linked list of `gm_node`s, built on
 the C stack by `with`. Performing an operation finds the innermost node for the
