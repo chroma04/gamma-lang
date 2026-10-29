@@ -69,7 +69,11 @@ the test suite (tools/test.sh -v per-test times; baseline 275 s wall, 1097 s sum
   within 10%; parallel contention makes unit 0 look slower). Suite 275 → ~205 s wall,
   1097 → 804 s summed (conformance/run 256 → 115 s).
 - Not done: map growth per (K,V) (55 × 9 KB, rehashes: needs hash fn pointer), sort per T
-  (79 × 4.9 KB), harness kit.check/fail forward templates to str.format (harness only),
-  seed refresh (56 MB diff; bootstrap works with the current seed — verified).
+  (79 × 4.9 KB), harness kit.check/fail forward templates to str.format (harness only).
+- Seed refreshed at the end of s56 (56 → 47 MB; bootstrap/verify.sh passes).
+- posix_spawn + groups: qemu-user ignores CLONE_VFORK, so posix_spawn returned before the
+  child's setpgid → killing the group right away gave ESRCH (aarch64 lane, std_process).
+  Parent also calls setpgid(pid, pid). Reproduce lanes locally: apt-get install
+  gcc-aarch64-linux-gnu qemu-user; GAMMA_TEST_LANE=aarch64 harness lanes/.
 - Pain point logged: comptime `template :: string` → instance per template; wrappers
   multiply (spec-notes/pain-points.md). Language idea: checked template values.
