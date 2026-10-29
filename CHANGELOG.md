@@ -370,8 +370,9 @@ Rust implementation was still the one users ran; it is now `gamma`.
 - The language server no longer adds "gamma cannot check this kind of expression yet" to a
   syntax error in a condition.
 - New lint `stale-element-pointer`: a pointer or slice into a list's items used after a
-  call on that list that may move them (`push`, `extend`, `reserve`, …, or a function given
-  the list by pointer).
+  call on that list that may move them (`push`, `extend`, `reserve`, …, a function given
+  the list by pointer, or one given a pointer to the struct holding the list that grows it,
+  itself or through the functions it calls, such as `p.alloc_expr()`).
 - `gamma lint` has a new rule, `mutated-copy`: a local holding a copy of a `List`, a
   `HashMap` or another value with a resizable buffer (`tys := cx.tys`) that is then
   changed as if it were the original (`tys.intern(k)`), which loses the change; a pointer

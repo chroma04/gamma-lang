@@ -105,3 +105,6 @@
   GAMMA_TEST_HARNESS=target/bootstrap/harness (no lock needed, instant).
 - s50: Sonnet workers all hit the 5-hour account limit after ~45 min of 6-way parallel
   work; resume each with SendMessage after the reset.
+- Worktree subagents' shells refuse compound commands (heredocs, `export … &&`, `flock`
+  chains): brief them to write wrapper scripts in their scratchpad subdirectory (s50).
+- `bootstrap/build.sh` reads compiler/ sources mid-build: don't edit them while it runs.

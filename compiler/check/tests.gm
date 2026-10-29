@@ -22,7 +22,9 @@ check_tests :: fn(s: ^Sema, root: usize) needs Load {
     for place in order.items {
         module := place.module
         names := list((bench: bool, name: string, span: source.Span))
-        for o in s.l.other_items.items {
+        // Checking a test may load modules, which adds items: index the list each time.
+        for i in 0..s.l.other_items.items.len {
+            o := s.l.other_items.items[i]
             if o.module is not module { continue }
             .Test(t) := o.item.kind else continue
             text := string(t.name.bytes)

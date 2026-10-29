@@ -77,6 +77,59 @@ next_iteration :: fn(l: ^List(Node)) needs Alloc {
     }
 }
 
+// Growth through a method of the struct holding the list, directly or through further
+// calls (also recursive ones).
+Parser :: struct {
+    graph: Graph
+    other: List(Node)
+    depth: u32
+}
+
+new_node :: fn(p: ^Parser) -> u32 needs Alloc {
+    p.graph.nodes.push(fresh())!
+    return p.graph.nodes.items.len.trunc(u32) - 1
+}
+
+new_nested :: fn(p: ^Parser) -> u32 needs Alloc {
+    if p.depth > 0 {
+        p.depth -= 1
+        return new_nested(p)
+    }
+    return p.new_node()
+}
+
+touch_other :: fn(p: ^Parser) needs Alloc { p.other.push(fresh())! }
+
+peek :: fn(p: ^Parser) -> u32 => p.depth
+
+through_method :: fn(p: ^Parser) needs Alloc {
+    e := &p.graph.nodes.items[0]
+    _ = p.new_node()
+    e.count = 1 //~ WARNING [stale-element-pointer] `e` points into the items of `p.graph.nodes`
+}
+
+through_calls :: fn(p: ^Parser) needs Alloc {
+    e := &p.graph.nodes.items[0]
+    _ = new_nested(p)
+    e.count = 2 //~ WARNING [stale-element-pointer] `e` points into the items of `p.graph.nodes`
+}
+
+through_field :: fn(g: ^Graph, p: ^Parser) needs Alloc {
+    e := &p.graph.nodes.items[0]
+    grow(&p.graph.nodes)
+    e.count = 3 //~ WARNING [stale-element-pointer] `e` points into the items of `p.graph.nodes`
+    _ = g
+}
+
+// A method that grows another list of the struct, or none, is fine.
+method_fine :: fn(p: ^Parser) -> u32 needs Alloc {
+    e := &p.graph.nodes.items[0]
+    p.touch_other()
+    n := p.peek()
+    e.count = n
+    return e.count
+}
+
 // Indexing again after growing, a pointer that is not used after the call, another list,
 // calls that do not move the items, and a pointer that is assigned again are fine.
 fine :: fn(l: ^List(Node), other: ^List(Node)) -> u32 needs Alloc {
@@ -140,4 +193,10 @@ main :: fn() needs Alloc {
     _ = local_list()
     nested_block(&l, true)
     next_iteration(&l)
+    p := Parser(graph: Graph(nodes: list(Node)), other: list(Node), depth: 1)
+    p.graph.nodes.push(fresh())!
+    through_method(&p)
+    through_calls(&p)
+    through_field(&g, &p)
+    _ = method_fine(&p)
 }

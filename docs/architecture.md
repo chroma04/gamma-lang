@@ -1193,7 +1193,8 @@ The lint rules are split by what they need. Rules that walk the syntax tree are 
 `compiler/lint/syntax.gm`. Rules that read the checked program are in `checked.gm` (unused
 locals and declarations, variables that never change, comparisons with a known result),
 `stale.gm` (the `stale-element-pointer` rule: pointers into a list's items used after a call that may
-move them), `copy.gm` (the `mutated-copy` rule: locals holding a copy of a list or map that are changed as
+move them; a summary of the lists each function may grow through its pointer parameters,
+computed to a fixed point over the calls, covers methods of the struct holding the list), `copy.gm` (the `mutated-copy` rule: locals holding a copy of a list or map that are changed as
 if they were the original) and `present.gm` (the `present-only-binding` rule: `match` arms
 whose present-only bindings leave the absent case to a catch-all arm). Addresses of locals
 kept where they outlive the local are a compile error where certain (§15.1,

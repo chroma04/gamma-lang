@@ -8,7 +8,9 @@ declare_handlers :: fn(s: ^Sema) needs Load {
     // A compile-time evaluation may need them before the bodies are checked.
     if s.handlers_declared { return }
     s.handlers_declared = true
-    for o in s.l.other_items.items {
+    // Declaring a handler may load modules, which adds items: index the list each time.
+    for i in 0..s.l.other_items.items.len {
+        o := s.l.other_items.items[i]
         .Handler(h) := o.item.kind else continue
         declare_handler(s, o.module, h)
     }
