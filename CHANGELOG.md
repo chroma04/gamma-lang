@@ -64,6 +64,37 @@ Versions and what each kind of change means are described in
   (about 630 instructions of the interpreter instead of 1,180), and the machine's loop
   keeps its state in registers again (see below): a loop of calls and performs runs
   about 20 to 30% faster, `std_parse_float_table` about 12%.
+- **Debug builds compile about 20% faster:** the generated code of a program linked with
+  the cached runtime includes only the few system headers it needs (`<stdint.h>`,
+  `<string.h>` and the like) instead of all those of the runtime, which took the C
+  compiler about a third of its time on a small program.
+- **Failed checks format their messages in the runtime:** an index or slice out of
+  bounds, a shift too large, a short vector slice and an unwrapped error each call a
+  runtime function instead of formatting the message inline. The compiler's own
+  executable is about 6% smaller and builds about 3% faster.
+- **Formatted writes to a function generate much less C:** `l.write("…", …)`,
+  `str.format` and every other `@write` whose sink is a function call two helpers shared by
+  the whole program, one per piece of the template, instead of repeating the call of the
+  sink and the formatting of each value inline. Each template has an instance of these
+  functions, so this was about a tenth of the compiler's own C, which now compiles about 6%
+  faster. `str.format` writes through `@write` itself rather than through `List.write`,
+  which saves a function per template (another 5% of the compiler's C).
+- **A `List` grows through one function for every element type:** the growth of a
+  `List(T)` depends on `T` only through its size and alignment, so it is done by one
+  function on bytes rather than by an instance per element type (about 300 in the
+  compiler: another 5% of its C).
+- **The interpreter rotates and counts bits as instructions:** `@rotl`, `@rotr`, `@clz`,
+  `@ctz`, `@popcount`, `@bswap` and `@bitreverse` on integers of 8 to 64 bits no longer go
+  through the general evaluator. SHA-256 runs about five times as fast (the `std/hash`
+  conformance test went from 3.6 s to 0.8 s), and 64- and 128-bit integers outside the
+  register machine are read and written a word at a time.
+- In Debug builds, a small value built with zeroed padding (an optional, a result or a
+  variant with gaps around its payload) is cleared with one `memset` in the generated C
+  instead of a store per gap. Optimized builds keep the stores, which run faster.
+- **Child processes start without copying the parent** on Linux (glibc 2.29 and later):
+  `Proc.spawn`, and with it `gamma`'s calls of the C compiler, uses `posix_spawn` rather
+  than `fork`, whose cost grows with the parent's memory. A test that runs `gamma` about
+  4,000 times went from 25 s to 12 s.
 - **No function of the compiler is too long for Clang to optimize:** the C back end's
   `expr_node` and `builtin`, which Clang 19 and later (Apple clang 17 and later) compiled
   without optimization because of their size, are split into smaller functions.

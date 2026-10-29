@@ -249,7 +249,7 @@ pub int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: 
             n := str.format("n{}", fg.fresh())!
             fg.line(str.format("unsigned __int128 {} = (unsigned __int128){};", n, b)!)
             if fg.g.opts.checks {
-                fg.line(str.format("if ({} >= {}) {{ char m[128]; snprintf(m, sizeof m, \"shift amount %llu too large for {}\", (unsigned long long){}); gm_trap(m, {}); }}", n, ii.bits, fg.g.ty.show(lt), n, loc)!)
+                fg.line(str.format("if ({} >= {}) gm_trap_shift((uint64_t){}, \"{}\", {});", n, ii.bits, n, fg.g.ty.show(lt), loc)!)
             } else {
                 fg.line(str.format("{} %= {};", n, ii.bits)!)
             }

@@ -468,6 +468,40 @@ out_stub :: fn(fg: ^FnGen, effect_: ^const EffectRef, id: u32, op: u32, tys: []c
     return f
 }
 
+/// The helper that calls a function value of type `fn(string)` (an `@write` sink) with the
+/// `n` bytes at `d`, as `call_closure` would: `code` and `env` are the closure's, `cx` its
+/// handler context. It returns whether the call started an unwind.
+pub fn_sink_stub :: fn(fg: ^FnGen, str_ty: Ty) -> string needs sema.Load {
+    key := "fnsink"
+    if f := fg.g.stubs.get(key) { return f }
+    f := str.format("gm_pf{}", fg.g.stubs.len())!
+    fg.g.stubs.put(key, f)!
+    unit_ty := fg.g.ty.unit_ty()
+    tys := [1]Ty(str_ty)
+    head := str.format("static bool {}(void *code, void *env, gm_node *cx, const void *d, uintptr_t n)", f)!
+    fg.g.helpers.protos.write("GM_NOINLINE {};\n", head)!
+    pt := fg.g.ty.param_cty(str_ty)
+    plain := str.format("((void (*)({}))GM_PTR_UNTAG(code))({})", fg.g.ty.plain_cty(str_ty), fg.plain_value(str_ty, "a"))!
+    hidden := str.format("(({})code)(env, cx, NULL, a)", fg.fn_ptr_type(unit_ty, tys[..]))!
+    fg.g.helpers.bodies.write("GM_NOINLINE {} {{\n    {} a;\n    GM_ST(void *, (uint8_t *)&a, (void *)(d));\n    GM_ST(uintptr_t, (uint8_t *)&a + {}, (uintptr_t)(n));\n    if (GM_PTR_TAGGED(code)) {}; else {};\n    return gm_unw.kind != 0;\n}}\n", head, pt, fg.ptr_bytes(), plain, hidden)!
+    return f
+}
+
+/// The helper around `fn_sink_stub` `sink` that formats the value at `v`, of the type that
+/// `t` describes, as `{}` does (or as the spec `s` says, unless it is NULL) and writes it
+/// unless it comes out empty (as the interpreter does). It returns whether the write
+/// started an unwind.
+pub fn_format_stub :: fn(fg: ^FnGen, sink: string) -> string needs sema.Load {
+    key := "fnformat"
+    if f := fg.g.stubs.get(key) { return f }
+    f := str.format("gm_pf{}", fg.g.stubs.len())!
+    fg.g.stubs.put(key, f)!
+    head := str.format("static bool {}(void *code, void *env, gm_node *cx, const gm_type *t, const void *v, const gm_spec *s)", f)!
+    fg.g.helpers.protos.write("GM_NOINLINE {};\n", head)!
+    fg.g.helpers.bodies.write("GM_NOINLINE {} {{\n    gm_buf b = {{0}};\n    if (s) gm_format_spec(&b, t, v, s); else gm_format(&b, t, v, true);\n    bool u = b.len != 0 && {}(code, env, cx, b.data, b.len);\n    gm_buf_free(&b);\n    return u;\n}}\n", head, sink)!
+    return f
+}
+
 /// A function around the stub `core` that builds the string it writes: `kind` 's'
 /// takes a pointer and a length, 'f' a type descriptor and a value to format (the
 /// way `{}` of a template does). It returns whether the write started an unwind.

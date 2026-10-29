@@ -7,7 +7,8 @@
  * the whole program). With GM_RT_SEPARATE defined, this header and gm_rt.c are
  * compiled on their own into an object that is reused across programs, and the
  * generated code includes only this header: the declarations marked GM_API and
- * GM_API_VAR then have external linkage.
+ * GM_API_VAR then have external linkage. The generated code also defines GM_RT_PROGRAM,
+ * which leaves out the system headers that only gm_rt.c needs.
  * GNU C11 is required (statement expressions, zero-size arrays, __int128,
  * __builtin_*_overflow).
  */
@@ -67,6 +68,18 @@ static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
 #endif
 #endif
 
+#if defined(GM_RT_PROGRAM) && defined(GM_RT_SEPARATE) && !defined(_WIN32)
+/* The generated code of a program that is linked with the separately compiled runtime
+ * needs only the declarations below, which use nothing from the operating system's headers;
+ * parsing those would take the C compiler about as long as a small program. (Windows
+ * builds include them all.) */
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdarg.h>
+#include <string.h>
+#include <errno.h>
+#else
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -114,7 +127,16 @@ static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
 #if defined(__linux__) && !defined(__FILC__)
 #include <sys/syscall.h>
 #endif
+/* glibc's posix_spawn starts a child without copying the parent's address space (clone with
+ * CLONE_VM | CLONE_VFORK), reports a failed exec, and can change the child's directory
+ * (2.29): Proc.spawn uses it instead of fork, which costs time in proportion to the
+ * parent's memory. */
+#if defined(__GLIBC__) && !defined(__FILC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 29))
+#define GM_POSIX_SPAWN 1
+#include <spawn.h>
 #endif
+#endif
+#endif /* GM_RT_PROGRAM */
 #endif /* GM_FREESTANDING */
 
 /* GM_API: the linkage of the runtime's functions (and of its variables' definitions);
@@ -324,6 +346,15 @@ GM_API _Noreturn void gm_trap(const char *msg, const char *file, uint32_t line, 
 GM_API _Noreturn void gm_trap_bytes(const uint8_t *msg, size_t len, const char *file, uint32_t line, uint32_t col);
 /* The trap of a pointer cast to a type of alignment `align` that `addr` lacks. */
 GM_API _Noreturn void gm_trap_misaligned(uintptr_t addr, unsigned align, const char *file, uint32_t line, uint32_t col);
+/* The traps of failed checks, which format their messages here rather than in the
+ * generated code: index `i` out of bounds for length `len`; slice bounds lo..hi invalid for
+ * length `len`; a shift amount `n` too large for the integer type named `ty`; a vector load
+ * or store (`what`) of `lanes` lanes with a slice of `len` elements. */
+GM_API _Noreturn void gm_trap_index(uint64_t i, uint64_t len, const char *file, uint32_t line, uint32_t col);
+GM_API _Noreturn void gm_trap_slice(uint64_t lo, uint64_t hi, uint64_t len, const char *file, uint32_t line, uint32_t col);
+GM_API _Noreturn void gm_trap_shift(uint64_t n, const char *ty, const char *file, uint32_t line, uint32_t col);
+GM_API _Noreturn void gm_trap_lanes(const char *what, uint32_t lanes, uint64_t len, const char *file, uint32_t line,
+                                    uint32_t col);
 
 /* ---- growable byte buffer --------------------------------------------------- */
 
@@ -398,6 +429,8 @@ struct gm_type {
 /* Appends the display form of the value of type t at address v (§21.6.1). `top` is true for
  * the argument itself: a []u8 / []const u8 slice is then written raw, otherwise quoted. */
 GM_API void gm_format(gm_buf *out, const gm_type *t, const void *v, bool top);
+/* Traps: "unwrap of error value <v>", the error `v` of type `t`. */
+GM_API _Noreturn void gm_trap_unwrap(const gm_type *t, const void *v, const char *file, uint32_t line, uint32_t col);
 
 /* A placeholder's format spec (§21.6.1). align: 0 auto, 1 left, 2 right, 3 center; kind:
  * 0 display, 1 x, 2 X, 3 o, 4 b, 5 e; precision -1 when absent. */
@@ -424,6 +457,9 @@ GM_API_VAR uint32_t *gm_cover_counts;
 /* Process arguments as a Gamma `[]const string`: returns a pointer to `argc` slices
  * ({ptr, len} pairs, each 2 * sizeof(void*) bytes). Set by gm_set_args at startup. */
 GM_API void gm_set_args(int argc, char **argv);
+/* The index of the test that a test binary is to run: its first argument. Without one,
+ * prints its usage and returns -1. */
+GM_API long gm_test_index(int argc, char **argv);
 GM_API const void *gm_args(size_t *count);
 /* Looks up an environment variable; returns false if unset. */
 GM_API bool gm_env_var(const uint8_t *name, size_t len, const uint8_t **value, size_t *value_len);
@@ -680,7 +716,11 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #define GM_NO_FRAME_PROBES 1
 #endif
 /* `n` bounds the bytes of the function's other locals, which may lie below its frame `p`. */
+#if defined(GM_FREESTANDING) || defined(GM_WASI)
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
+#else
+#define GM_STACK_CHECK(p, n) do { if ((uintptr_t)__builtin_frame_address(0) < gm_stack_limit + (uintptr_t)(n) + sizeof(*(p))) gm_stack_overflow(); } while (0)
+#endif
 #endif
 GM_API_VAR GM_TLS gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
 GM_API_VAR GM_TLS uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
@@ -1055,6 +1095,33 @@ GM_API _Noreturn void gm_trap_misaligned(uintptr_t addr, unsigned align, const c
     char m[128];
     snprintf(m, sizeof m, "misaligned pointer cast: address 0x%llx is not aligned to %u bytes",
              (unsigned long long)addr, align);
+    gm_trap(m, file, line, col);
+}
+
+GM_API _Noreturn void gm_trap_index(uint64_t i, uint64_t len, const char *file, uint32_t line, uint32_t col) {
+    char m[96];
+    snprintf(m, sizeof m, "index %llu out of bounds for length %llu", (unsigned long long)i, (unsigned long long)len);
+    gm_trap(m, file, line, col);
+}
+
+GM_API _Noreturn void gm_trap_slice(uint64_t lo, uint64_t hi, uint64_t len, const char *file, uint32_t line, uint32_t col) {
+    char m[128];
+    snprintf(m, sizeof m, "slice bounds %llu..%llu invalid for length %llu", (unsigned long long)lo,
+             (unsigned long long)hi, (unsigned long long)len);
+    gm_trap(m, file, line, col);
+}
+
+GM_API _Noreturn void gm_trap_shift(uint64_t n, const char *ty, const char *file, uint32_t line, uint32_t col) {
+    char m[128];
+    snprintf(m, sizeof m, "shift amount %llu too large for %s", (unsigned long long)n, ty);
+    gm_trap(m, file, line, col);
+}
+
+GM_API _Noreturn void gm_trap_lanes(const char *what, uint32_t lanes, uint64_t len, const char *file, uint32_t line,
+                                    uint32_t col) {
+    char m[96];
+    snprintf(m, sizeof m, "vector %s of %u lanes with a slice of %llu elements", what, (unsigned)lanes,
+             (unsigned long long)len);
     gm_trap(m, file, line, col);
 }
 
@@ -2174,6 +2241,13 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
     }
 }
 
+GM_API _Noreturn void gm_trap_unwrap(const gm_type *t, const void *v, const char *file, uint32_t line, uint32_t col) {
+    gm_buf b = {0};
+    gm_buf_push(&b, "unwrap of error value ", 22);
+    gm_format(&b, t, v, false);
+    gm_trap_bytes(b.data, b.len, file, line, col);
+}
+
 /* ---- format specs (spec §21.6.1) ----------------------------------------------- */
 
 /* Writes head and body padded to the spec's width, counted in Unicode scalar values. */
@@ -2509,6 +2583,14 @@ static char *gm_utf8_arg(const wchar_t *w, size_t *len) {
 #endif
 static gm_rt_str *gm_rt_args;
 static size_t gm_rt_argc;
+
+GM_API long gm_test_index(int argc, char **argv) {
+    if (argc < 2) {
+        fputs("usage: test-binary INDEX\n", stderr);
+        return -1;
+    }
+    return strtol(argv[1], NULL, 10);
+}
 
 GM_API void gm_set_args(int argc, char **argv) {
     if (gm_rt_args != NULL || argc <= 0) return;
@@ -3433,6 +3515,47 @@ static char **gm_child_env(const gm_rt_str *v, size_t n, int clear) {
     return out;
 }
 
+#ifdef GM_POSIX_SPAWN
+/* Starts `prog` as the fork path of gm_proc_launch does: the streams of child_fd (where >= 0)
+ * as its standard streams, SIGPIPE at its default action, no signal blocked, the directory
+ * cwd unless empty, and its own process group if asked. Returns 0 or the errno of the
+ * failure, a failed exec or chdir included. */
+static int gm_posix_spawn(pid_t *pid, const char *prog, char **av, char **ev, const int *child_fd, const char *cwd,
+                          uint32_t flags) {
+    posix_spawn_file_actions_t fa;
+    posix_spawnattr_t at;
+    int err = posix_spawn_file_actions_init(&fa);
+    if (err != 0) return err;
+    err = posix_spawnattr_init(&at);
+    if (err != 0) {
+        posix_spawn_file_actions_destroy(&fa);
+        return err;
+    }
+    for (int i = 0; i < 3 && err == 0; i++)
+        if (child_fd[i] >= 0) err = posix_spawn_file_actions_adddup2(&fa, child_fd[i], i);
+    if (err == 0 && cwd[0] != 0) err = posix_spawn_file_actions_addchdir_np(&fa, cwd);
+    sigset_t none, pipe;
+    sigemptyset(&none);
+    sigemptyset(&pipe);
+    sigaddset(&pipe, SIGPIPE);
+    short how = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+    if (flags & GM_PROC_GROUP) how |= POSIX_SPAWN_SETPGROUP;
+    if (err == 0) err = posix_spawnattr_setflags(&at, how);
+    if (err == 0) err = posix_spawnattr_setsigmask(&at, &none);
+    if (err == 0) err = posix_spawnattr_setsigdefault(&at, &pipe);
+    if (err == 0 && (flags & GM_PROC_GROUP)) err = posix_spawnattr_setpgroup(&at, 0);
+    if (err == 0) err = posix_spawn(pid, prog, &fa, &at, av, ev);
+    /* posix_spawn returns once the child has execed, its group made, where the clone it
+     * makes (CLONE_VFORK) suspends the parent until then; qemu-user does not, so the
+     * parent makes the group too. Whichever call comes second fails harmlessly: the group
+     * is already there, or the child has execed with it. */
+    if (err == 0 && (flags & GM_PROC_GROUP)) (void)setpgid(*pid, *pid);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    return err;
+}
+#endif
+
 GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, size_t envc, const void *dir,
                               size_t dir_len, const void *program, size_t program_len, uint32_t flags) {
     if (argc == 0) return gm_io_error(EINVAL);
@@ -3461,7 +3584,7 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
     fflush(stderr);
 
     /* Per stream: the child's end, and ours. */
-    int child_fd[3] = {-1, -1, -1}, mine[3] = {-1, -1, -1}, errp[2] = {-1, -1};
+    int child_fd[3] = {-1, -1, -1}, mine[3] = {-1, -1, -1};
     int null_fd = -1;
     for (int i = 0; i < 3 && err == 0; i++) {
         int mode = (int)((flags >> (2 * i)) & 3);
@@ -3491,8 +3614,12 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
 #endif
         }
     }
-    if (err == 0 && gm_pipe_cloexec(errp) != 0) err = errno;
     pid_t pid = -1;
+#ifdef GM_POSIX_SPAWN
+    if (err == 0) err = gm_posix_spawn(&pid, prog, av, own_env ? ev : environ, child_fd, cwd, flags);
+#else
+    int errp[2] = {-1, -1};
+    if (err == 0 && gm_pipe_cloexec(errp) != 0) err = errno;
     if (err == 0) {
         sigset_t all, old;
         sigfillset(&all);
@@ -3534,6 +3661,7 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
         }
     }
     if (errp[0] >= 0) close(errp[0]);
+#endif
     for (int i = 0; i < 3; i++)
         if (child_fd[i] >= 0 && child_fd[i] != null_fd) close(child_fd[i]);
     if (null_fd >= 0) close(null_fd);

@@ -502,8 +502,7 @@ gen_main :: fn(g: ^Gen, entries: []const u32, select: bool) -> Unsup!string need
     }
     s.extend("int main(int argc, char **argv) {\n")!
     if select {
-        s.extend("    if (argc < 2) { fputs(\"usage: test-binary INDEX\\n\", stderr); return 2; }\n")!
-        s.extend("    long which = strtol(argv[1], NULL, 10);\n    gm_set_args(1, argv);\n")!
+        s.extend("    long which = gm_test_index(argc, argv);\n    if (which < 0) return 2;\n    gm_set_args(1, argv);\n")!
     } else {
         s.extend("    gm_set_args(argc, argv);\n")!
     }

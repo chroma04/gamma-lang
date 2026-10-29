@@ -430,7 +430,7 @@ vec_load_store :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Uns
     if fg.g.opts.checks {
         loc := fg.loc(e)
         what := if is_load { "load" } else { "store" }
-        fg.line(str.format("if ((uintptr_t)({}) < {}) {{ char m[96]; snprintf(m, sizeof m, \"vector {} of {} lanes with a slice of %llu elements\", (unsigned long long)({})); gm_trap(m, {}); }}", len, n, what, n, len, loc)!)
+        fg.line(str.format("if ((uintptr_t)({}) < {}) gm_trap_lanes(\"{}\", {}, {}, {});", len, n, what, n, len, loc)!)
     }
     size := n * vp.bytes
     if vv := v {

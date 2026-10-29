@@ -20,21 +20,35 @@ pub reserve :: fn(T: type, l: ^List(T), extra: usize) -> AllocError!() {
 }
 
 // Moves the list into a larger block with room for `extra` more elements and appends `tail`
-// (which may point into the old block) after the existing ones.
+// (which may point into the old block) after the existing ones. The work depends on `T`
+// only through its size and alignment, so one function, `regrow_raw`, does it for every
+// element type.
 regrow :: fn(T: type, l: ^List(T), extra: usize, tail: []const T) -> AllocError!() {
+    return regrow_raw(l.cast(^RawList), extra, tail.ptr.cast([^]const u8), tail.len, @size_of(T), @align_of(T))
+}
+
+// The layout of every `List(T)`, with the elements seen as bytes: `items.len` is still the
+// number of elements.
+RawList :: struct {
+    items: []u8
+    cap: usize
+    alloc: Allocator
+}
+
+// `regrow` for elements of `size` bytes aligned to `align`; `tail` points to `tail_len` of
+// them.
+regrow_raw :: fn(l: ^RawList, extra: usize, tail: [^]const u8, tail_len: usize, size: usize, align: usize) -> AllocError!() {
     n := l.items.len
     if extra > @max_value(usize) - n { return !.OutOfMemory }
     new_cap := n + extra
     if l.cap <= @max_value(usize) / 2 and l.cap * 2 > new_cap { new_cap = l.cap * 2 }
     if l.cap is 0 and new_cap < 4 { new_cap = 4 }
-    if @size_of(T) > 0 and new_cap > @max_value(usize) / @size_of(T) { return !.OutOfMemory }
-    raw := l.alloc.vt.alloc(l.alloc.data, @size_of(T) * new_cap, @align_of(T)) else return !.OutOfMemory
-    p := raw.cast([^]T)
-    @copy_elems(p[0..n], l.items)
-    @copy_elems(p[n..n + tail.len], tail)
-    if l.cap > 0 {
-        l.alloc.vt.free(l.alloc.data, l.items.ptr.cast([^]u8), @size_of(T) * l.cap, @align_of(T))
-    }
+    if size > 0 and new_cap > @max_value(usize) / size { return !.OutOfMemory }
+    raw := l.alloc.vt.alloc(l.alloc.data, size * new_cap, align) else return !.OutOfMemory
+    p := raw
+    @copy_elems(p[0..n * size], l.items.ptr[0..n * size])
+    @copy_elems(p[n * size..(n + tail_len) * size], tail[0..tail_len * size])
+    if l.cap > 0 { l.alloc.vt.free(l.alloc.data, l.items.ptr, size * l.cap, align) }
     l.items = p[0..n]
     l.cap = new_cap
     return ()

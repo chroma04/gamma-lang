@@ -46,8 +46,11 @@ blob :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
 }
 
 /// A blob temporary of type `t` whose bytes outside `parts` (offset and size of each
-/// piece the caller is about to store) are zero. Only the gaps are cleared, with a few
-/// stores, rather than the whole value with `memset`.
+/// piece the caller is about to store) are zero. In a Debug build, a small value with
+/// several gaps is cleared whole with `memset`: one statement instead of a store per gap,
+/// for the C compiler to get through faster. Otherwise only the gaps are cleared, which
+/// writes less (an optimized build runs a few percent faster that way) and, under Fil-C,
+/// avoids `memset`, a call into its runtime.
 blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema.Load {
     size := fg.g.ty.size(t).trunc(usize)
     covered := list(bool)
@@ -65,7 +68,7 @@ blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema
         if not c { gaps += 1 }
     }
     if gaps > 32 { return fg.blob(t) }
-    n := fg.tmp_uninit(t)
+    stores := list((at: usize, len: usize))
     i: usize = 0
     while i < size {
         if covered.items[i] {
@@ -87,11 +90,17 @@ blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema
                 }
             }
         }
-        fg.line(str.format("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", k * 8, n, i)!)
+        stores.push((at: i, len: k))!
         i += k
     }
+    if fg.g.opts.debug and stores.items.len > 1 and size <= MAX_MEMSET_CLEAR and not fg.g.ty.lay.target.filc { return fg.blob(t) }
+    n := fg.tmp_uninit(t)
+    for st in stores.items { fg.line(str.format("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", st.len * 8, n, st.at)!) }
     return n
 }
+
+/// The size up to which `blob_over` clears a value with several gaps whole.
+MAX_MEMSET_CLEAR :: 64
 
 store :: fn(fg: ^FnGen, t: Ty, addr: string, v: string) needs sema.Load {
     c := fg.g.ty.cty(t)
@@ -502,9 +511,7 @@ unwrap :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, is_result: bool) -> Unsup!string ne
         off := fg.g.ty.offsets(x.ty)[1]
         d := fg.g.ty.desc(err)
         if fg.g.opts.checks {
-            fg.line(str.format("if ({}) {{", bad)!)
-            fg.line(str.format("    gm_buf b = {{0}}; gm_buf_push(&b, \"unwrap of error value \", 22); gm_format(&b, {}, {} + {}, false); gm_trap_bytes(b.data, b.len, {});", d, a, off, at)!)
-            fg.line("}")
+            fg.line(str.format("if ({}) gm_trap_unwrap({}, {} + {}, {});", bad, d, a, off, at)!)
         }
         return fg.load(t, str.format("({} + {})", a, off)!)
     } else {
@@ -701,6 +708,35 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
             stub = fg.out_stub(&effect_, id, op, tys[..], unit_ty)
         }
         .Fn(_) => {}
+    }
+    if .Fn(sx) := w.sink and not fg.g.ty.by_ref(str_ty) {
+        // A write to a function: the closure and its handler context once, then a call of
+        // a shared helper per piece.
+        cv := sink_v?
+        .Fn(sig) := fg.g.ty.kind(cv.ty) else @unreachable()
+        c := fg.tmp(cv.ty, cv.v)
+        ccx := str.format("ccx{}", fg.fresh())!
+        fg.line(str.format("gm_node *{} = {}.cx;", ccx, c)!)
+        for eff in sig.effects.effects {
+            id := fg.g.effect_id(&eff)
+            n := str.format("cn{}", fg.fresh())!
+            fg.line(str.format("gm_node {}; {{ gm_node *f = gm_find({}, {}); if (f) {{ {} = *f; {}.next = {}; {} = &{}; }} }}", n, fg.cx, id, n, n, ccx, ccx, n)!)
+        }
+        fs := fg.fn_sink_stub(str_ty)
+        ff := fg.fn_format_stub(fs)
+        for i in 0..w.pieces.len {
+            if w.pieces[i].len > 0 {
+                fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {})", fs, c, c, ccx, fg.g.static_bytes(w.pieces[i]), w.pieces[i].len)!)
+            }
+            if i < w.args.len {
+                spec := "NULL"
+                if sp := w.specs.get(i) {
+                    if not tir.is_default_spec(&sp) { spec = str.format("&{}", spec_literal(sp))! }
+                }
+                fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {}, {})", ff, c, c, ccx, fg.g.ty.desc(w.args[i].ty), vals.items[i], spec)!)
+            }
+        }
+        return fg.unit()
     }
     if core := stub {
         ps := fg.piece_stub(core, 's', str_ty)
@@ -908,7 +944,7 @@ pub place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
 /// The bounds check of an index `i` against length `len`.
 index_check :: fn(fg: ^FnGen, checked: bool, i: string, len: string, at: string) needs sema.Load {
     if checked {
-        fg.line(str.format("if ({} >= (uintptr_t)({})) {{ char m[96]; snprintf(m, sizeof m, \"index %llu out of bounds for length %llu\", (unsigned long long){}, (unsigned long long)({})); gm_trap(m, {}); }}", i, len, i, len, at)!)
+        fg.line(str.format("if ({} >= (uintptr_t)({})) gm_trap_index({}, {}, {});", i, len, i, len, at)!)
     }
 }
 
@@ -985,7 +1021,7 @@ slice_expr :: fn(fg: ^FnGen, e: ^Expr, base: ^Expr, lo: ?^Expr, hi: ?^Expr, incl
     }
     if l := len {
         at := fg.loc(e)
-        fg.line(str.format("if ({} > {} || {} > (uintptr_t){}) {{ char m[128]; snprintf(m, sizeof m, \"slice bounds %llu..%llu invalid for length %llu\", (unsigned long long){}, (unsigned long long){}, (unsigned long long){}); gm_trap(m, {}); }}", lo_v, hi_v, hi_v, l, lo_v, hi_v, l, at)!)
+        fg.line(str.format("if ({} > {} || {} > (uintptr_t){}) gm_trap_slice({}, {}, {}, {});", lo_v, hi_v, hi_v, l, lo_v, hi_v, l, at)!)
     }
     return fg.make_slice(e.ty, str.format("((uint8_t *){} + {} * {})", ptr, lo_v, esz)!, str.format("{} - {}", hi_v, lo_v)!)
 }

@@ -611,7 +611,9 @@ How the runtime is linked depends on the build mode:
   compiling a small program, so it is compiled once on its own (with
   `GM_RT_SEPARATE` defined, which gives the declarations marked `GM_API` external
   linkage), cached, and linked with each program; the generated code includes
-  only `gm_rt.h` and is compiled at `-O1` (`-O0` with `-g`). Compared with `-O2`
+  only `gm_rt.h`, with `GM_RT_PROGRAM` defined so that it skips the operating
+  system's headers (parsing them took about a third of the C compiler's time on a
+  small program), and is compiled at `-O1` (`-O0` with `-g`). Compared with `-O2`
   this halves the C compiler's time, while the programs run about as fast; `-O0`
   would compile faster again but run several times slower. The cache
   (`driver/rtcache.gm`) is the directory `$GAMMA_CACHE_DIR` (an empty value
@@ -741,7 +743,17 @@ prints in one `main` took a minute to compile before; the stubs and the register
 `@black_box` cut the compile time of a 9,400-line `main` of such statements
 from over 60 s to about 20 s, and the generated C from about 30 lines per statement to
 about 14. What remains grows faster than linearly with the size of one function
-(splitting the same statements over eight functions halves it again).
+(splitting the same statements over eight functions halves it again). An `@write` to a
+function (`List.write`, `str.format`) works the same way: it computes the sink closure's
+handler context once, then calls, per piece, one of two functions shared by the program,
+one that calls the sink with a pointer and a length and one that formats a value and
+passes it on. Such functions have an instance per template (the template is a
+compile-time parameter), so in the compiler they were about a tenth of its C before.
+For the same reason a generic function whose work depends on its type parameter only
+through the size of the type is a thin wrapper around one function on bytes (`List`'s
+growth, `regrow_raw` in `lib/core/list.gm`), and failed checks (an index or slice out of
+bounds, a shift too large, an unwrapped error) call runtime functions that format their
+message (`gm_trap_index` and the like) instead of formatting it inline.
 
 **Effects.** The handler context `cx` is a linked list of `gm_node`s, built on
 the C stack by `with`. Performing an operation finds the innermost node for the

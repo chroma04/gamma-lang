@@ -30,7 +30,7 @@ ev :: fn(m: ^Machine, a: Act, n: ^Node, dst: []u8) -> Flow!() needs Run {
             if el := x.else_ { return m.ev(a, el, dst) }
         }
         .Return(levels, value) => return m.ev_return(a, levels, value, n)
-        .Word(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .FloatOp(_) => m.wr_word(dst, try m.ew(a, n))
+        .Word(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .IntRot(_), .IntBits(_), .FloatOp(_) => m.wr_word(dst, try m.ew(a, n))
         .Field(_), .Index(_), .Deref(_) => {
             if n.place {
                 p := try m.place(a, n, false)
@@ -78,6 +78,15 @@ ew :: fn(m: ^Machine, a: Act, n: ^Node) -> Flow!u64 needs Run {
         .IntConv(op, from, to, x) => {
             v := try m.ew(a, x)
             return int_conv(op, from, to, v)
+        }
+        .IntRot(x) => {
+            v := try m.ew(a, x.x)
+            k := try m.ew(a, x.k)
+            return bit_word(x.op, x.t, v, k)
+        }
+        .IntBits(op, t, x) => {
+            v := try m.ew(a, x)
+            return bit_word(op, t, v, 0)
         }
         .FloatOp(x) => {
             p := try m.ew(a, x.l)
@@ -134,7 +143,7 @@ ev_return :: fn(m: ^Machine, a: Act, levels: u32, value: ^Node, n: ^Node) -> Flo
 #noinline
 ev_slow :: fn(m: ^Machine, a: Act, n: ^Node, dst: []u8) -> Flow!() needs Run {
     match n.op {
-        .Word(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .FloatOp(_) => m.wr_word(dst, try m.ew(a, n))
+        .Word(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .IntRot(_), .IntBits(_), .FloatOp(_) => m.wr_word(dst, try m.ew(a, n))
         .Bytes(b) => dst.copy_from(b)
         .Str(bytes) => {
             addr := try m.string_literal(n.span, bytes, false)
@@ -555,6 +564,27 @@ int_conv :: fn(op: tir.Builtin, from: IntW, to: IntW, v: u64) -> u64 {
     }
     x := if from.signed { sext(v, from.bits).bits(u64) } else { v }
     return x & mask64(to.bits)
+}
+
+/// `@rotl` and `@rotr` of the word `v` by `k`, and `@clz`, `@ctz`, `@popcount`, `@bswap`
+/// and `@bitreverse` of `v`, the word of an integer of type `t`.
+#noinline
+bit_word :: fn(op: tir.Builtin, t: IntW, v, k: u64) -> u64 {
+    n := t.bits
+    x := v & mask64(n)
+    match op {
+        .Rotl, .Rotr => {
+            s := (k % u64(n)).trunc(u32)
+            if op is .Rotr { s = (n - s) % n }
+            if s is 0 { return x }
+            return ((x <<% u64(s)) | (x >> u64(n - s))) & mask64(n)
+        }
+        .Clz => return u64(@clz(x)) - u64(64 - n)
+        .Ctz => return if x is 0 { u64(n) } else { u64(@ctz(x)) }
+        .Popcount => return u64(@popcount(x))
+        .Bswap => return @bswap(x) >> u64(64 - n)
+        _ => return @bitreverse(x) >> u64(64 - n)
+    }
 }
 
 /// `-` and `~` of the word `v` of an integer of type `t`.
