@@ -79,6 +79,10 @@ Versions and what each kind of change means are described in
   functions, so this was about a tenth of the compiler's own C, which now compiles about 6%
   faster. `str.format` writes through `@write` itself rather than through `List.write`,
   which saves a function per template (another 5% of the compiler's C).
+- **A `List` grows through one function for every element type:** the growth of a
+  `List(T)` depends on `T` only through its size and alignment, so it is done by one
+  function on bytes rather than by an instance per element type (about 300 in the
+  compiler: another 5% of its C).
 - **The interpreter rotates and counts bits as instructions:** `@rotl`, `@rotr`, `@clz`,
   `@ctz`, `@popcount`, `@bswap` and `@bitreverse` on integers of 8 to 64 bits no longer go
   through the general evaluator. SHA-256 runs about five times as fast (the `std/hash`
