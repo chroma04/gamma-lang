@@ -46,10 +46,11 @@ blob :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
 }
 
 /// A blob temporary of type `t` whose bytes outside `parts` (offset and size of each
-/// piece the caller is about to store) are zero. A small value with several gaps is
-/// cleared whole with `memset`, which the C compiler expands into a few stores (and trims
-/// where the parts overwrite it): one statement instead of a store per gap. Otherwise, and
-/// always under Fil-C, where `memset` is a call into its runtime, only the gaps are cleared.
+/// piece the caller is about to store) are zero. In a Debug build, a small value with
+/// several gaps is cleared whole with `memset`: one statement instead of a store per gap,
+/// for the C compiler to get through faster. Otherwise only the gaps are cleared, which
+/// writes less (an optimized build runs a few percent faster that way) and, under Fil-C,
+/// avoids `memset`, a call into its runtime.
 blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema.Load {
     size := fg.g.ty.size(t).trunc(usize)
     covered := list(bool)
@@ -92,7 +93,7 @@ blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema
         stores.push((at: i, len: k))!
         i += k
     }
-    if stores.items.len > 1 and size <= MAX_MEMSET_CLEAR and not fg.g.ty.lay.target.filc { return fg.blob(t) }
+    if fg.g.opts.debug and stores.items.len > 1 and size <= MAX_MEMSET_CLEAR and not fg.g.ty.lay.target.filc { return fg.blob(t) }
     n := fg.tmp_uninit(t)
     for st in stores.items { fg.line(str.format("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", st.len * 8, n, st.at)!) }
     return n

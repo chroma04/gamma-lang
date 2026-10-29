@@ -77,9 +77,9 @@ Versions and what each kind of change means are described in
   through the general evaluator. SHA-256 runs about five times as fast (the `std/hash`
   conformance test went from 3.6 s to 0.8 s), and 64- and 128-bit integers outside the
   register machine are read and written a word at a time.
-- A small value built with zeroed padding (an optional, a result or a variant with gaps
-  around its payload) is cleared with one `memset` in the generated C instead of a store
-  per gap, except under Fil-C, where `memset` is a call.
+- In Debug builds, a small value built with zeroed padding (an optional, a result or a
+  variant with gaps around its payload) is cleared with one `memset` in the generated C
+  instead of a store per gap. Optimized builds keep the stores, which run faster.
 - **Child processes start without copying the parent** on Linux (glibc 2.29 and later):
   `Proc.spawn`, and with it `gamma`'s calls of the C compiler, uses `posix_spawn` rather
   than `fork`, whose cost grows with the parent's memory. A test that runs `gamma` about
