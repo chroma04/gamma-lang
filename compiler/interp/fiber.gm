@@ -71,10 +71,20 @@ EXIT_ALL: u32 : 0xFFFF_FFFF
 /// The size of the host stack of the root coroutine, which runs the program's own thread:
 /// room for `MAX_DEPTH` calls, each of which takes 10 to 15 KB of host stack (more in
 /// Debug builds of the interpreter and on Windows).
-ROOT_STACK: u64 : 4 << 30
-/// The smallest root stack tried when the host refuses a larger one (and the size on
-/// 32-bit hosts, whose address space has no room for more).
-MIN_ROOT_STACK: u64 : 1 << 30
+///
+/// On WebAssembly the host stack holds only the locals whose address is taken (the
+/// engine keeps the rest, and its own stack ends a deep recursion long before this one
+/// would), and the C library clears every byte that `calloc` hands out, on each run, as
+/// it has no zero pages to map: so the stack there is small.
+when target.arch is .Wasm32 {
+    ROOT_STACK: u64 : 8 << 20
+    MIN_ROOT_STACK: u64 : 8 << 20
+} else {
+    ROOT_STACK: u64 : 4 << 30
+    /// The smallest root stack tried when the host refuses a larger one (and the size on
+    /// 32-bit hosts, whose address space has no room for more).
+    MIN_ROOT_STACK: u64 : 1 << 30
+}
 
 /// The root coroutine's host stack: `ROOT_STACK` bytes, or as many as the host gives.
 root_host_stack :: fn() -> ?[]u8 {
@@ -88,6 +98,7 @@ root_host_stack :: fn() -> ?[]u8 {
 
 /// Host stacks come from `calloc`, whose large blocks the C library maps from fresh zero
 /// pages: they cost memory only as they are used (the heap allocator fills its blocks).
+/// WebAssembly is the exception (see `ROOT_STACK`).
 libc :: foreign "c" {
     calloc :: fn(n, size: usize) -> ?[^]u8 needs not
     free :: fn(p: [^]u8) needs not

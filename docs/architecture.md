@@ -1068,7 +1068,12 @@ layer, as wasi-libc provides it, and replaces what WASI lacks (`GM_WASI` in
   optimization level over the module. Only a module that imports from `asyncify` is
   transformed; the generated `main` calls `gm_run_main_fibers`, the only function that
   reaches the driver, only when the program uses `with ... on` (`gm_with_go`), so a
-  program without fibers keeps its size and speed.
+  program without fibers keeps its size and speed. Exports (`#export`) are module exports
+  (`export_name`); each calls `gm_start` (the constants, once, shared with `main`) and
+  runs the function through a trampoline (`gm_xt<k>`, arguments and result in statics)
+  given to `GM_RUN_EXPORT`: `gm_run_export_fibers` starts the driver under it unless one
+  is already running (a call back from foreign code during `main`), `gm_run_export`
+  just calls it.
 - Function "addresses" are table indices, so the tag that marks a plain function in a
   function value is the top bit (`GM_PTR_TAG_BIT`) rather than bit 0.
 - WASI's `proc_exit` refuses statuses of 126 and above, so a trap reports and then

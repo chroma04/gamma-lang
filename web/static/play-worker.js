@@ -1,7 +1,8 @@
 // Runs the Gamma interpreter (gamma-play.wasm, a WASI command) for the playground page.
 // Each request gets a fresh instance: {mode: "run" | "fmt", source}. Output is streamed
-// back as {kind: "out" | "err", text} messages, then {kind: "exit", code, ms}.
-// The page stops a run by terminating this worker.
+// back as {kind: "out" | "err", text} messages, then {kind: "exit", code, ms}. The first
+// request, {mode: "load"}, prepares the module and the snapshot runs start from, and is
+// answered with {kind: "ready"}. The page stops a run by terminating this worker.
 //
 // The interpreter needs only a small part of WASI: arguments, the environment, standard
 // streams, clocks, randomness, sleeping and, for the compiler it contains, a read-only
@@ -61,7 +62,7 @@ function loadLibs(url) {
 }
 
 // Batches small writes so that a program printing a character at a time stays fast.
-function makeStream(kind) {
+function makeStream(kind, post) {
   const decoder = new TextDecoder();
   let pending = "";
   let last = 0;
@@ -73,19 +74,22 @@ function makeStream(kind) {
     },
     flush(now) {
       pending += decoder.decode();
-      if (pending) postMessage({ kind, text: pending });
+      if (pending) post({ kind, text: pending });
       pending = "";
       last = now || performance.now();
     },
   };
 }
 
-function run(module, mode, source, libs) {
+// Runs the module once: `mode` and `source` as above. With `snapshot` (see below), the
+// instance starts from that memory instead of the module's initial one. Messages go to
+// `post`. With `keep`, the instance's memory is returned as well as the exit status.
+function run(module, mode, source, libs, snapshot, post, keep) {
   const args = ["gamma-play", mode];
   const env = ["GAMMA_STD=/std"];
   const encoder = new TextEncoder();
   let stdin = encoder.encode(source);
-  const out = makeStream("out"), err = makeStream("err");
+  const out = makeStream("out", post), err = makeStream("err", post);
   let memory = null;
 
   const view = () => new DataView(memory.buffer);
@@ -345,10 +349,13 @@ function run(module, mode, source, libs) {
   }
   const instance = new WebAssembly.Instance(module, imports);
   memory = instance.exports.memory;
+  if (snapshot) restore(memory, snapshot);
 
   let code = 0;
   try {
-    instance.exports._start();
+    // A module starts only once in its memory: in a snapshot's, `run` is an export.
+    if (snapshot) instance.exports.gamma_play_run();
+    else instance.exports._start();
   } catch (e) {
     if (e instanceof Exit) {
       code = e.code;
@@ -356,16 +363,91 @@ function run(module, mode, source, libs) {
       out.flush();
       err.flush();
       if (e instanceof RangeError || (e && e.name === "RangeError")) {
-        postMessage({ kind: "err", text: "trap: stack overflow (the browser's stack is smaller than a native one)\n" });
+        post({ kind: "err", text: "trap: stack overflow (the browser's stack is smaller than a native one)\n" });
       } else {
-        postMessage({ kind: "err", text: "internal error: " + e.message + "\n" });
+        post({ kind: "err", text: "internal error: " + e.message + "\n" });
       }
       code = 134;
     }
   }
   out.flush();
   err.flush();
-  return code;
+  return keep ? { code, memory } : code;
+}
+
+// The memory a run starts from. Every run of `run` first loads and checks the core
+// library, the same work each time; `init` does only that, keeping the result in memory,
+// where a later run finds it. So the pages that `init` changed, compared with a fresh
+// instance, are kept here once and copied into each run's instance, which then runs the
+// export `gamma_play_run` instead of starting (the C library's start-up code refuses to
+// run twice in one memory). A module without that export, or whose `init` fails, runs
+// from its initial memory.
+const PAGE = 65536;
+
+// What the worker runs once it is ready, to have the engine compile the code of a run.
+const WARM_UP = `Shape :: union { Circle: f64, Square: f64 }
+
+area :: fn(s: Shape) -> f64 => match s {
+    .Circle(r) => 3.14159 * r * r
+    .Square(a) => a * a
+}
+
+main :: fn() needs Out + Alloc {
+    shapes := list(Shape)
+    for i in 0..4 { shapes.push(if i % 2 is 0 { Shape.Circle(f64(i)) } else { Shape.Square(f64(i)) })! }
+    total := 0.0
+    for s in shapes.items { total += area(s) }
+    print("{} shapes, {} {:q}\\n", shapes.items.len, total, "done")
+}
+`;
+let snapshotPromise = null;
+
+function loadSnapshot(module, libs) {
+  if (!snapshotPromise) {
+    snapshotPromise = Promise.resolve().then(() => {
+      if (!WebAssembly.Module.exports(module).some((e) => e.name === "gamma_play_run")) return null;
+      const fresh = new WebAssembly.Instance(module, stubImports(module)).exports.memory.buffer;
+      const result = run(module, "init", "", libs, null, () => {}, true);
+      if (result.code !== 0) return null;
+      const after = result.memory.buffer;
+      const a = new Uint32Array(after), b = new Uint32Array(fresh);
+      const freshWords = b.length;
+      const chunks = [];
+      // Runs of changed pages, as [offset, bytes].
+      let start = -1;
+      for (let page = 0; page * PAGE < after.byteLength; page++) {
+        const lo = page * PAGE / 4, hi = lo + PAGE / 4;
+        let changed = lo >= freshWords;
+        for (let i = lo; !changed && i < hi; i++) changed = a[i] !== b[i];
+        if (changed && start < 0) start = page;
+        if (!changed && start >= 0) {
+          chunks.push([start * PAGE, new Uint8Array(after.slice(start * PAGE, page * PAGE))]);
+          start = -1;
+        }
+      }
+      if (start >= 0) chunks.push([start * PAGE, new Uint8Array(after.slice(start * PAGE))]);
+      return { size: after.byteLength, chunks };
+    });
+  }
+  return snapshotPromise;
+}
+
+function restore(memory, snapshot) {
+  const grow = (snapshot.size - memory.buffer.byteLength) / PAGE;
+  if (grow > 0) memory.grow(grow);
+  const bytes = new Uint8Array(memory.buffer);
+  for (const [offset, data] of snapshot.chunks) bytes.set(data, offset);
+}
+
+// Imports that do nothing, for an instance that is never started.
+function stubImports(module) {
+  const imports = {};
+  for (const imp of WebAssembly.Module.imports(module)) {
+    if (imp.kind !== "function") continue;
+    imports[imp.module] ??= {};
+    imports[imp.module][imp.name] = () => ENOSYS;
+  }
+  return imports;
 }
 
 onmessage = async (ev) => {
@@ -374,12 +456,16 @@ onmessage = async (ev) => {
     const module = await loadModule(wasm);
     // A module that embeds its libraries needs none: a page without the file still runs it.
     const tree = libs ? await loadLibs(libs).catch(() => { libsPromise = null; return null; }) : null;
+    const snapshot = mode === "fmt" || !tree ? null : await loadSnapshot(module, tree);
     if (mode === "load") {
       postMessage({ kind: "ready" });
+      // The engine compiles the module's functions as they are first called: one small
+      // program now, with nothing to show, compiles most of what any program needs.
+      if (snapshot) run(module, "run", WARM_UP, tree, snapshot, () => {});
       return;
     }
     const t0 = performance.now();
-    const code = run(module, mode, source, tree);
+    const code = run(module, mode, source, tree, snapshot, postMessage);
     postMessage({ kind: "exit", code, ms: performance.now() - t0 });
   } catch (e) {
     postMessage({ kind: "fail", text: String(e.message || e) });

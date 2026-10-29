@@ -13,6 +13,7 @@ str :: import "std/str"
 pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "services", run: services))!
     out.push(kit.Test(name: "fibers", run: fibers))!
+    out.push(kit.Test(name: "exports_without_main", run: exports_without_main))!
     out.push(kit.Test(name: "run_and_test_use_wasmtime", run: run_and_test_use_wasmtime))!
     out.push(kit.Test(name: "traps_and_stack_overflow", run: traps_and_stack_overflow))!
     out.push(kit.Test(name: "freestanding_wasm_is_still_freestanding", run: freestanding_wasm))!
@@ -200,6 +201,26 @@ fibers :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
         try t.check(out.success(), "{}: {}", mode, out.err)
         try t.expect_text(mode, "400 steps, sum 27800\n29800\n", out.out)
     }
+    return ()
+}
+
+/// Added to `FIBERS`: an export that runs it, which the host calls without running
+/// `main`, so the export starts the program (its constants) and the fiber driver.
+EXPORTS :: `
+STEPS :: [2]u64(100, 400)
+
+#export("fibers_sum")
+fibers_sum :: fn() -> u64 needs Sys {
+    return with heap_allocator(), system_output() { run() + STEPS[1] }
+}
+`
+
+exports_without_main :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not try available(t) { return !t.skip("needs clang with a WASI sysroot, wasm-opt and wasmtime") }
+    b := try build(t, "exports", str.format("{}{}", FIBERS, EXPORTS)!, empty_slice(string))
+    out := try t.run(wasmtime(b.dir, [_]string("run", "--invoke", "fibers_sum", b.module)))
+    try t.check(out.success(), "{}", out.err)
+    try t.expect_text("the output", "400 steps, sum 27800\n28200\n", out.out)
     return ()
 }
 
