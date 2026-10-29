@@ -72,6 +72,12 @@ Versions and what each kind of change means are described in
   bounds, a shift too large, a short vector slice and an unwrapped error each call a
   runtime function instead of formatting the message inline. The compiler's own
   executable is about 6% smaller and builds about 3% faster.
+- **Formatted writes to a function generate much less C:** `l.write("…", …)`,
+  `str.format` and every other `@write` whose sink is a function call two helpers shared by
+  the whole program, one per piece of the template, instead of repeating the call of the
+  sink and the formatting of each value inline. Each template has an instance of these
+  functions, so this was about a tenth of the compiler's own C, which now compiles about 6%
+  faster.
 - **The interpreter rotates and counts bits as instructions:** `@rotl`, `@rotr`, `@clz`,
   `@ctz`, `@popcount`, `@bswap` and `@bitreverse` on integers of 8 to 64 bits no longer go
   through the general evaluator. SHA-256 runs about five times as fast (the `std/hash`

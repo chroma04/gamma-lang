@@ -709,6 +709,35 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
         }
         .Fn(_) => {}
     }
+    if .Fn(sx) := w.sink and not fg.g.ty.by_ref(str_ty) {
+        // A write to a function: the closure and its handler context once, then a call of
+        // a shared helper per piece.
+        cv := sink_v?
+        .Fn(sig) := fg.g.ty.kind(cv.ty) else @unreachable()
+        c := fg.tmp(cv.ty, cv.v)
+        ccx := str.format("ccx{}", fg.fresh())!
+        fg.line(str.format("gm_node *{} = {}.cx;", ccx, c)!)
+        for eff in sig.effects.effects {
+            id := fg.g.effect_id(&eff)
+            n := str.format("cn{}", fg.fresh())!
+            fg.line(str.format("gm_node {}; {{ gm_node *f = gm_find({}, {}); if (f) {{ {} = *f; {}.next = {}; {} = &{}; }} }}", n, fg.cx, id, n, n, ccx, ccx, n)!)
+        }
+        fs := fg.fn_sink_stub(str_ty)
+        ff := fg.fn_format_stub(fs)
+        for i in 0..w.pieces.len {
+            if w.pieces[i].len > 0 {
+                fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {})", fs, c, c, ccx, fg.g.static_bytes(w.pieces[i]), w.pieces[i].len)!)
+            }
+            if i < w.args.len {
+                spec := "NULL"
+                if sp := w.specs.get(i) {
+                    if not tir.is_default_spec(&sp) { spec = str.format("&{}", spec_literal(sp))! }
+                }
+                fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {}, {})", ff, c, c, ccx, fg.g.ty.desc(w.args[i].ty), vals.items[i], spec)!)
+            }
+        }
+        return fg.unit()
+    }
     if core := stub {
         ps := fg.piece_stub(core, 's', str_ty)
         pf := fg.piece_stub(core, 'f', str_ty)
