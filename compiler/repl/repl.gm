@@ -1,4 +1,4 @@
-//! `gammac repl`: an interactive read-eval-print loop on the interpreter.
+//! `gamma repl`: an interactive read-eval-print loop on the interpreter.
 //!
 //! There is no incremental compilation, so every input is checked and run as a complete
 //! program that is synthesized from the session so far:
@@ -42,7 +42,7 @@ pub Options :: struct {
     pub version: string = ""
 }
 
-/// What the command line of `gammac repl` asks for.
+/// What the command line of `gamma repl` asks for.
 pub Cli :: union {
     Run: Options
     Help

@@ -140,7 +140,7 @@ pub cache_dir :: fn() -> ?string needs Alloc + Env {
         home := Env.var("HOME") else return null
         if home.len is 0 { return null }
         // The host's system, not the one gammac was built for, so that the generated C
-        // of gammac is the same for every Unix-like host.
+        // of gamma is the same for every Unix-like host.
         if load.host_target().os is "MacOS" { return join(home, "Library/Caches/gamma") }
         return join(home, ".cache/gamma")
     }

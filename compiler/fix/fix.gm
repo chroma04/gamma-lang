@@ -1,4 +1,4 @@
-//! Applying the fixes that diagnostics carry (`gammac fix`).
+//! Applying the fixes that diagnostics carry (`gamma fix`).
 //!
 //! A diagnostic with exactly one fix is resolved by applying it; one with several leaves the
 //! choice to the programmer. Fixes are applied whole: a fix that has an edit in a file that
@@ -118,7 +118,7 @@ pub Setup :: struct {
     pub profile: ?string
 }
 
-/// The directory of the files that `gammac fix` may change and `gammac lint` reports on:
+/// The directory of the files that `gamma fix` may change and `gamma lint` reports on:
 /// the input's package, or outside a package, the input's directory; never the standard
 /// library or other packages. Gives the message if the input cannot be read.
 pub own_files :: fn(path: string) -> string!string needs Alloc + Fs {
@@ -138,7 +138,7 @@ pub render :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics, format: 
     diags.list.clear()
 }
 
-/// `gammac fix`: checks the program and applies the fixes of its diagnostics, again until
+/// `gamma fix`: checks the program and applies the fixes of its diagnostics, again until
 /// none is left to apply (a fix can let checking go further), then reports what is left.
 pub command :: fn(path: string, setup: Setup) -> u8 needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     outer := Alloc.current()

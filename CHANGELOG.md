@@ -4,269 +4,79 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
-## Unreleased
+## 0.2.0 - 2026-10-30
 
-### The compiler is written in Gamma
+`gamma` is now written in Gamma: the compiler in `compiler/` builds itself, from a C seed
+with nothing but a C compiler, and replaces the Rust implementation of 0.1.0. It has two
+back ends, C (the default) and an interpreter. This release also brings complex numbers,
+math vectors and structure-of-arrays types, `pub(package)`, local types, numbered format
+placeholders, many standard library additions, new lints, and much faster builds,
+interpreter and playground.
 
-- **Breaking: `gamma` is now the compiler in `compiler/`, written in Gamma.** It replaces
-  the Rust implementation, which has been removed from the repository (its last state is
-  the tag `rust-reference-final`). Commands, options and messages are those of `gamma` as
-  before; `gamma --help` and `gamma version` name `gamma`. The earlier `gammac` is gone:
-  use `gamma`.
-- **Breaking: `gamma run` compiles through C by default** (it used to interpret).
-  `gamma run --backend=interp` interprets the program: it needs no C compiler, but it is
-  slower than the old interpreter, and a program that calls foreign C code or uses inline
-  assembly runs only through C. `gamma test` and `gamma bench` always compile through C,
-  and `gamma repl` runs on the interpreter. So a C compiler is needed for `build`, `run`,
-  `test` and `bench`.
-- **Breaking: the Cranelift back end is gone.** `--backend=cranelift` is rejected; use C.
-  The chapter on it in the guide is now about the two remaining back ends.
-- **Building from source needs only a C compiler:** `bootstrap/build.sh` compiles the
-  checked-in C seed and builds the current compiler with it, writing
-  `target/bootstrap/gamma`. `tools/refresh-seed.sh` and `bootstrap/verify.sh` take a
-  `gamma` executable.
-- **The repository builds and tests with a C compiler alone.** The test suites are a
-  Gamma program, `tests/harness/`: `tools/test.sh [-j N] [-v] [--list] [--filter TEXT]
-  [PREFIX...]` builds `gamma` and the harness and runs the tests whose names
-  (`suite/test`) start with a prefix. A program that outlives `GAMMA_TEST_TIMEOUT` is killed
-  with everything it started. The conformance test format is documented in
-  `tests/harness/conformance/conformance.gm`.
-- `tools/difftest` (differential testing of the interpreter against the C back end) is a
-  Gamma program; it generates the same program for a seed as before.
-- The libFuzzer targets moved from `fuzz/gammac/` to `fuzz/` (new inputs go to
-  `fuzz/found/`); the cargo-fuzz targets are gone, as are the Rust web playground and site
-  generator (`web/play` and `web/gen` replace them).
-- **Releases** are `gamma-<platform>.tar.gz` (`.zip` on Windows) for linux-x86_64,
-  linux-aarch64, macos-x86_64, macos-aarch64 and windows-x86_64, laid out as
-  `bin/gamma` and `lib/gamma/{std,core,runtime}`. `tools/install.sh` and
-  `tools/install.ps1` install it; `GAMMA_ARCHIVE` is gone.
+### Breaking
 
-### WebAssembly
-
-- **`#export` on `wasm32-wasi` exports the function from the module** (spec §19.4), so
-  that the host can call it, before `main` has run, after it or instead of it. Before,
-  the linker left it out. The first call, of an export or of `main`, prepares the
-  program's constants, and an export of a program that uses fibers runs under the same
-  fiber support as `main`.
-
-### Speed
-
-- **The playground runs programs about fifty times as fast**: a small program takes
-  10 to 30 ms instead of about 600 ms (Node; the first run takes about 70 ms). The page
-  loads and checks the core library once, when it opens, and starts every run from a
-  copy of the module's memory at that point; it then runs a small program out of sight,
-  so that the browser has compiled most of the interpreter before the first real run.
-  Most of the gain came from the interpreter's stack: it gave the program's thread a
-  1 GiB stack, which costs nothing on a native host but which the WebAssembly C library
-  cleared byte by byte on every run. On WebAssembly the stack is now 8 MiB: the browser's own stack ends a deep
-  recursion first, and if it does not, the interpreter traps with `stack overflow`.
-- **The interpreter runs three to seven times as fast** (`gamma run --backend=interp`,
-  `gamma repl`): a function's body is lowered once, on its first call, with sizes, offsets
-  and operations resolved, and its statements, arithmetic on words, simple places and
-  calls are compiled to instructions on registers that run in one loop; the rest of the
-  language is evaluated by walking the lowered body. The slowest conformance test went
-  from 43 s to 6 s, and the suites that run programs in the interpreter (conformance
-  `run` tests, examples, the REPL, documentation examples) take about a third of the time.
-  Calls through function values, captured variables, `else`, compare-and-branch and
-  arithmetic on 32- and 64-bit integers then got instructions of their own, for up to
-  another 2.5x (the slowest test now takes 4.3 s).
-  Then operations performed through handlers, patterns, building structs, optionals,
-  results, variants and slices, and slice elements also became instructions; locals and
-  constants live in registers; and scratch memory is marked only where it can be used:
-  another 1.5 to 2x (the slowest test now takes 2.1 s, `for` over an iterator runs about
-  twice as fast). Then `with` (except `with … on`) became instructions too: entering one
-  costs about a sixth of what it did, and the code in its body runs as instructions rather
-  than in the tree (a loop of handled performs inside a `with` runs over twice as fast).
-  A call between functions the register machine runs takes about half the work it did
-  (about 630 instructions of the interpreter instead of 1,180), and the machine's loop
-  keeps its state in registers again (see below): a loop of calls and performs runs
-  about 20 to 30% faster, `std_parse_float_table` about 12%.
-- **Debug builds compile about 20% faster:** the generated code of a program linked with
-  the cached runtime includes only the few system headers it needs (`<stdint.h>`,
-  `<string.h>` and the like) instead of all those of the runtime, which took the C
-  compiler about a third of its time on a small program.
-- **Failed checks format their messages in the runtime:** an index or slice out of
-  bounds, a shift too large, a short vector slice and an unwrapped error each call a
-  runtime function instead of formatting the message inline. The compiler's own
-  executable is about 6% smaller and builds about 3% faster.
-- **Formatted writes to a function generate much less C:** `l.write("…", …)`,
-  `str.format` and every other `@write` whose sink is a function call two helpers shared by
-  the whole program, one per piece of the template, instead of repeating the call of the
-  sink and the formatting of each value inline. Each template has an instance of these
-  functions, so this was about a tenth of the compiler's own C, which now compiles about 6%
-  faster. `str.format` writes through `@write` itself rather than through `List.write`,
-  which saves a function per template (another 5% of the compiler's C).
-- **A `List` grows through one function for every element type:** the growth of a
-  `List(T)` depends on `T` only through its size and alignment, so it is done by one
-  function on bytes rather than by an instance per element type (about 300 in the
-  compiler: another 5% of its C).
-- **The interpreter rotates and counts bits as instructions:** `@rotl`, `@rotr`, `@clz`,
-  `@ctz`, `@popcount`, `@bswap` and `@bitreverse` on integers of 8 to 64 bits no longer go
-  through the general evaluator. SHA-256 runs about five times as fast (the `std/hash`
-  conformance test went from 3.6 s to 0.8 s), and 64- and 128-bit integers outside the
-  register machine are read and written a word at a time.
-- In Debug builds, a small value built with zeroed padding (an optional, a result or a
-  variant with gaps around its payload) is cleared with one `memset` in the generated C
-  instead of a store per gap. Optimized builds keep the stores, which run faster.
-- **Child processes start without copying the parent** on Linux (glibc 2.29 and later):
-  `Proc.spawn`, and with it `gamma`'s calls of the C compiler, uses `posix_spawn` rather
-  than `fork`, whose cost grows with the parent's memory. A test that runs `gamma` about
-  4,000 times went from 25 s to 12 s.
-- **No function of the compiler is too long for Clang to optimize:** the C back end's
-  `expr_node` and `builtin`, which Clang 19 and later (Apple clang 17 and later) compiled
-  without optimization because of their size, are split into smaller functions.
-- **Long functions whose blocks are short keep their locals in C variables** in the
-  generated C. Only a function some of whose statements are moved into helper functions
-  needs them in its frame struct, which the C compiler cannot keep in registers. A block's
-  statements are moved only when the small ones among them add up to a helper's worth: a
-  few statements beside one long loop stay, and so does the speed of the loop.
-- **Filling, copying and popping are inlined everywhere:** `fill` and `copy_from` on
-  slices and `pop` on lists are `#inline`, and `fill` is a loop without bounds checks
-  that the C compiler turns into `memset` in Debug and Checked builds too. `push` checks
-  for room without a call. (`push` is not `#inline`: inlining it at every call site made
-  the compiler's own build about 11% slower for about 0.6% more speed.)
-- **A `match` on a union switches on its tag** in the generated C, instead of testing the
-  arms one after another, and tests the patterns of a large value that is a place where it
-  is, without copying it first (unless an arm has a guard).
-- **`#inline` functions are inlined in every translation unit of a split build:** their
-  definitions are shared by all units, with the external one in unit 0.
-- **The compiler builds itself in Checked mode** (`compiler/gamma.toml`), optimized with
-  every check on: `gamma check` and `gamma build` of a large program take about 40% of the
-  time they took, and programs run in the interpreter almost twice as fast.
-- **Long expressions are checked in linear time.** A sum or a chain of field accesses of
-  tens of thousands of terms took minutes to check (a 40,000-term sum took over twenty);
-  it takes about a second.
-- Names in a module's scope are found through a hash table, and the sizes of types are no
-  longer recomputed after each declaration.
-- **Checked and Fast builds of very large programs are split into C files compiled in
-  parallel,** as Debug builds are; small programs are still one file, so the C compiler
-  optimizes across the whole program. An optimized build of the compiler takes about a
-  minute instead of over five, and runs as fast.
-- A `List` grows, extends, inserts and removes, and `copy_from` and `dupe` copy, a block
-  at a time instead of an element at a time.
-- `gamma build -g` works on programs with a pointer to an optional pointer, or a field
-  named `defined`.
-
-### Self-hosting
-
-In this section, `gammac` is the compiler in `compiler/` under the name it had while the
-Rust implementation was still the one users ran; it is now `gamma`.
-
-- **Bootstrapping without Rust.** `bootstrap/seed/` holds the C that `gammac` generates for
-  itself, and `bootstrap/build.sh` builds `gammac` from it with only a C compiler, on Linux
-  and macOS (x86-64 and AArch64). CI checks that the seed is exactly what its sources,
-  named in `bootstrap/seed/SOURCE`, compile to, and that the build from it is a fixed
-  point. `tools/refresh-seed.sh` regenerates it (`bootstrap/README.md`,
-  `docs/contributing.md`).
-- `gammac` asks the system (`uname`) for the operating system and architecture it runs on,
-  so the C it generates for itself is the same on every 64-bit little-endian Unix-like host.
-- `gammac build --emit-c` with `GAMMA_C_UNITS` above 1 writes the program split into units
-  that include a shared header, with the runtime in a file of its own.
-- **The website is built by `gammac`.** `web/gen/` is the site generator written in Gamma
-  (a CommonMark renderer with tables, highlighting with `gammac`'s lexer, the link check);
-  it generates exactly the site the Rust generator does. The playground runs `gammac`'s
-  interpreter built for WASI (`web/play/`), which reads the libraries from an in-memory
-  file system in the page's worker. The Pages workflow builds both from the seed, without
-  cargo.
-- The conformance tests and the examples run with any compiler that has `gamma`'s command
-  line (`GAMMA_TEST_COMPILER`); CI runs them with `gammac` on Linux and macOS.
-- `fuzz/gammac/` fuzzes `gammac` with libFuzzer: the same five targets as the cargo-fuzz
-  crate, built without cargo; CI builds them and runs each briefly.
-- `gammac`'s interpreter makes the network calls that may block (connect, accept, send,
-  receive) on a host thread when the program has several threads, so a server thread no
-  longer stops the others.
-- `gammac` builds for wasm32-wasi: the checks for `f16` and fibers no longer look inside
-  string data.
-- **`gammac` compiles itself.** `compiler/cgen/` is a C back end for `gammac`, ported from
-  the reference implementation's, and `gammac build` compiles a program to an executable
-  with it (`--mode=debug|checked|fast`, `-o`, `--emit-c`). Every conformance `run` test
-  compiled by `gammac` behaves as expected, and the bootstrap reaches a fixed point: the
-  `gammac` that `gammac` builds generates byte-identical C for itself
-  (`docs/self-hosting.md`, `tests/selfhost.rs`).
-- `gammac build` in the Debug mode compiles the runtime on its own and splits the program
-  into several C units compiled in parallel, as `gamma build` does; building `gammac` with
-  itself takes about a third of the time on four cores.
-- `gammac` now covers the rest of the `gamma` command line that runs through the C back
-  end: `check` and `run` (with the human diagnostic format as the default), `fmt`, `doc`,
-  `lint` and `fix` (with diagnostic codes), `build -g` (source-level debugging),
-  `test` and `bench`, the package manager (`new`, `init`, `fetch`, `update`, `add`,
-  `remove`, `cache`) and the `gamma.toml` build settings. Each matches the reference's
-  output byte for byte (`tests/selfhost.rs`).
-- The gdb and lldb printers for `-g` builds live in `runtime/`, shared by both compilers.
-- **`gammac` has an interpreter and a REPL.** `gammac run --backend=interp` runs a program
-  in an interpreter written in Gamma (`compiler/interp/`), with the reference's memory
-  model, trap messages and reports, fibers, threads and system services; programs that
-  call foreign code run natively, as with `gamma`. Every conformance `run` test passes in
-  it. `gammac repl` is `gamma repl` on that interpreter, with the same output.
-- `gammac` covers the rest of the `gamma` command line except the interpreter for `test`
-  and `bench`, and the Cranelift back end: `test --coverage[=FILE]`, `--target=TRIPLE` (cross compilers, freestanding
-  objects, `wasm32-wasi`), `--mode=safe` (Fil-C), the caches of compiled runtimes and of
-  programs built by `run`, `test --package`, dependencies for `test`, `bench`, `lint` and
-  `fix`, and `gammac lsp`. Its C back end makes the reference's optimizations, so the
-  programs it builds are as fast, and generates the same C functions.
-
-### Language
-
+- **`gamma` is the compiler written in Gamma** (`compiler/`). Commands, options and
+  messages are those of 0.1.0's `gamma`. The Rust implementation has been removed from
+  the repository; its last state is the tag `rust-reference-final`. To build from source,
+  run `bootstrap/build.sh` (see below) instead of `cargo build`.
+- **`gamma run` compiles through C by default** (it used to interpret). Use
+  `gamma run --backend=interp` to interpret: it needs no C compiler, but it cannot call
+  foreign C code or run inline assembly, which the 0.1.0 interpreter did through libffi.
+  `gamma test` and `gamma bench` always compile through C and `gamma repl` runs on the
+  interpreter, so a C compiler is needed for `build`, `run`, `test` and `bench`.
+- **The Cranelift back end is gone.** `--backend=cranelift` is rejected; use C. The
+  chapter on it in the guide now describes the two remaining back ends.
+- **`SpawnOptions.env` changes the environment instead of replacing it.** Its entries
+  apply in order to the environment the child inherits: `NAME=value` sets a variable, a
+  bare `NAME` removes it. Set `clear_env: true` to start from an empty environment (what
+  `env` did before). `env` is now a plain `[]const string`, empty by default.
+- **Storing the address of a local where it certainly outlives the local is a compile
+  error**, as returning it already was (§15.1): assigning `&x` (or a slice of a local
+  array), by itself or inside another value, to a local of an enclosing scope, a captured
+  local or a `#global`, and returning it inside a value. This catches keeping `&x` from
+  `for x in xs` or from a pattern binding, which are copies. The cases that only may
+  dangle (through a pointer, or passed to a call that may keep it) are the
+  `dangling-address` lint.
+- A private function of a type's module is no longer callable as a method of the type
+  from other modules, as §7.10 always said (`x.helper()` where `helper` is private was
+  accepted).
 - `needs`, `handler` and `foreign` are contextual keywords (§2.4): ordinary names except
   after a signature (`needs`), before an effect (`handler Eff {`, a top-level handler
   declaration) and before a library name (`foreign "c" {`). A newline after `needs` now
   ends the line like after any name, so put the effect set on the same line.
-- An `else` fallback joins with the left side's value as `if` branches do (§10.4):
-  `str.format("{}", n) else "none"` and `x: string = lookup(k) else ""` (with `lookup`
-  giving `?[]u8`) are `string`s; they used to be type errors.
-- A coercion that only adds `const` also applies inside optionals and results (§6.4):
-  `?[]u8` → `?string`, `E!^T` → `E!^const T`.
-- Arrays of one element type and different lengths join as a slice of it (§7.12): in the
-  branches of `if` and `match`, and in `for x in (a, b)`, whose elements may now be of any
-  types with a join (`for s in (bytes, "lit")`).
-- Format templates may number their placeholders (§21.6.1): `print("{1}: {0} ({0:x})", n,
-  name)` writes a value several times or out of order; each value is still evaluated once.
-- The format spec kind `q` writes a `string` or byte slice quoted with escapes, as inside
-  an aggregate: `print("{:q}", "a\tb")` writes `"a\tb"`.
-- `struct` and `union` types may be declared inside a function body (§3.5): they are
-  visible to the rest of the block, are not generic, have no methods, and may not depend on
-  the function's type or value parameters.
-- In `x in (a, b, c)` and `x in list`, the element and the members are compared at one
-  type, joined as the branches of an `if` are (§7.7, §7.12): with `p: []u8`,
-  `p in ("get", "put")` and `p in names` (`names: []string`) are accepted; they used to be
-  type errors. For an array or slice, the element must coerce to the element type.
-- An array is a slice of all of it wherever a `[]const T` is expected, not only as a call
-  argument (§6.4): `xs: []const i64 = [_]i64(1, 2)`, `Options(flags: [_]string("-g"))`.
-  Any temporary array can be sliced (`[_]i64(1, 2, 3)[1..]`), giving a read-only slice.
-  The temporary lives until the end of the block of its statement (§15.1), and returning a
-  slice of it, or storing one where it outlives that block, is an error.
-- The default `Out` handler hands what it buffered to the system before the program waits
-  on anything: a lock, condition variable or channel, a thread, a socket, a child process
-  or a file read, as it already did before reading standard input and sleeping (§12.9).
-  A program that answers requests over its standard streams needs no flush.
+- The old effect syntax `\` is no longer recognized: `\` is an unexpected character. Write
+  `needs`.
+- The install scripts no longer read `GAMMA_ARCHIVE`; use `GAMMA_DOWNLOAD` and
+  `GAMMA_VERSION`.
 
-- Without an expected type, a value `if` or `match` takes the first branch type to which
-  every other branch coerces (§7.12): `if c { str.format(…)! } else { "none" }` is a
-  `string`, and `if c { u8(1) } else { u32(2) }` a `u32`. Before, the first branch's type
-  was used, and the others had to coerce to it.
+### Building and testing Gamma
 
-- **`?x`** in a pattern binds an optional or a result as it is, absent or failed value
-  included, where a bare name would match only a present or success value (§9.3):
-  `.Break(?label, ?value)` matches every `.Break` and binds both optionals. It is
-  irrefutable; against any other type it is an error. The "not exhaustive" error and the
-  `present-only-binding` lint now suggest it.
-- Storing the address of a local where it certainly outlives the local is a compile error,
-  as returning it already was (§15.1): assigning `&x` (or a slice of a local array), by
-  itself or inside another value, to a local of an enclosing scope, a captured local or a
-  `#global`, and returning it inside a value. This catches keeping `&x` from
-  `for x in xs` or from a pattern binding, which are copies. The cases that only may
-  dangle (through a pointer, or passed to a call that may keep it) stay the
-  `dangling-address` lint.
-- `[1, 2]` gets a note saying how an array value is written (`[_]i32(1, 2)`), and that a
-  tuple is `(a, b)`.
-- **`pub(package)`** makes a declaration or a struct field visible to every module of its
-  package, and to nothing outside it (§3.3): for what a package's modules share with each
-  other but not with its users. A declaration may not mention a type less visible than
-  itself. `gamma doc` shows only `pub` names.
-- A private function of a type's module is no longer callable as a method of the type from
-  other modules, as §7.10 always said (`x.helper()` where `helper` is private was accepted).
-- A member of an inline tuple of `in` may be a pattern form, as on the right of `is`:
-  `k in (.Fn(_), .Handler(_), .Type)` tests whether `k` matches any of them (§7.7).
+- **Building from source needs only a C compiler.** `bootstrap/seed/` holds the C that
+  the compiler generates for itself, and `bootstrap/build.sh` compiles it and then builds
+  the current compiler with it, writing `target/bootstrap/gamma`, on Linux and macOS
+  (x86-64 and AArch64). CI checks that the seed is exactly what its sources (named in
+  `bootstrap/seed/SOURCE`) compile to and that the build from it is a fixed point.
+  `tools/refresh-seed.sh` regenerates it and `bootstrap/verify.sh` checks it
+  (`bootstrap/README.md`, `docs/self-hosting.md`).
+- **The test suites are a Gamma program,** `tests/harness/`: `tools/test.sh [-j N] [-v]
+  [--list] [--filter TEXT] [PREFIX...]` builds `gamma` and the harness and runs the tests
+  whose names (`suite/test`) start with a prefix. A program that outlives
+  `GAMMA_TEST_TIMEOUT` is killed with everything it started. The conformance test format
+  is documented in `tests/harness/conformance/conformance.gm`.
+- `tools/difftest` (differential testing of the interpreter against the C back end) is a
+  Gamma program; it generates the same program for a seed as before.
+- The libFuzzer targets are Gamma programs in `fuzz/` (new inputs go to `fuzz/found/`),
+  built without cargo; the cargo-fuzz targets are gone.
+- The website is built by a generator written in Gamma (`web/gen/`), and the playground
+  runs the interpreter built for WASI (`web/play/`). The Pages workflow builds both from
+  the seed.
+- **Releases** are `gamma-<platform>.tar.gz` (`.zip` on Windows) for linux-x86_64,
+  linux-aarch64, macos-x86_64, macos-aarch64 and windows-x86_64, laid out as
+  `bin/gamma` and `lib/gamma/{std,core,runtime}`; the runtime directory includes the gdb
+  and lldb printers for `-g` builds. `tools/install.sh` and `tools/install.ps1` install it.
+
+### Language
+
 - **Complex numbers**: `Complex(T)` for a float type `T`, a core struct `{ re, im }` with the
   layout of C's `_Complex`, and the operators `+ - * /`, unary `-`, and scaling by a scalar;
   methods `conj()` and `abs()`. Division is Smith's algorithm (§5.3.1, §7.4.7).
@@ -282,76 +92,111 @@ Rust implementation was still the one users ran; it is now `gamma`.
   element (a place), `a.f` a whole column; slicing, `&a` to a slice, `for`, `is` and `@hash`
   work as for arrays and slices; `T.make(n)` and `s.free()` allocate and release a `#soa`
   slice in one block (§5.6.4). `a.copy_from(src)` copies a `#soa` column by column (the
-  lengths must be equal; the two may overlap).
-- `#soa []T` and `#soa [N]T` of a type parameter in generic code: whole elements (`a[i]`,
-  `a[i] = x`), `len`, slicing, `for`, `copy_from`, `make` and `free` work there, and each instantiation
-  checks that its argument is a struct `#soa` can store (§5.6.4). A local alias may name an
-  attributed type: `Cols :: #soa []T`, then `Cols.make(n)`.
-- `Float(T)` now implies `Neg(T)`, so unary minus works in generic code over floats.
-- Examples `nbody.gm` (math vectors) and `julia.gm` (complex numbers).
+  lengths must be equal; the two may overlap). In generic code, `#soa []T` and `#soa [N]T`
+  of a type parameter support whole elements, `len`, slicing, `for`, `copy_from`, `make`
+  and `free`, and each instantiation checks that its argument is a struct `#soa` can
+  store. A local alias may name an attributed type: `Cols :: #soa []T`, then
+  `Cols.make(n)`.
+- **`pub(package)`** makes a declaration or a struct field visible to every module of its
+  package, and to nothing outside it (§3.3): for what a package's modules share with each
+  other but not with its users. A declaration may not mention a type less visible than
+  itself. `gamma doc` shows only `pub` names.
+- **`?x`** in a pattern binds an optional or a result as it is, absent or failed value
+  included, where a bare name would match only a present or success value (§9.3):
+  `.Break(?label, ?value)` matches every `.Break` and binds both optionals. It is
+  irrefutable; against any other type it is an error. The "not exhaustive" error and the
+  `present-only-binding` lint suggest it.
+- `struct` and `union` types may be declared inside a function body (§3.5): they are
+  visible to the rest of the block, are not generic, have no methods, and may not depend on
+  the function's type or value parameters.
+- Format templates may number their placeholders (§21.6.1): `print("{1}: {0} ({0:x})", n,
+  name)` writes a value several times or out of order; each value is still evaluated once.
+  The format spec kind `q` writes a `string` or byte slice quoted with escapes, as inside
+  an aggregate: `print("{:q}", "a\tb")` writes `"a\tb"`.
 - An array `[N]T` or a vector spreads into its `N` elements like an unnamed tuple:
   `f(..xs)`, `(u8, u8, u8)(..xs)`, `print("{} {}", ..pair)` (§11.4). An enum-indexed array,
   or one whose length is a compile-time parameter, cannot be spread.
-- New chapter 23 of the specification: what is a compile error, a trap or an error value,
-  what a diagnostic reports and what it does not, and the limits every implementation
-  supports (64 levels of nesting, …).
-- The specification states rules the compiler already enforced: a struct may not contain
-  itself by value, a directory without `.gm` files is not a module, and the characters of
-  foreign library and symbol names.
-- The hash map moved from the core library to the standard module
-  `std/collections/hash_map`: write `hm :: import "std/collections/hash_map"`, then
-  `hm.hash_map(K, V)` and `hm.HashMap(K, V)`. `List` is now the only container in the
-  core library, the one the language definition refers to (§21.5). The universe names
-  `HashMap`, `hash_map` and `hash_map_with` stay for one release as `#deprecated` names of
-  the same declarations, so existing code compiles with a warning.
-- The specification's rationale (Appendix C.8) records why constraints stay predicates on
-  one type and why `in` covers only built-in sequences: library containers answer
-  membership with `contains`.
-
-- An optional or result on the left of `in` with an inline tuple compares as `is` does: the
-  members convert to its type, so `s.get(i) in (' ', '\t')` works for `s.get(i): ?u8`
-  (§7.7).
+- An array is a slice of all of it wherever a `[]const T` is expected, not only as a call
+  argument (§6.4): `xs: []const i64 = [_]i64(1, 2)`, `Options(flags: [_]string("-g"))`.
+  Any temporary array can be sliced (`[_]i64(1, 2, 3)[1..]`), giving a read-only slice.
+  The temporary lives until the end of the block of its statement (§15.1), and returning a
+  slice of it, or storing one where it outlives that block, is an error.
+- Branches join more often (§7.12, §10.4):
+  - without an expected type, a value `if` or `match` takes the first branch type to which
+    every other branch coerces: `if c { str.format(…)! } else { "none" }` is a `string`,
+    and `if c { u8(1) } else { u32(2) }` a `u32`;
+  - an `else` fallback joins with the left side's value as `if` branches do:
+    `str.format("{}", n) else "none"` and `x: string = lookup(k) else ""` (with `lookup`
+    giving `?[]u8`) are `string`s;
+  - arrays of one element type and different lengths join as a slice of it, in the
+    branches of `if` and `match` and in `for x in (a, b)`, whose elements may now be of any
+    types with a join (`for s in (bytes, "lit")`).
+- `in` compares at a joined type (§7.7, §7.12): with `p: []u8`, `p in ("get", "put")` and
+  `p in names` (`names: []string`) are accepted. An optional or result on the left of an
+  inline tuple compares as `is` does (`s.get(i) in (' ', '\t')` for `s.get(i): ?u8`), and a
+  member of an inline tuple may be a pattern form, as on the right of `is`:
+  `k in (.Fn(_), .Handler(_), .Type)`.
+- A coercion that only adds `const` also applies inside optionals and results (§6.4):
+  `?[]u8` → `?string`, `E!^T` → `E!^const T`.
+- `&e` where a pointer `^T` is expected checks `e` with `T` expected, so a variant or tuple
+  takes its type from it: `area(&.Circle(2.0))` (§7.2).
+- `Float(T)` now implies `Neg(T)`, so unary minus works in generic code over floats.
+- The default `Out` handler hands what it buffered to the system before the program waits
+  on anything: a lock, condition variable or channel, a thread, a socket, a child process
+  or a file read, as it already did before reading standard input and sleeping (§12.9).
+  A program that answers requests over its standard streams needs no flush.
+- **`#export` on `wasm32-wasi` exports the function from the module** (§19.4), so that
+  the host can call it before `main` has run, after it or instead of it. Before, the
+  linker left it out. The first call, of an export or of `main`, prepares the program's
+  constants, and an export of a program that uses fibers runs under the same fiber
+  support as `main`.
+- The specification has a new chapter 23: what is a compile error, a trap or an error
+  value, what a diagnostic reports and what it does not, and the limits every
+  implementation supports (64 levels of nesting, …). It also states rules the compiler
+  already enforced: a struct may not contain itself by value, a directory without `.gm`
+  files is not a module, and the characters of foreign library and symbol names. Its
+  rationale (Appendix C.8) records why constraints stay predicates on one type and why
+  `in` covers only built-in sequences.
 
 ### Standard library
 
-- `Fs` has `canonical` (symlinks, `.` and `..` resolved; `fs.canonical_alloc`),
-  `read_link`, `symlink`, `set_mode` and `set_modified`, and `FileInfo` has `mode`. On
-  WASI they fail with `Unsupported`; the in-memory test file system stores modes and times
-  but has no symlinks.
-- `Proc.try_wait(child)` reports a status without blocking (`null` while the child runs),
-  and `SpawnOptions.program` names the file to run when `argv[0]` should be only the name
-  the child sees.
-- The handle types `File`, `Dir`, `Socket`, `Listener` and `Child` have a public `handle`,
-  so handlers written in Gamma (a virtual file system) can issue and read them.
-- `thread.defaults` gives a thread `Env` as well: `args`, `var`, and `exit`, which ends the
-  process once the thread's body has unwound.
-- `std/text` has `is_space`, `trim`, `trim_start`, `trim_end` and `fields` for Unicode
-  whitespace (the `White_Space` property); the `std/str` ones stay ASCII.
-- `thread.drained(&c)` tells a closed and drained `Channel` from an empty one, so a consumer
-  polling with `try_recv` knows when to stop.
-- **Breaking: `SpawnOptions.env` changes the environment instead of replacing it.** Its
-  entries apply in order to the environment the child inherits: `NAME=value` sets a
-  variable, a bare `NAME` removes it. `clear_env: true` starts from an empty environment
-  instead (what `env` did before). `env` is now a plain `[]const string`, empty by default.
-- **`SpawnOptions.group`** starts the child in a process group of its own (a job object on
-  Windows), and `Proc.kill` then ends the whole group, including what the child started.
-- `std/fs`: `make_dir_all` accepts `\` separators and a drive prefix on Windows.
-- `std/collections/soa_list`: `SoaList(S)`, a growable list stored by field, with `items` a
-  `#soa []S` (`push`, `pop`, `insert`, `remove`, `swap_remove`, `extend`, `reserve`,
-  `truncate`, `clear`, `deinit`). Like `List`, it keeps the allocator it was created with.
+- **The hash map moved from the core library to `std/collections/hash_map`:** write
+  `hm :: import "std/collections/hash_map"`, then `hm.hash_map(K, V)` and
+  `hm.HashMap(K, V)`. `List` is now the only container in the core library (§21.5). The
+  universe names `HashMap`, `hash_map` and `hash_map_with` stay for this release as
+  `#deprecated` names of the same declarations, so existing code compiles with a warning.
 - Slices and arrays have new builtin methods (§21.3): `reverse()`, `rotate_left(k)`,
   `rotate_right(k)`, `dedup()`, `partition(pred)`, `select_nth(n)` and `select_nth_by(n,
   less)`, `is_sorted()` and `is_sorted_by(less)`, and `upper_bound(x)`, the counterpart of
   `binary_search`'s lower bound. Like the sorts, they work in place and allocate nothing.
+- `Fs` has `canonical` (symlinks, `.` and `..` resolved; `fs.canonical_alloc`),
+  `read_link`, `symlink`, `set_mode` and `set_modified`, and `FileInfo` has `mode`. On
+  WASI they fail with `Unsupported`; the in-memory test file system stores modes and times
+  but has no symlinks.
+- `std/fs`: `remove_all(path)` removes a directory tree without following symbolic links;
+  `temp_dir()`, `create_temp(dir, prefix, buf)` and `make_temp_dir(dir, prefix, buf)`
+  create temporary files and directories under fresh random names. `make_dir_all`
+  accepts `\` separators and a drive prefix on Windows.
+- `Proc.try_wait(child)` reports a status without blocking (`null` while the child runs),
+  and `SpawnOptions.program` names the file to run when `argv[0]` should be only the name
+  the child sees. **`SpawnOptions.group`** starts the child in a process group of its own
+  (a job object on Windows), and `Proc.kill` then ends the whole group, including what the
+  child started.
+- The handle types `File`, `Dir`, `Socket`, `Listener` and `Child` have a public `handle`,
+  so handlers written in Gamma (a virtual file system) can issue and read them.
+- `thread.defaults` gives a thread `Env` as well: `args`, `var`, and `exit`, which ends the
+  process once the thread's body has unwound. `thread.drained(&c)` tells a closed and
+  drained `Channel` from an empty one, so a consumer polling with `try_recv` knows when to
+  stop.
+- `std/collections/soa_list`: `SoaList(S)`, a growable list stored by field, with `items` a
+  `#soa []S` (`push`, `pop`, `insert`, `remove`, `swap_remove`, `extend`, `reserve`,
+  `truncate`, `clear`, `deinit`). Like `List`, it keeps the allocator it was created with.
 - `std/uuid`: RFC 9562 identifiers, with `v4()` (needs `Rand`), `v7()` (needs `Clock +
   Rand`), and `parse` and `format` of the canonical text.
 - `std/net`: IP address values `Ipv4`, `Ipv6` and `IpAddr`, parsed from the text forms of
   RFC 4291 (`parse_ipv4`, `parse_ipv6`, `parse_ip`) and written in the canonical form of
   RFC 5952 (`format_ipv4`, `format_ipv6`, `format_ip`), plus `is_loopback` and
   `is_unspecified`.
-- `std/fs`: `remove_all(path)` removes a directory tree without following symbolic links;
-  `temp_dir()`, `create_temp(dir, prefix, buf)` and `make_temp_dir(dir, prefix, buf)`
-  create temporary files and directories under fresh random names.
 - `std/math`: `asinh`, `acosh`, `atanh`, `erf`, `erfc`, `lgamma`, `lgamma_sign`, `tgamma`,
   `frexp`, `ldexp` and `nextafter`; and, for every integer type, `gcd`, `lcm`, `isqrt`,
   `ilog2`, `ilog10`, `div_floor` and `mod_floor`.
@@ -362,103 +207,125 @@ Rust implementation was still the one users ran; it is now `gamma`.
 - `std/time`: `parse_duration`, the inverse of `format_duration`; ISO 8601 week dates and
   ordinal dates (`iso_week`, `from_iso_week`, `day_of_year`, `from_ordinal`, and
   `format_`/`parse_iso_week` and `format_`/`parse_ordinal` for their text).
-- `std/text`: UTF-16 with `utf16_len`, `encode_utf16`, `append_utf16` and the iterator
-  `decode_utf16`.
+- `std/text`: `is_space`, `trim`, `trim_start`, `trim_end` and `fields` for Unicode
+  whitespace (the `White_Space` property; the `std/str` ones stay ASCII), and UTF-16 with
+  `utf16_len`, `encode_utf16`, `append_utf16` and the iterator `decode_utf16`.
+
+### Tooling
+
+- `gamma test --coverage` runs with the C back end, with the same table and LCOV file as
+  before. Each test process writes its counts to a file that the runner adds up.
+- `gamma tir` checks a program and prints the typed form the checker produces for each of
+  its functions (resolved names, typed operators, explicit conversions); `gamma decls`
+  resolves the top-level declarations without checking function bodies and prints what
+  each denotes; `gamma modules` prints a program's modules in load order with their
+  directories, packages and imports (chapter 15 of the guide).
+- `gamma build --emit-c` with `GAMMA_C_UNITS` above 1 writes the program split into units
+  that include a shared header, with the runtime in a file of its own.
+- New lint rules:
+  - `stale-element-pointer`: a pointer or slice into a list's items used after a call on
+    that list that may move them (`push`, `extend`, `reserve`, …, a function given the
+    list by pointer, or one given a pointer to the struct holding the list that grows it,
+    itself or through the functions it calls, such as `p.alloc_expr()`);
+  - `mutated-copy`: a local holding a copy of a `List`, a `HashMap` or another value with
+    a resizable buffer (`tys := cx.tys`) that is then changed as if it were the original
+    (`tys.intern(k)`), which loses the change; a pointer (`tys := &cx.tys`) was meant;
+  - `dangling-address`: the address of a local (a loop variable, a pattern binding)
+    stored, passed to be stored or returned where it may outlive the local;
+  - `needless-pub`: `pub(package)` names no other module uses, and `pub` ones of a
+    program package;
+  - `present-only-binding`: a `match` arm such as `.Return(v)` whose name matches only a
+    present optional, when no arm names `.Return(null)` and a catch-all arm with a body
+    takes it instead.
+- `gamma lint` names the files of a package's other modules relative to the working
+  directory, as `gamma check` does, and reports an `#allow` with a name that is not a lint
+  rule (which no longer stops compilation).
 
 ### Diagnostics
 
-- The language server no longer adds "gamma cannot check this kind of expression yet" to a
-  syntax error in a condition.
-- New lint `stale-element-pointer`: a pointer or slice into a list's items used after a
-  call on that list that may move them (`push`, `extend`, `reserve`, …, a function given
-  the list by pointer, or one given a pointer to the struct holding the list that grows it,
-  itself or through the functions it calls, such as `p.alloc_expr()`).
-- `gamma lint` has a new rule, `mutated-copy`: a local holding a copy of a `List`, a
-  `HashMap` or another value with a resizable buffer (`tys := cx.tys`) that is then
-  changed as if it were the original (`tys.intern(k)`), which loses the change; a pointer
-  (`tys := &cx.tys`) was meant. It was found when such copies broke the self-hosted
-  compiler.
-- `gamma lint` has three new rules: `dangling-address`, for the address of a local (a loop
-  variable, a pattern binding) stored, passed to be stored or returned where it outlives the
-  local; `needless-pub`, for `pub(package)` names no other module uses and `pub` ones of
-  a program package; and `present-only-binding`, for a `match` arm such as `.Return(v)`
-  whose name matches only a present optional, when no arm names `.Return(null)` and a
-  catch-all arm with a body takes it instead. Lint now names the files of a package's other modules relative to the
-  working directory, as `gamma check` does.
 - A `match` left incomplete by a bare name in the position of an optional inside a
-  pattern (which matches only a present value, §9.3) now points at that name and says how
-  to bind the optional as it is: bind the value that holds it, such as `.Break(b)` for the
-  whole payload.
-- An `else` arm of a `match` gets the plain "expected a pattern" error, without a fix.
-- The hint to write `is` for `=` is given only after an `if` or `while` condition.
-- `#allow` with a name that is not a lint rule no longer stops compilation; `gamma lint`
-  reports it.
+  pattern (which matches only a present value, §9.3) points at that name and says how to
+  bind the optional as it is.
+- `[1, 2]` gets a note saying how an array value is written (`[_]i32(1, 2)`), and that a
+  tuple is `(a, b)`.
 - Nesting deeper than the parser's limit (now 256) and other implementation limits say
   which limit was reached.
 - A spread that fails no longer also reports every element it did not supply.
-- The old effect syntax `\` is no longer recognized: `\` is an unexpected character.
+- An `else` arm of a `match` gets the plain "expected a pattern" error, without a fix.
+- The hint to write `is` for `=` is given only after an `if` or `while` condition.
+- The language server no longer adds "gamma cannot check this kind of expression yet" to a
+  syntax error in a condition.
+
+### Speed
+
+- **The playground runs programs about fifty times as fast**: a small program takes
+  10 to 30 ms instead of about 600 ms (the first run takes about 70 ms). The page loads
+  and checks the core library once, when it opens, and starts every run from a copy of
+  the module's memory at that point. On WebAssembly the interpreter's stack is 8 MiB: the
+  browser's own stack ends a deep recursion first, and if it does not, the interpreter
+  traps with `stack overflow`.
+- **The interpreter** (`gamma run --backend=interp`, `gamma repl`) lowers a function's
+  body once, on its first call, and compiles most of the language (statements,
+  arithmetic, places, calls, performs and handlers, `with`, patterns, optionals, results,
+  variants and slices, bit builtins) to instructions on registers that run in one loop;
+  the rest of the language is evaluated by walking the lowered body.
+- **`gamma check` and `gamma build`:** the compiler builds itself in Checked mode,
+  optimized with every check on, and checking and building a large program take about 40%
+  of the time they took. Long expressions are checked in linear time (a 40,000-term sum
+  took over twenty minutes; it takes about a second), and names in a module's scope are
+  found through a hash table.
+- **Debug builds compile about 20% faster:** the generated code of a program linked with
+  the cached runtime includes only the few system headers it needs.
+- **Checked and Fast builds of very large programs are split into C files compiled in
+  parallel,** as Debug builds are; small programs are still one file, so the C compiler
+  optimizes across the whole program. `#inline` functions are inlined in every unit.
+- **Smaller generated C:** failed checks format their messages in the runtime; formatted
+  writes to a function (`l.write("…", …)`, `str.format`) call helpers shared by the whole
+  program; a `List` grows through one function for every element type. Together they make
+  the compiler's own C about a fifth smaller.
+- **Faster generated code:** a `match` on a union switches on its tag and tests a large
+  place without copying it; long functions keep their locals in C variables; `fill`,
+  `copy_from` and `pop` are inlined, and `fill` becomes `memset`; a `List` grows, extends,
+  inserts and removes, and `copy_from` and `dupe` copy, a block at a time.
+- **Child processes start without copying the parent** on Linux (glibc 2.29 and later):
+  `Proc.spawn`, and with it `gamma`'s calls of the C compiler, uses `posix_spawn` rather
+  than `fork`, whose cost grows with the parent's memory.
 
 ### Documentation
 
-- [Idiomatic Gamma](docs/guide/idioms.md), a growing handbook of the patterns Gamma code uses,
+- [Idiomatic Gamma](docs/guide/idioms.md), a handbook of the patterns Gamma code uses,
   checked by the test suite.
-
-### Added
-
-- `gamma test --coverage` runs with the C back end too (`--backend=c`, and tests of
-  modules that call C), with the same table and LCOV file as the interpreter's. Each test
-  process writes its counts to a file that the runner adds up.
-- `gamma tir`: checks a program and prints the typed form the checker produces for each
-  of its functions (resolved names, typed operators, explicit conversions), see chapter
-  15 of the guide. `gammac tir` checks the function bodies of a growing subset of
-  programs the same way, generic functions and their calls included, and evaluates
-  constants, defaults, array lengths, static assertions and immutable locals at compile
-  time. `gammac decls` and `gammac tir` now match `gamma decls` and `gamma tir` on every
-  program in the repository.
-- `&e` where a pointer `^T` is expected checks `e` with `T` expected, so a variant or tuple
-  takes its type from it: `area(&.Circle(2.0))` (§7.2).
-- `gamma decls`: resolves the top-level declarations of a program without checking
-  function bodies, and prints what each denotes (types with their fields or variants,
-  effects, signatures, constants), with the diagnostics of declarations.
-- `gamma modules`: loads a program the way `gamma check` does, without checking its
-  declarations, and prints its modules in load order with their directories, packages
-  and imports (see chapter 15 of the guide).
-- `compiler/`: `gammac`, a Gamma compiler written in Gamma, the start of a self-hosted
-  toolchain. Its lexer and parser produce the same tokens, syntax trees and diagnostics as
-  `gamma lex` and `gamma parse --dump` on every `.gm` file of the repository, and loads
-  every program's modules as `gamma modules` does; it resolves the declarations of most
-  programs as `gamma decls` does. `tests/selfhost.rs` checks all of it (see
-  `docs/self-hosting.md`).
+- Examples `nbody.gm` (math vectors) and `julia.gm` (complex numbers).
 
 ### Fixed
 
 - A nested function that captures variables and calls itself through a function literal
   written in it is rejected, like a direct call (§11.8); it compiled to code that read the
   captured variables from the wrong frame.
+- C back end: an assignment through a slice, a pointer or an index stores to the place as
+  it was before the right side ran, as §4.7 says and the interpreter does:
+  `s.xs[0] = f(&s)` no longer stores into the slice that `f` put in `s.xs`.
 - `gamma test --coverage` counts the lines in function literals and in the bodies of `for`
   loops over iterators, which it left out; functions written inside a test are still left
   out.
 - The fallback of an `else` whose left side has an error is now checked: its own errors
   are reported, and a `break` in it counts for its loop, which was otherwise reported as
   never ending, with the code after it as unreachable.
-- A Debug build split into C units (`GAMMA_C_UNITS`, or a large program) of a program
-  that uses `#global errno` failed with "the generated C cannot be split into units".
-- `gamma tir` on a library (a root module without `main`) left out its tests and
-  benchmarks: they were not checked, and their functions were missing from the dump.
 - A pattern binding with `else` in a block whose value is coerced to an expected type
   (`x: i64 = if c { .A(v) := u else return 0; v } else { 0 }`) was rejected as not
   leaving the block.
+- A Debug build split into C units (`GAMMA_C_UNITS`, or a large program) of a program
+  that uses `#global errno` failed with "the generated C cannot be split into units".
+- `gamma build -g` works on programs with a pointer to an optional pointer, or a field
+  named `defined`.
+- `gamma tir` on a library (a root module without `main`) includes its tests and
+  benchmarks.
 - `gamma fmt` indented a line starting with a variant (`.A`) as a continuation when it
   was the first line of a block.
-
 - Messages that show an effect set with an effect-set parameter (`needs E + Out`) list its
   terms in the same order in every run; the order used to depend on what the same process
   had compiled before (the language server, the test runner).
-- C back end: an assignment through a slice, a pointer or an index stores to the place as
-  it was before the right side ran, as §4.7 says and the interpreter and the Cranelift
-  back end did: `s.xs[0] = f(&s)` no longer stores into the slice that `f` put in `s.xs`.
-- Interpreter: `x!` on a result whose success type is empty (`E!()`) no longer crashes
-  the interpreter.
+- Interpreter: `x!` on a result whose success type is empty (`E!()`) no longer crashes.
 
 ## 0.1.0 - 2026-10-20
 

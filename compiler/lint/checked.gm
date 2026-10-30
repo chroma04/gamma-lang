@@ -1,9 +1,9 @@
-// What `gammac lint` needs from the checker: the findings that depend on name resolution
+// What `gamma lint` needs from the checker: the findings that depend on name resolution
 // and types (unused locals, parameters and declarations, locals that never change,
 // comparisons whose result is known). `lint.gm` turns them
 // into diagnostics.
 
-/// One fact `gammac lint` reports, located in the program's own files.
+/// One fact `gamma lint` reports, located in the program's own files.
 pub Finding :: union {
     /// A local (`param`: a parameter of a named function) whose value is never read;
     /// `assigned` if it is assigned after its declaration.

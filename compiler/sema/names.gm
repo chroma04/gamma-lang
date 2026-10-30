@@ -36,20 +36,20 @@ pub lookup_module_name :: fn(s: ^Sema, module: usize, name: string) -> ?usize ne
     return if s.universe_hidden(d) { null } else { d }
 }
 
-/// Records that a name was resolved to declaration `d` (for `gammac lint`).
+/// Records that a name was resolved to declaration `d` (for `gamma lint`).
 pub note_decl_use :: fn(s: ^Sema, d: usize) needs Alloc {
     while s.decl_uses.items.len <= d { s.decl_uses.push(false)! }
     s.decl_uses.items[d] = true
 }
 
-/// Records that declaration `d` is named from module `from` (for `gammac lint`).
+/// Records that declaration `d` is named from module `from` (for `gamma lint`).
 pub note_use_from :: fn(s: ^Sema, d: usize, from: usize) needs Alloc {
     if s.l.decls.items[d].module is from { return }
     while s.outside_uses.items.len <= d { s.outside_uses.push(false)! }
     s.outside_uses.items[d] = true
 }
 
-/// Records that the local declared at `decl` is used by name at `at` (for `gammac lint`).
+/// Records that the local declared at `decl` is used by name at `at` (for `gamma lint`).
 pub note_local_use :: fn(s: ^Sema, decl: source.Span, at: source.Span) needs Alloc {
     if s.local_uses.contains((decl, at)) { return }
     s.local_uses.put((decl, at), true)!

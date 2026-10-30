@@ -1,4 +1,4 @@
-//! API documentation (`gammac doc`): the public declarations of a module, with their
+//! API documentation (`gamma doc`): the public declarations of a module, with their
 //! doc comments, rendered as Markdown or HTML, in the output of `gamma doc`.
 //!
 //! Documentation is built from the syntax tree alone, so a module needs to parse but not
@@ -105,7 +105,7 @@ parse_args :: fn(args: []const string) -> Failure!Args needs Alloc {
     return opts
 }
 
-/// Runs `gammac doc` with the arguments after the command name; returns the exit status.
+/// Runs `gamma doc` with the arguments after the command name; returns the exit status.
 pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + Out {
     if "--help" in args or "-h" in args {
         Out.write(USAGE)

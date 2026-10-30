@@ -30,13 +30,13 @@ Package and install the extension:
 cd editors/vscode
 npm install
 npx @vscode/vsce package --skip-license
-code --install-extension gamma-lang-0.1.0.vsix
+code --install-extension gamma-lang-0.2.0.vsix
 ```
 
 Or link the directory into your extensions folder (run `npm install` first, which installs the language client):
 
 ```sh
-ln -s "$PWD" ~/.vscode/extensions/gamma-lang.gamma-lang-0.1.0
+ln -s "$PWD" ~/.vscode/extensions/gamma-lang.gamma-lang-0.2.0
 ```
 
 Restart VS Code afterwards.

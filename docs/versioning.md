@@ -66,4 +66,4 @@ change to the specification names the section it touches. When a release is cut,
 4. Check the installer on a clean Linux and macOS machine:
    `curl -fsSL https://github.com/chroma04/gamma-lang/releases/latest/download/install.sh | sh`,
    and on Windows `irm https://github.com/chroma04/gamma-lang/releases/latest/download/install.ps1 | iex`,
-   then `gamma run` and `gamma run --backend=c` on a small program.
+   then `gamma run` and `gamma run --backend=interp` on a small program.

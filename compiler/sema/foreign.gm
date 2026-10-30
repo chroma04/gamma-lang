@@ -172,7 +172,7 @@ pub foreign_info :: fn(s: ^const Sema, f: u32) -> ForeignFn {
     return ForeignFn(fn_id: f, lib: "c", link_name: s.fns.items[usize(f)].name)
 }
 
-/// Reports that gammac cannot check `what` yet; the declaration has no value.
+/// Reports that gamma cannot check `what` yet; the declaration has no value.
 unsupported_value :: fn(s: ^Sema, span: source.Span, what: string) -> DeclValue needs Alloc {
     s.unsupported(span, what)
     return .Error

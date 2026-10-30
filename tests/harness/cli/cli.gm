@@ -6,6 +6,7 @@ str :: import "std/str"
 pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "every_command_takes_help", run: every_command_takes_help))!
     out.push(kit.Test(name: "help_after_the_program_belongs_to_the_program", run: help_after_the_program))!
+    out.push(kit.Test(name: "version_is_the_compiler_package_version", run: version_is_the_package_version))!
     when target.os is not .Windows {
         out.push(kit.Test(name: "arguments_that_are_not_utf8_are_usage_errors", run: arguments_not_utf8))!
         out.push(kit.Test(name: "program_arguments_pass_through_as_bytes", run: arguments_as_bytes))!
@@ -32,6 +33,16 @@ every_command_takes_help :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     }
     out := try t.run(t.gamma([_]string("add", "--help")))
     try t.expect_contains("the help of add", out.out, "gamma add")
+    return ()
+}
+
+/// `gamma version` names the version of `compiler/gamma.toml`, which a release tag must match.
+version_is_the_package_version :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    out := try t.run_ok(t.gamma([_]string("version")))
+    version := str.strip_prefix(str.trim(out.out), "gamma ") else return !t.fail("`gamma version` printed {}", kit.quote(out.out))
+    manifest := try t.read(t.repo("compiler/gamma.toml"))
+    line := str.format("\nversion = \"{}\"\n", version)!
+    try t.check(str.contains(manifest, line), "`gamma version` says {}, compiler/gamma.toml does not", version)
     return ()
 }
 

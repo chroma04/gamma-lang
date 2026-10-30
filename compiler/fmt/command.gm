@@ -6,7 +6,7 @@ str :: import "std/str"
 
 USAGE :: "usage: gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)\n"
 
-/// `gammac fmt [--check] <file or directory>... (`-` filters stdin to stdout)`. Returns the
+/// `gamma fmt [--check] <file or directory>... (`-` filters stdin to stdout)`. Returns the
 /// exit status.
 pub command :: fn(args: []const string) -> u8 needs Alloc + Err + Fs + In + Out {
     check := false

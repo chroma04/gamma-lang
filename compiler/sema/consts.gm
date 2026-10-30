@@ -37,7 +37,7 @@ check_default :: fn(s: ^Sema, module: usize, d: ^const ast.Expr, ty: Ty) needs L
     s.pending_consts.push(PendingConst(module: module, init: d, ty: ty))!
 }
 
-/// The type of `e` if gammac can tell that it is a valid constant expression (of type
+/// The type of `e` if gamma can tell that it is a valid constant expression (of type
 /// `expected`, if given), else `null`. Reports nothing.
 const_check :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?Ty needs Load {
     match e.kind {
@@ -150,7 +150,7 @@ const_array :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) ->
 }
 
 /// The type a construction's prefixes and callee spell, with `[_]` standing for `n`
-/// elements; `null` if gammac cannot tell it without reporting anything.
+/// elements; `null` if gamma cannot tell it without reporting anything.
 construction_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, n: usize) -> ?Ty needs Load {
     match e.kind {
         .Call(callee, _, _) => {

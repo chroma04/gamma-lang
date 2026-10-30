@@ -1,4 +1,4 @@
-// The options of `gammac lint`.
+// The options of `gamma lint`.
 
 /// A level given on the command line for a rule, or for `all`.
 pub Setting :: struct {

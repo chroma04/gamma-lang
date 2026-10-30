@@ -1,4 +1,4 @@
-// Debugger views of values (`gammac build -g`).
+// Debugger views of values (`gamma build -g`).
 //
 // Values that are blobs in the generated C (see `types.gm`) would show as raw bytes in a
 // debugger. With debug information on, each frame field instead also has a *view*: a C

@@ -471,7 +471,7 @@ pub Builtin :: union {
     /// `@static_assert` on a condition that depends on the parameters of the generic body
     /// it is in, checked for each instance; the index of its message (§17.7).
     StaticAssert: u32
-    /// Counts one execution of the source line with this counter (`gammac test
+    /// Counts one execution of the source line with this counter (`gamma test
     /// --coverage`).
     Cover: u32
 }

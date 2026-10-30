@@ -87,6 +87,6 @@ pub ConstState :: union {
     Done
     /// Its initializer has errors, or its evaluation failed (reported).
     Failed
-    /// gammac cannot evaluate it (reported).
+    /// gamma cannot evaluate it (reported).
     Unsupported
 }

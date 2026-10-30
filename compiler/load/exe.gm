@@ -1,4 +1,4 @@
-//! The path of the running executable, which is where an installed gammac finds its
+//! The path of the running executable, which is where an installed gamma finds its
 //! libraries.
 
 /// The path of the running executable. The system is asked first, so that the answer is

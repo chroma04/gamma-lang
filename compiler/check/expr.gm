@@ -156,7 +156,7 @@ prefix_on_call :: fn(e: ^const ast.Expr) -> bool => match e.kind {
     _ => false
 }
 
-/// What a construct gammac cannot check yet is called in its message.
+/// What a construct gamma cannot check yet is called in its message.
 expr_kind_text :: fn(k: ^const ast.ExprKind) -> string => match k^ {
     .Elements(_) => "element lists"
     .Else(_) => "`else` on optionals and results"

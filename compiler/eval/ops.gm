@@ -878,7 +878,7 @@ offsets :: fn(m: ^Machine, t: Ty) -> ?(tys: []const Ty, offs: []const u64) needs
 byte_at :: fn(m: ^const Machine, i, n: u64) -> u64 => if m.s.l.target.little_endian { i } else { n - 1 - i }
 
 /// Writes the plain-data value `v` of type `t` into `out` at `at`, in the target's byte
-/// order; `false` if it is not plain data that gammac can lay out.
+/// order; `false` if it is not plain data that gamma can lay out.
 put_bytes :: fn(m: ^Machine, v: Value, t: Ty, out: []u8, at: u64) -> bool needs Alloc {
     match v {
         .Int(bits) => {

@@ -4,7 +4,7 @@
 
 ;; Author: The Gamma authors
 ;; URL: https://github.com/chroma04/gamma-lang
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: languages, tree-sitter
 

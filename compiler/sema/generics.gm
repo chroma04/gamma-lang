@@ -469,7 +469,7 @@ pub int_key :: fn(s: ^Sema, ty: Ty, i: bigint.Int) -> types.ConstKey needs Load 
 }
 
 /// The key of the compile-time value `v` of type `ty` used as a generic argument (§16.4),
-/// or `null` after reporting that gammac cannot key it.
+/// or `null` after reporting that gamma cannot key it.
 pub value_key :: fn(s: ^Sema, v: tir.Value, ty: Ty, span: source.Span) -> ?types.ConstKey needs Load {
     tys := &s.tys
     match v {

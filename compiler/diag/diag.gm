@@ -39,7 +39,7 @@ pub Diagnostic :: struct {
     pub labels: List(Label)
     pub notes: List(string)
     pub fixes: List(Fix)
-    /// The lint rule of a `gammac lint` warning, shown as `warning[rule]`.
+    /// The lint rule of a `gamma lint` warning, shown as `warning[rule]`.
     pub code: ?string = null
 }
 

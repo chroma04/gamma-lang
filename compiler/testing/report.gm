@@ -1,7 +1,7 @@
-// The report of `gammac test` and `gammac bench`: what each test or benchmark did, and
+// The report of `gamma test` and `gamma bench`: what each test or benchmark did, and
 // the counts.
 
-/// The first words of the line a benchmark prints for `gammac bench`.
+/// The first words of the line a benchmark prints for `gamma bench`.
 BENCH_MARKER :: "gamma-bench: "
 
 /// The result of running one test or benchmark.

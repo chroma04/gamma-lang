@@ -1,4 +1,4 @@
-// Source-level debugging of compiled programs (`gammac build -g`).
+// Source-level debugging of compiled programs (`gamma build -g`).
 //
 // With debug information on, the generated C maps back to the Gamma source:
 //

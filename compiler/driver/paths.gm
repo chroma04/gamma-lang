@@ -1,6 +1,6 @@
-//! Where gammac finds the libraries and the runtime.
+//! Where gamma finds the libraries and the runtime.
 //!
-//! An installation is a prefix with `bin/gammac` and `lib/gamma/{std,core,runtime}`; the
+//! An installation is a prefix with `bin/gamma` and `lib/gamma/{std,core,runtime}`; the
 //! repository has `lib/std`, `lib/core` and `runtime`. Both work without environment
 //! variables.
 

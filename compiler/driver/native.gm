@@ -412,7 +412,7 @@ compile_object :: fn(b: ^const Built, tc: ^const pkg.Toolchain, obj: string, opt
 }
 
 /// Writes generated C to `path`, which is named after the output and next to it. A file
-/// there that gammac did not generate (the user's own `hello.c` beside `hello.gm`) is never
+/// there that gamma did not generate (the user's own `hello.c` beside `hello.gm`) is never
 /// overwritten.
 write_generated_c :: fn(path: string, code: string) -> bool needs Alloc + Err + Fs {
     if f := Fs.open(path, fs.OpenOptions(read: true)) {
