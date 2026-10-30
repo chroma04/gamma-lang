@@ -478,7 +478,13 @@ assign_addr :: fn(fg: ^FnGen, place: ^Expr, value: ^Expr) -> Unsup!string needs 
     return n
 }
 
-zero :: fn(fg: ^FnGen, t: Ty) -> string needs Alloc => str.format("GM_ZERO({})", fg.g.ty.cty(t))!
+/// A zero value of `t`. Scalars are a cast `0`: an empty initializer of a scalar
+/// (`(void *){}`) is C23, which older compilers (GCC 11, Apple clang 15) reject.
+zero :: fn(fg: ^FnGen, t: Ty) -> string needs Alloc {
+    cty := fg.g.ty.cty(t)
+    if fg.g.ty.repr(t) in (.Int(_, _, _), .Float(_), .Bool, .Ptr) { return str.format("(({})0)", cty)! }
+    return str.format("GM_ZERO({})", cty)!
+}
 
 unit :: fn(fg: ^FnGen) -> string needs Alloc => fg.zero(fg.g.ty.unit_ty())
 

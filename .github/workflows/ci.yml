@@ -53,14 +53,15 @@ jobs:
     # gamma built from the checked-in C seed with nothing but a C compiler, on each kind of
     # host the seed serves; the compiler it makes must be a fixed point. On x86-64 Linux,
     # where the seed is generated, the seed must also be exactly what its compiler generates
-    # for the sources it names.
+    # for the sources it names. ubuntu-22.04 (GCC 11) and macos-14 (Apple clang 15) are the
+    # oldest compilers the release workflow builds with: the seed must not need C23.
     name: Bootstrap from the seed (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, ubuntu-22.04, macos-14]
     steps:
       - uses: actions/checkout@v7
         with:

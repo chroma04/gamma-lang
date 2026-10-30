@@ -6,7 +6,10 @@
   history dropped); version 0.2.0 in compiler/gamma.toml, main.gm + lsp/lsp.gm VERSION
   (cli + lsp tests check they agree), editors/* versions. After merge: user runs the
   Release workflow, tags v0.2.0 (fix the date if later). Next behavior change starts a
-  fresh `## Unreleased`.
+  fresh `## Unreleased`. #111 merged; first Release dispatch failed: seed had `GM_ZERO(void *)`
+  = `((void *){})` (C23 scalar `{}`; GCC 11 / Apple clang 15 reject). cgen zero() casts 0 for
+  scalars, seed refreshed, CI bootstrap matrix + ubuntu-22.04, macos-14 (release runners).
+  Check: clang -Wc23-extensions over the seed (aggregate `{}` is fine, GNU ext).
 - s58: LINT stale-element-pointer follows growth through struct-pointer calls
   (`p.alloc_expr()`): per-function growth summaries + fixpoint (decisions/060); 5 compiler
   sites fixed. Pain-points "Open" now: seed-refresh watch, fn-as-format-arg, template size.

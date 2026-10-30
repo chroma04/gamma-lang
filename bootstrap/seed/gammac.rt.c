@@ -614,6 +614,10 @@ GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx);
 /* The same for a program that switches fibers: on WASI, that takes the fiber driver at the
  * bottom of the stack (which brings in the code of the switch, see gm_rt.c). */
 GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx);
+/* On WASI, run an exported function (called by `f`, which ignores its argument): the
+ * _fibers variant under the fiber driver, unless one is already running below. */
+GM_API void gm_run_export(int (*f)(gm_node *));
+GM_API void gm_run_export_fibers(int (*f)(gm_node *));
 
 /* The innermost handler of effect `eff` in context `cx`, or NULL. The innermost node, most
  * often the one, is looked at inline: a call is dear, under Fil-C especially. */
@@ -5296,6 +5300,7 @@ static int gm_wasi_drive(int (*f)(gm_node *), gm_node *cx);
 
 GM_API int gm_run_main(int (*f)(gm_node *), gm_node *cx) { return gm_finish_main(f(cx)); }
 GM_API int gm_run_main_fibers(int (*f)(gm_node *), gm_node *cx) { return gm_finish_main(gm_wasi_drive(f, cx)); }
+GM_API void gm_run_export(int (*f)(gm_node *)) { (void)f(NULL); }
 
 GM_API int64_t gm_thread_spawn(void *f, void *arg) {
     (void)f; (void)arg;
@@ -5827,7 +5832,10 @@ __attribute__((noinline)) static int gm_wasi_drive(int (*f)(gm_node *), gm_node 
         if (c->fb == NULL) status = gm_wasi_entry(cx);
         else gm_wasi_fiber_entry(c->fb);
         gm_wasi_set_sp(base);
-        if (gm_wasi_next == NULL) return status;   /* the entry returned */
+        if (gm_wasi_next == NULL) {   /* the entry returned */
+            gm_wasi_running = NULL;
+            return status;
+        }
         /* The saved state must have stayed below the frames it describes. */
         if (c->cur > c->sp) {
             gm_asyncify_stop_unwind();
@@ -5837,6 +5845,12 @@ __attribute__((noinline)) static int gm_wasi_drive(int (*f)(gm_node *), gm_node 
         c = gm_wasi_next;
         gm_wasi_next = NULL;
     }
+}
+
+/* An export called while the program runs (from foreign code) is under the driver already. */
+GM_API void gm_run_export_fibers(int (*f)(gm_node *)) {
+    if (gm_wasi_running != NULL) (void)f(NULL);
+    else (void)gm_wasi_drive(f, NULL);
 }
 
 /* A fiber's context sits at the top of its stack, and its frames start below it. */
