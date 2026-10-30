@@ -326,6 +326,9 @@ interpreter and playground.
   terms in the same order in every run; the order used to depend on what the same process
   had compiled before (the language server, the test runner).
 - Interpreter: `x!` on a result whose success type is empty (`E!()`) no longer crashes.
+- C back end: the generated C compiles with GCC 11 and Apple clang 15 again. A zero
+  pointer or integer was written as an empty initializer (`(void *){}`), which only C23
+  allows for a scalar.
 
 ## 0.1.0 - 2026-10-20
 
