@@ -136,7 +136,7 @@ pub generate_object :: fn(p: ^Prog, opts: Options) -> Unsup!Generated needs sema
 }
 
 /// Translates the program to C source whose `main` runs one of `entries`, chosen by the
-/// decimal index in its first command-line argument (`gammac test`). Each entry runs
+/// decimal index in its first command-line argument (`gamma test`). Each entry runs
 /// exactly as the entry of `generate` does.
 pub generate_tests :: fn(p: ^Prog, entries: []const u32, opts: Options) -> Unsup!Generated needs sema.Load {
     return generate_entries(p, entries, true, opts)

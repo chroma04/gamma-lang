@@ -1,5 +1,5 @@
 // The conditions of top-level `when`s (§3.6), which decide what a module declares and
-// therefore what it imports. A condition is a compile-time expression; until gammac has a
+// therefore what it imports. A condition is a compile-time expression; until gamma has a
 // checker, it evaluates the conditions programs use for this: the fields of `target`,
 // `@size_of` of an integer type, `bool` and integer literals, constants of the module
 // bound to such an expression, and `is`, `is not`, the orderings, `and`, `or` and `not`.
@@ -26,7 +26,7 @@ pub when_cond :: fn(l: ^Loader, module: usize, cond: ^const ast.Expr) -> ?bool n
     return b
 }
 
-/// The value of `e`, or `null` if it is not a condition gammac can evaluate. `depth`
+/// The value of `e`, or `null` if it is not a condition gamma can evaluate. `depth`
 /// counts the constants followed, which stops a cycle.
 eval :: fn(l: ^Loader, module: usize, e: ^const ast.Expr, depth: u32) -> ?Const needs Alloc {
     if depth > 64 { return null }

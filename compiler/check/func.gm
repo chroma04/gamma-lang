@@ -3,7 +3,7 @@
 //! Expressions are in `expr.gm`, coercions in `coerce.gm` and the final pass over a body in
 //! `finalize.gm`.
 //!
-//! gammac checks a growing subset of the language: a construct it cannot check yet is
+//! gamma checks a growing subset of the language: a construct it cannot check yet is
 //! reported with `Sema.unsupported`, and the result is not used by later stages.
 
 ast :: import "../ast"
@@ -331,7 +331,7 @@ error :: fn(cx: ^FnCx, span: source.Span, msg: string) needs Alloc {
     cx.s.error(span, msg)
 }
 
-/// Reports that gammac cannot check `what` yet, and returns an error expression.
+/// Reports that gamma cannot check `what` yet, and returns an error expression.
 unsupported :: fn(cx: ^FnCx, span: source.Span, what: string) -> ^Expr needs Alloc {
     cx.s.unsupported(span, what)
     return error_expr(cx.s, span)

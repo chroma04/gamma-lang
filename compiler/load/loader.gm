@@ -123,7 +123,7 @@ pub Loader :: struct {
     /// Keep the root module even if loading it reported errors, so that editors can go on
     /// with what parsed.
     pub keep_going: bool = false
-    /// Buffers that are read instead of the files on disk (`gammac lsp`).
+    /// Buffers that are read instead of the files on disk (`gamma lsp`).
     pub overlays: List(Overlay)
     /// The build mode, `target.mode` (§3.6): `Debug`, `Checked` or `Fast`.
     pub mode: string = "Debug"

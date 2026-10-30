@@ -1,4 +1,4 @@
-//! The source formatter behind `gammac fmt`.
+//! The source formatter behind `gamma fmt`.
 //!
 //! The formatter works on the token stream and never changes meaning: it keeps
 //! every line break of the source (except for surplus blank lines), re-indents

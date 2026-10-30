@@ -1,4 +1,4 @@
-//! `gammac lint`: warnings about code that compiles but is probably not what was meant,
+//! `gamma lint`: warnings about code that compiles but is probably not what was meant,
 //! or that has a simpler form.
 //!
 //! The rules come in two kinds. Those that need names resolved and types known (unused
@@ -7,7 +7,7 @@
 //! tree (`syntax.gm`). Each warning names its rule, and the rules' levels come from
 //! `RULES`, the `[lint]` table of `gamma.toml`, the command line, and `#allow("rule")`
 //! attributes on declarations, in increasing order of precedence. Warnings with a fix are
-//! applied by `gammac lint --fix`.
+//! applied by `gamma lint --fix`.
 
 /// How a rule's findings are reported.
 pub Level :: union {
@@ -15,7 +15,7 @@ pub Level :: union {
     Allow
     /// Reported as a warning.
     Warn
-    /// Reported as an error: `gammac lint` fails.
+    /// Reported as an error: `gamma lint` fails.
     Deny
 }
 

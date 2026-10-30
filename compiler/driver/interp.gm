@@ -1,4 +1,4 @@
-// `gammac run --backend=interp`: runs the program in the interpreter (`interp/`).
+// `gamma run --backend=interp`: runs the program in the interpreter (`interp/`).
 
 hash_map :: import "std/collections/hash_map"
 interp :: import "../interp"

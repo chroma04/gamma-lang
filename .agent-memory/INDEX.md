@@ -1,6 +1,12 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-29) — PRs #1–#109 merged, v0.1.0 + rust-reference-final tagged
+## State (2026-10-30) — PRs #1–#110 merged, v0.1.0 + rust-reference-final tagged
+- s59 (branch claude/trusting-wright-yb34y4): RELEASE PREP 0.2.0: CHANGELOG Unreleased
+  rewritten as `## 0.2.0 - 2026-10-30` for 0.1.0 users (Breaking list first; gammac-era
+  history dropped); version 0.2.0 in compiler/gamma.toml, main.gm + lsp/lsp.gm VERSION
+  (cli + lsp tests check they agree), editors/* versions. After merge: user runs the
+  Release workflow, tags v0.2.0 (fix the date if later). Next behavior change starts a
+  fresh `## Unreleased`.
 - s58: LINT stale-element-pointer follows growth through struct-pointer calls
   (`p.alloc_expr()`): per-function growth summaries + fixpoint (decisions/060); 5 compiler
   sites fixed. Pain-points "Open" now: seed-refresh watch, fn-as-format-arg, template size.
@@ -8,15 +14,9 @@
   interp root stack 1 GiB calloc → 8 MiB on Wasm32; core-loaded memory snapshot (play init
   + export gamma_play_run); warm-up run. `#export` on WASI = module export + gm_start +
   fiber driver. ~600 → ~11 ms hello. MODE=fast measured, not adopted.
-- s56 (branch claude/perf-round-5): PERF ROUND 5 (decisions/058): posix_spawn (glibc),
-  GM_RT_PROGRAM (generated code skips system headers: Debug builds ~20% faster), trap
-  messages in runtime (gm_trap_index…), @write-to-function via shared stubs, str.format
-  via @write, List regrow on bytes (compiler C -17%), interp bit builtins as VM
-  instructions (std_hash 4.7x), memset of padded values in Debug only. Suite 275 → ~205 s.
-- s51–s55 (#104–#107): PERFORMANCE rounds (decisions/055–057): long chains linear, compiler
-  built Checked (compiler/gamma.toml), big optimized builds split into units; interpreter
-  lowered Nodes + register machine (056), `with` + fused calls in the VM (057). Keep
-  vm_run < 2000 names (vm_slow for cold instrs). Profiling recipes in 055/057/058.
+- s51–s56 (#104–#108): PERFORMANCE rounds (decisions/055–058): compiler built Checked,
+  big builds split into units, interpreter VM (056/057; keep vm_run < 2000 names),
+  posix_spawn, GM_RT_PROGRAM, shared @write stubs. Profiling recipes in 055/057/058.
 - s50 (branch claude/eager-curie-ocf0wz): PAIN-POINT SWEEP (decisions/054): whole list
   triaged (pain-points.md "Settled"), 16 items implemented (language: else/array joins,
   const lifting into ?/!, contextual needs/handler/foreign, `{0}`/`{:q}`, local types; lint
@@ -46,7 +46,7 @@
 
 ## Next steps
 0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
-1. Keep CHANGELOG Unreleased current. User: enable private vulnerability reporting.
+1. Keep CHANGELOG Unreleased current (start one above 0.2.0). User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
 1b. Rust is gone (052/053). Follow-ups: kit helpers (gamma_in, sorted dir listing, jsonl),
    harness Watch thread → Proc.try_wait, pain-points.md "Open", Windows CI of the harness.

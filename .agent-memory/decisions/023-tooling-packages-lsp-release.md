@@ -24,5 +24,7 @@
   CI regenerates + diffs. tree-sitter test highlight assertions inside trailing comments make
   0.25.10 allocate 4 GiB (killed a runner) — don't add such assertions.
 ## Release
-- Tag vX.Y.Z (must equal Cargo version) → release.yml; archives are install prefixes;
+- Tag vX.Y.Z (must equal compiler/gamma.toml version; main.gm + lsp.gm VERSION must match,
+  tested by cli/version_is_the_compiler_package_version; bump editors/* too, then
+  `npx tree-sitter generate`: parser.c embeds the grammar version) → release.yml; archives are install prefixes;
   std found at <exe>/../lib/gamma/std. Runner labels ubuntu-22.04-arm, macos-15-intel unverified.

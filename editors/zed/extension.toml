@@ -1,7 +1,7 @@
 id = "gamma"
 name = "Gamma"
 description = "Gamma language support: tree-sitter highlighting, outline and indentation, and the gamma language server."
-version = "0.1.0"
+version = "0.2.0"
 schema_version = 1
 authors = ["quang nguyen"]
 repository = "https://github.com/chroma04/gamma-lang"

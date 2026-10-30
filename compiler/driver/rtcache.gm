@@ -7,7 +7,7 @@
 //! `--version` output) and the flags.
 //!
 //! `cached_program` keeps whole executables in `run/` under a key that covers everything
-//! that affects them, for `gammac run`; the most recent few are kept.
+//! that affects them, for `gamma run`; the most recent few are kept.
 //!
 //! Concurrent builds may compile the same object at once: each writes a file of its own and
 //! renames it into place, so a reader never sees a partial object.
@@ -18,7 +18,7 @@ pkg :: import "../pkg"
 process :: import "std/process"
 str :: import "std/str"
 
-/// How many executables `gammac run` keeps; older ones are removed.
+/// How many executables `gamma run` keeps; older ones are removed.
 KEPT_PROGRAMS :: 32
 
 NS_PER_SECOND :: 1_000_000_000

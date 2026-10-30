@@ -4,7 +4,7 @@
 //! declaration is resolved the first time something needs it (`resolve_decl`); a
 //! declaration requested while it is being resolved is a dependency cycle (§3.4).
 //!
-//! gammac checks declarations so far: what each top-level binding denotes (a type, an
+//! gamma checks declarations so far: what each top-level binding denotes (a type, an
 //! effect, a function signature, a constant, …), as `gamma decls` shows it. Where it meets
 //! a construct it cannot check yet it reports so (`unsupported`).
 
@@ -443,7 +443,7 @@ pub Sema :: struct {
     /// The functions whose bodies are being checked, for cycles of compile-time
     /// evaluation.
     pub checking: List(u32)
-    /// The number of coverage counters the program is instrumented with (`gammac test
+    /// The number of coverage counters the program is instrumented with (`gamma test
     /// --coverage`).
     pub cover_counters: u32 = 0
     /// Checks the constant expression `e` against `expected` and evaluates it, as the
@@ -477,17 +477,17 @@ pub Sema :: struct {
     pub soa_errors: List(string)
     /// The spans of `a[i]` expressions that gather an element of a `#soa` (for errors).
     pub soa_gathers: List(source.Span)
-    /// Set while gammac tries an expression as an untyped constant without reporting why
+    /// Set while gamma tries an expression as an untyped constant without reporting why
     /// it is not one.
     pub quiet_untyped: bool = false
     /// The declarations that some name was resolved to (in their own module's scope or as
-    /// a member of their module), by declaration; for `gammac lint`'s unused declarations.
+    /// a member of their module), by declaration; for `gamma lint`'s unused declarations.
     pub decl_uses: List(bool)
     /// The declarations named from a module other than their own, by declaration.
     pub outside_uses: List(bool)
     /// Each use of a local variable by name: the spans of its declaration and of the use.
     /// Unlike the typed program, it keeps the uses that checking evaluates away
-    /// (`a.len` of an array, `@type_of(x)`), for `gammac lint`'s unused locals.
+    /// (`a.len` of an array, `@type_of(x)`), for `gamma lint`'s unused locals.
     pub local_uses: hash_map.HashMap((source.Span, source.Span), bool)
     /// How many distinct uses each local variable has, by the span of its declaration.
     pub local_use_counts: hash_map.HashMap(source.Span, u32)
@@ -596,7 +596,7 @@ pub add_const :: fn(s: ^Sema, c: tir.ConstDef) -> u32 needs Alloc {
     return id
 }
 
-/// The prefix of the message of every construct gammac cannot check yet.
+/// The prefix of the message of every construct gamma cannot check yet.
 pub UNSUPPORTED :: "gamma cannot check"
 
 /// Whether a type or value parameter of a generic body is in scope.
@@ -608,7 +608,7 @@ pub in_generic_scope :: fn(s: ^const Sema) -> bool {
     return false
 }
 
-/// Reports that gammac cannot check `what` yet.
+/// Reports that gamma cannot check `what` yet.
 pub unsupported :: fn(s: ^Sema, span: source.Span, what: string) needs Alloc {
     s.error(span, str.format("{} {} yet", UNSUPPORTED, what)!)
 }
@@ -1041,7 +1041,7 @@ declare_const_or_type :: fn(s: ^Sema, module: usize, name: ast.Ident, annot: ?^a
     expected: ?Ty = null
     if a := annot { expected = s.resolve_type(module, a) }
     if t := expected and s.tys.is_error(t) { return .Error }
-    // What gammac can type without checking it as an expression is evaluated when its
+    // What gamma can type without checking it as an expression is evaluated when its
     // value is needed; anything else is checked and evaluated now (§17.2).
     if hook := s.eval_hook and s.const_check(module, init, expected) is null {
         id := hook(s, module, init, expected, name.name, name.span) else return .Error

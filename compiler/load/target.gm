@@ -1,6 +1,6 @@
 // The target a program is compiled for: the machine
 // whose layouts, integer widths and `target` module the checker and the back end use. It
-// is the machine gammac runs on unless `--target` or the C compiler says otherwise;
+// is the machine gamma runs on unless `--target` or the C compiler says otherwise;
 // gammac's own platform code (paths, operating system errors) keeps using its own
 // `target`.
 
@@ -25,7 +25,7 @@ pub Target :: struct {
 
 /// The target gammac itself runs on. Its layout properties are those gammac was built
 /// for; on a Unix-like system the operating system and architecture are asked of the
-/// system when gammac runs, so that gammac's generated C for itself (the bootstrap seed)
+/// system when gamma runs, so that gammac's generated C for itself (the bootstrap seed)
 /// is the same for every 64-bit little-endian Unix-like host and makes, wherever it is
 /// compiled, a compiler for that host.
 pub host_target :: fn() -> Target {

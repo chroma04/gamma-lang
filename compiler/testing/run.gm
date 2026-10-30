@@ -1,4 +1,4 @@
-//! `gammac test` and `gammac bench`: running the `test` and `bench` declarations of a
+//! `gamma test` and `gamma bench`: running the `test` and `bench` declarations of a
 //! program (§3.8, §3.9), compiled into one native executable, in order or in parallel,
 //! with timing when asked for.
 
@@ -25,7 +25,7 @@ selected :: fn(t: sema.TestCase, filter: ?string) -> bool {
     return str.contains(m, f)
 }
 
-/// `gammac test` and `gammac bench`: runs each test (or benchmark) of the checked program
+/// `gamma test` and `gamma bench`: runs each test (or benchmark) of the checked program
 /// (the root module's, and those of the modules of its package that it imports; all of
 /// them with `--all`) with captured output (§3.8). A failing test's output and failure
 /// reason are printed below its line; with `--coverage`, the lines of the package of

@@ -24,7 +24,7 @@ StackHandler :: struct {
 
 /// Why no bound exists.
 StackFail :: union {
-    /// The program has errors that were already reported, or uses what gammac cannot
+    /// The program has errors that were already reported, or uses what gamma cannot
     /// check yet.
     Quiet
     /// The analysis met something it cannot bound.

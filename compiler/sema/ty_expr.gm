@@ -806,7 +806,7 @@ pub comptime_value :: fn(s: ^Sema, module: usize, ty: Ty, e: ^const ast.Expr) ->
     return null
 }
 
-/// The key of the constant expression `e` of type `ty`, if gammac can tell it without
+/// The key of the constant expression `e` of type `ty`, if gamma can tell it without
 /// reporting anything: `null`, a function, or an integer or `bool` constant.
 const_key_of :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?types.ConstKey needs Load {
     if e.kind is .Null {

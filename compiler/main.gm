@@ -53,7 +53,7 @@ testing :: import "./testing"
 thread :: import "std/thread"
 fiber :: import "std/fiber"
 
-VERSION :: "0.1.0"
+VERSION :: "0.2.0"
 
 USAGE :: `
 usage: gamma <command> [options] <file>
@@ -234,7 +234,7 @@ compiler_main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + R
     while i < args.len {
         a := args[i]
         i += 1
-        // What follows the file of `gammac run` is the program's.
+        // What follows the file of `gamma run` is the program's.
         if opts.command is .Run and files.items.len > 0 {
             opts.program_args = args[i - 1..]
             break
@@ -400,7 +400,7 @@ check_arguments_are_text :: fn(args: []const string) needs Alloc + Env + Err {
     }
 }
 
-/// The command whose help `gammac help COMMAND` or `gammac COMMAND --help` asks for.
+/// The command whose help `gamma help COMMAND` or `gamma COMMAND --help` asks for.
 help_topic :: fn(args: []const string) -> ?string {
     command := args.get(1) else return null
     if command is "help" { return args.get(2) }

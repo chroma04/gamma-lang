@@ -25,7 +25,7 @@ Cell :: tir.Cell
 EvalFrame :: tir.Frame
 
 /// How an evaluation leaves an expression other than with its value: a jump to an
-/// enclosing construct, a trap, or a construct gammac cannot evaluate.
+/// enclosing construct, a trap, or a construct gamma cannot evaluate.
 Flow :: union {
     Break: (frame: ^EvalFrame, label: u32, value: ?Value)
     Continue: (frame: ^EvalFrame, label: u32)

@@ -1,4 +1,4 @@
-// Statement coverage for `gammac test --coverage`.
+// Statement coverage for `gamma test --coverage`.
 //
 // `instrument` rewrites the checked program: in front of every statement of the functions
 // of the package under test (and in front of the value of each block) it inserts a
