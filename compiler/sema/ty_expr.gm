@@ -231,7 +231,7 @@ pub looks_like_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> bool n
         }
         .Tuple(elems) => {
             for el in elems {
-                if not s.looks_like_type(module, &el.value) { return false }
+                if el.spread or not s.looks_like_type(module, &el.value) { return false }
             }
             return true
         }
@@ -362,6 +362,10 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
         }
         .Paren(inner) => return s.resolve_type(module, inner)
         .Tuple(elems) => {
+            if ast.has_spread(elems) {
+                s.error(e.span, "a tuple type cannot contain a spread")
+                return tys.error()
+            }
             named := elems.len > 0 and elems[0].name is not null
             ts := list(Ty)
             for el in elems { ts.push(s.component_type(module, &el.value))! }

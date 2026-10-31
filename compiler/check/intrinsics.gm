@@ -756,7 +756,7 @@ asm_entries :: fn(list_e: ^const ast.Expr, pairs: bool) -> []ast.Expr needs Allo
     l := list_e
     if .Paren(inner) := l.kind { l = inner }
     out := list(ast.Expr)
-    if .Tuple(elems) := l.kind {
+    if .Tuple(elems) := l.kind and not ast.has_spread(elems) {
         if pairs and elems.len > 0 and elems[0].value.kind is .Str(_) {
             out.push(l^)!
         } else {

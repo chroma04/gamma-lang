@@ -656,6 +656,16 @@ parse_paren :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
     named: ?bool = null
     while not p.at(.RParen) {
         elem_start := p.lo()
+        // A spread's elements decide whether the tuple is named; the checker sees them.
+        if p.at(.DotDot) {
+            _ = p.bump()
+            if mode is not .Expr { p.report(source.Span(file: p.file, lo: elem_start, hi: p.span().hi), "a tuple type cannot contain a spread") }
+            value := try (if mode is .Expr { p.parse_expr() } else { p.parse_type() })
+            elems.push(ast.TupleElem(name: null, value: value, spread: true))!
+            comma = p.eat(.Comma)
+            if not comma { break }
+            continue
+        }
         name: ?ast.Ident = null
         if p.nth_is_name(0) and p.nth_is(1, .Colon) {
             name = try p.parse_name("a name")
@@ -673,7 +683,7 @@ parse_paren :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
     }
     _ = try p.expect(.RParen, "to close the parenthesis")
     whole := p.span_from(start)
-    if elems.items.len is 1 and not comma and elems.items[0].name is null {
+    if elems.items.len is 1 and not comma and elems.items[0].name is null and not elems.items[0].spread {
         return p.mk_expr(.Paren(box(elems.items[0].value)), whole)
     }
     return p.mk_expr(.Tuple(elems.items), whole)

@@ -467,6 +467,38 @@ f :: ((1, 2), (3, 4))
         (integer_literal)))))
 
 ================================================================================
+Tuples with spreads
+================================================================================
+
+a :: (..t)
+b :: (1, ..t, 2)
+c :: (..p, z: 0)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (tuple_expression
+      (spread_argument
+        (identifier))))
+  (const_declaration
+    (identifier)
+    (tuple_expression
+      (integer_literal)
+      (spread_argument
+        (identifier))
+      (integer_literal)))
+  (const_declaration
+    (identifier)
+    (tuple_expression
+      (spread_argument
+        (identifier))
+      (named_element
+        (identifier)
+        (integer_literal)))))
+
+================================================================================
 Enum shorthand
 ================================================================================
 

@@ -347,6 +347,7 @@ expr_to_pattern :: fn(e: ^const ast.Expr) -> ?ast.Pattern needs Alloc {
             pargs := list(ast.PatArg)
             for i in 0..elems.len {
                 el := &elems[i]
+                if el.spread { return null }
                 np := nested_pattern(&el.value) else return null
                 pargs.push(ast.PatArg(name: el.name, pat: np, span: el.value.span))!
             }

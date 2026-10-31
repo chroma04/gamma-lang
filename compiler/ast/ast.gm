@@ -210,7 +210,8 @@ pub ExprKind :: union {
 
     /// `(e)`.
     Paren: ^Expr
-    /// `()`, `(a,)`, `(a, b)`, `(x: a, y: b)`; also tuple types such as `(i32, u8)`.
+    /// `()`, `(a,)`, `(a, b)`, `(x: a, y: b)`, `(a, ..t)`; also tuple types such as
+    /// `(i32, u8)`.
     Tuple: []TupleElem
     /// The elements of a tuple or array as an unnamed tuple. Never parsed: the checker
     /// makes it from a spread passed as all of a call's rest arguments (§11.2).
@@ -333,6 +334,8 @@ pub IntrinsicExpr :: struct {
 pub TupleElem :: struct {
     pub name: ?Ident
     pub value: Expr
+    /// `..value` (§11.4); never named.
+    pub spread: bool = false
 }
 
 pub Arg :: struct {
@@ -404,6 +407,14 @@ pub BinOp :: union {
 }
 
 /// The operator as written.
+/// Whether a tuple expression has a spread element `..e`.
+pub has_spread :: fn(elems: []const TupleElem) -> bool {
+    for el in elems {
+        if el.spread { return true }
+    }
+    return false
+}
+
 pub binop_text :: fn(op: BinOp) -> string => match op {
     .Add(f) => flavored(f, "+", "+%", "+|", "+?")
     .Sub(f) => flavored(f, "-", "-%", "-|", "-?")

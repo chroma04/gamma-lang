@@ -805,6 +805,8 @@ Elements are accessed by position `t.0`, `t.1` or, if named, by name `t.a`.
 
 **Tuple expressions.** When a tuple expression `(e1, e2, …)` appears where a tuple type with as many elements is expected — directly, or wrapped in optionals or results (`?(T1, T2)`, `E!(T1, T2)`) — each element is a coercion site (§6.4) for the corresponding element type: `(a: 1, b: null)` where `(a: u8, b: ?u8)` is expected is `(a: u8(1), b: ?u8(null))`, and `(1, v)` with `v: u8` where `(u8, ?u8)` is expected wraps `v`. A tuple value that is not written as a tuple expression converts only by name erasure.
 
+A tuple expression may contain spreads `..e` (§11.4), and its elements are then those of an argument list: `(1, ..t)` with `t: (i32, i32)` is a three-element tuple, `(..a)` is the elements of an array `a: [N]T` as a tuple, and `(..p, z: 0)` extends a named tuple `p`. Once the spreads are expanded, the tuple must be fully named or fully unnamed, and each element is a coercion site as above. A later named element replaces the element of that name that a spread supplied, keeping its place and its type: `(..p, x: 5)` with `p: (x: f32, y: f32)` is a `(x: f32, y: f32)`. A name supplied twice otherwise is a compile error.
+
 Layout: like a struct with the same fields in the same order (§5.10.4).
 
 ### 5.10 Structs
@@ -1649,14 +1651,14 @@ The argument list is a tuple: `f(..t)` where `t: (i32, i32)` passes `t`'s elemen
 
 ### 11.4 Spread
 
-`..e` in an argument list or constructor:
+`..e` in an argument list, constructor or tuple expression (§5.9):
 
 - If `e` is an unnamed tuple, its elements become positional arguments.
 - If `e` is an array `[N]T` or a vector `#simd [N]T` (§5.6.2), it spreads as the unnamed tuple `(T, …, T)` of its `N` elements, in index order: `(u8, u8, u8)(..[_]u8(10, 20, 30))` is `(10, 20, 30)`. `N` must be known where the spread is written, so an array whose length depends on a compile-time parameter (§16.5) cannot be spread, and neither can an enum-indexed array, whose elements have no positions (§5.6.1).
 - If `e` is a named tuple or a struct (whose fields are all visible), its elements/fields become named arguments.
 - Several spreads may appear. A later explicit **named** argument overrides a name supplied by a spread: `Window(..w, title: "new")` is `w` with a different title. A name supplied twice by spreads, or twice explicitly, is a compile error.
 
-The prefix `..` in an argument list is always spread; there are no open-ended ranges outside index brackets (§7.9).
+The prefix `..` in an argument list or tuple expression is always spread; there are no open-ended ranges outside index brackets (§7.9). A tuple type cannot contain a spread.
 
 ### 11.5 Results of calls
 
@@ -3410,8 +3412,7 @@ primary       = literal | IDENT | '_' | '---' | 'null' | 'true' | 'false'
               | jump_expr
 jump_expr     = 'return' [ expr ] | 'break' [ IDENT ] [ expr ] | 'continue' [ IDENT ]
               | 'resume' postfix_expr '(' [ expr ] ')'                 // all have type never
-tuple_expr    = '(' ')' | '(' expr ',' ')' | '(' expr ',' expr { ',' expr } [ ',' ] ')'
-              | '(' IDENT ':' expr { ',' IDENT ':' expr } [ ',' ] ')'
+tuple_expr    = '(' ')' | '(' arg { ',' arg } [ ',' ] ')'          // not a lone '(' expr ')'; all named or all unnamed after spreads (§5.9)
 if_expr       = 'if' cond block { 'else' 'if' cond block } [ 'else' ( block | IDENT '=>' ( block | expr ) ) ]
 match_expr    = 'match' expr '{' { NL } { arm NL { NL } } '}'
 arm           = pattern { ',' pattern } [ 'if' expr ] '=>' ( expr | block )

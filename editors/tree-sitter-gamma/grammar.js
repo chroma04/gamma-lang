@@ -354,10 +354,10 @@ module.exports = grammar({
 
     tuple_expression: $ => choice(
       seq('(', ')'),
-      seq('(', $._expression, ',', ')'),
-      seq('(', $._expression, ',', commaSep1($._expression), optional(','), ')'),
-      seq('(', commaSep1($.named_element), optional(','), ')'),
+      seq('(', $._expression, ',', optional(seq(commaSep1($._tuple_element), optional(','))), ')'),
+      seq('(', choice($.named_element, $.spread_argument), repeat(seq(',', $._tuple_element)), optional(','), ')'),
     ),
+    _tuple_element: $ => choice($.named_element, $.spread_argument, $._expression),
     named_element: $ => seq(
       field('name', $.identifier),
       ':',

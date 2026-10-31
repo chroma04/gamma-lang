@@ -14,12 +14,13 @@ in_expr :: fn(cx: ^FnCx, checked: ^Expr, container: ^const ast.Expr, negated: bo
         return cx.range_test(elem, empty_slice(tir.Stmt), lo, hi, ty, op is .RangeIncl, negated, span)
     }
     // An inline tuple with a pattern member: `k in (.Fn(_), .Type)` (§7.7).
-    if .Tuple(elems) := container.kind {
+    // A tuple with a spread is checked as a value.
+    if .Tuple(elems) := container.kind and not ast.has_spread(elems) {
         for i in 0..elems.len {
             if cx.is_pattern_operand(&elems[i].value, elem.ty) is not null { return cx.in_patterns(elem, elems, negated, span) }
         }
     }
-    c := if .Tuple(elems) := container.kind {
+    c := if .Tuple(elems) := container.kind and not ast.has_spread(elems) {
         // An inline tuple: the element and the members are joined as the branches of an
         // `if` are (§7.12), so `p in ("a", "b")` with `p: []u8` compares `string`s. As with
         // `is`, a member converts to an optional or result element: `c in ('a', 'b')` with

@@ -1,15 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-30) — PRs #1–#110 merged, v0.1.0 + rust-reference-final tagged
-- s59 (branch claude/trusting-wright-yb34y4): RELEASE PREP 0.2.0: CHANGELOG Unreleased
-  rewritten as `## 0.2.0 - 2026-10-30` for 0.1.0 users (Breaking list first; gammac-era
-  history dropped); version 0.2.0 in compiler/gamma.toml, main.gm + lsp/lsp.gm VERSION
-  (cli + lsp tests check they agree), editors/* versions. After merge: user runs the
-  Release workflow, tags v0.2.0 (fix the date if later). Next behavior change starts a
-  fresh `## Unreleased`. #111 merged; first Release dispatch failed: seed had `GM_ZERO(void *)`
-  = `((void *){})` (C23 scalar `{}`; GCC 11 / Apple clang 15 reject). cgen zero() casts 0 for
-  scalars, seed refreshed, CI bootstrap matrix + ubuntu-22.04, macos-14 (release runners).
-  Check: clang -Wc23-extensions over the seed (aggregate `{}` is fine, GNU ext).
+## State (2026-10-31) — PRs #1–#112 merged, v0.1.0 + rust-reference-final tagged
+- s60 (branch claude/tuple-literal-spread): tuple expressions take spreads `(1, ..t)`,
+  `(..a)`, `(..p, z: 0)` (decisions/061); arrays already did. CHANGELOG `## Unreleased` started.
+- s59 (#111, #112): 0.2.0 release prep (CHANGELOG, versions); seed GM_ZERO scalar fix,
+  CI bootstrap matrix ubuntu-22.04 + macos-14. User then runs Release workflow, tags v0.2.0.
 - s58: LINT stale-element-pointer follows growth through struct-pointer calls
   (`p.alloc_expr()`): per-function growth summaries + fixpoint (decisions/060); 5 compiler
   sites fixed. Pain-points "Open" now: seed-refresh watch, fn-as-format-arg, template size.
@@ -68,7 +63,7 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–059, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51), 056 interpreter VM (s52), 057 perf round 4 (s55), 058 perf round 5 (s56), 059 playground root stack (s57), 060 stale-element growth summaries (s58). `ls decisions/` for the rest.
+                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51), 056 interpreter VM (s52), 057 perf round 4 (s55), 058 perf round 5 (s56), 059 playground root stack (s57), 060 stale-element growth summaries (s58), 061 tuple-expression spread (s60). `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

@@ -1,0 +1,8 @@
+//! stage: parse
+// A spread is an element of a tuple expression, never of a tuple type (§11.4).
+
+f :: fn(t: (i32, i32)) {
+    _ = (..t)
+    _ = (0, ..t, 3)
+    _: (..(i32, i32)) = t          //~ ERROR a tuple type cannot contain a spread
+}
