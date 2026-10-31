@@ -1,0 +1,16 @@
+//! stage: check
+// Spreads in tuple expressions (§5.9, §11.4).
+
+f :: fn(p: (x: i32, y: i32), s: []const i32, xs: [2]i32) {
+    _ = (1, ..p)                   //~ ERROR a tuple must be either fully named or fully unnamed
+    _ = (..p, ..p)                 //~ ERROR element `x` is supplied twice
+    _ = (x: 0, ..p)                //~ ERROR element `x` is supplied twice
+    _ = (..p, x: 1, x: 2)          //~ ERROR duplicate tuple element name `x`
+    _ = (..p, x: "s")              //~ ERROR expected `i32`, found `string`
+    _ = (..s)                      //~ ERROR a spread needs a tuple, an array or a struct
+    _ = (..xs, ..p)                //~ ERROR fully named or fully unnamed
+    t: (i32, i32, i32) = (0, ..xs)
+    _ = t
+}
+
+main :: fn() {}

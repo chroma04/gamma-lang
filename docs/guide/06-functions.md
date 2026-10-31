@@ -94,7 +94,7 @@ spread_demo :: fn() -> i32 {
 }
 ```
 
-Spread works in struct construction too, which is how you write "this value, but with one field changed": `Window(..w, title: "new")`.
+Spread works in struct construction too, which is how you write "this value, but with one field changed": `Window(..w, title: "new")`. A tuple expression is an argument list without a function, so it takes spreads in the same way: `(..args, 9)` is `(5, 7, 9)`, and `(..point, z: 0)` extends a named tuple.
 
 An array spreads like an unnamed tuple of its elements, so `..rgb` with `rgb: [3]u8` passes three positional arguments, and `(u8, u8, u8)(..rgb)` turns the array into a tuple, as `[3]u8(..t)` turns a tuple into an array. The length must be known where the spread is written: an array whose length is a compile-time parameter cannot be spread, and neither can an enum-indexed array, whose elements are named by its variants rather than numbered.
 

@@ -1,0 +1,38 @@
+// Spreads in tuple expressions (§5.9, §11.4): the elements are those of an argument list.
+
+P :: struct { x: f32, y: f32 }
+
+step :: fn(n: ^i32, tag: i32) -> i32 {
+    n^ = n^ * 10 + tag
+    return tag
+}
+
+both :: fn(n: ^i32, tag: i32) -> (i32, i32) {
+    n^ = n^ * 10 + tag
+    return (tag, tag)
+}
+
+C :: (1, ..(2, 3))
+
+main :: fn() needs Out {
+    t := (2, 3)
+    print("{} {} {}\n", (1, ..t), (..t, 4), (..t, ..t))
+    // An array spreads its elements, so `(..a)` is the array as a tuple.
+    a := [_]u8(7, 8, 9)
+    print("{} {}\n", (..a), (..a, "end"))
+    // With an expected type, every element converts to its element type.
+    w: (i64, u8, ?i64) = (1, ..t)
+    print("{}\n", w)
+    // A named tuple or a struct spreads named elements; a later named element replaces
+    // one of them and keeps its type.
+    p := (x: 1.5f32, y: 2.0f32)
+    q := (..p, z: 0)
+    r := (..p, x: 5)
+    print("{} {} {}\n", q, r, @type_of(r) is @type_of(p))
+    print("{}\n", (..P(x: 3, y: 4)))
+    // Values are evaluated once each, in the order written.
+    n: i32 = 0
+    u := (step(&n, 1), ..both(&n, 2), step(&n, 3), ..both(&n, 4))
+    print("{} {}\n", u, n)
+    print("{} {} {}\n", C, (..()), 3 in (1, ..t))
+}

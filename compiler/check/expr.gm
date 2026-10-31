@@ -433,6 +433,7 @@ tuple :: fn(cx: ^FnCx, elems: []const ast.TupleElem, expect: ?Ty, span: source.S
             _ => break
         }
     }
+    if ast.has_spread(elems) { return cx.spread_tuple(elems, want, span) }
     expected_elems: ?[]const Ty = null
     if w := want {
         if .Tuple(es, _) := tys.kind(w) and es.len is elems.len { expected_elems = es }
@@ -449,16 +450,7 @@ tuple :: fn(cx: ^FnCx, elems: []const ast.TupleElem, expect: ?Ty, span: source.S
         exp: ?Ty = null
         if es := expected_elems { exp = es[i] }
         v := cx.expr(&el.value, exp)
-        // Each element converts to the expected element type where it can (§6.4).
-        if x := exp {
-            et := cx.infer.resolve(cx.s, x)
-            if not tys.has_infer(et) {
-                vt := cx.infer.resolve(cx.s, v.ty)
-                if vt is not et and (tys.kind(vt) is .Infer(_) or (not tys.has_infer(vt) and cx.coercion_steps(vt, et) is not null)) {
-                    v = cx.coerce(v, et)
-                }
-            }
-        }
+        v = cx.coerce_element(v, exp)
         _ = cx.reject_second_class(v, "a tuple element")
         vals.push(v^)!
     }
@@ -476,6 +468,121 @@ tuple :: fn(cx: ^FnCx, elems: []const ast.TupleElem, expect: ?Ty, span: source.S
     ts := list(Ty)
     for v in vals.items { ts.push(v.ty)! }
     return tir.mk(tys.intern(.Tuple(ts.items, names.items)), .Aggregate(vals.items), span)
+}
+
+/// `v` converted to the expected element type `exp` of a tuple expression where it can
+/// be (§6.4); otherwise unchanged, for the enclosing coercion to report.
+coerce_element :: fn(cx: ^FnCx, v: ^Expr, exp: ?Ty) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    x := exp else return v
+    et := cx.infer.resolve(cx.s, x)
+    if tys.has_infer(et) { return v }
+    vt := cx.infer.resolve(cx.s, v.ty)
+    if vt is not et and (tys.kind(vt) is .Infer(_) or (not tys.has_infer(vt) and cx.coercion_steps(vt, et) is not null)) {
+        return cx.coerce(v, et)
+    }
+    return v
+}
+
+/// A tuple expression with spreads (§11.4): `(a, ..t)`, `(..p, z: 0)`. Its elements are
+/// those of an argument list (§11.3): a spread supplies its elements in place, and a
+/// later named element replaces the one of that name a spread supplied, converted to its
+/// type. `want` is the expected tuple type, if any.
+spread_tuple :: fn(cx: ^FnCx, elems: []const ast.TupleElem, want: ?Ty, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    want_elems: []const Ty = empty_slice(Ty)
+    want_names: []const string = empty_slice(string)
+    if w := want {
+        if .Tuple(es, ns) := tys.kind(w) {
+            want_elems = es
+            want_names = ns
+        }
+    }
+    // Every value goes through a temporary, in the order written.
+    stmts := list(tir.Stmt)
+    parts := list(TuplePart)
+    // Whether part `i` came from a spread (and so may be replaced by name).
+    spread := list(bool)
+    for el in elems {
+        if el.spread {
+            ps := cx.spread_parts(&el.value, &stmts) else continue
+            reported := false
+            for p in ps {
+                if n := p.name {
+                    if index_of_part(parts.items, n) is not null {
+                        if not reported { cx.error(el.value.span, str.format("element `{}` is supplied twice", n)!) }
+                        reported = true
+                        continue
+                    }
+                }
+                parts.push(TuplePart(name: p.name, value: p.value, at: el.value.span))!
+                spread.push(true)!
+            }
+            continue
+        }
+        exp: ?Ty = null
+        at := el.value.span
+        if n := el.name {
+            at = n.span
+            if i := index_of_part(parts.items, n.name) {
+                if not spread.items[i] {
+                    cx.error(n.span, str.format("duplicate tuple element name `{}`", n.name)!)
+                    continue
+                }
+                // A replacement keeps the element's type.
+                t := parts.items[i].value.ty
+                v := cx.coerce(cx.expr(&el.value, t), t)
+                _ = cx.reject_second_class(v, "a tuple element")
+                parts.items[i] = TuplePart(name: n.name, value: cx.bind_temp(v, &stmts), at: n.span)
+                spread.items[i] = false
+                continue
+            }
+            if i := index_of_name(want_names, n.name) { exp = want_elems[i] }
+        } else if parts.items.len < want_elems.len {
+            exp = want_elems[parts.items.len]
+        }
+        v := cx.coerce_element(cx.expr(&el.value, exp), exp)
+        _ = cx.reject_second_class(v, "a tuple element")
+        parts.push(TuplePart(name: if n := el.name { n.name } else { null }, value: cx.bind_temp(v, &stmts), at: at))!
+        spread.push(false)!
+    }
+    named := parts.items.len > 0 and parts.items[0].name is not null
+    for p in parts.items {
+        if (p.name is not null) is not named {
+            cx.error(p.at, "a tuple must be either fully named or fully unnamed")
+            return error_expr(cx.s, span)
+        }
+    }
+    // The elements a spread supplied convert to the expected type as written ones do.
+    fits := want_elems.len is parts.items.len and (want_names.len is 0 or not named)
+    if named and want_names.len is parts.items.len {
+        fits = true
+        for i, p in enumerate(parts.items) {
+            if p.name is not want_names[i] { fits = false }
+        }
+    }
+    values := list(Expr)
+    ts := list(Ty)
+    names := list(string)
+    for i, p in enumerate(parts.items) {
+        v := p.value
+        if fits and spread.items[i] { v = cx.coerce_element(v, want_elems[i]) }
+        values.push(v^)!
+        ts.push(v.ty)!
+        if n := p.name { names.push(n)! }
+    }
+    ty := tys.intern(.Tuple(ts.items, names.items))
+    agg := tir.mk(ty, .Aggregate(values.items), span)
+    if stmts.items.len is 0 { return agg }
+    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+}
+
+/// The index of the part named `name`.
+index_of_part :: fn(parts: []const TuplePart, name: string) -> ?usize {
+    for i, p in enumerate(parts) {
+        if p.name is name { return i }
+    }
+    return null
 }
 
 /// Reports a second-class value used as `what`. True if it was reported.

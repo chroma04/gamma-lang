@@ -235,6 +235,8 @@ tuples_demo :: fn() needs Out {
 
 Two tuple types are the same if they have the same element types in the same order and the same names. A tuple is either fully named or fully unnamed. A tuple value converts to a tuple type with the same element types if *either* side is unnamed, which is why `return (n / d, n % d)` works for a function declared `-> (q: u32, r: u32)`. Two differently named tuples never convert to each other. A tuple *expression* written where a tuple type is expected converts each element on its own, so `(a: 1, b: null)` fits `(a: u8, b: ?u8)`, and `return (n, v)` with `v: u8` fits `-> (u32, ?u8)`. Tuples are how functions return several values. They compare with `is` element by element, and with `<` lexicographically when their elements are orderable.
 
+A tuple expression can spread other tuples, arrays and structs into it, as an argument list can ([chapter 6](06-functions.md)): `(1, ..t)` puts `1` before the elements of `t`, `(..a)` is an array's elements as a tuple, and `(..p, z: 0)` adds an element to a named tuple. A named element after a spread replaces the one the spread supplied and keeps its type, so `(..p, x: 5)` is `p` with a different `x`.
+
 ## Structs
 
 A `struct` literal creates a new, nominal type. Fields are declared `name: Type`, optionally with a default, a constant that is computed once at compile time (a default that fails to evaluate is a compile error), and `a, b: T` declares several at once. Fields are separated by newlines (or `;`).

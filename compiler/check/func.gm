@@ -1246,7 +1246,7 @@ local_is_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
     match e.kind {
         .Tuple(elems) => {
             for el in elems {
-                if not cx.local_is_type(&el.value) { return false }
+                if el.spread or not cx.local_is_type(&el.value) { return false }
             }
             return true
         }

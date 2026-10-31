@@ -4,6 +4,22 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
+## Unreleased
+
+### Added
+
+- **Spreads in tuple expressions.** A tuple expression takes `..e` like an argument list:
+  `(1, ..t)`, `(..a)` for the elements of an array `a`, `(..p, z: 0)` to extend a named
+  tuple, and `(..p, x: 5)` to replace one of its elements. Array constructors already took
+  spreads anywhere among their elements (`[_]T(a, ..xs, b)`).
+
+### Fixed
+
+- **`x in t` for a tuple value `t` with elements of different types** compared every
+  element at the type of the first, reading the others at the wrong width (wrong results
+  on big-endian targets). The elements are now converted to their join, as `for` over a
+  tuple does, and a tuple without one is a compile error.
+
 ## 0.2.0 - 2026-10-30
 
 `gamma` is now written in Gamma: the compiler in `compiler/` builds itself, from a C seed

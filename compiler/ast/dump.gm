@@ -512,6 +512,7 @@ const_type :: fn(head: string, is_const: bool, inner: ^const Expr) -> Sx needs A
 
 dump_tuple_elem :: fn(t: ^const TupleElem) -> Sx needs Alloc {
     if n := t.name { return node2("named", ident_sx(n), dump_expr(&t.value)) }
+    if t.spread { return node1("spread", dump_expr(&t.value)) }
     return dump_expr(&t.value)
 }
 
