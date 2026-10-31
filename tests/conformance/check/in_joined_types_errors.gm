@@ -2,6 +2,8 @@
 // `in` joins the element and the members only where one type coerces to the other
 // (§7.7): an array's elements are not converted, and unrelated types are not joined.
 main :: fn() {
+    mixed := (u8(1), "s")
+    _ = 1 in mixed //~ ERROR the members of a tuple compared by `in` must have one type, but found `u8` and `string`
     narrow := [_]u8(1, 2)
     signed := i8(-1)
     _ = u16(1) in narrow //~ ERROR the element and the members of `in` have different types: `u16` and `u8`

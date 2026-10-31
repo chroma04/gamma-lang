@@ -21,3 +21,8 @@ User asked: is generalizing spread to `(a, b, ..xs)` and `[_]T(a, b, ..xs)` wort
   members → value path, @asm entries). Tree-sitter grammar `_tuple_element`.
 - Not done (deliberately): rest patterns `(a, ..rest)` in destructuring (037 keeps spread
   as the one bridge).
+- CI s390x caught a PRE-EXISTING bug: `x in t` for a tuple VALUE with mixed element
+  types compared all at es[0]'s type (wrong-width loads; only big-endian shows it). Fixed
+  in check/seq.gm: tuple values compared at tuple_elem_join (as `for`, §8.4), else error
+  "must have one type"; inline tuples keep their member join. §7.7 sentence added.
+  Gotcha: little-endian tests can't see width bugs; read emitted C (`build --emit-c`).

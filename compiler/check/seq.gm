@@ -20,7 +20,9 @@ in_expr :: fn(cx: ^FnCx, checked: ^Expr, container: ^const ast.Expr, negated: bo
             if cx.is_pattern_operand(&elems[i].value, elem.ty) is not null { return cx.in_patterns(elem, elems, negated, span) }
         }
     }
-    c := if .Tuple(elems) := container.kind and not ast.has_spread(elems) {
+    inline := false
+    if .Tuple(elems) := container.kind and not ast.has_spread(elems) { inline = true }
+    c := if inline and .Tuple(elems) := container.kind {
         // An inline tuple: the element and the members are joined as the branches of an
         // `if` are (§7.12), so `p in ("a", "b")` with `p: []u8` compares `string`s. As with
         // `is`, a member converts to an optional or result element: `c in ('a', 'b')` with
@@ -75,6 +77,36 @@ in_expr :: fn(cx: ^FnCx, checked: ^Expr, container: ^const ast.Expr, negated: bo
         _ => {
             cx.error(container.span, str.format("`in` needs a range, array, slice or tuple, not `{}`", cx.show(ct))!)
             return error_expr(cx.s, span)
+        }
+    }
+    // A tuple value's elements (an inline tuple's members are joined above).
+    if .Tuple(es, _) := tys.kind(ct) and es.len > 0 and not inline {
+        // Elements of different types are compared at their join (§7.7, §7.12):
+        // `{ t := c; (T(t.0), T(t.1), …) }`.
+        joined := cx.tuple_elem_join(es)
+        for k in 1..es.len {
+            if joined is null and cx.infer.unify(tys, item, es[k]) is !_ {
+                a := cx.infer.resolve(cx.s, item)
+                b := cx.infer.resolve(cx.s, es[k])
+                cx.error(container.span, str.format("the members of a tuple compared by `in` must have one type, but found `{}` and `{}`", cx.show(a), cx.show(b))!)
+                return error_expr(cx.s, span)
+            }
+        }
+        if j := joined {
+            item = j
+            t := cx.temp(ct, span)
+            items := list(Expr)
+            jts := list(Ty)
+            for k in 0..es.len {
+                field := tir.mk(es[k], .Field(tir.mk(ct, .Local(t), span), k.trunc(u32)), span)
+                items.push(cx.coerce(field, j)^)!
+                jts.push(j)!
+            }
+            jt := tys.tuple(jts.items)
+            stmts := list(tir.Stmt)
+            stmts.push(.Let(t, c))!
+            agg := tir.mk(jt, .Aggregate(items.items), span)
+            c = tir.mk(jt, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
         }
     }
     // The element converts to the members' type: `p in names` with `p: []u8` and

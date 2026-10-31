@@ -11,4 +11,7 @@ main :: fn() needs Alloc + Out {
     print("{} {}\n", small in (u16(7), u16(300)), u16(300) in (small, 300))
     found: ?u8 = 'b'
     print("{}\n", found in ('a', 'b'))
+    // A tuple value's elements are converted to their join too, here `i64`.
+    wide := (300i64, u8(1))
+    print("{} {} {}\n", 1 in wide, 300 in wide, 2 in wide)
 }
