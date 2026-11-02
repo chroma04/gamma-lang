@@ -2918,7 +2918,7 @@ collect :: fn(T: type, l: ^List(T), it: fn() needs Yield(T)) -> AllocError!()   
 write  :: fn(A: type, l: ^List(u8), template :: string, args: ..A) -> AllocError!()  // @write into the list
 ```
 
-The list captures `Alloc.current()` at construction and never performs `Alloc` afterwards (§15.2). `for x in l.items` iterates it. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
+The list captures `Alloc.current()` at construction and never performs `Alloc` afterwards (§15.2). To grow, it first asks that allocator to `resize` its block in place and allocates a larger one only if that fails. `for x in l.items` iterates it. `into_slice` leaves the list empty; the slice is released with `free` under the allocator the list captured.
 
 ### 21.6 Diagnostics and output
 

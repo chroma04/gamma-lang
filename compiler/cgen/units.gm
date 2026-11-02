@@ -245,6 +245,12 @@ function :: fn(item: string) -> ?(decl: string, def: string) needs Alloc {
         if c in ('\n', '"', '\'') { return null }
     }
     if str.contains(header, "static") { return null }
+    // A small function keeps its `inline` hint on the definition, which stays external
+    // because the shared header declares it without the hint (C11 6.7.4): without the hint
+    // the C compiler would not inline it even into the callers of its own unit.
+    if first.starts_with("static inline __attribute__((aligned(4))) ") {
+        def = str.format("{}inline {}", pre, def[pre.len..def.len])!
+    }
     return (decl: str.format("{};", header)!, def: def)
 }
 
@@ -350,7 +356,8 @@ test "inline functions are inline definitions in every unit, external in unit 0"
             expect(str.contains(u, "\n__attribute__((aligned(4))) int gm_f6(void);\n"))
         }
         expect(str.contains(units[0], "extern __attribute__((aligned(4))) int gm_f5(int a);\n"))
-        expect(str.contains(units[0], "\n__attribute__((aligned(4))) int gm_f6(void) { return 6; }\n") or str.contains(units[1], "\n__attribute__((aligned(4))) int gm_f6(void) { return 6; }\n"))
+        // ... with its inline hint on the definition only.
+        expect(str.contains(units[0], "\ninline __attribute__((aligned(4))) int gm_f6(void) { return 6; }\n") or str.contains(units[1], "\ninline __attribute__((aligned(4))) int gm_f6(void) { return 6; }\n"))
         expect(not str.contains(units[1], "extern __attribute__((aligned(4))) int gm_f5"))
     }
 }

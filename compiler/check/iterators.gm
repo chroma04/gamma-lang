@@ -57,6 +57,7 @@ for_iterator :: fn(cx: ^FnCx, f: ^const ast.ForExpr) -> ^Expr needs Load {
             i += 1
         }
     }
+    if e := cx.enumerate_loop(f, call, bound, elem) { return e }
     result_ty := call.ty
     // The arguments are bound first, so that they are evaluated outside the loop's handler.
     pre := list(tir.Stmt)
@@ -112,6 +113,39 @@ for_iterator :: fn(cx: ^FnCx, f: ^const ast.ForExpr) -> ^Expr needs Load {
     w := tir.mk(result_ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: null, body: call)), span)
     if pre.items.len is 0 { return w }
     return tir.mk(result_ty, .Block(new(tir.Block(stmts: pre.items, tail: w, span: span))!), span)
+}
+
+/// `for p in enumerate(xs)` as the loop over the slice that the iterator runs, without a
+/// handler: `{ s := xs; i := 0; loop i < s.len { p :: (i: i, x: s[i]); body } step i += 1 }`.
+/// `null` unless `call` is a call of the core library's `enumerate`.
+enumerate_loop :: fn(cx: ^FnCx, f: ^const ast.ForExpr, call: ^Expr, bound: []tir.Stmt, elem: Ty) -> ?^Expr needs Load {
+    .Call(callee, args) := call.kind else return null
+    .Fn(fid) := callee else return null
+    sig := &cx.s.fns.items[usize(fid)]
+    if sig.name is not "enumerate" or not cx.s.l.modules.items[sig.module].is_prelude or args.len is not 1 { return null }
+    tys := &cx.s.tys
+    sty := cx.infer.resolve(cx.s, args[0].ty)
+    .Slice(_, x_ty) := tys.kind(sty) else return null
+    span := f.span
+    usize_t := tys.usize_ty()
+    s := cx.temp(sty, span)
+    i := cx.temp(usize_t, span)
+    local :: fn(id: u32, ty: Ty) -> ^Expr needs Alloc => tir.mk(ty, .Local(id), span)
+    cond := list(tir.CondPart)
+    cond.push(.Bool(tir.mk(tys.bool_ty(), .Binary(.Lt, local(i, usize_t), tir.mk(usize_t, .SliceLen(local(s, sty)), span)), span)))!
+    fields := list(Expr)
+    fields.push(local(i, usize_t)^)!
+    fields.push(tir.mk(x_ty, .Index(local(s, sty), local(i, usize_t), false), span)^)!
+    item := tir.mk(elem, .Aggregate(fields.items), span)
+    more := list(tir.Stmt)
+    more.push(.Assign(local(i, usize_t), tir.mk(usize_t, .Binary(.Add(.Wrap), local(i, usize_t), tir.mk(usize_t, .Int(bigint.one()), span)), span)))!
+    lp := cx.loop_with_pattern(f, elem, item, cond.items, block_of(cx.s, more.items, span))
+    stmts := list(tir.Stmt)
+    stmts.extend(bound)!
+    stmts.push(.Let(s, &args[0]))!
+    stmts.push(.Let(i, tir.mk(usize_t, .Int(bigint.zero()), span)))!
+    stmts.push(.Expr(lp))!
+    return block_of(cx.s, stmts.items, span)
 }
 
 /// The source of a `for` that is a call of no function: iterated if it is an array or

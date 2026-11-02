@@ -13,6 +13,19 @@ Versions and what each kind of change means are described in
   tuple, and `(..p, x: 5)` to replace one of its elements. Array constructors already took
   spreads anywhere among their elements (`[_]T(a, ..xs, b)`).
 
+### Changed
+
+- **Faster builds and a faster compiler.** Debug builds compile the generated C at `-Og`
+  (with gcc, plus the passes that keep the code within about a quarter of `-O1`'s speed):
+  the C compiler takes about 30% less time, the conformance and example suites run 20%
+  faster. The compiler checks itself 20% faster: `x is "text"`, string `match` arms and
+  `x is .Variant(p)` compare in place without building the constant, slices of integers
+  compare with `memcmp`, a `for` over `enumerate(xs)` runs as an index loop in every back
+  end, small functions stay inlinable in split builds, and the lexer sizes its token list
+  up front.
+- **`List` growth asks the allocator to `resize` in place first** (an arena grows its most
+  recent block), and allocates and copies only if that fails.
+
 ### Fixed
 
 - **`x in t` for a tuple value `t` with elements of different types** compared every

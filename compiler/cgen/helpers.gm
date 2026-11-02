@@ -52,19 +52,27 @@ pub eq_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
                 b.extend("    return true;\n")!
             }
             .Array(len, elem, _) => {
-                f := h.eq_fn(ty, elem)
                 esz := ty.size(elem)
-                b.write("    for (uint64_t i = 0; i < {}; i++) if (!{}(a + i * {}, b + i * {})) return false;\n", len, f, esz, esz)!
-                b.extend("    return true;\n")!
+                if bytewise_eq(ty, elem) {
+                    b.write("    return memcmp(a, b, {}) == 0;\n", len * esz)!
+                } else {
+                    f := h.eq_fn(ty, elem)
+                    b.write("    for (uint64_t i = 0; i < {}; i++) if (!{}(a + i * {}, b + i * {})) return false;\n", len, f, esz, esz)!
+                    b.extend("    return true;\n")!
+                }
             }
             .Slice(_, elem) => {
-                f := h.eq_fn(ty, elem)
                 esz := ty.size(elem)
                 b.write("    uintptr_t n = GM_LD(uintptr_t, a + {});\n", p)!
                 b.write("    if (n != GM_LD(uintptr_t, b + {})) return false;\n", p)!
                 b.extend("    const uint8_t *pa = GM_LD(void *, a), *pb = GM_LD(void *, b);\n")!
-                b.write("    for (uintptr_t i = 0; i < n; i++) if (!{}(pa + i * {}, pb + i * {})) return false;\n", f, esz, esz)!
-                b.extend("    return true;\n")!
+                if bytewise_eq(ty, elem) {
+                    b.write("    return n == 0 || memcmp(pa, pb, n * {}) == 0;\n", esz)!
+                } else {
+                    f := h.eq_fn(ty, elem)
+                    b.write("    for (uintptr_t i = 0; i < n; i++) if (!{}(pa + i * {}, pb + i * {})) return false;\n", f, esz, esz)!
+                    b.extend("    return true;\n")!
+                }
             }
             .Optional(inner) => {
                 f := h.eq_fn(ty, inner)
@@ -119,6 +127,13 @@ pub eq_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     return name
 }
 
+/// Whether values of type `t` are `is`-equal exactly when their bytes are: integers whose
+/// storage has no padding bits. (Floats are not: `-0.0 is 0.0`.)
+bytewise_eq :: fn(ty: ^CTypes, t: Ty) -> bool needs Alloc => match ty.repr(t) {
+    .Int(_, bits, storage) => u64(bits) is storage * 8
+    _ => false
+}
+
 /// `bool f(const uint8_t *a, const uint8_t *b)`: `a < b` for values of type `t`.
 pub less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     if n := h.less.get(t.id) { return n }
@@ -154,8 +169,6 @@ pub less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
                     .Slice(_, el) => { elem = el }
                     _ => @unreachable()
                 }
-                fe := h.eq_fn(ty, elem)
-                fl := h.less_fn(ty, elem)
                 esz := ty.size(elem)
                 if n := array_len {
                     b.write("    uintptr_t na = {}, nb = {};\n    const uint8_t *pa = a, *pb = b;\n", n, n)!
@@ -163,8 +176,15 @@ pub less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
                     b.write("    uintptr_t na = GM_LD(uintptr_t, a + {}), nb = GM_LD(uintptr_t, b + {});\n", p, p)!
                     b.extend("    const uint8_t *pa = GM_LD(void *, a), *pb = GM_LD(void *, b);\n")!
                 }
-                b.write("    for (uintptr_t i = 0; i < na && i < nb; i++) {{ if (!{}(pa + i * {}, pb + i * {})) return {}(pa + i * {}, pb + i * {}); }}\n", fe, esz, esz, fl, esz, esz)!
-                b.extend("    return na < nb;\n")!
+                if ty.repr(elem) is .Int(false, 8, 1) {
+                    // Bytes compare as `memcmp` compares them.
+                    b.extend("    uintptr_t m = na < nb ? na : nb;\n    int c = m == 0 ? 0 : memcmp(pa, pb, m);\n    return c != 0 ? c < 0 : na < nb;\n")!
+                } else {
+                    fe := h.eq_fn(ty, elem)
+                    fl := h.less_fn(ty, elem)
+                    b.write("    for (uintptr_t i = 0; i < na && i < nb; i++) {{ if (!{}(pa + i * {}, pb + i * {})) return {}(pa + i * {}, pb + i * {}); }}\n", fe, esz, esz, fl, esz, esz)!
+                    b.extend("    return na < nb;\n")!
+                }
             }
             .Adt(_, _) => match ty.adt_of(t).kind {
                 .Union(tag, _) => {

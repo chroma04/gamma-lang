@@ -1,8 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-10-31) — PRs #1–#112 merged, v0.1.0 + rust-reference-final tagged
-- s60 (branch claude/tuple-literal-spread): tuple expressions take spreads `(1, ..t)`,
-  `(..a)`, `(..p, z: 0)` (decisions/061); arrays already did. CHANGELOG `## Unreleased` started.
+## State (2026-11-02) — PRs #1–#113 merged, v0.1.0 + rust-reference-final tagged
+- s61 (branch claude/nifty-brahmagupta-1ymgmj): PERF ROUND 6 (decisions/062): inline hints
+  kept in split builds, `is` vs string literal / variant in place, memcmp slice eq,
+  `for … in enumerate` → index loop (checker), lexer token reserve, List grows via resize,
+  Debug C at -Og + gcc passes. check compiler -20%, conformance+examples -20%.
+- s60 (#113): tuple expressions take spreads (decisions/061). CHANGELOG `## Unreleased` open.
 - s59 (#111, #112): 0.2.0 release prep (CHANGELOG, versions); seed GM_ZERO scalar fix,
   CI bootstrap matrix ubuntu-22.04 + macos-14. User then runs Release workflow, tags v0.2.0.
 - s58: LINT stale-element-pointer follows growth through struct-pointer calls
@@ -12,7 +15,7 @@
   interp root stack 1 GiB calloc → 8 MiB on Wasm32; core-loaded memory snapshot (play init
   + export gamma_play_run); warm-up run. `#export` on WASI = module export + gm_start +
   fiber driver. ~600 → ~11 ms hello. MODE=fast measured, not adopted.
-- s51–s56 (#104–#108): PERFORMANCE rounds (decisions/055–058): compiler built Checked,
+- s51–s56 (#104–#108): PERFORMANCE rounds (decisions/055–058; s61 = 062): compiler built Checked,
   big builds split into units, interpreter VM (056/057; keep vm_run < 2000 names),
   posix_spawn, GM_RT_PROGRAM, shared @write stubs. Profiling recipes in 055/057/058.
 - s50 (branch claude/eager-curie-ocf0wz): PAIN-POINT SWEEP (decisions/054): whole list
@@ -63,7 +66,7 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–059, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51), 056 interpreter VM (s52), 057 perf round 4 (s55), 058 perf round 5 (s56), 059 playground root stack (s57), 060 stale-element growth summaries (s58), 061 tuple-expression spread (s60). `ls decisions/` for the rest.
+                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51), 056 interpreter VM (s52), 057 perf round 4 (s55), 058 perf round 5 (s56), 059 playground root stack (s57), 060 stale-element growth summaries (s58), 061 tuple-expression spread (s60), 062 perf round 6 (s61; profiling recipe). `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

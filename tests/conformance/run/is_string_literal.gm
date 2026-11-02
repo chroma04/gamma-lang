@@ -1,0 +1,21 @@
+// `is` and `match` against string literals compare lengths and bytes (§7.6), on either side
+// of `is`, for `string` and `[]u8` values alike.
+kind :: fn(s: string) -> i32 => match s {
+    "" => 0
+    "a" => 1
+    "ab" => 2
+    "a\0b" => 3
+    "b" => 4
+    _ => -1
+}
+
+main :: fn() needs Out {
+    words := [7]string("", "a", "ab", "a\0b", "b", "abc", "A")
+    for w in words {
+        print("{} {} {} {} {}\n", kind(w), w is "ab", "a" is w, w is not "", w is "a\0b")
+    }
+    buf := [3]u8('a', 'b', 'c')
+    b: []u8 = buf[0..2]
+    print("{} {}\n", b is "ab", b[1..2] is "b")
+    print("{} {}\n", "x" < "y", "ab" < "a")
+}

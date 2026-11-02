@@ -38,6 +38,8 @@ test "binary operators get spaces" {
 test "unary and postfix operators are tight" {
     check("x = - y\n", "x = -y\n")
     check("x = a - -b\n", "x = a - -b\n")
+    // Three minus signs in a row would be `---`.
+    check("x = - - -y\n", "x = -- -y\n")
     check("x = a-b\n", "x = a - b\n")
     check("p = & x\nq = ~ m\nr = a ~ b\n", "p = &x\nq = ~m\nr = a ~ b\n")
     check("v = p ^ + 1\n", "v = p^ + 1\n")

@@ -1,0 +1,68 @@
+// `for i, x in enumerate(xs)` visits each element with its index (§13.2, §21.3), with
+// `break`, `continue`, labels and `return` as in any loop, over slices, arrays and calls.
+Pt :: struct { x: i32, y: i32 }
+
+first_negative :: fn(xs: []const i32) -> ?usize {
+    for i, x in enumerate(xs) {
+        if x < 0 { return i }
+    }
+    return null
+}
+
+squares :: fn(n: u32) -> List(u32) needs Alloc {
+    l := list(u32)
+    for k in 0..n { l.push(k * k)! }
+    return l
+}
+
+evens :: fn(xs: []const i32) needs Yield(i32) {
+    for i, x in enumerate(xs) {
+        if i % 2 is 0 { yield(x) }
+    }
+}
+
+main :: fn() needs Out + Alloc {
+    words := [4]string("zero", "one", "two", "three")
+    for i, w in enumerate(words) { print("{}={} ", i, w) }
+    print("\n")
+    for i, w in enumerate(words[1..3]) { print("{}:{} ", i, w) }
+    print("\n")
+    // `continue` still advances the index; `break` leaves the loop.
+    for i, w in enumerate(words) {
+        if i is 1 { continue }
+        if w is "three" { break }
+        print("{} ", w)
+    }
+    print("\n")
+    print("{} {}\n", first_negative([3]i32(4, -2, -9)[..]), first_negative([1]i32(1)[..]))
+    l := squares(5)
+    defer l.deinit()
+    sum: u32 = 0
+    for i, s in enumerate(l.items) { sum += s * u32(i.trunc(u32)) }
+    print("{}\n", sum)
+    // Nested, with a label on the outer loop.
+    grid := [2][3]u8([3]u8(1, 2, 3), [3]u8(4, 5, 6))
+    outer: for r, row in enumerate(grid) {
+        for c, v in enumerate(row) {
+            if v is 5 { break outer }
+            print("({},{})={} ", r, c, v)
+        }
+    }
+    print("\n")
+    // A single pattern binds the pair; struct elements are copied.
+    pts := [2]Pt(Pt(x: 1, y: 2), Pt(x: 3, y: 4))
+    for p in enumerate(pts) { print("{} {} {} ", p.i, p.x.x, p.x.y) }
+    print("\n")
+    for i, _ in enumerate(empty_slice(u8)) { print("never {}\n", i) }
+    for x in evens([5]i32(10, 11, 12, 13, 14)[..]) { print("{} ", x) }
+    print("\n")
+    // The source is evaluated once, before the loop.
+    calls := 0
+    src :: fn() -> []const string {
+        calls += 1
+        return words[..]
+    }
+    n: usize = 0
+    for i, _ in enumerate(src()) { n += i }
+    print("{} {}\n", n, calls)
+}

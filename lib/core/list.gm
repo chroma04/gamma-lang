@@ -44,6 +44,13 @@ regrow_raw :: fn(l: ^RawList, extra: usize, tail: [^]const u8, tail_len: usize, 
     if l.cap <= @max_value(usize) / 2 and l.cap * 2 > new_cap { new_cap = l.cap * 2 }
     if l.cap is 0 and new_cap < 4 { new_cap = 4 }
     if size > 0 and new_cap > @max_value(usize) / size { return !.OutOfMemory }
+    // An allocator that can grow the block where it is (an arena, for its latest block)
+    // saves the copy.
+    if l.cap > 0 and l.alloc.vt.resize(l.alloc.data, l.items.ptr, size * l.cap, size * new_cap, align) {
+        @copy_elems(l.items.ptr[n * size..(n + tail_len) * size], tail[0..tail_len * size])
+        l.cap = new_cap
+        return ()
+    }
     raw := l.alloc.vt.alloc(l.alloc.data, size * new_cap, align) else return !.OutOfMemory
     p := raw
     @copy_elems(p[0..n * size], l.items.ptr[0..n * size])

@@ -798,6 +798,10 @@ pub pat :: fn(fg: ^FnGen, p: ^tir.Pat, addr: string, fail: string) -> Unsup!() n
             fg.line(str.format("{} = {};", lv, v)!)
         }
         .Const(c) => {
+            if .Str(bytes) := c.kind and fg.g.ty.kind(t) is .Slice(_, _) {
+                fg.line(str.format("if (!{}) goto {};", fg.str_equal_at(addr, bytes), fail)!)
+                return ()
+            }
             cv := try fg.expr(c)
             v := fg.load(t, addr)
             eq := fg.equal(t, v, cv)
@@ -989,4 +993,66 @@ pub equal :: fn(fg: ^FnGen, t: Ty, a: string, b: string) -> string needs sema.Lo
         return str.format("{}({}, {})", f, pa, pb)!
     }
     return str.format("({} == {})", a, b)!
+}
+
+/// A C condition for `x is "text"` or `x is .V(p)` (or `.V`) on a union that compares the
+/// bytes, or the tag and payload, without building the constant or the variant: `null` if
+/// neither side is a string literal or a variant expression of a union. The value `x` is
+/// tested in place when evaluating the payload cannot change it.
+variant_equal :: fn(fg: ^FnGen, lhs: ^Expr, rhs: ^Expr) -> Unsup!?string needs sema.Load {
+    for (x, y) in [2](^Expr, ^Expr)((lhs, rhs), (rhs, lhs)) {
+        if .Str(bytes) := y.kind and fg.g.ty.kind(x.ty) is .Slice(_, _) {
+            return fg.str_equal_at(try fg.scrutinee_addr(x, true), bytes)
+        }
+    }
+    x := lhs
+    vx := tir.VariantExpr(variant: 0, payload: null)
+    if .Variant(v) := rhs.kind {
+        vx = v
+    } else if .Variant(v) := lhs.kind {
+        x = rhs
+        vx = v
+    } else {
+        return null
+    }
+    t := x.ty
+    if fg.g.ty.repr(t) is not .Blob { return null }
+    .Union(tag, variants) := fg.adt_def(t).kind else return null
+    variant := variants[usize(vx.variant)]
+    in_place := if p := vx.payload { fg.frame_pure(p) } else { true }
+    // The operands are evaluated in order; a variant on the left is a constant tag.
+    addr := ""
+    payload: ?string = null
+    if x is lhs {
+        addr = try fg.scrutinee_addr(x, in_place)
+        if p := vx.payload { payload = try fg.expr(p) }
+    } else {
+        if p := vx.payload { payload = try fg.expr(p) }
+        addr = try fg.scrutinee_addr(x, false)
+    }
+    offs := fg.g.ty.offsets(t)
+    tc := fg.g.ty.cty(tag)
+    tv: string = str.format("GM_LD({}, {} + {})", tc, addr, offs[0])!
+    if ii := fg.int_info(tag) { tv = fg.normalize(ii, tv) }
+    c := str.format("({} == {})", tv, fg.int_lit(tag, variant.tag))!
+    pv := payload else return c
+    pt := variant.payload else return c
+    pa := str.format("({} + {})", addr, offs[1])!
+    pe := ""
+    if fg.g.ty.repr(pt) is .Blob {
+        f := fg.g.helpers.eq_fn(&fg.g.ty, pt)
+        pe = str.format("{}({}, {})", f, pa, fg.addr_of(pt, pv))!
+    } else {
+        ld: string = str.format("GM_LD({}, {})", fg.g.ty.cty(pt), pa)!
+        if ii := fg.int_info(pt) { ld = fg.normalize(ii, ld) }
+        pe = if fg.g.ty.repr(pt) is .Bool { str.format("(({} != 0) == ({} != 0))", ld, pv)! } else { str.format("({} == {})", ld, pv)! }
+    }
+    return str.format("({} && {})", c, pe)!
+}
+
+/// A C condition: the bytes of the slice at `addr` are those of `text` (a string literal).
+str_equal_at :: fn(fg: ^FnGen, addr: string, text: []const u8) -> string needs sema.Load {
+    len := str.format("(GM_LD(uintptr_t, {} + {}) == {})", addr, fg.ptr_bytes(), text.len)!
+    if text.len is 0 { return len }
+    return str.format("({} && memcmp(GM_LD(void *, {}), {}, {}) == 0)", len, addr, fg.g.static_bytes(text), text.len)!
 }

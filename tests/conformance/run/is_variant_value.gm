@@ -1,0 +1,34 @@
+// `x is .V(p)` compares the tag and then the payload (§7.6), whatever the payload's type,
+// with the variant on either side; the operands are evaluated left to right.
+Tok :: union {
+    Word: string
+    Num: u64
+    Small: u3
+    Flag: bool
+    Real: f64
+    Pair: (a: i32, b: string)
+    Inner: Shape
+    Eof
+}
+
+Shape :: union { Dot, Circle: f64 }
+
+next :: fn(t: ^Tok, v: u64) -> u64 {
+    t^ = .Num(v + 1)
+    return v
+}
+
+main :: fn() needs Out {
+    toks := [7]Tok(.Word("if"), .Num(7), .Small(5), .Flag(true), .Pair(a: -1, b: "x"), .Inner(.Circle(0.5)), .Eof)
+    for t in toks {
+        print("{} {} {} {} {} {} {} {}\n", t is .Word("if"), t is .Num(7), t is .Small(5), t is .Flag(true), t is .Pair(a: -1, b: "x"), t is .Inner(.Circle(0.5)), t is .Eof, t is not .Num(8))
+    }
+    w: string = "i"
+    print("{} {}\n", Tok.Word("if") is toks[0], Tok.Word(w) is toks[0])
+    // The left side is read before the payload is computed.
+    x: Tok = .Num(3)
+    print("{}\n", x is .Num(next(&x, 3)))
+    print("{}\n", x is .Num(4))
+    r: Tok = .Real(0.0)
+    print("{} {}\n", r is .Real(-0.0), r is .Real(1.0))
+}

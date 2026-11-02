@@ -298,7 +298,7 @@ stable text form, which tests of the compiler use.
 | literal inference | `check/infer.gm`, `check/finalize.gm` |
 | function literals, captures and second-class rules | `check/fnlit.gm` |
 | `with`, handler literals and declarations, `resume`, `cancel` | `check/handlers.gm`, `check/handler_decls.gm` |
-| iterators | `check/iterators.gm` |
+| iterators (a `for` over the core `enumerate` becomes the index loop over the slice, without a handler) | `check/iterators.gm` |
 | generic function calls and instances | `check/generic.gm` |
 | compile-time evaluation requests (`@static_assert`, constants, array lengths) | `check/consts.gm`, `check/eval_prepare.gm` |
 | continuations used exactly once (§14.2) | `check/cont_check.gm` |
@@ -613,9 +613,13 @@ How the runtime is linked depends on the build mode:
   linkage), cached, and linked with each program; the generated code includes
   only `gm_rt.h`, with `GM_RT_PROGRAM` defined so that it skips the operating
   system's headers (parsing them took about a third of the C compiler's time on a
-  small program), and is compiled at `-O1` (`-O0` with `-g`). Compared with `-O2`
-  this halves the C compiler's time, while the programs run about as fast; `-O0`
-  would compile faster again but run several times slower. The cache
+  small program), and is compiled at `-Og` (`-O0` with `-g`). Compared with `-O2`
+  this cuts the C compiler's time by about two thirds. `-O1` takes about 40%
+  longer than `-Og`; with gcc, which `-Og` keeps from inlining functions called
+  once (code then runs up to three times slower), a Debug build adds that pass
+  and two cheap others (`GCC_DEBUG_PASSES` in `driver/native.gm`), and runs
+  within about a quarter of `-O1`. `-O0` would compile faster again but run
+  several times slower. The cache
   (`driver/rtcache.gm`) is the directory `$GAMMA_CACHE_DIR` (an empty value
   turns it off), else `$XDG_CACHE_HOME/gamma`, else `~/.cache/gamma`
   (`~/Library/Caches/gamma` on macOS, `%LOCALAPPDATA%\gamma` on Windows). An object's name is a hash of the runtime
