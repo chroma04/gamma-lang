@@ -144,7 +144,7 @@ pub prune :: fn(dir: string) needs Alloc + Clock + Fs {
 
 /// Whether `version`, a compiler's `compiler_version`, is that of gcc (which clang's is
 /// not, though clang accepts most of gcc's options).
-pub is_gcc :: fn(version: ?string) -> bool {
+is_gcc :: fn(version: ?string) -> bool {
     v := version else return false
     return str.contains(v, "Free Software Foundation") and not str.contains(v, "clang")
 }
