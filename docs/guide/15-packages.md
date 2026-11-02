@@ -189,7 +189,7 @@ shim :: foreign "c" {
 }
 ```
 
-- A build (`build`, `run`, `test`, `bench`) compiles each C file with `-O2` (`-O1` in Debug mode, `-O0 -g` with debug information), `-fPIC`, `-pthread`, the package's `-I` directories and then the `cflags`, and links the objects with the program. `libs` become `-l` options and `lib-dirs` become `-L` options, with a run-time search path (`-Wl,-rpath`) for the same directories so the executable finds shared libraries there.
+- A build (`build`, `run`, `test`, `bench`) compiles each C file with `-O2` (`-Og` in Debug mode, `-O0 -g` with debug information), `-fPIC`, `-pthread`, the package's `-I` directories and then the `cflags`, and links the objects with the program. `libs` become `-l` options and `lib-dirs` become `-L` options, with a run-time search path (`-Wl,-rpath`) for the same directories so the executable finds shared libraries there.
 - The interpreter (`gamma run --backend=interp`) cannot call C, so a package with C sources runs only through C.
 - The C files are compiled again by every build, into a temporary directory; a program with C sources of its own is not kept in the cache of built programs either.
 

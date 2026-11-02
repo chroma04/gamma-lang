@@ -160,8 +160,20 @@ report_unsupported :: fn(s: ^sema.Sema, u: cgen.Unsup) needs Alloc + Err {
 /// The compiler options of a build in `opts`: the optimization level.
 opt_level :: fn(opts: ^const Options) -> string => match (opts.mode is .Debug, opts.debug_info) {
     (true, true) => "-O0"
-    (true, false) => "-O1"
+    (true, false) => "-Og"
     (false, _) => "-O2"
+}
+
+/// The passes a Debug build (without debug information) adds to gcc's `-Og`, which compiles
+/// in about 30% less time than `-O1`: without inlining the functions called once, `-Og`
+/// code runs up to three times slower; with these it runs within about a quarter of `-O1`.
+GCC_DEBUG_PASSES :: [3]string("-finline-functions-called-once", "-ftree-bit-ccp", "-fif-conversion")
+
+/// The options a build in `opts` adds to `opt_level` for the compiler whose
+/// `compiler_version` is `version`.
+debug_flags :: fn(opts: ^const Options, version: ?string) -> []const string {
+    if opts.mode is .Debug and not opts.debug_info and is_gcc(version) { return GCC_DEBUG_PASSES[..] }
+    return empty_slice(string)
 }
 
 /// Compiles the translated program to the executable `exe`: the C is written next to it
@@ -269,7 +281,7 @@ windows_libs :: fn(target: load.Target) -> []const string needs Alloc {
 /// unit at `-O2`, so the optimizer sees the whole program; a program so large that one
 /// unit would take the C compiler minutes (the compiler itself) is split into units
 /// compiled in parallel, linked with the cached runtime. Debug builds favor turnaround:
-/// they are compiled at `-O1` (`-O0` with debug information, so every variable and line is
+/// they are compiled at `-Og` (`-O0` with debug information, so every variable and line is
 /// there in the debugger) and linked with a runtime object compiled once and cached; without
 /// a usable cache they fall back to one translation unit. Safe builds (Fil-C, which compiles
 /// slowly) are compiled at `-O2` but link the cached runtime too. A large Debug build is
@@ -294,10 +306,13 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
         n = cgen.optimized_unit_count(&generated.parts, cpus, forced)
     }
     separate := debug or opts.target.filc or n > 1
+    // The keys of cached objects include the compiler's version, which also tells whether
+    // it is gcc (for `debug_flags`).
+    version: ?string = if separate { compiler_version(tc) } else { null }
     runtime: ?string = null
     if separate {
         flags := rt_flags(&opts)
-        runtime = runtime_object(tc, flags.items, str.format("#define GM_RT_SEPARATE 1\n{}\n{}", b.rt_h, b.rt_c)!, "gm_rt")
+        runtime = runtime_object(tc, flags.items, str.format("#define GM_RT_SEPARATE 1\n{}\n{}", b.rt_h, b.rt_c)!, "gm_rt", version)
     }
     sources := list(string)
     if runtime is not null {
@@ -327,6 +342,7 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     // source and the runtime object, before the libraries, as for `make`.
     flags := base_cflags(opts.target)
     flags.push(opt)!
+    flags.extend(debug_flags(&opts, version))!
     if opts.debug_info { flags.push("-g")! }
     if f := f16c_flag(opts.target) { flags.push(f)! }
     wasi := opts.target.os is "Wasi"
@@ -405,6 +421,7 @@ compile_object :: fn(b: ^const Built, tc: ^const pkg.Toolchain, obj: string, opt
     flags.extend(BASE_CFLAGS[..])!
     flags.push("-ffreestanding")!
     flags.push(opt)!
+    if opts.mode is .Debug and not opts.debug_info { flags.extend(debug_flags(&opts, compiler_version(tc)))! }
     if opts.debug_info { flags.push("-g")! }
     tail := [4]string("-c", "-o", obj, c_file)
     argv := pkg.command(tc, flags.items, tail[..])

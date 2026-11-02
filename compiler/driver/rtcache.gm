@@ -43,11 +43,12 @@ pub compiler_version :: fn(tc: ^const pkg.Toolchain) -> ?string needs Alloc + Pr
 }
 
 /// The object of the C file `source` compiled with `tc` and `flags`, kept in the cache under
-/// a name starting with `prefix`; compiled now if it is not there. `null` if there is no
-/// cache or the object cannot be made.
-pub runtime_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, source: string, prefix: string) -> ?string needs Alloc + Env + Fs + Proc + Rand {
+/// a name starting with `prefix`; compiled now if it is not there. `compiler` is the
+/// compiler's `compiler_version`. `null` if there is no cache, no version, or the object
+/// cannot be made.
+pub runtime_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, source: string, prefix: string, compiler: ?string) -> ?string needs Alloc + Env + Fs + Proc + Rand {
     dir := pkg.cache_dir() else return null
-    version := compiler_version(tc) else return null
+    version := compiler else return null
     key := cache_key([6]string("gammac", source, str.join(tc.cc, "\0")!, str.join(tc.cflags, "\0")!, str.join(flags, "\0")!, version)[..])
     stem := str.format("{}-{}", prefix, key)!
     obj := load.join(dir, str.format("{}.o", stem)!)
@@ -139,4 +140,19 @@ pub prune :: fn(dir: string) needs Alloc + Clock + Fs {
     for i in 0..(n - KEPT_PROGRAMS) {
         if progs.items[i].modified < recent { _ = Fs.remove(progs.items[i].path) }
     }
+}
+
+/// Whether `version`, a compiler's `compiler_version`, is that of gcc (which clang's is
+/// not, though clang accepts most of gcc's options).
+pub is_gcc :: fn(version: ?string) -> bool {
+    v := version else return false
+    return str.contains(v, "Free Software Foundation") and not str.contains(v, "clang")
+}
+
+test "gcc is told apart by its version" {
+    expect(is_gcc("cc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\n"))
+    expect(is_gcc("x86_64-w64-mingw32-gcc (GCC) 12-win32\nCopyright (C) 2022 Free Software Foundation, Inc.\n"))
+    expect(not is_gcc("Ubuntu clang version 18.1.3 (1ubuntu1)\nTarget: x86_64-pc-linux-gnu\n"))
+    expect(not is_gcc("Apple clang version 15.0.0 (clang-1500.3.9.4)\n"))
+    expect(not is_gcc(null))
 }

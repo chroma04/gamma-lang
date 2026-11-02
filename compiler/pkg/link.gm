@@ -232,7 +232,7 @@ pub remove_objects :: fn(link: ^const Link) needs Alloc + Fs {
 /// `debug_info`.
 object_flags :: fn(debug, debug_info: bool, src: ^const CSource) -> List(string) needs Alloc {
     flags := list(string)
-    flags.push(if debug and debug_info { "-O0" } else if debug { "-O1" } else { "-O2" })!
+    flags.push(if debug and debug_info { "-O0" } else if debug { "-Og" } else { "-O2" })!
     flags.push("-fPIC")!
     flags.push("-pthread")!
     if debug_info { flags.push("-g")! }

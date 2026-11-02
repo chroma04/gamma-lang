@@ -47,7 +47,7 @@ pub wasm_opt_version :: fn() -> string needs Alloc + Env + Proc {
 }
 
 /// Applies the Asyncify transformation to the module at `path` in place when it needs it
-/// (it imports from `asyncify`), then optimizes it at the build's level `opt` (`-O1`, ...).
+/// (it imports from `asyncify`), then optimizes it at the build's level `opt` (`-Og`, ...).
 /// `debug_info` keeps the debugging information.
 pub asyncify :: fn(path: string, opt: string, debug_info: bool) -> string!() needs Alloc + Env + Fs + Proc {
     bytes := fs.read_all(path) else e => { return !str.format("cannot read {}: {}", path, read_error(e))! }
@@ -66,7 +66,8 @@ pub asyncify :: fn(path: string, opt: string, debug_info: bool) -> string!() nee
     // about: naming a module that does not exist says so.
     argv.push("--pass-arg=asyncify-imports@gamma.none")!
     // Optimizing after the transformation recovers most of what it costs.
-    if opt is not "-O0" { argv.push(opt)! }
+    // `wasm-opt` has no `-Og`: a Debug build's module is optimized at `-O1`.
+    if opt is not "-O0" { argv.push(if opt is "-Og" { "-O1" } else { opt })! }
     if debug_info { argv.push("-g")! }
     argv.push("-o")!
     argv.push(path)!
