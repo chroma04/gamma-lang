@@ -298,7 +298,7 @@ stable text form, which tests of the compiler use.
 | literal inference | `check/infer.gm`, `check/finalize.gm` |
 | function literals, captures and second-class rules | `check/fnlit.gm` |
 | `with`, handler literals and declarations, `resume`, `cancel` | `check/handlers.gm`, `check/handler_decls.gm` |
-| iterators | `check/iterators.gm` |
+| iterators (a `for` over the core `enumerate` becomes the index loop over the slice, without a handler) | `check/iterators.gm` |
 | generic function calls and instances | `check/generic.gm` |
 | compile-time evaluation requests (`@static_assert`, constants, array lengths) | `check/consts.gm`, `check/eval_prepare.gm` |
 | continuations used exactly once (§14.2) | `check/cont_check.gm` |

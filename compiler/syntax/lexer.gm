@@ -130,6 +130,9 @@ new_lexer :: fn(file: source.FileId, src: string, diags: ^diag.Diagnostics) -> L
 
 run :: fn(lx: ^Lexer) -> LexOutput needs Alloc {
     if lx.src.starts_with("\u{feff}") { lx.pos = 3 }
+    // Gamma source has about one token per four bytes: room for them up front saves
+    // regrowing (and copying) the list a dozen times.
+    lx.tokens.reserve(lx.src.len / 4 + 16)!
     while true {
         lx.skip_trivia()
         b := lx.peek() else break
