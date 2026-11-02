@@ -327,6 +327,9 @@ pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
         }
         .Unwrap(x, is_result) => return fg.unwrap(e, x, is_result)
         .Eq(lhs, rhs, negated) => {
+            if c := try fg.variant_equal(lhs, rhs) {
+                return fg.tmp(fg.g.ty.bool_ty(), str.format("({}{})", if negated { "!" } else { "" }, c)!)
+            }
             l := try fg.expr(lhs)
             r := try fg.expr(rhs)
             c := fg.equal(lhs.ty, l, r)
