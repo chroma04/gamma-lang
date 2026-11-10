@@ -19,8 +19,7 @@ parse_decl_params :: fn(p: ^Parser) -> Abort![]ast.Param needs Alloc {
 /// Runs `body` until the `}` that closes a braced list of members, recovering from
 /// errors member by member. `body` parses one member and the separator after it.
 members :: fn(p: ^Parser, what: string, body: fn() -> Abort!() needs Alloc) needs Alloc {
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     while true {
         p.skip_newlines()
@@ -129,8 +128,7 @@ parse_union_lit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
             params = try p.parse_decl_params()
         } else {
             _ = p.bump()
-            old := p.restr
-            p.restr = Restr()
+            old := p.set_restr(Restr())
             t := p.parse_type()
             p.restr = old
             tag_type = box(try t)
@@ -239,8 +237,7 @@ parse_handler_lit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 /// The effect named by a handler: a postfix expression such as `Log`, `Yield(T)` or
 /// `m.Net`, parsed so that a following `{` is not taken.
 parse_effect_ref :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
-    old := p.restr
-    p.restr = Restr(no_brace: true)
+    old := p.set_restr(Restr(no_brace: true))
     defer p.restr = old
     return p.parse_postfix(false)
 }

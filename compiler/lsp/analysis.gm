@@ -1,23 +1,6 @@
 //! Running the compiler on a module for the server, and turning its diagnostics into LSP
 //! diagnostics.
 
-/// The path as the compiler's overlays and file lookups spell it: absolute, without `.`
-/// and `..` names; for a file that does not exist (yet), its directory's canonical form
-/// joined with its name.
-canon :: fn(p: string) -> string needs Alloc + Fs {
-    if c := canonical_of(p) { return c }
-    name := load.file_name(p) else return p
-    dir := load.parent(p) else return p
-    if dir.len is 0 { return p }
-    if c := canonical_of(dir) { return load.join(c, name) }
-    return p
-}
-
-canonical_of :: fn(p: string) -> ?string needs Alloc + Fs {
-    if Fs.stat(p) is !_ { return null }
-    return load.normalize(load.join(load.working_dir(), p))
-}
-
 /// The directory of a path.
 dir_of :: fn(p: string) -> string needs Alloc => load.parent(p) else ""
 
@@ -110,7 +93,7 @@ check_module :: fn(dir: string, overlays: []const load.Overlay, primary: string)
         for i in 0..a.sm.files.items.len {
             p := a.sm.files.items[i].path
             if p.starts_with("<") { continue }
-            a.files.put(canon(p), i.trunc(u32))!
+            a.files.put(load.canonical_path(p), i.trunc(u32))!
         }
     }
     return a
@@ -180,7 +163,7 @@ real_path :: fn(a: ^const Analysis, file: source.FileId) -> ?string needs Alloc 
     if usize(file) >= a.sm.files.items.len { return null }
     p := a.sm.file(file).path
     if p.starts_with("<") { return null }
-    return canon(p)
+    return load.canonical_path(p)
 }
 
 /// Where an editor can open the file: its path, or for the embedded core library a file
@@ -397,7 +380,7 @@ core_path_for :: fn(name, body: string) -> ?string needs Alloc + Env + Fs + Proc
     if file.len is 0 or file.index_of('/') is not null or str.contains(file, "..") { return null }
     in_tree := load.join(load.join(driver.std_root(), ".."), str.format("core/{}", file)!)
     if existing := fs.read_all(in_tree) {
-        if existing is body { return canon(in_tree) }
+        if existing is body { return load.canonical_path(in_tree) }
     }
     h: u64 = 0xcbf29ce484222325
     for b in body { h = (h ~ u64(b)) *% 0x100000001b3 }

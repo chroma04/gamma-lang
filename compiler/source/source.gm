@@ -111,13 +111,63 @@ pub line_text :: fn(f: ^const SourceFile, line: u32) -> string {
 /// Whether every byte of the file is ASCII.
 pub is_ascii :: fn(f: ^const SourceFile) -> bool => f.ascii
 
+/// Whether `c` can start an identifier (§2.3): an ASCII letter or `_`.
+pub is_ident_start :: fn(c: u8) -> bool => ascii.is_alpha(c) or c is '_'
+
+/// Whether `c` can continue an identifier: an ASCII letter, digit or `_`.
+pub is_ident_cont :: fn(c: u8) -> bool => ascii.is_alnum(c) or c is '_'
+
+/// Whether the byte starts a character (is not a UTF-8 continuation byte).
+pub is_char_start :: fn(b: u8) -> bool => (b & 0xC0) is not 0x80
+
 /// The number of characters in UTF-8 text: the bytes that do not continue a character.
 pub char_count :: fn(s: string) -> usize {
     n: usize = 0
     for c in s {
-        if c & 0xC0 is not 0x80 { n += 1 }
+        if is_char_start(c) { n += 1 }
     }
     return n
+}
+
+/// The byte offset of the `n`-th character of UTF-8 `s` (its length if it has fewer).
+pub char_offset :: fn(s: string, n: usize) -> usize {
+    i: usize = 0
+    k: usize = 0
+    while i < s.len and k < n {
+        i += decode(s, i).len
+        k += 1
+    }
+    return i
+}
+
+/// A character decoded from UTF-8: its code point and its length in bytes.
+pub Char :: struct {
+    pub value: u32
+    pub len: usize
+}
+
+/// The character starting at byte `i` of `s`, which must be inside it (a malformed
+/// sequence is one byte long).
+pub decode :: fn(s: string, i: usize) -> Char {
+    b := s[i]
+    if b < 0x80 { return Char(value: u32(b), len: 1) }
+    len: usize = 1
+    value: u32 = 0
+    if b >= 0xF0 {
+        len = 4
+        value = u32(b & 0x07)
+    } else if b >= 0xE0 {
+        len = 3
+        value = u32(b & 0x0F)
+    } else if b >= 0xC0 {
+        len = 2
+        value = u32(b & 0x1F)
+    } else {
+        return Char(value: u32(b), len: 1)
+    }
+    if i + len > s.len { return Char(value: u32(b), len: 1) }
+    for k in 1..len { value = (value << 6) | u32(s[i + k] & 0x3F) }
+    return Char(value: value, len: len)
 }
 
 test "lines and columns" {
@@ -137,3 +187,4 @@ test "lines and columns" {
 }
 
 arena :: import "std/arena"
+ascii :: import "std/ascii"

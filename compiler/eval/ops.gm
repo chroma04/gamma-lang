@@ -818,27 +818,13 @@ offsets :: fn(m: ^Machine, t: Ty) -> ?(tys: []const Ty, offs: []const u64) needs
             }
             return (tys: tys.items, offs: offs.items)
         }
-        .Tuple(elems, _) => {
-            offs := list(u64)
-            off: u64 = 0
-            for e in elems {
-                l := s.layout(e)
-                off = (off + l.align - 1) / l.align * l.align
-                offs.push(off)!
-                off += l.size
-            }
-            return (tys: elems, offs: offs.items)
-        }
+        .Tuple(elems, _) => return (tys: elems, offs: s.layout(t).offsets)
         .Adt(id, _) => {
             .Struct(def) := s.adts.items[usize(id)].kind else return null
             if def.bits is not null { return null }
             tys := list(Ty)
-            offs := list(u64)
-            for i, f in enumerate(def.fields) {
-                tys.push(f.ty)!
-                offs.push(s.field_offset(t, i))!
-            }
-            return (tys: tys.items, offs: offs.items)
+            for f in def.fields { tys.push(f.ty)! }
+            return (tys: tys.items, offs: s.layout(t).offsets)
         }
         _ => return null
     }

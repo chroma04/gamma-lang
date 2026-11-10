@@ -64,7 +64,7 @@ const_check :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) ->
         .Int(lit) => {
             if suffix := lit.suffix {
                 t := s.suffix_type(suffix)
-                if not s.int_fits(nat_int(&lit.value), t) { return null }
+                if not s.int_fits(lit.value, t) { return null }
                 return s.expect_type(t, expected)
             }
         }
@@ -76,7 +76,7 @@ const_check :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) ->
                     .F32 => 32
                     .F64 => 64
                 }))
-                if not s.float_finite(literal_rational(&lit.value), t) { return null }
+                if not s.float_finite(lit.value, t) { return null }
                 return s.expect_type(t, expected)
             }
         }

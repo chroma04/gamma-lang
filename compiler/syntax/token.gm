@@ -1,6 +1,7 @@
 // Tokens produced by the lexer (spec §2).
 
-bignum :: import "../bignum"
+bigint :: import "../bigint"
+ratio :: import "../ratio"
 source :: import "../source"
 str :: import "std/str"
 
@@ -194,7 +195,7 @@ pub FloatSuffix :: union { F16, F32, F64 }
 
 pub IntLit :: struct {
     /// The exact value (literals are never negative; `-` is an operator).
-    pub value: bignum.Nat
+    pub value: bigint.Int
     pub suffix: ?IntSuffix
     /// True for character literals such as `'a'`, which are integers (§2.5.2).
     pub is_char: bool
@@ -202,7 +203,7 @@ pub IntLit :: struct {
 
 pub FloatLit :: struct {
     /// The exact value (§2.5.2).
-    pub value: bignum.Rational
+    pub value: ratio.Rat
     /// For an imaginary literal (`4j`, `2.5j32`), the type of its parts.
     pub suffix: ?FloatSuffix
     /// True for an imaginary literal: the value is the imaginary part.

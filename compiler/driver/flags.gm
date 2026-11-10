@@ -1,0 +1,437 @@
+//! The options of gammac's command line, described once: `OPTIONS` gives the spellings of
+//! each option, whether and how it takes a value, the commands it is for and its help line.
+//! `scan` reads an option from the arguments by this table, for `gamma` and `gamma repl`
+//! alike, and `options_help` writes the `options:` part of the usage text from it.
+
+arena :: import "std/arena"
+diag :: import "../diag"
+str :: import "std/str"
+
+/// The options of the table. `Lint` stands for those that `lint.parse_arg` reads.
+pub OptionId :: union {
+    DiagFormat
+    Quiet
+    Recover
+    Dump
+    Mode
+    Target
+    DebugInfo
+    Out
+    EmitC
+    Filter
+    All
+    Package
+    ShowOutput
+    Jobs
+    Timeout
+    Time
+    Coverage
+    Backend
+    Offline
+    Locked
+    Profile
+    Lint
+}
+
+/// How an option takes a value.
+pub ValueForm :: union {
+    /// A flag.
+    None
+    /// `--name=VALUE`.
+    Attached
+    /// `NAME VALUE`: the value is the next argument.
+    Separate
+    /// Both: `--name=VALUE`, and `NAME VALUE` for every spelling.
+    Either
+    /// `--name`, or `--name=VALUE`.
+    Optional
+}
+
+pub OptionSpec :: struct {
+    pub id: OptionId
+    /// The spellings, separated by spaces, the first of which names the option in messages.
+    pub names: string
+    pub form: ValueForm = .None
+    /// The value as the usage text names it (`<n>`), and what a missing value needs
+    /// (`needs a number`).
+    pub arg: string = ""
+    pub needs: string = ""
+    /// The values that are accepted, separated by spaces, if there are only a few.
+    pub choices: string = ""
+    /// A value that is refused with a message of its own.
+    pub refuse: string = ""
+    pub refuse_message: string = ""
+    /// An attached value may not be empty.
+    pub nonempty: bool = false
+    /// The commands the option is for, separated by spaces, as the usage text says; none:
+    /// every command.
+    pub commands: string = ""
+    /// Only `gamma repl` knows the option; the other commands report it as unknown.
+    pub repl_only: bool = false
+    /// The usage text's description. Line breaks continue it on the next line.
+    pub help: string
+}
+
+OPTIONS :: [_]OptionSpec(
+    OptionSpec(
+        id: .DiagFormat,
+        names: "--diag-format",
+        form: .Attached,
+        choices: "human short json",
+        help: "how to print diagnostics (default: human)",
+    ),
+    OptionSpec(
+        id: .Quiet,
+        names: "--quiet",
+        commands: "repl",
+        repl_only: true,
+        help: "no banner and prompts, even on a terminal",
+    ),
+    OptionSpec(
+        id: .Recover,
+        names: "--recover",
+        commands: "lex parse",
+        help: "lex with the layout recovery tools use after errors",
+    ),
+    OptionSpec(id: .Dump, names: "--dump", commands: "parse", help: "print the syntax tree"),
+    OptionSpec(
+        id: .Mode,
+        names: "--mode",
+        form: .Attached,
+        choices: "debug checked safe fast",
+        commands: "build run test bench repl",
+        help: "the build mode (default: debug); safe builds\nwith Fil-C",
+    ),
+    OptionSpec(
+        id: .Target,
+        names: "--target",
+        form: .Attached,
+        arg: "triple",
+        needs: "a target triple",
+        nonempty: true,
+        commands: "check build run test bench",
+        help: "the target (default: the C compiler's)",
+    ),
+    OptionSpec(
+        id: .DebugInfo,
+        names: "-g",
+        commands: "build run",
+        help: "add debug information that maps the executable back to the\nGamma source (build also writes the lldb formatters, gamma_lldb.py,\nnext to the executable)",
+    ),
+    OptionSpec(
+        id: .Out,
+        names: "-o",
+        form: .Separate,
+        arg: "file",
+        needs: "a file name",
+        commands: "build",
+        help: "the executable to write (default: the input's name)",
+    ),
+    OptionSpec(id: .EmitC, names: "--emit-c", commands: "build", help: "stop after writing the C file (<exe>.c)"),
+    OptionSpec(
+        id: .Filter,
+        names: "--filter",
+        form: .Attached,
+        arg: "text",
+        commands: "test bench",
+        help: "run only the tests whose name or module path\ncontains <text>",
+    ),
+    OptionSpec(
+        id: .All,
+        names: "--all",
+        commands: "test bench",
+        help: "also run those of the modules of the package\nthat nothing imports (every directory with .gm files)",
+    ),
+    OptionSpec(
+        id: .Package,
+        names: "--package",
+        form: .Attached,
+        arg: "name",
+        commands: "test bench",
+        help: "run those of the dependency <name> of the input's\npackage (or of one of its dependencies) instead, with the\ndependency versions this package locks",
+    ),
+    OptionSpec(
+        id: .ShowOutput,
+        names: "--show-output",
+        commands: "test bench",
+        help: "also print the output of the tests that pass",
+    ),
+    OptionSpec(
+        id: .Jobs,
+        names: "--jobs -j",
+        form: .Either,
+        arg: "n",
+        needs: "a number",
+        commands: "test",
+        help: "run <n> tests at a time (default 1; 0: one per processor;\nthe output is still in order)",
+    ),
+    OptionSpec(
+        id: .Timeout,
+        names: "--timeout",
+        form: .Attached,
+        arg: "seconds",
+        commands: "test bench",
+        help: "fail a test that runs longer than <seconds> (no\nlimit by default)",
+    ),
+    OptionSpec(
+        id: .Time,
+        names: "--time",
+        commands: "test bench",
+        help: "print how long each test took and the total",
+    ),
+    OptionSpec(
+        id: .Coverage,
+        names: "--coverage",
+        form: .Optional,
+        arg: "file",
+        commands: "test",
+        help: "count the lines of the package that the tests run; print\na table, and with <file> write LCOV",
+    ),
+    OptionSpec(
+        id: .Backend,
+        names: "--backend",
+        form: .Attached,
+        choices: "c interp",
+        refuse: "cranelift",
+        refuse_message: "`--backend=cranelift` is not supported: gamma has the C back end and, for `run`, the interpreter",
+        commands: "run",
+        help: "compile via C (the default) or run in the interpreter;\n(test, bench) only c is accepted",
+    ),
+    OptionSpec(
+        id: .Offline,
+        names: "--offline",
+        commands: "check run build",
+        help: "never use the network for dependencies",
+    ),
+    OptionSpec(
+        id: .Locked,
+        names: "--locked",
+        commands: "check run build",
+        help: "fail if gamma.lock is missing or out of date",
+    ),
+    OptionSpec(
+        id: .Profile,
+        names: "--profile",
+        form: .Attached,
+        arg: "name",
+        needs: "a profile name",
+        nonempty: true,
+        commands: "check run build",
+        help: "use the [profile.<name>] table of gamma.toml",
+    ),
+    OptionSpec(id: .Lint, names: "--fix", commands: "lint", help: "apply the fixes of the warnings that have one"),
+    OptionSpec(id: .Lint, names: "--rules", commands: "lint", help: "list the rules and their default levels"),
+    OptionSpec(
+        id: .Lint,
+        names: "--allow --warn --deny",
+        form: .Attached,
+        arg: "rules",
+        commands: "lint",
+        help: "set the level of rules (comma-separated; all is every rule)",
+    ),
+    OptionSpec(
+        id: .Lint,
+        names: "-D --deny-warnings",
+        commands: "lint",
+        help: "report every rule that would warn as an error",
+    ),
+)
+
+/// One option read from the arguments.
+pub Hit :: struct {
+    pub id: OptionId
+    /// The value of an option that has one.
+    pub value: ?string
+    /// The index of the argument after those the option used.
+    pub next: usize
+}
+
+/// What `scan` made of an argument.
+pub Scan :: union {
+    Found: Hit
+    /// Not an option of the table (a file, a lint option, an unknown option): the caller
+    /// decides.
+    Other
+    /// An option with a missing or invalid value: the message.
+    Bad: string
+}
+
+/// Reads the option at `args[at]` by `OPTIONS`; `repl` says that the command is `gamma repl`.
+pub scan :: fn(args: []const string, at: usize, repl: bool) -> Scan needs Alloc {
+    a := args[at]
+    for spec in OPTIONS[..] {
+        if spec.id is .Lint or (spec.repl_only and not repl) { continue }
+        for name in str.split(spec.names, " ") {
+            is_long := name.starts_with("--")
+            if a is name {
+                match spec.form {
+                    .None, .Optional => return .Found(Hit(id: spec.id, value: null, next: at + 1))
+                    .Separate, .Either => {
+                        if at + 1 >= args.len { return .Bad(str.format("`{}` needs {}", a, spec.needs)!) }
+                        return .Found(Hit(id: spec.id, value: args[at + 1], next: at + 2))
+                    }
+                    .Attached => {}
+                }
+            }
+            if not is_long or spec.form in (ValueForm.None, ValueForm.Separate) { continue }
+            if a.len > name.len and a.starts_with(name) and a[name.len] is '=' {
+                value := a[name.len + 1..]
+                if message := value_error(&spec, value) { return .Bad(message) }
+                return .Found(Hit(id: spec.id, value: value, next: at + 1))
+            }
+        }
+    }
+    return .Other
+}
+
+/// Why `value` is not one that `spec` accepts, if it is not.
+value_error :: fn(spec: ^const OptionSpec, value: string) -> ?string needs Alloc {
+    if spec.refuse.len > 0 and value is spec.refuse { return spec.refuse_message }
+    name := words(spec.names).items[0]
+    if spec.choices.len > 0 {
+        choices := words(spec.choices)
+        if value not in choices.items { return str.format("invalid value `{}` for {} (expected {})", value, name, choice_list(choices.items))! }
+    }
+    if spec.nonempty and value.len is 0 { return str.format("`{}=` needs {}", name, spec.needs)! }
+    return null
+}
+
+/// The words of `text`, which are separated by spaces.
+words :: fn(text: string) -> List(string) needs Alloc {
+    out := list(string)
+    for w in str.split(text, " ") { out.push(w)! }
+    return out
+}
+
+/// `a, b or c`.
+choice_list :: fn(choices: []const string) -> string needs Alloc {
+    last := choices.len - 1
+    head := str.join(choices[..last], ", ")!
+    return str.format("{} or {}", head, choices[last])!
+}
+
+/// The mode that the value of a `--mode=` option names.
+pub mode_of :: fn(value: string) -> Mode => match value {
+    "checked" => .Checked
+    "safe" => .Safe
+    "fast" => .Fast
+    _ => .Debug
+}
+
+/// The diagnostic format that the value of a `--diag-format=` option names.
+pub format_of :: fn(value: string) -> diag.Format => match value {
+    "short" => .Short
+    "json" => .Json
+    _ => .Human
+}
+
+/// The column where the descriptions of the options start.
+HELP_COLUMN: usize : 30
+
+/// How the usage text shows an option's spellings: `-j <n>`, `--jobs=<n>`.
+syntax :: fn(spec: ^const OptionSpec) -> string needs Alloc {
+    placeholder := if spec.choices.len > 0 { str.join(words(spec.choices).items, "|")! } else { str.format("<{}>", spec.arg)! }
+    parts := list(string)
+    for name in str.split(spec.names, " ") {
+        is_long := name.starts_with("--")
+        parts.push(match spec.form {
+            .None => name
+            .Attached => str.format("{}={}", name, placeholder)!
+            .Separate => str.format("{} {}", name, placeholder)!
+            .Either => if is_long { str.format("{}={}", name, placeholder)! } else { str.format("{} {}", name, placeholder)! }
+            .Optional => str.format("{}[={}]", name, placeholder)!
+        })!
+    }
+    return str.join(parts.items, ", ")!
+}
+
+/// Writes the lines of the options of the usage text.
+pub options_help :: fn(out: ^List(u8)) needs Alloc {
+    for spec in OPTIONS[..] {
+        text := syntax(&spec)
+        out.extend("  ")!
+        out.extend(text)!
+        if text.len + 2 < HELP_COLUMN {
+            for _ in text.len + 2..HELP_COLUMN { out.push(' ')! }
+        } else {
+            out.push('\n')!
+            for _ in 0..HELP_COLUMN { out.push(' ')! }
+        }
+        if spec.commands.len > 0 {
+            out.extend(str.format("({}) ", str.join(words(spec.commands).items, ", ")!)!)!
+        }
+        first := true
+        for line in str.split(spec.help, "\n") {
+            if not first {
+                out.push('\n')!
+                for _ in 0..HELP_COLUMN { out.push(' ')! }
+            }
+            first = false
+            out.extend(line)!
+        }
+        out.push('\n')!
+    }
+}
+
+test "the usage text lists every option once" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        out := list(u8)
+        options_help(&out)
+        for spec in OPTIONS[..] {
+            for name in str.split(spec.names, " ") { expect(str.contains(out.items, name)) }
+        }
+        for i, a in enumerate(OPTIONS[..]) {
+            for j, b in enumerate(OPTIONS[..]) {
+                if i is j { continue }
+                for n in str.split(a.names, " ") {
+                    for m in str.split(b.names, " ") { expect(n is not m) }
+                }
+            }
+        }
+    }
+}
+
+/// The hit of the option at `at`, which the test needs to be one.
+hit_at :: fn(args: []const string, at: usize, repl: bool, loc: SourceLocation = @caller_location()) -> Hit needs Alloc + Test {
+    match scan(args, at, repl) {
+        .Found(h) => return h
+        .Other => Test.fail(str.format("`{}` is not an option", args[at])!, loc)
+        .Bad(m) => Test.fail(str.format("`{}`: {}", args[at], m)!, loc)
+    }
+}
+
+test "scan reads the spellings of the table" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        args := [_]string("-j", "4", "--jobs=2", "--coverage", "--coverage=x.lcov", "--mode=fast", "--bogus", "-o")
+        h := hit_at(args[..], 0, false)
+        expect(h.id is .Jobs)
+        expect_eq(h.value, "4")
+        expect_eq(h.next, 2)
+        expect_eq(hit_at(args[..], 2, false).value, "2")
+        expect_eq(hit_at(args[..], 3, false).value, null)
+        expect_eq(hit_at(args[..], 4, false).value, "x.lcov")
+        expect(scan(args[..], 6, false) is .Other)
+        match scan(args[..], 7, false) {
+            .Bad(m) => expect_eq(m, "`-o` needs a file name")
+            _ => expect(false, "`-o` without a file was accepted")
+        }
+    }
+}
+
+test "values are checked against the choices" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        args := [_]string("--mode=slow", "--quiet")
+        match scan(args[..], 0, true) {
+            .Bad(m) => expect_eq(m, "invalid value `slow` for --mode (expected debug, checked, safe or fast)")
+            _ => expect(false, "`--mode=slow` was accepted")
+        }
+        expect(scan(args[..], 1, false) is .Other)
+        expect(hit_at(args[..], 1, true).id is .Quiet)
+    }
+}

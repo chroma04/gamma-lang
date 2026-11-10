@@ -20,7 +20,7 @@ pub dump_tokens :: fn(f: ^const source.SourceFile, tokens: []const Token, out: ^
             }
             .Float(l) => {
                 out.extend(if l.imag { "imag " } else { "float " })!
-                l.value.write_rational(out)
+                l.value.write(out)
                 if s := l.suffix { out.write(" {}", float_suffix_name(s))! }
                 out.push('\n')!
             }

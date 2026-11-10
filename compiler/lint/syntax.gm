@@ -422,11 +422,10 @@ use_label :: fn(w: ^Walk, label: ?ast.Ident) {
 expr :: fn(w: ^Walk, e: ^const ast.Expr) needs Alloc {
     match e.kind {
         .Int(_), .Float(_), .Str(_), .Bool(_), .Null, .Uninit, .Ident(_), .Underscore, .DotIdent(_), .Import(_), .Error => {}
-        .Paren(x), .Elements(x), .OptUnwrap(x), .ResUnwrap(x), .Deref(x), .OptionalType(x), .ContType(x) => w.expr(x)
-        .PtrType(_, x), .SliceType(_, x), .ManyPtrType(_, x) => w.expr(x)
-        .Tuple(elems) => {
-            for i in 0..elems.len { w.expr(&elems[i].value) }
-        }
+        .Paren(_), .Elements(_), .OptUnwrap(_), .ResUnwrap(_), .Deref(_), .OptionalType(_), .ContType(_), .PtrType(_, _),
+        .SliceType(_, _), .ManyPtrType(_, _), .Tuple(_), .Binary(_, _, _), .Bang(_, _), .ErrorUnionType(_, _),
+        .Call(_, _, _), .Intrinsic(_), .Index(_, _), .Slice(_), .Field(_, _), .TupleField(_, _, _), .ArrayType(_),
+        .Attributed(_, _), .Resume(_) => ast.for_each_child(e, fn(c: ^const ast.Expr) { w.expr(c) })
         .Unary(op, operand) => {
             if op is .Not {
                 inner := operand
@@ -445,46 +444,13 @@ expr :: fn(w: ^Walk, e: ^const ast.Expr) needs Alloc {
             }
             w.expr(operand)
         }
-        .Binary(_, lhs, rhs) => {
-            w.expr(lhs)
-            w.expr(rhs)
-        }
-        .Bang(lhs, rhs) => {
-            w.expr(lhs)
-            w.expr(rhs)
-        }
-        .ErrorUnionType(err, ok) => {
-            w.expr(err)
-            w.expr(ok)
-        }
         .Else(x) => {
             if c := x.capture { w.capture(c, true) }
             w.expr(x.lhs)
             w.expr(x.rhs)
         }
-        .Call(callee, args, _) => {
-            w.expr(callee)
-            w.args(args)
-        }
-        .Intrinsic(x) => w.args(x.args else empty_slice(ast.Arg))
-        .Index(base, index) => {
-            w.expr(base)
-            w.expr(index)
-        }
-        .Slice(sl) => {
-            w.expr(sl.base)
-            if x := sl.lo { w.expr(x) }
-            if x := sl.hi { w.expr(x) }
-        }
-        .Field(base, _) => w.expr(base)
-        .TupleField(base, _, _) => w.expr(base)
-        .ArrayType(a) => {
-            if l := a.len { w.expr(l) }
-            w.expr(a.elem)
-        }
         .FnType(sig) => w.sig(sig, false)
         .Struct(_), .Union(_), .Effect(_), .Foreign(_) => {}
-        .Attributed(_, inner) => w.expr(inner)
         .Fn(f) => w.fn_lit(f)
         .Handler(h) => {
             for c in h.clauses { w.expr(c.body) }
@@ -526,20 +492,6 @@ expr :: fn(w: ^Walk, e: ^const ast.Expr) needs Alloc {
             if v := b.value { w.expr(v) }
         }
         .Continue(?label) => w.use_label(label)
-        .Resume(r) => {
-            w.expr(r.cont)
-            if v := r.value { w.expr(v) }
-        }
-    }
-}
-
-args :: fn(w: ^Walk, args: []const ast.Arg) needs Alloc {
-    for i in 0..args.len {
-        match args[i].kind {
-            .Positional(x) => w.expr(&x)
-            .Named(_, x) => w.expr(&x)
-            .Spread(x) => w.expr(&x)
-        }
     }
 }
 

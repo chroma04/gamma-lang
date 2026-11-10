@@ -35,9 +35,6 @@ SMALL_FN_NAMES: u32 : 64
 /// The largest local, in bytes, that may be a C local of its own (`frame_locals`).
 MAX_C_LOCAL: u64 : 32
 
-/// The largest `frame_cost` a function may have: far above any real thread's stack.
-MAX_FRAME: u64 : 1073741824
-
 /// The label and type of a `with` of the function: its result has a slot `wN` in the frame.
 WithSlot :: struct {
     label: u32
@@ -138,8 +135,8 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     g.protos.write("{};\n", sig)!
     // A frame that no stack can hold makes every call a stack overflow: the body is only
     // the trap, which names the function and its frame as the interpreter's does.
-    cost := frame_cost(g, def)
-    if cost > MAX_FRAME {
+    cost := g.prog.s.frame_cost(def.locals, def.body)
+    if cost > sema.MAX_FRAME {
         name := c_string(def.name)
         g.bodies.write("{} {{\n    gm_frame_overflow({}, {}ull);\n}}\n", sig, name, cost)!
         return ()
@@ -333,90 +330,6 @@ stmt_span :: fn(s: ^const tir.Stmt) -> ?source.Span {
 collect_withs :: fn(e: ^Expr, out: ^List(WithSlot)) needs Alloc {
     if .With(w) := e.kind { out.push(WithSlot(label: w.label, ty: e.ty))! }
     tir.for_each_child(e, fn(c: ^Expr) { collect_withs(c, out) })
-}
-
-/// The local that place `e` is part of, if it is not reached through a pointer.
-root_local :: fn(g: ^Gen, e: ^Expr) -> ?u32 {
-    match e.kind {
-        .Local(l) => return l
-        .Field(base, _) => return root_local(g, base)
-        .Index(base, _, _) => if g.ty.kind(base.ty) is .Array(_, _, _) { return root_local(g, base) }
-        _ => {}
-    }
-    return null
-}
-
-/// The number of bytes `frame_cost` charges for one call of the function `def`: a fixed
-/// overhead for the return address, saved registers and spills; the locals; every
-/// composite temporary bigger than a register (call results, constructed values, and the
-/// copies made by reading a large value, but not by using it as a place); and the records
-/// of the handlers its `with`s install.
-frame_cost :: fn(g: ^Gen, def: ^const Func) -> u64 needs Alloc {
-    c: u64 = 256
-    for l in def.locals { c = c +| round8(g.ty.size(l.ty)) }
-    if b := def.body { frame_temps(g, b, false, &c) }
-    return c
-}
-
-round8 :: fn(n: u64) -> u64 => (n +| 7) & 0xFFFF_FFFF_FFFF_FFF8
-
-/// Adds the temporaries of `e` to `c`; `place` is set for an expression used as a place
-/// (the base of an index, field or slice, an operand of `&`, the target of an
-/// assignment): reading it makes no copy.
-frame_temps :: fn(g: ^Gen, e: ^Expr, place: bool, c: ^u64) needs Alloc {
-    add :: fn(t: Ty) needs Alloc {
-        n := g.ty.size(t)
-        if n > 8 { c^ = c^ +| round8(n) }
-    }
-    match e.kind {
-        .With(w) => { c^ = c^ +| 128 * u64(w.handlers.len) }
-        .Call(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .Builtin(_) => add(e.ty)
-        .Local(_), .Upvar(_), .Global(_) => if not place { add(e.ty) }
-        _ => {}
-    }
-    match e.kind {
-        .Deref(x), .Field(x, _), .Index(x, _, _) => {
-            if not place { add(e.ty) }
-            frame_temps(g, x, true, c)
-            if .Index(_, index, _) := e.kind { frame_temps(g, index, false, c) }
-            return ()
-        }
-        .AddrOf(x), .SliceLen(x), .SlicePtr(x) => {
-            frame_temps(g, x, true, c)
-            return ()
-        }
-        .Slice(sl) => {
-            frame_temps(g, sl.base, true, c)
-            if x := sl.lo { frame_temps(g, x, false, c) }
-            if x := sl.hi { frame_temps(g, x, false, c) }
-            return ()
-        }
-        .Block(b) => {
-            for st in b.stmts {
-                match st {
-                    .Assign(place_, value) => {
-                        frame_temps(g, place_, true, c)
-                        frame_temps(g, value, false, c)
-                    }
-                    .AssignTuple(places, value) => {
-                        for p in places {
-                            if x := p { frame_temps(g, x, true, c) }
-                        }
-                        frame_temps(g, value, false, c)
-                    }
-                    .Let(_, init) => frame_temps(g, init, false, c)
-                    .LetTuple(_, init) => frame_temps(g, init, false, c)
-                    .Expr(x) => frame_temps(g, x, false, c)
-                    .Defer(_, x) => frame_temps(g, x, false, c)
-                    _ => {}
-                }
-            }
-            if t := b.tail { frame_temps(g, t, false, c) }
-            return ()
-        }
-        _ => {}
-    }
-    tir.for_each_child(e, fn(x: ^Expr) { frame_temps(g, x, false, c) })
 }
 
 // --- the generator's helpers ------------------------------------------------------------
@@ -712,9 +625,23 @@ defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool)
 }
 
 /// Starts a non-local exit of `kind` to `frame` (a `gm_frame *`) and `label`.
-start_exit :: fn(fg: ^FnGen, kind: string, frame: string, label: string, is_err: string) needs Alloc {
+/// How an exit leaves (`gm_unw.kind` in the runtime).
+ExitKind :: union { Return, Break, Continue, Exit, Resume }
+
+/// The runtime's name for an exit kind.
+exit_c_name :: fn(k: ExitKind) -> string => match k {
+    .Return => "GM_RETURN"
+    .Break => "GM_BREAK"
+    .Continue => "GM_CONTINUE"
+    .Exit => "GM_EXIT"
+    .Resume => "GM_RESUME"
+}
+
+/// Starts an exit of `kind` to the frame `frame` (a C expression) at `label` (a C
+/// expression; 0 for none); `is_err` (C) is set for a `return` of an error.
+start_exit :: fn(fg: ^FnGen, kind: ExitKind, frame: string, label: string, is_err: string) needs Alloc {
     if frame is "(&F.h)" and not fg.outlined and fg.local_exit(kind, label, is_err) { return }
-    fg.linef("gm_unw.kind = {}; gm_unw.frame = {}; gm_unw.label = {}; gm_unw.is_err = {};", kind, frame, label, is_err)
+    fg.linef("gm_unw.kind = {}; gm_unw.frame = {}; gm_unw.label = {}; gm_unw.is_err = {};", exit_c_name(kind), frame, label, is_err)
     saved := fg.no_check
     fg.no_check = false
     fg.ladder()
@@ -725,10 +652,10 @@ start_exit :: fn(fg: ^FnGen, kind: string, frame: string, label: string, is_err:
 /// crosses, without going through `gm_unw`: the frame's address need not be taken, so the C
 /// compiler can keep its locals in registers. Returns false (emitting nothing) when the
 /// target is not statically known.
-local_exit :: fn(fg: ^FnGen, kind: string, label: string, is_err: string) -> bool needs Alloc {
+local_exit :: fn(fg: ^FnGen, kind: ExitKind, label: string, is_err: string) -> bool needs Alloc {
     target: ?usize = null
-    if kind is "GM_RETURN" {
-    } else if kind is "GM_BREAK" or kind is "GM_CONTINUE" {
+    if kind is .Return {
+    } else if kind in (.Break, .Continue) {
         found: ?usize = null
         i := fg.scopes.items.len
         while i > 0 {
@@ -737,7 +664,7 @@ local_exit :: fn(fg: ^FnGen, kind: string, label: string, is_err: string) -> boo
             hit := false
             match s.kind {
                 .Loop => { hit = str.format("{}", s.label)! is label }
-                .With => { hit = kind is "GM_BREAK" and str.format("{}", s.label)! is label }
+                .With => { hit = kind is .Break and str.format("{}", s.label)! is label }
                 .Block => {}
             }
             if hit {
@@ -755,7 +682,7 @@ local_exit :: fn(fg: ^FnGen, kind: string, label: string, is_err: string) -> boo
     // Errdefers run on a `return` of an error only: a `break` or `continue` within the
     // function never runs them. An exit that crosses a `defer` takes the ladder, so that
     // each deferred body is emitted once.
-    err := kind is "GM_RETURN" and not (is_err is "0")
+    err := kind is .Return and not (is_err is "0")
     for j in start..fg.scopes.items.len {
         s := fg.scopes.items[j]
         if s.kind is .Block {
@@ -768,7 +695,7 @@ local_exit :: fn(fg: ^FnGen, kind: string, label: string, is_err: string) -> boo
     if t := target {
         s := fg.scopes.items[t]
         match s.kind {
-            .Loop => if kind is "GM_BREAK" { dest = s.brk } else { dest = s.cont }
+            .Loop => if kind is .Break { dest = s.brk } else { dest = s.cont }
             .With => { dest = s.end }
             .Block => @unreachable()
         }
@@ -1070,7 +997,7 @@ stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
             if fg.builds_in_place(value) {
                 p := try fg.assign_addr(place, value)
                 c := fg.g.ty.cty(place.ty)
-                root := root_local(fg.g, place)
+                root := fg.g.prog.s.root_local(place)
                 try fg.expr_into(value, str.format("(*({} *){})", c, p)!, Observed.Any(root))
                 return ()
             }
@@ -1190,9 +1117,7 @@ has_fiber_with :: fn(e: ^Expr) -> bool {
     if .With(w) := e.kind {
         if w.on is not null { return true }
     }
-    found := false
-    tir.for_each_child(e, fn(c: ^Expr) { found = found or has_fiber_with(c) })
-    return found
+    return tir.any_child(e, fn(c: ^Expr) -> bool => has_fiber_with(c))
 }
 
 /// Adds the locals of enclosing functions that `e`, in the body of `f`, refers to.
@@ -1230,7 +1155,5 @@ may_write :: fn(e: ^Expr) -> bool {
         _ => {}
     }
     if writes { return true }
-    r := false
-    tir.for_each_child(e, fn(c: ^Expr) { r = r or may_write(c) })
-    return r
+    return tir.any_child(e, fn(c: ^Expr) -> bool => may_write(c))
 }

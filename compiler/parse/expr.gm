@@ -96,8 +96,7 @@ parse_expr :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 /// Parses an expression with `{` reserved for the body of the construct whose head this
 /// is (A.7 rule 4).
 parse_head_expr :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
-    old := p.restr
-    p.restr = Restr(no_brace: true)
+    old := p.set_restr(Restr(no_brace: true))
     defer p.restr = old
     return p.parse_expr()
 }
@@ -418,9 +417,8 @@ parse_dot_suffix :: fn(p: ^Parser, base: ast.Expr) -> Abort!ast.Expr needs Alloc
         .Int(l) => {
             _ = p.bump()
             index: u32 = 0
-            limbs := l.value.limbs.items
-            if limbs.len <= 1 and l.suffix is null {
-                index = limbs.first() else 0
+            if v := l.value.to_u64() and v <= 0xFFFF_FFFF and l.suffix is null {
+                index = v.trunc(u32)
             } else {
                 p.report(at, "invalid tuple index")
             }
@@ -448,8 +446,7 @@ parse_bang :: fn(p: ^Parser, lhs: ast.Expr) -> Abort!ast.Expr needs Alloc {
 parse_subscript :: fn(p: ^Parser, base: ast.Expr) -> Abort!ast.Expr needs Alloc {
     start := base.span.lo
     _ = p.bump()
-    old := p.restr
-    p.restr = Restr(in_index: true)
+    old := p.set_restr(Restr(in_index: true))
     sub := p.parse_subscript_inner()
     p.restr = old
     s := try sub
@@ -504,8 +501,7 @@ CallArgs :: struct {
 /// `( args )`, and whether a trailing comma was written.
 parse_call_args :: fn(p: ^Parser) -> Abort!CallArgs needs Alloc {
     _ = try p.expect(.LParen, "")
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     args := list(ast.Arg)
     trailing := false
@@ -644,8 +640,7 @@ parse_primary :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 parse_paren :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
     start := p.lo()
     _ = try p.expect(.LParen, "")
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     elems := list(ast.TupleElem)
     comma := false

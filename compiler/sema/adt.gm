@@ -300,6 +300,42 @@ pub(package) bit_width :: fn(s: ^const Sema, t: Ty) -> ?u64 {
     }
 }
 
+/// The width in bits of a value of `t` as a `#bits` field (§5.10.5), or for any other
+/// type its size in bits.
+pub field_bits :: fn(s: ^Sema, t: Ty) -> u32 needs Alloc {
+    if w := s.bit_width(t) { return w.trunc(u32) }
+    return (8 * s.layout(t).size).trunc(u32)
+}
+
+/// A field of a `#bits` struct: bit offset, width and type.
+pub BitField :: struct {
+    pub off: u32
+    pub width: u32
+    pub ty: Ty
+}
+
+/// The layout of a `#bits` struct: its underlying integer type and each field's bit
+/// offset, width and type, in declaration order from the least significant bit.
+pub BitsLayout :: struct {
+    pub int_ty: Ty
+    pub fields: []const BitField
+}
+
+/// The layout of `t` if it is a `#bits` struct.
+pub bits_layout :: fn(s: ^Sema, t: Ty) -> ?BitsLayout needs Alloc {
+    .Adt(id, _) := s.tys.kind(t) else return null
+    .Struct(sd) := s.adts.items[usize(id)].kind else return null
+    u := sd.bits else return null
+    off: u32 = 0
+    out := list(BitField)
+    for fd in sd.fields {
+        w := s.field_bits(fd.ty)
+        out.push(BitField(off: off, width: w, ty: fd.ty))!
+        off += w
+    }
+    return BitsLayout(int_ty: u, fields: out.items)
+}
+
 union_kind :: fn(s: ^Sema, module: usize, u: ^const ast.UnionLit, attrs: []const ast.Attribute) -> AdtKind needs Load {
     c_union := false
     for a in attrs {

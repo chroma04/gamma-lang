@@ -1,0 +1,90 @@
+// The stack bytes a call of a function is charged (§18.6): the same count for the C back
+// end, the interpreter and the static stack-size analysis, so that they agree on which
+// calls overflow.
+
+/// The largest `frame_cost` a function may have: far above any real thread's stack. A
+/// call of a function with a larger frame is a stack overflow.
+pub MAX_FRAME: u64 : 1 << 30
+
+/// The number of bytes charged for one call of a function with these locals and body: a
+/// fixed overhead for the return address, saved registers and spills; the locals; every
+/// composite temporary bigger than a register (call results, constructed values, and the
+/// copies made by reading a large value, but not by using it as a place); and the records
+/// of the handlers its `with`s install.
+pub frame_cost :: fn(s: ^Sema, locals: []const tir.LocalDecl, body: ?^Expr) -> u64 needs Alloc {
+    c: u64 = 256
+    for l in locals { c = c +| round8(s.layout(l.ty).size) }
+    if b := body { frame_temps(s, b, false, &c) }
+    return c
+}
+
+round8 :: fn(n: u64) -> u64 => (n +| 7) & 0xFFFF_FFFF_FFFF_FFF8
+
+/// Adds the temporaries of `e` to `c`; `place` is set for an expression used as a place
+/// (the base of an index, field or slice, an operand of `&`, the target of an
+/// assignment): reading it makes no copy.
+frame_temps :: fn(s: ^Sema, e: ^Expr, place: bool, c: ^u64) needs Alloc {
+    add :: fn(t: Ty) needs Alloc {
+        n := s.layout(t).size
+        if n > 8 { c^ = c^ +| round8(n) }
+    }
+    match e.kind {
+        .With(w) => { c^ = c^ +| 128 * u64(w.handlers.len) }
+        .Call(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .Builtin(_) => add(e.ty)
+        .Local(_), .Upvar(_), .Global(_) => if not place { add(e.ty) }
+        _ => {}
+    }
+    match e.kind {
+        .Deref(x), .Field(x, _), .Index(x, _, _) => {
+            if not place { add(e.ty) }
+            frame_temps(s, x, true, c)
+            if .Index(_, index, _) := e.kind { frame_temps(s, index, false, c) }
+            return
+        }
+        .AddrOf(x), .SliceLen(x), .SlicePtr(x) => {
+            frame_temps(s, x, true, c)
+            return
+        }
+        .Slice(sl) => {
+            frame_temps(s, sl.base, true, c)
+            if x := sl.lo { frame_temps(s, x, false, c) }
+            if x := sl.hi { frame_temps(s, x, false, c) }
+            return
+        }
+        .Block(b) => {
+            for st in b.stmts {
+                match st {
+                    .Assign(place_, value) => {
+                        frame_temps(s, place_, true, c)
+                        frame_temps(s, value, false, c)
+                    }
+                    .AssignTuple(places, value) => {
+                        for p in places {
+                            if x := p { frame_temps(s, x, true, c) }
+                        }
+                        frame_temps(s, value, false, c)
+                    }
+                    .Let(_, ?init) => if x := init { frame_temps(s, x, false, c) }
+                    .LetTuple(_, init) => frame_temps(s, init, false, c)
+                    .Expr(x) => frame_temps(s, x, false, c)
+                    .Defer(_, x) => frame_temps(s, x, false, c)
+                }
+            }
+            if t := b.tail { frame_temps(s, t, false, c) }
+            return
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { frame_temps(s, x, false, c) })
+}
+
+/// The local that place `e` is part of, if it is not reached through a pointer.
+pub root_local :: fn(s: ^const Sema, e: ^Expr) -> ?u32 {
+    match e.kind {
+        .Local(l) => return l
+        .Field(base, _) => return root_local(s, base)
+        .Index(base, _, _) => if s.tys.kind(base.ty) is .Array(_, _, _) { return root_local(s, base) }
+        _ => {}
+    }
+    return null
+}

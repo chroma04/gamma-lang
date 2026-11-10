@@ -729,3 +729,61 @@ pub PatArg :: struct {
     pub pat: Pattern
     pub span: source.Span
 }
+
+// ---------------------------------------------------------------------------------
+// Traversal
+// ---------------------------------------------------------------------------------
+
+/// Calls `f` on each direct sub-expression of `e`, in source order, for the expressions
+/// whose children are all expressions: operands, type operands, call arguments, tuple
+/// elements, slice bounds, the value of `return`, `break` and `resume`. It does nothing
+/// for literals, names and the constructs that hold blocks, patterns, signatures or
+/// declarations (`if`, `match`, `with`, `for`, blocks, functions, handlers, type
+/// literals) and for `else`, whose capture scopes its right operand: a walker that
+/// tracks scopes handles those itself.
+pub for_each_child :: fn(e: ^const Expr, f: fn(c: ^const Expr)) {
+    match e.kind {
+        .Paren(x), .Elements(x), .OptUnwrap(x), .ResUnwrap(x), .Deref(x), .OptionalType(x), .ContType(x) => f(x)
+        .PtrType(_, x), .SliceType(_, x), .ManyPtrType(_, x), .Attributed(_, x) => f(x)
+        .Unary(_, x) => f(x)
+        .Tuple(elems) => for i in 0..elems.len { f(&elems[i].value) }
+        .Binary(_, a, b), .Bang(a, b), .ErrorUnionType(a, b), .Index(a, b) => {
+            f(a)
+            f(b)
+        }
+        .Field(x, _), .TupleField(x, _, _) => f(x)
+        .ArrayType(a) => {
+            if l := a.len { f(l) }
+            f(a.elem)
+        }
+        .Slice(sl) => {
+            f(sl.base)
+            if x := sl.lo { f(x) }
+            if x := sl.hi { f(x) }
+        }
+        .Call(callee, args, _) => {
+            f(callee)
+            for i in 0..args.len { arg_expr(&args[i], f) }
+        }
+        .Intrinsic(x) => {
+            if args := x.args {
+                for i in 0..args.len { arg_expr(&args[i], f) }
+            }
+        }
+        .Return(?v) => if x := v { f(x) }
+        .Break(b) => if v := b.value { f(v) }
+        .Resume(r) => {
+            f(r.cont)
+            if v := r.value { f(v) }
+        }
+        _ => {}
+    }
+}
+
+arg_expr :: fn(a: ^const Arg, f: fn(c: ^const Expr)) {
+    match a.kind {
+        .Positional(x) => f(&x)
+        .Named(_, x) => f(&x)
+        .Spread(x) => f(&x)
+    }
+}

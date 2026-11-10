@@ -13,6 +13,12 @@
 //! child must be ended with `wait`, or with a `try_wait` that returned its status (`null` while
 //! the child still runs). Tests cannot start processes: `spawn` fails with
 //! `PermissionDenied`.
+//!
+//! A program that may not finish is run with `output_within`, which kills it (with everything
+//! it started, if `SpawnOptions.group` is set) once a time limit is up; `watch` puts the same
+//! limit on a child that the caller drives itself.
+
+thread :: import "std/thread"
 
 /// A started child process (§21.7).
 pub Child :: core.Child
@@ -44,6 +50,8 @@ pub Output :: struct {
     pub status: ExitStatus
     pub out: List(u8)
     pub err: List(u8)
+    /// The program was killed because it outlived the limit of `output_within`.
+    pub timed_out: bool = false
 }
 
 /// Frees the output.
@@ -104,4 +112,135 @@ pub output :: fn(argv: []const string, opts: SpawnOptions = SpawnOptions()) -> R
 pub status :: fn(argv: []const string, opts: SpawnOptions = SpawnOptions()) -> IoError!ExitStatus needs Proc {
     c := try Proc.spawn(argv, opts)
     return c.wait()
+}
+
+/// Runs the program like `output`, but kills it once it has run for `limit` (with its whole
+/// process group if `opts.group` is set; the program otherwise leaves its own children
+/// running, and they may keep the pipes open). `timed_out` of the result tells that the limit
+/// ended it. With `input`, the bytes are written to the program's standard input, which is
+/// then closed (`opts.stdin` is replaced by a pipe); the writing runs on a thread of its own,
+/// so a program that writes much before it reads all its input does not block. Release the
+/// result with `deinit`. Needs `Sys` for the threads.
+pub output_within :: fn(argv: []const string, limit: Duration, opts: SpawnOptions = SpawnOptions(), input: ?[]const u8 = null) -> RunError!Output needs Proc + Alloc + Clock + Sys {
+    o := opts
+    o.stdout = .Pipe
+    o.stderr = .Pipe
+    if input is null {} else { o.stdin = .Pipe }
+    c := try Proc.spawn(argv, o)
+    w := try watch(c, limit)
+    feed := Feed(child: c, bytes: empty_slice(u8))
+    feeder: ?thread.Thread = null
+    if bytes := input {
+        feed.bytes = bytes
+        if f := thread.spawn(feed_input, &feed) { feeder = f } else { _ = c.kill() }
+    }
+    out := list(u8)
+    err := list(u8)
+    failed: ?RunError = null
+    drain(c, &out, &err) else e => {
+        failed = e
+        _ = c.kill()
+    }
+    // The other threads are done with the child before `wait` releases its handle, which a
+    // later child may get.
+    if f := feeder { thread.join(f) }
+    fired := w.disarm()
+    status := c.wait()
+    if f := failed {
+        out.deinit()
+        err.deinit()
+        return !f
+    }
+    s := status else e => {
+        out.deinit()
+        err.deinit()
+        return !.Io(e)
+    }
+    return Output(status: s, out: out, err: err, timed_out: fired)
+}
+
+/// The time limit on a running child: a thread that kills the child (with everything in its
+/// process group if it was started with `group`) once the limit is up, unless it is disarmed
+/// first.
+pub Watchdog :: struct {
+    state: ^Watch
+    thread: thread.Thread
+    alloc: Allocator
+}
+
+/// Starts a watchdog that kills `child` after `limit`. If it cannot be started, the child is
+/// killed and waited for, and the error is returned.
+pub watch :: fn(child: Child, limit: Duration) -> RunError!Watchdog needs Alloc + Proc + Sys {
+    a := Alloc.current()
+    state := new(Watch(child: child, limit: limit, m: thread.mutex(), cv: thread.condvar())) else e => {
+        _ = child.kill()
+        _ = child.wait()
+        return !.Alloc(e)
+    }
+    th := thread.spawn(watch_main, state) else e => {
+        _ = child.kill()
+        _ = child.wait()
+        a.vt.free(a.data, state.cast([^]u8), @size_of(Watch), @align_of(Watch))
+        return !.Io(e)
+    }
+    return Watchdog(state: state, thread: th, alloc: a)
+}
+
+/// Stops the watchdog, once, and returns whether it killed the child. Call it before the
+/// child is waited for (`wait` releases the child's handle, which a later child may get), and
+/// do not use the watchdog afterwards.
+pub disarm :: fn(w: ^Watchdog) -> bool needs Sys {
+    s := w.state
+    s.m.lock()
+    s.done = true
+    s.m.unlock()
+    s.cv.signal()
+    thread.join(w.thread)
+    fired := s.fired
+    w.alloc.vt.free(w.alloc.data, s.cast([^]u8), @size_of(Watch), @align_of(Watch))
+    return fired
+}
+
+Watch :: struct {
+    child: Child
+    limit: Duration
+    m: thread.Mutex
+    cv: thread.Condvar
+    done: bool = false
+    fired: bool = false
+}
+
+watch_main :: fn(w: ^Watch) needs Sys {
+    thread.defaults(fn() needs Clock + Proc {
+        start := Clock.now()
+        w.m.lock()
+        while not w.done {
+            spent := Clock.now().since(start)
+            if spent.ns >= w.limit.ns {
+                w.fired = true
+                _ = w.child.kill()
+                break
+            }
+            _ = w.cv.wait_timeout(&w.m, w.limit.minus(spent))
+        }
+        w.m.unlock()
+    })
+}
+
+// The writer of a program's input, on a thread of its own so that the program's output is
+// read while it reads its input.
+Feed :: struct {
+    child: Child
+    bytes: []const u8
+}
+
+feed_input :: fn(f: ^Feed) needs Sys {
+    thread.defaults(fn() needs Proc {
+        rest := f.bytes
+        while rest.len > 0 {
+            n := f.child.write(rest) else break
+            rest = rest[n..]
+        }
+        f.child.close_in()
+    })
 }

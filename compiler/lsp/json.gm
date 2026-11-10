@@ -1,6 +1,7 @@
 //! The JSON values of the language server: building them, reading the fields of a request,
 //! and writing them with the members of every object in the order of their keys.
 
+diag :: import "../diag"
 json :: import "std/json"
 
 pub Value :: json.Value
@@ -97,7 +98,7 @@ write_value :: fn(out: ^List(u8), v: Value) needs Alloc {
         .Null => out.extend("null")!
         .Bool(b) => out.extend(if b { "true" } else { "false" })!
         .Number(n) => out.extend(n.text)!
-        .String(s) => write_string(out, s)
+        .String(s) => diag.json_string(s, out)
         .Array(xs) => {
             out.push('[')!
             for i, x in enumerate(xs) {
@@ -121,37 +122,13 @@ write_value :: fn(out: ^List(u8), v: Value) needs Alloc {
             out.push('{')!
             for k, i in enumerate(order.items) {
                 if k > 0 { out.push(',')! }
-                write_string(out, ms[i].key)
+                diag.json_string(ms[i].key, out)
                 out.push(':')!
                 write_value(out, ms[i].value)
             }
             out.push('}')!
         }
     }
-}
-
-/// A string literal with the escapes JSON needs and nothing else.
-write_string :: fn(out: ^List(u8), s: string) needs Alloc {
-    out.push('"')!
-    start: usize = 0
-    for i in 0..s.len {
-        c := s[i]
-        if c >= 0x20 and c is not '"' and c is not '\\' { continue }
-        out.extend(s[start..i])!
-        start = i + 1
-        match c {
-            '"' => out.extend("\\\"")!
-            '\\' => out.extend("\\\\")!
-            '\n' => out.extend("\\n")!
-            '\r' => out.extend("\\r")!
-            '\t' => out.extend("\\t")!
-            8 => out.extend("\\b")!
-            12 => out.extend("\\f")!
-            _ => out.write("\\u{:04x}", c)!
-        }
-    }
-    out.extend(s[start..])!
-    out.push('"')!
 }
 
 /// The compact JSON text of `v`.

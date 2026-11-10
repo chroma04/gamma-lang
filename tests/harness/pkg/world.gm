@@ -24,19 +24,7 @@ starts_with :: fn(s, prefix: string) -> bool => str.strip_prefix(s, prefix) is n
 
 ends_with :: fn(s, suffix: string) -> bool => str.strip_suffix(s, suffix) is not null
 
-/// Deletes a tree whose directories may be read-only (fetched packages are).
-force_remove :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
-    if not fs.exists(p) { return () }
-    when target.os is not .Windows {
-        c := kit.command("chmod")
-        c.args([_]string("-R", "u+rwx", p))
-        _ = try t.run(c)
-    }
-    fs.remove_all(p) else e => {
-        if e is not .NotFound { return !t.fail("cannot remove {}: {}", p, e) }
-    }
-    return ()
-}
+force_remove :: kit.force_remove
 
 /// Lets the file `p` be written (fetched files are read-only).
 make_writable :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
@@ -52,25 +40,16 @@ make_writable :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
     return ()
 }
 
-/// The absolute path of `p` with symbolic links resolved.
-canonical :: fn(t: ^kit.T, p: string) -> kit.Fail!string needs kit.Run {
-    when target.os is .Windows {
-        return p
-    } else {
-        c := kit.command("sh")
-        c.args([_]string("-c", "cd \"$1\" && pwd -P", "sh", p))
-        out := try t.run_ok(c)
-        return str.trim(out.out)
-    }
-}
+canonical :: kit.canonical
 
 /// A fresh directory for the test `name`.
 world :: fn(t: ^kit.T, name: string) -> kit.Fail!World needs kit.Run {
-    dir := kit.join(kit.join(t.cfg.tmp, "pkg"), name)
-    try force_remove(t, dir)
-    fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
-    return World(t: t, root: try canonical(t, dir))
+    return World(t: t, root: try kit.world_dir(t, "pkg", name))
 }
+
+at :: fn(w: ^const World, rel: string) -> string needs Alloc => kit.join(w.root, rel)
+
+cache_dir :: fn(w: ^const World) -> string needs Alloc => w.at("cache")
 
 /// A fresh directory outside any git work tree (the test directory may be inside one),
 /// which `dispose` deletes.
@@ -92,10 +71,6 @@ dispose :: fn(w: ^const World) needs Alloc + Fs + Proc {
     }
     _ = fs.remove_all(w.owned)
 }
-
-at :: fn(w: ^const World, rel: string) -> string needs Alloc => kit.join(w.root, rel)
-
-cache_dir :: fn(w: ^const World) -> string needs Alloc => w.at("cache")
 
 /// The `file:` URL of the local path `p`, as git takes it (`file:///D:/x` on Windows).
 file_url :: fn(p: string) -> string needs Alloc {

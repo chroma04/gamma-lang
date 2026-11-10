@@ -9,7 +9,7 @@ process :: import "std/process"
 str :: import "std/str"
 
 /// A running server and what is known of its output.
-Lsp :: struct {
+pub Lsp :: struct {
     t: ^kit.T
     child: process.Child
     /// The bytes read from the server's standard output; those before `consumed` are
@@ -26,11 +26,11 @@ Lsp :: struct {
     /// The server was waited for.
     stopped: bool = false
     err_logged: bool = false
-    watch: kit.Watchdog
+    watch: process.Watchdog
 }
 
 /// Starts the server with extra environment settings (`NAME=value`).
-start_with :: fn(t: ^kit.T, env: []const string) -> kit.Fail!Lsp needs kit.Run {
+pub start_with :: fn(t: ^kit.T, env: []const string) -> kit.Fail!Lsp needs kit.Run {
     c := t.gamma([_]string("lsp"))
     for e in env { c.env.push(e)! }
     opts := process.SpawnOptions(stdin: .Pipe, stdout: .Pipe, stderr: .Pipe, env: c.env.items, group: true)
@@ -69,7 +69,7 @@ finish :: fn(l: ^Lsp) -> kit.Fail!process.ExitStatus needs kit.Run {
 
 /// Ends the server if the test has not (kill, wait) and shows what it wrote to its standard
 /// error if the test failed. Call it with `defer` right after starting.
-stop :: fn(l: ^Lsp) needs Alloc + Proc + Sys {
+pub stop :: fn(l: ^Lsp) needs Alloc + Proc + Sys {
     if not l.stopped {
         _ = Proc.kill(l.child)
         _ = l.reap()
@@ -84,7 +84,7 @@ stop :: fn(l: ^Lsp) needs Alloc + Proc + Sys {
 close_input :: fn(l: ^Lsp) needs Proc { Proc.close_in(l.child) }
 
 /// Ends the session: shutdown, exit, and the server's exit code, which must be 0.
-shutdown :: fn(l: ^Lsp) -> kit.Fail!() needs kit.Run {
+pub shutdown :: fn(l: ^Lsp) -> kit.Fail!() needs kit.Run {
     r := try l.result("shutdown", "null")
     try expect_null(l.t, "the result of shutdown", r)
     try l.notify("exit", "null")
@@ -192,7 +192,7 @@ result :: fn(l: ^Lsp, method, params: string) -> kit.Fail!json.Value needs kit.R
 }
 
 /// Sends the `initialize` request and the `initialized` notification; returns the result.
-initialize :: fn(l: ^Lsp) -> kit.Fail!json.Value needs kit.Run {
+pub initialize :: fn(l: ^Lsp) -> kit.Fail!json.Value needs kit.Run {
     r := try l.result("initialize", "{\"processId\":null,\"rootUri\":null,\"capabilities\":{}}")
     try l.notify("initialized", "{}")
     return r
@@ -206,7 +206,7 @@ initialize_watching :: fn(l: ^Lsp) -> kit.Fail!() needs kit.Run {
 }
 
 /// Opens the document `path` with `text` as its buffer.
-open :: fn(l: ^Lsp, path, text: string) -> kit.Fail!() needs kit.Run {
+pub open :: fn(l: ^Lsp, path, text: string) -> kit.Fail!() needs kit.Run {
     params := str.format(
         "{{\"textDocument\":{{\"uri\":{},\"languageId\":\"gamma\",\"version\":1,\"text\":{}}}}}",
         jq(uri(path)),
@@ -245,7 +245,7 @@ publishes :: fn(m: json.Value, path: string, version: i64) -> bool needs Alloc {
 }
 
 /// The next diagnostics published for `path` at `version`.
-diagnostics :: fn(l: ^Lsp, path: string, version: i64) -> kit.Fail![]json.Value needs kit.Run {
+pub diagnostics :: fn(l: ^Lsp, path: string, version: i64) -> kit.Fail![]json.Value needs kit.Run {
     for i in 0..l.queued.items.len {
         if publishes(l.queued.items[i], path, version) {
             m := l.queued.remove(i)

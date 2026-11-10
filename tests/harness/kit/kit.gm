@@ -15,8 +15,8 @@
 //! allocate freely. `Env.var` sees the variables the harness started with (those named in
 //! `VARS`); a test changes the environment of the programs it runs, never its own.
 
+diag :: import "gammac/diag"
 fs :: import "std/fs"
-json :: import "std/json"
 load :: import "gammac/load"
 path :: import "std/path"
 str :: import "std/str"
@@ -243,11 +243,35 @@ pub read_if_exists :: fn(t: ^T, p: string) -> Fail!?string needs Alloc + Fs {
     return r
 }
 
+/// Compares `actual` with the golden file `golden`, a missing file counting as empty. Returns
+/// null if they are the same, else a message that says what `what` is and shows the
+/// difference; for the caller to report. With `BLESS=1` (`t.cfg.bless`) the file is rewritten
+/// from `actual` instead, and the result is null (an empty `actual` does not create a file).
+pub golden :: fn(t: ^T, what, golden, actual: string) -> Fail!?string needs Alloc + Fs {
+    if t.cfg.bless {
+        try t.bless(golden, actual)
+        return null
+    }
+    return try t.golden_diff(what, golden, actual)
+}
+
+/// Like `golden`, but never rewrites the file.
+pub golden_diff :: fn(t: ^T, what, golden, actual: string) -> Fail!?string needs Alloc + Fs {
+    expected := (try t.read_if_exists(golden)) else ""
+    if expected is actual { return null }
+    return str.format("{} differs from {} (`BLESS=1` rewrites golden files):\n{}", what, golden, diff(expected, actual))!
+}
+
+/// Rewrites the golden file `golden` from `actual`; an empty `actual` does not create it.
+pub bless :: fn(t: ^T, golden, actual: string) -> Fail!() needs Alloc + Fs {
+    if actual.len > 0 or fs.exists(golden) { try t.write(golden, actual) }
+    return ()
+}
+
 /// `s` as a JSON string, in its quotes.
 pub json_string :: fn(s: string) -> string needs Alloc {
     out := list(u8)
-    w := json.writer(&out)
-    w.write_string(s)!
+    diag.json_string(s, &out)
     return out.items
 }
 

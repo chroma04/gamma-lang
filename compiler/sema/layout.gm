@@ -1,11 +1,14 @@
-// The sizes and alignments of types on the target (§5.10.4), as far as checking needs
-// them. Sizes saturate at the largest `u64`, which is above any object size, so that a
+// The layouts of types on the target (§5.10.4): sizes, alignments and field offsets, for
+// the checker and the back ends alike. Sizes saturate at the largest `u64`, which is above any object size, so that a
 // type that is too large can be reported.
 
-/// A size and an alignment, in bytes.
+/// A size and an alignment, in bytes, and the offsets of the fields (of a struct or
+/// tuple), of the flag (`[0, flag]` for an optional) or of the tag and payload (a result or
+/// union; `[0]` for a union without payloads).
 pub Layout :: struct {
     pub size: u64
     pub align: u64
+    pub offsets: []const u64 = empty_slice(u64)
 }
 
 scalar :: fn(size: u64) -> Layout => Layout(size: size, align: size.max(1))
@@ -19,25 +22,28 @@ round_up :: fn(x, align: u64) -> u64 {
 }
 
 /// Lays out fields in order with C rules.
-struct_layout :: fn(fields: []const (layout: Layout, align: ?u64), packed: bool, min_align: ?u64) -> Layout {
+struct_layout :: fn(fields: []const (layout: Layout, align: ?u64), packed: bool, min_align: ?u64) -> Layout needs Alloc {
     offset: u64 = 0
     align: u64 = 1
+    offsets := list(u64)
     for f in fields {
         a := if packed { u64(1) } else if fa := f.align { fa.max(f.layout.align) } else { f.layout.align }
-        offset = round_up(offset, a) +| f.layout.size
+        offset = round_up(offset, a)
+        offsets.push(offset)!
+        offset = offset +| f.layout.size
         align = align.max(a)
     }
     if m := min_align { align = align.max(m) }
-    return Layout(size: round_up(offset, align), align: align)
+    return Layout(size: round_up(offset, align), align: align, offsets: offsets.items)
 }
 
-pair :: fn(a, b: Layout) -> Layout {
+pair :: fn(a, b: Layout) -> Layout needs Alloc {
     fields := [2](layout: Layout, align: ?u64)((layout: a, align: null), (layout: b, align: null))
     return struct_layout(fields[..], false, null)
 }
 
 /// True for the pointer kinds whose optional uses address 0 as null (§5.12).
-pub(package) is_nullable_pointer :: fn(s: ^Sema, t: Ty) -> bool => s.tys.kind(t) in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_))
+pub is_nullable_pointer :: fn(s: ^const Sema, t: Ty) -> bool => s.tys.kind(t) in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_))
 
 /// The layout of `t`, computed once per query: types are shared DAGs whose expanded
 /// trees can be exponentially large.
@@ -70,7 +76,7 @@ compute_layout :: fn(s: ^Sema, t: Ty) -> Layout needs Alloc {
         .Float(bits) => return scalar(u64(bits / 8))
         .Bool => return scalar(1)
         .Rawptr, .Ptr(_), .ManyPtr(_), .FnPtr(_) => return scalar(p)
-        .Slice(_) => return Layout(size: 2 * p, align: p)
+        .Slice(_) => return pair(scalar(p), scalar(p))
         .Array(len, elem, kind) => {
             e := s.layout(elem)
             // A vector is aligned to its size, a power of two (§5.6.2).
@@ -100,7 +106,10 @@ compute_layout :: fn(s: ^Sema, t: Ty) -> Layout needs Alloc {
 adt_layout :: fn(s: ^Sema, id: u32) -> Layout needs Alloc {
     match s.adts.items[usize(id)].kind {
         .Struct(def) => {
-            if u := def.bits { return s.layout(u) }
+            if u := def.bits {
+                l := s.layout(u)
+                return Layout(size: l.size, align: l.align)
+            }
             fields := list((layout: Layout, align: ?u64))
             for f in def.fields { fields.push((layout: s.layout(f.ty), align: f.align))! }
             return struct_layout(fields.items, def.packed, def.align)
@@ -118,7 +127,7 @@ adt_layout :: fn(s: ^Sema, id: u32) -> Layout needs Alloc {
                     any = true
                 }
             }
-            if not any { return tag_l }
+            if not any { return Layout(size: tag_l.size, align: tag_l.align, offsets: zeros(1)) }
             return pair(tag_l, Layout(size: size, align: align))
         }
         .CUnion(fields) => {
@@ -129,7 +138,7 @@ adt_layout :: fn(s: ^Sema, id: u32) -> Layout needs Alloc {
                 size = size.max(l.size)
                 align = align.max(l.align)
             }
-            return Layout(size: round_up(size, align), align: align)
+            return Layout(size: round_up(size, align), align: align, offsets: zeros(fields.len))
         }
     }
 }
@@ -145,20 +154,8 @@ pub type_size_ok :: fn(s: ^Sema, ty: Ty, span: source.Span) -> bool needs Alloc 
     return false
 }
 
-/// The byte offset of field `i` of the struct `t` (0 for a `#bits` struct, which has no
-/// field offsets).
-pub field_offset :: fn(s: ^Sema, t: Ty, i: usize) -> u64 needs Alloc {
-    .Adt(id, _) := s.tys.kind(t) else return 0
-    .Struct(def) := s.adts.items[usize(id)].kind else return 0
-    if def.bits is not null { return 0 }
-    offset: u64 = 0
-    for k in 0..def.fields.len {
-        f := def.fields[k]
-        l := s.layout(f.ty)
-        a := if def.packed { u64(1) } else if fa := f.align { fa.max(l.align) } else { l.align }
-        offset = round_up(offset, a)
-        if k is i { return offset }
-        offset = offset +| l.size
-    }
-    return 0
+zeros :: fn(n: usize) -> []const u64 needs Alloc {
+    z := list(u64)
+    for _ in 0..n { z.push(0)! }
+    return z.items
 }

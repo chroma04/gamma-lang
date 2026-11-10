@@ -31,8 +31,7 @@ assign_op :: fn(k: syntax.TokenKind) -> ?ast.AssignOp => match k {
 parse_block :: fn(p: ^Parser) -> Abort!ast.Block needs Alloc {
     start := p.lo()
     _ = try p.expect(.LBrace, "to begin a block")
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     try p.enter()
     stmts := p.parse_block_body()
@@ -232,8 +231,7 @@ parse_when_stmt :: fn(p: ^Parser) -> Abort!ast.WhenStmt needs Alloc {
 /// `cond = cond_part { 'and' cond_part }` (A.7 rule 2).
 parse_cond :: fn(p: ^Parser) -> Abort!ast.Cond needs Alloc {
     start := p.lo()
-    old := p.restr
-    p.restr = Restr(no_brace: true, no_and: true)
+    old := p.set_restr(Restr(no_brace: true, no_and: true))
     parts := list(ast.CondPart)
     r := p.parse_cond_parts(&parts)
     p.restr = old
@@ -374,8 +372,7 @@ parse_match :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
     _ = p.bump()
     scrutinee := box(try p.parse_head_expr())
     _ = try p.expect(.LBrace, "to begin the match arms")
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     try p.enter()
     arms := p.parse_arms()

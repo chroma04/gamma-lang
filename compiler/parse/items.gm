@@ -66,8 +66,7 @@ parse_handler_decl :: fn(p: ^Parser) -> Abort!ast.HandlerDecl needs Alloc {
     if p.at(.LParen) { params = try p.parse_decl_params() }
     effect_ := box(try p.parse_effect_ref())
     _ = try p.expect_kw(.For, "after the effect of a handler declaration")
-    old := p.restr
-    p.restr = Restr(no_brace: true)
+    old := p.set_restr(Restr(no_brace: true))
     for_ty := p.parse_type()
     p.restr = old
     for_type := box(try for_ty)
@@ -120,8 +119,7 @@ parse_when_items :: fn(p: ^Parser) -> Abort!ast.WhenItems needs Alloc {
 /// `{ items }` of a top-level `when`. Errors are recovered item by item.
 parse_top_block :: fn(p: ^Parser) -> Abort![]ast.Item needs Alloc {
     _ = try p.expect(.LBrace, "to begin the block")
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     try p.enter()
     defer p.leave()

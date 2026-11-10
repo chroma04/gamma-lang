@@ -170,20 +170,17 @@ runs_of :: fn(weights: []const u32) -> List((start: usize, end: usize, outline: 
 outlines :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
     if not long_body(g, f) { return false }
     b := g.prog.func(f).body else return false
-    found := false
-    any_outlined(b, &found)
-    return found
+    return any_outlined(b)
 }
 
-/// Sets `found` if a block in `e` has a run of statements to move into a helper.
-any_outlined :: fn(e: ^Expr, found: ^bool) needs Alloc {
-    if found^ { return () }
+/// Whether a block in `e` has a run of statements to move into a helper.
+any_outlined :: fn(e: ^Expr) -> bool needs Alloc {
     match e.kind {
-        .Block(blk) => if block_outlines(blk) { found^ = true }
-        .Loop(x) => if block_outlines(x.body) { found^ = true }
+        .Block(blk) => if block_outlines(blk) { return true }
+        .Loop(x) => if block_outlines(x.body) { return true }
         _ => {}
     }
-    tir.for_each_child(e, fn(c: ^Expr) { any_outlined(c, found) })
+    return tir.any_child(e, fn(c: ^Expr) -> bool => any_outlined(c))
 }
 
 /// Whether `stmt_list` moves some run of the statements of `blk` into a helper.

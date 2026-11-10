@@ -7,7 +7,7 @@ call_node :: fn(m: ^Machine, a: Act, f: u32, args: []^Node, n: ^Node, dst: []u8)
     info := m.fn_info(f)
     body := info.body else return m.call_missing(n.span, f)
     if args.len is not info.params.len { return !m.trap(n.span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len, info.params.len)!) }
-    if info.cost > MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
+    if info.cost > sema.MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
     mk := m.mark()
     store := m.tmp(info.frame_size)
     // Not `enumerate`: an iterator costs a call per element.
@@ -102,7 +102,7 @@ call_function :: fn(m: ^Machine, span: source.Span, f: u32, args: []const []u8, 
     info := m.fn_info(f)
     body := info.body else return m.call_missing(span, f)
     if args.len is not info.params.len { return !m.trap(span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len, info.params.len)!) }
-    if info.cost > MAX_FRAME { return !m.trap(span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
+    if info.cost > sema.MAX_FRAME { return !m.trap(span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
     mk := m.mark()
     store := m.tmp(info.frame_size)
     i: usize = 0
@@ -155,7 +155,6 @@ enter :: fn(m: ^Machine, span: source.Span, f: u32, info: ^FnInfo, body: ^Node, 
 }
 
 /// The largest frame a call may need: far above any real thread's stack.
-MAX_FRAME: u64 : 1 << 30
 
 // ---------------------------------------------------------------------------------
 // Effects

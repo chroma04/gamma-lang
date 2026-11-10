@@ -131,8 +131,7 @@ after_parens_is :: fn(p: ^const Parser, x: syntax.Punct) -> bool {
 /// `( p, name: p, … )`
 parse_pat_args :: fn(p: ^Parser) -> Abort![]ast.PatArg needs Alloc {
     _ = try p.expect(.LParen, "")
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     args := list(ast.PatArg)
     while not p.at(.RParen) {

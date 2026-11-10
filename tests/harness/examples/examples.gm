@@ -129,20 +129,12 @@ run_lane :: fn(t: ^kit.T, case: ^const Case, c_lane: bool, problems: ^List(u8)) 
     out := try t.run(c)
 
     golden := kit.join(cases_dir(t), str.format("{}.stdout", case.name)!)
-    if t.cfg.bless and not c_lane {
-        if out.out.len is 0 {
-            _ = Fs.remove(golden)
-        } else {
-            try t.write(golden, out.out)
-        }
-    }
-    expected := (try t.read_if_exists(golden)) else ""
+    // Only the interpreter's output becomes the expected one: the C back end must agree with it.
+    if t.cfg.bless and not c_lane { try t.bless(golden, out.out) }
     if out.code() is not case.exit {
         problems.write("{} exit status {} (expected {})\nstderr:\n{}\n", lane, out.status, case.exit, out.err)!
     }
-    if expected is not out.out {
-        problems.write("{} output differs from {}:\n{}\n", lane, golden, kit.diff(expected, out.out))!
-    }
+    if d := try t.golden_diff(str.format("{} output", lane)!, golden, out.out) { problems.write("{}\n", d)! }
     return ()
 }
 

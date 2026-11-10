@@ -8,13 +8,8 @@ str :: import "std/str"
 /// The root package for work at `start` (a file or a directory): the nearest directory at
 /// or above it that holds a `gamma.toml`.
 pub find_root :: fn(start: string) -> ?string needs Alloc + Fs {
-    abs := canonicalize(start) else return null
-    cur: ?string = if is_dir(abs) { abs } else { parent(abs) }
-    while d := cur {
-        if is_file(join(d, "gamma.toml")) { return d }
-        cur = parent(d)
-    }
-    return null
+    if canonicalize(start) is null { return null }
+    return load.find_package_root(start)
 }
 
 /// Brings the git and archive dependencies of the package at `root` up to date: resolves

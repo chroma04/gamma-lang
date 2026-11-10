@@ -33,52 +33,23 @@ World :: struct {
     root: string
 }
 
-/// Deletes a tree whose directories may be read-only (fetched packages are).
-force_remove :: fn(t: ^kit.T, p: string) -> kit.Fail!() needs kit.Run {
-    if not fs.exists(p) { return () }
-    when target.os is not .Windows {
-        c := kit.command("chmod")
-        c.args([_]string("-R", "u+rwx", p))
-        _ = try t.run(c)
-    }
-    fs.remove_all(p) else e => {
-        if e is not .NotFound { return !t.fail("cannot remove {}: {}", p, e) }
-    }
-    return ()
-}
-
-/// The absolute path of `p` with symbolic links resolved.
-canonical :: fn(t: ^kit.T, p: string) -> kit.Fail!string needs kit.Run {
-    when target.os is .Windows {
-        return p
-    } else {
-        c := kit.command("sh")
-        c.args([_]string("-c", "cd \"$1\" && pwd -P", "sh", p))
-        out := try t.run_ok(c)
-        return str.trim(out.out)
-    }
-}
-
 /// A fresh directory for the test `name`.
 world :: fn(t: ^kit.T, name: string) -> kit.Fail!World needs kit.Run {
-    dir := kit.join(kit.join(t.cfg.tmp, "build_profiles"), name)
-    try force_remove(t, dir)
-    fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
-    return World(t: t, root: try canonical(t, dir))
+    return World(t: t, root: try kit.world_dir(t, "build_profiles", name))
 }
+
+write :: fn(w: ^const World, rel, text: string) -> kit.Fail!() needs kit.Run => w.t.write(w.at(rel), text)
 
 at :: fn(w: ^const World, rel: string) -> string needs Alloc => kit.join(w.root, rel)
 
-cache :: fn(w: ^const World) -> string needs Alloc => w.at("cache")
-
-write :: fn(w: ^const World, rel, text: string) -> kit.Fail!() needs kit.Run => w.t.write(w.at(rel), text)
+cache_dir :: fn(w: ^const World) -> string needs Alloc => w.at("cache")
 
 /// A command running gamma in the directory `dir` of the world, with a cache directory of
 /// the world's and no C compiler settings from the environment.
 command :: fn(w: ^const World, dir: string, args: []const string) -> kit.Command needs Alloc {
     c := w.t.gamma(args)
     c.dir = w.at(dir)
-    c.set("GAMMA_CACHE_DIR", w.cache())
+    c.set("GAMMA_CACHE_DIR", w.cache_dir())
     c.unset("CFLAGS")
     c.unset("LDFLAGS")
     c.unset("CC")
@@ -122,7 +93,7 @@ fails_with :: fn(w: ^const World, dir: string, args: []const string, needle: str
 /// removed after linking, so none stays in the cache.
 package_objects :: fn(w: ^const World) -> []string needs Alloc + Fs {
     names := list(string)
-    for r in fs.walk(w.cache()) {
+    for r in fs.walk(w.cache_dir()) {
         e := r else break
         if e.kind is .Dir { continue }
         name := dupe(base_name(e.path))!

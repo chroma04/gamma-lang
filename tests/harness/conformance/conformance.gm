@@ -123,7 +123,7 @@ with_ext :: fn(p, ext: string) -> string needs Alloc {
     return str.format("{}.{}", stem, ext)!
 }
 
-Stage :: union { Lex, Parse, Check, Run, Test, Lint }
+pub Stage :: union { Lex, Parse, Check, Run, Test, Lint }
 
 stage_command :: fn(s: Stage) -> string => match s {
     .Lex => "lex"
@@ -135,7 +135,7 @@ stage_command :: fn(s: Stage) -> string => match s {
 }
 
 /// A diagnostic a test expects: in `file` on `line` (0: one without a location).
-Expected :: struct {
+pub Expected :: struct {
     file: string
     line: u32
     severity: string
@@ -143,33 +143,33 @@ Expected :: struct {
 }
 
 /// What the directives and annotations of a test ask for.
-Expectations :: struct {
-    stage: Stage = .Run
-    dump: bool = false
+pub Expectations :: struct {
+    pub stage: Stage = .Run
+    pub dump: bool = false
     /// Compare standard error with `<name>.stderr`.
-    stderr: bool = false
+    pub stderr: bool = false
     /// The build mode of `run` and `test`, if not the default.
-    mode: ?string = null
+    pub mode: ?string = null
     /// The `--filter` of a `test` test.
-    filter: ?string = null
-    exit: u32 = 0
-    arch: ?string = null
-    endian: ?string = null
-    os: ?string = null
-    ptr_bits: ?u32 = null
-    safe_skip: bool = false
-    needs_f16: bool = false
-    needs_threads: bool = false
-    needs_sockets: bool = false
-    native: bool = false
-    lint_args: List(string)
-    diags: List(Expected)
+    pub filter: ?string = null
+    pub exit: u32 = 0
+    pub arch: ?string = null
+    pub endian: ?string = null
+    pub os: ?string = null
+    pub ptr_bits: ?u32 = null
+    pub safe_skip: bool = false
+    pub needs_f16: bool = false
+    pub needs_threads: bool = false
+    pub needs_sockets: bool = false
+    pub native: bool = false
+    pub lint_args: List(string)
+    pub diags: List(Expected)
 }
 
 is_run_or_test :: fn(s: Stage) -> bool => s in (.Run, .Test)
 
 /// The expectations of the test's files.
-parse_expectations :: fn(t: ^kit.T, files: []const string) -> kit.Fail!Expectations needs Alloc + Fs {
+pub parse_expectations :: fn(t: ^kit.T, files: []const string) -> kit.Fail!Expectations needs Alloc + Fs {
     e := Expectations(lint_args: list(string), diags: list(Expected))
     for f in files {
         src := try t.read(f)
@@ -395,21 +395,14 @@ run_c :: fn(t: ^kit.T, command, target, golden: string, exp: ^const Expectations
     if t.cfg.os_kind is "wasi" { c.set("TMPDIR", wasi_tmp_dir(t)) }
     try set_stdin(t, &c, with_ext(golden, "stdin"))
     out := try t.run(c)
-    expected := (try t.read_if_exists(golden)) else ""
     problems := list(u8)
     code := out.code()
     if code is not exp.exit {
         problems.write("{} exit status {} (expected {})\nstderr:\n{}\n", lane, out.status, exp.exit, out.err)!
     }
-    if expected is not out.out {
-        problems.write("{} output differs from {}:\n{}", lane, golden, kit.diff(expected, out.out))!
-    }
+    if d := try t.golden_diff(str.format("{} output", lane)!, golden, out.out) { problems.write("{}", d)! }
     if g := stderr_golden {
-        want := (try t.read_if_exists(g)) else ""
-        got := normalize_stderr(t, out.err)
-        if want is not got {
-            problems.write("{} standard error differs from {}:\n{}", lane, g, kit.diff(want, got))!
-        }
+        if d := try t.golden_diff(str.format("{} standard error", lane)!, g, normalize_stderr(t, out.err)) { problems.write("{}", d)! }
     }
     if problems.items.len > 0 { return !t.fail("{}", problems.items) }
     return ()
@@ -505,29 +498,14 @@ run_one :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     if exp.dump and exp.stage is .Parse { golden = with_ext(p, "ast") }
     if is_run_or_test(exp.stage) and not expects_errors { golden = with_ext(p, "stdout") }
     if g := golden {
-        if cfg.bless {
-            if out.out.len > 0 or fs.exists(g) { try t.write(g, out.out) }
-        } else {
-            expected := (try t.read_if_exists(g)) else ""
-            if expected is not out.out {
-                problems.write("output differs from {}:\n{}", g, kit.diff(expected, out.out))!
-            }
-        }
+        if d := try t.golden("output", g, out.out) { problems.write("{}", d)! }
     }
 
     // Golden standard error.
     stderr_golden: ?string = null
     if exp.stderr and is_run_or_test(exp.stage) and not expects_errors { stderr_golden = with_ext(p, "stderr") }
     if g := stderr_golden {
-        got := normalize_stderr(t, out.err)
-        if cfg.bless {
-            try t.write(g, got)
-        } else {
-            want := (try t.read_if_exists(g)) else ""
-            if want is not got {
-                problems.write("standard error differs from {}:\n{}", g, kit.diff(want, got))!
-            }
-        }
+        if d := try t.golden("standard error", g, normalize_stderr(t, out.err)) { problems.write("{}", d)! }
     }
     if problems.items.len > 0 { return !t.fail("{}", problems.items) }
 

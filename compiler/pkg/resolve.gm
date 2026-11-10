@@ -226,30 +226,52 @@ read_manifest :: fn(dir: string) -> string!load.Manifest needs Alloc + Fs {
     return load.parse_manifest(text) else e => { return !str.format("{}:{}: {}", path, e.line, e.msg)! }
 }
 
-/// The key/value pairs the walk keeps per package source.
-KeyText :: struct {
-    key: Key
-    text: string
+/// Values by package source, in the order their keys were first put (a resolution
+/// handles a few packages, so lookups are linear).
+KeyMap :: struct(V: type) {
+    entries: List((key: Key, value: V))
 }
 
-KeyKeys :: struct {
-    key: Key
-    keys: List(Key)
+key_map :: fn(V: type) -> KeyMap(V) needs Alloc => KeyMap(V)(entries: list((key: Key, value: V)))
+
+/// The value for `key`, if there is one.
+get :: fn(V: type, m: ^const KeyMap(V), key: Key) -> ?V {
+    for e in m.entries.items {
+        if key_equal(e.key, key) { return e.value }
+    }
+    return null
 }
 
-Constraint :: struct {
-    key: Key
-    reqs: List(Req)
+/// The place of the value for `key`, if there is one.
+slot :: fn(V: type, m: ^KeyMap(V), key: Key) -> ?^V {
+    for i in 0..m.entries.items.len {
+        if key_equal(m.entries.items[i].key, key) { return &m.entries.items[i].value }
+    }
+    return null
+}
+
+/// Sets the value for `key`, keeping its place if it had one.
+put :: fn(V: type, m: ^KeyMap(V), key: Key, value: V) needs Alloc {
+    if p := m.slot(key) {
+        p^ = value
+        return
+    }
+    m.entries.push((key: key, value: value))!
+}
+
+/// Removes the value for `key`, if there is one.
+drop :: fn(V: type, m: ^KeyMap(V), key: Key) {
+    for i in 0..m.entries.items.len {
+        if key_equal(m.entries.items[i].key, key) {
+            _ = m.entries.remove(i)
+            return
+        }
+    }
 }
 
 UrlRefs :: struct {
     url: string
     refs: Refs
-}
-
-ChosenEntry :: struct {
-    key: Key
-    choice: Choice
 }
 
 /// A package being walked: its directory, display name, and whether it is a git or
@@ -272,7 +294,8 @@ pub Resolver :: struct {
     refresh: Refresh
     store: Store
     old: ?Lock
-    constraints: List(Constraint)
+    /// The requirements on each git package, as they were found.
+    constraints: KeyMap(List(Req))
     fetched: List(string)
     refs: List(UrlRefs)
     /// The archives obtained so far, by URL (kept across walks).
@@ -280,12 +303,12 @@ pub Resolver :: struct {
     /// The names of the dependencies that are archives.
     url_deps: List(string)
     // State of one walk.
-    chosen: List(ChosenEntry)
+    chosen: KeyMap(Choice)
     used_archives: List(Key)
-    checkouts: List(KeyText)
-    checksums: List(KeyText)
-    pkg_names: List(KeyText)
-    pkg_deps: List(KeyKeys)
+    checkouts: KeyMap(string)
+    checksums: KeyMap(string)
+    pkg_names: KeyMap(string)
+    pkg_deps: KeyMap(List(Key))
     dirty: bool
     res: load.Resolution
     stack: List(StackItem)
@@ -298,38 +321,21 @@ resolver :: fn(root: string, opts: Options, refresh: Refresh, old: ?Lock) -> Res
         refresh: refresh,
         store: store_for_package(root),
         old: old,
-        constraints: list(Constraint),
+        constraints: key_map(List(Req)),
         fetched: list(string),
         refs: list(UrlRefs),
         archives: list(ArchiveInfo),
         url_deps: list(string),
-        chosen: list(ChosenEntry),
+        chosen: key_map(Choice),
         used_archives: list(Key),
-        checkouts: list(KeyText),
-        checksums: list(KeyText),
-        pkg_names: list(KeyText),
-        pkg_deps: list(KeyKeys),
+        checkouts: key_map(string),
+        checksums: key_map(string),
+        pkg_names: key_map(string),
+        pkg_deps: key_map(List(Key)),
         dirty: false,
         res: load.Resolution(packages: list(load.ResolvedPackage)),
         stack: list(StackItem),
     )
-}
-
-find_text :: fn(items: []const KeyText, key: Key) -> ?string {
-    for it in items {
-        if key_equal(it.key, key) { return it.text }
-    }
-    return null
-}
-
-put_text :: fn(items: ^List(KeyText), key: Key, text: string) needs Alloc {
-    for i in 0..items.items.len {
-        if key_equal(items.items[i].key, key) {
-            items.items[i].text = text
-            return
-        }
-    }
-    items.push(KeyText(key: key, text: text))!
 }
 
 /// The locked entry for `key`, if there is a lock that has one.
@@ -338,31 +344,17 @@ locked_entry :: fn(r: ^const Resolver, key: Key) -> ?LockedPackage {
     return find_locked(&old, key.url, key.subdir)
 }
 
-constraint_index :: fn(r: ^const Resolver, key: Key) -> ?usize {
-    for i, c in enumerate(r.constraints.items) {
-        if key_equal(c.key, key) { return i }
-    }
-    return null
-}
-
-chosen_index :: fn(r: ^const Resolver, key: Key) -> ?usize {
-    for i, c in enumerate(r.chosen.items) {
-        if key_equal(c.key, key) { return i }
-    }
-    return null
-}
-
 /// Resolves the graph of the root package. Returns the resolution and the lock it implies,
 /// or `null` if there are no git or archive dependencies.
 run_resolver :: fn(r: ^Resolver) -> string!?(res: load.Resolution, lock: Lock) needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     root := canonicalize(r.root) else return !str.format("cannot read {}: No such file or directory (os error 2)", r.root)!
     manifest := try read_manifest(root)
     while true {
-        r.chosen.clear()
+        r.chosen.entries.clear()
         r.used_archives.clear()
-        r.checkouts.clear()
-        r.pkg_names.clear()
-        r.pkg_deps.clear()
+        r.checkouts.entries.clear()
+        r.pkg_names.entries.clear()
+        r.pkg_deps.entries.clear()
         r.res = load.Resolution(packages: list(load.ResolvedPackage))
         r.stack.clear()
         r.dirty = false
@@ -370,7 +362,7 @@ run_resolver :: fn(r: ^Resolver) -> string!?(res: load.Resolution, lock: Lock) n
         try r.walk(root, &manifest, name, null)
         if not r.dirty { break }
     }
-    if r.chosen.items.len is 0 and r.used_archives.items.len is 0 { return null }
+    if r.chosen.entries.items.len is 0 and r.used_archives.items.len is 0 { return null }
     try r.check_refresh_names()
     lock := try r.build_lock()
     return (res: r.res, lock: lock)
@@ -383,14 +375,14 @@ check_refresh_names :: fn(r: ^Resolver) -> string!() needs Alloc {
     }
     for n in names {
         known := false
-        for c in r.chosen.items {
+        for c in r.chosen.entries.items {
             if r.entry_name(c.key) is n { known = true }
         }
         for u in r.url_deps.items {
             if u is n { known = true }
         }
-        for c in r.constraints.items {
-            for q in c.reqs.items {
+        for c in r.constraints.entries.items {
+            for q in c.value.items {
                 if q.dep is n { known = true }
             }
         }
@@ -400,36 +392,35 @@ check_refresh_names :: fn(r: ^Resolver) -> string!() needs Alloc {
 }
 
 entry_name :: fn(r: ^const Resolver, key: Key) -> string needs Alloc {
-    if n := find_text(r.pkg_names.items, key) { return n }
+    if n := r.pkg_names.get(key) { return n }
     deps := list(string)
-    if ci := r.constraint_index(key) {
-        for q in r.constraints.items[ci].reqs.items { deps.push(q.dep)! }
+    if reqs := r.constraints.get(key) {
+        for q in reqs.items { deps.push(q.dep)! }
     }
     deps.items.sort()
     return deps.items.first() else "package"
 }
 
 add_req :: fn(r: ^Resolver, key: Key, req: Req) needs Alloc {
-    ci := r.constraint_index(key) else {
+    reqs := r.constraints.slot(key) else {
         reqs := list(Req)
         reqs.push(req)!
-        r.constraints.push(Constraint(key: key, reqs: reqs))!
+        r.constraints.put(key, reqs)
         r.after_req(key, req)
         return
     }
-    for q in r.constraints.items[ci].reqs.items {
+    for q in reqs.items {
         if req_same(q, req) { return }
     }
-    r.constraints.items[ci].reqs.push(req)!
+    reqs.push(req)!
     r.after_req(key, req)
 }
 
 /// A new requirement on a package already chosen may no longer be satisfied: choose again.
 after_req :: fn(r: ^Resolver, key: Key, req: Req) needs Alloc {
-    ci := r.chosen_index(key) else return
-    c := r.chosen.items[ci].choice
+    c := r.chosen.get(key) else return
     if not is_default(req.spec) and not satisfies(c.reference, c.rev, req.spec) {
-        _ = r.chosen.remove(ci)
+        r.chosen.drop(key)
         r.dirty = true
     }
 }
@@ -439,8 +430,7 @@ mirror :: fn(r: ^Resolver, key: Key) -> string!() needs Alloc + Err + Fs + Proc 
     for u in r.fetched.items {
         if u is key.url { return () }
     }
-    ci := r.constraint_index(key)?
-    first := r.constraints.items[ci].reqs.items[0]
+    first := r.constraints.get(key)?.items[0]
     eprint("    Fetching {} ({})\n", first.dep, first.url)
     db_dir := db(&r.store, key.url)
     try fetch_mirror(db_dir, first.url)
@@ -455,9 +445,9 @@ is_refreshed :: fn(r: ^const Resolver, key: Key) -> bool needs Alloc {
         .None => false
         .All => true
         .Names(names) => {
-            ci := r.constraint_index(key)?
+            reqs := r.constraints.get(key)?
             for n in names {
-                for q in r.constraints.items[ci].reqs.items {
+                for q in reqs.items {
                     if q.dep is n { return true }
                 }
                 if l := r.locked_entry(key) {
@@ -479,9 +469,8 @@ refs_of :: fn(r: ^const Resolver, url: string) -> ?Refs {
 }
 
 choose :: fn(r: ^Resolver, key: Key) -> string!Choice needs Alloc + Err + Fs + Proc {
-    if ci := r.chosen_index(key) { return r.chosen.items[ci].choice }
-    cons := r.constraint_index(key)?
-    reqs := r.constraints.items[cons].reqs.items
+    if c := r.chosen.get(key) { return c }
+    reqs := r.constraints.get(key)?.items
     locked := r.locked_entry(key)
     reuse := false
     if l := locked {
@@ -520,7 +509,7 @@ choose :: fn(r: ^Resolver, key: Key) -> string!Choice needs Alloc + Err + Fs + P
         refs := r.refs_of(key.url)?
         choice = try pick(url, reqs, &refs, db(&r.store, key.url))
     }
-    r.chosen.push(ChosenEntry(key: key, choice: choice))!
+    r.chosen.put(key, choice)
     return choice
 }
 
@@ -529,11 +518,11 @@ short_rev :: fn(rev: string) -> string => rev[0..if rev.len < 12 { rev.len } els
 /// The checkout of the chosen revision, made if it is missing (and then verified against the
 /// lockfile's checksum). Returns its canonical path.
 ensure_checkout :: fn(r: ^Resolver, key: Key, choice: Choice) -> string!string needs Alloc + Err + Fs + Proc + Rand {
-    if p := find_text(r.checkouts.items, key) { return p }
+    if p := r.checkouts.get(key) { return p }
     dest := checkout_dir(&r.store, key.url, choice.rev)
-    cons := r.constraint_index(key)?
-    dep := r.constraints.items[cons].reqs.items[0].dep
-    url := r.constraints.items[cons].reqs.items[0].url
+    first := r.constraints.get(key)?.items[0]
+    dep := first.dep
+    url := first.url
     if not is_dir(dest) {
         db_dir := db(&r.store, key.url)
         has := is_file(join(db_dir, "HEAD")) and (rev_parse(db_dir, choice.rev) else "") is choice.rev
@@ -569,9 +558,9 @@ ensure_checkout :: fn(r: ^Resolver, key: Key, choice: Choice) -> string!string n
                 return !str.format("checksum mismatch for package {} (expected {}, found {})", l.name, l.checksum, sum)!
             }
         }
-        put_text(&r.checksums, key, sum)
+        r.checksums.put(key, sum)
         make_read_only(dest)
-    } else if find_text(r.checksums.items, key) is null {
+    } else if r.checksums.get(key) is null {
         if l := r.locked_entry(key) {
             if l.rev is choice.rev {
                 // A checkout from an earlier run: it must still be what the lock vouches for.
@@ -585,13 +574,13 @@ ensure_checkout :: fn(r: ^Resolver, key: Key, choice: Choice) -> string!string n
                         dest,
                     )!
                 }
-                put_text(&r.checksums, key, sum)
+                r.checksums.put(key, sum)
             }
         }
     }
     mark_used(dest)
     canon := canonicalize(dest) else return !str.format("cannot read {}: No such file or directory (os error 2)", dest)!
-    put_text(&r.checkouts, key, canon)
+    r.checkouts.put(key, canon)
     return canon
 }
 
@@ -723,15 +712,13 @@ subdir_of :: fn(co: string, sub: ?string) -> ?string needs Alloc + Fs {
 
 record_dep :: fn(r: ^Resolver, owner: ?Owner, key: Key) needs Alloc {
     o := owner else return
-    for i in 0..r.pkg_deps.items.len {
-        if key_equal(r.pkg_deps.items[i].key, o.key) {
-            r.pkg_deps.items[i].keys.push(key)!
-            return
-        }
+    if keys := r.pkg_deps.slot(o.key) {
+        keys.push(key)!
+        return
     }
     keys := list(Key)
     keys.push(key)!
-    r.pkg_deps.push(KeyKeys(key: o.key, keys: keys))!
+    r.pkg_deps.put(o.key, keys)
 }
 
 /// Visits the package in `dir`; `owner` is the git package it belongs to, with the root of
@@ -790,7 +777,7 @@ walk :: fn(r: ^Resolver, dir: string, manifest: ^const load.Manifest, display: s
                 r.record_dep(owner, key)
                 deps.push(load.Dep(name: dep.name, dir: pkg_dir))!
                 m := try read_manifest(pkg_dir)
-                if n := m.name { put_text(&r.pkg_names, key, n) }
+                if n := m.name { r.pkg_names.put(key, n) }
                 try r.walk(pkg_dir, &m, dep.name, Owner(key: key, root: co))
             }
             .Url(u) => {
@@ -806,7 +793,7 @@ walk :: fn(r: ^Resolver, dir: string, manifest: ^const load.Manifest, display: s
                 r.record_dep(owner, key)
                 deps.push(load.Dep(name: dep.name, dir: pkg_dir))!
                 m := try read_manifest(pkg_dir)
-                put_text(&r.pkg_names, key, m.name else dep.name)
+                r.pkg_names.put(key, m.name else dep.name)
                 r.url_deps.push(dep.name)!
                 dup := false
                 for k in r.used_archives.items {
@@ -825,10 +812,8 @@ walk :: fn(r: ^Resolver, dir: string, manifest: ^const load.Manifest, display: s
 /// The names of the packages `key` depends on, sorted and without repeats.
 dependency_names :: fn(r: ^const Resolver, key: Key) -> []const string needs Alloc {
     names := list(string)
-    for e in r.pkg_deps.items {
-        if key_equal(e.key, key) {
-            for k in e.keys.items { names.push(r.entry_name(k))! }
-        }
+    if keys := r.pkg_deps.get(key) {
+        for k in keys.items { names.push(r.entry_name(k))! }
     }
     names.items.sort()
     out := list(string)
@@ -848,17 +833,17 @@ key_less :: fn(a, b: ^const Key) -> bool {
 build_lock :: fn(r: ^Resolver) -> string!Lock needs Alloc + Fs + Proc {
     packages := list(LockedPackage)
     keys := list(Key)
-    for c in r.chosen.items { keys.push(c.key)! }
+    for c in r.chosen.entries.items { keys.push(c.key)! }
     keys.items.sort_by(key_less)
     for key in keys.items {
-        choice := r.chosen.items[r.chosen_index(key)?].choice
+        choice := r.chosen.get(key)?
         checksum := ""
-        if s := find_text(r.checksums.items, key) {
+        if s := r.checksums.get(key) {
             checksum = s
         } else if l := r.locked_entry(key) {
-            checksum = if l.rev is choice.rev { l.checksum } else { try tree_checksum(find_text(r.checkouts.items, key)?) }
+            checksum = if l.rev is choice.rev { l.checksum } else { try tree_checksum(r.checkouts.get(key)?) }
         } else {
-            checksum = try tree_checksum(find_text(r.checkouts.items, key)?)
+            checksum = try tree_checksum(r.checkouts.get(key)?)
         }
         packages.push(LockedPackage(
             name: r.entry_name(key),

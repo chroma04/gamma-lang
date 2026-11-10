@@ -12,9 +12,21 @@ Versions and what each kind of change means are described in
   `(1, ..t)`, `(..a)` for the elements of an array `a`, `(..p, z: 0)` to extend a named
   tuple, and `(..p, x: 5)` to replace one of its elements. Array constructors already took
   spreads anywhere among their elements (`[_]T(a, ..xs, b)`).
+- **`std/process`: running a program with a time limit.** `process.output_within(argv,
+  limit, opts, input)` runs a program to completion like `output`, killing it (and its
+  process group with `opts.group`) once the limit is up and setting `Output.timed_out`;
+  `process.watch(child, limit)` returns a `Watchdog` that does the same for a child driven
+  by hand until `disarm`.
 
 ### Changed
 
+- **One wording for operating-system errors.** Every command describes a failed file,
+  directory or process operation with the same table; errors it does not name get the
+  system's own message (on Windows its native text) instead of a generic "input/output
+  error". `gamma lint` reports an invalid `gamma.toml` outside `[lint]` itself, as
+  `path:line: message`.
+- **`node_modules` directories are skipped** when a package's modules are listed (builds,
+  `gamma doc`), as the language server already did.
 - **`gamma lint`: `dangling-address` leaves alone an address that a later statement of
   the same block replaces** (`w.cur = &n`, the work, `w.cur = saved`).
 - **Faster builds and a faster compiler.** Debug builds compile the generated C at `-Og`

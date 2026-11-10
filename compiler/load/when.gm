@@ -33,9 +33,8 @@ eval :: fn(l: ^Loader, module: usize, e: ^const ast.Expr, depth: u32) -> ?Const 
     match e.kind {
         .Bool(b) => return Const.Bool(b)
         .Int(lit) => {
-            limbs := lit.value.limbs.items
-            if limbs.len > 1 { return null }
-            return Const.Int(i64(limbs.first() else 0))
+            v := lit.value.to_u64() else return null
+            return Const.Int(i64(v.checked(u32) else return null))
         }
         .Paren(x) => return l.eval(module, x, depth)
         .Unary(.Not, x) => {

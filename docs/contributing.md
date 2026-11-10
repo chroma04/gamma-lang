@@ -176,7 +176,11 @@ freed when it ends, so tests allocate freely. The module `tests/harness/kit` has
   `t.run_ok(c)` also fails the test if it did not succeed, and `t.try_run(c)` returns `null`
   when the program is not installed;
 - files: `t.scratch(name)` is a fresh directory for the test, `t.write(path, text)`,
-  `t.read(path)`, `t.repo(rel)` a path in the repository.
+  `t.read(path)`, `t.repo(rel)` a path in the repository;
+- golden files: `t.golden(what, file, actual)` compares `actual` with the file (a missing file
+  counts as empty) and returns a message with the diff, or null if they agree; with `BLESS=1`
+  it rewrites the file instead. Use it, rather than comparing by hand, for any expected output
+  kept in a file.
 
 This is a suite with a test that every command takes `--help` (adapted from
 `tests/harness/cli/cli.gm`):
