@@ -87,10 +87,7 @@ fmt_adt :: fn(m: ^Machine, out: ^List(u8), t: Ty, b: []u8) -> string!() needs Al
             out.push(')')!
         }
         .Union(tag, variants) => {
-            v := m.variant_index(t, b) else {
-                raw := m.get_int(tag, b[0..us(m.size(tag))])
-                return !str.format("invalid tag value S({}) for union {}", raw.bits(i128), m.s.show(t))!
-            }
+            v := m.variant_index(t, b) else return !m.invalid_tag_text(t, tag, b)
             out.push('.')!
             out.extend(variants[us(v)].name)!
             if pt := variants[us(v)].payload {

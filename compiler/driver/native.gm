@@ -242,7 +242,8 @@ BASE_CFLAGS :: [6]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrap
 /// The flags every build uses on `target`: `BASE_CFLAGS`, and `-pthread` except on Windows,
 /// where the runtime uses the Win32 API and programs need no thread library, and on WASI,
 /// which has no threads.
-base_cflags :: fn(target: load.Target) -> List(string) needs Alloc {
+#allow("needless-pub")
+pub base_cflags :: fn(target: load.Target) -> List(string) needs Alloc {
     flags := list(string)
     flags.extend(BASE_CFLAGS[..])!
     if target.os is not "Windows" and target.os is not "Wasi" { flags.push("-pthread")! }

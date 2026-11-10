@@ -258,21 +258,10 @@ fin_float :: fn(cx: ^FnCx, e: ^Expr, r: ratio.Rat, from_int: bool) needs Alloc {
         e.kind = .Float(0.0)
         return
     }
-    if from_int and not exact_float(x, r) {
+    if from_int and not ratio.from_f64(x).eq(r) {
         cx.error(e.span, str.format("the integer {} is not exactly representable as `{}`", show_rat(r), cx.show(e.ty))!)
     }
     e.kind = .Float(x)
-}
-
-/// Whether the float `x` is exactly the rational `r`.
-exact_float :: fn(x: f64, r: ratio.Rat) -> bool needs Alloc {
-    // Integers within 2^53 are exact; larger ones are checked by converting back.
-    if r.is_integer() {
-        if i := r.num.to_i64() {
-            if i >= -(1 << 53) and i <= (1 << 53) { return true }
-        }
-    }
-    return false
 }
 
 show_rat :: fn(r: ratio.Rat) -> string needs Alloc {

@@ -608,11 +608,11 @@ unary :: fn(cx: ^FnCx, op: ast.UnOp, operand: ^const ast.Expr, expect: ?Ty, span
             if cx.s.tys.is_vector(st) { return cx.vector_unary(.BitNot, v, span) }
             if cx.is_compound_number(st) { return cx.compound_number_unary(.BitNot, v, span) }
             if u := cx.bits_operand(st, "~", span) {
-                x := cx.bits_convert(v, u)
+                x := bits_convert(v, u)
                 n := tir.mk(u, .Unary(.BitNot, x), span)
                 // Padding fields `_` stay zero (§5.10.5): only the named fields are complemented.
                 if mask := cx.bits_padding_mask(st) { n = tir.mk(u, .Binary(.BitAnd, n, tir.mk(u, .Int(mask), span)), span) }
-                return cx.bits_convert(n, st)
+                return bits_convert(n, st)
             }
             if cx.s.tys.kind(st) is .Adt(_) { return cx.unsupported(span, "`~` on this type") }
             cx.obligations.push(.Numeric(NumericObligation(ty: v.ty, span: span, op: "~", int_only: true, signed_only: false)))!
@@ -928,8 +928,8 @@ arith_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs, r: ^Expr, span: source.Span) -> ^E
                         .BitOr => .BitOr
                         _ => .BitXor
                     }
-                    n := tir.mk(u, .Binary(top, cx.bits_convert(lhs, u), cx.bits_convert(r, u)), span)
-                    return cx.bits_convert(n, st)
+                    n := tir.mk(u, .Binary(top, bits_convert(lhs, u), bits_convert(r, u)), span)
+                    return bits_convert(n, st)
                 }
             }
             cx.obligations.push(.Numeric(NumericObligation(ty: ty, span: span, op: ast.binop_text(op), int_only: op is not .Div, signed_only: false)))!
@@ -975,7 +975,7 @@ bits_operand :: fn(cx: ^FnCx, t: Ty, op: string, span: source.Span) -> ?Ty needs
 }
 
 /// Converts between a `#bits` struct and its underlying integer.
-bits_convert :: fn(cx: ^FnCx, v: ^Expr, to: Ty) -> ^Expr needs Alloc => tir.mk(to, .Builtin(.Convert, one_expr(v)), v.span)
+bits_convert :: fn(v: ^Expr, to: Ty) -> ^Expr needs Alloc => tir.mk(to, .Builtin(.Convert, one_expr(v)), v.span)
 
 /// The operands of `is`, converted to one type.
 equalize :: fn(cx: ^FnCx, l: ^Expr, r: ^Expr, span: source.Span) -> (l: ^Expr, r: ^Expr) needs Load {
@@ -1300,7 +1300,7 @@ Captured :: struct {
 /// type other than `never` to which every other branch coerces, or `[]const T` for arrays
 /// of one element type `T`, or failing that the first one (and the others are reported
 /// where they are coerced to it).
-pub join_type :: fn(cx: ^FnCx, branches: []const Ty) -> Ty needs Load {
+join_type :: fn(cx: ^FnCx, branches: []const Ty) -> Ty needs Load {
     tys := &cx.s.tys
     live := list(Ty)
     for t in branches {

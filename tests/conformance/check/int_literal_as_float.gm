@@ -1,0 +1,35 @@
+// An integer literal given a float type must convert exactly (§6.1): the float holds the
+// integer itself, not a rounding of it. A float literal rounds as usual.
+
+// f16: 11 bits of significand.
+h1: f16 : 2048
+h2: f16 : 2049 //~ ERROR the integer 2049 is not exactly representable as `f16`
+h3: f16 : 2050
+h4: f16 : 65504
+
+// f32: 24 bits.
+s1: f32 : 16777216
+s2: f32 : 16777217 //~ ERROR the integer 16777217 is not exactly representable as `f32`
+s3: f32 : 16777218
+s4: f32 : -16777217 //~ ERROR the integer -16777217 is not exactly representable as `f32`
+s5: f32 : 1 << 100
+s6: f32 : 16777217.0
+
+// f64: 53 bits; larger integers that fit the significand are exact.
+d1: f64 : 9007199254740992
+d2: f64 : 9007199254740993 //~ ERROR the integer 9007199254740993 is not exactly representable as `f64`
+d3: f64 : 9007199254740994
+d4: f64 : 1 << 60
+d5: f64 : 1152921504606846977 //~ ERROR the integer 1152921504606846977 is not exactly representable as `f64`
+d6: f64 : -(1 << 1000)
+
+half :: fn(x: f32) -> f32 => x / 2
+
+main :: fn() {
+    _ = half(3)
+    _ = half(33554433) //~ ERROR the integer 33554433 is not exactly representable as `f32`
+    y: f64 = 0
+    y += 18014398509481985 //~ ERROR the integer 18014398509481985 is not exactly representable as `f64`
+    _ = y
+    _ = (h1, h2, h3, h4, s1, s2, s3, s4, s5, s6, d1, d2, d3, d4, d5, d6)
+}

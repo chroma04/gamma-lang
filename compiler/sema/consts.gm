@@ -225,7 +225,10 @@ untyped_fits :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, t: Ty) -> bool n
     match v {
         .Int(i) => {
             if s.tys.is_integer(inner) { return s.int_fits(i, inner) }
-            return s.tys.kind(inner) is .Float(_) and s.float_finite(ratio.from_int(i), inner)
+            // An integer must convert exactly (§6.1); the checker reports one that does not.
+            .Float(bits) := s.tys.kind(inner) else return false
+            q := ratio.from_int(i)
+            return s.float_finite(q, inner) and ratio.from_f64(q.to_float(bits)).eq(q)
         }
         .Float(q) => return s.tys.kind(inner) is .Float(_) and s.float_finite(q, inner)
         .NegZero => return s.tys.kind(inner) is .Float(_)

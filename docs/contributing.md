@@ -56,8 +56,10 @@ reformatted, since some pin columns in their expected output.
 
 ## Lint rules
 
-`gamma lint` ([`lint.md`](lint.md)) is kept clean on `lib/std` and `examples/`:
-the `lint` suite fails if either has a warning. To add a rule, give it an entry in
+`gamma lint` ([`lint.md`](lint.md)) is kept clean on `lib/std`, `examples/`, `compiler/`,
+`tests/harness/` and `tools/difftest/`: the `lint` suite fails if any has a warning. A
+declaration of the compiler that is `pub` only for the test harness or a fuzz target,
+which the linter does not see, carries `#allow("needless-pub")`. To add a rule, give it an entry in
 `RULES` (`compiler/lint/lint.gm`) with its default level and a one-line summary, then
 report it from the AST walk (`compiler/lint/syntax.gm`) if the syntax tree is enough, or
 as a `Finding` from `compiler/lint/checked.gm` if it needs types or name resolution. Attach a

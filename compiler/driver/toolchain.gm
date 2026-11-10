@@ -32,6 +32,7 @@ env_var :: fn(name: string) -> ?string needs Alloc + Env {
 }
 
 /// The toolchain `CC`, `CFLAGS` and `LDFLAGS` describe.
+#allow("needless-pub")
 pub from_env :: fn() -> string!Toolchain needs Alloc + Env + Fs {
     return from_vars(env_var("CC") else load.default_cc(), env_var("CFLAGS"), env_var("LDFLAGS"))
 }
@@ -136,6 +137,7 @@ has_white_space :: fn(s: string) -> bool {
 /// The toolchain of a Safe build (§18.7), which compiles with Fil-C: as `from_env`, except
 /// that without `CC` the compiler is Fil-C's `filcc`, found on `PATH` or in `/opt/fil/bin`.
 /// Whether the compiler really is Fil-C is up to the caller to check, with `target`.
+#allow("needless-pub")
 pub for_safe_build :: fn() -> string!Toolchain needs Alloc + Env + Fs {
     t := try from_env()
     if env_var("CC") is not null { return t }
@@ -205,6 +207,7 @@ macros :: fn(t: ^const Toolchain) -> string!string needs Alloc + Proc {
 }
 
 /// An error of starting a program as the operating system words it.
+#allow("needless-pub")
 pub run_error :: fn(e: process.RunError) -> string needs Alloc => match e {
     .Io(io) => pkg.io_message(io)
     .Alloc(_) => "out of memory"
@@ -212,6 +215,7 @@ pub run_error :: fn(e: process.RunError) -> string needs Alloc => match e {
 
 /// The command prefix from `GAMMA_RUNNER` that runs executables built for another machine
 /// (`qemu-s390x -L /usr/s390x-linux-gnu`), empty when it is unset.
+#allow("needless-pub")
 pub runner_from_env :: fn() -> string!List(string) needs Alloc + Env {
     v := Env.var("GAMMA_RUNNER") else return list(string)
     return pkg.split_words(v) else e => { return !str.format("cannot read GAMMA_RUNNER: {}", e)! }

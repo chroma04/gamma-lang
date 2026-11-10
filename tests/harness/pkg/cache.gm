@@ -41,7 +41,7 @@ talk :: fn(w: ^const World, s: ^Server) -> kit.Fail!() needs kit.Run {
     open := str.format(
         `{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{}","languageId":"gamma","version":1,"text":{}}}}}}}`,
         file_url(file),
-        kit.quote(w.get("app/main.gm")),
+        kit.json_string(w.get("app/main.gm")),
     )!
     try s.send(open)
     diags := try s.read_until("publishDiagnostics")

@@ -425,7 +425,7 @@ vec_load_store :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Uns
     if not is_load { v = try fg.expr(&args[0]) }
     s := try fg.expr(sl)
     ps := fg.addr_of(sl.ty, s)
-    p := fg.slice_ptr(ps)
+    p := slice_ptr(ps)
     len := fg.slice_len(ps)
     if fg.g.opts.checks {
         loc := fg.loc(e)

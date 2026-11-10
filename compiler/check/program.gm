@@ -4,7 +4,8 @@
 /// its declarations are resolved. With `tests`, its tests are checked as for running
 /// them, and `main` is not required; otherwise the root must declare `main`.
 pub check_program :: fn(s: ^Sema, root: usize, tests: bool) needs Load {
-    for o in s.l.other_items.items {
+    for k in 0..s.l.other_items.items.len {
+        o := s.l.other_items.items[k]
         if s.l.modules.items[o.module].is_prelude { continue }
         match o.item.kind {
             .Test(_), .Handler(_) => {}

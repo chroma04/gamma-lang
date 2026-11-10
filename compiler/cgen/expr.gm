@@ -32,7 +32,7 @@ pub load :: fn(fg: ^FnGen, t: Ty, a: string) -> string needs sema.Load {
     ld := str.format("GM_LD({}, {})", c, a)!
     // Padding bits of a narrow integer in memory are unspecified; ignore them.
     if ii := fg.int_info(t) {
-        v := fg.normalize(ii, ld)
+        v := normalize(ii, ld)
         return fg.tmp(t, v)
     }
     return fg.tmp(t, ld)
@@ -208,7 +208,7 @@ make_slice :: fn(fg: ^FnGen, t: Ty, ptr: string, len: string) -> string needs se
     return b
 }
 
-slice_ptr :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.format("GM_LD(void *, {})", addr)!
+slice_ptr :: fn(addr: string) -> string needs sema.Load => str.format("GM_LD(void *, {})", addr)!
 
 slice_len :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.format("GM_LD(uintptr_t, {} + {})", addr, fg.ptr_bytes())!
 
@@ -268,7 +268,7 @@ expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
         }
         .SlicePtr(x) => {
             a := try fg.place_addr(x)
-            p := fg.slice_ptr(a)
+            p := slice_ptr(a)
             return fg.tmp(t, p)
         }
         .AddrOf(p) => {
@@ -294,7 +294,7 @@ expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
         }
         .Closure(f) => {
             fg.g.queue(f)
-            name := fg.g.fn_name(f)
+            name := fn_name(f)
             return fg.tmp(t, str.format("((gm_closure){{(void *){}, (void *)&F.h, {}}})", name, fg.cx)!)
         }
         .HandlerRef(_) => return fg.tmp(t, str.format("((gm_hval){{(void *)&F.h, {}}})", fg.cx)!)
@@ -684,7 +684,7 @@ trap :: fn(fg: ^FnGen, e: ^Expr, message: ^Expr) -> Unsup!string needs sema.Load
     t := e.ty
     m := try fg.expr(message)
     a := fg.addr_of(message.ty, m)
-    p := fg.slice_ptr(a)
+    p := slice_ptr(a)
     l := fg.slice_len(a)
     at := fg.loc(e)
     fg.linef("gm_trap_bytes({}, {}, {});", p, l, at)
@@ -921,7 +921,7 @@ place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
                     sl := fg.slice_len(a)
                     len := fg.tmp(fg.g.ty.usize_ty(), sl)
                     fg.index_check(checked, i, len, at)
-                    p := fg.slice_ptr(a)
+                    p := slice_ptr(a)
                     return str.format("((uint8_t *){} + {} * {})", p, i, esz)!
                 }
                 .ManyPtr(_, elem) => {
@@ -981,7 +981,7 @@ slice_expr :: fn(fg: ^FnGen, e: ^Expr, base: ^Expr, lo: ?^Expr, hi: ?^Expr, incl
                 v := try fg.expr(base)
                 a = fg.addr_of(base.ty, v)
             }
-            p := fg.slice_ptr(a)
+            p := slice_ptr(a)
             l := fg.slice_len(a)
             ptr = str.format("((uint8_t *){})", p)!
             len = fg.tmp(fg.g.ty.usize_ty(), l)

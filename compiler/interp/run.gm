@@ -960,6 +960,7 @@ unwrap :: fn(m: ^Machine, a: Act, x: ^Node, is_result: bool, n: ^Node, dst: []u8
         if m.res_is_err(x.ty, b) {
             if m.fast() {
                 dst.fill(0)
+                m.release(mk)
                 return ()
             }
             out := list(u8)
@@ -971,6 +972,7 @@ unwrap :: fn(m: ^Machine, a: Act, x: ^Node, is_result: bool, n: ^Node, dst: []u8
         if not m.opt_present(x.ty, b) {
             if m.fast() {
                 dst.fill(0)
+                m.release(mk)
                 return ()
             }
             return !m.trap(n.span, "unwrap of null")

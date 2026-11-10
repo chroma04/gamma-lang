@@ -129,12 +129,12 @@ run :: fn(srv: ^Server, inbox: ^Inbox) -> u8 needs Fx + Sys {
 handle_incoming :: fn(srv: ^Server, msg: Incoming) -> Flow needs Fx {
     match msg {
         .Bad(e) => {
-            srv.respond_error(NULL, PARSE_ERROR, e)
+            respond_error(NULL, PARSE_ERROR, e)
             return .Continue
         }
         .Body(bytes) => {
             doc := json.parse(bytes) else e => {
-                srv.respond_error(NULL, PARSE_ERROR, parse_error_text(bytes, e))
+                respond_error(NULL, PARSE_ERROR, parse_error_text(bytes, e))
                 return .Continue
             }
             flow := srv.handle(doc.root)
@@ -299,7 +299,7 @@ handle :: fn(srv: ^Server, msg: Value) -> Flow needs Fx {
     if not srv.initialized and method is not "initialize" {
         // Before `initialize`, requests fail and notifications (except `exit`) are dropped.
         if i := id {
-            srv.respond_error(i, SERVER_NOT_INITIALIZED, "the server is not initialized")
+            respond_error(i, SERVER_NOT_INITIALIZED, "the server is not initialized")
         } else if method is "exit" {
             return srv.notification(method, params)
         }
@@ -314,19 +314,19 @@ handle :: fn(srv: ^Server, msg: Value) -> Flow needs Fx {
 
 // --- sending ---
 
-send :: fn(srv: ^Server, msg: Value) needs Alloc + Fs + Out {
+send :: fn(msg: Value) needs Alloc + Fs + Out {
     write_message(to_text(msg))
 }
 
-respond :: fn(srv: ^Server, id: Value, result: Value) needs Alloc + Fs + Out {
+respond :: fn(id: Value, result: Value) needs Alloc + Fs + Out {
     o := obj()
     o.put("jsonrpc", text("2.0"))
     o.put("id", id)
     o.put("result", result)
-    srv.send(o.value())
+    send(o.value())
 }
 
-respond_error :: fn(srv: ^Server, id: Value, code: i64, message: string) needs Alloc + Fs + Out {
+respond_error :: fn(id: Value, code: i64, message: string) needs Alloc + Fs + Out {
     e := obj()
     e.put("code", int(code))
     e.put("message", text(message))
@@ -334,24 +334,24 @@ respond_error :: fn(srv: ^Server, id: Value, code: i64, message: string) needs A
     o.put("jsonrpc", text("2.0"))
     o.put("id", id)
     o.put("error", e.value())
-    srv.send(o.value())
+    send(o.value())
 }
 
-notify :: fn(srv: ^Server, method: string, params: Value) needs Alloc + Fs + Out {
+notify :: fn(method: string, params: Value) needs Alloc + Fs + Out {
     o := obj()
     o.put("jsonrpc", text("2.0"))
     o.put("method", text(method))
     o.put("params", params)
-    srv.send(o.value())
+    send(o.value())
 }
 
 // --- notifications ---
 
-publish_empty :: fn(srv: ^Server, uri: string) needs Alloc + Fs + Out {
+publish_empty :: fn(uri: string) needs Alloc + Fs + Out {
     p := obj()
     p.put("uri", text(uri))
     p.put("diagnostics", array(empty_slice(Value)))
-    srv.notify("textDocument/publishDiagnostics", p.value())
+    notify("textDocument/publishDiagnostics", p.value())
 }
 
 notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx {
@@ -412,7 +412,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
                 o.put("id", text(id))
                 o.put("method", text("client/registerCapability"))
                 o.put("params", p.value())
-                srv.send(o.value())
+                send(o.value())
             }
         }
         "workspace/didChangeWatchedFiles" => srv.watched_files_changed(params)
@@ -422,7 +422,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
             path := canon(raw)
             if srv.docs.contains(path) {
                 _ = srv.docs.remove(path)
-                srv.publish_empty(uri)
+                publish_empty(uri)
                 srv.invalidate(path)
                 dir := dir_of(path)
                 still_open := false
@@ -439,7 +439,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
                         others := old
                         others.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
                         for other in others.items {
-                            if other is not path { srv.publish_empty(path_to_uri(other)) }
+                            if other is not path { publish_empty(path_to_uri(other)) }
                         }
                     }
                 }
@@ -591,7 +591,7 @@ publish :: fn(srv: ^Server, dir: string, a: ^Analysis) needs Fx {
         params.put("uri", text(uri_of(&uris, path)))
         params.put("diagnostics", array(items))
         if d := srv.docs.get(path) { params.put("version", int(d.version)) }
-        srv.notify("textDocument/publishDiagnostics", params.value())
+        notify("textDocument/publishDiagnostics", params.value())
     }
     paths := list(string)
     for d in diags.items { paths.push(d.path)! }
@@ -602,29 +602,29 @@ publish :: fn(srv: ^Server, dir: string, a: ^Analysis) needs Fx {
 
 request :: fn(srv: ^Server, id: Value, method: string, params: Value) needs Fx {
     if srv.shutdown and method is not "shutdown" {
-        srv.respond_error(id, INVALID_REQUEST, "the server is shutting down")
+        respond_error(id, INVALID_REQUEST, "the server is shutting down")
         return
     }
     match method {
         "initialize" => {
             srv.initialized = true
-            srv.respond(id, srv.initialize(params))
+            respond(id, srv.initialize(params))
         }
         "shutdown" => {
             srv.shutdown = true
-            srv.respond(id, NULL)
+            respond(id, NULL)
         }
-        "textDocument/codeAction" => srv.respond(id, code_actions(params))
+        "textDocument/codeAction" => respond(id, code_actions(params))
         "textDocument/hover", "textDocument/definition", "textDocument/references", "textDocument/prepareRename",
         "textDocument/rename", "textDocument/completion", "textDocument/documentSymbol", "textDocument/signatureHelp",
         "textDocument/formatting" => {
             r := srv.language_request(method, params) else e => {
-                srv.respond_error(id, e.code, e.msg)
+                respond_error(id, e.code, e.msg)
                 return
             }
-            srv.respond(id, r)
+            respond(id, r)
         }
-        _ => srv.respond_error(id, METHOD_NOT_FOUND, str.format("method not found: {}", method)!)
+        _ => respond_error(id, METHOD_NOT_FOUND, str.format("method not found: {}", method)!)
     }
 }
 
