@@ -6,16 +6,8 @@
   helper dedupes, harness: std process.output_within/Watchdog, kit.golden). Status and
   what is left: roadmap/refactor-backlog.md. macOS CI `lint/deny_fails_the_command` failed
   once after the walker merge (not reproducible on Linux; check whether it recurs).
-- s64 (branch claude/focused-ritchie-zf9339): REFACTORING SESSION. Eight area audits →
-  roadmap/refactor-backlog.md (open large/medium items, possible bugs). Done: needless
-  `pub` stripped (`gamma lint compiler`: 455 → 24 warnings; it is the mechanical to-do
-  list), dead code, shared helpers (tir.binop_symbol, bigint.bits128, ratio.zero/to_float,
-  types.write_debug_string, sema.generic_of/frame_up). Fixed: `[N << 63]` length trapped
-  the compiler; f16 literal defaults; cranelift in --backend messages.
-  s64b (same branch, after #117): integer literal → float must be exact (spec §6.1 was
-  right, checker was not); listed possible bugs fixed (status in refactor-backlog.md);
-  `gamma lint` clean on compiler/harness/difftest and tested (lint suite);
-  dangling-address skips a store that a later statement of the block replaces.
+- s64 (#117, #118): first refactor round (needless pub, dead code, shared helpers; int
+  literal → float must be exact); `gamma lint` clean on compiler/harness/difftest.
 - s63 (#116): idioms.md folded into guide; CI macOS runner → macos-15.
 - s61–s62 (#114, #115): PERF ROUNDS 6–7 (decisions/062, 063; profiling recipe in
   docs/contributing.md): emit-c -25%, lint -46%, check compiler -20%.
@@ -23,10 +15,8 @@
   (decisions/060); 0.2.0 release prep + seed GM_ZERO fix + CI bootstrap matrix; tuple
   expression spreads (061). CHANGELOG `## Unreleased` open. Pain-points "Open":
   seed-refresh watch, fn-as-format-arg, template size.
-- s57 (#109): PLAYGROUND SPEED (decisions/059): ~600 → ~11 ms hello.
-- s51–s56 (#104–#108): PERFORMANCE rounds (decisions/055–058; s61 = 062, s62 = 063): compiler built Checked,
-  big builds split into units, interpreter VM (056/057; keep vm_run < 2000 names),
-  posix_spawn, GM_RT_PROGRAM, shared @write stubs. Profiling recipes in 055/057/058.
+- s51–s57 (#104–#109): PERFORMANCE rounds + playground speed (decisions/055–059; s61 = 062,
+  s62 = 063): Checked build, unit splits, interpreter VM (keep vm_run < 2000 names).
 - s50 (branch claude/eager-curie-ocf0wz): PAIN-POINT SWEEP (decisions/054): whole list
   triaged (pain-points.md "Settled"), 16 items implemented (language: else/array joins,
   const lifting into ?/!, contextual needs/handler/foreign, `{0}`/`{:q}`, local types; lint
