@@ -15,6 +15,13 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **One wording for operating-system errors.** Every command describes a failed file,
+  directory or process operation with the same table; errors it does not name get the
+  system's own message (on Windows its native text) instead of a generic "input/output
+  error". `gamma lint` reports an invalid `gamma.toml` outside `[lint]` itself, as
+  `path:line: message`.
+- **`node_modules` directories are skipped** when a package's modules are listed (builds,
+  `gamma doc`), as the language server already did.
 - **`gamma lint`: `dangling-address` leaves alone an address that a later statement of
   the same block replaces** (`w.cur = &n`, the work, `w.cur = saved`).
 - **Faster builds and a faster compiler.** Debug builds compile the generated C at `-Og`
