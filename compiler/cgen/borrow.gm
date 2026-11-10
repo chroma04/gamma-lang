@@ -246,14 +246,8 @@ each_cond :: fn(cond: []tir.CondPart, f: fn(c: ^Expr)) {
 
 /// Calls `f` on the constant expressions inside pattern `p`.
 each_pat :: fn(p: ^tir.Pat, f: fn(c: ^Expr)) {
-    match p.kind {
-        .Const(e) => f(e)
-        .Some(q), .Ok(q), .Err(q) => each_pat(q, f)
-        .Variant(_, ?q) => if x := q { each_pat(x, f) }
-        .Fields(fs) => for x in fs { each_pat(x.pat, f) }
-        .Or(ps) => for q in ps { each_pat(q, f) }
-        _ => {}
-    }
+    if .Const(e) := p.kind { f(e) }
+    tir.for_each_subpat(p, fn(q: ^tir.Pat) { each_pat(q, f) })
 }
 
 /// Calls `f` on the expressions of the statements of `b`, and its tail.

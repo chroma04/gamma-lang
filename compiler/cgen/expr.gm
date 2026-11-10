@@ -1123,10 +1123,7 @@ uses_effect :: fn(prog: ^Prog, e: ^Expr, effect_: ^const EffectRef) -> bool need
             .Indirect(_) => {}
         }
     }
-    tir.for_each_child(e, fn(c: ^Expr) {
-        if not found { found = uses_effect(prog, c, effect_) }
-    })
-    return found
+    return found or tir.any_child(e, fn(c: ^Expr) -> bool => uses_effect(prog, c, effect_))
 }
 
 /// True if `e` contains the `with` labeled `label`.
@@ -1134,11 +1131,7 @@ find_with :: fn(e: ^Expr, label: u32) -> bool {
     if .With(w) := e.kind {
         if w.label is label { return true }
     }
-    found := false
-    tir.for_each_child(e, fn(c: ^Expr) {
-        if not found { found = find_with(c, label) }
-    })
-    return found
+    return tir.any_child(e, fn(c: ^Expr) -> bool => find_with(c, label))
 }
 
 /// The low and high 64-bit halves of `v` modulo 2^128 (two's complement).

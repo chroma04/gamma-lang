@@ -82,16 +82,12 @@ only_consumed :: fn(e: ^Expr, k: u32) -> bool {
 
 mentions_local :: fn(e: ^Expr, k: u32) -> bool {
     if is_k(e, k) { return true }
-    found := false
-    tir.for_each_child(e, fn(c: ^Expr) { found = found or mentions_local(c, k) })
-    return found
+    return tir.any_child(e, fn(c: ^Expr) -> bool => mentions_local(c, k))
 }
 
 mentions_upvar :: fn(e: ^Expr, k: u32) -> bool {
     if .Upvar(_, l) := e.kind and l is k { return true }
-    found := false
-    tir.for_each_child(e, fn(c: ^Expr) { found = found or mentions_upvar(c, k) })
-    return found
+    return tir.any_child(e, fn(c: ^Expr) -> bool => mentions_upvar(c, k))
 }
 
 is_k :: fn(e: ^Expr, k: u32) -> bool {

@@ -1117,9 +1117,7 @@ has_fiber_with :: fn(e: ^Expr) -> bool {
     if .With(w) := e.kind {
         if w.on is not null { return true }
     }
-    found := false
-    tir.for_each_child(e, fn(c: ^Expr) { found = found or has_fiber_with(c) })
-    return found
+    return tir.any_child(e, fn(c: ^Expr) -> bool => has_fiber_with(c))
 }
 
 /// Adds the locals of enclosing functions that `e`, in the body of `f`, refers to.
@@ -1157,7 +1155,5 @@ may_write :: fn(e: ^Expr) -> bool {
         _ => {}
     }
     if writes { return true }
-    r := false
-    tir.for_each_child(e, fn(c: ^Expr) { r = r or may_write(c) })
-    return r
+    return tir.any_child(e, fn(c: ^Expr) -> bool => may_write(c))
 }
