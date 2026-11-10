@@ -1,0 +1,41 @@
+// The directory of a test (its "world") and what a suite needs to make one: removing trees whose directories
+// are read-only, and resolving symbolic links in paths.
+
+fs :: import "std/fs"
+str :: import "std/str"
+
+/// A fresh directory for the test `name` of the suite `suite`, below the harness's test
+/// directory, as an absolute path without symbolic links. A suite builds its own world on it,
+/// with the helpers its tests need.
+pub world_dir :: fn(t: ^T, suite, name: string) -> Fail!string needs Run {
+    dir := join(join(t.cfg.tmp, suite), name)
+    try force_remove(t, dir)
+    fs.make_dir_all(dir) else e => return !t.fail("cannot make {}: {}", dir, e)
+    return try canonical(t, dir)
+}
+
+/// Deletes a tree whose directories may be read-only (fetched packages are).
+pub force_remove :: fn(t: ^T, p: string) -> Fail!() needs Run {
+    if not fs.exists(p) { return () }
+    when target.os is not .Windows {
+        c := command("chmod")
+        c.args([_]string("-R", "u+rwx", p))
+        _ = try t.run(c)
+    }
+    fs.remove_all(p) else e => {
+        if e is not .NotFound { return !t.fail("cannot remove {}: {}", p, e) }
+    }
+    return ()
+}
+
+/// The absolute path of `p` with symbolic links resolved.
+pub canonical :: fn(t: ^T, p: string) -> Fail!string needs Run {
+    when target.os is .Windows {
+        return p
+    } else {
+        c := command("sh")
+        c.args([_]string("-c", "cd \"$1\" && pwd -P", "sh", p))
+        out := try t.run_ok(c)
+        return str.trim(out.out)
+    }
+}

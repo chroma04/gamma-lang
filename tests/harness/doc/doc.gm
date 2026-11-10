@@ -57,16 +57,7 @@ doc_ok :: fn(t: ^kit.T, args: []const string) -> kit.Fail!kit.Output needs kit.R
 /// writes the file instead.
 check_golden :: fn(t: ^kit.T, name, actual: string) -> kit.Fail!() needs kit.Run {
     path := t.repo(str.format("tests/doc/golden/{}", name)!)
-    if t.cfg.bless {
-        try t.write(path, actual)
-        return ()
-    }
-    expected := (try t.read_if_exists(path)) else {
-        return !t.fail("missing golden file {}; create it with BLESS=1", path)
-    }
-    if expected is not actual {
-        return !t.fail("{} differs from the generated output; if the change is intended, run the tests with BLESS=1\n{}", path, kit.diff(expected, actual))
-    }
+    if d := try t.golden("the generated output", path, actual) { return !t.fail("{}", d) }
     return ()
 }
 
