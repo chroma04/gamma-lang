@@ -22,7 +22,8 @@ main :: fn() needs Out + Alloc {
     show("{} {} {} {}", @max_value(u8), @max_value(u16), @max_value(u32), @max_value(u64))
     show("{} {} {}", @min_value(i128), @max_value(i128), @max_value(u128))
     show("{} {} {} {}", @min_value(i7), @max_value(u7), @min_value(i33), @max_value(u63))
-    show("{} {} {}", @min_value(isize), @max_value(usize), usize(0))
+    // Pointer-sized integers, with values that fit every target.
+    show("{} {} {}", isize(-2147483648), usize(4294967295), usize(0))
     show("{} {} {}", i64(-1), u1(1), @min_value(i65))
     show("{}|{}|{}", true, false, "")
     empty: []const u8 = ""
