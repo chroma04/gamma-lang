@@ -5,7 +5,7 @@
   sonnet worktree agents (layouts in sema, bignum gone, CLI table driver/flags.gm, walkers,
   helper dedupes, harness: std process.output_within/Watchdog, kit.golden). Status and
   what is left: roadmap/refactor-backlog.md. macOS CI `lint/deny_fails_the_command` failed
-  once after the walker merge (not reproducible on Linux; check whether it recurs).
+  once after the walker merge, passed on the next run (flaky? watch for it).
 - s64 (#117, #118): first refactor round (needless pub, dead code, shared helpers; int
   literal → float must be exact); `gamma lint` clean on compiler/harness/difftest.
 - s63 (#116): idioms.md folded into guide; CI macOS runner → macos-15.
