@@ -439,37 +439,10 @@ expr :: fn(w: ^Walker, e: ^const ast.Expr) needs Alloc {
         .Continue(?label) => w.label_use(label)
         .Ident(id) => w.name_use(id)
         .DotIdent(id) => { _ = w.variant_at(e.span, id) }
-        .Paren(i) => w.expr(i)
-        .Elements(i) => w.expr(i)
-        .OptUnwrap(i) => w.expr(i)
-        .ResUnwrap(i) => w.expr(i)
-        .Deref(i) => w.expr(i)
-        .OptionalType(i) => w.expr(i)
-        .ContType(i) => w.expr(i)
-        .Unary(_, operand) => w.expr(operand)
-        .PtrType(_, inner) => w.expr(inner)
-        .SliceType(_, inner) => w.expr(inner)
-        .ManyPtrType(_, inner) => w.expr(inner)
-        .Attributed(_, inner) => w.expr(inner)
-        .Tuple(elems) => {
-            for i in 0..elems.len { w.expr(&elems[i].value) }
-        }
-        .Binary(_, lhs, rhs) => {
-            w.expr(lhs)
-            w.expr(rhs)
-        }
-        .Bang(lhs, rhs) => {
-            w.expr(lhs)
-            w.expr(rhs)
-        }
-        .ErrorUnionType(err, ok) => {
-            w.expr(err)
-            w.expr(ok)
-        }
-        .ArrayType(a) => {
-            if l := a.len { w.expr(l) }
-            w.expr(a.elem)
-        }
+        .Paren(_), .Elements(_), .OptUnwrap(_), .ResUnwrap(_), .Deref(_), .OptionalType(_), .ContType(_), .Unary(_, _),
+        .PtrType(_, _), .SliceType(_, _), .ManyPtrType(_, _), .Attributed(_, _), .Tuple(_), .Binary(_, _, _), .Bang(_, _),
+        .ErrorUnionType(_, _), .ArrayType(_), .Index(_, _), .Slice(_), .TupleField(_, _, _), .Resume(_), .Return(_),
+        .Intrinsic(_) => ast.for_each_child(e, fn(c: ^const ast.Expr) { w.expr(c) })
         .Else(x) => {
             w.expr(x.lhs)
             w.push_scope(x.rhs.span.hi)
@@ -477,16 +450,6 @@ expr :: fn(w: ^Walker, e: ^const ast.Expr) needs Alloc {
             w.expr(x.rhs)
             w.pop_scope()
         }
-        .Index(base, index) => {
-            w.expr(base)
-            w.expr(index)
-        }
-        .Slice(x) => {
-            w.expr(x.base)
-            if lo := x.lo { w.expr(lo) }
-            if hi := x.hi { w.expr(hi) }
-        }
-        .TupleField(base, _, _) => w.expr(base)
         .Field(base, name) => w.field(e, base, name)
         .Call(callee, args, _) => w.call(e, callee, args)
         .FnType(sg) => w.sig(sg)
@@ -515,21 +478,9 @@ expr :: fn(w: ^Walker, e: ^const ast.Expr) needs Alloc {
         }
         .For(f) => w.for_expr(f)
         .Block(b) => w.block(&b)
-        .Return(?v) => {
-            if x := v { w.expr(x) }
-        }
         .Break(x) => {
             w.label_use(x.label)
             if v := x.value { w.expr(v) }
-        }
-        .Resume(x) => {
-            w.expr(x.cont)
-            if v := x.value { w.expr(v) }
-        }
-        .Intrinsic(x) => {
-            if args := x.args {
-                for i in 0..args.len { w.arg(&args[i]) }
-            }
         }
     }
 }

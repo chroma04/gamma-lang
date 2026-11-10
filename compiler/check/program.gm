@@ -264,13 +264,7 @@ mono_cond_pats :: fn(s: ^Sema, mc: ^MonoCx, cond: []tir.CondPart) needs Load {
 /// Substitutes the types of pattern `p`.
 mono_pat :: fn(s: ^Sema, mc: ^MonoCx, p: ^tir.Pat) needs Load {
     p.ty = s.subst(p.ty, mc.map)
-    match p.kind {
-        .Some(q), .Ok(q), .Err(q) => mono_pat(s, mc, q)
-        .Variant(_, q) => mono_pat(s, mc, q)
-        .Fields(fs) => for f in fs { mono_pat(s, mc, f.pat) }
-        .Or(ps) => for q in ps { mono_pat(s, mc, q) }
-        _ => {}
-    }
+    tir.for_each_subpat(p, fn(q: ^tir.Pat) { mono_pat(s, mc, q) })
 }
 
 /// Substitutes type parameters in `t`; the type of a handler literal of the generic

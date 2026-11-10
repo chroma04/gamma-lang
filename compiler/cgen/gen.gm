@@ -696,11 +696,7 @@ expr_may_exit :: fn(g: ^Gen, e: ^Expr, spec_: ?u32) -> bool needs Alloc {
         }
         _ => {}
     }
-    may := false
-    tir.for_each_child(e, fn(c: ^Expr) {
-        if not may { may = g.expr_may_exit(c, spec_) }
-    })
-    return may
+    return tir.any_child(e, fn(c: ^Expr) -> bool => g.expr_may_exit(c, spec_))
 }
 
 /// True if calls to `f` can leave by a non-local exit (Appendix D.2). A function that

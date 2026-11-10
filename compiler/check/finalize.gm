@@ -211,11 +211,7 @@ fin_pat :: fn(cx: ^FnCx, p: ^Pat) needs Load {
                 cx.error(p.span, str.format("{} does not fit in `{}`", sema.show_int(v), cx.show(p.ty))!)
             }
         }
-        .Some(q), .Ok(q), .Err(q) => cx.fin_pat(q)
-        .Variant(_, q) => cx.fin_pat(q)
-        .Fields(fs) => for f in fs { cx.fin_pat(f.pat) }
-        .Or(ps) => for q in ps { cx.fin_pat(q) }
-        _ => {}
+        _ => tir.for_each_subpat(p, fn(q: ^Pat) { cx.fin_pat(q) })
     }
 }
 

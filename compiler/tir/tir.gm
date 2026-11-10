@@ -645,6 +645,16 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
     }
 }
 
+/// Whether `pred` holds for some direct sub-expression of `e`, as `for_each_child`
+/// visits them; `pred` is not called again once one is found.
+pub any_child :: fn(e: ^Expr, pred: fn(c: ^Expr) -> bool) -> bool {
+    found := false
+    for_each_child(e, fn(c: ^Expr) {
+        if not found { found = pred(c) }
+    })
+    return found
+}
+
 block_children :: fn(b: ^Block, f: fn(c: ^Expr)) {
     for s in b.stmts {
         match s {
@@ -681,12 +691,19 @@ conds_children :: fn(cond: []CondPart, f: fn(c: ^Expr)) {
 
 /// Calls `f` on the constant expressions inside pattern `p`.
 pat_children :: fn(p: ^Pat, f: fn(c: ^Expr)) {
+    if .Const(e) := p.kind { f(e) }
+    for_each_subpat(p, fn(q: ^Pat) { pat_children(q, f) })
+}
+
+/// Calls `f` on each direct sub-pattern of `p`: the payload of `some`, `ok`, `err` and
+/// variant patterns, the fields of a struct or tuple pattern and the alternatives of an
+/// or-pattern.
+pub for_each_subpat :: fn(p: ^Pat, f: fn(q: ^Pat)) {
     match p.kind {
-        .Const(e) => f(e)
-        .Some(q), .Ok(q), .Err(q) => pat_children(q, f)
-        .Variant(_, q) => pat_children(q, f)
-        .Fields(fs) => for x in fs { pat_children(x.pat, f) }
-        .Or(ps) => for q in ps { pat_children(q, f) }
+        .Some(q), .Ok(q), .Err(q) => f(q)
+        .Variant(_, ?q) => if x := q { f(x) }
+        .Fields(fs) => for x in fs { f(x.pat) }
+        .Or(ps) => for q in ps { f(q) }
         _ => {}
     }
 }

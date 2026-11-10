@@ -109,11 +109,7 @@ d_declare :: fn(w: ^DWalk, l: u32) { w.depth.items[usize(l)] = w.cur }
 d_declare_pat :: fn(w: ^DWalk, p: ^tir.Pat) {
     match p.kind {
         .Bind(l) => w.d_declare(l)
-        .Some(q), .Ok(q), .Err(q) => w.d_declare_pat(q)
-        .Variant(_, q) => w.d_declare_pat(q)
-        .Fields(fs) => for f in fs { w.d_declare_pat(f.pat) }
-        .Or(ps) => for q in ps { w.d_declare_pat(q) }
-        _ => {}
+        _ => tir.for_each_subpat(p, fn(q: ^tir.Pat) { w.d_declare_pat(q) })
     }
 }
 

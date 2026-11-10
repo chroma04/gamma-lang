@@ -170,11 +170,7 @@ remap_binds :: fn(p: ^Pat, map: []const LocalMap) {
                 break
             }
         }
-        .Some(q), .Ok(q), .Err(q) => remap_binds(q, map)
-        .Variant(_, q) => remap_binds(q, map)
-        .Fields(fs) => for f in fs { remap_binds(f.pat, map) }
-        .Or(ps) => for q in ps { remap_binds(q, map) }
-        _ => {}
+        _ => tir.for_each_subpat(p, fn(q: ^Pat) { remap_binds(q, map) })
     }
 }
 

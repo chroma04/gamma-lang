@@ -340,18 +340,10 @@ bool_lit :: fn(x: ^const Expr) -> ?bool {
 }
 
 /// Records the locals that pattern `p` binds.
-binds :: fn(c: ^Checked, f: u32, p: ^const tir.Pat) needs Alloc {
+binds :: fn(c: ^Checked, f: u32, p: ^tir.Pat) needs Alloc {
     match p.kind {
         .Bind(l) => c.bound.put((f, l), true)!
-        .Some(q), .Ok(q), .Err(q) => c.binds(f, q)
-        .Variant(_, ?payload) => if q := payload { c.binds(f, q) }
-        .Fields(fs) => {
-            for x in fs { c.binds(f, x.pat) }
-        }
-        .Or(alts) => {
-            for q in alts { c.binds(f, q) }
-        }
-        _ => {}
+        _ => tir.for_each_subpat(p, fn(q: ^tir.Pat) { c.binds(f, q) })
     }
 }
 
