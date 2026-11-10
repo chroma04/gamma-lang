@@ -313,7 +313,7 @@ compiler_main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + R
                 if a.starts_with("--backend=") {
                     value := a[10..]
                     if value is "cranelift" { usage_error("`--backend=cranelift` is not supported: gamma has the C back end and, for `run`, the interpreter") }
-                    usage_error(str.format("invalid value `{}` for --backend (expected c, cranelift or interp)", value)!)
+                    usage_error(str.format("invalid value `{}` for --backend (expected c or interp)", value)!)
                 }
                 if a is "--coverage" {
                     opts.coverage = true
