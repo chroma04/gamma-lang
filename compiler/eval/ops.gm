@@ -153,7 +153,7 @@ scalar_binary :: fn(m: ^Machine, op: tir.BinOp, a, b: Value, lt, rt: Ty, span: s
                 .Ge => return .Bool(x >= y)
                 _ => return !m.unsupported(span, "this operator on floats")
             }
-            return .Float(try m.round_float(r, lt, span))
+            return .Float(try m.round_float(r, lt))
         }
         .Bool(x) => {
             .Bool(y) := b else return !m.unsupported(span, "this operator")
@@ -183,7 +183,7 @@ float_rem :: fn(x, y: f64) -> f64 needs Alloc {
 }
 
 /// `x`, computed in `f64`, rounded to float type `t`.
-round_float :: fn(m: ^Machine, x: f64, t: Ty, span: source.Span) -> Flow!f64 needs Alloc {
+round_float :: fn(m: ^Machine, x: f64, t: Ty) -> Flow!f64 needs Alloc {
     .Float(bits) := m.s.tys.kind(t) else return x
     if bits is 32 { return f64(x.to(f32)) }
     if bits is 16 {
@@ -369,12 +369,12 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
     match op {
         .Convert => match x {
             .Int(bits) => match tys.kind(e.ty) {
-                .Float(_) => return .Float(try m.round_float(m.big_float(m.big_of(bits, at)), e.ty, span))
+                .Float(_) => return .Float(try m.round_float(m.big_float(m.big_of(bits, at)), e.ty))
                 .Int(_), .Usize, .Isize => return .Int(m.wrap(m.int_value(bits, at).bits(u128), e.ty))
                 _ => return !m.unsupported(span, "this conversion")
             }
             .Bool(b) => return .Int(if b { 1 } else { 0 })
-            .Float(f) => return .Float(try m.round_float(f, e.ty, span))
+            .Float(f) => return .Float(try m.round_float(f, e.ty))
             .Variant(i, _) => {
                 tag := m.variant_tag(at, i) else return !m.unsupported(span, "this conversion")
                 return .Int(m.wrap(bigint.bits128(tag), e.ty))
@@ -383,11 +383,11 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
         }
         .Trunc, .Round, .Floor, .Ceil => match x {
             .Int(bits) => {
-                if .Float(_) := tys.kind(e.ty) { return .Float(try m.round_float(m.big_float(m.big_of(bits, at)), e.ty, span)) }
+                if .Float(_) := tys.kind(e.ty) { return .Float(try m.round_float(m.big_float(m.big_of(bits, at)), e.ty)) }
                 return .Int(m.wrap(bits, e.ty))
             }
             .Float(f) => {
-                if .Float(_) := tys.kind(e.ty) { return .Float(try m.round_float(f, e.ty, span)) }
+                if .Float(_) := tys.kind(e.ty) { return .Float(try m.round_float(f, e.ty)) }
                 i := m.float_to_int(f, e.ty, op) else return !m.trap(span, "float to integer conversion out of range")
                 return .Int(m.wrap(bigint.bits128(i), e.ty))
             }
@@ -539,7 +539,7 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
                 pl := try m.place(&args[0])
                 return .Some(new(Value.Ptr(Place(cell: pl.cell, path: append(pl.path, k))))!)
             }
-            v := if pl := start { m.load(offset(pl, k), span) } else {
+            v := if pl := start { m.load(offset(pl, k)) } else {
                 .Agg(a) := x else return !m.unsupported(span, "this builtin")
                 a.elems[k.trunc(usize)]
             }
@@ -551,7 +551,7 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
             .Slice(s) := vals[1] else return !m.unsupported(span, "this copy")
             // The elements are read first: the slices may overlap.
             elems := list(Value)
-            for k in 0..s.len { elems.push(copy(m.load(offset(s.start, k), span)))! }
+            for k in 0..s.len { elems.push(copy(m.load(offset(s.start, k))))! }
             for k, v in enumerate(elems.items) { try m.store(offset(d.start, u64(k)), v, span) }
             return unit_value()
         }
@@ -584,7 +584,7 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
         .Bits => return m.reinterpret(x, at, e.ty, span)
         .Sqrt => {
             .Float(f) := x else return !m.unsupported(span, "this builtin")
-            return .Float(try m.round_float(f.sqrt(), e.ty, span))
+            return .Float(try m.round_float(f.sqrt(), e.ty))
         }
         .Clz, .Ctz, .Popcount, .Bswap, .Bitreverse, .Rotl, .Rotr => {
             .Int(raw) := x else return !m.unsupported(span, "this builtin")
@@ -709,7 +709,7 @@ equal :: fn(m: ^Machine, a, b: Value, t: Ty, span: source.Span) -> Flow!bool nee
             .Slice(_, et) := tys.kind(t) else return !m.unsupported(span, "this comparison")
             if x.len is not y.len { return false }
             for i in 0..x.len {
-                if not try m.equal(m.load(offset(x.start, i), span), m.load(offset(y.start, i), span), et, span) { return false }
+                if not try m.equal(m.load(offset(x.start, i)), m.load(offset(y.start, i)), et, span) { return false }
             }
             return true
         }

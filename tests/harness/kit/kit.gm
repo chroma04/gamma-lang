@@ -16,6 +16,7 @@
 //! `VARS`); a test changes the environment of the programs it runs, never its own.
 
 fs :: import "std/fs"
+json :: import "std/json"
 load :: import "gammac/load"
 path :: import "std/path"
 str :: import "std/str"
@@ -77,10 +78,10 @@ pub Var :: struct {
 /// through `Env.var`.
 pub VARS :: [_]string(
     "BLESS", "CC", "CFLAGS", "LDFLAGS", "HOME", "PATH", "TMPDIR", "TZ", "TZDIR", "USERPROFILE",
-    "LOCALAPPDATA", "XDG_CACHE_HOME", "WASI_SDK_PATH", "WASM_OPT", "WASI_RUNNER", "GAMMA_RUNNER",
+    "LOCALAPPDATA", "XDG_CACHE_HOME", "WASI_SDK_PATH", "WASM_OPT", "GAMMA_RUNNER",
     "GAMMA_C_UNITS", "GAMMA_STD", "GAMMA_RUNTIME", "GAMMA_CORE", "GAMMA_CACHE_DIR",
     "GAMMA_TEST_C", "GAMMA_TEST_SAFE", "GAMMA_TEST_LANE", "GAMMA_TEST_DEBUG_INFO",
-    "GAMMA_TEST_TIMEOUT", "GAMMA_TEST_FILTER", "GAMMA_WASI_TEST", "GAMMA_BLESS",
+    "GAMMA_TEST_TIMEOUT", "GAMMA_TEST_FILTER", "GAMMA_WASI_TEST",
 )
 
 /// The `Env` that tests run under: no arguments, the variables of `Config.vars`.
@@ -240,6 +241,14 @@ pub read_if_exists :: fn(t: ^T, p: string) -> Fail!?string needs Alloc + Fs {
         return !t.fail("cannot read {}: {}", p, e)
     }
     return r
+}
+
+/// `s` as a JSON string, in its quotes.
+pub json_string :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    w := json.writer(&out)
+    w.write_string(s)!
+    return out.items
 }
 
 /// `s` in double quotes, with line breaks, quotes, backslashes and other control bytes and

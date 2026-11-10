@@ -194,6 +194,20 @@ pub to_f32 :: fn(r: Rat) -> f32 needs Alloc {
     return (sign | (field <<% 23) | (m.trunc(u32) - (u32(1) <<% 23))).bits(f32)
 }
 
+/// The exact value of the finite float `x`.
+pub from_f64 :: fn(x: f64) -> Rat needs Alloc {
+    b := x.bits(u64)
+    field := (b >> 52) & 0x7FF
+    frac := b & 0xF_FFFF_FFFF_FFFF
+    // A subnormal has no implicit leading bit and the exponent of the smallest normal.
+    m := if field is 0 { frac } else { frac | (u64(1) << 52) }
+    e := (if field is 0 { 1 } else { field }).trunc(i64) - 1075
+    num := bigint.from_u64(m)
+    if (b >> 63) is 1 { num = num.neg() }
+    if e >= 0 { return from_int(bigint.shl(num, e.trunc(u64))) }
+    return new(num, bigint.shl(bigint.one(), (-e).trunc(u64)))
+}
+
 /// `r` rounded to the float type of `bits` bits (16, 32 or 64), as the `f64` that holds
 /// the rounded value exactly.
 pub to_float :: fn(r: Rat, bits: u16) -> f64 needs Alloc {
@@ -460,6 +474,24 @@ test "to_f64 of huge and tiny ratios" {
         expect_eq(q(5, 1).mul(from_i64(10).pow(-324)).to_f64(), 5e-324)
         expect_eq(q(2, 1).mul(from_i64(10).pow(-324)).to_f64(), 0.0)
     })
+}
+
+test "from_f64" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(txt(from_f64(0.0)), "0")
+        expect_eq(txt(from_f64(-0.0)), "0")
+        expect_eq(txt(from_f64(1.0)), "1")
+        expect_eq(txt(from_f64(-2.5)), "-5/2")
+        expect_eq(txt(from_f64(0.1)), "3602879701896397/36028797018963968")
+        expect_eq(txt(from_f64(1152921504606846976.0)), "1152921504606846976")
+        // The smallest subnormal, 2^-1074, and the largest finite value round-trip.
+        expect_eq(f64_bits(from_f64(u64(1).bits(f64))), 1)
+        expect_eq(f64_bits(from_f64(0x7FEF_FFFF_FFFF_FFFFu64.bits(f64))), 0x7FEF_FFFF_FFFF_FFFF)
+        expect(from_f64(16777216.0).eq(q(16777216, 1)))
+        expect(not from_f64(q(16777217, 1).to_float(32)).eq(q(16777217, 1)))
+    }
 }
 
 test "to_f32" {

@@ -2,7 +2,7 @@
 //!
 //! * Golden tests render the fixture module in `tests/doc/fixture/shapes`, which has one
 //!   of every kind of public declaration, and compare with the files in `tests/doc/golden`.
-//!   `BLESS=1` (or `GAMMA_BLESS=1`) rewrites the goldens after an intended change. The
+//!   `BLESS=1` rewrites the goldens after an intended change. The
 //!   module pages come from `gamma doc` run on the module; the index pages from `gamma doc
 //!   --all -o` run on the module, whose name gives the index its title.
 //! * The command-line tests run the `gamma` executable.
@@ -53,11 +53,11 @@ doc_ok :: fn(t: ^kit.T, args: []const string) -> kit.Fail!kit.Output needs kit.R
     return out
 }
 
-/// Fails the test unless `actual` is the golden file `name`; with `BLESS=1` or
-/// `GAMMA_BLESS` set it writes the file instead.
+/// Fails the test unless `actual` is the golden file `name`; with `BLESS=1` it
+/// writes the file instead.
 check_golden :: fn(t: ^kit.T, name, actual: string) -> kit.Fail!() needs kit.Run {
     path := t.repo(str.format("tests/doc/golden/{}", name)!)
-    if t.cfg.bless or Env.var("GAMMA_BLESS") is not null {
+    if t.cfg.bless {
         try t.write(path, actual)
         return ()
     }

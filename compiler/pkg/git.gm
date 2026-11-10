@@ -342,6 +342,7 @@ resolve_within :: fn(at: ^List(string), target: string, entries: []const TreeEnt
 /// `0xFF` bytes (a length no file has), the length of the link's target as 8 little-endian
 /// bytes, and the target; so a link never has the same record as a file. Written
 /// `sha256:<hex>`. A link that points outside the tree is an error.
+#allow("needless-pub")
 pub tree_checksum :: fn(root: string) -> string!string needs Alloc + Fs + Proc {
     entries := list(TreeEntry)
     try collect_entries(root, "", &entries)

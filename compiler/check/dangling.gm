@@ -233,7 +233,7 @@ d_expr :: fn(w: ^DWalk, e: ^Expr, tail: bool) needs Alloc {
     match e.kind {
         .Block(b) => {
             w.cur += 1
-            for st in b.stmts { w.d_stmt(st) }
+            w.d_stmts(b.stmts)
             if t := b.tail { w.d_expr(t, tail) }
             w.cur -= 1
             return
@@ -287,7 +287,7 @@ d_expr :: fn(w: ^DWalk, e: ^Expr, tail: bool) needs Alloc {
 
 d_block :: fn(w: ^DWalk, b: ^tir.Block) needs Alloc {
     w.cur += 1
-    for st in b.stmts { w.d_stmt(st) }
+    w.d_stmts(b.stmts)
     if t := b.tail { w.d_expr(t, false) }
     w.cur -= 1
 }
@@ -302,6 +302,44 @@ d_cond :: fn(w: ^DWalk, cond: []tir.CondPart) needs Alloc {
             }
         }
     }
+}
+
+/// Walks the statements of a block. An address stored where it only may outlive its
+/// local is not kept if a later statement of the block assigns the same place again
+/// (`p.cur = &x`, the work, `p.cur = saved`).
+d_stmts :: fn(w: ^DWalk, stmts: []tir.Stmt) needs Alloc {
+    for i, st in enumerate(stmts) {
+        if .Assign(place, value) := st {
+            if t := w.d_storage(place) and not t.certain and assigned_later(place, stmts[i + 1..]) {
+                w.d_expr(place, false)
+                w.d_expr(value, false)
+                continue
+            }
+        }
+        w.d_stmt(st)
+    }
+}
+
+/// Whether one of `stmts` assigns the place `p`.
+assigned_later :: fn(p: ^Expr, stmts: []tir.Stmt) -> bool {
+    for st in stmts {
+        if .Assign(place, _) := st and same_place(p, place) { return true }
+    }
+    return false
+}
+
+/// Whether `a` and `b` name the same place by the same path of locals, fields and
+/// pointers.
+same_place :: fn(a, b: ^Expr) -> bool {
+    match a.kind {
+        .Local(x) => if .Local(y) := b.kind { return x is y }
+        .Upvar(xl, x) => if .Upvar(yl, y) := b.kind { return xl is yl and x is y }
+        .Global(_, x) => if .Global(_, y) := b.kind { return x is y }
+        .Deref(x) => if .Deref(y) := b.kind { return same_place(x, y) }
+        .Field(x, i) => if .Field(y, j) := b.kind { return i is j and same_place(x, y) }
+        _ => {}
+    }
+    return false
 }
 
 d_stmt :: fn(w: ^DWalk, st: tir.Stmt) needs Alloc {

@@ -174,16 +174,16 @@ eval :: fn(m: ^Machine, e: ^Expr) -> Flow!Value needs Load {
             cell := try m.const_cell(span, e.ty, e.span)
             return cell.v
         }
-        .Local(_), .Upvar(_), .Deref(_), .Global(_) => return m.load(try m.place(e), e.span)
+        .Local(_), .Upvar(_), .Deref(_), .Global(_) => return m.load(try m.place(e))
         .Field(base, index) => {
-            if is_place(base) { return m.load(try m.place(e), e.span) }
+            if is_place(base) { return m.load(try m.place(e)) }
             v := try m.eval(base)
             .Agg(a) := v else return !m.unsupported(e.span, "this field access")
             return a.elems[usize(index)]
         }
         .Index(base, _, _) => {
-            if is_place(base) or tys.kind(base.ty) in (.Slice(_), .ManyPtr(_)) { return m.load(try m.place(e), e.span) }
-            return m.load(try m.place(e), e.span)
+            if is_place(base) or tys.kind(base.ty) in (.Slice(_), .ManyPtr(_)) { return m.load(try m.place(e)) }
+            return m.load(try m.place(e))
         }
         .Slice(sl) => return m.slice(sl, e.span)
         .SliceLen(x) => {
@@ -306,7 +306,7 @@ eval :: fn(m: ^Machine, e: ^Expr) -> Flow!Value needs Load {
                 .Slice(sl) => {
                     .Slice(_, et) := tys.kind(container.ty) else return !m.unsupported(e.span, "this `in`")
                     for i in 0..sl.len {
-                        el := m.load(offset(sl.start, i), e.span)
+                        el := m.load(offset(sl.start, i))
                         if try m.equal(v, el, et, e.span) {
                             found = true
                             break
@@ -418,7 +418,7 @@ string_of :: fn(m: ^Machine, v: Value) -> ?[]u8 needs Alloc {
     .Slice(sl) := v else return null
     out := list(u8)
     for i in 0..sl.len {
-        .Int(b) := m.load(offset(sl.start, i), source.DUMMY) else return null
+        .Int(b) := m.load(offset(sl.start, i)) else return null
         out.push(b.trunc(u8))!
     }
     return out.items
@@ -559,7 +559,7 @@ offset :: fn(pl: Place, k: u64) -> Place needs Alloc {
 }
 
 /// The value at `pl`, shared with the place (copy it before keeping it in another).
-load :: fn(m: ^Machine, pl: Place, span: source.Span) -> Value {
+load :: fn(m: ^Machine, pl: Place) -> Value {
     v := pl.cell.v
     for i in pl.path {
         .Agg(a) := v else return .Null

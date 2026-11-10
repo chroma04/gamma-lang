@@ -285,10 +285,10 @@ queue :: fn(g: ^Gen, f: u32) needs Alloc {
     }
 }
 
-fn_name :: fn(g: ^const Gen, f: u32) -> string needs Alloc => str.format("gm_f{}", f)!
+fn_name :: fn(f: u32) -> string needs Alloc => str.format("gm_f{}", f)!
 
 /// The C name of the clone of `f` specialized by `s`.
-spec_name :: fn(g: ^const Gen, f: u32, s: u32) -> string needs Alloc => str.format("gm_f{}_s{}", f, s)!
+spec_name :: fn(f: u32, s: u32) -> string needs Alloc => str.format("gm_f{}_s{}", f, s)!
 
 /// Marks the clone of `f` specialized by `s` as needed; returns its C name.
 queue_spec :: fn(g: ^Gen, f: u32, s: u32) -> string needs Alloc {
@@ -296,7 +296,7 @@ queue_spec :: fn(g: ^Gen, f: u32, s: u32) -> string needs Alloc {
         g.clones.put((f, s), true)!
         g.spec_queue.push((f, s))!
     }
-    return g.spec_name(f, s)
+    return spec_name(f, s)
 }
 
 /// The number of specialization `key`.
@@ -329,7 +329,7 @@ spec_slot :: fn(outer: ?u32) -> u32 {
 clause_name :: fn(g: ^Gen, c: u32, outer: ?u32) -> string needs Alloc {
     if o := outer { return g.queue_spec(c, o) }
     g.queue(c)
-    return g.fn_name(c)
+    return fn_name(c)
 }
 
 /// Generates every function and clone queued so far, and those they reach.
@@ -424,7 +424,7 @@ handler_table :: fn(g: ^Gen, h: u32) -> string needs Alloc {
         names := list(string)
         for c in g.prog.handler_lit(h).clauses {
             g.queue(c)
-            names.push(str.format("(void *){}", g.fn_name(c))!)!
+            names.push(str.format("(void *){}", fn_name(c))!)!
         }
         g.handler_tables.write("static void *const gm_hl{}[] = {{{}}};\n", h, str.join(names.items, ", ")!)!
     }
@@ -464,7 +464,7 @@ decl_table :: fn(g: ^Gen, d: u32) -> Unsup!string needs Alloc {
                 ret_kw = ""
             }
             g.protos.write("static {} {}({});\n", ret, name, str.join(params.items, ", ")!)!
-            g.bodies.write("static {} {}({}) {{ {}{}({}); }}\n", ret, name, str.join(params.items, ", ")!, ret_kw, g.fn_name(c), str.join(args.items, ", ")!)!
+            g.bodies.write("static {} {}({}) {{ {}{}({}); }}\n", ret, name, str.join(params.items, ", ")!, ret_kw, fn_name(c), str.join(args.items, ", ")!)!
             names.push(str.format("(void *){}", name)!)!
         }
         g.handler_tables.write("static void *const gm_hd{}[] = {{{}}};\n", d, str.join(names.items, ", ")!)!
@@ -591,15 +591,15 @@ gen_entry :: fn(g: ^Gen, entry: u32, n: usize) -> Unsup!string needs sema.Load {
     s.write("static int gm_entry{}(gm_node *cx) {{\n", n)!
     if g.ty.by_ref(ret) {
         hidden := if g.is_plain(entry) { "" } else { ", NULL, cx, NULL" }
-        s.write("    {} r; {}(&r{});\n", rc, g.fn_name(entry), hidden)!
+        s.write("    {} r; {}(&r{});\n", rc, fn_name(entry), hidden)!
     } else if g.is_plain(entry) {
         if g.ty.is_void(ret) {
-            s.write("    {}();\n    {} r = GM_ZERO({});\n", g.fn_name(entry), rc, rc)!
+            s.write("    {}();\n    {} r = GM_ZERO({});\n", fn_name(entry), rc, rc)!
         } else {
-            s.write("    {} r = {}();\n", rc, g.fn_name(entry))!
+            s.write("    {} r = {}();\n", rc, fn_name(entry))!
         }
     } else {
-        s.write("    {} r = {}(NULL, cx, NULL);\n", rc, g.fn_name(entry))!
+        s.write("    {} r = {}(NULL, cx, NULL);\n", rc, fn_name(entry))!
     }
     s.extend("    (void)cx;\n")!
     s.extend("    if (gm_unw.kind == GM_EXIT) { gm_flush(); return gm_unw.code; }\n")!
@@ -743,7 +743,7 @@ is_plain :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
 /// The C name used to call `f`: foreign functions have a private alias.
 callee_name :: fn(g: ^Gen, f: u32) -> string needs Alloc {
     if g.prog.func(f).kind is .Foreign(_) { return str.format("gm_x{}", f)! }
-    return g.fn_name(f)
+    return fn_name(f)
 }
 
 /// Whether plain function `f` needs a separate C-ABI entry point: its own signature

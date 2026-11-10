@@ -1183,7 +1183,7 @@ local_adt_binding :: fn(cx: ^FnCx, name: ast.Ident, b: ^const ast.Binding) -> ti
 /// expression: the binding is then a local alias (§3.5).
 local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
     match e.kind {
-        .ArrayType(_), .OptionalType(_) if cx.is_construction(e) => {
+        .ArrayType(_), .OptionalType(_) if is_construction(e) => {
             if cx.s.looks_like_type(cx.module, e) { return cx.resolve_ty(e) }
             return null
         }
@@ -1198,7 +1198,7 @@ local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
         }
         // `Cols :: #soa []T`; `#soa [2]P(…)` constructs a value.
         .Attributed(_, inner) => {
-            if inner.kind is .SliceType(_) or (inner.kind is .ArrayType(_) and not cx.is_construction(inner)) { return cx.resolve_ty(e) }
+            if inner.kind is .SliceType(_) or (inner.kind is .ArrayType(_) and not is_construction(inner)) { return cx.resolve_ty(e) }
             return null
         }
         .Effect(_) => {
@@ -1231,7 +1231,7 @@ local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
 
 /// Whether `e` is `[N]T(…)` or `?T(…)`, possibly followed by a postfix chain: a
 /// construction rather than a type (§A.7 rule 12).
-is_construction :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Alloc {
+is_construction :: fn(e: ^const ast.Expr) -> bool needs Alloc {
     inner := match e.kind {
         .ArrayType(a) => a.elem
         .OptionalType(x) => x
@@ -1252,7 +1252,7 @@ local_is_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
         }
         .Paren(inner) => return cx.local_is_type(inner)
         .Ident(_), .Field(_) => return cx.local_type_init(e) is not null
-        .ArrayType(_), .OptionalType(_) if cx.is_construction(e) => return cx.s.looks_like_type(cx.module, e)
+        .ArrayType(_), .OptionalType(_) if is_construction(e) => return cx.s.looks_like_type(cx.module, e)
         .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return true
         _ => return false
     }

@@ -552,10 +552,16 @@ equal :: fn(m: ^Machine, span: source.Span, t: Ty, x, y: []u8) -> Flow!bool need
 /// The trap for the union value `b` of type `t` whose tag is no variant's.
 invalid_tag :: fn(m: ^Machine, span: source.Span, t: Ty, b: []const u8) -> Flow needs Alloc {
     u := m.union_def(t) else return m.trap(span, "not a union")
-    tag := m.get_int(u.tag, b[0..us(m.size(u.tag))])
-    info := m.int_info(u.tag) else (signed: false, bits: 8)
-    text := if info.signed { str.format("{}", tag.bits(i128))! } else { str.format("{}", tag)! }
-    return m.trap(span, str.format("invalid tag value S({}) for union {}", text, m.s.show(t))!)
+    return m.trap(span, m.invalid_tag_text(t, u.tag, b))
+}
+
+/// The message for the union value `b` of type `t`, with tag type `tag`, whose tag is no
+/// variant's.
+invalid_tag_text :: fn(m: ^Machine, t: Ty, tag: Ty, b: []const u8) -> string needs Alloc {
+    raw := m.get_int(tag, b[0..us(m.size(tag))])
+    info := m.int_info(tag) else (signed: false, bits: 8)
+    text := if info.signed { str.format("{}", raw.bits(i128))! } else { str.format("{}", raw)! }
+    return str.format("invalid tag value S({}) for union {}", text, m.s.show(t))!
 }
 
 /// Whether the byte strings are equal.

@@ -39,7 +39,7 @@ call_inner :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr, dest: ?
         borrows := dest is not null and fg.callee_borrows(callee, i)
         root := fg.in_place_root(a)
         overlaps := true
-        if r := root { overlaps = fg.arg_may_overlap(r, obs, borrows) }
+        if r := root { overlaps = arg_may_overlap(r, obs, borrows) }
         // A large constant is passed from static storage (see `constarg.gm`).
         k: ?string = null
         if fg.g.ty.by_ref(a.ty) { k = fg.g.const_arg(a) }
@@ -125,7 +125,7 @@ in_place_root :: fn(fg: ^FnGen, a: ^Expr) -> ?^Expr needs sema.Load {
 /// Whether argument `a`, passed in place, may overlap the destination of the call
 /// (see `Observed`) and so must be copied first. `borrows`: the callee may read it
 /// in place without copying it.
-arg_may_overlap :: fn(fg: ^FnGen, a: ^Expr, obs: Observed, borrows: bool) -> bool {
+arg_may_overlap :: fn(a: ^Expr, obs: Observed, borrows: bool) -> bool {
     if not borrows { return false }
     match obs {
         .Fresh => return false
@@ -878,7 +878,7 @@ in_expr :: fn(fg: ^FnGen, elem: ^Expr, container: ^Expr, negated: bool) -> Unsup
     match fg.g.ty.kind(container.ty) {
         .Array(len, et, _) => fg.calls_in_scan(et, str.format("{}", len)!, ca, x, r)
         .Slice(_, et) => {
-            p := fg.slice_ptr(ca)
+            p := slice_ptr(ca)
             l := fg.slice_len(ca)
             fg.calls_in_scan(et, l, str.format("((uint8_t *){})", p)!, x, r)
         }
@@ -1033,7 +1033,7 @@ variant_equal :: fn(fg: ^FnGen, lhs: ^Expr, rhs: ^Expr) -> Unsup!?string needs s
     offs := fg.g.ty.offsets(t)
     tc := fg.g.ty.cty(tag)
     tv: string = str.format("GM_LD({}, {} + {})", tc, addr, offs[0])!
-    if ii := fg.int_info(tag) { tv = fg.normalize(ii, tv) }
+    if ii := fg.int_info(tag) { tv = normalize(ii, tv) }
     c := str.format("({} == {})", tv, fg.int_lit(tag, variant.tag))!
     pv := payload else return c
     pt := variant.payload else return c
@@ -1044,7 +1044,7 @@ variant_equal :: fn(fg: ^FnGen, lhs: ^Expr, rhs: ^Expr) -> Unsup!?string needs s
         pe = str.format("{}({}, {})", f, pa, fg.addr_of(pt, pv))!
     } else {
         ld: string = str.format("GM_LD({}, {})", fg.g.ty.cty(pt), pa)!
-        if ii := fg.int_info(pt) { ld = fg.normalize(ii, ld) }
+        if ii := fg.int_info(pt) { ld = normalize(ii, ld) }
         pe = if fg.g.ty.repr(pt) is .Bool { str.format("(({} != 0) == ({} != 0))", ld, pv)! } else { str.format("({} == {})", ld, pv)! }
     }
     return str.format("({} && {})", c, pe)!

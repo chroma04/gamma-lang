@@ -15,6 +15,8 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **`gamma lint`: `dangling-address` leaves alone an address that a later statement of
+  the same block replaces** (`w.cur = &n`, the work, `w.cur = saved`).
 - **Faster builds and a faster compiler.** Debug builds compile the generated C at `-Og`
   (with gcc, plus the passes that keep the code within about a quarter of `-O1`'s speed):
   the C compiler takes about 30% less time, the conformance and example suites run 20%
@@ -38,6 +40,15 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **An integer literal given a float type is checked for converting exactly**, as the
+  specification says, for every float type. `x: f32 = 16777217` and `h: f16 = 2049` were
+  accepted and silently rounded; they are now compile errors (write `16777217.0` to ask
+  for the nearest value). Exact integers above 2^53, such as `x: f64 = 1 << 60`, were
+  rejected and are now accepted.
+- The interpreter's message for a union value with an invalid tag printed an unsigned
+  tag as a signed number when it was written through a format template.
+- `gamma fetch` reported an archive with too many entries as unpacking "to more than 4
+  GiB", a limit it does not have.
 - **`x in t` for a tuple value `t` with elements of different types** compared every
   element at the type of the first, reading the others at the wrong width (wrong results
   on big-endian targets). The elements are now converted to their join, as `for` over a

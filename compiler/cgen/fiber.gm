@@ -48,7 +48,7 @@ detached :: fn(fg: ^FnGen, head: string, cx: string, emit: fn() -> Unsup!() need
 with_on :: fn(fg: ^FnGen, e: ^Expr, label: u32, w: string, cx: string, stack: ^Expr, body: ^Expr) -> Unsup!string needs sema.Load {
     st := try fg.expr(stack)
     sa := fg.addr_of(stack.ty, st)
-    p := fg.slice_ptr(sa)
+    p := slice_ptr(sa)
     l := fg.slice_len(sa)
     loc := fg.loc(e)
     body_fn := try fg.outline_body(label, e.ty, body)
@@ -201,7 +201,7 @@ fiber_builtin :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs se
     a := try fg.expr(&args[1])
     s := try fg.expr(&args[2])
     sa := fg.addr_of(args[2].ty, s)
-    p := fg.slice_ptr(sa)
+    p := slice_ptr(sa)
     l := fg.slice_len(sa)
     aty := args[1].ty
     ac := fg.g.ty.cty(aty)

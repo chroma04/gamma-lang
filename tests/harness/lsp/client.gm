@@ -327,12 +327,7 @@ of_document :: fn(path: string) -> string needs Alloc {
 }
 
 /// `s` as a JSON string.
-jq :: fn(s: string) -> string needs Alloc {
-    out := list(u8)
-    w := json.writer(&out)
-    w.write_string(s)!
-    return out.items
-}
+jq :: fn(s: string) -> string needs Alloc => kit.json_string(s)
 
 // ---------------------------------------------------------------------------------
 // Looking into JSON values

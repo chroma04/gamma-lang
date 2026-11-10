@@ -205,6 +205,7 @@ option_less :: fn(a, b: ?string) -> bool {
 }
 
 /// The text of the file: entries sorted by name, then source, deterministic.
+#allow("needless-pub")
 pub render_lock :: fn(l: ^const Lock) -> string needs Alloc {
     pkgs := list(LockedPackage)
     for p in l.packages.items { pkgs.push(p)! }
@@ -268,6 +269,7 @@ parse_error :: fn(text: string, e: load.TomlError) -> string needs Alloc {
 }
 
 /// Parses the text of a lockfile.
+#allow("needless-pub")
 pub parse_lock :: fn(text: string) -> string!Lock needs Alloc {
     doc := load.parse_toml(text) else e => {
         return !parse_error(text, e)

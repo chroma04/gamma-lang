@@ -1,12 +1,16 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-11-10) — PRs #1–#116 merged, v0.1.0 + rust-reference-final tagged
+## State (2026-11-10) — PRs #1–#117 merged, v0.1.0 + rust-reference-final tagged
 - s64 (branch claude/focused-ritchie-zf9339): REFACTORING SESSION. Eight area audits →
   roadmap/refactor-backlog.md (open large/medium items, possible bugs). Done: needless
   `pub` stripped (`gamma lint compiler`: 455 → 24 warnings; it is the mechanical to-do
   list), dead code, shared helpers (tir.binop_symbol, bigint.bits128, ratio.zero/to_float,
   types.write_debug_string, sema.generic_of/frame_up). Fixed: `[N << 63]` length trapped
   the compiler; f16 literal defaults; cranelift in --backend messages.
+  s64b (same branch, after #117): integer literal → float must be exact (spec §6.1 was
+  right, checker was not); listed possible bugs fixed (status in refactor-backlog.md);
+  `gamma lint` clean on compiler/harness/difftest and tested (lint suite);
+  dangling-address skips a store that a later statement of the block replaces.
 - s63 (#116): idioms.md folded into guide; CI macOS runner → macos-15.
 - s61–s62 (#114, #115): PERF ROUNDS 6–7 (decisions/062, 063; profiling recipe in
   docs/contributing.md): emit-c -25%, lint -46%, check compiler -20%.

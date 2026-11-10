@@ -22,8 +22,10 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
     out.push(kit.Test(name: "allow_attribute_silences_a_declaration", run: allow_attribute_silences_a_declaration))!
     out.push(kit.Test(name: "json_output_names_the_rule", run: json_output_names_the_rule))!
     out.push(kit.Test(name: "rules_lists_every_rule", run: rules_lists_every_rule))!
-    // Every module of the standard library, and every example program.
+    // Every module of the standard library, every example program, and the compiler, this
+    // harness and the differential tester.
     inputs := list(string)
+    inputs.extend([_]string("compiler", "tests/harness", "tools/difftest"))!
     modules(cfg, "lib/std", &inputs)
     examples := kit.join(cfg.root, "examples")
     for r in fs.entries(examples) {

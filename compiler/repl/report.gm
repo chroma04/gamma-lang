@@ -46,13 +46,19 @@ region_text :: fn(sm: ^const source.SourceMap, diags: ^const diag.Diagnostics, f
         }
         inside := (d.span.lo >= lo or d.span.hi > lo) and d.span.lo <= hi
         if not inside and d.severity is not .Error { continue }
-        nd := d^
-        nd.span = remap(d.span, file, lo, hi, input.len, inside) else source.DUMMY
         labels := list(diag.Label)
         for l in d.labels.items {
             if s := remap(l.span, file, lo, hi, input.len, inside) { labels.push(diag.Label(span: s, message: l.message))! }
         }
-        nd.labels = labels
+        nd := diag.Diagnostic(
+            severity: d.severity,
+            message: d.message,
+            span: remap(d.span, file, lo, hi, input.len, inside) else source.DUMMY,
+            labels: labels,
+            notes: d.notes,
+            fixes: d.fixes,
+            code: d.code,
+        )
         diag.render(&view, &nd, format, &out)
     }
     return out.items

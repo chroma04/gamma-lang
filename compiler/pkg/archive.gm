@@ -71,6 +71,7 @@ file_sha256 :: fn(path: string) -> string!string needs Alloc + Fs {
 /// `dest` and moved into place at the end, so a failure never leaves a partial `dest`. Paths
 /// that would leave the directory, hard links and special files are errors; symbolic links
 /// are allowed here and checked with the checksum of the tree.
+#allow("needless-pub")
 pub unpack :: fn(archive: string, dest: string) -> string!() needs Alloc + Fs + Proc + Rand {
     parent_dir := parent(dest) else return !"bad archive path"
     try make_dirs(parent_dir)
@@ -105,7 +106,7 @@ unpack_into :: fn(archive, dir: string) -> string!() needs Alloc + Fs + Proc {
     for i, name in enumerate(names.items) {
         count += 1
         if count > MAX_ENTRIES {
-            return !str.format("the archive unpacks to more than {} GiB or {} entries, which is not allowed", 4, MAX_ENTRIES)!
+            return !str.format("the archive unpacks to more than {} entries, which is not allowed", MAX_ENTRIES)!
         }
         kind: u8 = types.items.get(i) else '-'
         if kind not in ('-', 'd', 'l') {

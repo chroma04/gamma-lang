@@ -1114,6 +1114,7 @@ deinit :: fn(m: ^Machine) needs Alloc {
         destroy(fr)
     }
     m.argv.deinit()
+    if t := m.env_args { free(t) }
     m.sizes.deinit()
     m.frames.deinit()
     m.free_frames.deinit()

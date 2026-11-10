@@ -47,18 +47,19 @@ on gammac: `Options.native_fallback` looked dead and is not).
 - semver cmp_pre_parts == cmp_build; manifest.gm ascii helpers/KEYWORDS copy.
 - lsp/server.gm JSON-RPC envelope ×4, long `notification`; ide narrowest-range search ×4.
 - CI: version awk ×3, hello program ×3, composite action for "Build gamma from the seed".
-- Remaining `gamma lint compiler` warnings: receiver-style unused params, 8 pubs the
-  harness/fuzz need, and 4 probable false positives (present-only-binding cgen/func.gm:319,
-  stale-element-pointer + dangling-address check/program.gm, mutated-copy repl/report.gm).
+- `gamma lint` is CLEAN on compiler, tests/harness, tools/difftest and the `lint` suite
+  keeps it so (s64b). Pubs needed only by harness/fuzz carry `#allow("needless-pub")`.
 
-## Possible bugs found (not fixed; tell user / fix with tests)
-- check/finalize.gm exact_float ignores `x`: `y: f32 = 16777217` accepted, `1 << 60` as
-  f64 rejected (spec: integer literal "must convert exactly").
-- pkg/archive.gm:108 message says "more than 4 GiB or N entries"; only entries are checked.
-- interp/format.gm fmt_adt invalid-tag prints the tag as i128 regardless of signedness;
-  run.gm unwrap Fast early returns skip m.release; calls.gm env_args never freed.
-- harness: pkg/cache.gm uses kit.quote for JSON; GAMMA_BLESS=0 blesses (doc.gm);
-  build_profiles skips on `cc` not cfg.c; selfhost.gm C flags drifted from BASE_CFLAGS;
-  tools/difftest and fuzz/*.gm are outside the fmt check.
-- cgen/vector.gm f16 lanes typed double (if f16 vectors reach the back end).
-- sema/generics.gm value_at ignores k on an empty path; eval Pow exponent trunc(u32).
+## Possible bugs: status (s64b, PR after #117)
+Fixed: int literal → float exactness (ratio.from_f64; also sema/consts.gm untyped_fits
+shortcut for plain constants), archive entries message, interp invalid-tag signedness /
+unwrap release / env_args free, harness (kit.json_string, GAMMA_BLESS dropped,
+build_profiles honours cfg.c, selfhost uses driver.base_cflags, fmt check covers
+tools/difftest + fuzz), sema value_at.
+Not bugs: eval Pow exponent (always u32), f16 vector lanes (sema rejects them).
+Left: pkg/lsp.gm bad Content-Length → 0 (test would time out, not pass);
+driver/toolchain.gm for_safe_build splits PATH on ":" (Safe is Unix-only);
+native.gm cached_program calls Env.exit inside a ?string fn; target_text trailing "" field
+(changing it invalidates cache keys); ci.yml:346 `gammac` fallback; a non-exact constant
+EXPRESSION typed float (`x: f64 : (1 << 60) + 1`) reports "`<<` requires integer operands"
+rather than the exactness error (operands take the float type; pre-existing).

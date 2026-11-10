@@ -587,6 +587,8 @@ canonical_field :: fn(s: ^Sema, v: tir.Value, ty: Ty, offset: u64, out: []u8) ->
 
 /// The value `k` elements after place `p`.
 value_at :: fn(p: tir.Place, k: u64) -> ?tir.Value {
+    // A place that is a whole cell has no elements after it.
+    if p.path.len is 0 and k is not 0 { return null }
     v := p.cell.v
     for i, x in enumerate(p.path) {
         .Agg(a) := v else return null

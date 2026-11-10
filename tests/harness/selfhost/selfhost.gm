@@ -4,6 +4,7 @@
 //! seed builds, and a packaged release runs from its installed layout.
 
 driver :: import "gammac/driver"
+load :: import "gammac/load"
 fs :: import "std/fs"
 kit :: import "../kit"
 str :: import "std/str"
@@ -40,9 +41,9 @@ unit_tests_pass :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 }
 
 sources_are_formatted :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    // Run `gamma fmt compiler tests/harness` after editing them.
-    out := try t.run(t.gamma([_]string("fmt", "--check", "compiler", "tests/harness")))
-    try t.check(out.success(), "not formatted (run `gamma fmt compiler tests/harness`):\n{}{}", out.out, out.err)
+    // Run `gamma fmt compiler tests/harness tools/difftest fuzz` after editing them.
+    out := try t.run(t.gamma([_]string("fmt", "--check", "compiler", "tests/harness", "tools/difftest", "fuzz")))
+    try t.check(out.success(), "not formatted (run `gamma fmt compiler tests/harness tools/difftest fuzz`):\n{}{}", out.out, out.err)
     return ()
 }
 
@@ -120,7 +121,8 @@ split_emitted_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     for name in sources {
         object := str.format("{}.o", kit.join(dir, name))!
         cc := cc_command(&tc)
-        cc.args([_]string("-std=gnu11", "-w", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-pthread", "-O1", "-c", kit.join(dir, name), "-o", object))
+        cc.args(driver.base_cflags(load.host_target()).items)
+        cc.args([_]string("-O1", "-c", kit.join(dir, name), "-o", object))
         out := try t.run(cc)
         try t.check(out.success(), "{} does not compile:\n{}", name, out.err)
         objects.push(object)!

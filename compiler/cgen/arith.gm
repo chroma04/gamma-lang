@@ -111,7 +111,7 @@ int_info :: fn(fg: ^FnGen, t: Ty) -> ?IntInfo needs Alloc {
 }
 
 /// `v` reduced to `bits` bits (two's complement wrap), as a C expression.
-pub normalize :: fn(fg: ^FnGen, ii: IntInfo, v: string) -> string needs Alloc {
+pub normalize :: fn(ii: IntInfo, v: string) -> string needs Alloc {
     if ii_exact(ii) { return v }
     shift := ii.storage * 8 - u64(ii.bits)
     if ii.signed {
@@ -135,14 +135,14 @@ unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs 
                     fg.linef("if ({} == {}) gm_trap(\"integer overflow in `-`\", {});", v, min, loc)
                 }
                 r := str.format("({})(({})0 - ({}){})", ii_cty(ii), ii_ucty(ii), ii_ucty(ii), v)!
-                r2 := fg.normalize(ii, r)
+                r2 := normalize(ii, r)
                 return fg.tmp(t, r2)
             }
             _ => return !unsupported(e.span, str.format("negating `{}`", fg.g.ty.show(x.ty))!)
         }
         .BitNot => {
             ii := fg.int_info(x.ty) else return !unsupported(e.span, str.format("`~` on `{}`", fg.g.ty.show(x.ty))!)
-            r := fg.normalize(ii, str.format("({})~{}", ii_cty(ii), v)!)
+            r := normalize(ii, str.format("({})~{}", ii_cty(ii), v)!)
             return fg.tmp(t, r)
         }
     }
@@ -239,7 +239,7 @@ int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: stri
             if op is .Shr { return fg.tmp(t, str.format("({})({} >> (int){})", c, a, n)!) }
             r := str.format("r{}", fg.fresh())!
             raw := str.format("({})(({}){} << (int){})", c, ii_ucty(ii), a, n)!
-            norm := fg.normalize(ii, raw)
+            norm := normalize(ii, raw)
             fg.linef("{} {} = {};", c, r, norm)
             o := str.format("o{}", fg.fresh())!
             fg.linef("bool {} = ({})({} >> (int){}) != {};", o, c, r, n, a)
@@ -272,7 +272,7 @@ int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: stri
 /// `o`, according to the flavor (§7.4.2). `sat_up` says which way a saturating result
 /// goes.
 finish_int :: fn(fg: ^FnGen, fl: ast.Flavor, ii: IntInfo, lt: Ty, t: Ty, r: string, o: string, sat_up: string, loc: string, sym: string) -> Unsup!string needs sema.Load {
-    wrapped := fg.normalize(ii, r)
+    wrapped := normalize(ii, r)
     match fl {
         .Checked => {
             if fg.g.opts.checks {
@@ -375,7 +375,7 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
             d := fg.addr_of(args[0].ty, try fg.expr(&args[0]))
             s := fg.addr_of(args[1].ty, try fg.expr(&args[1]))
             n := fg.slice_len(d)
-            fg.linef("if ({} != 0) memmove({}, {}, {} * {});", n, fg.slice_ptr(d), fg.slice_ptr(s), n, fg.g.ty.size(elem))
+            fg.linef("if ({} != 0) memmove({}, {}, {} * {});", n, slice_ptr(d), slice_ptr(s), n, fg.g.ty.size(elem))
             return fg.unit()
         }
         _ => {}
@@ -393,7 +393,7 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
             fg.linef("memset(&{}, 0, sizeof {}); memcpy(&{}, {}, sizeof {} < {} ? sizeof {} : {});", r, r, r, a, r, sz, r, sz)
             if ii := fg.int_info(t) {
                 if not ii_exact(ii) {
-                    nv := fg.normalize(ii, r)
+                    nv := normalize(ii, r)
                     fg.linef("{} = {};", r, nv)
                 }
             }
@@ -506,7 +506,7 @@ assert :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load
     fg.indent += 1
     m := try fg.expr(&args[1])
     a := fg.addr_of(args[1].ty, m)
-    p := fg.slice_ptr(a)
+    p := slice_ptr(a)
     l := fg.slice_len(a)
     prefix := "assertion failed"
     fg.linef("gm_buf mb = {{0}}; size_t ml = {}; const uint8_t *mp = {}; if (ml == {} && memcmp(mp, \"{}\", {}) == 0) gm_buf_push(&mb, mp, ml); else {{ gm_buf_push(&mb, \"{}: \", {}); gm_buf_push(&mb, mp, ml); }} gm_trap_bytes(mb.data, mb.len, {});", l, p, prefix.len, prefix, prefix.len, prefix, prefix.len + 2, loc)
@@ -529,7 +529,7 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
         v := try fg.expr(&args[0])
         addr := fg.addr_of(args[0].ty, v)
         fg.linef("const uint8_t *ev{}; size_t evn{};", k, k)
-        fg.linef("bool evok{} = gm_env_var((const uint8_t *){}, {}, &ev{}, &evn{});", k, fg.slice_ptr(addr), fg.slice_len(addr), k, k)
+        fg.linef("bool evok{} = gm_env_var((const uint8_t *){}, {}, &ev{}, &evn{});", k, slice_ptr(addr), fg.slice_len(addr), k, k)
         s := fg.make_slice(fg.g.ty.string_ty(), str.format("ev{}", k)!, str.format("evn{}", k)!)
         some := fg.make_some(t, s)
         none := fg.make_none(t)
@@ -541,7 +541,7 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
         v := try fg.expr(a)
         if fg.g.ty.kind(a.ty) is .Slice(_, _) {
             addr := fg.addr_of(a.ty, v)
-            cargs.push(str.format("(void *){}, {}", fg.slice_ptr(addr), fg.slice_len(addr))!)!
+            cargs.push(str.format("(void *){}, {}", slice_ptr(addr), fg.slice_len(addr))!)!
         } else {
             cargs.push(v)!
         }
@@ -562,7 +562,7 @@ alloc_tag :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!st
     for k in 0..3 { v.push(try fg.expr(&args[k]))! }
     f := try fg.expr(&args[3])
     fa := fg.addr_of(args[3].ty, f)
-    fp := fg.slice_ptr(fa)
+    fp := slice_ptr(fa)
     fl := fg.slice_len(fa)
     line := try fg.expr(&args[4])
     col := try fg.expr(&args[5])
@@ -606,7 +606,7 @@ rotate :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, at: Ty, vals: []string) -> U
     k: string = if op is .Rotl { k0 } else { str.format("({} - {} % {})", ii.bits, k0, ii.bits)! }
     c := fg.g.ty.cty(t)
     r := fg.tmp(t, str.format("({})gm_rotl({}, {}, {})", c, x, k, ii.bits)!)
-    n := fg.normalize(ii, r)
+    n := normalize(ii, r)
     return fg.tmp(t, n)
 }
 
@@ -631,7 +631,7 @@ bit_count :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, at: Ty, v0: string) -> Un
     r := fg.tmp(t, str.format("({}){}", c, call)!)
     if op in (.Bswap, .Bitreverse) {
         if ri := fg.int_info(t) {
-            n := fg.normalize(ri, r)
+            n := normalize(ri, r)
             return fg.tmp(t, n)
         }
     }
@@ -756,7 +756,7 @@ arith_get :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!st
         .Slice(_, _) => {
             v := try fg.expr(base)
             a := fg.addr_of(base.ty, v)
-            ptr = str.format("((uint8_t *){})", fg.slice_ptr(a))!
+            ptr = str.format("((uint8_t *){})", slice_ptr(a))!
             len = fg.slice_len(a)
         }
         .Array(n, _, _) => {
@@ -851,7 +851,7 @@ convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> Unsu
                     _ => true
                 }
                 fits := arith_fits(ii, src_val, si)
-                wrapped := fg.normalize(ii, str.format("({}){}", c, src_val)!)
+                wrapped := normalize(ii, str.format("({}){}", c, src_val)!)
                 match op {
                     .Checked => {
                         res := fg.tmp_uninit(t)
@@ -919,7 +919,7 @@ convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> Unsu
     if src_int {
         if bl := fg.g.ty.bits_layout(target) {
             ui := fg.int_info(bl.int_ty)?
-            w := fg.normalize(ui, str.format("({}){}", ii_cty(ui), src_val)!)
+            w := normalize(ui, str.format("({}){}", ii_cty(ui), src_val)!)
             b := fg.tmp_uninit(target)
             fg.linef("GM_ST({}, (uint8_t *)&{}, {});", ii_cty(ui), b, w)
             return b

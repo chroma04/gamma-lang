@@ -10,6 +10,21 @@ keep :: fn(h: ^Holder, n: Node) {
     h.p = &n //~ WARNING [dangling-address] this address of `n` is stored where it outlives `n`
 }
 
+Walk :: struct { cur: ?^const Node = null, seen: i32 = 0 }
+
+visit :: fn(w: ^Walk) {
+    if c := w.cur { w.seen += c.v }
+}
+
+// An address stored for the work that follows and replaced before the block ends does
+// not outlive the local.
+scoped :: fn(w: ^Walk, n: Node) {
+    saved := w.cur
+    w.cur = &n
+    visit(w)
+    w.cur = saved
+}
+
 main :: fn() needs Alloc + Out {
     nodes := [_]Node(Node(v: 1), Node(v: 2))
     ptrs := list(^const Node)
@@ -21,5 +36,7 @@ main :: fn() needs Alloc + Out {
     for i in 0..nodes.len { ok.push(&nodes[i])! }
     h := Holder(p: null)
     keep(&h, nodes[0])
+    w := Walk()
+    scoped(&w, nodes[1])
     print("{} {}\n", ptrs.items.len, ok.items.len)
 }
