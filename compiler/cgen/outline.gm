@@ -46,9 +46,14 @@ pub Run :: struct {
 
 /// True if `def`'s body is long enough that its long blocks are split into helpers (see the
 /// file's comment).
-long_body :: fn(def: ^const Func) -> bool {
-    b := def.body else return false
-    return weight(b, LONG_BODY + 1) > LONG_BODY
+long_body :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
+    i := usize(f)
+    while g.long_memo.items.len <= i { g.long_memo.push(null)! }
+    if known := g.long_memo.items[i] { return known }
+    long := false
+    if b := g.prog.func(f).body { long = weight(b, LONG_BODY + 1) > LONG_BODY }
+    g.long_memo.items[i] = long
+    return long
 }
 
 /// The number of expression nodes in `e`, counting up to `cap` at most.
@@ -100,11 +105,11 @@ jump :: fn(fg: ^FnGen, label: string, scope: ?usize) needs Alloc {
                 }
             }
             if k is run.exits.items.len { run.exits.push(RunExit(label: label, scope: scope))! }
-            fg.line(str.format("return {};", k + 1)!)
+            fg.linef("return {};", k + 1)
             return ()
         }
     }
-    fg.line(str.format("goto {};", label)!)
+    fg.linef("goto {};", label)
 }
 
 /// The statements of a block, each in a C block of its own (so the C compiler can reuse
@@ -162,9 +167,9 @@ runs_of :: fn(weights: []const u32) -> List((start: usize, end: usize, outline: 
 
 /// Whether generating `def`'s body moves some run of statements into a helper, so that its
 /// locals must live in the frame: it is long, and some block of it has a run to move.
-outlines :: fn(def: ^const Func) -> bool needs Alloc {
-    if not long_body(def) { return false }
-    b := def.body else return false
+outlines :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
+    if not long_body(g, f) { return false }
+    b := g.prog.func(f).body else return false
     found := false
     any_outlined(b, &found)
     return found
@@ -276,11 +281,11 @@ outline_run :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
 
     call := str.format("{}({})", name, str.join(args.items, ", ")!)!
     if run.exits.items.len is 0 {
-        fg.line(str.format("{};", call)!)
+        fg.linef("{};", call)
     } else {
-        fg.line(str.format("switch ({}) {{", call)!)
+        fg.linef("switch ({}) {{", call)
         for j, x in enumerate(run.exits.items) {
-            fg.line(str.format("case {}:", j + 1)!)
+            fg.linef("case {}:", j + 1)
             fg.indent += 1
             fg.jump(x.label, x.scope)
             fg.indent -= 1

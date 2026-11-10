@@ -1,0 +1,39 @@
+// Integers of every width, booleans and strings written through each kind of sink (the
+// ambient output, `str.format`, `List(u8).write`, a function): the same text everywhere,
+// at the limits of each type (§21.6.1).
+str :: import "std/str"
+
+show :: fn(A: type, template :: string, args: ..A) needs Out + Alloc {
+    print(template, ..args)
+    s := str.format(template, ..args)!
+    defer free(s)
+    l := list(u8)
+    defer l.deinit()
+    l.write(template, ..args)!
+    bytes: usize = 0
+    @write(fn(b: []const u8) { bytes += b.len }, template, ..args)
+    if not (s is l.items) or bytes is not s.len { print("MISMATCH: {} / {} ({} bytes)\n", s, l.items, bytes) }
+    print("  [{} bytes]\n", bytes)
+}
+
+main :: fn() needs Out + Alloc {
+    show("{} {} {} {}", @min_value(i8), @max_value(i8), @min_value(i16), @max_value(i16))
+    show("{} {} {} {}", @min_value(i32), @max_value(i32), @min_value(i64), @max_value(i64))
+    show("{} {} {} {}", @max_value(u8), @max_value(u16), @max_value(u32), @max_value(u64))
+    show("{} {} {}", @min_value(i128), @max_value(i128), @max_value(u128))
+    show("{} {} {} {}", @min_value(i7), @max_value(u7), @min_value(i33), @max_value(u63))
+    // Pointer-sized integers, with values that fit every target.
+    show("{} {} {}", isize(-2147483648), usize(4294967295), usize(0))
+    show("{} {} {}", i64(-1), u1(1), @min_value(i65))
+    show("{}|{}|{}", true, false, "")
+    empty: []const u8 = ""
+    show("<{}{}{}>", "", empty, "x")
+    show("{}", "the whole text is one string")
+    // A list formatted into itself: the argument is the list's own storage.
+    l := list(u8)
+    defer l.deinit()
+    l.write("{}", "ab")!
+    for _ in 0..6 { l.write("{}{}", l.items, l.items.len)! }
+    print("{}\n", l.items.len)
+    print("{}\n", l.items[0..40])
+}

@@ -522,9 +522,7 @@ taken_union_members :: fn(s: ^Sema, module: usize, members: []const ast.UnionMem
 pub instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs Load {
     gargs := list(GenericArg)
     for a in args { gargs.push(.Type(a))! }
-    for i in s.instances.items {
-        if i.template is template and i.args is args { return s.tys.adt(i.inst, gargs.items) }
-    }
+    if inst := s.adt_instances.get((template, args)) { return s.tys.adt(inst, gargs.items) }
     // Instantiating a type's fields instantiates the types they mention, which must end:
     // `Bad :: struct(T: type) { next: ?^Bad(?T) }` would go on forever (§16.7).
     if s.adt_inst_depth >= MAX_ADT_INST_DEPTH {
@@ -540,6 +538,7 @@ pub instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs
     copy := list(Ty)
     copy.extend(args)!
     s.instances.push(Instance(template: template, args: copy.items, inst: inst))!
+    s.adt_instances.put((template, copy.items), inst)!
     ty := s.tys.adt(inst, gargs.items)
     s.adts.push(AdtInfo(
         name: info.name,

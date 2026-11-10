@@ -54,6 +54,8 @@ pub CTypes :: struct {
     /// Typed C structs by type id (`null`: the type is a blob), and by their member list
     /// so that types of the same shape share one.
     typed_cache: hash_map.HashMap(u32, ?string)
+    /// The C type of each type asked for so far, by type id.
+    cty_cache: List(?string)
     typed_by_shape: hash_map.HashMap(string, string)
     typed_count: usize
     typed_defs: List(u8)
@@ -81,6 +83,7 @@ pub ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
     desc_parts: list(u8),
     desc_defs: list(u8),
     typed_cache: hash_map.hash_map(u32, ?string),
+    cty_cache: list(?string),
     typed_by_shape: hash_map.hash_map(string, string),
     typed_count: 0,
     typed_defs: list(u8),
@@ -154,6 +157,17 @@ pub repr :: fn(ty: ^CTypes, t: Ty) -> Repr needs Alloc => match ty.kind(t) {
 
 /// The C type of values of `t`.
 pub cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+    i := usize(t.id)
+    if i < ty.cty_cache.items.len {
+        if c := ty.cty_cache.items[i] { return c }
+    }
+    c := ty.make_cty(t)
+    while ty.cty_cache.items.len <= i { ty.cty_cache.push(null)! }
+    ty.cty_cache.items[i] = c
+    return c
+}
+
+make_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
     match ty.repr(t) {
         .Int(signed, _, storage) => return int_cty(signed, storage)
         .Float(16) => return "_Float16"

@@ -428,6 +428,12 @@ struct gm_type {
 /* Appends the display form of the value of type t at address v (§21.6.1). `top` is true for
  * the argument itself: a []u8 / []const u8 slice is then written raw, otherwise quoted. */
 GM_API void gm_format(gm_buf *out, const gm_type *t, const void *v, bool top);
+/* The display form of the value of type t at address v, as `gm_format` with `top` gives
+ * it, where it already is or can cheaply be put: a string's own bytes, the digits of an
+ * integer in `scratch` (GM_VIEW_SCRATCH bytes); any other value is formatted into `b`
+ * (empty on entry, to be freed if it has data). Sets *data and returns the length. */
+#define GM_VIEW_SCRATCH 48
+GM_API size_t gm_format_view(gm_buf *b, uint8_t *scratch, const gm_type *t, const void *v, const void **data);
 /* Traps: "unwrap of error value <v>", the error `v` of type `t`. */
 GM_API _Noreturn void gm_trap_unwrap(const gm_type *t, const void *v, const char *file, uint32_t line, uint32_t col);
 

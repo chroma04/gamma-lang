@@ -315,6 +315,28 @@ tools/test.sh --filter for-rust doc_examples/
 `bench/README.md`); `bench/programs/` holds small programs that exercise the call, effect and allocation paths. On pull requests CI runs `scripts/bench-compare.sh` to compare the
 benchmarks of the branch with those of its base; the job only reports, it never fails.
 
+### Profiling the compiler
+
+The compiler's work is spread over many small functions, so measure before changing it.
+Wall times of a second or two vary by 5 to 10% between runs; instruction counts under
+`valgrind --tool=callgrind` do not, and they show small gains reliably:
+
+```sh
+gamma build -g compiler -o /tmp/prof/gamma        # debug information for function names
+valgrind --tool=callgrind --callgrind-out-file=/tmp/prof/check.out /tmp/prof/gamma check compiler
+callgrind_annotate /tmp/prof/check.out | head -40
+```
+
+`check compiler`, `lint compiler` and `build --emit-c compiler -o FILE` exercise the front
+end, the lint rules and the C back end without the C compiler's time. With `-g` the
+functions are listed by the Gamma file and line where they are defined; functions of the
+core library (`lib/core`) have no line information and appear under their C names
+(`gm_fN`), to be looked up in the generated C beside the executable. Inclusive costs
+(`--inclusive=yes`) are not meaningful for recursive functions, which most of the
+compiler's passes are: compare the totals of two builds instead. A change to the code
+generator shows in the compiler's own speed only one generation later, in a compiler built
+by a compiler that has the change.
+
 ## Generated files
 
 `lib/std/text/tables.gm` and the conformance test `tests/conformance/run/std_text_ucd.gm`

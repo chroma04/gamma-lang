@@ -189,10 +189,10 @@ pub find_root :: fn(start: string) -> ?string needs Alloc + Fs {
 text_of :: fn(sm: ^const source.SourceMap, span: source.Span) -> string => sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
 
 /// Lints the package of the program rooted at `root`, which `s` has checked (with its
-/// tests): adds the findings of the rules in files for which `in_scope` holds to `diags`,
-/// at the levels of `config`. Returns `null` if the program does not compile (the errors
-/// are in `diags`).
-pub run :: fn(s: ^sema.Sema, program: bool, sc: ^Scope, cfg: ^const Config) -> ?Outcome needs Alloc + Fs {
+/// tests) and whose files the loader kept in `parsed`: adds the findings of the rules in
+/// files for which `in_scope` holds to `diags`, at the levels of `config`. Returns `null`
+/// if the program does not compile (the errors are in `diags`).
+pub run :: fn(s: ^sema.Sema, parsed: []const load.Parsed, program: bool, sc: ^Scope, cfg: ^const Config) -> ?Outcome needs Alloc + Fs {
     sm := s.l.sm
     diags := s.l.diags
     if diags.has_errors() { return null }
@@ -202,16 +202,16 @@ pub run :: fn(s: ^sema.Sema, program: bool, sc: ^Scope, cfg: ^const Config) -> ?
     found := list(diag.Diagnostic)
     w := walk(sm)
     when_names := hash_map.hash_map(string, bool)
+    at := hash_map.hash_map(source.FileId, usize)
+    for i, p in enumerate(parsed) { at.put(p.file, i)! }
     for i, f in enumerate(sm.files.items) {
         if f.path.starts_with("<") or not scoped.items[i] { continue }
-        scratch := diag.diagnostics()
-        lexed := syntax.lex(i.trunc(u32), f.text, &scratch)
-        ids: ast.NodeId = 0
-        tree := parse.parse_file(i.trunc(u32), &lexed, &ids, &scratch)
-        if scratch.has_errors() { continue }
+        // The checked program has no errors, so the loader's tokens and tree of the file
+        // are those of its text.
+        p := &parsed[at.get(i.trunc(u32)) else continue]
         before := w.facts.whens.items.len
-        w.walk_file(&tree)
-        names_in(lexed.tokens.items, w.facts.whens.items[before..], &when_names)
+        w.walk_file(&p.tree)
+        names_in(p.tokens, w.facts.whens.items[before..], &when_names)
     }
     facts := &w.facts
     for f in findings.items {

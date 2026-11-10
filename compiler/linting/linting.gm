@@ -141,6 +141,8 @@ lint_round :: fn(path: string, o: ^const lint.Options, setup: fix.Setup, base: ^
     l := load.loader(&sm, &diags, &next_id, setup.std, setup.recover)
     prepared := pkg.prepare_build(path, setup.packages, setup.profile) else return .Done(1)
     l.resolution = prepared.resolution
+    parsed := list(load.Parsed)
+    l.parsed = &parsed
     outcome: ?lint.Outcome = null
     if l.load_core(setup.core, setup.mode) {
         s := sema.sema(&l)
@@ -152,7 +154,7 @@ lint_round :: fn(path: string, o: ^const lint.Options, setup: fix.Setup, base: ^
             s.resolve_declarations()
             check.check_program(&s, m, true)
             program := packaged and l.lookup(m, "main") is not null
-            outcome = lint.run(&s, program, &scope, cfg)
+            outcome = lint.run(&s, parsed.items, program, &scope, cfg)
         }
     }
     if outcome is null and st.undo.items.len > 0 {

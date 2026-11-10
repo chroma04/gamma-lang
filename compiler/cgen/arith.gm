@@ -149,7 +149,7 @@ pub unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string ne
                 min := fg.int_lit(x.ty, ii_min(ii))
                 if fg.g.opts.checks {
                     loc := fg.loc(e)
-                    fg.line(str.format("if ({} == {}) gm_trap(\"integer overflow in `-`\", {});", v, min, loc)!)
+                    fg.linef("if ({} == {}) gm_trap(\"integer overflow in `-`\", {});", v, min, loc)
                 }
                 r := str.format("({})(({})0 - ({}){})", ii_cty(ii), ii_ucty(ii), ii_ucty(ii), v)!
                 r2 := fg.normalize(ii, r)
@@ -226,11 +226,11 @@ pub int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: 
             }
             r := str.format("r{}", fg.fresh())!
             o := str.format("o{}", fg.fresh())!
-            fg.line(str.format("{} {}; bool {} = __builtin_{}_overflow({}, {}, &{});", c, r, o, name, a, b, r)!)
+            fg.linef("{} {}; bool {} = __builtin_{}_overflow({}, {}, &{});", c, r, o, name, a, b, r)
             if not ii_exact(ii) {
                 min := fg.int_lit(lt, ii_min(ii))
                 max := fg.int_lit(lt, ii_max(ii))
-                fg.line(str.format("{} = {} || {} < {} || {} > {};", o, o, r, min, r, max)!)
+                fg.linef("{} = {} || {} < {} || {} > {};", o, o, r, min, r, max)
             }
             sat: string = "1"
             if ii.signed {
@@ -247,28 +247,28 @@ pub int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: 
         .Shl(_), .Shr => {
             fl: ast.Flavor = arith_flavor(op) else .Checked
             n := str.format("n{}", fg.fresh())!
-            fg.line(str.format("unsigned __int128 {} = (unsigned __int128){};", n, b)!)
+            fg.linef("unsigned __int128 {} = (unsigned __int128){};", n, b)
             if fg.g.opts.checks {
-                fg.line(str.format("if ({} >= {}) gm_trap_shift((uint64_t){}, \"{}\", {});", n, ii.bits, n, fg.g.ty.show(lt), loc)!)
+                fg.linef("if ({} >= {}) gm_trap_shift((uint64_t){}, \"{}\", {});", n, ii.bits, n, fg.g.ty.show(lt), loc)
             } else {
-                fg.line(str.format("{} %= {};", n, ii.bits)!)
+                fg.linef("{} %= {};", n, ii.bits)
             }
             if op is .Shr { return fg.tmp(t, str.format("({})({} >> (int){})", c, a, n)!) }
             r := str.format("r{}", fg.fresh())!
             raw := str.format("({})(({}){} << (int){})", c, ii_ucty(ii), a, n)!
             norm := fg.normalize(ii, raw)
-            fg.line(str.format("{} {} = {};", c, r, norm)!)
+            fg.linef("{} {} = {};", c, r, norm)
             o := str.format("o{}", fg.fresh())!
-            fg.line(str.format("bool {} = ({})({} >> (int){}) != {};", o, c, r, n, a)!)
+            fg.linef("bool {} = ({})({} >> (int){}) != {};", o, c, r, n, a)
             sat := str.format("({} > 0)", a)!
             return try fg.finish_int(fl, ii, lt, t, r, o, sat, loc, "<<")
         }
         .Div, .Rem => {
             sym := arith_op_symbol(op)
-            fg.line(str.format("if ({} == 0) gm_trap(\"division by zero\", {});", b, loc)!)
+            fg.linef("if ({} == 0) gm_trap(\"division by zero\", {});", b, loc)
             if ii.signed {
                 min := fg.int_lit(lt, ii_min(ii))
-                fg.line(str.format("if ({} == {} && {} == ({})-1) gm_trap(\"integer overflow in `{}`\", {});", a, min, b, c, sym, loc)!)
+                fg.linef("if ({} == {} && {} == ({})-1) gm_trap(\"integer overflow in `{}`\", {});", a, min, b, c, sym, loc)
             }
             r: string = if op is .Div { str.format("({} / {})", a, b)! } else { str.format("({} % {})", a, b)! }
             return fg.tmp(t, str.format("({}){}", c, r)!)
@@ -293,7 +293,7 @@ finish_int :: fn(fg: ^FnGen, fl: ast.Flavor, ii: IntInfo, lt: Ty, t: Ty, r: stri
     match fl {
         .Checked => {
             if fg.g.opts.checks {
-                fg.line(str.format("if ({}) gm_trap(\"integer overflow in `{}`\", {});", o, sym, loc)!)
+                fg.linef("if ({}) gm_trap(\"integer overflow in `{}`\", {});", o, sym, loc)
             }
             return fg.tmp(t, wrapped)
         }
@@ -305,13 +305,13 @@ finish_int :: fn(fg: ^FnGen, fl: ast.Flavor, ii: IntInfo, lt: Ty, t: Ty, r: stri
         }
         .Opt => {
             res := fg.tmp_uninit(t)
-            fg.line(str.format("if ({}) {{", o)!)
+            fg.linef("if ({}) {{", o)
             none := fg.make_none(t)
-            fg.line(str.format("    {} = {};", res, none)!)
+            fg.linef("    {} = {};", res, none)
             fg.line("} else {")
             w := fg.tmp(lt, wrapped)
             some := fg.make_some(t, w)
-            fg.line(str.format("    {} = {};", res, some)!)
+            fg.linef("    {} = {};", res, some)
             fg.line("}")
             return res
         }
@@ -347,7 +347,7 @@ arith_asm :: fn(fg: ^FnGen, args: []Expr, outputs: usize, inputs: usize) -> Unsu
     }
     clobbers := list(string)
     for k in (1 + 2 * (outputs + inputs))..args.len { clobbers.push(asm_text(&args[k]))! }
-    fg.line(str.format("__asm__ volatile ({} : {} : {} : {});", asm_text(&args[0]), str.join(outs.items, ", ")!, str.join(ins.items, ", ")!, str.join(clobbers.items, ", ")!)!)
+    fg.linef("__asm__ volatile ({} : {} : {} : {});", asm_text(&args[0]), str.join(outs.items, ", ")!, str.join(ins.items, ", ")!, str.join(clobbers.items, ", ")!)
     return fg.unit()
 }
 
@@ -364,18 +364,18 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
         // a length.
         .Sys(sop) => return fg.sys_builtin(e, sop, args)
         .Cover(id) => {
-            fg.line(str.format("GM_COVER({});", id)!)
+            fg.linef("GM_COVER({});", id)
             return fg.unit()
         }
         .Unreachable => {
-            fg.line(str.format("gm_trap(\"reached `@unreachable()`\", {});", loc)!)
+            fg.linef("gm_trap(\"reached `@unreachable()`\", {});", loc)
             return fg.zero(t)
         }
         .Get, .GetPtr, .First, .Last => return try fg.arith_get(e, op, args)
         .HeapAlloc => {
             s := try fg.expr(&args[0])
             a := try fg.expr(&args[1])
-            fg.line(str.format("if (({}) == 0 || (({}) & (({}) - 1)) != 0) gm_trap(\"allocation alignment is not a power of two\", {});", a, a, a, loc)!)
+            fg.linef("if (({}) == 0 || (({}) & (({}) - 1)) != 0) gm_trap(\"allocation alignment is not a power of two\", {});", a, a, a, loc)
             p := fg.tmp(tys.intern(.Rawptr), str.format("gm_heap_alloc({}, {})", s, a)!)
             return fg.tmp(t, p)
         }
@@ -384,7 +384,7 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
             p := try fg.expr(&args[0])
             s := try fg.expr(&args[1])
             a := try fg.expr(&args[2])
-            fg.line(str.format("gm_heap_free({}, {}, {}, {});", p, s, a, loc)!)
+            fg.linef("gm_heap_free({}, {}, {}, {});", p, s, a, loc)
             return fg.unit()
         }
         .CopyElems => {
@@ -392,7 +392,7 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
             d := fg.addr_of(args[0].ty, try fg.expr(&args[0]))
             s := fg.addr_of(args[1].ty, try fg.expr(&args[1]))
             n := fg.slice_len(d)
-            fg.line(str.format("if ({} != 0) memmove({}, {}, {} * {});", n, fg.slice_ptr(d), fg.slice_ptr(s), n, fg.g.ty.size(elem))!)
+            fg.linef("if ({} != 0) memmove({}, {}, {} * {});", n, fg.slice_ptr(d), fg.slice_ptr(s), n, fg.g.ty.size(elem))
             return fg.unit()
         }
         _ => {}
@@ -407,11 +407,11 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
             a := fg.addr_of(at, v0)
             r := fg.tmp_uninit(t)
             sz := fg.g.ty.size(at)
-            fg.line(str.format("memset(&{}, 0, sizeof {}); memcpy(&{}, {}, sizeof {} < {} ? sizeof {} : {});", r, r, r, a, r, sz, r, sz)!)
+            fg.linef("memset(&{}, 0, sizeof {}); memcpy(&{}, {}, sizeof {} < {} ? sizeof {} : {});", r, r, r, a, r, sz, r, sz)
             if ii := fg.int_info(t) {
                 if not ii_exact(ii) {
                     nv := fg.normalize(ii, r)
-                    fg.line(str.format("{} = {};", r, nv)!)
+                    fg.linef("{} = {};", r, nv)
                 }
             }
             return r
@@ -419,7 +419,7 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
         .Cast => {
             al := arith_pointee_align(fg, t)
             if al > 1 and fg.g.opts.checks {
-                fg.line(str.format("if ((uintptr_t){} % {} != 0) gm_trap_misaligned((uintptr_t){}, {}, {});", v0, al, v0, al, loc)!)
+                fg.linef("if ((uintptr_t){} % {} != 0) gm_trap_misaligned((uintptr_t){}, {}, {});", v0, al, v0, al, loc)
             }
             return fg.tmp(t, v0)
         }
@@ -468,7 +468,7 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
             ii := fg.int_info(at)?
             if ii.signed and fg.g.opts.checks {
                 min := fg.int_lit(at, ii_min(ii))
-                fg.line(str.format("if ({} == {}) gm_trap(\"integer overflow in `abs`\", {});", v0, min, loc)!)
+                fg.linef("if ({} == {}) gm_trap(\"integer overflow in `abs`\", {});", v0, min, loc)
             }
             return fg.tmp(t, str.format("({} < 0 ? -{} : {})", v0, v0, v0)!)
         }
@@ -500,7 +500,7 @@ pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!
         .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore => return fg.atomic(e, op, args, vals.items)
         .Fence => {
             a := fg.addr_of(at, v0)
-            fg.line(str.format("__atomic_thread_fence(gm_ord[GM_LD(uint8_t, {})]);", a)!)
+            fg.linef("__atomic_thread_fence(gm_ord[GM_LD(uint8_t, {})]);", a)
             return fg.unit()
         }
         .BlackBox => return fg.black_box(e, v0)
@@ -519,14 +519,14 @@ assert :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load
     // Fast builds remove `assert`, argument and all (§21.6).
     if not fg.g.opts.checks { return fg.unit() }
     c := try fg.expr(&args[0])
-    fg.line(str.format("if (!{}) {{", c)!)
+    fg.linef("if (!{}) {{", c)
     fg.indent += 1
     m := try fg.expr(&args[1])
     a := fg.addr_of(args[1].ty, m)
     p := fg.slice_ptr(a)
     l := fg.slice_len(a)
     prefix := "assertion failed"
-    fg.line(str.format("gm_buf mb = {{0}}; size_t ml = {}; const uint8_t *mp = {}; if (ml == {} && memcmp(mp, \"{}\", {}) == 0) gm_buf_push(&mb, mp, ml); else {{ gm_buf_push(&mb, \"{}: \", {}); gm_buf_push(&mb, mp, ml); }} gm_trap_bytes(mb.data, mb.len, {});", l, p, prefix.len, prefix, prefix.len, prefix, prefix.len + 2, loc)!)
+    fg.linef("gm_buf mb = {{0}}; size_t ml = {}; const uint8_t *mp = {}; if (ml == {} && memcmp(mp, \"{}\", {}) == 0) gm_buf_push(&mb, mp, ml); else {{ gm_buf_push(&mb, \"{}: \", {}); gm_buf_push(&mb, mp, ml); }} gm_trap_bytes(mb.data, mb.len, {});", l, p, prefix.len, prefix, prefix.len, prefix, prefix.len + 2, loc)
     fg.indent -= 1
     fg.line("}")
     return fg.unit()
@@ -538,15 +538,15 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
     // The arguments and variables come from the runtime as slices and strings.
     if sop is .EnvArgs {
         k := fg.fresh()
-        fg.line(str.format("size_t argn{}; const void *argp{} = gm_args(&argn{});", k, k, k)!)
+        fg.linef("size_t argn{}; const void *argp{} = gm_args(&argn{});", k, k, k)
         return fg.make_slice(t, str.format("argp{}", k)!, str.format("argn{}", k)!)
     }
     if sop is .EnvVar {
         k := fg.fresh()
         v := try fg.expr(&args[0])
         addr := fg.addr_of(args[0].ty, v)
-        fg.line(str.format("const uint8_t *ev{}; size_t evn{};", k, k)!)
-        fg.line(str.format("bool evok{} = gm_env_var((const uint8_t *){}, {}, &ev{}, &evn{});", k, fg.slice_ptr(addr), fg.slice_len(addr), k, k)!)
+        fg.linef("const uint8_t *ev{}; size_t evn{};", k, k)
+        fg.linef("bool evok{} = gm_env_var((const uint8_t *){}, {}, &ev{}, &evn{});", k, fg.slice_ptr(addr), fg.slice_len(addr), k, k)
         s := fg.make_slice(fg.g.ty.string_ty(), str.format("ev{}", k)!, str.format("evn{}", k)!)
         some := fg.make_some(t, s)
         none := fg.make_none(t)
@@ -565,7 +565,7 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
     }
     call := str.format("gm_{}({})", arith_sys_name(sop), str.join(cargs.items, ", ")!)!
     if fg.g.ty.is_unit(t) {
-        fg.line(str.format("{};", call)!)
+        fg.linef("{};", call)
         return fg.unit()
     }
     return fg.tmp(t, call)
@@ -584,10 +584,10 @@ alloc_tag :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!st
     line := try fg.expr(&args[4])
     col := try fg.expr(&args[5])
     if op is .AllocTag {
-        fg.line(str.format("gm_alloc_tag({}, {}, {}, {}, {}, {}, {});", v.items[0], v.items[1], v.items[2], fp, fl, line, col)!)
+        fg.linef("gm_alloc_tag({}, {}, {}, {}, {}, {}, {});", v.items[0], v.items[1], v.items[2], fp, fl, line, col)
     } else {
         // The check traps at its own location, like the interpreter.
-        fg.line(str.format("gm_alloc_check({}, {}, {}, {}, {}, {}, {}, {});", v.items[0], v.items[1], v.items[2], fp, fl, line, col, loc)!)
+        fg.linef("gm_alloc_check({}, {}, {}, {}, {}, {}, {}, {});", v.items[0], v.items[1], v.items[2], fp, fl, line, col, loc)
     }
     return fg.unit()
 }
@@ -603,10 +603,10 @@ from_tag :: fn(fg: ^FnGen, e: ^Expr, at: Ty, v0: string) -> Unsup!string needs s
         vd := variants[i]
         if vd.payload is not null { continue }
         lit := fg.int_lit(at, vd.tag)
-        fg.line(str.format("if ({} == {}) {{", v0, lit)!)
+        fg.linef("if ({} == {}) {{", v0, lit)
         x := fg.make_variant(u, i, null)
         s := fg.make_some(t, x)
-        fg.line(str.format("    {} = {};", res, s)!)
+        fg.linef("    {} = {};", res, s)
         fg.line("}")
     }
     return res
@@ -665,16 +665,16 @@ pow :: fn(fg: ^FnGen, e: ^Expr, fl: ast.Flavor, at: Ty, vals: []string) -> Unsup
     r := str.format("r{}", fg.fresh())!
     o := str.format("o{}", fg.fresh())!
     f := str.format("gm_pow_{}{}", if ii.signed { "i" } else { "u" }, ii.storage * 8)!
-    fg.line(str.format("bool {} = false; {} {} = {}({}, (uint64_t){}, &{});", o, c, r, f, v0, vals[1], o)!)
+    fg.linef("bool {} = false; {} {} = {}({}, (uint64_t){}, &{});", o, c, r, f, v0, vals[1], o)
     if not ii_exact(ii) {
         min := fg.int_lit(at, ii_min(ii))
         max := fg.int_lit(at, ii_max(ii))
-        fg.line(str.format("{} = {} || {} < {} || {} > {};", o, o, r, min, r, max)!)
+        fg.linef("{} = {} || {} < {} || {} > {};", o, o, r, min, r, max)
     }
     if fl is .Checked and fg.g.opts.checks {
         // The message names the operands, as the interpreter's does.
         b := fg.tmp(at, v0)
-        fg.line(str.format("if ({}) gm_trap_pow((const uint8_t *)&{}, {}, {}, (uint32_t){}, {});", o, b, ii.bits, ii.signed, vals[1], loc)!)
+        fg.linef("if ({}) gm_trap_pow((const uint8_t *)&{}, {}, {}, (uint32_t){}, {});", o, b, ii.bits, ii.signed, vals[1], loc)
     }
     sat := str.format("({} > 0 || ({} & 1) == 0)", v0, vals[1])!
     return try fg.finish_int(fl, ii, at, t, r, o, sat, loc, "pow")
@@ -698,12 +698,12 @@ atomic :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr, vals: []string
     match op {
         .VolatileLoad => return fg.tmp(t, str.format("*(volatile {} *){}", c, v0)!)
         .VolatileStore => {
-            fg.line(str.format("*(volatile {} *){} = {};", c, v0, vals[1])!)
+            fg.linef("*(volatile {} *){} = {};", c, v0, vals[1])
             return fg.unit()
         }
         .AtomicLoad => return fg.tmp(t, str.format("__atomic_load_n({}, {})", p, ords.items[0])!)
         .AtomicStore => {
-            fg.line(str.format("__atomic_store_n({}, {}, {});", p, vals[1], ords.items[0])!)
+            fg.linef("__atomic_store_n({}, {}, {});", p, vals[1], ords.items[0])
             return fg.unit()
         }
         .AtomicSwap => return fg.tmp(t, str.format("__atomic_exchange_n({}, {}, {})", p, vals[1], ords.items[0])!)
@@ -713,7 +713,7 @@ atomic :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr, vals: []string
             res := fg.tmp_uninit(t)
             none := fg.make_none(t)
             some := fg.make_some(t, exp)
-            fg.line(str.format("{} = {} ? {} : {};", res, ok, none, some)!)
+            fg.linef("{} = {} ? {} : {};", res, ok, none, some)
             return res
         }
         .AtomicRmw(rmw) => {
@@ -731,7 +731,7 @@ atomic :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr, vals: []string
             cmp := if rmw is .Max { ">" } else { "<" }
             old := fg.tmp(elem, str.format("__atomic_load_n({}, __ATOMIC_RELAXED)", p)!)
             v := vals[1]
-            fg.line(str.format("while (!__atomic_compare_exchange_n({}, &{}, {} {} {} ? {} : {}, 1, {}, __ATOMIC_RELAXED)) {{}}", p, old, v, cmp, old, v, old, ords.items[0])!)
+            fg.linef("while (!__atomic_compare_exchange_n({}, &{}, {} {} {} ? {} : {}, 1, {}, __ATOMIC_RELAXED)) {{}}", p, old, v, cmp, old, v, old, ords.items[0])
             return old
         }
         _ => @unreachable()
@@ -754,12 +754,12 @@ black_box :: fn(fg: ^FnGen, e: ^Expr, v0: string) -> Unsup!string needs sema.Loa
     }
     if in_register {
         v := fg.tmp(t, v0)
-        fg.line(str.format("__asm__ volatile (\"\" : \"+r\"({}));", v)!)
+        fg.linef("__asm__ volatile (\"\" : \"+r\"({}));", v)
         return v
     }
     slot := fg.tmp(t, v0)
-    p := str.format("t{}", fg.fresh())!
-    fg.line(str.format("{} *volatile {} = &{};", c, p, slot)!)
+    p := fg.fresh_tmp()
+    fg.linef("{} *volatile {} = &{};", c, p, slot)
     return fg.tmp(t, str.format("*{}", p)!)
 }
 
@@ -809,14 +809,14 @@ arith_get :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!st
     }
     esz := fg.g.ty.size(elem)
     res := fg.tmp_uninit(t)
-    fg.line(str.format("if ({} < {}) {{", i, len)!)
+    fg.linef("if ({} < {}) {{", i, len)
     addr := str.format("((uint8_t *){} + {} * {})", ptr, i, esz)!
     v: string = if op is .GetPtr { str.format("(void *){}", addr)! } else { fg.load(inner, addr) }
     some := fg.make_some(t, v)
-    fg.line(str.format("    {} = {};", res, some)!)
+    fg.linef("    {} = {};", res, some)
     fg.line("} else {")
     none := fg.make_none(t)
-    fg.line(str.format("    {} = {};", res, none)!)
+    fg.linef("    {} = {};", res, none)
     fg.line("}")
     return res
 }
@@ -875,7 +875,7 @@ pub convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> 
                         w := fg.tmp(target, wrapped)
                         some := fg.make_some(t, w)
                         none := fg.make_none(t)
-                        fg.line(str.format("{} = {} ? {} : {};", res, fits, some, none)!)
+                        fg.linef("{} = {} ? {} : {};", res, fits, some, none)
                         return res
                     }
                     .Sat => {
@@ -903,13 +903,13 @@ pub convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> 
             match op {
                 .Checked => {
                     res := fg.tmp_uninit(t)
-                    fg.line(str.format("if ({} && {} == {}) {{", in_range, x, r)!)
+                    fg.linef("if ({} && {} == {}) {{", in_range, x, r)
                     w := fg.tmp(target, str.format("({}){}", c, r)!)
                     some := fg.make_some(t, w)
-                    fg.line(str.format("    {} = {};", res, some)!)
+                    fg.linef("    {} = {};", res, some)
                     fg.line("} else {")
                     none := fg.make_none(t)
-                    fg.line(str.format("    {} = {};", res, none)!)
+                    fg.linef("    {} = {};", res, none)
                     fg.line("}")
                     return res
                 }
@@ -920,7 +920,7 @@ pub convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> 
                 }
                 _ => {
                     if fg.g.opts.checks {
-                        fg.line(str.format("if (!{}) gm_trap(\"float to integer conversion out of range\", {});", in_range, loc)!)
+                        fg.linef("if (!{}) gm_trap(\"float to integer conversion out of range\", {});", in_range, loc)
                     }
                     return fg.tmp(t, str.format("({}){}", c, r)!)
                 }
@@ -938,7 +938,7 @@ pub convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> 
             ui := fg.int_info(bl.int_ty)?
             w := fg.normalize(ui, str.format("({}){}", ii_cty(ui), src_val)!)
             b := fg.tmp_uninit(target)
-            fg.line(str.format("GM_ST({}, (uint8_t *)&{}, {});", ii_cty(ui), b, w)!)
+            fg.linef("GM_ST({}, (uint8_t *)&{}, {});", ii_cty(ui), b, w)
             return b
         }
     }

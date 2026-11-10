@@ -66,7 +66,7 @@ vec_load :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
     vt := vec_ty(fg, p.n, p.lane, null)
     pa := fg.addr_of(t, v)
     name := str.format("v{}", fg.fresh())!
-    fg.line(str.format("{} {}; memcpy(&{}, {}, sizeof {});", vt, name, name, pa, name)!)
+    fg.linef("{} {}; memcpy(&{}, {}, sizeof {});", vt, name, name, pa, name)
     return name
 }
 
@@ -74,7 +74,7 @@ vec_load :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
 vec_store :: fn(fg: ^FnGen, t: Ty, x: string) -> string needs sema.Load {
     res := fg.tmp_uninit(t)
     n := str.format("v{}", fg.fresh())!
-    fg.line(str.format("__typeof__({}) {} = {}; memcpy(&{}, &{}, sizeof {});", x, n, x, res, n, res)!)
+    fg.linef("__typeof__({}) {} = {}; memcpy(&{}, &{}, sizeof {});", x, n, x, res, n, res)
     return res
 }
 
@@ -86,10 +86,10 @@ vec_lane_loop :: fn(fg: ^FnGen, res_t: Ty, n: u64, f: fn(i: string) -> Unsup!str
     ce := fg.g.ty.cty(p.lane)
     res := fg.tmp_uninit(res_t)
     i := str.format("i{}", fg.fresh())!
-    fg.line(str.format("for (size_t {} = 0; {} < {}; {}++) {{", i, i, n, i)!)
+    fg.linef("for (size_t {} = 0; {} < {}; {}++) {{", i, i, n, i)
     fg.indent += 1
     v := try f(i)
-    fg.line(str.format("GM_ST({}, (uint8_t *)&{} + {} * {}, {});", ce, res, i, p.bytes, v)!)
+    fg.linef("GM_ST({}, (uint8_t *)&{} + {} * {}, {});", ce, res, i, p.bytes, v)
     fg.indent -= 1
     fg.line("}")
     return res
@@ -218,7 +218,7 @@ vec_compare_mask :: fn(fg: ^FnGen, t: Ty, sym: string, a: string, b: string) -> 
     wide := vec_ty(fg, vp.n, vp.lane, true)
     m8 := vec_ty(fg, vp.n, bool_ty, null)
     c := str.format("c{}", fg.fresh())!
-    fg.line(str.format("{} {} = ({})({} {} {});", wide, c, wide, a, sym, b)!)
+    fg.linef("{} {} = ({})({} {} {});", wide, c, wide, a, sym, b)
     return fg.vec_store(tys.simd(vp.n, bool_ty), str.format("(__builtin_convertvector({}, {}) & 1)", c, m8)!)
 }
 
@@ -230,7 +230,7 @@ vec_blend :: fn(fg: ^FnGen, t: Ty, m: string, a: string, b: string) -> string ne
     u := vec_ty(fg, vp.n, vp.lane, false)
     s := vec_ty(fg, vp.n, vp.lane, null)
     mm := str.format("m{}", fg.fresh())!
-    fg.line(str.format("{} {} = ({})-__builtin_convertvector({}, {});", u, mm, u, m, w)!)
+    fg.linef("{} {} = ({})-__builtin_convertvector({}, {});", u, mm, u, m, w)
     return str.format("({})((({}){} & {}) | (({}){} & ~{}))", s, u, a, mm, u, b, mm)!
 }
 
@@ -274,7 +274,7 @@ vec_reduce :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, x: ^Expr) -> Unsup!strin
     p := fg.addr_of(t, v)
     acc := fg.vec_lane_at(lane, vp.bytes, p, "0")
     i := str.format("i{}", fg.fresh())!
-    fg.line(str.format("for (size_t {} = 1; {} < {}; {}++) {{", i, i, vp.n, i)!)
+    fg.linef("for (size_t {} = 1; {} < {}; {}++) {{", i, i, vp.n, i)
     fg.indent += 1
     y := fg.vec_lane_at(lane, vp.bytes, p, i)
     at := Expr(ty: lane, kind: .Uninit, span: e.span)
@@ -293,7 +293,7 @@ vec_reduce :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, x: ^Expr) -> Unsup!strin
         gt := if op is .ReduceMin { "<" } else { ">" }
         r = fg.tmp(lane, str.format("({} {} {} ? {} : {})", acc, gt, y, acc, y)!)
     }
-    fg.line(str.format("{} = {};", acc, r)!)
+    fg.linef("{} = {};", acc, r)
     fg.indent -= 1
     fg.line("}")
     return acc
@@ -304,7 +304,7 @@ vec_mask_test :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, x: ^Expr) -> Unsup!st
     v := try fg.expr(x)
     p := fg.addr_of(x.ty, v)
     count := fg.tmp(fg.g.ty.usize_ty(), "0")
-    fg.line(str.format("for (size_t i = 0; i < {}; i++) {} += {}[i];", n, count, p)!)
+    fg.linef("for (size_t i = 0; i < {}; i++) {} += {}[i];", n, count, p)
     r: string = match op {
         .MaskAll => str.format("(uint8_t)({} == {})", count, n)!
         .MaskAny => str.format("(uint8_t)({} != 0)", count)!
@@ -351,7 +351,7 @@ vec_minmax_abs :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Uns
             }
             ii := fg.int_info(lane)?
             min := fg.int_lit(lane, ii_min(ii))
-            fg.line(str.format("if ({} == {}) gm_trap(\"integer overflow in `abs`\", {});", x, min, loc)!)
+            fg.linef("if ({} == {}) gm_trap(\"integer overflow in `abs`\", {});", x, min, loc)
             return str.format("({} < 0 ? -{} : {})", x, x, x)!
         })
     }
@@ -364,14 +364,14 @@ vec_minmax_abs :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Uns
         r = str.format("({})(({}){} & {})", s, u, va, mask)!
     } else if is_abs {
         sh := str.format("h{}", fg.fresh())!
-        fg.line(str.format("{} {} = {} >> {};", s, sh, va, bytes * 8 - 1)!)
+        fg.linef("{} {} = {} >> {};", s, sh, va, bytes * 8 - 1)
         r = str.format("({})((({})({} ^ {})) - ({}){})", s, u, va, sh, u, sh)!
     } else {
         vb := fg.vec_load(t, b?)
         sym := if op is .LaneMin { "<" } else { ">" }
         w := vec_ty(fg, n, lane, true)
         c := str.format("c{}", fg.fresh())!
-        fg.line(str.format("{} {} = ({})({})({} {} {});", u, c, u, w, va, sym, vb)!)
+        fg.linef("{} {} = ({})({})({} {} {});", u, c, u, w, va, sym, vb)
         r = str.format("({})((({}){} & {}) | (({}){} & ~{}))", s, u, va, c, u, vb, c)!
     }
     return fg.vec_store(t, r)
@@ -405,11 +405,11 @@ vec_shuffle :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema
     res := fg.tmp_uninit(e.ty)
     r := str.format("v{}", fg.fresh())!
     fg.line("#if defined(__clang__) || __GNUC__ >= 12")
-    fg.line(str.format("{} {} = __builtin_shufflevector({}, {}, {});", tv, r, va, va, str.join(idx.items, ", ")!)!)
-    fg.line(str.format("memcpy(&{}, &{}, sizeof {});", res, r, res)!)
+    fg.linef("{} {} = __builtin_shufflevector({}, {}, {});", tv, r, va, va, str.join(idx.items, ", ")!)
+    fg.linef("memcpy(&{}, &{}, sizeof {});", res, r, res)
     fg.line("#else")
     for j, k in enumerate(idx.items) {
-        fg.line(str.format("memcpy((uint8_t *)&{} + {}, (uint8_t *)&{} + {} * {}, {});", res, u64(j) * bytes, va, k, bytes, bytes)!)
+        fg.linef("memcpy((uint8_t *)&{} + {}, (uint8_t *)&{} + {} * {}, {});", res, u64(j) * bytes, va, k, bytes, bytes)
     }
     fg.line("#endif")
     return res
@@ -430,15 +430,15 @@ vec_load_store :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Uns
     if fg.g.opts.checks {
         loc := fg.loc(e)
         what := if is_load { "load" } else { "store" }
-        fg.line(str.format("if ((uintptr_t)({}) < {}) gm_trap_lanes(\"{}\", {}, {}, {});", len, n, what, n, len, loc)!)
+        fg.linef("if ((uintptr_t)({}) < {}) gm_trap_lanes(\"{}\", {}, {}, {});", len, n, what, n, len, loc)
     }
     size := n * vp.bytes
     if vv := v {
         pv := fg.addr_of(vt, vv)
-        fg.line(str.format("memcpy({}, {}, {});", p, pv, size)!)
+        fg.linef("memcpy({}, {}, {});", p, pv, size)
         return fg.unit()
     }
     res := fg.tmp_uninit(vt)
-    fg.line(str.format("memcpy(&{}, {}, {});", res, p, size)!)
+    fg.linef("memcpy(&{}, {}, {});", res, p, size)
     return res
 }

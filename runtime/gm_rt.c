@@ -447,14 +447,38 @@ static size_t gm_u128_dec(char *buf, unsigned __int128 v) {
     return n;
 }
 
-/* The value of a `bits`-bit integer stored in `size` bytes at p. */
-static void gm_fmt_int(gm_buf *out, const gm_type *t, const uint8_t *p) {
-    unsigned __int128 raw = gm_load_u128(p, t->size);
+/* Decimal digits of v into buf (at least 20 bytes); returns the length. */
+static size_t gm_u64_dec(char *buf, uint64_t v) {
+    char tmp[20];
+    size_t n = 0;
+    do {
+        tmp[n++] = (char)('0' + (int)(v % 10));
+        v /= 10;
+    } while (v != 0);
+    for (size_t i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
+    return n;
+}
+
+/* The decimal form of the `bits`-bit integer stored in `size` bytes at p, into buf (at
+ * least 48 bytes); returns the length. */
+static size_t gm_int_dec(char *buf, const gm_type *t, const uint8_t *p) {
     unsigned bits = t->bits;
+    size_t n = 0;
+    if (t->size <= 8 && bits <= 64) {
+        /* The common widths, without 128-bit division. */
+        uint64_t raw = 0;
+        for (size_t i = t->size; i > 0; i--) raw = (raw << 8) | *gm_ibp(p, t->size, i - 1);
+        uint64_t mask = bits >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << bits) - 1);
+        raw &= mask;
+        if (t->is_signed && bits > 0 && ((raw >> (bits - 1)) & 1) != 0) {
+            buf[n++] = '-';
+            raw = (~raw + 1) & mask; /* |value| as an unsigned number */
+        }
+        return n + gm_u64_dec(buf + n, raw);
+    }
+    unsigned __int128 raw = gm_load_u128(p, t->size);
     unsigned __int128 mask = bits >= 128 ? ~(unsigned __int128)0 : (((unsigned __int128)1 << bits) - 1);
     raw &= mask;
-    char buf[48];
-    size_t n = 0;
     if (t->is_signed && bits > 0 && ((raw >> (bits - 1)) & 1) != 0) {
         unsigned __int128 mag = (~raw + 1) & mask; /* |value| as an unsigned number */
         buf[n++] = '-';
@@ -462,7 +486,12 @@ static void gm_fmt_int(gm_buf *out, const gm_type *t, const uint8_t *p) {
     } else {
         n = gm_u128_dec(buf, raw);
     }
-    gm_buf_push(out, buf, n);
+    return n;
+}
+
+static void gm_fmt_int(gm_buf *out, const gm_type *t, const uint8_t *p) {
+    char buf[48];
+    gm_buf_push(out, buf, gm_int_dec(buf, t, p));
 }
 
 /* binary16 -> double, exactly. */
@@ -1488,6 +1517,30 @@ GM_API void gm_format(gm_buf *out, const gm_type *t, const void *vp, bool top) {
         break;
     }
     }
+}
+
+GM_API size_t gm_format_view(gm_buf *b, uint8_t *scratch, const gm_type *t, const void *vp, const void **data) {
+    const uint8_t *v = (const uint8_t *)vp;
+    switch (t->kind) {
+    case GM_K_INT:
+        *data = scratch;
+        return gm_int_dec((char *)scratch, t, v);
+    case GM_K_BOOL:
+        *data = v[0] != 0 ? "true" : "false";
+        return v[0] != 0 ? 4 : 5;
+    case GM_K_SLICE:
+        if (t->elem->kind == GM_K_INT && t->elem->bits == 8 && !t->elem->is_signed) {
+            const uint8_t *bytes;
+            memcpy(&bytes, v, sizeof bytes);
+            *data = bytes;
+            return (size_t)gm_load_ptr(v + sizeof(void *));
+        }
+        break;
+    default: break;
+    }
+    gm_format(b, t, v, true);
+    *data = b->data;
+    return b->len;
 }
 
 GM_API _Noreturn void gm_trap_unwrap(const gm_type *t, const void *v, const char *file, uint32_t line, uint32_t col) {
