@@ -79,7 +79,7 @@ pub parse_options :: fn(args: []const string) -> Cli needs Alloc {
                 if a.starts_with("--diag-format=") { return .Bad(str.format("invalid value `{}` for --diag-format (expected human, short or json)", a[14..])!) }
                 if a.starts_with("--backend=") {
                     value := a[10..]
-                    if value not in ("c", "cranelift", "interp") { return .Bad(str.format("invalid value `{}` for --backend (expected c, cranelift or interp)", value)!) }
+                    if value not in ("c", "interp") { return .Bad(str.format("invalid value `{}` for --backend (expected c or interp)", value)!) }
                     continue
                 }
                 if a.starts_with("--profile=") {

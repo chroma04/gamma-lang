@@ -51,7 +51,7 @@ chain_child :: fn(fg: ^FnGen, e: ^Expr) -> ?^Expr needs sema.Load {
     return null
 }
 
-chain_plain :: fn(fg: ^FnGen, t: Ty) -> bool needs Alloc => not fg.g.ty.is_unit(t) and not fg.g.ty.is_never(t) and not fg.g.ty.by_ref(t)
+chain_plain :: fn(fg: ^FnGen, t: Ty) -> bool needs Alloc => not fg.g.ty.is_void(t) and not fg.g.ty.by_ref(t)
 
 /// The number of links of the chain that ends in `e`, up to one more than `MIN_LINKS`.
 chain_links :: fn(fg: ^FnGen, e: ^Expr) -> usize needs sema.Load {

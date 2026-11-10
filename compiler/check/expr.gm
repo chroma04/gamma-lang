@@ -414,7 +414,7 @@ untyped_literal :: fn(cx: ^FnCx, v: ^const sema.Untyped, span: source.Span) -> ^
         .Int(i) => return tir.mk(cx.infer.new_var(tys, .Int), .Int(i), span)
         .Float(r) => return tir.mk(cx.infer.new_var(tys, .Float), .UntypedFloat(r), span)
         .NegZero => {
-            zero := tir.mk(cx.infer.new_var(tys, .Float), .UntypedFloat(ratio.from_int(bigint.zero())), span)
+            zero := tir.mk(cx.infer.new_var(tys, .Float), .UntypedFloat(ratio.zero()), span)
             return tir.mk(zero.ty, .Unary(.Neg, zero), span)
         }
         .Bool(b) => return tir.mk(tys.bool_ty(), .Bool(b), span)
@@ -537,7 +537,7 @@ spread_tuple :: fn(cx: ^FnCx, elems: []const ast.TupleElem, want: ?Ty, span: sou
                 spread.items[i] = false
                 continue
             }
-            if i := index_of_name(want_names, n.name) { exp = want_elems[i] }
+            if i := want_names.index_of(n.name) { exp = want_elems[i] }
         } else if parts.items.len < want_elems.len {
             exp = want_elems[parts.items.len]
         }
@@ -1165,7 +1165,6 @@ struct_field :: fn(cx: ^FnCx, b: ^Expr, name: string, span: source.Span, depth: 
     return cx.struct_field(inner, name, span, depth + 1)
 }
 
-/// Whether the private fields of `t` are visible here.
 /// Whether a field of visibility `vis` of type `t` can be named here (§3.3).
 field_visible_here :: fn(cx: ^const FnCx, vis: ast.Visibility, t: Ty) -> bool {
     if vis is .Public { return true }
@@ -1692,7 +1691,7 @@ construct_tuple :: fn(cx: ^FnCx, ty: Ty, elems: []const Ty, names: []const strin
                 parts.push(TuplePart(name: null, value: cx.field_value(&e, elems[next]), at: e.span))!
             }
             .Named(n, e) => {
-                i := index_of_name(names, n.name) else {
+                i := names.index_of(n.name) else {
                     cx.error(n.span, str.format("`{}` has no element named `{}`", cx.show(ty), n.name)!)
                     continue
                 }
@@ -1709,7 +1708,7 @@ construct_tuple :: fn(cx: ^FnCx, ty: Ty, elems: []const Ty, names: []const strin
         for part in parts.items {
             i: usize = 0
             if n := part.name {
-                i = index_of_name(names, n) else {
+                i = names.index_of(n) else {
                     cx.error(part.at, str.format("`{}` has no element named `{}`", cx.show(ty), n)!)
                     continue
                 }
@@ -1745,14 +1744,6 @@ TuplePart :: struct {
     name: ?string
     value: ^Expr
     at: source.Span
-}
-
-/// The index of `name` in `names`.
-index_of_name :: fn(names: []const string, name: string) -> ?usize {
-    for i, n in enumerate(names) {
-        if n is name { return i }
-    }
-    return null
 }
 
 /// A constructor field or argument value: `---` for plain data, else coerced.
@@ -1948,7 +1939,7 @@ default_value :: fn(cx: ^FnCx, module: usize, d: ^const ast.Expr, ty: Ty) -> ^Ex
 /// The float `r` rounded to float type `ty`.
 float_value :: fn(cx: ^FnCx, r: ratio.Rat, ty: Ty, span: source.Span) -> ^Expr needs Alloc {
     .Float(bits) := cx.s.tys.kind(ty) else return error_expr(cx.s, span)
-    x: f64 = if bits is 32 { f64(r.to_f32()) } else { r.to_f64() }
+    x := r.to_float(bits)
     return tir.mk(ty, .Float(x), span)
 }
 

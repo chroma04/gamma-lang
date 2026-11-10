@@ -4,8 +4,6 @@
 /// The target the generated code is for.
 pub Target :: loader.Target
 
-pub host_target :: fn() -> Target => loader.host_target()
-
 pub ptr_bits :: fn(t: ^const Target) -> u32 => loader.ptr_bits(t)
 
 /// A size, an alignment and the offsets of the fields (of a struct or tuple), of the flag

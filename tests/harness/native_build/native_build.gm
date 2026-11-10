@@ -56,36 +56,15 @@ build_and_run :: fn(t: ^kit.T, src, exe, cache: string, args: []const string) ->
     return t.read(c_of(exe))
 }
 
-/// Sorts `names` in byte order.
-sort_names :: fn(names: []string) {
-    for i in 1..names.len {
-        j := i
-        while j > 0 and less(names[j], names[j - 1]) {
-            tmp := names[j]
-            names[j] = names[j - 1]
-            names[j - 1] = tmp
-            j -= 1
-        }
-    }
-}
-
-less :: fn(a, b: string) -> bool {
-    n := if a.len < b.len { a.len } else { b.len }
-    for i in 0..n {
-        if a[i] is not b[i] { return a[i] < b[i] }
-    }
-    return a.len < b.len
-}
-
 /// The names in the directory `dir` (sorted), or none if there is no such directory.
 names_in :: fn(t: ^kit.T, dir: string) -> kit.Fail![]string needs kit.Run {
     l := list(string)
     if not fs.exists(dir) { return l.items }
     for r in fs.entries(dir) {
         e := r else err => return !t.fail("cannot list {}: {}", dir, err)
-        l.push(str.format("{}", e.name)!)!
+        l.push(dupe(e.name)!)!
     }
-    sort_names(l.items)
+    l.items.sort()
     return l.items
 }
 

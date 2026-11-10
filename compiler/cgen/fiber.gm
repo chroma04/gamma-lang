@@ -154,7 +154,7 @@ ctl_perform :: fn(fg: ^FnGen, n: string, op: u32, vals: []const string, tys: []c
     for v in vals { init.push(v)! }
     fg.linef("struct {} {} = {{{}}};", req, r, str.join(init.items, ", ")!)
     res: ?string = null
-    if not fg.g.ty.is_unit(ret) and not fg.g.ty.is_never(ret) { res = fg.tmp_uninit(ret) }
+    if not fg.g.ty.is_void(ret) { res = fg.tmp_uninit(ret) }
     res_ptr: string = if x := res { str.format("&{}", x)! } else { "NULL" }
     fg.linef("gm_ctl_perform({}->fw, {}, &{}, {});", n, thunk, r, res_ptr)
     fg.check_unwind()
@@ -170,7 +170,7 @@ resume_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr, value: ^Expr) -> Unsup!string n
     loc := fg.loc(e)
     rp := str.format("rp{}", fg.fresh())!
     fg.linef("void *{} = gm_resume(inst->fw, {}, {});", rp, ka, loc)
-    if fg.g.ty.is_unit(value.ty) or fg.g.ty.is_never(value.ty) {
+    if fg.g.ty.is_void(value.ty) {
         fg.linef("(void){};", rp)
     } else {
         c := fg.g.ty.cty(value.ty)

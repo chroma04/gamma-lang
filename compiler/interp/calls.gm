@@ -1,4 +1,4 @@
-// Calls, handler contexts, performing operations, `with`, the default handlers of the
+// Calls, performing operations, `with`, the default handlers of the
 // ambient effects and formatted output.
 
 /// A call of function `f` with the arguments `args`: their values go straight to the

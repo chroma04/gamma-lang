@@ -337,7 +337,7 @@ write_int :: fn(b: []const u8, signed: bool, out: ^List(u8)) needs Alloc {
 
 /// `s` in double quotes, with `"` and `\` escaped, `\n`, `\r`, `\t` and `\0` as such, and
 /// other control characters as `\u{..}` with the code in hexadecimal.
-write_debug_string :: fn(s: []const u8, out: ^List(u8)) needs Alloc {
+pub write_debug_string :: fn(s: []const u8, out: ^List(u8)) needs Alloc {
     out.push('"')!
     for c in s {
         match c {
@@ -349,7 +349,7 @@ write_debug_string :: fn(s: []const u8, out: ^List(u8)) needs Alloc {
             0 => out.extend("\\0")!
             _ => {
                 if c < 0x20 or c is 0x7f {
-                    out.write("\\u{{{}}}", hex(c))!
+                    out.write("\\u{{{:x}}}", c)!
                 } else {
                     out.push(c)!
                 }
@@ -357,14 +357,6 @@ write_debug_string :: fn(s: []const u8, out: ^List(u8)) needs Alloc {
         }
     }
     out.push('"')!
-}
-
-hex :: fn(c: u8) -> string needs Alloc {
-    digits := "0123456789abcdef"
-    out := list(u8)
-    if c >= 16 { out.push(digits[usize(c >> 4)])! }
-    out.push(digits[usize(c & 15)])!
-    return out.items
 }
 
 test "display" {

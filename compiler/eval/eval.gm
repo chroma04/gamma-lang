@@ -153,11 +153,11 @@ eval :: fn(m: ^Machine, e: ^Expr) -> Flow!Value needs Load {
     m.steps += 1
     tys := &m.s.tys
     match e.kind {
-        .Int(i) => return .Int(int_bits(i))
+        .Int(i) => return .Int(bigint.bits128(i))
         .Float(x) => return .Float(x)
         .UntypedFloat(r) => {
             .Float(bits) := tys.kind(e.ty) else return !m.unsupported(e.span, "float literals of this type")
-            return .Float(if bits is 16 { r.to_f16() } else if bits is 32 { f64(r.to_f32()) } else { r.to_f64() })
+            return .Float(r.to_float(bits))
         }
         .Bool(b) => return .Bool(b)
         .Null => return .Null

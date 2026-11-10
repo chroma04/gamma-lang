@@ -87,7 +87,7 @@ apply_edit :: fn(t: ^kit.T, edit: json.Value, root: string) -> kit.Fail!Edited n
         new.extend(old[at_byte..])!
         out.files.push(Renamed(path: rel, text: new.items))!
     }
-    out.files.items.sort_by(fn(a, b: ^const Renamed) -> bool => before(a.path, b.path))
+    out.files.items.sort_by(fn(a, b: ^const Renamed) -> bool => a.path < b.path)
     return out
 }
 

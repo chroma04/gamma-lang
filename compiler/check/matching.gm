@@ -109,11 +109,7 @@ check_deferred_match :: fn(cx: ^FnCx, e: ^Expr) needs Alloc {
         }
     }
     i := found else return
-    d := cx.deferred_matches.items[i]
-    // `swap_remove`.
-    last := cx.deferred_matches.items.len - 1
-    cx.deferred_matches.items[i] = cx.deferred_matches.items[last]
-    _ = cx.deferred_matches.pop()
+    d := cx.deferred_matches.swap_remove(i)
     if cx.s.tys.is_error(scrutinee.ty) { return }
     cx.report_match(cx.check_arms(scrutinee.ty, arms), d.span, d.arm_spans)
 }

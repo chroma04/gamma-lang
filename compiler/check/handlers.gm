@@ -37,11 +37,11 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
             }
             .Error => { bad_handler = true }
             _ => {
-                decls := cx.handlers_for(t)
+                decls := handlers_of_type(cx.s, t)
                 if decls.len is 0 {
                     bad_handler = true
                     d := diag.error(h.span, str.format("expected a handler, but no handler is declared for `{}`", cx.show(t))!)
-                    if tys.kind(t) is not .Ptr(_) and cx.handlers_for(tys.ptr(false, t)).len > 0 {
+                    if tys.kind(t) is not .Ptr(_) and handlers_of_type(cx.s, tys.ptr(false, t)).len > 0 {
                         d.add_note(str.format("a handler is declared for `^{}`: install it from a variable with `with &x`", cx.show(t))!)
                     }
                     cx.s.emit(d)

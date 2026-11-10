@@ -59,7 +59,6 @@ root :: fn(t: ^InferTable, v: u32) -> u32 {
     return r
 }
 
-/// Replaces resolved variables at the top level of `ty` (not inside it).
 /// Records that the conversion at `span` gave `ty`, a variable, its type.
 note_fixed_by :: fn(t: ^InferTable, tys: ^const types.Types, ty: Ty, span: source.Span) {
     .Infer(v) := tys.kind(ty) else return
@@ -73,6 +72,7 @@ fixed_by :: fn(t: ^InferTable, tys: ^const types.Types, ty: Ty) -> ?source.Span 
     return t.vars.items[usize(t.root(v))].fixed_by
 }
 
+/// Replaces resolved variables at the top level of `ty` (not inside it).
 shallow :: fn(t: ^InferTable, tys: ^types.Types, ty: Ty) -> Ty needs Alloc {
     .Infer(v) := tys.kind(ty) else return ty
     r := t.root(v)

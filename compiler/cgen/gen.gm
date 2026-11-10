@@ -593,7 +593,7 @@ gen_entry :: fn(g: ^Gen, entry: u32, n: usize) -> Unsup!string needs sema.Load {
         hidden := if g.is_plain(entry) { "" } else { ", NULL, cx, NULL" }
         s.write("    {} r; {}(&r{});\n", rc, g.fn_name(entry), hidden)!
     } else if g.is_plain(entry) {
-        if g.ty.is_unit(ret) or g.ty.is_never(ret) {
+        if g.ty.is_void(ret) {
             s.write("    {}();\n    {} r = GM_ZERO({});\n", g.fn_name(entry), rc, rc)!
         } else {
             s.write("    {} r = {}();\n", rc, g.fn_name(entry))!

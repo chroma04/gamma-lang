@@ -458,7 +458,11 @@ show_witness :: fn(s: ^Sema, d: ^const DPat) -> string needs Alloc {
             if lo.eq(hi) { return sema.show_int(lo) }
             return str.format("{}..={}", sema.show_int(lo), sema.show_int(hi))!
         }
-        .Str(b) => return debug_string(b)
+        .Str(b) => {
+            out := list(u8)
+            types.write_debug_string(b, &out)
+            return out.items
+        }
         .Variant(v) => {
             name := "?"
             if uv := s.union_variants(ty) { name = uv.variants[usize(v)].name }
@@ -480,25 +484,4 @@ show_witness :: fn(s: ^Sema, d: ^const DPat) -> string needs Alloc {
             return str.format("({})", str.join(inner.items, ", ")!)!
         }
     }
-}
-
-/// A string literal as messages show it: in double quotes, with `"` and `\` escaped, `\n`,
-/// `\r`, `\t` and `\0` as such, and other control characters as `\u{..}`.
-debug_string :: fn(b: []const u8) -> string needs Alloc {
-    out := list(u8)
-    out.push('"')!
-    for c in b {
-        match c {
-            '"' => out.extend("\\\"")!
-            '\\' => out.extend("\\\\")!
-            '\n' => out.extend("\\n")!
-            '\r' => out.extend("\\r")!
-            '\t' => out.extend("\\t")!
-            0 => out.extend("\\0")!
-            0x01..=0x1F, 0x7F => out.write("\\u{{{:x}}}", c)!
-            _ => out.push(c)!
-        }
-    }
-    out.push('"')!
-    return out.items
 }

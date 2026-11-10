@@ -343,11 +343,7 @@ apply :: fn(op: LenOp, a, b: u64) -> ?u64 {
         .Mul => return a *? b
         .Div => return if b is 0 { null } else { a / b }
         .Rem => return if b is 0 { null } else { a % b }
-        .Shl => {
-            if b >= 64 { return null }
-            r := a << b
-            return if r >> b is a { r } else { null }
-        }
+        .Shl => return if b >= 64 { null } else { a <<? b }
         .Shr => return if b >= 64 { 0 } else { a >> b }
         .And => return a & b
         .Or => return a | b
@@ -494,10 +490,6 @@ pub key_u64 :: fn(k: ConstKey) -> ?u64 {
     }
     return v
 }
-
-// ---------------------------------------------------------------------------------
-// Encoding kinds, for hash-consing
-// ---------------------------------------------------------------------------------
 
 test "hash-consing" {
     a := arena.new()

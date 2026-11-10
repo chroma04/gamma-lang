@@ -1,4 +1,5 @@
-// Sequences: membership `in` (§7.7) and `for` loops over ranges (§13.2).
+// Sequences: membership `in` (§7.7), `for` loops over ranges and values (§13.2),
+// indexing and slicing, and array construction.
 
 /// `elem in container`, with `elem` already checked.
 in_expr :: fn(cx: ^FnCx, checked: ^Expr, container: ^const ast.Expr, negated: bool, span: source.Span) -> ^Expr needs Load {
@@ -550,7 +551,7 @@ construct_enum_array :: fn(cx: ^FnCx, ty: Ty, index: Ty, elem: Ty, args: []const
     for a in args {
         match a.kind {
             .Named(name, x) => {
-                i := position(names.items, name.name) else {
+                i := names.items.index_of(name.name) else {
                     fill := if name.name is "fill" { " (`fill:` must be the only argument)" } else { "" }
                     cx.error(name.span, str.format("`{}` has no variant `{}`{}", cx.show(index), name.name, fill)!)
                     _ = cx.expr(&x, null)
@@ -595,14 +596,6 @@ construct_enum_array :: fn(cx: ^FnCx, ty: Ty, index: Ty, elem: Ty, args: []const
     arr := tir.mk(ty, .Array(values.items), span)
     if stmts.items.len is 0 { return arr }
     return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
-}
-
-/// The position of `name` in `names`.
-position :: fn(names: []const string, name: string) -> ?usize {
-    for i, n in enumerate(names) {
-        if n is name { return i }
-    }
-    return null
 }
 
 /// `a[e]` on an enum-indexed array `[E]T`: `e` is an `E`, and the element is the one at

@@ -277,7 +277,7 @@ expr :: fn(lw: ^Lower, e: ^Expr) -> ^Node needs Alloc {
             if m.kind(e.ty) is .Float(_) {
                 m.put_float(e.ty, m.big_float(i), b[0..us(n)])
             } else {
-                m.put_uint(b[0..us(n)], tag_bits(i))
+                m.put_uint(b[0..us(n)], bigint.bits128(i))
             }
             const_op(m, b[0..us(n)])
         }
@@ -532,7 +532,7 @@ low_pat :: fn(lw: ^Lower, p: ^tir.Pat) -> ^Pat needs Alloc {
             size: u64 = 0
             if d := u {
                 tag_ty = d.tag
-                tag = tag_bits(d.variants[us(variant)].tag)
+                tag = bigint.bits128(d.variants[us(variant)].tag)
                 if pt := d.variants[us(variant)].payload { size = m.size(pt) }
             }
             ts := m.size(tag_ty)

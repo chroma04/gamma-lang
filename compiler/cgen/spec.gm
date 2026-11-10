@@ -72,16 +72,8 @@ passed_spec :: fn(fg: ^FnGen, f: u32) -> ?u32 needs sema.Load {
     def := fg.g.prog.func(f)
     hid := fg.g.spec_key(s).hid
     effect_ := fg.g.prog.handler_lit(hid).effect_
-    if def.kind is .Named and def.body is not null and effect_set_has(def.effects.effects, &effect_) { return s }
+    if def.kind is .Named and def.body is not null and effect_ in def.effects.effects { return s }
     return null
-}
-
-/// Whether `effects` holds the effect instance `e`.
-effect_set_has :: fn(effects: []const EffectRef, e: ^const EffectRef) -> bool {
-    for x in effects {
-        if x is e^ { return true }
-    }
-    return false
 }
 
 /// The specialization a `with` installing `handlers` passes to the clauses of its handler:
@@ -126,7 +118,7 @@ specializable :: fn(fg: ^FnGen, handlers: []tir.HandlerValue, body: ^Expr, outer
     .Fn(f) := callee else return null
     def := fg.g.prog.func(f)
     effect_ := fg.g.prog.handler_lit(hid).effect_
-    if not (def.kind is .Named) or def.body is null or not effect_set_has(def.effects.effects, &effect_) { return null }
+    if not (def.kind is .Named) or def.body is null or effect_ not in def.effects.effects { return null }
     id := fg.g.effect_id(&effect_)
     s := fg.g.spec(SpecKey(hid: hid, eff: id, outer: outer))
     return SpecCall(call: call, spec: s)

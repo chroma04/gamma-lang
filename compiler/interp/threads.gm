@@ -133,8 +133,7 @@ check_fatal :: fn(m: ^const Machine) -> Flow!() {
 /// progress; another thread records it for the main thread, which ends the program when it
 /// next runs, and unwinds its own frames.
 env_exit :: fn(m: ^Machine, code: u8) -> Flow!() {
-    if m.threads.cur is 0 { return !.Exit(code) }
-    if m.threads.exit is null { m.threads.exit = code }
+    if m.threads.cur is not 0 and m.threads.exit is null { m.threads.exit = code }
     return !.Exit(code)
 }
 
@@ -275,16 +274,14 @@ connected :: fn(r: IoError!net.Socket) -> HostResult {
 on_host_thread :: fn(m: ^Machine, span: source.Span, op: HostOp) -> Flow!HostResult needs Run {
     j := new(HostCall(op: op, result: HostResult(count: 0), done: 0))!
     t := thread.spawn(host_main, j) else e => {
-        free(slice_of_call(j))
+        destroy(j)
         return HostResult(count: !e)
     }
     m.threads.list.items[usize(m.threads.cur)].state = .Host(&j.done)
     r := m.switch_thread(span)
     thread.join(t)
     result := j.result
-    free(slice_of_call(j))
+    destroy(j)
     try r
     return result
 }
-
-slice_of_call :: fn(j: ^HostCall) -> []HostCall => j.cast([^]HostCall)[0..1]

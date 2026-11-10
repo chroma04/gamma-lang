@@ -108,3 +108,11 @@
 - Worktree subagents' shells refuse compound commands (heredocs, `export … &&`, `flock`
   chains): brief them to write wrapper scripts in their scratchpad subdirectory (s50).
 - `bootstrap/build.sh` reads compiler/ sources mid-build: don't edit them while it runs.
+- s64: `gamma check compiler` takes ~2 s (no C build): the fast edit loop. Packages that
+  depend on gammac and break when a `pub` goes: tests/harness, fuzz/*.gm, web/gen, web/play
+  (check each; `gamma test web/gen`). `gamma lint compiler` has no auto-fix for needless-pub.
+  The installed target/bootstrap/gamma is the OLD binary until tools/test.sh rebuilds it:
+  a compiler fix does not show in `gamma check` before that.
+- s64: eight sonnet audit workers used the whole 5-hour quota in ~10 min of parallel work
+  (reset ~15 h later). Audit reports were good; have them write reports to files, and
+  implement with ≤2–3 workers or yourself.

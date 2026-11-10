@@ -338,6 +338,24 @@ pub BinOp :: union {
     Ge
 }
 
+/// The operator of `op` as Gamma source writes it, without its flavor.
+pub binop_symbol :: fn(op: BinOp) -> string => match op {
+    .Add(_) => "+"
+    .Sub(_) => "-"
+    .Mul(_) => "*"
+    .Shl(_) => "<<"
+    .Div => "/"
+    .Rem => "%"
+    .Shr => ">>"
+    .BitAnd => "&"
+    .BitOr => "|"
+    .BitXor => "~"
+    .Lt => "<"
+    .Le => "<="
+    .Gt => ">"
+    .Ge => ">="
+}
+
 /// Implicit coercions (§6.4), made explicit.
 pub Coercion :: union {
     IntWiden

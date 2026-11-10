@@ -234,7 +234,7 @@ assign_stmt :: fn(g: ^Gen, out: ^List(u8), level: usize) needs Alloc {
         .Pt if g.rng.chance(50) => {
             k := g.rng.below(3)
             e := g.int_expr(g.p_fields[k], d)
-            op := if g.rng.chance(min_of(g.trap_bias, 40)) { "+=" } else { "=" }
+            op := if g.rng.chance(g.trap_bias.min(40)) { "+=" } else { "=" }
             out.write("{}{}.{} {} {}\n", ind, name, FIELDS[k], op, e)!
         }
         .Gp(t) => {

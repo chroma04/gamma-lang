@@ -37,23 +37,6 @@ ii_max :: fn(ii: IntInfo) -> bigint.Int needs Alloc {
     return bigint.sub(bigint.shl(bigint.one(), u64(ii.bits)), bigint.one())
 }
 
-arith_op_symbol :: fn(op: tir.BinOp) -> string => match op {
-    .Add(_) => "+"
-    .Sub(_) => "-"
-    .Mul(_) => "*"
-    .Shl(_) => "<<"
-    .Div => "/"
-    .Rem => "%"
-    .Shr => ">>"
-    .BitAnd => "&"
-    .BitOr => "|"
-    .BitXor => "~"
-    .Lt => "<"
-    .Le => "<="
-    .Gt => ">"
-    .Ge => ">="
-}
-
 /// The flavor of an operator that has one.
 arith_flavor :: fn(op: tir.BinOp) -> ?ast.Flavor => match op {
     .Add(f) => f
@@ -63,7 +46,7 @@ arith_flavor :: fn(op: tir.BinOp) -> ?ast.Flavor => match op {
     _ => null
 }
 
-/// The name of the runtime function behind a system operation (`SysOp::signature().0`).
+/// The name of the runtime function behind a system operation.
 arith_sys_name :: fn(op: tir.SysOp) -> string => match op {
     .Read => "sys_read"
     .ClockNow => "clock_now"
@@ -172,7 +155,7 @@ binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!s
     if op in (.Lt, .Le, .Gt, .Ge) {
         match fg.g.ty.repr(l.ty) {
             .Int(_, _, _), .Float(_), .Bool, .Ptr => {
-                return fg.tmp(t, str.format("({} {} {})", a, arith_op_symbol(op), b)!)
+                return fg.tmp(t, str.format("({} {} {})", a, tir.binop_symbol(op), b)!)
             }
             _ => {
                 lt := fg.g.helpers.less_fn(&fg.g.ty, l.ty)
@@ -196,12 +179,12 @@ binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!s
                 .Sub(_) => "-"
                 .Mul(_) => "*"
                 .Div => "/"
-                _ => return !unsupported(e.span, str.format("operator `{}` on floats", arith_op_symbol(op))!)
+                _ => return !unsupported(e.span, str.format("operator `{}` on floats", tir.binop_symbol(op))!)
             }
             return fg.tmp(t, str.format("({} {} {})", a, sym, b)!)
         }
         .Int(_, _, _) => return try fg.int_binary(e, op, l.ty, a, b)
-        _ => return !unsupported(e.span, str.format("operator `{}` on `{}`", arith_op_symbol(op), fg.g.ty.show(l.ty))!)
+        _ => return !unsupported(e.span, str.format("operator `{}` on `{}`", tir.binop_symbol(op), fg.g.ty.show(l.ty))!)
     }
 }
 
@@ -242,7 +225,7 @@ int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: stri
             } else if op is .Sub(_) {
                 sat = "0"
             }
-            return try fg.finish_int(fl, ii, lt, t, r, o, sat, loc, arith_op_symbol(op))
+            return try fg.finish_int(fl, ii, lt, t, r, o, sat, loc, tir.binop_symbol(op))
         }
         .Shl(_), .Shr => {
             fl: ast.Flavor = arith_flavor(op) else .Checked
@@ -264,7 +247,7 @@ int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: stri
             return try fg.finish_int(fl, ii, lt, t, r, o, sat, loc, "<<")
         }
         .Div, .Rem => {
-            sym := arith_op_symbol(op)
+            sym := tir.binop_symbol(op)
             fg.linef("if ({} == 0) gm_trap(\"division by zero\", {});", b, loc)
             if ii.signed {
                 min := fg.int_lit(lt, ii_min(ii))

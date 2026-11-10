@@ -41,16 +41,9 @@ borrowed_params :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
     touched := list(u32)
     mutated_locals(g, body, &touched)
     for i, p in enumerate(def.params) {
-        if out.items[i] and contains_local(touched.items, p) { out.items[i] = false }
+        if out.items[i] and p in touched.items { out.items[i] = false }
     }
     return out.items
-}
-
-contains_local :: fn(xs: []const u32, l: u32) -> bool {
-    for x in xs {
-        if x is l { return true }
-    }
-    return false
 }
 
 /// For each parameter of `f`: whether it is passed by address, `f` never writes it, takes
@@ -105,7 +98,7 @@ compute_steady :: fn(g: ^Gen) -> List([]bool) needs sema.Load {
         eligible := not debug_info and d.kind is .Named and d.parent is null and d.body is not null and not escaping.items[i]
         row := list(bool)
         for p in d.params {
-            row.push(eligible and g.ty.by_ref(d.locals[usize(p)].ty) and not contains_local(written.items[i], p) and captured.get((f, p)) is null)!
+            row.push(eligible and g.ty.by_ref(d.locals[usize(p)].ty) and p not in written.items[i] and captured.get((f, p)) is null)!
         }
         steady.push(row.items)!
     }
@@ -139,7 +132,7 @@ steady_arg :: fn(g: ^Gen, caller: u32, a: ^Expr, written: []const u32, captured:
     // A by-address parameter of the caller is either its own copy or, when read in place,
     // a value that is steady itself (or the caller is pure, and so is the callee, which
     // then reads it in place regardless).
-    if l := root_local(g, a) { return not contains_local(written, l) and captured.get((caller, l)) is null }
+    if l := root_local(g, a) { return l not in written and captured.get((caller, l)) is null }
     return g.is_const_arg(a)
 }
 
@@ -159,7 +152,7 @@ read_during_build :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
         used := list(u32)
         if body := def.body { locals_in_aggregates(body, false, &used) }
         for i, p in enumerate(def.params) {
-            if r[i] and not contains_local(used.items, p) { r[i] = false }
+            if r[i] and p not in used.items { r[i] = false }
         }
     }
     g.early_memo.put(f, r)!

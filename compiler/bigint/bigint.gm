@@ -108,17 +108,6 @@ mag_mul :: fn(a, b: []const u32) -> List(u32) needs Alloc {
     return r
 }
 
-/// The number of leading zero bits of the limb `x`, which must not be zero.
-clz :: fn(x: u32) -> u32 {
-    s: u32 = 0
-    m := x
-    while (m & 0x8000_0000) is 0 {
-        m <<%= 1
-        s += 1
-    }
-    return s
-}
-
 /// The quotient of `a` and the single limb `d`, and the remainder.
 mag_divrem_small :: fn(a: []const u32, d: u32) -> (q: List(u32), r: u32) needs Alloc {
     q := zeros(a.len)
@@ -167,7 +156,7 @@ mag_divrem :: fn(a, b: []const u32) -> (q: List(u32), r: List(u32)) needs Alloc 
     }
     n := b.len
     m := a.len - n
-    s := clz(b[n - 1])
+    s := @clz(b[n - 1])
     v := shl_small(b, s, false)
     u := shl_small(a, s, true)
     q := zeros(m + 1)
@@ -386,7 +375,7 @@ pub eq :: fn(a, b: Int) -> bool => a.negative is b.negative and mag_cmp(a.mag.it
 pub bits :: fn(a: Int) -> u64 {
     k := a.mag.items.len
     if k is 0 { return 0 }
-    return u64(k - 1) * 32 + u64(32 - clz(a.mag.items[k - 1]))
+    return u64(k - 1) * 32 + u64(32 - @clz(a.mag.items[k - 1]))
 }
 
 /// The magnitude as a `u128`, if it fits.
@@ -409,6 +398,18 @@ to_u128 :: fn(a: Int) -> ?u128 {
 pub to_u64 :: fn(a: Int) -> ?u64 {
     v := to_u128(a) else return null
     return v.checked(u64)
+}
+
+/// The two's-complement bits of `a`, modulo 2^128.
+pub bits128 :: fn(a: Int) -> u128 {
+    l := a.mag.items
+    v: u128 = 0
+    k := l.len.min(4)
+    while k > 0 {
+        k -= 1
+        v = (v <<% 32) | u128(l[k])
+    }
+    return if a.negative { 0 -% v } else { v }
 }
 
 pub to_i128 :: fn(a: Int) -> ?i128 {
@@ -608,35 +609,7 @@ pub write_decimal :: fn(a: Int, out: ^List(u8)) needs Alloc {
         out.push('0')!
         return
     }
-    // Base-10^9 chunks, least significant first.
-    m := list(u32)
-    m.extend(a.mag.items)!
-    chunks := list(u32)
-    while m.items.len > 0 {
-        k := m.items.len
-        rem: u64 = 0
-        i := k
-        while i > 0 {
-            i -= 1
-            cur := (rem <<% 32) | u64(m.items[i])
-            m.items[i] = (cur / 1_000_000_000).trunc(u32)
-            rem = cur % 1_000_000_000
-        }
-        trim(&m)
-        chunks.push(rem.trunc(u32))!
-    }
-    i := chunks.items.len - 1
-    out.write("{}", chunks.items[i])!
-    while i > 0 {
-        i -= 1
-        c := chunks.items[i]
-        width: u32 = 100_000_000
-        while width > 1 and c < width {
-            out.push('0')!
-            width /= 10
-        }
-        out.write("{}", c)!
-    }
+    bignum.write_decimal(&bignum.Nat(limbs: a.mag), out)
 }
 
 /// `a` in decimal.

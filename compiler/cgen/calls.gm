@@ -282,7 +282,7 @@ call_fn :: fn(fg: ^FnGen, e: ^Expr, f: u32, vals: []const string) -> Unsup!strin
             rest := list(u8)
             for a in args.items { rest.write(", {}", a)! }
             r = fg.out_call(def.ret, name, rest.items)
-        } else if fg.g.ty.is_unit(def.ret) or fg.g.ty.is_never(def.ret) {
+        } else if fg.g.ty.is_void(def.ret) {
             fg.linef("{};", call)
             r = fg.zero(e.ty)
         } else {
@@ -344,7 +344,7 @@ calls_emit_plain :: fn(fg: ^FnGen, res: ?string, ret: Ty, plain_call: string) ne
 /// Calls code pointer `code`. With `hidden`, the code uses the hidden convention
 /// (env, cx, inst) unless its tag (GM_PTR_TAGGED) marks a plain function; otherwise it is plain.
 call_indirect :: fn(fg: ^FnGen, code: string, env: string, cx: string, vals: []const string, tys: []const Ty, ret: Ty, hidden: bool, win64: bool) -> string needs sema.Load {
-    plain_ret: string = if fg.g.ty.is_unit(ret) or fg.g.ty.is_never(ret) { "void" } else { fg.g.ty.plain_cty(ret) }
+    plain_ret: string = if fg.g.ty.is_void(ret) { "void" } else { fg.g.ty.plain_cty(ret) }
     ps := list(string)
     for p in tys { ps.push(fg.g.ty.plain_cty(p))! }
     plain_params: string = if ps.items.len is 0 { "void" } else { str.join(ps.items, ", ")! }

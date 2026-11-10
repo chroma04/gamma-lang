@@ -653,7 +653,7 @@ break_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^const tir.BreakExpr) -> Unsup!string 
         }
         .InstallingWith => {
             if bv := val {
-                if not fg.g.ty.is_unit(bv.ty) and not fg.g.ty.is_never(bv.ty) { fg.store(bv.ty, "inst->result", bv.v) }
+                if not fg.g.ty.is_void(bv.ty) { fg.store(bv.ty, "inst->result", bv.v) }
             }
             fg.start_exit("GM_BREAK", "inst->with_frame", "inst->with_label", "0")
         }
@@ -865,7 +865,7 @@ place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
                     if sd.bits is not null { return !unsupported(e.span, "fields of #bits structs") }
                 }
             }
-            b := try fg.base_addr(base)
+            b := try fg.place_addr(base)
             off := fg.g.ty.offsets(base.ty)[usize(index)]
             return str.format("({} + {})", b, off)!
         }
@@ -877,7 +877,7 @@ place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
             if not no_writes(index) {
                 b0 := ""
                 if is_array {
-                    b0 = try fg.base_addr(base)
+                    b0 = try fg.place_addr(base)
                 } else {
                     b0 = try fg.expr(base)
                 }
@@ -904,7 +904,7 @@ place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
                     if x := early {
                         b = x
                     } else {
-                        b = try fg.base_addr(base)
+                        b = try fg.place_addr(base)
                     }
                     fg.index_check(checked, i, str.format("{}", len)!, at)
                     return str.format("({} + {} * {})", b, i, esz)!
@@ -950,9 +950,6 @@ index_check :: fn(fg: ^FnGen, checked: bool, i: string, len: string, at: string)
         fg.linef("if ({} >= (uintptr_t)({})) gm_trap_index({}, {}, {});", i, len, i, len, at)
     }
 }
-
-/// The address of an aggregate operand: the place itself, or a temporary copy.
-base_addr :: fn(fg: ^FnGen, base: ^Expr) -> Unsup!string needs sema.Load => fg.place_addr(base)
 
 /// An index or bound `v` of type `t` that is checked against a length, as a
 /// `uintptr_t`: a value too large for one becomes `UINTPTR_MAX`, so the check fails
@@ -1146,13 +1143,7 @@ find_with :: fn(e: ^Expr, label: u32) -> bool {
 
 /// The low and high 64-bit halves of `v` modulo 2^128 (two's complement).
 split_u128 :: fn(v: bigint.Int) -> (lo: u128, hi: u128) {
-    m: u128 = 0
-    i := v.mag.items.len.min(4)
-    while i > 0 {
-        i -= 1
-        m = (m <<% 32) | u128(v.mag.items[i])
-    }
-    if v.negative { m = u128(0) -% m }
+    m := bigint.bits128(v)
     return (m & 0xffff_ffff_ffff_ffff, m >> 64)
 }
 

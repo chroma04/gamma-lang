@@ -13,7 +13,7 @@ pub sys_set :: fn(s: ^Sema) -> EffectSet needs Load {
 }
 
 /// The core library's `Sys` effect.
-sys_effect :: fn(s: ^Sema) -> ?u32 needs Load {
+pub sys_effect :: fn(s: ^Sema) -> ?u32 needs Load {
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, "Sys") else return null
     .Effect(e) := s.resolve_decl(d) else return null

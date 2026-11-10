@@ -22,7 +22,7 @@ new_helpers :: fn() -> Helpers needs Alloc => Helpers(
     hash: hash_map.hash_map(u32, string),
 )
 
-/// A fresh C name for a helper of this `kind` (`eq`, `lt`, `hash`); `Helpers::name`.
+/// A fresh C name for a helper of this `kind` (`eq`, `lt`, `hash`).
 helper_name :: fn(h: ^Helpers, kind: string) -> string needs Alloc {
     h.n += 1
     return str.format("gm_{}{}", kind, h.n)!

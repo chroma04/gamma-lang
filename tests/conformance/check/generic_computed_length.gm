@@ -32,9 +32,16 @@ drop1 :: fn(N :: usize) -> [N - 1]u8 { //~ ERROR the array length `N - 1` overfl
 
 Halves :: struct(N: usize) { a: [N / 2]u8 }
 
+// A shift that loses bits overflows like the other operators.
+Shifted :: struct(N: usize) {
+    a: [N << 63]u8 //~ ERROR the array length `N << 63` overflows or divides by zero with `N` = 4
+}
+
 main :: fn() {
     _ = grow(3, [4]u8(fill: 0))
     _ = grow(a: [4]u8(fill: 0)) //~ ERROR missing argument for the compile-time parameter `N`
     _ = drop1(0)
     _ = drop1(5)
+    four: ?^Shifted(4) = null
+    _ = four
 }

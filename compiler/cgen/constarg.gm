@@ -23,21 +23,12 @@ pub SiteConst :: struct {
     relocs: List(SiteReloc)
 }
 
-/// Whether two byte strings are equal.
-same_bytes :: fn(a, b: []const u8) -> bool {
-    if a.len is not b.len { return false }
-    for i in 0..a.len {
-        if a[i] is not b[i] { return false }
-    }
-    return true
-}
-
 same_site_const :: fn(a, b: ^const SiteConst) -> bool {
-    if not (a.ty is b.ty) or not same_bytes(a.bytes.items, b.bytes.items) or a.relocs.items.len is not b.relocs.items.len { return false }
+    if a.ty is not b.ty or a.bytes.items is not b.bytes.items or a.relocs.items.len is not b.relocs.items.len { return false }
     for i in 0..a.relocs.items.len {
         x := a.relocs.items[i]
         y := b.relocs.items[i]
-        if x.offset is not y.offset or not same_bytes(x.data, y.data) { return false }
+        if x.offset is not y.offset or x.data is not y.data { return false }
     }
     return true
 }

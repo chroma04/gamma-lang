@@ -654,21 +654,9 @@ variant_index :: fn(m: ^Machine, t: Ty, b: []const u8) -> ?u32 needs Alloc {
     n := us(m.size(u.tag))
     tag := m.get_int(u.tag, b[0..n])
     for i, v in enumerate(u.variants) {
-        if tag_bits(v.tag) is tag { return i.trunc(u32) }
+        if bigint.bits128(v.tag) is tag { return i.trunc(u32) }
     }
     return null
-}
-
-/// The two's-complement bits of `i`, modulo 2^128.
-tag_bits :: fn(i: bigint.Int) -> u128 {
-    l := i.mag.items
-    v: u128 = 0
-    k := l.len.min(4)
-    while k > 0 {
-        k -= 1
-        v = (v <<% 32) | u128(l[k])
-    }
-    return if i.negative { 0 -% v } else { v }
 }
 
 payload_offset :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc {
@@ -681,7 +669,7 @@ make_variant :: fn(m: ^Machine, t: Ty, dst: []u8, variant: u32, payload: []const
     dst.fill(0)
     u := m.union_def(t) else return ()
     n := us(m.size(u.tag))
-    m.put_uint(dst[0..n], tag_bits(u.variants[us(variant)].tag))
+    m.put_uint(dst[0..n], bigint.bits128(u.variants[us(variant)].tag))
     if payload.len > 0 {
         off := us(m.payload_offset(t))
         k := payload.len.min(dst.len - off)
@@ -991,10 +979,8 @@ end_frame_slow :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
     fr.labels.deinit()
     fr.defers.deinit()
     if fr.mem_buf.len > 0 { free(fr.mem_buf) }
-    free(slice_of(fr))
+    destroy(fr)
 }
-
-slice_of :: fn(fr: ^Frame) -> []Frame => fr.cast([^]Frame)[0..1]
 
 /// The frame `levels` capture links up from `fr`.
 frame_up :: fn(fr: ^Frame, levels: u32) -> ?^Frame {
@@ -1125,7 +1111,7 @@ deinit :: fn(m: ^Machine) needs Alloc {
         fr.labels.deinit()
         fr.defers.deinit()
         if fr.mem_buf.len > 0 { free(fr.mem_buf) }
-        free(slice_of(fr))
+        destroy(fr)
     }
     m.argv.deinit()
     m.sizes.deinit()

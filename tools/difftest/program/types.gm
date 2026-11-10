@@ -170,7 +170,4 @@ join :: fn(parts: []const string, sep: string) -> string needs Alloc => str.join
 
 format :: str.format
 
-/// The smaller of `a` and `b`.
-min_of :: fn(a, b: usize) -> usize => if a < b { a } else { b }
-
 FIELDS: [3]string : [_]string("a", "b", "c")

@@ -107,6 +107,9 @@ is_unit :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_unit(t)
 
 is_never :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) is .Never
 
+/// Whether a value of type `t` has no C representation: `()` or `never`.
+is_void :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.is_unit(t) or ty.is_never(t)
+
 is_integer :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_integer(t)
 
 is_signed_integer :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_signed_integer(t)

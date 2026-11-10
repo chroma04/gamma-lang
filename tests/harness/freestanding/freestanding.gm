@@ -100,15 +100,7 @@ global_symbols :: fn(t: ^kit.T, obj: string) -> kit.Fail![]string needs kit.Run 
     c.args([_]string("-g", "--defined-only", obj))
     out := try t.run_ok(c)
     names := last_words(out.out)
-    for i in 1..names.len {
-        j := i
-        while j > 0 and names[j] < names[j - 1] {
-            tmp := names[j]
-            names[j] = names[j - 1]
-            names[j - 1] = tmp
-            j -= 1
-        }
-    }
+    names.sort()
     return names
 }
 

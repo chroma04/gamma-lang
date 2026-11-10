@@ -1,7 +1,6 @@
 // Handler declarations `handler E for T needs A { … }` (§12.6): declared before the
 // function bodies are checked, so that `with` finds them, and their clauses checked
-// after. Declarations for generic types are
-// reported as unsupported.
+// after. A declaration for a generic type is a template, instantiated per type.
 
 /// Declares the handler declarations of the program and of the libraries it uses.
 declare_handlers :: fn(s: ^Sema) needs Load {
@@ -333,9 +332,6 @@ check_decl_breaks :: fn(s: ^Sema) needs Load {
         }
     }
 }
-
-/// The handler declarations for values of type `t`.
-handlers_for :: fn(cx: ^FnCx, t: Ty) -> []u32 needs Load => handlers_of_type(cx.s, t)
 
 /// The handler declarations for values of type `t`, instantiating those for generic types
 /// that `t` matches.

@@ -159,7 +159,7 @@ pub Watchdog :: struct {
 pub watchdog :: fn(t: ^T, child: process.Child) -> Fail!Watchdog needs Alloc + Proc + Sys => t.watchdog_for(child, t.cfg.timeout_s)
 
 /// Like `watchdog`, with a time limit of `secs` seconds.
-pub watchdog_for :: fn(t: ^T, child: process.Child, secs: u64) -> Fail!Watchdog needs Alloc + Proc + Sys {
+watchdog_for :: fn(t: ^T, child: process.Child, secs: u64) -> Fail!Watchdog needs Alloc + Proc + Sys {
     w := new(Watch(child: child, limit: Duration(ns: secs * 1_000_000_000), m: thread.mutex(), cv: thread.condvar()))!
     th := thread.spawn(watch, w) else e => {
         _ = Proc.kill(child)
