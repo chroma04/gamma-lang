@@ -26,7 +26,6 @@ This guide is for experienced programmers, especially C programmers, who want to
 | [14. Interoperating with C](14-interop.md) | Foreign functions, C-compatible types, `#export`, `#global`, atomics, volatile access, freestanding programs |
 | [15. Packages](15-packages.md) | The manifest, path and git dependencies, version requirements, `gamma.lock`, `gamma new`, `fetch`, `add`, `update`, offline and locked builds |
 | [16. The standard library](16-standard-library.md) | A tour of the core library and the `std/` modules: formatted output and `@write`, builtin methods, text, files, time, logging, threads, collections, encodings, hashes and JSON |
-| [Idiomatic Gamma](idioms.md) | A handbook of the patterns experienced Gamma code uses: layout and naming, methods, optionals and results, matching, arenas, building text |
 | [Back ends: C and the interpreter](native-backend.md) | `--backend=c` and `--backend=interp`: when to use which, where the C back end runs, C interoperability, debugging |
 
 ### Coming from another language

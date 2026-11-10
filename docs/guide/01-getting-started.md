@@ -270,6 +270,7 @@ answer :: 42
 - Identifiers are ASCII letters, digits and `_`, case-sensitive. A lone `_` is the *discard* and cannot be read.
 - Tabs and spaces are whitespace. No other Unicode whitespace is allowed outside comments and strings, and a stray carriage return is an error.
 - **Newlines end statements.** You never need a `;` (you can use one to put two statements on a line). A line continues onto the next only in specific, predictable situations; [chapter 2](02-basics.md) lists them.
+- By convention, functions, variables and modules are `snake_case`, types and variants `PascalCase`, and constants `SCREAMING_CASE` (`MAX_EXPONENT: i64 : 100_000`). Layout is `gamma fmt`'s business: nothing is aligned by hand.
 
 ## Modules at a glance
 
@@ -311,6 +312,7 @@ Points worth knowing:
 - A path starting with `./` or `../` is relative to the importing module. Any other path starts with a package name: `std` is the standard library, and every other name must be a dependency listed in `gamma.toml`.
 - Everything is **private to its module unless marked `pub`**. A private name is visible from every file of the same module, and from nowhere else. `pub(package)` makes a name visible to every module of the same package (the directory tree under its `gamma.toml`) but not to the package's users: use it for what the modules of a library or program share among themselves. Struct fields have the same rules, and a private function is not a method of its type outside its module (§3.3).
 - A module binding is not a value: you cannot store it, pass it or compare it. The import graph must be acyclic.
+- Keep one concern in each module, and split a large one into several files of its directory: they share one namespace, so no file imports another. Each file imports what it uses at its top, and the files of a module may repeat an import with the same name and path. Document what is `pub` with `///` comments, saying what a function gives and expects rather than how it works, and the module with `//!` lines at the top of one of its files.
 - A binding that just names another declaration is an alias for it: `Shape :: geom.Shape`, `area :: geom.area`, `Seq :: List`. Generic types and functions work through aliases and qualified names alike (`geom.Pair(i32)`). A `pub` alias re-exports the declaration, and a `pub` import is itself a member, so a module can gather others: with `pub geom :: import "./geom"` in module `lib`, `lib.geom.area(s)` works.
 - The manifest is a small TOML file with a `[package]` section and a `[dependencies]` section. A dependency is a directory given relative to the manifest, or a git repository with a version requirement ([chapter 15](15-packages.md) covers git dependencies, the lockfile and `gamma new`):
 

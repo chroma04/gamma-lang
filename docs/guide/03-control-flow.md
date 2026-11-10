@@ -56,7 +56,7 @@ greet :: fn(id: u32) needs Out {
 }
 ```
 
-Against an optional `?T`, a bare name matches **only a present value** and binds a `T`. Against a result `E!T` it matches only success. To bind an optional or a result as it is, absent or failed included, write `?` before the name: in a `match` on a payload `(label: ?string, value: ?i32)`, `.Break(?label, _)` matches every `.Break` and binds `label: ?string`. Binding conditions work with union variants too:
+Against an optional `?T`, a bare name matches **only a present value** and binds a `T`. Against a result `E!T` it matches only success. To bind an optional or a result as it is, absent or failed included, write `?` before the name: in a `match` on a payload `(label: ?string, value: ?i32)`, `.Break(?label, _)` matches every `.Break` and binds `label: ?string`, where `.Break(label, _)` would match only a labeled one (and an incomplete `match` points at `label`). The present-only rule is what makes `.Return(null)` and `.Return(x)` a natural pair of arms. When a catch-all arm follows, though, `.Return(v) => …` quietly sends `.Return(null)` to the catch-all; `gamma lint` reports that (rule `present-only-binding`) unless an arm names the absent case or the catch-all is an empty `_ => {}`. Binding conditions work with union variants too:
 
 ```gamma
 Shape :: union {
@@ -252,6 +252,21 @@ size_class :: fn(n: u32) -> string => match n {
 
 Literal patterns work for integers, `bool` and `string` (strings compare by content). Range patterns work for integers. Several comma-separated patterns share one arm. `_` matches anything without binding.
 
+A character literal is a `u8`, so a scanner's `match` reads like its grammar:
+
+```gamma
+Class :: union { Letter, Digit, Space, Other }
+
+classify :: fn(c: u8) -> Class => match c {
+    'a'..='z', 'A'..='Z', '_' => .Letter
+    '0'..='9'                 => .Digit
+    ' ', '\t', '\n'           => .Space
+    _                         => .Other
+}
+```
+
+String patterns make the usual way to map an enum to text and back a pair of `match` functions, `keyword_text(k) -> string` and `keyword_from(s) -> ?Keyword`: both are exhaustive over what they must be, so a new variant cannot be forgotten in one of them.
+
 Patterns take apart tuples, structs and unions and bind names inside them:
 
 ```gamma
@@ -316,6 +331,8 @@ The elements of a tuple payload are written directly (`.Rect(w, h)`); a single n
 > Use a guard, `v if v is LIMIT => true`, or a qualified pattern for a constant from another module (`limits.MAX => ...`).
 
 > **Common mistake: a method chain across arms.** Each line of a `match` body starts a new arm, even if the line begins with `.`. If an arm's expression needs to continue on the next line, wrap it in `( )` or `{ }`.
+>
+> Elsewhere it is the other way round: a line that *starts* with `.Name` continues the previous line, so a variant that begins a line, such as the value at the end of a block arm, is written with its type: `ast.ItemKind.When(…)`.
 
 ## `defer` and `errdefer`
 

@@ -21,6 +21,9 @@ jobs:
   build:
     name: Build (${{ matrix.asset }})
     runs-on: ${{ matrix.os }}
+    env:
+      # The macOS binaries run on macOS 14 and later, not only on the runner's version.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     strategy:
       fail-fast: false
       matrix:
@@ -32,7 +35,7 @@ jobs:
             asset: linux-aarch64
           - os: macos-15-intel
             asset: macos-x86_64
-          - os: macos-14
+          - os: macos-15
             asset: macos-aarch64
     steps:
       - uses: actions/checkout@v7
