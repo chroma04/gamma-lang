@@ -6,6 +6,7 @@
 // diagnostics and lexing continues, so the result is always a complete token stream
 // ending in `Eof`.
 
+ascii :: import "std/ascii"
 diag :: import "../diag"
 source :: import "../source"
 str :: import "std/str"
@@ -33,14 +34,6 @@ pub lex_recovering :: fn(file: source.FileId, src: string, diags: ^diag.Diagnost
     again.recover = true
     return again.run()
 }
-
-is_ident_start :: fn(b: u8) -> bool => b in 'a'..='z' or b in 'A'..='Z' or b is '_'
-
-is_ident_cont :: fn(b: u8) -> bool => is_ident_start(b) or b in '0'..='9'
-
-is_digit :: fn(b: u8) -> bool => b in '0'..='9'
-
-is_hex_digit :: fn(b: u8) -> bool => b in '0'..='9' or b in 'a'..='f' or b in 'A'..='F'
 
 /// The kind of an open bracket on the lexer's bracket stack.
 BracketKind :: union {
@@ -162,37 +155,8 @@ peek_at :: fn(lx: ^const Lexer, n: usize) -> ?u8 => lx.src.get(lx.pos + n)
 /// The byte at `i`, if there is one.
 byte :: fn(lx: ^const Lexer, i: usize) -> ?u8 => lx.src.get(i)
 
-/// A character decoded from UTF-8: its code point and its length in bytes.
-Char :: struct {
-    value: u32
-    len: usize
-}
-
-/// The character starting at byte `i` of `s` (a malformed sequence is one byte long).
-decode :: fn(s: string, i: usize) -> Char {
-    b := s[i]
-    if b < 0x80 { return Char(value: u32(b), len: 1) }
-    len: usize = 1
-    value: u32 = 0
-    if b >= 0xF0 {
-        len = 4
-        value = u32(b & 0x07)
-    } else if b >= 0xE0 {
-        len = 3
-        value = u32(b & 0x0F)
-    } else if b >= 0xC0 {
-        len = 2
-        value = u32(b & 0x1F)
-    } else {
-        return Char(value: u32(b), len: 1)
-    }
-    if i + len > s.len { return Char(value: u32(b), len: 1) }
-    for k in 1..len { value = (value << 6) | u32(s[i + k] & 0x3F) }
-    return Char(value: value, len: len)
-}
-
 /// The character at the lexer's position, which must not be at the end.
-current_char :: fn(lx: ^const Lexer) -> Char => decode(lx.src, lx.pos)
+current_char :: fn(lx: ^const Lexer) -> source.Char => source.decode(lx.src, lx.pos)
 
 // ----- whitespace and comments -----
 
@@ -316,7 +280,7 @@ second_word_end :: fn(lx: ^const Lexer, from: usize, word: string) -> ?usize {
     end := i + word.len
     if not lx.src[i..].starts_with(word) { return null }
     if c := lx.byte(end) {
-        if is_ident_cont(c) { return null }
+        if source.is_ident_cont(c) { return null }
     }
     return end
 }
@@ -338,7 +302,7 @@ lex_token :: fn(lx: ^Lexer, b: u8) needs Alloc {
         '@', '#' => {
             lx.pos += 1
             next := lx.peek() else 0
-            if is_ident_start(next) {
+            if source.is_ident_start(next) {
                 name := lx.scan_ident()
                 kind: TokenKind = if b is '@' { .Intrinsic(name) } else { .Attribute(name) }
                 lx.emit(kind, lo, lx.pos)
@@ -387,7 +351,7 @@ is_ascii_space :: fn(c: u8) -> bool => c in (' ', '\t', '\n', 0x0C, '\r')
 scan_ident :: fn(lx: ^Lexer) -> string {
     start := lx.pos
     while c := lx.peek() {
-        if not is_ident_cont(c) { break }
+        if not source.is_ident_cont(c) { break }
         lx.pos += 1
     }
     return lx.src[start..lx.pos]
@@ -625,7 +589,7 @@ emit :: fn(lx: ^Lexer, kind: TokenKind, lo, hi: usize) needs Alloc {
 declaration_starts_at :: fn(lx: ^const Lexer, lo: usize, kind: TokenKind) -> bool {
     if lo is not 0 and lx.src[lo - 1] is not '\n' { return false }
     i := lo
-    while i < lx.src.len and is_ident_cont(lx.src[i]) { i += 1 }
+    while i < lx.src.len and source.is_ident_cont(lx.src[i]) { i += 1 }
     word := lx.src[lo..i]
     while i < lx.src.len and lx.src[i] in (' ', '\t') { i += 1 }
     after := lx.src[i..]
@@ -634,7 +598,7 @@ declaration_starts_at :: fn(lx: ^const Lexer, lo: usize, kind: TokenKind) -> boo
         .Keyword(k) => k is Keyword.Pub
         .Ident(_) => {
             after.starts_with("::") or (word in ("test", "bench") and after.starts_with("\""))
-                or (word is "handler" and after.len > 0 and (after[0] is '(' or is_ident_start(after[0])))
+                or (word is "handler" and after.len > 0 and (after[0] is '(' or source.is_ident_start(after[0])))
         }
         _ => false
     }
@@ -714,7 +678,7 @@ flush_newline :: fn(lx: ^Lexer, next: TokenKind, next_hi: usize) {
     }
     if innermost is not .MatchBrace {
         // A line `.V(x) := v else …` is a pattern binding, not a continuation.
-        dot_name := next.is_punct(.Dot) and next_hi < lx.src.len and is_ident_start(lx.src[next_hi])
+        dot_name := next.is_punct(.Dot) and next_hi < lx.src.len and source.is_ident_start(lx.src[next_hi])
             and not line_binds(lx.src[next_hi..])
         if dot_name or starts_continuation(next) { return }
     }

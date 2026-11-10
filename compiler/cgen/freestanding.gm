@@ -66,12 +66,12 @@ c_identifiers :: fn(code: string) -> hash_map.HashMap(string, bool) needs Alloc 
             i += 2
         } else if c is '/' and code.get(i + 1) is '/' {
             while i < code.len and code[i] is not '\n' { i += 1 }
-        } else if is_ident_start(c) {
+        } else if source.is_ident_start(c) {
             start := i
-            while i < code.len and is_ident_char(code[i]) { i += 1 }
+            while i < code.len and source.is_ident_cont(code[i]) { i += 1 }
             out.put(code[start..i], true)!
         } else if c >= '0' and c <= '9' {
-            while i < code.len and (is_ident_char(code[i]) or code[i] is '.') { i += 1 }
+            while i < code.len and (source.is_ident_cont(code[i]) or code[i] is '.') { i += 1 }
         } else {
             i += 1
         }
@@ -79,6 +79,4 @@ c_identifiers :: fn(code: string) -> hash_map.HashMap(string, bool) needs Alloc 
     return out
 }
 
-is_ident_start :: fn(c: u8) -> bool => (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c is '_'
-
-is_ident_char :: fn(c: u8) -> bool => is_ident_start(c) or (c >= '0' and c <= '9')
+source :: import "../source"

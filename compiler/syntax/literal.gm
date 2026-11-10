@@ -1,5 +1,6 @@
 // Lexing of numeric, character and string literals (spec §2.5).
 
+ascii :: import "std/ascii"
 bigint :: import "../bigint"
 diag :: import "../diag"
 ratio :: import "../ratio"
@@ -141,16 +142,16 @@ lex_number :: fn(lx: ^Lexer) needs Alloc {
 /// In a hexadecimal literal, `.` starts a fraction only before a decimal digit or before
 /// hex digits and a `p` exponent; otherwise it is member access (`0xFF.abs()`).
 fraction_follows :: fn(lx: ^const Lexer, radix: u32, i: usize) -> bool {
-    first_is_digit := if c := lx.byte(i) { is_digit(c) } else { false }
+    first_is_digit := if c := lx.byte(i) { ascii.is_digit(c) } else { false }
     if radix is 10 { return first_is_digit }
     j := i
-    while j < lx.src.len and (is_hex_digit(lx.src[j]) or lx.src[j] is '_') { j += 1 }
+    while j < lx.src.len and (ascii.is_hex_digit(lx.src[j]) or lx.src[j] is '_') { j += 1 }
     return first_is_digit or lx.byte(j) is 'p'
 }
 
 /// Lexes the digits of a numeric field name such as the `0` in `t.0` (§2.6).
 lex_field_index :: fn(lx: ^Lexer, lo: usize) needs Alloc {
-    while lx.pos < lx.src.len and is_digit(lx.src[lx.pos]) { lx.pos += 1 }
+    while lx.pos < lx.src.len and ascii.is_digit(lx.src[lx.pos]) { lx.pos += 1 }
     if lx.pos - lo > 1 and lx.src[lo] is '0' {
         lx.error(lo, lx.pos, "numeric field names may not have a leading zero")
     }
@@ -164,7 +165,7 @@ lex_field_index :: fn(lx: ^Lexer, lo: usize) needs Alloc {
 scan_digits :: fn(lx: ^Lexer, radix: u32, err: ^?string) -> Digits needs Alloc {
     start := lx.pos
     while c := lx.peek() {
-        ok := if radix is 16 { is_hex_digit(c) } else { is_digit(c) }
+        ok := if radix is 16 { ascii.is_hex_digit(c) } else { ascii.is_digit(c) }
         if not (ok or c is '_') { break }
         lx.pos += 1
     }
@@ -190,7 +191,7 @@ at_exponent :: fn(lx: ^const Lexer, markers: string) -> bool {
     i: usize = 1
     if lx.peek_at(i) in ('+', '-') { i += 1 }
     c := lx.peek_at(i) else return false
-    return is_digit(c)
+    return ascii.is_digit(c)
 }
 
 /// Consumes an exponent (the marker is known to be present) and returns its value.
@@ -346,11 +347,11 @@ lex_escape :: fn(lx: ^Lexer) -> ?Escape needs Alloc {
             lx.pos += 1
             hi := lx.peek() else 0
             low := lx.peek_at(1) else 0
-            if is_hex_digit(hi) and is_hex_digit(low) {
+            if ascii.is_hex_digit(hi) and ascii.is_hex_digit(low) {
                 lx.pos += 2
                 return .Byte((bigint.digit_value(hi) * 16 + bigint.digit_value(low)).trunc(u8))
             }
-            while lx.pos < lo + 4 and lx.pos < lx.src.len and is_hex_digit(lx.src[lx.pos]) { lx.pos += 1 }
+            while lx.pos < lo + 4 and lx.pos < lx.src.len and ascii.is_hex_digit(lx.src[lx.pos]) { lx.pos += 1 }
             lx.error(lo, lx.pos, "invalid `\\x` escape: expected exactly two hexadecimal digits")
             return null
         }
@@ -376,7 +377,7 @@ lex_unicode_escape :: fn(lx: ^Lexer, lo: usize) -> ?Escape needs Alloc {
     }
     lx.pos += 1
     start := lx.pos
-    while lx.pos < lx.src.len and is_hex_digit(lx.src[lx.pos]) { lx.pos += 1 }
+    while lx.pos < lx.src.len and ascii.is_hex_digit(lx.src[lx.pos]) { lx.pos += 1 }
     digits := lx.src[start..lx.pos]
     if lx.peek() is not '}' {
         lx.error(lo, lx.pos, "invalid unicode escape: expected `}` after the hexadecimal digits")
@@ -512,7 +513,7 @@ radix_name :: fn(radix: u32) -> string => match radix {
 
 all_digits :: fn(s: string) -> bool {
     for c in s {
-        if not is_digit(c) { return false }
+        if not ascii.is_digit(c) { return false }
     }
     return true
 }

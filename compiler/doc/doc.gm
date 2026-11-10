@@ -270,14 +270,7 @@ load_modules :: fn(path: string, all: bool) -> Failure![]Module needs Alloc + Fs
 
 /// The `.gm` files directly in `dir`, in name order.
 gm_files :: fn(dir: string) -> Failure![]string needs Alloc + Fs {
-    files := list(string)
-    for r in fs.entries(dir) {
-        e := r else err => return !fail(str.format("gamma: {}: {}", dir, load.os_error_text(err))!)
-        if e.name.len > 3 and e.name.ends_with(".gm") {
-            p := load.join(dir, e.name)
-            if load.is_file(p) { files.push(p)! }
-        }
-    }
+    files := load.dir_gm_files(dir) else err => return !fail(str.format("gamma: {}: {}", dir, load.os_error_text(err))!)
     files.items.sort()
     return files.items
 }
@@ -293,7 +286,7 @@ module_dirs :: fn(dir, rel: string, out: ^List(ModuleDir)) -> Failure!() needs A
     }
     subs.items.sort()
     for s in subs.items {
-        if s.starts_with(".") or s is "target" { continue }
+        if load.skipped_dir(s) { continue }
         sub_rel := if rel.len is 0 { s } else { str.format("{}/{}", rel, s)! }
         try module_dirs(load.join(dir, s), sub_rel, out)
     }

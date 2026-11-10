@@ -123,7 +123,7 @@ load_module :: fn(files: []const string, name, path: string) -> Failure!Module n
     r := reader()
     for f in files {
         src := fs.read_all(f) else e => {
-            r.diags.report(source.DUMMY, str.format("cannot read {}: {}", f, describe_read_error(e))!)
+            r.diags.report(source.DUMMY, str.format("cannot read {}: {}", f, load.describe_read_error(e))!)
             return !Failure(message: render_diagnostics(&r.sm, &r.diags))
         }
         try r.read_file(f, src)
@@ -173,11 +173,6 @@ render_diagnostics :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics) 
     out := list(u8)
     for d in diags.list.items { diag.render(sm, &d, .Human, &out) }
     return out.items
-}
-
-describe_read_error :: fn(e: fs.ReadError) -> string needs Alloc => match e {
-    .Io(io) => load.os_error_text(io)
-    .Alloc(_) => "out of memory"
 }
 
 /// The length of the longest prefix of `text` that is valid UTF-8.

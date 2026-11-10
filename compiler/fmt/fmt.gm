@@ -9,6 +9,7 @@
 //! lexed again and must give the same tokens as the input.
 
 diag :: import "../diag"
+source :: import "../source"
 str :: import "std/str"
 syntax :: import "../syntax"
 
@@ -47,12 +48,12 @@ lex_checked :: fn(src: string) -> FormatError![]const Token needs Alloc {
             lo := usize(d.span.lo)
             if lo > src.len { lo = src.len }
             // A position inside a character is taken to be at the start of the text.
-            before: string = if lo < src.len and not is_char_start(src[lo]) { "" } else { src[0..lo] }
+            before: string = if lo < src.len and not source.is_char_start(src[lo]) { "" } else { src[0..lo] }
             line: usize = 1
             for b in before {
                 if b is '\n' { line += 1 }
             }
-            col := count_chars(last_line(before)) + 1
+            col := source.char_count(last_line(before)) + 1
             return !FormatError(message: str.format("{}:{}: {}", line, col, d.message)!)
         }
     }

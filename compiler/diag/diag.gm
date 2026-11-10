@@ -236,7 +236,7 @@ render_human :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List
             start := (col - 1) -| WINDOW / 3
             stop := (start + WINDOW).min(len)
             if start > 0 { shown.extend("…")! }
-            body := if f.is_ascii() { text[usize(start)..usize(stop)] } else { text[char_offset(text, start)..char_offset(text, stop)] }
+            body := if f.is_ascii() { text[usize(start)..usize(stop)] } else { text[source.char_offset(text, usize(start))..source.char_offset(text, usize(stop))] }
             push_untabbed(&shown, body)
             if stop < len { shown.extend("…")! }
             width = width.min(stop + 1 - col)
@@ -269,18 +269,6 @@ spaces :: fn(n: usize) -> string needs Alloc {
 /// Appends `text` with each tab replaced by a space.
 push_untabbed :: fn(out: ^List(u8), text: string) needs Alloc {
     for c in text { out.push(if c is '\t' { ' ' } else { c })! }
-}
-
-/// The byte offset of character `n` of UTF-8 `text` (its length if it has fewer).
-char_offset :: fn(text: string, n: u32) -> usize {
-    seen: u32 = 0
-    for i, c in enumerate(text) {
-        if c & 0xC0 is not 0x80 {
-            if seen is n { return i }
-            seen += 1
-        }
-    }
-    return text.len
 }
 
 render_short :: fn(sm: ^const source.SourceMap, d: ^const Diagnostic, out: ^List(u8)) needs Alloc {
@@ -394,7 +382,7 @@ HEX :: "0123456789abcdef"
 
 /// Appends `s` as a JSON string. Control characters are escaped; everything else,
 /// including non-ASCII text, is copied.
-json_string :: fn(s: string, out: ^List(u8)) needs Alloc {
+pub json_string :: fn(s: string, out: ^List(u8)) needs Alloc {
     out.push('"')!
     for c in s {
         match c {

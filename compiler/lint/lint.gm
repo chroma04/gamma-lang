@@ -32,53 +32,17 @@ pub level_name :: fn(l: Level) -> string => match l {
     .Deny => "deny"
 }
 
-pub Rule :: struct {
-    pub name: string
-    /// The level when nothing configures the rule.
-    pub default: Level
-    /// What the rule reports, in a line.
-    pub summary: string
-}
-
-rule_def :: fn(name, summary: string) -> Rule => Rule(name: name, default: .Warn, summary: summary)
+/// Every rule, grouped by kind.
+pub RULES :: load.LINT_RULES
 
 /// The number of rules.
-RULE_COUNT :: 23
+RULE_COUNT :: load.LINT_RULES.len
 
-/// Every rule, grouped by kind.
-pub RULES :: [RULE_COUNT]Rule(
-    rule_def("unused-variable", "a local variable or pattern binding whose value is never read"),
-    rule_def("unused-parameter", "a parameter of a function that its body never uses"),
-    rule_def("unused-import", "an import that nothing in its module refers to"),
-    rule_def("unused-declaration", "a private top-level function, type, constant or global that nothing refers to"),
-    rule_def("needless-pub", "a `pub(package)` function or constant, or a `pub` one of a program package, that no other module uses"),
-    rule_def("unused-label", "a loop or `with` label that no `break` or `continue` names"),
-    Rule(name: "prefer-immutable", default: .Allow, summary: "a variable declared with `:=` that is never assigned, so `::` would do"),
-    rule_def("bool-comparison", "a `bool` compared with `true` or `false`"),
-    rule_def("self-comparison", "a value compared with itself"),
-    rule_def("self-assignment", "a place assigned to itself"),
-    rule_def("dangling-address", "the address of a local, such as a loop variable or a pattern binding, kept where it outlives the local"),
-    rule_def("present-only-binding", "a name in a `match` pattern that matches only a present optional, leaving `null` to a catch-all arm"),
-    rule_def("mutated-copy", "a local holding a copy of a list, map or other value with a resizable buffer, changed as if it were the original"),
-    rule_def("stale-element-pointer", "a pointer into a list's items, used after a call that may have moved them"),
-    rule_def("constant-condition", "an `if` or `while` whose condition is the literal `true` or `false`"),
-    rule_def("useless-defer", "a `defer` or `errdefer` that is the last statement of its block"),
-    rule_def("needless-bool", "`if c { true } else { false }` and the like, which are `c` or `not c`"),
-    rule_def("double-negation", "`not not x`, which is `x`"),
-    rule_def("collapsible-else-if", "`else { if … }`, which is `else if …`"),
-    rule_def("empty-branch", "an `if` with an empty body and no `else`, or an empty `else`"),
-    rule_def("identical-branches", "an `if` whose branches are all the same"),
-    rule_def("unnecessary-parens", "parentheses around a whole condition, initializer, assigned or returned value"),
-    rule_def("naming", "names not written in the usual case: types and variants in UpperCamelCase, the rest in snake_case"),
-)
+/// The level of `r` when nothing configures it.
+pub default_level :: fn(r: ^const load.LintRule) -> Level => if r.allow_by_default { .Allow } else { .Warn }
 
 /// The index in `RULES` of the rule named `name`.
-pub rule :: fn(name: string) -> ?usize {
-    for i, r in enumerate(RULES[..]) {
-        if r.name is name { return i }
-    }
-    return null
-}
+rule :: fn(name: string) -> ?usize => load.lint_rule(name)
 
 /// The level of each rule.
 pub Config :: struct {
@@ -88,7 +52,7 @@ pub Config :: struct {
 /// The levels of the rules when nothing configures them.
 pub default_config :: fn() -> Config needs Alloc {
     c := Config(levels: list(Level))
-    for r in RULES[..] { c.levels.push(r.default)! }
+    for r in RULES[..] { c.levels.push(default_level(&r))! }
     return c
 }
 
@@ -172,18 +136,10 @@ pub in_scope :: fn(sc: ^Scope, path: string) -> bool needs Alloc + Fs {
 }
 
 /// The absolute form of `path`, without `.` and `..`.
-pub canonical :: fn(path: string) -> string needs Alloc + Fs => load.normalize(load.join(load.working_dir(), path))
+pub canonical :: fn(path: string) -> string needs Alloc + Fs => load.absolute_path(path)
 
 /// The nearest directory at or above `start` that holds a `gamma.toml`.
-pub find_root :: fn(start: string) -> ?string needs Alloc + Fs {
-    abs := canonical(start)
-    cur: ?string = if load.is_dir(abs) { abs } else { load.parent(abs) }
-    while d := cur {
-        if load.is_file(load.join(d, "gamma.toml")) { return d }
-        cur = load.parent(d)
-    }
-    return null
-}
+pub find_root :: fn(start: string) -> ?string needs Alloc + Fs => load.find_package_root(start)
 
 /// The text of `span`.
 text_of :: fn(sm: ^const source.SourceMap, span: source.Span) -> string => sm.file(span.file).text[usize(span.lo)..usize(span.hi)]

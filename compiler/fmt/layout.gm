@@ -2,6 +2,7 @@
 
 arena :: import "std/arena"
 diag :: import "../diag"
+source :: import "../source"
 str :: import "std/str"
 syntax :: import "../syntax"
 
@@ -181,7 +182,7 @@ keeps_padding :: fn(src: string, prev: Info, cur: Info) -> bool {
 /// Whether `line` has the operator `text` (if `op`, else some token) in the column `col`,
 /// counted from its indentation, after a space.
 aligned_with :: fn(line: string, col: usize, op: bool, text: string) -> bool {
-    cut := char_offset(line, col + indent_of(line))
+    cut := source.char_offset(line, col + indent_of(line))
     rest := line[cut..]
     before := line[0..cut]
     spaced := before.ends_with(" ") and not all_white(before)
@@ -429,7 +430,7 @@ is_word :: fn(c: u8) -> bool => c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='
 
 /// The column after the text of a line, counted from the line's indentation.
 relative_column :: fn(line: string) -> usize {
-    n := count_chars(line)
+    n := source.char_count(line)
     i := indent_of(line)
     return if n > i { n - i } else { 0 }
 }
