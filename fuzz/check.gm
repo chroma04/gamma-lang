@@ -22,7 +22,7 @@ body :: fn(input: string) needs Alloc + Env + Fs + Proc + Rand + Clock {
     next_id: ast.NodeId = 0
     std := driver.std_root()
     l := load.loader(&sm, &diags, &next_id, std, false)
-    l.overlays.push(load.Overlay(path: l.canonical_path(PATH), text: input))!
+    l.overlays.push(load.Overlay(path: load.canonical_path(PATH), text: input))!
     if l.load_core(driver.core_root(std), "Debug") {
         s := sema.sema(&l)
         check.install(&s)
