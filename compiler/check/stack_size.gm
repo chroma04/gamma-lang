@@ -132,7 +132,8 @@ stack_frame :: fn(a: ^StackAnalysis, g: u32) -> u64 needs Alloc {
     for c in a.costs.items {
         if c.fn_id is g { return c.cost }
     }
-    c := frame_cost(a.s, g)
+    def := a.s.def_of(g)
+    c := a.s.frame_cost(def.locals, def.body)
     a.costs.push(StackCost(fn_id: g, cost: c))!
     return c
 }
@@ -298,78 +299,4 @@ stack_perform :: fn(a: ^StackAnalysis, eref: ^const EffectRef, op: u32, args: []
         return stack_call(a, h.clauses[usize(op)], args, a.env.items[..k], span)
     }
     return !StackFail.At(span, unknown)
-}
-
-/// The stack bytes charged for one call of `g`: a fixed overhead for the return address,
-/// saved registers and spills; the locals; every composite temporary bigger than a
-/// register (call results, constructed values, and the copies made by reading a large
-/// value, but not by using it as a place); and the records of the handlers its `with`s
-/// install.
-frame_cost :: fn(s: ^Sema, g: u32) -> u64 needs Alloc {
-    def := s.def_of(g)
-    c: u64 = 256
-    for l in def.locals { c = c +| round8(s.layout(l.ty).size) }
-    if b := def.body { frame_temps(s, b, false, &c) }
-    return c
-}
-
-round8 :: fn(n: u64) -> u64 => (n +| 7) & 0xFFFF_FFFF_FFFF_FFF8
-
-/// Adds the temporaries of `e`; `place` is set for an expression used as a place (the base
-/// of an index, field or slice, an operand of `&`, the target of an assignment): reading
-/// it makes no copy.
-frame_temps :: fn(s: ^Sema, e: ^Expr, place: bool, c: ^u64) needs Alloc {
-    add :: fn(t: Ty) needs Alloc {
-        n := s.layout(t).size
-        if n > 8 { c^ = c^ +| round8(n) }
-    }
-    match e.kind {
-        .With(w) => { c^ = c^ +| 128 * u64(w.handlers.len) }
-        .Call(_), .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .Builtin(_) => add(e.ty)
-        .Local(_), .Upvar(_), .Global(_) => if not place { add(e.ty) }
-        _ => {}
-    }
-    match e.kind {
-        .Deref(x), .Field(x, _), .Index(x, _, _) => {
-            if not place { add(e.ty) }
-            frame_temps(s, x, true, c)
-            if .Index(_, index, _) := e.kind { frame_temps(s, index, false, c) }
-            return
-        }
-        .AddrOf(x), .SliceLen(x), .SlicePtr(x) => {
-            frame_temps(s, x, true, c)
-            return
-        }
-        .Slice(sl) => {
-            frame_temps(s, sl.base, true, c)
-            if x := sl.lo { frame_temps(s, x, false, c) }
-            if x := sl.hi { frame_temps(s, x, false, c) }
-            return
-        }
-        .Block(b) => {
-            for st in b.stmts {
-                match st {
-                    .Assign(place_, value) => {
-                        frame_temps(s, place_, true, c)
-                        frame_temps(s, value, false, c)
-                    }
-                    .AssignTuple(places, value) => {
-                        for p in places {
-                            if x := p { frame_temps(s, x, true, c) }
-                        }
-                        frame_temps(s, value, false, c)
-                    }
-                    .Let(_, init) => frame_temps(s, init, false, c)
-                    .LetTuple(_, init) => frame_temps(s, init, false, c)
-                    .Expr(x) => frame_temps(s, x, false, c)
-                    .Defer(_, x) => frame_temps(s, x, false, c)
-                    _ => {}
-                }
-            }
-            if t := b.tail { frame_temps(s, t, false, c) }
-            return
-        }
-        _ => {}
-    }
-    tir.for_each_child(e, fn(x: ^Expr) { frame_temps(s, x, false, c) })
 }

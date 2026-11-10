@@ -209,13 +209,13 @@ literal_pattern :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty, span: source.Span) 
 pattern_int :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ?bigint.Int needs Load {
     v := bigint.zero()
     match e.kind {
-        .Int(l) => { v = bigint.from_nat(&l.value) }
+        .Int(l) => { v = l.value }
         .Unary(.Neg, operand) => {
             .Int(l) := operand.kind else {
                 cx.error(operand.span, "expected an integer literal")
                 return null
             }
-            v = bigint.from_nat(&l.value).neg()
+            v = l.value.neg()
         }
         _ => {
             r := cx.try_untyped(e)

@@ -2465,7 +2465,7 @@ vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, reg
     info := m.fn_info(f)
     marker: u8 = 0
     code := info.vm else return m.vm_invoke(a, f, null, a.cx, null, false, null, args, dst, n, regs, ret)
-    if info.addressed_params or args.len is not info.params.len or info.cost > MAX_FRAME or m.depth >= MAX_DEPTH or (&marker).addr() < m.stack_floor or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 {
+    if info.addressed_params or args.len is not info.params.len or info.cost > sema.MAX_FRAME or m.depth >= MAX_DEPTH or (&marker).addr() < m.stack_floor or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 {
         return m.vm_invoke(a, f, null, a.cx, null, false, null, args, dst, n, regs, ret)
     }
     fr := a.fr
@@ -2632,7 +2632,7 @@ vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: 
     body := info.body else return m.call_missing(n.span, f)
     first: usize = if self_ is null { 0 } else { 1 }
     if args.len + first is not info.params.len { return !m.trap(n.span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len + first, info.params.len)!) }
-    if info.cost > MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
+    if info.cost > sema.MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
     fr := a.fr
     mk := m.mark()
     store := m.tmp(info.frame_size)

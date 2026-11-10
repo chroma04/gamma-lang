@@ -255,7 +255,7 @@ spread_generic_args :: fn(cx: ^FnCx, args: []const ast.Arg, stmts: ^List(tir.Stm
             .Array(_), .ParamArray(_) => {
                 arr := cx.spread_array(vt, e.span) else return null
                 for i in 0..arr.len {
-                    lit := syntax.IntLit(value: bignum.from_u64(i), suffix: null, is_char: false)
+                    lit := syntax.IntLit(value: bigint.from_u64(i), suffix: null, is_char: false)
                     index := new(synthetic(.Int(lit), e.span))!
                     elem := synthetic(.Index(new(base)!, index), e.span)
                     written.push(ast.Arg(kind: .Positional(elem), span: e.span))!

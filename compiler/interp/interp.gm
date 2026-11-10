@@ -147,7 +147,7 @@ FnInfo :: struct {
     /// Whether each local needs an address (an allocation of its own).
     addressed: []bool
     store_size: u64
-    /// The stack bytes a call is charged on a fiber stack (`cgen.frame_cost`).
+    /// The stack bytes a call is charged on a fiber stack (`sema.frame_cost`).
     cost: u64
 }
 
@@ -691,24 +691,13 @@ field_layout :: fn(m: ^Machine, t: Ty, i: u32) -> (ty: Ty, off: u64) needs Alloc
 }
 
 /// The width in bits of a `#bits` field of type `t`.
-bit_width :: fn(m: ^Machine, t: Ty) -> u32 needs Alloc {
-    match m.kind(t) {
-        .Bool => return 1
-        .Int(_, bits) => return u32(bits)
-        _ => {}
-    }
-    if u := m.union_def(t) { return m.bit_width(u.tag) }
-    if u := m.bits_struct_ty(t) { return m.bit_width(u) }
-    return (8 * m.size(t)).trunc(u32)
-}
+bit_width :: fn(m: ^Machine, t: Ty) -> u32 needs Alloc => m.s.field_bits(t)
 
 /// The bit offset and type of field `i` of the `#bits` struct `t`.
 bits_field :: fn(m: ^Machine, t: Ty, i: u32) -> (off: u32, ty: Ty) needs Alloc {
-    a := m.adt_of(t) else return (off: 0, ty: t)
-    .Struct(def) := a.kind else return (off: 0, ty: t)
-    off: u32 = 0
-    for k in 0..us(i) { off += m.bit_width(def.fields[k].ty) }
-    return (off: off, ty: def.fields[us(i)].ty)
+    bl := m.s.bits_layout(t) else return (off: 0, ty: t)
+    f := bl.fields[us(i)]
+    return (off: f.off, ty: f.ty)
 }
 
 /// The raw bits of a value `b` of the `#bits` field type `t`, zero-extended.
@@ -834,7 +823,7 @@ make_fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
     if x := m.infos.items[i] { return x }
     def := m.func(f)
     made := m.make_info(f, def.locals, def.body)
-    made.cost = m.frame_cost(def)
+    made.cost = m.s.frame_cost(def.locals, def.body)
     made.params = def.params
     for p in def.params {
         if made.addressed[us(p)] { made.addressed_params = true }

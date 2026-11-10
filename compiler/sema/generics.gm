@@ -554,20 +554,18 @@ canonical_bytes :: fn(s: ^Sema, v: tir.Value, ty: Ty, out: []u8) -> bool needs L
                 return true
             }
             .Tuple(elems, _) => {
-                offset: u64 = 0
+                offs := s.layout(ty).offsets
                 for i, e in enumerate(elems) {
-                    l := s.layout(e)
-                    offset = (offset + l.align - 1) / l.align * l.align
-                    if i >= a.elems.len or not s.canonical_field(a.elems[i], e, offset, out) { return false }
-                    offset += l.size
+                    if i >= a.elems.len or not s.canonical_field(a.elems[i], e, offs[i], out) { return false }
                 }
                 return true
             }
             .Adt(id, _) => {
                 .Struct(def) := s.adts.items[usize(id)].kind else return false
                 if def.bits is not null { return false }
+                offs := s.layout(ty).offsets
                 for i, f in enumerate(def.fields) {
-                    if i >= a.elems.len or not s.canonical_field(a.elems[i], f.ty, s.field_offset(ty, i), out) { return false }
+                    if i >= a.elems.len or not s.canonical_field(a.elems[i], f.ty, offs[i], out) { return false }
                 }
                 return true
             }

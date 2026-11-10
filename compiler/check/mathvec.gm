@@ -48,7 +48,7 @@ imaginary_literal :: fn(cx: ^FnCx, l: ^const syntax.FloatLit, span: source.Span)
         ty = cx.literal_var(.Complex)
     }
     if cx.infer.complex is null and not tys.is_error(ty) { _ = cx.literal_var(.Complex) }
-    return tir.mk(ty, .UntypedComplex(re: ratio.zero(), im: sema.literal_rational(&l.value)), span)
+    return tir.mk(ty, .UntypedComplex(re: ratio.zero(), im: l.value), span)
 }
 
 /// The type of a fresh variable for an untyped literal.

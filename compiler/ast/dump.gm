@@ -7,7 +7,6 @@
 // unambiguous. A node is printed on one line when it is short and has no block-like
 // children; otherwise its children go on their own lines, indented by two spaces.
 
-bignum :: import "../bignum"
 source :: import "../source"
 str :: import "std/str"
 
@@ -343,14 +342,11 @@ dump_cond :: fn(c: ^const Cond) -> Sx needs Alloc {
 
 // ----- expressions -----
 
-/// The decimal text of a natural number.
-decimal :: fn(n: ^const bignum.Nat) -> Sx needs Alloc => .Atom(n.to_decimal())
-
 dump_expr :: fn(e: ^const Expr) -> Sx needs Alloc {
     v := list(Sx)
     match e.kind {
         .Int(l) => {
-            v.push(decimal(&l.value))!
+            v.push(.Atom(l.value.to_decimal()))!
             if s := l.suffix {
                 v.push(.Atom(match s {
                     .U(n) => str.format("u{}", n)!
@@ -363,7 +359,7 @@ dump_expr :: fn(e: ^const Expr) -> Sx needs Alloc {
         }
         .Float(l) => {
             text := list(u8)
-            l.value.write_rational(&text)
+            l.value.write(&text)
             v.push(.Atom(text.items))!
             if s := l.suffix { v.push(.Atom(float_suffix(s)))! }
             return node(if l.imag { "imag" } else { "float" }, v)

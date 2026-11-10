@@ -7,8 +7,6 @@
 //! the current allocator and is never released one value at a time, so run a compilation
 //! inside an arena. Division by zero traps.
 
-bignum :: import "../bignum"
-
 /// An integer as a sign and a magnitude. The magnitude is in base-2^32 limbs, least
 /// significant first, with no zero limb at the top, so zero has no limbs. Zero is never
 /// negative. Build values with the functions of this module, which keep these rules.
@@ -326,12 +324,6 @@ pub from_i128 :: fn(v: i128) -> Int needs Alloc {
 }
 
 /// The natural number `n`.
-pub from_nat :: fn(n: ^const bignum.Nat) -> Int needs Alloc {
-    l := list(u32)
-    l.extend(n.limbs.items)!
-    return make(false, l)
-}
-
 /// A copy of `a` that shares no memory with it.
 copy :: fn(a: Int) -> Int needs Alloc {
     l := list(u32)
@@ -609,7 +601,20 @@ pub write_decimal :: fn(a: Int, out: ^List(u8)) needs Alloc {
         out.push('0')!
         return
     }
-    bignum.write_decimal(&bignum.Nat(limbs: a.mag), out)
+    // Base-10^9 chunks, least significant first.
+    chunks := list(u32)
+    m := a.mag.items
+    while m.len > 0 {
+        qr := mag_divrem_small(m, 1_000_000_000)
+        chunks.push(qr.r)!
+        m = qr.q.items
+    }
+    i := chunks.items.len - 1
+    out.write("{}", chunks.items[i])!
+    while i > 0 {
+        i -= 1
+        out.write("{:09}", chunks.items[i])!
+    }
 }
 
 /// `a` in decimal.
@@ -619,9 +624,25 @@ pub to_decimal :: fn(a: Int) -> []u8 needs Alloc {
     return out.into_slice()!
 }
 
-/// The non-negative number written by `digits` in `radix` (2, 8, 10 or 16), without sign
-/// or separators. Other bytes count as the digit 0.
-parse :: fn(digits: string, radix: u32) -> Int needs Alloc {
+/// The value of a hexadecimal digit (either case); 0 for other bytes.
+pub digit_value :: fn(c: u8) -> u32 => match c {
+    '0'..='9' => u32(c - '0')
+    'a'..='f' => u32(c - 'a') + 10
+    'A'..='F' => u32(c - 'A') + 10
+    _ => 0
+}
+
+/// The non-negative number written by `digits` in `radix` (2 to 16), without sign. `_`
+/// separators are skipped; other bytes count as the digit 0.
+pub parse :: fn(text: string, radix: u32) -> Int needs Alloc {
+    digits := text
+    if '_' in text {
+        kept := list(u8)
+        for c in text {
+            if c is not '_' { kept.push(c)! }
+        }
+        digits = kept.items
+    }
     // Digits are taken in groups whose weight `radix^k` still fits in a limb.
     group: u32 = 1
     per: usize = 0
@@ -637,7 +658,7 @@ parse :: fn(digits: string, radix: u32) -> Int needs Alloc {
         chunk: u32 = 0
         weight: u32 = 1
         for i in start..end {
-            chunk = chunk * radix + bignum.digit_value(digits[i])
+            chunk = chunk * radix + digit_value(digits[i])
             weight *= radix
         }
         // l = l * weight + chunk
@@ -705,10 +726,6 @@ test "constructors and conversions" {
         expect_eq(big.to_u128(), 170141183460469231731687303715884105728)
         expect_eq(shl(one(), 128).to_u128(), null)
         expect_eq(shl(one(), 128).to_i128(), null)
-        n := bignum.from_u64(0x1_0000_0001)
-        expect_eq(txt(from_nat(&n)), "4294967297")
-        z := bignum.zero()
-        expect(from_nat(&z).is_zero())
     })
 }
 
@@ -1057,6 +1074,8 @@ test "parse" {
         expect_eq(txt(parse("340282366920938463463374607431768211456", 10)), txt(shl(one(), 128)))
         expect_eq(txt(parse("1606938044258990275541962092341162602522202993782792835301376", 10)), txt(shl(one(), 200)))
         expect(parse("0000", 16).is_zero())
+        expect_eq(txt(parse("123_456_789_012_345_678_901_234_567_890", 10)), "123456789012345678901234567890")
+        expect_eq(txt(parse("ffff_ffff_ffff_ffff_f", 16)), "295147905179352825855")
     })
 }
 

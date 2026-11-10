@@ -176,7 +176,7 @@ resume_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr, value: ^Expr) -> Unsup!string n
         c := fg.g.ty.cty(value.ty)
         fg.linef("GM_ST({}, {}, {});", c, rp, v)
     }
-    fg.start_exit("GM_RESUME", "(&F.h)", "0", "0")
+    fg.start_exit(.Resume, "(&F.h)", "0", "0")
     return fg.zero(e.ty)
 }
 

@@ -578,7 +578,7 @@ native_op :: fn(fg: ^FnGen, effect_: ^const EffectRef, op: u32, vals: []const st
             }
             _ => {
                 fg.linef("gm_unw.code = (uint8_t){};", vals[0])
-                fg.start_exit("GM_EXIT", "NULL", "0", "1")
+                fg.start_exit(.Exit, "NULL", "0", "1")
             }
         }
     }
@@ -663,7 +663,7 @@ try_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, lift: ?u32, levels: u32) -> Unsup
             fg.indent += 1
             none := fg.make_none(ret)
             fg.linef("{} = {};", slot, none)
-            fg.start_exit("GM_RETURN", fr, "0", "0")
+            fg.start_exit(.Return, fr, "0", "0")
             fg.indent -= 1
             fg.line("}")
             return fg.load(e.ty, a)
@@ -678,7 +678,7 @@ try_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, lift: ?u32, levels: u32) -> Unsup
             if i := lift { ev = fg.make_variant(rerr, usize(i), ev) }
             r := fg.make_res(ret, true, rerr, ev)
             fg.linef("{} = {};", slot, r)
-            fg.start_exit("GM_RETURN", fr, "0", "1")
+            fg.start_exit(.Return, fr, "0", "1")
             fg.indent -= 1
             fg.line("}")
             return fg.load(e.ty, str.format("({} + {})", a, off)!)

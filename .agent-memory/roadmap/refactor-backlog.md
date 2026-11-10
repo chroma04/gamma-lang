@@ -2,7 +2,13 @@
 Eight area audits (sonnet workers; they ran out of quota before implementing most of it).
 Done in s64: needless `pub` stripped (lint 455 → 24 warnings), dead code, small dedupes
 (tir.binop_symbol, bigint.bits128, ratio.zero/to_float, types.write_debug_string,
-sema.generic_of/frame_up/NO_FN, slice.dedup in ide/lsp). Everything below is OPEN.
+sema.generic_of/frame_up/NO_FN, slice.dedup in ide/lsp).
+s65 (branch claude/amazing-clarke-5jp6b8) DONE: #1 layouts (sema.Layout has offsets;
+cgen.Layouts delegates; sema/frame.gm = frame_cost/MAX_FRAME/root_local; sema
+bits_layout/field_bits/BitField), #6 bignum removed (literals hold bigint.Int /
+ratio.Rat; ratio.scaled; bigint.parse skips `_`, digit_value), #7 resolve KeyMap(V),
+#8 partly (cgen ExitKind; tir.sys_name shared by cgen + check intrinsics; dump tables
+→ @variant_name). Items marked [s65] below are done; the rest is OPEN.
 Re-verify line numbers before acting; audits did NOT grep web/ (web/gen, web/play depend
 on gammac: `Options.native_fallback` looked dead and is not).
 

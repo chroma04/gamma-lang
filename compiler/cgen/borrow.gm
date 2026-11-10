@@ -132,7 +132,7 @@ steady_arg :: fn(g: ^Gen, caller: u32, a: ^Expr, written: []const u32, captured:
     // A by-address parameter of the caller is either its own copy or, when read in place,
     // a value that is steady itself (or the caller is pure, and so is the callee, which
     // then reads it in place regardless).
-    if l := root_local(g, a) { return l not in written and captured.get((caller, l)) is null }
+    if l := g.prog.s.root_local(a) { return l not in written and captured.get((caller, l)) is null }
     return g.is_const_arg(a)
 }
 
@@ -229,7 +229,7 @@ pure_block :: fn(g: ^Gen, b: ^tir.Block) -> bool needs sema.Load {
 
 /// True if `place` is (part of) a local of the function itself, not reached through a
 /// pointer or a slice.
-own_place :: fn(g: ^Gen, place: ^Expr) -> bool => root_local(g, place) is not null
+own_place :: fn(g: ^Gen, place: ^Expr) -> bool => g.prog.s.root_local(place) is not null
 
 /// Calls `f` on the expressions of the conditions `cond`, and of the patterns in them.
 each_cond :: fn(cond: []tir.CondPart, f: fn(c: ^Expr)) {
@@ -282,8 +282,8 @@ each_stmt :: fn(b: ^tir.Block, f: fn(c: ^Expr)) {
 /// address of, or slices.
 mutated_locals :: fn(g: ^Gen, e: ^Expr, out: ^List(u32)) needs Alloc {
     match e.kind {
-        .AddrOf(p) => { if l := root_local(g, p) { out.push(l)! } }
-        .Slice(sl) => { if l := root_local(g, sl.base) { out.push(l)! } }
+        .AddrOf(p) => { if l := g.prog.s.root_local(p) { out.push(l)! } }
+        .Slice(sl) => { if l := g.prog.s.root_local(sl.base) { out.push(l)! } }
         .Block(b) => {
             mutated_in_block(g, b, out)
             return ()
@@ -302,11 +302,11 @@ mutated_locals :: fn(g: ^Gen, e: ^Expr, out: ^List(u32)) needs Alloc {
 mutated_in_block :: fn(g: ^Gen, b: ^tir.Block, out: ^List(u32)) needs Alloc {
     for s in b.stmts {
         match s {
-            .Assign(place, _) => { if l := root_local(g, place) { out.push(l)! } }
+            .Assign(place, _) => { if l := g.prog.s.root_local(place) { out.push(l)! } }
             .AssignTuple(places, _) => {
                 for p in places {
                     if x := p {
-                        if l := root_local(g, x) { out.push(l)! }
+                        if l := g.prog.s.root_local(x) { out.push(l)! }
                     }
                 }
             }

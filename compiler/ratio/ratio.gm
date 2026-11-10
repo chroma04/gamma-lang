@@ -35,6 +35,35 @@ pub new :: fn(num, den: bigint.Int) -> Rat needs Alloc {
 /// The integer `i`.
 pub from_int :: fn(i: bigint.Int) -> Rat needs Alloc => Rat(num: i, den: bigint.one())
 
+/// The non-negative rational `mantissa * base^scale`, where `base` is 2 or 10: the value
+/// of a float literal (§2.5.2).
+pub scaled :: fn(mantissa: bigint.Int, base: u32, scale: i64) -> Rat needs Alloc {
+    if scale >= 0 { return from_int(mantissa.mul(bigint.from_u64(u64(base)).pow(scale.trunc(u32)))) }
+    if mantissa.is_zero() { return zero() }
+    // The denominator is base^k. Cancel the factors 2 (and 5) that the numerator shares
+    // with it; they are the only primes in it.
+    k := (-scale).trunc(u32)
+    num := mantissa
+    twos := k
+    while twos > 0 and num.is_even() {
+        num = num.shr(1)
+        twos -= 1
+    }
+    den := bigint.one().shl(u64(twos))
+    if base is 10 {
+        five := bigint.from_u64(5)
+        fives := k
+        while fives > 0 {
+            qr := num.div_rem(five)
+            if not qr.r.is_zero() { break }
+            num = qr.q
+            fives -= 1
+        }
+        den = den.mul(five.pow(fives))
+    }
+    return Rat(num: num, den: den)
+}
+
 /// The integer `v`.
 from_i64 :: fn(v: i64) -> Rat needs Alloc => from_int(bigint.from_i64(v))
 
@@ -260,6 +289,19 @@ txt :: fn(r: Rat) -> string needs Alloc {
 
 // The rational `2^e` for an exponent of either sign.
 two_to :: fn(e: i32) -> Rat needs Alloc => from_i64(2).pow(e)
+
+test "scaled float literal values are in lowest terms" {
+    with_arena(fn() {
+        lit :: fn(m: string, radix: u32, base: u32, scale: i64) -> string needs Alloc => txt(scaled(bigint.parse(m, radix), base, scale))
+        expect_eq(lit("15", 10, 10, -1), "3/2")
+        expect_eq(lit("314159", 10, 10, -5), "314159/100000")
+        expect_eq(lit("25", 10, 10, 9), "25000000000")
+        expect_eq(lit("0", 10, 10, -3), "0")
+        expect_eq(lit("18", 16, 2, -4), "3/2")
+        expect_eq(lit("1", 10, 10, -3), "1/1000")
+        expect_eq(lit("4", 10, 2, -2), "1")
+    })
+}
 
 test "normalization" {
     with_arena(fn() {

@@ -418,9 +418,8 @@ parse_dot_suffix :: fn(p: ^Parser, base: ast.Expr) -> Abort!ast.Expr needs Alloc
         .Int(l) => {
             _ = p.bump()
             index: u32 = 0
-            limbs := l.value.limbs.items
-            if limbs.len <= 1 and l.suffix is null {
-                index = limbs.first() else 0
+            if v := l.value.to_u64() and v <= 0xFFFF_FFFF and l.suffix is null {
+                index = v.trunc(u32)
             } else {
                 p.report(at, "invalid tuple index")
             }

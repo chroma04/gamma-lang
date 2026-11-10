@@ -224,9 +224,6 @@ show_rational :: fn(q: Rat) -> string needs Alloc {
 }
 
 /// The exact value of a literal's natural number.
-nat_int :: fn(n: ^const bignum.Nat) -> Int needs Alloc => bigint.from_nat(n)
-
-pub literal_rational :: fn(r: ^const bignum.Rational) -> Rat needs Alloc => ratio.new(bigint.from_nat(&r.num), bigint.from_nat(&r.den))
 
 /// Evaluates `e` as an untyped constant expression (§6.2) if it has that shape. Returns
 /// `null` if it is not an untyped constant expression, `.Failed` after reporting an error.
@@ -234,11 +231,11 @@ pub try_untyped :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedRe
     match e.kind {
         .Int(lit) => {
             if lit.suffix is not null { return null }
-            return .Ok(.Int(nat_int(&lit.value)))
+            return .Ok(.Int(lit.value))
         }
         .Float(lit) => {
             if lit.suffix is not null { return null }
-            v := literal_rational(&lit.value)
+            v := lit.value
             if lit.imag { return .Ok(.Complex(ratio.zero(), v)) }
             return .Ok(.Float(v))
         }
@@ -294,5 +291,3 @@ pub try_untyped :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedRe
         _ => return null
     }
 }
-
-bignum :: import "../bignum"

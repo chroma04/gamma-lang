@@ -27,18 +27,9 @@ pub Repr :: union {
     Blob
 }
 
-/// A field of a `#bits` struct: bit offset, width and type.
-pub BitField :: struct {
-    pub off: u32
-    pub width: u32
-    pub ty: Ty
-}
+pub BitField :: sema.BitField
 
-pub BitsLayout :: struct {
-    /// The underlying integer type.
-    pub int_ty: Ty
-    pub fields: []const BitField
-}
+pub BitsLayout :: sema.BitsLayout
 
 pub CTypes :: struct {
     pub s: ^Sema
@@ -622,35 +613,10 @@ fields_array :: fn(ty: ^CTypes, i: usize, parts: []const string, f: ^List(string
 }
 
 /// The width in bits of a `#bits` field of type `t` (§5.10.5).
-bit_width :: fn(ty: ^CTypes, t: Ty) -> u32 needs Alloc {
-    match ty.kind(t) {
-        .Bool => return 1
-        .Int(_, bits) => return u32(bits)
-        .Adt(id, _) => match ty.s.adts.items[usize(id)].kind {
-            .Union(tag, _) => return ty.bit_width(tag)
-            .Struct(sd) => if u := sd.bits { return ty.bit_width(u) }
-            _ => {}
-        }
-        _ => {}
-    }
-    return (8 * ty.size(t)).trunc(u32)
-}
+bit_width :: fn(ty: ^CTypes, t: Ty) -> u32 needs Alloc => ty.s.field_bits(t)
 
-/// For a `#bits` struct: its underlying integer type and each field's bit offset, width
-/// and type, in declaration order from the least significant bit.
-bits_layout :: fn(ty: ^CTypes, t: Ty) -> ?BitsLayout needs Alloc {
-    .Adt(id, _) := ty.kind(t) else return null
-    .Struct(sd) := ty.s.adts.items[usize(id)].kind else return null
-    u := sd.bits else return null
-    off: u32 = 0
-    out := list(BitField)
-    for fd in sd.fields {
-        w := ty.bit_width(fd.ty)
-        out.push(BitField(off: off, width: w, ty: fd.ty))!
-        off += w
-    }
-    return BitsLayout(int_ty: u, fields: out.items)
-}
+/// For a `#bits` struct: its underlying integer type and its fields.
+bits_layout :: fn(ty: ^CTypes, t: Ty) -> ?BitsLayout needs Alloc => ty.s.bits_layout(t)
 
 /// The descriptor definitions, in dependency-safe order.
 descriptors :: fn(ty: ^const CTypes) -> string needs Alloc => str.format("{}{}{}", ty.desc_fwd.items, ty.desc_parts.items, ty.desc_defs.items)!

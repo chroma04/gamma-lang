@@ -41,7 +41,7 @@ expr_kind :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load 
     match e.kind {
         .Int(lit) => {
             ty := if suffix := lit.suffix { cx.s.suffix_type(suffix) } else { cx.infer.new_var(tys, .Int) }
-            return tir.mk(ty, .Int(bigint.from_nat(&lit.value)), span)
+            return tir.mk(ty, .Int(lit.value), span)
         }
         .Float(lit) => {
             if lit.imag { return cx.imaginary_literal(&lit, span) }
@@ -53,7 +53,7 @@ expr_kind :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load 
                     .F64 => 64
                 }))
             }
-            return tir.mk(ty, .UntypedFloat(sema.literal_rational(&lit.value)), span)
+            return tir.mk(ty, .UntypedFloat(lit.value), span)
         }
         .Str(lit) => {
             if lit.kind is .C { return tir.mk(tys.many_ptr(true, tys.u8_ty()), .CStr(lit.bytes), span) }
@@ -1912,13 +1912,13 @@ default_value :: fn(cx: ^FnCx, module: usize, d: ^const ast.Expr, ty: Ty) -> ^Ex
     numeric := tys.is_integer(ty) or tys.kind(ty) is .Float(_)
     match e.kind {
         .Int(lit) => if numeric and lit.suffix is null {
-            v := bigint.from_nat(&lit.value)
+            v := lit.value
             if negative { v = v.neg() }
             if tys.is_integer(ty) { return tir.mk(ty, .Int(v), d.span) }
             return cx.float_value(ratio.from_int(v), ty, d.span)
         }
         .Float(lit) => if tys.kind(ty) is .Float(_) and lit.suffix is null and not lit.imag {
-            r := sema.literal_rational(&lit.value)
+            r := lit.value
             if negative {
                 if r.is_zero() {
                     if not default_const(cx.s, module, d, ty) { return error_expr(cx.s, d.span) }

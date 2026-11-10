@@ -77,7 +77,7 @@ package manifest and `compiler/main.gm` the root module.
 | `compiler/bigint/`, `compiler/bignum/`, `compiler/ratio/` | arbitrary-precision integers, natural numbers and exact rationals, for the values of integer and float constants |
 | `compiler/types/` | semantic types (hash-consed `Ty`), their display in messages, vector types |
 | `compiler/load/` | loading the root module and every module its imports name; packages from `gamma.toml` (`manifest.gm`, `toml.gm`, `semver.gm`); top-level `when` (`when.gm`); the core library (`core.gm`); the compilation target (`target.gm`); the path of the running executable (`exe.gm`); file paths (`paths.gm`) |
-| `compiler/sema/` | semantic analysis of declarations: names and scopes, structs and unions, type expressions, function signatures and effect sets, constraints, untyped constants, constants, layout sizes, `foreign` blocks, `#soa` types; the `gamma decls` dump |
+| `compiler/sema/` | semantic analysis of declarations: names and scopes, structs and unions, type expressions, function signatures and effect sets, constraints, untyped constants, constants, layouts and frame costs, `foreign` blocks, `#soa` types; the `gamma decls` dump |
 | `compiler/check/` | checking function bodies and lowering them to TIR: expressions, calls, methods, patterns, `match`, exhaustiveness, literal inference, effects, handlers, iterators, generics, escape and dangling-pointer checks, continuations, `@stack_size`, format templates, vectors; the `gamma tir` dump |
 | `compiler/tir/` | the typed intermediate representation, compile-time values, deep copies for generic instances |
 | `compiler/eval/` | compile-time evaluation (spec §17) over TIR |
@@ -288,7 +288,8 @@ stable text form, which tests of the compiler use.
 | typed constants and field defaults | `sema/consts.gm` |
 | `foreign` blocks, `#global`s, C compatibility | `sema/foreign.gm` |
 | `#soa` types | `sema/soa.gm` |
-| sizes and alignments | `sema/layout.gm` (the back end's layouts with field offsets are in `cgen/layout.gm`) |
+| layouts: sizes, alignments and field offsets, for the checker and both back ends; `#bits` field layouts | `sema/layout.gm`, `sema/adt.gm` |
+| the stack bytes a call is charged (`frame_cost`), shared by the C back end, the interpreter and `@stack_size` | `sema/frame.gm` |
 | the per-function context, scopes, statements, loops | `check/func.gm` |
 | expressions, operators, optionals and results | `check/expr.gm`, `check/errors.gm` |
 | coercions | `check/coerce.gm` |
@@ -514,7 +515,7 @@ operating system, the architecture, whether it is a Fil-C target and whether `f1
 | File | Responsibility |
 | --- | --- |
 | `gen.gm`, `program.gm` | `Gen`: the whole program, prototypes, constants, entry points; the checked program as the back end sees it |
-| `types.gm`, `layout.gm` | C representations of types (typed structs, blobs, mirrors), type descriptors for `@write`; layouts with field offsets |
+| `types.gm`, `layout.gm` | C representations of types (typed structs, blobs, mirrors), type descriptors for `@write`; the target and pointer maps for Fil-C (layouts come from `sema/layout.gm`) |
 | `func.gm`, `fngen.gm` | functions: frames, blocks, statements, the exit ladders; the state of generating one function |
 | `expr.gm`, `calls.gm` | expressions, places and coercions; calls, effects, `with`, `try`, conditions, patterns |
 | `consts.gm` | compile-time values in static storage |
@@ -704,8 +705,8 @@ is one number in the target's byte order (C's own layout, read with `GM_LD`/`GM_
 Code that must address the bytes of an integer goes through `gm_ibp` (the i-th least
 significant byte) instead of indexing, and `gm_load_u128` /
 `gm_store_u128` read and write a whole integer of any storage size. Bytes of
-compile-time values are laid out for the target (`int_bytes_swap_order` in
-`cgen/layout.gm`; a `ConstKey` keeps an integer's bytes little-endian, whatever the
+compile-time values are laid out for the target (`store_int` in
+`cgen/consts.gm`; a `ConstKey` keeps an integer's bytes little-endian, whatever the
 target), and the interpreter's memory is in target order, so constants emitted into
 C are exactly what the generated code would store. Hashes mix the little-endian
 bytes of every value, so they agree across targets, and printed output is the same

@@ -1,7 +1,8 @@
 // Lexing of numeric, character and string literals (spec §2.5).
 
-bignum :: import "../bignum"
+bigint :: import "../bigint"
 diag :: import "../diag"
+ratio :: import "../ratio"
 str :: import "std/str"
 
 /// Decimal and binary exponents beyond this magnitude are rejected so that a literal
@@ -173,7 +174,7 @@ scan_digits :: fn(lx: ^Lexer, radix: u32, err: ^?string) -> Digits needs Alloc {
     }
     if err^ is null {
         for i, c in enumerate(text) {
-            if c is not '_' and bignum.digit_value(c) >= radix {
+            if c is not '_' and bigint.digit_value(c) >= radix {
                 err^ = str.format("invalid digit `{}` in {} literal", text[i..i + 1], radix_name(radix))!
                 break
             }
@@ -220,18 +221,18 @@ scan_exponent :: fn(lx: ^Lexer, err: ^?string) -> i64 needs Alloc {
 
 /// The value of the digits, or zero if one of them is not a digit of `radix` (the
 /// literal has been reported then).
-int_value :: fn(lx: ^const Lexer, digits: Digits, radix: u32) -> bignum.Nat needs Alloc {
+int_value :: fn(lx: ^const Lexer, digits: Digits, radix: u32) -> bigint.Int needs Alloc {
     return parse_valid(lx.src[digits.lo..digits.hi], radix)
 }
 
-parse_valid :: fn(text: string, radix: u32) -> bignum.Nat needs Alloc {
+parse_valid :: fn(text: string, radix: u32) -> bigint.Int needs Alloc {
     for c in text {
-        if c is not '_' and bignum.digit_value(c) >= radix { return bignum.zero() }
+        if c is not '_' and bigint.digit_value(c) >= radix { return bigint.zero() }
     }
-    return bignum.parse(text, radix)
+    return bigint.parse(text, radix)
 }
 
-float_value :: fn(lx: ^const Lexer, radix: u32, int_part: Digits, frac_part: ?Digits, exp: i64) -> bignum.Rational needs Alloc {
+float_value :: fn(lx: ^const Lexer, radix: u32, int_part: Digits, frac_part: ?Digits, exp: i64) -> ratio.Rat needs Alloc {
     frac := frac_part else Digits(lo: 0, hi: 0)
     frac_text := lx.src[frac.lo..frac.hi]
     frac_digits: i64 = 0
@@ -247,8 +248,8 @@ float_value :: fn(lx: ^const Lexer, radix: u32, int_part: Digits, frac_part: ?Di
     }
     mantissa := parse_valid(digits.items, radix)
     // value = mantissa * base^scale where base is 10 (decimal) or 2 (hex float).
-    if radix is 16 { return bignum.scaled(mantissa, 2, exp - 4 * frac_digits) }
-    return bignum.scaled(mantissa, 10, exp - frac_digits)
+    if radix is 16 { return ratio.scaled(mantissa, 2, exp - 4 * frac_digits) }
+    return ratio.scaled(mantissa, 10, exp - frac_digits)
 }
 
 // ----- characters -----
@@ -315,7 +316,7 @@ skip_to_closing_quote :: fn(lx: ^Lexer) -> bool {
 }
 
 emit_char :: fn(lx: ^Lexer, value: u32, lo: usize) needs Alloc {
-    lit := IntLit(value: bignum.from_u64(u64(value)), suffix: null, is_char: true)
+    lit := IntLit(value: bigint.from_u64(u64(value)), suffix: null, is_char: true)
     lx.emit(.Int(lit), lo, lx.pos)
 }
 
@@ -347,7 +348,7 @@ lex_escape :: fn(lx: ^Lexer) -> ?Escape needs Alloc {
             low := lx.peek_at(1) else 0
             if is_hex_digit(hi) and is_hex_digit(low) {
                 lx.pos += 2
-                return .Byte((bignum.digit_value(hi) * 16 + bignum.digit_value(low)).trunc(u8))
+                return .Byte((bigint.digit_value(hi) * 16 + bigint.digit_value(low)).trunc(u8))
             }
             while lx.pos < lo + 4 and lx.pos < lx.src.len and is_hex_digit(lx.src[lx.pos]) { lx.pos += 1 }
             lx.error(lo, lx.pos, "invalid `\\x` escape: expected exactly two hexadecimal digits")
@@ -387,7 +388,7 @@ lex_unicode_escape :: fn(lx: ^Lexer, lo: usize) -> ?Escape needs Alloc {
         return null
     }
     value: u32 = 0
-    for c in digits { value = value * 16 + bignum.digit_value(c) }
+    for c in digits { value = value * 16 + bigint.digit_value(c) }
     if value > 0x10FFFF or value in 0xD800..=0xDFFF {
         why := if value > 0x10FFFF { "it is above U+10FFFF" } else { "it is a surrogate" }
         lx.error(lo, lx.pos, str.format("invalid unicode escape `\\u{{{}}}`: {}", digits, why)!)

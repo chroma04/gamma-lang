@@ -378,7 +378,7 @@ return_expr :: fn(fg: ^FnGen, e: ^Expr, levels: u32, value: ^Expr) -> Unsup!stri
         }
         flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
         fr, _ := fg.frame_up(levels)
-        fg.start_exit("GM_RETURN", fr, "0", flag)
+        fg.start_exit(.Return, fr, "0", flag)
         return fg.zero(t)
     }
     // A large place is copied straight to the caller's destination.
@@ -408,7 +408,7 @@ return_expr :: fn(fg: ^FnGen, e: ^Expr, levels: u32, value: ^Expr) -> Unsup!stri
         fg.linef("{} = {};", slot, v)
     }
     fr, _ := fg.frame_up(levels)
-    fg.start_exit("GM_RETURN", fr, "0", flag)
+    fg.start_exit(.Return, fr, "0", flag)
     return fg.zero(t)
 }
 
@@ -649,13 +649,13 @@ break_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^const tir.BreakExpr) -> Unsup!string 
                 }
             }
             fr, _ := fg.frame_up(levels)
-            fg.start_exit("GM_BREAK", fr, str.format("{}", lbl)!, "0")
+            fg.start_exit(.Break, fr, str.format("{}", lbl)!, "0")
         }
         .InstallingWith => {
             if bv := val {
                 if not fg.g.ty.is_void(bv.ty) { fg.store(bv.ty, "inst->result", bv.v) }
             }
-            fg.start_exit("GM_BREAK", "inst->with_frame", "inst->with_label", "0")
+            fg.start_exit(.Break, "inst->with_frame", "inst->with_label", "0")
         }
     }
     return fg.zero(t)
@@ -667,13 +667,13 @@ continue_expr :: fn(fg: ^FnGen, e: ^Expr, target: tir.Target) -> Unsup!string ne
     match target {
         .Label(levels, lbl) => {
             fr, _ := fg.frame_up(levels)
-            fg.start_exit("GM_CONTINUE", fr, str.format("{}", lbl)!, "0")
+            fg.start_exit(.Continue, fr, str.format("{}", lbl)!, "0")
         }
         // In a clause, `continue` ends the clause (the next iteration of a `for`).
         .InstallingWith => {
             u := fg.unit()
             fg.linef("F.ret = {};", u)
-            fg.start_exit("GM_RETURN", "(&F.h)", "0", "0")
+            fg.start_exit(.Return, "(&F.h)", "0", "0")
         }
     }
     return fg.zero(t)
