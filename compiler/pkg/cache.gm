@@ -29,7 +29,7 @@ pub CleanReport :: struct {
     pub failures: List(string)
 }
 
-pub report_is_empty :: fn(r: ^const CleanReport) -> bool => r.checkouts + r.mirrors + r.builds is 0
+report_is_empty :: fn(r: ^const CleanReport) -> bool => r.checkouts + r.mirrors + r.builds is 0
 
 plural :: fn(n: usize, one, many: string) -> string needs Alloc => str.format("{} {}", n, if n is 1 { one } else { many })!
 
@@ -87,8 +87,6 @@ size_of_tree :: fn(path: string) -> u64 needs Alloc + Fs {
     return total
 }
 
-name_of :: fn(p: string) -> string needs Alloc => base_name(p)
-
 modified :: fn(p: string) -> ?i64 needs Fs {
     info := Fs.lstat(p) else return null
     return info.modified
@@ -137,7 +135,7 @@ delete :: fn(c: ^Cleaner, path: string) -> bool needs Alloc + Fs + Proc {
 
 /// Removes a half-written temporary entry if it is old enough; true if it was one.
 tmp :: fn(c: ^Cleaner, path: string) -> bool needs Alloc + Fs + Proc {
-    if not name_of(path).starts_with(".tmp-") { return false }
+    if not base_name(path).starts_with(".tmp-") { return false }
     if c.policy.all or age(c, modified(path)) >= TMP_MAX_AGE { _ = delete(c, path) }
     return true
 }
@@ -150,7 +148,7 @@ trees :: fn(c: ^Cleaner, root: string) -> List(string) needs Alloc + Fs + Proc {
         if tmp(c, repo) or not is_dir(repo) { continue }
         left: usize = 0
         for entry in subdirs(repo).items {
-            name := name_of(entry)
+            name := base_name(entry)
             if tmp(c, entry) { continue }
             if name.ends_with(".used") {
                 // A stamp whose tree is gone.
@@ -172,7 +170,7 @@ trees :: fn(c: ^Cleaner, root: string) -> List(string) needs Alloc + Fs + Proc {
         }
         // Only an empty directory goes: a build may be writing a new tree into it.
         if left is 0 and not c.policy.dry_run { _ = Fs.remove_dir(repo) }
-        if left > 0 { kept.push(name_of(repo))! }
+        if left > 0 { kept.push(base_name(repo))! }
     }
     return kept
 }
@@ -182,7 +180,7 @@ mirrors :: fn(c: ^Cleaner, db_root: string, kept: []const string) needs Alloc + 
         if tmp(c, mirror) or not is_dir(mirror) { continue }
         is_kept := false
         for k in kept {
-            if k is name_of(mirror) { is_kept = true }
+            if k is base_name(mirror) { is_kept = true }
         }
         if (c.policy.all or not is_kept) and delete(c, mirror) { c.report.mirrors += 1 }
     }
@@ -192,7 +190,7 @@ mirrors :: fn(c: ^Cleaner, db_root: string, kept: []const string) needs Alloc + 
 /// times.
 builds :: fn(c: ^Cleaner, dir: string, prefixes: []const string) needs Alloc + Fs + Proc {
     for f in subdirs(dir).items {
-        name := name_of(f)
+        name := base_name(f)
         matches := false
         for p in prefixes {
             if name.starts_with(p) { matches = true }

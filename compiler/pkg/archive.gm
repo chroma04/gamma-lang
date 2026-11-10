@@ -117,8 +117,8 @@ unpack_into :: fn(archive, dir: string) -> string!() needs Alloc + Fs + Proc {
         }
     }
     // `-m`: the files get the time of unpacking, not the archive's.
-    args := [8]string("tar", "-xzmf", archive, "-C", dir, "--no-same-owner", "--no-same-permissions", "")
-    r := run(args[0..7])
+    args := [7]string("tar", "-xzmf", archive, "-C", dir, "--no-same-owner", "--no-same-permissions")
+    r := run(args[..])
     if not r.ok { return !str.format("cannot unpack the archive: {}", str.trim(r.err))! }
     sanitize_modes(dir)
     return ()

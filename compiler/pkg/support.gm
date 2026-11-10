@@ -113,9 +113,6 @@ pub run :: fn(argv: []const string) -> Ran needs Alloc + Proc {
     return Ran(ok: process.success(o.status), code: code, out: string(o.out.items), err: string(o.err.items))
 }
 
-/// The text of `ran.err` with white space at both ends removed.
-pub trimmed :: fn(s: string) -> string => str.trim(s)
-
 /// Makes `dir` and its parents, or says why not.
 pub make_dirs :: fn(dir: string) -> string!() needs Alloc + Fs {
     fs.make_dir_all(dir) else e => { return !str.format("cannot create {}: {}", dir, io_message(e))! }

@@ -19,7 +19,6 @@ pub Store :: struct {
 /// A directory name for a repository: the last segment of its URL and a hash of the URL.
 repo_dir_name :: fn(url: string) -> string needs Alloc {
     last := "repo"
-    end := url.len
     // The last segment that is not empty, between `/` and `:` separators.
     i := url.len
     found := false
@@ -32,7 +31,6 @@ repo_dir_name :: fn(url: string) -> string needs Alloc {
         }
         i = if j > 0 { j - 1 } else { 0 }
     }
-    _ = end
     clean := make(u8, last.len)!
     for k, c in enumerate(last) {
         clean[k] = if c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c in ('-', '_', '.') { c } else { '_' }
@@ -124,7 +122,8 @@ pub Refs :: struct {
 pub fetch_mirror :: fn(db: string, url: string) -> string!() needs Alloc + Fs + Proc {
     if not is_file(join(db, "HEAD")) {
         if p := parent(db) { try make_dirs(p) }
-        _ = try git(null, [5]string("init", "-q", "--bare", db, "")[0..4], [0]string()[..])
+        init_args := [4]string("init", "-q", "--bare", db)
+        _ = try git(null, init_args[..], empty_slice(string))
     }
     args := [9]string("fetch", "-q", "--force", "--prune", "--", url, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "+HEAD:refs/gamma/head")
     _ = git(db, args[..], [0]string()[..]) else e => { return !str.format("cannot fetch {}: {}", url, e)! }
@@ -132,8 +131,8 @@ pub fetch_mirror :: fn(db: string, url: string) -> string!() needs Alloc + Fs + 
 }
 
 pub list_refs :: fn(db: string) -> string!Refs needs Alloc + Proc {
-    args := [6]string("for-each-ref", "--format=%(refname)%09%(objectname)%09%(*objectname)", "refs/heads", "refs/tags", "refs/gamma", "")
-    out := try git(db, args[0..5], [0]string()[..])
+    args := [5]string("for-each-ref", "--format=%(refname)%09%(objectname)%09%(*objectname)", "refs/heads", "refs/tags", "refs/gamma")
+    out := try git(db, args[..], empty_slice(string))
     refs := Refs(tags: list(RefName), branches: list(RefName))
     for line in str.lines(out) {
         parts := list(string)

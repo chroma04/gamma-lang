@@ -138,7 +138,6 @@ string_metrics :: fn(s: string) -> StringMetrics {
 basic_string :: fn(s: string, multiline: bool) -> string needs Alloc {
     out := list(u8)
     out.extend(if multiline { "\"\"\"" } else { "\"" })!
-    if multiline and s.len > 0 and false { out.push('\n')! }
     max_dq: u32 = if multiline { 2 } else { 0 }
     doubles: u32 = 0
     for b in s {
