@@ -56,3 +56,5 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
   `((p1 -? 1u32 else p1) & e122.sat(u32)).checked(u8)` inside `match … { !.Bad(e122) => …}`
   with p1 = 0. Program C identical on main → pre-existing; gcc-15 not installable here.
   Either a gcc 15 bug or latent UB (UBSan on gcc 14 clean). Reproduce with gcc 15.
+- (s65) Interpreter hangs when one thread reads a child's output while another writes its
+  stdin (even `cat`); tests/conformance/run/std_process_within.gm is `//! native:` for it.
