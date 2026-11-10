@@ -74,7 +74,7 @@ package manifest and `compiler/main.gm` the root module.
 | `compiler/syntax/` | tokens, the lexer, the exact values of literals, the token dump of `gamma lex` |
 | `compiler/ast/` | the syntax tree and its stable text dump (`gamma parse --dump`) |
 | `compiler/parse/` | the parser: `parser.gm` (state and error recovery), `expr.gm`, `stmt.gm` (blocks, statements, control flow), `items.gm` (declarations), `types.gm`, `pattern.gm`, `lits.gm` (type, handler and foreign literals) |
-| `compiler/bigint/`, `compiler/bignum/`, `compiler/ratio/` | arbitrary-precision integers, natural numbers and exact rationals, for the values of integer and float constants |
+| `compiler/bigint/`, `compiler/ratio/` | arbitrary-precision integers and exact rationals, for the values of literals and of integer and float constants |
 | `compiler/types/` | semantic types (hash-consed `Ty`), their display in messages, vector types |
 | `compiler/load/` | loading the root module and every module its imports name; packages from `gamma.toml` (`manifest.gm`, `toml.gm`, `semver.gm`); top-level `when` (`when.gm`); the core library (`core.gm`); the compilation target (`target.gm`); the path of the running executable (`exe.gm`); file paths (`paths.gm`) |
 | `compiler/sema/` | semantic analysis of declarations: names and scopes, structs and unions, type expressions, function signatures and effect sets, constraints, untyped constants, constants, layouts and frame costs, `foreign` blocks, `#soa` types; the `gamma decls` dump |
