@@ -114,7 +114,7 @@ clone_conds :: fn(cond: []const CondPart) -> []CondPart needs Alloc {
     return out.items
 }
 
-pub clone_pat :: fn(p: ^const Pat) -> ^Pat needs Alloc {
+clone_pat :: fn(p: ^const Pat) -> ^Pat needs Alloc {
     k: PatKind = match p.kind {
         .Const(e) => .Const(clone_expr(e))
         .Some(q) => .Some(clone_pat(q))

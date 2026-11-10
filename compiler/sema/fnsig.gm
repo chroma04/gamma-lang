@@ -5,7 +5,7 @@ pub declare_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, lit: ^const ast.F
     sig := s.resolve_fn_sig(module, &lit.sig, true, lit.where_) else return .Error
     for p in sig.params {
         if p.generic is null {
-            s.declare_method_candidate(module, name, p.ty, false)
+            s.declare_method_candidate(module, name, p.ty)
             break
         }
     }
@@ -443,7 +443,7 @@ declare_effect :: fn(s: ^Sema, module: usize, decl: usize, name: ast.Ident, lit:
         }
         ret := s.tys.unit()
         if r := op.ret { ret = s.resolve_type(module, r) }
-        if op_params.items.len > 0 { s.declare_method_candidate(module, op.name, op_params.items[0].ty, true) }
+        if op_params.items.len > 0 { s.declare_method_candidate(module, op.name, op_params.items[0].ty) }
         ops.push(OpInfo(name: op.name.name, kind: op.kind, params: op_params.items, ret: ret))!
     }
     s.type_params.truncate(s.type_params.items.len - params.items.len)

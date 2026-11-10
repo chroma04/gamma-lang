@@ -19,7 +19,6 @@ tir :: import "../tir"
 types :: import "../types"
 
 Ty :: types.Ty
-TyKind :: types.TyKind
 EffectRef :: types.EffectRef
 EffectSet :: types.EffectSet
 GenericArg :: types.GenericArg
@@ -348,7 +347,6 @@ MethodCandidate :: struct {
     adt: u32
     name: string
     span: source.Span
-    is_op: bool
 }
 
 pub Sema :: struct {
@@ -467,7 +465,7 @@ pub Sema :: struct {
     pub nested_generic: List((fn_id: u32, name: ast.Ident))
     /// The step budget of compile-time evaluations in the declaration being resolved
     /// (§17.3).
-    pub fuel: u64 = 50_000_000
+    pub fuel: u64 = STEP_BUDGET
     /// The structs that stand for `#soa` arrays and slices (§5.6.4), and what they store.
     pub soa: hash_map.HashMap(u32, SoaInfo)
     /// The struct made for each `#soa` type so far.
@@ -1135,7 +1133,7 @@ pub walk :: fn(s: ^const Sema, t: Ty, f: fn(t: Ty)) {
 /// Records the function or operation `name` of `module`, whose first run-time parameter
 /// has type `first`, as a method candidate of that type if the type is declared in
 /// `module`. A struct may not have both a field and a method candidate named alike (§7.10).
-declare_method_candidate :: fn(s: ^Sema, module: usize, name: ast.Ident, first: Ty, is_op: bool) needs Alloc {
+declare_method_candidate :: fn(s: ^Sema, module: usize, name: ast.Ident, first: Ty) needs Alloc {
     t := first
     if .Ptr(_, p) := s.tys.kind(first) { t = p }
     .Adt(adt, _) := s.tys.kind(t) else return
@@ -1148,7 +1146,7 @@ declare_method_candidate :: fn(s: ^Sema, module: usize, name: ast.Ident, first: 
             }
         }
     }
-    s.method_candidates.push(MethodCandidate(adt: s.tys.template(adt), name: name.name, span: name.span, is_op: is_op))!
+    s.method_candidates.push(MethodCandidate(adt: s.tys.template(adt), name: name.name, span: name.span))!
 }
 
 /// Reports a type with two method candidates of one name (§7.10).

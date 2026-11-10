@@ -11,7 +11,6 @@
 // `soa_expand` in each instance, with the same builders as for a concrete struct.
 
 Expr :: tir.Expr
-Stmt :: tir.Stmt
 
 /// What a `#soa` type stores: elements of the struct `elem`, `len` of them for an array
 /// (`null` for a slice), read-only for a `#soa []const S`.

@@ -89,8 +89,6 @@ Machine :: struct {
 /// The function of the frame of an evaluation's own expression.
 NO_FN: u32 : 0xFFFF_FFFF
 
-/// The default number of steps of one evaluation (§17.3); `#fuel(n)` changes it.
-STEP_BUDGET: u64 : 50_000_000
 /// How deeply calls may nest.
 MAX_DEPTH: u32 : 200_000
 
@@ -120,12 +118,6 @@ machine :: fn(s: ^Sema, budget: u64) -> Machine needs Alloc => Machine(s: s, fra
 pub string_bytes :: fn(s: ^Sema, v: Value) -> ?[]u8 needs Alloc {
     m := machine(s, 0)
     return m.string_of(v)
-}
-
-/// The value of the integer `bits` of type `t`.
-pub int_of :: fn(s: ^Sema, bits: u128, t: Ty) -> bigint.Int needs Alloc {
-    m := machine(s, 0)
-    return m.big_of(bits, t)
 }
 
 new_frame :: fn(fn_id: u32, locals: []const tir.LocalDecl, parent: ?^EvalFrame) -> ^EvalFrame needs Alloc {
