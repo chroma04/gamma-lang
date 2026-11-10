@@ -116,3 +116,6 @@
 - s64: eight sonnet audit workers used the whole 5-hour quota in ~10 min of parallel work
   (reset ~15 h later). Audit reports were good; have them write reports to files, and
   implement with ≤2–3 workers or yourself.
+- 16 GB / 4 cores: three parallel worktree agents each running tools/test.sh exhaust memory;
+  selfhost tests then fail spuriously ("core module `complex` does not declare `Complex`",
+  killed `gamma test`). Re-run alone before debugging. Max ~2 building agents at once.
