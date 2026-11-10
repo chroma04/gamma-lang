@@ -180,25 +180,12 @@ pub prepare_rename :: fn(rq: ^Request, file: source.FileId, off: u32) -> string!
     return o.value()
 }
 
-/// Whether `name` is the name of a builtin type that cannot be redeclared.
-is_reserved_type_name :: fn(name: string) -> bool {
-    if name in ("usize", "isize", "f16", "f32", "f64", "bool", "never", "type", "rawptr", "cont") { return true }
-    if name.len < 2 or (name[0] is not 'u' and name[0] is not 'i') or name[1] is '0' { return false }
-    bits: u32 = 0
-    for c in name[1..] {
-        if c < '0' or c > '9' { return false }
-        bits = bits * 10 + u32(c - '0')
-        if bits > 100000 { return false }
-    }
-    return bits >= 1 and bits <= 128
-}
-
 /// Why `name` cannot be the name of a declaration, if it cannot.
 pub check_new_name :: fn(name: string) -> ?string needs Alloc {
     if not load.is_identifier(name) { return str.format("`{}` is not an identifier", name)! }
     if name is "_" { return "`_` cannot be the name of a declaration" }
     if name in syntax.KEYWORD_TEXTS[..] { return str.format("`{}` is a keyword", name)! }
-    if is_reserved_type_name(name) { return str.format("`{}` is the name of a builtin type", name)! }
+    if load.is_reserved_type_name(name) { return str.format("`{}` is the name of a builtin type", name)! }
     return null
 }
 
