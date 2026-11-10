@@ -133,7 +133,7 @@ inline_value :: fn(dep: NewDep) -> string needs Alloc {
 }
 
 /// `text` with the dependency `name` added to `[dependencies]`, which is created if missing.
-pub add_dependency :: fn(original: string, name: string, dep: NewDep) -> string!string needs Alloc {
+add_dependency :: fn(original: string, name: string, dep: NewDep) -> string!string needs Alloc {
     text := normalize_newlines(original)
     doc := load.parse_toml(text) else e => { return !str.format("gamma.toml: {}", e.message)! }
     if d := doc.get("dependencies") {
@@ -177,7 +177,7 @@ pub add_dependency :: fn(original: string, name: string, dep: NewDep) -> string!
 }
 
 /// `text` without the dependency `name`.
-pub remove_dependency :: fn(original: string, name: string) -> string!string needs Alloc {
+remove_dependency :: fn(original: string, name: string) -> string!string needs Alloc {
     text := normalize_newlines(original)
     lines := split_lines(text)
     missing := str.format("gamma.toml has no dependency `{}`", name)!

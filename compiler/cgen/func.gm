@@ -54,7 +54,7 @@ replacen1 :: fn(text: string, from: string, to: string) -> string needs Alloc {
 join_parts :: fn(parts: []const string, sep: string) -> string needs Alloc => str.join(parts, sep)!
 
 /// Generates function `f` into `g`, or its clone specialized by `spec`.
-pub gen_fn :: fn(g: ^Gen, f: u32, spec: ?u32) -> Unsup!() needs sema.Load {
+gen_fn :: fn(g: ^Gen, f: u32, spec: ?u32) -> Unsup!() needs sema.Load {
     def := g.prog.func(f)
     if def.kind is .Foreign(_) { return g.foreign_decl(f) }
     body := def.body else return !unsupported(def.span, str.format("the function `{}` has no body", def.name)!)
@@ -259,7 +259,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
 
 /// The attributes (each with a trailing space) for a C function with `names` temporaries
 /// and labels: `GM_HUGE_FN` and `GM_LONG_FN` for the very long ones.
-pub size_attrs :: fn(names: u32) -> string {
+size_attrs :: fn(names: u32) -> string {
     if names > HUGE_FN_NAMES { return "GM_HUGE_FN GM_LONG_FN " }
     if names > LONG_FN_NAMES { return "GM_LONG_FN " }
     return ""

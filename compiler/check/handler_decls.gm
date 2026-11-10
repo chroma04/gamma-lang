@@ -258,7 +258,7 @@ check_handler_clauses :: fn(s: ^Sema) needs Load {
 
 /// Checks the clause of a handler declaration with function `f` now if it is still
 /// pending (a compile-time evaluation calls it); returns whether it was.
-pub check_pending_clause :: fn(s: ^Sema, f: u32) -> bool needs Load {
+check_pending_clause :: fn(s: ^Sema, f: u32) -> bool needs Load {
     for i, p in enumerate(s.pending_clauses.items) {
         if p.fn_id is not f { continue }
         check_clause(s, s.pending_clauses.remove(i))

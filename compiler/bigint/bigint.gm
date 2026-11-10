@@ -390,7 +390,7 @@ pub bits :: fn(a: Int) -> u64 {
 }
 
 /// The magnitude as a `u128`, if it fits.
-pub mag_to_u128 :: fn(a: Int) -> ?u128 {
+mag_to_u128 :: fn(a: Int) -> ?u128 {
     if a.mag.items.len > 4 { return null }
     r: u128 = 0
     i := a.mag.items.len
@@ -401,7 +401,7 @@ pub mag_to_u128 :: fn(a: Int) -> ?u128 {
     return r
 }
 
-pub to_u128 :: fn(a: Int) -> ?u128 {
+to_u128 :: fn(a: Int) -> ?u128 {
     if a.negative { return null }
     return mag_to_u128(a)
 }

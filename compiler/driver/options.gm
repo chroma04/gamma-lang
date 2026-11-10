@@ -33,6 +33,10 @@ pub Options :: struct {
     pub program_args: []const string = empty_slice(string)
     /// `run`: run the program in the interpreter instead of compiling it (`--backend=interp`).
     pub interp: bool = false
+    /// `run --backend=interp`: a program the interpreter cannot run (it calls foreign code
+    /// or uses assembly) is compiled and run natively. A host without a C compiler turns
+    /// this off, and such a program is refused.
+    pub native_fallback: bool = true
     /// `test`, `bench`: only the tests whose name or module path contains this text.
     pub filter: ?string = null
     /// `test`, `bench`: also the tests of the modules of the package that nothing imports.

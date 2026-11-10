@@ -25,7 +25,7 @@ pub ConstsText :: struct {
 
 /// The storage of the constant declared at `span` with type `t`, named by an expression
 /// `Const(name, span)`.
-pub const_storage :: fn(g: ^Gen, span: source.Span, t: Ty, at: source.Span) -> Unsup!string needs sema.Load {
+const_storage :: fn(g: ^Gen, span: source.Span, t: Ty, at: source.Span) -> Unsup!string needs sema.Load {
     s := g.prog.s
     id := s.const_id(span, t) else return !unsupported(at, "a constant that was not evaluated")
     cell := s.consts.items[(id).trunc(usize)].cell else return !unsupported(at, "a constant without a compile-time value")

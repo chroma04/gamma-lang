@@ -131,7 +131,7 @@ pub(package) suffix_type :: fn(s: ^Sema, suffix: syntax.IntSuffix) -> Ty needs A
 /// prefix applies to the construction `T(args)` (§A.7 rule 12).
 const_array :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?Ty needs Load {
     call := construction_call(e) else return null
-    .Call(callee, args, _) := call.kind else return null
+    .Call(_, args, _) := call.kind else return null
     t := s.construction_type(module, e, args.len) else return null
     .Array(len, elem, kind) := s.tys.kind(t) else return null
     if kind is not .Plain { return null }
@@ -164,7 +164,7 @@ construction_type :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, n: usize) -
             elem := s.construction_type(module, a.elem, n) else return null
             len := u64(n)
             if l := a.len {
-                if .Ident(id) := l.kind and s.length_is_type(module, l) { return null }
+                if .Ident(_) := l.kind and s.length_is_type(module, l) { return null }
                 errors := s.l.diags.list.items.len
                 match s.array_len(module, l) {
                     .Known(k) => { len = k }

@@ -49,7 +49,7 @@ pub Views :: struct {
     enumerators: hash_map.HashMap(string, bool)
 }
 
-pub views :: fn() -> Views needs Alloc => Views(
+views :: fn() -> Views needs Alloc => Views(
     cache: hash_map.hash_map(u32, ?View),
     pending: list(Ty),
     building: false,
@@ -69,7 +69,7 @@ scalar :: fn(cty: string) -> ?View => View(cty: cty)
 
 /// The debugger view of values of `t` (see the comment at the top of this file), or `null`
 /// if `t` has no bytes.
-pub debug_view :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
+debug_view :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
     if ty.views.building { return ty.view(t) }
     ty.views.building = true
     v := ty.view(t)
@@ -79,7 +79,7 @@ pub debug_view :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
 }
 
 /// The definitions of the views used.
-pub view_defs :: fn(ty: ^const CTypes) -> string => ty.views.defs.items
+view_defs :: fn(ty: ^const CTypes) -> string => ty.views.defs.items
 
 view :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
     if cached := ty.views.cache.get(t.id) {

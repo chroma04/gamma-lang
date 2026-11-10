@@ -60,11 +60,6 @@ node2 :: fn(head: string, x, y: Sx) -> Sx needs Alloc {
     return node(head, rest)
 }
 
-/// Appends `(label x)` for a present optional part.
-push_labeled :: fn(v: ^List(Sx), label: string, x: ?Sx) needs Alloc {
-    if s := x { v.push(node1(label, s))! }
-}
-
 /// Whether `sx` fits on one line in `budget` characters; subtracts its width.
 fits :: fn(sx: ^const Sx, budget: ^isize) -> bool {
     match sx^ {

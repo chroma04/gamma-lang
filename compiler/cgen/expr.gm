@@ -21,7 +21,7 @@ BlobPart :: struct {
 ptr_bytes :: fn(fg: ^FnGen) -> u64 => fg.g.ty.lay.target.ptr_bytes
 
 /// An addressable copy of `v` (of type `t`); returns its `uint8_t *` address.
-pub addr_of :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
+addr_of :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
     n := fg.tmp(t, v)
     return str.format("((uint8_t *)&{})", n)!
 }
@@ -107,18 +107,18 @@ store :: fn(fg: ^FnGen, t: Ty, addr: string, v: string) needs sema.Load {
     fg.linef("GM_ST({}, {}, {});", c, addr, v)
 }
 
-pub loc :: fn(fg: ^FnGen, e: ^Expr) -> string needs Alloc => fg.g.src_loc(e.span)
+loc :: fn(fg: ^FnGen, e: ^Expr) -> string needs Alloc => fg.g.src_loc(e.span)
 
 // --- optionals, results, unions ---------------------------------------------------------------
 
 /// A C condition: the optional at `addr` (of type `t`) is present.
-pub opt_present :: fn(fg: ^FnGen, t: Ty, addr: string) -> string needs sema.Load {
+opt_present :: fn(fg: ^FnGen, t: Ty, addr: string) -> string needs sema.Load {
     if fg.g.ty.repr(t) is .Ptr { return str.format("(GM_LD(void *, {}) != 0)", addr)! }
     off := fg.g.ty.offsets(t)[1]
     return str.format("(({})[{}] != 0)", addr, off)!
 }
 
-pub make_some :: fn(fg: ^FnGen, t: Ty, payload: string) -> string needs sema.Load {
+make_some :: fn(fg: ^FnGen, t: Ty, payload: string) -> string needs sema.Load {
     if fg.g.ty.repr(t) is .Ptr { return payload }
     .Optional(inner) := fg.g.ty.kind(t) else @unreachable()
     off := fg.g.ty.offsets(t)[1]
@@ -129,18 +129,18 @@ pub make_some :: fn(fg: ^FnGen, t: Ty, payload: string) -> string needs sema.Loa
     return b
 }
 
-pub make_none :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
+make_none :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
     if fg.g.ty.repr(t) is .Ptr { return "((void *)0)" }
     return fg.blob(t)
 }
 
 /// The tag byte of the result at `addr` is set: it holds an error.
-pub res_is_err :: fn(fg: ^FnGen, t: Ty, addr: string) -> string needs sema.Load {
+res_is_err :: fn(fg: ^FnGen, t: Ty, addr: string) -> string needs sema.Load {
     off := fg.g.ty.offsets(t)[0]
     return str.format("(({})[{}] != 0)", addr, off)!
 }
 
-pub make_res :: fn(fg: ^FnGen, t: Ty, is_err: bool, payload_ty: Ty, payload: string) -> string needs sema.Load {
+make_res :: fn(fg: ^FnGen, t: Ty, is_err: bool, payload_ty: Ty, payload: string) -> string needs sema.Load {
     offs := fg.g.ty.offsets(t)
     parts := [2]BlobPart(BlobPart(off: offs[0], len: 1), BlobPart(off: offs[1], len: fg.g.ty.size(payload_ty)))
     b := fg.blob_over(t, parts[..])
@@ -150,7 +150,7 @@ pub make_res :: fn(fg: ^FnGen, t: Ty, is_err: bool, payload_ty: Ty, payload: str
 }
 
 /// A union value of variant `v` with an optional payload.
-pub make_variant :: fn(fg: ^FnGen, t: Ty, v: usize, payload: ?string) -> string needs sema.Load {
+make_variant :: fn(fg: ^FnGen, t: Ty, v: usize, payload: ?string) -> string needs sema.Load {
     def := fg.adt_def(t)
     .Union(tag, variants) := def.kind else @unreachable()
     variant := variants[v]
@@ -169,12 +169,12 @@ pub make_variant :: fn(fg: ^FnGen, t: Ty, v: usize, payload: ?string) -> string 
     return b
 }
 
-pub adt_def :: fn(fg: ^FnGen, t: Ty) -> ^const sema.AdtInfo => fg.g.ty.adt_of(t)
+adt_def :: fn(fg: ^FnGen, t: Ty) -> ^const sema.AdtInfo => fg.g.ty.adt_of(t)
 
 // --- literals ---------------------------------------------------------------------------------
 
 /// A C literal of integer type `t` with value `v` (floats accept integer literals too).
-pub int_lit :: fn(fg: ^FnGen, t: Ty, v: bigint.Int) -> string needs sema.Load {
+int_lit :: fn(fg: ^FnGen, t: Ty, v: bigint.Int) -> string needs sema.Load {
     match fg.g.ty.repr(t) {
         .Float(f) => return float_lit(f, ratio.to_f64(ratio.from_int(v)))
         .Int(signed, _, storage) => {
@@ -200,7 +200,7 @@ pub int_lit :: fn(fg: ^FnGen, t: Ty, v: bigint.Int) -> string needs sema.Load {
 }
 
 /// A slice value `{ptr, len}` of type `t`.
-pub make_slice :: fn(fg: ^FnGen, t: Ty, ptr: string, len: string) -> string needs sema.Load {
+make_slice :: fn(fg: ^FnGen, t: Ty, ptr: string, len: string) -> string needs sema.Load {
     b := fg.tmp_uninit(t)
     p := fg.ptr_bytes()
     fg.linef("GM_ST(void *, (uint8_t *)&{}, (void *)({}));", b, ptr)
@@ -208,20 +208,20 @@ pub make_slice :: fn(fg: ^FnGen, t: Ty, ptr: string, len: string) -> string need
     return b
 }
 
-pub slice_ptr :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.format("GM_LD(void *, {})", addr)!
+slice_ptr :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.format("GM_LD(void *, {})", addr)!
 
-pub slice_len :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.format("GM_LD(uintptr_t, {} + {})", addr, fg.ptr_bytes())!
+slice_len :: fn(fg: ^FnGen, addr: string) -> string needs sema.Load => str.format("GM_LD(uintptr_t, {} + {})", addr, fg.ptr_bytes())!
 
 // --- expressions ------------------------------------------------------------------------------
 
-pub expr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
+expr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
     if acc := fg.chain_operand(e) { return acc }
     if fg.chain_links(e) > MIN_LINKS { return fg.emit_chain(e) }
     return fg.expr_node(e)
 }
 
 /// Emits `e` itself.
-pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
+expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
     t := e.ty
     match e.kind {
         .Int(v) => return fg.int_lit(t, v)
@@ -712,7 +712,7 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
         }
         .Fn(_) => {}
     }
-    if .Fn(sx) := w.sink and not fg.g.ty.by_ref(str_ty) {
+    if .Fn(_) := w.sink and not fg.g.ty.by_ref(str_ty) {
         // A write to a function: the closure and its handler context once, then a call of
         // a shared helper per piece.
         cv := sink_v?
@@ -837,7 +837,7 @@ target_ret :: fn(fg: ^FnGen, levels: u32) -> Ty needs sema.Load {
 // --- places ---------------------------------------------------------------------------------
 
 /// The address (`uint8_t *`) of a place, or of a temporary holding a value.
-pub place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
+place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
     match e.kind {
         .Local(l) => return fg.local_addr(l)
         .Global(_, decl) => {
@@ -957,7 +957,7 @@ base_addr :: fn(fg: ^FnGen, base: ^Expr) -> Unsup!string needs sema.Load => fg.p
 /// An index or bound `v` of type `t` that is checked against a length, as a
 /// `uintptr_t`: a value too large for one becomes `UINTPTR_MAX`, so the check fails
 /// instead of seeing its low bits.
-pub bound :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs Alloc {
+bound :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs Alloc {
     if fg.g.ty.size(t) > fg.g.ty.lay.target.ptr_bytes {
         return str.format("(((unsigned __int128)({}) > (unsigned __int128)UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)({}))", v, v)!
     }
@@ -1145,7 +1145,7 @@ find_with :: fn(e: ^Expr, label: u32) -> bool {
 }
 
 /// The low and high 64-bit halves of `v` modulo 2^128 (two's complement).
-pub split_u128 :: fn(v: bigint.Int) -> (lo: u128, hi: u128) {
+split_u128 :: fn(v: bigint.Int) -> (lo: u128, hi: u128) {
     m: u128 = 0
     i := v.mag.items.len.min(4)
     while i > 0 {
@@ -1157,7 +1157,7 @@ pub split_u128 :: fn(v: bigint.Int) -> (lo: u128, hi: u128) {
 }
 
 /// A C literal of float type of `bits` bits with value `x` (exactly representable in it).
-pub float_lit :: fn(bits: u16, x: f64) -> string needs Alloc {
+float_lit :: fn(bits: u16, x: f64) -> string needs Alloc {
     c := match bits {
         16 => "_Float16"
         32 => "float"
@@ -1170,7 +1170,7 @@ pub float_lit :: fn(bits: u16, x: f64) -> string needs Alloc {
 }
 
 /// The mask of the low `w` bits, as an `unsigned __int128` C expression.
-pub mask :: fn(w: u32) -> string needs Alloc {
+mask :: fn(w: u32) -> string needs Alloc {
     if w >= 128 { return "(~(unsigned __int128)0)" }
     return str.format("((((unsigned __int128)1) << {}) - 1)", w)!
 }

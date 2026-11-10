@@ -370,7 +370,7 @@ slice_expr :: fn(cx: ^FnCx, base: ^const ast.Expr, lo_ast: ?^ast.Expr, hi_ast: ?
 
 /// `v` as a `[]const T` where one is expected: an array is passed as a slice of the whole
 /// array, held in a hidden local if it is a temporary (§6.4, §15.1).
-pub array_as_slice :: fn(cx: ^FnCx, v: ^Expr, target0: Ty) -> ^Expr needs Load {
+array_as_slice :: fn(cx: ^FnCx, v: ^Expr, target0: Ty) -> ^Expr needs Load {
     tys := &cx.s.tys
     target := cx.infer.resolve(cx.s, target0)
     vt := cx.infer.resolve(cx.s, v.ty)
@@ -392,7 +392,7 @@ const_temp :: fn(cx: ^FnCx, v: ^Expr) -> ^Expr needs Load {
 }
 
 /// The name of the hidden local that holds a temporary array used as a slice.
-pub TEMP_ARRAY :: "<temporary array>"
+TEMP_ARRAY :: "<temporary array>"
 
 /// Holds the temporary array `v` in a new hidden local of the enclosing block (§15.1):
 /// the assignment that fills it, where `v` was, and the local.
@@ -412,7 +412,7 @@ held :: fn(s: ^Sema, hold: tir.Stmt, sl: ^Expr) -> ^Expr needs Alloc {
 }
 
 /// Whether `e` is a slice of a temporary array held by `held`.
-pub is_held_temp :: fn(e: ^const Expr) -> bool {
+is_held_temp :: fn(e: ^const Expr) -> bool {
     .Block(b) := e.kind else return false
     if b.stmts.len is not 1 or b.stmts[0] is not .Assign(_) { return false }
     t := b.tail else return false

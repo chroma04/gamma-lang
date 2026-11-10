@@ -64,7 +64,7 @@ generic_call :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast.Arg, s
             stmts := list(tir.Stmt)
             r: ?^Expr = null
             if x := receiver { r = cx.bind_temp(x, &stmts) }
-            spread := cx.spread_generic_args(written, &stmts, span) else return error_expr(cx.s, span)
+            spread := cx.spread_generic_args(written, &stmts) else return error_expr(cx.s, span)
             call := cx.generic_call_packed(f, r, spread, span)
             return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
         }
@@ -662,17 +662,6 @@ location_function :: fn(cx: ^const FnCx) -> string {
         if not last.starts_with("<") { return last }
     }
     return last
-}
-
-/// Whether a parameter of type `ty` is an iterator parameter (§13.5): a function type
-/// that performs `Yield`.
-is_iterator_param :: fn(cx: ^FnCx, ty: Ty) -> bool {
-    .Fn(sig) := cx.s.tys.kind(ty) else return false
-    y := cx.s.yield_effect else return false
-    for x in sig.effects.effects {
-        if x.eff is y { return true }
-    }
-    return false
 }
 
 /// The value of the default `d` of parameter `p`, of type `ty`, for a call at `span`

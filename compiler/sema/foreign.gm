@@ -353,7 +353,7 @@ pub source_location_ty :: fn(s: ^Sema) -> ?Ty needs Load {
 }
 
 /// Whether `t` is C-compatible (§19.1). `in_struct` allows arrays (as struct fields).
-pub is_c_compatible :: fn(s: ^Sema, t: Ty, in_struct: bool) -> bool needs Load {
+is_c_compatible :: fn(s: ^Sema, t: Ty, in_struct: bool) -> bool needs Load {
     match s.tys.kind(t) {
         .Int(_, bits) => return bits in (8, 16, 32, 64, 128)
         .Usize, .Isize, .Float(_), .Bool, .Rawptr, .Ptr(_), .ManyPtr(_), .Error => return true

@@ -42,24 +42,24 @@ repo_dir_name :: fn(url: string) -> string needs Alloc {
 
 /// The store for the package at `root`: under the cache directory, or, when the cache is
 /// disabled, in `<root>/.gamma/deps`.
-pub store_for_package :: fn(root: string) -> Store needs Alloc + Env {
+store_for_package :: fn(root: string) -> Store needs Alloc + Env {
     if d := cache_dir() { return Store(base: join(d, "git")) }
     return Store(base: join(join(root, ".gamma"), "deps"))
 }
 
 /// The bare mirror of the repository with the normalized URL `url`.
-pub db :: fn(s: ^const Store, url: string) -> string needs Alloc => join(join(s.base, "db"), repo_dir_name(url))
+db :: fn(s: ^const Store, url: string) -> string needs Alloc => join(join(s.base, "db"), repo_dir_name(url))
 
 /// The directory archives are downloaded into before they are unpacked.
-pub downloads :: fn(s: ^const Store) -> string needs Alloc => join(s.base, "url")
+downloads :: fn(s: ^const Store) -> string needs Alloc => join(s.base, "url")
 
 /// Where the archive at `url` whose file has the SHA-256 `sha` (hexadecimal) is unpacked.
-pub archive_dir :: fn(s: ^const Store, url, sha: string) -> string needs Alloc {
+archive_dir :: fn(s: ^const Store, url, sha: string) -> string needs Alloc {
     return join(join(join(s.base, "url"), repo_dir_name(url)), sha[0..if sha.len < 16 { sha.len } else { 16 }])
 }
 
 /// Where revision `rev` of the repository is checked out.
-pub checkout_dir :: fn(s: ^const Store, url, rev: string) -> string needs Alloc {
+checkout_dir :: fn(s: ^const Store, url, rev: string) -> string needs Alloc {
     return join(join(join(s.base, "checkouts"), repo_dir_name(url)), rev[0..if rev.len < 12 { rev.len } else { 12 }])
 }
 
@@ -119,7 +119,7 @@ pub Refs :: struct {
 }
 
 /// Brings the mirror `db` of `url` up to date, creating it if needed.
-pub fetch_mirror :: fn(db: string, url: string) -> string!() needs Alloc + Fs + Proc {
+fetch_mirror :: fn(db: string, url: string) -> string!() needs Alloc + Fs + Proc {
     if not is_file(join(db, "HEAD")) {
         if p := parent(db) { try make_dirs(p) }
         init_args := [4]string("init", "-q", "--bare", db)
@@ -130,7 +130,7 @@ pub fetch_mirror :: fn(db: string, url: string) -> string!() needs Alloc + Fs + 
     return ()
 }
 
-pub list_refs :: fn(db: string) -> string!Refs needs Alloc + Proc {
+list_refs :: fn(db: string) -> string!Refs needs Alloc + Proc {
     args := [5]string("for-each-ref", "--format=%(refname)%09%(objectname)%09%(*objectname)", "refs/heads", "refs/tags", "refs/gamma")
     out := try git(db, args[..], empty_slice(string))
     refs := Refs(tags: list(RefName), branches: list(RefName))
@@ -154,7 +154,7 @@ pub list_refs :: fn(db: string) -> string!Refs needs Alloc + Proc {
 }
 
 /// The full commit id for `rev` (an id prefix), if the mirror has exactly one.
-pub rev_parse :: fn(db: string, rev: string) -> ?string needs Alloc + Proc {
+rev_parse :: fn(db: string, rev: string) -> ?string needs Alloc + Proc {
     spec := str.format("{}^{{commit}}", rev)!
     args := [4]string("rev-parse", "--verify", "--quiet", spec)
     out := git(db, args[..], [0]string()[..]) else return null
@@ -164,7 +164,7 @@ pub rev_parse :: fn(db: string, rev: string) -> ?string needs Alloc + Proc {
 }
 
 /// The names of the tags of the repository at `url`, without cloning it.
-pub remote_tags :: fn(url: string) -> string!List(string) needs Alloc + Proc {
+remote_tags :: fn(url: string) -> string!List(string) needs Alloc + Proc {
     args := [5]string("ls-remote", "--tags", "--refs", "--", url)
     out := git(null, args[..], [0]string()[..]) else e => { return !str.format("cannot list {}: {}", url, e)! }
     tags := list(string)
@@ -180,7 +180,7 @@ pub remote_tags :: fn(url: string) -> string!List(string) needs Alloc + Proc {
 
 /// Checks out `rev` into `dest`, through a temporary directory so that a failure never
 /// leaves a partial checkout. Does nothing if `dest` exists.
-pub checkout :: fn(db: string, rev: string, dest: string) -> string!() needs Alloc + Fs + Proc + Rand {
+checkout :: fn(db: string, rev: string, dest: string) -> string!() needs Alloc + Fs + Proc + Rand {
     if is_dir(dest) { return () }
     parent_dir := parent(dest) else return !"bad checkout path"
     try make_dirs(parent_dir)
@@ -392,31 +392,31 @@ pub make_read_only :: fn(root: string) needs Alloc + Proc { chmod_tree("a-w", ro
 
 /// Restores the owner's write permission in the tree at `root` (and read and search
 /// permission of directories), as needed to delete it.
-pub make_writable :: fn(root: string) needs Alloc + Proc { chmod_tree("u+rwX", root) }
+make_writable :: fn(root: string) needs Alloc + Proc { chmod_tree("u+rwX", root) }
 
 /// Normalizes the permissions of an unpacked tree: the owner can read and write
 /// everything, and special bits (setuid, sticky) are dropped.
-pub sanitize_modes :: fn(root: string) needs Alloc + Proc { chmod_tree("u+rwX,u-s,g-s,a-t", root) }
+sanitize_modes :: fn(root: string) needs Alloc + Proc { chmod_tree("u+rwX,u-s,g-s,a-t", root) }
 
 /// Deletes the tree at `path`, which may be read-only.
-pub remove_tree :: fn(path: string) -> IoError!() needs Alloc + Fs + Proc {
+remove_tree :: fn(path: string) -> IoError!() needs Alloc + Fs + Proc {
     make_writable(path)
     return fs.remove_all(path)
 }
 
 /// The file whose modification time is the last use of the checkout `dir`: next to it,
 /// since the checkout itself is read-only.
-pub stamp_of :: fn(dir: string) -> string needs Alloc => str.format("{}.used", dir)!
+stamp_of :: fn(dir: string) -> string needs Alloc => str.format("{}.used", dir)!
 
 /// Records that the checkout `dir` is in use now.
-pub mark_used :: fn(dir: string) needs Alloc + Proc {
+mark_used :: fn(dir: string) needs Alloc + Proc {
     args := [2]string("touch", stamp_of(dir))
     _ = run(args[..])
 }
 
 /// The time (Unix nanoseconds) the checkout `dir` was last used: its stamp's, else its own
 /// modification time.
-pub last_used :: fn(dir: string) -> ?i64 needs Alloc + Fs {
+last_used :: fn(dir: string) -> ?i64 needs Alloc + Fs {
     if info := Fs.stat(stamp_of(dir)) { return info.modified }
     if info := Fs.stat(dir) { return info.modified }
     return null

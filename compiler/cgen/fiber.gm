@@ -45,7 +45,7 @@ detached :: fn(fg: ^FnGen, head: string, cx: string, emit: fn() -> Unsup!() need
 
 /// The rest of `with h on stack { body }`, once its handlers are installed in the context
 /// `cx`, whose nodes point at the `gm_with` named `w`.
-pub with_on :: fn(fg: ^FnGen, e: ^Expr, label: u32, w: string, cx: string, stack: ^Expr, body: ^Expr) -> Unsup!string needs sema.Load {
+with_on :: fn(fg: ^FnGen, e: ^Expr, label: u32, w: string, cx: string, stack: ^Expr, body: ^Expr) -> Unsup!string needs sema.Load {
     st := try fg.expr(stack)
     sa := fg.addr_of(stack.ty, st)
     p := fg.slice_ptr(sa)
@@ -120,7 +120,7 @@ outline_body :: fn(fg: ^FnGen, label: u32, ty: Ty, body: ^Expr) -> Unsup!string 
 
 /// Performs `ctl` operation `op` through node `n` (§14.2): the arguments go into a
 /// request on the fiber's stack, and a per-site thunk calls the clause on the driver.
-pub ctl_perform :: fn(fg: ^FnGen, n: string, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
+ctl_perform :: fn(fg: ^FnGen, n: string, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
     id := fg.fresh()
     req := str.format("gm_pr{}_{}", fg.tag, id)!
     thunk := str.format("gm_pt{}_{}", fg.tag, id)!
@@ -163,7 +163,7 @@ pub ctl_perform :: fn(fg: ^FnGen, n: string, op: u32, vals: []const string, tys:
 }
 
 /// `resume k(v)` (§14.3): stores `v` for the fiber and ends the clause with GM_RESUME.
-pub resume_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr, value: ^Expr) -> Unsup!string needs sema.Load {
+resume_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr, value: ^Expr) -> Unsup!string needs sema.Load {
     k := try fg.expr(kont)
     ka := fg.addr_of(kont.ty, k)
     v := try fg.expr(value)
@@ -181,7 +181,7 @@ pub resume_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr, value: ^Expr) -> Unsup!stri
 }
 
 /// `cancel k` (§14.5).
-pub cancel_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr) -> Unsup!string needs sema.Load {
+cancel_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr) -> Unsup!string needs sema.Load {
     k := try fg.expr(kont)
     ka := fg.addr_of(kont.ty, k)
     loc := fg.loc(e)
@@ -191,7 +191,7 @@ pub cancel_ :: fn(fg: ^FnGen, e: ^Expr, kont: ^Expr) -> Unsup!string needs sema.
 }
 
 /// `@fiber(f, arg, stack)` (§14.6): a fiber whose start function calls `f(arg)`.
-pub fiber_builtin :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load {
+fiber_builtin :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load {
     sig := match fg.g.ty.kind(args[0].ty) {
         .FnPtr(s) => s
         _ => return !unsupported(e.span, "`@fiber` with this function")

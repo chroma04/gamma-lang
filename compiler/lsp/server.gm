@@ -36,7 +36,7 @@ pub Server :: struct {
     next_request: u64
 }
 
-pub server :: fn() -> Server needs Alloc + Fs {
+server :: fn() -> Server needs Alloc + Fs {
     return Server(
         enc: .Utf16,
         docs: hash_map.hash_map(string, Doc),
@@ -100,7 +100,7 @@ code_actions :: fn(params: Value) -> Value needs Alloc {
 // --- the loop ---
 
 /// Serves messages until `exit` or the end of the input; returns the exit code.
-pub run :: fn(srv: ^Server, inbox: ^Inbox) -> u8 needs Fx + Sys {
+run :: fn(srv: ^Server, inbox: ^Inbox) -> u8 needs Fx + Sys {
     while true {
         // Analyze when no newer message is waiting, so that a burst of edits costs one run.
         msg: Incoming = .Bad("")
@@ -126,7 +126,7 @@ pub run :: fn(srv: ^Server, inbox: ^Inbox) -> u8 needs Fx + Sys {
 }
 
 /// Handles one message; returns the exit code if it was `exit`.
-pub handle_incoming :: fn(srv: ^Server, msg: Incoming) -> Flow needs Fx {
+handle_incoming :: fn(srv: ^Server, msg: Incoming) -> Flow needs Fx {
     match msg {
         .Bad(e) => {
             srv.respond_error(NULL, PARSE_ERROR, e)

@@ -7,12 +7,12 @@ pub Ctx :: struct {
     uris: ^const UriMap
 }
 
-pub offset_at :: fn(cx: ^const Ctx, file: source.FileId, line, character: u32) -> u32 needs Alloc {
+offset_at :: fn(cx: ^const Ctx, file: source.FileId, line, character: u32) -> u32 needs Alloc {
     ix := cx.a.lines(file)
     return offset(&ix, line, character, cx.enc).trunc(u32)
 }
 
-pub location :: fn(cx: ^const Ctx, span: source.Span) -> ?Value needs Alloc + Env + Fs + Proc + Rand {
+location :: fn(cx: ^const Ctx, span: source.Span) -> ?Value needs Alloc + Env + Fs + Proc + Rand {
     path := cx.a.open_path(span.file) else return null
     o := obj()
     o.put("uri", text(uri_of(cx.uris, path)))
@@ -20,7 +20,7 @@ pub location :: fn(cx: ^const Ctx, span: source.Span) -> ?Value needs Alloc + En
     return o.value()
 }
 
-pub markdown :: fn(code: string, doc_text: ?string) -> string needs Alloc {
+markdown :: fn(code: string, doc_text: ?string) -> string needs Alloc {
     fence := doc.fence(code)
     out := list(u8)
     out.write("{}gamma\n{}\n{}", fence, code, fence)!
@@ -31,7 +31,7 @@ pub markdown :: fn(code: string, doc_text: ?string) -> string needs Alloc {
     return out.items
 }
 
-pub hover :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc {
+hover :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc {
     h := cx.a.index.hover_at(file, off) else return NULL
     contents := obj()
     contents.put("kind", text("markdown"))
@@ -42,12 +42,12 @@ pub hover :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Al
     return o.value()
 }
 
-pub definition :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc + Env + Fs + Proc + Rand {
+definition :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc + Env + Fs + Proc + Rand {
     s := cx.a.index.definition_at(file, off) else return NULL
     return location(cx, s) else NULL
 }
 
-pub references :: fn(cx: ^const Ctx, file: source.FileId, off: u32, include_declaration: bool) -> Value needs Alloc + Env + Fs + Proc + Rand {
+references :: fn(cx: ^const Ctx, file: source.FileId, off: u32, include_declaration: bool) -> Value needs Alloc + Env + Fs + Proc + Rand {
     def := cx.a.index.definition_at(file, off) else return array(empty_slice(Value))
     spans := cx.a.index.uses_of(def)
     out := list(Value)
@@ -107,7 +107,7 @@ symbol_json :: fn(cx: ^const Ctx, s: ^const ide.DocSymbol) -> Value needs Alloc 
     return o.value()
 }
 
-pub document_symbols :: fn(cx: ^const Ctx, file: source.FileId) -> Value needs Alloc {
+document_symbols :: fn(cx: ^const Ctx, file: source.FileId) -> Value needs Alloc {
     syms := ide.outline_of(&cx.a.index, file)
     out := list(Value)
     for i in 0..syms.len { out.push(symbol_json(cx, &syms[i]))! }
@@ -131,7 +131,7 @@ item_json :: fn(i: ^const ide.Item, sort: ?string) -> Value needs Alloc {
 
 /// Completions for a name written at `off`: the locals in scope, the module's
 /// declarations, then the universe scope (the core library, builtin types and keywords).
-pub names :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> List(Value) needs Alloc {
+names :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> List(Value) needs Alloc {
     ix := &cx.a.index
     seen := hash_map.hash_map(string, bool)
     out := list(Value)
@@ -163,7 +163,7 @@ pub names :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> List(Value) ne
 }
 
 /// Completions for the members of the expression written at `lo..hi`.
-pub members :: fn(cx: ^const Ctx, file: source.FileId, lo, hi: u32) -> ?List(Value) needs Alloc {
+members :: fn(cx: ^const Ctx, file: source.FileId, lo, hi: u32) -> ?List(Value) needs Alloc {
     ix := &cx.a.index
     found: ?[]const ide.Item = ix.members_at(file, lo, hi)
     if found is null {
@@ -184,7 +184,7 @@ is_ident_byte :: fn(c: u8) -> bool => (c >= 'a' and c <= 'z') or (c >= 'A' and c
 
 /// For a completion request after `receiver.prefix`, the offsets where the receiver
 /// starts and the dot is.
-pub member_context :: fn(t: string, off: usize) -> ?(start: usize, dot: usize) {
+member_context :: fn(t: string, off: usize) -> ?(start: usize, dot: usize) {
     b := t
     p := off.min(b.len)
     while p > 0 and is_ident_byte(b[p - 1]) { p -= 1 }
@@ -233,7 +233,7 @@ pub CallContext :: struct {
 
 is_space :: fn(c: u8) -> bool => c is ' ' or c is '\t' or c is '\n' or c is '\r' or c is 0x0b or c is 0x0c
 
-pub call_context :: fn(t: string, off_in: usize) -> ?CallContext needs Alloc {
+call_context :: fn(t: string, off_in: usize) -> ?CallContext needs Alloc {
     b := t
     off := off_in.min(b.len)
     depth: usize = 0
@@ -323,7 +323,7 @@ split_signature :: fn(sig: string) -> ?SplitSignature needs Alloc {
 
 /// Help with the arguments of the call around `off`: the signature of the function called,
 /// with the parameter being written marked.
-pub signature_help :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc {
+signature_help :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value needs Alloc {
     t := cx.a.source_text(file)
     cc := call_context(t, usize(off)) else return NULL
     active := cc.active
@@ -385,7 +385,7 @@ pub signature_help :: fn(cx: ^const Ctx, file: source.FileId, off: u32) -> Value
 }
 
 /// The edit that replaces the whole of `old` by `new`.
-pub full_edit :: fn(old, new: string, enc: Encoding) -> Value needs Alloc {
+full_edit :: fn(old, new: string, enc: Encoding) -> Value needs Alloc {
     ix := line_index(old)
     e := obj()
     e.put("range", range_json(&ix, 0, old.len, enc))

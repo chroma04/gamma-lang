@@ -153,13 +153,6 @@ is_generic :: fn(lit: ^const ast.FnLit) -> bool {
     return false
 }
 
-/// Whether the outermost function being checked is generic.
-in_generic_fn :: fn(cx: ^const FnCx) -> bool {
-    root := if cx.outer.items.len > 0 { cx.outer.items[0].fn_id } else { cx.fn_id }
-    f := root else return false
-    return cx.s.fns.items[usize(f)].generics.len > 0
-}
-
 /// The parameters of a literal: their types come from annotations, or from the expected
 /// function type.
 literal_params :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expected: ?types.FnTy) -> []sema.ParamInfo needs Load {

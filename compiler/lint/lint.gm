@@ -111,7 +111,7 @@ pub deny_warnings :: fn(c: ^Config) {
     }
 }
 
-pub level :: fn(c: ^const Config, name: string) -> Level {
+level :: fn(c: ^const Config, name: string) -> Level {
     i := rule(name) else return .Allow
     return c.levels.items[i]
 }
@@ -398,7 +398,6 @@ check :: import "../check"
 diag :: import "../diag"
 hash_map :: import "std/collections/hash_map"
 load :: import "../load"
-parse :: import "../parse"
 sema :: import "../sema"
 source :: import "../source"
 str :: import "std/str"

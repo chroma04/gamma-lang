@@ -67,7 +67,7 @@ ArchiveInfo :: struct {
 }
 
 /// The version a tag name stands for: `vX.Y.Z` or `X.Y.Z`.
-pub tag_version :: fn(tag: string) -> ?load.Version needs Alloc {
+tag_version :: fn(tag: string) -> ?load.Version needs Alloc {
     name := str.strip_prefix(tag, "v") else tag
     return load.parse_version(name) else null
 }
@@ -220,7 +220,7 @@ pick :: fn(url: string, all: []const Req, refs: ^const Refs, db_dir: string) -> 
 }
 
 /// Reads and parses the manifest in `dir`, with errors that name the file and line.
-pub read_manifest :: fn(dir: string) -> string!load.Manifest needs Alloc + Fs {
+read_manifest :: fn(dir: string) -> string!load.Manifest needs Alloc + Fs {
     path := join(dir, "gamma.toml")
     text := try read_text(path)
     return load.parse_manifest(text) else e => { return !str.format("{}:{}: {}", path, e.line, e.msg)! }
@@ -291,7 +291,7 @@ pub Resolver :: struct {
     stack: List(StackItem)
 }
 
-pub resolver :: fn(root: string, opts: Options, refresh: Refresh, old: ?Lock) -> Resolver needs Alloc + Env {
+resolver :: fn(root: string, opts: Options, refresh: Refresh, old: ?Lock) -> Resolver needs Alloc + Env {
     return Resolver(
         root: root,
         opts: opts,
@@ -354,7 +354,7 @@ chosen_index :: fn(r: ^const Resolver, key: Key) -> ?usize {
 
 /// Resolves the graph of the root package. Returns the resolution and the lock it implies,
 /// or `null` if there are no git or archive dependencies.
-pub run_resolver :: fn(r: ^Resolver) -> string!?(res: load.Resolution, lock: Lock) needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+run_resolver :: fn(r: ^Resolver) -> string!?(res: load.Resolution, lock: Lock) needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     root := canonicalize(r.root) else return !str.format("cannot read {}: No such file or directory (os error 2)", r.root)!
     manifest := try read_manifest(root)
     while true {

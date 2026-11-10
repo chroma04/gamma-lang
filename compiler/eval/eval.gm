@@ -242,7 +242,7 @@ eval :: fn(m: ^Machine, e: ^Expr) -> Flow!Value needs Load {
             return .Variant(v.variant, p)
         }
         .MakeErr(x) => return .Err(new(copy(try m.eval(x)))!)
-        .Unwrap(x, is_result) => {
+        .Unwrap(x, _) => {
             v := try m.eval(x)
             match v {
                 .Some(p), .Ok(p) => return p^

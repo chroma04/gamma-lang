@@ -37,7 +37,7 @@ pub Facts :: struct {
 
 /// The facts of the program's functions, except those of the embedded core library, which
 /// no editor can open.
-pub collect_facts :: fn(s: ^const sema.Sema) -> Facts needs Alloc {
+collect_facts :: fn(s: ^const sema.Sema) -> Facts needs Alloc {
     facts := Facts(
         types: hash_map.hash_map(Span, TypeFact),
         all_types: hash_map.hash_map(Span, List(Ty)),

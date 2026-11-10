@@ -291,8 +291,3 @@ pub describe :: fn(k: TokenKind) -> string needs Alloc => match k {
     .Newline => "newline"
     .Eof => "end of file"
 }
-
-is_keyword :: fn(k: TokenKind, kw: Keyword) -> bool => match k {
-    .Keyword(x) => x is kw
-    _ => false
-}

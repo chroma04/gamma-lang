@@ -65,12 +65,10 @@ finish :: fn(r: ^const Report) -> u8 needs Alloc + Clock + Out {
         } else {
             str.format("{} run, {} failed", r.passed, r.failed)!
         }
+    } else if n := r.filtered_out {
+        str.format("{} passed, {} failed, {} filtered out", r.passed, r.failed, n)!
     } else {
-        if n := r.filtered_out {
-            str.format("{} passed, {} failed, {} filtered out", r.passed, r.failed, n)!
-        } else {
-            str.format("{} passed, {} failed", r.passed, r.failed)!
-        }
+        str.format("{} passed, {} failed", r.passed, r.failed)!
     }
     if r.time { line = str.format("{} (finished in {})", line, fmt_duration(Clock.now().ns - r.started))! }
     print("{}\n", line)

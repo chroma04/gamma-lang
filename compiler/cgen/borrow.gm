@@ -18,7 +18,7 @@
 // calls.
 
 /// For each parameter of `f`: whether it is used in place of a copy.
-pub borrowed_params :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
+borrowed_params :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
     def := g.prog.func(f)
     out := list(bool)
     any := false
@@ -147,7 +147,7 @@ steady_arg :: fn(g: ^Gen, caller: u32, a: ^Expr, written: []const u32, captured:
 /// aggregate or array construction, which `expr_into` may build directly in the result
 /// destination while still reading the parameter. A caller must then not pass a
 /// destination that overlaps the parameter's value.
-pub read_during_build :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
+read_during_build :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
     if r := g.early_memo.get(f) { return r }
     r := g.borrowed_params(f)
     any := false
@@ -169,7 +169,7 @@ pub read_during_build :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
 /// Whether `f` is pure in the sense of the file's comment: a named function or a literal
 /// that captures nothing, with no effects, that stores only into its own locals and calls
 /// only pure functions.
-pub is_pure :: fn(g: ^Gen, f: u32) -> bool needs sema.Load {
+is_pure :: fn(g: ^Gen, f: u32) -> bool needs sema.Load {
     // Being computed (recursion): assumed impure.
     if m := g.pure_memo.get(f) { return m is 3 }
     g.pure_memo.put(f, 1)!

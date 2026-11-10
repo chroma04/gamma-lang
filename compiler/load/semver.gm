@@ -305,7 +305,7 @@ pub version_string :: fn(v: Version) -> string needs Alloc {
 }
 
 /// `req` as Cargo prints it: `^1.2, <3` (`*` if empty).
-pub req_string :: fn(req: ^const VersionReq) -> string needs Alloc {
+req_string :: fn(req: ^const VersionReq) -> string needs Alloc {
     if req.comparators.items.len is 0 { return "*" }
     out := list(u8)
     for i, c in enumerate(req.comparators.items) {
@@ -360,7 +360,7 @@ cmp_text :: fn(a, b: string) -> i32 {
 }
 
 /// Compares two pre-release identifiers: a release (empty) is greater than any pre-release.
-pub cmp_pre :: fn(a, b: string) -> i32 {
+cmp_pre :: fn(a, b: string) -> i32 {
     if a.len is 0 {
         return if b.len is 0 { 0 } else { 1 }
     }
@@ -543,7 +543,7 @@ pub req_matches :: fn(req: ^const VersionReq, v: Version) -> bool {
 }
 
 /// Whether two requirements are written alike.
-pub req_equal :: fn(a, b: ^const VersionReq) -> bool {
+req_equal :: fn(a, b: ^const VersionReq) -> bool {
     if a.comparators.items.len is not b.comparators.items.len { return false }
     for i, x in enumerate(a.comparators.items) {
         y := b.comparators.items[i]

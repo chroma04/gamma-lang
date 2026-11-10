@@ -1,7 +1,7 @@
 // Vector types `#simd [N]T` (§5.6.2) and math vectors `#vec [N]T` (§5.6.3): forming them.
 
 /// The largest vector, in bytes (§5.6.2).
-pub MAX_VECTOR_BYTES :: 64
+MAX_VECTOR_BYTES :: 64
 
 /// Whether `t` may be the lane type of a vector: a fixed-width integer of 8, 16, 32 or 64
 /// bits, `f32`, `f64` or `bool`.
@@ -13,7 +13,7 @@ pub lane_type_ok :: fn(tys: ^const types.Types, t: Ty) -> bool => match tys.kind
 }
 
 /// The size of a lane of type `t` (one of `lane_type_ok`), in bytes.
-pub lane_bytes :: fn(tys: ^const types.Types, t: Ty) -> u64 => match tys.kind(t) {
+lane_bytes :: fn(tys: ^const types.Types, t: Ty) -> u64 => match tys.kind(t) {
     .Int(_, bits) => u64(bits) / 8
     .Float(bits) => u64(bits) / 8
     _ => 1
@@ -36,7 +36,7 @@ pub vector_shape_error :: fn(s: ^Sema, len: u64, elem: Ty) -> ?string needs Load
 }
 
 /// Why `len` elements of `elem` do not make a math vector, if they do not.
-pub math_vector_shape_error :: fn(s: ^Sema, len: u64, elem: Ty) -> ?string needs Load {
+math_vector_shape_error :: fn(s: ^Sema, len: u64, elem: Ty) -> ?string needs Load {
     if not (s.tys.is_integer(elem) or s.tys.is_float(elem)) {
         return str.format("a math vector's elements are integers or floats, not `{}`", s.show(elem))!
     }

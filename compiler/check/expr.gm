@@ -782,7 +782,6 @@ binary_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs: ^Expr, rhs: ^const ast.Expr, span
                 if .Optional(inner) := tys.kind(lt) { expect = inner }
             }
             r := cx.expr(rhs, expect)
-            rt := cx.infer.resolve(cx.s, r.ty)
             // `2 * v`: a scalar times a math vector or a complex number (§7.4.7).
             if cx.is_compound_number(r.ty) { return cx.compound_number_binary(op, lhs, r, span) }
             return cx.arith_op(op, lhs, r, span)
@@ -1085,7 +1084,6 @@ type_of_name :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
 }
 
 field :: fn(cx: ^FnCx, base: ^const ast.Expr, name: ast.Ident, span: source.Span) -> ^Expr needs Load {
-    tys := &cx.s.tys
     // `m.x`: a declaration of another module (§3.2).
     if m := cx.module_of(base) {
         d := cx.s.module_member(m, name, cx.module) else return error_expr(cx.s, span)
@@ -1877,7 +1875,7 @@ construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Sp
             values.push(if cx.s.tys.kind(ft) is .Bool { tir.mk(ft, .Bool(false), span)^ } else { tir.mk(ft, .Int(bigint.zero()), span)^ })!
             continue
         }
-        if d := cx.field_default(id, i, fields[i].ty, span) {
+        if d := cx.field_default(id, i, fields[i].ty) {
             values.push(d^)!
         } else {
             if not bad_args { cx.error(span, str.format("missing field `{}` (it has no default)", fields[i].name)!) }
@@ -1892,7 +1890,7 @@ construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Sp
 /// The default of field `i` of struct `id` of type `ty`, as it is
 /// used: the literal itself for a numeric, `bool` or `null` literal of the field's
 /// type, else the default's value in static memory.
-field_default :: fn(cx: ^FnCx, id: u32, i: usize, ty: Ty, span: source.Span) -> ?^Expr needs Load {
+field_default :: fn(cx: ^FnCx, id: u32, i: usize, ty: Ty) -> ?^Expr needs Load {
     defaults := cx.s.adts.items[usize(id)].defaults
     if i >= defaults.len or not defaults[i] { return null }
     d := cx.s.field_default_expr(id, i) else return null

@@ -212,14 +212,14 @@ handler_lit :: fn(e: ^const ast.Expr) -> ?^const ast.HandlerLit => match e.kind 
 /// A handler literal (§12.5), installed by a `with` whose value is expected to have type
 /// `with_expect`: a second-class handler value.
 handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, with_expect: ?Ty, span: source.Span) -> ^Expr needs Load {
-    hid := cx.new_handler_literal(lit, span) else return error_expr(cx.s, span)
+    hid := cx.new_handler_literal(lit) else return error_expr(cx.s, span)
     cx.handler_clauses(hid, lit, with_expect, span)
     return tir.mk(cx.s.tys.intern(.Handler(hid)), .HandlerRef(hid), span)
 }
 
 /// Starts a handler literal: resolves its effect and reserves its handler, whose clauses
 /// `handler_clauses` checks.
-new_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: source.Span) -> ?u32 needs Load {
+new_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit) -> ?u32 needs Load {
     eref := cx.s.resolve_effect_ref(cx.module, lit.effect_) else return null
     info := cx.s.effects.items[usize(eref.eff)]
     if eref.args.len is not info.params.len {
@@ -263,7 +263,7 @@ handler_clauses :: fn(cx: ^FnCx, hid: u32, lit: ^const ast.HandlerLit, with_expe
 
 /// Binds `name :: handler E { … }`: the clauses are checked later (`check_pending_handler`).
 pending_handler_literal :: fn(cx: ^FnCx, lit: ^const ast.HandlerLit, span: source.Span) -> ^Expr needs Load {
-    hid := cx.new_handler_literal(lit, span) else return error_expr(cx.s, span)
+    hid := cx.new_handler_literal(lit) else return error_expr(cx.s, span)
     lens := list(usize)
     for sc in cx.scopes.items { lens.push(sc.items.len)! }
     cx.pending_handlers.push(PendingHandler(hid: hid, lit: lit, span: span, depth: cx.outer.items.len, scope_lens: lens.items, local_consts: cx.s.local_consts.items.len, labels: cx.labels.items.len, handled: cx.handled.items.len))!
@@ -403,7 +403,7 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
 /// The parameters and result type of a clause for operation `o` of the instantiated
 /// effect `eref`: a `ctl` clause also takes the continuation `k` and never finishes
 /// normally (§14.3).
-pub clause_signature :: fn(s: ^Sema, eref: ^const EffectRef, o: ^const sema.OpInfo) -> (params: []sema.ParamInfo, ret: Ty) needs Load {
+clause_signature :: fn(s: ^Sema, eref: ^const EffectRef, o: ^const sema.OpInfo) -> (params: []sema.ParamInfo, ret: Ty) needs Load {
     m := effect_map(s.effects.items[usize(eref.eff)].params, eref.args)
     params := list(sema.ParamInfo)
     for p in o.params { params.push(sema.ParamInfo(name: p.name, ty: s.subst(p.ty, m), span: p.span, default: null, generic: null, rest: false))! }

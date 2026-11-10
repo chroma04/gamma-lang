@@ -21,7 +21,7 @@ pub find_root :: fn(start: string) -> ?string needs Alloc + Fs {
 /// what the lockfile does not cover, fetches what the store lacks, and rewrites `gamma.lock`
 /// if it changed. Returns `null` if the graph has none. `explicit` is set for the package
 /// commands, which also delete a lockfile that is no longer needed.
-pub sync :: fn(root: string, opts: Options, refresh: Refresh, explicit: bool) -> string!?load.Resolution needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+sync :: fn(root: string, opts: Options, refresh: Refresh, explicit: bool) -> string!?load.Resolution needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     lock_path := join(root, "gamma.lock")
     old := try read_lock(lock_path)
     r := resolver(root, opts, refresh, old)

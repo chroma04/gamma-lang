@@ -47,7 +47,7 @@ pub MemError :: union {
 }
 
 /// The message of the trap `e` causes.
-pub mem_message :: fn(e: MemError) -> string needs Alloc => match e {
+mem_message :: fn(e: MemError) -> string needs Alloc => match e {
     .Null => "invalid memory access: null pointer dereference"
     .Unmapped(addr, len) => str.format("invalid memory access: {} byte(s) at address {:#x} are not inside any allocation", len, addr)!
     .Dead(addr, kind) => {
@@ -76,7 +76,7 @@ pub Memory :: struct {
 
 /// An empty address space whose first allocation is at or above `data_base`, for a
 /// target with pointers of `ptr_bytes` bytes.
-pub memory :: fn(data_base: u64, ptr_bytes: u64) -> Memory needs Alloc {
+memory :: fn(data_base: u64, ptr_bytes: u64) -> Memory needs Alloc {
     limit := if ptr_bytes >= 8 { ~u64(0) } else { u64(1) << (ptr_bytes * 8) }
     return Memory(allocs: list(Allocation), next: data_base, limit: limit, live_count: 0, last: 0, cache: make_fill(CACHE, u32(0))!)
 }
@@ -84,7 +84,7 @@ pub memory :: fn(data_base: u64, ptr_bytes: u64) -> Memory needs Alloc {
 slot :: fn(addr: u64) -> usize => us((addr >> 4) % u64(CACHE))
 
 /// A new zero-filled allocation of `size` bytes aligned to `align`: its base address.
-pub alloc :: fn(m: ^Memory, size: u64, align: u64, kind: AllocKind, mutable: bool) -> MemError!u64 needs Alloc {
+alloc :: fn(m: ^Memory, size: u64, align: u64, kind: AllocKind, mutable: bool) -> MemError!u64 needs Alloc {
     a := align.max(MIN_ALIGN)
     q := m.next / a + (if m.next % a is 0 { 0 } else { 1 })
     // Sums saturate: an address range past the end of the space is exhaustion.
@@ -149,7 +149,7 @@ aligned :: fn(addr: u64, align: u64) -> bool {
 
 /// The `len` bytes at `addr`, aligned to `align`: a view of the allocation's storage,
 /// valid until the next allocation is freed.
-pub read :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
+read :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
     if len is 0 and align <= 1 { return empty_slice(u8) }
     if not aligned(addr, align) { return !.Misaligned(addr, align) }
     // Most accesses are to the allocation used last.
@@ -167,7 +167,7 @@ pub read :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
 }
 
 /// The `len` bytes at `addr` for writing (the allocation must be mutable).
-pub write_view :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
+write_view :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
     if len is 0 and align <= 1 { return empty_slice(u8) }
     if not aligned(addr, align) { return !.Misaligned(addr, align) }
     if m.last < m.allocs.items.len {
@@ -185,14 +185,14 @@ pub write_view :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]
 }
 
 /// Copies `data` to `addr`.
-pub write :: fn(m: ^Memory, addr: u64, data: []const u8, align: u64) -> MemError!() {
+write :: fn(m: ^Memory, addr: u64, data: []const u8, align: u64) -> MemError!() {
     d := try m.write_view(addr, u64(data.len), align)
     d.copy_from(data)
 }
 
 /// Copies `data` to `addr` without the read-only check (to initialize constants and
 /// static data).
-pub init :: fn(m: ^Memory, addr: u64, data: []const u8) -> MemError!() {
+init :: fn(m: ^Memory, addr: u64, data: []const u8) -> MemError!() {
     if data.len is 0 { return () }
     i := try m.check(addr, u64(data.len))
     a := &m.allocs.items[i]
@@ -202,7 +202,7 @@ pub init :: fn(m: ^Memory, addr: u64, data: []const u8) -> MemError!() {
 
 /// Marks the allocation at `base` dead and releases its storage. Returns false if there
 /// is none (or it is already dead).
-pub kill :: fn(m: ^Memory, base: u64) -> bool needs Alloc {
+kill :: fn(m: ^Memory, base: u64) -> bool needs Alloc {
     items := m.allocs.items
     idx := us(m.cache[slot(base)])
     if idx >= items.len or items[idx].base is not base {
@@ -243,7 +243,7 @@ compact :: fn(m: ^Memory) {
 
 /// The allocation containing `addr` (a one-past-the-end address belongs to the allocation
 /// it ends): its base, size, kind and whether it is live.
-pub describe :: fn(m: ^Memory, addr: u64) -> ?(base: u64, size: u64, kind: AllocKind, live: bool) {
+describe :: fn(m: ^Memory, addr: u64) -> ?(base: u64, size: u64, kind: AllocKind, live: bool) {
     i := m.find(addr, 0) else return null
     a := &m.allocs.items[i]
     return (base: a.base, size: a.size, kind: a.kind, live: a.live)

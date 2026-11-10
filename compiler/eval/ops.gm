@@ -306,7 +306,7 @@ coerce :: fn(m: ^Machine, kind: tir.Coercion, x: ^Expr, e: ^Expr) -> Flow!Value 
             .Some(p) => {
                 .Optional(inner) := m.s.tys.kind(e.ty) else return v
                 .Optional(from) := m.s.tys.kind(x.ty) else return v
-                return .Some(new(try m.convert_value(p^, from, inner, e.span))!)
+                return .Some(new(try m.convert_value(p^, from, inner))!)
             }
             _ => return v
         }
@@ -316,7 +316,7 @@ coerce :: fn(m: ^Machine, kind: tir.Coercion, x: ^Expr, e: ^Expr) -> Flow!Value 
 }
 
 /// `v` of type `from` coerced to `to`, for the coercions inside an optional.
-convert_value :: fn(m: ^Machine, v: Value, from: Ty, to: Ty, span: source.Span) -> Flow!Value needs Alloc {
+convert_value :: fn(m: ^Machine, v: Value, from: Ty, to: Ty) -> Flow!Value needs Alloc {
     if from is to { return v }
     match v {
         .Int(bits) => return .Int(m.wrap(m.int_value(bits, from).bits(u128), to))

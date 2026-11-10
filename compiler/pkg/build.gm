@@ -144,7 +144,7 @@ resolve_path :: fn(dir, rel, key, name: string, root: bool) -> string!string nee
 /// The C sources and libraries that the package containing `input` and all its dependencies
 /// add to a native build. `resolution` locates the git and archive dependencies (see
 /// `prepare`). `profile` selects the root package's profile.
-pub collect :: fn(input: string, resolution: ?load.Resolution, profile: ?string) -> string!Extras needs Alloc + Fs {
+collect :: fn(input: string, resolution: ?load.Resolution, profile: ?string) -> string!Extras needs Alloc + Fs {
     root := find_root(input) else return extras()
     manifest := try read_manifest(root)
     settings := load.build_settings(&manifest, profile) else e => { return !str.format("{}: {}", join(root, "gamma.toml"), e)! }

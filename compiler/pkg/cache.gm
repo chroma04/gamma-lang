@@ -34,7 +34,7 @@ report_is_empty :: fn(r: ^const CleanReport) -> bool => r.checkouts + r.mirrors 
 plural :: fn(n: usize, one, many: string) -> string needs Alloc => str.format("{} {}", n, if n is 1 { one } else { many })!
 
 /// One line for the user.
-pub summary :: fn(r: ^const CleanReport, dry_run: bool) -> string needs Alloc {
+summary :: fn(r: ^const CleanReport, dry_run: bool) -> string needs Alloc {
     if report_is_empty(r) { return "Nothing to remove" }
     return str.format(
         "{} {}, {}, {} ({} {})",
@@ -48,7 +48,7 @@ pub summary :: fn(r: ^const CleanReport, dry_run: bool) -> string needs Alloc {
 }
 
 /// `n` bytes as `12.3 MiB`.
-pub human_size :: fn(n: u64) -> string needs Alloc {
+human_size :: fn(n: u64) -> string needs Alloc {
     units := [4]string("B", "KiB", "MiB", "GiB")
     v := n.to(f64)
     u: usize = 0
@@ -220,7 +220,7 @@ with_extension :: fn(p: string, ext: string) -> string needs Alloc {
 }
 
 /// Cleans the cache directory `dir` as `policy` says.
-pub clean :: fn(dir: string, policy: Policy) -> CleanReport needs Alloc + Clock + Fs + Proc {
+clean :: fn(dir: string, policy: Policy) -> CleanReport needs Alloc + Clock + Fs + Proc {
     c := Cleaner(policy: policy, now: Clock.wall(), report: CleanReport(failures: list(string)))
     if not is_dir(dir) { return c.report }
     kept_git := trees(&c, join(join(dir, "git"), "checkouts"))

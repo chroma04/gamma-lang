@@ -121,7 +121,7 @@ pub(package) starts_with :: fn(p, base: string) -> bool needs Alloc => strip_pre
 
 /// `p` without the leading names of `base` (empty if they are equal), or `null` if `p`
 /// does not begin with `base`.
-pub(package) strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
+strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
     a := split(p)
     b := split(base)
     if a.root is not b.root or a.names.items.len < b.names.items.len { return null }
@@ -132,7 +132,7 @@ pub(package) strip_prefix :: fn(p, base: string) -> ?string needs Alloc {
 }
 
 /// `p` with `/` for every separator, for output that is the same on every platform.
-pub slashes :: fn(p: string) -> string needs Alloc {
+slashes :: fn(p: string) -> string needs Alloc {
     out := list(u8)
     for c in p { out.push(if is_sep(c) { '/' } else { c })! }
     return out.items

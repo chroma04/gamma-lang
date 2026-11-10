@@ -24,7 +24,7 @@ pub Inbox :: struct {
     closed: bool
 }
 
-pub inbox :: fn() -> Inbox needs Alloc => Inbox(lock: thread.mutex(), ready: thread.condvar(), items: list(Incoming), head: 0, closed: false)
+inbox :: fn() -> Inbox needs Alloc => Inbox(lock: thread.mutex(), ready: thread.condvar(), items: list(Incoming), head: 0, closed: false)
 
 /// What taking a message found.
 pub Taken :: union {
@@ -60,7 +60,7 @@ pop_front :: fn(b: ^Inbox) -> Incoming {
 
 /// The next message, waiting for one; `null` once the input has ended and all messages
 /// are taken.
-pub take :: fn(b: ^Inbox) -> ?Incoming needs Sys {
+take :: fn(b: ^Inbox) -> ?Incoming needs Sys {
     thread.lock(&b.lock)
     while b.head is b.items.items.len and not b.closed { thread.wait(&b.ready, &b.lock) }
     r: ?Incoming = null
@@ -70,7 +70,7 @@ pub take :: fn(b: ^Inbox) -> ?Incoming needs Sys {
 }
 
 /// The next message if one is waiting.
-pub try_take :: fn(b: ^Inbox) -> Taken needs Sys {
+try_take :: fn(b: ^Inbox) -> Taken needs Sys {
     thread.lock(&b.lock)
     r := Taken.Empty
     if b.head < b.items.items.len {
@@ -130,7 +130,7 @@ read_line :: fn(inp: ^Input, limit: usize, line: ^List(u8)) needs Alloc + In {
 }
 
 /// Reads one message. `null` at the end of the input.
-pub read_message :: fn(inp: ^Input) -> ReadError!?[]u8 needs Alloc + In {
+read_message :: fn(inp: ^Input) -> ReadError!?[]u8 needs Alloc + In {
     length: ?usize = null
     line := list(u8)
     defer line.deinit()
@@ -181,7 +181,7 @@ parse_length :: fn(s: string) -> ?usize {
 
 /// The reader thread: reads messages from standard input into the inbox until the input
 /// ends.
-pub reader :: fn(b: ^Inbox) needs Sys {
+reader :: fn(b: ^Inbox) needs Sys {
     with heap_allocator(), system_io(), system_output() {
         inp := new(Input(buf: ---, pos: 0, end: 0, eof: false))!
         while true {
@@ -203,7 +203,7 @@ pub reader :: fn(b: ^Inbox) needs Sys {
 
 /// Writes one message with its header. The output is handed to the system before the
 /// server waits for the next message (§12.9), so the client gets it without a flush.
-pub write_message :: fn(body: string) needs Alloc + Out {
+write_message :: fn(body: string) needs Alloc + Out {
     msg := list(u8)
     defer msg.deinit()
     msg.write("Content-Length: {}\r\n\r\n", body.len)!

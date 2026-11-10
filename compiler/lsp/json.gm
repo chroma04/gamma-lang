@@ -10,9 +10,9 @@ pub Obj :: struct {
     members: List(json.Member)
 }
 
-pub obj :: fn() -> Obj needs Alloc => Obj(members: list(json.Member))
+obj :: fn() -> Obj needs Alloc => Obj(members: list(json.Member))
 
-pub put :: fn(o: ^Obj, key: string, v: Value) needs Alloc {
+put :: fn(o: ^Obj, key: string, v: Value) needs Alloc {
     for i in 0..o.members.items.len {
         if o.members.items[i].key is key {
             o.members.items[i].value = v
@@ -23,20 +23,20 @@ pub put :: fn(o: ^Obj, key: string, v: Value) needs Alloc {
 }
 
 /// The object with the members put so far.
-pub value :: fn(o: ^const Obj) -> Value => Value.Object(o.members.items)
+value :: fn(o: ^const Obj) -> Value => Value.Object(o.members.items)
 
 /// A string value.
 pub text :: fn(s: string) -> Value => Value.String(s)
 
 /// An integer value.
-pub int :: fn(n: i64) -> Value needs Alloc => Value.Number(json.Number(text: str.format("{}", n)!))
+int :: fn(n: i64) -> Value needs Alloc => Value.Number(json.Number(text: str.format("{}", n)!))
 
-pub bool_value :: fn(b: bool) -> Value => Value.Bool(b)
+bool_value :: fn(b: bool) -> Value => Value.Bool(b)
 
-pub NULL :: Value.Null
+NULL :: Value.Null
 
 /// An array value.
-pub array :: fn(items: []const Value) -> Value needs Alloc {
+array :: fn(items: []const Value) -> Value needs Alloc {
     l := list(Value)
     l.extend(items)!
     return Value.Array(l.items)
@@ -46,32 +46,32 @@ pub array :: fn(items: []const Value) -> Value needs Alloc {
 pub field :: fn(v: Value, key: string) -> Value => json.get(v, key) else Value.Null
 
 /// Member `a` of member `b`, and so on: `v["a"]["b"]` of a language with such indexing.
-pub path2 :: fn(v: Value, a, b: string) -> Value => field(field(v, a), b)
+path2 :: fn(v: Value, a, b: string) -> Value => field(field(v, a), b)
 
-pub as_str :: fn(v: Value) -> ?string => match v {
+as_str :: fn(v: Value) -> ?string => match v {
     .String(s) => s
     _ => null
 }
 
-pub as_array :: fn(v: Value) -> ?[]Value => match v {
+as_array :: fn(v: Value) -> ?[]Value => match v {
     .Array(xs) => xs
     _ => null
 }
 
-pub as_bool :: fn(v: Value) -> ?bool => match v {
+as_bool :: fn(v: Value) -> ?bool => match v {
     .Bool(b) => b
     _ => null
 }
 
 /// An integer value that fits an `i64` (and was written without a fraction).
-pub as_i64 :: fn(v: Value) -> ?i64 {
+as_i64 :: fn(v: Value) -> ?i64 {
     .Number(n) := v else return null
     if n.text.index_of('.') is not null or n.text.index_of('e') is not null or n.text.index_of('E') is not null { return null }
     return json.to_i64(n)
 }
 
 /// A non-negative integer value that fits a `u64`.
-pub as_u64 :: fn(v: Value) -> ?u64 {
+as_u64 :: fn(v: Value) -> ?u64 {
     .Number(n) := v else return null
     if n.text.len is 0 { return null }
     x: u64 = 0
@@ -85,14 +85,14 @@ pub as_u64 :: fn(v: Value) -> ?u64 {
 }
 
 /// Whether `v` is the boolean `true`.
-pub is_true :: fn(v: Value) -> bool => match v {
+is_true :: fn(v: Value) -> bool => match v {
     .Bool(b) => b
     _ => false
 }
 
 /// Appends the compact JSON text of `v` to `out`, with the members of each object ordered
 /// by key (a later member of the same name replaces an earlier one).
-pub write_value :: fn(out: ^List(u8), v: Value) needs Alloc {
+write_value :: fn(out: ^List(u8), v: Value) needs Alloc {
     match v {
         .Null => out.extend("null")!
         .Bool(b) => out.extend(if b { "true" } else { "false" })!
@@ -131,7 +131,7 @@ pub write_value :: fn(out: ^List(u8), v: Value) needs Alloc {
 }
 
 /// A string literal with the escapes JSON needs and nothing else.
-pub write_string :: fn(out: ^List(u8), s: string) needs Alloc {
+write_string :: fn(out: ^List(u8), s: string) needs Alloc {
     out.push('"')!
     start: usize = 0
     for i in 0..s.len {
@@ -155,7 +155,7 @@ pub write_string :: fn(out: ^List(u8), s: string) needs Alloc {
 }
 
 /// The compact JSON text of `v`.
-pub to_text :: fn(v: Value) -> string needs Alloc {
+to_text :: fn(v: Value) -> string needs Alloc {
     out := list(u8)
     write_value(&out, v)
     return out.items

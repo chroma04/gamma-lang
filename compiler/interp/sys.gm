@@ -193,7 +193,7 @@ sys_run :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []^Node, vals
         .ProcLaunch, .ProcWriteIn, .ProcCloseIn, .ProcReadOut, .ProcWait, .ProcTryWait, .ProcKill => { n = try m.sys_proc(span, op, args, vals) }
         .EnvArgs => { return m.perform_native(span, .Env, 0, empty_slice([]u8), dst) }
         .EnvVar => { return m.perform_native(span, .Env, 1, vals, dst) }
-        .EnvExit => { return m.env_exit(span, m.get_uint(vals[0]).trunc(u8)) }
+        .EnvExit => { return m.env_exit(m.get_uint(vals[0]).trunc(u8)) }
         _ => return !m.trap(span, "internal error: a thread operation reached the system services")
     }
     m.sys_ret(dst, n)

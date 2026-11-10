@@ -51,7 +51,7 @@ same_len :: fn(a, b: ?u64) -> bool {
 }
 
 /// Function `name` of the core module `core/<module>`.
-pub core_fn_of :: fn(s: ^Sema, module: string, name: string) -> ?u32 needs Load {
+core_fn_of :: fn(s: ^Sema, module: string, name: string) -> ?u32 needs Load {
     mname := str.format("core/{}", module)!
     for m in s.l.core_modules.items {
         if s.l.modules.items[m].name is not mname { continue }
@@ -92,7 +92,7 @@ pub soa_type :: fn(s: ^Sema, elem: Ty, len: ?u64, is_const: bool, span: source.S
 
 /// `soa_type`, or why `elem` cannot be stored by field. A type parameter, or a generic type
 /// of one, gives the stand-in that each instantiation replaces.
-pub soa_type_of :: fn(s: ^Sema, elem: Ty, len: ?u64, is_const0: bool) -> SoaTy needs Load {
+soa_type_of :: fn(s: ^Sema, elem: Ty, len: ?u64, is_const0: bool) -> SoaTy needs Load {
     tys := &s.tys
     if tys.is_error(elem) { return .Ok(elem) }
     is_const := is_const0 and len is null
@@ -175,7 +175,7 @@ soa_template :: fn(s: ^Sema, len: ?u64, is_const: bool) -> u32 needs Load {
 }
 
 /// Whether `id` is the template of a shape of `#soa` type.
-pub soa_shape_of :: fn(s: ^const Sema, id: u32) -> ?(len: ?u64, is_const: bool) {
+soa_shape_of :: fn(s: ^const Sema, id: u32) -> ?(len: ?u64, is_const: bool) {
     for tm in s.soa_templates.items {
         if tm.id is id { return (len: tm.len, is_const: tm.is_const) }
     }
@@ -184,7 +184,7 @@ pub soa_shape_of :: fn(s: ^const Sema, id: u32) -> ?(len: ?u64, is_const: bool) 
 
 /// `subst` of the stand-in `#soa` type of `elem`: the real type, or the error type, with
 /// the reason kept for `report_soa_errors`.
-pub subst_soa :: fn(s: ^Sema, elem: Ty, shape: (len: ?u64, is_const: bool)) -> Ty needs Load {
+subst_soa :: fn(s: ^Sema, elem: Ty, shape: (len: ?u64, is_const: bool)) -> Ty needs Load {
     match s.soa_type_of(elem, shape.len, shape.is_const) {
         .Ok(t) => return t
         .Err(msg) => {

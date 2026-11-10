@@ -24,7 +24,7 @@ KEPT_PROGRAMS :: 32
 NS_PER_SECOND :: 1_000_000_000
 
 /// A 16-digit key for `parts`: the start of their SHA-256, each part preceded by its length.
-pub cache_key :: fn(parts: []const string) -> string needs Alloc {
+cache_key :: fn(parts: []const string) -> string needs Alloc {
     buf := list(u8)
     defer buf.deinit()
     for p in parts { buf.write("{}:{}", p.len, p)! }
@@ -33,7 +33,7 @@ pub cache_key :: fn(parts: []const string) -> string needs Alloc {
 
 /// The first line of the output of `<compiler> --version` (all of its standard output), or
 /// `null` if the compiler cannot be run.
-pub compiler_version :: fn(tc: ^const pkg.Toolchain) -> ?string needs Alloc + Proc {
+compiler_version :: fn(tc: ^const pkg.Toolchain) -> ?string needs Alloc + Proc {
     argv := list(string)
     argv.extend(tc.cc)!
     argv.push("--version")!
@@ -46,7 +46,7 @@ pub compiler_version :: fn(tc: ^const pkg.Toolchain) -> ?string needs Alloc + Pr
 /// a name starting with `prefix`; compiled now if it is not there. `compiler` is the
 /// compiler's `compiler_version`. `null` if there is no cache, no version, or the object
 /// cannot be made.
-pub runtime_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, source: string, prefix: string, compiler: ?string) -> ?string needs Alloc + Env + Fs + Proc + Rand {
+runtime_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, source: string, prefix: string, compiler: ?string) -> ?string needs Alloc + Env + Fs + Proc + Rand {
     dir := pkg.cache_dir() else return null
     version := compiler else return null
     key := cache_key([6]string("gammac", source, str.join(tc.cc, "\0")!, str.join(tc.cflags, "\0")!, str.join(flags, "\0")!, version)[..])
@@ -78,14 +78,14 @@ pub runtime_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, source
 }
 
 /// A file name in `dir` no other process or thread uses.
-pub private_name :: fn(dir, stem, ext: string) -> string needs Alloc + Rand {
+private_name :: fn(dir, stem, ext: string) -> string needs Alloc + Rand {
     r: [8]u8 = ---
     Rand.fill(r[..])
     return load.join(dir, str.format("{}.tmp-{}.{}", stem, pkg.hex(r[..]), ext)!)
 }
 
 /// Renames `from` to `to` (replacing it), removing `from` if that fails. `null` if it fails.
-pub rename_or_remove :: fn(from, to: string) -> ?() needs Fs {
+rename_or_remove :: fn(from, to: string) -> ?() needs Fs {
     Fs.rename(from, to) else {
         _ = Fs.remove(from)
         return null
@@ -95,7 +95,7 @@ pub rename_or_remove :: fn(from, to: string) -> ?() needs Fs {
 
 /// Sets the modification time of the cached file `p` to now, so the cache cleaner keeps it.
 /// (The standard library has no call for it, so the `touch` program does it.)
-pub touch :: fn(p: string) needs Alloc + Proc {
+touch :: fn(p: string) needs Alloc + Proc {
     argv := [3]string("touch", "-c", p)
     _ = pkg.run(argv[..])
 }
@@ -109,7 +109,7 @@ CachedProgram :: struct {
 /// Removes all but the most recently used `KEPT_PROGRAMS` executables in `dir`, sparing any
 /// used in the last ten minutes (another process may be about to run it), and the leftovers
 /// of builds that died, which are over an hour old.
-pub prune :: fn(dir: string) needs Alloc + Clock + Fs {
+prune :: fn(dir: string) needs Alloc + Clock + Fs {
     now := Clock.wall()
     stale := now - 3600 * NS_PER_SECOND
     progs := list(CachedProgram)

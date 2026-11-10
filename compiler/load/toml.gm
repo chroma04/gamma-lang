@@ -36,7 +36,7 @@ pub(package) TomlError :: struct {
     pub(package) col: usize = 1
 }
 
-pub(package) new_table :: fn() -> ^Table needs Alloc => new(Table(entries: list(Entry)))!
+new_table :: fn() -> ^Table needs Alloc => new(Table(entries: list(Entry)))!
 
 /// The entry `key` of `t`, if it has one.
 pub(package) get :: fn(t: ^const Table, key: string) -> ?^Entry {

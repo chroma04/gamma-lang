@@ -70,7 +70,7 @@ Checked :: struct {
 
 /// Finds what the rules about the checked program report in the files `scoped` holds
 /// (by file id).
-pub analyze :: fn(s: ^sema.Sema, program: bool, scoped: []const bool) -> List(Finding) needs Alloc + Fs {
+analyze :: fn(s: ^sema.Sema, program: bool, scoped: []const bool) -> List(Finding) needs Alloc + Fs {
     // Constants are checked when first used; those that nothing used yet are checked now.
     cn: usize = 0
     while cn < s.consts.items.len {

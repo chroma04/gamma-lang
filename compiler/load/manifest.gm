@@ -99,7 +99,7 @@ pub BuildSettings :: struct {
 }
 
 /// These settings with every key `over` writes replaced by its value.
-pub overlay :: fn(base: BuildSettings, over: BuildSettings) -> BuildSettings {
+overlay :: fn(base: BuildSettings, over: BuildSettings) -> BuildSettings {
     return BuildSettings(
         mode: over.mode else base.mode,
         debug_info: over.debug_info else base.debug_info,
@@ -246,7 +246,7 @@ pub trim_ascii :: fn(s: string) -> string {
 is_ws :: fn(c: u8) -> bool => c in (' ', '\t', '\n', '\r', 0x0b, 0x0c)
 
 /// `s` with ASCII capitals made small.
-pub lower_ascii :: fn(s: string) -> string needs Alloc {
+lower_ascii :: fn(s: string) -> string needs Alloc {
     out := make(u8, s.len)!
     for i, c in enumerate(s) { out[i] = if c in 'A'..='Z' { c + 32 } else { c } }
     return out

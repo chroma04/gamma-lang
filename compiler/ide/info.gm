@@ -22,13 +22,13 @@ TYPE_NAMES :: [20]string(
 BUILTIN_FNS :: [5]string("assert", "eprint", "expect_eq", "print", "trap")
 
 /// The text of the source at `span`, or "" for no location.
-pub src :: fn(s: ^const sema.Sema, span: Span) -> string {
+src :: fn(s: ^const sema.Sema, span: Span) -> string {
     if span is source.DUMMY or usize(span.file) >= s.l.sm.files.items.len { return "" }
     return s.l.sm.file(span.file).text[usize(span.lo)..usize(span.hi)]
 }
 
 /// Whether `span` is in a file of the embedded core library.
-pub is_core_file :: fn(s: ^const sema.Sema, span: Span) -> bool {
+is_core_file :: fn(s: ^const sema.Sema, span: Span) -> bool {
     if span is source.DUMMY or usize(span.file) >= s.l.sm.files.items.len { return false }
     return s.l.sm.file(span.file).path.starts_with("<")
 }
@@ -50,13 +50,13 @@ lines_of :: fn(text: string) -> List(string) needs Alloc {
 }
 
 /// The value of an already resolved declaration.
-pub decl_done :: fn(s: ^sema.Sema, d: usize) -> ?sema.DeclValue needs Alloc {
+decl_done :: fn(s: ^sema.Sema, d: usize) -> ?sema.DeclValue needs Alloc {
     if .Done(v) := s.state(d) { return v }
     return null
 }
 
 /// `fn(a: i32, b: string) -> bool needs Out`: the signature of function `f`.
-pub fn_signature :: fn(s: ^sema.Sema, f: u32, skip_receiver: bool) -> string needs Alloc {
+fn_signature :: fn(s: ^sema.Sema, f: u32, skip_receiver: bool) -> string needs Alloc {
     sig := &s.fns.items[usize(f)]
     params := list(string)
     skipped := not skip_receiver
@@ -97,7 +97,7 @@ first_line :: fn(s: ^const sema.Sema, span: Span) -> string needs Alloc {
 
 /// The operation `index` of the effect declared by declaration `ed`, as a declaration
 /// shows it: `Eff.op :: fn(a: T) -> R`.
-pub op_info :: fn(s: ^sema.Sema, ed: usize, index: u32) -> (kind: Kind, hover: Hover) needs Alloc {
+op_info :: fn(s: ^sema.Sema, ed: usize, index: u32) -> (kind: Kind, hover: Hover) needs Alloc {
     decl := &s.l.decls.items[ed]
     name := ""
     if .Binding(b) := decl.item.kind {
@@ -126,7 +126,7 @@ pub op_info :: fn(s: ^sema.Sema, ed: usize, index: u32) -> (kind: Kind, hover: H
 }
 
 /// The kind and hover text of declaration `d`.
-pub decl_info :: fn(s: ^sema.Sema, d: usize) -> (kind: Kind, hover: Hover) needs Alloc {
+decl_info :: fn(s: ^sema.Sema, d: usize) -> (kind: Kind, hover: Hover) needs Alloc {
     decl := &s.l.decls.items[d]
     name := decl.name.name
     doc := decl.item.doc
@@ -190,7 +190,7 @@ pub decl_info :: fn(s: ^sema.Sema, d: usize) -> (kind: Kind, hover: Hover) needs
 }
 
 /// A completion item for declaration `d`.
-pub decl_item :: fn(s: ^sema.Sema, d: usize) -> Item needs Alloc {
+decl_item :: fn(s: ^sema.Sema, d: usize) -> Item needs Alloc {
     decl := &s.l.decls.items[d]
     info := decl_info(s, d)
     detail := ""
@@ -198,10 +198,10 @@ pub decl_item :: fn(s: ^sema.Sema, d: usize) -> Item needs Alloc {
         match v {
             .Fn(f) => { detail = fn_signature(s, f, false) }
             .Const(ty), .Global(ty) => { detail = s.show(ty) }
-            _ => { detail = (lines_of(info.hover.code).items.first() else "") }
+            _ => { detail = lines_of(info.hover.code).items.first() else "" }
         }
     } else {
-        detail = (lines_of(info.hover.code).items.first() else "")
+        detail = lines_of(info.hover.code).items.first() else ""
     }
     return Item(label: decl.name.name, kind: info.kind, detail: detail, doc: info.hover.doc)
 }
@@ -218,7 +218,7 @@ op_item :: fn(s: ^sema.Sema, ed: usize, index: u32) -> Item needs Alloc {
 }
 
 /// The declarations of module `m` that module `from` can see, as the members of `m.`.
-pub module_members :: fn(s: ^sema.Sema, m: usize, from: usize) -> List(Item) needs Alloc {
+module_members :: fn(s: ^sema.Sema, m: usize, from: usize) -> List(Item) needs Alloc {
     ds := list(usize)
     for n in s.l.modules.items[m].scope.items {
         if s.decl_visible(n.decl, from) { ds.push(n.decl)! }
@@ -230,7 +230,7 @@ pub module_members :: fn(s: ^sema.Sema, m: usize, from: usize) -> List(Item) nee
 }
 
 /// The names of the universe scope: the prelude's public declarations and the builtins.
-pub universe_items :: fn(s: ^sema.Sema) -> List(Item) needs Alloc {
+universe_items :: fn(s: ^sema.Sema) -> List(Item) needs Alloc {
     items := list(Item)
     if p := s.l.prelude {
         ds := list(usize)
@@ -256,7 +256,7 @@ pub universe_items :: fn(s: ^sema.Sema) -> List(Item) needs Alloc {
 }
 
 /// The module-level names of module `m`: its own declarations.
-pub module_scope_items :: fn(s: ^sema.Sema, m: usize) -> List(Item) needs Alloc {
+module_scope_items :: fn(s: ^sema.Sema, m: usize) -> List(Item) needs Alloc {
     ds := list(usize)
     for n in s.l.modules.items[m].scope.items { ds.push(n.decl)! }
     ds.items.sort()
@@ -271,7 +271,7 @@ builtin_methods :: fn(names: []const string, out: ^List(Item)) needs Alloc {
 
 /// The members reached with `.` on a value of the nominal or builtin type `ty`: fields,
 /// then the functions of the type's module that take it as a receiver.
-pub value_members :: fn(s: ^sema.Sema, ty: Ty) -> List(Item) needs Alloc {
+value_members :: fn(s: ^sema.Sema, ty: Ty) -> List(Item) needs Alloc {
     items := list(Item)
     match s.tys.kind(ty) {
         .Adt(id, _) => {
@@ -326,7 +326,7 @@ field_items :: fn(s: ^sema.Sema, ty: Ty, items: ^List(Item), depth: u32) needs A
 }
 
 /// The variants of the union `ty`, as the members of the type's name.
-pub variant_members :: fn(s: ^sema.Sema, ty: Ty) -> List(Item) needs Alloc {
+variant_members :: fn(s: ^sema.Sema, ty: Ty) -> List(Item) needs Alloc {
     items := list(Item)
     .Adt(id, _) := s.tys.kind(ty) else return items
     info := &s.adts.items[usize(id)]
@@ -339,7 +339,7 @@ pub variant_members :: fn(s: ^sema.Sema, ty: Ty) -> List(Item) needs Alloc {
 }
 
 /// The operations of effect declaration `d`, as the members of the effect's name.
-pub operation_members :: fn(s: ^sema.Sema, d: usize) -> List(Item) needs Alloc {
+operation_members :: fn(s: ^sema.Sema, d: usize) -> List(Item) needs Alloc {
     items := list(Item)
     v := decl_done(s, d) else return items
     .Effect(e) := v else return items
@@ -355,7 +355,7 @@ pub operation_members :: fn(s: ^sema.Sema, d: usize) -> List(Item) needs Alloc {
 
 /// The declaration of the struct or union that type `ty` (or the type it points to)
 /// instantiates.
-pub adt_decl_of :: fn(s: ^const sema.Sema, ty_in: Ty) -> ?usize {
+adt_decl_of :: fn(s: ^const sema.Sema, ty_in: Ty) -> ?usize {
     ty := ty_in
     while .Ptr(_, pointee) := s.tys.kind(ty) { ty = pointee }
     .Adt(id, _) := s.tys.kind(ty) else return null

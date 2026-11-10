@@ -4,7 +4,7 @@
 /// The path as the compiler's overlays and file lookups spell it: absolute, without `.`
 /// and `..` names; for a file that does not exist (yet), its directory's canonical form
 /// joined with its name.
-pub canon :: fn(p: string) -> string needs Alloc + Fs {
+canon :: fn(p: string) -> string needs Alloc + Fs {
     if c := canonical_of(p) { return c }
     name := load.file_name(p) else return p
     dir := load.parent(p) else return p
@@ -19,10 +19,10 @@ canonical_of :: fn(p: string) -> ?string needs Alloc + Fs {
 }
 
 /// The directory of a path.
-pub dir_of :: fn(p: string) -> string needs Alloc => load.parent(p) else ""
+dir_of :: fn(p: string) -> string needs Alloc => load.parent(p) else ""
 
 /// A `file://` URI for `path`.
-pub path_to_uri :: fn(path: string) -> string needs Alloc {
+path_to_uri :: fn(path: string) -> string needs Alloc {
     out := list(u8)
     out.extend("file://")!
     for b in path {
@@ -42,7 +42,7 @@ hex_value :: fn(c: u8) -> ?u8 {
 }
 
 /// The path of a `file://` URI.
-pub uri_to_path :: fn(uri: string) -> ?string needs Alloc {
+uri_to_path :: fn(uri: string) -> ?string needs Alloc {
     if not uri.starts_with("file://") { return null }
     rest := uri[7..]
     // `file://host/path` and `file:///path`: the path starts at the next slash.
@@ -102,7 +102,7 @@ make_analysis :: fn(ar: ^arena.Arena, primary: string) -> ^Analysis needs Alloc 
 }
 
 /// Checks the module in `dir`, reading the open documents from `overlays`.
-pub check_module :: fn(dir: string, overlays: []const load.Overlay, primary: string) -> ^Analysis needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+check_module :: fn(dir: string, overlays: []const load.Overlay, primary: string) -> ^Analysis needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     ar := new(arena.new())!
     a := make_analysis(ar, primary)
     with ar.allocator() {
@@ -117,7 +117,7 @@ pub check_module :: fn(dir: string, overlays: []const load.Overlay, primary: str
 }
 
 /// Releases an analysis.
-pub release :: fn(a: ^Analysis) needs Alloc {
+release :: fn(a: ^Analysis) needs Alloc {
     ar := a.arena
     ar.deinit()
     destroy(ar)
@@ -170,13 +170,13 @@ resolve_core :: fn(s: ^sema.Sema) needs Alloc + Fs {
     }
 }
 
-pub file_id :: fn(a: ^const Analysis, path: string) -> ?source.FileId => a.files.get(path)
+file_id :: fn(a: ^const Analysis, path: string) -> ?source.FileId => a.files.get(path)
 
-pub source_text :: fn(a: ^const Analysis, file: source.FileId) -> string => a.sm.file(file).text
+source_text :: fn(a: ^const Analysis, file: source.FileId) -> string => a.sm.file(file).text
 
 /// The path of a file of the analysis, unless it is not a real file (the embedded core
 /// library).
-pub real_path :: fn(a: ^const Analysis, file: source.FileId) -> ?string needs Alloc + Fs {
+real_path :: fn(a: ^const Analysis, file: source.FileId) -> ?string needs Alloc + Fs {
     if usize(file) >= a.sm.files.items.len { return null }
     p := a.sm.file(file).path
     if p.starts_with("<") { return null }
@@ -185,7 +185,7 @@ pub real_path :: fn(a: ^const Analysis, file: source.FileId) -> ?string needs Al
 
 /// Where an editor can open the file: its path, or for the embedded core library a file
 /// with its text (see `corelib.gm`).
-pub open_path :: fn(a: ^Analysis, file: source.FileId) -> ?string needs Alloc + Env + Fs + Proc + Rand {
+open_path :: fn(a: ^Analysis, file: source.FileId) -> ?string needs Alloc + Env + Fs + Proc + Rand {
     if p := a.real_path(file) { return p }
     if usize(file) >= a.sm.files.items.len { return null }
     f := a.sm.file(file)
@@ -201,7 +201,7 @@ scan_lines :: fn(a: ^Analysis, t: string) -> LineStarts needs Alloc {
 }
 
 /// The line index of a file, scanning the file the first time only.
-pub lines :: fn(a: ^Analysis, file: source.FileId) -> LineIndex needs Alloc {
+lines :: fn(a: ^Analysis, file: source.FileId) -> LineIndex needs Alloc {
     t := a.source_text(file)
     if known := a.line_cache.get(file) { return line_index_from(t, known) }
     starts := scan_lines(a, t)
@@ -211,7 +211,7 @@ pub lines :: fn(a: ^Analysis, file: source.FileId) -> LineIndex needs Alloc {
 
 /// The LSP range of `span`; an empty span is widened to one character so that editors
 /// can underline it.
-pub range :: fn(a: ^Analysis, span: source.Span, enc: Encoding) -> Value needs Alloc {
+range :: fn(a: ^Analysis, span: source.Span, enc: Encoding) -> Value needs Alloc {
     t := a.source_text(span.file)
     ix := a.lines(span.file)
     lo := usize(span.lo)
@@ -228,7 +228,7 @@ pub range :: fn(a: ^Analysis, span: source.Span, enc: Encoding) -> Value needs A
     return range_json(&ix, lo, hi, enc)
 }
 
-pub range_json :: fn(ix: ^const LineIndex, lo, hi: usize, enc: Encoding) -> Value needs Alloc {
+range_json :: fn(ix: ^const LineIndex, lo, hi: usize, enc: Encoding) -> Value needs Alloc {
     s := position(ix, lo, enc)
     e := position(ix, hi, enc)
     o := obj()
@@ -237,7 +237,7 @@ pub range_json :: fn(ix: ^const LineIndex, lo, hi: usize, enc: Encoding) -> Valu
     return o.value()
 }
 
-pub pos_json :: fn(line, character: u32) -> Value needs Alloc {
+pos_json :: fn(line, character: u32) -> Value needs Alloc {
     o := obj()
     o.put("line", int(i64(line)))
     o.put("character", int(i64(character)))
@@ -250,7 +250,7 @@ pub UriMap :: struct {
 }
 
 /// The URI to use for the file at `path`.
-pub uri_of :: fn(m: ^const UriMap, path: string) -> string needs Alloc {
+uri_of :: fn(m: ^const UriMap, path: string) -> string needs Alloc {
     if u := m.uris.get(path) { return u }
     return path_to_uri(path)
 }
@@ -263,7 +263,7 @@ pub PathDiags :: struct {
 
 /// The diagnostics of the analysis as LSP diagnostics, by canonical file path, in the order
 /// the files first have one.
-pub diagnostics :: fn(a: ^Analysis, enc: Encoding, uris: ^const UriMap) -> List(PathDiags) needs Alloc + Env + Fs {
+diagnostics :: fn(a: ^Analysis, enc: Encoding, uris: ^const UriMap) -> List(PathDiags) needs Alloc + Env + Fs {
     out := list(PathDiags)
     index := hash_map.hash_map(string, usize)
     for i in 0..a.diags.list.items.len {
@@ -386,7 +386,7 @@ fix_json :: fn(a: ^Analysis, fx: ^const diag.Fix, enc: Encoding, uris: ^const Ur
 CORE_PREFIX :: "<core>/"
 
 /// Whether `name` (a source file's name in the compiler) is an embedded core source.
-pub is_core :: fn(name: string) -> bool => name.starts_with(CORE_PREFIX)
+is_core :: fn(name: string) -> bool => name.starts_with(CORE_PREFIX)
 
 /// The path of a file holding `text`, the embedded source named `name` (`<core>/list.gm`).
 /// It is `core/NAME` next to the standard library when that file has exactly the embedded

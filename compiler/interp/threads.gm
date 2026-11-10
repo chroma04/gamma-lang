@@ -132,7 +132,7 @@ check_fatal :: fn(m: ^const Machine) -> Flow!() {
 /// `@env_exit`: ends the program with `code`. On the main thread that is an exit in
 /// progress; another thread records it for the main thread, which ends the program when it
 /// next runs, and unwinds its own frames.
-env_exit :: fn(m: ^Machine, span: source.Span, code: u8) -> Flow!() {
+env_exit :: fn(m: ^Machine, code: u8) -> Flow!() {
     if m.threads.cur is 0 { return !.Exit(code) }
     if m.threads.exit is null { m.threads.exit = code }
     return !.Exit(code)
