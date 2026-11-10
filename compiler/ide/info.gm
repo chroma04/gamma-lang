@@ -229,9 +229,6 @@ pub module_members :: fn(s: ^sema.Sema, m: usize, from: usize) -> List(Item) nee
     return items
 }
 
-/// Whether `d`, a public declaration of the prelude, stays out of the universe scope.
-universe_hidden_decl :: fn(s: ^const sema.Sema, d: usize) -> bool => sema.universe_hidden(s, d)
-
 /// The names of the universe scope: the prelude's public declarations and the builtins.
 pub universe_items :: fn(s: ^sema.Sema) -> List(Item) needs Alloc {
     items := list(Item)

@@ -42,18 +42,6 @@ pub array :: fn(items: []const Value) -> Value needs Alloc {
     return Value.Array(l.items)
 }
 
-/// The object `{k1: v1, k2: v2, …}` for the pairs of `kvs`.
-pub Pair :: struct {
-    key: string
-    value: Value
-}
-
-pub object :: fn(kvs: []const Pair) -> Value needs Alloc {
-    o := obj()
-    for kv in kvs { o.put(kv.key, kv.value) }
-    return o.value()
-}
-
 /// Member `key` of an object, or null if `v` is not an object or has no such member.
 pub field :: fn(v: Value, key: string) -> Value => json.get(v, key) else Value.Null
 

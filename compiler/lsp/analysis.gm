@@ -21,9 +21,6 @@ canonical_of :: fn(p: string) -> ?string needs Alloc + Fs {
 /// The directory of a path.
 pub dir_of :: fn(p: string) -> string needs Alloc => load.parent(p) else ""
 
-/// Whether `p` is a path of a `.gm` file.
-pub is_gm :: fn(p: string) -> bool => p.ends_with(".gm")
-
 /// A `file://` URI for `path`.
 pub path_to_uri :: fn(path: string) -> string needs Alloc {
     out := list(u8)

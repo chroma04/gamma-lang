@@ -9,6 +9,19 @@ str :: import "std/str"
 // The Markdown renderer
 // ---------------------------------------------------------------------------------
 
+escape :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    escape_into(s, &out)
+    return out.items
+}
+
+/// Inline Markdown: code spans, strong, emphasis and links.
+inline :: fn(s: string) -> string needs Alloc {
+    out := list(u8)
+    inline_into(s, &out)
+    return out.items
+}
+
 test "escape" {
     a := arena.new()
     defer a.deinit()

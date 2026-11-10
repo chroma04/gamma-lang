@@ -8,7 +8,6 @@ INVALID_REQUEST :: -32600
 METHOD_NOT_FOUND :: -32601
 SERVER_NOT_INITIALIZED :: -32002
 INVALID_PARAMS :: -32602
-INTERNAL_ERROR :: -32603
 REQUEST_FAILED :: -32803
 
 pub Doc :: struct {
@@ -630,8 +629,6 @@ request :: fn(srv: ^Server, id: Value, method: string, params: Value) needs Fx {
 }
 
 initialize :: fn(srv: ^Server, params: Value) -> Value needs Alloc {
-    offered := as_array(path2(path2(params, "capabilities", "general"), "positionEncodings", ""))
-    _ = offered
     encs := as_array(field(path2(params, "capabilities", "general"), "positionEncodings"))
     if list_of := encs {
         for e in list_of {

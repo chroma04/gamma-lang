@@ -22,12 +22,6 @@ escape_into :: fn(s: string, out: ^List(u8)) needs Alloc {
     }
 }
 
-escape :: fn(s: string) -> string needs Alloc {
-    out := list(u8)
-    escape_into(s, &out)
-    return out.items
-}
-
 /// The lines of `text`, split on line feeds, with a carriage return before one dropped.
 /// There is no empty line after a final line feed.
 lines_of :: fn(text: string) -> []string needs Alloc {
@@ -384,13 +378,6 @@ render_table :: fn(lines: []const string, start: usize, out: ^List(u8)) -> usize
     }
     out.extend("</tbody>\n</table>\n")!
     return i
-}
-
-/// Inline Markdown: code spans, strong, emphasis and links.
-inline :: fn(s: string) -> string needs Alloc {
-    out := list(u8)
-    inline_into(s, &out)
-    return out.items
 }
 
 inline_into :: fn(s: string, out: ^List(u8)) needs Alloc {
