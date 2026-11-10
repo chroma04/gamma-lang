@@ -1,0 +1,176 @@
+// Indexing and slicing (§7.9).
+
+/// `base[index]`.
+index :: fn(cx: ^FnCx, base: ^const ast.Expr, i: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    b := cx.expr(base, null)
+    return cx.index_value(b, i, span)
+}
+
+/// `b[index]` with the base already checked.
+index_value :: fn(cx: ^FnCx, b0: ^Expr, index_ast: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    b1 := cx.soa_deref(b0)
+    if info := cx.soa_of(b1) { return cx.soa_element(b1, info, index_ast, span) }
+    b := cx.auto_deref_array(b1)
+    if .Array(_, elem, kind) := tys.kind(cx.infer.resolve(cx.s, b.ty)) and .Enum(e) := kind { return cx.enum_array_index(b, e, elem, index_ast, span) }
+    i := cx.expr(index_ast, null)
+    // `a[r]` with a range value `r` is the slice `a[r.lo..r.hi]` (§5.16).
+    it := cx.infer.resolve(cx.s, i.ty)
+    if r := cx.s.range_of(it) {
+        t := cx.temp(it, span)
+        lo := tir.mk(r.elem, .Field(tir.mk(it, .Local(t), span), 0), span)
+        hi := tir.mk(r.elem, .Field(tir.mk(it, .Local(t), span), 1), span)
+        s := cx.slice_of(b, span, lo, hi, r.inclusive, span)
+        stmts := list(tir.Stmt)
+        stmts.push(.Let(t, i))!
+        return tir.mk(s.ty, .Block(new(tir.Block(stmts: stmts.items, tail: s, span: span))!), span)
+    }
+    if not cx.infer.require_unsigned(tys, i.ty, .Usize) and not tys.is_error(i.ty) {
+        cx.error(i.span, str.format("an index must have an unsigned integer type, not `{}`", cx.show(it))!)
+    }
+    bt := cx.infer.resolve(cx.s, b.ty)
+    elem: Ty = bt
+    checked := true
+    match tys.kind(bt) {
+        .Array(_, e, _), .ParamArray(_, e), .Slice(_, e) => { elem = e }
+        .ManyPtr(_, e) => {
+            elem = e
+            checked = false
+        }
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            cx.error(span, str.format("cannot index a value of type `{}`", cx.show(bt))!)
+            return error_expr(cx.s, span)
+        }
+    }
+    return tir.mk(elem, .Index(b, i, checked), span)
+}
+
+/// Indexing and slicing see through one pointer to an array.
+auto_deref_array :: fn(cx: ^FnCx, b: ^Expr) -> ^Expr needs Alloc {
+    if .Ptr(_, pointee) := cx.s.tys.kind(cx.infer.shallow(&cx.s.tys, b.ty)) and cx.s.tys.kind(pointee) in (.Array(_), .ParamArray(_)) {
+        return tir.mk(pointee, .Deref(b), b.span)
+    }
+    return b
+}
+
+/// `a[lo..hi]` and its open-ended forms.
+slice_expr :: fn(cx: ^FnCx, base: ^const ast.Expr, lo_ast: ?^ast.Expr, hi_ast: ?^ast.Expr, inclusive: bool, span: source.Span) -> ^Expr needs Load {
+    cx.temp_ref_arg = false
+    b := cx.expr(base, null)
+    // A temporary array is held in a hidden local, so the slice is of that (§7.9).
+    if cx.s.tys.kind(cx.infer.resolve(cx.s, b.ty)) in (.Array(_), .ParamArray(_)) and cx.place_mutability(b) is null and not cx.const_init {
+        held_by := cx.hold_temp_array(b)
+        lo: ?^Expr = null
+        if x := lo_ast { lo = cx.expr(x, null) }
+        hi: ?^Expr = null
+        if x := hi_ast { hi = cx.expr(x, null) }
+        return held(cx.s, held_by.hold, cx.slice_of(held_by.local, base.span, lo, hi, inclusive, base.span.to(span)))
+    }
+    if cx.const_init { b = cx.const_temp(b) }
+    lo: ?^Expr = null
+    if x := lo_ast { lo = cx.expr(x, null) }
+    hi: ?^Expr = null
+    if x := hi_ast { hi = cx.expr(x, null) }
+    return cx.slice_of(b, base.span, lo, hi, inclusive, span)
+}
+
+/// `v` as a `[]const T` where one is expected: an array is passed as a slice of the whole
+/// array, held in a hidden local if it is a temporary (§6.4, §15.1).
+array_as_slice :: fn(cx: ^FnCx, v: ^Expr, target0: Ty) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    target := cx.infer.resolve(cx.s, target0)
+    vt := cx.infer.resolve(cx.s, v.ty)
+    .Slice(c, _) := tys.kind(target) else return v
+    if not c or not tys.is_positional_array(vt) { return v }
+    span := v.span
+    if cx.place_mutability(v) is not null { return cx.slice_of(v, span, null, null, false, span) }
+    if cx.const_init { return cx.slice_of(cx.const_temp(v), span, null, null, false, span) }
+    held_by := cx.hold_temp_array(v)
+    return held(cx.s, held_by.hold, cx.slice_of(held_by.local, span, null, null, false, span))
+}
+
+/// A temporary array `v` in a constant's initializer, which lives as long as the
+/// evaluation; a constant that keeps a pointer to it is rejected by the evaluator.
+const_temp :: fn(cx: ^FnCx, v: ^Expr) -> ^Expr needs Load {
+    if cx.place_mutability(v) is not null or cx.s.tys.kind(cx.infer.resolve(cx.s, v.ty)) not in (.Array(_), .ParamArray(_)) { return v }
+    p := tir.mk(cx.s.tys.ptr(true, v.ty), .AddrOfTemp(v), v.span)
+    return tir.mk(v.ty, .Deref(p), v.span)
+}
+
+/// The name of the hidden local that holds a temporary array used as a slice.
+TEMP_ARRAY :: "<temporary array>"
+
+/// Holds the temporary array `v` in a new hidden local of the enclosing block (§15.1):
+/// the assignment that fills it, where `v` was, and the local.
+hold_temp_array :: fn(cx: ^FnCx, v: ^Expr) -> (hold: tir.Stmt, local: ^Expr) needs Alloc {
+    t := cx.new_local(TEMP_ARRAY, v.ty, false, v.span)
+    cx.block_temps.push(t)!
+    local := tir.mk(v.ty, .Local(t), v.span)
+    return (hold: .Assign(local, v), local: local)
+}
+
+/// `{ hold; s }`: the slice `s` of a hidden local, after the assignment that fills it.
+held :: fn(s: ^Sema, hold: tir.Stmt, sl: ^Expr) -> ^Expr needs Alloc {
+    stmts := list(tir.Stmt)
+    stmts.push(hold)!
+    blk := new(tir.Block(stmts: stmts.items, tail: sl, span: sl.span))!
+    return tir.mk(sl.ty, .Block(blk), sl.span)
+}
+
+/// Whether `e` is a slice of a temporary array held by `held`.
+is_held_temp :: fn(e: ^const Expr) -> bool {
+    .Block(b) := e.kind else return false
+    if b.stmts.len is not 1 or b.stmts[0] is not .Assign(_) { return false }
+    t := b.tail else return false
+    return t.kind is .Slice(_)
+}
+
+/// Slices the checked `b` (written at `base_span`) with the checked bounds.
+slice_of :: fn(cx: ^FnCx, b0: ^Expr, base_span: source.Span, lo: ?^Expr, hi: ?^Expr, inclusive: bool, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    b := b0
+    if .Ptr(_, pointee) := tys.kind(cx.infer.resolve(cx.s, b.ty)) and tys.kind(pointee) in (.Array(_), .ParamArray(_)) {
+        b = tir.mk(pointee, .Deref(b), span)
+    }
+    b = cx.soa_deref(b)
+    if info := cx.soa_of(b) { return cx.soa_slice(b, info, lo, hi, inclusive, span) }
+    bt := cx.infer.resolve(cx.s, b.ty)
+    if .Array(_, _, kind) := tys.kind(bt) and kind is .Enum(_) and (lo is not null or hi is not null) {
+        cx.error(span, str.format("`{}` is indexed by its enum, so it is sliced only whole: `a[..]`", cx.show(bt))!)
+        return error_expr(cx.s, span)
+    }
+    elem: Ty = bt
+    is_const := false
+    match tys.kind(bt) {
+        .Array(_, e, _), .ParamArray(_, e) => {
+            m := cx.place_mutability(b) else {
+                cx.error(base_span, "only an array variable (a place) can be sliced, not a temporary array")
+                return error_expr(cx.s, span)
+            }
+            elem = e
+            is_const = not m
+        }
+        .Slice(c, e) => {
+            elem = e
+            is_const = c
+        }
+        .ManyPtr(c, e) => {
+            if lo is null or hi is null { cx.error(span, "slicing a many-pointer needs both bounds") }
+            elem = e
+            is_const = c
+        }
+        .Error => return error_expr(cx.s, span)
+        _ => {
+            cx.error(span, str.format("cannot slice a value of type `{}`", cx.show(bt))!)
+            return error_expr(cx.s, span)
+        }
+    }
+    for x in [2]?^Expr(lo, hi) {
+        v := x else continue
+        if not cx.infer.require_unsigned(tys, v.ty, .Usize) and not tys.is_error(v.ty) {
+            cx.error(v.span, str.format("a slice bound must have an unsigned integer type, not `{}`", cx.show(cx.infer.resolve(cx.s, v.ty)))!)
+        }
+    }
+    return tir.mk(tys.slice(is_const, elem), .Slice(tir.SliceExpr(base: b, lo: lo, hi: hi, inclusive: inclusive)), span)
+}

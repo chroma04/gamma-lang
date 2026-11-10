@@ -291,11 +291,11 @@ stable text form, which tests of the compiler use.
 | layouts: sizes, alignments and field offsets, for the checker and both back ends; `#bits` field layouts | `sema/layout.gm`, `sema/adt.gm` |
 | the stack bytes a call is charged (`frame_cost`), shared by the C back end, the interpreter and `@stack_size` | `sema/frame.gm` |
 | the per-function context, scopes, statements, loops | `check/func.gm` |
-| expressions, operators, optionals and results | `check/expr.gm`, `check/errors.gm` |
+| expressions, operators, optionals and results | `check/expr.gm`, `check/optionals.gm` |
 | coercions | `check/coerce.gm` |
 | calls and builtin functions, methods, rest parameters and spreads | `check/call.gm`, `check/methods.gm`, `check/spread.gm` |
 | patterns, `match`, exhaustiveness | `check/pattern.gm`, `check/matching.gm`, `check/exhaust.gm` |
-| `in` and `for` over ranges, arrays and slices | `check/seq.gm` |
+| `in` and `for` over ranges, arrays and slices; indexing and slicing; array construction | `check/seq.gm`, `check/index.gm`, `check/array_ctor.gm` |
 | literal inference | `check/infer.gm`, `check/finalize.gm` |
 | function literals, captures and second-class rules | `check/fnlit.gm` |
 | `with`, handler literals and declarations, `resume`, `cancel` | `check/handlers.gm`, `check/handler_decls.gm` |
@@ -420,7 +420,7 @@ every checked operation checked.
   of fields, the sizes of elements, the tags of variants, and operations specialized for the
   values that fit in a machine word (integers of 8 to 64 bits, `f32` and `f64`, booleans,
   pointers), which are computed as 64-bit words rather than as bytes.
-- **The register machine** (`vm.gm`) runs the body. Its statement structure (blocks with
+- **The register machine** (`vm.gm`; `vm_compile.gm` compiles bodies for it) runs the body. Its statement structure (blocks with
   their `defer`s, `if`, loops, `match` and its patterns, `return`, `break`, `continue`),
   its arithmetic and comparisons on words, the places it can address (locals, upvars and
   their fields, dereferences, indexing of slices, arrays and pointers), its calls of
