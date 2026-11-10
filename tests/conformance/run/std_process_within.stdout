@@ -1,0 +1,11 @@
+.Exited(3) timed out false [out
+] [err
+]
+cat: .Exited(0) 400000 false
+.Signaled(9) timed out true [started
+]
+missing program: .Io(.NotFound)
+watchdog read ends: true
+killed true: .Signaled(9)
+ended: .Exited(0)
+fired: false

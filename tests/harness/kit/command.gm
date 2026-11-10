@@ -2,7 +2,6 @@
 
 process :: import "std/process"
 str :: import "std/str"
-thread :: import "std/thread"
 
 /// What a command reads as its standard input.
 pub Input :: union {
@@ -93,49 +92,20 @@ pub try_run :: fn(t: ^T, c: Command) -> Fail!?Output needs Alloc + Clock + Proc 
 run_unless_missing :: fn(t: ^T, c: Command, missing_ok: bool) -> Fail!?Output needs Alloc + Clock + Proc + Sys {
     opts := process.SpawnOptions(
         stdin: if c.input is .Null { .Null } else { .Pipe },
-        stdout: .Pipe,
-        stderr: .Pipe,
         dir: c.dir,
         env: c.env.items,
         group: true,
     )
-    child := Proc.spawn(c.argv.items, opts) else e => {
+    limit := c.timeout_s else t.cfg.timeout_s
+    input: ?[]const u8 = if .Bytes(b) := c.input { b } else { null }
+    o := process.output_within(c.argv.items, Duration(ns: limit * 1_000_000_000), opts, input) else e => {
         if missing_ok { return null }
         return !t.fail("cannot run `{}`: {}", c.show(), e)
     }
-    limit := c.timeout_s else t.cfg.timeout_s
-    w := try t.watchdog_for(child, limit)
-    feed := Feed(child: child, bytes: empty_slice(u8))
-    feeder: ?thread.Thread = null
-    if .Bytes(b) := c.input {
-        feed.bytes = b
-        if f := thread.spawn(feed_input, &feed) { feeder = f } else { _ = Proc.kill(child) }
+    if o.timed_out {
+        return !t.fail("`{}` did not finish within {} s (GAMMA_TEST_TIMEOUT); output so far:\n{}\n{}", c.show(), limit, string(o.out.items), string(o.err.items))
     }
-    out := list(u8)
-    err := list(u8)
-    buf: [16384]u8 = ---
-    read_failed: ?IoError = null
-    while true {
-        chunk := Proc.read(child, buf[..]) else e => {
-            read_failed = e
-            _ = Proc.kill(child)
-            break
-        }
-        got := chunk else break
-        dst := if got.from is .Stdout { &out } else { &err }
-        dst.extend(buf[0..got.len])!
-    }
-    // The other threads are done with the child before `wait` releases its handle, which a
-    // later child may get.
-    if f := feeder { thread.join(f) }
-    fired := w.disarm()
-    status := Proc.wait(child)
-    if fired {
-        return !t.fail("`{}` did not finish within {} s (GAMMA_TEST_TIMEOUT); output so far:\n{}\n{}", c.show(), limit, string(out.items), string(err.items))
-    }
-    if e := read_failed { return !t.fail("cannot read the output of `{}`: {}", c.show(), e) }
-    s := status else e => return !t.fail("cannot wait for `{}`: {}", c.show(), e)
-    return Output(status: s, out: out.items, err: err.items)
+    return Output(status: o.status, out: string(o.out.items), err: string(o.err.items))
 }
 
 /// Like `run`, and fails the test unless the program succeeds.
@@ -147,82 +117,10 @@ pub run_ok :: fn(t: ^T, c: Command) -> Fail!Output needs Alloc + Clock + Proc + 
     return o
 }
 
-/// The watchdog of a running program: it kills the program (with everything in its process
-/// group) once the time limit of the tests is up, unless it is disarmed first.
-pub Watchdog :: struct {
-    state: ^Watch
-    thread: thread.Thread
-}
-
-/// Starts a watchdog for `child`. If it cannot be started, the child is killed and waited
-/// for, and the test fails.
-pub watchdog :: fn(t: ^T, child: process.Child) -> Fail!Watchdog needs Alloc + Proc + Sys => t.watchdog_for(child, t.cfg.timeout_s)
-
-/// Like `watchdog`, with a time limit of `secs` seconds.
-watchdog_for :: fn(t: ^T, child: process.Child, secs: u64) -> Fail!Watchdog needs Alloc + Proc + Sys {
-    w := new(Watch(child: child, limit: Duration(ns: secs * 1_000_000_000), m: thread.mutex(), cv: thread.condvar()))!
-    th := thread.spawn(watch, w) else e => {
-        _ = Proc.kill(child)
-        _ = Proc.wait(child)
-        return !t.fail("cannot start a thread: {}", e)
-    }
-    return Watchdog(state: w, thread: th)
-}
-
-/// Stops the watchdog, once, before the child is waited for (`wait` releases its handle,
-/// which a later child may get). Returns whether it killed the child.
-pub disarm :: fn(w: ^Watchdog) -> bool needs Sys {
-    s := w.state
-    s.m.lock()
-    s.done = true
-    s.m.unlock()
-    s.cv.signal()
-    thread.join(w.thread)
-    return s.fired
-}
-
-Watch :: struct {
-    child: process.Child
-    limit: Duration
-    m: thread.Mutex
-    cv: thread.Condvar
-    done: bool = false
-    fired: bool = false
-}
-
-watch :: fn(w: ^Watch) needs Sys {
-    thread.defaults(fn() needs Clock + Proc {
-        start := Clock.now()
-        w.m.lock()
-        while not w.done {
-            spent := Clock.now().since(start)
-            if spent.ns >= w.limit.ns {
-                w.fired = true
-                _ = Proc.kill(w.child)
-                break
-            }
-            _ = w.cv.wait_timeout(&w.m, w.limit.minus(spent))
-        }
-        w.m.unlock()
-    })
-}
-
-// The writer of a program's input, on a thread of its own so that the program's output is
-// read while it reads its input.
-Feed :: struct {
-    child: process.Child
-    bytes: []const u8
-}
-
-feed_input :: fn(f: ^Feed) needs Sys {
-    thread.defaults(fn() needs Proc {
-        rest := f.bytes
-        while rest.len > 0 {
-            n := Proc.write(f.child, rest) else break
-            rest = rest[n..]
-        }
-        Proc.close_in(f.child)
-    })
+/// Puts the time limit of the tests on the running program `child` (see `process.watch`),
+/// and fails the test if the watchdog cannot be started.
+pub watchdog :: fn(t: ^T, child: process.Child) -> Fail!process.Watchdog needs Alloc + Proc + Sys {
+    return process.watch(child, Duration(ns: t.cfg.timeout_s * 1_000_000_000)) else e => !t.fail("cannot start a watchdog: {}", e)
 }
 
 /// True if `program --version` runs and succeeds: the program is installed.

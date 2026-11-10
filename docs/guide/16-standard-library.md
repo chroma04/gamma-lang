@@ -470,6 +470,8 @@ main :: fn() -> process.RunError!() needs Out + Proc + Alloc {
 }
 ```
 
+A program that may hang is run with `process.output_within(argv, limit, opts, input)`: it kills the program (with everything it started, when `opts.group` is set) after `limit`, reports `timed_out` in the result, and can feed `input` to the program's standard input on a thread of its own. `process.watch(child, limit)` puts the same limit on a child you drive yourself, and `disarm` ends it. Both need `Sys` for the threads.
+
 For more control use the operations themselves: `Proc.spawn` gives a `Child`; with `stdin: .Pipe` the child's input is fed with `Proc.write` (`child.write(bytes)`) and ended with `Proc.close_in`; `Proc.read` (`child.read(buf)`) waits until one of the piped output streams has data and tells which one it came from (so two streams cannot block each other); `wait` gives the `ExitStatus` (`Exited(code)`, or on POSIX systems `Signaled(signal)`) and must be called for every child; `try_wait` is `wait` that does not block: it gives `null` while the child runs and the status once it has ended (which also releases the child); `kill` ends it forcibly. `SpawnOptions.program` names the file to run when `argv[0]` should only be the name the child sees. A program that reads all its input before writing can deadlock with a caller that writes everything before reading; interleave `write` and `read`, or close the input first. In tests, `Proc.spawn` is refused with `PermissionDenied`.
 
 ## Time and randomness

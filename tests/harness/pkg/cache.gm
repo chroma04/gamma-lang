@@ -2,6 +2,7 @@
 // links in checkouts, and of the language server's use of fetched dependencies.
 
 kit :: import "../kit"
+lsp :: import "../lsp"
 fs :: import "std/fs"
 str :: import "std/str"
 
@@ -17,38 +18,18 @@ the_language_server_sees_fetched_git_dependencies :: fn(t: ^kit.T) -> kit.Fail!(
     try w.sum_app(str.format("http = {{ git = \"{}\" }}\n", w.url_of("http"))!, [_]string("http"))
     _ = try w.ok("app", [_]string("fetch"))
     lock := w.get("app/gamma.lock")
-    c := w.t.gamma([_]string("lsp"))
-    c.set("GAMMA_CACHE_DIR", w.cache_dir())
-    server := try start_server(t, c)
-    talk(&w, &server) else e => {
-        _ = Proc.kill(server.child)
-        _ = server.finish()
-        return !e
-    }
-    try t.check(try server.finish(), "the server did not exit successfully")
+    l := try lsp.start_with(t, [_]string(str.format("GAMMA_CACHE_DIR={}", w.cache_dir())!))
+    defer l.stop()
+    _ = try l.initialize()
+    // The application's main file has no diagnostics: the fetched dependency is found.
+    file := w.at("app/main.gm")
+    try l.open(file, w.get("app/main.gm"))
+    diags := try l.diagnostics(file, 1)
+    try t.check(diags.len is 0, "the server reports {} diagnostics for the application", diags.len)
+    try l.shutdown()
     // The server leaves the lockfile alone.
     try t.expect_text("gamma.lock", lock, w.get("app/gamma.lock"))
     return ()
-}
-
-/// Opens the application's main file in the server, which must publish no diagnostics for
-/// it, and ends the session.
-talk :: fn(w: ^const World, s: ^Server) -> kit.Fail!() needs kit.Run {
-    file := w.at("app/main.gm")
-    try s.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}`)
-    _ = try s.read_until(`"id":1`)
-    try s.send(`{"jsonrpc":"2.0","method":"initialized","params":{}}`)
-    open := str.format(
-        `{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{}","languageId":"gamma","version":1,"text":{}}}}}}}`,
-        file_url(file),
-        kit.json_string(w.get("app/main.gm")),
-    )!
-    try s.send(open)
-    diags := try s.read_until("publishDiagnostics")
-    try w.t.expect_contains("the diagnostics", diags, "\"diagnostics\":[]")
-    try s.send(`{"jsonrpc":"2.0","id":2,"method":"shutdown"}`)
-    _ = try s.read_until(`"id":2`)
-    return s.send(`{"jsonrpc":"2.0","method":"exit"}`)
 }
 
 checkouts_are_read_only_and_removable :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
