@@ -23,6 +23,16 @@ Versions and what each kind of change means are described in
   compare with `memcmp`, a `for` over `enumerate(xs)` runs as an index loop in every back
   end, small functions stay inlinable in split builds, and the lexer sizes its token list
   up front.
+- **Formatting allocates less.** A string or an integer of up to 64 bits written through
+  a template (`print`, `str.format`, `List(u8).write`) no longer goes through a heap
+  buffer of its own, and `str.format` reserves room for its result up front: a loop of
+  `str.format` and `List.write` calls runs 30% to 50% faster.
+- **`gamma lint` is about 30% faster** on a large program (the compiler: 1.9 s to 1.3 s):
+  it no longer lexes and parses every file a second time, and the
+  `stale-element-pointer` rule follows list growth through calls with a worklist.
+- **The C back end generates code about a quarter faster** (`gamma build --emit-c` of the
+  compiler: 2.5 s to 2.1 s including checking): lines are formatted straight into the
+  output, and the names and per-function facts it asks for repeatedly are computed once.
 - **`List` growth asks the allocator to `resize` in place first** (an arena grows its most
   recent block), and allocates and copies only if that fails.
 

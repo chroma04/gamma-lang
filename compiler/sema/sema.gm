@@ -396,6 +396,8 @@ pub Sema :: struct {
     /// By parameter id.
     params: List(ParamData)
     instances: List(Instance)
+    /// The instance of a generic struct or union for its arguments (`Instance.inst`).
+    adt_instances: hash_map.HashMap((u32, []const Ty), u32)
     /// The instances of generic functions, by the function and its arguments.
     fn_instances: hash_map.HashMap((u32, []const Ty), u32)
     /// The instances of generic functions whose calls are still to be followed, and how
@@ -525,6 +527,7 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         adts: list(AdtInfo),
         params: list(ParamData),
         instances: list(Instance),
+        adt_instances: hash_map.hash_map((u32, []const Ty), u32),
         fn_instances: hash_map.hash_map((u32, []const Ty), u32),
         mono_queue: list(MonoRequest),
         mono_depth: 0,

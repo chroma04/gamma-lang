@@ -444,7 +444,9 @@ line :: fn(fg: ^FnGen, s: string) needs Alloc {
 /// indentation.
 linef :: fn(A: type, fg: ^FnGen, template :: string, args: ..A) needs Alloc {
     for _ in 0..fg.indent { fg.out.extend("    ")! }
-    fg.out.write(template, ..args)!
+    // As `List(u8).write`, written out: one function per template instead of two.
+    out := &fg.out
+    @write(fn(bytes) { out.extend(bytes)! }, template, ..args)
     fg.out.push('\n')!
 }
 

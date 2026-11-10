@@ -751,7 +751,10 @@ about 14. What remains grows faster than linearly with the size of one function
 function (`List.write`, `str.format`) works the same way: it computes the sink closure's
 handler context once, then calls, per piece, one of two functions shared by the program,
 one that calls the sink with a pointer and a length and one that formats a value and
-passes it on. Such functions have an instance per template (the template is a
+passes it on. The second asks the runtime for a view of the value (`gm_format_view`): a
+string's own bytes, an integer's digits in a buffer on the stack, and only for other
+values text formatted into a heap buffer, so the common pieces of a template are written
+without allocating. Such functions have an instance per template (the template is a
 compile-time parameter), so in the compiler they were about a tenth of its C before.
 For the same reason a generic function whose work depends on its type parameter only
 through the size of the type is a thin wrapper around one function on bytes (`List`'s
@@ -1194,11 +1197,13 @@ fails.
 ### Lint and fix
 
 The lint rules are split by what they need. Rules that walk the syntax tree are in
-`compiler/lint/syntax.gm`. Rules that read the checked program are in `checked.gm` (unused
+`compiler/lint/syntax.gm`; they walk the tokens and trees the loader made when it read the
+program (it keeps them when `Loader.parsed` is set), not a second parse of the files.
+Rules that read the checked program are in `checked.gm` (unused
 locals and declarations, variables that never change, comparisons with a known result),
 `stale.gm` (the `stale-element-pointer` rule: pointers into a list's items used after a call that may
 move them; a summary of the lists each function may grow through its pointer parameters,
-computed to a fixed point over the calls, covers methods of the struct holding the list), `copy.gm` (the `mutated-copy` rule: locals holding a copy of a list or map that are changed as
+carried from callee to caller along the call edges until nothing is added, covers methods of the struct holding the list), `copy.gm` (the `mutated-copy` rule: locals holding a copy of a list or map that are changed as
 if they were the original) and `present.gm` (the `present-only-binding` rule: `match` arms
 whose present-only bindings leave the absent case to a catch-all arm). Addresses of locals
 kept where they outlive the local are a compile error where certain (§15.1,
