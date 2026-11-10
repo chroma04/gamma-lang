@@ -43,6 +43,13 @@ Versions and what each kind of change means are described in
   on big-endian targets). The elements are now converted to their join, as `for` over a
   tuple does, and a tuple without one is a compile error.
 
+### Documentation
+
+- The idioms handbook is folded into the guide: its patterns (naming and module layout,
+  scanners with `match`, binding optional payloads, when to trap, errors that unwind a
+  recursive descent, an arena per phase, pointers into lists that grow, copies of lists and
+  loop variables) are now in the chapters they belong to.
+
 ## 0.2.0 - 2026-10-30
 
 `gamma` is now written in Gamma: the compiler in `compiler/` builds itself, from a C seed
@@ -332,7 +339,7 @@ interpreter and playground.
 
 ### Documentation
 
-- [Idiomatic Gamma](docs/guide/idioms.md), a handbook of the patterns Gamma code uses,
+- Idiomatic Gamma, a handbook of the patterns Gamma code uses,
   checked by the test suite.
 - Examples `nbody.gm` (math vectors) and `julia.gm` (complex numbers).
 

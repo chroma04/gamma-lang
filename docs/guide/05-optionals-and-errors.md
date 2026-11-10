@@ -69,7 +69,7 @@ first_or_report :: fn(xs: []const i32) -> i32 needs Out {
 
 `x?` is a **checked operation**: if `x` is `null`, the program traps in Debug and Checked builds and produces an unspecified value in Fast builds. It says "this cannot fail here", so reserve it for places where that is actually true; to *handle* absence use `if`, `else` or `try`.
 
-Absent values compare as you would hope: `x is null` and `x is not null` work, and two optionals are `is`-equal if both are `null` or both hold equal values.
+Absent values compare as you would hope: `x is null` and `x is not null` work, and two optionals are `is`-equal if both are `null` or both hold equal values. An optional also compares with a plain value, which an absent value simply does not equal, so a lookup needs no unwrapping to be tested: `if s.get(i) is 'x' { … }`, and `if s.get(i) in (' ', '\t') { … }` for one of several. The binding form loops as well: `while c := lx.peek() { … }`.
 
 ### Propagating absence with `try`
 
@@ -216,6 +216,61 @@ Some rules for `try`:
 - Inside a function literal or a handler clause, `try` returns from the literal's function or, for a handler literal's clause, from the enclosing function ([chapter 7](07-effects.md)).
 
 > **Common mistake: `try` in `main` with no result.** `try` needs somewhere to send the error. In `main :: fn() needs Out { ... }` there is nowhere, so `try` is a compile error. Either declare `-> E!()` for `main` (above), or handle the result with `else`, `match` or `if`. The same holds for a `test` body, which returns nothing: use `ok(x)`, which gives the success value of a result or fails the test with the error ([chapter 13](13-safety.md)).
+
+### Return, trap or report?
+
+Return a result when failure has a cause outside the program's control that a caller can act on. When failure is a bug, or nothing sensible can be done about it, unwrap with `x!` or `x?` and let it trap with the error in the message. A compiler, for instance, treats running out of memory as fatal and writes `l.push(x)!` rather than threading `AllocError` through every function. Decide this once per program and say so in its documentation; a library should usually return the error and let its user decide.
+
+A problem in a tool's *input*, such as a syntax error or a bad option, is usually neither: report it to a collection of diagnostics and carry on, so the user sees every problem in one run.
+
+### Errors that unwind a recursive descent
+
+A parser reports a syntax error once and then unwinds to a point where it can recover. Give the error a type of its own (an empty struct is enough), return `Abort!T` from every parsing function, propagate with `try`, and make the report a function that *returns* the error value, so that failing reads `return !p.fail(…)`:
+
+```gamma
+Abort :: struct {}
+
+Parser :: struct {
+    text: string
+    pos: usize = 0
+    errors: u32 = 0
+}
+
+fail :: fn(p: ^Parser, message: string) -> Abort needs Out {
+    print("error at {}: {}\n", p.pos, message)
+    p.errors += 1
+    return Abort()
+}
+
+digit :: fn(p: ^Parser) -> Abort!u32 needs Out {
+    c := p.text.get(p.pos) else return !p.fail("expected a digit, found the end")
+    if c not in '0'..='9' { return !p.fail("expected a digit") }
+    p.pos += 1
+    return u32(c - '0')
+}
+
+sum :: fn(p: ^Parser) -> Abort!u32 needs Out {
+    total := try p.digit()
+    while p.text.get(p.pos) is '+' {
+        p.pos += 1
+        total += try p.digit()
+    }
+    return total
+}
+```
+
+State that must be restored on every way out, such as a nesting depth or a mode flag, is saved and put back with `defer`, which also runs when a `try` propagates:
+
+```gamma
+parse_head_expr :: fn(p: ^Parser) -> Abort!Expr needs Alloc {
+    old := p.restr
+    p.restr = Restr(no_brace: true)
+    defer p.restr = old
+    return p.parse_expr()
+}
+```
+
+Behavior that varies inside a fixed frame, such as "parse one member" inside "loop to the closing brace and recover from errors", is a second-class function parameter ([chapter 6](06-functions.md)): `p.members("union body", fn() -> Abort!() needs Alloc { … })`. The literal can use and change the caller's locals, and costs no allocation.
 
 ## Optional chains and iterators
 

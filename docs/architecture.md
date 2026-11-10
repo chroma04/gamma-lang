@@ -1377,5 +1377,5 @@ described in [`contributing.md`](contributing.md#releases).
 - **No dependencies** beyond the standard library.
 - **Structure.** Each module of the compiler keeps one concern, and the comments say why.
   Where Gamma has a better way to say a thing (`try` for early return, `defer` to restore
-  parser state), the code uses it; [Idiomatic Gamma](guide/idioms.md) collects these.
+  parser state), the code uses it, and the [guide](guide/README.md) describes these patterns.
 - Sources are formatted with `gamma fmt compiler`; a test checks it.

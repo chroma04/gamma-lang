@@ -92,6 +92,8 @@ buf: [256]u8 = ---
 
 This is allowed only for **plain-data** types: integers, floats, and arrays, tuples and structs made only of those. Reading uninitialized plain data gives an unspecified value, but it is never undefined behavior. Types with invariants, such as `bool`, optionals, unions, pointers and slices, cannot be left uninitialized, so you cannot produce an invalid value by forgetting to initialize. Debug builds fill `---` storage with `0xAA` bytes so mistakes stand out.
 
+So a pointer or a slice that depends on a condition is chosen with an expression and bound once, rather than assigned later: `msg := if args.len is 0 { default_msg() } else { check(args[0]) }`, where a branch that cannot produce a value leaves through `return`.
+
 ### Destructuring
 
 A function that returns a tuple is unpacked with several names on the left:

@@ -125,6 +125,21 @@ scratch_demo :: fn(arena: Allocator) -> AllocError!() needs Alloc {
 
 A function without `Alloc` in its effect set does not allocate through the current allocator, though it may allocate through an `Allocator` value it was handed. So `needs Alloc` in a signature is a reliable "this function may allocate" marker.
 
+This makes **one arena per phase** the natural shape for most programs, which allocate in phases: read a file, build a structure, print a result, forget all of it. The code of the phase allocates through `Alloc` without caring where the memory comes from, nothing in it needs a `deinit` of its own, and the arena frees everything at once:
+
+```gamma
+arena :: import "std/arena"
+
+main :: fn() needs Alloc + Out {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        ws := words("one two three")    // a List(string) built with push, never freed
+        print("{} {}\n", ws.items.len, ws.items.last() else "")
+    }
+}
+```
+
 ## `List` and hash maps
 
 The core library provides one container, `List(T)`, the growable array; the standard library adds a hash map (`std/collections/hash_map`) and the other collections of [chapter 16](16-standard-library.md#collections). All of them capture the current allocator at construction and never perform `Alloc` afterwards. None is magical: they are structs with ordinary functions, called with method syntax.
@@ -196,9 +211,33 @@ report := try out.into_slice()
 defer free(report)
 ```
 
-`dupe(s)` copies any slice into a new allocation, and `str.format(template, args)` from `std/str` formats straight into one.
+`dupe(s)` copies any slice into a new allocation, and `str.format(template, args)` from `std/str` formats straight into one, for a message that is kept, such as a diagnostic. To produce a lot of output, build it in a `List(u8)` and hand it to `Out.write(out.items)` once: many small `print` calls are much slower than one large write.
 
 Because maps compare with `is`, a float key never finds a NaN, as `nan is nan` is false. Key such maps by `x.bits(u64)` instead.
+
+### Lists, copies and pointers
+
+A `List` keeps its elements in one block and moves them to a larger block when it grows, so a slice or a pointer into `l.items` is valid only until the next `push` (and a map's `get_ptr` until the next insertion). That includes the place of an assignment, which is evaluated *before* the right side (§4.7):
+
+```gamma
+l.decls.items[id].state = l.import_decl(…)    // wrong if import_decl pushes to l.decls
+
+state := l.import_decl(…)                     // compute the value first, then store it
+l.decls.items[id].state = state
+```
+
+Likewise, keep an index rather than `p := &l.items[i]` across a call that may add to `l`.
+
+A `List` or a hash map is itself a small struct: a slice of its elements, a count or capacity, and its allocator. Assigning it copies that struct, not the elements, so the copy shares the elements but has its own length. Reading through a copy is fine, but `push`, or any method that takes `^T`, changes only the copy. To work on a list kept in a larger structure, take its address: `t := &cx.table`, not `t := cx.table`. `gamma lint` reports a copy that is changed as if it were the original (rule `mutated-copy`).
+
+A loop variable, and a name a pattern binds, hold a *copy* of the element or payload in a slot that is reused. A pointer to one is fine for a call, but stored, it points at whatever the next iteration puts there:
+
+```gamma
+for e in exprs { terms.push(&e)! }            // wrong: every pointer is to `e`
+for i in 0..exprs.len { terms.push(&exprs[i])! }
+```
+
+Storing such an address where it certainly outlives the binding is a compile error (§15.1), and `gamma lint` reports a call like `push` that may keep it. When the data has no stable place (a payload bound by a pattern), keep a copy of the value instead. The same goes for a slot about to be overwritten: a function that keeps the pointer it is given must not be handed the address of the slot that receives its result. `args[0] = wrap(&args[0])^` makes the kept pointer see the new value; `args[0] = wrap(new(args[0])!)^` gives the old value a place of its own.
 
 ## Nothing allocates behind your back
 

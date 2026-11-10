@@ -28,7 +28,7 @@ kit :: import "../kit"
 str :: import "std/str"
 
 /// The documents whose examples are checked, relative to the repository root.
-CHECKED_DOCS :: [_]string("docs/guide/for-c-programmers.md", "docs/guide/for-rust-programmers.md", "docs/guide/idioms.md")
+CHECKED_DOCS :: [_]string("docs/guide/for-c-programmers.md", "docs/guide/for-rust-programmers.md")
 
 pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
     out.push(kit.Test(name: "fence_parsing", run: fence_parsing))!

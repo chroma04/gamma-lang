@@ -1,6 +1,8 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-11-10) — PRs #1–#114 merged, v0.1.0 + rust-reference-final tagged
+## State (2026-11-10) — PRs #1–#115 merged, v0.1.0 + rust-reference-final tagged
+- s63 (branch claude/quirky-edison-wp0t67): idioms.md folded into guide; CI macos-14 runner
+  retired → macos-15 (release: MACOSX_DEPLOYMENT_TARGET=14.0).
 - s62 (branch claude/kind-hamilton-ya5z7d): PERF ROUND 7 (decisions/063): gm_format_view
   (no heap buffer per formatted string/int), str.format reserves, lint worklist + reuses
   the loader's parse (Loader.parsed), cgen linef/cty cache/name tables/frame memo, adt
@@ -32,7 +34,9 @@
   fuzz/ flattened (s47–48: C seed bootstrap/, tools/refresh-seed.sh). Std: SpawnOptions env changes inherited env, clear_env, group (§21.7).
 - s46 (#91): compiler/interp tree-walking interpreter + repl (051); slow.
 - s38–s45d: gammac written in compiler/ (043–050); roadmap/self-hosting.md, gammac-cli.md.
-  docs/guide/idioms.md = idioms handbook (doc_examples-checked; ADD learned patterns).
+  Idioms handbook removed s63 (user: directionless); patterns live in guide chapters
+  (01 naming/modules, 03 match, 05 trap-vs-return + Abort parser, 09 arena/list pitfalls).
+  Add learned patterns to the chapter they belong to. doc_examples checks for-c/for-rust only.
 - s33–s37: errors policy + spread (037), HashMap (038), complex/#vec (039), #soa (040/042).
 - s32 (#63): whole-codebase review: roadmap/review-2026-10-20.md (written against Rust src;
   re-check items against compiler/ before acting).
