@@ -308,7 +308,7 @@ int_expr :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
         48..=57 => {
             a := g.int_expr(t, d1)
             amount := g.int_expr(U8, d1)
-            masked := if g.rng.chance(min_of(g.trap_bias, 10)) { amount } else { format("({} % {}u8)", amount, t.bits)! }
+            masked := if g.rng.chance(g.trap_bias.min(10)) { amount } else { format("({} % {}u8)", amount, t.bits)! }
             match g.rng.below(5) {
                 0 => format("({} >> {})", a, masked)!
                 1 if g.rng.chance(g.trap_bias) => format("({} << {})", a, masked)!
@@ -381,7 +381,7 @@ int_expr :: fn(g: ^Gen, t: It, d: u32) -> string needs Alloc {
         }
         87..=90 => {
             o := g.opt_expr(t, d1)
-            if g.rng.chance(min_of(g.trap_bias, 10)) {
+            if g.rng.chance(g.trap_bias.min(10)) {
                 format("({})?", o)!
             } else {
                 fb := g.int_expr(t, d1)

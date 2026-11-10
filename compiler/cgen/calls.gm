@@ -5,7 +5,7 @@
 // Calls
 // ---------------------------------------------------------------------------------
 
-pub call :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr) -> Unsup!string needs sema.Load {
+call :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr) -> Unsup!string needs sema.Load {
     dest: ?string = null
     obs := Observed.Fresh
     if dc := fg.dest_call {
@@ -142,7 +142,7 @@ arg_may_overlap :: fn(fg: ^FnGen, a: ^Expr, obs: Observed, borrows: bool) -> boo
 
 /// In Debug builds, records `span` as the location of the call about to be made, for
 /// backtraces.
-pub call_site :: fn(fg: ^FnGen, span: source.Span) needs sema.Load {
+call_site :: fn(fg: ^FnGen, span: source.Span) needs sema.Load {
     if fg.g.opts.debug and span is not source.DUMMY {
         f := fg.g.prog.s.l.sm.file(span.file)
         lc := f.line_col(span.lo)
@@ -152,7 +152,7 @@ pub call_site :: fn(fg: ^FnGen, span: source.Span) needs sema.Load {
 }
 
 /// The C function pointer type of a Gamma function returning `ret`.
-pub fn_ptr_type :: fn(fg: ^FnGen, ret: Ty, params: []const Ty) -> string needs sema.Load {
+fn_ptr_type :: fn(fg: ^FnGen, ret: Ty, params: []const Ty) -> string needs sema.Load {
     r := ""
     ps := list(string)
     if fg.g.ty.by_ref(ret) {
@@ -167,13 +167,13 @@ pub fn_ptr_type :: fn(fg: ^FnGen, ret: Ty, params: []const Ty) -> string needs s
 }
 
 /// The value `v` of type `t` as the plain C convention passes it (its mirror).
-pub plain_value :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
+plain_value :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
     if m := fg.g.ty.mirror(t) { return str.format("GM_CONV({}, {})", m, v)! }
     return v
 }
 
 /// A value of type `t` received in the plain C convention, as a Gamma value.
-pub gamma_value :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
+gamma_value :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
     if fg.g.ty.mirror(t) is not null { return str.format("GM_CONV({}, {})", fg.g.ty.cty(t), v)! }
     return v
 }
@@ -187,7 +187,7 @@ plain_args :: fn(fg: ^FnGen, vals: []const string, tys: []const Ty) -> List(stri
 
 /// Argument `v` of type `t` as Gamma functions take it: the address of a temporary
 /// holding it if the type is passed by address (`CTypes.by_ref`).
-pub gamma_arg :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
+gamma_arg :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
     if not fg.g.ty.by_ref(t) { return v }
     // Temporaries and the places `call` passes are lvalues already.
     is_temp := v.len > 1 and v[0] is 't'
@@ -202,7 +202,7 @@ pub gamma_arg :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
 
 /// The arguments `vals` of types `tys` of a call of a Gamma function, each preceded
 /// by a comma.
-pub gamma_args :: fn(fg: ^FnGen, vals: []const string, tys: []const Ty) -> string needs sema.Load {
+gamma_args :: fn(fg: ^FnGen, vals: []const string, tys: []const Ty) -> string needs sema.Load {
     out := list(u8)
     for i in 0..vals.len.min(tys.len) { out.write(", {}", fg.gamma_arg(tys[i], vals[i]))! }
     return out.items
@@ -219,7 +219,7 @@ call_result :: fn(fg: ^FnGen, ret: Ty, call: string) -> string needs sema.Load {
 
 /// The variable a call writes its large result to (`CTypes.by_ref`): the call's
 /// destination if it has one (see `expr_into`), else a new temporary.
-pub result_var :: fn(fg: ^FnGen, ret: Ty) -> string needs sema.Load {
+result_var :: fn(fg: ^FnGen, ret: Ty) -> string needs sema.Load {
     if d := fg.call_dest {
         fg.call_dest = null
         return d
@@ -282,7 +282,7 @@ call_fn :: fn(fg: ^FnGen, e: ^Expr, f: u32, vals: []const string) -> Unsup!strin
             rest := list(u8)
             for a in args.items { rest.write(", {}", a)! }
             r = fg.out_call(def.ret, name, rest.items)
-        } else if fg.g.ty.is_unit(def.ret) or fg.g.ty.is_never(def.ret) {
+        } else if fg.g.ty.is_void(def.ret) {
             fg.linef("{};", call)
             r = fg.zero(e.ty)
         } else {
@@ -305,7 +305,7 @@ call_fn :: fn(fg: ^FnGen, e: ^Expr, f: u32, vals: []const string) -> Unsup!strin
 
 /// Calls a second-class function value: its context plus the caller's handlers for
 /// the effects in its type (§11.6).
-pub call_closure :: fn(fg: ^FnGen, cv: string, cty: Ty, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
+call_closure :: fn(fg: ^FnGen, cv: string, cty: Ty, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
     .Fn(sig) := fg.g.ty.kind(cty) else @unreachable()
     c := fg.tmp(cty, cv)
     ccx := str.format("ccx{}", fg.fresh())!
@@ -323,7 +323,7 @@ pub call_closure :: fn(fg: ^FnGen, cv: string, cty: Ty, vals: []const string, ty
 
 /// True if values of function pointer type `t` use the plain C convention: their
 /// effects are at most `{Sys}`.
-pub ptr_type_plain :: fn(fg: ^FnGen, t: Ty) -> bool needs sema.Load {
+ptr_type_plain :: fn(fg: ^FnGen, t: Ty) -> bool needs sema.Load {
     match fg.g.ty.kind(t) {
         .FnPtr(sig) => return fg.g.within_sys(&sig.effects)
         .Optional(inner) => return fg.ptr_type_plain(inner)
@@ -343,8 +343,8 @@ calls_emit_plain :: fn(fg: ^FnGen, res: ?string, ret: Ty, plain_call: string) ne
 
 /// Calls code pointer `code`. With `hidden`, the code uses the hidden convention
 /// (env, cx, inst) unless its tag (GM_PTR_TAGGED) marks a plain function; otherwise it is plain.
-pub call_indirect :: fn(fg: ^FnGen, code: string, env: string, cx: string, vals: []const string, tys: []const Ty, ret: Ty, hidden: bool, win64: bool) -> string needs sema.Load {
-    plain_ret: string = if fg.g.ty.is_unit(ret) or fg.g.ty.is_never(ret) { "void" } else { fg.g.ty.plain_cty(ret) }
+call_indirect :: fn(fg: ^FnGen, code: string, env: string, cx: string, vals: []const string, tys: []const Ty, ret: Ty, hidden: bool, win64: bool) -> string needs sema.Load {
+    plain_ret: string = if fg.g.ty.is_void(ret) { "void" } else { fg.g.ty.plain_cty(ret) }
     ps := list(string)
     for p in tys { ps.push(fg.g.ty.plain_cty(p))! }
     plain_params: string = if ps.items.len is 0 { "void" } else { str.join(ps.items, ", ")! }
@@ -391,7 +391,7 @@ pub call_indirect :: fn(fg: ^FnGen, code: string, env: string, cx: string, vals:
 // ---------------------------------------------------------------------------------
 
 /// Performs operation `op` of `effect` with argument values `vals`.
-pub perform :: fn(fg: ^FnGen, e: ^Expr, effect_: ^const EffectRef, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
+perform :: fn(fg: ^FnGen, e: ^Expr, effect_: ^const EffectRef, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
     id := fg.g.effect_id(effect_)
     if r := fg.direct_perform(id, effect_, op, vals, tys, ret) { return r }
     if r := fg.stub_perform(e, effect_, id, op, vals, tys, ret) { return r }
@@ -471,7 +471,7 @@ out_stub :: fn(fg: ^FnGen, effect_: ^const EffectRef, id: u32, op: u32, tys: []c
 /// The helper that calls a function value of type `fn(string)` (an `@write` sink) with the
 /// `n` bytes at `d`, as `call_closure` would: `code` and `env` are the closure's, `cx` its
 /// handler context. It returns whether the call started an unwind.
-pub fn_sink_stub :: fn(fg: ^FnGen, str_ty: Ty) -> string needs sema.Load {
+fn_sink_stub :: fn(fg: ^FnGen, str_ty: Ty) -> string needs sema.Load {
     key := "fnsink"
     if f := fg.g.stubs.get(key) { return f }
     f := str.format("gm_pf{}", fg.g.stubs.len())!
@@ -491,7 +491,7 @@ pub fn_sink_stub :: fn(fg: ^FnGen, str_ty: Ty) -> string needs sema.Load {
 /// `t` describes, as `{}` does (or as the spec `s` says, unless it is NULL) and writes it
 /// unless it comes out empty (as the interpreter does). It returns whether the write
 /// started an unwind.
-pub fn_format_stub :: fn(fg: ^FnGen, sink: string) -> string needs sema.Load {
+fn_format_stub :: fn(fg: ^FnGen, sink: string) -> string needs sema.Load {
     key := "fnformat"
     if f := fg.g.stubs.get(key) { return f }
     f := str.format("gm_pf{}", fg.g.stubs.len())!
@@ -505,7 +505,7 @@ pub fn_format_stub :: fn(fg: ^FnGen, sink: string) -> string needs sema.Load {
 /// A function around the stub `core` that builds the string it writes: `kind` 's'
 /// takes a pointer and a length, 'f' a type descriptor and a value to format (the
 /// way `{}` of a template does). It returns whether the write started an unwind.
-pub piece_stub :: fn(fg: ^FnGen, core: string, kind: u8, str_ty: Ty) -> string needs sema.Load {
+piece_stub :: fn(fg: ^FnGen, core: string, kind: u8, str_ty: Ty) -> string needs sema.Load {
     kind_text := if kind is 's' { "s" } else { "f" }
     key := str.format("piece|{}|{}", core, kind_text)!
     if f := fg.g.stubs.get(key) { return f }
@@ -588,7 +588,7 @@ native_op :: fn(fg: ^FnGen, effect_: ^const EffectRef, op: u32, vals: []const st
 // `with` and `try`
 // ---------------------------------------------------------------------------------
 
-pub with_expr :: fn(fg: ^FnGen, e: ^Expr, label: u32, handlers: []tir.HandlerValue, on_: ?^Expr, body: ^Expr) -> Unsup!string needs sema.Load {
+with_expr :: fn(fg: ^FnGen, e: ^Expr, label: u32, handlers: []tir.HandlerValue, on_: ?^Expr, body: ^Expr) -> Unsup!string needs sema.Load {
     cur := fg.cx
     result_slot := str.format("(void *)&F.w{}", label)!
     // A `with … on` (§14) has a driver state its handlers point at.
@@ -650,7 +650,7 @@ pub with_expr :: fn(fg: ^FnGen, e: ^Expr, label: u32, handlers: []tir.HandlerVal
     return fg.tmp(e.ty, str.format("F.w{}", label)!)
 }
 
-pub try_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, lift: ?u32, levels: u32) -> Unsup!string needs sema.Load {
+try_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, lift: ?u32, levels: u32) -> Unsup!string needs sema.Load {
     v := try fg.expr(x)
     a := fg.addr_of(x.ty, v)
     ret := fg.target_ret(levels)
@@ -692,7 +692,7 @@ pub try_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, lift: ?u32, levels: u32) -> U
 // ---------------------------------------------------------------------------------
 
 /// Emits the parts of an `if`/loop condition, jumping to `fail` when one fails.
-pub conds :: fn(fg: ^FnGen, cond: []tir.CondPart, fail: string) -> Unsup!() needs sema.Load {
+conds :: fn(fg: ^FnGen, cond: []tir.CondPart, fail: string) -> Unsup!() needs sema.Load {
     for c in cond {
         match c {
             .Bool(b) => {
@@ -707,7 +707,7 @@ pub conds :: fn(fg: ^FnGen, cond: []tir.CondPart, fail: string) -> Unsup!() need
     }
 }
 
-pub match_expr :: fn(fg: ^FnGen, e: ^Expr, scrutinee: ^Expr, arms: []tir.Arm) -> Unsup!string needs sema.Load {
+match_expr :: fn(fg: ^FnGen, e: ^Expr, scrutinee: ^Expr, arms: []tir.Arm) -> Unsup!string needs sema.Load {
     guarded := false
     for arm in arms {
         if arm.guard is not null { guarded = true }
@@ -788,7 +788,7 @@ scrutinee_addr :: fn(fg: ^FnGen, value: ^Expr, in_place: bool) -> Unsup!string n
 }
 
 /// Tests the value at `addr` against `p`, binding its locals; jumps to `fail` on mismatch.
-pub pat :: fn(fg: ^FnGen, p: ^tir.Pat, addr: string, fail: string) -> Unsup!() needs sema.Load {
+pat :: fn(fg: ^FnGen, p: ^tir.Pat, addr: string, fail: string) -> Unsup!() needs sema.Load {
     t := p.ty
     match p.kind {
         .Wild => {}
@@ -870,7 +870,7 @@ calls_in_scan :: fn(fg: ^FnGen, et: Ty, n: string, p: string, x: string, r: stri
 }
 
 /// `x in c` for arrays, slices, inline tuples and ranges (§7.7).
-pub in_expr :: fn(fg: ^FnGen, elem: ^Expr, container: ^Expr, negated: bool) -> Unsup!string needs sema.Load {
+in_expr :: fn(fg: ^FnGen, elem: ^Expr, container: ^Expr, negated: bool) -> Unsup!string needs sema.Load {
     x := try fg.expr(elem)
     c := try fg.expr(container)
     ca := fg.addr_of(container.ty, c)
@@ -920,7 +920,7 @@ pub in_expr :: fn(fg: ^FnGen, elem: ^Expr, container: ^Expr, negated: bool) -> U
 // ---------------------------------------------------------------------------------
 
 /// The bits of `v`, a value of `#bits` field type `t`, as an `unsigned __int128`.
-pub bits_raw :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
+bits_raw :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
     match fg.g.ty.repr(t) {
         .Bool => return str.format("(unsigned __int128)({} != 0)", v)!
         .Int(_, _, storage) => return str.format("(unsigned __int128)({})({})", int_cty(false, storage), v)!
@@ -943,7 +943,7 @@ pub bits_raw :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
 }
 
 /// A value of `#bits` field type `t` from its bits `raw` (an `unsigned __int128`).
-pub bits_value :: fn(fg: ^FnGen, t: Ty, raw: string) -> string needs sema.Load {
+bits_value :: fn(fg: ^FnGen, t: Ty, raw: string) -> string needs sema.Load {
     w := fg.g.ty.bit_width(t)
     match fg.g.ty.repr(t) {
         .Bool => return fg.tmp(t, str.format("(uint8_t)({} != 0)", raw)!)
@@ -985,7 +985,7 @@ pub bits_value :: fn(fg: ^FnGen, t: Ty, raw: string) -> string needs sema.Load {
 }
 
 /// A C condition: values `a` and `b` of type `t` are `is`-equal (§7.6).
-pub equal :: fn(fg: ^FnGen, t: Ty, a: string, b: string) -> string needs sema.Load {
+equal :: fn(fg: ^FnGen, t: Ty, a: string, b: string) -> string needs sema.Load {
     if fg.g.ty.repr(t) is .Blob {
         f := fg.g.helpers.eq_fn(&fg.g.ty, t)
         pa := fg.addr_of(t, a)

@@ -29,10 +29,8 @@ Code :: struct {
     ins: []Ins
     /// The frame's storage seen as words is the register file: the locals that are words
     /// (`vc_local_reg`) are registers, and so are the words from `regs_off` on, after the
-    /// byte slots, which start at `slots_off`. `size` is the storage's whole size.
-    slots_off: u64
+    /// byte slots. `size` is the storage's whole size.
     regs_off: u64
-    nregs: u64
     size: u64
     /// The constants the registers from `regs_off` on hold, set when the body starts.
     consts: []u64
@@ -45,8 +43,6 @@ VmLoop :: struct {
     /// Where a `break` and a `continue` go.
     brk: u32
     cont: u32
-    /// The registers holding the mark taken at the start of each iteration.
-    mark: u32
     /// The register holding the height of the frame's deferred statements at its entry
     /// (`NO_DEFERS` if it has no deferred statements).
     defers: u32
@@ -323,7 +319,7 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
         regs_off := u64(rbase) * 8
         // At least one register past the locals.
         nregs := u64((c.max - rbase).max(1))
-        return new(Code(ins: c.ins.items, slots_off: sbase, regs_off: regs_off, nregs: nregs, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
+        return new(Code(ins: c.ins.items, regs_off: regs_off, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
     }
 }
 
@@ -621,15 +617,15 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
             return ()
         }
         .If(x) => {
-            c.vc_if_(x.cond, x.then, x.else_, want)
+            c.vc_if(x.cond, x.then, x.else_, want)
             return ()
         }
         .Match(scrutinee, arms) => {
-            c.vc_match_(n, scrutinee, arms, want)
+            c.vc_match(n, scrutinee, arms, want)
             return ()
         }
         .Loop(x) => if n.size is 0 and want is not .Reg {
-            c.vc_loop_(x.label, x.cond, x.body, x.step)
+            c.vc_loop(x.label, x.cond, x.body, x.step)
             if want is .Ret { c.vc_emit(.Ret) }
             return ()
         }
@@ -835,8 +831,8 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
             }
         }
         .Block(b) => c.vc_block(b, .Reg)
-        .If(x) => c.vc_if_(x.cond, x.then, x.else_, .Reg)
-        .Match(scrutinee, arms) => c.vc_match_(n, scrutinee, arms, .Reg)
+        .If(x) => c.vc_if(x.cond, x.then, x.else_, .Reg)
+        .Match(scrutinee, arms) => c.vc_match(n, scrutinee, arms, .Reg)
         .Return(_), .Break(_), .Continue(_) => c.vc_expr(n, .Reg)
         .With(w) => if w.on is null { c.vc_with(n, w, .Reg) } else { c.vc_emit(.EvalW(c.vc_alloc(), n)) }
         .AddrOf(x) => if c.vc_addressable(x) {
@@ -1144,11 +1140,11 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             return ()
         }
         .If(x) => {
-            c.vc_if_(x.cond, x.then, x.else_, .Slot(at))
+            c.vc_if(x.cond, x.then, x.else_, .Slot(at))
             return ()
         }
         .Match(scrutinee, arms) => {
-            c.vc_match_(n, scrutinee, arms, .Slot(at))
+            c.vc_match(n, scrutinee, arms, .Slot(at))
             return ()
         }
         .Bytes(b) => {
@@ -1196,7 +1192,7 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             u := m.union_def(n.ty) else return ()
             c.vc_emit(.ZeroSlot(at, n.size.trunc(u32)))
             r := c.vc_alloc()
-            c.vc_emit(.Const(r, tag_bits(u.variants[us(variant)].tag).trunc(u64)))
+            c.vc_emit(.Const(r, bigint.bits128(u.variants[us(variant)].tag).trunc(u64)))
             c.vc_emit(.WSlot(at, m.size(u.tag).trunc(u32), r))
             c.top = save
             if p := payload { c.vc_to_slot(p, at + m.payload_offset(n.ty).trunc(u32)) }
@@ -1665,7 +1661,7 @@ vc_opt_shape :: fn(c: ^Vc, t: Ty) -> ?(flag: u64, size: u64, payload: u64) needs
     return (flag: offs[1], size: 1, payload: offs[0])
 }
 
-vc_if_ :: fn(c: ^Vc, cond: []Cond, then: ^Node, else_: ?^Node, want: Want) needs Alloc {
+vc_if :: fn(c: ^Vc, cond: []Cond, then: ^Node, else_: ?^Node, want: Want) needs Alloc {
     save := c.top
     slots := c.slot_top
     fails := c.vc_conds(cond)
@@ -1689,7 +1685,7 @@ vc_if_ :: fn(c: ^Vc, cond: []Cond, then: ^Node, else_: ?^Node, want: Want) needs
     c.vc_set_top(if want is .Reg { save + 1 } else { save })
 }
 
-vc_match_ :: fn(c: ^Vc, n: ^Node, scrutinee: ^Node, arms: []Arm, want: Want) needs Alloc {
+vc_match :: fn(c: ^Vc, n: ^Node, scrutinee: ^Node, arms: []Arm, want: Want) needs Alloc {
     save := c.top
     slots := c.slot_top
     at := c.vc_slot_at(c.vc_alloc_slot(scrutinee.size))
@@ -1774,7 +1770,7 @@ vc_with :: fn(c: ^Vc, n: ^Node, w: With, want: Want) needs Alloc {
         }
     }
     li := c.loops.items.len.trunc(u32)
-    c.loops.push(VmLoop(label: w.label, brk: 0, cont: 0, mark: 0, defers: h, dblocks: c.dblocks, cx: NO_CX, withs: c.withs, is_with: true, at: res, size: size))!
+    c.loops.push(VmLoop(label: w.label, brk: 0, cont: 0, defers: h, dblocks: c.dblocks, cx: NO_CX, withs: c.withs, is_with: true, at: res, size: size))!
     c.open.push(li)!
     dh := c.vc_jump(.DeferHeight(h))
     ndefers := c.ndefers
@@ -1816,7 +1812,7 @@ vc_with :: fn(c: ^Vc, n: ^Node, w: With, want: Want) needs Alloc {
 /// with the mark and its releases only if something in the loop may leave scratch memory
 /// behind, the height only if it has deferred statements, and the context only if it has
 /// `with`s.
-vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs Alloc {
+vc_loop :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs Alloc {
     save := c.top
     slots := c.slot_top
     mark := c.vc_alloc()
@@ -1825,7 +1821,7 @@ vc_loop_ :: fn(c: ^Vc, label: u32, cond: []Cond, body: ^Blk, step: ?^Node) needs
     h := c.vc_alloc()
     cx := c.vc_alloc()
     li := c.loops.items.len.trunc(u32)
-    c.loops.push(VmLoop(label: label, brk: 0, cont: 0, mark: mark, defers: h, dblocks: c.dblocks, cx: cx, withs: c.withs, is_with: false))!
+    c.loops.push(VmLoop(label: label, brk: 0, cont: 0, defers: h, dblocks: c.dblocks, cx: cx, withs: c.withs, is_with: false))!
     c.open.push(li)!
     dh := c.vc_jump(.DeferHeight(h))
     ndefers := c.ndefers

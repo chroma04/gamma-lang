@@ -163,11 +163,9 @@ parse_logic :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
     chain: ?ast.BinOp = null
     while true {
         op: ast.BinOp = .And
-        if p.at_kw(.And) and not p.restr.no_and {
-            op = .And
-        } else if p.at_kw(.Or) {
+        if p.at_kw(.Or) {
             op = .Or
-        } else {
+        } else if not p.at_kw(.And) or p.restr.no_and {
             break
         }
         if chain is null {
@@ -242,11 +240,9 @@ op_text :: fn(k: syntax.TokenKind) -> string => match k {
 parse_range :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
     lhs := try p.parse_bit()
     op: ast.BinOp = .Range
-    if p.at(.DotDot) {
-        op = .Range
-    } else if p.at(.DotDotEq) {
+    if p.at(.DotDotEq) {
         op = .RangeIncl
-    } else {
+    } else if not p.at(.DotDot) {
         return lhs
     }
     _ = p.bump()
@@ -380,7 +376,7 @@ parse_postfix_ops :: fn(p: ^Parser, base: ast.Expr, allow_bang: bool) -> Abort!a
         if k in (.Punct(.Question), .Punct(.Caret), .Punct(.LParen), .Punct(.LBracket), .Punct(.Dot)) or (allow_bang and k is .Punct(.Bang)) {
             links += 1
             if links > MAX_POSTFIX_CHAIN {
-                return !p.fail(p.span(), "more than 100000 postfix operations in a row, the limit of this implementation (§23.5)")
+                return !p.fail(p.span(), str.format("more than {} postfix operations in a row, the limit of this implementation (§23.5)", MAX_POSTFIX_CHAIN)!)
             }
         }
         match k {
@@ -531,7 +527,7 @@ parse_arg :: fn(p: ^Parser) -> Abort!ast.Arg needs Alloc {
         return ast.Arg(kind: .Spread(e), span: p.span_from(start))
     }
     if p.nth_is_name(0) and p.nth_is(1, .Colon) {
-        if p.kind() is .Underscore { p.diags.push(diag.error(p.span(), "`_` cannot name an argument (§11.3)")) }
+        if p.kind() is .Underscore { p.report(p.span(), "`_` cannot name an argument (§11.3)") }
         name := try p.parse_name("an argument name")
         _ = p.bump()
         e := try p.parse_expr()

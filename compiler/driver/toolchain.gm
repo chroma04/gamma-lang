@@ -37,7 +37,7 @@ pub from_env :: fn() -> string!Toolchain needs Alloc + Env + Fs {
 }
 
 /// The toolchain given the values of `CC`, `CFLAGS` and `LDFLAGS` (`null` when unset).
-pub from_vars :: fn(cc, cflags, ldflags: ?string) -> string!Toolchain needs Alloc {
+from_vars :: fn(cc, cflags, ldflags: ?string) -> string!Toolchain needs Alloc {
     t := Toolchain(cc: words_of(DEFAULT_CC, null), cflags: empty_slice(string), ldflags: empty_slice(string))
     if c := cc {
         words := pkg.split_words(c) else e => { return !str.format("cannot read CC: {}", e)! }
@@ -56,7 +56,7 @@ pub from_vars :: fn(cc, cflags, ldflags: ?string) -> string!Toolchain needs Allo
 
 /// The toolchain for building for the target triple `triple` (`--target=s390x-linux-gnu`),
 /// from the environment.
-pub for_target :: fn(triple: string) -> string!Toolchain needs Alloc + Env + Fs {
+for_target :: fn(triple: string) -> string!Toolchain needs Alloc + Env + Fs {
     // For WASI without `CC`, the clang of a wasi-sdk named by `WASI_SDK_PATH`, with its
     // sysroot.
     cc := env_var("CC")
@@ -82,7 +82,7 @@ pub for_target :: fn(triple: string) -> string!Toolchain needs Alloc + Env + Fs 
 ///
 /// Whether the resulting compiler really produces code for `triple` is checked by
 /// `target_for`.
-pub for_triple :: fn(triple: string, cc, cflags, ldflags: ?string, have_gcc, have_clang: bool) -> string!Toolchain needs Alloc {
+for_triple :: fn(triple: string, cc, cflags, ldflags: ?string, have_gcc, have_clang: bool) -> string!Toolchain needs Alloc {
     if triple.len is 0 or has_white_space(triple) {
         return !str.format("`{}` is not a target triple (such as `aarch64-linux-gnu`)", triple)!
     }
@@ -154,10 +154,10 @@ pub for_safe_build :: fn() -> string!Toolchain needs Alloc + Env + Fs {
 
 /// Whether this is the plain system compiler (`cc` with no extra options), which compiles
 /// for the host.
-pub is_default :: fn(t: ^const Toolchain) -> bool => t.cc.len is 1 and t.cc[0] is DEFAULT_CC and t.cflags.len is 0 and t.ldflags.len is 0
+is_default :: fn(t: ^const Toolchain) -> bool => t.cc.len is 1 and t.cc[0] is DEFAULT_CC and t.cflags.len is 0 and t.ldflags.len is 0
 
 /// `t` with the flags of gamma.toml placed before those of the environment.
-pub with_manifest_flags :: fn(t: Toolchain, cflags, ldflags: []const string) -> Toolchain needs Alloc {
+with_manifest_flags :: fn(t: Toolchain, cflags, ldflags: []const string) -> Toolchain needs Alloc {
     r := t
     if cflags.len > 0 {
         words := list(string)
@@ -184,7 +184,7 @@ pub target :: fn(t: ^const Toolchain) -> string!load.Target needs Alloc + Proc {
 
 /// As `target`, and checks that the compiler produces code for the target triple `triple`
 /// (its architecture, operating system and byte order).
-pub target_for :: fn(t: ^const Toolchain, triple: string) -> string!load.Target needs Alloc + Proc {
+target_for :: fn(t: ^const Toolchain, triple: string) -> string!load.Target needs Alloc + Proc {
     m := try macros(t)
     tg := target_from_macros(m) else e => { return !str.format("the C compiler `{}` {}", pkg.display(t), e)! }
     check_triple(triple, m) else e => { return !str.format("the C compiler `{}` {}", pkg.display(t), e)! }
@@ -248,7 +248,7 @@ pub strip_wasm_trap_report :: fn(stderr: string) -> string {
 
 /// Checks that the compiler whose predefined macros are `macros` produces code for the
 /// target triple `triple`. The error completes the sentence "the C compiler … ".
-pub check_triple :: fn(triple: string, macros: string) -> string!() needs Alloc {
+check_triple :: fn(triple: string, macros: string) -> string!() needs Alloc {
     parts := list(string)
     for p in str.split(triple, "-") { parts.push(p)! }
     arch := parts.items[0]
@@ -348,7 +348,7 @@ defined :: fn(macros: string, name: string) -> bool {
 
 /// The target described by a C compiler's predefined macros (the output of `cc -dM -E`).
 /// The error completes the sentence "the C compiler … ".
-pub target_from_macros :: fn(macros: string) -> string!load.Target needs Alloc {
+target_from_macros :: fn(macros: string) -> string!load.Target needs Alloc {
     defs := hash_map.hash_map(string, string)
     for line in str.lines(macros) {
         rest := str.strip_prefix(line, "#define ") else continue

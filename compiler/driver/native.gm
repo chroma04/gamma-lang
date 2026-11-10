@@ -103,8 +103,6 @@ Built :: struct {
     generated: cgen.Generated
     rt_h: string
     rt_c: string
-    /// `main` of an executable is `entries[0]`.
-    exe_kind: u8 = 0
 }
 
 /// Translates the checked program to C. `roots` are the functions the code starts from

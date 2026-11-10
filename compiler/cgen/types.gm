@@ -72,7 +72,7 @@ pub CTypes :: struct {
     views: Views
 }
 
-pub ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
+ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
     s: s,
     lay: layouts(s, t),
     blobs: list(BlobDef),
@@ -99,35 +99,38 @@ pub ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
 // Type queries, so the rest of the back end need not reach into the checker
 // ---------------------------------------------------------------------------------
 
-pub kind :: fn(ty: ^const CTypes, t: Ty) -> TyKind => ty.s.tys.kind(t)
+kind :: fn(ty: ^const CTypes, t: Ty) -> TyKind => ty.s.tys.kind(t)
 
-pub show :: fn(ty: ^const CTypes, t: Ty) -> string needs Alloc => ty.s.tys.show(t)
+show :: fn(ty: ^const CTypes, t: Ty) -> string needs Alloc => ty.s.tys.show(t)
 
-pub is_unit :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_unit(t)
+is_unit :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_unit(t)
 
-pub is_never :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) is .Never
+is_never :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) is .Never
 
-pub is_integer :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_integer(t)
+/// Whether a value of type `t` has no C representation: `()` or `never`.
+is_void :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.is_unit(t) or ty.is_never(t)
 
-pub is_signed_integer :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_signed_integer(t)
+is_integer :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_integer(t)
 
-pub is_float :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) is .Float(_)
+is_signed_integer :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.is_signed_integer(t)
+
+is_float :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) is .Float(_)
 
 /// A `#simd` or `#vec` array (§5.6.2, §5.6.3).
-pub is_vector :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) in (.Array(_, _, .Simd), .Array(_, _, .Math))
+is_vector :: fn(ty: ^const CTypes, t: Ty) -> bool => ty.s.tys.kind(t) in (.Array(_, _, .Simd), .Array(_, _, .Math))
 
-pub unit_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.unit()
+unit_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.unit()
 
-pub bool_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.bool_ty()
+bool_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.bool_ty()
 
-pub string_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.string_ty()
+string_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.string_ty()
 
-pub int_ty :: fn(ty: ^CTypes, signed: bool, bits: u16) -> Ty needs Alloc => ty.s.tys.int(signed, bits)
+int_ty :: fn(ty: ^CTypes, signed: bool, bits: u16) -> Ty needs Alloc => ty.s.tys.int(signed, bits)
 
-pub usize_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.usize_ty()
+usize_ty :: fn(ty: ^CTypes) -> Ty needs Alloc => ty.s.tys.usize_ty()
 
 /// The definition of the struct or union `t`.
-pub adt_of :: fn(ty: ^const CTypes, t: Ty) -> ^const sema.AdtInfo {
+adt_of :: fn(ty: ^const CTypes, t: Ty) -> ^const sema.AdtInfo {
     .Adt(id, _) := ty.s.tys.kind(t) else @unreachable()
     return &ty.s.adts.items[usize(id)]
 }
@@ -138,11 +141,11 @@ pub adt_of :: fn(ty: ^const CTypes, t: Ty) -> ^const sema.AdtInfo {
 
 pub size :: fn(ty: ^CTypes, t: Ty) -> u64 needs Alloc => ty.lay.size_of(t)
 
-pub align :: fn(ty: ^CTypes, t: Ty) -> u64 needs Alloc => ty.lay.align_of(t)
+align :: fn(ty: ^CTypes, t: Ty) -> u64 needs Alloc => ty.lay.align_of(t)
 
-pub offsets :: fn(ty: ^CTypes, t: Ty) -> []const u64 needs Alloc => ty.lay.layout_of(t).offsets
+offsets :: fn(ty: ^CTypes, t: Ty) -> []const u64 needs Alloc => ty.lay.layout_of(t).offsets
 
-pub repr :: fn(ty: ^CTypes, t: Ty) -> Repr needs Alloc => match ty.kind(t) {
+repr :: fn(ty: ^CTypes, t: Ty) -> Repr needs Alloc => match ty.kind(t) {
     .Int(signed, bits) => .Int(signed: signed, bits: u32(bits), storage: ty.size(t))
     .Usize => .Int(signed: false, bits: ty.lay.target.ptr_bits(), storage: ty.lay.target.ptr_bytes)
     .Isize => .Int(signed: true, bits: ty.lay.target.ptr_bits(), storage: ty.lay.target.ptr_bytes)
@@ -156,7 +159,7 @@ pub repr :: fn(ty: ^CTypes, t: Ty) -> Repr needs Alloc => match ty.kind(t) {
 }
 
 /// The C type of values of `t`.
-pub cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
     i := usize(t.id)
     if i < ty.cty_cache.items.len {
         if c := ty.cty_cache.items[i] { return c }
@@ -327,7 +330,7 @@ define_typed :: fn(ty: ^CTypes, t: Ty, members: string, named: []const NamedOffs
 
 /// The name of a GCC/Clang vector type of `n` lanes of the C type `lane` (`tag` names it,
 /// as `u8` or `f32`), each `bytes` wide, declared once.
-pub vector_typedef :: fn(ty: ^CTypes, lane: string, tag: string, n: u64, bytes: u64) -> string needs Alloc {
+vector_typedef :: fn(ty: ^CTypes, lane: string, tag: string, n: u64, bytes: u64) -> string needs Alloc {
     name := str.format("gm_v{}{}", n, tag)!
     if ty.vector_names.get(name) is null {
         ty.vector_names.put(name, true)!
@@ -338,7 +341,7 @@ pub vector_typedef :: fn(ty: ^CTypes, lane: string, tag: string, n: u64, bytes: 
 
 /// The mirror of `t`: a C type with its fields, for a C-compatible struct, `#c_union` or
 /// `#bits` struct (the latter is its integer). `null` for other types.
-pub mirror :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
+mirror :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
     if m := ty.mirrors.get(t.id) { return m }
     m := ty.make_mirror(t)
     ty.mirrors.put(t.id, m)!
@@ -433,25 +436,25 @@ field_cty :: fn(ty: ^CTypes, t: Ty) -> ?FieldCty needs Alloc {
 
 /// Whether values of `t` cross calls between Gamma functions by address: blobs larger
 /// than two words, which the C ABI would copy through memory anyway.
-pub by_ref :: fn(ty: ^CTypes, t: Ty) -> bool needs Alloc => ty.repr(t) is .Blob and ty.size(t) > 16
+by_ref :: fn(ty: ^CTypes, t: Ty) -> bool needs Alloc => ty.repr(t) is .Blob and ty.size(t) > 16
 
 /// The C type of a parameter of type `t` of a Gamma function (not of a plain C
 /// signature): an address if `by_ref`.
-pub param_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc => if ty.by_ref(t) { "const void *" } else { ty.cty(t) }
+param_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc => if ty.by_ref(t) { "const void *" } else { ty.cty(t) }
 
 /// The C type of `t` in the plain C calling convention: its mirror if it has one.
-pub plain_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+plain_cty :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
     if m := ty.mirror(t) { return m }
     return ty.cty(t)
 }
 
 /// Records `name` as a Gamma name given to a member (see `guard`).
-pub add_member_name :: fn(ty: ^CTypes, name: string) needs Alloc {
+add_member_name :: fn(ty: ^CTypes, name: string) needs Alloc {
     ty.member_set.put(name, true)!
 }
 
 /// The Gamma names given to members, sorted.
-pub member_names :: fn(ty: ^const CTypes) -> []string needs Alloc {
+member_names :: fn(ty: ^const CTypes) -> []string needs Alloc {
     out := list(string)
     for k in ty.member_set.keys() { out.push(k)! }
     out.items.sort()
@@ -459,10 +462,10 @@ pub member_names :: fn(ty: ^const CTypes) -> []string needs Alloc {
 }
 
 /// The definitions of the mirrors used.
-pub mirror_text :: fn(ty: ^const CTypes) -> string => ty.mirror_defs.items
+mirror_text :: fn(ty: ^const CTypes) -> string => ty.mirror_defs.items
 
 /// Typedefs of the blob types used, then of the typed structs.
-pub blob_typedefs :: fn(ty: ^const CTypes) -> string needs Alloc {
+blob_typedefs :: fn(ty: ^const CTypes) -> string needs Alloc {
     out := list(u8)
     // In the order of their sizes, alignments and kinds.
     sorted := list(BlobDef)
@@ -473,22 +476,12 @@ pub blob_typedefs :: fn(ty: ^const CTypes) -> string needs Alloc {
     return out.items
 }
 
-number_after :: fn(text: string, prefix: string) -> u64 {
-    i := str.find(text, prefix) else return 0
-    n: u64 = 0
-    for c in text[i + prefix.len..] {
-        if c not in '0'..='9' { break }
-        n = n * 10 + u64(c - '0')
-    }
-    return n
-}
-
 // ---------------------------------------------------------------------------------
 // Type descriptors (§21.6.1 formatting)
 // ---------------------------------------------------------------------------------
 
 /// The C expression `&gm_tyN` for the descriptor of `t`.
-pub desc :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
+desc :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
     if i := ty.desc_ids.get(t.id) { return str.format("&gm_ty{}", i)! }
     i := ty.desc_count
     ty.desc_count += 1
@@ -629,7 +622,7 @@ fields_array :: fn(ty: ^CTypes, i: usize, parts: []const string, f: ^List(string
 }
 
 /// The width in bits of a `#bits` field of type `t` (§5.10.5).
-pub bit_width :: fn(ty: ^CTypes, t: Ty) -> u32 needs Alloc {
+bit_width :: fn(ty: ^CTypes, t: Ty) -> u32 needs Alloc {
     match ty.kind(t) {
         .Bool => return 1
         .Int(_, bits) => return u32(bits)
@@ -645,7 +638,7 @@ pub bit_width :: fn(ty: ^CTypes, t: Ty) -> u32 needs Alloc {
 
 /// For a `#bits` struct: its underlying integer type and each field's bit offset, width
 /// and type, in declaration order from the least significant bit.
-pub bits_layout :: fn(ty: ^CTypes, t: Ty) -> ?BitsLayout needs Alloc {
+bits_layout :: fn(ty: ^CTypes, t: Ty) -> ?BitsLayout needs Alloc {
     .Adt(id, _) := ty.kind(t) else return null
     .Struct(sd) := ty.s.adts.items[usize(id)].kind else return null
     u := sd.bits else return null
@@ -660,9 +653,9 @@ pub bits_layout :: fn(ty: ^CTypes, t: Ty) -> ?BitsLayout needs Alloc {
 }
 
 /// The descriptor definitions, in dependency-safe order.
-pub descriptors :: fn(ty: ^const CTypes) -> string needs Alloc => str.format("{}{}{}", ty.desc_fwd.items, ty.desc_parts.items, ty.desc_defs.items)!
+descriptors :: fn(ty: ^const CTypes) -> string needs Alloc => str.format("{}{}{}", ty.desc_fwd.items, ty.desc_parts.items, ty.desc_defs.items)!
 
-pub int_cty :: fn(signed: bool, storage: u64) -> string => match storage {
+int_cty :: fn(signed: bool, storage: u64) -> string => match storage {
     1 => if signed { "int8_t" } else { "uint8_t" }
     2 => if signed { "int16_t" } else { "uint16_t" }
     4 => if signed { "int32_t" } else { "uint32_t" }
@@ -670,7 +663,7 @@ pub int_cty :: fn(signed: bool, storage: u64) -> string => match storage {
     _ => if signed { "__int128" } else { "unsigned __int128" }
 }
 
-pub blob_name :: fn(size: u64, align: u64, kind: BlobKind) -> string needs Alloc => match kind {
+blob_name :: fn(size: u64, align: u64, kind: BlobKind) -> string needs Alloc => match kind {
     .Words => str.format("gm_w{}_{}", size, align)!
     .Lanes(ptrs) => {
         lanes := list(u8)

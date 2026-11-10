@@ -167,9 +167,7 @@ at_eof :: fn(p: ^const Parser) -> bool => p.kind() is .Eof
 at_newline :: fn(p: ^const Parser) -> bool => p.kind() is .Newline
 
 /// True if the current token is the contextual keyword `word`.
-at_word :: fn(p: ^const Parser, word: string) -> bool => p.nth_is_word(0, word)
-
-nth_is_word :: fn(p: ^const Parser, n: usize, word: string) -> bool => match p.nth(n) {
+at_word :: fn(p: ^const Parser, word: string) -> bool => match p.nth(0) {
     .Ident(s) => s is word
     _ => false
 }

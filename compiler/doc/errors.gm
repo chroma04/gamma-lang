@@ -1,6 +1,0 @@
-// The texts of operating system errors, as `gamma doc` prints them.
-
-load :: import "../load"
-
-/// The text of an operating system error: the system's message and `(os error N)`.
-describe_io_error :: fn(e: IoError) -> string needs Alloc => load.os_error_text(e)

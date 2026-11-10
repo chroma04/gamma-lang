@@ -184,7 +184,7 @@ pub diff :: fn(expected, actual: string) -> string needs Alloc {
         shown += 1
     }
     if shown > 200 { out.write("  … {} more lines differ\n", shown - 200)! }
-    for i in e.len - tail..min(e.len - tail + context, e.len) { out.write("  {}\n", e[i])! }
+    for i in e.len - tail..(e.len - tail + context).min(e.len) { out.write("  {}\n", e[i])! }
     if expected.len > 0 and actual.len > 0 and expected.last() is not actual.last() {
         out.write("  (one ends with a newline, the other does not)\n")!
     }
@@ -197,8 +197,6 @@ pub split_lines :: fn(s: string) -> []string needs Alloc {
     for line in str.lines(s) { l.push(line)! }
     return l.items
 }
-
-min :: fn(a, b: usize) -> usize => if a < b { a } else { b }
 
 // ---------------------------------------------------------------------------------
 // Files

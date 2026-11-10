@@ -4,8 +4,6 @@
 /// The target the generated code is for.
 pub Target :: loader.Target
 
-pub host_target :: fn() -> Target => loader.host_target()
-
 pub ptr_bits :: fn(t: ^const Target) -> u32 => loader.ptr_bits(t)
 
 /// A size, an alignment and the offsets of the fields (of a struct or tuple), of the flag
@@ -28,7 +26,7 @@ pub layouts :: fn(s: ^Sema, t: Target) -> Layouts needs Alloc => Layouts(target:
 scalar_layout :: fn(size: u64) -> Layout => Layout(size: size, align: size.max(1), offsets: empty_slice(u64))
 
 /// The size in bytes of the storage of an integer of `bits` bits (§5.2).
-pub int_storage_bytes :: fn(bits: u32) -> u64 => if bits <= 8 { 1 } else if bits <= 16 { 2 } else if bits <= 32 { 4 } else if bits <= 64 { 8 } else { 16 }
+int_storage_bytes :: fn(bits: u32) -> u64 => if bits <= 8 { 1 } else if bits <= 16 { 2 } else if bits <= 32 { 4 } else if bits <= 64 { 8 } else { 16 }
 
 round_up_to :: fn(x, align: u64) -> u64 {
     q := x / align + (if x % align is 0 { 0 } else { 1 })
@@ -70,14 +68,6 @@ lay_pair :: fn(a, b: Layout) -> Layout needs Alloc {
 
 /// True for the pointer kinds whose optional uses address 0 as null (§5.12).
 pub nullable_pointer :: fn(s: ^const Sema, t: Ty) -> bool => s.tys.kind(t) in (.Ptr(_), .ManyPtr(_), .Rawptr, .FnPtr(_))
-
-/// Whether `t` is a signed or unsigned integer type, with its width in bits.
-pub int_bits :: fn(lay: ^const Layouts, t: Ty) -> ?(signed: bool, bits: u32) => match lay.s.tys.kind(t) {
-    .Int(signed, bits) => (signed: signed, bits: u32(bits))
-    .Usize => (signed: false, bits: lay.target.ptr_bits())
-    .Isize => (signed: true, bits: lay.target.ptr_bits())
-    _ => null
-}
 
 pub layout_of :: fn(lay: ^Layouts, t: Ty) -> Layout needs Alloc {
     i := usize(t.id)
@@ -178,7 +168,7 @@ adt_layout :: fn(lay: ^Layouts, id: u32) -> Layout needs Alloc {
 }
 
 /// Whether a value of `t` may hold a pointer (only Fil-C builds need to know).
-pub may_hold_pointers :: fn(lay: ^Layouts, t: Ty) -> bool needs Alloc {
+may_hold_pointers :: fn(lay: ^Layouts, t: Ty) -> bool needs Alloc {
     match lay.s.tys.kind(t) {
         .Int(_), .Usize, .Isize, .Float(_), .Bool, .Never => return false
         .Array(_, elem, _) => return lay.may_hold_pointers(elem)
@@ -218,7 +208,7 @@ pub may_hold_pointers :: fn(lay: ^Layouts, t: Ty) -> bool needs Alloc {
 /// For a value of `t` whose pointers are always at the same places (no union, optional or
 /// result holds one), which of its pointer-sized words hold a pointer; `null` when that
 /// depends on the value, or a pointer is not aligned to its size.
-pub pointer_words :: fn(lay: ^Layouts, t: Ty) -> ?[]bool needs Alloc {
+pointer_words :: fn(lay: ^Layouts, t: Ty) -> ?[]bool needs Alloc {
     p := lay.target.ptr_bytes
     n := (lay.layout_of(t).size + p - 1) / p
     words := list(bool)

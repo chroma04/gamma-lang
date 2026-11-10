@@ -14,7 +14,7 @@ pub Helpers :: struct {
     n: usize = 0
 }
 
-pub new_helpers :: fn() -> Helpers needs Alloc => Helpers(
+new_helpers :: fn() -> Helpers needs Alloc => Helpers(
     protos: list(u8),
     bodies: list(u8),
     eq: hash_map.hash_map(u32, string),
@@ -22,14 +22,14 @@ pub new_helpers :: fn() -> Helpers needs Alloc => Helpers(
     hash: hash_map.hash_map(u32, string),
 )
 
-/// A fresh C name for a helper of this `kind` (`eq`, `lt`, `hash`); `Helpers::name`.
-pub helper_name :: fn(h: ^Helpers, kind: string) -> string needs Alloc {
+/// A fresh C name for a helper of this `kind` (`eq`, `lt`, `hash`).
+helper_name :: fn(h: ^Helpers, kind: string) -> string needs Alloc {
     h.n += 1
     return str.format("gm_{}{}", kind, h.n)!
 }
 
 /// `bool f(const uint8_t *a, const uint8_t *b)`: `is` on values of type `t`.
-pub eq_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
+eq_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     if n := h.eq.get(t.id) { return n }
     name := h.helper_name("eq")
     h.eq.put(t.id, name)!
@@ -135,7 +135,7 @@ bytewise_eq :: fn(ty: ^CTypes, t: Ty) -> bool needs Alloc => match ty.repr(t) {
 }
 
 /// `bool f(const uint8_t *a, const uint8_t *b)`: `a < b` for values of type `t`.
-pub less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
+less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     if n := h.less.get(t.id) { return n }
     name := h.helper_name("lt")
     h.less.put(t.id, name)!
@@ -212,7 +212,7 @@ pub less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
 }
 
 /// `uint64_t f(const uint8_t *v, uint64_t h)`: mixes the value into the FNV-1a state `h`.
-pub hash_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
+hash_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     if n := h.hash.get(t.id) { return n }
     name := h.helper_name("hash")
     h.hash.put(t.id, name)!
@@ -311,7 +311,7 @@ pub hash_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
 }
 
 /// C support for the helpers and for bit builtins.
-pub SUPPORT :: ``
+SUPPORT :: ``
 
 #define GM_NOINLINE __attribute__((noinline))
 static uint64_t gm_mix(uint64_t h, const void *p, size_t n) {

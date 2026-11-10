@@ -769,7 +769,7 @@ fn_body :: fn(cx: ^FnCx, body: ^const ast.FnBody) -> ^Expr needs Load {
 
 /// `e` preceded by the declarations of the hidden locals made since `mark`: those of the
 /// temporary arrays in `e`, which live until the end of the enclosing block (§15.1).
-pub declare_temps :: fn(cx: ^FnCx, mark: usize, e: ^Expr) -> ^Expr needs Alloc {
+declare_temps :: fn(cx: ^FnCx, mark: usize, e: ^Expr) -> ^Expr needs Alloc {
     if cx.block_temps.items.len <= mark { return e }
     stmts := list(tir.Stmt)
     cx.push_temps(mark, &stmts)

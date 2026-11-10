@@ -89,8 +89,6 @@ Machine :: struct {
 /// The function of the frame of an evaluation's own expression.
 NO_FN: u32 : 0xFFFF_FFFF
 
-/// The default number of steps of one evaluation (§17.3); `#fuel(n)` changes it.
-STEP_BUDGET: u64 : 50_000_000
 /// How deeply calls may nest.
 MAX_DEPTH: u32 : 200_000
 
@@ -120,12 +118,6 @@ machine :: fn(s: ^Sema, budget: u64) -> Machine needs Alloc => Machine(s: s, fra
 pub string_bytes :: fn(s: ^Sema, v: Value) -> ?[]u8 needs Alloc {
     m := machine(s, 0)
     return m.string_of(v)
-}
-
-/// The value of the integer `bits` of type `t`.
-pub int_of :: fn(s: ^Sema, bits: u128, t: Ty) -> bigint.Int needs Alloc {
-    m := machine(s, 0)
-    return m.big_of(bits, t)
 }
 
 new_frame :: fn(fn_id: u32, locals: []const tir.LocalDecl, parent: ?^EvalFrame) -> ^EvalFrame needs Alloc {
@@ -161,11 +153,11 @@ eval :: fn(m: ^Machine, e: ^Expr) -> Flow!Value needs Load {
     m.steps += 1
     tys := &m.s.tys
     match e.kind {
-        .Int(i) => return .Int(int_bits(i))
+        .Int(i) => return .Int(bigint.bits128(i))
         .Float(x) => return .Float(x)
         .UntypedFloat(r) => {
             .Float(bits) := tys.kind(e.ty) else return !m.unsupported(e.span, "float literals of this type")
-            return .Float(if bits is 16 { r.to_f16() } else if bits is 32 { f64(r.to_f32()) } else { r.to_f64() })
+            return .Float(r.to_float(bits))
         }
         .Bool(b) => return .Bool(b)
         .Null => return .Null
@@ -250,7 +242,7 @@ eval :: fn(m: ^Machine, e: ^Expr) -> Flow!Value needs Load {
             return .Variant(v.variant, p)
         }
         .MakeErr(x) => return .Err(new(copy(try m.eval(x)))!)
-        .Unwrap(x, is_result) => {
+        .Unwrap(x, _) => {
             v := try m.eval(x)
             match v {
                 .Some(p), .Ok(p) => return p^

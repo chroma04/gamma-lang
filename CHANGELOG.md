@@ -42,6 +42,13 @@ Versions and what each kind of change means are described in
   element at the type of the first, reading the others at the wrong width (wrong results
   on big-endian targets). The elements are now converted to their join, as `for` over a
   tuple does, and a tuple without one is a compile error.
+- **A computed array length whose `<<` loses bits** (`[N << 63]u8` with `N` = 4) made the
+  compiler trap; it is now the error "the array length … overflows" that the other
+  operators give.
+- **A literal default of an `f16` field** is rounded to half precision at compile time, as
+  other `f16` constants are.
+- **`--backend=cranelift` is no longer listed** as a value `--backend` expects, and
+  `gamma repl` rejects it as the other commands do.
 
 ### Documentation
 

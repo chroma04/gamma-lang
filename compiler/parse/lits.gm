@@ -314,6 +314,6 @@ parse_foreign_member :: fn(p: ^Parser) -> Abort!ast.ForeignMember needs Alloc {
     name := try p.parse_decl_ident("the name of a foreign function")
     _ = try p.expect(.ColonColon, "and a function type after the name")
     if not p.at_kw(.Fn) { return !p.expected("a function type like `fn(args) -> T`") }
-    sig := try p.parse_foreign_fn_sig()
+    sig := try p.parse_fn_type_sig(true)
     return ast.ForeignMember(attrs: all, kind: .Fn(name: name, sig: sig), span: p.span_from(start))
 }

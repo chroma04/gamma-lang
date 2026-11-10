@@ -40,14 +40,7 @@ pub Ambient :: struct {
     pub out: ?u32 = null
     pub err: ?u32 = null
     pub env: ?u32 = null
-    pub alloc: ?u32 = null
     pub sys: ?u32 = null
-    pub input: ?u32 = null
-    pub clock: ?u32 = null
-    pub rand: ?u32 = null
-    pub fs: ?u32 = null
-    pub net: ?u32 = null
-    pub proc: ?u32 = null
 }
 
 pub Prog :: struct {
@@ -56,20 +49,18 @@ pub Prog :: struct {
     funcs: List(?^Func)
     pub ambient: Ambient
     pub target: Target
-    /// The function the runtime calls (see `check.entry_point`).
-    pub main: ?u32 = null
 }
 
 pub prog :: fn(s: ^Sema) -> Prog needs sema.Load {
     a := Ambient()
     if prelude := s.l.prelude {
-        names := [11]string("Out", "Err", "Env", "Alloc", "Sys", "In", "Clock", "Rand", "Fs", "Net", "Proc")
-        ids: [11]?u32 = [11]?u32(null, null, null, null, null, null, null, null, null, null, null)
+        names := [4]string("Out", "Err", "Env", "Sys")
+        ids: [4]?u32 = [4]?u32(null, null, null, null)
         for i, name in enumerate(names) {
             d := s.l.lookup(prelude, name) else continue
             if .Effect(e) := s.resolve_decl(d) { ids[i] = e }
         }
-        a = Ambient(out: ids[0], err: ids[1], env: ids[2], alloc: ids[3], sys: ids[4], input: ids[5], clock: ids[6], rand: ids[7], fs: ids[8], net: ids[9], proc: ids[10])
+        a = Ambient(out: ids[0], err: ids[1], env: ids[2], sys: ids[3])
     }
     return Prog(s: s, funcs: list(?^Func), ambient: a, target: s.l.target)
 }
@@ -125,7 +116,7 @@ pub global_index :: fn(p: ^const Prog, decl: usize) -> ?usize {
     return null
 }
 
-pub fn_count :: fn(p: ^const Prog) -> usize => p.s.fns.items.len
+fn_count :: fn(p: ^const Prog) -> usize => p.s.fns.items.len
 
 /// Whether operation `op` of effect `eff` is a `ctl` operation (§14), which suspends the
 /// running fiber.
@@ -141,10 +132,10 @@ pub handler_lit :: fn(p: ^const Prog, h: u32) -> ^const tir.HandlerLit => &p.s.h
 pub handler_decl :: fn(p: ^const Prog, d: u32) -> ^const sema.HandlerDeclInfo => &p.s.handler_decls.items[usize(d)]
 
 /// The definition of the struct or union `id`.
-pub adt :: fn(p: ^const Prog, id: u32) -> ^const sema.AdtInfo => &p.s.adts.items[usize(id)]
+adt :: fn(p: ^const Prog, id: u32) -> ^const sema.AdtInfo => &p.s.adts.items[usize(id)]
 
-/// How a debug build's backtrace names `f` (`None` for the core library's functions and
-/// `<entry>`), as `Program::backtrace_name` does.
+/// How a debug build's backtrace names `f` (`null` for the core library's functions and
+/// `<entry>`).
 pub backtrace_name :: fn(p: ^Prog, f: u32) -> ?string needs Alloc {
     def := p.func(f)
     if def.span is not source.DUMMY and p.s.l.sm.file(def.span.file).path.starts_with("<core>") { return null }

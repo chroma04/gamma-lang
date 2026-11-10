@@ -1,25 +1,20 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-11-10) — PRs #1–#115 merged, v0.1.0 + rust-reference-final tagged
-- s63 (branch claude/quirky-edison-wp0t67): idioms.md folded into guide; CI macos-14 runner
-  retired → macos-15 (release: MACOSX_DEPLOYMENT_TARGET=14.0).
-- s62 (branch claude/kind-hamilton-ya5z7d): PERF ROUND 7 (decisions/063): gm_format_view
-  (no heap buffer per formatted string/int), str.format reserves, lint worklist + reuses
-  the loader's parse (Loader.parsed), cgen linef/cty cache/name tables/frame memo, adt
-  instance map. emit-c -25% Ir, lint -46%, check ~flat. Profiling recipe in
-  docs/contributing.md.
-- s61 (branch claude/nifty-brahmagupta-1ymgmj): PERF ROUND 6 (decisions/062): inline hints
-  kept in split builds, `is` vs string literal / variant in place, memcmp slice eq,
-  `for … in enumerate` → index loop (checker), lexer token reserve, List grows via resize,
-  Debug C at -Og + gcc passes. check compiler -20%, conformance+examples -20%.
+## State (2026-11-10) — PRs #1–#116 merged, v0.1.0 + rust-reference-final tagged
+- s64 (branch claude/focused-ritchie-zf9339): REFACTORING SESSION. Eight area audits →
+  roadmap/refactor-backlog.md (open large/medium items, possible bugs). Done: needless
+  `pub` stripped (`gamma lint compiler`: 455 → 24 warnings; it is the mechanical to-do
+  list), dead code, shared helpers (tir.binop_symbol, bigint.bits128, ratio.zero/to_float,
+  types.write_debug_string, sema.generic_of/frame_up). Fixed: `[N << 63]` length trapped
+  the compiler; f16 literal defaults; cranelift in --backend messages.
+- s63 (#116): idioms.md folded into guide; CI macOS runner → macos-15.
+- s61–s62 (#114, #115): PERF ROUNDS 6–7 (decisions/062, 063; profiling recipe in
+  docs/contributing.md): emit-c -25%, lint -46%, check compiler -20%.
 - s58–s60 (#110–#113): lint stale-element-pointer through struct-pointer calls
   (decisions/060); 0.2.0 release prep + seed GM_ZERO fix + CI bootstrap matrix; tuple
   expression spreads (061). CHANGELOG `## Unreleased` open. Pain-points "Open":
   seed-refresh watch, fn-as-format-arg, template size.
-- s57 (branch claude/compassionate-tesla-mepur2, PR #109): PLAYGROUND SPEED (decisions/059):
-  interp root stack 1 GiB calloc → 8 MiB on Wasm32; core-loaded memory snapshot (play init
-  + export gamma_play_run); warm-up run. `#export` on WASI = module export + gm_start +
-  fiber driver. ~600 → ~11 ms hello. MODE=fast measured, not adopted.
+- s57 (#109): PLAYGROUND SPEED (decisions/059): ~600 → ~11 ms hello.
 - s51–s56 (#104–#108): PERFORMANCE rounds (decisions/055–058; s61 = 062, s62 = 063): compiler built Checked,
   big builds split into units, interpreter VM (056/057; keep vm_run < 2000 names),
   posix_spawn, GM_RT_PROGRAM, shared @write stubs. Profiling recipes in 055/057/058.
@@ -53,7 +48,8 @@
 - Older history: sessions/ and decisions/.
 
 ## Next steps
-0. Drive the s32 review PR to merge; then continue roadmap/review-2026-10-20.md "Open".
+0. roadmap/refactor-backlog.md: large refactors in priority order + possible bugs (s64).
+   Then roadmap/review-2026-10-20.md "Open".
 1. Keep CHANGELOG Unreleased current (start one above 0.2.0). User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
 1b. Rust is gone (052/053). Follow-ups: kit helpers (gamma_in, sorted dir listing, jsonl),
@@ -69,7 +65,8 @@
 ## Map
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
                   self-hosting.md (gammac stages), gammac-cli.md (porting the gamma commands),
-                  c-backend-plan.md, review-2026-10-20.md (s32 review findings + status)
+                  c-backend-plan.md, review-2026-10-20.md (s32 review findings + status),
+                  refactor-backlog.md (s64 audit: open refactors + possible bugs)
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–059, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,

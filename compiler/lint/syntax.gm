@@ -22,7 +22,7 @@ pub Allow :: struct {
     pub rules: List(string)
 }
 
-pub file_facts :: fn() -> FileFacts needs Alloc {
+file_facts :: fn() -> FileFacts needs Alloc {
     return FileFacts(
         diags: list(diag.Diagnostic),
         sites: hash_map.hash_map(source.Span, Site),
@@ -46,7 +46,7 @@ pub Walk :: struct {
     labels: List(LabelUse)
 }
 
-pub walk :: fn(sm: ^const source.SourceMap) -> Walk needs Alloc => Walk(sm: sm, facts: file_facts(), labels: list(LabelUse))
+walk :: fn(sm: ^const source.SourceMap) -> Walk needs Alloc => Walk(sm: sm, facts: file_facts(), labels: list(LabelUse))
 
 /// Where a pattern is written, which decides how its unused bindings are fixed.
 PatSite :: union {
@@ -72,7 +72,7 @@ push :: fn(w: ^Walk, d: diag.Diagnostic) needs Alloc {
     w.facts.diags.push(d)!
 }
 
-pub walk_file :: fn(w: ^Walk, file: ^const ast.File) needs Alloc {
+walk_file :: fn(w: ^Walk, file: ^const ast.File) needs Alloc {
     for i in 0..file.items.len { w.item(&file.items[i]) }
 }
 
@@ -901,7 +901,7 @@ dedent :: fn(t: string, from: usize, to: usize) -> string needs Alloc {
 }
 
 /// The names written as identifiers in `spans` of the token list `tokens`.
-pub names_in :: fn(tokens: []const syntax.Token, spans: []const source.Span, out: ^hash_map.HashMap(string, bool)) needs Alloc {
+names_in :: fn(tokens: []const syntax.Token, spans: []const source.Span, out: ^hash_map.HashMap(string, bool)) needs Alloc {
     if spans.len is 0 { return }
     for t in tokens {
         if .Ident(s) := t.kind {

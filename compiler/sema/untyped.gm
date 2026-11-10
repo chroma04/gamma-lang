@@ -37,21 +37,21 @@ describe :: fn(v: ^const Untyped) -> string => match v^ {
 as_rational :: fn(v: ^const Untyped) -> ?Rat needs Alloc => match v^ {
     .Int(i) => ratio.from_int(i)
     .Float(r) => r
-    .NegZero => ratio.from_int(bigint.zero())
+    .NegZero => ratio.zero()
     _ => null
 }
 
 as_complex :: fn(v: ^const Untyped) -> ?(re: Rat, im: Rat) needs Alloc {
     if .Complex(re, im) := v^ { return (re: re, im: im) }
     r := as_rational(v) else return null
-    return (re: r, im: ratio.from_int(bigint.zero()))
+    return (re: r, im: ratio.zero())
 }
 
 /// Applies unary minus.
 pub negate :: fn(v: ^const Untyped) -> UntypedOr needs Alloc => match v^ {
     .Int(i) => UntypedOr.Ok(.Int(i.neg()))
     .Float(r) => UntypedOr.Ok(if r.is_zero() { Untyped.NegZero } else { Untyped.Float(r.neg()) })
-    .NegZero => UntypedOr.Ok(.Float(ratio.from_int(bigint.zero())))
+    .NegZero => UntypedOr.Ok(.Float(ratio.zero()))
     .Bool(_) => UntypedOr.Err("cannot negate a boolean constant")
     .Complex(re, im) => UntypedOr.Ok(.Complex(re.neg(), im.neg()))
 }
@@ -239,7 +239,7 @@ pub try_untyped :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?UntypedRe
         .Float(lit) => {
             if lit.suffix is not null { return null }
             v := literal_rational(&lit.value)
-            if lit.imag { return .Ok(.Complex(ratio.from_int(bigint.zero()), v)) }
+            if lit.imag { return .Ok(.Complex(ratio.zero(), v)) }
             return .Ok(.Float(v))
         }
         .Paren(inner) => return s.try_untyped(module, inner)

@@ -39,7 +39,7 @@ pub from_int :: fn(i: bigint.Int) -> Rat needs Alloc => Rat(num: i, den: bigint.
 from_i64 :: fn(v: i64) -> Rat needs Alloc => from_int(bigint.from_i64(v))
 
 /// 0.
-zero_rat :: fn() -> Rat needs Alloc => from_int(bigint.zero())
+pub zero :: fn() -> Rat needs Alloc => from_int(bigint.zero())
 
 /// 1.
 one_rat :: fn() -> Rat needs Alloc => from_int(bigint.one())
@@ -148,20 +148,9 @@ round_scaled :: fn(r: Rat, p: u32, emin: i64, emax: i64) -> Scaled needs Alloc {
     if up { m += 1 }
     if m is 0 { return Scaled(m: 0, ue: ue) }
     // A carry out of the significand gives 2^p; the value is then still exact as m = 2^p.
-    lead := i64(64) - i64(clz64(m)) - 1
+    lead := i64(64) - i64(@clz(m)) - 1
     if lead + ue > emax { return Scaled(m: 0, ue: ue, overflow: true) }
     return Scaled(m: m, ue: ue)
-}
-
-/// The number of leading zero bits of `x`, which must not be zero.
-clz64 :: fn(x: u64) -> u32 {
-    s: u32 = 0
-    m := x
-    while (m & 0x8000_0000_0000_0000) is 0 {
-        m <<%= 1
-        s += 1
-    }
-    return s
 }
 
 /// The `f64` nearest to `r`, ties to even: exactly the correctly rounded value, which is
@@ -203,6 +192,14 @@ pub to_f32 :: fn(r: Rat) -> f32 needs Alloc {
     if m < (u64(1) << 23) { return (sign | m.trunc(u32)).bits(f32) }
     field := (ue + 23 + 127).trunc(u32)
     return (sign | (field <<% 23) | (m.trunc(u32) - (u32(1) <<% 23))).bits(f32)
+}
+
+/// `r` rounded to the float type of `bits` bits (16, 32 or 64), as the `f64` that holds
+/// the rounded value exactly.
+pub to_float :: fn(r: Rat, bits: u16) -> f64 needs Alloc {
+    if bits is 16 { return r.to_f16() }
+    if bits is 32 { return f64(r.to_f32()) }
+    return r.to_f64()
 }
 
 /// The `f16` nearest to `r`, ties to even, rounded directly from the exact value, as the
@@ -268,7 +265,7 @@ test "normalization" {
         expect(not q(2, 4).eq(q(-1, 2)))
         big := new(bigint.shl(bigint.one(), 200), bigint.shl(bigint.one(), 198))
         expect_eq(txt(big), "4")
-        expect(zero_rat().is_zero())
+        expect(zero().is_zero())
         expect(not one_rat().is_zero())
         expect(one_rat().is_integer())
         expect(not q(1, 2).is_integer())
@@ -285,8 +282,8 @@ test "comparison" {
         expect_eq(q(-1, 2).cmp(q(-1, 3)), -1)
         expect_eq(q(-1, 2).cmp(q(1, 3)), -1)
         expect_eq(q(1, 2).cmp(q(-1, 3)), 1)
-        expect_eq(zero_rat().cmp(q(-1, 1000)), 1)
-        expect_eq(q(1, 1000).cmp(zero_rat()), 1)
+        expect_eq(zero().cmp(q(-1, 1000)), 1)
+        expect_eq(q(1, 1000).cmp(zero()), 1)
     })
 }
 
@@ -301,7 +298,7 @@ test "arithmetic" {
         expect_eq(txt(q(2, 3).mul(q(3, 4))), "1/2")
         expect_eq(txt(q(-2, 3).mul(q(3, 4))), "-1/2")
         expect_eq(txt(q(-2, 3).mul(q(-3, 4))), "1/2")
-        expect_eq(txt(q(2, 3).mul(zero_rat())), "0")
+        expect_eq(txt(q(2, 3).mul(zero())), "0")
         expect_eq(txt(q(2, 3).div(q(4, 9))), "3/2")
         expect_eq(txt(q(2, 3).div(q(-4, 9))), "-3/2")
         expect_eq(txt(q(-2, 3).recip()), "-3/2")
@@ -309,10 +306,10 @@ test "arithmetic" {
         expect_eq(txt(q(1, 3).neg()), "-1/3")
         expect_eq(txt(q(-1, 3).neg()), "1/3")
         expect_eq(txt(q(-1, 3).abs()), "1/3")
-        expect_eq(txt(zero_rat().neg()), "0")
+        expect_eq(txt(zero().neg()), "0")
         expect_eq(txt(q(1, 10).add(q(2, 10))), "3/10")
         // 1/1 + 1/2 + ... + 1/10 = 7381/2520
-        h := zero_rat()
+        h := zero()
         for i in 1..11 { h = h.add(q(1, i)) }
         expect_eq(txt(h), "7381/2520")
     })
@@ -328,7 +325,7 @@ test "truncation and floor" {
         expect_eq(string(bigint.to_decimal(q(-1, 3).trunc())), "0")
         expect_eq(string(bigint.to_decimal(q(-1, 3).floor())), "-1")
         expect_eq(string(bigint.to_decimal(q(1, 3).floor())), "0")
-        expect_eq(string(bigint.to_decimal(zero_rat().floor())), "0")
+        expect_eq(string(bigint.to_decimal(zero().floor())), "0")
     })
 }
 

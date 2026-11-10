@@ -192,16 +192,10 @@ parse_fn_sig :: fn(p: ^Parser, is_foreign: bool) -> Abort!ast.FnSig needs Alloc 
     return ast.FnSig(params: params.params, variadic: params.variadic, ret: ret, effects: effects, span: p.span_from(start))
 }
 
-/// A function signature that is a type: `fn(A, B) -> R needs E`.
-parse_fn_type_sig :: fn(p: ^Parser) -> Abort!ast.FnSig needs Alloc {
-    sig := try p.parse_fn_sig(false)
-    p.fn_sig_to_type(&sig)
-    return sig
-}
-
-/// The signature of a foreign function, which may end in `needs not` (§19.2).
-parse_foreign_fn_sig :: fn(p: ^Parser) -> Abort!ast.FnSig needs Alloc {
-    sig := try p.parse_fn_sig(true)
+/// A function signature that is a type: `fn(A, B) -> R needs E`. That of a foreign
+/// function (`is_foreign`) may end in `needs not` (§19.2).
+parse_fn_type_sig :: fn(p: ^Parser, is_foreign: bool) -> Abort!ast.FnSig needs Alloc {
+    sig := try p.parse_fn_sig(is_foreign)
     p.fn_sig_to_type(&sig)
     return sig
 }
@@ -209,7 +203,7 @@ parse_foreign_fn_sig :: fn(p: ^Parser) -> Abort!ast.FnSig needs Alloc {
 /// A function type in a type position (never a literal).
 parse_fn_type_only :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
     start := p.lo()
-    sig := try p.parse_fn_type_sig()
+    sig := try p.parse_fn_type_sig(false)
     return p.mk_expr(.FnType(new(sig)!), p.span_from(start))
 }
 

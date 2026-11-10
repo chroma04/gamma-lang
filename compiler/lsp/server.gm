@@ -8,7 +8,6 @@ INVALID_REQUEST :: -32600
 METHOD_NOT_FOUND :: -32601
 SERVER_NOT_INITIALIZED :: -32002
 INVALID_PARAMS :: -32602
-INTERNAL_ERROR :: -32603
 REQUEST_FAILED :: -32803
 
 pub Doc :: struct {
@@ -37,7 +36,7 @@ pub Server :: struct {
     next_request: u64
 }
 
-pub server :: fn() -> Server needs Alloc + Fs {
+server :: fn() -> Server needs Alloc + Fs {
     return Server(
         enc: .Utf16,
         docs: hash_map.hash_map(string, Doc),
@@ -101,7 +100,7 @@ code_actions :: fn(params: Value) -> Value needs Alloc {
 // --- the loop ---
 
 /// Serves messages until `exit` or the end of the input; returns the exit code.
-pub run :: fn(srv: ^Server, inbox: ^Inbox) -> u8 needs Fx + Sys {
+run :: fn(srv: ^Server, inbox: ^Inbox) -> u8 needs Fx + Sys {
     while true {
         // Analyze when no newer message is waiting, so that a burst of edits costs one run.
         msg: Incoming = .Bad("")
@@ -127,7 +126,7 @@ pub run :: fn(srv: ^Server, inbox: ^Inbox) -> u8 needs Fx + Sys {
 }
 
 /// Handles one message; returns the exit code if it was `exit`.
-pub handle_incoming :: fn(srv: ^Server, msg: Incoming) -> Flow needs Fx {
+handle_incoming :: fn(srv: ^Server, msg: Incoming) -> Flow needs Fx {
     match msg {
         .Bad(e) => {
             srv.respond_error(NULL, PARSE_ERROR, e)
@@ -517,13 +516,7 @@ open_dirs :: fn(srv: ^const Server) -> List(string) needs Alloc {
     dirs := list(string)
     for kv in srv.docs.entries() { dirs.push(dir_of(kv.key))! }
     dirs.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
-    n: usize = 0
-    for i in 0..dirs.items.len {
-        if i > 0 and dirs.items[i] is dirs.items[n - 1] { continue }
-        dirs.items[n] = dirs.items[i]
-        n += 1
-    }
-    dirs.truncate(n)
+    dirs.truncate(dirs.items.dedup())
     return dirs
 }
 
@@ -588,13 +581,7 @@ publish :: fn(srv: ^Server, dir: string, a: ^Analysis) needs Fx {
     }
     targets.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
     // A path twice (a diagnostic's file that also had a document) is one target.
-    n: usize = 0
-    for i in 0..targets.items.len {
-        if i > 0 and targets.items[i] is targets.items[n - 1] { continue }
-        targets.items[n] = targets.items[i]
-        n += 1
-    }
-    targets.truncate(n)
+    targets.truncate(targets.items.dedup())
     for path in targets.items {
         items := empty_slice(Value)
         for d in diags.items {
@@ -642,8 +629,6 @@ request :: fn(srv: ^Server, id: Value, method: string, params: Value) needs Fx {
 }
 
 initialize :: fn(srv: ^Server, params: Value) -> Value needs Alloc {
-    offered := as_array(path2(path2(params, "capabilities", "general"), "positionEncodings", ""))
-    _ = offered
     encs := as_array(field(path2(params, "capabilities", "general"), "positionEncodings"))
     if list_of := encs {
         for e in list_of {

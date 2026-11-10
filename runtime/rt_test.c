@@ -1,4 +1,5 @@
-/* Tests of the C back end's runtime. Built and run by tests/runtime.rs:
+/* Tests of the C back end's runtime. Built and run by the `runtime` suite
+ * (tests/harness/runtime):
  *
  *     cc -std=gnu11 -O1 -pthread -Wall -Werror -Wno-unused-function -I runtime runtime/rt_test.c
  *

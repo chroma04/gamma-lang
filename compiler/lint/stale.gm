@@ -102,7 +102,7 @@ collect_calls :: fn(s: ^sema.Sema, list_adt: u32, f: usize, e: ^Expr, sums: ^Lis
     .Fn(g) := callee else return
     sig := &s.fns.items[usize(g)]
     core := s.l.modules.items[sig.module].is_prelude
-    target := usize(generic_of(s, g))
+    target := usize(sema.generic_of(s, g))
     for i in 0..args.len {
         if i >= sig.params.len { break }
         .Ptr(is_const, pointee) := s.tys.kind(sig.params[i].ty) else continue
@@ -310,7 +310,7 @@ grow_by_call :: fn(sc: ^StaleScan, g: u32, args: []Expr, at: source.Span) needs 
     if sc.live.items.len is 0 { return }
     sig := &sc.s.fns.items[usize(g)]
     core := sc.s.l.modules.items[sig.module].is_prelude
-    target := usize(generic_of(sc.s, g))
+    target := usize(sema.generic_of(sc.s, g))
     for i in 0..args.len {
         if i >= sig.params.len { break }
         .Ptr(is_const, pointee) := sc.s.tys.kind(sig.params[i].ty) else continue

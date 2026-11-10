@@ -218,8 +218,8 @@ match_pat :: fn(m: ^Machine, a: Act, pat: ^Pat, b: []u8) -> Flow!bool needs Run 
         .Range(r) => {
             v := m.get_int(pat.ty, b)
             signed := (m.int_info(pat.ty) else (signed: false, bits: 0)).signed
-            lo := tag_bits(r.lo)
-            hi := tag_bits(r.hi)
+            lo := bigint.bits128(r.lo)
+            hi := bigint.bits128(r.hi)
             if signed {
                 x := v.bits(i128)
                 ok_hi := if r.inclusive { x <= hi.bits(i128) } else { x < hi.bits(i128) }

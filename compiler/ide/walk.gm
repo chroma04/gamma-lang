@@ -70,7 +70,7 @@ pub Walker :: struct {
 }
 
 /// The effect literal that declaration `d` binds.
-pub effect_lit :: fn(s: ^const sema.Sema, d: usize) -> ?^ast.EffectLit {
+effect_lit :: fn(s: ^const sema.Sema, d: usize) -> ?^ast.EffectLit {
     decl := &s.l.decls.items[d]
     .Binding(b) := decl.item.kind else return null
     .Effect(lit) := b.init.kind else return null
@@ -83,7 +83,7 @@ ref_key :: fn(d: DeclRef) -> u64 => match d {
     .Op(x, i) => (u64(1) << 60) | (u64(x) << 16) | u64(i)
 }
 
-pub walker :: fn(s: ^sema.Sema, facts: ^const Facts, idx: ^IdeIndex, module: usize) -> Walker needs Alloc {
+walker :: fn(s: ^sema.Sema, facts: ^const Facts, idx: ^IdeIndex, module: usize) -> Walker needs Alloc {
     w := Walker(
         s: s,
         facts: facts,
@@ -122,11 +122,11 @@ pub walker :: fn(s: ^sema.Sema, facts: ^const Facts, idx: ^IdeIndex, module: usi
 
 // --- scopes ---
 
-pub push_scope :: fn(w: ^Walker, end: u32) needs Alloc {
+push_scope :: fn(w: ^Walker, end: u32) needs Alloc {
     w.scopes.push(Scope(names: list(ScopeName), end: end))!
 }
 
-pub pop_scope :: fn(w: ^Walker) {
+pop_scope :: fn(w: ^Walker) {
     _ = w.scopes.pop()
 }
 
@@ -145,12 +145,12 @@ lookup_local :: fn(w: ^Walker, name: string) -> ?Span {
 }
 
 /// Registers `h` for the declared name at `span`, unless it has text already.
-pub def_once :: fn(w: ^Walker, span: Span, h: Hover) needs Alloc {
+def_once :: fn(w: ^Walker, span: Span, h: Hover) needs Alloc {
     if not w.idx.defs.contains(span) { w.idx.defs.put(span, h)! }
 }
 
 /// Declares a local that is visible from offset `from` to the end of the scope.
-pub declare :: fn(w: ^Walker, id: ast.Ident, kind: Kind, from: u32) needs Alloc {
+declare :: fn(w: ^Walker, id: ast.Ident, kind: Kind, from: u32) needs Alloc {
     if id.name is "_" or w.scopes.items.len is 0 { return }
     last := &w.scopes.items[w.scopes.items.len - 1]
     end := last.end
@@ -169,7 +169,7 @@ pub declare :: fn(w: ^Walker, id: ast.Ident, kind: Kind, from: u32) needs Alloc 
 
 // --- references ---
 
-pub add_ref :: fn(w: ^Walker, from, to: Span) needs Alloc {
+add_ref :: fn(w: ^Walker, from, to: Span) needs Alloc {
     if from is not source.DUMMY and to is not source.DUMMY { w.idx.refs.push(Ref(from: from, to: to))! }
 }
 
@@ -184,7 +184,7 @@ decl_name_span :: fn(w: ^Walker, d: DeclRef) -> Span {
     }
 }
 
-pub ensure_hover :: fn(w: ^Walker, d: DeclRef) needs Alloc {
+ensure_hover :: fn(w: ^Walker, d: DeclRef) needs Alloc {
     key := ref_key(d)
     if w.hovered.contains(key) { return }
     w.hovered.put(key, true)!
@@ -202,14 +202,14 @@ pub ensure_hover :: fn(w: ^Walker, d: DeclRef) needs Alloc {
     }
 }
 
-pub use_decl :: fn(w: ^Walker, from: Span, d: DeclRef) needs Alloc {
+use_decl :: fn(w: ^Walker, from: Span, d: DeclRef) needs Alloc {
     w.add_ref(from, w.decl_name_span(d))
     w.ensure_hover(d)
     w.note_receiver(from, d)
 }
 
 /// Remembers the members that `.` offers after the name at `span`, which denotes `d`.
-pub note_receiver :: fn(w: ^Walker, span: Span, d: DeclRef) needs Alloc {
+note_receiver :: fn(w: ^Walker, span: Span, d: DeclRef) needs Alloc {
     key := ref_key(d)
     if r := w.receivers.get(key) {
         w.idx.receivers.put(span, r)!
@@ -234,7 +234,7 @@ lookup_decl :: fn(w: ^Walker, name: string) -> ?DeclRef needs Alloc {
 }
 
 /// Resolves the name `id`, used as a value or a type.
-pub name_use :: fn(w: ^Walker, id: ast.Ident) needs Alloc {
+name_use :: fn(w: ^Walker, id: ast.Ident) needs Alloc {
     if def := w.lookup_local(id.name) {
         w.add_ref(id.span, def)
     } else if d := w.lookup_decl(id.name) {
@@ -243,7 +243,7 @@ pub name_use :: fn(w: ^Walker, id: ast.Ident) needs Alloc {
 }
 
 /// What `e`, written before a `.`, denotes.
-pub classify :: fn(w: ^Walker, e: ^const ast.Expr) -> Base needs Alloc {
+classify :: fn(w: ^Walker, e: ^const ast.Expr) -> Base needs Alloc {
     match e.kind {
         .Paren(inner) => return w.classify(inner)
         .Ident(id) => {
@@ -342,7 +342,7 @@ find_payload_field :: fn(members: []const ast.UnionMember, variant, field: strin
 }
 
 /// The span of the field or variant `name` declared by type `d`; registers its hover text.
-pub member_def :: fn(w: ^Walker, d: usize, name: string) -> ?Span needs Alloc {
+member_def :: fn(w: ^Walker, d: usize, name: string) -> ?Span needs Alloc {
     decl := &w.s.l.decls.items[d]
     owner := decl.name.name
     .Binding(b) := decl.item.kind else return null
@@ -433,7 +433,7 @@ type_of :: fn(w: ^Walker, span: Span) -> ?Ty {
 
 // --- expressions ---
 
-pub expr :: fn(w: ^Walker, e: ^const ast.Expr) needs Alloc {
+expr :: fn(w: ^Walker, e: ^const ast.Expr) needs Alloc {
     match e.kind {
         .Int(_), .Float(_), .Str(_), .Bool(_), .Null, .Uninit, .Underscore, .Error => {}
         .Continue(?label) => w.label_use(label)
@@ -534,7 +534,7 @@ pub expr :: fn(w: ^Walker, e: ^const ast.Expr) needs Alloc {
     }
 }
 
-pub arg :: fn(w: ^Walker, a: ^const ast.Arg) needs Alloc {
+arg :: fn(w: ^Walker, a: ^const ast.Arg) needs Alloc {
     match a.kind {
         .Positional(e) => w.expr(&e)
         .Named(_, e) => w.expr(&e)
@@ -569,7 +569,7 @@ field :: fn(w: ^Walker, e: ^const ast.Expr, base: ^const ast.Expr, name: ast.Ide
 }
 
 /// The operation `name` of effect `d`.
-pub operation_use :: fn(w: ^Walker, d: usize, name: ast.Ident) needs Alloc {
+operation_use :: fn(w: ^Walker, d: usize, name: ast.Ident) needs Alloc {
     lit := effect_lit(w.s, d) else return
     for i in 0..lit.ops.len {
         if lit.ops[i].name.name is name.name {
@@ -579,7 +579,7 @@ pub operation_use :: fn(w: ^Walker, d: usize, name: ast.Ident) needs Alloc {
     }
 }
 
-Variant_ :: struct {
+VariantCall :: struct {
     decl: usize
     name: string
 }
@@ -588,7 +588,7 @@ Variant_ :: struct {
 call :: fn(w: ^Walker, e: ^const ast.Expr, callee: ^const ast.Expr, args: []const ast.Arg) needs Alloc {
     target := w.facts.calls.get(e.span)
     // A union variant construction: the union's declaration and the variant.
-    variant: ?Variant_ = null
+    variant: ?VariantCall = null
     match callee.kind {
         .Field(base, name) => {
             cls := w.classify(base)
@@ -600,12 +600,12 @@ call :: fn(w: ^Walker, e: ^const ast.Expr, callee: ^const ast.Expr, args: []cons
                     if f := target { w.fn_use(name.span, f) }
                 }
             } else {
-                if .Type(d) := cls { variant = Variant_(decl: d, name: name.name) }
+                if .Type(d) := cls { variant = VariantCall(decl: d, name: name.name) }
                 w.expr(callee)
             }
         }
         .DotIdent(id) => {
-            if d := w.variant_at(e.span, id) { variant = Variant_(decl: d, name: id.name) }
+            if d := w.variant_at(e.span, id) { variant = VariantCall(decl: d, name: id.name) }
         }
         _ => w.expr(callee)
     }
@@ -648,7 +648,7 @@ fn_use :: fn(w: ^Walker, from: Span, f: u32) needs Alloc {
 
 // --- statements and control flow ---
 
-pub block :: fn(w: ^Walker, b: ^const ast.Block) needs Alloc {
+block :: fn(w: ^Walker, b: ^const ast.Block) needs Alloc {
     w.push_scope(b.span.hi)
     for i in 0..b.stmts.len { w.stmt(&b.stmts[i]) }
     w.pop_scope()
@@ -798,7 +798,7 @@ label_use :: fn(w: ^Walker, label: ?ast.Ident) needs Alloc {
 
 /// Walks pattern `p`, matched against a value of type `ty` when it is known; its
 /// bindings are visible from offset `from`.
-pub pattern :: fn(w: ^Walker, p: ^const ast.Pattern, ty: ?Ty, from: u32) needs Alloc {
+pattern :: fn(w: ^Walker, p: ^const ast.Pattern, ty: ?Ty, from: u32) needs Alloc {
     match p.kind {
         .Wildcard => {}
         .Null => {}

@@ -6,7 +6,7 @@ str :: import "std/str"
 
 /// A package name for a directory name: other characters become `_`, and a leading digit
 /// gets a `_` in front.
-pub sanitize_name :: fn(dir_name: string) -> string needs Alloc {
+sanitize_name :: fn(dir_name: string) -> string needs Alloc {
     out := list(u8)
     for c in dir_name {
         // One `_` for each character: the continuation bytes of a UTF-8 sequence add none.
@@ -22,11 +22,11 @@ pub sanitize_name :: fn(dir_name: string) -> string needs Alloc {
     return out.items
 }
 
-pub manifest_text :: fn(name: string) -> string needs Alloc {
+manifest_text :: fn(name: string) -> string needs Alloc {
     return str.format("[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[dependencies]\n", name)!
 }
 
-pub main_source :: fn(name: string) -> string needs Alloc {
+main_source :: fn(name: string) -> string needs Alloc {
     return str.format(
         "main :: fn() needs Out {{\n    print(\"hello from {}\\n\")\n}}\n\ndouble :: fn(n: i32) -> i32 => n * 2\n\ntest \"double\" {{\n    expect_eq(double(21), 42)\n}}\n",
         name,
@@ -35,7 +35,7 @@ pub main_source :: fn(name: string) -> string needs Alloc {
 
 /// Ignores what `gamma build` writes: the executable is named after the directory given
 /// (`main` for `.`), with `.exe` on Windows.
-pub gitignore :: fn(name: string) -> string needs Alloc {
+gitignore :: fn(name: string) -> string needs Alloc {
     return str.format("/main\n/main.exe\n/{}\n/{}.exe\n/.gamma/\n", name, name)!
 }
 
@@ -47,7 +47,7 @@ pub ScaffoldReport :: struct {
 }
 
 /// Writes the package files into `dir` (which exists), leaving existing files alone.
-pub scaffold :: fn(dir, name: string, git: bool) -> string!ScaffoldReport needs Alloc + Fs + Proc {
+scaffold :: fn(dir, name: string, git: bool) -> string!ScaffoldReport needs Alloc + Fs + Proc {
     report := ScaffoldReport(created: list(string), skipped: list(string))
     names := [3]string("gamma.toml", "main.gm", ".gitignore")
     texts := [3]string(manifest_text(name), main_source(name), gitignore(name))

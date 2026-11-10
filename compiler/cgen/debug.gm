@@ -22,11 +22,11 @@ loader :: import "../load"
 str :: import "std/str"
 
 /// The line that ends a function whose body carries `#line` directives.
-pub LINE_RESET :: "#line GM_C_SOURCE"
+LINE_RESET :: "#line GM_C_SOURCE"
 
 /// The name under which the lldb formatters are written next to an executable built with
 /// debug information.
-pub LLDB_FORMATTERS_FILE :: "gamma_lldb.py"
+LLDB_FORMATTERS_FILE :: "gamma_lldb.py"
 
 /// Prepares generated C with `#line` directives for the C file `c_file`. A directive
 /// numbers the lines after it consecutively, but all the C lines of a statement belong to
@@ -64,7 +64,7 @@ pub resolve_lines :: fn(code: string, c_file: string) -> string needs Alloc {
 /// A top-level `asm` statement that embeds the gdb pretty printers `script` in the
 /// executable's `.debug_gdb_scripts` section (an inline Python script), which gdb loads
 /// with the executable where its auto-load safe path allows. ELF targets only.
-pub gdb_script_section :: fn(script: string) -> string needs Alloc {
+gdb_script_section :: fn(script: string) -> string needs Alloc {
     asm := list(u8)
     asm.extend(".pushsection \".debug_gdb_scripts\", \"MS\",%progbits,1\n.byte 4\n")!
     asm.extend(".ascii \"gdb.inlined-script.gamma\\n\"\n")!
@@ -82,7 +82,7 @@ pub gdb_script_section :: fn(script: string) -> string needs Alloc {
 
 /// `name` if it can be the name of a struct member in the generated C: an ASCII C
 /// identifier that is neither a keyword nor a name the generated code itself uses.
-pub member_name :: fn(name: string) -> ?string needs Alloc {
+member_name :: fn(name: string) -> ?string needs Alloc {
     if name.len is 0 { return null }
     for i, c in enumerate(name) {
         alpha := c in 'a'..='z' or c in 'A'..='Z' or c is '_'
@@ -123,11 +123,11 @@ KEYWORDS :: [43]string(
 /// Picks member names for `names` (in order): the Gamma name where `member_name` accepts
 /// it and no other member has it, else none. `taken` holds names already in use in the
 /// same struct and receives the chosen ones.
-pub unique_members :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool)) -> []?string needs Alloc => unique_with(names, taken, false)
+unique_members :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool)) -> []?string needs Alloc => unique_with(names, taken, false)
 
 /// `unique_members` for the members of a debugger view (`views`), where the names of a
 /// frame's own members are free.
-pub unique_view_members :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool)) -> []?string needs Alloc => unique_with(names, taken, true)
+unique_view_members :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool)) -> []?string needs Alloc => unique_with(names, taken, true)
 
 unique_with :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool), view: bool) -> []?string needs Alloc {
     count := hash_map.hash_map(string, u32)
@@ -155,7 +155,7 @@ unique_with :: fn(names: []const string, taken: ^hash_map.HashMap(string, bool),
 
 /// `decls`, with every macro named in `names` (sorted) suspended around it. `defined` is
 /// an operator of the preprocessor, never a macro.
-pub guard :: fn(names: []const string, decls: string) -> string needs Alloc {
+guard :: fn(names: []const string, decls: string) -> string needs Alloc {
     if names.len is 0 or decls.len is 0 { return decls }
     out := list(u8)
     for n in names {

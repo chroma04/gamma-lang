@@ -114,7 +114,7 @@ const_hook :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty, nam
 
 /// Checks the constant expression `e` (against `expected`), as a function body without
 /// parameters; `null` if it has errors.
-pub check_const_expr :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?^Expr needs Load {
+check_const_expr :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, expected: ?Ty) -> ?^Expr needs Load {
     errors := s.l.diags.error_count()
     cx := fn_cx(s, module, s.tys.unit(), types.empty_effects())
     cx.const_init = true
@@ -168,7 +168,7 @@ escapes :: fn(v: Value) -> bool => match v {
 /// Evaluates the checked, closed expression `e` with `budget` steps: its value, or
 /// `null` after reporting why not. Nothing is reported if `e`, or a function it can
 /// reach, has errors.
-pub evaluate :: fn(s: ^Sema, e: ^Expr, budget: u64) -> ?Value needs Load {
+evaluate :: fn(s: ^Sema, e: ^Expr, budget: u64) -> ?Value needs Load {
     if s.tys.mentions_error(e.ty) or not prepare(s, e) { return null }
     match eval.run(s, e, budget) {
         .Ok(v) => {
@@ -240,7 +240,7 @@ pub const_value :: fn(s: ^Sema, span: source.Span, ty: Ty) -> ?^Cell needs Load 
 /// The constant holding the default `d` (declared in `module`) of a field or parameter of
 /// type `ty`: each default is checked and evaluated once per type (§17.2); a failure is
 /// reported once, at the default.
-pub default_const :: fn(s: ^Sema, module: usize, d: ^const ast.Expr, ty: Ty) -> bool needs Load {
+default_const :: fn(s: ^Sema, module: usize, d: ^const ast.Expr, ty: Ty) -> bool needs Load {
     if id := s.const_id(d.span, ty) {
         c := s.consts.items[usize(id)]
         if c.state is .Unchecked { return const_value(s, d.span, ty) is not null }
@@ -286,7 +286,7 @@ check_declared_defaults :: fn(s: ^Sema) needs Load {
 /// value may live in static memory (§17.2, §17.4): the constant, or `null` to evaluate the
 /// local at run time. Running out of steps falls back to run time; any other failure is
 /// reported.
-pub local_const :: fn(s: ^Sema, module: usize, init: ^const ast.Expr, annot: ?Ty, name: string, span: source.Span) -> ?u32 needs Load {
+local_const :: fn(s: ^Sema, module: usize, init: ^const ast.Expr, annot: ?Ty, name: string, span: source.Span) -> ?u32 needs Load {
     if s.in_generic_scope() { return null }
     m := s.l.diags.mark()
     checked := check_const_expr(s, module, init, annot)
@@ -333,7 +333,7 @@ pub local_const :: fn(s: ^Sema, module: usize, init: ^const ast.Expr, annot: ?Ty
 
 /// Evaluates the typed constant expression `e` of type `ty` (an array length or a
 /// compile-time argument), declared in `module`: its value, or `null` after reporting.
-pub eval_typed :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?Value needs Load {
+eval_typed :: fn(s: ^Sema, module: usize, e: ^const ast.Expr, ty: Ty) -> ?Value needs Load {
     ex := check_const_expr(s, module, e, ty) else return null
     return evaluate(s, ex, s.fuel)
 }
@@ -365,7 +365,7 @@ static_assert :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source
 
 /// Reports a failed static assertion with condition `ex`; `instance` is the use that
 /// instantiated the generic body it is in.
-pub check_static_assert :: fn(s: ^Sema, ex: ^Expr, msg: ?[]u8, span: source.Span, instance: ?source.Span) needs Load {
+check_static_assert :: fn(s: ^Sema, ex: ^Expr, msg: ?[]u8, span: source.Span, instance: ?source.Span) needs Load {
     v := evaluate(s, ex, s.fuel) else return
     if v is .Bool(false) {
         text: string = if t := msg { t } else { "(no message)" }
@@ -377,7 +377,7 @@ pub check_static_assert :: fn(s: ^Sema, ex: ^Expr, msg: ?[]u8, span: source.Span
 
 /// The condition of a `when` in a body (§3.6, §8.9), which may not depend on a generic
 /// parameter (§16.7); `null` after an error.
-pub body_when_cond :: fn(s: ^Sema, module: usize, cond: ^const ast.Expr) -> ?bool needs Load {
+body_when_cond :: fn(s: ^Sema, module: usize, cond: ^const ast.Expr) -> ?bool needs Load {
     ex := check_const_expr(s, module, cond, s.tys.bool_ty()) else return null
     if depends_on_params(s, ex) {
         s.error(cond.span, "a `when` condition may not depend on a generic parameter (§16.7)")
@@ -399,7 +399,7 @@ compile_error :: fn(s: ^Sema, module: usize, args: []const ast.Arg, span: source
 }
 
 /// The value of the constant string expression `e`.
-pub const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs Load {
+const_string :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> ?[]u8 needs Load {
     ex := check_const_expr(s, module, e, s.tys.string_ty()) else return null
     v := evaluate(s, ex, s.fuel) else return null
     return eval.string_bytes(s, v)

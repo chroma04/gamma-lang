@@ -172,11 +172,9 @@ gamma :: fn(t: ^kit.T, args: []const string, env: []const string, path: string) 
         c.set(sp.before, sp.after)
     }
     out := try t.run(c)
-    try t.check(not str.contains(out.err, "C compiler"), "the C compiler failed:\n{}", out.err[0..min(out.err.len, 800)])
+    try t.check(not str.contains(out.err, "C compiler"), "the C compiler failed:\n{}", out.err[0..out.err.len.min(800)])
     return Result(code: out.code(), out: out.out)
 }
-
-min :: fn(a, b: usize) -> usize => if a < b { a } else { b }
 
 /// Fails the test unless `a` and `b` are the same result.
 expect_same :: fn(t: ^kit.T, what: string, a, b: Result) -> kit.Fail!() needs Alloc {

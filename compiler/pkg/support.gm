@@ -24,7 +24,7 @@ pub io_message :: fn(e: IoError) -> string needs Alloc => match e {
     _ => "input/output error"
 }
 
-pub read_message :: fn(e: fs.ReadError) -> string needs Alloc => match e {
+read_message :: fn(e: fs.ReadError) -> string needs Alloc => match e {
     .Io(io) => io_message(io)
     .Alloc(_) => "out of memory"
 }
@@ -55,29 +55,29 @@ pub canonicalize :: fn(p: string) -> ?string needs Alloc + Fs {
 
 pub join :: fn(a, b: string) -> string needs Alloc => load.join(a, b)
 
-pub parent :: fn(p: string) -> ?string needs Alloc => load.parent(p)
+parent :: fn(p: string) -> ?string needs Alloc => load.parent(p)
 
 /// The last name of `p`.
-pub base_name :: fn(p: string) -> string needs Alloc => load.file_name(p) else ""
+base_name :: fn(p: string) -> string needs Alloc => load.file_name(p) else ""
 
 pub is_dir :: fn(p: string) -> bool needs Fs => load.is_dir(p)
 
 pub is_file :: fn(p: string) -> bool needs Fs => load.is_file(p)
 
 /// The text of the file at `path`, or the message `cannot read PATH: REASON`.
-pub read_text :: fn(path: string) -> string!string needs Alloc + Fs {
+read_text :: fn(path: string) -> string!string needs Alloc + Fs {
     data := fs.read_all(path) else e => { return !str.format("cannot read {}: {}", path, read_message(e))! }
     return data
 }
 
 /// Writes `text` to `path` through a temporary file, so a reader never sees half a file.
-pub write_atomic :: fn(path: string, text: string) -> string!() needs Alloc + Fs + Rand {
+write_atomic :: fn(path: string, text: string) -> string!() needs Alloc + Fs + Rand {
     fs.write_atomic(path, text) else e => { return !str.format("cannot write {}: {}", path, io_message(e))! }
     return ()
 }
 
 /// A name no other process uses, for a temporary file or directory in `dir`.
-pub private_name :: fn(dir, what: string) -> string needs Alloc + Rand {
+private_name :: fn(dir, what: string) -> string needs Alloc + Rand {
     r: [8]u8 = ---
     Rand.fill(r[..])
     return join(dir, str.format(".tmp-{}-{}", what, hex(r[..]))!)
@@ -112,9 +112,6 @@ pub run :: fn(argv: []const string) -> Ran needs Alloc + Proc {
     }
     return Ran(ok: process.success(o.status), code: code, out: string(o.out.items), err: string(o.err.items))
 }
-
-/// The text of `ran.err` with white space at both ends removed.
-pub trimmed :: fn(s: string) -> string => str.trim(s)
 
 /// Makes `dir` and its parents, or says why not.
 pub make_dirs :: fn(dir: string) -> string!() needs Alloc + Fs {

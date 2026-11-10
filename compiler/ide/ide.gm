@@ -213,7 +213,7 @@ pub definition_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
 
 /// The span of a declared name that covers `off`: a name that is used somewhere, or that
 /// is listed in the outline, in scope as a local, or has hover text.
-pub declared_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
+declared_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
     best: ?Span = null
     consider :: fn(s: Span) {
         if s.hi <= s.lo or not fn_contains(s, file, off) { return }
@@ -246,13 +246,7 @@ pub uses_of :: fn(ix: ^const IdeIndex, def: Span) -> List(Span) needs Alloc {
     }
     out.items.sort_by(fn(a, b: ^const Span) -> bool => (a.file, a.lo, a.hi) < (b.file, b.lo, b.hi))
     // Equal spans are adjacent now: keep one of each.
-    n: usize = 0
-    for i in 0..out.items.len {
-        if i > 0 and out.items[i] is out.items[n - 1] { continue }
-        out.items[n] = out.items[i]
-        n += 1
-    }
-    out.truncate(n)
+    out.truncate(out.items.dedup())
     return out
 }
 
@@ -269,13 +263,7 @@ pub locals_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> List(LocalSc
 pub members_at :: fn(ix: ^const IdeIndex, file: FileId, lo, hi: u32) -> ?[]const Item => ix.receivers.get(Span(file: file, lo: lo, hi: hi))
 
 /// Sorts the tables so that lookups and results are deterministic.
-pub finish :: fn(ix: ^IdeIndex) {
+finish :: fn(ix: ^IdeIndex) {
     ix.refs.items.sort_by(fn(a, b: ^const Ref) -> bool => (a.from.file, a.from.lo, a.from.hi, a.to.file, a.to.lo, a.to.hi) < (b.from.file, b.from.lo, b.from.hi, b.to.file, b.to.lo, b.to.hi))
-    n: usize = 0
-    for i in 0..ix.refs.items.len {
-        if i > 0 and ix.refs.items[i].from is ix.refs.items[n - 1].from and ix.refs.items[i].to is ix.refs.items[n - 1].to { continue }
-        ix.refs.items[n] = ix.refs.items[i]
-        n += 1
-    }
-    ix.refs.truncate(n)
+    ix.refs.truncate(ix.refs.items.dedup())
 }

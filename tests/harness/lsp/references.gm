@@ -76,15 +76,6 @@ Loc :: struct {
     character: i64
 }
 
-/// True if `a` is before `b` in the order of bytes.
-before :: fn(a, b: string) -> bool {
-    n := if a.len < b.len { a.len } else { b.len }
-    for i in 0..n {
-        if a[i] is not b[i] { return a[i] < b[i] }
-    }
-    return a.len < b.len
-}
-
 /// Fails the test unless `locs`, a list of locations in files below `root`, is `expected`
 /// (as `file:line:character`) when sorted by file, line and character.
 expect_locations :: fn(t: ^kit.T, what: string, locs: json.Value, root: string, expected: []const string) -> kit.Fail!() needs Alloc {
@@ -99,7 +90,7 @@ expect_locations :: fn(t: ^kit.T, what: string, locs: json.Value, root: string, 
         found.push(Loc(file: file, line: line, character: character))!
     }
     found.items.sort_by(fn(a, b: ^const Loc) -> bool {
-        if a.file is not b.file { return before(a.file, b.file) }
+        if a.file is not b.file { return a.file < b.file }
         if a.line is not b.line { return a.line < b.line }
         return a.character < b.character
     })

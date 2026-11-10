@@ -101,7 +101,7 @@ vec_lane_at :: fn(fg: ^FnGen, lane: Ty, bytes: u64, p: string, i: string) -> str
     return fg.tmp(lane, str.format("GM_LD({}, {} + {} * {})", ce, p, i, bytes)!)
 }
 
-pub vector_unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs sema.Load {
+vector_unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs sema.Load {
     t := e.ty
     vp := vec_parts(fg, t)
     n := vp.n
@@ -135,7 +135,7 @@ pub vector_unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!st
     return fg.vec_store(t, r)
 }
 
-pub vector_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!string needs sema.Load {
+vector_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!string needs sema.Load {
     t := e.ty
     vp := vec_parts(fg, t)
     n := vp.n
@@ -235,7 +235,7 @@ vec_blend :: fn(fg: ^FnGen, t: Ty, m: string, a: string, b: string) -> string ne
 }
 
 /// The vector builtins (§21.3), or `null` if `op` is not one.
-pub vector_builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!?string needs sema.Load {
+vector_builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!?string needs sema.Load {
     match op {
         .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe => return try fg.vec_compare(op, args)
         .ReduceSum, .ReduceMin, .ReduceMax => return try fg.vec_reduce(e, op, &args[0])

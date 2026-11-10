@@ -15,7 +15,7 @@ pub Loc :: struct {
 }
 
 /// The order of paths: name by name, as `Path` compares components.
-pub path_less :: fn(a, b: string) -> bool {
+path_less :: fn(a, b: string) -> bool {
     i: usize = 0
     j: usize = 0
     while true {
@@ -47,13 +47,13 @@ next_name :: fn(p: string, at: ^usize) -> ?string {
     return null
 }
 
-pub loc_less :: fn(a, b: ^const Loc) -> bool {
+loc_less :: fn(a, b: ^const Loc) -> bool {
     if a.path is not b.path { return path_less(a.path, b.path) }
     if a.lo is not b.lo { return a.lo < b.lo }
     return a.hi < b.hi
 }
 
-pub loc_equal :: fn(a, b: ^const Loc) -> bool => a.path is b.path and a.lo is b.lo and a.hi is b.hi
+loc_equal :: fn(a, b: ^const Loc) -> bool => a.path is b.path and a.lo is b.lo and a.hi is b.hi
 
 loc_key :: fn(l: Loc) -> string needs Alloc => str.format("{}:{}:{}", l.path, l.lo, l.hi)!
 
@@ -97,7 +97,7 @@ loc_of :: fn(a: ^Analysis, span: source.Span) -> ?Loc needs Alloc + Fs {
 }
 
 /// What is kept of the analysis of module directory `dir`.
-pub facts_of :: fn(a: ^Analysis, dir: string) -> ^ModuleFacts needs Alloc + Fs {
+facts_of :: fn(a: ^Analysis, dir: string) -> ^ModuleFacts needs Alloc + Fs {
     ar := new(arena.new())!
     with ar.allocator() {
         facts := new(ModuleFacts(
@@ -150,7 +150,7 @@ add_siblings :: fn(f: ^ModuleFacts, path: string, syms: []const ide.DocSymbol, g
 }
 
 /// The text of the file at `path` among the module's files.
-pub text_in :: fn(f: ^const ModuleFacts, path: string) -> ?string {
+text_in :: fn(f: ^const ModuleFacts, path: string) -> ?string {
     for t in f.texts.items {
         if t.path is path { return t.text }
     }
@@ -158,7 +158,7 @@ pub text_in :: fn(f: ^const ModuleFacts, path: string) -> ?string {
 }
 
 /// Releases the memory of the facts.
-pub release_facts :: fn(f: ^ModuleFacts) needs Alloc {
+release_facts :: fn(f: ^ModuleFacts) needs Alloc {
     ar := f.arena
     ar.deinit()
     destroy(ar)
@@ -174,7 +174,7 @@ fnv :: fn(h_in: u64, bytes: []const u8) -> u64 {
 
 /// The `.gm` files of module directory `dir`, counting the open buffers (`overlays`) that
 /// stand in a file of that directory.
-pub module_files :: fn(dir: string, overlays: []const load.Overlay) -> List(string) needs Alloc + Fs {
+module_files :: fn(dir: string, overlays: []const load.Overlay) -> List(string) needs Alloc + Fs {
     out := list(string)
     if load.is_dir(dir) {
         for r in fs.entries(dir) {
@@ -244,7 +244,7 @@ pub Workspace :: struct {
     cache: hash_map.HashMap(string, Entry)
 }
 
-pub workspace :: fn() -> Workspace needs Alloc => Workspace(cache: hash_map.hash_map(string, Entry))
+workspace :: fn() -> Workspace needs Alloc => Workspace(cache: hash_map.hash_map(string, Entry))
 
 /// The directories to skip when looking for modules.
 skipped :: fn(name: string) -> bool => name.starts_with(".") or name is "target" or name is "node_modules"
@@ -276,7 +276,7 @@ find_module_dirs :: fn(root: string, out: ^List(string)) needs Alloc + Fs {
 
 /// The root directory of the package that contains module directory `dir`: the nearest
 /// directory with a `gamma.toml`, or `dir` itself.
-pub package_root :: fn(dir: string) -> string needs Alloc + Fs {
+package_root :: fn(dir: string) -> string needs Alloc + Fs {
     cur: ?string = dir
     while d := cur {
         if load.is_file(load.join(d, "gamma.toml")) { return d }
@@ -302,7 +302,7 @@ path_dependencies :: fn(root: string, seen: ^List(string)) needs Alloc + Fs {
 
 /// The roots of the package containing `dir` and of its path dependencies; the package's
 /// own root is first.
-pub package_roots :: fn(dir: string) -> List(string) needs Alloc + Fs {
+package_roots :: fn(dir: string) -> List(string) needs Alloc + Fs {
     root := canon(package_root(dir))
     roots := list(string)
     roots.push(root)!
@@ -312,7 +312,7 @@ pub package_roots :: fn(dir: string) -> List(string) needs Alloc + Fs {
 
 /// The module directories of the packages rooted at `roots`, including directories that
 /// so far exist only as unsaved buffers.
-pub module_dirs :: fn(roots: []const string, overlays: []const load.Overlay) -> List(string) needs Alloc + Fs {
+module_dirs :: fn(roots: []const string, overlays: []const load.Overlay) -> List(string) needs Alloc + Fs {
     dirs := list(string)
     for r in roots { find_module_dirs(r, &dirs) }
     for o in overlays {
@@ -330,18 +330,12 @@ pub module_dirs :: fn(roots: []const string, overlays: []const load.Overlay) -> 
         dirs.push(d)!
     }
     dirs.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
-    n: usize = 0
-    for i in 0..dirs.items.len {
-        if i > 0 and dirs.items[i] is dirs.items[n - 1] { continue }
-        dirs.items[n] = dirs.items[i]
-        n += 1
-    }
-    dirs.truncate(n)
+    dirs.truncate(dirs.items.dedup())
     return dirs
 }
 
 /// Whether some file of module directory `dir` mentions `name`.
-pub mentions :: fn(dir: string, name: string, overlays: []const load.Overlay) -> bool needs Alloc + Fs {
+mentions :: fn(dir: string, name: string, overlays: []const load.Overlay) -> bool needs Alloc + Fs {
     for f in module_files(dir, overlays).items {
         if t := buffer_for(f, overlays) {
             if str.contains(t, name) { return true }
@@ -353,7 +347,7 @@ pub mentions :: fn(dir: string, name: string, overlays: []const load.Overlay) ->
 }
 
 /// The facts of the module in `dir`, analyzed now unless the cached ones are still valid.
-pub facts :: fn(ws: ^Workspace, dir: string, overlays: []const load.Overlay) -> ^ModuleFacts needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
+facts :: fn(ws: ^Workspace, dir: string, overlays: []const load.Overlay) -> ^ModuleFacts needs Alloc + Clock + Env + Err + Fs + Proc + Rand {
     if e := ws.cache.get(dir) {
         if stamp(e.dirs, overlays) is e.stamp { return e.facts }
     }
@@ -373,7 +367,7 @@ pub facts :: fn(ws: ^Workspace, dir: string, overlays: []const load.Overlay) -> 
 }
 
 /// Keeps the facts of an analysis of the module in `dir` that is current.
-pub store :: fn(ws: ^Workspace, dir: string, a: ^Analysis, overlays: []const load.Overlay) -> ^ModuleFacts needs Alloc + Env + Fs {
+store :: fn(ws: ^Workspace, dir: string, a: ^Analysis, overlays: []const load.Overlay) -> ^ModuleFacts needs Alloc + Env + Fs {
     f := facts_of(a, dir)
     // The standard library is taken to stay as it is.
     std := canon(driver.std_root())
@@ -400,7 +394,7 @@ pub Found :: struct {
 }
 
 /// The text of a file of one of the modules found.
-pub found_text :: fn(f: ^const Found, path: string) -> ?string {
+found_text :: fn(f: ^const Found, path: string) -> ?string {
     for m in f.modules.items {
         if t := text_in(m, path) { return t }
     }

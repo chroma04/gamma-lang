@@ -23,21 +23,12 @@ pub SiteConst :: struct {
     relocs: List(SiteReloc)
 }
 
-/// Whether two byte strings are equal.
-same_bytes :: fn(a, b: []const u8) -> bool {
-    if a.len is not b.len { return false }
-    for i in 0..a.len {
-        if a[i] is not b[i] { return false }
-    }
-    return true
-}
-
 same_site_const :: fn(a, b: ^const SiteConst) -> bool {
-    if not (a.ty is b.ty) or not same_bytes(a.bytes.items, b.bytes.items) or a.relocs.items.len is not b.relocs.items.len { return false }
+    if a.ty is not b.ty or a.bytes.items is not b.bytes.items or a.relocs.items.len is not b.relocs.items.len { return false }
     for i in 0..a.relocs.items.len {
         x := a.relocs.items[i]
         y := b.relocs.items[i]
-        if x.offset is not y.offset or not same_bytes(x.data, y.data) { return false }
+        if x.offset is not y.offset or x.data is not y.data { return false }
     }
     return true
 }
@@ -52,7 +43,7 @@ new_site_const :: fn(g: ^Gen, t: Ty) -> SiteConst needs sema.Load {
 
 /// The C address (`uint8_t *`) of static storage holding the value of `e`, if `e` is built
 /// from literals only.
-pub const_arg :: fn(g: ^Gen, e: ^Expr) -> ?string needs sema.Load {
+const_arg :: fn(g: ^Gen, e: ^Expr) -> ?string needs sema.Load {
     v := new_site_const(g, e.ty)
     if not g.const_into(e, 0, &v) { return null }
     i := g.site_consts.items.len
@@ -68,7 +59,7 @@ pub const_arg :: fn(g: ^Gen, e: ^Expr) -> ?string needs sema.Load {
 
 /// Whether `e` is built from literals only, so that `const_arg` passes it from static
 /// storage.
-pub is_const_arg :: fn(g: ^Gen, e: ^Expr) -> bool needs sema.Load {
+is_const_arg :: fn(g: ^Gen, e: ^Expr) -> bool needs sema.Load {
     v := new_site_const(g, e.ty)
     return g.const_into(e, 0, &v)
 }

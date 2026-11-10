@@ -64,7 +64,7 @@ RUNTIME_NAMES :: [302]string(
 
 /// Whether `sym` is a name of the compiled program's runtime or of the kind generated code
 /// uses (`gm_` and a kind and number).
-pub is_runtime_symbol :: fn(sym: string) -> bool {
+is_runtime_symbol :: fn(sym: string) -> bool {
     if not sym.starts_with("gm_") { return false }
     last := sym[sym.len - 1]
     if last >= '0' and last <= '9' { return true }

@@ -15,7 +15,7 @@ pub Download :: struct {
 }
 
 /// Downloads `url` into a temporary file in `dir`.
-pub download :: fn(url: string, dir: string) -> string!Download needs Alloc + Fs + Proc + Rand {
+download :: fn(url: string, dir: string) -> string!Download needs Alloc + Fs + Proc + Rand {
     try make_dirs(dir)
     path := private_name(dir, "download")
     max := str.format("{}", MAX_ARCHIVE_BYTES)!
@@ -44,12 +44,12 @@ pub download :: fn(url: string, dir: string) -> string!Download needs Alloc + Fs
 }
 
 /// Removes the temporary file of a download.
-pub discard :: fn(d: Download) needs Alloc + Fs {
+discard :: fn(d: Download) needs Alloc + Fs {
     _ = fs.remove_all(d.path)
 }
 
 /// The SHA-256 of the file at `path`, hexadecimal.
-pub file_sha256 :: fn(path: string) -> string!string needs Alloc + Fs {
+file_sha256 :: fn(path: string) -> string!string needs Alloc + Fs {
     f := Fs.open(path, fs.OpenOptions()) else e => { return !str.format("cannot read {}: {}", path, io_message(e))! }
     defer Fs.close(f)
     h := sha256.init()
@@ -117,8 +117,8 @@ unpack_into :: fn(archive, dir: string) -> string!() needs Alloc + Fs + Proc {
         }
     }
     // `-m`: the files get the time of unpacking, not the archive's.
-    args := [8]string("tar", "-xzmf", archive, "-C", dir, "--no-same-owner", "--no-same-permissions", "")
-    r := run(args[0..7])
+    args := [7]string("tar", "-xzmf", archive, "-C", dir, "--no-same-owner", "--no-same-permissions")
+    r := run(args[..])
     if not r.ok { return !str.format("cannot unpack the archive: {}", str.trim(r.err))! }
     sanitize_modes(dir)
     return ()

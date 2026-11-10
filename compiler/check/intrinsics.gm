@@ -1,8 +1,7 @@
 // Intrinsic calls `@name(args)` (§20.3): the layout and limit queries, the bit
 // operations, atomics and volatile accesses, `@write`, `@asm`, the system and heap
-// primitives of the core library and the small ones. `@static_assert`, `@compile_error`,
-// `@caller_location`, `@stack_size`, `@fiber` and those that need the compile-time
-// evaluator are reported as unsupported.
+// primitives of the core library, `@static_assert`, `@compile_error`,
+// `@caller_location`, `@stack_size`, `@fiber` and the small ones.
 
 intrinsic :: fn(cx: ^FnCx, i: ast.IntrinsicExpr, span: source.Span) -> ^Expr needs Load {
     args := i.args else empty_slice(ast.Arg)
@@ -192,16 +191,6 @@ numeric_intrinsic :: fn(cx: ^FnCx, n: string, args: []const ast.Arg, span: sourc
     return tir.mk(ty, .Builtin(op, vals.items), span)
 }
 
-/// The core library's `Sys` effect as a set.
-sys_set :: fn(cx: ^FnCx) -> EffectSet needs Load {
-    prelude := cx.s.l.prelude else return types.empty_effects()
-    d := cx.s.l.lookup(prelude, "Sys") else return types.empty_effects()
-    .Effect(e) := cx.s.resolve_decl(d) else return types.empty_effects()
-    one := list(EffectRef)
-    one.push(types.EffectRef(eff: e, args: empty_slice(types.GenericArg)))!
-    return types.effect_set(one.items)
-}
-
 /// The core library's `MemoryOrder` type.
 memory_order_ty :: fn(cx: ^FnCx) -> Ty needs Load {
     if prelude := cx.s.l.prelude {
@@ -324,7 +313,7 @@ atomic_intrinsic :: fn(cx: ^FnCx, name: string, args: []const ast.Arg, span: sou
         }
         vals.push(p^)!
         if volatile {
-            sys := cx.sys_set()
+            sys := cx.s.sys_set()
             cx.record_effects(&sys, span)
         }
     }
@@ -494,7 +483,7 @@ tys5 :: fn(a, b, c, d, e: Ty) -> []Ty needs Alloc {
     return l.items
 }
 
-/// The system operation `@name(..)` of the core library, if there is one (`SysOp::signature`).
+/// The system operation `@name(..)` of the core library, if there is one.
 sys_sig :: fn(tys: ^types.Types, name: string) -> ?SysSig needs Alloc {
     i64_ty := tys.int(true, 64)
     u64_ty := tys.int(false, 64)
@@ -570,14 +559,6 @@ sys_sig :: fn(tys: ^types.Types, name: string) -> ?SysSig needs Alloc {
     }
 }
 
-/// The `Sys` effect's id.
-sys_effect :: fn(cx: ^FnCx) -> ?u32 needs Load {
-    prelude := cx.s.l.prelude else return null
-    d := cx.s.l.lookup(prelude, "Sys") else return null
-    .Effect(e) := cx.s.resolve_decl(d) else return null
-    return e
-}
-
 /// A system operation of the core library (`SysOp`), called as `@name(..)`.
 sys_intrinsic :: fn(cx: ^FnCx, name: string, sig: SysSig, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     if args.len is not sig.params.len {
@@ -607,7 +588,7 @@ thread_entry_arg :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ^Expr needs Load {
     ok := false
     if .FnPtr(sig) := tys.kind(vt) {
         ok = sig.params.len is 1 and tys.kind(sig.params[0]) in (.Rawptr, .Ptr(_)) and tys.is_unit(sig.ret) and not sig.win64
-        sys := cx.sys_effect()
+        sys := cx.s.sys_effect()
         for x in sig.effects.effects {
             if s := sys {
                 if x.eff is not s { ok = false }
@@ -789,7 +770,7 @@ asm_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Exp
         return error_expr(cx.s, span)
     }
     if exprs.items.len is not args.len { cx.error(span, "`@asm` takes positional arguments only") }
-    sys := cx.sys_set()
+    sys := cx.s.sys_set()
     cx.record_effects(&sys, span)
     vals := list(Expr)
     ok := true

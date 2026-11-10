@@ -19,7 +19,6 @@ tir :: import "../tir"
 types :: import "../types"
 
 Ty :: types.Ty
-TyKind :: types.TyKind
 EffectRef :: types.EffectRef
 EffectSet :: types.EffectSet
 GenericArg :: types.GenericArg
@@ -348,7 +347,6 @@ MethodCandidate :: struct {
     adt: u32
     name: string
     span: source.Span
-    is_op: bool
 }
 
 pub Sema :: struct {
@@ -467,7 +465,7 @@ pub Sema :: struct {
     pub nested_generic: List((fn_id: u32, name: ast.Ident))
     /// The step budget of compile-time evaluations in the declaration being resolved
     /// (§17.3).
-    pub fuel: u64 = 50_000_000
+    pub fuel: u64 = STEP_BUDGET
     /// The structs that stand for `#soa` arrays and slices (§5.6.4), and what they store.
     pub soa: hash_map.HashMap(u32, SoaInfo)
     /// The struct made for each `#soa` type so far.
@@ -574,13 +572,34 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
 }
 
 /// The default number of steps of one compile-time evaluation (§17.3).
-pub STEP_BUDGET: u64 : 50_000_000
+STEP_BUDGET: u64 : 50_000_000
 
 /// The checked form of function `f`: an instance of a generic function has the body
 /// produced for its arguments, once it is.
 pub def_of :: fn(s: ^const Sema, f: u32) -> tir.FnDef {
     if d := s.inst_defs.get(f) { return d }
     return s.defs.items[usize(f)]
+}
+
+/// The function id that stands for "no function" where code outside any function (a
+/// constant's initializer) is walked.
+pub NO_FN: u32 : 0xFFFF_FFFF
+
+/// The generic function that `f` instantiates, or `f`.
+pub generic_of :: fn(s: ^const Sema, f: u32) -> u32 {
+    if inst := s.fns.items[usize(f)].instance { return inst.template }
+    return f
+}
+
+/// The function whose frame holds the local that an upvar `levels` frames up from `f`
+/// names.
+pub frame_up :: fn(s: ^const Sema, f: u32, levels: u32) -> ?u32 {
+    cur := f
+    for _ in 0..levels {
+        if usize(cur) >= s.defs.items.len { return null }
+        cur = s.defs.items[usize(cur)].parent else return null
+    }
+    return cur
 }
 
 /// Records the body produced for instance `f`.
@@ -900,7 +919,7 @@ compute_decl :: fn(s: ^Sema, id: usize) -> DeclValue needs Load {
             s.globals.push(GlobalInfo(decl: id, name: name.name, ty: ty, module: module, init: b.init, thread_local: thread_local, link_name: null, align: global_align))!
         }
     } else {
-        v = s.compute_binding(id, module, name, &item, &b)
+        v = s.compute_binding(id, module, name, &b)
     }
     s.fuel = saved_fuel
     if c := callconv {
@@ -945,7 +964,7 @@ check_allow_attr :: fn(s: ^Sema, attr: ^const ast.Attribute) needs Alloc {
     }
 }
 
-compute_binding :: fn(s: ^Sema, id: usize, module: usize, name: ast.Ident, item: ^const ast.Item, b: ^const ast.Binding) -> DeclValue needs Load {
+compute_binding :: fn(s: ^Sema, id: usize, module: usize, name: ast.Ident, b: ^const ast.Binding) -> DeclValue needs Load {
     if b.kind is .Var {
         if b.init.kind is .Import(_) {
             // The loader reports it.
@@ -1114,7 +1133,7 @@ pub walk :: fn(s: ^const Sema, t: Ty, f: fn(t: Ty)) {
 /// Records the function or operation `name` of `module`, whose first run-time parameter
 /// has type `first`, as a method candidate of that type if the type is declared in
 /// `module`. A struct may not have both a field and a method candidate named alike (§7.10).
-declare_method_candidate :: fn(s: ^Sema, module: usize, name: ast.Ident, first: Ty, is_op: bool) needs Alloc {
+declare_method_candidate :: fn(s: ^Sema, module: usize, name: ast.Ident, first: Ty) needs Alloc {
     t := first
     if .Ptr(_, p) := s.tys.kind(first) { t = p }
     .Adt(adt, _) := s.tys.kind(t) else return
@@ -1127,7 +1146,7 @@ declare_method_candidate :: fn(s: ^Sema, module: usize, name: ast.Ident, first: 
             }
         }
     }
-    s.method_candidates.push(MethodCandidate(adt: s.tys.template(adt), name: name.name, span: name.span, is_op: is_op))!
+    s.method_candidates.push(MethodCandidate(adt: s.tys.template(adt), name: name.name, span: name.span))!
 }
 
 /// Reports a type with two method candidates of one name (§7.10).

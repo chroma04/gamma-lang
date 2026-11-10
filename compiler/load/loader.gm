@@ -237,13 +237,13 @@ pub(package) is_file :: fn(p: string) -> bool needs Fs {
 
 /// The canonical form of `p`: absolute and without `.` and `..`, or `null` if it does not
 /// exist. (Symbolic links are not resolved.)
-pub(package) canonicalize :: fn(l: ^const Loader, p: string) -> ?string needs Alloc + Fs {
+canonicalize :: fn(l: ^const Loader, p: string) -> ?string needs Alloc + Fs {
     if Fs.stat(p) is !_ { return null }
     return normalize(join(l.cwd, p))
 }
 
 /// The `.gm` files directly in directory `dir`, or `null` if it cannot be read.
-pub(package) module_files :: fn(dir: string) -> ?List(string) needs Alloc + Fs {
+module_files :: fn(dir: string) -> ?List(string) needs Alloc + Fs {
     if not is_dir(dir) { return null }
     paths := list(string)
     for r in fs.entries(dir) {
@@ -257,7 +257,7 @@ pub(package) module_files :: fn(dir: string) -> ?List(string) needs Alloc + Fs {
 }
 
 /// The text of the buffer that stands in for the file at `path`, if there is one.
-pub overlay_text :: fn(l: ^const Loader, path: string) -> ?string needs Alloc + Fs {
+overlay_text :: fn(l: ^const Loader, path: string) -> ?string needs Alloc + Fs {
     if l.overlays.items.len is 0 { return null }
     key := canonical_path(l, path)
     for o in l.overlays.items {
@@ -279,7 +279,7 @@ pub canonical_path :: fn(l: ^const Loader, p: string) -> string needs Alloc + Fs
 
 /// The `.gm` files of directory `dir`, counting the buffers (`overlays`) that stand in a
 /// file of that directory, or `null` if it cannot be read and holds no buffer.
-pub module_files_of :: fn(l: ^const Loader, dir: string) -> ?List(string) needs Alloc + Fs {
+module_files_of :: fn(l: ^const Loader, dir: string) -> ?List(string) needs Alloc + Fs {
     paths := module_files(dir)
     if l.overlays.items.len is 0 { return paths }
     key := canonical_path(l, dir)

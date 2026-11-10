@@ -9,7 +9,7 @@
 //! on `-j` threads (default: one per processor), those that took longest in the previous
 //! run first. The exit status is 0 if no test failed.
 //!
-//! The suites are listed in `SUITES`; each is a module with a function adding its tests
+//! The suites are listed in `suites`; each is a module with a function adding its tests
 //! (see `kit`). `docs/contributing.md` describes the environment variables that select
 //! lanes and tools.
 

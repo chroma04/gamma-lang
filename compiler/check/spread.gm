@@ -197,7 +197,7 @@ elements_tuple :: fn(cx: ^FnCx, v: ^Expr, span: source.Span) -> ?^Expr needs Loa
 /// before one, to keep the written evaluation order) is evaluated into a local first by
 /// `stmts`, and the spread is replaced by arguments naming that local's elements. `null`
 /// (after reporting) if a spread cannot be expanded.
-spread_generic_args :: fn(cx: ^FnCx, args: []const ast.Arg, stmts: ^List(tir.Stmt), span: source.Span) -> ?[]ast.Arg needs Load {
+spread_generic_args :: fn(cx: ^FnCx, args: []const ast.Arg, stmts: ^List(tir.Stmt)) -> ?[]ast.Arg needs Load {
     tys := &cx.s.tys
     last_spread: usize = 0
     for k, a in enumerate(args) {

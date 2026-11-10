@@ -78,7 +78,7 @@ value_bytes :: fn(m: ^Machine, span: source.Span, v: tir.Value, t: Ty, out: []u8
             u := m.union_def(t) else return !m.unsupported(span, "this compile-time union value")
             vd := u.variants[us(index)]
             n := us(m.size(u.tag))
-            m.put_uint(out[o..o + n], tag_bits(vd.tag))
+            m.put_uint(out[o..o + n], bigint.bits128(vd.tag))
             if x := payload {
                 pt := vd.payload else return ()
                 try m.value_bytes(span, x^, pt, out, off + m.payload_offset(t))
@@ -176,7 +176,7 @@ const_bits :: fn(m: ^Machine, span: source.Span, v: tir.Value, t: Ty) -> Flow!u1
         }
         .Variant(index, _) => {
             u := m.union_def(t) else return !m.unsupported(span, "this `#bits` field value")
-            return m.const_bits(span, .Int(tag_bits(u.variants[us(index)].tag)), u.tag)
+            return m.const_bits(span, .Int(bigint.bits128(u.variants[us(index)].tag)), u.tag)
         }
         .Agg(a) => {
             raw: u128 = 0

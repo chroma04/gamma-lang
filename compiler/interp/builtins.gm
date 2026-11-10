@@ -241,7 +241,7 @@ apply_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, res_ty, t0,
             x := num_val(info.signed, m.get_int(t0, v[0]))
             for i, d in enumerate(def.variants) {
                 if d.payload is null and d.tag.negative is x.neg {
-                    tb := tag_bits(d.tag)
+                    tb := bigint.bits128(d.tag)
                     mag := if d.tag.negative { 0 -% tb } else { tb }
                     if mag is x.mag {
                         mk := m.mark()

@@ -7,8 +7,8 @@ Usage: tools/gen_float_table.py
 For each decimal exponent k in [K_MIN, K_MAX] the table holds the 126-bit integer
 g(k) = floor(10^-k * 2^r) + 1, with r chosen so that 2^125 <= g(k) < 2^126, split as
 g = hi * 2^63 + lo. It also checks the integer approximations of the logarithms used by
-the C and Rust code against exact arithmetic. The output is the initializer of gm_g10 in
-runtime/gm_rt.c.
+the C runtime and the standard library against exact arithmetic. The output is the
+initializer of gm_g10 in runtime/gm_rt.c.
 """
 
 from fractions import Fraction

@@ -227,7 +227,6 @@ int_value :: fn(lx: ^const Lexer, digits: Digits, radix: u32) -> bignum.Nat need
 parse_valid :: fn(text: string, radix: u32) -> bignum.Nat needs Alloc {
     for c in text {
         if c is not '_' and bignum.digit_value(c) >= radix { return bignum.zero() }
-        if c is not '_' and not is_hex_digit(c) { return bignum.zero() }
     }
     return bignum.parse(text, radix)
 }

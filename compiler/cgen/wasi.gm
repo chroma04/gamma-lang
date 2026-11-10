@@ -102,7 +102,7 @@ io_error_text :: fn(e: IoError) -> string needs Alloc => match e {
 }
 
 /// The module names of the imports of WebAssembly module `wasm`.
-pub import_modules :: fn(wasm: []const u8) -> string!List(string) needs Alloc {
+import_modules :: fn(wasm: []const u8) -> string!List(string) needs Alloc {
     r := WasmReader(b: wasm, at: 0)
     head := try r.wasm_bytes(4)
     if not (head[0] is 0 and head[1] is 'a' and head[2] is 's' and head[3] is 'm') { return !"no WebAssembly header" }

@@ -399,11 +399,6 @@ path_pattern :: fn(cx: ^FnCx, path: ^const ast.Expr, args: ?[]ast.PatArg, ty: Ty
     }
 }
 
-unsupported_pat :: fn(cx: ^FnCx, span: source.Span, ty: Ty, what: string) -> ^Pat needs Alloc {
-    cx.s.unsupported(span, what)
-    return tir.mk_pat(ty, .Wild, span)
-}
-
 /// `.V` / `.V(…)` for the variant `vname` of the union type `u`.
 variant_pattern :: fn(cx: ^FnCx, u: Ty, vname: ast.Ident, args: ?[]ast.PatArg, ty: Ty, ctx: PatCtx, binds: ^List(PatBind), span: source.Span) -> ^Pat needs Load {
     wild := tir.mk_pat(ty, .Wild, span)

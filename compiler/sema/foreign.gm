@@ -13,7 +13,7 @@ pub sys_set :: fn(s: ^Sema) -> EffectSet needs Load {
 }
 
 /// The core library's `Sys` effect.
-sys_effect :: fn(s: ^Sema) -> ?u32 needs Load {
+pub sys_effect :: fn(s: ^Sema) -> ?u32 needs Load {
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, "Sys") else return null
     .Effect(e) := s.resolve_decl(d) else return null
@@ -353,7 +353,7 @@ pub source_location_ty :: fn(s: ^Sema) -> ?Ty needs Load {
 }
 
 /// Whether `t` is C-compatible (§19.1). `in_struct` allows arrays (as struct fields).
-pub is_c_compatible :: fn(s: ^Sema, t: Ty, in_struct: bool) -> bool needs Load {
+is_c_compatible :: fn(s: ^Sema, t: Ty, in_struct: bool) -> bool needs Load {
     match s.tys.kind(t) {
         .Int(_, bits) => return bits in (8, 16, 32, 64, 128)
         .Usize, .Isize, .Float(_), .Bool, .Rawptr, .Ptr(_), .ManyPtr(_), .Error => return true

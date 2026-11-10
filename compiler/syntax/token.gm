@@ -226,8 +226,8 @@ pub StrLit :: struct {
 
 pub TokenKind :: union {
     /// An identifier (never a reserved keyword). Contextual keywords (`const`, `on`,
-    /// `where`, `test`, `needs`, `handler`, `foreign`) are identifiers; `_` is `Underscore`. The text is a slice of the
-    /// source.
+    /// `where`, `test`, `bench`, `needs`, `handler`, `foreign`, `cont`) are identifiers; `_` is
+    /// `Underscore`. The text is a slice of the source.
     Ident: string
     /// The discard identifier `_`.
     Underscore
@@ -290,9 +290,4 @@ pub describe :: fn(k: TokenKind) -> string needs Alloc => match k {
     .Punct(p) => str.format("`{}`", punct_text(p))!
     .Newline => "newline"
     .Eof => "end of file"
-}
-
-is_keyword :: fn(k: TokenKind, kw: Keyword) -> bool => match k {
-    .Keyword(x) => x is kw
-    _ => false
 }

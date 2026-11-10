@@ -27,31 +27,14 @@ ii_cty :: fn(ii: IntInfo) -> string => int_cty(ii.signed, ii.storage)
 /// The unsigned C type of the storage.
 ii_ucty :: fn(ii: IntInfo) -> string => int_cty(false, ii.storage)
 
-pub ii_min :: fn(ii: IntInfo) -> bigint.Int needs Alloc {
+ii_min :: fn(ii: IntInfo) -> bigint.Int needs Alloc {
     if ii.signed { return bigint.neg(bigint.shl(bigint.one(), u64(ii.bits) - 1)) }
     return bigint.zero()
 }
 
-pub ii_max :: fn(ii: IntInfo) -> bigint.Int needs Alloc {
+ii_max :: fn(ii: IntInfo) -> bigint.Int needs Alloc {
     if ii.signed { return bigint.sub(bigint.shl(bigint.one(), u64(ii.bits) - 1), bigint.one()) }
     return bigint.sub(bigint.shl(bigint.one(), u64(ii.bits)), bigint.one())
-}
-
-arith_op_symbol :: fn(op: tir.BinOp) -> string => match op {
-    .Add(_) => "+"
-    .Sub(_) => "-"
-    .Mul(_) => "*"
-    .Shl(_) => "<<"
-    .Div => "/"
-    .Rem => "%"
-    .Shr => ">>"
-    .BitAnd => "&"
-    .BitOr => "|"
-    .BitXor => "~"
-    .Lt => "<"
-    .Le => "<="
-    .Gt => ">"
-    .Ge => ">="
 }
 
 /// The flavor of an operator that has one.
@@ -63,7 +46,7 @@ arith_flavor :: fn(op: tir.BinOp) -> ?ast.Flavor => match op {
     _ => null
 }
 
-/// The name of the runtime function behind a system operation (`SysOp::signature().0`).
+/// The name of the runtime function behind a system operation.
 arith_sys_name :: fn(op: tir.SysOp) -> string => match op {
     .Read => "sys_read"
     .ClockNow => "clock_now"
@@ -122,7 +105,7 @@ arith_sys_name :: fn(op: tir.SysOp) -> string => match op {
     .SysWrite => "sys_write"
 }
 
-pub int_info :: fn(fg: ^FnGen, t: Ty) -> ?IntInfo needs Alloc {
+int_info :: fn(fg: ^FnGen, t: Ty) -> ?IntInfo needs Alloc {
     .Int(signed, bits, storage) := fg.g.ty.repr(t) else return null
     return IntInfo(signed: signed, bits: bits, storage: storage)
 }
@@ -137,7 +120,7 @@ pub normalize :: fn(fg: ^FnGen, ii: IntInfo, v: string) -> string needs Alloc {
     return str.format("(({})(({}) & ((({})1 << {}) - 1)))", ii_cty(ii), v, ii_cty(ii), ii.bits)!
 }
 
-pub unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs sema.Load {
+unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs sema.Load {
     v := try fg.expr(x)
     t := e.ty
     match op {
@@ -165,14 +148,14 @@ pub unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string ne
     }
 }
 
-pub binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!string needs sema.Load {
+binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!string needs sema.Load {
     a := try fg.expr(l)
     b := try fg.expr(r)
     t := e.ty
     if op in (.Lt, .Le, .Gt, .Ge) {
         match fg.g.ty.repr(l.ty) {
             .Int(_, _, _), .Float(_), .Bool, .Ptr => {
-                return fg.tmp(t, str.format("({} {} {})", a, arith_op_symbol(op), b)!)
+                return fg.tmp(t, str.format("({} {} {})", a, tir.binop_symbol(op), b)!)
             }
             _ => {
                 lt := fg.g.helpers.less_fn(&fg.g.ty, l.ty)
@@ -196,23 +179,23 @@ pub binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Uns
                 .Sub(_) => "-"
                 .Mul(_) => "*"
                 .Div => "/"
-                _ => return !unsupported(e.span, str.format("operator `{}` on floats", arith_op_symbol(op))!)
+                _ => return !unsupported(e.span, str.format("operator `{}` on floats", tir.binop_symbol(op))!)
             }
             return fg.tmp(t, str.format("({} {} {})", a, sym, b)!)
         }
         .Int(_, _, _) => return try fg.int_binary(e, op, l.ty, a, b)
-        _ => return !unsupported(e.span, str.format("operator `{}` on `{}`", arith_op_symbol(op), fg.g.ty.show(l.ty))!)
+        _ => return !unsupported(e.span, str.format("operator `{}` on `{}`", tir.binop_symbol(op), fg.g.ty.show(l.ty))!)
     }
 }
 
 /// The C expression converting the number `v` (of any C arithmetic type) to the float
 /// type `t`. An `f16` result goes through `GM_F16`.
-pub float_from :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs Alloc {
+float_from :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs Alloc {
     if fg.g.ty.kind(t) is .Float(16) { return str.format("GM_F16({})", v)! }
     return str.format("({})({})", fg.g.ty.cty(t), v)!
 }
 
-pub int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: string) -> Unsup!string needs sema.Load {
+int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: string) -> Unsup!string needs sema.Load {
     ii := fg.int_info(lt)?
     c := ii_cty(ii)
     loc := fg.loc(e)
@@ -242,7 +225,7 @@ pub int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: 
             } else if op is .Sub(_) {
                 sat = "0"
             }
-            return try fg.finish_int(fl, ii, lt, t, r, o, sat, loc, arith_op_symbol(op))
+            return try fg.finish_int(fl, ii, lt, t, r, o, sat, loc, tir.binop_symbol(op))
         }
         .Shl(_), .Shr => {
             fl: ast.Flavor = arith_flavor(op) else .Checked
@@ -264,7 +247,7 @@ pub int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: 
             return try fg.finish_int(fl, ii, lt, t, r, o, sat, loc, "<<")
         }
         .Div, .Rem => {
-            sym := arith_op_symbol(op)
+            sym := tir.binop_symbol(op)
             fg.linef("if ({} == 0) gm_trap(\"division by zero\", {});", b, loc)
             if ii.signed {
                 min := fg.int_lit(lt, ii_min(ii))
@@ -351,7 +334,7 @@ arith_asm :: fn(fg: ^FnGen, args: []Expr, outputs: usize, inputs: usize) -> Unsu
     return fg.unit()
 }
 
-pub builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
+builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
     if r := try fg.vector_builtin(e, op, args) { return r }
     t := e.ty
     loc := fg.loc(e)
@@ -822,7 +805,7 @@ arith_get :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!st
 }
 
 /// The numeric conversions `T(x)`, `.trunc`, `.round`, `.floor`, `.ceil`, `.checked`, `.sat`.
-pub convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> Unsup!string needs sema.Load {
+convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> Unsup!string needs sema.Load {
     t := e.ty
     target := t
     if op is .Checked {
