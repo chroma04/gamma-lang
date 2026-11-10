@@ -49,53 +49,33 @@ pub Cli :: union {
     Bad: string
 }
 
-/// Reads the arguments after `repl`.
+/// Reads the arguments after `repl`. Of the options of the other commands it takes the
+/// ones that mean something here (`--mode`, `--diag-format`) and ignores the rest.
 pub parse_options :: fn(args: []const string) -> Cli needs Alloc {
     o := Options()
     i: usize = 0
     while i < args.len {
         a := args[i]
-        i += 1
-        match a {
-            "--help", "-h" => return .Help
-            "--quiet" => { o.quiet = true }
-            "--mode=debug" => { o.mode = .Debug }
-            "--mode=checked" => { o.mode = .Checked }
-            "--mode=safe" => { o.mode = .Safe }
-            "--mode=fast" => { o.mode = .Fast }
-            "--diag-format=human" => { o.format = .Human }
-            "--diag-format=short" => { o.format = .Short }
-            "--diag-format=json" => { o.format = .Json }
-            "--dump", "--offline", "--locked", "--all", "--show-output", "--time", "--coverage", "-g" => {}
-            "-o", "-j", "--jobs" => {
-                if i >= args.len {
-                    if a is "-o" { return .Bad("`-o` needs a file name") }
-                    return .Bad(str.format("`{}` needs a number", a)!)
+        if a in ("--help", "-h") { return .Help }
+        match driver.scan(args, i, true) {
+            .Found(hit) => {
+                value := hit.value else ""
+                match hit.id {
+                    .Quiet => { o.quiet = true }
+                    .Mode => { o.mode = driver.mode_of(value) }
+                    .DiagFormat => { o.format = driver.format_of(value) }
+                    _ => {}
                 }
-                i += 1
+                i = hit.next
+                continue
             }
-            _ => {
-                if a.starts_with("--mode=") { return .Bad(str.format("invalid value `{}` for --mode (expected debug, checked, safe or fast)", a[7..])!) }
-                if a.starts_with("--diag-format=") { return .Bad(str.format("invalid value `{}` for --diag-format (expected human, short or json)", a[14..])!) }
-                if a.starts_with("--backend=") {
-                    value := a[10..]
-                    if value not in ("c", "interp") { return .Bad(str.format("invalid value `{}` for --backend (expected c or interp)", value)!) }
-                    continue
-                }
-                if a.starts_with("--profile=") {
-                    if a.len is 10 { return .Bad("`--profile=` needs a profile name") }
-                    continue
-                }
-                if a.starts_with("--target=") {
-                    if a.len is 9 { return .Bad("`--target=` needs a target triple") }
-                    continue
-                }
-                if a.starts_with("--timeout=") or a.starts_with("--jobs=") or a.starts_with("--coverage=") or a.starts_with("--filter=") or a.starts_with("--package=") { continue }
-                if a.starts_with("-") { return .Bad(str.format("unknown option `{}`", a)!) }
-                if o.preload is not null { return .Bad("more than one input file given") }
-                o.preload = a
-            }
+            .Bad(message) => return .Bad(message)
+            .Other => {}
         }
+        i += 1
+        if a.starts_with("-") { return .Bad(str.format("unknown option `{}`", a)!) }
+        if o.preload is not null { return .Bad("more than one input file given") }
+        o.preload = a
     }
     return .Run(o)
 }

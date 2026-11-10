@@ -23,7 +23,7 @@
 //! read the package's `gamma.toml` (`pkg/`).
 //!
 //! Every command takes `--diag-format=human|short|json` (default `human`), the formats of
-//! `gamma`; `doc` has its own options and diagnostics (`doc/doc.gm`). See `USAGE` for what
+//! `gamma`; `doc` has its own options and diagnostics (`doc/doc.gm`). See `usage` for what
 //! each command does and `docs/self-hosting.md` for how the compiler is built. With several files, the output of each is
 //! preceded by a line `==> FILE <==` on both streams. The exit status is 1 if a file has
 //! errors, 2 for a usage error or a file that cannot be read; `run` ends with the
@@ -55,7 +55,7 @@ fiber :: import "std/fiber"
 
 VERSION :: "0.2.0"
 
-USAGE :: `
+USAGE_HEAD :: `
 usage: gamma <command> [options] <file>
 
 commands:
@@ -85,45 +85,18 @@ commands:
   version print the compiler version
 
 options:
-  --diag-format=human|short|json
-                              how to print diagnostics (default: human)
-  --quiet                     (repl) no banner and prompts, even on a terminal
-  --recover                   (lex, parse) lex with the layout recovery tools use after errors
-  --dump                      (parse) print the syntax tree
-  --mode=debug|checked|safe|fast
-                              (build, run, test, bench, repl) the build mode (default: debug); safe builds
-                              with Fil-C
-  --target=<triple>           (check, build, run, test, bench) the target (default: the C compiler's)
-  -g                          (build, run) add debug information that maps the executable back to the
-                              Gamma source (build also writes the lldb formatters, gamma_lldb.py,
-                              next to the executable)
-  -o <file>                   (build) the executable to write (default: the input's name)
-  --emit-c                    (build) stop after writing the C file (<exe>.c)
-  --filter=<text>             (test, bench) run only the tests whose name or module path
-                              contains <text>
-  --all                       (test, bench) also run those of the modules of the package
-                              that nothing imports (every directory with .gm files)
-  --package=<name>            (test, bench) run those of the dependency <name> of the input's
-                              package (or of one of its dependencies) instead, with the
-                              dependency versions this package locks
-  --show-output               (test, bench) also print the output of the tests that pass
-  --jobs=<n>, -j <n>          (test) run <n> tests at a time (default 1; 0: one per processor;
-                              the output is still in order)
-  --timeout=<seconds>         (test, bench) fail a test that runs longer than <seconds> (no
-                              limit by default)
-  --time                      (test, bench) print how long each test took and the total
-  --coverage[=<file>]         (test) count the lines of the package that the tests run; print
-                              a table, and with <file> write LCOV
-  --backend=c|interp          (run) compile via C (the default) or run in the interpreter;
-                              (test, bench) only c is accepted
-  --offline                   (check, run, build) never use the network for dependencies
-  --locked                    (check, run, build) fail if gamma.lock is missing or out of date
-  --profile=<name>            (check, run, build) use the [profile.<name>] table of gamma.toml
-  --fix                       (lint) apply the fixes of the warnings that have one
-  --rules                     (lint) list the rules and their default levels
-  --allow=<rules>, --warn=<rules>, --deny=<rules>
-                              (lint) set the level of rules (comma-separated; all is every rule)
-  -D, --deny-warnings         (lint) report every rule that would warn as an error
+`
+
+/// The usage text: the commands, the options of `driver.OPTIONS` and the environment.
+usage :: fn() -> string needs Alloc {
+    out := list(u8)
+    out.extend(USAGE_HEAD)!
+    driver.options_help(&out)
+    out.extend(USAGE_ENVIRONMENT)!
+    return out.items
+}
+
+USAGE_ENVIRONMENT :: `
 
 environment:
   GAMMA_STD      the standard library (default: lib/gamma/std next to bin/)
@@ -167,12 +140,35 @@ main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys
 compiler_main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys {
     args := Env.args()
     check_arguments_are_text(args)
+    if run_standalone_command(args) { return }
+    command := args.get(1) else ""
+    opts := driver.Options(command: command_named(command), target: load.host_target(), lint: lint.options())
+    // Benchmarks are about speed: compiled without checks, unless asked otherwise.
+    if opts.command is .Bench { opts.mode = .Fast }
+    files := list(string)
+    defer files.deinit()
+    if not read_options(args, &opts, &files) {
+        Out.write(usage())
+        return
+    }
+    if opts.command is .Lint and opts.lint.rules {
+        linting.list_rules()
+        return
+    }
+    check_input_files(opts.command, files.items)
+    process_files(files.items, opts)
+}
+
+/// Runs the commands that take no compiler options (`fmt`, `doc`, `lsp`, the package
+/// manager, `repl`, help and version) and asks for them. Returns whether it did the work
+/// of the command line, which then needs nothing more.
+run_standalone_command :: fn(args: []const string) -> bool needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + Rand + Sys {
     command := args.get(1) else ""
     if command is "fmt" { Env.exit(fmt.command(args[2..])) }
     if topic := help_topic(args) {
         if pkg.is_package_command(topic) or topic is "packages" {
-            print("{}\n{}", USAGE, pkg.USAGE)
-            return
+            print("{}\n{}", usage(), pkg.USAGE)
+            return true
         }
         help := [1]string("--help")
         if topic is "doc" { Env.exit(doc.command(help[..])) }
@@ -180,18 +176,18 @@ compiler_main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + R
     }
     if pkg.is_package_command(command) { Env.exit(pkg.run_command("gamma", command, args[2..])) }
     if command in ("help", "--help", "-h") {
-        Out.write(USAGE)
-        return
+        Out.write(usage())
+        return true
     }
     if command in ("version", "--version") {
         print("gamma {}\n", VERSION)
-        return
+        return true
     }
     if command is "doc" { Env.exit(doc.command(args[2..])) }
     if command is "lsp" {
         if args.len > 2 and args[2] in ("--help", "-h") {
-            Out.write(USAGE)
-            return
+            Out.write(usage())
+            return true
         }
         if args.len > 2 { usage_error(str.format("unknown option `{}`", args[2])!) }
         Env.exit(lsp.command())
@@ -199,8 +195,8 @@ compiler_main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + R
     if command is "repl" {
         match repl.parse_options(args[2..]) {
             .Help => {
-                Out.write(USAGE)
-                return
+                Out.write(usage())
+                return true
             }
             .Bad(message) => usage_error(message)
             .Run(o) => {
@@ -210,7 +206,12 @@ compiler_main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + R
             }
         }
     }
-    opts := driver.Options(command: match command {
+    return false
+}
+
+/// The command that `name` names, or a usage error.
+command_named :: fn(name: string) -> driver.Command needs Alloc + Env + Err {
+    return match name {
         "lex" => .Lex
         "parse" => .Parse
         "modules" => .Modules
@@ -224,137 +225,101 @@ compiler_main :: fn() needs Alloc + Clock + Env + Err + Fs + In + Out + Proc + R
         "test" => .Test
         "bench" => .Bench
         "" => usage_error("missing command")
-        _ => usage_error(str.format("unknown command `{}`", command)!)
-    }, target: load.host_target(), lint: lint.options())
-    // Benchmarks are about speed: compiled without checks, unless asked otherwise.
-    if opts.command is .Bench { opts.mode = .Fast }
-    files := list(string)
-    defer files.deinit()
+        _ => usage_error(str.format("unknown command `{}`", name)!)
+    }
+}
+
+/// Reads the arguments after the command into `opts` and the input files. Returns false
+/// if help was asked for.
+read_options :: fn(args: []const string, opts: ^driver.Options, files: ^List(string)) -> bool needs Alloc + Env + Err + Sys {
     i: usize = 2
     while i < args.len {
         a := args[i]
-        i += 1
         // What follows the file of `gamma run` is the program's.
         if opts.command is .Run and files.items.len > 0 {
-            opts.program_args = args[i - 1..]
+            opts.program_args = args[i..]
             break
         }
-        match a {
-            "--help", "-h" => {
-                Out.write(USAGE)
-                return
+        if a in ("--help", "-h") { return false }
+        match driver.scan(args, i, false) {
+            .Found(hit) => {
+                apply_option(opts, hit)
+                i = hit.next
+                continue
             }
-            "--mode=debug" => {
-                opts.mode = .Debug
-                opts.mode_given = true
-            }
-            "--mode=checked" => {
-                opts.mode = .Checked
-                opts.mode_given = true
-            }
-            "--mode=safe" => {
-                opts.mode = .Safe
-                opts.mode_given = true
-            }
-            "--mode=fast" => {
-                opts.mode = .Fast
-                opts.mode_given = true
-            }
-            "--offline" => { opts.offline = true }
-            "--locked" => { opts.locked = true }
-            "-o" => {
-                if i >= args.len { usage_error("`-o` needs a file name") }
-                opts.out = args[i]
-                i += 1
-            }
-            "--emit-c" => { opts.emit_c = true }
-            "--all" => { opts.all = true }
-            "--show-output" => { opts.show_output = true }
-            "--time" => { opts.time = true }
-            "-j", "--jobs" => {
-                if i >= args.len { usage_error(str.format("`{}` needs a number", a)!) }
-                opts.jobs = parse_jobs(args[i])
-                i += 1
-            }
-            "--backend=c" => { opts.interp = false }
-            "--backend=interp" => {
-                if opts.command is not .Run { usage_error("`--backend=interp` is supported by `run` only: the other commands use the C back end") }
-                opts.interp = true
-            }
-            "-g" => {
-                opts.debug_info = true
-                opts.debug_info_given = true
-            }
-            "--diag-format=human" => { opts.format = .Human }
-            "--diag-format=short" => { opts.format = .Short }
-            "--diag-format=json" => { opts.format = .Json }
-            "--recover" => { opts.recover = true }
-            "--dump" => { opts.dump = true }
-            _ => {
-                if opts.command is .Lint {
-                    match lint.parse_arg(&opts.lint, a) {
-                        .Yes => continue
-                        .Bad(message) => usage_error(message)
-                        .No => {}
-                    }
-                }
-                if a.starts_with("--timeout=") {
-                    opts.timeout = parse_timeout(a[10..])
-                    continue
-                }
-                if a.starts_with("--jobs=") {
-                    opts.jobs = parse_jobs(a[7..])
-                    continue
-                }
-                if a.starts_with("--filter=") {
-                    opts.filter = a[9..]
-                    continue
-                }
-                if a.starts_with("--backend=") {
-                    value := a[10..]
-                    if value is "cranelift" { usage_error("`--backend=cranelift` is not supported: gamma has the C back end and, for `run`, the interpreter") }
-                    usage_error(str.format("invalid value `{}` for --backend (expected c or interp)", value)!)
-                }
-                if a is "--coverage" {
-                    opts.coverage = true
-                    continue
-                }
-                if a.starts_with("--coverage=") {
-                    opts.coverage = true
-                    opts.coverage_file = a[11..]
-                    continue
-                }
-                if a.starts_with("--package=") {
-                    opts.package = a[10..]
-                    continue
-                }
-                if a.starts_with("--target=") {
-                    if a.len is 9 { usage_error("`--target=` needs a target triple") }
-                    if opts.command in (driver.Command.Lint, driver.Command.Fix) { usage_error("`--target` is not supported by `lint` and `fix`") }
-                    opts.target_triple = a[9..]
-                    continue
-                }
-                if a.starts_with("--profile=") {
-                    if a.len is 10 { usage_error("`--profile=` needs a profile name") }
-                    opts.profile = a[10..]
-                    continue
-                }
-                if a.starts_with("--mode=") { usage_error(str.format("invalid value `{}` for --mode (expected debug, checked, safe or fast)", a[7..])!) }
-                if a.starts_with("--diag-format=") { usage_error(str.format("invalid value `{}` for --diag-format (expected human, short or json)", a[14..])!) }
-                if a.starts_with("-") { usage_error(str.format("unknown option `{}`", a)!) }
-                files.push(a)!
+            .Bad(message) => usage_error(message)
+            .Other => {}
+        }
+        i += 1
+        if opts.command is .Lint {
+            match lint.parse_arg(&opts.lint, a) {
+                .Yes => continue
+                .Bad(message) => usage_error(message)
+                .No => {}
             }
         }
+        if a.starts_with("-") { usage_error(str.format("unknown option `{}`", a)!) }
+        files.push(a)!
     }
-    if opts.command is .Lint and opts.lint.rules {
-        linting.list_rules()
-        return
+    return true
+}
+
+/// Sets what the option `hit` stands for.
+apply_option :: fn(opts: ^driver.Options, hit: driver.Hit) needs Alloc + Env + Err + Sys {
+    value := hit.value else ""
+    match hit.id {
+        .Mode => {
+            opts.mode = driver.mode_of(value)
+            opts.mode_given = true
+        }
+        .DiagFormat => { opts.format = driver.format_of(value) }
+        .Recover => { opts.recover = true }
+        .Dump => { opts.dump = true }
+        .Target => {
+            if opts.command in (driver.Command.Lint, driver.Command.Fix) { usage_error("`--target` is not supported by `lint` and `fix`") }
+            opts.target_triple = value
+        }
+        .DebugInfo => {
+            opts.debug_info = true
+            opts.debug_info_given = true
+        }
+        .Out => { opts.out = value }
+        .EmitC => { opts.emit_c = true }
+        .Filter => { opts.filter = value }
+        .All => { opts.all = true }
+        .Package => { opts.package = value }
+        .ShowOutput => { opts.show_output = true }
+        .Jobs => { opts.jobs = parse_jobs(value) }
+        .Timeout => { opts.timeout = parse_timeout(value) }
+        .Time => { opts.time = true }
+        .Coverage => {
+            opts.coverage = true
+            if file := hit.value { opts.coverage_file = file }
+        }
+        .Backend => {
+            if value is "interp" and opts.command is not .Run { usage_error("`--backend=interp` is supported by `run` only: the other commands use the C back end") }
+            opts.interp = value is "interp"
+        }
+        .Offline => { opts.offline = true }
+        .Locked => { opts.locked = true }
+        .Profile => { opts.profile = value }
+        // Options of `repl` alone, and of `lint`, which `lint.parse_arg` reads.
+        .Quiet, .Lint => {}
     }
-    if files.items.len is 0 { usage_error("no input file") }
-    if opts.command in (driver.Command.Build, driver.Command.Run, driver.Command.Lint, driver.Command.Fix, driver.Command.Test, driver.Command.Bench) and files.items.len > 1 { usage_error("more than one input file given") }
+}
+
+/// Reports a usage error unless `files` is what `command` takes: some input, and for the
+/// commands that work on a program, one.
+check_input_files :: fn(command: driver.Command, files: []const string) needs Alloc + Env + Err {
+    if files.len is 0 { usage_error("no input file") }
+    if command in (driver.Command.Build, driver.Command.Run, driver.Command.Lint, driver.Command.Fix, driver.Command.Test, driver.Command.Bench) and files.len > 1 { usage_error("more than one input file given") }
+}
+
+/// Runs the command on each file. The exit status is that of the first file that fails.
+process_files :: fn(files: []const string, opts: driver.Options) needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     status: u8 = 0
-    for path in files.items {
-        if files.items.len > 1 {
+    for path in files {
+        if files.len > 1 {
             print("==> {} <==\n", path)
             eprint("==> {} <==\n", path)
         }
@@ -410,9 +375,9 @@ help_topic :: fn(args: []const string) -> ?string {
     return null
 }
 
-usage_error :: fn(message: string) -> never needs Env + Err {
+usage_error :: fn(message: string) -> never needs Alloc + Env + Err {
     eprint("gamma: {}\n\n", message)
-    Err.write(USAGE)
+    Err.write(usage())
     Env.exit(2)
 }
 

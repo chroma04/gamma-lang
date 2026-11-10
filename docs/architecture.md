@@ -83,7 +83,7 @@ package manifest and `compiler/main.gm` the root module.
 | `compiler/eval/` | compile-time evaluation (spec §17) over TIR |
 | `compiler/interp/` | the interpreter |
 | `compiler/cgen/` | the C back end |
-| `compiler/driver/` | the C toolchain and target selection, native builds, the cache of runtimes and programs, library paths, the interpreter entry, the options |
+| `compiler/driver/` | the C toolchain and target selection, native builds, the cache of runtimes and programs, library paths, the interpreter entry, the options and the table of command-line options (`flags.gm`), from which the usage text is generated |
 | `compiler/pkg/` | the package manager: git and archive dependencies, resolution, `gamma.lock`, build settings, the cache, `gamma new`, and the C sources and libraries of native builds |
 | `compiler/testing/` | `gamma test` and `gamma bench`: running, reporting, coverage |
 | `compiler/fmt/` | the source formatter behind `gamma fmt` |
