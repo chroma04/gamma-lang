@@ -333,6 +333,13 @@ expect_terminator :: fn(p: ^Parser, what: string) needs Alloc {
 // Speculation, nesting, restrictions
 // ---------------------------------------------------------------------------------
 
+/// Sets the restrictions to `r` and returns the ones in force before.
+set_restr :: fn(p: ^Parser, r: Restr) -> Restr {
+    old := p.restr
+    p.restr = r
+    return old
+}
+
 snapshot :: fn(p: ^const Parser) -> Snapshot {
     return Snapshot(
         pos: p.pos,

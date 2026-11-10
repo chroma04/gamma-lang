@@ -109,8 +109,7 @@ parse_type_prefix :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
         elem := try p.parse_type_operand(mode)
         return p.mk_expr(.ArrayType(ast.ArrayTypeExpr(len: null, elem: box(elem))), p.span_from(start))
     }
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     len := p.parse_expr()
     p.restr = old
     length := box(try len)
@@ -130,8 +129,7 @@ parse_cont_type :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
     start := p.lo()
     _ = p.bump()
     _ = p.bump()
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     inner := p.parse_type()
     p.restr = old
     t := try inner
@@ -165,8 +163,7 @@ parse_attrs :: fn(p: ^Parser) -> Abort![]ast.Attribute needs Alloc {
 
 parse_attr_args :: fn(p: ^Parser) -> Abort![]ast.Expr needs Alloc {
     _ = try p.expect(.LParen, "")
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     args := list(ast.Expr)
     while not p.at(.RParen) {
@@ -270,8 +267,7 @@ Params :: struct {
 
 /// The parameters after `(`, through the closing `)`.
 parse_params :: fn(p: ^Parser) -> Abort!Params needs Alloc {
-    old := p.restr
-    p.restr = Restr()
+    old := p.set_restr(Restr())
     defer p.restr = old
     params := list(ast.Param)
     variadic := false
@@ -363,8 +359,7 @@ parse_where_opt :: fn(p: ^Parser) -> Abort![]ast.Constraint needs Alloc {
         start := p.lo()
         name := try p.parse_ident("a constraint such as `Ord(T)`")
         _ = try p.expect(.LParen, "after the constraint name")
-        old := p.restr
-        p.restr = Restr()
+        old := p.set_restr(Restr())
         ty := p.parse_type()
         p.restr = old
         t := box(try ty)
