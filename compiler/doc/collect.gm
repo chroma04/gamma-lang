@@ -3,6 +3,7 @@
 ast :: import "../ast"
 diag :: import "../diag"
 fs :: import "std/fs"
+load :: import "../load"
 parse :: import "../parse"
 source :: import "../source"
 str :: import "std/str"
@@ -175,7 +176,7 @@ render_diagnostics :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics) 
 }
 
 describe_read_error :: fn(e: fs.ReadError) -> string needs Alloc => match e {
-    .Io(io) => describe_io_error(io)
+    .Io(io) => load.os_error_text(io)
     .Alloc(_) => "out of memory"
 }
 
