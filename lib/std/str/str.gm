@@ -782,6 +782,9 @@ pub format :: fn(A: type, template :: string, args: ..A) -> AllocError![]u8 need
     // As `List(u8).write`, written out: this function has an instance per template, and
     // one function per template instead of two keeps programs smaller.
     l := list(u8)
+    // Room for the template's text and a guess at the arguments' (their size as values:
+    // 16 bytes for a string), so that most results are allocated once.
+    l.reserve(template.len + @size_of(A)) else return !.OutOfMemory
     failed := false
     @write(fn(bytes) {
         if not failed {

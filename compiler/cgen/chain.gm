@@ -78,7 +78,7 @@ emit_chain :: fn(fg: ^FnGen, top: ^Expr) -> Unsup!string needs sema.Load {
     acc := str.format("c{}", fg.fresh())!
     acc_ty := bottom.ty
     cty := fg.g.ty.cty(acc_ty)
-    fg.line(str.format("{} {} = {};", cty, acc, first)!)
+    fg.linef("{} {} = {};", cty, acc, first)
     child: ^Expr = bottom
     k := links.items.len
     while k > 0 {
@@ -88,7 +88,7 @@ emit_chain :: fn(fg: ^FnGen, top: ^Expr) -> Unsup!string needs sema.Load {
         dest := acc
         if not (link.ty is acc_ty) {
             dest = str.format("c{}", fg.fresh())!
-            fg.line(str.format("{} {};", fg.g.ty.cty(link.ty), dest)!)
+            fg.linef("{} {};", fg.g.ty.cty(link.ty), dest)
         }
         fg.line("{")
         fg.indent += 1
@@ -100,7 +100,7 @@ emit_chain :: fn(fg: ^FnGen, top: ^Expr) -> Unsup!string needs sema.Load {
         fg.spine = saved
         v := try r
         if not used { return !unsupported(link.span, "a long chain of operations") }
-        fg.line(str.format("{} = {};", dest, v)!)
+        fg.linef("{} = {};", dest, v)
         fg.indent -= 1
         fg.line("}")
         acc = dest

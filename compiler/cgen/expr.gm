@@ -41,7 +41,7 @@ pub load :: fn(fg: ^FnGen, t: Ty, a: string) -> string needs sema.Load {
 /// A zero-filled blob temporary of type `t`.
 blob :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
     n := fg.tmp_uninit(t)
-    fg.line(str.format("memset(&{}, 0, sizeof {});", n, n)!)
+    fg.linef("memset(&{}, 0, sizeof {});", n, n)
     return n
 }
 
@@ -95,7 +95,7 @@ blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema
     }
     if fg.g.opts.debug and stores.items.len > 1 and size <= MAX_MEMSET_CLEAR and not fg.g.ty.lay.target.filc { return fg.blob(t) }
     n := fg.tmp_uninit(t)
-    for st in stores.items { fg.line(str.format("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", st.len * 8, n, st.at)!) }
+    for st in stores.items { fg.linef("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", st.len * 8, n, st.at) }
     return n
 }
 
@@ -104,7 +104,7 @@ MAX_MEMSET_CLEAR :: 64
 
 store :: fn(fg: ^FnGen, t: Ty, addr: string, v: string) needs sema.Load {
     c := fg.g.ty.cty(t)
-    fg.line(str.format("GM_ST({}, {}, {});", c, addr, v)!)
+    fg.linef("GM_ST({}, {}, {});", c, addr, v)
 }
 
 pub loc :: fn(fg: ^FnGen, e: ^Expr) -> string needs Alloc => fg.g.src_loc(e.span)
@@ -125,7 +125,7 @@ pub make_some :: fn(fg: ^FnGen, t: Ty, payload: string) -> string needs sema.Loa
     parts := [2]BlobPart(BlobPart(off: 0, len: fg.g.ty.size(inner)), BlobPart(off: off, len: 1))
     b := fg.blob_over(t, parts[..])
     fg.store(inner, str.format("((uint8_t *)&{})", b)!, payload)
-    fg.line(str.format("((uint8_t *)&{})[{}] = 1;", b, off)!)
+    fg.linef("((uint8_t *)&{})[{}] = 1;", b, off)
     return b
 }
 
@@ -144,7 +144,7 @@ pub make_res :: fn(fg: ^FnGen, t: Ty, is_err: bool, payload_ty: Ty, payload: str
     offs := fg.g.ty.offsets(t)
     parts := [2]BlobPart(BlobPart(off: offs[0], len: 1), BlobPart(off: offs[1], len: fg.g.ty.size(payload_ty)))
     b := fg.blob_over(t, parts[..])
-    fg.line(str.format("((uint8_t *)&{})[{}] = {};", b, offs[0], if is_err { 1 } else { 0 })!)
+    fg.linef("((uint8_t *)&{})[{}] = {};", b, offs[0], if is_err { 1 } else { 0 })
     fg.store(payload_ty, str.format("((uint8_t *)&{} + {})", b, offs[1])!, payload)
     return b
 }
@@ -203,8 +203,8 @@ pub int_lit :: fn(fg: ^FnGen, t: Ty, v: bigint.Int) -> string needs sema.Load {
 pub make_slice :: fn(fg: ^FnGen, t: Ty, ptr: string, len: string) -> string needs sema.Load {
     b := fg.tmp_uninit(t)
     p := fg.ptr_bytes()
-    fg.line(str.format("GM_ST(void *, (uint8_t *)&{}, (void *)({}));", b, ptr)!)
-    fg.line(str.format("GM_ST(uintptr_t, (uint8_t *)&{} + {}, (uintptr_t)({}));", b, p, len)!)
+    fg.linef("GM_ST(void *, (uint8_t *)&{}, (void *)({}));", b, ptr)
+    fg.linef("GM_ST(uintptr_t, (uint8_t *)&{} + {}, (uintptr_t)({}));", b, p, len)
     return b
 }
 
@@ -238,7 +238,7 @@ pub expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
         .Null => return fg.make_none(t)
         .Uninit => {
             n := fg.tmp_uninit(t)
-            if fg.g.opts.debug { fg.line(str.format("memset(&{}, 0xAA, sizeof {});", n, n)!) }
+            if fg.g.opts.debug { fg.linef("memset(&{}, 0xAA, sizeof {});", n, n) }
             return n
         }
         .Const(_, span) => {
@@ -384,7 +384,7 @@ return_expr :: fn(fg: ^FnGen, e: ^Expr, levels: u32, value: ^Expr) -> Unsup!stri
     // A large place is copied straight to the caller's destination.
     if levels is 0 and fg.g.ty.by_ref(value.ty) and fg.g.ty.by_ref(fg.def.ret) and not fg.outlined and fg.no_defers() and (value.kind is .Local(_) or value.kind is .Upvar(_) or value.kind is .Deref(_)) {
         addr := try fg.place_addr(value)
-        fg.line(str.format("memmove(gm_out, {}, {});", addr, fg.g.ty.size(value.ty))!)
+        fg.linef("memmove(gm_out, {}, {});", addr, fg.g.ty.size(value.ty))
         fg.jump("gm_fdone", null)
         return fg.zero(t)
     }
@@ -405,7 +405,7 @@ return_expr :: fn(fg: ^FnGen, e: ^Expr, levels: u32, value: ^Expr) -> Unsup!stri
     flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
     if not fg.g.ty.is_never(value.ty) {
         slot := fg.frame_field(levels, "ret")
-        fg.line(str.format("{} = {};", slot, v)!)
+        fg.linef("{} = {};", slot, v)
     }
     fr, _ := fg.frame_up(levels)
     fg.start_exit("GM_RETURN", fr, "0", flag)
@@ -429,15 +429,15 @@ logic :: fn(fg: ^FnGen, is_and: bool, lhs: ^Expr, rhs: ^Expr) -> Unsup!string ne
     r := fg.tmp(fg.g.ty.bool_ty(), "0")
     l := try fg.expr(lhs)
     if is_and {
-        fg.line(str.format("if ({}) {{", l)!)
+        fg.linef("if ({}) {{", l)
     } else {
-        fg.line(str.format("if (!{}) {{", l)!)
+        fg.linef("if (!{}) {{", l)
     }
     fg.indent += 1
     v := try fg.expr(rhs)
-    fg.line(str.format("{} = {};", r, v)!)
+    fg.linef("{} = {};", r, v)
     fg.indent -= 1
-    fg.line(str.format("}} else {} = {};", r, if is_and { 0 } else { 1 })!)
+    fg.linef("}} else {} = {};", r, if is_and { 0 } else { 1 })
     return r
 }
 
@@ -451,11 +451,11 @@ bits_aggregate :: fn(fg: ^FnGen, e: ^Expr, elems: []Expr) -> Unsup!string needs 
     for i in 0..elems.len {
         f := bl.fields[i]
         raw := fg.bits_raw(elems[i].ty, vals.items[i])
-        fg.line(str.format("{} |= (({}) & {}) << {};", acc, raw, mask(f.width), f.off)!)
+        fg.linef("{} |= (({}) & {}) << {};", acc, raw, mask(f.width), f.off)
     }
     b := fg.blob(t)
     uc := fg.g.ty.cty(bl.int_ty)
-    fg.line(str.format("GM_ST({}, (uint8_t *)&{}, ({}){});", uc, b, uc, acc)!)
+    fg.linef("GM_ST({}, (uint8_t *)&{}, ({}){});", uc, b, uc, acc)
     return b
 }
 
@@ -498,7 +498,7 @@ array_fill :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr) -> Unsup!string needs sema.Load
     b := fg.tmp_uninit(t)
     esz := fg.g.ty.size(elem)
     c := fg.g.ty.cty(elem)
-    fg.line(str.format("for (uint64_t i = 0; i < {}; i++) GM_ST({}, (uint8_t *)&{} + i * {}, {});", len, c, b, esz, v)!)
+    fg.linef("for (uint64_t i = 0; i < {}; i++) GM_ST({}, (uint8_t *)&{} + i * {}, {});", len, c, b, esz, v)
     return b
 }
 
@@ -514,12 +514,12 @@ unwrap :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, is_result: bool) -> Unsup!string ne
         off := fg.g.ty.offsets(x.ty)[1]
         d := fg.g.ty.desc(err)
         if fg.g.opts.checks {
-            fg.line(str.format("if ({}) gm_trap_unwrap({}, {} + {}, {});", bad, d, a, off, at)!)
+            fg.linef("if ({}) gm_trap_unwrap({}, {} + {}, {});", bad, d, a, off, at)
         }
         return fg.load(t, str.format("({} + {})", a, off)!)
     } else {
         present := fg.opt_present(x.ty, a)
-        if fg.g.opts.checks { fg.line(str.format("if (!{}) gm_trap(\"unwrap of null\", {});", present, at)!) }
+        if fg.g.opts.checks { fg.linef("if (!{}) gm_trap(\"unwrap of null\", {});", present, at) }
         return fg.load(t, a)
     }
 }
@@ -535,14 +535,14 @@ if_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^const tir.IfExpr) -> Unsup!string needs 
     try fg.conds(x.cond, els)
     v := try fg.expr(x.then)
     if r := res {
-        if not fg.g.ty.is_never(x.then.ty) { fg.line(str.format("{} = {};", r, v)!) }
+        if not fg.g.ty.is_never(x.then.ty) { fg.linef("{} = {};", r, v) }
     }
-    fg.line(str.format("goto {};", end)!)
+    fg.linef("goto {};", end)
     fg.label(els)
     if xe := x.else_ {
         ev := try fg.expr(xe)
         if r := res {
-            if not fg.g.ty.is_never(xe.ty) { fg.line(str.format("{} = {};", r, ev)!) }
+            if not fg.g.ty.is_never(xe.ty) { fg.linef("{} = {};", r, ev) }
         }
     }
     fg.label(end)
@@ -574,7 +574,7 @@ else_expr :: fn(fg: ^FnGen, e: ^Expr, el: ^const tir.ElseExpr) -> Unsup!string n
         }
         _ => return !unsupported(e.span, "`else` on this type")
     }
-    fg.line(str.format("if ({}) {{", present)!)
+    fg.linef("if ({}) {{", present)
     fg.indent += 1
     if r := res {
         v := ""
@@ -589,7 +589,7 @@ else_expr :: fn(fg: ^FnGen, e: ^Expr, el: ^const tir.ElseExpr) -> Unsup!string n
             p := fg.load(payload_ty, str.format("({} + {})", a, payload_off)!)
             v = fg.make_res(t, false, payload_ty, p)
         }
-        fg.line(str.format("{} = {};", r, v)!)
+        fg.linef("{} = {};", r, v)
     }
     fg.indent -= 1
     fg.line("} else {")
@@ -599,12 +599,12 @@ else_expr :: fn(fg: ^FnGen, e: ^Expr, el: ^const tir.ElseExpr) -> Unsup!string n
             off := fg.g.ty.offsets(lhs.ty)[1]
             ev := fg.load(err, str.format("({} + {})", a, off)!)
             lv := fg.local_lv(c)
-            fg.line(str.format("{} = {};", lv, ev)!)
+            fg.linef("{} = {};", lv, ev)
         }
     }
     rv := try fg.expr(el.rhs)
     if r := res {
-        if not fg.g.ty.is_never(el.rhs.ty) { fg.line(str.format("{} = {};", r, rv)!) }
+        if not fg.g.ty.is_never(el.rhs.ty) { fg.linef("{} = {};", r, rv) }
     }
     fg.indent -= 1
     fg.line("}")
@@ -645,7 +645,7 @@ break_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^const tir.BreakExpr) -> Unsup!string 
             if bv := val {
                 if fg.is_with_label(levels, lbl) {
                     slot := fg.frame_field(levels, str.format("w{}", lbl)!)
-                    if not fg.g.ty.is_never(bv.ty) { fg.line(str.format("{} = {};", slot, bv.v)!) }
+                    if not fg.g.ty.is_never(bv.ty) { fg.linef("{} = {};", slot, bv.v) }
                 }
             }
             fr, _ := fg.frame_up(levels)
@@ -672,7 +672,7 @@ continue_expr :: fn(fg: ^FnGen, e: ^Expr, target: tir.Target) -> Unsup!string ne
         // In a clause, `continue` ends the clause (the next iteration of a `for`).
         .InstallingWith => {
             u := fg.unit()
-            fg.line(str.format("F.ret = {};", u)!)
+            fg.linef("F.ret = {};", u)
             fg.start_exit("GM_RETURN", "(&F.h)", "0", "0")
         }
     }
@@ -687,7 +687,7 @@ trap :: fn(fg: ^FnGen, e: ^Expr, message: ^Expr) -> Unsup!string needs sema.Load
     p := fg.slice_ptr(a)
     l := fg.slice_len(a)
     at := fg.loc(e)
-    fg.line(str.format("gm_trap_bytes({}, {}, {});", p, l, at)!)
+    fg.linef("gm_trap_bytes({}, {}, {});", p, l, at)
     return fg.zero(t)
 }
 
@@ -719,11 +719,11 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
         .Fn(sig) := fg.g.ty.kind(cv.ty) else @unreachable()
         c := fg.tmp(cv.ty, cv.v)
         ccx := str.format("ccx{}", fg.fresh())!
-        fg.line(str.format("gm_node *{} = {}.cx;", ccx, c)!)
+        fg.linef("gm_node *{} = {}.cx;", ccx, c)
         for eff in sig.effects.effects {
             id := fg.g.effect_id(&eff)
             n := str.format("cn{}", fg.fresh())!
-            fg.line(str.format("gm_node {}; {{ gm_node *f = gm_find({}, {}); if (f) {{ {} = *f; {}.next = {}; {} = &{}; }} }}", n, fg.cx, id, n, n, ccx, ccx, n)!)
+            fg.linef("gm_node {}; {{ gm_node *f = gm_find({}, {}); if (f) {{ {} = *f; {}.next = {}; {} = &{}; }} }}", n, fg.cx, id, n, n, ccx, ccx, n)
         }
         fs := fg.fn_sink_stub(str_ty)
         ff := fg.fn_format_stub(fs)
@@ -759,8 +759,8 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
                 if sp := custom {
                     b := str.format("b{}", fg.fresh())!
                     c := spec_literal(sp)
-                    fg.line(str.format("gm_buf {} = {{0}};", b)!)
-                    fg.line(str.format("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)!)
+                    fg.linef("gm_buf {} = {{0}};", b)
+                    fg.linef("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)
                     try fg.emit_buf(w.sink, sink_v, b, e)
                 } else {
                     fg.unwind_call(str.format("{}({}, {}, {}, {})", pf, fg.cx, d, vals.items[i], at)!)
@@ -778,16 +778,16 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
         if i < w.args.len {
             d := fg.g.ty.desc(w.args[i].ty)
             b := str.format("b{}", fg.fresh())!
-            fg.line(str.format("gm_buf {} = {{0}};", b)!)
+            fg.linef("gm_buf {} = {{0}};", b)
             custom: ?tir.FmtSpec = null
             if sp := w.specs.get(i) {
                 if not tir.is_default_spec(&sp) { custom = sp }
             }
             if sp := custom {
                 c := spec_literal(sp)
-                fg.line(str.format("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)!)
+                fg.linef("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)
             } else {
-                fg.line(str.format("gm_format(&{}, {}, {}, true);", b, d, vals.items[i])!)
+                fg.linef("gm_format(&{}, {}, {}, true);", b, d, vals.items[i])
             }
             try fg.emit_buf(w.sink, sink_v, b, e)
         }
@@ -798,13 +798,13 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
 /// Sends the formatted argument in `gm_buf` variable `b` to an `@write` sink unless it
 /// is empty (the interpreter writes no empty chunks either), then frees it.
 emit_buf :: fn(fg: ^FnGen, sink: tir.WriteSink, sv: ?ValTy, b: string, e: ^Expr) -> Unsup!() needs sema.Load {
-    fg.line(str.format("if ({}.len != 0) {{", b)!)
+    fg.linef("if ({}.len != 0) {{", b)
     fg.indent += 1
     sl := fg.make_slice(fg.g.ty.string_ty(), str.format("{}.data", b)!, str.format("{}.len", b)!)
     try fg.emit_to(sink, sv, sl, e)
     fg.indent -= 1
     fg.line("}")
-    fg.line(str.format("gm_buf_free(&{});", b)!)
+    fg.linef("gm_buf_free(&{});", b)
 }
 
 /// Sends a `[]const u8` value to an `@write` sink.
@@ -881,7 +881,7 @@ pub place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
                 } else {
                     b0 = try fg.expr(base)
                 }
-                n := str.format("t{}", fg.fresh())!
+                n := fg.fresh_tmp()
                 cty := ""
                 b1 := b0
                 if is_array {
@@ -890,7 +890,7 @@ pub place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
                 } else {
                     cty = str.format("{} ", fg.g.ty.cty(base.ty))!
                 }
-                fg.line(str.format("{}{} = {};", cty, n, b1)!)
+                fg.linef("{}{} = {};", cty, n, b1)
                 early = n
             }
             iv := try fg.expr(index)
@@ -947,7 +947,7 @@ pub place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
 /// The bounds check of an index `i` against length `len`.
 index_check :: fn(fg: ^FnGen, checked: bool, i: string, len: string, at: string) needs sema.Load {
     if checked {
-        fg.line(str.format("if ({} >= (uintptr_t)({})) gm_trap_index({}, {}, {});", i, len, i, len, at)!)
+        fg.linef("if ({} >= (uintptr_t)({})) gm_trap_index({}, {}, {});", i, len, i, len, at)
     }
 }
 
@@ -1013,9 +1013,9 @@ slice_expr :: fn(fg: ^FnGen, e: ^Expr, base: ^Expr, lo: ?^Expr, hi: ?^Expr, incl
         if inclusive and len is not null {
             // An inclusive bound of `UINTPTR_MAX` stays past every length rather
             // than wrapping to 0.
-            fg.line(str.format("{} += {} != UINTPTR_MAX;", h, h)!)
+            fg.linef("{} += {} != UINTPTR_MAX;", h, h)
         } else if inclusive {
-            fg.line(str.format("{} += 1;", h)!)
+            fg.linef("{} += 1;", h)
         }
         hi_v = h
     } else {
@@ -1024,7 +1024,7 @@ slice_expr :: fn(fg: ^FnGen, e: ^Expr, base: ^Expr, lo: ?^Expr, hi: ?^Expr, incl
     }
     if l := len {
         at := fg.loc(e)
-        fg.line(str.format("if ({} > {} || {} > (uintptr_t){}) gm_trap_slice({}, {}, {}, {});", lo_v, hi_v, hi_v, l, lo_v, hi_v, l, at)!)
+        fg.linef("if ({} > {} || {} > (uintptr_t){}) gm_trap_slice({}, {}, {}, {});", lo_v, hi_v, hi_v, l, lo_v, hi_v, l, at)
     }
     return fg.make_slice(e.ty, str.format("((uint8_t *){} + {} * {})", ptr, lo_v, esz)!, str.format("{} - {}", hi_v, lo_v)!)
 }
@@ -1048,18 +1048,18 @@ coerce :: fn(fg: ^FnGen, e: ^Expr, kind: tir.Coercion, x: ^Expr) -> Unsup!string
             res := fg.tmp_uninit(t)
             bad := fg.res_is_err(x.ty, a)
             off := fg.g.ty.offsets(x.ty)[1]
-            fg.line(str.format("if ({}) {{", bad)!)
+            fg.linef("if ({}) {{", bad)
             fg.indent += 1
             ev := fg.load(e1, str.format("({} + {})", a, off)!)
             wrapped := fg.make_variant(e2, usize(variant), ev)
             r := fg.make_res(t, true, e2, wrapped)
-            fg.line(str.format("{} = {};", res, r)!)
+            fg.linef("{} = {};", res, r)
             fg.indent -= 1
             fg.line("} else {")
             fg.indent += 1
             ov := fg.load(ok, str.format("({} + {})", a, off)!)
             r2 := fg.make_res(t, false, ok, ov)
-            fg.line(str.format("{} = {};", res, r2)!)
+            fg.linef("{} = {};", res, r2)
             fg.indent -= 1
             fg.line("}")
             return res

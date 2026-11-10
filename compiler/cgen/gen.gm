@@ -92,7 +92,18 @@ pub Gen :: struct {
     /// The locals that function literals or handler clauses reach through their
     /// environment, by function and local (computed on first use, see `frame_locals`).
     pub captured: ?hash_map.HashMap((u32, u32), bool) = null
+    /// What `frame_locals` and `long_body` found for each function asked about so far, by
+    /// function: both walk the body, and are asked for the function and again for each of
+    /// its clones.
+    pub frame_memo: List(?[]bool)
+    pub long_memo: List(?bool)
     pub handler_tables: List(u8)
+    /// The names `t1`, `t2`, … of temporaries, made once for all functions (index 0 is `t1`).
+    pub tmp_names: List(string)
+    /// The C lvalues of locals by number, in the frame (`F.l0`, …) and as C locals
+    /// (`gm_l0`, …), likewise.
+    pub frame_names: List(string)
+    pub local_names: List(string)
     /// Libraries to link, from foreign blocks.
     pub libs: List(string)
     handler_done: hash_map.HashMap(u32, bool)
@@ -168,6 +179,11 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         spec_tables: hash_map.hash_map((u32, u32), bool),
         exits: hash_map.hash_map((u32, u32), u8),
         handler_tables: list(u8),
+        tmp_names: list(string),
+        frame_names: list(string),
+        local_names: list(string),
+        frame_memo: list(?[]bool),
+        long_memo: list(?bool),
         libs: list(string),
         handler_done: hash_map.hash_map(u32, bool),
         decl_done: hash_map.hash_map(u32, bool),

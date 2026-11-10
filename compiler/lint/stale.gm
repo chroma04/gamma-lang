@@ -50,20 +50,35 @@ growth_summaries :: fn(s: ^sema.Sema) -> List(List(Growth)) needs Alloc + Fs {
         body := s.defs.items[i].body else continue
         collect_calls(s, id, i, body, &sums, &edges)
     }
-    changed := true
-    while changed {
-        changed = false
-        for e in edges.items {
-            n := sums.items[e.callee].items.len
-            for k in 0..n {
-                x := sums.items[e.callee].items[k]
-                if x.param is not e.arg { continue }
-                p := str.format("{}{}", e.path, x.path)!
-                if add_growth(&sums.items[e.caller], e.param, p) { changed = true }
+    // A growth of a function reaches its callers through the edges into it; each growth
+    // is carried over once, when it is found.
+    incoming := list(List(u32))
+    for _ in 0..s.fns.items.len { incoming.push(list(u32))! }
+    for i, e in enumerate(edges.items) { incoming.items[e.callee].push(i.trunc(u32))! }
+    work := list((f: usize, k: usize))
+    for f in 0..sums.items.len {
+        for k in 0..sums.items[f].items.len { work.push((f: f, k: k))! }
+    }
+    while w := work.pop() {
+        x := sums.items[w.f].items[w.k]
+        for ei in incoming.items[w.f].items {
+            e := edges.items[usize(ei)]
+            if e.arg is not x.param { continue }
+            p := join_paths(e.path, x.path) else continue
+            if add_growth(&sums.items[e.caller], e.param, p) {
+                work.push((f: e.caller, k: sums.items[e.caller].items.len - 1))!
             }
         }
     }
     return sums
+}
+
+/// The path `a` followed by `b`, or `null` if it is deeper than a summary keeps.
+join_paths :: fn(a, b: string) -> ?string needs Alloc {
+    if str.count(a, ".") + str.count(b, ".") > MAX_GROWTH_DEPTH { return null }
+    if b.len is 0 { return a }
+    if a.len is 0 { return b }
+    return str.format("{}{}", a, b)!
 }
 
 /// Adds the growth of the list at `path` in parameter `param` to `sum`, unless it is there
@@ -291,6 +306,8 @@ touch :: fn(sc: ^StaleScan, l: u32, at: source.Span) needs Alloc {
 
 /// A call to function `g` with `args`: the lists it may grow are marked.
 grow_by_call :: fn(sc: ^StaleScan, g: u32, args: []Expr, at: source.Span) needs Alloc {
+    // Nothing points into a list: no call can make it stale.
+    if sc.live.items.len is 0 { return }
     sig := &sc.s.fns.items[usize(g)]
     core := sc.s.l.modules.items[sig.module].is_prelude
     target := usize(generic_of(sc.s, g))

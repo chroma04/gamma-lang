@@ -4,7 +4,7 @@
 // is reserved for generated code and not listed.
 
 /// The runtime's `gm_` identifiers that do not end in a digit, sorted.
-RUNTIME_NAMES :: [299]string(
+RUNTIME_NAMES :: [302]string(
     "gm_alloc_check", "gm_alloc_tag", "gm_altstack_free", "gm_altstack_init", "gm_altstack_key",
     "gm_altstack_keyed", "gm_args", "gm_asyncify_start_rewind", "gm_asyncify_start_unwind",
     "gm_asyncify_stop_rewind", "gm_asyncify_stop_unwind", "gm_atag", "gm_atag_cap", "gm_atag_find",
@@ -21,7 +21,7 @@ RUNTIME_NAMES :: [299]string(
     "gm_field", "gm_filc_ctx", "gm_filc_entry", "gm_filc_running", "gm_filc_starting",
     "gm_file_exists", "gm_find", "gm_find_outer", "gm_find_program", "gm_finish_main", "gm_flush",
     "gm_fmt_ch", "gm_fmt_fields", "gm_fmt_float", "gm_fmt_hex_escape", "gm_fmt_int", "gm_fmt_seq",
-    "gm_fmt_str", "gm_format", "gm_format_spec", "gm_frame", "gm_frame_overflow",
+    "gm_fmt_str", "gm_format", "gm_format_spec", "gm_format_view", "gm_frame", "gm_frame_overflow",
     "gm_free_cstr_list", "gm_free_cstrs", "gm_fs_canonical", "gm_fs_close", "gm_fs_close_dir",
     "gm_fs_cwd", "gm_fs_lstat", "gm_fs_make_dir", "gm_fs_next_entry", "gm_fs_open",
     "gm_fs_open_dir", "gm_fs_read", "gm_fs_read_link", "gm_fs_remove", "gm_fs_remove_dir",
@@ -29,7 +29,7 @@ RUNTIME_NAMES :: [299]string(
     "gm_fs_symlink", "gm_fs_sync", "gm_fs_truncate", "gm_fs_write", "gm_futex_wait",
     "gm_futex_wake", "gm_hb_cap", "gm_hb_find", "gm_hb_index", "gm_hb_record", "gm_hb_slot",
     "gm_hb_tab", "gm_hb_used", "gm_hblock", "gm_heap_alloc", "gm_heap_free", "gm_heap_release",
-    "gm_hval", "gm_ibp", "gm_io_error", "gm_is_batch", "gm_isize", "gm_kind", "gm_ld_v_",
+    "gm_hval", "gm_ibp", "gm_int_dec", "gm_io_error", "gm_is_batch", "gm_isize", "gm_kind", "gm_ld_v_",
     "gm_lexically_same", "gm_load_ptr", "gm_load_uint", "gm_main_call", "gm_main_thread",
     "gm_make_pipe", "gm_mkdir", "gm_mode_kind", "gm_mulhi", "gm_n_", "gm_net_accept",
     "gm_net_close", "gm_net_connect", "gm_net_error", "gm_net_init", "gm_net_listen",
@@ -53,7 +53,7 @@ RUNTIME_NAMES :: [299]string(
     "gm_thread_detach", "gm_thread_join", "gm_thread_main", "gm_thread_spawn", "gm_thread_stack",
     "gm_thread_stack_limit", "gm_thread_take", "gm_thread_yield", "gm_threads", "gm_trap",
     "gm_trap_bytes", "gm_trap_hook_call", "gm_trap_index", "gm_trap_lanes", "gm_trap_misaligned",
-    "gm_trap_pow", "gm_trap_shift", "gm_trap_slice", "gm_trap_unwrap", "gm_type", "gm_u128_dec",
+    "gm_trap_pow", "gm_trap_shift", "gm_trap_slice", "gm_trap_unwrap", "gm_type", "gm_u128_dec", "gm_u64_dec",
     "gm_unit", "gm_unw", "gm_unwind", "gm_utf8_arg", "gm_utf8_seq_ok", "gm_variant", "gm_veh",
     "gm_veh_install", "gm_veh_once", "gm_wasi_arg", "gm_wasi_ctx", "gm_wasi_drive", "gm_wasi_entry",
     "gm_wasi_fiber_entry", "gm_wasi_get_sp", "gm_wasi_main_ctx", "gm_wasi_next",

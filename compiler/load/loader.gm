@@ -144,9 +144,19 @@ pub Loader :: struct {
     pub core_modules: List(usize)
     /// The git and archive dependencies the package manager resolved, if any.
     pub resolution: ?Resolution = null
+    /// Where the tokens and tree of every file parsed are kept, for a tool that goes over
+    /// the sources again after checking (`gamma lint`); `null` keeps none.
+    pub parsed: ?^List(Parsed) = null
     packages: List(Package)
     by_dir: List(DirModule)
     edges: List(Edge)
+}
+
+/// A source file as the loader lexed and parsed it.
+pub Parsed :: struct {
+    pub file: source.FileId
+    pub tokens: []const syntax.Token
+    pub tree: ast.File
 }
 
 pub loader :: fn(sm: ^source.SourceMap, diags: ^diag.Diagnostics, ids: ^ast.NodeId, std_root: string, recover: bool) -> Loader needs Alloc + Fs {
@@ -302,7 +312,9 @@ load_file :: fn(l: ^Loader, path: string) -> ?ast.File needs Alloc + Fs {
 parse_text :: fn(l: ^Loader, name, text: string) -> ast.File needs Alloc {
     id := l.sm.add(name, text)
     lexed := if l.recover { syntax.lex_recovering(id, text, l.diags) } else { syntax.lex(id, text, l.diags) }
-    return parse.parse_file(id, &lexed, l.ids, l.diags)
+    tree := parse.parse_file(id, &lexed, l.ids, l.diags)
+    if keep := l.parsed { keep.push(Parsed(file: id, tokens: lexed.tokens.items, tree: tree))! }
+    return tree
 }
 
 pub describe_read_error :: fn(e: fs.ReadError) -> string => match e {
