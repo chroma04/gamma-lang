@@ -17,6 +17,7 @@
 
 arena :: import "std/arena"
 hash_map :: import "std/collections/hash_map"
+source :: import "../source"
 str :: import "std/str"
 
 /// The generated code by role, as `generate` produces it in one unit.
@@ -155,9 +156,9 @@ pub split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
 c_fn_name :: fn(line: string) -> ?string {
     i: usize = 0
     while i + 3 <= line.len {
-        if line[i..i + 3] is "gm_" and (i is 0 or not ident_char(line[i - 1])) {
+        if line[i..i + 3] is "gm_" and (i is 0 or not source.is_ident_cont(line[i - 1])) {
             j := i
-            while j < line.len and ident_char(line[j]) { j += 1 }
+            while j < line.len and source.is_ident_cont(line[j]) { j += 1 }
             if j < line.len and line[j] is '(' { return line[i..j] }
             i = j
         } else {
@@ -166,8 +167,6 @@ c_fn_name :: fn(line: string) -> ?string {
     }
     return null
 }
-
-ident_char :: fn(c: u8) -> bool => (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c is '_'
 
 /// Whether the first line of a function definition is of an `#inline` function. (The small
 /// functions an optimized build marks `inline` are external: sharing their thousands of

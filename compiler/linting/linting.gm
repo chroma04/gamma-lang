@@ -11,7 +11,7 @@ pub list_rules :: fn() needs Alloc + Out {
         out.extend(r.name)!
         pad(&out, width - r.name.len)
         out.extend("  ")!
-        level := lint.level_name(r.default)
+        level := lint.level_name(lint.default_level(&r))
         out.extend(level)!
         pad(&out, 5 - level.len)
         out.extend("  ")!
@@ -34,23 +34,12 @@ config :: fn(o: ^const lint.Options, path: string) -> string!lint.Config needs A
         text := fs.read_all(file) else _ => {
             return !str.format("cannot read {}", file)!
         }
-        doc := load.parse_toml(text) else e => {
-            return !str.format("{}:{}: {}", file, e.line, e.message)!
+        manifest := load.parse_manifest(text) else e => {
+            return !str.format("{}:{}: {}", file, e.line, e.msg)!
         }
-        if entry := load.get(doc, "lint") {
-            table := load.as_table(entry.value) else {
-                return !str.format("{}:{}: `lint` must be a table of rule names and levels", file, entry.line)!
-            }
-            for item in table.entries.items {
-                if item.key is not "all" and lint.rule(item.key) is null {
-                    return !str.format("{}:{}: unknown lint rule `{}` in [lint] (`gamma lint --rules` lists them)", file, item.line, item.key)!
-                }
-                given := load.as_str(item.value) else ""
-                lv := lint.parse_level(given) else {
-                    return !str.format("{}:{}: the level of `{}` in [lint] must be \"allow\", \"warn\" or \"deny\"", file, item.line, item.key)!
-                }
-                _ = lint.set(&c, item.key, lv)
-            }
+        for item in manifest.lint.items {
+            lv := lint.parse_level(item.level) else continue
+            _ = lint.set(&c, item.rule, lv)
         }
     }
     for st in o.levels.items {

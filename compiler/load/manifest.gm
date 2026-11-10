@@ -6,7 +6,10 @@
 
 /// A manifest error: a message and the 1-based line it refers to.
 arena :: import "std/arena"
+ascii :: import "std/ascii"
+source :: import "../source"
 str :: import "std/str"
+syntax :: import "../syntax"
 
 pub ManifestError :: struct {
     pub line: usize
@@ -126,6 +129,13 @@ pub Dependency :: struct {
     pub source: Source
 }
 
+/// One entry of the `[lint]` table: a rule (or `all`) and its level (`allow`, `warn`, `deny`).
+pub LintSetting :: struct {
+    pub rule: string
+    pub level: string
+    pub line: usize
+}
+
 pub Manifest :: struct {
     pub name: ?string = null
     pub version: ?string = null
@@ -133,25 +143,22 @@ pub Manifest :: struct {
     /// The `[build]` table.
     pub build: BuildSettings = BuildSettings()
     pub profiles: List(Profile)
+    /// The `[lint]` table, in the order written.
+    pub lint: List(LintSetting)
 }
 
 /// Whether `s` can name a package: it is the first segment of an import path.
 pub is_identifier :: fn(s: string) -> bool {
     if s.len is 0 { return false }
-    c := s[0]
-    if not (c in 'a'..='z' or c in 'A'..='Z' or c is '_') { return false }
+    if not source.is_ident_start(s[0]) { return false }
     for d in s {
-        if not (d in 'a'..='z' or d in 'A'..='Z' or d in '0'..='9' or d is '_') { return false }
+        if not source.is_ident_cont(d) { return false }
     }
     return true
 }
 
-KEYWORDS :: [35]string(
-    "and", "break", "cancel", "continue", "ctl", "defer", "effect", "else", "errdefer", "esc",
-    "false", "fn", "for", "foreign", "handler", "if", "import", "in", "is", "match", "needs",
-    "not", "null", "or", "pub", "resume", "return", "struct", "true", "try", "union", "using",
-    "when", "while", "with",
-)
+/// The contextual keywords of §2.4, which no package may be named either.
+CONTEXTUAL_KEYWORDS :: [3]string("foreign", "handler", "needs")
 
 /// Why `s` cannot name a package or a dependency, if it cannot: it is the first
 /// segment of an import path, so it must be an identifier that is no keyword,
@@ -161,7 +168,10 @@ pub name_problem :: fn(s: string, what: string) -> ?string needs Alloc {
         return str.format("invalid {} name `{}`: use letters, digits and `_`, not starting with a digit", what, s)!
     }
     if s is "_" { return str.format("invalid {} name `_`: it is not a usable name", what)! }
-    for k in KEYWORDS {
+    for k in syntax.KEYWORD_TEXTS {
+        if k is s { return str.format("invalid {} name `{}`: it is a keyword", what, s)! }
+    }
+    for k in CONTEXTUAL_KEYWORDS {
         if k is s { return str.format("invalid {} name `{}`: it is a keyword", what, s)! }
     }
     if is_reserved_type_name(s) or s in ("string", "cstring", "rune") {
@@ -209,7 +219,7 @@ debug_escape :: fn(s: string) -> string needs Alloc {
 }
 
 /// Whether `c` is white space or a control character (ASCII).
-is_space_or_control :: fn(c: u8) -> bool => c <= 0x20 or c is 0x7f
+is_space_or_control :: fn(c: u8) -> bool => c is ' ' or ascii.is_control(c)
 
 /// Why `url` cannot be the location of a dependency, if it cannot. A URL is handed to
 /// `git` or `curl` as an argument, so one that starts with `-` would be read as an option.
@@ -238,17 +248,15 @@ pub normalize_url :: fn(url: string) -> string {
 pub trim_ascii :: fn(s: string) -> string {
     lo: usize = 0
     hi := s.len
-    while lo < hi and is_ws(s[lo]) { lo += 1 }
-    while hi > lo and is_ws(s[hi - 1]) { hi -= 1 }
+    while lo < hi and ascii.is_space(s[lo]) { lo += 1 }
+    while hi > lo and ascii.is_space(s[hi - 1]) { hi -= 1 }
     return s[lo..hi]
 }
-
-is_ws :: fn(c: u8) -> bool => c in (' ', '\t', '\n', '\r', 0x0b, 0x0c)
 
 /// `s` with ASCII capitals made small.
 lower_ascii :: fn(s: string) -> string needs Alloc {
     out := make(u8, s.len)!
-    for i, c in enumerate(s) { out[i] = if c in 'A'..='Z' { c + 32 } else { c } }
+    for i, c in enumerate(s) { out[i] = ascii.to_lower(c) }
     return out
 }
 
@@ -268,7 +276,7 @@ pub is_subdir :: fn(s: string) -> bool needs Alloc {
 /// Parses the text of a manifest.
 pub parse_manifest :: fn(text: string) -> ManifestError!Manifest needs Alloc {
     doc := parse_toml(text) else e => { return !mfail(e.line, e.message) }
-    m := Manifest(deps: list(Dependency), profiles: list(Profile))
+    m := Manifest(deps: list(Dependency), profiles: list(Profile), lint: list(LintSetting))
     if pkg := doc.get("package") {
         t := as_table(pkg.value) else return !mfail(pkg.line, "`package` must be a table")
         if item := t.get("name") {
@@ -299,13 +307,14 @@ pub parse_manifest :: fn(text: string) -> ManifestError!Manifest needs Alloc {
     if l := doc.get("lint") {
         t := as_table(l.value) else return !mfail(l.line, "`lint` must be a table of rule names and levels")
         for e in t.entries.items {
-            if e.key is not "all" and not is_lint_rule(e.key) {
+            if e.key is not "all" and lint_rule(e.key) is null {
                 return !mfail(e.line, str.format("unknown lint rule `{}` in [lint] (`gamma lint --rules` lists them)", e.key)!)
             }
             level := as_str(e.value) else ""
             if level not in ("allow", "warn", "deny") {
                 return !mfail(e.line, str.format("the level of `{}` in [lint] must be \"allow\", \"warn\" or \"deny\"", e.key)!)
             }
+            m.lint.push(LintSetting(rule: e.key, level: level, line: e.line))!
         }
     }
     if ps := doc.get("profile") {
@@ -326,20 +335,50 @@ pub parse_manifest :: fn(text: string) -> ManifestError!Manifest needs Alloc {
     return m
 }
 
-/// The names of the rules of `gamma lint`.
-LINT_RULES :: [23]string(
-    "unused-variable", "unused-parameter", "unused-import", "unused-declaration", "needless-pub",
-    "unused-label", "prefer-immutable", "bool-comparison", "self-comparison", "self-assignment",
-    "dangling-address", "present-only-binding", "mutated-copy", "stale-element-pointer", "constant-condition",
-    "useless-defer", "needless-bool", "double-negation", "collapsible-else-if", "empty-branch",
-    "identical-branches", "unnecessary-parens", "naming",
+/// A rule of `gamma lint`.
+pub LintRule :: struct {
+    pub name: string
+    /// What the rule reports, in a line.
+    pub summary: string
+    /// Whether the rule is `allow` rather than `warn` when nothing configures it.
+    pub allow_by_default: bool = false
+}
+
+rule_def :: fn(name, summary: string) -> LintRule => LintRule(name: name, summary: summary)
+
+/// Every rule, grouped by kind.
+pub LINT_RULES :: [23]LintRule(
+    rule_def("unused-variable", "a local variable or pattern binding whose value is never read"),
+    rule_def("unused-parameter", "a parameter of a function that its body never uses"),
+    rule_def("unused-import", "an import that nothing in its module refers to"),
+    rule_def("unused-declaration", "a private top-level function, type, constant or global that nothing refers to"),
+    rule_def("needless-pub", "a `pub(package)` function or constant, or a `pub` one of a program package, that no other module uses"),
+    rule_def("unused-label", "a loop or `with` label that no `break` or `continue` names"),
+    LintRule(name: "prefer-immutable", allow_by_default: true, summary: "a variable declared with `:=` that is never assigned, so `::` would do"),
+    rule_def("bool-comparison", "a `bool` compared with `true` or `false`"),
+    rule_def("self-comparison", "a value compared with itself"),
+    rule_def("self-assignment", "a place assigned to itself"),
+    rule_def("dangling-address", "the address of a local, such as a loop variable or a pattern binding, kept where it outlives the local"),
+    rule_def("present-only-binding", "a name in a `match` pattern that matches only a present optional, leaving `null` to a catch-all arm"),
+    rule_def("mutated-copy", "a local holding a copy of a list, map or other value with a resizable buffer, changed as if it were the original"),
+    rule_def("stale-element-pointer", "a pointer into a list's items, used after a call that may have moved them"),
+    rule_def("constant-condition", "an `if` or `while` whose condition is the literal `true` or `false`"),
+    rule_def("useless-defer", "a `defer` or `errdefer` that is the last statement of its block"),
+    rule_def("needless-bool", "`if c { true } else { false }` and the like, which are `c` or `not c`"),
+    rule_def("double-negation", "`not not x`, which is `x`"),
+    rule_def("collapsible-else-if", "`else { if … }`, which is `else if …`"),
+    rule_def("empty-branch", "an `if` with an empty body and no `else`, or an empty `else`"),
+    rule_def("identical-branches", "an `if` whose branches are all the same"),
+    rule_def("unnecessary-parens", "parentheses around a whole condition, initializer, assigned or returned value"),
+    rule_def("naming", "names not written in the usual case: types and variants in UpperCamelCase, the rest in snake_case"),
 )
 
-is_lint_rule :: fn(name: string) -> bool {
-    for r in LINT_RULES {
-        if r is name { return true }
+/// The index in `LINT_RULES` of the rule named `name`.
+pub lint_rule :: fn(name: string) -> ?usize {
+    for i, r in enumerate(LINT_RULES[..]) {
+        if r.name is name { return i }
     }
-    return false
+    return null
 }
 
 /// The build settings for the profile `profile` (`null`: the `[build]` table alone).
@@ -415,7 +454,7 @@ parse_build :: fn(t: ^const Table, what: string) -> ManifestError!BuildSettings 
                 for n in l {
                     bad := n.len is 0 or n.starts_with("-")
                     for c in n {
-                        if is_ws(c) or c is '/' { bad = true }
+                        if ascii.is_space(c) or c is '/' { bad = true }
                     }
                     if bad {
                         return !mfail(line, str.format("invalid library name `{}` in {}: write `z`, not `-lz` or a path", n, what)!)

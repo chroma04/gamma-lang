@@ -42,7 +42,7 @@ check_source :: fn(src: string, mode: driver.Mode, lo: u32, input: string) -> Co
         std := driver.std_root()
         l := new(load.loader(sm, diags, next_id, std, false))!
         root := load.join(load.working_dir(), MODULE_FILE)
-        l.overlays.push(load.Overlay(path: l.canonical_path(root), text: dupe(src)!))!
+        l.overlays.push(load.Overlay(path: load.canonical_path(root), text: dupe(src)!))!
         if l.load_core(driver.core_root(std), driver.mode_name(mode)) {
             s := new(sema.sema(l))!
             check.install(s)

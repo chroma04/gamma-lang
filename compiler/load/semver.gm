@@ -365,42 +365,13 @@ cmp_pre :: fn(a, b: string) -> i32 {
         return if b.len is 0 { 0 } else { 1 }
     }
     if b.len is 0 { return -1 }
-    return cmp_pre_parts(a, b)
+    return cmp_identifiers(a, b)
 }
 
-/// The dot-separated parts of two non-empty pre-release identifiers, compared in turn.
-cmp_pre_parts :: fn(a, b: string) -> i32 {
-    ia: usize = 0
-    ib: usize = 0
-    while true {
-        if ia > a.len { return if ib > b.len { 0 } else { -1 } }
-        if ib > b.len { return 1 }
-        ea := ia
-        while ea < a.len and a[ea] is not '.' { ea += 1 }
-        eb := ib
-        while eb < b.len and b[eb] is not '.' { eb += 1 }
-        pa := a[ia..ea]
-        pb := b[ib..eb]
-        o: i32 = 0
-        da := all_digits(pa)
-        db := all_digits(pb)
-        if da and db {
-            o = if pa.len < pb.len { -1 } else if pa.len > pb.len { 1 } else { cmp_text(pa, pb) }
-        } else if da {
-            return -1
-        } else if db {
-            return 1
-        } else {
-            o = cmp_text(pa, pb)
-        }
-        if o is not 0 { return o }
-        ia = ea + 1
-        ib = eb + 1
-    }
-}
-
-/// Compares build metadata by the semver rules.
-cmp_build :: fn(a, b: string) -> i32 {
+/// Compares two dot-separated lists of identifiers by the semver rules: numeric ones by
+/// value (ties broken by length, for build metadata with leading zeros), numeric ones below
+/// the rest, the rest as text, a shorter list below a longer one it starts.
+cmp_identifiers :: fn(a, b: string) -> i32 {
     ia: usize = 0
     ib: usize = 0
     while true {
@@ -454,7 +425,7 @@ pub cmp_version :: fn(a, b: Version) -> i32 {
     // An empty build string sorts before any other: it has no parts.
     if a.build.len is 0 { return if b.build.len is 0 { 0 } else { -1 } }
     if b.build.len is 0 { return 1 }
-    return cmp_build(a.build, b.build)
+    return cmp_identifiers(a.build, b.build)
 }
 
 /// Whether `c` accepts `v` apart from the pre-release rule.

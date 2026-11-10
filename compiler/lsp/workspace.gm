@@ -172,58 +172,17 @@ fnv :: fn(h_in: u64, bytes: []const u8) -> u64 {
     return h
 }
 
-/// The `.gm` files of module directory `dir`, counting the open buffers (`overlays`) that
-/// stand in a file of that directory.
-module_files :: fn(dir: string, overlays: []const load.Overlay) -> List(string) needs Alloc + Fs {
-    out := list(string)
-    if load.is_dir(dir) {
-        for r in fs.entries(dir) {
-            e := r else break
-            if e.name.len > 3 and e.name.ends_with(".gm") {
-                p := load.join(dir, e.name)
-                if load.is_file(p) { out.push(p)! }
-            }
-        }
-    }
-    n := out.items.len
-    for o in overlays {
-        name := load.file_name(o.path) else continue
-        if (load.parent(o.path) else "") is not dir or not name.ends_with(".gm") or name.len <= 3 { continue }
-        present := false
-        for p in out.items[0..n] {
-            if canon(p) is o.path { present = true }
-        }
-        if not present { out.push(load.join(dir, name))! }
-    }
-    return out
-}
-
-/// The text of the buffer standing in for the file at `path`, if there is one.
-buffer_for :: fn(path: string, overlays: []const load.Overlay) -> ?string needs Alloc + Fs {
-    name := load.file_name(path) else return null
-    any := false
-    for o in overlays {
-        if (load.file_name(o.path) else "") is name { any = true }
-    }
-    if not any { return null }
-    c := canon(path)
-    for o in overlays {
-        if o.path is c { return o.text }
-    }
-    return null
-}
-
 /// A hash of the files of the module directories `dirs` (their lists of files and
 /// contents, the buffers standing in for the files on disk).
 stamp :: fn(dirs: []const string, overlays: []const load.Overlay) -> u64 needs Alloc + Fs {
     h: u64 = 0xcbf29ce484222325
     for dir in dirs {
         h = fnv(h, dir)
-        names := module_files(dir, overlays)
+        names := module_files_in(dir, overlays)
         names.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
         for f in names.items {
             h = fnv(h, f)
-            if t := buffer_for(f, overlays) {
+            if t := load.overlay_text(overlays, f) {
                 h = fnv(h, t)
             } else if bytes := fs.read_all(f) {
                 h = fnv(h, bytes)
@@ -246,8 +205,11 @@ pub Workspace :: struct {
 
 workspace :: fn() -> Workspace needs Alloc => Workspace(cache: hash_map.hash_map(string, Entry))
 
-/// The directories to skip when looking for modules.
-skipped :: fn(name: string) -> bool => name.starts_with(".") or name is "target" or name is "node_modules"
+/// The `.gm` files of module directory `dir`, counting the open buffers (`overlays`) that
+/// stand in a file of that directory.
+module_files_in :: fn(dir: string, overlays: []const load.Overlay) -> List(string) needs Alloc + Fs {
+    return load.module_files_with(dir, overlays) else list(string)
+}
 
 /// The most module directories looked at; larger trees are not searched further.
 MAX_DIRS :: 4000
@@ -261,12 +223,12 @@ find_module_dirs :: fn(root: string, out: ^List(string)) needs Alloc + Fs {
         is_directory := false
         if info := Fs.stat(p) { is_directory = info.kind is .Dir }
         if is_directory {
-            if not skipped(e.name) { subdirs.push(p)! }
+            if not load.skipped_dir(e.name) { subdirs.push(p)! }
         } else if e.name.len > 3 and e.name.ends_with(".gm") {
             has_gm = true
         }
     }
-    if has_gm { out.push(canon(root))! }
+    if has_gm { out.push(load.canonical_path(root))! }
     subdirs.items.sort_by(fn(x, y: ^const string) -> bool => x^ < y^)
     for d in subdirs.items {
         if out.items.len >= MAX_DIRS { return }
@@ -276,14 +238,7 @@ find_module_dirs :: fn(root: string, out: ^List(string)) needs Alloc + Fs {
 
 /// The root directory of the package that contains module directory `dir`: the nearest
 /// directory with a `gamma.toml`, or `dir` itself.
-package_root :: fn(dir: string) -> string needs Alloc + Fs {
-    cur: ?string = dir
-    while d := cur {
-        if load.is_file(load.join(d, "gamma.toml")) { return d }
-        cur = load.parent(d)
-    }
-    return dir
-}
+package_root :: fn(dir: string) -> string needs Alloc + Fs => load.find_package_root(dir) else dir
 
 /// The roots of the packages that a package at `root` depends on by path, transitively.
 path_dependencies :: fn(root: string, seen: ^List(string)) needs Alloc + Fs {
@@ -291,7 +246,7 @@ path_dependencies :: fn(root: string, seen: ^List(string)) needs Alloc + Fs {
     manifest := load.parse_manifest(body) else return
     for dep in manifest.deps.items {
         if .Path(p) := dep.source {
-            d := canon(load.join(root, p))
+            d := load.canonical_path(load.join(root, p))
             if d not in seen.items {
                 seen.push(d)!
                 path_dependencies(d, seen)
@@ -303,7 +258,7 @@ path_dependencies :: fn(root: string, seen: ^List(string)) needs Alloc + Fs {
 /// The roots of the package containing `dir` and of its path dependencies; the package's
 /// own root is first.
 package_roots :: fn(dir: string) -> List(string) needs Alloc + Fs {
-    root := canon(package_root(dir))
+    root := load.canonical_path(package_root(dir))
     roots := list(string)
     roots.push(root)!
     path_dependencies(root, &roots)
@@ -324,7 +279,7 @@ module_dirs :: fn(roots: []const string, overlays: []const load.Overlay) -> List
         if not under { continue }
         skip := false
         for name in load.split(d).names.items {
-            if skipped(name) { skip = true }
+            if load.skipped_dir(name) { skip = true }
         }
         if skip or d in dirs.items { continue }
         dirs.push(d)!
@@ -336,8 +291,8 @@ module_dirs :: fn(roots: []const string, overlays: []const load.Overlay) -> List
 
 /// Whether some file of module directory `dir` mentions `name`.
 mentions :: fn(dir: string, name: string, overlays: []const load.Overlay) -> bool needs Alloc + Fs {
-    for f in module_files(dir, overlays).items {
-        if t := buffer_for(f, overlays) {
+    for f in module_files_in(dir, overlays).items {
+        if t := load.overlay_text(overlays, f) {
             if str.contains(t, name) { return true }
         } else if bytes := fs.read_all(f) {
             if str.contains(bytes, name) { return true }
@@ -352,7 +307,7 @@ facts :: fn(ws: ^Workspace, dir: string, overlays: []const load.Overlay) -> ^Mod
         if stamp(e.dirs, overlays) is e.stamp { return e.facts }
     }
     primary: ?string = null
-    for f in module_files(dir, overlays).items {
+    for f in module_files_in(dir, overlays).items {
         if p := primary {
             if path_less(f, p) { primary = f }
         } else {
@@ -360,7 +315,7 @@ facts :: fn(ws: ^Workspace, dir: string, overlays: []const load.Overlay) -> ^Mod
         }
     }
     main := load.join(dir, "main.gm")
-    a := check_module(dir, overlays, canon(primary else main))
+    a := check_module(dir, overlays, load.canonical_path(primary else main))
     result := ws.store(dir, a, overlays)
     release(a)
     return result
@@ -370,7 +325,7 @@ facts :: fn(ws: ^Workspace, dir: string, overlays: []const load.Overlay) -> ^Mod
 store :: fn(ws: ^Workspace, dir: string, a: ^Analysis, overlays: []const load.Overlay) -> ^ModuleFacts needs Alloc + Env + Fs {
     f := facts_of(a, dir)
     // The standard library is taken to stay as it is.
-    std := canon(driver.std_root())
+    std := load.canonical_path(driver.std_root())
     dirs := list(string)
     for kv in a.files.entries() {
         d := dir_of(kv.key)

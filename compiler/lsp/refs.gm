@@ -42,7 +42,7 @@ declaration_at :: fn(rq: ^Request, file: source.FileId, off: u32) -> string!Targ
 
 /// Refuses declarations outside the package being edited.
 check_editable :: fn(rq: ^const Request, t: ^const Target) -> ?string needs Alloc + Env + Fs {
-    if load.starts_with(t.loc.path, canon(driver.std_root())) {
+    if load.starts_with(t.loc.path, load.canonical_path(driver.std_root())) {
         return str.format("cannot rename `{}`: it is part of the standard library", t.name)!
     }
     roots := package_roots(rq.dir)
@@ -120,7 +120,7 @@ references_all :: fn(rq: ^Request, file: source.FileId, off: u32, include_declar
     return array(out.items)
 }
 
-is_word_byte :: fn(c: u8) -> bool => c >= 0x80 or is_ident_byte(c)
+is_word_byte :: fn(c: u8) -> bool => c >= 0x80 or source.is_ident_cont(c)
 
 /// The range of `name` in `text[lo..hi]` (the whole of it, or the last whole word, as in
 /// the span of `a.name`).

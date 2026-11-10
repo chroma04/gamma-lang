@@ -364,7 +364,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
             raw := uri_to_path(uri) else return .Continue
             if not is_gm_file(raw) { return .Continue }
             version := as_i64(field(td, "version")) else 0
-            path := canon(raw)
+            path := load.canonical_path(raw)
             srv.docs.put(path, Doc(uri: dupe(uri)!, version: version, text: dupe(body)!))!
             srv.invalidate(path)
         }
@@ -372,7 +372,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
             td := field(params, "textDocument")
             uri := as_str(field(td, "uri")) else return .Continue
             raw := uri_to_path(uri) else return .Continue
-            path := canon(raw)
+            path := load.canonical_path(raw)
             d := srv.docs.get_ptr(path) else return .Continue
             d.version = as_i64(field(td, "version")) else d.version
             // Full synchronization: the last change holds the whole text.
@@ -385,7 +385,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
         }
         "textDocument/didSave" => {
             if uri := as_str(path2(params, "textDocument", "uri")) {
-                if raw := uri_to_path(uri) { srv.invalidate(canon(raw)) }
+                if raw := uri_to_path(uri) { srv.invalidate(load.canonical_path(raw)) }
             }
         }
         "initialized" => {
@@ -419,7 +419,7 @@ notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx
         "textDocument/didClose" => {
             uri := as_str(path2(params, "textDocument", "uri")) else return .Continue
             raw := uri_to_path(uri) else return .Continue
-            path := canon(raw)
+            path := load.canonical_path(raw)
             if srv.docs.contains(path) {
                 _ = srv.docs.remove(path)
                 publish_empty(uri)
@@ -492,7 +492,7 @@ watched_files_changed :: fn(srv: ^Server, params: Value) needs Alloc + Fs {
     for change in changes {
         uri := as_str(field(change, "uri")) else continue
         raw := uri_to_path(uri) else continue
-        path := canon(raw)
+        path := load.canonical_path(raw)
         if is_gm_file(path) {
             // 1 is created, 2 changed, 3 deleted.
             if (as_i64(field(change, "type")) else 0) is 2 {
@@ -679,7 +679,7 @@ initialize :: fn(srv: ^Server, params: Value) -> Value needs Alloc {
 target :: fn(params: Value) -> ReqError!string needs Alloc + Fs {
     uri := as_str(path2(params, "textDocument", "uri")) else return !fail(INVALID_PARAMS, "missing textDocument.uri")
     raw := uri_to_path(uri) else return !fail(INVALID_PARAMS, str.format("unsupported URI {}", uri)!)
-    return canon(raw)
+    return load.canonical_path(raw)
 }
 
 component :: fn(v: Value) -> u32 {

@@ -15,8 +15,8 @@
 //! allocate freely. `Env.var` sees the variables the harness started with (those named in
 //! `VARS`); a test changes the environment of the programs it runs, never its own.
 
+diag :: import "gammac/diag"
 fs :: import "std/fs"
-json :: import "std/json"
 load :: import "gammac/load"
 path :: import "std/path"
 str :: import "std/str"
@@ -246,8 +246,7 @@ pub read_if_exists :: fn(t: ^T, p: string) -> Fail!?string needs Alloc + Fs {
 /// `s` as a JSON string, in its quotes.
 pub json_string :: fn(s: string) -> string needs Alloc {
     out := list(u8)
-    w := json.writer(&out)
-    w.write_string(s)!
+    diag.json_string(s, &out)
     return out.items
 }
 
