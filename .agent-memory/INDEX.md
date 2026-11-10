@@ -1,6 +1,11 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-11-10) — PRs #1–#117 merged, v0.1.0 + rust-reference-final tagged
+## State (2026-11-10) — PRs #1–#118 merged, v0.1.0 + rust-reference-final tagged
+- s65 (branch claude/amazing-clarke-5jp6b8, PR #119): REFACTOR BACKLOG round 2 with 4
+  sonnet worktree agents (layouts in sema, bignum gone, CLI table driver/flags.gm, walkers,
+  helper dedupes, harness: std process.output_within/Watchdog, kit.golden). Status and
+  what is left: roadmap/refactor-backlog.md. macOS CI `lint/deny_fails_the_command` failed
+  once after the walker merge (not reproducible on Linux; check whether it recurs).
 - s64 (branch claude/focused-ritchie-zf9339): REFACTORING SESSION. Eight area audits →
   roadmap/refactor-backlog.md (open large/medium items, possible bugs). Done: needless
   `pub` stripped (`gamma lint compiler`: 455 → 24 warnings; it is the mechanical to-do
