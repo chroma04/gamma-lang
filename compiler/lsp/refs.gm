@@ -78,13 +78,7 @@ find :: fn(rq: ^Request, t: ^const Target) -> Found needs Alloc + Clock + Env + 
         }
     }
     uses.items.sort_by(loc_less)
-    n: usize = 0
-    for i in 0..uses.items.len {
-        if i > 0 and loc_equal(&uses.items[i], &uses.items[n - 1]) { continue }
-        uses.items[n] = uses.items[i]
-        n += 1
-    }
-    uses.truncate(n)
+    uses.truncate(uses.items.dedup())
     return Found(uses: uses, modules: modules)
 }
 
@@ -253,13 +247,7 @@ pub rename :: fn(rq: ^Request, file: source.FileId, off: u32, new_name: string) 
     for k in 0..by_file.items.len {
         fe := &by_file.items[k]
         fe.spans.items.sort_by(fn(x, y: ^const Span2) -> bool => (x.lo, x.hi) < (y.lo, y.hi))
-        n: usize = 0
-        for i in 0..fe.spans.items.len {
-            if i > 0 and fe.spans.items[i].lo is fe.spans.items[n - 1].lo and fe.spans.items[i].hi is fe.spans.items[n - 1].hi { continue }
-            fe.spans.items[n] = fe.spans.items[i]
-            n += 1
-        }
-        fe.spans.truncate(n)
+        fe.spans.truncate(fe.spans.items.dedup())
         body := ""
         for te in texts.items {
             if te.path is fe.path { body = te.text }

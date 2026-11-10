@@ -330,13 +330,7 @@ pub module_dirs :: fn(roots: []const string, overlays: []const load.Overlay) -> 
         dirs.push(d)!
     }
     dirs.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
-    n: usize = 0
-    for i in 0..dirs.items.len {
-        if i > 0 and dirs.items[i] is dirs.items[n - 1] { continue }
-        dirs.items[n] = dirs.items[i]
-        n += 1
-    }
-    dirs.truncate(n)
+    dirs.truncate(dirs.items.dedup())
     return dirs
 }
 

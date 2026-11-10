@@ -517,13 +517,7 @@ open_dirs :: fn(srv: ^const Server) -> List(string) needs Alloc {
     dirs := list(string)
     for kv in srv.docs.entries() { dirs.push(dir_of(kv.key))! }
     dirs.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
-    n: usize = 0
-    for i in 0..dirs.items.len {
-        if i > 0 and dirs.items[i] is dirs.items[n - 1] { continue }
-        dirs.items[n] = dirs.items[i]
-        n += 1
-    }
-    dirs.truncate(n)
+    dirs.truncate(dirs.items.dedup())
     return dirs
 }
 
@@ -588,13 +582,7 @@ publish :: fn(srv: ^Server, dir: string, a: ^Analysis) needs Fx {
     }
     targets.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
     // A path twice (a diagnostic's file that also had a document) is one target.
-    n: usize = 0
-    for i in 0..targets.items.len {
-        if i > 0 and targets.items[i] is targets.items[n - 1] { continue }
-        targets.items[n] = targets.items[i]
-        n += 1
-    }
-    targets.truncate(n)
+    targets.truncate(targets.items.dedup())
     for path in targets.items {
         items := empty_slice(Value)
         for d in diags.items {
