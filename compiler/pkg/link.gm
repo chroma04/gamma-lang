@@ -171,36 +171,6 @@ split_posix :: fn(s: string) -> string!List(string) needs Alloc {
     return words
 }
 
-/// The toolchain `CC`, `CFLAGS` and `LDFLAGS` describe, with the manifest's flags before
-/// the environment's.
-pub toolchain_from_env :: fn(manifest_cflags, manifest_ldflags: []const string) -> string!Toolchain needs Alloc + Env + Fs {
-    cc := list(string)
-    cc.push(load.default_cc() else "cc")!
-    if v := Env.var("CC") {
-        if str.trim(v).len > 0 {
-            words := split_words(v) else e => { return !str.format("cannot read CC: {}", e)! }
-            if words.items.len > 0 { cc = words }
-        }
-    }
-    cflags := list(string)
-    cflags.extend(manifest_cflags)!
-    if v := Env.var("CFLAGS") {
-        if str.trim(v).len > 0 {
-            words := split_words(v) else e => { return !str.format("cannot read CFLAGS: {}", e)! }
-            cflags.extend(words.items)!
-        }
-    }
-    ldflags := list(string)
-    ldflags.extend(manifest_ldflags)!
-    if v := Env.var("LDFLAGS") {
-        if str.trim(v).len > 0 {
-            words := split_words(v) else e => { return !str.format("cannot read LDFLAGS: {}", e)! }
-            ldflags.extend(words.items)!
-        }
-    }
-    return Toolchain(cc: cc.items, cflags: cflags.items, ldflags: ldflags.items)
-}
-
 /// The compiler as the user wrote it, for messages.
 pub display :: fn(tc: ^const Toolchain) -> string needs Alloc => str.join(tc.cc, " ")!
 
