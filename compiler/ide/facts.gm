@@ -35,12 +35,6 @@ pub Facts :: struct {
     refs: List(Ref)
 }
 
-/// The generic function that `f` instantiates, or `f`.
-pub generic_of :: fn(s: ^const sema.Sema, f: u32) -> u32 {
-    if inst := s.fns.items[usize(f)].instance { return inst.template }
-    return f
-}
-
 /// The facts of the program's functions, except those of the embedded core library, which
 /// no editor can open.
 pub collect_facts :: fn(s: ^const sema.Sema) -> Facts needs Alloc {
@@ -65,19 +59,9 @@ pub collect_facts :: fn(s: ^const sema.Sema) -> Facts needs Alloc {
         if body := def.body { visit_fact(s, f, body, &facts) }
     }
     for c in s.consts.items {
-        if init := c.init { visit_fact(s, 0xFFFF_FFFF, init, &facts) }
+        if init := c.init { visit_fact(s, sema.NO_FN, init, &facts) }
     }
     return facts
-}
-
-/// The function whose frame holds the local that an upvar `levels` frames up names.
-frame_up :: fn(s: ^const sema.Sema, f_in: u32, levels: u32) -> ?u32 {
-    f := f_in
-    for _ in 0..levels {
-        if usize(f) >= s.defs.items.len { return null }
-        f = s.defs.items[usize(f)].parent else return null
-    }
-    return f
 }
 
 visit_fact :: fn(s: ^const sema.Sema, f: u32, e: ^tir.Expr, facts: ^Facts) needs Alloc {
@@ -99,14 +83,14 @@ visit_fact :: fn(s: ^const sema.Sema, f: u32, e: ^tir.Expr, facts: ^Facts) needs
             }
         }
         .Upvar(levels, local) => {
-            if owner := frame_up(s, f, levels) {
+            if owner := sema.frame_up(s, f, levels) {
                 locals := s.defs.items[usize(owner)].locals
                 if usize(local) < locals.len { local_ref(e.span, locals[usize(local)], facts) }
             }
         }
         .Call(callee, _) => {
             if .Fn(c) := callee {
-                if not facts.calls.contains(e.span) { facts.calls.put(e.span, generic_of(s, c))! }
+                if not facts.calls.contains(e.span) { facts.calls.put(e.span, sema.generic_of(s, c))! }
             }
         }
         _ => {}

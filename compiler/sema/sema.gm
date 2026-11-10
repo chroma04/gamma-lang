@@ -583,6 +583,27 @@ pub def_of :: fn(s: ^const Sema, f: u32) -> tir.FnDef {
     return s.defs.items[usize(f)]
 }
 
+/// The function id that stands for "no function" where code outside any function (a
+/// constant's initializer) is walked.
+pub NO_FN: u32 : 0xFFFF_FFFF
+
+/// The generic function that `f` instantiates, or `f`.
+pub generic_of :: fn(s: ^const Sema, f: u32) -> u32 {
+    if inst := s.fns.items[usize(f)].instance { return inst.template }
+    return f
+}
+
+/// The function whose frame holds the local that an upvar `levels` frames up from `f`
+/// names.
+pub frame_up :: fn(s: ^const Sema, f: u32, levels: u32) -> ?u32 {
+    cur := f
+    for _ in 0..levels {
+        if usize(cur) >= s.defs.items.len { return null }
+        cur = s.defs.items[usize(cur)].parent else return null
+    }
+    return cur
+}
+
 /// Records the body produced for instance `f`.
 pub set_inst_def :: fn(s: ^Sema, f: u32, d: tir.FnDef) needs Alloc {
     s.inst_defs.put(f, d)!

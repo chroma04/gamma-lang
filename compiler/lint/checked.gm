@@ -94,12 +94,6 @@ pub analyze :: fn(s: ^sema.Sema, program: bool, scoped: []const bool) -> List(Fi
     return c.out
 }
 
-/// The function that `f` instantiates, or `f`.
-generic_of :: fn(s: ^const sema.Sema, f: u32) -> u32 {
-    if inst := s.fns.items[usize(f)].instance { return inst.template }
-    return f
-}
-
 run_checks :: fn(c: ^Checked, scoped: []const bool) needs Alloc + Fs {
     s := c.s
     file_ok :: fn(span: source.Span) -> bool => span is not source.DUMMY and span.file < scoped.len.trunc(u32) and scoped[usize(span.file)]
@@ -122,7 +116,7 @@ run_checks :: fn(c: ^Checked, scoped: []const bool) needs Alloc + Fs {
         outer := s.nested_owner.get(f) else f
         me := fn_decl.items[usize(outer)]
         for callee in calls.items {
-            g := generic_of(s, callee)
+            g := sema.generic_of(s, callee)
             if d := fn_decl.items[usize(g)] {
                 if me is not d { c.fn_uses.items[d] = true }
             }
@@ -131,9 +125,9 @@ run_checks :: fn(c: ^Checked, scoped: []const bool) needs Alloc + Fs {
     for k in 0..s.consts.items.len {
         init := s.consts.items[k].init else continue
         calls := list(u32)
-        c.visit(0xFFFF_FFFF, init, &calls)
+        c.visit(sema.NO_FN, init, &calls)
         for callee in calls.items {
-            if d := fn_decl.items[usize(generic_of(s, callee))] { c.fn_uses.items[d] = true }
+            if d := fn_decl.items[usize(sema.generic_of(s, callee))] { c.fn_uses.items[d] = true }
         }
     }
     for f in s.export_fns.items { c.as_value.items[usize(f)] = true }
@@ -251,24 +245,13 @@ needless_pub :: fn(c: ^const Checked, d: usize, scoped: []const bool) -> ?string
     return null
 }
 
-/// The function whose frame holds the local that an upvar `levels` frames up from `f`
-/// names.
-frame_up :: fn(c: ^const Checked, f: u32, levels: u32) -> ?u32 {
-    cur := f
-    for _ in 0..levels {
-        if usize(cur) >= c.s.defs.items.len { return null }
-        cur = c.s.defs.items[usize(cur)].parent else return null
-    }
-    return cur
-}
-
 /// The local a place expression in function `f` is rooted at, through fields and array
 /// elements (not through pointers or slices, which name other storage).
 root :: fn(c: ^const Checked, f: u32, e: ^const Expr) -> ?LocalKey {
     match e.kind {
         .Local(l) => return (f, l)
         .Upvar(levels, local) => {
-            fr := c.frame_up(f, levels) else return null
+            fr := sema.frame_up(c.s, f, levels) else return null
             return (fr, local)
         }
         .Field(base, _) => return c.root(f, base)
@@ -308,7 +291,7 @@ visit :: fn(c: ^Checked, f: u32, e: ^Expr, calls: ^List(u32)) needs Alloc {
         .Call(callee, _) => if .Fn(g) := callee { calls.push(g)! }
         .FnRef(g), .Closure(g) => {
             calls.push(g)!
-            c.as_value.items[usize(generic_of(c.s, g))] = true
+            c.as_value.items[usize(sema.generic_of(c.s, g))] = true
         }
         .Block(b) => c.block_stmts(f, b.stmts)
         .Match(_, arms) => {
