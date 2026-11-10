@@ -12,8 +12,9 @@ errors.gm → optionals.gm), #5 partly (interp/vm_compile.gm split out of vm.gm)
 KeyMap(V), #8 partly (cgen ExitKind; tir.sys_name shared by cgen + intrinsics; dump
 tables → @variant_name). Medium items 1–7 of the helper list done (source.decode/
 char_count/is_ident_*, diag.json_string, load.os_error_text, load path helpers +
-skipped_dir, LINT_RULES in load/manifest, semver cmp_identifiers). Items #4 (walkers)
-and #9 (harness) delegated in s65 — check the PR/branch before redoing.
+skipped_dir, LINT_RULES in load/manifest, semver cmp_identifiers). #4 done (ast.for_each_child
+— expression-only kinds; tir.for_each_subpat, tir.any_child). #9 (harness) delegated in
+s65 — check the PR/branch before redoing. parse: set_restr.
 Re-verify line numbers before acting; audits did NOT grep web/ (web/gen, web/play depend
 on gammac: `Options.native_fallback` looked dead and is not).
 
@@ -26,7 +27,8 @@ on gammac: `Options.native_fallback` looked dead and is not).
    word run.gm); interp.gm/run.gm mix.
 8. cgen: Scope fields per kind; FnGen save/restore ×4; file splits (calls.gm →
    patterns/bits/write, arith.gm builtins); helpers.gm eq/less/hash scaffolding.
-(4 walkers, 9 harness: delegated in s65, see above.)
+(9 harness: delegated in s65, see above.) Fuzz targets are not type-checked by
+tools/test.sh (CI fuzz job caught fuzz/check.gm): worth a harness test.
 
 ## Medium: what is left
 - check: 36 hand-built Block exprs → block_of; prelude lookups ×10 (Sema.prelude_effect);
