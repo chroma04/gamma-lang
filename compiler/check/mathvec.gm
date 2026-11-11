@@ -244,7 +244,7 @@ compound_number_binary :: fn(cx: ^FnCx, op: ast.BinOp, lhs0: ^Expr, r0: ^Expr, s
         elems.push(e^)!
     }
     arr := tir.mk(agg, .Array(elems.items), span)
-    return tir.mk(agg, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+    return block_typed(agg, stmts.items, arr, span)
 }
 
 /// A unary operator on a math vector or complex number `v` (§7.4.7).
@@ -282,7 +282,7 @@ compound_number_unary :: fn(cx: ^FnCx, op: ast.UnOp, v: ^Expr, span: source.Span
         elems.push(tir.mk(p.elem, .Unary(top, cx.math_elem(x, p.elem, i)), span)^)!
     }
     arr := tir.mk(vt, .Array(elems.items), span)
-    return tir.mk(vt, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+    return block_typed(vt, stmts.items, arr, span)
 }
 
 /// Element `i` of the math vector `v` (a local or a constant).
@@ -305,7 +305,7 @@ complex_call :: fn(cx: ^FnCx, name: string, args0: []const ^Expr, swap: bool, sp
         stmts := list(tir.Stmt)
         first := cx.bind_temp(args.items[0], &stmts)
         call := cx.core_call_values(f, [2]^Expr(args.items[1], first)[..], span)
-        return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
+        return block_typed(call.ty, stmts.items, call, span)
     }
     return cx.core_call_values(f, args.items, span)
 }
@@ -325,7 +325,7 @@ core_call_values :: fn(cx: ^FnCx, f: u32, args: []const ^Expr, span: source.Span
         written.push(ast.Arg(kind: .Positional(e), span: v.span))!
     }
     call := cx.generic_call(f, null, written.items, span)
-    return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
+    return block_typed(call.ty, stmts.items, call, span)
 }
 
 /// A builtin method of the math vector `recv` (§21.3).
@@ -372,7 +372,7 @@ math_vector_method :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, n: string, args: []cons
                 for i in 0..len { elems.push(builtin(op, elem, [2]^Expr(cx.math_elem(x, elem, i), cx.math_elem(y, elem, i))[..], span)^)! }
                 tail = tir.mk(vt, .Array(elems.items), span)
             }
-            return tir.mk(tail.ty, .Block(new(tir.Block(stmts: stmts.items, tail: tail, span: span))!), span)
+            return block_typed(tail.ty, stmts.items, tail, span)
         }
         "abs" => {
             if not cx.arity(args, 0, n, span) { return error_expr(cx.s, span) }
@@ -383,7 +383,7 @@ math_vector_method :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, n: string, args: []cons
             elems := list(Expr)
             for i in 0..len { elems.push(builtin(.Abs, elem, [1]^Expr(cx.math_elem(x, elem, i))[..], span)^)! }
             tail := tir.mk(vt, .Array(elems.items), span)
-            return tir.mk(vt, .Block(new(tir.Block(stmts: stmts.items, tail: tail, span: span))!), span)
+            return block_typed(vt, stmts.items, tail, span)
         }
         "norm" => {
             if not cx.arity(args, 0, n, span) { return error_expr(cx.s, span) }
@@ -399,7 +399,7 @@ math_vector_method :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, n: string, args: []cons
             }
             total := acc else return error_expr(cx.s, span)
             tail := builtin(.Sqrt, elem, [1]^Expr(total)[..], span)
-            return tir.mk(tail.ty, .Block(new(tir.Block(stmts: stmts.items, tail: tail, span: span))!), span)
+            return block_typed(tail.ty, stmts.items, tail, span)
         }
         _ => {}
     }
@@ -436,7 +436,7 @@ math_vector_conversion :: fn(cx: ^FnCx, target: Ty, x: ^Expr, span: source.Span)
         elems := list(Expr)
         for i in 0..n { elems.push(builtin(.Convert, b, [1]^Expr(cx.math_elem(v, a, i))[..], span)^)! }
         arr := tir.mk(target, .Array(elems.items), span)
-        return tir.mk(target, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+        return block_typed(target, stmts.items, arr, span)
     }
     why: string = if both and n is m { str.format("; `{}` does not convert to `{}` losslessly", cx.show(a), cx.show(b))! } else { "" }
     cx.error(span, str.format("cannot convert `{}` to `{}`{}", cx.show(st), cx.show(target), why)!)

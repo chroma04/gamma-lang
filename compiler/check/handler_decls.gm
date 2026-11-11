@@ -283,22 +283,8 @@ check_clause :: fn(s: ^Sema, p: sema.PendingClause) needs Load {
     if c.params.len is not runtime.items.len {
         cx.error(c.span, str.format("the clause for `{}` takes {} parameters (the first is the handler value)", c.name.name, runtime.items.len)!)
     }
-    ids := list(u32)
-    for k, param in enumerate(runtime.items) {
-        name := if k < c.params.len { c.params[k].name } else { param.name }
-        at := if k < c.params.len { c.params[k].span } else { c.span }
-        id := cx.new_local(name, param.ty, false, at)
-        if name is not "_" { cx.declare(name, .Var(id), at) }
-        ids.push(id)!
-    }
-    // A `ctl` clause must not finish normally (§14.3); see `clause_fn`.
-    expect: ?Ty = if p.kind is .Ctl { null } else { sig.ret }
-    body := match c.body.kind {
-        .Block(b) => cx.block_expected(&b, true, expect)
-        _ => cx.expr(c.body, expect)
-    }
-    body = cx.clause_body(body, p.kind, sig.ret)
-    body = cx.declare_temps(0, body)
+    ids := cx.declare_clause_params(c, runtime.items)
+    body := cx.clause_value(c, p.kind, sig.ret)
     // The types of untyped literals given to `break` are known now.
     for j in 0..s.decl_clause_breaks.items.len {
         b := &s.decl_clause_breaks.items[j]
@@ -306,7 +292,7 @@ check_clause :: fn(s: ^Sema, p: sema.PendingClause) needs Load {
     }
     cx.finish(body)
     def := &s.defs.items[usize(p.fn_id)]
-    def.params = ids.items
+    def.params = ids
     def.locals = cx.locals.items
     def.body = body
     s.unscope_type_params(scope)

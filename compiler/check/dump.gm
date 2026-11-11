@@ -189,30 +189,7 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             str.format("handler-ref {} [{}]", s.tys.show_ref(&lit.effect_), str.join(labels.items, ", ")!)!
         }
         .With(w) => {
-            d.write_line(depth, str.format("with {} : {}", w.label, ty)!)
-            for h in w.handlers {
-                match h {
-                    .Literal(x) => {
-                        d.write_line(depth + 1, "handler")
-                        d.write_expr(depth + 2, x)
-                    }
-                    .Decl(decls, x) => {
-                        names := list(string)
-                        for i in decls {
-                            hd := s.handler_decls.items[usize(i)]
-                            names.push(str.format("{} for {}", s.tys.show_ref(&hd.effect_), s.show(hd.for_ty))!)!
-                        }
-                        d.write_line(depth + 1, str.format("handlers {}", str.join(names.items, ", ")!)!)
-                        d.write_expr(depth + 2, x)
-                    }
-                }
-            }
-            if x := w.on {
-                d.write_line(depth + 1, "on")
-                d.write_expr(depth + 2, x)
-            }
-            d.write_line(depth + 1, "body")
-            d.write_expr(depth + 2, w.body)
+            d.write_with(depth, w, ty)
             return
         }
         .Unary(op, x) => {
@@ -308,25 +285,11 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             return
         }
         .If(x) => {
-            d.write_line(depth, str.format("if : {}", ty)!)
-            d.write_conds(depth + 1, x.cond)
-            d.write_line(depth + 1, "then")
-            d.write_expr(depth + 2, x.then)
-            if el := x.else_ {
-                d.write_line(depth + 1, "else")
-                d.write_expr(depth + 2, el)
-            }
+            d.write_if(depth, x, ty)
             return
         }
         .Loop(x) => {
-            d.write_line(depth, str.format("loop {} : {}", x.label, ty)!)
-            d.write_conds(depth + 1, x.cond)
-            d.write_line(depth + 1, "body")
-            d.write_block(depth + 2, x.body)
-            if st := x.step {
-                d.write_line(depth + 1, "step")
-                d.write_expr(depth + 2, st)
-            }
+            d.write_loop(depth, x, ty)
             return
         }
         .Break(x) => {
@@ -352,24 +315,9 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
             "cancel"
         }
         .Write(w) => {
-            h := list(u8)
-            h.write("write {}", d.sink_text(w.sink))!
-            for p in w.pieces {
-                h.push(' ')!
-                syntax.escape_bytes(p, &h)
-            }
-            for i in 0..w.specs.len {
-                spec := &w.specs[i]
-                if tir.is_default_spec(spec) {
-                    h.extend(" {}")!
-                } else {
-                    h.push(' ')!
-                    spec_text(spec, &h)
-                }
-            }
             if .Fn(x) := w.sink { kids.push(x)! }
             for i in 0..w.args.len { kids.push(&w.args[i])! }
-            h.items
+            d.write_text(w)
         }
         .WriteDeferred(w) => {
             if .Fn(x) := w.sink { kids.push(x)! }
@@ -380,6 +328,79 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
     }
     d.write_line(depth, str.format("{} : {}", head, ty)!)
     for k in kids.items { d.write_expr(depth + 1, k) }
+}
+
+/// A `with` and its handlers, body and stack.
+write_with :: fn(d: ^Dump, depth: usize, w: tir.WithExpr, ty: string) needs Alloc {
+    s := d.s
+    d.write_line(depth, str.format("with {} : {}", w.label, ty)!)
+    for h in w.handlers {
+        match h {
+            .Literal(x) => {
+                d.write_line(depth + 1, "handler")
+                d.write_expr(depth + 2, x)
+            }
+            .Decl(decls, x) => {
+                names := list(string)
+                for i in decls {
+                    hd := s.handler_decls.items[usize(i)]
+                    names.push(str.format("{} for {}", s.tys.show_ref(&hd.effect_), s.show(hd.for_ty))!)!
+                }
+                d.write_line(depth + 1, str.format("handlers {}", str.join(names.items, ", ")!)!)
+                d.write_expr(depth + 2, x)
+            }
+        }
+    }
+    if x := w.on {
+        d.write_line(depth + 1, "on")
+        d.write_expr(depth + 2, x)
+    }
+    d.write_line(depth + 1, "body")
+    d.write_expr(depth + 2, w.body)
+}
+
+/// An `if` with its conditions and branches.
+write_if :: fn(d: ^Dump, depth: usize, x: tir.IfExpr, ty: string) needs Alloc {
+    d.write_line(depth, str.format("if : {}", ty)!)
+    d.write_conds(depth + 1, x.cond)
+    d.write_line(depth + 1, "then")
+    d.write_expr(depth + 2, x.then)
+    if el := x.else_ {
+        d.write_line(depth + 1, "else")
+        d.write_expr(depth + 2, el)
+    }
+}
+
+/// A loop with its conditions, body and step.
+write_loop :: fn(d: ^Dump, depth: usize, x: tir.LoopExpr, ty: string) needs Alloc {
+    d.write_line(depth, str.format("loop {} : {}", x.label, ty)!)
+    d.write_conds(depth + 1, x.cond)
+    d.write_line(depth + 1, "body")
+    d.write_block(depth + 2, x.body)
+    if st := x.step {
+        d.write_line(depth + 1, "step")
+        d.write_expr(depth + 2, st)
+    }
+}
+
+/// The text of a `write` node: its sink, pieces and format specs.
+write_text :: fn(d: ^Dump, w: tir.WriteExpr) -> string needs Alloc {
+    h := list(u8)
+    h.write("write {}", d.sink_text(w.sink))!
+    for p in w.pieces {
+        h.push(' ')!
+        syntax.escape_bytes(p, &h)
+    }
+    for i in 0..w.specs.len {
+        spec := &w.specs[i]
+        if tir.is_default_spec(spec) {
+            h.extend(" {}")!
+        } else {
+            h.push(' ')!
+            spec_text(spec, &h)
+        }
+    }
+    return h.items
 }
 
 escaped :: fn(prefix: string, bytes: []const u8) -> string needs Alloc {

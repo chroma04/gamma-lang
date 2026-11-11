@@ -603,7 +603,7 @@ finish_call :: fn(cx: ^FnCx, pre: []tir.Stmt, call: ^Expr, receiver: bool) -> ^E
         args[0] = cx.bind_temp(new(args[0])!, &stmts)^
     }
     stmts.extend(pre)!
-    return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: call.span))!), call.span)
+    return block_typed(call.ty, stmts.items, call, call.span)
 }
 
 /// The effect that `e` names, if it names one: `E`, `m.E`, or an instantiation `E(T)`.

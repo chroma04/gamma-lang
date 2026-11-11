@@ -10,159 +10,23 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     with_expect: ?Ty = if value { expect } else { null }
     cx.push_scope()
     if l := w.label { cx.declare(l.name, .Label, l.span) }
-    handlers := list(tir.HandlerValue)
-    handled := list(EffectRef)
-    literal_ids := list(u32)
-    // A handler with errors (already reported) may have handled anything the body does.
-    bad_handler := false
-    decl_ids := list(u32)
-    for h in w.handlers {
-        // `with a, b` is `with a { with b { … } }`: earlier handlers handle what later
-        // ones' clauses perform (§12.7).
-        earlier := handled.items.len
-        v := if lit := handler_lit(&h) { cx.handler_literal(lit, with_expect, h.span) } else { cx.expr(&h, null) }
-        // The handler declaration is chosen by the value's type now, so an untyped
-        // literal's type is settled here (`x := 0; with &x`).
-        t := cx.settle(v.ty, h.span)
-        match tys.kind(t) {
-            .Handler(id) => {
-                if cx.pending_handlers.items.len > 0 { cx.check_pending_handler(id, with_expect) }
-                eref := cx.s.handlers.items[usize(id)].effect_
-                for x in handled.items {
-                    if types.cmp_ref(&x, &eref) is 0 { cx.error(h.span, str.format("two handlers for `{}` in one `with`", tys.effect_name(eref.eff))!) }
-                }
-                handled.push(eref)!
-                literal_ids.push(id)!
-                handlers.push(.Literal(v))!
-            }
-            .Error => { bad_handler = true }
-            _ => {
-                decls := handlers_of_type(cx.s, t)
-                if decls.len is 0 {
-                    bad_handler = true
-                    d := diag.error(h.span, str.format("expected a handler, but no handler is declared for `{}`", cx.show(t))!)
-                    if tys.kind(t) is not .Ptr(_) and handlers_of_type(cx.s, tys.ptr(false, t)).len > 0 {
-                        d.add_note(str.format("a handler is declared for `^{}`: install it from a variable with `with &x`", cx.show(t))!)
-                    }
-                    cx.s.emit(d)
-                    continue
-                }
-                for id in decls {
-                    info := cx.s.handler_decls.items[usize(id)]
-                    eref := info.effect_
-                    for x in handled.items {
-                        if types.cmp_ref(&x, &eref) is 0 { cx.error(h.span, str.format("two handlers for `{}` in one `with`", tys.effect_name(eref.eff))!) }
-                    }
-                    handled.push(eref)!
-                    // The clauses' effects are performed at the `with`, outside it (§12.6).
-                    effs := list(EffectRef)
-                    for e in info.effects.effects {
-                        seen := false
-                        for x in handled.items[..earlier] {
-                            if types.cmp_ref(&x, &e) is 0 { seen = true }
-                        }
-                        if not seen { effs.push(e)! }
-                    }
-                    set := types.effect_set(effs.items)
-                    cx.record_effects(&set, h.span)
-                    decl_ids.push(id)!
-                }
-                handlers.push(.Decl(decls: decls, value: v))!
-            }
-        }
-    }
-    // A `ctl` operation needs a stack to suspend: `on` is required exactly then (§14.1).
-    has_ctl := false
-    for e in handled.items {
-        for o in cx.s.effects.items[usize(e.eff)].ops {
-            if o.kind is .Ctl { has_ctl = true }
-        }
-    }
-    on: ?^Expr = null
-    if st := w.on {
-        if not has_ctl { cx.error(st.span, "`on` gives a stack to fibers, but none of these handlers handles a `ctl` operation") }
-        stack_ty := tys.slice(false, tys.int(false, 8))
-        v := cx.expr(st, stack_ty)
-        on = cx.coerce(v, stack_ty)
-    } else if has_ctl {
-        cx.error(span, "this `with` handles `ctl` operations, so it needs a stack: `with h on stack { … }` (§14.1)")
-    }
+    hs := cx.with_handlers(w, with_expect)
+    handled := hs.handled.items
+    on := cx.with_stack(w, handled)
     label_name: ?string = null
     if l := w.label { label_name = l.name }
     label := cx.new_label(label_name, false, .With(with_expect))
     start := cx.performed.items.len
     n := cx.handled.items.len
-    cx.handled.extend(handled.items)!
+    cx.handled.extend(handled)!
     body := cx.block_expected(&w.body, value, expect)
     cx.handled.truncate(n)
     _ = cx.labels.pop()
     cx.pop_scope()
-    for p in cx.performed.items[start..] {
-        named := false
-        for x in handled.items {
-            if types.cmp_ref(&x, &p.effect_) is 0 { named = true }
-        }
-        if named { continue }
-        for x in handled.items {
-            if x.eff is p.effect_.eff {
-                cx.near_misses.push(Performed(effect_: x, span: p.span))!
-                break
-            }
-        }
-    }
-    // Whether this `with` handles a perform must not depend on type arguments (§16.6).
-    for p in cx.performed.items[start..] {
-        if p.effect_.eff is types.SPLICE {
-            if handled.items.len > 0 {
-                cx.error(p.span, str.format("this performs `{}` inside a `with` that handles `{}`, which the effect-set parameter might include (§16.6)", cx.s.tys.show_ref(&p.effect_), cx.s.tys.show_ref(&handled.items[0]))!)
-                continue
-            }
-        }
-        for x in handled.items {
-            if cx.s.may_coincide(&p.effect_, &x) {
-                cx.error(p.span, str.format("this performs `{}` inside a `with` that handles `{}`, which might be the same effect for some type arguments (§16.6)", cx.s.tys.show_ref(&p.effect_), cx.s.tys.show_ref(&x))!)
-                break
-            }
-        }
-    }
-    // Effects handled here are not performed by the `with` (§12.3).
-    i := start
-    while i < cx.performed.items.len {
-        p := cx.performed.items[i]
-        handles := bad_handler
-        for x in handled.items {
-            if types.cmp_ref(&x, &p.effect_) is 0 { handles = true }
-        }
-        // Not those of a handler literal written before this `with` began (§12.5).
-        for sh in cx.shielded_performs.items {
-            if sh.at is p.span and n >= sh.handled { handles = false }
-        }
-        if handles {
-            _ = cx.performed.remove(i)
-        } else {
-            i += 1
-        }
-    }
-    // Values of clause-level `break`s and of `break`s to the `with`'s label must agree
-    // with the body's value (§8.5, §12.7).
-    breaks := list(HandlerBreak)
-    for id in literal_ids.items {
-        // A literal bound with `::` can be installed again: its breaks stay recorded.
-        for b in cx.handler_breaks.items {
-            if b.handler_ is id { breaks.push(b)! }
-        }
-    }
-    depth := cx.depth()
-    k: usize = 0
-    while k < cx.label_breaks.items.len {
-        b := cx.label_breaks.items[k]
-        if b.label is label and b.depth is depth {
-            breaks.push(HandlerBreak(handler_: 0, ty: b.ty, span: b.span))!
-            _ = cx.label_breaks.remove(k)
-        } else {
-            k += 1
-        }
-    }
+    cx.note_near_misses(start, handled)
+    cx.check_handled_coincidence(start, handled)
+    cx.remove_handled_performs(start, n, handled, hs.bad)
+    breaks := cx.with_breaks(hs.literal_ids.items, label)
     ty := if value { expect else body.ty } else { tys.unit() }
     // A body that never finishes leaves the value to the `break`s.
     if tys.kind(ty) is .Never {
@@ -186,7 +50,7 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     // clause of a handler literal or aimed at its label, or possibly one in a clause of a
     // handler declaration for an `esc` operation.
     decl_exits := false
-    for id in decl_ids.items {
+    for id in hs.decl_ids.items {
         e := cx.s.handler_decls.items[usize(id)].effect_
         for o in cx.s.effects.items[usize(e.eff)].ops {
             if o.kind is not .Fn { decl_exits = true }
@@ -195,11 +59,196 @@ with_expr :: fn(cx: ^FnCx, w: ^const ast.WithExpr, value: bool, expect: ?Ty) -> 
     // Clauses of handler declarations are checked after function bodies, so their
     // `break`s are checked against this `with` later.
     with_ty := cx.infer.resolve(cx.s, ty)
-    if decl_ids.items.len > 0 and not tys.has_infer(with_ty) and not tys.is_error(with_ty) {
-        cx.s.decl_with_checks.push(sema.DeclWithCheck(decls: decl_ids.items, ty: with_ty, span: span))!
+    if hs.decl_ids.items.len > 0 and not tys.has_infer(with_ty) and not tys.is_error(with_ty) {
+        cx.s.decl_with_checks.push(sema.DeclWithCheck(decls: hs.decl_ids.items, ty: with_ty, span: span))!
     }
     if not value and tys.kind(body.ty) is .Never and breaks.items.len is 0 and not decl_exits { ty = tys.never_ty() }
-    return tir.mk(ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: on, body: body)), span)
+    return tir.mk(ty, .With(tir.WithExpr(label: label, handlers: hs.values.items, on: on, body: body)), span)
+}
+
+/// The handlers a `with` installs, as checked by `with_handlers`.
+WithHandlers :: struct {
+    values: List(tir.HandlerValue)
+    handled: List(EffectRef)
+    literal_ids: List(u32)
+    decl_ids: List(u32)
+    /// A handler with errors (already reported) may have handled anything the body does.
+    bad: bool
+}
+
+/// Checks the handlers of `w`, in order: `with a, b` is `with a { with b { … } }`, so
+/// earlier handlers handle what later ones' clauses perform (§12.7).
+with_handlers :: fn(cx: ^FnCx, w: ^const ast.WithExpr, with_expect: ?Ty) -> WithHandlers needs Load {
+    tys := &cx.s.tys
+    values := list(tir.HandlerValue)
+    handled := list(EffectRef)
+    literal_ids := list(u32)
+    decl_ids := list(u32)
+    bad := false
+    for h in w.handlers {
+        // `with a, b` is `with a { with b { … } }`: earlier handlers handle what later
+        // ones' clauses perform (§12.7).
+        earlier := handled.items.len
+        v := if lit := handler_lit(&h) { cx.handler_literal(lit, with_expect, h.span) } else { cx.expr(&h, null) }
+        // The handler declaration is chosen by the value's type now, so an untyped
+        // literal's type is settled here (`x := 0; with &x`).
+        t := cx.settle(v.ty, h.span)
+        match tys.kind(t) {
+            .Handler(id) => {
+                if cx.pending_handlers.items.len > 0 { cx.check_pending_handler(id, with_expect) }
+                eref := cx.s.handlers.items[usize(id)].effect_
+                cx.check_one_handler(handled.items, eref, h.span)
+                handled.push(eref)!
+                literal_ids.push(id)!
+                values.push(.Literal(v))!
+            }
+            .Error => { bad = true }
+            _ => {
+                decls := handlers_of_type(cx.s, t)
+                if decls.len is 0 {
+                    bad = true
+                    d := diag.error(h.span, str.format("expected a handler, but no handler is declared for `{}`", cx.show(t))!)
+                    if tys.kind(t) is not .Ptr(_) and handlers_of_type(cx.s, tys.ptr(false, t)).len > 0 {
+                        d.add_note(str.format("a handler is declared for `^{}`: install it from a variable with `with &x`", cx.show(t))!)
+                    }
+                    cx.s.emit(d)
+                    continue
+                }
+                for id in decls {
+                    info := cx.s.handler_decls.items[usize(id)]
+                    eref := info.effect_
+                    cx.check_one_handler(handled.items, eref, h.span)
+                    handled.push(eref)!
+                    // The clauses' effects are performed at the `with`, outside it (§12.6).
+                    effs := list(EffectRef)
+                    for e in info.effects.effects {
+                        seen := false
+                        for x in handled.items[..earlier] {
+                            if types.cmp_ref(&x, &e) is 0 { seen = true }
+                        }
+                        if not seen { effs.push(e)! }
+                    }
+                    set := types.effect_set(effs.items)
+                    cx.record_effects(&set, h.span)
+                    decl_ids.push(id)!
+                }
+                values.push(.Decl(decls: decls, value: v))!
+            }
+        }
+    }
+    return WithHandlers(values: values, handled: handled, literal_ids: literal_ids, decl_ids: decl_ids, bad: bad)
+}
+
+/// Reports `eref` if a handler in `handled` is already for the same effect.
+check_one_handler :: fn(cx: ^FnCx, handled: []const EffectRef, eref: EffectRef, span: source.Span) needs Load {
+    for x in handled {
+        if types.cmp_ref(&x, &eref) is 0 { cx.error(span, str.format("two handlers for `{}` in one `with`", cx.s.tys.effect_name(eref.eff))!) }
+    }
+}
+
+/// The stack of a `with` that handles `ctl` operations: `on` is required exactly then
+/// (§14.1).
+with_stack :: fn(cx: ^FnCx, w: ^const ast.WithExpr, handled: []const EffectRef) -> ?^Expr needs Load {
+    tys := &cx.s.tys
+    has_ctl := false
+    for e in handled {
+        for o in cx.s.effects.items[usize(e.eff)].ops {
+            if o.kind is .Ctl { has_ctl = true }
+        }
+    }
+    if st := w.on {
+        if not has_ctl { cx.error(st.span, "`on` gives a stack to fibers, but none of these handlers handles a `ctl` operation") }
+        stack_ty := tys.slice(false, tys.int(false, 8))
+        v := cx.expr(st, stack_ty)
+        return cx.coerce(v, stack_ty)
+    }
+    if has_ctl { cx.error(w.span, "this `with` handles `ctl` operations, so it needs a stack: `with h on stack { … }` (§14.1)") }
+    return null
+}
+
+/// Records the performs of a `with` body (from `start`) that name no handled effect but
+/// an instantiation of one, as near misses for the diagnostic of an undeclared effect.
+note_near_misses :: fn(cx: ^FnCx, start: usize, handled: []const EffectRef) needs Alloc {
+    for p in cx.performed.items[start..] {
+        named := false
+        for x in handled {
+            if types.cmp_ref(&x, &p.effect_) is 0 { named = true }
+        }
+        if named { continue }
+        for x in handled {
+            if x.eff is p.effect_.eff {
+                cx.near_misses.push(Performed(effect_: x, span: p.span))!
+                break
+            }
+        }
+    }
+}
+
+/// Whether a `with` handles a perform in its body (from `start`) must not depend on type
+/// arguments (§16.6).
+check_handled_coincidence :: fn(cx: ^FnCx, start: usize, handled: []const EffectRef) needs Alloc {
+    for p in cx.performed.items[start..] {
+        if p.effect_.eff is types.SPLICE {
+            if handled.len > 0 {
+                cx.error(p.span, str.format("this performs `{}` inside a `with` that handles `{}`, which the effect-set parameter might include (§16.6)", cx.s.tys.show_ref(&p.effect_), cx.s.tys.show_ref(&handled[0]))!)
+                continue
+            }
+        }
+        for x in handled {
+            if cx.s.may_coincide(&p.effect_, &x) {
+                cx.error(p.span, str.format("this performs `{}` inside a `with` that handles `{}`, which might be the same effect for some type arguments (§16.6)", cx.s.tys.show_ref(&p.effect_), cx.s.tys.show_ref(&x))!)
+                break
+            }
+        }
+    }
+}
+
+/// Removes the performs of a `with` body (from `start`) that its handlers handle: they
+/// are not performed by the `with` (§12.3). `n` is the number of handlers in scope when
+/// the `with` began.
+remove_handled_performs :: fn(cx: ^FnCx, start: usize, n: usize, handled: []const EffectRef, bad_handler: bool) {
+    i := start
+    while i < cx.performed.items.len {
+        p := cx.performed.items[i]
+        handles := bad_handler
+        for x in handled {
+            if types.cmp_ref(&x, &p.effect_) is 0 { handles = true }
+        }
+        // Not those of a handler literal written before this `with` began (§12.5).
+        for sh in cx.shielded_performs.items {
+            if sh.at is p.span and n >= sh.handled { handles = false }
+        }
+        if handles {
+            _ = cx.performed.remove(i)
+        } else {
+            i += 1
+        }
+    }
+}
+
+/// The values of the clause-level `break`s of the handler literals `literal_ids` and of
+/// the `break`s to `label` of a `with`, which must agree with the body's value (§8.5,
+/// §12.7). The latter are taken off the pending ones.
+with_breaks :: fn(cx: ^FnCx, literal_ids: []const u32, label: u32) -> List(HandlerBreak) needs Alloc {
+    breaks := list(HandlerBreak)
+    for id in literal_ids {
+        // A literal bound with `::` can be installed again: its breaks stay recorded.
+        for b in cx.handler_breaks.items {
+            if b.handler_ is id { breaks.push(b)! }
+        }
+    }
+    depth := cx.depth()
+    k: usize = 0
+    while k < cx.label_breaks.items.len {
+        b := cx.label_breaks.items[k]
+        if b.label is label and b.depth is depth {
+            breaks.push(HandlerBreak(handler_: 0, ty: b.ty, span: b.span))!
+            _ = cx.label_breaks.remove(k)
+        } else {
+            k += 1
+        }
+    }
+    return breaks
 }
 
 /// The handler literal `e` is, under parentheses.
@@ -376,6 +425,18 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
     fn_id := cx.s.new_nested_fn(.Clause, c.name.name, c.span, cx.module, params, ret, types.empty_effects())
     cx.enter_fn(fn_id, ret, types.empty_effects())
     cx.clause = info
+    ids := cx.declare_clause_params(c, params)
+    body := cx.clause_value(c, info.op_kind, ret)
+    frame := cx.exit_fn()
+    cx.performed.extend(frame.performed)!
+    cx.s.defs.items[usize(fn_id)].parent = cx.fn_id
+    cx.nested.push(NestedFn(fn_id: fn_id, params: ids, locals: frame.locals, body: body))!
+    return fn_id
+}
+
+/// Declares the parameters of clause `c` as locals of the clause being checked, named as
+/// the clause names them, and returns their ids.
+declare_clause_params :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []const sema.ParamInfo) -> []u32 needs Load {
     ids := list(u32)
     for i, p in enumerate(params) {
         name := if i < c.params.len { c.params[i].name } else { p.name }
@@ -384,20 +445,20 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
         if name is not "_" { cx.declare(name, .Var(id), at) }
         ids.push(id)!
     }
+    return ids.items
+}
+
+/// The checked body of clause `c` of an operation of kind `kind` with result type `ret`.
+clause_value :: fn(cx: ^FnCx, c: ^const ast.Clause, kind: ast.OpKind, ret: Ty) -> ^Expr needs Load {
     // A `ctl` clause must not finish normally (§14.3): its body is checked without an
     // expected type, so that a branch that finishes gives it a type other than `never`.
-    expect: ?Ty = if info.op_kind is .Ctl { null } else { ret }
+    expect: ?Ty = if kind is .Ctl { null } else { ret }
     body := match c.body.kind {
         .Block(b) => cx.block_expected(&b, true, expect)
         _ => cx.expr(c.body, expect)
     }
-    body = cx.clause_body(body, info.op_kind, ret)
-    body = cx.declare_temps(0, body)
-    frame := cx.exit_fn()
-    cx.performed.extend(frame.performed)!
-    cx.s.defs.items[usize(fn_id)].parent = cx.fn_id
-    cx.nested.push(NestedFn(fn_id: fn_id, params: ids.items, locals: frame.locals, body: body))!
-    return fn_id
+    body = cx.clause_body(body, kind, ret)
+    return cx.declare_temps(0, body)
 }
 
 /// The parameters and result type of a clause for operation `o` of the instantiated

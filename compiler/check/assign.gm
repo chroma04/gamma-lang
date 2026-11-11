@@ -1,0 +1,205 @@
+// Assignments (§4.7): single places, tuples of places, and compound operators.
+
+/// `a, b = e`: assigns the elements of a tuple; every element is computed before any
+/// store (§4.7).
+assign_tuple :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
+    tys := &cx.s.tys
+    if op is not .Assign { cx.error(span, "a compound assignment takes one place") }
+    targets := list(?^Expr)
+    all_known := true
+    for i in 0..places.len {
+        p := &places[i]
+        if p.kind is .Underscore {
+            targets.push(null)!
+            all_known = false
+            continue
+        }
+        if not cx.assignable_name(p) {
+            _ = cx.expr(value, null)
+            return .Expr(unit(cx.s, span))
+        }
+        place := cx.expr(p, null)
+        cx.require_mutable_place(place, p.span)
+        targets.push(place)!
+    }
+    expect: ?Ty = null
+    if all_known {
+        ts := list(Ty)
+        for t in targets.items {
+            if x := t { ts.push(x.ty)! }
+        }
+        expect = tys.tuple(ts.items)
+    }
+    v := cx.expr(value, expect)
+    vt := cx.infer.resolve(cx.s, v.ty)
+    elems: []const Ty = empty_slice(Ty)
+    match tys.kind(vt) {
+        .Tuple(es, _) => if es.len is targets.items.len { elems = es }
+        .Error => return .Expr(unit(cx.s, span))
+        _ => {}
+    }
+    if elems.len is not targets.items.len {
+        n := targets.items.len
+        cx.error(value.span, str.format("assigning to {} places needs a tuple of {} elements, not `{}`", n, n, cx.show(vt))!)
+        return .Expr(unit(cx.s, span))
+    }
+    ts := list(Ty)
+    for i, t in enumerate(targets.items) { ts.push(if x := t { x.ty } else { elems[i] })! }
+    return .AssignTuple(targets.items, cx.coerce(v, tys.tuple(ts.items)))
+}
+
+assign :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
+    if places.len is not 1 { return cx.assign_tuple(places, op, value, span) }
+    place_ast := &places[0]
+    if place_ast.kind is .Underscore {
+        if op is not .Assign { cx.error(span, "`_` can only be assigned with `=`") }
+        v := cx.expr(value, null)
+        stmts := list(tir.Stmt)
+        stmts.push(.Expr(v))!
+        return .Expr(block_of(cx.s, stmts.items, span))
+    }
+    if not cx.assignable_name(place_ast) {
+        _ = cx.expr(value, null)
+        return .Expr(unit(cx.s, span))
+    }
+    // `a[i] = s` on a `#soa`: each field of `s` goes to its column (§5.6.4).
+    if .Index(base, index) := place_ast.kind {
+        b := cx.soa_deref(cx.expr(base, null))
+        if info := cx.soa_of(b) {
+            if op is not .Assign {
+                cx.error(span, "an element of a `#soa` is assigned whole with `=`; assign to its fields with `a[i].f`")
+            }
+            return cx.soa_store(b, info, index, value, span)
+        }
+        return cx.assign_place(cx.index_value(b, index, place_ast.span), place_ast, op, value, span)
+    }
+    return cx.assign_place(cx.expr(place_ast, null), place_ast, op, value, span)
+}
+
+/// `place op value` with the place already checked.
+assign_place :: fn(cx: ^FnCx, place: ^Expr, place_ast: ^const ast.Expr, op: ast.AssignOp, value: ^const ast.Expr, span: source.Span) -> tir.Stmt needs Load {
+    cx.require_mutable_place(place, place_ast.span)
+    match op {
+        .Assign => {
+            v := cx.expr(value, place.ty)
+            return .Assign(place, cx.coerce(v, place.ty))
+        }
+        .Compound(bop) => {
+            // `p op= e` is `p = p op e` with `p` evaluated once (§4.7).
+            if is_simple_place(place) {
+                rhs := cx.compound_op(bop, copy_expr(place), value, span)
+                return .Assign(place, cx.coerce(rhs, place.ty))
+            }
+            pty := cx.s.tys.ptr(false, place.ty)
+            tmp := cx.temp(pty, span)
+            addr := tir.mk(pty, .AddrOf(place), span)
+            deref :: fn() -> ^Expr needs Alloc => tir.mk(place.ty, .Deref(tir.mk(pty, .Local(tmp), span)), span)
+            rhs := cx.compound_op(bop, deref(), value, span)
+            rhs = cx.coerce(rhs, place.ty)
+            stmts := list(tir.Stmt)
+            stmts.push(.Let(tmp, addr))!
+            stmts.push(.Assign(deref(), rhs))!
+            return .Expr(block_of(cx.s, stmts.items, span))
+        }
+    }
+}
+
+/// A copy of an expression tree, for a place used twice.
+copy_expr :: fn(e: ^Expr) -> ^Expr needs Alloc {
+    c := new(e^)!
+    match c.kind {
+        .Field(base, index) => { c.kind = .Field(copy_expr(base), index) }
+        .Deref(p) => { c.kind = .Deref(copy_expr(p)) }
+        _ => {}
+    }
+    return c
+}
+
+/// `place op value` for `place op= value`: the right operand of an arithmetic or bitwise
+/// operator may have a narrower numeric type that converts losslessly (§4.7, §6.5).
+compound_op :: fn(cx: ^FnCx, op: ast.BinOp, place: ^Expr, value: ^const ast.Expr, span: source.Span) -> ^Expr needs Load {
+    arith := match op {
+        .Add(_), .Sub(_), .Mul(_), .Div, .Rem, .BitAnd, .BitOr, .BitXor => true
+        _ => false
+    }
+    pt := cx.infer.resolve(cx.s, place.ty)
+    if not arith or not cx.numeric(pt) { return cx.binary_op(op, place, value, span) }
+    r := cx.expr(value, place.ty)
+    rt := cx.infer.resolve(cx.s, r.ty)
+    if pt is not rt and cx.numeric(rt) and lossless(cx.s, rt, pt) {
+        r = tir.mk(pt, .Builtin(.Convert, one_expr(r)), r.span)
+    }
+    return cx.arith_op(op, place, r, span)
+}
+
+numeric :: fn(cx: ^FnCx, t: Ty) -> bool => cx.s.tys.is_integer(t) or cx.s.tys.kind(t) is .Float(_)
+
+/// A slice holding one expression.
+one_expr :: fn(e: ^Expr) -> []Expr needs Alloc {
+    l := list(Expr)
+    l.push(e^)!
+    return l.items
+}
+
+/// For an assignment to a plain name: whether it names mutable storage (reports it if not).
+assignable_name :: fn(cx: ^FnCx, place: ^const ast.Expr) -> bool needs Load {
+    .Ident(id) := place.kind else return true
+    immutable := true
+    if found := cx.lookup_local_at(id.name) {
+        if .Var(l) := found.binding { immutable = not cx.local_at(found.depth, l).mutable }
+    } else {
+        d := cx.s.lookup_module_name(cx.module, id.name)
+        // A `#global` is mutable storage (§19.3); a declaration with errors was reported.
+        immutable = if x := d { cx.s.resolve_decl(x) not in (.Error, .Global(_)) } else { true }
+    }
+    if immutable {
+        cx.error(place.span, str.format("cannot assign to `{}`: it is immutable (declare it with `:=`)", id.name)!)
+    }
+    return not immutable
+}
+
+/// Reports an error unless `place` is a mutable place (§7.2).
+require_mutable_place :: fn(cx: ^FnCx, place: ^Expr, span: source.Span) needs Alloc {
+    match cx.place_mutability(place) {
+        true => {}
+        false => cx.error(span, "cannot assign to an immutable place")
+        null => {
+            if not cx.s.tys.is_error(place.ty) {
+                cx.error(span, "the left side of an assignment must be a place (a variable, `p^`, field or element)")
+            }
+        }
+    }
+}
+
+/// Whether `e` is a mutable place, or `null` if it is not a place.
+place_mutability :: fn(cx: ^FnCx, e: ^Expr) -> ?bool {
+    tys := &cx.s.tys
+    if tys.is_error(e.ty) { return true }
+    match e.kind {
+        .Local(l) => return cx.locals.items[usize(l)].mutable
+        .Upvar(levels, l) => return cx.local_at(cx.depth() - levels, l).mutable
+        .Global(_) => return true
+        .Const(_) => return false
+        .Deref(p) => {
+            if .Ptr(c, _) := tys.kind(p.ty) { return not c }
+            return false
+        }
+        .Field(base, _) => return cx.place_mutability(base)
+        .Index(base, _, _) => match tys.kind(base.ty) {
+            .Slice(c, _), .ManyPtr(c, _) => return not c
+            .Array(_), .ParamArray(_) => return cx.place_mutability(base)
+            _ => return null
+        }
+        _ => return null
+    }
+}
+
+/// A place whose re-evaluation has no side effects and is cheap.
+is_simple_place :: fn(e: ^Expr) -> bool {
+    match e.kind {
+        .Local(_), .Upvar(_), .Global(_) => return true
+        .Field(base, _) => return is_simple_place(base)
+        .Deref(p) => return p.kind is .Local(_)
+        _ => return false
+    }
+}

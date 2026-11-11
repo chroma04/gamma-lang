@@ -122,7 +122,7 @@ construct_enum_array :: fn(cx: ^FnCx, ty: Ty, index: Ty, elem: Ty, args: []const
     for s in slots.items { values.push((s else error_expr(cx.s, span))^)! }
     arr := tir.mk(ty, .Array(values.items), span)
     if stmts.items.len is 0 { return arr }
-    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+    return block_typed(ty, stmts.items, arr, span)
 }
 
 /// `a[e]` on an enum-indexed array `[E]T`: `e` is an `E`, and the element is the one at
@@ -237,7 +237,7 @@ construct_array :: fn(cx: ^FnCx, ty: ?Ty, len: ?u64, elem: Ty, args: []const ast
     t := ty else tys.array(u64(values.items.len), elem)
     arr := tir.mk(t, .Array(values.items), span)
     if stmts.items.len is 0 { return arr }
-    return tir.mk(t, .Block(new(tir.Block(stmts: stmts.items, tail: arr, span: span))!), span)
+    return block_typed(t, stmts.items, arr, span)
 }
 
 /// "1 is" or "3 are", for a count of given values.

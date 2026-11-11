@@ -673,6 +673,14 @@ pub prelude_template :: fn(s: ^Sema, name: string) -> ?u32 needs Load {
     return template
 }
 
+/// The effect `name` of the core prelude (`Out`, `Test`, ...), if it declares one.
+pub prelude_effect :: fn(s: ^Sema, name: string) -> ?types.EffectRef needs Load {
+    prelude := s.l.prelude else return null
+    d := s.l.lookup(prelude, name) else return null
+    .Effect(eff) := s.resolve_decl(d) else return null
+    return types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
+}
+
 /// The core library's `Range` or `RangeIncl`.
 pub range_template :: fn(s: ^Sema, inclusive: bool) -> ?u32 needs Load => s.prelude_template(if inclusive { "RangeIncl" } else { "Range" })
 

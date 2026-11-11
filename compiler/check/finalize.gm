@@ -181,7 +181,7 @@ fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
                 e^ = inner^
                 return
             }
-            if steps := cx.final_steps(inner.ty, target) {
+            if steps := cx.steps_for(inner.ty, target, false) {
                 e^ = apply_steps(inner, steps)^
                 return
             }
@@ -212,33 +212,6 @@ fin_pat :: fn(cx: ^FnCx, p: ^Pat) needs Load {
             }
         }
         _ => tir.for_each_subpat(p, fn(q: ^Pat) { cx.fin_pat(q) })
-    }
-}
-
-final_steps :: fn(cx: ^FnCx, src, target: Ty) -> ?[]Step needs Alloc {
-    out := list(Step)
-    if cx.final_steps_into(src, target, &out) { return out.items }
-    return null
-}
-
-final_steps_into :: fn(cx: ^FnCx, src, target: Ty, out: ^List(Step)) -> bool needs Alloc {
-    if src is target { return true }
-    if k := base_coercion(cx.s, src, target) {
-        out.push(Step(kind: k, ty: target))!
-        return true
-    }
-    match cx.s.tys.kind(target) {
-        .Optional(inner) => {
-            if not cx.final_steps_into(src, inner, out) { return false }
-            out.push(Step(kind: .WrapOptional, ty: target))!
-            return true
-        }
-        .Result(_, ok) => {
-            if not cx.final_steps_into(src, ok, out) { return false }
-            out.push(Step(kind: .WrapOk, ty: target))!
-            return true
-        }
-        _ => return false
     }
 }
 
