@@ -1,0 +1,40 @@
+// Handler contexts: the persistent list of installed handlers.
+
+push_ctx :: fn(m: ^Machine, parent: u32, effect_: types.EffectRef, installed: Installed, with_frame: u64, with_label: u32, with_fr: ?^Frame) -> u32 needs Alloc {
+    node := CtxNode(parent: parent, effect_: effect_, installed: installed, with_frame: with_frame, with_label: with_label, with_fr: with_fr)
+    if h := m.free_ctxs.pop() {
+        m.ctxs.items[us(h)] = node
+        return h
+    }
+    m.ctxs.push(node)!
+    return (m.ctxs.items.len - 1).trunc(u32)
+}
+
+/// Frees the contexts `from` and its parents up to (not including) `until`.
+pop_ctx :: fn(m: ^Machine, from: u32, until: u32) needs Alloc {
+    c := from
+    while c is not until and c is not 0 {
+        next := m.ctxs.items[us(c)].parent
+        m.free_ctxs.push(c)!
+        c = next
+    }
+}
+
+/// Whether `a` and `b` are the same effect with the same arguments: most often, the same
+/// arguments.
+same_ref :: fn(a, b: ^const types.EffectRef) -> bool {
+    if a.eff is not b.eff { return false }
+    if a.args.len is b.args.len and (a.args.len is 0 or a.args.ptr.addr() is b.args.ptr.addr()) { return true }
+    return types.cmp_ref(a, b) is 0
+}
+
+/// The innermost handler of `effect_` in context `cx` (0: none).
+find_ctx :: fn(m: ^const Machine, cx: u32, effect_: ^const types.EffectRef) -> u32 {
+    c := cx
+    while c is not 0 {
+        n := &m.ctxs.items[us(c)]
+        if same_ref(&n.effect_, effect_) { return c }
+        c = n.parent
+    }
+    return 0
+}

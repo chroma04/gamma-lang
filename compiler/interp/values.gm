@@ -1,0 +1,359 @@
+// Values as bytes in the target's layout: integers, pointers, slices, optionals, results,
+// unions and fields.
+
+kind :: fn(m: ^const Machine, t: Ty) -> TyKind => m.s.tys.kind(t)
+
+/// The size of `t`, cached by type (most operations ask for it).
+size :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc {
+    i := usize(t.id)
+    if i < m.sizes.items.len and m.sizes.items[i] is not ~u64(0) { return m.sizes.items[i] }
+    while m.sizes.items.len <= i { m.sizes.push(~u64(0))! }
+    n := m.lay.size_of(t)
+    m.sizes.items[i] = n
+    return n
+}
+
+align :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc => m.lay.align_of(t)
+
+offsets :: fn(m: ^Machine, t: Ty) -> []const u64 needs Alloc => m.lay.layout_of(t).offsets
+
+/// The signedness and width of the integer type `t`.
+int_info :: fn(m: ^const Machine, t: Ty) -> ?(signed: bool, bits: u32) => match m.s.tys.kind(t) {
+    .Int(signed, bits) => (signed: signed, bits: u32(bits))
+    .Usize => (signed: false, bits: (m.ptr_bytes * 8).trunc(u32))
+    .Isize => (signed: true, bits: (m.ptr_bytes * 8).trunc(u32))
+    _ => null
+}
+
+/// The integer in the bytes `b` (at most 16), in the target's byte order, zero-extended.
+get_uint :: fn(m: ^const Machine, b: []const u8) -> u128 {
+    v: u128 = 0
+    n := b.len.min(16)
+    if m.little {
+        // Integers of 64 and 128 bits a word at a time.
+        if n is 16 { return u128(le64(b[0..8])) | (u128(le64(b[8..16])) << 64) }
+        if n is 8 { return u128(le64(b)) }
+        i := n
+        while i > 0 {
+            i -= 1
+            v = (v << 8) | u128(b[i])
+        }
+    } else {
+        for i in 0..n { v = (v << 8) | u128(b[i]) }
+    }
+    return v
+}
+
+/// Writes the low bytes of `v` to `b`, in the target's byte order.
+put_uint :: fn(m: ^const Machine, b: []u8, v: u128) {
+    n := b.len.min(16)
+    x := v
+    if m.little {
+        if n is 16 {
+            put_le64(b[0..8], v.trunc(u64))
+            put_le64(b[8..16], (v >> 64).trunc(u64))
+            return ()
+        }
+        if n is 8 {
+            put_le64(b, v.trunc(u64))
+            return ()
+        }
+        for i in 0..n {
+            b[i] = x.trunc(u8)
+            x >>= 8
+        }
+    } else {
+        i := n
+        while i > 0 {
+            i -= 1
+            b[i] = x.trunc(u8)
+            x >>= 8
+        }
+    }
+}
+
+/// The little-endian integer in the 8 bytes `b`.
+#inline
+le64 :: fn(b: []const u8) -> u64 => u64(b[0]) | (u64(b[1]) << 8) | (u64(b[2]) << 16) | (u64(b[3]) << 24) | (u64(b[4]) << 32) | (u64(b[5]) << 40) | (u64(b[6]) << 48) | (u64(b[7]) << 56)
+
+/// Writes `v` to the 8 bytes `b`, little-endian.
+#inline
+put_le64 :: fn(b: []u8, v: u64) {
+    for i in 0..8 { b[i] = (v >> u64(8 * i)).trunc(u8) }
+}
+
+get_u64 :: fn(m: ^const Machine, b: []const u8) -> u64 => if b.len <= 8 { m.rd_word(b) } else { m.get_uint(b).trunc(u64) }
+
+put_u64 :: fn(m: ^const Machine, b: []u8, v: u64) {
+    if b.len <= 8 {
+        m.wr_word(b, v)
+    } else {
+        m.put_uint(b, u128(v))
+    }
+}
+
+/// The value of the integer of type `t` in `b`, sign-extended to 128 bits if it is signed.
+get_int :: fn(m: ^const Machine, t: Ty, b: []const u8) -> u128 {
+    v := m.get_uint(b)
+    info := m.int_info(t) else return v
+    if info.signed and info.bits < 128 and (v >> u128(info.bits - 1)) & 1 is 1 { return v | ~((u128(1) << u128(info.bits)) - 1) }
+    if info.bits < 128 { return v & ((u128(1) << u128(info.bits)) - 1) }
+    return v
+}
+
+ptr_of :: fn(m: ^const Machine, b: []const u8) -> u64 => m.get_u64(b[0..us(m.ptr_bytes)])
+
+put_ptr :: fn(m: ^const Machine, b: []u8, addr: u64) => m.put_u64(b[0..us(m.ptr_bytes)], addr)
+
+/// The pointer and length of the slice in `b`.
+slice_parts :: fn(m: ^const Machine, b: []const u8) -> (ptr: u64, len: u64) {
+    p := us(m.ptr_bytes)
+    return (ptr: m.get_u64(b[0..p]), len: m.get_u64(b[p..2 * p]))
+}
+
+put_slice :: fn(m: ^const Machine, b: []u8, ptr: u64, len: u64) {
+    p := us(m.ptr_bytes)
+    m.put_u64(b[0..p], ptr)
+    m.put_u64(b[p..2 * p], len)
+}
+
+/// The `i`th pointer-sized word of `b`.
+word :: fn(m: ^const Machine, b: []const u8, i: usize) -> u64 {
+    p := us(m.ptr_bytes)
+    return m.get_u64(b[i * p..(i + 1) * p])
+}
+
+put_word :: fn(m: ^const Machine, b: []u8, i: usize, v: u64) {
+    p := us(m.ptr_bytes)
+    m.put_u64(b[i * p..(i + 1) * p], v)
+}
+
+// Optionals, results and unions --------------------------------------------------------
+
+opt_inner :: fn(m: ^const Machine, t: Ty) -> Ty {
+    .Optional(inner) := m.kind(t) else return t
+    return inner
+}
+
+opt_present :: fn(m: ^Machine, t: Ty, b: []const u8) -> bool needs Alloc {
+    inner := m.opt_inner(t)
+    if cgen.nullable_pointer(m.s, inner) { return m.ptr_of(b) is not 0 }
+    return b[us(m.offsets(t)[1])] is not 0
+}
+
+/// The payload of the optional `b` (of type `t`), a view of `b`.
+opt_payload :: fn(m: ^Machine, t: Ty, b: []u8) -> []u8 needs Alloc {
+    inner := m.opt_inner(t)
+    n := us(m.size(inner))
+    if cgen.nullable_pointer(m.s, inner) { return b[0..n] }
+    off := us(m.offsets(t)[0])
+    return b[off..off + n]
+}
+
+/// Writes the present optional of type `t` holding `payload` to `dst`.
+make_some :: fn(m: ^Machine, t: Ty, dst: []u8, payload: []const u8) needs Alloc {
+    inner := m.opt_inner(t)
+    dst.fill(0)
+    if cgen.nullable_pointer(m.s, inner) {
+        n := payload.len.min(dst.len)
+        dst[0..n].copy_from(payload[0..n])
+        return ()
+    }
+    offs := m.offsets(t)
+    off := us(offs[0])
+    n := payload.len.min(dst.len - off)
+    dst[off..off + n].copy_from(payload[0..n])
+    dst[us(offs[1])] = 1
+}
+
+res_types :: fn(m: ^const Machine, t: Ty) -> (err: Ty, ok: Ty) {
+    .Result(err, ok) := m.kind(t) else return (err: t, ok: t)
+    return (err: err, ok: ok)
+}
+
+res_is_err :: fn(m: ^Machine, t: Ty, b: []const u8) -> bool needs Alloc => b[us(m.offsets(t)[0])] is not 0
+
+/// The payload of the result `b` (of type `t`): its value or its error, a view of `b`.
+res_payload :: fn(m: ^Machine, t: Ty, b: []u8) -> []u8 needs Alloc {
+    rt := m.res_types(t)
+    n := us(m.size(if m.res_is_err(t, b) { rt.err } else { rt.ok }))
+    off := us(m.offsets(t)[1])
+    return b[off..off + n]
+}
+
+make_res :: fn(m: ^Machine, t: Ty, dst: []u8, is_err: bool, payload: []const u8) needs Alloc {
+    offs := m.offsets(t)
+    dst.fill(0)
+    dst[us(offs[0])] = if is_err { 1 } else { 0 }
+    off := us(offs[1])
+    n := payload.len.min(dst.len - off)
+    dst[off..off + n].copy_from(payload[0..n])
+}
+
+/// The tag type and variants of the union `t`.
+union_def :: fn(m: ^const Machine, t: Ty) -> ?(tag: Ty, variants: []sema.VariantDef) {
+    .Adt(id, _) := m.kind(t) else return null
+    .Union(tag, variants) := m.s.adts.items[us(id)].kind else return null
+    return (tag: tag, variants: variants)
+}
+
+adt_of :: fn(m: ^const Machine, t: Ty) -> ?^const sema.AdtInfo {
+    .Adt(id, _) := m.kind(t) else return null
+    return &m.s.adts.items[us(id)]
+}
+
+/// The underlying integer type of the `#bits` struct `t`.
+bits_struct_ty :: fn(m: ^const Machine, t: Ty) -> ?Ty {
+    a := m.adt_of(t) else return null
+    .Struct(def) := a.kind else return null
+    return def.bits
+}
+
+is_packed :: fn(m: ^const Machine, t: Ty) -> bool {
+    a := m.adt_of(t) else return false
+    .Struct(def) := a.kind else return false
+    return def.packed
+}
+
+/// The index of the variant of the union value `b` of type `t`.
+variant_index :: fn(m: ^Machine, t: Ty, b: []const u8) -> ?u32 needs Alloc {
+    u := m.union_def(t) else return null
+    n := us(m.size(u.tag))
+    tag := m.get_int(u.tag, b[0..n])
+    for i, v in enumerate(u.variants) {
+        if bigint.bits128(v.tag) is tag { return i.trunc(u32) }
+    }
+    return null
+}
+
+payload_offset :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc {
+    offs := m.offsets(t)
+    return if offs.len > 1 { offs[1] } else { 0 }
+}
+
+/// Writes the value of variant `variant` of union `t` with `payload` to `dst`.
+make_variant :: fn(m: ^Machine, t: Ty, dst: []u8, variant: u32, payload: []const u8) needs Alloc {
+    dst.fill(0)
+    u := m.union_def(t) else return ()
+    n := us(m.size(u.tag))
+    m.put_uint(dst[0..n], bigint.bits128(u.variants[us(variant)].tag))
+    if payload.len > 0 {
+        off := us(m.payload_offset(t))
+        k := payload.len.min(dst.len - off)
+        dst[off..off + k].copy_from(payload[0..k])
+    }
+}
+
+/// The type and byte offset of field `i` of a struct, tuple or `#c_union` (not `#bits`).
+field_layout :: fn(m: ^Machine, t: Ty, i: u32) -> (ty: Ty, off: u64) needs Alloc {
+    match m.kind(t) {
+        .Tuple(elems, _) => return (ty: elems[us(i)], off: m.offsets(t)[us(i)])
+        .Adt(id, _) => match m.s.adts.items[us(id)].kind {
+            .Struct(def) => return (ty: def.fields[us(i)].ty, off: m.offsets(t)[us(i)])
+            .CUnion(fields) => return (ty: fields[us(i)].ty, off: 0)
+            .Union(_, variants) => return (ty: variants[us(i)].payload else t, off: m.payload_offset(t))
+        }
+        _ => return (ty: t, off: 0)
+    }
+}
+
+/// The width in bits of a `#bits` field of type `t`.
+bit_width :: fn(m: ^Machine, t: Ty) -> u32 needs Alloc => m.s.field_bits(t)
+
+/// The bit offset and type of field `i` of the `#bits` struct `t`.
+bits_field :: fn(m: ^Machine, t: Ty, i: u32) -> (off: u32, ty: Ty) needs Alloc {
+    bl := m.s.bits_layout(t) else return (off: 0, ty: t)
+    f := bl.fields[us(i)]
+    return (off: f.off, ty: f.ty)
+}
+
+/// The raw bits of a value `b` of the `#bits` field type `t`, zero-extended.
+bits_raw :: fn(m: ^Machine, t: Ty, b: []const u8) -> u128 needs Alloc {
+    w := m.bit_width(t)
+    v := m.get_uint(b)
+    return if w >= 128 { v } else { v & ((u128(1) << u128(w)) - 1) }
+}
+
+/// Writes the value of the `#bits` field type `t` whose raw bits are `raw` to `dst`.
+bits_from_raw :: fn(m: ^Machine, t: Ty, raw: u128, dst: []u8) needs Alloc {
+    if m.kind(t) is .Bool {
+        dst[0] = if raw is 0 { 0 } else { 1 }
+        return ()
+    }
+    w := m.bit_width(t)
+    v := raw
+    under := t
+    if u := m.union_def(t) { under = u.tag } else if u := m.bits_struct_ty(t) { under = u }
+    if info := m.int_info(under) and info.signed and w < 128 and (v >> u128(w - 1)) & 1 is 1 { v |= ~((u128(1) << u128(w)) - 1) }
+    m.put_uint(dst, v)
+}
+
+/// A view of field `i` of the value `b` of type `t` (not `#bits`).
+field_bytes :: fn(m: ^Machine, t: Ty, b: []u8, i: u32) -> []u8 needs Alloc {
+    fl := m.field_layout(t, i)
+    off := us(fl.off)
+    return b[off..off + us(m.size(fl.ty))]
+}
+
+/// Field `i` of the value `b` of type `t`, written to `dst`: a `#bits` field is
+/// extracted from its integer.
+read_field :: fn(m: ^Machine, t: Ty, b: []u8, i: u32, dst: []u8) needs Alloc {
+    if u := m.bits_struct_ty(t) {
+        bf := m.bits_field(t, i)
+        whole := m.get_uint(b[0..us(m.size(u))]) >> u128(bf.off)
+        w := m.bit_width(bf.ty)
+        raw := if w >= 128 { whole } else { whole & ((u128(1) << u128(w)) - 1) }
+        m.bits_from_raw(bf.ty, raw, dst)
+        return ()
+    }
+    dst.copy_from(m.field_bytes(t, b, i))
+}
+
+/// The word of the bytes `b` (at most 8): the integer they hold in the target's byte order.
+#inline
+rd_word :: fn(m: ^const Machine, b: []const u8) -> u64 {
+    if m.little {
+        if b.len is 8 { return u64(b[0]) | (u64(b[1]) << 8) | (u64(b[2]) << 16) | (u64(b[3]) << 24) | (u64(b[4]) << 32) | (u64(b[5]) << 40) | (u64(b[6]) << 48) | (u64(b[7]) << 56) }
+        if b.len is 4 { return u64(b[0]) | (u64(b[1]) << 8) | (u64(b[2]) << 16) | (u64(b[3]) << 24) }
+        if b.len is 1 { return u64(b[0]) }
+        if b.len is 2 { return u64(b[0]) | (u64(b[1]) << 8) }
+    }
+    return m.get_uint(b).trunc(u64)
+}
+
+/// Writes the word `v` to `b` (at most 8 bytes).
+#inline
+wr_word :: fn(m: ^const Machine, b: []u8, v: u64) {
+    if m.little {
+        if b.len is 8 {
+            b[0] = v.trunc(u8)
+            b[1] = (v >> 8).trunc(u8)
+            b[2] = (v >> 16).trunc(u8)
+            b[3] = (v >> 24).trunc(u8)
+            b[4] = (v >> 32).trunc(u8)
+            b[5] = (v >> 40).trunc(u8)
+            b[6] = (v >> 48).trunc(u8)
+            b[7] = (v >> 56).trunc(u8)
+            return ()
+        }
+        if b.len is 1 {
+            b[0] = v.trunc(u8)
+            return ()
+        }
+        if b.len is 4 {
+            b[0] = v.trunc(u8)
+            b[1] = (v >> 8).trunc(u8)
+            b[2] = (v >> 16).trunc(u8)
+            b[3] = (v >> 24).trunc(u8)
+            return ()
+        }
+    }
+    m.put_uint(b, u128(v))
+}
+
+/// The word of the `size` bytes at `addr`, aligned to `align`.
+load_word :: fn(m: ^Machine, span: source.Span, addr: u64, align: u64, size: u64) -> Flow!u64 needs Alloc {
+    if size is 0 { return 0 }
+    b := m.mem.read(addr, size, align) else e => return !m.mem_trap(span, e)
+    return m.rd_word(b)
+}

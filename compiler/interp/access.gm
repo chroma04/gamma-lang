@@ -1,0 +1,45 @@
+// Memory access of the machine: loads and stores that trap, temporaries and literals.
+
+/// Reads `dst.len` bytes at `addr` aligned to `align` into `dst`.
+load_at :: fn(m: ^Machine, span: source.Span, addr: u64, align: u64, dst: []u8) -> Flow!() needs Alloc {
+    if dst.len is 0 { return () }
+    b := m.mem.read(addr, u64(dst.len), align) else e => return !m.mem_trap(span, e)
+    dst.copy_from(b)
+}
+
+store_at :: fn(m: ^Machine, span: source.Span, addr: u64, align: u64, data: []const u8) -> Flow!() needs Alloc {
+    if data.len is 0 { return () }
+    m.mem.write(addr, data, align) else e => return !m.mem_trap(span, e)
+}
+
+alloc_mem :: fn(m: ^Machine, span: source.Span, size: u64, align: u64, kind: AllocKind, mutable: bool) -> Flow!u64 needs Alloc {
+    return m.mem.alloc(size, align, kind, mutable) else e => return !m.mem_trap(span, e)
+}
+
+/// A new temporary holding `data`, which dies at the end of the statement.
+alloc_temp :: fn(m: ^Machine, span: source.Span, data: []const u8, align: u64) -> Flow!u64 needs Alloc {
+    addr := try m.alloc_mem(span, u64(data.len), align, .Temp, true)
+    _ = m.mem.init(addr, data)
+    m.temps.push(addr)!
+    return addr
+}
+
+kill_temps :: fn(m: ^Machine, mk: usize) needs Alloc {
+    while m.temps.items.len > mk {
+        a := m.temps.pop() else break
+        _ = m.mem.kill(a)
+    }
+}
+
+/// The address of static (read-only) bytes, made once per `bytes` (a string literal),
+/// followed by a 0 byte if `nul`.
+string_literal :: fn(m: ^Machine, span: source.Span, bytes: []const u8, nul: bool) -> Flow!u64 needs Alloc {
+    key := bytes.ptr.addr()
+    cache := if nul { &m.cstrings } else { &m.strings }
+    if a := cache.get(key) { return a }
+    n := u64(bytes.len) + (if nul { 1 } else { 0 })
+    addr := try m.alloc_mem(span, n, 1, .Static, false)
+    _ = m.mem.init(addr, bytes)
+    cache.put(key, addr)!
+    return addr
+}
