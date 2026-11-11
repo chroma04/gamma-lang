@@ -26,8 +26,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Test
         run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma" tools/test.sh
       - name: Install script
@@ -38,8 +37,7 @@ jobs:
           esac
           tools/package-release.sh "$asset" target/bootstrap/gamma "$RUNNER_TEMP/dist"
           GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/prefix" sh tools/install.sh
-          printf 'm :: import "std/math"\nmain :: fn() needs Out { print("{}\\n", m.abs(-3)) }\n' > "$RUNNER_TEMP/hello.gm"
-          test "$("$RUNNER_TEMP/prefix/bin/gamma" run "$RUNNER_TEMP/hello.gm")" = 3
+          scripts/smoke-hello.sh "$RUNNER_TEMP/prefix/bin/gamma"
           # A checksum that does not match stops the installation.
           echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$RUNNER_TEMP/dist/gamma-$asset.tar.gz.sha256"
           if GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/p2" sh tools/install.sh; then exit 1; fi
@@ -68,8 +66,7 @@ jobs:
         with:
           # The seed's sources are git trees, maybe of older commits.
           fetch-depth: ${{ matrix.os == 'ubuntu-latest' && '0' || '1' }}
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Fixed point
         env:
           GAMMA_STD: lib/std
@@ -83,8 +80,7 @@ jobs:
           GAMMA_STD: lib/std
           GAMMA_RUNTIME: runtime
         run: |
-          printf 'm :: import "std/math"\nmain :: fn() needs Out { print("{}\\n", m.abs(-3)) }\n' > "$RUNNER_TEMP/hello.gm"
-          test "$(target/bootstrap/gamma run "$RUNNER_TEMP/hello.gm")" = 3
+          scripts/smoke-hello.sh target/bootstrap/gamma
           target/bootstrap/gamma test compiler
       - name: The seed is what its sources compile to
         if: matrix.os == 'ubuntu-latest'
@@ -100,8 +96,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install MinGW-w64
         run: sudo apt-get update -q && sudo apt-get install -y -q gcc-mingw-w64-x86-64
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Build gamma.exe
         env:
           GAMMA_STD: ${{ github.workspace }}/lib/std
@@ -160,8 +155,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libclang-rt-dev
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Build the targets and run each for 30 seconds
         env:
           GAMMA: ${{ github.workspace }}/target/bootstrap/gamma
@@ -200,8 +194,7 @@ jobs:
           cd "$RUNNER_TEMP/filc/optfil-${FILC_VERSION}-linux-x86_64"
           sudo ./setup.sh -u
           /opt/fil/bin/filcc --version
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Test Safe builds
         run: |
           export GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma"
@@ -220,8 +213,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-s390x-linux-gnu qemu-user
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Run tests and runtime tests for s390x
         env:
           GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
@@ -243,8 +235,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Run tests for aarch64
         env:
           GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
@@ -272,8 +263,7 @@ jobs:
           clang-18 --version | head -n 1
           wasm-opt --version
           wasmtime --version
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Run tests and WASI tests
         env:
           GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
@@ -297,8 +287,7 @@ jobs:
       GAMMA_RUNTIME: ${{ github.workspace }}/runtime
     steps:
       - uses: actions/checkout@v7
-      - name: Build gamma from the seed
-        run: bootstrap/build.sh
+      - uses: ./.github/actions/build-gamma
       - name: Build difftest
         run: target/bootstrap/gamma build tools/difftest -o target/difftest
       - name: Compilers
@@ -326,7 +315,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Build this branch
-        run: bootstrap/build.sh
+        uses: ./.github/actions/build-gamma
       - name: Build the base branch
         continue-on-error: true
         env:
@@ -343,12 +332,10 @@ jobs:
           }
           wrap "$PWD" "$PWD/target/bootstrap/gamma" "$RUNNER_TEMP/head-gamma"
           base=""
-          for exe in gamma gammac; do
-            if [ -z "$base" ] && [ -x "../base/target/bootstrap/$exe" ]; then
-              base=$RUNNER_TEMP/base-gamma
-              wrap "$(cd ../base && pwd)" "$(cd ../base && pwd)/target/bootstrap/$exe" "$base"
-            fi
-          done
+          if [ -x ../base/target/bootstrap/gamma ]; then
+            base=$RUNNER_TEMP/base-gamma
+            wrap "$(cd ../base && pwd)" "$(cd ../base && pwd)/target/bootstrap/gamma" "$base"
+          fi
           ./scripts/bench-compare.sh "$RUNNER_TEMP/head-gamma" "$base" bench
 
   editors:

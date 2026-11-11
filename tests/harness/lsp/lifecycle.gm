@@ -96,3 +96,19 @@ a_huge_content_length_does_not_crash_the_server :: fn(t: ^kit.T) -> kit.Fail!() 
     try t.check(status is .Exited(_), "the server ended with {}, not with an exit code", status)
     return ()
 }
+
+malformed_headers_are_reported_and_the_server_goes_on :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    // A Content-Length that is not a number, one that is missing, and an empty body: each
+    // is answered with an error, and the next message is served.
+    bad := [_]string("Content-Length: abc\r\n\r\n", "Content-Type: utf-8\r\n\r\n", "Content-Length: 0\r\n\r\n")
+    for h in bad {
+        try l.write_all(h)
+        m := try l.next_message()
+        try expect_int(t, h, dig(m, "error.code"), -32700)
+    }
+    try l.shutdown()
+    return ()
+}
