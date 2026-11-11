@@ -419,7 +419,9 @@ every checked operation checked.
   up by type at run time: the size of every value, the frame offsets of locals, the offsets
   of fields, the sizes of elements, the tags of variants, and operations specialized for the
   values that fit in a machine word (integers of 8 to 64 bits, `f32` and `f64`, booleans,
-  pointers), which are computed as 64-bit words rather than as bytes.
+  pointers), which are computed as 64-bit words rather than as bytes (`word.gm`; its
+  overflow, saturation and shift rules are the ones of the byte arithmetic of `intarith.gm`,
+  which it calls when an operation leaves the common case).
 - **The register machine** (`vm.gm`; `vm_compile.gm` compiles bodies for it) runs the body. Its statement structure (blocks with
   their `defer`s, `if`, loops, `match` and its patterns, `return`, `break`, `continue`),
   its arithmetic and comparisons on words, the places it can address (locals, upvars and

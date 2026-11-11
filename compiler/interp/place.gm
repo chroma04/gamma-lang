@@ -1,0 +1,236 @@
+// Places: locals, memory and bit-field locations, and the slices of them.
+
+/// A location: bytes of a frame's storage or of a temporary, memory, memory that may be
+/// unaligned (a field of a packed struct), or a field of a `#bits` struct, which lives in
+/// one of the first two.
+Place :: union {
+    Host: []u8
+    Mem: u64
+    Packed: u64
+    Bits: (host: []u8, addr: u64, whole: Ty, off: u32, fty: Ty)
+}
+
+read_local :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32, dst: []u8) -> Flow!() needs Alloc {
+    i := us(l)
+    if fr.mem[i] is not 0 { return m.load_at(span, fr.mem[i], fr.info.aligns[i], dst) }
+    off := us(fr.info.offsets[i])
+    dst.copy_from(fr.store[off..off + dst.len])
+}
+
+set_local :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32, data: []const u8) -> Flow!() needs Alloc {
+    i := us(l)
+    if fr.mem[i] is 0 and fr.info.addressed[i] { _ = try m.local_addr(span, fr, l) }
+    if fr.mem[i] is not 0 { return m.store_at(span, fr.mem[i], fr.info.aligns[i], data) }
+    off := us(fr.info.offsets[i])
+    fr.store[off..off + data.len].copy_from(data)
+}
+
+/// The place of local `l` of `fr`; in memory if `need_addr` or its address is taken.
+local_place :: fn(m: ^Machine, span: source.Span, fr: ^Frame, l: u32, need_addr: bool) -> Flow!Place needs Alloc {
+    i := us(l)
+    if fr.mem[i] is not 0 { return .Mem(fr.mem[i]) }
+    if need_addr or fr.info.addressed[i] { return .Mem(try m.local_addr(span, fr, l)) }
+    off := us(fr.info.offsets[i])
+    return .Host(fr.store[off..off + us(fr.info.sizes[i])])
+}
+
+/// Evaluates a place expression to its location; anything else is evaluated into a
+/// temporary (in memory if `need_addr`).
+place :: fn(m: ^Machine, a: Act, n: ^Node, need_addr: bool) -> Flow!Place needs Run {
+    match n.op {
+        .Local(l, _) => return m.local_place(n.span, a.fr, l, need_addr)
+        .Upvar(levels, l) => {
+            fr := frame_up(a.fr, levels) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+            return m.local_place(n.span, fr, l, need_addr)
+        }
+        .Global(decl) => return .Mem(try m.global_addr(n.span, decl))
+        .Const(span) => return .Mem(try m.const_addr(span, n.ty, n.span))
+        .Deref(x, _) => return .Mem(try m.ew(a, x))
+        .BitsField(x) => {
+            match try m.place(a, x.base, false) {
+                .Host(h) => return .Bits(h, 0, x.base.ty, x.bit_off, x.fty)
+                .Mem(addr), .Packed(addr) => return .Bits(empty_slice(u8), addr, x.base.ty, x.bit_off, x.fty)
+                .Bits(y) => return .Bits(y.host, y.addr, y.whole, y.off + x.bit_off, x.fty)
+            }
+        }
+        .Field(x) => {
+            match try m.place(a, x.base, need_addr) {
+                .Host(h) => {
+                    off := us(x.off)
+                    return .Host(h[off..off + us(n.size)])
+                }
+                .Mem(addr) => return if x.packed { .Packed(addr + x.off) } else { .Mem(addr + x.off) }
+                .Packed(addr) => return .Packed(addr + x.off)
+                .Bits(_) => return !m.trap(n.span, "internal error: a field of a #bits field")
+            }
+        }
+        .Index(x) => {
+            esz := x.esz
+            match x.seq {
+                .Array => {
+                    p := try m.place(a, x.base, need_addr)
+                    i := try m.ev_index(a, x.index)
+                    if i >= x.len { return !m.trap(n.span, str.format("index {} out of bounds for length {}", i, x.len)!) }
+                    match p {
+                        .Host(h) => {
+                            off := us(i * esz)
+                            return .Host(h[off..off + us(esz)])
+                        }
+                        .Mem(addr) => return .Mem(addr + i * esz)
+                        .Packed(addr) => return .Packed(addr + i * esz)
+                        .Bits(_) => return !m.trap(n.span, "internal error: an index of a #bits field")
+                    }
+                }
+                .Slice => {
+                    b: [16]u8 = ---
+                    sb := b[0..us(2 * m.ptr_bytes)]
+                    try m.ev(a, x.base, sb)
+                    sp := m.slice_parts(sb)
+                    i := try m.ev_index(a, x.index)
+                    if i >= sp.len { return !m.trap(n.span, str.format("index {} out of bounds for length {}", i, sp.len)!) }
+                    return .Mem(sp.ptr +% i * esz)
+                }
+                .ManyPtr => {
+                    p := try m.ew(a, x.base)
+                    i := try m.ev_index(a, x.index)
+                    return .Mem(p +% i *% esz)
+                }
+                .PtrArray => {
+                    p := try m.ew(a, x.base)
+                    i := try m.ev_index(a, x.index)
+                    if i >= x.len { return !m.trap(n.span, str.format("index {} out of bounds for length {}", i, x.len)!) }
+                    return .Mem(p +% i * esz)
+                }
+            }
+        }
+        _ => {
+            b := m.tmp(n.size)
+            try m.ev(a, n, b)
+            if not need_addr { return .Host(b) }
+            return .Mem(try m.alloc_temp(n.span, b, m.align(n.ty)))
+        }
+    }
+}
+
+read_place :: fn(m: ^Machine, span: source.Span, p: Place, t: Ty, dst: []u8) -> Flow!() needs Alloc {
+    match p {
+        .Host(h) => dst.copy_from(h[0..dst.len])
+        .Mem(addr) => try m.load_at(span, addr, m.align(t), dst)
+        .Packed(addr) => try m.load_at(span, addr, 1, dst)
+        .Bits(x) => {
+            whole := try m.bits_whole(span, x.host, x.addr, x.whole)
+            raw := whole >> u128(x.off)
+            w := m.bit_width(x.fty)
+            if w < 128 { raw &= (u128(1) << u128(w)) - 1 }
+            m.bits_from_raw(x.fty, raw, dst)
+        }
+    }
+}
+
+write_place :: fn(m: ^Machine, span: source.Span, p: Place, t: Ty, data: []const u8) -> Flow!() needs Alloc {
+    match p {
+        .Host(h) => h[0..data.len].copy_from(data)
+        .Mem(addr) => try m.store_at(span, addr, m.align(t), data)
+        .Packed(addr) => try m.store_at(span, addr, 1, data)
+        .Bits(x) => {
+            whole := try m.bits_whole(span, x.host, x.addr, x.whole)
+            w := m.bit_width(x.fty)
+            mask := (if w >= 128 { ~u128(0) } else { (u128(1) << u128(w)) - 1 }) << u128(x.off)
+            raw := m.bits_raw(x.fty, data)
+            v := (whole & ~mask) | ((raw << u128(x.off)) & mask)
+            u := m.bits_struct_ty(x.whole) else x.whole
+            n := us(m.size(u))
+            if x.host.len > 0 {
+                m.put_uint(x.host[0..n], v)
+            } else {
+                b: [16]u8 = ---
+                m.put_uint(b[0..n], v)
+                try m.store_at(span, x.addr, m.align(u), b[0..n])
+            }
+        }
+    }
+}
+
+/// The bits of the `#bits` struct of type `whole` at `host` or `addr`.
+bits_whole :: fn(m: ^Machine, span: source.Span, host: []u8, addr: u64, whole: Ty) -> Flow!u128 needs Alloc {
+    u := m.bits_struct_ty(whole) else whole
+    n := us(m.size(u))
+    if host.len > 0 { return m.get_uint(host[0..n]) }
+    b: [16]u8 = ---
+    try m.load_at(span, addr, m.align(u), b[0..n])
+    return m.get_uint(b[0..n])
+}
+
+/// Where a `break` with a value to `label` in `fr` leaves it: the destination of a loop or
+/// `with` that the tree runs, or the slot of a `with` that the register machine runs.
+label_dst :: fn(fr: ^Frame, label: u32) -> ?[]u8 {
+    i := fr.labels.items.len
+    while i > 0 {
+        i -= 1
+        if fr.labels.items[i].label is label { return fr.labels.items[i].dst }
+    }
+    code := fr.info.vm else return null
+    for lp in code.loops {
+        if lp.is_with and lp.label is label {
+            o := usize(lp.at)
+            return fr.store[o..o + usize(lp.size)]
+        }
+    }
+    return null
+}
+
+/// The frame and label a `break` or `continue` to `t` goes to.
+resolve_target :: fn(m: ^Machine, a: Act, t: tir.Target, span: source.Span) -> Flow!(frame: ^Frame, label: u32) needs Alloc {
+    match t {
+        .Label(levels, label) => {
+            fr := frame_up(a.fr, levels) else return !m.trap(span, "internal error: a jump target in a missing frame")
+            return (frame: fr, label: label)
+        }
+        .InstallingWith => {
+            x := a.fr.installing else return !m.trap(span, "internal error: no installing `with` for this break")
+            return (frame: x.frame, label: x.label)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Slices
+// ---------------------------------------------------------------------------------
+
+ev_slice :: fn(m: ^Machine, a: Act, n: ^Node, base: ^Node, lo_n: ?^Node, hi_n: ?^Node, inclusive: bool, seq: SeqKind, esz: u64, n_len: u64, dst: []u8) -> Flow!() needs Run {
+    ptr: u64 = 0
+    len: ?u64 = null
+    mk := m.mark()
+    match seq {
+        .Array => {
+            match try m.place(a, base, true) {
+                .Mem(addr), .Packed(addr) => { ptr = addr }
+                _ => return !m.trap(n.span, "internal error: a slice of a #bits field")
+            }
+            len = n_len
+        }
+        .Slice => {
+            b := m.tmp(base.size)
+            try m.ev(a, base, b)
+            sp := m.slice_parts(b)
+            ptr = sp.ptr
+            len = sp.len
+        }
+        .ManyPtr => { ptr = try m.ew(a, base) }
+        .PtrArray => {
+            ptr = try m.ew(a, base)
+            len = n_len
+        }
+    }
+    lo: u64 = 0
+    if x := lo_n { lo = try m.ev_index(a, x) }
+    hi := len else 0
+    if x := hi_n { hi = try m.ev_index(a, x) }
+    if inclusive { hi = hi +| 1 }
+    m.release(mk)
+    if lo > hi or (len is not null and hi > (len else 0)) {
+        text := if l := len { str.format("{}", l)! } else { "?" }
+        return !m.trap(n.span, str.format("slice bounds {}..{} invalid for length {}", lo, hi, text)!)
+    }
+    m.put_slice(dst, ptr +% lo * esz, hi - lo)
+}
