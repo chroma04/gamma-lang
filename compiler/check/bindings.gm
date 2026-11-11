@@ -1,0 +1,254 @@
+// Local bindings (`x := e`, destructuring, local types) and the checks on what they bind.
+
+binding :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
+    if b.names.len is not 1 { return cx.destructure(b) }
+    name := b.names[0]
+    if b.kind is .Const and b.ty is null {
+        if .Fn(lit) := b.init.kind { return cx.nested_fn_binding(name, lit, b.span) }
+        if nominal_lit(b.init) {
+            return cx.local_adt_binding(name, b)
+        }
+        if t := cx.local_type_init(b.init) {
+            cx.declare(name.name, .Type(t), name.span)
+            cx.s.push_type_alias(name.name, t)
+            return .Expr(unit(cx.s, b.span))
+        }
+    }
+    annot: ?Ty = null
+    if t := b.ty { annot = cx.resolve_ty(t) }
+    // An immutable binding of an untyped constant expression is an untyped constant (§6.2).
+    if b.kind is .Const and annot is null {
+        if r := cx.try_untyped(b.init) {
+            if .Ok(v) := r { cx.declare(name.name, .Untyped(v), name.span) }
+            return .Expr(unit(cx.s, b.span))
+        }
+    }
+    mutable := b.kind is .Var
+    errors_before := cx.s.l.diags.list.items.len
+    init := if b.init.kind is .Uninit {
+        if not mutable { cx.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)") }
+        if t := annot {
+            if not cx.is_plain_data(t) { cx.error(b.init.span, uninit_message(cx.s, t)) }
+            tir.mk(t, .Uninit, b.init.span)
+        } else {
+            cx.error(b.init.span, "`---` needs a type annotation")
+            error_expr(cx.s, b.init.span)
+        }
+    } else if lit := handler_lit(b.init) and b.kind is .Const and annot is null and not cx.in_defer {
+        cx.pending_handler_literal(lit, b.init.span)
+    } else {
+        ex := cx.expr(b.init, annot)
+        if t := annot { cx.coerce(ex, t) } else { ex }
+    }
+    // An immutable local whose initializer is a constant expression is evaluated at
+    // compile time when that succeeds within the step budget (§17.2).
+    if b.kind is .Const and errors_before is cx.s.l.diags.list.items.len and b.init.kind is not .Uninit and closed_const(cx.s, init) and not cx.unsettled(init) {
+        if id := local_const(cx.s, cx.module, b.init, annot, name.name, name.span) {
+            cx.declare(name.name, .Const(ty: cx.s.consts.items[usize(id)].ty, name: name.name, span: name.span), name.span)
+            return .Expr(unit(cx.s, b.span))
+        }
+    }
+    ty := annot else init.ty
+    if cx.s.tys.kind(ty) is .Type {
+        cx.error(b.init.span, "types cannot be stored in variables; use `::` at top level for a type alias")
+    }
+    if mutable and cx.s.tys.kind(cx.infer.resolve(cx.s, ty)) in (.Fn(_), .Handler(_)) {
+        cx.error(b.span, "a second-class value (a function literal or handler) may only be bound with `::`, not stored in a variable (§11.6)")
+    }
+    id := cx.new_local(name.name, ty, mutable, name.span)
+    // The name is in scope only after its initializer (§4.6).
+    cx.declare(name.name, .Var(id), name.span)
+    return .Let(id, init)
+}
+
+/// `a, b := e`: binds the elements of a tuple (§4.5).
+destructure :: fn(cx: ^FnCx, b: ^const ast.Binding) -> tir.Stmt needs Load {
+    tys := &cx.s.tys
+    annot: ?Ty = null
+    if t := b.ty { annot = cx.resolve_ty(t) }
+    init: ^Expr = error_expr(cx.s, b.init.span)
+    if b.init.kind is .Uninit {
+        if b.kind is not .Var { cx.error(b.init.span, "an immutable binding cannot be `---`: it could never be given a value (§4.4)") }
+        if t := annot and cx.is_plain_data(t) {
+            init = tir.mk(t, .Uninit, b.init.span)
+        } else {
+            cx.error(b.init.span, "`---` needs a plain-data tuple type annotation")
+        }
+    } else {
+        ex := cx.expr(b.init, annot)
+        init = if t := annot { cx.coerce(ex, t) } else { ex }
+    }
+    t := cx.infer.resolve(cx.s, init.ty)
+    elems := list(Ty)
+    n := b.names.len
+    match tys.kind(t) {
+        .Tuple(es, _) => if es.len is n {
+            elems.extend(es)!
+        } else {
+            cx.error(b.span, str.format("{} names cannot destructure a tuple of {} elements", n, es.len)!)
+        }
+        .Error => {}
+        _ => cx.error(b.init.span, str.format("destructuring needs a tuple, but this is `{}` (§4.5)", cx.show(t))!)
+    }
+    while elems.items.len < n { elems.push(tys.error())! }
+    mutable := b.kind is .Var
+    locals := list(?u32)
+    declared := list(Declared)
+    for i, name in enumerate(b.names) {
+        if name.name is "_" {
+            locals.push(null)!
+            continue
+        }
+        id := cx.new_local(name.name, elems.items[i], mutable, name.span)
+        locals.push(id)!
+        declared.push(Declared(name: name.name, id: id, span: name.span))!
+    }
+    // The names are in scope only after the initializer (§4.6).
+    for d in declared.items { cx.declare(d.name, .Var(d.id), d.span) }
+    return .LetTuple(locals.items, init)
+}
+
+Declared :: struct {
+    name: string
+    id: u32
+    span: source.Span
+}
+/// Plain data (§5.19).
+is_plain_data :: fn(cx: ^FnCx, t: Ty) -> bool needs Alloc => cx.s.tys.is_error(t) or cx.s.is_plain(t)
+
+/// Whether `e` is a `struct` or `union` literal, possibly preceded by attributes.
+nominal_lit :: fn(e: ^const ast.Expr) -> bool {
+    match e.kind {
+        .Struct(_), .Union(_) => return true
+        .Attributed(_, inner) => return inner.kind in (.Struct(_), .Union(_))
+        _ => return false
+    }
+}
+
+/// `Name :: struct { … }` or `union { … }` inside a body: a local type (§3.5).
+local_adt_binding :: fn(cx: ^FnCx, name: ast.Ident, b: ^const ast.Binding) -> tir.Stmt needs Load {
+    n := name.name
+    if cx.lookup_local(n) is not null {
+        cx.error(name.span, str.format("`{}` is already declared in this function; locals may not be shadowed", n)!)
+    } else if cx.s.names_type(cx.module, n) {
+        cx.error(name.span, str.format("`{}` names a type; a local type may not have the name of a type (§4.6)", n)!)
+    } else if load.is_reserved_type_name(n) {
+        cx.error(name.span, str.format("`{}` is a reserved type name and cannot be redeclared", n)!)
+    }
+    // The type itself puts its name in scope, for its own fields.
+    t := cx.s.declare_local_adt(cx.module, n, b.init)
+    cx.scopes.items[cx.scopes.items.len - 1].push(Binding(name: n, value: .Type(t)))!
+    return .Expr(unit(cx.s, b.span))
+}
+
+/// The type that the initializer `e` of a local `::` binding denotes, if it is a type
+/// expression: the binding is then a local alias (§3.5).
+local_type_init :: fn(cx: ^FnCx, e: ^const ast.Expr) -> ?Ty needs Load {
+    match e.kind {
+        .ArrayType(_), .OptionalType(_) if is_construction(e) => {
+            if cx.s.looks_like_type(cx.module, e) { return cx.resolve_ty(e) }
+            return null
+        }
+        .Tuple(_) => {
+            if cx.local_is_type(e) { return cx.resolve_ty(e) }
+            return null
+        }
+        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return cx.resolve_ty(e)
+        .Intrinsic(i) => {
+            if i.name.name is "type_of" { return cx.resolve_ty(e) }
+            return null
+        }
+        // `Cols :: #soa []T`; `#soa [2]P(…)` constructs a value.
+        .Attributed(_, inner) => {
+            if inner.kind is .SliceType(_) or (inner.kind is .ArrayType(_) and not is_construction(inner)) { return cx.resolve_ty(e) }
+            return null
+        }
+        .Effect(_) => {
+            cx.error(e.span, "an effect is declared at top level; inside a function only aliases, structs and unions can be declared (§3.5)")
+            return cx.s.tys.error()
+        }
+        .Paren(inner) => return cx.local_type_init(inner)
+        .Ident(id) => {
+            if b := cx.lookup_local(id.name) {
+                if .Type(t) := b { return t }
+                return null
+            }
+            if t := cx.s.type_param(id.name) { return t }
+            if d := cx.s.lookup_module_name(cx.module, id.name) {
+                if .Type(t) := cx.s.resolve_decl(d) { return t }
+                return null
+            }
+            return cx.s.builtin_type(id.name)
+        }
+        .Field(base, name) => {
+            m := cx.s.module_named(cx.module, base) else return null
+            d := cx.s.l.lookup(m, name.name) else return null
+            if not cx.s.decl_visible(d, cx.module) { return null }
+            if .Type(t) := cx.s.resolve_decl(d) { return t }
+            return null
+        }
+        _ => return null
+    }
+}
+
+/// Whether `e` is `[N]T(…)` or `?T(…)`, possibly followed by a postfix chain: a
+/// construction rather than a type (§A.7 rule 12).
+is_construction :: fn(e: ^const ast.Expr) -> bool needs Alloc {
+    inner := match e.kind {
+        .ArrayType(a) => a.elem
+        .OptionalType(x) => x
+        _ => return false
+    }
+    return sema.construction_call(inner) is not null or sema.hoist_prefix(e) is not null
+}
+
+/// Whether `e` denotes a type, given the local aliases in scope (the local counterpart of
+/// `looks_like_type`); reports nothing.
+local_is_type :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
+    match e.kind {
+        .Tuple(elems) => {
+            for el in elems {
+                if el.spread or not cx.local_is_type(&el.value) { return false }
+            }
+            return true
+        }
+        .Paren(inner) => return cx.local_is_type(inner)
+        .Ident(_), .Field(_) => return cx.local_type_init(e) is not null
+        .ArrayType(_), .OptionalType(_) if is_construction(e) => return cx.s.looks_like_type(cx.module, e)
+        .OptionalType(_), .PtrType(_), .SliceType(_), .ManyPtrType(_), .ArrayType(_), .ErrorUnionType(_), .FnType(_), .ContType(_) => return true
+        _ => return false
+    }
+}
+
+/// Whether the signature of a function that `e` calls is not known yet.
+unsettled :: fn(cx: ^FnCx, e: ^Expr) -> bool needs Load {
+    found := false
+    visit(e, fn(x: ^Expr) {
+        f: ?u32 = null
+        match x.kind {
+            .Call(callee, _) => if .Fn(g) := callee { f = g }
+            .FnRef(g) => { f = g }
+            _ => {}
+        }
+        if g := f {
+            sig := &cx.s.fns.items[usize(g)]
+            if cx.s.tys.has_infer(sig.ret) { found = true }
+        }
+    })
+    return found
+}
+
+/// Calls `f` on every expression in `e` (pre-order).
+visit :: fn(e: ^Expr, f: fn(x: ^Expr)) {
+    f(e)
+    tir.for_each_child(e, fn(c: ^Expr) { visit(c, f) })
+}
+
+/// True if `e` mentions no locals: a candidate for evaluation at compile time.
+closed_const :: fn(s: ^Sema, e: ^Expr) -> bool {
+    ok := true
+    visit(e, fn(x: ^Expr) {
+        if s.tys.has_param(x.ty) or x.kind in (.Local(_), .Upvar(_), .ValueParam(_), .SizeOf(_), .IntLimit(_), .TypeName(_), .TypeIs(_), .Closure(_), .HandlerRef(_)) { ok = false }
+    })
+    return ok
+}

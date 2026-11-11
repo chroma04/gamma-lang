@@ -1,0 +1,386 @@
+// Constructing values: union variants, tuples and structs from call-style arguments, and
+// field defaults.
+
+/// The type inside optional and result wrappers, where a variant shorthand's union type
+/// is found (`x: ?Shape = .Empty`).
+strip_wrappers :: fn(cx: ^FnCx, t0: Ty) -> Ty {
+    t := t0
+    while true {
+        match cx.s.tys.kind(t) {
+            .Optional(i) => { t = i }
+            .Result(_, ok) => { t = ok }
+            _ => return t
+        }
+    }
+}
+
+/// `.V`, `.V(args)`, `U.V`, `U.V(args)` for a union type `u`.
+construct_variant :: fn(cx: ^FnCx, u: Ty, name: ast.Ident, args: ?[]const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    vs := cx.s.union_variants(u) else {
+        cx.error(span, str.format("`.{}` needs a union type, but the expected type is `{}`", name.name, cx.show(u))!)
+        return error_expr(cx.s, span)
+    }
+    idx: ?usize = null
+    for i, v in enumerate(vs.variants) {
+        if v.name is name.name {
+            idx = i
+            break
+        }
+    }
+    i := idx else {
+        cx.error(name.span, str.format("`{}` has no variant `{}`", cx.show(u), name.name)!)
+        return error_expr(cx.s, span)
+    }
+    payload_ty := vs.variants[i].payload
+    payload: ?^Expr = null
+    if pt := payload_ty {
+        a := args else {
+            cx.error(span, str.format("variant `{}` needs a payload: `.{}(…)`", name.name, name.name)!)
+            return error_expr(cx.s, span)
+        }
+        // A tuple payload's elements are written directly (§5.11).
+        if .Tuple(elems, names) := cx.s.tys.kind(pt) {
+            if a.len is not 1 or elems.len is not 1 or a[0].kind is .Named(_) {
+                payload = cx.construct_tuple(pt, elems, names, a, span)
+                return tir.mk(u, .Variant(tir.VariantExpr(variant: i.trunc(u32), payload: payload)), span)
+            }
+        }
+        if a.len is not 1 or a[0].kind is not .Positional(_) {
+            cx.error(span, str.format("expected one payload value of type `{}`", cx.show(pt))!)
+            return error_expr(cx.s, span)
+        }
+        .Positional(x) := a[0].kind else return error_expr(cx.s, span)
+        payload = cx.field_value(&x, pt)
+    } else if args is not null {
+        cx.error(span, str.format("variant `{}` has no payload", name.name)!)
+        return error_expr(cx.s, span)
+    }
+    return tir.mk(u, .Variant(tir.VariantExpr(variant: i.trunc(u32), payload: payload)), span)
+}
+
+/// The named fields a spread of a value of type `vt` supplies to a construction.
+spread_source_fields :: fn(cx: ^FnCx, vt: Ty, e: ^const ast.Expr) -> ?[]SourceField needs Alloc {
+    out := list(SourceField)
+    if .Tuple(elems, names) := cx.s.tys.kind(vt) and names.len > 0 {
+        for i, n in enumerate(names) { out.push(SourceField(name: n, ty: elems[i]))! }
+        return out.items
+    }
+    fs := cx.s.struct_fields(vt) else {
+        if not cx.s.tys.is_error(vt) { cx.error(e.span, str.format("cannot spread a value of type `{}` into named arguments", cx.show(vt))!) }
+        return null
+    }
+    for f in fs { out.push(SourceField(name: f.name, ty: f.ty))! }
+    return out.items
+}
+
+SourceField :: struct {
+    name: string
+    ty: Ty
+}
+
+/// Builds a tuple of type `ty` from call-style arguments (positional or named).
+construct_tuple :: fn(cx: ^FnCx, ty: Ty, elems: []const Ty, names: []const string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    slots := list(?^Expr)
+    for _ in elems { slots.push(null)! }
+    next: usize = 0
+    // With spreads, every value goes through a temporary, in the order written.
+    spreading := false
+    for a in args {
+        if a.kind is .Spread(_) { spreading = true }
+    }
+    stmts := list(tir.Stmt)
+    // A spread that could not be expanded already explains the missing elements.
+    spread_failed := false
+    // `T(t)` with a tuple `t` is not a conversion: a tuple type takes one value per
+    // element (§6.5), and `T(..t)` builds it from another tuple.
+    if args.len is 1 and elems.len is not 1 and .Positional(e) := args[0].kind {
+        v := cx.expr(&e, null)
+        vt := cx.infer.resolve(cx.s, v.ty)
+        what: ?string = match cx.s.tys.kind(vt) {
+            .Tuple(_) => "a tuple"
+            .Array(_, _, kind) => if kind in (.Plain, .Simd) { "an array" } else { null }
+            _ => null
+        }
+        if w := what {
+            cx.error(span, str.format("`{}` takes one value per element, so {} is not converted to it; spread it: `{}(..x)` (§6.5)", cx.show(ty), w, cx.show(ty))!)
+            return error_expr(cx.s, span)
+        }
+        if elems.len > 0 {
+            slots.items[0] = cx.coerce(v, elems[0])
+            next = 1
+        }
+    }
+    for arg in args[next.min(args.len)..] {
+        parts := list(TuplePart)
+        match arg.kind {
+            .Positional(e) => {
+                if next >= elems.len {
+                    cx.error(e.span, str.format("too many values for `{}`", cx.show(ty))!)
+                    continue
+                }
+                parts.push(TuplePart(name: null, value: cx.field_value(&e, elems[next]), at: e.span))!
+            }
+            .Named(n, e) => {
+                i := names.index_of(n.name) else {
+                    cx.error(n.span, str.format("`{}` has no element named `{}`", cx.show(ty), n.name)!)
+                    continue
+                }
+                parts.push(TuplePart(name: n.name, value: cx.field_value(&e, elems[i]), at: n.span))!
+            }
+            .Spread(e) => {
+                ps := cx.spread_parts(&e, &stmts) else {
+                    spread_failed = true
+                    continue
+                }
+                for p in ps { parts.push(TuplePart(name: p.name, value: p.value, at: e.span))! }
+            }
+        }
+        for part in parts.items {
+            i: usize = 0
+            if n := part.name {
+                i = names.index_of(n) else {
+                    cx.error(part.at, str.format("`{}` has no element named `{}`", cx.show(ty), n)!)
+                    continue
+                }
+            } else {
+                if next >= elems.len {
+                    cx.error(part.at, str.format("too many values for `{}`", cx.show(ty))!)
+                    break
+                }
+                i = next
+                next += 1
+            }
+            if slots.items[i] is not null { cx.error(part.at, str.format("element {} of `{}` is given twice", i, cx.show(ty))!) }
+            v := cx.coerce(part.value, elems[i])
+            slots.items[i] = if spreading { cx.bind_temp(v, &stmts) } else { v }
+        }
+    }
+    values := list(Expr)
+    for i in 0..elems.len {
+        if v := slots.items[i] {
+            values.push(v^)!
+        } else {
+            if not spread_failed { cx.error(span, str.format("missing element {} of `{}`", i, cx.show(ty))!) }
+            values.push(error_expr(cx.s, span)^)!
+        }
+    }
+    agg := tir.mk(ty, .Aggregate(values.items), span)
+    if stmts.items.len is 0 { return agg }
+    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+}
+
+/// A value for a tuple element, with its name if it is given by name, and where.
+TuplePart :: struct {
+    name: ?string
+    value: ^Expr
+    at: source.Span
+}
+
+/// A constructor field or argument value: `---` for plain data, else coerced.
+field_value :: fn(cx: ^FnCx, e: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
+    if e.kind is .Uninit {
+        if not cx.is_plain_data(ty) { cx.error(e.span, uninit_message(cx.s, ty)) }
+        return tir.mk(ty, .Uninit, e.span)
+    }
+    v := cx.expr(e, ty)
+    return cx.coerce(v, ty)
+}
+
+/// `S(field: value, …)`.
+construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    .Adt(id, _) := cx.s.tys.kind(ty) else return error_expr(cx.s, span)
+    if info := cx.s.soa_info(ty) { return cx.soa_construct(ty, info, args, span) }
+    if h := cx.hidden_field(ty) {
+        cx.error(span, str.format("`{}` cannot be constructed outside its {}: its field `{}` is private (§3.3)", cx.show(ty), h.owner, h.name)!)
+        return error_expr(cx.s, span)
+    }
+    // The defaults of a struct's fields are evaluated while the struct is declared (§17.2),
+    // so a default that reaches a construction of the struct needs the struct complete.
+    if id in cx.s.adts_in_progress.items {
+        cx.error(span, str.format("dependency cycle: `{}` is constructed while the default of one of its fields is evaluated (§3.4)", cx.show(ty))!)
+        return error_expr(cx.s, span)
+    }
+    fields := cx.s.struct_fields(ty) else empty_slice(sema.FieldDef)
+    n := fields.len
+    stmts := list(tir.Stmt)
+    slots := list(?^Expr)
+    explicit := list(bool)
+    for _ in 0..n {
+        slots.push(null)!
+        explicit.push(false)!
+    }
+    written := list(usize)
+    bad_args := false
+    for arg in args {
+        match arg.kind {
+            .Positional(e) => {
+                if not bad_args {
+                    cx.error(e.span, str.format("`{}` is constructed with named arguments only: `{}(field: value)`", cx.show(ty), cx.show(ty))!)
+                }
+                bad_args = true
+            }
+            .Named(fname, e) => {
+                found: ?usize = null
+                for i, f in enumerate(fields) {
+                    if f.name is fname.name {
+                        found = i
+                        break
+                    }
+                }
+                i := found else {
+                    cx.error(fname.span, str.format("`{}` has no field `{}`", cx.show(ty), fname.name)!)
+                    _ = cx.expr(&e, null)
+                    continue
+                }
+                if explicit.items[i] { cx.error(fname.span, str.format("field `{}` is given twice", fname.name)!) }
+                explicit.items[i] = true
+                v := cx.field_value(&e, fields[i].ty)
+                written.push(i)!
+                slots.items[i] = v
+            }
+            .Spread(e) => {
+                v := cx.expr(&e, null)
+                vt := cx.infer.resolve(cx.s, v.ty)
+                src := cx.spread_source_fields(vt, &e) else continue
+                // Values written before the spread are evaluated before it.
+                for w in written.items {
+                    if x := slots.items[w] { slots.items[w] = cx.bind_temp(x, &stmts) }
+                }
+                written.clear()
+                base := cx.bind_temp(v, &stmts)
+                for k, sf in enumerate(src) {
+                    found: ?usize = null
+                    for i, f in enumerate(fields) {
+                        if f.name is sf.name {
+                            found = i
+                            break
+                        }
+                    }
+                    i := found else {
+                        cx.error(e.span, str.format("`{}` has no field `{}` (supplied by this spread)", cx.show(ty), sf.name)!)
+                        continue
+                    }
+                    if explicit.items[i] {
+                        // A later explicit named argument overrides; an earlier one is a
+                        // conflict.
+                        cx.error(e.span, str.format("field `{}` is supplied twice", sf.name)!)
+                        continue
+                    }
+                    if slots.items[i] is not null { cx.error(e.span, str.format("field `{}` is supplied by two spreads", sf.name)!) }
+                    proj := tir.mk(sf.ty, .Field(base, k.trunc(u32)), e.span)
+                    slots.items[i] = cx.coerce(proj, fields[i].ty)
+                }
+            }
+        }
+    }
+    // Arguments written out of field order are evaluated into temporaries first, so
+    // evaluation follows the written order (§7.1).
+    out_of_order := false
+    for k in 1..written.items.len.max(1) {
+        if written.items[k - 1] > written.items[k] { out_of_order = true }
+    }
+    if out_of_order {
+        for w in written.items {
+            if v := slots.items[w] { slots.items[w] = cx.bind_temp(v, &stmts) }
+        }
+    }
+    values := list(Expr)
+    for i in 0..n {
+        if v := slots.items[i] {
+            values.push(v^)!
+            continue
+        }
+        // Padding fields `_` of a `#bits` struct are zero (§5.10.5).
+        if fields[i].name is "_" and cx.s.bits_struct_ty(ty) is not null {
+            ft := fields[i].ty
+            values.push(if cx.s.tys.kind(ft) is .Bool { tir.mk(ft, .Bool(false), span)^ } else { tir.mk(ft, .Int(bigint.zero()), span)^ })!
+            continue
+        }
+        if d := cx.field_default(id, i, fields[i].ty) {
+            values.push(d^)!
+        } else {
+            if not bad_args { cx.error(span, str.format("missing field `{}` (it has no default)", fields[i].name)!) }
+            values.push(error_expr(cx.s, span)^)!
+        }
+    }
+    agg := tir.mk(ty, .Aggregate(values.items), span)
+    if stmts.items.len is 0 { return agg }
+    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+}
+
+/// The default of field `i` of struct `id` of type `ty`, as it is
+/// used: the literal itself for a numeric, `bool` or `null` literal of the field's
+/// type, else the default's value in static memory.
+field_default :: fn(cx: ^FnCx, id: u32, i: usize, ty: Ty) -> ?^Expr needs Load {
+    defaults := cx.s.adts.items[usize(id)].defaults
+    if i >= defaults.len or not defaults[i] { return null }
+    d := cx.s.field_default_expr(id, i) else return null
+    // A default whose type mentions a type parameter of the struct is checked as an
+    // expression of the declared field type, not of the instance's.
+    tid := cx.s.tys.template(id)
+    if tid is not id {
+        if .Struct(def) := cx.s.adts.items[usize(tid)].kind {
+            if i < def.fields.len and cx.s.tys.has_param(def.fields[i].ty) {
+                v := check_const_expr(cx.s, cx.s.adts.items[usize(id)].module, d, def.fields[i].ty)
+                return v else error_expr(cx.s, d.span)
+            }
+        }
+    }
+    return cx.default_value(cx.s.adts.items[usize(id)].module, d, ty)
+}
+
+/// The value of the default `d` (written in `module`) of type `ty`.
+default_value :: fn(cx: ^FnCx, module: usize, d: ^const ast.Expr, ty: Ty) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    e := d
+    while .Paren(inner) := e.kind { e = inner }
+    negative := false
+    if .Unary(.Neg, x) := e.kind and x.kind in (.Int(_), .Float(_)) {
+        negative = true
+        e = x
+    }
+    numeric := tys.is_integer(ty) or tys.kind(ty) is .Float(_)
+    match e.kind {
+        .Int(lit) => if numeric and lit.suffix is null {
+            v := lit.value
+            if negative { v = v.neg() }
+            if tys.is_integer(ty) { return tir.mk(ty, .Int(v), d.span) }
+            return cx.float_value(ratio.from_int(v), ty, d.span)
+        }
+        .Float(lit) => if tys.kind(ty) is .Float(_) and lit.suffix is null and not lit.imag {
+            r := lit.value
+            if negative {
+                if r.is_zero() {
+                    if not default_const(cx.s, module, d, ty) { return error_expr(cx.s, d.span) }
+                    return tir.mk(ty, .Const("<default>", d.span), d.span)
+                }
+                r = r.neg()
+            }
+            return cx.float_value(r, ty, d.span)
+        }
+        .Bool(b) => if tys.kind(ty) is .Bool { return tir.mk(ty, .Bool(b), d.span) }
+        .Null => if tys.kind(ty) is .Optional(_) { return tir.mk(ty, .Null, d.span) }
+        _ => {}
+    }
+    if not default_const(cx.s, module, d, ty) { return error_expr(cx.s, d.span) }
+    return tir.mk(ty, .Const("<default>", d.span), d.span)
+}
+
+/// The float `r` rounded to float type `ty`.
+float_value :: fn(cx: ^FnCx, r: ratio.Rat, ty: Ty, span: source.Span) -> ^Expr needs Alloc {
+    .Float(bits) := cx.s.tys.kind(ty) else return error_expr(cx.s, span)
+    x := r.to_float(bits)
+    return tir.mk(ty, .Float(x), span)
+}
+
+/// Binds `v` to a temporary (appending the `let` to `stmts`) unless it is a constant, and
+/// returns an expression reading it.
+bind_temp :: fn(cx: ^FnCx, v: ^Expr, stmts: ^List(tir.Stmt)) -> ^Expr needs Load {
+    if v.kind in (.Int(_), .Float(_), .UntypedFloat(_), .Bool(_), .Str(_), .Null, .Uninit, .Const(_)) { return v }
+    // A temporary the value points to (`&mk()` for a `^const T` parameter) must live for
+    // the whole call, not just for the statement that binds the value.
+    cx.lift_temps(v, stmts)
+    t := cx.temp(v.ty, v.span)
+    stmts.push(.Let(t, v))!
+    return tir.mk(v.ty, .Local(t), v.span)
+}
