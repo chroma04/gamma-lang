@@ -56,7 +56,7 @@ assign :: fn(cx: ^FnCx, places: []const ast.Expr, op: ast.AssignOp, value: ^cons
         v := cx.expr(value, null)
         stmts := list(tir.Stmt)
         stmts.push(.Expr(v))!
-        return .Expr(tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span))
+        return .Expr(block_of(cx.s, stmts.items, span))
     }
     if not cx.assignable_name(place_ast) {
         _ = cx.expr(value, null)
@@ -99,7 +99,7 @@ assign_place :: fn(cx: ^FnCx, place: ^Expr, place_ast: ^const ast.Expr, op: ast.
             stmts := list(tir.Stmt)
             stmts.push(.Let(tmp, addr))!
             stmts.push(.Assign(deref(), rhs))!
-            return .Expr(tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span))
+            return .Expr(block_of(cx.s, stmts.items, span))
         }
     }
 }

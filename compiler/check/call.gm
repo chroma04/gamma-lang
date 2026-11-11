@@ -121,7 +121,7 @@ call_value :: fn(cx: ^FnCx, v: ^Expr, args: []const ast.Arg, span: source.Span) 
     call := tir.mk(sig.ret, .Call(.Indirect(callee), bound.args), span)
     if bound.pre.len is 0 { return call }
     for st in bound.pre { stmts.push(st)! }
-    return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
+    return block_typed(call.ty, stmts.items, call, span)
 }
 
 /// A call of the declaration `d`, written as `callee`.
@@ -157,7 +157,7 @@ call_fn :: fn(cx: ^FnCx, f: u32, args: []const ast.Arg, span: source.Span) -> ^E
     cx.record_effects(&sig.effects, span)
     call := tir.mk(sig.ret, .Call(.Fn(f), all), span)
     if bound.pre.len is 0 { return call }
-    return tir.mk(call.ty, .Block(new(tir.Block(stmts: bound.pre, tail: call, span: span))!), span)
+    return block_typed(call.ty, bound.pre, call, span)
 }
 
 /// Bound arguments in parameter order, and the statements that evaluate them first.
@@ -527,9 +527,7 @@ expect_eq :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr ne
     }
     .Positional(a) := args[0].kind else return error_expr(cx.s, span)
     .Positional(b) := args[1].kind else return error_expr(cx.s, span)
-    prelude := cx.s.l.prelude else return error_expr(cx.s, span)
-    d := cx.s.l.lookup(prelude, "Test") else return error_expr(cx.s, span)
-    .Effect(effect_) := cx.s.resolve_decl(d) else return error_expr(cx.s, span)
+    eref := cx.s.prelude_effect("Test") else return error_expr(cx.s, span)
     tys := &cx.s.tys
     l0 := cx.expr(&a, null)
     r0 := cx.expr(&b, l0.ty)
@@ -539,7 +537,6 @@ expect_eq :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr ne
     x := cx.temp(lt, a.span)
     y := cx.temp(rt, b.span)
     differ := tir.mk(tys.bool_ty(), .Eq(tir.mk(lt, .Local(x), span), tir.mk(rt, .Local(y), span), true), span)
-    eref := types.EffectRef(eff: effect_, args: empty_slice(types.GenericArg))
     one := list(EffectRef)
     one.push(eref)!
     set := types.effect_set(one.items)
@@ -564,7 +561,7 @@ expect_eq :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr ne
     stop := tir.mk(tys.never_ty(), .Call(.Perform(eref, 1), stop_args.items), span)
     fail_stmts := list(tir.Stmt)
     fail_stmts.push(.Expr(write))!
-    fail := tir.mk(tys.never_ty(), .Block(new(tir.Block(stmts: fail_stmts.items, tail: stop, span: span))!), span)
+    fail := block_typed(tys.never_ty(), fail_stmts.items, stop, span)
     cond := list(tir.CondPart)
     cond.push(.Bool(differ))!
     check := tir.mk(tys.unit(), .If(tir.IfExpr(cond: cond.items, then: fail, else_: null)), span)
@@ -572,7 +569,7 @@ expect_eq :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr ne
     stmts.push(.Let(x, eq.l))!
     stmts.push(.Let(y, eq.r))!
     stmts.push(.Expr(check))!
-    return tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span)
+    return block_of(cx.s, stmts.items, span)
 }
 
 /// `print(template, args…)` (§21.6, §21.6.1).
@@ -589,10 +586,7 @@ print :: fn(cx: ^FnCx, to_out: bool, args: []const ast.Arg, span: source.Span) -
     }
     .Positional(template) := args[0].kind else return error_expr(cx.s, span)
     effect_name := if to_out { "Out" } else { "Err" }
-    prelude := cx.s.l.prelude else return error_expr(cx.s, span)
-    d := cx.s.l.lookup(prelude, effect_name) else return error_expr(cx.s, span)
-    .Effect(eff) := cx.s.resolve_decl(d) else return error_expr(cx.s, span)
-    eref := types.EffectRef(eff: eff, args: empty_slice(types.GenericArg))
+    eref := cx.s.prelude_effect(effect_name) else return error_expr(cx.s, span)
     one := list(EffectRef)
     one.push(eref)!
     set := types.effect_set(one.items)

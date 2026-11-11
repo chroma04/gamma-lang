@@ -166,7 +166,7 @@ construct_tuple :: fn(cx: ^FnCx, ty: Ty, elems: []const Ty, names: []const strin
     }
     agg := tir.mk(ty, .Aggregate(values.items), span)
     if stmts.items.len is 0 { return agg }
-    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+    return block_typed(ty, stmts.items, agg, span)
 }
 
 /// A value for a tuple element, with its name if it is given by name, and where.
@@ -305,7 +305,7 @@ construct_struct :: fn(cx: ^FnCx, ty: Ty, args: []const ast.Arg, span: source.Sp
     }
     agg := tir.mk(ty, .Aggregate(values.items), span)
     if stmts.items.len is 0 { return agg }
-    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+    return block_typed(ty, stmts.items, agg, span)
 }
 
 /// The default of field `i` of struct `id` of type `ty`, as it is

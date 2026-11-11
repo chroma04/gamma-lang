@@ -376,6 +376,18 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
     fn_id := cx.s.new_nested_fn(.Clause, c.name.name, c.span, cx.module, params, ret, types.empty_effects())
     cx.enter_fn(fn_id, ret, types.empty_effects())
     cx.clause = info
+    ids := cx.declare_clause_params(c, params)
+    body := cx.clause_value(c, info.op_kind, ret)
+    frame := cx.exit_fn()
+    cx.performed.extend(frame.performed)!
+    cx.s.defs.items[usize(fn_id)].parent = cx.fn_id
+    cx.nested.push(NestedFn(fn_id: fn_id, params: ids, locals: frame.locals, body: body))!
+    return fn_id
+}
+
+/// Declares the parameters of clause `c` as locals of the clause being checked, named as
+/// the clause names them, and returns their ids.
+declare_clause_params :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []const sema.ParamInfo) -> []u32 needs Load {
     ids := list(u32)
     for i, p in enumerate(params) {
         name := if i < c.params.len { c.params[i].name } else { p.name }
@@ -384,20 +396,20 @@ clause_fn :: fn(cx: ^FnCx, c: ^const ast.Clause, params: []sema.ParamInfo, ret: 
         if name is not "_" { cx.declare(name, .Var(id), at) }
         ids.push(id)!
     }
+    return ids.items
+}
+
+/// The checked body of clause `c` of an operation of kind `kind` with result type `ret`.
+clause_value :: fn(cx: ^FnCx, c: ^const ast.Clause, kind: ast.OpKind, ret: Ty) -> ^Expr needs Load {
     // A `ctl` clause must not finish normally (§14.3): its body is checked without an
     // expected type, so that a branch that finishes gives it a type other than `never`.
-    expect: ?Ty = if info.op_kind is .Ctl { null } else { ret }
+    expect: ?Ty = if kind is .Ctl { null } else { ret }
     body := match c.body.kind {
         .Block(b) => cx.block_expected(&b, true, expect)
         _ => cx.expr(c.body, expect)
     }
-    body = cx.clause_body(body, info.op_kind, ret)
-    body = cx.declare_temps(0, body)
-    frame := cx.exit_fn()
-    cx.performed.extend(frame.performed)!
-    cx.s.defs.items[usize(fn_id)].parent = cx.fn_id
-    cx.nested.push(NestedFn(fn_id: fn_id, params: ids.items, locals: frame.locals, body: body))!
-    return fn_id
+    body = cx.clause_body(body, kind, ret)
+    return cx.declare_temps(0, body)
 }
 
 /// The parameters and result type of a clause for operation `o` of the instantiated

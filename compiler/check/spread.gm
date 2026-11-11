@@ -185,7 +185,7 @@ elements_tuple :: fn(cx: ^FnCx, v: ^Expr, span: source.Span) -> ?^Expr needs Loa
             ty := tys.intern(.Tuple(ts.items, empty_slice(string)))
             agg := tir.mk(ty, .Aggregate(elems.items), span)
             if stmts.items.len is 0 { return agg }
-            return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+            return block_typed(ty, stmts.items, agg, span)
         }
         // Anything else is passed on as it is, for the caller to check.
         _ => return v

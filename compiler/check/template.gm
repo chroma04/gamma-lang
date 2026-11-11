@@ -310,7 +310,7 @@ build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template: ^const ast.Expr, res
     stmts := list(tir.Stmt)
     for st in ta.stmts { stmts.push(st)! }
     stmts.push(.Expr(write))!
-    return tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span)
+    return block_of(cx.s, stmts.items, span)
 }
 
 /// The pieces of a template, the values for its placeholders, and statements that must

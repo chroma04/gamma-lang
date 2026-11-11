@@ -66,7 +66,7 @@ generic_call :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast.Arg, s
             if x := receiver { r = cx.bind_temp(x, &stmts) }
             spread := cx.spread_generic_args(written, &stmts) else return error_expr(cx.s, span)
             call := cx.generic_call_packed(f, r, spread, span)
-            return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
+            return block_typed(call.ty, stmts.items, call, span)
         }
     }
     return cx.generic_call_packed(f, receiver, written, span)

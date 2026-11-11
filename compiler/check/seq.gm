@@ -107,7 +107,7 @@ in_expr :: fn(cx: ^FnCx, checked: ^Expr, container: ^const ast.Expr, negated: bo
             stmts := list(tir.Stmt)
             stmts.push(.Let(t, c))!
             agg := tir.mk(jt, .Aggregate(items.items), span)
-            c = tir.mk(jt, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+            c = block_typed(jt, stmts.items, agg, span)
         }
     }
     // The element converts to the members' type: `p in names` with `p: []u8` and
@@ -182,7 +182,7 @@ range_test :: fn(cx: ^FnCx, elem: ^Expr, lets: []const tir.Stmt, lo, hi: ^Expr, 
     stmts := list(tir.Stmt)
     stmts.push(.Let(tmp, elem))!
     stmts.extend(lets)!
-    return tir.mk(b, .Block(new(tir.Block(stmts: stmts.items, tail: test, span: span))!), span)
+    return block_typed(b, stmts.items, test, span)
 }
 
 /// A `for` loop (§13.2).
@@ -226,33 +226,47 @@ range_loop :: fn(cx: ^FnCx, f: ^const ast.ForExpr, lo, hi: ^Expr, elem: Ty, incl
     hi_t := cx.temp(elem, span)
     i := cx.temp(elem, span)
     local :: fn(id: u32, ty: Ty) -> ^Expr needs Alloc => tir.mk(ty, .Local(id), span)
-    incr :: fn() -> tir.Stmt needs Alloc => .Assign(local(i, elem), tir.mk(elem, .Binary(.Add(.Wrap), local(i, elem), tir.mk(elem, .Int(bigint.one()), span)), span))
     stmts := list(tir.Stmt)
     stmts.push(.Let(i, lo))!
     stmts.push(.Let(hi_t, hi))!
-    cond := list(tir.CondPart)
-    step: ^Expr = local(i, elem)
-    if inclusive {
-        going := cx.temp(b, span)
-        stmts.push(.Let(going, tir.mk(b, .Binary(.Le, local(i, elem), local(hi_t, elem)), span)))!
-        at_end := tir.mk(b, .Eq(local(i, elem), local(hi_t, elem), false), span)
-        stop := list(tir.Stmt)
-        stop.push(.Assign(local(going, b), tir.mk(b, .Bool(false), span)))!
-        more := list(tir.Stmt)
-        more.push(incr())!
-        parts := list(tir.CondPart)
-        parts.push(.Bool(at_end))!
-        step = tir.mk(cx.s.tys.unit(), .If(tir.IfExpr(cond: parts.items, then: block_of(cx.s, stop.items, span), else_: block_of(cx.s, more.items, span))), span)
-        cond.push(.Bool(local(going, b)))!
-    } else {
-        cond.push(.Bool(tir.mk(b, .Binary(.Lt, local(i, elem), local(hi_t, elem)), span)))!
-        more := list(tir.Stmt)
-        more.push(incr())!
-        step = block_of(cx.s, more.items, span)
+    if not inclusive {
+        stmts.push(.Expr(cx.counting_loop(f, elem, i, elem, local(hi_t, elem), local(i, elem))))!
+        return block_of(cx.s, stmts.items, span)
     }
+    going := cx.temp(b, span)
+    stmts.push(.Let(going, tir.mk(b, .Binary(.Le, local(i, elem), local(hi_t, elem)), span)))!
+    at_end := tir.mk(b, .Eq(local(i, elem), local(hi_t, elem), false), span)
+    stop := list(tir.Stmt)
+    stop.push(.Assign(local(going, b), tir.mk(b, .Bool(false), span)))!
+    more := list(tir.Stmt)
+    more.push(increment(i, elem, span))!
+    parts := list(tir.CondPart)
+    parts.push(.Bool(at_end))!
+    step := tir.mk(cx.s.tys.unit(), .If(tir.IfExpr(cond: parts.items, then: block_of(cx.s, stop.items, span), else_: block_of(cx.s, more.items, span))), span)
+    cond := list(tir.CondPart)
+    cond.push(.Bool(local(going, b)))!
     lp := cx.loop_with_pattern(f, elem, local(i, elem), cond.items, step)
     stmts.push(.Expr(lp))!
     return block_of(cx.s, stmts.items, span)
+}
+
+/// The statement `i += 1` (wrapping) on local `i` of integer type `ty`.
+increment :: fn(i: u32, ty: Ty, span: source.Span) -> tir.Stmt needs Alloc {
+    cur := tir.mk(ty, .Local(i), span)
+    next := tir.mk(ty, .Binary(.Add(.Wrap), tir.mk(ty, .Local(i), span), tir.mk(ty, .Int(bigint.one()), span)), span)
+    return .Assign(cur, next)
+}
+
+/// The loop of a lowered `for` that counts local `i` of type `ity` up while `i < bound`,
+/// with `item` the value matched by the head pattern in each iteration (of type `elem`).
+counting_loop :: fn(cx: ^FnCx, f: ^const ast.ForExpr, elem: Ty, i: u32, ity: Ty, bound: ^Expr, item: ^Expr) -> ^Expr needs Load {
+    span := f.span
+    lt := tir.mk(cx.s.tys.bool_ty(), .Binary(.Lt, tir.mk(ity, .Local(i), span), bound), span)
+    cond := list(tir.CondPart)
+    cond.push(.Bool(lt))!
+    more := list(tir.Stmt)
+    more.push(increment(i, ity, span))!
+    return cx.loop_with_pattern(f, elem, item, cond.items, block_of(cx.s, more.items, span))
 }
 
 /// The loop of a lowered `for`: binds the head patterns to `item` for each iteration.
@@ -321,7 +335,7 @@ for_each_value :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src0: ^Expr) -> ?^Expr ne
                 s := tir.mk(sty, .Slice(tir.SliceExpr(base: tir.mk(st, .Local(t), span), lo: null, hi: null, inclusive: false)), span)
                 stmts := list(tir.Stmt)
                 stmts.push(.Let(t, src))!
-                slice = tir.mk(sty, .Block(new(tir.Block(stmts: stmts.items, tail: s, span: span))!), span)
+                slice = block_typed(sty, stmts.items, s, span)
             }
         }
         .Ptr(c, pointee) => {
@@ -389,13 +403,8 @@ for_each_value :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src0: ^Expr) -> ?^Expr ne
     i := cx.temp(usize_t, span)
     local :: fn(id: u32, ty: Ty) -> ^Expr needs Alloc => tir.mk(ty, .Local(id), span)
     len := tir.mk(usize_t, .SliceLen(local(s, sty)), span)
-    cond := list(tir.CondPart)
-    cond.push(.Bool(tir.mk(tys.bool_ty(), .Binary(.Lt, local(i, usize_t), len), span)))!
     item := tir.mk(elem, .Index(local(s, sty), local(i, usize_t), false), span)
-    more := list(tir.Stmt)
-    more.push(.Assign(local(i, usize_t), tir.mk(usize_t, .Binary(.Add(.Wrap), local(i, usize_t), tir.mk(usize_t, .Int(bigint.one()), span)), span)))!
-    step := block_of(cx.s, more.items, span)
-    lp := cx.loop_with_pattern(f, elem, item, cond.items, step)
+    lp := cx.counting_loop(f, elem, i, usize_t, len, item)
     stmts := list(tir.Stmt)
     stmts.push(.Let(s, slice))!
     stmts.push(.Let(i, tir.mk(usize_t, .Int(bigint.zero()), span)))!

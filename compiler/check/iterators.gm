@@ -111,7 +111,7 @@ for_iterator :: fn(cx: ^FnCx, f: ^const ast.ForExpr) -> ^Expr needs Load {
     handlers.push(.Literal(tir.mk(tys.intern(.Handler(hid)), .HandlerRef(hid), span)))!
     w := tir.mk(result_ty, .With(tir.WithExpr(label: label, handlers: handlers.items, on: null, body: call)), span)
     if pre.items.len is 0 { return w }
-    return tir.mk(result_ty, .Block(new(tir.Block(stmts: pre.items, tail: w, span: span))!), span)
+    return block_typed(result_ty, pre.items, w, span)
 }
 
 /// `for p in enumerate(xs)` as the loop over the slice that the iterator runs, without a
@@ -130,15 +130,11 @@ enumerate_loop :: fn(cx: ^FnCx, f: ^const ast.ForExpr, call: ^Expr, bound: []tir
     s := cx.temp(sty, span)
     i := cx.temp(usize_t, span)
     local :: fn(id: u32, ty: Ty) -> ^Expr needs Alloc => tir.mk(ty, .Local(id), span)
-    cond := list(tir.CondPart)
-    cond.push(.Bool(tir.mk(tys.bool_ty(), .Binary(.Lt, local(i, usize_t), tir.mk(usize_t, .SliceLen(local(s, sty)), span)), span)))!
     fields := list(Expr)
     fields.push(local(i, usize_t)^)!
     fields.push(tir.mk(x_ty, .Index(local(s, sty), local(i, usize_t), false), span)^)!
     item := tir.mk(elem, .Aggregate(fields.items), span)
-    more := list(tir.Stmt)
-    more.push(.Assign(local(i, usize_t), tir.mk(usize_t, .Binary(.Add(.Wrap), local(i, usize_t), tir.mk(usize_t, .Int(bigint.one()), span)), span)))!
-    lp := cx.loop_with_pattern(f, elem, item, cond.items, block_of(cx.s, more.items, span))
+    lp := cx.counting_loop(f, elem, i, usize_t, tir.mk(usize_t, .SliceLen(local(s, sty)), span), item)
     stmts := list(tir.Stmt)
     stmts.extend(bound)!
     stmts.push(.Let(s, &args[0]))!

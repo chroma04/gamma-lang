@@ -574,7 +574,7 @@ spread_tuple :: fn(cx: ^FnCx, elems: []const ast.TupleElem, want: ?Ty, span: sou
     ty := tys.intern(.Tuple(ts.items, names.items))
     agg := tir.mk(ty, .Aggregate(values.items), span)
     if stmts.items.len is 0 { return agg }
-    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: agg, span: span))!), span)
+    return block_typed(ty, stmts.items, agg, span)
 }
 
 /// The index of the part named `name`.
@@ -899,7 +899,7 @@ chained_opt_op :: fn(cx: ^FnCx, op: ast.BinOp, lhs, r: ^Expr, span: source.Span)
     }
     ty := then.ty
     test := tir.mk(ty, .If(tir.IfExpr(cond: cond.items, then: then, else_: tir.mk(ty, .Null, span))), span)
-    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts.items, tail: test, span: span))!), span)
+    return block_typed(ty, stmts.items, test, span)
 }
 
 /// An arithmetic or bitwise operator applied to checked operands.
@@ -1230,7 +1230,7 @@ if_expr :: fn(cx: ^FnCx, i: ^const ast.IfExpr, value_: bool, expect: ?Ty) -> ^Ex
                 // As a statement, the fallback's value is discarded.
                 stmts := list(tir.Stmt)
                 stmts.push(.Expr(d))!
-                d = tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: d.span))!), d.span)
+                d = block_of(cx.s, stmts.items, d.span)
             }
             err_pat := tir.mk_pat(vt, .Err(tir.mk_pat(err, .Bind(id), name.span)), name.span)
             captured = Captured(value: v, pat: p, then: then, err_pat: err_pat)

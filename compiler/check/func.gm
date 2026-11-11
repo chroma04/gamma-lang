@@ -566,23 +566,7 @@ note_capture :: fn(cx: ^FnCx, depth: u32) {
 /// Saves the current function's state and starts checking the body of nested function
 /// `fn_id`.
 enter_fn :: fn(cx: ^FnCx, fn_id: u32, ret: Ty, declared: EffectSet) needs Alloc {
-    cx.outer.push(Frame(
-        locals: cx.locals,
-        ret: cx.ret,
-        declared: cx.declared,
-        performed: cx.performed,
-        labels: cx.labels,
-        next_label: cx.next_label,
-        in_defer: cx.in_defer,
-        defer_label_base: cx.defer_label_base,
-        fn_id: cx.fn_id,
-        captures: cx.captures,
-        open_ret: cx.open_ret,
-        open_ty: cx.open_ty,
-        clause: cx.clause,
-        handled: cx.handled,
-        block_temps: cx.block_temps,
-    ))!
+    cx.outer.push(cx.save_frame())!
     cx.block_temps = list(u32)
     cx.handled = list(EffectRef)
     cx.clause = null
@@ -607,27 +591,13 @@ exit_fn :: fn(cx: ^FnCx) -> (locals: []tir.LocalDecl, performed: []Performed, ca
     cx.pop_scope()
     f := cx.outer.pop() else return (locals: cx.locals.items, performed: cx.performed.items, captures: cx.captures)
     out := (locals: cx.locals.items, performed: cx.performed.items, captures: cx.captures)
-    cx.locals = f.locals
-    cx.ret = f.ret
-    cx.declared = f.declared
-    cx.performed = f.performed
-    cx.labels = f.labels
-    cx.next_label = f.next_label
-    cx.in_defer = f.in_defer
-    cx.defer_label_base = f.defer_label_base
-    cx.fn_id = f.fn_id
-    cx.captures = f.captures
-    cx.open_ret = f.open_ret
-    cx.open_ty = f.open_ty
-    cx.clause = f.clause
-    cx.handled = f.handled
-    cx.block_temps = f.block_temps
+    cx.load_frame(f)
     return out
 }
 
-/// Puts frame `f`'s state in place of the current function's, which it returns.
-swap_frame :: fn(cx: ^FnCx, f: Frame) -> Frame {
-    out := Frame(
+/// The state of the function being checked, as a frame.
+save_frame :: fn(cx: ^const FnCx) -> Frame {
+    return Frame(
         locals: cx.locals,
         ret: cx.ret,
         declared: cx.declared,
@@ -644,6 +614,10 @@ swap_frame :: fn(cx: ^FnCx, f: Frame) -> Frame {
         handled: cx.handled,
         block_temps: cx.block_temps,
     )
+}
+
+/// Makes frame `f`'s state the current function's.
+load_frame :: fn(cx: ^FnCx, f: Frame) {
     cx.locals = f.locals
     cx.ret = f.ret
     cx.declared = f.declared
@@ -659,6 +633,12 @@ swap_frame :: fn(cx: ^FnCx, f: Frame) -> Frame {
     cx.clause = f.clause
     cx.handled = f.handled
     cx.block_temps = f.block_temps
+}
+
+/// Puts frame `f`'s state in place of the current function's, which it returns.
+swap_frame :: fn(cx: ^FnCx, f: Frame) -> Frame {
+    out := cx.save_frame()
+    cx.load_frame(f)
     return out
 }
 
@@ -688,8 +668,7 @@ declare_temps :: fn(cx: ^FnCx, mark: usize, e: ^Expr) -> ^Expr needs Alloc {
     if cx.block_temps.items.len <= mark { return e }
     stmts := list(tir.Stmt)
     cx.push_temps(mark, &stmts)
-    blk := new(tir.Block(stmts: stmts.items, tail: e, span: e.span))!
-    return tir.mk(e.ty, .Block(blk), e.span)
+    return block_typed(e.ty, stmts.items, e, e.span)
 }
 
 /// Adds to `stmts` the declarations of the hidden locals made since `mark`.
@@ -708,8 +687,7 @@ finish_block_body :: fn(cx: ^FnCx, block: ^Expr, b: ^const ast.Block) -> ^Expr n
         success := cx.coerce(unit(cx.s, span), ret)
         stmts := list(tir.Stmt)
         stmts.push(.Expr(block))!
-        blk := new(tir.Block(stmts: stmts.items, tail: success, span: b.span))!
-        return tir.mk(ret, .Block(blk), b.span)
+        return block_typed(ret, stmts.items, success, b.span)
     }
     if not tys.is_unit(ret) and tys.kind(block.ty) is not .Never { cx.missing_return(b, ret) }
     return block
@@ -810,8 +788,7 @@ block_expected :: fn(cx: ^FnCx, b: ^const ast.Block, value: bool, expected: ?Ty)
     if cx.pending_handlers.items.len > 0 { cx.check_pending_handlers_of_scope() }
     cx.pop_scope()
     ty := if t := tail { t.ty } else if diverges { cx.s.tys.never_ty() } else { cx.s.tys.unit() }
-    blk := new(tir.Block(stmts: stmts.items, tail: tail, span: b.span))!
-    return tir.mk(ty, .Block(blk), b.span)
+    return block_typed(ty, stmts.items, tail, b.span)
 }
 
 stmt :: fn(cx: ^FnCx, s: ^const ast.Stmt) -> tir.Stmt needs Load {
@@ -877,7 +854,7 @@ defer_stmt :: fn(cx: ^FnCx, is_err: bool, body: ^const ast.Stmt) -> tir.Stmt nee
         _ => {
             stmts := list(tir.Stmt)
             stmts.push(inner)!
-            tir.mk(cx.s.tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: body.span))!), body.span)
+            block_of(cx.s, stmts.items, body.span)
         }
     }
     return .Defer(is_err, x)
@@ -993,7 +970,12 @@ forget_label_breaks :: fn(cx: ^FnCx, id: u32) -> bool {
 
 /// A block of statements as a `()` expression.
 block_of :: fn(s: ^Sema, stmts: []tir.Stmt, span: source.Span) -> ^Expr needs Alloc {
-    return tir.mk(s.tys.unit(), .Block(new(tir.Block(stmts: stmts, tail: null, span: span))!), span)
+    return block_typed(s.tys.unit(), stmts, null, span)
+}
+
+/// A block of type `ty` running `stmts`, then `tail` if there is one.
+block_typed :: fn(ty: Ty, stmts: []tir.Stmt, tail: ?^Expr, span: source.Span) -> ^Expr needs Alloc {
+    return tir.mk(ty, .Block(new(tir.Block(stmts: stmts, tail: tail, span: span))!), span)
 }
 
 /// The error for a literal whose type an earlier use already fixed (§6.1).
