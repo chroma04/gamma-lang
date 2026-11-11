@@ -1,0 +1,66 @@
+// Reading and writing the `#bits` fields of a struct as integers.
+
+/// The bits of `v`, a value of `#bits` field type `t`, as an `unsigned __int128`.
+bits_raw :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
+    match fg.g.ty.repr(t) {
+        .Bool => return str.format("(unsigned __int128)({} != 0)", v)!
+        .Int(_, _, storage) => return str.format("(unsigned __int128)({})({})", int_cty(false, storage), v)!
+        _ => {
+            // An enum's tag, or a nested `#bits` struct's integer.
+            under := fg.g.ty.int_ty(false, 8)
+            match fg.adt_def(t).kind {
+                .Union(tag, _) => { under = tag }
+                .Struct(sd) => {
+                    if u := sd.bits { under = u }
+                }
+                _ => {}
+            }
+            a := fg.addr_of(t, v)
+            uc := fg.g.ty.cty(under)
+            us := int_cty(false, fg.g.ty.size(under))
+            return str.format("(unsigned __int128)({})GM_LD({}, {})", us, uc, a)!
+        }
+    }
+}
+
+/// A value of `#bits` field type `t` from its bits `raw` (an `unsigned __int128`).
+bits_value :: fn(fg: ^FnGen, t: Ty, raw: string) -> string needs sema.Load {
+    w := fg.g.ty.bit_width(t)
+    match fg.g.ty.repr(t) {
+        .Bool => return fg.tmp(t, str.format("(uint8_t)({} != 0)", raw)!)
+        .Int(signed, _, _) => {
+            c := fg.g.ty.cty(t)
+            if signed and w < 128 {
+                return fg.tmp(t, str.format("({})((__int128)({} << {}) >> {})", c, raw, 128 - w, 128 - w)!)
+            }
+            return fg.tmp(t, str.format("({}){}", c, raw)!)
+        }
+        _ => {
+            under := fg.g.ty.int_ty(false, 8)
+            signed := false
+            is_union := false
+            match fg.adt_def(t).kind {
+                .Union(tag, _) => {
+                    under = tag
+                    signed = fg.g.ty.is_signed_integer(tag)
+                    is_union = true
+                }
+                .Struct(sd) => {
+                    if u := sd.bits { under = u }
+                }
+                _ => {}
+            }
+            uc := fg.g.ty.cty(under)
+            v := ""
+            if signed and w < 128 {
+                v = str.format("({})((__int128)({} << {}) >> {})", uc, raw, 128 - w, 128 - w)!
+            } else {
+                v = str.format("({}){}", uc, raw)!
+            }
+            b := fg.blob(t)
+            off: u64 = if is_union { fg.g.ty.offsets(t)[0] } else { 0 }
+            fg.linef("GM_ST({}, (uint8_t *)&{} + {}, {});", uc, b, off, v)
+            return b
+        }
+    }
+}

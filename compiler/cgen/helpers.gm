@@ -28,12 +28,27 @@ helper_name :: fn(h: ^Helpers, kind: string) -> string needs Alloc {
     return str.format("gm_{}{}", kind, h.n)!
 }
 
+/// Registers a new helper of this `kind` for the type `id` in `memo` and declares it
+/// (`static ret name(params);`). Returns its name; the caller generates the body and passes
+/// it to `define_helper`.
+declare_helper :: fn(h: ^Helpers, memo: ^hash_map.HashMap(u32, string), kind: string, id: u32, ret: string, params: string) -> string needs Alloc {
+    name := h.helper_name(kind)
+    memo.put(id, name)!
+    h.protos.write("static {} {}({});\n", ret, name, params)!
+    return name
+}
+
+/// Defines the helper `name` declared by `declare_helper`, with the statements `body`.
+define_helper :: fn(h: ^Helpers, name: string, ret: string, params: string, body: []const u8) needs Alloc {
+    h.bodies.write("static {} {}({}) {{\n", ret, name, params)!
+    h.bodies.extend(body)!
+    h.bodies.extend("}\n")!
+}
+
 /// `bool f(const uint8_t *a, const uint8_t *b)`: `is` on values of type `t`.
 eq_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     if n := h.eq.get(t.id) { return n }
-    name := h.helper_name("eq")
-    h.eq.put(t.id, name)!
-    h.protos.write("static bool {}(const uint8_t *a, const uint8_t *b);\n", name)!
+    name := h.declare_helper(&h.eq, "eq", t.id, "bool", "const uint8_t *a, const uint8_t *b")
     b := list(u8)
     p := ty.lay.target.ptr_bytes
     match ty.repr(t) {
@@ -121,9 +136,7 @@ eq_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
             _ => b.extend("    return true;\n")!
         }
     }
-    h.bodies.write("static bool {}(const uint8_t *a, const uint8_t *b) {{\n", name)!
-    h.bodies.extend(b.items)!
-    h.bodies.extend("}\n")!
+    h.define_helper(name, "bool", "const uint8_t *a, const uint8_t *b", b.items)
     return name
 }
 
@@ -137,9 +150,7 @@ bytewise_eq :: fn(ty: ^CTypes, t: Ty) -> bool needs Alloc => match ty.repr(t) {
 /// `bool f(const uint8_t *a, const uint8_t *b)`: `a < b` for values of type `t`.
 less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     if n := h.less.get(t.id) { return n }
-    name := h.helper_name("lt")
-    h.less.put(t.id, name)!
-    h.protos.write("static bool {}(const uint8_t *a, const uint8_t *b);\n", name)!
+    name := h.declare_helper(&h.less, "lt", t.id, "bool", "const uint8_t *a, const uint8_t *b")
     b := list(u8)
     p := ty.lay.target.ptr_bytes
     match ty.repr(t) {
@@ -205,18 +216,14 @@ less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
             _ => b.extend("    return false;\n")!
         }
     }
-    h.bodies.write("static bool {}(const uint8_t *a, const uint8_t *b) {{\n", name)!
-    h.bodies.extend(b.items)!
-    h.bodies.extend("}\n")!
+    h.define_helper(name, "bool", "const uint8_t *a, const uint8_t *b", b.items)
     return name
 }
 
 /// `uint64_t f(const uint8_t *v, uint64_t h)`: mixes the value into the FNV-1a state `h`.
 hash_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     if n := h.hash.get(t.id) { return n }
-    name := h.helper_name("hash")
-    h.hash.put(t.id, name)!
-    h.protos.write("static uint64_t {}(const uint8_t *v, uint64_t h);\n", name)!
+    name := h.declare_helper(&h.hash, "hash", t.id, "uint64_t", "const uint8_t *v, uint64_t h")
     b := list(u8)
     p := ty.lay.target.ptr_bytes
     match ty.repr(t) {
@@ -304,9 +311,7 @@ hash_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
             _ => b.extend("    return h;\n")!
         }
     }
-    h.bodies.write("static uint64_t {}(const uint8_t *v, uint64_t h) {{\n", name)!
-    h.bodies.extend(b.items)!
-    h.bodies.extend("}\n")!
+    h.define_helper(name, "uint64_t", "const uint8_t *v, uint64_t h", b.items)
     return name
 }
 

@@ -14,31 +14,12 @@ str :: import "std/str"
 /// Generates a C function from the code `emit` produces, with its own scopes and handler
 /// context `cx`. Returns the function's text.
 detached :: fn(fg: ^FnGen, head: string, cx: string, emit: fn() -> Unsup!() needs sema.Load) -> Unsup!string needs sema.Load {
-    saved_out := fg.out
-    fg.out = list(u8)
+    saved := fg.save(cx)
     fg.out.write("{} {{\n", head)!
-    saved_scopes := fg.scopes
-    fg.scopes = list(Scope)
-    saved_cx := fg.cx
-    fg.cx = cx
-    saved_indent := fg.indent
-    fg.indent = 1
-    saved_check := fg.no_check
-    fg.no_check = false
-    saved_lad := fg.lad_used
-    fg.lad_used = false
-    saved_runs := fg.runs
-    fg.runs = list(Run)
     r := emit()
-    fg.runs = saved_runs
     fg.end_lines()
     text := fg.out
-    fg.out = saved_out
-    fg.scopes = saved_scopes
-    fg.cx = saved_cx
-    fg.indent = saved_indent
-    fg.no_check = saved_check
-    fg.lad_used = saved_lad
+    fg.restore(saved)
     try r
     return text.items
 }
