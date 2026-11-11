@@ -194,15 +194,16 @@ declare_foreign_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, sig: ^const a
     if not s.tys.is_error(ret) and not s.tys.is_unit(ret) and s.tys.kind(ret) is not .Never and not s.is_c_compatible(ret, false) {
         s.error(name.span, str.format("`{}` is not a C-compatible result type (§19.1)", s.show(ret))!)
     }
-    s.fns.push(FnSig(name: name.name, span: name.span, module: module, params: r.params, ret: ret, effects: effects, generics: empty_slice(u32)))!
     params := list(u32)
     locals := list(tir.LocalDecl)
     for i, p in enumerate(r.params) {
         locals.push(tir.LocalDecl(name: p.name, ty: p.ty, mutable: false, span: p.span))!
         params.push(i.trunc(u32))!
     }
-    s.defs.push(tir.FnDef(kind: .Foreign, params: params.items, locals: locals.items, body: null))!
-    f := (s.fns.items.len - 1).trunc(u32)
+    f := s.add_fn(
+        FnSig(name: name.name, span: name.span, module: module, params: r.params, ret: ret, effects: effects, generics: empty_slice(u32)),
+        tir.FnDef(kind: .Foreign, params: params.items, locals: locals.items, body: null),
+    )
     if sig.variadic { s.variadic_fns.push(f)! }
     return f
 }
@@ -271,7 +272,7 @@ callconv_fn_ptr :: fn(s: ^Sema, module: usize, attrs: []const ast.Attribute, inn
         s.error(span, "a function pointer type with a calling convention other than C must have effects at most `{Sys}` (§19.2)")
         return s.tys.error()
     }
-    return s.tys.intern(.FnPtr(types.FnTy(params: sig.params, ret: sig.ret, effects: sig.effects, variadic: sig.variadic, win64: true)))
+    return s.tys.intern(.FnPtr(types.FnTy(params: sig.params, ret: sig.ret, effects: sig.effects, win64: true)))
 }
 
 /// `#export("sym")` on the function `f` (§19.4): its signature must be C-compatible and its

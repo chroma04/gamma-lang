@@ -126,7 +126,7 @@ fn_literal :: fn(cx: ^FnCx, lit: ^const ast.FnLit, expect: ?Ty, name: ?ast.Ident
             cx.error(span, "a function with a calling convention other than C must have effects at most `{Sys}` (§19.2)")
         }
     }
-    fty := types.FnTy(params: ptys.items, ret: final_ret, effects: effects, variadic: false, win64: win64)
+    fty := types.FnTy(params: ptys.items, ret: final_ret, effects: effects, win64: win64)
     if frame.captures {
         if wants_pointer {
             cx.error(span, "a function literal that uses local variables cannot be a function pointer (§11.7)")

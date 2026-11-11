@@ -14,6 +14,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "unit_tests_pass", run: unit_tests_pass))!
     out.push(kit.Test(name: "sources_are_formatted", run: sources_are_formatted))!
     out.push(kit.Test(name: "architecture_names_every_module", run: architecture_names_every_module))!
+    out.push(kit.Test(name: "fuzz_targets_type_check", run: fuzz_targets_type_check))!
     when target.os is not .Windows {
         out.push(kit.Test(name: "the_compiler_compiles_itself_to_a_fixed_point", run: fixed_point))!
         out.push(kit.Test(name: "split_emitted_c_builds_the_program", run: split_emitted_c))!
@@ -58,6 +59,21 @@ architecture_names_every_module :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
         if not str.contains(doc, str.format("compiler/{}/", e.name)!) { missing.write(" compiler/{}/", e.name)! }
     }
     try t.check(missing.items.len is 0, "docs/architecture.md does not mention:{}", missing.items)
+    return ()
+}
+
+/// Every root module of `fuzz/` type-checks: `fuzz/build.sh` needs clang and libFuzzer, so
+/// the harness would not otherwise notice a target that stopped compiling.
+fuzz_targets_type_check :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    checked: usize = 0
+    for r in fs.entries(t.repo("fuzz")) {
+        e := r else break
+        if e.kind is not .File or not e.name.ends_with(".gm") { continue }
+        out := try t.run(t.gamma([_]string("check", t.repo(str.format("fuzz/{}", e.name)!))))
+        try t.check(out.success(), "fuzz/{} does not type-check:\n{}{}", e.name, out.out, out.err)
+        checked += 1
+    }
+    try t.check(checked > 0, "no fuzz targets found")
     return ()
 }
 

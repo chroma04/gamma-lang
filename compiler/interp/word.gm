@@ -1,0 +1,249 @@
+// Arithmetic and comparisons on words (u64): integers of at most 64 bits and floats. This is the
+// fast path of the tree walker and the register machine; its overflow and shift rules are
+// the ones of `intarith.gm`, which it calls where an operation leaves the common case.
+
+/// The low `bits` bits set.
+#inline
+mask64 :: fn(bits: u32) -> u64 => if bits >= 64 { ~u64(0) } else { (u64(1) << u64(bits)) - 1 }
+
+/// The value of the word `v` of a signed integer of `bits` bits.
+#inline
+sext :: fn(v: u64, bits: u32) -> i64 => match bits {
+    8 => i64(v.trunc(u8).bits(i8))
+    16 => i64(v.trunc(u16).bits(i16))
+    32 => i64(v.trunc(u32).bits(i32))
+    _ => v.bits(i64)
+}
+
+/// The smallest and largest values of a signed integer of `bits` bits.
+#inline
+lo64 :: fn(bits: u32) -> i64 => if bits >= 64 { @min_value(i64) } else { -(i64(1) << (bits - 1)) }
+
+#inline
+hi64 :: fn(bits: u32) -> i64 => if bits >= 64 { @max_value(i64) } else { (i64(1) << (bits - 1)) - 1 }
+
+/// `p < q` and the other comparisons of words.
+#inline
+word_less :: fn(op: tir.BinOp, how: WordCmp, p, q: u64) -> bool {
+    match how {
+        .Signed(bits) => {
+            x := sext(p, bits)
+            y := sext(q, bits)
+            return match op {
+                .Lt => x < y
+                .Le => x <= y
+                .Gt => x > y
+                _ => x >= y
+            }
+        }
+        .F64 => {
+            x := p.bits(f64)
+            y := q.bits(f64)
+            return match op {
+                .Lt => x < y
+                .Le => x <= y
+                .Gt => x > y
+                _ => x >= y
+            }
+        }
+        .F32 => {
+            x := p.trunc(u32).bits(f32)
+            y := q.trunc(u32).bits(f32)
+            return match op {
+                .Lt => x < y
+                .Le => x <= y
+                .Gt => x > y
+                _ => x >= y
+            }
+        }
+        _ => return match op {
+            .Lt => p < q
+            .Le => p <= q
+            .Gt => p > q
+            _ => p >= q
+        }
+    }
+}
+
+/// `p is q` for words.
+#inline
+word_eq :: fn(how: WordCmp, p, q: u64) -> bool => match how {
+    .F64 => p.bits(f64) is q.bits(f64)
+    .F32 => p.trunc(u32).bits(f32) is q.trunc(u32).bits(f32)
+    .Bool => (p is not 0) is (q is not 0)
+    _ => p is q
+}
+
+/// `+ - * /` on the words of two `f64`s or (not `wide`) `f32`s, computed in `f64` and rounded.
+float_op :: fn(op: tir.BinOp, wide: bool, p, q: u64) -> u64 {
+    x := if wide { p.bits(f64) } else { f64(p.trunc(u32).bits(f32)) }
+    y := if wide { q.bits(f64) } else { f64(q.trunc(u32).bits(f32)) }
+    r := match op {
+        .Add(_) => x + y
+        .Sub(_) => x - y
+        .Mul(_) => x * y
+        _ => x / y
+    }
+    return if wide { r.bits(u64) } else { u64(r.to(f32).bits(u32)) }
+}
+
+/// An integer word converted to another integer type.
+int_conv :: fn(op: tir.Builtin, from: IntW, to: IntW, v: u64) -> u64 {
+    if op is .Sat {
+        x := if from.signed { i128(sext(v, from.bits)).bits(u128) } else { u128(v) }
+        return num_ext(to.signed, to.bits, num_bits(num_sat(num_val(from.signed, x), to.signed, to.bits))).trunc(u64) & mask64(to.bits)
+    }
+    x := if from.signed { sext(v, from.bits).bits(u64) } else { v }
+    return x & mask64(to.bits)
+}
+
+/// `@rotl` and `@rotr` of the word `v` by `k`, and `@clz`, `@ctz`, `@popcount`, `@bswap`
+/// and `@bitreverse` of `v`, the word of an integer of type `t`.
+#noinline
+bit_word :: fn(op: tir.Builtin, t: IntW, v, k: u64) -> u64 {
+    n := t.bits
+    x := v & mask64(n)
+    match op {
+        .Rotl, .Rotr => {
+            s := (k % u64(n)).trunc(u32)
+            if op is .Rotr { s = (n - s) % n }
+            if s is 0 { return x }
+            return ((x <<% u64(s)) | (x >> u64(n - s))) & mask64(n)
+        }
+        .Clz => return u64(@clz(x)) - u64(64 - n)
+        .Ctz => return if x is 0 { u64(n) } else { u64(@ctz(x)) }
+        .Popcount => return u64(@popcount(x))
+        .Bswap => return @bswap(x) >> u64(64 - n)
+        _ => return @bitreverse(x) >> u64(64 - n)
+    }
+}
+
+/// `-` and `~` of the word `v` of an integer of type `t`.
+int_un :: fn(m: ^Machine, op: tir.UnOp, t: IntW, v: u64, n: ^Node) -> Flow!u64 needs Alloc {
+    mask := mask64(t.bits)
+    if op is .BitNot { return ~v & mask }
+    if t.signed {
+        x := sext(v, t.bits)
+        if x is lo64(t.bits) {
+            try m.checked_overflow(n.span, "-")
+            return v
+        }
+        return (0 -% x).bits(u64) & mask
+    }
+    if v is 0 { return 0 }
+    try m.checked_overflow(n.span, "-")
+    return (0 -% v) & mask
+}
+
+/// A binary operator on word integers of type `t`, the right operand of a shift having type
+/// `shift`.
+int_op :: fn(m: ^Machine, a: Act, op: tir.BinOp, t: IntW, shift: IntW, l, r: ^Node, n: ^Node) -> Flow!u64 needs Run {
+    p := try m.ew(a, l)
+    q := try m.ew(a, r)
+    return m.int_word(op, t, shift, p, q, n)
+}
+
+/// A binary operator on the words `p` and `q` of integers of type `t` (`q` of type `shift`
+/// for a shift), for the `IntOp` node `n`.
+int_word :: fn(m: ^Machine, op: tir.BinOp, t: IntW, shift: IntW, p, q: u64, n: ^Node) -> Flow!u64 needs Alloc {
+    mask := mask64(t.bits)
+    bits := t.bits
+    match op {
+        .Add(fl) => {
+            if t.signed {
+                x := sext(p, bits)
+                y := sext(q, bits)
+                s := x +% y
+                over := if bits >= 64 { ((x ~ s) & (y ~ s)) < 0 } else { s < lo64(bits) or s > hi64(bits) }
+                return m.int_done(n, fl, t, s.bits(u64), over, y < 0, "+")
+            }
+            s := p +% q
+            over := if bits >= 64 { s < p } else { s > mask }
+            return m.int_done(n, fl, t, s, over, false, "+")
+        }
+        .Sub(fl) => {
+            if t.signed {
+                x := sext(p, bits)
+                y := sext(q, bits)
+                s := x -% y
+                over := if bits >= 64 { ((x ~ y) & (x ~ s)) < 0 } else { s < lo64(bits) or s > hi64(bits) }
+                return m.int_done(n, fl, t, s.bits(u64), over, y > 0, "-")
+            }
+            return m.int_done(n, fl, t, p -% q, p < q, true, "-")
+        }
+        .Mul(fl) => {
+            if t.signed {
+                x := sext(p, bits)
+                y := sext(q, bits)
+                if bits <= 32 {
+                    s := x * y
+                    return m.int_done(n, fl, t, s.bits(u64), s < lo64(bits) or s > hi64(bits), s < 0, "*")
+                }
+                s := i128(x) * i128(y)
+                return m.int_done(n, fl, t, s.trunc(i64).bits(u64), s < i128(lo64(bits)) or s > i128(hi64(bits)), s < 0, "*")
+            }
+            if bits <= 32 {
+                s := p * q
+                return m.int_done(n, fl, t, s, s > mask, false, "*")
+            }
+            s := u128(p) * u128(q)
+            return m.int_done(n, fl, t, s.trunc(u64), s > u128(mask), false, "*")
+        }
+        .Shl(fl) => {
+            k := try m.shift_word(n, shift, q, bits)
+            if not t.signed {
+                low := (p <<% u64(k)) & mask
+                return m.int_done(n, fl, t, low, (low >> u64(k)) is not p, false, "<<")
+            }
+            v := sext(p, bits)
+            w := sext((v.bits(u64) <<% u64(k)) & mask, bits)
+            return m.int_done(n, fl, t, w.bits(u64), (w >> k) is not v, v < 0, "<<")
+        }
+        .Shr => {
+            k := try m.shift_word(n, shift, q, bits)
+            if t.signed { return (sext(p, bits) >> k).bits(u64) & mask }
+            return p >> u64(k)
+        }
+        .Div, .Rem => {
+            if q is 0 { return !m.div_zero_trap(n.span) }
+            is_div := op is .Div
+            if not t.signed { return if is_div { p / q } else { p % q } }
+            x := sext(p, bits)
+            y := sext(q, bits)
+            if y is -1 {
+                if x is lo64(bits) { return !m.overflow_trap(n.span, op_sym(op)) }
+                return if is_div { (0 -% x).bits(u64) & mask } else { 0 }
+            }
+            return (if is_div { x / y } else { x % y }).bits(u64) & mask
+        }
+        .BitAnd => return p & q
+        .BitOr => return p | q
+        .BitXor => return p ~ q
+        _ => return !m.trap(n.span, "internal error: a comparison reached the integer operators")
+    }
+}
+
+/// The result of `+ - * <<` whose wrapped bits are `low`, as the flavor `fl` says.
+int_done :: fn(m: ^Machine, n: ^Node, fl: ast.Flavor, t: IntW, low: u64, over: bool, below: bool, sym: string) -> Flow!u64 needs Alloc {
+    mask := mask64(t.bits)
+    if not over { return low & mask }
+    return (try m.overflow_result(n.span, fl, t.signed, t.bits, u128(low), below, sym)).trunc(u64) & mask
+}
+
+/// The shift amount `q` (a word of type `rt`) for an integer of `bits` bits: it traps if it is
+/// not below `bits`, and in Fast mode reduces it.
+shift_word :: fn(m: ^Machine, n: ^Node, rw: IntW, q: u64, bits: u32) -> Flow!u32 needs Alloc {
+    neg := rw.signed and sext(q, rw.bits) < 0
+    if not neg and q < u64(bits) { return q.trunc(u32) }
+    lt := n.ty
+    if .IntOp(x) := n.op { lt = x.l.ty }
+    return m.shift_check(n.span, lt, neg, u128(if neg { (0 -% sext(q, rw.bits)).bits(u64) } else { q }), bits)
+}
+
+test "word bounds agree with the general ones" {
+    for bits in 1..=u32(64) {
+        expect_eq(i128(lo64(bits)), int_lo(bits))
+        expect_eq(i128(hi64(bits)), int_hi(bits))
+        expect_eq(u128(mask64(bits)), num_mask(bits))
+    }
+}

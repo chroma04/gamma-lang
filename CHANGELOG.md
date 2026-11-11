@@ -52,6 +52,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **The language server reports a message header without a valid `Content-Length`** as a
+  parse error and goes on reading. A header block that lacked the field was taken for a
+  stray blank line, and the messages after it were read out of step.
 - **An integer literal given a float type is checked for converting exactly**, as the
   specification says, for every float type. `x: f32 = 16777217` and `h: f16 = 2049` were
   accepted and silently rounded; they are now compile errors (write `16777217.0` to ask

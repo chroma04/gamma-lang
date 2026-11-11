@@ -66,17 +66,12 @@ parse_handler_decl :: fn(p: ^Parser) -> Abort!ast.HandlerDecl needs Alloc {
     if p.at(.LParen) { params = try p.parse_decl_params() }
     effect_ := box(try p.parse_effect_ref())
     _ = try p.expect_kw(.For, "after the effect of a handler declaration")
-    old := p.set_restr(Restr(no_brace: true))
-    for_ty := p.parse_type()
-    p.restr = old
-    for_type := box(try for_ty)
+    for_type := box(try p.parse_type_in(Restr(no_brace: true)))
     effects := try p.parse_needs_opt(false)
     _ = try p.expect(.LBrace, "to begin the handler body")
     saved := p.labels
     p.labels = list(string)
-    p.restr = Restr()
     clauses := p.parse_clauses()
-    p.restr = old
     p.labels = saved
     return ast.HandlerDecl(
         params: params,
@@ -119,27 +114,14 @@ parse_when_items :: fn(p: ^Parser) -> Abort!ast.WhenItems needs Alloc {
 /// `{ items }` of a top-level `when`. Errors are recovered item by item.
 parse_top_block :: fn(p: ^Parser) -> Abort![]ast.Item needs Alloc {
     _ = try p.expect(.LBrace, "to begin the block")
-    old := p.set_restr(Restr())
-    defer p.restr = old
     try p.enter()
     defer p.leave()
     items := list(ast.Item)
-    while true {
-        p.skip_newlines()
-        if p.eat(.RBrace) { break }
-        if p.at_eof() {
-            _ = p.expected("`}` to close the block")
-            break
-        }
-        before := p.pos
-        if item := p.parse_item() {
-            items.push(item)!
-            p.expect_terminator("the declaration")
-        } else {
-            p.recover_to_stmt_end()
-        }
-        if p.pos is before { _ = p.bump() }
-    }
+    p.members("block", fn() -> Abort!() needs Alloc {
+        items.push(try p.parse_item())!
+        p.expect_terminator("the declaration")
+        return ()
+    })
     return items.items
 }
 

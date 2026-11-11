@@ -318,7 +318,6 @@ fn_cast_mismatch :: fn(cx: ^FnCx, from, to: ^const types.FnTy) -> ?string needs 
         return pointer(a) is not 0 and pointer(a) is pointer(b) and (tys.kind(a) is .Optional(_)) is (tys.kind(b) is .Optional(_))
     }
     if from.win64 is not to.win64 { return "the calling conventions differ" }
-    if from.variadic is not to.variadic { return "only one of them is variadic" }
     if from.params.len is not to.params.len { return str.format("they take {} and {} parameters", from.params.len, to.params.len)! }
     for i in 0..from.params.len {
         a := from.params[i]
@@ -604,7 +603,7 @@ finish_call :: fn(cx: ^FnCx, pre: []tir.Stmt, call: ^Expr, receiver: bool) -> ^E
         args[0] = cx.bind_temp(new(args[0])!, &stmts)^
     }
     stmts.extend(pre)!
-    return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: call.span))!), call.span)
+    return block_typed(call.ty, stmts.items, call, call.span)
 }
 
 /// The effect that `e` names, if it names one: `E`, `m.E`, or an instantiation `E(T)`.

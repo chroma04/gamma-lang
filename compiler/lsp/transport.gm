@@ -132,6 +132,10 @@ read_line :: fn(inp: ^Input, limit: usize, line: ^List(u8)) needs Alloc + In {
 /// Reads one message. `null` at the end of the input.
 read_message :: fn(inp: ^Input) -> ReadError!?[]u8 needs Alloc + In {
     length: ?usize = null
+    /// A problem with the headers, reported once they have all been read so that the next
+    /// message starts at a line boundary.
+    problem: ?string = null
+    seen_header := false
     line := list(u8)
     defer line.deinit()
     while true {
@@ -140,13 +144,22 @@ read_message :: fn(inp: ^Input) -> ReadError!?[]u8 needs Alloc + In {
         if line.items.len > MAX_HEADER_LINE { return !.Invalid("header line is too long") }
         text := trim_end_newlines(line.items)
         if text.len is 0 {
-            if length is not null { break }
-            // A stray blank line between messages.
-            continue
+            if not seen_header {
+                // A stray blank line between messages.
+                continue
+            }
+            if m := problem { return !.Invalid(m) }
+            if length is null { return !.Invalid("missing Content-Length header") }
+            break
         }
+        seen_header = true
         if split := str.split_once(text, ":") {
             if str.eq_ignore_case(str.trim(split.before), "content-length") {
-                length = parse_length(str.trim(split.after)) else return !.Invalid("bad Content-Length header")
+                if n := parse_length(str.trim(split.after)) {
+                    length = n
+                } else if problem is null {
+                    problem = "bad Content-Length header"
+                }
             }
         }
         // Other headers (`Content-Type`) are ignored.

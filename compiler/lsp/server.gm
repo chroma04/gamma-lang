@@ -318,9 +318,15 @@ send :: fn(msg: Value) needs Alloc + Fs + Out {
     write_message(to_text(msg))
 }
 
-respond :: fn(id: Value, result: Value) needs Alloc + Fs + Out {
+/// A JSON-RPC message under construction, with the version member in place.
+envelope :: fn() -> Obj needs Alloc {
     o := obj()
     o.put("jsonrpc", text("2.0"))
+    return o
+}
+
+respond :: fn(id: Value, result: Value) needs Alloc + Fs + Out {
+    o := envelope()
     o.put("id", id)
     o.put("result", result)
     send(o.value())
@@ -330,16 +336,14 @@ respond_error :: fn(id: Value, code: i64, message: string) needs Alloc + Fs + Ou
     e := obj()
     e.put("code", int(code))
     e.put("message", text(message))
-    o := obj()
-    o.put("jsonrpc", text("2.0"))
+    o := envelope()
     o.put("id", id)
     o.put("error", e.value())
     send(o.value())
 }
 
 notify :: fn(method: string, params: Value) needs Alloc + Fs + Out {
-    o := obj()
-    o.put("jsonrpc", text("2.0"))
+    o := envelope()
     o.put("method", text(method))
     o.put("params", params)
     send(o.value())
@@ -357,97 +361,105 @@ publish_empty :: fn(uri: string) needs Alloc + Fs + Out {
 notification :: fn(srv: ^Server, method: string, params: Value) -> Flow needs Fx {
     match method {
         "exit" => return .Exit(if srv.shutdown { 0 } else { 1 })
-        "textDocument/didOpen" => {
-            td := field(params, "textDocument")
-            uri := as_str(field(td, "uri")) else return .Continue
-            body := as_str(field(td, "text")) else return .Continue
-            raw := uri_to_path(uri) else return .Continue
-            if not is_gm_file(raw) { return .Continue }
-            version := as_i64(field(td, "version")) else 0
-            path := load.canonical_path(raw)
-            srv.docs.put(path, Doc(uri: dupe(uri)!, version: version, text: dupe(body)!))!
-            srv.invalidate(path)
-        }
-        "textDocument/didChange" => {
-            td := field(params, "textDocument")
-            uri := as_str(field(td, "uri")) else return .Continue
-            raw := uri_to_path(uri) else return .Continue
-            path := load.canonical_path(raw)
-            d := srv.docs.get_ptr(path) else return .Continue
-            d.version = as_i64(field(td, "version")) else d.version
-            // Full synchronization: the last change holds the whole text.
-            if changes := as_array(field(params, "contentChanges")) {
-                if changes.len > 0 {
-                    if body := as_str(field(changes[changes.len - 1], "text")) { d.text = dupe(body)! }
-                }
-            }
-            srv.invalidate(path)
-        }
+        "textDocument/didOpen" => srv.did_open(params)
+        "textDocument/didChange" => srv.did_change(params)
         "textDocument/didSave" => {
             if uri := as_str(path2(params, "textDocument", "uri")) {
                 if raw := uri_to_path(uri) { srv.invalidate(load.canonical_path(raw)) }
             }
         }
-        "initialized" => {
-            if srv.can_watch {
-                srv.next_request += 1
-                id := str.format("gamma-register-{}", srv.next_request)!
-                w1 := obj()
-                w1.put("globPattern", text("**/*.gm"))
-                w2 := obj()
-                w2.put("globPattern", text("**/gamma.toml"))
-                ws := list(Value)
-                ws.push(w1.value())!
-                ws.push(w2.value())!
-                ro := obj()
-                ro.put("watchers", array(ws.items))
-                reg := obj()
-                reg.put("id", text("gamma-watched-files"))
-                reg.put("method", text("workspace/didChangeWatchedFiles"))
-                reg.put("registerOptions", ro.value())
-                p := obj()
-                p.put("registrations", array([1]Value(reg.value())[..]))
-                o := obj()
-                o.put("jsonrpc", text("2.0"))
-                o.put("id", text(id))
-                o.put("method", text("client/registerCapability"))
-                o.put("params", p.value())
-                send(o.value())
-            }
-        }
+        "initialized" => srv.register_watchers()
         "workspace/didChangeWatchedFiles" => srv.watched_files_changed(params)
-        "textDocument/didClose" => {
-            uri := as_str(path2(params, "textDocument", "uri")) else return .Continue
-            raw := uri_to_path(uri) else return .Continue
-            path := load.canonical_path(raw)
-            if srv.docs.contains(path) {
-                _ = srv.docs.remove(path)
-                publish_empty(uri)
-                srv.invalidate(path)
-                dir := dir_of(path)
-                still_open := false
-                for kv in srv.docs.entries() {
-                    if dir_of(kv.key) is dir { still_open = true }
-                }
-                if not still_open {
-                    if a := srv.analyses.get(dir) { release(a) }
-                    _ = srv.analyses.remove(dir)
-                    _ = srv.stale.remove(dir)
-                    // Other files of the directory keep no diagnostics once nothing is open.
-                    if old := srv.published.get(dir) {
-                        _ = srv.published.remove(dir)
-                        others := old
-                        others.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
-                        for other in others.items {
-                            if other is not path { publish_empty(path_to_uri(other)) }
-                        }
-                    }
-                }
-            }
-        }
+        "textDocument/didClose" => srv.did_close(params)
         _ => {}
     }
     return .Continue
+}
+
+/// `textDocument/didOpen`: the document is now held by the client.
+did_open :: fn(srv: ^Server, params: Value) needs Alloc + Fs {
+    td := field(params, "textDocument")
+    uri := as_str(field(td, "uri")) else return
+    body := as_str(field(td, "text")) else return
+    raw := uri_to_path(uri) else return
+    if not is_gm_file(raw) { return }
+    version := as_i64(field(td, "version")) else 0
+    path := load.canonical_path(raw)
+    srv.docs.put(path, Doc(uri: dupe(uri)!, version: version, text: dupe(body)!))!
+    srv.invalidate(path)
+}
+
+/// `textDocument/didChange`, with full synchronization.
+did_change :: fn(srv: ^Server, params: Value) needs Alloc + Fs {
+    td := field(params, "textDocument")
+    uri := as_str(field(td, "uri")) else return
+    raw := uri_to_path(uri) else return
+    path := load.canonical_path(raw)
+    d := srv.docs.get_ptr(path) else return
+    d.version = as_i64(field(td, "version")) else d.version
+    // The last change holds the whole text.
+    if changes := as_array(field(params, "contentChanges")) {
+        if changes.len > 0 {
+            if body := as_str(field(changes[changes.len - 1], "text")) { d.text = dupe(body)! }
+        }
+    }
+    srv.invalidate(path)
+}
+
+/// `initialized`: asks a client that can watch files to report changes to `.gm` files and
+/// manifests.
+register_watchers :: fn(srv: ^Server) needs Alloc + Fs + Out {
+    if not srv.can_watch { return }
+    srv.next_request += 1
+    id := str.format("gamma-register-{}", srv.next_request)!
+    w1 := obj()
+    w1.put("globPattern", text("**/*.gm"))
+    w2 := obj()
+    w2.put("globPattern", text("**/gamma.toml"))
+    ws := list(Value)
+    ws.push(w1.value())!
+    ws.push(w2.value())!
+    ro := obj()
+    ro.put("watchers", array(ws.items))
+    reg := obj()
+    reg.put("id", text("gamma-watched-files"))
+    reg.put("method", text("workspace/didChangeWatchedFiles"))
+    reg.put("registerOptions", ro.value())
+    p := obj()
+    p.put("registrations", array([1]Value(reg.value())[..]))
+    o := envelope()
+    o.put("id", text(id))
+    o.put("method", text("client/registerCapability"))
+    o.put("params", p.value())
+    send(o.value())
+}
+
+/// `textDocument/didClose`: the document's diagnostics are cleared, and the analysis of
+/// its directory dropped once no document of it is open.
+did_close :: fn(srv: ^Server, params: Value) needs Fx {
+    uri := as_str(path2(params, "textDocument", "uri")) else return
+    raw := uri_to_path(uri) else return
+    path := load.canonical_path(raw)
+    if not srv.docs.contains(path) { return }
+    _ = srv.docs.remove(path)
+    publish_empty(uri)
+    srv.invalidate(path)
+    dir := dir_of(path)
+    for kv in srv.docs.entries() {
+        if dir_of(kv.key) is dir { return }
+    }
+    if a := srv.analyses.get(dir) { release(a) }
+    _ = srv.analyses.remove(dir)
+    _ = srv.stale.remove(dir)
+    // Other files of the directory keep no diagnostics once nothing is open.
+    if old := srv.published.get(dir) {
+        _ = srv.published.remove(dir)
+        others := old
+        others.items.sort_by(fn(x, y: ^const string) -> bool => path_less(x^, y^))
+        for other in others.items {
+            if other is not path { publish_empty(path_to_uri(other)) }
+        }
+    }
 }
 
 test "syntax errors are worded like those of the compiler" {

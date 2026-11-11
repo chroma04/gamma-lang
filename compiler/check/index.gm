@@ -23,7 +23,7 @@ index_value :: fn(cx: ^FnCx, b0: ^Expr, index_ast: ^const ast.Expr, span: source
         s := cx.slice_of(b, span, lo, hi, r.inclusive, span)
         stmts := list(tir.Stmt)
         stmts.push(.Let(t, i))!
-        return tir.mk(s.ty, .Block(new(tir.Block(stmts: stmts.items, tail: s, span: span))!), span)
+        return block_typed(s.ty, stmts.items, s, span)
     }
     if not cx.infer.require_unsigned(tys, i.ty, .Usize) and not tys.is_error(i.ty) {
         cx.error(i.span, str.format("an index must have an unsigned integer type, not `{}`", cx.show(it))!)
@@ -114,8 +114,7 @@ hold_temp_array :: fn(cx: ^FnCx, v: ^Expr) -> (hold: tir.Stmt, local: ^Expr) nee
 held :: fn(s: ^Sema, hold: tir.Stmt, sl: ^Expr) -> ^Expr needs Alloc {
     stmts := list(tir.Stmt)
     stmts.push(hold)!
-    blk := new(tir.Block(stmts: stmts.items, tail: sl, span: sl.span))!
-    return tir.mk(sl.ty, .Block(blk), sl.span)
+    return block_typed(sl.ty, stmts.items, sl, sl.span)
 }
 
 /// Whether `e` is a slice of a temporary array held by `held`.

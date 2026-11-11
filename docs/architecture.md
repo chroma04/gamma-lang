@@ -291,6 +291,10 @@ stable text form, which tests of the compiler use.
 | layouts: sizes, alignments and field offsets, for the checker and both back ends; `#bits` field layouts | `sema/layout.gm`, `sema/adt.gm` |
 | the stack bytes a call is charged (`frame_cost`), shared by the C back end, the interpreter and `@stack_size` | `sema/frame.gm` |
 | the per-function context, scopes, statements, loops | `check/func.gm` |
+| bindings and destructuring, local types; assignments | `check/bindings.gm`, `check/assign.gm` |
+| `return`, `break`, `continue` and their targets | `check/jumps.gm` |
+| constructing variants, tuples and structs, field defaults | `check/construct.gm` |
+| the effects a function performs against those it declares | `check/effect_check.gm` |
 | expressions, operators, optionals and results | `check/expr.gm`, `check/optionals.gm` |
 | coercions | `check/coerce.gm` |
 | calls and builtin functions, methods, rest parameters and spreads | `check/call.gm`, `check/methods.gm`, `check/spread.gm` |
@@ -298,7 +302,7 @@ stable text form, which tests of the compiler use.
 | `in` and `for` over ranges, arrays and slices; indexing and slicing; array construction | `check/seq.gm`, `check/index.gm`, `check/array_ctor.gm` |
 | literal inference | `check/infer.gm`, `check/finalize.gm` |
 | function literals, captures and second-class rules | `check/fnlit.gm` |
-| `with`, handler literals and declarations, `resume`, `cancel` | `check/handlers.gm`, `check/handler_decls.gm` |
+| `with`, handler literals and declarations, `resume`, `cancel`; effect operations | `check/handlers.gm`, `check/handler_decls.gm`, `check/perform.gm` |
 | iterators (a `for` over the core `enumerate` becomes the index loop over the slice, without a handler) | `check/iterators.gm` |
 | generic function calls and instances | `check/generic.gm` |
 | compile-time evaluation requests (`@static_assert`, constants, array lengths) | `check/consts.gm`, `check/eval_prepare.gm` |
@@ -419,7 +423,9 @@ every checked operation checked.
   up by type at run time: the size of every value, the frame offsets of locals, the offsets
   of fields, the sizes of elements, the tags of variants, and operations specialized for the
   values that fit in a machine word (integers of 8 to 64 bits, `f32` and `f64`, booleans,
-  pointers), which are computed as 64-bit words rather than as bytes.
+  pointers), which are computed as 64-bit words rather than as bytes (`word.gm`; its
+  overflow, saturation and shift rules are the ones of the byte arithmetic of `intarith.gm`,
+  which it calls when an operation leaves the common case).
 - **The register machine** (`vm.gm`; `vm_compile.gm` compiles bodies for it) runs the body. Its statement structure (blocks with
   their `defer`s, `if`, loops, `match` and its patterns, `return`, `break`, `continue`),
   its arithmetic and comparisons on words, the places it can address (locals, upvars and
@@ -517,12 +523,13 @@ operating system, the architecture, whether it is a Fil-C target and whether `f1
 | `gen.gm`, `program.gm` | `Gen`: the whole program, prototypes, constants, entry points; the checked program as the back end sees it |
 | `types.gm`, `layout.gm` | C representations of types (typed structs, blobs, mirrors), type descriptors for `@write`; the target and pointer maps for Fil-C (layouts come from `sema/layout.gm`) |
 | `func.gm`, `fngen.gm` | functions: frames, blocks, statements, the exit ladders; the state of generating one function |
-| `expr.gm`, `calls.gm` | expressions, places and coercions; calls, effects, `with`, `try`, conditions, patterns |
+| `expr.gm`, `calls.gm` | expressions, places and coercions; calls, effects, `with`, `try`, equality |
+| `patterns.gm`, `bits.gm` | conditions, `match`, patterns and `in`; `#bits` fields |
 | `consts.gm` | compile-time values in static storage |
 | `spec.gm` | handler specialization |
 | `chain.gm` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
 | `outline.gm` | long runs of statements moved into helper functions that share the frame |
-| `arith.gm` | checked scalar operators |
+| `arith.gm`, `builtins.gm` | checked scalar operators; the builtins, system operations, atomics and conversions |
 | `vector.gm` | vector operations as GCC/Clang vector extensions, lane loops where a check applies (§5.6.2) |
 | `helpers.gm` | per-type equality, ordering and hashing |
 | `fiber.gm` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
@@ -566,7 +573,7 @@ is therefore marked `GM_LONG_FN`, which compiles it without optimization (`optno
 on those versions of Clang and means nothing elsewhere.
 
 A `match` tests its arms' patterns in order, each jumping to the next arm when it fails
-(`calls.gm`). The value tested is a temporary copy of the scrutinee, except when the
+(`patterns.gm`). The value tested is a temporary copy of the scrutinee, except when the
 scrutinee is a large value (a union, say) that is a place and no arm has a guard: nothing
 can then write the place between the tests, which only read it, and the patterns are
 tested where it is (a condition `if p := place` always is). A `match` of three or more arms

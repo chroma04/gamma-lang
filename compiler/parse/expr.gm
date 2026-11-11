@@ -446,10 +446,7 @@ parse_bang :: fn(p: ^Parser, lhs: ast.Expr) -> Abort!ast.Expr needs Alloc {
 parse_subscript :: fn(p: ^Parser, base: ast.Expr) -> Abort!ast.Expr needs Alloc {
     start := base.span.lo
     _ = p.bump()
-    old := p.set_restr(Restr(in_index: true))
-    sub := p.parse_subscript_inner()
-    p.restr = old
-    s := try sub
+    s := try p.parse_subscript_inner()
     _ = try p.expect(.RBracket, "to close the subscript")
     whole := p.span_from(start)
     match s {
@@ -469,6 +466,8 @@ Subscript :: union {
 }
 
 parse_subscript_inner :: fn(p: ^Parser) -> Abort!Subscript needs Alloc {
+    old := p.set_restr(Restr(in_index: true))
+    defer p.restr = old
     placeholder := box(p.error_expr(p.span()))
     if p.at(.DotDot) or p.at(.DotDotEq) {
         inclusive := p.at(.DotDotEq)

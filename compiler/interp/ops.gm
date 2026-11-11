@@ -28,194 +28,6 @@ is_cmp :: fn(op: tir.BinOp) -> bool => match op {
     _ => false
 }
 
-/// The smallest value of the signed integer type of `bits` bits.
-int_lo :: fn(bits: u32) -> i128 {
-    if bits >= 128 { return (u128(1) << 127).bits(i128) }
-    return -(i128(1) << (bits - 1))
-}
-
-/// The largest value of the signed integer type of `bits` bits.
-int_hi :: fn(bits: u32) -> i128 {
-    if bits >= 128 { return (~u128(0) >> 1).bits(i128) }
-    return (i128(1) << (bits - 1)) - 1
-}
-
-/// The two's-complement bits of the smallest or largest value of an integer type.
-sat_bits :: fn(signed: bool, bits: u32, below: bool) -> u128 {
-    if signed { return (if below { int_lo(bits) } else { int_hi(bits) }).bits(u128) }
-    return if below { 0 } else { num_mask(bits) }
-}
-
-/// An exact result of `+ - * <<` on integers: its low bits, whether it is out of range and,
-/// if so, on which side.
-Arith :: struct {
-    low: u128
-    over: bool
-    below: bool
-}
-
-/// `a + c`, `a - c` or `a * c` for integers of `bits` bits whose values are `a` and `c`
-/// (sign-extended to 128 bits if `signed`).
-int_arith :: fn(op: tir.BinOp, signed: bool, bits: u32, a, c: u128) -> Arith {
-    if not signed {
-        mask := num_mask(bits)
-        match op {
-            .Add(_) => {
-                r := a +% c
-                over := if bits >= 128 { r < a } else { r > mask }
-                return Arith(low: r & mask, over: over, below: false)
-            }
-            .Sub(_) => return Arith(low: (a -% c) & mask, over: a < c, below: true)
-            _ => {
-                if bits <= 64 {
-                    p := a * c
-                    return Arith(low: p & mask, over: p > mask, below: false)
-                }
-                p := a *% c
-                over := a is not 0 and (p / a is not c or p > mask)
-                return Arith(low: p & mask, over: over, below: false)
-            }
-        }
-    }
-    x := a.bits(i128)
-    z := c.bits(i128)
-    lo := int_lo(bits)
-    hi := int_hi(bits)
-    match op {
-        .Add(_) => {
-            r := x +% z
-            over := if bits >= 128 { ((x ~ r) & (z ~ r)) < 0 } else { r < lo or r > hi }
-            return Arith(low: num_ext(true, bits, r.bits(u128)), over: over, below: z < 0)
-        }
-        .Sub(_) => {
-            r := x -% z
-            over := if bits >= 128 { ((x ~ z) & (x ~ r)) < 0 } else { r < lo or r > hi }
-            return Arith(low: num_ext(true, bits, r.bits(u128)), over: over, below: z > 0)
-        }
-        _ => {
-            if bits <= 63 {
-                p := x * z
-                return Arith(low: num_ext(true, bits, p.bits(u128)), over: p < lo or p > hi, below: p < 0)
-            }
-            if x is 0 or z is 0 { return Arith(low: 0, over: false, below: false) }
-            if x is -1 or z is -1 {
-                o := if x is -1 { z } else { x }
-                if o is int_lo(128) { return Arith(low: o.bits(u128), over: true, below: false) }
-                p := -o
-                return Arith(low: num_ext(true, bits, p.bits(u128)), over: p < lo or p > hi, below: p < 0)
-            }
-            p := x *% z
-            over := p / x is not z or p < lo or p > hi
-            return Arith(low: num_ext(true, bits, p.bits(u128)), over: over, below: (x < 0) is not (z < 0))
-        }
-    }
-}
-
-/// `a << n` for an integer of `bits` bits whose value is `a`, and `n` below `bits`.
-int_shl :: fn(signed: bool, bits: u32, a: u128, n: u32) -> Arith {
-    k := u128(n)
-    if not signed {
-        low := (a <<% k) & num_mask(bits)
-        return Arith(low: low, over: (low >> k) is not a, below: false)
-    }
-    v := a.bits(i128)
-    w := v <<% k
-    wrapped := if bits >= 128 { w } else { (w <<% (128 - bits)) >> (128 - bits) }
-    return Arith(low: wrapped.bits(u128), over: (wrapped >> k) is not v, below: v < 0)
-}
-
-/// The result `r` of `+ - * <<` on integers of type `t`, as the flavor `fl` says.
-finish_int :: fn(m: ^Machine, span: source.Span, fl: ast.Flavor, r: Arith, t: Ty, info: (signed: bool, bits: u32), sym: string, res_ty: Ty, dst: []u8) -> Flow!() needs Alloc {
-    low := num_ext(info.signed, info.bits, r.low)
-    match fl {
-        .Opt => {
-            if r.over {
-                dst.fill(0)
-                return ()
-            }
-            pb: [16]u8 = ---
-            n := us(m.size(t))
-            wr_uint(m, pb[0..n], low)
-            m.make_some(res_ty, dst, pb[0..n])
-        }
-        _ => {
-            if not r.over {
-                wr_uint(m, dst, low)
-                return ()
-            }
-            match fl {
-                .Wrap => wr_uint(m, dst, low)
-                .Sat => wr_uint(m, dst, sat_bits(info.signed, info.bits, r.below))
-                _ => {
-                    if not m.fast() { return !m.trap(span, str.format("integer overflow in `{}`", sym)!) }
-                    wr_uint(m, dst, low)
-                }
-            }
-        }
-    }
-}
-
-/// The shift amount `y` of type `rt` for an integer of `bits` bits: it traps if the amount
-/// is not below `bits`, and in Fast mode reduces it.
-shift_amount :: fn(m: ^Machine, span: source.Span, lt, rt: Ty, y: []const u8, bits: u32) -> Flow!u32 needs Alloc {
-    rinfo := m.int_info(rt) else return !m.trap(span, "internal error: a shift by a value that is not an integer")
-    v := m.get_int(rt, y)
-    neg := rinfo.signed and (v >> 127) is 1
-    if not neg and v < u128(bits) { return v.trunc(u32) }
-    if m.fast() {
-        if neg { return 0 }
-        mag := v.min(u128(~u64(0))).trunc(u64)
-        return (mag % u64(bits)).trunc(u32)
-    }
-    text := if neg { str.format("-{}", 0 -% v)! } else { str.format("{}", v)! }
-    return !m.trap(span, str.format("shift amount {} too large for {}", text, m.s.show(lt))!)
-}
-
-/// The binary operator `op` on integers of type `lt` (and shifts by `rt`), into `dst`.
-int_binop :: fn(m: ^Machine, span: source.Span, op: tir.BinOp, lt, rt, res_ty: Ty, x, y: []const u8, dst: []u8) -> Flow!() needs Alloc {
-    info := m.int_info(lt) else return !m.trap(span, "internal error: an integer operator on a value that is not an integer")
-    a := rd_int(m, info, x)
-    match op {
-        .Add(fl), .Sub(fl), .Mul(fl) => {
-            c := rd_int(m, info, y)
-            return m.finish_int(span, fl, int_arith(op, info.signed, info.bits, a, c), lt, info, op_sym(op), res_ty, dst)
-        }
-        .Shl(fl) => {
-            n := try m.shift_amount(span, lt, rt, y, info.bits)
-            return m.finish_int(span, fl, int_shl(info.signed, info.bits, a, n), lt, info, "<<", res_ty, dst)
-        }
-        .Shr => {
-            n := try m.shift_amount(span, lt, rt, y, info.bits)
-            if info.signed {
-                wr_uint(m, dst, (a.bits(i128) >> n).bits(u128))
-            } else {
-                wr_uint(m, dst, a >> u128(n))
-            }
-        }
-        .Div, .Rem => {
-            c := rd_int(m, info, y)
-            if c is 0 { return !m.trap(span, "division by zero") }
-            is_div := op is .Div
-            if not info.signed {
-                wr_uint(m, dst, if is_div { a / c } else { a % c })
-                return ()
-            }
-            p := a.bits(i128)
-            q := c.bits(i128)
-            if q is -1 {
-                if p is int_lo(info.bits) { return !m.trap(span, str.format("integer overflow in `{}`", op_sym(op))!) }
-                wr_uint(m, dst, if is_div { (-p).bits(u128) } else { 0 })
-                return ()
-            }
-            wr_uint(m, dst, (if is_div { p / q } else { p % q }).bits(u128))
-        }
-        .BitAnd => wr_uint(m, dst, a & rd_int(m, info, y))
-        .BitOr => wr_uint(m, dst, a | rd_int(m, info, y))
-        .BitXor => wr_uint(m, dst, a ~ rd_int(m, info, y))
-        _ => return !m.trap(span, "internal error: a comparison reached the integer operators")
-    }
-}
-
 /// The binary operator `op` on the operand bytes `x` of type `lt` and `y` of type `rt`,
 /// giving `dst` of type `res_ty` (`?T` for the optional flavor).
 binop :: fn(m: ^Machine, span: source.Span, op: tir.BinOp, lt, rt, res_ty: Ty, x, y: []u8, dst: []u8) -> Flow!() needs Run {
@@ -308,7 +120,7 @@ unop :: fn(m: ^Machine, span: source.Span, op: tir.UnOp, t: Ty, b: []const u8, d
             if info.signed {
                 x := v.bits(i128)
                 if x is int_lo(info.bits) {
-                    if not m.fast() { return !m.trap(span, "integer overflow in `-`") }
+                    try m.checked_overflow(span, "-")
                     m.put_uint(dst, v)
                     return ()
                 }
@@ -316,7 +128,7 @@ unop :: fn(m: ^Machine, span: source.Span, op: tir.UnOp, t: Ty, b: []const u8, d
             } else if v is 0 {
                 dst.fill(0)
             } else {
-                if not m.fast() { return !m.trap(span, "integer overflow in `-`") }
+                try m.checked_overflow(span, "-")
                 m.put_uint(dst, num_ext(false, info.bits, 0 -% v))
             }
         }

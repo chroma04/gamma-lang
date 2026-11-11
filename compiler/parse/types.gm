@@ -109,10 +109,7 @@ parse_type_prefix :: fn(p: ^Parser, mode: Mode) -> Abort!ast.Expr needs Alloc {
         elem := try p.parse_type_operand(mode)
         return p.mk_expr(.ArrayType(ast.ArrayTypeExpr(len: null, elem: box(elem))), p.span_from(start))
     }
-    old := p.set_restr(Restr())
-    len := p.parse_expr()
-    p.restr = old
-    length := box(try len)
+    length := box(try p.parse_expr_in(Restr()))
     if p.at(.Comma) {
         // `[1, 2]`: an array value written as in other languages.
         d := diag.error(p.span(), "expected `]` to close the array length, found `,`")
@@ -129,10 +126,7 @@ parse_cont_type :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
     start := p.lo()
     _ = p.bump()
     _ = p.bump()
-    old := p.set_restr(Restr())
-    inner := p.parse_type()
-    p.restr = old
-    t := try inner
+    t := try p.parse_type_in(Restr())
     _ = try p.expect(.RParen, "to close `cont(`")
     return p.mk_expr(.ContType(box(t)), p.span_from(start))
 }
@@ -338,12 +332,8 @@ parse_needs_opt :: fn(p: ^Parser, is_foreign: bool) -> Abort!?[]ast.Expr needs A
         return empty_slice(ast.Expr)
     }
     effects := list(ast.Expr)
-    old := p.restr
-    defer p.restr = old
     while true {
-        p.restr = Restr(no_brace: true)
-        effects.push(try p.parse_type())!
-        p.restr = old
+        effects.push(try p.parse_type_in(Restr(no_brace: true)))!
         if not p.eat(.Plus) { break }
         p.skip_newlines()
     }
@@ -359,10 +349,7 @@ parse_where_opt :: fn(p: ^Parser) -> Abort![]ast.Constraint needs Alloc {
         start := p.lo()
         name := try p.parse_ident("a constraint such as `Ord(T)`")
         _ = try p.expect(.LParen, "after the constraint name")
-        old := p.set_restr(Restr())
-        ty := p.parse_type()
-        p.restr = old
-        t := box(try ty)
+        t := box(try p.parse_type_in(Restr()))
         _ = try p.expect(.RParen, "to close the constraint")
         out.push(ast.Constraint(name: name, ty: t, span: p.span_from(start)))!
         if not (p.eat(.Comma) and p.kind() is .Ident(_) and p.nth_is(1, .LParen)) { break }

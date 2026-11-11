@@ -92,13 +92,17 @@ Step :: struct {
 
 /// The coercions converting `src` to `target`, if any: at most one base coercion followed
 /// by any number of wrapping steps (§6.4).
-coercion_steps :: fn(cx: ^FnCx, src, target: Ty) -> ?[]Step needs Load {
+coercion_steps :: fn(cx: ^FnCx, src, target: Ty) -> ?[]Step needs Load => cx.steps_for(src, target, true)
+
+/// `coercion_steps`, with the error-lifting step `E!T` → `F!T` only if `lift` (the final
+/// pass checks coercions already decided, whose error types are fixed).
+steps_for :: fn(cx: ^FnCx, src, target: Ty, lift: bool) -> ?[]Step needs Load {
     out := list(Step)
-    if cx.steps_into(src, target, &out) { return out.items }
+    if cx.steps_into(src, target, lift, &out) { return out.items }
     return null
 }
 
-steps_into :: fn(cx: ^FnCx, src, target: Ty, out: ^List(Step)) -> bool needs Load {
+steps_into :: fn(cx: ^FnCx, src, target: Ty, lift: bool, out: ^List(Step)) -> bool needs Load {
     if src is target { return true }
     if k := base_coercion(cx.s, src, target) {
         out.push(Step(kind: k, ty: target))!
@@ -106,7 +110,7 @@ steps_into :: fn(cx: ^FnCx, src, target: Ty, out: ^List(Step)) -> bool needs Loa
     }
     tys := &cx.s.tys
     // Error lifting `E!T` → `F!T` (§10.6).
-    if .Result(e, o1) := tys.kind(src) and .Result(f, o2) := tys.kind(target) and o1 is o2 {
+    if lift and .Result(e, o1) := tys.kind(src) and .Result(f, o2) := tys.kind(target) and o1 is o2 {
         if .Ok(i) := cx.lift_variant(e, f) {
             out.push(Step(kind: .LiftErr(i), ty: target))!
             return true
@@ -114,12 +118,12 @@ steps_into :: fn(cx: ^FnCx, src, target: Ty, out: ^List(Step)) -> bool needs Loa
     }
     match tys.kind(target) {
         .Optional(inner) => {
-            if not cx.steps_into(src, inner, out) { return false }
+            if not cx.steps_into(src, inner, lift, out) { return false }
             out.push(Step(kind: .WrapOptional, ty: target))!
             return true
         }
         .Result(_, ok) => {
-            if not cx.steps_into(src, ok, out) { return false }
+            if not cx.steps_into(src, ok, lift, out) { return false }
             out.push(Step(kind: .WrapOk, ty: target))!
             return true
         }
@@ -163,7 +167,7 @@ base_coercion :: fn(s: ^Sema, src, target: Ty) -> ?tir.Coercion needs Alloc {
         }
         .Result(e1, a) => if .Result(e2, b) := tys.kind(target) and e1 is e2 and adds_const(s, a, b) { return .PtrToPtr }
         .FnPtr(a) => if .FnPtr(b) := tys.kind(target) {
-            same := a.params.len is b.params.len and a.ret is b.ret and a.variadic is b.variadic and a.win64 is b.win64
+            same := a.params.len is b.params.len and a.ret is b.ret and a.win64 is b.win64
             if same {
                 for i in 0..a.params.len {
                     if a.params[i] is not b.params[i] { same = false }

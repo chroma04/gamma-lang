@@ -298,7 +298,7 @@ apply_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, res_ty, t0,
             }
             r := 0 -% x
             if r is (u128(1) << (info.bits - 1)) {
-                if not m.fast() { return !m.trap(span, "integer overflow in `abs`") }
+                try m.checked_overflow(span, "abs")
                 m.put_uint(dst, x)
                 return ()
             }
@@ -394,85 +394,6 @@ apply_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, res_ty, t0,
         .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe, .ReduceSum, .ReduceMin, .ReduceMax, .MaskAll, .MaskAny, .MaskCount, .Select, .LaneMin, .LaneMax, .LaneAbs, .LaneConvert, .Shuffle => return m.vector_builtin(span, op, res_ty, t0, t1, v, dst)
         _ => return !m.unsupported(span, str.format("the builtin `{}`", op)!)
     }
-}
-
-/// `-1`, `0` or `1` as the integer `x` is below, equal to or above `y` (sign-extended to 128
-/// bits if `signed`).
-int_cmp :: fn(signed: bool, x, y: u128) -> i32 {
-    if signed {
-        p := x.bits(i128)
-        q := y.bits(i128)
-        return if p < q { -1 } else if p > q { 1 } else { 0 }
-    }
-    return if x < y { -1 } else if x > y { 1 } else { 0 }
-}
-
-/// `base` raised to `n`, for `pow` and its flavors.
-pow :: fn(m: ^Machine, span: source.Span, fl: ast.Flavor, t: Ty, res_ty, ety: Ty, bb, nb: []const u8, dst: []u8) -> Flow!() needs Alloc {
-    info := m.int_info(t) else return !m.trap(span, "pow on a non-integer")
-    signed := info.signed
-    bits := info.bits
-    base := m.get_int(t, bb)
-    einfo := m.int_info(ety) else return !m.trap(span, "pow by a non-integer")
-    nraw := m.get_int(ety, nb)
-    n: u32 = 0
-    if not (einfo.signed and (nraw >> 127) is 1) { n = nraw.min(u128(~u32(0))).trunc(u32) }
-    bval := num_val(signed, base)
-    mulop: tir.BinOp = .Mul(.Checked)
-    // The exact power, or the side it overflows on.
-    acc: u128 = 1
-    over := false
-    if n is 0 {
-        acc = 1
-    } else if bval.mag is 0 {
-        acc = 0
-    } else if bval.mag is 1 {
-        acc = if bval.neg and n % 2 is 1 { 0 -% 1 } else { 1 }
-    } else {
-        for _ in 0..n {
-            r := int_arith(mulop, signed, bits, acc, base)
-            acc = r.low
-            if r.over {
-                over = true
-                break
-            }
-        }
-    }
-    if not over {
-        v := num_ext(signed, bits, acc)
-        if fl is .Opt {
-            pb: [16]u8 = ---
-            sz := us(m.size(t))
-            m.put_uint(pb[0..sz], v)
-            m.make_some(res_ty, dst, pb[0..sz])
-        } else {
-            m.put_uint(dst, v)
-        }
-        return ()
-    }
-    match fl {
-        .Opt => dst.fill(0)
-        .Sat => m.put_uint(dst, sat_bits(signed, bits, bval.neg and n % 2 is 1))
-        .Wrap => m.put_uint(dst, int_pow_wrapped(signed, bits, base, n))
-        .Checked => {
-            if not m.fast() { return !m.trap(span, str.format("integer overflow in `pow` ({}^{})", m.int_text(t, bb), n)!) }
-            m.put_uint(dst, int_pow_wrapped(signed, bits, base, n))
-        }
-    }
-}
-
-/// `base` raised to `n`, modulo 2^bits.
-int_pow_wrapped :: fn(signed: bool, bits: u32, base: u128, n: u32) -> u128 {
-    mulop: tir.BinOp = .Mul(.Wrap)
-    result: u128 = 1
-    b := base
-    k := n
-    while k > 0 {
-        if k & 1 is 1 { result = int_arith(mulop, signed, bits, result, b).low }
-        b = int_arith(mulop, signed, bits, b, b).low
-        k >>= 1
-    }
-    return num_ext(signed, bits, result)
 }
 
 // ---------------------------------------------------------------------------------

@@ -63,15 +63,21 @@ pub push_type_alias :: fn(s: ^Sema, name: string, ty: Ty) needs Alloc {
     s.type_params.push(Scoped(name: name, ty: ty))!
 }
 
-/// How much of the names that a body adds to the scope of its type and compile-time
-/// expressions is in scope.
-pub ScopeMark :: (types: usize, fns: usize, consts: usize)
+/// How much of the names that a declaration or body adds to the scope of its type and
+/// compile-time expressions is in scope.
+pub ScopeMark :: (types: usize, values: usize, fns: usize, consts: usize)
 
-pub scope_mark :: fn(s: ^const Sema) -> ScopeMark => (types: s.type_params.items.len, fns: s.local_fns.items.len, consts: s.local_consts.items.len)
+pub scope_mark :: fn(s: ^const Sema) -> ScopeMark => (
+    types: s.type_params.items.len,
+    values: s.value_scope.items.len,
+    fns: s.local_fns.items.len,
+    consts: s.local_consts.items.len,
+)
 
 /// Takes the names added since `mark` out of scope.
 pub restore_scope :: fn(s: ^Sema, mark: ScopeMark) {
     s.type_params.truncate(mark.types)
+    s.value_scope.truncate(mark.values)
     s.local_fns.truncate(mark.fns)
     s.local_consts.truncate(mark.consts)
 }
@@ -530,7 +536,7 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
 pub fn_ty :: fn(s: ^const Sema, f: ^const FnSig) -> types.FnTy needs Alloc {
     params := list(Ty)
     for p in f.params { params.push(p.ty)! }
-    return types.FnTy(params: params.items, ret: f.ret, effects: f.effects, variadic: false, win64: f.win64)
+    return types.FnTy(params: params.items, ret: f.ret, effects: f.effects, win64: f.win64)
 }
 
 /// Resolves a type that is part of a larger type (an element, a pointee, a payload): a

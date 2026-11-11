@@ -49,13 +49,11 @@ check_tests :: fn(s: ^Sema, root: usize) needs Load {
 /// The ambient effects of the core library (§12.9), with `Test` if `test`.
 ambient_effects :: fn(s: ^Sema, test: bool) -> EffectSet needs Load {
     out := list(EffectRef)
-    prelude := s.l.prelude else return types.empty_effects()
     names := [12]string("Out", "Err", "Env", "Sys", "Alloc", "In", "Clock", "Rand", "Fs", "Net", "Proc", "Test")
     for i, name in enumerate(names) {
         if i is 11 and not test { break }
-        d := s.l.lookup(prelude, name) else continue
-        .Effect(e) := s.resolve_decl(d) else continue
-        out.push(types.EffectRef(eff: e, args: empty_slice(types.GenericArg)))!
+        eref := s.prelude_effect(name) else continue
+        out.push(eref)!
     }
     return types.effect_set(out.items)
 }
@@ -109,7 +107,7 @@ runner_call :: fn(s: ^Sema, f: u32, span: source.Span, runner: string) -> ?^Expr
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, runner) else return null
     .Fn(g) := s.resolve_decl(d) else return null
-    fn_ty := s.tys.intern(.FnPtr(types.FnTy(params: empty_slice(Ty), ret: s.tys.unit(), effects: ambient_effects(s, true), variadic: false, win64: false)))
+    fn_ty := s.tys.intern(.FnPtr(types.FnTy(params: empty_slice(Ty), ret: s.tys.unit(), effects: ambient_effects(s, true), win64: false)))
     args := list(Expr)
     args.push(tir.mk(fn_ty, .FnRef(f), span)^)!
     return tir.mk(s.tys.u8_ty(), .Call(.Fn(g), args.items), span)

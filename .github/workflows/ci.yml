@@ -38,8 +38,7 @@ jobs:
           esac
           tools/package-release.sh "$asset" target/bootstrap/gamma "$RUNNER_TEMP/dist"
           GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/prefix" sh tools/install.sh
-          printf 'm :: import "std/math"\nmain :: fn() needs Out { print("{}\\n", m.abs(-3)) }\n' > "$RUNNER_TEMP/hello.gm"
-          test "$("$RUNNER_TEMP/prefix/bin/gamma" run "$RUNNER_TEMP/hello.gm")" = 3
+          scripts/smoke-hello.sh "$RUNNER_TEMP/prefix/bin/gamma"
           # A checksum that does not match stops the installation.
           echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$RUNNER_TEMP/dist/gamma-$asset.tar.gz.sha256"
           if GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/p2" sh tools/install.sh; then exit 1; fi
@@ -83,8 +82,7 @@ jobs:
           GAMMA_STD: lib/std
           GAMMA_RUNTIME: runtime
         run: |
-          printf 'm :: import "std/math"\nmain :: fn() needs Out { print("{}\\n", m.abs(-3)) }\n' > "$RUNNER_TEMP/hello.gm"
-          test "$(target/bootstrap/gamma run "$RUNNER_TEMP/hello.gm")" = 3
+          scripts/smoke-hello.sh target/bootstrap/gamma
           target/bootstrap/gamma test compiler
       - name: The seed is what its sources compile to
         if: matrix.os == 'ubuntu-latest'
@@ -343,12 +341,10 @@ jobs:
           }
           wrap "$PWD" "$PWD/target/bootstrap/gamma" "$RUNNER_TEMP/head-gamma"
           base=""
-          for exe in gamma gammac; do
-            if [ -z "$base" ] && [ -x "../base/target/bootstrap/$exe" ]; then
-              base=$RUNNER_TEMP/base-gamma
-              wrap "$(cd ../base && pwd)" "$(cd ../base && pwd)/target/bootstrap/$exe" "$base"
-            fi
-          done
+          if [ -x ../base/target/bootstrap/gamma ]; then
+            base=$RUNNER_TEMP/base-gamma
+            wrap "$(cd ../base && pwd)" "$(cd ../base && pwd)/target/bootstrap/gamma" "$base"
+          fi
           ./scripts/bench-compare.sh "$RUNNER_TEMP/head-gamma" "$base" bench
 
   editors:

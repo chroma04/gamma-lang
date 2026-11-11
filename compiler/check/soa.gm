@@ -176,7 +176,7 @@ soa_store :: fn(cx: ^FnCx, b: ^Expr, info: sema.SoaInfo, index_ast: ^const ast.E
     } else {
         for st in cx.s.soa_scatter(v, info, i, x, span) { stmts.push(st)! }
     }
-    return .Expr(tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span))
+    return .Expr(block_of(cx.s, stmts.items, span))
 }
 
 /// A slice bound of a `#soa`, bound to a temporary.
@@ -312,17 +312,10 @@ soa_for :: fn(cx: ^FnCx, f: ^const ast.ForExpr, src: ^Expr, info: sema.SoaInfo) 
     len := cx.soa_len(v, info, span)
     stmts.push(.Let(i, cx.s.usize_lit(0, span)))!
     stmts.push(.Let(n, len))!
-    lt := tir.mk(tys.bool_ty(), .Binary(.Lt, tir.mk(usize_, .Local(i), span), tir.mk(usize_, .Local(n), span)), span)
-    next := tir.mk(usize_, .Binary(.Add(.Wrap), tir.mk(usize_, .Local(i), span), cx.s.usize_lit(1, span)), span)
-    incr := list(tir.Stmt)
-    incr.push(.Assign(tir.mk(usize_, .Local(i), span), next))!
-    step := tir.mk(tys.unit(), .Block(new(tir.Block(stmts: incr.items, tail: null, span: span))!), span)
     item := cx.soa_gather(v, info, tir.mk(usize_, .Local(i), span), span)
-    cond := list(tir.CondPart)
-    cond.push(.Bool(lt))!
-    lp := cx.loop_with_pattern(f, info.elem, item, cond.items, step)
+    lp := cx.counting_loop(f, info.elem, i, usize_, tir.mk(usize_, .Local(n), span), item)
     stmts.push(.Expr(lp))!
-    return tir.mk(tys.unit(), .Block(new(tir.Block(stmts: stmts.items, tail: null, span: span))!), span)
+    return block_of(cx.s, stmts.items, span)
 }
 
 /// `a is b` (or `is not`) on `#soa` slices: the columns compare by content (§5.6.4).

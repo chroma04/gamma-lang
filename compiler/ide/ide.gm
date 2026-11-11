@@ -133,6 +133,26 @@ fn_contains :: fn(s: Span, file: FileId, off: u32) -> bool => s.file is file and
 
 width :: fn(s: Span) -> u32 => s.hi - s.lo
 
+/// The search for the narrowest span around a position: `offer` each candidate, and `best`
+/// is the narrowest that contained the position (the first of equal widths).
+Narrowest :: struct {
+    file: FileId
+    off: u32
+    best: ?Span
+}
+
+narrowest_around :: fn(file: FileId, off: u32) -> Narrowest => Narrowest(file: file, off: off, best: null)
+
+/// Whether `s` is the narrowest candidate so far; if so, it is now `best`.
+offer :: fn(n: ^Narrowest, s: Span) -> bool {
+    if not fn_contains(s, n.file, n.off) { return false }
+    if b := n.best {
+        if width(s) >= width(b) { return false }
+    }
+    n.best = s
+    return true
+}
+
 /// The outline of `file`.
 pub outline_of :: fn(ix: ^const IdeIndex, file: FileId) -> []const DocSymbol {
     for o in ix.outlines.items {
@@ -146,23 +166,17 @@ pub hover_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?HoverResult 
     // The narrowest use of a declared name around `off`, with the text of its declaration.
     by_use: ?(range: Span, hover: Hover) = null
     narrowest: ?Ref = null
+    use := narrowest_around(file, off)
     for r in ix.refs.items {
-        if not fn_contains(r.from, file, off) { continue }
-        if b := narrowest {
-            if width(r.from) >= width(b.from) { continue }
-        }
-        narrowest = r
+        if use.offer(r.from) { narrowest = r }
     }
     if r := narrowest {
         if h := ix.defs.get(r.to) { by_use = (range: r.from, hover: h) }
     }
     by_def: ?(range: Span, hover: Hover) = null
+    def := narrowest_around(file, off)
     for kv in ix.defs.entries() {
-        if not fn_contains(kv.key, file, off) { continue }
-        if u := by_def {
-            if width(kv.key) >= width(u.range) { continue }
-        }
-        by_def = (range: kv.key, hover: kv.value)
+        if def.offer(kv.key) { by_def = (range: kv.key, hover: kv.value) }
     }
     named: ?(range: Span, hover: Hover) = null
     if a := by_use {
@@ -175,12 +189,9 @@ pub hover_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?HoverResult 
         named = by_def
     }
     typed: ?(span: Span, info: TypeInfo) = null
+    ty := narrowest_around(file, off)
     for kv in ix.types.entries() {
-        if not kv.value.hover or not fn_contains(kv.key, file, off) or kv.key.hi <= kv.key.lo { continue }
-        if t := typed {
-            if width(kv.key) >= width(t.span) { continue }
-        }
-        typed = (span: kv.key, info: kv.value)
+        if kv.value.hover and kv.key.hi > kv.key.lo and ty.offer(kv.key) { typed = (span: kv.key, info: kv.value) }
     }
     if n := named {
         if t := typed {
@@ -200,12 +211,9 @@ pub hover_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?HoverResult 
 /// declaration itself).
 pub definition_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
     best: ?Ref = null
+    use := narrowest_around(file, off)
     for r in ix.refs.items {
-        if not fn_contains(r.from, file, off) { continue }
-        if b := best {
-            if width(r.from) >= width(b.from) { continue }
-        }
-        best = r
+        if use.offer(r.from) { best = r }
     }
     if b := best { return b.to }
     return ix.declared_at(file, off)
@@ -214,13 +222,9 @@ pub definition_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
 /// The span of a declared name that covers `off`: a name that is used somewhere, or that
 /// is listed in the outline, in scope as a local, or has hover text.
 declared_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
-    best: ?Span = null
+    n := narrowest_around(file, off)
     consider :: fn(s: Span) {
-        if s.hi <= s.lo or not fn_contains(s, file, off) { return }
-        if b := best {
-            if width(s) >= width(b) { return }
-        }
-        best = s
+        if s.hi > s.lo { _ = n.offer(s) }
     }
     for r in ix.refs.items { consider(r.to) }
     for sc in ix.scopes.items { consider(sc.def) }
@@ -228,7 +232,7 @@ declared_at :: fn(ix: ^const IdeIndex, file: FileId, off: u32) -> ?Span {
     for o in ix.outlines.items {
         if o.file is file { consider_symbols(o.symbols, consider) }
     }
-    return best
+    return n.best
 }
 
 consider_symbols :: fn(syms: []const DocSymbol, consider: fn(s: Span)) {

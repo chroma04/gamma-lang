@@ -63,8 +63,6 @@ pub FnTy :: struct {
     pub params: []const Ty
     pub ret: Ty
     pub effects: EffectSet
-    /// Only foreign function types may be variadic.
-    pub variadic: bool
     /// The Microsoft x64 calling convention (`#callconv(.Win64)`, §19.2).
     pub win64: bool
 }
@@ -181,7 +179,7 @@ owned_kind :: fn(k: TyKind) -> TyKind needs Alloc => match k {
     _ => k
 }
 
-owned_fn :: fn(f: FnTy) -> FnTy needs Alloc => FnTy(params: copied(f.params), ret: f.ret, effects: owned_effects(f.effects), variadic: f.variadic, win64: f.win64)
+owned_fn :: fn(f: FnTy) -> FnTy needs Alloc => FnTy(params: copied(f.params), ret: f.ret, effects: owned_effects(f.effects), win64: f.win64)
 
 owned_effects :: fn(e: EffectSet) -> EffectSet needs Alloc {
     refs := list(EffectRef)

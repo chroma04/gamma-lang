@@ -32,6 +32,10 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
         name: "a_huge_content_length_does_not_crash_the_server",
         run: a_huge_content_length_does_not_crash_the_server,
     ))!
+    out.push(kit.Test(
+        name: "malformed_headers_are_reported_and_the_server_goes_on",
+        run: malformed_headers_are_reported_and_the_server_goes_on,
+    ))!
     out.push(kit.Test(name: "diagnostics_follow_the_buffer", run: diagnostics_follow_the_buffer))!
     out.push(kit.Test(
         name: "diagnostics_carry_related_locations",

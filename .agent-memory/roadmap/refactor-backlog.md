@@ -1,57 +1,39 @@
-# Refactoring backlog (s64 audit, 2026-11-10)
-Eight area audits (sonnet workers; they ran out of quota before implementing most of it).
-Done in s64: needless `pub` stripped (lint 455 → 24 warnings), dead code, small dedupes
-(tir.binop_symbol, bigint.bits128, ratio.zero/to_float, types.write_debug_string,
-sema.generic_of/frame_up/NO_FN, slice.dedup in ide/lsp).
-s65 (branch claude/amazing-clarke-5jp6b8, PR #119) DONE: #1 layouts (sema.Layout has
-offsets; cgen.Layouts delegates; sema/frame.gm = frame_cost/MAX_FRAME/root_local; sema
-bits_layout/field_bits), #2 CLI table (driver/flags.gm OPTIONS, scan, options_help;
-main.gm split; repl uses scan), #3 partly (check/seq.gm → seq/index/array_ctor;
-errors.gm → optionals.gm), #5 partly (interp/vm_compile.gm split out of vm.gm),
-#6 bignum removed (literals hold bigint.Int / ratio.Rat; ratio.scaled), #7 resolve
-KeyMap(V), #8 partly (cgen ExitKind; tir.sys_name shared by cgen + intrinsics; dump
-tables → @variant_name). Medium items 1–7 of the helper list done (source.decode/
-char_count/is_ident_*, diag.json_string, load.os_error_text, load path helpers +
-skipped_dir, LINT_RULES in load/manifest, semver cmp_identifiers). #4 done (ast.for_each_child
-— expression-only kinds; tir.for_each_subpat, tir.any_child). #9 (harness) delegated in
-s65 — check the PR/branch before redoing. parse: set_restr.
-Re-verify line numbers before acting; audits did NOT grep web/ (web/gen, web/play depend
-on gammac: `Options.native_fallback` looked dead and is not).
+# Refactoring backlog (s64 audit, 2026-11-10) — essentially DONE (s66)
+s64: needless pub, dead code, small dedupes. s65 (PR #119): layouts in sema, CLI table
+(driver/flags.gm), bignum removed, ast.for_each_child/tir walkers, harness Watchdog +
+kit.golden, check/seq split, vm_compile split, helper dedupes.
+s66 (branch claude/kind-shannon-h4x997; 5 sonnet worktree agents, one per directory):
+- check: expr.gm → jumps.gm + construct.gm; func.gm → bindings.gm, assign.gm,
+  effect_check.gm; perform.gm (from iterators.gm); with_expr/bind_args (ArgBinder)/
+  generic_call_packed (357 → 182)/write_expr split; block_typed + block_of everywhere;
+  Sema.prelude_effect; save_frame/load_frame; clause helpers; counting_loop/increment;
+  coerce/finalize share steps_for.
+- cgen: ScopeKind payloads (LoopLabels, WithLabels; defers/used stay on Scope since a
+  match binding is a copy); FnGen Saved/save/restore + ScopeState; patterns.gm, bits.gm,
+  builtins.gm split out; helpers.gm declare_helper/define_helper. C output byte-identical.
+- interp: intarith.gm = 128-bit arithmetic + the shared rules (overflow_trap,
+  div_zero_trap, checked_overflow, overflow_result, shift_check) used by BOTH the byte
+  path and the word path (word.gm); place.gm, values.gm, access.gm, frames.gm,
+  contexts.gm split out of run.gm/interp.gm. No perf change measured.
+- sema/parse: ScopeMark everywhere, add_fn/bodiless_def/new_adt_info, member_count/
+  member_ty, CORE_EFFECTS table (order = effect ids), FnTy.variadic REMOVED (dead);
+  parse members() for block/match/when, parse_type_in/parse_expr_in (restr), generic
+  ast.MemberWhen(M) replaces StructWhen/UnionWhen.
+- lsp: envelope(), notification split, malformed/missing Content-Length → -32700 and
+  continue (test lsp/malformed_headers…); ide Narrowest; native.gm CacheLookup (no
+  Env.exit in cached_program). CI: scripts/version.sh, scripts/smoke-hello.sh, bench
+  compare looks for `gamma` only; selfhost/fuzz_targets_type_check test. A composite
+  "build gamma" action was tried and reverted (it wrapped one line).
 
-## Large: what is left (s65)
-3. check/: expr.gm still mixes jumps (return/break/continue ~1344–1575) and construction
-   (~1576–1947) → jumps.gm / construct.gm; func.gm; iterators.gm perform_* → effects
-   file. Long fns: generic_call_packed 357 lines, with_expr 197, bind_args 163,
-   write_expr 263.
-5. interp: two integer-arithmetic implementations (byte/128-bit ops.gm+builtins.gm vs
-   word run.gm); interp.gm/run.gm mix.
-8. cgen: Scope fields per kind; FnGen save/restore ×4; file splits (calls.gm →
-   patterns/bits/write, arith.gm builtins); helpers.gm eq/less/hash scaffolding.
-(9 harness: delegated in s65, see above.) Fuzz targets are not type-checked by
-tools/test.sh (CI fuzz job caught fuzz/check.gm): worth a harness test.
+## Left (small; do only when touching the code)
+- check: generic_call_packed's per-argument loop (shared state); write_expr's big match;
+  check/tests.gm repeats the effect-name list in another order (could use CORE_EFFECTS).
+- cgen: save/restore sites in calls.gm, chain.gm, outline_run, start_exit save different
+  field sets (left on purpose).
 
-## Medium: what is left
-- check: 36 hand-built Block exprs → block_of; prelude lookups ×10 (Sema.prelude_effect);
-  Frame save/restore field lists ×3 (func.gm:653); handler clause checking dup;
-  index-loop builders ×4; coerce/finalize peel dup.
-- sema: ScopeMark variants ×5; FnSig/FnDef/AdtInfo construction ×3–4; adt member walkers ×6;
-  ambient effect name lists ×4; FnTy.variadic never true.
-- parser: members() reuse for 4 brace loops; `p.restr` swap/restore ×19; StructWhen==UnionWhen.
-- lsp/server.gm JSON-RPC envelope ×4, long `notification`; ide narrowest-range search ×4.
-- CI: version awk ×3, hello program ×3, composite action for "Build gamma from the seed".
-- `gamma lint` is CLEAN on compiler, tests/harness, tools/difftest and the `lint` suite
-  keeps it so. Pubs needed only by harness/fuzz carry `#allow("needless-pub")`.
-
-## Possible bugs: status (s64b, PR after #117)
-Fixed: int literal → float exactness (ratio.from_f64; also sema/consts.gm untyped_fits
-shortcut for plain constants), archive entries message, interp invalid-tag signedness /
-unwrap release / env_args free, harness (kit.json_string, GAMMA_BLESS dropped,
-build_profiles honours cfg.c, selfhost uses driver.base_cflags, fmt check covers
-tools/difftest + fuzz), sema value_at.
-Not bugs: eval Pow exponent (always u32), f16 vector lanes (sema rejects them).
-Left: pkg/lsp.gm bad Content-Length → 0 (test would time out, not pass);
-driver/toolchain.gm for_safe_build splits PATH on ":" (Safe is Unix-only);
-native.gm cached_program calls Env.exit inside a ?string fn; target_text trailing "" field
-(changing it invalidates cache keys); ci.yml:346 `gammac` fallback; a non-exact constant
-EXPRESSION typed float (`x: f64 : (1 << 60) + 1`) reports "`<<` requires integer operands"
-rather than the exactness error (operands take the float type; pre-existing).
+## Possible bugs: final status
+Fixed in s64b/s66 (see git log). Not bugs: eval Pow exponent; f16 vector lanes;
+toolchain for_safe_build splitting PATH on ":" (Safe is Unix-only); `x: f64 : (1 << 60)
++ 1` → "`<<` requires integer operands" is what §6.1 says (literals of an annotated
+constant take its type; untyped-constant evaluation applies only WITHOUT annotation).
+Left on purpose: target_text trailing "" field (changing it invalidates cache keys).

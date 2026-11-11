@@ -714,7 +714,7 @@ write_intrinsic :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^E
     .Positional(sink_e) := args[0].kind else return error_expr(cx.s, span)
     .Positional(template) := args[1].kind else return error_expr(cx.s, span)
     bytes := tys.string_ty()
-    sink_ty := tys.intern(.Fn(types.FnTy(params: tys1(bytes), ret: tys.unit(), effects: types.empty_effects(), variadic: false, win64: false)))
+    sink_ty := tys.intern(.Fn(types.FnTy(params: tys1(bytes), ret: tys.unit(), effects: types.empty_effects(), win64: false)))
     sink := cx.expr(&sink_e, sink_ty)
     st := cx.infer.resolve(cx.s, sink.ty)
     mut_sig: ?types.FnTy = null

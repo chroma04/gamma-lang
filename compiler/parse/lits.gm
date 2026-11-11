@@ -99,7 +99,7 @@ parse_struct_when :: fn(p: ^Parser) -> Abort!ast.StructMember needs Alloc {
         _ = try p.expect(.LBrace, "after `else`")
         else_ = p.parse_struct_members()
     }
-    return ast.StructMember.When(ast.StructWhen(cond: cond, then: then, else_: else_, span: p.span_from(start)))
+    return ast.StructMember.When(ast.MemberWhen(ast.StructMember)(cond: cond, then: then, else_: else_, span: p.span_from(start)))
 }
 
 // ----- union -----
@@ -128,10 +128,7 @@ parse_union_lit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
             params = try p.parse_decl_params()
         } else {
             _ = p.bump()
-            old := p.set_restr(Restr())
-            t := p.parse_type()
-            p.restr = old
-            tag_type = box(try t)
+            tag_type = box(try p.parse_type_in(Restr()))
             _ = try p.expect(.RParen, "to close the tag type")
         }
     }
@@ -172,7 +169,7 @@ parse_union_member :: fn(p: ^Parser) -> Abort!ast.UnionMember needs Alloc {
             _ = try p.expect(.LBrace, "after `else`")
             else_ = p.parse_union_members()
         }
-        return ast.UnionMember.When(ast.UnionWhen(cond: cond, then: then, else_: else_, span: p.span_from(start)))
+        return ast.UnionMember.When(ast.MemberWhen(ast.UnionMember)(cond: cond, then: then, else_: else_, span: p.span_from(start)))
     }
     name := try p.parse_decl_ident("a variant name")
     payload: ?^ast.Expr = null

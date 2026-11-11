@@ -532,7 +532,7 @@ ladder_target :: fn(fg: ^FnGen) -> (string, ?usize) needs Alloc {
                 if s.defers.items.len > s.used { s.used = s.defers.items.len }
                 return (str.format("gm_ld{}_{}", s.id, s.defers.items.len)!, found)
             }
-            .Loop, .With => {
+            .Loop(_), .With(_) => {
                 s.used = 1
                 return (str.format("gm_ll{}", s.id)!, found)
             }
@@ -548,10 +548,10 @@ ladder_target :: fn(fg: ^FnGen) -> (string, ?usize) needs Alloc {
 block_scope :: fn(fg: ^FnGen) -> Scope needs Alloc => Scope(kind: .Block, id: fg.fresh(), defers: list(Defer))
 
 /// A new loop scope.
-loop_scope :: fn(fg: ^FnGen, label: u32, brk: string, cont_: string) -> Scope needs Alloc => Scope(kind: .Loop, id: fg.fresh(), defers: list(Defer), label: label, brk: brk, cont: cont_)
+loop_scope :: fn(fg: ^FnGen, label: u32, brk: string, cont_: string) -> Scope needs Alloc => Scope(kind: .Loop(LoopLabels(label: label, brk: brk, cont: cont_)), id: fg.fresh(), defers: list(Defer))
 
 /// A new `with` scope.
-with_scope :: fn(fg: ^FnGen, label: u32, end: string) -> Scope needs Alloc => Scope(kind: .With, id: fg.fresh(), defers: list(Defer), label: label, end: end)
+with_scope :: fn(fg: ^FnGen, label: u32, end: string) -> Scope needs Alloc => Scope(kind: .With(WithLabels(label: label, end: end)), id: fg.fresh(), defers: list(Defer))
 
 /// Emits the rung of the ladder for scope `s`, just popped, if an exit uses it: it runs the
 /// scope's part of the ladder and jumps to the rung of the enclosing scope. `fallthrough`
@@ -575,16 +575,16 @@ end_scope :: fn(fg: ^FnGen, s: Scope, fallthrough: bool) needs sema.Load {
                 k -= 1
             }
         }
-        .Loop => {
+        .Loop(l) => {
             fg.label(str.format("gm_ll{}", s.id)!)
-            fg.linef("if (gm_unw.frame == &F.h && gm_unw.label == {}) {{", s.label)
-            fg.linef("    if (gm_unw.kind == GM_BREAK) {{ gm_unw.kind = GM_NONE; goto {}; }}", s.brk)
-            fg.linef("    if (gm_unw.kind == GM_CONTINUE) {{ gm_unw.kind = GM_NONE; goto {}; }}", s.cont)
+            fg.linef("if (gm_unw.frame == &F.h && gm_unw.label == {}) {{", l.label)
+            fg.linef("    if (gm_unw.kind == GM_BREAK) {{ gm_unw.kind = GM_NONE; goto {}; }}", l.brk)
+            fg.linef("    if (gm_unw.kind == GM_CONTINUE) {{ gm_unw.kind = GM_NONE; goto {}; }}", l.cont)
             fg.line("}")
         }
-        .With => {
+        .With(w) => {
             fg.label(str.format("gm_ll{}", s.id)!)
-            fg.linef("if (gm_unw.kind == GM_BREAK && gm_unw.frame == &F.h && gm_unw.label == {}) {{ gm_unw.kind = GM_NONE; goto {}; }}", s.label, s.end)
+            fg.linef("if (gm_unw.kind == GM_BREAK && gm_unw.frame == &F.h && gm_unw.label == {}) {{ gm_unw.kind = GM_NONE; goto {}; }}", w.label, w.end)
         }
     }
     fg.ladder()
@@ -596,15 +596,12 @@ end_scope :: fn(fg: ^FnGen, s: Scope, fallthrough: bool) needs sema.Load {
 /// a non-local exit: the exit in progress is set aside while it runs, so the calls it makes
 /// return normally.
 defer_body :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
-    saved_runs := fg.runs
-    fg.runs = list(Run)
+    saved := fg.set_aside_scopes()
     fg.defer_body_inner(guard, body, unwinding)
-    fg.runs = saved_runs
+    fg.restore_scopes(saved)
 }
 
 defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
-    saved_scopes := fg.scopes
-    fg.scopes = list(Scope)
     saved_check := fg.no_check
     fg.no_check = true
     if g := guard {
@@ -621,7 +618,6 @@ defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool)
     fg.indent -= 1
     fg.line("}")
     fg.no_check = saved_check
-    fg.scopes = saved_scopes
 }
 
 /// Starts a non-local exit of `kind` to `frame` (a `gm_frame *`) and `label`.
@@ -663,8 +659,8 @@ local_exit :: fn(fg: ^FnGen, kind: ExitKind, label: string, is_err: string) -> b
             s := fg.scopes.items[i]
             hit := false
             match s.kind {
-                .Loop => { hit = str.format("{}", s.label)! is label }
-                .With => { hit = kind is .Break and str.format("{}", s.label)! is label }
+                .Loop(l) => { hit = str.format("{}", l.label)! is label }
+                .With(w) => { hit = kind is .Break and str.format("{}", w.label)! is label }
                 .Block => {}
             }
             if hit {
@@ -695,8 +691,8 @@ local_exit :: fn(fg: ^FnGen, kind: ExitKind, label: string, is_err: string) -> b
     if t := target {
         s := fg.scopes.items[t]
         match s.kind {
-            .Loop => if kind is .Break { dest = s.brk } else { dest = s.cont }
-            .With => { dest = s.end }
+            .Loop(l) => if kind is .Break { dest = l.brk } else { dest = l.cont }
+            .With(w) => { dest = w.end }
             .Block => @unreachable()
         }
     }
@@ -1042,19 +1038,15 @@ stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
         }
         .Defer(is_err, body) => {
             // Check that it translates; its code is emitted where it runs.
-            saved := fg.out
+            saved_out := fg.out
             fg.out = list(u8)
             saved_split := fg.split_runs
             fg.split_runs = false
-            saved_runs := fg.runs
-            fg.runs = list(Run)
-            saved_scopes := fg.scopes
-            fg.scopes = list(Scope)
+            saved := fg.set_aside_scopes()
             r := fg.expr(body)
-            fg.scopes = saved_scopes
-            fg.runs = saved_runs
+            fg.restore_scopes(saved)
             fg.split_runs = saved_split
-            fg.out = saved
+            fg.out = saved_out
             _ = try r
             if fg.scopes.items.len > 0 {
                 top := &fg.scopes.items[fg.scopes.items.len - 1]

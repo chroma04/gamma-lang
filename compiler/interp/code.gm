@@ -3,7 +3,7 @@
 // the size of each value, the frame offsets of locals, the offsets of fields and the sizes
 // of elements, and specialized operations for the values that fit in a machine word
 // (integers of 8 to 64 bits, `f32` and `f64`, booleans and pointers), which `ew` computes
-// as `u64`s without going through memory (`run.gm`).
+// as `u64`s without going through memory (`run.gm`, `word.gm`).
 
 /// A lowered expression: its operation, type, size in bytes and location.
 Node :: struct {

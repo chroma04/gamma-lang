@@ -66,7 +66,7 @@ generic_call :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast.Arg, s
             if x := receiver { r = cx.bind_temp(x, &stmts) }
             spread := cx.spread_generic_args(written, &stmts) else return error_expr(cx.s, span)
             call := cx.generic_call_packed(f, r, spread, span)
-            return tir.mk(call.ty, .Block(new(tir.Block(stmts: stmts.items, tail: call, span: span))!), span)
+            return block_typed(call.ty, stmts.items, call, span)
         }
     }
     return cx.generic_call_packed(f, receiver, written, span)
@@ -105,19 +105,7 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
         targets.push(i)!
     }
     if positional.items.len > targets.items.len {
-        what := if receiver is not null { " besides the receiver" } else { "" }
-        msg := str.format("too many arguments: the function takes {}{}", targets.items.len, what)!
-        // `max(i32, xs)`: a type written where it would be inferred.
-        first := &positional.items[0]
-        if not cx.clearly_value(first) and cx.denotes_type(first) {
-            for i, p in enumerate(sig.params) {
-                if inferable_param(cx.s, &sig, i) and p.name not in named.items {
-                    msg = str.format("{}; a type parameter that the arguments determine is written by name, if at all: `{}: {}`", msg, p.name, cx.span_text(first.span))!
-                    break
-                }
-            }
-        }
-        cx.error(span, msg)
+        cx.too_many_generic_args(&sig, receiver is not null, named.items, positional.items, targets.items.len, span)
         return error_expr(cx.s, span)
     }
     // Inferable parameters written by name fix their arguments' types: the run-time
@@ -136,14 +124,7 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
     for k, e in enumerate(positional.items) { sources.push(ArgSource(param: targets.items[k], e: e, rank: 0))! }
     for a in args {
         .Named(nm, e) := a.kind else continue
-        found: ?usize = null
-        for i, p in enumerate(sig.params) {
-            if p.name is nm.name {
-                found = i
-                break
-            }
-        }
-        i := found else {
+        i := param_index(sig.params, nm.name) else {
             cx.error(nm.span, str.format("the function has no parameter named `{}`", nm.name)!)
             continue
         }
@@ -251,14 +232,58 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
         values.items[i] = v
     }
     if conflict { return error_expr(cx.s, span) }
-    // A type parameter that only untyped literals determine takes their fallback types
-    // (§16.2): `log("{}", 5)` makes it `i32`.
+    cx.bind_literal_fallbacks(&sig, &binds, literal_args.items)
+    cx.bind_unit_defaults(&sig, values.items, &binds)
+    cx.bind_available_effects(&sig, &binds)
+    targs := cx.generic_type_args(&sig, binds.items, values.items, span) else return error_expr(cx.s, span)
+    if not cx.check_generic_constraints(&sig, targs, span) { return error_expr(cx.s, span) }
+    if inst_only { return cx.fn_ref(cx.s.instantiate(f, targs, span), span) }
+    map := list(Subst)
+    for k, g in enumerate(sig.generics) { map.push(Subst(param: g, ty: targs[k]))! }
+    // The run-time arguments in the order written (the receiver first).
+    written := list(usize)
+    if i := recv_index { written.push(i)! }
+    for src in sources.items {
+        if sig.params[src.param].generic is null and values.items[src.param] is not null { written.push(src.param)! }
+    }
+    coerced := cx.coerce_generic_args(&sig, values.items, map.items, span)
+    out := &coerced.out
+    slot := coerced.slot
+    effects := cx.s.subst_effects(&sig.effects, map.items)
+    cx.record_effects(&effects, span)
+    pre := cx.order_generic_args(out, slot.items, written.items, &iter_pre, source_order.items)
+    inst := cx.s.instantiate(f, targs, span)
+    call := tir.mk(cx.s.subst(sig.ret, map.items), .Call(.Fn(inst), out.items), span)
+    return cx.finish_call(pre, call, false)
+}
+
+/// Reports too many positional arguments to a generic function taking `ntargets` besides
+/// its receiver (if `has_receiver`).
+too_many_generic_args :: fn(cx: ^FnCx, sig: ^const sema.FnSig, has_receiver: bool, named: []const string, positional: []const ast.Expr, ntargets: usize, span: source.Span) needs Load {
+    what := if has_receiver { " besides the receiver" } else { "" }
+    msg := str.format("too many arguments: the function takes {}{}", ntargets, what)!
+    // `max(i32, xs)`: a type written where it would be inferred.
+    first := &positional[0]
+    if not cx.clearly_value(first) and cx.denotes_type(first) {
+        for i, p in enumerate(sig.params) {
+            if inferable_param(cx.s, sig, i) and p.name not in named {
+                msg = str.format("{}; a type parameter that the arguments determine is written by name, if at all: `{}: {}`", msg, p.name, cx.span_text(first.span))!
+                break
+            }
+        }
+    }
+    cx.error(span, msg)
+}
+
+/// Binds the type parameters that only untyped literal arguments determine to the
+/// fallback types of the literals (§16.2): `log("{}", 5)` makes it `i32`.
+bind_literal_fallbacks :: fn(cx: ^FnCx, sig: ^const sema.FnSig, binds: ^List(Subst), literal_args: []const LiteralArg) needs Load {
     any_free := false
     for g in sig.generics {
         if sema.bound_to(binds.items, g) is null and cx.s.param_kind(g) is not .Value(_) { any_free = true }
     }
     if any_free {
-        for la in literal_args.items {
+        for la in literal_args {
             mentions := false
             cx.s.walk(la.param_ty, fn(x: Ty) {
                 if .Param(q) := cx.s.tys.kind(x) and q in sig.generics and sema.bound_to(binds.items, q) is null { mentions = true }
@@ -272,17 +297,24 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
             }
         }
     }
-    // An omitted argument whose default is `()` determines its parameter's type: `args:
-    // A = ()` makes `A` the unit type when there are no arguments.
+}
+
+/// Binds the type parameters of omitted arguments whose default is `()`: `args: A = ()`
+/// makes `A` the unit type when there are no arguments.
+bind_unit_defaults :: fn(cx: ^FnCx, sig: ^const sema.FnSig, values: []const ?^Expr, binds: ^List(Subst)) needs Alloc {
+    tys := &cx.s.tys
     for i, p in enumerate(sig.params) {
         .Param(pid) := tys.kind(p.ty) else continue
-        if values.items[i] is not null { continue }
+        if values[i] is not null { continue }
         d := p.default else continue
         if .Tuple(elems) := d.kind and elems.len is 0 and sema.bound_to(binds.items, pid) is null { binds.push(Subst(param: pid, ty: tys.unit()))! }
     }
-    // An effect-set parameter named in an effect of the function's own set (`needs
-    // Sched(E)`) takes its effects from the one instantiation of that effect available
-    // here, as an operation call does (§12.1, §16.6).
+}
+
+/// Binds an effect-set parameter named in an effect of the function's own set (`needs
+/// Sched(E)`) from the one instantiation of that effect available here, as an operation
+/// call does (§12.1, §16.6).
+bind_available_effects :: fn(cx: ^FnCx, sig: ^const sema.FnSig, binds: ^List(Subst)) needs Load {
     for pid in sig.generics {
         if sema.bound_to(binds.items, pid) is not null or cx.s.param_kind(pid) is not .Effects { continue }
         for e in sig.effects.effects {
@@ -290,37 +322,43 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
             avail := cx.available(e.eff)
             if avail.len is not 1 { continue }
             for i, x in enumerate(e.args) {
-                if i < avail[0].args.len and .Type(xt) := x and .Type(yt) := avail[0].args[i] { cx.s.match_params(xt, yt, &binds) }
+                if i < avail[0].args.len and .Type(xt) := x and .Type(yt) := avail[0].args[i] { cx.s.match_params(xt, yt, binds) }
             }
         }
     }
+}
+
+/// The type arguments of the generic function `sig` given the bindings found so far, or
+/// null if some is missing or the compile-time arguments are wrong (reported).
+generic_type_args :: fn(cx: ^FnCx, sig: ^const sema.FnSig, binds: []const Subst, values: []const ?^Expr, span: source.Span) -> ?[]Ty needs Load {
+    tys := &cx.s.tys
     // An argument with an error (already reported) leaves its parameters unbound; say
     // nothing more about them.
     failed_arg := false
-    for v in values.items {
+    for v in values {
         x := v else continue
         if tys.mentions_error(cx.infer.resolve(cx.s, x.ty)) { failed_arg = true }
     }
     targs := list(Ty)
     for pid in sig.generics {
-        if failed_arg and sema.bound_to(binds.items, pid) is null { return error_expr(cx.s, span) }
+        if failed_arg and sema.bound_to(binds, pid) is null { return null }
         if .Value(vty) := cx.s.param_kind(pid) {
-            if t := sema.bound_to(binds.items, pid) {
-                targs.push(cx.normalize_value(t, vty, tys.param_name(pid), span) else return error_expr(cx.s, span))!
+            if t := sema.bound_to(binds, pid) {
+                targs.push(cx.normalize_value(t, vty, tys.param_name(pid), span) else return null)!
                 continue
             }
             for p in sig.params {
                 if p.generic is not pid { continue }
                 d := p.default else {
                     cx.error(span, str.format("missing argument for the compile-time parameter `{}`", p.name)!)
-                    return error_expr(cx.s, span)
+                    return null
                 }
-                targs.push(cx.comptime_arg(p.ty, d) else return error_expr(cx.s, span))!
+                targs.push(cx.comptime_arg(p.ty, d) else return null)!
                 break
             }
             continue
         }
-        if t := sema.bound_to(binds.items, pid) {
+        if t := sema.bound_to(binds, pid) {
             targs.push(t)!
             continue
         }
@@ -329,39 +367,52 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
             targs.push(tys.intern(.Effects(types.empty_effects())))!
             continue
         }
-        // An array where a slice is expected says nothing about the slice's element type:
-        // arrays do not convert to slices (§6.7).
-        array_for_slice := false
-        pointer_for_slice := false
-        for i, p in enumerate(sig.params) {
-            v := values.items[i] else continue
-            if tys.kind(p.ty) is not .Slice(_) { continue }
-            if tys.kind(v.ty) is .Array(_) { array_for_slice = true }
-            if tys.kind(cx.infer.resolve(cx.s, v.ty)) is .Ptr(_) { pointer_for_slice = true }
-        }
-        hint := if array_for_slice {
-            "; an array is not a slice: pass `a[..]`"
-        } else if pointer_for_slice and sig.name is "free" {
-            "; `free` releases a slice from `make`: release a value from `new` with `destroy(p)`"
-        } else if pointer_for_slice {
-            "; a pointer is not a slice"
-        } else {
-            ""
-        }
-        pname := tys.param_name(pid)
-        how: string = str.format("write it: `{}({}, …)`", sig.name, pname)!
-        for k, q in enumerate(sig.params) {
-            if q.generic is not pid { continue }
-            if inferable_param(cx.s, &sig, k) { how = str.format("write it by name: `{}({}: …)`", sig.name, pname)! }
-            break
-        }
-        cx.error(span, str.format("cannot infer the type parameter `{}`; {}{}", pname, how, hint)!)
-        return error_expr(cx.s, span)
+        cx.report_cannot_infer(sig, pid, values, span)
+        return null
     }
-    // Constraints are checked at each instantiation (§16.3).
+    return targs.items
+}
+
+/// Reports that type parameter `pid` of `sig` cannot be inferred, with a hint from the
+/// run-time arguments `values` given.
+report_cannot_infer :: fn(cx: ^FnCx, sig: ^const sema.FnSig, pid: u32, values: []const ?^Expr, span: source.Span) needs Load {
+    tys := &cx.s.tys
+    // An array where a slice is expected says nothing about the slice's element type:
+    // arrays do not convert to slices (§6.7).
+    array_for_slice := false
+    pointer_for_slice := false
+    for i, p in enumerate(sig.params) {
+        v := values[i] else continue
+        if tys.kind(p.ty) is not .Slice(_) { continue }
+        if tys.kind(v.ty) is .Array(_) { array_for_slice = true }
+        if tys.kind(cx.infer.resolve(cx.s, v.ty)) is .Ptr(_) { pointer_for_slice = true }
+    }
+    hint := if array_for_slice {
+        "; an array is not a slice: pass `a[..]`"
+    } else if pointer_for_slice and sig.name is "free" {
+        "; `free` releases a slice from `make`: release a value from `new` with `destroy(p)`"
+    } else if pointer_for_slice {
+        "; a pointer is not a slice"
+    } else {
+        ""
+    }
+    pname := tys.param_name(pid)
+    how: string = str.format("write it: `{}({}, …)`", sig.name, pname)!
+    for k, q in enumerate(sig.params) {
+        if q.generic is not pid { continue }
+        if inferable_param(cx.s, sig, k) { how = str.format("write it by name: `{}({}: …)`", sig.name, pname)! }
+        break
+    }
+    cx.error(span, str.format("cannot infer the type parameter `{}`; {}{}", pname, how, hint)!)
+}
+
+/// Checks that the type arguments `targs` of `sig` satisfy its constraints (§16.3), and
+/// are first-class; false if one is an error.
+check_generic_constraints :: fn(cx: ^FnCx, sig: ^const sema.FnSig, targs: []const Ty, span: source.Span) -> bool needs Load {
+    tys := &cx.s.tys
     for k, pid in enumerate(sig.generics) {
-        t := targs.items[k]
-        if tys.is_error(t) { return error_expr(cx.s, span) }
+        t := targs[k]
+        if tys.is_error(t) { return false }
         if part := cx.s.second_class_part(t) { cx.error(span, cx.s.not_first_class(t, part)) }
         for c in cx.s.param_constraints(pid) {
             if not cx.s.satisfies(t, c) {
@@ -369,23 +420,21 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
             }
         }
     }
-    if inst_only { return cx.fn_ref(cx.s.instantiate(f, targs.items, span), span) }
-    map := list(Subst)
-    for k, g in enumerate(sig.generics) { map.push(Subst(param: g, ty: targs.items[k]))! }
-    // The run-time arguments in the order written (the receiver first).
-    written := list(usize)
-    if i := recv_index { written.push(i)! }
-    for src in sources.items {
-        if sig.params[src.param].generic is null and values.items[src.param] is not null { written.push(src.param)! }
-    }
+    return true
+}
+
+/// The run-time arguments of a call of generic function `sig`, in parameter order,
+/// coerced to the parameter types under `map` or defaulted, and the position in the
+/// result of each parameter's argument.
+coerce_generic_args :: fn(cx: ^FnCx, sig: ^const sema.FnSig, values: []const ?^Expr, map: []const Subst, span: source.Span) -> (out: List(Expr), slot: List(usize)) needs Load {
     out := list(Expr)
     // The position in `out` of each parameter's argument.
     slot := list(usize)
     for i, p in enumerate(sig.params) {
         slot.push(out.items.len)!
         if p.generic is not null { continue }
-        pty := cx.s.subst(p.ty, map.items)
-        if v := values.items[i] {
+        pty := cx.s.subst(p.ty, map)
+        if v := values[i] {
             out.push(cx.coerce(v, pty)^)!
         } else if d := p.default {
             out.push(cx.param_default(&p, sig.module, d, pty, span)^)!
@@ -394,19 +443,25 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
             out.push(error_expr(cx.s, span)^)!
         }
     }
-    effects := cx.s.subst_effects(&sig.effects, map.items)
-    cx.record_effects(&effects, span)
+    return (out: out, slot: slot)
+}
+
+/// The statements that evaluate the arguments `out` (at `slot` per parameter) of a call
+/// in the order written, `written` being the parameters in that order, into temporaries
+/// (§11.3); the call arguments of iterator arguments `iter_pre` run at their places
+/// (§13.5). `source_order` is the order the arguments were written in.
+order_generic_args :: fn(cx: ^FnCx, out: ^List(Expr), slot: []const usize, written: []usize, iter_pre: ^List(IterPre), source_order: []const usize) -> []tir.Stmt needs Load {
     // Named arguments out of parameter order are evaluated in the order written (§11.3),
     // into temporaries.
     pre := list(tir.Stmt)
     reordered := false
-    for k in 1..written.items.len.max(1) {
-        if written.items[k - 1] > written.items[k] { reordered = true }
+    for k in 1..written.len.max(1) {
+        if written[k - 1] > written[k] { reordered = true }
     }
     if iter_pre.items.len > 0 {
         // An iterator's call arguments are evaluated at its place among the arguments.
-        order := written.items
-        order.stable_sort_by(fn(a, b: ^const usize) -> bool => source_position(source_order.items, a^) < source_position(source_order.items, b^))
+        order := written
+        order.stable_sort_by(fn(a, b: ^const usize) -> bool => source_position(source_order, a^) < source_position(source_order, b^))
         for i in order {
             found: ?usize = null
             for n, ip in enumerate(iter_pre.items) {
@@ -416,19 +471,17 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
                 pre.extend(iter_pre.items[n].stmts)!
                 _ = iter_pre.remove(n)
             } else {
-                v := new(out.items[slot.items[i]])!
-                out.items[slot.items[i]] = cx.bind_temp(v, &pre)^
+                v := new(out.items[slot[i]])!
+                out.items[slot[i]] = cx.bind_temp(v, &pre)^
             }
         }
     } else if reordered {
-        for i in written.items {
-            v := new(out.items[slot.items[i]])!
-            out.items[slot.items[i]] = cx.bind_temp(v, &pre)^
+        for i in written {
+            v := new(out.items[slot[i]])!
+            out.items[slot[i]] = cx.bind_temp(v, &pre)^
         }
     }
-    inst := cx.s.instantiate(f, targs.items, span)
-    call := tir.mk(cx.s.subst(sig.ret, map.items), .Call(.Fn(inst), out.items), span)
-    return cx.finish_call(pre.items, call, false)
+    return pre.items
 }
 
 /// The statements that evaluate the call arguments of the iterator argument for a
