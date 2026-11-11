@@ -26,7 +26,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Test
         run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma" tools/test.sh
       - name: Install script
@@ -66,7 +67,8 @@ jobs:
         with:
           # The seed's sources are git trees, maybe of older commits.
           fetch-depth: ${{ matrix.os == 'ubuntu-latest' && '0' || '1' }}
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Fixed point
         env:
           GAMMA_STD: lib/std
@@ -96,7 +98,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install MinGW-w64
         run: sudo apt-get update -q && sudo apt-get install -y -q gcc-mingw-w64-x86-64
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Build gamma.exe
         env:
           GAMMA_STD: ${{ github.workspace }}/lib/std
@@ -155,7 +158,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libclang-rt-dev
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Build the targets and run each for 30 seconds
         env:
           GAMMA: ${{ github.workspace }}/target/bootstrap/gamma
@@ -194,7 +198,8 @@ jobs:
           cd "$RUNNER_TEMP/filc/optfil-${FILC_VERSION}-linux-x86_64"
           sudo ./setup.sh -u
           /opt/fil/bin/filcc --version
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Test Safe builds
         run: |
           export GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma"
@@ -213,7 +218,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-s390x-linux-gnu qemu-user
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Run tests and runtime tests for s390x
         env:
           GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
@@ -235,7 +241,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Run tests for aarch64
         env:
           GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
@@ -263,7 +270,8 @@ jobs:
           clang-18 --version | head -n 1
           wasm-opt --version
           wasmtime --version
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Run tests and WASI tests
         env:
           GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
@@ -287,7 +295,8 @@ jobs:
       GAMMA_RUNTIME: ${{ github.workspace }}/runtime
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Build difftest
         run: target/bootstrap/gamma build tools/difftest -o target/difftest
       - name: Compilers
@@ -315,7 +324,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Build this branch
-        uses: ./.github/actions/build-gamma
+        run: bootstrap/build.sh
       - name: Build the base branch
         continue-on-error: true
         env:

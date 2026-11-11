@@ -54,7 +54,8 @@ jobs:
             echo "CHANGELOG.md has no section for $version" >&2
             exit 1
           fi
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Build the release binary (Fast mode)
         env:
           GAMMA_STD: ${{ github.workspace }}/lib/std

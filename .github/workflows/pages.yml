@@ -30,7 +30,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 wasi-libc libclang-rt-18-dev-wasm32 binaryen
-      - uses: ./.github/actions/build-gamma
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
       - name: Test and build the site generator
         env:
           GAMMA_STD: ${{ github.workspace }}/lib/std
