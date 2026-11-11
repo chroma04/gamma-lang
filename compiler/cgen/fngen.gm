@@ -12,14 +12,32 @@ pub Observed :: union {
     Any: ?u32
 }
 
+/// The C labels of a loop scope.
+pub LoopLabels :: struct {
+    /// The label of the loop, as `break` and `continue` name it.
+    pub label: u32
+    /// The C label for leaving the loop.
+    pub brk: string
+    /// The C label for its `continue` point.
+    pub cont: string
+}
+
+/// The C labels of a `with` scope.
+pub WithLabels :: struct {
+    /// The label of the `with`.
+    pub label: u32
+    /// The C label after it.
+    pub end: string
+}
+
 /// The kind of a scope of the function being generated.
 pub ScopeKind :: union {
-    /// A block, with its `defer`s.
+    /// A block, with its `defer`s (`Scope.defers`).
     Block
-    /// A loop, with C labels for leaving it and for its `continue` point.
-    Loop
-    /// A `with`, with the C label after it.
-    With
+    /// A loop.
+    Loop: LoopLabels
+    /// A `with`.
+    With: WithLabels
 }
 
 /// A `defer` (or `errdefer`) registered in a block.
@@ -28,23 +46,15 @@ pub Defer :: struct {
     pub body: ^Expr
 }
 
-/// A scope of the function being generated (its variants are told
-/// apart by `kind`).
+/// A scope of the function being generated.
 pub Scope :: struct {
     pub kind: ScopeKind
     pub id: u32
-    /// Block: its `defer`s registered so far.
+    /// Block: its `defer`s registered so far (empty for the other kinds).
     pub defers: List(Defer)
     /// Block: how many of the `defer`s the exits so far run (the deepest entry of its
     /// segment in use). Loop and With: 1 once an exit uses the scope's rung.
     pub used: usize = 0
-    /// Loop and With: the label of the loop or `with`.
-    pub label: u32 = 0
-    /// Loop: the C labels for leaving it and for its `continue` point.
-    pub brk: string = ""
-    pub cont: string = ""
-    /// With: the C label after it.
-    pub end: string = ""
 }
 
 /// A call whose large result goes straight into a destination (see `expr_into`).
@@ -99,4 +109,58 @@ pub FnGen :: struct {
     pub split_runs: bool = false
     /// The helpers being generated, innermost last.
     pub runs: List(Run)
+}
+
+/// The scopes and the helpers in progress of a function being generated: what a body
+/// emitted apart from the code around it (a `defer` body, a detached function) starts
+/// without.
+ScopeState :: struct {
+    scopes: List(Scope)
+    runs: List(Run)
+}
+
+/// The state of a `FnGen` that a detached C function replaces while it is generated.
+Saved :: struct {
+    out: List(u8)
+    scopes: ScopeState
+    cx: string
+    indent: usize
+    no_check: bool
+    lad_used: bool
+}
+
+/// Sets the scopes and helpers aside and starts with none; `restore_scopes` undoes it.
+set_aside_scopes :: fn(fg: ^FnGen) -> ScopeState needs Alloc {
+    saved := ScopeState(scopes: fg.scopes, runs: fg.runs)
+    fg.scopes = list(Scope)
+    fg.runs = list(Run)
+    return saved
+}
+
+/// Brings back the scopes and helpers `set_aside_scopes` set aside.
+restore_scopes :: fn(fg: ^FnGen, saved: ScopeState) {
+    fg.scopes = saved.scopes
+    fg.runs = saved.runs
+}
+
+/// Sets the state of the code being emitted aside and starts a new C function with the
+/// handler context `cx`; `restore` undoes it.
+save :: fn(fg: ^FnGen, cx: string) -> Saved needs Alloc {
+    saved := Saved(out: fg.out, scopes: fg.set_aside_scopes(), cx: fg.cx, indent: fg.indent, no_check: fg.no_check, lad_used: fg.lad_used)
+    fg.out = list(u8)
+    fg.cx = cx
+    fg.indent = 1
+    fg.no_check = false
+    fg.lad_used = false
+    return saved
+}
+
+/// Brings back the state `save` set aside.
+restore :: fn(fg: ^FnGen, saved: Saved) {
+    fg.out = saved.out
+    fg.restore_scopes(saved.scopes)
+    fg.cx = saved.cx
+    fg.indent = saved.indent
+    fg.no_check = saved.no_check
+    fg.lad_used = saved.lad_used
 }

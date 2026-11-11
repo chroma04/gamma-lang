@@ -517,12 +517,13 @@ operating system, the architecture, whether it is a Fil-C target and whether `f1
 | `gen.gm`, `program.gm` | `Gen`: the whole program, prototypes, constants, entry points; the checked program as the back end sees it |
 | `types.gm`, `layout.gm` | C representations of types (typed structs, blobs, mirrors), type descriptors for `@write`; the target and pointer maps for Fil-C (layouts come from `sema/layout.gm`) |
 | `func.gm`, `fngen.gm` | functions: frames, blocks, statements, the exit ladders; the state of generating one function |
-| `expr.gm`, `calls.gm` | expressions, places and coercions; calls, effects, `with`, `try`, conditions, patterns |
+| `expr.gm`, `calls.gm` | expressions, places and coercions; calls, effects, `with`, `try`, equality |
+| `patterns.gm`, `bits.gm` | conditions, `match`, patterns and `in`; `#bits` fields |
 | `consts.gm` | compile-time values in static storage |
 | `spec.gm` | handler specialization |
 | `chain.gm` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
 | `outline.gm` | long runs of statements moved into helper functions that share the frame |
-| `arith.gm` | checked scalar operators |
+| `arith.gm`, `builtins.gm` | checked scalar operators; the builtins, system operations, atomics and conversions |
 | `vector.gm` | vector operations as GCC/Clang vector extensions, lane loops where a check applies (§5.6.2) |
 | `helpers.gm` | per-type equality, ordering and hashing |
 | `fiber.gm` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
@@ -566,7 +567,7 @@ is therefore marked `GM_LONG_FN`, which compiles it without optimization (`optno
 on those versions of Clang and means nothing elsewhere.
 
 A `match` tests its arms' patterns in order, each jumping to the next arm when it fails
-(`calls.gm`). The value tested is a temporary copy of the scrutinee, except when the
+(`patterns.gm`). The value tested is a temporary copy of the scrutinee, except when the
 scrutinee is a large value (a union, say) that is a place and no arm has a guard: nothing
 can then write the place between the tests, which only read it, and the patterns are
 tested where it is (a condition `if p := place` always is). A `match` of three or more arms
