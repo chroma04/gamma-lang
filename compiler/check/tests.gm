@@ -109,7 +109,7 @@ runner_call :: fn(s: ^Sema, f: u32, span: source.Span, runner: string) -> ?^Expr
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, runner) else return null
     .Fn(g) := s.resolve_decl(d) else return null
-    fn_ty := s.tys.intern(.FnPtr(types.FnTy(params: empty_slice(Ty), ret: s.tys.unit(), effects: ambient_effects(s, true), variadic: false, win64: false)))
+    fn_ty := s.tys.intern(.FnPtr(types.FnTy(params: empty_slice(Ty), ret: s.tys.unit(), effects: ambient_effects(s, true), win64: false)))
     args := list(Expr)
     args.push(tir.mk(fn_ty, .FnRef(f), span)^)!
     return tir.mk(s.tys.u8_ty(), .Call(.Fn(g), args.items), span)

@@ -163,7 +163,7 @@ base_coercion :: fn(s: ^Sema, src, target: Ty) -> ?tir.Coercion needs Alloc {
         }
         .Result(e1, a) => if .Result(e2, b) := tys.kind(target) and e1 is e2 and adds_const(s, a, b) { return .PtrToPtr }
         .FnPtr(a) => if .FnPtr(b) := tys.kind(target) {
-            same := a.params.len is b.params.len and a.ret is b.ret and a.variadic is b.variadic and a.win64 is b.win64
+            same := a.params.len is b.params.len and a.ret is b.ret and a.win64 is b.win64
             if same {
                 for i in 0..a.params.len {
                     if a.params[i] is not b.params[i] { same = false }

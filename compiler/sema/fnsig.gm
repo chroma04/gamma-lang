@@ -9,9 +9,7 @@ pub declare_fn :: fn(s: ^Sema, module: usize, name: ast.Ident, lit: ^const ast.F
             break
         }
     }
-    s.fns.push(FnSig(name: name.name, span: name.span, module: module, params: sig.params, ret: sig.ret, effects: sig.effects, generics: sig.generics))!
-    s.defs.push(tir.FnDef(kind: .Named, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null))!
-    id := (s.fns.items.len - 1).trunc(u32)
+    id := s.add_fn(FnSig(name: name.name, span: name.span, module: module, params: sig.params, ret: sig.ret, effects: sig.effects, generics: sig.generics), bodiless_def(.Named))
     s.pending_bodies.push(PendingBody(fn_id: id, module: module, lit: lit))!
     return .Fn(id)
 }
@@ -31,8 +29,7 @@ resolve_fn_sig :: fn(s: ^Sema, module: usize, sig: ^const ast.FnSig, literal: bo
     generics := list(u32)
     seen_default := false
     s.constraint_defer += 1
-    scope_len := s.type_params.items.len
-    value_scope_len := s.value_scope.items.len
+    mark := s.scope_mark()
     for p in sig.params {
         if p.comptime {
             // `N :: usize`: a compile-time value parameter (§16.5).
@@ -145,8 +142,7 @@ resolve_fn_sig :: fn(s: ^Sema, module: usize, sig: ^const ast.FnSig, literal: bo
     // Instantiations of one generic effect in the declared set must be told apart without
     // knowing the type arguments (§16.6).
     if generics.items.len > 0 { s.check_distinct(sig.span, effects.effects) }
-    s.type_params.truncate(scope_len)
-    s.value_scope.truncate(value_scope_len)
+    s.restore_scope(mark)
     if not ok { return null }
     return FnSig(name: "", span: sig.span, module: module, params: params.items, ret: ret, effects: effects, generics: generics.items)
 }
@@ -459,7 +455,15 @@ pub new_literal_fn :: fn(s: ^Sema, name: string, span: source.Span, module: usiz
 
 /// A function checked with the body that contains it: a literal or a handler clause.
 pub new_nested_fn :: fn(s: ^Sema, kind: tir.FnKind, name: string, span: source.Span, module: usize, params: []ParamInfo, ret: Ty, effects: EffectSet) -> u32 needs Alloc {
-    s.fns.push(FnSig(name: name, span: span, module: module, params: params, ret: ret, effects: effects, generics: empty_slice(u32)))!
-    s.defs.push(tir.FnDef(kind: kind, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null))!
+    return s.add_fn(FnSig(name: name, span: span, module: module, params: params, ret: ret, effects: effects, generics: empty_slice(u32)), bodiless_def(kind))
+}
+
+/// A function definition of `kind` that has no parameters, locals or body yet.
+bodiless_def :: fn(kind: tir.FnKind) -> tir.FnDef => tir.FnDef(kind: kind, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null)
+
+/// Adds a function with its signature and definition, and returns its id.
+add_fn :: fn(s: ^Sema, sig: FnSig, def: tir.FnDef) -> u32 needs Alloc {
+    s.fns.push(sig)!
+    s.defs.push(def)!
     return (s.fns.items.len - 1).trunc(u32)
 }

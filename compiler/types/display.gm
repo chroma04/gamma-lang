@@ -162,7 +162,6 @@ sig :: fn(p: ^Printer, head: string, sig: ^const FnTy) needs Alloc {
         if i > 0 { out.extend(", ")! }
         p.ty(t)
     }
-    if sig.variadic { out.extend(if sig.params.len is 0 { "..." } else { ", ..." })! }
     out.push(')')!
     if not p.t.is_unit(sig.ret) {
         out.extend(" -> ")!

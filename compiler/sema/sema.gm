@@ -650,6 +650,9 @@ pub show :: fn(s: ^const Sema, t: Ty) -> string needs Alloc => s.tys.show(t)
 // The declarations of a program
 // ---------------------------------------------------------------------------------
 
+/// The effects of the core library other than `Yield`, in the order their ids are assigned.
+CORE_EFFECTS :: [12]string("Out", "Err", "Env", "Alloc", "Sys", "In", "Clock", "Rand", "Fs", "Net", "Test", "Proc")
+
 /// Resolves the core library's ambient effects, as loading the prelude does, so that
 /// their ids come first.
 pub resolve_ambient :: fn(s: ^Sema) needs Load {
@@ -657,8 +660,7 @@ pub resolve_ambient :: fn(s: ^Sema) needs Load {
     if d := s.l.lookup(prelude, "Yield") {
         if .Effect(e) := s.resolve_decl(d) { s.yield_effect = e }
     }
-    names := [12]string("Out", "Err", "Env", "Alloc", "Sys", "In", "Clock", "Rand", "Fs", "Net", "Test", "Proc")
-    for name in names {
+    for name in CORE_EFFECTS {
         if d := s.l.lookup(prelude, name) { _ = s.resolve_decl(d) }
     }
 }
@@ -705,7 +707,7 @@ pub field_default_expr :: fn(s: ^const Sema, id: u32, i: usize) -> ?^ast.Expr {
 pub is_ambient :: fn(s: ^const Sema, eff: u32) -> bool {
     info := &s.effects.items[usize(eff)]
     if not s.l.modules.items[info.module].is_prelude { return false }
-    return info.name in ("Out", "Err", "Env", "Alloc", "Sys", "In", "Clock", "Rand", "Fs", "Net", "Proc")
+    return info.name is not "Test" and info.name in CORE_EFFECTS
 }
 
 /// Resolves the declarations of every loaded module, as checking does before it checks

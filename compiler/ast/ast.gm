@@ -564,13 +564,15 @@ pub StructLit :: struct {
 
 pub StructMember :: union {
     Field: FieldDecl
-    When: StructWhen
+    When: MemberWhen(StructMember)
 }
 
-pub StructWhen :: struct {
+/// A `when cond { … } else { … }` inside a struct or union body; `M` is the member type
+/// of the enclosing body.
+pub MemberWhen :: struct(M: type) {
     pub cond: ^Expr
-    pub then: []StructMember
-    pub else_: ?[]StructMember
+    pub then: []M
+    pub else_: ?[]M
     pub span: source.Span
 }
 
@@ -597,14 +599,7 @@ pub UnionLit :: struct {
 
 pub UnionMember :: union {
     Variant: Variant
-    When: UnionWhen
-}
-
-pub UnionWhen :: struct {
-    pub cond: ^Expr
-    pub then: []UnionMember
-    pub else_: ?[]UnionMember
-    pub span: source.Span
+    When: MemberWhen(UnionMember)
 }
 
 pub Variant :: struct {

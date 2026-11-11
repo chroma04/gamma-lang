@@ -228,8 +228,8 @@ inner_second_class_part :: fn(s: ^const Sema, t: Ty) -> ?Ty {
 
 /// Brings the compile-time parameters among `params` into scope for a generic body, and
 /// returns what `unscope_type_params` needs to take them out again.
-pub scope_type_params :: fn(s: ^Sema, params: []const ParamInfo) -> (types: usize, values: usize) needs Alloc {
-    before := (types: s.type_params.items.len, values: s.value_scope.items.len)
+pub scope_type_params :: fn(s: ^Sema, params: []const ParamInfo) -> ScopeMark needs Alloc {
+    before := s.scope_mark()
     for p in params {
         pid := p.generic else continue
         if s.params.items[usize(pid)].kind is .Value(_) {
@@ -241,9 +241,8 @@ pub scope_type_params :: fn(s: ^Sema, params: []const ParamInfo) -> (types: usiz
     return before
 }
 
-pub unscope_type_params :: fn(s: ^Sema, before: (types: usize, values: usize)) {
-    s.type_params.truncate(before.types)
-    s.value_scope.truncate(before.values)
+pub unscope_type_params :: fn(s: ^Sema, before: ScopeMark) {
+    s.restore_scope(before)
 }
 
 /// What generic parameter `p` stands for.
@@ -303,10 +302,8 @@ pub instantiate :: fn(s: ^Sema, f: u32, args: []const Ty, span: source.Span) -> 
         instance: FnInstance(template: f, args: kept.items),
     )
     s.report_soa_errors(span)
-    id := s.fns.items.len.trunc(u32)
-    s.fns.push(inst)!
     kind: tir.FnKind = if s.defs.items[usize(f)].kind is .Clause { .Clause } else { .Named }
-    s.defs.push(tir.FnDef(kind: kind, params: empty_slice(u32), locals: empty_slice(tir.LocalDecl), body: null))!
+    id := s.add_fn(inst, bodiless_def(kind))
     s.fn_instances.put((f, kept.items), id)!
     for a in args {
         if s.tys.has_param(a) { return id }

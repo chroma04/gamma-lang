@@ -3,6 +3,21 @@
 /// How deeply instantiating a generic type may instantiate others (§16.7).
 MAX_ADT_INST_DEPTH :: 64
 
+/// A struct or union with no fields or defaults yet, no type parameters and no explicit tag.
+new_adt_info :: fn(name: string, module: usize, kind: AdtKind, span: source.Span, decl: ?usize) -> AdtInfo => AdtInfo(
+    name: name,
+    module: module,
+    kind: kind,
+    defaults: empty_slice(bool),
+    default_exprs: empty_slice(?^ast.Expr),
+    has_using: false,
+    params: empty_slice(u32),
+    param_defaults: empty_slice(?^ast.Expr),
+    explicit_tag: false,
+    span: span,
+    decl: decl,
+)
+
 empty_struct :: fn() -> AdtKind => .Struct(StructDef(fields: empty_slice(FieldDef), packed: false, align: null, bits: null))
 
 /// A type parameter of a generic declaration: whether it is an effect set, a type, or a
@@ -55,26 +70,26 @@ pub declare_local_adt :: fn(s: ^Sema, module: usize, name: string, lit: ^const a
 
 /// Whether a field or payload type of `id` mentions a type or value parameter.
 adt_mentions_param :: fn(s: ^const Sema, id: u32) -> bool {
-    match s.adts.items[usize(id)].kind {
-        .Struct(def) => {
-            for f in def.fields {
-                if s.tys.has_param(f.ty) { return true }
-            }
-        }
-        .CUnion(fields) => {
-            for f in fields {
-                if s.tys.has_param(f.ty) { return true }
-            }
-        }
-        .Union(_, variants) => {
-            for v in variants {
-                if p := v.payload {
-                    if s.tys.has_param(p) { return true }
-                }
-            }
-        }
+    kind := s.adts.items[usize(id)].kind
+    for i in 0..member_count(kind) {
+        t := member_ty(kind, i) else continue
+        if s.tys.has_param(t) { return true }
     }
     return false
+}
+
+/// How many fields (or variants) a struct or union has.
+member_count :: fn(kind: AdtKind) -> usize => match kind {
+    .Struct(def) => def.fields.len
+    .CUnion(fields) => fields.len
+    .Union(_, variants) => variants.len
+}
+
+/// The type of field `i`, or of the payload of variant `i` (null if it has none).
+member_ty :: fn(kind: AdtKind, i: usize) -> ?Ty => match kind {
+    .Struct(def) => def.fields[i].ty
+    .CUnion(fields) => fields[i].ty
+    .Union(_, variants) => variants[i].payload
 }
 
 declare_adt_in :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^const ast.Expr, local: bool) -> Ty needs Load {
@@ -85,19 +100,7 @@ declare_adt_in :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^
         inner = i
     }
     id := s.tys.fresh_adt(name)
-    s.adts.push(AdtInfo(
-        name: name,
-        module: module,
-        kind: empty_struct(),
-        defaults: empty_slice(bool),
-        default_exprs: empty_slice(?^ast.Expr),
-        has_using: false,
-        params: empty_slice(u32),
-        param_defaults: empty_slice(?^ast.Expr),
-        explicit_tag: false,
-        span: lit.span,
-        decl: decl,
-    ))!
+    s.adts.push(new_adt_info(name, module, empty_struct(), lit.span, decl))!
     ty := s.tys.adt(id, empty_slice(GenericArg))
     // A local type is usable by its own fields and by the rest of the block.
     if local { s.push_type_alias(name, ty) }
@@ -107,8 +110,7 @@ declare_adt_in :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^
         .Union(u) => u.params
         _ => null
     }
-    scope_len := s.type_params.items.len
-    value_scope_len := s.value_scope.items.len
+    mark := s.scope_mark()
     generics := list(u32)
     defaults := list(?^ast.Expr)
     for p in params else empty_slice(ast.Param) {
@@ -155,8 +157,7 @@ declare_adt_in :: fn(s: ^Sema, module: usize, decl: ?usize, name: string, lit: ^
     s.adts.items[usize(id)].kind = kind
     for c in wheres { s.declare_constraint(module, &c) }
     s.end_constraint_defer()
-    s.type_params.truncate(scope_len)
-    s.value_scope.truncate(value_scope_len)
+    s.restore_scope(mark)
     if generics.items.len > 0 { return ty }
     stack := list(u32)
     if s.is_infinitely_sized(ty, &stack) {
@@ -466,24 +467,12 @@ is_infinitely_sized :: fn(s: ^const Sema, ty: Ty, stack: ^List(u32)) -> bool nee
             if id in stack.items { return true }
             stack.push(id)!
             r := false
-            match s.adts.items[usize(id)].kind {
-                .Struct(def) => for f in def.fields {
-                    if s.is_infinitely_sized(f.ty, stack) {
-                        r = true
-                        break
-                    }
-                }
-                .CUnion(fields) => for f in fields {
-                    if s.is_infinitely_sized(f.ty, stack) {
-                        r = true
-                        break
-                    }
-                }
-                .Union(_, variants) => for v in variants {
-                    if p := v.payload and s.is_infinitely_sized(p, stack) {
-                        r = true
-                        break
-                    }
+            kind := s.adts.items[usize(id)].kind
+            for i in 0..member_count(kind) {
+                t := member_ty(kind, i) else continue
+                if s.is_infinitely_sized(t, stack) {
+                    r = true
+                    break
                 }
             }
             _ = stack.pop()
@@ -576,19 +565,12 @@ pub instantiate_adt :: fn(s: ^Sema, template: u32, args: []const Ty) -> Ty needs
     s.instances.push(Instance(template: template, args: copy.items, inst: inst))!
     s.adt_instances.put((template, copy.items), inst)!
     ty := s.tys.adt(inst, gargs.items)
-    s.adts.push(AdtInfo(
-        name: info.name,
-        module: info.module,
-        kind: empty_struct(),
-        defaults: info.defaults,
-        default_exprs: info.default_exprs,
-        has_using: info.has_using,
-        params: empty_slice(u32),
-        param_defaults: empty_slice(?^ast.Expr),
-        explicit_tag: info.explicit_tag,
-        span: info.span,
-        decl: null,
-    ))!
+    inst_info := new_adt_info(info.name, info.module, empty_struct(), info.span, null)
+    inst_info.defaults = info.defaults
+    inst_info.default_exprs = info.default_exprs
+    inst_info.has_using = info.has_using
+    inst_info.explicit_tag = info.explicit_tag
+    s.adts.push(inst_info)!
     map := list(Subst)
     for i, p in enumerate(info.params) {
         if i < args.len { map.push(Subst(param: p, ty: args[i]))! }
@@ -666,16 +648,10 @@ contains_by_value :: fn(s: ^const Sema, ty: Ty, target_: u32, seen: ^List(u32)) 
             if id is target_ and seen.items.len > 0 { return true }
             if id in seen.items { return false }
             seen.push(id)!
-            match s.adts.items[usize(id)].kind {
-                .Struct(def) => for f in def.fields {
-                    if s.contains_by_value(f.ty, target_, seen) { return true }
-                }
-                .CUnion(fields) => for f in fields {
-                    if s.contains_by_value(f.ty, target_, seen) { return true }
-                }
-                .Union(_, variants) => for v in variants {
-                    if p := v.payload and s.contains_by_value(p, target_, seen) { return true }
-                }
+            kind := s.adts.items[usize(id)].kind
+            for i in 0..member_count(kind) {
+                t := member_ty(kind, i) else continue
+                if s.contains_by_value(t, target_, seen) { return true }
             }
             return false
         }
@@ -775,7 +751,7 @@ subst_sig :: fn(s: ^Sema, sig: ^const types.FnTy, map: []const Subst) -> types.F
     for p in sig.params { params.push(s.subst(p, map))! }
     ret := s.subst(sig.ret, map)
     effects := s.subst_effects(&sig.effects, map)
-    return types.FnTy(params: params.items, ret: ret, effects: effects, variadic: sig.variadic, win64: sig.win64)
+    return types.FnTy(params: params.items, ret: ret, effects: effects, win64: sig.win64)
 }
 
 /// `subst` on the arguments of each effect in `set`, splicing in the effect sets that
@@ -819,23 +795,10 @@ pub pending_layout :: fn(s: ^const Sema, ty: Ty) -> ?u32 {
     match s.tys.kind(ty) {
         .Adt(id, _) => {
             if s.adts_in_progress.items.index_of(id) is not null { return id }
-            match s.adts.items[usize(id)].kind {
-                .Struct(def) => {
-                    for f in def.fields {
-                        if p := s.pending_layout(f.ty) { return p }
-                    }
-                }
-                .CUnion(fields) => {
-                    for f in fields {
-                        if p := s.pending_layout(f.ty) { return p }
-                    }
-                }
-                .Union(u) => {
-                    for v in u.variants {
-                        t := v.payload else continue
-                        if p := s.pending_layout(t) { return p }
-                    }
-                }
+            kind := s.adts.items[usize(id)].kind
+            for i in 0..member_count(kind) {
+                t := member_ty(kind, i) else continue
+                if p := s.pending_layout(t) { return p }
             }
             return null
         }

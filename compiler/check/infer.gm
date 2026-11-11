@@ -133,7 +133,7 @@ resolve_effects :: fn(t: ^InferTable, s: ^Sema, set: types.EffectSet) -> types.E
 resolve_sig :: fn(t: ^InferTable, s: ^Sema, sig: types.FnTy) -> types.FnTy needs Load {
     params := list(Ty)
     for p in sig.params { params.push(t.resolve(s, p))! }
-    return types.FnTy(params: params.items, ret: t.resolve(s, sig.ret), effects: t.resolve_effects(s, sig.effects), variadic: sig.variadic, win64: sig.win64)
+    return types.FnTy(params: params.items, ret: t.resolve(s, sig.ret), effects: t.resolve_effects(s, sig.effects), win64: sig.win64)
 }
 
 /// The kind of an unresolved variable type, if `ty` is one.

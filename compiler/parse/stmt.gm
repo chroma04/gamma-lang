@@ -31,8 +31,6 @@ assign_op :: fn(k: syntax.TokenKind) -> ?ast.AssignOp => match k {
 parse_block :: fn(p: ^Parser) -> Abort!ast.Block needs Alloc {
     start := p.lo()
     _ = try p.expect(.LBrace, "to begin a block")
-    old := p.set_restr(Restr())
-    defer p.restr = old
     try p.enter()
     stmts := p.parse_block_body()
     p.leave()
@@ -42,14 +40,7 @@ parse_block :: fn(p: ^Parser) -> Abort!ast.Block needs Alloc {
 /// The statements after `{`, through the closing `}`.
 parse_block_body :: fn(p: ^Parser) -> []ast.Stmt needs Alloc {
     stmts := list(ast.Stmt)
-    while true {
-        p.skip_newlines()
-        if p.eat(.RBrace) { break }
-        if p.at_eof() {
-            _ = p.expected("`}` to close the block")
-            break
-        }
-        before := p.pos
+    p.members("block", fn() -> Abort!() needs Alloc {
         start := p.lo()
         if s := p.parse_stmt() {
             stmts.push(s)!
@@ -59,8 +50,8 @@ parse_block_body :: fn(p: ^Parser) -> []ast.Stmt needs Alloc {
             at := p.span_from(start)
             stmts.push(ast.Stmt(id: p.next_id(), kind: .Expr(box(p.error_expr(at))), span: at))!
         }
-        if p.pos is before { _ = p.bump() }
-    }
+        return ()
+    })
     return stmts.items
 }
 
@@ -231,11 +222,8 @@ parse_when_stmt :: fn(p: ^Parser) -> Abort!ast.WhenStmt needs Alloc {
 /// `cond = cond_part { 'and' cond_part }` (A.7 rule 2).
 parse_cond :: fn(p: ^Parser) -> Abort!ast.Cond needs Alloc {
     start := p.lo()
-    old := p.set_restr(Restr(no_brace: true, no_and: true))
     parts := list(ast.CondPart)
-    r := p.parse_cond_parts(&parts)
-    p.restr = old
-    try r
+    try p.parse_cond_parts(&parts)
     // The parts are joined by `and`, so an `or` directly inside one of them mixes the
     // two operators (§7.8).
     if parts.items.len > 1 {
@@ -251,6 +239,8 @@ parse_cond :: fn(p: ^Parser) -> Abort!ast.Cond needs Alloc {
 }
 
 parse_cond_parts :: fn(p: ^Parser, parts: ^List(ast.CondPart)) -> Abort!() needs Alloc {
+    old := p.set_restr(Restr(no_brace: true, no_and: true))
+    defer p.restr = old
     while true {
         parts.push(try p.parse_cond_part())!
         if not p.eat_kw(.And) { break }
@@ -372,8 +362,6 @@ parse_match :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
     _ = p.bump()
     scrutinee := box(try p.parse_head_expr())
     _ = try p.expect(.LBrace, "to begin the match arms")
-    old := p.set_restr(Restr())
-    defer p.restr = old
     try p.enter()
     arms := p.parse_arms()
     p.leave()
@@ -384,22 +372,11 @@ parse_match :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 /// The arms after `{`, through the closing `}`.
 parse_arms :: fn(p: ^Parser) -> []ast.Arm needs Alloc {
     arms := list(ast.Arm)
-    while true {
-        p.skip_newlines()
-        if p.eat(.RBrace) { break }
-        if p.at_eof() {
-            _ = p.expected("`}` to close the match")
-            break
-        }
-        before := p.pos
-        if arm := p.parse_arm() {
-            arms.push(arm)!
-            p.expect_terminator("the match arm")
-        } else {
-            p.recover_to_stmt_end()
-        }
-        if p.pos is before { _ = p.bump() }
-    }
+    p.members("match", fn() -> Abort!() needs Alloc {
+        arms.push(try p.parse_arm())!
+        p.expect_terminator("the match arm")
+        return ()
+    })
     return arms.items
 }
 

@@ -141,19 +141,10 @@ compiler_adt :: fn(name: string, module: usize, kind: AdtKind, fields: usize) ->
         defaults.push(false)!
         default_exprs.push(null)!
     }
-    return AdtInfo(
-        name: name,
-        module: module,
-        kind: kind,
-        defaults: defaults.items,
-        default_exprs: default_exprs.items,
-        has_using: false,
-        params: empty_slice(u32),
-        param_defaults: empty_slice(?^ast.Expr),
-        explicit_tag: false,
-        span: source.DUMMY,
-        decl: null,
-    )
+    info := new_adt_info(name, module, kind, source.DUMMY, null)
+    info.defaults = defaults.items
+    info.default_exprs = default_exprs.items
+    return info
 }
 
 /// The stand-in for a `#soa` type of the generic `elem`: the compiler-made generic type of
