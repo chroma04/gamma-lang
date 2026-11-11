@@ -291,6 +291,10 @@ stable text form, which tests of the compiler use.
 | layouts: sizes, alignments and field offsets, for the checker and both back ends; `#bits` field layouts | `sema/layout.gm`, `sema/adt.gm` |
 | the stack bytes a call is charged (`frame_cost`), shared by the C back end, the interpreter and `@stack_size` | `sema/frame.gm` |
 | the per-function context, scopes, statements, loops | `check/func.gm` |
+| bindings and destructuring, local types; assignments | `check/bindings.gm`, `check/assign.gm` |
+| `return`, `break`, `continue` and their targets | `check/jumps.gm` |
+| constructing variants, tuples and structs, field defaults | `check/construct.gm` |
+| the effects a function performs against those it declares | `check/effect_check.gm` |
 | expressions, operators, optionals and results | `check/expr.gm`, `check/optionals.gm` |
 | coercions | `check/coerce.gm` |
 | calls and builtin functions, methods, rest parameters and spreads | `check/call.gm`, `check/methods.gm`, `check/spread.gm` |
@@ -298,7 +302,7 @@ stable text form, which tests of the compiler use.
 | `in` and `for` over ranges, arrays and slices; indexing and slicing; array construction | `check/seq.gm`, `check/index.gm`, `check/array_ctor.gm` |
 | literal inference | `check/infer.gm`, `check/finalize.gm` |
 | function literals, captures and second-class rules | `check/fnlit.gm` |
-| `with`, handler literals and declarations, `resume`, `cancel` | `check/handlers.gm`, `check/handler_decls.gm` |
+| `with`, handler literals and declarations, `resume`, `cancel`; effect operations | `check/handlers.gm`, `check/handler_decls.gm`, `check/perform.gm` |
 | iterators (a `for` over the core `enumerate` becomes the index loop over the slice, without a handler) | `check/iterators.gm` |
 | generic function calls and instances | `check/generic.gm` |
 | compile-time evaluation requests (`@static_assert`, constants, array lengths) | `check/consts.gm`, `check/eval_prepare.gm` |

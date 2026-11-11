@@ -1,11 +1,12 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-11-10) — PRs #1–#118 merged, v0.1.0 + rust-reference-final tagged
-- s65 (branch claude/amazing-clarke-5jp6b8, PR #119): REFACTOR BACKLOG round 2 with 4
-  sonnet worktree agents (layouts in sema, bignum gone, CLI table driver/flags.gm, walkers,
-  helper dedupes, harness: std process.output_within/Watchdog, kit.golden). Status and
-  what is left: roadmap/refactor-backlog.md. macOS CI `lint/deny_fails_the_command` failed
-  once after the walker merge, passed on the next run (flaky? watch for it).
+## State (2026-11-11) — PRs #1–#119 merged, v0.1.0 + rust-reference-final tagged
+- s66 (branch claude/kind-shannon-h4x997): REFACTOR BACKLOG finished with 5 sonnet worktree
+  agents, one per directory (check, cgen, interp, sema+parse, lsp/ide/CI). Summary and the
+  few leftovers: roadmap/refactor-backlog.md. LESSON: 5 parallel agents on this 16 GB box
+  OOM-kill compiler builds (each gamma build ~2–3 GB + cc); use at most 3 that build.
+- s65 (#119): refactor round 2 (layouts in sema, bignum gone, CLI table, walkers, harness
+  Watchdog). macOS CI `lint/deny_fails_the_command` failed once (flaky? watch).
 - s64 (#117, #118): first refactor round (needless pub, dead code, shared helpers; int
   literal → float must be exact); `gamma lint` clean on compiler/harness/difftest.
 - s63 (#116): idioms.md folded into guide; CI macOS runner → macos-15.
@@ -47,8 +48,7 @@
 - Older history: sessions/ and decisions/.
 
 ## Next steps
-0. roadmap/refactor-backlog.md: large refactors in priority order + possible bugs (s64).
-   Then roadmap/review-2026-10-20.md "Open".
+0. roadmap/review-2026-10-20.md "Open" (re-check against compiler/). Refactor backlog is done.
 1. Keep CHANGELOG Unreleased current (start one above 0.2.0). User: enable private vulnerability reporting.
    Diagnostics must follow spec ch. 23 (policy for new errors/hints; limits in §23.5).
 1b. Rust is gone (052/053). Follow-ups: kit helpers (gamma_in, sorted dir listing, jsonl),
@@ -65,7 +65,7 @@
 - roadmap/        todo.md (prioritized to-do), milestones.md (M0–M12 + gaps), bugs-open.md,
                   self-hosting.md (gammac stages), gammac-cli.md (porting the gamma commands),
                   c-backend-plan.md, review-2026-10-20.md (s32 review findings + status),
-                  refactor-backlog.md (s64 audit: open refactors + possible bugs)
+                  refactor-backlog.md (s64–s66 refactors: done; small leftovers)
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–059, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
