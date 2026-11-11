@@ -1,0 +1,9 @@
+name: Build gamma from the seed
+description: Builds target/bootstrap/gamma from the checked-in C seed with nothing but a C compiler.
+
+runs:
+  using: composite
+  steps:
+    - name: Build gamma from the seed
+      shell: bash
+      run: bootstrap/build.sh

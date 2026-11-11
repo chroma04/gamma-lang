@@ -515,24 +515,26 @@ pub run :: fn(s: ^sema.Sema, root: usize, opts: Options) -> u8 needs Alloc + Clo
     // The executable comes from the cache when the same program was built before.
     exe := ""
     dir := ""
-    if cached := cached_program(&b, opts) {
-        exe = cached
-    } else {
-        buf: [4096]u8 = ---
-        dir = fs.make_temp_dir(fs.temp_dir(), "gamma-run-", buf[..]) else {
-            eprint("gamma: cannot create a temporary directory in `{}`\n", fs.temp_dir())
-            return 1
-        }
-        exe = load.join(dir, native_exe_name(&opts, "prog"))
-        if not compile_built(&b, exe, opts) {
-            _ = fs.remove_all(dir)
-            return 1
+    match cached_program(&b, opts) {
+        .Exe(path) => { exe = path }
+        .Failed => return 1
+        .Uncached => {
+            buf: [4096]u8 = ---
+            dir = fs.make_temp_dir(fs.temp_dir(), "gamma-run-", buf[..]) else {
+                eprint("gamma: cannot create a temporary directory in `{}`\n", fs.temp_dir())
+                return 1
+            }
+            exe = load.join(dir, native_exe_name(&opts, "prog"))
+            if not compile_built(&b, exe, opts) {
+                _ = fs.remove_all(dir)
+                return 1
+            }
         }
     }
     defer if dir.len > 0 { _ = fs.remove_all(dir) }
     runner := runner_for(exe) else e => {
         eprint("gamma: {}\n", e)
-        Env.exit(2)
+        return 2
     }
     argv := list(string)
     argv.extend(runner.items)!
@@ -545,19 +547,28 @@ pub run :: fn(s: ^sema.Sema, root: usize, opts: Options) -> u8 needs Alloc + Clo
     return exit_code(status)
 }
 
-/// The program's executable from the cache of built programs (built into it if missing),
-/// or `null` if there is no cache or the program cannot be cached. A key covers everything
-/// that affects the executable: the generated code and its options, the libraries, the
-/// target, the compiler and its flags.
-cached_program :: fn(b: ^const Built, opts: Options) -> ?string needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+/// The result of looking a program up in the cache of built programs.
+CacheLookup :: union {
+    /// The executable, found or built into the cache.
+    Exe: string
+    /// There is no cache or the program cannot be cached.
+    Uncached
+    /// The program had to be built and the build failed (reported).
+    Failed
+}
+
+/// The program's executable from the cache of built programs (built into it if missing).
+/// A key covers everything that affects the executable: the generated code and its
+/// options, the libraries, the target, the compiler and its flags.
+cached_program :: fn(b: ^const Built, opts: Options) -> CacheLookup needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
     // The packages' C objects are named after the executable, so a program with them is
     // built where it is run.
     extras := opts.extras else pkg.extras()
-    if not pkg.is_empty(&extras) or opts.emit_c { return null }
-    tc := opts.toolchain else return null
-    cache := pkg.cache_dir() else return null
+    if not pkg.is_empty(&extras) or opts.emit_c { return .Uncached }
+    tc := opts.toolchain else return .Uncached
+    cache := pkg.cache_dir() else return .Uncached
     dir := load.join(cache, "run")
-    version := compiler_version(&tc) else return null
+    version := compiler_version(&tc) else return .Uncached
     libs := str.join(b.generated.libs, "\0")!
     parts := list(string)
     parts.extend([9]string("gammac", b.rt_h, b.rt_c, b.generated.code, libs, mode_name(opts.mode), if opts.debug_info { "g" } else { "-" }, str.join(tc.cc, "\0")!, str.join(tc.cflags, "\0")!)[..])!
@@ -568,20 +579,20 @@ cached_program :: fn(b: ^const Built, opts: Options) -> ?string needs Alloc + Cl
     if load.is_file(exe) {
         // Mark it as recently used, so pruning keeps it.
         touch(exe)
-        return exe
+        return .Exe(exe)
     }
-    pkg.make_dirs(dir) else return null
+    pkg.make_dirs(dir) else return .Uncached
     tmp := private_name(dir, stem, "exe")
     built := compile_built(b, tmp, opts)
     _ = fs.remove_all(str.format("{}.c", tmp)!)
     for i in 1..8 { _ = fs.remove_all(str.format("{}.{}.c", tmp, i)!) }
     if not built {
         _ = fs.remove_all(tmp)
-        Env.exit(1)
+        return .Failed
     }
-    rename_or_remove(tmp, exe) else return null
+    rename_or_remove(tmp, exe) else return .Uncached
     prune(dir)
-    return exe
+    return .Exe(exe)
 }
 
 /// The size and modification time of each library file of `libs` (`foreign` blocks) found in

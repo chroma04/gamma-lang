@@ -28,9 +28,7 @@ asset=$1
 binary=$2
 out=$3
 root=$(cd "$(dirname "$0")/.." && pwd)
-# The `version` of the `[package]` table (not of another table that may come first).
-version=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version = / { gsub(/"/, "", $3); print $3; exit }' "$root/compiler/gamma.toml")
-[ -n "$version" ] || { echo "$0: no [package] version in compiler/gamma.toml" >&2; exit 1; }
+version=$("$root/scripts/version.sh")
 name="gamma-$version-$asset"
 
 work=$(mktemp -d)
