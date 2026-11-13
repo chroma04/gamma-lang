@@ -4,7 +4,7 @@
 
 /// The low `bits` bits set.
 #inline
-mask64 :: fn(bits: u32) -> u64 => if bits >= 64 { ~u64(0) } else { (u64(1) << u64(bits)) - 1 }
+mask64 :: fn(bits: u32) -> u64 => if bits >= 64 { ~u64(0) } else { (u64(1) <<% u64(bits)) -% 1 }
 
 /// The value of the word `v` of a signed integer of `bits` bits.
 #inline
@@ -17,10 +17,10 @@ sext :: fn(v: u64, bits: u32) -> i64 => match bits {
 
 /// The smallest and largest values of a signed integer of `bits` bits.
 #inline
-lo64 :: fn(bits: u32) -> i64 => if bits >= 64 { @min_value(i64) } else { -(i64(1) << (bits - 1)) }
+lo64 :: fn(bits: u32) -> i64 => if bits >= 64 { @min_value(i64) } else { (~u64(0) <<% u64(bits -% 1)).bits(i64) }
 
 #inline
-hi64 :: fn(bits: u32) -> i64 => if bits >= 64 { @max_value(i64) } else { (i64(1) << (bits - 1)) - 1 }
+hi64 :: fn(bits: u32) -> i64 => if bits >= 64 { @max_value(i64) } else { ((u64(1) <<% u64(bits -% 1)) -% 1).bits(i64) }
 
 /// `p < q` and the other comparisons of words.
 #inline

@@ -143,6 +143,11 @@ BcOp :: union {
     RemU
     DivS
     RemS
+    /// `a` = the word of `f` bytes at offset `c` of local `b` of the captured frame
+    /// (`Code.env_reg`), where it is in that frame's storage; `UpSet` writes register `b`
+    /// to the `f` bytes at offset `c` of its local `a`.
+    Up
+    UpSet
     /// `a` = the address of an addressed local, kept in register `c` once it has memory
     /// (`Code.hidden`).
     LocalAddrH
@@ -185,6 +190,9 @@ CallRec :: struct {
     regs: [^]u64
     dst: []u8
     pc: usize
+    /// The caller's handler context, and the callee's.
+    cx: u32
+    callee_cx: u32
     /// The callee: its function, code, registers and where its result goes (`buf` for a
     /// word that then goes to the caller's register `ret_reg`).
     f: u32
@@ -463,13 +471,21 @@ bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
         .ZeroSlot(at, size) => return bc3(.ZeroSlot, at, size, 0)
         .Mark(r) => return bc3(.Mark, r, 0, 0)
         .Release(r) => return bc3(.Release, r, 0, 0)
-        .Call(_) => return bc3(.Call, 0, 0, 0)
+        .Call(_), .Perform(_), .CallValue(_) => return bc3(.Call, 0, 0, 0)
+        .UpvarAt(x) => {
+            if not words or x.levels is not 1 or not word_size(u64(x.size)) { return bc_free() }
+            return Bc(op: .Up, f: x.size.trunc(u8), w: 0, a: x.r, b: x.local, c: x.rel)
+        }
+        .SetUpvarAt(x) => {
+            if not words or x.levels is not 1 or not word_size(u64(x.size)) { return bc_free() }
+            return Bc(op: .UpSet, f: x.size.trunc(u8), w: 0, a: x.local, b: x.v, c: x.rel)
+        }
         .RetW(r) => return bc3(.RetW, r, 0, 0)
         .Ret => return bc3(.Ret, 0, 0, 0)
         .RetSlot(at, size) => return bc3(.RetSlot, at, size, 0)
         // These need the frame: its locals in memory, its deferred statements, the frames
         // it captures or its handler context, or they run the tree evaluator in it.
-        .Local(_), .SetLocal(_), .UpvarAt(_), .SetUpvarAt(_), .LocalAddr(_), .SetLocalSlot(_), .EvalW(_), .EvalSlot(_), .Discard(_), .Stmt(_), .AssignW(_), .Pat(_), .RetEval(_), .DeferHeight(_), .Defer(_), .Unwind(_), .CxSave(_), .CxRestore(_), .WithLit(_), .WithDecl(_) => return Bc(op: .Framed, f: 0, w: 0, a: 0, b: 0, c: 0)
+        .Local(_), .SetLocal(_), .LocalAddr(_), .SetLocalSlot(_), .EvalW(_), .EvalSlot(_), .Discard(_), .Stmt(_), .AssignW(_), .Pat(_), .RetEval(_), .DeferHeight(_), .Defer(_), .Unwind(_), .CxSave(_), .CxRestore(_), .WithLit(_), .WithDecl(_) => return Bc(op: .Framed, f: 0, w: 0, a: 0, b: 0, c: 0)
         _ => return bc_free()
     }
 }
@@ -493,6 +509,14 @@ vm_assemble :: fn(m: ^const Machine, info: ^const FnInfo, code: ^Code) needs All
     }
     code.bc = out
     code.frameless = frameless
+    // The frame a body captures is reached through a register after the others.
+    for k in 0..code.ins.len {
+        if code.ins[k] is .UpvarAt(_) or code.ins[k] is .SetUpvarAt(_) {
+            code.env_reg = (code.size / 8).trunc(u32)
+            code.size += 8
+            break
+        }
+    }
     if not frameless { return () }
     hidden := make_fill(info.addressed.len, NO_REG)!
     n: u64 = 0
