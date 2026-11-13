@@ -88,16 +88,16 @@ fails_with :: fn(w: ^const World, dir: string, args: []const string, needle: str
     return w.t.expect_contains("the error message", out.err, needle)
 }
 
-/// The names of the object files in the cache other than the runtime's. The C sources of
-/// packages are compiled for each build into objects next to the executable, which are
-/// removed after linking, so none stays in the cache.
+/// The names of the object files in the cache other than the runtime's and the units of
+/// generated code. The C sources of packages are compiled for each build into objects next
+/// to the executable, which are removed after linking, so none stays in the cache.
 package_objects :: fn(w: ^const World) -> []string needs Alloc + Fs {
     names := list(string)
     for r in fs.walk(w.cache_dir()) {
         e := r else break
         if e.kind is .Dir { continue }
         name := dupe(base_name(e.path))!
-        if str.strip_suffix(name, ".o") is not null and str.strip_prefix(name, "gm_rt-") is null {
+        if str.strip_suffix(name, ".o") is not null and not name.starts_with("gm_rt-") and not name.starts_with("unit-") {
             names.push(name)!
         }
     }

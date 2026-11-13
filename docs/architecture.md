@@ -557,7 +557,7 @@ operating system, the architecture, whether it is a Fil-C target and whether `f1
 | `helpers.gm` | per-type equality, ordering and hashing |
 | `fiber.gm` | `with … on`, `ctl` performs, `resume`, `cancel`, `@fiber` |
 | `borrow.gm`, `constarg.gm` | parameters read in place; static storage for constant arguments |
-| `units.gm` | splitting a Debug build, or a very large optimized one, into translation units compiled in parallel |
+| `units.gm`, `names.gm` | splitting a Debug build, or a very large optimized one, into translation units by source file; stable C names, so that an edit changes only the units it concerns |
 | `freestanding.gm`, `wasi.gm` | freestanding targets; WebAssembly for WASI |
 | `debug.gm`, `views.gm` (and `runtime/gdb_printers.py`, `runtime/lldb_formatters.py`) | debug information for `-g` |
 
@@ -607,7 +607,7 @@ arm whose nested pattern or guard fails falls through to the next as before.
 A function that is long because it has many statements, rather than one long chain, is
 split instead (`outline.gm`). When a body has more than 1,500 expression nodes, every
 block of more than 400 has its statements dealt out in runs of up to 400 nodes, each
-moved into a helper `gm_cN_K` that the function calls where the run was. A helper takes
+moved into a helper `gm_c<tag>_K` that the function calls where the run was. A helper takes
 the frame's address and defines `F` as `(*gm_Fp)`, so a statement's code is the same as
 inline; such a function keeps all its locals in the frame, and the helper also gets the
 other C variables statements read (`env`, `cx`, `inst`, `gm_out`, the backtrace record
@@ -636,8 +636,8 @@ How the runtime is linked depends on the build mode:
   large program (more than 4 MiB of generated function text, such as the
   compiler itself) is split into units like a large Debug build (below) and
   linked with the cached runtime: as one unit, gcc takes over five minutes on
-  the compiler's C, and the split build, at about a minute on four cores, runs
-  as fast.
+  the compiler's C, and the split build, at about 40 s on four cores from an
+  empty cache, runs as fast.
 - Debug builds favor turnaround. Compiling the runtime is most of the work of
   compiling a small program, so it is compiled once on its own (with
   `GM_RT_SEPARATE` defined, which gives the declarations marked `GM_API` external
@@ -666,29 +666,64 @@ How the runtime is linked depends on the build mode:
   files it links (the package's, those of `foreign` blocks, and those named by
   `-L` / `-l` in `$LDFLAGS`) and, for WASI, the version of `wasm-opt`. Leftover
   temporary files of builds that died are removed after an hour.
-- A large Debug build is split into several translation units, compiled in
-  parallel and then linked (`cgen/units.gm`): one per 96 KiB of function
-  text, at most one per processor and 8. The generator writes everything with
-  internal linkage, as one unit needs, and keeps it by role (`Parts` in `cgen/units.gm`):
-  support code, types and frames; function declarations; static data, one item
-  per line; function definitions; the entry code. A split shares a header of the
-  first two plus an `extern` declaration of each data item and each function,
-  gives the functions and data external linkage (their names all start with
-  `gm_`, so they cannot clash with C code), defines the data and the entry code
-  in unit 0 and deals the function definitions out by size. Unit `i` > 0 is
-  written next to unit 0's `prog.c` as `prog.i.c`. Units are compiled with
-  `-Werror=implicit-function-declaration`, so a function left undeclared fails
-  the build instead of being called with C's implicit `int` signature. Code of
-  a shape the splitter does not recognize is compiled as one unit, unless
-  `GAMMA_C_UNITS=<n>` forces a split into `n` units (tests use it on small
-  programs), which then fails. On four cores a Debug build of the compiler
-  itself takes about a minute this way. In an optimized build a
-  small generated function is declared `inline`; split, it loses the hint. An
-  `#inline` function keeps it: its definition goes to the shared header as a C99
-  inline definition, and unit 0 declares it `extern`, which makes unit 0's copy the
-  one external definition, so every unit can inline it and its address is the same
-  in all of them. (Sharing the thousands of small functions this way would make every
-  unit compile them all.)
+- A large Debug build is split into translation units, compiled in parallel and
+  then linked (`cgen/units.gm`); so is any build when `GAMMA_C_UNITS=<n>` with
+  `n` > 1 forces a split (tests use it on small programs). The generator writes
+  everything with internal linkage, as one unit needs, and keeps it by role
+  (`Parts` in `cgen/units.gm`): support code; types; frames; function
+  declarations; static data, one item per line; function definitions, by the
+  source file they come from; the entry code. `split_by_file` makes one unit per
+  source file (a function literal or clause goes with the function around it; the
+  instances of a file's generic functions are dealt into 16 units of their own by
+  a hash of their keys, so that a new instance of `List(T)` does not compile all
+  the others again; helpers that belong to no file, such as per-type equality,
+  have a unit of their own), units for the data, and unit 0, which holds the
+  entry code. Functions
+  and data get external linkage (their names all start with `gm_`, so they cannot
+  clash with C code). Each unit declares only what it uses: the declarations its
+  function bodies name, and those these name in turn, in an order of their own
+  (types by how deeply they nest others, then everything by name), so a unit's
+  text depends on its file and on the declarations it uses, not on the rest of
+  the program. Units are compiled with `-Werror=implicit-function-declaration`,
+  so a function left undeclared fails the build instead of being called with C's
+  implicit `int` signature, at most one per processor at a time.
+
+  Compiled units are kept in the cache (below) under a hash of their text, the
+  compiler and the flags, and a build compiles only the units it does not find
+  there. This is what makes rebuilding a large program after an edit fast. It
+  works because the generated names are stable (`cgen/names.gm`): a function's
+  C name is made from its module and name (`gm_f_<name>_<hash>`; an instance's
+  from its template and type arguments, a function literal's or clause's from
+  its place in the function around it), and strings, struct shapes and type
+  descriptors are named after their contents or their type's text, so an edit
+  does not renumber the rest of the program. On four cores a build of the
+  compiler itself (a Checked build, at `-O2`, as its manifest asks) takes about
+  40 s from an empty cache and 4 to 5 s after an edit of one file, which
+  compiles that file's unit again, plus one unit of data for a new string
+  literal and a few units of instances for new instances of generic functions.
+  The cache keeps the 4,000 most recently used unit objects, and never removes
+  one used in the last day, which a build running at the same time may be
+  about to link. Without a usable cache the units are
+  written next to the executable (`prog.c`, `prog.1.c`, …) and compiled every
+  time. Code of a shape the splitter does not recognize is compiled as one unit,
+  unless `GAMMA_C_UNITS` forces a split, which then fails.
+
+  In an optimized build a small generated function is declared `inline`; split,
+  it can be inlined only within its unit. An `#inline` function keeps its hint:
+  its definition goes, as a C99 inline definition, to every unit that calls it,
+  and the unit of its own file declares it `extern`, which makes that copy the one
+  external definition, so its address is the same in all of them. (Sharing the thousands
+  of small functions this way would make every unit compile them all.) With
+  `-g`, the debugger views (`views.gm`) are declarations like the types, named
+  `gm_dv<number>_<kind>` with a number hashed from the type's text, and every
+  function definition ends by mapping the lines after it back to the C file, since
+  definitions move between units. The data is dealt into 16 units by a hash of
+  each item's name, so a new string literal compiles one of them again.
+
+  `gamma build --emit-c` with `GAMMA_C_UNITS=<n>` writes the older form of a
+  split, the form of the bootstrap seed: a header that every unit includes
+  (`prog.h`), the runtime (`prog.rt.c`) and `n` units that deal the function
+  definitions out by size.
 - Safe builds are compiled at `-O2` like Checked builds but link the cached
   runtime object as Debug builds do (compiled with Fil-C, at `-O2`). Fil-C
   compiles slowly, and the runtime code a program reaches was half the time of
@@ -747,7 +782,8 @@ the C compiler has none (`load.Target`), a program that uses `f16` is rejected
 with an error naming the limitation.
 
 **Functions and frames.** Each function becomes
-`RET gm_fN(void *env, gm_node *cx, gm_node *inst, params…)`. The locals that
+`RET gm_f_<name>_<hash>(void *env, gm_node *cx, gm_node *inst, params…)` (see
+`names.gm` for how the C names are made). The locals that
 function literals and handler clauses reach live in a frame struct whose
 address is the `env` of those literals and clauses, so captured variables are
 shared, as §11.6 requires. The other locals of up to 32 bytes are plain C
@@ -966,7 +1002,7 @@ temporary's escaping address cost a heap allocation per call. (Passing such
 values by value instead is slower still under Fil-C: its calling convention
 copies an aggregate argument through memory it allocates.) A plain function whose own signature differs from the C ABI as a result
 (it has a large parameter, or returns a large mirror type) gets a separate entry
-point `gm_fN_c` with the C signature (`needs_wrapper`, `c_abi_wrapper`); it
+point, its C name followed by `_c`, with the C signature (`needs_wrapper`, `c_abi_wrapper`); it
 is what function pointers, constants and `#export` refer to (`addr_name`),
 while direct calls use the internal one.
 

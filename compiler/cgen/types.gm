@@ -37,8 +37,10 @@ pub CTypes :: struct {
     /// Blob typedefs needed, by name.
     blobs: List(BlobDef)
     blob_names: hash_map.HashMap(string, bool)
-    desc_ids: hash_map.HashMap(u32, usize)
-    desc_count: usize
+    /// The descriptor of each type asked for so far, by type id, named after the type's
+    /// text (a descriptor can reach itself, through a slice, so not after its contents).
+    desc_ids: hash_map.HashMap(u32, string)
+    desc_namer: Namer
     desc_fwd: List(u8)
     desc_parts: List(u8)
     desc_defs: List(u8)
@@ -47,11 +49,13 @@ pub CTypes :: struct {
     typed_cache: hash_map.HashMap(u32, ?string)
     /// The C type of each type asked for so far, by type id.
     cty_cache: List(?string)
+    /// Named after their member list.
     typed_by_shape: hash_map.HashMap(string, string)
-    typed_count: usize
     typed_defs: List(u8)
     /// Mirror C types by type id (`null`: the type has none).
     mirrors: hash_map.HashMap(u32, ?string)
+    /// The mirrors defined, by their text (which names them).
+    mirror_names: hash_map.HashMap(string, string)
     mirror_defs: List(u8)
     /// The vector types declared so far.
     vector_names: hash_map.HashMap(string, bool)
@@ -68,17 +72,17 @@ ctypes :: fn(s: ^Sema, t: Target) -> CTypes needs Alloc => CTypes(
     lay: layouts(s, t),
     blobs: list(BlobDef),
     blob_names: hash_map.hash_map(string, bool),
-    desc_ids: hash_map.hash_map(u32, usize),
-    desc_count: 0,
+    desc_ids: hash_map.hash_map(u32, string),
+    desc_namer: new_namer(),
     desc_fwd: list(u8),
     desc_parts: list(u8),
     desc_defs: list(u8),
     typed_cache: hash_map.hash_map(u32, ?string),
     cty_cache: list(?string),
     typed_by_shape: hash_map.hash_map(string, string),
-    typed_count: 0,
     typed_defs: list(u8),
     mirrors: hash_map.hash_map(u32, ?string),
+    mirror_names: hash_map.hash_map(string, string),
     mirror_defs: list(u8),
     vector_names: hash_map.hash_map(string, bool),
     debug_names: false,
@@ -309,8 +313,7 @@ define_typed :: fn(ty: ^CTypes, t: Ty, members: string, named: []const NamedOffs
     attr: string = if al > natural { str.format(" __attribute__((aligned({})))", al)! } else { "" }
     shape := str.format("{}{}", attr, members)!
     if n := ty.typed_by_shape.get(shape) { return n }
-    name := str.format("gm_t{}", ty.typed_count)!
-    ty.typed_count += 1
+    name := content_name("gm_t", shape)
     ty.typed_defs.write("typedef struct{} {{ {} }} {};\n", attr, members, name)!
     ty.typed_defs.write("_Static_assert(sizeof({}) == {} && _Alignof({}) == {}", name, size, name, al)!
     for m in named { ty.typed_defs.write(" && offsetof({}, {}) == {}", name, m.name, m.off)! }
@@ -380,12 +383,15 @@ make_mirror :: fn(ty: ^CTypes, t: Ty) -> ?string needs Alloc {
             if member_name(n) is not null { ty.add_member_name(n) }
         }
     }
-    // Numbered by how many mirrors were asked for.
-    name := str.format("gm_cs{}", ty.mirrors.len())!
     attrs := list(string)
     if packed { attrs.push("packed")! }
     if a := explicit { attrs.push(str.format("aligned({})", a)!)! }
     attr_text: string = if attrs.items.len is 0 { "" } else { str.format(" __attribute__(({}))", str.join(attrs.items, ", ")!)! }
+    // Named after its text: types with the same mirror share it.
+    content := str.format("{}{} {}", keyword, attr_text, str.join(members.items, " ")!)!
+    if n := ty.mirror_names.get(content) { return n }
+    name := content_name("gm_cs", content)
+    ty.mirror_names.put(content, name)!
     ty.mirror_defs.write("typedef {} {}{} {{ {} }} {};\n", keyword, attr_text, name, str.join(members.items, " ")!, name)!
     // The C compiler must agree with the Gamma layout.
     ty.mirror_defs.write("_Static_assert(sizeof({}) == {} && _Alignof({}) == {}", name, ty.size(t), name, ty.align(t))!
@@ -473,11 +479,10 @@ blob_typedefs :: fn(ty: ^const CTypes) -> string needs Alloc {
 
 /// The C expression `&gm_tyN` for the descriptor of `t`.
 desc :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
-    if i := ty.desc_ids.get(t.id) { return str.format("&gm_ty{}", i)! }
-    i := ty.desc_count
-    ty.desc_count += 1
+    if i := ty.desc_ids.get(t.id) { return str.format("&{}", i)! }
+    i := ty.desc_namer.keyed("gm_ty", ty.show(t))
     ty.desc_ids.put(t.id, i)!
-    ty.desc_fwd.write("static const gm_type gm_ty{};\n", i)!
+    ty.desc_fwd.write("static const gm_type {};\n", i)!
     f := list(string)
     f.push(str.format(".size = {}", ty.size(t))!)!
     f.push(str.format(".align = {}", ty.align(t))!)!
@@ -575,10 +580,10 @@ desc :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
                         p: string = if pt := v.payload { ty.desc(pt) } else { "NULL" }
                         parts.push(str.format("{{{}, {}, {}}}", c_string(v.name), bigint.to_decimal(v.tag), p)!)!
                     }
-                    ty.desc_parts.write("static const gm_variant gm_ty{}_v[] = {{{}}};\n", i, str.join(parts.items, ", ")!)!
+                    ty.desc_parts.write("static const gm_variant {}_v[] = {{{}}};\n", i, str.join(parts.items, ", ")!)!
                     f.push("kind = GM_K_UNION")!
                     f.push(str.format("nvariants = {}", variants.len)!)!
-                    f.push(str.format("variants = gm_ty{}_v", i)!)!
+                    f.push(str.format("variants = {}_v", i)!)!
                     f.push(str.format("tag_offset = {}", offs[0])!)!
                     f.push(str.format("payload_offset = {}", if offs.len > 1 { offs[1] } else { 0 })!)!
                     f.push(str.format("tag_size = {}", ty.size(tag))!)!
@@ -598,18 +603,18 @@ desc :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
     }
     fields := list(string)
     for x in f.items { fields.push(if x.starts_with(".") { x } else { str.format(".{}", x)! })! }
-    ty.desc_defs.write("static const gm_type gm_ty{} = {{{}}};\n", i, str.join(fields.items, ", ")!)!
-    return str.format("&gm_ty{}", i)!
+    ty.desc_defs.write("static const gm_type {} = {{{}}};\n", i, str.join(fields.items, ", ")!)!
+    return str.format("&{}", i)!
 }
 
-fields_array :: fn(ty: ^CTypes, i: usize, parts: []const string, f: ^List(string)) needs Alloc {
+fields_array :: fn(ty: ^CTypes, i: string, parts: []const string, f: ^List(string)) needs Alloc {
     if parts.len is 0 {
         f.push("nfields = 0")!
         return
     }
-    ty.desc_parts.write("static const gm_field gm_ty{}_f[] = {{{}}};\n", i, str.join(parts, ", ")!)!
+    ty.desc_parts.write("static const gm_field {}_f[] = {{{}}};\n", i, str.join(parts, ", ")!)!
     f.push(str.format("nfields = {}", parts.len)!)!
-    f.push(str.format("fields = gm_ty{}_f", i)!)!
+    f.push(str.format("fields = {}_f", i)!)!
 }
 
 /// The width in bits of a `#bits` field of type `t` (§5.10.5).

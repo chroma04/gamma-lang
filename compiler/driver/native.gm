@@ -284,11 +284,13 @@ windows_libs :: fn(target: load.Target) -> []const string needs Alloc {
 /// there in the debugger) and linked with a runtime object compiled once and cached; without
 /// a usable cache they fall back to one translation unit. Safe builds (Fil-C, which compiles
 /// slowly) are compiled at `-O2` but link the cached runtime too. A large Debug build is
-/// split into several units compiled in parallel; unit `i` > 0 is written to `exe.i.c`.
+/// split into a unit per source file (`cgen.split_by_file`), compiled in parallel through
+/// the cache of unit objects (`unit_objects`), which a later build reuses for the units an
+/// edit left unchanged; without a cache, unit `i` > 0 is written to `exe.i.c`.
 ///
 /// A WASI module is always compiled to objects first and linked without optimization
 /// options, and then goes through `cgen.asyncify`.
-compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link, exe: string, opts: Options) -> bool needs Alloc + Env + Err + Fs + Proc + Rand + Sys {
+compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link, exe: string, opts: Options) -> bool needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
     generated := &b.generated
     if generated.freestanding { return compile_object(b, tc, exe, opts) }
     opt := opt_level(&opts)
@@ -314,7 +316,25 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
         runtime = runtime_object(tc, flags.items, str.format("#define GM_RT_SEPARATE 1\n{}\n{}", b.rt_h, b.rt_c)!, "gm_rt", version)
     }
     sources := list(string)
-    if runtime is not null {
+    // The units of a split build are compiled through the cache of unit objects when there
+    // is one: only those whose text changed since a build that made them are compiled.
+    cached: ?[]const string = null
+    if runtime is not null and n > 1 {
+        if split := cgen.split_by_file(&generated.parts) {
+            prelude := str.format("{}{}\n{}", PROGRAM_PRELUDE, b.rt_h, split.shared)!
+            for u in split.units { sources.push(str.format("{}{}", prelude, u)!)! }
+            uflags := build_flags(&opts, version)
+            uflags.push("-Werror=implicit-function-declaration")!
+            match unit_objects(tc, uflags.items, sources.items, version, cpus, opts.debug_info) {
+                .Objects(objs) => { cached = objs }
+                .Failed => return false
+                .NoCache => {}
+            }
+        }
+    }
+    if cached is not null or sources.items.len > 0 {
+        // Split by file: compiled already, or to be compiled below without the cache.
+    } else if runtime is not null {
         prelude := str.format("{}{}\n", PROGRAM_PRELUDE, b.rt_h)!
         split_units: ?[]string = if n > 1 { cgen.split(&generated.parts, n) } else { null }
         if units := split_units {
@@ -330,6 +350,7 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
         sources.push(str.format("{}\n{}\n{}", b.rt_h, b.rt_c, generated.code)!)!
     }
     c_files := list(string)
+    if cached is not null { sources.clear() }
     for i, src in enumerate(sources.items) {
         path := unit_path(exe, i)
         // The debugger finds the C file by its absolute name.
@@ -339,12 +360,8 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     }
     // `CFLAGS` come after these options, so they can override them; `LDFLAGS` come after the
     // source and the runtime object, before the libraries, as for `make`.
-    flags := base_cflags(opts.target)
-    flags.push(opt)!
-    flags.extend(debug_flags(&opts, version))!
-    if opts.debug_info { flags.push("-g")! }
-    if f := f16c_flag(opts.target) { flags.push(f)! }
-    wasi := opts.target.os is "Wasi"
+    flags := build_flags(&opts, version)
+    wasi := wasi_target(opts.target)
     // Several units are compiled to objects in parallel, then linked.
     inputs := list(string)
     objects := list(string)
@@ -355,7 +372,7 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
         unit_flags := list(string)
         unit_flags.extend(flags.items)!
         unit_flags.push("-Werror=implicit-function-declaration")!
-        ok := compile_objects(tc, unit_flags.items, c_files.items, objects.items)
+        ok := compile_objects(tc, unit_flags.items, c_files.items, objects.items, cpus)
         if not ok {
             for o in objects.items { _ = fs.remove_all(o) }
             return false
@@ -373,6 +390,7 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     tail.push("-o")!
     tail.push(exe)!
     tail.extend(inputs.items)!
+    if objs := cached { tail.extend(objs)! }
     if r := runtime { tail.push(r)! }
     tail.extend(link.objects.items)!
     tail.extend(tc.ldflags)!
@@ -391,6 +409,20 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     }
     return true
 }
+
+/// The C compiler's options of a build with `opts` (`version` is the compiler's): the base
+/// flags, the optimization and debug information.
+build_flags :: fn(opts: ^const Options, version: ?string) -> List(string) needs Alloc {
+    flags := base_cflags(opts.target)
+    flags.push(opt_level(opts))!
+    flags.extend(debug_flags(opts, version))!
+    if opts.debug_info { flags.push("-g")! }
+    if f := f16c_flag(opts.target) { flags.push(f)! }
+    return flags
+}
+
+/// Whether `target` is WASI, whose modules are linked and transformed differently.
+wasi_target :: fn(target: load.Target) -> bool => target.os is "Wasi"
 
 /// A token that makes the names of the temporary objects of this process its own.
 pid_token :: fn() -> string needs Alloc + Rand {
@@ -447,35 +479,81 @@ write_generated_c :: fn(path: string, code: string) -> bool needs Alloc + Err + 
     return true
 }
 
-/// Compiles each of `c_files` to the object of the same position in `objects`, all at once.
-/// Returns whether all succeeded, reporting the first failure.
-compile_objects :: fn(tc: ^const pkg.Toolchain, flags: []const string, c_files, objects: []const string) -> bool needs Alloc + Err + Proc {
-    children := list(?process.Child)
+/// Compiles each of `c_files` to the object of the same position in `objects`, `jobs` at a
+/// time. Returns whether all succeeded, reporting the first failure.
+compile_objects :: fn(tc: ^const pkg.Toolchain, flags: []const string, c_files, objects: []const string, jobs: usize) -> bool needs Alloc + Err + Sys {
+    argvs := list([]const string)
     for i, c in enumerate(c_files) {
         tail := [4]string("-c", "-o", objects[i], c)
-        argv := pkg.command(tc, flags, tail[..])
-        children.push(Proc.spawn(argv.items, process.SpawnOptions(stdout: .Null, stderr: .Pipe)) else null)!
+        argvs.push(pkg.command(tc, flags, tail[..]).items)!
     }
-    ok := true
-    for child in children.items {
-        c := child else {
-            if ok { eprint("cannot run the C compiler `{}`: No such file or directory (os error 2)\n", pkg.display(tc)) }
-            ok = false
-            continue
+    pool := CompilePool(argvs: argvs.items, next: 0, results: list(Compiled), lock: thread.mutex())
+    for _ in argvs.items { pool.results.push(.Ok)! }
+    threads := list(thread.Thread)
+    for _ in 0..jobs.clamp(1, argvs.items.len.max(1)) {
+        t := thread.spawn(compile_worker, &pool) else break
+        threads.push(t)!
+    }
+    if threads.items.len is 0 { compile_worker(&pool) }
+    for t in threads.items { thread.join(t) }
+    for r in pool.results.items {
+        match r {
+            .Ok => {}
+            .NoCompiler => {
+                eprint("cannot run the C compiler `{}`: No such file or directory (os error 2)\n", pkg.display(tc))
+                return false
+            }
+            .Failed(err) => {
+                eprint("the C compiler failed:\n{}", err)
+                return false
+            }
         }
-        err := list(u8)
-        buf: [4096]u8 = ---
+    }
+    return true
+}
+
+/// The C compilations of `compile_objects`, which its threads take in turn.
+CompilePool :: struct {
+    argvs: []const []const string
+    next: usize
+    /// By compilation; each thread writes only those it took.
+    results: List(Compiled)
+    lock: thread.Mutex
+}
+
+/// How a compilation went: its error output if it failed.
+Compiled :: union {
+    Ok
+    NoCompiler
+    Failed: string
+}
+
+/// A thread of `compile_objects`: runs compilations until none are left.
+compile_worker :: fn(p: ^CompilePool) needs Sys {
+    with heap_allocator(), system_io() {
         while true {
-            chunk := (c.read(buf[..]) else break) else break
-            err.extend(buf[0..chunk.len])!
-        }
-        status := c.wait() else .Exited(1)
-        if not process.success(status) and ok {
-            eprint("the C compiler failed:\n{}", string(err.items))
-            ok = false
+            thread.lock(&p.lock)
+            j := p.next
+            p.next += 1
+            thread.unlock(&p.lock)
+            if j >= p.argvs.len { break }
+            p.results.items[j] = compile_one(p.argvs[j])
         }
     }
-    return ok
+}
+
+/// Runs the C compiler command `argv`, keeping its error output.
+compile_one :: fn(argv: []const string) -> Compiled needs Alloc + Proc {
+    c := Proc.spawn(argv, process.SpawnOptions(stdout: .Null, stderr: .Pipe)) else return .NoCompiler
+    err := list(u8)
+    buf: [4096]u8 = ---
+    while true {
+        chunk := (c.read(buf[..]) else break) else break
+        err.extend(buf[0..chunk.len])!
+    }
+    status := c.wait() else .Exited(1)
+    if process.success(status) { return .Ok }
+    return .Failed(string(err.items))
 }
 
 /// Runs the C compiler command `argv` and returns whether it succeeded, reporting why not.

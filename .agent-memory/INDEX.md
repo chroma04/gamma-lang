@@ -1,24 +1,21 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-11-13) — PRs #1–#120 merged, v0.1.0 + rust-reference-final tagged
+## State (2026-11-13) — PRs #1–#121 merged, v0.1.0 + rust-reference-final tagged
+- s68 (branch claude/magical-dirac-tgheox): INCREMENTAL NATIVE BUILDS (decisions/065):
+  stable C names (cgen/names.gm: gm_f_<name>_<hash>, content/key-named data and types),
+  split by source file with per-unit pruned headers (units.gm split_by_file), unit
+  objects cached by text (driver/rtcache.gm unit_objects; pooled compile_objects).
+  Compiler debug build: cold 41 s, one-file body edit 4 s. Follow-ups in 065.
 - s67 (branch claude/optimistic-curie-kxu2yf): INTERPRETER REDESIGN (decisions/064): 16-byte
   specialized `Bc` per instruction (bc.gm), every compiled call made inside the vm_run loop
   with a CallRec per body (no host recursion, no Frame for frameless bodies), page-table
   memory (O(1) address lookup), much wider vm_compile coverage, cgen drops stack probes of
   #inline helpers. 2–4x on real programs; 064 lists measured next candidates.
-- s64–s66 (#117–#120): refactor rounds (roadmap/refactor-backlog.md: done, small leftovers);
-  `gamma lint` clean on compiler/harness/difftest. LESSON: at most 2–3 parallel building
-  agents on this 16 GB box (compiler build ~2–3 GB + cc). macOS `lint/deny_fails_the_command`
-  failed once (flaky? watch).
-- s63 (#116): idioms.md folded into guide; CI macOS runner → macos-15.
-- s61–s62 (#114, #115): PERF ROUNDS 6–7 (decisions/062, 063; profiling recipe in
-  docs/contributing.md): emit-c -25%, lint -46%, check compiler -20%.
-- s58–s60 (#110–#113): lint stale-element-pointer through struct-pointer calls
-  (decisions/060); 0.2.0 release prep + seed GM_ZERO fix + CI bootstrap matrix; tuple
-  expression spreads (061). CHANGELOG `## Unreleased` open. Pain-points "Open":
-  seed-refresh watch, fn-as-format-arg, template size.
-- s51–s57 (#104–#109): PERFORMANCE rounds + playground speed (decisions/055–059; s61 = 062,
-  s62 = 063): Checked build, unit splits, interpreter VM (keep vm_run < 2000 names).
+- s51–s66: perf rounds (decisions/055–063; profiling recipe in docs/contributing.md),
+  refactor rounds (roadmap/refactor-backlog.md: done), lint stale-element-pointer (060),
+  tuple spreads (061), 0.2.0 prep. LESSON: at most 2–3 parallel building agents on this
+  16 GB box. CHANGELOG `## Unreleased` open. Pain-points "Open": seed-refresh watch,
+  fn-as-format-arg, template size.
 - s50 (branch claude/eager-curie-ocf0wz): PAIN-POINT SWEEP (decisions/054): whole list
   triaged (pain-points.md "Settled"), 16 items implemented (language: else/array joins,
   const lifting into ?/!, contextual needs/handler/foreign, `{0}`/`{:q}`, local types; lint
@@ -56,6 +53,7 @@
    harness Watch thread → Proc.try_wait, pain-points.md "Open", Windows CI of the harness.
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
+2b. Incremental builds follow-ups (decisions/065 "Not done"): data of unit 0 by owner, -g.
 3. VM follow-ups: decisions/064 "Not done" (push cost, dispatch, builtins, stack-local
    allocations, lazy frames); `with … on`, value loops, u128 ops still tree; bugs-open.md.
    C size follow-ups: decisions/058 "Not done" (map growth, sort per T, seed refresh).

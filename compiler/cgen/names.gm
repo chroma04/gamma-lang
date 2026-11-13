@@ -1,0 +1,224 @@
+// Stable C names.
+//
+// The C names of functions, types, data and tables do not depend on the order in which the
+// back end meets them, nor on what the rest of the program holds: each is made from what
+// the entity *is*. A function is named after its module and its name (and, for an
+// instance, its type arguments; for a literal or a clause, its place in the enclosing
+// function); a string, a type or a descriptor after its contents. An edit then changes the
+// text of the functions it touches and of their callers' declarations, not the whole
+// program, so a build split into units (`units.gm`) recompiles only the units whose text
+// changed (see the cache of unit objects in the driver).
+//
+// Names are only ever *stable*, never relied on to be unique by construction: two entities
+// whose keys coincide (two instances whose type arguments read the same, say) get
+// distinct names, the later one with a numbered suffix.
+
+arena :: import "std/arena"
+hash_map :: import "std/collections/hash_map"
+source :: import "../source"
+str :: import "std/str"
+
+/// The names given so far.
+pub Namer :: struct {
+    taken: hash_map.HashMap(string, ())
+}
+
+new_namer :: fn() -> Namer needs Alloc => Namer(taken: hash_map.hash_map(string, ()))
+
+/// `base`, or `base` with a suffix `_2`, `_3`, … if `base` is already given; recorded as
+/// given. Each entity asks once (callers keep the name).
+unique :: fn(n: ^Namer, base: string) -> string needs Alloc {
+    name := base
+    k: usize = 1
+    while n.taken.get(name) is not null {
+        k += 1
+        name = str.format("{}_{}", base, k)!
+    }
+    n.taken.put(name, ())!
+    return name
+}
+
+/// A 64-bit hash of `text` (FNV-1a with a final mix, so that every bit depends on every
+/// byte).
+hash64 :: fn(text: []const u8) -> u64 {
+    h: u64 = 0xcbf29ce484222325
+    for b in text { h = (h ~ u64(b)) *% 0x100000001b3 }
+    h = (h ~ (h >> 30)) *% 0xbf58476d1ce4e5b9
+    h = (h ~ (h >> 27)) *% 0x94d049bb133111eb
+    return h ~ (h >> 31)
+}
+
+HASH_DIGITS :: "0123456789abcdefghijklmnopqrstuv"
+
+/// `text` hashed to `digits` base-32 digits (5 bits each, at most 12).
+hash_text :: fn(text: []const u8, digits: usize) -> string needs Alloc {
+    h := hash64(text)
+    out := list(u8)
+    for _ in 0..digits.min(12) {
+        out.push(HASH_DIGITS[(h & 31).trunc(usize)])!
+        h >>= 5
+    }
+    return out.items
+}
+
+/// The letters, digits and underscores of `name`, at most `max` of them, for a C name
+/// a person can recognize (`<literal>` gives `literal`).
+sanitized :: fn(name: string, max: usize) -> string needs Alloc {
+    out := list(u8)
+    for c in name {
+        if out.items.len >= max { break }
+        if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c is '_' {
+            out.push(c)!
+        } else if c is ' ' and out.items.len > 0 and out.items[out.items.len - 1] is not '_' {
+            out.push('_')!
+        }
+    }
+    return out.items
+}
+
+/// A stable name `prefix` + a hash of `key`, unique among the names given.
+keyed :: fn(n: ^Namer, prefix: string, key: []const u8) -> string needs Alloc => n.unique(str.format("{}{}", prefix, hash_text(key, 10))!)
+
+/// A stable name for an entity whose text is `content`: entities with the same text share
+/// it (the caller keeps a table by content).
+content_name :: fn(prefix: string, content: []const u8) -> string needs Alloc => str.format("{}{}", prefix, hash_text(content, 12))!
+
+test "names are stable and unique" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        n := new_namer()
+        x := n.keyed("gm_f", "a/b.f")
+        expect(x.starts_with("gm_f") and x.len is "gm_f".len + 10)
+        // The same key twice: two entities, two names.
+        expect_eq(n.keyed("gm_f", "a/b.f"), str.format("{}_2", x)!)
+        m := new_namer()
+        expect_eq(m.keyed("gm_f", "a/b.f"), x)
+        expect(hash_text("a", 12) is not hash_text("b", 12))
+        expect_eq(sanitized("<literal> in f", 20), "literal_in_f")
+        expect_eq(sanitized("abcdef", 3), "abc")
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// The keys of the program's entities
+// ---------------------------------------------------------------------------------
+
+/// The text naming module `m` in keys: its directory and name, as written (`<std>/str/str`).
+module_key :: fn(g: ^const Gen, m: usize) -> string needs Alloc {
+    md := &g.prog.s.l.modules.items[m]
+    return str.format("{}/{}", md.dir, md.name)!
+}
+
+/// `span` as a place in a key: relative to `outer` when it is inside it, so that an edit
+/// above the enclosing function leaves it unchanged; else the file and offset.
+place_key :: fn(g: ^const Gen, span: source.Span, outer: ?source.Span) -> string needs Alloc {
+    if o := outer and o.file is span.file and span.lo >= o.lo { return str.format("+{}", span.lo - o.lo)! }
+    return str.format("{}@{}", g.prog.s.l.sm.file(span.file).path, span.lo)!
+}
+
+/// The key of function `f`: its module and name, its template and type arguments for an
+/// instance, or its place in the enclosing function for a literal, a clause or a nested
+/// function.
+fn_key :: fn(g: ^Gen, f: u32) -> string needs Alloc {
+    i := usize(f)
+    while g.fn_keys.items.len <= i { g.fn_keys.push(null)! }
+    if k := g.fn_keys.items[i] { return k }
+    s := g.prog.s
+    sig := &s.fns.items[i]
+    def := g.prog.func(f)
+    key := ""
+    if inst := sig.instance {
+        args := list(string)
+        for t in inst.args { args.push(g.ty.show(t))! }
+        key = str.format("{}({})", g.fn_key(inst.template), str.join(args.items, ", ")!)!
+    } else if p := def.parent {
+        key = str.format("{}/{}{}", g.fn_key(p), def.name, g.place_key(def.span, g.prog.func(p).span))!
+    } else if def.kind is .Named and not s.def_of(f).nested {
+        key = str.format("{}.{}", g.module_key(sig.module), def.name)!
+    } else {
+        key = str.format("{}/{}", g.place_key(def.span, null), def.name)!
+    }
+    g.fn_keys.items[i] = key
+    return key
+}
+
+/// The C name of function `f`: `gm_f_<name>_<hash of its key>`.
+fn_name :: fn(g: ^Gen, f: u32) -> string needs Alloc {
+    i := usize(f)
+    while g.fn_names.items.len <= i { g.fn_names.push(null)! }
+    if n := g.fn_names.items[i] { return n }
+    def := g.prog.func(f)
+    base := str.format("gm_f_{}_{}", sanitized(def.name, 24), hash_text(g.fn_key(f), 7))!
+    if def.kind is .Foreign(_) { base = str.format("gm_x_{}_{}", sanitized(def.name, 24), hash_text(g.fn_key(f), 7))! }
+    n := g.names.unique(base)
+    g.fn_names.items[i] = n
+    return n
+}
+
+/// What distinguishes the C names of the helpers of function `f` (or of its clone
+/// specialized by `spec`): its name without the `gm_f`.
+fn_tag :: fn(g: ^Gen, f: u32, spec_: ?u32) -> string needs Alloc {
+    name := if s := spec_ { g.spec_name(f, s) } else { g.fn_name(f) }
+    return name["gm_f".len..]
+}
+
+/// The C name of the frame struct of function `f` (shared by its clones).
+frame_name :: fn(g: ^Gen, f: u32) -> string needs Alloc => str.format("gm_fr{}", g.fn_tag(f, null))!
+
+/// The key of specialization `s`: its handler, effect and enclosing specialization.
+spec_text :: fn(g: ^Gen, s: u32) -> string needs Alloc {
+    i := usize(s)
+    while g.spec_texts.items.len <= i { g.spec_texts.push(null)! }
+    if t := g.spec_texts.items[i] { return t }
+    key := g.spec_key(s)
+    outer := if o := key.outer { g.spec_text(o) } else { "" }
+    t := str.format("{}|{}|{}", g.handler_key(key.hid), g.effect_texts.get(key.eff) else "", outer)!
+    g.spec_texts.items[i] = t
+    return t
+}
+
+/// The C name of the clone of `f` specialized by `s`.
+spec_name :: fn(g: ^Gen, f: u32, s: u32) -> string needs Alloc {
+    if n := g.spec_names.get((f, s)) { return n }
+    n := g.names.unique(str.format("{}_s{}", g.fn_name(f), hash_text(g.spec_text(s), 6))!)
+    g.spec_names.put((f, s), n)!
+    return n
+}
+
+/// The key of handler literal `h`: its effect and clauses.
+handler_key :: fn(g: ^Gen, h: u32) -> string needs Alloc {
+    lit := g.prog.handler_lit(h)
+    parts := list(string)
+    parts.push(g.prog.s.tys.show_ref(&lit.effect_))!
+    for c in lit.clauses { parts.push(g.fn_key(c))! }
+    return str.join(parts.items, "|")!
+}
+
+/// The C name of the table of the clauses of handler literal `h`.
+handler_name :: fn(g: ^Gen, h: u32) -> string needs Alloc {
+    if n := g.handler_names.get(h) { return n }
+    n := g.names.keyed("gm_hl", g.handler_key(h))
+    g.handler_names.put(h, n)!
+    return n
+}
+
+/// The C name of the table of the clause thunks of handler declaration `d`.
+decl_name :: fn(g: ^Gen, d: u32) -> string needs Alloc {
+    if n := g.decl_names.get(d) { return n }
+    hd := g.prog.handler_decl(d)
+    n := g.names.keyed("gm_hd", str.format("{} for {}", g.prog.s.tys.show_ref(&hd.effect_), g.ty.show(hd.for_ty))!)
+    g.decl_names.put(d, n)!
+    return n
+}
+
+/// What distinguishes the C names of `#global` variable `gi` and its accessors: a hash of
+/// its module and name.
+global_tag :: fn(g: ^Gen, gi: usize) -> string needs Alloc {
+    while g.global_tags.items.len <= gi { g.global_tags.push(null)! }
+    if t := g.global_tags.items[gi] { return t }
+    gl := &g.prog.s.globals.items[gi]
+    t := g.names.keyed("gm_g", str.format("{}.{}", g.module_key(gl.module), gl.name)!)["gm_g".len..]
+    g.global_tags.items[gi] = t
+    return t
+}

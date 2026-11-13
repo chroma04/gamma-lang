@@ -44,7 +44,9 @@ pub Views :: struct {
     pending: List(Ty)
     building: bool
     defs: List(u8)
-    count: usize
+    /// The numbers in the views' names, given out by hashes of the types' text (the
+    /// debugger scripts read a view's kind after `gm_dv<number>_`).
+    numbers: hash_map.HashMap(u64, ())
     /// The C enumerators declared, which share one namespace.
     enumerators: hash_map.HashMap(string, bool)
 }
@@ -54,7 +56,7 @@ views :: fn() -> Views needs Alloc => Views(
     pending: list(Ty),
     building: false,
     defs: list(u8),
-    count: 0,
+    numbers: hash_map.hash_map(u64, ()),
     enumerators: hash_map.hash_map(string, bool),
 )
 
@@ -169,10 +171,18 @@ view_kind :: fn(ty: ^CTypes, t: Ty) -> string needs Alloc {
     }
 }
 
+/// The number in the name of the view of the type whose text is `key`: a hash of it, so
+/// that it does not depend on the rest of the program, or the next one free.
+view_number :: fn(ty: ^CTypes, key: string) -> u64 needs Alloc {
+    n := hash64(key) % 1_000_000_000_000
+    while ty.views.numbers.get(n) is not null { n = (n + 1) % 1_000_000_000_000 }
+    ty.views.numbers.put(n, ())!
+    return n
+}
+
 /// Gives `t`'s view its name before its definition, so pointers can refer to it.
 reserve :: fn(ty: ^CTypes, t: Ty) -> ?View needs Alloc {
-    n := ty.views.count
-    ty.views.count += 1
+    n := ty.view_number(ty.show(t))
     cty: string = if ty.is_aggregate(t) { str.format("struct gm_dv{}{}", n, ty.view_kind(t))! } else { str.format("enum gm_dv{}", n)! }
     v := scalar(cty)
     ty.views.cache.put(t.id, v)!
@@ -364,21 +374,21 @@ define_enum :: fn(ty: ^CTypes, t: Ty, view: string) -> string needs Alloc {
     info := ty.enum_info(t) else return ty.cty(tag)
     name := view
     if not view.starts_with("enum ") {
-        n := ty.views.count
-        ty.views.count += 1
+        n := ty.view_number(str.format("tag of {}", ty.show(t))!)
         name = str.format("enum gm_dv{}", n)!
     }
-    // Generic instances share a name: the prefix gets a number.
+    // Generic instances share a name: the prefix gets a hash of the type's text (and
+    // more of it in the unlikely case that it is not enough).
     prefix := info.base
-    k: u32 = 1
+    k: usize = 3
     while true {
         clash := false
         for v in variants {
             if ty.views.enumerators.get(str.format("{}_{}", prefix, v.name)!) is not null { clash = true }
         }
         if not clash { break }
+        prefix = str.format("{}_{}", info.base, hash_text(ty.show(t), k))!
         k += 1
-        prefix = str.format("{}{}", info.base, k)!
     }
     items := list(string)
     lo: i64 = 0

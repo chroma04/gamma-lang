@@ -35,6 +35,22 @@ pub Parts :: struct {
     pub funcs: string = ""
     /// The entry code, which unit 0 holds after its share of the functions.
     pub tail: string = ""
+    /// The function definitions of `funcs` by the source file they come from (see `Owned`).
+    pub owned: []const Owned = empty_slice(Owned)
+    /// For `split_by_file`, `head` in parts: the text every unit needs as it is, the
+    /// type definitions and the frames, and the names of members that the declarations of a
+    /// unit hold with any macro of the same name suspended.
+    pub support: string = ""
+    pub types: string = ""
+    pub frames: string = ""
+    pub members: []const string = empty_slice(string)
+}
+
+/// The functions of one source file, `owner` (its path, with `#` and a group number for
+/// instances of its generic functions; `""` for code of no file).
+pub Owned :: struct {
+    pub owner: string
+    pub text: string
 }
 
 /// The most units a build is split into.
@@ -243,7 +259,7 @@ function :: fn(item: string) -> ?(decl: string, def: string) needs Alloc {
     for c in header {
         if c in ('\n', '"', '\'') { return null }
     }
-    if str.contains(header, "static") { return null }
+    if has_word(header, "static") { return null }
     // A small function keeps its `inline` hint on the definition, which stays external
     // because the shared header declares it without the hint (C11 6.7.4): without the hint
     // the C compiler would not inline it even into the callers of its own unit.
@@ -251,6 +267,19 @@ function :: fn(item: string) -> ?(decl: string, def: string) needs Alloc {
         def = str.format("{}inline {}", pre, def[pre.len..def.len])!
     }
     return (decl: str.format("{};", header)!, def: def)
+}
+
+/// Whether `text` holds the identifier `word` (not as part of a longer one).
+has_word :: fn(text: string, word: string) -> bool {
+    from: usize = 0
+    while from < text.len {
+        i := str.find(text[from..text.len], word) else return false
+        at := from + i
+        end := at + word.len
+        if (at is 0 or not source.is_ident_cont(text[at - 1])) and (end >= text.len or not source.is_ident_cont(text[end])) { return true }
+        from = at + 1
+    }
+    return false
 }
 
 /// The top-level items of C text that holds only function definitions, each with the
@@ -301,6 +330,384 @@ items_of :: fn(code: string) -> ?[]string needs Alloc {
         if str.trim(l).len > 0 and not l.starts_with("#") { return null }
     }
     return items.items
+}
+
+// ---------------------------------------------------------------------------------
+// Units by source file
+// ---------------------------------------------------------------------------------
+
+/// A top-level declaration that units may need: its text, the name it declares (`""` for
+/// none, as for a `_Static_assert`), the `gm_` names it refers to, and where it goes in a
+/// unit's declarations: by `rank` (types, frames, prototypes, data, inline definitions),
+/// then by `depth` (how deeply a type nests others, which come first), then by name.
+Decl :: struct {
+    text: string
+    name: string
+    refs: []const string
+    rank: u8
+    depth: u32 = 0
+}
+
+/// The declarations of `text`, one per top-level item, with `rank`.
+decls_of :: fn(out: ^List(Decl), text: string, rank: u8) needs Alloc {
+    for item in decl_items(text) {
+        out.push(Decl(text: item, name: declared_name(item), refs: gm_names(item), rank: rank))!
+    }
+}
+
+/// The top-level items of C declarations `text`: each preprocessor line, and each run of
+/// lines that ends at brace depth 0 with `;` or `}`.
+decl_items :: fn(text: string) -> []string needs Alloc {
+    items := list(string)
+    start: usize = 0
+    depth: i32 = 0
+    i: usize = 0
+    for line in str.lines(text) {
+        end := i + line.len
+        if end < text.len { end += 1 }
+        if depth is 0 and line.starts_with("#") {
+            items.push(text[start..end])!
+            start = end
+            i = end
+            continue
+        }
+        depth += brace_balance(line)
+        t := str.trim_end(line)
+        if depth <= 0 and (t.ends_with(";") or t.ends_with("}")) {
+            items.push(text[start..end])!
+            start = end
+            depth = 0
+        }
+        i = end
+    }
+    if start < text.len and str.trim(text[start..text.len]).len > 0 { items.push(text[start..text.len])! }
+    return items.items
+}
+
+/// Opening minus closing braces of `line`, outside string and character literals.
+brace_balance :: fn(line: string) -> i32 {
+    d: i32 = 0
+    i: usize = 0
+    while i < line.len {
+        c := line[i]
+        if c is '"' or c is '\'' {
+            i = skip_literal(line, i)
+            continue
+        }
+        if c is '{' { d += 1 } else if c is '}' { d -= 1 }
+        i += 1
+    }
+    return d
+}
+
+/// The index just after the string or character literal that starts at `i`.
+skip_literal :: fn(text: string, i: usize) -> usize {
+    q := text[i]
+    j := i + 1
+    while j < text.len and text[j] is not q {
+        j += if text[j] is '\\' { 2 } else { 1 }
+    }
+    return (j + 1).min(text.len)
+}
+
+/// Whether `c` may continue a C identifier.
+ident_char :: fn(c: u8) -> bool => source.is_ident_cont(c)
+
+/// The `gm_` identifiers of `text`, outside literals, each once, in order.
+gm_names :: fn(text: string) -> []const string needs Alloc {
+    out := list(string)
+    seen := hash_map.hash_map(string, ())
+    defer seen.deinit()
+    i: usize = 0
+    while i < text.len {
+        c := text[i]
+        if c is '"' or c is '\'' {
+            i = skip_literal(text, i)
+            continue
+        }
+        if ident_char(c) {
+            j := i
+            while j < text.len and ident_char(text[j]) { j += 1 }
+            id := text[i..j]
+            if id.starts_with("gm_") and not (c >= '0' and c <= '9') and seen.get(id) is null {
+                seen.put(id, ())!
+                out.push(id)!
+            }
+            i = j
+            continue
+        }
+        i += 1
+    }
+    return out.items
+}
+
+/// The name declaration `item` declares: a macro's name, or the last `gm_` identifier
+/// outside brackets before an initializer. `""` for none.
+declared_name :: fn(item: string) -> string {
+    text := item
+    // `#line` directives may come first.
+    while text.starts_with("#line") {
+        nl := str.find(text, "\n") else return ""
+        text = text[nl + 1..text.len]
+    }
+    if text.starts_with("#define ") {
+        rest := text["#define ".len..text.len]
+        j: usize = 0
+        while j < rest.len and ident_char(rest[j]) { j += 1 }
+        return rest[0..j]
+    }
+    if text.starts_with("#") { return "" }
+    name := ""
+    depth: i32 = 0
+    i: usize = 0
+    while i < text.len {
+        c := text[i]
+        if c is '"' or c is '\'' {
+            i = skip_literal(text, i)
+            continue
+        }
+        if c in ('(', '[', '{') {
+            depth += 1
+        } else if c in (')', ']', '}') {
+            depth -= 1
+        } else if c is '=' and depth is 0 {
+            break
+        } else if ident_char(c) {
+            j := i
+            while j < text.len and ident_char(text[j]) { j += 1 }
+            if depth is 0 and text[i..j].starts_with("gm_") { name = text[i..j] }
+            i = j
+            continue
+        }
+        i += 1
+    }
+    return name
+}
+
+/// How many units the data of a split by file is dealt into, by name.
+DATA_GROUPS :: 16
+
+/// The ranks of declarations (see `Decl`).
+RANK_TYPE: u8 : 0
+RANK_FRAME: u8 : 1
+RANK_PROTO: u8 : 2
+RANK_DATA: u8 : 3
+RANK_INLINE: u8 : 4
+
+/// `parts` split into units by the source files of the functions: unit 0 holds the entry
+/// code; then up to `DATA_GROUPS` units of data, one unit per source file, which also makes
+/// the external definitions of its inline functions, and one for the code of no file. Each unit declares only what it uses, in
+/// an order that does not depend on the rest of the program, so that an edit changes only
+/// the units it concerns. `null` if the code has a shape the split does not handle.
+pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
+    if parts.owned.len is 0 and parts.funcs.len > 0 { return null }
+    decls := list(Decl)
+    decls_of(&decls, parts.types, RANK_TYPE)
+    decls_of(&decls, parts.frames, RANK_FRAME)
+    // The inline functions, by name, with the unit of their file: their definitions are
+    // declarations every unit that calls them holds, and the unit of their file makes the
+    // one external definition.
+    inline_names := hash_map.hash_map(string, usize)
+    defer inline_names.deinit()
+    bodies := list(List((name: string, def: string)))
+    for o in parts.owned {
+        fns := list((name: string, def: string))
+        all := items_of(o.text) else return null
+        for item in all {
+            if d := inline_definition(item) {
+                inline_names.put(d.name, bodies.items.len)!
+                decls.push(Decl(text: line_reset(d.def), name: d.name, refs: gm_names(d.def), rank: RANK_INLINE))!
+                continue
+            }
+            f := function(item) else return null
+            name := c_fn_name(f.decl) else return null
+            fns.push((name: name, def: line_reset(f.def)))!
+            decls.push(Decl(text: str.format("{}\n", f.decl)!, name: name, refs: gm_names(f.decl), rank: RANK_PROTO))!
+        }
+        bodies.push(fns)!
+    }
+    externs := list(List((name: string, def: string)))
+    for _ in bodies.items { externs.push(list((name: string, def: string)))! }
+    for line in str.lines(parts.protos) {
+        if line.len is 0 { continue }
+        if name := c_fn_name(line) and inline_names.get(name) is not null {
+            d := str.strip_prefix(line, "static ") else line
+            if not str.contains(d, "inline ") { d = str.format("inline {}", d)! }
+            decls.push(Decl(text: str.format("{}\n", d)!, name: name, refs: gm_names(d), rank: RANK_PROTO))!
+            k := inline_names.get(name) else @unreachable()
+            externs.items[k].push((name: name, def: str.format("extern {}\n", external(line) else line)!))!
+            continue
+        }
+        d := external(line) else line
+        decls.push(Decl(text: str.format("{}\n", d)!, name: declared_name(d), refs: gm_names(d), rank: RANK_PROTO))!
+    }
+    // The definitions of the data, dealt into `DATA_GROUPS` units by name, so that new
+    // data (a string literal) changes one of them.
+    groups := list(List(string))
+    for _ in 0..DATA_GROUPS { groups.push(list(string))! }
+    for line in str.lines(parts.data) {
+        if line.len is 0 { continue }
+        if line.starts_with("#") or line.starts_with("extern ") or line.starts_with("static inline ") {
+            decls.push(Decl(text: str.format("{}\n", line)!, name: declared_name(line), refs: gm_names(line), rank: RANK_DATA))!
+            continue
+        }
+        def := str.strip_prefix(line, "static ") else return null
+        head: string = if eq := str.split_once(def, " = ") { eq.before } else { str.strip_suffix(def, ";") else return null }
+        d := str.format("extern {};", head)!
+        name := declared_name(d)
+        decls.push(Decl(text: str.format("{}\n", d)!, name: name, refs: gm_names(d), rank: RANK_DATA))!
+        groups.items[(hash64(name) % u64(DATA_GROUPS)).trunc(usize)].push(def)!
+    }
+    by_name := hash_map.hash_map(string, List(usize))
+    defer by_name.deinit()
+    nameless := list(usize)
+    for i, d in enumerate(decls.items) {
+        if d.name.len is 0 {
+            nameless.push(i)!
+            continue
+        }
+        if l := by_name.get_ptr(d.name) {
+            l.push(i)!
+        } else {
+            l := list(usize)
+            l.push(i)!
+            by_name.put(d.name, l)!
+        }
+    }
+    set_depths(decls.items, &by_name)
+    units := list(string)
+    first := str.format("{}{}", parts.once, parts.tail)!
+    units.push(unit_text(decls.items, &by_name, nameless.items, first, parts.members))!
+    for g in groups.items {
+        if g.items.len is 0 { continue }
+        // A tentative definition and the definition of a name may come in either order.
+        g.items.sort()
+        text := list(u8)
+        for def in g.items { text.write("{}\n", def)! }
+        units.push(unit_text(decls.items, &by_name, nameless.items, text.items, parts.members))!
+    }
+    for k, fns in enumerate(bodies.items) {
+        ext := externs.items[k]
+        if fns.items.len is 0 and ext.items.len is 0 { continue }
+        all := list((name: string, def: string))
+        all.extend(fns.items)!
+        all.extend(ext.items)!
+        all.items.sort_by(fn(a, b: ^const (name: string, def: string)) -> bool => a.name < b.name or (a.name is b.name and a.def < b.def))
+        body := list(u8)
+        for f in all.items { body.extend(f.def)! }
+        units.push(unit_text(decls.items, &by_name, nameless.items, body.items, parts.members))!
+    }
+    return Split(shared: parts.support, units: units.items)
+}
+
+/// Definition `def`, which may map its lines to the Gamma source (with `-g`), followed by
+/// the marker that maps the lines after it back to the C file: definitions move between
+/// units, and a marker before one maps the end of the definition before it.
+line_reset :: fn(def: string) -> string needs Alloc {
+    if not str.contains(def, "#line ") or def.ends_with(str.format("{}\n", LINE_RESET)!) { return def }
+    return str.format("{}{}\n", def, LINE_RESET)!
+}
+
+/// The depth of each type declaration: one more than the deepest type it refers to.
+set_depths :: fn(decls: []Decl, by_name: ^hash_map.HashMap(string, List(usize))) needs Alloc {
+    // Types refer only to types declared before them, so one pass in order suffices.
+    for i, d in enumerate(decls) {
+        if d.rank is not RANK_TYPE { continue }
+        depth: u32 = 0
+        for r in d.refs {
+            if r is d.name { continue }
+            l := by_name.get(r) else continue
+            for k in l.items {
+                if k < i and decls[k].rank is RANK_TYPE { depth = depth.max(decls[k].depth + 1) }
+            }
+        }
+        decls[i].depth = depth
+    }
+}
+
+/// `body` preceded by the declarations it needs, in their order (see `Decl`), and by the
+/// guards of the members' names among them.
+unit_text :: fn(decls: []const Decl, by_name: ^hash_map.HashMap(string, List(usize)), nameless: []const usize, body: string, members: []const string) -> string needs Alloc {
+    taken := list(bool)
+    for _ in decls { taken.push(false)! }
+    defined := hash_map.hash_map(string, ())
+    defer defined.deinit()
+    work := list(string)
+    work.extend(gm_names(body))!
+    while w := work.pop() {
+        if defined.get(w) is not null { continue }
+        defined.put(w, ())!
+        l := by_name.get(w) else continue
+        for k in l.items {
+            if taken.items[k] { continue }
+            taken.items[k] = true
+            for r in decls[k].refs { if defined.get(r) is null { work.push(r)! } }
+        }
+    }
+    // A declaration of no name (a layout assertion) goes with what it refers to.
+    for k in nameless {
+        refs := decls[k].refs
+        if refs.len is 0 { continue }
+        all := true
+        for r in refs {
+            if by_name.get(r) is not null and defined.get(r) is null { all = false }
+        }
+        if all { taken.items[k] = true }
+    }
+    chosen := list(usize)
+    for k, t in enumerate(taken.items) { if t { chosen.push(k)! } }
+    chosen.items.sort_by(fn(a, b: ^const usize) -> bool => decl_before(&decls[a^], &decls[b^]))
+    text := list(u8)
+    seen := hash_map.hash_map(string, ())
+    defer seen.deinit()
+    for k in chosen.items {
+        // The same declaration may come from several places.
+        if seen.get(decls[k].text) is not null { continue }
+        seen.put(decls[k].text, ())!
+        text.extend(decls[k].text)!
+    }
+    used := list(string)
+    if members.len > 0 {
+        idents := ident_set(text.items)
+        for m in members { if idents.get(m) is not null { used.push(m)! } }
+    }
+    return str.format("{}{}", guard(used.items, text.items), body)!
+}
+
+/// Whether declaration `a` goes before `b`.
+decl_before :: fn(a, b: ^const Decl) -> bool {
+    if a.rank is not b.rank { return a.rank < b.rank }
+    if a.depth is not b.depth { return a.depth < b.depth }
+    // An assertion (no name) after the type it checks.
+    an := sort_name(a)
+    bn := sort_name(b)
+    if an is not bn { return an < bn }
+    if (a.name.len is 0) is not (b.name.len is 0) { return b.name.len is 0 }
+    return a.text < b.text
+}
+
+/// The name `d` sorts by: its own, or for an assertion that of what it checks.
+sort_name :: fn(d: ^const Decl) -> string {
+    if d.name.len > 0 { return d.name }
+    if d.refs.len > 0 { return d.refs[0] }
+    return ""
+}
+
+/// The identifiers of `text`.
+ident_set :: fn(text: string) -> hash_map.HashMap(string, ()) needs Alloc {
+    set := hash_map.hash_map(string, ())
+    i: usize = 0
+    while i < text.len {
+        if ident_char(text[i]) {
+            j := i
+            while j < text.len and ident_char(text[j]) { j += 1 }
+            set.put(text[i..j], ())!
+            i = j
+        } else {
+            i += 1
+        }
+    }
+    return set
 }
 
 test_parts :: fn() -> Parts => Parts(
@@ -388,6 +795,12 @@ test "optimized builds are split only when very large" {
     }
 }
 
+test "a function named after `static` is split" {
+    expect(has_word("static int f(void)", "static"))
+    expect(not has_word("int gm_f_static_bytes_x(void)", "static"))
+    expect(has_word("int f(static)", "static"))
+}
+
 test "other shapes are not split" {
     a := arena.new()
     defer a.deinit()
@@ -452,5 +865,124 @@ test "a split keeps the shared text apart" {
             expect(not str.contains(u, "int gm_f0(int a);\n"))
             expect_eq(str.format("{}{}", s.shared, u)!, units[i])
         }
+    }
+}
+
+/// A program of two source files for `split_by_file`: `a.gm` uses type `gm_ta`, its frame,
+/// a string and an inline function of `b.gm`; `b.gm` uses type `gm_tb` and a descriptor.
+file_parts :: fn(protos: string, data: string) -> Parts needs Alloc {
+    owned := list(Owned)
+    owned.push(Owned(owner: "a.gm", text: "static void gm_f_f_x(gm_ta a) {\n    struct gm_fr_f_x F;\n    (void)gm_sa;\n    gm_f_i_z(1);\n}\n"))!
+    owned.push(Owned(owner: "b.gm", text: "static int32_t gm_f_g_y(gm_tb b) {\n    return gm_format(&gm_tyb);\n}\n#line 1 \"b.gm\"\nstatic __attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f_i_z(int a) {\n    return a;\n}\n"))!
+    return Parts(
+        support: "#define GM_NOINLINE __attribute__((noinline))\n",
+        types: "typedef struct { uint8_t b[8]; } gm_b8_8;\ntypedef struct { gm_b8_8 f0; } gm_ta;\n_Static_assert(sizeof(gm_ta) == 8, \"layout of `A`\");\ntypedef struct { int32_t f0; } gm_tb;\n",
+        frames: "struct gm_fr_f_x {\n    gm_frame h;\n    gm_ta l0;\n};\n",
+        protos: protos,
+        data: data,
+        once: "int gm_checks = 1;\n",
+        tail: "int main(void) { gm_f_f_x((gm_ta){0}); return 0; }\n",
+        owned: owned.items,
+    )
+}
+
+FILE_PROTOS :: "static void gm_f_f_x(gm_ta a);\nstatic int32_t gm_f_g_y(gm_tb b);\nstatic __attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f_i_z(int a);\n"
+
+FILE_DATA :: "static const uint8_t gm_sa[4] = \"a{;\";\nstatic const gm_type gm_tyb;\nstatic const gm_type gm_tyb = {.size = 4};\n"
+
+test "a split by file declares in each unit what it uses" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := file_parts(FILE_PROTOS, FILE_DATA)
+        s := split_by_file(&p) else {
+            expect(false)
+            return
+        }
+        expect_eq(s.shared, p.support)
+        // Unit 0 (the entry code), the data, `a.gm` and `b.gm`.
+        u0 := s.units[0]
+        expect(u0.ends_with("int main(void) { gm_f_f_x((gm_ta){0}); return 0; }\n"))
+        expect(not str.contains(u0, "gm_f_i_z") and not str.contains(u0, "gm_tyb"))
+        data := list(u8)
+        for u in s.units[1..s.units.len - 2] { data.extend(u)! }
+        expect(str.contains(data.items, "\nconst uint8_t gm_sa[4] = \"a{;\";\n"))
+        expect(str.contains(data.items, "\nconst gm_type gm_tyb = {.size = 4};\n"))
+        expect(not str.contains(u0, "gm_tb"))
+        // `a.gm`: its type and assertion, its frame, the string and the inline function.
+        ua := s.units[s.units.len - 2]
+        expect(str.contains(ua, "typedef struct { uint8_t b[8]; } gm_b8_8;\ntypedef struct { gm_b8_8 f0; } gm_ta;\n_Static_assert(sizeof(gm_ta) == 8"))
+        expect(str.contains(ua, "struct gm_fr_f_x {\n    gm_frame h;\n    gm_ta l0;\n};\n"))
+        expect(str.contains(ua, "extern const uint8_t gm_sa[4];\n"))
+        expect(str.contains(ua, "inline int gm_f_i_z(int a) {\n    return a;\n}\n"))
+        expect(not str.contains(ua, "extern __attribute__((aligned(4))) int gm_f_i_z"))
+        expect(str.contains(ua, "\nvoid gm_f_f_x(gm_ta a) {\n"))
+        expect(not str.contains(ua, "gm_tb") and not str.contains(ua, "main"))
+        // `b.gm`: only what it uses, and the external definition of its inline function.
+        ub := s.units[s.units.len - 1]
+        expect(str.contains(ub, "extern __attribute__((aligned(4))) int gm_f_i_z(int a);\n"))
+        expect(str.contains(ub, "__attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f_i_z(int a) {\n"))
+        expect(str.contains(ub, "typedef struct { int32_t f0; } gm_tb;\n"))
+        expect(str.contains(ub, "extern const gm_type gm_tyb;\n"))
+        expect(str.contains(ub, "\nint32_t gm_f_g_y(gm_tb b) {\n"))
+        expect(not str.contains(ub, "gm_ta") and not str.contains(ub, "gm_fr_f_x") and not str.contains(ub, "gm_sa"))
+    }
+}
+
+test "the units of a split by file do not depend on the order of the declarations" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        p := file_parts(FILE_PROTOS, FILE_DATA)
+        lines := list(string)
+        for l in str.lines(FILE_PROTOS) { lines.insert(0, str.format("{}\n", l)!)! }
+        q := file_parts(str.join(lines.items, "")!, str.format("static const uint8_t gm_sz[2] = \"z\";\n{}", FILE_DATA)!)
+        s := split_by_file(&p) else {
+            expect(false)
+            return
+        }
+        t := split_by_file(&q) else {
+            expect(false)
+            return
+        }
+        // Only the unit of the new string's data changes (or is added).
+        changed: usize = 0
+        for u in t.units {
+            found := false
+            for v in s.units { if u is v { found = true } }
+            if not found { changed += 1 }
+        }
+        expect_eq(changed, 1)
+    }
+}
+
+test "definitions that map lines to the source end by mapping them back" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(line_reset("int f(void) {\n}\n"), "int f(void) {\n}\n")
+        with_line := "#line 3 \"a.gm\"\nint f(void) {\n}\n"
+        expect_eq(line_reset(with_line), str.format("{}{}\n", with_line, LINE_RESET)!)
+        expect_eq(line_reset(line_reset(with_line)), line_reset(with_line))
+    }
+}
+
+test "declarations and their names" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(declared_name("static const gm_type gm_ty1 = {.elem = &gm_ty2};"), "gm_ty1")
+        expect_eq(declared_name("static uint8_t gm_c1[8] __attribute__((aligned(8)));"), "gm_c1")
+        expect_eq(declared_name("extern uint8_t gm_g1[] __asm__(GM_SYM(\"x\"));"), "gm_g1")
+        expect_eq(declared_name("typedef struct { gm_t1 f0; } gm_t2;"), "gm_t2")
+        expect_eq(declared_name("#define gm_g2 ((uint8_t *)&errno)"), "gm_g2")
+        expect_eq(declared_name("_Static_assert(sizeof(gm_t2) == 8, \"x\");"), "")
+        expect_eq(declared_name("static void gm_f_a_b(gm_node *cx, gm_t1 x);"), "gm_f_a_b")
+        items := decl_items("static const uint8_t gm_s1[3] = \"};\";\nstruct gm_fr1 {\n    gm_frame h;\n};\n#define gm_x 1\n")
+        expect_eq(items.len, 3)
+        expect_eq(items[1], "struct gm_fr1 {\n    gm_frame h;\n};\n")
+        names := gm_names("gm_f1(gm_t2 x, \"gm_s9\", 'g') + gm_t2")
+        expect_eq(names.len, 2)
+        expect_eq(names[0], "gm_f1")
     }
 }

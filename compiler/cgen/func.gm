@@ -1,7 +1,7 @@
 // Functions: frames, blocks, statements, scopes, and the cleanup code that runs on
 // non-local exits.
 //
-// Every Gamma function becomes `static RET gm_fN(void *env, gm_node *cx, gm_node *inst,
+// Every Gamma function becomes `static RET gm_f_<name>_<hash>(void *env, gm_node *cx, gm_node *inst,
 // params…)`. The locals that function literals and handler clauses reach through `env`
 // live in a frame struct `F`; the others are plain C locals `gm_lN`, which the C
 // compiler can keep in registers even when the frame's address escapes (see
@@ -56,7 +56,7 @@ gen_fn :: fn(g: ^Gen, f: u32, spec: ?u32) -> Unsup!() needs sema.Load {
     in_frame := g.frame_locals(f)
     // The frame struct, shared by the function and its clones.
     frame := list(u8)
-    frame.write("struct gm_fr{} {{\n    gm_frame h;\n", f)!
+    frame.write("struct {} {{\n    gm_frame h;\n", g.frame_name(f))!
     // With `-g`, a field also has its local's name, with the type's debugger view.
     names: []const ?string = empty_slice(?string)
     if g.opts.debug_info {
@@ -130,7 +130,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     in_frame := g.frame_locals(f)
     split_runs := not g.opts.debug_info and long_body(g, f)
     cname := ""
-    if sp := spec { cname = spec_name(f, sp) } else { cname = fn_name(f) }
+    if sp := spec { cname = g.spec_name(f, sp) } else { cname = g.fn_name(f) }
     sig := str.format("static __attribute__((aligned(4))) {}{}{} {}({})", hint_attrs(def.hints), conv_attr(def.win64), ret, cname, str.join(params.items, ", ")!)!
     g.protos.write("{};\n", sig)!
     // A frame that no stack can hold makes every call a stack overflow: the body is only
@@ -141,8 +141,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         g.bodies.write("{} {{\n    gm_frame_overflow({}, {}ull);\n}}\n", sig, name, cost)!
         return ()
     }
-    tag := ""
-    if sp := spec { tag = str.format("{}_s{}", f, sp)! } else { tag = str.format("{}", f)! }
+    tag := g.fn_tag(f, spec)
     fg := FnGen(
         g: g,
         fid: f,
@@ -160,7 +159,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     fg.src_line(def.span)
     if def.hints.fast_math { fg.line("GM_FAST_MATH_BODY") }
     if plain { fg.line("void *env = NULL; gm_node *cx = NULL; gm_node *inst = NULL;") }
-    fg.linef("struct gm_fr{} F;", f)
+    fg.linef("struct {} F;", g.frame_name(f))
     for i, l in enumerate(def.locals) {
         if not fg.in_frame[i] {
             fg.temp_bytes += fg.g.ty.size(l.ty)
@@ -302,7 +301,7 @@ c_abi_wrapper :: fn(g: ^Gen, f: u32, def: ^const Func) needs Alloc {
         if g.ty.by_ref(t) { args.push(str.format("&a{}", i)!)! } else { args.push(str.format("a{}", i)!)! }
     }
     if params.items.len is 0 { params.push("void")! }
-    call := str.format("{}({})", fn_name(f), str.join(args.items, ", ")!)!
+    call := str.format("{}({})", g.fn_name(f), str.join(args.items, ", ")!)!
     ret := ""
     body := ""
     if g.ty.is_unit(def.ret) {
@@ -314,7 +313,7 @@ c_abi_wrapper :: fn(g: ^Gen, f: u32, def: ^const Func) needs Alloc {
         with_out := list(string)
         with_out.push("&gm_r")!
         with_out.extend(args.items)!
-        out_call := str.format("{}({})", fn_name(f), str.join(with_out.items, ", ")!)!
+        out_call := str.format("{}({})", g.fn_name(f), str.join(with_out.items, ", ")!)!
         v := "gm_r"
         if m := g.ty.mirror(def.ret) { v = str.format("GM_CONV({}, gm_r)", m)! }
         body = str.format("{} gm_r; {}; return {};", c, out_call, v)!
@@ -326,7 +325,7 @@ c_abi_wrapper :: fn(g: ^Gen, f: u32, def: ^const Func) needs Alloc {
         }
         body = str.format("return {};", v)!
     }
-    sig := str.format("static __attribute__((aligned(4))) {}{} gm_f{}_c({})", conv_attr(def.win64), ret, f, str.join(params.items, ", ")!)!
+    sig := str.format("static __attribute__((aligned(4))) {}{} {}_c({})", conv_attr(def.win64), ret, g.fn_name(f), str.join(params.items, ", ")!)!
     g.protos.write("{};\n", sig)!
     g.bodies.write("{} {{ {} }}\n", sig, body)!
 }
@@ -505,7 +504,7 @@ frame_up :: fn(fg: ^FnGen, levels: u32) -> (string, u32) needs Alloc {
 frame_field :: fn(fg: ^FnGen, levels: u32, field: string) -> string needs Alloc {
     if levels is 0 { return str.format("F.{}", field)! }
     p, f := fg.frame_up(levels)
-    return str.format("((struct gm_fr{} *){})->{}", f, p, field)!
+    return str.format("((struct {} *){})->{}", fg.g.frame_name(f), p, field)!
 }
 
 /// True if `e` reads a place whose type is large enough that copying it through a C

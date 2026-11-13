@@ -21,6 +21,8 @@ pub SiteConst :: struct {
     ty: Ty
     bytes: List(u8)
     relocs: List(SiteReloc)
+    /// Its storage, `gm_k` and a hash of the above.
+    name: string = ""
 }
 
 same_site_const :: fn(a, b: ^const SiteConst) -> bool {
@@ -53,8 +55,15 @@ const_arg :: fn(g: ^Gen, e: ^Expr) -> ?string needs sema.Load {
             break
         }
     }
-    if i is g.site_consts.items.len { g.site_consts.push(v)! }
-    return str.format("((uint8_t *)gm_k{})", i)!
+    if i is g.site_consts.items.len {
+        key := list(u8)
+        key.write("{}|{}|", g.ty.show(v.ty), v.bytes.items.len)!
+        key.extend(v.bytes.items)!
+        for r in v.relocs.items { key.write("|{}:{}", r.offset, r.data)! }
+        v.name = g.names.keyed("gm_k", key.items)
+        g.site_consts.push(v)!
+    }
+    return str.format("((uint8_t *){})", g.site_consts.items[i].name)!
 }
 
 /// Whether `e` is built from literals only, so that `const_arg` passes it from static
