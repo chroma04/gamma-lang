@@ -1,18 +1,30 @@
 // The interpreter's flat virtual address space.
 //
-// Every allocation receives a fresh, never reused address range from a bump counter, so
-// the allocations are sorted by base address by construction and an address is found
-// with a binary search (after a look at the last allocation used and a small cache). A
-// freed allocation stays as a tombstone so that a use after free is reported precisely;
-// once most allocations are dead, all but the newest tombstones are dropped, after which
-// stale pointers are reported as unmapped addresses.
+// Every allocation receives a fresh, never reused address range, so that a use after free
+// is always found. The space is handed out in pages of 4096 addresses. A page serves
+// allocations of one size class: it is divided into slots of a power of two of at least
+// 16 bytes, each holding one allocation and at least one address past its end (so that
+// one-past-the-end addresses and small overruns never land inside another allocation).
+// An allocation too large for half a page has a run of pages of its own. Finding the
+// allocation of an address is therefore a lookup of its page and a shift, whatever the
+// number of allocations.
+//
+// The bytes of an allocation are host memory of exactly its size, released when it is
+// freed; its slot stays as a tombstone so that a use after free is reported precisely.
+// Once every slot of a page is dead the page is retired, and all but the newest retired
+// tombstones are dropped, after which stale pointers into them are reported as unmapped
+// addresses.
 
-/// The gap left between consecutive allocations, so that one-past-the-end addresses and
-/// small overruns never land inside another allocation.
-GAP: u64 : 16
-MIN_ALIGN: u64 : 16
-/// Entries of the direct-mapped cache from address to allocation index.
-CACHE: usize : 4096
+PAGE_BITS: u64 : 12
+PAGE: u64 : 4096
+/// The smallest slot is 16 bytes, the largest half a page.
+MIN_SHIFT: u64 : 4
+MAX_SHIFT: u64 : 11
+CLASSES: usize : 8
+/// The shift of the pages of a large allocation: every address of them is in slot 0.
+LARGE: u64 : 63
+/// How many tombstones of retired pages are kept.
+TOMBSTONES: usize : 65536
 
 pub AllocKind :: union {
     Stack
@@ -24,13 +36,27 @@ pub AllocKind :: union {
     Global
 }
 
-Allocation :: struct {
-    base: u64
+/// One allocation: its bytes (`size` of them while it is live) and state.
+Slot :: struct {
+    data: [^]u8
     size: u64
-    data: []u8
+    /// False until the slot holds an allocation.
+    used: bool
     live: bool
     mutable: bool
     kind: AllocKind
+}
+
+/// A page of the address space: its slots (`null` for a page that was skipped for
+/// alignment or whose tombstones were dropped), the address of the first, and the size of
+/// each as a shift. The pages of a large allocation share its one slot and its base.
+Page :: struct {
+    slots: ?[^]Slot
+    base: u64
+    shift: u64
+    /// How many slots hold (or held) an allocation, and how many of them are dead.
+    count: u32
+    dead: u32
 }
 
 /// Why an access or an allocation failed.
@@ -66,78 +92,103 @@ mem_message :: fn(e: MemError) -> string needs Alloc => match e {
 }
 
 pub Memory :: struct {
-    allocs: List(Allocation)
-    next: u64
+    pages: List(Page)
+    /// The address of the first page.
+    base: u64
     limit: u64
-    live_count: usize
-    last: usize
-    cache: []u32
+    /// The page being filled of each size class, plus one (0: none).
+    open: [CLASSES]usize
+    /// The retired pages (the first of a large allocation's), oldest first from `retired_head`,
+    /// and how many tombstones they hold.
+    retired: List(usize)
+    retired_head: usize
+    tombstones: usize
 }
 
 /// An empty address space whose first allocation is at or above `data_base`, for a
 /// target with pointers of `ptr_bytes` bytes.
 memory :: fn(data_base: u64, ptr_bytes: u64) -> Memory needs Alloc {
     limit := if ptr_bytes >= 8 { ~u64(0) } else { u64(1) << (ptr_bytes * 8) }
-    return Memory(allocs: list(Allocation), next: data_base, limit: limit, live_count: 0, last: 0, cache: make_fill(CACHE, u32(0))!)
+    base := (data_base + PAGE - 1) / PAGE * PAGE
+    return Memory(pages: list(Page), base: base, limit: limit, open: [CLASSES]usize(fill: 0), retired: list(usize), retired_head: 0, tombstones: 0)
 }
 
-slot :: fn(addr: u64) -> usize => us((addr >> 4) % u64(CACHE))
+/// The address of the next new page, if the space has `n` more.
+next_pages :: fn(m: ^const Memory, n: u64) -> ?u64 {
+    addr := m.base + u64(m.pages.items.len) * PAGE
+    if n > (m.limit - addr) / PAGE { return null }
+    return addr
+}
 
 /// A new zero-filled allocation of `size` bytes aligned to `align`: its base address.
 alloc :: fn(m: ^Memory, size: u64, align: u64, kind: AllocKind, mutable: bool) -> MemError!u64 needs Alloc {
-    a := align.max(MIN_ALIGN)
-    q := m.next / a + (if m.next % a is 0 { 0 } else { 1 })
-    // Sums saturate: an address range past the end of the space is exhaustion.
-    base := q *| a
-    next := base +| size.max(1) +| GAP
-    if next >= m.limit { return !.Exhausted }
     if size > u64(@max_value(usize) >> 1) { return !.TooLarge(size, kind) }
     data := empty_slice(u8)
     if size > 0 { data = make_fill(us(size), u8(0)) else return !.TooLarge(size, kind) }
-    m.next = next
-    m.cache[slot(base)] = m.allocs.items.len.trunc(u32)
-    m.allocs.push(Allocation(base: base, size: size, data: data, live: true, mutable: mutable, kind: kind))!
-    m.live_count += 1
-    return base
+    slot := Slot(data: data.ptr, size: size, used: true, live: true, mutable: mutable, kind: kind)
+    // The slot also holds the address one past the end.
+    need := (size + 1).max(align)
+    if need <= (u64(1) << MAX_SHIFT) {
+        shift := MIN_SHIFT
+        while (u64(1) << shift) < need { shift += 1 }
+        c := us(shift - MIN_SHIFT)
+        per := (PAGE >> shift).trunc(u32)
+        if m.open[c] is 0 or m.pages.items[m.open[c] - 1].count is per {
+            addr := m.next_pages(1) else {
+                free(data)
+                return !.Exhausted
+            }
+            slots := make_fill(usize(per), Slot(data: data.ptr, size: 0, used: false, live: false, mutable: false, kind: .Heap)) else {
+                free(data)
+                return !.TooLarge(size, kind)
+            }
+            m.pages.push(Page(slots: slots.ptr, base: addr, shift: shift, count: 0, dead: 0))!
+            m.open[c] = m.pages.items.len
+        }
+        pg := &m.pages.items[m.open[c] - 1]
+        i := pg.count
+        pg.count += 1
+        if ss := pg.slots { ss[usize(i)] = slot }
+        return pg.base + (u64(i) << shift)
+    }
+    // A run of pages of its own, from a page boundary that is aligned.
+    while (m.base + u64(m.pages.items.len) * PAGE) % align.max(1) is not 0 {
+        _ = m.next_pages(1) else {
+            free(data)
+            return !.Exhausted
+        }
+        m.pages.push(Page(slots: null, base: 0, shift: LARGE, count: 0, dead: 0))!
+    }
+    n := size / PAGE + 1
+    addr := m.next_pages(n) else {
+        free(data)
+        return !.Exhausted
+    }
+    one := new(slot) else {
+        free(data)
+        return !.TooLarge(size, kind)
+    }
+    for _ in 0..us(n) { m.pages.push(Page(slots: (one).cast([^]Slot), base: addr, shift: LARGE, count: 1, dead: 0))! }
+    return addr
 }
 
+/// The page of `addr`, if it is one with slots.
 #inline
-holds :: fn(a: ^const Allocation, addr: u64) -> bool => addr >= a.base and addr - a.base < a.size.max(1)
-
-/// The index of the allocation containing `addr` (or ending at it).
-find :: fn(m: ^Memory, addr: u64, len: u64) -> MemError!usize {
-    if addr is 0 { return !.Null }
-    items := m.allocs.items
-    if m.last < items.len and items[m.last].holds(addr) { return m.last }
-    c := us(m.cache[slot(addr)])
-    if c < items.len and items[c].holds(addr) {
-        m.last = c
-        return c
-    }
-    // The first allocation with a base above `addr`.
-    lo: usize = 0
-    hi := items.len
-    while lo < hi {
-        mid := lo + (hi - lo) / 2
-        if items[mid].base <= addr { lo = mid + 1 } else { hi = mid }
-    }
-    if lo is 0 { return !.Unmapped(addr, len) }
-    i := lo - 1
-    // One past the end of an allocation (for zero-length accesses) is also accepted.
-    if addr - items[i].base > items[i].size { return !.Unmapped(addr, len) }
-    m.last = i
-    m.cache[slot(addr)] = i.trunc(u32)
-    return i
+page_of :: fn(m: ^const Memory, addr: u64) -> ?^Page {
+    p := (addr -% m.base) >> PAGE_BITS
+    if p >= u64(m.pages.items.len) { return null }
+    return &m.pages.items.ptr[us(p)]
 }
 
-/// The index of the live allocation holding the `len` bytes at `addr`.
-check :: fn(m: ^Memory, addr: u64, len: u64) -> MemError!usize {
-    i := try m.find(addr, len)
-    a := &m.allocs.items[i]
-    if not a.live { return !.Dead(addr, a.kind) }
-    off := addr - a.base
-    if off > a.size or len > a.size - off { return !.OutOfBounds(addr, len, a.base, a.size) }
-    return i
+/// The slot of the allocation containing `addr` (or ending at it) and its base address.
+locate :: fn(m: ^const Memory, addr: u64) -> ?(slot: ^Slot, base: u64) {
+    pg := m.page_of(addr) else return null
+    ss := pg.slots else return null
+    i := (addr - pg.base) >> pg.shift
+    s := &ss[us(i)]
+    base := pg.base + (i << pg.shift)
+    if not s.used or addr - base > s.size { return null }
+    return (slot: s, base: base)
 }
 
 #inline
@@ -147,41 +198,53 @@ aligned :: fn(addr: u64, align: u64) -> bool {
     return addr % align is 0
 }
 
+/// The host memory of the `len` bytes at `addr`, if they are inside a live allocation
+/// (a mutable one if `write`); `null` otherwise, when `fault` tells why. This is the
+/// path of every access: a page lookup, a shift and the bounds of one slot.
+#inline
+view :: fn(m: ^const Memory, addr: u64, len: u64, write: bool) -> ?[^]u8 {
+    p := (addr -% m.base) >> PAGE_BITS
+    if p >= u64(m.pages.items.len) { return null }
+    pg := &m.pages.items.ptr[us(p)]
+    ss := pg.slots else return null
+    rel := addr - pg.base
+    i := rel >> pg.shift
+    s := &ss[us(i)]
+    off := rel - (i << pg.shift)
+    if not s.live or len > s.size or off > s.size - len or (write and not s.mutable) { return null }
+    return (&s.data[us(off)]).cast([^]u8)
+}
+
+/// Why the access of `len` bytes at `addr` aligned to `align` fails.
+fault :: fn(m: ^const Memory, addr: u64, len: u64, align: u64, write: bool) -> MemError {
+    if not aligned(addr, align) { return .Misaligned(addr, align) }
+    if addr is 0 { return .Null }
+    at := m.locate(addr) else return .Unmapped(addr, len)
+    if not at.slot.live { return .Dead(addr, at.slot.kind) }
+    if len > at.slot.size - (addr - at.base) { return .OutOfBounds(addr, len, at.base, at.slot.size) }
+    if write and not at.slot.mutable { return .ReadOnly(addr) }
+    return .Unmapped(addr, len)
+}
+
 /// The `len` bytes at `addr`, aligned to `align`: a view of the allocation's storage,
-/// valid until the next allocation is freed.
-read :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
+/// valid until the allocation is freed.
+#inline
+read :: fn(m: ^const Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
     if len is 0 and align <= 1 { return empty_slice(u8) }
-    if not aligned(addr, align) { return !.Misaligned(addr, align) }
-    // Most accesses are to the allocation used last.
-    if m.last < m.allocs.items.len {
-        a := &m.allocs.items[m.last]
-        if a.live and addr >= a.base and len <= a.size and addr - a.base <= a.size - len {
-            off := us(addr - a.base)
-            return a.data[off..off + us(len)]
-        }
+    if aligned(addr, align) {
+        if p := m.view(addr, len, false) { return p[0..us(len)] }
     }
-    i := try m.check(addr, len)
-    a := &m.allocs.items[i]
-    off := us(addr - a.base)
-    return a.data[off..off + us(len)]
+    return !m.fault(addr, len, align, false)
 }
 
 /// The `len` bytes at `addr` for writing (the allocation must be mutable).
-write_view :: fn(m: ^Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
+#inline
+write_view :: fn(m: ^const Memory, addr: u64, len: u64, align: u64) -> MemError![]u8 {
     if len is 0 and align <= 1 { return empty_slice(u8) }
-    if not aligned(addr, align) { return !.Misaligned(addr, align) }
-    if m.last < m.allocs.items.len {
-        a := &m.allocs.items[m.last]
-        if a.live and a.mutable and addr >= a.base and len <= a.size and addr - a.base <= a.size - len {
-            off := us(addr - a.base)
-            return a.data[off..off + us(len)]
-        }
+    if aligned(addr, align) {
+        if p := m.view(addr, len, true) { return p[0..us(len)] }
     }
-    i := try m.check(addr, len)
-    a := &m.allocs.items[i]
-    if not a.mutable { return !.ReadOnly(addr) }
-    off := us(addr - a.base)
-    return a.data[off..off + us(len)]
+    return !m.fault(addr, len, align, true)
 }
 
 /// Copies `data` to `addr`.
@@ -194,57 +257,81 @@ write :: fn(m: ^Memory, addr: u64, data: []const u8, align: u64) -> MemError!() 
 /// static data).
 init :: fn(m: ^Memory, addr: u64, data: []const u8) -> MemError!() {
     if data.len is 0 { return () }
-    i := try m.check(addr, u64(data.len))
-    a := &m.allocs.items[i]
-    off := us(addr - a.base)
-    a.data[off..off + data.len].copy_from(data)
+    p := m.view(addr, u64(data.len), false) else return !m.fault(addr, u64(data.len), 1, false)
+    p[0..data.len].copy_from(data)
 }
 
 /// Marks the allocation at `base` dead and releases its storage. Returns false if there
 /// is none (or it is already dead).
 kill :: fn(m: ^Memory, base: u64) -> bool needs Alloc {
-    items := m.allocs.items
-    idx := us(m.cache[slot(base)])
-    if idx >= items.len or items[idx].base is not base {
-        lo: usize = 0
-        hi := items.len
-        while lo < hi {
-            mid := lo + (hi - lo) / 2
-            if items[mid].base < base { lo = mid + 1 } else { hi = mid }
-        }
-        idx = lo
+    at := m.locate(base) else return false
+    s := at.slot
+    if at.base is not base or not s.live { return false }
+    s.live = false
+    if s.size > 0 { free(s.data[0..us(s.size)]) }
+    pi := us((base - m.base) >> PAGE_BITS)
+    pg := &m.pages.items[pi]
+    pg.dead += 1
+    full := if pg.shift is LARGE { 1 } else { (PAGE >> pg.shift).trunc(u32) }
+    if pg.dead is full {
+        // Every slot is dead: no allocation will be made in the page again.
+        m.retired.push(pi)!
+        m.tombstones += usize(full)
+        while m.tombstones > TOMBSTONES { m.drop_oldest() }
     }
-    if idx >= items.len { return false }
-    a := &items[idx]
-    if a.base is not base or not a.live { return false }
-    a.live = false
-    free(a.data)
-    a.data = empty_slice(u8)
-    m.live_count -= 1
-    if items.len > (1 << 20) and items.len > 4 * m.live_count { m.compact() }
     return true
 }
 
-/// Drops the tombstones but the newest 2^16.
-compact :: fn(m: ^Memory) {
-    items := m.allocs.items
-    keep_dead_from := if items.len > (1 << 16) { items.len - (1 << 16) } else { 0 }
-    n: usize = 0
-    for i in 0..items.len {
-        if items[i].live or i >= keep_dead_from {
-            items[n] = items[i]
-            n += 1
-        }
+/// Drops the tombstones of the page retired first.
+drop_oldest :: fn(m: ^Memory) needs Alloc {
+    pi := m.retired.items[m.retired_head]
+    m.retired_head += 1
+    if m.retired_head > 1024 and m.retired_head * 2 > m.retired.items.len {
+        rest := m.retired.items[m.retired_head..m.retired.items.len]
+        for k in 0..rest.len { m.retired.items[k] = rest[k] }
+        m.retired.truncate(rest.len)
+        m.retired_head = 0
     }
-    m.allocs.truncate(n)
-    m.last = 0
-    for i in 0..m.cache.len { m.cache[i] = 0 }
+    m.tombstones -= m.release_page(pi)
+}
+
+/// Releases the slots of page `pi` (and, for the first page of a large allocation, of the
+/// pages it shares them with) with the bytes of the allocations still live; returns how
+/// many slots there were.
+release_page :: fn(m: ^Memory, pi: usize) -> usize needs Alloc {
+    pg := &m.pages.items[pi]
+    ss := pg.slots else return 0
+    if pg.shift is LARGE {
+        s := &ss[0]
+        if s.live and s.size > 0 { free(s.data[0..us(s.size)]) }
+        k := pi
+        while k < m.pages.items.len and m.pages.items[k].shift is LARGE and m.pages.items[k].base is pg.base and m.pages.items[k].slots is not null {
+            m.pages.items[k].slots = null
+            k += 1
+        }
+        destroy(s)
+        return 1
+    }
+    per := us(PAGE >> pg.shift)
+    for i in 0..per {
+        s := &ss[i]
+        if s.live and s.size > 0 { free(s.data[0..us(s.size)]) }
+    }
+    free(ss[0..per])
+    pg.slots = null
+    return per
+}
+
+/// Releases everything the address space holds.
+mem_deinit :: fn(m: ^Memory) needs Alloc {
+    for pi in 0..m.pages.items.len { _ = m.release_page(pi) }
+    m.pages.deinit()
+    m.retired.deinit()
 }
 
 /// The allocation containing `addr` (a one-past-the-end address belongs to the allocation
 /// it ends): its base, size, kind and whether it is live.
-describe :: fn(m: ^Memory, addr: u64) -> ?(base: u64, size: u64, kind: AllocKind, live: bool) {
-    i := m.find(addr, 0) else return null
-    a := &m.allocs.items[i]
-    return (base: a.base, size: a.size, kind: a.kind, live: a.live)
+describe :: fn(m: ^const Memory, addr: u64) -> ?(base: u64, size: u64, kind: AllocKind, live: bool) {
+    at := m.locate(addr) else return null
+    return (base: at.base, size: at.slot.size, kind: at.slot.kind, live: at.slot.live)
 }

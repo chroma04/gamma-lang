@@ -474,11 +474,7 @@ pub run_entry :: fn(p: ^Prog, entry: u32, mode: Mode, args: []const string, filt
 
 /// Frees what the machine holds (the trap of an outcome is kept).
 deinit :: fn(m: ^Machine) needs Alloc {
-    for a in m.mem.allocs.items {
-        if a.data.len > 0 { free(a.data) }
-    }
-    m.mem.allocs.deinit()
-    free(m.mem.cache)
+    m.mem.mem_deinit()
     for c in m.scratch.chunks.items { free(c) }
     m.scratch.chunks.deinit()
     m.infos.deinit()
