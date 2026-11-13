@@ -35,6 +35,14 @@ pub Parts :: struct {
     pub funcs: string = ""
     /// The entry code, which unit 0 holds after its share of the functions.
     pub tail: string = ""
+    /// The function definitions of `funcs` by the source file they come from.
+    pub owned: []const Owned = empty_slice(Owned)
+}
+
+/// The functions of one source file, `owner` (its path; `""` for code of no file).
+pub Owned :: struct {
+    pub owner: string
+    pub text: string
 }
 
 /// The most units a build is split into.

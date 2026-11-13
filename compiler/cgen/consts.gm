@@ -2,11 +2,13 @@
 // pointers as places in cells (`tir/value.gm`); the generated program gets the value's
 // bytes in the target layout, initialized at startup with pointers patched in.
 
-/// A cell whose value the program has in static storage `gm_cN` (N its index), with the
-/// type of that value.
+/// A cell whose value the program has in static storage, with the type of that value and
+/// the name of the storage (`gm_c` and a hash of the constant's module and name, or of the
+/// place of the pointer that reaches it).
 pub StaticCell :: struct {
     pub cell: ^tir.Cell
     pub ty: Ty
+    pub name: string
 }
 
 /// A pointer stored at `offset` within a value: the address of `target` (a C expression
@@ -28,18 +30,20 @@ pub ConstsText :: struct {
 const_storage :: fn(g: ^Gen, span: source.Span, t: Ty, at: source.Span) -> Unsup!string needs sema.Load {
     s := g.prog.s
     id := s.const_id(span, t) else return !unsupported(at, "a constant that was not evaluated")
-    cell := s.consts.items[(id).trunc(usize)].cell else return !unsupported(at, "a constant without a compile-time value")
-    return g.cell_storage(cell, t)
+    def := &s.consts.items[(id).trunc(usize)]
+    cell := def.cell else return !unsupported(at, "a constant without a compile-time value")
+    return g.cell_storage(cell, t, str.format("{}.{}: {}", g.module_key(def.module), def.name, g.ty.show(t))!)
 }
 
-/// The storage `gm_cN` of `cell`, holding a value of type `t`.
-cell_storage :: fn(g: ^Gen, cell: ^tir.Cell, t: Ty) -> string needs Alloc {
-    key := usize(cell.addr())
-    if i := g.cell_ids.get(key) { return str.format("gm_c{}", i)! }
+/// The storage of `cell`, holding a value of type `t`; `key` names it if it has none yet.
+cell_storage :: fn(g: ^Gen, cell: ^tir.Cell, t: Ty, key: string) -> string needs Alloc {
+    addr := usize(cell.addr())
+    if i := g.cell_ids.get(addr) { return g.statics_cells.items[usize(i)].name }
     i := g.statics_cells.items.len.trunc(u32)
-    g.statics_cells.push(StaticCell(cell: cell, ty: t))!
-    g.cell_ids.put(key, i)!
-    return str.format("gm_c{}", i)!
+    name := g.names.keyed("gm_c", key)
+    g.statics_cells.push(StaticCell(cell: cell, ty: t, name: name))!
+    g.cell_ids.put(addr, i)!
+    return name
 }
 
 /// Static storage for every cell used so far, filled by `gm_init_consts`.
@@ -53,7 +57,8 @@ gen_consts :: fn(g: ^Gen) -> Unsup!ConstsText needs sema.Load {
     while true {
         while i < g.statics_cells.items.len {
             sc := g.statics_cells.items[i]
-            name := str.format("gm_c{}", i)!
+            name := sc.name
+            g.cell_referrer = name
             i += 1
             size := g.ty.size(sc.ty)
             al := g.ty.align(sc.ty).max(1)
@@ -75,22 +80,24 @@ gen_consts :: fn(g: ^Gen) -> Unsup!ConstsText needs sema.Load {
         if i is g.statics_cells.items.len { break }
     }
     for gi, gl in enumerate(g.prog.s.globals.items) {
+        t := g.global_tag(gi)
+        g.cell_referrer = str.format("gm_g{}", t)!
         size := g.ty.size(gl.ty)
         al := g.ty.align(gl.ty).max(gl.align else 1).max(1)
         // `errno` is the C library's macro for the calling thread's variable, not a
         // symbol to link with.
         if gl.link_name is "errno" {
-            decls.write("#define gm_g{} ((uint8_t *)&errno)\n", gi)!
+            decls.write("#define gm_g{} ((uint8_t *)&errno)\n", t)!
             continue
         }
         if link := gl.link_name {
-            decls.write("extern uint8_t gm_g{}[] __asm__(GM_SYM({}));\n", gi, c_string(link))!
+            decls.write("extern uint8_t gm_g{}[] __asm__(GM_SYM({}));\n", t, c_string(link))!
             continue
         }
         tls := if gl.thread_local { "GM_TLS " } else { "" }
-        decls.write("static {}uint8_t gm_g{}[{}] __attribute__((aligned({})));\n", tls, gi, size.max(1), al)!
+        decls.write("static {}uint8_t gm_g{}[{}] __attribute__((aligned({})));\n", tls, t, size.max(1), al)!
         // A thread-local variable gets its initial value in each thread, on first use,
-        // through its accessor `gm_ga{gi}()`.
+        // through its accessor `gm_ga…()`.
         tls_init := list(u8)
         target: ^List(u8) = if gl.thread_local { &tls_init } else { &init }
         if cell := gl.value {
@@ -100,21 +107,22 @@ gen_consts :: fn(g: ^Gen) -> Unsup!ConstsText needs sema.Load {
             try g.value_bytes(cell.v, gl.ty, bytes.items, 0, &relocs)
             if bytes.items.len > 0 {
                 sb := g.static_bytes(bytes.items)
-                target.write("    memcpy(gm_g{}, {}, {});\n", gi, sb, bytes.items.len)!
+                target.write("    memcpy(gm_g{}, {}, {});\n", t, sb, bytes.items.len)!
             }
             for r in relocs.items {
-                target.write("    {{ void *p = (uint8_t *){} + {}; memcpy(gm_g{} + {}, &p, sizeof p); }}\n", r.target, r.addend, gi, r.offset)!
+                target.write("    {{ void *p = (uint8_t *){} + {}; memcpy(gm_g{} + {}, &p, sizeof p); }}\n", r.target, r.addend, t, r.offset)!
             }
         }
         if gl.thread_local {
-            decls.write("static GM_TLS uint8_t gm_gi{};\nstatic void gm_ginit{}(void);\nstatic inline uint8_t *gm_ga{}(void) {{ if (!gm_gi{}) {{ gm_gi{} = 1; gm_ginit{}(); }} return gm_g{}; }}\n", gi, gi, gi, gi, gi, gi, gi)!
-            g.bodies.write("static void gm_ginit{}(void) {{\n{}}}\n", gi, tls_init.items)!
+            decls.write("static GM_TLS uint8_t gm_gi{};\nstatic void gm_ginit{}(void);\nstatic inline uint8_t *gm_ga{}(void) {{ if (!gm_gi{}) {{ gm_gi{} = 1; gm_ginit{}(); }} return gm_g{}; }}\n", t, t, t, t, t, t, t)!
+            g.bodies.write("static void gm_ginit{}(void) {{\n{}}}\n", t, tls_init.items)!
         }
     }
     // Their values may refer to cells and functions not seen yet.
     while i < g.statics_cells.items.len {
         sc := g.statics_cells.items[i]
-        name := str.format("gm_c{}", i)!
+        name := sc.name
+        g.cell_referrer = name
         i += 1
         size := g.ty.size(sc.ty)
         decls.write("static uint8_t {}[{}] __attribute__((aligned({})));\n", name, size.max(1), g.ty.align(sc.ty).max(1))!
@@ -133,8 +141,8 @@ gen_consts :: fn(g: ^Gen) -> Unsup!ConstsText needs sema.Load {
     try g.drain()
     if i is not g.statics_cells.items.len { return !unsupported(source.DUMMY, "a variable whose value reaches a function that uses a new constant") }
     // Large constant arguments of calls (see `constarg.gm`).
-    for k, sc in enumerate(g.site_consts.items) {
-        name := str.format("gm_k{}", k)!
+    for sc in g.site_consts.items {
+        name := sc.name
         decls.write("static uint8_t {}[{}] __attribute__((aligned({})));\n", name, g.ty.size(sc.ty).max(1), g.ty.align(sc.ty).max(1))!
         if sc.bytes.items.len > 0 {
             sb := g.static_bytes(sc.bytes.items)
@@ -288,7 +296,7 @@ place_reloc :: fn(g: ^Gen, pl: tir.Place, pointee: Ty, off: u64) -> Unsup!Reloc 
             _ => return !unsupported(source.DUMMY, "a compile-time pointer into this value")
         }
     }
-    return Reloc(offset: off, target: g.cell_storage(pl.cell, root), addend: addend)
+    return Reloc(offset: off, target: g.cell_storage(pl.cell, root, str.format("{}+{}", g.cell_referrer, off)!), addend: addend)
 }
 
 /// The type of the value in `cell` if it already has storage.

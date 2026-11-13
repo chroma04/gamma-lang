@@ -75,7 +75,8 @@ outline_body :: fn(fg: ^FnGen, label: u32, ty: Ty, body: ^Expr) -> Unsup!string 
     saved := fg.outlined
     fg.outlined = true
     emit :: fn() -> Unsup!() needs sema.Load {
-        fg.linef("struct gm_fr{} *gm_Fp = (struct gm_fr{} *)fb->frame;", fid, fid)
+        fr := fg.g.frame_name(fid)
+        fg.linef("struct {} *gm_Fp = (struct {} *)fb->frame;", fr, fr)
         fg.line("void *env = fb->env; gm_node *cx = fb->cx; gm_node *inst = fb->inst;")
         fg.line("(void)env; (void)cx; (void)inst;")
         // The body belongs to the frame of the enclosing function, whose record the

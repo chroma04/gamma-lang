@@ -228,7 +228,7 @@ outline_run :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
 
     fid := fg.fid
     params := list(string)
-    params.push(str.format("struct gm_fr{} *gm_Fp", fid)!)!
+    params.push(str.format("struct {} *gm_Fp", fg.g.frame_name(fid))!)!
     params.push("void *env")!
     params.push("gm_node *cx")!
     params.push("gm_node *inst")!

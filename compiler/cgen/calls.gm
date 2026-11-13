@@ -460,7 +460,7 @@ out_stub :: fn(fg: ^FnGen, effect_: ^const EffectRef, id: u32, op: u32, tys: []c
     name := fg.g.prog.s.tys.effect_name(effect_.eff)
     key := str.format("{}|{}|{}|{}", id, op, writer, pt)!
     if f := fg.g.stubs.get(key) { return f }
-    f := str.format("gm_pf{}", fg.g.stubs.len())!
+    f := fg.g.names.keyed("gm_pf", key)
     fg.g.stubs.put(key, f)!
     sig := str.format("static void {}(gm_node *cx, {} a, const char *file, uint32_t line, uint32_t col)", f, pt)!
     fg.g.helpers.protos.write("GM_NOINLINE {};\n", sig)!
@@ -474,7 +474,7 @@ out_stub :: fn(fg: ^FnGen, effect_: ^const EffectRef, id: u32, op: u32, tys: []c
 fn_sink_stub :: fn(fg: ^FnGen, str_ty: Ty) -> string needs sema.Load {
     key := "fnsink"
     if f := fg.g.stubs.get(key) { return f }
-    f := str.format("gm_pf{}", fg.g.stubs.len())!
+    f := fg.g.names.keyed("gm_pf", key)
     fg.g.stubs.put(key, f)!
     unit_ty := fg.g.ty.unit_ty()
     tys := [1]Ty(str_ty)
@@ -494,7 +494,7 @@ fn_sink_stub :: fn(fg: ^FnGen, str_ty: Ty) -> string needs sema.Load {
 fn_format_stub :: fn(fg: ^FnGen, sink: string) -> string needs sema.Load {
     key := "fnformat"
     if f := fg.g.stubs.get(key) { return f }
-    f := str.format("gm_pf{}", fg.g.stubs.len())!
+    f := fg.g.names.keyed("gm_pf", key)
     fg.g.stubs.put(key, f)!
     head := str.format("static bool {}(void *code, void *env, gm_node *cx, const gm_type *t, const void *v, const gm_spec *s)", f)!
     fg.g.helpers.protos.write("GM_NOINLINE {};\n", head)!
@@ -509,7 +509,7 @@ piece_stub :: fn(fg: ^FnGen, core: string, kind: u8, str_ty: Ty) -> string needs
     kind_text := if kind is 's' { "s" } else { "f" }
     key := str.format("piece|{}|{}", core, kind_text)!
     if f := fg.g.stubs.get(key) { return f }
-    f := str.format("gm_pf{}", fg.g.stubs.len())!
+    f := fg.g.names.keyed("gm_pf", key)
     fg.g.stubs.put(key, f)!
     pt := fg.g.ty.param_cty(str_ty)
     p := fg.ptr_bytes()

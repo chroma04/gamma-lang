@@ -57,8 +57,22 @@ pub Gen :: struct {
     effect_ids: hash_map.HashMap(string, u32)
     /// The shared functions that perform an ambient output effect, by signature.
     pub stubs: hash_map.HashMap(string, string)
-    /// Static byte arrays by content.
-    statics: hash_map.HashMap([]const u8, usize)
+    /// The C names given so far (see `names.gm`), and those of functions, specializations,
+    /// handler tables and globals, with the keys they are made from.
+    pub names: Namer
+    fn_keys: List(?string)
+    fn_names: List(?string)
+    spec_texts: List(?string)
+    spec_names: hash_map.HashMap((u32, u32), string)
+    handler_names: hash_map.HashMap(u32, string)
+    decl_names: hash_map.HashMap(u32, string)
+    global_tags: List(?string)
+    /// The text of each effect instance, by its number.
+    effect_texts: hash_map.HashMap(u32, string)
+    /// Where the text of each source file's functions starts in `bodies` (see `owned`).
+    pub owner_marks: List(OwnerMark)
+    /// Static byte arrays by content, with their names.
+    statics: hash_map.HashMap([]const u8, string)
     static_defs: List(u8)
     pub frames: List(u8)
     pub protos: List(u8)
@@ -116,6 +130,8 @@ pub Gen :: struct {
     /// their pointers point into.
     pub statics_cells: List(StaticCell)
     pub cell_ids: hash_map.HashMap(usize, u32)
+    /// The storage whose value is being written, which names the cells its pointers reach.
+    pub cell_referrer: string = ""
 }
 
 /// What the back end produces.
@@ -159,7 +175,17 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         opts: opts,
         effect_ids: hash_map.hash_map(string, u32),
         stubs: hash_map.hash_map(string, string),
-        statics: hash_map.hash_map([]const u8, usize),
+        names: new_namer(),
+        fn_keys: list(?string),
+        fn_names: list(?string),
+        spec_texts: list(?string),
+        spec_names: hash_map.hash_map((u32, u32), string),
+        handler_names: hash_map.hash_map(u32, string),
+        decl_names: hash_map.hash_map(u32, string),
+        global_tags: list(?string),
+        effect_texts: hash_map.hash_map(u32, string),
+        owner_marks: list(OwnerMark),
+        statics: hash_map.hash_map([]const u8, string),
         static_defs: list(u8),
         frames: list(u8),
         protos: list(u8),
@@ -217,7 +243,7 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
     data := list(u8)
     data.extend(g.ty.descriptors())!
     for id in g.loc_files.items {
-        data.write("static const char gm_src{}[] = {};\n", id, c_string(g.prog.s.l.sm.file(id).path))!
+        data.write("static const char {}[] = {};\n", g.src_name(id), c_string(g.prog.s.l.sm.file(id).path))!
     }
     data.extend(g.static_defs.items)!
     frames := guard(names, g.frames.items)
@@ -264,6 +290,7 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         data: str.format("{}{}{}", data.items, g.handler_tables.items, consts.decls)!,
         once: str.format("{}{}", checks, gdb)!,
         funcs: str.format("{}{}", g.helpers.bodies.items, g.bodies.items)!,
+        owned: with_helpers(g.owned(), g.helpers.bodies.items),
         // The function text before it ends with a marker that a split leaves with the next
         // function (see `split`), so the tail starts with one of its own.
         tail: str.format("{}{}{}{}", reset, consts.init, exports, main_text)!,
@@ -285,18 +312,13 @@ queue :: fn(g: ^Gen, f: u32) needs Alloc {
     }
 }
 
-fn_name :: fn(f: u32) -> string needs Alloc => str.format("gm_f{}", f)!
-
-/// The C name of the clone of `f` specialized by `s`.
-spec_name :: fn(f: u32, s: u32) -> string needs Alloc => str.format("gm_f{}_s{}", f, s)!
-
 /// Marks the clone of `f` specialized by `s` as needed; returns its C name.
 queue_spec :: fn(g: ^Gen, f: u32, s: u32) -> string needs Alloc {
     if g.clones.get((f, s)) is null {
         g.clones.put((f, s), true)!
         g.spec_queue.push((f, s))!
     }
-    return spec_name(f, s)
+    return g.spec_name(f, s)
 }
 
 /// The number of specialization `key`.
@@ -329,20 +351,81 @@ spec_slot :: fn(outer: ?u32) -> u32 {
 clause_name :: fn(g: ^Gen, c: u32, outer: ?u32) -> string needs Alloc {
     if o := outer { return g.queue_spec(c, o) }
     g.queue(c)
-    return fn_name(c)
+    return g.fn_name(c)
 }
 
 /// Generates every function and clone queued so far, and those they reach.
 drain :: fn(g: ^Gen) -> Unsup!() needs sema.Load {
     while true {
         if f := g.reachable.pop() {
+            g.mark_owner(g.owner_file(f))
             try gen_fn(g, f, null)
         } else if c := g.spec_queue.pop() {
+            g.mark_owner(g.owner_file(c.0))
             try gen_fn(g, c.0, c.1)
         } else {
+            g.mark_owner(null)
             return ()
         }
     }
+}
+
+/// The functions of source file `file` (`null`: of no file) start at `at` in `Gen.bodies`.
+pub OwnerMark :: struct {
+    pub at: usize
+    pub file: ?u32
+}
+
+/// The source file whose unit function `f` goes to in a split build: the one it is written
+/// in (an instance's is its template's).
+owner_file :: fn(g: ^Gen, f: u32) -> ?u32 needs Alloc {
+    span := g.prog.func(f).span
+    if span is source.DUMMY { return null }
+    return span.file
+}
+
+/// Records that the text added to `bodies` from now on belongs to `file`.
+mark_owner :: fn(g: ^Gen, file: ?u32) needs Alloc {
+    n := g.owner_marks.items.len
+    if n > 0 and g.owner_marks.items[n - 1].file is file { return }
+    g.owner_marks.push(OwnerMark(at: g.bodies.items.len, file: file))!
+}
+
+/// The text of `bodies` by source file, as `(path, text)` (`""` for no file), each file's
+/// functions together.
+owned :: fn(g: ^Gen) -> []Owned needs Alloc {
+    by_file := hash_map.hash_map(string, usize)
+    paths := list(string)
+    texts := list(List(u8))
+    for k, m in enumerate(g.owner_marks.items) {
+        end := if k + 1 < g.owner_marks.items.len { g.owner_marks.items[k + 1].at } else { g.bodies.items.len }
+        if end <= m.at { continue }
+        path: string = if file := m.file { g.prog.s.l.sm.file(file).path } else { "" }
+        if by_file.get(path) is null {
+            by_file.put(path, paths.items.len)!
+            paths.push(path)!
+            texts.push(list(u8))!
+        }
+        i := by_file.get(path) else @unreachable()
+        texts.items[i].extend(g.bodies.items[m.at..end])!
+    }
+    out := list(Owned)
+    for i, p in enumerate(paths.items) { out.push(Owned(owner: p, text: texts.items[i].items))! }
+    return out.items
+}
+
+/// `owned` with the helpers added to the code of no file.
+with_helpers :: fn(owned: []Owned, helpers: string) -> []const Owned needs Alloc {
+    for i, o in enumerate(owned) {
+        if o.owner.len is 0 {
+            owned[i].text = str.format("{}{}", helpers, o.text)!
+            return owned
+        }
+    }
+    out := list(Owned)
+    out.push(Owned(owner: "", text: helpers))!
+    out.extend(owned)!
+    return out.items
 }
 
 /// True if the frame struct of `f` has been emitted; marks it as emitted.
@@ -354,22 +437,25 @@ frame_done :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
     return done
 }
 
-/// The number identifying an effect instance in handler contexts.
+/// The number identifying an effect instance in handler contexts: a hash of its text, so
+/// that it does not depend on the rest of the program.
 effect_id :: fn(g: ^Gen, e: ^const EffectRef) -> u32 needs Alloc {
     key := g.prog.s.tys.show_ref(e)
     if id := g.effect_ids.get(key) { return id }
-    n := g.effect_ids.len().trunc(u32)
+    n := (hash64(key) & 0x7fff_ffff).trunc(u32)
+    while g.effect_texts.get(n) is not null { n = (n + 1) & 0x7fff_ffff }
     g.effect_ids.put(key, n)!
+    g.effect_texts.put(n, key)!
     return n
 }
 
 /// The name of a static array holding `bytes` followed by a NUL byte.
 static_bytes :: fn(g: ^Gen, bytes: []const u8) -> string needs Alloc {
-    if i := g.statics.get(bytes) { return str.format("gm_s{}", i)! }
-    i := g.statics.len()
-    g.statics.put(bytes, i)!
-    g.static_defs.write("static const uint8_t gm_s{}[{}] = {};\n", i, bytes.len + 1, c_string(bytes))!
-    return str.format("gm_s{}", i)!
+    if n := g.statics.get(bytes) { return n }
+    n := content_name("gm_s", bytes)
+    g.statics.put(bytes, n)!
+    g.static_defs.write("static const uint8_t {}[{}] = {};\n", n, bytes.len + 1, c_string(bytes))!
+    return n
 }
 
 /// `"file", line, col` for a trap at `span` (NULL location for none).
@@ -378,8 +464,11 @@ src_loc :: fn(g: ^Gen, span: source.Span) -> string needs Alloc {
     f := g.prog.s.l.sm.file(span.file)
     lc := f.line_col(span.lo)
     if span.file not in g.loc_files.items { g.loc_files.push(span.file)! }
-    return str.format("gm_src{}, {}, {}", span.file, lc.line, lc.col)!
+    return str.format("{}, {}, {}", g.src_name(span.file), lc.line, lc.col)!
 }
+
+/// The name of the static string holding the path of source file `file`.
+src_name :: fn(g: ^const Gen, file: u32) -> string needs Alloc => content_name("gm_src", g.prog.s.l.sm.file(file).path)
 
 /// A `#line` directive for the start of `span`, with debug information on and the span in a
 /// file on disk.
@@ -405,7 +494,7 @@ line_directive :: fn(g: ^Gen, span: source.Span) -> ?string needs Alloc + Fs {
 /// handler is installed where `s`'s node is the context, so its clauses run with that node
 /// as theirs.
 spec_handler_table :: fn(g: ^Gen, h: u32, s: u32) -> string needs Alloc {
-    name := str.format("gm_hl{}_s{}", h, s)!
+    name := str.format("{}_s{}", g.handler_name(h), hash_text(g.spec_text(s), 6))!
     if g.spec_tables.get((h, s)) is null {
         g.spec_tables.put((h, s), true)!
         names := list(string)
@@ -424,11 +513,11 @@ handler_table :: fn(g: ^Gen, h: u32) -> string needs Alloc {
         names := list(string)
         for c in g.prog.handler_lit(h).clauses {
             g.queue(c)
-            names.push(str.format("(void *){}", fn_name(c))!)!
+            names.push(str.format("(void *){}", g.fn_name(c))!)!
         }
-        g.handler_tables.write("static void *const gm_hl{}[] = {{{}}};\n", h, str.join(names.items, ", ")!)!
+        g.handler_tables.write("static void *const {}[] = {{{}}};\n", g.handler_name(h), str.join(names.items, ", ")!)!
     }
-    return str.format("gm_hl{}", h)!
+    return g.handler_name(h)
 }
 
 /// The table of clause thunks of handler declaration `d`. A thunk has the uniform clause
@@ -454,7 +543,7 @@ decl_table :: fn(g: ^Gen, d: u32) -> Unsup!string needs Alloc {
                 params.push(str.format("{} a{}", g.ty.param_cty(ptys.items[i]), i)!)!
                 args.push(str.format("a{}", i)!)!
             }
-            name := str.format("gm_dt{}_{}", d, k)!
+            name := str.format("gm_dt{}_{}", g.decl_name(d)["gm_hd".len..], k)!
             // A large result goes to `gm_out`, as for every Gamma function.
             ret_kw := "return "
             if g.ty.by_ref(def.ret) {
@@ -464,12 +553,12 @@ decl_table :: fn(g: ^Gen, d: u32) -> Unsup!string needs Alloc {
                 ret_kw = ""
             }
             g.protos.write("static {} {}({});\n", ret, name, str.join(params.items, ", ")!)!
-            g.bodies.write("static {} {}({}) {{ {}{}({}); }}\n", ret, name, str.join(params.items, ", ")!, ret_kw, fn_name(c), str.join(args.items, ", ")!)!
+            g.bodies.write("static {} {}({}) {{ {}{}({}); }}\n", ret, name, str.join(params.items, ", ")!, ret_kw, g.fn_name(c), str.join(args.items, ", ")!)!
             names.push(str.format("(void *){}", name)!)!
         }
-        g.handler_tables.write("static void *const gm_hd{}[] = {{{}}};\n", d, str.join(names.items, ", ")!)!
+        g.handler_tables.write("static void *const {}[] = {{{}}};\n", g.decl_name(d), str.join(names.items, ", ")!)!
     }
-    return str.format("gm_hd{}", d)!
+    return g.decl_name(d)
 }
 
 /// Exported functions (§19.4): external C-ABI wrappers under their symbols.
@@ -591,15 +680,15 @@ gen_entry :: fn(g: ^Gen, entry: u32, n: usize) -> Unsup!string needs sema.Load {
     s.write("static int gm_entry{}(gm_node *cx) {{\n", n)!
     if g.ty.by_ref(ret) {
         hidden := if g.is_plain(entry) { "" } else { ", NULL, cx, NULL" }
-        s.write("    {} r; {}(&r{});\n", rc, fn_name(entry), hidden)!
+        s.write("    {} r; {}(&r{});\n", rc, g.fn_name(entry), hidden)!
     } else if g.is_plain(entry) {
         if g.ty.is_void(ret) {
-            s.write("    {}();\n    {} r = GM_ZERO({});\n", fn_name(entry), rc, rc)!
+            s.write("    {}();\n    {} r = GM_ZERO({});\n", g.fn_name(entry), rc, rc)!
         } else {
-            s.write("    {} r = {}();\n", rc, fn_name(entry))!
+            s.write("    {} r = {}();\n", rc, g.fn_name(entry))!
         }
     } else {
-        s.write("    {} r = {}(NULL, cx, NULL);\n", rc, fn_name(entry))!
+        s.write("    {} r = {}(NULL, cx, NULL);\n", rc, g.fn_name(entry))!
     }
     s.extend("    (void)cx;\n")!
     s.extend("    if (gm_unw.kind == GM_EXIT) { gm_flush(); return gm_unw.code; }\n")!
@@ -738,8 +827,7 @@ is_plain :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
 
 /// The C name used to call `f`: foreign functions have a private alias.
 callee_name :: fn(g: ^Gen, f: u32) -> string needs Alloc {
-    if g.prog.func(f).kind is .Foreign(_) { return str.format("gm_x{}", f)! }
-    return fn_name(f)
+    return g.fn_name(f)
 }
 
 /// Whether plain function `f` needs a separate C-ABI entry point: its own signature
@@ -757,7 +845,7 @@ needs_wrapper :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
 /// The C name of `f` where its address is taken: the C-ABI entry point of a plain
 /// function (see `needs_wrapper`), else the name it is called by.
 addr_name :: fn(g: ^Gen, f: u32) -> string needs Alloc {
-    if g.needs_wrapper(f) { return str.format("gm_f{}_c", f)! }
+    if g.needs_wrapper(f) { return str.format("{}_c", g.fn_name(f))! }
     return g.callee_name(f)
 }
 
@@ -778,7 +866,7 @@ foreign_decl :: fn(g: ^Gen, f: u32) -> Unsup!() needs Alloc {
     } else {
         try g.c_abi_type(def.ret, def.span)
     }
-    g.protos.write("extern {}{} gm_x{}({}) __asm__(GM_SYM({}));\n", conv_attr(def.win64), ret, f, str.join(params.items, ", ")!, c_string(link_name))!
+    g.protos.write("extern {}{} {}({}) __asm__(GM_SYM({}));\n", conv_attr(def.win64), ret, g.fn_name(f), str.join(params.items, ", ")!, c_string(link_name))!
 }
 
 /// The C type passed across the C ABI for `t`.
