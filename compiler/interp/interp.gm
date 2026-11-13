@@ -138,6 +138,8 @@ FnInfo :: struct {
     addressed_params: bool = false
     /// For a function returning a result: the offset of the byte telling an error.
     err_flag: ?u64 = null
+    /// The function's result type (`null` for what is not a function's body).
+    ret_ty: ?Ty = null
     /// The body compiled for the register machine (`vm.gm`).
     vm: ?^Code = null
     /// The size of the frame's storage: the locals, then the machine's slots and registers.

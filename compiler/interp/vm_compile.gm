@@ -92,7 +92,7 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
         regs_off := u64(rbase) * 8
         // At least one register past the locals.
         nregs := u64((c.max - rbase).max(1))
-        return new(Code(ins: c.ins.items, bc: empty_slice(Bc), frameless: false, locals_size: info.store_size, regs_off: regs_off, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
+        return new(Code(ins: c.ins.items, bc: empty_slice(Bc), frameless: false, locals_size: info.store_size, hidden: empty_slice(u32), info: info, regs_off: regs_off, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
     }
 }
 
@@ -496,9 +496,142 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
 }
 
 /// Whether the machine runs `n` itself (else `word` hands it to the tree).
-vc_compiles :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
+vc_compiles :: fn(c: ^Vc, n: ^const Node) -> bool needs Alloc => match n.op {
     .Word(_), .Local(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .IntRot(_), .IntBits(_), .FloatOp(_), .Call(_), .Perform(_) => true
+    .Builtin(op, args) => vc_builtin_ok(op, args)
+    .Try(x) => c.vc_try_ok(n, x.x, x.lift, x.levels)
+    .Unwrap(x, _) => c.vc_unwrap_ok(n, x)
+    .Else(lhs, _, _) => c.vc_else_shape(n, lhs) is not null
     _ => false
+}
+
+/// Whether the machine runs the builtin operation `op` on the values of `args` itself
+/// (`Ins.Builtin`): one that `ev_builtin` gives the values of its arguments.
+vc_builtin_ok :: fn(op: tir.Builtin, args: []^Node) -> bool => match op {
+    .Assert, .Cover(_), .Unreachable, .Fiber, .Sys(_), .Get, .GetPtr, .First, .Last, .Asm(_), .StaticAssert(_) => false
+    _ => args.len <= MAX_BUILTIN_ARGS
+}
+
+/// The builtin operation `n` (`vc_builtin_ok`) on `args`, its result going to `dst` (as
+/// `vc_call`).
+vc_builtin :: fn(c: ^Vc, args: []^Node, dst: Dest, n: ^Node) needs Alloc {
+    save := c.top
+    slots := c.slot_top
+    out := c.vc_args(args)
+    c.vc_emit(.Builtin(out, dst, n))
+    c.slot_top = slots
+    c.vc_set_top(if dst is .Reg(_) { save + 1 } else { save })
+}
+
+/// Whether the machine copies the value of the place `n` itself: one in memory, or in a
+/// local of this frame (not an element of an array local).
+vc_copies :: fn(c: ^const Vc, n: ^const Node) -> bool => match n.op {
+    .Local(_), .Field(_), .Deref(_), .Index(_) => match c.vc_placeable(n) {
+        .No => false
+        .Mem => true
+        .Local => root_levels(n) is 0 and not c.vc_has_index(n)
+    }
+    _ => false
+}
+
+/// Copies the value of the place `n` (`vc_copies`) to the slot at `at`.
+vc_copy_place :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
+    save := c.top
+    match c.vc_place(n) {
+        .Local(_, l, rel, _, _) => c.vc_emit(.CopySlot(at, (c.info.offsets[usize(l)] + rel).trunc(u32), n.size.trunc(u32)))
+        .Mem(r, off, packed) => c.vc_emit(.MemGet(at, r, off.trunc(u32), n.size.trunc(u32), if packed { 1 } else { c.vc_align(n) }, n))
+    }
+    c.top = save
+}
+
+/// Whether the machine runs `try inner`, the node `n`: the `try` of this function (not of
+/// a function it is nested in) on an optional or a result whose payload is the value, in
+/// a function whose error it can build.
+vc_try_ok :: fn(c: ^Vc, n: ^const Node, inner: ^const Node, lift: ?u32, levels: u32) -> bool needs Alloc {
+    if levels is not 0 or c.vc_else_shape(n, inner) is null { return false }
+    ret := c.info.ret_ty else return false
+    m := c.m
+    if m.kind(inner.ty) is .Optional(_) { return true }
+    if not (m.kind(ret) is .Result(_, _)) { return false }
+    if lift is not null { return c.vc_variant_builds(m.res_types(ret).err) }
+    return true
+}
+
+/// `try inner` (`vc_try_ok`), the node `n`: its value into the slot at `at`, or (`null`)
+/// into the first free register. An absent optional returns the function's zero value, an
+/// error returns it as the function's error (as variant `lift` of it, if given).
+vc_try :: fn(c: ^Vc, n: ^Node, inner: ^Node, lift: ?u32, at: ?u32) needs Alloc {
+    shape := c.vc_else_shape(n, inner) else return ()
+    ret := c.info.ret_ty else return ()
+    m := c.m
+    save := c.top
+    slots := c.slot_top
+    la := c.vc_slot_at(c.vc_alloc_slot(inner.size))
+    c.vc_to_slot(inner, la)
+    ok := c.vc_jump(.JSlot(la + shape.flag.trunc(u32), shape.size.trunc(u32), not shape.nonzero, 0))
+    // Absent: the function returns.
+    rsize := m.size(ret)
+    ra := c.vc_slot_at(c.vc_alloc_slot(rsize))
+    c.vc_emit(.ZeroSlot(ra, rsize.trunc(u32)))
+    if .Result(err, _) := m.kind(inner.ty) {
+        offs := m.offsets(ret)
+        esz := m.size(err)
+        to := ra + offs[1].trunc(u32)
+        room := rsize - offs[1]
+        if v := lift {
+            rerr := m.res_types(ret).err
+            if u := m.union_def(rerr) {
+                r := c.vc_alloc()
+                c.vc_emit(.Const(r, bigint.bits128(u.variants[us(v)].tag).trunc(u64)))
+                c.vc_emit(.WSlot(to, m.size(u.tag).trunc(u32), r))
+                c.top = save
+            }
+            po := m.payload_offset(rerr)
+            k := esz.min(m.size(rerr) - po)
+            if k > 0 { c.vc_emit(.CopySlot(to + po.trunc(u32), la + shape.payload.trunc(u32), k.trunc(u32))) }
+        } else {
+            k := esz.min(room)
+            if k > 0 { c.vc_emit(.CopySlot(to, la + shape.payload.trunc(u32), k.trunc(u32))) }
+        }
+        c.vc_put_byte(ra + offs[0].trunc(u32), 1)
+    }
+    c.vc_emit(.RetSlot(ra, rsize.trunc(u32)))
+    c.vc_patch(ok, c.vc_here())
+    c.vc_payload(n, la + shape.payload.trunc(u32), at)
+    c.slot_top = slots
+    c.vc_set_top(if at is null { save + 1 } else { save })
+}
+
+/// The value of `n`, the payload at the slot offset `pa`: into the slot at `at`, or
+/// (`null`) into the first free register.
+vc_payload :: fn(c: ^Vc, n: ^const Node, pa: u32, at: ?u32) needs Alloc {
+    if d := at {
+        if n.size > 0 { c.vc_emit(.CopySlot(d, pa, n.size.trunc(u32))) }
+    } else if n.size is 0 {
+        c.vc_emit(.Const(c.vc_alloc(), 0))
+    } else {
+        c.vc_emit(.SlotW(c.vc_alloc(), pa, n.size.trunc(u32)))
+    }
+}
+
+/// Whether the machine runs the unwrap `n` of `x`: where it is checked (not in Fast
+/// builds), of an optional or a result whose payload is the value.
+vc_unwrap_ok :: fn(c: ^Vc, n: ^const Node, x: ^const Node) -> bool needs Alloc => not c.m.fast() and c.vc_else_shape(n, x) is not null
+
+/// The unwrap `n` of `x` (`vc_unwrap_ok`): its value into the slot at `at`, or (`null`)
+/// into the first free register.
+vc_unwrap :: fn(c: ^Vc, n: ^Node, x: ^Node, is_result: bool, at: ?u32) needs Alloc {
+    shape := c.vc_else_shape(n, x) else return ()
+    save := c.top
+    slots := c.slot_top
+    la := c.vc_slot_at(c.vc_alloc_slot(x.size))
+    c.vc_to_slot(x, la)
+    ok := c.vc_jump(.JSlot(la + shape.flag.trunc(u32), shape.size.trunc(u32), not shape.nonzero, 0))
+    c.vc_emit(.UnwrapTrap(la, x.ty, is_result, n))
+    c.vc_patch(ok, c.vc_here())
+    c.vc_payload(n, la + shape.payload.trunc(u32), at)
+    c.slot_top = slots
+    c.vc_set_top(if at is null { save + 1 } else { save })
 }
 
 /// Compiles the word expression `n` into the first free register.
@@ -644,9 +777,46 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
                 c.vc_load(save, pl, if n.op is .SliceLen(_) { pb } else { 0 }, pb, pb.trunc(u32), n)
             }
         }
-        _ => c.vc_emit(.EvalW(c.vc_alloc(), n))
+        .Coerce(kind, x) => {
+            // A pointer or a renamed tuple is the same word.
+            if kind in (tir.Coercion.PtrToPtr, .TupleRename, .FnPtrWiden) and x.size is n.size {
+                c.vc_word(x)
+            } else {
+                c.vc_word_via_slot(n)
+            }
+        }
+        .Builtin(op, args) => {
+            if op in (tir.Builtin.Cast, .Addr, .ToPtr, .BlackBox) and args.len is 1 and args[0].size is n.size {
+                c.vc_word(args[0])
+                if op is .Cast and not c.m.fast() {
+                    al := c.m.ptr_align(n.ty)
+                    if al > 1 { c.vc_emit(.AlignCheck(save, al, n)) }
+                }
+            } else if vc_builtin_ok(op, args) {
+                c.vc_builtin(args, .Reg(save), n)
+            } else {
+                c.vc_emit(.EvalW(c.vc_alloc(), n))
+            }
+        }
+        .Try(x) => if c.vc_try_ok(n, x.x, x.lift, x.levels) { c.vc_try(n, x.x, x.lift, null) } else { c.vc_emit(.EvalW(c.vc_alloc(), n)) }
+        .Unwrap(x, is_result) => if c.vc_unwrap_ok(n, x) { c.vc_unwrap(n, x, is_result, null) } else { c.vc_emit(.EvalW(c.vc_alloc(), n)) }
+        _ => c.vc_word_via_slot(n)
     }
     c.vc_set_top(save + 1)
+}
+
+/// The word `n` into the first free register: built in a slot if the machine builds its
+/// value (a small struct, optional or result), else by the tree evaluator.
+vc_word_via_slot :: fn(c: ^Vc, n: ^Node) needs Alloc {
+    if n.size > 0 and c.vc_builds(n) {
+        slots := c.slot_top
+        at := c.vc_slot_at(c.vc_alloc_slot(n.size))
+        c.vc_to_slot(n, at)
+        c.vc_emit(.SlotW(c.vc_alloc(), at, n.size.trunc(u32)))
+        c.slot_top = slots
+    } else {
+        c.vc_emit(.EvalW(c.vc_alloc(), n))
+    }
 }
 
 /// Whether the machine finds a place itself: in a local (`Local`), in memory (`Mem`).
@@ -924,6 +1094,10 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             c.vc_emit(.ConstSlot(at, b))
             return ()
         }
+        .Str(_) => {
+            c.vc_emit(.StrSlot(at, n))
+            return ()
+        }
         .Aggregate(items, offs) => {
             total: u64 = 0
             for x in items { total += x.size }
@@ -979,6 +1153,18 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             c.vc_with(n, w, .Slot(at))
             return ()
         }
+        .Try(x) => if n.size > 8 and c.vc_try_ok(n, x.x, x.lift, x.levels) {
+            c.vc_try(n, x.x, x.lift, at)
+            return ()
+        }
+        .Unwrap(x, is_result) => if n.size > 8 and c.vc_unwrap_ok(n, x) {
+            c.vc_unwrap(n, x, is_result, at)
+            return ()
+        }
+        .Builtin(op, args) => if n.size > 8 and vc_builtin_ok(op, args) {
+            c.vc_builtin(args, .Slot(at), n)
+            return ()
+        }
         _ => {}
     }
     if n.size is 0 {
@@ -988,6 +1174,10 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
     if is_word(n) {
         c.vc_emit(.WSlot(at, n.size.trunc(u32), c.vc_operand(n, true)))
         c.vc_set_top(save)
+        return ()
+    }
+    if c.vc_copies(n) {
+        c.vc_copy_place(n, at)
         return ()
     }
     c.vc_emit(.EvalSlot(at, n))
@@ -1003,6 +1193,11 @@ vc_builds :: fn(c: ^Vc, n: ^const Node) -> bool needs Alloc => match n.op {
     .Variant(_) => c.vc_variant_builds(n.ty)
     .Slice(x) => c.vc_slice_builds(x)
     .With(w) => w.on is null
+    .Str(_) => true
+    .Try(x) => c.vc_try_ok(n, x.x, x.lift, x.levels)
+    .Unwrap(x, _) => c.vc_unwrap_ok(n, x)
+    .Builtin(op, args) => vc_builtin_ok(op, args)
+    .Local(_), .Field(_), .Deref(_), .Index(_) => c.vc_copies(n)
     _ => false
 }
 
@@ -1138,11 +1333,7 @@ vc_else :: fn(c: ^Vc, n: ^Node, lhs: ^Node, capture: ?u32, rhs: ^Node, at: ?u32)
     c.vc_to_slot(lhs, la)
     fail := c.vc_jump(.JSlot(la + shape.flag.trunc(u32), shape.size.trunc(u32), shape.nonzero, 0))
     pa := la + shape.payload.trunc(u32)
-    if d := at {
-        c.vc_emit(.CopySlot(d, pa, n.size.trunc(u32)))
-    } else {
-        c.vc_emit(.SlotW(c.vc_alloc(), pa, n.size.trunc(u32)))
-    }
+    c.vc_payload(n, pa, at)
     end := c.vc_jump(.Jmp(0))
     c.vc_patch(fail, c.vc_here())
     c.top = save
@@ -1249,6 +1440,16 @@ vc_stmt :: fn(c: ^Vc, st: St) needs Alloc {
                 }
             } else if is_word(value) {
                 c.vc_emit(.AssignW(place, value))
+            } else if value.size is place.size and c.vc_builds(value) and c.vc_copies(place) {
+                // The place, then the value, as the tree does.
+                pl := c.vc_place(place)
+                at := c.vc_slot_at(c.vc_alloc_slot(value.size))
+                c.vc_to_slot(value, at)
+                size := place.size.trunc(u32)
+                match pl {
+                    .Local(_, l, rel, _, _) => c.vc_emit(.CopySlot((c.info.offsets[usize(l)] + rel).trunc(u32), at, size))
+                    .Mem(base, off, packed) => c.vc_emit(.MemPut(base, off.trunc(u32), at, size, if packed { 1 } else { c.vc_align(place) }, place))
+                }
             } else {
                 c.vc_emit(.Stmt(st))
             }

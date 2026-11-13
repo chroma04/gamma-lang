@@ -132,6 +132,27 @@ BcOp :: union {
     SliceIdx
     ArrIdx
     PtrIdx
+    /// `a = b >> c` on unsigned (`ShrU`) or signed (`ShrS`) integers of `w` bits, and
+    /// `a = b << c` wrapping (`ShlM`) or checked unsigned (`ShlN`), where `c` is below `w`.
+    ShrU
+    ShrS
+    ShlM
+    ShlN
+    /// `a = b / c` and `a = b % c` on unsigned integers, or on signed integers of `w` bits.
+    DivU
+    RemU
+    DivS
+    RemS
+    /// `a` = the address of an addressed local, kept in register `c` once it has memory
+    /// (`Code.hidden`).
+    LocalAddrH
+    /// Leaves the loop (to trap) if register `a` has any of the bits `b`.
+    AlignChk
+    /// Copies the `w` bytes aligned to 2 to the power `f` at the address in `b` plus `c` to
+    /// offset `a` of the frame's storage; `MemPut` copies those at offset `b` to the
+    /// address in `a` plus `c`.
+    MemGet
+    MemPut
     /// Copies `c` bytes of the frame's storage from offset `b` to offset `a`; zeroes `b`
     /// bytes at offset `a`.
     CopySlot
@@ -240,6 +261,13 @@ stn :: fn(p: [^]u8, size: u8, v: u64) {
 vm_view :: fn(m: ^const Machine, addr: u64, size: u64, align: u64, write: bool) -> ?[^]u8 {
     if addr & (align - 1) is not 0 { return null }
     return m.mem.view(addr, size, write)
+}
+
+/// The exponent of the power of two `v`.
+log2 :: fn(v: u32) -> u8 {
+    k: u8 = 0
+    while (u32(1) << u32(k)) < v { k += 1 }
+    return k
 }
 
 bc_free :: fn() -> Bc => Bc(op: .Free, f: 0, w: 0, a: 0, b: 0, c: 0)
@@ -409,6 +437,28 @@ bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
             if not fits32(x.esz) { return bc_free() }
             return bc3(.PtrIdx, x.p, x.i, x.esz.trunc(u32))
         }
+        .Shr(x) => return Bc(op: if x.t.signed { BcOp.ShrS } else { .ShrU }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b)
+        .Shl(x) => {
+            if not x.wrap and x.t.signed { return bc_free() }
+            return Bc(op: if x.wrap { BcOp.ShlM } else { .ShlN }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b)
+        }
+        .IntOp(x) => {
+            if x.op is .Div { return Bc(op: if x.t.signed { BcOp.DivS } else { .DivU }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b) }
+            if x.op is .Rem { return Bc(op: if x.t.signed { BcOp.RemS } else { .RemU }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b) }
+            return bc_free()
+        }
+        .AlignCheck(r, align, _) => {
+            if align is 0 or align & (align - 1) is not 0 or not fits32(align) { return bc_free() }
+            return bc3(.AlignChk, r, (align - 1).trunc(u32), 0)
+        }
+        .MemGet(x) => {
+            if not fits16(u64(x.size)) or not bc_align(x.align) { return bc_free() }
+            return Bc(op: .MemGet, f: log2(x.align), w: x.size.trunc(u16), a: x.at, b: x.base, c: x.off)
+        }
+        .MemPut(x) => {
+            if not fits16(u64(x.size)) or not bc_align(x.align) { return bc_free() }
+            return Bc(op: .MemPut, f: log2(x.align), w: x.size.trunc(u16), a: x.base, b: x.at, c: x.off)
+        }
         .CopySlot(d, src, size) => return bc3(.CopySlot, d, src, size)
         .ZeroSlot(at, size) => return bc3(.ZeroSlot, at, size, 0)
         .Mark(r) => return bc3(.Mark, r, 0, 0)
@@ -424,19 +474,45 @@ bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
     }
 }
 
+/// Whether instruction `i` reaches a local that has memory of its own.
+in_memory :: fn(i: ^const Ins) -> bool => match i^ {
+    .Local(_), .SetLocal(_), .LocalAddr(_), .SetLocalSlot(_) => true
+    _ => false
+}
+
 /// Assembles the instructions of `code` (`Code.bc`) and tells whether its body runs
-/// without a frame (`Code.frameless`): no instruction needs one, and no local of `info`
-/// has memory of its own.
+/// without a frame (`Code.frameless`): no instruction needs one. The locals whose address
+/// is taken then keep the address of their memory in a register of their own after the
+/// others (`Code.hidden`), which extends the storage; with a frame it is in `Frame.mem`.
 vm_assemble :: fn(m: ^const Machine, info: ^const FnInfo, code: ^Code) needs Alloc {
     out := make_fill(code.ins.len, bc_free())!
     frameless := true
     for k in 0..code.ins.len {
         out[k] = bc_of(&code.ins[k], m.word_locals)
-        if out[k].op is .Framed { frameless = false }
-    }
-    for x in info.addressed {
-        if x { frameless = false }
+        if out[k].op is .Framed and not in_memory(&code.ins[k]) { frameless = false }
     }
     code.bc = out
     code.frameless = frameless
+    if not frameless { return () }
+    hidden := make_fill(info.addressed.len, NO_REG)!
+    n: u64 = 0
+    for l in 0..info.addressed.len {
+        if info.addressed[l] {
+            hidden[l] = (code.size / 8 + n).trunc(u32)
+            n += 1
+        }
+    }
+    if n is 0 {
+        free(hidden)
+        return ()
+    }
+    code.hidden = hidden
+    code.size += 8 * n
+    for k in 0..code.ins.len {
+        match code.ins[k] {
+            .LocalAddr(r, local, _) => { out[k] = bc3(.LocalAddrH, r, local, hidden[usize(local)]) }
+            .Local(_), .SetLocal(_), .SetLocalSlot(_) => { out[k] = bc_free() }
+            _ => {}
+        }
+    }
 }
