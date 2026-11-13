@@ -198,7 +198,7 @@ apply_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, res_ty, t0,
         .Cast => {
             addr := m.ptr_of(v[0])
             al := m.ptr_align(res_ty)
-            if addr is not 0 and al > 1 and addr % al is not 0 and not m.fast() {
+            if addr is not 0 and al > 1 and addr % al is not 0 and m.ptr_align(t0) < al and not m.fast() {
                 return !m.trap(span, str.format("misaligned pointer cast: address {:#x} is not aligned to {} bytes", addr, al)!)
             }
             dst.copy_from(v[0])

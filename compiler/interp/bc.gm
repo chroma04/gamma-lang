@@ -578,3 +578,11 @@ vm_assemble :: fn(m: ^const Machine, info: ^const FnInfo, code: ^Code) needs All
         }
     }
 }
+
+/// The instruction `k` places after `p`.
+#inline
+bc_at :: fn(p: [^]Bc, k: usize) -> [^]Bc => (&p[k]).cast([^]Bc)
+
+/// The index of the instruction at `p` in the code that starts at `start`.
+#inline
+bc_pc :: fn(start: [^]Bc, p: [^]Bc) -> usize => (p.addr() - start.addr()) / @size_of(Bc)

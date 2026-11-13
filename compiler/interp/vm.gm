@@ -235,7 +235,8 @@ Ins :: union {
     /// uninstalling the handlers installed since.
     CxSave: u32
     CxRestore: u32
-    /// Installs the handler literal `id` whose value is in the slot at `at`, or the
+    /// Installs the handler literal `id` whose value is in the slot at `at` (written in
+    /// the `with` if `at` is `NO_REG`: it captures this frame and context), or the
     /// handler declarations `decls` for the value of `size` bytes there, for the `with` of
     /// `label` (`vc_with`).
     WithLit: (id: u32, at: u32, label: u32)
@@ -286,6 +287,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
     regs := cur.regs
     bc := body.bc.ptr
     pc: usize = 0
+    ip := bc
     vm_consts(body, regs)
     if body.env_reg is not NO_REG {
         if e := a.fr.env { regs[usize(body.env_reg)] = u64(e.addr()) }
@@ -293,7 +295,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
     while true {
         done := false
         while true {
-            i := &bc[pc]
+            i := &ip[0]
             match i.op {
                 .Mov => { regs[usize(i.a)] = regs[usize(i.b)] }
                 .K => { regs[usize(i.a)] = u64(i.b) | (u64(i.c) <<% 32) }
@@ -348,61 +350,61 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 .Eq => { regs[usize(i.a)] = if regs[usize(i.b)] is regs[usize(i.c)] { 1 } else { 0 } }
                 .Ne => { regs[usize(i.a)] = if regs[usize(i.b)] is regs[usize(i.c)] { 0 } else { 1 } }
                 .JLtU => if not (regs[usize(i.a)] < regs[usize(i.b)]) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLeU => if not (regs[usize(i.a)] <= regs[usize(i.b)]) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLtI => if not (regs[usize(i.a)].bits(i64) < regs[usize(i.b)].bits(i64)) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLeI => if not (regs[usize(i.a)].bits(i64) <= regs[usize(i.b)].bits(i64)) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLtS => if not (sext(regs[usize(i.a)], u32(i.w)) < sext(regs[usize(i.b)], u32(i.w))) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLeS => if not (sext(regs[usize(i.a)], u32(i.w)) <= sext(regs[usize(i.b)], u32(i.w))) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLtF => if not (regs[usize(i.a)].bits(f64) < regs[usize(i.b)].bits(f64)) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLeF => if not (regs[usize(i.a)].bits(f64) <= regs[usize(i.b)].bits(f64)) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JEq => if regs[usize(i.a)] is regs[usize(i.b)] {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JNe => if regs[usize(i.a)] is not regs[usize(i.b)] {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .Jmp => {
-                    pc = usize(i.a)
+                    ip = bc_at(bc, usize(i.a))
                     continue
                 }
                 .Jz => if regs[usize(i.a)] is 0 {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .Jnz => if regs[usize(i.a)] is not 0 {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .Loop => {
                     // Other threads run first (`vm_free`).
                     if m.threads.list.items.len > 1 { break }
-                    pc = usize(i.a)
+                    ip = bc_at(bc, usize(i.a))
                     continue
                 }
                 .Fr1 => { regs[usize(i.a)] = ld1(fat(regs, usize(i.b))) }
@@ -416,15 +418,15 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 .FrD => { regs[usize(i.a)] = ldn(fat(regs, usize(i.b) + us(regs[usize(i.c)])), i.f) }
                 .FrSetD => stn(fat(regs, usize(i.a) + us(regs[usize(i.b)])), i.f, regs[usize(i.c)])
                 .JFrZ => if ldn(fat(regs, usize(i.a)), i.f) is 0 {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JFrNz => if ldn(fat(regs, usize(i.a)), i.f) is not 0 {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JTag => if ldn(fat(regs, usize(i.a)), i.f) is not u64(i.b) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .Ld1 => {
@@ -580,10 +582,10 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 }
                 .Release => m.vm_release(regs, i.a)
                 .Call => {
-                    cur = m.vm_push(cur, pc, i.a) else break
+                    cur = m.vm_push(cur, bc_pc(bc, ip), i.a) else break
                     regs = cur.regs
                     bc = cur.code.bc.ptr
-                    pc = 0
+                    ip = bc
                     continue
                 }
                 .RetW => {
@@ -603,9 +605,9 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     } else {
                         cur = try m.vm_ret(cur, true, v)
                     }
-                    pc = cur.pc
                     regs = cur.regs
                     bc = cur.code.bc.ptr
+                    ip = bc_at(bc, cur.pc)
                     continue
                 }
                 .Ret, .RetSlot => {
@@ -616,16 +618,17 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                         break
                     }
                     cur = try m.vm_ret(cur, false, 0)
-                    pc = cur.pc
                     regs = cur.regs
                     bc = cur.code.bc.ptr
+                    ip = bc_at(bc, cur.pc)
                     continue
                 }
                 .Free, .Framed => break
             }
-            pc +%= 1
+            ip = bc_at(ip, 1)
         }
         if done { break }
+        pc = bc_pc(bc, ip)
         // The instruction as compiled: every case of it, traps included. A flow it raises
         // goes to the loop it targets or leaves bodies (`vm_raise`).
         next: usize = 0
@@ -651,7 +654,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
         }
         regs = cur.regs
         bc = cur.code.bc.ptr
-        pc = next
+        ip = bc_at(bc, next)
     }
     // The body returns, its result in `ret`.
     if a.fr.defers.items.len is 0 and base.cx is a.cx { return () }
@@ -1277,9 +1280,12 @@ vm_framed :: fn(m: ^Machine, act: ^Act, code: ^Code, regs: [^]u64, pc: usize, ds
         .CxRestore(r) => m.vm_cx_restore(act, regs, r)
         .WithDecl(x) => { act.cx = m.vm_with_decl(fr, act.cx, x.decls, x.at, x.size, x.label) }
         .WithLit(id, at, label) => {
-            o := usize(at)
-            hb := fr.store[o..o + us(2 * m.ptr_bytes)]
-            inst := Installed.Lit(id, m.frame_of(m.word(hb, 0)), m.word(hb, 1).trunc(u32))
+            inst := Installed.Lit(id, fr, a.cx)
+            if at is not NO_REG {
+                o := usize(at)
+                hb := fr.store[o..o + us(2 * m.ptr_bytes)]
+                inst = .Lit(id, m.frame_of(m.word(hb, 0)), m.word(hb, 1).trunc(u32))
+            }
             act.cx = m.push_ctx(a.cx, m.p.handler_lit(id).effect_, inst, fr.id, label, fr)
         }
         _ => {}
