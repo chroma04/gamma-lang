@@ -92,7 +92,7 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
         regs_off := u64(rbase) * 8
         // At least one register past the locals.
         nregs := u64((c.max - rbase).max(1))
-        return new(Code(ins: c.ins.items, regs_off: regs_off, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
+        return new(Code(ins: c.ins.items, bc: empty_slice(Bc), frameless: false, locals_size: info.store_size, regs_off: regs_off, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
     }
 }
 

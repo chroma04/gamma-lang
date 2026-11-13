@@ -42,6 +42,7 @@ make_fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
         body := lower_body(m, made, b)
         made.body = body
         c := vm_compile(m, made, body)
+        m.vm_assemble(made, c)
         made.vm = c
         made.frame_size = c.size
     }
