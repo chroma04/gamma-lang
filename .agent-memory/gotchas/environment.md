@@ -61,6 +61,13 @@
   one example share the cached `prog-<hash>`; rtcache::touch opened it for WRITE (Windows-only
   need) while another case ran it. Now read-only handle outside Windows. Never open a cached
   executable for writing.
+- s69: Windows CI flaked with exit 1 + EMPTY stderr on random example cases (grep-ignore-case,
+  wordfreq-bad-arg, ~10-20 s each). Cause: unit-object cache (#122) — Windows can't rename over
+  a file another process has open (a std unit object being linked by a parallel case), and
+  unit_objects returned .Failed silently. rtcache.rename_or_remove now treats "rename failed
+  but dest exists" as success (cache files are content-keyed). Small examples DO go through
+  the unit cache (grep.gm: 40 units). Silent exit 1 from `gamma run` = look for unreported
+  .Failed/false paths; gm_proc_kill on Windows also exits 1 silently.
 - WASI toolchain (s30): `apt-get install clang-18 lld-18 wasi-libc libclang-rt-18-dev-wasm32 binaryen`;
   wasmtime from the GitHub release tarball (v25.0.1 x86_64-linux). `CC="clang --target=wasm32-wasi"
   cargo test --release --test conformance --test wasi` (CI job `wasi`). Clang runs wasm-opt itself
