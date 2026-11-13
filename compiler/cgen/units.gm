@@ -35,7 +35,7 @@ pub Parts :: struct {
     pub funcs: string = ""
     /// The entry code, which unit 0 holds after its share of the functions.
     pub tail: string = ""
-    /// The function definitions of `funcs` by the source file they come from.
+    /// The function definitions of `funcs` by the source file they come from (see `Owned`).
     pub owned: []const Owned = empty_slice(Owned)
     /// For `split_by_file`, `head` in parts: the text every unit needs as it is, the
     /// type definitions and the frames, and the names of members that the declarations of a
@@ -46,7 +46,8 @@ pub Parts :: struct {
     pub members: []const string = empty_slice(string)
 }
 
-/// The functions of one source file, `owner` (its path; `""` for code of no file).
+/// The functions of one source file, `owner` (its path, with `#` and a group number for
+/// instances of its generic functions; `""` for code of no file).
 pub Owned :: struct {
     pub owner: string
     pub text: string
@@ -490,9 +491,9 @@ RANK_PROTO: u8 : 2
 RANK_DATA: u8 : 3
 RANK_INLINE: u8 : 4
 
-/// `parts` split into units by the source files of the functions: unit 0 holds the data,
-/// the entry code and the external definitions of the inline functions; then one unit per
-/// source file, and one for the code of no file. Each unit declares only what it uses, in
+/// `parts` split into units by the source files of the functions: unit 0 holds the data
+/// and the entry code; then one unit per source file, which also makes the external
+/// definitions of its inline functions, and one for the code of no file. Each unit declares only what it uses, in
 /// an order that does not depend on the rest of the program, so that an edit changes only
 /// the units it concerns. `null` if the code has a shape the split does not handle.
 pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
@@ -500,9 +501,10 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
     decls := list(Decl)
     decls_of(&decls, parts.types, RANK_TYPE)
     decls_of(&decls, parts.frames, RANK_FRAME)
-    // The inline functions, by name: their definitions are declarations every unit that
-    // calls them holds.
-    inline_names := hash_map.hash_map(string, ())
+    // The inline functions, by name, with the unit of their file: their definitions are
+    // declarations every unit that calls them holds, and the unit of their file makes the
+    // one external definition.
+    inline_names := hash_map.hash_map(string, usize)
     defer inline_names.deinit()
     bodies := list(List((name: string, def: string)))
     for o in parts.owned {
@@ -510,7 +512,7 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
         all := items_of(o.text) else return null
         for item in all {
             if d := inline_definition(item) {
-                inline_names.put(d.name, ())!
+                inline_names.put(d.name, bodies.items.len)!
                 decls.push(Decl(text: d.def, name: d.name, refs: gm_names(d.def), rank: RANK_INLINE))!
                 continue
             }
@@ -521,14 +523,16 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
         }
         bodies.push(fns)!
     }
-    externs := list(u8)
+    externs := list(List((name: string, def: string)))
+    for _ in bodies.items { externs.push(list((name: string, def: string)))! }
     for line in str.lines(parts.protos) {
         if line.len is 0 { continue }
         if name := c_fn_name(line) and inline_names.get(name) is not null {
             d := str.strip_prefix(line, "static ") else line
             if not str.contains(d, "inline ") { d = str.format("inline {}", d)! }
             decls.push(Decl(text: str.format("{}\n", d)!, name: name, refs: gm_names(d), rank: RANK_PROTO))!
-            externs.write("extern {}\n", external(line) else line)!
+            k := inline_names.get(name) else @unreachable()
+            externs.items[k].push((name: name, def: str.format("extern {}\n", external(line) else line)!))!
             continue
         }
         d := external(line) else line
@@ -566,13 +570,17 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
     }
     set_depths(decls.items, &by_name)
     units := list(string)
-    first := str.format("{}{}{}{}", parts.once, defs.items, externs.items, parts.tail)!
+    first := str.format("{}{}{}", parts.once, defs.items, parts.tail)!
     units.push(unit_text(decls.items, &by_name, nameless.items, first, parts.members))!
-    for fns in bodies.items {
-        if fns.items.len is 0 { continue }
-        fns.items.sort_by(fn(a, b: ^const (name: string, def: string)) -> bool => a.name < b.name)
+    for k, fns in enumerate(bodies.items) {
+        ext := externs.items[k]
+        if fns.items.len is 0 and ext.items.len is 0 { continue }
+        all := list((name: string, def: string))
+        all.extend(fns.items)!
+        all.extend(ext.items)!
+        all.items.sort_by(fn(a, b: ^const (name: string, def: string)) -> bool => a.name < b.name or (a.name is b.name and a.def < b.def))
         body := list(u8)
-        for f in fns.items { body.extend(f.def)! }
+        for f in all.items { body.extend(f.def)! }
         units.push(unit_text(decls.items, &by_name, nameless.items, body.items, parts.members))!
     }
     return Split(shared: parts.support, units: units.items)
@@ -871,12 +879,10 @@ test "a split by file declares in each unit what it uses" {
         }
         expect_eq(s.shared, p.support)
         expect_eq(s.units.len, 3)
-        // Unit 0: the data, the entry code and the external definition of the inline
-        // function.
+        // Unit 0: the data and the entry code.
         u0 := s.units[0]
         expect(str.contains(u0, "\nconst uint8_t gm_sa[4] = \"a{;\";\n"))
-        expect(str.contains(u0, "extern __attribute__((aligned(4))) int gm_f_i_z(int a);\n"))
-        expect(str.contains(u0, "__attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f_i_z(int a) {\n"))
+        expect(not str.contains(u0, "gm_f_i_z"))
         expect(u0.ends_with("int main(void) { gm_f_f_x((gm_ta){0}); return 0; }\n"))
         expect(not str.contains(u0, "gm_tb"))
         // `a.gm`: its type and assertion, its frame, the string and the inline function.
@@ -885,10 +891,13 @@ test "a split by file declares in each unit what it uses" {
         expect(str.contains(ua, "struct gm_fr_f_x {\n    gm_frame h;\n    gm_ta l0;\n};\n"))
         expect(str.contains(ua, "extern const uint8_t gm_sa[4];\n"))
         expect(str.contains(ua, "inline int gm_f_i_z(int a) {\n    return a;\n}\n"))
+        expect(not str.contains(ua, "extern __attribute__((aligned(4))) int gm_f_i_z"))
         expect(str.contains(ua, "\nvoid gm_f_f_x(gm_ta a) {\n"))
         expect(not str.contains(ua, "gm_tb") and not str.contains(ua, "main"))
-        // `b.gm`: only what it uses; its inline function is a declaration of the others.
+        // `b.gm`: only what it uses, and the external definition of its inline function.
         ub := s.units[2]
+        expect(str.contains(ub, "extern __attribute__((aligned(4))) int gm_f_i_z(int a);\n"))
+        expect(str.contains(ub, "__attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f_i_z(int a) {\n"))
         expect(str.contains(ub, "typedef struct { int32_t f0; } gm_tb;\n"))
         expect(str.contains(ub, "extern const gm_type gm_tyb;\n"))
         expect(str.contains(ub, "\nint32_t gm_f_g_y(gm_tb b) {\n"))

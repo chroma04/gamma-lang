@@ -636,7 +636,7 @@ How the runtime is linked depends on the build mode:
   large program (more than 4 MiB of generated function text, such as the
   compiler itself) is split into units like a large Debug build (below) and
   linked with the cached runtime: as one unit, gcc takes over five minutes on
-  the compiler's C, and the split build, at about a minute on four cores from an
+  the compiler's C, and the split build, at about 40 s on four cores from an
   empty cache, runs as fast.
 - Debug builds favor turnaround. Compiling the runtime is most of the work of
   compiling a small program, so it is compiled once on its own (with
@@ -673,9 +673,12 @@ How the runtime is linked depends on the build mode:
   (`Parts` in `cgen/units.gm`): support code; types; frames; function
   declarations; static data, one item per line; function definitions, by the
   source file they come from; the entry code. `split_by_file` makes one unit per
-  source file (an instance of a generic function goes with its template, and
-  helpers that belong to no file, such as per-type equality, have a unit of their
-  own), plus unit 0, which defines the data and holds the entry code. Functions
+  source file (a function literal or clause goes with the function around it; the
+  instances of a file's generic functions are dealt into 16 units of their own by
+  a hash of their keys, so that a new instance of `List(T)` does not compile all
+  the others again; helpers that belong to no file, such as per-type equality,
+  have a unit of their own), plus unit 0, which defines the data and holds the
+  entry code. Functions
   and data get external linkage (their names all start with `gm_`, so they cannot
   clash with C code). Each unit declares only what it uses: the declarations its
   function bodies name, and those these name in turn, in an order of their own
@@ -693,10 +696,11 @@ How the runtime is linked depends on the build mode:
   from its template and type arguments, a function literal's or clause's from
   its place in the function around it), and strings, struct shapes and type
   descriptors are named after their contents or their type's text, so an edit
-  does not renumber the rest of the program. On four cores a Debug build of the
-  compiler itself takes about 40 s from an empty cache, 4 s when only one file's
-  function bodies changed, and a few seconds more when the edit adds a string
-  literal or other data (unit 0 is then compiled again too). The cache keeps the
+  does not renumber the rest of the program. On four cores a build of the
+  compiler itself (a Checked build, at `-O2`, as its manifest asks) takes about
+  40 s from an empty cache, about 4 s when only one file's function bodies
+  changed, and a few seconds more when the edit adds a string literal or other
+  data (unit 0 is then compiled again too) or new instances of generic functions. The cache keeps the
   4,000 most recently used unit objects. Without a usable cache the units are
   written next to the executable (`prog.c`, `prog.1.c`, …) and compiled every
   time. Code of a shape the splitter does not recognize is compiled as one unit,
@@ -705,8 +709,8 @@ How the runtime is linked depends on the build mode:
   In an optimized build a small generated function is declared `inline`; split,
   it can be inlined only within its unit. An `#inline` function keeps its hint:
   its definition goes, as a C99 inline definition, to every unit that calls it,
-  and unit 0 declares it `extern`, which makes unit 0's copy the one external
-  definition, so its address is the same in all of them. (Sharing the thousands
+  and the unit of its own file declares it `extern`, which makes that copy the one
+  external definition, so its address is the same in all of them. (Sharing the thousands
   of small functions this way would make every unit compile them all.) With
   `-g`, every unit holds all the types, because the debugger views
   (`views.gm`) are named after the Gamma types rather than after what they use.

@@ -22,9 +22,9 @@ Versions and what each kind of change means are described in
 
 - **Incremental native builds.** A large program is now split into one C translation unit
   per source file, and compiled units are kept in the cache (`$GAMMA_CACHE_DIR`, by default
-  `~/.cache/gamma`), so a rebuild compiles only the units an edit changed. A Debug build of
-  the compiler itself takes about 40 s from an empty cache and about 4 s after editing
-  function bodies in one file (it took about a minute every time). The generated C names
+  `~/.cache/gamma`), so a rebuild compiles only the units an edit changed. A build of the
+  compiler itself takes about 40 s from an empty cache (about a minute before) and 4 to 6 s
+  after an edit in one file. The generated C names
   functions after their Gamma names (`gm_f_<name>_<hash>`), which also makes profiles and C
   backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` still writes the shared
   header and `n` units of the bootstrap seed.

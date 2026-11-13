@@ -284,7 +284,9 @@ windows_libs :: fn(target: load.Target) -> []const string needs Alloc {
 /// there in the debugger) and linked with a runtime object compiled once and cached; without
 /// a usable cache they fall back to one translation unit. Safe builds (Fil-C, which compiles
 /// slowly) are compiled at `-O2` but link the cached runtime too. A large Debug build is
-/// split into several units compiled in parallel; unit `i` > 0 is written to `exe.i.c`.
+/// split into a unit per source file (`cgen.split_by_file`), compiled in parallel through
+/// the cache of unit objects (`unit_objects`), which a later build reuses for the units an
+/// edit left unchanged; without a cache, unit `i` > 0 is written to `exe.i.c`.
 ///
 /// A WASI module is always compiled to objects first and linked without optimization
 /// options, and then goes through `cgen.asyncify`.

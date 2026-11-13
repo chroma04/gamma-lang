@@ -372,41 +372,64 @@ clause_name :: fn(g: ^Gen, c: u32, outer: ?u32) -> string needs Alloc {
 drain :: fn(g: ^Gen) -> Unsup!() needs sema.Load {
     while true {
         if f := g.reachable.pop() {
-            g.mark_owner(g.owner_file(f))
+            g.mark_owner(g.owner_of(f))
             try gen_fn(g, f, null)
         } else if c := g.spec_queue.pop() {
-            g.mark_owner(g.owner_file(c.0))
+            g.mark_owner(g.owner_of(c.0))
             try gen_fn(g, c.0, c.1)
         } else {
-            g.mark_owner(null)
+            g.mark_owner(NO_OWNER)
             return ()
         }
     }
 }
 
-/// The functions of source file `file` (`null`: of no file) start at `at` in `Gen.bodies`.
+/// The functions of `owner` start at `at` in `Gen.bodies`.
 pub OwnerMark :: struct {
     pub at: usize
+    pub owner: Owner
+}
+
+/// Where a function goes in a split build (see `owner_of`): a source file (`null`: none)
+/// and a group of the instances of the file's generic functions (`0`: not an instance).
+pub Owner :: struct {
     pub file: ?u32
+    pub group: u32
 }
 
-/// The source file whose unit function `f` goes to in a split build: the one it is written
-/// in (an instance's is its template's).
-owner_file :: fn(g: ^Gen, f: u32) -> ?u32 needs Alloc {
-    span := g.prog.func(f).span
-    if span is source.DUMMY { return null }
-    return span.file
+NO_OWNER :: Owner(file: null, group: 0)
+
+/// How many groups the instances of the generic functions of one source file are dealt
+/// into, by their keys.
+INSTANCE_GROUPS: u64 : 16
+
+/// Where function `f` goes in a split build: with the file it is written in (or, for a
+/// function nested in another, the file of the outermost one). An instance of a generic
+/// function goes with its template's file, in one of `INSTANCE_GROUPS` groups chosen by
+/// its key: a file whose functions have many instances (the core library's `List`) would
+/// otherwise make one large unit that every new instance anywhere changes.
+owner_of :: fn(g: ^Gen, f: u32) -> Owner needs Alloc {
+    root := f
+    while p := g.prog.func(root).parent { root = p }
+    span := g.prog.func(root).span
+    if span is source.DUMMY { return NO_OWNER }
+    group: u32 = 0
+    if g.prog.s.fns.items[usize(root)].instance is not null { group = 1 + (hash64(g.fn_key(root)) % INSTANCE_GROUPS).trunc(u32) }
+    return Owner(file: span.file, group: group)
 }
 
-/// Records that the text added to `bodies` from now on belongs to `file`.
-mark_owner :: fn(g: ^Gen, file: ?u32) needs Alloc {
+/// Records that the text added to `bodies` from now on belongs to `owner`.
+mark_owner :: fn(g: ^Gen, owner: Owner) needs Alloc {
     n := g.owner_marks.items.len
-    if n > 0 and g.owner_marks.items[n - 1].file is file { return }
-    g.owner_marks.push(OwnerMark(at: g.bodies.items.len, file: file))!
+    if n > 0 {
+        last := g.owner_marks.items[n - 1].owner
+        if last.file is owner.file and last.group is owner.group { return }
+    }
+    g.owner_marks.push(OwnerMark(at: g.bodies.items.len, owner: owner))!
 }
 
-/// The text of `bodies` by source file, as `(path, text)` (`""` for no file), each file's
-/// functions together.
+/// The text of `bodies` by owner, as `(path, text)`: a source file's path, followed by
+/// `#` and the group for instances (see `owner_of`), or `""` for no file.
 owned :: fn(g: ^Gen) -> []Owned needs Alloc {
     by_file := hash_map.hash_map(string, usize)
     paths := list(string)
@@ -414,7 +437,11 @@ owned :: fn(g: ^Gen) -> []Owned needs Alloc {
     for k, m in enumerate(g.owner_marks.items) {
         end := if k + 1 < g.owner_marks.items.len { g.owner_marks.items[k + 1].at } else { g.bodies.items.len }
         if end <= m.at { continue }
-        path: string = if file := m.file { g.prog.s.l.sm.file(file).path } else { "" }
+        path: string = ""
+        if file := m.owner.file {
+            path = g.prog.s.l.sm.file(file).path
+            if m.owner.group > 0 { path = str.format("{}#{}", path, m.owner.group)! }
+        }
         if by_file.get(path) is null {
             by_file.put(path, paths.items.len)!
             paths.push(path)!

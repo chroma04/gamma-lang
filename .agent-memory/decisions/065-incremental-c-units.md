@@ -47,7 +47,19 @@ D. Measure: edit one compiler file → count recompiled units / wall; docs (arch
 - Measured (4 cpus, compiler, debug): cold 41 s (was 55), no-op 3.9 s, body edit 4.2 s
   (1 unit), new fn + string 6.1 s (2 units: file + unit 0 = 29k lines of data).
 
+- s68 later: inline fns' extern definitions moved from unit 0 to their owner's unit (unit 0
+  had all 2856 #inline instances: 9.2 MB, 23 s at -O2). Instances of generic fns go to
+  one of 16 groups per template file by hash of key (`owner_of`, `Owner{file,group}`;
+  owned path `file#k`); nested fns go with their outermost parent. NOTE `gamma build
+  compiler` is a CHECKED build (compiler/gamma.toml mode). Checked numbers (4 cpus): cold
+  42 s (was ~62), no-op 4.2, body edit 4.3 (1 unit), new fn+string 6.0 (2), new List
+  instance 5.2 (5 units). 370 units, largest 1.3 MB.
+- Flake seen once at -j 4: conformance/run/std_process "core module `complex` does not
+  declare" (known memory-pressure flake, gotchas/environment.md); passes alone.
+
 ## Not done / ideas
 - Unit 0 (all data) recompiles on every new string literal (~2 s): split data by owner.
+- Cold build is CPU-bound (370 cc processes); merging tiny units would cut process
+  overhead but costs stability. Not measured.
 - -g: types+views go to every unit (views name no gm_ deps), so -g builds prune less.
 - WASI keeps the old path (asyncify links objects itself).
