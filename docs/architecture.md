@@ -677,7 +677,7 @@ How the runtime is linked depends on the build mode:
   instances of a file's generic functions are dealt into 16 units of their own by
   a hash of their keys, so that a new instance of `List(T)` does not compile all
   the others again; helpers that belong to no file, such as per-type equality,
-  have a unit of their own), plus unit 0, which defines the data and holds the
+  have a unit of their own), units for the data, and unit 0, which holds the
   entry code. Functions
   and data get external linkage (their names all start with `gm_`, so they cannot
   clash with C code). Each unit declares only what it uses: the declarations its
@@ -698,10 +698,12 @@ How the runtime is linked depends on the build mode:
   descriptors are named after their contents or their type's text, so an edit
   does not renumber the rest of the program. On four cores a build of the
   compiler itself (a Checked build, at `-O2`, as its manifest asks) takes about
-  40 s from an empty cache, about 4 s when only one file's function bodies
-  changed, and a few seconds more when the edit adds a string literal or other
-  data (unit 0 is then compiled again too) or new instances of generic functions. The cache keeps the
-  4,000 most recently used unit objects. Without a usable cache the units are
+  40 s from an empty cache and 4 to 5 s after an edit of one file, which
+  compiles that file's unit again, plus one unit of data for a new string
+  literal and a few units of instances for new instances of generic functions.
+  The cache keeps the 4,000 most recently used unit objects, and never removes
+  one used in the last day, which a build running at the same time may be
+  about to link. Without a usable cache the units are
   written next to the executable (`prog.c`, `prog.1.c`, …) and compiled every
   time. Code of a shape the splitter does not recognize is compiled as one unit,
   unless `GAMMA_C_UNITS` forces a split, which then fails.
@@ -712,8 +714,11 @@ How the runtime is linked depends on the build mode:
   and the unit of its own file declares it `extern`, which makes that copy the one
   external definition, so its address is the same in all of them. (Sharing the thousands
   of small functions this way would make every unit compile them all.) With
-  `-g`, every unit holds all the types, because the debugger views
-  (`views.gm`) are named after the Gamma types rather than after what they use.
+  `-g`, the debugger views (`views.gm`) are declarations like the types, named
+  `gm_dv<number>_<kind>` with a number hashed from the type's text, and every
+  function definition ends by mapping the lines after it back to the C file, since
+  definitions move between units. The data is dealt into 16 units by a hash of
+  each item's name, so a new string literal compiles one of them again.
 
   `gamma build --emit-c` with `GAMMA_C_UNITS=<n>` writes the older form of a
   split, the form of the bootstrap seed: a header that every unit includes

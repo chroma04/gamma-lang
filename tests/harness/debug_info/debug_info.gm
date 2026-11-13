@@ -96,8 +96,14 @@ build :: fn(t: ^kit.T, name: string, args: []const string) -> kit.Fail!Built nee
     return build_program(t, name, "points", PROGRAM, args)
 }
 
+/// As `build_program`, as one C file next to the executable (`c_of`), whatever the
+/// environment asks: a split build keeps its units in the cache.
+build_one_file :: fn(t: ^kit.T, name, stem, program: string, args: []const string) -> kit.Fail!Built needs kit.Run => build_with(t, name, stem, program, args, true)
+
 /// Writes `program` to `<stem>.gm` in a fresh directory and builds it with `args`.
-build_program :: fn(t: ^kit.T, name, stem, program: string, args: []const string) -> kit.Fail!Built needs kit.Run {
+build_program :: fn(t: ^kit.T, name, stem, program: string, args: []const string) -> kit.Fail!Built needs kit.Run => build_with(t, name, stem, program, args, false)
+
+build_with :: fn(t: ^kit.T, name, stem, program: string, args: []const string, one_file: bool) -> kit.Fail!Built needs kit.Run {
     dir := try t.scratch(str.format("debug_info-{}", name)!)
     src := kit.join(dir, str.format("{}.gm", stem)!)
     try t.write(src, program)
@@ -105,6 +111,7 @@ build_program :: fn(t: ^kit.T, name, stem, program: string, args: []const string
     c := t.gamma([_]string("build"))
     c.args(args)
     c.args([_]string("-o", exe, src))
+    if one_file { c.set("GAMMA_C_UNITS", "1") }
     _ = try t.run_ok(c)
     return Built(exe: exe, dir: dir)
 }
@@ -130,7 +137,7 @@ debug_information_maps_to_the_source :: fn(t: ^kit.T) -> kit.Fail!() needs kit.R
     if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
     for mode in ("debug", "fast") {
         flag := str.format("--mode={}", mode)!
-        b := try build(t, mode, [_]string("-g", flag))
+        b := try build_one_file(t, mode, "points", PROGRAM, [_]string("-g", flag))
         try t.expect_text("the output", "7 45 3\n", try run(t, b.exe))
         c := try c_of(t, b.exe)
         src := kit.join(b.dir, "points.gm")
@@ -141,7 +148,7 @@ debug_information_maps_to_the_source :: fn(t: ^kit.T) -> kit.Fail!() needs kit.R
         try t.check(str.contains(c, "#undef linux"), "a Gamma name that is a macro is not suspended")
     }
     // Without `-g` the C has no source mapping.
-    b := try build(t, "plain", empty_slice(string))
+    b := try build_one_file(t, "plain", "points", PROGRAM, empty_slice(string))
     try t.expect_text("the output", "7 45 3\n", try run(t, b.exe))
     try t.check(not str.contains(try c_of(t, b.exe), "#line"), "the C of a build without -g has #line directives")
     return ()
@@ -215,7 +222,7 @@ VIEWED :: [_]string(
 
 debug_views_are_declared :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
-    b := try build_program(t, "views-c", "views", VIEWS, [_]string("-g"))
+    b := try build_one_file(t, "views-c", "views", VIEWS, [_]string("-g"))
     try t.expect_text("the output", "1 3 1\n", try run(t, b.exe))
     c := try c_of(t, b.exe)
     for needle in ("Shape_Rect = 1", "Dir_S = 2", "_union {", "_slice {", "_string {", " pair;", " next;") {
@@ -223,7 +230,7 @@ debug_views_are_declared :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     }
     try t.check(str.contains(c, ".debug_gdb_scripts") is on_linux(), "`.debug_gdb_scripts` is {}in the generated C", if on_linux() { "missing " } else { "" })
     // Without `-g` there are no views.
-    plain := try build_program(t, "views-plain", "views", VIEWS, empty_slice(string))
+    plain := try build_one_file(t, "views-plain", "views", VIEWS, empty_slice(string))
     try t.expect_text("the output", "1 3 1\n", try run(t, plain.exe))
     try t.check(not str.contains(try c_of(t, plain.exe), "gm_dv"), "the C of a build without -g has debugger views")
     return ()

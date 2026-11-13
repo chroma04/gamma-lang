@@ -284,16 +284,11 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
     out.extend(main_text)!
     reset := ""
     if opts.debug_info { reset = str.format("{}\n", LINE_RESET)! }
-    // A split by file prunes the types and frames of each unit; the debugger views (with
-    // `-g`) do not name their dependencies as the rest does, so with them every unit has
-    // all the types.
+    // A split by file prunes the types (with `-g`, the debugger views too) and frames of
+    // each unit.
     split_support: string = SUPPORT
-    split_types: string = str.format("{}{}", g.ty.blob_typedefs(), g.ty.mirror_text())!
+    split_types: string = str.format("{}{}{}", g.ty.blob_typedefs(), g.ty.mirror_text(), g.ty.view_defs())!
     split_frames: string = g.frames.items
-    if g.ty.view_defs().len > 0 {
-        split_support = str.format("{}{}", SUPPORT, guard(names, str.format("{}{}", split_types, g.ty.view_defs())!))!
-        split_types = ""
-    }
     parts := Parts(
         head: str.format("{}{}", head.items, frames)!,
         protos: protos,

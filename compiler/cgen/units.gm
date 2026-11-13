@@ -516,12 +516,12 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
         for item in all {
             if d := inline_definition(item) {
                 inline_names.put(d.name, bodies.items.len)!
-                decls.push(Decl(text: d.def, name: d.name, refs: gm_names(d.def), rank: RANK_INLINE))!
+                decls.push(Decl(text: line_reset(d.def), name: d.name, refs: gm_names(d.def), rank: RANK_INLINE))!
                 continue
             }
             f := function(item) else return null
             name := c_fn_name(f.decl) else return null
-            fns.push((name: name, def: f.def))!
+            fns.push((name: name, def: line_reset(f.def)))!
             decls.push(Decl(text: str.format("{}\n", f.decl)!, name: name, refs: gm_names(f.decl), rank: RANK_PROTO))!
         }
         bodies.push(fns)!
@@ -598,6 +598,14 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
         units.push(unit_text(decls.items, &by_name, nameless.items, body.items, parts.members))!
     }
     return Split(shared: parts.support, units: units.items)
+}
+
+/// Definition `def`, which may map its lines to the Gamma source (with `-g`), followed by
+/// the marker that maps the lines after it back to the C file: definitions move between
+/// units, and a marker before one maps the end of the definition before it.
+line_reset :: fn(def: string) -> string needs Alloc {
+    if not str.contains(def, "#line ") or def.ends_with(str.format("{}\n", LINE_RESET)!) { return def }
+    return str.format("{}{}\n", def, LINE_RESET)!
 }
 
 /// The depth of each type declaration: one more than the deepest type it refers to.
@@ -945,6 +953,17 @@ test "the units of a split by file do not depend on the order of the declaration
             if not found { changed += 1 }
         }
         expect_eq(changed, 1)
+    }
+}
+
+test "definitions that map lines to the source end by mapping them back" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(line_reset("int f(void) {\n}\n"), "int f(void) {\n}\n")
+        with_line := "#line 3 \"a.gm\"\nint f(void) {\n}\n"
+        expect_eq(line_reset(with_line), str.format("{}{}\n", with_line, LINE_RESET)!)
+        expect_eq(line_reset(line_reset(with_line)), line_reset(with_line))
     }
 }
 
