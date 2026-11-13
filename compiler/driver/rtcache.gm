@@ -12,6 +12,7 @@
 //! Concurrent builds may compile the same object at once: each writes a file of its own and
 //! renames it into place, so a reader never sees a partial object.
 
+cgen :: import "../cgen"
 fs :: import "std/fs"
 load :: import "../load"
 pkg :: import "../pkg"
@@ -139,6 +140,92 @@ prune :: fn(dir: string) needs Alloc + Clock + Fs {
     recent := now - 600 * NS_PER_SECOND
     for i in 0..(n - KEPT_PROGRAMS) {
         if progs.items[i].modified < recent { _ = Fs.remove(progs.items[i].path) }
+    }
+}
+
+/// How many unit objects (and their sources) the cache keeps; the least recently used
+/// beyond that are removed.
+KEPT_UNITS :: 4000
+
+/// The objects of the translation units `sources` of a split build, compiled with `tc` and
+/// `flags` (`compiler` is the compiler's `compiler_version`), from the cache: each unit is
+/// kept under a name derived from its text, the compiler and the flags, so a unit whose
+/// text an edit left unchanged is not compiled again. The others are compiled into the
+/// cache, `jobs` at a time. With `line_paths`, each source is first given the name of its
+/// cached file for its `#line` directives (see `cgen.resolve_lines`). `.NoCache` if there
+/// is no cache or no compiler version; `.Failed` (reported) if a unit does not compile.
+unit_objects :: fn(tc: ^const pkg.Toolchain, flags: []const string, sources: []const string, compiler: ?string, jobs: usize, line_paths: bool) -> UnitObjects needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+    dir := pkg.cache_dir() else return .NoCache
+    version := compiler else return .NoCache
+    pkg.make_dirs(dir) else return .NoCache
+    cc := str.join(tc.cc, "\0")!
+    cflags := str.join(tc.cflags, "\0")!
+    fl := str.join(flags, "\0")!
+    objects := list(string)
+    todo_c := list(string)
+    todo_tmp := list(string)
+    todo_obj := list(string)
+    day := Clock.wall() - 86400 * NS_PER_SECOND
+    for src in sources {
+        key := cache_key([6]string("unit", src, cc, cflags, fl, version)[..])
+        stem := load.join(dir, str.format("unit-{}", key)!)
+        obj := str.format("{}.o", stem)!
+        objects.push(obj)!
+        if info := Fs.stat(obj) {
+            // Mark it as used now and then, so the pruning keeps it.
+            if info.modified < day { touch(obj) }
+            continue
+        }
+        c_file := str.format("{}.c", stem)!
+        text: string = if line_paths { cgen.resolve_lines(src, c_file) } else { src }
+        tmp_c := private_name(dir, str.format("unit-{}", key)!, "c")
+        fs.write_all(tmp_c, text) else return .NoCache
+        rename_or_remove(tmp_c, c_file) else return .NoCache
+        todo_c.push(c_file)!
+        todo_tmp.push(private_name(dir, str.format("unit-{}", key)!, "o"))!
+        todo_obj.push(obj)!
+    }
+    if todo_c.items.len > 0 {
+        if not compile_objects(tc, flags, todo_c.items, todo_tmp.items, jobs) {
+            for o in todo_tmp.items { _ = Fs.remove(o) }
+            return .Failed
+        }
+        for i, tmp in enumerate(todo_tmp.items) { rename_or_remove(tmp, todo_obj.items[i]) else return .Failed }
+        prune_units(dir)
+    }
+    return .Objects(objects.items)
+}
+
+/// What `unit_objects` found.
+UnitObjects :: union {
+    Objects: []const string
+    NoCache
+    Failed
+}
+
+/// Removes all but the most recently used `KEPT_UNITS` unit objects of `dir`, with their
+/// sources, and the leftovers of builds that died, which are over an hour old.
+prune_units :: fn(dir: string) needs Alloc + Clock + Fs {
+    now := Clock.wall()
+    stale := now - 3600 * NS_PER_SECOND
+    objs := list(CachedProgram)
+    for r in fs.entries(dir) {
+        e := r else break
+        if not e.name.starts_with("unit-") { continue }
+        p := load.join(dir, e.name)
+        info := Fs.lstat(p) else continue
+        if str.contains(e.name, ".tmp-") {
+            if info.modified < stale { _ = Fs.remove(p) }
+            continue
+        }
+        if e.name.ends_with(".o") { objs.push(CachedProgram(modified: info.modified, path: p))! }
+    }
+    if objs.items.len <= KEPT_UNITS { return }
+    objs.items.sort_by(fn(a, b: ^const CachedProgram) -> bool => a.modified < b.modified or (a.modified is b.modified and a.path < b.path))
+    for i in 0..(objs.items.len - KEPT_UNITS) {
+        o := objs.items[i].path
+        _ = Fs.remove(o)
+        _ = Fs.remove(str.format("{}.c", o[0..o.len - 2])!)
     }
 }
 

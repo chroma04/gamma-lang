@@ -337,7 +337,7 @@ callgrind_annotate /tmp/prof/check.out | head -40
 end, the lint rules and the C back end without the C compiler's time. With `-g` the
 functions are listed by the Gamma file and line where they are defined; functions of the
 core library (`lib/core`) have no line information and appear under their C names
-(`gm_fN`), to be looked up in the generated C beside the executable. Inclusive costs
+(`gm_f_<name>_<hash>`, which start with the Gamma name). Inclusive costs
 (`--inclusive=yes`) are not meaningful for recursive functions, which most of the
 compiler's passes are: compare the totals of two builds instead. A change to the code
 generator shows in the compiler's own speed only one generation later, in a compiler built

@@ -5,7 +5,7 @@
   main.gm dispatch; syntax/ parse/ ast/ load/ (modules, core.gm loads lib/core from disk,
   Module.index hash of scope) sema/ (decls, layout cache with generations) check/ (bodies →
   TIR; FnCx in func.gm; expr.gm `expr` wrapper → `expr_kind`) tir/ eval/ (comptime,
-  structured values) interp/ (code.gm lowering, vm_compile.gm → Ins, bc.gm 16-byte Bc forms + CallRec/CallSite, vm.gm loop with in-loop calls, run.gm tree fallback, memory.gm page table; decisions/056, 064) cgen/ (C; units.gm splits) driver/
+  structured values) interp/ (code.gm lowering, vm_compile.gm → Ins, bc.gm 16-byte Bc forms + CallRec/CallSite, vm.gm loop with in-loop calls, run.gm tree fallback, memory.gm page table; decisions/056, 064) cgen/ (C; names.gm stable C names, units.gm split by file + old n-way split for --emit-c) driver/
   (native.gm compile_c: unit policy, runtime object cache) pkg/ testing/ fmt/ doc/ lint/
   linting/ fix/ repl/ ide/ lsp/.
 - lib/core (prelude, list, map, slice, complex) may use core-only intrinsics (@heap_*,

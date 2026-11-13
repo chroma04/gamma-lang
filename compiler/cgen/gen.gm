@@ -284,6 +284,16 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
     out.extend(main_text)!
     reset := ""
     if opts.debug_info { reset = str.format("{}\n", LINE_RESET)! }
+    // A split by file prunes the types and frames of each unit; the debugger views (with
+    // `-g`) do not name their dependencies as the rest does, so with them every unit has
+    // all the types.
+    split_support: string = SUPPORT
+    split_types: string = str.format("{}{}", g.ty.blob_typedefs(), g.ty.mirror_text())!
+    split_frames: string = g.frames.items
+    if g.ty.view_defs().len > 0 {
+        split_support = str.format("{}{}", SUPPORT, guard(names, str.format("{}{}", split_types, g.ty.view_defs())!))!
+        split_types = ""
+    }
     parts := Parts(
         head: str.format("{}{}", head.items, frames)!,
         protos: protos,
@@ -291,6 +301,10 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         once: str.format("{}{}", checks, gdb)!,
         funcs: str.format("{}{}", g.helpers.bodies.items, g.bodies.items)!,
         owned: with_helpers(g.owned(), g.helpers.bodies.items),
+        support: split_support,
+        types: split_types,
+        frames: split_frames,
+        members: names,
         // The function text before it ends with a marker that a split leaves with the next
         // function (see `split`), so the tail starts with one of its own.
         tail: str.format("{}{}{}{}", reset, consts.init, exports, main_text)!,

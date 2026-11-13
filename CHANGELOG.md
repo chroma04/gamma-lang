@@ -20,6 +20,14 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Incremental native builds.** A large program is now split into one C translation unit
+  per source file, and compiled units are kept in the cache (`$GAMMA_CACHE_DIR`, by default
+  `~/.cache/gamma`), so a rebuild compiles only the units an edit changed. A Debug build of
+  the compiler itself takes about 40 s from an empty cache and about 4 s after editing
+  function bodies in one file (it took about a minute every time). The generated C names
+  functions after their Gamma names (`gm_f_<name>_<hash>`), which also makes profiles and C
+  backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` still writes the shared
+  header and `n` units of the bootstrap seed.
 - **A faster interpreter.** `gamma run --backend=interp`, `gamma repl` and the web
   playground run programs two to four times faster. The register machine now dispatches on
   compact instructions specialized for their operand types, makes every call of a compiled

@@ -20,6 +20,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "run_reuses_cached_executables", run: run_reuses_cached_executables))!
     out.push(kit.Test(name: "prints_and_black_boxes_do_not_grow_the_c_per_site", run: prints_do_not_grow_the_c))!
     out.push(kit.Test(name: "builds_never_overwrite_files_they_did_not_generate", run: never_overwrite_own_files))!
+    out.push(kit.Test(name: "split_builds_compile_only_the_units_an_edit_changes", run: split_builds_reuse_units))!
     when target.os is not .Windows {
         out.push(kit.Test(name: "run_reports_a_closed_pipe_as_a_signal_status", run: closed_pipe))!
         out.push(kit.Test(name: "run_relinks_when_a_foreign_library_changes", run: relinks_foreign_library))!
@@ -224,6 +225,50 @@ prints_do_not_grow_the_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     lines: usize = 0
     for _ in str.lines(gen[start..start + end]) { lines += 1 }
     try t.check(lines > N * 10 and lines < N * 45, "main takes {} lines of C for {} statements", lines, N)
+    return ()
+}
+
+/// The unit objects of split builds in `cache`.
+unit_objects :: fn(t: ^kit.T, cache: string) -> kit.Fail![]string needs kit.Run {
+    l := list(string)
+    for n in try objects(t, cache) {
+        if n.starts_with("unit-") { l.push(n)! }
+    }
+    return l.items
+}
+
+/// Builds the program in `dir` split into units, with the cache `cache`, runs it and checks
+/// that it prints `expected`.
+build_split :: fn(t: ^kit.T, dir, exe, cache, expected: string) -> kit.Fail!() needs kit.Run {
+    c := t.gamma([_]string("build", "-o", exe, dir))
+    c.set("GAMMA_CACHE_DIR", cache)
+    c.set("GAMMA_C_UNITS", "2")
+    _ = try t.run_ok(c)
+    run := try t.run(kit.command(exe))
+    return t.expect_text("the output of the program", expected, run.out)
+}
+
+split_builds_reuse_units :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    s := try setup(t, "units")
+    dir := kit.join(s.dir, "prog")
+    try make_dir(t, dir)
+    try t.write(kit.join(dir, "main.gm"), "main :: fn() needs Out {\n    print(\"{}\\n\", twice(21))\n}\n")
+    helper := kit.join(dir, "helper.gm")
+    try t.write(helper, "twice :: fn(x: i32) -> i32 => x * 2\n")
+    cache := kit.join(s.dir, "cache")
+    try build_split(t, dir, kit.join(s.dir, "a"), cache, "42\n")
+    first := try unit_objects(t, cache)
+    // A unit per source file, the core library's included, and unit 0 for the data.
+    try t.check(first.len >= 3, "expected the units of each file in {}, found {}", cache, first.len)
+    // Built again, every unit comes from the cache.
+    try build_split(t, dir, kit.join(s.dir, "b"), cache, "42\n")
+    try t.check(same_names(try unit_objects(t, cache), first), "a build of the same program compiled units again")
+    // An edit of one function's body compiles that file's unit alone.
+    try t.write(helper, "twice :: fn(x: i32) -> i32 => x + x + 1\n")
+    try build_split(t, dir, kit.join(s.dir, "c"), cache, "43\n")
+    n := (try unit_objects(t, cache)).len
+    try t.check(n is first.len + 1, "an edit of one function compiled {} units", n - first.len)
     return ()
 }
 
